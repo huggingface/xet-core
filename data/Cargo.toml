@@ -12,7 +12,7 @@ debug = 1
 doctest = false
 
 [[bin]]
-name = "example"
+name = "x"
 path = "src/bin/example.rs"
 
 [dependencies]
