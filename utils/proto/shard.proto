@@ -1,0 +1,69 @@
+/*
+ * https://www.notion.so/xethub/MerkleDBv2-Xet-CLI-Architecture-62c3177c92834864883bd3fa442feadc
+ * https://www.notion.so/xethub/MerkleDBv2-The-Final-Stage-cc654b5266294d399503c3431131fafa
+ */
+syntax = "proto3";
+package shard;
+import public "common.proto";
+
+// The Shard service.
+service Shard {
+  // Queries for file->shard information.
+  rpc QueryFile(QueryFileRequest) returns (QueryFileResponse);
+
+  // Synchronizes a shard from CAS to the Shard Service for querying
+  rpc SyncShard(SyncShardRequest) returns (SyncShardResponse);
+
+  // Queries for chunk->shard information.
+  rpc QueryChunk(QueryChunkRequest) returns (QueryChunkResponse);
+
+  // SyncShard + synchronizes chunk->shard information to the Shard Service
+  rpc SyncShardWithSalt(SyncShardWithSaltRequest) returns (SyncShardResponse);
+}
+message QueryFileRequest {
+  bytes file_id = 1;
+}
+
+message Range {
+  uint64 start = 1;
+  uint64 end = 2;
+}
+
+message CASReconstructionTerm {
+  bytes cas_id = 1;
+  uint64 unpacked_length = 2;
+  Range range = 3;
+}
+
+message QueryFileResponse {
+  repeated CASReconstructionTerm reconstruction = 1;
+  common.Key shard_id = 2;
+}
+
+message SyncShardRequest {
+  common.Key key = 1;
+  bool force_sync = 2;
+}
+
+enum SyncShardResponseType {
+  Exists = 0;
+  SyncPerformed = 1;
+}
+
+message SyncShardResponse {
+  SyncShardResponseType response = 1;
+}
+
+message QueryChunkRequest {
+  string prefix = 1;
+  repeated bytes chunk = 2;
+}
+
+message QueryChunkResponse {
+  repeated bytes shard = 1;
+}
+
+message SyncShardWithSaltRequest {
+  SyncShardRequest ssr = 1;
+  bytes salt = 2;
+}

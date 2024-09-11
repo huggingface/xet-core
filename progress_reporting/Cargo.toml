@@ -1,0 +1,22 @@
+[package]
+name = "progress_reporting"
+version = "0.14.5"
+edition = "2021"
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "test_progress_reporting"
+path = "src/main.rs"
+
+
+[dependencies]
+crossterm = "0.25.0"
+tokio = { version = "1.36", features = ["full"] }
+utils = {path = "../utils"}
+tracing = "0.1.*"
+more-asserts = "0.3.*"
+atty = "0.2"
+
+

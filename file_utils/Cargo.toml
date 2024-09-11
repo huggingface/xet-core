@@ -1,0 +1,23 @@
+[package]
+name = "file_utils"
+version = "0.14.2"
+edition = "2021"
+
+[dependencies]
+colored = "2.0.0"
+tracing = "0.1.*"
+libc = "0.2"
+lazy_static = "1.4.0"
+whoami = "1.4.1"
+anyhow = "1"
+tempfile = "3.2.0"
+rand = "0.8.4"
+
+
+winapi = { version = "0.3", features = [
+    "winerror",
+    "winnt",
+    "handleapi",
+    "processthreadsapi",
+    "securitybaseapi",
+] }

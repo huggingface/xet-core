@@ -1,0 +1,81 @@
+/*
+ * https://www.notion.so/cantorsystems/GlodHub-Client-Architecture-0992cff0f95e4203bf7763e9951f1fe8
+ */
+syntax = "proto3";
+package cas;
+import public "common.proto";
+
+// The CAS (Content Addressed Storage) service.
+service Cas {
+  // Initiates uploads of an object.
+  rpc Initiate(common.InitiateRequest) returns (common.InitiateResponse);
+
+  // Uploads the provided bytes to an object.
+  // This will also verify the hash is correct.
+  rpc Put(PutRequest) returns (PutResponse);
+
+  // Completes uploads of an object. This verifies that hash is correct.
+  rpc PutComplete(PutCompleteRequest) returns (PutCompleteResponse);
+
+
+  // Downloads all bytes for the indicated object.
+  rpc Get(GetRequest) returns (GetResponse);
+
+
+  // Downloads a set of ranges within an object.
+  rpc GetRange(GetRangeRequest) returns (GetRangeResponse);
+
+  // Retrieve metadata about a particular object.
+  rpc Head(HeadRequest) returns (HeadResponse);
+}
+
+
+
+message PutRequest {
+  common.Key key = 1;
+  bytes data = 2;
+  repeated uint64 chunk_boundaries = 3;
+}
+
+message PutResponse {
+  bool was_inserted = 1;
+}
+
+
+message PutCompleteRequest {
+  common.Key key = 1;
+  repeated uint64 chunk_boundaries = 2;
+}
+
+message PutCompleteResponse {
+  bool was_inserted = 1;
+}
+
+message GetRequest {
+  common.Key key = 1;
+}
+
+message GetResponse {
+  bytes data = 1;
+}
+message GetRangeRequest {
+  common.Key key = 1;
+  repeated Range ranges = 2;
+}
+
+message GetRangeResponse {
+  repeated bytes data = 1;
+}
+
+message HeadRequest {
+  common.Key key = 1;
+}
+
+message HeadResponse {
+  uint64 size = 1;
+}
+
+message Range {
+  uint64 start = 1;
+  uint64 end = 2;
+}

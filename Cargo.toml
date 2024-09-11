@@ -1,0 +1,30 @@
+[workspace]
+rust-version = "1.79"
+
+resolver = "2"
+
+members = [
+    "cache",
+    "cas_client",
+    "data",
+    "error_printer",
+    "file_utils",
+    "merklehash",
+    "mdb_shard",
+    "parutils",
+    "progress_reporting",
+    "retry_strategy",
+    "shard_client",
+    "utils",
+    "xet_error",
+]
+
+[profile.release]
+opt-level = 3
+lto = true
+debug = 1
+
+[profile.opt-test]
+inherits = "dev"
+opt-level = 1
+debug = 1
