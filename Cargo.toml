@@ -19,6 +19,8 @@ members = [
     "shard_client",
     "utils",
     "xet_error",
+    "cas_object",
+    "cas_types",
 ]
 
 exclude = [

@@ -51,6 +51,9 @@ tokio-rustls = "0.25.0"
 rustls-pemfile = "2.0.0"
 hyper-rustls = { version = "0.26.0", features = ["http2"] }
 lz4 = "1.24.0"
+reqwest = "0.12.7"
+serde = { version = "1.0.210", features = ["derive"] }
+cas_types = { version = "0.1.0", path = "../cas_types" }
 
 [dev-dependencies]
 trait-set = "0.3.0"
