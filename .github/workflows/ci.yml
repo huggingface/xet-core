@@ -1,0 +1,38 @@
+name: xet-core CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+
+jobs:
+  build_and_test:
+    runs-on:
+      group: cpu-high
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      - name: Install Rust 1.79
+        uses: dtolnay/rust-toolchain@1.79.0
+        with:
+          components: clippy
+      - name: Install protoc compiler
+        run: |
+          sudo apt-get install unzip
+          cd $HOME
+          curl https://github.com/protocolbuffers/protobuf/releases/download/v23.1/protoc-23.1-linux-x86_64.zip -L -o protoc.zip
+          unzip protoc.zip -d .protoc
+          rm protoc.zip
+          echo "PATH=$HOME/.protoc/bin:$PATH" >> $GITHUB_ENV
+      - name: Lint
+        run: |
+          cargo clippy -r --verbose -- -D warnings # elevates warnings to errors
+      - name: Build and Test
+        run: |
+          cargo test --verbose --no-fail-fast --features "strict"
