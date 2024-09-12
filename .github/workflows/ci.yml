@@ -29,7 +29,7 @@ jobs:
           curl https://github.com/protocolbuffers/protobuf/releases/download/v23.1/protoc-23.1-linux-x86_64.zip -L -o protoc.zip
           unzip protoc.zip -d .protoc
           rm protoc.zip
-          export PATH=$PATH:$HOME/.protoc/bin
+          echo 'export PATH=$PATH:$HOME/.protoc/bin' >> $GITHUB_ENV
       - name: Lint
         run: |
           cargo clippy -r --verbose -- -D warnings # elevates warnings to errors
