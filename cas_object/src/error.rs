@@ -7,15 +7,6 @@ use xet_error::Error;
 #[non_exhaustive]
 #[derive(Error, Debug)]
 pub enum CasObjectError {
-    #[error("Tonic RPC error.")]
-    TonicError,
-
-    #[error("Configuration Error: {0} ")]
-    ConfigurationError(String),
-
-    #[error("URL Parsing Error.")]
-    URLError(#[from] InvalidUri),
-
     #[error("Invalid Range Read")]
     InvalidRange,
 
@@ -36,15 +27,6 @@ pub enum CasObjectError {
 
     #[error("CAS Hash not found")]
     XORBNotFound(MerkleHash),
-
-    #[error("Data transfer timeout")]
-    DataTransferTimeout,
-
-    #[error("Batch Error: {0}")]
-    BatchError(String),
-
-    #[error("Runtime Error (Temp files): {0}")]
-    RuntimeErrorTempFileError(#[from] tempfile::PersistError),
 }
 
 // Define our own result type here (this seems to be the standard).

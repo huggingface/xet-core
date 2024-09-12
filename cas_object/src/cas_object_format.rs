@@ -203,7 +203,7 @@ impl CasObject {
     pub fn get_range<R: Read + Seek>(&self, reader: &mut R, start: u32, end: u32) -> Result<Vec<u8>, CasObjectError> {
         
         if end < start {
-            return Err(CasObjectError::InvalidArguments);
+            return Err(CasObjectError::InvalidRange);
         }
 
         // make sure the end of the range is within the bounds of the xorb
