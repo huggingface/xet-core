@@ -1,6 +1,5 @@
 use std::convert::Infallible;
 
-use http::uri::InvalidUri;
 use merklehash::MerkleHash;
 use xet_error::Error;
 
