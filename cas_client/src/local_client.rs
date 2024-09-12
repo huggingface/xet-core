@@ -298,7 +298,7 @@ impl Client for LocalClient {
 
     async fn get_length(&self, prefix: &str, hash: &MerkleHash) -> Result<u64> {
         let file_path = self.get_path_for_entry(prefix, hash);
-        match File::open(&file_path) {
+        match File::open(file_path) {
             Ok(file) => {
                 let mut reader = BufReader::new(file);
                 let cas = CasObject::deserialize(&mut reader)?;
