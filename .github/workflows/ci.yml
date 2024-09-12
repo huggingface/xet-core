@@ -22,6 +22,10 @@ jobs:
         uses: dtolnay/rust-toolchain@1.79.0
         with:
           components: clippy
+      - uses: arduino/setup-protoc@v2
+        with:
+          version: "23.1"
+          repo-token: ${{ secrets.DEV_GITHUB_TOKEN }}
       - name: Lint
         run: |
           cargo clippy -r --verbose -- -D warnings # elevates warnings to errors
