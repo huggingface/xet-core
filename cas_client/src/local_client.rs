@@ -392,6 +392,146 @@ mod tests {
         assert!(matches!(result, Err(CasClientError::XORBNotFound(_))));
     }
 
+    #[tokio::test]
+    async fn test_failures() {
+        let client = LocalClient::default();
+        let hello = "hello world".as_bytes().to_vec();
+
+        let hello_hash = merklehash::compute_data_hash(&hello[..]);
+        // write "hello world"
+        client.put("key", &hello_hash, hello.clone(), vec![hello.len() as u64]).await.unwrap();
+
+        // put the same value a second time. This should be ok.
+        client
+            .put("key", &hello_hash, hello.clone(), vec![hello.len() as u64])
+            .await
+            .unwrap();
+
+        // we can list all entries
+        let r = client.get_all_entries().unwrap();
+        assert_eq!(r.len(), 1);
+        assert_eq!(
+            r,
+            vec![Key {
+                prefix: "key".into(),
+                hash: hello_hash
+            }]
+        );
+
+        // put the different value with the same hash
+        // this should fail
+        assert_eq!(
+            CasClientError::HashMismatch,
+            client
+                .put(
+                    "key",
+                    &hello_hash,
+                    "hellp world".as_bytes().to_vec(),
+                    vec![hello.len() as u64],
+                )
+                .await
+                .unwrap_err()
+        );
+        // content shorter than the chunk boundaries should fail
+        assert_eq!(
+            CasClientError::InvalidArguments,
+            client
+                .put(
+                    "key",
+                    &hello_hash,
+                    "hellp wod".as_bytes().to_vec(),
+                    vec![hello.len() as u64],
+                )
+                .await
+                .unwrap_err()
+        );
+
+        // content longer than the chunk boundaries should fail
+        assert_eq!(
+            CasClientError::InvalidArguments,
+            client
+                .put(
+                    "key",
+                    &hello_hash,
+                    "hello world again".as_bytes().to_vec(),
+                    vec![hello.len() as u64],
+                )
+                .await
+                .unwrap_err()
+        );
+
+        // empty writes should fail
+        assert_eq!(
+            CasClientError::InvalidArguments,
+            client
+                .put("key", &hello_hash, vec![], vec![],)
+                .await
+                .unwrap_err()
+        );
+
+        // compute a hash of something we do not have in the store
+        let world = "world".as_bytes().to_vec();
+        let world_hash = merklehash::compute_data_hash(&world[..]);
+
+        // get length of non-existant object should fail with XORBNotFound
+        assert_eq!(
+            CasClientError::XORBNotFound(world_hash),
+            client.get_length("key", &world_hash).await.unwrap_err()
+        );
+
+        // read of non-existant object should fail with XORBNotFound
+        assert!(client.get("key", &world_hash).await.is_err());
+        // read range of non-existant object should fail with XORBNotFound
+        assert!(client
+            .get_object_range("key", &world_hash, vec![(0, 5)])
+            .await
+            .is_err());
+
+        // we can delete non-existant things
+        client.delete("key", &world_hash);
+
+        // delete the entry we inserted
+        client.delete("key", &hello_hash);
+        let r = client.get_all_entries().unwrap();
+        assert_eq!(r.len(), 0);
+
+        // now every read of that key should fail
+        assert_eq!(
+            CasClientError::XORBNotFound(hello_hash),
+            client.get_length("key", &hello_hash).await.unwrap_err()
+        );
+        assert_eq!(
+            CasClientError::XORBNotFound(hello_hash),
+            client.get("key", &hello_hash).await.unwrap_err()
+        );
+    }
+    
+    #[tokio::test]
+    async fn test_hashing() {
+        let client = LocalClient::default();
+        // hand construct a tree of 2 chunks
+        let hello = "hello".as_bytes().to_vec();
+        let world = "world".as_bytes().to_vec();
+        let hello_hash = merklehash::compute_data_hash(&hello[..]);
+        let world_hash = merklehash::compute_data_hash(&world[..]);
+
+        let hellonode = merkledb::MerkleNode::new(0, hello_hash, 5, vec![]);
+        let worldnode = merkledb::MerkleNode::new(1, world_hash, 5, vec![]);
+
+        let final_hash = merkledb::detail::hash_node_sequence(&[hellonode, worldnode]);
+
+        // insert should succeed
+        client
+            .put(
+                "key",
+                &final_hash,
+                "helloworld".as_bytes().to_vec(),
+                vec![5, 10],
+            )
+            .await
+            .unwrap();
+    }
+
     fn gen_dummy_xorb(num_chunks: u32, uncompressed_chunk_size: u32, randomize_chunk_sizes: bool) -> (DataHash, Vec<u8>, Vec<u64>) {
         let mut contents = Vec::new();
         let mut chunks: Vec<Chunk> = Vec::new();
