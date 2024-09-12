@@ -22,10 +22,14 @@ jobs:
         uses: dtolnay/rust-toolchain@1.79.0
         with:
           components: clippy
-      - uses: arduino/setup-protoc@v3
-        with:
-          version: "23.1"
-          repo-token: ${{ secrets.DEV_GITHUB_TOKEN }}
+      - name: Install protoc compiler
+        run: |
+          sudo apt-get install unzip
+          cd $HOME
+          curl https://github.com/protocolbuffers/protobuf/releases/download/v23.1/protoc-23.1-linux-x86_64.zip -L -o protoc.zip
+          unzip protoc.zip -d .protoc
+          rm protoc.zip
+          export PATH=$PATH:$HOME/.protoc/bin
       - name: Lint
         run: |
           cargo clippy -r --verbose -- -D warnings # elevates warnings to errors
