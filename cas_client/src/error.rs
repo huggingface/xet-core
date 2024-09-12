@@ -39,6 +39,9 @@ pub enum CasClientError {
     #[error("Hash Mismatch")]
     HashMismatch,
 
+    #[error("Internal IO Error: {0}")]
+    InternalIOError(#[from] std::io::Error),
+
     #[error("Other Internal Error: {0}")]
     InternalError(anyhow::Error),
 
@@ -59,6 +62,9 @@ pub enum CasClientError {
 
     #[error("Runtime Error (Temp files): {0}")]
     RuntimeErrorTempFileError(#[from] tempfile::PersistError),
+
+    #[error("Cas Object Error: {0}")]
+    CasObjectError(#[from] cas_object::error::CasObjectError),
 }
 
 // Define our own result type here (this seems to be the standard).

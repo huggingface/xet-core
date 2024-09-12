@@ -1,5 +1,5 @@
 
-use std::io::{Error, Read, Seek, Write};
+use std::{cmp::min, io::{Error, Read, Seek, Write}};
 use merklehash::{DataHash, MerkleHash};
 
 use crate::error::CasObjectError;
@@ -202,9 +202,12 @@ impl CasObject {
     /// Get range of content bytes from Xorb
     pub fn get_range<R: Read + Seek>(&self, reader: &mut R, start: u32, end: u32) -> Result<Vec<u8>, CasObjectError> {
         
-        if end <= start {
+        if end < start {
             return Err(CasObjectError::InvalidArguments);
         }
+
+        // make sure the end of the range is within the bounds of the xorb
+        let end = min(end, self.header.total_uncompressed_length);
         
         let mut data = vec![0u8; (end - start) as usize];
 
@@ -234,6 +237,29 @@ impl CasObject {
                 reader.seek(std::io::SeekFrom::Start(self.header_length as u64))?;
                 reader.read_exact(&mut data)?;
                 Ok(data)
+            },
+
+            CAS_OBJECT_COMPRESSION_LZ4 => Err(CasObjectError::FormatError(anyhow!("LZ4 compression method is not supported."))),
+            _  =>Err(CasObjectError::FormatError(anyhow!("Unknown compression method"))),
+        }
+    }
+
+    /// Get all the content bytes from a Xorb, and return the chunk boundaries
+    pub fn get_detailed_bytes<R: Read + Seek>(&self, reader: &mut R) -> Result<(Vec<u32>, Vec<u8>), CasObjectError> {
+        // seek to header_length (from start).
+        // if uncompressed, just read rest of uncompressed length and return.
+        // if compressed, then walk compressed chunk vector and decompress and return.
+        if self.header == Default::default() || self.header_length == 0 {
+            return Err(CasObjectError::InternalError(anyhow!("Incomplete CasObject, no header")));
+        }
+
+        match self.header.compression_method {
+
+            CAS_OBJECT_COMPRESSION_UNCOMPRESSED => {
+                let mut data = vec![0; self.header.total_uncompressed_length as usize];
+                reader.seek(std::io::SeekFrom::Start(self.header_length as u64))?;
+                reader.read_exact(&mut data)?;
+                Ok((self.header.chunk_compressed_cumulative.clone(), data))
             },
 
             CAS_OBJECT_COMPRESSION_LZ4 => Err(CasObjectError::FormatError(anyhow!("LZ4 compression method is not supported."))),

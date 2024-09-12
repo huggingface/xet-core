@@ -9,6 +9,7 @@ strict = []
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
+cas_object = {path = "../cas_object"}
 error_printer = {path = "../error_printer"}
 utils = {path = "../utils"}
 merkledb = {path = "../merkledb"}
@@ -56,3 +57,4 @@ trait-set = "0.3.0"
 lazy_static = "1.4.0"
 tokio-stream = { version = "0.1", features = ["net"] }
 rcgen = "0.12.0"
+rand = "0.8.5"

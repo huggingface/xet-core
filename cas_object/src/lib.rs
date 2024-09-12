@@ -1,3 +1,2 @@
 pub mod cas_object_format;
-
-mod error;
+pub mod error;

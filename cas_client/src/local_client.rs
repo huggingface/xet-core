@@ -1,16 +1,18 @@
-use crate::error::{CasClientError, Result};
-use crate::interface::Client;
-use anyhow::anyhow;
-use async_trait::async_trait;
+use std::fs::{metadata, File};
+use std::path::{Path, PathBuf};
+use std::io::{BufReader, BufWriter, Write};
 use cas::key::Key;
+use cas_object::cas_object_format::CasObject;
 use merkledb::prelude::*;
 use merkledb::{Chunk, MerkleMemDB};
-use merklehash::MerkleHash;
-use std::fs::{metadata, File};
-use std::io::{BufReader, BufWriter, Read, Seek, Write};
-use std::path::{Path, PathBuf};
 use tempfile::TempDir;
+use merklehash::MerkleHash;
+use crate::interface::Client;
+use crate::error::{CasClientError, Result};
+
+use anyhow::anyhow;
 use tracing::{debug, error, info};
+use async_trait::async_trait;
 
 #[derive(Debug)]
 pub struct LocalClient {
@@ -35,14 +37,12 @@ impl Default for LocalClient {
     }
 }
 
-fn read_io_to_cas_err(path: &PathBuf, e: std::io::Error) -> CasClientError {
-    CasClientError::InternalError(anyhow!("Unable to read contents of {:?}. {:?}", path, e))
-}
-fn write_io_to_cas_err(path: &PathBuf, e: std::io::Error) -> CasClientError {
-    CasClientError::InternalError(anyhow!("Unable to write contents of {:?}. {:?}", path, e))
-}
-
 impl LocalClient {
+    /// Internal function to get the path for a given hash entry
+    fn get_path_for_entry(&self, prefix: &str, hash: &MerkleHash) -> PathBuf {
+        self.path.join(format!("{}.{}", prefix, hash.hex()))
+    }
+
     /// Creates a local client that writes to a particular specified path.
     /// Files preexisting in the path may be used to serve queries.
     pub fn new(path: &Path, silence_errors: bool) -> LocalClient {
@@ -51,63 +51,6 @@ impl LocalClient {
             path: path.to_path_buf(),
             silence_errors,
         }
-    }
-
-    /// Internal function to get the path for a given hash entry
-    fn get_path_for_entry(&self, prefix: &str, hash: &MerkleHash) -> PathBuf {
-        self.path.join(format!("{}.{}", prefix, hash.hex()))
-    }
-
-    /// File format handling Functions
-    ///
-    /// The local disk format for each Xorb is:
-    ///  HEADER
-    ///  - u64: Version Number
-    ///  - u64: data len bytes
-    ///  - u64: chunk boundary in bytes length
-    ///
-    ///  - all the data
-    ///  - chunk_boundaries as bincode
-    ///
-    const HEADER_LEN: u64 = 24;
-    const HEADER_VERSION: u64 = 0;
-
-    /// Reads a u64 in little endian form from a file
-    fn read_u64(file: &mut impl Read) -> std::io::Result<u64> {
-        let mut val = [0u8; 8];
-        file.read_exact(&mut val)?;
-        Ok(u64::from_le_bytes(val))
-    }
-
-    /// Writes a u64 in little endian form to a file
-    fn write_u64(file: &mut impl Write, val: u64) -> std::io::Result<()> {
-        file.write_all(&val.to_le_bytes())
-    }
-
-    /// Returns the length and the size of the of the chunk boundary object
-    fn read_header(file: &mut impl Read) -> std::io::Result<(u64, u64)> {
-        let version = LocalClient::read_u64(file)?;
-        if version != LocalClient::HEADER_VERSION {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                "Invalid File Version",
-            ));
-        }
-        let data_len = LocalClient::read_u64(file)?;
-        let chunkboundary_len = LocalClient::read_u64(file)?;
-        Ok((data_len, chunkboundary_len))
-    }
-
-    /// Returns the length and the size of the of the chunk boundary object
-    fn write_header(
-        file: &mut impl Write,
-        data_len: u64,
-        chunkboundary_len: u64,
-    ) -> std::io::Result<()> {
-        LocalClient::write_u64(file, LocalClient::HEADER_VERSION)?;
-        LocalClient::write_u64(file, data_len)?;
-        LocalClient::write_u64(file, chunkboundary_len)?;
-        Ok(())
     }
 
     /// Returns all entries in the local client
@@ -162,26 +105,10 @@ impl LocalClient {
         })?;
 
         let mut reader = BufReader::new(file);
+        let cas = CasObject::deserialize(&mut reader)?;
+        let (boundaries, data) = cas.get_detailed_bytes(&mut reader)?;
 
-        // read the data length and the chunk boundary length
-        let (data_len, chunkboundary_len) =
-            LocalClient::read_header(&mut reader).map_err(|x| read_io_to_cas_err(&file_path, x))?;
-
-        // deserialize the chunk boundary
-        let mut chunk_boundary_buf = vec![0u8; chunkboundary_len as usize];
-        reader
-            .read_exact(&mut chunk_boundary_buf)
-            .map_err(|x| read_io_to_cas_err(&file_path, x))?;
-        let chunk_boundaries: Vec<u64> =
-            bincode::deserialize(&chunk_boundary_buf).map_err(|_| {
-                CasClientError::InternalError(anyhow!("Invalid deserialization {:?}", file_path))
-            })?;
-
-        let mut data = vec![0u8; data_len as usize];
-        reader
-            .read_exact(&mut data)
-            .map_err(|x| read_io_to_cas_err(&file_path, x))?;
-        Ok((chunk_boundaries, data))
+        Ok((boundaries.into_iter().map(|x| x as u64).collect(), data))
     }
 
     /// Deletes an entry
@@ -200,32 +127,33 @@ impl LocalClient {
 
         let _ = std::fs::remove_file(file_path);
     }
+
+    fn validate_root_hash(data: &[u8], chunk_boundaries: &[u64], hash: &MerkleHash) -> bool {
+        // at least 1 chunk, and last entry in chunk boundary must match the length
+        if chunk_boundaries.is_empty() || chunk_boundaries[chunk_boundaries.len() - 1] as usize != data.len() {
+            return false;
+        }
+
+        let mut chunks: Vec<Chunk> = Vec::new();
+        let mut left_edge: usize = 0;
+        for i in chunk_boundaries {
+            let right_edge = *i as usize;
+            let hash = merklehash::compute_data_hash(&data[left_edge..right_edge]);
+            let length = right_edge - left_edge;
+            chunks.push(Chunk { hash, length });
+            left_edge = right_edge;
+        }
+
+        let mut db = MerkleMemDB::default();
+        let mut staging = db.start_insertion_staging();
+        db.add_file(&mut staging, &chunks);
+        let ret = db.finalize(staging);
+        *ret.hash() == *hash
+    }
+
 }
 
-fn validate_root_hash(data: &[u8], chunk_boundaries: &[u64], hash: &MerkleHash) -> bool {
-    // at least 1 chunk, and last entry in chunk boundary must match the length
-    if chunk_boundaries.is_empty()
-        || chunk_boundaries[chunk_boundaries.len() - 1] as usize != data.len()
-    {
-        return false;
-    }
-    let mut chunks: Vec<Chunk> = Vec::new();
-    let mut left_edge: usize = 0;
-    for i in chunk_boundaries {
-        let right_edge = *i as usize;
-        let hash = merklehash::compute_data_hash(&data[left_edge..right_edge]);
-        let length = right_edge - left_edge;
-        chunks.push(Chunk { hash, length });
-        left_edge = right_edge;
-    }
-    let mut db = MerkleMemDB::default();
-    let mut staging = db.start_insertion_staging();
-    db.add_file(&mut staging, &chunks);
-    let ret = db.finalize(staging);
-    *ret.hash() == *hash
-}
-
-/// The local client stores Xorbs on local disk.
+/// LocalClient is responsible for writing/reading Xorbs on local disk.
 #[async_trait]
 impl Client for LocalClient {
     async fn put(
@@ -235,29 +163,33 @@ impl Client for LocalClient {
         data: Vec<u8>,
         chunk_boundaries: Vec<u64>,
     ) -> Result<()> {
-        let file_path = self.get_path_for_entry(prefix, hash);
-
-        info!("Writing XORB {prefix}/{hash:?} to local path {file_path:?}");
         // no empty writes
         if chunk_boundaries.is_empty() || data.is_empty() {
             return Err(CasClientError::InvalidArguments);
         }
+        
         // last boundary must be end of data
         if !chunk_boundaries.is_empty()
             && chunk_boundaries[chunk_boundaries.len() - 1] as usize != data.len()
         {
             return Err(CasClientError::InvalidArguments);
         }
+
         // validate hash
-        if !validate_root_hash(&data, &chunk_boundaries, hash) {
+        if !Self::validate_root_hash(&data, &chunk_boundaries, hash) {
             return Err(CasClientError::HashMismatch);
         }
+
         if let Ok(xorb_size) = self.get_length(prefix, hash).await {
             if xorb_size > 0 {
                 info!("{prefix:?}/{hash:?} already exists in Local CAS; returning.");
                 return Ok(());
             }
         }
+
+        let file_path = self.get_path_for_entry(prefix, hash);
+        info!("Writing XORB {prefix}/{hash:?} to local path {file_path:?}");
+        
         if let Ok(metadata) = metadata(&file_path) {
             return if metadata.is_file() {
                 info!("{file_path:?} already exists; returning.");
@@ -285,54 +217,52 @@ impl Client for LocalClient {
                 ))
             })?;
 
-        let chunk_boundaries_bytes: Vec<u8> = bincode::serialize(&chunk_boundaries)?;
-
-        {
-            let mut writer = BufWriter::new(&tempfile);
-            LocalClient::write_header(
-                &mut writer,
-                data.len() as u64,
-                chunk_boundaries_bytes.len() as u64,
-            )
-            .map_err(|x| write_io_to_cas_err(&file_path, x))?;
-
-            // write out chunk boundaries then bytes
-            writer
-                .write_all(&chunk_boundaries_bytes)
-                .map_err(|x| write_io_to_cas_err(&file_path, x))?;
-
-            writer
-                .write_all(&data[..])
-                .map_err(|x| write_io_to_cas_err(&file_path, x))?;
-
-            // make sure we flush before persisting
-            writer
-                .flush()
-                .map_err(|x| write_io_to_cas_err(&file_path, x))?;
-        }
-
-        tempfile.persist(&file_path)?;
-
-        // attempt to set to readonly
-        // its ok to fail.
-        if let Ok(metadata) = std::fs::metadata(&file_path) {
-            let mut permissions = metadata.permissions();
-            permissions.set_readonly(true);
-            let _ = std::fs::set_permissions(&file_path, permissions);
-        }
-
-        info!("{file_path:?} successfully written.");
+            let total_bytes_written;
+            {
+                let mut writer = BufWriter::new(&tempfile);
+                let (_, bytes_written) = CasObject::serialize(
+                    &mut writer, 
+                    hash, 
+                    &data, 
+                    &chunk_boundaries.into_iter().map(|x| x as u32).collect()
+                )?;
+                // flush before persisting
+                writer.flush()?;
+                total_bytes_written = bytes_written;
+            }
+    
+            tempfile.persist(&file_path)?;
+    
+            // attempt to set to readonly
+            // its ok to fail.
+            if let Ok(metadata) = std::fs::metadata(&file_path) {
+                let mut permissions = metadata.permissions();
+                permissions.set_readonly(true);
+                let _ = std::fs::set_permissions(&file_path, permissions);
+            }
+    
+            info!("{file_path:?} successfully written with {total_bytes_written:?} bytes.");
 
         Ok(())
     }
 
     async fn flush(&self) -> Result<()> {
-        // this client does not background so no flush is needed
         Ok(())
     }
 
     async fn get(&self, prefix: &str, hash: &MerkleHash) -> Result<Vec<u8>> {
-        Ok(self.get_detailed(prefix, hash).await?.1)
+        let file_path = self.get_path_for_entry(prefix, hash);
+        let file = File::open(&file_path).map_err(|_| {
+            if !self.silence_errors {
+                error!("Unable to find file in local CAS {:?}", file_path);
+            }
+            CasClientError::XORBNotFound(*hash)
+        })?;
+
+        let mut reader = BufReader::new(file);
+        let cas = CasObject::deserialize(&mut reader)?;
+        let result = cas.get_all_bytes(&mut reader)?;
+        Ok(result)
     }
 
     async fn get_object_range(
@@ -341,49 +271,26 @@ impl Client for LocalClient {
         hash: &MerkleHash,
         ranges: Vec<(u64, u64)>,
     ) -> Result<Vec<Vec<u8>>> {
+
         // Handle the case where we aren't asked for any real data.
         if ranges.len() == 1 && ranges[0].0 == ranges[0].1 {
             return Ok(vec![Vec::<u8>::new()]);
         }
-        let file_path = self.get_path_for_entry(prefix, hash);
 
-        let mut file = File::open(&file_path).map_err(|_| {
+        let file_path = self.get_path_for_entry(prefix, hash);
+        let file = File::open(&file_path).map_err(|_| {
             if !self.silence_errors {
                 error!("Unable to find file in local CAS {:?}", file_path);
             }
             CasClientError::XORBNotFound(*hash)
         })?;
 
-        // read the data length and the chunk boundary length
-        let (data_len, chunkboundary_len) =
-            LocalClient::read_header(&mut file).map_err(|x| read_io_to_cas_err(&file_path, x))?;
-
-        // calculate where the data starts:
-        // Its just the header + chunkboundary bytes
-        let starting_offset = LocalClient::HEADER_LEN + chunkboundary_len;
+        let mut reader = BufReader::new(file);
+        let cas = CasObject::deserialize(&mut reader)?;
 
         let mut ret: Vec<Vec<u8>> = Vec::new();
         for r in ranges {
-            let mut start = r.0;
-            let mut end = r.1;
-            if start >= data_len {
-                start = data_len
-            }
-            if end > data_len {
-                end = data_len
-            }
-            // end before start, or any position is outside of array
-            if end < start {
-                return Err(CasClientError::InvalidRange);
-            }
-            let mut data = vec![0u8; (end - start) as usize];
-            if end - start > 0 {
-                file.seek(std::io::SeekFrom::Start(starting_offset + start))
-                    .map_err(|x| read_io_to_cas_err(&file_path, x))?;
-
-                file.read_exact(&mut data)
-                    .map_err(|x| read_io_to_cas_err(&file_path, x))?;
-            }
+            let data = cas.get_range(&mut reader, r.0 as u32, r.1 as u32)?;
             ret.push(data);
         }
         Ok(ret)
@@ -392,10 +299,10 @@ impl Client for LocalClient {
     async fn get_length(&self, prefix: &str, hash: &MerkleHash) -> Result<u64> {
         let file_path = self.get_path_for_entry(prefix, hash);
         match File::open(&file_path) {
-            Ok(mut file) => {
-                let (len, _) = LocalClient::read_header(&mut file)
-                    .map_err(|x| read_io_to_cas_err(&file_path, x))?;
-                Ok(len)
+            Ok(file) => {
+                let mut reader = BufReader::new(file);
+                let cas = CasObject::deserialize(&mut reader)?;
+                Ok(cas.header.total_uncompressed_length as u64)
             }
             Err(_) => Err(CasClientError::XORBNotFound(*hash)),
         }
@@ -404,199 +311,122 @@ impl Client for LocalClient {
 
 #[cfg(test)]
 mod tests {
+
     use super::*;
-    use cas::key::Key;
-    use merkledb::detail::hash_node_sequence;
-    use merkledb::MerkleNode;
+    use merklehash::{compute_data_hash, DataHash};
+    use rand::Rng;
 
     #[tokio::test]
-    async fn test_basic_read_write() {
+    async fn test_basic_put_get() {
+        // Arrange
         let client = LocalClient::default();
-        // the root hash of a single chunk is just the hash of the data
-        let hello = "hello world".as_bytes().to_vec();
-        let hello_hash = merklehash::compute_data_hash(&hello[..]);
-        // write "hello world"
-        client
-            .put("key", &hello_hash, hello.clone(), vec![hello.len() as u64])
-            .await
-            .unwrap();
+        let data = gen_random_bytes(2048);
+        let hash = compute_data_hash(&data[..]);
+        let chunk_boundaries = vec![data.len() as u64];
+        
+        let data_again = data.clone();
 
-        // get length "hello world"
-        assert_eq!(11, client.get_length("key", &hello_hash).await.unwrap());
+        // Act & Assert
+        assert!(client.put("key", &hash, data, chunk_boundaries).await.is_ok());
 
-        // read "hello world"
-        assert_eq!(hello, client.get("key", &hello_hash).await.unwrap());
-
-        // read range "hello" and "world"
-        let ranges_to_read: Vec<(u64, u64)> = vec![(0, 5), (6, 11)];
-        let expected: Vec<Vec<u8>> = vec!["hello".as_bytes().to_vec(), "world".as_bytes().to_vec()];
-        assert_eq!(
-            expected,
-            client
-                .get_object_range("key", &hello_hash, ranges_to_read)
-                .await
-                .unwrap()
-        );
-        // read range "hello" and "world", with truncation for larger offsets
-        let ranges_to_read: Vec<(u64, u64)> = vec![(0, 5), (6, 20)];
-        let expected: Vec<Vec<u8>> = vec!["hello".as_bytes().to_vec(), "world".as_bytes().to_vec()];
-        assert_eq!(
-            expected,
-            client
-                .get_object_range("key", &hello_hash, ranges_to_read)
-                .await
-                .unwrap()
-        );
-        // empty read
-        let ranges_to_read: Vec<(u64, u64)> = vec![(0, 5), (6, 6)];
-        let expected: Vec<Vec<u8>> = vec!["hello".as_bytes().to_vec(), "".as_bytes().to_vec()];
-        assert_eq!(
-            expected,
-            client
-                .get_object_range("key", &hello_hash, ranges_to_read)
-                .await
-                .unwrap()
-        );
+        let returned_data = client.get("key", &hash).await.unwrap();
+        assert_eq!(data_again, returned_data);
     }
 
     #[tokio::test]
-    async fn test_failures() {
+    async fn test_basic_put_get_random_medium() {
+        // Arrange
         let client = LocalClient::default();
-        let hello = "hello world".as_bytes().to_vec();
-        let hello_hash = merklehash::compute_data_hash(&hello[..]);
-        // write "hello world"
-        client
-            .put("key", &hello_hash, hello.clone(), vec![hello.len() as u64])
-            .await
-            .unwrap();
-        // put the same value a second time. This should be ok.
-        client
-            .put("key", &hello_hash, hello.clone(), vec![hello.len() as u64])
-            .await
-            .unwrap();
+        let (hash, data, chunk_boundaries) = gen_dummy_xorb(44, 15633, true);
+        let data_again = data.clone();
 
-        // we can list all entries
-        let r = client.get_all_entries().unwrap();
-        assert_eq!(r.len(), 1);
-        assert_eq!(
-            r,
-            vec![Key {
-                prefix: "key".into(),
-                hash: hello_hash
-            }]
-        );
+        // Act & Assert
+        assert!(client.put("", &hash, data, chunk_boundaries).await.is_ok());
 
-        // put the different value with the same hash
-        // this should fail
-        assert_eq!(
-            CasClientError::HashMismatch,
-            client
-                .put(
-                    "key",
-                    &hello_hash,
-                    "hellp world".as_bytes().to_vec(),
-                    vec![hello.len() as u64],
-                )
-                .await
-                .unwrap_err()
-        );
-        // content shorter than the chunk boundaries should fail
-        assert_eq!(
-            CasClientError::InvalidArguments,
-            client
-                .put(
-                    "key",
-                    &hello_hash,
-                    "hellp wod".as_bytes().to_vec(),
-                    vec![hello.len() as u64],
-                )
-                .await
-                .unwrap_err()
-        );
-
-        // content longer than the chunk boundaries should fail
-        assert_eq!(
-            CasClientError::InvalidArguments,
-            client
-                .put(
-                    "key",
-                    &hello_hash,
-                    "hello world again".as_bytes().to_vec(),
-                    vec![hello.len() as u64],
-                )
-                .await
-                .unwrap_err()
-        );
-
-        // empty writes should fail
-        assert_eq!(
-            CasClientError::InvalidArguments,
-            client
-                .put("key", &hello_hash, vec![], vec![],)
-                .await
-                .unwrap_err()
-        );
-
-        // compute a hash of something we do not have in the store
-        let world = "world".as_bytes().to_vec();
-        let world_hash = merklehash::compute_data_hash(&world[..]);
-
-        // get length of non-existant object should fail with XORBNotFound
-        assert_eq!(
-            CasClientError::XORBNotFound(world_hash),
-            client.get_length("key", &world_hash).await.unwrap_err()
-        );
-
-        // read of non-existant object should fail with XORBNotFound
-        assert!(client.get("key", &world_hash).await.is_err());
-        // read range of non-existant object should fail with XORBNotFound
-        assert!(client
-            .get_object_range("key", &world_hash, vec![(0, 5)])
-            .await
-            .is_err());
-
-        // we can delete non-existant things
-        client.delete("key", &world_hash);
-
-        // delete the entry we inserted
-        client.delete("key", &hello_hash);
-        let r = client.get_all_entries().unwrap();
-        assert_eq!(r.len(), 0);
-
-        // now every read of that key should fail
-        assert_eq!(
-            CasClientError::XORBNotFound(hello_hash),
-            client.get_length("key", &hello_hash).await.unwrap_err()
-        );
-        assert_eq!(
-            CasClientError::XORBNotFound(hello_hash),
-            client.get("key", &hello_hash).await.unwrap_err()
-        );
+        let returned_data = client.get("", &hash).await.unwrap();
+        assert_eq!(data_again, returned_data);
     }
 
     #[tokio::test]
-    async fn test_hashing() {
+    async fn test_basic_put_get_range_random_small() {
+        // Arrange
         let client = LocalClient::default();
-        // hand construct a tree of 2 chunks
-        let hello = "hello".as_bytes().to_vec();
-        let world = "world".as_bytes().to_vec();
-        let hello_hash = merklehash::compute_data_hash(&hello[..]);
-        let world_hash = merklehash::compute_data_hash(&world[..]);
+        let (hash, data, chunk_boundaries) = gen_dummy_xorb(3, 2048, true);
+        let data_again = data.clone();
 
-        let hellonode = MerkleNode::new(0, hello_hash, 5, vec![]);
-        let worldnode = MerkleNode::new(1, world_hash, 5, vec![]);
+        // Act & Assert
+        assert!(client.put("", &hash, data, chunk_boundaries).await.is_ok());
 
-        let final_hash = hash_node_sequence(&[hellonode, worldnode]);
+        let ranges: Vec<(u64, u64)> = vec![(0, 100),(100, 1500)];
+        let ranges_again = ranges.clone();
+        let returned_ranges = client.get_object_range("", &hash, ranges).await.unwrap();
 
-        // insert should succeed
-        client
-            .put(
-                "key",
-                &final_hash,
-                "helloworld".as_bytes().to_vec(),
-                vec![5, 10],
-            )
-            .await
-            .unwrap();
+        for idx in 0..returned_ranges.len() {
+            assert_eq!(data_again[ranges_again[idx].0 as usize .. ranges_again[idx].1 as usize], returned_ranges[idx]);
+        }
     }
+
+    #[tokio::test]
+    async fn test_basic_length() {
+        // Arrange
+        let client = LocalClient::default();
+        let (hash, data, chunk_boundaries) = gen_dummy_xorb(1, 2048, false);
+        let gen_length = data.len();
+
+        // Act
+        client.put("", &hash, data, chunk_boundaries).await.unwrap();
+        let len = client.get_length("", &hash).await.unwrap();
+        
+        // Assert
+        assert_eq!(len as usize, gen_length);
+    }
+
+    #[tokio::test]
+    async fn test_missing_xorb() {
+        // Arrange
+        let client = LocalClient::default();
+        let (hash, _, _) = gen_dummy_xorb(16, 2048, true);
+
+        // Act & Assert
+        let result = client.get("", &hash).await;
+        assert!(matches!(result, Err(CasClientError::XORBNotFound(_))));
+    }
+
+    fn gen_dummy_xorb(num_chunks: u32, uncompressed_chunk_size: u32, randomize_chunk_sizes: bool) -> (DataHash, Vec<u8>, Vec<u64>) {
+        let mut contents = Vec::new();
+        let mut chunks: Vec<Chunk> = Vec::new();
+        let mut chunk_boundaries = Vec::with_capacity(num_chunks as usize);
+        for _idx in 0..num_chunks {
+
+            let chunk_size: u32 = if randomize_chunk_sizes {
+                let mut rng = rand::thread_rng();
+                rng.gen_range(1024..=uncompressed_chunk_size)
+            } else {
+                uncompressed_chunk_size
+            };
+
+            let bytes = gen_random_bytes(chunk_size);
+
+            chunks.push(Chunk { hash: merklehash::compute_data_hash(&bytes), length: bytes.len() });
+
+            contents.extend(bytes);
+            chunk_boundaries.push(contents.len() as u64);
+        }
+
+        let mut db = MerkleMemDB::default();
+        let mut staging = db.start_insertion_staging();
+        db.add_file(&mut staging, &chunks);
+        let ret = db.finalize(staging);
+        let hash = *ret.hash();
+
+        (hash, contents, chunk_boundaries)
+    }
+
+    fn gen_random_bytes(uncompressed_chunk_size: u32) -> Vec<u8> {
+        let mut rng = rand::thread_rng();
+        let mut data = vec![0u8; uncompressed_chunk_size as usize];
+        rng.fill(&mut data[..]);
+        data        
+    }
+
 }
