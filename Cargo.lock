@@ -868,7 +868,6 @@ dependencies = [
  "hex",
  "http 0.2.12",
  "humantime",
- "intaglio",
  "is_executable",
  "itertools 0.10.5",
  "lazy_static",
@@ -1801,12 +1800,6 @@ checksum = "e0242819d153cba4b4b05a5a8f2a7e9bbf97b6055b2a002b395c96b5ff3c0222"
 dependencies = [
  "cfg-if 1.0.0",
 ]
-
-[[package]]
-name = "intaglio"
-version = "1.8.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1b4f756a47a2dac507018af2d4e47988e93829f34a665da3655b23cc1d21ee47"
 
 [[package]]
 name = "integer-encoding"
