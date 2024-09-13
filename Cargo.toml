@@ -16,7 +16,9 @@ members = [
     "retry_strategy",
     "shard_client",
     "utils",
-    "xet_error", "cas_object",
+    "xet_error",
+    "cas_object",
+    "cas_types",
 ]
 
 [profile.release]

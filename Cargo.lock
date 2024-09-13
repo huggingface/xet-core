@@ -403,7 +403,7 @@ dependencies = [
  "chrono",
  "lazy_static",
  "lru",
- "merklehash",
+ "merklehash 0.14.5",
  "mockall",
  "prometheus",
  "rand 0.8.5",
@@ -443,7 +443,7 @@ dependencies = [
  "lazy_static",
  "lz4",
  "merkledb",
- "merklehash",
+ "merklehash 0.14.5",
  "opentelemetry",
  "opentelemetry-http",
  "opentelemetry-jaeger",
@@ -478,11 +478,21 @@ dependencies = [
  "anyhow",
  "bincode",
  "http 1.1.0",
- "merklehash",
+ "merklehash 0.14.5",
  "rand 0.8.5",
  "tempfile",
  "tracing",
  "xet_error",
+]
+
+[[package]]
+name = "cas_types"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "merklehash 0.14.5 (git+https://github.com/xetdata/xet-core)",
+ "serde",
+ "serde_repr",
 ]
 
 [[package]]
@@ -892,7 +902,7 @@ dependencies = [
  "lz4",
  "mdb_shard",
  "merkledb",
- "merklehash",
+ "merklehash 0.14.5",
  "mockall",
  "mockall_double",
  "mockstream",
@@ -2032,7 +2042,7 @@ dependencies = [
  "binary-heap-plus",
  "clap 3.2.25",
  "lazy_static",
- "merklehash",
+ "merklehash 0.14.5",
  "more-asserts",
  "rand 0.8.5",
  "regex",
@@ -2066,7 +2076,7 @@ dependencies = [
  "gearhash",
  "itertools 0.10.5",
  "lazy_static",
- "merklehash",
+ "merklehash 0.14.5",
  "parutils",
  "rand 0.8.5",
  "rand_chacha",
@@ -2086,6 +2096,23 @@ dependencies = [
 [[package]]
 name = "merklehash"
 version = "0.14.5"
+dependencies = [
+ "blake3",
+ "generic-array",
+ "heed",
+ "rand 0.8.5",
+ "rand_chacha",
+ "rand_core 0.6.4",
+ "safe-transmute",
+ "serde",
+ "sha3",
+ "structopt",
+]
+
+[[package]]
+name = "merklehash"
+version = "0.14.5"
+source = "git+https://github.com/xetdata/xet-core#469028007186fd2cbcce3cbda4b78ea8b99c5818"
 dependencies = [
  "blake3",
  "generic-array",
@@ -3463,6 +3490,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "serde_repr"
+version = "0.1.19"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6c64451ba24fc7a6a2d60fc75dd9c83c90903b19028d4eff35e88fc1e86564e9"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.77",
+]
+
+[[package]]
 name = "serde_spanned"
 version = "0.6.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3559,7 +3597,7 @@ dependencies = [
  "lazy_static",
  "mdb_shard",
  "merkledb",
- "merklehash",
+ "merklehash 0.14.5",
  "opentelemetry",
  "opentelemetry-http",
  "opentelemetry-jaeger",
@@ -4554,7 +4592,7 @@ dependencies = [
  "http 0.2.12",
  "itertools 0.10.5",
  "lazy_static",
- "merklehash",
+ "merklehash 0.14.5",
  "parking_lot 0.11.2",
  "pin-project",
  "prost",
