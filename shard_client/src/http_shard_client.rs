@@ -3,7 +3,7 @@ use crate::{RegistrationClient, ShardClientInterface};
 
 use async_trait::async_trait;
 use bytes::Buf;
-use cas::key::Key;
+use cas_types::Key;
 use cas_types::{
     QueryChunkResponse, QueryReconstructionResponse, UploadShardResponse, UploadShardResponseType,
 };
