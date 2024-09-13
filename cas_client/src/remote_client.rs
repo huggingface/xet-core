@@ -54,6 +54,7 @@ impl Client for RemoteClient {
     }
 
     async fn get(&self, prefix: &str, hash: &merklehash::MerkleHash) -> Result<Vec<u8>> {
+        // Call reconstruction API
         let key = Key {
             prefix: prefix.to_string(),
             hash: *hash,
