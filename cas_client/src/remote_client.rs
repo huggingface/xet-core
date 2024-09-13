@@ -3,13 +3,13 @@ use bytes::Buf;
 use cas::key::Key;
 use cas_types::compression_scheme::CompressionScheme;
 use cas_types::{
-    QueryChunkParams, QueryChunkResponse, QueryFileParams,
-    SyncShardResponse, SyncShardResponseType, UploadXorbResponse
+    QueryChunkResponse, QueryReconstructionResponse, UploadShardResponse, UploadShardResponseType, UploadXorbResponse
 };
 use reqwest::{StatusCode, Url};
 use serde::{de::DeserializeOwned, Serialize};
 
 use merklehash::MerkleHash;
+use tracing::info;
 
 use crate::error::{CasClientError, Result};
 use crate::Client;
@@ -37,10 +37,16 @@ impl Client for RemoteClient {
             prefix: prefix.to_string(),
             hash: *hash,
         };
-        self.client
+
+        let was_uploaded = self.client
             .upload(&key, data, chunk_boundaries)
-            .await
-            .map(|_| ())
+            .await?;
+
+        if !was_uploaded {
+            info!("Key: {key:?} not inserted.");
+        }
+
+        Ok(())
     }
 
     async fn flush(&self) -> Result<()> {
@@ -93,28 +99,36 @@ impl Client for RemoteClient {
     }
 }
 
+impl RemoteClient {
+    pub async fn from_config(endpoint: &String) -> Self {
+        Self { endpoint:endpoint.to_string(), client: CASAPIClient::default() }
+    }
+}
+
 #[derive(Debug)]
 pub struct CASAPIClient {
     client: reqwest::Client,
+    scheme: String,
+    endpoint: String,
 }
 
 impl Default for CASAPIClient {
     fn default() -> Self {
-        Self::new()
+        Self::new(SCHEME, CAS_ENDPOINT)
     }
 }
 
 impl CASAPIClient {
-    pub fn new() -> Self {
+    pub fn new(scheme: &str, endpoint: &str) -> Self {
         let client = reqwest::Client::builder()
             .http2_prior_knowledge()
             .build()
             .unwrap();
-        Self { client }
+        Self { client, scheme: scheme.to_string(), endpoint: endpoint.to_string() }
     }
 
     pub async fn get(&self, key: &Key) -> Result<Vec<u8>> {
-        let url = format!("{SCHEME}/{CAS_ENDPOINT}/{key}").parse()?;
+        let url = Url::parse(&format!("{0}/{1}/{key}", self.scheme, self.endpoint))?;
         let request = reqwest::Request::new(reqwest::Method::GET, url);
         let response = self.client.execute(request).await?;
         let xorb_data = response.bytes().await?;
@@ -122,7 +136,7 @@ impl CASAPIClient {
     }
 
     pub async fn exists(&self, key: &Key) -> Result<bool> {
-        let url: Url = format!("{SCHEME}/{CAS_ENDPOINT}/{key}").parse()?;
+        let url = Url::parse(&format!("{0}/{1}/{key}", self.scheme, self.endpoint))?;
         let response = self.client.head(url).send().await?;
         match response.status() {
             StatusCode::OK => Ok(true),
@@ -134,7 +148,7 @@ impl CASAPIClient {
     }
 
     pub async fn get_length(&self, key: &Key) -> Result<Option<u64>> {
-        let url: Url = format!("{SCHEME}/{CAS_ENDPOINT}/{key}").parse()?;
+        let url = Url::parse(&format!("{0}/{1}/{key}", self.scheme, self.endpoint))?;
         let response = self.client.head(url).send().await?;
         let status = response.status();
         if status == StatusCode::NOT_FOUND {
@@ -175,7 +189,7 @@ impl CASAPIClient {
             .map(|num| num.to_string())
             .collect::<Vec<String>>()
             .join(",");
-        let url: Url = format!("{SCHEME}/{CAS_ENDPOINT}/{key}?{chunk_boundaries_query}").parse()?;
+        let url = Url::parse(&format!("{0}/{1}/xorb/{key}?{chunk_boundaries_query}", self.scheme, self.endpoint))?;
 
         let response = self.client.post(url).body(contents.into()).send().await?;
         let response_body = response.bytes().await?;
@@ -184,40 +198,40 @@ impl CASAPIClient {
         Ok(response_parsed.was_inserted)
     }
 
-    pub async fn shard_sync(&self, key: &Key, force_sync: bool, salt: &[u8; 32]) -> Result<bool> {
-        let url: Url = format!("{SCHEME}/{CAS_ENDPOINT}/shard/sync").parse()?;
-        let params = SyncShardParams {
-            key: key.clone(),
-            force_sync,
-            salt: Vec::from(salt),
+    pub async fn upload_shard(&self, key: &Key, force_sync: bool, salt: &[u8; 32]) -> Result<bool> {
+        let url = Url::parse(&format!("{0}/{1}/shard/{key}", self.scheme, self.endpoint))?;
+        let response = match force_sync {
+             true => self.client.put(url).send().await?,
+             false => self.client.post(url).send().await?,
         };
+        let response_body = response.bytes().await?;
+        let response_parsed: UploadShardResponse = serde_json::from_reader(response_body.reader())?;
 
-        let response_value: SyncShardResponse = self.post_json(url, &params).await?;
-        match response_value.response {
-            SyncShardResponseType::Exists => Ok(false),
-            SyncShardResponseType::SyncPerformed => Ok(true),
+        match response_parsed.result {
+            UploadShardResponseType::Exists => Ok(false),
+            UploadShardResponseType::SyncPerformed => Ok(true),
         }
     }
 
-    pub async fn shard_query_file(&self, file_id: &MerkleHash) -> Result<QueryFileResponse> {
-        let url: Url = format!("{SCHEME}/{CAS_ENDPOINT}/shard/query_file").parse()?;
-        let params = QueryFileParams { file_id: *file_id };
-        let response_value: QueryFileResponse = self.post_json(url, &params).await?;
-        Ok(response_value)
+    pub async fn reconstruct_file(&self, file_id: &MerkleHash) -> Result<QueryReconstructionResponse> {
+        let url = Url::parse(&format!("{0}/{1}/reconstruction/{2}", self.scheme, self.endpoint, file_id.hex()))?;
+        let response = self.client.get(url).send().await?;
+        let response_body = response.bytes().await?;
+        let response_parsed: QueryReconstructionResponse = serde_json::from_reader(response_body.reader())?;
+        
+        Ok(response_parsed)
     }
 
     pub async fn shard_query_chunk(
         &self,
-        prefix: &str,
-        chunk: Vec<MerkleHash>,
+        key: &Key,
     ) -> Result<QueryChunkResponse> {
-        let url: Url = format!("{SCHEME}/{CAS_ENDPOINT}/shard/query_chunk").parse()?;
-        let params = QueryChunkParams {
-            prefix: prefix.to_string(),
-            chunk,
-        };
-        let response_value: QueryChunkResponse = self.post_json(url, &params).await?;
-        Ok(response_value)
+        let url = Url::parse(&format!("{0}/{1}/chunk/{key}", self.scheme, self.endpoint))?;
+        let response = self.client.get(url).send().await?;
+        let response_body = response.bytes().await?;
+        let response_parsed: QueryChunkResponse = serde_json::from_reader(response_body.reader())?;
+
+        Ok(response_parsed)
     }
 
     async fn post_json<ReqT, RespT>(&self, url: Url, request_body: &ReqT) -> Result<RespT>
@@ -228,6 +242,6 @@ impl CASAPIClient {
         let body = serde_json::to_vec(request_body)?;
         let response = self.client.post(url).body(body).send().await?;
         let response_bytes = response.bytes().await?;
-        serde_json::from_reader(response_bytes.reader()).map_err(CasClientError::SerdeJSONError)
+        serde_json::from_reader(response_bytes.reader()).map_err(CasClientError::SerdeError)
     }
 }

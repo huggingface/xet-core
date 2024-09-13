@@ -469,6 +469,7 @@ dependencies = [
  "tracing",
  "tracing-opentelemetry",
  "trait-set",
+ "url",
  "utils",
  "uuid",
  "xet_error",

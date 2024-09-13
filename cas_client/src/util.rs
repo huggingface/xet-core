@@ -14,8 +14,6 @@ pub(crate) mod grpc_mock {
     use tonic::{Request, Response, Status};
 
     use crate::cas_connection_pool::CasConnectionConfig;
-    use crate::grpc::get_client;
-    use crate::grpc::GrpcClient;
     use cas::cas::cas_server::{Cas, CasServer};
     use cas::cas::{
         GetRangeRequest, GetRangeResponse, GetRequest, GetResponse, HeadRequest, HeadResponse,
@@ -101,6 +99,7 @@ pub(crate) mod grpc_mock {
             }
         }
 
+        /*
         pub async fn start(self) -> (ShutdownHook, GrpcClient) {
             self.start_with_retry_strategy(RetryStrategy::new(2, 1))
                 .await
@@ -140,6 +139,8 @@ pub(crate) mod grpc_mock {
             let client = GrpcClient::new("127.0.0.1".to_string(), cas_client, strategy);
             (shutdown_hook, client)
         }
+
+        */
     }
 
     // Unsafe hacks so that we can dynamically add in overrides to the mock functionality

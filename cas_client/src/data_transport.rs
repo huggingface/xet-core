@@ -4,8 +4,6 @@ use std::time::Duration;
 
 use crate::{
     cas_connection_pool::CasConnectionConfig,
-    grpc::{get_request_id, trace_forwarding},
-    remote_client::CAS_PROTOCOL_VERSION,
 };
 use anyhow::{anyhow, Result};
 use cas::common::CompressionScheme;
@@ -196,19 +194,19 @@ impl DataTransport {
         debug!("Calling {} with address: {}", method, dest);
         let user_id = self.cas_connection_config.user_id.clone();
         let auth = self.cas_connection_config.auth.clone();
-        let request_id = get_request_id();
+        // let request_id = get_request_id();
         let repo_paths = self.cas_connection_config.repo_paths.clone();
         let git_xet_version = self.cas_connection_config.git_xet_version.clone();
-        let cas_protocol_version = CAS_PROTOCOL_VERSION.clone();
+        // let cas_protocol_version = CAS_PROTOCOL_VERSION.clone();
 
         let mut req = Request::builder()
             .method(method.clone())
             .header(USER_ID_HEADER, user_id)
             .header(AUTH_HEADER, auth)
-            .header(REQUEST_ID_HEADER, request_id)
+            //.header(REQUEST_ID_HEADER, request_id)
             .header(REPO_PATHS_HEADER, repo_paths)
             .header(GIT_XET_VERSION_HEADER, git_xet_version)
-            .header(CAS_PROTOCOL_VERSION_HEADER, cas_protocol_version)
+            //.header(CAS_PROTOCOL_VERSION_HEADER, cas_protocol_version)
             .uri(&dest)
             .version(Version::HTTP_2);
 
@@ -219,6 +217,7 @@ impl DataTransport {
             );
         }
 
+        /*
         if trace_forwarding() {
             if let Some(headers) = req.headers_mut() {
                 let mut injector = HeaderInjector(headers);
@@ -228,6 +227,8 @@ impl DataTransport {
                 propagator.inject_context(&ctx, &mut injector);
             }
         }
+        */
+
         let bytes = match body {
             None => Bytes::new(),
             Some(data) => Bytes::from(data),
@@ -581,11 +582,5 @@ mod tests {
         // check against values in config
         assert_eq!(get_header_value(GIT_XET_VERSION_HEADER), git_xet_version);
         assert_eq!(get_header_value(USER_ID_HEADER), user_id);
-
-        // check against global static
-        assert_eq!(
-            get_header_value(CAS_PROTOCOL_VERSION_HEADER),
-            CAS_PROTOCOL_VERSION.as_str()
-        );
     }
 }

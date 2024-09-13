@@ -49,7 +49,7 @@ pub(crate) async fn create_cas_client(
 
     // Raw remote client.
     let remote_client = Arc::new(
-        RemoteClient::from_config(endpoint, user_id, auth, repo_paths, XET_VERSION.clone()).await,
+        RemoteClient::from_config(endpoint).await,
     );
 
     // Try add in caching capability.

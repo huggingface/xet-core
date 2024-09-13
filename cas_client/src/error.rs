@@ -65,6 +65,15 @@ pub enum CasClientError {
 
     #[error("Cas Object Error: {0}")]
     CasObjectError(#[from] cas_object::error::CasObjectError),
+
+    #[error("Parse Error: {0}")]
+    ParseError(#[from] url::ParseError),
+
+    #[error("Reqwest Error: {0}")]
+    ReqwestError(#[from] reqwest::Error),
+
+    #[error("Serde Error: {0}")]
+    SerdeError(#[from] serde_json::Error),
 }
 
 // Define our own result type here (this seems to be the standard).
