@@ -6,5 +6,5 @@ edition = "2021"
 [dependencies]
 anyhow = "1.0.86"
 serde = { version = "1.0.208", features = ["derive"] }
-merklehash = { git = "https://github.com/xetdata/xet-core" }
+merklehash = { path = "../merklehash" }
 serde_repr = "0.1.19"
