@@ -335,8 +335,6 @@ impl RemoteShardInterface {
         }
 
         let salt = self.repo_salt()?;
-        let cas = self.cas()?;
-        let cas_ref = &cas;
         let shard_client = self.shard_client()?;
         let shard_client_ref = &shard_client;
         let shard_prefix = self.shard_prefix.clone();
@@ -352,25 +350,10 @@ impl RemoteShardInterface {
                 &si.shard_hash
             );
             let data = std::fs::read(&si.path)?;
-            let data_len = data.len();
+
             // Upload the shard.
-            cas_ref
-                .put_bypass_stage(
-                    shard_prefix_ref,
-                    &si.shard_hash,
-                    data,
-                    vec![data_len as u64],
-                )
-                .await?;
-
-            debug!(
-                "Registering shard {shard_prefix_ref}/{:?} with shard server.",
-                &si.shard_hash
-            );
-
-            // That succeeded if we made it here, so now try to sync things.
             shard_client_ref
-                .register_shard_with_salt(shard_prefix_ref, &si.shard_hash, false, &salt)
+                .upload_shard(&self.shard_prefix, &si.shard_hash, false, &data, &salt)
                 .await?;
 
             info!(
@@ -387,8 +370,6 @@ impl RemoteShardInterface {
             }
             parutils::ParallelError::TaskError(e) => e,
         })?;
-
-        cas.flush().await?;
 
         Ok(())
     }

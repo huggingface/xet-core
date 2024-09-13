@@ -29,9 +29,6 @@ pub enum MDBShardError {
     #[error("Query failed: {0}")]
     QueryFailed(String),
 
-    #[error("Client connection error: {0}")]
-    GrpcClientError(#[from] anyhow::Error),
-
     #[error("Smudge query policy Error: {0}")]
     SmudgeQueryPolicyError(String),
 

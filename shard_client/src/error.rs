@@ -9,8 +9,8 @@ pub enum ShardClientError {
     #[error("LMDB Error: {0}")]
     ShardDedupDBError(String),
 
-    #[error("Data Parsing Error")]
-    DataParsingError(String),
+    #[error("Data Parsing Error: {0}")]
+    DataParsingError(#[from] serde_json::Error),
 
     #[error("Error : {0}")]
     Other(String),
@@ -19,7 +19,10 @@ pub enum ShardClientError {
     MDBShardError(#[from] mdb_shard::error::MDBShardError),
 
     #[error("Client connection error: {0}")]
-    GrpcClientError(#[from] anyhow::Error),
+    HttpClientError(#[from] reqwest::Error),
+
+    #[error("Bad endpoint: {0}")]
+    UrlError(#[from] url::ParseError),
 }
 
 // Define our own result type here (this seems to be the standard).

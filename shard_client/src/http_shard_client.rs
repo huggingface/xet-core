@@ -1,0 +1,188 @@
+use crate::error::{Result, ShardClientError};
+use crate::{RegistrationClient, ShardClientInterface};
+
+use async_trait::async_trait;
+use bytes::Buf;
+use cas::key::Key;
+use cas_types::{
+    QueryChunkResponse, QueryReconstructionResponse, UploadShardResponse, UploadShardResponseType,
+};
+use error_printer::ErrorPrinter;
+use mdb_shard::file_structs::{FileDataSequenceEntry, FileDataSequenceHeader, MDBFileInfo};
+use mdb_shard::shard_dedup_probe::ShardDedupProber;
+use mdb_shard::shard_file_reconstructor::FileReconstructor;
+use merklehash::MerkleHash;
+use reqwest::Url;
+use retry_strategy::RetryStrategy;
+use tracing::warn;
+
+const NUM_RETRIES: usize = 5;
+const BASE_RETRY_DELAY_MS: u64 = 3000;
+
+/// Shard Client that uses HTTP for communication.
+#[derive(Debug)]
+pub struct HttpShardClient {
+    pub endpoint: String,
+    client: reqwest::Client,
+    retry_strategy: RetryStrategy,
+}
+
+impl HttpShardClient {
+    pub fn new(endpoint: &str) -> Self {
+        HttpShardClient {
+            endpoint: endpoint.into(),
+            client: reqwest::Client::builder().build().unwrap(),
+            // Retry policy: Exponential backoff starting at BASE_RETRY_DELAY_MS and retrying NUM_RETRIES times
+            retry_strategy: RetryStrategy::new(NUM_RETRIES, BASE_RETRY_DELAY_MS),
+        }
+    }
+}
+
+fn retry_http_status_code(stat: &reqwest::StatusCode) -> bool {
+    stat.is_server_error() || *stat == reqwest::StatusCode::TOO_MANY_REQUESTS
+}
+
+fn is_status_retriable_and_print(err: &reqwest::Error) -> bool {
+    let ret = if let Some(code) = err.status() {
+        retry_http_status_code(&code)
+    } else {
+        true
+    };
+    if ret {
+        warn!("{}. Retrying...", err);
+    }
+    ret
+}
+
+#[async_trait]
+impl RegistrationClient for HttpShardClient {
+    async fn upload_shard(
+        &self,
+        prefix: &str,
+        hash: &MerkleHash,
+        force_sync: bool,
+        shard_data: &[u8],
+        _salt: &[u8; 32],
+    ) -> Result<bool> {
+        let key = Key {
+            prefix: prefix.into(),
+            hash: *hash,
+        };
+
+        let url = Url::parse(&format!("{}/shard/{key}", self.endpoint))?;
+        let response = self
+            .retry_strategy
+            .retry(
+                || async {
+                    let url = url.clone();
+                    match force_sync {
+                        true => self.client.put(url).body(shard_data.to_vec()).send().await,
+                        false => self.client.post(url).body(shard_data.to_vec()).send().await,
+                    }
+                },
+                is_status_retriable_and_print,
+            )
+            .await
+            .map_err(|e| ShardClientError::Other(format!("request failed with code {e}")))?;
+
+        let response_body = response.bytes().await?;
+        let response_parsed: UploadShardResponse = serde_json::from_reader(response_body.reader())?;
+
+        match response_parsed.result {
+            UploadShardResponseType::Exists => Ok(false),
+            UploadShardResponseType::SyncPerformed => Ok(true),
+        }
+    }
+}
+
+#[async_trait]
+impl FileReconstructor<ShardClientError> for HttpShardClient {
+    async fn get_file_reconstruction_info(
+        &self,
+        file_hash: &MerkleHash,
+    ) -> Result<Option<(MDBFileInfo, Option<MerkleHash>)>> {
+        let url = Url::parse(&format!(
+            "{}/reconstruction/{}",
+            self.endpoint,
+            file_hash.hex()
+        ))?;
+        let response = self
+            .retry_strategy
+            .retry(
+                || async {
+                    let url = url.clone();
+                    self.client.get(url).send().await
+                },
+                is_status_retriable_and_print,
+            )
+            .await
+            .map_err(|e| ShardClientError::Other(format!("request failed with code {e}")))?;
+
+        let response_body = response.bytes().await?;
+        let response_info: QueryReconstructionResponse =
+            serde_json::from_reader(response_body.reader())?;
+
+        Ok(Some((
+            MDBFileInfo {
+                metadata: FileDataSequenceHeader::new(
+                    *file_hash,
+                    response_info.reconstruction.len(),
+                ),
+                segments: response_info
+                    .reconstruction
+                    .into_iter()
+                    .filter_map(|ce| {
+                        Some(FileDataSequenceEntry::new(
+                            MerkleHash::from_hex(&ce.hash)
+                                .log_error("invalid hash returned from server")
+                                .ok()?,
+                            ce.unpacked_length,
+                            ce.range.start,
+                            ce.range.end,
+                        ))
+                    })
+                    .collect(),
+            },
+            None,
+        )))
+    }
+}
+
+#[async_trait]
+impl ShardDedupProber<ShardClientError> for HttpShardClient {
+    async fn get_dedup_shards(
+        &self,
+        prefix: &str,
+        chunk_hash: &[MerkleHash],
+        _salt: &[u8; 32],
+    ) -> Result<Vec<MerkleHash>> {
+        debug_assert!(chunk_hash.len() == 1);
+
+        // The API endpoint now only supports non-batched dedup request and
+        // ignores salt.
+        let key = Key {
+            prefix: prefix.into(),
+            hash: chunk_hash[0],
+        };
+
+        let url = Url::parse(&format!("{0}/chunk/{key}", self.endpoint))?;
+        let response = self
+            .retry_strategy
+            .retry(
+                || async {
+                    let url = url.clone();
+                    self.client.get(url).send().await
+                },
+                is_status_retriable_and_print,
+            )
+            .await
+            .map_err(|e| ShardClientError::Other(format!("request failed with code {e}")))?;
+
+        let response_body = response.bytes().await?;
+        let response_info: QueryChunkResponse = serde_json::from_reader(response_body.reader())?;
+
+        Ok(vec![response_info.shard])
+    }
+}
+
+impl ShardClientInterface for HttpShardClient {}

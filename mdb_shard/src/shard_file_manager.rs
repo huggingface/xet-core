@@ -1,4 +1,4 @@
-use crate::error::Result;
+use crate::error::{MDBShardError, Result};
 use crate::shard_file_handle::MDBShardFile;
 use crate::shard_file_reconstructor::FileReconstructor;
 use crate::utils::truncate_hash;
@@ -260,7 +260,7 @@ impl ShardFileManager {
 }
 
 #[async_trait]
-impl FileReconstructor for ShardFileManager {
+impl FileReconstructor<MDBShardError> for ShardFileManager {
     // Given a file pointer, returns the information needed to reconstruct the file.
     // The information is stored in the destination vector dest_results.  The function
     // returns true if the file hash was found, and false otherwise.
