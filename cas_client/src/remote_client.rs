@@ -21,13 +21,11 @@ use tracing::debug;
 
 use crate::Client;
 
-pub const CAS_ENDPOINT: &str = "localhost:8080";
-pub const SCHEME: &str = "http:/";
+pub const CAS_ENDPOINT: &str = "http://localhost:8080";
 pub const PREFIX_DEFAULT: &str = "default";
 
 #[derive(Debug)]
 pub struct RemoteClient {
-    endpoint: String,
     client: CASAPIClient,
 }
 
@@ -88,34 +86,33 @@ impl Client for RemoteClient {
 
 impl RemoteClient {
     pub async fn from_config(endpoint: String) -> Self {
-        Self { endpoint, client: CASAPIClient::default() }
+        Self { client: CASAPIClient::new(&endpoint) }
     }
 }
 
 #[derive(Debug)]
 pub struct CASAPIClient {
     client: reqwest::Client,
-    scheme: String,
     endpoint: String,
 }
 
 impl Default for CASAPIClient {
     fn default() -> Self {
-        Self::new(SCHEME, CAS_ENDPOINT)
+        Self::new(CAS_ENDPOINT)
     }
 }
 
 impl CASAPIClient {
-    pub fn new(scheme: &str, endpoint: &str) -> Self {
+    pub fn new(endpoint: &str) -> Self {
         let client = reqwest::Client::builder()
             .http2_prior_knowledge()
             .build()
             .unwrap();
-        Self { client, scheme: scheme.to_string(), endpoint: endpoint.to_string() }
+        Self { client, endpoint: endpoint.to_string() }
     }
 
     pub async fn exists(&self, key: &Key) -> Result<bool> {
-        let url = Url::parse(&format!("{0}/{1}/xorb/{key}", self.scheme, self.endpoint))?;
+        let url = Url::parse(&format!("{0}/xorb/{key}", self.endpoint))?;
         let response = self.client.head(url).send().await?;
         match response.status() {
             StatusCode::OK => Ok(true),
@@ -127,7 +124,7 @@ impl CASAPIClient {
     }
 
     pub async fn get_length(&self, key: &Key) -> Result<Option<u64>> {
-        let url = Url::parse(&format!("{0}/{1}/xorb/{key}", self.scheme, self.endpoint))?;
+        let url = Url::parse(&format!("{0}/xorb/{key}", self.endpoint))?;
         let response = self.client.head(url).send().await?;
         let status = response.status();
         if status == StatusCode::NOT_FOUND {
@@ -168,7 +165,7 @@ impl CASAPIClient {
             .map(|num| num.to_string())
             .collect::<Vec<String>>()
             .join(",");
-        let url = Url::parse(&format!("{0}/{1}/xorb/{key}?{chunk_boundaries_query}", self.scheme, self.endpoint))?;
+        let url = Url::parse(&format!("{0}/xorb/{key}?{chunk_boundaries_query}", self.endpoint))?;
 
         debug!("Upload: POST to {url:?} for {key:?}");
 
@@ -211,7 +208,7 @@ impl CASAPIClient {
 
     /// Reconstruct the file
     async fn reconstruct_file(&self, file_id: &MerkleHash) -> Result<QueryReconstructionResponse> {
-        let url = Url::parse(&format!("{0}/{1}/reconstruction/{2}", self.scheme, self.endpoint, file_id.hex()))?;
+        let url = Url::parse(&format!("{0}/reconstruction/{1}", self.endpoint, file_id.hex()))?;
         
         let response = self.client.get(url).send().await?;
         let response_body = response.bytes().await?;
@@ -224,7 +221,7 @@ impl CASAPIClient {
         &self,
         key: &Key,
     ) -> Result<QueryChunkResponse> {
-        let url = Url::parse(&format!("{0}/{1}/chunk/{key}", self.scheme, self.endpoint))?;
+        let url = Url::parse(&format!("{0}/chunk/{key}", self.endpoint))?;
         let response = self.client.get(url).send().await?;
         let response_body = response.bytes().await?;
         let response_parsed: QueryChunkResponse = serde_json::from_reader(response_body.reader())?;

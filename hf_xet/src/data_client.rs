@@ -12,7 +12,7 @@ use crate::config::default_config;
 pub const MAX_CONCURRENT_UPLOADS: usize = 8; // TODO
 pub const MAX_CONCURRENT_DOWNLOADS: usize = 8; // TODO
 
-const DEFAULT_CAS_ENDPOINT: &str = "https://localhost:4884";
+const DEFAULT_CAS_ENDPOINT: &str = "http://localhost:4884";
 const READ_BLOCK_SIZE: usize = 1024 * 1024;
 
 pub async fn upload_async(file_paths: Vec<String>) -> errors::Result<Vec<PointerFile>> {
@@ -107,6 +107,7 @@ mod tests {
     async fn upload_files() {
         let cwd = current_dir().unwrap();
         let path = cwd.join("src").join("data_client.rs");
+
         let abs_path = canonicalize(path).unwrap();
         let s = abs_path.to_string_lossy();
         let files = vec![
@@ -119,7 +120,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
     async fn download_files() {
         let pointers = vec![
-            PointerFile::init_from_info("/tmp/foo.rs", "e12be5e7cf55a47b78089bdf6fa1ebafe1836ef2b3ea7206b08ca37398f98a6f", 12700),
+            PointerFile::init_from_info("/tmp/foo.rs", "6999733a46030e67f6f020651c91442ace735572458573df599106e54646867c", 4203),
         ];
         let paths = download_async(pointers).await.unwrap();
         println!("paths: {paths:?}");
