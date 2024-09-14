@@ -332,7 +332,7 @@ impl PointerFileTranslator {
 
         let url = Url::parse(&endpoint).unwrap();
 
-        let rc = CASAPIClient::new("https", url.domain().unwrap());
+        let rc = CASAPIClient::new(url.scheme(), url.domain().unwrap());
 
         rc.write_file(file_id, writer).await?;
 
