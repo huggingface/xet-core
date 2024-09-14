@@ -21,7 +21,6 @@ use std::path::Path;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use tracing::error;
-use url::Url;
 
 #[derive(Default, Debug)]
 pub struct CASDataAggregator {
