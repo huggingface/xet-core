@@ -2,9 +2,7 @@ use cas::constants::*;
 use std::str::FromStr;
 use std::time::Duration;
 
-use crate::{
-    cas_connection_pool::CasConnectionConfig,
-};
+use crate::cas_connection_pool::CasConnectionConfig;
 use anyhow::{anyhow, Result};
 use cas::common::CompressionScheme;
 use cas::compression::{
@@ -25,13 +23,12 @@ use hyper_util::client::legacy::Client;
 use hyper_util::rt::{TokioExecutor, TokioTimer};
 use lazy_static::lazy_static;
 use lz4::block::CompressionMode;
-use opentelemetry::propagation::{Injector, TextMapPropagator};
+use opentelemetry::propagation::Injector;
 use retry_strategy::RetryStrategy;
 use rustls_pemfile::Item;
 use tokio_rustls::rustls;
 use tokio_rustls::rustls::pki_types::CertificateDer;
-use tracing::{debug, error, info_span, warn, Instrument, Span};
-use tracing_opentelemetry::OpenTelemetrySpanExt;
+use tracing::{debug, error, info_span, warn, Instrument};
 use xet_error::Error;
 
 use merklehash::MerkleHash;

@@ -1,6 +1,6 @@
 use super::configurations::{Endpoint::*, RepoInfo, StorageConfig};
 use super::errors::Result;
-use crate::constants::{MAX_CONCURRENT_DOWNLOADS, XET_VERSION};
+use crate::constants::MAX_CONCURRENT_DOWNLOADS;
 use crate::metrics::FILTER_BYTES_SMUDGED;
 use cas_client::{new_staging_client, CachingClient, LocalClient, RemoteClient, Staging};
 use futures::prelude::stream::*;
@@ -37,11 +37,11 @@ pub(crate) async fn create_cas_client(
     };
 
     // Auth info.
-    let user_id = &cas_storage_config.auth.user_id;
-    let auth = &cas_storage_config.auth.login_id;
+    let _user_id = &cas_storage_config.auth.user_id;
+    let _auth = &cas_storage_config.auth.login_id;
 
     // Usage tracking.
-    let repo_paths = maybe_repo_info
+    let _repo_paths = maybe_repo_info
         .as_ref()
         .map(|repo_info| &repo_info.repo_paths)
         .cloned()
@@ -49,7 +49,7 @@ pub(crate) async fn create_cas_client(
 
     // Raw remote client.
     let remote_client = Arc::new(
-        RemoteClient::from_config(endpoint).await,
+        RemoteClient::from_config(endpoint.to_string()).await,
     );
 
     // Try add in caching capability.
