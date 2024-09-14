@@ -1,4 +1,4 @@
-use crate::cas_interface::{create_cas_client, data_from_chunks_to_writer, slice_object_range};
+use crate::cas_interface::{create_cas_client, data_from_chunks_to_writer};
 use crate::clean::Cleaner;
 use crate::configurations::*;
 use crate::constants::MAX_CONCURRENT_UPLOADS;
