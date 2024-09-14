@@ -83,7 +83,7 @@ async fn clean_file(processor: &PointerFileTranslator, f: String) -> errors::Res
     }
 
     let pf_str = handle.result().await?;
-    let pf = PointerFile::init_from_string(&pf_str, "");
+    let pf = PointerFile::init_from_string(&pf_str, path.to_str().unwrap());
     Ok(pf)
 }
 

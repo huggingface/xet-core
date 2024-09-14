@@ -105,7 +105,6 @@ impl Default for CASAPIClient {
 impl CASAPIClient {
     pub fn new(endpoint: &str) -> Self {
         let client = reqwest::Client::builder()
-            .http2_prior_knowledge()
             .build()
             .unwrap();
         Self { client, endpoint: endpoint.to_string() }
