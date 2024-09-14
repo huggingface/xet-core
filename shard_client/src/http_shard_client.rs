@@ -7,7 +7,6 @@ use cas_types::Key;
 use cas_types::{
     QueryChunkResponse, QueryReconstructionResponse, UploadShardResponse, UploadShardResponseType,
 };
-use error_printer::ErrorPrinter;
 use mdb_shard::file_structs::{FileDataSequenceEntry, FileDataSequenceHeader, MDBFileInfo};
 use mdb_shard::shard_dedup_probe::ShardDedupProber;
 use mdb_shard::shard_file_reconstructor::FileReconstructor;
@@ -133,9 +132,7 @@ impl FileReconstructor<ShardClientError> for HttpShardClient {
                     .into_iter()
                     .filter_map(|ce| {
                         Some(FileDataSequenceEntry::new(
-                            MerkleHash::from_hex(&ce.hash)
-                                .log_error("invalid hash returned from server")
-                                .ok()?,
+                            ce.hash.into(),
                             ce.unpacked_length,
                             ce.range.start,
                             ce.range.end,

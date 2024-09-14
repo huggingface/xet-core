@@ -20,9 +20,10 @@ pub struct Range {
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct CASReconstructionTerm {
-    pub hash: String,
+    pub hash: HexMerkleHash,
     pub unpacked_length: u64,
     pub range: Range,
+    pub url: String,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]

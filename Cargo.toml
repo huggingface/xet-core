@@ -21,6 +21,10 @@ members = [
     "xet_error",
 ]
 
+exclude = [
+    "hf_xet",
+]
+
 [profile.release]
 opt-level = 3
 lto = true

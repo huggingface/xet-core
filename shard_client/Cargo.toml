@@ -17,7 +17,6 @@ xet_error = {path = "../xet_error"}
 mdb_shard = {path = "../mdb_shard"}
 merkledb = {path = "../merkledb"}
 cas_types = {path = "../cas_types"}
-error_printer = {path = "../error_printer"}
 tokio = { version = "1.36", features = ["full"] }
 tokio-retry = "0.3.0"
 tower = {version = "0.4"}
