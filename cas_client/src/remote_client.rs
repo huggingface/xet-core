@@ -1,4 +1,4 @@
-use std::io::{Cursor, Write};
+use std::io::{BufWriter, Cursor, Write};
 
 use anyhow::anyhow;
 use bytes::Buf;
@@ -44,7 +44,7 @@ impl Client for RemoteClient {
             hash: *hash,
         };
 
-        let was_uploaded = self.client.upload(&key, data, chunk_boundaries).await?;
+        let was_uploaded = self.client.upload(&key, &data, chunk_boundaries).await?;
 
         if !was_uploaded {
             debug!("{key:?} not inserted into CAS.");
@@ -112,7 +112,7 @@ impl CASAPIClient {
     }
 
     pub async fn exists(&self, key: &Key) -> Result<bool> {
-        let url = Url::parse(&format!("{0}/xorb/{key}", self.endpoint))?;
+        let url = Url::parse(&format!("{}/xorb/{key}", self.endpoint))?;
         let response = self.client.head(url).send().await?;
         match response.status() {
             StatusCode::OK => Ok(true),
@@ -124,7 +124,7 @@ impl CASAPIClient {
     }
 
     pub async fn get_length(&self, key: &Key) -> Result<Option<u64>> {
-        let url = Url::parse(&format!("{0}/xorb/{key}", self.endpoint))?;
+        let url = Url::parse(&format!("{}/xorb/{key}", self.endpoint))?;
         let response = self.client.head(url).send().await?;
         let status = response.status();
         if status == StatusCode::NOT_FOUND {
@@ -154,22 +154,27 @@ impl CASAPIClient {
         Ok(Some(length))
     }
 
-    pub async fn upload<T: Into<reqwest::Body>>(
+    pub async fn upload(
         &self,
         key: &Key,
-        contents: T,
+        contents: &[u8],
         chunk_boundaries: Vec<u64>,
     ) -> Result<bool> {
-        let chunk_boundaries_query = chunk_boundaries
-            .iter()
-            .map(|num| num.to_string())
-            .collect::<Vec<String>>()
-            .join(",");
-        let url = Url::parse(&format!("{0}/xorb/{key}?{chunk_boundaries_query}", self.endpoint))?;
+        let url = Url::parse(&format!("{}/xorb/{key}", self.endpoint))?;
+
+        let writer = Cursor::new(Vec::new());
+        let mut buf = BufWriter::new(writer);
+
+        let (_,_) = CasObject::serialize(
+            &mut buf, 
+            &key.hash, 
+            contents,
+            &chunk_boundaries.into_iter().map(|x| x as u32).collect()
+        )?;
 
         debug!("Upload: POST to {url:?} for {key:?}");
 
-        let response = self.client.post(url).body(contents.into()).send().await?;
+        let response = self.client.post(url).body(buf.buffer().to_vec()).send().await?;
         let response_body = response.bytes().await?;
         let response_parsed: UploadXorbResponse = serde_json::from_reader(response_body.reader())?;
 
@@ -186,6 +191,7 @@ impl CASAPIClient {
     }
 
     async fn reconstruct<W: Write>(&self, reconstruction_response: QueryReconstructionResponse, writer: &mut W) -> Result<usize> {
+
         let info = reconstruction_response.reconstruction;
         let total_len = info.iter().fold(0, |acc, x| acc + x.unpacked_length);
         let futs = info.into_iter().map(|term| {
@@ -208,7 +214,7 @@ impl CASAPIClient {
 
     /// Reconstruct the file
     async fn reconstruct_file(&self, file_id: &MerkleHash) -> Result<QueryReconstructionResponse> {
-        let url = Url::parse(&format!("{0}/reconstruction/{1}", self.endpoint, file_id.hex()))?;
+        let url = Url::parse(&format!("{}/reconstruction/{}", self.endpoint, file_id.hex()))?;
         
         let response = self.client.get(url).send().await?;
         let response_body = response.bytes().await?;
@@ -221,7 +227,7 @@ impl CASAPIClient {
         &self,
         key: &Key,
     ) -> Result<QueryChunkResponse> {
-        let url = Url::parse(&format!("{0}/chunk/{key}", self.endpoint))?;
+        let url = Url::parse(&format!("{}/chunk/{key}", self.endpoint))?;
         let response = self.client.get(url).send().await?;
         let response_body = response.bytes().await?;
         let response_parsed: QueryChunkResponse = serde_json::from_reader(response_body.reader())?;
