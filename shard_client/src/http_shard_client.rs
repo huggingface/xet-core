@@ -130,13 +130,13 @@ impl FileReconstructor<ShardClientError> for HttpShardClient {
                 segments: response_info
                     .reconstruction
                     .into_iter()
-                    .filter_map(|ce| {
-                        Some(FileDataSequenceEntry::new(
+                    .map(|ce| {
+                        FileDataSequenceEntry::new(
                             ce.hash.into(),
                             ce.unpacked_length,
                             ce.range.start,
                             ce.range.end,
-                        ))
+                        )
                     })
                     .collect(),
             },

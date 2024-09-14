@@ -444,6 +444,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "cas_types"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "merklehash",
+ "serde",
+ "serde_repr",
+]
+
+[[package]]
 name = "cc"
 version = "1.1.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3230,6 +3240,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "serde_repr"
+version = "0.1.19"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6c64451ba24fc7a6a2d60fc75dd9c83c90903b19028d4eff35e88fc1e86564e9"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.77",
+]
+
+[[package]]
 name = "serde_urlencoded"
 version = "0.7.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3284,10 +3305,10 @@ dependencies = [
  "bincode",
  "bytes",
  "cas_client",
+ "cas_types",
  "clap 2.34.0",
  "heed",
  "http 0.2.12",
- "hyper 0.14.30",
  "itertools 0.10.5",
  "lazy_static",
  "mdb_shard",
@@ -3296,16 +3317,16 @@ dependencies = [
  "opentelemetry",
  "opentelemetry-http",
  "opentelemetry-jaeger",
- "prost",
+ "reqwest",
  "retry_strategy",
  "serde_json",
  "tempfile",
  "tokio",
  "tokio-retry",
- "tonic",
  "tower",
  "tracing",
  "tracing-opentelemetry",
+ "url",
  "utils",
  "uuid",
  "xet_error",

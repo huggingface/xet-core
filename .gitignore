@@ -16,3 +16,4 @@ debug/
 # VS Code configs
 .vscode
 venv
+**/*.env

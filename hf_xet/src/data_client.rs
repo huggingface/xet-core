@@ -9,7 +9,6 @@ use parutils::{ParallelError, tokio_par_for_each};
 use crate::config::default_config;
 
 /// The maximum git filter protocol packet size
-pub const GIT_MAX_PACKET_SIZE: usize = 65516;
 pub const MAX_CONCURRENT_UPLOADS: usize = 8; // TODO
 pub const MAX_CONCURRENT_DOWNLOADS: usize = 8; // TODO
 
