@@ -318,7 +318,7 @@ mod tests {
     use super::*;
     use merklehash::compute_data_hash;
     use rand::Rng;
-    use std::io::{Cursor};
+    use std::io::Cursor;
 
     #[test]
     fn test_default_header_initialization() {
