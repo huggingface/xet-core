@@ -12,7 +12,7 @@ use crate::config::default_config;
 pub const MAX_CONCURRENT_UPLOADS: usize = 8; // TODO
 pub const MAX_CONCURRENT_DOWNLOADS: usize = 8; // TODO
 
-const DEFAULT_CAS_ENDPOINT: &str = "http://localhost:4884";
+const DEFAULT_CAS_ENDPOINT: &str = "https://cas-server.us.dev.moon.huggingface.tech"; 
 const READ_BLOCK_SIZE: usize = 1024 * 1024;
 
 pub async fn upload_async(file_paths: Vec<String>) -> errors::Result<Vec<PointerFile>> {
@@ -83,7 +83,7 @@ async fn clean_file(processor: &PointerFileTranslator, f: String) -> errors::Res
     }
 
     let pf_str = handle.result().await?;
-    let pf = PointerFile::init_from_string(&pf_str, "");
+    let pf = PointerFile::init_from_string(&pf_str, path.to_str().unwrap()); 
     Ok(pf)
 }
 

@@ -20,7 +20,6 @@ use merklehash::MerkleHash;
 use tracing::debug;
 
 use crate::Client;
-
 pub const CAS_ENDPOINT: &str = "http://localhost:8080";
 pub const PREFIX_DEFAULT: &str = "default";
 
@@ -105,7 +104,6 @@ impl Default for CASAPIClient {
 impl CASAPIClient {
     pub fn new(endpoint: &str) -> Self {
         let client = reqwest::Client::builder()
-            .http2_prior_knowledge()
             .build()
             .unwrap();
         Self { client, endpoint: endpoint.to_string() }
@@ -162,19 +160,20 @@ impl CASAPIClient {
     ) -> Result<bool> {
         let url = Url::parse(&format!("{}/xorb/{key}", self.endpoint))?;
 
-        let writer = Cursor::new(Vec::new());
-        let mut buf = BufWriter::new(writer);
+        let mut writer = Cursor::new(Vec::new());
 
         let (_,_) = CasObject::serialize(
-            &mut buf, 
+            &mut writer,
             &key.hash, 
             contents,
             &chunk_boundaries.into_iter().map(|x| x as u32).collect()
         )?;
 
         debug!("Upload: POST to {url:?} for {key:?}");
+        writer.set_position(0);
+        let data = writer.into_inner();
 
-        let response = self.client.post(url).body(buf.buffer().to_vec()).send().await?;
+        let response = self.client.post(url).body(data).send().await?;
         let response_body = response.bytes().await?;
         let response_parsed: UploadXorbResponse = serde_json::from_reader(response_body.reader())?;
 
@@ -191,7 +190,6 @@ impl CASAPIClient {
     }
 
     async fn reconstruct<W: Write>(&self, reconstruction_response: QueryReconstructionResponse, writer: &mut W) -> Result<usize> {
-
         let info = reconstruction_response.reconstruction;
         let total_len = info.iter().fold(0, |acc, x| acc + x.unpacked_length);
         let futs = info.into_iter().map(|term| {
