@@ -8,7 +8,7 @@ use crate::remote_shard_interface::RemoteShardInterface;
 use crate::shard_interface::create_shard_manager;
 use crate::PointerFile;
 
-use cas_client::Staging;
+use cas_client::{CASAPIClient, Staging};
 use mdb_shard::cas_structs::{CASChunkSequenceEntry, CASChunkSequenceHeader, MDBCASInfo};
 use mdb_shard::file_structs::MDBFileInfo;
 use mdb_shard::ShardFileManager;
@@ -20,8 +20,8 @@ use std::ops::DerefMut;
 use std::path::Path;
 use std::sync::Arc;
 use tokio::sync::Mutex;
-use tracing::{error, info_span};
-use tracing_futures::Instrument;
+use tracing::error;
+use url::Url;
 
 #[derive(Default, Debug)]
 pub struct CASDataAggregator {
@@ -323,30 +323,41 @@ impl PointerFileTranslator {
         &self,
         file_id: &MerkleHash,
         writer: &mut impl std::io::Write,
-        range: Option<(usize, usize)>,
+        _range: Option<(usize, usize)>,
     ) -> Result<()> {
-        let blocks = self
-            .derive_blocks(file_id)
-            .instrument(info_span!("derive_blocks"))
-            .await?;
-
-        let ranged_blocks = match range {
-            Some((start, end)) => {
-                // we expect callers to validate the range, but just in case, check it anyway.
-                if end < start {
-                    let msg = format!(
-                        "End range value requested ({end}) is less than start range value ({start})"
-                    );
-                    error!(msg);
-                    return Err(DataProcessingError::ParameterError(msg));
-                }
-                slice_object_range(&blocks, start, end - start)
-            }
-            None => blocks,
+        let endpoint = match &self.config.cas_storage_config.endpoint {
+            Endpoint::Server(endpoint) => endpoint.clone(),
+            Endpoint::FileSystem(_) => panic!("aaaaaaaa no server"),
         };
 
-        self.data_from_chunks_to_writer(ranged_blocks, writer)
-            .await?;
+        let url = Url::parse(&endpoint).unwrap();
+
+        let rc = CASAPIClient::new("https", url.domain().unwrap());
+
+        rc.write_file(file_id, writer).await?;
+
+        // let blocks = self
+        //     .derive_blocks(file_id)
+        //     .instrument(info_span!("derive_blocks"))
+        //     .await?;
+
+        // let ranged_blocks = match range {
+        //     Some((start, end)) => {
+        //         // we expect callers to validate the range, but just in case, check it anyway.
+        //         if end < start {
+        //             let msg = format!(
+        //                 "End range value requested ({end}) is less than start range value ({start})"
+        //             );
+        //             error!(msg);
+        //             return Err(DataProcessingError::ParameterError(msg));
+        //         }
+        //         slice_object_range(&blocks, start, end - start)
+        //     }
+        //     None => blocks,
+        // };
+
+        // self.data_from_chunks_to_writer(ranged_blocks, writer)
+        //     .await?;
 
         Ok(())
     }
