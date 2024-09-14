@@ -6,7 +6,7 @@ mod clean;
 pub mod configurations;
 mod constants;
 mod data_processing;
-mod errors;
+pub mod errors;
 mod metrics;
 mod pointer_file;
 mod remote_shard_interface;

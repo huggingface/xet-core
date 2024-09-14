@@ -12,7 +12,7 @@ const CURRENT_VERSION: &str = "0";
 /// A struct that wraps a Xet pointer file.
 /// Xet pointer file format is a TOML file,
 /// and the first line must be of the form "# xet version <x.y>"
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct PointerFile {
     /// The version string of the pointer file
     version_string: String,
