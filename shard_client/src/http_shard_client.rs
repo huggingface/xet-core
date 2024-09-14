@@ -186,3 +186,65 @@ impl ShardDedupProber<ShardClientError> for HttpShardClient {
 }
 
 impl ShardClientInterface for HttpShardClient {}
+
+#[cfg(test)]
+mod test {
+    use std::path::PathBuf;
+
+    use super::HttpShardClient;
+    use crate::RegistrationClient;
+    use mdb_shard::{
+        shard_dedup_probe::ShardDedupProber, shard_file_reconstructor::FileReconstructor,
+        MDBShardFile, MDBShardInfo,
+    };
+    use merklehash::MerkleHash;
+
+    #[tokio::test]
+    #[ignore = "need a local cas_server running"]
+    async fn test_local() -> anyhow::Result<()> {
+        let client = HttpShardClient::new("http://localhost:8080");
+
+        let path =
+            PathBuf::from("./a7de567477348b23d23b667dba4d63d533c2ba7337cdc4297970bb494ba4699e.mdb");
+
+        let shard_hash = MerkleHash::from_hex(
+            "a7de567477348b23d23b667dba4d63d533c2ba7337cdc4297970bb494ba4699e",
+        )?;
+
+        let shard_data = std::fs::read(&path)?;
+
+        let salt = [0u8; 32];
+
+        client
+            .upload_shard("default-merkledb", &shard_hash, true, &shard_data, &salt)
+            .await?;
+
+        let shard = MDBShardFile::load_from_file(&path)?;
+
+        let mut reader = shard.get_reader()?;
+
+        // test file reconstruction lookup
+        let files = MDBShardInfo::read_file_info_ranges(&mut reader)?;
+        for (file_hash, _) in files {
+            let expected = shard.get_file_reconstruction_info(&file_hash)?.unwrap();
+            let (result, _) = client
+                .get_file_reconstruction_info(&file_hash)
+                .await?
+                .unwrap();
+
+            assert_eq!(expected, result);
+        }
+
+        // test chunk dedup lookup
+        let chunks = MDBShardInfo::read_cas_chunks_for_global_dedup(&mut reader)?;
+        for chunk in chunks {
+            let expected = shard_hash;
+            let result = client
+                .get_dedup_shards("default-merkledb", &[chunk], &salt)
+                .await?;
+            assert_eq!(expected, result[0]);
+        }
+
+        Ok(())
+    }
+}
