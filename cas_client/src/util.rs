@@ -1,27 +1,23 @@
 #[cfg(test)]
 pub(crate) mod grpc_mock {
-    use std::sync::atomic::{AtomicU16, Ordering};
+    use std::sync::atomic::AtomicU16;
     use std::sync::Arc;
-    use std::time::Duration;
 
     use cas::infra::infra_utils_server::InfraUtils;
-    use oneshot::{channel, Receiver};
+    use oneshot::Receiver;
     use tokio::sync::oneshot;
     use tokio::sync::oneshot::Sender;
     use tokio::task::JoinHandle;
-    use tokio::time::sleep;
-    use tonic::transport::{Error, Server};
+    use tonic::transport::Error;
     use tonic::{Request, Response, Status};
 
-    use crate::cas_connection_pool::CasConnectionConfig;
-    use cas::cas::cas_server::{Cas, CasServer};
+    use cas::cas::cas_server::Cas;
     use cas::cas::{
         GetRangeRequest, GetRangeResponse, GetRequest, GetResponse, HeadRequest, HeadResponse,
         PutCompleteRequest, PutCompleteResponse, PutRequest, PutResponse,
     };
     use cas::common::{Empty, InitiateRequest, InitiateResponse};
     use cas::infra::EndpointLoadResponse;
-    use retry_strategy::RetryStrategy;
 
     const TEST_PORT_START: u16 = 64400;
 
