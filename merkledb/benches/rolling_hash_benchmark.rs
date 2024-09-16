@@ -49,10 +49,12 @@ impl SumHash {
         let mut bytehash: [u32; 256] = [0; 256];
         if seed > 0 {
             let mut rng = ChaChaRng::seed_from_u64(seed);
+            #[allow(clippy::needless_range_loop)]
             for i in 0..256 {
                 bytehash[i] = rng.next_u32();
             }
         } else {
+            #[allow(clippy::needless_range_loop)]
             for i in 0..256 {
                 bytehash[i] = i as u32;
             }
@@ -189,6 +191,7 @@ impl GearHash {
     pub fn init(mask: u32, seed: u64) -> GearHash {
         let mut rng = ChaChaRng::seed_from_u64(seed);
         let mut bytehash: [u32; 256] = [0; 256];
+        #[allow(clippy::needless_range_loop)]
         for i in 0..256 {
             bytehash[i] = rng.next_u32();
         }

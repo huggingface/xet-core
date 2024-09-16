@@ -381,12 +381,14 @@ mod tests {
         std::fs::OpenOptions::new()
             .write(true)
             .create(true)
+            .truncate(true)
             .open(&shard_path_1)?
             .write_all(&disk_shard_1[..])?;
 
         std::fs::OpenOptions::new()
             .write(true)
             .create(true)
+            .truncate(true)
             .open(&shard_path_2)?
             .write_all(&disk_shard_2[..])?;
 
