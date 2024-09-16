@@ -1,19 +1,17 @@
-#![cfg_attr(xet_error_nightly_testing, feature(error_generic_member_access))]
-
 use xet_error::Error;
 
 #[derive(Error, Debug)]
 #[error("...")]
 pub struct Inner;
 
-#[cfg(xet_error_nightly_testing)]
+#[cfg(feature = "error_generic_member_access")]
 #[derive(Error, Debug)]
 #[error("...")]
 pub struct InnerBacktrace {
     backtrace: std::backtrace::Backtrace,
 }
 
-#[cfg(xet_error_nightly_testing)]
+#[cfg(feature = "error_generic_member_access")]
 pub mod structs {
     use super::{Inner, InnerBacktrace};
     use std::backtrace::Backtrace;
@@ -147,7 +145,7 @@ pub mod structs {
     }
 }
 
-#[cfg(xet_error_nightly_testing)]
+#[cfg(feature = "error_generic_member_access")]
 pub mod enums {
     use super::{Inner, InnerBacktrace};
     use std::backtrace::Backtrace;
@@ -270,5 +268,5 @@ pub mod enums {
 }
 
 #[test]
-#[cfg_attr(not(xet_error_nightly_testing), ignore)]
+#[cfg_attr(not(feature = "error_generic_member_access"), ignore)]
 fn test_backtrace() {}

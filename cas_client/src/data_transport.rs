@@ -70,7 +70,7 @@ impl std::fmt::Debug for DataTransport {
 /// Right now this retries every h2 error. Reading these:
 ///  - https://docs.rs/h2/latest/h2/struct.Error.html,
 ///  - https://docs.rs/h2/latest/h2/struct.Reason.html
-/// unclear if there is any reason not to retry.
+///    unclear if there is any reason not to retry.
 #[derive(Error, Debug)]
 enum RetryError {
     #[error("{0}")]
