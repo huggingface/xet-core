@@ -1,3 +1,7 @@
+
+const CAS_CHUNK_COMPRESSION_UNCOMPRESSED: u8 = 0;
+const CAS_CHUNK_COMPRESSION_LZ4: u8 = 1;
+
 #[repr(C, packed)]
 #[derive(Debug, Copy, Clone)]
 pub struct CASChunkHeader {
