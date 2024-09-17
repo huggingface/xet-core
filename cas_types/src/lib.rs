@@ -14,8 +14,8 @@ pub struct UploadXorbResponse {
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Range {
-    pub start: u64,
-    pub end: u64,
+    pub start: u32,
+    pub end: u32,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
