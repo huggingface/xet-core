@@ -3,9 +3,7 @@ use std::io::{Cursor, Write};
 use anyhow::anyhow;
 use bytes::Buf;
 use cas::key::Key;
-use cas_types::{
-    QueryChunkResponse, QueryReconstructionResponse, UploadXorbResponse
-};
+use cas_types::{QueryChunkResponse, QueryReconstructionResponse, UploadXorbResponse};
 use reqwest::{StatusCode, Url};
 use serde::{de::DeserializeOwned, Serialize};
 
@@ -85,7 +83,9 @@ impl Client for RemoteClient {
 
 impl RemoteClient {
     pub async fn from_config(endpoint: String) -> Self {
-        Self { client: CASAPIClient::new(&endpoint) }
+        Self {
+            client: CASAPIClient::new(&endpoint),
+        }
     }
 }
 
@@ -103,10 +103,11 @@ impl Default for CASAPIClient {
 
 impl CASAPIClient {
     pub fn new(endpoint: &str) -> Self {
-        let client = reqwest::Client::builder()
-            .build()
-            .unwrap();
-        Self { client, endpoint: endpoint.to_string() }
+        let client = reqwest::Client::builder().build().unwrap();
+        Self {
+            client,
+            endpoint: endpoint.to_string(),
+        }
     }
 
     pub async fn exists(&self, key: &Key) -> Result<bool> {
@@ -162,11 +163,11 @@ impl CASAPIClient {
 
         let mut writer = Cursor::new(Vec::new());
 
-        let (_,_) = CasObject::serialize(
+        let (_, _) = CasObject::serialize(
             &mut writer,
-            &key.hash, 
+            &key.hash,
             contents,
-            &chunk_boundaries.into_iter().map(|x| x as u32).collect()
+            &chunk_boundaries.into_iter().map(|x| x as u32).collect(),
         )?;
 
         debug!("Upload: POST to {url:?} for {key:?}");
@@ -178,18 +179,25 @@ impl CASAPIClient {
         let response_parsed: UploadXorbResponse = serde_json::from_reader(response_body.reader())?;
 
         Ok(response_parsed.was_inserted)
-    }    
+    }
 
     /// Reconstruct a file and write to writer.
-    pub async fn write_file<W: Write>(&self, file_id: &MerkleHash, writer: &mut W) -> Result<usize> {
-
+    pub async fn write_file<W: Write>(
+        &self,
+        file_id: &MerkleHash,
+        writer: &mut W,
+    ) -> Result<usize> {
         // get manifest of xorbs to download
         let manifest = self.reconstruct_file(file_id).await?;
 
         self.reconstruct(manifest, writer).await
     }
 
-    async fn reconstruct<W: Write>(&self, reconstruction_response: QueryReconstructionResponse, writer: &mut W) -> Result<usize> {
+    async fn reconstruct<W: Write>(
+        &self,
+        reconstruction_response: QueryReconstructionResponse,
+        writer: &mut W,
+    ) -> Result<usize> {
         let info = reconstruction_response.reconstruction;
         let total_len = info.iter().fold(0, |acc, x| acc + x.unpacked_length);
         let futs = info.into_iter().map(|term| {
@@ -212,19 +220,21 @@ impl CASAPIClient {
 
     /// Reconstruct the file
     async fn reconstruct_file(&self, file_id: &MerkleHash) -> Result<QueryReconstructionResponse> {
-        let url = Url::parse(&format!("{}/reconstruction/{}", self.endpoint, file_id.hex()))?;
-        
+        let url = Url::parse(&format!(
+            "{}/reconstruction/{}",
+            self.endpoint,
+            file_id.hex()
+        ))?;
+
         let response = self.client.get(url).send().await?;
         let response_body = response.bytes().await?;
-        let response_parsed: QueryReconstructionResponse = serde_json::from_reader(response_body.reader())?;
-        
+        let response_parsed: QueryReconstructionResponse =
+            serde_json::from_reader(response_body.reader())?;
+
         Ok(response_parsed)
     }
 
-    pub async fn shard_query_chunk(
-        &self,
-        key: &Key,
-    ) -> Result<QueryChunkResponse> {
+    pub async fn shard_query_chunk(&self, key: &Key) -> Result<QueryChunkResponse> {
         let url = Url::parse(&format!("{}/chunk/{key}", self.endpoint))?;
         let response = self.client.get(url).send().await?;
         let response_body = response.bytes().await?;
@@ -259,7 +269,7 @@ async fn get_one(term: &CASReconstructionTerm) -> Result<Bytes> {
     let mut readseek = Cursor::new(xorb_bytes.to_vec());
 
     let cas_object = CasObject::deserialize(&mut readseek)?;
-    let data = cas_object.get_range(&mut readseek, term.range.start as u32, term.range.end as u32)?;
+    let data = cas_object.get_range(&mut readseek, term.range.start, term.range.end)?;
 
     Ok(Bytes::from(data))
 }
@@ -289,13 +299,16 @@ mod tests {
         // Assert
         assert!(result.is_ok());
     }
-    
-    fn gen_dummy_xorb(num_chunks: u32, uncompressed_chunk_size: u32, randomize_chunk_sizes: bool) -> (DataHash, Vec<u8>, Vec<u64>) {
+
+    fn gen_dummy_xorb(
+        num_chunks: u32,
+        uncompressed_chunk_size: u32,
+        randomize_chunk_sizes: bool,
+    ) -> (DataHash, Vec<u8>, Vec<u64>) {
         let mut contents = Vec::new();
         let mut chunks: Vec<Chunk> = Vec::new();
         let mut chunk_boundaries = Vec::with_capacity(num_chunks as usize);
         for _idx in 0..num_chunks {
-
             let chunk_size: u32 = if randomize_chunk_sizes {
                 let mut rng = rand::thread_rng();
                 rng.gen_range(1024..=uncompressed_chunk_size)
@@ -305,7 +318,10 @@ mod tests {
 
             let bytes = gen_random_bytes(chunk_size);
 
-            chunks.push(Chunk { hash: merklehash::compute_data_hash(&bytes), length: bytes.len() });
+            chunks.push(Chunk {
+                hash: merklehash::compute_data_hash(&bytes),
+                length: bytes.len(),
+            });
 
             contents.extend(bytes);
             chunk_boundaries.push(contents.len() as u64);
@@ -324,6 +340,6 @@ mod tests {
         let mut rng = rand::thread_rng();
         let mut data = vec![0u8; uncompressed_chunk_size as usize];
         rng.fill(&mut data[..]);
-        data        
+        data
     }
 }
