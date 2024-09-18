@@ -482,7 +482,6 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "bincode",
- "bytes",
  "cas_types",
  "http 1.1.0",
  "lz4_flex",

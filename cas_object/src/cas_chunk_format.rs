@@ -1,12 +1,11 @@
 use std::{
-    io::{copy, Cursor, Read, Seek, Write},
+    io::{copy, Cursor, Read, Write},
     slice,
 };
 
 use anyhow::anyhow;
-use bytes::{BufMut, Bytes, BytesMut};
 use cas_types::compression_scheme::CompressionScheme;
-use lz4_flex::block::uncompressed_size;
+use lz4_flex::frame::{FrameDecoder, FrameEncoder};
 
 use crate::error::CasObjectError;
 
@@ -86,7 +85,7 @@ fn convert_three_byte_num(buf: &[u8; 3]) -> u32 {
     u32::from_le_bytes(bytes) // Convert back to u32
 }
 
-pub fn serialize_chunk<W: Write + Seek>(
+pub fn serialize_chunk<W: Write>(
     chunk: &[u8],
     w: &mut W,
     compression_scheme: CompressionScheme,
@@ -96,7 +95,7 @@ pub fn serialize_chunk<W: Write + Seek>(
     let compressed = match compression_scheme {
         CompressionScheme::None => Vec::from(chunk),
         CompressionScheme::LZ4 => {
-            let mut enc = lz4_flex::frame::FrameEncoder::new(Vec::new());
+            let mut enc = FrameEncoder::new(Vec::new());
             enc.write_all(chunk)
                 .map_err(|e| CasObjectError::InternalError(anyhow!("{e}")))?;
             enc.finish()
@@ -142,7 +141,7 @@ pub fn deserialize_chunk<R: Read>(
         CompressionScheme::None => compressed_buf,
         CompressionScheme::LZ4 => {
             let mut uncompressed_buf = Vec::new();
-            let mut dec = lz4_flex::frame::FrameDecoder::new(Cursor::new(compressed_buf));
+            let mut dec = FrameDecoder::new(Cursor::new(compressed_buf));
             copy(&mut dec, &mut uncompressed_buf)?;
             uncompressed_buf
         }
