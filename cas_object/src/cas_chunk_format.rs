@@ -200,8 +200,9 @@ mod tests {
         let data = &[1, 2, 3, 4];
         let header = CASChunkHeader::new(CompressionScheme::None, 4, 4);
         let mut buf = Vec::with_capacity(size_of::<CASChunkHeader>() + 4);
+        println!("len buf: {}", buf.len());
         write_chunk_header(&mut buf, &header).unwrap();
-        buf[8..].copy_from_slice(data);
+        buf.extend_from_slice(data);
 
         let (deserialized_header, data_copy) = deserialize_chunk(&mut Cursor::new(buf)).unwrap();
         assert_eq!(&deserialized_header, &header);
