@@ -10,6 +10,9 @@ use lz4_flex::frame::{FrameDecoder, FrameEncoder};
 use crate::error::CasObjectError;
 
 const CURRENT_VERSION: u8 = 0;
+pub const CAS_CHUNK_HEADER_LENGTH: u8 = 8;
+const CAS_CHUNK_COMPRESSION_UNCOMPRESSED: u8 = 0;
+const CAS_CHUNK_COMPRESSION_LZ4: u8 = 1;
 
 #[repr(C, packed)]
 #[derive(Debug, Copy, Clone, Default, PartialEq, Eq)]
