@@ -1,10 +1,24 @@
 use anyhow::anyhow;
-use std::str::FromStr;
+use std::{convert::Infallible, default, str::FromStr};
 
-#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+#[repr(u8)]
+#[derive(Debug, PartialEq, Eq, Clone, Copy, Default)]
 pub enum CompressionScheme {
-    None,
-    LZ4,
+    #[default]
+    None = 0,
+    LZ4 = 1,
+}
+
+impl TryFrom<u8> for CompressionScheme {
+    type Error = anyhow::Error;
+
+    fn try_from(value: u8) -> Result<Self, Self::Error> {
+        match value {
+            0 => Ok(CompressionScheme::None),
+            1 => Ok(CompressionScheme::LZ4),
+            _ => Err(anyhow!("cannot convert value {value} to CompressionScheme")),
+        }
+    }
 }
 
 impl From<&CompressionScheme> for &'static str {
