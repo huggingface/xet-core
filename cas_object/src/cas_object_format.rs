@@ -349,7 +349,7 @@ impl CasObject {
         let mut res = Vec::<u8>::new();
 
         while reader.has_remaining() {
-            let (_, data) = deserialize_chunk(&mut reader)?;
+            let data = deserialize_chunk(&mut reader)?;
             res.extend_from_slice(&data);
         }
         Ok(res)

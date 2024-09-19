@@ -1,11 +1,13 @@
 use std::{
-    io::{copy, Cursor, Read, Write}, mem::size_of, slice,
+    io::{self, copy, Cursor, Read, Write},
+    mem::size_of,
+    slice,
 };
 
+use crate::error::CasObjectError;
 use anyhow::anyhow;
 use cas_types::compression_scheme::CompressionScheme;
 use lz4_flex::frame::{FrameDecoder, FrameEncoder};
-use crate::error::CasObjectError;
 
 pub const CAS_CHUNK_HEADER_LENGTH: u8 = 8;
 const CURRENT_VERSION: u8 = 0;
@@ -128,25 +130,60 @@ pub fn deserialize_chunk_header<R: Read>(reader: &mut R) -> Result<CASChunkHeade
     Ok(result)
 }
 
-pub fn deserialize_chunk<R: Read>(
+pub fn deserialize_chunk<R: Read>(reader: &mut R) -> Result<Vec<u8>, CasObjectError> {
+    let mut buf = Vec::new();
+    let _ = deserialize_chunk_to_writer(reader, &mut buf)?;
+    Ok(buf)
+}
+
+pub fn deserialize_chunk_to_writer<R: Read, W: Write>(
     reader: &mut R,
-) -> Result<(CASChunkHeader, Vec<u8>), CasObjectError> {
+    writer: &mut W,
+) -> Result<usize, CasObjectError> {
     let header = deserialize_chunk_header(reader)?;
     let mut compressed_buf = Vec::with_capacity(header.get_compressed_length() as usize);
     let mut chunk = reader.take(header.get_compressed_length() as u64);
     chunk.read_to_end(&mut compressed_buf)?;
 
-    let uncompressed_buf = match header.get_compression_scheme() {
-        CompressionScheme::None => compressed_buf,
+    match header.get_compression_scheme() {
+        CompressionScheme::None => writer.write_all(&compressed_buf)?,
         CompressionScheme::LZ4 => {
-            let mut uncompressed_buf = Vec::new();
             let mut dec = FrameDecoder::new(Cursor::new(compressed_buf));
-            copy(&mut dec, &mut uncompressed_buf)?;
-            uncompressed_buf
+            copy(&mut dec, writer)?;
         }
     };
 
-    Ok((header, uncompressed_buf))
+    Ok(header.get_uncompressed_length() as usize)
+}
+
+pub fn deserialize_chunks<R: Read>(reader: &mut R) -> Result<Vec<u8>, CasObjectError> {
+    let mut buf = Vec::new();
+    let _ = deserialize_chunks_to_writer(reader, &mut buf)?;
+    Ok(buf)
+}
+
+pub fn deserialize_chunks_to_writer<R: Read, W: Write>(
+    reader: &mut R,
+    writer: &mut W,
+) -> Result<usize, CasObjectError> {
+    let mut num_written = 0;
+
+    loop {
+        match deserialize_chunk_to_writer(reader, writer) {
+            Ok(delta_written) => {
+                num_written += delta_written;
+            }
+            Err(CasObjectError::InternalIOError(e)) => {
+                if e.kind() == io::ErrorKind::UnexpectedEof {
+                    break;
+                }
+                return Err(CasObjectError::InternalIOError(e));
+            }
+            Err(e) => return Err(e),
+        }
+    }
+
+    Ok(num_written)
 }
 
 #[cfg(test)]
@@ -155,6 +192,7 @@ mod tests {
 
     use super::*;
     use cas_types::compression_scheme::CompressionScheme;
+    use rand::Rng;
 
     const COMP_LEN: u32 = 0x010203;
     const UNCOMP_LEN: u32 = 0x040506;
@@ -202,8 +240,43 @@ mod tests {
         write_chunk_header(&mut buf, &header).unwrap();
         buf.extend_from_slice(data);
 
-        let (deserialized_header, data_copy) = deserialize_chunk(&mut Cursor::new(buf)).unwrap();
-        assert_eq!(&deserialized_header, &header);
+        let data_copy = deserialize_chunk(&mut Cursor::new(buf)).unwrap();
         assert_eq!(data_copy.as_slice(), data);
+    }
+
+    fn gen_random_bytes(uncompressed_chunk_size: u32) -> Vec<u8> {
+        let mut rng = rand::thread_rng();
+        let mut data = vec![0u8; uncompressed_chunk_size as usize];
+        rng.fill(&mut data[..]);
+        data
+    }
+
+    const CHUNK_SIZE: usize = 1000;
+
+    fn get_chunks(num_chunks: u32, compression_scheme: CompressionScheme) -> Vec<u8> {
+        let mut out = Vec::new();
+        for _ in 0..num_chunks {
+            let data = gen_random_bytes(CHUNK_SIZE as u32);
+            serialize_chunk(&data, &mut out, compression_scheme).unwrap();
+        }
+        out
+    }
+
+    #[test]
+    fn test_deserialize_multiple_chunks() {
+        let cases = [
+            (1, CompressionScheme::None),
+            (3, CompressionScheme::None),
+            (5, CompressionScheme::LZ4),
+            (100, CompressionScheme::None),
+            (100, CompressionScheme::LZ4),
+        ];
+        for (num_chunks, compression_scheme) in cases {
+            let chunks = get_chunks(num_chunks, compression_scheme);
+            let mut buf = Vec::new();
+            let res = deserialize_chunks_to_writer(&mut Cursor::new(chunks), &mut buf);
+            assert!(res.is_ok());
+            assert_eq!(buf.len(), num_chunks as usize * CHUNK_SIZE);
+        }
     }
 }
