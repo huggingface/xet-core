@@ -93,7 +93,7 @@ impl CasObjectInfo {
 
         // write variable field: chunk_size_metadata
         for chunk in &self.chunk_size_info {
-            let chunk_bytes = chunk.as_bytes()?;
+            let chunk_bytes = chunk.as_bytes();
             write_bytes(&chunk_bytes)?;
         }
 
@@ -185,17 +185,17 @@ impl CasObjectInfo {
 }
 
 impl CasChunkInfo {
-    pub fn as_bytes(&self) -> Result<Vec<u8>, CasObjectError> {
-        let mut serialized_bytes = Vec::with_capacity(2 * size_of::<u32>()); // 8 bytes, 2 u32
-        serialized_bytes.extend_from_slice(&self.start_byte_index.to_le_bytes());
-        serialized_bytes.extend_from_slice(&self.cumulative_uncompressed_len.to_le_bytes());
-        Ok(serialized_bytes)
+    pub fn as_bytes(&self) -> [u8; size_of::<Self>()] {
+        let mut serialized_bytes = [0u8; size_of::<Self>()]; // 8 bytes, 2 u32
+        serialized_bytes[..4].copy_from_slice(&self.start_byte_index.to_le_bytes());
+        serialized_bytes[4..].copy_from_slice(&self.cumulative_uncompressed_len.to_le_bytes());
+        serialized_bytes
     }
 
     pub fn from_bytes(buf: [u8; 8]) -> Result<Self, CasObjectError> {
         Ok(Self {
-            start_byte_index: u32::from_le_bytes(buf[0..4].try_into().unwrap()),
-            cumulative_uncompressed_len: u32::from_le_bytes(buf[4..8].try_into().unwrap()),
+            start_byte_index: u32::from_le_bytes(buf[..4].try_into().unwrap()),
+            cumulative_uncompressed_len: u32::from_le_bytes(buf[4..].try_into().unwrap()),
         })
     }
 }
