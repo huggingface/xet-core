@@ -155,7 +155,7 @@ impl CasObjectInfo {
 
         let mut chunk_size_info = Vec::with_capacity(num_chunks as usize);
         for _ in 0..num_chunks {
-            let mut buf = [0u8; 8];
+            let mut buf = [0u8; size_of::<CasChunkInfo>()];
             read_bytes(&mut buf)?;
             chunk_size_info.push(CasChunkInfo::from_bytes(buf)?);
         }
@@ -370,14 +370,13 @@ impl CasObject {
     }
 
     /// Helper function to translate CasObjectInfo.chunk_size_info to just return chunk_boundaries.
-    /// 
+    ///
     /// This isolates the weirdness about iterating through chunk_size_info and ignoring the final entry.
     fn get_chunk_boundaries(&self) -> Vec<u32> {
-        self.info.chunk_size_info.clone()
-        [..self.info.chunk_size_info.len() - 1]
-        .iter()
-        .map(|c| c.cumulative_uncompressed_len)
-        .collect()
+        self.info.chunk_size_info.clone()[..self.info.chunk_size_info.len() - 1]
+            .iter()
+            .map(|c| c.cumulative_uncompressed_len)
+            .collect()
     }
 
     /// Get all the content bytes from a Xorb, and return the chunk boundaries
@@ -511,7 +510,7 @@ mod tests {
         let (c, _cas_data, _raw_data) = build_cas_object(3, 100, false);
         // Act & Assert
         assert_eq!(c.get_chunk_boundaries().len(), 3);
-        assert_eq!(c.get_chunk_boundaries(), [100,200,300]);
+        assert_eq!(c.get_chunk_boundaries(), [100, 200, 300]);
         assert_eq!(c.info.num_chunks, 4);
         assert_eq!(c.info.chunk_size_info.len(), c.info.num_chunks as usize);
 
@@ -632,7 +631,7 @@ mod tests {
             &c.info.cashash,
             &raw_data,
             &c.get_chunk_boundaries(),
-       )
+        )
         .is_ok());
 
         let mut reader = writer.clone();

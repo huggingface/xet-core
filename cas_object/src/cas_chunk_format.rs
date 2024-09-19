@@ -141,9 +141,8 @@ pub fn deserialize_chunk_to_writer<R: Read, W: Write>(
     writer: &mut W,
 ) -> Result<usize, CasObjectError> {
     let header = deserialize_chunk_header(reader)?;
-    let mut compressed_buf = Vec::with_capacity(header.get_compressed_length() as usize);
-    let mut chunk = reader.take(header.get_compressed_length() as u64);
-    chunk.read_to_end(&mut compressed_buf)?;
+    let mut compressed_buf = vec![0u8; header.get_compressed_length() as usize];
+    reader.read_exact(&mut compressed_buf)?;
 
     match header.get_compression_scheme() {
         CompressionScheme::None => writer.write_all(&compressed_buf)?,
