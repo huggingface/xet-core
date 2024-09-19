@@ -1,6 +1,5 @@
 use std::{
-    io::{copy, Cursor, Read, Write},
-    slice,
+    io::{copy, Cursor, Read, Write}, mem::size_of, slice,
 };
 
 use anyhow::anyhow;
@@ -9,10 +8,8 @@ use lz4_flex::frame::{FrameDecoder, FrameEncoder};
 
 use crate::error::CasObjectError;
 
-const CURRENT_VERSION: u8 = 0;
 pub const CAS_CHUNK_HEADER_LENGTH: u8 = 8;
-const CAS_CHUNK_COMPRESSION_UNCOMPRESSED: u8 = 0;
-const CAS_CHUNK_COMPRESSION_LZ4: u8 = 1;
+const CURRENT_VERSION: u8 = 0;
 
 #[repr(C, packed)]
 #[derive(Debug, Copy, Clone, Default, PartialEq, Eq)]
