@@ -302,7 +302,7 @@ impl Client for LocalClient {
             Ok(file) => {
                 let mut reader = BufReader::new(file);
                 let cas = CasObject::deserialize(&mut reader)?;
-                let length = cas.get_contents_length()? + cas.info_length;
+                let length = cas.get_contents_length()?;
                 Ok(length as u64)
             }
             Err(_) => Err(CasClientError::XORBNotFound(*hash)),

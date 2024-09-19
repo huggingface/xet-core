@@ -1,10 +1,15 @@
 use bytes::Buf;
 use merklehash::{DataHash, MerkleHash};
 use std::{
-    cmp::min, io::{Cursor, Error, Read, Seek, SeekFrom, Write}, mem::size_of, usize
+    cmp::min,
+    io::{Cursor, Error, Read, Seek, Write},
+    mem::size_of,
 };
 
-use crate::{cas_chunk_format::{deserialize_chunk, serialize_chunk, CAS_CHUNK_HEADER_LENGTH}, error::CasObjectError};
+use crate::{
+    cas_chunk_format::{deserialize_chunk, serialize_chunk},
+    error::CasObjectError,
+};
 use anyhow::anyhow;
 
 const CAS_OBJECT_FORMAT_IDENT: [u8; 7] = [b'X', b'E', b'T', b'B', b'L', b'O', b'B'];
@@ -34,10 +39,9 @@ pub struct CasObjectInfo {
 
     /// Unused 16-byte buffer to allow for future extensibility.
     _buffer: [u8; 16],
-
 }
 
-#[repr(C, packed)]
+// #[repr(C, packed)] TODO: Understand why this doesn't work for unit-tests with: "reference to packed field is unaligned"
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct CasChunkInfo {
     /// Starting index of chunk.
@@ -107,16 +111,16 @@ impl CasObjectInfo {
 
         // Go to end of Reader and get length, then jump back to it, and read sequentially
         // read last 4 bytes to get length
-        reader.seek(std::io::SeekFrom::End(
-            -1 * size_of::<u32>() as i64,
-        ))?;
+        reader.seek(std::io::SeekFrom::End(-(size_of::<u32>() as i64)))?;
 
         let mut info_length = [0u8; 4];
         reader.read_exact(&mut info_length)?;
         let info_length = u32::from_le_bytes(info_length);
 
         // now seek back that many bytes + size of length (u32) and read sequentially.
-        reader.seek(std::io::SeekFrom::End(-1 * (size_of::<u32>() as i64 + info_length as i64)))?;
+        reader.seek(std::io::SeekFrom::End(
+            -(size_of::<u32>() as i64 + info_length as i64),
+        ))?;
 
         // Helper function to read data and update the byte count
         let mut read_bytes = |data: &mut [u8]| -> Result<(), CasObjectError> {
@@ -161,17 +165,22 @@ impl CasObjectInfo {
 
         // validate that info_length matches what we read off of header
         if total_bytes_read != info_length {
-            return Err(CasObjectError::FormatError(anyhow!("Xorb Info Format Error")));
+            return Err(CasObjectError::FormatError(anyhow!(
+                "Xorb Info Format Error"
+            )));
         }
 
-        Ok((CasObjectInfo {
-            ident,
-            version: version[0],
-            cashash,
-            num_chunks,
-            chunk_size_info,
-            _buffer,
-        }, info_length))
+        Ok((
+            CasObjectInfo {
+                ident,
+                version: version[0],
+                cashash,
+                num_chunks,
+                chunk_size_info,
+                _buffer,
+            },
+            info_length,
+        ))
     }
 }
 
@@ -198,7 +207,7 @@ impl CasChunkInfo {
 pub struct CasObject {
     /// Header CAS object, see CasObjectHeader struct.
     pub info: CasObjectInfo,
-    
+
     /// Length of entire info block.
     ///
     /// This is required to be at the end of the CasObject, so readers can read the
@@ -217,8 +226,8 @@ impl Default for CasObject {
 
 pub struct RangeBoundaryHelper {
     pub compressed_range_start: u32,
-    pub compressed_range_end:u32,
-    pub uncompressed_offset:u32,
+    pub compressed_range_end: u32,
+    pub uncompressed_offset: u32,
 }
 
 impl CasObject {
@@ -258,7 +267,10 @@ impl CasObject {
         let mut compressed_range_end = u32::MAX;
         let mut uncompressed_offset = u32::MAX;
 
-        for (idx, c) in chunk_size_info[..chunk_size_info.len()-1].iter().enumerate() {
+        for (idx, c) in chunk_size_info[..chunk_size_info.len() - 1]
+            .iter()
+            .enumerate()
+        {
             if c.cumulative_uncompressed_len >= start && compressed_range_start == u32::MAX {
                 compressed_range_start = c.start_byte_index;
                 uncompressed_offset = if idx == 0 {
@@ -284,7 +296,7 @@ impl CasObject {
             uncompressed_offset,
         })
     }
-    
+
     /// Return end value of all chunk contents (byte index prior to header)
     pub fn get_contents_length(&self) -> Result<u32, CasObjectError> {
         match self.info.chunk_size_info.last() {
@@ -325,9 +337,9 @@ impl CasObject {
 
         // build up result vector by processing these chunks
         let chunk_contents = self.get_chunk_contents(&chunk_data)?;
-        let len = (end-start) as usize;
+        let len = (end - start) as usize;
 
-        Ok(chunk_contents[offset..offset+len].to_vec())
+        Ok(chunk_contents[offset..offset + len].to_vec())
     }
 
     /// Assumes chunk_data is 1+ complete chunks. Processes them sequentially and returns them as Vec<u8>.
@@ -357,6 +369,17 @@ impl CasObject {
         self.get_range(reader, 0, self.get_contents_length()?)
     }
 
+    /// Helper function to translate CasObjectInfo.chunk_size_info to just return chunk_boundaries.
+    /// 
+    /// This isolates the weirdness about iterating through chunk_size_info and ignoring the final entry.
+    fn get_chunk_boundaries(&self) -> Vec<u32> {
+        self.info.chunk_size_info.clone()
+        [..self.info.chunk_size_info.len() - 1]
+        .iter()
+        .map(|c| c.cumulative_uncompressed_len)
+        .collect()
+    }
+
     /// Get all the content bytes from a Xorb, and return the chunk boundaries
     pub fn get_detailed_bytes<R: Read + Seek>(
         &self,
@@ -372,7 +395,7 @@ impl CasObject {
         }
 
         let data = self.get_all_bytes(reader)?;
-        let chunk_boundaries = self.info.chunk_size_info.clone().into_iter().map(|c| c.cumulative_uncompressed_len).collect();
+        let chunk_boundaries = self.get_chunk_boundaries();
 
         Ok((chunk_boundaries, data))
     }
@@ -392,24 +415,29 @@ impl CasObject {
         let mut total_written_bytes: usize = 0;
 
         let mut raw_start_idx = 0;
-        let mut start_idx:u32 = 0;
+        let mut start_idx: u32 = 0;
         let mut cumulative_chunk_length: u32 = 0;
         for boundary in chunk_boundaries {
             let chunk_boundary: u32 = *boundary;
 
             let mut chunk_raw_bytes = Vec::<u8>::new();
-            chunk_raw_bytes.extend_from_slice(&data[raw_start_idx as usize..chunk_boundary as usize]);
+            chunk_raw_bytes
+                .extend_from_slice(&data[raw_start_idx as usize..chunk_boundary as usize]);
             let chunk_size = chunk_boundary - raw_start_idx;
 
             // now serialize chunk directly to writer (since chunks come first!)
             // for uncompressed just take data as is, for compressed compress chunk and then write those out.
             // TODO: add support for compression here
-            let chunk_written_bytes = serialize_chunk(&chunk_raw_bytes, writer, cas_types::compression_scheme::CompressionScheme::None)?;
+            let chunk_written_bytes = serialize_chunk(
+                &chunk_raw_bytes,
+                writer,
+                cas_types::compression_scheme::CompressionScheme::None,
+            )?;
             total_written_bytes += chunk_written_bytes;
 
             let chunk_meta = CasChunkInfo {
-                start_byte_index : start_idx,
-                cumulative_uncompressed_len : cumulative_chunk_length + chunk_size,
+                start_byte_index: start_idx,
+                cumulative_uncompressed_len: cumulative_chunk_length + chunk_size,
             };
             cas.info.chunk_size_info.push(chunk_meta);
 
@@ -418,9 +446,9 @@ impl CasObject {
             cumulative_chunk_length += chunk_size;
         }
 
-        // extra chunk_info to help with range reads 
+        // extra chunk_info to help with range reads
         let chunk_meta = CasChunkInfo {
-            start_byte_index : start_idx,
+            start_byte_index: start_idx,
             cumulative_uncompressed_len: cumulative_chunk_length,
         };
         cas.info.chunk_size_info.push(chunk_meta);
@@ -477,6 +505,23 @@ mod tests {
         assert_eq!(cas.info_length, CAS_OBJECT_INFO_DEFAULT_LENGTH);
     }
 
+    #[test]
+    fn test_chunk_boundaries_chunk_size_info() {
+        // Arrange
+        let (c, _cas_data, _raw_data) = build_cas_object(3, 100, false);
+        // Act & Assert
+        assert_eq!(c.get_chunk_boundaries().len(), 3);
+        assert_eq!(c.get_chunk_boundaries(), [100,200,300]);
+        assert_eq!(c.info.num_chunks, 4);
+        assert_eq!(c.info.chunk_size_info.len(), c.info.num_chunks as usize);
+
+        let last_chunk_info = c.info.chunk_size_info[2].clone();
+        let dummy_chunk_info = c.info.chunk_size_info[3].clone();
+        assert_eq!(dummy_chunk_info.cumulative_uncompressed_len, 300);
+        assert_eq!(dummy_chunk_info.start_byte_index, 324); // 8-byte header, 3 chunks, so 4th chunk should start at byte 324
+        assert_eq!(last_chunk_info.cumulative_uncompressed_len, 300);
+    }
+
     fn gen_random_bytes(uncompressed_chunk_size: u32) -> Vec<u8> {
         let mut rng = rand::thread_rng();
         let mut data = vec![0u8; uncompressed_chunk_size as usize];
@@ -497,7 +542,8 @@ mod tests {
         let mut total_bytes = 0;
         let mut uncompressed_bytes: u32 = 0;
 
-        let mut data_contents_raw = Vec::<u8>::with_capacity(num_chunks as usize * uncompressed_chunk_size as usize);
+        let mut data_contents_raw =
+            Vec::<u8>::with_capacity(num_chunks as usize * uncompressed_chunk_size as usize);
 
         for _idx in 0..num_chunks {
             let chunk_size: u32 = if use_random_chunk_size {
@@ -514,12 +560,16 @@ mod tests {
 
             // build chunk, create ChunkInfo and keep going
 
-            let bytes_written = serialize_chunk(&bytes, &mut writer, cas_types::compression_scheme::CompressionScheme::None).unwrap();
+            let bytes_written = serialize_chunk(
+                &bytes,
+                &mut writer,
+                cas_types::compression_scheme::CompressionScheme::None,
+            )
+            .unwrap();
 
             let chunk_info = CasChunkInfo {
-                start_byte_index : total_bytes,
-                cumulative_uncompressed_len : uncompressed_bytes + len,
-
+                start_byte_index: total_bytes,
+                cumulative_uncompressed_len: uncompressed_bytes + len,
             };
 
             chunk_size_info.push(chunk_info);
@@ -528,9 +578,8 @@ mod tests {
         }
 
         let chunk_info = CasChunkInfo {
-            start_byte_index : total_bytes,
-            cumulative_uncompressed_len : uncompressed_bytes,
-
+            start_byte_index: total_bytes,
+            cumulative_uncompressed_len: uncompressed_bytes,
         };
         chunk_size_info.push(chunk_info);
 
@@ -558,7 +607,7 @@ mod tests {
             &mut writer,
             &c.info.cashash,
             &raw_data,
-            &c.info.chunk_size_info[..c.info.chunk_size_info.len()-1].iter().map(|c| c.cumulative_uncompressed_len).collect()
+            &c.get_chunk_boundaries(),
         )
         .is_ok());
 
@@ -582,8 +631,8 @@ mod tests {
             &mut writer,
             &c.info.cashash,
             &raw_data,
-            &c.info.chunk_size_info[..c.info.chunk_size_info.len()-1].iter().map(|c| c.cumulative_uncompressed_len).collect()
-        )
+            &c.get_chunk_boundaries(),
+       )
         .is_ok());
 
         let mut reader = writer.clone();
@@ -609,7 +658,7 @@ mod tests {
             &mut writer,
             &c.info.cashash,
             &raw_data,
-            &c.info.chunk_size_info[..c.info.chunk_size_info.len()-1].iter().map(|c| c.cumulative_uncompressed_len).collect()
+            &c.get_chunk_boundaries(),
         )
         .is_ok());
 
@@ -635,7 +684,7 @@ mod tests {
             &mut writer,
             &c.info.cashash,
             &raw_data,
-            &c.info.chunk_size_info[..c.info.chunk_size_info.len()-1].iter().map(|c| c.cumulative_uncompressed_len).collect()
+            &c.get_chunk_boundaries(),
         )
         .is_ok());
 

@@ -5,7 +5,6 @@ use std::{
 use anyhow::anyhow;
 use cas_types::compression_scheme::CompressionScheme;
 use lz4_flex::frame::{FrameDecoder, FrameEncoder};
-
 use crate::error::CasObjectError;
 
 pub const CAS_CHUNK_HEADER_LENGTH: u8 = 8;
