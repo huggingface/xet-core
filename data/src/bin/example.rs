@@ -234,7 +234,7 @@ async fn smudge(mut reader: impl Read, mut writer: impl Write) -> Result<()> {
     let translator = PointerFileTranslator::new(default_smudge_config()?).await?;
 
     translator
-        .smudge_file_from_pointer(&pointer_file, &mut writer, None)
+        .smudge_file_from_pointer(&pointer_file, &mut writer, None, None, None)
         .await?;
 
     Ok(())

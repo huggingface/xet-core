@@ -21,15 +21,15 @@ pub fn upload_files(file_paths: Vec<String>) -> PyResult<Vec<PyPointerFile>> {
 }
 
 #[pyfunction]
-#[pyo3(signature = (files), text_signature = "(files: List[PyPointerFile]) -> List[str]")]
-pub fn download_files(files: Vec<PyPointerFile>) -> PyResult<Vec<String>> {
+#[pyo3(signature = (files, endpoint, token), text_signature = "(files: List[PyPointerFile]) -> List[str]\ntoken: Optional[str]\nendpoint: Optional[str]")]
+pub fn download_files(files: Vec<PyPointerFile>, endpoint: Option<String>, token: Option<String>) -> PyResult<Vec<String>> {
     let pfs = files.into_iter().map(PointerFile::from)
         .collect();
     tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?
         .block_on(async move {
-            data_client::download_async(pfs).await
+            data_client::download_async(pfs, endpoint, token).await
         }).map_err(|e| PyException::new_err(format!("{e:?}")))
 }
 
