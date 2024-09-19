@@ -202,7 +202,7 @@ impl CASAPIClient {
         let total_len = info.iter().fold(0, |acc, x| acc + x.unpacked_length);
         let futs = info.into_iter().map(|term| {
             tokio::spawn(async move {
-                let piece = get_one(&term).await?;
+                let piece = get_one_term(&term).await?;
                 if piece.len() != (term.range.end - term.range.start) as usize {
                     warn!("got back a smaller range than requested");
                 }
@@ -255,24 +255,60 @@ impl CASAPIClient {
     }
 }
 
-async fn get_one(term: &CASReconstructionTerm) -> Result<Bytes> {
+async fn get_one_term(term: &CASReconstructionTerm) -> Result<Bytes> {
+    if term.range_start_offset >= term.unpacked_length {
+        return Err(CasClientError::InvalidArguments);
+    }
+    if term.range.end <= term.range.start {
+        return Err(CasClientError::InvalidArguments);
+    }
     let url = Url::parse(term.url.as_str())?;
-    let response = reqwest::Client::new()
+    let chunks_bytes = reqwest::Client::new()
         .request(hyper::Method::GET, url)
         .send()
         .await?
-        .error_for_status()?;
-    let xorb_bytes = response
+        .error_for_status()?
         .bytes()
         .await
         .map_err(CasClientError::ReqwestError)?;
-    let mut readseek = Cursor::new(xorb_bytes.to_vec());
+    let mut chunk_bytes_rdr = Cursor::new(chunks_bytes);
+    let mut chunk_data = cas_object::cas_chunk_format::deserialize_chunks(&mut chunk_bytes_rdr)?;
+    let len = chunk_data.len() as u32;
 
-    let cas_object = CasObject::deserialize(&mut readseek)?;
-    let data = cas_object.get_range(&mut readseek, term.range.start, term.range.end)?;
+    if len < term.range_start_offset
+        || len < (term.range_start_offset + term.range.end - term.range.start)
+    {
+        return Err(CasClientError::InternalError(anyhow!(
+            "xorb data too short"
+        )));
+    }
 
-    Ok(Bytes::from(data))
+    let start = term.range_start_offset as usize;
+    let len = (term.range.end - term.range.start) as usize;
+    let mut chunk_data = chunk_data.split_off(start);
+    chunk_data.truncate(len + 1);
+    Ok(Bytes::from(chunk_data))
 }
+
+// version where we got whole xorb
+// async fn get_one(term: &CASReconstructionTerm) -> Result<Bytes> {
+//     let url = Url::parse(term.url.as_str())?;
+//     let response = reqwest::Client::new()
+//         .request(hyper::Method::GET, url)
+//         .send()
+//         .await?
+//         .error_for_status()?;
+//     let xorb_bytes = response
+//         .bytes()
+//         .await
+//         .map_err(CasClientError::ReqwestError)?;
+//     let mut readseek = Cursor::new(xorb_bytes.to_vec());
+
+//     let cas_object = CasObject::deserialize(&mut readseek)?;
+//     let data = cas_object.get_range(&mut readseek, term.range.start, term.range.end)?;
+
+//     Ok(Bytes::from(data))
+// }
 
 #[cfg(test)]
 mod tests {

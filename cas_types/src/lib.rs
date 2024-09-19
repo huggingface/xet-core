@@ -21,8 +21,9 @@ pub struct Range {
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct CASReconstructionTerm {
     pub hash: HexMerkleHash,
-    pub unpacked_length: u64,
+    pub unpacked_length: u32,
     pub range: Range,
+    pub range_start_offset: u32,
     pub url: String,
 }
 
