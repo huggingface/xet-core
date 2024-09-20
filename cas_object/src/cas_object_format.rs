@@ -235,7 +235,7 @@ impl Default for CasObject {
 /// correctly support range reads across compressed chunks in a Xorb.
 /// 
 /// See docs for [CasObject::get_range_boundaries] for example usage.
-struct RangeBoundaryHelper {
+pub struct RangeBoundaryHelper {
     /// Index for range start in compressed chunks.
     /// Guaranteed to be start of a [CASChunkHeader].
     pub compressed_range_start: u32,
@@ -280,7 +280,7 @@ impl CasObject {
     /// // ranges.uncompressed_offset = 50
     /// ```
     /// See [CasObject::get_range] for how these ranges are used.
-    fn get_range_boundaries(
+    pub fn get_range_boundaries(
         &self,
         start: u32,
         end: u32,
