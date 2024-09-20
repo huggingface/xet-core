@@ -168,6 +168,7 @@ impl CASAPIClient {
             &key.hash,
             contents,
             &chunk_boundaries.into_iter().map(|x| x as u32).collect(),
+            cas_object::CompressionScheme::LZ4
         )?;
 
         debug!("Upload: POST to {url:?} for {key:?}");

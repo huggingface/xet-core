@@ -226,6 +226,7 @@ impl Client for LocalClient {
                 hash,
                 &data,
                 &chunk_boundaries.into_iter().map(|x| x as u32).collect(),
+                cas_object::CompressionScheme::None
             )?;
             // flush before persisting
             writer.flush()?;
