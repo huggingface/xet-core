@@ -4,11 +4,8 @@ use std::time::Duration;
 
 use crate::cas_connection_pool::CasConnectionConfig;
 use anyhow::{anyhow, Result};
-use cas::common::CompressionScheme;
-use cas::compression::{
-    multiple_accepted_encoding_header_value, CAS_ACCEPT_ENCODING_HEADER,
-    CAS_CONTENT_ENCODING_HEADER, CAS_INFLATED_SIZE_HEADER,
-};
+use cas_object::CompressionScheme;
+
 use error_printer::ErrorPrinter;
 use http_body_util::{BodyExt, Full};
 use hyper::body::Bytes;
@@ -33,16 +30,26 @@ use xet_error::Error;
 
 use merklehash::MerkleHash;
 
+const CAS_CONTENT_ENCODING_HEADER: &str = "xet-cas-content-encoding";
+const CAS_ACCEPT_ENCODING_HEADER: &str = "xet-cas-content-encoding";
+const CAS_INFLATED_SIZE_HEADER: &str = "xet-cas-inflated-size";
+
 const HTTP2_POOL_IDLE_TIMEOUT_SECS: u64 = 30;
 const HTTP2_KEEPALIVE_MILLIS: u64 = 500;
 const HTTP2_WINDOW_SIZE: u32 = 2147418112;
 const NUM_RETRIES: usize = 5;
 const BASE_RETRY_DELAY_MS: u64 = 3000;
 
+// in the header value, we will consider
+fn multiple_accepted_encoding_header_value(list: Vec<CompressionScheme>) -> String {
+    let as_strs: Vec<&str> = list.iter().map(Into::into).collect();
+    as_strs.join(";").to_string()
+}
+
 lazy_static! {
     static ref ACCEPTED_ENCODINGS_HEADER_VALUE: HeaderValue = HeaderValue::from_str(
         multiple_accepted_encoding_header_value(vec![
-            CompressionScheme::Lz4,
+            CompressionScheme::LZ4,
             CompressionScheme::None
         ])
         .as_str()
@@ -284,7 +291,7 @@ impl DataTransport {
         let bytes = maybe_decode(bytes.as_slice(), encoding, uncompressed_size)?;
         debug!(
             "GET; encoding: ({}), uncompressed size: ({}), payload ({})  prefix: ({}), hash: ({})",
-            encoding.as_str_name(),
+            encoding,
             uncompressed_size.unwrap_or_default(),
             payload_size,
             prefix,
@@ -344,7 +351,7 @@ impl DataTransport {
                         .to_vec();
                     let payload_size = bytes.len();
                     let bytes = maybe_decode(bytes.as_slice(), encoding, uncompressed_size)?;
-                    debug!("GET RANGE; encoding: ({}), uncompressed size: ({}), payload ({}) prefix: ({}), hash: ({})", encoding.as_str_name(), uncompressed_size.unwrap_or_default(), payload_size, prefix, hash);
+                    debug!("GET RANGE; encoding: ({}), uncompressed size: ({}), payload ({}) prefix: ({}), hash: ({})", encoding, uncompressed_size.unwrap_or_default(), payload_size, prefix, hash);
                     Ok(bytes.to_vec())
                 },
                 is_status_retriable_and_print,
@@ -367,7 +374,7 @@ impl DataTransport {
         let data = maybe_encode(data, encoding)?;
         debug!(
             "PUT; encoding: ({}), uncompressed size: ({}), payload: ({}), prefix: ({}), hash: ({})",
-            encoding.as_str_name(),
+            encoding,
             full_size,
             data.len(),
             prefix,
@@ -423,7 +430,7 @@ fn maybe_decode<'a, T: Into<&'a [u8]>>(
     encoding: CompressionScheme,
     uncompressed_size: Option<i32>,
 ) -> Result<Vec<u8>> {
-    if let CompressionScheme::Lz4 = encoding {
+    if let CompressionScheme::LZ4 = encoding {
         if uncompressed_size.is_none() {
             return Err(anyhow!(
                 "Missing uncompressed size when attempting to decompress LZ4"
@@ -447,7 +454,7 @@ fn get_encoding_info<T>(response: &Response<T>) -> Option<(CompressionScheme, Op
 }
 
 fn maybe_encode<'a, T: Into<&'a [u8]>>(data: T, encoding: CompressionScheme) -> Result<Vec<u8>> {
-    if let CompressionScheme::Lz4 = encoding {
+    if let CompressionScheme::LZ4 = encoding {
         lz4::block::compress(data.into(), Some(CompressionMode::DEFAULT), false)
             .log_error("LZ4 compression error")
             .map_err(|e| anyhow!(e))
@@ -580,4 +587,20 @@ mod tests {
         assert_eq!(get_header_value(GIT_XET_VERSION_HEADER), git_xet_version);
         assert_eq!(get_header_value(USER_ID_HEADER), user_id);
     }
+
+    #[test]
+    fn test_multiple_accepted_encoding_header_value() {
+        let multi = vec![CompressionScheme::LZ4, CompressionScheme::None];
+        assert_eq!(
+            multiple_accepted_encoding_header_value(multi),
+            "lz4;none".to_string()
+        );
+
+        let singular = vec![CompressionScheme::LZ4];
+        assert_eq!(
+            multiple_accepted_encoding_header_value(singular),
+            "lz4".to_string()
+        );
+    }
+
 }

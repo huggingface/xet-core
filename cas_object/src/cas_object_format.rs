@@ -9,6 +9,7 @@ use std::{
 use crate::{
     cas_chunk_format::{deserialize_chunk, serialize_chunk},
     error::CasObjectError,
+    CompressionScheme,
 };
 use anyhow::anyhow;
 
@@ -474,11 +475,8 @@ impl CasObject {
 
             // now serialize chunk directly to writer (since chunks come first!)
             // TODO: add compression scheme to this call
-            let chunk_written_bytes = serialize_chunk(
-                &chunk_raw_bytes,
-                writer,
-                cas_types::compression_scheme::CompressionScheme::None,
-            )?;
+            let chunk_written_bytes =
+                serialize_chunk(&chunk_raw_bytes, writer, CompressionScheme::None)?;
             total_written_bytes += chunk_written_bytes;
 
             let chunk_meta = CasChunkInfo {
@@ -554,7 +552,7 @@ mod tests {
     #[test]
     fn test_chunk_boundaries_chunk_size_info() {
         // Arrange
-        let (c, _cas_data, _raw_data) = build_cas_object(3, 100, false);
+        let (c, _cas_data, _raw_data) = build_cas_object(3, 100, false, false);
         // Act & Assert
         assert_eq!(c.get_chunk_boundaries().len(), 3);
         assert_eq!(c.get_chunk_boundaries(), [100, 200, 300]);
@@ -579,6 +577,7 @@ mod tests {
         num_chunks: u32,
         uncompressed_chunk_size: u32,
         use_random_chunk_size: bool,
+        use_lz4_compression: bool
     ) -> (CasObject, Vec<u8>, Vec<u8>) {
         let mut c = CasObject::default();
 
@@ -606,10 +605,15 @@ mod tests {
 
             // build chunk, create ChunkInfo and keep going
 
+            let compression_scheme = match use_lz4_compression {
+                true => CompressionScheme::LZ4,
+                false => CompressionScheme::None
+            };
+
             let bytes_written = serialize_chunk(
                 &bytes,
                 &mut writer,
-                cas_types::compression_scheme::CompressionScheme::None,
+                compression_scheme,
             )
             .unwrap();
 
@@ -646,7 +650,7 @@ mod tests {
     #[test]
     fn test_basic_serialization_mem() {
         // Arrange
-        let (c, _cas_data, raw_data) = build_cas_object(3, 100, false);
+        let (c, _cas_data, raw_data) = build_cas_object(3, 100, false, false);
         let mut writer: Cursor<Vec<u8>> = Cursor::new(Vec::new());
         // Act & Assert
         assert!(CasObject::serialize(
@@ -670,7 +674,7 @@ mod tests {
     #[test]
     fn test_serialization_deserialization_mem_medium() {
         // Arrange
-        let (c, _cas_data, raw_data) = build_cas_object(32, 16384, false);
+        let (c, _cas_data, raw_data) = build_cas_object(32, 16384, false, false);
         let mut writer: Cursor<Vec<u8>> = Cursor::new(Vec::new());
         // Act & Assert
         assert!(CasObject::serialize(
@@ -697,7 +701,7 @@ mod tests {
     #[test]
     fn test_serialization_deserialization_mem_large_random() {
         // Arrange
-        let (c, _cas_data, raw_data) = build_cas_object(32, 65536, true);
+        let (c, _cas_data, raw_data) = build_cas_object(32, 65536, true, false);
         let mut writer: Cursor<Vec<u8>> = Cursor::new(Vec::new());
         // Act & Assert
         assert!(CasObject::serialize(
@@ -723,7 +727,7 @@ mod tests {
     #[test]
     fn test_serialization_deserialization_file_large_random() {
         // Arrange
-        let (c, _cas_data, raw_data) = build_cas_object(256, 65536, true);
+        let (c, _cas_data, raw_data) = build_cas_object(256, 65536, true, false);
         let mut writer: Cursor<Vec<u8>> = Cursor::new(Vec::new());
         // Act & Assert
         assert!(CasObject::serialize(
@@ -745,4 +749,85 @@ mod tests {
         assert_eq!(c.info.num_chunks, c2.info.num_chunks);
         assert_eq!(raw_data, c2.get_all_bytes(&mut reader).unwrap());
     }
+    
+    /*
+    #[test]
+    fn test_serialization_deserialization_mem_medium_lz4() {
+        // Arrange
+        let (c, _cas_data, raw_data) = build_cas_object(32, 16384, false, true);
+        let mut writer: Cursor<Vec<u8>> = Cursor::new(Vec::new());
+        // Act & Assert
+        assert!(CasObject::serialize(
+            &mut writer,
+            &c.info.cashash,
+            &raw_data,
+            &c.get_chunk_boundaries(),
+        )
+        .is_ok());
+
+        let mut reader = writer.clone();
+        reader.set_position(0);
+        let res = CasObject::deserialize(&mut reader);
+        assert!(res.is_ok());
+
+        let c2 = res.unwrap();
+        assert_eq!(c, c2);
+
+        let bytes_read = c2.get_all_bytes(&mut reader).unwrap();
+        assert_eq!(c.info.num_chunks, c2.info.num_chunks);
+        assert_eq!(raw_data, bytes_read);
+    }
+
+    #[test]
+    fn test_serialization_deserialization_mem_large_random_lz4() {
+        // Arrange
+        let (c, _cas_data, raw_data) = build_cas_object(32, 65536, true, true);
+        let mut writer: Cursor<Vec<u8>> = Cursor::new(Vec::new());
+        // Act & Assert
+        assert!(CasObject::serialize(
+            &mut writer,
+            &c.info.cashash,
+            &raw_data,
+            &c.get_chunk_boundaries(),
+        )
+        .is_ok());
+
+        let mut reader = writer.clone();
+        reader.set_position(0);
+        let res = CasObject::deserialize(&mut reader);
+        assert!(res.is_ok());
+
+        let c2 = res.unwrap();
+        assert_eq!(c, c2);
+
+        assert_eq!(c.info.num_chunks, c2.info.num_chunks);
+        assert_eq!(raw_data, c2.get_all_bytes(&mut reader).unwrap());
+    }
+
+    #[test]
+    fn test_serialization_deserialization_file_large_random_lz4() {
+        // Arrange
+        let (c, _cas_data, raw_data) = build_cas_object(256, 65536, true, true);
+        let mut writer: Cursor<Vec<u8>> = Cursor::new(Vec::new());
+        // Act & Assert
+        assert!(CasObject::serialize(
+            &mut writer,
+            &c.info.cashash,
+            &raw_data,
+            &c.get_chunk_boundaries(),
+        )
+        .is_ok());
+
+        let mut reader = writer.clone();
+        reader.set_position(0);
+        let res = CasObject::deserialize(&mut reader);
+        assert!(res.is_ok());
+
+        let c2 = res.unwrap();
+        assert_eq!(c, c2);
+
+        assert_eq!(c.info.num_chunks, c2.info.num_chunks);
+        assert_eq!(raw_data, c2.get_all_bytes(&mut reader).unwrap());
+    }
+    */
 }

@@ -6,7 +6,7 @@ use std::{
 
 use crate::error::CasObjectError;
 use anyhow::anyhow;
-use cas_types::compression_scheme::CompressionScheme;
+use crate::CompressionScheme;
 use lz4_flex::frame::{FrameDecoder, FrameEncoder};
 
 pub const CAS_CHUNK_HEADER_LENGTH: u8 = 8;
@@ -191,7 +191,7 @@ mod tests {
     use std::io::Cursor;
 
     use super::*;
-    use cas_types::compression_scheme::CompressionScheme;
+    use CompressionScheme;
     use rand::Rng;
 
     const COMP_LEN: u32 = 0x010203;

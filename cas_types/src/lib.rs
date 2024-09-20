@@ -3,7 +3,6 @@ use serde_repr::{Deserialize_repr, Serialize_repr};
 use merklehash::MerkleHash;
 use serde::{Deserialize, Serialize};
 
-pub mod compression_scheme;
 mod key;
 pub use key::*;
 
