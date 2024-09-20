@@ -275,13 +275,8 @@ async fn get_one_term(term: &CASReconstructionTerm) -> Result<Bytes> {
     let mut chunk_data = cas_object::cas_chunk_format::deserialize_chunks(&mut chunk_bytes_rdr)?;
     let len = chunk_data.len() as u32;
 
-    if len < term.range_start_offset
-        || len < (term.range_start_offset + term.range.end - term.range.start)
-    {
-        return Err(CasClientError::InternalError(anyhow!(
-            "xorb data too short"
-        )));
-    }
+    let cas_object = CasObject::deserialize(&mut readseek)?;
+    let data = cas_object.get_range(&mut readseek, term.range.start, term.range.end)?;
 
     let start = term.range_start_offset as usize;
     let len = (term.range.end - term.range.start) as usize;
