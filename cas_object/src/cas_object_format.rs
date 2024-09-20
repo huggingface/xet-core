@@ -16,7 +16,6 @@ const CAS_OBJECT_FORMAT_IDENT: [u8; 7] = [b'X', b'E', b'T', b'B', b'L', b'O', b'
 const CAS_OBJECT_FORMAT_VERSION: u8 = 0;
 const CAS_OBJECT_INFO_DEFAULT_LENGTH: u32 = 60;
 
-// TODO: #[repr(C, packed)] - this requires alignment stuff to get corrected for Vec & DataHash.
 #[derive(Clone, PartialEq, Eq, Debug)]
 /// Info struct for [CasObject]. This is stored at the end of the XORB
 ///
@@ -31,22 +30,29 @@ pub struct CasObjectInfo {
     /// 256-bits, 16-bytes, The CAS Hash of this Xorb.
     pub cashash: DataHash,
 
-    /// Total number of chunks in the file. Length of chunk_size_metadata.
+    /// Total number of chunks in the file. Length of chunk_size_info.
     pub num_chunks: u32,
 
     /// Chunk metadata (start of chunk, length of chunk), length of vector matches num_chunks.
+    /// This vector is expected to be in order (ex. `chunk[0].start_byte_index == 0`).
+    /// If uncompressed chunk, then: `chunk[n].start_byte_index == chunk[n-1].uncompressed_cumulative_len`.
+    /// And the final entry in this vector is a dummy entry to know the final chunk ending byte range.
+    /// 
+    /// ```
+    /// // ex.       chunks:  [ 0 - 99 | 100 - 199 | 200 - 299 ]
+    /// // chunk_size_info : < (0,100), (100, 200), (200, 300), (300, 300) > <-- notice extra entry.
+    /// ```
     pub chunk_size_info: Vec<CasChunkInfo>,
 
     /// Unused 16-byte buffer to allow for future extensibility.
     _buffer: [u8; 16],
 }
 
-// #[repr(C, packed)] TODO: Understand why this doesn't work for unit-tests with: "reference to packed field is unaligned"
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct CasChunkInfo {
     /// Starting index of chunk.
     ///
-    /// Ex. chunk[5] would start at start_byte_index
+    /// Ex. `chunk[5]` would start at start_byte_index
     /// from the beginning of the XORB.
     ///
     /// This does include chunk header, to allow for fast range lookups.
@@ -205,13 +211,13 @@ impl CasChunkInfo {
 ///
 /// Has header, and a set of functions that interact directly with XORB.
 pub struct CasObject {
-    /// Header CAS object, see CasObjectHeader struct.
+    /// CasObjectInfo block see [CasObjectInfo] for details.
     pub info: CasObjectInfo,
 
     /// Length of entire info block.
     ///
     /// This is required to be at the end of the CasObject, so readers can read the
-    /// final 4 bytes and know the full length of the metadata block.
+    /// final 4 bytes and know the full length of the info block.
     pub info_length: u32,
 }
 
@@ -224,9 +230,22 @@ impl Default for CasObject {
     }
 }
 
-pub struct RangeBoundaryHelper {
+
+/// Helper struct to capture 3-part tuple needed to 
+/// correctly support range reads across compressed chunks in a Xorb.
+/// 
+/// See docs for [CasObject::get_range_boundaries] for example usage.
+struct RangeBoundaryHelper {
+    /// Index for range start in compressed chunks.
+    /// Guaranteed to be start of a [CASChunkHeader].
     pub compressed_range_start: u32,
+
+    /// Index for range end in compressed chunk.
+    /// Guaranteed to be end of chunk.
     pub compressed_range_end: u32,
+
+    /// Offset into uncompressed chunk. This is necessary for 
+    /// range requests that do not align with chunk boundary.
     pub uncompressed_offset: u32,
 }
 
@@ -239,11 +258,29 @@ impl CasObject {
         Ok(Self { info, info_length })
     }
 
-    /// Translate range into actual byte range from within Xorb.
-    /// This function will return a tuple that is the start idx for a chunk and the end idx of a chunk,
-    /// the assumption is the caller can fetch this byte range from Xorb directly and then use
-    /// chunk operations to translate bytes into uncompressed bytes.
-    pub fn get_range_boundaries(
+    /// Translate desired range into actual byte range from within Xorb.
+    /// 
+    /// This function will return a [RangeBoundaryHelper] struct to be able to read 
+    /// a range from the Xorb. This function translates uncompressed ranges into their corresponding
+    /// Xorb chunk start byte index and Xorb chunk end byte index, along with an offset into that chunk.
+    /// See example below.
+    /// 
+    /// Ex. If user requests range bytes 150-250 from a Xorb, and assume the following layout: 
+    /// ```
+    /// //              chunk: [   0  |    1    |    2    |    3    ]
+    /// // uncompressed chunks: [ 0-99 | 100-199 | 200-299 | 300-399 ]
+    /// //   compressed chunks: [ 0-49 |   50-99 | 100-149 | 150-199 ]
+    /// ```
+    /// This function needs to return starting index for chunk 1, with an offset of 50 bytes, and the end 
+    /// index of chunk 2 in order to satisfy the range 150-250.
+    /// ```
+    /// // let ranges = cas.get_range_boundaries(150, 250)?;
+    /// // ranges.compressed_range_start = 50
+    /// // ranges.compressed_range_end = 150
+    /// // ranges.uncompressed_offset = 50
+    /// ```
+    /// See [CasObject::get_range] for how these ranges are used.
+    fn get_range_boundaries(
         &self,
         start: u32,
         end: u32,
@@ -256,21 +293,21 @@ impl CasObject {
             return Err(CasObjectError::InvalidArguments);
         }
 
-        /*
-        - cumulative_uncompressed_len does not include chunk header lengths
-        - start_byte_index does include chunk header length.
-        */
-
         let chunk_size_info = &self.info.chunk_size_info;
 
         let mut compressed_range_start = u32::MAX;
         let mut compressed_range_end = u32::MAX;
         let mut uncompressed_offset = u32::MAX;
 
+        // Enumerate all the chunks in order in the Xorb, but ignore the final one since that is a dummy chunk used to 
+        // get the final byte index of the final content chunk. This allows the (idx + 1) to always be correct.
         for (idx, c) in chunk_size_info[..chunk_size_info.len() - 1]
             .iter()
             .enumerate()
         {
+            // Starting chunk is identified, store the start_byte_index of this chunk.
+            // compute the offset into the chunk if necessary by subtracting start range from end of
+            // previous chunk len (idx - 1).
             if c.cumulative_uncompressed_len >= start && compressed_range_start == u32::MAX {
                 compressed_range_start = c.start_byte_index;
                 uncompressed_offset = if idx == 0 {
@@ -284,6 +321,9 @@ impl CasObject {
                 }
             }
 
+            // Once we find the 1st chunk (in-order) that meets the range query, we find the start_byte_index
+            // of the next chunk and capture that as compressed_range_end. This uses the dummy chunk entry
+            // to get the end of the final content chunk.
             if c.cumulative_uncompressed_len >= end && compressed_range_end == u32::MAX {
                 compressed_range_end = chunk_size_info.get(idx + 1).unwrap().start_byte_index;
                 break;
@@ -325,10 +365,10 @@ impl CasObject {
         // let mut data = vec![0u8; (end - start) as usize];
 
         // translate range into chunk bytes to read from xorb directly
-        let range_boundary_helper = self.get_range_boundaries(start, end)?;
-        let chunk_start = range_boundary_helper.compressed_range_start;
-        let chunk_end = range_boundary_helper.compressed_range_end;
-        let offset = range_boundary_helper.uncompressed_offset as usize;
+        let boundary = self.get_range_boundaries(start, end)?;
+        let chunk_start = boundary.compressed_range_start;
+        let chunk_end = boundary.compressed_range_end;
+        let offset = boundary.uncompressed_offset as usize;
 
         // read chunk bytes
         let mut chunk_data = vec![0u8; (chunk_end - chunk_start) as usize];
@@ -357,9 +397,6 @@ impl CasObject {
 
     /// Get all the content bytes from a Xorb
     pub fn get_all_bytes<R: Read + Seek>(&self, reader: &mut R) -> Result<Vec<u8>, CasObjectError> {
-        // seek to header_length (from start).
-        // if uncompressed, just read rest of uncompressed length and return.
-        // if compressed, then walk compressed chunk vector and decompress and return.
         if self.info == Default::default() {
             return Err(CasObjectError::InternalError(anyhow!(
                 "Incomplete CasObject, no header"
@@ -371,7 +408,7 @@ impl CasObject {
 
     /// Helper function to translate CasObjectInfo.chunk_size_info to just return chunk_boundaries.
     ///
-    /// This isolates the weirdness about iterating through chunk_size_info and ignoring the final entry.
+    /// This isolates the weirdness about iterating through chunk_size_info and ignoring the final dummy entry.
     fn get_chunk_boundaries(&self) -> Vec<u32> {
         self.info.chunk_size_info.clone()[..self.info.chunk_size_info.len() - 1]
             .iter()
@@ -384,9 +421,6 @@ impl CasObject {
         &self,
         reader: &mut R,
     ) -> Result<(Vec<u32>, Vec<u8>), CasObjectError> {
-        // seek to header_length (from start).
-        // if uncompressed, just read rest of uncompressed length and return.
-        // if compressed, then walk compressed chunk vector and decompress and return.
         if self.info == Default::default() {
             return Err(CasObjectError::InternalError(anyhow!(
                 "Incomplete CasObject, no header"
@@ -408,7 +442,7 @@ impl CasObject {
     ) -> Result<(Self, usize), CasObjectError> {
         let mut cas = CasObject::default();
         cas.info.cashash.copy_from_slice(hash.as_slice());
-        cas.info.num_chunks = chunk_boundaries.len() as u32 + 1;
+        cas.info.num_chunks = chunk_boundaries.len() as u32 + 1; // extra entry for dummy, see [chunk_size_info] for details.
         cas.info.chunk_size_info = Vec::with_capacity(cas.info.num_chunks as usize);
 
         let mut total_written_bytes: usize = 0;
@@ -425,8 +459,7 @@ impl CasObject {
             let chunk_size = chunk_boundary - raw_start_idx;
 
             // now serialize chunk directly to writer (since chunks come first!)
-            // for uncompressed just take data as is, for compressed compress chunk and then write those out.
-            // TODO: add support for compression here
+            // TODO: add compression scheme to this call
             let chunk_written_bytes = serialize_chunk(
                 &chunk_raw_bytes,
                 writer,
@@ -445,14 +478,14 @@ impl CasObject {
             cumulative_chunk_length += chunk_size;
         }
 
-        // extra chunk_info to help with range reads
+        // dummy chunk_info to help with range reads. See [chunk_size_info] for details.
         let chunk_meta = CasChunkInfo {
             start_byte_index: start_idx,
             cumulative_uncompressed_len: cumulative_chunk_length,
         };
         cas.info.chunk_size_info.push(chunk_meta);
 
-        // now that header is ready, write out to writer, and then write the bytes.
+        // now that header is ready, write out to writer.
         let info_length = cas.info.serialize(writer)?;
         cas.info_length = info_length as u32;
         total_written_bytes += info_length;
