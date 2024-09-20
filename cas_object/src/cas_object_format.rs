@@ -37,7 +37,7 @@ pub struct CasObjectInfo {
     /// This vector is expected to be in order (ex. `chunk[0].start_byte_index == 0`).
     /// If uncompressed chunk, then: `chunk[n].start_byte_index == chunk[n-1].uncompressed_cumulative_len`.
     /// And the final entry in this vector is a dummy entry to know the final chunk ending byte range.
-    /// 
+    ///
     /// ```
     /// // ex.       chunks:  [ 0 - 99 | 100 - 199 | 200 - 299 ]
     /// // chunk_size_info : < (0,100), (100, 200), (200, 300), (300, 300) > <-- notice extra entry.
@@ -230,10 +230,9 @@ impl Default for CasObject {
     }
 }
 
-
-/// Helper struct to capture 3-part tuple needed to 
+/// Helper struct to capture 3-part tuple needed to
 /// correctly support range reads across compressed chunks in a Xorb.
-/// 
+///
 /// See docs for [CasObject::get_range_boundaries] for example usage.
 pub struct RangeBoundaryHelper {
     /// Index for range start in compressed chunks.
@@ -244,12 +243,27 @@ pub struct RangeBoundaryHelper {
     /// Guaranteed to be end of chunk.
     pub compressed_range_end: u32,
 
-    /// Offset into uncompressed chunk. This is necessary for 
+    /// Offset into uncompressed chunk. This is necessary for
     /// range requests that do not align with chunk boundary.
     pub uncompressed_offset: u32,
 }
 
 impl CasObject {
+    /// Deserializes only the info length field of the footer to tell the user how many bytes
+    /// make up the info portion of the xorb.
+    ///
+    /// Assumes reader has at least size_of::<u32>() bytes, otherwise returns an error.
+    pub fn get_info_length<R: Read + Seek>(reader: &mut R) -> Result<u32, CasObjectError> {
+        // Go to end of Reader and get length, then jump back to it, and read sequentially
+        // read last 4 bytes to get length
+        reader.seek(std::io::SeekFrom::End(-(size_of::<u32>() as i64)))?;
+
+        let mut info_length = [0u8; 4];
+        reader.read_exact(&mut info_length)?;
+        let info_length = u32::from_le_bytes(info_length);
+        Ok(info_length)
+    }
+
     /// Deserialize the header only.
     ///
     /// This allows the CasObject to be partially constructed, allowing for range reads inside the CasObject.
@@ -259,19 +273,19 @@ impl CasObject {
     }
 
     /// Translate desired range into actual byte range from within Xorb.
-    /// 
-    /// This function will return a [RangeBoundaryHelper] struct to be able to read 
+    ///
+    /// This function will return a [RangeBoundaryHelper] struct to be able to read
     /// a range from the Xorb. This function translates uncompressed ranges into their corresponding
     /// Xorb chunk start byte index and Xorb chunk end byte index, along with an offset into that chunk.
     /// See example below.
-    /// 
-    /// Ex. If user requests range bytes 150-250 from a Xorb, and assume the following layout: 
+    ///
+    /// Ex. If user requests range bytes 150-250 from a Xorb, and assume the following layout:
     /// ```
     /// //              chunk: [   0  |    1    |    2    |    3    ]
     /// // uncompressed chunks: [ 0-99 | 100-199 | 200-299 | 300-399 ]
     /// //   compressed chunks: [ 0-49 |   50-99 | 100-149 | 150-199 ]
     /// ```
-    /// This function needs to return starting index for chunk 1, with an offset of 50 bytes, and the end 
+    /// This function needs to return starting index for chunk 1, with an offset of 50 bytes, and the end
     /// index of chunk 2 in order to satisfy the range 150-250.
     /// ```
     /// // let ranges = cas.get_range_boundaries(150, 250)?;
@@ -299,7 +313,7 @@ impl CasObject {
         let mut compressed_range_end = u32::MAX;
         let mut uncompressed_offset = u32::MAX;
 
-        // Enumerate all the chunks in order in the Xorb, but ignore the final one since that is a dummy chunk used to 
+        // Enumerate all the chunks in order in the Xorb, but ignore the final one since that is a dummy chunk used to
         // get the final byte index of the final content chunk. This allows the (idx + 1) to always be correct.
         for (idx, c) in chunk_size_info[..chunk_size_info.len() - 1]
             .iter()
