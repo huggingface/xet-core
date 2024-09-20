@@ -75,6 +75,7 @@ fn write_chunk_header<W: Write>(w: &mut W, chunk_header: &CASChunkHeader) -> std
 
 #[inline]
 fn copy_three_byte_num(buf: &mut [u8; 3], num: u32) {
+    debug_assert!(num < 16_777_216); // verify that chunk is under 16MB
     let bytes = num.to_le_bytes(); // Convert u32 to little-endian bytes
     buf.copy_from_slice(&bytes[0..3]);
 }

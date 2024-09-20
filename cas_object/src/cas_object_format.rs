@@ -281,7 +281,7 @@ impl CasObject {
     ///
     /// Ex. If user requests range bytes 150-250 from a Xorb, and assume the following layout:
     /// ```
-    /// //              chunk: [   0  |    1    |    2    |    3    ]
+    /// //               chunk: [   0  |    1    |    2    |    3    ]
     /// // uncompressed chunks: [ 0-99 | 100-199 | 200-299 | 300-399 ]
     /// //   compressed chunks: [ 0-49 |   50-99 | 100-149 | 150-199 ]
     /// ```
