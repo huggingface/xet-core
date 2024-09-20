@@ -8,7 +8,7 @@ use reqwest::{StatusCode, Url};
 use serde::{de::DeserializeOwned, Serialize};
 
 use bytes::Bytes;
-use cas_object::cas_object_format::CasObject;
+use cas_object::CasObject;
 use cas_types::CASReconstructionTerm;
 use tracing::warn;
 
