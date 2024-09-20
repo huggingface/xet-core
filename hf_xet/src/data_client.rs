@@ -15,13 +15,14 @@ pub const MAX_CONCURRENT_DOWNLOADS: usize = 8; // TODO
 const DEFAULT_CAS_ENDPOINT: &str = "http://localhost:8080";
 const READ_BLOCK_SIZE: usize = 1024 * 1024;
 
-pub async fn upload_async(file_paths: Vec<String>) -> errors::Result<Vec<PointerFile>> {
+pub async fn upload_async(file_paths: Vec<String>, endpoint: Option<String>, token: Option<String>) -> errors::Result<Vec<PointerFile>> {
     // chunk files
     // produce Xorbs + Shards
     // upload shards and xorbs
     // for each file, return the filehash
+    let endpoint = endpoint.unwrap_or(DEFAULT_CAS_ENDPOINT.to_string());
 
-    let config = default_config(DEFAULT_CAS_ENDPOINT.to_string())?;
+    let config = default_config(endpoint, token)?;
     let processor = Arc::new(PointerFileTranslator::new(config).await?);
     let processor = &processor;
     // for all files, clean them, producing pointer files.
@@ -46,7 +47,7 @@ pub async fn upload_async(file_paths: Vec<String>) -> errors::Result<Vec<Pointer
 }
 
 pub async fn download_async(pointer_files: Vec<PointerFile>, endpoint: Option<String>, token: Option<String>) -> errors::Result<Vec<String>> {
-    let config = default_config(DEFAULT_CAS_ENDPOINT.to_string())?;
+    let config = default_config(endpoint.clone().unwrap_or(DEFAULT_CAS_ENDPOINT.to_string()), token.clone())?;
     let processor = Arc::new(PointerFileTranslator::new(config).await?);
     let processor = &processor;
     let paths = tokio_par_for_each(

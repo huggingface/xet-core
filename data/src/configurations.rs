@@ -25,6 +25,7 @@ pub struct CacheConfig {
 #[derive(Debug)]
 pub struct StorageConfig {
     pub endpoint: Endpoint,
+    pub token: Option<String>,
     pub auth: Auth,
     pub prefix: String,
     pub cache_config: Option<CacheConfig>,

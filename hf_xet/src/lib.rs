@@ -7,13 +7,13 @@ use pyo3::prelude::*;
 use data::PointerFile;
 
 #[pyfunction]
-#[pyo3(signature = (file_paths), text_signature = "(file_paths: List[str]) -> List[PyPointerFile]")]
-pub fn upload_files(file_paths: Vec<String>) -> PyResult<Vec<PyPointerFile>> {
+#[pyo3(signature = (file_paths, endpoint, token), text_signature = "(file_paths: List[str], endpoint: Optional[str], token: Optional[str]) -> List[str]")]
+pub fn upload_files(file_paths: Vec<String>, endpoint: Option<String>, token: Option<String>) -> PyResult<Vec<PyPointerFile>> {
     Ok(tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?
         .block_on(async {
-            data_client::upload_async(file_paths).await
+            data_client::upload_async(file_paths, endpoint, token).await
         }).map_err(|e| PyException::new_err(format!("{e:?}")))?
         .into_iter()
         .map(PyPointerFile::from)
@@ -21,7 +21,7 @@ pub fn upload_files(file_paths: Vec<String>) -> PyResult<Vec<PyPointerFile>> {
 }
 
 #[pyfunction]
-#[pyo3(signature = (files, endpoint, token), text_signature = "(files: List[PyPointerFile]) -> List[str]\ntoken: Optional[str]\nendpoint: Optional[str]")]
+#[pyo3(signature = (files, endpoint, token), text_signature = "(files: List[PyPointerFile], endpoint: Optional[str], token: Optional[str]) -> List[str]")]
 pub fn download_files(files: Vec<PyPointerFile>, endpoint: Option<String>, token: Option<String>) -> PyResult<Vec<String>> {
     let pfs = files.into_iter().map(PointerFile::from)
         .collect();
