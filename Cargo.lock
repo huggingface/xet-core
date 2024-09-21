@@ -486,6 +486,7 @@ dependencies = [
  "cas_types",
  "http 1.1.0",
  "lz4_flex",
+ "merkledb",
  "merklehash",
  "rand 0.8.5",
  "tempfile",
