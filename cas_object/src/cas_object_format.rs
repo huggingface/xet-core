@@ -1,4 +1,5 @@
 use bytes::Buf;
+use merkledb::{prelude::MerkleDBHighLevelMethodsV1, Chunk, MerkleMemDB};
 use merklehash::{DataHash, MerkleHash};
 use std::{
     cmp::min,
@@ -454,6 +455,12 @@ impl CasObject {
         chunk_boundaries: &Vec<u32>,
         compression_scheme: CompressionScheme,
     ) -> Result<(Self, usize), CasObjectError> {
+
+        // validate hash against contents
+        if !Self::validate_root_hash(&data, &chunk_boundaries, hash) {
+            return Err(CasObjectError::HashMismatch);
+        }
+
         let mut cas = CasObject::default();
         cas.info.cashash.copy_from_slice(hash.as_slice());
         cas.info.num_chunks = chunk_boundaries.len() as u32 + 1; // extra entry for dummy, see [chunk_size_info] for details.
@@ -505,6 +512,32 @@ impl CasObject {
 
         Ok((cas, total_written_bytes))
     }
+
+    pub fn validate_root_hash(data: &[u8], chunk_boundaries: &[u32], hash: &MerkleHash) -> bool {
+        // at least 1 chunk, and last entry in chunk boundary must match the length
+        if chunk_boundaries.is_empty()
+            || chunk_boundaries[chunk_boundaries.len() - 1] as usize != data.len()
+        {
+            return false;
+        }
+
+        let mut chunks: Vec<Chunk> = Vec::new();
+        let mut left_edge: usize = 0;
+        for i in chunk_boundaries {
+            let right_edge = *i as usize;
+            let hash = merklehash::compute_data_hash(&data[left_edge..right_edge]);
+            let length = right_edge - left_edge;
+            chunks.push(Chunk { hash, length });
+            left_edge = right_edge;
+        }
+
+        let mut db = MerkleMemDB::default();
+        let mut staging = db.start_insertion_staging();
+        db.add_file(&mut staging, &chunks);
+        let ret = db.finalize(staging);
+        *ret.hash() == *hash
+    }
+
 }
 
 #[cfg(test)]
@@ -665,17 +698,16 @@ mod tests {
     #[test]
     fn test_compress_decompress() {
         // Arrange
-        let bytes = gen_random_bytes(16376);
-        let chunk_boundaries:Vec<u32> = vec![32, 500, 768];
-        let hash = gen_hash(&bytes, &chunk_boundaries);
+        let (c, _cas_data, raw_data) = build_cas_object(55, 53212, false, true); 
+        let hash = gen_hash(&&raw_data, &c.get_chunk_boundaries());
 
         // Act & Assert
         let mut writer: Cursor<Vec<u8>> = Cursor::new(Vec::new());
         assert!(CasObject::serialize(
             &mut writer,
-            &hash,
-            &bytes,
-            &chunk_boundaries,
+            &c.info.cashash,
+            &raw_data,
+            &c.get_chunk_boundaries(),
             CompressionScheme::LZ4
         )
         .is_ok());

@@ -424,10 +424,10 @@ mod tests {
         // put the different value with the same hash
         // this should fail
         assert_eq!(
-            CasClientError::HashMismatch,
+            CasClientError::CasObjectError(cas_object::error::CasObjectError::HashMismatch),
             client
                 .put(
-                    "key",
+                    "hellp",
                     &hello_hash,
                     "hellp world".as_bytes().to_vec(),
                     vec![hello.len() as u64],

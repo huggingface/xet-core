@@ -2,8 +2,6 @@ use crate::error::{CasClientError, Result};
 use crate::interface::Client;
 use cas::key::Key;
 use cas_object::CasObject;
-use merkledb::prelude::*;
-use merkledb::{Chunk, MerkleMemDB};
 use merklehash::MerkleHash;
 use std::fs::{metadata, File};
 use std::io::{BufReader, BufWriter, Write};
@@ -128,30 +126,6 @@ impl LocalClient {
         let _ = std::fs::remove_file(file_path);
     }
 
-    fn validate_root_hash(data: &[u8], chunk_boundaries: &[u64], hash: &MerkleHash) -> bool {
-        // at least 1 chunk, and last entry in chunk boundary must match the length
-        if chunk_boundaries.is_empty()
-            || chunk_boundaries[chunk_boundaries.len() - 1] as usize != data.len()
-        {
-            return false;
-        }
-
-        let mut chunks: Vec<Chunk> = Vec::new();
-        let mut left_edge: usize = 0;
-        for i in chunk_boundaries {
-            let right_edge = *i as usize;
-            let hash = merklehash::compute_data_hash(&data[left_edge..right_edge]);
-            let length = right_edge - left_edge;
-            chunks.push(Chunk { hash, length });
-            left_edge = right_edge;
-        }
-
-        let mut db = MerkleMemDB::default();
-        let mut staging = db.start_insertion_staging();
-        db.add_file(&mut staging, &chunks);
-        let ret = db.finalize(staging);
-        *ret.hash() == *hash
-    }
 }
 
 /// LocalClient is responsible for writing/reading Xorbs on local disk.
@@ -176,10 +150,7 @@ impl Client for LocalClient {
             return Err(CasClientError::InvalidArguments);
         }
 
-        // validate hash
-        if !Self::validate_root_hash(&data, &chunk_boundaries, hash) {
-            return Err(CasClientError::HashMismatch);
-        }
+        // moved hash validation into [CasObject::serialize], so removed from here.
 
         if let Ok(xorb_size) = self.get_length(prefix, hash).await {
             if xorb_size > 0 {
@@ -315,6 +286,7 @@ impl Client for LocalClient {
 mod tests {
 
     use super::*;
+    use merkledb::{prelude::MerkleDBHighLevelMethodsV1, Chunk, MerkleMemDB};
     use merklehash::{compute_data_hash, DataHash};
     use rand::Rng;
 
@@ -432,10 +404,10 @@ mod tests {
         // put the different value with the same hash
         // this should fail
         assert_eq!(
-            CasClientError::HashMismatch,
+            CasClientError::CasObjectError(cas_object::error::CasObjectError::HashMismatch),
             client
                 .put(
-                    "key",
+                    "hellp",
                     &hello_hash,
                     "hellp world".as_bytes().to_vec(),
                     vec![hello.len() as u64],
@@ -448,7 +420,7 @@ mod tests {
             CasClientError::InvalidArguments,
             client
                 .put(
-                    "key",
+                    "hellp2",
                     &hello_hash,
                     "hellp wod".as_bytes().to_vec(),
                     vec![hello.len() as u64],
@@ -462,7 +434,7 @@ mod tests {
             CasClientError::InvalidArguments,
             client
                 .put(
-                    "key",
+                    "again",
                     &hello_hash,
                     "hello world again".as_bytes().to_vec(),
                     vec![hello.len() as u64],

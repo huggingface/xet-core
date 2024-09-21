@@ -15,6 +15,9 @@ pub enum CasObjectError {
     #[error("Format Error: {0}")]
     FormatError(anyhow::Error),
 
+    #[error("Hash Mismatch")]
+    HashMismatch,
+
     #[error("Internal IO Error: {0}")]
     InternalIOError(#[from] std::io::Error),
 
