@@ -457,7 +457,7 @@ impl CasObject {
     ) -> Result<(Self, usize), CasObjectError> {
 
         // validate hash against contents
-        if !Self::validate_root_hash(&data, &chunk_boundaries, hash) {
+        if !Self::validate_root_hash(data, chunk_boundaries, hash) {
             return Err(CasObjectError::HashMismatch);
         }
 
