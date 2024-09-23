@@ -31,7 +31,7 @@ impl HttpShardClient {
     pub fn new(endpoint: &str, token: Option<String>) -> Self {
         HttpShardClient {
             endpoint: endpoint.into(),
-            token: token,
+            token,
             client: reqwest::Client::builder().build().unwrap(),
             // Retry policy: Exponential backoff starting at BASE_RETRY_DELAY_MS and retrying NUM_RETRIES times
             retry_strategy: RetryStrategy::new(NUM_RETRIES, BASE_RETRY_DELAY_MS),

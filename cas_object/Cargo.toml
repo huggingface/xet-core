@@ -11,6 +11,9 @@ merklehash = { path = "../merklehash" }
 tempfile = "3.12.0"
 tracing = "0.1.40"
 xet_error = { path = "../xet_error" }
+cas_types = { path = "../cas_types" }
+lz4_flex = "0.11.3"
+bytes = "1.7.2"
 
 [dev-dependencies]
 rand = "0.8.5"

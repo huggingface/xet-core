@@ -1,10 +1,33 @@
 use anyhow::anyhow;
-use std::str::FromStr;
+use std::{fmt::Display, str::FromStr};
 
-#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+#[repr(u8)]
+#[derive(Debug, PartialEq, Eq, Clone, Copy, Default)]
 pub enum CompressionScheme {
-    None,
-    LZ4,
+    #[default]
+    None = 0,
+    LZ4 = 1,
+}
+
+impl Display for CompressionScheme {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            CompressionScheme::None => write!(f, "none"),
+            CompressionScheme::LZ4 => write!(f, "lz4"),
+        }
+    }
+}
+
+impl TryFrom<u8> for CompressionScheme {
+    type Error = anyhow::Error;
+
+    fn try_from(value: u8) -> Result<Self, Self::Error> {
+        match value {
+            0 => Ok(CompressionScheme::None),
+            1 => Ok(CompressionScheme::LZ4),
+            _ => Err(anyhow!("cannot convert value {value} to CompressionScheme")),
+        }
+    }
 }
 
 impl From<&CompressionScheme> for &'static str {
@@ -34,15 +57,9 @@ impl FromStr for CompressionScheme {
     }
 }
 
-// in the header value, we will consider
-pub fn multiple_accepted_encoding_header_value(list: Vec<CompressionScheme>) -> String {
-    let as_strs: Vec<&str> = list.iter().map(Into::into).collect();
-    as_strs.join(";").to_string()
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{multiple_accepted_encoding_header_value, CompressionScheme};
+    use super::CompressionScheme;
     use std::str::FromStr;
 
     #[test]
@@ -76,18 +93,4 @@ mod tests {
         assert_eq!(Into::<&str>::into(CompressionScheme::None), "none");
     }
 
-    #[test]
-    fn test_multiple_accepted_encoding_header_value() {
-        let multi = vec![CompressionScheme::LZ4, CompressionScheme::None];
-        assert_eq!(
-            multiple_accepted_encoding_header_value(multi),
-            "lz4;none".to_string()
-        );
-
-        let singular = vec![CompressionScheme::LZ4];
-        assert_eq!(
-            multiple_accepted_encoding_header_value(singular),
-            "lz4".to_string()
-        );
-    }
 }

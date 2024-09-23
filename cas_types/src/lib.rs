@@ -3,7 +3,6 @@ use serde_repr::{Deserialize_repr, Serialize_repr};
 use merklehash::MerkleHash;
 use serde::{Deserialize, Serialize};
 
-pub mod compression_scheme;
 mod key;
 pub use key::*;
 
@@ -14,15 +13,16 @@ pub struct UploadXorbResponse {
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Range {
-    pub start: u64,
-    pub end: u64,
+    pub start: u32,
+    pub end: u32,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct CASReconstructionTerm {
     pub hash: HexMerkleHash,
-    pub unpacked_length: u64,
+    pub unpacked_length: u32,
     pub range: Range,
+    pub range_start_offset: u32,
     pub url: String,
 }
 

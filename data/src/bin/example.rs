@@ -83,6 +83,7 @@ fn default_clean_config() -> Result<TranslatorConfig> {
                 cache_size: 10 * 1024 * 1024 * 1024, // 10 GiB
                 cache_blocksize: DEFAULT_BLOCK_SIZE,
             }),
+            token: None,
             staging_directory: None,
         },
         shard_storage_config: StorageConfig {
@@ -97,6 +98,7 @@ fn default_clean_config() -> Result<TranslatorConfig> {
                 cache_size: 0,      // ignored
                 cache_blocksize: 0, // ignored
             }),
+            token: None,
             staging_directory: Some(path.join("shard-session")),
         },
         dedup_config: Some(DedupConfig {
@@ -132,6 +134,7 @@ fn default_smudge_config() -> Result<TranslatorConfig> {
                 cache_size: 10 * 1024 * 1024 * 1024, // 10 GiB
                 cache_blocksize: DEFAULT_BLOCK_SIZE,
             }),
+            token: None,
             staging_directory: None,
         },
         shard_storage_config: StorageConfig {
@@ -146,6 +149,7 @@ fn default_smudge_config() -> Result<TranslatorConfig> {
                 cache_size: 0,      // ignored
                 cache_blocksize: 0, // ignored
             }),
+            token: None,
             staging_directory: Some(path.join("shard-session")),
         },
         dedup_config: None,
