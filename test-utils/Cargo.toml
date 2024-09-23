@@ -1,0 +1,10 @@
+[package]
+name = "test-utils"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+rand = "0.8.5"
+cas_object = { path = "../cas_object" }
+merklehash = { path = "../merklehash" }
+mdb_shard = { path = "../mdb_shard" }

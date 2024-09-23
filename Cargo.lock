@@ -4107,6 +4107,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "test-utils"
+version = "0.1.0"
+dependencies = [
+ "cas_object",
+ "mdb_shard",
+ "merklehash",
+ "rand 0.8.5",
+]
+
+[[package]]
 name = "textwrap"
 version = "0.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"

@@ -20,7 +20,7 @@ members = [
     "utils",
     "xet_error",
     "cas_object",
-    "cas_types",
+    "cas_types", "test-utils",
 ]
 
 exclude = [
