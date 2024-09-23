@@ -11,8 +11,7 @@ pub enum Endpoint {
 
 #[derive(Debug)]
 pub struct Auth {
-    pub user_id: String,
-    pub login_id: String,
+    pub token: Option<String>,
 }
 
 #[derive(Debug)]
@@ -25,7 +24,6 @@ pub struct CacheConfig {
 #[derive(Debug)]
 pub struct StorageConfig {
     pub endpoint: Endpoint,
-    pub token: Option<String>,
     pub auth: Auth,
     pub prefix: String,
     pub cache_config: Option<CacheConfig>,

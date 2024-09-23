@@ -7,7 +7,7 @@ use pyo3::prelude::*;
 use data::PointerFile;
 
 #[pyfunction]
-#[pyo3(signature = (file_paths, endpoint, token), text_signature = "(file_paths: List[str], endpoint: Optional[str], token: Optional[str]) -> List[str]")]
+#[pyo3(signature = (file_paths, endpoint, token), text_signature = "(file_paths: List[str], endpoint: Optional[str], token: Optional[str]) -> List[PyPointerFile]")]
 pub fn upload_files(file_paths: Vec<String>, endpoint: Option<String>, token: Option<String>) -> PyResult<Vec<PyPointerFile>> {
     Ok(tokio::runtime::Builder::new_multi_thread()
         .enable_all()

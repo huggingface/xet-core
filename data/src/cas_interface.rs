@@ -36,9 +36,6 @@ pub(crate) async fn create_cas_client(
         unreachable!();
     };
 
-    // Auth info.
-    let _user_id = &cas_storage_config.auth.user_id;
-    let _auth = &cas_storage_config.auth.login_id;
 
     // Usage tracking.
     let _repo_paths = maybe_repo_info
@@ -49,7 +46,7 @@ pub(crate) async fn create_cas_client(
 
     // Raw remote client.
     let remote_client = Arc::new(
-        RemoteClient::from_config(endpoint.to_string(), None).await,
+        RemoteClient::from_config(endpoint.to_string(), cas_storage_config.auth.token.clone()).await,
     );
 
     // Try add in caching capability.

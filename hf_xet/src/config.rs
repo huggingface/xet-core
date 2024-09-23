@@ -13,10 +13,8 @@ pub fn default_config(endpoint: String, token: Option<String>) -> errors::Result
         file_query_policy: FileQueryPolicy::ServerOnly,
         cas_storage_config: StorageConfig {
             endpoint: Endpoint::Server(endpoint.clone()),
-            token: token.clone(),
             auth: Auth {
-                user_id: "".into(),
-                login_id: "".into(),
+                token: token.clone(),
             },
             prefix: "default".into(),
             cache_config: Some(CacheConfig {
@@ -28,10 +26,8 @@ pub fn default_config(endpoint: String, token: Option<String>) -> errors::Result
         },
         shard_storage_config: StorageConfig {
             endpoint: Endpoint::Server(endpoint),
-            token: token,
             auth: Auth {
-                user_id: "".into(),
-                login_id: "".into(),
+                token: token,
             },
             prefix: "default-merkledb".into(),
             cache_config: Some(CacheConfig {
