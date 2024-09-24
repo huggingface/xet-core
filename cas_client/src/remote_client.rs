@@ -13,12 +13,11 @@ use serde::{de::DeserializeOwned, Serialize};
 use bytes::Bytes;
 use cas_object::CasObject;
 use cas_types::CASReconstructionTerm;
-use tracing::{info, warn};
+use tracing::{debug, warn};
 
 use crate::{error::Result, CasClientError};
 
 use merklehash::MerkleHash;
-use tracing::debug;
 
 use crate::Client;
 pub const CAS_ENDPOINT: &str = "http://localhost:8080";
