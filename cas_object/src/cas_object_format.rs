@@ -553,14 +553,18 @@ impl CasObject {
         let mut hash_chunks: Vec<Chunk> = Vec::new();
         let mut cumulative_uncompressed_length: u32 = 0;
         let mut cumulative_compressed_length: u32 = 0;
-        for (idx, c) in cas.info.chunk_size_info[..cas.info.chunk_size_info.len() - 1].iter().enumerate() {
 
-            // fence post conditions - starting chunk and final chunk
-            if idx == 0 && c.start_byte_index != 0 {
+        if let Some(c) = cas.info.chunk_size_info.first() {
+            if c.start_byte_index != 0 {
                 // for 1st chunk verify that its start_byte_index is 0
                 warn!("XORB Validation: Byte 0 does not contain 1st chunk.");
                 return Ok(false);
             }
+        } else {
+            return Err(CasObjectError::FormatError(anyhow!("Invalid Xorb, no chunks")));
+        }
+
+        for (idx, c) in cas.info.chunk_size_info[..cas.info.chunk_size_info.len() - 1].iter().enumerate() {
 
             // 3. verify on each chunk:
             reader.seek(std::io::SeekFrom::Start(c.start_byte_index as u64))?;
