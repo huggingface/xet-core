@@ -24,6 +24,7 @@ pub struct CASReconstructionTerm {
     pub range: Range,
     pub range_start_offset: u32,
     pub url: String,
+    pub url_range: Range,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]

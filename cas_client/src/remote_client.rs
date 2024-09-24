@@ -4,7 +4,10 @@ use anyhow::anyhow;
 use bytes::Buf;
 use cas::key::Key;
 use cas_types::{QueryChunkResponse, QueryReconstructionResponse, UploadXorbResponse};
-use reqwest::{header::{HeaderMap, HeaderValue}, StatusCode, Url};
+use reqwest::{
+    header::{HeaderMap, HeaderValue},
+    StatusCode, Url,
+};
 use serde::{de::DeserializeOwned, Serialize};
 
 use bytes::Bytes;
@@ -83,8 +86,8 @@ impl Client for RemoteClient {
 
 impl RemoteClient {
     pub async fn from_config(endpoint: String, token: Option<String>) -> Self {
-        Self { 
-            client: CASAPIClient::new(&endpoint, token) 
+        Self {
+            client: CASAPIClient::new(&endpoint, token),
         }
     }
 }
@@ -108,7 +111,7 @@ impl CASAPIClient {
         Self {
             client,
             endpoint: endpoint.to_string(),
-            token
+            token,
         }
     }
 
@@ -170,7 +173,7 @@ impl CASAPIClient {
             &key.hash,
             contents,
             &chunk_boundaries.into_iter().map(|x| x as u32).collect(),
-            cas_object::CompressionScheme::LZ4
+            cas_object::CompressionScheme::LZ4,
         )?;
 
         debug!("Upload: POST to {url:?} for {key:?}");
@@ -224,14 +227,17 @@ impl CASAPIClient {
     /// Reconstruct the file
     async fn reconstruct_file(&self, file_id: &MerkleHash) -> Result<QueryReconstructionResponse> {
         let url = Url::parse(&format!(
-            "{}/reconstruction/{}", 
-            self.endpoint, 
+            "{}/reconstruction/{}",
+            self.endpoint,
             file_id.hex()
         ))?;
 
         let mut headers = HeaderMap::new();
         if let Some(tok) = &self.token {
-            headers.insert("Authorization", HeaderValue::from_str(&format!("Bearer {}", tok)).unwrap());
+            headers.insert(
+                "Authorization",
+                HeaderValue::from_str(&format!("Bearer {}", tok)).unwrap(),
+            );
         }
 
         let response = self.client.get(url).headers(headers).send().await?;
@@ -267,6 +273,10 @@ async fn get_one(term: &CASReconstructionTerm) -> Result<Bytes> {
     let url = Url::parse(term.url.as_str())?;
     let response = reqwest::Client::new()
         .request(hyper::Method::GET, url)
+        .header(
+            reqwest::header::RANGE,
+            format!("bytes={}-{}", term.url_range.start, term.url_range.end),
+        )
         .send()
         .await?
         .error_for_status()?;
