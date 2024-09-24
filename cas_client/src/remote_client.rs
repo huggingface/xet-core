@@ -116,7 +116,12 @@ impl CASAPIClient {
 
     pub async fn exists(&self, key: &Key) -> Result<bool> {
         let url = Url::parse(&format!("{}/xorb/{key}", self.endpoint))?;
-        let response = self.client.head(url).send().await?;
+        let response = self
+            .client
+            .head(url)
+            .headers(self.request_headers())
+            .send()
+            .await?;
         match response.status() {
             StatusCode::OK => Ok(true),
             StatusCode::NOT_FOUND => Ok(false),
@@ -128,7 +133,12 @@ impl CASAPIClient {
 
     pub async fn get_length(&self, key: &Key) -> Result<Option<u64>> {
         let url = Url::parse(&format!("{}/xorb/{key}", self.endpoint))?;
-        let response = self.client.head(url).send().await?;
+        let response = self
+            .client
+            .head(url)
+            .headers(self.request_headers())
+            .send()
+            .await?;
         let status = response.status();
         if status == StatusCode::NOT_FOUND {
             return Ok(None);
@@ -179,7 +189,13 @@ impl CASAPIClient {
         writer.set_position(0);
         let data = writer.into_inner();
 
-        let response = self.client.post(url).body(data).send().await?;
+        let response = self
+            .client
+            .post(url)
+            .headers(self.request_headers())
+            .body(data)
+            .send()
+            .await?;
         let response_body = response.bytes().await?;
         let response_parsed: UploadXorbResponse = serde_json::from_reader(response_body.reader())?;
 
@@ -231,15 +247,12 @@ impl CASAPIClient {
             file_id.hex()
         ))?;
 
-        let mut headers = HeaderMap::new();
-        if let Some(tok) = &self.token {
-            headers.insert(
-                "Authorization",
-                HeaderValue::from_str(&format!("Bearer {}", tok)).unwrap(),
-            );
-        }
-
-        let response = self.client.get(url).headers(headers).send().await?;
+        let response = self
+            .client
+            .get(url)
+            .headers(self.request_headers())
+            .send()
+            .await?;
         let response_body = response.bytes().await?;
         let response_parsed: QueryReconstructionResponse =
             serde_json::from_reader(response_body.reader())?;
@@ -249,11 +262,27 @@ impl CASAPIClient {
 
     pub async fn shard_query_chunk(&self, key: &Key) -> Result<QueryChunkResponse> {
         let url = Url::parse(&format!("{}/chunk/{key}", self.endpoint))?;
-        let response = self.client.get(url).send().await?;
+        let response = self
+            .client
+            .get(url)
+            .headers(self.request_headers())
+            .send()
+            .await?;
         let response_body = response.bytes().await?;
         let response_parsed: QueryChunkResponse = serde_json::from_reader(response_body.reader())?;
 
         Ok(response_parsed)
+    }
+
+    fn request_headers(&self) -> HeaderMap {
+        let mut headers = HeaderMap::new();
+        if let Some(tok) = &self.token {
+            headers.insert(
+                "Authorization",
+                HeaderValue::from_str(&format!("Bearer {}", tok)).unwrap(),
+            );
+        }
+        headers
     }
 
     async fn post_json<ReqT, RespT>(&self, url: Url, request_body: &ReqT) -> Result<RespT>
