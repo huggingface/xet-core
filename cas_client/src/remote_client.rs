@@ -13,7 +13,7 @@ use serde::{de::DeserializeOwned, Serialize};
 use bytes::Bytes;
 use cas_object::CasObject;
 use cas_types::CASReconstructionTerm;
-use tracing::warn;
+use tracing::{info, warn};
 
 use crate::{error::Result, CasClientError};
 
@@ -270,6 +270,7 @@ impl CASAPIClient {
 }
 
 async fn get_one(term: &CASReconstructionTerm) -> Result<Bytes> {
+    debug!("term: {term:?}");
     let url = Url::parse(term.url.as_str())?;
     let response = reqwest::Client::new()
         .request(hyper::Method::GET, url)
@@ -285,11 +286,13 @@ async fn get_one(term: &CASReconstructionTerm) -> Result<Bytes> {
         .await
         .map_err(CasClientError::ReqwestError)?;
     let mut readseek = Cursor::new(xorb_bytes.to_vec());
+    let data = cas_object::deserialize_chunks(&mut readseek)?;
+    let len = (term.range.end - term.range.start) as usize;
+    let offset = term.range_start_offset as usize;
 
-    let cas_object = CasObject::deserialize(&mut readseek)?;
-    let data = cas_object.get_range(&mut readseek, term.range.start, term.range.end)?;
+    let sliced = data[offset..offset + len].to_vec();
 
-    Ok(Bytes::from(data))
+    Ok(Bytes::from(sliced))
 }
 
 #[cfg(test)]
