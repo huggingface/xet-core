@@ -1,5 +1,6 @@
 mod data_client;
 mod config;
+mod log;
 
 use pyo3::{pyfunction, PyResult};
 use pyo3::exceptions::PyException;
@@ -82,6 +83,7 @@ impl PyPointerFile {
 
 #[pymodule]
 pub fn hf_xet(_py: Python<'_>, m: &PyModule) -> PyResult<()> {
+    log::initialize_logging();
     m.add_function(wrap_pyfunction!(upload_files, m)?)?;
     m.add_function(wrap_pyfunction!(download_files, m)?)?;
     m.add_class::<PyPointerFile>()?;
