@@ -22,9 +22,7 @@ pub struct CASReconstructionTerm {
     pub hash: HexMerkleHash,
     pub unpacked_length: u32,
     pub range: Range,
-    // TODO: disabling until https://github.com/huggingface-internal/xetcas/pull/31/files
-    // is merged.
-    // pub range_start_offset: u32,
+    pub range_start_offset: u32,
     pub url: String,
 }
 
