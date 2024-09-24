@@ -270,6 +270,13 @@ impl CASAPIClient {
 
 async fn get_one(term: &CASReconstructionTerm) -> Result<Bytes> {
     debug!("term: {term:?}");
+
+    if term.range.end < term.range.start || term.url_range.end < term.url_range.start {
+        return Err(CasClientError::InternalError(anyhow!(
+            "invalid range in reconstruction"
+        )));
+    }
+
     let url = Url::parse(term.url.as_str())?;
     let response = reqwest::Client::new()
         .request(hyper::Method::GET, url)
