@@ -1,6 +1,7 @@
 use bytes::Buf;
 use merkledb::{prelude::MerkleDBHighLevelMethodsV1, Chunk, MerkleMemDB};
 use merklehash::{DataHash, MerkleHash};
+use tracing::warn;
 use std::{
     cmp::min,
     io::{Cursor, Error, Read, Seek, Write},
@@ -403,7 +404,7 @@ impl CasObject {
         let mut res = Vec::<u8>::new();
 
         while reader.has_remaining() {
-            let data = deserialize_chunk(&mut reader)?;
+            let (data, _) = deserialize_chunk(&mut reader)?;
             res.extend_from_slice(&data);
         }
         Ok(res)
@@ -536,6 +537,78 @@ impl CasObject {
         db.add_file(&mut staging, &chunks);
         let ret = db.finalize(staging);
         *ret.hash() == *hash
+    }
+
+    /// Validate CasObject.
+    /// Verifies each chunk is valid and correctly represented in CasObjectInfo, along with 
+    /// recomputing the hash and validating it matches CasObjectInfo.
+    /// 
+    /// Returns Ok(true) if recomputed hash matches what is passed in.
+    pub fn validate_cas_object<R: Read + Seek>(reader: &mut R, hash: &MerkleHash) -> Result<bool, CasObjectError> {
+
+        // 1. deserialize to get Info
+        let cas = CasObject::deserialize(reader)?;
+
+        // 2. walk chunks from Info (skip the final dummy chunk)
+        let mut hash_chunks: Vec<Chunk> = Vec::new();
+        let mut cumulative_uncompressed_length: u32 = 0;
+        let mut cumulative_compressed_length: u32 = 0;
+        for (idx, c) in cas.info.chunk_size_info[..cas.info.chunk_size_info.len() - 1].iter().enumerate() {
+
+            // fence post conditions - starting chunk and final chunk
+            if idx == 0 && c.start_byte_index != 0 {
+                // for 1st chunk verify that its start_byte_index is 0
+                warn!("XORB Validation: Byte 0 does not contain 1st chunk.");
+                return Ok(false);
+            }
+
+            // 3. verify on each chunk:
+            reader.seek(std::io::SeekFrom::Start(c.start_byte_index as u64))?;
+            let (data, compressed_chunk_length) = deserialize_chunk(reader)?;
+            let chunk_uncompressed_length = data.len();
+            
+            // 3a. compute hash
+            hash_chunks.push(Chunk {hash: merklehash::compute_data_hash(&data), length: chunk_uncompressed_length});
+
+            cumulative_uncompressed_length += data.len() as u32;
+            cumulative_compressed_length += compressed_chunk_length as u32;
+
+            // 3b. verify deserialized chunk is expected size from Info object
+            if cumulative_uncompressed_length != c.cumulative_uncompressed_len {
+                warn!("XORB Validation: Chunk length does not match Info object.");
+                return Ok(false);
+            }
+
+            // 3c. verify start byte index of next chunk matches current byte index + compressed length
+            if cas.info.chunk_size_info[idx+1].start_byte_index != (c.start_byte_index + compressed_chunk_length as u32) {
+                warn!("XORB Validation: Chunk start byte index does not match Info object.");
+                return Ok(false);
+            }
+        }
+
+        // validate that Info/footer begins immediately after final content xorb.
+        // end of for loop completes the content chunks, now should be able to deserialize an Info directly
+        let cur_position = reader.stream_position()? as u32;
+        let expected_position = cumulative_compressed_length;
+        let expected_from_end_position = reader.seek(std::io::SeekFrom::End(0))? as u32 - cas.info_length - size_of::<u32>() as u32;
+        if cur_position != expected_position || cur_position != expected_from_end_position {
+            warn!("XORB Validation: Content bytes after known chunks in Info object.");
+            return Ok(false);
+        }
+
+        // 4. combine hashes to get full xorb hash, compare to provided
+        let mut db = MerkleMemDB::default();
+        let mut staging = db.start_insertion_staging();
+        db.add_file(&mut staging, &hash_chunks);
+        let ret = db.finalize(staging);
+
+        if *ret.hash() != *hash || *ret.hash() != cas.info.cashash {
+            warn!("XORB Validation: Computed hash does not match provided hash or Info hash.");
+            return Ok(false);
+        }
+
+        Ok(true)
+
     }
 
 }
@@ -767,10 +840,10 @@ mod tests {
     fn test_basic_serialization_mem() {
         // Arrange
         let (c, _cas_data, raw_data) = build_cas_object(3, 100, false, false);
-        let mut writer: Cursor<Vec<u8>> = Cursor::new(Vec::new());
+        let mut buf: Cursor<Vec<u8>> = Cursor::new(Vec::new());
         // Act & Assert
         assert!(CasObject::serialize(
-            &mut writer,
+            &mut buf,
             &c.info.cashash,
             &raw_data,
             &c.get_chunk_boundaries(),
@@ -778,24 +851,17 @@ mod tests {
         )
         .is_ok());
 
-        let mut reader = writer.clone();
-        reader.set_position(0);
-        let res = CasObject::deserialize(&mut reader);
-        assert!(res.is_ok());
-        let c2 = res.unwrap();
-        assert_eq!(c, c2);
-        assert_eq!(c.info.cashash, c2.info.cashash);
-        assert_eq!(c.info.num_chunks, c2.info.num_chunks);
+        assert!(CasObject::validate_cas_object(&mut buf, &c.info.cashash).unwrap());
     }
 
     #[test]
     fn test_serialization_deserialization_mem_medium() {
         // Arrange
         let (c, _cas_data, raw_data) = build_cas_object(32, 16384, false, false);
-        let mut writer: Cursor<Vec<u8>> = Cursor::new(Vec::new());
+        let mut buf: Cursor<Vec<u8>> = Cursor::new(Vec::new());
         // Act & Assert
         assert!(CasObject::serialize(
-            &mut writer,
+            &mut buf,
             &c.info.cashash,
             &raw_data,
             &c.get_chunk_boundaries(),
@@ -803,7 +869,9 @@ mod tests {
         )
         .is_ok());
 
-        let mut reader = writer.clone();
+        assert!(CasObject::validate_cas_object(&mut buf, &c.info.cashash).unwrap());
+
+        let mut reader = buf.clone();
         reader.set_position(0);
         let res = CasObject::deserialize(&mut reader);
         assert!(res.is_ok());
@@ -820,10 +888,10 @@ mod tests {
     fn test_serialization_deserialization_mem_large_random() {
         // Arrange
         let (c, _cas_data, raw_data) = build_cas_object(32, 65536, true, false);
-        let mut writer: Cursor<Vec<u8>> = Cursor::new(Vec::new());
+        let mut buf: Cursor<Vec<u8>> = Cursor::new(Vec::new());
         // Act & Assert
         assert!(CasObject::serialize(
-            &mut writer,
+            &mut buf,
             &c.info.cashash,
             &raw_data,
             &c.get_chunk_boundaries(),
@@ -831,7 +899,9 @@ mod tests {
         )
         .is_ok());
 
-        let mut reader = writer.clone();
+        assert!(CasObject::validate_cas_object(&mut buf, &c.info.cashash).unwrap());
+
+        let mut reader = buf.clone();
         reader.set_position(0);
         let res = CasObject::deserialize(&mut reader);
         assert!(res.is_ok());
@@ -847,10 +917,10 @@ mod tests {
     fn test_serialization_deserialization_file_large_random() {
         // Arrange
         let (c, _cas_data, raw_data) = build_cas_object(256, 65536, true, false);
-        let mut writer: Cursor<Vec<u8>> = Cursor::new(Vec::new());
+        let mut buf: Cursor<Vec<u8>> = Cursor::new(Vec::new());
         // Act & Assert
         assert!(CasObject::serialize(
-            &mut writer,
+            &mut buf,
             &c.info.cashash,
             &raw_data,
             &c.get_chunk_boundaries(),
@@ -858,7 +928,9 @@ mod tests {
         )
         .is_ok());
 
-        let mut reader = writer.clone();
+        assert!(CasObject::validate_cas_object(&mut buf, &c.info.cashash).unwrap());
+
+        let mut reader = buf.clone();
         reader.set_position(0);
         let res = CasObject::deserialize(&mut reader);
         assert!(res.is_ok());
@@ -902,10 +974,10 @@ mod tests {
     fn test_serialization_deserialization_mem_medium_lz4() {
         // Arrange
         let (c, _cas_data, raw_data) = build_cas_object(32, 16384, false, true);
-        let mut writer: Cursor<Vec<u8>> = Cursor::new(Vec::new());
+        let mut buf: Cursor<Vec<u8>> = Cursor::new(Vec::new());
         // Act & Assert
         assert!(CasObject::serialize(
-            &mut writer,
+            &mut buf,
             &c.info.cashash,
             &raw_data,
             &c.get_chunk_boundaries(),
@@ -913,7 +985,9 @@ mod tests {
         )
         .is_ok());
 
-        let mut reader = writer.clone();
+        assert!(CasObject::validate_cas_object(&mut buf, &c.info.cashash).unwrap());
+
+        let mut reader = buf.clone();
         reader.set_position(0);
         let res = CasObject::deserialize(&mut reader);
         assert!(res.is_ok());
@@ -930,10 +1004,10 @@ mod tests {
     fn test_serialization_deserialization_mem_large_random_lz4() {
         // Arrange
         let (c, _cas_data, raw_data) = build_cas_object(32, 65536, true, true);
-        let mut writer: Cursor<Vec<u8>> = Cursor::new(Vec::new());
+        let mut buf: Cursor<Vec<u8>> = Cursor::new(Vec::new());
         // Act & Assert
         assert!(CasObject::serialize(
-            &mut writer,
+            &mut buf,
             &c.info.cashash,
             &raw_data,
             &c.get_chunk_boundaries(),
@@ -941,7 +1015,9 @@ mod tests {
         )
         .is_ok());
 
-        let mut reader = writer.clone();
+        assert!(CasObject::validate_cas_object(&mut buf, &c.info.cashash).unwrap());
+
+        let mut reader = buf.clone();
         reader.set_position(0);
         let res = CasObject::deserialize(&mut reader);
         assert!(res.is_ok());

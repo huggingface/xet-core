@@ -9,7 +9,7 @@ use anyhow::anyhow;
 use crate::CompressionScheme;
 use lz4_flex::frame::{FrameDecoder, FrameEncoder};
 
-pub const CAS_CHUNK_HEADER_LENGTH: u8 = 8;
+pub const CAS_CHUNK_HEADER_LENGTH: usize = size_of::<CASChunkHeader>();
 const CURRENT_VERSION: u8 = 0;
 
 #[repr(C, packed)]
@@ -131,10 +131,10 @@ pub fn deserialize_chunk_header<R: Read>(reader: &mut R) -> Result<CASChunkHeade
     Ok(result)
 }
 
-pub fn deserialize_chunk<R: Read>(reader: &mut R) -> Result<Vec<u8>, CasObjectError> {
+pub fn deserialize_chunk<R: Read>(reader: &mut R) -> Result<(Vec<u8>, usize), CasObjectError> {
     let mut buf = Vec::new();
-    let _ = deserialize_chunk_to_writer(reader, &mut buf)?;
-    Ok(buf)
+    let bytes_read = deserialize_chunk_to_writer(reader, &mut buf)?;
+    Ok((buf, bytes_read))
 }
 
 pub fn deserialize_chunk_to_writer<R: Read, W: Write>(
@@ -153,7 +153,7 @@ pub fn deserialize_chunk_to_writer<R: Read, W: Write>(
         }
     };
 
-    Ok(header.get_uncompressed_length() as usize)
+    Ok(header.get_compressed_length() as usize + CAS_CHUNK_HEADER_LENGTH)
 }
 
 pub fn deserialize_chunks<R: Read>(reader: &mut R) -> Result<Vec<u8>, CasObjectError> {
@@ -240,7 +240,7 @@ mod tests {
         write_chunk_header(&mut buf, &header).unwrap();
         buf.extend_from_slice(data);
 
-        let data_copy = deserialize_chunk(&mut Cursor::new(buf)).unwrap();
+        let (data_copy, _) = deserialize_chunk(&mut Cursor::new(buf)).unwrap();
         assert_eq!(data_copy.as_slice(), data);
     }
 

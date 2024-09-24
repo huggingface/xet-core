@@ -58,7 +58,7 @@ mod hex {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default)]
 pub struct HexMerkleHash(#[serde(with = "hex::serde")] pub MerkleHash);
 
 impl From<MerkleHash> for HexMerkleHash {
