@@ -11,7 +11,6 @@ pub mod shard_file_manager;
 pub mod shard_file_reconstructor;
 pub mod shard_format;
 pub mod shard_in_memory;
-pub mod shard_version;
 pub mod utils;
 
 pub use constants::hash_is_global_dedup_eligible;

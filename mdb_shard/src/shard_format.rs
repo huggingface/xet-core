@@ -13,7 +13,6 @@ use tracing::{debug, error};
 use crate::cas_structs::*;
 use crate::file_structs::*;
 use crate::shard_in_memory::MDBInMemoryShard;
-use crate::shard_version;
 use crate::utils::truncate_hash;
 
 // Same size for FileDataSequenceHeader and FileDataSequenceEntry
@@ -22,10 +21,14 @@ const MDB_FILE_INFO_ENTRY_SIZE: u64 = (size_of::<[u64; 4]>() + 4 * size_of::<u32
 const MDB_CAS_INFO_ENTRY_SIZE: u64 = (size_of::<[u64; 4]>() + 4 * size_of::<u32>()) as u64;
 const MDB_SHARD_FOOTER_SIZE: i64 = size_of::<MDBShardFileFooter>() as i64;
 
-// At the start of each shard file, insert "MerkleDB Shard" plus a magic-number sequence of random bytes to ensure
-// that we are able to quickly identify a CAS file as a shard file.
+const MDB_SHARD_HEADER_VERSION: u64 = 1;
+
+const MDB_SHARD_FOOTER_VERSION: u64 = 1;
+
+// At the start of each shard file, insert a tag plus a magic-number sequence of bytes to ensure
+// that we are able to quickly identify a file as a shard file.
 const MDB_SHARD_HEADER_TAG: [u8; 32] = [
-    b'M', b'e', b'r', b'k', b'l', b'e', b'D', b'B', b' ', b'S', b'h', b'a', b'r', b'd', 0, 85, 105,
+    b'H', b'F', b'R', b'e', b'p', b'o', b'M', b'e', b't', b'a', b'd', b'a', b't', b'a', 0, 85, 105,
     103, 69, 106, 123, 129, 87, 131, 165, 189, 217, 92, 205, 209, 74, 169,
 ];
 
@@ -41,7 +44,7 @@ impl Default for MDBShardFileHeader {
     fn default() -> Self {
         Self {
             tag: MDB_SHARD_HEADER_TAG,
-            version: shard_version::MDB_SHARD_HEADER_VERSION,
+            version: MDB_SHARD_HEADER_VERSION,
             footer_size: MDB_SHARD_FOOTER_SIZE as u64,
         }
     }
@@ -98,7 +101,7 @@ pub struct MDBShardFileFooter {
 impl Default for MDBShardFileFooter {
     fn default() -> Self {
         Self {
-            version: shard_version::MDB_SHARD_FOOTER_VERSION,
+            version: MDB_SHARD_FOOTER_VERSION,
             file_info_offset: 0,
             file_lookup_offset: 0,
             file_lookup_num_entry: 0,
@@ -137,8 +140,17 @@ impl MDBShardFileFooter {
     }
 
     pub fn deserialize<R: Read>(reader: &mut R) -> Result<Self> {
+        let version = read_u64(reader)?;
+
+        // Do a version check as a simple guard against using this in an old repository
+        if version != MDB_SHARD_FOOTER_VERSION {
+            return Err(MDBShardError::ShardVersionError(format!(
+                "Error: Expected header version {MDB_SHARD_FOOTER_VERSION}, got {version}"
+            )));
+        }
+
         let mut obj = Self {
-            version: read_u64(reader)?,
+            version,
             file_info_offset: read_u64(reader)?,
             file_lookup_offset: read_u64(reader)?,
             file_lookup_num_entry: read_u64(reader)?,
