@@ -514,7 +514,7 @@ impl CasObject {
         Ok((cas, total_written_bytes))
     }
 
-    pub fn validate_root_hash(data: &[u8], chunk_boundaries: &[u32], hash: &MerkleHash) -> bool {
+    fn validate_root_hash(data: &[u8], chunk_boundaries: &[u32], hash: &MerkleHash) -> bool {
         // at least 1 chunk, and last entry in chunk boundary must match the length
         if chunk_boundaries.is_empty()
             || chunk_boundaries[chunk_boundaries.len() - 1] as usize != data.len()
