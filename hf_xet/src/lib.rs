@@ -15,7 +15,7 @@ use token_refresh::WrappedTokenRefresher;
 use tracing::info;
 
 #[pyfunction]
-#[pyo3(signature = (file_paths, endpoint, token, token_refresher), text_signature = "(file_paths: List[str], endpoint: Optional[str], token: Optional[str], token_refresher: Optional[Callable[[], str]]) -> List[PyPointerFile]")]
+#[pyo3(signature = (file_paths, endpoint, token, token_refresher), text_signature = "(file_paths: List[str], endpoint: Optional[str], token: Optional[str], token_refresher: Optional[Callable[[], (str, int)]]) -> List[PyPointerFile]")]
 pub fn upload_files(
     py: Python,
     file_paths: Vec<String>,
@@ -26,7 +26,7 @@ pub fn upload_files(
     let refresher = token_refresher
         .map(WrappedTokenRefresher::from_func)
         .transpose()?
-        .map(to_arc_translator);
+        .map(to_arc_dyn);
     // Release GIL to allow python concurrency
     py.allow_threads(move || {
         Ok(tokio::runtime::Builder::new_multi_thread()
@@ -43,7 +43,7 @@ pub fn upload_files(
 }
 
 #[pyfunction]
-#[pyo3(signature = (files, endpoint, token, token_refresher), text_signature = "(files: List[PyPointerFile], endpoint: Optional[str], token: Optional[str], token_refresher: Optional[Callable[[], str]]) -> List[str]")]
+#[pyo3(signature = (files, endpoint, token, token_refresher), text_signature = "(files: List[PyPointerFile], endpoint: Optional[str], token: Optional[str], token_refresher: Optional[Callable[[], (str, int)]]) -> List[str]")]
 pub fn download_files(
     py: Python,
     files: Vec<PyPointerFile>,
@@ -55,7 +55,7 @@ pub fn download_files(
     let refresher = token_refresher
         .map(WrappedTokenRefresher::from_func)
         .transpose()?
-        .map(to_arc_translator);
+        .map(to_arc_dyn);
     // Release GIL to allow python concurrency
     py.allow_threads(move || {
         tokio::runtime::Builder::new_multi_thread()
@@ -68,7 +68,9 @@ pub fn download_files(
     })
 }
 
-fn to_arc_translator(r: WrappedTokenRefresher) -> Arc<dyn TokenRefresher> {
+// helper to convert the implemented WrappedTokenRefresher into an Arc<dyn TokenRefresher>
+#[inline]
+fn to_arc_dyn(r: WrappedTokenRefresher) -> Arc<dyn TokenRefresher> {
     Arc::new(r)
 }
 
