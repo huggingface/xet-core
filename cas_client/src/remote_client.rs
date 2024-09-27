@@ -1,4 +1,6 @@
 use std::io::{Cursor, Write};
+use std::sync::{Arc, Mutex};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::anyhow;
 use bytes::Buf;
@@ -6,15 +8,18 @@ use cas::key::Key;
 use cas_types::{QueryChunkResponse, QueryReconstructionResponse, UploadXorbResponse};
 use reqwest::{
     header::{HeaderMap, HeaderValue},
-    StatusCode, Url,
+    Request, Response, StatusCode, Url,
 };
 use serde::{de::DeserializeOwned, Serialize};
 
 use bytes::Bytes;
-use cas::auth::AuthConfig;
+use cas::auth::{AuthConfig, TokenRefresher};
+use cas::errors::AuthError;
 use cas_object::CasObject;
 use cas_types::CASReconstructionTerm;
-use tracing::{debug, warn};
+use reqwest::header::AUTHORIZATION;
+use reqwest_middleware::{ClientBuilder, ClientWithMiddleware, Middleware, Next};
+use tracing::{debug, info, warn};
 
 use crate::{error::Result, CasClientError};
 
@@ -23,6 +28,95 @@ use merklehash::MerkleHash;
 use crate::Client;
 pub const CAS_ENDPOINT: &str = "http://localhost:8080";
 pub const PREFIX_DEFAULT: &str = "default";
+
+struct TokenProvider {
+    token: String,
+    expiration: u64,
+    refresher: Arc<dyn TokenRefresher>,
+}
+
+impl TokenProvider {
+    pub fn new(token: String, expiration: u64, refresher: Arc<dyn TokenRefresher>) -> Self {
+        Self {
+            token,
+            expiration,
+            refresher,
+        }
+    }
+
+    pub fn get_valid_token(&mut self) -> std::result::Result<String, AuthError> {
+        if self.is_expired() {
+            let (new_token, new_expiry) = self.refresher.refresh()?;
+            self.token = new_token;
+            self.expiration = new_expiry;
+        }
+        Ok(self.token.clone())
+    }
+
+    fn is_expired(&self) -> bool {
+        let cur_time = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(u64::MAX);
+        self.expiration <= cur_time
+    }
+}
+
+struct AuthMiddleware {
+    token_provider: Option<Arc<Mutex<TokenProvider>>>,
+}
+
+impl AuthMiddleware {
+    fn get_token(
+        provider_ref: &Arc<Mutex<TokenProvider>>,
+    ) -> std::result::Result<String, anyhow::Error> {
+        let mut provider = provider_ref
+            .lock()
+            .map_err(|e| anyhow!("lock error: {e:?}"))?;
+        provider
+            .get_valid_token()
+            .map_err(|e| anyhow!("couldn't get token: {e:?}"))
+    }
+}
+
+impl From<&AuthConfig> for AuthMiddleware {
+    fn from(value: &AuthConfig) -> Self {
+        let token_provider = if let (Some(token), Some(expiration), Some(refresher)) = (
+            value.token.clone(),
+            value.token_expiration,
+            value.token_refresher.clone(),
+        ) {
+            Some(Arc::new(Mutex::new(TokenProvider::new(
+                token, expiration, refresher,
+            ))))
+        } else {
+            info!("CAS auth disabled");
+            None
+        };
+        Self { token_provider }
+    }
+}
+
+#[async_trait::async_trait]
+impl Middleware for AuthMiddleware {
+    async fn handle(
+        &self,
+        mut req: Request,
+        extensions: &mut hyper::http::Extensions,
+        next: Next<'_>,
+    ) -> reqwest_middleware::Result<Response> {
+        if let Some(ref provider) = self.token_provider {
+            let token = Self::get_token(provider).map_err(reqwest_middleware::Error::Middleware)?;
+
+            let headers = req.headers_mut();
+            headers.insert(
+                AUTHORIZATION,
+                HeaderValue::from_str(&format!("Bearer {}", token)).unwrap(),
+            );
+        }
+        next.run(req, extensions).await
+    }
+}
 
 #[derive(Debug)]
 pub struct RemoteClient {
@@ -94,7 +188,7 @@ impl RemoteClient {
 
 #[derive(Debug)]
 pub struct CASAPIClient {
-    client: reqwest::Client,
+    client: ClientWithMiddleware,
     endpoint: String,
     auth_config: AuthConfig,
 }
@@ -107,7 +201,10 @@ impl Default for CASAPIClient {
 
 impl CASAPIClient {
     pub fn new(endpoint: &str, auth_config: &AuthConfig) -> Self {
-        let client = reqwest::Client::builder().build().unwrap();
+        let reqwest_client = reqwest::Client::builder().build().unwrap();
+        let client = ClientBuilder::new(reqwest_client)
+            .with(AuthMiddleware::from(auth_config))
+            .build();
         Self {
             client,
             endpoint: endpoint.to_string(),

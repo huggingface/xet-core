@@ -454,6 +454,7 @@ dependencies = [
  "rand 0.8.5",
  "rcgen",
  "reqwest 0.12.7",
+ "reqwest-middleware",
  "retry_strategy",
  "rustls-pemfile 2.1.3",
  "serde",
@@ -3231,6 +3232,21 @@ dependencies = [
  "wasm-bindgen-futures",
  "web-sys",
  "windows-registry",
+]
+
+[[package]]
+name = "reqwest-middleware"
+version = "0.3.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "562ceb5a604d3f7c885a792d42c199fd8af239d0a51b2fa6a78aafa092452b04"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "http 1.1.0",
+ "reqwest 0.12.7",
+ "serde",
+ "thiserror",
+ "tower-service",
 ]
 
 [[package]]

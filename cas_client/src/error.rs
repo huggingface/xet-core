@@ -69,6 +69,8 @@ pub enum CasClientError {
     #[error("Parse Error: {0}")]
     ParseError(#[from] url::ParseError),
 
+    #[error("ReqwestMiddleware Error: {0}")]
+    ReqwestMiddlewareError(#[from] reqwest_middleware::Error),
     #[error("Reqwest Error: {0}")]
     ReqwestError(#[from] reqwest::Error),
 
