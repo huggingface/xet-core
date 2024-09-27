@@ -15,25 +15,26 @@ use token_refresh::WrappedTokenRefresher;
 use tracing::info;
 
 #[pyfunction]
-#[pyo3(signature = (file_paths, endpoint, token, token_refresher), text_signature = "(file_paths: List[str], endpoint: Optional[str], token: Optional[str], token_refresher: Optional[Callable[[], (str, int)]]) -> List[PyPointerFile]")]
+#[pyo3(signature = (file_paths, endpoint, token_info, token_refresher), text_signature = "(file_paths: List[str], endpoint: Optional[str], token_info: Optional[(str, int)], token_refresher: Optional[Callable[[], (str, int)]]) -> List[PyPointerFile]")]
 pub fn upload_files(
     py: Python,
     file_paths: Vec<String>,
     endpoint: Option<String>,
-    token: Option<String>,
+    token_info: Option<(String, u64)>,
     token_refresher: Option<Py<PyAny>>,
 ) -> PyResult<Vec<PyPointerFile>> {
     let refresher = token_refresher
         .map(WrappedTokenRefresher::from_func)
         .transpose()?
         .map(to_arc_dyn);
+
     // Release GIL to allow python concurrency
     py.allow_threads(move || {
         Ok(tokio::runtime::Builder::new_multi_thread()
             .enable_all()
             .build()?
             .block_on(async {
-                data_client::upload_async(file_paths, endpoint, token, refresher).await
+                data_client::upload_async(file_paths, endpoint, token_info, refresher).await
             })
             .map_err(|e| PyException::new_err(format!("{e:?}")))?
             .into_iter()
@@ -43,12 +44,12 @@ pub fn upload_files(
 }
 
 #[pyfunction]
-#[pyo3(signature = (files, endpoint, token, token_refresher), text_signature = "(files: List[PyPointerFile], endpoint: Optional[str], token: Optional[str], token_refresher: Optional[Callable[[], (str, int)]]) -> List[str]")]
+#[pyo3(signature = (files, endpoint, token_info, token_refresher), text_signature = "(files: List[PyPointerFile], endpoint: Optional[str], token_info: Optional[(str, int)], token_refresher: Optional[Callable[[], (str, int)]]) -> List[str]")]
 pub fn download_files(
     py: Python,
     files: Vec<PyPointerFile>,
     endpoint: Option<String>,
-    token: Option<String>,
+    token_info: Option<(String, u64)>,
     token_refresher: Option<Py<PyAny>>,
 ) -> PyResult<Vec<String>> {
     let pfs = files.into_iter().map(PointerFile::from).collect();
@@ -62,7 +63,7 @@ pub fn download_files(
             .enable_all()
             .build()?
             .block_on(
-                async move { data_client::download_async(pfs, endpoint, token, refresher).await },
+                async move { data_client::download_async(pfs, endpoint, token_info, refresher).await },
             )
             .map_err(|e| PyException::new_err(format!("{e:?}")))
     })

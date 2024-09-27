@@ -21,7 +21,7 @@ const READ_BLOCK_SIZE: usize = 1024 * 1024;
 pub async fn upload_async(
     file_paths: Vec<String>,
     endpoint: Option<String>,
-    token: Option<String>,
+    token_info: Option<(String, u64)>,
     token_refresher: Option<Arc<dyn TokenRefresher>>,
 ) -> errors::Result<Vec<PointerFile>> {
     // chunk files
@@ -30,7 +30,7 @@ pub async fn upload_async(
     // for each file, return the filehash
     let endpoint = endpoint.unwrap_or(DEFAULT_CAS_ENDPOINT.to_string());
 
-    let config = default_config(endpoint, token, token_refresher)?;
+    let config = default_config(endpoint, token_info, token_refresher)?;
     let processor = Arc::new(PointerFileTranslator::new(config).await?);
     let processor = &processor;
     // for all files, clean them, producing pointer files.
@@ -53,12 +53,12 @@ pub async fn upload_async(
 pub async fn download_async(
     pointer_files: Vec<PointerFile>,
     endpoint: Option<String>,
-    token: Option<String>,
+    token_info: Option<(String, u64)>,
     token_refresher: Option<Arc<dyn TokenRefresher>>,
 ) -> errors::Result<Vec<String>> {
     let config = default_config(
-        endpoint.clone().unwrap_or(DEFAULT_CAS_ENDPOINT.to_string()),
-        token.clone(),
+        endpoint.unwrap_or(DEFAULT_CAS_ENDPOINT.to_string()),
+        token_info,
         token_refresher,
     )?;
     let processor = Arc::new(PointerFileTranslator::new(config).await?);

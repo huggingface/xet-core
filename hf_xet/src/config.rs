@@ -11,11 +11,13 @@ pub const SMALL_FILE_THRESHOLD: usize = 1;
 
 pub fn default_config(
     endpoint: String,
-    token: Option<String>,
+    token_info: Option<(String, u64)>,
     token_refresher: Option<Arc<dyn TokenRefresher>>,
 ) -> errors::Result<TranslatorConfig> {
     let path = current_dir()?.join(".xet");
     fs::create_dir_all(&path)?;
+
+    let (token, token_expiration) = convert(token_info);
 
     let translator_config = TranslatorConfig {
         file_query_policy: FileQueryPolicy::ServerOnly,
@@ -23,6 +25,7 @@ pub fn default_config(
             endpoint: Endpoint::Server(endpoint.clone()),
             auth: AuthConfig {
                 token: token.clone(),
+                token_expiration,
                 token_refresher: token_refresher.clone(),
             },
             prefix: "default".into(),
@@ -37,6 +40,7 @@ pub fn default_config(
             endpoint: Endpoint::Server(endpoint),
             auth: AuthConfig {
                 token,
+                token_expiration,
                 token_refresher,
             },
             prefix: "default-merkledb".into(),
@@ -60,4 +64,11 @@ pub fn default_config(
     translator_config.validate()?;
 
     Ok(translator_config)
+}
+
+fn convert(opt: Option<(String, u64)>) -> (Option<String>, Option<u64>) {
+    match opt {
+        Some((s, n)) => (Some(s), Some(n)),
+        None => (None, None),
+    }
 }

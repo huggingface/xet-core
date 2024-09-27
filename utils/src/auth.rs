@@ -22,6 +22,8 @@ impl TokenRefresher for NoOpTokenRefresher {
 pub struct AuthConfig {
     /// Initial token to use
     pub token: Option<String>,
+    /// Initial token expiration time epoch in seconds
+    pub token_expiration: Option<u64>,
     /// A function to refresh tokens.
     pub token_refresher: Option<Arc<dyn TokenRefresher>>,
 }
