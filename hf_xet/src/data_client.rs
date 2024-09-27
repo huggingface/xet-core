@@ -92,13 +92,13 @@ async fn clean_file(processor: &PointerFileTranslator, f: String) -> errors::Res
     Ok(pf)
 }
 
-async fn smudge_file(proc: &PointerFileTranslator, pointer_file: &PointerFile, endpoint: Option<String>, token: Option<String>) -> errors::Result<String> {
+async fn smudge_file(proc: &PointerFileTranslator, pointer_file: &PointerFile) -> errors::Result<String> {
     let path = PathBuf::from(pointer_file.path());
     if let Some(parent_dir) = path.parent() {
         fs::create_dir_all(parent_dir)?;
     }
     let mut f = File::create(&path)?;
-    proc.smudge_file_from_pointer(&pointer_file, &mut f, None, endpoint, token).await?;
+    proc.smudge_file_from_pointer(&pointer_file, &mut f, None).await?;
     Ok(pointer_file.path().to_string())
 }
 

@@ -1,18 +1,15 @@
+use crate::cas_interface::Client;
 use crate::chunking::{chunk_target_default, ChunkYieldType};
 use crate::configurations::FileQueryPolicy;
 use crate::constants::MIN_SPACING_BETWEEN_GLOBAL_DEDUP_QUERIES;
 use crate::data_processing::{register_new_cas_block, CASDataAggregator};
-use crate::errors::{
-    DataProcessingError::{self, *},
-    Result,
-};
+use crate::errors::{DataProcessingError::*, Result};
 use crate::metrics::FILTER_BYTES_CLEANED;
 use crate::remote_shard_interface::RemoteShardInterface;
 use crate::repo_salt::RepoSalt;
 use crate::small_file_determination::{is_file_passthrough, is_possible_start_to_text_file};
 use crate::PointerFile;
 
-use cas_client::Staging;
 use lazy_static::lazy_static;
 use mdb_shard::file_structs::{FileDataSequenceEntry, FileDataSequenceHeader, MDBFileInfo};
 use mdb_shard::shard_file_reconstructor::FileReconstructor;
@@ -64,7 +61,7 @@ pub struct Cleaner {
     // Utils
     shard_manager: Arc<ShardFileManager>,
     remote_shards: Arc<RemoteShardInterface>,
-    cas: Arc<dyn Staging + Send + Sync>,
+    cas: Arc<dyn Client + Send + Sync>,
 
     // External Data
     global_cas_data: Arc<Mutex<CASDataAggregator>>,
@@ -91,7 +88,7 @@ impl Cleaner {
         repo_salt: Option<RepoSalt>,
         shard_manager: Arc<ShardFileManager>,
         remote_shards: Arc<RemoteShardInterface>,
-        cas: Arc<dyn Staging + Send + Sync>,
+        cas: Arc<dyn Client + Send + Sync>,
         cas_data: Arc<Mutex<CASDataAggregator>>,
         buffer_size: usize,
         file_name: Option<&Path>,
@@ -139,7 +136,8 @@ impl Cleaner {
 
         let mut small_file_buffer = self.small_file_buffer.lock().await;
         if let Some(buffer) = small_file_buffer.take() {
-            return String::from_utf8(buffer).map_err(DataProcessingError::from);
+            let small_file = String::from_utf8(buffer)?;
+            return Ok(small_file);
         }
 
         self.to_pointer_file().await

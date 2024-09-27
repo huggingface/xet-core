@@ -1,10 +1,10 @@
 use super::configurations::{FileQueryPolicy, StorageConfig};
 use super::errors::{DataProcessingError, Result};
 use super::shard_interface::{create_shard_client, create_shard_manager};
+use crate::cas_interface::Client;
 use crate::constants::{FILE_RECONSTRUCTION_CACHE_SIZE, MAX_CONCURRENT_UPLOADS};
 use crate::repo_salt::RepoSalt;
 use cas::singleflight;
-use cas_client::Staging;
 use file_utils::write_all_safe;
 use lru::LruCache;
 use mdb_shard::constants::MDB_SHARD_MIN_TARGET_SIZE;
@@ -31,7 +31,7 @@ pub struct RemoteShardInterface {
 
     pub repo_salt: Option<RepoSalt>,
 
-    pub cas: Option<Arc<dyn Staging + Send + Sync>>,
+    pub cas: Option<Arc<dyn Client + Send + Sync>>,
     pub shard_manager: Option<Arc<ShardFileManager>>,
     pub shard_client: Option<Arc<dyn ShardClientInterface>>,
     pub reconstruction_cache:
@@ -55,7 +55,7 @@ impl RemoteShardInterface {
         file_query_policy: FileQueryPolicy,
         shard_storage_config: &StorageConfig,
         shard_manager: Option<Arc<ShardFileManager>>,
-        cas: Option<Arc<dyn Staging + Send + Sync>>,
+        cas: Option<Arc<dyn Client + Send + Sync>>,
         repo_salt: Option<RepoSalt>,
     ) -> Result<Arc<Self>> {
         let shard_client = {
@@ -93,7 +93,7 @@ impl RemoteShardInterface {
         }))
     }
 
-    fn cas(&self) -> Result<Arc<dyn Staging + Send + Sync>> {
+    fn cas(&self) -> Result<Arc<dyn Client + Send + Sync>> {
         let Some(cas) = self.cas.clone() else {
             // Trigger error and backtrace
             return Err(DataProcessingError::CASConfigError(
@@ -408,7 +408,7 @@ fn is_shard_file(path: &Path) -> bool {
 // Returns the path to the downloaded file and the number of bytes transferred.
 // Returns the path to the existing file and 0 (transferred byte) if exists.
 async fn download_shard(
-    cas: &Arc<dyn Staging + Send + Sync>,
+    cas: &Arc<dyn Client + Send + Sync>,
     prefix: &str,
     shard_hash: &MerkleHash,
     dest_dir: &Path,
