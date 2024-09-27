@@ -1,4 +1,5 @@
 use anyhow::Result;
+use cas::auth::AuthConfig;
 use clap::{Args, Parser, Subcommand};
 use data::DEFAULT_BLOCK_SIZE;
 use data::{configurations::*, SMALL_FILE_THRESHOLD};
@@ -73,8 +74,9 @@ fn default_clean_config() -> Result<TranslatorConfig> {
         file_query_policy: Default::default(),
         cas_storage_config: StorageConfig {
             endpoint: Endpoint::FileSystem(path.join("xorbs")),
-            auth: Auth {
+            auth: AuthConfig {
                 token: None,
+                token_refresher: None,
             },
             prefix: "default".into(),
             cache_config: Some(CacheConfig {
@@ -86,8 +88,9 @@ fn default_clean_config() -> Result<TranslatorConfig> {
         },
         shard_storage_config: StorageConfig {
             endpoint: Endpoint::FileSystem(path.join("xorbs")),
-            auth: Auth {
+            auth: AuthConfig {
                 token: None,
+                token_refresher: None,
             },
             prefix: "default-merkledb".into(),
             cache_config: Some(CacheConfig {
@@ -120,8 +123,9 @@ fn default_smudge_config() -> Result<TranslatorConfig> {
         file_query_policy: Default::default(),
         cas_storage_config: StorageConfig {
             endpoint: Endpoint::FileSystem(path.join("xorbs")),
-            auth: Auth {
+            auth: AuthConfig {
                 token: None,
+                token_refresher: None,
             },
             prefix: "default".into(),
             cache_config: Some(CacheConfig {
@@ -133,8 +137,9 @@ fn default_smudge_config() -> Result<TranslatorConfig> {
         },
         shard_storage_config: StorageConfig {
             endpoint: Endpoint::FileSystem(path.join("xorbs")),
-            auth: Auth {
+            auth: AuthConfig {
                 token: None,
+                token_refresher: None,
             },
             prefix: "default-merkledb".into(),
             cache_config: Some(CacheConfig {
@@ -230,7 +235,7 @@ async fn smudge(mut reader: impl Read, mut writer: impl Write) -> Result<()> {
     let translator = PointerFileTranslator::new(default_smudge_config()?).await?;
 
     translator
-        .smudge_file_from_pointer(&pointer_file, &mut writer, None, None, None)
+        .smudge_file_from_pointer(&pointer_file, &mut writer, None)
         .await?;
 
     Ok(())

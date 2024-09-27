@@ -36,7 +36,6 @@ pub(crate) async fn create_cas_client(
         unreachable!();
     };
 
-
     // Usage tracking.
     let _repo_paths = maybe_repo_info
         .as_ref()
@@ -45,9 +44,8 @@ pub(crate) async fn create_cas_client(
         .unwrap_or_default();
 
     // Raw remote client.
-    let remote_client = Arc::new(
-        RemoteClient::from_config(endpoint.to_string(), cas_storage_config.auth.token.clone()).await,
-    );
+    let remote_client =
+        Arc::new(RemoteClient::from_config(endpoint.to_string(), &cas_storage_config.auth).await);
 
     // Try add in caching capability.
     let maybe_caching_client = cas_storage_config.cache_config.as_ref().and_then(|cache| {

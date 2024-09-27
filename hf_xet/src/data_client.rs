@@ -1,12 +1,15 @@
-use crate::config::default_config;
-use data::errors::DataProcessingError;
-use data::{errors, PointerFile, PointerFileTranslator};
-use parutils::{tokio_par_for_each, ParallelError};
 use std::fs;
 use std::fs::File;
 use std::io::{BufReader, Read};
 use std::path::PathBuf;
 use std::sync::Arc;
+
+use cas::auth::TokenRefresher;
+use data::errors::DataProcessingError;
+use data::{errors, PointerFile, PointerFileTranslator};
+use parutils::{tokio_par_for_each, ParallelError};
+
+use crate::config::default_config;
 
 /// The maximum git filter protocol packet size
 pub const MAX_CONCURRENT_UPLOADS: usize = 8; // TODO
@@ -15,11 +18,11 @@ pub const MAX_CONCURRENT_DOWNLOADS: usize = 8; // TODO
 const DEFAULT_CAS_ENDPOINT: &str = "http://localhost:8080";
 const READ_BLOCK_SIZE: usize = 1024 * 1024;
 
-// TODO: token refresher
 pub async fn upload_async(
     file_paths: Vec<String>,
     endpoint: Option<String>,
     token: Option<String>,
+    token_refresher: Option<Arc<dyn TokenRefresher>>,
 ) -> errors::Result<Vec<PointerFile>> {
     // chunk files
     // produce Xorbs + Shards
@@ -27,7 +30,7 @@ pub async fn upload_async(
     // for each file, return the filehash
     let endpoint = endpoint.unwrap_or(DEFAULT_CAS_ENDPOINT.to_string());
 
-    let config = default_config(endpoint, token)?;
+    let config = default_config(endpoint, token, token_refresher)?;
     let processor = Arc::new(PointerFileTranslator::new(config).await?);
     let processor = &processor;
     // for all files, clean them, producing pointer files.
@@ -47,28 +50,25 @@ pub async fn upload_async(
     Ok(pointers)
 }
 
-// TODO: token refresher
 pub async fn download_async(
     pointer_files: Vec<PointerFile>,
     endpoint: Option<String>,
     token: Option<String>,
+    token_refresher: Option<Arc<dyn TokenRefresher>>,
 ) -> errors::Result<Vec<String>> {
     let config = default_config(
         endpoint.clone().unwrap_or(DEFAULT_CAS_ENDPOINT.to_string()),
         token.clone(),
+        token_refresher,
     )?;
     let processor = Arc::new(PointerFileTranslator::new(config).await?);
     let processor = &processor;
     let paths = tokio_par_for_each(
         pointer_files,
         MAX_CONCURRENT_DOWNLOADS,
-        |pointer_file, _| {
-            let tok = token.clone();
-            let end = endpoint.clone();
-            async move {
-                let proc = processor.clone();
-                smudge_file(&proc, &pointer_file, end.clone(), tok.clone()).await
-            }
+        |pointer_file, _| async move {
+            let proc = processor.clone();
+            smudge_file(&proc, &pointer_file).await
         },
     )
     .await
@@ -104,30 +104,23 @@ async fn clean_file(processor: &PointerFileTranslator, f: String) -> errors::Res
 async fn smudge_file(
     proc: &PointerFileTranslator,
     pointer_file: &PointerFile,
-    endpoint: Option<String>,
-    token: Option<String>,
 ) -> errors::Result<String> {
     let path = PathBuf::from(pointer_file.path());
     if let Some(parent_dir) = path.parent() {
         fs::create_dir_all(parent_dir)?;
     }
     let mut f = File::create(&path)?;
-    proc.smudge_file_from_pointer(&pointer_file, &mut f, None, endpoint, token)
+    proc.smudge_file_from_pointer(&pointer_file, &mut f, None)
         .await?;
     Ok(pointer_file.path().to_string())
 }
 
-/// Helper to provide auth tokens to CAS.
-pub trait TokenRefresher {
-    /// Get a new auth token for CAS
-    fn refresh(&self) -> errors::Result<String>;
-}
-
 #[cfg(test)]
 mod tests {
-    use super::*;
     use std::env::current_dir;
     use std::fs::canonicalize;
+
+    use super::*;
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
     async fn upload_files() {
@@ -137,7 +130,7 @@ mod tests {
         let abs_path = canonicalize(path).unwrap();
         let s = abs_path.to_string_lossy();
         let files = vec![s.to_string()];
-        let pointers = upload_async(files).await.unwrap();
+        let pointers = upload_async(files, None, None, None).await.unwrap();
         println!("files: {pointers:?}");
     }
 
@@ -148,9 +141,7 @@ mod tests {
             "6999733a46030e67f6f020651c91442ace735572458573df599106e54646867c",
             4203,
         )];
-        let paths = download_async(pointers, "http://localhost:8080", "12345")
-            .await
-            .unwrap();
+        let paths = download_async(pointers, None, None, None).await.unwrap();
         println!("paths: {paths:?}");
     }
 }

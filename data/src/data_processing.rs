@@ -313,10 +313,8 @@ impl PointerFileTranslator {
         pointer: &PointerFile,
         writer: &mut impl std::io::Write,
         range: Option<(usize, usize)>,
-        endpoint: Option<String>,
-        token: Option<String>,
     ) -> Result<()> {
-        self.smudge_file_from_hash(&pointer.hash()?, writer, range, endpoint, token)
+        self.smudge_file_from_hash(&pointer.hash()?, writer, range)
             .await
     }
 
@@ -325,21 +323,13 @@ impl PointerFileTranslator {
         file_id: &MerkleHash,
         writer: &mut impl std::io::Write,
         _range: Option<(usize, usize)>,
-        endpoint: Option<String>,
-        token: Option<String>,
     ) -> Result<()> {
         let endpoint = match &self.config.cas_storage_config.endpoint {
-            Endpoint::Server(config_endpoint) => {
-                if let Some(endpoint) = endpoint {
-                    endpoint
-                } else {
-                config_endpoint.clone()
-                }
-            },
+            Endpoint::Server(endpoint) => endpoint.clone(),
             Endpoint::FileSystem(_) => panic!("aaaaaaaa no server"),
         };
 
-        let rc = CASAPIClient::new(&endpoint, token);
+        let rc = CASAPIClient::new(&endpoint, &self.config.cas_storage_config.auth);
 
         rc.write_file(file_id, writer).await?;
 

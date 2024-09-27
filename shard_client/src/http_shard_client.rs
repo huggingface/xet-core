@@ -3,6 +3,7 @@ use crate::{RegistrationClient, ShardClientInterface};
 
 use async_trait::async_trait;
 use bytes::Buf;
+use cas::auth::AuthConfig;
 use cas_types::Key;
 use cas_types::{
     QueryChunkResponse, QueryReconstructionResponse, UploadShardResponse, UploadShardResponseType,
@@ -11,7 +12,10 @@ use mdb_shard::file_structs::{FileDataSequenceEntry, FileDataSequenceHeader, MDB
 use mdb_shard::shard_dedup_probe::ShardDedupProber;
 use mdb_shard::shard_file_reconstructor::FileReconstructor;
 use merklehash::MerkleHash;
-use reqwest::{Url, header::{HeaderMap, HeaderValue}};
+use reqwest::{
+    header::{HeaderMap, HeaderValue},
+    Url,
+};
 use retry_strategy::RetryStrategy;
 use tracing::warn;
 
@@ -22,16 +26,16 @@ const BASE_RETRY_DELAY_MS: u64 = 3000;
 #[derive(Debug)]
 pub struct HttpShardClient {
     pub endpoint: String,
-    pub token: Option<String>,
+    pub auth_config: AuthConfig,
     client: reqwest::Client,
     retry_strategy: RetryStrategy,
 }
 
 impl HttpShardClient {
-    pub fn new(endpoint: &str, token: Option<String>) -> Self {
+    pub fn new(endpoint: &str, auth_config: &AuthConfig) -> Self {
         HttpShardClient {
             endpoint: endpoint.into(),
-            token,
+            auth_config: auth_config.clone(),
             client: reqwest::Client::builder().build().unwrap(),
             // Retry policy: Exponential backoff starting at BASE_RETRY_DELAY_MS and retrying NUM_RETRIES times
             retry_strategy: RetryStrategy::new(NUM_RETRIES, BASE_RETRY_DELAY_MS),
@@ -71,10 +75,13 @@ impl RegistrationClient for HttpShardClient {
         };
 
         let url = Url::parse(&format!("{}/shard/{key}", self.endpoint))?;
-        
+
         let mut headers = HeaderMap::new();
-        if let Some(tok) = &self.token {
-            headers.insert("Authorization", HeaderValue::from_str(&format!("Bearer {}", tok)).unwrap());
+        if let Some(tok) = &self.auth_config.token {
+            headers.insert(
+                "Authorization",
+                HeaderValue::from_str(&format!("Bearer {}", tok)).unwrap(),
+            );
         }
 
         let response = self
@@ -85,8 +92,22 @@ impl RegistrationClient for HttpShardClient {
                     async {
                         let url = url.clone();
                         match force_sync {
-                            true => self.client.put(url).headers(headers).body(shard_data.to_vec()).send().await,
-                            false => self.client.post(url).headers(headers).body(shard_data.to_vec()).send().await,
+                            true => {
+                                self.client
+                                    .put(url)
+                                    .headers(headers)
+                                    .body(shard_data.to_vec())
+                                    .send()
+                                    .await
+                            }
+                            false => {
+                                self.client
+                                    .post(url)
+                                    .headers(headers)
+                                    .body(shard_data.to_vec())
+                                    .send()
+                                    .await
+                            }
                         }
                     }
                 },
@@ -197,6 +218,7 @@ impl ShardClientInterface for HttpShardClient {}
 
 #[cfg(test)]
 mod test {
+    use cas::auth::AuthConfig;
     use std::path::PathBuf;
 
     use super::HttpShardClient;
@@ -210,7 +232,7 @@ mod test {
     #[tokio::test]
     #[ignore = "need a local cas_server running"]
     async fn test_local() -> anyhow::Result<()> {
-        let client = HttpShardClient::new("http://localhost:8080", None);
+        let client = HttpShardClient::new("http://localhost:8080", &AuthConfig::default());
 
         let path =
             PathBuf::from("./a7de567477348b23d23b667dba4d63d533c2ba7337cdc4297970bb494ba4699e.mdb");

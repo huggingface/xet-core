@@ -15,6 +15,7 @@ pyo3 = { version = "0.22.3", features = [
 ] }
 
 data = { path = "../data" }
+utils = { path = "../utils" }
 tokio = { version = "1.36", features = ["full"] }
 parutils = { path = "../parutils" }
 tracing = "0.1.*"

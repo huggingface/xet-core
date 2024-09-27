@@ -11,6 +11,7 @@ use reqwest::{
 use serde::{de::DeserializeOwned, Serialize};
 
 use bytes::Bytes;
+use cas::auth::AuthConfig;
 use cas_object::CasObject;
 use cas_types::CASReconstructionTerm;
 use tracing::{debug, warn};
@@ -84,9 +85,9 @@ impl Client for RemoteClient {
 }
 
 impl RemoteClient {
-    pub async fn from_config(endpoint: String, token: Option<String>) -> Self {
+    pub async fn from_config(endpoint: String, auth_config: &AuthConfig) -> Self {
         Self {
-            client: CASAPIClient::new(&endpoint, token),
+            client: CASAPIClient::new(&endpoint, auth_config),
         }
     }
 }
@@ -95,22 +96,22 @@ impl RemoteClient {
 pub struct CASAPIClient {
     client: reqwest::Client,
     endpoint: String,
-    token: Option<String>,
+    auth_config: AuthConfig,
 }
 
 impl Default for CASAPIClient {
     fn default() -> Self {
-        Self::new(CAS_ENDPOINT, None)
+        Self::new(CAS_ENDPOINT, &AuthConfig::default())
     }
 }
 
 impl CASAPIClient {
-    pub fn new(endpoint: &str, token: Option<String>) -> Self {
+    pub fn new(endpoint: &str, auth_config: &AuthConfig) -> Self {
         let client = reqwest::Client::builder().build().unwrap();
         Self {
             client,
             endpoint: endpoint.to_string(),
-            token,
+            auth_config: auth_config.clone(),
         }
     }
 
@@ -276,7 +277,7 @@ impl CASAPIClient {
 
     fn request_headers(&self) -> HeaderMap {
         let mut headers = HeaderMap::new();
-        if let Some(tok) = &self.token {
+        if let Some(tok) = &self.auth_config.token {
             headers.insert(
                 "Authorization",
                 HeaderValue::from_str(&format!("Bearer {}", tok)).unwrap(),
@@ -345,7 +346,7 @@ mod tests {
     #[tokio::test]
     async fn test_basic_put() {
         // Arrange
-        let rc = RemoteClient::from_config(CAS_ENDPOINT.to_string(), None).await;
+        let rc = RemoteClient::from_config(CAS_ENDPOINT.to_string(), &AuthConfig::default()).await;
         let prefix = PREFIX_DEFAULT;
         let (hash, data, chunk_boundaries) = gen_dummy_xorb(3, 10248, true);
 
