@@ -3443,6 +3443,8 @@ dependencies = [
  "opentelemetry-http",
  "opentelemetry-jaeger",
  "reqwest 0.11.27",
+ "reqwest 0.12.7",
+ "reqwest-middleware",
  "retry_strategy",
  "serde_json",
  "tempfile",

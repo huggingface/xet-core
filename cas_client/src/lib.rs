@@ -2,6 +2,7 @@
 #![allow(dead_code)]
 
 pub use crate::error::CasClientError;
+pub use auth::AuthMiddleware;
 pub use caching_client::{CachingClient, DEFAULT_BLOCK_SIZE};
 pub use interface::Client;
 pub use local_client::LocalClient;
@@ -12,6 +13,7 @@ pub use remote_client::RemoteClient;
 pub use staging_client::{new_staging_client, new_staging_client_with_progressbar, StagingClient};
 pub use staging_trait::{Staging, StagingBypassable};
 
+mod auth;
 mod caching_client;
 mod cas_connection_pool;
 mod client_adapter;

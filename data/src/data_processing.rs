@@ -329,7 +329,7 @@ impl PointerFileTranslator {
             Endpoint::FileSystem(_) => panic!("aaaaaaaa no server"),
         };
 
-        let rc = CASAPIClient::new(&endpoint, &self.config.cas_storage_config.auth);
+        let rc = CASAPIClient::new(&endpoint, self.config.cas_storage_config.auth.as_ref());
 
         rc.write_file(file_id, writer).await?;
 

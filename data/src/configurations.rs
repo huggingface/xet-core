@@ -20,7 +20,7 @@ pub struct CacheConfig {
 #[derive(Debug)]
 pub struct StorageConfig {
     pub endpoint: Endpoint,
-    pub auth: AuthConfig,
+    pub auth: Option<AuthConfig>,
     pub prefix: String,
     pub cache_config: Option<CacheConfig>,
     pub staging_directory: Option<PathBuf>,

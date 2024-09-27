@@ -21,6 +21,9 @@ pub enum ShardClientError {
     #[error("Client connection error: {0}")]
     HttpClientError(#[from] reqwest::Error),
 
+    #[error("Client middleware error: {0}")]
+    HttpMiddlewareClientError(#[from] reqwest_middleware::Error),
+
     #[error("Bad endpoint: {0}")]
     UrlError(#[from] url::ParseError),
 }

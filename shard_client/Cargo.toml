@@ -37,7 +37,8 @@ itertools = "0.10"
 [target.'cfg(macos)'.dependencies]
 reqwest = { version = "0.11.4", features = ["json", "webpki-roots"] }
 [target.'cfg(not(macos))'.dependencies]
-reqwest = { version = "0.11.4", features = ["json"] }
+reqwest = { version = "0.12.7", features = ["json"] }
+reqwest-middleware = "0.3.3"
 url = "2.5.2"
 bytes = "1"
 

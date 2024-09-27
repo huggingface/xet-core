@@ -1,122 +1,25 @@
 use std::io::{Cursor, Write};
-use std::sync::{Arc, Mutex};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::anyhow;
 use bytes::Buf;
-use cas::key::Key;
-use cas_types::{QueryChunkResponse, QueryReconstructionResponse, UploadXorbResponse};
-use reqwest::{
-    header::{HeaderMap, HeaderValue},
-    Request, Response, StatusCode, Url,
-};
-use serde::{de::DeserializeOwned, Serialize};
-
 use bytes::Bytes;
-use cas::auth::{AuthConfig, TokenRefresher};
-use cas::errors::AuthError;
+use reqwest::{StatusCode, Url};
+use reqwest_middleware::{ClientBuilder, ClientWithMiddleware};
+use serde::{de::DeserializeOwned, Serialize};
+use tracing::{debug, warn};
+
+use cas::auth::AuthConfig;
+use cas::key::Key;
 use cas_object::CasObject;
 use cas_types::CASReconstructionTerm;
-use reqwest::header::AUTHORIZATION;
-use reqwest_middleware::{ClientBuilder, ClientWithMiddleware, Middleware, Next};
-use tracing::{debug, info, warn};
-
-use crate::{error::Result, CasClientError};
-
+use cas_types::{QueryChunkResponse, QueryReconstructionResponse, UploadXorbResponse};
 use merklehash::MerkleHash;
 
 use crate::Client;
+use crate::{error::Result, AuthMiddleware, CasClientError};
+
 pub const CAS_ENDPOINT: &str = "http://localhost:8080";
 pub const PREFIX_DEFAULT: &str = "default";
-
-struct TokenProvider {
-    token: String,
-    expiration: u64,
-    refresher: Arc<dyn TokenRefresher>,
-}
-
-impl TokenProvider {
-    pub fn new(token: String, expiration: u64, refresher: Arc<dyn TokenRefresher>) -> Self {
-        Self {
-            token,
-            expiration,
-            refresher,
-        }
-    }
-
-    pub fn get_valid_token(&mut self) -> std::result::Result<String, AuthError> {
-        if self.is_expired() {
-            let (new_token, new_expiry) = self.refresher.refresh()?;
-            self.token = new_token;
-            self.expiration = new_expiry;
-        }
-        Ok(self.token.clone())
-    }
-
-    fn is_expired(&self) -> bool {
-        let cur_time = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(u64::MAX);
-        self.expiration <= cur_time
-    }
-}
-
-struct AuthMiddleware {
-    token_provider: Option<Arc<Mutex<TokenProvider>>>,
-}
-
-impl AuthMiddleware {
-    fn get_token(
-        provider_ref: &Arc<Mutex<TokenProvider>>,
-    ) -> std::result::Result<String, anyhow::Error> {
-        let mut provider = provider_ref
-            .lock()
-            .map_err(|e| anyhow!("lock error: {e:?}"))?;
-        provider
-            .get_valid_token()
-            .map_err(|e| anyhow!("couldn't get token: {e:?}"))
-    }
-}
-
-impl From<&AuthConfig> for AuthMiddleware {
-    fn from(value: &AuthConfig) -> Self {
-        let token_provider = if let (Some(token), Some(expiration), Some(refresher)) = (
-            value.token.clone(),
-            value.token_expiration,
-            value.token_refresher.clone(),
-        ) {
-            Some(Arc::new(Mutex::new(TokenProvider::new(
-                token, expiration, refresher,
-            ))))
-        } else {
-            info!("CAS auth disabled");
-            None
-        };
-        Self { token_provider }
-    }
-}
-
-#[async_trait::async_trait]
-impl Middleware for AuthMiddleware {
-    async fn handle(
-        &self,
-        mut req: Request,
-        extensions: &mut hyper::http::Extensions,
-        next: Next<'_>,
-    ) -> reqwest_middleware::Result<Response> {
-        if let Some(ref provider) = self.token_provider {
-            let token = Self::get_token(provider).map_err(reqwest_middleware::Error::Middleware)?;
-
-            let headers = req.headers_mut();
-            headers.insert(
-                AUTHORIZATION,
-                HeaderValue::from_str(&format!("Bearer {}", token)).unwrap(),
-            );
-        }
-        next.run(req, extensions).await
-    }
-}
 
 #[derive(Debug)]
 pub struct RemoteClient {
@@ -179,7 +82,7 @@ impl Client for RemoteClient {
 }
 
 impl RemoteClient {
-    pub async fn from_config(endpoint: String, auth_config: &AuthConfig) -> Self {
+    pub async fn from_config(endpoint: String, auth_config: Option<&AuthConfig>) -> Self {
         Self {
             client: CASAPIClient::new(&endpoint, auth_config),
         }
@@ -190,17 +93,16 @@ impl RemoteClient {
 pub struct CASAPIClient {
     client: ClientWithMiddleware,
     endpoint: String,
-    auth_config: AuthConfig,
 }
 
 impl Default for CASAPIClient {
     fn default() -> Self {
-        Self::new(CAS_ENDPOINT, &AuthConfig::default())
+        Self::new(CAS_ENDPOINT, None)
     }
 }
 
 impl CASAPIClient {
-    pub fn new(endpoint: &str, auth_config: &AuthConfig) -> Self {
+    pub fn new(endpoint: &str, auth_config: Option<&AuthConfig>) -> Self {
         let reqwest_client = reqwest::Client::builder().build().unwrap();
         let client = ClientBuilder::new(reqwest_client)
             .with(AuthMiddleware::from(auth_config))
@@ -208,18 +110,12 @@ impl CASAPIClient {
         Self {
             client,
             endpoint: endpoint.to_string(),
-            auth_config: auth_config.clone(),
         }
     }
 
     pub async fn exists(&self, key: &Key) -> Result<bool> {
         let url = Url::parse(&format!("{}/xorb/{key}", self.endpoint))?;
-        let response = self
-            .client
-            .head(url)
-            .headers(self.request_headers())
-            .send()
-            .await?;
+        let response = self.client.head(url).send().await?;
         match response.status() {
             StatusCode::OK => Ok(true),
             StatusCode::NOT_FOUND => Ok(false),
@@ -231,12 +127,7 @@ impl CASAPIClient {
 
     pub async fn get_length(&self, key: &Key) -> Result<Option<u64>> {
         let url = Url::parse(&format!("{}/xorb/{key}", self.endpoint))?;
-        let response = self
-            .client
-            .head(url)
-            .headers(self.request_headers())
-            .send()
-            .await?;
+        let response = self.client.head(url).send().await?;
         let status = response.status();
         if status == StatusCode::NOT_FOUND {
             return Ok(None);
@@ -287,13 +178,7 @@ impl CASAPIClient {
         writer.set_position(0);
         let data = writer.into_inner();
 
-        let response = self
-            .client
-            .post(url)
-            .headers(self.request_headers())
-            .body(data)
-            .send()
-            .await?;
+        let response = self.client.post(url).body(data).send().await?;
         let response_body = response.bytes().await?;
         let response_parsed: UploadXorbResponse = serde_json::from_reader(response_body.reader())?;
 
@@ -345,12 +230,7 @@ impl CASAPIClient {
             file_id.hex()
         ))?;
 
-        let response = self
-            .client
-            .get(url)
-            .headers(self.request_headers())
-            .send()
-            .await?;
+        let response = self.client.get(url).send().await?;
         let response_body = response.bytes().await?;
         let response_parsed: QueryReconstructionResponse =
             serde_json::from_reader(response_body.reader())?;
@@ -360,27 +240,11 @@ impl CASAPIClient {
 
     pub async fn shard_query_chunk(&self, key: &Key) -> Result<QueryChunkResponse> {
         let url = Url::parse(&format!("{}/chunk/{key}", self.endpoint))?;
-        let response = self
-            .client
-            .get(url)
-            .headers(self.request_headers())
-            .send()
-            .await?;
+        let response = self.client.get(url).send().await?;
         let response_body = response.bytes().await?;
         let response_parsed: QueryChunkResponse = serde_json::from_reader(response_body.reader())?;
 
         Ok(response_parsed)
-    }
-
-    fn request_headers(&self) -> HeaderMap {
-        let mut headers = HeaderMap::new();
-        if let Some(tok) = &self.auth_config.token {
-            headers.insert(
-                "Authorization",
-                HeaderValue::from_str(&format!("Bearer {}", tok)).unwrap(),
-            );
-        }
-        headers
     }
 
     async fn post_json<ReqT, RespT>(&self, url: Url, request_body: &ReqT) -> Result<RespT>
@@ -430,20 +294,19 @@ async fn get_one(term: &CASReconstructionTerm) -> Result<Bytes> {
 
 #[cfg(test)]
 mod tests {
-
-    use merkledb::{prelude::MerkleDBHighLevelMethodsV1, Chunk, MerkleMemDB};
-    use merklehash::DataHash;
     use rand::Rng;
     use tracing_test::traced_test;
 
     use super::*;
+    use merkledb::{prelude::MerkleDBHighLevelMethodsV1, Chunk, MerkleMemDB};
+    use merklehash::DataHash;
 
     #[ignore]
     #[traced_test]
     #[tokio::test]
     async fn test_basic_put() {
         // Arrange
-        let rc = RemoteClient::from_config(CAS_ENDPOINT.to_string(), &AuthConfig::default()).await;
+        let rc = RemoteClient::from_config(CAS_ENDPOINT.to_string(), None).await;
         let prefix = PREFIX_DEFAULT;
         let (hash, data, chunk_boundaries) = gen_dummy_xorb(3, 10248, true);
 

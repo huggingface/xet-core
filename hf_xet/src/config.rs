@@ -18,16 +18,13 @@ pub fn default_config(
     fs::create_dir_all(&path)?;
 
     let (token, token_expiration) = convert(token_info);
+    let auth_cfg = AuthConfig::maybe_new(token, token_expiration, token_refresher);
 
     let translator_config = TranslatorConfig {
         file_query_policy: FileQueryPolicy::ServerOnly,
         cas_storage_config: StorageConfig {
             endpoint: Endpoint::Server(endpoint.clone()),
-            auth: AuthConfig {
-                token: token.clone(),
-                token_expiration,
-                token_refresher: token_refresher.clone(),
-            },
+            auth: auth_cfg.clone(),
             prefix: "default".into(),
             cache_config: Some(CacheConfig {
                 cache_directory: path.join("cache"),
@@ -38,11 +35,7 @@ pub fn default_config(
         },
         shard_storage_config: StorageConfig {
             endpoint: Endpoint::Server(endpoint),
-            auth: AuthConfig {
-                token,
-                token_expiration,
-                token_refresher,
-            },
+            auth: auth_cfg,
             prefix: "default-merkledb".into(),
             cache_config: Some(CacheConfig {
                 cache_directory: path.join("shard-cache"),

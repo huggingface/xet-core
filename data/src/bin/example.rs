@@ -1,5 +1,4 @@
 use anyhow::Result;
-use cas::auth::AuthConfig;
 use clap::{Args, Parser, Subcommand};
 use data::DEFAULT_BLOCK_SIZE;
 use data::{configurations::*, SMALL_FILE_THRESHOLD};
@@ -74,10 +73,7 @@ fn default_clean_config() -> Result<TranslatorConfig> {
         file_query_policy: Default::default(),
         cas_storage_config: StorageConfig {
             endpoint: Endpoint::FileSystem(path.join("xorbs")),
-            auth: AuthConfig {
-                token: None,
-                token_refresher: None,
-            },
+            auth: None,
             prefix: "default".into(),
             cache_config: Some(CacheConfig {
                 cache_directory: path.join("cache"),
@@ -88,10 +84,7 @@ fn default_clean_config() -> Result<TranslatorConfig> {
         },
         shard_storage_config: StorageConfig {
             endpoint: Endpoint::FileSystem(path.join("xorbs")),
-            auth: AuthConfig {
-                token: None,
-                token_refresher: None,
-            },
+            auth: None,
             prefix: "default-merkledb".into(),
             cache_config: Some(CacheConfig {
                 cache_directory: path.join("shard-cache"),
@@ -123,10 +116,7 @@ fn default_smudge_config() -> Result<TranslatorConfig> {
         file_query_policy: Default::default(),
         cas_storage_config: StorageConfig {
             endpoint: Endpoint::FileSystem(path.join("xorbs")),
-            auth: AuthConfig {
-                token: None,
-                token_refresher: None,
-            },
+            auth: None,
             prefix: "default".into(),
             cache_config: Some(CacheConfig {
                 cache_directory: path.join("cache"),
@@ -137,10 +127,7 @@ fn default_smudge_config() -> Result<TranslatorConfig> {
         },
         shard_storage_config: StorageConfig {
             endpoint: Endpoint::FileSystem(path.join("xorbs")),
-            auth: AuthConfig {
-                token: None,
-                token_refresher: None,
-            },
+            auth: None,
             prefix: "default-merkledb".into(),
             cache_config: Some(CacheConfig {
                 cache_directory: path.join("shard-cache"),

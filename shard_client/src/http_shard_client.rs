@@ -1,9 +1,11 @@
-use crate::error::{Result, ShardClientError};
-use crate::{RegistrationClient, ShardClientInterface};
-
 use async_trait::async_trait;
 use bytes::Buf;
+use reqwest::Url;
+use reqwest_middleware::{ClientBuilder, ClientWithMiddleware};
+use tracing::warn;
+
 use cas::auth::AuthConfig;
+use cas_client::AuthMiddleware;
 use cas_types::Key;
 use cas_types::{
     QueryChunkResponse, QueryReconstructionResponse, UploadShardResponse, UploadShardResponseType,
@@ -12,12 +14,10 @@ use mdb_shard::file_structs::{FileDataSequenceEntry, FileDataSequenceHeader, MDB
 use mdb_shard::shard_dedup_probe::ShardDedupProber;
 use mdb_shard::shard_file_reconstructor::FileReconstructor;
 use merklehash::MerkleHash;
-use reqwest::{
-    header::{HeaderMap, HeaderValue},
-    Url,
-};
 use retry_strategy::RetryStrategy;
-use tracing::warn;
+
+use crate::error::{Result, ShardClientError};
+use crate::{RegistrationClient, ShardClientInterface};
 
 const NUM_RETRIES: usize = 5;
 const BASE_RETRY_DELAY_MS: u64 = 3000;
@@ -26,17 +26,20 @@ const BASE_RETRY_DELAY_MS: u64 = 3000;
 #[derive(Debug)]
 pub struct HttpShardClient {
     pub endpoint: String,
-    pub auth_config: AuthConfig,
-    client: reqwest::Client,
+    client: ClientWithMiddleware,
     retry_strategy: RetryStrategy,
 }
 
 impl HttpShardClient {
-    pub fn new(endpoint: &str, auth_config: &AuthConfig) -> Self {
+    pub fn new(endpoint: &str, auth_config: Option<&AuthConfig>) -> Self {
+        let reqwest_client = reqwest::Client::builder().build().unwrap();
+        let client = ClientBuilder::new(reqwest_client)
+            .with(AuthMiddleware::from(auth_config))
+            .build();
+
         HttpShardClient {
             endpoint: endpoint.into(),
-            auth_config: auth_config.clone(),
-            client: reqwest::Client::builder().build().unwrap(),
+            client,
             // Retry policy: Exponential backoff starting at BASE_RETRY_DELAY_MS and retrying NUM_RETRIES times
             retry_strategy: RetryStrategy::new(NUM_RETRIES, BASE_RETRY_DELAY_MS),
         }
@@ -47,14 +50,14 @@ fn retry_http_status_code(stat: &reqwest::StatusCode) -> bool {
     stat.is_server_error() || *stat == reqwest::StatusCode::TOO_MANY_REQUESTS
 }
 
-fn is_status_retriable_and_print(err: &reqwest::Error) -> bool {
+fn is_status_retriable_and_print(err: &reqwest_middleware::Error) -> bool {
     let ret = if let Some(code) = err.status() {
         retry_http_status_code(&code)
     } else {
         true
     };
     if ret {
-        warn!("{}. Retrying...", err);
+        warn!("{err:?}. Retrying...");
     }
     ret
 }
@@ -76,39 +79,14 @@ impl RegistrationClient for HttpShardClient {
 
         let url = Url::parse(&format!("{}/shard/{key}", self.endpoint))?;
 
-        let mut headers = HeaderMap::new();
-        if let Some(tok) = &self.auth_config.token {
-            headers.insert(
-                "Authorization",
-                HeaderValue::from_str(&format!("Bearer {}", tok)).unwrap(),
-            );
-        }
-
         let response = self
             .retry_strategy
             .retry(
-                || {
-                    let headers = headers.clone();
-                    async {
-                        let url = url.clone();
-                        match force_sync {
-                            true => {
-                                self.client
-                                    .put(url)
-                                    .headers(headers)
-                                    .body(shard_data.to_vec())
-                                    .send()
-                                    .await
-                            }
-                            false => {
-                                self.client
-                                    .post(url)
-                                    .headers(headers)
-                                    .body(shard_data.to_vec())
-                                    .send()
-                                    .await
-                            }
-                        }
+                || async {
+                    let url = url.clone();
+                    match force_sync {
+                        true => self.client.put(url).body(shard_data.to_vec()).send().await,
+                        false => self.client.post(url).body(shard_data.to_vec()).send().await,
                     }
                 },
                 is_status_retriable_and_print,
@@ -218,21 +196,22 @@ impl ShardClientInterface for HttpShardClient {}
 
 #[cfg(test)]
 mod test {
-    use cas::auth::AuthConfig;
     use std::path::PathBuf;
 
-    use super::HttpShardClient;
-    use crate::RegistrationClient;
     use mdb_shard::{
         shard_dedup_probe::ShardDedupProber, shard_file_reconstructor::FileReconstructor,
         MDBShardFile, MDBShardInfo,
     };
     use merklehash::MerkleHash;
 
+    use crate::RegistrationClient;
+
+    use super::HttpShardClient;
+
     #[tokio::test]
     #[ignore = "need a local cas_server running"]
     async fn test_local() -> anyhow::Result<()> {
-        let client = HttpShardClient::new("http://localhost:8080", &AuthConfig::default());
+        let client = HttpShardClient::new("http://localhost:8080", None);
 
         let path =
             PathBuf::from("./a7de567477348b23d23b667dba4d63d533c2ba7337cdc4297970bb494ba4699e.mdb");
