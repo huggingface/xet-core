@@ -1,5 +1,7 @@
 use crate::error::{CasClientError, Result};
-use crate::interface::Client;
+use crate::interface::UploadClient;
+use anyhow::anyhow;
+use async_trait::async_trait;
 use cas::key::Key;
 use cas_object::CasObject;
 use merklehash::MerkleHash;
@@ -7,9 +9,6 @@ use std::fs::{metadata, File};
 use std::io::{BufReader, BufWriter, Write};
 use std::path::{Path, PathBuf};
 use tempfile::TempDir;
-
-use anyhow::anyhow;
-use async_trait::async_trait;
 use tracing::{debug, error, info};
 
 #[derive(Debug)]
@@ -125,12 +124,11 @@ impl LocalClient {
 
         let _ = std::fs::remove_file(file_path);
     }
-
 }
 
 /// LocalClient is responsible for writing/reading Xorbs on local disk.
 #[async_trait]
-impl Client for LocalClient {
+impl UploadClient for LocalClient {
     async fn put(
         &self,
         prefix: &str,
@@ -152,30 +150,13 @@ impl Client for LocalClient {
 
         // moved hash validation into [CasObject::serialize], so removed from here.
 
-        if let Ok(xorb_size) = self.get_length(prefix, hash).await {
-            if xorb_size > 0 {
-                info!("{prefix:?}/{hash:?} already exists in Local CAS; returning.");
-                return Ok(());
-            }
+        if self.exists(prefix, hash).await? {
+            info!("{prefix:?}/{hash:?} already exists in Local CAS; returning.");
+            return Ok(());
         }
 
         let file_path = self.get_path_for_entry(prefix, hash);
         info!("Writing XORB {prefix}/{hash:?} to local path {file_path:?}");
-
-        if let Ok(metadata) = metadata(&file_path) {
-            return if metadata.is_file() {
-                info!("{file_path:?} already exists; returning.");
-                // if its a file, its ok. we do not overwrite
-                Ok(())
-            } else {
-                // if its not file we have a problem.
-                Err(CasClientError::InternalError(anyhow!(
-                    "Attempting to write to {:?}, but {:?} is not a file",
-                    file_path,
-                    file_path
-                )))
-            };
-        }
 
         // we prefix with "[PID]." for now. We should be able to do a cleanup
         // in the future.
@@ -197,14 +178,14 @@ impl Client for LocalClient {
                 hash,
                 &data,
                 &chunk_boundaries.into_iter().map(|x| x as u32).collect(),
-                cas_object::CompressionScheme::None
+                cas_object::CompressionScheme::None,
             )?;
             // flush before persisting
             writer.flush()?;
             total_bytes_written = bytes_written;
         }
 
-        tempfile.persist(&file_path)?;
+        tempfile.persist(&file_path).map_err(|e| e.error)?;
 
         // attempt to set to readonly
         // its ok to fail.
@@ -219,72 +200,117 @@ impl Client for LocalClient {
         Ok(())
     }
 
-    async fn flush(&self) -> Result<()> {
-        Ok(())
-    }
-
-    async fn get(&self, prefix: &str, hash: &MerkleHash) -> Result<Vec<u8>> {
+    async fn exists(&self, prefix: &str, hash: &MerkleHash) -> Result<bool> {
         let file_path = self.get_path_for_entry(prefix, hash);
-        let file = File::open(&file_path).map_err(|_| {
-            if !self.silence_errors {
-                error!("Unable to find file in local CAS {:?}", file_path);
-            }
-            CasClientError::XORBNotFound(*hash)
-        })?;
 
-        let mut reader = BufReader::new(file);
-        let cas = CasObject::deserialize(&mut reader)?;
-        let result = cas.get_all_bytes(&mut reader)?;
-        Ok(result)
-    }
+        let res = metadata(&file_path);
 
-    async fn get_object_range(
-        &self,
-        prefix: &str,
-        hash: &MerkleHash,
-        ranges: Vec<(u64, u64)>,
-    ) -> Result<Vec<Vec<u8>>> {
-        // Handle the case where we aren't asked for any real data.
-        if ranges.len() == 1 && ranges[0].0 == ranges[0].1 {
-            return Ok(vec![Vec::<u8>::new()]);
-        }
+        if res.is_err() || !res.unwrap().is_file() {
+            return Err(CasClientError::InternalError(anyhow!(
+                "Attempting to write to {:?}, but it is not a file",
+                file_path
+            )));
+        };
 
-        let file_path = self.get_path_for_entry(prefix, hash);
-        let file = File::open(&file_path).map_err(|_| {
-            if !self.silence_errors {
-                error!("Unable to find file in local CAS {:?}", file_path);
-            }
-            CasClientError::XORBNotFound(*hash)
-        })?;
-
-        let mut reader = BufReader::new(file);
-        let cas = CasObject::deserialize(&mut reader)?;
-
-        let mut ret: Vec<Vec<u8>> = Vec::new();
-        for r in ranges {
-            let data = cas.get_range(&mut reader, r.0 as u32, r.1 as u32)?;
-            ret.push(data);
-        }
-        Ok(ret)
-    }
-
-    async fn get_length(&self, prefix: &str, hash: &MerkleHash) -> Result<u64> {
-        let file_path = self.get_path_for_entry(prefix, hash);
         match File::open(file_path) {
             Ok(file) => {
                 let mut reader = BufReader::new(file);
-                let cas = CasObject::deserialize(&mut reader)?;
-                let length = cas.get_contents_length()?;
-                Ok(length as u64)
+                CasObject::deserialize(&mut reader)?;
+                Ok(true)
             }
             Err(_) => Err(CasClientError::XORBNotFound(*hash)),
+        }
+    }
+
+    async fn flush(&self) -> Result<()> {
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests_utils {
+    use super::LocalClient;
+    use crate::{error::Result, CasClientError};
+    use cas_object::CasObject;
+    use merklehash::MerkleHash;
+    use std::{fs::File, io::BufReader};
+    use tracing::error;
+
+    pub trait TestUtils {
+        fn get(&self, prefix: &str, hash: &MerkleHash) -> Result<Vec<u8>>;
+        fn get_object_range(
+            &self,
+            prefix: &str,
+            hash: &MerkleHash,
+            ranges: Vec<(u64, u64)>,
+        ) -> Result<Vec<Vec<u8>>>;
+        fn get_length(&self, prefix: &str, hash: &MerkleHash) -> Result<u64>;
+    }
+
+    impl TestUtils for LocalClient {
+        fn get(&self, prefix: &str, hash: &MerkleHash) -> Result<Vec<u8>> {
+            let file_path = self.get_path_for_entry(prefix, hash);
+            let file = File::open(&file_path).map_err(|_| {
+                if !self.silence_errors {
+                    error!("Unable to find file in local CAS {:?}", file_path);
+                }
+                CasClientError::XORBNotFound(*hash)
+            })?;
+
+            let mut reader = BufReader::new(file);
+            let cas = CasObject::deserialize(&mut reader)?;
+            let result = cas.get_all_bytes(&mut reader)?;
+            Ok(result)
+        }
+
+        fn get_object_range(
+            &self,
+            prefix: &str,
+            hash: &MerkleHash,
+            ranges: Vec<(u64, u64)>,
+        ) -> Result<Vec<Vec<u8>>> {
+            // Handle the case where we aren't asked for any real data.
+            if ranges.len() == 1 && ranges[0].0 == ranges[0].1 {
+                return Ok(vec![Vec::<u8>::new()]);
+            }
+
+            let file_path = self.get_path_for_entry(prefix, hash);
+            let file = File::open(&file_path).map_err(|_| {
+                if !self.silence_errors {
+                    error!("Unable to find file in local CAS {:?}", file_path);
+                }
+                CasClientError::XORBNotFound(*hash)
+            })?;
+
+            let mut reader = BufReader::new(file);
+            let cas = CasObject::deserialize(&mut reader)?;
+
+            let mut ret: Vec<Vec<u8>> = Vec::new();
+            for r in ranges {
+                let data = cas.get_range(&mut reader, r.0 as u32, r.1 as u32)?;
+                ret.push(data);
+            }
+            Ok(ret)
+        }
+
+        fn get_length(&self, prefix: &str, hash: &MerkleHash) -> Result<u64> {
+            let file_path = self.get_path_for_entry(prefix, hash);
+            match File::open(file_path) {
+                Ok(file) => {
+                    let mut reader = BufReader::new(file);
+                    let cas = CasObject::deserialize(&mut reader)?;
+                    let length = cas.get_contents_length()?;
+                    Ok(length as u64)
+                }
+                Err(_) => Err(CasClientError::XORBNotFound(*hash)),
+            }
         }
     }
 }
 
 #[cfg(test)]
 mod tests {
-
+    use super::tests_utils::TestUtils;
     use super::*;
     use merkledb::{prelude::MerkleDBHighLevelMethodsV1, Chunk, MerkleMemDB};
     use merklehash::{compute_data_hash, DataHash};
@@ -306,7 +332,7 @@ mod tests {
             .await
             .is_ok());
 
-        let returned_data = client.get("key", &hash).await.unwrap();
+        let returned_data = client.get("key", &hash).unwrap();
         assert_eq!(data_again, returned_data);
     }
 
@@ -320,7 +346,7 @@ mod tests {
         // Act & Assert
         assert!(client.put("", &hash, data, chunk_boundaries).await.is_ok());
 
-        let returned_data = client.get("", &hash).await.unwrap();
+        let returned_data = client.get("", &hash).unwrap();
         assert_eq!(data_again, returned_data);
     }
 
@@ -336,7 +362,7 @@ mod tests {
 
         let ranges: Vec<(u64, u64)> = vec![(0, 100), (100, 1500)];
         let ranges_again = ranges.clone();
-        let returned_ranges = client.get_object_range("", &hash, ranges).await.unwrap();
+        let returned_ranges = client.get_object_range("", &hash, ranges).unwrap();
 
         for idx in 0..returned_ranges.len() {
             assert_eq!(
@@ -355,7 +381,7 @@ mod tests {
 
         // Act
         client.put("", &hash, data, chunk_boundaries).await.unwrap();
-        let len = client.get_length("", &hash).await.unwrap();
+        let len = client.get_length("", &hash).unwrap();
 
         // Assert
         assert_eq!(len as usize, gen_length);
@@ -368,7 +394,7 @@ mod tests {
         let (hash, _, _) = gen_dummy_xorb(16, 2048, true);
 
         // Act & Assert
-        let result = client.get("", &hash).await;
+        let result = client.get("", &hash);
         assert!(matches!(result, Err(CasClientError::XORBNotFound(_))));
     }
 
@@ -459,15 +485,14 @@ mod tests {
         // get length of non-existant object should fail with XORBNotFound
         assert_eq!(
             CasClientError::XORBNotFound(world_hash),
-            client.get_length("key", &world_hash).await.unwrap_err()
+            client.get_length("key", &world_hash).unwrap_err()
         );
 
         // read of non-existant object should fail with XORBNotFound
-        assert!(client.get("key", &world_hash).await.is_err());
+        assert!(client.get("key", &world_hash).is_err());
         // read range of non-existant object should fail with XORBNotFound
         assert!(client
             .get_object_range("key", &world_hash, vec![(0, 5)])
-            .await
             .is_err());
 
         // we can delete non-existant things
@@ -481,11 +506,11 @@ mod tests {
         // now every read of that key should fail
         assert_eq!(
             CasClientError::XORBNotFound(hello_hash),
-            client.get_length("key", &hello_hash).await.unwrap_err()
+            client.get_length("key", &hello_hash).unwrap_err()
         );
         assert_eq!(
             CasClientError::XORBNotFound(hello_hash),
-            client.get("key", &hello_hash).await.unwrap_err()
+            client.get("key", &hello_hash).unwrap_err()
         );
     }
 

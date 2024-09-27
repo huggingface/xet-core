@@ -459,6 +459,8 @@ impl ShardFileManager {
 #[cfg(test)]
 mod tests {
 
+    use std::cmp::min;
+
     use crate::{
         cas_structs::{CASChunkSequenceEntry, CASChunkSequenceHeader},
         file_structs::FileDataSequenceHeader,
@@ -596,12 +598,8 @@ mod tests {
                 let mut query_hashes_2 = query_hashes_1.clone();
                 query_hashes_2.push(rng_hash(1000000 + i as u64));
 
-                let lb = cas_block.chunks[i].chunk_byte_range_start;
-                let ub = if i + 3 >= cas_block.chunks.len() {
-                    cas_block.metadata.num_bytes_in_cas
-                } else {
-                    cas_block.chunks[i + 3].chunk_byte_range_start
-                };
+                let lb = i as u32;
+                let ub = min(i + 3, cas_block.chunks.len()) as u32;
 
                 for query_hashes in [&query_hashes_1, &query_hashes_2] {
                     let result_m = mem_shard.chunk_hash_dedup_query(query_hashes).unwrap();
@@ -621,17 +619,11 @@ mod tests {
 
                     // Make sure the bounds are correct
                     assert_eq!(
-                        (
-                            result_m.1.chunk_byte_range_start,
-                            result_m.1.chunk_byte_range_end
-                        ),
+                        (result_m.1.chunk_index_start, result_m.1.chunk_index_end),
                         (lb, ub)
                     );
                     assert_eq!(
-                        (
-                            result_f.1.chunk_byte_range_start,
-                            result_f.1.chunk_byte_range_end
-                        ),
+                        (result_f.1.chunk_index_start, result_f.1.chunk_index_end),
                         (lb, ub)
                     );
 

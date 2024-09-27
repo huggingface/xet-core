@@ -1,7 +1,7 @@
 use crate::error::Result;
 use async_trait::async_trait;
 use merklehash::MerkleHash;
-use std::sync::Arc;
+use std::{io::Write, sync::Arc};
 
 /// A Client to the CAS (Content Addressed Storage) service to allow storage and
 /// management of XORBs (Xet Object Remote Block). A XORB represents a collection
@@ -9,7 +9,7 @@ use std::sync::Arc;
 /// producing a Merkle Tree. XORBs in the CAS are identified by a combination of
 /// a prefix namespacing the XORB and the hash at the root of the Merkle Tree.
 #[async_trait]
-pub trait Client: core::fmt::Debug {
+pub trait UploadClient {
     /// Insert the provided data into the CAS as a XORB indicated by the prefix and hash.
     /// The hash will be verified on the server-side according to the chunk boundaries.
     /// Chunk Boundaries must be complete; i.e. the last entry in chunk boundary
@@ -27,35 +27,37 @@ pub trait Client: core::fmt::Debug {
         chunk_boundaries: Vec<u64>,
     ) -> Result<()>;
 
+    /// Check if a XORB already exists.
+    async fn exists(&self, prefix: &str, hash: &MerkleHash) -> Result<bool>;
+
     /// Clients may do puts in the background. A flush is necessary
     /// to enforce completion of all puts. If an error occured during any
     /// background put it will be returned here.
     async fn flush(&self) -> Result<()>;
+}
 
-    /// Reads all of the contents for the indicated XORB, returning the data or an error
-    /// if an issue occurred.
-    async fn get(&self, prefix: &str, hash: &MerkleHash) -> Result<Vec<u8>>;
+/// A Client to the CAS (Content Addressed Storage) service to allow reconstructing a
+/// pointer file based on FileID (MerkleHash).
+#[async_trait]
+pub trait ReconstructionClient {
+    /// Get a entire file by file hash.
+    async fn get_file(&self, hash: &MerkleHash, writer: &mut Box<dyn Write + Send>) -> Result<()>;
 
-    /// Reads the requested ranges for the indicated object. Each range is a tuple of
-    /// start byte (inclusive) to end byte (exclusive). Will return the contents for
-    /// the ranges if they exist in the order specified. If there are issues fetching
-    /// any of the ranges, then an Error will be returned.
-    async fn get_object_range(
+    /// Get a entire file by file hash at a specific bytes range.
+    async fn get_file_byte_range(
         &self,
-        prefix: &str,
         hash: &MerkleHash,
-        ranges: Vec<(u64, u64)>,
-    ) -> Result<Vec<Vec<u8>>>;
-
-    /// Gets the length of the XORB or an error if an issue occurred.
-    async fn get_length(&self, prefix: &str, hash: &MerkleHash) -> Result<u64>;
+        offset: u64,
+        length: u64,
+        writer: &mut Box<dyn Write + Send>,
+    ) -> Result<()>;
 }
 
 /*
  * If T implements Client, Arc<T> also implements Client
  */
 #[async_trait]
-impl<T: Client + Sync + Send> Client for Arc<T> {
+impl<T: UploadClient + Send + Sync> UploadClient for Arc<T> {
     async fn put(
         &self,
         prefix: &str,
@@ -66,8 +68,8 @@ impl<T: Client + Sync + Send> Client for Arc<T> {
         (**self).put(prefix, hash, data, chunk_boundaries).await
     }
 
-    async fn get(&self, prefix: &str, hash: &MerkleHash) -> Result<Vec<u8>> {
-        (**self).get(prefix, hash).await
+    async fn exists(&self, prefix: &str, hash: &MerkleHash) -> Result<bool> {
+        (**self).exists(prefix, hash).await
     }
 
     /// Clients may do puts in the background. A flush is necessary
@@ -76,17 +78,26 @@ impl<T: Client + Sync + Send> Client for Arc<T> {
     async fn flush(&self) -> Result<()> {
         (**self).flush().await
     }
+}
 
-    async fn get_object_range(
-        &self,
-        prefix: &str,
-        hash: &MerkleHash,
-        ranges: Vec<(u64, u64)>,
-    ) -> Result<Vec<Vec<u8>>> {
-        (**self).get_object_range(prefix, hash, ranges).await
+#[async_trait]
+impl<T: ReconstructionClient + Send + Sync> ReconstructionClient for Arc<T> {
+    /// Get a entire file by file hash.
+    async fn get_file(&self, hash: &MerkleHash, writer: &mut Box<dyn Write + Send>) -> Result<()> {
+        (**self).get_file(hash, writer).await
     }
 
-    async fn get_length(&self, prefix: &str, hash: &MerkleHash) -> Result<u64> {
-        (**self).get_length(prefix, hash).await
+    async fn get_file_byte_range(
+        &self,
+        hash: &MerkleHash,
+        offset: u64,
+        length: u64,
+        writer: &mut Box<dyn Write + Send>,
+    ) -> Result<()> {
+        (**self)
+            .get_file_byte_range(hash, offset, length, writer)
+            .await
     }
 }
+
+pub trait Client: UploadClient + ReconstructionClient {}
