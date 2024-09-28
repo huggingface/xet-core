@@ -1,0 +1,14 @@
+[package]
+name = "chunk_cache"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+cas_types = { path = "../cas_types" }
+merklehash = { path = "../merklehash" }
+error_printer = { path = "../error_printer" }
+xet_error = { path = "../xet_error" }
+base64 = "0.22.1"
+blake3 = "1.5.4"
+tracing = "0.1.40"
+rand = "0.8.5"

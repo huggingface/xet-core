@@ -21,11 +21,10 @@ members = [
     "xet_error",
     "cas_object",
     "cas_types",
+    "chunk_cache",
 ]
 
-exclude = [
-    "hf_xet",
-]
+exclude = ["hf_xet"]
 
 [profile.release]
 opt-level = 3

@@ -555,6 +555,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "chunk_cache"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "blake3",
+ "cas_types",
+ "error_printer",
+ "merklehash",
+ "rand 0.8.5",
+ "tracing",
+ "xet_error",
+]
+
+[[package]]
 name = "clap"
 version = "2.34.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
