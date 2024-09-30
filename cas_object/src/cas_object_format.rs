@@ -222,6 +222,7 @@ impl Default for CasObject {
 }
 
 impl CasObject {
+
     /// Deserializes only the info length field of the footer to tell the user how many bytes
     /// make up the info portion of the xorb.
     ///
@@ -243,90 +244,6 @@ impl CasObject {
     pub fn deserialize<R: Read + Seek>(reader: &mut R) -> Result<Self, CasObjectError> {
         let (info, info_length) = CasObjectInfo::deserialize(reader)?;
         Ok(Self { info, info_length })
-    }
-    
-    /// Return end value of all chunk contents (byte index prior to header)
-    pub fn get_contents_length(&self) -> Result<u32, CasObjectError> {
-        match self.info.chunk_boundary_offsets.last() {
-            Some(c) => Ok(*c),
-            None => Err(CasObjectError::FormatError(anyhow!(
-                "Cannot retrieve content length"
-            ))),
-        }
-    }
-
-    /// Get range of content bytes from Xorb.
-    /// 
-    /// The start and end parameters are required to align with chunk boundaries.
-    pub fn get_range<R: Read + Seek>(
-        &self,
-        reader: &mut R,
-        start: u32,
-        end: u32,
-    ) -> Result<Vec<u8>, CasObjectError> {
-        if end < start {
-            return Err(CasObjectError::InvalidRange);
-        }
-
-        // make sure the end of the range is within the bounds of the xorb
-        let end = min(end, self.get_contents_length()?);
-
-        // read chunk bytes
-        let mut chunk_data = vec![0u8; (end - start) as usize];
-        reader.seek(std::io::SeekFrom::Start(start as u64))?;
-        reader.read_exact(&mut chunk_data)?;
-
-        // build up result vector by processing these chunks
-        let chunk_contents = self.get_chunk_contents(&chunk_data)?;
-        Ok(chunk_contents)
-    }
-
-    /// Assumes chunk_data is 1+ complete chunks. Processes them sequentially and returns them as Vec<u8>.
-    fn get_chunk_contents(&self, chunk_data: &[u8]) -> Result<Vec<u8>, CasObjectError> {
-        // walk chunk_data, deserialize into Chunks, and then get_bytes() from each of them.
-        let mut reader = Cursor::new(chunk_data);
-        let mut res = Vec::<u8>::new();
-
-        while reader.has_remaining() {
-            let (data, _) = deserialize_chunk(&mut reader)?;
-            res.extend_from_slice(&data);
-        }
-        Ok(res)
-    }
-
-    /// Get all the content bytes from a Xorb
-    pub fn get_all_bytes<R: Read + Seek>(&self, reader: &mut R) -> Result<Vec<u8>, CasObjectError> {
-        if self.info == Default::default() {
-            return Err(CasObjectError::InternalError(anyhow!(
-                "Incomplete CasObject, no CasObjectInfo footer."
-            )));
-        }
-
-        self.get_range(reader, 0, self.get_contents_length()?)
-    }
-
-    /// Helper function to translate CasObjectInfo.chunk_byte_offsets to just return chunk boundaries.
-    ///
-    /// The final chunk boundary returned is required to be the length of the contents.
-    fn get_chunk_boundaries(&self) -> Vec<u32> {
-        self.info.chunk_boundary_offsets.to_vec()
-    }
-
-    /// Get all the content bytes from a Xorb, and return the chunk boundaries
-    pub fn get_detailed_bytes<R: Read + Seek>(
-        &self,
-        reader: &mut R,
-    ) -> Result<(Vec<u32>, Vec<u8>), CasObjectError> {
-        if self.info == Default::default() {
-            return Err(CasObjectError::InternalError(anyhow!(
-                "Incomplete CasObject, no header"
-            )));
-        }
-
-        let data = self.get_all_bytes(reader)?;
-        let chunk_boundaries = self.get_chunk_boundaries();
-
-        Ok((chunk_boundaries, data))
     }
 
     /// Used by LocalClient for generating Cas Object from chunk_boundaries while uploading or downloading blocks.
@@ -382,32 +299,7 @@ impl CasObject {
         total_written_bytes += size_of::<u32>();
 
         Ok((cas, total_written_bytes))
-    }
-
-    fn validate_root_hash(data: &[u8], chunk_boundaries: &[u32], hash: &MerkleHash) -> bool {
-        // at least 1 chunk, and last entry in chunk boundary must match the length
-        if chunk_boundaries.is_empty()
-            || chunk_boundaries[chunk_boundaries.len() - 1] as usize != data.len()
-        {
-            return false;
-        }
-
-        let mut chunks: Vec<Chunk> = Vec::new();
-        let mut left_edge: usize = 0;
-        for i in chunk_boundaries {
-            let right_edge = *i as usize;
-            let hash = merklehash::compute_data_hash(&data[left_edge..right_edge]);
-            let length = right_edge - left_edge;
-            chunks.push(Chunk { hash, length });
-            left_edge = right_edge;
-        }
-
-        let mut db = MerkleMemDB::default();
-        let mut staging = db.start_insertion_staging();
-        db.add_file(&mut staging, &chunks);
-        let ret = db.finalize(staging);
-        *ret.hash() == *hash
-    }
+    }   
 
     /// Validate CasObject.
     /// Verifies each chunk is valid and correctly represented in CasObjectInfo, along with 
@@ -481,6 +373,124 @@ impl CasObject {
 
     }
 
+    /// Return end value of all chunk contents (byte index prior to header)
+    pub fn get_contents_length(&self) -> Result<u32, CasObjectError> {
+        self.validate_cas_object_info()?;
+        match self.info.chunk_boundary_offsets.last() {
+            Some(c) => Ok(*c),
+            None => Err(CasObjectError::FormatError(anyhow!(
+                "Cannot retrieve content length"
+            ))),
+        }
+    }
+
+    /// Get range of content bytes from Xorb.
+    /// 
+    /// The start and end parameters are required to align with chunk boundaries.
+    pub fn get_range<R: Read + Seek>(
+        &self,
+        reader: &mut R,
+        start: u32,
+        end: u32,
+    ) -> Result<Vec<u8>, CasObjectError> {
+        
+        if end < start {
+            return Err(CasObjectError::InvalidRange);
+        }
+        
+        self.validate_cas_object_info()?;
+
+        // make sure the end of the range is within the bounds of the xorb
+        let end = min(end, self.get_contents_length()?);
+
+        // read chunk bytes
+        let mut chunk_data = vec![0u8; (end - start) as usize];
+        reader.seek(std::io::SeekFrom::Start(start as u64))?;
+        reader.read_exact(&mut chunk_data)?;
+
+        // build up result vector by processing these chunks
+        let chunk_contents = self.get_chunk_contents(&chunk_data)?;
+        Ok(chunk_contents)
+    }
+
+    /// Get all the content bytes from a Xorb
+    pub fn get_all_bytes<R: Read + Seek>(&self, reader: &mut R) -> Result<Vec<u8>, CasObjectError> {
+        self.validate_cas_object_info()?;
+        self.get_range(reader, 0, self.get_contents_length()?)
+    }
+
+    /// Get all the content bytes from a Xorb, and return the chunk boundaries
+    pub fn get_detailed_bytes<R: Read + Seek>(
+        &self,
+        reader: &mut R,
+    ) -> Result<(Vec<u32>, Vec<u8>), CasObjectError> {
+        self.validate_cas_object_info()?;
+
+        let data = self.get_all_bytes(reader)?;
+        let chunk_boundaries = self.get_chunk_boundaries()?;
+
+        Ok((chunk_boundaries, data))
+    }
+
+    /// Assumes chunk_data is 1+ complete chunks. Processes them sequentially and returns them as Vec<u8>.
+    fn get_chunk_contents(&self, chunk_data: &[u8]) -> Result<Vec<u8>, CasObjectError> {
+        self.validate_cas_object_info()?;
+
+        // walk chunk_data, deserialize into Chunks, and then get_bytes() from each of them.
+        let mut reader = Cursor::new(chunk_data);
+        let mut res = Vec::<u8>::new();
+
+        while reader.has_remaining() {
+            let (data, _) = deserialize_chunk(&mut reader)?;
+            res.extend_from_slice(&data);
+        }
+        Ok(res)
+    }
+
+    /// Helper function to translate CasObjectInfo.chunk_boundary_offsets to just return chunk boundaries.
+    ///
+    /// The final chunk boundary returned is required to be the length of the contents.
+    fn get_chunk_boundaries(&self) -> Result<Vec<u32>, CasObjectError> {
+        self.validate_cas_object_info()?;
+        Ok(self.info.chunk_boundary_offsets.to_vec())
+    }
+
+    /// Helper method to verify that info object is complete
+    fn validate_cas_object_info(&self) -> Result<(), CasObjectError> {
+        if self.info == Default::default() {
+            return Err(CasObjectError::InternalError(anyhow!(
+                "Incomplete CasObject, no CasObjectInfo footer."
+            )));
+        }
+        Ok(())
+    }
+
+    /// Helper method to validate root hash for data block. 
+    fn validate_root_hash(data: &[u8], chunk_boundaries: &[u32], hash: &MerkleHash) -> bool {
+        // at least 1 chunk, and last entry in chunk boundary must match the length
+        if chunk_boundaries.is_empty()
+            || chunk_boundaries[chunk_boundaries.len() - 1] as usize != data.len()
+        {
+            return false;
+        }
+
+        let mut chunks: Vec<Chunk> = Vec::new();
+        let mut left_edge: usize = 0;
+        for i in chunk_boundaries {
+            let right_edge = *i as usize;
+            let hash = merklehash::compute_data_hash(&data[left_edge..right_edge]);
+            let length = right_edge - left_edge;
+            chunks.push(Chunk { hash, length });
+            left_edge = right_edge;
+        }
+
+        let mut db = MerkleMemDB::default();
+        let mut staging = db.start_insertion_staging();
+        db.add_file(&mut staging, &chunks);
+        let ret = db.finalize(staging);
+        *ret.hash() == *hash
+    }
+
 }
 
 #[cfg(test)]
@@ -528,8 +538,8 @@ mod tests {
         // Arrange
         let (c, _cas_data, _raw_data, _raw_chunk_boundaries) = build_cas_object(3, 100, false, CompressionScheme::None);
         // Act & Assert
-        assert_eq!(c.get_chunk_boundaries().len(), 3);
-        assert_eq!(c.get_chunk_boundaries(), [108, 216, 324]);
+        assert_eq!(c.get_chunk_boundaries().unwrap().len(), 3);
+        assert_eq!(c.get_chunk_boundaries().unwrap(), [108, 216, 324]);
         assert_eq!(c.info.num_chunks, 3);
         assert_eq!(c.info.chunk_boundary_offsets.len(), c.info.num_chunks as usize);
 
