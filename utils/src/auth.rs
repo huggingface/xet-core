@@ -22,6 +22,17 @@ impl TokenRefresher for NoOpTokenRefresher {
     }
 }
 
+#[derive(Debug)]
+pub struct ErrTokenRefresher;
+
+impl TokenRefresher for ErrTokenRefresher {
+    fn refresh(&self) -> Result<TokenInfo, AuthError> {
+        Err(AuthError::RefreshFunctionNotCallable(
+            "Token refresh not expected".to_string(),
+        ))
+    }
+}
+
 /// Shared configuration for token-based auth
 #[derive(Debug, Clone)]
 pub struct AuthConfig {
@@ -51,7 +62,7 @@ impl AuthConfig {
             (Some(token), expiry, None) => Some(Self {
                 token,
                 token_expiration: expiry.unwrap_or(u64::MAX),
-                token_refresher: Arc::new(NoOpTokenRefresher),
+                token_refresher: Arc::new(ErrTokenRefresher),
             }),
             (_, _, _) => None,
         }

@@ -13,6 +13,15 @@ pub struct AuthMiddleware {
 }
 
 impl AuthMiddleware {
+    /// Fetches a token from our TokenProvider. This locks the TokenProvider as we might need
+    /// to refresh the token if it has expired.
+    ///
+    /// In the common case, this lock is held only to read the underlying token stored
+    /// in memory. However, in the event of an expired token (e.g. once every 15 min),
+    /// we will need to hold the lock while making a call to refresh the token
+    /// (e.g. to a remote service). During this time, no other CAS requests can proceed
+    /// from this client until the token has been fetched. This is expected/ok since we
+    /// don't have a valid token and thus any calls would fail.
     fn get_token(&self) -> Result<String, anyhow::Error> {
         let mut provider = self
             .token_provider
