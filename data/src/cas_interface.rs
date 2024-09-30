@@ -45,7 +45,7 @@ pub(crate) async fn create_cas_client(
 
     // Raw remote client.
     let remote_client =
-        Arc::new(RemoteClient::from_config(endpoint.to_string(), cas_storage_config.auth.as_ref()).await);
+        Arc::new(RemoteClient::from_config(endpoint.to_string(), &cas_storage_config.auth).await);
 
     // Try add in caching capability.
     let maybe_caching_client = cas_storage_config.cache_config.as_ref().and_then(|cache| {

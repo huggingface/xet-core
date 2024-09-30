@@ -1,11 +1,11 @@
 use async_trait::async_trait;
 use bytes::Buf;
 use reqwest::Url;
-use reqwest_middleware::{ClientBuilder, ClientWithMiddleware};
+use reqwest_middleware::ClientWithMiddleware;
 use tracing::warn;
 
 use cas::auth::AuthConfig;
-use cas_client::AuthMiddleware;
+use cas_client::build_reqwest_client;
 use cas_types::Key;
 use cas_types::{
     QueryChunkResponse, QueryReconstructionResponse, UploadShardResponse, UploadShardResponseType,
@@ -31,12 +31,8 @@ pub struct HttpShardClient {
 }
 
 impl HttpShardClient {
-    pub fn new(endpoint: &str, auth_config: Option<&AuthConfig>) -> Self {
-        let reqwest_client = reqwest::Client::builder().build().unwrap();
-        let client = ClientBuilder::new(reqwest_client)
-            .with(AuthMiddleware::from(auth_config))
-            .build();
-
+    pub fn new(endpoint: &str, auth_config: &Option<AuthConfig>) -> Self {
+        let client = build_reqwest_client(auth_config).unwrap();
         HttpShardClient {
             endpoint: endpoint.into(),
             client,
@@ -51,11 +47,11 @@ fn retry_http_status_code(stat: &reqwest::StatusCode) -> bool {
 }
 
 fn is_status_retriable_and_print(err: &reqwest_middleware::Error) -> bool {
-    let ret = if let Some(code) = err.status() {
-        retry_http_status_code(&code)
-    } else {
-        true
-    };
+    let ret = err
+        .status()
+        .as_ref()
+        .map(retry_http_status_code)
+        .unwrap_or(true); // network issues should be retried
     if ret {
         warn!("{err:?}. Retrying...");
     }
@@ -211,7 +207,7 @@ mod test {
     #[tokio::test]
     #[ignore = "need a local cas_server running"]
     async fn test_local() -> anyhow::Result<()> {
-        let client = HttpShardClient::new("http://localhost:8080", None);
+        let client = HttpShardClient::new("http://localhost:8080", &None);
 
         let path =
             PathBuf::from("./a7de567477348b23d23b667dba4d63d533c2ba7337cdc4297970bb494ba4699e.mdb");

@@ -4,7 +4,7 @@ use anyhow::anyhow;
 use bytes::Buf;
 use bytes::Bytes;
 use reqwest::{StatusCode, Url};
-use reqwest_middleware::{ClientBuilder, ClientWithMiddleware};
+use reqwest_middleware::{ClientBuilder, ClientWithMiddleware, Middleware};
 use serde::{de::DeserializeOwned, Serialize};
 use tracing::{debug, warn};
 
@@ -13,6 +13,7 @@ use cas::key::Key;
 use cas_object::CasObject;
 use cas_types::CASReconstructionTerm;
 use cas_types::{QueryChunkResponse, QueryReconstructionResponse, UploadXorbResponse};
+use error_printer::OptionPrinter;
 use merklehash::MerkleHash;
 
 use crate::Client;
@@ -82,7 +83,7 @@ impl Client for RemoteClient {
 }
 
 impl RemoteClient {
-    pub async fn from_config(endpoint: String, auth_config: Option<&AuthConfig>) -> Self {
+    pub async fn from_config(endpoint: String, auth_config: &Option<AuthConfig>) -> Self {
         Self {
             client: CASAPIClient::new(&endpoint, auth_config),
         }
@@ -97,16 +98,13 @@ pub struct CASAPIClient {
 
 impl Default for CASAPIClient {
     fn default() -> Self {
-        Self::new(CAS_ENDPOINT, None)
+        Self::new(CAS_ENDPOINT, &None)
     }
 }
 
 impl CASAPIClient {
-    pub fn new(endpoint: &str, auth_config: Option<&AuthConfig>) -> Self {
-        let reqwest_client = reqwest::Client::builder().build().unwrap();
-        let client = ClientBuilder::new(reqwest_client)
-            .with(AuthMiddleware::from(auth_config))
-            .build();
+    pub fn new(endpoint: &str, auth_config: &Option<AuthConfig>) -> Self {
+        let client = build_reqwest_client(auth_config).unwrap();
         Self {
             client,
             endpoint: endpoint.to_string(),
@@ -292,6 +290,34 @@ async fn get_one(term: &CASReconstructionTerm) -> Result<Bytes> {
     Ok(Bytes::from(sliced))
 }
 
+/// builds the client to talk to CAS.
+pub fn build_reqwest_client(
+    auth_config: &Option<AuthConfig>,
+) -> std::result::Result<ClientWithMiddleware, reqwest::Error> {
+    let auth_middleware = auth_config
+        .as_ref()
+        .map(AuthMiddleware::from)
+        .info_none("CAS auth disabled");
+    let reqwest_client = reqwest::Client::builder().build()?;
+    Ok(ClientBuilder::new(reqwest_client)
+        .maybe_with(auth_middleware)
+        .build())
+}
+
+/// Helper trait to allow the reqwest_middleware client to optionally add a middleware.
+trait OptionalMiddleware {
+    fn maybe_with<M: Middleware>(self, middleware: Option<M>) -> Self;
+}
+
+impl OptionalMiddleware for ClientBuilder {
+    fn maybe_with<M: Middleware>(self, middleware: Option<M>) -> Self {
+        match middleware {
+            Some(m) => self.with(m),
+            None => self,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use rand::Rng;
@@ -306,7 +332,7 @@ mod tests {
     #[tokio::test]
     async fn test_basic_put() {
         // Arrange
-        let rc = RemoteClient::from_config(CAS_ENDPOINT.to_string(), None).await;
+        let rc = RemoteClient::from_config(CAS_ENDPOINT.to_string(), &None).await;
         let prefix = PREFIX_DEFAULT;
         let (hash, data, chunk_boundaries) = gen_dummy_xorb(3, 10248, true);
 

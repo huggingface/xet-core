@@ -1,4 +1,4 @@
-use cas::auth::TokenRefresher;
+use cas::auth::{TokenInfo, TokenRefresher};
 use cas::errors::AuthError;
 use pyo3::exceptions::PyTypeError;
 use pyo3::prelude::PyAnyMethods;
@@ -50,7 +50,7 @@ impl WrappedTokenRefresher {
 }
 
 impl TokenRefresher for WrappedTokenRefresher {
-    fn refresh(&self) -> Result<(String, u64), AuthError> {
+    fn refresh(&self) -> Result<TokenInfo, AuthError> {
         info!("refreshing token");
         Python::with_gil(|py| {
             let f = self.py_func.bind(py);

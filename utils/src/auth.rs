@@ -3,17 +3,21 @@ use std::fmt::Debug;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+/// Helper type for information about an auth token.
+/// Namely, the token itself and expiration time
+pub type TokenInfo = (String, u64);
+
 /// Helper to provide auth tokens to CAS.
 pub trait TokenRefresher: Debug + Send + Sync {
     /// Get a new auth token for CAS and the unixtime (in seconds) for expiration
-    fn refresh(&self) -> Result<(String, u64), AuthError>;
+    fn refresh(&self) -> Result<TokenInfo, AuthError>;
 }
 
 #[derive(Debug)]
 pub struct NoOpTokenRefresher;
 
 impl TokenRefresher for NoOpTokenRefresher {
-    fn refresh(&self) -> Result<(String, u64), AuthError> {
+    fn refresh(&self) -> Result<TokenInfo, AuthError> {
         Ok(("token".to_string(), 0))
     }
 }

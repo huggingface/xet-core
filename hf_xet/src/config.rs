@@ -17,7 +17,7 @@ pub fn default_config(
     let path = current_dir()?.join(".xet");
     fs::create_dir_all(&path)?;
 
-    let (token, token_expiration) = convert(token_info);
+    let (token, token_expiration) = token_info.unzip();
     let auth_cfg = AuthConfig::maybe_new(token, token_expiration, token_refresher);
 
     let translator_config = TranslatorConfig {
@@ -57,11 +57,4 @@ pub fn default_config(
     translator_config.validate()?;
 
     Ok(translator_config)
-}
-
-fn convert(opt: Option<(String, u64)>) -> (Option<String>, Option<u64>) {
-    match opt {
-        Some((s, n)) => (Some(s), Some(n)),
-        None => (None, None),
-    }
 }

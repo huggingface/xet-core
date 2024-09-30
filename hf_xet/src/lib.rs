@@ -4,15 +4,13 @@ mod log;
 mod token_refresh;
 
 use cas::auth::TokenRefresher;
-use data::{errors, PointerFile};
-use parutils::{tokio_par_for_each, ParallelError};
+use data::PointerFile;
 use pyo3::exceptions::PyException;
 use pyo3::prelude::*;
 use pyo3::pyfunction;
 use std::fmt::Debug;
 use std::sync::Arc;
 use token_refresh::WrappedTokenRefresher;
-use tracing::info;
 
 #[pyfunction]
 #[pyo3(signature = (file_paths, endpoint, token_info, token_refresher), text_signature = "(file_paths: List[str], endpoint: Optional[str], token_info: Optional[(str, int)], token_refresher: Optional[Callable[[], (str, int)]]) -> List[PyPointerFile]")]
@@ -62,9 +60,9 @@ pub fn download_files(
         tokio::runtime::Builder::new_multi_thread()
             .enable_all()
             .build()?
-            .block_on(
-                async move { data_client::download_async(pfs, endpoint, token_info, refresher).await },
-            )
+            .block_on(async move {
+                data_client::download_async(pfs, endpoint, token_info, refresher).await
+            })
             .map_err(|e| PyException::new_err(format!("{e:?}")))
     })
 }
@@ -125,45 +123,11 @@ impl PyPointerFile {
     }
 }
 
-#[pyfunction]
-pub fn try_refresh_token(py: Python, func: Py<PyAny>) -> PyResult<(String, u64)> {
-    let refresher = WrappedTokenRefresher::from_func(func)?;
-    py.allow_threads(move || {
-        tokio::runtime::Builder::new_multi_thread()
-            .enable_all()
-            .build()?
-            .block_on(async move { try_refresh(refresher).await })
-            .map_err(|e| PyException::new_err(format!("{e:?}")))
-    })
-}
-
-async fn try_refresh(refresher: WrappedTokenRefresher) -> errors::Result<(String, u64)> {
-    let refresher = Arc::new(refresher);
-    let tokens = tokio_par_for_each(
-        (0..20).collect(),
-        data_client::MAX_CONCURRENT_UPLOADS,
-        |i, _| {
-            let refresher = refresher.clone();
-            async move {
-                let result = refresher.refresh()?;
-                info!("got result {i}:{result:?}");
-                Ok(result)
-            }
-        },
-    )
-    .await
-    .map_err(|e: ParallelError<errors::DataProcessingError>| {
-        errors::DataProcessingError::InternalError(format!("err: {e:?}"))
-    })?;
-    Ok(tokens[0].clone())
-}
-
 #[pymodule]
 pub fn hf_xet(m: &Bound<'_, PyModule>) -> PyResult<()> {
     log::initialize_logging();
     m.add_function(wrap_pyfunction!(upload_files, m)?)?;
     m.add_function(wrap_pyfunction!(download_files, m)?)?;
     m.add_class::<PyPointerFile>()?;
-    m.add_function(wrap_pyfunction!(try_refresh_token, m)?)?;
     Ok(())
 }

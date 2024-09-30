@@ -5,17 +5,17 @@ use reqwest::header::AUTHORIZATION;
 use reqwest::{Request, Response};
 use reqwest_middleware::{Middleware, Next};
 use std::sync::{Arc, Mutex};
-use tracing::info;
 
 /// AuthMiddleware is a thread-safe middleware that adds a CAS auth token to outbound requests.
 /// If the token it holds is expired, it will automatically be refreshed.
 pub struct AuthMiddleware {
-    token_provider: Option<Arc<Mutex<TokenProvider>>>,
+    token_provider: Arc<Mutex<TokenProvider>>,
 }
 
 impl AuthMiddleware {
-    fn get_token(provider_ref: &Arc<Mutex<TokenProvider>>) -> Result<String, anyhow::Error> {
-        let mut provider = provider_ref
+    fn get_token(&self) -> Result<String, anyhow::Error> {
+        let mut provider = self
+            .token_provider
             .lock()
             .map_err(|e| anyhow!("lock error: {e:?}"))?;
         provider
@@ -24,13 +24,10 @@ impl AuthMiddleware {
     }
 }
 
-impl From<Option<&AuthConfig>> for AuthMiddleware {
-    fn from(value: Option<&AuthConfig>) -> Self {
-        if value.is_none() {
-            info!("CAS auth disabled");
-        }
+impl From<&AuthConfig> for AuthMiddleware {
+    fn from(cfg: &AuthConfig) -> Self {
         Self {
-            token_provider: value.map(|cfg| Arc::new(Mutex::new(TokenProvider::new(cfg)))),
+            token_provider: Arc::new(Mutex::new(TokenProvider::new(cfg))),
         }
     }
 }
@@ -43,15 +40,15 @@ impl Middleware for AuthMiddleware {
         extensions: &mut hyper::http::Extensions,
         next: Next<'_>,
     ) -> reqwest_middleware::Result<Response> {
-        if let Some(ref provider) = self.token_provider {
-            let token = Self::get_token(provider).map_err(reqwest_middleware::Error::Middleware)?;
+        let token = self
+            .get_token()
+            .map_err(reqwest_middleware::Error::Middleware)?;
 
-            let headers = req.headers_mut();
-            headers.insert(
-                AUTHORIZATION,
-                HeaderValue::from_str(&format!("Bearer {}", token)).unwrap(),
-            );
-        }
+        let headers = req.headers_mut();
+        headers.insert(
+            AUTHORIZATION,
+            HeaderValue::from_str(&format!("Bearer {}", token)).unwrap(),
+        );
         next.run(req, extensions).await
     }
 }
