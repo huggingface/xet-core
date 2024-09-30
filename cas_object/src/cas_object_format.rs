@@ -18,9 +18,7 @@ const CAS_OBJECT_FORMAT_VERSION: u8 = 0;
 const CAS_OBJECT_INFO_DEFAULT_LENGTH: u32 = 60;
 
 #[derive(Clone, PartialEq, Eq, Debug)]
-/// Info struct for [CasObject]. This is stored at the end of the XORB
-///
-/// See details here: https://www.notion.so/huggingface2/Introduction-To-XetHub-Storage-Architecture-And-The-Integration-Path-54c3d14c682c4e41beab2364f273fc35?pvs=4#4ffa9b930a6942bd87f054714865375d
+/// Info struct for [CasObject]. This is stored at the end of the XORB.
 pub struct CasObjectInfo {
     /// CAS identifier: "XETBLOB"
     pub ident: [u8; 7],
@@ -31,7 +29,7 @@ pub struct CasObjectInfo {
     /// 256-bits, 16-bytes, The CAS Hash of this Xorb.
     pub cashash: MerkleHash,
 
-    /// Total number of chunks in the Xorb. Length of chunk_byte_offset & chunk_hashes vectors.
+    /// Total number of chunks in the Xorb. Length of chunk_boundary_offsets & chunk_hashes vectors.
     pub num_chunks: u32,
 
     /// Byte offset marking the boundary of each chunk. Length of vector is num_chunks.
@@ -87,7 +85,7 @@ impl CasObjectInfo {
         write_bytes(self.cashash.as_bytes())?;
         write_bytes(&self.num_chunks.to_le_bytes())?;
 
-        // write variable field: chunk offsets & hashes
+        // write variable field: chunk boundaries & hashes
         for offset in &self.chunk_boundary_offsets {
             write_bytes(&offset.to_le_bytes())?;
         }
@@ -157,7 +155,7 @@ impl CasObjectInfo {
             read_bytes(&mut offset)?;
             chunk_boundary_offsets.push(u32::from_le_bytes(offset));
         }
-        let mut chunk_hashes = Vec::with_capacity(num_chunks as usize); // dummy chunk
+        let mut chunk_hashes = Vec::with_capacity(num_chunks as usize);
         for _ in 0..num_chunks {
             let mut hash = [0u8; 32];
             read_bytes(&mut hash)?;
@@ -192,7 +190,17 @@ impl CasObjectInfo {
 #[derive(Clone, PartialEq, Eq, Debug)]
 /// XORB: 16MB data block for storing chunks.
 ///
-/// Has header, and a set of functions that interact directly with XORB.
+/// Has Info footer, and a set of functions that interact directly with XORB.
+/// 
+/// Physical layout of this object is as follows:
+/// [START OF XORB]
+/// <CHUNK 0>
+/// <CHUNK 1>
+/// <..>
+/// <CHUNK N>
+/// <CasObjectInfo>
+/// CasObjectinfo length: u32
+/// [END OF XORB]
 pub struct CasObject {
     /// CasObjectInfo block see [CasObjectInfo] for details.
     pub info: CasObjectInfo,
@@ -299,7 +307,7 @@ impl CasObject {
 
     /// Helper function to translate CasObjectInfo.chunk_byte_offsets to just return chunk boundaries.
     ///
-    /// The final chunk boundary returned is required to be the length of the contents, which is recorded in the dummy chunk.
+    /// The final chunk boundary returned is required to be the length of the contents.
     fn get_chunk_boundaries(&self) -> Vec<u32> {
         self.info.chunk_boundary_offsets.to_vec()
     }
