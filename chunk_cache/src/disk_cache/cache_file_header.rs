@@ -1,4 +1,7 @@
-use std::io::{Read, Seek, Write};
+use std::{
+    io::{Read, Seek, Write},
+    mem::size_of,
+};
 
 use crate::error::ChunkCacheError;
 

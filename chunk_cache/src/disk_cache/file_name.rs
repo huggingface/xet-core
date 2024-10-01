@@ -1,4 +1,5 @@
 use std::{
+    mem::size_of,
     path::PathBuf,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
@@ -6,7 +7,6 @@ use std::{
 use base64::{engine::GeneralPurpose, prelude::BASE64_URL_SAFE, Engine};
 use blake3::Hash;
 use error_printer::ErrorPrinter;
-use std::mem::size_of;
 
 use crate::error::ChunkCacheError;
 
