@@ -200,7 +200,7 @@ impl DiskCache {
             .create(true)
             .write(true)
             .truncate(true)
-            .open(&file_path)?;
+            .open(file_path)?;
         file.write_all(&header_buf)?;
         file.write_all(data)?;
         let len = (header_buf.len() + data.len()) as u64;
