@@ -2,11 +2,12 @@ use std::{
     collections::HashMap,
     fs::File,
     io::{Read, Seek, Write},
+    os::unix::ffi::OsStringExt,
     path::{Path, PathBuf},
     time::SystemTime,
 };
 
-use base64::{engine::GeneralPurpose, prelude::BASE64_URL_SAFE_NO_PAD, Engine};
+use base64::{engine::GeneralPurpose, prelude::BASE64_URL_SAFE, Engine};
 use cache_file_header::CacheFileHeader;
 use cas_types::{Key, Range};
 use error_printer::ErrorPrinter;
@@ -20,7 +21,7 @@ use crate::{error::ChunkCacheError, ChunkCache};
 mod cache_file_header;
 mod file_name;
 
-const BASE64_ENGINE: GeneralPurpose = BASE64_URL_SAFE_NO_PAD;
+const BASE64_ENGINE: GeneralPurpose = BASE64_URL_SAFE;
 
 #[derive(Debug, Clone)]
 pub struct DiskCache {
@@ -41,11 +42,10 @@ impl DiskCache {
         for subdir in std::fs::read_dir(&cache_root)? {
             let subdir = subdir?;
 
-            let key_result =
-                subdir_to_key(subdir.file_name().as_encoded_bytes()).warn_error(format!(
-                    "expected subdir: {:?} to be parsable as a key",
-                    subdir.file_name()
-                ));
+            let key_result = subdir_to_key(subdir.file_name().into_vec()).warn_error(format!(
+                "expected subdir: {:?} to be parsable as a key",
+                subdir.file_name()
+            ));
             let key = match key_result {
                 Ok(k) => k,
                 Err(_) => continue,
@@ -57,7 +57,7 @@ impl DiskCache {
             }
             for key_file in std::fs::read_dir(subdir.path())? {
                 let key_file = key_file?;
-                let file_name_result = FileName::try_parse(key_file.file_name().as_encoded_bytes())
+                let file_name_result = FileName::try_parse(key_file.file_name().into_vec())
                     .warn_error(format!(
                         "expected file name: {:?} to be parsed as a cache FileName",
                         key_file.file_name()
@@ -119,21 +119,26 @@ impl DiskCache {
             return Err(ChunkCacheError::parse("file checksum mismatch"));
         }
 
-        let result = self.hit(&mut file, range)?;
+        let result = self.hit(&mut file, *start, range)?;
         self.update_time_stamp(&(key.clone(), *start, *end))?;
 
         Ok(Some(result))
     }
 
-    fn hit<R: Read + Seek>(&self, file: &mut R, range: &Range) -> Result<Vec<u8>, ChunkCacheError> {
+    fn hit<R: Read + Seek>(
+        &self,
+        file: &mut R,
+        start: u32,
+        range: &Range,
+    ) -> Result<Vec<u8>, ChunkCacheError> {
         let header = CacheFileHeader::deserialize(file)?;
         let start_byte_index = header
             .chunk_byte_indicies
-            .get(range.start as usize)
+            .get((range.start - start) as usize)
             .ok_or(ChunkCacheError::BadRange)?;
         let end_byte_index = header
             .chunk_byte_indicies
-            .get(range.end as usize)
+            .get((range.end - start) as usize)
             .ok_or(ChunkCacheError::BadRange)?;
         let start_position = (header.header_len + *start_byte_index as usize) as u64;
         file.seek(std::io::SeekFrom::Start(start_position))?;
@@ -168,7 +173,7 @@ impl DiskCache {
             .keys()
             .filter(|(k, start, end)| k == key && *start <= range.start && *end >= range.end)
             .collect::<Vec<_>>();
-        if matches.len() > 0 {
+        if !matches.is_empty() {
             self.update_time_stamp(&matches[0].clone())?;
             return Ok(());
         }
@@ -254,11 +259,11 @@ impl DiskCache {
         let cache_root = self.cache_root.clone();
         let (file_name, _) = self
             .items
-            .get_mut(&item_key)
+            .get_mut(item_key)
             .ok_or(ChunkCacheError::Infallible)?;
-        let old_file_path = cache_file_path(cache_root.clone(), &item_key.0, &file_name);
+        let old_file_path = cache_file_path(cache_root.clone(), &item_key.0, file_name);
         file_name.timestamp = SystemTime::now();
-        let new_file_path = cache_file_path(cache_root, &item_key.0, &file_name);
+        let new_file_path = cache_file_path(cache_root, &item_key.0, file_name);
         std::fs::rename(old_file_path, new_file_path)?;
 
         Ok(())
@@ -268,7 +273,7 @@ impl DiskCache {
 fn cache_file_path(cache_root: PathBuf, key: &Key, file_name: &FileName) -> PathBuf {
     cache_root
         .join(key_to_subdir(key))
-        .join(file_name.as_path_buf())
+        .join(Into::<PathBuf>::into(file_name))
 }
 
 impl ChunkCache for DiskCache {
@@ -284,7 +289,7 @@ impl ChunkCache for DiskCache {
         &mut self,
         key: &Key,
         range: &Range,
-        chunk_byte_indicies: &Vec<u32>,
+        chunk_byte_indicies: &[u32],
         data: &[u8],
     ) -> Result<(), crate::error::ChunkCacheError> {
         self.put_impl(key, range, chunk_byte_indicies, data)
@@ -300,9 +305,8 @@ fn key_to_subdir(key: &Key) -> String {
 }
 
 fn subdir_to_key<T: AsRef<[u8]>>(subdir: T) -> Result<Key, ChunkCacheError> {
-    let mut buf = Vec::new();
-    BASE64_ENGINE
-        .decode_slice(subdir, &mut buf)
+    let mut buf = BASE64_ENGINE
+        .decode(subdir)
         .map_err(ChunkCacheError::parse)?;
     if buf.len() < 1 + size_of::<MerkleHash>() {
         return Err(ChunkCacheError::parse("decoded too few bytes"));
@@ -340,7 +344,6 @@ mod test_utils {
                             // If it's a directory, call this function recursively
                             if path.is_dir() {
                                 print_directory_contents(&path);
-                                println!("");
                             }
                         }
                         Err(e) => eprintln!("Error reading entry: {}", e),
@@ -404,7 +407,7 @@ mod tests {
 
     use crate::ChunkCache;
 
-    use super::DiskCache;
+    use super::{subdir_to_key, DiskCache};
 
     #[test]
     fn test_get_cache_empty() {
@@ -485,5 +488,32 @@ mod tests {
         assert!(cache.put(&key, &range, &offsets, &data).is_ok());
 
         assert!(cache.put(&key, &range, &offsets, &data).is_ok());
+    }
+
+    #[test]
+    fn test_initialize_non_empty() {
+        let cache_root = TempDir::new("puts_eviction").unwrap();
+        let mut cache = DiskCache::initialize(cache_root.path(), DEFAULT_CAPACITY).unwrap();
+
+        let mut keys_and_ranges = Vec::new();
+
+        for _ in 0..20 {
+            let (key, range, offsets, data) = RandomEntryIterator.next().unwrap();
+            assert!(cache.put(&key, &range, &offsets, &data).is_ok());
+            keys_and_ranges.push((key, range));
+        }
+        let mut cache2 = DiskCache::initialize(cache_root.path(), DEFAULT_CAPACITY).unwrap();
+        for (i, (key, range)) in keys_and_ranges.iter().enumerate() {
+            let get_result = cache2.get(&key, &range);
+            assert!(get_result.is_ok(), "{i} {get_result:?}");
+            assert!(get_result.unwrap().is_some(), "{i}");
+        }
+    }
+
+    #[test]
+    fn test_subdir_to_key() {
+        let s = "oL-Xqk1J00kVe1U4kCko-Kw4zaVv3-4U73i27w5DViBkZWZhdWx0";
+        let key = subdir_to_key(s);
+        assert!(key.is_ok(), "{key:?}")
     }
 }
