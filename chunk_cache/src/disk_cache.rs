@@ -2,6 +2,7 @@ use std::{
     collections::HashMap,
     fs::File,
     io::{Read, Seek, Write},
+    mem::size_of,
     os::unix::ffi::OsStringExt,
     path::{Path, PathBuf},
     time::SystemTime,
