@@ -6,7 +6,6 @@ use crate::metrics::FILTER_CAS_BYTES_PRODUCED;
 use crate::remote_shard_interface::RemoteShardInterface;
 use crate::shard_interface::create_shard_manager;
 use crate::PointerFile;
-
 use cas_client::Client;
 use mdb_shard::cas_structs::{CASChunkSequenceEntry, CASChunkSequenceHeader, MDBCASInfo};
 use mdb_shard::file_structs::MDBFileInfo;

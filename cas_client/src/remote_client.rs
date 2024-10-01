@@ -1,15 +1,17 @@
 use crate::interface::*;
-use crate::{error::Result, CasClientError};
+use crate::Client;
+use crate::{error::Result, AuthMiddleware, CasClientError};
 use anyhow::anyhow;
 use async_trait::async_trait;
 use bytes::Buf;
 use bytes::Bytes;
+use cas::auth::AuthConfig;
 use cas_object::CasObject;
 use cas_types::{CASReconstructionTerm, Key, QueryReconstructionResponse, UploadXorbResponse};
+use error_printer::OptionPrinter;
 use merklehash::MerkleHash;
-use reqwest::header::{HeaderMap, HeaderValue};
-use reqwest::StatusCode;
-use reqwest::Url;
+use reqwest::{StatusCode, Url};
+use reqwest_middleware::{ClientBuilder, ClientWithMiddleware, Middleware};
 use std::io::{Cursor, Write};
 use tracing::{debug, warn};
 
@@ -18,9 +20,8 @@ pub const PREFIX_DEFAULT: &str = "default";
 
 #[derive(Debug)]
 pub struct RemoteClient {
-    client: reqwest::Client,
+    client: ClientWithMiddleware,
     endpoint: String,
-    token: Option<String>,
 }
 
 // TODO: add retries
@@ -56,12 +57,7 @@ impl UploadClient for RemoteClient {
         };
 
         let url = Url::parse(&format!("{}/xorb/{key}", self.endpoint))?;
-        let response = self
-            .client
-            .head(url)
-            .headers(self.request_headers())
-            .send()
-            .await?;
+        let response = self.client.head(url).send().await?;
         match response.status() {
             StatusCode::OK => Ok(true),
             StatusCode::NOT_FOUND => Ok(false),
@@ -102,12 +98,11 @@ impl ReconstructionClient for RemoteClient {
 impl Client for RemoteClient {}
 
 impl RemoteClient {
-    pub fn new(endpoint: &str, token: Option<String>) -> Self {
-        let client = reqwest::Client::builder().build().unwrap();
+    pub fn new(endpoint: &str, auth_config: &Option<AuthConfig>) -> Self {
+        let client = build_reqwest_client(auth_config).unwrap();
         Self {
             client,
             endpoint: endpoint.to_string(),
-            token,
         }
     }
 
@@ -133,13 +128,7 @@ impl RemoteClient {
         writer.set_position(0);
         let data = writer.into_inner();
 
-        let response = self
-            .client
-            .post(url)
-            .headers(self.request_headers())
-            .body(data)
-            .send()
-            .await?;
+        let response = self.client.post(url).body(data).send().await?;
         let response_body = response.bytes().await?;
         let response_parsed: UploadXorbResponse = serde_json::from_reader(response_body.reader())?;
 
@@ -184,28 +173,12 @@ impl RemoteClient {
             file_id.hex()
         ))?;
 
-        let response = self
-            .client
-            .get(url)
-            .headers(self.request_headers())
-            .send()
-            .await?;
+        let response = self.client.get(url).send().await?;
         let response_body = response.bytes().await?;
         let response_parsed: QueryReconstructionResponse =
             serde_json::from_reader(response_body.reader())?;
 
         Ok(response_parsed)
-    }
-
-    fn request_headers(&self) -> HeaderMap {
-        let mut headers = HeaderMap::new();
-        if let Some(tok) = &self.token {
-            headers.insert(
-                "Authorization",
-                HeaderValue::from_str(&format!("Bearer {}", tok)).unwrap(),
-            );
-        }
-        headers
     }
 }
 
@@ -242,22 +215,49 @@ async fn get_one(term: &CASReconstructionTerm) -> Result<Bytes> {
     Ok(Bytes::from(sliced))
 }
 
+/// builds the client to talk to CAS.
+pub fn build_reqwest_client(
+    auth_config: &Option<AuthConfig>,
+) -> std::result::Result<ClientWithMiddleware, reqwest::Error> {
+    let auth_middleware = auth_config
+        .as_ref()
+        .map(AuthMiddleware::from)
+        .info_none("CAS auth disabled");
+    let reqwest_client = reqwest::Client::builder().build()?;
+    Ok(ClientBuilder::new(reqwest_client)
+        .maybe_with(auth_middleware)
+        .build())
+}
+
+/// Helper trait to allow the reqwest_middleware client to optionally add a middleware.
+trait OptionalMiddleware {
+    fn maybe_with<M: Middleware>(self, middleware: Option<M>) -> Self;
+}
+
+impl OptionalMiddleware for ClientBuilder {
+    fn maybe_with<M: Middleware>(self, middleware: Option<M>) -> Self {
+        match middleware {
+            Some(m) => self.with(m),
+            None => self,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
-
-    use merkledb::{prelude::MerkleDBHighLevelMethodsV1, Chunk, MerkleMemDB};
-    use merklehash::DataHash;
     use rand::Rng;
     use tracing_test::traced_test;
 
     use super::*;
+    use merkledb::{prelude::MerkleDBHighLevelMethodsV1, Chunk, MerkleMemDB};
+    use merklehash::DataHash;
 
     #[ignore]
     #[traced_test]
     #[tokio::test]
     async fn test_basic_put() {
         // Arrange
-        let rc = RemoteClient::new(CAS_ENDPOINT, None);
+        let rc = RemoteClient::new(CAS_ENDPOINT, &None);
         let prefix = PREFIX_DEFAULT;
         let (hash, data, chunk_boundaries) = gen_dummy_xorb(3, 10248, true);
 

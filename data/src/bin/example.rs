@@ -72,7 +72,7 @@ fn default_clean_config() -> Result<TranslatorConfig> {
         file_query_policy: Default::default(),
         cas_storage_config: StorageConfig {
             endpoint: Endpoint::FileSystem(path.join("xorbs")),
-            auth: Auth { token: None },
+            auth: None,
             prefix: "default".into(),
             cache_config: Some(CacheConfig {
                 cache_directory: path.join("cache"),
@@ -83,7 +83,7 @@ fn default_clean_config() -> Result<TranslatorConfig> {
         },
         shard_storage_config: StorageConfig {
             endpoint: Endpoint::FileSystem(path.join("xorbs")),
-            auth: Auth { token: None },
+            auth: None,
             prefix: "default-merkledb".into(),
             cache_config: Some(CacheConfig {
                 cache_directory: path.join("shard-cache"),
@@ -115,7 +115,7 @@ fn default_smudge_config() -> Result<TranslatorConfig> {
         file_query_policy: Default::default(),
         cas_storage_config: StorageConfig {
             endpoint: Endpoint::FileSystem(path.join("xorbs")),
-            auth: Auth { token: None },
+            auth: None,
             prefix: "default".into(),
             cache_config: Some(CacheConfig {
                 cache_directory: path.join("cache"),
@@ -126,7 +126,7 @@ fn default_smudge_config() -> Result<TranslatorConfig> {
         },
         shard_storage_config: StorageConfig {
             endpoint: Endpoint::FileSystem(path.join("xorbs")),
-            auth: Auth { token: None },
+            auth: None,
             prefix: "default-merkledb".into(),
             cache_config: Some(CacheConfig {
                 cache_directory: path.join("shard-cache"),

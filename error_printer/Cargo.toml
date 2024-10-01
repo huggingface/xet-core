@@ -7,3 +7,6 @@ edition = "2021"
 
 [dependencies]
 tracing = "0.1.40"
+
+[dev-dependencies]
+tracing-test = { version = "0.2.5", features = ["no-env-filter"] }

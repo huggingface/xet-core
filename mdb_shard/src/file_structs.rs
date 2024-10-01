@@ -90,8 +90,8 @@ impl FileDataSequenceEntry {
             cas_hash,
             cas_flags: MDB_DEFAULT_FILE_FLAG,
             unpacked_segment_bytes: unpacked_segment_bytes.try_into().unwrap(),
-            chunk_index_start: chunk_index_start.try_into().unwrap() as u32,
-            chunk_index_end: chunk_index_end.try_into().unwrap() as u32,
+            chunk_index_start: chunk_index_start.try_into().unwrap(),
+            chunk_index_end: chunk_index_end.try_into().unwrap(),
         }
     }
 

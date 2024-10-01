@@ -1,5 +1,6 @@
 use crate::errors::Result;
 use crate::repo_salt::RepoSalt;
+use cas::auth::AuthConfig;
 use std::path::PathBuf;
 use std::str::FromStr;
 
@@ -7,11 +8,6 @@ use std::str::FromStr;
 pub enum Endpoint {
     Server(String),
     FileSystem(PathBuf),
-}
-
-#[derive(Debug)]
-pub struct Auth {
-    pub token: Option<String>,
 }
 
 #[derive(Debug)]
@@ -24,7 +20,7 @@ pub struct CacheConfig {
 #[derive(Debug)]
 pub struct StorageConfig {
     pub endpoint: Endpoint,
-    pub auth: Auth,
+    pub auth: Option<AuthConfig>,
     pub prefix: String,
     pub cache_config: Option<CacheConfig>,
     pub staging_directory: Option<PathBuf>,

@@ -9,12 +9,13 @@ name = "hf_xet"
 crate-type = ["cdylib"]
 
 [dependencies]
-pyo3 = { version = "0.20.2", features = [
+pyo3 = { version = "0.22.3", features = [
     "extension-module",
     "abi3-py37",
 ] }
 
 data = { path = "../data" }
+utils = { path = "../utils" }
 tokio = { version = "1.36", features = ["full"] }
 parutils = { path = "../parutils" }
 tracing = "0.1.*"

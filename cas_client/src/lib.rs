@@ -2,11 +2,14 @@
 #![allow(dead_code)]
 
 pub use crate::error::CasClientError;
+pub use auth::AuthMiddleware;
 pub use caching_client::CachingClient;
 pub use interface::Client;
 pub use local_client::LocalClient;
+pub use remote_client::build_reqwest_client;
 pub use remote_client::RemoteClient;
 
+mod auth;
 mod caching_client;
 mod error;
 mod interface;

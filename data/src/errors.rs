@@ -1,4 +1,4 @@
-use cas::errors::SingleflightError;
+use cas::errors::{AuthError, SingleflightError};
 use cas_client::CasClientError;
 use mdb_shard::error::MDBShardError;
 use merkledb::error::MerkleDBError;
@@ -68,6 +68,9 @@ pub enum DataProcessingError {
 
     #[error("Deprecated feature: {0}")]
     DeprecatedError(String),
+
+    #[error("AuthError: {0}")]
+    AuthError(#[from] AuthError),
 }
 
 pub type Result<T> = std::result::Result<T, DataProcessingError>;

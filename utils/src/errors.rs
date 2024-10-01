@@ -35,6 +35,16 @@ where
     OwnerPanicked,
 }
 
+#[derive(Debug, Error)]
+#[non_exhaustive]
+pub enum AuthError {
+    #[error("Refresh function: {0} is not callable")]
+    RefreshFunctionNotCallable(String),
+
+    #[error("Token refresh failed: {0}")]
+    TokenRefreshFailure(String),
+}
+
 impl<E: Send + std::fmt::Debug + Sync> Clone for SingleflightError<E> {
     fn clone(&self) -> Self {
         match self {

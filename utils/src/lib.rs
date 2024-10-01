@@ -39,6 +39,7 @@ pub mod key;
 pub mod safeio;
 pub mod singleflight;
 pub mod version;
+pub mod auth;
 
 mod output_bytes;
 

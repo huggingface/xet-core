@@ -1,37 +1,76 @@
-mod data_client;
 mod config;
+mod data_client;
 mod log;
+mod token_refresh;
 
-use pyo3::{pyfunction, PyResult};
+use cas::auth::TokenRefresher;
+use data::PointerFile;
 use pyo3::exceptions::PyException;
 use pyo3::prelude::*;
-use data::PointerFile;
+use pyo3::pyfunction;
+use std::fmt::Debug;
+use std::sync::Arc;
+use token_refresh::WrappedTokenRefresher;
 
 #[pyfunction]
-#[pyo3(signature = (file_paths, endpoint, token), text_signature = "(file_paths: List[str], endpoint: Optional[str], token: Optional[str]) -> List[PyPointerFile]")]
-pub fn upload_files(file_paths: Vec<String>, endpoint: Option<String>, token: Option<String>) -> PyResult<Vec<PyPointerFile>> {
-    Ok(tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()?
-        .block_on(async {
-            data_client::upload_async(file_paths, endpoint, token).await
-        }).map_err(|e| PyException::new_err(format!("{e:?}")))?
-        .into_iter()
-        .map(PyPointerFile::from)
-        .collect())
+#[pyo3(signature = (file_paths, endpoint, token_info, token_refresher), text_signature = "(file_paths: List[str], endpoint: Optional[str], token_info: Optional[(str, int)], token_refresher: Optional[Callable[[], (str, int)]]) -> List[PyPointerFile]")]
+pub fn upload_files(
+    py: Python,
+    file_paths: Vec<String>,
+    endpoint: Option<String>,
+    token_info: Option<(String, u64)>,
+    token_refresher: Option<Py<PyAny>>,
+) -> PyResult<Vec<PyPointerFile>> {
+    let refresher = token_refresher
+        .map(WrappedTokenRefresher::from_func)
+        .transpose()?
+        .map(to_arc_dyn);
+
+    // Release GIL to allow python concurrency
+    py.allow_threads(move || {
+        Ok(tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()?
+            .block_on(async {
+                data_client::upload_async(file_paths, endpoint, token_info, refresher).await
+            })
+            .map_err(|e| PyException::new_err(format!("{e:?}")))?
+            .into_iter()
+            .map(PyPointerFile::from)
+            .collect())
+    })
 }
 
 #[pyfunction]
-#[pyo3(signature = (files, endpoint, token), text_signature = "(files: List[PyPointerFile], endpoint: Optional[str], token: Optional[str]) -> List[str]")]
-pub fn download_files(files: Vec<PyPointerFile>, endpoint: Option<String>, token: Option<String>) -> PyResult<Vec<String>> {
-    let pfs = files.into_iter().map(PointerFile::from)
-        .collect();
-    tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()?
-        .block_on(async move {
-            data_client::download_async(pfs, endpoint, token).await
-        }).map_err(|e| PyException::new_err(format!("{e:?}")))
+#[pyo3(signature = (files, endpoint, token_info, token_refresher), text_signature = "(files: List[PyPointerFile], endpoint: Optional[str], token_info: Optional[(str, int)], token_refresher: Optional[Callable[[], (str, int)]]) -> List[str]")]
+pub fn download_files(
+    py: Python,
+    files: Vec<PyPointerFile>,
+    endpoint: Option<String>,
+    token_info: Option<(String, u64)>,
+    token_refresher: Option<Py<PyAny>>,
+) -> PyResult<Vec<String>> {
+    let pfs = files.into_iter().map(PointerFile::from).collect();
+    let refresher = token_refresher
+        .map(WrappedTokenRefresher::from_func)
+        .transpose()?
+        .map(to_arc_dyn);
+    // Release GIL to allow python concurrency
+    py.allow_threads(move || {
+        tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()?
+            .block_on(async move {
+                data_client::download_async(pfs, endpoint, token_info, refresher).await
+            })
+            .map_err(|e| PyException::new_err(format!("{e:?}")))
+    })
+}
+
+// helper to convert the implemented WrappedTokenRefresher into an Arc<dyn TokenRefresher>
+#[inline]
+fn to_arc_dyn(r: WrappedTokenRefresher) -> Arc<dyn TokenRefresher> {
+    Arc::new(r)
 }
 
 #[pyclass]
@@ -77,12 +116,15 @@ impl PyPointerFile {
     }
 
     fn __repr__(&self) -> String {
-        format!("PyPointerFile({}, {}, {})", self.path, self.hash, self.filesize)
+        format!(
+            "PyPointerFile({}, {}, {})",
+            self.path, self.hash, self.filesize
+        )
     }
 }
 
 #[pymodule]
-pub fn hf_xet(_py: Python<'_>, m: &PyModule) -> PyResult<()> {
+pub fn hf_xet(m: &Bound<'_, PyModule>) -> PyResult<()> {
     log::initialize_logging();
     m.add_function(wrap_pyfunction!(upload_files, m)?)?;
     m.add_function(wrap_pyfunction!(download_files, m)?)?;

@@ -41,7 +41,7 @@ pub async fn create_shard_client(
     let client: Arc<dyn ShardClientInterface> = match &shard_storage_config.endpoint {
         Server(endpoint) => Arc::new(HttpShardClient::new(
             endpoint,
-            shard_storage_config.auth.token.clone(),
+            &shard_storage_config.auth,
             shard_storage_config
                 .cache_config
                 .as_ref()

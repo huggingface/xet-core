@@ -1,4 +1,5 @@
 use crate::config::default_config;
+use cas::auth::TokenRefresher;
 use data::errors::DataProcessingError;
 use data::{errors, PointerFile, PointerFileTranslator};
 use parutils::{tokio_par_for_each, ParallelError};
@@ -18,16 +19,19 @@ const READ_BLOCK_SIZE: usize = 1024 * 1024;
 pub async fn upload_async(
     file_paths: Vec<String>,
     endpoint: Option<String>,
-    token: Option<String>,
+    token_info: Option<(String, u64)>,
+    token_refresher: Option<Arc<dyn TokenRefresher>>,
 ) -> errors::Result<Vec<PointerFile>> {
     // chunk files
     // produce Xorbs + Shards
     // upload shards and xorbs
     // for each file, return the filehash
     let config = default_config(
-        endpoint.clone().unwrap_or(DEFAULT_CAS_ENDPOINT.to_string()),
-        token.clone(),
+        endpoint.unwrap_or(DEFAULT_CAS_ENDPOINT.to_string()),
+        token_info,
+        token_refresher,
     )?;
+
     let processor = Arc::new(PointerFileTranslator::new(config).await?);
     let processor = &processor;
     // for all files, clean them, producing pointer files.
@@ -50,22 +54,22 @@ pub async fn upload_async(
 pub async fn download_async(
     pointer_files: Vec<PointerFile>,
     endpoint: Option<String>,
-    token: Option<String>,
+    token_info: Option<(String, u64)>,
+    token_refresher: Option<Arc<dyn TokenRefresher>>,
 ) -> errors::Result<Vec<String>> {
     let config = default_config(
-        endpoint.clone().unwrap_or(DEFAULT_CAS_ENDPOINT.to_string()),
-        token.clone(),
+        endpoint.unwrap_or(DEFAULT_CAS_ENDPOINT.to_string()),
+        token_info,
+        token_refresher,
     )?;
     let processor = Arc::new(PointerFileTranslator::new(config).await?);
     let processor = &processor;
     let paths = tokio_par_for_each(
         pointer_files,
         MAX_CONCURRENT_DOWNLOADS,
-        |pointer_file, _| {
-            async move {
-                let proc = processor.clone();
-                smudge_file(&proc, &pointer_file).await
-            }
+        |pointer_file, _| async move {
+            let proc = processor.clone();
+            smudge_file(&proc, &pointer_file).await
         },
     )
     .await
@@ -126,9 +130,7 @@ mod tests {
         let abs_path = canonicalize(path).unwrap();
         let s = abs_path.to_string_lossy();
         let files = vec![s.to_string()];
-        let pointers = upload_async(files, "http://localhost:8080", "12345")
-            .await
-            .unwrap();
+        let pointers = upload_async(files, None, None, None).await.unwrap();
         println!("files: {pointers:?}");
     }
 
@@ -139,9 +141,7 @@ mod tests {
             "6999733a46030e67f6f020651c91442ace735572458573df599106e54646867c",
             4203,
         )];
-        let paths = download_async(pointers, "http://localhost:8080", "12345")
-            .await
-            .unwrap();
+        let paths = download_async(pointers, None, None, None).await.unwrap();
         println!("paths: {paths:?}");
     }
 }

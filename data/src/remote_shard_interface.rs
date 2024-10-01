@@ -275,12 +275,12 @@ impl RemoteShardInterface {
         let cache_dir = self.shard_cache_directory()?;
 
         // Shard is expired, we need to evit the previous registration.
-        if shard_manager.shard_is_registered(&shard_hash).await {
+        if shard_manager.shard_is_registered(shard_hash).await {
             info!("register_local_shard: re-register {shard_hash:?}.");
             todo!()
         }
 
-        let shard_file = cache_dir.join(local_shard_name(&shard_hash));
+        let shard_file = cache_dir.join(local_shard_name(shard_hash));
 
         shard_manager
             .register_shards_by_path(&[shard_file], true)

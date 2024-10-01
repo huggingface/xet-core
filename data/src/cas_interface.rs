@@ -1,5 +1,6 @@
 use crate::configurations::*;
 use crate::errors::Result;
+use cas::auth::AuthConfig;
 use cas_client::RemoteClient;
 use std::env::current_dir;
 use std::path::Path;
@@ -18,9 +19,12 @@ pub(crate) fn create_cas_client(
     }
 }
 
-pub(crate) fn remote_client(endpoint: &str, auth: &Auth) -> Result<Arc<dyn Client + Send + Sync>> {
+pub(crate) fn remote_client(
+    endpoint: &str,
+    auth: &Option<AuthConfig>,
+) -> Result<Arc<dyn Client + Send + Sync>> {
     // Raw remote client.
-    let remote_client = Arc::new(RemoteClient::new(endpoint, auth.token.clone()));
+    let remote_client = Arc::new(RemoteClient::new(endpoint, auth));
 
     Ok(remote_client)
 }
