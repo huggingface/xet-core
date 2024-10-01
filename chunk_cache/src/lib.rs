@@ -1,5 +1,5 @@
-pub mod error;
 mod disk_cache;
+pub mod error;
 
 use cas_types::{Key, Range};
 use error::ChunkCacheError;

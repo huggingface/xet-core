@@ -12,6 +12,8 @@ pub enum ChunkCacheError {
     BadRange,
     #[error("cache is empty when it is presumed no empty")]
     CacheEmpty,
+    #[error("Infallible")]
+    Infallible,
 }
 
 impl ChunkCacheError {

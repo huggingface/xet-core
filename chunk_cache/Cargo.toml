@@ -12,3 +12,6 @@ base64 = "0.22.1"
 blake3 = "1.5.4"
 tracing = "0.1.40"
 rand = "0.8.5"
+
+[dev-dependencies]
+tempdir = "0.3.7"

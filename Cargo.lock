@@ -564,6 +564,7 @@ dependencies = [
  "error_printer",
  "merklehash",
  "rand 0.8.5",
+ "tempdir",
  "tracing",
  "xet_error",
 ]
