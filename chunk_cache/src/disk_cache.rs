@@ -4,7 +4,6 @@ use std::{
     io::{Read, Seek, Write},
     mem::size_of,
     path::{Path, PathBuf},
-    time::SystemTime,
 };
 
 use base64::{engine::GeneralPurpose, prelude::BASE64_URL_SAFE, Engine};
@@ -108,12 +107,25 @@ impl DiskCache {
             .filter(|((k, start, end), _)| *start <= range.start && *end >= range.end && k == key)
             .peekable();
         let hit_option = hits.peek();
-        let ((key, start, end), (file_name, _)) = match hit_option {
+        let ((key, start, end), (file_name, len)) = match hit_option {
             Some(v) => v,
             None => return Ok(None),
         };
         let file_path = self.cache_file_path(key, file_name);
-        let mut file = File::open(&file_path)?;
+        let file_result = File::open(&file_path);
+
+        let mut file = match file_result {
+            Ok(file) => file,
+            Err(e) => match e.kind() {
+                std::io::ErrorKind::NotFound => {
+                    // cache item got evicted by another process
+                    self.total_bytes -= len;
+                    self.items.remove(&(key.clone(), *start, *end));
+                    return Ok(None);
+                }
+                _ => return Err(e.into()),
+            },
+        };
         let hash = blake3::Hasher::new().update_reader(&mut file)?.finalize();
         if hash != file_name.hash {
             std::fs::remove_file(&file_path)?;
@@ -121,7 +133,6 @@ impl DiskCache {
         }
 
         let result = self.hit(&mut file, *start, range)?;
-        self.update_time_stamp(&(key.clone(), *start, *end))?;
 
         Ok(Some(result))
     }
@@ -133,6 +144,7 @@ impl DiskCache {
         range: &Range,
     ) -> Result<Vec<u8>, ChunkCacheError> {
         let header = CacheFileHeader::deserialize(file)?;
+
         let start_byte_index = header
             .chunk_byte_indicies
             .get((range.start - start) as usize)
@@ -141,8 +153,10 @@ impl DiskCache {
             .chunk_byte_indicies
             .get((range.end - start) as usize)
             .ok_or(ChunkCacheError::BadRange)?;
+
         let start_position = (header.header_len + *start_byte_index as usize) as u64;
         file.seek(std::io::SeekFrom::Start(start_position))?;
+
         let len = (end_byte_index - start_byte_index) as usize;
         let mut result = vec![0; len];
         file.read_exact(&mut result)?;
@@ -175,7 +189,6 @@ impl DiskCache {
             .filter(|(k, start, end)| k == key && *start <= range.start && *end >= range.end)
             .collect::<Vec<_>>();
         if !matches.is_empty() {
-            self.update_time_stamp(&matches[0].clone())?;
             return Ok(());
         }
 
@@ -190,7 +203,7 @@ impl DiskCache {
             .update(&header_buf)
             .update(data)
             .finalize();
-        let file_name = FileName::new(range.start, range.end, SystemTime::now(), hash);
+        let file_name = FileName::new(range.start, range.end, hash);
         let file_path = Path::join(dir, Into::<PathBuf>::into(&file_name));
 
         if !dir.exists() {
@@ -254,20 +267,6 @@ impl DiskCache {
 
     fn cache_file_path(&self, key: &Key, file_name: &FileName) -> PathBuf {
         cache_file_path(self.cache_root.clone(), key, file_name)
-    }
-
-    fn update_time_stamp(&mut self, item_key: &(Key, u32, u32)) -> Result<(), ChunkCacheError> {
-        let cache_root = self.cache_root.clone();
-        let (file_name, _) = self
-            .items
-            .get_mut(item_key)
-            .ok_or(ChunkCacheError::Infallible)?;
-        let old_file_path = cache_file_path(cache_root.clone(), &item_key.0, file_name);
-        file_name.timestamp = SystemTime::now();
-        let new_file_path = cache_file_path(cache_root, &item_key.0, file_name);
-        std::fs::rename(old_file_path, new_file_path)?;
-
-        Ok(())
     }
 }
 
@@ -401,6 +400,8 @@ mod test_utils {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
+
     use crate::disk_cache::test_utils::*;
 
     use cas_types::Range;
@@ -493,7 +494,7 @@ mod tests {
 
     #[test]
     fn test_initialize_non_empty() {
-        let cache_root = TempDir::new("puts_eviction").unwrap();
+        let cache_root = TempDir::new("initialize_non_empty").unwrap();
         let mut cache = DiskCache::initialize(cache_root.path(), DEFAULT_CAPACITY).unwrap();
 
         let mut keys_and_ranges = Vec::new();
@@ -509,6 +510,10 @@ mod tests {
             assert!(get_result.is_ok(), "{i} {get_result:?}");
             assert!(get_result.unwrap().is_some(), "{i}");
         }
+
+        let cache_keys = cache.items.keys().collect::<BTreeSet<_>>();
+        let cache2_keys = cache2.items.keys().collect::<BTreeSet<_>>();
+        assert_eq!(cache_keys, cache2_keys);
     }
 
     #[test]
@@ -516,5 +521,47 @@ mod tests {
         let s = "oL-Xqk1J00kVe1U4kCko-Kw4zaVv3-4U73i27w5DViBkZWZhdWx0";
         let key = subdir_to_key(s);
         assert!(key.is_ok(), "{key:?}")
+    }
+
+    #[test]
+    fn test_unknown_eviction() {
+        let cache_root = TempDir::new("initialize_non_empty").unwrap();
+        let capacity = Some(2 * RANGE_LEN as u64);
+        let mut cache = DiskCache::initialize(cache_root.path(), capacity).unwrap();
+        let (key, range, chunk_byte_indicies, data) = RandomEntryIterator.next().unwrap();
+        cache
+            .put(&key, &range, &chunk_byte_indicies, &data)
+            .unwrap();
+
+        let mut cache2 = DiskCache::initialize(cache_root.path(), capacity).unwrap();
+        let get_result = cache2.get(&key, &range);
+        assert!(get_result.is_ok());
+        assert!(get_result.unwrap().is_some());
+
+        let (key2, range2, chunk_byte_indicies2, data2) = RandomEntryIterator.next().unwrap();
+        assert!(cache2
+            .put(&key2, &range2, &chunk_byte_indicies2, &data2)
+            .is_ok());
+
+        let mut get_result_1 = cache2.get(&key, &range).unwrap();
+        let get_result_2 = cache2.get(&key2, &range2).unwrap();
+        assert!(get_result_1.is_some() != get_result_2.is_some());
+        let mut i = 0;
+        while get_result_1.is_some() && i < 10 {
+            i += 1;
+            let (key2, range2, chunk_byte_indicies2, data2) = RandomEntryIterator.next().unwrap();
+            assert!(cache2
+                .put(&key2, &range2, &chunk_byte_indicies2, &data2)
+                .is_ok());
+            get_result_1 = cache2.get(&key, &range).unwrap();
+        }
+        if get_result_1.is_some() {
+            // randomness didn't evict the record after 10 tries, don't test this case now
+        }
+        // we've evicted the original record from the cache
+        // note using the original cache handle without updates!
+        let get_result_post_eviction = cache.get(&key, &range);
+        assert!(get_result_post_eviction.is_ok());
+        assert!(get_result_post_eviction.unwrap().is_none());
     }
 }
