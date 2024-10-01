@@ -3,7 +3,6 @@ use std::{
     fs::File,
     io::{Read, Seek, Write},
     mem::size_of,
-    os::unix::ffi::OsStringExt,
     path::{Path, PathBuf},
     time::SystemTime,
 };
@@ -43,10 +42,11 @@ impl DiskCache {
         for subdir in std::fs::read_dir(&cache_root)? {
             let subdir = subdir?;
 
-            let key_result = subdir_to_key(subdir.file_name().into_vec()).warn_error(format!(
-                "expected subdir: {:?} to be parsable as a key",
-                subdir.file_name()
-            ));
+            let key_result =
+                subdir_to_key(subdir.file_name().as_encoded_bytes()).warn_error(format!(
+                    "expected subdir: {:?} to be parsable as a key",
+                    subdir.file_name()
+                ));
             let key = match key_result {
                 Ok(k) => k,
                 Err(_) => continue,
@@ -58,7 +58,7 @@ impl DiskCache {
             }
             for key_file in std::fs::read_dir(subdir.path())? {
                 let key_file = key_file?;
-                let file_name_result = FileName::try_parse(key_file.file_name().into_vec())
+                let file_name_result = FileName::try_parse(key_file.file_name().as_encoded_bytes())
                     .warn_error(format!(
                         "expected file name: {:?} to be parsed as a cache FileName",
                         key_file.file_name()
@@ -193,7 +193,7 @@ impl DiskCache {
         let file_name = FileName::new(range.start, range.end, SystemTime::now(), hash);
         let file_path = Path::join(dir, Into::<PathBuf>::into(&file_name));
 
-        if !std::fs::exists(dir)? {
+        if !dir.exists() {
             std::fs::create_dir_all(dir)?;
         }
         let mut file = std::fs::OpenOptions::new()
