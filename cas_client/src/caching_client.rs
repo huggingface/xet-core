@@ -1,3 +1,5 @@
+#![allow(unused_variables)]
+
 use crate::error::Result;
 use crate::interface::*;
 use async_trait::async_trait;
@@ -44,3 +46,5 @@ impl ReconstructionClient for CachingClient {
         todo!()
     }
 }
+
+impl Client for CachingClient {}

@@ -77,15 +77,14 @@ pub struct FileDataSequenceEntry {
 }
 
 impl FileDataSequenceEntry {
-    pub fn new<I1: TryInto<u32>, I2: TryInto<u16>>(
+    pub fn new<I1: TryInto<u32>>(
         cas_hash: MerkleHash,
         unpacked_segment_bytes: I1,
-        chunk_index_start: I2,
-        chunk_index_end: I2,
+        chunk_index_start: I1,
+        chunk_index_end: I1,
     ) -> Self
     where
         <I1 as TryInto<u32>>::Error: std::fmt::Debug,
-        <I2 as TryInto<u16>>::Error: std::fmt::Debug,
     {
         Self {
             cas_hash,

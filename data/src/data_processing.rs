@@ -1,7 +1,6 @@
 use crate::cas_interface::create_cas_client;
 use crate::clean::Cleaner;
 use crate::configurations::*;
-use crate::constants::MAX_CONCURRENT_UPLOADS;
 use crate::errors::*;
 use crate::metrics::FILTER_CAS_BYTES_PRODUCED;
 use crate::remote_shard_interface::RemoteShardInterface;
@@ -14,6 +13,7 @@ use mdb_shard::file_structs::MDBFileInfo;
 use mdb_shard::ShardFileManager;
 use merkledb::aggregate_hashes::cas_node_hash;
 use merklehash::MerkleHash;
+use std::io::Write;
 use std::mem::take;
 use std::ops::DerefMut;
 use std::path::Path;
@@ -22,8 +22,11 @@ use tokio::sync::Mutex;
 
 #[derive(Default, Debug)]
 pub struct CASDataAggregator {
+    /// Bytes of all chunks accumulated in one CAS block concatenated together.
     pub data: Vec<u8>,
-    pub chunks: Vec<(MerkleHash, (usize, usize))>,
+    /// Metadata of all chunks accumulated in one CAS block. Each entry is
+    /// (chunk hash, chunk size).
+    pub chunks: Vec<(MerkleHash, usize)>,
     // The file info of files that are still being processed.
     // As we're building this up, we assume that all files that do not have a size in the header are
     // not finished yet and thus cannot be uploaded.
@@ -59,10 +62,10 @@ pub struct PointerFileTranslator {
     global_cas_data: Arc<Mutex<CASDataAggregator>>,
 }
 
-// Constructors
+// Constructorscas_data_accumulator
 impl PointerFileTranslator {
     pub async fn new(config: TranslatorConfig) -> Result<PointerFileTranslator> {
-        let cas_client = create_cas_client(&config.cas_storage_config, &config.repo_info).await?;
+        let cas_client = create_cas_client(&config.cas_storage_config, &config.repo_info)?;
 
         let shard_manager = Arc::new(create_shard_manager(&config.shard_storage_config).await?);
 
@@ -191,10 +194,7 @@ impl PointerFileTranslator {
     }
 
     async fn upload_cas(&self) -> Result<()> {
-        self.cas
-            .upload_all_staged(*MAX_CONCURRENT_UPLOADS, false)
-            .await?;
-
+        // We don't have staging client support yet.
         Ok(())
     }
 }
@@ -232,23 +232,23 @@ pub(crate) async fn register_new_cas_block(
     let chunks: Vec<_> = cas_data
         .chunks
         .iter()
-        .map(|(h, (bytes_lb, bytes_ub))| {
-            let size = bytes_ub - bytes_lb;
-            let result = CASChunkSequenceEntry::new(*h, size, pos);
-            pos += size;
+        .map(|(h, len)| {
+            let result = CASChunkSequenceEntry::new(*h, *len, pos);
+            pos += *len;
             result
         })
         .collect();
-
     let cas_info = MDBCASInfo { metadata, chunks };
 
-    let mut chunk_boundaries: Vec<u64> = Vec::with_capacity(cas_data.chunks.len());
-    let mut running_sum = 0;
-
-    for (_, s) in cas_data.chunks.iter() {
-        running_sum += s.1 - s.0;
-        chunk_boundaries.push(running_sum as u64);
-    }
+    pos = 0;
+    let chunk_boundaries = cas_data
+        .chunks
+        .iter()
+        .map(|(_, len)| {
+            pos += *len;
+            pos as u64
+        })
+        .collect();
 
     if !cas_info.chunks.is_empty() {
         shard_manager.add_cas_block(cas_info).await?;
@@ -288,7 +288,7 @@ impl PointerFileTranslator {
     pub async fn smudge_file_from_pointer(
         &self,
         pointer: &PointerFile,
-        writer: &mut impl std::io::Write,
+        writer: &mut Box<dyn Write + Send>,
         range: Option<(usize, usize)>,
     ) -> Result<()> {
         self.smudge_file_from_hash(&pointer.hash()?, writer, range)
@@ -298,7 +298,7 @@ impl PointerFileTranslator {
     pub async fn smudge_file_from_hash(
         &self,
         file_id: &MerkleHash,
-        writer: &mut impl std::io::Write,
+        writer: &mut Box<dyn Write + Send>,
         _range: Option<(usize, usize)>,
     ) -> Result<()> {
         self.cas.get_file(file_id, writer).await?;

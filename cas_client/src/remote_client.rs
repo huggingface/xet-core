@@ -87,6 +87,7 @@ impl ReconstructionClient for RemoteClient {
         Ok(())
     }
 
+    #[allow(unused_variables)]
     async fn get_file_byte_range(
         &self,
         hash: &MerkleHash,
@@ -145,11 +146,11 @@ impl RemoteClient {
         Ok(response_parsed.was_inserted)
     }
 
-    async fn reconstruct<W: Write>(
+    async fn reconstruct(
         &self,
         reconstruction_response: QueryReconstructionResponse,
         _byte_range: Option<(u64, u64)>,
-        writer: &mut W,
+        writer: &mut Box<dyn Write + Send>,
     ) -> Result<usize> {
         let info = reconstruction_response.reconstruction;
         let total_len = info.iter().fold(0, |acc, x| acc + x.unpacked_length);

@@ -502,6 +502,7 @@ dependencies = [
  "merklehash",
  "serde",
  "serde_repr",
+ "xet_error",
 ]
 
 [[package]]
@@ -3680,6 +3681,7 @@ dependencies = [
  "cas_client",
  "cas_types",
  "clap 2.34.0",
+ "file_utils",
  "heed",
  "http 0.2.12",
  "itertools 0.10.5",
@@ -3701,7 +3703,6 @@ dependencies = [
  "tracing",
  "tracing-opentelemetry",
  "url",
- "utils",
  "uuid",
  "xet_error",
 ]

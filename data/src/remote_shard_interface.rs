@@ -5,7 +5,6 @@ use crate::cas_interface::Client;
 use crate::constants::{FILE_RECONSTRUCTION_CACHE_SIZE, MAX_CONCURRENT_UPLOADS};
 use crate::repo_salt::RepoSalt;
 use cas::singleflight;
-use file_utils::write_all_safe;
 use lru::LruCache;
 use mdb_shard::constants::MDB_SHARD_MIN_TARGET_SIZE;
 use mdb_shard::session_directory::consolidate_shards_in_directory;
@@ -21,7 +20,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::Mutex;
 use tokio::task::JoinHandle;
-use tracing::{debug, error, info};
+use tracing::{debug, info};
 
 pub struct RemoteShardInterface {
     pub file_query_policy: FileQueryPolicy,
@@ -271,50 +270,23 @@ impl RemoteShardInterface {
         Ok(self.get_dedup_shards(&[*chunk_hash], salt).await?.pop())
     }
 
-    fn download_and_register_shard_background(
-        &self,
-        shard_hash: &MerkleHash,
-    ) -> Result<JoinHandle<Result<()>>> {
-        let hex_key = shard_hash.hex();
-
-        let prefix = self.shard_prefix.to_owned();
-
-        let shard_hash = shard_hash.to_owned();
-        let shard_downloads_sf = self.shard_downloads.clone();
+    pub async fn register_local_shard(&self, shard_hash: &MerkleHash) -> Result<()> {
         let shard_manager = self.shard_manager()?;
-        let cas = self.cas()?;
-
         let cache_dir = self.shard_cache_directory()?;
 
-        Ok(tokio::spawn(async move {
-            if shard_manager.shard_is_registered(&shard_hash).await {
-                info!("download_and_register_shard: Shard {shard_hash:?} is already registered.");
-                return Ok(());
-            }
+        // Shard is expired, we need to evit the previous registration.
+        if shard_manager.shard_is_registered(&shard_hash).await {
+            info!("register_local_shard: re-register {shard_hash:?}.");
+            todo!()
+        }
 
-            shard_downloads_sf
-                .work(&hex_key, async move {
-                    // Download the shard in question.
-                    let (shard_file, _) = download_shard(&cas, &prefix, &shard_hash, &cache_dir)
-                        .await
-                        .map_err(|e| DataProcessingError::InternalError(format!("{e:?}")))?;
+        let shard_file = cache_dir.join(local_shard_name(&shard_hash));
 
-                    shard_manager
-                        .register_shards_by_path(&[shard_file], true)
-                        .await?;
+        shard_manager
+            .register_shards_by_path(&[shard_file], true)
+            .await?;
 
-                    Ok(())
-                })
-                .await
-                .0?;
-
-            Ok(())
-        }))
-    }
-
-    pub async fn download_and_register_shard(&self, shard_hash: &MerkleHash) -> Result<()> {
-        self.download_and_register_shard_background(shard_hash)?
-            .await?
+        Ok(())
     }
 
     pub fn merge_shards(
@@ -402,46 +374,4 @@ fn local_shard_name(hash: &MerkleHash) -> PathBuf {
 /// Quickly validate the shard extension
 fn is_shard_file(path: &Path) -> bool {
     path.extension().and_then(OsStr::to_str) == Some("mdb")
-}
-
-// Download a shard to local cache if not exists.
-// Returns the path to the downloaded file and the number of bytes transferred.
-// Returns the path to the existing file and 0 (transferred byte) if exists.
-async fn download_shard(
-    cas: &Arc<dyn Client + Send + Sync>,
-    prefix: &str,
-    shard_hash: &MerkleHash,
-    dest_dir: &Path,
-) -> Result<(PathBuf, usize)> {
-    let shard_name = local_shard_name(shard_hash);
-    let dest_file = dest_dir.join(&shard_name);
-
-    if dest_file.exists() {
-        #[cfg(debug_assertions)]
-        {
-            MDBShardFile::load_from_file(&dest_file)?.verify_shard_integrity_debug_only();
-        }
-        debug!(
-            "download_shard: shard file {shard_name:?} already present in local cache, skipping download."
-        );
-        return Ok((dest_file, 0));
-    } else {
-        debug!(
-            "download_shard: shard file {shard_name:?} does not exist in local cache, downloading from cas."
-        );
-    }
-
-    let bytes: Vec<u8> = match cas.get(prefix, shard_hash).await {
-        Err(e) => {
-            error!("Error attempting to download shard {prefix}/{shard_hash:?}: {e:?}");
-            Err(e)?
-        }
-        Ok(data) => data,
-    };
-
-    info!("Downloaded shard {prefix}/{shard_hash:?}.");
-
-    write_all_safe(&dest_file, &bytes)?;
-
-    Ok((dest_file, bytes.len()))
 }

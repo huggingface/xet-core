@@ -2,7 +2,7 @@ use data::configurations::{
     Auth, CacheConfig, DedupConfig, Endpoint, FileQueryPolicy, RepoInfo, StorageConfig,
     TranslatorConfig,
 };
-use data::{errors, DEFAULT_BLOCK_SIZE};
+use data::errors;
 use std::env::current_dir;
 use std::fs;
 

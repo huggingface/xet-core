@@ -1,18 +1,24 @@
 use crate::error::{Result, ShardClientError};
 use crate::{RegistrationClient, ShardClientInterface};
-
 use async_trait::async_trait;
 use bytes::Buf;
 use cas_types::Key;
-use cas_types::{
-    QueryChunkResponse, QueryReconstructionResponse, UploadShardResponse, UploadShardResponseType,
-};
+use cas_types::{QueryReconstructionResponse, UploadShardResponse, UploadShardResponseType};
+use file_utils::write_all_safe;
 use mdb_shard::file_structs::{FileDataSequenceEntry, FileDataSequenceHeader, MDBFileInfo};
+use mdb_shard::serialization_utils::read_u32;
 use mdb_shard::shard_dedup_probe::ShardDedupProber;
 use mdb_shard::shard_file_reconstructor::FileReconstructor;
 use merklehash::MerkleHash;
-use reqwest::{Url, header::{HeaderMap, HeaderValue}};
+use reqwest::{
+    header::{HeaderMap, HeaderValue},
+    Url,
+};
 use retry_strategy::RetryStrategy;
+use std::io::Read;
+use std::path::PathBuf;
+use std::str::FromStr;
+use tokio::task::JoinSet;
 use tracing::warn;
 
 const NUM_RETRIES: usize = 5;
@@ -21,20 +27,26 @@ const BASE_RETRY_DELAY_MS: u64 = 3000;
 /// Shard Client that uses HTTP for communication.
 #[derive(Debug)]
 pub struct HttpShardClient {
-    pub endpoint: String,
-    pub token: Option<String>,
+    endpoint: String,
+    token: Option<String>,
     client: reqwest::Client,
     retry_strategy: RetryStrategy,
+    cache_directory: Option<PathBuf>,
 }
 
 impl HttpShardClient {
-    pub fn new(endpoint: &str, token: Option<String>) -> Self {
+    pub fn new(
+        endpoint: &str,
+        token: Option<String>,
+        shard_cache_directory: Option<PathBuf>,
+    ) -> Self {
         HttpShardClient {
             endpoint: endpoint.into(),
             token,
             client: reqwest::Client::builder().build().unwrap(),
             // Retry policy: Exponential backoff starting at BASE_RETRY_DELAY_MS and retrying NUM_RETRIES times
             retry_strategy: RetryStrategy::new(NUM_RETRIES, BASE_RETRY_DELAY_MS),
+            cache_directory: shard_cache_directory.clone(),
         }
     }
 }
@@ -71,10 +83,13 @@ impl RegistrationClient for HttpShardClient {
         };
 
         let url = Url::parse(&format!("{}/shard/{key}", self.endpoint))?;
-        
+
         let mut headers = HeaderMap::new();
         if let Some(tok) = &self.token {
-            headers.insert("Authorization", HeaderValue::from_str(&format!("Bearer {}", tok)).unwrap());
+            headers.insert(
+                "Authorization",
+                HeaderValue::from_str(&format!("Bearer {}", tok)).unwrap(),
+            );
         }
 
         let response = self
@@ -85,8 +100,22 @@ impl RegistrationClient for HttpShardClient {
                     async {
                         let url = url.clone();
                         match force_sync {
-                            true => self.client.put(url).headers(headers).body(shard_data.to_vec()).send().await,
-                            false => self.client.post(url).headers(headers).body(shard_data.to_vec()).send().await,
+                            true => {
+                                self.client
+                                    .put(url)
+                                    .headers(headers)
+                                    .body(shard_data.to_vec())
+                                    .send()
+                                    .await
+                            }
+                            false => {
+                                self.client
+                                    .post(url)
+                                    .headers(headers)
+                                    .body(shard_data.to_vec())
+                                    .send()
+                                    .await
+                            }
                         }
                     }
                 },
@@ -165,6 +194,11 @@ impl ShardDedupProber<ShardClientError> for HttpShardClient {
         _salt: &[u8; 32],
     ) -> Result<Vec<MerkleHash>> {
         debug_assert!(chunk_hash.len() == 1);
+        let Some(shard_cache_dir) = &self.cache_directory else {
+            return Err(ShardClientError::InvalidConfig(
+                "cache directory not configured for shard storage".into(),
+            ));
+        };
 
         // The API endpoint now only supports non-batched dedup request and
         // ignores salt.
@@ -187,17 +221,66 @@ impl ShardDedupProber<ShardClientError> for HttpShardClient {
             .map_err(|e| ShardClientError::Other(format!("request failed with code {e}")))?;
 
         let response_body = response.bytes().await?;
-        let response_info: QueryChunkResponse = serde_json::from_reader(response_body.reader())?;
+        let mut reader = response_body.reader();
 
-        Ok(vec![response_info.shard])
+        let mut downloaded_shards = vec![];
+
+        let mut write_join_set = JoinSet::<Result<()>>::new();
+
+        // Return in the format of
+        // [
+        //     {
+        //         key_length: usize,              // 4 bytes little endian
+        //         key: [u8; key_length]
+        //     },
+        //     {
+        //         shard_content_length: usize,    // 4 bytes little endian
+        //         shard_content: [u8; shard_content_length]
+        //     }
+        // ] // Repeat for each shard
+        loop {
+            let Ok(key_length) = read_u32(&mut reader) else {
+                break;
+            };
+            let mut shard_key = vec![0u8; key_length as usize];
+            reader.read_exact(&mut shard_key)?;
+
+            let shard_key = String::from_utf8(shard_key)
+                .map_err(|e| ShardClientError::InvalidShardKey(format!("{e:?}")))?;
+            let shard_key = Key::from_str(&shard_key)
+                .map_err(|e| ShardClientError::InvalidShardKey(format!("{e:?}")))?;
+            downloaded_shards.push(shard_key.hash);
+
+            let shard_content_length = read_u32(&mut reader)?;
+            let mut shard_content = vec![0u8; shard_content_length as usize];
+            reader.read_exact(&mut shard_content)?;
+
+            let file_name = local_shard_name(&shard_key.hash);
+            let file_path = shard_cache_dir.join(file_name);
+            write_join_set.spawn(async move {
+                write_all_safe(&file_path, &shard_content)?;
+                Ok(())
+            });
+        }
+
+        while let Some(res) = write_join_set.join_next().await {
+            res.map_err(|e| ShardClientError::Other(format!("Internal task error: {e:?}")))??;
+        }
+
+        Ok(downloaded_shards)
     }
+}
+
+/// Construct a file name for a MDBShard stored under cache and session dir.
+fn local_shard_name(hash: &MerkleHash) -> PathBuf {
+    PathBuf::from(hash.to_string()).with_extension("mdb")
 }
 
 impl ShardClientInterface for HttpShardClient {}
 
 #[cfg(test)]
 mod test {
-    use std::path::PathBuf;
+    use std::{env, path::PathBuf};
 
     use super::HttpShardClient;
     use crate::RegistrationClient;
@@ -210,7 +293,7 @@ mod test {
     #[tokio::test]
     #[ignore = "need a local cas_server running"]
     async fn test_local() -> anyhow::Result<()> {
-        let client = HttpShardClient::new("http://localhost:8080", None);
+        let client = HttpShardClient::new("http://localhost:8080", None, Some(env::current_dir()?));
 
         let path =
             PathBuf::from("./a7de567477348b23d23b667dba4d63d533c2ba7337cdc4297970bb494ba4699e.mdb");

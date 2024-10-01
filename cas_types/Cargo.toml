@@ -4,7 +4,8 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+merklehash = { path = "../merklehash" }
+xet_error = { path = "../xet_error"}
 anyhow = "1.0.86"
 serde = { version = "1.0.208", features = ["derive"] }
-merklehash = { path = "../merklehash" }
 serde_repr = "0.1.19"

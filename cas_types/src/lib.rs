@@ -1,8 +1,8 @@
-use serde_repr::{Deserialize_repr, Serialize_repr};
-
 use merklehash::MerkleHash;
 use serde::{Deserialize, Serialize};
+use serde_repr::{Deserialize_repr, Serialize_repr};
 
+mod error;
 mod key;
 pub use key::*;
 
@@ -21,9 +21,11 @@ pub struct Range {
 pub struct CASReconstructionTerm {
     pub hash: HexMerkleHash,
     pub unpacked_length: u32,
+    // chunk index start and end in a xorb
     pub range: Range,
     pub range_start_offset: u32,
     pub url: String,
+    // byte index start and end in a xorb
     pub url_range: Range,
 }
 
