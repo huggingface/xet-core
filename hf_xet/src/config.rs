@@ -1,9 +1,9 @@
-use cas::auth::{AuthConfig, TokenRefresher};
 use data::configurations::*;
 use data::errors;
 use std::env::current_dir;
 use std::fs;
 use std::sync::Arc;
+use utils::auth::{AuthConfig, TokenRefresher};
 
 pub const SMALL_FILE_THRESHOLD: usize = 1;
 

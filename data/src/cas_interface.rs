@@ -1,11 +1,11 @@
 use crate::configurations::*;
 use crate::errors::Result;
-use cas::auth::AuthConfig;
 use cas_client::RemoteClient;
 use std::env::current_dir;
 use std::path::Path;
 use std::sync::Arc;
 use tracing::info;
+use utils::auth::AuthConfig;
 
 pub use cas_client::Client;
 

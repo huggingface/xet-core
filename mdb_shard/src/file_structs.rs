@@ -1,9 +1,9 @@
 use crate::cas_structs::{CASChunkSequenceEntry, CASChunkSequenceHeader};
-use crate::serialization_utils::*;
 use merklehash::MerkleHash;
 use std::fmt::Debug;
 use std::io::{Cursor, Read, Write};
 use std::mem::size_of;
+use utils::serialization_utils::*;
 
 pub const MDB_DEFAULT_FILE_FLAG: u32 = 0;
 

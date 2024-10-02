@@ -1,5 +1,5 @@
 use crate::config::default_config;
-use cas::auth::TokenRefresher;
+use utils::auth::TokenRefresher;
 use data::errors::DataProcessingError;
 use data::{errors, PointerFile, PointerFileTranslator};
 use parutils::{tokio_par_for_each, ParallelError};
@@ -111,7 +111,7 @@ async fn smudge_file(
         fs::create_dir_all(parent_dir)?;
     }
     let mut f: Box<dyn Write + Send> = Box::new(File::create(&path)?);
-    proc.smudge_file_from_pointer(&pointer_file, &mut f, None)
+    proc.smudge_file_from_pointer(pointer_file, &mut f, None)
         .await?;
     Ok(pointer_file.path().to_string())
 }

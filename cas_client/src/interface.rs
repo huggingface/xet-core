@@ -11,7 +11,7 @@ use std::{io::Write, sync::Arc};
 #[async_trait]
 pub trait UploadClient {
     /// Insert the provided data into the CAS as a XORB indicated by the prefix and hash.
-    /// The hash will be verified on the server-side according to the chunk boundaries.
+    /// The hash will be verified on the SERVER-side according to the chunk boundaries.
     /// Chunk Boundaries must be complete; i.e. the last entry in chunk boundary
     /// must be the length of data. For instance, if data="helloworld" with 2 chunks
     /// ["hello" "world"], chunk_boundaries should be [5, 10].
@@ -24,7 +24,7 @@ pub trait UploadClient {
         prefix: &str,
         hash: &MerkleHash,
         data: Vec<u8>,
-        chunk_boundaries: Vec<u64>,
+        chunk_and_boundaries: Vec<(MerkleHash, u32)>,
     ) -> Result<()>;
 
     /// Check if a XORB already exists.
@@ -63,9 +63,9 @@ impl<T: UploadClient + Send + Sync> UploadClient for Arc<T> {
         prefix: &str,
         hash: &MerkleHash,
         data: Vec<u8>,
-        chunk_boundaries: Vec<u64>,
+        chunk_and_boundaries: Vec<(MerkleHash, u32)>,
     ) -> Result<()> {
-        (**self).put(prefix, hash, data, chunk_boundaries).await
+        (**self).put(prefix, hash, data, chunk_and_boundaries).await
     }
 
     async fn exists(&self, prefix: &str, hash: &MerkleHash) -> Result<bool> {

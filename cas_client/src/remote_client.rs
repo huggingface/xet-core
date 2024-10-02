@@ -5,7 +5,6 @@ use anyhow::anyhow;
 use async_trait::async_trait;
 use bytes::Buf;
 use bytes::Bytes;
-use cas::auth::AuthConfig;
 use cas_object::CasObject;
 use cas_types::{CASReconstructionTerm, Key, QueryReconstructionResponse, UploadXorbResponse};
 use error_printer::OptionPrinter;
@@ -14,6 +13,7 @@ use reqwest::{StatusCode, Url};
 use reqwest_middleware::{ClientBuilder, ClientWithMiddleware, Middleware};
 use std::io::{Cursor, Write};
 use tracing::{debug, warn};
+use utils::auth::AuthConfig;
 
 pub const CAS_ENDPOINT: &str = "http://localhost:8080";
 pub const PREFIX_DEFAULT: &str = "default";
@@ -32,14 +32,14 @@ impl UploadClient for RemoteClient {
         prefix: &str,
         hash: &MerkleHash,
         data: Vec<u8>,
-        chunk_boundaries: Vec<u64>,
+        chunk_and_boundaries: Vec<(MerkleHash, u32)>,
     ) -> Result<()> {
         let key = Key {
             prefix: prefix.to_string(),
             hash: *hash,
         };
 
-        let was_uploaded = self.upload(&key, &data, chunk_boundaries).await?;
+        let was_uploaded = self.upload(&key, &data, chunk_and_boundaries).await?;
 
         if !was_uploaded {
             debug!("{key:?} not inserted into CAS.");
@@ -110,7 +110,7 @@ impl RemoteClient {
         &self,
         key: &Key,
         contents: &[u8],
-        chunk_boundaries: Vec<u64>,
+        chunk_and_boundaries: Vec<(MerkleHash, u32)>,
     ) -> Result<bool> {
         let url = Url::parse(&format!("{}/xorb/{key}", self.endpoint))?;
 
@@ -120,7 +120,7 @@ impl RemoteClient {
             &mut writer,
             &key.hash,
             contents,
-            &chunk_boundaries.into_iter().map(|x| x as u32).collect(),
+            &chunk_and_boundaries,
             cas_object::CompressionScheme::LZ4,
         )?;
 
@@ -245,12 +245,9 @@ impl OptionalMiddleware for ClientBuilder {
 
 #[cfg(test)]
 mod tests {
-    use rand::Rng;
-    use tracing_test::traced_test;
-
     use super::*;
-    use merkledb::{prelude::MerkleDBHighLevelMethodsV1, Chunk, MerkleMemDB};
-    use merklehash::DataHash;
+    use cas_object::test_utils::*;
+    use tracing_test::traced_test;
 
     #[ignore]
     #[traced_test]
@@ -259,55 +256,18 @@ mod tests {
         // Arrange
         let rc = RemoteClient::new(CAS_ENDPOINT, &None);
         let prefix = PREFIX_DEFAULT;
-        let (hash, data, chunk_boundaries) = gen_dummy_xorb(3, 10248, true);
+        let (c, _, data, chunk_boundaries) = build_cas_object(
+            3,
+            ChunkSize::Random(512, 10248),
+            cas_object::CompressionScheme::LZ4,
+        );
 
         // Act
-        let result = rc.put(prefix, &hash, data, chunk_boundaries).await;
+        let result = rc
+            .put(prefix, &c.info.cashash, data, chunk_boundaries)
+            .await;
 
         // Assert
         assert!(result.is_ok());
-    }
-
-    fn gen_dummy_xorb(
-        num_chunks: u32,
-        uncompressed_chunk_size: u32,
-        randomize_chunk_sizes: bool,
-    ) -> (DataHash, Vec<u8>, Vec<u64>) {
-        let mut contents = Vec::new();
-        let mut chunks: Vec<Chunk> = Vec::new();
-        let mut chunk_boundaries = Vec::with_capacity(num_chunks as usize);
-        for _idx in 0..num_chunks {
-            let chunk_size: u32 = if randomize_chunk_sizes {
-                let mut rng = rand::thread_rng();
-                rng.gen_range(1024..=uncompressed_chunk_size)
-            } else {
-                uncompressed_chunk_size
-            };
-
-            let bytes = gen_random_bytes(chunk_size);
-
-            chunks.push(Chunk {
-                hash: merklehash::compute_data_hash(&bytes),
-                length: bytes.len(),
-            });
-
-            contents.extend(bytes);
-            chunk_boundaries.push(contents.len() as u64);
-        }
-
-        let mut db = MerkleMemDB::default();
-        let mut staging = db.start_insertion_staging();
-        db.add_file(&mut staging, &chunks);
-        let ret = db.finalize(staging);
-        let hash = *ret.hash();
-
-        (hash, contents, chunk_boundaries)
-    }
-
-    fn gen_random_bytes(uncompressed_chunk_size: u32) -> Vec<u8> {
-        let mut rng = rand::thread_rng();
-        let mut data = vec![0u8; uncompressed_chunk_size as usize];
-        rng.fill(&mut data[..]);
-        data
     }
 }

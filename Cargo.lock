@@ -400,6 +400,7 @@ dependencies = [
  "async-trait",
  "base64 0.13.1",
  "byteorder",
+ "cas_types",
  "chrono",
  "lazy_static",
  "lru",
@@ -2104,6 +2105,7 @@ dependencies = [
  "tempfile",
  "tokio",
  "tracing",
+ "utils",
  "uuid",
  "xet_error",
 ]

@@ -1,19 +1,18 @@
-use bytes::Buf;
-use merkledb::{prelude::MerkleDBHighLevelMethodsV1, Chunk, MerkleMemDB};
-use merklehash::{DataHash, MerkleHash};
-use std::{
-    cmp::{max, min},
-    io::{Cursor, Error, Read, Seek, Write},
-    mem::size_of,
-};
-use tracing::warn;
-
 use crate::{
     cas_chunk_format::{deserialize_chunk, serialize_chunk},
     error::CasObjectError,
     CompressionScheme,
 };
 use anyhow::anyhow;
+use bytes::Buf;
+use merkledb::{prelude::MerkleDBHighLevelMethodsV1, Chunk, MerkleMemDB};
+use merklehash::MerkleHash;
+use std::{
+    cmp::min,
+    io::{Cursor, Error, Read, Seek, Write},
+    mem::size_of,
+};
+use tracing::warn;
 
 const CAS_OBJECT_FORMAT_IDENT: [u8; 7] = [b'X', b'E', b'T', b'B', b'L', b'O', b'B'];
 const CAS_OBJECT_FORMAT_VERSION: u8 = 0;
@@ -39,7 +38,7 @@ pub struct CasObjectInfo {
     /// This vector only contains boundaries, so assumes the first chunk starts at offset 0.
     /// The final entry in vector is the total length of the chunks.
     /// See example below.
-    /// chunk[n] offset = chunk_boundary_offsets[n-1]
+    /// chunk[n] are bytes in [chunk_boundary_offsets[n-1], chunk_boundary_offsets[n])
     /// ```
     /// // ex.             chunks: [  0,   1,   2,   3 ]
     /// // chunk_boundary_offsets: [ 100, 200, 300, 400]
@@ -58,7 +57,7 @@ impl Default for CasObjectInfo {
         CasObjectInfo {
             ident: CAS_OBJECT_FORMAT_IDENT,
             version: CAS_OBJECT_FORMAT_VERSION,
-            cashash: DataHash::default(),
+            cashash: MerkleHash::default(),
             num_chunks: 0,
             chunk_boundary_offsets: Vec::new(),
             chunk_hashes: Vec::new(),
@@ -107,19 +106,6 @@ impl CasObjectInfo {
     pub fn deserialize<R: Read + Seek>(reader: &mut R) -> Result<(Self, u32), CasObjectError> {
         let mut total_bytes_read: u32 = 0;
 
-        // Go to end of Reader and get length, then jump back to it, and read sequentially
-        // read last 4 bytes to get length
-        reader.seek(std::io::SeekFrom::End(-(size_of::<u32>() as i64)))?;
-
-        let mut info_length = [0u8; 4];
-        reader.read_exact(&mut info_length)?;
-        let info_length = u32::from_le_bytes(info_length);
-
-        // now seek back that many bytes + size of length (u32) and read sequentially.
-        reader.seek(std::io::SeekFrom::End(
-            -(size_of::<u32>() as i64 + info_length as i64),
-        ))?;
-
         // Helper function to read data and update the byte count
         let mut read_bytes = |data: &mut [u8]| -> Result<(), CasObjectError> {
             reader.read_exact(data)?;
@@ -143,36 +129,29 @@ impl CasObjectInfo {
             )));
         }
 
-        let mut buf = [0u8; 32];
+        let mut buf = [0u8; size_of::<MerkleHash>()];
         read_bytes(&mut buf)?;
-        let cashash = DataHash::from(&buf);
+        let cashash = MerkleHash::from(&buf);
 
-        let mut num_chunks = [0u8; 4];
+        let mut num_chunks = [0u8; size_of::<u32>()];
         read_bytes(&mut num_chunks)?;
         let num_chunks = u32::from_le_bytes(num_chunks);
 
         let mut chunk_boundary_offsets = Vec::with_capacity(num_chunks as usize);
         for _ in 0..num_chunks {
-            let mut offset = [0u8; 4];
+            let mut offset = [0u8; size_of::<u32>()];
             read_bytes(&mut offset)?;
             chunk_boundary_offsets.push(u32::from_le_bytes(offset));
         }
         let mut chunk_hashes = Vec::with_capacity(num_chunks as usize);
         for _ in 0..num_chunks {
-            let mut hash = [0u8; 32];
+            let mut hash = [0u8; size_of::<MerkleHash>()];
             read_bytes(&mut hash)?;
-            chunk_hashes.push(DataHash::from(&hash));
+            chunk_hashes.push(MerkleHash::from(&hash));
         }
 
         let mut _buffer = [0u8; 16];
         read_bytes(&mut _buffer)?;
-
-        // validate that info_length matches what we read off of header
-        if total_bytes_read != info_length {
-            return Err(CasObjectError::FormatError(anyhow!(
-                "Xorb Info Format Error"
-            )));
-        }
 
         Ok((
             CasObjectInfo {
@@ -184,7 +163,7 @@ impl CasObjectInfo {
                 chunk_hashes,
                 _buffer,
             },
-            info_length,
+            total_bytes_read,
         ))
     }
 }
@@ -243,46 +222,50 @@ impl CasObject {
     ///
     /// This allows the CasObject to be partially constructed, allowing for range reads inside the CasObject.
     pub fn deserialize<R: Read + Seek>(reader: &mut R) -> Result<Self, CasObjectError> {
-        let (info, info_length) = CasObjectInfo::deserialize(reader)?;
+        let info_length = Self::get_info_length(reader)?;
+
+        // now seek back that many bytes + size of length (u32) and read sequentially.
+        reader.seek(std::io::SeekFrom::End(
+            -(size_of::<u32>() as i64 + info_length as i64),
+        ))?;
+
+        let (info, total_bytes_read) = CasObjectInfo::deserialize(reader)?;
+
+        // validate that info_length matches what we read off of header
+        if total_bytes_read != info_length {
+            return Err(CasObjectError::FormatError(anyhow!(
+                "Xorb Info Format Error"
+            )));
+        }
+
         Ok(Self { info, info_length })
     }
 
-    /// Used by LocalClient for generating Cas Object from chunk_boundaries while uploading or downloading blocks.
+    /// Serialize into Cas Object from uncompressed data and chunk boundaries.
+    /// Assumes correctness from caller: it's the receiver's responsibility to validate a cas object.
     pub fn serialize<W: Write + Seek>(
         writer: &mut W,
         hash: &MerkleHash,
         data: &[u8],
-        chunk_boundaries: &Vec<u32>,
+        chunk_and_boundaries: &[(MerkleHash, u32)],
         compression_scheme: CompressionScheme,
     ) -> Result<(Self, usize), CasObjectError> {
-        // validate hash against contents
-        if !Self::validate_root_hash(data, chunk_boundaries, hash) {
-            return Err(CasObjectError::HashMismatch);
-        }
-
         let mut cas = CasObject::default();
-        cas.info.cashash.copy_from_slice(hash.as_slice());
-        cas.info.num_chunks = chunk_boundaries.len() as u32;
+        cas.info.cashash = *hash;
+        cas.info.num_chunks = chunk_and_boundaries.len() as u32;
         cas.info.chunk_boundary_offsets = Vec::with_capacity(cas.info.num_chunks as usize);
-        cas.info.chunk_hashes = Vec::with_capacity(cas.info.num_chunks as usize);
+        cas.info.chunk_hashes = chunk_and_boundaries.iter().map(|(hash, _)| *hash).collect();
 
         let mut total_written_bytes: usize = 0;
 
         let mut raw_start_idx = 0;
-        for boundary in chunk_boundaries {
-            let chunk_boundary: u32 = *boundary;
+        for boundary in chunk_and_boundaries {
+            let chunk_boundary: u32 = boundary.1;
 
-            let mut chunk_raw_bytes = Vec::<u8>::new();
-            chunk_raw_bytes
-                .extend_from_slice(&data[raw_start_idx as usize..chunk_boundary as usize]);
-
-            // generate chunk hash and store it
-            let chunk_hash = merklehash::compute_data_hash(&chunk_raw_bytes);
-            cas.info.chunk_hashes.push(chunk_hash);
+            let chunk_raw_bytes = &data[raw_start_idx as usize..chunk_boundary as usize];
 
             // now serialize chunk directly to writer (since chunks come first!)
-            let chunk_written_bytes =
-                serialize_chunk(&chunk_raw_bytes, writer, compression_scheme)?;
+            let chunk_written_bytes = serialize_chunk(chunk_raw_bytes, writer, compression_scheme)?;
             total_written_bytes += chunk_written_bytes;
             cas.info
                 .chunk_boundary_offsets
@@ -382,50 +365,33 @@ impl CasObject {
 
     /// Generate a hash for securing a chunk range.
     ///
-    /// chunk_start_index, chunk_end_index: byte indices for chunks in CasObject.
+    /// chunk_start_index, chunk_end_index: indices for chunks in CasObject.
     /// key: additional key incorporated into generating hash.
     ///
     /// This hash ensures validity of the knowledge of chunks, since ranges are public,
-    /// this ensures that only users that actually have access to chunks can request them.
+    /// this ensures that only users that actually have access to chunks can claim them
+    /// in a file reconstruction entry.
     pub fn generate_chunk_range_hash(
         &self,
         chunk_start_index: u32,
         chunk_end_index: u32,
         key: &[u8],
-    ) -> Result<DataHash, CasObjectError> {
+    ) -> Result<MerkleHash, CasObjectError> {
         self.validate_cas_object_info()?;
 
-        if chunk_end_index < chunk_start_index
-            || self.get_contents_length()? > max(chunk_end_index, chunk_start_index)
-        {
+        if chunk_end_index < chunk_start_index || chunk_end_index > self.info.num_chunks {
             return Err(CasObjectError::InvalidArguments);
         }
 
-        // walk chunk boundaries and collect relevant hashes
-        let mut range_hashes = Vec::<DataHash>::new();
-        let mut found_start = chunk_start_index == 0;
-        let mut found_end = false;
-        for (idx, boundary) in self.info.chunk_boundary_offsets.iter().enumerate() {
-            let boundary = *boundary;
-            if found_start || chunk_start_index == boundary {
-                found_start = true;
-                let chunk_hash = self.info.chunk_hashes.get(idx).unwrap();
-                range_hashes.push(*chunk_hash);
-            }
-
-            // if found end then exit loop early
-            if chunk_end_index == boundary {
-                found_end = true;
-                break;
-            }
-        }
-
-        if !found_start || !found_end {
-            return Err(CasObjectError::InternalError(anyhow!("Chunk Range Invalid")))
-        }
+        // Collect relevant hashes
+        let range_hashes =
+            self.info.chunk_hashes[chunk_start_index as usize..chunk_end_index as usize].as_ref();
 
         // TODO: Make this more robust, currently appends range hashes together, adds key to end
-        let mut combined : Vec<u8> = range_hashes.iter().flat_map(|hash| hash.as_bytes().to_vec()).collect();
+        let mut combined: Vec<u8> = range_hashes
+            .iter()
+            .flat_map(|hash| hash.as_bytes().to_vec())
+            .collect();
         combined.extend_from_slice(key);
 
         // now hash the hashes + key and return
@@ -434,7 +400,7 @@ impl CasObject {
         Ok(range_hash)
     }
 
-    /// Return end value of all chunk contents (byte index prior to header)
+    /// Return end offset of all physical chunk contents (byte index at the beginning of footer)
     pub fn get_contents_length(&self) -> Result<u32, CasObjectError> {
         self.validate_cas_object_info()?;
         match self.info.chunk_boundary_offsets.last() {
@@ -445,10 +411,12 @@ impl CasObject {
         }
     }
 
-    /// Get range of content bytes from Xorb.
+    /// Get range of content bytes uncompressed from Xorb.
+    ///
+    /// start and end are byte indices into the physical layout of a xorb.
     ///
     /// The start and end parameters are required to align with chunk boundaries.
-    pub fn get_range<R: Read + Seek>(
+    fn get_range<R: Read + Seek>(
         &self,
         reader: &mut R,
         start: u32,
@@ -479,23 +447,8 @@ impl CasObject {
         self.get_range(reader, 0, self.get_contents_length()?)
     }
 
-    /// Get all the content bytes from a Xorb, and return the chunk boundaries
-    pub fn get_detailed_bytes<R: Read + Seek>(
-        &self,
-        reader: &mut R,
-    ) -> Result<(Vec<u32>, Vec<u8>), CasObjectError> {
-        self.validate_cas_object_info()?;
-
-        let data = self.get_all_bytes(reader)?;
-        let chunk_boundaries = self.get_chunk_boundaries()?;
-
-        Ok((chunk_boundaries, data))
-    }
-
     /// Assumes chunk_data is 1+ complete chunks. Processes them sequentially and returns them as Vec<u8>.
     fn get_chunk_contents(&self, chunk_data: &[u8]) -> Result<Vec<u8>, CasObjectError> {
-        self.validate_cas_object_info()?;
-
         // walk chunk_data, deserialize into Chunks, and then get_bytes() from each of them.
         let mut reader = Cursor::new(chunk_data);
         let mut res = Vec::<u8>::new();
@@ -507,22 +460,28 @@ impl CasObject {
         Ok(res)
     }
 
-    /// Helper function to translate CasObjectInfo.chunk_boundary_offsets to just return chunk boundaries.
-    ///
-    /// The final chunk boundary returned is required to be the length of the contents.
-    fn get_chunk_boundaries(&self) -> Result<Vec<u32>, CasObjectError> {
+    /// Helper function to translate a range of chunk indices to physical byte offset range.
+    fn get_byte_offset(
+        &self,
+        chunk_index_start: u32,
+        chunk_index_end: u32,
+    ) -> Result<(u32, u32), CasObjectError> {
         self.validate_cas_object_info()?;
-        Ok(self.info.chunk_boundary_offsets.to_vec())
+        if chunk_index_end <= chunk_index_start || chunk_index_end > self.info.num_chunks {
+            return Err(CasObjectError::InvalidArguments);
+        }
+
+        let byte_offset_start = match chunk_index_start {
+            0 => 0,
+            _ => self.info.chunk_boundary_offsets[chunk_index_start as usize - 1],
+        };
+        let byte_offset_end = self.info.chunk_boundary_offsets[chunk_index_end as usize - 1];
+
+        Ok((byte_offset_start, byte_offset_end))
     }
 
     /// Helper method to verify that info object is complete
     fn validate_cas_object_info(&self) -> Result<(), CasObjectError> {
-        if self.info == Default::default() {
-            return Err(CasObjectError::InternalError(anyhow!(
-                "Incomplete CasObject, no CasObjectInfo footer."
-            )));
-        }
-
         if self.info.num_chunks == 0 {
             return Err(CasObjectError::FormatError(anyhow!(
                 "Invalid CasObjectInfo, no chunks in CasObject."
@@ -537,7 +496,7 @@ impl CasObject {
             )));
         }
 
-        if self.info.cashash == DataHash::default() {
+        if self.info.cashash == MerkleHash::default() {
             return Err(CasObjectError::FormatError(anyhow!(
                 "Invalid CasObjectInfo, Missing cashash."
             )));
@@ -545,154 +504,52 @@ impl CasObject {
 
         Ok(())
     }
-
-    /// Helper method to validate root hash for data block.
-    fn validate_root_hash(data: &[u8], chunk_boundaries: &[u32], hash: &MerkleHash) -> bool {
-        // at least 1 chunk, and last entry in chunk boundary must match the length
-        if chunk_boundaries.is_empty()
-            || chunk_boundaries[chunk_boundaries.len() - 1] as usize != data.len()
-        {
-            return false;
-        }
-
-        let mut chunks: Vec<Chunk> = Vec::new();
-        let mut left_edge: usize = 0;
-        for i in chunk_boundaries {
-            let right_edge = *i as usize;
-            let hash = merklehash::compute_data_hash(&data[left_edge..right_edge]);
-            let length = right_edge - left_edge;
-            chunks.push(Chunk { hash, length });
-            left_edge = right_edge;
-        }
-
-        let mut db = MerkleMemDB::default();
-        let mut staging = db.start_insertion_staging();
-        db.add_file(&mut staging, &chunks);
-        let ret = db.finalize(staging);
-        *ret.hash() == *hash
-    }
 }
 
-#[cfg(test)]
-mod tests {
-
+pub mod test_utils {
     use super::*;
     use crate::cas_chunk_format::serialize_chunk;
     use merkledb::{prelude::MerkleDBHighLevelMethodsV1, Chunk, MerkleMemDB};
     use rand::Rng;
-    use std::io::Cursor;
 
-    #[test]
-    fn test_default_header_initialization() {
-        // Create an instance using the Default trait
-        let default_instance = CasObjectInfo::default();
-
-        // Expected default values
-        let expected_default = CasObjectInfo {
-            ident: CAS_OBJECT_FORMAT_IDENT,
-            version: CAS_OBJECT_FORMAT_VERSION,
-            cashash: DataHash::default(),
-            num_chunks: 0,
-            chunk_boundary_offsets: Vec::new(),
-            chunk_hashes: Vec::new(),
-            _buffer: [0; 16],
-        };
-
-        // Assert that the default instance matches the expected values
-        assert_eq!(default_instance, expected_default);
-    }
-
-    #[test]
-    fn test_default_cas_object() {
-        let cas = CasObject::default();
-
-        let mut writer: Cursor<Vec<u8>> = Cursor::new(Vec::new());
-        let len = cas.info.serialize(&mut writer).unwrap();
-
-        assert_eq!(cas.info_length, len as u32);
-        assert_eq!(cas.info_length, CAS_OBJECT_INFO_DEFAULT_LENGTH);
-    }
-
-    #[test]
-    fn test_chunk_boundaries_chunk_size_info() {
-        // Arrange
-        let (c, _cas_data, _raw_data, _raw_chunk_boundaries) =
-            build_cas_object(3, 100, false, CompressionScheme::None);
-        // Act & Assert
-        assert_eq!(c.get_chunk_boundaries().unwrap().len(), 3);
-        assert_eq!(c.get_chunk_boundaries().unwrap(), [108, 216, 324]);
-        assert_eq!(c.info.num_chunks, 3);
-        assert_eq!(
-            c.info.chunk_boundary_offsets.len(),
-            c.info.num_chunks as usize
-        );
-
-        let second_chunk_boundary = *c.info.chunk_boundary_offsets.get(1).unwrap();
-        let third_chunk_boundary = *c.info.chunk_boundary_offsets.get(2).unwrap();
-        assert_eq!(second_chunk_boundary, 216); // 8-byte header, 3 chunks, so 2nd chunk boundary is at byte 216
-        assert_eq!(third_chunk_boundary, 324); // 8-byte header, 3 chunks, so 3rd chunk boundary is at byte 324
-    }
-
-    fn gen_random_bytes(uncompressed_chunk_size: u32) -> Vec<u8> {
+    pub fn gen_random_bytes(size: u32) -> Vec<u8> {
         let mut rng = rand::thread_rng();
-        let mut data = vec![0u8; uncompressed_chunk_size as usize];
+        let mut data = vec![0u8; size as usize];
         rng.fill(&mut data[..]);
         data
     }
 
-    #[test]
-    fn test_generate_range_hash_full_range() {
-        // Arrange
-        let (c, _cas_data, _raw_data, _raw_chunk_boundaries) =
-            build_cas_object(3, 100, false, CompressionScheme::None);
-        let key = [b'K', b'E', b'Y'];
-
-        let mut hashes : Vec<u8> = c.info.chunk_hashes.iter().flat_map(|hash| hash.as_bytes().to_vec()).collect();
-        hashes.extend_from_slice(&key);
-        let expected_hash = merklehash::compute_data_hash(&hashes);
-
-        // Act & Assert
-        let range_hash = c.generate_chunk_range_hash(0, 324, &key).unwrap();
-        assert_eq!(range_hash, expected_hash);
-    }
-
-    #[ignore = "not written yet"]
-    #[test]
-    fn test_generate_range_hash_partial() {
-        todo!()
-    }
-
-    #[ignore = "Not written yet"]
-    #[test]
-    fn test_validate_cas_object_info() {
-        todo!()
+    pub enum ChunkSize {
+        Random(u32, u32),
+        Fixed(u32),
     }
 
     /// Utility test method for creating a cas object
-    /// Returns (CasObject, CasObjectInfo serialized, raw data, raw data chunk boundaries)
-    fn build_cas_object(
+    /// Returns (CasObject, chunks serialized, raw data, raw data chunk boundaries)
+    #[allow(clippy::type_complexity)]
+    pub fn build_cas_object(
         num_chunks: u32,
-        uncompressed_chunk_size: u32,
-        use_random_chunk_size: bool,
+        chunk_size: ChunkSize,
         compression_scheme: CompressionScheme,
-    ) -> (CasObject, Vec<u8>, Vec<u8>, Vec<u32>) {
+    ) -> (CasObject, Vec<u8>, Vec<u8>, Vec<(MerkleHash, u32)>) {
         let mut c = CasObject::default();
 
-        let mut chunk_boundary_offsets = Vec::<u32>::new();
-        let mut chunk_hashes = Vec::<DataHash>::new();
-        let mut writer = Cursor::new(Vec::<u8>::new());
+        let mut chunk_boundary_offsets = vec![];
+        let mut chunk_hashes = vec![];
+        let mut writer = Cursor::new(vec![]);
 
         let mut total_bytes = 0;
-        let mut chunks: Vec<Chunk> = Vec::new();
-        let mut data_contents_raw = Vec::<u8>::new();
-        let mut raw_chunk_boundaries = Vec::<u32>::new();
+        let mut chunks = vec![];
+        let mut data_contents_raw = vec![];
+        let mut raw_chunk_boundaries = vec![];
 
         for _idx in 0..num_chunks {
-            let chunk_size: u32 = if use_random_chunk_size {
-                let mut rng = rand::thread_rng();
-                rng.gen_range(512..=uncompressed_chunk_size)
-            } else {
-                uncompressed_chunk_size
+            let chunk_size: u32 = match chunk_size {
+                ChunkSize::Random(a, b) => {
+                    let mut rng = rand::thread_rng();
+                    rng.gen_range(a..=b)
+                }
+                ChunkSize::Fixed(size) => size,
             };
 
             let bytes = gen_random_bytes(chunk_size);
@@ -711,7 +568,7 @@ mod tests {
 
             total_bytes += bytes_written as u32;
 
-            raw_chunk_boundaries.push(data_contents_raw.len() as u32);
+            raw_chunk_boundaries.push((chunk_hash, data_contents_raw.len() as u32));
             chunk_boundary_offsets.push(total_bytes);
             chunk_hashes.push(chunk_hash);
         }
@@ -739,12 +596,96 @@ mod tests {
             raw_chunk_boundaries,
         )
     }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::test_utils::*;
+    use super::*;
+    use std::io::Cursor;
+
+    #[test]
+    fn test_default_header_initialization() {
+        // Create an instance using the Default trait
+        let default_instance = CasObjectInfo::default();
+
+        // Expected default values
+        let expected_default = CasObjectInfo {
+            ident: CAS_OBJECT_FORMAT_IDENT,
+            version: CAS_OBJECT_FORMAT_VERSION,
+            cashash: MerkleHash::default(),
+            num_chunks: 0,
+            chunk_boundary_offsets: Vec::new(),
+            chunk_hashes: Vec::new(),
+            _buffer: [0; 16],
+        };
+
+        // Assert that the default instance matches the expected values
+        assert_eq!(default_instance, expected_default);
+    }
+
+    #[test]
+    fn test_default_cas_object() {
+        let cas = CasObject::default();
+
+        let mut writer: Cursor<Vec<u8>> = Cursor::new(Vec::new());
+        let len = cas.info.serialize(&mut writer).unwrap();
+
+        assert_eq!(cas.info_length, len as u32);
+        assert_eq!(cas.info_length, CAS_OBJECT_INFO_DEFAULT_LENGTH);
+    }
+
+    #[test]
+    fn test_uncompressed_cas_object() {
+        // Arrange
+        let (c, _cas_data, _raw_data, _raw_chunk_boundaries) =
+            build_cas_object(3, ChunkSize::Fixed(100), CompressionScheme::None);
+        // Act & Assert
+        assert_eq!(c.info.num_chunks, 3);
+        assert_eq!(
+            c.info.chunk_boundary_offsets.len(),
+            c.info.num_chunks as usize
+        );
+
+        let second_chunk_boundary = *c.info.chunk_boundary_offsets.get(1).unwrap();
+        assert_eq!(second_chunk_boundary, 216); // 8-byte header, 3 chunks, so 2nd chunk boundary is at byte 216
+
+        let third_chunk_boundary = *c.info.chunk_boundary_offsets.get(2).unwrap();
+        assert_eq!(third_chunk_boundary, 324); // 8-byte header, 3 chunks, so 3rd chunk boundary is at byte 324
+
+        let byte_offset_range = c.get_byte_offset(0, 1).unwrap();
+        assert_eq!(byte_offset_range, (0, 108));
+
+        let byte_offset_range = c.get_byte_offset(1, 3).unwrap();
+        assert_eq!(byte_offset_range, (108, 324));
+    }
+
+    #[test]
+    fn test_generate_range_hash_full_range() {
+        // Arrange
+        let (c, _cas_data, _raw_data, _raw_chunk_boundaries) =
+            build_cas_object(3, ChunkSize::Fixed(100), CompressionScheme::None);
+        let key = [b'K', b'E', b'Y'];
+
+        let mut hashes: Vec<u8> = c
+            .info
+            .chunk_hashes
+            .iter()
+            .flat_map(|hash| hash.as_bytes().to_vec())
+            .collect();
+        hashes.extend_from_slice(&key);
+        let expected_hash = merklehash::compute_data_hash(&hashes);
+
+        // Act & Assert
+        let range_hash = c.generate_chunk_range_hash(0, 3, &key).unwrap();
+        assert_eq!(range_hash, expected_hash);
+    }
 
     #[test]
     fn test_compress_decompress() {
         // Arrange
         let (c, _cas_data, raw_data, raw_chunk_boundaries) =
-            build_cas_object(55, 53212, false, CompressionScheme::LZ4);
+            build_cas_object(55, ChunkSize::Fixed(53212), CompressionScheme::LZ4);
 
         // Act & Assert
         let mut writer: Cursor<Vec<u8>> = Cursor::new(Vec::new());
@@ -791,7 +732,7 @@ mod tests {
     fn test_hash_generation_compression() {
         // Arrange
         let (c, cas_data, raw_data, raw_chunk_boundaries) =
-            build_cas_object(55, 53212, false, CompressionScheme::LZ4);
+            build_cas_object(55, ChunkSize::Fixed(53212), CompressionScheme::LZ4);
         // Act & Assert
         let mut buf: Cursor<Vec<u8>> = Cursor::new(Vec::new());
         assert!(CasObject::serialize(
@@ -813,7 +754,7 @@ mod tests {
     fn test_basic_serialization_mem() {
         // Arrange
         let (c, _cas_data, raw_data, raw_chunk_boundaries) =
-            build_cas_object(3, 100, false, CompressionScheme::None);
+            build_cas_object(3, ChunkSize::Fixed(100), CompressionScheme::None);
         let mut buf: Cursor<Vec<u8>> = Cursor::new(Vec::new());
         // Act & Assert
         assert!(CasObject::serialize(
@@ -832,7 +773,7 @@ mod tests {
     fn test_serialization_deserialization_mem_medium() {
         // Arrange
         let (c, _cas_data, raw_data, raw_chunk_boundaries) =
-            build_cas_object(32, 16384, false, CompressionScheme::None);
+            build_cas_object(32, ChunkSize::Fixed(16384), CompressionScheme::None);
         let mut buf: Cursor<Vec<u8>> = Cursor::new(Vec::new());
         // Act & Assert
         assert!(CasObject::serialize(
@@ -863,7 +804,7 @@ mod tests {
     fn test_serialization_deserialization_mem_large_random() {
         // Arrange
         let (c, _cas_data, raw_data, raw_chunk_boundaries) =
-            build_cas_object(32, 65536, true, CompressionScheme::None);
+            build_cas_object(32, ChunkSize::Random(512, 65536), CompressionScheme::None);
         let mut buf: Cursor<Vec<u8>> = Cursor::new(Vec::new());
         // Act & Assert
         assert!(CasObject::serialize(
@@ -893,7 +834,7 @@ mod tests {
     fn test_serialization_deserialization_file_large_random() {
         // Arrange
         let (c, _cas_data, raw_data, raw_chunk_boundaries) =
-            build_cas_object(256, 65536, true, CompressionScheme::None);
+            build_cas_object(256, ChunkSize::Random(512, 65536), CompressionScheme::None);
         let mut buf: Cursor<Vec<u8>> = Cursor::new(Vec::new());
         // Act & Assert
         assert!(CasObject::serialize(
@@ -923,7 +864,7 @@ mod tests {
     fn test_basic_mem_lz4() {
         // Arrange
         let (c, _cas_data, raw_data, raw_chunk_boundaries) =
-            build_cas_object(1, 8, false, CompressionScheme::LZ4);
+            build_cas_object(1, ChunkSize::Fixed(8), CompressionScheme::LZ4);
         let mut writer: Cursor<Vec<u8>> = Cursor::new(Vec::new());
         // Act & Assert
         assert!(CasObject::serialize(
@@ -952,7 +893,7 @@ mod tests {
     fn test_serialization_deserialization_mem_medium_lz4() {
         // Arrange
         let (c, _cas_data, raw_data, raw_chunk_boundaries) =
-            build_cas_object(32, 16384, false, CompressionScheme::LZ4);
+            build_cas_object(32, ChunkSize::Fixed(16384), CompressionScheme::LZ4);
         let mut buf: Cursor<Vec<u8>> = Cursor::new(Vec::new());
         // Act & Assert
         assert!(CasObject::serialize(
@@ -983,7 +924,7 @@ mod tests {
     fn test_serialization_deserialization_mem_large_random_lz4() {
         // Arrange
         let (c, _cas_data, raw_data, raw_chunk_boundaries) =
-            build_cas_object(32, 65536, true, CompressionScheme::LZ4);
+            build_cas_object(32, ChunkSize::Random(512, 65536), CompressionScheme::LZ4);
         let mut buf: Cursor<Vec<u8>> = Cursor::new(Vec::new());
         // Act & Assert
         assert!(CasObject::serialize(
@@ -1013,7 +954,7 @@ mod tests {
     fn test_serialization_deserialization_file_large_random_lz4() {
         // Arrange
         let (c, _cas_data, raw_data, raw_chunk_boundaries) =
-            build_cas_object(256, 65536, true, CompressionScheme::LZ4);
+            build_cas_object(256, ChunkSize::Random(512, 65536), CompressionScheme::LZ4);
         let mut writer: Cursor<Vec<u8>> = Cursor::new(Vec::new());
         // Act & Assert
         assert!(CasObject::serialize(

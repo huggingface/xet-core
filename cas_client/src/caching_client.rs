@@ -16,7 +16,7 @@ impl UploadClient for CachingClient {
         prefix: &str,
         hash: &MerkleHash,
         data: Vec<u8>,
-        chunk_boundaries: Vec<u64>,
+        chunk_boundaries: Vec<(MerkleHash, u32)>,
     ) -> Result<()> {
         todo!()
     }

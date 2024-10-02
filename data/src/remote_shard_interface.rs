@@ -4,7 +4,6 @@ use super::shard_interface::{create_shard_client, create_shard_manager};
 use crate::cas_interface::Client;
 use crate::constants::{FILE_RECONSTRUCTION_CACHE_SIZE, MAX_CONCURRENT_UPLOADS};
 use crate::repo_salt::RepoSalt;
-use cas::singleflight;
 use lru::LruCache;
 use mdb_shard::constants::MDB_SHARD_MIN_TARGET_SIZE;
 use mdb_shard::session_directory::consolidate_shards_in_directory;
@@ -21,6 +20,7 @@ use std::sync::Arc;
 use std::sync::Mutex;
 use tokio::task::JoinHandle;
 use tracing::{debug, info};
+use utils::singleflight;
 
 pub struct RemoteShardInterface {
     pub file_query_policy: FileQueryPolicy,

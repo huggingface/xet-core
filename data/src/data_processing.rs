@@ -243,9 +243,9 @@ pub(crate) async fn register_new_cas_block(
     let chunk_boundaries = cas_data
         .chunks
         .iter()
-        .map(|(_, len)| {
+        .map(|(hash, len)| {
             pos += *len;
-            pos as u64
+            (*hash, pos as u32)
         })
         .collect();
 

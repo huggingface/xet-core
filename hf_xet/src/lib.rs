@@ -3,7 +3,7 @@ mod data_client;
 mod log;
 mod token_refresh;
 
-use cas::auth::TokenRefresher;
+use utils::auth::TokenRefresher;
 use data::PointerFile;
 use pyo3::exceptions::PyException;
 use pyo3::prelude::*;

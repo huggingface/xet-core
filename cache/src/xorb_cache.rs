@@ -6,8 +6,8 @@ use std::time::SystemTime;
 use tracing::{debug, info, info_span, warn};
 use tracing_futures::Instrument;
 
-use cas::key::Key;
-use cas::singleflight;
+use cas_types::Key;
+use utils::singleflight;
 
 use crate::metrics::{
     BLOCKS_READ, DATA_READ, READ_ERROR_COUNT, REQUEST_LATENCY_MS, REQUEST_THROUGHPUT,

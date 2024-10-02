@@ -2,7 +2,7 @@ use crate::cas_structs::*;
 use crate::constants::*;
 use crate::error::{MDBShardError, Result};
 use crate::file_structs::*;
-use crate::serialization_utils::*;
+use crate::interpolation_search::search_on_sorted_u64s;
 use crate::shard_in_memory::MDBInMemoryShard;
 use crate::shard_version;
 use crate::utils::truncate_hash;
@@ -13,6 +13,7 @@ use std::io::{Read, Seek, SeekFrom, Write};
 use std::mem::size_of;
 use std::sync::Arc;
 use tracing::debug;
+use utils::serialization_utils::*;
 
 // Same size for FileDataSequenceHeader and FileDataSequenceEntry
 const MDB_FILE_INFO_ENTRY_SIZE: u64 = (size_of::<[u64; 4]>() + 4 * size_of::<u32>()) as u64;

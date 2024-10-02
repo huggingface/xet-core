@@ -367,6 +367,7 @@ dependencies = [
  "async-trait",
  "base64 0.13.1",
  "byteorder",
+ "cas_types",
  "chrono",
  "lazy_static",
  "lru",
@@ -447,6 +448,7 @@ dependencies = [
  "lz4_flex",
  "merkledb",
  "merklehash",
+ "rand 0.8.5",
  "tempfile",
  "tracing",
  "xet_error",
@@ -1937,6 +1939,7 @@ dependencies = [
  "tempfile",
  "tokio",
  "tracing",
+ "utils",
  "uuid",
  "xet_error",
 ]
