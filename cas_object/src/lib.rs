@@ -1,4 +1,3 @@
-#![allow(dead_code)]
 mod cas_chunk_format;
 mod cas_object_format;
 mod compression_scheme;

@@ -461,7 +461,7 @@ impl CasObject {
     }
 
     /// Helper function to translate a range of chunk indices to physical byte offset range.
-    fn get_byte_offset(
+    pub fn get_byte_offset(
         &self,
         chunk_index_start: u32,
         chunk_index_end: u32,
