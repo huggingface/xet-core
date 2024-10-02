@@ -11,6 +11,9 @@ classifiers = [
     "Programming Language :: Python :: Implementation :: PyPy",
 ]
 dynamic = ["version"]
+dependencies = [
+    "maturin>=1.7.4",
+]
 [project.optional-dependencies]
 tests = [
     "pytest",

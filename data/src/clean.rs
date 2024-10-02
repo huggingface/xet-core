@@ -21,6 +21,7 @@ use std::mem::take;
 use std::ops::DerefMut;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::Instant;
 use tokio::sync::mpsc::error::TryRecvError;
 use tokio::sync::mpsc::{channel, Receiver, Sender};
 use tokio::sync::Mutex;
@@ -76,6 +77,9 @@ pub struct Cleaner {
 
     // Auxiliary info
     file_name: Option<PathBuf>,
+
+    // Telemetry
+    start: Instant,
 }
 
 impl Cleaner {
@@ -113,6 +117,7 @@ impl Cleaner {
             tracking_info: Mutex::new(Default::default()),
             small_file_buffer: Mutex::new(Some(Vec::with_capacity(small_file_threshold))),
             file_name: file_name.map(|f| f.to_owned()),
+            start: Instant::now(),
         });
 
         Self::run(cleaner.clone(), chunk_c).await;
@@ -239,8 +244,9 @@ impl Cleaner {
         Ok(false)
     }
 
-    async fn dedup(&self, chunks: &[ChunkYieldType]) -> Result<()> {
+    async fn dedup(&self, chunks: &[ChunkYieldType]) -> Result<u64> {
         info!("Dedup {} chunks", chunks.len());
+        let mut total_compressed_bytes = 0;
         let mut tracking_info = self.tracking_info.lock().await;
 
         let enable_global_dedup = self.enable_global_dedup_queries;
@@ -463,13 +469,14 @@ impl Cleaner {
                     tracking_info.cas_data.data.extend(bytes);
 
                     if tracking_info.cas_data.data.len() > TARGET_CAS_BLOCK_SIZE {
-                        let cas_hash = register_new_cas_block(
+                        let (cas_hash, compressed_bytes) = register_new_cas_block(
                             &mut tracking_info.cas_data,
                             &self.shard_manager,
                             &self.cas,
                             &self.cas_prefix,
                         )
                         .await?;
+                        total_compressed_bytes += compressed_bytes;
 
                         for i in take(&mut tracking_info.current_cas_file_info_indices) {
                             tracking_info.file_info[i].cas_hash = cas_hash;
@@ -483,7 +490,7 @@ impl Cleaner {
             }
         }
 
-        Ok(())
+        Ok(total_compressed_bytes)
     }
 
     async fn finish(&self) -> Result<()> {
@@ -516,7 +523,8 @@ impl Cleaner {
         Ok(())
     }
 
-    async fn summarize_dedup_info(&self) -> Result<(MerkleHash, u64)> {
+    async fn summarize_dedup_info(&self) -> Result<(MerkleHash, u64, u64)> {
+        let mut total_compressed_bytes = 0;
         let mut tracking_info = self.tracking_info.lock().await;
 
         let file_hash = file_node_hash(
@@ -577,13 +585,14 @@ impl Cleaner {
             if cas_data_accumulator.data.len() >= TARGET_CAS_BLOCK_SIZE {
                 let mut new_cas_data = take(cas_data_accumulator.deref_mut());
                 drop(cas_data_accumulator); // Release the lock.
-                register_new_cas_block(
+                let (_cas_hash, compressed_bytes) = register_new_cas_block(
                     &mut new_cas_data,
                     &self.shard_manager,
                     &self.cas,
                     &self.cas_prefix,
                 )
                 .await?;
+                total_compressed_bytes += compressed_bytes;
             } else {
                 drop(cas_data_accumulator);
             }
@@ -593,11 +602,11 @@ impl Cleaner {
 
         *tracking_info = Default::default();
 
-        Ok((file_hash, file_size))
+        Ok((file_hash, file_size, total_compressed_bytes))
     }
 
     async fn to_pointer_file(&self) -> Result<String> {
-        let (hash, filesize) = self.summarize_dedup_info().await?;
+        let (hash, filesize, compressed_size) = self.summarize_dedup_info().await?;
         let pointer_file = PointerFile::init_from_info(
             &self
                 .file_name
@@ -606,6 +615,8 @@ impl Cleaner {
                 .unwrap_or_default(),
             &hash.hex(),
             filesize,
+            compressed_size,
+            self.start.elapsed(),
         );
         Ok(pointer_file.to_string())
     }

@@ -36,7 +36,7 @@ impl<T: Client + Reconstructable + Send + Sync> UploadClient for CachingClient<T
 
 #[async_trait]
 impl<T: Client + Reconstructable + Send + Sync> ReconstructionClient for CachingClient<T> {
-    async fn get_file(&self, hash: &MerkleHash, writer: &mut Box<dyn Write + Send>) -> Result<()> {
+    async fn get_file(&self, hash: &MerkleHash, writer: &mut Box<dyn Write + Send>) -> Result<u64> {
         /*
         let file_info = self.reconstruct(hash, None).await?;
 
@@ -60,7 +60,7 @@ impl<T: Client + Reconstructable + Send + Sync> ReconstructionClient for Caching
         offset: u64,
         length: u64,
         writer: &mut Box<dyn Write + Send>,
-    ) -> Result<()> {
+    ) -> Result<u64> {
         todo!()
     }
 }

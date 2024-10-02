@@ -42,7 +42,7 @@ pub trait UploadClient {
 #[async_trait]
 pub trait ReconstructionClient {
     /// Get a entire file by file hash.
-    async fn get_file(&self, hash: &MerkleHash, writer: &mut Box<dyn Write + Send>) -> Result<()>;
+    async fn get_file(&self, hash: &MerkleHash, writer: &mut Box<dyn Write + Send>) -> Result<u64>;
 
     /// Get a entire file by file hash at a specific bytes range.
     async fn get_file_byte_range(
@@ -51,7 +51,7 @@ pub trait ReconstructionClient {
         offset: u64,
         length: u64,
         writer: &mut Box<dyn Write + Send>,
-    ) -> Result<()>;
+    ) -> Result<u64>;
 }
 
 pub trait Client: UploadClient + ReconstructionClient {}

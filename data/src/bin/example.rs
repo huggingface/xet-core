@@ -213,7 +213,7 @@ async fn smudge(mut reader: impl Read, writer: &mut Box<dyn Write + Send>) -> Re
     let mut input = String::new();
     reader.read_to_string(&mut input)?;
 
-    let pointer_file = PointerFile::init_from_string(&input, "");
+    let mut pointer_file = PointerFile::init_from_string(&input, "");
 
     // not a pointer file, leave it as it is.
     if !pointer_file.is_valid() {
@@ -223,7 +223,7 @@ async fn smudge(mut reader: impl Read, writer: &mut Box<dyn Write + Send>) -> Re
     let translator = PointerFileTranslator::new(default_smudge_config()?).await?;
 
     translator
-        .smudge_file_from_pointer(&pointer_file, writer, None)
+        .smudge_file_from_pointer(&mut pointer_file, writer, None)
         .await?;
 
     Ok(())

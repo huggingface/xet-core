@@ -53,7 +53,8 @@ impl ReconstructionClient for LocalTestClient {
         &self,
         hash: &MerkleHash,
         writer: &mut Box<dyn Write + Send>,
-    ) -> Result<(), CasClientError> {
+    ) -> Result<u64, CasClientError> {
+        let mut bytes_downloaded = 0u64;
         let Some((file_info, _)) = self
             .shard_manager
             .get_file_reconstruction_info(hash)
@@ -76,10 +77,11 @@ impl ReconstructionClient for LocalTestClient {
                 return Err(CasClientError::InvalidRange);
             };
 
+            bytes_downloaded += one_range.len() as u64;
             writer.write_all(&one_range)?;
         }
 
-        Ok(())
+        Ok(bytes_downloaded)
     }
 
     #[allow(unused_variables)]
@@ -89,7 +91,7 @@ impl ReconstructionClient for LocalTestClient {
         offset: u64,
         length: u64,
         writer: &mut Box<dyn Write + Send>,
-    ) -> Result<(), CasClientError> {
+    ) -> Result<u64, CasClientError> {
         todo!()
     }
 }

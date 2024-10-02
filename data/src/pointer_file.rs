@@ -2,6 +2,7 @@
 use crate::constants::POINTER_FILE_LIMIT;
 use merklehash::{DataHashHexParseError, MerkleHash};
 use static_assertions::const_assert;
+use std::time::Duration;
 use std::{collections::BTreeMap, fs, path::Path};
 use toml::Value;
 use tracing::{debug, error, warn};
@@ -9,6 +10,14 @@ use tracing::{debug, error, warn};
 const HEADER_PREFIX: &str = "# xet version ";
 const CURRENT_VERSION: &str = "0";
 
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct PointerFileTelemetry {
+    /// The transfer of CAS bytes due to this file
+    pub network_bytes: Option<u64>,
+
+    /// The duration for cleaning or smudging this file
+    pub latency: Option<Duration>,
+}
 /// A struct that wraps a Xet pointer file.
 /// Xet pointer file format is a TOML file,
 /// and the first line must be of the form "# xet version <x.y>"
@@ -33,6 +42,9 @@ pub struct PointerFile {
 
     /// The size of the file pointed to by this pointer file
     filesize: u64,
+
+    /// Optional telemetry information that is never written to the file
+    pub telemetry: Option<PointerFileTelemetry>,
 }
 
 impl PointerFile {
@@ -59,6 +71,7 @@ impl PointerFile {
                 is_valid,
                 hash,
                 filesize,
+                telemetry: None,
             };
         }
 
@@ -73,6 +86,7 @@ impl PointerFile {
                 is_valid,
                 hash,
                 filesize,
+                telemetry: None,
             };
         }
 
@@ -117,6 +131,7 @@ impl PointerFile {
             is_valid,
             hash,
             filesize,
+            telemetry: None,
         }
     }
 
@@ -134,6 +149,7 @@ impl PointerFile {
             is_valid: false,
             hash: empty_string,
             filesize: 0,
+            telemetry: None,
         };
 
         let Ok(file_meta) = fs::metadata(path).map_err(|e| {
@@ -156,13 +172,23 @@ impl PointerFile {
         PointerFile::init_from_string(&contents, path)
     }
 
-    pub fn init_from_info(path: &str, hash: &str, filesize: u64) -> Self {
+    pub fn init_from_info(
+        path: &str,
+        hash: &str,
+        filesize: u64,
+        compressed_size: u64,
+        latency: Duration,
+    ) -> Self {
         Self {
             version_string: CURRENT_VERSION.to_string(),
             path: path.to_string(),
             is_valid: true,
             hash: hash.to_string(),
             filesize,
+            telemetry: Some(PointerFileTelemetry {
+                network_bytes: Some(compressed_size),
+                latency: Some(latency),
+            }),
         }
     }
 
@@ -193,6 +219,20 @@ impl PointerFile {
     }
     pub fn filesize(&self) -> u64 {
         self.filesize
+    }
+
+    pub fn compressed_size(&self) -> u64 {
+        self.telemetry
+            .as_ref()
+            .and_then(|t| t.network_bytes)
+            .unwrap_or(0)
+    }
+
+    pub fn latency(&self) -> f64 {
+        self.telemetry
+            .as_ref()
+            .and_then(|t| t.latency.map(|dur| dur.as_secs_f64()))
+            .unwrap_or(0f64)
     }
 }
 
@@ -322,4 +362,6 @@ mod tests {
         let test = PointerFile::init_from_string(&test_contents, &empty_string);
         assert!(!test.is_valid()); // new version is not valid
     }
+
+    // todo add init_from_info test
 }
