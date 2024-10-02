@@ -519,9 +519,19 @@ pub mod test_utils {
         data
     }
 
+    #[derive(Debug, Clone, Copy)]
     pub enum ChunkSize {
         Random(u32, u32),
         Fixed(u32),
+    }
+
+    impl std::fmt::Display for ChunkSize {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            match self {
+                ChunkSize::Random(a, b) => write!(f, "[{a}, {b}]"),
+                ChunkSize::Fixed(a) => write!(f, "{a}"),
+            }
+        }
     }
 
     /// Utility test method for creating a cas object
