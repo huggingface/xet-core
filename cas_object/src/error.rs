@@ -31,8 +31,6 @@ pub type Result<T> = std::result::Result<T, CasObjectError>;
 
 impl PartialEq for CasObjectError {
     fn eq(&self, other: &CasObjectError) -> bool {
-        match (self, other) {
-            (e1, e2) => std::mem::discriminant(e1) == std::mem::discriminant(e2),
-        }
+        std::mem::discriminant(self) == std::mem::discriminant(other)
     }
 }

@@ -145,7 +145,7 @@ impl RemoteClient {
         let total_len = info.iter().fold(0, |acc, x| acc + x.unpacked_length);
         let futs = info
             .into_iter()
-            .map(|term| tokio::spawn(async move { Result::<Bytes>::Ok(get_one(&term).await?) }));
+            .map(|term| tokio::spawn(async move { get_one(&term).await }));
         for fut in futs {
             let piece = fut
                 .await
