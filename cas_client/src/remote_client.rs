@@ -12,7 +12,7 @@ use merklehash::MerkleHash;
 use reqwest::{StatusCode, Url};
 use reqwest_middleware::{ClientBuilder, ClientWithMiddleware, Middleware};
 use std::io::{Cursor, Write};
-use tracing::{debug, warn};
+use tracing::{debug, error};
 use utils::auth::AuthConfig;
 
 pub const CAS_ENDPOINT: &str = "http://localhost:8080";
@@ -143,15 +143,9 @@ impl RemoteClient {
     ) -> Result<usize> {
         let info = reconstruction_response.reconstruction;
         let total_len = info.iter().fold(0, |acc, x| acc + x.unpacked_length);
-        let futs = info.into_iter().map(|term| {
-            tokio::spawn(async move {
-                let piece = get_one(&term).await?;
-                if piece.len() != (term.range.end - term.range.start) as usize {
-                    warn!("got back a smaller range than requested");
-                }
-                Result::<Bytes>::Ok(piece)
-            })
-        });
+        let futs = info
+            .into_iter()
+            .map(|term| tokio::spawn(async move { Result::<Bytes>::Ok(get_one(&term).await?) }));
         for fut in futs {
             let piece = fut
                 .await
@@ -205,14 +199,13 @@ async fn get_one(term: &CASReconstructionTerm) -> Result<Bytes> {
         .bytes()
         .await
         .map_err(CasClientError::ReqwestError)?;
+    if xorb_bytes.len() as u32 != term.url_range.end - term.url_range.start {
+        error!("got back a smaller range than requested");
+    }
     let mut readseek = Cursor::new(xorb_bytes.to_vec());
     let data = cas_object::deserialize_chunks(&mut readseek)?;
-    let len = (term.range.end - term.range.start) as usize;
-    let offset = term.range_start_offset as usize;
 
-    let sliced = data[offset..offset + len].to_vec();
-
-    Ok(Bytes::from(sliced))
+    Ok(Bytes::from(data))
 }
 
 /// builds the client to talk to CAS.
