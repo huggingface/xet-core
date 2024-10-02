@@ -456,12 +456,18 @@ mod tests {
 
         for start in range.start..range.end {
             for end in (start + 1)..=range.end {
-                assert!(
-                    cache.get(&key, &Range { start, end }).unwrap().is_some(),
-                    "range: [{start} {end})"
-                );
+                let get_result = cache.get(&key, &Range { start, end }).unwrap();
+                assert!(get_result.is_some(), "range: [{start} {end})");
+                let data_portion = get_data(&Range { start, end }, &chunk_byte_indicies, &data);
+                assert_eq!(data_portion, get_result.unwrap())
             }
         }
+    }
+
+    fn get_data<'a>(range: &Range, chunk_byte_indicies: &[u32], data: &'a [u8]) -> &'a [u8] {
+        let start = chunk_byte_indicies[range.start as usize] as usize;
+        let end = chunk_byte_indicies[range.end as usize] as usize;
+        &data[start..end]
     }
 
     #[test]
@@ -550,13 +556,14 @@ mod tests {
         while get_result_1.is_some() && i < 10 {
             i += 1;
             let (key2, range2, chunk_byte_indicies2, data2) = RandomEntryIterator.next().unwrap();
-            assert!(cache2
+            cache2
                 .put(&key2, &range2, &chunk_byte_indicies2, &data2)
-                .is_ok());
+                .unwrap();
             get_result_1 = cache2.get(&key, &range).unwrap();
         }
         if get_result_1.is_some() {
             // randomness didn't evict the record after 10 tries, don't test this case now
+            return;
         }
         // we've evicted the original record from the cache
         // note using the original cache handle without updates!
