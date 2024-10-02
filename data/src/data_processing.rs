@@ -61,7 +61,7 @@ pub struct PointerFileTranslator {
     global_cas_data: Arc<Mutex<CASDataAggregator>>,
 }
 
-// Constructorscas_data_accumulator
+// Constructors
 impl PointerFileTranslator {
     pub async fn new(config: TranslatorConfig) -> Result<PointerFileTranslator> {
         let cas_client = create_cas_client(&config.cas_storage_config, &config.repo_info)?;
