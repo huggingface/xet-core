@@ -23,7 +23,6 @@ pub struct CASReconstructionTerm {
     pub unpacked_length: u32,
     // chunk index start and end in a xorb
     pub range: Range,
-    pub range_start_offset: u32,
     pub url: String,
     // byte index start and end in a xorb
     pub url_range: Range,
@@ -31,6 +30,9 @@ pub struct CASReconstructionTerm {
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct QueryReconstructionResponse {
+    // For range query [a, b) into a file content, the location
+    // of "a" into the first range.
+    pub offset_into_first_range: u32,
     pub reconstruction: Vec<CASReconstructionTerm>,
 }
 
