@@ -365,7 +365,10 @@ impl CasObject {
 
     /// Generate a hash for securing a chunk range.
     ///
-    /// chunk_start_index, chunk_end_index: indices for chunks in CasObject.
+    /// chunk_start_index, chunk_end_index: indices for chunks in CasObject. 
+    /// The indices should be [start, end) - meaning start is inclusive and end is exclusive.
+    /// Ex. For specifying the 1st chunk: chunk_start_index: 0, chunk_end_index: 1
+    /// 
     /// key: additional key incorporated into generating hash.
     ///
     /// This hash ensures validity of the knowledge of chunks, since ranges are public,
@@ -379,13 +382,12 @@ impl CasObject {
     ) -> Result<MerkleHash, CasObjectError> {
         self.validate_cas_object_info()?;
 
-        if chunk_end_index < chunk_start_index || chunk_end_index > self.info.num_chunks {
+        if chunk_end_index <= chunk_start_index || chunk_end_index > self.info.num_chunks {
             return Err(CasObjectError::InvalidArguments);
         }
 
         // Collect relevant hashes
-        let range_hashes =
-            self.info.chunk_hashes[chunk_start_index as usize..chunk_end_index as usize].as_ref();
+        let range_hashes = self.info.chunk_hashes[chunk_start_index as usize..chunk_end_index as usize].as_ref();
 
         // TODO: Make this more robust, currently appends range hashes together, adds key to end
         let mut combined: Vec<u8> = range_hashes
@@ -690,7 +692,70 @@ mod tests {
         let range_hash = c.generate_chunk_range_hash(0, 3, &key).unwrap();
         assert_eq!(range_hash, expected_hash);
     }
+    
+    #[test]
+    fn test_generate_range_hash_partial() {
+        // Arrange
+        let (c, _cas_data, _raw_data, _raw_chunk_boundaries) =
+            build_cas_object(5, ChunkSize::Fixed(100), CompressionScheme::None);
+        let key = [b'K', b'E', b'Y', b'B', b'A', b'B', b'Y'];
+        
+        let mut hashes : Vec<u8> = c.info.chunk_hashes.as_slice()[1..=3].to_vec().iter().flat_map(|hash| hash.as_bytes().to_vec()).collect();
+        hashes.extend_from_slice(&key);
+        let expected_hash = merklehash::compute_data_hash(&hashes);
+        
+        // Act & Assert
+        let range_hash = c.generate_chunk_range_hash(1, 4, &key).unwrap();
+        assert_eq!(range_hash, expected_hash);
 
+        let mut hashes : Vec<u8> = c.info.chunk_hashes.as_slice()[0..1].to_vec().iter().flat_map(|hash| hash.as_bytes().to_vec()).collect();
+        hashes.extend_from_slice(&key);
+        let expected_hash = merklehash::compute_data_hash(&hashes);
+        
+        let range_hash = c.generate_chunk_range_hash(0, 1, &key).unwrap();
+        assert_eq!(range_hash, expected_hash);
+    }
+    
+    #[test]
+    fn test_generate_range_hash_invalid_range() {
+        // Arrange
+        let (c, _cas_data, _raw_data, _raw_chunk_boundaries) =
+            build_cas_object(5, ChunkSize::Fixed(100), CompressionScheme::None);
+        let key = [b'K', b'E', b'Y', b'B', b'A', b'B', b'Y'];
+        
+        // Act & Assert
+        assert_eq!(c.generate_chunk_range_hash(1, 6, &key), Err(CasObjectError::InvalidArguments));
+        assert_eq!(c.generate_chunk_range_hash(100, 10, &key), Err(CasObjectError::InvalidArguments));
+        assert_eq!(c.generate_chunk_range_hash(0, 0, &key), Err(CasObjectError::InvalidArguments));
+    }
+    
+    #[test]
+    fn test_validate_cas_object_info() {
+        // Arrange & Act & Assert
+        let (c, _cas_data, _raw_data, _raw_chunk_boundaries) =
+            build_cas_object(5, ChunkSize::Fixed(100), CompressionScheme::None);
+        let result = c.validate_cas_object_info();
+        assert!(result.is_ok());
+
+        // no chunks
+        let c = CasObject::default(); 
+        let result = c.validate_cas_object_info();
+        assert_eq!(result, Err(CasObjectError::FormatError(anyhow!("Invalid CasObjectInfo, no chunks in CasObject."))));
+        
+        // num_chunks doesn't match chunk_boundaries.len()
+        let mut c = CasObject::default();
+        c.info.num_chunks = 1;
+        let result = c.validate_cas_object_info();
+        assert_eq!(result, Err(CasObjectError::FormatError(anyhow!("Invalid CasObjectInfo, num chunks not matching boundaries or hashes."))));
+        
+        // no hash
+        let (mut c, _cas_data, _raw_data, _raw_chunk_boundaries) =
+            build_cas_object(1, ChunkSize::Fixed(100), CompressionScheme::None);
+        c.info.cashash = MerkleHash::default();
+        let result = c.validate_cas_object_info();
+        assert_eq!(result, Err(CasObjectError::FormatError(anyhow!("Invalid CasObjectInfo, Missing cashash."))));
+    }
+    
     #[test]
     fn test_compress_decompress() {
         // Arrange
