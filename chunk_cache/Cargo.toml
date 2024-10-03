@@ -15,3 +15,11 @@ rand = "0.8.5"
 
 [dev-dependencies]
 tempdir = "0.3.7"
+sccache = "0.8.2"
+moka = "0.7"
+rand = "0.8"
+criterion = "0.4"
+
+[[bench]]
+name = "cache_bench"
+harness = false
