@@ -206,8 +206,7 @@ impl UploadClient for LocalClient {
     }
 }
 
-#[cfg(test)]
-mod tests_utils {
+pub mod tests_utils {
     use super::LocalClient;
     use crate::{error::Result, CasClientError};
     use cas_object::CasObject;
@@ -242,15 +241,17 @@ mod tests_utils {
             Ok(result)
         }
 
+        /// Get uncompressed bytes from a CAS object within chunk ranges.
+        /// Each tuple in chunk_ranges represents a chunk index range [a, b)
         fn get_object_range(
             &self,
             prefix: &str,
             hash: &MerkleHash,
-            ranges: Vec<(u32, u32)>,
+            chunk_ranges: Vec<(u32, u32)>,
         ) -> Result<Vec<Vec<u8>>> {
             // Handle the case where we aren't asked for any real data.
-            if ranges.len() == 1 && ranges[0].0 == ranges[0].1 {
-                return Ok(vec![Vec::<u8>::new()]);
+            if chunk_ranges.is_empty() {
+                return Ok(vec![vec![]]);
             }
 
             let file_path = self.get_path_for_entry(prefix, hash);
@@ -265,9 +266,13 @@ mod tests_utils {
             let cas = CasObject::deserialize(&mut reader)?;
 
             let mut ret: Vec<Vec<u8>> = Vec::new();
-            let all_uncompressed_bytes = cas.get_all_bytes(&mut reader)?;
-            for r in ranges {
-                let data = all_uncompressed_bytes[r.0 as usize..r.1 as usize].to_vec();
+            for r in chunk_ranges {
+                if r.0 >= r.1 {
+                    ret.push(vec![]);
+                    continue;
+                }
+
+                let data = cas.get_bytes_by_chunk_range(&mut reader, r.0, r.1)?;
                 ret.push(data);
             }
             Ok(ret)
@@ -338,26 +343,32 @@ mod tests {
     async fn test_basic_put_get_range_random_small() {
         // Arrange
         let client = LocalClient::default();
-        let (c, _, data, chunk_boundaries) = build_cas_object(3, ChunkSize::Random(512, 2048), LZ4);
-        let data_again = data.clone();
+        let (c, _, data, chunk_and_boundaries) =
+            build_cas_object(3, ChunkSize::Random(512, 2048), LZ4);
 
         // Act & Assert
         assert!(client
-            .put("", &c.info.cashash, data, chunk_boundaries)
+            .put(
+                "",
+                &c.info.cashash,
+                data.clone(),
+                chunk_and_boundaries.clone()
+            )
             .await
             .is_ok());
 
-        let ranges: Vec<(u32, u32)> = vec![(0, 100), (100, 1500)];
-        let ranges_again = ranges.clone();
+        let ranges: Vec<(u32, u32)> = vec![(0, 1), (2, 3)];
         let returned_ranges = client
             .get_object_range("", &c.info.cashash, ranges)
             .unwrap();
 
+        let expected = vec![
+            data[0..chunk_and_boundaries[0].1 as usize].to_vec(),
+            data[chunk_and_boundaries[1].1 as usize..chunk_and_boundaries[2].1 as usize].to_vec(),
+        ];
+
         for idx in 0..returned_ranges.len() {
-            assert_eq!(
-                data_again[ranges_again[idx].0 as usize..ranges_again[idx].1 as usize],
-                returned_ranges[idx]
-            );
+            assert_eq!(expected[idx], returned_ranges[idx]);
         }
     }
 

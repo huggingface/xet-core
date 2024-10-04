@@ -17,16 +17,16 @@ pub enum CasClientError {
     #[error("Invalid Arguments")]
     InvalidArguments,
 
-    #[error("Hash Mismatch")]
-    HashMismatch,
+    #[error("File not found for hash: {0}")]
+    FileNotFound(MerkleHash),
 
     #[error("IO Error: {0}")]
     IOError(#[from] std::io::Error),
 
     #[error("Other Internal Error: {0}")]
-    InternalError(anyhow::Error),
+    InternalError(#[from] anyhow::Error),
 
-    #[error("CAS Hash not found")]
+    #[error("CAS object not found for hash: {0}")]
     XORBNotFound(MerkleHash),
 
     #[error("Cas Object Error: {0}")]
@@ -37,6 +37,7 @@ pub enum CasClientError {
 
     #[error("ReqwestMiddleware Error: {0}")]
     ReqwestMiddlewareError(#[from] reqwest_middleware::Error),
+
     #[error("Reqwest Error: {0}")]
     ReqwestError(#[from] reqwest::Error),
 

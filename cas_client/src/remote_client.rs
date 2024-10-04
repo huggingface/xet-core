@@ -76,9 +76,9 @@ impl UploadClient for RemoteClient {
 impl ReconstructionClient for RemoteClient {
     async fn get_file(&self, hash: &MerkleHash, writer: &mut Box<dyn Write + Send>) -> Result<()> {
         // get manifest of xorbs to download
-        let manifest = self.reconstruct_file(hash, None).await?;
+        let manifest = self.reconstruct(hash, None).await?;
 
-        self.reconstruct(manifest, None, writer).await?;
+        self.get_ranges(manifest, None, writer).await?;
 
         Ok(())
     }
@@ -92,6 +92,29 @@ impl ReconstructionClient for RemoteClient {
         writer: &mut Box<dyn Write + Send>,
     ) -> Result<()> {
         todo!()
+    }
+}
+
+#[async_trait]
+impl Reconstructable for RemoteClient {
+    async fn reconstruct(
+        &self,
+        file_id: &MerkleHash,
+        _bytes_range: Option<(u64, u64)>,
+    ) -> Result<QueryReconstructionResponse> {
+        let url = Url::parse(&format!(
+            "{}/reconstruction/{}",
+            self.endpoint,
+            file_id.hex()
+        ))?;
+
+        let response = self.client.get(url).send().await?;
+        let response_body = response.bytes().await?;
+        let response_parsed: QueryReconstructionResponse =
+            serde_json::from_reader(response_body.reader())
+                .map_err(|_| CasClientError::FileNotFound(*file_id))?;
+
+        Ok(response_parsed)
     }
 }
 
@@ -135,7 +158,7 @@ impl RemoteClient {
         Ok(response_parsed.was_inserted)
     }
 
-    async fn reconstruct(
+    async fn get_ranges(
         &self,
         reconstruction_response: QueryReconstructionResponse,
         _byte_range: Option<(u64, u64)>,
@@ -145,7 +168,7 @@ impl RemoteClient {
         let total_len = info.iter().fold(0, |acc, x| acc + x.unpacked_length);
         let futs = info
             .into_iter()
-            .map(|term| tokio::spawn(async move { get_one(&term).await }));
+            .map(|term| tokio::spawn(async move { get_one_range(&term).await }));
         for fut in futs {
             let piece = fut
                 .await
@@ -154,29 +177,9 @@ impl RemoteClient {
         }
         Ok(total_len as usize)
     }
-
-    /// Reconstruct the file
-    async fn reconstruct_file(
-        &self,
-        file_id: &MerkleHash,
-        _bytes_range: Option<(u64, u64)>,
-    ) -> Result<QueryReconstructionResponse> {
-        let url = Url::parse(&format!(
-            "{}/reconstruction/{}",
-            self.endpoint,
-            file_id.hex()
-        ))?;
-
-        let response = self.client.get(url).send().await?;
-        let response_body = response.bytes().await?;
-        let response_parsed: QueryReconstructionResponse =
-            serde_json::from_reader(response_body.reader())?;
-
-        Ok(response_parsed)
-    }
 }
 
-async fn get_one(term: &CASReconstructionTerm) -> Result<Bytes> {
+pub(crate) async fn get_one_range(term: &CASReconstructionTerm) -> Result<Bytes> {
     debug!("term: {term:?}");
 
     if term.range.end < term.range.start || term.url_range.end < term.url_range.start {

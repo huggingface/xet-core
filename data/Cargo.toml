@@ -3,11 +3,6 @@ name = "data"
 version = "0.14.5"
 edition = "2021"
 
-[profile.release]
-opt-level = 3
-lto = true
-debug = 1
-
 [lib]
 doctest = false
 

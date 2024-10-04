@@ -421,21 +421,21 @@ impl CasObject {
     fn get_range<R: Read + Seek>(
         &self,
         reader: &mut R,
-        start: u32,
-        end: u32,
+        byte_start: u32,
+        byte_end: u32,
     ) -> Result<Vec<u8>, CasObjectError> {
-        if end < start {
+        if byte_end < byte_start {
             return Err(CasObjectError::InvalidRange);
         }
 
         self.validate_cas_object_info()?;
 
         // make sure the end of the range is within the bounds of the xorb
-        let end = min(end, self.get_contents_length()?);
+        let end = min(byte_end, self.get_contents_length()?);
 
         // read chunk bytes
-        let mut chunk_data = vec![0u8; (end - start) as usize];
-        reader.seek(std::io::SeekFrom::Start(start as u64))?;
+        let mut chunk_data = vec![0u8; (end - byte_start) as usize];
+        reader.seek(std::io::SeekFrom::Start(byte_start as u64))?;
         reader.read_exact(&mut chunk_data)?;
 
         // build up result vector by processing these chunks
@@ -447,6 +447,18 @@ impl CasObject {
     pub fn get_all_bytes<R: Read + Seek>(&self, reader: &mut R) -> Result<Vec<u8>, CasObjectError> {
         self.validate_cas_object_info()?;
         self.get_range(reader, 0, self.get_contents_length()?)
+    }
+
+    /// Convenient function to get content bytes by chunk range, mainly for internal testing
+    pub fn get_bytes_by_chunk_range<R: Read + Seek>(
+        &self,
+        reader: &mut R,
+        chunk_index_start: u32,
+        chunk_index_end: u32,
+    ) -> Result<Vec<u8>, CasObjectError> {
+        let (byte_start, byte_end) = self.get_byte_offset(chunk_index_start, chunk_index_end)?;
+
+        self.get_range(reader, byte_start, byte_end)
     }
 
     /// Assumes chunk_data is 1+ complete chunks. Processes them sequentially and returns them as Vec<u8>.
