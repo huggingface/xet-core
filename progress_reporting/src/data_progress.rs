@@ -1,9 +1,9 @@
-use cas::output_bytes;
 use crossterm::{cursor, QueueableCommand};
 use std::io::{stderr, Write};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
+use utils::output_bytes;
 
 const MAX_PRINT_INTERVAL_MS: u64 = 250;
 

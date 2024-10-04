@@ -367,6 +367,7 @@ dependencies = [
  "async-trait",
  "base64 0.13.1",
  "byteorder",
+ "cas_types",
  "chrono",
  "lazy_static",
  "lru",
@@ -397,6 +398,7 @@ dependencies = [
  "clap 2.34.0",
  "deadpool",
  "error_printer",
+ "file_utils",
  "futures",
  "http 0.2.12",
  "http-body-util",
@@ -412,7 +414,6 @@ dependencies = [
  "opentelemetry-http",
  "opentelemetry-jaeger",
  "parutils",
- "progress_reporting",
  "prost",
  "reqwest 0.12.7",
  "reqwest-middleware",
@@ -447,6 +448,7 @@ dependencies = [
  "lz4_flex",
  "merkledb",
  "merklehash",
+ "rand 0.8.5",
  "tempfile",
  "tracing",
  "xet_error",
@@ -460,6 +462,7 @@ dependencies = [
  "merklehash",
  "serde",
  "serde_repr",
+ "xet_error",
 ]
 
 [[package]]
@@ -669,31 +672,6 @@ name = "crossbeam-utils"
 version = "0.8.20"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "22ec99545bb0ed0ea7bb9b8e1e9122ea386ff8a48c0922e43f36d45ab09e0e80"
-
-[[package]]
-name = "crossterm"
-version = "0.25.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e64e6c0fbe2c17357405f7c758c1ef960fce08bdfb2c03d88d2a18d7e09c4b67"
-dependencies = [
- "bitflags 1.3.2",
- "crossterm_winapi",
- "libc",
- "mio 0.8.11",
- "parking_lot 0.12.3",
- "signal-hook",
- "signal-hook-mio",
- "winapi",
-]
-
-[[package]]
-name = "crossterm_winapi"
-version = "0.9.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "acdd7c62a3665c7f6830a51635d9ac9b23ed385797f70a83bb8bafe9c572ab2b"
-dependencies = [
- "winapi",
-]
 
 [[package]]
 name = "csv-core"
@@ -1961,6 +1939,7 @@ dependencies = [
  "tempfile",
  "tokio",
  "tracing",
+ "utils",
  "uuid",
  "xet_error",
 ]
@@ -2039,18 +2018,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e2d80299ef12ff69b16a84bb182e3b9df68b5a91574d3d4fa6e41b65deec4df1"
 dependencies = [
  "adler2",
-]
-
-[[package]]
-name = "mio"
-version = "0.8.11"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a4a650543ca06a924e8b371db273b2756685faae30f8487da1b56505a8f78b0c"
-dependencies = [
- "libc",
- "log",
- "wasi",
- "windows-sys 0.48.0",
 ]
 
 [[package]]
@@ -2640,18 +2607,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5e719e8df665df0d1c8fbfd238015744736151d4445ec0836b8e628aae103b77"
 dependencies = [
  "unicode-ident",
-]
-
-[[package]]
-name = "progress_reporting"
-version = "0.14.5"
-dependencies = [
- "atty",
- "crossterm",
- "more-asserts",
- "tokio",
- "tracing",
- "utils",
 ]
 
 [[package]]
@@ -3432,6 +3387,7 @@ dependencies = [
  "cas_client",
  "cas_types",
  "clap 2.34.0",
+ "file_utils",
  "heed",
  "http 0.2.12",
  "itertools 0.10.5",
@@ -3488,27 +3444,6 @@ name = "shlex"
 version = "1.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0fda2ff0d084019ba4d7c6f371c95d8fd75ce3524c3cb8fb653a3023f6323e64"
-
-[[package]]
-name = "signal-hook"
-version = "0.3.17"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8621587d4798caf8eb44879d42e56b9a93ea5dcd315a6487c357130095b62801"
-dependencies = [
- "libc",
- "signal-hook-registry",
-]
-
-[[package]]
-name = "signal-hook-mio"
-version = "0.2.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "34db1a06d485c9142248b7a054f034b349b212551f3dfd19c94d45a754a217cd"
-dependencies = [
- "libc",
- "mio 0.8.11",
- "signal-hook",
-]
 
 [[package]]
 name = "signal-hook-registry"
@@ -3967,7 +3902,7 @@ dependencies = [
  "backtrace",
  "bytes",
  "libc",
- "mio 1.0.2",
+ "mio",
  "parking_lot 0.12.3",
  "pin-project-lite",
  "signal-hook-registry",

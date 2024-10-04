@@ -5,12 +5,12 @@ use std::{fmt::Debug, sync::Arc};
 
 use crate::error::Result;
 pub use block::BlockConverter;
-use cas::key::Key;
-use cas::singleflight;
+use cas_types::Key;
 pub use disk::DiskCache;
 pub use error::CacheError;
 pub use interface::{BlockReadRequest, BlockReader, FileMetadata};
 pub use metrics::set_metrics_service_name;
+use utils::singleflight;
 pub use xorb_cache::XorbCacheImpl;
 
 mod block;
@@ -29,7 +29,7 @@ mod xorb_cache;
 pub trait Remote: Debug + Sync + Send {
     async fn fetch(
         &self,
-        key: &cas::key::Key,
+        key: &Key,
         range: Range<u64>,
     ) -> std::result::Result<Vec<u8>, anyhow::Error>;
 }

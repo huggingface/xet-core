@@ -400,6 +400,7 @@ dependencies = [
  "async-trait",
  "base64 0.13.1",
  "byteorder",
+ "cas_types",
  "chrono",
  "lazy_static",
  "lru",
@@ -434,6 +435,7 @@ dependencies = [
  "clap 2.34.0",
  "deadpool",
  "error_printer",
+ "file_utils",
  "futures",
  "http 0.2.12",
  "http-body-util",
@@ -449,7 +451,6 @@ dependencies = [
  "opentelemetry-http",
  "opentelemetry-jaeger",
  "parutils",
- "progress_reporting",
  "prost",
  "rand 0.8.5",
  "rcgen",
@@ -503,6 +504,7 @@ dependencies = [
  "merklehash",
  "serde",
  "serde_repr",
+ "xet_error",
 ]
 
 [[package]]
@@ -2103,6 +2105,7 @@ dependencies = [
  "tempfile",
  "tokio",
  "tracing",
+ "utils",
  "uuid",
  "xet_error",
 ]
@@ -3697,6 +3700,7 @@ dependencies = [
  "cas_client",
  "cas_types",
  "clap 2.34.0",
+ "file_utils",
  "heed",
  "http 0.2.12",
  "itertools 0.10.5",

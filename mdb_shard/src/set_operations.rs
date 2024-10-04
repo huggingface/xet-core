@@ -2,7 +2,6 @@ use crate::error::Result;
 use crate::{
     cas_structs::{CASChunkSequenceEntry, CASChunkSequenceHeader},
     file_structs::{FileDataSequenceEntry, FileDataSequenceHeader},
-    serialization_utils::{write_u32, write_u64},
     shard_format::{MDBShardFileFooter, MDBShardFileHeader, MDBShardInfo},
     utils::truncate_hash,
 };
@@ -14,6 +13,7 @@ use std::{
     mem::size_of,
     path::Path,
 };
+use utils::serialization_utils::*;
 use uuid::Uuid;
 
 #[derive(PartialEq, Debug, Copy, Clone)]

@@ -1,11 +1,9 @@
-use cas::auth::{AuthConfig, TokenRefresher};
-use data::configurations::{
-    CacheConfig, DedupConfig, Endpoint, FileQueryPolicy, RepoInfo, StorageConfig, TranslatorConfig,
-};
-use data::{errors, DEFAULT_BLOCK_SIZE};
+use data::configurations::*;
+use data::errors;
 use std::env::current_dir;
 use std::fs;
 use std::sync::Arc;
+use utils::auth::{AuthConfig, TokenRefresher};
 
 pub const SMALL_FILE_THRESHOLD: usize = 1;
 
@@ -29,7 +27,7 @@ pub fn default_config(
             cache_config: Some(CacheConfig {
                 cache_directory: path.join("cache"),
                 cache_size: 10 * 1024 * 1024 * 1024, // 10 GiB
-                cache_blocksize: DEFAULT_BLOCK_SIZE,
+                cache_blocksize: 0,                  // ignored
             }),
             staging_directory: None,
         },

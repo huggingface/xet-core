@@ -1,18 +1,14 @@
+use crate::cas_interface::Client;
 use crate::chunking::{chunk_target_default, ChunkYieldType};
 use crate::configurations::FileQueryPolicy;
 use crate::constants::MIN_SPACING_BETWEEN_GLOBAL_DEDUP_QUERIES;
 use crate::data_processing::{register_new_cas_block, CASDataAggregator};
-use crate::errors::{
-    DataProcessingError::{self, *},
-    Result,
-};
+use crate::errors::{DataProcessingError::*, Result};
 use crate::metrics::FILTER_BYTES_CLEANED;
 use crate::remote_shard_interface::RemoteShardInterface;
 use crate::repo_salt::RepoSalt;
 use crate::small_file_determination::{is_file_passthrough, is_possible_start_to_text_file};
 use crate::PointerFile;
-
-use cas_client::Staging;
 use lazy_static::lazy_static;
 use mdb_shard::file_structs::{FileDataSequenceEntry, FileDataSequenceHeader, MDBFileInfo};
 use mdb_shard::shard_file_reconstructor::FileReconstructor;
@@ -64,7 +60,7 @@ pub struct Cleaner {
     // Utils
     shard_manager: Arc<ShardFileManager>,
     remote_shards: Arc<RemoteShardInterface>,
-    cas: Arc<dyn Staging + Send + Sync>,
+    cas: Arc<dyn Client + Send + Sync>,
 
     // External Data
     global_cas_data: Arc<Mutex<CASDataAggregator>>,
@@ -91,7 +87,7 @@ impl Cleaner {
         repo_salt: Option<RepoSalt>,
         shard_manager: Arc<ShardFileManager>,
         remote_shards: Arc<RemoteShardInterface>,
-        cas: Arc<dyn Staging + Send + Sync>,
+        cas: Arc<dyn Client + Send + Sync>,
         cas_data: Arc<Mutex<CASDataAggregator>>,
         buffer_size: usize,
         file_name: Option<&Path>,
@@ -139,7 +135,8 @@ impl Cleaner {
 
         let mut small_file_buffer = self.small_file_buffer.lock().await;
         if let Some(buffer) = small_file_buffer.take() {
-            return String::from_utf8(buffer).map_err(DataProcessingError::from);
+            let small_file = String::from_utf8(buffer)?;
+            return Ok(small_file);
         }
 
         self.to_pointer_file().await
@@ -325,8 +322,8 @@ impl Cleaner {
                                 };
 
                                 // Okay, we have something, so go ahead and download it in the background.
-                                debug!("global dedup: {file_name:?} deduplicated by shard {shard_hash}; downloading.");
-                                let Ok(_) = remote_shards.download_and_register_shard(&shard_hash).await.map_err(|e| {
+                                debug!("global dedup: {file_name:?} deduplicated by shard {shard_hash}; registering.");
+                                let Ok(_) = remote_shards.register_local_shard(&shard_hash).await.map_err(|e| {
                                     warn!("Error encountered attempting to download and register shard {shard_hash} for deduplication : {e:?}; ignoring.");
                                     e
                                 })
@@ -388,13 +385,13 @@ impl Cleaner {
                 // start a new entry?
                 if !tracking_info.file_info.is_empty()
                     && tracking_info.file_info.last().unwrap().cas_hash == fse.cas_hash
-                    && tracking_info.file_info.last().unwrap().chunk_byte_range_end
-                        == fse.chunk_byte_range_start
+                    && tracking_info.file_info.last().unwrap().chunk_index_end
+                        == fse.chunk_index_start
                 {
                     // This block is the contiguous continuation of the last entry
                     let last_entry = tracking_info.file_info.last_mut().unwrap();
                     last_entry.unpacked_segment_bytes += n_bytes as u32;
-                    last_entry.chunk_byte_range_end += n_bytes as u32;
+                    last_entry.chunk_index_end = fse.chunk_index_end;
                 } else {
                     // This block is new
                     tracking_info.file_info.push(fse);
@@ -411,8 +408,7 @@ impl Cleaner {
                 let add_new_data;
 
                 if let Some(idx) = tracking_info.current_cas_block_hashes.get(&chunk.hash) {
-                    let (_, (data_lb, data_ub)) = tracking_info.cas_data.chunks[*idx];
-
+                    let idx = *idx;
                     // This chunk will get the CAS hash updated when the local CAS block
                     // is full and registered.
                     let file_info_len = tracking_info.file_info.len();
@@ -423,20 +419,20 @@ impl Cleaner {
                     tracking_info.file_info.push(FileDataSequenceEntry::new(
                         MerkleHash::default(),
                         n_bytes,
-                        data_lb,
-                        data_ub,
+                        idx,
+                        idx + 1,
                     ));
                     add_new_data = false;
                 } else if !tracking_info.file_info.is_empty()
                     && tracking_info.file_info.last().unwrap().cas_hash == MerkleHash::default()
-                    && tracking_info.file_info.last().unwrap().chunk_byte_range_end as usize
-                        == tracking_info.cas_data.data.len()
+                    && tracking_info.file_info.last().unwrap().chunk_index_end as usize
+                        == tracking_info.cas_data.chunks.len()
                 {
-                    // This is the next chunk in the CAS block
-                    // we're building, in which case we can just modify the previous entry.
+                    // This is the next chunk in the CAS block we're building,
+                    // in which case we can just modify the previous entry.
                     let last_entry = tracking_info.file_info.last_mut().unwrap();
                     last_entry.unpacked_segment_bytes += n_bytes as u32;
-                    last_entry.chunk_byte_range_end += n_bytes as u32;
+                    last_entry.chunk_index_end += 1;
                     add_new_data = true;
                 } else {
                     // This block is unrelated to the previous one.
@@ -447,12 +443,12 @@ impl Cleaner {
                         .current_cas_file_info_indices
                         .push(file_info_len);
 
-                    let cas_data_len = tracking_info.cas_data.data.len();
+                    let chunk_len = tracking_info.cas_data.chunks.len();
                     tracking_info.file_info.push(FileDataSequenceEntry::new(
                         MerkleHash::default(),
                         n_bytes,
-                        cas_data_len,
-                        cas_data_len + n_bytes,
+                        chunk_len,
+                        chunk_len + 1,
                     ));
                     add_new_data = true;
                 }
@@ -463,12 +459,7 @@ impl Cleaner {
                     tracking_info
                         .current_cas_block_hashes
                         .insert(chunk.hash, cas_data_chunks_len);
-
-                    let cas_data_len = tracking_info.cas_data.data.len();
-                    tracking_info
-                        .cas_data
-                        .chunks
-                        .push((chunk.hash, (cas_data_len, cas_data_len + n_bytes)));
+                    tracking_info.cas_data.chunks.push((chunk.hash, n_bytes));
                     tracking_info.cas_data.data.extend(bytes);
 
                     if tracking_info.cas_data.data.len() > TARGET_CAS_BLOCK_SIZE {
@@ -549,7 +540,7 @@ impl Cleaner {
             // Put an accumulated data into the struct-wide cas block for building a future chunk.
             let mut cas_data_accumulator = self.global_cas_data.lock().await;
 
-            let shift = cas_data_accumulator.data.len() as u32;
+            let shift = cas_data_accumulator.chunks.len() as u32;
             cas_data_accumulator
                 .data
                 .append(&mut tracking_info.cas_data.data);
@@ -562,7 +553,8 @@ impl Cleaner {
                     .file_info
                     .iter()
                     .map(|fi| {
-                        // If it's in this new cas chunk, shift everything.
+                        // Transfering cas chunks from tracking_info.cas_data to cas_data_accumulator,
+                        // shift chunk indices.
                         let s = if fi.cas_hash == MerkleHash::default() {
                             shift
                         } else {
@@ -570,8 +562,8 @@ impl Cleaner {
                         };
 
                         let mut new_fi = fi.clone();
-                        new_fi.chunk_byte_range_start += s;
-                        new_fi.chunk_byte_range_end += s;
+                        new_fi.chunk_index_start += s;
+                        new_fi.chunk_index_end += s;
 
                         new_fi
                     })

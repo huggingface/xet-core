@@ -1,9 +1,9 @@
-use cas::common::Empty;
-use cas::consistenthash::ConsistentHash;
-use cas::infra::infra_utils_client::InfraUtilsClient;
 use clap::Parser;
 use http::Uri;
 use tonic::transport::Channel;
+use utils::common::Empty;
+use utils::consistenthash::ConsistentHash;
+use utils::infra::infra_utils_client::InfraUtilsClient;
 
 pub type InfraUtilsClientType = InfraUtilsClient<Channel>;
 pub async fn get_infra_client(server_name: &str) -> anyhow::Result<InfraUtilsClientType> {

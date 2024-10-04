@@ -9,7 +9,7 @@
 //! use std::sync::Arc;
 //! use std::time::Duration;
 //!
-//! use cas::singleflight::Group;
+//! use utils::singleflight::Group;
 //!
 //! const RES: usize = 7;
 //!

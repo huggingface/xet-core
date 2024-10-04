@@ -1,6 +1,5 @@
 use anyhow::Result;
 use clap::{Args, Parser, Subcommand};
-use data::DEFAULT_BLOCK_SIZE;
 use data::{configurations::*, SMALL_FILE_THRESHOLD};
 use data::{PointerFile, PointerFileTranslator};
 use std::env::current_dir;
@@ -78,7 +77,7 @@ fn default_clean_config() -> Result<TranslatorConfig> {
             cache_config: Some(CacheConfig {
                 cache_directory: path.join("cache"),
                 cache_size: 10 * 1024 * 1024 * 1024, // 10 GiB
-                cache_blocksize: DEFAULT_BLOCK_SIZE,
+                cache_blocksize: 0,                  // ignored
             }),
             staging_directory: None,
         },
@@ -121,7 +120,7 @@ fn default_smudge_config() -> Result<TranslatorConfig> {
             cache_config: Some(CacheConfig {
                 cache_directory: path.join("cache"),
                 cache_size: 10 * 1024 * 1024 * 1024, // 10 GiB
-                cache_blocksize: DEFAULT_BLOCK_SIZE,
+                cache_blocksize: 0,                  // ignored
             }),
             staging_directory: None,
         },
@@ -195,20 +194,22 @@ async fn smudge_file(arg: &SmudgeArg) -> Result<()> {
         Some(path) => Box::new(File::open(path)?),
         None => Box::new(std::io::stdin()),
     };
-    let writer = BufWriter::new(
+    let mut writer: Box<dyn Write + Send> = Box::new(BufWriter::new(
         File::options()
             .create(true)
             .write(true)
             .truncate(true)
             .open(&arg.dest)?,
-    );
+    ));
 
-    smudge(reader, writer).await?;
+    smudge(reader, &mut writer).await?;
+
+    writer.flush()?;
 
     Ok(())
 }
 
-async fn smudge(mut reader: impl Read, mut writer: impl Write) -> Result<()> {
+async fn smudge(mut reader: impl Read, writer: &mut Box<dyn Write + Send>) -> Result<()> {
     let mut input = String::new();
     reader.read_to_string(&mut input)?;
 
@@ -222,7 +223,7 @@ async fn smudge(mut reader: impl Read, mut writer: impl Write) -> Result<()> {
     let translator = PointerFileTranslator::new(default_smudge_config()?).await?;
 
     translator
-        .smudge_file_from_pointer(&pointer_file, &mut writer, None)
+        .smudge_file_from_pointer(&pointer_file, writer, None)
         .await?;
 
     Ok(())

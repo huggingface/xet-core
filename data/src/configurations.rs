@@ -1,8 +1,8 @@
 use crate::errors::Result;
 use crate::repo_salt::RepoSalt;
-use cas::auth::AuthConfig;
 use std::path::PathBuf;
 use std::str::FromStr;
+use utils::auth::AuthConfig;
 
 #[derive(Debug)]
 pub enum Endpoint {

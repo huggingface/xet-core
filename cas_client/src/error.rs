@@ -1,34 +1,15 @@
 use cache::CacheError;
-use http::uri::InvalidUri;
 use merklehash::MerkleHash;
-use tonic::metadata::errors::InvalidMetadataValue;
 use xet_error::Error;
-
-use crate::cas_connection_pool::CasConnectionPoolError;
 
 #[non_exhaustive]
 #[derive(Error, Debug)]
 pub enum CasClientError {
-    #[error("Tonic RPC error.")]
-    TonicError,
-
     #[error("CAS Cache Error: {0}")]
     CacheError(#[from] CacheError),
 
     #[error("Configuration Error: {0} ")]
     ConfigurationError(String),
-
-    #[error("URL Parsing Error.")]
-    URLError(#[from] InvalidUri),
-
-    #[error("Tonic Trasport Error")]
-    TonicTransportError(#[from] tonic::transport::Error),
-
-    #[error("Metadata error: {0}")]
-    MetadataParsingError(#[from] InvalidMetadataValue),
-
-    #[error("CAS Connection Pool Error")]
-    CasConnectionPoolError(#[from] CasConnectionPoolError),
 
     #[error("Invalid Range Read")]
     InvalidRange,
@@ -36,32 +17,17 @@ pub enum CasClientError {
     #[error("Invalid Arguments")]
     InvalidArguments,
 
-    #[error("Hash Mismatch")]
-    HashMismatch,
+    #[error("File not found for hash: {0}")]
+    FileNotFound(MerkleHash),
 
-    #[error("Internal IO Error: {0}")]
-    InternalIOError(#[from] std::io::Error),
+    #[error("IO Error: {0}")]
+    IOError(#[from] std::io::Error),
 
     #[error("Other Internal Error: {0}")]
-    InternalError(anyhow::Error),
+    InternalError(#[from] anyhow::Error),
 
-    #[error("CAS Hash not found")]
+    #[error("CAS object not found for hash: {0}")]
     XORBNotFound(MerkleHash),
-
-    #[error("Data transfer timeout")]
-    DataTransferTimeout,
-
-    #[error("Client connection error {0}")]
-    Grpc(#[from] anyhow::Error),
-
-    #[error("Batch Error: {0}")]
-    BatchError(String),
-
-    #[error("Serialization Error: {0}")]
-    SerializationError(#[from] bincode::Error),
-
-    #[error("Runtime Error (Temp files): {0}")]
-    RuntimeErrorTempFileError(#[from] tempfile::PersistError),
 
     #[error("Cas Object Error: {0}")]
     CasObjectError(#[from] cas_object::error::CasObjectError),
@@ -71,6 +37,7 @@ pub enum CasClientError {
 
     #[error("ReqwestMiddleware Error: {0}")]
     ReqwestMiddlewareError(#[from] reqwest_middleware::Error),
+
     #[error("Reqwest Error: {0}")]
     ReqwestError(#[from] reqwest::Error),
 

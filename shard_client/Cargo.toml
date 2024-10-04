@@ -10,6 +10,7 @@ strict = []
 
 [dependencies]
 utils = {path = "../utils"}
+file_utils = {path = "../file_utils" }
 merklehash = {path = "../merklehash"}
 retry_strategy = {path = "../retry_strategy"}
 cas_client = {path = "../cas_client"}

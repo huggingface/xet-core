@@ -1,31 +1,31 @@
-use crate::cas_interface::{create_cas_client, data_from_chunks_to_writer};
+use crate::cas_interface::create_cas_client;
 use crate::clean::Cleaner;
 use crate::configurations::*;
-use crate::constants::MAX_CONCURRENT_UPLOADS;
 use crate::errors::*;
 use crate::metrics::FILTER_CAS_BYTES_PRODUCED;
 use crate::remote_shard_interface::RemoteShardInterface;
 use crate::shard_interface::create_shard_manager;
 use crate::PointerFile;
-
-use cas_client::{CASAPIClient, Staging};
+use cas_client::Client;
 use mdb_shard::cas_structs::{CASChunkSequenceEntry, CASChunkSequenceHeader, MDBCASInfo};
 use mdb_shard::file_structs::MDBFileInfo;
 use mdb_shard::ShardFileManager;
 use merkledb::aggregate_hashes::cas_node_hash;
-use merkledb::ObjectRange;
 use merklehash::MerkleHash;
+use std::io::Write;
 use std::mem::take;
 use std::ops::DerefMut;
 use std::path::Path;
 use std::sync::Arc;
 use tokio::sync::Mutex;
-use tracing::error;
 
 #[derive(Default, Debug)]
 pub struct CASDataAggregator {
+    /// Bytes of all chunks accumulated in one CAS block concatenated together.
     pub data: Vec<u8>,
-    pub chunks: Vec<(MerkleHash, (usize, usize))>,
+    /// Metadata of all chunks accumulated in one CAS block. Each entry is
+    /// (chunk hash, chunk size).
+    pub chunks: Vec<(MerkleHash, usize)>,
     // The file info of files that are still being processed.
     // As we're building this up, we assume that all files that do not have a size in the header are
     // not finished yet and thus cannot be uploaded.
@@ -55,7 +55,7 @@ pub struct PointerFileTranslator {
     /* ----- Utils ----- */
     shard_manager: Arc<ShardFileManager>,
     remote_shards: Arc<RemoteShardInterface>,
-    cas: Arc<dyn Staging + Send + Sync>,
+    cas: Arc<dyn Client + Send + Sync>,
 
     /* ----- Deduped data shared across files ----- */
     global_cas_data: Arc<Mutex<CASDataAggregator>>,
@@ -64,9 +64,13 @@ pub struct PointerFileTranslator {
 // Constructors
 impl PointerFileTranslator {
     pub async fn new(config: TranslatorConfig) -> Result<PointerFileTranslator> {
-        let cas_client = create_cas_client(&config.cas_storage_config, &config.repo_info).await?;
-
         let shard_manager = Arc::new(create_shard_manager(&config.shard_storage_config).await?);
+
+        let cas_client = create_cas_client(
+            &config.cas_storage_config,
+            &config.repo_info,
+            shard_manager.clone(),
+        )?;
 
         let remote_shards = {
             if let Some(dedup) = &config.dedup_config {
@@ -193,10 +197,7 @@ impl PointerFileTranslator {
     }
 
     async fn upload_cas(&self) -> Result<()> {
-        self.cas
-            .upload_all_staged(*MAX_CONCURRENT_UPLOADS, false)
-            .await?;
-
+        // We don't have staging client support yet.
         Ok(())
     }
 }
@@ -205,7 +206,7 @@ impl PointerFileTranslator {
 pub(crate) async fn register_new_cas_block(
     cas_data: &mut CASDataAggregator,
     shard_manager: &Arc<ShardFileManager>,
-    cas: &Arc<dyn Staging + Send + Sync>,
+    cas: &Arc<dyn Client + Send + Sync>,
     cas_prefix: &str,
 ) -> Result<MerkleHash> {
     let cas_hash = cas_node_hash(&cas_data.chunks[..]);
@@ -234,23 +235,23 @@ pub(crate) async fn register_new_cas_block(
     let chunks: Vec<_> = cas_data
         .chunks
         .iter()
-        .map(|(h, (bytes_lb, bytes_ub))| {
-            let size = bytes_ub - bytes_lb;
-            let result = CASChunkSequenceEntry::new(*h, size, pos);
-            pos += size;
+        .map(|(h, len)| {
+            let result = CASChunkSequenceEntry::new(*h, *len, pos);
+            pos += *len;
             result
         })
         .collect();
-
     let cas_info = MDBCASInfo { metadata, chunks };
 
-    let mut chunk_boundaries: Vec<u64> = Vec::with_capacity(cas_data.chunks.len());
-    let mut running_sum = 0;
-
-    for (_, s) in cas_data.chunks.iter() {
-        running_sum += s.1 - s.0;
-        chunk_boundaries.push(running_sum as u64);
-    }
+    pos = 0;
+    let chunk_boundaries = cas_data
+        .chunks
+        .iter()
+        .map(|(hash, len)| {
+            pos += *len;
+            (*hash, pos as u32)
+        })
+        .collect();
 
     if !cas_info.chunks.is_empty() {
         shard_manager.add_cas_block(cas_info).await?;
@@ -287,31 +288,10 @@ pub(crate) async fn register_new_cas_block(
 
 /// Smudge operations
 impl PointerFileTranslator {
-    pub async fn derive_blocks(&self, hash: &MerkleHash) -> Result<Vec<ObjectRange>> {
-        if let Some((file_info, _shard_hash)) = self
-            .remote_shards
-            .get_file_reconstruction_info(hash)
-            .await?
-        {
-            Ok(file_info
-                .segments
-                .into_iter()
-                .map(|s| ObjectRange {
-                    hash: s.cas_hash,
-                    start: s.chunk_byte_range_start as usize,
-                    end: s.chunk_byte_range_end as usize,
-                })
-                .collect())
-        } else {
-            error!("File Reconstruction info for hash {hash:?} not found.");
-            Err(DataProcessingError::HashNotFound)
-        }
-    }
-
     pub async fn smudge_file_from_pointer(
         &self,
         pointer: &PointerFile,
-        writer: &mut impl std::io::Write,
+        writer: &mut Box<dyn Write + Send>,
         range: Option<(usize, usize)>,
     ) -> Result<()> {
         self.smudge_file_from_hash(&pointer.hash()?, writer, range)
@@ -321,55 +301,11 @@ impl PointerFileTranslator {
     pub async fn smudge_file_from_hash(
         &self,
         file_id: &MerkleHash,
-        writer: &mut impl std::io::Write,
+        writer: &mut Box<dyn Write + Send>,
         _range: Option<(usize, usize)>,
     ) -> Result<()> {
-        let endpoint = match &self.config.cas_storage_config.endpoint {
-            Endpoint::Server(endpoint) => endpoint.clone(),
-            Endpoint::FileSystem(_) => panic!("aaaaaaaa no server"),
-        };
-
-        let rc = CASAPIClient::new(&endpoint, &self.config.cas_storage_config.auth);
-
-        rc.write_file(file_id, writer).await?;
-
-        // let blocks = self
-        //     .derive_blocks(file_id)
-        //     .instrument(info_span!("derive_blocks"))
-        //     .await?;
-
-        // let ranged_blocks = match range {
-        //     Some((start, end)) => {
-        //         // we expect callers to validate the range, but just in case, check it anyway.
-        //         if end < start {
-        //             let msg = format!(
-        //                 "End range value requested ({end}) is less than start range value ({start})"
-        //             );
-        //             error!(msg);
-        //             return Err(DataProcessingError::ParameterError(msg));
-        //         }
-        //         slice_object_range(&blocks, start, end - start)
-        //     }
-        //     None => blocks,
-        // };
-
-        // self.data_from_chunks_to_writer(ranged_blocks, writer)
-        //     .await?;
+        self.cas.get_file(file_id, writer).await?;
 
         Ok(())
-    }
-
-    async fn data_from_chunks_to_writer(
-        &self,
-        chunks: Vec<ObjectRange>,
-        writer: &mut impl std::io::Write,
-    ) -> Result<()> {
-        data_from_chunks_to_writer(
-            &self.cas,
-            self.config.cas_storage_config.prefix.clone(),
-            chunks,
-            writer,
-        )
-        .await
     }
 }

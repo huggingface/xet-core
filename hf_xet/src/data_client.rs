@@ -1,15 +1,13 @@
-use std::fs;
-use std::fs::File;
-use std::io::{BufReader, Read};
-use std::path::PathBuf;
-use std::sync::Arc;
-
-use cas::auth::TokenRefresher;
+use crate::config::default_config;
+use utils::auth::TokenRefresher;
 use data::errors::DataProcessingError;
 use data::{errors, PointerFile, PointerFileTranslator};
 use parutils::{tokio_par_for_each, ParallelError};
-
-use crate::config::default_config;
+use std::fs;
+use std::fs::File;
+use std::io::{BufReader, Read, Write};
+use std::path::PathBuf;
+use std::sync::Arc;
 
 /// The maximum git filter protocol packet size
 pub const MAX_CONCURRENT_UPLOADS: usize = 8; // TODO
@@ -28,9 +26,12 @@ pub async fn upload_async(
     // produce Xorbs + Shards
     // upload shards and xorbs
     // for each file, return the filehash
-    let endpoint = endpoint.unwrap_or(DEFAULT_CAS_ENDPOINT.to_string());
+    let config = default_config(
+        endpoint.unwrap_or(DEFAULT_CAS_ENDPOINT.to_string()),
+        token_info,
+        token_refresher,
+    )?;
 
-    let config = default_config(endpoint, token_info, token_refresher)?;
     let processor = Arc::new(PointerFileTranslator::new(config).await?);
     let processor = &processor;
     // for all files, clean them, producing pointer files.
@@ -109,18 +110,17 @@ async fn smudge_file(
     if let Some(parent_dir) = path.parent() {
         fs::create_dir_all(parent_dir)?;
     }
-    let mut f = File::create(&path)?;
-    proc.smudge_file_from_pointer(&pointer_file, &mut f, None)
+    let mut f: Box<dyn Write + Send> = Box::new(File::create(&path)?);
+    proc.smudge_file_from_pointer(pointer_file, &mut f, None)
         .await?;
     Ok(pointer_file.path().to_string())
 }
 
 #[cfg(test)]
 mod tests {
+    use super::*;
     use std::env::current_dir;
     use std::fs::canonicalize;
-
-    use super::*;
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
     async fn upload_files() {

@@ -1,18 +1,17 @@
+use crate::cas_structs::*;
 use crate::constants::*;
 use crate::error::{MDBShardError, Result};
-use crate::serialization_utils::*;
+use crate::file_structs::*;
+use crate::interpolation_search::search_on_sorted_u64s;
+use crate::shard_in_memory::MDBInMemoryShard;
+use crate::utils::truncate_hash;
 use merklehash::{HMACKey, MerkleHash};
-
 use std::collections::{BTreeMap, HashMap};
 use std::io::{copy, Read, Seek, SeekFrom, Write};
 use std::mem::size_of;
 use std::sync::Arc;
-use tracing::{debug, error};
-
-use crate::cas_structs::*;
-use crate::file_structs::*;
-use crate::shard_in_memory::MDBInMemoryShard;
-use crate::utils::truncate_hash;
+use tracing::debug;
+use utils::serialization_utils::*;
 
 // Same size for FileDataSequenceHeader and FileDataSequenceEntry
 const MDB_FILE_INFO_ENTRY_SIZE: u64 = (size_of::<[u64; 4]>() + 4 * size_of::<u32>()) as u64;
@@ -692,30 +691,26 @@ impl MDBShardInfo {
 
         // Now, read in data while the query hashes match.
         let first_chunk = CASChunkSequenceEntry::deserialize(reader)?;
-        if first_chunk.chunk_hash != self.keyed_chunk_hash(&unkeyed_query_hashes[0]) {
+        if first_chunk.chunk_hash != self.keyed_chunk_hash(unkeyed_query_hashes[0]) {
             return Ok(None);
         }
 
         let mut n_bytes = first_chunk.unpacked_segment_bytes;
-        let chunk_byte_range_start = first_chunk.chunk_byte_range_start;
 
         // Read everything else until the CAS block end.
         let mut end_idx = 0;
-        let mut chunk_byte_range_end = chunk_byte_range_start;
         for i in 1.. {
             if cas_chunk_offset as usize + i == cas_header.num_entries as usize {
                 end_idx = i;
-                chunk_byte_range_end = cas_header.num_bytes_in_cas;
                 break;
             }
 
             let chunk = CASChunkSequenceEntry::deserialize(reader)?;
 
             if i == unkeyed_query_hashes.len()
-                || chunk.chunk_hash != self.keyed_chunk_hash(&unkeyed_query_hashes[i])
+                || chunk.chunk_hash != self.keyed_chunk_hash(unkeyed_query_hashes[i])
             {
                 end_idx = i;
-                chunk_byte_range_end = chunk.chunk_byte_range_start;
                 break;
             }
 
@@ -728,8 +723,8 @@ impl MDBShardInfo {
                 cas_hash: cas_header.cas_hash,
                 cas_flags: cas_header.cas_flags,
                 unpacked_segment_bytes: n_bytes,
-                chunk_byte_range_start,
-                chunk_byte_range_end,
+                chunk_index_start: cas_chunk_offset,
+                chunk_index_end: cas_chunk_offset + end_idx as u32,
             },
         )))
     }
@@ -927,17 +922,8 @@ impl MDBShardInfo {
             };
 
             // Scan the cas entries to get the proper index
-            let Some(first_chunk_hash) = ('a: {
-                for e in cas_chunks[*cas_block_index].chunks.iter() {
-                    if e.chunk_byte_range_start == entry.chunk_byte_range_start {
-                        break 'a Some(e.chunk_hash);
-                    }
-                }
-                error!("Error: Shard file start in CAS is not on chunk boundary.");
-                break 'a None;
-            }) else {
-                continue;
-            };
+            let first_chunk_hash =
+                cas_chunks[*cas_block_index].chunks[entry.chunk_index_start as usize].chunk_hash;
 
             ret.push(first_chunk_hash);
         }
@@ -1076,6 +1062,7 @@ impl MDBShardInfo {
 }
 
 pub mod test_routines {
+    use std::cmp::min;
     use std::io::{Cursor, Read, Seek};
     use std::mem::size_of;
 
@@ -1231,12 +1218,8 @@ pub mod test_routines {
                 let mut query_hashes_2 = query_hashes_1.clone();
                 query_hashes_2.push(rng_hash(1000000 + i as u64));
 
-                let lb = cas_block.chunks[i].chunk_byte_range_start;
-                let ub = if i + 3 >= cas_block.chunks.len() {
-                    cas_block.metadata.num_bytes_in_cas
-                } else {
-                    cas_block.chunks[i + 3].chunk_byte_range_start
-                };
+                let lb = i as u32;
+                let ub = min(i + 3, cas_block.chunks.len()) as u32;
 
                 for query_hashes in [&query_hashes_1, &query_hashes_2] {
                     let result_m = mem_shard.chunk_hash_dedup_query(query_hashes).unwrap();
@@ -1255,17 +1238,11 @@ pub mod test_routines {
 
                     // Make sure the bounds are correct
                     assert_eq!(
-                        (
-                            result_m.1.chunk_byte_range_start,
-                            result_m.1.chunk_byte_range_end
-                        ),
+                        (result_m.1.chunk_index_start, result_m.1.chunk_index_end),
                         (lb, ub)
                     );
                     assert_eq!(
-                        (
-                            result_f.1.chunk_byte_range_start,
-                            result_f.1.chunk_byte_range_end
-                        ),
+                        (result_f.1.chunk_index_start, result_f.1.chunk_index_end),
                         (lb, ub)
                     );
 

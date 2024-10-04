@@ -5,8 +5,8 @@ use std::{
 };
 
 use crate::error::CasObjectError;
-use anyhow::anyhow;
 use crate::CompressionScheme;
+use anyhow::anyhow;
 use lz4_flex::frame::{FrameDecoder, FrameEncoder};
 
 pub const CAS_CHUNK_HEADER_LENGTH: usize = size_of::<CASChunkHeader>();
@@ -145,13 +145,22 @@ pub fn deserialize_chunk_to_writer<R: Read, W: Write>(
     let mut compressed_buf = vec![0u8; header.get_compressed_length() as usize];
     reader.read_exact(&mut compressed_buf)?;
 
-    match header.get_compression_scheme() {
-        CompressionScheme::None => writer.write_all(&compressed_buf)?,
+    let uncompressed_len = match header.get_compression_scheme() {
+        CompressionScheme::None => {
+            writer.write_all(&compressed_buf)?;
+            compressed_buf.len() as u32
+        }
         CompressionScheme::LZ4 => {
             let mut dec = FrameDecoder::new(Cursor::new(compressed_buf));
-            copy(&mut dec, writer)?;
+            copy(&mut dec, writer)? as u32
         }
     };
+
+    if uncompressed_len != header.get_uncompressed_length() {
+        return Err(CasObjectError::FormatError(anyhow!(
+            "chunk is corrupted, uncompressed bytes len doesn't agree with chunk header"
+        )));
+    }
 
     Ok(header.get_compressed_length() as usize + CAS_CHUNK_HEADER_LENGTH)
 }
@@ -191,8 +200,8 @@ mod tests {
     use std::io::Cursor;
 
     use super::*;
-    use CompressionScheme;
     use rand::Rng;
+    use CompressionScheme;
 
     const COMP_LEN: u32 = 0x010203;
     const UNCOMP_LEN: u32 = 0x040506;

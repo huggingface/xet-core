@@ -6,9 +6,11 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
+merklehash = { path = "../merklehash" }
+xet_error = {path = "../xet_error"}
+utils = {path = "../utils"}
 more-asserts = "0.3.*"
 tempdir = "0.3.7"
-merklehash = { path = "../merklehash" }
 serde = {version="1.0.129", features = ["derive"]}
 tokio = { version = "1.36", features = ["full"] }
 lazy_static = "1.4.0"
@@ -21,7 +23,6 @@ tempfile = "3.2.0"
 clap = { version = "3.1.6", features = ["derive"] }
 anyhow = "1"
 rand = {version = "0.8.5", features = ["small_rng"]}
-xet_error = {path = "../xet_error"}
 async-trait = "0.1.9"
 
 [[bin]]

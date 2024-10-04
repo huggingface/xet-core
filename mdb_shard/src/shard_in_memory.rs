@@ -146,25 +146,23 @@ impl MDBInMemoryShard {
             return None;
         }
 
-        let (chunk_ref, offset) = match self.chunk_hash_lookup.get(&query_hashes[0]) {
+        let (chunk_ref, chunk_index_start) = match self.chunk_hash_lookup.get(&query_hashes[0]) {
             Some(s) => s,
             None => return None,
         };
 
-        let offset = *offset as usize;
+        let chunk_index_start = *chunk_index_start as usize;
 
-        let end_byte_offset;
         let mut query_idx = 0;
 
         loop {
-            if offset + query_idx >= chunk_ref.chunks.len() {
-                end_byte_offset = chunk_ref.metadata.num_bytes_in_cas;
+            if chunk_index_start + query_idx >= chunk_ref.chunks.len() {
                 break;
             }
             if query_idx >= query_hashes.len()
-                || chunk_ref.chunks[offset + query_idx].chunk_hash != query_hashes[query_idx]
+                || chunk_ref.chunks[chunk_index_start + query_idx].chunk_hash
+                    != query_hashes[query_idx]
             {
-                end_byte_offset = chunk_ref.chunks[offset + query_idx].chunk_byte_range_start;
                 break;
             }
             query_idx += 1;
@@ -174,8 +172,9 @@ impl MDBInMemoryShard {
             query_idx,
             FileDataSequenceEntry::from_cas_entries(
                 &chunk_ref.metadata,
-                &chunk_ref.chunks[offset..(offset + query_idx)],
-                end_byte_offset,
+                &chunk_ref.chunks[chunk_index_start..(chunk_index_start + query_idx)],
+                chunk_index_start,
+                chunk_index_start + query_idx,
             ),
         ))
     }

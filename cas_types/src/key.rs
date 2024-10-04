@@ -1,7 +1,10 @@
-use std::fmt::{Display, Formatter};
-
+use crate::error::CasTypesError;
 use merklehash::MerkleHash;
 use serde::{Deserialize, Serialize};
+use std::{
+    fmt::{Display, Formatter},
+    str::FromStr,
+};
 
 /// A Key indicates a prefixed merkle hash for some data stored in the CAS DB.
 #[derive(Debug, PartialEq, Default, Serialize, Deserialize, Ord, PartialOrd, Eq, Hash, Clone)]
@@ -13,6 +16,25 @@ pub struct Key {
 impl Display for Key {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}/{:x}", self.prefix, self.hash)
+    }
+}
+
+impl FromStr for Key {
+    type Err = CasTypesError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let parts = s.rsplit_once('/');
+        let Some((prefix, hash)) = parts else {
+            return Err(CasTypesError::InvalidKey(s.to_owned()));
+        };
+
+        let hash =
+            MerkleHash::from_hex(hash).map_err(|_| CasTypesError::InvalidKey(s.to_owned()))?;
+
+        Ok(Key {
+            prefix: prefix.to_owned(),
+            hash,
+        })
     }
 }
 

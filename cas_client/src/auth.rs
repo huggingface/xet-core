@@ -1,10 +1,10 @@
 use anyhow::anyhow;
-use cas::auth::{AuthConfig, TokenProvider};
 use reqwest::header::HeaderValue;
 use reqwest::header::AUTHORIZATION;
 use reqwest::{Request, Response};
 use reqwest_middleware::{Middleware, Next};
 use std::sync::{Arc, Mutex};
+use utils::auth::{AuthConfig, TokenProvider};
 
 /// AuthMiddleware is a thread-safe middleware that adds a CAS auth token to outbound requests.
 /// If the token it holds is expired, it will automatically be refreshed.

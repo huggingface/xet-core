@@ -11,12 +11,12 @@ strict = []
 [dependencies]
 cas_object = {path = "../cas_object"}
 error_printer = {path = "../error_printer"}
+file_utils = {path = "../file_utils"}
 utils = {path = "../utils"}
 merkledb = {path = "../merkledb"}
 merklehash = { path = "../merklehash" } 
 parutils = {path = "../parutils"}
 retry_strategy = {path = "../retry_strategy"}
-progress_reporting = {path = "../progress_reporting"}
 tonic = {version = "0.10.2", features = ["tls", "tls-roots", "transport"] }
 prost = "0.12.3"
 tokio = { version = "1.36", features = ["full"] }

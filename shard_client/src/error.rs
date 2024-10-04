@@ -3,6 +3,9 @@ use xet_error::Error;
 #[non_exhaustive]
 #[derive(Error, Debug)]
 pub enum ShardClientError {
+    #[error("Invalid config: {0}")]
+    InvalidConfig(String),
+
     #[error("File I/O error")]
     IOError(#[from] std::io::Error),
 
@@ -26,6 +29,9 @@ pub enum ShardClientError {
 
     #[error("Bad endpoint: {0}")]
     UrlError(#[from] url::ParseError),
+
+    #[error("Invalid Shard Key: {0}")]
+    InvalidShardKey(String),
 }
 
 // Define our own result type here (this seems to be the standard).

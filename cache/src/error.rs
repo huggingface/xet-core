@@ -1,6 +1,6 @@
 use crate::CacheError::OtherTaskError;
-use cas::errors::SingleflightError;
 use tracing::error;
+use utils::errors::SingleflightError;
 use xet_error::Error;
 
 #[non_exhaustive]

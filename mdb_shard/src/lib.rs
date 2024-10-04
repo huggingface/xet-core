@@ -2,7 +2,7 @@ pub mod cas_structs;
 pub mod constants;
 pub mod error;
 pub mod file_structs;
-pub mod serialization_utils;
+pub mod interpolation_search;
 pub mod session_directory;
 pub mod set_operations;
 pub mod shard_dedup_probe;

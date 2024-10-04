@@ -1,9 +1,9 @@
 use crate::cas_structs::{CASChunkSequenceEntry, CASChunkSequenceHeader};
-use crate::serialization_utils::*;
 use merklehash::MerkleHash;
 use std::fmt::Debug;
 use std::io::{Cursor, Read, Write};
 use std::mem::size_of;
+use utils::serialization_utils::*;
 
 pub const MDB_DEFAULT_FILE_FLAG: u32 = 0;
 
@@ -72,35 +72,38 @@ pub struct FileDataSequenceEntry {
     pub cas_hash: MerkleHash,
     pub cas_flags: u32,
     pub unpacked_segment_bytes: u32,
-    pub chunk_byte_range_start: u32,
-    pub chunk_byte_range_end: u32,
+    pub chunk_index_start: u32,
+    pub chunk_index_end: u32,
 }
 
 impl FileDataSequenceEntry {
-    pub fn new<I1: TryInto<u32>, I2: TryInto<u32>>(
+    pub fn new<I1: TryInto<u32>>(
         cas_hash: MerkleHash,
         unpacked_segment_bytes: I1,
-        chunk_byte_range_start: I2,
-        chunk_byte_range_end: I2,
+        chunk_index_start: I1,
+        chunk_index_end: I1,
     ) -> Self
     where
         <I1 as TryInto<u32>>::Error: std::fmt::Debug,
-        <I2 as TryInto<u32>>::Error: std::fmt::Debug,
     {
         Self {
             cas_hash,
             cas_flags: MDB_DEFAULT_FILE_FLAG,
             unpacked_segment_bytes: unpacked_segment_bytes.try_into().unwrap(),
-            chunk_byte_range_start: chunk_byte_range_start.try_into().unwrap(),
-            chunk_byte_range_end: chunk_byte_range_end.try_into().unwrap(),
+            chunk_index_start: chunk_index_start.try_into().unwrap(),
+            chunk_index_end: chunk_index_end.try_into().unwrap(),
         }
     }
 
-    pub fn from_cas_entries(
+    pub fn from_cas_entries<I1: TryInto<u32>>(
         metadata: &CASChunkSequenceHeader,
         chunks: &[CASChunkSequenceEntry],
-        chunk_byte_range_end: u32,
-    ) -> Self {
+        chunk_index_start: I1,
+        chunk_index_end: I1,
+    ) -> Self
+    where
+        <I1 as TryInto<u32>>::Error: std::fmt::Debug,
+    {
         if chunks.is_empty() {
             return Self::default();
         }
@@ -109,8 +112,8 @@ impl FileDataSequenceEntry {
             cas_hash: metadata.cas_hash,
             cas_flags: metadata.cas_flags,
             unpacked_segment_bytes: chunks.iter().map(|sb| sb.unpacked_segment_bytes).sum(),
-            chunk_byte_range_start: chunks[0].chunk_byte_range_start,
-            chunk_byte_range_end,
+            chunk_index_start: chunk_index_start.try_into().unwrap(),
+            chunk_index_end: chunk_index_end.try_into().unwrap(),
         }
     }
 
@@ -123,8 +126,8 @@ impl FileDataSequenceEntry {
             write_hash(writer, &self.cas_hash)?;
             write_u32(writer, self.cas_flags)?;
             write_u32(writer, self.unpacked_segment_bytes)?;
-            write_u32(writer, self.chunk_byte_range_start)?;
-            write_u32(writer, self.chunk_byte_range_end)?;
+            write_u32(writer, self.chunk_index_start)?;
+            write_u32(writer, self.chunk_index_end)?;
         }
 
         writer.write_all(&buf[..])?;
@@ -143,8 +146,8 @@ impl FileDataSequenceEntry {
             cas_hash: read_hash(reader)?,
             cas_flags: read_u32(reader)?,
             unpacked_segment_bytes: read_u32(reader)?,
-            chunk_byte_range_start: read_u32(reader)?,
-            chunk_byte_range_end: read_u32(reader)?,
+            chunk_index_start: read_u32(reader)?,
+            chunk_index_end: read_u32(reader)?,
         })
     }
 }
