@@ -133,7 +133,7 @@ impl MDBShardFile {
     }
 
     /// Write out the current shard, re-keyed with an hmac key, to the output directory in question, returning
-    /// the foll path to the new shard.
+    /// the full path to the new shard.
     pub fn export_as_keyed_shard(
         &self,
         target_directory: impl AsRef<Path>,
