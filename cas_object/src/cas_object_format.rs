@@ -6,7 +6,7 @@ use crate::{
 use anyhow::anyhow;
 use bytes::Buf;
 use merkledb::{prelude::MerkleDBHighLevelMethodsV1, Chunk, MerkleMemDB};
-use merklehash::MerkleHash;
+use merklehash::{DataHash, MerkleHash};
 use std::{
     cmp::min,
     io::{Cursor, Error, Read, Seek, Write},
@@ -379,7 +379,7 @@ impl CasObject {
         chunk_start_index: u32,
         chunk_end_index: u32,
         key: &[u8; 32],
-    ) -> Result<Vec<u8>, CasObjectError> {
+    ) -> Result<DataHash, CasObjectError> {
         self.validate_cas_object_info()?;
 
         if chunk_end_index <= chunk_start_index || chunk_end_index > self.info.num_chunks {
@@ -395,7 +395,7 @@ impl CasObject {
 
         // now apply hmac to hashes and return
         let range_hash = blake3::keyed_hash(key, combined.as_slice());
-        Ok(range_hash.as_bytes().to_vec())
+        Ok(DataHash::from(range_hash.as_bytes()))
     }
 
     /// Return end offset of all physical chunk contents (byte index at the beginning of footer)
@@ -698,7 +698,7 @@ mod tests {
 
         // Act & Assert
         let range_hash = c.generate_chunk_range_hash(0, 3, key).unwrap();
-        assert_eq!(range_hash, expected_hash.as_bytes());
+        assert_eq!(range_hash, DataHash::from(expected_hash.as_bytes()));
     }
     
     #[test]
@@ -713,13 +713,13 @@ mod tests {
         
         // Act & Assert
         let range_hash = c.generate_chunk_range_hash(1, 4, key).unwrap();
-        assert_eq!(range_hash, expected_hash.as_bytes());
+        assert_eq!(range_hash, DataHash::from(expected_hash.as_bytes()));
 
         let hashes : Vec<u8> = c.info.chunk_hashes.as_slice()[0..1].to_vec().iter().flat_map(|hash| hash.as_bytes().to_vec()).collect();
         let expected_hash = blake3::keyed_hash(key, hashes.as_slice());
         
         let range_hash = c.generate_chunk_range_hash(0, 1, key).unwrap();
-        assert_eq!(range_hash, expected_hash.as_bytes());
+        assert_eq!(range_hash, DataHash::from(expected_hash.as_bytes()));
     }
     
     #[test]
