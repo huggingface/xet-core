@@ -145,9 +145,9 @@ impl MDBShardFileFooter {
 
         // Do a version check as a simple guard against using this in an old repository
         if version != MDB_SHARD_FOOTER_VERSION {
-            //return Err(MDBShardError::ShardVersionError(
-            panic!("Error: Expected footer version {MDB_SHARD_FOOTER_VERSION}, got {version}");
-            //));
+            return Err(MDBShardError::ShardVersionError(format!(
+                "Error: Expected footer version {MDB_SHARD_FOOTER_VERSION}, got {version}"
+            )));
         }
 
         let mut obj = Self {
