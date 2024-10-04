@@ -484,7 +484,6 @@ mod tests {
 
     use super::*;
     use crate::error::Result;
-    use merklehash::DataHash;
     use more_asserts::assert_lt;
     use rand::prelude::*;
     use tempdir::TempDir;

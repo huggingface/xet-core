@@ -593,6 +593,7 @@ impl MDBShardInfo {
     }
 
     /// Returns the keyed chunk hash for the shard.
+    #[inline]
     pub fn keyed_chunk_hash(&self, chunk_hash: impl AsRef<MerkleHash>) -> MerkleHash {
         let chunk_hash = *chunk_hash.as_ref();
         if self.metadata.chunk_hash_hmac_key != HMACKey::default() {
@@ -676,14 +677,6 @@ impl MDBShardInfo {
             return Ok(None);
         }
 
-        let keyed_hash = |h: MerkleHash| {
-            if self.metadata.chunk_hash_hmac_key != HMACKey::default() {
-                h.hmac(self.metadata.chunk_hash_hmac_key)
-            } else {
-                h
-            }
-        };
-
         reader.seek(SeekFrom::Start(
             self.metadata.cas_info_offset + MDB_CAS_INFO_ENTRY_SIZE * (cas_entry_index as u64),
         ))?;
@@ -699,7 +692,7 @@ impl MDBShardInfo {
 
         // Now, read in data while the query hashes match.
         let first_chunk = CASChunkSequenceEntry::deserialize(reader)?;
-        if first_chunk.chunk_hash != keyed_hash(unkeyed_query_hashes[0]) {
+        if first_chunk.chunk_hash != self.keyed_chunk_hash(&unkeyed_query_hashes[0]) {
             return Ok(None);
         }
 
@@ -719,7 +712,7 @@ impl MDBShardInfo {
             let chunk = CASChunkSequenceEntry::deserialize(reader)?;
 
             if i == unkeyed_query_hashes.len()
-                || chunk.chunk_hash != keyed_hash(unkeyed_query_hashes[i])
+                || chunk.chunk_hash != self.keyed_chunk_hash(&unkeyed_query_hashes[i])
             {
                 end_idx = i;
                 chunk_byte_range_end = chunk.chunk_byte_range_start;
