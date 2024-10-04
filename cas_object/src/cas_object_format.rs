@@ -378,8 +378,8 @@ impl CasObject {
         &self,
         chunk_start_index: u32,
         chunk_end_index: u32,
-        key: &[u8],
-    ) -> Result<MerkleHash, CasObjectError> {
+        key: &[u8; 32],
+    ) -> Result<Vec<u8>, CasObjectError> {
         self.validate_cas_object_info()?;
 
         if chunk_end_index <= chunk_start_index || chunk_end_index > self.info.num_chunks {
@@ -388,18 +388,14 @@ impl CasObject {
 
         // Collect relevant hashes
         let range_hashes = self.info.chunk_hashes[chunk_start_index as usize..chunk_end_index as usize].as_ref();
-
-        // TODO: Make this more robust, currently appends range hashes together, adds key to end
-        let mut combined: Vec<u8> = range_hashes
+        let combined: Vec<u8> = range_hashes
             .iter()
             .flat_map(|hash| hash.as_bytes().to_vec())
             .collect();
-        combined.extend_from_slice(key);
 
-        // now hash the hashes + key and return
-        let range_hash = merklehash::compute_data_hash(&combined);
-
-        Ok(range_hash)
+        // now apply hmac to hashes and return
+        let range_hash = blake3::keyed_hash(&key, combined.as_slice());
+        Ok(range_hash.as_bytes().to_vec())
     }
 
     /// Return end offset of all physical chunk contents (byte index at the beginning of footer)
@@ -689,20 +685,20 @@ mod tests {
         // Arrange
         let (c, _cas_data, _raw_data, _raw_chunk_boundaries) =
             build_cas_object(3, ChunkSize::Fixed(100), CompressionScheme::None);
-        let key = [b'K', b'E', b'Y'];
+        let key: &[u8; 32] = c.info.cashash.as_bytes().try_into().map_err(|_| "The slice is not 32 bytes long").unwrap();
 
-        let mut hashes: Vec<u8> = c
+        let hashes: Vec<u8> = c
             .info
             .chunk_hashes
             .iter()
             .flat_map(|hash| hash.as_bytes().to_vec())
             .collect();
-        hashes.extend_from_slice(&key);
-        let expected_hash = merklehash::compute_data_hash(&hashes);
+
+        let expected_hash = blake3::keyed_hash(key, hashes.as_slice());
 
         // Act & Assert
-        let range_hash = c.generate_chunk_range_hash(0, 3, &key).unwrap();
-        assert_eq!(range_hash, expected_hash);
+        let range_hash = c.generate_chunk_range_hash(0, 3, key).unwrap();
+        assert_eq!(range_hash, expected_hash.as_bytes());
     }
     
     #[test]
@@ -710,22 +706,20 @@ mod tests {
         // Arrange
         let (c, _cas_data, _raw_data, _raw_chunk_boundaries) =
             build_cas_object(5, ChunkSize::Fixed(100), CompressionScheme::None);
-        let key = [b'K', b'E', b'Y', b'B', b'A', b'B', b'Y'];
+        let key: &[u8; 32] = c.info.cashash.as_bytes().try_into().map_err(|_| "The slice is not 32 bytes long").unwrap();
         
-        let mut hashes : Vec<u8> = c.info.chunk_hashes.as_slice()[1..=3].to_vec().iter().flat_map(|hash| hash.as_bytes().to_vec()).collect();
-        hashes.extend_from_slice(&key);
-        let expected_hash = merklehash::compute_data_hash(&hashes);
+        let hashes : Vec<u8> = c.info.chunk_hashes.as_slice()[1..=3].to_vec().iter().flat_map(|hash| hash.as_bytes().to_vec()).collect();
+        let expected_hash = blake3::keyed_hash(key, hashes.as_slice());
         
         // Act & Assert
-        let range_hash = c.generate_chunk_range_hash(1, 4, &key).unwrap();
-        assert_eq!(range_hash, expected_hash);
+        let range_hash = c.generate_chunk_range_hash(1, 4, key).unwrap();
+        assert_eq!(range_hash, expected_hash.as_bytes());
 
-        let mut hashes : Vec<u8> = c.info.chunk_hashes.as_slice()[0..1].to_vec().iter().flat_map(|hash| hash.as_bytes().to_vec()).collect();
-        hashes.extend_from_slice(&key);
-        let expected_hash = merklehash::compute_data_hash(&hashes);
+        let hashes : Vec<u8> = c.info.chunk_hashes.as_slice()[0..1].to_vec().iter().flat_map(|hash| hash.as_bytes().to_vec()).collect();
+        let expected_hash = blake3::keyed_hash(key, hashes.as_slice());
         
-        let range_hash = c.generate_chunk_range_hash(0, 1, &key).unwrap();
-        assert_eq!(range_hash, expected_hash);
+        let range_hash = c.generate_chunk_range_hash(0, 1, key).unwrap();
+        assert_eq!(range_hash, expected_hash.as_bytes());
     }
     
     #[test]
@@ -733,12 +727,12 @@ mod tests {
         // Arrange
         let (c, _cas_data, _raw_data, _raw_chunk_boundaries) =
             build_cas_object(5, ChunkSize::Fixed(100), CompressionScheme::None);
-        let key = [b'K', b'E', b'Y', b'B', b'A', b'B', b'Y'];
-        
+        let key: &[u8; 32] = c.info.cashash.as_bytes().try_into().map_err(|_| "The slice is not 32 bytes long").unwrap();
+
         // Act & Assert
-        assert_eq!(c.generate_chunk_range_hash(1, 6, &key), Err(CasObjectError::InvalidArguments));
-        assert_eq!(c.generate_chunk_range_hash(100, 10, &key), Err(CasObjectError::InvalidArguments));
-        assert_eq!(c.generate_chunk_range_hash(0, 0, &key), Err(CasObjectError::InvalidArguments));
+        assert_eq!(c.generate_chunk_range_hash(1, 6, key), Err(CasObjectError::InvalidArguments));
+        assert_eq!(c.generate_chunk_range_hash(100, 10, key), Err(CasObjectError::InvalidArguments));
+        assert_eq!(c.generate_chunk_range_hash(0, 0, key), Err(CasObjectError::InvalidArguments));
     }
     
     #[test]
