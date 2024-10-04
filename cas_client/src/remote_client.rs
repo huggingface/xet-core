@@ -11,16 +11,44 @@ use error_printer::OptionPrinter;
 use merklehash::MerkleHash;
 use reqwest::{StatusCode, Url};
 use reqwest_middleware::{ClientBuilder, ClientWithMiddleware, Middleware};
+use retry_strategy::RetryStrategy;
 use std::io::{Cursor, Write};
-use tracing::{debug, error};
+use tracing::{debug, error, warn};
 use utils::auth::AuthConfig;
 
 pub const CAS_ENDPOINT: &str = "http://localhost:8080";
 pub const PREFIX_DEFAULT: &str = "default";
 
+const NUM_RETRIES: usize = 5;
+const BASE_RETRY_DELAY_MS: u64 = 3000;
+
+fn retry_http_status_code(stat: &reqwest::StatusCode) -> bool {
+    stat.is_server_error() || *stat == reqwest::StatusCode::TOO_MANY_REQUESTS
+}
+
+fn is_status_retriable_and_print(err: &reqwest::Error) -> bool {
+    let ret = err
+        .status()
+        .as_ref()
+        .map(retry_http_status_code)
+        .unwrap_or(true); // network issues should be retried
+    if ret {
+        warn!("{err:?}. Retrying...");
+    }
+    ret
+}
+
+fn is_middleware_status_retriable_and_print(err: &reqwest_middleware::Error) -> bool {
+    match err {
+        reqwest_middleware::Error::Reqwest(error) => is_status_retriable_and_print(error),
+        _ => false,
+    }
+}
+
 #[derive(Debug)]
 pub struct RemoteClient {
     client: ClientWithMiddleware,
+    retry_strategy: RetryStrategy,
     endpoint: String,
 }
 
@@ -108,7 +136,18 @@ impl Reconstructable for RemoteClient {
             file_id.hex()
         ))?;
 
-        let response = self.client.get(url).send().await?;
+        let response = self
+            .retry_strategy
+            .retry(
+                || async {
+                    let url = url.clone();
+                    self.client.get(url).send().await
+                },
+                is_middleware_status_retriable_and_print,
+            )
+            .await
+            .map_err(|e| CasClientError::InternalError(anyhow!("request failed with code {e}")))?;
+
         let response_body = response.bytes().await?;
         let response_parsed: QueryReconstructionResponse =
             serde_json::from_reader(response_body.reader())
@@ -125,6 +164,7 @@ impl RemoteClient {
         let client = build_reqwest_client(auth_config).unwrap();
         Self {
             client,
+            retry_strategy: RetryStrategy::new(NUM_RETRIES, BASE_RETRY_DELAY_MS),
             endpoint: endpoint.to_string(),
         }
     }
@@ -183,27 +223,36 @@ pub(crate) async fn get_one_range(term: &CASReconstructionTerm) -> Result<Bytes>
     debug!("term: {term:?}");
 
     if term.range.end < term.range.start || term.url_range.end < term.url_range.start {
-        return Err(CasClientError::InternalError(anyhow!(
-            "invalid range in reconstruction"
-        )));
+        return Err(CasClientError::InvalidRange);
     }
 
     let url = Url::parse(term.url.as_str())?;
-    let response = reqwest::Client::new()
-        .request(hyper::Method::GET, url)
-        .header(
-            reqwest::header::RANGE,
-            format!("bytes={}-{}", term.url_range.start, term.url_range.end),
+    let client = reqwest::Client::new();
+    let retry_strategy = RetryStrategy::new(NUM_RETRIES, BASE_RETRY_DELAY_MS);
+
+    let response = retry_strategy
+        .retry(
+            || async {
+                let url = url.clone();
+
+                client
+                    .get(url)
+                    .header(
+                        reqwest::header::RANGE,
+                        format!("bytes={}-{}", term.url_range.start, term.url_range.end),
+                    )
+                    .send()
+                    .await
+            },
+            is_status_retriable_and_print,
         )
-        .send()
-        .await?
-        .error_for_status()?;
-    let xorb_bytes = response
-        .bytes()
         .await
-        .map_err(CasClientError::ReqwestError)?;
+        .map_err(|e| CasClientError::InternalError(anyhow!("request failed with code {e}")))?;
+
+    let xorb_bytes = response.bytes().await?;
     if xorb_bytes.len() as u32 != term.url_range.end - term.url_range.start {
         error!("got back a smaller range than requested");
+        return Err(CasClientError::InvalidRange);
     }
     let mut readseek = Cursor::new(xorb_bytes.to_vec());
     let data = cas_object::deserialize_chunks(&mut readseek)?;

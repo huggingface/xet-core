@@ -20,7 +20,6 @@ use std::sync::Arc;
 use std::sync::Mutex;
 use tokio::task::JoinHandle;
 use tracing::{debug, info};
-use utils::singleflight;
 
 pub struct RemoteShardInterface {
     pub file_query_policy: FileQueryPolicy,
@@ -35,9 +34,6 @@ pub struct RemoteShardInterface {
     pub shard_client: Option<Arc<dyn ShardClientInterface>>,
     pub reconstruction_cache:
         Mutex<LruCache<merklehash::MerkleHash, (MDBFileInfo, Option<MerkleHash>)>>,
-
-    // A gate on downloading and registering new shards.
-    pub shard_downloads: Arc<singleflight::Group<(), DataProcessingError>>,
 }
 
 impl RemoteShardInterface {
@@ -88,7 +84,6 @@ impl RemoteShardInterface {
                 std::num::NonZero::new(FILE_RECONSTRUCTION_CACHE_SIZE).unwrap(),
             )),
             cas,
-            shard_downloads: Arc::new(singleflight::Group::new()),
         }))
     }
 
