@@ -173,4 +173,15 @@ impl MDBCASInfo {
 
         Ok(Self { metadata, chunks })
     }
+
+    pub fn serialize<W: Write>(&self, writer: &mut W) -> Result<usize, std::io::Error> {
+        let mut n_out_bytes = 0;
+        n_out_bytes += self.metadata.serialize(writer)?;
+
+        for chunk in self.chunks.iter() {
+            n_out_bytes += chunk.serialize(writer)?;
+        }
+
+        Ok(n_out_bytes)
+    }
 }

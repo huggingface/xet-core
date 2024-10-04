@@ -3,8 +3,8 @@ use crate::error::{MDBShardError, Result};
 use crate::file_structs::{FileDataSequenceEntry, MDBFileInfo};
 use crate::utils::{shard_file_name, temp_shard_file_name};
 use crate::{shard_format::MDBShardInfo, utils::parse_shard_filename};
-use merklehash::{compute_data_hash, HashedWrite, MerkleHash};
-use std::io::{BufReader, Read, Seek, Write};
+use merklehash::{compute_data_hash, HMACKey, HashedWrite, MerkleHash};
+use std::io::{BufReader, Cursor, Read, Seek, Write};
 use std::path::{Path, PathBuf};
 use tracing::{debug, error, warn};
 
@@ -30,9 +30,11 @@ impl MDBShardFile {
     }
 
     pub fn write_out_from_reader<R: Read + Seek>(
-        target_directory: &Path,
+        target_directory: impl AsRef<Path>,
         reader: &mut R,
     ) -> Result<Self> {
+        let target_directory = target_directory.as_ref();
+
         let mut hashed_write; // Need to access after file is closed.
 
         let temp_file_name = target_directory.join(temp_shard_file_name());
@@ -130,6 +132,33 @@ impl MDBShardFile {
         Ok(ret)
     }
 
+    /// Write out the current shard, re-keyed with an hmac key, to the output directory in question, returning
+    /// the foll path to the new shard.
+    pub fn export_as_keyed_shard(
+        &self,
+        target_directory: impl AsRef<Path>,
+        hmac_key: HMACKey,
+        include_file_info: bool,
+        include_cas_lookup_table: bool,
+        include_chunk_lookup_table: bool,
+    ) -> Result<Self> {
+        let mut output_bytes = Vec::<u8>::new();
+
+        self.shard.export_as_keyed_shard(
+            &mut self.get_reader()?,
+            &mut output_bytes,
+            hmac_key,
+            include_file_info,
+            include_cas_lookup_table,
+            include_chunk_lookup_table,
+        )?;
+
+        Self::write_out_from_reader(
+            target_directory,
+            &mut Cursor::new(output_bytes),
+        )
+    }
+
     #[inline]
     pub fn read_all_cas_blocks(&self) -> Result<Vec<(CASChunkSequenceHeader, u64)>> {
         self.shard.read_all_cas_blocks(&mut self.get_reader()?)
@@ -173,6 +202,11 @@ impl MDBShardFile {
             cas_block_index,
             cas_chunk_offset,
         )
+    }
+
+    #[inline]
+    pub fn chunk_hmac_key(&self) -> Option<HMACKey> {
+        self.shard.chunk_hmac_key()
     }
 
     #[inline]
@@ -240,7 +274,9 @@ impl MDBShardFile {
             })
             .unwrap();
 
-        debug_assert_eq!(fir.len() as u64, self.shard.metadata.file_lookup_num_entry);
+        if self.shard.metadata.file_lookup_num_entry != 0 {
+            debug_assert_eq!(fir.len() as u64, self.shard.metadata.file_lookup_num_entry);
+        }
         debug!("Integrity test passed for shard {:?}", &self.path);
 
         // TODO: More parts; but this will at least succeed on the server end.

@@ -282,7 +282,7 @@ impl Cleaner {
                     local_chunk_index += n_deduped;
                 } else if let Some((n_deduped, fse)) = self
                     .shard_manager
-                    .chunk_hash_dedup_query(&chunk_hashes[local_chunk_index..], None)
+                    .chunk_hash_dedup_query(&chunk_hashes[local_chunk_index..])
                     .await?
                 {
                     if !first_pass {

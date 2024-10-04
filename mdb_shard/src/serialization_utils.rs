@@ -7,6 +7,10 @@ pub fn write_hash<W: Write>(writer: &mut W, m: &MerkleHash) -> Result<(), std::i
     writer.write_all(m.as_bytes())
 }
 
+pub fn write_u8<W: Write>(writer: &mut W, v: u8) -> Result<(), std::io::Error> {
+    writer.write_all(&[v])
+}
+
 pub fn write_u32<W: Write>(writer: &mut W, v: u32) -> Result<(), std::io::Error> {
     writer.write_all(&v.to_le_bytes())
 }
@@ -20,6 +24,11 @@ pub fn write_u32s<W: Write>(writer: &mut W, vs: &[u32]) -> Result<(), std::io::E
         write_u32(writer, *e)?;
     }
 
+    Ok(())
+}
+
+pub fn write_u8s<W: Write>(writer: &mut W, vs: &[u8]) -> Result<(), std::io::Error> {
+    writer.write_all(vs)?;
     Ok(())
 }
 
@@ -40,6 +49,11 @@ pub fn read_hash<R: Read>(reader: &mut R) -> Result<MerkleHash, std::io::Error> 
     }))
 }
 
+pub fn read_u8<R: Read>(reader: &mut R) -> Result<u8, std::io::Error> {
+    let mut buf = [0u8; size_of::<u8>()];
+    reader.read_exact(&mut buf[..])?;
+    Ok(u8::from_le_bytes(buf))
+}
 pub fn read_u32<R: Read>(reader: &mut R) -> Result<u32, std::io::Error> {
     let mut buf = [0u8; size_of::<u32>()];
     reader.read_exact(&mut buf[..])?;
@@ -50,6 +64,10 @@ pub fn read_u64<R: Read>(reader: &mut R) -> Result<u64, std::io::Error> {
     let mut buf = [0u8; size_of::<u64>()];
     reader.read_exact(&mut buf[..])?;
     Ok(u64::from_le_bytes(buf))
+}
+pub fn read_u8s<R: Read>(reader: &mut R, vs: &mut [u8]) -> Result<(), std::io::Error> {
+    reader.read_exact(vs)?;
+    Ok(())
 }
 
 pub fn read_u64s<R: Read>(reader: &mut R, vs: &mut [u64]) -> Result<(), std::io::Error> {

@@ -22,7 +22,7 @@ pub async fn create_shard_manager(
 
     if shard_cache_directory.exists() {
         shard_manager
-            .register_shards_by_path(&[shard_cache_directory], true)
+            .register_shards_by_path(&[shard_cache_directory])
             .await?;
     } else {
         warn!(

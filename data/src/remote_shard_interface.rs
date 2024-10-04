@@ -299,9 +299,7 @@ impl RemoteShardInterface {
                         .await
                         .map_err(|e| DataProcessingError::InternalError(format!("{e:?}")))?;
 
-                    shard_manager
-                        .register_shards_by_path(&[shard_file], true)
-                        .await?;
+                    shard_manager.register_shards_by_path(&[shard_file]).await?;
 
                     Ok(())
                 })

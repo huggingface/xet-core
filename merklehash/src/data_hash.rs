@@ -65,9 +65,21 @@ impl From<&[u8; 32]> for DataHash {
     }
 }
 
+impl From<DataHash> for [u8; 32] {
+    fn from(val: DataHash) -> Self {
+        unsafe { std::mem::transmute(val) }
+    }
+}
+
 impl AsRef<[u8]> for DataHash {
     fn as_ref(&self) -> &[u8] {
         transmute_to_bytes(self.deref())
+    }
+}
+
+impl AsRef<DataHash> for DataHash {
+    fn as_ref(&self) -> &DataHash {
+        self
     }
 }
 
@@ -176,12 +188,17 @@ impl DataHash {
         }
         Ok(hash)
     }
+}
 
+// Just use the same type here; rename for code legibility.
+pub type HMACKey = DataHash;
+
+impl DataHash {
     /**  Given a 256 bit key and a MerkleHash (the message), generate an HMAC hash from self.
      */
-    pub fn hmac(&self, key: &[u8; 32]) -> Self {
+    pub fn hmac(&self, key: HMACKey) -> Self {
         // Use the blake 3 keyed hash method as the HMac
-        Self::from(*blake3::keyed_hash(key, self.as_bytes()).as_bytes())
+        Self::from(*blake3::keyed_hash(&key.into(), self.as_bytes()).as_bytes())
     }
 }
 
@@ -400,8 +417,8 @@ mod tests {
         let key2 = [1u8; 32];
 
         // Compute HMAC hashes with different keys
-        let output1 = message.hmac(&key1);
-        let output2 = message.hmac(&key2);
+        let output1 = message.hmac(key1.into());
+        let output2 = message.hmac(key2.into());
 
         // Verify that the outputs are different
         assert_ne!(output1, output2,);
@@ -420,8 +437,8 @@ mod tests {
         let message2 = DataHash::from(message2_bytes);
 
         // Compute HMAC hashes with different messages
-        let output1 = message1.hmac(&key);
-        let output2 = message2.hmac(&key);
+        let output1 = message1.hmac(key.into());
+        let output2 = message2.hmac(key.into());
 
         // Verify that the outputs are different
         assert_ne!(output1, output2,);

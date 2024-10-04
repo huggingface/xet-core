@@ -37,7 +37,7 @@ impl LocalShardClient {
 
         let shard_manager = ShardFileManager::new(&shard_directory).await?;
         shard_manager
-            .register_shards_by_path(&[&shard_directory], true)
+            .register_shards_by_path(&[&shard_directory])
             .await?;
 
         let global_dedup = DiskBasedGlobalDedupTable::open_or_create(
@@ -68,7 +68,7 @@ impl RegistrationClient for LocalShardClient {
             &mut Cursor::new(shard_data),
         )?;
 
-        self.shard_manager.register_shards(&[shard], true).await?;
+        self.shard_manager.register_shards(&[shard]).await?;
 
         // Add dedup info to the global dedup table.
         let mut shard_reader = Cursor::new(shard_data);

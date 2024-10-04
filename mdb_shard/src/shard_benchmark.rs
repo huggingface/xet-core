@@ -107,7 +107,6 @@ async fn run_shard_benchmark(
                     let res = mdb_ref
                         .chunk_hash_dedup_query(
                             &file_info[query_loc..(query_loc + contiguity).min(file_info.len())],
-                            None,
                         )
                         .await
                         .unwrap();
