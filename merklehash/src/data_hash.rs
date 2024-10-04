@@ -176,6 +176,13 @@ impl DataHash {
         }
         Ok(hash)
     }
+
+    /**  Given a 256 bit key and a MerkleHash (the message), generate an HMAC hash from self.
+     */
+    pub fn hmac(&self, key: &[u8; 32]) -> Self {
+        // Use the blake 3 keyed hash method as the HMac
+        Self::from(*blake3::keyed_hash(key, self.as_bytes()).as_bytes())
+    }
 }
 
 /// The error type that is returned if TryFrom<&[u8]> fails.
@@ -380,5 +387,43 @@ mod tests {
         assert_eq!(written_data, raw_data);
 
         Ok(())
+    }
+
+    #[test]
+    fn test_hmac_hash_key_change() {
+        // Prepare a fixed message
+        let message_bytes = [0u8; 32];
+        let message = DataHash::from(message_bytes);
+
+        // Prepare two different keys
+        let key1 = [0u8; 32];
+        let key2 = [1u8; 32];
+
+        // Compute HMAC hashes with different keys
+        let output1 = message.hmac(&key1);
+        let output2 = message.hmac(&key2);
+
+        // Verify that the outputs are different
+        assert_ne!(output1, output2,);
+    }
+
+    #[test]
+    fn test_hmac_hash_message_change() {
+        // Prepare a fixed key
+        let key = [0u8; 32];
+
+        // Prepare two different messages
+        let message1_bytes = [0u8; 32];
+        let message2_bytes = [1u8; 32];
+
+        let message1 = DataHash::from(message1_bytes);
+        let message2 = DataHash::from(message2_bytes);
+
+        // Compute HMAC hashes with different messages
+        let output1 = message1.hmac(&key);
+        let output2 = message2.hmac(&key);
+
+        // Verify that the outputs are different
+        assert_ne!(output1, output2,);
     }
 }
