@@ -394,7 +394,7 @@ impl CasObject {
             .collect();
 
         // now apply hmac to hashes and return
-        let range_hash = blake3::keyed_hash(&key, combined.as_slice());
+        let range_hash = blake3::keyed_hash(key, combined.as_slice());
         Ok(range_hash.as_bytes().to_vec())
     }
 
