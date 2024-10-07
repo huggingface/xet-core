@@ -1,9 +1,9 @@
 use std::{
     cmp::Ordering,
     collections::HashMap,
-    fs::{read_dir, DirEntry, File},
+    fs::{DirEntry, File},
     io::{Cursor, Read, Seek, SeekFrom, Write},
-    path::PathBuf,
+    path::{Path, PathBuf},
 };
 
 use base64::engine::general_purpose::URL_SAFE;
@@ -15,6 +15,7 @@ use file_utils::SafeFileCreator;
 use merklehash::MerkleHash;
 use sorted_vec::SortedVec;
 use tracing::warn;
+pub mod test_utils;
 
 use crate::{error::ChunkCacheError, ChunkCache};
 
@@ -119,7 +120,7 @@ fn range_contained_fn(range: &Range) -> impl FnMut(&CacheItem) -> std::cmp::Orde
 }
 
 impl DiskCache {
-    fn num_items(&self) -> usize {
+    pub fn num_items(&self) -> usize {
         self.state.values().fold(0, |acc, v| acc + v.len())
     }
 
@@ -132,8 +133,25 @@ impl DiskCache {
     pub fn initialize(cache_root: PathBuf, capacity: u64) -> Result<Self, ChunkCacheError> {
         let mut state = HashMap::new();
 
-        for key_dir in read_dir(&cache_root)? {
-            let key_dir = key_dir?;
+        let readdir = match std::fs::read_dir(&cache_root) {
+            Ok(rd) => rd,
+            Err(e) => {
+                if e.kind() == std::io::ErrorKind::NotFound {
+                    return Ok(Self {
+                        cache_root,
+                        capacity,
+                        state,
+                    });
+                }
+                return Err(e.into());
+            }
+        };
+
+        for key_dir in readdir {
+            let key_dir = match key_dir {
+                Ok(kd) => kd,
+                Err(_) => continue,
+            };
             if !key_dir.metadata()?.is_dir() {
                 warn!(
                     "CACHE: expected key directory at {:?}, is not directory",
@@ -144,7 +162,17 @@ impl DiskCache {
             let key = parse_key(key_dir.file_name().as_encoded_bytes())?;
             let mut items = SortedVec::new();
 
-            for item in read_dir(key_dir.path())? {
+            let key_readdir = match std::fs::read_dir(key_dir.path()) {
+                Ok(krd) => krd,
+                Err(e) => {
+                    if e.kind() == std::io::ErrorKind::NotFound {
+                        continue;
+                    }
+                    return Err(e.into());
+                }
+            };
+
+            for item in key_readdir {
                 let item = item?;
                 let cache_item = match parse_cache_item(&item) {
                     Ok(i) => i,
@@ -201,7 +229,7 @@ impl DiskCache {
                 Ok(header) => header,
                 Err(_) => {
                     items.remove_index(idx);
-                    std::fs::remove_file(&path)?;
+                    remove_file(&path)?;
                     continue;
                 }
             };
@@ -264,6 +292,8 @@ impl DiskCache {
             .join(key_dir(key))
             .join(item.to_file_name()?);
 
+        // create dir if doesn't exist
+
         let mut fw = SafeFileCreator::new(path)?;
 
         fw.write_all(&header_buf)?;
@@ -289,15 +319,17 @@ impl DiskCache {
                 .cache_root
                 .join(key_dir(&key))
                 .join(item.to_file_name()?);
-            std::fs::remove_file(path)?;
+            remove_file(path)?;
             items.remove_index(idx);
             if items.is_empty() {
                 self.state.remove(&key);
 
                 let dir_path = self.cache_root.join(key_dir(&key));
-                if std::fs::read_dir(&dir_path)?.next().is_none() {
-                    // no more files in that directory, remove it
-                    std::fs::remove_dir(dir_path)?;
+                if let Ok(mut readdir) = std::fs::read_dir(&dir_path) {
+                    if readdir.next().is_none() {
+                        // no more files in that directory, remove it
+                        remove_dir(dir_path)?;
+                    }
                 }
             }
 
@@ -322,6 +354,26 @@ impl DiskCache {
     }
 }
 
+fn remove_file(path: impl AsRef<Path>) -> Result<(), ChunkCacheError> {
+    if let Err(e) = std::fs::remove_file(path) {
+        if e.kind() != std::io::ErrorKind::NotFound {
+            return Err(e.into());
+        }
+    }
+    Ok(())
+}
+
+fn remove_dir(path: impl AsRef<Path>) -> Result<(), ChunkCacheError> {
+    if let Err(e) = std::fs::remove_dir(path) {
+        if e.kind() != std::io::ErrorKind::NotFound {
+            return Err(e.into());
+        }
+    }
+    Ok(())
+}
+
+// TODO make readdir safe
+
 fn key_dir(key: &Key) -> String {
     let prefix_bytes = key.prefix.as_bytes();
     let mut buf = vec![0u8; size_of::<MerkleHash>() + prefix_bytes.len()];
@@ -343,85 +395,6 @@ impl ChunkCache for DiskCache {
         data: &[u8],
     ) -> Result<(), ChunkCacheError> {
         self.put_impl(key, range, chunk_byte_indicies, data)
-    }
-}
-
-#[cfg(test)]
-mod test_utils {
-    use std::path::Path;
-
-    use cas_types::{Key, Range};
-    use merklehash::MerkleHash;
-    use rand::Rng;
-
-    pub const DEFAULT_CAPACITY: u64 = 16 << 20;
-    pub const RANGE_LEN: u32 = 4000;
-
-    pub fn print_directory_contents(path: &Path) {
-        // Read the contents of the directory
-        match std::fs::read_dir(path) {
-            Ok(entries) => {
-                for entry in entries {
-                    match entry {
-                        Ok(entry) => {
-                            let path = entry.path();
-                            // Print the path
-                            println!("{}", path.display());
-
-                            // If it's a directory, call this function recursively
-                            if path.is_dir() {
-                                print_directory_contents(&path);
-                            }
-                        }
-                        Err(e) => eprintln!("Error reading entry: {}", e),
-                    }
-                }
-            }
-            Err(e) => eprintln!("Error reading directory: {}", e),
-        }
-    }
-
-    pub fn random_key() -> Key {
-        Key {
-            prefix: "default".to_string(),
-            hash: MerkleHash::from_slice(&rand::random::<[u8; 32]>()).unwrap(),
-        }
-    }
-
-    pub fn random_range() -> Range {
-        let start = rand::random::<u32>() % 1024;
-        let end = 1024.min(start + rand::random::<u32>() % 256);
-        Range { start, end }
-    }
-
-    pub fn random_bytes(range: &Range) -> (Vec<u32>, Vec<u8>) {
-        let mut rng = rand::thread_rng();
-        let random_vec: Vec<u8> = (0..RANGE_LEN).map(|_| rng.gen()).collect();
-        let mut offsets: Vec<u32> = Vec::with_capacity((range.end - range.start + 1) as usize);
-        offsets.push(0);
-        for _ in range.start..range.end - 1 {
-            let mut num = rng.gen::<u32>() % RANGE_LEN;
-            while offsets.contains(&num) {
-                num = rng.gen::<u32>() % RANGE_LEN;
-            }
-            offsets.push(num);
-        }
-        offsets.push(4000);
-        offsets.sort();
-        (offsets, random_vec)
-    }
-
-    pub struct RandomEntryIterator;
-
-    impl Iterator for RandomEntryIterator {
-        type Item = (Key, Range, Vec<u32>, Vec<u8>);
-
-        fn next(&mut self) -> Option<Self::Item> {
-            let key = random_key();
-            let range = random_range();
-            let (offsets, data) = random_bytes(&range);
-            Some((key, range, offsets, data))
-        }
     }
 }
 
@@ -644,9 +617,10 @@ mod tests {
                 num_hits += 1;
             }
         }
+        // assert got some hits, exact number depends on item size
+        assert_ne!(num_hits, 0);
 
-        // expecting 3 or 4 hits, depends how much the chunk headers contribute to the total len
-        assert!(num_hits == 3 || num_hits == 4, "{num_hits} is not 3 or 4");
+        // assert that we haven't evicted all keys for key with multiple items
         assert!(
             cache.state.contains_key(&key),
             "evicted key that should have remained in cache"

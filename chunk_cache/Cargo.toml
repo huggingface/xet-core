@@ -10,19 +10,22 @@ xet_error = { path = "../xet_error" }
 error_printer = { path = "../error_printer" }
 file_utils = { path = "../file_utils" }
 blake3 = "1.5.4"
-foyer = "0.11.5"
 base64 = "0.22.1"
 tracing = "0.1.40"
 sorted-vec = "0.8.3"
 rand = "0.8"
+clap = { version = "4.5.19", features = ["derive"] }
+tempdir = "0.3.7"
 
 [dev-dependencies]
 tempdir = "0.3.7"
 sccache = "0.8.2"
-moka = "0.7"
 rand = "0.8"
 criterion = "0.4"
 
 [[bench]]
 name = "cache_bench"
 harness = false
+
+[[bin]]
+name = "cache_resiliancy_test"
