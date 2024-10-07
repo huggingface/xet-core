@@ -118,11 +118,10 @@ impl PrivilgedExecutionContext {
         }
 
         // try recursively create all the directories.
-        std::fs::create_dir_all(path).map_err(|err| {
+        std::fs::create_dir_all(path).inspect_err(|err| {
             if err.kind() == std::io::ErrorKind::PermissionDenied {
                 permission_warning(root, true);
             }
-            err
         })?;
 
         // with elevated privileges we chown for all entries from path to root.
@@ -176,11 +175,10 @@ impl PrivilgedExecutionContext {
                 .truncate(false)
                 .write(true)
                 .open(path)
-                .map_err(|err| {
+                .inspect_err(|err| {
                     if err.kind() == std::io::ErrorKind::PermissionDenied {
                         permission_warning(path, false);
                     }
-                    err
                 })
         };
 

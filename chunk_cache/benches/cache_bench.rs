@@ -1,11 +1,13 @@
+use std::u64;
+
 use cas_types::{Key, Range};
-use chunk_cache::ChunkCache;
+use chunk_cache::{ChunkCache, DiskCache};
 use criterion::{criterion_group, criterion_main, Criterion};
 use merklehash::MerkleHash;
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
+use tempdir::TempDir;
 
-const CACHE_CAPACITY: u64 = 1024 * 1024 * 1024;
 const SEED: u64 = 42;
 const AVG_CHUNK_LEN: u64 = 64 * 1024;
 
@@ -62,20 +64,15 @@ impl Iterator for RandomEntryIterator {
     }
 }
 
+const NUM_PUTS: u64 = 100;
+
 fn benchmark_cache_put_get(c: &mut Criterion, cache: &mut impl ChunkCache) {
     let mut rng = StdRng::seed_from_u64(SEED);
     let mut it = RandomEntryIterator::new(SEED);
 
-    let mut i = 0;
-
-    loop {
-        if i == 100 {
-            break;
-        }
+    for _ in 0..NUM_PUTS {
         let (key, range, offsets, data) = it.next().unwrap();
         cache.put(&key, &range, &offsets, &data).unwrap();
-
-        i += 1;
     }
 
     c.bench_function("cache_get", |b| {
@@ -114,5 +111,29 @@ fn benchmark_cache_put_get_no_good_cache(c: &mut Criterion) {
     benchmark_cache_put_get(c, &mut NoGoodCache);
 }
 
-criterion_group!(benches, benchmark_cache_put_get_no_good_cache);
+fn benchmark_cache_put_get_std_no_cap(c: &mut Criterion) {
+    let cache_root = TempDir::new("bench_no_cap").unwrap();
+    let mut cache = DiskCache::initialize(cache_root.into_path().to_path_buf(), u64::MAX).unwrap();
+    benchmark_cache_put_get(c, &mut cache);
+}
+
+fn benchmark_cache_put_get_std_cap_10_gb(c: &mut Criterion) {
+    let cache_root = TempDir::new("bench_10GB").unwrap();
+    let mut cache = DiskCache::initialize(cache_root.into_path().to_path_buf(), 10 << 30).unwrap();
+    benchmark_cache_put_get(c, &mut cache);
+}
+
+fn benchmark_cache_put_get_std_cap_1_gb(c: &mut Criterion) {
+    let cache_root = TempDir::new("bench_10GB").unwrap();
+    let mut cache = DiskCache::initialize(cache_root.into_path().to_path_buf(), 1 << 30).unwrap();
+    benchmark_cache_put_get(c, &mut cache);
+}
+
+criterion_group!(
+    benches,
+    benchmark_cache_put_get_no_good_cache,
+    benchmark_cache_put_get_std_no_cap,
+    benchmark_cache_put_get_std_cap_10_gb,
+    benchmark_cache_put_get_std_cap_1_gb
+);
 criterion_main!(benches);

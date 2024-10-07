@@ -1,7 +1,10 @@
+mod disk;
 pub mod error;
 
 use cas_types::{Key, Range};
 use error::ChunkCacheError;
+
+pub use disk::DiskCache;
 
 pub trait ChunkCache {
     fn get(&mut self, key: &Key, range: &Range) -> Result<Option<Vec<u8>>, ChunkCacheError>;

@@ -11,7 +11,7 @@ pub struct UploadXorbResponse {
     pub was_inserted: bool,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone, Eq, PartialEq, PartialOrd, Ord)]
 pub struct Range {
     pub start: u32,
     pub end: u32,

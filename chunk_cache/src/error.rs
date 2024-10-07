@@ -1,5 +1,7 @@
-use std::array::TryFromSliceError;
+use std::{array::TryFromSliceError, str::Utf8Error};
 
+use base64::DecodeError;
+use merklehash::DataHashBytesParseError;
 use xet_error::Error;
 
 #[derive(Debug, Error)]
@@ -22,8 +24,17 @@ impl ChunkCacheError {
     }
 }
 
-impl From<TryFromSliceError> for ChunkCacheError {
-    fn from(value: TryFromSliceError) -> Self {
-        ChunkCacheError::parse(value)
-    }
+macro_rules! impl_parse_error_from_error {
+    ($error_type:ty) => {
+        impl From<$error_type> for ChunkCacheError {
+            fn from(value: $error_type) -> Self {
+                ChunkCacheError::parse(value)
+            }
+        }
+    };
 }
+
+impl_parse_error_from_error!(TryFromSliceError);
+impl_parse_error_from_error!(DecodeError);
+impl_parse_error_from_error!(DataHashBytesParseError);
+impl_parse_error_from_error!(Utf8Error);
