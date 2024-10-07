@@ -90,18 +90,18 @@ struct NoGoodCache;
 impl ChunkCache for NoGoodCache {
     fn get(
         &mut self,
-        key: &Key,
-        range: &Range,
+        _key: &Key,
+        _range: &Range,
     ) -> Result<Option<Vec<u8>>, chunk_cache::error::ChunkCacheError> {
         Ok(None)
     }
 
     fn put(
         &mut self,
-        key: &Key,
-        range: &Range,
-        chunk_byte_indicies: &[u32],
-        data: &[u8],
+        _key: &Key,
+        _range: &Range,
+        _chunk_byte_indicies: &[u32],
+        _data: &[u8],
     ) -> Result<(), chunk_cache::error::ChunkCacheError> {
         Ok(())
     }

@@ -106,8 +106,8 @@ pub fn write_u32(writer: &mut impl Write, v: u32) -> Result<(), std::io::Error> 
     writer.write_all(&v.to_le_bytes())
 }
 
-fn range_contained_fn<'a>(range: &'a Range) -> impl FnMut(&CacheItem) -> std::cmp::Ordering + 'a {
-    return |item: &CacheItem| {
+fn range_contained_fn(range: &Range) -> impl FnMut(&CacheItem) -> std::cmp::Ordering + '_ {
+    |item: &CacheItem| {
         if item.range.start > range.start {
             Ordering::Greater
         } else if item.range.end < range.end {
@@ -115,7 +115,7 @@ fn range_contained_fn<'a>(range: &'a Range) -> impl FnMut(&CacheItem) -> std::cm
         } else {
             Ordering::Equal
         }
-    };
+    }
 }
 
 impl DiskCache {
@@ -250,7 +250,7 @@ impl DiskCache {
         let item = CacheItem {
             range: range.clone(),
             len: (header_buf.len() + data.len()) as u64,
-            hash: hash,
+            hash,
         };
 
         if self.capacity < total_bytes + item.len {
