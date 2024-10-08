@@ -1,7 +1,6 @@
 use crate::cas_structs::CASChunkSequenceHeader;
 use crate::error::{MDBShardError, Result};
 use crate::file_structs::{FileDataSequenceEntry, MDBFileInfo};
-use crate::shard_file::current_timestamp;
 use crate::utils::{shard_file_name, temp_shard_file_name};
 use crate::{shard_format::MDBShardInfo, utils::parse_shard_filename};
 use merklehash::{compute_data_hash, HMACKey, HashedWrite, MerkleHash};

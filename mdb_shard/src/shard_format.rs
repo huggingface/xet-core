@@ -11,7 +11,6 @@ use std::io::{copy, Read, Seek, SeekFrom, Write};
 use std::mem::size_of;
 use std::ops::Add;
 use std::sync::Arc;
-use std::time::Duration;
 use std::time::UNIX_EPOCH;
 use tracing::debug;
 use utils::serialization_utils::*;
@@ -967,6 +966,7 @@ impl MDBShardInfo {
     }
 
     /// Export the current shard as an hmac keyed shard, returning the number of bytes written and the hash of the resulting data.
+    #[allow(clippy::too_many_arguments)]
     pub fn export_as_keyed_shard<R: Read + Seek, W: Write>(
         &self,
         reader: &mut R,
