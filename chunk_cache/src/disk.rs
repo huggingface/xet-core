@@ -1,85 +1,38 @@
 use std::{
-    cmp::Ordering,
     collections::HashMap,
-    fs::{DirEntry, File},
-    io::{Cursor, Read, Seek, SeekFrom, Write},
+    fs::File,
+    io::{ErrorKind, Read, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, MutexGuard},
 };
 
 use base64::engine::general_purpose::URL_SAFE;
 use base64::{engine::GeneralPurpose, Engine};
-use blake3::Hash;
 use cache_file_header::CacheFileHeader;
+use cache_item::{range_contained_fn, CacheItem};
 use cas_types::{Key, Range};
 use file_utils::SafeFileCreator;
 use merklehash::MerkleHash;
 use sorted_vec::SortedVec;
-use tracing::warn;
-pub mod test_utils;
+use tracing::{error, warn};
 
 use crate::{error::ChunkCacheError, ChunkCache};
 
 mod cache_file_header;
+mod cache_item;
+pub mod test_utils;
 
-const BASE64_ENGINE: GeneralPurpose = URL_SAFE;
+// consistently use URL_SAFE (also file path safe) base64 codec
+pub(crate) const BASE64_ENGINE: GeneralPurpose = URL_SAFE;
 
+type CacheState = HashMap<Key, SortedVec<CacheItem>>;
+
+/// DiskCache is a ChunkCache implementor that saves data on the file system
 #[derive(Debug, Clone)]
 pub struct DiskCache {
     cache_root: PathBuf,
     capacity: u64,
-    state: Arc<Mutex<HashMap<Key, SortedVec<CacheItem>>>>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct CacheItem {
-    range: Range,
-    len: u64,
-    hash: Hash,
-}
-
-impl PartialOrd for CacheItem {
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        Some(self.cmp(other))
-    }
-}
-
-impl Ord for CacheItem {
-    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        self.range.cmp(&other.range)
-    }
-}
-
-const CACHE_ITEM_FILE_NAME_BUF_SIZE: usize = size_of::<u32>() * 2 + blake3::OUT_LEN;
-
-impl CacheItem {
-    fn to_file_name(&self) -> Result<String, ChunkCacheError> {
-        let mut buf = [0u8; CACHE_ITEM_FILE_NAME_BUF_SIZE];
-        let mut w = Cursor::new(&mut buf[..]);
-        write_u32(&mut w, self.range.start)?;
-        write_u32(&mut w, self.range.end)?;
-        write_hash(&mut w, &self.hash)?;
-        Ok(BASE64_ENGINE.encode(buf))
-    }
-}
-
-fn parse_cache_item(item: &DirEntry) -> Result<CacheItem, ChunkCacheError> {
-    let md = item.metadata()?;
-    if !md.is_file() {
-        warn!("expected file at path: {:?}", item.path());
-        return Err(ChunkCacheError::parse("not a file"));
-    }
-    let len = md.len();
-    let buf = BASE64_ENGINE.decode(item.file_name().as_encoded_bytes())?;
-    let mut r = Cursor::new(buf);
-    let start = read_u32(&mut r)?;
-    let end = read_u32(&mut r)?;
-    let hash = read_hash(&mut r)?;
-    Ok(CacheItem {
-        range: Range { start, end },
-        len,
-        hash,
-    })
+    state: Arc<Mutex<CacheState>>,
 }
 
 fn parse_key(file_name: &[u8]) -> Result<Key, ChunkCacheError> {
@@ -87,38 +40,6 @@ fn parse_key(file_name: &[u8]) -> Result<Key, ChunkCacheError> {
     let hash = MerkleHash::from_slice(&buf[..size_of::<MerkleHash>()])?;
     let prefix = String::from(std::str::from_utf8(&buf[size_of::<MerkleHash>()..])?);
     Ok(Key { prefix, hash })
-}
-
-pub fn read_hash(reader: &mut impl Read) -> Result<blake3::Hash, std::io::Error> {
-    let mut m = [0u8; 32];
-    reader.read_exact(&mut m)?;
-    Ok(blake3::Hash::from_bytes(m))
-}
-
-pub fn read_u32(reader: &mut impl Read) -> Result<u32, std::io::Error> {
-    let mut buf = [0u8; size_of::<u32>()];
-    reader.read_exact(&mut buf[..])?;
-    Ok(u32::from_le_bytes(buf))
-}
-
-pub fn write_hash(writer: &mut impl Write, hash: &blake3::Hash) -> Result<(), std::io::Error> {
-    writer.write_all(hash.as_bytes())
-}
-
-pub fn write_u32(writer: &mut impl Write, v: u32) -> Result<(), std::io::Error> {
-    writer.write_all(&v.to_le_bytes())
-}
-
-fn range_contained_fn(range: &Range) -> impl FnMut(&CacheItem) -> std::cmp::Ordering + '_ {
-    |item: &CacheItem| {
-        if item.range.start > range.start {
-            Ordering::Greater
-        } else if item.range.end < range.end {
-            Ordering::Less
-        } else {
-            Ordering::Equal
-        }
-    }
 }
 
 impl DiskCache {
@@ -141,7 +62,7 @@ impl DiskCache {
         let readdir = match std::fs::read_dir(&cache_root) {
             Ok(rd) => rd,
             Err(e) => {
-                if e.kind() == std::io::ErrorKind::NotFound {
+                if e.kind() == ErrorKind::NotFound {
                     return Ok(Self {
                         cache_root,
                         capacity,
@@ -160,7 +81,7 @@ impl DiskCache {
             let md = match key_dir.metadata() {
                 Ok(md) => md,
                 Err(e) => {
-                    if e.kind() == std::io::ErrorKind::NotFound {
+                    if e.kind() == ErrorKind::NotFound {
                         continue;
                     }
                     return Err(e.into());
@@ -182,7 +103,7 @@ impl DiskCache {
             let key_readdir = match std::fs::read_dir(key_dir.path()) {
                 Ok(krd) => krd,
                 Err(e) => {
-                    if e.kind() == std::io::ErrorKind::NotFound {
+                    if e.kind() == ErrorKind::NotFound {
                         continue;
                     }
                     return Err(e.into());
@@ -193,13 +114,27 @@ impl DiskCache {
                 let item = match item {
                     Ok(item) => item,
                     Err(e) => {
-                        if e.kind() == std::io::ErrorKind::NotFound {
+                        if e.kind() == ErrorKind::NotFound {
                             continue;
                         }
                         return Err(e.into());
                     }
                 };
-                let cache_item = match parse_cache_item(&item) {
+                let md = match item.metadata() {
+                    Ok(md) => md,
+                    Err(e) => {
+                        if e.kind() == ErrorKind::NotFound {
+                            continue;
+                        }
+                        return Err(e.into());
+                    }
+                };
+
+                if !md.is_file() {
+                    continue;
+                }
+
+                let cache_item = match CacheItem::parse(item.file_name().as_encoded_bytes()) {
                     Ok(i) => i,
                     Err(e) => {
                         warn!(
@@ -209,8 +144,13 @@ impl DiskCache {
                         continue;
                     }
                 };
+                if md.len() != cache_item.len {
+                    // file is invalid, remove it
+                    remove_file(item.path())?;
+                }
                 items.push(cache_item);
             }
+
             if !items.is_empty() {
                 state.insert(key, items);
             }
@@ -224,33 +164,49 @@ impl DiskCache {
     }
 
     fn get_impl(&self, key: &Key, range: &Range) -> Result<Option<Vec<u8>>, ChunkCacheError> {
+        if range.start >= range.end {
+            return Err(ChunkCacheError::InvalidArguments);
+        }
+
         let mut state = self.state.lock()?;
         let items = if let Some(items) = state.get_mut(key) {
             items
         } else {
+            // no entry matched for key
             return Ok(None);
         };
 
         loop {
+            // attempt to find a matching range in the given key's items using binary search
             let idx = items.binary_search_by(range_contained_fn(range));
             if idx.is_err() {
+                // no matching range for this key
                 return Ok(None);
             }
             let idx = idx.expect("already checked for error case");
-            let item = items.get(idx).ok_or(ChunkCacheError::Infallible)?.clone();
+            let item = items.get(idx).ok_or(ChunkCacheError::Infallible)?;
             let file_name = item.to_file_name()?;
             let path = self.cache_root.join(key_dir(key)).join(file_name);
 
             let mut file = match File::open(&path) {
                 Ok(file) => file,
                 Err(e) => match e.kind() {
-                    std::io::ErrorKind::NotFound => {
+                    ErrorKind::NotFound => {
                         items.remove_index(idx);
                         continue;
                     }
                     _ => return Err(e.into()),
                 },
             };
+            let hash = blake3::Hasher::new().update_reader(&mut file)?.finalize();
+            if hash != item.hash {
+                error!("file hash mismatch on path: {path:?}, key: {key}, item: {item}");
+                items.remove_index(idx);
+                remove_file(&path)?;
+                continue;
+            }
+
+            file.seek(SeekFrom::Start(0))?;
             let header = match CacheFileHeader::deserialize(&mut file) {
                 Ok(header) => header,
                 Err(_) => {
@@ -268,7 +224,7 @@ impl DiskCache {
                 .get((range.end - item.range.start) as usize)
                 .ok_or(ChunkCacheError::BadRange)?;
             file.seek(SeekFrom::Start(
-                (*start_byte as usize + header.header_len) as u64,
+                (*start_byte as usize + header.header_len()) as u64,
             ))?;
             let mut buf = vec![0; (end_byte - start_byte) as usize];
             file.read_exact(&mut buf)?;
@@ -283,6 +239,15 @@ impl DiskCache {
         chunk_byte_indicies: &[u32],
         data: &[u8],
     ) -> Result<(), ChunkCacheError> {
+        if range.start >= range.end
+            || chunk_byte_indicies.len() != (range.end - range.start + 1) as usize
+            // chunk_byte_indices is guarenteed to be more than 1 element at this point
+            || chunk_byte_indicies[0] != 0
+            || *chunk_byte_indicies.last().unwrap() as usize != data.len()
+        {
+            return Err(ChunkCacheError::InvalidArguments);
+        }
+
         let mut state = self.state.lock()?;
         let total_bytes = total_bytes(&state);
 
@@ -294,7 +259,7 @@ impl DiskCache {
         }
 
         let header = CacheFileHeader::new(chunk_byte_indicies);
-        let mut header_buf = Vec::with_capacity(header.header_len);
+        let mut header_buf = Vec::with_capacity(header.header_len());
         header.serialize(&mut header_buf)?;
         let hash = blake3::Hasher::new()
             .update(&header_buf)
@@ -318,8 +283,6 @@ impl DiskCache {
             .join(key_dir(key))
             .join(item.to_file_name()?);
 
-        // create dir if doesn't exist
-
         let mut fw = SafeFileCreator::new(path)?;
 
         fw.write_all(&header_buf)?;
@@ -331,9 +294,11 @@ impl DiskCache {
         Ok(())
     }
 
+    /// removed items from the cache (including deleting from file system)
+    /// until at least to_remove number of bytes have been removed
     fn evict(
         &self,
-        state: &mut std::sync::MutexGuard<'_, HashMap<Key, SortedVec<CacheItem>>>,
+        state: &mut MutexGuard<'_, CacheState>,
         to_remove: u64,
     ) -> Result<(), ChunkCacheError> {
         let mut bytes_removed = 0;
@@ -352,6 +317,7 @@ impl DiskCache {
                 state.remove(&key);
 
                 let dir_path = self.cache_root.join(key_dir(&key));
+                // check if directory exists and if it does and is empty then remove the directory
                 if let Ok(mut readdir) = std::fs::read_dir(&dir_path) {
                     if readdir.next().is_none() {
                         // no more files in that directory, remove it
@@ -366,10 +332,7 @@ impl DiskCache {
     }
 
     /// returns the key and index within that key for a random item
-    fn random_item(
-        &self,
-        state: &std::sync::MutexGuard<'_, HashMap<Key, SortedVec<CacheItem>>>,
-    ) -> (Key, usize) {
+    fn random_item(&self, state: &MutexGuard<'_, CacheState>) -> (Key, usize) {
         let num_items = num_items(state);
         let random_item = rand::random::<usize>() % num_items;
         let mut count = 0;
@@ -384,34 +347,38 @@ impl DiskCache {
     }
 }
 
-fn total_bytes(state: &std::sync::MutexGuard<'_, HashMap<Key, SortedVec<CacheItem>>>) -> u64 {
+fn total_bytes(state: &CacheState) -> u64 {
     state
         .values()
         .fold(0, |acc, v| acc + v.iter().fold(0, |acc, v| acc + v.len))
 }
 
-fn num_items(state: &std::sync::MutexGuard<'_, HashMap<Key, SortedVec<CacheItem>>>) -> usize {
+fn num_items(state: &CacheState) -> usize {
     state.values().fold(0, |acc, v| acc + v.len())
 }
 
+/// removes a file but disregards a "NotFound" error if the file is already gone
 fn remove_file(path: impl AsRef<Path>) -> Result<(), ChunkCacheError> {
     if let Err(e) = std::fs::remove_file(path) {
-        if e.kind() != std::io::ErrorKind::NotFound {
+        if e.kind() != ErrorKind::NotFound {
             return Err(e.into());
         }
     }
     Ok(())
 }
 
+/// removes a directory but disregards a "NotFound" error if the directory is already gone
 fn remove_dir(path: impl AsRef<Path>) -> Result<(), ChunkCacheError> {
     if let Err(e) = std::fs::remove_dir(path) {
-        if e.kind() != std::io::ErrorKind::NotFound {
+        if e.kind() != ErrorKind::NotFound {
             return Err(e.into());
         }
     }
     Ok(())
 }
 
+/// key_dir returns a directory name string formed from the key
+/// the format is BASE64_encode([ key.hash[..], key.prefix.as_bytes()[..] ])
 fn key_dir(key: &Key) -> String {
     let prefix_bytes = key.prefix.as_bytes();
     let mut buf = vec![0u8; size_of::<MerkleHash>() + prefix_bytes.len()];
@@ -668,5 +635,83 @@ mod tests {
             cache.state.lock().unwrap().contains_key(&key),
             "evicted key that should have remained in cache"
         );
+    }
+}
+
+#[cfg(test)]
+mod concurrency_tests {
+    use tempdir::TempDir;
+
+    use crate::{ChunkCache, RandomEntryIterator, DEFAULT_CAPACITY, RANGE_LEN};
+
+    use super::DiskCache;
+
+    const NUM_ITEMS_PER_TASK: usize = 10;
+
+    #[tokio::test]
+    async fn test_run_concurrently() {
+        let cache_root = TempDir::new("run_concurrently").unwrap();
+        let cache =
+            DiskCache::initialize(cache_root.path().to_path_buf(), DEFAULT_CAPACITY).unwrap();
+
+        let num_tasks = 2 + rand::random::<u8>() % 14;
+
+        let mut handles = Vec::with_capacity(num_tasks as usize);
+        for _ in 0..num_tasks {
+            let cache_clone = cache.clone();
+            handles.push(tokio::spawn(async move {
+                let mut kr = Vec::with_capacity(NUM_ITEMS_PER_TASK);
+                for _ in 0..NUM_ITEMS_PER_TASK {
+                    let (key, range, chunk_byte_indicies, data) =
+                        RandomEntryIterator.next().unwrap();
+                    assert!(cache_clone
+                        .put(&key, &range, &chunk_byte_indicies, &data)
+                        .is_ok());
+                    kr.push((key, range));
+                }
+                for (key, range) in kr {
+                    assert!(cache_clone.get(&key, &range).is_ok());
+                }
+            }))
+        }
+
+        for handle in handles {
+            handle.await.expect("join should not error");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_run_concurrently_with_evictions() {
+        let cache_root = TempDir::new("run_concurrently_with_evictions").unwrap();
+        let cache = DiskCache::initialize(
+            cache_root.path().to_path_buf(),
+            RANGE_LEN as u64 * NUM_ITEMS_PER_TASK as u64,
+        )
+        .unwrap();
+
+        let num_tasks = 2 + rand::random::<u8>() % 14;
+
+        let mut handles = Vec::with_capacity(num_tasks as usize);
+        for _ in 0..num_tasks {
+            let cache_clone = cache.clone();
+            handles.push(tokio::spawn(async move {
+                let mut kr = Vec::with_capacity(NUM_ITEMS_PER_TASK);
+                for _ in 0..NUM_ITEMS_PER_TASK {
+                    let (key, range, chunk_byte_indicies, data) =
+                        RandomEntryIterator.next().unwrap();
+                    assert!(cache_clone
+                        .put(&key, &range, &chunk_byte_indicies, &data)
+                        .is_ok());
+                    kr.push((key, range));
+                }
+                for (key, range) in kr {
+                    assert!(cache_clone.get(&key, &range).is_ok());
+                }
+            }))
+        }
+
+        for handle in handles {
+            handle.await.expect("join should not error");
+        }
     }
 }

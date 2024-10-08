@@ -18,6 +18,8 @@ pub enum ChunkCacheError {
     Infallible,
     #[error("LockPoison")]
     LockPoison,
+    #[error("invalid arguments")]
+    InvalidArguments,
 }
 
 impl ChunkCacheError {

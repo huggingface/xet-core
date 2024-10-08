@@ -17,6 +17,13 @@ pub struct Range {
     pub end: u32,
 }
 
+impl std::fmt::Display for Range {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let Range { start, end } = self;
+        write!(f, "{start}-{end}")
+    }
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct CASReconstructionTerm {
     pub hash: HexMerkleHash,

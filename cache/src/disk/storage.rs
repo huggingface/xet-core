@@ -63,9 +63,8 @@ impl DiskManager {
             files
                 .scan((), |_, f| f.ok())
                 .filter_map(Self::try_load_entry)
-                .map(|v| {
+                .inspect(|v| {
                     observe_data_added(v.size);
-                    v
                 }),
         ))
     }

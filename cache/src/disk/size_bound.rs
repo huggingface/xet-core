@@ -69,9 +69,8 @@ impl InternalCacheState {
     /// Removes the indicated key from the cache. Updating the internal state and
     /// returning the old value if present.
     fn pop(&mut self, key: &str) -> Option<CacheValue> {
-        self.values.pop(key).map(|val| {
+        self.values.pop(key).inspect(|val| {
             self.current_usage -= val.size;
-            val
         })
     }
 

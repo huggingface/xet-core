@@ -107,8 +107,8 @@ fn child_main(args: ChildArgs) {
     let mut saved = (0, Key::default(), Range::default());
 
     let mut i = 0;
-    let mut hits = 0;
-    let mut attempts = 0;
+    let mut hits = 0f64;
+    let mut attempts = 0f64;
     while SystemTime::now() < end_time {
         let (key, range, chunk_byte_indicies, data) = RandomEntryIterator.next().unwrap();
         cache
@@ -120,11 +120,11 @@ fn child_main(args: ChildArgs) {
         }
         if i != 0 && i % 1000 == 0 {
             let (_old_i, key, range) = &saved;
-            attempts += 1;
+            attempts += 1f64;
             match cache.get(key, range).unwrap() {
                 Some(_) => {
                     // eprintln!("id: {id} old test got a hit {old_i} @ {i}");
-                    hits += 1;
+                    hits += 1f64;
                 }
                 None => {
                     // eprintln!("id: {id} old test got a miss {old_i} @ {i}"),
@@ -132,13 +132,14 @@ fn child_main(args: ChildArgs) {
             };
         }
         i += 1;
-        // if i != 0 && i % 10000 == 0 {
-        //     eprintln!("{id} put get {i}");
-        // }
     }
 
-    let rate = (hits as f64) / (attempts as f64);
-    eprintln!("{id} done rate: {rate}");
+    if attempts > 0f64 {
+        let rate = hits / attempts;
+        eprintln!("{id} done {i} iterations, old key test, rate: {rate} over {attempts} attempts");
+    } else {
+        eprintln!("{id} done {i} iterations, not enough time to attempt old key gets");
+    }
 
     exit(0);
 }

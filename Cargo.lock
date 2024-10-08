@@ -622,7 +622,9 @@ dependencies = [
  "rand 0.8.5",
  "sorted-vec",
  "tempdir",
+ "tokio",
  "tracing",
+ "utils",
  "xet_error",
 ]
 

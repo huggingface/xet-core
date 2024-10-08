@@ -6,6 +6,9 @@ use rand::Rng;
 use sorted_vec::SortedVec;
 
 pub const DEFAULT_CAPACITY: u64 = 1 << 30;
+#[cfg(test)]
+pub const RANGE_LEN: u32 = 16 << 10;
+#[cfg(not(test))]
 pub const RANGE_LEN: u32 = 16 << 19;
 
 pub fn print_directory_contents(path: &Path) {
