@@ -6,6 +6,7 @@ use cas_types::Range;
 use std::{
     cmp::Ordering,
     io::{Cursor, Read, Write},
+    mem::size_of,
 };
 use utils::serialization_utils::{read_u32, read_u64, write_u32, write_u64};
 

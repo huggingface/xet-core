@@ -2,6 +2,7 @@ use std::{
     collections::HashMap,
     fs::File,
     io::{ErrorKind, Read, Seek, SeekFrom, Write},
+    mem::size_of,
     path::{Path, PathBuf},
     sync::{Arc, Mutex, MutexGuard},
 };
