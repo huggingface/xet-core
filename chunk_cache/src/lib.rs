@@ -8,9 +8,9 @@ pub use disk::test_utils::*;
 pub use disk::DiskCache;
 
 pub trait ChunkCache {
-    fn get(&mut self, key: &Key, range: &Range) -> Result<Option<Vec<u8>>, ChunkCacheError>;
+    fn get(&self, key: &Key, range: &Range) -> Result<Option<Vec<u8>>, ChunkCacheError>;
     fn put(
-        &mut self,
+        &self,
         key: &Key,
         range: &Range,
         chunk_byte_indicies: &[u32],

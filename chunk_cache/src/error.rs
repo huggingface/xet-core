@@ -16,11 +16,19 @@ pub enum ChunkCacheError {
     CacheEmpty,
     #[error("Infallible")]
     Infallible,
+    #[error("LockPoison")]
+    LockPoison,
 }
 
 impl ChunkCacheError {
     pub fn parse<T: ToString>(value: T) -> ChunkCacheError {
         ChunkCacheError::Parse(value.to_string())
+    }
+}
+
+impl<T> From<std::sync::PoisonError<T>> for ChunkCacheError {
+    fn from(_value: std::sync::PoisonError<T>) -> Self {
+        ChunkCacheError::LockPoison
     }
 }
 

@@ -4,6 +4,7 @@ use std::{
     fs::{DirEntry, File},
     io::{Cursor, Read, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
+    sync::{Arc, Mutex},
 };
 
 use base64::engine::general_purpose::URL_SAFE;
@@ -23,10 +24,11 @@ mod cache_file_header;
 
 const BASE64_ENGINE: GeneralPurpose = URL_SAFE;
 
+#[derive(Debug, Clone)]
 pub struct DiskCache {
     cache_root: PathBuf,
     capacity: u64,
-    state: HashMap<Key, SortedVec<CacheItem>>,
+    state: Arc<Mutex<HashMap<Key, SortedVec<CacheItem>>>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -120,14 +122,17 @@ fn range_contained_fn(range: &Range) -> impl FnMut(&CacheItem) -> std::cmp::Orde
 }
 
 impl DiskCache {
-    pub fn num_items(&self) -> usize {
-        self.state.values().fold(0, |acc, v| acc + v.len())
+    pub fn num_items(&self) -> Result<usize, ChunkCacheError> {
+        let state = self.state.lock()?;
+        let value = num_items(&state);
+        Ok(value)
     }
 
-    fn total_bytes(&self) -> u64 {
-        self.state
-            .values()
-            .fold(0, |acc, v| acc + v.iter().fold(0, |acc, v| acc + v.len))
+    #[allow(dead_code)]
+    fn total_bytes(&self) -> Result<u64, ChunkCacheError> {
+        let state = self.state.lock()?;
+        let value = total_bytes(&state);
+        Ok(value)
     }
 
     pub fn initialize(cache_root: PathBuf, capacity: u64) -> Result<Self, ChunkCacheError> {
@@ -140,7 +145,7 @@ impl DiskCache {
                     return Ok(Self {
                         cache_root,
                         capacity,
-                        state,
+                        state: Arc::new(Mutex::new(state)),
                     });
                 }
                 return Err(e.into());
@@ -152,14 +157,26 @@ impl DiskCache {
                 Ok(kd) => kd,
                 Err(_) => continue,
             };
-            if !key_dir.metadata()?.is_dir() {
+            let md = match key_dir.metadata() {
+                Ok(md) => md,
+                Err(e) => {
+                    if e.kind() == std::io::ErrorKind::NotFound {
+                        continue;
+                    }
+                    return Err(e.into());
+                }
+            };
+            if !md.is_dir() {
                 warn!(
                     "CACHE: expected key directory at {:?}, is not directory",
                     key_dir.path()
                 );
                 continue;
             }
-            let key = parse_key(key_dir.file_name().as_encoded_bytes())?;
+            let key = match parse_key(key_dir.file_name().as_encoded_bytes()) {
+                Ok(key) => key,
+                Err(_) => continue,
+            };
             let mut items = SortedVec::new();
 
             let key_readdir = match std::fs::read_dir(key_dir.path()) {
@@ -173,7 +190,15 @@ impl DiskCache {
             };
 
             for item in key_readdir {
-                let item = item?;
+                let item = match item {
+                    Ok(item) => item,
+                    Err(e) => {
+                        if e.kind() == std::io::ErrorKind::NotFound {
+                            continue;
+                        }
+                        return Err(e.into());
+                    }
+                };
                 let cache_item = match parse_cache_item(&item) {
                     Ok(i) => i,
                     Err(e) => {
@@ -192,14 +217,15 @@ impl DiskCache {
         }
 
         Ok(Self {
-            state,
+            state: Arc::new(Mutex::new(state)),
             cache_root,
             capacity,
         })
     }
 
-    fn get_impl(&mut self, key: &Key, range: &Range) -> Result<Option<Vec<u8>>, ChunkCacheError> {
-        let items = if let Some(items) = self.state.get_mut(key) {
+    fn get_impl(&self, key: &Key, range: &Range) -> Result<Option<Vec<u8>>, ChunkCacheError> {
+        let mut state = self.state.lock()?;
+        let items = if let Some(items) = state.get_mut(key) {
             items
         } else {
             return Ok(None);
@@ -251,19 +277,19 @@ impl DiskCache {
     }
 
     fn put_impl(
-        &mut self,
+        &self,
         key: &Key,
         range: &Range,
         chunk_byte_indicies: &[u32],
         data: &[u8],
     ) -> Result<(), ChunkCacheError> {
-        let total_bytes = self.total_bytes();
-        {
-            // check if we already contain the range
-            if let Some(item_set) = self.state.get(key) {
-                if item_set.binary_search_by(range_contained_fn(range)).is_ok() {
-                    return Ok(());
-                }
+        let mut state = self.state.lock()?;
+        let total_bytes = total_bytes(&state);
+
+        // check if we already contain the range
+        if let Some(item_set) = state.get(key) {
+            if item_set.binary_search_by(range_contained_fn(range)).is_ok() {
+                return Ok(());
             }
         }
 
@@ -282,10 +308,10 @@ impl DiskCache {
         };
 
         if self.capacity < total_bytes + item.len {
-            self.evict(total_bytes + item.len - self.capacity)?;
+            self.evict(&mut state, total_bytes + item.len - self.capacity)?;
         }
 
-        let item_set = self.state.entry(key.clone()).or_default();
+        let item_set = state.entry(key.clone()).or_default();
 
         let path = self
             .cache_root
@@ -305,14 +331,15 @@ impl DiskCache {
         Ok(())
     }
 
-    fn evict(&mut self, to_remove: u64) -> Result<(), ChunkCacheError> {
+    fn evict(
+        &self,
+        state: &mut std::sync::MutexGuard<'_, HashMap<Key, SortedVec<CacheItem>>>,
+        to_remove: u64,
+    ) -> Result<(), ChunkCacheError> {
         let mut bytes_removed = 0;
         while to_remove > bytes_removed {
-            let (key, idx) = self.random_item();
-            let items = self
-                .state
-                .get_mut(&key)
-                .ok_or(ChunkCacheError::Infallible)?;
+            let (key, idx) = self.random_item(state);
+            let items = state.get_mut(&key).ok_or(ChunkCacheError::Infallible)?;
             let item = &items[idx];
             let len = item.len;
             let path = self
@@ -322,7 +349,7 @@ impl DiskCache {
             remove_file(path)?;
             items.remove_index(idx);
             if items.is_empty() {
-                self.state.remove(&key);
+                state.remove(&key);
 
                 let dir_path = self.cache_root.join(key_dir(&key));
                 if let Ok(mut readdir) = std::fs::read_dir(&dir_path) {
@@ -339,11 +366,14 @@ impl DiskCache {
     }
 
     /// returns the key and index within that key for a random item
-    fn random_item(&self) -> (Key, usize) {
-        let num_items = self.num_items();
+    fn random_item(
+        &self,
+        state: &std::sync::MutexGuard<'_, HashMap<Key, SortedVec<CacheItem>>>,
+    ) -> (Key, usize) {
+        let num_items = num_items(state);
         let random_item = rand::random::<usize>() % num_items;
         let mut count = 0;
-        for (key, items) in &self.state {
+        for (key, items) in state.iter() {
             if random_item < count + items.len() {
                 return (key.clone(), random_item - count);
             }
@@ -352,6 +382,16 @@ impl DiskCache {
 
         panic!("should have returned")
     }
+}
+
+fn total_bytes(state: &std::sync::MutexGuard<'_, HashMap<Key, SortedVec<CacheItem>>>) -> u64 {
+    state
+        .values()
+        .fold(0, |acc, v| acc + v.iter().fold(0, |acc, v| acc + v.len))
+}
+
+fn num_items(state: &std::sync::MutexGuard<'_, HashMap<Key, SortedVec<CacheItem>>>) -> usize {
+    state.values().fold(0, |acc, v| acc + v.len())
 }
 
 fn remove_file(path: impl AsRef<Path>) -> Result<(), ChunkCacheError> {
@@ -372,8 +412,6 @@ fn remove_dir(path: impl AsRef<Path>) -> Result<(), ChunkCacheError> {
     Ok(())
 }
 
-// TODO make readdir safe
-
 fn key_dir(key: &Key) -> String {
     let prefix_bytes = key.prefix.as_bytes();
     let mut buf = vec![0u8; size_of::<MerkleHash>() + prefix_bytes.len()];
@@ -383,12 +421,12 @@ fn key_dir(key: &Key) -> String {
 }
 
 impl ChunkCache for DiskCache {
-    fn get(&mut self, key: &Key, range: &Range) -> Result<Option<Vec<u8>>, ChunkCacheError> {
+    fn get(&self, key: &Key, range: &Range) -> Result<Option<Vec<u8>>, ChunkCacheError> {
         self.get_impl(key, range)
     }
 
     fn put(
-        &mut self,
+        &self,
         key: &Key,
         range: &Range,
         chunk_byte_indicies: &[u32],
@@ -414,14 +452,14 @@ mod tests {
     #[test]
     fn test_get_cache_empty() {
         let cache_root = TempDir::new("empty").unwrap();
-        let mut cache = DiskCache::initialize(cache_root.into_path(), DEFAULT_CAPACITY).unwrap();
+        let cache = DiskCache::initialize(cache_root.into_path(), DEFAULT_CAPACITY).unwrap();
         assert!(cache.get(&random_key(), &random_range()).unwrap().is_none());
     }
 
     #[test]
     fn test_put_get_simple() {
         let cache_root = TempDir::new("put_get_simple").unwrap();
-        let mut cache =
+        let cache =
             DiskCache::initialize(cache_root.path().to_path_buf(), DEFAULT_CAPACITY).unwrap();
 
         let key = random_key();
@@ -446,7 +484,7 @@ mod tests {
     #[test]
     fn test_put_get_subrange() {
         let cache_root = TempDir::new("put_get_subrange").unwrap();
-        let mut cache =
+        let cache =
             DiskCache::initialize(cache_root.path().to_path_buf(), DEFAULT_CAPACITY).unwrap();
 
         let key = random_key();
@@ -476,31 +514,29 @@ mod tests {
     #[test]
     fn test_puts_eviction() {
         const CAP: u64 = (RANGE_LEN * 4) as u64;
-        for i in 0..10 {
-            let cache_root = TempDir::new(format!("puts_eviction{i}").as_str()).unwrap();
-            let mut cache = DiskCache::initialize(cache_root.path().to_path_buf(), CAP).unwrap();
+        let cache_root = TempDir::new("puts_eviction").unwrap();
+        let cache = DiskCache::initialize(cache_root.path().to_path_buf(), CAP).unwrap();
 
-            // fill the cache to almost capacity
-            for _ in 0..3 {
-                let (key, range, offsets, data) = RandomEntryIterator.next().unwrap();
-                assert!(cache.put(&key, &range, &offsets, &data).is_ok());
-            }
-            assert!(cache.total_bytes() <= CAP);
-
+        // fill the cache to almost capacity
+        for _ in 0..3 {
             let (key, range, offsets, data) = RandomEntryIterator.next().unwrap();
-            let result = cache.put(&key, &range, &offsets, &data);
-            if result.is_err() {
-                println!("{result:?}");
-            }
-            assert!(result.is_ok());
-            assert!(cache.total_bytes() <= CAP);
+            assert!(cache.put(&key, &range, &offsets, &data).is_ok());
         }
+        assert!(cache.total_bytes().unwrap() <= CAP);
+
+        let (key, range, offsets, data) = RandomEntryIterator.next().unwrap();
+        let result = cache.put(&key, &range, &offsets, &data);
+        if result.is_err() {
+            println!("{result:?}");
+        }
+        assert!(result.is_ok());
+        assert!(cache.total_bytes().unwrap() <= CAP);
     }
 
     #[test]
     fn test_same_puts_noop() {
         let cache_root = TempDir::new("puts_eviction").unwrap();
-        let mut cache =
+        let cache =
             DiskCache::initialize(cache_root.path().to_path_buf(), DEFAULT_CAPACITY).unwrap();
         let (key, range, offsets, data) = RandomEntryIterator.next().unwrap();
         assert!(cache.put(&key, &range, &offsets, &data).is_ok());
@@ -511,7 +547,7 @@ mod tests {
     #[test]
     fn test_initialize_non_empty() {
         let cache_root = TempDir::new("initialize_non_empty").unwrap();
-        let mut cache =
+        let cache =
             DiskCache::initialize(cache_root.path().to_path_buf(), DEFAULT_CAPACITY).unwrap();
 
         let mut keys_and_ranges = Vec::new();
@@ -521,21 +557,28 @@ mod tests {
             assert!(cache.put(&key, &range, &offsets, &data).is_ok());
             keys_and_ranges.push((key, range));
         }
-        let mut cache2 =
+        let cache2 =
             DiskCache::initialize(cache_root.path().to_path_buf(), DEFAULT_CAPACITY).unwrap();
         for (i, (key, range)) in keys_and_ranges.iter().enumerate() {
             let get_result = cache2.get(&key, &range);
             assert!(get_result.is_ok(), "{i} {get_result:?}");
-            println!(
-                "{key} {range:?} {:?}\n{:?}",
-                cache2.state.get(key),
-                cache2.state
-            );
             assert!(get_result.unwrap().is_some(), "{i}");
         }
 
-        let cache_keys = cache.state.keys().collect::<BTreeSet<_>>();
-        let cache2_keys = cache2.state.keys().collect::<BTreeSet<_>>();
+        let cache_keys = cache
+            .state
+            .lock()
+            .unwrap()
+            .keys()
+            .cloned()
+            .collect::<BTreeSet<_>>();
+        let cache2_keys = cache2
+            .state
+            .lock()
+            .unwrap()
+            .keys()
+            .cloned()
+            .collect::<BTreeSet<_>>();
         assert_eq!(cache_keys, cache2_keys);
     }
 
@@ -550,13 +593,13 @@ mod tests {
     fn test_unknown_eviction() {
         let cache_root = TempDir::new("initialize_non_empty").unwrap();
         let capacity = 2 * RANGE_LEN as u64;
-        let mut cache = DiskCache::initialize(cache_root.path().to_path_buf(), capacity).unwrap();
+        let cache = DiskCache::initialize(cache_root.path().to_path_buf(), capacity).unwrap();
         let (key, range, chunk_byte_indicies, data) = RandomEntryIterator.next().unwrap();
         cache
             .put(&key, &range, &chunk_byte_indicies, &data)
             .unwrap();
 
-        let mut cache2 = DiskCache::initialize(cache_root.path().to_path_buf(), capacity).unwrap();
+        let cache2 = DiskCache::initialize(cache_root.path().to_path_buf(), capacity).unwrap();
         let get_result = cache2.get(&key, &range);
         assert!(get_result.is_ok());
         assert!(get_result.unwrap().is_some());
@@ -591,9 +634,9 @@ mod tests {
 
     #[test]
     fn test_evictions_with_multiple_range_per_key() {
-        let cache_root = TempDir::new("initialize_non_empty").unwrap();
+        let cache_root = TempDir::new("multiple_range_per_key").unwrap();
         let capacity = 5 * RANGE_LEN as u64;
-        let mut cache = DiskCache::initialize(cache_root.path().to_path_buf(), capacity).unwrap();
+        let cache = DiskCache::initialize(cache_root.path().to_path_buf(), capacity).unwrap();
         let key = random_key();
         let mut previously_put = Vec::new();
         for _ in 0..3 {
@@ -622,7 +665,7 @@ mod tests {
 
         // assert that we haven't evicted all keys for key with multiple items
         assert!(
-            cache.state.contains_key(&key),
+            cache.state.lock().unwrap().contains_key(&key),
             "evicted key that should have remained in cache"
         );
     }

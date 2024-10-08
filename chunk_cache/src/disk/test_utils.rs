@@ -3,9 +3,10 @@ use std::path::Path;
 use cas_types::{Key, Range};
 use merklehash::MerkleHash;
 use rand::Rng;
+use sorted_vec::SortedVec;
 
-pub const DEFAULT_CAPACITY: u64 = 16 << 20;
-pub const RANGE_LEN: u32 = 4000;
+pub const DEFAULT_CAPACITY: u64 = 1 << 30;
+pub const RANGE_LEN: u32 = 16 << 19;
 
 pub fn print_directory_contents(path: &Path) {
     // Read the contents of the directory
@@ -40,25 +41,27 @@ pub fn random_key() -> Key {
 
 pub fn random_range() -> Range {
     let start = rand::random::<u32>() % 1024;
-    let end = 1024.min(start + rand::random::<u32>() % 256);
+    let end = 1024.min(start + 1 + rand::random::<u32>() % 256);
     Range { start, end }
 }
 
 pub fn random_bytes(range: &Range) -> (Vec<u32>, Vec<u8>) {
     let mut rng = rand::thread_rng();
     let random_vec: Vec<u8> = (0..RANGE_LEN).map(|_| rng.gen()).collect();
-    let mut offsets: Vec<u32> = Vec::with_capacity((range.end - range.start + 1) as usize);
+    let mut offsets: SortedVec<u32> =
+        SortedVec::with_capacity((range.end - range.start + 1) as usize);
+
     offsets.push(0);
     for _ in range.start..range.end - 1 {
         let mut num = rng.gen::<u32>() % RANGE_LEN;
         while offsets.contains(&num) {
-            num = rng.gen::<u32>() % RANGE_LEN;
+            num = (num + 1) % RANGE_LEN;
         }
         offsets.push(num);
     }
-    offsets.push(4000);
-    offsets.sort();
-    (offsets, random_vec)
+
+    offsets.push(RANGE_LEN);
+    (offsets.to_vec(), random_vec)
 }
 
 pub struct RandomEntryIterator;

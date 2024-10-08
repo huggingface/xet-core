@@ -1,6 +1,6 @@
 use std::{
     path::PathBuf,
-    process::Stdio,
+    process::{exit, Stdio},
     time::{Duration, SystemTime},
 };
 
@@ -24,13 +24,13 @@ enum Commands {
 
 #[derive(Args, Debug)]
 struct ParentArgs {
-    #[arg(short, long, default_value_t = 3)]
+    #[arg(short, long, default_value_t = 4)]
     num_children: u8,
 
     #[arg(short, long, default_value_t = 60)]
     seconds: u64,
 
-    #[arg(short, long, default_value_t = 10 << 30)]
+    #[arg(short, long, default_value_t = 1 << 30)]
     capacity: u64,
 }
 
@@ -83,9 +83,12 @@ fn parent_main(args: ParentArgs) {
             .unwrap();
         handles.push(handle);
     }
-    for mut handle in handles.into_iter() {
+
+    for handle in handles.iter_mut() {
         handle.wait().unwrap();
     }
+    eprintln!("done");
+    exit(0);
 }
 
 fn child_main(args: ChildArgs) {
@@ -94,13 +97,18 @@ fn child_main(args: ChildArgs) {
         .checked_add(Duration::from_secs(args.seconds))
         .unwrap();
 
-    let mut cache = DiskCache::initialize(PathBuf::from(args.cache_root), args.capacity).unwrap();
+    let cache = DiskCache::initialize(PathBuf::from(args.cache_root), args.capacity).unwrap();
 
-    eprintln!("initialized id: {id} with {} entries", cache.num_items());
+    eprintln!(
+        "initialized id: {id} with {} entries",
+        cache.num_items().unwrap()
+    );
 
     let mut saved = (0, Key::default(), Range::default());
 
     let mut i = 0;
+    let mut hits = 0;
+    let mut attempts = 0;
     while SystemTime::now() < end_time {
         let (key, range, chunk_byte_indicies, data) = RandomEntryIterator.next().unwrap();
         cache
@@ -111,15 +119,26 @@ fn child_main(args: ChildArgs) {
             saved = (i, key, range);
         }
         if i != 0 && i % 1000 == 0 {
-            let (old_i, key, range) = &saved;
+            let (_old_i, key, range) = &saved;
+            attempts += 1;
             match cache.get(key, range).unwrap() {
-                Some(_) => eprintln!("id: {id} old test got a hit {old_i} @ {i}"),
-                None => eprintln!("id: {id} old test got a miss {old_i} @ {i}"),
+                Some(_) => {
+                    // eprintln!("id: {id} old test got a hit {old_i} @ {i}");
+                    hits += 1;
+                }
+                None => {
+                    // eprintln!("id: {id} old test got a miss {old_i} @ {i}"),
+                }
             };
         }
         i += 1;
-        if i != 0 && i % 10000 == 0 {
-            eprintln!("{id} put get {i}");
-        }
+        // if i != 0 && i % 10000 == 0 {
+        //     eprintln!("{id} put get {i}");
+        // }
     }
+
+    let rate = (hits as f64) / (attempts as f64);
+    eprintln!("{id} done rate: {rate}");
+
+    exit(0);
 }
