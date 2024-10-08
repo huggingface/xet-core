@@ -35,9 +35,9 @@ impl LocalShardClient {
             })?;
         }
 
-        let shard_manager = ShardFileManager::new(&shard_directory).await?;
+        let shard_manager = ShardFileManager::load_dir(&shard_directory).await?;
         shard_manager
-            .register_shards_by_path(&[&shard_directory])
+            .load_and_cleanup_shards_by_path(&[&shard_directory])
             .await?;
 
         let global_dedup = DiskBasedGlobalDedupTable::open_or_create(

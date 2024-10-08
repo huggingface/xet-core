@@ -1,11 +1,13 @@
 use crate::cas_structs::CASChunkSequenceHeader;
 use crate::error::{MDBShardError, Result};
 use crate::file_structs::{FileDataSequenceEntry, MDBFileInfo};
+use crate::shard_file::current_timestamp;
 use crate::utils::{shard_file_name, temp_shard_file_name};
 use crate::{shard_format::MDBShardInfo, utils::parse_shard_filename};
 use merklehash::{compute_data_hash, HMACKey, HashedWrite, MerkleHash};
 use std::io::{BufReader, Cursor, Read, Seek, Write};
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 use tracing::{debug, error, warn};
 
 /// When a specific implementation of the  
@@ -138,6 +140,7 @@ impl MDBShardFile {
         &self,
         target_directory: impl AsRef<Path>,
         hmac_key: HMACKey,
+        key_valid_for: Duration,
         include_file_info: bool,
         include_cas_lookup_table: bool,
         include_chunk_lookup_table: bool,
@@ -148,15 +151,13 @@ impl MDBShardFile {
             &mut self.get_reader()?,
             &mut output_bytes,
             hmac_key,
+            key_valid_for,
             include_file_info,
             include_cas_lookup_table,
             include_chunk_lookup_table,
         )?;
 
-        Self::write_out_from_reader(
-            target_directory,
-            &mut Cursor::new(output_bytes),
-        )
+        Self::write_out_from_reader(target_directory, &mut Cursor::new(output_bytes))
     }
 
     #[inline]

@@ -277,7 +277,7 @@ impl RemoteShardInterface {
 
         let shard_file = cache_dir.join(local_shard_name(shard_hash));
 
-        shard_manager.register_shards_by_path(&[shard_file]).await?;
+        shard_manager.load_and_cleanup_shards_by_path(&[shard_file]).await?;
 
         Ok(())
     }

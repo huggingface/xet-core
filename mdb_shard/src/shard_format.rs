@@ -9,7 +9,10 @@ use merklehash::{HMACKey, MerkleHash};
 use std::collections::{BTreeMap, HashMap};
 use std::io::{copy, Read, Seek, SeekFrom, Write};
 use std::mem::size_of;
+use std::ops::Add;
 use std::sync::Arc;
+use std::time::Duration;
+use std::time::UNIX_EPOCH;
 use tracing::debug;
 use utils::serialization_utils::*;
 
@@ -29,6 +32,15 @@ const MDB_SHARD_HEADER_TAG: [u8; 32] = [
     b'H', b'F', b'R', b'e', b'p', b'o', b'M', b'e', b't', b'a', b'd', b'a', b't', b'a', 0, 85, 105,
     103, 69, 106, 123, 129, 87, 131, 165, 189, 217, 92, 205, 209, 74, 169,
 ];
+
+#[inline]
+pub fn current_timestamp() -> u64 {
+    // Get the seconds since the epoc as u64
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+}
 
 #[derive(Clone, Debug)]
 pub struct MDBShardFileHeader {
@@ -89,8 +101,15 @@ pub struct MDBShardFileFooter {
     pub chunk_lookup_num_entry: u64,
     pub chunk_hash_hmac_key: HMACKey, // If zero, then no key.
 
+    // The creation time of this shard, in seconds since the epoc
+    pub shard_creation_timestamp: u64,
+
+    // The time, in seconds since the epoc, after which this shard is no longer assumed to be valid.
+    // Locally created shards do not have an expiry.
+    pub shard_key_expiry: u64,
+
     // More locations to stick in here if needed.
-    _buffer: [u64; 7],
+    _buffer: [u64; 6],
     pub stored_bytes_on_disk: u64,
     pub materialized_bytes: u64,
     pub stored_bytes: u64,
@@ -110,7 +129,11 @@ impl Default for MDBShardFileFooter {
             chunk_lookup_offset: 0,
             chunk_lookup_num_entry: 0,
             chunk_hash_hmac_key: HMACKey::default(), // No HMAC key
-            _buffer: [0u64; 7],
+
+            // On serialization, this is set to current time if this is zero.
+            shard_creation_timestamp: 0,
+            shard_key_expiry: u64::MAX,
+            _buffer: [0u64; 6],
             stored_bytes_on_disk: 0,
             materialized_bytes: 0,
             stored_bytes: 0,
@@ -121,6 +144,14 @@ impl Default for MDBShardFileFooter {
 
 impl MDBShardFileFooter {
     pub fn serialize<W: Write>(&self, writer: &mut W) -> Result<usize> {
+        let creation_timestamp = {
+            if self.shard_creation_timestamp == 0 {
+                current_timestamp()
+            } else {
+                self.shard_creation_timestamp
+            }
+        };
+
         write_u64(writer, self.version)?;
         write_u64(writer, self.file_info_offset)?;
         write_u64(writer, self.file_lookup_offset)?;
@@ -131,6 +162,8 @@ impl MDBShardFileFooter {
         write_u64(writer, self.chunk_lookup_offset)?;
         write_u64(writer, self.chunk_lookup_num_entry)?;
         write_hash(writer, &self.chunk_hash_hmac_key)?;
+        write_u64(writer, creation_timestamp)?;
+        write_u64(writer, self.shard_key_expiry)?;
         write_u64s(writer, &self._buffer)?;
         write_u64(writer, self.stored_bytes_on_disk)?;
         write_u64(writer, self.materialized_bytes)?;
@@ -161,6 +194,8 @@ impl MDBShardFileFooter {
             chunk_lookup_offset: read_u64(reader)?,
             chunk_lookup_num_entry: read_u64(reader)?,
             chunk_hash_hmac_key: read_hash(reader)?,
+            shard_creation_timestamp: read_u64(reader)?,
+            shard_key_expiry: read_u64(reader)?,
             ..Default::default()
         };
         read_u64s(reader, &mut obj._buffer)?;
@@ -937,6 +972,7 @@ impl MDBShardInfo {
         reader: &mut R,
         writer: &mut W,
         hmac_key: HMACKey,
+        key_valid_for: std::time::Duration,
         include_file_info: bool,
         include_cas_lookup_table: bool,
         include_chunk_lookup_table: bool,
@@ -1045,6 +1081,18 @@ impl MDBShardInfo {
         }
 
         out_footer.chunk_hash_hmac_key = hmac_key;
+
+        // Add in the timestamps.
+        let creation_time = std::time::SystemTime::now();
+        out_footer.shard_creation_timestamp = creation_time
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        out_footer.shard_key_expiry = creation_time
+            .add(key_valid_for)
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
 
         // Copy over the stored information elsewhere
         out_footer.materialized_bytes = self.metadata.materialized_bytes;
