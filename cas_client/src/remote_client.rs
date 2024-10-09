@@ -239,7 +239,7 @@ pub(crate) async fn get_one_range(term: &CASReconstructionTerm) -> Result<Bytes>
                     .get(url)
                     .header(
                         reqwest::header::RANGE,
-                        format!("bytes={}-{}", term.url_range.start, term.url_range.end),
+                        format!("bytes={}-{}", term.url_range.start, term.url_range.end - 1),
                     )
                     .send()
                     .await
