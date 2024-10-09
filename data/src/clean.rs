@@ -9,8 +9,11 @@ use crate::remote_shard_interface::RemoteShardInterface;
 use crate::repo_salt::RepoSalt;
 use crate::small_file_determination::{is_file_passthrough, is_possible_start_to_text_file};
 use crate::PointerFile;
+use cas_object::range_hash_from_chunks;
 use lazy_static::lazy_static;
-use mdb_shard::file_structs::{FileDataSequenceEntry, FileDataSequenceHeader, MDBFileInfo};
+use mdb_shard::file_structs::{
+    FileDataSequenceEntry, FileDataSequenceHeader, FileVerificationEntry, MDBFileInfo,
+};
 use mdb_shard::shard_file_reconstructor::FileReconstructor;
 use mdb_shard::{hash_is_global_dedup_eligible, ShardFileManager};
 use merkledb::aggregate_hashes::file_node_hash;
@@ -547,28 +550,54 @@ impl Cleaner {
             cas_data_accumulator
                 .chunks
                 .append(&mut tracking_info.cas_data.chunks);
+
+            let segments: Vec<_> = tracking_info
+                .file_info
+                .iter()
+                .map(|fi| {
+                    // Transfering cas chunks from tracking_info.cas_data to cas_data_accumulator,
+                    // shift chunk indices.
+                    let s = if fi.cas_hash == MerkleHash::default() {
+                        shift
+                    } else {
+                        0
+                    };
+
+                    let mut new_fi = fi.clone();
+                    new_fi.chunk_index_start += s;
+                    new_fi.chunk_index_end += s;
+
+                    new_fi
+                })
+                .collect();
+
+            let mut chunk_idx = 0;
+            let verification = segments
+                .iter()
+                .map(|entry| {
+                    let n_chunks = (entry.chunk_index_end - entry.chunk_index_start) as usize;
+                    let chunk_hashes: Vec<_> = tracking_info.file_hashes
+                        [chunk_idx..chunk_idx + n_chunks]
+                        .iter()
+                        .map(|(hash, _)| *hash)
+                        .collect();
+                    let range_hash = range_hash_from_chunks(&chunk_hashes, &entry.cas_hash.into());
+                    chunk_idx += n_chunks;
+
+                    FileVerificationEntry::new(range_hash)
+                })
+                .collect();
+
             let new_file_info = MDBFileInfo {
-                metadata: FileDataSequenceHeader::new(file_hash, tracking_info.file_info.len()),
-                segments: tracking_info
-                    .file_info
-                    .iter()
-                    .map(|fi| {
-                        // Transfering cas chunks from tracking_info.cas_data to cas_data_accumulator,
-                        // shift chunk indices.
-                        let s = if fi.cas_hash == MerkleHash::default() {
-                            shift
-                        } else {
-                            0
-                        };
-
-                        let mut new_fi = fi.clone();
-                        new_fi.chunk_index_start += s;
-                        new_fi.chunk_index_end += s;
-
-                        new_fi
-                    })
-                    .collect(),
+                metadata: FileDataSequenceHeader::new(
+                    file_hash,
+                    tracking_info.file_info.len(),
+                    true,
+                ),
+                segments,
+                verification,
             };
+
             cas_data_accumulator.pending_file_info.push((
                 new_file_info,
                 tracking_info.current_cas_file_info_indices.clone(),

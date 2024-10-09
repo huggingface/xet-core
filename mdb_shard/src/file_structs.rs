@@ -1,4 +1,5 @@
 use crate::cas_structs::{CASChunkSequenceEntry, CASChunkSequenceHeader};
+use crate::shard_file::MDB_FILE_INFO_ENTRY_SIZE;
 use merklehash::MerkleHash;
 use std::fmt::Debug;
 use std::io::{Cursor, Read, Write};
@@ -6,9 +7,12 @@ use std::mem::size_of;
 use utils::serialization_utils::*;
 
 pub const MDB_DEFAULT_FILE_FLAG: u32 = 0;
+pub const MDB_FILE_FLAG_WITH_VERIFICATION: u32 = 1 << 31;
+pub const MDB_FILE_FLAG_VERIFICATION_MASK: u32 = 1 << 31;
 
 /// Each file consists of a FileDataSequenceHeader following
-/// a sequence of FileDataSequenceEntry.
+/// a sequence of FileDataSequenceEntry and maybe a sequence
+/// of FileVerificationEntry, determined by file flags.
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct FileDataSequenceHeader {
@@ -19,13 +23,21 @@ pub struct FileDataSequenceHeader {
 }
 
 impl FileDataSequenceHeader {
-    pub fn new<I: TryInto<u32>>(file_hash: MerkleHash, num_entries: I) -> Self
+    pub fn new<I: TryInto<u32>>(
+        file_hash: MerkleHash,
+        num_entries: I,
+        contains_verification: bool,
+    ) -> Self
     where
         <I as TryInto<u32>>::Error: std::fmt::Debug,
     {
         Self {
             file_hash,
-            file_flags: MDB_DEFAULT_FILE_FLAG,
+            file_flags: MDB_DEFAULT_FILE_FLAG
+                | match contains_verification {
+                    true => MDB_FILE_FLAG_WITH_VERIFICATION,
+                    false => 0,
+                },
             num_entries: num_entries.try_into().unwrap(),
             #[cfg(test)]
             _unused: 126846135456846514u64,
@@ -63,6 +75,24 @@ impl FileDataSequenceHeader {
             num_entries: read_u32(reader)?,
             _unused: read_u64(reader)?,
         })
+    }
+
+    pub fn is_valid(&self) -> bool {
+        *self != FileDataSequenceHeader::default()
+    }
+
+    pub fn contains_verification(&self) -> bool {
+        (self.file_flags & MDB_FILE_FLAG_VERIFICATION_MASK) != 0
+    }
+
+    /// Get the number of info entries following the header in this shard,
+    /// this includes "FileDataSequenceEntry"s and "FileVerificationEntry"s.
+    pub fn num_info_entry_following(&self) -> u32 {
+        if self.contains_verification() {
+            self.num_entries * 2
+        } else {
+            self.num_entries
+        }
     }
 }
 
@@ -153,14 +183,113 @@ impl FileDataSequenceEntry {
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
+pub struct FileVerificationEntry {
+    pub range_hash: MerkleHash,
+    pub _unused: [u64; 2],
+}
+
+impl FileVerificationEntry {
+    pub fn new(range_hash: MerkleHash) -> Self {
+        Self {
+            range_hash,
+            _unused: Default::default(),
+        }
+    }
+
+    pub fn serialize<W: Write>(&self, writer: &mut W) -> Result<usize, std::io::Error> {
+        let mut buf = [0u8; size_of::<Self>()];
+
+        {
+            let mut writer = Cursor::new(&mut buf[..]);
+            write_hash(&mut writer, &self.range_hash)?;
+            write_u64s(&mut writer, &self._unused)?;
+        }
+
+        writer.write_all(&buf)?;
+
+        Ok(size_of::<Self>())
+    }
+
+    pub fn deserialize<R: Read>(reader: &mut R) -> Result<Self, std::io::Error> {
+        let mut v = [0u8; size_of::<Self>()];
+        reader.read_exact(&mut v[..])?;
+
+        let mut reader_curs = Cursor::new(&v);
+        let reader = &mut reader_curs;
+
+        Ok(Self {
+            range_hash: read_hash(reader)?,
+            _unused: Default::default(),
+        })
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct MDBFileInfo {
     pub metadata: FileDataSequenceHeader,
     pub segments: Vec<FileDataSequenceEntry>,
+    pub verification: Vec<FileVerificationEntry>,
 }
 
 impl MDBFileInfo {
     pub fn num_bytes(&self) -> u64 {
-        (size_of::<FileDataSequenceHeader>()
-            + self.segments.len() * size_of::<FileDataSequenceEntry>()) as u64
+        size_of::<FileDataSequenceHeader>() as u64
+            + self.metadata.num_info_entry_following() as u64 * MDB_FILE_INFO_ENTRY_SIZE as u64
+    }
+
+    pub fn serialize<W: Write>(&self, writer: &mut W) -> Result<usize, std::io::Error> {
+        if self.contains_verification() {
+            debug_assert!(self.segments.len() == self.verification.len());
+        }
+
+        let mut bytes_written = 0;
+
+        bytes_written += self.metadata.serialize(writer)?;
+
+        for file_segment in self.segments.iter() {
+            bytes_written += file_segment.serialize(writer)?;
+        }
+
+        if self.contains_verification() {
+            for verification in self.verification.iter() {
+                bytes_written += verification.serialize(writer)?;
+            }
+        }
+
+        Ok(bytes_written)
+    }
+
+    pub fn deserialize<R: Read>(reader: &mut R) -> Result<Option<Self>, std::io::Error> {
+        let metadata = FileDataSequenceHeader::deserialize(reader)?;
+
+        // An invalid header: typically this is the single block of 00 bytes
+        // we put as a guard for sequential reading.
+        if !metadata.is_valid() {
+            return Ok(None);
+        }
+
+        let num_entries = metadata.num_entries;
+
+        let mut segments = vec![];
+        for _ in 0..num_entries {
+            segments.push(FileDataSequenceEntry::deserialize(reader)?);
+        }
+
+        let mut verification = vec![];
+        if metadata.contains_verification() {
+            for _ in 0..num_entries {
+                verification.push(FileVerificationEntry::deserialize(reader)?);
+            }
+        }
+
+        Ok(Some(Self {
+            metadata,
+            segments,
+            verification,
+        }))
+    }
+
+    pub fn contains_verification(&self) -> bool {
+        self.metadata.contains_verification()
     }
 }

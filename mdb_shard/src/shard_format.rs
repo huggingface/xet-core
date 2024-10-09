@@ -5,7 +5,9 @@ use crate::file_structs::*;
 use crate::interpolation_search::search_on_sorted_u64s;
 use crate::shard_in_memory::MDBInMemoryShard;
 use crate::utils::truncate_hash;
+use anyhow::anyhow;
 use merklehash::{HMACKey, MerkleHash};
+use static_assertions::const_assert;
 use std::collections::{BTreeMap, HashMap};
 use std::io::{copy, Read, Seek, SeekFrom, Write};
 use std::mem::size_of;
@@ -16,9 +18,15 @@ use tracing::debug;
 use utils::serialization_utils::*;
 
 // Same size for FileDataSequenceHeader and FileDataSequenceEntry
-const MDB_FILE_INFO_ENTRY_SIZE: u64 = (size_of::<[u64; 4]>() + 4 * size_of::<u32>()) as u64;
+pub const MDB_FILE_INFO_ENTRY_SIZE: usize = size_of::<[u64; 4]>() + 4 * size_of::<u32>();
+const_assert!(MDB_FILE_INFO_ENTRY_SIZE == size_of::<FileDataSequenceHeader>());
+const_assert!(MDB_FILE_INFO_ENTRY_SIZE == size_of::<FileDataSequenceEntry>());
+const_assert!(MDB_FILE_INFO_ENTRY_SIZE == size_of::<FileVerificationEntry>());
 // Same size for CASChunkSequenceHeader and CASChunkSequenceEntry
-const MDB_CAS_INFO_ENTRY_SIZE: u64 = (size_of::<[u64; 4]>() + 4 * size_of::<u32>()) as u64;
+const MDB_CAS_INFO_ENTRY_SIZE: usize = size_of::<[u64; 4]>() + 4 * size_of::<u32>();
+const_assert!(MDB_CAS_INFO_ENTRY_SIZE == size_of::<CASChunkSequenceHeader>());
+const_assert!(MDB_CAS_INFO_ENTRY_SIZE == size_of::<CASChunkSequenceEntry>());
+
 const MDB_SHARD_FOOTER_SIZE: i64 = size_of::<MDBShardFileFooter>() as i64;
 
 const MDB_SHARD_HEADER_VERSION: u64 = 1;
@@ -376,13 +384,11 @@ impl MDBShardInfo {
             file_lookup_keys.push(truncate_hash(file_hash));
             file_lookup_vals.push(index);
 
-            bytes_written += content.metadata.serialize(writer)?;
+            let bytes = content.serialize(writer)?;
 
-            for file_segment in content.segments.iter() {
-                bytes_written += file_segment.serialize(writer)?;
-            }
-
-            index += 1 + content.metadata.num_entries;
+            bytes_written += bytes;
+            debug_assert!(bytes % MDB_FILE_INFO_ENTRY_SIZE == 0);
+            index += (bytes / MDB_FILE_INFO_ENTRY_SIZE) as u32;
         }
 
         // Serialize a single block of 00 bytes as a guard for sequential reading.
@@ -548,23 +554,15 @@ impl MDBShardInfo {
         file_entry_index: u32,
     ) -> Result<MDBFileInfo> {
         reader.seek(SeekFrom::Start(
-            self.metadata.file_info_offset + MDB_FILE_INFO_ENTRY_SIZE * (file_entry_index as u64),
+            self.metadata.file_info_offset
+                + (MDB_FILE_INFO_ENTRY_SIZE as u64) * (file_entry_index as u64),
         ))?;
 
-        let file_header = FileDataSequenceHeader::deserialize(reader)?;
-
-        let num_entries = file_header.num_entries;
-
-        let mut mdb_file = MDBFileInfo {
-            metadata: file_header,
-            ..Default::default()
+        let Some(mdb_file) = MDBFileInfo::deserialize(reader)? else {
+            return Err(MDBShardError::InternalError(anyhow!(
+                "invalid file entry index"
+            )));
         };
-
-        for _ in 0..num_entries {
-            mdb_file
-                .segments
-                .push(FileDataSequenceEntry::deserialize(reader)?);
-        }
 
         Ok(mdb_file)
     }
@@ -578,23 +576,14 @@ impl MDBShardInfo {
         reader.seek(SeekFrom::Start(self.metadata.file_info_offset))?;
 
         for _ in 0..self.num_file_entries() {
-            let file_header = FileDataSequenceHeader::deserialize(reader)?;
-
-            let num_entries = file_header.num_entries;
-
-            let mut mdb_file = MDBFileInfo {
-                metadata: file_header,
-                ..Default::default()
-            };
-
-            for _ in 0..num_entries {
-                mdb_file
-                    .segments
-                    .push(FileDataSequenceEntry::deserialize(reader)?);
+            if let Some(mdb_file) = MDBFileInfo::deserialize(reader)? {
+                ret.push(mdb_file);
+            } else {
+                break;
             }
-
-            ret.push(mdb_file);
         }
+
+        debug_assert!(ret.len() == self.num_file_entries());
 
         Ok(ret)
     }
@@ -711,7 +700,8 @@ impl MDBShardInfo {
         }
 
         reader.seek(SeekFrom::Start(
-            self.metadata.cas_info_offset + MDB_CAS_INFO_ENTRY_SIZE * (cas_entry_index as u64),
+            self.metadata.cas_info_offset
+                + (MDB_CAS_INFO_ENTRY_SIZE as u64) * (cas_entry_index as u64),
         ))?;
 
         let cas_header = CASChunkSequenceHeader::deserialize(reader)?;
@@ -893,7 +883,7 @@ impl MDBShardInfo {
 
     pub fn read_file_info_ranges<R: Read + Seek>(
         reader: &mut R,
-    ) -> Result<Vec<(MerkleHash, (u64, u64))>> {
+    ) -> Result<Vec<(MerkleHash, (u64, u64), Option<(u64, u64)>)>> {
         let mut ret = Vec::new();
 
         let _shard_header = MDBShardFileHeader::deserialize(reader)?;
@@ -901,18 +891,35 @@ impl MDBShardInfo {
         loop {
             let header = FileDataSequenceHeader::deserialize(reader)?;
 
-            if header.file_hash == MerkleHash::default() {
+            if !header.is_valid() {
                 break;
             }
 
             let byte_start = reader.stream_position()?;
-
             reader.seek(SeekFrom::Current(
-                (header.num_entries as i64) * (size_of::<FileDataSequenceEntry>() as i64),
+                header.num_entries as i64 * size_of::<FileDataSequenceEntry>() as i64,
             ))?;
             let byte_end = reader.stream_position()?;
 
-            ret.push((header.file_hash, (byte_start, byte_end)));
+            let data_sequence_entry_byte_range = (byte_start, byte_end);
+
+            let verification_entry_byte_range = if header.contains_verification() {
+                let byte_start = byte_end;
+                reader.seek(SeekFrom::Current(
+                    header.num_entries as i64 * size_of::<FileVerificationEntry>() as i64,
+                ))?;
+                let byte_end = reader.stream_position()?;
+
+                Some((byte_start, byte_end))
+            } else {
+                None
+            };
+
+            ret.push((
+                header.file_hash,
+                data_sequence_entry_byte_range,
+                verification_entry_byte_range,
+            ));
         }
 
         Ok(ret)
@@ -1123,6 +1130,8 @@ pub mod test_routines {
     use rand::rngs::{SmallRng, StdRng};
     use rand::{Rng, SeedableRng};
 
+    use super::FileVerificationEntry;
+
     pub fn simple_hash(n: u64) -> MerkleHash {
         MerkleHash::from([n, 1, 0, 0])
     }
@@ -1143,6 +1152,7 @@ pub mod test_routines {
     pub fn gen_specific_shard(
         cas_nodes: &[(u64, &[(u64, u32)])],
         file_nodes: &[(u64, &[(u64, (u32, u32))])],
+        verifications: Option<&[&[u64]]>,
     ) -> Result<MDBInMemoryShard> {
         let mut shard = MDBInMemoryShard::default();
 
@@ -1161,18 +1171,54 @@ pub mod test_routines {
             })?;
         }
 
-        for (file_hash, segments) in file_nodes {
-            let file_contents: Vec<_> = segments
-                .iter()
-                .map(|(h, (lb, ub))| {
-                    FileDataSequenceEntry::new(simple_hash(*h), *ub - *lb, *lb, *ub)
-                })
-                .collect();
+        if let Some(verification) = verifications {
+            assert_eq!(file_nodes.len(), verification.len());
 
-            shard.add_file_reconstruction_info(MDBFileInfo {
-                metadata: FileDataSequenceHeader::new(simple_hash(*file_hash), segments.len()),
-                segments: file_contents,
-            })?;
+            for ((file_hash, segments), verification) in file_nodes.iter().zip(verification.iter())
+            {
+                assert_eq!(segments.len(), verification.len());
+
+                let file_contents: Vec<_> = segments
+                    .iter()
+                    .map(|(h, (lb, ub))| {
+                        FileDataSequenceEntry::new(simple_hash(*h), *ub - *lb, *lb, *ub)
+                    })
+                    .collect();
+
+                let verification = verification
+                    .iter()
+                    .map(|v: &u64| FileVerificationEntry::new(simple_hash(*v)))
+                    .collect();
+
+                shard.add_file_reconstruction_info(MDBFileInfo {
+                    metadata: FileDataSequenceHeader::new(
+                        simple_hash(*file_hash),
+                        segments.len(),
+                        true,
+                    ),
+                    segments: file_contents,
+                    verification,
+                })?;
+            }
+        } else {
+            for (file_hash, segments) in file_nodes.iter() {
+                let file_contents: Vec<_> = segments
+                    .iter()
+                    .map(|(h, (lb, ub))| {
+                        FileDataSequenceEntry::new(simple_hash(*h), *ub - *lb, *lb, *ub)
+                    })
+                    .collect();
+
+                shard.add_file_reconstruction_info(MDBFileInfo {
+                    metadata: FileDataSequenceHeader::new(
+                        simple_hash(*file_hash),
+                        segments.len(),
+                        false,
+                    ),
+                    segments: file_contents,
+                    verification: vec![],
+                })?;
+            }
         }
 
         Ok(shard)
@@ -1182,6 +1228,7 @@ pub mod test_routines {
         seed: u64,
         cas_block_sizes: &[usize],
         file_chunk_range_sizes: &[usize],
+        contains_verification: bool,
     ) -> Result<MDBInMemoryShard> {
         // generate the cas content stuff.
         let mut shard = MDBInMemoryShard::default();
@@ -1217,9 +1264,23 @@ pub mod test_routines {
                 })
                 .collect();
 
+            let verification = if contains_verification {
+                file_contents
+                    .iter()
+                    .map(|_| FileVerificationEntry::new(rng_hash(rng.gen())))
+                    .collect()
+            } else {
+                vec![]
+            };
+
             shard.add_file_reconstruction_info(MDBFileInfo {
-                metadata: FileDataSequenceHeader::new(file_hash, *file_block_size),
+                metadata: FileDataSequenceHeader::new(
+                    file_hash,
+                    *file_block_size,
+                    contains_verification,
+                ),
                 segments: file_contents,
+                verification,
             })?;
         }
 
@@ -1350,7 +1411,11 @@ pub mod test_routines {
 
             assert_eq!(file_info.len(), mem_shard.file_content.len());
 
-            for (file_hash, (byte_start, byte_end)) in file_info {
+            for (file_hash, data_byte_range, verification_byte_range) in file_info {
+                let true_fie = mem_shard.file_content.get(&file_hash).unwrap();
+
+                // Check FileDataSequenceEntry
+                let (byte_start, byte_end) = data_byte_range;
                 cursor.seek(std::io::SeekFrom::Start(byte_start))?;
 
                 let num_entries =
@@ -1362,11 +1427,9 @@ pub mod test_routines {
                     (byte_end - byte_start)
                 );
 
-                let true_fie = mem_shard.file_content.get(&file_hash).unwrap();
-
                 assert_eq!(num_entries, true_fie.segments.len() as u64);
 
-                for i in 0..num_entries {
+                for i in 0..true_fie.metadata.num_entries as u64 {
                     let pos = byte_start + i * (size_of::<FileDataSequenceEntry>() as u64);
 
                     cursor.seek(std::io::SeekFrom::Start(pos))?;
@@ -1374,6 +1437,32 @@ pub mod test_routines {
                     let fie = FileDataSequenceEntry::deserialize(&mut cursor)?;
 
                     assert_eq!(true_fie.segments[i as usize], fie);
+                }
+
+                // Check FileVerificationEntry if exists
+                if let Some((byte_start, byte_end)) = verification_byte_range {
+                    cursor.seek(std::io::SeekFrom::Start(byte_start))?;
+
+                    let num_entries =
+                        (byte_end - byte_start) / (size_of::<FileVerificationEntry>() as u64);
+
+                    // No leftovers
+                    assert_eq!(
+                        num_entries * (size_of::<FileVerificationEntry>() as u64),
+                        (byte_end - byte_start)
+                    );
+
+                    assert_eq!(num_entries, true_fie.verification.len() as u64);
+
+                    for i in 0..true_fie.metadata.num_entries as u64 {
+                        let pos = byte_start + i * (size_of::<FileVerificationEntry>() as u64);
+
+                        cursor.seek(std::io::SeekFrom::Start(pos))?;
+
+                        let fie = FileVerificationEntry::deserialize(&mut cursor)?;
+
+                        assert_eq!(true_fie.verification[i as usize], fie);
+                    }
                 }
             }
         }
@@ -1390,8 +1479,10 @@ mod tests {
 
     #[test]
     fn test_simple() -> Result<()> {
-        let shard = gen_random_shard(0, &[1, 1], &[1])?;
+        let shard = gen_random_shard(0, &[1, 1], &[1], false)?;
+        verify_mdb_shard(&shard)?;
 
+        let shard = gen_random_shard(0, &[1, 1], &[1], true)?;
         verify_mdb_shard(&shard)?;
 
         Ok(())
@@ -1399,14 +1490,25 @@ mod tests {
 
     #[test]
     fn test_specific() -> Result<()> {
-        let mem_shard_1 = gen_specific_shard(&[(0, &[(11, 5)])], &[(100, &[(200, (0, 5))])])?;
-        verify_mdb_shard(&mem_shard_1)
+        let mem_shard_1 = gen_specific_shard(&[(0, &[(11, 5)])], &[(100, &[(200, (0, 5))])], None)?;
+        verify_mdb_shard(&mem_shard_1)?;
+
+        let mem_shard_1 = gen_specific_shard(
+            &[(0, &[(11, 5)])],
+            &[(100, &[(200, (0, 5))])],
+            Some(&[&[25]]),
+        )?;
+        verify_mdb_shard(&mem_shard_1)?;
+
+        Ok(())
     }
 
     #[test]
     fn test_multiple() -> Result<()> {
-        let shard = gen_random_shard(0, &[1, 5, 10, 8], &[4, 3, 5, 9, 4, 6])?;
+        let shard = gen_random_shard(0, &[1, 5, 10, 8], &[4, 3, 5, 9, 4, 6], false)?;
+        verify_mdb_shard(&shard)?;
 
+        let shard = gen_random_shard(0, &[1, 5, 10, 8], &[4, 3, 5, 9, 4, 6], true)?;
         verify_mdb_shard(&shard)?;
 
         Ok(())
@@ -1414,8 +1516,10 @@ mod tests {
 
     #[test]
     fn test_corner_cases_empty() -> Result<()> {
-        let shard = gen_random_shard(0, &[0], &[0])?;
+        let shard = gen_random_shard(0, &[0], &[0], false)?;
+        verify_mdb_shard(&shard)?;
 
+        let shard = gen_random_shard(0, &[0], &[0], true)?;
         verify_mdb_shard(&shard)?;
 
         Ok(())
@@ -1423,8 +1527,10 @@ mod tests {
 
     #[test]
     fn test_corner_cases_empty_entries() -> Result<()> {
-        let shard = gen_random_shard(0, &[5, 6, 0, 10, 0], &[3, 4, 5, 0, 4, 0])?;
+        let shard = gen_random_shard(0, &[5, 6, 0, 10, 0], &[3, 4, 5, 0, 4, 0], false)?;
+        verify_mdb_shard(&shard)?;
 
+        let shard = gen_random_shard(0, &[5, 6, 0, 10, 0], &[3, 4, 5, 0, 4, 0], true)?;
         verify_mdb_shard(&shard)?;
 
         Ok(())

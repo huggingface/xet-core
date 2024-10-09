@@ -1,4 +1,6 @@
 use crate::error::Result;
+use crate::file_structs::FileVerificationEntry;
+use crate::shard_file::MDB_FILE_INFO_ENTRY_SIZE;
 use crate::{
     cas_structs::{CASChunkSequenceEntry, CASChunkSequenceHeader},
     file_structs::{FileDataSequenceEntry, FileDataSequenceHeader},
@@ -44,7 +46,7 @@ fn get_next_actions(
             }
         }
         (None, Some(_)) => Some([NextAction::Nothing, NextAction::CopyToOut]),
-        (Some(ft0), Some(ft1)) => match ft0.cmp(ft1) {
+        (Some(ft0), Some(ft1)) => match ft0.cmp(&ft1) {
             std::cmp::Ordering::Less => {
                 if op == MDBSetOperation::Union {
                     Some([NextAction::CopyToOut, NextAction::Nothing])
@@ -62,6 +64,31 @@ fn get_next_actions(
             std::cmp::Ordering::Greater => Some([NextAction::Nothing, NextAction::CopyToOut]),
         },
     }
+}
+
+#[inline]
+fn get_next_actions_for_file_info(
+    h1: Option<&FileDataSequenceHeader>,
+    h2: Option<&FileDataSequenceHeader>,
+    op: MDBSetOperation,
+) -> Option<[NextAction; 2]> {
+    // Special case for union operation on file info with same file hash.
+    if let (Some(ft0), Some(ft1)) = (h1, h2) {
+        if std::cmp::Ordering::Equal == ft0.file_hash.cmp(&ft1.file_hash) {
+            if op == MDBSetOperation::Union {
+                // Now two parties have the same file hash, and union should produce only one copy.
+                // While one party may have more information than the other, e.g. verification
+                // information, union should produce one with more information.
+                return if ft0.num_info_entry_following() >= ft1.num_info_entry_following() {
+                    Some([NextAction::CopyToOut, NextAction::SkipOver])
+                } else {
+                    Some([NextAction::SkipOver, NextAction::CopyToOut])
+                };
+            }
+        }
+    }
+
+    get_next_actions(h1.map(|f| &f.file_hash), h2.map(|f| &f.file_hash), op)
 }
 
 fn set_operation<R: Read + Seek, W: Write>(
@@ -104,17 +131,15 @@ fn set_operation<R: Read + Seek, W: Write>(
 
         let mut file_data_header = [load_next(r[0], s[0])?, load_next(r[1], s[1])?];
 
-        while let Some(action) = get_next_actions(
-            file_data_header[0].as_ref().map(|h| &h.file_hash),
-            file_data_header[1].as_ref().map(|h| &h.file_hash),
+        while let Some(action) = get_next_actions_for_file_info(
+            file_data_header[0].as_ref(),
+            file_data_header[1].as_ref(),
             op,
         ) {
             for i in [0, 1] {
                 match action[i] {
                     NextAction::CopyToOut => {
                         let fh = file_data_header[i].as_ref().unwrap();
-                        let n_payload_bytes =
-                            (fh.num_entries as u64) * (size_of::<FileDataSequenceEntry>() as u64);
 
                         out_offset += fh.serialize(out)? as u64;
 
@@ -124,17 +149,29 @@ fn set_operation<R: Read + Seek, W: Write>(
                             entry.serialize(out)?;
                         }
 
-                        out_offset += n_payload_bytes;
+                        out_offset +=
+                            (fh.num_entries as u64) * (size_of::<FileDataSequenceEntry>() as u64);
+
+                        if fh.contains_verification() {
+                            for _ in 0..fh.num_entries {
+                                let entry = FileVerificationEntry::deserialize(r[i])?;
+                                entry.serialize(out)?;
+                            }
+
+                            out_offset += (fh.num_entries as u64)
+                                * (size_of::<FileVerificationEntry>() as u64);
+                        }
 
                         file_lookup_data.push((truncate_hash(&fh.file_hash), current_index));
 
-                        current_index += 1 + fh.num_entries;
+                        current_index += 1 + fh.num_info_entry_following();
                         file_data_header[i] = load_next(r[i], s[i])?;
                     }
                     NextAction::SkipOver => {
                         let fh = file_data_header[i].as_ref().unwrap();
                         r[i].seek(SeekFrom::Current(
-                            (fh.num_entries as i64) * (size_of::<FileDataSequenceEntry>() as i64),
+                            (fh.num_info_entry_following() as i64)
+                                * (MDB_FILE_INFO_ENTRY_SIZE as i64),
                         ))?;
                         file_data_header[i] = load_next(r[i], s[i])?;
                     }
@@ -432,57 +469,134 @@ mod tests {
 
     #[test]
     fn test_simple() -> Result<()> {
-        let mem_shard_1 = gen_specific_shard(&[(10, &[(21, 5)])], &[(100, &[(200, (0, 5))])])?;
-        let mem_shard_2 = gen_specific_shard(&[(11, &[(22, 5)])], &[(101, &[(201, (0, 5))])])?;
+        // Both without verification
+        let mem_shard_1 =
+            gen_specific_shard(&[(10, &[(21, 5)])], &[(100, &[(200, (0, 5))])], None)?;
+        let mem_shard_2 =
+            gen_specific_shard(&[(11, &[(22, 5)])], &[(101, &[(201, (0, 5))])], None)?;
+        test_operations(&mem_shard_1, &mem_shard_2)?;
 
+        // One with verification
+        let mem_shard_1 =
+            gen_specific_shard(&[(10, &[(21, 5)])], &[(100, &[(200, (0, 5))])], None)?;
+        let mem_shard_2 = gen_specific_shard(
+            &[(11, &[(22, 5)])],
+            &[(101, &[(201, (0, 5))])],
+            Some(&[&[624]]),
+        )?;
+        test_operations(&mem_shard_1, &mem_shard_2)?;
+
+        // Both with verification
+        let mem_shard_1 = gen_specific_shard(
+            &[(10, &[(21, 5)])],
+            &[(100, &[(200, (0, 5))])],
+            Some(&[&[485]]),
+        )?;
+        let mem_shard_2 = gen_specific_shard(
+            &[(11, &[(22, 5)])],
+            &[(101, &[(201, (0, 5))])],
+            Some(&[&[624]]),
+        )?;
         test_operations(&mem_shard_1, &mem_shard_2)
     }
 
     #[test]
     fn test_intersecting() -> Result<()> {
-        let mem_shard_1 = gen_specific_shard(&[(10, &[(21, 5)])], &[(100, &[(200, (0, 5))])])?;
-        let mem_shard_2 = gen_specific_shard(&[(10, &[(21, 5)])], &[(100, &[(200, (0, 5))])])?;
+        // Both without verification
+        let mem_shard_1 =
+            gen_specific_shard(&[(10, &[(21, 5)])], &[(100, &[(200, (0, 5))])], None)?;
+        let mem_shard_2 =
+            gen_specific_shard(&[(10, &[(21, 5)])], &[(100, &[(200, (0, 5))])], None)?;
+        test_operations(&mem_shard_1, &mem_shard_2)?;
 
+        // One with verification
+        let mem_shard_1 = gen_specific_shard(
+            &[(10, &[(21, 5)])],
+            &[(100, &[(200, (0, 5))])],
+            Some(&[&[23]]),
+        )?;
+        let mem_shard_2 =
+            gen_specific_shard(&[(10, &[(21, 5)])], &[(100, &[(200, (0, 5))])], None)?;
+        test_operations(&mem_shard_1, &mem_shard_2)?;
+
+        // Both with same verification
+        let mem_shard_1 = gen_specific_shard(
+            &[(10, &[(21, 5)])],
+            &[(100, &[(200, (0, 5))])],
+            Some(&[&[95]]),
+        )?;
+        let mem_shard_2 = gen_specific_shard(
+            &[(10, &[(21, 5)])],
+            &[(100, &[(200, (0, 5))])],
+            Some(&[&[95]]),
+        )?;
         test_operations(&mem_shard_1, &mem_shard_2)
     }
 
     #[test]
     fn test_intersecting_2() -> Result<()> {
-        let mem_shard_1 = gen_specific_shard(&[(10, &[(21, 5)])], &[(100, &[(200, (0, 5))])])?;
+        // Both without verification
+        let mem_shard_1 =
+            gen_specific_shard(&[(10, &[(21, 5)])], &[(100, &[(200, (0, 5))])], None)?;
         let mem_shard_2 = gen_specific_shard(
             &[(10, &[(21, 5)]), (11, &[(22, 5)])],
             &[(100, &[(200, (0, 5))]), (101, &[(201, (0, 5))])],
+            None,
         )?;
+        test_operations(&mem_shard_1, &mem_shard_2)?;
 
+        // One with verification
+        let mem_shard_1 =
+            gen_specific_shard(&[(10, &[(21, 5)])], &[(100, &[(200, (0, 5))])], None)?;
+        let mem_shard_2 = gen_specific_shard(
+            &[(10, &[(21, 5)]), (11, &[(22, 5)])],
+            &[(100, &[(200, (0, 5))]), (101, &[(201, (0, 5))])],
+            Some(&[&[74], &[63]]),
+        )?;
+        test_operations(&mem_shard_1, &mem_shard_2)?;
+
+        // Both with verification, and same files have same verification
+        let mem_shard_1 = gen_specific_shard(
+            &[(10, &[(21, 5)])],
+            &[(100, &[(200, (0, 5))])],
+            Some(&[&[365]]),
+        )?;
+        let mem_shard_2 = gen_specific_shard(
+            &[(10, &[(21, 5)]), (11, &[(22, 5)])],
+            &[(100, &[(200, (0, 5))]), (101, &[(201, (0, 5))])],
+            Some(&[&[365], &[48]]),
+        )?;
         test_operations(&mem_shard_1, &mem_shard_2)
     }
 
     #[test]
     fn test_empty() -> Result<()> {
-        let mem_shard_1 = gen_specific_shard(&[], &[])?;
-        let mem_shard_2 = gen_specific_shard(&[], &[])?;
+        let mem_shard_1 = gen_specific_shard(&[], &[], None)?;
+        let mem_shard_2 = gen_specific_shard(&[], &[], None)?;
 
         test_operations(&mem_shard_1, &mem_shard_2)
     }
     #[test]
     fn test_empty_2() -> Result<()> {
-        let mem_shard_1 = gen_random_shard(0, &[0], &[0])?;
-        let mem_shard_2 = gen_random_shard(1, &[0], &[0])?;
+        let mem_shard_1 = gen_random_shard(0, &[0], &[0], false)?;
+        let mem_shard_2 = gen_random_shard(1, &[0], &[0], false)?;
 
         test_operations(&mem_shard_1, &mem_shard_2)
     }
 
     #[test]
     fn test_random() -> Result<()> {
-        let mem_shard_1 = gen_random_shard(0, &[1, 5, 10, 8], &[4, 3, 5, 9, 4, 6])?;
-        let mem_shard_2 = gen_random_shard(1, &[3, 5, 9, 8], &[8, 5, 5, 8, 5, 6])?;
+        for (v1, v2) in &[(false, false), (false, true), (true, true)] {
+            let mem_shard_1 = gen_random_shard(0, &[1, 5, 10, 8], &[4, 3, 5, 9, 4, 6], *v1)?;
+            let mem_shard_2 = gen_random_shard(1, &[3, 5, 9, 8], &[8, 5, 5, 8, 5, 6], *v2)?;
 
-        test_operations(&mem_shard_1, &mem_shard_2)?;
+            test_operations(&mem_shard_1, &mem_shard_2)?;
 
-        let mem_shard_3 = mem_shard_1.union(&mem_shard_2)?;
+            let mem_shard_3 = mem_shard_1.union(&mem_shard_2)?;
 
-        test_operations(&mem_shard_1, &mem_shard_3)?;
-        test_operations(&mem_shard_2, &mem_shard_3)?;
+            test_operations(&mem_shard_1, &mem_shard_3)?;
+            test_operations(&mem_shard_2, &mem_shard_3)?;
+        }
 
         Ok(())
     }

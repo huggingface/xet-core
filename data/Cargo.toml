@@ -12,6 +12,7 @@ path = "src/bin/example.rs"
 
 [dependencies]
 cas_client = { path = "../cas_client" }
+cas_object = { path = "../cas_object" }
 merkledb = { path = "../merkledb" }
 merklehash = { path = "../merklehash" }
 mdb_shard = { path = "../mdb_shard" }

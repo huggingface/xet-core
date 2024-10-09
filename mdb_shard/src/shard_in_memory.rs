@@ -62,7 +62,12 @@ impl MDBInMemoryShard {
 
         let mut file_content = self.file_content.clone();
         other.file_content.iter().for_each(|(k, v)| {
-            file_content.insert(*k, v.clone());
+            if let Some(old_v) = file_content.insert(*k, v.clone()) {
+                // Use the old value if it contains more information (e.g. verification)
+                if old_v.num_bytes() > v.num_bytes() {
+                    file_content.insert(*k, old_v);
+                }
+            }
         });
 
         let mut chunk_hash_lookup = self.chunk_hash_lookup.clone();

@@ -336,13 +336,7 @@ impl FileReconstructor<MDBShardError> for ShardFileManager {
         file_hash: &MerkleHash,
     ) -> Result<Option<(MDBFileInfo, Option<MerkleHash>)>> {
         if *file_hash == MerkleHash::default() {
-            return Ok(Some((
-                MDBFileInfo {
-                    metadata: FileDataSequenceHeader::new(MerkleHash::default(), 0),
-                    segments: Vec::default(),
-                },
-                None,
-            )));
+            return Ok(Some((MDBFileInfo::default(), None)));
         }
 
         // First attempt the in-memory version of this.
@@ -570,8 +564,13 @@ mod tests {
                 })
                 .collect();
             let file_info = MDBFileInfo {
-                metadata: FileDataSequenceHeader::new(simple_hash(*file_hash), segments.len()),
+                metadata: FileDataSequenceHeader::new(
+                    simple_hash(*file_hash),
+                    segments.len(),
+                    false,
+                ),
                 segments: file_contents,
+                verification: vec![],
             };
 
             shard
@@ -655,9 +654,13 @@ mod tests {
                 })
                 .collect();
 
-            let metadata = FileDataSequenceHeader::new(file_hash, *file_block_size);
+            let metadata = FileDataSequenceHeader::new(file_hash, *file_block_size, false);
 
-            let file_info = MDBFileInfo { metadata, segments };
+            let file_info = MDBFileInfo {
+                metadata,
+                segments,
+                verification: vec![],
+            };
 
             shard
                 .add_file_reconstruction_info(file_info.clone())
