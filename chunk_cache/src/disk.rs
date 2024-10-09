@@ -265,25 +265,11 @@ impl DiskCache {
             || chunk_byte_indicies[0] != 0
             || *chunk_byte_indicies.last().unwrap() as usize != data.len()
         {
-            eprintln!(
-                "{range:?} cbi start {} cbi end {:?} datalen {}",
-                chunk_byte_indicies[0],
-                chunk_byte_indicies.last(),
-                data.len()
-            );
-            return Err(ChunkCacheError::parse(format!(
-                "{range:?} cbi start {} cbi end {:?} datalen {}",
-                chunk_byte_indicies[0],
-                chunk_byte_indicies.last(),
-                data.len()
-            )));
+            return Err(ChunkCacheError::InvalidArguments);
         }
 
-        let mut state = self.state.lock()?;
-        let total_bytes = total_bytes(&state);
-
         // check if we already contain the range
-        if let Some(item_set) = state.get_mut(key) {
+        if let Some(item_set) = self.state.lock()?.get_mut(key) {
             while let Ok(idx) = item_set.binary_search_by(range_contained_fn(range)) {
                 let item = item_set.get(idx).ok_or(ChunkCacheError::Infallible)?;
                 let path = self
@@ -323,11 +309,7 @@ impl DiskCache {
             hash,
         };
 
-        if self.capacity < total_bytes + item.len {
-            self.evict(&mut state, total_bytes + item.len - self.capacity)?;
-        }
-
-        let item_set = state.entry(key.clone()).or_default();
+        self.maybe_evict(item.len)?;
 
         let path = self
             .cache_root
@@ -340,6 +322,8 @@ impl DiskCache {
         fw.write_all(data)?;
         fw.close()?;
 
+        let mut state = self.state.lock()?;
+        let item_set = state.entry(key.clone()).or_default();
         item_set.insert(item);
 
         Ok(())
@@ -347,14 +331,13 @@ impl DiskCache {
 
     /// removed items from the cache (including deleting from file system)
     /// until at least to_remove number of bytes have been removed
-    fn evict(
-        &self,
-        state: &mut MutexGuard<'_, CacheState>,
-        to_remove: u64,
-    ) -> Result<(), ChunkCacheError> {
+    fn maybe_evict(&self, want_to_add: u64) -> Result<(), ChunkCacheError> {
+        let mut state = self.state.lock()?;
+        let total_bytes = total_bytes(&state);
+        let to_remove = total_bytes as i64 - self.capacity as i64 + want_to_add as i64;
         let mut bytes_removed = 0;
         while to_remove > bytes_removed {
-            let (key, idx) = self.random_item(state);
+            let (key, idx) = self.random_item(&state);
             let items = state.get_mut(&key).ok_or(ChunkCacheError::Infallible)?;
             let item = &items[idx];
             let len = item.len;
@@ -377,7 +360,7 @@ impl DiskCache {
                 }
             }
 
-            bytes_removed += len;
+            bytes_removed += len as i64;
         }
         Ok(())
     }
@@ -488,7 +471,7 @@ mod tests {
 
         let key = random_key(&mut rng);
         let range = Range { start: 0, end: 4 };
-        let (chunk_byte_indicies, data) = random_bytes(&mut rng, &range);
+        let (chunk_byte_indicies, data) = random_bytes(&mut rng, &range, RANGE_LEN);
         let put_result = cache.put(&key, &range, &chunk_byte_indicies, data.as_slice());
         assert!(put_result.is_ok(), "{put_result:?}");
 
@@ -514,11 +497,9 @@ mod tests {
 
         let key = random_key(&mut rng);
         let range = Range { start: 0, end: 4 };
-        let (chunk_byte_indicies, data) = random_bytes(&mut rng, &range);
-        println!("{range:?} {chunk_byte_indicies:?} {}", data.len());
+        let (chunk_byte_indicies, data) = random_bytes(&mut rng, &range, RANGE_LEN);
         let put_result = cache.put(&key, &range, &chunk_byte_indicies, data.as_slice());
         assert!(put_result.is_ok(), "{put_result:?}");
-        println!("{cache:?}");
 
         print_directory_contents(cache_root.as_ref());
 

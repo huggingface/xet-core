@@ -46,19 +46,19 @@ pub fn random_range(rng: &mut impl Rng) -> Range {
     Range { start, end }
 }
 
-pub fn random_bytes(rng: &mut impl Rng, range: &Range) -> (Vec<u32>, Vec<u8>) {
-    let random_vec: Vec<u8> = (0..RANGE_LEN).map(|_| rng.gen()).collect();
+pub fn random_bytes(rng: &mut impl Rng, range: &Range, len: u32) -> (Vec<u32>, Vec<u8>) {
+    let random_vec: Vec<u8> = (0..len).map(|_| rng.gen()).collect();
 
     let mut offsets = Vec::with_capacity((range.end - range.start + 1) as usize);
     offsets.push(0);
-    let mut candidates: Vec<u32> = (1..RANGE_LEN).collect();
+    let mut candidates: Vec<u32> = (1..len).collect();
     candidates.shuffle(rng);
     candidates
         .into_iter()
         .take((range.end - range.start - 1) as usize)
         .for_each(|v| offsets.push(v));
     offsets.sort();
-    offsets.push(RANGE_LEN);
+    offsets.push(len);
 
     (offsets.to_vec(), random_vec)
 }
@@ -108,7 +108,7 @@ impl<T: Rng> Iterator for RandomEntryIterator<T> {
     fn next(&mut self) -> Option<Self::Item> {
         let key = random_key(&mut self.rng);
         let range = random_range(&mut self.rng);
-        let (offsets, data) = random_bytes(&mut self.rng, &range);
+        let (offsets, data) = random_bytes(&mut self.rng, &range, self.range_len);
         Some((key, range, offsets, data))
     }
 }

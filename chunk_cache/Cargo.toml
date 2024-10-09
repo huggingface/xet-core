@@ -21,7 +21,7 @@ sccache = "0.8.2"
 
 [dev-dependencies]
 rand = "0.8"
-criterion = "0.4"
+criterion = { version = "0.4", features = ["async_tokio"] }
 tokio = { version = "1.36", features = ["full"] }
 
 [[bench]]
