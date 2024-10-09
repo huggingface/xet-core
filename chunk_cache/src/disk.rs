@@ -25,6 +25,7 @@ pub mod test_utils;
 
 // consistently use URL_SAFE (also file path safe) base64 codec
 pub(crate) const BASE64_ENGINE: GeneralPurpose = URL_SAFE;
+pub const _DEFAULT_CAPACITY: u64 = 1 << 30; // 1 GB
 
 type CacheState = HashMap<Key, SortedVec<CacheItem>>;
 
@@ -44,12 +45,14 @@ fn parse_key(file_name: &[u8]) -> Result<Key, ChunkCacheError> {
 }
 
 impl DiskCache {
+    // TODO: memoize
     pub fn num_items(&self) -> Result<usize, ChunkCacheError> {
         let state = self.state.lock()?;
         let value = num_items(&state);
         Ok(value)
     }
 
+    // TODO: memoize
     #[allow(dead_code)]
     fn total_bytes(&self) -> Result<u64, ChunkCacheError> {
         let state = self.state.lock()?;
@@ -59,6 +62,8 @@ impl DiskCache {
 
     pub fn initialize(cache_root: PathBuf, capacity: u64) -> Result<Self, ChunkCacheError> {
         let mut state = HashMap::new();
+        let mut num_bytes = 0;
+        let max_num_bytes = 2 * capacity;
 
         let readdir = match std::fs::read_dir(&cache_root) {
             Ok(rd) => rd,
@@ -149,11 +154,21 @@ impl DiskCache {
                     // file is invalid, remove it
                     remove_file(item.path())?;
                 }
+
+                num_bytes += cache_item.len;
                 items.push(cache_item);
+
+                if num_bytes >= max_num_bytes {
+                    break;
+                }
             }
 
             if !items.is_empty() {
                 state.insert(key, items);
+            }
+
+            if num_bytes >= max_num_bytes {
+                break;
             }
         }
 
@@ -177,7 +192,7 @@ impl DiskCache {
             return Ok(None);
         };
 
-        loop {
+        let (mut file, header, start) = loop {
             // attempt to find a matching range in the given key's items using binary search
             let idx = items.binary_search_by(range_contained_fn(range));
             if idx.is_err() {
@@ -216,21 +231,25 @@ impl DiskCache {
                     continue;
                 }
             };
-            let start_byte = header
-                .chunk_byte_indicies
-                .get((range.start - item.range.start) as usize)
-                .ok_or(ChunkCacheError::BadRange)?;
-            let end_byte = header
-                .chunk_byte_indicies
-                .get((range.end - item.range.start) as usize)
-                .ok_or(ChunkCacheError::BadRange)?;
-            file.seek(SeekFrom::Start(
-                (*start_byte as usize + header.header_len()) as u64,
-            ))?;
-            let mut buf = vec![0; (end_byte - start_byte) as usize];
-            file.read_exact(&mut buf)?;
-            return Ok(Some(buf));
-        }
+
+            let start = item.range.start;
+            // drop(state);
+            break (file, header, start);
+        };
+        let start_byte = header
+            .chunk_byte_indicies
+            .get((range.start - start) as usize)
+            .ok_or(ChunkCacheError::BadRange)?;
+        let end_byte = header
+            .chunk_byte_indicies
+            .get((range.end - start) as usize)
+            .ok_or(ChunkCacheError::BadRange)?;
+        file.seek(SeekFrom::Start(
+            (*start_byte as usize + header.header_len()) as u64,
+        ))?;
+        let mut buf = vec![0; (end_byte - start_byte) as usize];
+        file.read_exact(&mut buf)?;
+        Ok(Some(buf))
     }
 
     fn put_impl(
@@ -253,9 +272,29 @@ impl DiskCache {
         let total_bytes = total_bytes(&state);
 
         // check if we already contain the range
-        if let Some(item_set) = state.get(key) {
-            if item_set.binary_search_by(range_contained_fn(range)).is_ok() {
-                return Ok(());
+        if let Some(item_set) = state.get_mut(key) {
+            while let Ok(idx) = item_set.binary_search_by(range_contained_fn(range)) {
+                let item = item_set.get(idx).ok_or(ChunkCacheError::Infallible)?;
+                let path = self
+                    .cache_root
+                    .join(key_dir(key))
+                    .join(item.to_file_name()?);
+                match File::open(&path) {
+                    Ok(mut file) => {
+                        let hash = blake3::Hasher::new().update_reader(&mut file)?.finalize();
+                        if hash == item.hash && file.metadata()?.len() == item.len {
+                            return Ok(());
+                        }
+                    }
+                    Err(e) => {
+                        if e.kind() == ErrorKind::NotFound {
+                            item_set.remove_index(idx);
+                        } else {
+                            remove_file(path)?;
+                            // should remove directory if empty as well as item set
+                        }
+                    }
+                }
             }
         }
 
@@ -415,12 +454,12 @@ mod tests {
 
     use crate::ChunkCache;
 
-    use super::DiskCache;
+    use super::{DiskCache, _DEFAULT_CAPACITY};
 
     #[test]
     fn test_get_cache_empty() {
         let cache_root = TempDir::new("empty").unwrap();
-        let cache = DiskCache::initialize(cache_root.into_path(), DEFAULT_CAPACITY).unwrap();
+        let cache = DiskCache::initialize(cache_root.into_path(), _DEFAULT_CAPACITY).unwrap();
         assert!(cache.get(&random_key(), &random_range()).unwrap().is_none());
     }
 
@@ -428,7 +467,7 @@ mod tests {
     fn test_put_get_simple() {
         let cache_root = TempDir::new("put_get_simple").unwrap();
         let cache =
-            DiskCache::initialize(cache_root.path().to_path_buf(), DEFAULT_CAPACITY).unwrap();
+            DiskCache::initialize(cache_root.path().to_path_buf(), _DEFAULT_CAPACITY).unwrap();
 
         let key = random_key();
         let range = Range { start: 0, end: 4 };
@@ -453,13 +492,15 @@ mod tests {
     fn test_put_get_subrange() {
         let cache_root = TempDir::new("put_get_subrange").unwrap();
         let cache =
-            DiskCache::initialize(cache_root.path().to_path_buf(), DEFAULT_CAPACITY).unwrap();
+            DiskCache::initialize(cache_root.path().to_path_buf(), _DEFAULT_CAPACITY).unwrap();
 
         let key = random_key();
         let range = Range { start: 0, end: 4 };
         let (chunk_byte_indicies, data) = random_bytes(&range);
+        println!("{range} {chunk_byte_indicies:?} {}", data.len());
         let put_result = cache.put(&key, &range, &chunk_byte_indicies, data.as_slice());
         assert!(put_result.is_ok(), "{put_result:?}");
+        println!("{cache:?}");
 
         print_directory_contents(cache_root.as_ref());
 
@@ -505,7 +546,7 @@ mod tests {
     fn test_same_puts_noop() {
         let cache_root = TempDir::new("puts_eviction").unwrap();
         let cache =
-            DiskCache::initialize(cache_root.path().to_path_buf(), DEFAULT_CAPACITY).unwrap();
+            DiskCache::initialize(cache_root.path().to_path_buf(), _DEFAULT_CAPACITY).unwrap();
         let (key, range, offsets, data) = RandomEntryIterator.next().unwrap();
         assert!(cache.put(&key, &range, &offsets, &data).is_ok());
 
@@ -516,7 +557,7 @@ mod tests {
     fn test_initialize_non_empty() {
         let cache_root = TempDir::new("initialize_non_empty").unwrap();
         let cache =
-            DiskCache::initialize(cache_root.path().to_path_buf(), DEFAULT_CAPACITY).unwrap();
+            DiskCache::initialize(cache_root.path().to_path_buf(), _DEFAULT_CAPACITY).unwrap();
 
         let mut keys_and_ranges = Vec::new();
 
@@ -526,7 +567,7 @@ mod tests {
             keys_and_ranges.push((key, range));
         }
         let cache2 =
-            DiskCache::initialize(cache_root.path().to_path_buf(), DEFAULT_CAPACITY).unwrap();
+            DiskCache::initialize(cache_root.path().to_path_buf(), _DEFAULT_CAPACITY).unwrap();
         for (i, (key, range)) in keys_and_ranges.iter().enumerate() {
             let get_result = cache2.get(&key, &range);
             assert!(get_result.is_ok(), "{i} {get_result:?}");
@@ -643,7 +684,7 @@ mod tests {
 mod concurrency_tests {
     use tempdir::TempDir;
 
-    use crate::{ChunkCache, RandomEntryIterator, DEFAULT_CAPACITY, RANGE_LEN};
+    use crate::{disk::_DEFAULT_CAPACITY, ChunkCache, RandomEntryIterator, RANGE_LEN};
 
     use super::DiskCache;
 
@@ -653,7 +694,7 @@ mod concurrency_tests {
     async fn test_run_concurrently() {
         let cache_root = TempDir::new("run_concurrently").unwrap();
         let cache =
-            DiskCache::initialize(cache_root.path().to_path_buf(), DEFAULT_CAPACITY).unwrap();
+            DiskCache::initialize(cache_root.path().to_path_buf(), _DEFAULT_CAPACITY).unwrap();
 
         let num_tasks = 2 + rand::random::<u8>() % 14;
 

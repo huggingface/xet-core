@@ -2,10 +2,8 @@ use std::path::Path;
 
 use cas_types::{Key, Range};
 use merklehash::MerkleHash;
-use rand::Rng;
-use sorted_vec::SortedVec;
+use rand::{seq::SliceRandom, Rng};
 
-pub const DEFAULT_CAPACITY: u64 = 1 << 30;
 #[cfg(test)]
 pub const RANGE_LEN: u32 = 16 << 10;
 #[cfg(not(test))]
@@ -43,27 +41,26 @@ pub fn random_key() -> Key {
 }
 
 pub fn random_range() -> Range {
-    let start = rand::random::<u32>() % 1024;
-    let end = 1024.min(start + 1 + rand::random::<u32>() % 256);
+    let start = rand::random::<u32>() % 1000;
+    let end = start + 1 + rand::random::<u32>() % 20;
     Range { start, end }
 }
 
 pub fn random_bytes(range: &Range) -> (Vec<u32>, Vec<u8>) {
     let mut rng = rand::thread_rng();
     let random_vec: Vec<u8> = (0..RANGE_LEN).map(|_| rng.gen()).collect();
-    let mut offsets: SortedVec<u32> =
-        SortedVec::with_capacity((range.end - range.start + 1) as usize);
 
+    let mut offsets = Vec::with_capacity((range.end - range.start + 1) as usize);
     offsets.push(0);
-    for _ in range.start..range.end - 1 {
-        let mut num = rng.gen::<u32>() % RANGE_LEN;
-        while offsets.contains(&num) {
-            num = (num + 1) % RANGE_LEN;
-        }
-        offsets.push(num);
-    }
-
+    let mut candidates: Vec<u32> = (1..RANGE_LEN).collect();
+    candidates.shuffle(&mut rng);
+    candidates
+        .into_iter()
+        .take((range.end - range.start - 1) as usize)
+        .for_each(|v| offsets.push(v));
+    offsets.sort();
     offsets.push(RANGE_LEN);
+
     (offsets.to_vec(), random_vec)
 }
 

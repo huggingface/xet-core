@@ -39,17 +39,7 @@ impl std::fmt::Display for CacheItem {
 // see logic
 impl Ord for CacheItem {
     fn cmp(&self, other: &Self) -> Ordering {
-        match self.range.cmp(&other.range) {
-            Ordering::Less => return Ordering::Less,
-            Ordering::Equal => {}
-            Ordering::Greater => return Ordering::Greater,
-        }
-        match self.len.cmp(&other.len) {
-            Ordering::Less => return Ordering::Less,
-            Ordering::Equal => {}
-            Ordering::Greater => return Ordering::Greater,
-        }
-        self.hash.as_bytes().cmp(other.hash.as_bytes())
+        self.range.cmp(&other.range)
     }
 }
 
