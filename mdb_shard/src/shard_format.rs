@@ -881,6 +881,10 @@ impl MDBShardInfo {
         );
     }
 
+    /// Read all file info from shard and return a collection of
+    /// (file_hash, (byte_start, byte_end) for file_data_sequence_entry,
+    /// Option<(byte_start, byte_end)> for file_verification_entry).
+    #[allow(clippy::type_complexity)]
     pub fn read_file_info_ranges<R: Read + Seek>(
         reader: &mut R,
     ) -> Result<Vec<(MerkleHash, (u64, u64), Option<(u64, u64)>)>> {
