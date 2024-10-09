@@ -46,7 +46,7 @@ fn get_next_actions(
             }
         }
         (None, Some(_)) => Some([NextAction::Nothing, NextAction::CopyToOut]),
-        (Some(ft0), Some(ft1)) => match ft0.cmp(&ft1) {
+        (Some(ft0), Some(ft1)) => match ft0.cmp(ft1) {
             std::cmp::Ordering::Less => {
                 if op == MDBSetOperation::Union {
                     Some([NextAction::CopyToOut, NextAction::Nothing])
@@ -74,17 +74,17 @@ fn get_next_actions_for_file_info(
 ) -> Option<[NextAction; 2]> {
     // Special case for union operation on file info with same file hash.
     if let (Some(ft0), Some(ft1)) = (h1, h2) {
-        if std::cmp::Ordering::Equal == ft0.file_hash.cmp(&ft1.file_hash) {
-            if op == MDBSetOperation::Union {
-                // Now two parties have the same file hash, and union should produce only one copy.
-                // While one party may have more information than the other, e.g. verification
-                // information, union should produce one with more information.
-                return if ft0.num_info_entry_following() >= ft1.num_info_entry_following() {
-                    Some([NextAction::CopyToOut, NextAction::SkipOver])
-                } else {
-                    Some([NextAction::SkipOver, NextAction::CopyToOut])
-                };
-            }
+        if std::cmp::Ordering::Equal == ft0.file_hash.cmp(&ft1.file_hash)
+            && op == MDBSetOperation::Union
+        {
+            // Now two parties have the same file hash, and union should produce only one copy.
+            // While one party may have more information than the other, e.g. verification
+            // information, union should produce one with more information.
+            return if ft0.num_info_entry_following() >= ft1.num_info_entry_following() {
+                Some([NextAction::CopyToOut, NextAction::SkipOver])
+            } else {
+                Some([NextAction::SkipOver, NextAction::CopyToOut])
+            };
         }
     }
 
