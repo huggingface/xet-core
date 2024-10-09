@@ -109,8 +109,9 @@ fn child_main(args: ChildArgs) {
     let mut i = 0;
     let mut hits = 0f64;
     let mut attempts = 0f64;
+    let mut it = RandomEntryIterator::default();
     while SystemTime::now() < end_time {
-        let (key, range, chunk_byte_indicies, data) = RandomEntryIterator.next().unwrap();
+        let (key, range, chunk_byte_indicies, data) = it.next().unwrap();
         cache
             .put(&key, &range, &chunk_byte_indicies, &data)
             .unwrap();

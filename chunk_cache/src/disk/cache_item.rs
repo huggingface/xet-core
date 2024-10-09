@@ -28,7 +28,7 @@ impl std::fmt::Display for CacheItem {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "CacheItem {{ range: {}, len: {}, hash: {} }}",
+            "CacheItem {{ range: {:?}, len: {}, hash: {} }}",
             self.range, self.len, self.hash,
         )
     }

@@ -17,6 +17,7 @@ sorted-vec = "0.8.3"
 rand = "0.8"
 clap = { version = "4.5.19", features = ["derive"] }
 tempdir = "0.3.7"
+sccache = "0.8.2"
 
 [dev-dependencies]
 rand = "0.8"
