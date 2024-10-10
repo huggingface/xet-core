@@ -391,7 +391,7 @@ impl MDBShardInfo {
             index += (bytes / MDB_FILE_INFO_ENTRY_SIZE) as u32;
         }
 
-        // Serialize a single block of 00 bytes as a guard for sequential reading.
+        // Serialize a single bookend entry as a guard for sequential reading.
         bytes_written += FileDataSequenceHeader::bookend().serialize(writer)?;
 
         // No need to sort because BTreeMap is ordered and we truncate by the first 8 bytes.

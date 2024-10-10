@@ -89,10 +89,6 @@ impl FileDataSequenceHeader {
         })
     }
 
-    pub fn is_valid(&self) -> bool {
-        *self != FileDataSequenceHeader::default()
-    }
-
     pub fn contains_verification(&self) -> bool {
         (self.file_flags & MDB_FILE_FLAG_VERIFICATION_MASK) != 0
     }
@@ -274,9 +270,8 @@ impl MDBFileInfo {
     pub fn deserialize<R: Read>(reader: &mut R) -> Result<Option<Self>, std::io::Error> {
         let metadata = FileDataSequenceHeader::deserialize(reader)?;
 
-        // An invalid header: typically this is the single block of 00 bytes
-        // we put as a guard for sequential reading.
-        if !metadata.is_valid() {
+        // This is the single bookend entry as a guard for sequential reading.
+        if metadata.is_bookend() {
             return Ok(None);
         }
 
