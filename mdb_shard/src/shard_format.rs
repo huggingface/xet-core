@@ -392,7 +392,7 @@ impl MDBShardInfo {
         }
 
         // Serialize a single block of 00 bytes as a guard for sequential reading.
-        bytes_written += FileDataSequenceHeader::default().serialize(writer)?;
+        bytes_written += FileDataSequenceHeader::bookend().serialize(writer)?;
 
         // No need to sort because BTreeMap is ordered and we truncate by the first 8 bytes.
         Ok(((file_lookup_keys, file_lookup_vals), bytes_written))
@@ -434,8 +434,8 @@ impl MDBShardInfo {
             index += 1 + content.chunks.len() as u32;
         }
 
-        // Serialize a single block of 00 bytes as a guard for sequential reading.
-        bytes_written += CASChunkSequenceHeader::default().serialize(writer)?;
+        // Serialize a single bookend entry as a guard for sequential reading.
+        bytes_written += CASChunkSequenceHeader::bookend().serialize(writer)?;
 
         // No need to sort cas_lookup_ because BTreeMap is ordered and we truncate by the first 8 bytes.
 
@@ -895,7 +895,7 @@ impl MDBShardInfo {
         loop {
             let header = FileDataSequenceHeader::deserialize(reader)?;
 
-            if !header.is_valid() {
+            if header.is_bookend() {
                 break;
             }
 
@@ -1011,7 +1011,7 @@ impl MDBShardInfo {
             out_footer.file_info_offset = self.metadata.file_info_offset;
 
             // Serialize a single block of 00 bytes as a guard for sequential reading.
-            byte_pos += FileDataSequenceHeader::default().serialize(writer)?;
+            byte_pos += FileDataSequenceHeader::bookend().serialize(writer)?;
 
             out_footer.file_lookup_offset = byte_pos as u64;
             out_footer.file_lookup_num_entry = 0;

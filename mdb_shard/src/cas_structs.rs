@@ -37,6 +37,18 @@ impl CASChunkSequenceHeader {
         }
     }
 
+    pub fn bookend() -> Self {
+        Self {
+            // Use all 1s to denote a bookend hash.
+            cas_hash: [!0u64; 4].into(),
+            ..Default::default()
+        }
+    }
+
+    pub fn is_bookend(&self) -> bool {
+        self.cas_hash == [!0u64; 4].into()
+    }
+
     pub fn new_with_compression<I1: TryInto<u32>, I2: TryInto<u32> + Copy>(
         cas_hash: MerkleHash,
         num_entries: I1,
