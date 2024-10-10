@@ -1,6 +1,11 @@
 mod disk;
 pub mod error;
 
+pub mod sccache;
+pub mod solid_cache;
+
+use std::path::PathBuf;
+
 use cas_types::{Key, Range};
 use error::ChunkCacheError;
 
@@ -48,4 +53,10 @@ pub trait ChunkCache: Sync + Send {
         chunk_byte_indicies: &[u32],
         data: &[u8],
     ) -> Result<(), ChunkCacheError>;
+}
+
+/// only used for benchmark code
+pub trait ChunkCacheExt: ChunkCache + Sized + Clone {
+    fn _initialize(cache_root: PathBuf, capacity: u64) -> Result<Self, ChunkCacheError>;
+    fn name() -> &'static str;
 }

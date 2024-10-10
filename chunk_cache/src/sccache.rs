@@ -6,23 +6,27 @@ use std::{
     sync::{Arc, Mutex},
 };
 
+use crate::{error::ChunkCacheError, ChunkCache, ChunkCacheExt};
 use base64::Engine;
 use cas_types::{Key, Range};
-use chunk_cache::{error::ChunkCacheError, ChunkCache};
 use sccache::lru_disk_cache::LruDiskCache;
 
+#[derive(Clone)]
 pub struct SCCache {
     cache: Arc<Mutex<LruDiskCache>>,
 }
 
-impl SCCache {
-    pub fn initialize(cache_root: PathBuf, capacity: u64) -> Result<Self, ChunkCacheError> {
-        let cache =
-            LruDiskCache::new(cache_root, capacity).map_err(|e| ChunkCacheError::parse(e))?;
+impl ChunkCacheExt for SCCache {
+    fn _initialize(cache_root: PathBuf, capacity: u64) -> Result<Self, ChunkCacheError> {
+        let cache = LruDiskCache::new(cache_root, capacity).map_err(ChunkCacheError::general)?;
 
         Ok(Self {
             cache: Arc::new(Mutex::new(cache)),
         })
+    }
+
+    fn name() -> &'static str {
+        "sccache"
     }
 }
 
@@ -60,7 +64,7 @@ impl ChunkCache for SCCache {
 
         cache
             .insert_bytes(cache_key, data)
-            .map_err(|e| ChunkCacheError::parse(e))?;
+            .map_err(ChunkCacheError::general)?;
         Ok(())
     }
 }

@@ -6,6 +6,8 @@ use xet_error::Error;
 
 #[derive(Debug, Error)]
 pub enum ChunkCacheError {
+    #[error("General: {0}")]
+    General(String),
     #[error("IO: {0}")]
     IO(#[from] std::io::Error),
     #[error("ParseError: {0}")]
@@ -25,6 +27,10 @@ pub enum ChunkCacheError {
 impl ChunkCacheError {
     pub fn parse<T: ToString>(value: T) -> ChunkCacheError {
         ChunkCacheError::Parse(value.to_string())
+    }
+
+    pub fn general<T: ToString>(value: T) -> ChunkCacheError {
+        ChunkCacheError::General(value.to_string())
     }
 }
 

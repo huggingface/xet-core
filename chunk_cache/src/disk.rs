@@ -15,9 +15,11 @@ use cas_types::{Key, Range};
 use file_utils::SafeFileCreator;
 use merklehash::MerkleHash;
 use sorted_vec::SortedVec;
-use tracing::{error, warn};
+use tracing::debug;
 
 use crate::{error::ChunkCacheError, ChunkCache};
+
+use crate::ChunkCacheExt;
 
 mod cache_file_header;
 mod cache_item;
@@ -94,7 +96,7 @@ impl DiskCache {
                 }
             };
             if !md.is_dir() {
-                warn!(
+                debug!(
                     "CACHE: expected key directory at {:?}, is not directory",
                     key_dir.path()
                 );
@@ -143,7 +145,7 @@ impl DiskCache {
                 let cache_item = match CacheItem::parse(item.file_name().as_encoded_bytes()) {
                     Ok(i) => i,
                     Err(e) => {
-                        warn!(
+                        debug!(
                             "error parsing cache item file info from path: {:?}, {e}",
                             item.path()
                         );
@@ -206,7 +208,7 @@ impl DiskCache {
             };
             let hash = compute_hash_from_reader(&mut file)?;
             if hash != item.hash {
-                error!("file hash mismatch on path: {path:?}, key: {key}, item: {item}");
+                debug!("file hash mismatch on path: {path:?}, key: {key}, item: {item}");
                 self.remove_item(key, &item)?;
                 continue;
             }
@@ -271,6 +273,8 @@ impl DiskCache {
             // chunk_byte_indices is guarenteed to be more than 1 element at this point
             || chunk_byte_indicies[0] != 0
             || *chunk_byte_indicies.last().unwrap() as usize != data.len()
+            // assert 1 new range doesn't take up more than 10% of capacity
+            || data.len() > (self.capacity as usize / 10)
         {
             return Err(ChunkCacheError::InvalidArguments);
         }
@@ -355,7 +359,7 @@ impl DiskCache {
             remove_file(&path)?;
             let dir_path = path.parent().ok_or(ChunkCacheError::Infallible)?;
             // check if directory exists and if it does and is empty then remove the directory
-            if let Ok(mut readdir) = std::fs::read_dir(&dir_path) {
+            if let Ok(mut readdir) = std::fs::read_dir(dir_path) {
                 if readdir.next().is_none() {
                     // no more files in that directory, remove it
                     remove_dir(dir_path)?;
@@ -475,6 +479,16 @@ impl ChunkCache for DiskCache {
     }
 }
 
+impl ChunkCacheExt for DiskCache {
+    fn _initialize(cache_root: PathBuf, capacity: u64) -> Result<Self, ChunkCacheError> {
+        DiskCache::initialize(cache_root, capacity)
+    }
+
+    fn name() -> &'static str {
+        "disk"
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeSet;
@@ -559,13 +573,14 @@ mod tests {
 
     #[test]
     fn test_puts_eviction() {
-        const CAP: u64 = (RANGE_LEN * 4) as u64;
+        const MIN_NUM_KEYS: u32 = 12;
+        const CAP: u64 = (RANGE_LEN * (MIN_NUM_KEYS - 1)) as u64;
         let cache_root = TempDir::new("puts_eviction").unwrap();
         let cache = DiskCache::initialize(cache_root.path().to_path_buf(), CAP).unwrap();
         let mut it = RandomEntryIterator::default();
 
         // fill the cache to almost capacity
-        for _ in 0..3 {
+        for _ in 0..MIN_NUM_KEYS {
             let (key, range, offsets, data) = it.next().unwrap();
             assert!(cache.put(&key, &range, &offsets, &data).is_ok());
         }
@@ -730,7 +745,7 @@ mod concurrency_tests {
 
     use super::DiskCache;
 
-    const NUM_ITEMS_PER_TASK: usize = 10;
+    const NUM_ITEMS_PER_TASK: usize = 20;
 
     #[tokio::test]
     async fn test_run_concurrently() {
