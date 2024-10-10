@@ -2,6 +2,7 @@ use crate::error::Result;
 use async_trait::async_trait;
 use cas_types::QueryReconstructionResponse;
 use merklehash::MerkleHash;
+use reqwest_middleware::ClientWithMiddleware;
 use std::io::Write;
 
 /// A Client to the CAS (Content Addressed Storage) service to allow storage and
@@ -21,7 +22,8 @@ pub trait UploadClient {
     /// Note that put may background in some implementations and a flush()
     /// will be needed.
     async fn put(
-        &self,
+        endpoint: &str,
+        http_client_auth: &ClientWithMiddleware,
         prefix: &str,
         hash: &MerkleHash,
         data: Vec<u8>,
@@ -29,12 +31,12 @@ pub trait UploadClient {
     ) -> Result<()>;
 
     /// Check if a XORB already exists.
-    async fn exists(&self, prefix: &str, hash: &MerkleHash) -> Result<bool>;
-
-    /// Clients may do puts in the background. A flush is necessary
-    /// to enforce completion of all puts. If an error occured during any
-    /// background put it will be returned here.
-    async fn flush(&self) -> Result<()>;
+    async fn exists(
+        endpoint: &str,
+        http_client_auth: &ClientWithMiddleware,
+        prefix: &str,
+        hash: &MerkleHash,
+    ) -> Result<bool>;
 }
 
 /// A Client to the CAS (Content Addressed Storage) service to allow reconstructing a
@@ -42,11 +44,19 @@ pub trait UploadClient {
 #[async_trait]
 pub trait ReconstructionClient {
     /// Get a entire file by file hash.
-    async fn get_file(&self, hash: &MerkleHash, writer: &mut Box<dyn Write + Send>) -> Result<()>;
+    async fn get_file(
+        endpoint: &str,
+        http_client_auth: &ClientWithMiddleware,
+        http_client: &ClientWithMiddleware,
+        hash: &MerkleHash,
+        writer: &mut Box<dyn Write + Send>,
+    ) -> Result<()>;
 
     /// Get a entire file by file hash at a specific bytes range.
     async fn get_file_byte_range(
-        &self,
+        endpoint: &str,
+        http_client_auth: &ClientWithMiddleware,
+        http_client: &ClientWithMiddleware,
         hash: &MerkleHash,
         offset: u64,
         length: u64,
@@ -63,55 +73,9 @@ pub trait Client: UploadClient + ReconstructionClient {}
 #[async_trait]
 pub(crate) trait Reconstructable {
     async fn reconstruct(
-        &self,
+        endpoint: &str,
+        http_client_auth: &ClientWithMiddleware,
         hash: &MerkleHash,
         byte_range: Option<(u64, u64)>,
     ) -> Result<QueryReconstructionResponse>;
 }
-
-/*
- * If T implements Client, Arc<T> also implements Client
- */
-// #[async_trait]
-// impl<T: UploadClient + Send + Sync> UploadClient for Arc<T> {
-//     async fn put(
-//         &self,
-//         prefix: &str,
-//         hash: &MerkleHash,
-//         data: Vec<u8>,
-//         chunk_and_boundaries: Vec<(MerkleHash, u32)>,
-//     ) -> Result<()> {
-//         (**self).put(prefix, hash, data, chunk_and_boundaries).await
-//     }
-
-//     async fn exists(&self, prefix: &str, hash: &MerkleHash) -> Result<bool> {
-//         (**self).exists(prefix, hash).await
-//     }
-
-//     /// Clients may do puts in the background. A flush is necessary
-//     /// to enforce completion of all puts. If an error occured during any
-//     /// background put it will be returned here.force completion of all puts.
-//     async fn flush(&self) -> Result<()> {
-//         (**self).flush().await
-//     }
-// }
-
-// #[async_trait]
-// impl<T: ReconstructionClient + Send + Sync> ReconstructionClient for Arc<T> {
-//     /// Get a entire file by file hash.
-//     async fn get_file(&self, hash: &MerkleHash, writer: &mut Box<dyn Write + Send>) -> Result<()> {
-//         (**self).get_file(hash, writer).await
-//     }
-
-//     async fn get_file_byte_range(
-//         &self,
-//         hash: &MerkleHash,
-//         offset: u64,
-//         length: u64,
-//         writer: &mut Box<dyn Write + Send>,
-//     ) -> Result<()> {
-//         (**self)
-//             .get_file_byte_range(hash, offset, length, writer)
-//             .await
-//     }
-// }

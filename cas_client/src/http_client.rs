@@ -2,9 +2,44 @@ use anyhow::anyhow;
 use reqwest::header::HeaderValue;
 use reqwest::header::AUTHORIZATION;
 use reqwest::{Request, Response};
-use reqwest_middleware::{Middleware, Next};
 use std::sync::{Arc, Mutex};
 use utils::auth::{AuthConfig, TokenProvider};
+use reqwest_middleware::{ClientBuilder, ClientWithMiddleware, Middleware, Next};
+use error_printer::OptionPrinter;
+
+/// builds the client to talk to CAS.
+pub fn build_auth_http_client(
+    auth_config: &Option<AuthConfig>,
+) -> std::result::Result<ClientWithMiddleware, reqwest::Error> {
+    let auth_middleware = auth_config
+        .as_ref()
+        .map(AuthMiddleware::from)
+        .info_none("CAS auth disabled");
+    let reqwest_client = reqwest::Client::builder().build()?;
+    Ok(ClientBuilder::new(reqwest_client)
+        .maybe_with(auth_middleware)
+        .build())
+}
+
+pub fn build_http_client() -> std::result::Result<ClientWithMiddleware, reqwest::Error> {
+    let reqwest_client = reqwest::Client::builder().build()?;
+    Ok(ClientBuilder::new(reqwest_client).build())
+}
+
+/// Helper trait to allow the reqwest_middleware client to optionally add a middleware.
+trait OptionalMiddleware {
+    fn maybe_with<M: Middleware>(self, middleware: Option<M>) -> Self;
+}
+
+impl OptionalMiddleware for ClientBuilder {
+    fn maybe_with<M: Middleware>(self, middleware: Option<M>) -> Self {
+        match middleware {
+            Some(m) => self.with(m),
+            None => self,
+        }
+    }
+}
+
 
 /// AuthMiddleware is a thread-safe middleware that adds a CAS auth token to outbound requests.
 /// If the token it holds is expired, it will automatically be refreshed.
