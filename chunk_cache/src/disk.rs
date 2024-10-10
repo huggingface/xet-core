@@ -1,6 +1,6 @@
 use std::{
     collections::HashMap,
-    fs::File,
+    fs::{read_dir, File},
     io::{ErrorKind, Read, Seek, SeekFrom, Write},
     mem::size_of,
     path::{Path, PathBuf},
@@ -184,23 +184,13 @@ impl DiskCache {
             return Err(ChunkCacheError::InvalidArguments);
         }
 
-        let mut state = self.state.lock()?;
-        let items = if let Some(items) = state.get_mut(key) {
-            items
-        } else {
-            // no entry matched for key
-            return Ok(None);
-        };
-
         let (mut file, header, start) = loop {
-            // attempt to find a matching range in the given key's items using binary search
-            let idx = items.binary_search_by(range_contained_fn(range));
-            if idx.is_err() {
-                // no matching range for this key
+            let item = if let Some(item) = self.find_match(key, range)? {
+                item
+            } else {
                 return Ok(None);
-            }
-            let idx = idx.expect("already checked for error case");
-            let item = items.get(idx).ok_or(ChunkCacheError::Infallible)?;
+            };
+
             let file_name = item.to_file_name()?;
             let path = self.cache_root.join(key_dir(key)).join(file_name);
 
@@ -208,17 +198,16 @@ impl DiskCache {
                 Ok(file) => file,
                 Err(e) => match e.kind() {
                     ErrorKind::NotFound => {
-                        items.remove_index(idx);
+                        self.remove_item(key, &item)?;
                         continue;
                     }
                     _ => return Err(e.into()),
                 },
             };
-            let hash = blake3::Hasher::new().update_reader(&mut file)?.finalize();
+            let hash = compute_hash_from_reader(&mut file)?;
             if hash != item.hash {
                 error!("file hash mismatch on path: {path:?}, key: {key}, item: {item}");
-                items.remove_index(idx);
-                remove_file(&path)?;
+                self.remove_item(key, &item)?;
                 continue;
             }
 
@@ -226,8 +215,8 @@ impl DiskCache {
             let header = match CacheFileHeader::deserialize(&mut file) {
                 Ok(header) => header,
                 Err(_) => {
-                    items.remove_index(idx);
-                    remove_file(&path)?;
+                    // HOLD
+                    self.remove_item(key, &item)?;
                     continue;
                 }
             };
@@ -235,7 +224,6 @@ impl DiskCache {
             let start = item.range.start;
             break (file, header, start);
         };
-        drop(state);
         let start_byte = header
             .chunk_byte_indicies
             .get((range.start - start) as usize)
@@ -250,6 +238,25 @@ impl DiskCache {
         let mut buf = vec![0; (end_byte - start_byte) as usize];
         file.read_exact(&mut buf)?;
         Ok(Some(buf))
+    }
+
+    fn find_match(&self, key: &Key, range: &Range) -> Result<Option<CacheItem>, ChunkCacheError> {
+        let state = self.state.lock()?;
+        let items = if let Some(items) = state.get(key) {
+            items
+        } else {
+            return Ok(None);
+        };
+
+        // attempt to find a matching range in the given key's items using binary search
+        let idx = items.binary_search_by(range_contained_fn(range));
+        if idx.is_err() {
+            // no matching range for this key
+            return Ok(None);
+        }
+        let idx = idx.expect("already checked for error case");
+        let item = items.get(idx).ok_or(ChunkCacheError::Infallible)?;
+        Ok(Some(item.clone()))
     }
 
     fn put_impl(
@@ -269,39 +276,26 @@ impl DiskCache {
         }
 
         // check if we already contain the range
-        if let Some(item_set) = self.state.lock()?.get_mut(key) {
-            while let Ok(idx) = item_set.binary_search_by(range_contained_fn(range)) {
-                let item = item_set.get(idx).ok_or(ChunkCacheError::Infallible)?;
-                let path = self
-                    .cache_root
-                    .join(key_dir(key))
-                    .join(item.to_file_name()?);
-                match File::open(&path) {
-                    Ok(mut file) => {
-                        let hash = blake3::Hasher::new().update_reader(&mut file)?.finalize();
-                        if hash == item.hash && file.metadata()?.len() == item.len {
-                            return Ok(());
-                        }
-                    }
-                    Err(e) => {
-                        if e.kind() == ErrorKind::NotFound {
-                            item_set.remove_index(idx);
-                        } else {
-                            remove_file(path)?;
-                            // should remove directory if empty as well as item set
-                        }
+        while let Some(item) = self.find_match(key, range)? {
+            let path = self
+                .cache_root
+                .join(key_dir(key))
+                .join(item.to_file_name()?);
+            match File::open(&path) {
+                Ok(mut file) => {
+                    let hash = blake3::Hasher::new().update_reader(&mut file)?.finalize();
+                    if hash == item.hash && file.metadata()?.len() == item.len {
+                        return Ok(());
                     }
                 }
+                Err(_) => self.remove_item(key, &item)?,
             }
         }
 
         let header = CacheFileHeader::new(chunk_byte_indicies);
         let mut header_buf = Vec::with_capacity(header.header_len());
         header.serialize(&mut header_buf)?;
-        let hash = blake3::Hasher::new()
-            .update(&header_buf)
-            .update(data)
-            .finalize();
+        let hash = compute_hash(&header_buf, data);
 
         let item = CacheItem {
             range: range.clone(),
@@ -331,11 +325,12 @@ impl DiskCache {
 
     /// removed items from the cache (including deleting from file system)
     /// until at least to_remove number of bytes have been removed
-    fn maybe_evict(&self, want_to_add: u64) -> Result<(), ChunkCacheError> {
+    fn maybe_evict(&self, expected_add: u64) -> Result<(), ChunkCacheError> {
         let mut state = self.state.lock()?;
         let total_bytes = total_bytes(&state);
-        let to_remove = total_bytes as i64 - self.capacity as i64 + want_to_add as i64;
+        let to_remove = total_bytes as i64 - self.capacity as i64 + expected_add as i64;
         let mut bytes_removed = 0;
+        let mut paths = Vec::new();
         while to_remove > bytes_removed {
             let (key, idx) = self.random_item(&state);
             let items = state.get_mut(&key).ok_or(ChunkCacheError::Infallible)?;
@@ -345,22 +340,27 @@ impl DiskCache {
                 .cache_root
                 .join(key_dir(&key))
                 .join(item.to_file_name()?);
-            remove_file(path)?;
+            paths.push(path);
             items.remove_index(idx);
             if items.is_empty() {
                 state.remove(&key);
-
-                let dir_path = self.cache_root.join(key_dir(&key));
-                // check if directory exists and if it does and is empty then remove the directory
-                if let Ok(mut readdir) = std::fs::read_dir(&dir_path) {
-                    if readdir.next().is_none() {
-                        // no more files in that directory, remove it
-                        remove_dir(dir_path)?;
-                    }
-                }
             }
 
             bytes_removed += len as i64;
+        }
+        drop(state);
+
+        // remove files after done with modifyinf in memory state and releasing lock
+        for path in paths {
+            remove_file(&path)?;
+            let dir_path = path.parent().ok_or(ChunkCacheError::Infallible)?;
+            // check if directory exists and if it does and is empty then remove the directory
+            if let Ok(mut readdir) = std::fs::read_dir(&dir_path) {
+                if readdir.next().is_none() {
+                    // no more files in that directory, remove it
+                    remove_dir(dir_path)?;
+                }
+            }
         }
         Ok(())
     }
@@ -379,6 +379,44 @@ impl DiskCache {
 
         panic!("should have returned")
     }
+
+    fn remove_item(&self, key: &Key, item: &CacheItem) -> Result<(), ChunkCacheError> {
+        {
+            let mut state = self.state.lock()?;
+            if let Some(items) = state.get_mut(key) {
+                items.remove_item(item);
+            }
+        }
+
+        let path = self
+            .cache_root
+            .join(key_dir(key))
+            .join(item.to_file_name()?);
+
+        if !path.exists() {
+            return Ok(());
+        }
+
+        remove_file(&path)?;
+        let dir_path = path.parent().ok_or(ChunkCacheError::Infallible)?;
+
+        if let Ok(readir) = read_dir(dir_path) {
+            if readir.peekable().peek().is_none() {
+                // directory empty, remove it
+                remove_dir(dir_path)?;
+            }
+        }
+
+        Ok(())
+    }
+}
+
+fn compute_hash(header: &[u8], data: &[u8]) -> blake3::Hash {
+    blake3::Hasher::new().update(header).update(data).finalize()
+}
+
+fn compute_hash_from_reader(r: &mut impl Read) -> Result<blake3::Hash, ChunkCacheError> {
+    Ok(blake3::Hasher::new().update_reader(r)?.finalize())
 }
 
 fn total_bytes(state: &CacheState) -> u64 {

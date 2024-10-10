@@ -5,21 +5,24 @@ SCCache implementation requires an exact range match, the test accounts for this
 get: runs random gets, almost certain to all be misses
 get_hit: runs gets guarenteed to be hits
 put: before the measuring, the cache is filled so all puts required evictions.
-get_mt: multithreaded, each run is 4 gets run asynchronously on 4 spawned tokio tasks.
+get_mt: multithreaded, each run is 8 gets run asynchronously on 8 spawned tokio tasks.
+put_mt: mutlithreaded put, cache is pre-filled, so all puts require evictions, 8 tasks concurrently.
 
 ## Latest on Assaf's M2 Macbook Pro
 
 Summarized:
 
 ```text
-cache_get_std_1_GB: 317.15 ns
-cache_get_sccache: 725.92 ns
-cache_get_hit_std_1_GB: 802.49 µs
-cache_get_hit_sccache: 226.15 µs
-cache_put_std_1_GB: 159.90 ms
-cache_put_sccache: 160.64 ms
-cache_get_mt_std_1_GB: 9.5891 µs
-cache_get_mt_sccache: 11.531 µs
+cache_get_std_1_GB: 314.53 ns
+cache_get_sccache: 691.71 ns
+cache_get_hit_std_1_GB: 780.54 µs
+cache_get_hit_sccache: 197.97 µs
+cache_put_std_1_GB: 130.54 ms
+cache_put_sccache: 122.87 ms
+cache_get_mt/std_1_GB: 12.236 µs
+cache_get_mt/sccache: 16.222 µs
+cache_put_mt/std_1_GB: 220.85 ms
+cache_put_mt/sccache: 218.82 ms
 ```
 
 Summary: current implementation compared to sccache has faster misses, but slower hits
@@ -27,56 +30,74 @@ Summary: current implementation compared to sccache has faster misses, but slowe
 Raw:
 
 ```text
-cache_get_std_1_GB      time:   [313.62 ns 317.15 ns 323.18 ns]
-                        change: [-1.7216% -0.8301% +0.5408%] (p = 0.15 > 0.05)
-                        No change in performance detected.
-Found 15 outliers among 100 measurements (15.00%)
-  2 (2.00%) low mild
-  7 (7.00%) high mild
-  6 (6.00%) high severe
+     Running unittests src/bin/cache_resiliancy_test.rs (/Users/assafvayner/hf/xet-core/target/release/deps/cache_resiliancy_test-1a9e8997cb2b07aa)
 
-cache_get_sccache       time:   [719.92 ns 725.92 ns 731.85 ns]
-                        change: [+1.9459% +2.8220% +3.8241%] (p = 0.00 < 0.05)
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running benches/cache_bench.rs (/Users/assafvayner/hf/xet-core/target/release/deps/cache_bench-610aadf20abf5452)
+cache_get_std_1_GB      time:   [312.59 ns 314.53 ns 316.66 ns]
+                        change: [+21.781% +22.810% +23.797%] (p = 0.00 < 0.05)
                         Performance has regressed.
-Found 2 outliers among 100 measurements (2.00%)
-  2 (2.00%) high mild
+Found 4 outliers among 100 measurements (4.00%)
+  4 (4.00%) high mild
 
-cache_get_hit_std_1_GB  time:   [794.26 µs 802.49 µs 811.65 µs]
-                        change: [-0.8794% -0.0982% +0.6609%] (p = 0.81 > 0.05)
-                        No change in performance detected.
-Found 5 outliers among 100 measurements (5.00%)
-  1 (1.00%) high mild
-  4 (4.00%) high severe
-
-cache_get_hit_sccache   time:   [223.65 µs 226.15 µs 229.10 µs]
-                        change: [+6.2922% +7.7773% +9.4043%] (p = 0.00 < 0.05)
+cache_get_sccache       time:   [684.70 ns 691.71 ns 698.51 ns]
+                        change: [+11.059% +12.152% +13.177%] (p = 0.00 < 0.05)
                         Performance has regressed.
-Found 5 outliers among 100 measurements (5.00%)
-  3 (3.00%) high mild
+Found 4 outliers among 100 measurements (4.00%)
+  4 (4.00%) high mild
+
+cache_get_hit_std_1_GB  time:   [778.33 µs 780.54 µs 782.78 µs]
+                        change: [+1.5561% +2.1907% +2.8432%] (p = 0.00 < 0.05)
+                        Performance has regressed.
+Found 6 outliers among 100 measurements (6.00%)
+  4 (4.00%) high mild
   2 (2.00%) high severe
 
-cache_put_std_1_GB      time:   [158.49 ms 159.90 ms 161.51 ms]
-                        change: [-8.4353% -7.3834% -6.2071%] (p = 0.00 < 0.05)
-                        Performance has improved.
-Found 10 outliers among 100 measurements (10.00%)
-  6 (6.00%) high mild
-  4 (4.00%) high severe
-
-cache_put_sccache       time:   [159.66 ms 160.64 ms 161.81 ms]
-                        change: [-6.6452% -5.4062% -4.1045%] (p = 0.00 < 0.05)
-                        Performance has improved.
-Found 4 outliers among 100 measurements (4.00%)
-  1 (1.00%) high mild
-  3 (3.00%) high severe
-
-cache_get_mt_std_1_GB/  time:   [9.5020 µs 9.5891 µs 9.6961 µs]
-Found 12 outliers among 100 measurements (12.00%)
-  1 (1.00%) low severe
-  5 (5.00%) high mild
-  6 (6.00%) high severe
-
-cache_get_mt_sccache/   time:   [11.424 µs 11.531 µs 11.651 µs]
+cache_get_hit_sccache   time:   [196.34 µs 197.97 µs 199.75 µs]
+                        change: [+0.5284% +1.9270% +3.3375%] (p = 0.01 < 0.05)
+                        Change within noise threshold.
 Found 3 outliers among 100 measurements (3.00%)
   2 (2.00%) high mild
   1 (1.00%) high severe
+
+cache_put_std_1_GB      time:   [129.95 ms 130.54 ms 131.18 ms]
+                        change: [-14.703% -14.191% -13.668%] (p = 0.00 < 0.05)
+                        Performance has improved.
+Found 2 outliers among 100 measurements (2.00%)
+  1 (1.00%) high mild
+  1 (1.00%) high severe
+
+cache_put_sccache       time:   [122.42 ms 122.87 ms 123.34 ms]
+                        change: [-16.653% -16.263% -15.827%] (p = 0.00 < 0.05)
+                        Performance has improved.
+Found 2 outliers among 100 measurements (2.00%)
+  2 (2.00%) high mild
+
+cache_get_mt/std_1_GB   time:   [12.169 µs 12.236 µs 12.304 µs]
+                        change: [-1.2254% +0.0094% +1.2885%] (p = 0.99 > 0.05)
+                        No change in performance detected.
+Found 7 outliers among 100 measurements (7.00%)
+  3 (3.00%) high mild
+  4 (4.00%) high severe
+
+cache_get_mt/sccache    time:   [16.051 µs 16.222 µs 16.397 µs]
+                        change: [+0.6889% +2.0261% +3.4757%] (p = 0.01 < 0.05)
+                        Change within noise threshold.
+Found 8 outliers among 100 measurements (8.00%)
+  6 (6.00%) high mild
+  2 (2.00%) high severe
+
+cache_put_mt/std_1_GB   time:   [219.94 ms 220.85 ms 221.84 ms]
+Found 5 outliers among 100 measurements (5.00%)
+  5 (5.00%) high mild
+
+cache_put_mt/sccache    time:   [218.19 ms 218.82 ms 219.54 ms]
+                        change: [-0.7315% -0.2334% +0.2445%] (p = 0.37 > 0.05)
+                        No change in performance detected.
+Found 18 outliers among 100 measurements (18.00%)
+  9 (9.00%) high mild
+  9 (9.00%) high severe
 ```
