@@ -635,7 +635,12 @@ impl MDBShardInfo {
         reader.seek(SeekFrom::Start(self.metadata.cas_info_offset))?;
 
         for _ in 0..(self.num_cas_entries() as u32) {
-            ret.push(MDBCASInfo::deserialize(reader)?);
+            let Some(cas_info) = MDBCASInfo::deserialize(reader)? else {
+                return Err(MDBShardError::InternalError(anyhow!(
+                    "corrupted shard, detected cas info bookend before deserializing all cas block info"
+                )));
+            };
+            ret.push(cas_info);
         }
 
         Ok(ret)
@@ -1401,7 +1406,7 @@ pub mod test_routines {
 
             cursor.seek(std::io::SeekFrom::Start(pos))?;
 
-            let read_cas = MDBCASInfo::deserialize(&mut cursor)?;
+            let read_cas = MDBCASInfo::deserialize(&mut cursor)?.unwrap();
             assert_eq!(read_cas.metadata, cas_block);
 
             assert_eq!(&read_cas, cas.as_ref());

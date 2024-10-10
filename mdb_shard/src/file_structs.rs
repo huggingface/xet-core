@@ -275,14 +275,14 @@ impl MDBFileInfo {
             return Ok(None);
         }
 
-        let num_entries = metadata.num_entries;
+        let num_entries = metadata.num_entries as usize;
 
-        let mut segments = vec![];
+        let mut segments = Vec::with_capacity(num_entries);
         for _ in 0..num_entries {
             segments.push(FileDataSequenceEntry::deserialize(reader)?);
         }
 
-        let mut verification = vec![];
+        let mut verification = Vec::with_capacity(num_entries);
         if metadata.contains_verification() {
             for _ in 0..num_entries {
                 verification.push(FileVerificationEntry::deserialize(reader)?);
