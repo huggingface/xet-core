@@ -95,7 +95,7 @@ fn set_operation<R: Read + Seek, W: Write>(
 
         let load_next = |_r: &mut R, _s: &MDBShardInfo| -> Result<_> {
             let fdsh = FileDataSequenceHeader::deserialize(_r)?;
-            if fdsh.file_hash == MerkleHash::default() {
+            if fdsh.is_bookend() {
                 Ok(None)
             } else {
                 Ok(Some(fdsh))
@@ -142,7 +142,7 @@ fn set_operation<R: Read + Seek, W: Write>(
                 };
             }
         }
-        out_offset += FileDataSequenceHeader::default().serialize(out)? as u64;
+        out_offset += FileDataSequenceHeader::bookend().serialize(out)? as u64;
 
         footer.file_lookup_offset = out_offset;
         footer.file_lookup_num_entry = file_lookup_data.len() as u64;
@@ -172,7 +172,7 @@ fn set_operation<R: Read + Seek, W: Write>(
 
         let load_next = |_r: &mut R, _s: &MDBShardInfo| -> Result<_> {
             let ccsh = CASChunkSequenceHeader::deserialize(_r)?;
-            if ccsh.cas_hash == MerkleHash::default() {
+            if ccsh.is_bookend() {
                 Ok(None)
             } else {
                 Ok(Some(ccsh))
@@ -220,7 +220,7 @@ fn set_operation<R: Read + Seek, W: Write>(
             }
         }
 
-        out_offset += CASChunkSequenceHeader::default().serialize(out)? as u64;
+        out_offset += CASChunkSequenceHeader::bookend().serialize(out)? as u64;
 
         // Write out the cas and chunk lookup sections.
         footer.cas_lookup_offset = out_offset;

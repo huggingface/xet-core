@@ -34,6 +34,18 @@ impl FileDataSequenceHeader {
         }
     }
 
+    pub fn bookend() -> Self {
+        Self {
+            // The bookend file hash is all 1s
+            file_hash: [!0u64; 4].into(),
+            ..Default::default()
+        }
+    }
+
+    pub fn is_bookend(&self) -> bool {
+        self.file_hash == [!0u64; 4].into()
+    }
+
     pub fn serialize<W: Write>(&self, writer: &mut W) -> Result<usize, std::io::Error> {
         let mut buf = [0u8; size_of::<Self>()];
         {
