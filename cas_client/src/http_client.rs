@@ -7,10 +7,12 @@ use utils::auth::{AuthConfig, TokenProvider};
 use reqwest_middleware::{ClientBuilder, ClientWithMiddleware, Middleware, Next};
 use error_printer::OptionPrinter;
 
+use crate::CasClientError;
+
 /// builds the client to talk to CAS.
 pub fn build_auth_http_client(
     auth_config: &Option<AuthConfig>,
-) -> std::result::Result<ClientWithMiddleware, reqwest::Error> {
+) -> std::result::Result<ClientWithMiddleware, CasClientError> {
     let auth_middleware = auth_config
         .as_ref()
         .map(AuthMiddleware::from)
@@ -21,7 +23,7 @@ pub fn build_auth_http_client(
         .build())
 }
 
-pub fn build_http_client() -> std::result::Result<ClientWithMiddleware, reqwest::Error> {
+pub fn build_http_client() -> std::result::Result<ClientWithMiddleware, CasClientError> {
     let reqwest_client = reqwest::Client::builder().build()?;
     Ok(ClientBuilder::new(reqwest_client).build())
 }

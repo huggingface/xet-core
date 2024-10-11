@@ -2,7 +2,7 @@ use crate::error::{Result, ShardClientError};
 use crate::{RegistrationClient, ShardClientInterface};
 use async_trait::async_trait;
 use bytes::Buf;
-use cas_client::build_reqwest_client;
+use cas_client::build_auth_http_client;
 use cas_types::Key;
 use cas_types::{QueryReconstructionResponse, UploadShardResponse, UploadShardResponseType};
 use file_utils::write_all_safe;
@@ -39,7 +39,7 @@ impl HttpShardClient {
         auth_config: &Option<AuthConfig>,
         shard_cache_directory: Option<PathBuf>,
     ) -> Self {
-        let client = build_reqwest_client(auth_config).unwrap();
+        let client = build_auth_http_client(auth_config).unwrap();
         HttpShardClient {
             endpoint: endpoint.into(),
             client,
