@@ -93,13 +93,6 @@ impl ChunkCache for SolidCache {
     }
 }
 
-// fn key_from_string(s: &str) -> Key {
-//     let split: Vec<&str> = s.split('/').collect();
-//     let prefix = String::from(split[0]);
-//     let hash = MerkleHash::from_hex(split[1]).unwrap();
-//     Key { prefix, hash }
-// }
-
 #[cfg(test)]
 mod tests {
     use crate::{ChunkCache, RandomEntryIterator};
@@ -108,6 +101,7 @@ mod tests {
     use super::SolidCache;
 
     #[test]
+    #[ignore = "need a running postgres"]
     fn test_postgres() {
         let cache = SolidCache::new();
         let mut it = RandomEntryIterator::new(thread_rng());
@@ -132,6 +126,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "need a running postgres"]
     fn test_postgres_get_miss() {
         let cache = SolidCache::new();
         let mut it = RandomEntryIterator::new(thread_rng());
