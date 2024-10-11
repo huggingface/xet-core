@@ -12,6 +12,7 @@ use base64::{engine::GeneralPurpose, Engine};
 use cache_file_header::CacheFileHeader;
 use cache_item::{range_contained_fn, CacheItem};
 use cas_types::{Key, Range};
+use error_printer::ErrorPrinter;
 use file_utils::SafeFileCreator;
 use merklehash::MerkleHash;
 use sorted_vec::SortedVec;
@@ -84,7 +85,12 @@ impl DiskCache {
         for key_dir in readdir {
             let key_dir = match key_dir {
                 Ok(kd) => kd,
-                Err(_) => continue,
+                Err(e) => {
+                    if e.kind() == ErrorKind::NotFound {
+                        continue;
+                    }
+                    return Err(e.into());
+                }
             };
             let md = match key_dir.metadata() {
                 Ok(md) => md,
@@ -102,7 +108,9 @@ impl DiskCache {
                 );
                 continue;
             }
-            let key = match parse_key(key_dir.file_name().as_encoded_bytes()) {
+            let key = match parse_key(key_dir.file_name().as_encoded_bytes())
+                .debug_error("failed to decoded a directory name as a key")
+            {
                 Ok(key) => key,
                 Err(_) => continue,
             };
@@ -141,8 +149,14 @@ impl DiskCache {
                 if !md.is_file() {
                     continue;
                 }
+                // don't track an item that takes up the whole capacity
+                if md.len() > capacity {
+                    continue;
+                }
 
-                let cache_item = match CacheItem::parse(item.file_name().as_encoded_bytes()) {
+                let cache_item = match CacheItem::parse(item.file_name().as_encoded_bytes())
+                    .debug_error("failed to decode a file name as a cache item")
+                {
                     Ok(i) => i,
                     Err(e) => {
                         debug!(
@@ -187,58 +201,46 @@ impl DiskCache {
         }
 
         let (mut file, header, start) = loop {
-            let item = if let Some(item) = self.find_match(key, range)? {
+            let cache_item = if let Some(item) = self.find_match(key, range)? {
                 item
             } else {
                 return Ok(None);
             };
 
-            let file_name = item.to_file_name()?;
-            let path = self.cache_root.join(key_dir(key)).join(file_name);
+            let path = self.item_path(key, &cache_item)?;
 
             let mut file = match File::open(&path) {
                 Ok(file) => file,
                 Err(e) => match e.kind() {
                     ErrorKind::NotFound => {
-                        self.remove_item(key, &item)?;
+                        self.remove_item(key, &cache_item)?;
                         continue;
                     }
                     _ => return Err(e.into()),
                 },
             };
             let hash = compute_hash_from_reader(&mut file)?;
-            if hash != item.hash {
-                debug!("file hash mismatch on path: {path:?}, key: {key}, item: {item}");
-                self.remove_item(key, &item)?;
+            if hash != cache_item.hash {
+                debug!("file hash mismatch on path: {path:?}, key: {key}, item: {cache_item}");
+                self.remove_item(key, &cache_item)?;
                 continue;
             }
 
             file.seek(SeekFrom::Start(0))?;
-            let header = match CacheFileHeader::deserialize(&mut file) {
+            let header = match CacheFileHeader::deserialize(&mut file).debug_error(format!(
+                "failed to deserialize cache file header on path: {path:?}"
+            )) {
                 Ok(header) => header,
                 Err(_) => {
-                    // HOLD
-                    self.remove_item(key, &item)?;
+                    self.remove_item(key, &cache_item)?;
                     continue;
                 }
             };
 
-            let start = item.range.start;
+            let start = cache_item.range.start;
             break (file, header, start);
         };
-        let start_byte = header
-            .chunk_byte_indicies
-            .get((range.start - start) as usize)
-            .ok_or(ChunkCacheError::BadRange)?;
-        let end_byte = header
-            .chunk_byte_indicies
-            .get((range.end - start) as usize)
-            .ok_or(ChunkCacheError::BadRange)?;
-        file.seek(SeekFrom::Start(
-            (*start_byte as usize + header.header_len()) as u64,
-        ))?;
-        let mut buf = vec![0; (end_byte - start_byte) as usize];
-        file.read_exact(&mut buf)?;
+        let buf = get_range_from_cache_file(&header, &mut file, range, start)?;
         Ok(Some(buf))
     }
 
@@ -273,6 +275,7 @@ impl DiskCache {
             // chunk_byte_indices is guarenteed to be more than 1 element at this point
             || chunk_byte_indicies[0] != 0
             || *chunk_byte_indicies.last().unwrap() as usize != data.len()
+            || !strictly_increasing(chunk_byte_indicies)
             // assert 1 new range doesn't take up more than 10% of capacity
             || data.len() > (self.capacity as usize / 10)
         {
@@ -280,19 +283,9 @@ impl DiskCache {
         }
 
         // check if we already contain the range
-        while let Some(item) = self.find_match(key, range)? {
-            let path = self
-                .cache_root
-                .join(key_dir(key))
-                .join(item.to_file_name()?);
-            match File::open(&path) {
-                Ok(mut file) => {
-                    let hash = blake3::Hasher::new().update_reader(&mut file)?.finalize();
-                    if hash == item.hash && file.metadata()?.len() == item.len {
-                        return Ok(());
-                    }
-                }
-                Err(_) => self.remove_item(key, &item)?,
+        while let Some(cache_item) = self.find_match(key, range)? {
+            if self.validate_match(key, range, chunk_byte_indicies, data, &cache_item)? {
+                return Ok(());
             }
         }
 
@@ -301,18 +294,13 @@ impl DiskCache {
         header.serialize(&mut header_buf)?;
         let hash = compute_hash(&header_buf, data);
 
-        let item = CacheItem {
+        let cache_item = CacheItem {
             range: range.clone(),
             len: (header_buf.len() + data.len()) as u64,
             hash,
         };
 
-        self.maybe_evict(item.len)?;
-
-        let path = self
-            .cache_root
-            .join(key_dir(key))
-            .join(item.to_file_name()?);
+        let path = self.item_path(key, &cache_item)?;
 
         let mut fw = SafeFileCreator::new(path)?;
 
@@ -320,11 +308,86 @@ impl DiskCache {
         fw.write_all(data)?;
         fw.close()?;
 
+        // evict items after ensuring the file write but before committing to cache state
+        // to avoid removing new item.
+        self.maybe_evict(cache_item.len)?;
+
         let mut state = self.state.lock()?;
         let item_set = state.entry(key.clone()).or_default();
-        item_set.insert(item);
+        item_set.insert(cache_item);
 
         Ok(())
+    }
+
+    // on a non-error case, returns true if the item is a good match and a new item should not be inserted
+    // returns false if not a good match and should be removed.
+    fn validate_match(
+        &self,
+        key: &Key,
+        range: &Range,
+        chunk_byte_indicies: &[u32],
+        data: &[u8],
+        cache_item: &CacheItem,
+    ) -> Result<bool, ChunkCacheError> {
+        // this is a redundant check
+        if range.start < cache_item.range.start || range.end > cache_item.range.end {
+            return Err(ChunkCacheError::BadRange);
+        }
+
+        // validate stored data
+        let path = self.item_path(key, &cache_item)?;
+        let mut file = if let Ok(file) = File::open(&path) {
+            file
+        } else {
+            self.remove_item(key, cache_item)?;
+            return Ok(false);
+        };
+        let md = file.metadata()?;
+        if md.len() != cache_item.len {
+            self.remove_item(key, cache_item)?;
+            return Ok(false);
+        }
+        let hash = blake3::Hasher::new().update_reader(&mut file)?.finalize();
+        if hash != cache_item.hash {
+            self.remove_item(key, cache_item)?;
+            return Ok(false);
+        }
+        file.seek(SeekFrom::Start(0))?;
+        let header = if let Ok(header) = CacheFileHeader::deserialize(&mut file) {
+            header
+        } else {
+            self.remove_item(key, cache_item)?;
+            return Ok(false);
+        };
+
+        // validate the chunk_byte_indicies and data input against stored data
+        // the chunk_byte_indicies should match the chunk lengths, if the ranges
+        // don't start at the same chunk, values will be different, what's important
+        // to match is the chunk lengths, i.e. difference in the offsets.
+        let idx_start = (range.start - cache_item.range.start) as usize;
+        let idx_end = (range.end - cache_item.range.start + 1) as usize;
+        for i in idx_start..idx_end - 1 {
+            let stored_diff = header.chunk_byte_indicies[i + 1] - header.chunk_byte_indicies[i];
+            let given_diff =
+                chunk_byte_indicies[i + 1 - idx_start] - chunk_byte_indicies[i - idx_start];
+            if stored_diff != given_diff {
+                debug!(
+                    "failed to match chunk lens for these chunk offsets {} {:?}\n{} {:?}",
+                    cache_item.range,
+                    &header.chunk_byte_indicies[idx_start..idx_end],
+                    range,
+                    chunk_byte_indicies
+                );
+                return Err(ChunkCacheError::InvalidArguments);
+            }
+        }
+
+        let stored_data =
+            get_range_from_cache_file(&header, &mut file, range, cache_item.range.start)?;
+        if data != stored_data {
+            return Err(ChunkCacheError::InvalidArguments);
+        }
+        Ok(true)
     }
 
     /// removed items from the cache (including deleting from file system)
@@ -338,12 +401,9 @@ impl DiskCache {
         while to_remove > bytes_removed {
             let (key, idx) = self.random_item(&state);
             let items = state.get_mut(&key).ok_or(ChunkCacheError::Infallible)?;
-            let item = &items[idx];
-            let len = item.len;
-            let path = self
-                .cache_root
-                .join(key_dir(&key))
-                .join(item.to_file_name()?);
+            let cache_item = &items[idx];
+            let len = cache_item.len;
+            let path = self.item_path(&key, cache_item)?;
             paths.push(path);
             items.remove_index(idx);
             if items.is_empty() {
@@ -384,18 +444,18 @@ impl DiskCache {
         panic!("should have returned")
     }
 
-    fn remove_item(&self, key: &Key, item: &CacheItem) -> Result<(), ChunkCacheError> {
+    fn remove_item(&self, key: &Key, cache_item: &CacheItem) -> Result<(), ChunkCacheError> {
         {
             let mut state = self.state.lock()?;
             if let Some(items) = state.get_mut(key) {
-                items.remove_item(item);
+                items.remove_item(cache_item);
+                if items.is_empty() {
+                    state.remove(key);
+                }
             }
         }
 
-        let path = self
-            .cache_root
-            .join(key_dir(key))
-            .join(item.to_file_name()?);
+        let path = self.item_path(key, cache_item)?;
 
         if !path.exists() {
             return Ok(());
@@ -413,6 +473,44 @@ impl DiskCache {
 
         Ok(())
     }
+
+    fn item_path(&self, key: &Key, cache_item: &CacheItem) -> Result<PathBuf, ChunkCacheError> {
+        Ok(self
+            .cache_root
+            .join(key_dir(key))
+            .join(cache_item.file_name()?))
+    }
+}
+
+fn strictly_increasing(chunk_byte_indicies: &[u32]) -> bool {
+    for i in 1..chunk_byte_indicies.len() {
+        if chunk_byte_indicies[i - 1] >= chunk_byte_indicies[i] {
+            return false;
+        }
+    }
+    true
+}
+
+fn get_range_from_cache_file<R: Read + Seek>(
+    header: &CacheFileHeader,
+    file: &mut R,
+    range: &Range,
+    start: u32,
+) -> Result<Vec<u8>, ChunkCacheError> {
+    let start_byte = header
+        .chunk_byte_indicies
+        .get((range.start - start) as usize)
+        .ok_or(ChunkCacheError::BadRange)?;
+    let end_byte = header
+        .chunk_byte_indicies
+        .get((range.end - start) as usize)
+        .ok_or(ChunkCacheError::BadRange)?;
+    file.seek(SeekFrom::Start(
+        (*start_byte as usize + header.header_len()) as u64,
+    ))?;
+    let mut buf = vec![0; (end_byte - start_byte) as usize];
+    file.read_exact(&mut buf)?;
+    Ok(buf)
 }
 
 fn compute_hash(header: &[u8], data: &[u8]) -> blake3::Hash {
@@ -495,7 +593,7 @@ mod tests {
 
     use crate::disk::{parse_key, test_utils::*};
 
-    use cas_types::Range;
+    use cas_types::{Key, Range};
     use rand::thread_rng;
     use tempdir::TempDir;
 
@@ -597,14 +695,61 @@ mod tests {
 
     #[test]
     fn test_same_puts_noop() {
-        let cache_root = TempDir::new("puts_eviction").unwrap();
+        let cache_root = TempDir::new("same_puts_noop").unwrap();
         let cache =
             DiskCache::initialize(cache_root.path().to_path_buf(), _DEFAULT_CAPACITY).unwrap();
-        let mut it = RandomEntryIterator::default();
+        let mut it = RandomEntryIterator::default().with_range_len(1000);
         let (key, range, offsets, data) = it.next().unwrap();
         assert!(cache.put(&key, &range, &offsets, &data).is_ok());
-
         assert!(cache.put(&key, &range, &offsets, &data).is_ok());
+    }
+
+    #[test]
+    fn test_overlap_range_data_mismatch_fail() {
+        let setup = || {
+            let mut it = RandomEntryIterator::default();
+            let cache_root = TempDir::new("overlap_range_data_mismatch_fail").unwrap();
+            let cache =
+                DiskCache::initialize(cache_root.path().to_path_buf(), _DEFAULT_CAPACITY).unwrap();
+            let (key, range, offsets, data) = it.next().unwrap();
+            assert!(cache.put(&key, &range, &offsets, &data).is_ok());
+            (cache_root, cache, key, range, offsets, data)
+        };
+        // bad offsets
+        // totally random, mismatch len from range
+        let (_cache_root, cache, key, range, mut offsets, data) = setup();
+        offsets.remove(1);
+        assert!(cache.put(&key, &range, &offsets, &data).is_err());
+
+        // start isn't 0
+        let (_cache_root, cache, key, range, mut offsets, data) = setup();
+        offsets[0] = 100;
+        assert!(cache.put(&key, &range, &offsets, &data).is_err());
+
+        // end isn't data.len()
+        let (_cache_root, cache, key, range, mut offsets, data) = setup();
+        *offsets.last_mut().unwrap() = data.len() as u32 + 1;
+        assert!(cache.put(&key, &range, &offsets, &data).is_err());
+
+        // not strictly increasing
+        let (_cache_root, cache, key, range, mut offsets, data) = setup();
+        offsets[2] = offsets[1];
+        assert!(cache.put(&key, &range, &offsets, &data).is_err());
+
+        // not matching
+        let (_cache_root, cache, key, range, mut offsets, data) = setup();
+        offsets[1] = offsets[1] + 1;
+        assert!(cache.put(&key, &range, &offsets, &data).is_err());
+
+        // bad data
+        // size mismatch given offsets
+        let (_cache_root, cache, key, range, offsets, data) = setup();
+        assert!(cache.put(&key, &range, &offsets, &data[1..]).is_err());
+
+        // data changed
+        let (_cache_root, cache, key, range, offsets, mut data) = setup();
+        data[0] = data[0] + 1;
+        assert!(cache.put(&key, &range, &offsets, &data).is_err());
     }
 
     #[test]
@@ -647,6 +792,46 @@ mod tests {
     }
 
     #[test]
+    fn test_initialize_too_large_file() {
+        const LARGE_FILE: u64 = 1000;
+        let cache_root = TempDir::new("initialize_too_large_file").unwrap();
+        let cache =
+            DiskCache::initialize(cache_root.path().to_path_buf(), _DEFAULT_CAPACITY).unwrap();
+        let mut it = RandomEntryIterator::default().with_range_len(LARGE_FILE as u32);
+
+        let (key, range, offsets, data) = it.next().unwrap();
+        cache.put(&key, &range, &offsets, &data).unwrap();
+        let cache2 =
+            DiskCache::initialize(cache_root.path().to_path_buf(), LARGE_FILE - 1).unwrap();
+
+        assert_eq!(cache2.total_bytes().unwrap(), 0);
+    }
+
+    #[test]
+    fn test_initialize_stops_loading_early_with_too_many_files() {
+        const LARGE_FILE: u64 = 1000;
+        let cache_root =
+            TempDir::new("initialize_stops_loading_early_with_too_many_files").unwrap();
+        let cache =
+            DiskCache::initialize(cache_root.path().to_path_buf(), LARGE_FILE * 10).unwrap();
+        let mut it = RandomEntryIterator::default().with_range_len(LARGE_FILE as u32);
+        for _ in 0..10 {
+            let (key, range, offsets, data) = it.next().unwrap();
+            cache.put(&key, &range, &offsets, &data).unwrap();
+        }
+
+        let cap2 = LARGE_FILE * 2;
+        let cache2 = DiskCache::initialize(cache_root.path().to_path_buf(), cap2).unwrap();
+
+        assert!(
+            cache2.total_bytes().unwrap() < cap2 * 3,
+            "{} < {}",
+            cache2.total_bytes().unwrap(),
+            cap2 * 3
+        );
+    }
+
+    #[test]
     fn test_dir_name_to_key() {
         let s = "oL-Xqk1J00kVe1U4kCko-Kw4zaVv3-4U73i27w5DViBkZWZhdWx0";
         let key = parse_key(s.as_bytes());
@@ -656,7 +841,7 @@ mod tests {
     #[test]
     fn test_unknown_eviction() {
         let cache_root = TempDir::new("initialize_non_empty").unwrap();
-        let capacity = 2 * RANGE_LEN as u64;
+        let capacity = 12 * RANGE_LEN as u64;
         let cache = DiskCache::initialize(cache_root.path().to_path_buf(), capacity).unwrap();
         let mut it = RandomEntryIterator::default();
         let (key, range, chunk_byte_indicies, data) = it.next().unwrap();
@@ -675,10 +860,8 @@ mod tests {
             .is_ok());
 
         let mut get_result_1 = cache2.get(&key, &range).unwrap();
-        let get_result_2 = cache2.get(&key2, &range2).unwrap();
-        assert!(get_result_1.is_some() != get_result_2.is_some());
         let mut i = 0;
-        while get_result_1.is_some() && i < 10 {
+        while get_result_1.is_some() && i < 50 {
             i += 1;
             let (key2, range2, chunk_byte_indicies2, data2) = it.next().unwrap();
             cache2
@@ -687,7 +870,7 @@ mod tests {
             get_result_1 = cache2.get(&key, &range).unwrap();
         }
         if get_result_1.is_some() {
-            // randomness didn't evict the record after 10 tries, don't test this case now
+            // randomness didn't evict the record after 50 tries, don't test this case now
             return;
         }
         // we've evicted the original record from the cache
@@ -698,15 +881,83 @@ mod tests {
     }
 
     #[test]
+    fn put_subrange() {
+        let cache_root = TempDir::new("put_subrange").unwrap();
+        let cache =
+            DiskCache::initialize(cache_root.path().to_path_buf(), _DEFAULT_CAPACITY).unwrap();
+        let (key, range, chunk_byte_indicies, data) =
+            RandomEntryIterator::default().next().unwrap();
+        cache
+            .put(&key, &range, &chunk_byte_indicies, &data)
+            .unwrap();
+        let total_bytes = cache.total_bytes().unwrap();
+
+        // left range
+        let left_range = Range {
+            start: range.start,
+            end: range.end - 1,
+        };
+        let left_chunk_byte_indicies = &chunk_byte_indicies[..chunk_byte_indicies.len() - 1];
+        let left_data = &data[..*left_chunk_byte_indicies.last().unwrap() as usize];
+        assert!(cache
+            .put(&key, &left_range, left_chunk_byte_indicies, left_data)
+            .is_ok());
+        assert_eq!(total_bytes, cache.total_bytes().unwrap());
+
+        // right range
+        let right_range = Range {
+            start: range.start + 1,
+            end: range.end,
+        };
+        let right_chunk_byte_indicies: Vec<u32> = (&chunk_byte_indicies[1..])
+            .iter()
+            .map(|v| v - chunk_byte_indicies[1])
+            .collect();
+        let right_data = &data[chunk_byte_indicies[1] as usize..];
+        assert!(cache
+            .put(&key, &right_range, &right_chunk_byte_indicies, right_data)
+            .is_ok());
+        assert_eq!(total_bytes, cache.total_bytes().unwrap());
+
+        // middle range
+        let middle_range = Range {
+            start: range.start + 1,
+            end: range.end - 1,
+        };
+        let middle_chunk_byte_indicies: Vec<u32> = (&chunk_byte_indicies
+            [1..(chunk_byte_indicies.len() - 1)])
+            .iter()
+            .map(|v| v - chunk_byte_indicies[1])
+            .collect();
+        let middle_data = &data[chunk_byte_indicies[1] as usize
+            ..chunk_byte_indicies[chunk_byte_indicies.len() - 2] as usize];
+
+        assert!(cache
+            .put(
+                &key,
+                &middle_range,
+                &middle_chunk_byte_indicies,
+                middle_data
+            )
+            .is_ok());
+        assert_eq!(total_bytes, cache.total_bytes().unwrap());
+    }
+
+    #[test]
     fn test_evictions_with_multiple_range_per_key() {
+        const NUM: u32 = 12;
         let cache_root = TempDir::new("multiple_range_per_key").unwrap();
-        let capacity = 5 * RANGE_LEN as u64;
+        let capacity = (NUM * RANGE_LEN) as u64;
         let cache = DiskCache::initialize(cache_root.path().to_path_buf(), capacity).unwrap();
-        let mut it = RandomEntryIterator::default();
+        let mut it = RandomEntryIterator::default().with_one_chunk_ranges(true);
         let (key, _, _, _) = it.next().unwrap();
-        let mut previously_put = Vec::new();
-        for _ in 0..3 {
-            let (key2, range, chunk_byte_indicies, data) = it.next().unwrap();
+        let mut previously_put: Vec<(Key, Range)> = Vec::new();
+
+        for _ in 0..(NUM / 2) {
+            let (key2, mut range, chunk_byte_indicies, data) = it.next().unwrap();
+            while previously_put.iter().any(|(_, r)| r.start == range.start) {
+                range.start += 1 % 1000;
+            }
             cache
                 .put(&key, &range, &chunk_byte_indicies, &data)
                 .unwrap();

@@ -48,6 +48,9 @@ pub fn random_range(rng: &mut impl Rng) -> Range {
 
 pub fn random_bytes(rng: &mut impl Rng, range: &Range, len: u32) -> (Vec<u32>, Vec<u8>) {
     let random_vec: Vec<u8> = (0..len).map(|_| rng.gen()).collect();
+    if range.end - range.start == 0 {
+        return (vec![0, len], random_vec);
+    }
 
     let mut offsets = Vec::with_capacity((range.end - range.start + 1) as usize);
     offsets.push(0);
@@ -67,6 +70,7 @@ pub fn random_bytes(rng: &mut impl Rng, range: &Range, len: u32) -> (Vec<u32>, V
 pub struct RandomEntryIterator<T: Rng> {
     rng: T,
     range_len: u32,
+    one_chunk_ranges: bool,
 }
 
 impl<T: Rng> RandomEntryIterator<T> {
@@ -74,11 +78,18 @@ impl<T: Rng> RandomEntryIterator<T> {
         Self {
             rng,
             range_len: RANGE_LEN,
+            one_chunk_ranges: false,
         }
     }
 
     pub fn with_range_len(mut self, len: u32) -> Self {
         self.range_len = len;
+        self
+    }
+
+    // default is false, only use to set to true
+    pub fn with_one_chunk_ranges(mut self, one_chunk_ranges: bool) -> Self {
+        self.one_chunk_ranges = one_chunk_ranges;
         self
     }
 
@@ -95,10 +106,7 @@ impl<T: SeedableRng + Rng> RandomEntryIterator<T> {
 
 impl Default for RandomEntryIterator<ThreadRng> {
     fn default() -> Self {
-        Self {
-            rng: thread_rng(),
-            range_len: RANGE_LEN,
-        }
+        Self::new(thread_rng())
     }
 }
 
@@ -107,7 +115,15 @@ impl<T: Rng> Iterator for RandomEntryIterator<T> {
 
     fn next(&mut self) -> Option<Self::Item> {
         let key = random_key(&mut self.rng);
-        let range = random_range(&mut self.rng);
+        let range = if self.one_chunk_ranges {
+            let start = self.rng.gen();
+            Range {
+                start,
+                end: start + 1,
+            }
+        } else {
+            random_range(&mut self.rng)
+        };
         let (offsets, data) = random_bytes(&mut self.rng, &range, self.range_len);
         Some((key, range, offsets, data))
     }

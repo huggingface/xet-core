@@ -34,9 +34,8 @@ impl std::fmt::Display for CacheItem {
     }
 }
 
-// impl PartialOrd & Ord to sort initially by the range to enable binary search over
+// impl PartialOrd & Ord to sort by the range to enable binary search over
 // sorted CacheItems using the range field to match a range for search
-// see logic
 impl Ord for CacheItem {
     fn cmp(&self, other: &Self) -> Ordering {
         self.range.cmp(&other.range)
@@ -50,7 +49,7 @@ impl PartialOrd for CacheItem {
 }
 
 impl CacheItem {
-    pub(crate) fn to_file_name(&self) -> Result<String, ChunkCacheError> {
+    pub(crate) fn file_name(&self) -> Result<String, ChunkCacheError> {
         let mut buf = [0u8; CACHE_ITEM_FILE_NAME_BUF_SIZE];
         let mut w = Cursor::new(&mut buf[..]);
         write_u32(&mut w, self.range.start)?;
@@ -62,6 +61,11 @@ impl CacheItem {
 
     pub(crate) fn parse(file_name: &[u8]) -> Result<CacheItem, ChunkCacheError> {
         let buf = BASE64_ENGINE.decode(file_name)?;
+        if buf.len() != CACHE_ITEM_FILE_NAME_BUF_SIZE {
+            return Err(ChunkCacheError::parse(
+                "decoded buf is not the right size for a cache item file name",
+            ));
+        }
         let mut r = Cursor::new(buf);
         let start = read_u32(&mut r)?;
         let end = read_u32(&mut r)?;
@@ -101,4 +105,81 @@ pub fn read_hash(reader: &mut impl Read) -> Result<blake3::Hash, std::io::Error>
     let mut m = [0u8; 32];
     reader.read_exact(&mut m)?;
     Ok(blake3::Hash::from_bytes(m))
+}
+
+#[cfg(test)]
+mod tests {
+    use base64::Engine;
+    use blake3::OUT_LEN;
+    use cas_types::Range;
+    use sorted_vec::SortedVec;
+
+    use crate::disk::{cache_item::CACHE_ITEM_FILE_NAME_BUF_SIZE, BASE64_ENGINE};
+
+    use super::{range_contained_fn, CacheItem};
+
+    impl Default for CacheItem {
+        fn default() -> Self {
+            Self {
+                range: Default::default(),
+                len: Default::default(),
+                hash: blake3::Hash::from_bytes([0u8; OUT_LEN]),
+            }
+        }
+    }
+
+    #[test]
+    fn test_to_file_name_len() {
+        let cache_item = CacheItem {
+            range: Range {
+                start: 0,
+                end: 1024,
+            },
+            len: 16 << 20,
+            hash: blake3::hash(&(1..100).collect::<Vec<u8>>()),
+        };
+
+        let file_name = cache_item.file_name().unwrap();
+        let decoded = BASE64_ENGINE.decode(file_name).unwrap();
+        assert_eq!(decoded.len(), CACHE_ITEM_FILE_NAME_BUF_SIZE);
+    }
+
+    #[test]
+    fn test_binary_search() {
+        let range = |i: u32| Range {
+            start: i * 100,
+            end: (i + 1) * 100,
+        };
+        let sub_range = |i: u32| Range {
+            start: i * 100 + 20,
+            end: (i + 1) * 100 - 1,
+        };
+
+        let v = SortedVec::from(
+            (1..=10)
+                .map(|i| CacheItem {
+                    range: range(i),
+                    ..Default::default()
+                })
+                .collect::<Vec<_>>(),
+        );
+
+        for i in 1..=10 {
+            let r = range(i);
+            let sr = sub_range(i);
+
+            let idx_result = v.binary_search_by(range_contained_fn(&r));
+            assert!(idx_result.is_ok(), "{r} {idx_result:?}");
+            let idx = idx_result.unwrap();
+            assert_eq!(idx, (i - 1) as usize, "{r}, {i}");
+
+            let sr_idx_result = v.binary_search_by(range_contained_fn(&sr));
+            assert!(sr_idx_result.is_ok(), "{sr}, {sr_idx_result:?}");
+            let sr_idx = sr_idx_result.unwrap();
+            assert_eq!(sr_idx, (i - 1) as usize, "{sr}, {i}");
+        }
+
+        let out_range = range(100);
+        assert!(v.binary_search_by(range_contained_fn(&out_range)).is_err());
+    }
 }
