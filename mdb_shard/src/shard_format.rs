@@ -1053,7 +1053,7 @@ impl MDBShardInfo {
                     .take(self.metadata.chunk_lookup_offset - self.metadata.cas_lookup_offset),
                 writer,
             )? as usize;
-            out_footer.cas_lookup_num_entry = self.metadata.chunk_lookup_num_entry;
+            out_footer.cas_lookup_num_entry = self.metadata.cas_lookup_num_entry;
         } else {
             out_footer.cas_lookup_num_entry = 0;
 
