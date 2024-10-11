@@ -697,21 +697,33 @@ dependencies = [
  "base64 0.22.1",
  "blake3",
  "cas_types",
- "clap 4.5.19",
- "criterion 0.4.0",
  "error_printer",
  "file_utils",
  "merklehash",
- "r2d2",
- "r2d2_postgres",
  "rand 0.8.5",
- "sccache",
  "sorted-vec",
  "tempdir",
  "tokio",
  "tracing",
  "utils",
  "xet_error",
+]
+
+[[package]]
+name = "chunk_cache_bench"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "cas_types",
+ "chunk_cache",
+ "clap 4.5.19",
+ "criterion 0.4.0",
+ "r2d2",
+ "r2d2_postgres",
+ "rand 0.8.5",
+ "sccache",
+ "tempdir",
+ "tokio",
 ]
 
 [[package]]

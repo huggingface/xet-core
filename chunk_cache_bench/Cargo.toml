@@ -1,0 +1,28 @@
+[package]
+name = "chunk_cache_bench"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+base64 = "0.22.1"
+chunk_cache = { path = "../chunk_cache" }
+cas_types = { path = "../cas_types" }
+sccache = "0.8.2"
+r2d2_postgres = "0.18.1"
+r2d2 = "0.8.10"
+clap = { version = "4.5.19", features = ["derive"] }
+tempdir = "0.3.7"
+
+
+[[bench]]
+name = "cache_bench"
+harness = false
+bench = true
+
+[[bin]]
+name = "cache_resiliancy_test"
+
+[dev-dependencies]
+rand = "0.8"
+criterion = { version = "0.4", features = ["async_tokio"] }
+tokio = { version = "1.36", features = ["full"] }

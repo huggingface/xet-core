@@ -1,4 +1,5 @@
-use crate::{error::ChunkCacheError, ChunkCache, ChunkCacheExt};
+use crate::ChunkCacheExt;
+use chunk_cache::{error::ChunkCacheError, ChunkCache};
 use r2d2_postgres::postgres::NoTls;
 
 #[derive(Clone)]
@@ -95,7 +96,7 @@ impl ChunkCache for SolidCache {
 
 #[cfg(test)]
 mod tests {
-    use crate::{ChunkCache, RandomEntryIterator};
+    use chunk_cache::{ChunkCache, RandomEntryIterator};
     use rand::thread_rng;
 
     use super::SolidCache;

@@ -15,21 +15,7 @@ base64 = "0.22.1"
 tracing = "0.1.40"
 sorted-vec = "0.8.3"
 rand = "0.8"
-clap = { version = "4.5.19", features = ["derive"] }
 tempdir = "0.3.7"
-sccache = "0.8.2"
-r2d2_postgres = "0.18.1"
-r2d2 = "0.8.10"
 
 [dev-dependencies]
-rand = "0.8"
-criterion = { version = "0.4", features = ["async_tokio"] }
 tokio = { version = "1.36", features = ["full"] }
-
-[[bench]]
-name = "cache_bench"
-harness = false
-bench = true
-
-[[bin]]
-name = "cache_resiliancy_test"

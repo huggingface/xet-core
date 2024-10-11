@@ -1,9 +1,10 @@
 use std::time::Duration;
 use std::u64;
 
-use chunk_cache::sccache::SCCache;
-use chunk_cache::solid_cache::SolidCache;
-use chunk_cache::{random_key, random_range, ChunkCacheExt, DiskCache, RandomEntryIterator};
+use chunk_cache::{random_key, random_range, DiskCache, RandomEntryIterator};
+use chunk_cache_bench::sccache::SCCache;
+use chunk_cache_bench::solid_cache::SolidCache;
+use chunk_cache_bench::ChunkCacheExt;
 use criterion::{criterion_group, BenchmarkId, Criterion};
 
 use rand::rngs::StdRng;

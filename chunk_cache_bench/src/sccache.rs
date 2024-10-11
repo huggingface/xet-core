@@ -6,10 +6,12 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use crate::{error::ChunkCacheError, ChunkCache, ChunkCacheExt};
 use base64::Engine;
 use cas_types::{Key, Range};
+use chunk_cache::{error::ChunkCacheError, ChunkCache};
 use sccache::lru_disk_cache::LruDiskCache;
+
+use crate::ChunkCacheExt;
 
 #[derive(Clone)]
 pub struct SCCache {

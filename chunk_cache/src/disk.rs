@@ -20,8 +20,6 @@ use tracing::debug;
 
 use crate::{error::ChunkCacheError, ChunkCache};
 
-use crate::ChunkCacheExt;
-
 mod cache_file_header;
 mod cache_item;
 pub mod test_utils;
@@ -574,16 +572,6 @@ impl ChunkCache for DiskCache {
         data: &[u8],
     ) -> Result<(), ChunkCacheError> {
         self.put_impl(key, range, chunk_byte_indicies, data)
-    }
-}
-
-impl ChunkCacheExt for DiskCache {
-    fn _initialize(cache_root: PathBuf, capacity: u64) -> Result<Self, ChunkCacheError> {
-        DiskCache::initialize(cache_root, capacity)
-    }
-
-    fn name() -> &'static str {
-        "disk"
     }
 }
 
