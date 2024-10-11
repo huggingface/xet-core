@@ -10,7 +10,31 @@ use pyo3::prelude::*;
 use pyo3::pyfunction;
 use std::fmt::Debug;
 use std::sync::Arc;
+use std::time::Duration;
 use token_refresh::WrappedTokenRefresher;
+
+// This will be the information that will finally be sent to the telemetry endpoint
+//
+// #[pyclass]
+// #[derive(Clone, Debug)]
+// pub struct UploadTelemetry {
+//     #[pyo3(get)]
+//     total_time_ms: u64,
+//     #[pyo3(get)]
+//     uploaded_bytes: u64,
+// }
+//
+// #[pyclass]
+// #[derive(Clone, Debug)]
+// pub struct DownloadTelemetry {
+//     #[pyo3(get)]
+//     total_time_ms: u64,
+//     #[pyo3(get)]
+//     downloaded_bytes: u64,
+//     #[pyo3(get)]
+//     cached_bytes: u32,
+// }
+
 
 #[pyfunction]
 #[pyo3(signature = (file_paths, endpoint, token_info, token_refresher), text_signature = "(file_paths: List[str], endpoint: Optional[str], token_info: Optional[(str, int)], token_refresher: Optional[Callable[[], (str, int)]]) -> List[PyPointerFile]")]
@@ -63,8 +87,10 @@ pub fn download_files(
             .block_on(async move {
                 data_client::download_async(pfs, endpoint, token_info, refresher).await
             })
+            .map(|pfs| pfs.into_iter().map(|pointer_file| pointer_file.path().to_string()).collect())
             .map_err(|e| PyException::new_err(format!("{e:?}")))
     })
+
 }
 
 // helper to convert the implemented WrappedTokenRefresher into an Arc<dyn TokenRefresher>
@@ -82,7 +108,12 @@ pub struct PyPointerFile {
     hash: String,
     #[pyo3(get)]
     filesize: u64,
+    #[pyo3(get)]
+    compressed_size: u64,
+    #[pyo3(get)]
+    latency: f64,
 }
+
 
 impl From<PointerFile> for PyPointerFile {
     fn from(pf: PointerFile) -> Self {
@@ -90,13 +121,15 @@ impl From<PointerFile> for PyPointerFile {
             path: pf.path().to_string(),
             hash: pf.hash_string().to_string(),
             filesize: pf.filesize(),
+            compressed_size: pf.compressed_size(),
+            latency: pf.latency(),
         }
     }
 }
 
 impl From<PyPointerFile> for PointerFile {
     fn from(pf: PyPointerFile) -> Self {
-        PointerFile::init_from_info(&pf.path, &pf.hash, pf.filesize)
+        PointerFile::init_from_info(&pf.path, &pf.hash, pf.filesize, pf.compressed_size, Duration::from_secs_f64(pf.latency))
     }
 }
 
@@ -108,6 +141,8 @@ impl PyPointerFile {
             path,
             hash,
             filesize,
+            compressed_size: 0,
+            latency: 0.0,
         }
     }
 

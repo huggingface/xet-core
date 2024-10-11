@@ -17,4 +17,4 @@ mod test_utils;
 
 pub use constants::SMALL_FILE_THRESHOLD;
 pub use data_processing::PointerFileTranslator;
-pub use pointer_file::PointerFile;
+pub use pointer_file::{PointerFile, PointerFileTelemetry};

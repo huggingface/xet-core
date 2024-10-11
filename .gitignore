@@ -17,3 +17,4 @@ debug/
 .vscode
 venv
 **/*.env
+**/uv.lock

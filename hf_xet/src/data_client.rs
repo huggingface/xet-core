@@ -1,7 +1,7 @@
 use crate::config::default_config;
 use utils::auth::TokenRefresher;
 use data::errors::DataProcessingError;
-use data::{errors, PointerFile, PointerFileTranslator};
+use data::{errors, PointerFile, PointerFileTelemetry, PointerFileTranslator};
 use parutils::{tokio_par_for_each, ParallelError};
 use std::fs;
 use std::fs::File;
@@ -56,7 +56,7 @@ pub async fn download_async(
     endpoint: Option<String>,
     token_info: Option<(String, u64)>,
     token_refresher: Option<Arc<dyn TokenRefresher>>,
-) -> errors::Result<Vec<String>> {
+) -> errors::Result<Vec<PointerFile>> {
     let config = default_config(
         endpoint.unwrap_or(DEFAULT_CAS_ENDPOINT.to_string()),
         token_info,
@@ -64,7 +64,7 @@ pub async fn download_async(
     )?;
     let processor = Arc::new(PointerFileTranslator::new(config).await?);
     let processor = &processor;
-    let paths = tokio_par_for_each(
+    let pfs = tokio_par_for_each(
         pointer_files,
         MAX_CONCURRENT_DOWNLOADS,
         |pointer_file, _| async move {
@@ -78,7 +78,7 @@ pub async fn download_async(
         ParallelError::TaskError(e) => e,
     })?;
 
-    Ok(paths)
+    Ok(pfs)
 }
 
 async fn clean_file(processor: &PointerFileTranslator, f: String) -> errors::Result<PointerFile> {
@@ -96,7 +96,6 @@ async fn clean_file(processor: &PointerFileTranslator, f: String) -> errors::Res
 
         handle.add_bytes(read_buf[0..bytes].to_vec()).await?;
     }
-
     let pf_str = handle.result().await?;
     let pf = PointerFile::init_from_string(&pf_str, path.to_str().unwrap());
     Ok(pf)
@@ -105,7 +104,7 @@ async fn clean_file(processor: &PointerFileTranslator, f: String) -> errors::Res
 async fn smudge_file(
     proc: &PointerFileTranslator,
     pointer_file: &PointerFile,
-) -> errors::Result<String> {
+) -> errors::Result<PointerFile> {
     let path = PathBuf::from(pointer_file.path());
     if let Some(parent_dir) = path.parent() {
         fs::create_dir_all(parent_dir)?;
@@ -113,7 +112,17 @@ async fn smudge_file(
     let mut f: Box<dyn Write + Send> = Box::new(File::create(&path)?);
     proc.smudge_file_from_pointer(pointer_file, &mut f, None)
         .await?;
-    Ok(pointer_file.path().to_string())
+    let mut pointer_file_clone = pointer_file.clone();
+    match pointer_file_clone.telemetry
+    {
+        None => pointer_file_clone.telemetry =  Some(PointerFileTelemetry {
+            latency: Some(proc.start.elapsed()),
+            compressed_size: None
+        }),
+        Some(ref mut telemetry) => telemetry.latency = Some(proc.start.elapsed()),
+    }
+
+    Ok(pointer_file_clone)
 }
 
 #[cfg(test)]

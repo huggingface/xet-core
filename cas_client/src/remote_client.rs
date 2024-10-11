@@ -102,13 +102,13 @@ impl UploadClient for RemoteClient {
 
 #[async_trait]
 impl ReconstructionClient for RemoteClient {
-    async fn get_file(&self, hash: &MerkleHash, writer: &mut Box<dyn Write + Send>) -> Result<()> {
+    async fn get_file(&self, hash: &MerkleHash, writer: &mut Box<dyn Write + Send>) -> Result<u64> {
         // get manifest of xorbs to download
         let manifest = self.reconstruct(hash, None).await?;
 
-        self.get_ranges(manifest, None, writer).await?;
+        let bytes_downloaded = self.get_ranges(manifest, None, writer).await?;
 
-        Ok(())
+        Ok(bytes_downloaded)
     }
 
     #[allow(unused_variables)]
@@ -118,7 +118,7 @@ impl ReconstructionClient for RemoteClient {
         offset: u64,
         length: u64,
         writer: &mut Box<dyn Write + Send>,
-    ) -> Result<()> {
+    ) -> Result<u64> {
         todo!()
     }
 }
@@ -203,7 +203,7 @@ impl RemoteClient {
         reconstruction_response: QueryReconstructionResponse,
         _byte_range: Option<(u64, u64)>,
         writer: &mut Box<dyn Write + Send>,
-    ) -> Result<usize> {
+    ) -> Result<u64> {
         let info = reconstruction_response.reconstruction;
         let total_len = info.iter().fold(0, |acc, x| acc + x.unpacked_length);
         let futs = info
@@ -215,7 +215,8 @@ impl RemoteClient {
                 .map_err(|e| CasClientError::InternalError(anyhow!("join error {e}")))??;
             writer.write_all(&piece)?;
         }
-        Ok(total_len as usize)
+        // Todo: return the bytes which were read from the cache for telemetry
+        Ok(total_len as u64)
     }
 }
 

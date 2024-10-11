@@ -5,7 +5,7 @@ use crate::errors::*;
 use crate::metrics::FILTER_CAS_BYTES_PRODUCED;
 use crate::remote_shard_interface::RemoteShardInterface;
 use crate::shard_interface::create_shard_manager;
-use crate::PointerFile;
+use crate::{PointerFile, PointerFileTelemetry};
 use cas_client::Client;
 use mdb_shard::cas_structs::{CASChunkSequenceEntry, CASChunkSequenceHeader, MDBCASInfo};
 use mdb_shard::file_structs::MDBFileInfo;
@@ -17,6 +17,7 @@ use std::mem::take;
 use std::ops::DerefMut;
 use std::path::Path;
 use std::sync::Arc;
+use std::time::Instant;
 use tokio::sync::Mutex;
 
 #[derive(Default, Debug)]
@@ -59,6 +60,9 @@ pub struct PointerFileTranslator {
 
     /* ----- Deduped data shared across files ----- */
     global_cas_data: Arc<Mutex<CASDataAggregator>>,
+    // Telemetry
+    /* ----- Telemetry ----- */
+    pub start: Instant,
 }
 
 // Constructors
@@ -97,6 +101,7 @@ impl PointerFileTranslator {
             remote_shards,
             cas: cas_client,
             global_cas_data: Default::default(),
+            start: Instant::now(),
         })
     }
 }
@@ -208,7 +213,7 @@ pub(crate) async fn register_new_cas_block(
     shard_manager: &Arc<ShardFileManager>,
     cas: &Arc<dyn Client + Send + Sync>,
     cas_prefix: &str,
-) -> Result<MerkleHash> {
+) -> Result<(MerkleHash, u64)> {
     let cas_hash = cas_node_hash(&cas_data.chunks[..]);
 
     let raw_bytes_len = cas_data.data.len();
@@ -283,19 +288,28 @@ pub(crate) async fn register_new_cas_block(
     cas_data.chunks.clear();
     cas_data.pending_file_info.clear();
 
-    Ok(cas_hash)
+    Ok((cas_hash, compressed_bytes_len as u64))
 }
 
 /// Smudge operations
 impl PointerFileTranslator {
     pub async fn smudge_file_from_pointer(
         &self,
-        pointer: &PointerFile,
+        pointer_file: &mut PointerFile,
         writer: &mut Box<dyn Write + Send>,
         range: Option<(usize, usize)>,
     ) -> Result<()> {
-        self.smudge_file_from_hash(&pointer.hash()?, writer, range)
-            .await
+        let start = Instant::now();
+        let bytes_downloaded = self
+            .smudge_file_from_hash(&pointer_file.hash()?, writer, range)
+            .await?;
+
+        pointer_file.telemetry = Some(PointerFileTelemetry {
+            latency: Some(start.elapsed()),
+            network_bytes: Some(bytes_downloaded),
+        });
+
+        Ok(())
     }
 
     pub async fn smudge_file_from_hash(
@@ -303,9 +317,8 @@ impl PointerFileTranslator {
         file_id: &MerkleHash,
         writer: &mut Box<dyn Write + Send>,
         _range: Option<(usize, usize)>,
-    ) -> Result<()> {
-        self.cas.get_file(file_id, writer).await?;
-
-        Ok(())
+    ) -> Result<u64> {
+        let bytes_downloaded = self.cas.get_file(file_id, writer).await?;
+        Ok(bytes_downloaded)
     }
 }
