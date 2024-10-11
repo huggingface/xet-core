@@ -22,8 +22,7 @@ pub trait UploadClient {
     /// Note that put may background in some implementations and a flush()
     /// will be needed.
     async fn put(
-        endpoint: &str,
-        http_client_auth: &ClientWithMiddleware,
+        &self,
         prefix: &str,
         hash: &MerkleHash,
         data: Vec<u8>,
@@ -32,8 +31,7 @@ pub trait UploadClient {
 
     /// Check if a XORB already exists.
     async fn exists(
-        endpoint: &str,
-        http_client_auth: &ClientWithMiddleware,
+        &self,
         prefix: &str,
         hash: &MerkleHash,
     ) -> Result<bool>;
@@ -45,8 +43,7 @@ pub trait UploadClient {
 pub trait ReconstructionClient {
     /// Get a entire file by file hash.
     async fn get_file(
-        endpoint: &str,
-        http_client_auth: &ClientWithMiddleware,
+        &self,
         http_client: &ClientWithMiddleware,
         hash: &MerkleHash,
         writer: &mut Box<dyn Write + Send>,
@@ -54,8 +51,7 @@ pub trait ReconstructionClient {
 
     /// Get a entire file by file hash at a specific bytes range.
     async fn get_file_byte_range(
-        endpoint: &str,
-        http_client_auth: &ClientWithMiddleware,
+        &self,
         http_client: &ClientWithMiddleware,
         hash: &MerkleHash,
         offset: u64,
@@ -73,8 +69,7 @@ pub trait Client: UploadClient + ReconstructionClient {}
 #[async_trait]
 pub(crate) trait Reconstructable {
     async fn reconstruct(
-        endpoint: &str,
-        http_client_auth: &ClientWithMiddleware,
+        &self,
         hash: &MerkleHash,
         byte_range: Option<(u64, u64)>,
     ) -> Result<QueryReconstructionResponse>;
