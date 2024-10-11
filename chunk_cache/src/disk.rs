@@ -28,7 +28,22 @@ pub mod test_utils;
 pub(crate) const BASE64_ENGINE: GeneralPurpose = URL_SAFE;
 pub const DEFAULT_CAPACITY: u64 = 1 << 30; // 1 GB
 
-type CacheState = HashMap<Key, SortedVec<CacheItem>>;
+#[derive(Debug, Clone)]
+struct CacheState {
+    inner: HashMap<Key, SortedVec<CacheItem>>,
+    num_items: usize,
+    total_bytes: u64,
+}
+
+impl CacheState {
+    fn new(state: HashMap<Key, SortedVec<CacheItem>>, num_items: usize, total_bytes: u64) -> Self {
+        Self {
+            inner: state,
+            num_items,
+            total_bytes,
+        }
+    }
+}
 
 /// DiskCache is a ChunkCache implementor that saves data on the file system
 #[derive(Debug, Clone)]
@@ -46,24 +61,20 @@ fn parse_key(file_name: &[u8]) -> Result<Key, ChunkCacheError> {
 }
 
 impl DiskCache {
-    // TODO: memoize
     pub fn num_items(&self) -> Result<usize, ChunkCacheError> {
         let state = self.state.lock()?;
-        let value = num_items(&state);
-        Ok(value)
+        Ok(state.num_items)
     }
 
-    // TODO: memoize
-    #[allow(dead_code)]
-    fn total_bytes(&self) -> Result<u64, ChunkCacheError> {
+    pub fn total_bytes(&self) -> Result<u64, ChunkCacheError> {
         let state = self.state.lock()?;
-        let value = total_bytes(&state);
-        Ok(value)
+        Ok(state.total_bytes)
     }
 
     pub fn initialize(cache_root: PathBuf, capacity: u64) -> Result<Self, ChunkCacheError> {
         let mut state = HashMap::new();
-        let mut num_bytes = 0;
+        let mut total_bytes = 0;
+        let mut num_items = 0;
         let max_num_bytes = 2 * capacity;
 
         let readdir = match std::fs::read_dir(&cache_root) {
@@ -73,7 +84,7 @@ impl DiskCache {
                     return Ok(Self {
                         cache_root,
                         capacity,
-                        state: Arc::new(Mutex::new(state)),
+                        state: Arc::new(Mutex::new(CacheState::new(state, 0, 0))),
                     });
                 }
                 return Err(e.into());
@@ -173,10 +184,11 @@ impl DiskCache {
                     remove_file(item.path())?;
                 }
 
-                num_bytes += cache_item.len;
+                total_bytes += cache_item.len;
+                num_items += 1;
                 items.push(cache_item);
 
-                if num_bytes >= max_num_bytes {
+                if total_bytes >= max_num_bytes {
                     break;
                 }
             }
@@ -185,13 +197,13 @@ impl DiskCache {
                 state.insert(key, items);
             }
 
-            if num_bytes >= max_num_bytes {
+            if total_bytes >= max_num_bytes {
                 break;
             }
         }
 
         Ok(Self {
-            state: Arc::new(Mutex::new(state)),
+            state: Arc::new(Mutex::new(CacheState::new(state, num_items, total_bytes))),
             cache_root,
             capacity,
         })
@@ -248,7 +260,7 @@ impl DiskCache {
 
     fn find_match(&self, key: &Key, range: &Range) -> Result<Option<CacheItem>, ChunkCacheError> {
         let state = self.state.lock()?;
-        let items = if let Some(items) = state.get(key) {
+        let items = if let Some(items) = state.inner.get(key) {
             items
         } else {
             return Ok(None);
@@ -315,7 +327,9 @@ impl DiskCache {
         self.maybe_evict(cache_item.len)?;
 
         let mut state = self.state.lock()?;
-        let item_set = state.entry(key.clone()).or_default();
+        state.num_items += 1;
+        state.total_bytes += cache_item.len;
+        let item_set = state.inner.entry(key.clone()).or_default();
         item_set.insert(cache_item);
 
         Ok(())
@@ -396,21 +410,26 @@ impl DiskCache {
     /// until at least to_remove number of bytes have been removed
     fn maybe_evict(&self, expected_add: u64) -> Result<(), ChunkCacheError> {
         let mut state = self.state.lock()?;
-        let total_bytes = total_bytes(&state);
+        let total_bytes = state.total_bytes;
         let to_remove = total_bytes as i64 - self.capacity as i64 + expected_add as i64;
         let mut bytes_removed = 0;
         let mut paths = Vec::new();
         while to_remove > bytes_removed {
             let (key, idx) = self.random_item(&state);
-            let items = state.get_mut(&key).ok_or(ChunkCacheError::Infallible)?;
+            let items = state
+                .inner
+                .get_mut(&key)
+                .ok_or(ChunkCacheError::Infallible)?;
             let cache_item = &items[idx];
             let len = cache_item.len;
             let path = self.item_path(&key, cache_item)?;
             paths.push(path);
             items.remove_index(idx);
             if items.is_empty() {
-                state.remove(&key);
+                state.inner.remove(&key);
             }
+            state.total_bytes -= len;
+            state.num_items -= 1;
 
             bytes_removed += len as i64;
         }
@@ -433,10 +452,10 @@ impl DiskCache {
 
     /// returns the key and index within that key for a random item
     fn random_item(&self, state: &MutexGuard<'_, CacheState>) -> (Key, usize) {
-        let num_items = num_items(state);
+        let num_items = state.num_items;
         let random_item = rand::random::<usize>() % num_items;
         let mut count = 0;
-        for (key, items) in state.iter() {
+        for (key, items) in state.inner.iter() {
             if random_item < count + items.len() {
                 return (key.clone(), random_item - count);
             }
@@ -449,11 +468,13 @@ impl DiskCache {
     fn remove_item(&self, key: &Key, cache_item: &CacheItem) -> Result<(), ChunkCacheError> {
         {
             let mut state = self.state.lock()?;
-            if let Some(items) = state.get_mut(key) {
+            if let Some(items) = state.inner.get_mut(key) {
                 items.remove_item(cache_item);
                 if items.is_empty() {
-                    state.remove(key);
+                    state.inner.remove(key);
                 }
+                state.total_bytes -= cache_item.len;
+                state.num_items -= 1;
             }
         }
 
@@ -523,16 +544,6 @@ fn compute_hash_from_reader(r: &mut impl Read) -> Result<blake3::Hash, ChunkCach
     Ok(blake3::Hasher::new().update_reader(r)?.finalize())
 }
 
-fn total_bytes(state: &CacheState) -> u64 {
-    state
-        .values()
-        .fold(0, |acc, v| acc + v.iter().fold(0, |acc, v| acc + v.len))
-}
-
-fn num_items(state: &CacheState) -> usize {
-    state.values().fold(0, |acc, v| acc + v.len())
-}
-
 /// removes a file but disregards a "NotFound" error if the file is already gone
 fn remove_file(path: impl AsRef<Path>) -> Result<(), ChunkCacheError> {
     if let Err(e) = std::fs::remove_file(path) {
@@ -581,9 +592,9 @@ impl ChunkCache for DiskCache {
 
 #[cfg(test)]
 mod tests {
-    use std::{collections::BTreeSet, fs::OpenOptions};
+    use std::collections::BTreeSet;
 
-    use crate::disk::{key_dir, parse_key, test_utils::*};
+    use crate::disk::{parse_key, test_utils::*};
 
     use cas_types::{Key, Range};
     use rand::thread_rng;
@@ -770,6 +781,7 @@ mod tests {
             .state
             .lock()
             .unwrap()
+            .inner
             .keys()
             .cloned()
             .collect::<BTreeSet<_>>();
@@ -777,6 +789,7 @@ mod tests {
             .state
             .lock()
             .unwrap()
+            .inner
             .keys()
             .cloned()
             .collect::<BTreeSet<_>>();
@@ -974,7 +987,7 @@ mod tests {
 
         // assert that we haven't evicted all keys for key with multiple items
         assert!(
-            cache.state.lock().unwrap().contains_key(&key),
+            cache.state.lock().unwrap().inner.contains_key(&key),
             "evicted key that should have remained in cache"
         );
     }
