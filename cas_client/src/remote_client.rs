@@ -1,3 +1,4 @@
+use crate::http_client;
 use crate::interface::*;
 use crate::Client;
 use crate::{error::Result, CasClientError};
@@ -10,6 +11,7 @@ use cas_types::{CASReconstructionTerm, Key, QueryReconstructionResponse, UploadX
 use merklehash::MerkleHash;
 use reqwest::{StatusCode, Url};
 use reqwest_middleware::ClientWithMiddleware;
+use utils::auth::AuthConfig;
 use std::io::{Cursor, Write};
 use tracing::{debug, error, warn};
 
@@ -43,13 +45,24 @@ fn is_middleware_status_retryable_and_print(err: &reqwest_middleware::Error) -> 
 }
 
 #[derive(Debug)]
-pub struct RemoteClient {}
+pub struct RemoteClient {
+    endpoint: String,
+    http_auth_client: ClientWithMiddleware,
+}
+
+impl RemoteClient {
+    pub fn new(endpoint: &str, auth: &Option<AuthConfig>) -> Self {
+        Self {
+            endpoint: endpoint.to_string(),
+            http_auth_client:http_client::build_auth_http_client(auth).unwrap(),
+        }
+    }
+}
 
 #[async_trait]
 impl UploadClient for RemoteClient {
     async fn put(
-        endpoint: &str,
-        http_auth_client: &ClientWithMiddleware,
+        &self,
         prefix: &str,
         hash: &MerkleHash,
         data: Vec<u8>,
@@ -60,9 +73,7 @@ impl UploadClient for RemoteClient {
             hash: *hash,
         };
 
-        let was_uploaded = RemoteClient::upload(
-            endpoint,
-            http_auth_client,
+        let was_uploaded = self.upload(
             &key,
             &data,
             chunk_and_boundaries,
@@ -79,8 +90,7 @@ impl UploadClient for RemoteClient {
     }
 
     async fn exists(
-        endpoint: &str,
-        http_auth_client: &ClientWithMiddleware,
+        &self,
         prefix: &str,
         hash: &MerkleHash,
     ) -> Result<bool> {
@@ -89,8 +99,8 @@ impl UploadClient for RemoteClient {
             hash: *hash,
         };
 
-        let url = Url::parse(&format!("{}/xorb/{key}", endpoint))?;
-        let response = http_auth_client.head(url).send().await?;
+        let url = Url::parse(&format!("{}/xorb/{key}", self.endpoint))?;
+        let response = self.http_auth_client.head(url).send().await?;
         match response.status() {
             StatusCode::OK => Ok(true),
             StatusCode::NOT_FOUND => Ok(false),
@@ -104,14 +114,13 @@ impl UploadClient for RemoteClient {
 #[async_trait]
 impl ReconstructionClient for RemoteClient {
     async fn get_file(
-        endpoint: &str,
-        http_client_auth: &ClientWithMiddleware,
+        &self,
         http_client: &ClientWithMiddleware,
         hash: &MerkleHash,
         writer: &mut Box<dyn Write + Send>,
     ) -> Result<()> {
         // get manifest of xorbs to download
-        let manifest = RemoteClient::reconstruct(endpoint, http_client_auth, hash, None).await?;
+        let manifest = self.reconstruct(hash, None).await?;
 
         RemoteClient::get_ranges(http_client, manifest, None, writer).await?;
 
@@ -120,8 +129,7 @@ impl ReconstructionClient for RemoteClient {
 
     #[allow(unused_variables)]
     async fn get_file_byte_range(
-        endpoint: &str,
-        http_client_auth: &ClientWithMiddleware,
+        &self,
         http_client: &ClientWithMiddleware,
         hash: &MerkleHash,
         offset: u64,
@@ -135,14 +143,13 @@ impl ReconstructionClient for RemoteClient {
 #[async_trait]
 impl Reconstructable for RemoteClient {
     async fn reconstruct(
-        endpoint: &str,
-        http_client: &ClientWithMiddleware,
+        &self,
         file_id: &MerkleHash,
         _bytes_range: Option<(u64, u64)>,
     ) -> Result<QueryReconstructionResponse> {
-        let url = Url::parse(&format!("{}/reconstruction/{}", endpoint, file_id.hex()))?;
+        let url = Url::parse(&format!("{}/reconstruction/{}", self.endpoint, file_id.hex()))?;
 
-        let response = http_client.get(url).send().await?;
+        let response = self.http_auth_client.get(url).send().await?;
 
         let response_body = response.bytes().await?;
         let response_parsed: QueryReconstructionResponse =
@@ -157,13 +164,12 @@ impl Client for RemoteClient {}
 
 impl RemoteClient {
     pub async fn upload(
-        endpoint: &str,
-        http_client_auth: &ClientWithMiddleware,
+        &self,
         key: &Key,
         contents: &[u8],
         chunk_and_boundaries: Vec<(MerkleHash, u32)>,
     ) -> Result<bool> {
-        let url = Url::parse(&format!("{}/xorb/{key}", endpoint))?;
+        let url = Url::parse(&format!("{}/xorb/{key}", self.endpoint))?;
 
         let mut writer = Cursor::new(Vec::new());
 
@@ -179,7 +185,7 @@ impl RemoteClient {
         writer.set_position(0);
         let data = writer.into_inner();
 
-        let response = http_client_auth.post(url).body(data).send().await?;
+        let response = self.http_auth_client.post(url).body(data).send().await?;
         let response_body = response.bytes().await?;
         let response_parsed: UploadXorbResponse = serde_json::from_reader(response_body.reader())?;
 
@@ -242,20 +248,16 @@ pub(crate) async fn get_one_range(
 
 #[cfg(test)]
 mod tests {
-    use crate::http_client;
 
     use super::*;
     use cas_object::test_utils::*;
     use tracing_test::traced_test;
-    use utils::auth::AuthConfig;
 
     #[ignore = "requires a running CAS server"]
     #[traced_test]
     #[tokio::test]
     async fn test_basic_put() {
         // Arrange
-        let auth_config = AuthConfig::maybe_new(None, None, None);
-        let http_client_auth = http_client::build_auth_http_client(&auth_config).unwrap();
         let prefix = PREFIX_DEFAULT;
         let (c, _, data, chunk_boundaries) = build_cas_object(
             3,
@@ -263,10 +265,9 @@ mod tests {
             cas_object::CompressionScheme::LZ4,
         );
 
+        let client = RemoteClient::new(CAS_ENDPOINT, &None);
         // Act
-        let result = RemoteClient::put(
-            CAS_ENDPOINT,
-            &http_client_auth,
+        let result = client.put(
             prefix,
             &c.info.cashash,
             data,

@@ -5,6 +5,7 @@ use cas_client::{CasClientError, Client, LocalClient, ReconstructionClient, Uplo
 use mdb_shard::{shard_file_reconstructor::FileReconstructor, ShardFileManager};
 use merklehash::MerkleHash;
 use std::path::Path;
+use reqwest_middleware::ClientWithMiddleware;
 use std::{io::Write, sync::Arc};
 
 /// A CAS client only for the purpose of testing. It utilizes LocalClient to upload
@@ -17,7 +18,7 @@ pub struct LocalTestClient {
 
 impl LocalTestClient {
     pub fn new(prefix: &str, path: &Path, shard_manager: Arc<ShardFileManager>) -> Self {
-        let cas = LocalClient::new(path, false);
+        let cas = LocalClient::new(path.to_path_buf());
         Self {
             prefix: prefix.to_owned(),
             cas,
@@ -41,16 +42,13 @@ impl UploadClient for LocalTestClient {
     async fn exists(&self, prefix: &str, hash: &MerkleHash) -> Result<bool, CasClientError> {
         self.cas.exists(prefix, hash).await
     }
-
-    async fn flush(&self) -> Result<(), CasClientError> {
-        self.cas.flush().await
-    }
 }
 
 #[async_trait]
 impl ReconstructionClient for LocalTestClient {
     async fn get_file(
         &self,
+        _http_client: &ClientWithMiddleware,
         hash: &MerkleHash,
         writer: &mut Box<dyn Write + Send>,
     ) -> Result<(), CasClientError> {
@@ -85,6 +83,7 @@ impl ReconstructionClient for LocalTestClient {
     #[allow(unused_variables)]
     async fn get_file_byte_range(
         &self,
+        _http_client: &ClientWithMiddleware,
         hash: &MerkleHash,
         offset: u64,
         length: u64,

@@ -152,8 +152,6 @@ impl PointerFileTranslator {
 
         debug_assert!(new_cas_data.is_empty());
 
-        self.cas.flush().await?;
-
         // flush accumulated memory shard.
         self.shard_manager.flush().await?;
 
@@ -304,7 +302,8 @@ impl PointerFileTranslator {
         writer: &mut Box<dyn Write + Send>,
         _range: Option<(usize, usize)>,
     ) -> Result<()> {
-        self.cas.get_file(file_id, writer).await?;
+        let http_client = cas_client::build_http_client()?;
+        self.cas.get_file(&http_client, file_id, writer).await?;
 
         Ok(())
     }

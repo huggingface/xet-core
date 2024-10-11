@@ -5,27 +5,43 @@ use async_trait::async_trait;
 use cas_object::CasObject;
 use cas_types::Key;
 use merklehash::MerkleHash;
-use reqwest_middleware::ClientWithMiddleware;
+use tempfile::TempDir;
 use std::fs::{metadata, File};
 use std::io::{BufReader, BufWriter, Write};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use tracing::{debug, info};
 
 #[derive(Debug)]
-pub struct LocalClient {}
+pub struct LocalClient {
+    _tmp_dir : TempDir,
+    pub path: PathBuf,
+}
+
+impl Default for LocalClient {
+    fn default() -> Self {
+        let tmp_dir = TempDir::new().unwrap();
+        let path = tmp_dir.path().to_owned();
+        Self { _tmp_dir: tmp_dir, path }
+    }
+}
 
 impl LocalClient {
+
+    pub fn new(path: PathBuf) -> Self {
+        Self { _tmp_dir: TempDir::new().unwrap(), path }
+    }
+
     /// Internal function to get the path for a given hash entry
-    fn get_path_for_entry(path: &str, prefix: &str, hash: &MerkleHash) -> PathBuf {
-        PathBuf::from(path).join(format!("{}.{}", prefix, hash.hex()))
+    fn get_path_for_entry(&self, prefix: &str, hash: &MerkleHash) -> PathBuf {
+        self.path.join(format!("{}.{}", prefix, hash.hex()))
     }
 
     /// Returns all entries in the local client
-    pub fn get_all_entries(path: &Path) -> Result<Vec<Key>> {
+    pub fn get_all_entries(&self) -> Result<Vec<Key>> {
         let mut ret: Vec<_> = Vec::new();
 
         // loop through the directory
-        path.read_dir()
+        self.path.read_dir()
             .map_err(|x| CasClientError::InternalError(x.into()))?
             // take only entries which are ok
             .filter_map(|x| x.ok())
@@ -55,9 +71,8 @@ impl LocalClient {
     }
 
     /// Deletes an entry
-    pub fn delete(endpoint: &str, prefix: &str, hash: &MerkleHash) {
-        let path = endpoint;
-        let file_path = LocalClient::get_path_for_entry(path, prefix, hash);
+    pub fn delete(&self, prefix: &str, hash: &MerkleHash) {
+        let file_path = self.get_path_for_entry(prefix, hash);
 
         // unset read-only for Windows to delete
         #[cfg(windows)]
@@ -77,8 +92,7 @@ impl LocalClient {
 #[async_trait]
 impl UploadClient for LocalClient {
     async fn put(
-        endpoint: &str,
-        http_client_auth: &ClientWithMiddleware,
+        &self,
         prefix: &str,
         hash: &MerkleHash,
         data: Vec<u8>,
@@ -89,8 +103,6 @@ impl UploadClient for LocalClient {
             return Err(CasClientError::InvalidArguments);
         }
 
-        let path = endpoint;
-
         // last boundary must be end of data
         if chunk_and_boundaries.last().unwrap().1 as usize != data.len() {
             return Err(CasClientError::InvalidArguments);
@@ -98,12 +110,12 @@ impl UploadClient for LocalClient {
 
         // moved hash validation into [CasObject::serialize], so removed from here.
 
-        if LocalClient::exists(endpoint, http_client_auth, prefix, hash).await? {
+        if self.exists(prefix, hash).await? {
             info!("{prefix:?}/{hash:?} already exists in Local CAS; returning.");
             return Ok(());
         }
 
-        let file_path = LocalClient::get_path_for_entry(path, prefix, hash);
+        let file_path = self.get_path_for_entry(prefix, hash);
         info!("Writing XORB {prefix}/{hash:?} to local path {file_path:?}");
 
         // we prefix with "[PID]." for now. We should be able to do a cleanup
@@ -111,7 +123,7 @@ impl UploadClient for LocalClient {
         let tempfile = tempfile::Builder::new()
             .prefix(&format!("{}.", std::process::id()))
             .suffix(".xorb")
-            .tempfile_in(path)
+            .tempfile_in(self.path.as_path())
             .map_err(|e| {
                 CasClientError::InternalError(anyhow!(
                     "Unable to create temporary file for staging Xorbs, got {e:?}"
@@ -149,13 +161,11 @@ impl UploadClient for LocalClient {
     }
 
     async fn exists(
-        endpoint: &str,
-        _http_client_auth: &ClientWithMiddleware,
+        &self,
         prefix: &str,
         hash: &MerkleHash,
     ) -> Result<bool> {
-        let path = endpoint;
-        let file_path = LocalClient::get_path_for_entry(path, prefix, hash);
+        let file_path = self.get_path_for_entry(prefix, hash);
 
         let res = metadata(&file_path);
 
@@ -190,21 +200,20 @@ pub mod tests_utils {
     use tracing::error;
 
     pub trait TestUtils {
-        fn get(endpoint: &str, prefix: &str, hash: &MerkleHash) -> Result<Vec<u8>>;
+        fn get(&self, prefix: &str, hash: &MerkleHash) -> Result<Vec<u8>>;
         fn get_object_range(
-            endpoint: &str,
+            &self,
             prefix: &str,
             hash: &MerkleHash,
             ranges: Vec<(u32, u32)>,
         ) -> Result<Vec<Vec<u8>>>;
-        fn get_length(endpoint: &str, prefix: &str, hash: &MerkleHash) -> Result<u32>;
+        fn get_length(&self, prefix: &str, hash: &MerkleHash) -> Result<u32>;
     }
 
     impl TestUtils for LocalClient {
 
-        fn get(endpoint: &str, prefix: &str, hash: &MerkleHash) -> Result<Vec<u8>> {
-            let path = endpoint;
-            let file_path = LocalClient::get_path_for_entry(path, prefix, hash);
+        fn get(&self, prefix: &str, hash: &MerkleHash) -> Result<Vec<u8>> {
+            let file_path = self.get_path_for_entry(prefix, hash);
             let file = File::open(&file_path).map_err(|_| {
                 error!("Unable to find file in local CAS {:?}", file_path);
                 CasClientError::XORBNotFound(*hash)
@@ -219,7 +228,7 @@ pub mod tests_utils {
         /// Get uncompressed bytes from a CAS object within chunk ranges.
         /// Each tuple in chunk_ranges represents a chunk index range [a, b)
         fn get_object_range(
-            endpoint: &str,
+            &self,
             prefix: &str,
             hash: &MerkleHash,
             chunk_ranges: Vec<(u32, u32)>,
@@ -229,8 +238,7 @@ pub mod tests_utils {
                 return Ok(vec![vec![]]);
             }
 
-            let path = endpoint;
-            let file_path = LocalClient::get_path_for_entry(path, prefix, hash);
+            let file_path = self.get_path_for_entry(prefix, hash);
             let file = File::open(&file_path).map_err(|_| {
                 error!("Unable to find file in local CAS {:?}", file_path);
                 CasClientError::XORBNotFound(*hash)
@@ -252,9 +260,8 @@ pub mod tests_utils {
             Ok(ret)
         }
 
-        fn get_length(endpoint: &str, prefix: &str, hash: &MerkleHash) -> Result<u32> {
-            let path = endpoint;
-            let file_path = LocalClient::get_path_for_entry(path, prefix, hash);
+        fn get_length(&self, prefix: &str, hash: &MerkleHash) -> Result<u32> {
+            let file_path = self.get_path_for_entry(prefix, hash);
             match File::open(file_path) {
                 Ok(file) => {
                     let mut reader = BufReader::new(file);
@@ -270,13 +277,11 @@ pub mod tests_utils {
 
 #[cfg(test)]
 mod tests {
-    use crate::http_client;
 
     use super::*;
     use cas_object::test_utils::*;
     use cas_object::CompressionScheme::LZ4;
     use merklehash::compute_data_hash;
-    use tempfile::TempDir;
     use tests_utils::TestUtils;
 
     #[tokio::test]
@@ -288,16 +293,10 @@ mod tests {
 
         let data_again = data.clone();
 
-        let tmp_dir = TempDir::new().unwrap();
-        let path = tmp_dir.path().to_owned();
-        let dummy_http_client = http_client::build_auth_http_client(&None).unwrap();
 
         // Act & Assert
-        assert!(path.exists());
-
-        assert!(LocalClient::put(
-            path.to_str().unwrap(),
-            &dummy_http_client,
+        let client = LocalClient::default();
+        assert!(client.put(
             "key",
             &hash,
             data,
@@ -306,24 +305,20 @@ mod tests {
         .await
         .is_ok());
 
-        let returned_data = LocalClient::get(&path.to_string_lossy(), "key", &hash).unwrap();
+        let returned_data = client.get("key", &hash).unwrap();
         assert_eq!(data_again, returned_data);
     }
 
     #[tokio::test]
     async fn test_basic_put_get_random_medium() {
         // Arrange
-        let tmp_dir = TempDir::new().unwrap();
-        let path = tmp_dir.path().to_owned();
-        let dummy_http_client = http_client::build_auth_http_client(&None).unwrap();
         let (c, _, data, chunk_boundaries) =
             build_cas_object(44, ChunkSize::Random(512, 15633), LZ4);
         let data_again = data.clone();
 
         // Act & Assert
-        assert!(LocalClient::put(
-            &path.to_string_lossy(),
-            &dummy_http_client,
+        let client = LocalClient::default();
+        assert!(client.put(
             "",
             &c.info.cashash,
             data,
@@ -332,23 +327,19 @@ mod tests {
         .await
         .is_ok());
 
-        let returned_data = LocalClient::get(&path.to_string_lossy(), "", &c.info.cashash).unwrap();
+        let returned_data = client.get("", &c.info.cashash).unwrap();
         assert_eq!(data_again, returned_data);
     }
 
     #[tokio::test]
     async fn test_basic_put_get_range_random_small() {
         // Arrange
-        let tmp_dir = TempDir::new().unwrap();
-        let path = tmp_dir.path().to_owned();
-        let dummy_http_client = http_client::build_auth_http_client(&None).unwrap();
         let (c, _, data, chunk_and_boundaries) =
             build_cas_object(3, ChunkSize::Random(512, 2048), LZ4);
 
         // Act & Assert
-        assert!(LocalClient::put(
-            &path.to_string_lossy(),
-            &dummy_http_client,
+        let client = LocalClient::default();
+        assert!(client.put(
             "",
             &c.info.cashash,
             data.clone(),
@@ -359,8 +350,7 @@ mod tests {
 
         let ranges: Vec<(u32, u32)> = vec![(0, 1), (2, 3)];
         let returned_ranges =
-            LocalClient::get_object_range(&path.to_string_lossy(), "", &c.info.cashash, ranges)
-                .unwrap();
+            client.get_object_range("", &c.info.cashash, ranges).unwrap();
 
         let expected = vec![
             data[0..chunk_and_boundaries[0].1 as usize].to_vec(),
@@ -375,24 +365,13 @@ mod tests {
     #[tokio::test]
     async fn test_basic_length() {
         // Arrange
-        let tmp_dir = TempDir::new().unwrap();
-        let path = tmp_dir.path().to_owned();
-        let dummy_http_client = http_client::build_auth_http_client(&None).unwrap();
         let (c, _, data, chunk_boundaries) = build_cas_object(1, ChunkSize::Fixed(2048), LZ4);
         let gen_length = data.len();
 
         // Act
-        LocalClient::put(
-            &path.to_string_lossy(),
-            &dummy_http_client,
-            "",
-            &c.info.cashash,
-            data,
-            chunk_boundaries,
-        )
-        .await
-        .unwrap();
-        let len = LocalClient::get_length(&path.to_string_lossy(), "", &c.info.cashash).unwrap();
+        let client = LocalClient::default();
+        assert!(client.put("", &c.info.cashash, data, chunk_boundaries).await.is_ok());
+        let len = client.get_length("", &c.info.cashash).unwrap();
 
         // Assert
         assert_eq!(len as usize, gen_length);
@@ -401,30 +380,25 @@ mod tests {
     #[tokio::test]
     async fn test_missing_xorb() {
         // Arrange
-        let tmp_dir = TempDir::new().unwrap();
-        let path = tmp_dir.path().to_owned();
         let hash = MerkleHash::from_hex(
             "d760aaf4beb07581956e24c847c47f1abd2e419166aa68259035bc412232e9da",
         )
         .unwrap();
 
         // Act & Assert
-        let result = LocalClient::get(&path.to_string_lossy(), "", &hash);
+        let client = LocalClient::default();
+        let result = client.get("", &hash);
         assert!(matches!(result, Err(CasClientError::XORBNotFound(_))));
     }
 
     #[tokio::test]
     async fn test_failures() {
-        let tmp_dir = TempDir::new().unwrap();
-        let path = tmp_dir.path().to_owned();
-        let dummy_http_client = http_client::build_auth_http_client(&None).unwrap();
         let hello = "hello world".as_bytes().to_vec();
 
         let hello_hash = merklehash::compute_data_hash(&hello[..]);
         // write "hello world"
-        LocalClient::put(
-            &path.to_string_lossy(),
-            &dummy_http_client,
+        let client = LocalClient::default();
+        client.put(
             "key",
             &hello_hash,
             hello.clone(),
@@ -434,9 +408,7 @@ mod tests {
         .unwrap();
 
         // put the same value a second time. This should be ok.
-        LocalClient::put(
-            &path.to_string_lossy(),
-            &dummy_http_client,
+        client.put(
             "key",
             &hello_hash,
             hello.clone(),
@@ -446,7 +418,7 @@ mod tests {
         .unwrap();
 
         // we can list all entries
-        let r = LocalClient::get_all_entries(&path).unwrap();
+        let r = client.get_all_entries().unwrap();
         assert_eq!(r.len(), 1);
         assert_eq!(
             r,
@@ -459,9 +431,7 @@ mod tests {
         // content shorter than the chunk boundaries should fail
         assert_eq!(
             CasClientError::InvalidArguments,
-            LocalClient::put(
-                &path.to_string_lossy(),
-                &dummy_http_client,
+            client.put(
                 "hellp2",
                 &hello_hash,
                 "hellp wod".as_bytes().to_vec(),
@@ -474,9 +444,7 @@ mod tests {
         // content longer than the chunk boundaries should fail
         assert_eq!(
             CasClientError::InvalidArguments,
-            LocalClient::put(
-                &path.to_string_lossy(),
-                &dummy_http_client,
+            client.put(
                 "again",
                 &hello_hash,
                 "hello world again".as_bytes().to_vec(),
@@ -489,9 +457,7 @@ mod tests {
         // empty writes should fail
         assert_eq!(
             CasClientError::InvalidArguments,
-            LocalClient::put(
-                &path.to_string_lossy(),
-                &dummy_http_client,
+            client.put(
                 "key",
                 &hello_hash,
                 vec![],
@@ -508,14 +474,13 @@ mod tests {
         // get length of non-existant object should fail with XORBNotFound
         assert_eq!(
             CasClientError::XORBNotFound(world_hash),
-            LocalClient::get_length(&path.to_string_lossy(), "key", &world_hash).unwrap_err()
+            client.get_length("key", &world_hash).unwrap_err()
         );
 
         // read of non-existant object should fail with XORBNotFound
-        assert!(LocalClient::get(&path.to_string_lossy(), "key", &world_hash).is_err());
+        assert!(client.get("key", &world_hash).is_err());
         // read range of non-existant object should fail with XORBNotFound
-        assert!(LocalClient::get_object_range(
-            &path.to_string_lossy(),
+        assert!(client.get_object_range(
             "key",
             &world_hash,
             vec![(0, 5)]
@@ -523,29 +488,26 @@ mod tests {
         .is_err());
 
         // we can delete non-existant things
-        LocalClient::delete(&path.to_string_lossy(), "key", &world_hash);
+        client.delete("key", &world_hash);
 
         // delete the entry we inserted
-        LocalClient::delete(&path.to_string_lossy(), "key", &hello_hash);
-        let r = LocalClient::get_all_entries(&path).unwrap();
+        client.delete("key", &hello_hash);
+        let r = client.get_all_entries().unwrap();
         assert_eq!(r.len(), 0);
 
         // now every read of that key should fail
         assert_eq!(
             CasClientError::XORBNotFound(hello_hash),
-            LocalClient::get_length(&path.to_string_lossy(), "key", &hello_hash).unwrap_err()
+            client.get_length("key", &hello_hash).unwrap_err()
         );
         assert_eq!(
             CasClientError::XORBNotFound(hello_hash),
-            LocalClient::get(&path.to_string_lossy(), "key", &hello_hash).unwrap_err()
+            client.get("key", &hello_hash).unwrap_err()
         );
     }
 
     #[tokio::test]
     async fn test_hashing() {
-        let tmp_dir = TempDir::new().unwrap();
-        let path = tmp_dir.path().to_owned();
-        let dummy_http_client = http_client::build_auth_http_client(&None).unwrap();
         // hand construct a tree of 2 chunks
         let hello = "hello".as_bytes().to_vec();
         let world = "world".as_bytes().to_vec();
@@ -558,9 +520,8 @@ mod tests {
         let final_hash = merkledb::detail::hash_node_sequence(&[hellonode, worldnode]);
 
         // insert should succeed
-        LocalClient::put(
-            &path.to_string_lossy(),
-            &dummy_http_client,
+        let client = LocalClient::default();
+        client.put(
             "key",
             &final_hash,
             "helloworld".as_bytes().to_vec(),
