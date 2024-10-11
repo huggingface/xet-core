@@ -26,7 +26,7 @@ pub mod test_utils;
 
 // consistently use URL_SAFE (also file path safe) base64 codec
 pub(crate) const BASE64_ENGINE: GeneralPurpose = URL_SAFE;
-pub const _DEFAULT_CAPACITY: u64 = 1 << 30; // 1 GB
+pub const DEFAULT_CAPACITY: u64 = 1 << 30; // 1 GB
 
 type CacheState = HashMap<Key, SortedVec<CacheItem>>;
 
@@ -147,6 +147,10 @@ impl DiskCache {
                 if !md.is_file() {
                     continue;
                 }
+                if md.len() > DEFAULT_CAPACITY {
+                    return Err(ChunkCacheError::general(format!("Cache directory contains a file larger than {} GB, cache directory state is invalid", (DEFAULT_CAPACITY as f64 / (1 << 30) as f64))));
+                }
+
                 // don't track an item that takes up the whole capacity
                 if md.len() > capacity {
                     continue;
@@ -577,9 +581,9 @@ impl ChunkCache for DiskCache {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeSet;
+    use std::{collections::BTreeSet, fs::OpenOptions};
 
-    use crate::disk::{parse_key, test_utils::*};
+    use crate::disk::{key_dir, parse_key, test_utils::*};
 
     use cas_types::{Key, Range};
     use rand::thread_rng;
@@ -587,13 +591,13 @@ mod tests {
 
     use crate::ChunkCache;
 
-    use super::{DiskCache, _DEFAULT_CAPACITY};
+    use super::{DiskCache, DEFAULT_CAPACITY};
 
     #[test]
     fn test_get_cache_empty() {
         let mut rng = thread_rng();
         let cache_root = TempDir::new("empty").unwrap();
-        let cache = DiskCache::initialize(cache_root.into_path(), _DEFAULT_CAPACITY).unwrap();
+        let cache = DiskCache::initialize(cache_root.into_path(), DEFAULT_CAPACITY).unwrap();
         assert!(cache
             .get(&random_key(&mut rng), &random_range(&mut rng))
             .unwrap()
@@ -605,7 +609,7 @@ mod tests {
         let mut rng = thread_rng();
         let cache_root = TempDir::new("put_get_simple").unwrap();
         let cache =
-            DiskCache::initialize(cache_root.path().to_path_buf(), _DEFAULT_CAPACITY).unwrap();
+            DiskCache::initialize(cache_root.path().to_path_buf(), DEFAULT_CAPACITY).unwrap();
 
         let key = random_key(&mut rng);
         let range = Range { start: 0, end: 4 };
@@ -631,7 +635,7 @@ mod tests {
         let mut rng = thread_rng();
         let cache_root = TempDir::new("put_get_subrange").unwrap();
         let cache =
-            DiskCache::initialize(cache_root.path().to_path_buf(), _DEFAULT_CAPACITY).unwrap();
+            DiskCache::initialize(cache_root.path().to_path_buf(), DEFAULT_CAPACITY).unwrap();
 
         let key = random_key(&mut rng);
         let range = Range { start: 0, end: 4 };
@@ -685,7 +689,7 @@ mod tests {
     fn test_same_puts_noop() {
         let cache_root = TempDir::new("same_puts_noop").unwrap();
         let cache =
-            DiskCache::initialize(cache_root.path().to_path_buf(), _DEFAULT_CAPACITY).unwrap();
+            DiskCache::initialize(cache_root.path().to_path_buf(), DEFAULT_CAPACITY).unwrap();
         let mut it = RandomEntryIterator::default().with_range_len(1000);
         let (key, range, offsets, data) = it.next().unwrap();
         assert!(cache.put(&key, &range, &offsets, &data).is_ok());
@@ -698,7 +702,7 @@ mod tests {
             let mut it = RandomEntryIterator::default();
             let cache_root = TempDir::new("overlap_range_data_mismatch_fail").unwrap();
             let cache =
-                DiskCache::initialize(cache_root.path().to_path_buf(), _DEFAULT_CAPACITY).unwrap();
+                DiskCache::initialize(cache_root.path().to_path_buf(), DEFAULT_CAPACITY).unwrap();
             let (key, range, offsets, data) = it.next().unwrap();
             assert!(cache.put(&key, &range, &offsets, &data).is_ok());
             (cache_root, cache, key, range, offsets, data)
@@ -744,7 +748,7 @@ mod tests {
     fn test_initialize_non_empty() {
         let cache_root = TempDir::new("initialize_non_empty").unwrap();
         let cache =
-            DiskCache::initialize(cache_root.path().to_path_buf(), _DEFAULT_CAPACITY).unwrap();
+            DiskCache::initialize(cache_root.path().to_path_buf(), DEFAULT_CAPACITY).unwrap();
         let mut it = RandomEntryIterator::default();
 
         let mut keys_and_ranges = Vec::new();
@@ -755,7 +759,7 @@ mod tests {
             keys_and_ranges.push((key, range));
         }
         let cache2 =
-            DiskCache::initialize(cache_root.path().to_path_buf(), _DEFAULT_CAPACITY).unwrap();
+            DiskCache::initialize(cache_root.path().to_path_buf(), DEFAULT_CAPACITY).unwrap();
         for (i, (key, range)) in keys_and_ranges.iter().enumerate() {
             let get_result = cache2.get(&key, &range);
             assert!(get_result.is_ok(), "{i} {get_result:?}");
@@ -784,7 +788,7 @@ mod tests {
         const LARGE_FILE: u64 = 1000;
         let cache_root = TempDir::new("initialize_too_large_file").unwrap();
         let cache =
-            DiskCache::initialize(cache_root.path().to_path_buf(), _DEFAULT_CAPACITY).unwrap();
+            DiskCache::initialize(cache_root.path().to_path_buf(), DEFAULT_CAPACITY).unwrap();
         let mut it = RandomEntryIterator::default().with_range_len(LARGE_FILE as u32);
 
         let (key, range, offsets, data) = it.next().unwrap();
@@ -872,7 +876,7 @@ mod tests {
     fn put_subrange() {
         let cache_root = TempDir::new("put_subrange").unwrap();
         let cache =
-            DiskCache::initialize(cache_root.path().to_path_buf(), _DEFAULT_CAPACITY).unwrap();
+            DiskCache::initialize(cache_root.path().to_path_buf(), DEFAULT_CAPACITY).unwrap();
         let (key, range, chunk_byte_indicies, data) =
             RandomEntryIterator::default().next().unwrap();
         cache
@@ -980,7 +984,7 @@ mod tests {
 mod concurrency_tests {
     use tempdir::TempDir;
 
-    use crate::{disk::_DEFAULT_CAPACITY, ChunkCache, RandomEntryIterator, RANGE_LEN};
+    use crate::{disk::DEFAULT_CAPACITY, ChunkCache, RandomEntryIterator, RANGE_LEN};
 
     use super::DiskCache;
 
@@ -990,7 +994,7 @@ mod concurrency_tests {
     async fn test_run_concurrently() {
         let cache_root = TempDir::new("run_concurrently").unwrap();
         let cache =
-            DiskCache::initialize(cache_root.path().to_path_buf(), _DEFAULT_CAPACITY).unwrap();
+            DiskCache::initialize(cache_root.path().to_path_buf(), DEFAULT_CAPACITY).unwrap();
 
         let num_tasks = 2 + rand::random::<u8>() % 14;
 
