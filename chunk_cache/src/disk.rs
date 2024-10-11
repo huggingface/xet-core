@@ -335,8 +335,8 @@ impl DiskCache {
         }
 
         // validate stored data
-        let path = self.item_path(key, &cache_item)?;
-        let mut file = if let Ok(file) = File::open(&path) {
+        let path = self.item_path(key, cache_item)?;
+        let mut file = if let Ok(file) = File::open(path) {
             file
         } else {
             self.remove_item(key, cache_item)?;
