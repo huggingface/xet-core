@@ -1,13 +1,17 @@
 use anyhow::anyhow;
+use error_printer::OptionPrinter;
 use reqwest::header::HeaderValue;
 use reqwest::header::AUTHORIZATION;
 use reqwest::{Request, Response};
+use reqwest_middleware::{ClientBuilder, ClientWithMiddleware, Middleware, Next};
+use reqwest_retry::{policies::ExponentialBackoff, RetryTransientMiddleware};
 use std::sync::{Arc, Mutex};
 use utils::auth::{AuthConfig, TokenProvider};
-use reqwest_middleware::{ClientBuilder, ClientWithMiddleware, Middleware, Next};
-use error_printer::OptionPrinter;
 
 use crate::CasClientError;
+
+/// Number of retries for transient errors.
+const NUM_RETRIES: u32 = 5;
 
 /// builds the client to talk to CAS.
 pub fn build_auth_http_client(
@@ -17,15 +21,29 @@ pub fn build_auth_http_client(
         .as_ref()
         .map(AuthMiddleware::from)
         .info_none("CAS auth disabled");
+    let retry_policy = get_retry_middleware(NUM_RETRIES);
     let reqwest_client = reqwest::Client::builder().build()?;
     Ok(ClientBuilder::new(reqwest_client)
         .maybe_with(auth_middleware)
+        .maybe_with(Some(retry_policy))
         .build())
 }
 
 pub fn build_http_client() -> std::result::Result<ClientWithMiddleware, CasClientError> {
+    let retry_middleware = get_retry_middleware(NUM_RETRIES);
     let reqwest_client = reqwest::Client::builder().build()?;
-    Ok(ClientBuilder::new(reqwest_client).build())
+    Ok(ClientBuilder::new(reqwest_client)
+        .maybe_with(Some(retry_middleware))
+        .build())
+}
+
+// retry policy with exponential backoff and configurable number of retries using reqwest-retry
+fn get_retry_middleware(num_retries: u32) -> RetryTransientMiddleware<ExponentialBackoff> {
+    let retry_policy = ExponentialBackoff::builder().build_with_max_retries(num_retries);
+
+    // Uses DefaultRetryableStrategy which retries on 5xx/400/429 status codes, and retries on transient errors.
+    // See https://github.com/TrueLayer/reqwest-middleware/blob/cf06f0962aae543526756ff7e1aa5e5cd0c42e42/reqwest-retry/src/retryable_strategy.rs#L97
+    RetryTransientMiddleware::new_with_policy(retry_policy)
 }
 
 /// Helper trait to allow the reqwest_middleware client to optionally add a middleware.
@@ -41,7 +59,6 @@ impl OptionalMiddleware for ClientBuilder {
         }
     }
 }
-
 
 /// AuthMiddleware is a thread-safe middleware that adds a CAS auth token to outbound requests.
 /// If the token it holds is expired, it will automatically be refreshed.
