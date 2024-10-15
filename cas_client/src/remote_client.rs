@@ -11,9 +11,9 @@ use cas_types::{CASReconstructionTerm, Key, QueryReconstructionResponse, UploadX
 use merklehash::MerkleHash;
 use reqwest::{StatusCode, Url};
 use reqwest_middleware::ClientWithMiddleware;
-use utils::auth::AuthConfig;
 use std::io::{Cursor, Write};
 use tracing::{debug, error, warn};
+use utils::auth::AuthConfig;
 
 pub const CAS_ENDPOINT: &str = "http://localhost:8080";
 pub const PREFIX_DEFAULT: &str = "default";
@@ -54,7 +54,7 @@ impl RemoteClient {
     pub fn new(endpoint: &str, auth: &Option<AuthConfig>) -> Self {
         Self {
             endpoint: endpoint.to_string(),
-            http_auth_client:http_client::build_auth_http_client(auth).unwrap(),
+            http_auth_client: http_client::build_auth_http_client(auth).unwrap(),
         }
     }
 }
@@ -73,12 +73,7 @@ impl UploadClient for RemoteClient {
             hash: *hash,
         };
 
-        let was_uploaded = self.upload(
-            &key,
-            &data,
-            chunk_and_boundaries,
-        )
-        .await?;
+        let was_uploaded = self.upload(&key, &data, chunk_and_boundaries).await?;
 
         if !was_uploaded {
             debug!("{key:?} not inserted into CAS.");
@@ -89,11 +84,7 @@ impl UploadClient for RemoteClient {
         Ok(())
     }
 
-    async fn exists(
-        &self,
-        prefix: &str,
-        hash: &MerkleHash,
-    ) -> Result<bool> {
+    async fn exists(&self, prefix: &str, hash: &MerkleHash) -> Result<bool> {
         let key = Key {
             prefix: prefix.to_string(),
             hash: *hash,
@@ -147,7 +138,11 @@ impl Reconstructable for RemoteClient {
         file_id: &MerkleHash,
         _bytes_range: Option<(u64, u64)>,
     ) -> Result<QueryReconstructionResponse> {
-        let url = Url::parse(&format!("{}/reconstruction/{}", self.endpoint, file_id.hex()))?;
+        let url = Url::parse(&format!(
+            "{}/reconstruction/{}",
+            self.endpoint,
+            file_id.hex()
+        ))?;
 
         let response = self.http_auth_client.get(url).send().await?;
 
@@ -233,7 +228,8 @@ pub(crate) async fn get_one_range(
             format!("bytes={}-{}", term.url_range.start, term.url_range.end - 1),
         )
         .send()
-        .await?;
+        .await
+        .map_err(|e| CasClientError::InternalError(anyhow!("request failed with code {e}")))?;
 
     let xorb_bytes = response.bytes().await?;
     if xorb_bytes.len() as u32 != term.url_range.end - term.url_range.start {
@@ -267,13 +263,9 @@ mod tests {
 
         let client = RemoteClient::new(CAS_ENDPOINT, &None);
         // Act
-        let result = client.put(
-            prefix,
-            &c.info.cashash,
-            data,
-            chunk_boundaries,
-        )
-        .await;
+        let result = client
+            .put(prefix, &c.info.cashash, data, chunk_boundaries)
+            .await;
 
         // Assert
         assert!(result.is_ok());
