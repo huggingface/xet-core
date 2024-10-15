@@ -20,7 +20,6 @@ shard_client = { path = "../shard_client" }
 utils = { path = "../utils" }
 parutils = { path = "../parutils" }
 file_utils = { path = "../file_utils" }
-retry_strategy = { path = "../retry_strategy" }
 error_printer = { path = "../error_printer" }
 xet_error = { path = "../xet_error" }
 slog = "2.4.1"

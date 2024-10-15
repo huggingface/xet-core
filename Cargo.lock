@@ -580,7 +580,6 @@ dependencies = [
  "reqwest 0.12.8",
  "reqwest-middleware",
  "reqwest-retry",
- "retry_strategy",
  "rustls-pemfile 2.2.0",
  "serde",
  "serde_json",
@@ -1329,7 +1328,6 @@ dependencies = [
  "regex",
  "reqwest 0.11.27",
  "reqwest-middleware",
- "retry_strategy",
  "ring 0.16.20",
  "rstest",
  "run_script",
@@ -4359,15 +4357,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "retry_strategy"
-version = "0.14.5"
-dependencies = [
- "anyhow",
- "tokio",
- "tokio-retry",
-]
-
-[[package]]
 name = "ring"
 version = "0.16.20"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5001,7 +4990,6 @@ dependencies = [
  "reqwest 0.11.27",
  "reqwest 0.12.8",
  "reqwest-middleware",
- "retry_strategy",
  "serde_json",
  "tempfile",
  "tokio",
