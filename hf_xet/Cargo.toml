@@ -9,7 +9,7 @@ name = "hf_xet"
 crate-type = ["cdylib"]
 
 [dependencies]
-pyo3 = { version = "0.22.3", features = [
+pyo3 = { version = "0.22.4", features = [
     "extension-module",
     "abi3-py37",
 ] }
