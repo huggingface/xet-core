@@ -12,6 +12,11 @@ use crate::CasClientError;
 
 /// Number of retries for transient errors.
 const NUM_RETRIES: u32 = 5;
+const BASE_RETRY_DELAY_MS: u64 = 3000;
+
+// TODO: Add Logging
+// use tracing::warn;
+// Whenever retrying, add: warn!("{err:?}. Retrying...");
 
 /// builds the client to talk to CAS.
 pub fn build_auth_http_client(
