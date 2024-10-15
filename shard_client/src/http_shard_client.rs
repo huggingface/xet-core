@@ -12,24 +12,18 @@ use mdb_shard::shard_file_reconstructor::FileReconstructor;
 use merklehash::MerkleHash;
 use reqwest::Url;
 use reqwest_middleware::ClientWithMiddleware;
-use retry_strategy::RetryStrategy;
 use std::io::Read;
 use std::path::PathBuf;
 use std::str::FromStr;
 use tokio::task::JoinSet;
-use tracing::warn;
 use utils::auth::AuthConfig;
 use utils::serialization_utils::read_u32;
-
-const NUM_RETRIES: usize = 5;
-const BASE_RETRY_DELAY_MS: u64 = 3000;
 
 /// Shard Client that uses HTTP for communication.
 #[derive(Debug)]
 pub struct HttpShardClient {
     endpoint: String,
     client: ClientWithMiddleware,
-    retry_strategy: RetryStrategy,
     cache_directory: Option<PathBuf>,
 }
 
@@ -43,27 +37,9 @@ impl HttpShardClient {
         HttpShardClient {
             endpoint: endpoint.into(),
             client,
-            // Retry policy: Exponential backoff starting at BASE_RETRY_DELAY_MS and retrying NUM_RETRIES times
-            retry_strategy: RetryStrategy::new(NUM_RETRIES, BASE_RETRY_DELAY_MS),
             cache_directory: shard_cache_directory.clone(),
         }
     }
-}
-
-fn retry_http_status_code(stat: &reqwest::StatusCode) -> bool {
-    stat.is_server_error() || *stat == reqwest::StatusCode::TOO_MANY_REQUESTS
-}
-
-fn is_status_retriable_and_print(err: &reqwest_middleware::Error) -> bool {
-    let ret = err
-        .status()
-        .as_ref()
-        .map(retry_http_status_code)
-        .unwrap_or(true); // network issues should be retried
-    if ret {
-        warn!("{err:?}. Retrying...");
-    }
-    ret
 }
 
 #[async_trait]
@@ -83,20 +59,22 @@ impl RegistrationClient for HttpShardClient {
 
         let url = Url::parse(&format!("{}/shard/{key}", self.endpoint))?;
 
-        let response = self
-            .retry_strategy
-            .retry(
-                || async {
-                    let url = url.clone();
-                    match force_sync {
-                        true => self.client.put(url).body(shard_data.to_vec()).send().await,
-                        false => self.client.post(url).body(shard_data.to_vec()).send().await,
-                    }
-                },
-                is_status_retriable_and_print,
-            )
-            .await
-            .map_err(|e| ShardClientError::Other(format!("request failed with code {e}")))?;
+        let response = match force_sync {
+            true => self
+                .client
+                .put(url)
+                .body(shard_data.to_vec())
+                .send()
+                .await
+                .map_err(|e| ShardClientError::Other(format!("request failed with code {e}")))?,
+            false => self
+                .client
+                .post(url)
+                .body(shard_data.to_vec())
+                .send()
+                .await
+                .map_err(|e| ShardClientError::Other(format!("request failed with code {e}")))?,
+        };
 
         let response_body = response.bytes().await?;
         let response_parsed: UploadShardResponse = serde_json::from_reader(response_body.reader())?;
@@ -119,18 +97,13 @@ impl FileReconstructor<ShardClientError> for HttpShardClient {
             self.endpoint,
             file_hash.hex()
         ))?;
+
         let response = self
-            .retry_strategy
-            .retry(
-                || async {
-                    let url = url.clone();
-                    self.client.get(url).send().await
-                },
-                is_status_retriable_and_print,
-            )
+            .client
+            .get(url)
+            .send()
             .await
             .map_err(|e| ShardClientError::Other(format!("request failed with code {e}")))?;
-
         let response_body = response.bytes().await?;
         let response_info: QueryReconstructionResponse =
             serde_json::from_reader(response_body.reader())?;
@@ -184,18 +157,13 @@ impl ShardDedupProber<ShardClientError> for HttpShardClient {
         };
 
         let url = Url::parse(&format!("{0}/chunk/{key}", self.endpoint))?;
+
         let response = self
-            .retry_strategy
-            .retry(
-                || async {
-                    let url = url.clone();
-                    self.client.get(url).send().await
-                },
-                is_status_retriable_and_print,
-            )
+            .client
+            .get(url)
+            .send()
             .await
             .map_err(|e| ShardClientError::Other(format!("request failed with code {e}")))?;
-
         let response_body = response.bytes().await?;
         let mut reader = response_body.reader();
 

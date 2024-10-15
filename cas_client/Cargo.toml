@@ -16,7 +16,6 @@ utils = {path = "../utils"}
 merkledb = {path = "../merkledb"}
 merklehash = { path = "../merklehash" } 
 parutils = {path = "../parutils"}
-retry_strategy = {path = "../retry_strategy"}
 tonic = {version = "0.10.2", features = ["tls", "tls-roots", "transport"] }
 prost = "0.12.3"
 tokio = { version = "1.36", features = ["full"] }
