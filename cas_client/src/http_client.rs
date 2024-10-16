@@ -6,13 +6,17 @@ use reqwest::{Request, Response};
 use reqwest_middleware::{ClientBuilder, ClientWithMiddleware, Middleware, Next};
 use reqwest_retry::{policies::ExponentialBackoff, RetryTransientMiddleware};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 use utils::auth::{AuthConfig, TokenProvider};
 
 use crate::CasClientError;
 
 /// Number of retries for transient errors.
 const NUM_RETRIES: u32 = 5;
-const BASE_RETRY_DELAY_MS: u64 = 3000;
+/// Base delay before retrying, default to 3s.
+const BASE_RETRY_DELAY_MS: u64 = 3000; // 3s
+/// Base max duration for retry attempts, default to 6m.
+const BASE_RETRY_MAX_DURATION_MS: u64 = 6 * 60 * 1000; // 6m
 
 // TODO: Add Logging
 // use tracing::warn;
@@ -44,7 +48,9 @@ pub fn build_http_client() -> std::result::Result<ClientWithMiddleware, CasClien
 
 // retry policy with exponential backoff and configurable number of retries using reqwest-retry
 fn get_retry_middleware(num_retries: u32) -> RetryTransientMiddleware<ExponentialBackoff> {
-    let retry_policy = ExponentialBackoff::builder().build_with_max_retries(num_retries);
+    let retry_policy = ExponentialBackoff::builder()
+        .retry_bounds(Duration::from_millis(BASE_RETRY_DELAY_MS), Duration::from_millis(BASE_RETRY_MAX_DURATION_MS))
+        .build_with_max_retries(num_retries);
 
     // Uses DefaultRetryableStrategy which retries on 5xx/400/429 status codes, and retries on transient errors.
     // See https://github.com/TrueLayer/reqwest-middleware/blob/cf06f0962aae543526756ff7e1aa5e5cd0c42e42/reqwest-retry/src/retryable_strategy.rs#L97
