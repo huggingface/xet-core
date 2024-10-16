@@ -63,4 +63,5 @@ lazy_static = "1.4.0"
 tokio-stream = { version = "0.1", features = ["net"] }
 rcgen = "0.12.0"
 rand = "0.8.5"
-tracing-test = "0.2.5"
+httpmock = "0.7.0"
+tracing-test = { version = "0.2.5", features = ["no-env-filter"] }

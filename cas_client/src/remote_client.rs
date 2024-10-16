@@ -54,7 +54,7 @@ impl RemoteClient {
     pub fn new(endpoint: &str, auth: &Option<AuthConfig>) -> Self {
         Self {
             endpoint: endpoint.to_string(),
-            http_auth_client: http_client::build_auth_http_client(auth).unwrap(),
+            http_auth_client: http_client::build_auth_http_client(auth, &None).unwrap(),
         }
     }
 }
