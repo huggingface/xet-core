@@ -8,6 +8,9 @@ pub enum CasClientError {
     #[error("CAS Cache Error: {0}")]
     CacheError(#[from] CacheError),
 
+    #[error("Cas Object Error: {0}")]
+    CasObjectError(#[from] cas_object::error::CasObjectError),
+
     #[error("Configuration Error: {0} ")]
     ConfigurationError(String),
 
@@ -23,14 +26,17 @@ pub enum CasClientError {
     #[error("IO Error: {0}")]
     IOError(#[from] std::io::Error),
 
+    #[error("Invalid Shard Key: {0}")]
+    InvalidShardKey(String),
+
     #[error("Other Internal Error: {0}")]
     InternalError(#[from] anyhow::Error),
 
-    #[error("CAS object not found for hash: {0}")]
-    XORBNotFound(MerkleHash),
+    #[error("MerkleDB Shard Error : {0}")]
+    MDBShardError(#[from] mdb_shard::error::MDBShardError),
 
-    #[error("Cas Object Error: {0}")]
-    CasObjectError(#[from] cas_object::error::CasObjectError),
+    #[error("Error : {0}")]
+    Other(String),
 
     #[error("Parse Error: {0}")]
     ParseError(#[from] url::ParseError),
@@ -43,6 +49,12 @@ pub enum CasClientError {
 
     #[error("Serde Error: {0}")]
     SerdeError(#[from] serde_json::Error),
+
+    #[error("LMDB Error: {0}")]
+    ShardDedupDBError(String),
+    
+    #[error("CAS object not found for hash: {0}")]
+    XORBNotFound(MerkleHash),
 }
 
 // Define our own result type here (this seems to be the standard).

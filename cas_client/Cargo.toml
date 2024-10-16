@@ -14,6 +14,7 @@ error_printer = {path = "../error_printer"}
 file_utils = {path = "../file_utils"}
 utils = {path = "../utils"}
 merkledb = {path = "../merkledb"}
+mdb_shard = {path = "../mdb_shard"}
 merklehash = { path = "../merklehash" } 
 parutils = {path = "../parutils"}
 tonic = {version = "0.10.2", features = ["tls", "tls-roots", "transport"] }
@@ -56,6 +57,7 @@ serde = { version = "1.0.210", features = ["derive"] }
 cas_types = { version = "0.1.0", path = "../cas_types" }
 url = "2.5.2"
 reqwest-retry = "0.6.1"
+heed = "0.11"
 
 [dev-dependencies]
 trait-set = "0.3.0"
