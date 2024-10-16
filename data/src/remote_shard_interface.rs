@@ -13,7 +13,7 @@ use mdb_shard::{
 };
 use merklehash::MerkleHash;
 use parutils::tokio_par_for_each;
-use shard_client::ShardClientInterface;
+use cas_client::ShardClientInterface;
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;

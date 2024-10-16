@@ -16,7 +16,6 @@ cas_object = { path = "../cas_object" }
 merkledb = { path = "../merkledb" }
 merklehash = { path = "../merklehash" }
 mdb_shard = { path = "../mdb_shard" }
-shard_client = { path = "../shard_client" }
 utils = { path = "../utils" }
 parutils = { path = "../parutils" }
 file_utils = { path = "../file_utils" }
