@@ -4,9 +4,13 @@ use reqwest::header::HeaderValue;
 use reqwest::header::AUTHORIZATION;
 use reqwest::{Request, Response};
 use reqwest_middleware::{ClientBuilder, ClientWithMiddleware, Middleware, Next};
+use reqwest_retry::default_on_request_failure;
+use reqwest_retry::default_on_request_success;
+use reqwest_retry::Retryable;
 use reqwest_retry::{policies::ExponentialBackoff, RetryTransientMiddleware};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
+use tracing::warn;
 use utils::auth::{AuthConfig, TokenProvider};
 
 use crate::CasClientError;
@@ -18,10 +22,6 @@ const BASE_RETRY_DELAY_MS: u64 = 3000; // 3s
 /// Base max duration for retry attempts, default to 6m.
 const BASE_RETRY_MAX_DURATION_MS: u64 = 6 * 60 * 1000; // 6m
 
-// TODO: Add Logging
-// use tracing::warn;
-// Whenever retrying, add: warn!("{err:?}. Retrying...");
-
 /// builds the client to talk to CAS.
 pub fn build_auth_http_client(
     auth_config: &Option<AuthConfig>,
@@ -30,26 +30,33 @@ pub fn build_auth_http_client(
         .as_ref()
         .map(AuthMiddleware::from)
         .info_none("CAS auth disabled");
+    let logging_middleware = Some(LoggingMiddleware);
     let retry_policy = get_retry_middleware(NUM_RETRIES);
     let reqwest_client = reqwest::Client::builder().build()?;
     Ok(ClientBuilder::new(reqwest_client)
         .maybe_with(auth_middleware)
         .maybe_with(Some(retry_policy))
+        .maybe_with(logging_middleware)
         .build())
 }
 
 pub fn build_http_client() -> std::result::Result<ClientWithMiddleware, CasClientError> {
     let retry_middleware = get_retry_middleware(NUM_RETRIES);
+    let logging_middleware = Some(LoggingMiddleware);
     let reqwest_client = reqwest::Client::builder().build()?;
     Ok(ClientBuilder::new(reqwest_client)
         .maybe_with(Some(retry_middleware))
+        .maybe_with(logging_middleware)
         .build())
 }
 
 // retry policy with exponential backoff and configurable number of retries using reqwest-retry
 fn get_retry_middleware(num_retries: u32) -> RetryTransientMiddleware<ExponentialBackoff> {
     let retry_policy = ExponentialBackoff::builder()
-        .retry_bounds(Duration::from_millis(BASE_RETRY_DELAY_MS), Duration::from_millis(BASE_RETRY_MAX_DURATION_MS))
+        .retry_bounds(
+            Duration::from_millis(BASE_RETRY_DELAY_MS),
+            Duration::from_millis(BASE_RETRY_MAX_DURATION_MS),
+        )
         .build_with_max_retries(num_retries);
 
     // Uses DefaultRetryableStrategy which retries on 5xx/400/429 status codes, and retries on transient errors.
@@ -68,6 +75,34 @@ impl OptionalMiddleware for ClientBuilder {
             Some(m) => self.with(m),
             None => self,
         }
+    }
+}
+
+/// Adds logging middleware that will trace::warn! on retryable errors.
+pub struct LoggingMiddleware;
+
+#[async_trait::async_trait]
+impl Middleware for LoggingMiddleware {
+    async fn handle(
+        &self,
+        req: Request,
+        extensions: &mut hyper::http::Extensions,
+        next: Next<'_>,
+    ) -> reqwest_middleware::Result<Response> {
+        let res = next.run(req, extensions).await;
+        if res.is_ok() {
+            let res = res.as_ref().unwrap();
+            if Some(Retryable::Transient) == default_on_request_success(&res) {
+                let status_code = res.status();
+                warn!("Status Code: {status_code:?}. Retrying...");
+            }
+        } else {
+            let err = res.as_ref().unwrap_err();
+            if Some(Retryable::Transient) == default_on_request_failure(&err) {
+                warn!("{err:?}. Retrying...");
+            }
+        }
+        res
     }
 }
 
