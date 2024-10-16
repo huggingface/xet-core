@@ -575,15 +575,9 @@ impl MDBShardInfo {
 
         reader.seek(SeekFrom::Start(self.metadata.file_info_offset))?;
 
-        for _ in 0..self.num_file_entries() {
-            if let Some(mdb_file) = MDBFileInfo::deserialize(reader)? {
-                ret.push(mdb_file);
-            } else {
-                break;
-            }
+        while let Some(mdb_file) = MDBFileInfo::deserialize(reader)? {
+            ret.push(mdb_file);
         }
-
-        debug_assert!(ret.len() == self.num_file_entries());
 
         Ok(ret)
     }
@@ -634,12 +628,7 @@ impl MDBShardInfo {
 
         reader.seek(SeekFrom::Start(self.metadata.cas_info_offset))?;
 
-        for _ in 0..(self.num_cas_entries() as u32) {
-            let Some(cas_info) = MDBCASInfo::deserialize(reader)? else {
-                return Err(MDBShardError::InternalError(anyhow!(
-                    "corrupted shard, detected cas info bookend before deserializing all cas block info"
-                )));
-            };
+        while let Some(cas_info) = MDBCASInfo::deserialize(reader)? {
             ret.push(cas_info);
         }
 
