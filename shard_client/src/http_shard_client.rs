@@ -33,7 +33,7 @@ impl HttpShardClient {
         auth_config: &Option<AuthConfig>,
         shard_cache_directory: Option<PathBuf>,
     ) -> Self {
-        let client = build_auth_http_client(auth_config).unwrap();
+        let client = build_auth_http_client(auth_config, &None).unwrap();
         HttpShardClient {
             endpoint: endpoint.into(),
             client,

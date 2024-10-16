@@ -302,7 +302,7 @@ impl PointerFileTranslator {
         writer: &mut Box<dyn Write + Send>,
         _range: Option<(usize, usize)>,
     ) -> Result<()> {
-        let http_client = cas_client::build_http_client()?;
+        let http_client = cas_client::build_http_client(&None)?;
         self.cas.get_file(&http_client, file_id, writer).await?;
 
         Ok(())
