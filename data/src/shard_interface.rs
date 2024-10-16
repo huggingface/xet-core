@@ -1,7 +1,7 @@
 use super::configurations::{Endpoint::*, StorageConfig};
 use super::errors::Result;
 use mdb_shard::ShardFileManager;
-use shard_client::{HttpShardClient, LocalShardClient, ShardClientInterface};
+use cas_client::{HttpShardClient, LocalShardClient, ShardClientInterface};
 use std::sync::Arc;
 use tracing::{info, warn};
 

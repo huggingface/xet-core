@@ -1,4 +1,4 @@
-use crate::error::{Result, ShardClientError};
+use crate::error::{Result, CasClientError};
 use heed::types::*;
 use heed::EnvOpenOptions;
 use itertools::Itertools;
@@ -17,10 +17,10 @@ pub struct DiskBasedGlobalDedupTable {
 }
 
 // Annoyingly, heed::Error is not Send/Sync, so convert to string.
-fn map_db_error(e: heed::Error) -> ShardClientError {
+fn map_db_error(e: heed::Error) -> CasClientError {
     let msg = format!("Global shard dedup database error: {e:?}");
     warn!("{msg}");
-    ShardClientError::ShardDedupDBError(msg)
+    CasClientError::ShardDedupDBError(msg)
 }
 
 impl DiskBasedGlobalDedupTable {

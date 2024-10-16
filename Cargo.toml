@@ -13,7 +13,6 @@ members = [
     "mdb_shard",
     "parutils",
     "progress_reporting",
-    "shard_client",
     "utils",
     "xet_error",
     "cas_object",

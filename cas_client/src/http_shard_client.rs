@@ -1,8 +1,7 @@
-use crate::error::{Result, ShardClientError};
-use crate::{RegistrationClient, ShardClientInterface};
+use crate::error::{Result, CasClientError};
+use crate::{build_auth_http_client, RegistrationClient, ShardClientInterface};
 use async_trait::async_trait;
 use bytes::Buf;
-use cas_client::build_auth_http_client;
 use cas_types::Key;
 use cas_types::{QueryReconstructionResponse, UploadShardResponse, UploadShardResponseType};
 use file_utils::write_all_safe;
@@ -66,14 +65,14 @@ impl RegistrationClient for HttpShardClient {
                 .body(shard_data.to_vec())
                 .send()
                 .await
-                .map_err(|e| ShardClientError::Other(format!("request failed with code {e}")))?,
+                .map_err(|e| CasClientError::Other(format!("request failed with code {e}")))?,
             false => self
                 .client
                 .post(url)
                 .body(shard_data.to_vec())
                 .send()
                 .await
-                .map_err(|e| ShardClientError::Other(format!("request failed with code {e}")))?,
+                .map_err(|e| CasClientError::Other(format!("request failed with code {e}")))?,
         };
 
         let response_body = response.bytes().await?;
@@ -87,7 +86,7 @@ impl RegistrationClient for HttpShardClient {
 }
 
 #[async_trait]
-impl FileReconstructor<ShardClientError> for HttpShardClient {
+impl FileReconstructor<CasClientError> for HttpShardClient {
     async fn get_file_reconstruction_info(
         &self,
         file_hash: &MerkleHash,
@@ -103,7 +102,7 @@ impl FileReconstructor<ShardClientError> for HttpShardClient {
             .get(url)
             .send()
             .await
-            .map_err(|e| ShardClientError::Other(format!("request failed with code {e}")))?;
+            .map_err(|e| CasClientError::Other(format!("request failed with code {e}")))?;
         let response_body = response.bytes().await?;
         let response_info: QueryReconstructionResponse =
             serde_json::from_reader(response_body.reader())?;
@@ -135,7 +134,7 @@ impl FileReconstructor<ShardClientError> for HttpShardClient {
 }
 
 #[async_trait]
-impl ShardDedupProber<ShardClientError> for HttpShardClient {
+impl ShardDedupProber<CasClientError> for HttpShardClient {
     async fn get_dedup_shards(
         &self,
         prefix: &str,
@@ -144,7 +143,7 @@ impl ShardDedupProber<ShardClientError> for HttpShardClient {
     ) -> Result<Vec<MerkleHash>> {
         debug_assert!(chunk_hash.len() == 1);
         let Some(shard_cache_dir) = &self.cache_directory else {
-            return Err(ShardClientError::InvalidConfig(
+            return Err(CasClientError::ConfigurationError(
                 "cache directory not configured for shard storage".into(),
             ));
         };
@@ -163,7 +162,7 @@ impl ShardDedupProber<ShardClientError> for HttpShardClient {
             .get(url)
             .send()
             .await
-            .map_err(|e| ShardClientError::Other(format!("request failed with code {e}")))?;
+            .map_err(|e| CasClientError::Other(format!("request failed with code {e}")))?;
         let response_body = response.bytes().await?;
         let mut reader = response_body.reader();
 
@@ -190,9 +189,9 @@ impl ShardDedupProber<ShardClientError> for HttpShardClient {
             reader.read_exact(&mut shard_key)?;
 
             let shard_key = String::from_utf8(shard_key)
-                .map_err(|e| ShardClientError::InvalidShardKey(format!("{e:?}")))?;
+                .map_err(|e| CasClientError::InvalidShardKey(format!("{e:?}")))?;
             let shard_key = Key::from_str(&shard_key)
-                .map_err(|e| ShardClientError::InvalidShardKey(format!("{e:?}")))?;
+                .map_err(|e| CasClientError::InvalidShardKey(format!("{e:?}")))?;
             downloaded_shards.push(shard_key.hash);
 
             let shard_content_length = read_u32(&mut reader)?;
@@ -208,7 +207,7 @@ impl ShardDedupProber<ShardClientError> for HttpShardClient {
         }
 
         while let Some(res) = write_join_set.join_next().await {
-            res.map_err(|e| ShardClientError::Other(format!("Internal task error: {e:?}")))??;
+            res.map_err(|e| CasClientError::Other(format!("Internal task error: {e:?}")))??;
         }
 
         Ok(downloaded_shards)
