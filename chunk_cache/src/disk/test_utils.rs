@@ -139,23 +139,23 @@ mod tests {
     fn test_iter() {
         let mut it = RandomEntryIterator::default();
         for _ in 0..100 {
-            let (_key, range, chunk_byte_indicies, data) = it.next().unwrap();
+            let (_key, range, chunk_byte_indices, data) = it.next().unwrap();
             assert!(range.start < range.end, "invalid range: {range:?}");
             assert!(
-                chunk_byte_indicies.len() == (range.end - range.start + 1) as usize,
-                "chunk_byte_indicies len mismatch, range: {range:?}, cbi len: {}",
-                chunk_byte_indicies.len()
+                chunk_byte_indices.len() == (range.end - range.start + 1) as usize,
+                "chunk_byte_indices len mismatch, range: {range:?}, cbi len: {}",
+                chunk_byte_indices.len()
             );
             assert!(
-                chunk_byte_indicies[0] == 0,
-                "chunk_byte_indicies[0] != 0, is instead {}",
-                chunk_byte_indicies[0]
+                chunk_byte_indices[0] == 0,
+                "chunk_byte_indices[0] != 0, is instead {}",
+                chunk_byte_indices[0]
             );
             assert!(
-                *chunk_byte_indicies.last().unwrap() as usize == data.len(),
-                "chunk_byte_indicies last value does not equal data.len() ({}), is instead {}",
+                *chunk_byte_indices.last().unwrap() as usize == data.len(),
+                "chunk_byte_indices last value does not equal data.len() ({}), is instead {}",
                 data.len(),
-                chunk_byte_indicies.last().unwrap()
+                chunk_byte_indices.last().unwrap()
             );
         }
     }
