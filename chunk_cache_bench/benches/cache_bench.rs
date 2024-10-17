@@ -79,9 +79,9 @@ fn benchmark_cache_put_mt<T: ChunkCacheExt + 'static>(c: &mut Criterion) {
     let mut it: RandomEntryIterator<StdRng> = RandomEntryIterator::from_seed(SEED);
     let mut total_bytes = 0;
     while total_bytes < CAPACITY {
-        let (key, range, chunk_byte_indicies, data) = it.next().unwrap();
+        let (key, range, chunk_byte_indices, data) = it.next().unwrap();
         cache
-            .put(&key, &range, &chunk_byte_indicies, &data)
+            .put(&key, &range, &chunk_byte_indices, &data)
             .unwrap();
         total_bytes += data.len() as u64;
     }
@@ -111,9 +111,9 @@ fn benchmark_cache_put<T: ChunkCacheExt + 'static>(c: &mut Criterion) {
     let mut it: RandomEntryIterator<StdRng> = RandomEntryIterator::from_seed(SEED);
     let mut total_bytes = 0;
     while total_bytes < CAPACITY {
-        let (key, range, chunk_byte_indicies, data) = it.next().unwrap();
+        let (key, range, chunk_byte_indices, data) = it.next().unwrap();
         cache
-            .put(&key, &range, &chunk_byte_indicies, &data)
+            .put(&key, &range, &chunk_byte_indices, &data)
             .unwrap();
         total_bytes += data.len() as u64;
     }

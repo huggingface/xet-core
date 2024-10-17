@@ -285,15 +285,15 @@ impl DiskCache {
         &self,
         key: &Key,
         range: &Range,
-        chunk_byte_indicies: &[u32],
+        chunk_byte_indices: &[u32],
         data: &[u8],
     ) -> Result<(), ChunkCacheError> {
         if range.start >= range.end
-            || chunk_byte_indicies.len() != (range.end - range.start + 1) as usize
+            || chunk_byte_indices.len() != (range.end - range.start + 1) as usize
             // chunk_byte_indices is guarenteed to be more than 1 element at this point
-            || chunk_byte_indicies[0] != 0
-            || *chunk_byte_indicies.last().unwrap() as usize != data.len()
-            || !strictly_increasing(chunk_byte_indicies)
+            || chunk_byte_indices[0] != 0
+            || *chunk_byte_indices.last().unwrap() as usize != data.len()
+            || !strictly_increasing(chunk_byte_indices)
             // assert 1 new range doesn't take up more than 10% of capacity
             || data.len() > (self.capacity as usize / 10)
         {
@@ -302,12 +302,12 @@ impl DiskCache {
 
         // check if we already contain the range
         while let Some(cache_item) = self.find_match(key, range)? {
-            if self.validate_match(key, range, chunk_byte_indicies, data, &cache_item)? {
+            if self.validate_match(key, range, chunk_byte_indices, data, &cache_item)? {
                 return Ok(());
             }
         }
 
-        let header = CacheFileHeader::new(chunk_byte_indicies);
+        let header = CacheFileHeader::new(chunk_byte_indices);
         let mut header_buf = Vec::with_capacity(header.header_len());
         header.serialize(&mut header_buf)?;
         let hash = compute_hash(&header_buf, data);
@@ -345,7 +345,7 @@ impl DiskCache {
         &self,
         key: &Key,
         range: &Range,
-        chunk_byte_indicies: &[u32],
+        chunk_byte_indices: &[u32],
         data: &[u8],
         cache_item: &CacheItem,
     ) -> Result<bool, ChunkCacheError> {
@@ -385,23 +385,23 @@ impl DiskCache {
             return Ok(false);
         };
 
-        // validate the chunk_byte_indicies and data input against stored data
-        // the chunk_byte_indicies should match the chunk lengths, if the ranges
+        // validate the chunk_byte_indices and data input against stored data
+        // the chunk_byte_indices should match the chunk lengths, if the ranges
         // don't start at the same chunk, values will be different, what's important
         // to match is the chunk lengths, i.e. difference in the offsets.
         let idx_start = (range.start - cache_item.range.start) as usize;
         let idx_end = (range.end - cache_item.range.start + 1) as usize;
         for i in idx_start..idx_end - 1 {
-            let stored_diff = header.chunk_byte_indicies[i + 1] - header.chunk_byte_indicies[i];
+            let stored_diff = header.chunk_byte_indices[i + 1] - header.chunk_byte_indices[i];
             let given_diff =
-                chunk_byte_indicies[i + 1 - idx_start] - chunk_byte_indicies[i - idx_start];
+                chunk_byte_indices[i + 1 - idx_start] - chunk_byte_indices[i - idx_start];
             if stored_diff != given_diff {
                 debug!(
                     "failed to match chunk lens for these chunk offsets {} {:?}\n{} {:?}",
                     cache_item.range,
-                    &header.chunk_byte_indicies[idx_start..idx_end],
+                    &header.chunk_byte_indices[idx_start..idx_end],
                     range,
-                    chunk_byte_indicies
+                    chunk_byte_indices
                 );
                 return Err(ChunkCacheError::InvalidArguments);
             }
@@ -514,9 +514,9 @@ impl DiskCache {
     }
 }
 
-fn strictly_increasing(chunk_byte_indicies: &[u32]) -> bool {
-    for i in 1..chunk_byte_indicies.len() {
-        if chunk_byte_indicies[i - 1] >= chunk_byte_indicies[i] {
+fn strictly_increasing(chunk_byte_indices: &[u32]) -> bool {
+    for i in 1..chunk_byte_indices.len() {
+        if chunk_byte_indices[i - 1] >= chunk_byte_indices[i] {
             return false;
         }
     }
@@ -530,11 +530,11 @@ fn get_range_from_cache_file<R: Read + Seek>(
     start: u32,
 ) -> Result<Vec<u8>, ChunkCacheError> {
     let start_byte = header
-        .chunk_byte_indicies
+        .chunk_byte_indices
         .get((range.start - start) as usize)
         .ok_or(ChunkCacheError::BadRange)?;
     let end_byte = header
-        .chunk_byte_indicies
+        .chunk_byte_indices
         .get((range.end - start) as usize)
         .ok_or(ChunkCacheError::BadRange)?;
     file_contents.seek(SeekFrom::Start(
@@ -592,10 +592,10 @@ impl ChunkCache for DiskCache {
         &self,
         key: &Key,
         range: &Range,
-        chunk_byte_indicies: &[u32],
+        chunk_byte_indices: &[u32],
         data: &[u8],
     ) -> Result<(), ChunkCacheError> {
-        self.put_impl(key, range, chunk_byte_indicies, data)
+        self.put_impl(key, range, chunk_byte_indices, data)
     }
 }
 
@@ -633,8 +633,8 @@ mod tests {
 
         let key = random_key(&mut rng);
         let range = Range { start: 0, end: 4 };
-        let (chunk_byte_indicies, data) = random_bytes(&mut rng, &range, RANGE_LEN);
-        let put_result = cache.put(&key, &range, &chunk_byte_indicies, data.as_slice());
+        let (chunk_byte_indices, data) = random_bytes(&mut rng, &range, RANGE_LEN);
+        let put_result = cache.put(&key, &range, &chunk_byte_indices, data.as_slice());
         assert!(put_result.is_ok(), "{put_result:?}");
 
         print_directory_contents(cache_root.as_ref());
@@ -659,8 +659,8 @@ mod tests {
 
         let key = random_key(&mut rng);
         let range = Range { start: 0, end: 4 };
-        let (chunk_byte_indicies, data) = random_bytes(&mut rng, &range, RANGE_LEN);
-        let put_result = cache.put(&key, &range, &chunk_byte_indicies, data.as_slice());
+        let (chunk_byte_indices, data) = random_bytes(&mut rng, &range, RANGE_LEN);
+        let put_result = cache.put(&key, &range, &chunk_byte_indices, data.as_slice());
         assert!(put_result.is_ok(), "{put_result:?}");
 
         print_directory_contents(cache_root.as_ref());
@@ -669,15 +669,15 @@ mod tests {
             for end in (start + 1)..=range.end {
                 let get_result = cache.get(&key, &Range { start, end }).unwrap();
                 assert!(get_result.is_some(), "range: [{start} {end})");
-                let data_portion = get_data(&Range { start, end }, &chunk_byte_indicies, &data);
+                let data_portion = get_data(&Range { start, end }, &chunk_byte_indices, &data);
                 assert_eq!(data_portion, get_result.unwrap())
             }
         }
     }
 
-    fn get_data<'a>(range: &Range, chunk_byte_indicies: &[u32], data: &'a [u8]) -> &'a [u8] {
-        let start = chunk_byte_indicies[range.start as usize] as usize;
-        let end = chunk_byte_indicies[range.end as usize] as usize;
+    fn get_data<'a>(range: &Range, chunk_byte_indices: &[u32], data: &'a [u8]) -> &'a [u8] {
+        let start = chunk_byte_indices[range.start as usize] as usize;
+        let end = chunk_byte_indices[range.end as usize] as usize;
         &data[start..end]
     }
 
@@ -858,9 +858,9 @@ mod tests {
         let capacity = 12 * RANGE_LEN as u64;
         let cache = DiskCache::initialize(cache_root.path().to_path_buf(), capacity).unwrap();
         let mut it = RandomEntryIterator::default();
-        let (key, range, chunk_byte_indicies, data) = it.next().unwrap();
+        let (key, range, chunk_byte_indices, data) = it.next().unwrap();
         cache
-            .put(&key, &range, &chunk_byte_indicies, &data)
+            .put(&key, &range, &chunk_byte_indices, &data)
             .unwrap();
 
         let cache2 = DiskCache::initialize(cache_root.path().to_path_buf(), capacity).unwrap();
@@ -868,18 +868,18 @@ mod tests {
         assert!(get_result.is_ok());
         assert!(get_result.unwrap().is_some());
 
-        let (key2, range2, chunk_byte_indicies2, data2) = it.next().unwrap();
+        let (key2, range2, chunk_byte_indices2, data2) = it.next().unwrap();
         assert!(cache2
-            .put(&key2, &range2, &chunk_byte_indicies2, &data2)
+            .put(&key2, &range2, &chunk_byte_indices2, &data2)
             .is_ok());
 
         let mut get_result_1 = cache2.get(&key, &range).unwrap();
         let mut i = 0;
         while get_result_1.is_some() && i < 50 {
             i += 1;
-            let (key2, range2, chunk_byte_indicies2, data2) = it.next().unwrap();
+            let (key2, range2, chunk_byte_indices2, data2) = it.next().unwrap();
             cache2
-                .put(&key2, &range2, &chunk_byte_indicies2, &data2)
+                .put(&key2, &range2, &chunk_byte_indices2, &data2)
                 .unwrap();
             get_result_1 = cache2.get(&key, &range).unwrap();
         }
@@ -899,10 +899,10 @@ mod tests {
         let cache_root = TempDir::new("put_subrange").unwrap();
         let cache =
             DiskCache::initialize(cache_root.path().to_path_buf(), DEFAULT_CAPACITY).unwrap();
-        let (key, range, chunk_byte_indicies, data) =
+        let (key, range, chunk_byte_indices, data) =
             RandomEntryIterator::default().next().unwrap();
         cache
-            .put(&key, &range, &chunk_byte_indicies, &data)
+            .put(&key, &range, &chunk_byte_indices, &data)
             .unwrap();
         let total_bytes = cache.total_bytes().unwrap();
 
@@ -911,10 +911,10 @@ mod tests {
             start: range.start,
             end: range.end - 1,
         };
-        let left_chunk_byte_indicies = &chunk_byte_indicies[..chunk_byte_indicies.len() - 1];
-        let left_data = &data[..*left_chunk_byte_indicies.last().unwrap() as usize];
+        let left_chunk_byte_indices = &chunk_byte_indices[..chunk_byte_indices.len() - 1];
+        let left_data = &data[..*left_chunk_byte_indices.last().unwrap() as usize];
         assert!(cache
-            .put(&key, &left_range, left_chunk_byte_indicies, left_data)
+            .put(&key, &left_range, left_chunk_byte_indices, left_data)
             .is_ok());
         assert_eq!(total_bytes, cache.total_bytes().unwrap());
 
@@ -923,13 +923,13 @@ mod tests {
             start: range.start + 1,
             end: range.end,
         };
-        let right_chunk_byte_indicies: Vec<u32> = (&chunk_byte_indicies[1..])
+        let right_chunk_byte_indices: Vec<u32> = (&chunk_byte_indices[1..])
             .iter()
-            .map(|v| v - chunk_byte_indicies[1])
+            .map(|v| v - chunk_byte_indices[1])
             .collect();
-        let right_data = &data[chunk_byte_indicies[1] as usize..];
+        let right_data = &data[chunk_byte_indices[1] as usize..];
         assert!(cache
-            .put(&key, &right_range, &right_chunk_byte_indicies, right_data)
+            .put(&key, &right_range, &right_chunk_byte_indices, right_data)
             .is_ok());
         assert_eq!(total_bytes, cache.total_bytes().unwrap());
 
@@ -938,19 +938,19 @@ mod tests {
             start: range.start + 1,
             end: range.end - 1,
         };
-        let middle_chunk_byte_indicies: Vec<u32> = (&chunk_byte_indicies
-            [1..(chunk_byte_indicies.len() - 1)])
+        let middle_chunk_byte_indices: Vec<u32> = (&chunk_byte_indices
+            [1..(chunk_byte_indices.len() - 1)])
             .iter()
-            .map(|v| v - chunk_byte_indicies[1])
+            .map(|v| v - chunk_byte_indices[1])
             .collect();
-        let middle_data = &data[chunk_byte_indicies[1] as usize
-            ..chunk_byte_indicies[chunk_byte_indicies.len() - 2] as usize];
+        let middle_data = &data[chunk_byte_indices[1] as usize
+            ..chunk_byte_indices[chunk_byte_indices.len() - 2] as usize];
 
         assert!(cache
             .put(
                 &key,
                 &middle_range,
-                &middle_chunk_byte_indicies,
+                &middle_chunk_byte_indices,
                 middle_data
             )
             .is_ok());
@@ -968,16 +968,16 @@ mod tests {
         let mut previously_put: Vec<(Key, Range)> = Vec::new();
 
         for _ in 0..(NUM / 2) {
-            let (key2, mut range, chunk_byte_indicies, data) = it.next().unwrap();
+            let (key2, mut range, chunk_byte_indices, data) = it.next().unwrap();
             while previously_put.iter().any(|(_, r)| r.start == range.start) {
                 range.start += 1 % 1000;
             }
             cache
-                .put(&key, &range, &chunk_byte_indicies, &data)
+                .put(&key, &range, &chunk_byte_indices, &data)
                 .unwrap();
             previously_put.push((key.clone(), range.clone()));
             cache
-                .put(&key2, &range, &chunk_byte_indicies, &data)
+                .put(&key2, &range, &chunk_byte_indices, &data)
                 .unwrap();
             previously_put.push((key2, range));
         }
@@ -1027,9 +1027,9 @@ mod concurrency_tests {
                 let mut it = RandomEntryIterator::default();
                 let mut kr = Vec::with_capacity(NUM_ITEMS_PER_TASK);
                 for _ in 0..NUM_ITEMS_PER_TASK {
-                    let (key, range, chunk_byte_indicies, data) = it.next().unwrap();
+                    let (key, range, chunk_byte_indices, data) = it.next().unwrap();
                     assert!(cache_clone
-                        .put(&key, &range, &chunk_byte_indicies, &data)
+                        .put(&key, &range, &chunk_byte_indices, &data)
                         .is_ok());
                     kr.push((key, range));
                 }
@@ -1062,9 +1062,9 @@ mod concurrency_tests {
                 let mut it = RandomEntryIterator::default();
                 let mut kr = Vec::with_capacity(NUM_ITEMS_PER_TASK);
                 for _ in 0..NUM_ITEMS_PER_TASK {
-                    let (key, range, chunk_byte_indicies, data) = it.next().unwrap();
+                    let (key, range, chunk_byte_indices, data) = it.next().unwrap();
                     assert!(cache_clone
-                        .put(&key, &range, &chunk_byte_indicies, &data)
+                        .put(&key, &range, &chunk_byte_indices, &data)
                         .is_ok());
                     kr.push((key, range));
                 }

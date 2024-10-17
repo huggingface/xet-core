@@ -54,7 +54,7 @@ impl ChunkCache for SCCache {
         &self,
         key: &cas_types::Key,
         range: &cas_types::Range,
-        _chunk_byte_indicies: &[u32],
+        _chunk_byte_indices: &[u32],
         data: &[u8],
     ) -> Result<(), ChunkCacheError> {
         let mut cache = self.cache.lock()?;

@@ -10,7 +10,7 @@ pub use disk::DiskCache;
 /// ChunkCache is a trait for storing and fetching Xorb ranges.
 /// implementors are expected to return bytes for a key and a given chunk range
 /// (no compression or further deserialization should be required)
-/// Range inputs use chunk indicies in a end exclusive way i.e. [start, end)
+/// Range inputs use chunk indices in a end exclusive way i.e. [start, end)
 ///
 /// implementors are allowed to evict data, a get after a put is not required to
 /// be a cache hit.
@@ -22,7 +22,7 @@ pub trait ChunkCache: Sync + Send {
     /// otherwise returns an Ok(Some(data)) where data matches exactly the bytes for
     /// the requested key and the requested chunk index range for that key
     ///
-    /// Given implementors are expected to be able to evict members there's no guarentee
+    /// Given implementors are expected to be able to evict members there's no guarantee
     /// that a previously put range will be a cache hit
     ///
     /// key is required to be a valid CAS Key
@@ -45,7 +45,7 @@ pub trait ChunkCache: Sync + Send {
         &self,
         key: &Key,
         range: &Range,
-        chunk_byte_indicies: &[u32],
+        chunk_byte_indices: &[u32],
         data: &[u8],
     ) -> Result<(), ChunkCacheError>;
 }

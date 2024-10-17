@@ -111,9 +111,9 @@ fn child_main(args: ChildArgs) {
     let mut attempts = 0f64;
     let mut it = RandomEntryIterator::default();
     while SystemTime::now() < end_time {
-        let (key, range, chunk_byte_indicies, data) = it.next().unwrap();
+        let (key, range, chunk_byte_indices, data) = it.next().unwrap();
         cache
-            .put(&key, &range, &chunk_byte_indicies, &data)
+            .put(&key, &range, &chunk_byte_indices, &data)
             .unwrap();
         cache.get(&key, &range).unwrap();
         if i % 1000 == 1 {
