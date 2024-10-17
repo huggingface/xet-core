@@ -276,3 +276,93 @@ CREATE TRIGGER maintain_size_trigger AFTER INSERT ON public.cache FOR EACH ROW E
 -- PostgreSQL database dump complete
 --
 ```
+
+## Ajit's results
+
+> m1 results - similar to above trends
+
+```text
+     Running benches/cache_bench.rs (target/release/deps/cache_bench-18100c02f1a37ee6)
+Benchmarking cache_get_disk: Collecting 100 samples in estimated 5.0002 s (18M i
+cache_get_disk          time:   [266.89 ns 267.62 ns 268.44 ns]
+                        change: [+2.8393% +3.2068% +3.5712%] (p = 0.00 < 0.05)
+                        Performance has regressed.
+Found 11 outliers among 100 measurements (11.00%)
+  9 (9.00%) high mild
+  2 (2.00%) high severe
+
+Benchmarking cache_get_sccache: Collecting 100 samples in estimated 5.0009 s (10
+cache_get_sccache       time:   [486.10 ns 487.96 ns 490.31 ns]
+                        change: [+0.8240% +1.1720% +1.5348%] (p = 0.00 < 0.05)
+                        Change within noise threshold.
+Found 6 outliers among 100 measurements (6.00%)
+  3 (3.00%) high mild
+  3 (3.00%) high severe
+
+Benchmarking cache_get_solidcache: Collecting 100 samples in estimated 5.0562 s
+cache_get_solidcache    time:   [100.82 µs 101.65 µs 102.59 µs]
+Found 1 outliers among 100 measurements (1.00%)
+  1 (1.00%) high mild
+
+Benchmarking cache_get_hit_disk: Collecting 100 samples in estimated 30.439 s (4
+cache_get_hit_disk      time:   [748.58 µs 751.81 µs 755.62 µs]
+Found 16 outliers among 100 measurements (16.00%)
+  7 (7.00%) low mild
+  4 (4.00%) high mild
+  5 (5.00%) high severe
+
+Benchmarking cache_get_hit_sccache: Collecting 100 samples in estimated 30.142 s
+cache_get_hit_sccache   time:   [224.39 µs 227.03 µs 229.78 µs]
+Found 8 outliers among 100 measurements (8.00%)
+  6 (6.00%) high mild
+  2 (2.00%) high severe
+
+Benchmarking cache_get_hit_solidcache: Collecting 100 samples in estimated 31.24
+cache_get_hit_solidcache
+                        time:   [543.03 µs 552.37 µs 563.47 µs]
+Found 2 outliers among 100 measurements (2.00%)
+  2 (2.00%) high mild
+
+Benchmarking cache_put_disk: Collecting 100 samples in estimated 31.855 s (200 i
+cache_put_disk          time:   [160.87 ms 161.46 ms 162.09 ms]
+Found 3 outliers among 100 measurements (3.00%)
+  3 (3.00%) high mild
+
+Benchmarking cache_put_sccache: Collecting 100 samples in estimated 31.554 s (20
+cache_put_sccache       time:   [154.95 ms 155.84 ms 156.81 ms]
+Found 13 outliers among 100 measurements (13.00%)
+  5 (5.00%) high mild
+  8 (8.00%) high severe
+
+Benchmarking cache_put_solidcache: Collecting 100 samples in estimated 37.927 s
+cache_put_solidcache    time:   [189.04 ms 191.27 ms 194.19 ms]
+Found 9 outliers among 100 measurements (9.00%)
+  4 (4.00%) high mild
+  5 (5.00%) high severe
+
+Benchmarking cache_get_mt/disk: Collecting 100 samples in estimated 5.0415 s (50
+cache_get_mt/disk       time:   [10.003 µs 10.085 µs 10.211 µs]
+Found 4 outliers among 100 measurements (4.00%)
+  1 (1.00%) low mild
+  2 (2.00%) high mild
+  1 (1.00%) high severe
+
+Benchmarking cache_get_mt/sccache: Collecting 100 samples in estimated 5.0613 s
+cache_get_mt/sccache    time:   [12.928 µs 13.221 µs 13.566 µs]
+Found 7 outliers among 100 measurements (7.00%)
+  4 (4.00%) high mild
+  3 (3.00%) high severe
+
+Benchmarking cache_put_mt/disk: Collecting 100 samples in estimated 51.927 s (20
+cache_put_mt/disk       time:   [256.95 ms 258.25 ms 259.65 ms]
+Found 8 outliers among 100 measurements (8.00%)
+  7 (7.00%) high mild
+  1 (1.00%) high severe
+
+Benchmarking cache_put_mt/sccache: Collecting 100 samples in estimated 53.090 s
+cache_put_mt/sccache    time:   [254.23 ms 255.07 ms 256.07 ms]
+Found 13 outliers among 100 measurements (13.00%)
+  1 (1.00%) low mild
+  7 (7.00%) high mild
+  5 (5.00%) high severe
+```
