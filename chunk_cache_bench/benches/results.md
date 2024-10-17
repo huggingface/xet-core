@@ -31,7 +31,7 @@ cache_put_mt/disk: 209.48 ms
 cache_put_mt/sccache: 192.42 ms
 ```
 
-Summary: current implementation compared to sccache has faster misses, but slower hits. solid cache is always slower on all gets
+Summary: current implementation compared to sccache has faster misses, but slower hits. solid cache is slower than standard by a factor of 300x on cache misses. standard get-hit test is currently slower than both the solidcache and sccache implementation.
 
 Raw:
 
