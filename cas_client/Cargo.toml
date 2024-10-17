@@ -10,6 +10,7 @@ strict = []
 
 [dependencies]
 cas_object = {path = "../cas_object"}
+chunk_cache = {path = "../chunk_cache"}
 error_printer = {path = "../error_printer"}
 file_utils = {path = "../file_utils"}
 utils = {path = "../utils"}
