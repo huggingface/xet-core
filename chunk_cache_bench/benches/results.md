@@ -13,125 +13,266 @@ put_mt: mutlithreaded put, cache is pre-filled, so all puts require evictions, 8
 
 ## Latest on Assaf's M2 Macbook Pro
 
-Summarized:
+### Summarized
 
 ```text
-cache_get_disk: 312.56 ns
-cache_get_sccache: 679.03 ns
-cache_get_solidcache: 103.49 µs
-cache_get_hit_disk: 800.39 µs
-cache_get_hit_sccache: 264.21 µs
-cache_get_hit_solidcache: 606.35 µs
-cache_put_disk: 146.59 ms
-cache_put_sccache: 141.81 ms
-cache_put_solidcache: 143.19 ms
-cache_get_mt/disk: 13.727 µs
-cache_get_mt/sccache: 16.921 µs
-cache_put_mt/disk: 209.48 ms
-cache_put_mt/sccache: 192.42 ms
+cache_get_disk: 302.49 ns
+cache_get_sccache: 676.06 ns
+cache_get_solidcache: 106.57 µs
+cache_get_hit_disk: 674.79 µs
+cache_get_hit_sccache: 193.26 µs
+cache_get_hit_solidcache: 619.22 µs
+cache_put_disk: 143.20 ms
+cache_put_sccache: 137.96 ms
+cache_put_solidcache: 138.68 ms
+cache_get_mt/disk: 12.656 µs
+cache_get_mt/sccache: 15.327 µs
+cache_put_mt/disk: 196.23 ms
+cache_put_mt/sccache: 194.32 ms
 ```
 
-Summary: current implementation compared to sccache has faster misses, but slower hits. solid cache is slower than standard by a factor of 300x on cache misses. standard get-hit test is currently slower than both the solidcache and sccache implementation.
+- misses: current implementation compared to sccache & solidcache.
+- hits: current implementation is slower on hits compared to sccach.
+  - there are a lot of factors that could affect this and introduce room for later improvement
+    - effect of LRU vs random eviction
+    - does sccache validate file contents like we do with the blake3 hash, maybe we do extra passes on data in comparison
+    - does our splicing of the requested data range add a lot of extra time? (sccache is direct kv store)
+- put: speeds are comparable across all implementations
+- multithreaded: current impl on par with sccache.
+- misc: solid cache is slower than standard by a factor of 300x on cache misses.
 
-Raw:
+### Raw
 
 ```text
-     Running unittests src/bin/cache_resiliancy_test.rs (/Users/assafvayner/hf/xet-core/target/release/deps/cache_resiliancy_test-2be7a25162a1f92a)
+     Running benches/cache_bench.rs (/Users/assafvayner/hf/xet-core/target/release/deps/cache_bench-acb21e9a66cc1664)
+cache_get_disk          time:   [301.85 ns 302.49 ns 303.24 ns]
+                        change: [-4.0902% -3.4202% -2.8684%] (p = 0.00 < 0.05)
+                        Performance has improved.
+Found 10 outliers among 100 measurements (10.00%)
+  4 (4.00%) high mild
+  6 (6.00%) high severe
 
-running 0 tests
+cache_get_sccache       time:   [667.37 ns 676.06 ns 683.48 ns]
+                        change: [-5.5258% -4.4523% -3.4316%] (p = 0.00 < 0.05)
+                        Performance has improved.
 
-test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
-
-     Running benches/cache_bench.rs (/Users/assafvayner/hf/xet-core/target/release/deps/cache_bench-dd797ecaad4ad5cf)
-cache_get_disk          time:   [312.04 ns 312.56 ns 313.07 ns]
-                        change: [-0.2817% +0.4868% +1.2121%] (p = 0.21 > 0.05)
-                        No change in performance detected.
-Found 3 outliers among 100 measurements (3.00%)
+cache_get_solidcache    time:   [105.92 µs 106.57 µs 107.29 µs]
+                        change: [-4.0546% -3.4103% -2.7400%] (p = 0.00 < 0.05)
+                        Performance has improved.
+Found 4 outliers among 100 measurements (4.00%)
+  1 (1.00%) low mild
   2 (2.00%) high mild
   1 (1.00%) high severe
 
-cache_get_sccache       time:   [672.03 ns 679.03 ns 686.55 ns]
-                        change: [-1.5370% +1.6150% +5.5661%] (p = 0.44 > 0.05)
-                        No change in performance detected.
-Found 4 outliers among 100 measurements (4.00%)
-  1 (1.00%) high mild
-  3 (3.00%) high severe
-
-cache_get_solidcache    time:   [103.14 µs 103.49 µs 103.83 µs]
-                        change: [-5.9734% -4.9473% -4.0204%] (p = 0.00 < 0.05)
+cache_get_hit_disk      time:   [670.96 µs 674.79 µs 679.30 µs]
+                        change: [-14.498% -13.298% -12.252%] (p = 0.00 < 0.05)
                         Performance has improved.
-Found 12 outliers among 100 measurements (12.00%)
-  2 (2.00%) low severe
-  4 (4.00%) low mild
-  3 (3.00%) high mild
-  3 (3.00%) high severe
-
-cache_get_hit_disk      time:   [798.38 µs 800.39 µs 802.69 µs]
-                        change: [+4.7304% +5.5839% +6.4705%] (p = 0.00 < 0.05)
-                        Performance has regressed.
-Found 12 outliers among 100 measurements (12.00%)
-  10 (10.00%) high mild
+Found 6 outliers among 100 measurements (6.00%)
+  4 (4.00%) high mild
   2 (2.00%) high severe
 
-cache_get_hit_sccache   time:   [245.37 µs 264.21 µs 280.90 µs]
-                        change: [+11.172% +16.499% +21.758%] (p = 0.00 < 0.05)
-                        Performance has regressed.
-Found 20 outliers among 100 measurements (20.00%)
-  20 (20.00%) high severe
+cache_get_hit_sccache   time:   [191.48 µs 193.26 µs 195.39 µs]
+                        change: [-6.1415% -4.9539% -3.4732%] (p = 0.00 < 0.05)
+                        Performance has improved.
+Found 8 outliers among 100 measurements (8.00%)
+  4 (4.00%) high mild
+  4 (4.00%) high severe
 
 cache_get_hit_solidcache
-                        time:   [602.09 µs 606.35 µs 610.80 µs]
-                        change: [-6.8824% -4.6297% -2.3691%] (p = 0.00 < 0.05)
-                        Performance has improved.
-Found 7 outliers among 100 measurements (7.00%)
-  2 (2.00%) high mild
-  5 (5.00%) high severe
-
-cache_put_disk          time:   [146.29 ms 146.59 ms 146.90 ms]
-                        change: [+0.1479% +0.5906% +1.0184%] (p = 0.01 < 0.05)
-                        Change within noise threshold.
-Found 1 outliers among 100 measurements (1.00%)
-  1 (1.00%) high mild
-
-cache_put_sccache       time:   [141.48 ms 141.81 ms 142.19 ms]
-                        change: [+0.7751% +1.3329% +1.8605%] (p = 0.00 < 0.05)
-                        Change within noise threshold.
-Found 6 outliers among 100 measurements (6.00%)
-  5 (5.00%) high mild
-  1 (1.00%) high severe
-
-cache_put_solidcache    time:   [142.35 ms 143.19 ms 144.17 ms]
-                        change: [+1.8559% +2.6035% +3.5314%] (p = 0.00 < 0.05)
-                        Performance has regressed.
-Found 3 outliers among 100 measurements (3.00%)
-  2 (2.00%) high mild
-  1 (1.00%) high severe
-
-cache_get_mt/disk       time:   [13.567 µs 13.727 µs 13.870 µs]
-                        change: [-0.6124% +3.6122% +6.9046%] (p = 0.04 < 0.05)
-                        Change within noise threshold.
-Found 2 outliers among 100 measurements (2.00%)
-  1 (1.00%) low severe
-  1 (1.00%) low mild
-
-cache_get_mt/sccache    time:   [16.803 µs 16.921 µs 17.040 µs]
-                        change: [+3.6952% +5.6220% +7.4356%] (p = 0.00 < 0.05)
-                        Performance has regressed.
-Found 5 outliers among 100 measurements (5.00%)
-  2 (2.00%) low mild
-  1 (1.00%) high mild
-  2 (2.00%) high severe
-
-cache_put_mt/disk       time:   [208.76 ms 209.48 ms 210.23 ms]
-                        change: [+6.4973% +7.4875% +8.4682%] (p = 0.00 < 0.05)
-                        Performance has regressed.
-Found 1 outliers among 100 measurements (1.00%)
-  1 (1.00%) high mild
-
-cache_put_mt/sccache    time:   [191.02 ms 192.42 ms 193.99 ms]
-                        change: [-2.3362% -1.1473% +0.0861%] (p = 0.08 > 0.05)
+                        time:   [611.71 µs 619.22 µs 627.41 µs]
+                        change: [-2.1092% -0.8433% +0.4552%] (p = 0.17 > 0.05)
                         No change in performance detected.
-Found 22 outliers among 100 measurements (22.00%)
-  2 (2.00%) high mild
-  20 (20.00%) high severe
+Found 9 outliers among 100 measurements (9.00%)
+  8 (8.00%) high mild
+  1 (1.00%) high severe
+
+cache_put_disk          time:   [142.72 ms 143.20 ms 143.71 ms]
+                        change: [-5.7893% -4.8375% -3.9496%] (p = 0.00 < 0.05)
+                        Performance has improved.
+Found 9 outliers among 100 measurements (9.00%)
+  9 (9.00%) high mild
+
+cache_put_sccache       time:   [137.57 ms 137.96 ms 138.39 ms]
+                        change: [+0.6631% +1.0843% +1.5067%] (p = 0.00 < 0.05)
+                        Change within noise threshold.
+Found 8 outliers among 100 measurements (8.00%)
+  7 (7.00%) high mild
+  1 (1.00%) high severe
+
+cache_put_solidcache    time:   [138.07 ms 138.68 ms 139.35 ms]
+                        change: [+1.6395% +2.1834% +2.7363%] (p = 0.00 < 0.05)
+                        Performance has regressed.
+Found 4 outliers among 100 measurements (4.00%)
+  3 (3.00%) high mild
+  1 (1.00%) high severe
+
+cache_get_mt/disk       time:   [12.570 µs 12.656 µs 12.781 µs]
+                        change: [+3.0291% +3.5879% +4.3416%] (p = 0.00 < 0.05)
+                        Performance has regressed.
+Found 7 outliers among 100 measurements (7.00%)
+  3 (3.00%) high mild
+  4 (4.00%) high severe
+
+cache_get_mt/sccache    time:   [15.207 µs 15.327 µs 15.473 µs]
+                        change: [-2.5502% -1.6692% -0.7229%] (p = 0.00 < 0.05)
+                        Change within noise threshold.
+Found 1 outliers among 100 measurements (1.00%)
+  1 (1.00%) high mild
+
+cache_put_mt/disk       time:   [194.52 ms 196.23 ms 198.10 ms]
+                        change: [+1.8060% +2.8133% +3.8883%] (p = 0.00 < 0.05)
+                        Performance has regressed.
+Found 4 outliers among 100 measurements (4.00%)
+  3 (3.00%) high mild
+  1 (1.00%) high severe
+
+cache_put_mt/sccache    time:   [192.82 ms 194.32 ms 195.94 ms]
+                        change: [+1.2712% +2.1359% +3.0719%] (p = 0.00 < 0.05)
+                        Performance has regressed.
+Found 6 outliers among 100 measurements (6.00%)
+  6 (6.00%) high mild
+```
+
+## SolidCache table setup
+
+The implementation in solid_cache.rs expects the following configured attributes: `host=localhost user=postgres dbname=cache`.
+
+Below are the scripts and schemas to create the tables.
+
+Note that for evictions we create a function and a trigger on the cache table.
+
+### Summary of below
+
+```sql
+-- create the table
+
+CREATE TABLE public.cache (
+    key character varying(128) NOT NULL,
+    start integer NOT NULL,
+    "end" integer NOT NULL,
+    chunk_byte_indicies integer[] NOT NULL,
+    data bytea NOT NULL
+);
+```
+
+```sql
+-- cleaning function
+CREATE OR REPLACE FUNCTION delete_random_if_full() 
+RETURNS TRIGGER AS $$
+BEGIN
+    -- Check if the number of rows is greater than or equal to 1000
+    IF (SELECT COUNT(*) FROM cache) >= 1000 THEN
+        -- Delete a random row
+        DELETE FROM cache 
+        WHERE id = (SELECT id FROM cache ORDER BY random() LIMIT 1);
+    END IF;
+    RETURN NEW;
+END;
+```
+
+```sql
+-- create the trigger to evict data
+CREATE TRIGGER maintain_size_trigger AFTER INSERT ON cache FOR EACH ROW EXECUTE FUNCTION delete_random_if_full();
+```
+
+### Entire backup for the table setup
+
+*This was run on postgres running on macos using the postgres gui app.*
+
+For this script to work you will also need to create the following function before creating the trigger
+
+```sql
+CREATE OR REPLACE FUNCTION delete_random_if_full() 
+RETURNS TRIGGER AS $$
+BEGIN
+    -- Check if the number of rows is greater than or equal to 1000
+    IF (SELECT COUNT(*) FROM cache) >= 1000 THEN
+        -- Delete a random row
+        DELETE FROM cache 
+        WHERE id = (SELECT id FROM cache ORDER BY random() LIMIT 1);
+    END IF;
+    RETURN NEW;
+END;
+```
+
+#### The following is a dump from pgAdmin 4
+
+```sql
+--
+-- PostgreSQL database dump
+--
+
+-- Dumped from database version 16.4 (Postgres.app)
+-- Dumped by pg_dump version 16.1
+
+SET statement_timeout = 0;
+SET lock_timeout = 0;
+SET idle_in_transaction_session_timeout = 0;
+SET client_encoding = 'UTF8';
+SET standard_conforming_strings = on;
+SELECT pg_catalog.set_config('search_path', '', false);
+SET check_function_bodies = false;
+SET xmloption = content;
+SET client_min_messages = warning;
+SET row_security = off;
+
+--
+-- Name: cache; Type: DATABASE; Schema: -; Owner: postgres
+--
+
+CREATE DATABASE cache WITH TEMPLATE = template0 ENCODING = 'UTF8' LOCALE_PROVIDER = libc LOCALE = 'en_US.UTF-8';
+
+
+ALTER DATABASE cache OWNER TO postgres;
+
+\connect cache
+
+SET statement_timeout = 0;
+SET lock_timeout = 0;
+SET idle_in_transaction_session_timeout = 0;
+SET client_encoding = 'UTF8';
+SET standard_conforming_strings = on;
+SELECT pg_catalog.set_config('search_path', '', false);
+SET check_function_bodies = false;
+SET xmloption = content;
+SET client_min_messages = warning;
+SET row_security = off;
+
+SET default_tablespace = '';
+
+SET default_table_access_method = heap;
+
+--
+-- Name: cache; Type: TABLE; Schema: public; Owner: postgres
+--
+
+CREATE TABLE public.cache (
+    key character varying(128) NOT NULL,
+    start integer NOT NULL,
+    "end" integer NOT NULL,
+    chunk_byte_indicies integer[] NOT NULL,
+    data bytea NOT NULL
+);
+
+
+ALTER TABLE public.cache OWNER TO postgres;
+
+--
+-- Name: cache cache_pkey; Type: CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.cache
+    ADD CONSTRAINT cache_pkey PRIMARY KEY (key);
+
+
+--
+-- Name: cache maintain_size_trigger; Type: TRIGGER; Schema: public; Owner: postgres
+--
+
+CREATE TRIGGER maintain_size_trigger AFTER INSERT ON public.cache FOR EACH ROW EXECUTE FUNCTION public.delete_random_if_full();
+
+
+--
+-- PostgreSQL database dump complete
+--
 ```

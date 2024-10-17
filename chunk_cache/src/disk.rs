@@ -1,7 +1,7 @@
 use std::{
     collections::HashMap,
     fs::{read_dir, File},
-    io::{ErrorKind, Read, Seek, SeekFrom, Write},
+    io::{Cursor, ErrorKind, Read, Seek, SeekFrom, Write},
     mem::size_of,
     path::{Path, PathBuf},
     sync::{Arc, Mutex, MutexGuard},
@@ -214,7 +214,7 @@ impl DiskCache {
             return Err(ChunkCacheError::InvalidArguments);
         }
 
-        let (mut file, header, start) = loop {
+        loop {
             let cache_item = if let Some(item) = self.find_match(key, range)? {
                 item
             } else {
@@ -223,39 +223,43 @@ impl DiskCache {
 
             let path = self.item_path(key, &cache_item)?;
 
-            let mut file = match File::open(&path) {
-                Ok(file) => file,
-                Err(e) => match e.kind() {
-                    ErrorKind::NotFound => {
-                        self.remove_item(key, &cache_item)?;
-                        continue;
-                    }
-                    _ => return Err(e.into()),
-                },
+            let mut file_buf = {
+                let mut file = match File::open(&path) {
+                    Ok(file) => file,
+                    Err(e) => match e.kind() {
+                        ErrorKind::NotFound => {
+                            self.remove_item(key, &cache_item)?;
+                            continue;
+                        }
+                        _ => return Err(e.into()),
+                    },
+                };
+                let mut buf = Vec::with_capacity(file.metadata()?.len() as usize);
+                file.read_to_end(&mut buf)?;
+                Cursor::new(buf)
             };
-            let hash = compute_hash_from_reader(&mut file)?;
+            let hash = compute_hash_from_reader(&mut file_buf)?;
             if hash != cache_item.hash {
                 debug!("file hash mismatch on path: {path:?}, key: {key}, item: {cache_item}");
                 self.remove_item(key, &cache_item)?;
                 continue;
             }
 
-            file.seek(SeekFrom::Start(0))?;
-            let header = match CacheFileHeader::deserialize(&mut file).debug_error(format!(
+            file_buf.seek(SeekFrom::Start(0))?;
+            let header_result = CacheFileHeader::deserialize(&mut file_buf).debug_error(format!(
                 "failed to deserialize cache file header on path: {path:?}"
-            )) {
-                Ok(header) => header,
-                Err(_) => {
-                    self.remove_item(key, &cache_item)?;
-                    continue;
-                }
+            ));
+            let header = if let Ok(header) = header_result {
+                header
+            } else {
+                self.remove_item(key, &cache_item)?;
+                continue;
             };
 
             let start = cache_item.range.start;
-            break (file, header, start);
-        };
-        let buf = get_range_from_cache_file(&header, &mut file, range, start)?;
-        Ok(Some(buf))
+            let result_buf = get_range_from_cache_file(&header, &mut file_buf, range, start)?;
+            return Ok(Some(result_buf));
+        }
     }
 
     fn find_match(&self, key: &Key, range: &Range) -> Result<Option<CacheItem>, ChunkCacheError> {
@@ -352,24 +356,29 @@ impl DiskCache {
 
         // validate stored data
         let path = self.item_path(key, cache_item)?;
-        let mut file = if let Ok(file) = File::open(path) {
-            file
-        } else {
-            self.remove_item(key, cache_item)?;
-            return Ok(false);
+        let mut r = {
+            let mut file = if let Ok(file) = File::open(path) {
+                file
+            } else {
+                self.remove_item(key, cache_item)?;
+                return Ok(false);
+            };
+            let md = file.metadata()?;
+            if md.len() != cache_item.len {
+                self.remove_item(key, cache_item)?;
+                return Ok(false);
+            }
+            let mut buf = Vec::with_capacity(md.len() as usize);
+            file.read_to_end(&mut buf)?;
+            Cursor::new(buf)
         };
-        let md = file.metadata()?;
-        if md.len() != cache_item.len {
-            self.remove_item(key, cache_item)?;
-            return Ok(false);
-        }
-        let hash = blake3::Hasher::new().update_reader(&mut file)?.finalize();
+        let hash = blake3::Hasher::new().update_reader(&mut r)?.finalize();
         if hash != cache_item.hash {
             self.remove_item(key, cache_item)?;
             return Ok(false);
         }
-        file.seek(SeekFrom::Start(0))?;
-        let header = if let Ok(header) = CacheFileHeader::deserialize(&mut file) {
+        r.seek(SeekFrom::Start(0))?;
+        let header = if let Ok(header) = CacheFileHeader::deserialize(&mut r) {
             header
         } else {
             self.remove_item(key, cache_item)?;
@@ -399,7 +408,7 @@ impl DiskCache {
         }
 
         let stored_data =
-            get_range_from_cache_file(&header, &mut file, range, cache_item.range.start)?;
+            get_range_from_cache_file(&header, &mut r, range, cache_item.range.start)?;
         if data != stored_data {
             return Err(ChunkCacheError::InvalidArguments);
         }
@@ -516,7 +525,7 @@ fn strictly_increasing(chunk_byte_indicies: &[u32]) -> bool {
 
 fn get_range_from_cache_file<R: Read + Seek>(
     header: &CacheFileHeader,
-    file: &mut R,
+    file_contents: &mut R,
     range: &Range,
     start: u32,
 ) -> Result<Vec<u8>, ChunkCacheError> {
@@ -528,11 +537,11 @@ fn get_range_from_cache_file<R: Read + Seek>(
         .chunk_byte_indicies
         .get((range.end - start) as usize)
         .ok_or(ChunkCacheError::BadRange)?;
-    file.seek(SeekFrom::Start(
+    file_contents.seek(SeekFrom::Start(
         (*start_byte as usize + header.header_len()) as u64,
     ))?;
     let mut buf = vec![0; (end_byte - start_byte) as usize];
-    file.read_exact(&mut buf)?;
+    file_contents.read_exact(&mut buf)?;
     Ok(buf)
 }
 
