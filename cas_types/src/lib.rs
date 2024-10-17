@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use merklehash::MerkleHash;
 use serde::{Deserialize, Serialize};
 use serde_repr::{Deserialize_repr, Serialize_repr};
@@ -30,6 +32,12 @@ pub struct CASReconstructionTerm {
     pub unpacked_length: u32,
     // chunk index start and end in a xorb
     pub range: Range,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct CASReconstructionFetchInfo {
+    // chunk index start and end in a xorb
+    pub range: Range,
     pub url: String,
     // byte index start and end in a xorb
     pub url_range: Range,
@@ -40,7 +48,8 @@ pub struct QueryReconstructionResponse {
     // For range query [a, b) into a file content, the location
     // of "a" into the first range.
     pub offset_into_first_range: u32,
-    pub reconstruction: Vec<CASReconstructionTerm>,
+    pub terms: Vec<CASReconstructionTerm>,
+    pub fetch_info: HashMap<MerkleHash, Vec<CASReconstructionFetchInfo>>,
 }
 
 #[derive(Debug, Serialize_repr, Deserialize_repr, Clone, Copy)]
@@ -59,5 +68,3 @@ pub struct UploadShardResponse {
 pub struct QueryChunkResponse {
     pub shard: MerkleHash,
 }
-
-pub type Salt = [u8; 32];

@@ -204,7 +204,7 @@ impl RemoteClient {
         _byte_range: Option<(u64, u64)>,
         writer: &mut Box<dyn Write + Send>,
     ) -> Result<usize> {
-        let info = reconstruction_response.reconstruction;
+        let info = reconstruction_response.terms;
         let total_len = info.iter().fold(0, |acc, x| acc + x.unpacked_length);
         let futs = info
             .into_iter()
@@ -219,6 +219,8 @@ impl RemoteClient {
     }
 }
 
+// TODO: this is all wrong at the moment. We need to fetch ranges from fetch_info and
+// match terms
 pub(crate) async fn get_one_range(term: &CASReconstructionTerm) -> Result<Bytes> {
     debug!("term: {term:?}");
 
