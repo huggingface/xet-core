@@ -19,8 +19,9 @@ name = "cache_bench"
 harness = false
 bench = true
 
+# To run: ./cache_resilience_test parent
 [[bin]]
-name = "cache_resiliancy_test"
+name = "cache_resilience_test"
 
 [dev-dependencies]
 rand = "0.8"

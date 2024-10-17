@@ -11,7 +11,7 @@ use tempdir::TempDir;
 
 #[derive(Parser, Debug)]
 #[command(about)]
-struct ResiliancyTestArgs {
+struct ResilienceTestArgs {
     #[command(subcommand)]
     command: Commands,
 }
@@ -47,7 +47,7 @@ struct ChildArgs {
 }
 
 fn main() {
-    let args = ResiliancyTestArgs::parse();
+    let args = ResilienceTestArgs::parse();
     match args.command {
         Commands::Parent(parent) => parent_main(parent),
         Commands::Child(child) => child_main(child),
@@ -57,7 +57,7 @@ fn main() {
 fn parent_main(args: ParentArgs) {
     let binary = std::env::current_exe().unwrap();
     let binary_str = binary.to_str().unwrap();
-    let cache_root = TempDir::new("resiliancy_test").unwrap();
+    let cache_root = TempDir::new("resilience").unwrap();
     let cache_root_path = cache_root.into_path();
     let cache_root_str = cache_root_path.to_str().unwrap();
     let capacity_str = format!("{}", args.capacity);

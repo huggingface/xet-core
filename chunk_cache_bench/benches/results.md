@@ -6,10 +6,10 @@ SCCache implementation requires an exact range match, the test accounts for this
 See SolidCache at the bottom.
 
 get: runs random gets, almost certain to all be misses
-get_hit: runs gets guarenteed to be hits
+get_hit: runs gets guaranteed to be hits
 put: before the measuring, the cache is filled so all puts required evictions.
 get_mt: multithreaded, each run is 8 gets run asynchronously on 8 spawned tokio tasks.
-put_mt: mutlithreaded put, cache is pre-filled, so all puts require evictions, 8 tasks concurrently.
+put_mt: multithreaded put, cache is pre-filled, so all puts require evictions, 8 tasks concurrently.
 
 ## Latest on Assaf's M2 Macbook Pro
 
@@ -32,7 +32,7 @@ cache_put_mt/sccache: 194.32 ms
 ```
 
 - misses: current implementation compared to sccache & solidcache.
-- hits: current implementation is slower on hits compared to sccach.
+- hits: current implementation is slower on hits compared to sccache.
   - there are a lot of factors that could affect this and introduce room for later improvement
     - effect of LRU vs random eviction
     - does sccache validate file contents like we do with the blake3 hash, maybe we do extra passes on data in comparison
