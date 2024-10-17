@@ -8,6 +8,8 @@ use bytes::Buf;
 use bytes::Bytes;
 use cas_object::CasObject;
 use cas_types::{CASReconstructionTerm, Key, QueryReconstructionResponse, UploadXorbResponse};
+use chunk_cache::ChunkCache;
+use chunk_cache::DiskCache;
 use merklehash::MerkleHash;
 use reqwest::{StatusCode, Url};
 use reqwest_middleware::ClientWithMiddleware;
@@ -107,13 +109,14 @@ impl ReconstructionClient for RemoteClient {
     async fn get_file(
         &self,
         http_client: &ClientWithMiddleware,
+        disk_cache: Option<DiskCache>,
         hash: &MerkleHash,
         writer: &mut Box<dyn Write + Send>,
     ) -> Result<()> {
         // get manifest of xorbs to download
         let manifest = self.reconstruct(hash, None).await?;
 
-        RemoteClient::get_ranges(http_client, manifest, None, writer).await?;
+        RemoteClient::get_ranges(http_client, disk_cache, manifest, None, writer).await?;
 
         Ok(())
     }
@@ -189,6 +192,7 @@ impl RemoteClient {
 
     async fn get_ranges(
         http_client: &ClientWithMiddleware,
+        disk_cache: Option<DiskCache>,
         reconstruction_response: QueryReconstructionResponse,
         _byte_range: Option<(u64, u64)>,
         writer: &mut Box<dyn Write + Send>,
@@ -197,7 +201,8 @@ impl RemoteClient {
         let total_len = info.iter().fold(0, |acc, x| acc + x.unpacked_length);
         let futs = info.into_iter().map(|term| {
             let http_client_clone = http_client.clone();
-            tokio::spawn(async move { get_one_range(&http_client_clone, &term).await })
+            let disk_cache = disk_cache.clone();
+            tokio::spawn(async move { get_one_range(&http_client_clone, &disk_cache, &term).await })
         });
         for fut in futs {
             let piece = fut
@@ -211,12 +216,31 @@ impl RemoteClient {
 
 pub(crate) async fn get_one_range(
     http_client: &ClientWithMiddleware,
+    disk_cache: &Option<DiskCache>,
     term: &CASReconstructionTerm,
 ) -> Result<Bytes> {
     debug!("term: {term:?}");
 
     if term.range.end < term.range.start || term.url_range.end < term.url_range.start {
         return Err(CasClientError::InvalidRange);
+    }
+
+    // check disk cache
+    if Some(disk_cache).is_some() {
+
+        let key = Key {
+            prefix: PREFIX_DEFAULT.to_string(),
+            hash: term.hash.into(),
+        };
+
+        let cached = disk_cache
+            .as_ref()
+            .unwrap()
+            .get(&key, &term.range)
+            .map_err(|e| CasClientError::InternalError(anyhow!("cache error {e}")))?;
+        if let Some(cached) = cached {
+            return Ok(Bytes::from(cached));
+        }
     }
 
     let url = Url::parse(term.url.as_str())?;
@@ -237,7 +261,20 @@ pub(crate) async fn get_one_range(
         return Err(CasClientError::InvalidRange);
     }
     let mut readseek = Cursor::new(xorb_bytes.to_vec());
-    let data = cas_object::deserialize_chunks(&mut readseek)?;
+    let (data, chunk_byte_indices) = cas_object::deserialize_chunks(&mut readseek)?;
+
+    // now write it back to cache
+    if Some(disk_cache).is_some() {
+        let key = Key {
+            prefix: PREFIX_DEFAULT.to_string(),
+            hash: term.hash.into(),
+        };
+        disk_cache
+            .as_ref()
+            .unwrap()
+            .put(&key, &term.range, &chunk_byte_indices, &data)
+            .map_err(|e| CasClientError::InternalError(anyhow!("cache error {e}")))?;
+    }
 
     Ok(Bytes::from(data))
 }

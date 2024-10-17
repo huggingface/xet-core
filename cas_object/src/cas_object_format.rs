@@ -306,13 +306,13 @@ impl CasObject {
         for idx in 0..cas.info.num_chunks {
             // deserialize each chunk
             reader.seek(std::io::SeekFrom::Start(start_offset as u64))?;
-            let (data, compressed_chunk_length) = deserialize_chunk(reader)?;
-            let chunk_uncompressed_length = data.len();
+            let (data, compressed_chunk_length, chunk_uncompressed_length) = deserialize_chunk(reader)?;
+            // let chunk_uncompressed_length = data.len();
 
             let chunk_hash = merklehash::compute_data_hash(&data);
             hash_chunks.push(Chunk {
                 hash: chunk_hash,
-                length: chunk_uncompressed_length,
+                length: chunk_uncompressed_length as usize,
             });
 
             cumulative_compressed_length += compressed_chunk_length as u32;
@@ -456,7 +456,7 @@ impl CasObject {
         let mut res = Vec::<u8>::new();
 
         while reader.has_remaining() {
-            let (data, _) = deserialize_chunk(&mut reader)?;
+            let (data, _, _) = deserialize_chunk(&mut reader)?;
             res.extend_from_slice(&data);
         }
         Ok(res)

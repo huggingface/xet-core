@@ -1,6 +1,7 @@
 use crate::error::Result;
 use async_trait::async_trait;
 use cas_types::QueryReconstructionResponse;
+use chunk_cache::DiskCache;
 use merklehash::MerkleHash;
 use reqwest_middleware::ClientWithMiddleware;
 use std::io::Write;
@@ -45,6 +46,7 @@ pub trait ReconstructionClient {
     async fn get_file(
         &self,
         http_client: &ClientWithMiddleware,
+        disk_cache: Option<DiskCache>,
         hash: &MerkleHash,
         writer: &mut Box<dyn Write + Send>,
     ) -> Result<()>;
