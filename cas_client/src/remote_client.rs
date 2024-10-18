@@ -213,7 +213,7 @@ impl RemoteClient {
         let mut cache: HashMap<&CASReconstructionFetchInfo, (Vec<u32>, Vec<u8>)> = HashMap::new();
         for term in terms.iter() {
             let fhash = fetch_info
-                .get(&term.hash.into())
+                .get(&term.hash)
                 .expect("invalid response from CAS server: failed to get term hash in fetchables");
             let fterm = fhash
                 .iter()

@@ -49,7 +49,7 @@ pub struct QueryReconstructionResponse {
     // of "a" into the first range.
     pub offset_into_first_range: u32,
     pub terms: Vec<CASReconstructionTerm>,
-    pub fetch_info: HashMap<MerkleHash, Vec<CASReconstructionFetchInfo>>,
+    pub fetch_info: HashMap<HexMerkleHash, Vec<CASReconstructionFetchInfo>>,
 }
 
 #[derive(Debug, Serialize_repr, Deserialize_repr, Clone, Copy)]
