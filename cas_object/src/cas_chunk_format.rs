@@ -165,6 +165,26 @@ pub fn deserialize_chunk_to_writer<R: Read, W: Write>(
     Ok(header.get_compressed_length() as usize + CAS_CHUNK_HEADER_LENGTH)
 }
 
+pub fn deserialize_chunks2<R: Read>(reader: &mut R) -> Result<(Vec<u32>, Vec<u8>), CasObjectError> {
+    let mut buf = Vec::new();
+    let mut indices = vec![0];
+    loop {
+        match deserialize_chunk_to_writer(reader, &mut buf) {
+            Ok(_) => {
+                indices.push(buf.len() as u32);
+            }
+            Err(CasObjectError::InternalIOError(e)) => {
+                if e.kind() == io::ErrorKind::UnexpectedEof {
+                    break;
+                }
+                return Err(CasObjectError::InternalIOError(e));
+            }
+            Err(e) => return Err(e),
+        }
+    }
+    Ok((indices, buf))
+}
+
 pub fn deserialize_chunks<R: Read>(reader: &mut R) -> Result<Vec<u8>, CasObjectError> {
     let mut buf = Vec::new();
     let _ = deserialize_chunks_to_writer(reader, &mut buf)?;

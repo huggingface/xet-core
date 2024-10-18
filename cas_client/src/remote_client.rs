@@ -4,14 +4,15 @@ use crate::{error::Result, AuthMiddleware, CasClientError};
 use anyhow::anyhow;
 use async_trait::async_trait;
 use bytes::Buf;
-use bytes::Bytes;
 use cas_object::CasObject;
-use cas_types::{CASReconstructionTerm, Key, QueryReconstructionResponse, UploadXorbResponse};
+use cas_types::CASReconstructionFetchInfo;
+use cas_types::{Key, QueryReconstructionResponse, UploadXorbResponse};
 use error_printer::OptionPrinter;
 use merklehash::MerkleHash;
 use reqwest::{StatusCode, Url};
 use reqwest_middleware::{ClientBuilder, ClientWithMiddleware, Middleware};
 use retry_strategy::RetryStrategy;
+use std::collections::HashMap;
 use std::io::{Cursor, Write};
 use tracing::{debug, error, warn};
 use utils::auth::AuthConfig;
@@ -204,31 +205,52 @@ impl RemoteClient {
         _byte_range: Option<(u64, u64)>,
         writer: &mut Box<dyn Write + Send>,
     ) -> Result<usize> {
-        let info = reconstruction_response.terms;
-        let total_len = info.iter().fold(0, |acc, x| acc + x.unpacked_length);
-        let futs = info
-            .into_iter()
-            .map(|term| tokio::spawn(async move { get_one_range(&term).await }));
-        for fut in futs {
-            let piece = fut
-                .await
-                .map_err(|e| CasClientError::InternalError(anyhow!("join error {e}")))??;
-            writer.write_all(&piece)?;
+        let terms = reconstruction_response.terms;
+        let fetch_info = reconstruction_response.fetch_info;
+        let total_len = terms.iter().fold(0, |acc, x| acc + x.unpacked_length);
+
+        let mut cache: HashMap<&CASReconstructionFetchInfo, (Vec<u32>, Vec<u8>)> = HashMap::new();
+        for term in terms {
+            let fhash = fetch_info
+                .get(&term.hash.into())
+                .expect("invalid response from CAS server: failed to get term hash in fetchables");
+            let fterm = fhash
+                .iter()
+                .find(|fterm| {
+                    fterm.range.start <= term.range.start && fterm.range.end >= term.range.end
+                })
+                .expect(
+                    "invalid response from CAS server: failed to match term in fetchables for hash",
+                );
+
+            let (indices, data) = if let Some(v) = cache.get(fterm) {
+                v
+            } else {
+                cache.insert(fterm, get_one_range(fterm).await?);
+                cache.get(fterm).expect("literally just put it in")
+            };
+
+            let start = indices[(term.range.start - fterm.range.start) as usize] as usize;
+            let end = indices[(term.range.end - fterm.range.start) as usize] as usize;
+            writer.write_all(&data[start..end])?;
         }
+
         Ok(total_len as usize)
     }
 }
 
-// TODO: this is all wrong at the moment. We need to fetch ranges from fetch_info and
-// match terms
-pub(crate) async fn get_one_range(term: &CASReconstructionTerm) -> Result<Bytes> {
-    debug!("term: {term:?}");
+pub(crate) async fn get_one_range(
+    fetch_info: &CASReconstructionFetchInfo,
+) -> Result<(Vec<u32>, Vec<u8>)> {
+    debug!("term: {fetch_info:?}");
 
-    if term.range.end < term.range.start || term.url_range.end < term.url_range.start {
+    if fetch_info.range.end < fetch_info.range.start
+        || fetch_info.url_range.end < fetch_info.url_range.start
+    {
         return Err(CasClientError::InvalidRange);
     }
 
-    let url = Url::parse(term.url.as_str())?;
+    let url = Url::parse(fetch_info.url.as_str())?;
     let client = reqwest::Client::new();
     let retry_strategy = RetryStrategy::new(NUM_RETRIES, BASE_RETRY_DELAY_MS);
 
@@ -241,7 +263,10 @@ pub(crate) async fn get_one_range(term: &CASReconstructionTerm) -> Result<Bytes>
                     .get(url)
                     .header(
                         reqwest::header::RANGE,
-                        format!("bytes={}-{}", term.url_range.start, term.url_range.end - 1),
+                        format!(
+                            "bytes={}-{}",
+                            fetch_info.url_range.start, fetch_info.url_range.end
+                        ),
                     )
                     .send()
                     .await
@@ -252,14 +277,14 @@ pub(crate) async fn get_one_range(term: &CASReconstructionTerm) -> Result<Bytes>
         .map_err(|e| CasClientError::InternalError(anyhow!("request failed with code {e}")))?;
 
     let xorb_bytes = response.bytes().await?;
-    if xorb_bytes.len() as u32 != term.url_range.end - term.url_range.start {
+    if xorb_bytes.len() as u32 != fetch_info.url_range.end - fetch_info.url_range.start + 1 {
         error!("got back a smaller range than requested");
         return Err(CasClientError::InvalidRange);
     }
     let mut readseek = Cursor::new(xorb_bytes.to_vec());
-    let data = cas_object::deserialize_chunks(&mut readseek)?;
+    let (indices, data) = cas_object::deserialize_chunks2(&mut readseek)?;
 
-    Ok(Bytes::from(data))
+    Ok((indices, data))
 }
 
 /// builds the client to talk to CAS.

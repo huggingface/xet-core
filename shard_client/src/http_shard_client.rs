@@ -137,13 +137,9 @@ impl FileReconstructor<ShardClientError> for HttpShardClient {
 
         Ok(Some((
             MDBFileInfo {
-                metadata: FileDataSequenceHeader::new(
-                    *file_hash,
-                    response_info.reconstruction.len(),
-                    false,
-                ),
+                metadata: FileDataSequenceHeader::new(*file_hash, response_info.terms.len(), false),
                 segments: response_info
-                    .reconstruction
+                    .terms
                     .into_iter()
                     .map(|ce| {
                         FileDataSequenceEntry::new(

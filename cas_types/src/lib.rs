@@ -13,7 +13,7 @@ pub struct UploadXorbResponse {
     pub was_inserted: bool,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone, Eq, PartialEq, PartialOrd, Ord, Default)]
+#[derive(Debug, Serialize, Deserialize, Clone, Eq, PartialEq, PartialOrd, Ord, Default, Hash)]
 pub struct Range {
     pub start: u32,
     pub end: u32,
@@ -34,7 +34,7 @@ pub struct CASReconstructionTerm {
     pub range: Range,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq, Hash)]
 pub struct CASReconstructionFetchInfo {
     // chunk index start and end in a xorb
     pub range: Range,
