@@ -14,6 +14,7 @@ use reqwest_middleware::{ClientBuilder, ClientWithMiddleware, Middleware};
 use retry_strategy::RetryStrategy;
 use std::collections::HashMap;
 use std::io::{Cursor, Write};
+use tracing::info;
 use tracing::{debug, error, warn};
 use utils::auth::AuthConfig;
 
@@ -210,7 +211,7 @@ impl RemoteClient {
         let total_len = terms.iter().fold(0, |acc, x| acc + x.unpacked_length);
 
         let mut cache: HashMap<&CASReconstructionFetchInfo, (Vec<u32>, Vec<u8>)> = HashMap::new();
-        for term in terms {
+        for term in terms.iter() {
             let fhash = fetch_info
                 .get(&term.hash.into())
                 .expect("invalid response from CAS server: failed to get term hash in fetchables");
@@ -234,6 +235,15 @@ impl RemoteClient {
             let end = indices[(term.range.end - fterm.range.start) as usize] as usize;
             writer.write_all(&data[start..end])?;
         }
+
+        let num_fterms = fetch_info.values().fold(0, |acc, v| acc + v.len());
+
+        info!(
+            "recon done: num_terms: {}, num_fterms: {}, cache.len(): {}",
+            terms.len(),
+            num_fterms,
+            cache.len()
+        );
 
         Ok(total_len as usize)
     }
