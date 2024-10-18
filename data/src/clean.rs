@@ -581,7 +581,7 @@ impl Cleaner {
                         .iter()
                         .map(|(hash, _)| *hash)
                         .collect();
-                    let range_hash = range_hash_from_chunks(&chunk_hashes, &entry.cas_hash.into());
+                    let range_hash = range_hash_from_chunks(&chunk_hashes);
                     chunk_idx += n_chunks;
 
                     FileVerificationEntry::new(range_hash)

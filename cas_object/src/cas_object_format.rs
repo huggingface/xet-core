@@ -387,10 +387,7 @@ impl CasObject {
         let range_hashes =
             self.info.chunk_hashes[chunk_start_index as usize..chunk_end_index as usize].as_ref();
 
-        Ok(range_hash_from_chunks(
-            range_hashes,
-            &self.info.cashash.into(),
-        ))
+        Ok(range_hash_from_chunks(range_hashes))
     }
 
     /// Return end offset of all physical chunk contents (byte index at the beginning of footer)
@@ -617,6 +614,7 @@ pub mod test_utils {
 mod tests {
     use super::test_utils::*;
     use super::*;
+    use crate::chunk_verification::VERIFICATION_KEY;
     use std::io::Cursor;
 
     #[test]
@@ -680,7 +678,6 @@ mod tests {
         // Arrange
         let (c, _cas_data, _raw_data, _raw_chunk_boundaries) =
             build_cas_object(3, ChunkSize::Fixed(100), CompressionScheme::None);
-        let key: [u8; 32] = c.info.cashash.into();
 
         let hashes: Vec<u8> = c
             .info
@@ -689,7 +686,7 @@ mod tests {
             .flat_map(|hash| hash.as_bytes().to_vec())
             .collect();
 
-        let expected_hash = blake3::keyed_hash(&key, hashes.as_slice());
+        let expected_hash = blake3::keyed_hash(&VERIFICATION_KEY, hashes.as_slice());
 
         // Act & Assert
         let range_hash = c.generate_chunk_range_hash(0, 3).unwrap();
@@ -701,14 +698,13 @@ mod tests {
         // Arrange
         let (c, _cas_data, _raw_data, _raw_chunk_boundaries) =
             build_cas_object(5, ChunkSize::Fixed(100), CompressionScheme::None);
-        let key: [u8; 32] = c.info.cashash.into();
 
         let hashes: Vec<u8> = c.info.chunk_hashes.as_slice()[1..=3]
             .to_vec()
             .iter()
             .flat_map(|hash| hash.as_bytes().to_vec())
             .collect();
-        let expected_hash = blake3::keyed_hash(&key, hashes.as_slice());
+        let expected_hash = blake3::keyed_hash(&VERIFICATION_KEY, hashes.as_slice());
 
         // Act & Assert
         let range_hash = c.generate_chunk_range_hash(1, 4).unwrap();
@@ -719,7 +715,7 @@ mod tests {
             .iter()
             .flat_map(|hash| hash.as_bytes().to_vec())
             .collect();
-        let expected_hash = blake3::keyed_hash(&key, hashes.as_slice());
+        let expected_hash = blake3::keyed_hash(&VERIFICATION_KEY, hashes.as_slice());
 
         let range_hash = c.generate_chunk_range_hash(0, 1).unwrap();
         assert_eq!(range_hash, DataHash::from(expected_hash.as_bytes()));
