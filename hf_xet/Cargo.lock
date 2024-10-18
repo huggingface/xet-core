@@ -442,6 +442,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "bincode",
+ "blake3",
  "bytes",
  "cas_types",
  "http 1.1.0",
@@ -739,6 +740,7 @@ dependencies = [
  "bincode",
  "blake3",
  "cas_client",
+ "cas_object",
  "chrono",
  "clap 3.2.25",
  "colored",
@@ -1935,6 +1937,7 @@ dependencies = [
  "rand 0.8.5",
  "regex",
  "serde",
+ "static_assertions",
  "tempdir",
  "tempfile",
  "tokio",

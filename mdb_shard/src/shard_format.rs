@@ -926,7 +926,7 @@ impl MDBShardInfo {
     /// Returns a list of chunk hashes for the global dedup service.
     /// The chunk hashes are either multiple of 'hash_filter_modulues',
     /// or the hash of the first chunk of a file present in the shard.
-    pub fn read_cas_chunks_for_global_dedup<R: Read + Seek>(
+    pub fn filter_cas_chunks_for_global_dedup<R: Read + Seek>(
         reader: &mut R,
     ) -> Result<Vec<MerkleHash>> {
         let mut ret = Vec::new();

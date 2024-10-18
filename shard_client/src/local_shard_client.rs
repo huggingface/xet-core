@@ -73,7 +73,7 @@ impl RegistrationClient for LocalShardClient {
         // Add dedup info to the global dedup table.
         let mut shard_reader = Cursor::new(shard_data);
 
-        let chunk_hashes = MDBShardInfo::read_cas_chunks_for_global_dedup(&mut shard_reader)?;
+        let chunk_hashes = MDBShardInfo::filter_cas_chunks_for_global_dedup(&mut shard_reader)?;
 
         self.global_dedup
             .batch_add(&chunk_hashes, hash, prefix, salt)

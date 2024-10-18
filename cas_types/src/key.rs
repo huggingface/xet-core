@@ -38,7 +38,7 @@ impl FromStr for Key {
     }
 }
 
-mod hex {
+pub mod hex {
     pub mod serde {
         use merklehash::MerkleHash;
         use serde::de::{self, Visitor};

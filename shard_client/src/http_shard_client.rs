@@ -306,7 +306,7 @@ mod test {
         }
 
         // test chunk dedup lookup
-        let chunks = MDBShardInfo::read_cas_chunks_for_global_dedup(&mut reader)?;
+        let chunks = MDBShardInfo::filter_cas_chunks_for_global_dedup(&mut reader)?;
         for chunk in chunks {
             let expected = shard_hash;
             let result = client
