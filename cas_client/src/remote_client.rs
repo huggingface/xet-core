@@ -9,11 +9,13 @@ use bytes::Bytes;
 use cas_object::CasObject;
 use cas_types::{CASReconstructionTerm, Key, QueryReconstructionResponse, UploadXorbResponse};
 use chunk_cache::{CacheConfig, ChunkCache, DiskCache};
+use error_printer::ErrorPrinter;
 use merklehash::MerkleHash;
 use reqwest::{StatusCode, Url};
 use reqwest_middleware::ClientWithMiddleware;
-use tracing::info;
 use std::io::{Cursor, Write};
+use std::sync::Arc;
+use tracing::info;
 use tracing::{debug, error, warn};
 use utils::auth::AuthConfig;
 
@@ -46,16 +48,18 @@ fn is_middleware_status_retryable_and_print(err: &reqwest_middleware::Error) -> 
     }
 }
 
-#[derive(Debug)]
 pub struct RemoteClient {
     endpoint: String,
     http_auth_client: ClientWithMiddleware,
-    disk_cache: Option<DiskCache>,
+    disk_cache: Option<Arc<dyn ChunkCache>>,
 }
 
 impl RemoteClient {
-    pub fn new(endpoint: &str, auth: &Option<AuthConfig>, cache_config: &Option<CacheConfig>) -> Self {
-
+    pub fn new(
+        endpoint: &str,
+        auth: &Option<AuthConfig>,
+        cache_config: &Option<CacheConfig>,
+    ) -> Self {
         // use disk cache if provided.
         let disk_cache = if let Some(cache) = cache_config {
             info!(
@@ -63,9 +67,15 @@ impl RemoteClient {
                 cache.cache_directory, cache.cache_size, cache.cache_blocksize
             );
 
-            Some(DiskCache::initialize(
-                cache.cache_directory.clone(),
-                cache.cache_size).unwrap())
+            if let Ok(cache) =
+                DiskCache::initialize(cache.cache_directory.clone(), cache.cache_size)
+                    .log_error("failed to initialize cache, not using cache")
+            {
+                let cacheptr = Arc::new(cache) as Arc<dyn ChunkCache>;
+                Some(cacheptr)
+            } else {
+                None
+            }
         } else {
             None
         };
@@ -132,7 +142,8 @@ impl ReconstructionClient for RemoteClient {
         // get manifest of xorbs to download
         let manifest = self.reconstruct(hash, None).await?;
 
-        RemoteClient::get_ranges(http_client, self.disk_cache.clone(), manifest, None, writer).await?;
+        RemoteClient::get_ranges(http_client, self.disk_cache.clone(), manifest, None, writer)
+            .await?;
 
         Ok(())
     }
@@ -208,7 +219,7 @@ impl RemoteClient {
 
     async fn get_ranges(
         http_client: &ClientWithMiddleware,
-        disk_cache: Option<DiskCache>,
+        disk_cache: Option<Arc<dyn ChunkCache>>,
         reconstruction_response: QueryReconstructionResponse,
         _byte_range: Option<(u64, u64)>,
         writer: &mut Box<dyn Write + Send>,
@@ -218,7 +229,9 @@ impl RemoteClient {
         let futs = info.into_iter().map(|term| {
             let http_client_clone = http_client.clone();
             let disk_cache = disk_cache.clone();
-            tokio::spawn(async move { get_one_range(&http_client_clone, &disk_cache, &term).await })
+            tokio::spawn(async move {
+                get_one_range(&http_client_clone, disk_cache.clone(), &term).await
+            })
         });
         for fut in futs {
             let piece = fut
@@ -232,7 +245,7 @@ impl RemoteClient {
 
 pub(crate) async fn get_one_range(
     http_client: &ClientWithMiddleware,
-    disk_cache: &Option<DiskCache>,
+    disk_cache: Option<Arc<dyn ChunkCache>>,
     term: &CASReconstructionTerm,
 ) -> Result<Bytes> {
     debug!("term: {term:?}");
@@ -242,16 +255,13 @@ pub(crate) async fn get_one_range(
     }
 
     // check disk cache
-    if Some(disk_cache).is_some() {
-
+    if let Some(cache) = &disk_cache {
         let key = Key {
             prefix: PREFIX_DEFAULT.to_string(),
             hash: term.hash.into(),
         };
 
-        let cached = disk_cache
-            .as_ref()
-            .unwrap()
+        let cached = cache
             .get(&key, &term.range)
             .map_err(|e| CasClientError::InternalError(anyhow!("cache error {e}")))?;
         if let Some(cached) = cached {
@@ -280,14 +290,12 @@ pub(crate) async fn get_one_range(
     let (data, chunk_byte_indices) = cas_object::deserialize_chunks(&mut readseek)?;
 
     // now write it back to cache
-    if Some(disk_cache).is_some() {
+    if let Some(cache) = disk_cache {
         let key = Key {
             prefix: PREFIX_DEFAULT.to_string(),
             hash: term.hash.into(),
         };
-        disk_cache
-            .as_ref()
-            .unwrap()
+        cache
             .put(&key, &term.range, &chunk_byte_indices, &data)
             .map_err(|e| CasClientError::InternalError(anyhow!("cache error {e}")))?;
     }
