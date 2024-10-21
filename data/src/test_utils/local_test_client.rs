@@ -3,7 +3,6 @@ use async_trait::async_trait;
 use cas_client::tests_utils::*;
 use cas_client::{CasClientError, Client, LocalClient, ReconstructionClient, UploadClient};
 use mdb_shard::{shard_file_reconstructor::FileReconstructor, ShardFileManager};
-use chunk_cache::DiskCache;
 use merklehash::MerkleHash;
 use std::path::Path;
 use reqwest_middleware::ClientWithMiddleware;
@@ -50,7 +49,6 @@ impl ReconstructionClient for LocalTestClient {
     async fn get_file(
         &self,
         _http_client: &ClientWithMiddleware,
-        _disk_cache: Option<DiskCache>,
         hash: &MerkleHash,
         writer: &mut Box<dyn Write + Send>,
     ) -> Result<(), CasClientError> {

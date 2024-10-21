@@ -201,7 +201,7 @@ pub fn deserialize_chunks_to_writer<R: Read, W: Write>(
         }
     }
 
-    chunk_byte_indices.push(num_compressed_written as u32); // record end of last chunk (total length)
+    // chunk_byte_indices.push(num_compressed_written as u32); // record end of last chunk (total length)
 
     Ok((num_compressed_written, chunk_byte_indices))
 }
@@ -297,6 +297,17 @@ mod tests {
             let res = deserialize_chunks_to_writer(&mut Cursor::new(chunks), &mut buf);
             assert!(res.is_ok());
             assert_eq!(buf.len(), num_chunks as usize * CHUNK_SIZE);
+
+            // verify that chunk boundaries are correct
+            let (data, chunk_byte_indices) = res.unwrap();
+            assert!(data > 0);
+            assert_eq!(chunk_byte_indices.len(), num_chunks as usize + 1);
+            for i in 0..chunk_byte_indices.len() - 1 {
+                assert_eq!(
+                    chunk_byte_indices[i + 1] - chunk_byte_indices[i],
+                    CHUNK_SIZE as u32
+                );
+            }
         }
     }
 }

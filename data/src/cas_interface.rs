@@ -1,7 +1,7 @@
 use crate::configurations::*;
 use crate::errors::Result;
 use crate::test_utils::LocalTestClient;
-use cas_client::RemoteClient;
+use cas_client::{CacheConfig, RemoteClient};
 use mdb_shard::ShardFileManager;
 use std::env::current_dir;
 use std::path::Path;
@@ -30,11 +30,12 @@ pub(crate) fn create_cas_client(
 
 fn remote_client(
     endpoint: &str,
-    _cache_config: &Option<CacheConfig>,
+    cache_config: &Option<CacheConfig>,
     auth: &Option<AuthConfig>,
 ) -> Result<Arc<dyn Client + Send + Sync>> {
+    
     // Raw remote client.
-    let remote_client = RemoteClient::new(endpoint, auth);
+    let remote_client = RemoteClient::new(endpoint, auth, cache_config);
 
     /*
     if let Some(cache) = cache_config {

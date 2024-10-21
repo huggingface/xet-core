@@ -1,4 +1,5 @@
 use data::configurations::*;
+use data::CacheConfig;
 use data::errors;
 use std::env::current_dir;
 use std::fs;

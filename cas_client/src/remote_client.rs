@@ -8,11 +8,11 @@ use bytes::Buf;
 use bytes::Bytes;
 use cas_object::CasObject;
 use cas_types::{CASReconstructionTerm, Key, QueryReconstructionResponse, UploadXorbResponse};
-use chunk_cache::ChunkCache;
-use chunk_cache::DiskCache;
+use chunk_cache::{CacheConfig, ChunkCache, DiskCache};
 use merklehash::MerkleHash;
 use reqwest::{StatusCode, Url};
 use reqwest_middleware::ClientWithMiddleware;
+use tracing::info;
 use std::io::{Cursor, Write};
 use tracing::{debug, error};
 use utils::auth::AuthConfig;
@@ -27,13 +27,30 @@ const BASE_RETRY_DELAY_MS: u64 = 3000;
 pub struct RemoteClient {
     endpoint: String,
     http_auth_client: ClientWithMiddleware,
+    disk_cache: Option<DiskCache>,
 }
 
 impl RemoteClient {
-    pub fn new(endpoint: &str, auth: &Option<AuthConfig>) -> Self {
+    pub fn new(endpoint: &str, auth: &Option<AuthConfig>, cache_config: &Option<CacheConfig>) -> Self {
+
+        // use disk cache if provided.
+        let disk_cache = if let Some(cache) = cache_config {
+            info!(
+                "Using disk cache directory: {:?}, size: {}, blocksize: {}.",
+                cache.cache_directory, cache.cache_size, cache.cache_blocksize
+            );
+
+            Some(DiskCache::initialize(
+                cache.cache_directory.clone(),
+                cache.cache_size).unwrap())
+        } else {
+            None
+        };
+
         Self {
             endpoint: endpoint.to_string(),
             http_auth_client: http_client::build_auth_http_client(auth, &None).unwrap(),
+            disk_cache,
         }
     }
 }
@@ -86,14 +103,13 @@ impl ReconstructionClient for RemoteClient {
     async fn get_file(
         &self,
         http_client: &ClientWithMiddleware,
-        disk_cache: Option<DiskCache>,
         hash: &MerkleHash,
         writer: &mut Box<dyn Write + Send>,
     ) -> Result<()> {
         // get manifest of xorbs to download
         let manifest = self.reconstruct(hash, None).await?;
 
-        RemoteClient::get_ranges(http_client, disk_cache, manifest, None, writer).await?;
+        RemoteClient::get_ranges(http_client, self.disk_cache.clone(), manifest, None, writer).await?;
 
         Ok(())
     }
@@ -275,7 +291,7 @@ mod tests {
             cas_object::CompressionScheme::LZ4,
         );
 
-        let client = RemoteClient::new(CAS_ENDPOINT, &None);
+        let client = RemoteClient::new(CAS_ENDPOINT, &None, &None);
         // Act
         let result = client
             .put(prefix, &c.info.cashash, data, chunk_boundaries)
