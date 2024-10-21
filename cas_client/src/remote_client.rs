@@ -37,22 +37,15 @@ impl RemoteClient {
         auth: &Option<AuthConfig>,
         cache_config: &Option<CacheConfig>,
     ) -> Self {
-        // use disk cache if provided.
-        let disk_cache = if let Some(cache) = cache_config {
+        // use disk cache if cache_config provided.
+        let disk_cache = if let Some(cache_config) = cache_config {
             info!(
-                "Using disk cache directory: {:?}, size: {}, blocksize: {}.",
-                cache.cache_directory, cache.cache_size, cache.cache_blocksize
+                "Using disk cache directory: {:?}, size: {}.",
+                cache_config.cache_directory, cache_config.cache_size
             );
-
-            if let Ok(cache) =
-                DiskCache::initialize(cache.cache_directory.clone(), cache.cache_size)
-                    .log_error("failed to initialize cache, not using cache")
-            {
-                let cacheptr = Arc::new(cache) as Arc<dyn ChunkCache>;
-                Some(cacheptr)
-            } else {
-                None
-            }
+            DiskCache::initialize(cache_config)
+                .log_error("failed to initialize cache, not using cache")
+                .ok().map(|disk_cache| Arc::new(disk_cache) as Arc<dyn ChunkCache>)
         } else {
             None
         };
@@ -119,8 +112,7 @@ impl ReconstructionClient for RemoteClient {
         // get manifest of xorbs to download
         let manifest = self.reconstruct(hash, None).await?;
 
-        RemoteClient::get_ranges(http_client, self.disk_cache.clone(), manifest, None, writer)
-            .await?;
+        self.get_ranges(http_client, manifest, None, writer).await?;
 
         Ok(())
     }
@@ -195,8 +187,8 @@ impl RemoteClient {
     }
 
     async fn get_ranges(
+        &self,
         http_client: &ClientWithMiddleware,
-        disk_cache: Option<Arc<dyn ChunkCache>>,
         reconstruction_response: QueryReconstructionResponse,
         _byte_range: Option<(u64, u64)>,
         writer: &mut Box<dyn Write + Send>,
@@ -205,7 +197,7 @@ impl RemoteClient {
         let total_len = info.iter().fold(0, |acc, x| acc + x.unpacked_length);
         let futs = info.into_iter().map(|term| {
             let http_client_clone = http_client.clone();
-            let disk_cache = disk_cache.clone();
+            let disk_cache = self.disk_cache.clone();
             tokio::spawn(async move {
                 get_one_range(&http_client_clone, disk_cache.clone(), &term).await
             })

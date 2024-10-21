@@ -37,14 +37,6 @@ fn remote_client(
     // Raw remote client.
     let remote_client = RemoteClient::new(endpoint, auth, cache_config);
 
-    /*
-    if let Some(cache) = cache_config {
-        let caching_client =
-            CachingClient::new(remote_client, &cache.cache_directory, cache.cache_size);
-        return Ok(Arc::new(caching_client));
-    }
-    */
-
     Ok(Arc::new(remote_client))
 }
 

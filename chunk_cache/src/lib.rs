@@ -56,5 +56,13 @@ pub trait ChunkCache: Sync + Send {
 pub struct CacheConfig {
     pub cache_directory: PathBuf,
     pub cache_size: u64,
-    pub cache_blocksize: u64,
+}
+
+impl Default for CacheConfig {
+    fn default() -> Self {
+        CacheConfig {
+            cache_directory: PathBuf::from("/tmp"),
+            cache_size: 1024 * 1024 * 1024, // 1GB
+        }
+    }
 }

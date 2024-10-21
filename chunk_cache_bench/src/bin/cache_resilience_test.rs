@@ -5,7 +5,7 @@ use std::{
 };
 
 use cas_types::{Key, Range};
-use chunk_cache::{ChunkCache, DiskCache, RandomEntryIterator};
+use chunk_cache::{CacheConfig, ChunkCache, DiskCache, RandomEntryIterator};
 use clap::{Args, Parser, Subcommand};
 use tempdir::TempDir;
 
@@ -97,7 +97,11 @@ fn child_main(args: ChildArgs) {
         .checked_add(Duration::from_secs(args.seconds))
         .unwrap();
 
-    let cache = DiskCache::initialize(PathBuf::from(args.cache_root), args.capacity).unwrap();
+    let config = CacheConfig {
+        cache_directory: PathBuf::from(args.cache_root),
+        cache_size: args.capacity,
+    };
+    let cache = DiskCache::initialize(&config).unwrap();
 
     eprintln!(
         "initialized id: {id} with {} entries",

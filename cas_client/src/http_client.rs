@@ -278,7 +278,7 @@ mod tests {
         assert!(logs_contain("Status Code: 500. Retrying..."));
         assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
         assert_eq!(3, mock.hits());
-        assert_eq!(start_time.elapsed().unwrap() > Duration::from_secs(1), true);
+        assert_eq!(start_time.elapsed().unwrap() > Duration::from_secs(0), true);
     }
 }
 

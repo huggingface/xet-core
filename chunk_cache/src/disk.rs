@@ -18,7 +18,7 @@ use merklehash::MerkleHash;
 use sorted_vec::SortedVec;
 use tracing::debug;
 
-use crate::{error::ChunkCacheError, ChunkCache};
+use crate::{error::ChunkCacheError, CacheConfig, ChunkCache};
 
 mod cache_file_header;
 mod cache_item;
@@ -71,7 +71,10 @@ impl DiskCache {
         Ok(state.total_bytes)
     }
 
-    pub fn initialize(cache_root: PathBuf, capacity: u64) -> Result<Self, ChunkCacheError> {
+    pub fn initialize(config: &CacheConfig) -> Result<Self, ChunkCacheError> {
+        let capacity = config.cache_size;
+        let cache_root = config.cache_directory.clone();
+
         let mut state = HashMap::new();
         let mut total_bytes = 0;
         let mut num_items = 0;
@@ -603,7 +606,10 @@ impl ChunkCache for DiskCache {
 mod tests {
     use std::collections::BTreeSet;
 
-    use crate::disk::{parse_key, test_utils::*};
+    use crate::{
+        disk::{parse_key, test_utils::*},
+        CacheConfig,
+    };
 
     use cas_types::{Key, Range};
     use rand::thread_rng;
@@ -617,7 +623,12 @@ mod tests {
     fn test_get_cache_empty() {
         let mut rng = thread_rng();
         let cache_root = TempDir::new("empty").unwrap();
-        let cache = DiskCache::initialize(cache_root.into_path(), DEFAULT_CAPACITY).unwrap();
+        let config = CacheConfig {
+            cache_directory: cache_root.path().to_path_buf(),
+            cache_size: DEFAULT_CAPACITY,
+            ..Default::default()
+        };
+        let cache = DiskCache::initialize(&config).unwrap();
         assert!(cache
             .get(&random_key(&mut rng), &random_range(&mut rng))
             .unwrap()
@@ -628,8 +639,12 @@ mod tests {
     fn test_put_get_simple() {
         let mut rng = thread_rng();
         let cache_root = TempDir::new("put_get_simple").unwrap();
-        let cache =
-            DiskCache::initialize(cache_root.path().to_path_buf(), DEFAULT_CAPACITY).unwrap();
+        let config = CacheConfig {
+            cache_directory: cache_root.path().to_path_buf(),
+            cache_size: DEFAULT_CAPACITY,
+            ..Default::default()
+        };
+        let cache = DiskCache::initialize(&config).unwrap();
 
         let key = random_key(&mut rng);
         let range = Range { start: 0, end: 4 };
@@ -654,8 +669,12 @@ mod tests {
     fn test_put_get_subrange() {
         let mut rng = thread_rng();
         let cache_root = TempDir::new("put_get_subrange").unwrap();
-        let cache =
-            DiskCache::initialize(cache_root.path().to_path_buf(), DEFAULT_CAPACITY).unwrap();
+        let config = CacheConfig {
+            cache_directory: cache_root.path().to_path_buf(),
+            cache_size: DEFAULT_CAPACITY,
+            ..Default::default()
+        };
+        let cache = DiskCache::initialize(&config).unwrap();
 
         let key = random_key(&mut rng);
         let range = Range { start: 0, end: 4 };
@@ -686,7 +705,12 @@ mod tests {
         const MIN_NUM_KEYS: u32 = 12;
         const CAP: u64 = (RANGE_LEN * (MIN_NUM_KEYS - 1)) as u64;
         let cache_root = TempDir::new("puts_eviction").unwrap();
-        let cache = DiskCache::initialize(cache_root.path().to_path_buf(), CAP).unwrap();
+        let config = CacheConfig {
+            cache_directory: cache_root.path().to_path_buf(),
+            cache_size: CAP,
+            ..Default::default()
+        };
+        let cache = DiskCache::initialize(&config).unwrap();
         let mut it = RandomEntryIterator::default();
 
         // fill the cache to almost capacity
@@ -708,8 +732,12 @@ mod tests {
     #[test]
     fn test_same_puts_noop() {
         let cache_root = TempDir::new("same_puts_noop").unwrap();
-        let cache =
-            DiskCache::initialize(cache_root.path().to_path_buf(), DEFAULT_CAPACITY).unwrap();
+        let config = CacheConfig {
+            cache_directory: cache_root.path().to_path_buf(),
+            cache_size: DEFAULT_CAPACITY,
+            ..Default::default()
+        };
+        let cache = DiskCache::initialize(&config).unwrap();
         let mut it = RandomEntryIterator::default().with_range_len(1000);
         let (key, range, offsets, data) = it.next().unwrap();
         assert!(cache.put(&key, &range, &offsets, &data).is_ok());
@@ -721,8 +749,12 @@ mod tests {
         let setup = || {
             let mut it = RandomEntryIterator::default();
             let cache_root = TempDir::new("overlap_range_data_mismatch_fail").unwrap();
-            let cache =
-                DiskCache::initialize(cache_root.path().to_path_buf(), DEFAULT_CAPACITY).unwrap();
+            let config = CacheConfig {
+                cache_directory: cache_root.path().to_path_buf(),
+                cache_size: DEFAULT_CAPACITY,
+                ..Default::default()
+            };
+            let cache = DiskCache::initialize(&config).unwrap();
             let (key, range, offsets, data) = it.next().unwrap();
             assert!(cache.put(&key, &range, &offsets, &data).is_ok());
             (cache_root, cache, key, range, offsets, data)
@@ -767,8 +799,13 @@ mod tests {
     #[test]
     fn test_initialize_non_empty() {
         let cache_root = TempDir::new("initialize_non_empty").unwrap();
-        let cache =
-            DiskCache::initialize(cache_root.path().to_path_buf(), DEFAULT_CAPACITY).unwrap();
+        let config = CacheConfig {
+            cache_directory: cache_root.path().to_path_buf(),
+            cache_size: DEFAULT_CAPACITY,
+            ..Default::default()
+        };
+        let cache = DiskCache::initialize(&config).unwrap();
+
         let mut it = RandomEntryIterator::default();
 
         let mut keys_and_ranges = Vec::new();
@@ -778,8 +815,8 @@ mod tests {
             assert!(cache.put(&key, &range, &offsets, &data).is_ok());
             keys_and_ranges.push((key, range));
         }
-        let cache2 =
-            DiskCache::initialize(cache_root.path().to_path_buf(), DEFAULT_CAPACITY).unwrap();
+
+        let cache2 = DiskCache::initialize(&config).unwrap();
         for (i, (key, range)) in keys_and_ranges.iter().enumerate() {
             let get_result = cache2.get(&key, &range);
             assert!(get_result.is_ok(), "{i} {get_result:?}");
@@ -809,14 +846,22 @@ mod tests {
     fn test_initialize_too_large_file() {
         const LARGE_FILE: u64 = 1000;
         let cache_root = TempDir::new("initialize_too_large_file").unwrap();
-        let cache =
-            DiskCache::initialize(cache_root.path().to_path_buf(), DEFAULT_CAPACITY).unwrap();
+        let config = CacheConfig {
+            cache_directory: cache_root.path().to_path_buf(),
+            cache_size: DEFAULT_CAPACITY,
+            ..Default::default()
+        };
+        let cache = DiskCache::initialize(&config).unwrap();
         let mut it = RandomEntryIterator::default().with_range_len(LARGE_FILE as u32);
 
         let (key, range, offsets, data) = it.next().unwrap();
         cache.put(&key, &range, &offsets, &data).unwrap();
-        let cache2 =
-            DiskCache::initialize(cache_root.path().to_path_buf(), LARGE_FILE - 1).unwrap();
+        let config = CacheConfig {
+            cache_directory: cache_root.path().to_path_buf(),
+            cache_size: LARGE_FILE - 1,
+            ..Default::default()
+        };
+        let cache2 = DiskCache::initialize(&config).unwrap();
 
         assert_eq!(cache2.total_bytes().unwrap(), 0);
     }
@@ -826,8 +871,12 @@ mod tests {
         const LARGE_FILE: u64 = 1000;
         let cache_root =
             TempDir::new("initialize_stops_loading_early_with_too_many_files").unwrap();
-        let cache =
-            DiskCache::initialize(cache_root.path().to_path_buf(), LARGE_FILE * 10).unwrap();
+        let config = CacheConfig {
+            cache_directory: cache_root.path().to_path_buf(),
+            cache_size: LARGE_FILE * 10,
+            ..Default::default()
+        };
+        let cache = DiskCache::initialize(&config).unwrap();
         let mut it = RandomEntryIterator::default().with_range_len(LARGE_FILE as u32);
         for _ in 0..10 {
             let (key, range, offsets, data) = it.next().unwrap();
@@ -835,7 +884,12 @@ mod tests {
         }
 
         let cap2 = LARGE_FILE * 2;
-        let cache2 = DiskCache::initialize(cache_root.path().to_path_buf(), cap2).unwrap();
+        let config = CacheConfig {
+            cache_directory: cache_root.path().to_path_buf(),
+            cache_size: cap2,
+            ..Default::default()
+        };
+        let cache2 = DiskCache::initialize(&config).unwrap();
 
         assert!(
             cache2.total_bytes().unwrap() < cap2 * 3,
@@ -856,14 +910,17 @@ mod tests {
     fn test_unknown_eviction() {
         let cache_root = TempDir::new("initialize_non_empty").unwrap();
         let capacity = 12 * RANGE_LEN as u64;
-        let cache = DiskCache::initialize(cache_root.path().to_path_buf(), capacity).unwrap();
+        let config = CacheConfig {
+            cache_directory: cache_root.path().to_path_buf(),
+            cache_size: capacity,
+            ..Default::default()   
+        };
+        let cache = DiskCache::initialize(&config).unwrap();
         let mut it = RandomEntryIterator::default();
         let (key, range, chunk_byte_indices, data) = it.next().unwrap();
-        cache
-            .put(&key, &range, &chunk_byte_indices, &data)
-            .unwrap();
+        cache.put(&key, &range, &chunk_byte_indices, &data).unwrap();
 
-        let cache2 = DiskCache::initialize(cache_root.path().to_path_buf(), capacity).unwrap();
+        let cache2 = DiskCache::initialize(&config).unwrap();
         let get_result = cache2.get(&key, &range);
         assert!(get_result.is_ok());
         assert!(get_result.unwrap().is_some());
@@ -897,13 +954,15 @@ mod tests {
     #[test]
     fn put_subrange() {
         let cache_root = TempDir::new("put_subrange").unwrap();
-        let cache =
-            DiskCache::initialize(cache_root.path().to_path_buf(), DEFAULT_CAPACITY).unwrap();
-        let (key, range, chunk_byte_indices, data) =
-            RandomEntryIterator::default().next().unwrap();
-        cache
-            .put(&key, &range, &chunk_byte_indices, &data)
-            .unwrap();
+        let config = CacheConfig {
+            cache_directory: cache_root.path().to_path_buf(),
+            cache_size: DEFAULT_CAPACITY,
+            ..Default::default()   
+        };
+        let cache = DiskCache::initialize(&config).unwrap();
+
+        let (key, range, chunk_byte_indices, data) = RandomEntryIterator::default().next().unwrap();
+        cache.put(&key, &range, &chunk_byte_indices, &data).unwrap();
         let total_bytes = cache.total_bytes().unwrap();
 
         // left range
@@ -947,12 +1006,7 @@ mod tests {
             ..chunk_byte_indices[chunk_byte_indices.len() - 2] as usize];
 
         assert!(cache
-            .put(
-                &key,
-                &middle_range,
-                &middle_chunk_byte_indices,
-                middle_data
-            )
+            .put(&key, &middle_range, &middle_chunk_byte_indices, middle_data)
             .is_ok());
         assert_eq!(total_bytes, cache.total_bytes().unwrap());
     }
@@ -962,7 +1016,12 @@ mod tests {
         const NUM: u32 = 12;
         let cache_root = TempDir::new("multiple_range_per_key").unwrap();
         let capacity = (NUM * RANGE_LEN) as u64;
-        let cache = DiskCache::initialize(cache_root.path().to_path_buf(), capacity).unwrap();
+        let config = CacheConfig {
+            cache_directory: cache_root.path().to_path_buf(),
+            cache_size: capacity,
+            ..Default::default()   
+        };
+        let cache = DiskCache::initialize(&config).unwrap();
         let mut it = RandomEntryIterator::default().with_one_chunk_ranges(true);
         let (key, _, _, _) = it.next().unwrap();
         let mut previously_put: Vec<(Key, Range)> = Vec::new();
@@ -972,9 +1031,7 @@ mod tests {
             while previously_put.iter().any(|(_, r)| r.start == range.start) {
                 range.start += 1 % 1000;
             }
-            cache
-                .put(&key, &range, &chunk_byte_indices, &data)
-                .unwrap();
+            cache.put(&key, &range, &chunk_byte_indices, &data).unwrap();
             previously_put.push((key.clone(), range.clone()));
             cache
                 .put(&key2, &range, &chunk_byte_indices, &data)
@@ -1006,7 +1063,7 @@ mod tests {
 mod concurrency_tests {
     use tempdir::TempDir;
 
-    use crate::{disk::DEFAULT_CAPACITY, ChunkCache, RandomEntryIterator, RANGE_LEN};
+    use crate::{disk::DEFAULT_CAPACITY, CacheConfig, ChunkCache, RandomEntryIterator, RANGE_LEN};
 
     use super::DiskCache;
 
@@ -1015,8 +1072,13 @@ mod concurrency_tests {
     #[tokio::test]
     async fn test_run_concurrently() {
         let cache_root = TempDir::new("run_concurrently").unwrap();
-        let cache =
-            DiskCache::initialize(cache_root.path().to_path_buf(), DEFAULT_CAPACITY).unwrap();
+ 
+        let config = CacheConfig {
+            cache_directory: cache_root.path().to_path_buf(),
+            cache_size: DEFAULT_CAPACITY,
+            ..Default::default()
+        };
+        let cache = DiskCache::initialize(&config).unwrap();
 
         let num_tasks = 2 + rand::random::<u8>() % 14;
 
@@ -1047,11 +1109,12 @@ mod concurrency_tests {
     #[tokio::test]
     async fn test_run_concurrently_with_evictions() {
         let cache_root = TempDir::new("run_concurrently_with_evictions").unwrap();
-        let cache = DiskCache::initialize(
-            cache_root.path().to_path_buf(),
-            RANGE_LEN as u64 * NUM_ITEMS_PER_TASK as u64,
-        )
-        .unwrap();
+        let config = CacheConfig {
+            cache_directory: cache_root.path().to_path_buf(),
+            cache_size: RANGE_LEN as u64 * NUM_ITEMS_PER_TASK as u64,
+            ..Default::default()   
+        };
+        let cache = DiskCache::initialize(&config).unwrap();
 
         let num_tasks = 2 + rand::random::<u8>() % 14;
 
