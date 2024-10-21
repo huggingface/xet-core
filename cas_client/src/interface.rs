@@ -39,9 +39,17 @@ pub trait UploadClient {
 
 /// A Client to the CAS (Content Addressed Storage) service to allow reconstructing a
 /// pointer file based on FileID (MerkleHash).
+/// 
+/// To simplify this crate, it is intentional that the client does not create its own http_client or
+/// spawn its own threads. Instead, it is expected to be given the parallism harness/threadpool/queue
+/// on which it is expected to run. This allows the caller to better optimize overall system utilization
+/// by controlling the number of concurrent requests.
 #[async_trait]
 pub trait ReconstructionClient {
     /// Get a entire file by file hash.
+    /// 
+    /// The http_client passed in is a non-authenticated client. This is used to directly communicate 
+    /// with the backing store (S3) to retrieve xorbs.
     async fn get_file(
         &self,
         http_client: &ClientWithMiddleware,
@@ -50,6 +58,9 @@ pub trait ReconstructionClient {
     ) -> Result<()>;
 
     /// Get a entire file by file hash at a specific bytes range.
+    /// 
+    /// The http_client passed in is a non-authenticated client. This is used to directly communicate 
+    /// with the backing store (S3) to retrieve xorbs.
     async fn get_file_byte_range(
         &self,
         http_client: &ClientWithMiddleware,

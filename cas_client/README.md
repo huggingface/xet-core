@@ -13,14 +13,14 @@ Check out the traits published by this crate to understand how it is intended to
 
 ### Caching
 
-Caching happens locally using the cache crate, specifically using the ChunkCache. When RemoteClient is provided a ChunkCache then it
+Caching happens locally using the chunk_cache crate, specifically using the ChunkCache. When RemoteClient is provided a ChunkCache then it
 will use this on download calls (the ReconstructionClient trait `get_file` and `get_file_byte_range`).
 
 ## Overall CAS Communication Design
 
 ### Authentication
 
-Authentication is done using AuthMiddleware, which sets an Authorization Header and refreshes it periodically with CAS. See [src/auth.rs].
+Authentication is done using AuthMiddleware, which sets an Authorization Header and refreshes it periodically with CAS. See [src/http_client.rs].
 
 ### Operations
 
