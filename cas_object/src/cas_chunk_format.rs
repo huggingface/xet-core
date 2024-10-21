@@ -179,9 +179,9 @@ pub fn deserialize_chunks_to_writer<R: Read, W: Write>(
     let mut num_compressed_written = 0;
     let mut num_uncompressed_written = 0;
     
-    let mut chunk_byte_indices = Vec::<u32>::new();
     // chunk indices are expected to record the byte indices of uncompressed chunks
     // as they are read from the reader, so start with [0, len(uncompressed chunk 0..n), total length]
+    let mut chunk_byte_indices = Vec::<u32>::new();
     chunk_byte_indices.push(num_compressed_written as u32);
 
     loop {
@@ -200,8 +200,6 @@ pub fn deserialize_chunks_to_writer<R: Read, W: Write>(
             Err(e) => return Err(e),
         }
     }
-
-    // chunk_byte_indices.push(num_compressed_written as u32); // record end of last chunk (total length)
 
     Ok((num_compressed_written, chunk_byte_indices))
 }

@@ -307,7 +307,6 @@ impl CasObject {
             // deserialize each chunk
             reader.seek(std::io::SeekFrom::Start(start_offset as u64))?;
             let (data, compressed_chunk_length, chunk_uncompressed_length) = deserialize_chunk(reader)?;
-            // let chunk_uncompressed_length = data.len();
 
             let chunk_hash = merklehash::compute_data_hash(&data);
             hash_chunks.push(Chunk {
