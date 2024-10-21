@@ -196,14 +196,14 @@ impl DiskCache {
                     state: Arc::new(Mutex::new(CacheState::new(state, 0, 0))),
                 })
             }
-            Err(e) => return Err(e.into()),
+            Err(e) => return Err(e),
         };
 
         for key_prefix_dir in readdir {
             let key_prefix_dir = match is_ok_dir(key_prefix_dir) {
                 Ok(Some(dirent)) => dirent,
                 Ok(None) => continue,
-                Err(e) => return Err(e.into()),
+                Err(e) => return Err(e),
             };
 
             if key_prefix_dir.file_name().as_encoded_bytes().len() != PREFIX_DIR_NAME_LEN {
@@ -214,14 +214,14 @@ impl DiskCache {
             let key_prefix_readir = match read_dir(key_prefix_dir.path()) {
                 Ok(Some(rd)) => rd,
                 Ok(None) => continue,
-                Err(e) => return Err(e.into()),
+                Err(e) => return Err(e),
             };
 
             for key_dir in key_prefix_readir {
                 let key_dir = match is_ok_dir(key_dir) {
                     Ok(Some(dirent)) => dirent,
                     Ok(None) => continue,
-                    Err(e) => return Err(e.into()),
+                    Err(e) => return Err(e),
                 };
 
                 let key = match try_parse_key(key_dir.file_name().as_encoded_bytes())
@@ -235,14 +235,14 @@ impl DiskCache {
                 let key_readdir = match read_dir(key_dir.path()) {
                     Ok(Some(krd)) => krd,
                     Ok(None) => continue,
-                    Err(e) => return Err(e.into()),
+                    Err(e) => return Err(e),
                 };
 
                 for item in key_readdir {
                     let cache_item = match try_parse_cache_file(item, capacity) {
                         Ok(Some(ci)) => ci,
                         Ok(None) => continue,
-                        Err(e) => return Err(e.into()),
+                        Err(e) => return Err(e),
                     };
 
                     total_bytes += cache_item.len;
@@ -643,7 +643,7 @@ fn check_remove_dir(dir_path: impl AsRef<Path>) -> Result<(), ChunkCacheError> {
         .parent()
         .ok_or(ChunkCacheError::Infallible)?;
 
-    let prefix_readdir = match read_dir(&prefix_dir)? {
+    let prefix_readdir = match read_dir(prefix_dir)? {
         Some(prd) => prd,
         None => return Ok(()),
     };
