@@ -16,7 +16,7 @@ pub use disk::DiskCache;
 ///
 /// implementors are allowed to evict data, a get after a put is not required to
 /// be a cache hit.
-pub trait ChunkCache: Sync + Send + Clone {
+pub trait ChunkCache: Sync + Send {
     /// get should return an Ok() variant if significant error occurred, check the error
     /// variant for issues with IO or parsing contents etc.
     ///
