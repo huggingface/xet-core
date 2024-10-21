@@ -12,7 +12,7 @@ use merklehash::MerkleHash;
 use reqwest::{StatusCode, Url};
 use reqwest_middleware::ClientWithMiddleware;
 use std::io::{Cursor, Write};
-use tracing::{debug, error, warn};
+use tracing::{debug, error};
 use utils::auth::AuthConfig;
 
 pub const CAS_ENDPOINT: &str = "http://localhost:8080";
@@ -20,29 +20,6 @@ pub const PREFIX_DEFAULT: &str = "default";
 
 const NUM_RETRIES: usize = 5;
 const BASE_RETRY_DELAY_MS: u64 = 3000;
-
-fn retry_http_status_code(stat: &reqwest::StatusCode) -> bool {
-    stat.is_server_error() || *stat == reqwest::StatusCode::TOO_MANY_REQUESTS
-}
-
-fn is_status_retryable_and_print(err: &reqwest::Error) -> bool {
-    let ret = err
-        .status()
-        .as_ref()
-        .map(retry_http_status_code)
-        .unwrap_or(true); // network issues should be retried
-    if ret {
-        warn!("{err:?}. Retrying...");
-    }
-    ret
-}
-
-fn is_middleware_status_retryable_and_print(err: &reqwest_middleware::Error) -> bool {
-    match err {
-        reqwest_middleware::Error::Reqwest(error) => is_status_retryable_and_print(error),
-        _ => false,
-    }
-}
 
 #[derive(Debug)]
 pub struct RemoteClient {
