@@ -395,11 +395,13 @@ dependencies = [
  "cache",
  "cas_object",
  "cas_types",
+ "chunk_cache",
  "clap 2.34.0",
  "deadpool",
  "error_printer",
  "file_utils",
  "futures",
+ "heed",
  "http 0.2.12",
  "http-body-util",
  "hyper 1.4.1",
@@ -408,6 +410,7 @@ dependencies = [
  "itertools 0.10.5",
  "lazy_static",
  "lz4",
+ "mdb_shard",
  "merkledb",
  "merklehash",
  "opentelemetry",
@@ -417,7 +420,7 @@ dependencies = [
  "prost",
  "reqwest 0.12.7",
  "reqwest-middleware",
- "retry_strategy",
+ "reqwest-retry",
  "rustls-pemfile 2.1.3",
  "serde",
  "serde_json",
@@ -508,6 +511,24 @@ dependencies = [
  "serde",
  "wasm-bindgen",
  "windows-targets 0.52.6",
+]
+
+[[package]]
+name = "chunk_cache"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "blake3",
+ "cas_types",
+ "error_printer",
+ "file_utils",
+ "merklehash",
+ "rand 0.8.5",
+ "sorted-vec",
+ "tempdir",
+ "tracing",
+ "utils",
+ "xet_error",
 ]
 
 [[package]]
@@ -742,6 +763,7 @@ dependencies = [
  "cas_client",
  "cas_object",
  "chrono",
+ "chunk_cache",
  "clap 3.2.25",
  "colored",
  "const_format",
@@ -791,13 +813,12 @@ dependencies = [
  "rand_chacha",
  "regex",
  "reqwest 0.11.27",
- "retry_strategy",
+ "reqwest-middleware",
  "ring 0.16.20",
  "same-file",
  "serde",
  "serde_json",
  "serde_with",
- "shard_client",
  "shellexpand",
  "shellish_parse",
  "slog",
@@ -1190,8 +1211,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c4567c8db10ae91089c99af84c68c38da3ec2f087c3f82960bcdbf3656b6f4d7"
 dependencies = [
  "cfg-if 1.0.0",
+ "js-sys",
  "libc",
  "wasi",
+ "wasm-bindgen",
 ]
 
 [[package]]
@@ -1707,6 +1730,9 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e0242819d153cba4b4b05a5a8f2a7e9bbf97b6055b2a002b395c96b5ff3c0222"
 dependencies = [
  "cfg-if 1.0.0",
+ "js-sys",
+ "wasm-bindgen",
+ "web-sys",
 ]
 
 [[package]]
@@ -3027,16 +3053,39 @@ dependencies = [
 ]
 
 [[package]]
+name = "reqwest-retry"
+version = "0.6.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a83df1aaec00176d0fabb65dea13f832d2a446ca99107afc17c5d2d4981221d0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "futures",
+ "getrandom",
+ "http 1.1.0",
+ "hyper 1.4.1",
+ "parking_lot 0.11.2",
+ "reqwest 0.12.7",
+ "reqwest-middleware",
+ "retry-policies",
+ "tokio",
+ "tracing",
+ "wasm-timer",
+]
+
+[[package]]
 name = "retain_mut"
 version = "0.1.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4389f1d5789befaf6029ebd9f7dac4af7f7e3d61b69d4f30e2ac02b57e7712b0"
 
 [[package]]
-name = "retry_strategy"
-version = "0.14.5"
+name = "retry-policies"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5875471e6cab2871bc150ecb8c727db5113c9338cc3354dc5ee3425b6aa40a1c"
 dependencies = [
- "tokio-retry",
+ "rand 0.8.5",
 ]
 
 [[package]]
@@ -3377,45 +3426,6 @@ dependencies = [
  "digest",
  "keccak",
  "opaque-debug",
-]
-
-[[package]]
-name = "shard_client"
-version = "0.14.5"
-dependencies = [
- "anyhow",
- "async-trait",
- "bincode",
- "bytes",
- "cas_client",
- "cas_types",
- "clap 2.34.0",
- "file_utils",
- "heed",
- "http 0.2.12",
- "itertools 0.10.5",
- "lazy_static",
- "mdb_shard",
- "merkledb",
- "merklehash",
- "opentelemetry",
- "opentelemetry-http",
- "opentelemetry-jaeger",
- "reqwest 0.11.27",
- "reqwest 0.12.7",
- "reqwest-middleware",
- "retry_strategy",
- "serde_json",
- "tempfile",
- "tokio",
- "tokio-retry",
- "tower",
- "tracing",
- "tracing-opentelemetry",
- "url",
- "utils",
- "uuid",
- "xet_error",
 ]
 
 [[package]]
@@ -4491,6 +4501,21 @@ name = "wasm-bindgen-shared"
 version = "0.2.93"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c62a0a307cb4a311d3a07867860911ca130c3494e8c2719593806c08bc5d0484"
+
+[[package]]
+name = "wasm-timer"
+version = "0.2.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "be0ecb0db480561e9a7642b5d3e4187c128914e58aa84330b9493e3eb68c5e7f"
+dependencies = [
+ "futures",
+ "js-sys",
+ "parking_lot 0.11.2",
+ "pin-utils",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "web-sys",
+]
 
 [[package]]
 name = "web-sys"

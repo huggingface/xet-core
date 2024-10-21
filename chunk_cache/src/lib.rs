@@ -1,6 +1,8 @@
 mod disk;
 pub mod error;
 
+use std::path::PathBuf;
+
 use cas_types::{Key, Range};
 use error::ChunkCacheError;
 
@@ -48,4 +50,11 @@ pub trait ChunkCache: Sync + Send + Clone {
         chunk_byte_indices: &[u32],
         data: &[u8],
     ) -> Result<(), ChunkCacheError>;
+}
+
+#[derive(Debug)]
+pub struct CacheConfig {
+    pub cache_directory: PathBuf,
+    pub cache_size: u64,
+    pub cache_blocksize: u64,
 }

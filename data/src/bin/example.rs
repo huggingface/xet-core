@@ -1,4 +1,5 @@
 use anyhow::Result;
+use cas_client::CacheConfig;
 use clap::{Args, Parser, Subcommand};
 use data::{configurations::*, SMALL_FILE_THRESHOLD};
 use data::{PointerFile, PointerFileTranslator};

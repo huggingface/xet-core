@@ -1,6 +1,8 @@
 #![cfg_attr(feature = "strict", deny(warnings))]
 #![allow(dead_code)]
 
+pub use chunk_cache::CacheConfig;
+
 pub use crate::error::CasClientError;
 pub use interface::{Client, ReconstructionClient, UploadClient};
 pub use local_client::tests_utils;

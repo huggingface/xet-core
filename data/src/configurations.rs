@@ -3,18 +3,12 @@ use crate::repo_salt::RepoSalt;
 use std::path::PathBuf;
 use std::str::FromStr;
 use utils::auth::AuthConfig;
+use cas_client::CacheConfig;
 
 #[derive(Debug)]
 pub enum Endpoint {
     Server(String),
     FileSystem(PathBuf),
-}
-
-#[derive(Debug)]
-pub struct CacheConfig {
-    pub cache_directory: PathBuf,
-    pub cache_size: u64,
-    pub cache_blocksize: u64,
 }
 
 #[derive(Debug)]
