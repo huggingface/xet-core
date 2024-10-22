@@ -223,6 +223,9 @@ impl RemoteClient {
     }
 }
 
+// Right now if all ranges are fetched "at once" (all tasks spawned at once)
+// they may get a cache miss, and issue the S3 get, we use a singleflight group
+// to avoid double gets for these requests, with the singleflight key being the S3 url.
 pub(crate) type ChunkDataSingleFlightGroup =
     singleflight::Group<(Vec<u8>, Vec<u32>), CasClientError>;
 
@@ -241,7 +244,7 @@ pub(crate) async fn get_one_range(
 
     let hash = term.hash.into();
 
-    // check disk cache
+    // check disk cache for the exact range we want for the reconstruction term
     if let Some(cache) = &disk_cache {
         let key = Key {
             prefix: PREFIX_DEFAULT.to_string(),
@@ -256,6 +259,9 @@ pub(crate) async fn get_one_range(
         }
     }
 
+    // get the fetch info term for the key
+    // then find the term within the ranges that will match our requested range
+    // if either operation fails, this is a result of a bad response from the reconstruction api.
     let hash_fetch_info = fetch_info
         .get(&term.hash)
         .ok_or(CasClientError::InvalidArguments)
@@ -266,6 +272,7 @@ pub(crate) async fn get_one_range(
         .ok_or(CasClientError::InvalidArguments)
         .log_error("invalid response from CAS server: failed to match hash in fetch_info")?;
 
+    // fetch the range from blob store and deserialize the chunks
     let (mut data, chunk_byte_indices) = sfg
         .work(
             &fetch_term.url,
@@ -278,7 +285,7 @@ pub(crate) async fn get_one_range(
             e => CasClientError::Other(format!("single flight error: {e}")),
         })?;
 
-    // now write it back to cache
+    // now write it to cache, the whole fetched term
     if let Some(cache) = disk_cache {
         let key = Key {
             prefix: PREFIX_DEFAULT.to_string(),
@@ -289,6 +296,7 @@ pub(crate) async fn get_one_range(
             .map_err(|e| CasClientError::InternalError(anyhow!("cache error {e}")))?;
     }
 
+    // else case data matches exact, save some work
     if term.range != fetch_term.range {
         let start_idx = term.range.start - fetch_term.range.start;
         let end_idx = term.range.end - fetch_term.range.start;
@@ -297,7 +305,9 @@ pub(crate) async fn get_one_range(
         debug_assert!(start_byte_index < data.len());
         debug_assert!(end_byte_index <= data.len());
         debug_assert!(start_byte_index < end_byte_index);
+        // [0, len] -> [0, end_byte_index)
         data.truncate(end_byte_index);
+        // [0, end_byte_index) -> [start_byte_index, end_byte_index)
         data = data.split_off(start_byte_index);
     }
 
