@@ -156,11 +156,11 @@ impl Reconstructable for RemoteClient {
             .error_for_status()
             .log_error("reconstruction api returned error code")?;
 
-        let query_resonstruction_response: QueryReconstructionResponse = response
+        let query_reconstruction_response: QueryReconstructionResponse = response
             .json()
             .await
             .log_error("error json parsing QueryReconstructionResponse")?;
-        Ok(query_resonstruction_response)
+        Ok(query_reconstruction_response)
     }
 }
 
@@ -237,7 +237,7 @@ pub(crate) async fn get_one_term(
     disk_cache: Option<Arc<dyn ChunkCache>>,
     term: CASReconstructionTerm,
     fetch_info: Arc<HashMap<HexMerkleHash, Vec<CASReconstructionFetchInfo>>>,
-    sfg: Arc<ChunkDataSingleFlightGroup>,
+    single_flight_group: Arc<ChunkDataSingleFlightGroup>,
 ) -> Result<Vec<u8>> {
     debug!("term: {term:?}");
 
@@ -247,13 +247,12 @@ pub(crate) async fn get_one_term(
 
     let hash = term.hash.into();
 
-    let key = Key {
-        prefix: PREFIX_DEFAULT.to_string(),
-        hash,
-    };
-
     // check disk cache for the exact range we want for the reconstruction term
     if let Some(cache) = &disk_cache {
+        let key = Key {
+            prefix: PREFIX_DEFAULT.to_string(),
+            hash,
+        };
         if let Some(cached) = cache.get(&key, &term.range)? {
             return Ok(cached);
         }
@@ -274,16 +273,22 @@ pub(crate) async fn get_one_term(
 
     // fetch the range from blob store and deserialize the chunks
     let sfg_key = &fetch_term.url;
-    let (mut data, chunk_byte_indices) = sfg
+    let (mut data, chunk_byte_indices) = single_flight_group
         .work_dump_caller_info(sfg_key, download_range(fetch_term.clone(), http_client))
         .await?;
 
     // now write it to cache, the whole fetched term
     if let Some(cache) = disk_cache {
+        let key = Key {
+            prefix: PREFIX_DEFAULT.to_string(),
+            hash,
+        };
         cache.put(&key, &fetch_term.range, &chunk_byte_indices, &data)?;
     }
 
-    // else case data matches exact, save some work
+    // if the requested range is smaller than the fetched range, trim it down to the right data
+    // the requested range cannot be larger than the fetched range.
+    // "else" case data matches exact, save some work, return whole data.
     if term.range != fetch_term.range {
         let start_idx = term.range.start - fetch_term.range.start;
         let end_idx = term.range.end - fetch_term.range.start;
