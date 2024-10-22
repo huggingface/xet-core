@@ -1,12 +1,9 @@
-use cache::CacheError;
 use merklehash::MerkleHash;
 use xet_error::Error;
 
 #[non_exhaustive]
 #[derive(Error, Debug)]
 pub enum CasClientError {
-    #[error("CAS Cache Error: {0}")]
-    CacheError(#[from] CacheError),
 
     #[error("Cas Object Error: {0}")]
     CasObjectError(#[from] cas_object::error::CasObjectError),
