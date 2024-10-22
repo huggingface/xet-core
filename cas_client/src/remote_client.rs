@@ -9,6 +9,7 @@ use bytes::Bytes;
 use cas_object::CasObject;
 use cas_types::CASReconstructionFetchInfo;
 use cas_types::HexMerkleHash;
+use cas_types::Range;
 use cas_types::{CASReconstructionTerm, Key, QueryReconstructionResponse, UploadXorbResponse};
 use chunk_cache::{CacheConfig, ChunkCache, DiskCache};
 use error_printer::ErrorPrinter;
@@ -148,14 +149,20 @@ impl Reconstructable for RemoteClient {
             file_id.hex()
         ))?;
 
-        let response = self.http_auth_client.get(url).send().await?;
+        let response = self
+            .http_auth_client
+            .get(url)
+            .send()
+            .await
+            .log_error("error calling reconstruction api")?
+            .error_for_status()
+            .log_error("received error code on reconstion api")?;
 
-        let response_body = response.bytes().await?;
-        let response_parsed: QueryReconstructionResponse =
-            serde_json::from_reader(response_body.reader())
-                .map_err(|_| CasClientError::FileNotFound(*file_id))?;
-
-        Ok(response_parsed)
+        let query_resonstruction_response: QueryReconstructionResponse = response
+            .json()
+            .await
+            .log_error("error json parsing QueryReconstructionResponse")?;
+        Ok(query_resonstruction_response)
     }
 }
 
@@ -322,6 +329,10 @@ pub(crate) async fn get_one_range(
     Ok(Bytes::from(data))
 }
 
+fn range_header(range: &Range) -> String {
+    format!("bytes={}-{}", range.start, range.end)
+}
+
 async fn download_range(
     fetch_term: CASReconstructionFetchInfo,
     http_client: Arc<ClientWithMiddleware>,
@@ -329,19 +340,20 @@ async fn download_range(
     let url = Url::parse(fetch_term.url.as_str())?;
     let response = http_client
         .get(url)
-        .header(
-            reqwest::header::RANGE,
-            format!(
-                "bytes={}-{}",
-                fetch_term.url_range.start, fetch_term.url_range.end
-            ),
-        )
+        .header(reqwest::header::RANGE, range_header(&fetch_term.url_range))
         .send()
         .await
-        .map_err(|e| CasClientError::InternalError(anyhow!("request failed with code {e}")))?;
+        .log_error("error getting from s3")?
+        .error_for_status()
+        .log_error("get from s3 error code")?;
     let xorb_bytes = response.bytes().await?;
-    if xorb_bytes.len() as u32 != fetch_term.url_range.end - fetch_term.url_range.start + 1 {
-        error!("got back a smaller range than requested");
+    // + 1 since range S3/HTTP range is inclusive on both ends
+    let expected_len = fetch_term.url_range.end - fetch_term.url_range.start + 1;
+    if xorb_bytes.len() as u32 != expected_len {
+        error!(
+            "got back a smaller byte range ({}) than requested ({expected_len}) from s3",
+            xorb_bytes.len()
+        );
         return Err(CasClientError::InvalidRange);
     }
     let mut readseek = Cursor::new(xorb_bytes.to_vec());

@@ -4,6 +4,8 @@ use xet_error::Error;
 #[non_exhaustive]
 #[derive(Error, Debug)]
 pub enum CasClientError {
+    #[error("ChunkCache Error: {0}")]
+    ChunkCache(#[from] chunk_cache::error::ChunkCacheError),
 
     #[error("Cas Object Error: {0}")]
     CasObjectError(#[from] cas_object::error::CasObjectError),
@@ -49,7 +51,7 @@ pub enum CasClientError {
 
     #[error("LMDB Error: {0}")]
     ShardDedupDBError(String),
-    
+
     #[error("CAS object not found for hash: {0}")]
     XORBNotFound(MerkleHash),
 }

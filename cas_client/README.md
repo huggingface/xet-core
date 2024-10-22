@@ -27,7 +27,7 @@ HTTP operations are retried using a RetryPolicy defined in [src/http_client.rs].
 
 ### Operations
 
-CAS offers a set of services used by the client to upload and download user files. These files are stored using two different 
+CAS offers a set of services used by the client to upload and download user files. These files are stored using two different
 types of storage objects, Xorbs and Shards. Xorbs contain chunks and Shards contain mappings of files to Xorb chunks.
 
 ### Logging / Tracing
