@@ -156,6 +156,9 @@ impl Reconstructable for RemoteClient {
             .error_for_status()
             .log_error("reconstruction api returned error code")?;
 
+        let len = response.content_length();
+        debug!("fileid: {file_id} query_reconstruction len {len:?}");
+
         let query_reconstruction_response: QueryReconstructionResponse = response
             .json()
             .await
@@ -269,22 +272,27 @@ pub(crate) async fn get_one_term(
         .iter()
         .find(|fterm| fterm.range.start <= term.range.start && fterm.range.end >= term.range.end)
         .ok_or(CasClientError::InvalidArguments)
-        .log_error("invalid response from CAS server: failed to match hash in fetch_info")?;
+        .log_error("invalid response from CAS server: failed to match hash in fetch_info")?
+        .clone();
 
     // fetch the range from blob store and deserialize the chunks
+    // then put into the cache if used
     let sfg_key = &fetch_term.url;
+    let fetch_term_owned = fetch_term.clone();
     let (mut data, chunk_byte_indices) = single_flight_group
-        .work_dump_caller_info(sfg_key, download_range(fetch_term.clone(), http_client))
+        .work_dump_caller_info(sfg_key, async move {
+            let (data, chunk_byte_indices) = download_range(&fetch_term_owned, http_client).await?;
+            // now write it to cache, the whole fetched term
+            if let Some(cache) = disk_cache {
+                let key = Key {
+                    prefix: PREFIX_DEFAULT.to_string(),
+                    hash,
+                };
+                cache.put(&key, &fetch_term_owned.range, &chunk_byte_indices, &data)?;
+            }
+            Ok((data, chunk_byte_indices))
+        })
         .await?;
-
-    // now write it to cache, the whole fetched term
-    if let Some(cache) = disk_cache {
-        let key = Key {
-            prefix: PREFIX_DEFAULT.to_string(),
-            hash,
-        };
-        cache.put(&key, &fetch_term.range, &chunk_byte_indices, &data)?;
-    }
 
     // if the requested range is smaller than the fetched range, trim it down to the right data
     // the requested range cannot be larger than the fetched range.
@@ -319,7 +327,7 @@ fn range_header(range: &Range) -> String {
 }
 
 async fn download_range(
-    fetch_term: CASReconstructionFetchInfo,
+    fetch_term: &CASReconstructionFetchInfo,
     http_client: Arc<ClientWithMiddleware>,
 ) -> Result<(Vec<u8>, Vec<u32>)> {
     let url = Url::parse(fetch_term.url.as_str())?;
