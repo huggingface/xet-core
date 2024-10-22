@@ -763,7 +763,6 @@ dependencies = [
  "cas_client",
  "cas_object",
  "chrono",
- "chunk_cache",
  "clap 3.2.25",
  "colored",
  "const_format",

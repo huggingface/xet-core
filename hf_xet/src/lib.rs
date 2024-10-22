@@ -3,7 +3,6 @@ mod data_client;
 mod log;
 mod token_refresh;
 
-use utils::auth::TokenRefresher;
 use data::PointerFile;
 use pyo3::exceptions::PyException;
 use pyo3::prelude::*;
@@ -11,12 +10,13 @@ use pyo3::pyfunction;
 use std::fmt::Debug;
 use std::sync::Arc;
 use token_refresh::WrappedTokenRefresher;
+use utils::auth::TokenRefresher;
 
 #[pyfunction]
-#[pyo3(signature = (file_paths, endpoint, token_info, token_refresher), text_signature = "(file_paths: List[str], endpoint: Optional[str], token_info: Optional[(str, int)], token_refresher: Optional[Callable[[], (str, int)]]) -> List[PyPointerFile]")]
+#[pyo3(signature = (file_paths, endpoint, token_info, token_refresher), text_signature = "(file_paths: List[(str, str)], endpoint: Optional[str], token_info: Optional[(str, int)], token_refresher: Optional[Callable[[], (str, int)]]) -> List[PyPointerFile]")]
 pub fn upload_files(
     py: Python,
-    file_paths: Vec<String>,
+    file_paths: Vec<(String, String)>,
     endpoint: Option<String>,
     token_info: Option<(String, u64)>,
     token_refresher: Option<Py<PyAny>>,

@@ -19,7 +19,9 @@ use mdb_shard::{hash_is_global_dedup_eligible, ShardFileManager};
 use merkledb::aggregate_hashes::file_node_hash;
 use merkledb::constants::TARGET_CAS_BLOCK_SIZE;
 use merklehash::MerkleHash;
+use rand::Rng; // TODO: this is just for generating random sha256 values instead of the real values
 use std::collections::HashMap;
+use std::fmt::Write;
 use std::mem::take;
 use std::ops::DerefMut;
 use std::path::{Path, PathBuf};
@@ -79,6 +81,7 @@ pub struct Cleaner {
 
     // Auxiliary info
     file_name: Option<PathBuf>,
+    sha256: Option<String>,
 }
 
 impl Cleaner {
@@ -94,6 +97,7 @@ impl Cleaner {
         cas_data: Arc<Mutex<CASDataAggregator>>,
         buffer_size: usize,
         file_name: Option<&Path>,
+        sha256: Option<String>,
     ) -> Result<Arc<Self>> {
         let (data_p, data_c) = channel::<BufferItem<Vec<u8>>>(buffer_size);
 
@@ -116,6 +120,7 @@ impl Cleaner {
             tracking_info: Mutex::new(Default::default()),
             small_file_buffer: Mutex::new(Some(Vec::with_capacity(small_file_threshold))),
             file_name: file_name.map(|f| f.to_owned()),
+            sha256: sha256.or_else(rand_sha), // TODO: implement sha calculation in chunker
         });
 
         Self::run(cleaner.clone(), chunk_c).await;
@@ -638,4 +643,12 @@ impl Cleaner {
         );
         Ok(pointer_file.to_string())
     }
+}
+
+fn rand_sha() -> Option<String> {
+    let sha = rand::thread_rng().gen::<[u8; 32]>().to_vec();
+    Some(sha.iter().fold(String::new(), |mut output, b| {
+        let _ = write!(output, "{b:02x}");
+        output
+    }))
 }

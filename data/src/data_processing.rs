@@ -106,12 +106,17 @@ impl PointerFileTranslator {
     /// Start to clean one file. When cleaning multiple files, each file should
     /// be associated with one Cleaner. This allows to launch multiple clean task
     /// simultaneously.
+    ///
     /// The caller is responsible for memory usage management, the parameter "buffer_size"
     /// indicates the maximum number of Vec<u8> in the internal buffer.
+    ///
+    /// An optional sha256 can be provided if the caller has already calculated it. If
+    /// not provided then TODO: the sha will be calculated as part of the cleaning process
     pub async fn start_clean(
         &self,
         buffer_size: usize,
         file_name: Option<&Path>,
+        sha256: Option<String>,
     ) -> Result<Arc<Cleaner>> {
         let Some(ref dedup) = self.config.dedup_config else {
             return Err(DataProcessingError::DedupConfigError(
@@ -130,6 +135,7 @@ impl PointerFileTranslator {
             self.global_cas_data.clone(),
             buffer_size,
             file_name,
+            sha256,
         )
         .await
     }
