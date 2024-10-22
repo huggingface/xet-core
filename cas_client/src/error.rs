@@ -13,7 +13,7 @@ pub enum CasClientError {
     #[error("Configuration Error: {0} ")]
     ConfigurationError(String),
 
-    #[error("Invalid Range Read")]
+    #[error("Invalid Range")]
     InvalidRange,
 
     #[error("Invalid Arguments")]
@@ -64,6 +64,15 @@ impl PartialEq for CasClientError {
         match (self, other) {
             (CasClientError::XORBNotFound(a), CasClientError::XORBNotFound(b)) => a == b,
             (e1, e2) => std::mem::discriminant(e1) == std::mem::discriminant(e2),
+        }
+    }
+}
+
+impl From<utils::errors::SingleflightError<CasClientError>> for CasClientError {
+    fn from(value: utils::singleflight::SingleflightError<CasClientError>) -> Self {
+        match value {
+            utils::singleflight::SingleflightError::InternalError(e) => e,
+            e => CasClientError::Other(format!("single flight error: {e}")),
         }
     }
 }

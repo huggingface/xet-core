@@ -233,6 +233,16 @@ where
         }
     }
 
+    /// Like work but only returns the result, dumps the bool result value
+    pub async fn work_dump_caller_info(
+        &self,
+        key: &str,
+        fut: impl TaskFuture<T, E> + 'static,
+    ) -> Result<T, SingleflightError<E>> {
+        let (result, _) = self.work(key, fut).await;
+        result
+    }
+
     /// Gets the [Call] to use from the call_map or else inserts a new Call
     /// into the map.  
     ///

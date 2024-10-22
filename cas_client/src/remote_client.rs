@@ -4,8 +4,6 @@ use crate::Client;
 use crate::{error::Result, CasClientError};
 use anyhow::anyhow;
 use async_trait::async_trait;
-use bytes::Buf;
-use bytes::Bytes;
 use cas_object::CasObject;
 use cas_types::CASReconstructionFetchInfo;
 use cas_types::HexMerkleHash;
@@ -153,10 +151,8 @@ impl Reconstructable for RemoteClient {
             .http_auth_client
             .get(url)
             .send()
-            .await
-            .log_error("error calling reconstruction api")?
-            .error_for_status()
-            .log_error("received error code on reconstion api")?;
+            .await?
+            .error_for_status()?;
 
         let query_resonstruction_response: QueryReconstructionResponse = response
             .json()
@@ -192,8 +188,7 @@ impl RemoteClient {
         let data = writer.into_inner();
 
         let response = self.http_auth_client.post(url).body(data).send().await?;
-        let response_body = response.bytes().await?;
-        let response_parsed: UploadXorbResponse = serde_json::from_reader(response_body.reader())?;
+        let response_parsed: UploadXorbResponse = response.json().await?;
 
         Ok(response_parsed.was_inserted)
     }
@@ -211,38 +206,37 @@ impl RemoteClient {
         let sfg = Arc::new(singleflight::Group::new());
 
         let total_len = terms.iter().fold(0, |acc, x| acc + x.unpacked_length);
-        let futs = terms.into_iter().map(|term| {
+        let term_data_futures = terms.into_iter().map(|term| {
             let http_client = http_client.clone();
             let disk_cache = self.disk_cache.clone();
             let fetch_info = fetch_info.clone();
             let sfg = sfg.clone();
-            tokio::spawn(async move {
-                get_one_range(http_client, disk_cache, &term, fetch_info, sfg).await
-            })
+            tokio::spawn(get_one_term(http_client, disk_cache, term, fetch_info, sfg))
         });
-        for fut in futs {
-            let piece = fut
+        for fut in term_data_futures {
+            let term_data = fut
                 .await
-                .map_err(|e| CasClientError::InternalError(anyhow!("join error {e}")))??;
-            writer.write_all(&piece)?;
+                .map_err(|e| CasClientError::InternalError(anyhow!("join error {e}")))?
+                .log_error("error getting one term")?;
+            writer.write_all(&term_data)?;
         }
         Ok(total_len as usize)
     }
 }
 
-// Right now if all ranges are fetched "at once" (all tasks spawned at once)
+// Right now if all ranges are fetched "at once" (all tasks spawned in brief succession)
 // they may get a cache miss, and issue the S3 get, we use a singleflight group
 // to avoid double gets for these requests, with the singleflight key being the S3 url.
 pub(crate) type ChunkDataSingleFlightGroup =
     singleflight::Group<(Vec<u8>, Vec<u32>), CasClientError>;
 
-pub(crate) async fn get_one_range(
+pub(crate) async fn get_one_term(
     http_client: Arc<ClientWithMiddleware>,
     disk_cache: Option<Arc<dyn ChunkCache>>,
-    term: &CASReconstructionTerm,
+    term: CASReconstructionTerm,
     fetch_info: Arc<HashMap<HexMerkleHash, Vec<CASReconstructionFetchInfo>>>,
     sfg: Arc<ChunkDataSingleFlightGroup>,
-) -> Result<Bytes> {
+) -> Result<Vec<u8>> {
     debug!("term: {term:?}");
 
     if term.range.end < term.range.start {
@@ -251,18 +245,15 @@ pub(crate) async fn get_one_range(
 
     let hash = term.hash.into();
 
+    let key = Key {
+        prefix: PREFIX_DEFAULT.to_string(),
+        hash,
+    };
+
     // check disk cache for the exact range we want for the reconstruction term
     if let Some(cache) = &disk_cache {
-        let key = Key {
-            prefix: PREFIX_DEFAULT.to_string(),
-            hash,
-        };
-
-        let cached = cache
-            .get(&key, &term.range)
-            .map_err(|e| CasClientError::InternalError(anyhow!("cache error {e}")))?;
-        if let Some(cached) = cached {
-            return Ok(Bytes::from(cached));
+        if let Some(cached) = cache.get(&key, &term.range)? {
+            return Ok(cached);
         }
     }
 
@@ -280,27 +271,14 @@ pub(crate) async fn get_one_range(
         .log_error("invalid response from CAS server: failed to match hash in fetch_info")?;
 
     // fetch the range from blob store and deserialize the chunks
+    let sfg_key = &fetch_term.url;
     let (mut data, chunk_byte_indices) = sfg
-        .work(
-            &fetch_term.url,
-            download_range(fetch_term.clone(), http_client),
-        )
-        .await
-        .0
-        .map_err(|e| match e {
-            singleflight::SingleflightError::InternalError(e) => e,
-            e => CasClientError::Other(format!("single flight error: {e}")),
-        })?;
+        .work_dump_caller_info(sfg_key, download_range(fetch_term.clone(), http_client))
+        .await?;
 
     // now write it to cache, the whole fetched term
     if let Some(cache) = disk_cache {
-        let key = Key {
-            prefix: PREFIX_DEFAULT.to_string(),
-            hash: term.hash.into(),
-        };
-        cache
-            .put(&key, &fetch_term.range, &chunk_byte_indices, &data)
-            .map_err(|e| CasClientError::InternalError(anyhow!("cache error {e}")))?;
+        cache.put(&key, &fetch_term.range, &chunk_byte_indices, &data)?;
     }
 
     // else case data matches exact, save some work
@@ -326,7 +304,7 @@ pub(crate) async fn get_one_range(
         )));
     }
 
-    Ok(Bytes::from(data))
+    Ok(data)
 }
 
 fn range_header(range: &Range) -> String {
@@ -356,7 +334,7 @@ async fn download_range(
         );
         return Err(CasClientError::InvalidRange);
     }
-    let mut readseek = Cursor::new(xorb_bytes.to_vec());
+    let mut readseek = Cursor::new(xorb_bytes);
     let (data, chunk_byte_indices) = cas_object::deserialize_chunks(&mut readseek)?;
     Ok((data, chunk_byte_indices))
 }

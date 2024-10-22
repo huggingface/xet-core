@@ -75,8 +75,7 @@ impl RegistrationClient for HttpShardClient {
                 .map_err(|e| CasClientError::Other(format!("request failed with code {e}")))?,
         };
 
-        let response_body = response.bytes().await?;
-        let response_parsed: UploadShardResponse = serde_json::from_reader(response_body.reader())?;
+        let response_parsed: UploadShardResponse = response.json().await?;
 
         match response_parsed.result {
             UploadShardResponseType::Exists => Ok(false),
@@ -103,9 +102,7 @@ impl FileReconstructor<CasClientError> for HttpShardClient {
             .send()
             .await
             .map_err(|e| CasClientError::Other(format!("request failed with code {e}")))?;
-        let response_body = response.bytes().await?;
-        let response_info: QueryReconstructionResponse =
-            serde_json::from_reader(response_body.reader())?;
+        let response_info: QueryReconstructionResponse = response.json().await?;
 
         Ok(Some((
             MDBFileInfo {
