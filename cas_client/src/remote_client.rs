@@ -7,17 +7,21 @@ use async_trait::async_trait;
 use bytes::Buf;
 use bytes::Bytes;
 use cas_object::CasObject;
+use cas_types::CASReconstructionFetchInfo;
+use cas_types::HexMerkleHash;
 use cas_types::{CASReconstructionTerm, Key, QueryReconstructionResponse, UploadXorbResponse};
 use chunk_cache::{CacheConfig, ChunkCache, DiskCache};
 use error_printer::ErrorPrinter;
 use merklehash::MerkleHash;
 use reqwest::{StatusCode, Url};
 use reqwest_middleware::ClientWithMiddleware;
+use std::collections::HashMap;
 use std::io::{Cursor, Write};
 use std::sync::Arc;
 use tracing::info;
 use tracing::{debug, error};
 use utils::auth::AuthConfig;
+use utils::singleflight;
 
 pub const CAS_ENDPOINT: &str = "http://localhost:8080";
 pub const PREFIX_DEFAULT: &str = "default";
@@ -45,7 +49,8 @@ impl RemoteClient {
             );
             DiskCache::initialize(cache_config)
                 .log_error("failed to initialize cache, not using cache")
-                .ok().map(|disk_cache| Arc::new(disk_cache) as Arc<dyn ChunkCache>)
+                .ok()
+                .map(|disk_cache| Arc::new(disk_cache) as Arc<dyn ChunkCache>)
         } else {
             None
         };
@@ -105,7 +110,7 @@ impl UploadClient for RemoteClient {
 impl ReconstructionClient for RemoteClient {
     async fn get_file(
         &self,
-        http_client: &ClientWithMiddleware,
+        http_client: Arc<ClientWithMiddleware>,
         hash: &MerkleHash,
         writer: &mut Box<dyn Write + Send>,
     ) -> Result<()> {
@@ -120,7 +125,7 @@ impl ReconstructionClient for RemoteClient {
     #[allow(unused_variables)]
     async fn get_file_byte_range(
         &self,
-        http_client: &ClientWithMiddleware,
+        http_client: Arc<ClientWithMiddleware>,
         hash: &MerkleHash,
         offset: u64,
         length: u64,
@@ -188,18 +193,24 @@ impl RemoteClient {
 
     async fn get_ranges(
         &self,
-        http_client: &ClientWithMiddleware,
+        http_client: Arc<ClientWithMiddleware>,
         reconstruction_response: QueryReconstructionResponse,
         _byte_range: Option<(u64, u64)>,
         writer: &mut Box<dyn Write + Send>,
     ) -> Result<usize> {
-        let info = reconstruction_response.reconstruction;
-        let total_len = info.iter().fold(0, |acc, x| acc + x.unpacked_length);
-        let futs = info.into_iter().map(|term| {
-            let http_client_clone = http_client.clone();
+        let terms = reconstruction_response.terms;
+        let fetch_info = Arc::new(reconstruction_response.fetch_info);
+
+        let sfg = Arc::new(singleflight::Group::new());
+
+        let total_len = terms.iter().fold(0, |acc, x| acc + x.unpacked_length);
+        let futs = terms.into_iter().map(|term| {
+            let http_client = http_client.clone();
             let disk_cache = self.disk_cache.clone();
+            let fetch_info = fetch_info.clone();
+            let sfg = sfg.clone();
             tokio::spawn(async move {
-                get_one_range(&http_client_clone, disk_cache.clone(), &term).await
+                get_one_range(http_client, disk_cache, &term, fetch_info, sfg).await
             })
         });
         for fut in futs {
@@ -213,21 +224,25 @@ impl RemoteClient {
 }
 
 pub(crate) async fn get_one_range(
-    http_client: &ClientWithMiddleware,
+    http_client: Arc<ClientWithMiddleware>,
     disk_cache: Option<Arc<dyn ChunkCache>>,
     term: &CASReconstructionTerm,
+    fetch_info: Arc<HashMap<HexMerkleHash, Vec<CASReconstructionFetchInfo>>>,
+    sfg: Arc<singleflight::Group<(Vec<u8>, Vec<u32>), CasClientError>>,
 ) -> Result<Bytes> {
     debug!("term: {term:?}");
 
-    if term.range.end < term.range.start || term.url_range.end < term.url_range.start {
+    if term.range.end < term.range.start {
         return Err(CasClientError::InvalidRange);
     }
+
+    let hash = term.hash.into();
 
     // check disk cache
     if let Some(cache) = &disk_cache {
         let key = Key {
             prefix: PREFIX_DEFAULT.to_string(),
-            hash: term.hash.into(),
+            hash,
         };
 
         let cached = cache
@@ -238,25 +253,27 @@ pub(crate) async fn get_one_range(
         }
     }
 
-    let url = Url::parse(term.url.as_str())?;
+    let hash_fetch_info = fetch_info
+        .get(&term.hash)
+        .ok_or(CasClientError::InvalidArguments)
+        .log_error("invalid response from CAS server: failed to get term hash in fetchables")?;
+    let fetch_term = hash_fetch_info
+        .iter()
+        .find(|fterm| fterm.range.start <= term.range.start && fterm.range.end >= term.range.end)
+        .ok_or(CasClientError::InvalidArguments)
+        .log_error("invalid response from CAS server: failed to match hash in fetch_info")?;
 
-    let response = http_client
-        .get(url)
-        .header(
-            reqwest::header::RANGE,
-            format!("bytes={}-{}", term.url_range.start, term.url_range.end - 1),
+    let (mut data, chunk_byte_indices) = sfg
+        .work(
+            &fetch_term.url,
+            download_range(fetch_term.clone(), http_client),
         )
-        .send()
         .await
-        .map_err(|e| CasClientError::InternalError(anyhow!("request failed with code {e}")))?;
-
-    let xorb_bytes = response.bytes().await?;
-    if xorb_bytes.len() as u32 != term.url_range.end - term.url_range.start {
-        error!("got back a smaller range than requested");
-        return Err(CasClientError::InvalidRange);
-    }
-    let mut readseek = Cursor::new(xorb_bytes.to_vec());
-    let (data, chunk_byte_indices) = cas_object::deserialize_chunks(&mut readseek)?;
+        .0
+        .map_err(|e| match e {
+            singleflight::SingleflightError::InternalError(e) => e,
+            e => CasClientError::Other(format!("single flight error: {e}")),
+        })?;
 
     // now write it back to cache
     if let Some(cache) = disk_cache {
@@ -265,11 +282,58 @@ pub(crate) async fn get_one_range(
             hash: term.hash.into(),
         };
         cache
-            .put(&key, &term.range, &chunk_byte_indices, &data)
+            .put(&key, &fetch_term.range, &chunk_byte_indices, &data)
             .map_err(|e| CasClientError::InternalError(anyhow!("cache error {e}")))?;
     }
 
+    if term.range != fetch_term.range {
+        let start_idx = term.range.start - fetch_term.range.start;
+        let end_idx = term.range.end - fetch_term.range.start;
+        let start_byte_index = chunk_byte_indices[start_idx as usize] as usize;
+        let end_byte_index = chunk_byte_indices[end_idx as usize] as usize;
+        debug_assert!(start_byte_index < data.len());
+        debug_assert!(end_byte_index <= data.len());
+        debug_assert!(start_byte_index < start_byte_index);
+        data.truncate(end_byte_index);
+        data = data.split_off(start_byte_index);
+    }
+
+    if data.len() != term.unpacked_length as usize {
+        return Err(CasClientError::Other(format!(
+            "result term data length {} did not match expected value {}",
+            data.len(),
+            term.unpacked_length
+        )));
+    }
+
     Ok(Bytes::from(data))
+}
+
+async fn download_range(
+    fetch_term: CASReconstructionFetchInfo,
+    http_client: Arc<ClientWithMiddleware>,
+) -> Result<(Vec<u8>, Vec<u32>)> {
+    let url = Url::parse(fetch_term.url.as_str())?;
+    let response = http_client
+        .get(url)
+        .header(
+            reqwest::header::RANGE,
+            format!(
+                "bytes={}-{}",
+                fetch_term.url_range.start, fetch_term.url_range.end
+            ),
+        )
+        .send()
+        .await
+        .map_err(|e| CasClientError::InternalError(anyhow!("request failed with code {e}")))?;
+    let xorb_bytes = response.bytes().await?;
+    if xorb_bytes.len() as u32 != fetch_term.url_range.end - fetch_term.url_range.start + 1 {
+        error!("got back a smaller range than requested");
+        return Err(CasClientError::InvalidRange);
+    }
+    let mut readseek = Cursor::new(xorb_bytes.to_vec());
+    let (data, chunk_byte_indices) = cas_object::deserialize_chunks(&mut readseek)?;
+    Ok((data, chunk_byte_indices))
 }
 
 #[cfg(test)]

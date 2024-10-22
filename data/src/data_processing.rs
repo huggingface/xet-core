@@ -303,7 +303,9 @@ impl PointerFileTranslator {
         _range: Option<(usize, usize)>,
     ) -> Result<()> {
         let http_client = cas_client::build_http_client(&None)?;
-        self.cas.get_file(&http_client, file_id, writer).await?;
+        self.cas
+            .get_file(Arc::new(http_client), file_id, writer)
+            .await?;
         Ok(())
     }
 }

@@ -1,4 +1,4 @@
-use crate::error::{Result, CasClientError};
+use crate::error::{CasClientError, Result};
 use crate::{build_auth_http_client, RegistrationClient, ShardClientInterface};
 use async_trait::async_trait;
 use bytes::Buf;
@@ -109,13 +109,9 @@ impl FileReconstructor<CasClientError> for HttpShardClient {
 
         Ok(Some((
             MDBFileInfo {
-                metadata: FileDataSequenceHeader::new(
-                    *file_hash,
-                    response_info.reconstruction.len(),
-                    false,
-                ),
+                metadata: FileDataSequenceHeader::new(*file_hash, response_info.terms.len(), false),
                 segments: response_info
-                    .reconstruction
+                    .terms
                     .into_iter()
                     .map(|ce| {
                         FileDataSequenceEntry::new(
