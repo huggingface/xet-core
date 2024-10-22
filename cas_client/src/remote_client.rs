@@ -151,8 +151,10 @@ impl Reconstructable for RemoteClient {
             .http_auth_client
             .get(url)
             .send()
-            .await?
-            .error_for_status()?;
+            .await
+            .log_error("error invoking reconstruction api")?
+            .error_for_status()
+            .log_error("reconstruction api returned error code")?;
 
         let query_resonstruction_response: QueryReconstructionResponse = response
             .json()

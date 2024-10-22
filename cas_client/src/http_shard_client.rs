@@ -4,6 +4,7 @@ use async_trait::async_trait;
 use bytes::Buf;
 use cas_types::Key;
 use cas_types::{QueryReconstructionResponse, UploadShardResponse, UploadShardResponseType};
+use error_printer::ErrorPrinter;
 use file_utils::write_all_safe;
 use mdb_shard::file_structs::{FileDataSequenceEntry, FileDataSequenceHeader, MDBFileInfo};
 use mdb_shard::shard_dedup_probe::ShardDedupProber;
@@ -17,6 +18,9 @@ use std::str::FromStr;
 use tokio::task::JoinSet;
 use utils::auth::AuthConfig;
 use utils::serialization_utils::read_u32;
+
+const FORCE_SYNC_METHOD: reqwest::Method = reqwest::Method::PUT;
+const NON_FORCE_SYNC_METHOD: reqwest::Method = reqwest::Method::POST;
 
 /// Shard Client that uses HTTP for communication.
 #[derive(Debug)]
@@ -58,24 +62,25 @@ impl RegistrationClient for HttpShardClient {
 
         let url = Url::parse(&format!("{}/shard/{key}", self.endpoint))?;
 
-        let response = match force_sync {
-            true => self
-                .client
-                .put(url)
-                .body(shard_data.to_vec())
-                .send()
-                .await
-                .map_err(|e| CasClientError::Other(format!("request failed with code {e}")))?,
-            false => self
-                .client
-                .post(url)
-                .body(shard_data.to_vec())
-                .send()
-                .await
-                .map_err(|e| CasClientError::Other(format!("request failed with code {e}")))?,
+        let method = match force_sync {
+            true => FORCE_SYNC_METHOD,
+            false => NON_FORCE_SYNC_METHOD,
         };
 
-        let response_parsed: UploadShardResponse = response.json().await?;
+        let response = self
+            .client
+            .request(method, url)
+            .body(shard_data.to_vec())
+            .send()
+            .await
+            .log_error("failed request to upload_shard")?
+            .error_for_status()
+            .log_error("error status on upload_shard")?;
+
+        let response_parsed: UploadShardResponse = response
+            .json()
+            .await
+            .log_error("error json decoding upload_shard response")?;
 
         match response_parsed.result {
             UploadShardResponseType::Exists => Ok(false),
@@ -101,7 +106,9 @@ impl FileReconstructor<CasClientError> for HttpShardClient {
             .get(url)
             .send()
             .await
-            .map_err(|e| CasClientError::Other(format!("request failed with code {e}")))?;
+            .log_error("error invoking reconstruction API")?
+            .error_for_status()
+            .log_error("reconstruction api error status")?;
         let response_info: QueryReconstructionResponse = response.json().await?;
 
         Ok(Some((
