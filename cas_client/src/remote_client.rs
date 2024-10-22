@@ -223,12 +223,15 @@ impl RemoteClient {
     }
 }
 
+pub(crate) type ChunkDataSingleFlightGroup =
+    singleflight::Group<(Vec<u8>, Vec<u32>), CasClientError>;
+
 pub(crate) async fn get_one_range(
     http_client: Arc<ClientWithMiddleware>,
     disk_cache: Option<Arc<dyn ChunkCache>>,
     term: &CASReconstructionTerm,
     fetch_info: Arc<HashMap<HexMerkleHash, Vec<CASReconstructionFetchInfo>>>,
-    sfg: Arc<singleflight::Group<(Vec<u8>, Vec<u32>), CasClientError>>,
+    sfg: Arc<ChunkDataSingleFlightGroup>,
 ) -> Result<Bytes> {
     debug!("term: {term:?}");
 
@@ -293,7 +296,7 @@ pub(crate) async fn get_one_range(
         let end_byte_index = chunk_byte_indices[end_idx as usize] as usize;
         debug_assert!(start_byte_index < data.len());
         debug_assert!(end_byte_index <= data.len());
-        debug_assert!(start_byte_index < start_byte_index);
+        debug_assert!(start_byte_index < end_byte_index);
         data.truncate(end_byte_index);
         data = data.split_off(start_byte_index);
     }
