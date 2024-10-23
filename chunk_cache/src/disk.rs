@@ -160,8 +160,9 @@ impl DiskCache {
 
                 // asserts that the prefix dir name is actually the prefix of this key dir
                 debug_assert_eq!(
-                    &key_dir_name.as_encoded_bytes()[..PREFIX_DIR_NAME_LEN],
-                    key_prefix_dir_name.as_encoded_bytes(),
+                    key_dir_name.as_encoded_bytes()[..PREFIX_DIR_NAME_LEN].to_ascii_uppercase(),
+                    key_prefix_dir_name.as_encoded_bytes().to_ascii_uppercase(),
+                    "{key_dir_name:?}",
                 );
 
                 let key = match try_parse_key(key_dir_name.as_encoded_bytes()) {

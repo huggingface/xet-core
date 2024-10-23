@@ -62,7 +62,7 @@ impl Default for CacheConfig {
     fn default() -> Self {
         CacheConfig {
             cache_directory: PathBuf::from("/tmp"),
-            cache_size: 1024 * 1024 * 1024, // 1GB
+            cache_size: 10 << 30, // 10GB
         }
     }
 }
