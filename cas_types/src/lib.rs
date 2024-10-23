@@ -29,11 +29,19 @@ impl std::fmt::Display for Range {
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct CASReconstructionTerm {
     pub hash: HexMerkleHash,
+    // the resulting data from deserializing the range in this term
+    // should have a length equal to `unpacked_length`
     pub unpacked_length: u32,
     // chunk index start and end in a xorb
     pub range: Range,
 }
 
+/// To use a CASReconstructionFetchInfo fetch info all that's needed
+/// is an http get request on the url with the Range header directly
+/// formed from the url_range values.
+///
+/// the `range` key describes the chunk range within the xorb that the
+/// url is used to fetch
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq, Hash)]
 pub struct CASReconstructionFetchInfo {
     // chunk index start and end in a xorb
@@ -48,7 +56,13 @@ pub struct QueryReconstructionResponse {
     // For range query [a, b) into a file content, the location
     // of "a" into the first range.
     pub offset_into_first_range: u32,
+    // Series of terms describing a xorb hash and chunk range to be retreived
+    // to reconstruct the file
     pub terms: Vec<CASReconstructionTerm>,
+    // information to fetch xorb ranges to reconstruct the file
+    // each key is a hash that is present in the `terms` field reconstruction
+    // terms, the values are information we will need to fetch ranges from
+    // each xorb needed to reconstruct the file
     pub fetch_info: HashMap<HexMerkleHash, Vec<CASReconstructionFetchInfo>>,
 }
 

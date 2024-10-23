@@ -199,11 +199,11 @@ impl RemoteClient {
         Ok(response_parsed.was_inserted)
     }
 
-    /// reconstruct_file_to_writer will use the reconstruction response to CAS to re-create the described file
-    /// for any calls to download files from S3/blob store using urls from the fetch information section of
+    /// use the reconstruction response from CAS to re-create the described file for any calls
+    /// to download files from S3/blob store using urls from the fetch information section of
     /// of the response it will use the provided http client.
     ///
-    /// TODO: respet the byte_range argument to reconstruct only a section.
+    /// TODO: respect the byte_range argument to reconstruct only a section.
     ///
     /// To reconstruct, this function will iterate through each CASReconstructionTerm in the `terms` section
     /// of the QueryReconstructionResponse, fetching the data for that term. Each term is a range of chunks
@@ -257,7 +257,7 @@ impl RemoteClient {
 pub(crate) type ChunkDataSingleFlightGroup =
     singleflight::Group<(Vec<u8>, Vec<u32>), CasClientError>;
 
-/// get_one_term will fetch the data requested for the term argument (data from a range of chunks
+/// fetch the data requested for the term argument (data from a range of chunks
 /// in a xorb).
 /// if provided, it will first check a ChunkCache for the existence of this range.
 ///
@@ -357,7 +357,7 @@ fn range_header(range: &Range) -> String {
     format!("bytes={}-{}", range.start, range.end)
 }
 
-/// download_range will use the provided http_client to make requests to S3/blob store using the url and url_range
+/// use the provided http_client to make requests to S3/blob store using the url and url_range
 /// parts of a CASReconstructionFetchInfo. The url_range part is used directly in an http Range header
 /// value (see fn `range_header`).
 async fn download_range(
