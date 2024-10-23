@@ -29,7 +29,6 @@ anyhow = "1"
 http = "0.2.5"
 xet_error = {path = "../xet_error"}
 tempfile = "3"
-cache = {path = "../cache"}
 deadpool = {version = "0.9.4", features = ["managed", "rt_tokio_1"] }
 futures = {version = "0.3", default-features = false, features = ["alloc"]}
 tracing = "0.1.31"
