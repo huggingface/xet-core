@@ -48,6 +48,9 @@ impl PartialOrd for CacheItem {
     }
 }
 
+/// CacheItem is represented on disk as the file name of a cache file
+/// the file name is created by base64 encoding a buffer that concatenates
+/// all attributes of the CacheItem, numbers being written in little endian order
 impl CacheItem {
     pub(crate) fn file_name(&self) -> Result<String, ChunkCacheError> {
         let mut buf = [0u8; CACHE_ITEM_FILE_NAME_BUF_SIZE];
