@@ -118,7 +118,7 @@ impl DiskCache {
         let mut num_items = 0;
         let max_num_bytes = 2 * capacity;
 
-        let readdir = match read_dir(&cache_root) {
+        let readdir = match read_dir(cache_root) {
             Ok(Some(rd)) => rd,
             Ok(None) => return Ok(CacheState::new(state, 0, 0)),
             Err(e) => return Err(e),
