@@ -33,11 +33,11 @@ pub enum RangeParseError {
     ParseError(ParseIntError),
 }
 
-impl TryFrom<String> for Range {
+impl TryFrom<&str> for Range {
     type Error = RangeParseError;
 
-    fn try_from(value: String) -> Result<Self, Self::Error> {
-        let parts: Vec<&str> = value.split('-').collect();
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
+        let parts: Vec<&str> = value.splitn(2, '-').collect();
 
         if parts.len() != 2 {
             return Err(RangeParseError::InvalidFormat);
@@ -47,14 +47,6 @@ impl TryFrom<String> for Range {
         let end = parts[1].parse::<u32>().map_err(RangeParseError::ParseError)?;
 
         Ok(Range { start, end })
-    }
-}
-
-impl TryFrom<&str> for Range {
-    type Error = RangeParseError;
-
-    fn try_from(value: &str) -> Result<Self, Self::Error> {
-        String::try_into(value.to_owned())
     }
 }
 
