@@ -33,6 +33,8 @@ type OptionResult<T, E> = Result<Option<T>, E>;
 
 #[derive(Debug, Clone)]
 struct CacheState {
+    // each set of cache items is a sorted set to take advantage of
+    // binary search for fast lookups, albeit the slower adds
     inner: HashMap<Key, SortedVec<CacheItem>>,
     num_items: usize,
     total_bytes: u64,
@@ -98,6 +100,19 @@ impl DiskCache {
         let capacity = config.cache_size;
         let cache_root = config.cache_directory.clone();
 
+        let state = Self::initialize_state(&cache_root, capacity)?;
+
+        Ok(Self {
+            state: Arc::new(Mutex::new(state)),
+            cache_root,
+            capacity,
+        })
+    }
+
+    fn initialize_state(
+        cache_root: &PathBuf,
+        capacity: u64,
+    ) -> Result<CacheState, ChunkCacheError> {
         let mut state = HashMap::new();
         let mut total_bytes = 0;
         let mut num_items = 0;
@@ -105,24 +120,24 @@ impl DiskCache {
 
         let readdir = match read_dir(&cache_root) {
             Ok(Some(rd)) => rd,
-            Ok(None) => {
-                return Ok(Self {
-                    cache_root,
-                    capacity,
-                    state: Arc::new(Mutex::new(CacheState::new(state, 0, 0))),
-                })
-            }
+            Ok(None) => return Ok(CacheState::new(state, 0, 0)),
             Err(e) => return Err(e),
         };
 
+        // loop through cache root directory, first level containing "prefix" directories
+        // each of which may contain key directories with cache items
         for key_prefix_dir in readdir {
+            // this match pattern appears often in this function, and we could write a macro to replace it
+            // however this puts an implicit change of control flow with continue/return cases that is
+            // hard to decipher from a macro, so avoid replace it for readability
             let key_prefix_dir = match is_ok_dir(key_prefix_dir) {
                 Ok(Some(dirent)) => dirent,
                 Ok(None) => continue,
                 Err(e) => return Err(e),
             };
 
-            if key_prefix_dir.file_name().as_encoded_bytes().len() != PREFIX_DIR_NAME_LEN {
+            let key_prefix_dir_name = key_prefix_dir.file_name();
+            if key_prefix_dir_name.as_encoded_bytes().len() != PREFIX_DIR_NAME_LEN {
                 debug!("prefix dir name len != {PREFIX_DIR_NAME_LEN}");
                 continue;
             }
@@ -133,6 +148,7 @@ impl DiskCache {
                 Err(e) => return Err(e),
             };
 
+            // loop throught key directories inside prefix directory
             for key_dir in key_prefix_readir {
                 let key_dir = match is_ok_dir(key_dir) {
                     Ok(Some(dirent)) => dirent,
@@ -140,12 +156,22 @@ impl DiskCache {
                     Err(e) => return Err(e),
                 };
 
-                let key = match try_parse_key(key_dir.file_name().as_encoded_bytes())
-                    .debug_error("failed to decoded a directory name as a key")
-                {
+                let key_dir_name = key_dir.file_name();
+
+                // asserts that the prefix dir name is actually the prefix of this key dir
+                debug_assert_eq!(
+                    &key_dir_name.as_encoded_bytes()[..PREFIX_DIR_NAME_LEN],
+                    key_prefix_dir_name.as_encoded_bytes(),
+                );
+
+                let key = match try_parse_key(key_dir_name.as_encoded_bytes()) {
                     Ok(key) => key,
-                    Err(_) => continue,
+                    Err(e) => {
+                        debug!("failed to decoded a directory name as a key: {e}");
+                        continue;
+                    }
                 };
+
                 let mut items = SortedVec::new();
 
                 let key_readdir = match read_dir(key_dir.path()) {
@@ -154,6 +180,7 @@ impl DiskCache {
                     Err(e) => return Err(e),
                 };
 
+                // loop through cache items inside key directory
                 for item in key_readdir {
                     let cache_item = match try_parse_cache_file(item, capacity) {
                         Ok(Some(ci)) => ci,
@@ -165,29 +192,20 @@ impl DiskCache {
                     num_items += 1;
                     items.push(cache_item);
 
+                    // if already filled capacity, stop iterating over cache items
                     if total_bytes >= max_num_bytes {
-                        break;
+                        state.insert(key, items);
+                        return Ok(CacheState::new(state, num_items, total_bytes));
                     }
                 }
 
                 if !items.is_empty() {
                     state.insert(key, items);
                 }
-
-                if total_bytes >= max_num_bytes {
-                    break;
-                }
-            }
-            if total_bytes >= max_num_bytes {
-                break;
             }
         }
 
-        Ok(Self {
-            state: Arc::new(Mutex::new(CacheState::new(state, num_items, total_bytes))),
-            cache_root,
-            capacity,
-        })
+        Ok(CacheState::new(state, num_items, total_bytes))
     }
 
     fn get_impl(&self, key: &Key, range: &Range) -> OptionResult<Vec<u8>, ChunkCacheError> {
