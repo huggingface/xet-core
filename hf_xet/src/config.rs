@@ -1,6 +1,6 @@
 use data::configurations::*;
-use data::CacheConfig;
 use data::errors;
+use data::CacheConfig;
 use std::env::current_dir;
 use std::fs;
 use std::sync::Arc;
@@ -37,7 +37,7 @@ pub fn default_config(
             prefix: "default-merkledb".into(),
             cache_config: Some(CacheConfig {
                 cache_directory: path.join("shard-cache"),
-                cache_size: 0,      // ignored
+                cache_size: 0, // ignored
             }),
             staging_directory: Some(path.join("shard-session")),
         },

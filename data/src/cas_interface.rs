@@ -33,7 +33,6 @@ fn remote_client(
     cache_config: &Option<CacheConfig>,
     auth: &Option<AuthConfig>,
 ) -> Result<Arc<dyn Client + Send + Sync>> {
-    
     // Raw remote client.
     let remote_client = RemoteClient::new(endpoint, auth, cache_config);
 

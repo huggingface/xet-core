@@ -24,7 +24,7 @@ impl<T, E: Debug> ErrorPrinter for Result<T, E> {
             Ok(_) => {}
             Err(e) => {
                 let caller = get_caller();
-                error!(caller,"{message}, error: {e:?}")
+                error!(caller, "{message}, error: {e:?}")
             }
         }
         self
@@ -38,7 +38,7 @@ impl<T, E: Debug> ErrorPrinter for Result<T, E> {
             Ok(_) => {}
             Err(e) => {
                 let caller = get_caller();
-                warn!(caller,"{message}, error: {e:?}")
+                warn!(caller, "{message}, error: {e:?}")
             }
         }
         self
@@ -52,7 +52,7 @@ impl<T, E: Debug> ErrorPrinter for Result<T, E> {
             Ok(_) => {}
             Err(e) => {
                 let caller = get_caller();
-                debug!(caller,"{message}, error: {e:?}")
+                debug!(caller, "{message}, error: {e:?}")
             }
         }
         self
@@ -66,7 +66,7 @@ impl<T, E: Debug> ErrorPrinter for Result<T, E> {
             Ok(_) => {}
             Err(e) => {
                 let caller = get_caller();
-                info!(caller,"{message}, error: {e:?}")
+                info!(caller, "{message}, error: {e:?}")
             }
         }
         self

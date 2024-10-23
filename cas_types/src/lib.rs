@@ -1,8 +1,8 @@
-use std::collections::HashMap;
-use std::num::ParseIntError;
 use merklehash::MerkleHash;
 use serde::{Deserialize, Serialize};
 use serde_repr::{Deserialize_repr, Serialize_repr};
+use std::collections::HashMap;
+use std::num::ParseIntError;
 
 mod error;
 mod key;
@@ -43,8 +43,12 @@ impl TryFrom<&str> for Range {
             return Err(RangeParseError::InvalidFormat);
         }
 
-        let start = parts[0].parse::<u32>().map_err(RangeParseError::ParseError)?;
-        let end = parts[1].parse::<u32>().map_err(RangeParseError::ParseError)?;
+        let start = parts[0]
+            .parse::<u32>()
+            .map_err(RangeParseError::ParseError)?;
+        let end = parts[1]
+            .parse::<u32>()
+            .map_err(RangeParseError::ParseError)?;
 
         Ok(Range { start, end })
     }

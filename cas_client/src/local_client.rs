@@ -5,15 +5,15 @@ use async_trait::async_trait;
 use cas_object::CasObject;
 use cas_types::Key;
 use merklehash::MerkleHash;
-use tempfile::TempDir;
 use std::fs::{metadata, File};
 use std::io::{BufReader, BufWriter, Write};
 use std::path::PathBuf;
+use tempfile::TempDir;
 use tracing::{debug, info};
 
 #[derive(Debug)]
 pub struct LocalClient {
-    _tmp_dir : TempDir,
+    _tmp_dir: TempDir,
     pub path: PathBuf,
 }
 
@@ -21,14 +21,19 @@ impl Default for LocalClient {
     fn default() -> Self {
         let tmp_dir = TempDir::new().unwrap();
         let path = tmp_dir.path().to_owned();
-        Self { _tmp_dir: tmp_dir, path }
+        Self {
+            _tmp_dir: tmp_dir,
+            path,
+        }
     }
 }
 
 impl LocalClient {
-
     pub fn new(path: PathBuf) -> Self {
-        Self { _tmp_dir: TempDir::new().unwrap(), path }
+        Self {
+            _tmp_dir: TempDir::new().unwrap(),
+            path,
+        }
     }
 
     /// Internal function to get the path for a given hash entry
@@ -41,7 +46,8 @@ impl LocalClient {
         let mut ret: Vec<_> = Vec::new();
 
         // loop through the directory
-        self.path.read_dir()
+        self.path
+            .read_dir()
             .map_err(|x| CasClientError::InternalError(x.into()))?
             // take only entries which are ok
             .filter_map(|x| x.ok())
@@ -160,11 +166,7 @@ impl UploadClient for LocalClient {
         Ok(())
     }
 
-    async fn exists(
-        &self,
-        prefix: &str,
-        hash: &MerkleHash,
-    ) -> Result<bool> {
+    async fn exists(&self, prefix: &str, hash: &MerkleHash) -> Result<bool> {
         let file_path = self.get_path_for_entry(prefix, hash);
 
         let res = metadata(&file_path);
@@ -211,7 +213,6 @@ pub mod tests_utils {
     }
 
     impl TestUtils for LocalClient {
-
         fn get(&self, prefix: &str, hash: &MerkleHash) -> Result<Vec<u8>> {
             let file_path = self.get_path_for_entry(prefix, hash);
             let file = File::open(&file_path).map_err(|_| {
@@ -293,17 +294,12 @@ mod tests {
 
         let data_again = data.clone();
 
-
         // Act & Assert
         let client = LocalClient::default();
-        assert!(client.put(
-            "key",
-            &hash,
-            data,
-            vec![(hash, chunk_boundaries)]
-        )
-        .await
-        .is_ok());
+        assert!(client
+            .put("key", &hash, data, vec![(hash, chunk_boundaries)])
+            .await
+            .is_ok());
 
         let returned_data = client.get("key", &hash).unwrap();
         assert_eq!(data_again, returned_data);
@@ -318,14 +314,10 @@ mod tests {
 
         // Act & Assert
         let client = LocalClient::default();
-        assert!(client.put(
-            "",
-            &c.info.cashash,
-            data,
-            chunk_boundaries
-        )
-        .await
-        .is_ok());
+        assert!(client
+            .put("", &c.info.cashash, data, chunk_boundaries)
+            .await
+            .is_ok());
 
         let returned_data = client.get("", &c.info.cashash).unwrap();
         assert_eq!(data_again, returned_data);
@@ -339,18 +331,20 @@ mod tests {
 
         // Act & Assert
         let client = LocalClient::default();
-        assert!(client.put(
-            "",
-            &c.info.cashash,
-            data.clone(),
-            chunk_and_boundaries.clone()
-        )
-        .await
-        .is_ok());
+        assert!(client
+            .put(
+                "",
+                &c.info.cashash,
+                data.clone(),
+                chunk_and_boundaries.clone()
+            )
+            .await
+            .is_ok());
 
         let ranges: Vec<(u32, u32)> = vec![(0, 1), (2, 3)];
-        let returned_ranges =
-            client.get_object_range("", &c.info.cashash, ranges).unwrap();
+        let returned_ranges = client
+            .get_object_range("", &c.info.cashash, ranges)
+            .unwrap();
 
         let expected = vec![
             data[0..chunk_and_boundaries[0].1 as usize].to_vec(),
@@ -370,7 +364,10 @@ mod tests {
 
         // Act
         let client = LocalClient::default();
-        assert!(client.put("", &c.info.cashash, data, chunk_boundaries).await.is_ok());
+        assert!(client
+            .put("", &c.info.cashash, data, chunk_boundaries)
+            .await
+            .is_ok());
         let len = client.get_length("", &c.info.cashash).unwrap();
 
         // Assert
@@ -398,24 +395,26 @@ mod tests {
         let hello_hash = merklehash::compute_data_hash(&hello[..]);
         // write "hello world"
         let client = LocalClient::default();
-        client.put(
-            "key",
-            &hello_hash,
-            hello.clone(),
-            vec![(hello_hash, hello.len() as u32)],
-        )
-        .await
-        .unwrap();
+        client
+            .put(
+                "key",
+                &hello_hash,
+                hello.clone(),
+                vec![(hello_hash, hello.len() as u32)],
+            )
+            .await
+            .unwrap();
 
         // put the same value a second time. This should be ok.
-        client.put(
-            "key",
-            &hello_hash,
-            hello.clone(),
-            vec![(hello_hash, hello.len() as u32)],
-        )
-        .await
-        .unwrap();
+        client
+            .put(
+                "key",
+                &hello_hash,
+                hello.clone(),
+                vec![(hello_hash, hello.len() as u32)],
+            )
+            .await
+            .unwrap();
 
         // we can list all entries
         let r = client.get_all_entries().unwrap();
@@ -431,40 +430,38 @@ mod tests {
         // content shorter than the chunk boundaries should fail
         assert_eq!(
             CasClientError::InvalidArguments,
-            client.put(
-                "hellp2",
-                &hello_hash,
-                "hellp wod".as_bytes().to_vec(),
-                vec![(hello_hash, hello.len() as u32)],
-            )
-            .await
-            .unwrap_err()
+            client
+                .put(
+                    "hellp2",
+                    &hello_hash,
+                    "hellp wod".as_bytes().to_vec(),
+                    vec![(hello_hash, hello.len() as u32)],
+                )
+                .await
+                .unwrap_err()
         );
 
         // content longer than the chunk boundaries should fail
         assert_eq!(
             CasClientError::InvalidArguments,
-            client.put(
-                "again",
-                &hello_hash,
-                "hello world again".as_bytes().to_vec(),
-                vec![(hello_hash, hello.len() as u32)],
-            )
-            .await
-            .unwrap_err()
+            client
+                .put(
+                    "again",
+                    &hello_hash,
+                    "hello world again".as_bytes().to_vec(),
+                    vec![(hello_hash, hello.len() as u32)],
+                )
+                .await
+                .unwrap_err()
         );
 
         // empty writes should fail
         assert_eq!(
             CasClientError::InvalidArguments,
-            client.put(
-                "key",
-                &hello_hash,
-                vec![],
-                vec![],
-            )
-            .await
-            .unwrap_err()
+            client
+                .put("key", &hello_hash, vec![], vec![],)
+                .await
+                .unwrap_err()
         );
 
         // compute a hash of something we do not have in the store
@@ -480,12 +477,9 @@ mod tests {
         // read of non-existant object should fail with XORBNotFound
         assert!(client.get("key", &world_hash).is_err());
         // read range of non-existant object should fail with XORBNotFound
-        assert!(client.get_object_range(
-            "key",
-            &world_hash,
-            vec![(0, 5)]
-        )
-        .is_err());
+        assert!(client
+            .get_object_range("key", &world_hash, vec![(0, 5)])
+            .is_err());
 
         // we can delete non-existant things
         client.delete("key", &world_hash);
@@ -521,13 +515,14 @@ mod tests {
 
         // insert should succeed
         let client = LocalClient::default();
-        client.put(
-            "key",
-            &final_hash,
-            "helloworld".as_bytes().to_vec(),
-            vec![(hello_hash, 5), (world_hash, 10)],
-        )
-        .await
-        .unwrap();
+        client
+            .put(
+                "key",
+                &final_hash,
+                "helloworld".as_bytes().to_vec(),
+                vec![(hello_hash, 5), (world_hash, 10)],
+            )
+            .await
+            .unwrap();
     }
 }

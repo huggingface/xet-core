@@ -133,7 +133,8 @@ pub fn deserialize_chunk_header<R: Read>(reader: &mut R) -> Result<CASChunkHeade
 
 pub fn deserialize_chunk<R: Read>(reader: &mut R) -> Result<(Vec<u8>, usize, u32), CasObjectError> {
     let mut buf = Vec::new();
-    let (compressed_chunk_size, uncompressed_chunk_size) = deserialize_chunk_to_writer(reader, &mut buf)?;
+    let (compressed_chunk_size, uncompressed_chunk_size) =
+        deserialize_chunk_to_writer(reader, &mut buf)?;
     Ok((buf, compressed_chunk_size, uncompressed_chunk_size))
 }
 
@@ -163,7 +164,10 @@ pub fn deserialize_chunk_to_writer<R: Read, W: Write>(
         )));
     }
 
-    Ok((header.get_compressed_length() as usize + CAS_CHUNK_HEADER_LENGTH, uncompressed_len))
+    Ok((
+        header.get_compressed_length() as usize + CAS_CHUNK_HEADER_LENGTH,
+        uncompressed_len,
+    ))
 }
 
 pub fn deserialize_chunks<R: Read>(reader: &mut R) -> Result<(Vec<u8>, Vec<u32>), CasObjectError> {
@@ -178,7 +182,7 @@ pub fn deserialize_chunks_to_writer<R: Read, W: Write>(
 ) -> Result<(usize, Vec<u32>), CasObjectError> {
     let mut num_compressed_written = 0;
     let mut num_uncompressed_written = 0;
-    
+
     // chunk indices are expected to record the byte indices of uncompressed chunks
     // as they are read from the reader, so start with [0, len(uncompressed chunk 0..n), total length]
     let mut chunk_byte_indices = Vec::<u32>::new();

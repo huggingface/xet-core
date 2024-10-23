@@ -4,6 +4,7 @@ use super::shard_interface::{create_shard_client, create_shard_manager};
 use crate::cas_interface::Client;
 use crate::constants::{FILE_RECONSTRUCTION_CACHE_SIZE, MAX_CONCURRENT_UPLOADS};
 use crate::repo_salt::RepoSalt;
+use cas_client::ShardClientInterface;
 use lru::LruCache;
 use mdb_shard::constants::MDB_SHARD_MIN_TARGET_SIZE;
 use mdb_shard::session_directory::consolidate_shards_in_directory;
@@ -13,7 +14,6 @@ use mdb_shard::{
 };
 use merklehash::MerkleHash;
 use parutils::tokio_par_for_each;
-use cas_client::ShardClientInterface;
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -277,7 +277,9 @@ impl RemoteShardInterface {
 
         let shard_file = cache_dir.join(local_shard_name(shard_hash));
 
-        shard_manager.load_and_cleanup_shards_by_path(&[shard_file]).await?;
+        shard_manager
+            .load_and_cleanup_shards_by_path(&[shard_file])
+            .await?;
 
         Ok(())
     }

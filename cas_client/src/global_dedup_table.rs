@@ -1,4 +1,4 @@
-use crate::error::{Result, CasClientError};
+use crate::error::{CasClientError, Result};
 use heed::types::*;
 use heed::EnvOpenOptions;
 use itertools::Itertools;

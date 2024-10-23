@@ -197,8 +197,8 @@ mod tests {
     use std::time::SystemTime;
 
     use super::*;
-    use reqwest::StatusCode;
     use httpmock::prelude::*;
+    use reqwest::StatusCode;
     use tracing_test::traced_test;
 
     #[tokio::test]
@@ -226,7 +226,7 @@ mod tests {
         assert_eq!(2, mock_500.hits());
         assert_eq!(response.status(), 500);
     }
-    
+
     #[tokio::test]
     #[traced_test]
     async fn test_retry_policy_timeout() {
@@ -234,7 +234,8 @@ mod tests {
         let server = MockServer::start();
         let mock = server.mock(|when, then| {
             when.method(GET).path("/data");
-            then.status(StatusCode::REQUEST_TIMEOUT.as_u16()).body("Request Timeout");
+            then.status(StatusCode::REQUEST_TIMEOUT.as_u16())
+                .body("Request Timeout");
         });
 
         let retry_config = RetryConfig {
@@ -252,7 +253,7 @@ mod tests {
         assert_eq!(3, mock.hits());
         assert_eq!(response.status(), StatusCode::REQUEST_TIMEOUT);
     }
-    
+
     #[tokio::test]
     #[traced_test]
     async fn test_retry_policy_delay() {
@@ -281,4 +282,3 @@ mod tests {
         assert_eq!(start_time.elapsed().unwrap() > Duration::from_secs(0), true);
     }
 }
-

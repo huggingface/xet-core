@@ -92,5 +92,4 @@ mod tests {
         assert_eq!(Into::<&str>::into(CompressionScheme::LZ4), "lz4");
         assert_eq!(Into::<&str>::into(CompressionScheme::None), "none");
     }
-
 }

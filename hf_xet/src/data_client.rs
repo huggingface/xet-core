@@ -1,5 +1,4 @@
 use crate::config::default_config;
-use utils::auth::TokenRefresher;
 use data::errors::DataProcessingError;
 use data::{errors, PointerFile, PointerFileTranslator};
 use parutils::{tokio_par_for_each, ParallelError};
@@ -8,6 +7,7 @@ use std::fs::File;
 use std::io::{BufReader, Read, Write};
 use std::path::PathBuf;
 use std::sync::Arc;
+use utils::auth::TokenRefresher;
 
 /// The maximum git filter protocol packet size
 pub const MAX_CONCURRENT_UPLOADS: usize = 8; // TODO
