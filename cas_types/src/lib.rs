@@ -13,6 +13,7 @@ pub struct UploadXorbResponse {
     pub was_inserted: bool,
 }
 
+// note that the standard PartialOrd/Ord impls will first check `start` then `end`
 #[derive(Debug, Serialize, Deserialize, Clone, Eq, PartialEq, PartialOrd, Ord, Default, Hash)]
 pub struct Range {
     pub start: u32,
@@ -26,6 +27,11 @@ impl std::fmt::Display for Range {
     }
 }
 
+/// Describes a portion of a reconstructed file, namely the xorb and
+/// a range of chunks within that xorb that are needed.
+///
+/// unpacked_length is used for validation, the result data of this term
+/// should have that field's value as its length
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct CASReconstructionTerm {
     pub hash: HexMerkleHash,
@@ -47,7 +53,7 @@ pub struct CASReconstructionFetchInfo {
     // chunk index start and end in a xorb
     pub range: Range,
     pub url: String,
-    // byte index start and end in a xorb
+    // byte index start and end in a xorb, used exclusively for Range header
     pub url_range: Range,
 }
 
