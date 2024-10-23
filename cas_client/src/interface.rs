@@ -79,7 +79,7 @@ pub trait Client: UploadClient + ReconstructionClient {}
 /// access these trait functions.
 #[async_trait]
 pub(crate) trait Reconstructable {
-    async fn reconstruct(
+    async fn get_reconstruction(
         &self,
         hash: &MerkleHash,
         byte_range: Option<(u64, u64)>,

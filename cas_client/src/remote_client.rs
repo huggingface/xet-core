@@ -113,10 +113,11 @@ impl ReconstructionClient for RemoteClient {
         hash: &MerkleHash,
         writer: &mut Box<dyn Write + Send>,
     ) -> Result<()> {
-        // get manifest of xorbs to download
-        let manifest = self.reconstruct(hash, None).await?;
+        // get manifest of xorbs to download, api call to CAS
+        let manifest = self.get_reconstruction(hash, None).await?;
 
-        self.get_ranges(http_client, manifest, None, writer).await?;
+        self.reconstruct_file_to_writer(http_client, manifest, None, writer)
+            .await?;
 
         Ok(())
     }
@@ -136,7 +137,7 @@ impl ReconstructionClient for RemoteClient {
 
 #[async_trait]
 impl Reconstructable for RemoteClient {
-    async fn reconstruct(
+    async fn get_reconstruction(
         &self,
         file_id: &MerkleHash,
         _bytes_range: Option<(u64, u64)>,
@@ -198,7 +199,20 @@ impl RemoteClient {
         Ok(response_parsed.was_inserted)
     }
 
-    async fn get_ranges(
+    /// reconstruct_file_to_writer will use the reconstruction response to CAS to re-create the described file
+    /// for any calls to download files from S3/blob store using urls from the fetch information section of
+    /// of the response it will use the provided http client.
+    ///
+    /// TODO: respet the byte_range argument to reconstruct only a section.
+    ///
+    /// To reconstruct, this function will iterate through each CASReconstructionTerm in the `terms` section
+    /// of the QueryReconstructionResponse, fetching the data for that term. Each term is a range of chunks
+    /// from a specific Xorb. The range is an end exclusive [start, end) chunk index range of the xorb
+    /// specified by the hash key of the CASReconstructionTerm.
+    ///
+    /// To fetch the data for each term, this function will consult the fetch_info section of the reconstruction
+    /// response. See `get_one_term`.
+    async fn reconstruct_file_to_writer(
         &self,
         http_client: Arc<ClientWithMiddleware>,
         reconstruction_response: QueryReconstructionResponse,
@@ -208,15 +222,21 @@ impl RemoteClient {
         let terms = reconstruction_response.terms;
         let fetch_info = Arc::new(reconstruction_response.fetch_info);
 
-        let sfg = Arc::new(singleflight::Group::new());
+        let single_flight_group = Arc::new(singleflight::Group::new());
 
         let total_len = terms.iter().fold(0, |acc, x| acc + x.unpacked_length);
         let term_data_futures = terms.into_iter().map(|term| {
             let http_client = http_client.clone();
             let disk_cache = self.disk_cache.clone();
             let fetch_info = fetch_info.clone();
-            let sfg = sfg.clone();
-            tokio::spawn(get_one_term(http_client, disk_cache, term, fetch_info, sfg))
+            let single_flight_group = single_flight_group.clone();
+            tokio::spawn(get_one_term(
+                http_client,
+                disk_cache,
+                term,
+                fetch_info,
+                single_flight_group,
+            ))
         });
         for fut in term_data_futures {
             let term_data = fut
@@ -225,6 +245,8 @@ impl RemoteClient {
                 .log_error("error getting one term")?;
             writer.write_all(&term_data)?;
         }
+        // TODO: respect the offset_from_first_byte field of response
+        //  only necessary for range-reconstruction, not needed for full file
         Ok(total_len as usize)
     }
 }
@@ -235,6 +257,17 @@ impl RemoteClient {
 pub(crate) type ChunkDataSingleFlightGroup =
     singleflight::Group<(Vec<u8>, Vec<u32>), CasClientError>;
 
+/// get_one_term will fetch the data requested for the term argument (data from a range of chunks
+/// in a xorb).
+/// if provided, it will first check a ChunkCache for the existence of this range.
+///
+/// To fetch the data from S3/blob store, get_one_term will match the term's hash/xorb to a vec of
+/// CASReconstructionFetchInfo in the fetch_info information. Then pick from this vec (by a linear scan)
+/// a fetch_info term that contains the requested term's range. Then:
+///     download the url -> deserialize chunks -> trim the output to the requested term's chunk range
+///
+/// If the fetch_info section (provided as in the QueryReconstrutionResponse) fails to contain a term
+/// that matches our requested CASReconstructionTerm, it is considered a bad output from the CAS API.
 pub(crate) async fn get_one_term(
     http_client: Arc<ClientWithMiddleware>,
     disk_cache: Option<Arc<dyn ChunkCache>>,
@@ -248,13 +281,11 @@ pub(crate) async fn get_one_term(
         return Err(CasClientError::InvalidRange);
     }
 
-    let hash = term.hash.into();
-
     // check disk cache for the exact range we want for the reconstruction term
     if let Some(cache) = &disk_cache {
         let key = Key {
             prefix: PREFIX_DEFAULT.to_string(),
-            hash,
+            hash: term.hash.into(),
         };
         if let Some(cached) = cache.get(&key, &term.range)? {
             return Ok(cached);
@@ -277,16 +308,16 @@ pub(crate) async fn get_one_term(
 
     // fetch the range from blob store and deserialize the chunks
     // then put into the cache if used
-    let sfg_key = &fetch_term.url;
+    let single_flight_group_key = fetch_term.url.as_str();
     let fetch_term_owned = fetch_term.clone();
     let (mut data, chunk_byte_indices) = single_flight_group
-        .work_dump_caller_info(sfg_key, async move {
-            let (data, chunk_byte_indices) = download_range(&fetch_term_owned, http_client).await?;
+        .work_dump_caller_info(single_flight_group_key, async move {
+            let (data, chunk_byte_indices) = download_range(http_client, &fetch_term_owned).await?;
             // now write it to cache, the whole fetched term
             if let Some(cache) = disk_cache {
                 let key = Key {
                     prefix: PREFIX_DEFAULT.to_string(),
-                    hash,
+                    hash: term.hash.into(),
                 };
                 cache.put(&key, &fetch_term_owned.range, &chunk_byte_indices, &data)?;
             }
@@ -326,9 +357,12 @@ fn range_header(range: &Range) -> String {
     format!("bytes={}-{}", range.start, range.end)
 }
 
+/// download_range will use the provided http_client to make requests to S3/blob store using the url and url_range
+/// parts of a CASReconstructionFetchInfo. The url_range part is used directly in an http Range header
+/// value (see fn `range_header`).
 async fn download_range(
-    fetch_term: &CASReconstructionFetchInfo,
     http_client: Arc<ClientWithMiddleware>,
+    fetch_term: &CASReconstructionFetchInfo,
 ) -> Result<(Vec<u8>, Vec<u32>)> {
     let url = Url::parse(fetch_term.url.as_str())?;
     let response = http_client
@@ -340,7 +374,9 @@ async fn download_range(
         .error_for_status()
         .log_error("get from s3 error code")?;
     let xorb_bytes = response.bytes().await?;
+
     // + 1 since range S3/HTTP range is inclusive on both ends
+    // remove this check to be agnostic to range-end-exclusive blob store requests
     let expected_len = fetch_term.url_range.end - fetch_term.url_range.start + 1;
     if xorb_bytes.len() as u32 != expected_len {
         error!(
