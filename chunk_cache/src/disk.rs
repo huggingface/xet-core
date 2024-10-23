@@ -16,7 +16,7 @@ use error_printer::ErrorPrinter;
 use file_utils::SafeFileCreator;
 use merklehash::MerkleHash;
 use sorted_vec::SortedVec;
-use tracing::debug;
+use tracing::{debug, warn};
 
 use crate::{error::ChunkCacheError, CacheConfig, ChunkCache};
 
@@ -79,6 +79,9 @@ fn read_dir(path: impl AsRef<Path>) -> OptionResult<std::fs::ReadDir, ChunkCache
 }
 
 // returns Ok(Some(_)) if result dirent is a directory, Ok(None) if was removed
+// also returns an Ok(None) if the dirent is not a directory, in which case we should
+//   not remove it in case the user put something inadvertantly or intentionally,
+//   but not attempt to parse it as a valid cache directory.
 // Err(_) if an unrecoverable error occurred
 fn is_ok_dir(dir_result: Result<DirEntry, io::Error>) -> OptionResult<DirEntry, ChunkCacheError> {
     let dirent = match dir_result {
@@ -154,13 +157,23 @@ fn try_parse_cache_file(
         .debug_error("failed to decode a file name as a cache item")
     {
         Ok(i) => i,
-        Err(_) => {
+        Err(e) => {
+            warn!(
+                "not a valid cache file, removing: {:?} {e:?}",
+                item.file_name()
+            );
             remove_file(item.path())?;
             return Ok(None);
         }
     };
     if md.len() != cache_item.len {
         // file is invalid, remove it
+        warn!(
+            "cache file len {} does not match expected length {}, removing path: {:?}",
+            md.len(),
+            cache_item.len,
+            item.path()
+        );
         remove_file(item.path())?;
         return Ok(None);
     }
