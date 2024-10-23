@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-
+use std::num::ParseIntError;
 use merklehash::MerkleHash;
 use serde::{Deserialize, Serialize};
 use serde_repr::{Deserialize_repr, Serialize_repr};
@@ -24,6 +24,37 @@ impl std::fmt::Display for Range {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let Range { start, end } = self;
         write!(f, "{start}-{end}")
+    }
+}
+
+#[derive(Debug)]
+pub enum RangeParseError {
+    InvalidFormat,
+    ParseError(ParseIntError),
+}
+
+impl TryFrom<String> for Range {
+    type Error = RangeParseError;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        let parts: Vec<&str> = value.split('-').collect();
+
+        if parts.len() != 2 {
+            return Err(RangeParseError::InvalidFormat);
+        }
+
+        let start = parts[0].parse::<u32>().map_err(RangeParseError::ParseError)?;
+        let end = parts[1].parse::<u32>().map_err(RangeParseError::ParseError)?;
+
+        Ok(Range { start, end })
+    }
+}
+
+impl TryFrom<&str> for Range {
+    type Error = RangeParseError;
+
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
+        String::try_into(value.to_owned())
     }
 }
 
