@@ -10,7 +10,7 @@ use base64::engine::GeneralPurpose;
 use base64::Engine;
 use cache_file_header::CacheFileHeader;
 use cache_item::{range_contained_fn, CacheItem};
-use cas_types::{Key, ChunkRange};
+use cas_types::{ChunkRange, Key};
 use error_printer::ErrorPrinter;
 use file_utils::SafeFileCreator;
 use merklehash::MerkleHash;
@@ -166,7 +166,7 @@ impl DiskCache {
                     Err(e) => {
                         debug!("failed to decoded a directory name as a key: {e}");
                         continue;
-                    }
+                    },
                 };
 
                 let mut items = SortedVec::new();
@@ -226,7 +226,7 @@ impl DiskCache {
                         ErrorKind::NotFound => {
                             self.remove_item(key, &cache_item)?;
                             continue;
-                        }
+                        },
                         _ => return Err(e.into()),
                     },
                 };
@@ -534,7 +534,7 @@ fn read_dir(path: impl AsRef<Path>) -> OptionResult<std::fs::ReadDir, ChunkCache
             } else {
                 Err(e.into())
             }
-        }
+        },
     }
 }
 
@@ -551,7 +551,7 @@ fn is_ok_dir(dir_result: Result<DirEntry, io::Error>) -> OptionResult<DirEntry, 
                 return Ok(None);
             }
             return Err(e.into());
-        }
+        },
     };
     let md = match dirent.metadata() {
         Ok(md) => md,
@@ -560,7 +560,7 @@ fn is_ok_dir(dir_result: Result<DirEntry, io::Error>) -> OptionResult<DirEntry, 
                 return Ok(None);
             }
             return Err(e.into());
-        }
+        },
     };
     if !md.is_dir() {
         debug!("CACHE: expected directory at {:?}, is not directory", dirent.path());
@@ -580,7 +580,7 @@ fn try_parse_cache_file(file_result: io::Result<DirEntry>, capacity: u64) -> Opt
                 return Ok(None);
             }
             return Err(e.into());
-        }
+        },
     };
     let md = match item.metadata() {
         Ok(md) => md,
@@ -589,7 +589,7 @@ fn try_parse_cache_file(file_result: io::Result<DirEntry>, capacity: u64) -> Opt
                 return Ok(None);
             }
             return Err(e.into());
-        }
+        },
     };
 
     if !md.is_file() {
@@ -615,7 +615,7 @@ fn try_parse_cache_file(file_result: io::Result<DirEntry>, capacity: u64) -> Opt
             warn!("not a valid cache file, removing: {:?} {e:?}", item.file_name());
             remove_file(item.path())?;
             return Ok(None);
-        }
+        },
     };
     if md.len() != cache_item.len {
         // file is invalid, remove it
@@ -706,7 +706,13 @@ impl ChunkCache for DiskCache {
         self.get_impl(key, range)
     }
 
-    fn put(&self, key: &Key, range: &ChunkRange, chunk_byte_indices: &[u32], data: &[u8]) -> Result<(), ChunkCacheError> {
+    fn put(
+        &self,
+        key: &Key,
+        range: &ChunkRange,
+        chunk_byte_indices: &[u32],
+        data: &[u8],
+    ) -> Result<(), ChunkCacheError> {
         self.put_impl(key, range, chunk_byte_indices, data)
     }
 }
@@ -715,7 +721,7 @@ impl ChunkCache for DiskCache {
 mod tests {
     use std::collections::BTreeSet;
 
-    use cas_types::{Key, ChunkRange};
+    use cas_types::{ChunkRange, Key};
     use rand::thread_rng;
     use tempdir::TempDir;
 
