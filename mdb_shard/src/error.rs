@@ -43,9 +43,7 @@ pub type Result<T> = std::result::Result<T, MDBShardError>;
 impl PartialEq for MDBShardError {
     fn eq(&self, other: &MDBShardError) -> bool {
         match (self, other) {
-            (MDBShardError::IOError(ref e1), MDBShardError::IOError(ref e2)) => {
-                e1.kind() == e2.kind()
-            }
+            (MDBShardError::IOError(ref e1), MDBShardError::IOError(ref e2)) => e1.kind() == e2.kind(),
             _ => false,
         }
     }

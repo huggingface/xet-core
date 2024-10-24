@@ -28,8 +28,7 @@ impl FromStr for Key {
             return Err(CasTypesError::InvalidKey(s.to_owned()));
         };
 
-        let hash =
-            MerkleHash::from_hex(hash).map_err(|_| CasTypesError::InvalidKey(s.to_owned()))?;
+        let hash = MerkleHash::from_hex(hash).map_err(|_| CasTypesError::InvalidKey(s.to_owned()))?;
 
         Ok(Key {
             prefix: prefix.to_owned(),

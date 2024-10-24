@@ -111,12 +111,7 @@ pub trait MerkleDBBase {
     ///
     /// Note that changes may be commited until a flush() is issued.
     ///
-    fn add_node(
-        &mut self,
-        hash: &MerkleHash,
-        len: usize,
-        children: Vec<(MerkleNodeId, usize)>,
-    ) -> MerkleNode {
+    fn add_node(&mut self, hash: &MerkleHash, len: usize, children: Vec<(MerkleNodeId, usize)>) -> MerkleNode {
         self.maybe_add_node(hash, len, children).0
     }
 

@@ -50,20 +50,15 @@ impl<'a, T: Read> Chunker<'a, T> {
                 // and noting that the hash has a window size of 64
                 // so we should be careful to skip only minimum_chunk - 64 - 1
                 if cur_chunk_len < self.minimum_chunk - MAX_WINDOW_SIZE {
-                    let max_advance = min(
-                        self.minimum_chunk - cur_chunk_len - MAX_WINDOW_SIZE - 1,
-                        read_bytes - cur_pos,
-                    );
+                    let max_advance =
+                        min(self.minimum_chunk - cur_chunk_len - MAX_WINDOW_SIZE - 1, read_bytes - cur_pos);
                     cur_pos += max_advance;
                     cur_chunk_len += max_advance;
                 }
                 let mut consume_len;
                 let mut create_chunk = false;
                 // find a chunk boundary after minimum chunk
-                if let Some(boundary) = self
-                    .hash
-                    .next_match(&readbuf[cur_pos..read_bytes], self.mask)
-                {
+                if let Some(boundary) = self.hash.next_match(&readbuf[cur_pos..read_bytes], self.mask) {
                     consume_len = boundary;
                     create_chunk = true;
                 } else {
@@ -164,19 +159,15 @@ impl<'a, T: Read> LowVarianceChunker<'a, T> {
                 // and noting that the hash has a window size of 64
                 // so we should be careful to skip only minimum_chunk - 64 - 1
                 if cur_chunk_len < self.minimum_chunk - MAX_WINDOW_SIZE {
-                    let max_advance = min(
-                        self.minimum_chunk - cur_chunk_len - MAX_WINDOW_SIZE - 1,
-                        read_bytes - cur_pos,
-                    );
+                    let max_advance =
+                        min(self.minimum_chunk - cur_chunk_len - MAX_WINDOW_SIZE - 1, read_bytes - cur_pos);
                     cur_pos += max_advance;
                     cur_chunk_len += max_advance;
                 }
                 let mut consume_len;
                 let mut create_chunk = false;
                 // find a chunk boundary after minimum chunk
-                if let Some(boundary) =
-                    unsafe { (*cur_hasher).next_match(&readbuf[cur_pos..read_bytes], self.mask) }
-                {
+                if let Some(boundary) = unsafe { (*cur_hasher).next_match(&readbuf[cur_pos..read_bytes], self.mask) } {
                     consume_len = boundary;
                     create_chunk = true;
                 } else {

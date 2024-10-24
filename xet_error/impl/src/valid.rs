@@ -24,10 +24,7 @@ impl Struct<'_> {
                 ));
             }
             if let Some(source) = self.fields.iter().find_map(|f| f.attrs.source) {
-                return Err(Error::new_spanned(
-                    source,
-                    "transparent error struct can't contain #[source]",
-                ));
+                return Err(Error::new_spanned(source, "transparent error struct can't contain #[source]"));
             }
         }
         check_field_attrs(&self.fields)?;
@@ -44,12 +41,8 @@ impl Enum<'_> {
         let has_display = self.has_display();
         for variant in &self.variants {
             variant.validate()?;
-            if has_display && variant.attrs.display.is_none() && variant.attrs.transparent.is_none()
-            {
-                return Err(Error::new_spanned(
-                    variant.original,
-                    "missing #[error(\"...\")] display attribute",
-                ));
+            if has_display && variant.attrs.display.is_none() && variant.attrs.transparent.is_none() {
+                return Err(Error::new_spanned(variant.original, "missing #[error(\"...\")] display attribute"));
             }
         }
         let mut from_types = Set::new();
@@ -73,16 +66,10 @@ impl Variant<'_> {
         check_non_field_attrs(&self.attrs)?;
         if self.attrs.transparent.is_some() {
             if self.fields.len() != 1 {
-                return Err(Error::new_spanned(
-                    self.original,
-                    "#[error(transparent)] requires exactly one field",
-                ));
+                return Err(Error::new_spanned(self.original, "#[error(transparent)] requires exactly one field"));
             }
             if let Some(source) = self.fields.iter().find_map(|f| f.attrs.source) {
-                return Err(Error::new_spanned(
-                    source,
-                    "transparent variant can't contain #[source]",
-                ));
+                return Err(Error::new_spanned(source, "transparent variant can't contain #[source]"));
             }
         }
         check_field_attrs(&self.fields)?;
@@ -107,10 +94,7 @@ impl Field<'_> {
 
 fn check_non_field_attrs(attrs: &Attrs) -> Result<()> {
     if let Some(from) = &attrs.from {
-        return Err(Error::new_spanned(
-            from,
-            "not expected here; the #[from] attribute belongs on a specific field",
-        ));
+        return Err(Error::new_spanned(from, "not expected here; the #[from] attribute belongs on a specific field"));
     }
     if let Some(source) = &attrs.source {
         return Err(Error::new_spanned(
@@ -155,10 +139,7 @@ fn check_field_attrs(fields: &[Field]) -> Result<()> {
         }
         if let Some(backtrace) = field.attrs.backtrace {
             if backtrace_field.is_some() {
-                return Err(Error::new_spanned(
-                    backtrace,
-                    "duplicate #[backtrace] attribute",
-                ));
+                return Err(Error::new_spanned(backtrace, "duplicate #[backtrace] attribute"));
             }
             backtrace_field = Some(field);
             has_backtrace = true;
@@ -220,18 +201,13 @@ fn contains_non_static_lifetime(ty: &Type) -> bool {
             for arg in &bracketed.args {
                 match arg {
                     GenericArgument::Type(ty) if contains_non_static_lifetime(ty) => return true,
-                    GenericArgument::Lifetime(lifetime) if lifetime.ident != "static" => {
-                        return true
-                    }
-                    _ => {}
+                    GenericArgument::Lifetime(lifetime) if lifetime.ident != "static" => return true,
+                    _ => {},
                 }
             }
             false
-        }
-        Type::Reference(ty) => ty
-            .lifetime
-            .as_ref()
-            .map_or(false, |lifetime| lifetime.ident != "static"),
+        },
+        Type::Reference(ty) => ty.lifetime.as_ref().map_or(false, |lifetime| lifetime.ident != "static"),
         _ => false, // maybe implement later if there are common other cases
     }
 }

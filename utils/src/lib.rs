@@ -43,9 +43,7 @@ impl std::fmt::Display for common::Scheme {
 
 impl std::fmt::Display for common::EndpointConfig {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let common::EndpointConfig {
-            host, port, scheme, ..
-        } = self;
+        let common::EndpointConfig { host, port, scheme, .. } = self;
         let scheme_parsed = common::Scheme::try_from(*scheme).unwrap_or_default();
         write!(f, "{scheme_parsed}://{host}:{port}")
     }

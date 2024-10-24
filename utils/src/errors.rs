@@ -51,12 +51,8 @@ impl<E: Send + std::fmt::Debug + Sync> Clone for SingleflightError<E> {
             SingleflightError::NoResult => SingleflightError::NoResult,
             SingleflightError::CallMissing => SingleflightError::CallMissing,
             SingleflightError::NoNotifierCreated => SingleflightError::NoNotifierCreated,
-            SingleflightError::InternalError(e) => {
-                SingleflightError::WaiterInternalError(format!("{e:?}"))
-            }
-            SingleflightError::WaiterInternalError(s) => {
-                SingleflightError::WaiterInternalError(s.clone())
-            }
+            SingleflightError::InternalError(e) => SingleflightError::WaiterInternalError(format!("{e:?}")),
+            SingleflightError::WaiterInternalError(s) => SingleflightError::WaiterInternalError(s.clone()),
             SingleflightError::JoinError(e) => SingleflightError::JoinError(e.clone()),
             SingleflightError::OwnerPanicked => SingleflightError::OwnerPanicked,
         }

@@ -64,8 +64,10 @@ async fn run_shard_benchmark(
             let path = shard.write_to_directory(dir).unwrap();
 
             eprintln!(
-                "-> Target size {target_size:?}: Created shard {:?} / {n_shards:?} with {} CAS blocks and {} chunks", 
-                i + 1, shard.num_cas_entries(), shard.num_cas_entries() * CAS_BLOCK_SIZE
+                "-> Target size {target_size:?}: Created shard {:?} / {n_shards:?} with {} CAS blocks and {} chunks",
+                i + 1,
+                shard.num_cas_entries(),
+                shard.num_cas_entries() * CAS_BLOCK_SIZE
             );
             MDBShardInfo::load_from_file(&mut File::open(path)?)?.print_report();
         }
@@ -105,9 +107,7 @@ async fn run_shard_benchmark(
 
                 while query_loc < file_contiguity {
                     let res = mdb_ref
-                        .chunk_hash_dedup_query(
-                            &file_info[query_loc..(query_loc + contiguity).min(file_info.len())],
-                        )
+                        .chunk_hash_dedup_query(&file_info[query_loc..(query_loc + contiguity).min(file_info.len())])
                         .await
                         .unwrap();
 
@@ -130,10 +130,7 @@ async fn run_shard_benchmark(
                 time::sleep(Duration::from_secs(1)).await;
                 let elapsed_time = start_time.elapsed().as_secs_f64();
                 let count = counter_clone.load(Ordering::Relaxed);
-                println!(
-                    "{count} queries, queries per second: {}",
-                    count as f64 / elapsed_time
-                );
+                println!("{count} queries, queries per second: {}", count as f64 / elapsed_time);
             }
         }
     });
@@ -161,12 +158,7 @@ fn parse_arg(arg: &str) -> (u64, u64) {
 #[tokio::main]
 async fn main() {
     let arg_res = App::new("ShardBenchmark")
-        .arg(
-            Arg::new("SIZE")
-                .multiple_values(true)
-                .required(true)
-                .help("Sizes to be parsed"),
-        )
+        .arg(Arg::new("SIZE").multiple_values(true).required(true).help("Sizes to be parsed"))
         .arg(
             Arg::new("contiguity")
                 .long("contiguity")
@@ -235,13 +227,7 @@ async fn main() {
 
     assert!(dir.exists());
 
-    run_shard_benchmark(
-        shard_sizes,
-        contiguity,
-        file_contiguity,
-        hit_percent.clamp(0.0, 100.0) / 100.0,
-        &dir,
-    )
-    .await
-    .unwrap();
+    run_shard_benchmark(shard_sizes, contiguity, file_contiguity, hit_percent.clamp(0.0, 100.0) / 100.0, &dir)
+        .await
+        .unwrap();
 }

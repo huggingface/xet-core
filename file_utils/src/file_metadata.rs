@@ -4,11 +4,7 @@ use std::{fs::Metadata, path::Path, time::SystemTime};
 use std::os::unix::fs::MetadataExt;
 
 /// Matches the metadata of a file to another file's metadata
-pub fn set_file_metadata<P: AsRef<Path>>(
-    path: P,
-    metadata: &Metadata,
-    match_owner: bool,
-) -> std::io::Result<()> {
+pub fn set_file_metadata<P: AsRef<Path>>(path: P, metadata: &Metadata, match_owner: bool) -> std::io::Result<()> {
     let path = path.as_ref();
 
     // Set permissions
@@ -43,12 +39,7 @@ pub fn set_file_metadata<P: AsRef<Path>>(
         }
 
         unsafe {
-            libc::utimensat(
-                libc::AT_FDCWD,
-                path_s.as_bytes().as_ptr() as *const libc::c_char,
-                times.as_ptr(),
-                0,
-            );
+            libc::utimensat(libc::AT_FDCWD, path_s.as_bytes().as_ptr() as *const libc::c_char, times.as_ptr(), 0);
         }
     }
     Ok(())
@@ -69,11 +60,7 @@ mod tests {
         File::create(&file_path).unwrap();
 
         // Set some initial permissions
-        let mut perms = File::open(&file_path)
-            .unwrap()
-            .metadata()
-            .unwrap()
-            .permissions();
+        let mut perms = File::open(&file_path).unwrap().metadata().unwrap().permissions();
         perms.set_mode(0o644);
 
         fs::set_permissions(&file_path, perms.clone()).unwrap();
@@ -95,14 +82,8 @@ mod tests {
         let updated_metadata = File::open(file_path).unwrap().metadata().unwrap();
         let src_metadata = File::open(src_file_path).unwrap().metadata().unwrap();
 
-        assert_eq!(
-            updated_metadata.permissions().mode(),
-            src_metadata.permissions().mode()
-        );
-        assert_eq!(
-            updated_metadata.modified().unwrap(),
-            src_metadata.modified().unwrap()
-        );
+        assert_eq!(updated_metadata.permissions().mode(), src_metadata.permissions().mode());
+        assert_eq!(updated_metadata.modified().unwrap(), src_metadata.modified().unwrap());
     }
 
     #[test]
@@ -123,24 +104,12 @@ mod tests {
 
         let times = [
             libc::timespec {
-                tv_sec: atime
-                    .duration_since(SystemTime::UNIX_EPOCH)
-                    .unwrap()
-                    .as_secs() as libc::time_t,
-                tv_nsec: atime
-                    .duration_since(SystemTime::UNIX_EPOCH)
-                    .unwrap()
-                    .subsec_nanos() as libc::c_long,
+                tv_sec: atime.duration_since(SystemTime::UNIX_EPOCH).unwrap().as_secs() as libc::time_t,
+                tv_nsec: atime.duration_since(SystemTime::UNIX_EPOCH).unwrap().subsec_nanos() as libc::c_long,
             },
             libc::timespec {
-                tv_sec: mtime
-                    .duration_since(SystemTime::UNIX_EPOCH)
-                    .unwrap()
-                    .as_secs() as libc::time_t,
-                tv_nsec: mtime
-                    .duration_since(SystemTime::UNIX_EPOCH)
-                    .unwrap()
-                    .subsec_nanos() as libc::c_long,
+                tv_sec: mtime.duration_since(SystemTime::UNIX_EPOCH).unwrap().as_secs() as libc::time_t,
+                tv_nsec: mtime.duration_since(SystemTime::UNIX_EPOCH).unwrap().subsec_nanos() as libc::c_long,
             },
         ];
 
@@ -158,14 +127,8 @@ mod tests {
 
         // Check that timestamps have been updated
         let updated_metadata = file.metadata().unwrap();
-        assert_eq!(
-            updated_metadata.accessed().unwrap(),
-            src_metadata.accessed().unwrap()
-        );
-        assert_eq!(
-            updated_metadata.modified().unwrap(),
-            src_metadata.modified().unwrap()
-        );
+        assert_eq!(updated_metadata.accessed().unwrap(), src_metadata.accessed().unwrap());
+        assert_eq!(updated_metadata.modified().unwrap(), src_metadata.modified().unwrap());
     }
 
     #[test]
@@ -183,11 +146,7 @@ mod tests {
         let uid = 1000;
         let gid = 1000;
         unsafe {
-            libc::chown(
-                src_file_path.to_str().unwrap().as_bytes().as_ptr() as *const libc::c_char,
-                uid,
-                gid,
-            );
+            libc::chown(src_file_path.to_str().unwrap().as_bytes().as_ptr() as *const libc::c_char, uid, gid);
         }
 
         let src_metadata = src_file.metadata().unwrap();

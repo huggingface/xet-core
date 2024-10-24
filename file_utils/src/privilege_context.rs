@@ -155,10 +155,7 @@ impl PrivilgedExecutionContext {
         let path = path.as_path();
 
         let Some(pparent) = path.parent() else {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                format!("Path {path:?} has no parent."),
-            ));
+            return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, format!("Path {path:?} has no parent.")));
         };
 
         self.create_dir_all(pparent)?;
@@ -211,8 +208,12 @@ pub fn create_file(path: impl AsRef<Path>) -> std::io::Result<File> {
 fn permission_warning(path: &Path, recursive: bool) {
     #[cfg(unix)]
     {
-        let message = format!("The process doesn't have correct read-write permission into path {path:?}, please resets 
-        ownership by 'sudo chown{}{} {path:?}'.", if recursive {" -R "} else {" "}, whoami::username());
+        let message = format!(
+            "The process doesn't have correct read-write permission into path {path:?}, please resets 
+        ownership by 'sudo chown{}{} {path:?}'.",
+            if recursive { " -R " } else { " " },
+            whoami::username()
+        );
 
         eprintln!("{}", message.bright_blue());
     }

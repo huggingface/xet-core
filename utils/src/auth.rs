@@ -27,9 +27,7 @@ pub struct ErrTokenRefresher;
 
 impl TokenRefresher for ErrTokenRefresher {
     fn refresh(&self) -> Result<TokenInfo, AuthError> {
-        Err(AuthError::RefreshFunctionNotCallable(
-            "Token refresh not expected".to_string(),
-        ))
+        Err(AuthError::RefreshFunctionNotCallable("Token refresh not expected".to_string()))
     }
 }
 

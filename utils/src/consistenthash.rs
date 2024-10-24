@@ -11,9 +11,7 @@ struct VNode {
 
 impl VNode {
     fn new(ip: &str) -> Self {
-        VNode {
-            addr: ip.to_string(),
-        }
+        VNode { addr: ip.to_string() }
     }
 }
 
@@ -40,15 +38,9 @@ impl ConsistentHash {
             }
         }
         if valid_hosts == 0 {
-            return Err(anyhow!(
-                "Unable to create ConsistentHash with empty host set {:?}",
-                load_status_vec
-            ));
+            return Err(anyhow!("Unable to create ConsistentHash with empty host set {:?}", load_status_vec));
         }
-        Ok(Self {
-            ring,
-            ts: oldest_ts,
-        })
+        Ok(Self { ring, ts: oldest_ts })
     }
 
     pub fn server(&self, key: &str) -> Option<String> {
@@ -140,11 +132,7 @@ mod tests {
         ]);
         let server_counts: HashMap<String, usize> = (0..20)
             .map(|_| {
-                let key: String = rng
-                    .sample_iter(&Alphanumeric)
-                    .take(7)
-                    .map(char::from)
-                    .collect();
+                let key: String = rng.sample_iter(&Alphanumeric).take(7).map(char::from).collect();
                 ch.server(&key).unwrap()
             })
             .counts();

@@ -51,14 +51,10 @@ impl DiskBasedGlobalDedupTable {
         match write_lock.entry(prefix.to_owned()) {
             std::collections::hash_map::Entry::Occupied(db) => Ok(db.get().clone()),
             std::collections::hash_map::Entry::Vacant(entry_ref) => {
-                let db = Arc::new(
-                    self.env
-                        .create_database(Some(prefix))
-                        .map_err(map_db_error)?,
-                );
+                let db = Arc::new(self.env.create_database(Some(prefix)).map_err(map_db_error)?);
                 entry_ref.insert(db.clone());
                 Ok(db)
-            }
+            },
         }
     }
 
@@ -76,9 +72,8 @@ impl DiskBasedGlobalDedupTable {
         chunk_hashes.iter().for_each(|chunk| {
             let maybe_salted_chunk_hash = with_salt(chunk, salt).ok();
             if let Some(salted_chunk_hash) = maybe_salted_chunk_hash {
-                let _ = db
-                    .put(&mut write_txn, &salted_chunk_hash, shard_hash)
-                    .map_err(map_db_error); // Prints warning for error, otherwise ignores.
+                let _ = db.put(&mut write_txn, &salted_chunk_hash, shard_hash).map_err(map_db_error);
+                // Prints warning for error, otherwise ignores.
             }
         });
         write_txn.commit().map_err(map_db_error)?;
@@ -130,8 +125,7 @@ mod tests {
         let shard_hash = rng_hash(rng.gen());
         let salt: [u8; 32] = rng.gen();
 
-        db.batch_add(&[chunk_hash], &shard_hash, "default", &salt)
-            .await?;
+        db.batch_add(&[chunk_hash], &shard_hash, "default", &salt).await?;
 
         let query_shard = db.query(&[with_salt(&chunk_hash, &salt)?], prefix).await;
 
@@ -162,10 +156,7 @@ mod tests {
                 let shard_hash = shard_hashes[i];
                 let db = db.clone();
 
-                tokio::spawn(async move {
-                    db.batch_add(&[chunk_hash], &shard_hash, prefix, &salt)
-                        .await
-                })
+                tokio::spawn(async move { db.batch_add(&[chunk_hash], &shard_hash, prefix, &salt).await })
             })
             .collect_vec();
 
@@ -207,8 +198,7 @@ mod tests {
 
                 tokio::spawn(async move {
                     let db = DiskBasedGlobalDedupTable::open_or_create(&db_file).unwrap();
-                    db.batch_add(&chunk_hashes, &shard_hash, prefix, &salt)
-                        .await
+                    db.batch_add(&chunk_hashes, &shard_hash, prefix, &salt).await
                 })
             })
             .collect_vec();

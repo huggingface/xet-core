@@ -146,10 +146,7 @@ impl From<ParseIntError> for DataHashHexParseError {
 impl DataHash {
     /// Returns the hexadecimal printout of the hash.
     pub fn hex(&self) -> String {
-        format!(
-            "{:016x}{:016x}{:016x}{:016x}",
-            self.0[0], self.0[1], self.0[2], self.0[3]
-        )
+        format!("{:016x}{:016x}{:016x}{:016x}", self.0[0], self.0[1], self.0[2], self.0[3])
     }
 
     /// Parses a hexadecimal string as a DataHash, returning
@@ -244,14 +241,14 @@ impl Hash for DataHash {
 // as generated from random.org
 /// The hash key used for [compute_data_hash]
 const DATA_KEY: [u8; 32] = [
-    102, 151, 245, 119, 91, 149, 80, 222, 49, 53, 203, 172, 165, 151, 24, 28, 157, 228, 33, 16,
-    155, 235, 43, 88, 180, 208, 176, 75, 147, 173, 242, 41,
+    102, 151, 245, 119, 91, 149, 80, 222, 49, 53, 203, 172, 165, 151, 24, 28, 157, 228, 33, 16, 155, 235, 43, 88, 180,
+    208, 176, 75, 147, 173, 242, 41,
 ];
 
 /// The hash key used for [compute_internal_node_hash]
 const INTERNAL_NODE_HASH: [u8; 32] = [
-    1, 126, 197, 199, 165, 71, 41, 150, 253, 148, 102, 102, 180, 138, 2, 230, 93, 221, 83, 111, 55,
-    199, 109, 210, 248, 99, 82, 230, 74, 83, 113, 63,
+    1, 126, 197, 199, 165, 71, 41, 150, 253, 148, 102, 102, 180, 138, 2, 230, 93, 221, 83, 111, 55, 199, 109, 210, 248,
+    99, 82, 230, 74, 83, 113, 63,
 ];
 
 /// Hash function used to compute a leaf hash of the MerkleTree

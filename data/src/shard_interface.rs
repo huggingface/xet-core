@@ -5,9 +5,7 @@ use mdb_shard::ShardFileManager;
 use std::sync::Arc;
 use tracing::{info, warn};
 
-pub async fn create_shard_manager(
-    shard_storage_config: &StorageConfig,
-) -> Result<ShardFileManager> {
+pub async fn create_shard_manager(shard_storage_config: &StorageConfig) -> Result<ShardFileManager> {
     let shard_session_directory = shard_storage_config
         .staging_directory
         .as_ref()
@@ -21,22 +19,15 @@ pub async fn create_shard_manager(
     let shard_manager = ShardFileManager::load_dir(shard_session_directory).await?;
 
     if shard_cache_directory.exists() {
-        shard_manager
-            .load_and_cleanup_shards_by_path(&[shard_cache_directory])
-            .await?;
+        shard_manager.load_and_cleanup_shards_by_path(&[shard_cache_directory]).await?;
     } else {
-        warn!(
-            "Merkle DB Cache path {:?} does not exist, skipping registration.",
-            shard_cache_directory
-        );
+        warn!("Merkle DB Cache path {:?} does not exist, skipping registration.", shard_cache_directory);
     }
 
     Ok(shard_manager)
 }
 
-pub async fn create_shard_client(
-    shard_storage_config: &StorageConfig,
-) -> Result<Arc<dyn ShardClientInterface>> {
+pub async fn create_shard_client(shard_storage_config: &StorageConfig) -> Result<Arc<dyn ShardClientInterface>> {
     info!("Shard endpoint = {:?}", shard_storage_config.endpoint);
     let client: Arc<dyn ShardClientInterface> = match &shard_storage_config.endpoint {
         Server(endpoint) => Arc::new(HttpShardClient::new(

@@ -146,13 +146,7 @@ fn default_smudge_config() -> Result<TranslatorConfig> {
 async fn clean_file(arg: &CleanArg) -> Result<()> {
     let reader = BufReader::new(File::open(&arg.file)?);
     let writer: Box<dyn Write> = match &arg.dest {
-        Some(path) => Box::new(
-            File::options()
-                .create(true)
-                .write(true)
-                .truncate(true)
-                .open(path)?,
-        ),
+        Some(path) => Box::new(File::options().create(true).write(true).truncate(true).open(path)?),
         None => Box::new(std::io::stdout()),
     };
 
@@ -191,13 +185,8 @@ async fn smudge_file(arg: &SmudgeArg) -> Result<()> {
         Some(path) => Box::new(File::open(path)?),
         None => Box::new(std::io::stdin()),
     };
-    let mut writer: Box<dyn Write + Send> = Box::new(BufWriter::new(
-        File::options()
-            .create(true)
-            .write(true)
-            .truncate(true)
-            .open(&arg.dest)?,
-    ));
+    let mut writer: Box<dyn Write + Send> =
+        Box::new(BufWriter::new(File::options().create(true).write(true).truncate(true).open(&arg.dest)?));
 
     smudge(reader, &mut writer).await?;
 
@@ -219,9 +208,7 @@ async fn smudge(mut reader: impl Read, writer: &mut Box<dyn Write + Send>) -> Re
 
     let translator = PointerFileTranslator::new(default_smudge_config()?).await?;
 
-    translator
-        .smudge_file_from_pointer(&pointer_file, writer, None)
-        .await?;
+    translator.smudge_file_from_pointer(&pointer_file, writer, None).await?;
 
     Ok(())
 }

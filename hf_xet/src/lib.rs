@@ -31,9 +31,7 @@ pub fn upload_files(
         Ok(tokio::runtime::Builder::new_multi_thread()
             .enable_all()
             .build()?
-            .block_on(async {
-                data_client::upload_async(file_paths, endpoint, token_info, refresher).await
-            })
+            .block_on(async { data_client::upload_async(file_paths, endpoint, token_info, refresher).await })
             .map_err(|e| PyException::new_err(format!("{e:?}")))?
             .into_iter()
             .map(PyPointerFile::from)
@@ -60,9 +58,7 @@ pub fn download_files(
         tokio::runtime::Builder::new_multi_thread()
             .enable_all()
             .build()?
-            .block_on(async move {
-                data_client::download_async(pfs, endpoint, token_info, refresher).await
-            })
+            .block_on(async move { data_client::download_async(pfs, endpoint, token_info, refresher).await })
             .map_err(|e| PyException::new_err(format!("{e:?}")))
     })
 }
@@ -104,11 +100,7 @@ impl From<PyPointerFile> for PointerFile {
 impl PyPointerFile {
     #[new]
     pub fn new(path: String, hash: String, filesize: u64) -> Self {
-        Self {
-            path,
-            hash,
-            filesize,
-        }
+        Self { path, hash, filesize }
     }
 
     fn __str__(&self) -> String {
@@ -116,10 +108,7 @@ impl PyPointerFile {
     }
 
     fn __repr__(&self) -> String {
-        format!(
-            "PyPointerFile({}, {}, {})",
-            self.path, self.hash, self.filesize
-        )
+        format!("PyPointerFile({}, {}, {})", self.path, self.hash, self.filesize)
     }
 }
 

@@ -56,12 +56,12 @@ impl Display<'_> {
                         continue;
                     }
                     member
-                }
+                },
                 'a'..='z' | 'A'..='Z' | '_' => {
                     let mut ident = take_ident(&mut read);
                     ident.set_span(span);
                     Member::Named(ident)
-                }
+                },
                 _ => continue,
             };
             if let Some(&field) = member_index.get(&member) {
@@ -144,7 +144,7 @@ fn take_int(read: &mut &str) -> String {
             _ => {
                 *read = &read[i..];
                 break;
-            }
+            },
         }
     }
     int
@@ -163,7 +163,7 @@ fn take_ident(read: &mut &str) -> Ident {
             _ => {
                 *read = &read[i..];
                 break;
-            }
+            },
         }
     }
     Ident::parse_any.parse_str(&ident).unwrap()

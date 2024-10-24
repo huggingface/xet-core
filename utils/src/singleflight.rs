@@ -447,12 +447,7 @@ mod tests {
             }));
         }
 
-        let num_callers = join_all(handlers)
-            .await
-            .into_iter()
-            .map(|r| r.unwrap())
-            .filter(|b| *b)
-            .count();
+        let num_callers = join_all(handlers).await.into_iter().map(|r| r.unwrap()).filter(|b| *b).count();
         assert_eq!(1, num_callers);
         assert_eq!(1, times_called.load(Ordering::SeqCst));
     }
@@ -490,12 +485,7 @@ mod tests {
         assert_eq!(1, times_called_y.load(Ordering::SeqCst));
     }
 
-    fn call_success_n_times(
-        times: usize,
-        key: &str,
-        c: Arc<AtomicU32>,
-        val: usize,
-    ) -> Vec<JoinHandle<(usize, bool)>> {
+    fn call_success_n_times(times: usize, key: &str, c: Arc<AtomicU32>, val: usize) -> Vec<JoinHandle<(usize, bool)>> {
         let g: Arc<Group<usize, ()>> = Arc::new(Group::new());
         let mut handlers = Vec::new();
         for _ in 0..times {
@@ -536,10 +526,7 @@ mod tests {
         let waiter_handle = tokio::spawn(waiter_task);
         let owner_task = OwnerTask::new(future, call.clone());
         let result = tokio::spawn(owner_task).await;
-        timeout(WAITER_TIMEOUT, waiter_handle)
-            .await
-            .unwrap()
-            .unwrap();
+        timeout(WAITER_TIMEOUT, waiter_handle).await.unwrap().unwrap();
         assert_eq!(VAL, result.unwrap().unwrap());
         assert_eq!(VAL, call.get().unwrap());
         assert_eq!(1, call.num_waiters.load(Ordering::SeqCst)) // we should have had 1 waiter
@@ -560,10 +547,7 @@ mod tests {
         let owner_task = OwnerTask::new(future, call.clone());
         let result = tokio::spawn(owner_task).await;
         assert!(result.is_err());
-        timeout(WAITER_TIMEOUT, waiter_handle)
-            .await
-            .unwrap()
-            .unwrap();
+        timeout(WAITER_TIMEOUT, waiter_handle).await.unwrap().unwrap();
         assert_eq!(1, call.num_waiters.load(Ordering::SeqCst)) // we should have had 1 waiter
     }
 
@@ -602,22 +586,8 @@ mod tests {
         }
 
         // spawn tasks
-        let t1 = tokio::spawn(run_task(
-            1,
-            group.clone(),
-            waiters.clone(),
-            send1,
-            false,
-            vals1.clone(),
-        ));
-        let t2 = tokio::spawn(run_task(
-            2,
-            group.clone(),
-            waiters.clone(),
-            send2,
-            true,
-            vals2.clone(),
-        ));
+        let t1 = tokio::spawn(run_task(1, group.clone(), waiters.clone(), send1, false, vals1.clone()));
+        let t2 = tokio::spawn(run_task(2, group.clone(), waiters.clone(), send2, true, vals2.clone()));
 
         // try to receive all the values from task1 without getting stuck.
         for (i, expected_val) in vals1.into_iter().enumerate() {
@@ -636,12 +606,9 @@ mod tests {
                 println!("[main] notified val: {}", SHARED_ITEM);
             }
             println!("[main] getting t1[{}]", i);
-            let res = timeout(WAITER_TIMEOUT, recv1.recv()).await.map_err(|_| {
-                format!(
-                    "Timed out on task1 waiting for val: {}. Likely deadlock.",
-                    expected_val
-                )
-            });
+            let res = timeout(WAITER_TIMEOUT, recv1.recv())
+                .await
+                .map_err(|_| format!("Timed out on task1 waiting for val: {}. Likely deadlock.", expected_val));
             let val = res.unwrap().unwrap();
             println!("[main] got val: {} from t1[{}]", val, i);
             assert_eq!(expected_val, val);
@@ -649,12 +616,9 @@ mod tests {
 
         // try to receive all the values from task2 without getting stuck.
         for expected_val in vals2 {
-            let res = timeout(WAITER_TIMEOUT, recv2.recv()).await.map_err(|_| {
-                format!(
-                    "Timed out on task2 waiting for val: {}. Likely deadlock.",
-                    expected_val
-                )
-            });
+            let res = timeout(WAITER_TIMEOUT, recv2.recv())
+                .await
+                .map_err(|_| format!("Timed out on task2 waiting for val: {}. Likely deadlock.", expected_val));
             let val = res.unwrap().unwrap();
             assert_eq!(expected_val, val);
         }
@@ -682,10 +646,7 @@ mod tests {
             async move {
                 println!("[task: {}] running task for: {}", id, v);
                 let (res, is_owner) = g.work(format!("{}", v).as_str(), run_fut(v, waiters)).await;
-                println!(
-                    "[task: {}] completed task for: {}, is_owner: {}",
-                    id, v, is_owner
-                );
+                println!("[task: {}] completed task for: {}, is_owner: {}", id, v, is_owner);
                 if v == SHARED_ITEM {
                     assert_eq!(should_own, is_owner);
                 }
@@ -703,10 +664,7 @@ mod tests {
         Ok(())
     }
 
-    async fn run_fut(
-        v: usize,
-        waiters: Arc<Mutex<HashMap<usize, Arc<Notify>>>>,
-    ) -> Result<usize, ()> {
+    async fn run_fut(v: usize, waiters: Arc<Mutex<HashMap<usize, Arc<Notify>>>>) -> Result<usize, ()> {
         let waiter = {
             let x = waiters.lock().await;
             x.get(&v).cloned()

@@ -99,12 +99,7 @@ impl MerkleNode {
         self.children = ch;
     }
     /// Constructs a new node
-    pub fn new(
-        id: MerkleNodeId,
-        hash: MerkleHash,
-        len: usize,
-        children: Vec<(MerkleNodeId, usize)>,
-    ) -> MerkleNode {
+    pub fn new(id: MerkleNodeId, hash: MerkleHash, len: usize, children: Vec<(MerkleNodeId, usize)>) -> MerkleNode {
         MerkleNode {
             id,
             hash,
@@ -242,16 +237,14 @@ impl MerkleNodeAttributes {
      * it has a CAS parent.
      */
     pub fn has_cas_data(&self) -> bool {
-        self.attributes.contains(DataTypeBitfield::CAS)
-            || self.parent[NodeDataType::CAS as usize] != ID_UNASSIGNED
+        self.attributes.contains(DataTypeBitfield::CAS) || self.parent[NodeDataType::CAS as usize] != ID_UNASSIGNED
     }
     /** Whether this node is a substring of a FILE entry.
      * This is a simple check: either this node is a FILE entry, or
      * it has a CAS parent.
      */
     pub fn has_file_data(&self) -> bool {
-        self.attributes.contains(DataTypeBitfield::FILE)
-            || self.parent[NodeDataType::FILE as usize] != ID_UNASSIGNED
+        self.attributes.contains(DataTypeBitfield::FILE) || self.parent[NodeDataType::FILE as usize] != ID_UNASSIGNED
     }
     /**
      * Checks if this is a substring of either a CAS or FILE entry.

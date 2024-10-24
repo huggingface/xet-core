@@ -40,9 +40,7 @@ impl WrappedTokenRefresher {
                 .unwrap_or("unknown".to_string());
             if !f.is_callable() {
                 error!("TokenRefresher func: {name} is not callable");
-                return Err(PyTypeError::new_err(format!(
-                    "refresh func: {name} is not callable"
-                )));
+                return Err(PyTypeError::new_err(format!("refresh func: {name} is not callable")));
             }
             Ok(name)
         })
@@ -57,13 +55,11 @@ impl TokenRefresher for WrappedTokenRefresher {
             if !f.is_callable() {
                 return Err(AuthError::RefreshFunctionNotCallable(self.name.clone()));
             }
-            let result = f.call0().map_err(|e| {
-                AuthError::TokenRefreshFailure(format!("Error refreshing token: {e:?}"))
-            })?;
+            let result = f
+                .call0()
+                .map_err(|e| AuthError::TokenRefreshFailure(format!("Error refreshing token: {e:?}")))?;
             result.extract::<(String, u64)>().map_err(|e| {
-                AuthError::TokenRefreshFailure(format!(
-                    "refresh function didn't return a (String, u64) tuple: {e:?}"
-                ))
+                AuthError::TokenRefreshFailure(format!("refresh function didn't return a (String, u64) tuple: {e:?}"))
             })
         })
     }

@@ -66,11 +66,7 @@ impl PointerFileTranslator {
     pub async fn new(config: TranslatorConfig) -> Result<PointerFileTranslator> {
         let shard_manager = Arc::new(create_shard_manager(&config.shard_storage_config).await?);
 
-        let cas_client = create_cas_client(
-            &config.cas_storage_config,
-            &config.repo_info,
-            shard_manager.clone(),
-        )?;
+        let cas_client = create_cas_client(&config.cas_storage_config, &config.repo_info, shard_manager.clone())?;
 
         let remote_shards = {
             if let Some(dedup) = &config.dedup_config {
@@ -83,11 +79,7 @@ impl PointerFileTranslator {
                 )
                 .await?
             } else {
-                RemoteShardInterface::new_query_only(
-                    config.file_query_policy,
-                    &config.shard_storage_config,
-                )
-                .await?
+                RemoteShardInterface::new_query_only(config.file_query_policy, &config.shard_storage_config).await?
             }
         };
 
@@ -108,15 +100,9 @@ impl PointerFileTranslator {
     /// simultaneously.
     /// The caller is responsible for memory usage management, the parameter "buffer_size"
     /// indicates the maximum number of Vec<u8> in the internal buffer.
-    pub async fn start_clean(
-        &self,
-        buffer_size: usize,
-        file_name: Option<&Path>,
-    ) -> Result<Arc<Cleaner>> {
+    pub async fn start_clean(&self, buffer_size: usize, file_name: Option<&Path>) -> Result<Arc<Cleaner>> {
         let Some(ref dedup) = self.config.dedup_config else {
-            return Err(DataProcessingError::DedupConfigError(
-                "empty dedup config".to_owned(),
-            ));
+            return Err(DataProcessingError::DedupConfigError("empty dedup config".to_owned()));
         };
 
         Cleaner::new(
@@ -181,15 +167,11 @@ impl PointerFileTranslator {
         let merged_shards = merged_shards_jh.await??;
 
         // Now, these need to be sent to the remote.
-        self.remote_shards
-            .upload_and_register_shards(merged_shards)
-            .await?;
+        self.remote_shards.upload_and_register_shards(merged_shards).await?;
 
         // Finally, we can move all the mdb shards from the session directory, which is used
         // by the upload_shard task, to the cache.
-        self.remote_shards
-            .move_session_shards_to_local_cache()
-            .await?;
+        self.remote_shards.move_session_shards_to_local_cache().await?;
 
         Ok(())
     }
@@ -213,14 +195,10 @@ pub(crate) async fn register_new_cas_block(
     // We now assume that the server will compress Xorbs using lz4,
     // without actually compressing the data client-side.
     // The accounting logic will be moved to server-side in the future.
-    let compressed_bytes_len = lz4::block::compress(
-        &cas_data.data,
-        Some(lz4::block::CompressionMode::DEFAULT),
-        false,
-    )
-    .map(|out| out.len())
-    .unwrap_or(raw_bytes_len)
-    .min(raw_bytes_len);
+    let compressed_bytes_len = lz4::block::compress(&cas_data.data, Some(lz4::block::CompressionMode::DEFAULT), false)
+        .map(|out| out.len())
+        .unwrap_or(raw_bytes_len)
+        .min(raw_bytes_len);
 
     let metadata = CASChunkSequenceHeader::new_with_compression(
         cas_hash,
@@ -254,13 +232,8 @@ pub(crate) async fn register_new_cas_block(
     if !cas_info.chunks.is_empty() {
         shard_manager.add_cas_block(cas_info).await?;
 
-        cas.put(
-            cas_prefix,
-            &cas_hash,
-            take(&mut cas_data.data),
-            chunk_boundaries,
-        )
-        .await?;
+        cas.put(cas_prefix, &cas_hash, take(&mut cas_data.data), chunk_boundaries)
+            .await?;
     } else {
         debug_assert_eq!(cas_hash, MerkleHash::default());
     }
@@ -292,8 +265,7 @@ impl PointerFileTranslator {
         writer: &mut Box<dyn Write + Send>,
         range: Option<(usize, usize)>,
     ) -> Result<()> {
-        self.smudge_file_from_hash(&pointer.hash()?, writer, range)
-            .await
+        self.smudge_file_from_hash(&pointer.hash()?, writer, range).await
     }
 
     pub async fn smudge_file_from_hash(
@@ -303,9 +275,7 @@ impl PointerFileTranslator {
         _range: Option<(usize, usize)>,
     ) -> Result<()> {
         let http_client = cas_client::build_http_client(&None)?;
-        self.cas
-            .get_file(Arc::new(http_client), file_id, writer)
-            .await?;
+        self.cas.get_file(Arc::new(http_client), file_id, writer).await?;
         Ok(())
     }
 }

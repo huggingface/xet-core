@@ -13,9 +13,7 @@ fn main() {
         if u64::from_str(v).is_ok() {
             return Ok(());
         }
-        Err(String::from(
-            "The size must be a valid unsigned 64-bit integer.",
-        ))
+        Err(String::from("The size must be a valid unsigned 64-bit integer."))
     }
     let matches = App::new("Example of using fastcdc crate.")
         .about("Splits a (large) file and computes checksums.")
@@ -34,12 +32,7 @@ fn main() {
                 .long("lowvariance")
                 .help("If the low variance chunker is used"),
         )
-        .arg(
-            Arg::new("INPUT")
-                .help("Sets the input file to use")
-                .required(true)
-                .index(1),
-        )
+        .arg(Arg::new("INPUT").help("Sets the input file to use").required(true).index(1))
         .get_matches();
     let size = matches.value_of("size").unwrap_or("131072");
     let lv: bool = if matches.occurrences_of("lowvariance") >= 1 {

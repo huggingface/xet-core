@@ -13,11 +13,7 @@ use std::collections::{HashMap, HashSet};
  * Inserts a leaf node described by just a hash and a length into a database,
  * returning an existing node if one already exists.
  */
-pub fn node_from_hash(
-    db: &mut (impl MerkleDBBase + ?Sized),
-    hash: &MerkleHash,
-    len: usize,
-) -> MerkleNode {
+pub fn node_from_hash(db: &mut (impl MerkleDBBase + ?Sized), hash: &MerkleHash, len: usize) -> MerkleNode {
     db.add_node(hash, len, Vec::new())
 }
 
@@ -25,11 +21,7 @@ pub fn node_from_hash(
  * Inserts an interior node described by just a hash and a length into a database,
  * returning an existing node if one already exists.
  */
-pub fn node_from_children(
-    db: &mut (impl MerkleDBBase + ?Sized),
-    children: &[MerkleNode],
-    len: usize,
-) -> MerkleNode {
+pub fn node_from_children(db: &mut (impl MerkleDBBase + ?Sized), children: &[MerkleNode], len: usize) -> MerkleNode {
     let hash = hash_node_sequence(children);
     let children_id: Vec<_> = children.iter().map(|x| (x.id(), x.len())).collect();
     db.add_node(&hash, len, children_id)
@@ -110,11 +102,7 @@ pub fn merge_one_level(
             || idx + 1 == total_children
         {
             // cut a parent node here
-            let parent_node = node_from_children(
-                db,
-                &nodes[cur_children_start_idx..=idx],
-                cur_children_total_len,
-            );
+            let parent_node = node_from_children(db, &nodes[cur_children_start_idx..=idx], cur_children_total_len);
             let parent_id = parent_node.id();
             parents.push(parent_node);
             #[allow(clippy::needless_range_loop)]
@@ -208,9 +196,7 @@ pub fn find_descendent_reconstructor_impl<'a>(
         // TODO: this will generally indicate a graph inconsistency and we may
         // need a way to diagnose this.
         if node.children().is_empty() {
-            return Err(MerkleDBError::GraphInvariantError(
-                "Reached a leaf while searching for descendents".into(),
-            ));
+            return Err(MerkleDBError::GraphInvariantError("Reached a leaf while searching for descendents".into()));
         }
         let mut concat_desc_range: Vec<ObjectRangeById> = Vec::new();
         for ch in node.children().iter() {
@@ -263,16 +249,15 @@ pub fn find_descendent_reconstructor(
         ..Default::default()
     };
 
-    ret.descendent_ranges_for_root
-        .clone_from(find_descendent_reconstructor_impl(
-            db,
-            root,
-            root_id,
-            0,
-            &mut visited,
-            &condition,
-            &mut ret.root_ranges_in_descendent,
-        )?);
+    ret.descendent_ranges_for_root.clone_from(find_descendent_reconstructor_impl(
+        db,
+        root,
+        root_id,
+        0,
+        &mut visited,
+        &condition,
+        &mut ret.root_ranges_in_descendent,
+    )?);
     Ok(ret)
 }
 
@@ -306,12 +291,9 @@ pub fn find_reconstruction(
 
     // make sure all succeeded
     if !root_reconstructors.iter().all(|x| x.is_ok()) {
-        return Err(MerkleDBError::GraphInvariantError(
-            "Reconstruction infeasible".into(),
-        ));
+        return Err(MerkleDBError::GraphInvariantError("Reconstruction infeasible".into()));
     }
-    let root_reconstructors: Vec<RootConstructionDescription> =
-        root_reconstructors.into_iter().flatten().collect();
+    let root_reconstructors: Vec<RootConstructionDescription> = root_reconstructors.into_iter().flatten().collect();
 
     let mut nodes_between_src_and_dest: HashSet<MerkleNodeId> = Default::default();
     for aroot in &root_reconstructors {
@@ -344,12 +326,7 @@ pub fn find_reconstruction(
     let n_to_dest: HashMap<MerkleNodeId, ObjectRangeById> = nodes_between_src_and_dest
         .iter()
         .map(|x| db.find_node_by_id(*x).unwrap())
-        .map(|x| {
-            (
-                x.id(),
-                find_ancestor_reconstructor(db, &x, dest_tag).unwrap(),
-            )
-        })
+        .map(|x| (x.id(), find_ancestor_reconstructor(db, &x, dest_tag).unwrap()))
         .collect();
 
     // each entry n_to_dest[N] = [F, start, end]
@@ -386,10 +363,7 @@ pub fn find_reconstruction(
                     }
                 })
                 .collect();
-            (
-                *db.find_node_by_id(*id).unwrap().hash(),
-                simplify_ranges(&new_ranges[..]),
-            )
+            (*db.find_node_by_id(*id).unwrap().hash(), simplify_ranges(&new_ranges[..]))
         })
         .collect())
 }

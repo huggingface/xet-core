@@ -48,8 +48,7 @@ impl MDBInMemoryShard {
         self.current_shard_file_size += file_info.num_bytes();
         self.current_shard_file_size += (size_of::<u64>() + size_of::<u32>()) as u64;
 
-        self.file_content
-            .insert(file_info.metadata.file_hash, file_info);
+        self.file_content.insert(file_info.metadata.file_hash, file_info);
 
         Ok(())
     }
@@ -101,8 +100,7 @@ impl MDBInMemoryShard {
             num_bytes += (size_of::<u64>() + size_of::<u32>()) as u64;
         }
 
-        num_bytes +=
-            ((size_of::<u64>() + 2 * size_of::<u32>()) * self.chunk_hash_lookup.len()) as u64;
+        num_bytes += ((size_of::<u64>() + 2 * size_of::<u32>()) * self.chunk_hash_lookup.len()) as u64;
 
         self.current_shard_file_size = num_bytes;
     }
@@ -143,10 +141,7 @@ impl MDBInMemoryShard {
         None
     }
 
-    pub fn chunk_hash_dedup_query(
-        &self,
-        query_hashes: &[MerkleHash],
-    ) -> Option<(usize, FileDataSequenceEntry)> {
+    pub fn chunk_hash_dedup_query(&self, query_hashes: &[MerkleHash]) -> Option<(usize, FileDataSequenceEntry)> {
         if query_hashes.is_empty() {
             return None;
         }
@@ -165,8 +160,7 @@ impl MDBInMemoryShard {
                 break;
             }
             if query_idx >= query_hashes.len()
-                || chunk_ref.chunks[chunk_index_start + query_idx].chunk_hash
-                    != query_hashes[query_idx]
+                || chunk_ref.chunks[chunk_index_start + query_idx].chunk_hash != query_hashes[query_idx]
             {
                 break;
             }
@@ -193,9 +187,9 @@ impl MDBInMemoryShard {
     }
 
     pub fn stored_bytes_on_disk(&self) -> u64 {
-        self.cas_content.iter().fold(0u64, |acc, (_, cas)| {
-            acc + cas.metadata.num_bytes_on_disk as u64
-        })
+        self.cas_content
+            .iter()
+            .fold(0u64, |acc, (_, cas)| acc + cas.metadata.num_bytes_on_disk as u64)
     }
 
     pub fn materialized_bytes(&self) -> u64 {
@@ -208,9 +202,9 @@ impl MDBInMemoryShard {
     }
 
     pub fn stored_bytes(&self) -> u64 {
-        self.cas_content.iter().fold(0u64, |acc, (_, cas)| {
-            acc + cas.metadata.num_bytes_in_cas as u64
-        })
+        self.cas_content
+            .iter()
+            .fold(0u64, |acc, (_, cas)| acc + cas.metadata.num_bytes_in_cas as u64)
     }
 
     pub fn is_empty(&self) -> bool {

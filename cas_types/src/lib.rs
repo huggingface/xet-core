@@ -43,12 +43,8 @@ impl TryFrom<&str> for Range {
             return Err(RangeParseError::InvalidFormat);
         }
 
-        let start = parts[0]
-            .parse::<u32>()
-            .map_err(RangeParseError::ParseError)?;
-        let end = parts[1]
-            .parse::<u32>()
-            .map_err(RangeParseError::ParseError)?;
+        let start = parts[0].parse::<u32>().map_err(RangeParseError::ParseError)?;
+        let end = parts[1].parse::<u32>().map_err(RangeParseError::ParseError)?;
 
         Ok(Range { start, end })
     }

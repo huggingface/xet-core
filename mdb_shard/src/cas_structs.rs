@@ -171,8 +171,7 @@ pub struct MDBCASInfo {
 
 impl MDBCASInfo {
     pub fn num_bytes(&self) -> u64 {
-        (size_of::<CASChunkSequenceHeader>()
-            + self.chunks.len() * size_of::<CASChunkSequenceEntry>()) as u64
+        (size_of::<CASChunkSequenceHeader>() + self.chunks.len() * size_of::<CASChunkSequenceEntry>()) as u64
     }
 
     pub fn deserialize<R: Read>(reader: &mut R) -> Result<Option<Self>, std::io::Error> {

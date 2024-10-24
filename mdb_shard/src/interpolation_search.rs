@@ -106,7 +106,7 @@ pub fn search_on_sorted_u64s<
                 } else {
                     probe_index = candidate_probe_index;
                 }
-            }
+            },
             Ordering::Equal => {
                 // Read out this value.
                 write_result(read_value_function(reader)?);
@@ -128,7 +128,7 @@ pub fn search_on_sorted_u64s<
 
                 let jump_amount = (EXPECTED_MAX_NUM_DUPLICATES).min(probe_index - (lo + 1));
                 probe_index -= jump_amount;
-            }
+            },
             Ordering::Greater => {
                 lo = probe_index;
                 lo_key = probe_key;
@@ -142,7 +142,7 @@ pub fn search_on_sorted_u64s<
                 } else {
                     probe_index = candidate_probe_index;
                 }
-            }
+            },
         };
     }
 
@@ -157,14 +157,14 @@ pub fn search_on_sorted_u64s<
             Ordering::Less => {
                 // We're done.
                 break;
-            }
+            },
             Ordering::Equal => {
                 write_result(probe_value);
-            }
+            },
             Ordering::Greater => {
                 // Keep going
                 continue;
-            }
+            },
         }
     }
 
@@ -178,15 +178,8 @@ mod tests {
     use super::*;
     use rand::prelude::*;
 
-    fn test_interpolation_search(
-        keys: &[u64],
-        alt_query_keys: &[u64],
-    ) -> Result<(), std::io::Error> {
-        let mut values: Vec<(u64, u64)> = keys
-            .iter()
-            .enumerate()
-            .map(|(i, k)| (*k, 100 + i as u64))
-            .collect();
+    fn test_interpolation_search(keys: &[u64], alt_query_keys: &[u64]) -> Result<(), std::io::Error> {
+        let mut values: Vec<(u64, u64)> = keys.iter().enumerate().map(|(i, k)| (*k, 100 + i as u64)).collect();
         values.sort_unstable();
 
         // First, serialize out the values, and build a

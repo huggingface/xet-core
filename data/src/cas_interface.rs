@@ -17,14 +17,10 @@ pub(crate) fn create_cas_client(
     shard_manager: Arc<ShardFileManager>,
 ) -> Result<Arc<dyn Client + Send + Sync>> {
     match cas_storage_config.endpoint {
-        Endpoint::Server(ref endpoint) => remote_client(
-            endpoint,
-            &cas_storage_config.cache_config,
-            &cas_storage_config.auth,
-        ),
-        Endpoint::FileSystem(ref path) => {
-            local_test_cas_client(&cas_storage_config.prefix, path, shard_manager)
-        }
+        Endpoint::Server(ref endpoint) => {
+            remote_client(endpoint, &cas_storage_config.cache_config, &cas_storage_config.auth)
+        },
+        Endpoint::FileSystem(ref path) => local_test_cas_client(&cas_storage_config.prefix, path, shard_manager),
     }
 }
 

@@ -92,11 +92,7 @@ pub(crate) trait Reconstructable {
 /// 2. querying of file->reconstruction information
 /// 3. querying of chunk->shard information
 pub trait ShardClientInterface:
-    RegistrationClient
-    + FileReconstructor<CasClientError>
-    + ShardDedupProber<CasClientError>
-    + Send
-    + Sync
+    RegistrationClient + FileReconstructor<CasClientError> + ShardDedupProber<CasClientError> + Send + Sync
 {
 }
 

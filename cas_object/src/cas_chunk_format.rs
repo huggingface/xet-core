@@ -22,11 +22,7 @@ pub struct CASChunkHeader {
 }
 
 impl CASChunkHeader {
-    pub fn new(
-        compression_scheme: CompressionScheme,
-        compressed_length: u32,
-        uncompressed_length: u32,
-    ) -> Self {
+    pub fn new(compression_scheme: CompressionScheme, compressed_length: u32, uncompressed_length: u32) -> Self {
         let mut result = CASChunkHeader {
             version: CURRENT_VERSION,
             ..Default::default()
@@ -100,16 +96,11 @@ pub fn serialize_chunk<W: Write>(
             let mut enc = FrameEncoder::new(Vec::new());
             enc.write_all(chunk)
                 .map_err(|e| CasObjectError::InternalError(anyhow!("{e}")))?;
-            enc.finish()
-                .map_err(|e| CasObjectError::InternalError(anyhow!("{e}")))?
-        }
+            enc.finish().map_err(|e| CasObjectError::InternalError(anyhow!("{e}")))?
+        },
     };
     let compressed_len = compressed.len();
-    let header = CASChunkHeader::new(
-        compression_scheme,
-        compressed_len as u32,
-        uncompressed_len as u32,
-    );
+    let header = CASChunkHeader::new(compression_scheme, compressed_len as u32, uncompressed_len as u32);
 
     write_chunk_header(w, &header).map_err(|e| CasObjectError::InternalError(anyhow!("{e}")))?;
     w.write_all(&compressed)
@@ -121,10 +112,7 @@ pub fn serialize_chunk<W: Write>(
 pub fn deserialize_chunk_header<R: Read>(reader: &mut R) -> Result<CASChunkHeader, CasObjectError> {
     let mut result = CASChunkHeader::default();
     unsafe {
-        let buf = slice::from_raw_parts_mut(
-            &mut result as *mut _ as *mut u8,
-            size_of::<CASChunkHeader>(),
-        );
+        let buf = slice::from_raw_parts_mut(&mut result as *mut _ as *mut u8, size_of::<CASChunkHeader>());
         reader.read_exact(buf)?;
     }
 
@@ -133,8 +121,7 @@ pub fn deserialize_chunk_header<R: Read>(reader: &mut R) -> Result<CASChunkHeade
 
 pub fn deserialize_chunk<R: Read>(reader: &mut R) -> Result<(Vec<u8>, usize, u32), CasObjectError> {
     let mut buf = Vec::new();
-    let (compressed_chunk_size, uncompressed_chunk_size) =
-        deserialize_chunk_to_writer(reader, &mut buf)?;
+    let (compressed_chunk_size, uncompressed_chunk_size) = deserialize_chunk_to_writer(reader, &mut buf)?;
     Ok((buf, compressed_chunk_size, uncompressed_chunk_size))
 }
 
@@ -151,11 +138,11 @@ pub fn deserialize_chunk_to_writer<R: Read, W: Write>(
         CompressionScheme::None => {
             writer.write_all(&compressed_buf)?;
             compressed_buf.len() as u32
-        }
+        },
         CompressionScheme::LZ4 => {
             let mut dec = FrameDecoder::new(Cursor::new(compressed_buf));
             copy(&mut dec, writer)? as u32
-        }
+        },
     };
 
     if uncompressed_len != header.get_uncompressed_length() {
@@ -164,10 +151,7 @@ pub fn deserialize_chunk_to_writer<R: Read, W: Write>(
         )));
     }
 
-    Ok((
-        header.get_compressed_length() as usize + CAS_CHUNK_HEADER_LENGTH,
-        uncompressed_len,
-    ))
+    Ok((header.get_compressed_length() as usize + CAS_CHUNK_HEADER_LENGTH, uncompressed_len))
 }
 
 pub fn deserialize_chunks<R: Read>(reader: &mut R) -> Result<(Vec<u8>, Vec<u32>), CasObjectError> {
@@ -194,13 +178,13 @@ pub fn deserialize_chunks_to_writer<R: Read, W: Write>(
                 num_compressed_written += delta_written;
                 num_uncompressed_written += uncompressed_chunk_len;
                 chunk_byte_indices.push(num_uncompressed_written); // record end of current chunk
-            }
+            },
             Err(CasObjectError::InternalIOError(e)) => {
                 if e.kind() == io::ErrorKind::UnexpectedEof {
                     break;
                 }
                 return Err(CasObjectError::InternalIOError(e));
-            }
+            },
             Err(e) => return Err(e),
         }
     }
@@ -305,10 +289,7 @@ mod tests {
             assert!(data > 0);
             assert_eq!(chunk_byte_indices.len(), num_chunks as usize + 1);
             for i in 0..chunk_byte_indices.len() - 1 {
-                assert_eq!(
-                    chunk_byte_indices[i + 1] - chunk_byte_indices[i],
-                    CHUNK_SIZE as u32
-                );
+                assert_eq!(chunk_byte_indices[i + 1] - chunk_byte_indices[i], CHUNK_SIZE as u32);
             }
         }
     }

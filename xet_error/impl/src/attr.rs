@@ -3,8 +3,7 @@ use quote::{format_ident, quote, ToTokens};
 use std::collections::BTreeSet as Set;
 use syn::parse::ParseStream;
 use syn::{
-    braced, bracketed, parenthesized, token, Attribute, Error, Ident, Index, LitInt, LitStr, Meta,
-    Result, Token,
+    braced, bracketed, parenthesized, token, Attribute, Error, Ident, Index, LitInt, LitStr, Meta, Result, Token,
 };
 
 pub struct Attrs<'a> {
@@ -69,11 +68,11 @@ pub fn get(input: &[Attribute]) -> Result<Attrs> {
             attrs.backtrace = Some(attr);
         } else if attr.path().is_ident("from") {
             match attr.meta {
-                Meta::Path(_) => {}
+                Meta::Path(_) => {},
                 Meta::List(_) | Meta::NameValue(_) => {
                     // Assume this is meant for derive_more crate or something.
                     continue;
-                }
+                },
             }
             if attrs.from.is_some() {
                 return Err(Error::new_spanned(attr, "duplicate #[from] attribute"));
@@ -91,10 +90,7 @@ fn parse_error_attribute<'a>(attrs: &mut Attrs<'a>, attr: &'a Attribute) -> Resu
     attr.parse_args_with(|input: ParseStream| {
         if let Some(kw) = input.parse::<Option<transparent>>()? {
             if attrs.transparent.is_some() {
-                return Err(Error::new_spanned(
-                    attr,
-                    "duplicate #[error(transparent)] attribute",
-                ));
+                return Err(Error::new_spanned(attr, "duplicate #[error(transparent)] attribute"));
             }
             attrs.transparent = Some(Transparent {
                 original: attr,
@@ -111,10 +107,7 @@ fn parse_error_attribute<'a>(attrs: &mut Attrs<'a>, attr: &'a Attribute) -> Resu
             implied_bounds: Set::new(),
         };
         if attrs.display.is_some() {
-            return Err(Error::new_spanned(
-                attr,
-                "only one #[error(...)] attribute is allowed",
-            ));
+            return Err(Error::new_spanned(attr, "only one #[error(...)] attribute is allowed"));
         }
         attrs.display = Some(display);
         Ok(())

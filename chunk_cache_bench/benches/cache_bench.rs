@@ -23,8 +23,7 @@ fn benchmark_cache_get<T: ChunkCacheExt>(c: &mut Criterion) {
     let cache = T::_initialize(cache_root.path().to_path_buf(), CAPACITY).unwrap();
 
     let mut rng = StdRng::seed_from_u64(SEED);
-    let mut it: RandomEntryIterator<StdRng> =
-        RandomEntryIterator::from_seed(SEED).with_range_len(RANGE_LEN);
+    let mut it: RandomEntryIterator<StdRng> = RandomEntryIterator::from_seed(SEED).with_range_len(RANGE_LEN);
 
     for _ in 0..NUM_PUTS {
         let (key, range, offsets, data) = it.next().unwrap();
@@ -41,12 +40,10 @@ fn benchmark_cache_get<T: ChunkCacheExt>(c: &mut Criterion) {
 }
 
 fn benchmark_cache_get_mt<T: ChunkCacheExt + 'static>(c: &mut Criterion) {
-    let cache_root =
-        TempDir::new(format!("benchmark_cache_get_mt_{}", T::name()).as_str()).unwrap();
+    let cache_root = TempDir::new(format!("benchmark_cache_get_mt_{}", T::name()).as_str()).unwrap();
     let cache = T::_initialize(cache_root.path().to_path_buf(), CAPACITY).unwrap();
 
-    let mut it: RandomEntryIterator<StdRng> =
-        RandomEntryIterator::from_seed(SEED).with_range_len(RANGE_LEN);
+    let mut it: RandomEntryIterator<StdRng> = RandomEntryIterator::from_seed(SEED).with_range_len(RANGE_LEN);
 
     for _ in 0..NUM_PUTS {
         let (key, range, offsets, data) = it.next().unwrap();
@@ -73,8 +70,7 @@ fn benchmark_cache_get_mt<T: ChunkCacheExt + 'static>(c: &mut Criterion) {
 }
 
 fn benchmark_cache_put_mt<T: ChunkCacheExt + 'static>(c: &mut Criterion) {
-    let cache_root =
-        TempDir::new(format!("benchmark_cache_put_mt_{}", T::name()).as_str()).unwrap();
+    let cache_root = TempDir::new(format!("benchmark_cache_put_mt_{}", T::name()).as_str()).unwrap();
     let cache = T::_initialize(cache_root.path().to_path_buf(), CAPACITY).unwrap();
     let mut it: RandomEntryIterator<StdRng> = RandomEntryIterator::from_seed(SEED);
     let mut total_bytes = 0;
@@ -124,12 +120,10 @@ fn benchmark_cache_put<T: ChunkCacheExt + 'static>(c: &mut Criterion) {
 }
 
 fn benchmark_cache_get_hits<T: ChunkCacheExt + 'static>(c: &mut Criterion) {
-    let cache_root =
-        TempDir::new(format!("benchmark_cache_get_hits_{}", T::name()).as_str()).unwrap();
+    let cache_root = TempDir::new(format!("benchmark_cache_get_hits_{}", T::name()).as_str()).unwrap();
     let cache = T::_initialize(cache_root.path().to_path_buf(), CAPACITY).unwrap();
 
-    let mut it: RandomEntryIterator<StdRng> =
-        RandomEntryIterator::from_seed(SEED).with_range_len(RANGE_LEN);
+    let mut it: RandomEntryIterator<StdRng> = RandomEntryIterator::from_seed(SEED).with_range_len(RANGE_LEN);
 
     let mut kr = Vec::with_capacity(NUM_PUTS as usize);
     for _ in 0..NUM_PUTS {

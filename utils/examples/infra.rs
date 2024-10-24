@@ -37,11 +37,7 @@ async fn main() {
     if let Some(key) = args.key {
         let ch = ConsistentHash::new(response.into_inner().responses).unwrap();
 
-        println!(
-            "Key {} gets hashed to server {:?}",
-            &key,
-            ch.server(&key).unwrap()
-        );
+        println!("Key {} gets hashed to server {:?}", &key, ch.server(&key).unwrap());
         return;
     }
     // when no key is specified, print out the entire response

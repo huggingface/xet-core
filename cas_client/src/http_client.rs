@@ -46,10 +46,7 @@ pub fn build_auth_http_client(
     auth_config: &Option<AuthConfig>,
     retry_config: &Option<RetryConfig>,
 ) -> std::result::Result<ClientWithMiddleware, CasClientError> {
-    let auth_middleware = auth_config
-        .as_ref()
-        .map(AuthMiddleware::from)
-        .info_none("CAS auth disabled");
+    let auth_middleware = auth_config.as_ref().map(AuthMiddleware::from).info_none("CAS auth disabled");
     let logging_middleware = Some(LoggingMiddleware);
     let retry_middleware = match retry_config {
         Some(config) => get_retry_middleware(config),
@@ -153,13 +150,8 @@ impl AuthMiddleware {
     /// from this client until the token has been fetched. This is expected/ok since we
     /// don't have a valid token and thus any calls would fail.
     fn get_token(&self) -> Result<String, anyhow::Error> {
-        let mut provider = self
-            .token_provider
-            .lock()
-            .map_err(|e| anyhow!("lock error: {e:?}"))?;
-        provider
-            .get_valid_token()
-            .map_err(|e| anyhow!("couldn't get token: {e:?}"))
+        let mut provider = self.token_provider.lock().map_err(|e| anyhow!("lock error: {e:?}"))?;
+        provider.get_valid_token().map_err(|e| anyhow!("couldn't get token: {e:?}"))
     }
 }
 
@@ -179,15 +171,10 @@ impl Middleware for AuthMiddleware {
         extensions: &mut hyper::http::Extensions,
         next: Next<'_>,
     ) -> reqwest_middleware::Result<Response> {
-        let token = self
-            .get_token()
-            .map_err(reqwest_middleware::Error::Middleware)?;
+        let token = self.get_token().map_err(reqwest_middleware::Error::Middleware)?;
 
         let headers = req.headers_mut();
-        headers.insert(
-            AUTHORIZATION,
-            HeaderValue::from_str(&format!("Bearer {}", token)).unwrap(),
-        );
+        headers.insert(AUTHORIZATION, HeaderValue::from_str(&format!("Bearer {}", token)).unwrap());
         next.run(req, extensions).await
     }
 }
@@ -234,8 +221,7 @@ mod tests {
         let server = MockServer::start();
         let mock = server.mock(|when, then| {
             when.method(GET).path("/data");
-            then.status(StatusCode::REQUEST_TIMEOUT.as_u16())
-                .body("Request Timeout");
+            then.status(StatusCode::REQUEST_TIMEOUT.as_u16()).body("Request Timeout");
         });
 
         let retry_config = RetryConfig {

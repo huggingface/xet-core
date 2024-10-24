@@ -23,11 +23,7 @@ pub struct FileDataSequenceHeader {
 }
 
 impl FileDataSequenceHeader {
-    pub fn new<I: TryInto<u32>>(
-        file_hash: MerkleHash,
-        num_entries: I,
-        contains_verification: bool,
-    ) -> Self
+    pub fn new<I: TryInto<u32>>(file_hash: MerkleHash, num_entries: I, contains_verification: bool) -> Self
     where
         <I as TryInto<u32>>::Error: std::fmt::Debug,
     {

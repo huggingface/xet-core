@@ -13,11 +13,7 @@ pub struct Version {
 
 impl Version {
     pub const fn new(major: u32, minor: u32, patch: u32) -> Self {
-        Self {
-            major,
-            minor,
-            patch,
-        }
+        Self { major, minor, patch }
     }
 }
 
@@ -56,10 +52,7 @@ lazy_static! {
 /// captures must have named regex group and specifically have
 /// the specific name given
 #[inline]
-fn parse_from_capture_by_key<'a, T>(
-    captures: &Captures<'a>,
-    name: &'a str,
-) -> Result<T, VersionError>
+fn parse_from_capture_by_key<'a, T>(captures: &Captures<'a>, name: &'a str) -> Result<T, VersionError>
 where
     T: FromStr,
 {
@@ -89,11 +82,7 @@ impl TryFrom<&str> for Version {
         // allow patch to not be included
         let patch = parse_from_capture_by_key::<u32>(&captures, PATCH_KEY).unwrap_or(0);
 
-        Ok(Version {
-            major,
-            minor,
-            patch,
-        })
+        Ok(Version { major, minor, patch })
     }
 }
 
@@ -109,11 +98,11 @@ impl TryFrom<String> for Version {
 impl PartialOrd for Version {
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
         match self.major.partial_cmp(&other.major) {
-            Some(core::cmp::Ordering::Equal) => {}
+            Some(core::cmp::Ordering::Equal) => {},
             ord => return ord,
         }
         match self.minor.partial_cmp(&other.minor) {
-            Some(core::cmp::Ordering::Equal) => {}
+            Some(core::cmp::Ordering::Equal) => {},
             ord => return ord,
         }
         self.patch.partial_cmp(&other.patch)
@@ -123,11 +112,7 @@ impl PartialOrd for Version {
 /// allow pretty print
 impl std::fmt::Display for Version {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let Version {
-            major,
-            minor,
-            patch,
-        } = self;
+        let Version { major, minor, patch } = self;
         write!(f, "{major}.{minor}.{patch}")
     }
 }

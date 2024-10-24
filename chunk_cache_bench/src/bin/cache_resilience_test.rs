@@ -93,9 +93,7 @@ fn parent_main(args: ParentArgs) {
 
 fn child_main(args: ChildArgs) {
     let id = std::process::id();
-    let end_time = SystemTime::now()
-        .checked_add(Duration::from_secs(args.seconds))
-        .unwrap();
+    let end_time = SystemTime::now().checked_add(Duration::from_secs(args.seconds)).unwrap();
 
     let config = CacheConfig {
         cache_directory: PathBuf::from(args.cache_root),
@@ -103,10 +101,7 @@ fn child_main(args: ChildArgs) {
     };
     let cache = DiskCache::initialize(&config).unwrap();
 
-    eprintln!(
-        "initialized id: {id} with {} entries",
-        cache.num_items().unwrap()
-    );
+    eprintln!("initialized id: {id} with {} entries", cache.num_items().unwrap());
 
     let mut saved = (0, Key::default(), Range::default());
 
@@ -128,10 +123,10 @@ fn child_main(args: ChildArgs) {
                 Some(_) => {
                     // eprintln!("id: {id} old test got a hit {old_i} @ {i}");
                     hits += 1f64;
-                }
+                },
                 None => {
                     // eprintln!("id: {id} old test got a miss {old_i} @ {i}"),
-                }
+                },
             };
         }
         i += 1;

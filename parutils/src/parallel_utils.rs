@@ -28,11 +28,7 @@ pub enum ParallelError<E> {
 ///
 ///   Note:  Use Arc<Mutex<...>> around writable things.
 ///
-pub async fn run_tokio_parallel<F, R, E>(
-    n_tasks: usize,
-    max_concurrent: usize,
-    f: F,
-) -> Result<(), ParallelError<E>>
+pub async fn run_tokio_parallel<F, R, E>(n_tasks: usize, max_concurrent: usize, f: F) -> Result<(), ParallelError<E>>
 where
     F: Send + Sync + Fn(usize) -> R,
     R: futures::Future<Output = Result<(), E>> + Send,
@@ -171,11 +167,7 @@ where
 ///  }).await;
 ///  ```
 ///
-pub async fn tokio_par_for_any_ok<F, I, R, Q, E>(
-    input: Vec<I>,
-    max_concurrent: usize,
-    f: F,
-) -> Option<Q>
+pub async fn tokio_par_for_any_ok<F, I, R, Q, E>(input: Vec<I>, max_concurrent: usize, f: F) -> Option<Q>
 where
     F: Send + Sync + Fn(I, usize) -> R,
     I: Send,
@@ -183,13 +175,7 @@ where
     Q: Send + Default,
     E: Send + Sync + 'static,
 {
-    let mut strm = iter(
-        input
-            .into_iter()
-            .enumerate()
-            .map(|(idx, objr)| f(objr, idx)),
-    )
-    .buffer_unordered(max_concurrent);
+    let mut strm = iter(input.into_iter().enumerate().map(|(idx, objr)| f(objr, idx))).buffer_unordered(max_concurrent);
 
     while let Some(maybe_out) = strm.next().await {
         if let Ok(out) = maybe_out {
@@ -258,11 +244,7 @@ mod parallel_tests {
     async fn test_simple_parallel() -> Result<(), Box<dyn std::error::Error>> {
         let data: Vec<String> = (0..400).map(|i| format!("Number = {}", &i)).collect();
 
-        let data_ref: Vec<String> = data
-            .iter()
-            .enumerate()
-            .map(|(i, s)| format!("{}{}{}", &s, ":", &i))
-            .collect();
+        let data_ref: Vec<String> = data.iter().enumerate().map(|(i, s)| format!("{}{}{}", &s, ":", &i)).collect();
 
         // let data_test: Vec<String> =
         let r = tokio_par_for_each(data, 4, |s, i| async move {

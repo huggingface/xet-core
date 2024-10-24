@@ -42,9 +42,7 @@ impl CacheFileHeader {
             if i == 0 && idx != 0 {
                 return Err(ChunkCacheError::parse("first byte index isn't 0"));
             } else if !chunk_byte_indices.is_empty() && chunk_byte_indices.last().unwrap() >= &idx {
-                return Err(ChunkCacheError::parse(
-                    "chunk byte indices are not strictly increasing",
-                ));
+                return Err(ChunkCacheError::parse("chunk byte indices are not strictly increasing"));
             }
             chunk_byte_indices.push(idx);
         }
