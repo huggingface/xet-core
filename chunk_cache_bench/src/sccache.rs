@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use base64::Engine;
-use cas_types::{Key, ChunkRange};
+use cas_types::{ChunkRange, Key};
 use chunk_cache::error::ChunkCacheError;
 use chunk_cache::ChunkCache;
 use sccache::lru_disk_cache::LruDiskCache;
