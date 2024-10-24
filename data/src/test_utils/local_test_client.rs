@@ -4,8 +4,8 @@ use cas_client::tests_utils::*;
 use cas_client::{CasClientError, Client, LocalClient, ReconstructionClient, UploadClient};
 use mdb_shard::{shard_file_reconstructor::FileReconstructor, ShardFileManager};
 use merklehash::MerkleHash;
-use std::path::Path;
 use reqwest_middleware::ClientWithMiddleware;
+use std::path::Path;
 use std::{io::Write, sync::Arc};
 
 /// A CAS client only for the purpose of testing. It utilizes LocalClient to upload
@@ -48,7 +48,7 @@ impl UploadClient for LocalTestClient {
 impl ReconstructionClient for LocalTestClient {
     async fn get_file(
         &self,
-        _http_client: &ClientWithMiddleware,
+        _http_client: Arc<ClientWithMiddleware>,
         hash: &MerkleHash,
         writer: &mut Box<dyn Write + Send>,
     ) -> Result<(), CasClientError> {
@@ -83,7 +83,7 @@ impl ReconstructionClient for LocalTestClient {
     #[allow(unused_variables)]
     async fn get_file_byte_range(
         &self,
-        _http_client: &ClientWithMiddleware,
+        _http_client: Arc<ClientWithMiddleware>,
         hash: &MerkleHash,
         offset: u64,
         length: u64,

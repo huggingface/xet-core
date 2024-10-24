@@ -1,7 +1,7 @@
 use std::{
     collections::HashMap,
-    fs::{read_dir, File},
-    io::{Cursor, ErrorKind, Read, Seek, SeekFrom, Write},
+    fs::{DirEntry, File},
+    io::{self, Cursor, ErrorKind, Read, Seek, SeekFrom, Write},
     mem::size_of,
     path::{Path, PathBuf},
     sync::{Arc, Mutex, MutexGuard},
@@ -16,7 +16,7 @@ use error_printer::ErrorPrinter;
 use file_utils::SafeFileCreator;
 use merklehash::MerkleHash;
 use sorted_vec::SortedVec;
-use tracing::debug;
+use tracing::{debug, warn};
 
 use crate::{error::ChunkCacheError, CacheConfig, ChunkCache};
 
@@ -27,9 +27,14 @@ pub mod test_utils;
 // consistently use URL_SAFE (also file path safe) base64 codec
 pub(crate) const BASE64_ENGINE: GeneralPurpose = URL_SAFE;
 pub const DEFAULT_CAPACITY: u64 = 1 << 30; // 1 GB
+const PREFIX_DIR_NAME_LEN: usize = 2;
+
+type OptionResult<T, E> = Result<Option<T>, E>;
 
 #[derive(Debug, Clone)]
 struct CacheState {
+    // each set of cache items is a sorted set to take advantage of
+    // binary search for fast lookups, albeit the slower adds
     inner: HashMap<Key, SortedVec<CacheItem>>,
     num_items: usize,
     total_bytes: u64,
@@ -53,13 +58,6 @@ pub struct DiskCache {
     state: Arc<Mutex<CacheState>>,
 }
 
-fn parse_key(file_name: &[u8]) -> Result<Key, ChunkCacheError> {
-    let buf = BASE64_ENGINE.decode(file_name)?;
-    let hash = MerkleHash::from_slice(&buf[..size_of::<MerkleHash>()])?;
-    let prefix = String::from(std::str::from_utf8(&buf[size_of::<MerkleHash>()..])?);
-    Ok(Key { prefix, hash })
-}
-
 impl DiskCache {
     pub fn num_items(&self) -> Result<usize, ChunkCacheError> {
         let state = self.state.lock()?;
@@ -71,148 +69,147 @@ impl DiskCache {
         Ok(state.total_bytes)
     }
 
+    /// initialize will create a new DiskCache with the capacity and cache root based on the config
+    /// the cache file system layout is rooted at the provided config.cache_directory and initialize
+    /// will attempt to load any pre-existing cache state into memory.
+    ///
+    /// The cache layout is as follows:
+    ///
+    /// each key (cas hash) in the cache is a directory, containing "cache items" that each provide
+    /// some range of data.
+    ///
+    /// keys are grouped into subdirectories under the cache rootbased on the first 2 chacters of their
+    /// file name, which is base64 encoded, leading to at most 64 * 64 directories under the cache root.
+    ///
+    /// cache_root/
+    /// ├── [ab]/
+    /// │   ├── [key 1 (ab123...)]/
+    /// │   │   ├── [range 0-100, file_len, file_hash]
+    /// │   │   ├── [range 102-300, file_len, file_hash]
+    /// │   │   └── [range 900-1024, file_len, file_hash]
+    /// │   ├── [key 2 (ab456...)]/
+    /// │       └── [range 0-1020, file_len, file_hash]
+    /// ├── [cd]/
+    /// │   └── [key 3 (cd123...)]/
+    /// │       ├── [range 30-31, file_len, file_hash]
+    /// │       ├── [range 400-402, file_len, file_hash]
+    /// │       ├── [range 404-405, file_len, file_hash]
+    /// │       └── [range 679-700, file_len, file_hash]
+    ///
     pub fn initialize(config: &CacheConfig) -> Result<Self, ChunkCacheError> {
         let capacity = config.cache_size;
         let cache_root = config.cache_directory.clone();
 
-        let mut state = HashMap::new();
-        let mut total_bytes = 0;
-        let mut num_items = 0;
-        let max_num_bytes = 2 * capacity;
-
-        let readdir = match std::fs::read_dir(&cache_root) {
-            Ok(rd) => rd,
-            Err(e) => {
-                if e.kind() == ErrorKind::NotFound {
-                    return Ok(Self {
-                        cache_root,
-                        capacity,
-                        state: Arc::new(Mutex::new(CacheState::new(state, 0, 0))),
-                    });
-                }
-                return Err(e.into());
-            }
-        };
-
-        for key_dir in readdir {
-            let key_dir = match key_dir {
-                Ok(kd) => kd,
-                Err(e) => {
-                    if e.kind() == ErrorKind::NotFound {
-                        continue;
-                    }
-                    return Err(e.into());
-                }
-            };
-            let md = match key_dir.metadata() {
-                Ok(md) => md,
-                Err(e) => {
-                    if e.kind() == ErrorKind::NotFound {
-                        continue;
-                    }
-                    return Err(e.into());
-                }
-            };
-            if !md.is_dir() {
-                debug!(
-                    "CACHE: expected key directory at {:?}, is not directory",
-                    key_dir.path()
-                );
-                continue;
-            }
-            let key = match parse_key(key_dir.file_name().as_encoded_bytes())
-                .debug_error("failed to decoded a directory name as a key")
-            {
-                Ok(key) => key,
-                Err(_) => continue,
-            };
-            let mut items = SortedVec::new();
-
-            let key_readdir = match std::fs::read_dir(key_dir.path()) {
-                Ok(krd) => krd,
-                Err(e) => {
-                    if e.kind() == ErrorKind::NotFound {
-                        continue;
-                    }
-                    return Err(e.into());
-                }
-            };
-
-            for item in key_readdir {
-                let item = match item {
-                    Ok(item) => item,
-                    Err(e) => {
-                        if e.kind() == ErrorKind::NotFound {
-                            continue;
-                        }
-                        return Err(e.into());
-                    }
-                };
-                let md = match item.metadata() {
-                    Ok(md) => md,
-                    Err(e) => {
-                        if e.kind() == ErrorKind::NotFound {
-                            continue;
-                        }
-                        return Err(e.into());
-                    }
-                };
-
-                if !md.is_file() {
-                    continue;
-                }
-                if md.len() > DEFAULT_CAPACITY {
-                    return Err(ChunkCacheError::general(format!("Cache directory contains a file larger than {} GB, cache directory state is invalid", (DEFAULT_CAPACITY as f64 / (1 << 30) as f64))));
-                }
-
-                // don't track an item that takes up the whole capacity
-                if md.len() > capacity {
-                    continue;
-                }
-
-                let cache_item = match CacheItem::parse(item.file_name().as_encoded_bytes())
-                    .debug_error("failed to decode a file name as a cache item")
-                {
-                    Ok(i) => i,
-                    Err(e) => {
-                        debug!(
-                            "error parsing cache item file info from path: {:?}, {e}",
-                            item.path()
-                        );
-                        continue;
-                    }
-                };
-                if md.len() != cache_item.len {
-                    // file is invalid, remove it
-                    remove_file(item.path())?;
-                }
-
-                total_bytes += cache_item.len;
-                num_items += 1;
-                items.push(cache_item);
-
-                if total_bytes >= max_num_bytes {
-                    break;
-                }
-            }
-
-            if !items.is_empty() {
-                state.insert(key, items);
-            }
-
-            if total_bytes >= max_num_bytes {
-                break;
-            }
-        }
+        let state = Self::initialize_state(&cache_root, capacity)?;
 
         Ok(Self {
-            state: Arc::new(Mutex::new(CacheState::new(state, num_items, total_bytes))),
+            state: Arc::new(Mutex::new(state)),
             cache_root,
             capacity,
         })
     }
 
-    fn get_impl(&self, key: &Key, range: &Range) -> Result<Option<Vec<u8>>, ChunkCacheError> {
+    fn initialize_state(
+        cache_root: &PathBuf,
+        capacity: u64,
+    ) -> Result<CacheState, ChunkCacheError> {
+        let mut state = HashMap::new();
+        let mut total_bytes = 0;
+        let mut num_items = 0;
+        let max_num_bytes = 2 * capacity;
+
+        let readdir = match read_dir(cache_root) {
+            Ok(Some(rd)) => rd,
+            Ok(None) => return Ok(CacheState::new(state, 0, 0)),
+            Err(e) => return Err(e),
+        };
+
+        // loop through cache root directory, first level containing "prefix" directories
+        // each of which may contain key directories with cache items
+        for key_prefix_dir in readdir {
+            // this match pattern appears often in this function, and we could write a macro to replace it
+            // however this puts an implicit change of control flow with continue/return cases that is
+            // hard to decipher from a macro, so avoid replace it for readability
+            let key_prefix_dir = match is_ok_dir(key_prefix_dir) {
+                Ok(Some(dirent)) => dirent,
+                Ok(None) => continue,
+                Err(e) => return Err(e),
+            };
+
+            let key_prefix_dir_name = key_prefix_dir.file_name();
+            if key_prefix_dir_name.as_encoded_bytes().len() != PREFIX_DIR_NAME_LEN {
+                debug!("prefix dir name len != {PREFIX_DIR_NAME_LEN}");
+                continue;
+            }
+
+            let key_prefix_readir = match read_dir(key_prefix_dir.path()) {
+                Ok(Some(rd)) => rd,
+                Ok(None) => continue,
+                Err(e) => return Err(e),
+            };
+
+            // loop throught key directories inside prefix directory
+            for key_dir in key_prefix_readir {
+                let key_dir = match is_ok_dir(key_dir) {
+                    Ok(Some(dirent)) => dirent,
+                    Ok(None) => continue,
+                    Err(e) => return Err(e),
+                };
+
+                let key_dir_name = key_dir.file_name();
+
+                // asserts that the prefix dir name is actually the prefix of this key dir
+                debug_assert_eq!(
+                    key_dir_name.as_encoded_bytes()[..PREFIX_DIR_NAME_LEN].to_ascii_uppercase(),
+                    key_prefix_dir_name.as_encoded_bytes().to_ascii_uppercase(),
+                    "{key_dir_name:?}",
+                );
+
+                let key = match try_parse_key(key_dir_name.as_encoded_bytes()) {
+                    Ok(key) => key,
+                    Err(e) => {
+                        debug!("failed to decoded a directory name as a key: {e}");
+                        continue;
+                    }
+                };
+
+                let mut items = SortedVec::new();
+
+                let key_readdir = match read_dir(key_dir.path()) {
+                    Ok(Some(krd)) => krd,
+                    Ok(None) => continue,
+                    Err(e) => return Err(e),
+                };
+
+                // loop through cache items inside key directory
+                for item in key_readdir {
+                    let cache_item = match try_parse_cache_file(item, capacity) {
+                        Ok(Some(ci)) => ci,
+                        Ok(None) => continue,
+                        Err(e) => return Err(e),
+                    };
+
+                    total_bytes += cache_item.len;
+                    num_items += 1;
+                    items.push(cache_item);
+
+                    // if already filled capacity, stop iterating over cache items
+                    if total_bytes >= max_num_bytes {
+                        state.insert(key, items);
+                        return Ok(CacheState::new(state, num_items, total_bytes));
+                    }
+                }
+
+                if !items.is_empty() {
+                    state.insert(key, items);
+                }
+            }
+        }
+
+        Ok(CacheState::new(state, num_items, total_bytes))
+    }
+
+    fn get_impl(&self, key: &Key, range: &Range) -> OptionResult<Vec<u8>, ChunkCacheError> {
         if range.start >= range.end {
             return Err(ChunkCacheError::InvalidArguments);
         }
@@ -265,7 +262,7 @@ impl DiskCache {
         }
     }
 
-    fn find_match(&self, key: &Key, range: &Range) -> Result<Option<CacheItem>, ChunkCacheError> {
+    fn find_match(&self, key: &Key, range: &Range) -> OptionResult<CacheItem, ChunkCacheError> {
         let state = self.state.lock()?;
         let items = if let Some(items) = state.inner.get(key) {
             items
@@ -451,13 +448,7 @@ impl DiskCache {
         for path in paths {
             remove_file(&path)?;
             let dir_path = path.parent().ok_or(ChunkCacheError::Infallible)?;
-            // check if directory exists and if it does and is empty then remove the directory
-            if let Ok(mut readdir) = std::fs::read_dir(dir_path) {
-                if readdir.next().is_none() {
-                    // no more files in that directory, remove it
-                    remove_dir(dir_path)?;
-                }
-            }
+            check_remove_dir(dir_path)?;
         }
         Ok(())
     }
@@ -495,18 +486,9 @@ impl DiskCache {
         if !path.exists() {
             return Ok(());
         }
-
         remove_file(&path)?;
         let dir_path = path.parent().ok_or(ChunkCacheError::Infallible)?;
-
-        if let Ok(readir) = read_dir(dir_path) {
-            if readir.peekable().peek().is_none() {
-                // directory empty, remove it
-                remove_dir(dir_path)?;
-            }
-        }
-
-        Ok(())
+        check_remove_dir(dir_path)
     }
 
     fn item_path(&self, key: &Key, cache_item: &CacheItem) -> Result<PathBuf, ChunkCacheError> {
@@ -556,6 +538,123 @@ fn compute_hash_from_reader(r: &mut impl Read) -> Result<blake3::Hash, ChunkCach
     Ok(blake3::Hasher::new().update_reader(r)?.finalize())
 }
 
+// wrapper over std::fs::read_dir
+// returns Ok(None) on a not found error
+fn read_dir(path: impl AsRef<Path>) -> OptionResult<std::fs::ReadDir, ChunkCacheError> {
+    match std::fs::read_dir(path) {
+        Ok(rd) => Ok(Some(rd)),
+        Err(e) => {
+            if e.kind() == ErrorKind::NotFound {
+                Ok(None)
+            } else {
+                Err(e.into())
+            }
+        }
+    }
+}
+
+// returns Ok(Some(_)) if result dirent is a directory, Ok(None) if was removed
+// also returns an Ok(None) if the dirent is not a directory, in which case we should
+//   not remove it in case the user put something inadvertantly or intentionally,
+//   but not attempt to parse it as a valid cache directory.
+// Err(_) if an unrecoverable error occurred
+fn is_ok_dir(dir_result: Result<DirEntry, io::Error>) -> OptionResult<DirEntry, ChunkCacheError> {
+    let dirent = match dir_result {
+        Ok(kd) => kd,
+        Err(e) => {
+            if e.kind() == ErrorKind::NotFound {
+                return Ok(None);
+            }
+            return Err(e.into());
+        }
+    };
+    let md = match dirent.metadata() {
+        Ok(md) => md,
+        Err(e) => {
+            if e.kind() == ErrorKind::NotFound {
+                return Ok(None);
+            }
+            return Err(e.into());
+        }
+    };
+    if !md.is_dir() {
+        debug!(
+            "CACHE: expected directory at {:?}, is not directory",
+            dirent.path()
+        );
+        return Ok(None);
+    }
+    Ok(Some(dirent))
+}
+
+// given a result from readdir attempts to parse it as a cache file handle
+// i.e. validate its file name against the contents (excluding file-hash-validation)
+// validate that it is a file, correct len, and is not too large.
+fn try_parse_cache_file(
+    file_result: io::Result<DirEntry>,
+    capacity: u64,
+) -> OptionResult<CacheItem, ChunkCacheError> {
+    let item = match file_result {
+        Ok(item) => item,
+        Err(e) => {
+            if e.kind() == ErrorKind::NotFound {
+                return Ok(None);
+            }
+            return Err(e.into());
+        }
+    };
+    let md = match item.metadata() {
+        Ok(md) => md,
+        Err(e) => {
+            if e.kind() == ErrorKind::NotFound {
+                return Ok(None);
+            }
+            return Err(e.into());
+        }
+    };
+
+    if !md.is_file() {
+        return Ok(None);
+    }
+    if md.len() > DEFAULT_CAPACITY {
+        return Err(ChunkCacheError::general(format!(
+            "Cache directory contains a file larger than {} GB, cache directory state is invalid",
+            (DEFAULT_CAPACITY as f64 / (1 << 30) as f64)
+        )));
+    }
+
+    // don't track an item that takes up the whole capacity
+    if md.len() > capacity {
+        return Ok(None);
+    }
+
+    let cache_item = match CacheItem::parse(item.file_name().as_encoded_bytes())
+        .debug_error("failed to decode a file name as a cache item")
+    {
+        Ok(i) => i,
+        Err(e) => {
+            warn!(
+                "not a valid cache file, removing: {:?} {e:?}",
+                item.file_name()
+            );
+            remove_file(item.path())?;
+            return Ok(None);
+        }
+    };
+    if md.len() != cache_item.len {
+        // file is invalid, remove it
+        warn!(
+            "cache file len {} does not match expected length {}, removing path: {:?}",
+            md.len(),
+            cache_item.len,
+            item.path()
+        );
+        remove_file(item.path())?;
+        return Ok(None);
+    }
+    Ok(Some(cache_item))
+}
+
 /// removes a file but disregards a "NotFound" error if the file is already gone
 fn remove_file(path: impl AsRef<Path>) -> Result<(), ChunkCacheError> {
     if let Err(e) = std::fs::remove_file(path) {
@@ -576,14 +675,57 @@ fn remove_dir(path: impl AsRef<Path>) -> Result<(), ChunkCacheError> {
     Ok(())
 }
 
+// assumes dir_path is a path to a key directory i.e. cache_root/<prefix_dir>/<key_dir>
+// assumes a misformatted path is an error
+// checks if the directory is empty and removes it if so, then checks if the prefix dir is empty and removes it if so
+fn check_remove_dir(dir_path: impl AsRef<Path>) -> Result<(), ChunkCacheError> {
+    let readdir = match read_dir(&dir_path)? {
+        Some(rd) => rd,
+        None => return Ok(()),
+    };
+    if readdir.peekable().peek().is_some() {
+        return Ok(());
+    }
+    // directory empty, remove it
+    remove_dir(&dir_path)?;
+
+    // try to check and remove the prefix dir
+    let prefix_dir = dir_path
+        .as_ref()
+        .parent()
+        .ok_or(ChunkCacheError::Infallible)?;
+
+    let prefix_readdir = match read_dir(prefix_dir)? {
+        Some(prd) => prd,
+        None => return Ok(()),
+    };
+    if prefix_readdir.peekable().peek().is_some() {
+        return Ok(());
+    }
+    // directory empty, remove it
+    remove_dir(prefix_dir)
+}
+
+/// tries to parse just a Key from a file name encoded by fn `key_dir`
+/// expects only the key portion of the file path, with the prefix not present.
+fn try_parse_key(file_name: &[u8]) -> Result<Key, ChunkCacheError> {
+    let buf = BASE64_ENGINE.decode(file_name)?;
+    let hash = MerkleHash::from_slice(&buf[..size_of::<MerkleHash>()])?;
+    let prefix = String::from(std::str::from_utf8(&buf[size_of::<MerkleHash>()..])?);
+    Ok(Key { prefix, hash })
+}
+
 /// key_dir returns a directory name string formed from the key
 /// the format is BASE64_encode([ key.hash[..], key.prefix.as_bytes()[..] ])
-fn key_dir(key: &Key) -> String {
+fn key_dir(key: &Key) -> PathBuf {
     let prefix_bytes = key.prefix.as_bytes();
     let mut buf = vec![0u8; size_of::<MerkleHash>() + prefix_bytes.len()];
     buf[..size_of::<MerkleHash>()].copy_from_slice(key.hash.as_bytes());
     buf[size_of::<MerkleHash>()..].copy_from_slice(prefix_bytes);
-    BASE64_ENGINE.encode(buf)
+    let encoded = BASE64_ENGINE.encode(&buf);
+    let prefix_dir = &encoded[..PREFIX_DIR_NAME_LEN];
+    let dir_str = format!("{prefix_dir}/{encoded}");
+    PathBuf::from(dir_str)
 }
 
 impl ChunkCache for DiskCache {
@@ -607,7 +749,7 @@ mod tests {
     use std::collections::BTreeSet;
 
     use crate::{
-        disk::{parse_key, test_utils::*},
+        disk::{test_utils::*, try_parse_key},
         CacheConfig,
     };
 
@@ -661,7 +803,6 @@ mod tests {
             end: 101,
         };
         // miss
-        println!("{:?}", cache.get(&key, &miss_range));
         assert!(cache.get(&key, &miss_range).unwrap().is_none());
     }
 
@@ -722,9 +863,6 @@ mod tests {
 
         let (key, range, offsets, data) = it.next().unwrap();
         let result = cache.put(&key, &range, &offsets, &data);
-        if result.is_err() {
-            println!("{result:?}");
-        }
         assert!(result.is_ok());
         assert!(cache.total_bytes().unwrap() <= CAP);
     }
@@ -902,7 +1040,7 @@ mod tests {
     #[test]
     fn test_dir_name_to_key() {
         let s = "oL-Xqk1J00kVe1U4kCko-Kw4zaVv3-4U73i27w5DViBkZWZhdWx0";
-        let key = parse_key(s.as_bytes());
+        let key = try_parse_key(s.as_bytes());
         assert!(key.is_ok(), "{key:?}")
     }
 
@@ -913,7 +1051,7 @@ mod tests {
         let config = CacheConfig {
             cache_directory: cache_root.path().to_path_buf(),
             cache_size: capacity,
-            ..Default::default()   
+            ..Default::default()
         };
         let cache = DiskCache::initialize(&config).unwrap();
         let mut it = RandomEntryIterator::default();
@@ -957,7 +1095,7 @@ mod tests {
         let config = CacheConfig {
             cache_directory: cache_root.path().to_path_buf(),
             cache_size: DEFAULT_CAPACITY,
-            ..Default::default()   
+            ..Default::default()
         };
         let cache = DiskCache::initialize(&config).unwrap();
 
@@ -1019,7 +1157,7 @@ mod tests {
         let config = CacheConfig {
             cache_directory: cache_root.path().to_path_buf(),
             cache_size: capacity,
-            ..Default::default()   
+            ..Default::default()
         };
         let cache = DiskCache::initialize(&config).unwrap();
         let mut it = RandomEntryIterator::default().with_one_chunk_ranges(true);
@@ -1072,7 +1210,7 @@ mod concurrency_tests {
     #[tokio::test]
     async fn test_run_concurrently() {
         let cache_root = TempDir::new("run_concurrently").unwrap();
- 
+
         let config = CacheConfig {
             cache_directory: cache_root.path().to_path_buf(),
             cache_size: DEFAULT_CAPACITY,
@@ -1112,7 +1250,7 @@ mod concurrency_tests {
         let config = CacheConfig {
             cache_directory: cache_root.path().to_path_buf(),
             cache_size: RANGE_LEN as u64 * NUM_ITEMS_PER_TASK as u64,
-            ..Default::default()   
+            ..Default::default()
         };
         let cache = DiskCache::initialize(&config).unwrap();
 

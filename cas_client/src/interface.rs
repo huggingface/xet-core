@@ -2,12 +2,12 @@ use crate::error::Result;
 use crate::CasClientError;
 use async_trait::async_trait;
 use cas_types::QueryReconstructionResponse;
+use mdb_shard::shard_dedup_probe::ShardDedupProber;
+use mdb_shard::shard_file_reconstructor::FileReconstructor;
 use merklehash::MerkleHash;
 use reqwest_middleware::ClientWithMiddleware;
 use std::io::Write;
-use mdb_shard::shard_dedup_probe::ShardDedupProber;
-use mdb_shard::shard_file_reconstructor::FileReconstructor;
-
+use std::sync::Arc;
 
 /// A Client to the CAS (Content Addressed Storage) service to allow storage and
 /// management of XORBs (Xet Object Remote Block). A XORB represents a collection
@@ -34,16 +34,12 @@ pub trait UploadClient {
     ) -> Result<()>;
 
     /// Check if a XORB already exists.
-    async fn exists(
-        &self,
-        prefix: &str,
-        hash: &MerkleHash,
-    ) -> Result<bool>;
+    async fn exists(&self, prefix: &str, hash: &MerkleHash) -> Result<bool>;
 }
 
 /// A Client to the CAS (Content Addressed Storage) service to allow reconstructing a
 /// pointer file based on FileID (MerkleHash).
-/// 
+///
 /// To simplify this crate, it is intentional that the client does not create its own http_client or
 /// spawn its own threads. Instead, it is expected to be given the parallism harness/threadpool/queue
 /// on which it is expected to run. This allows the caller to better optimize overall system utilization
@@ -51,23 +47,23 @@ pub trait UploadClient {
 #[async_trait]
 pub trait ReconstructionClient {
     /// Get a entire file by file hash.
-    /// 
-    /// The http_client passed in is a non-authenticated client. This is used to directly communicate 
+    ///
+    /// The http_client passed in is a non-authenticated client. This is used to directly communicate
     /// with the backing store (S3) to retrieve xorbs.
     async fn get_file(
         &self,
-        http_client: &ClientWithMiddleware,
+        http_client: Arc<ClientWithMiddleware>,
         hash: &MerkleHash,
         writer: &mut Box<dyn Write + Send>,
     ) -> Result<()>;
 
     /// Get a entire file by file hash at a specific bytes range.
-    /// 
-    /// The http_client passed in is a non-authenticated client. This is used to directly communicate 
+    ///
+    /// The http_client passed in is a non-authenticated client. This is used to directly communicate
     /// with the backing store (S3) to retrieve xorbs.
     async fn get_file_byte_range(
         &self,
-        http_client: &ClientWithMiddleware,
+        http_client: Arc<ClientWithMiddleware>,
         hash: &MerkleHash,
         offset: u64,
         length: u64,
@@ -83,7 +79,7 @@ pub trait Client: UploadClient + ReconstructionClient {}
 /// access these trait functions.
 #[async_trait]
 pub(crate) trait Reconstructable {
-    async fn reconstruct(
+    async fn get_reconstruction(
         &self,
         hash: &MerkleHash,
         byte_range: Option<(u64, u64)>,

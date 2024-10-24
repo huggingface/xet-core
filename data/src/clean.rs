@@ -32,7 +32,7 @@ use tokio::sync::mpsc::error::TryRecvError;
 use tokio::sync::mpsc::{channel, Receiver, Sender};
 use tokio::sync::Mutex;
 use tokio::task::{JoinHandle, JoinSet};
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, warn};
 
 // Chunking is the bottleneck, changing batch size doesn't have a big impact.
 lazy_static! {
@@ -258,7 +258,7 @@ impl Cleaner {
     }
 
     async fn dedup(&self, chunks: &[ChunkYieldType]) -> Result<()> {
-        info!("Dedup {} chunks", chunks.len());
+        debug!("Dedup {} chunks", chunks.len());
         let mut tracking_info = self.tracking_info.lock().await;
 
         let enable_global_dedup = self.enable_global_dedup_queries;
