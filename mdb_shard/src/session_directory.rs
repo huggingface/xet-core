@@ -1,14 +1,15 @@
-use crate::error::Result;
-use crate::set_operations::shard_set_union;
-use crate::shard_file_handle::MDBShardFile;
-use merklehash::MerkleHash;
 use std::collections::HashSet;
-use std::io::Cursor;
-use std::io::Read;
+use std::io::{Cursor, Read};
 use std::mem::swap;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
+
+use merklehash::MerkleHash;
 use tracing::debug;
+
+use crate::error::Result;
+use crate::set_operations::shard_set_union;
+use crate::shard_file_handle::MDBShardFile;
 
 // Merge a collection of shards.
 // After calling this, the passed in shards may be invalid -- i.e. may refer to a shard that doesn't exist.

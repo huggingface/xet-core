@@ -1,10 +1,10 @@
-use crate::error::CasTypesError;
+use std::fmt::{Display, Formatter};
+use std::str::FromStr;
+
 use merklehash::MerkleHash;
 use serde::{Deserialize, Serialize};
-use std::{
-    fmt::{Display, Formatter},
-    str::FromStr,
-};
+
+use crate::error::CasTypesError;
 
 /// A Key indicates a prefixed merkle hash for some data stored in the CAS DB.
 #[derive(Debug, PartialEq, Default, Serialize, Deserialize, Ord, PartialOrd, Eq, Hash, Clone)]
@@ -39,10 +39,11 @@ impl FromStr for Key {
 
 pub mod hex {
     pub mod serde {
+        use std::fmt;
+
         use merklehash::MerkleHash;
         use serde::de::{self, Visitor};
         use serde::{Deserializer, Serializer};
-        use std::fmt;
 
         pub fn serialize<S>(value: &MerkleHash, serializer: S) -> Result<S::Ok, S::Error>
         where

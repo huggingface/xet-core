@@ -1,16 +1,14 @@
+use std::env::current_dir;
+use std::fs;
+use std::fs::File;
+use std::io::{BufReader, BufWriter, Read, Write};
+use std::path::PathBuf;
+
 use anyhow::Result;
 use cas_client::CacheConfig;
 use clap::{Args, Parser, Subcommand};
-use data::{configurations::*, SMALL_FILE_THRESHOLD};
-use data::{PointerFile, PointerFileTranslator};
-use std::env::current_dir;
-use std::fs;
-use std::io::{Read, Write};
-use std::path::PathBuf;
-use std::{
-    fs::File,
-    io::{BufReader, BufWriter},
-};
+use data::configurations::*;
+use data::{PointerFile, PointerFileTranslator, SMALL_FILE_THRESHOLD};
 
 #[derive(Parser)]
 struct XCommand {

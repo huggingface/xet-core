@@ -1,18 +1,19 @@
-use super::clean::BufferItem;
+use std::cmp::min;
+use std::pin::Pin;
+
 use lazy_static::lazy_static;
 use merkledb::constants::{
     MAXIMUM_CHUNK_MULTIPLIER, MINIMUM_CHUNK_DIVISOR, N_LOW_VARIANCE_CDC_CHUNKERS, TARGET_CDC_CHUNK_SIZE,
 };
 use merkledb::Chunk;
 use merklehash::compute_data_hash;
-use rand_chacha::rand_core::RngCore;
-use rand_chacha::rand_core::SeedableRng;
+use rand_chacha::rand_core::{RngCore, SeedableRng};
 use rand_chacha::ChaChaRng;
-use std::cmp::min;
-use std::pin::Pin;
 use tokio::sync::mpsc::{Receiver, Sender};
 use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
+
+use super::clean::BufferItem;
 
 pub const HASH_SEED: u64 = 123456;
 

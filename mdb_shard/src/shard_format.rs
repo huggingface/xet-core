@@ -1,3 +1,16 @@
+use std::collections::{BTreeMap, HashMap};
+use std::io::{copy, Read, Seek, SeekFrom, Write};
+use std::mem::size_of;
+use std::ops::Add;
+use std::sync::Arc;
+use std::time::UNIX_EPOCH;
+
+use anyhow::anyhow;
+use merklehash::{HMACKey, MerkleHash};
+use static_assertions::const_assert;
+use tracing::debug;
+use utils::serialization_utils::*;
+
 use crate::cas_structs::*;
 use crate::constants::*;
 use crate::error::{MDBShardError, Result};
@@ -5,17 +18,6 @@ use crate::file_structs::*;
 use crate::interpolation_search::search_on_sorted_u64s;
 use crate::shard_in_memory::MDBInMemoryShard;
 use crate::utils::truncate_hash;
-use anyhow::anyhow;
-use merklehash::{HMACKey, MerkleHash};
-use static_assertions::const_assert;
-use std::collections::{BTreeMap, HashMap};
-use std::io::{copy, Read, Seek, SeekFrom, Write};
-use std::mem::size_of;
-use std::ops::Add;
-use std::sync::Arc;
-use std::time::UNIX_EPOCH;
-use tracing::debug;
-use utils::serialization_utils::*;
 
 // Same size for FileDataSequenceHeader and FileDataSequenceEntry
 pub const MDB_FILE_INFO_ENTRY_SIZE: usize = size_of::<[u64; 4]>() + 4 * size_of::<u32>();
@@ -900,7 +902,8 @@ impl MDBShardInfo {
         Ok(ret)
     }
 
-    /// Export the current shard as an hmac keyed shard, returning the number of bytes written and the hash of the resulting data.
+    /// Export the current shard as an hmac keyed shard, returning the number of bytes written and the hash of the
+    /// resulting data.
     #[allow(clippy::too_many_arguments)]
     pub fn export_as_keyed_shard<R: Read + Seek, W: Write>(
         &self,
@@ -1042,16 +1045,16 @@ pub mod test_routines {
     use std::io::{Cursor, Read, Seek};
     use std::mem::size_of;
 
-    use crate::cas_structs::{CASChunkSequenceEntry, CASChunkSequenceHeader, MDBCASInfo};
-    use crate::error::Result;
-    use crate::file_structs::{FileDataSequenceEntry, FileDataSequenceHeader, MDBFileInfo};
-    use crate::shard_format::MDBShardInfo;
-    use crate::shard_in_memory::MDBInMemoryShard;
     use merklehash::MerkleHash;
     use rand::rngs::{SmallRng, StdRng};
     use rand::{Rng, SeedableRng};
 
     use super::FileVerificationEntry;
+    use crate::cas_structs::{CASChunkSequenceEntry, CASChunkSequenceHeader, MDBCASInfo};
+    use crate::error::Result;
+    use crate::file_structs::{FileDataSequenceEntry, FileDataSequenceHeader, MDBFileInfo};
+    use crate::shard_format::MDBShardInfo;
+    use crate::shard_in_memory::MDBInMemoryShard;
 
     pub fn simple_hash(n: u64) -> MerkleHash {
         MerkleHash::from([n, 1, 0, 0])
@@ -1349,9 +1352,8 @@ pub mod test_routines {
 
 #[cfg(test)]
 mod tests {
-    use crate::error::Result;
-
     use super::test_routines::*;
+    use crate::error::Result;
 
     #[test]
     fn test_simple() -> Result<()> {

@@ -1,11 +1,13 @@
+use std::collections::BTreeSet as Set;
+
+use proc_macro2::TokenStream;
+use quote::{format_ident, quote, quote_spanned, ToTokens};
+use syn::{Data, DeriveInput, GenericArgument, Member, PathArguments, Result, Token, Type, Visibility};
+
 use crate::ast::{Enum, Field, Input, Struct};
 use crate::attr::Trait;
 use crate::generics::InferredBounds;
 use crate::span::MemberSpan;
-use proc_macro2::TokenStream;
-use quote::{format_ident, quote, quote_spanned, ToTokens};
-use std::collections::BTreeSet as Set;
-use syn::{Data, DeriveInput, GenericArgument, Member, PathArguments, Result, Token, Type, Visibility};
 
 pub fn derive(node: &DeriveInput) -> Result<TokenStream> {
     let input = Input::from_syn(node)?;

@@ -1,11 +1,13 @@
-use rand::distributions::Alphanumeric;
-use rand::{thread_rng, Rng};
 use std::fs::{self, File, Metadata};
 use std::io::{self, BufWriter, Write};
 use std::path::{Path, PathBuf};
+
+use rand::distributions::Alphanumeric;
+use rand::{thread_rng, Rng};
 use tempfile::NamedTempFile;
 
-use crate::{create_file, file_metadata::set_file_metadata};
+use crate::create_file;
+use crate::file_metadata::set_file_metadata;
 
 pub struct SafeFileCreator {
     dest_path: PathBuf,
@@ -142,11 +144,13 @@ pub fn create_temp_file(dir: &Path, suffix: &str) -> io::Result<NamedTempFile> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use std::fs::{self, File};
     use std::io::Read;
     use std::os::unix::fs::PermissionsExt;
+
     use tempfile::tempdir;
+
+    use super::*;
 
     #[test]
     fn test_safe_file_creator_new() {

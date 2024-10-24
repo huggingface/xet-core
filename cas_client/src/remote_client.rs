@@ -1,26 +1,26 @@
-use crate::http_client;
-use crate::interface::*;
-use crate::Client;
-use crate::{error::Result, CasClientError};
+use std::collections::HashMap;
+use std::io::{Cursor, Write};
+use std::sync::Arc;
+
 use anyhow::anyhow;
 use async_trait::async_trait;
 use cas_object::CasObject;
-use cas_types::CASReconstructionFetchInfo;
-use cas_types::HexMerkleHash;
-use cas_types::Range;
-use cas_types::{CASReconstructionTerm, Key, QueryReconstructionResponse, UploadXorbResponse};
+use cas_types::{
+    CASReconstructionFetchInfo, CASReconstructionTerm, HexMerkleHash, Key, QueryReconstructionResponse, Range,
+    UploadXorbResponse,
+};
 use chunk_cache::{CacheConfig, ChunkCache, DiskCache};
 use error_printer::ErrorPrinter;
 use merklehash::MerkleHash;
 use reqwest::{StatusCode, Url};
 use reqwest_middleware::ClientWithMiddleware;
-use std::collections::HashMap;
-use std::io::{Cursor, Write};
-use std::sync::Arc;
-use tracing::info;
-use tracing::{debug, error};
+use tracing::{debug, error, info};
 use utils::auth::AuthConfig;
 use utils::singleflight;
+
+use crate::error::Result;
+use crate::interface::*;
+use crate::{http_client, CasClientError, Client};
 
 pub const CAS_ENDPOINT: &str = "http://localhost:8080";
 pub const PREFIX_DEFAULT: &str = "default";
@@ -369,9 +369,10 @@ async fn download_range(
 #[cfg(test)]
 mod tests {
 
-    use super::*;
     use cas_object::test_utils::*;
     use tracing_test::traced_test;
+
+    use super::*;
 
     #[ignore = "requires a running CAS server"]
     #[traced_test]

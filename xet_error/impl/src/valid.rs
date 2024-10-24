@@ -1,8 +1,10 @@
+use std::collections::BTreeSet as Set;
+
+use quote::ToTokens;
+use syn::{Error, GenericArgument, Member, PathArguments, Result, Type};
+
 use crate::ast::{Enum, Field, Input, Struct, Variant};
 use crate::attr::Attrs;
-use quote::ToTokens;
-use std::collections::BTreeSet as Set;
-use syn::{Error, GenericArgument, Member, PathArguments, Result, Type};
 
 impl Input<'_> {
     pub(crate) fn validate(&self) -> Result<()> {

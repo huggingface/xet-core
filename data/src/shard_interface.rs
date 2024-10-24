@@ -1,9 +1,12 @@
-use super::configurations::{Endpoint::*, StorageConfig};
-use super::errors::Result;
+use std::sync::Arc;
+
 use cas_client::{HttpShardClient, LocalShardClient, ShardClientInterface};
 use mdb_shard::ShardFileManager;
-use std::sync::Arc;
 use tracing::{info, warn};
+
+use super::configurations::Endpoint::*;
+use super::configurations::StorageConfig;
+use super::errors::Result;
 
 pub async fn create_shard_manager(shard_storage_config: &StorageConfig) -> Result<ShardFileManager> {
     let shard_session_directory = shard_storage_config

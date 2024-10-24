@@ -1,6 +1,7 @@
-use merklehash::MerkleHash;
 use std::io::{Read, Write};
 use std::mem::{size_of, transmute};
+
+use merklehash::MerkleHash;
 
 pub fn write_hash<W: Write>(writer: &mut W, m: &MerkleHash) -> Result<(), std::io::Error> {
     writer.write_all(m.as_bytes())

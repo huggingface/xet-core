@@ -1,7 +1,8 @@
-use merklehash::MerkleHash;
 use std::fmt::Debug;
 use std::io::{Read, Write};
 use std::mem::size_of;
+
+use merklehash::MerkleHash;
 use utils::serialization_utils::*;
 
 pub const MDB_DEFAULT_CAS_FLAG: u32 = 0;

@@ -1,5 +1,6 @@
-use merklehash::MerkleHash;
 use std::io;
+
+use merklehash::MerkleHash;
 use xet_error::Error;
 
 #[non_exhaustive]

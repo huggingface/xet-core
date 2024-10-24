@@ -1,7 +1,8 @@
-use crate::attr::{self, Attrs};
-use crate::generics::ParamsInScope;
 use proc_macro2::Span;
 use syn::{Data, DataEnum, DataStruct, DeriveInput, Error, Fields, Generics, Ident, Index, Member, Result, Type};
+
+use crate::attr::{self, Attrs};
+use crate::generics::ParamsInScope;
 
 pub enum Input<'a> {
     Struct(Struct<'a>),

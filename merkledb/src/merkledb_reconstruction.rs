@@ -1,11 +1,11 @@
+use merklehash::MerkleHash;
+
 use crate::error::*;
 use crate::internal_methods::*;
 use crate::merkledbbase::MerkleDBBase;
 use crate::merklenode::*;
-use merklehash::MerkleHash;
 ///
 ///  Describes methods for performing FILE2CAS or CAS2FILE reconstructions from a MerkleDB
-///
 pub trait MerkleDBReconstruction: MerkleDBBase {
     /**
      * Look for all CAS's which are dependent exclusively on descendents of

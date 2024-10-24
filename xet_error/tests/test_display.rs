@@ -1,6 +1,7 @@
 #![allow(clippy::uninlined_format_args)]
 
 use std::fmt::{self, Display};
+
 use xet_error::Error;
 
 fn assert<T: Display>(expected: &str, value: T) {

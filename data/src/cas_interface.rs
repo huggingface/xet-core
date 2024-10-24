@@ -1,15 +1,16 @@
-use crate::configurations::*;
-use crate::errors::Result;
-use crate::test_utils::LocalTestClient;
-use cas_client::{CacheConfig, RemoteClient};
-use mdb_shard::ShardFileManager;
 use std::env::current_dir;
 use std::path::Path;
 use std::sync::Arc;
+
+pub use cas_client::Client;
+use cas_client::{CacheConfig, RemoteClient};
+use mdb_shard::ShardFileManager;
 use tracing::info;
 use utils::auth::AuthConfig;
 
-pub use cas_client::Client;
+use crate::configurations::*;
+use crate::errors::Result;
+use crate::test_utils::LocalTestClient;
 
 pub(crate) fn create_cas_client(
     cas_storage_config: &StorageConfig,

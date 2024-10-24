@@ -1,4 +1,5 @@
 use std::convert::Infallible;
+
 use xet_error::Error;
 
 #[non_exhaustive]

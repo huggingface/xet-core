@@ -2,7 +2,9 @@ use std::path::Path;
 
 use cas_types::{Key, Range};
 use merklehash::MerkleHash;
-use rand::{rngs::ThreadRng, seq::SliceRandom, thread_rng, Rng, SeedableRng};
+use rand::rngs::ThreadRng;
+use rand::seq::SliceRandom;
+use rand::{thread_rng, Rng, SeedableRng};
 
 #[cfg(test)]
 pub const RANGE_LEN: u32 = 16 << 10;

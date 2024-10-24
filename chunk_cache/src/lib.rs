@@ -4,10 +4,9 @@ pub mod error;
 use std::path::PathBuf;
 
 use cas_types::{Key, Range};
-use error::ChunkCacheError;
-
 pub use disk::test_utils::*;
 pub use disk::DiskCache;
+use error::ChunkCacheError;
 
 /// ChunkCache is a trait for storing and fetching Xorb ranges.
 /// implementors are expected to return bytes for a key and a given chunk range

@@ -1,22 +1,19 @@
 // The shard structure for the in memory querying
 
+use std::collections::{BTreeMap, HashMap};
+use std::io::{BufWriter, Write};
+use std::mem::size_of;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+
 use merklehash::{HashedWrite, MerkleHash};
-use std::{
-    collections::{BTreeMap, HashMap},
-    io::{BufWriter, Write},
-    mem::size_of,
-    path::{Path, PathBuf},
-    sync::Arc,
-};
 use tracing::debug;
 
-use crate::{
-    cas_structs::*,
-    error::Result,
-    file_structs::*,
-    shard_format::MDBShardInfo,
-    utils::{shard_file_name, temp_shard_file_name},
-};
+use crate::cas_structs::*;
+use crate::error::Result;
+use crate::file_structs::*;
+use crate::shard_format::MDBShardInfo;
+use crate::utils::{shard_file_name, temp_shard_file_name};
 
 #[allow(clippy::type_complexity)]
 #[derive(Clone, Default, Debug)]

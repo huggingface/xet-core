@@ -1,9 +1,10 @@
-use crate::error::{CasClientError, Result};
-use crate::{build_auth_http_client, RegistrationClient, ShardClientInterface};
+use std::io::Read;
+use std::path::PathBuf;
+use std::str::FromStr;
+
 use async_trait::async_trait;
 use bytes::Buf;
-use cas_types::Key;
-use cas_types::{QueryReconstructionResponse, UploadShardResponse, UploadShardResponseType};
+use cas_types::{Key, QueryReconstructionResponse, UploadShardResponse, UploadShardResponseType};
 use error_printer::ErrorPrinter;
 use file_utils::write_all_safe;
 use mdb_shard::file_structs::{FileDataSequenceEntry, FileDataSequenceHeader, MDBFileInfo};
@@ -12,12 +13,12 @@ use mdb_shard::shard_file_reconstructor::FileReconstructor;
 use merklehash::MerkleHash;
 use reqwest::Url;
 use reqwest_middleware::ClientWithMiddleware;
-use std::io::Read;
-use std::path::PathBuf;
-use std::str::FromStr;
 use tokio::task::JoinSet;
 use utils::auth::AuthConfig;
 use utils::serialization_utils::read_u32;
+
+use crate::error::{CasClientError, Result};
+use crate::{build_auth_http_client, RegistrationClient, ShardClientInterface};
 
 const FORCE_SYNC_METHOD: reqwest::Method = reqwest::Method::PUT;
 const NON_FORCE_SYNC_METHOD: reqwest::Method = reqwest::Method::POST;
@@ -205,16 +206,16 @@ impl ShardClientInterface for HttpShardClient {}
 
 #[cfg(test)]
 mod test {
-    use std::{env, path::PathBuf};
+    use std::env;
+    use std::path::PathBuf;
 
-    use mdb_shard::{
-        shard_dedup_probe::ShardDedupProber, shard_file_reconstructor::FileReconstructor, MDBShardFile, MDBShardInfo,
-    };
+    use mdb_shard::shard_dedup_probe::ShardDedupProber;
+    use mdb_shard::shard_file_reconstructor::FileReconstructor;
+    use mdb_shard::{MDBShardFile, MDBShardInfo};
     use merklehash::MerkleHash;
 
-    use crate::RegistrationClient;
-
     use super::HttpShardClient;
+    use crate::RegistrationClient;
 
     #[tokio::test]
     #[ignore = "need a local cas_server running"]

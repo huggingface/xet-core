@@ -1,6 +1,7 @@
 use core::time;
-use progress_reporting::DataProgressReporter;
 use std::thread::sleep;
+
+use progress_reporting::DataProgressReporter;
 
 fn main() {
     let pb = DataProgressReporter::new("Testing progress bar (no totals, no bytes)", None, None);

@@ -1,14 +1,9 @@
-use crate::cas_interface::Client;
-use crate::chunking::{chunk_target_default, ChunkYieldType};
-use crate::configurations::FileQueryPolicy;
-use crate::constants::MIN_SPACING_BETWEEN_GLOBAL_DEDUP_QUERIES;
-use crate::data_processing::{register_new_cas_block, CASDataAggregator};
-use crate::errors::{DataProcessingError::*, Result};
-use crate::metrics::FILTER_BYTES_CLEANED;
-use crate::remote_shard_interface::RemoteShardInterface;
-use crate::repo_salt::RepoSalt;
-use crate::small_file_determination::{is_file_passthrough, is_possible_start_to_text_file};
-use crate::PointerFile;
+use std::collections::HashMap;
+use std::mem::take;
+use std::ops::DerefMut;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+
 use cas_object::range_hash_from_chunks;
 use lazy_static::lazy_static;
 use mdb_shard::file_structs::{FileDataSequenceEntry, FileDataSequenceHeader, FileVerificationEntry, MDBFileInfo};
@@ -17,16 +12,24 @@ use mdb_shard::{hash_is_global_dedup_eligible, ShardFileManager};
 use merkledb::aggregate_hashes::file_node_hash;
 use merkledb::constants::TARGET_CAS_BLOCK_SIZE;
 use merklehash::MerkleHash;
-use std::collections::HashMap;
-use std::mem::take;
-use std::ops::DerefMut;
-use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use tokio::sync::mpsc::error::TryRecvError;
 use tokio::sync::mpsc::{channel, Receiver, Sender};
 use tokio::sync::Mutex;
 use tokio::task::{JoinHandle, JoinSet};
 use tracing::{debug, error, warn};
+
+use crate::cas_interface::Client;
+use crate::chunking::{chunk_target_default, ChunkYieldType};
+use crate::configurations::FileQueryPolicy;
+use crate::constants::MIN_SPACING_BETWEEN_GLOBAL_DEDUP_QUERIES;
+use crate::data_processing::{register_new_cas_block, CASDataAggregator};
+use crate::errors::DataProcessingError::*;
+use crate::errors::Result;
+use crate::metrics::FILTER_BYTES_CLEANED;
+use crate::remote_shard_interface::RemoteShardInterface;
+use crate::repo_salt::RepoSalt;
+use crate::small_file_determination::{is_file_passthrough, is_possible_start_to_text_file};
+use crate::PointerFile;
 
 // Chunking is the bottleneck, changing batch size doesn't have a big impact.
 lazy_static! {
@@ -293,8 +296,9 @@ impl Cleaner {
                     // any shards are present that give us more dedup ability.
                     //
                     // If we've already queried these against the global dedup, then we can proceed on without
-                    // re-querying anything.  Only doing this on the first pass also gaurantees that in the case of errors
-                    // on shard retrieval, we don't get stuck in a loop trying to download and reprocess.
+                    // re-querying anything.  Only doing this on the first pass also gaurantees that in the case of
+                    // errors on shard retrieval, we don't get stuck in a loop trying to download
+                    // and reprocess.
                 } else {
                     if enable_global_dedup          // Is enabled
                             && first_pass                   // Have we seen this on the previous pass?  If so, skip.
@@ -303,7 +307,8 @@ impl Cleaner {
                             && (global_chunk_index as isize // Limit by enforcing at least 4MB between chunk queries.
                             >= last_chunk_index_queried + MIN_SPACING_BETWEEN_GLOBAL_DEDUP_QUERIES as isize)
                     {
-                        // Now, query for a global dedup shard in the background to make sure that all the rest of this can continue.
+                        // Now, query for a global dedup shard in the background to make sure that all the rest of this
+                        // can continue.
                         let remote_shards = self.remote_shards.clone();
                         let query_chunk = chunk_hashes[local_chunk_index];
 

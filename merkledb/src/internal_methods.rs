@@ -1,13 +1,14 @@
+use std::collections::{HashMap, HashSet};
+
 use super::constants::*;
 use super::merklenode::*;
 use crate::error::*;
 use crate::merkledbbase::MerkleDBBase;
-use std::collections::{HashMap, HashSet};
-/**************************************************************************/
-/*                                                                        */
-/*                          Internal Algorithms                           */
-/*                                                                        */
-/**************************************************************************/
+/************************************************************************* */
+/*  */
+/* Internal Algorithms */
+/*  */
+/************************************************************************* */
 
 /**
  * Inserts a leaf node described by just a hash and a length into a database,
@@ -65,10 +66,9 @@ pub fn merge_one_level(
      *  hash distribution, this implies on average, the number of children
      *  is MEAN_TREE_BRANCHING_FACTOR,
      *  - OR this is the last node in the list.
-     *  - subject to each parent must have at least 2 children, and at most
-     *    MEAN_TREE_BRANCHING_FACTOR * 2 children: This ensures that
-     *    the graph always has at most 1/2 the number of parents as children.
-     *    and we don't have too wide branches.
+     *  - subject to each parent must have at least 2 children, and at most MEAN_TREE_BRANCHING_FACTOR * 2 children:
+     *    This ensures that the graph always has at most 1/2 the number of parents as children. and we don't have too
+     *    wide branches.
      *
      * We build a parent, update the indices, and shift start_idx to the
      * next index (idx + 1) to set up the window for the next parent.
@@ -140,8 +140,7 @@ fn assign_node_parents(
  * This is the return type of `find_descendent_reconstructor`.
  * It is used to describe how the root relates to the descendents found
  * and vice versa.
- * - For the root, how to put together the descendent nodes to construct the
- *   value at the root.
+ * - For the root, how to put together the descendent nodes to construct the value at the root.
  * - and for each descendent, what subrange of the root does it correspond to.
  */
 #[derive(Default)]

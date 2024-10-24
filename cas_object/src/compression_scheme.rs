@@ -1,5 +1,7 @@
+use std::fmt::Display;
+use std::str::FromStr;
+
 use anyhow::anyhow;
-use std::{fmt::Display, str::FromStr};
 
 #[repr(u8)]
 #[derive(Debug, PartialEq, Eq, Clone, Copy, Default)]
@@ -59,8 +61,9 @@ impl FromStr for CompressionScheme {
 
 #[cfg(test)]
 mod tests {
-    use super::CompressionScheme;
     use std::str::FromStr;
+
+    use super::CompressionScheme;
 
     #[test]
     fn test_from_str() {

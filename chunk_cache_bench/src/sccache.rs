@@ -1,14 +1,13 @@
-use std::{
-    ffi::{OsStr, OsString},
-    io::Write,
-    os::unix::ffi::OsStringExt,
-    path::PathBuf,
-    sync::{Arc, Mutex},
-};
+use std::ffi::{OsStr, OsString};
+use std::io::Write;
+use std::os::unix::ffi::OsStringExt;
+use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
 
 use base64::Engine;
 use cas_types::{Key, Range};
-use chunk_cache::{error::ChunkCacheError, ChunkCache};
+use chunk_cache::error::ChunkCacheError;
+use chunk_cache::ChunkCache;
 use sccache::lru_disk_cache::LruDiskCache;
 
 use crate::ChunkCacheExt;

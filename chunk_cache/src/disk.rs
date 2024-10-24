@@ -1,14 +1,13 @@
-use std::{
-    collections::HashMap,
-    fs::{DirEntry, File},
-    io::{self, Cursor, ErrorKind, Read, Seek, SeekFrom, Write},
-    mem::size_of,
-    path::{Path, PathBuf},
-    sync::{Arc, Mutex, MutexGuard},
-};
+use std::collections::HashMap;
+use std::fs::{DirEntry, File};
+use std::io::{self, Cursor, ErrorKind, Read, Seek, SeekFrom, Write};
+use std::mem::size_of;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, MutexGuard};
 
 use base64::engine::general_purpose::URL_SAFE;
-use base64::{engine::GeneralPurpose, Engine};
+use base64::engine::GeneralPurpose;
+use base64::Engine;
 use cache_file_header::CacheFileHeader;
 use cache_item::{range_contained_fn, CacheItem};
 use cas_types::{Key, Range};
@@ -18,7 +17,8 @@ use merklehash::MerkleHash;
 use sorted_vec::SortedVec;
 use tracing::{debug, warn};
 
-use crate::{error::ChunkCacheError, CacheConfig, ChunkCache};
+use crate::error::ChunkCacheError;
+use crate::{CacheConfig, ChunkCache};
 
 mod cache_file_header;
 mod cache_item;
@@ -95,7 +95,6 @@ impl DiskCache {
     /// │       ├── [range 400-402, file_len, file_hash]
     /// │       ├── [range 404-405, file_len, file_hash]
     /// │       └── [range 679-700, file_len, file_hash]
-    ///
     pub fn initialize(config: &CacheConfig) -> Result<Self, ChunkCacheError> {
         let capacity = config.cache_size;
         let cache_root = config.cache_directory.clone();
@@ -716,18 +715,14 @@ impl ChunkCache for DiskCache {
 mod tests {
     use std::collections::BTreeSet;
 
-    use crate::{
-        disk::{test_utils::*, try_parse_key},
-        CacheConfig,
-    };
-
     use cas_types::{Key, Range};
     use rand::thread_rng;
     use tempdir::TempDir;
 
-    use crate::ChunkCache;
-
     use super::{DiskCache, DEFAULT_CAPACITY};
+    use crate::disk::test_utils::*;
+    use crate::disk::try_parse_key;
+    use crate::{CacheConfig, ChunkCache};
 
     #[test]
     fn test_get_cache_empty() {
@@ -1128,9 +1123,9 @@ mod tests {
 mod concurrency_tests {
     use tempdir::TempDir;
 
-    use crate::{disk::DEFAULT_CAPACITY, CacheConfig, ChunkCache, RandomEntryIterator, RANGE_LEN};
-
     use super::DiskCache;
+    use crate::disk::DEFAULT_CAPACITY;
+    use crate::{CacheConfig, ChunkCache, RandomEntryIterator, RANGE_LEN};
 
     const NUM_ITEMS_PER_TASK: usize = 20;
 

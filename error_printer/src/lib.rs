@@ -1,4 +1,5 @@
 use std::fmt::{Debug, Display};
+
 use tracing::{debug, error, info, warn};
 
 /// A helper trait to log errors.

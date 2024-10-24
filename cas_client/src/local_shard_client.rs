@@ -1,16 +1,18 @@
+use std::io::Cursor;
+use std::path::{Path, PathBuf};
+
 use async_trait::async_trait;
 use itertools::Itertools;
 use mdb_shard::file_structs::MDBFileInfo;
 use mdb_shard::shard_dedup_probe::ShardDedupProber;
-use mdb_shard::{shard_file_reconstructor::FileReconstructor, ShardFileManager};
-use mdb_shard::{MDBShardFile, MDBShardInfo};
+use mdb_shard::shard_file_reconstructor::FileReconstructor;
+use mdb_shard::{MDBShardFile, MDBShardInfo, ShardFileManager};
 use merkledb::aggregate_hashes::with_salt;
 use merklehash::MerkleHash;
-use std::io::Cursor;
-use std::path::{Path, PathBuf};
 
-use crate::error::CasClientError;
-use crate::{error::Result, global_dedup_table::DiskBasedGlobalDedupTable, RegistrationClient, ShardClientInterface};
+use crate::error::{CasClientError, Result};
+use crate::global_dedup_table::DiskBasedGlobalDedupTable;
+use crate::{RegistrationClient, ShardClientInterface};
 
 /// This creates a persistent local shard client that simulates the shard server.  It
 /// Is intended to use for testing interactions between local repos that would normally

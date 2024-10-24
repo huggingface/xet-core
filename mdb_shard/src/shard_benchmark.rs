@@ -1,3 +1,10 @@
+use std::fs::File;
+use std::path::{Path, PathBuf};
+use std::str::FromStr;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+
 use anyhow::{Ok, Result};
 use clap::{App, Arg};
 use mdb_shard::cas_structs::{CASChunkSequenceEntry, CASChunkSequenceHeader, MDBCASInfo};
@@ -8,12 +15,6 @@ use mdb_shard::shard_in_memory::MDBInMemoryShard;
 use merklehash::MerkleHash;
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
-use std::fs::File;
-use std::path::{Path, PathBuf};
-use std::str::FromStr;
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Arc;
-use std::time::{Duration, Instant};
 use tempdir::TempDir;
 use tokio::time;
 

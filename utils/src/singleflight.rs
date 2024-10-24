@@ -5,10 +5,10 @@
 //! # Examples
 //!
 //! ```no_run
-//! use futures::future::join_all;
 //! use std::sync::Arc;
 //! use std::time::Duration;
 //!
+//! use futures::future::join_all;
 //! use utils::singleflight::Group;
 //!
 //! const RES: usize = 7;
@@ -34,16 +34,16 @@
 //!     join_all(handlers).await;
 //! }
 //! ```
-//!
 
-use futures::future::Either;
 use std::fmt::Debug;
+use std::future::Future;
+use std::marker::PhantomData;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, AtomicU16, Ordering};
 use std::sync::Arc;
 use std::task::{ready, Context, Poll};
-use std::{future::Future, marker::PhantomData};
 
+use futures::future::Either;
 use hashbrown::HashMap;
 use parking_lot::RwLock;
 use pin_project::{pin_project, pinned_drop};
@@ -363,10 +363,9 @@ mod tests {
     use tokio::task::JoinHandle;
     use tokio::time::timeout;
 
+    use super::Group;
     use crate::errors::SingleflightError;
     use crate::singleflight::{Call, OwnerTask};
-
-    use super::Group;
 
     /// A period of time for waiters to wait for a notification from the owner
     /// task. This is expected to be sufficient time for the test futures to

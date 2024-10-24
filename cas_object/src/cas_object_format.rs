@@ -1,16 +1,17 @@
+use std::cmp::min;
+use std::io::{Cursor, Error, Read, Seek, Write};
+use std::mem::size_of;
+
+use anyhow::anyhow;
+use bytes::Buf;
+use merkledb::prelude::MerkleDBHighLevelMethodsV1;
+use merkledb::{Chunk, MerkleMemDB};
+use merklehash::{DataHash, MerkleHash};
+use tracing::warn;
+
 use crate::cas_chunk_format::{deserialize_chunk, serialize_chunk};
 use crate::error::CasObjectError;
 use crate::{range_hash_from_chunks, CompressionScheme};
-use anyhow::anyhow;
-use bytes::Buf;
-use merkledb::{prelude::MerkleDBHighLevelMethodsV1, Chunk, MerkleMemDB};
-use merklehash::{DataHash, MerkleHash};
-use std::{
-    cmp::min,
-    io::{Cursor, Error, Read, Seek, Write},
-    mem::size_of,
-};
-use tracing::warn;
 
 const CAS_OBJECT_FORMAT_IDENT: [u8; 7] = [b'X', b'E', b'T', b'B', b'L', b'O', b'B'];
 const CAS_OBJECT_FORMAT_VERSION: u8 = 0;
@@ -485,10 +486,12 @@ impl CasObject {
 }
 
 pub mod test_utils {
+    use merkledb::prelude::MerkleDBHighLevelMethodsV1;
+    use merkledb::{Chunk, MerkleMemDB};
+    use rand::Rng;
+
     use super::*;
     use crate::cas_chunk_format::serialize_chunk;
-    use merkledb::{prelude::MerkleDBHighLevelMethodsV1, Chunk, MerkleMemDB};
-    use rand::Rng;
 
     pub fn gen_random_bytes(size: u32) -> Vec<u8> {
         let mut rng = rand::thread_rng();
@@ -583,10 +586,11 @@ pub mod test_utils {
 
 #[cfg(test)]
 mod tests {
+    use std::io::Cursor;
+
     use super::test_utils::*;
     use super::*;
     use crate::chunk_verification::VERIFICATION_KEY;
-    use std::io::Cursor;
 
     #[test]
     fn test_default_header_initialization() {

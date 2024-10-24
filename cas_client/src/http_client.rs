@@ -1,15 +1,13 @@
-use anyhow::anyhow;
-use error_printer::OptionPrinter;
-use reqwest::header::HeaderValue;
-use reqwest::header::AUTHORIZATION;
-use reqwest::{Request, Response};
-use reqwest_middleware::{ClientBuilder, ClientWithMiddleware, Middleware, Next};
-use reqwest_retry::default_on_request_failure;
-use reqwest_retry::default_on_request_success;
-use reqwest_retry::Retryable;
-use reqwest_retry::{policies::ExponentialBackoff, RetryTransientMiddleware};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
+
+use anyhow::anyhow;
+use error_printer::OptionPrinter;
+use reqwest::header::{HeaderValue, AUTHORIZATION};
+use reqwest::{Request, Response};
+use reqwest_middleware::{ClientBuilder, ClientWithMiddleware, Middleware, Next};
+use reqwest_retry::policies::ExponentialBackoff;
+use reqwest_retry::{default_on_request_failure, default_on_request_success, RetryTransientMiddleware, Retryable};
 use tracing::warn;
 use utils::auth::{AuthConfig, TokenProvider};
 
@@ -183,10 +181,11 @@ impl Middleware for AuthMiddleware {
 mod tests {
     use std::time::SystemTime;
 
-    use super::*;
     use httpmock::prelude::*;
     use reqwest::StatusCode;
     use tracing_test::traced_test;
+
+    use super::*;
 
     #[tokio::test]
     #[traced_test]

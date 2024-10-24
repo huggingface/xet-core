@@ -1,17 +1,18 @@
-use super::constants::*;
-use crate::chunk_iterator::HASH_SEED;
-use crate::Chunk;
-use async_trait::async_trait;
-use lazy_static::lazy_static;
-use merklehash::*;
-use parutils::AsyncIterator;
-use rand_chacha::rand_core::RngCore;
-use rand_chacha::rand_core::SeedableRng;
-use rand_chacha::ChaChaRng;
 use std::cmp::min;
 use std::collections::VecDeque;
 use std::marker::PhantomData;
 use std::pin::Pin;
+
+use async_trait::async_trait;
+use lazy_static::lazy_static;
+use merklehash::*;
+use parutils::AsyncIterator;
+use rand_chacha::rand_core::{RngCore, SeedableRng};
+use rand_chacha::ChaChaRng;
+
+use super::constants::*;
+use crate::chunk_iterator::HASH_SEED;
+use crate::Chunk;
 
 type ChunkYieldType = (Chunk, Vec<u8>);
 

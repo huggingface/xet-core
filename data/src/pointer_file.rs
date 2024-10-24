@@ -1,10 +1,14 @@
 #![cfg_attr(feature = "strict", deny(warnings))]
-use crate::constants::POINTER_FILE_LIMIT;
+use std::collections::BTreeMap;
+use std::fs;
+use std::path::Path;
+
 use merklehash::{DataHashHexParseError, MerkleHash};
 use static_assertions::const_assert;
-use std::{collections::BTreeMap, fs, path::Path};
 use toml::Value;
 use tracing::{debug, error, warn};
+
+use crate::constants::POINTER_FILE_LIMIT;
 
 const HEADER_PREFIX: &str = "# xet version ";
 const CURRENT_VERSION: &str = "0";

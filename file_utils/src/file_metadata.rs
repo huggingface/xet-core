@@ -1,7 +1,8 @@
-use std::{fs::Metadata, path::Path, time::SystemTime};
-
+use std::fs::Metadata;
 #[cfg(unix)]
 use std::os::unix::fs::MetadataExt;
+use std::path::Path;
+use std::time::SystemTime;
 
 /// Matches the metadata of a file to another file's metadata
 pub fn set_file_metadata<P: AsRef<Path>>(path: P, metadata: &Metadata, match_owner: bool) -> std::io::Result<()> {
@@ -47,11 +48,13 @@ pub fn set_file_metadata<P: AsRef<Path>>(path: P, metadata: &Metadata, match_own
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use std::fs::{self, File};
     use std::os::unix::fs::PermissionsExt;
     use std::time::{Duration, SystemTime};
+
     use tempfile::tempdir;
+
+    use super::*;
 
     #[test]
     fn test_set_metadata_permissions() {

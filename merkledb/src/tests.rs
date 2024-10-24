@@ -291,9 +291,10 @@ mod component_tests {
         //
         // We should be able to merge the diffs in an arbitrary order
         // and obtain back the same MDB
-        use crate::MerkleNodeId;
         use rand::seq::SliceRandom;
         use rand::{RngCore, SeedableRng};
+
+        use crate::MerkleNodeId;
         let mut rng = rand::rngs::StdRng::seed_from_u64(12345);
 
         let mut mdb = MerkleMemDB::default();

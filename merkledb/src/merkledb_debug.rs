@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use crate::chunk_iterator::Chunk;
 use crate::internal_methods::*;
 use crate::merkledb_highlevel_v1::*;
@@ -5,7 +7,6 @@ use crate::merkledb_reconstruction::MerkleDBReconstruction;
 use crate::merkledbbase::MerkleDBBase;
 use crate::merklememdb::MerkleMemDB;
 use crate::merklenode::*;
-use std::collections::HashSet;
 
 pub trait MerkleDBDebugMethods: MerkleDBBase + MerkleDBReconstruction {
     fn print_node_details(&self, node: &MerkleNode) -> String {

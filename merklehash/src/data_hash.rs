@@ -1,20 +1,20 @@
-use safe_transmute::transmute_to_bytes;
-use serde::{Deserialize, Serialize};
 use std::cmp::{Eq, Ord, Ordering, PartialEq, PartialOrd};
 use std::error::Error;
-use std::fmt;
 use std::hash::{Hash, Hasher};
 use std::io::Write;
 use std::mem::transmute_copy;
 use std::num::ParseIntError;
 use std::ops::{Deref, DerefMut};
-use std::str;
+use std::{fmt, str};
 
-/**************************************************************************/
-/*                                                                        */
-/*                                DataHash                                */
-/*                                                                        */
-/**************************************************************************/
+use safe_transmute::transmute_to_bytes;
+use serde::{Deserialize, Serialize};
+
+/************************************************************************* */
+/*  */
+/* DataHash */
+/*  */
+/************************************************************************* */
 
 /// The DataHash is a transparent 256-bit value stores as `[u64; 4]`.
 ///
@@ -369,8 +369,9 @@ impl<W: Write> Write for HashedWrite<W> {
 
 #[cfg(test)]
 mod tests {
-    use rand::prelude::*;
     use std::io::Write;
+
+    use rand::prelude::*;
 
     use crate::{compute_data_hash, DataHash, HashedWrite};
 

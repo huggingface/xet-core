@@ -5,6 +5,7 @@
 )]
 
 use std::fmt::Display;
+
 use xet_error::Error;
 
 // Some of the elaborate cases from the rcc codebase, which is a C compiler in

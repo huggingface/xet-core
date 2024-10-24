@@ -1,12 +1,13 @@
 // Copyright (c) 2020 Nathan Fiedler
 //
-use clap::{App, Arg};
-use merkledb::{chunk_target, low_variance_chunk_target};
-use merklehash::*;
 use std::collections::btree_map::Entry;
 use std::collections::{BTreeMap, HashSet};
 use std::fs::File;
 use std::str::FromStr;
+
+use clap::{App, Arg};
+use merkledb::{chunk_target, low_variance_chunk_target};
+use merklehash::*;
 
 fn main() {
     fn is_integer(v: &str) -> Result<(), String> {

@@ -1,9 +1,10 @@
+use std::collections::VecDeque;
+use std::fmt;
+
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
 use lazy_static::lazy_static;
-use rand_chacha::rand_core::RngCore;
-use rand_chacha::rand_core::SeedableRng;
+use rand_chacha::rand_core::{RngCore, SeedableRng};
 use rand_chacha::ChaChaRng;
-use std::{collections::VecDeque, fmt};
 
 pub trait RollingHash {
     fn clone(&self) -> Box<dyn RollingHash>;

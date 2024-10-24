@@ -1,8 +1,9 @@
-use crate::infra::LoadStatus;
 use anyhow::{anyhow, Result};
 use chrono::{DateTime, Utc};
 use hashring::HashRing;
 use tracing::debug;
+
+use crate::infra::LoadStatus;
 
 #[derive(Debug, Clone, Hash, PartialEq)]
 struct VNode {
@@ -49,13 +50,15 @@ impl ConsistentHash {
 }
 #[cfg(test)]
 mod tests {
-    use crate::consistenthash::ConsistentHash;
-    use crate::infra::{LoadStatus, SystemStatus};
+    use std::collections::HashMap;
+
     use chrono::{FixedOffset, TimeZone};
     use itertools::Itertools;
-    use rand::SeedableRng;
-    use rand::{distributions::Alphanumeric, Rng};
-    use std::collections::HashMap;
+    use rand::distributions::Alphanumeric;
+    use rand::{Rng, SeedableRng};
+
+    use crate::consistenthash::ConsistentHash;
+    use crate::infra::{LoadStatus, SystemStatus};
     #[test]
     fn test_empty_errors() {
         let res = ConsistentHash::new(vec![]);

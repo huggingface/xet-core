@@ -1,4 +1,5 @@
-use std::{array::TryFromSliceError, str::Utf8Error};
+use std::array::TryFromSliceError;
+use std::str::Utf8Error;
 
 use base64::DecodeError;
 use merklehash::DataHashBytesParseError;

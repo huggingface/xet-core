@@ -1,13 +1,12 @@
-use std::{
-    io::{self, copy, Cursor, Read, Write},
-    mem::size_of,
-    slice,
-};
+use std::io::{self, copy, Cursor, Read, Write};
+use std::mem::size_of;
+use std::slice;
+
+use anyhow::anyhow;
+use lz4_flex::frame::{FrameDecoder, FrameEncoder};
 
 use crate::error::CasObjectError;
 use crate::CompressionScheme;
-use anyhow::anyhow;
-use lz4_flex::frame::{FrameDecoder, FrameEncoder};
 
 pub const CAS_CHUNK_HEADER_LENGTH: usize = size_of::<CASChunkHeader>();
 const CURRENT_VERSION: u8 = 0;
@@ -196,9 +195,10 @@ pub fn deserialize_chunks_to_writer<R: Read, W: Write>(
 mod tests {
     use std::io::Cursor;
 
-    use super::*;
     use rand::Rng;
     use CompressionScheme;
+
+    use super::*;
 
     const COMP_LEN: u32 = 0x010203;
     const UNCOMP_LEN: u32 = 0x040506;

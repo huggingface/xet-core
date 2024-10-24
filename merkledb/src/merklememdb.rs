@@ -1,19 +1,19 @@
-use crate::error::*;
-use crate::merklenode::*;
-
-use crate::internal_methods::assign_all_parents;
-use crate::merkledb_debug::*;
-use crate::merkledb_reconstruction::*;
-use crate::merkledbbase::*;
-
-use bincode::Options;
-use rustc_hash::FxHashMap;
-use serde::{Deserialize, Serialize};
 use std::fmt::Debug;
 use std::fs::File;
 use std::io::{BufReader, BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
+
+use bincode::Options;
+use rustc_hash::FxHashMap;
+use serde::{Deserialize, Serialize};
 use tracing::{debug, error};
+
+use crate::error::*;
+use crate::internal_methods::assign_all_parents;
+use crate::merkledb_debug::*;
+use crate::merkledb_reconstruction::*;
+use crate::merkledbbase::*;
+use crate::merklenode::*;
 
 /**
  * Since we want the graph to use small node ID values for connectivity,

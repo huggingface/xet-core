@@ -1,6 +1,8 @@
-use crate::ChunkCacheExt;
-use chunk_cache::{error::ChunkCacheError, ChunkCache};
+use chunk_cache::error::ChunkCacheError;
+use chunk_cache::ChunkCache;
 use r2d2_postgres::postgres::NoTls;
+
+use crate::ChunkCacheExt;
 
 #[derive(Clone)]
 pub struct SolidCache {

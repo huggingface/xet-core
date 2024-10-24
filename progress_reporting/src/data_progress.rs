@@ -1,8 +1,9 @@
-use crossterm::{cursor, QueueableCommand};
 use std::io::{stderr, Write};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
+
+use crossterm::{cursor, QueueableCommand};
 use utils::output_bytes;
 
 const MAX_PRINT_INTERVAL_MS: u64 = 250;
@@ -92,7 +93,6 @@ impl DataProgressReporter {
     /// Testing progress bar, bytes only: 25 KiB | 25 KiB/s.
     /// Testing progress bar, bytes only: 75 KiB | 75 KiB/s.
     /// Testing progress bar, bytes only: 75 KiB | 75 KiB/s, done.
-    ///
     pub fn register_progress(&self, unit_amount: Option<usize>, bytes: Option<usize>) {
         if let Some(c) = unit_amount {
             self.current_count.fetch_add(c, Ordering::Relaxed);

@@ -1,14 +1,14 @@
-use super::BASE64_ENGINE;
-use crate::error::ChunkCacheError;
+use std::cmp::Ordering;
+use std::io::{Cursor, Read, Write};
+use std::mem::size_of;
+
 use base64::Engine;
 use blake3::Hash;
 use cas_types::Range;
-use std::{
-    cmp::Ordering,
-    io::{Cursor, Read, Write},
-    mem::size_of,
-};
 use utils::serialization_utils::{read_u32, read_u64, write_u32, write_u64};
+
+use super::BASE64_ENGINE;
+use crate::error::ChunkCacheError;
 
 const CACHE_ITEM_FILE_NAME_BUF_SIZE: usize = size_of::<u32>() * 2 + size_of::<u64>() + blake3::OUT_LEN;
 
@@ -108,9 +108,9 @@ mod tests {
     use cas_types::Range;
     use sorted_vec::SortedVec;
 
-    use crate::disk::{cache_item::CACHE_ITEM_FILE_NAME_BUF_SIZE, BASE64_ENGINE};
-
     use super::{range_contained_fn, CacheItem};
+    use crate::disk::cache_item::CACHE_ITEM_FILE_NAME_BUF_SIZE;
+    use crate::disk::BASE64_ENGINE;
 
     impl Default for CacheItem {
         fn default() -> Self {

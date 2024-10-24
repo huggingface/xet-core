@@ -1,11 +1,13 @@
-use crate::ast::Field;
-use crate::attr::{Display, Trait};
+use std::collections::{BTreeSet as Set, HashMap as Map};
+
 use proc_macro2::TokenTree;
 use quote::{format_ident, quote_spanned};
-use std::collections::{BTreeSet as Set, HashMap as Map};
 use syn::ext::IdentExt;
 use syn::parse::{ParseStream, Parser};
 use syn::{Ident, Index, LitStr, Member, Result, Token};
+
+use crate::ast::Field;
+use crate::attr::{Display, Trait};
 
 impl Display<'_> {
     // Transform `"error {var}"` to `"error {}", var`.

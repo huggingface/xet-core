@@ -1,10 +1,12 @@
+use std::collections::HashSet;
+
+use merklehash::MerkleHash;
+
 use crate::chunk_iterator::*;
 use crate::constants::*;
 use crate::internal_methods::*;
 use crate::merkledbbase::*;
 use crate::merklenode::*;
-use merklehash::MerkleHash;
-use std::collections::HashSet;
 
 /**
  * An opaque struct used to stage a batch collection of inserts (like a directory)

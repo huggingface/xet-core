@@ -1,11 +1,12 @@
-use super::constants::*;
-use merklehash::*;
-use rand_chacha::rand_core::RngCore;
-use rand_chacha::rand_core::SeedableRng;
-use rand_chacha::ChaChaRng;
 use std::cmp::min;
 use std::io;
 use std::io::Read;
+
+use merklehash::*;
+use rand_chacha::rand_core::{RngCore, SeedableRng};
+use rand_chacha::ChaChaRng;
+
+use super::constants::*;
 
 #[derive(Debug, Clone)]
 pub struct Chunk {

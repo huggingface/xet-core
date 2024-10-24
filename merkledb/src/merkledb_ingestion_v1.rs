@@ -1,18 +1,19 @@
+use std::fs::File;
+use std::io::{BufReader, BufWriter, Write};
+use std::path::PathBuf;
+use std::sync::mpsc::sync_channel;
+use std::thread;
+use std::time::{Instant, SystemTime};
+
+use rayon::prelude::*;
+use tracing::{debug, info};
+use walkdir::*;
+
 use crate::chunk_iterator::*;
 use crate::constants::*;
 use crate::error::Result;
 use crate::merkledb_highlevel_v1::*;
 use crate::merklenode::*;
-use rayon::prelude::*;
-use std::fs::File;
-use std::io::Write;
-use std::io::{BufReader, BufWriter};
-use std::path::PathBuf;
-use std::sync::mpsc::sync_channel;
-use std::thread;
-use std::time::{Instant, SystemTime};
-use tracing::{debug, info};
-use walkdir::*;
 
 pub trait MerkleDBIngestionMethodsV1: MerkleDBHighLevelMethodsV1 {
     /**

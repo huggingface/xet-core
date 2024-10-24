@@ -1,3 +1,17 @@
+use std::io::Write;
+use std::mem::take;
+use std::ops::DerefMut;
+use std::path::Path;
+use std::sync::Arc;
+
+use cas_client::Client;
+use mdb_shard::cas_structs::{CASChunkSequenceEntry, CASChunkSequenceHeader, MDBCASInfo};
+use mdb_shard::file_structs::MDBFileInfo;
+use mdb_shard::ShardFileManager;
+use merkledb::aggregate_hashes::cas_node_hash;
+use merklehash::MerkleHash;
+use tokio::sync::Mutex;
+
 use crate::cas_interface::create_cas_client;
 use crate::clean::Cleaner;
 use crate::configurations::*;
@@ -6,18 +20,6 @@ use crate::metrics::FILTER_CAS_BYTES_PRODUCED;
 use crate::remote_shard_interface::RemoteShardInterface;
 use crate::shard_interface::create_shard_manager;
 use crate::PointerFile;
-use cas_client::Client;
-use mdb_shard::cas_structs::{CASChunkSequenceEntry, CASChunkSequenceHeader, MDBCASInfo};
-use mdb_shard::file_structs::MDBFileInfo;
-use mdb_shard::ShardFileManager;
-use merkledb::aggregate_hashes::cas_node_hash;
-use merklehash::MerkleHash;
-use std::io::Write;
-use std::mem::take;
-use std::ops::DerefMut;
-use std::path::Path;
-use std::sync::Arc;
-use tokio::sync::Mutex;
 
 #[derive(Default, Debug)]
 pub struct CASDataAggregator {

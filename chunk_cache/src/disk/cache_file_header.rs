@@ -1,7 +1,5 @@
-use std::{
-    io::{Read, Seek, Write},
-    mem::size_of,
-};
+use std::io::{Read, Seek, Write};
+use std::mem::size_of;
 
 use utils::serialization_utils::{read_u32, write_u32, write_u32s};
 

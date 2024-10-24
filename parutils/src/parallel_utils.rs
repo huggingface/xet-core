@@ -1,7 +1,8 @@
-use futures::prelude::stream::*;
 use std::mem::take;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+
+use futures::prelude::stream::*;
 use tokio::sync::Mutex;
 
 #[derive(Debug)]
@@ -27,7 +28,6 @@ pub enum ParallelError<E> {
 ///
 ///
 ///   Note:  Use Arc<Mutex<...>> around writable things.
-///
 pub async fn run_tokio_parallel<F, R, E>(n_tasks: usize, max_concurrent: usize, f: F) -> Result<(), ParallelError<E>>
 where
     F: Send + Sync + Fn(usize) -> R,
@@ -81,7 +81,6 @@ where
 ///     return Ok(out)
 ///  }).await?;
 ///  ```
-///
 pub async fn tokio_par_for_each<F, I, R, Q, E>(
     input: Vec<I>,
     max_concurrent: usize,
@@ -166,7 +165,6 @@ where
 ///     return out
 ///  }).await;
 ///  ```
-///
 pub async fn tokio_par_for_any_ok<F, I, R, Q, E>(input: Vec<I>, max_concurrent: usize, f: F) -> Option<Q>
 where
     F: Send + Sync + Fn(I, usize) -> R,
@@ -222,11 +220,12 @@ where
 #[cfg(test)]
 mod parallel_tests {
 
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::{Duration, Instant};
+
     use more_asserts::{assert_ge, assert_le};
 
     use super::*;
-    use std::sync::atomic::{AtomicUsize, Ordering};
-    use std::time::{Duration, Instant};
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_parallel() {

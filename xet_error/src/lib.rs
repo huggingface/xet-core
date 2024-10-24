@@ -26,10 +26,7 @@
 //!     #[error("the data for key `{0}` is not available")]
 //!     Redaction(String),
 //!     #[error("invalid header (expected {expected:?}, found {found:?})")]
-//!     InvalidHeader {
-//!         expected: String,
-//!         found: String,
-//!     },
+//!     InvalidHeader { expected: String, found: String },
 //!     #[error("unknown data store error")]
 //!     Unknown,
 //! }
@@ -39,17 +36,14 @@
 //!
 //! # Details
 //!
-//! - Thiserror deliberately does not appear in your public API. You get the
-//!   same thing as if you had written an implementation of `std::error::Error`
-//!   by hand, and switching from handwritten impls to xet_error or vice versa
-//!   is not a breaking change.
+//! - Thiserror deliberately does not appear in your public API. You get the same thing as if you had written an
+//!   implementation of `std::error::Error` by hand, and switching from handwritten impls to xet_error or vice versa is
+//!   not a breaking change.
 //!
-//! - Errors may be enums, structs with named fields, tuple structs, or unit
-//!   structs.
+//! - Errors may be enums, structs with named fields, tuple structs, or unit structs.
 //!
-//! - A `Display` impl is generated for your error if you provide
-//!   `#[error("...")]` messages on the struct or each variant of your enum, as
-//!   shown above in the example.
+//! - A `Display` impl is generated for your error if you provide `#[error("...")]` messages on the struct or each
+//!   variant of your enum, as shown above in the example.
 //!
 //!   The messages support a shorthand for interpolating fields from the error.
 //!
@@ -98,8 +92,7 @@
 //!   }
 //!   ```
 //!
-//! - A `From` impl is generated for each variant containing a `#[from]`
-//!   attribute.
+//! - A `From` impl is generated for each variant containing a `#[from]` attribute.
 //!
 //!   Note that the variant must not contain any other fields beyond the source
 //!   error and possibly a backtrace. A backtrace is captured from within the
@@ -118,9 +111,8 @@
 //!   # };
 //!   ```
 //!
-//! - The Error trait's `source()` method is implemented to return whichever
-//!   field has a `#[source]` attribute or is named `source`, if any. This is
-//!   for identifying the underlying lower level error that caused your error.
+//! - The Error trait's `source()` method is implemented to return whichever field has a `#[source]` attribute or is
+//!   named `source`, if any. This is for identifying the underlying lower level error that caused your error.
 //!
 //!   The `#[from]` attribute always implies that the same field is `#[source]`,
 //!   so you don't ever need to specify both attributes.
@@ -146,9 +138,8 @@
 //!   # }
 //!   ```
 //!
-//! - The Error trait's `provide()` method is implemented to provide whichever
-//!   field has a type named `Backtrace`, if any, as a
-//!   `std::backtrace::Backtrace`.
+//! - The Error trait's `provide()` method is implemented to provide whichever field has a type named `Backtrace`, if
+//!   any, as a `std::backtrace::Backtrace`.
 //!
 //!   ```rust
 //!   # const IGNORE: &str = stringify! {
@@ -162,10 +153,9 @@
 //!   # };
 //!   ```
 //!
-//! - If a field is both a source (named `source`, or has `#[source]` or
-//!   `#[from]` attribute) *and* is marked `#[backtrace]`, then the Error
-//!   trait's `provide()` method is forwarded to the source's `provide` so that
-//!   both layers of the error share the same backtrace.
+//! - If a field is both a source (named `source`, or has `#[source]` or `#[from]` attribute) *and* is marked
+//!   `#[backtrace]`, then the Error trait's `provide()` method is forwarded to the source's `provide` so that both
+//!   layers of the error share the same backtrace.
 //!
 //!   ```rust
 //!   # const IGNORE: &str = stringify! {
@@ -179,10 +169,9 @@
 //!   # };
 //!   ```
 //!
-//! - Errors may use `error(transparent)` to forward the source and Display
-//!   methods straight through to an underlying error without adding an
-//!   additional message. This would be appropriate for enums that need an
-//!   "anything else" variant.
+//! - Errors may use `error(transparent)` to forward the source and Display methods straight through to an underlying
+//!   error without adding an additional message. This would be appropriate for enums that need an "anything else"
+//!   variant.
 //!
 //!   ```
 //!   # use xet_error::Error;
@@ -223,8 +212,7 @@
 //!   }
 //!   ```
 //!
-//! - See also the [`anyhow`] library for a convenient single error type to use
-//!   in application code.
+//! - See also the [`anyhow`] library for a convenient single error type to use in application code.
 //!
 //!   [`anyhow`]: https://github.com/dtolnay/anyhow
 

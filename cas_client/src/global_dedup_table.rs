@@ -1,13 +1,16 @@
-use crate::error::{CasClientError, Result};
+use std::collections::HashMap;
+use std::path::Path;
+use std::sync::Arc;
+
 use heed::types::*;
 use heed::EnvOpenOptions;
 use itertools::Itertools;
 use merkledb::aggregate_hashes::with_salt;
 use merklehash::MerkleHash;
-use std::collections::HashMap;
-use std::{path::Path, sync::Arc};
 use tokio::sync::RwLock;
 use tracing::{info, warn};
+
+use crate::error::{CasClientError, Result};
 
 type DB = heed::Database<OwnedType<MerkleHash>, OwnedType<MerkleHash>>;
 
@@ -102,13 +105,15 @@ impl DiskBasedGlobalDedupTable {
 
 #[cfg(test)]
 mod tests {
-    use super::DiskBasedGlobalDedupTable;
+    use std::sync::Arc;
+
     use itertools::Itertools;
     use mdb_shard::shard_format::test_routines::rng_hash;
     use merkledb::aggregate_hashes::with_salt;
     use rand::{thread_rng, Rng};
-    use std::sync::Arc;
     use tempfile::TempDir;
+
+    use super::DiskBasedGlobalDedupTable;
 
     #[tokio::test]
     async fn test_basic_insert_retrieval() -> anyhow::Result<()> {

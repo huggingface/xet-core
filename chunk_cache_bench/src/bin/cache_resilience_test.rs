@@ -1,8 +1,6 @@
-use std::{
-    path::PathBuf,
-    process::{exit, Stdio},
-    time::{Duration, SystemTime},
-};
+use std::path::PathBuf;
+use std::process::{exit, Stdio};
+use std::time::{Duration, SystemTime};
 
 use cas_types::{Key, Range};
 use chunk_cache::{CacheConfig, ChunkCache, DiskCache, RandomEntryIterator};

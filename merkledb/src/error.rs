@@ -1,4 +1,5 @@
 use std::io;
+
 use xet_error::Error;
 
 #[derive(Error, Debug)]

@@ -1,6 +1,7 @@
-use anyhow::anyhow;
 use std::error::Error as _;
 use std::io;
+
+use anyhow::anyhow;
 use xet_error::Error;
 
 #[test]

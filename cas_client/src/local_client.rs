@@ -1,15 +1,17 @@
-use crate::error::{CasClientError, Result};
-use crate::interface::UploadClient;
+use std::fs::{metadata, File};
+use std::io::{BufReader, BufWriter, Write};
+use std::path::PathBuf;
+
 use anyhow::anyhow;
 use async_trait::async_trait;
 use cas_object::CasObject;
 use cas_types::Key;
 use merklehash::MerkleHash;
-use std::fs::{metadata, File};
-use std::io::{BufReader, BufWriter, Write};
-use std::path::PathBuf;
 use tempfile::TempDir;
 use tracing::{debug, info};
+
+use crate::error::{CasClientError, Result};
+use crate::interface::UploadClient;
 
 #[derive(Debug)]
 pub struct LocalClient {
@@ -192,12 +194,16 @@ impl UploadClient for LocalClient {
 }
 
 pub mod tests_utils {
-    use super::LocalClient;
-    use crate::{error::Result, CasClientError};
+    use std::fs::File;
+    use std::io::BufReader;
+
     use cas_object::CasObject;
     use merklehash::MerkleHash;
-    use std::{fs::File, io::BufReader};
     use tracing::error;
+
+    use super::LocalClient;
+    use crate::error::Result;
+    use crate::CasClientError;
 
     pub trait TestUtils {
         fn get(&self, prefix: &str, hash: &MerkleHash) -> Result<Vec<u8>>;
@@ -272,11 +278,12 @@ pub mod tests_utils {
 #[cfg(test)]
 mod tests {
 
-    use super::*;
     use cas_object::test_utils::*;
     use cas_object::CompressionScheme::LZ4;
     use merklehash::compute_data_hash;
     use tests_utils::TestUtils;
+
+    use super::*;
 
     #[tokio::test]
     async fn test_basic_put_get() {

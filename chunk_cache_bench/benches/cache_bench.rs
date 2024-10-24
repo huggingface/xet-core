@@ -6,7 +6,6 @@ use chunk_cache_bench::sccache::SCCache;
 use chunk_cache_bench::solid_cache::SolidCache;
 use chunk_cache_bench::ChunkCacheExt;
 use criterion::{criterion_group, BenchmarkId, Criterion};
-
 use rand::rngs::StdRng;
 use rand::{thread_rng, SeedableRng};
 use tempdir::TempDir;

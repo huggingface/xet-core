@@ -1,7 +1,10 @@
+use std::ffi::OsStr;
+use std::ops::Deref;
+use std::path::Path;
+
 use lazy_static::lazy_static;
 use merklehash::MerkleHash;
 use regex::Regex;
-use std::{ffi::OsStr, ops::Deref, path::Path};
 use uuid::Uuid;
 
 lazy_static! {

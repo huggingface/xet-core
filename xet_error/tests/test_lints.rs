@@ -1,6 +1,6 @@
-use xet_error::Error;
-
 pub use std::error::Error;
+
+use xet_error::Error;
 
 #[test]
 fn test_unused_qualifications() {

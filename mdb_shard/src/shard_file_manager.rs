@@ -1,20 +1,23 @@
-use crate::error::{MDBShardError, Result};
-use crate::shard_file::current_timestamp;
-use crate::shard_file_handle::MDBShardFile;
-use crate::shard_file_reconstructor::FileReconstructor;
-use crate::utils::truncate_hash;
-use async_trait::async_trait;
-use lazy_static::lazy_static;
-use merklehash::{HMACKey, MerkleHash};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
+
+use async_trait::async_trait;
+use lazy_static::lazy_static;
+use merklehash::{HMACKey, MerkleHash};
 use tokio::sync::RwLock;
 use tracing::{debug, error, info, trace};
 
+use crate::cas_structs::*;
 use crate::constants::{MDB_SHARD_EXPIRATION_BUFFER, MDB_SHARD_MIN_TARGET_SIZE};
-use crate::{cas_structs::*, file_structs::*, shard_in_memory::MDBInMemoryShard};
+use crate::error::{MDBShardError, Result};
+use crate::file_structs::*;
+use crate::shard_file::current_timestamp;
+use crate::shard_file_handle::MDBShardFile;
+use crate::shard_file_reconstructor::FileReconstructor;
+use crate::shard_in_memory::MDBInMemoryShard;
+use crate::utils::truncate_hash;
 
 /// A wrapper struct for the in-memory shard to make sure that it gets flushed on teardown.
 struct MDBShardFlushGuard {
@@ -123,7 +126,6 @@ pub struct ShardFileManager {
 /// let new_shards = mdb.process_session_directory()?;
 ///
 /// // new_shards is the list of new shards for this session.
-///
 impl ShardFileManager {
     /// Creates a new shard file manager at the
     pub async fn new(session_directory: &Path, load_and_clean_directory: bool) -> Result<Self> {
@@ -184,7 +186,8 @@ impl ShardFileManager {
         for p in paths {
             let shard_files = MDBShardFile::load_all(p.as_ref())?;
 
-            // Now, go through and filter out the ones that can't be used any more, and also filter out the ones that can't be
+            // Now, go through and filter out the ones that can't be used any more, and also filter out the ones that
+            // can't be
             new_shards.extend(shard_files.into_iter().filter_map(|s| {
                 let expiry_time = s.shard.metadata.shard_key_expiry;
                 if current_time < expiry_time {
@@ -496,20 +499,19 @@ impl ShardFileManager {
 #[cfg(test)]
 mod tests {
 
-    use std::{cmp::min, time::Duration};
+    use std::cmp::min;
+    use std::time::Duration;
 
-    use crate::{
-        cas_structs::{CASChunkSequenceEntry, CASChunkSequenceHeader},
-        file_structs::FileDataSequenceHeader,
-        session_directory::consolidate_shards_in_directory,
-        shard_format::test_routines::{rng_hash, simple_hash},
-    };
-
-    use super::*;
-    use crate::error::Result;
     use more_asserts::assert_lt;
     use rand::prelude::*;
     use tempdir::TempDir;
+
+    use super::*;
+    use crate::cas_structs::{CASChunkSequenceEntry, CASChunkSequenceHeader};
+    use crate::error::Result;
+    use crate::file_structs::FileDataSequenceHeader;
+    use crate::session_directory::consolidate_shards_in_directory;
+    use crate::shard_format::test_routines::{rng_hash, simple_hash};
 
     #[allow(clippy::type_complexity)]
     pub async fn fill_with_specific_shard(

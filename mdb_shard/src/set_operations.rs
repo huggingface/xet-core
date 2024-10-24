@@ -1,22 +1,19 @@
-use crate::error::Result;
-use crate::file_structs::FileVerificationEntry;
-use crate::shard_file::MDB_FILE_INFO_ENTRY_SIZE;
-use crate::{
-    cas_structs::{CASChunkSequenceEntry, CASChunkSequenceHeader},
-    file_structs::{FileDataSequenceEntry, FileDataSequenceHeader},
-    shard_format::{MDBShardFileFooter, MDBShardFileHeader, MDBShardInfo},
-    utils::truncate_hash,
-};
+use std::env::current_dir;
+use std::fs::File;
+use std::io::{BufReader, BufWriter, Read, Seek, SeekFrom, Write};
+use std::mem::size_of;
+use std::path::Path;
+
 use merklehash::{HashedWrite, MerkleHash};
-use std::{
-    env::current_dir,
-    fs::File,
-    io::{BufReader, BufWriter, Read, Seek, SeekFrom, Write},
-    mem::size_of,
-    path::Path,
-};
 use utils::serialization_utils::*;
 use uuid::Uuid;
+
+use crate::cas_structs::{CASChunkSequenceEntry, CASChunkSequenceHeader};
+use crate::error::Result;
+use crate::file_structs::{FileDataSequenceEntry, FileDataSequenceHeader, FileVerificationEntry};
+use crate::shard_file::MDB_FILE_INFO_ENTRY_SIZE;
+use crate::shard_format::{MDBShardFileFooter, MDBShardFileHeader, MDBShardInfo};
+use crate::utils::truncate_hash;
 
 #[derive(PartialEq, Debug, Copy, Clone)]
 enum MDBSetOperation {
@@ -356,14 +353,12 @@ fn shard_file_op(f1: &Path, f2: &Path, out: &Path, op: MDBSetOperation) -> Resul
 
 /// Performs a set union operation on two shard files, writing the result to a third file and
 /// returning the MerkleHash of the resulting shard file.
-///
 pub fn shard_file_union(f1: &Path, f2: &Path, out: &Path) -> Result<(MerkleHash, MDBShardInfo)> {
     shard_file_op(f1, f2, out, MDBSetOperation::Union)
 }
 
 /// Performs a set difference operation on two shard files, writing the result to a third file and
 /// returning the MerkleHash of the resulting shard file.
-///
 pub fn shard_file_difference(f1: &Path, f2: &Path, out: &Path) -> Result<(MerkleHash, MDBShardInfo)> {
     shard_file_op(f1, f2, out, MDBSetOperation::Difference)
 }
@@ -372,11 +367,13 @@ pub fn shard_file_difference(f1: &Path, f2: &Path, out: &Path) -> Result<(Merkle
 mod tests {
     use std::io::Cursor;
 
-    use super::*;
-    use crate::error::Result;
-    use crate::{shard_format::test_routines::*, shard_in_memory::MDBInMemoryShard};
     use merklehash::compute_data_hash;
     use tempdir::TempDir;
+
+    use super::*;
+    use crate::error::Result;
+    use crate::shard_format::test_routines::*;
+    use crate::shard_in_memory::MDBInMemoryShard;
 
     fn test_operations(mem_shard_1: &MDBInMemoryShard, mem_shard_2: &MDBInMemoryShard) -> Result<()> {
         let disk_shard_1 = convert_to_file(mem_shard_1)?;
