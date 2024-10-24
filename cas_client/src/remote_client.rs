@@ -6,7 +6,7 @@ use anyhow::anyhow;
 use async_trait::async_trait;
 use cas_object::CasObject;
 use cas_types::{
-    CASReconstructionFetchInfo, CASReconstructionTerm, HexMerkleHash, Key, QueryReconstructionResponse, Range,
+    CASReconstructionFetchInfo, CASReconstructionTerm, ChunkRange, HexMerkleHash, Key, QueryReconstructionResponse,
     UploadXorbResponse,
 };
 use chunk_cache::{CacheConfig, ChunkCache, DiskCache};
@@ -332,7 +332,7 @@ pub(crate) async fn get_one_term(
     Ok(data)
 }
 
-fn range_header(range: &Range) -> String {
+fn range_header(range: &ChunkRange) -> String {
     format!("bytes={}-{}", range.start, range.end)
 }
 
@@ -368,7 +368,6 @@ async fn download_range(
 
 #[cfg(test)]
 mod tests {
-
     use cas_object::test_utils::*;
     use tracing_test::traced_test;
 
