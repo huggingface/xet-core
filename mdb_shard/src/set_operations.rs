@@ -10,7 +10,7 @@ use uuid::Uuid;
 
 use crate::cas_structs::{CASChunkSequenceEntry, CASChunkSequenceHeader};
 use crate::error::Result;
-use crate::file_structs::{FileDataSequenceEntry, FileDataSequenceHeader, FileVerificationEntry};
+use crate::file_structs::{FileDataSequenceEntry, FileDataSequenceHeader, FileMetadataExt, FileVerificationEntry};
 use crate::shard_file::MDB_FILE_INFO_ENTRY_SIZE;
 use crate::shard_format::{MDBShardFileFooter, MDBShardFileHeader, MDBShardInfo};
 use crate::utils::truncate_hash;
@@ -147,6 +147,12 @@ fn set_operation<R: Read + Seek, W: Write>(
                             }
 
                             out_offset += (fh.num_entries as u64) * (size_of::<FileVerificationEntry>() as u64);
+                        }
+
+                        if fh.contains_metadata_ext() {
+                            let entry = FileMetadataExt::deserialize(r[i])?;
+                            entry.serialize(out)?;
+                            out_offset += size_of::<FileMetadataExt>() as u64;
                         }
 
                         file_lookup_data.push((truncate_hash(&fh.file_hash), current_index));

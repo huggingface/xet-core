@@ -282,7 +282,7 @@ impl FileMetadataExt {
         let reader = &mut reader_curs;
 
         Ok(Self {
-            sha256: read_hash(reader)?.into(),
+            sha256: read_hash(reader)?,
             _unused: Default::default(),
         })
     }
@@ -373,50 +373,25 @@ impl MDBFileInfo {
 #[cfg(test)]
 mod tests {
     use rand::prelude::StdRng;
-    use rand::{Rng, SeedableRng};
+    use rand::SeedableRng;
 
     use super::*;
-    use crate::shard_file::test_routines::rng_hash;
+    use crate::shard_format::test_routines::gen_random_file_info;
 
     #[test]
     fn test_serde_has_metadata_ext() {
         let seed = 3;
         let mut rng = StdRng::seed_from_u64(seed);
-        let file_block_size = &1;
-        let contains_verification = true;
-        let file_hash = rng_hash(rng.gen());
+        let file_info = gen_random_file_info(&mut rng, &2, true, true);
 
-        let file_contents: Vec<_> = (0..*file_block_size)
-            .map(|_| {
-                let lb = rng.gen_range(0..10000);
-                let ub = lb + rng.gen_range(0..10000);
-                FileDataSequenceEntry::new(rng_hash(rng.gen()), ub - lb, lb, ub)
-            })
-            .collect();
-
-        let verification = if contains_verification {
-            file_contents
-                .iter()
-                .map(|_| FileVerificationEntry::new(rng_hash(rng.gen())))
-                .collect()
-        } else {
-            vec![]
-        };
-
-        let sha256 = rng_hash(rng.gen());
-        let metadata_ext = Some(FileMetadataExt::new(sha256));
-
-        let file_info = MDBFileInfo {
-            metadata: FileDataSequenceHeader::new(file_hash, *file_block_size, contains_verification, true),
-            segments: file_contents,
-            verification,
-            metadata_ext,
-        };
+        assert!(file_info.metadata_ext.is_some());
+        assert_eq!(file_info.metadata.num_info_entry_following(), file_info.metadata.num_entries * 2 + 1);
 
         let size = file_info.num_bytes();
         let mut buffer = Vec::new();
-        let data = file_info.serialize(&mut buffer).unwrap();
-        assert_eq!(data as u64, size);
+        let bytes_written = file_info.serialize(&mut buffer).unwrap();
+        assert_eq!(bytes_written as u64, size);
+        assert_eq!(buffer.len(), bytes_written);
 
         let new_info = MDBFileInfo::deserialize(&mut &buffer[..]).unwrap().unwrap(); // Result<Option<Self>>
         assert_eq!(file_info, new_info);

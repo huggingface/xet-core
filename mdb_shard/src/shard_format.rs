@@ -1198,41 +1198,55 @@ pub mod test_routines {
         }
 
         for file_block_size in file_chunk_range_sizes {
-            let file_hash = rng_hash(rng.gen());
-
-            let file_contents: Vec<_> = (0..*file_block_size)
-                .map(|_| {
-                    let lb = rng.gen_range(0..10000);
-                    let ub = lb + rng.gen_range(0..10000);
-                    FileDataSequenceEntry::new(rng_hash(rng.gen()), ub - lb, lb, ub)
-                })
-                .collect();
-
-            let verification = if contains_verification {
-                file_contents
-                    .iter()
-                    .map(|_| FileVerificationEntry::new(rng_hash(rng.gen())))
-                    .collect()
-            } else {
-                vec![]
-            };
-
-            let metadata_ext = contains_metadata_ext.then(|| rng_hash(rng.gen())).map(FileMetadataExt::new);
-
-            shard.add_file_reconstruction_info(MDBFileInfo {
-                metadata: FileDataSequenceHeader::new(
-                    file_hash,
-                    *file_block_size,
-                    contains_verification,
-                    metadata_ext.is_some(),
-                ),
-                segments: file_contents,
-                verification,
-                metadata_ext,
-            })?;
+            shard.add_file_reconstruction_info(gen_random_file_info(
+                &mut rng,
+                file_block_size,
+                contains_verification,
+                contains_metadata_ext,
+            ))?;
         }
 
         Ok(shard)
+    }
+
+    pub fn gen_random_file_info(
+        rng: &mut StdRng,
+        file_block_size: &usize,
+        contains_verification: bool,
+        contains_metadata_ext: bool,
+    ) -> MDBFileInfo {
+        let file_hash = rng_hash(rng.gen());
+
+        let file_contents: Vec<_> = (0..*file_block_size)
+            .map(|_| {
+                let lb = rng.gen_range(0..10000);
+                let ub = lb + rng.gen_range(0..10000);
+                FileDataSequenceEntry::new(rng_hash(rng.gen()), ub - lb, lb, ub)
+            })
+            .collect();
+
+        let verification = if contains_verification {
+            file_contents
+                .iter()
+                .map(|_| FileVerificationEntry::new(rng_hash(rng.gen())))
+                .collect()
+        } else {
+            vec![]
+        };
+
+        let metadata_ext = contains_metadata_ext.then(|| rng_hash(rng.gen())).map(FileMetadataExt::new);
+
+        MDBFileInfo {
+            metadata: FileDataSequenceHeader::new(
+                file_hash,
+                *file_block_size,
+                contains_verification,
+                metadata_ext.is_some(),
+            ),
+            segments: file_contents,
+            verification,
+            metadata_ext,
+        }
     }
 
     pub fn verify_mdb_shard(shard: &MDBInMemoryShard) -> Result<()> {
@@ -1246,7 +1260,10 @@ pub mod test_routines {
         // Now, test that the results on queries from the
         let shard_file = MDBShardInfo::load_from_file(&mut cursor)?;
 
-        assert_eq!(mem_shard.shard_file_size(), shard_file.num_bytes());
+        let mem_size = mem_shard.shard_file_size();
+        let disk_size = shard_file.num_bytes();
+
+        assert_eq!(mem_size, disk_size);
         assert_eq!(mem_shard.materialized_bytes(), shard_file.materialized_bytes());
         assert_eq!(mem_shard.stored_bytes(), shard_file.stored_bytes());
 
@@ -1408,6 +1425,12 @@ mod tests {
         let shard = gen_random_shard(0, &[1, 1], &[1], true, false)?;
         verify_mdb_shard(&shard)?;
 
+        let shard = gen_random_shard(0, &[1, 1], &[1], false, true)?;
+        verify_mdb_shard(&shard)?;
+
+        let shard = gen_random_shard(0, &[1, 1], &[1], true, true)?;
+        verify_mdb_shard(&shard)?;
+
         Ok(())
     }
 
@@ -1417,6 +1440,13 @@ mod tests {
         verify_mdb_shard(&mem_shard_1)?;
 
         let mem_shard_1 = gen_specific_shard(&[(0, &[(11, 5)])], &[(100, &[(200, (0, 5))])], Some(&[&[25]]), None)?;
+        verify_mdb_shard(&mem_shard_1)?;
+
+        let mem_shard_1 = gen_specific_shard(&[(0, &[(11, 5)])], &[(100, &[(200, (0, 5))])], None, Some(&[38]))?;
+        verify_mdb_shard(&mem_shard_1)?;
+
+        let mem_shard_1 =
+            gen_specific_shard(&[(0, &[(11, 5)])], &[(100, &[(200, (0, 5))])], Some(&[&[25]]), Some(&[38]))?;
         verify_mdb_shard(&mem_shard_1)?;
 
         Ok(())
@@ -1430,6 +1460,12 @@ mod tests {
         let shard = gen_random_shard(0, &[1, 5, 10, 8], &[4, 3, 5, 9, 4, 6], true, false)?;
         verify_mdb_shard(&shard)?;
 
+        let shard = gen_random_shard(0, &[1, 5, 10, 8], &[4, 3, 5, 9, 4, 6], false, true)?;
+        verify_mdb_shard(&shard)?;
+
+        let shard = gen_random_shard(0, &[1, 5, 10, 8], &[4, 3, 5, 9, 4, 6], true, true)?;
+        verify_mdb_shard(&shard)?;
+
         Ok(())
     }
 
@@ -1441,6 +1477,12 @@ mod tests {
         let shard = gen_random_shard(0, &[0], &[0], true, false)?;
         verify_mdb_shard(&shard)?;
 
+        let shard = gen_random_shard(0, &[0], &[0], false, true)?;
+        verify_mdb_shard(&shard)?;
+
+        let shard = gen_random_shard(0, &[0], &[0], true, true)?;
+        verify_mdb_shard(&shard)?;
+
         Ok(())
     }
 
@@ -1450,6 +1492,12 @@ mod tests {
         verify_mdb_shard(&shard)?;
 
         let shard = gen_random_shard(0, &[5, 6, 0, 10, 0], &[3, 4, 5, 0, 4, 0], true, false)?;
+        verify_mdb_shard(&shard)?;
+
+        let shard = gen_random_shard(0, &[5, 6, 0, 10, 0], &[3, 4, 5, 0, 4, 0], false, true)?;
+        verify_mdb_shard(&shard)?;
+
+        let shard = gen_random_shard(0, &[5, 6, 0, 10, 0], &[3, 4, 5, 0, 4, 0], true, true)?;
         verify_mdb_shard(&shard)?;
 
         Ok(())
