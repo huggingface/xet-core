@@ -1,16 +1,14 @@
+use std::env::current_dir;
+use std::fs;
+use std::fs::File;
+use std::io::{BufReader, BufWriter, Read, Write};
+use std::path::PathBuf;
+
 use anyhow::Result;
 use cas_client::CacheConfig;
 use clap::{Args, Parser, Subcommand};
-use data::{configurations::*, SMALL_FILE_THRESHOLD};
-use data::{PointerFile, PointerFileTranslator};
-use std::env::current_dir;
-use std::fs;
-use std::io::{Read, Write};
-use std::path::PathBuf;
-use std::{
-    fs::File,
-    io::{BufReader, BufWriter},
-};
+use data::configurations::*;
+use data::{PointerFile, PointerFileTranslator, SMALL_FILE_THRESHOLD};
 
 #[derive(Parser)]
 struct XCommand {
@@ -146,13 +144,7 @@ fn default_smudge_config() -> Result<TranslatorConfig> {
 async fn clean_file(arg: &CleanArg) -> Result<()> {
     let reader = BufReader::new(File::open(&arg.file)?);
     let writer: Box<dyn Write> = match &arg.dest {
-        Some(path) => Box::new(
-            File::options()
-                .create(true)
-                .write(true)
-                .truncate(true)
-                .open(path)?,
-        ),
+        Some(path) => Box::new(File::options().create(true).write(true).truncate(true).open(path)?),
         None => Box::new(std::io::stdout()),
     };
 
@@ -191,13 +183,8 @@ async fn smudge_file(arg: &SmudgeArg) -> Result<()> {
         Some(path) => Box::new(File::open(path)?),
         None => Box::new(std::io::stdin()),
     };
-    let mut writer: Box<dyn Write + Send> = Box::new(BufWriter::new(
-        File::options()
-            .create(true)
-            .write(true)
-            .truncate(true)
-            .open(&arg.dest)?,
-    ));
+    let mut writer: Box<dyn Write + Send> =
+        Box::new(BufWriter::new(File::options().create(true).write(true).truncate(true).open(&arg.dest)?));
 
     smudge(reader, &mut writer).await?;
 
@@ -219,9 +206,7 @@ async fn smudge(mut reader: impl Read, writer: &mut Box<dyn Write + Send>) -> Re
 
     let translator = PointerFileTranslator::new(default_smudge_config()?).await?;
 
-    translator
-        .smudge_file_from_pointer(&pointer_file, writer, None)
-        .await?;
+    translator.smudge_file_from_pointer(&pointer_file, writer, None).await?;
 
     Ok(())
 }

@@ -19,12 +19,13 @@ mod merklememdb;
 mod merklenode;
 mod tests;
 
-pub use crate::merkledb_highlevel_v1::InsertionStaging;
 pub use chunk_iterator::{chunk_target, low_variance_chunk_target, Chunk};
 pub use merkledbv1::MerkleDBV1;
 pub use merkledbv2::MerkleDBV2;
 pub use merklememdb::MerkleMemDB;
 pub use merklenode::{MerkleNode, MerkleNodeAttributes, MerkleNodeId, NodeDataType, ObjectRange};
+
+pub use crate::merkledb_highlevel_v1::InsertionStaging;
 pub mod prelude {
     pub use crate::merkledb_debug::MerkleDBDebugMethods;
     pub use crate::merkledb_highlevel_v1::MerkleDBHighLevelMethodsV1;

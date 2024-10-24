@@ -1,10 +1,14 @@
 #![cfg_attr(feature = "strict", deny(warnings))]
-use crate::constants::POINTER_FILE_LIMIT;
+use std::collections::BTreeMap;
+use std::fs;
+use std::path::Path;
+
 use merklehash::{DataHashHexParseError, MerkleHash};
 use static_assertions::const_assert;
-use std::{collections::BTreeMap, fs, path::Path};
 use toml::Value;
 use tracing::{debug, error, warn};
+
+use crate::constants::POINTER_FILE_LIMIT;
 
 const HEADER_PREFIX: &str = "# xet version ";
 const CURRENT_VERSION: &str = "0";
@@ -64,7 +68,10 @@ impl PointerFile {
 
         let version_string = first_line[HEADER_PREFIX.len()..].to_string();
         if version_string != CURRENT_VERSION {
-            warn!("Pointer file version {} encountered. Only version {} is supported. Please upgrade git-xet.", version_string, CURRENT_VERSION);
+            warn!(
+                "Pointer file version {} encountered. Only version {} is supported. Please upgrade git-xet.",
+                version_string, CURRENT_VERSION
+            );
             // not a valid pointer file, doesn't start with header + version string
             is_valid = false;
             return PointerFile {
@@ -82,18 +89,18 @@ impl PointerFile {
             Err(_) => {
                 is_valid = false;
                 Value::String(empty_string)
-            }
+            },
         };
 
         match parsed.get("hash") {
             Some(Value::String(s)) => {
                 hash = s.to_string();
-            }
+            },
             _ => {
                 // did not find hash, or
                 // found a non-string type for hash (unexpected)
                 is_valid = false;
-            }
+            },
         }
 
         match parsed.get("filesize") {
@@ -103,12 +110,12 @@ impl PointerFile {
                     is_valid = false;
                 }
                 filesize = *i as u64;
-            }
+            },
             _ => {
                 // did not find filesize, or
                 // found a non-int type for filesize (unexpected)
                 is_valid = false;
-            }
+            },
         }
 
         PointerFile {
@@ -177,10 +184,7 @@ impl PointerFile {
     pub fn hash(&self) -> std::result::Result<MerkleHash, DataHashHexParseError> {
         if self.is_valid {
             MerkleHash::from_hex(&self.hash).map_err(|e| {
-                error!(
-                    "Error parsing hash value in pointer file for {:?}: {e:?}",
-                    self.path
-                );
+                error!("Error parsing hash value in pointer file for {:?}: {e:?}", self.path);
                 e
             })
         } else {
@@ -224,11 +228,7 @@ impl std::fmt::Display for PointerFile {
         })?;
 
         assert!(!self.version_string.is_empty());
-        write!(
-            f,
-            "{}{}\n{}",
-            HEADER_PREFIX, self.version_string, contents_str
-        )
+        write!(f, "{}{}\n{}", HEADER_PREFIX, self.version_string, contents_str)
     }
 }
 
@@ -268,10 +268,7 @@ mod tests {
         test = PointerFile::init_from_string(&test_contents, &empty_string);
         assert!(!test.is_valid()); // not valid because it doesn't contain hash or filesize
 
-        test_contents = format!(
-            "{}{}\nhash = '12345'\nfilesize = 678",
-            HEADER_PREFIX, POINTER_FILE_VERSION
-        );
+        test_contents = format!("{}{}\nhash = '12345'\nfilesize = 678", HEADER_PREFIX, POINTER_FILE_VERSION);
         test = PointerFile::init_from_string(&test_contents, &empty_string);
         assert!(test.is_valid()); // valid
     }
@@ -286,10 +283,7 @@ mod tests {
     #[test]
     fn parses_correctly() {
         let empty_string = "".to_string();
-        let test_contents = format!(
-            "{}{}\nhash = '12345'\nfilesize = 678",
-            HEADER_PREFIX, POINTER_FILE_VERSION
-        );
+        let test_contents = format!("{}{}\nhash = '12345'\nfilesize = 678", HEADER_PREFIX, POINTER_FILE_VERSION);
         let test = PointerFile::init_from_string(&test_contents, &empty_string);
         assert!(test.is_valid()); // valid
         assert_eq!(test.filesize(), 678);
@@ -300,10 +294,7 @@ mod tests {
     #[test]
     fn is_serializable_and_deserializable() {
         let empty_string = "".to_string();
-        let test_contents = format!(
-            "{}{}\nhash = '12345'\nfilesize = 678",
-            HEADER_PREFIX, POINTER_FILE_VERSION
-        );
+        let test_contents = format!("{}{}\nhash = '12345'\nfilesize = 678", HEADER_PREFIX, POINTER_FILE_VERSION);
         let test = PointerFile::init_from_string(&test_contents, &empty_string);
         assert!(test.is_valid()); // valid
 

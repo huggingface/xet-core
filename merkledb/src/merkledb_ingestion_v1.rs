@@ -1,18 +1,19 @@
+use std::fs::File;
+use std::io::{BufReader, BufWriter, Write};
+use std::path::PathBuf;
+use std::sync::mpsc::sync_channel;
+use std::thread;
+use std::time::{Instant, SystemTime};
+
+use rayon::prelude::*;
+use tracing::{debug, info};
+use walkdir::*;
+
 use crate::chunk_iterator::*;
 use crate::constants::*;
 use crate::error::Result;
 use crate::merkledb_highlevel_v1::*;
 use crate::merklenode::*;
-use rayon::prelude::*;
-use std::fs::File;
-use std::io::Write;
-use std::io::{BufReader, BufWriter};
-use std::path::PathBuf;
-use std::sync::mpsc::sync_channel;
-use std::thread;
-use std::time::{Instant, SystemTime};
-use tracing::{debug, info};
-use walkdir::*;
 
 pub trait MerkleDBIngestionMethodsV1: MerkleDBHighLevelMethodsV1 {
     /**
@@ -23,11 +24,7 @@ pub trait MerkleDBIngestionMethodsV1: MerkleDBHighLevelMethodsV1 {
         debug!("Ingesting file {:?}", input);
         let input_file = File::open(&input)?;
         let mut buf_reader = BufReader::new(input_file);
-        let chunks = low_variance_chunk_target(
-            &mut buf_reader,
-            TARGET_CDC_CHUNK_SIZE,
-            N_LOW_VARIANCE_CDC_CHUNKERS,
-        );
+        let chunks = low_variance_chunk_target(&mut buf_reader, TARGET_CDC_CHUNK_SIZE, N_LOW_VARIANCE_CDC_CHUNKERS);
         let mut staging = self.start_insertion_staging();
         self.add_file(&mut staging, &chunks);
         let ret = self.finalize(staging);
@@ -81,11 +78,8 @@ pub trait MerkleDBIngestionMethodsV1: MerkleDBHighLevelMethodsV1 {
                         Ok(file) => file,
                     };
                     let mut buf_reader = BufReader::new(input_file);
-                    let chunks = low_variance_chunk_target(
-                        &mut buf_reader,
-                        TARGET_CDC_CHUNK_SIZE,
-                        N_LOW_VARIANCE_CDC_CHUNKERS,
-                    );
+                    let chunks =
+                        low_variance_chunk_target(&mut buf_reader, TARGET_CDC_CHUNK_SIZE, N_LOW_VARIANCE_CDC_CHUNKERS);
                     (chunks, path)
                 })
                 .for_each(|x| tx.send(x).unwrap());
@@ -95,13 +89,7 @@ pub trait MerkleDBIngestionMethodsV1: MerkleDBHighLevelMethodsV1 {
                 let hash = self.add_file(&mut staging, &chunks);
                 writeln!(metadata_output_file, "{hash:x} {path:?}").unwrap();
             } else {
-                writeln!(
-                    metadata_output_file,
-                    "{:x} {:?}",
-                    MerkleHash::default(),
-                    path
-                )
-                .unwrap();
+                writeln!(metadata_output_file, "{:x} {:?}", MerkleHash::default(), path).unwrap();
             }
         }
         let dirroot = self.finalize(staging);
@@ -111,10 +99,7 @@ pub trait MerkleDBIngestionMethodsV1: MerkleDBHighLevelMethodsV1 {
         info!("Completed chunking in {:.2?}", now.elapsed());
 
         let total_length = dirroot.len() as f64;
-        info!(
-            "Chunking speed: {} MB/s",
-            total_length / 1024.0 / 1024.0 / chunk_time
-        );
+        info!("Chunking speed: {} MB/s", total_length / 1024.0 / 1024.0 / chunk_time);
         Some(dirroot)
     }
 }

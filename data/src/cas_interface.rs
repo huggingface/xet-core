@@ -1,15 +1,16 @@
-use crate::configurations::*;
-use crate::errors::Result;
-use crate::test_utils::LocalTestClient;
-use cas_client::{CacheConfig, RemoteClient};
-use mdb_shard::ShardFileManager;
 use std::env::current_dir;
 use std::path::Path;
 use std::sync::Arc;
+
+pub use cas_client::Client;
+use cas_client::{CacheConfig, RemoteClient};
+use mdb_shard::ShardFileManager;
 use tracing::info;
 use utils::auth::AuthConfig;
 
-pub use cas_client::Client;
+use crate::configurations::*;
+use crate::errors::Result;
+use crate::test_utils::LocalTestClient;
 
 pub(crate) fn create_cas_client(
     cas_storage_config: &StorageConfig,
@@ -17,14 +18,10 @@ pub(crate) fn create_cas_client(
     shard_manager: Arc<ShardFileManager>,
 ) -> Result<Arc<dyn Client + Send + Sync>> {
     match cas_storage_config.endpoint {
-        Endpoint::Server(ref endpoint) => remote_client(
-            endpoint,
-            &cas_storage_config.cache_config,
-            &cas_storage_config.auth,
-        ),
-        Endpoint::FileSystem(ref path) => {
-            local_test_cas_client(&cas_storage_config.prefix, path, shard_manager)
-        }
+        Endpoint::Server(ref endpoint) => {
+            remote_client(endpoint, &cas_storage_config.cache_config, &cas_storage_config.auth)
+        },
+        Endpoint::FileSystem(ref path) => local_test_cas_client(&cas_storage_config.prefix, path, shard_manager),
     }
 }
 
@@ -33,7 +30,6 @@ fn remote_client(
     cache_config: &Option<CacheConfig>,
     auth: &Option<AuthConfig>,
 ) -> Result<Arc<dyn Client + Send + Sync>> {
-    
     // Raw remote client.
     let remote_client = RemoteClient::new(endpoint, auth, cache_config);
 

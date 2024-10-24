@@ -10,8 +10,22 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
-
 jobs:
+  fmt:
+    name: Rustfmt
+    runs-on:
+      group: cpu-low
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: nightly
+          components: rustfmt
+      - name: Format
+        run: |
+          cargo fmt --manifest-path ./Cargo.toml --all -- --check
+          cargo fmt --manifest-path ./hf_xet/Cargo.toml --all -- --check
+
   build_and_test:
     runs-on:
       group: cpu-high

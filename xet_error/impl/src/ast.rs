@@ -1,10 +1,8 @@
+use proc_macro2::Span;
+use syn::{Data, DataEnum, DataStruct, DeriveInput, Error, Fields, Generics, Ident, Index, Member, Result, Type};
+
 use crate::attr::{self, Attrs};
 use crate::generics::ParamsInScope;
-use proc_macro2::Span;
-use syn::{
-    Data, DataEnum, DataStruct, DeriveInput, Error, Fields, Generics, Ident, Index, Member, Result,
-    Type,
-};
 
 pub enum Input<'a> {
     Struct(Struct<'a>),
@@ -47,10 +45,7 @@ impl<'a> Input<'a> {
         match &node.data {
             Data::Struct(data) => Struct::from_syn(node, data).map(Input::Struct),
             Data::Enum(data) => Enum::from_syn(node, data).map(Input::Enum),
-            Data::Union(_) => Err(Error::new_spanned(
-                node,
-                "union as errors are not supported",
-            )),
+            Data::Union(_) => Err(Error::new_spanned(node, "union as errors are not supported")),
         }
     }
 }
@@ -119,11 +114,7 @@ impl<'a> Variant<'a> {
 }
 
 impl<'a> Field<'a> {
-    fn multiple_from_syn(
-        fields: &'a Fields,
-        scope: &ParamsInScope<'a>,
-        span: Span,
-    ) -> Result<Vec<Self>> {
+    fn multiple_from_syn(fields: &'a Fields, scope: &ParamsInScope<'a>, span: Span) -> Result<Vec<Self>> {
         fields
             .iter()
             .enumerate()
@@ -131,21 +122,15 @@ impl<'a> Field<'a> {
             .collect()
     }
 
-    fn from_syn(
-        i: usize,
-        node: &'a syn::Field,
-        scope: &ParamsInScope<'a>,
-        span: Span,
-    ) -> Result<Self> {
+    fn from_syn(i: usize, node: &'a syn::Field, scope: &ParamsInScope<'a>, span: Span) -> Result<Self> {
         Ok(Field {
             original: node,
             attrs: attr::get(&node.attrs)?,
-            member: node.ident.clone().map(Member::Named).unwrap_or_else(|| {
-                Member::Unnamed(Index {
-                    index: i as u32,
-                    span,
-                })
-            }),
+            member: node
+                .ident
+                .clone()
+                .map(Member::Named)
+                .unwrap_or_else(|| Member::Unnamed(Index { index: i as u32, span })),
             ty: &node.ty,
             contains_generic: scope.intersects(&node.ty),
         })

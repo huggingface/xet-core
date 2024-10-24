@@ -1,6 +1,7 @@
 use std::cmp::Ordering;
 use std::io::{Read, Seek, SeekFrom};
 use std::mem::size_of;
+
 use utils::serialization_utils::*;
 
 /// Performs an interpolation search on a block of sorted, possibly multile
@@ -16,8 +17,6 @@ use utils::serialization_utils::*;
 /// be present.  
 ///
 /// Returns the number of values found.  
-///
-///
 pub fn search_on_sorted_u64s<
     Value: Default + Copy + std::fmt::Debug,
     R: Read + Seek,
@@ -35,11 +34,11 @@ pub fn search_on_sorted_u64s<
     //
     // 1. We assume an even distribution over keys, allowing us to do interpolation search.
     //
-    // 2. Multiple values may be present.  Therefore, it is not enough to find a key; rather,
-    //    we need to be certain we've found all of them.
+    // 2. Multiple values may be present.  Therefore, it is not enough to find a key; rather, we need to be certain
+    //    we've found all of them.
     //
-    // 2. Seeks are more expensive than forward reads. We assume it's fast to read values sequentially.
-    //    Therefore, once the candidate window is small enough, we just read all the values in the window.
+    // 2. Seeks are more expensive than forward reads. We assume it's fast to read values sequentially. Therefore, once
+    //    the candidate window is small enough, we just read all the values in the window.
     //
     // This is the size of the window where doing a sequential read from this point is assumed to be equivalent in speed
     // to a seek, then do a read.  If the next point is within READ_WINDOW_SIZE entries of the current point, then
@@ -106,7 +105,7 @@ pub fn search_on_sorted_u64s<
                 } else {
                     probe_index = candidate_probe_index;
                 }
-            }
+            },
             Ordering::Equal => {
                 // Read out this value.
                 write_result(read_value_function(reader)?);
@@ -128,7 +127,7 @@ pub fn search_on_sorted_u64s<
 
                 let jump_amount = (EXPECTED_MAX_NUM_DUPLICATES).min(probe_index - (lo + 1));
                 probe_index -= jump_amount;
-            }
+            },
             Ordering::Greater => {
                 lo = probe_index;
                 lo_key = probe_key;
@@ -142,7 +141,7 @@ pub fn search_on_sorted_u64s<
                 } else {
                     probe_index = candidate_probe_index;
                 }
-            }
+            },
         };
     }
 
@@ -157,14 +156,14 @@ pub fn search_on_sorted_u64s<
             Ordering::Less => {
                 // We're done.
                 break;
-            }
+            },
             Ordering::Equal => {
                 write_result(probe_value);
-            }
+            },
             Ordering::Greater => {
                 // Keep going
                 continue;
-            }
+            },
         }
     }
 
@@ -173,20 +172,15 @@ pub fn search_on_sorted_u64s<
 
 #[cfg(test)]
 mod tests {
-    use std::{collections::HashMap, io::Cursor};
+    use std::collections::HashMap;
+    use std::io::Cursor;
 
-    use super::*;
     use rand::prelude::*;
 
-    fn test_interpolation_search(
-        keys: &[u64],
-        alt_query_keys: &[u64],
-    ) -> Result<(), std::io::Error> {
-        let mut values: Vec<(u64, u64)> = keys
-            .iter()
-            .enumerate()
-            .map(|(i, k)| (*k, 100 + i as u64))
-            .collect();
+    use super::*;
+
+    fn test_interpolation_search(keys: &[u64], alt_query_keys: &[u64]) -> Result<(), std::io::Error> {
+        let mut values: Vec<(u64, u64)> = keys.iter().enumerate().map(|(i, k)| (*k, 100 + i as u64)).collect();
         values.sort_unstable();
 
         // First, serialize out the values, and build a

@@ -1,17 +1,18 @@
-use super::constants::*;
-use crate::chunk_iterator::HASH_SEED;
-use crate::Chunk;
-use async_trait::async_trait;
-use lazy_static::lazy_static;
-use merklehash::*;
-use parutils::AsyncIterator;
-use rand_chacha::rand_core::RngCore;
-use rand_chacha::rand_core::SeedableRng;
-use rand_chacha::ChaChaRng;
 use std::cmp::min;
 use std::collections::VecDeque;
 use std::marker::PhantomData;
 use std::pin::Pin;
+
+use async_trait::async_trait;
+use lazy_static::lazy_static;
+use merklehash::*;
+use parutils::AsyncIterator;
+use rand_chacha::rand_core::{RngCore, SeedableRng};
+use rand_chacha::ChaChaRng;
+
+use super::constants::*;
+use crate::chunk_iterator::HASH_SEED;
+use crate::Chunk;
 
 type ChunkYieldType = (Chunk, Vec<u8>);
 
@@ -101,10 +102,7 @@ where
                             let mut consume_len;
                             let mut create_chunk = false;
                             // find a chunk boundary after minimum chunk
-                            if let Some(boundary) = self
-                                .hash
-                                .next_match(&readbuf[cur_pos..read_bytes], self.mask)
-                            {
+                            if let Some(boundary) = self.hash.next_match(&readbuf[cur_pos..read_bytes], self.mask) {
                                 consume_len = boundary;
                                 create_chunk = true;
                             } else {
@@ -118,8 +116,7 @@ where
                             }
                             self.cur_chunk_len += consume_len;
                             cur_pos += consume_len;
-                            self.chunkbuf
-                                .extend_from_slice(&readbuf[chunk_buf_copy_start..cur_pos]);
+                            self.chunkbuf.extend_from_slice(&readbuf[chunk_buf_copy_start..cur_pos]);
                             if create_chunk {
                                 let res = (
                                     Chunk {
@@ -137,10 +134,10 @@ where
                             }
                         }
                     }
-                }
+                },
                 None => {
                     self.complete_after_queue = true;
-                }
+                },
             }
         }
         if let Some(res) = self.yield_queue.pop_front() {
@@ -241,8 +238,7 @@ where
 }
 
 #[async_trait]
-impl<T: AsyncIterator<E>, E: Send + Sync + 'static> AsyncIterator<E>
-    for AsyncLowVarianceChunker<T, E>
+impl<T: AsyncIterator<E>, E: Send + Sync + 'static> AsyncIterator<E> for AsyncLowVarianceChunker<T, E>
 where
     T::Item: AsRef<[u8]>,
 {
@@ -311,13 +307,11 @@ where
 
                             // If we have a lot of data, don't read all the way to the end when we'll stop reading
                             // at the maximum chunk boundary.
-                            let read_end =
-                                read_bytes.min(cur_pos + self.maximum_chunk - self.cur_chunk_len);
+                            let read_end = read_bytes.min(cur_pos + self.maximum_chunk - self.cur_chunk_len);
 
-                            if let Some(boundary) = unsafe {
-                                (*self.cur_hasher.0)
-                                    .next_match(&readbuf[cur_pos..read_end], self.mask)
-                            } {
+                            if let Some(boundary) =
+                                unsafe { (*self.cur_hasher.0).next_match(&readbuf[cur_pos..read_end], self.mask) }
+                            {
                                 consume_len = boundary;
                                 create_chunk = true;
                             } else {
@@ -331,17 +325,14 @@ where
                             }
                             self.cur_chunk_len += consume_len;
                             cur_pos += consume_len;
-                            self.chunkbuf
-                                .extend_from_slice(&readbuf[chunk_buf_copy_start..cur_pos]);
+                            self.chunkbuf.extend_from_slice(&readbuf[chunk_buf_copy_start..cur_pos]);
                             if create_chunk {
                                 // advance the current hash index.
                                 // we actually create a chunk when we run out of hashers
                                 unsafe { (*self.cur_hasher.0).set_hash(0) };
                                 self.cur_hash_index += 1;
                                 unsafe {
-                                    self.cur_hasher = HasherPointerBox(
-                                        self.hash.as_mut_ptr().add(self.cur_hash_index),
-                                    );
+                                    self.cur_hasher = HasherPointerBox(self.hash.as_mut_ptr().add(self.cur_hash_index));
                                 }
                                 if self.cur_hash_index >= self.hash.len() {
                                     let res = (
@@ -362,10 +353,10 @@ where
                             }
                         }
                     }
-                }
+                },
                 None => {
                     self.complete_after_queue = true;
-                }
+                },
             }
         }
         if let Some(res) = self.yield_queue.pop_front() {
@@ -405,8 +396,7 @@ lazy_static! {
 
 // Annoying that we have to explicitly declare this, but that is the cost of using async_trait
 #[async_trait]
-impl<E: Send + Sync + 'static, T: AsyncIterator<E>> AsyncIterator<E>
-    for Pin<Box<AsyncLowVarianceChunker<T, E>>>
+impl<E: Send + Sync + 'static, T: AsyncIterator<E>> AsyncIterator<E> for Pin<Box<AsyncLowVarianceChunker<T, E>>>
 where
     T::Item: AsRef<[u8]>,
 {

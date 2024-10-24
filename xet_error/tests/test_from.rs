@@ -1,6 +1,7 @@
 #![allow(clippy::extra_unused_type_parameters)]
 
 use std::io;
+
 use xet_error::Error;
 
 #[derive(Error, Debug)]

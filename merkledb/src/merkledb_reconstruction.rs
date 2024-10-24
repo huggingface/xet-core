@@ -1,11 +1,11 @@
+use merklehash::MerkleHash;
+
 use crate::error::*;
 use crate::internal_methods::*;
 use crate::merkledbbase::MerkleDBBase;
 use crate::merklenode::*;
-use merklehash::MerkleHash;
 ///
 ///  Describes methods for performing FILE2CAS or CAS2FILE reconstructions from a MerkleDB
-///
 pub trait MerkleDBReconstruction: MerkleDBBase {
     /**
      * Look for all CAS's which are dependent exclusively on descendents of
@@ -38,10 +38,7 @@ pub trait MerkleDBReconstruction: MerkleDBBase {
      * Really if you want to find all CASes needed for a given file,
      * use find_all_file_to_cas().
      */
-    fn reconstruct_from_file(
-        &self,
-        root: &[MerkleNode],
-    ) -> Result<Vec<(MerkleHash, Vec<ObjectRange>)>> {
+    fn reconstruct_from_file(&self, root: &[MerkleNode]) -> Result<Vec<(MerkleHash, Vec<ObjectRange>)>> {
         let ret = find_reconstruction(self, root, NodeDataType::FILE)?;
         Ok(ret
             .into_iter()
@@ -60,10 +57,7 @@ pub trait MerkleDBReconstruction: MerkleDBBase {
      * needed to reconstruct each FILE node.
      * Only traverses nodes which were inserted after after_sequence.
      */
-    fn reconstruct_from_cas(
-        &self,
-        root: &[MerkleNode],
-    ) -> Result<Vec<(MerkleHash, Vec<ObjectRange>)>> {
+    fn reconstruct_from_cas(&self, root: &[MerkleNode]) -> Result<Vec<(MerkleHash, Vec<ObjectRange>)>> {
         let ret = find_reconstruction(self, root, NodeDataType::CAS)?;
         // we need to filter this
         Ok(ret
@@ -77,13 +71,11 @@ pub trait MerkleDBReconstruction: MerkleDBBase {
     }
 
     fn find_all_leaves(&self, root: &MerkleNode) -> Result<Vec<MerkleNode>> {
-        Ok(
-            find_descendent_reconstructor(self, root, |n, _| n.children().is_empty())?
-                .root_ranges_in_descendent
-                .iter()
-                .map(|x| self.find_node_by_id(x.0).unwrap())
-                .collect(),
-        )
+        Ok(find_descendent_reconstructor(self, root, |n, _| n.children().is_empty())?
+            .root_ranges_in_descendent
+            .iter()
+            .map(|x| self.find_node_by_id(x.0).unwrap())
+            .collect())
     }
 
     /**
@@ -100,12 +92,11 @@ pub trait MerkleDBReconstruction: MerkleDBBase {
         // To get all the proper chunk boundaries, we need to use all the leaves
         // to determine the ranges of these nodes.
 
-        let leaves: Vec<MerkleNode> =
-            find_descendent_reconstructor(self, cas_root, |n, _| n.children().is_empty())?
-                .root_ranges_in_descendent
-                .iter()
-                .map(|x| self.find_node_by_id(x.0).unwrap())
-                .collect();
+        let leaves: Vec<MerkleNode> = find_descendent_reconstructor(self, cas_root, |n, _| n.children().is_empty())?
+            .root_ranges_in_descendent
+            .iter()
+            .map(|x| self.find_node_by_id(x.0).unwrap())
+            .collect();
 
         let mut ret: Vec<ObjectRange> = Vec::new();
 
@@ -153,25 +144,15 @@ pub trait MerkleDBReconstruction: MerkleDBBase {
         Ok(ret)
     }
 
-    fn find_all_descendents_of_type(
-        &self,
-        root: MerkleNode,
-        nodetype: NodeDataType,
-    ) -> Result<Vec<MerkleNode>> {
-        if self
-            .node_attributes(root.id())
-            .unwrap_or_default()
-            .is_type(nodetype)
-        {
+    fn find_all_descendents_of_type(&self, root: MerkleNode, nodetype: NodeDataType) -> Result<Vec<MerkleNode>> {
+        if self.node_attributes(root.id()).unwrap_or_default().is_type(nodetype) {
             Ok(vec![root])
         } else {
-            Ok(
-                find_descendent_reconstructor(self, &root, |_, attr| attr.is_type(nodetype))?
-                    .root_ranges_in_descendent
-                    .iter()
-                    .map(|x| self.find_node_by_id(x.0).unwrap())
-                    .collect(),
-            )
+            Ok(find_descendent_reconstructor(self, &root, |_, attr| attr.is_type(nodetype))?
+                .root_ranges_in_descendent
+                .iter()
+                .map(|x| self.find_node_by_id(x.0).unwrap())
+                .collect())
         }
     }
 }

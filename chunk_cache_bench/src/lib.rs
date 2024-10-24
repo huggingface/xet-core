@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 
-use chunk_cache::{error::ChunkCacheError, CacheConfig, DiskCache};
+use chunk_cache::error::ChunkCacheError;
+use chunk_cache::{CacheConfig, DiskCache};
 
 pub mod sccache;
 pub mod solid_cache;

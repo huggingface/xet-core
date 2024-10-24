@@ -1,7 +1,8 @@
-use crate::ast::{Enum, Field, Struct, Variant};
-use crate::span::MemberSpan;
 use proc_macro2::Span;
 use syn::{Member, Type};
+
+use crate::ast::{Enum, Field, Struct, Variant};
+use crate::span::MemberSpan;
 
 impl Struct<'_> {
     pub(crate) fn from_field(&self) -> Option<&Field> {
@@ -30,22 +31,14 @@ impl Enum<'_> {
     }
 
     pub(crate) fn has_backtrace(&self) -> bool {
-        self.variants
-            .iter()
-            .any(|variant| variant.backtrace_field().is_some())
+        self.variants.iter().any(|variant| variant.backtrace_field().is_some())
     }
 
     pub(crate) fn has_display(&self) -> bool {
         self.attrs.display.is_some()
             || self.attrs.transparent.is_some()
-            || self
-                .variants
-                .iter()
-                .any(|variant| variant.attrs.display.is_some())
-            || self
-                .variants
-                .iter()
-                .all(|variant| variant.attrs.transparent.is_some())
+            || self.variants.iter().any(|variant| variant.attrs.display.is_some())
+            || self.variants.iter().all(|variant| variant.attrs.transparent.is_some())
     }
 }
 
@@ -102,7 +95,7 @@ fn source_field<'a, 'b>(fields: &'a [Field<'b>]) -> Option<&'a Field<'b>> {
     for field in fields {
         match &field.member {
             Member::Named(ident) if ident == "source" => return Some(field),
-            _ => {}
+            _ => {},
         }
     }
     None
@@ -127,9 +120,7 @@ fn distinct_backtrace_field<'a, 'b>(
     backtrace_field: &'a Field<'b>,
     from_field: Option<&Field>,
 ) -> Option<&'a Field<'b>> {
-    if from_field.map_or(false, |from_field| {
-        from_field.member == backtrace_field.member
-    }) {
+    if from_field.map_or(false, |from_field| from_field.member == backtrace_field.member) {
         None
     } else {
         Some(backtrace_field)

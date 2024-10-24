@@ -1,7 +1,5 @@
-use std::{
-    io::{Read, Seek, Write},
-    mem::size_of,
-};
+use std::io::{Read, Seek, Write};
+use std::mem::size_of;
 
 use utils::serialization_utils::{read_u32, write_u32, write_u32s};
 
@@ -26,9 +24,7 @@ pub struct CacheFileHeader {
 impl CacheFileHeader {
     pub fn new<T: Into<Vec<u32>>>(chunk_byte_indices: T) -> Self {
         let chunk_byte_indices = chunk_byte_indices.into();
-        Self {
-            chunk_byte_indices,
-        }
+        Self { chunk_byte_indices }
     }
 
     pub fn header_len(&self) -> usize {
@@ -38,17 +34,13 @@ impl CacheFileHeader {
     pub fn deserialize<R: Read + Seek>(reader: &mut R) -> Result<Self, ChunkCacheError> {
         reader.seek(std::io::SeekFrom::Start(0))?;
         let chunk_byte_indices_len = read_u32(reader)?;
-        let mut chunk_byte_indices: Vec<u32> =
-            Vec::with_capacity(chunk_byte_indices_len as usize);
+        let mut chunk_byte_indices: Vec<u32> = Vec::with_capacity(chunk_byte_indices_len as usize);
         for i in 0..chunk_byte_indices_len {
             let idx = read_u32(reader)?;
             if i == 0 && idx != 0 {
                 return Err(ChunkCacheError::parse("first byte index isn't 0"));
-            } else if !chunk_byte_indices.is_empty() && chunk_byte_indices.last().unwrap() >= &idx
-            {
-                return Err(ChunkCacheError::parse(
-                    "chunk byte indices are not strictly increasing",
-                ));
+            } else if !chunk_byte_indices.is_empty() && chunk_byte_indices.last().unwrap() >= &idx {
+                return Err(ChunkCacheError::parse("chunk byte indices are not strictly increasing"));
             }
             chunk_byte_indices.push(idx);
         }

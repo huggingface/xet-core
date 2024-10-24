@@ -1,8 +1,6 @@
-use std::{
-    path::PathBuf,
-    process::{exit, Stdio},
-    time::{Duration, SystemTime},
-};
+use std::path::PathBuf;
+use std::process::{exit, Stdio};
+use std::time::{Duration, SystemTime};
 
 use cas_types::{Key, Range};
 use chunk_cache::{CacheConfig, ChunkCache, DiskCache, RandomEntryIterator};
@@ -93,9 +91,7 @@ fn parent_main(args: ParentArgs) {
 
 fn child_main(args: ChildArgs) {
     let id = std::process::id();
-    let end_time = SystemTime::now()
-        .checked_add(Duration::from_secs(args.seconds))
-        .unwrap();
+    let end_time = SystemTime::now().checked_add(Duration::from_secs(args.seconds)).unwrap();
 
     let config = CacheConfig {
         cache_directory: PathBuf::from(args.cache_root),
@@ -103,10 +99,7 @@ fn child_main(args: ChildArgs) {
     };
     let cache = DiskCache::initialize(&config).unwrap();
 
-    eprintln!(
-        "initialized id: {id} with {} entries",
-        cache.num_items().unwrap()
-    );
+    eprintln!("initialized id: {id} with {} entries", cache.num_items().unwrap());
 
     let mut saved = (0, Key::default(), Range::default());
 
@@ -116,9 +109,7 @@ fn child_main(args: ChildArgs) {
     let mut it = RandomEntryIterator::default();
     while SystemTime::now() < end_time {
         let (key, range, chunk_byte_indices, data) = it.next().unwrap();
-        cache
-            .put(&key, &range, &chunk_byte_indices, &data)
-            .unwrap();
+        cache.put(&key, &range, &chunk_byte_indices, &data).unwrap();
         cache.get(&key, &range).unwrap();
         if i % 1000 == 1 {
             saved = (i, key, range);
@@ -130,10 +121,10 @@ fn child_main(args: ChildArgs) {
                 Some(_) => {
                     // eprintln!("id: {id} old test got a hit {old_i} @ {i}");
                     hits += 1f64;
-                }
+                },
                 None => {
                     // eprintln!("id: {id} old test got a miss {old_i} @ {i}"),
-                }
+                },
             };
         }
         i += 1;

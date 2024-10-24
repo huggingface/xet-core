@@ -4,10 +4,9 @@ pub mod error;
 use std::path::PathBuf;
 
 use cas_types::{Key, Range};
-use error::ChunkCacheError;
-
 pub use disk::test_utils::*;
 pub use disk::DiskCache;
+use error::ChunkCacheError;
 
 /// ChunkCache is a trait for storing and fetching Xorb ranges.
 /// implementors are expected to return bytes for a key and a given chunk range
@@ -43,13 +42,7 @@ pub trait ChunkCache: Sync + Send {
     /// key is required to be a valid CAS Key
     /// range is intended to be an index range within the xorb with constraint
     ///     0 <= range.start < range.end <= num_chunks_in_xorb(key)
-    fn put(
-        &self,
-        key: &Key,
-        range: &Range,
-        chunk_byte_indices: &[u32],
-        data: &[u8],
-    ) -> Result<(), ChunkCacheError>;
+    fn put(&self, key: &Key, range: &Range, chunk_byte_indices: &[u32], data: &[u8]) -> Result<(), ChunkCacheError>;
 }
 
 #[derive(Debug)]

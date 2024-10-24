@@ -1,6 +1,7 @@
-use crate::DataProgressReporter;
 use std::io::Write;
 use std::sync::Arc;
+
+use crate::DataProgressReporter;
 
 pub struct ReportedWriter<W: Write> {
     writer: W,

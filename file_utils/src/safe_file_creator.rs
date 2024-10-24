@@ -1,11 +1,13 @@
-use rand::distributions::Alphanumeric;
-use rand::{thread_rng, Rng};
 use std::fs::{self, File, Metadata};
 use std::io::{self, BufWriter, Write};
 use std::path::{Path, PathBuf};
+
+use rand::distributions::Alphanumeric;
+use rand::{thread_rng, Rng};
 use tempfile::NamedTempFile;
 
-use crate::{create_file, file_metadata::set_file_metadata};
+use crate::create_file;
+use crate::file_metadata::set_file_metadata;
 
 pub struct SafeFileCreator {
     dest_path: PathBuf,
@@ -48,10 +50,7 @@ impl SafeFileCreator {
         let file_name = path.file_name().unwrap().to_str().unwrap();
 
         let mut rng = thread_rng();
-        let random_hash: String = (0..10)
-            .map(|_| rng.sample(Alphanumeric))
-            .map(char::from)
-            .collect();
+        let random_hash: String = (0..10).map(|_| rng.sample(Alphanumeric)).map(char::from).collect();
         let temp_file_name = format!(".{}.{hash}.tmp", file_name, hash = random_hash);
         parent.join(temp_file_name)
     }
@@ -109,10 +108,7 @@ impl Write for SafeFileCreator {
 impl Drop for SafeFileCreator {
     fn drop(&mut self) {
         if let Err(e) = self.close() {
-            eprintln!(
-                "Error: Failed to close writer for {:?}: {}",
-                &self.dest_path, e
-            );
+            eprintln!("Error: Failed to close writer for {:?}: {}", &self.dest_path, e);
         }
     }
 }
@@ -121,10 +117,7 @@ impl Drop for SafeFileCreator {
 pub fn write_all_safe(path: &Path, bytes: &[u8]) -> io::Result<()> {
     if !path.as_os_str().is_empty() {
         let dir = path.parent().ok_or_else(|| {
-            io::Error::new(
-                io::ErrorKind::InvalidInput,
-                format!("Unable to find parent path from {path:?}"),
-            )
+            io::Error::new(io::ErrorKind::InvalidInput, format!("Unable to find parent path from {path:?}"))
         })?;
 
         // Make sure dir exists.
@@ -151,11 +144,13 @@ pub fn create_temp_file(dir: &Path, suffix: &str) -> io::Result<NamedTempFile> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use std::fs::{self, File};
     use std::io::Read;
     use std::os::unix::fs::PermissionsExt;
+
     use tempfile::tempdir;
+
+    use super::*;
 
     #[test]
     fn test_safe_file_creator_new() {
@@ -168,10 +163,7 @@ mod tests {
 
         // Verify file contents
         let mut contents = String::new();
-        File::open(&dest_path)
-            .unwrap()
-            .read_to_string(&mut contents)
-            .unwrap();
+        File::open(&dest_path).unwrap().read_to_string(&mut contents).unwrap();
         assert_eq!(contents.trim(), "Hello, world!");
 
         // Verify file permissions
@@ -200,10 +192,7 @@ mod tests {
 
         // Verify file contents
         let mut contents = String::new();
-        File::open(&dest_path)
-            .unwrap()
-            .read_to_string(&mut contents)
-            .unwrap();
+        File::open(&dest_path).unwrap().read_to_string(&mut contents).unwrap();
         assert_eq!(contents.trim(), "New content");
 
         // Verify file permissions
@@ -225,10 +214,7 @@ mod tests {
 
         // Verify file contents
         let mut contents = String::new();
-        File::open(&dest_path)
-            .unwrap()
-            .read_to_string(&mut contents)
-            .unwrap();
+        File::open(&dest_path).unwrap().read_to_string(&mut contents).unwrap();
         assert_eq!(contents.trim(), "Hello, world!");
     }
 
@@ -244,10 +230,7 @@ mod tests {
 
         // Verify file contents
         let mut contents = String::new();
-        File::open(&dest_path)
-            .unwrap()
-            .read_to_string(&mut contents)
-            .unwrap();
+        File::open(&dest_path).unwrap().read_to_string(&mut contents).unwrap();
         assert_eq!(contents.trim(), "Hello, world!");
     }
 
@@ -272,10 +255,7 @@ mod tests {
 
         // Verify file contents
         let mut contents = String::new();
-        File::open(&dest_path)
-            .unwrap()
-            .read_to_string(&mut contents)
-            .unwrap();
+        File::open(&dest_path).unwrap().read_to_string(&mut contents).unwrap();
         assert_eq!(contents.trim(), "New content");
 
         // Verify file permissions

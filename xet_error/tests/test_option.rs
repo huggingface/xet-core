@@ -1,6 +1,7 @@
 #[cfg(feature = "error_generic_member_access")]
 pub mod structs {
     use std::backtrace::Backtrace;
+
     use xet_error::Error;
 
     #[derive(Error, Debug)]
@@ -46,6 +47,7 @@ pub mod structs {
 #[cfg(feature = "error_generic_member_access")]
 pub mod enums {
     use std::backtrace::Backtrace;
+
     use xet_error::Error;
 
     #[derive(Error, Debug)]

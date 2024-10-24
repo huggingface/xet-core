@@ -1,19 +1,19 @@
-use crate::error::*;
-use crate::merklenode::*;
-
-use crate::internal_methods::assign_all_parents;
-use crate::merkledb_debug::*;
-use crate::merkledb_reconstruction::*;
-use crate::merkledbbase::*;
-
-use bincode::Options;
-use rustc_hash::FxHashMap;
-use serde::{Deserialize, Serialize};
 use std::fmt::Debug;
 use std::fs::File;
 use std::io::{BufReader, BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
+
+use bincode::Options;
+use rustc_hash::FxHashMap;
+use serde::{Deserialize, Serialize};
 use tracing::{debug, error};
+
+use crate::error::*;
+use crate::internal_methods::assign_all_parents;
+use crate::merkledb_debug::*;
+use crate::merkledb_reconstruction::*;
+use crate::merkledbbase::*;
+use crate::merklenode::*;
 
 /**
  * Since we want the graph to use small node ID values for connectivity,
@@ -54,7 +54,7 @@ impl Default for MerkleMemDB {
         node_0_attributes.set_file();
         node_0_attributes.set_cas();
         let mut ret = MerkleMemDB {
-            nodedb: vec![MerkleNode::default(); 1], // first real node starts at index 1
+            nodedb: vec![MerkleNode::default(); 1],  // first real node starts at index 1
             attributedb: vec![node_0_attributes; 1], // first real node starts at index 1
             hashdb: FxHashMap::default(),
             path: PathBuf::default(),
@@ -168,9 +168,7 @@ impl MerkleMemDB {
     /// We recompute all the parent relationships
     pub fn union_finalize(&mut self) -> Result<()> {
         if self.nodedb.len() != self.attributedb.len() {
-            return Err(MerkleDBError::GraphInvariantError(
-                "NodeDB and AttributeDB length mismatch".into(),
-            ));
+            return Err(MerkleDBError::GraphInvariantError("NodeDB and AttributeDB length mismatch".into()));
         }
         for nodetype in [NodeDataType::CAS, NodeDataType::FILE] {
             let nodelist: Vec<MerkleNodeId> = self
@@ -200,9 +198,7 @@ impl MerkleMemDB {
             // if b does not contain this node
             // OR b's node and a's node have different attributes,
             // Then I need to add.
-            if !b.hashdb.contains_key(n.hash())
-                || !b.attributedb[b.hashdb[n.hash()] as usize].type_equal(&a_attr)
-            {
+            if !b.hashdb.contains_key(n.hash()) || !b.attributedb[b.hashdb[n.hash()] as usize].type_equal(&a_attr) {
                 // b does not contain this node. so this is part
                 // of the set difference. All the nodes in a - b
                 // must be *complete* (i.e. have children information)
@@ -272,13 +268,7 @@ impl MerkleMemDB {
             .attributedb
             .get(n.id() as usize)
             .map_or("?".to_string(), |attr| format!("{attr:?}"));
-        format!(
-            "{}: len:{} children:{:?} attr:{:?}",
-            n.hash(),
-            n.len(),
-            chlist,
-            attr_string
-        )
+        format!("{}: len:{} children:{:?} attr:{:?}", n.hash(), n.len(), chlist, attr_string)
     }
     pub fn get_path(&self) -> &Path {
         &self.path
@@ -392,10 +382,7 @@ impl MerkleDBBase for MerkleMemDB {
             let dbpath = self.path.parent().ok_or_else(|| {
                 Error::new(
                     ErrorKind::InvalidInput,
-                    format!(
-                        "Unable to find MerkleDB output parent path from {:?}",
-                        self.path
-                    ),
+                    format!("Unable to find MerkleDB output parent path from {:?}", self.path),
                 )
             })?;
             // we prefix with "[PID]." for now. We should be able to do a cleanup
@@ -418,8 +405,7 @@ impl MerkleDBBase for MerkleMemDB {
     }
 
     fn db_invariant_checks(&self) -> bool {
-        let ret = self.hashdb.len() == self.attributedb.len()
-            && self.attributedb.len() == self.nodedb.len();
+        let ret = self.hashdb.len() == self.attributedb.len() && self.attributedb.len() == self.nodedb.len();
         if !ret {
             error!(
                 "DB length mismatch: HashDB len {} , attributeDB len {} nodedb len {}",

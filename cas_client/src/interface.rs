@@ -1,13 +1,15 @@
-use crate::error::Result;
-use crate::CasClientError;
+use std::io::Write;
+use std::sync::Arc;
+
 use async_trait::async_trait;
 use cas_types::QueryReconstructionResponse;
 use mdb_shard::shard_dedup_probe::ShardDedupProber;
 use mdb_shard::shard_file_reconstructor::FileReconstructor;
 use merklehash::MerkleHash;
 use reqwest_middleware::ClientWithMiddleware;
-use std::io::Write;
-use std::sync::Arc;
+
+use crate::error::Result;
+use crate::CasClientError;
 
 /// A Client to the CAS (Content Addressed Storage) service to allow storage and
 /// management of XORBs (Xet Object Remote Block). A XORB represents a collection
@@ -92,11 +94,7 @@ pub(crate) trait Reconstructable {
 /// 2. querying of file->reconstruction information
 /// 3. querying of chunk->shard information
 pub trait ShardClientInterface:
-    RegistrationClient
-    + FileReconstructor<CasClientError>
-    + ShardDedupProber<CasClientError>
-    + Send
-    + Sync
+    RegistrationClient + FileReconstructor<CasClientError> + ShardDedupProber<CasClientError> + Send + Sync
 {
 }
 

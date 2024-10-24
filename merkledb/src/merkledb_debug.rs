@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use crate::chunk_iterator::Chunk;
 use crate::internal_methods::*;
 use crate::merkledb_highlevel_v1::*;
@@ -5,40 +7,35 @@ use crate::merkledb_reconstruction::MerkleDBReconstruction;
 use crate::merkledbbase::MerkleDBBase;
 use crate::merklememdb::MerkleMemDB;
 use crate::merklenode::*;
-use std::collections::HashSet;
 
 pub trait MerkleDBDebugMethods: MerkleDBBase + MerkleDBReconstruction {
     fn print_node_details(&self, node: &MerkleNode) -> String {
         let attr = self.node_attributes(node.id()).unwrap_or_default();
         let mut ret = String::new();
         if attr.has_cas_data() {
-            let cas_report =
-                if let Ok(r) = find_ancestor_reconstructor(self, node, NodeDataType::CAS) {
-                    format!(
-                        "\tSubstring [{}, {}) of CAS entry {}\n",
-                        r.start,
-                        r.end,
-                        self.find_node_by_id(r.id)
-                            .map_or("?".to_string(), |n| n.hash().to_string())
-                    )
-                } else {
-                    "\tHas CAS data but unable to derive origin CAS node\n".to_string()
-                };
+            let cas_report = if let Ok(r) = find_ancestor_reconstructor(self, node, NodeDataType::CAS) {
+                format!(
+                    "\tSubstring [{}, {}) of CAS entry {}\n",
+                    r.start,
+                    r.end,
+                    self.find_node_by_id(r.id).map_or("?".to_string(), |n| n.hash().to_string())
+                )
+            } else {
+                "\tHas CAS data but unable to derive origin CAS node\n".to_string()
+            };
             ret.push_str(&cas_report);
         }
         if attr.has_file_data() {
-            let cas_report =
-                if let Ok(r) = find_ancestor_reconstructor(self, node, NodeDataType::FILE) {
-                    format!(
-                        "\tSubstring [{}, {}) of FILE entry {}\n",
-                        r.start,
-                        r.end,
-                        self.find_node_by_id(r.id)
-                            .map_or("?".to_string(), |n| n.hash().to_string())
-                    )
-                } else {
-                    "\tHas FILE data but unable to derive origin FILE node\n".to_string()
-                };
+            let cas_report = if let Ok(r) = find_ancestor_reconstructor(self, node, NodeDataType::FILE) {
+                format!(
+                    "\tSubstring [{}, {}) of FILE entry {}\n",
+                    r.start,
+                    r.end,
+                    self.find_node_by_id(r.id).map_or("?".to_string(), |n| n.hash().to_string())
+                )
+            } else {
+                "\tHas FILE data but unable to derive origin FILE node\n".to_string()
+            };
             ret.push_str(&cas_report);
         }
         ret.push('\n');
@@ -65,9 +62,7 @@ pub trait MerkleDBDebugMethods: MerkleDBBase + MerkleDBReconstruction {
             if let Some(node) = self.find_node_by_id(i as MerkleNodeId) {
                 if let Some(hashtoid) = self.hash_to_id(node.hash()) {
                     if hashtoid != (i as MerkleNodeId) {
-                        eprintln!(
-                            "Node {node:?} hash_to_id resolves to {hashtoid:?} which should be {i:?}"
-                        );
+                        eprintln!("Node {node:?} hash_to_id resolves to {hashtoid:?} which should be {i:?}");
                         ret = false;
                     }
                 } else {
@@ -108,15 +103,11 @@ pub trait MerkleDBDebugMethods: MerkleDBBase + MerkleDBReconstruction {
                     let cas_parent = attr.cas_parent();
                     let file_parent = attr.file_parent();
                     if cas_parent != 0 && !id_exists.contains(&cas_parent) {
-                        eprintln!(
-                            "CAS Parent in attribute {attr:?} of Node {node:?} does not exist"
-                        );
+                        eprintln!("CAS Parent in attribute {attr:?} of Node {node:?} does not exist");
                         ret = false;
                     }
                     if file_parent != 0 && !id_exists.contains(&file_parent) {
-                        eprintln!(
-                            "FILE Parent in attribute {attr:?} of Node {node:?} does not exist"
-                        );
+                        eprintln!("FILE Parent in attribute {attr:?} of Node {node:?} does not exist");
                         ret = false;
                     }
                 }
@@ -135,18 +126,14 @@ pub trait MerkleDBDebugMethods: MerkleDBBase + MerkleDBReconstruction {
                     if attr.has_cas_data() {
                         let f = find_ancestor_reconstructor(self, &node, NodeDataType::CAS);
                         if f.is_err() {
-                            eprintln!(
-                                "Parent invariant broken on node {node:?}. Unable to track to CAS root"
-                            );
+                            eprintln!("Parent invariant broken on node {node:?}. Unable to track to CAS root");
                         }
                         ret &= f.is_ok();
                     } else if attr.has_file_data() {
                         let f = find_ancestor_reconstructor(self, &node, NodeDataType::FILE);
                         ret &= f.is_ok();
                         if f.is_err() {
-                            eprintln!(
-                                "Parent invariant broken on node {node:?}. Unable to track to File root"
-                            );
+                            eprintln!("Parent invariant broken on node {node:?}. Unable to track to File root");
                         }
                     };
                 }
@@ -165,9 +152,7 @@ pub trait MerkleDBDebugMethods: MerkleDBBase + MerkleDBReconstruction {
                 if cas_parent > 0 {
                     if let Some(parent) = self.find_node_by_id(cas_parent) {
                         if !parent.children().iter().any(|x| x.0 == node.id()) {
-                            eprintln!(
-                                "CAS Parent node of {node:?} has no children. Parent: {parent:?}"
-                            );
+                            eprintln!("CAS Parent node of {node:?} has no children. Parent: {parent:?}");
                             ret = false;
                         }
                     } else {
@@ -179,9 +164,7 @@ pub trait MerkleDBDebugMethods: MerkleDBBase + MerkleDBReconstruction {
                 if file_parent > 0 {
                     if let Some(parent) = self.find_node_by_id(file_parent) {
                         if !parent.children().iter().any(|x| x.0 == node.id()) {
-                            eprintln!(
-                                "FILE Parent node of {node:?} has no children. Parent: {parent:?}"
-                            );
+                            eprintln!("FILE Parent node of {node:?} has no children. Parent: {parent:?}");
                             ret = false;
                         }
                     } else {

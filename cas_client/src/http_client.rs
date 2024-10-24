@@ -1,15 +1,13 @@
-use anyhow::anyhow;
-use error_printer::OptionPrinter;
-use reqwest::header::HeaderValue;
-use reqwest::header::AUTHORIZATION;
-use reqwest::{Request, Response};
-use reqwest_middleware::{ClientBuilder, ClientWithMiddleware, Middleware, Next};
-use reqwest_retry::default_on_request_failure;
-use reqwest_retry::default_on_request_success;
-use reqwest_retry::Retryable;
-use reqwest_retry::{policies::ExponentialBackoff, RetryTransientMiddleware};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
+
+use anyhow::anyhow;
+use error_printer::OptionPrinter;
+use reqwest::header::{HeaderValue, AUTHORIZATION};
+use reqwest::{Request, Response};
+use reqwest_middleware::{ClientBuilder, ClientWithMiddleware, Middleware, Next};
+use reqwest_retry::policies::ExponentialBackoff;
+use reqwest_retry::{default_on_request_failure, default_on_request_success, RetryTransientMiddleware, Retryable};
 use tracing::warn;
 use utils::auth::{AuthConfig, TokenProvider};
 
@@ -46,10 +44,7 @@ pub fn build_auth_http_client(
     auth_config: &Option<AuthConfig>,
     retry_config: &Option<RetryConfig>,
 ) -> std::result::Result<ClientWithMiddleware, CasClientError> {
-    let auth_middleware = auth_config
-        .as_ref()
-        .map(AuthMiddleware::from)
-        .info_none("CAS auth disabled");
+    let auth_middleware = auth_config.as_ref().map(AuthMiddleware::from).info_none("CAS auth disabled");
     let logging_middleware = Some(LoggingMiddleware);
     let retry_middleware = match retry_config {
         Some(config) => get_retry_middleware(config),
@@ -116,7 +111,7 @@ impl Middleware for LoggingMiddleware {
     async fn handle(
         &self,
         req: Request,
-        extensions: &mut hyper::http::Extensions,
+        extensions: &mut http::Extensions,
         next: Next<'_>,
     ) -> reqwest_middleware::Result<Response> {
         let res = next.run(req, extensions).await;
@@ -153,13 +148,8 @@ impl AuthMiddleware {
     /// from this client until the token has been fetched. This is expected/ok since we
     /// don't have a valid token and thus any calls would fail.
     fn get_token(&self) -> Result<String, anyhow::Error> {
-        let mut provider = self
-            .token_provider
-            .lock()
-            .map_err(|e| anyhow!("lock error: {e:?}"))?;
-        provider
-            .get_valid_token()
-            .map_err(|e| anyhow!("couldn't get token: {e:?}"))
+        let mut provider = self.token_provider.lock().map_err(|e| anyhow!("lock error: {e:?}"))?;
+        provider.get_valid_token().map_err(|e| anyhow!("couldn't get token: {e:?}"))
     }
 }
 
@@ -176,18 +166,13 @@ impl Middleware for AuthMiddleware {
     async fn handle(
         &self,
         mut req: Request,
-        extensions: &mut hyper::http::Extensions,
+        extensions: &mut http::Extensions,
         next: Next<'_>,
     ) -> reqwest_middleware::Result<Response> {
-        let token = self
-            .get_token()
-            .map_err(reqwest_middleware::Error::Middleware)?;
+        let token = self.get_token().map_err(reqwest_middleware::Error::Middleware)?;
 
         let headers = req.headers_mut();
-        headers.insert(
-            AUTHORIZATION,
-            HeaderValue::from_str(&format!("Bearer {}", token)).unwrap(),
-        );
+        headers.insert(AUTHORIZATION, HeaderValue::from_str(&format!("Bearer {}", token)).unwrap());
         next.run(req, extensions).await
     }
 }
@@ -196,10 +181,11 @@ impl Middleware for AuthMiddleware {
 mod tests {
     use std::time::SystemTime;
 
-    use super::*;
-    use reqwest::StatusCode;
     use httpmock::prelude::*;
+    use reqwest::StatusCode;
     use tracing_test::traced_test;
+
+    use super::*;
 
     #[tokio::test]
     #[traced_test]
@@ -226,7 +212,7 @@ mod tests {
         assert_eq!(2, mock_500.hits());
         assert_eq!(response.status(), 500);
     }
-    
+
     #[tokio::test]
     #[traced_test]
     async fn test_retry_policy_timeout() {
@@ -252,7 +238,7 @@ mod tests {
         assert_eq!(3, mock.hits());
         assert_eq!(response.status(), StatusCode::REQUEST_TIMEOUT);
     }
-    
+
     #[tokio::test]
     #[traced_test]
     async fn test_retry_policy_delay() {
@@ -281,4 +267,3 @@ mod tests {
         assert_eq!(start_time.elapsed().unwrap() > Duration::from_secs(0), true);
     }
 }
-

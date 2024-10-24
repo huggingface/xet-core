@@ -1,6 +1,7 @@
-use merklehash::MerkleHash;
 use std::io::{Read, Write};
 use std::mem::{size_of, transmute};
+
+use merklehash::MerkleHash;
 
 pub fn write_hash<W: Write>(writer: &mut W, m: &MerkleHash) -> Result<(), std::io::Error> {
     writer.write_all(m.as_bytes())
@@ -34,9 +35,7 @@ pub fn read_hash<R: Read>(reader: &mut R) -> Result<MerkleHash, std::io::Error> 
     let mut m = [0u8; 32];
     reader.read_exact(&mut m)?; // Not endian safe.
 
-    Ok(MerkleHash::from(unsafe {
-        transmute::<[u8; 32], [u64; 4]>(m)
-    }))
+    Ok(MerkleHash::from(unsafe { transmute::<[u8; 32], [u64; 4]>(m) }))
 }
 
 pub fn read_u32<R: Read>(reader: &mut R) -> Result<u32, std::io::Error> {

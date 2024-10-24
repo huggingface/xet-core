@@ -1,4 +1,5 @@
 use std::fmt::{Debug, Display};
+
 use tracing::{debug, error, info, warn};
 
 /// A helper trait to log errors.
@@ -21,11 +22,11 @@ impl<T, E: Debug> ErrorPrinter for Result<T, E> {
     #[track_caller]
     fn log_error<M: Display>(self, message: M) -> Self {
         match &self {
-            Ok(_) => {}
+            Ok(_) => {},
             Err(e) => {
                 let caller = get_caller();
-                error!(caller,"{message}, error: {e:?}")
-            }
+                error!(caller, "{message}, error: {e:?}")
+            },
         }
         self
     }
@@ -35,11 +36,11 @@ impl<T, E: Debug> ErrorPrinter for Result<T, E> {
     #[track_caller]
     fn warn_error<M: Display>(self, message: M) -> Self {
         match &self {
-            Ok(_) => {}
+            Ok(_) => {},
             Err(e) => {
                 let caller = get_caller();
-                warn!(caller,"{message}, error: {e:?}")
-            }
+                warn!(caller, "{message}, error: {e:?}")
+            },
         }
         self
     }
@@ -49,11 +50,11 @@ impl<T, E: Debug> ErrorPrinter for Result<T, E> {
     #[track_caller]
     fn debug_error<M: Display>(self, message: M) -> Self {
         match &self {
-            Ok(_) => {}
+            Ok(_) => {},
             Err(e) => {
                 let caller = get_caller();
-                debug!(caller,"{message}, error: {e:?}")
-            }
+                debug!(caller, "{message}, error: {e:?}")
+            },
         }
         self
     }
@@ -63,11 +64,11 @@ impl<T, E: Debug> ErrorPrinter for Result<T, E> {
     #[track_caller]
     fn info_error<M: Display>(self, message: M) -> Self {
         match &self {
-            Ok(_) => {}
+            Ok(_) => {},
             Err(e) => {
                 let caller = get_caller();
-                info!(caller,"{message}, error: {e:?}")
-            }
+                info!(caller, "{message}, error: {e:?}")
+            },
         }
         self
     }
@@ -92,11 +93,11 @@ impl<T> OptionPrinter for Option<T> {
     #[track_caller]
     fn error_none<M: Display>(self, message: M) -> Self {
         match &self {
-            Some(_) => {}
+            Some(_) => {},
             None => {
                 let caller = get_caller();
                 error!(caller, "{message}")
-            }
+            },
         }
         self
     }
@@ -105,11 +106,11 @@ impl<T> OptionPrinter for Option<T> {
     #[track_caller]
     fn warn_none<M: Display>(self, message: M) -> Self {
         match &self {
-            Some(_) => {}
+            Some(_) => {},
             None => {
                 let caller = get_caller();
                 warn!(caller, "{message}")
-            }
+            },
         }
         self
     }
@@ -118,11 +119,11 @@ impl<T> OptionPrinter for Option<T> {
     #[track_caller]
     fn debug_none<M: Display>(self, message: M) -> Self {
         match &self {
-            Some(_) => {}
+            Some(_) => {},
             None => {
                 let caller = get_caller();
                 debug!(caller, "{message}")
-            }
+            },
         }
         self
     }
@@ -131,11 +132,11 @@ impl<T> OptionPrinter for Option<T> {
     #[track_caller]
     fn info_none<M: Display>(self, message: M) -> Self {
         match &self {
-            Some(_) => {}
+            Some(_) => {},
             None => {
                 let caller = get_caller();
                 info!(caller, "{message}")
-            }
+            },
         }
         self
     }

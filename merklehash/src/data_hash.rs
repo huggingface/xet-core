@@ -1,20 +1,20 @@
-use safe_transmute::transmute_to_bytes;
-use serde::{Deserialize, Serialize};
 use std::cmp::{Eq, Ord, Ordering, PartialEq, PartialOrd};
 use std::error::Error;
-use std::fmt;
 use std::hash::{Hash, Hasher};
 use std::io::Write;
 use std::mem::transmute_copy;
 use std::num::ParseIntError;
 use std::ops::{Deref, DerefMut};
-use std::str;
+use std::{fmt, str};
 
-/**************************************************************************/
-/*                                                                        */
-/*                                DataHash                                */
-/*                                                                        */
-/**************************************************************************/
+use safe_transmute::transmute_to_bytes;
+use serde::{Deserialize, Serialize};
+
+/************************************************************************* */
+/*  */
+/* DataHash */
+/*  */
+/************************************************************************* */
 
 /// The DataHash is a transparent 256-bit value stores as `[u64; 4]`.
 ///
@@ -146,10 +146,7 @@ impl From<ParseIntError> for DataHashHexParseError {
 impl DataHash {
     /// Returns the hexadecimal printout of the hash.
     pub fn hex(&self) -> String {
-        format!(
-            "{:016x}{:016x}{:016x}{:016x}",
-            self.0[0], self.0[1], self.0[2], self.0[3]
-        )
+        format!("{:016x}{:016x}{:016x}{:016x}", self.0[0], self.0[1], self.0[2], self.0[3])
     }
 
     /// Parses a hexadecimal string as a DataHash, returning
@@ -244,14 +241,14 @@ impl Hash for DataHash {
 // as generated from random.org
 /// The hash key used for [compute_data_hash]
 const DATA_KEY: [u8; 32] = [
-    102, 151, 245, 119, 91, 149, 80, 222, 49, 53, 203, 172, 165, 151, 24, 28, 157, 228, 33, 16,
-    155, 235, 43, 88, 180, 208, 176, 75, 147, 173, 242, 41,
+    102, 151, 245, 119, 91, 149, 80, 222, 49, 53, 203, 172, 165, 151, 24, 28, 157, 228, 33, 16, 155, 235, 43, 88, 180,
+    208, 176, 75, 147, 173, 242, 41,
 ];
 
 /// The hash key used for [compute_internal_node_hash]
 const INTERNAL_NODE_HASH: [u8; 32] = [
-    1, 126, 197, 199, 165, 71, 41, 150, 253, 148, 102, 102, 180, 138, 2, 230, 93, 221, 83, 111, 55,
-    199, 109, 210, 248, 99, 82, 230, 74, 83, 113, 63,
+    1, 126, 197, 199, 165, 71, 41, 150, 253, 148, 102, 102, 180, 138, 2, 230, 93, 221, 83, 111, 55, 199, 109, 210, 248,
+    99, 82, 230, 74, 83, 113, 63,
 ];
 
 /// Hash function used to compute a leaf hash of the MerkleTree
@@ -372,8 +369,9 @@ impl<W: Write> Write for HashedWrite<W> {
 
 #[cfg(test)]
 mod tests {
-    use rand::prelude::*;
     use std::io::Write;
+
+    use rand::prelude::*;
 
     use crate::{compute_data_hash, DataHash, HashedWrite};
 

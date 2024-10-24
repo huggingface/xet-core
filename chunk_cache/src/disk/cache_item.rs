@@ -1,17 +1,16 @@
-use super::BASE64_ENGINE;
-use crate::error::ChunkCacheError;
+use std::cmp::Ordering;
+use std::io::{Cursor, Read, Write};
+use std::mem::size_of;
+
 use base64::Engine;
 use blake3::Hash;
 use cas_types::Range;
-use std::{
-    cmp::Ordering,
-    io::{Cursor, Read, Write},
-    mem::size_of,
-};
 use utils::serialization_utils::{read_u32, read_u64, write_u32, write_u64};
 
-const CACHE_ITEM_FILE_NAME_BUF_SIZE: usize =
-    size_of::<u32>() * 2 + size_of::<u64>() + blake3::OUT_LEN;
+use super::BASE64_ENGINE;
+use crate::error::ChunkCacheError;
+
+const CACHE_ITEM_FILE_NAME_BUF_SIZE: usize = size_of::<u32>() * 2 + size_of::<u64>() + blake3::OUT_LEN;
 
 /// A CacheItem represents metadata for a single range in the cache
 /// it contains the range of chunks the item is for
@@ -26,11 +25,7 @@ pub(crate) struct CacheItem {
 
 impl std::fmt::Display for CacheItem {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "CacheItem {{ range: {:?}, len: {}, hash: {} }}",
-            self.range, self.len, self.hash,
-        )
+        write!(f, "CacheItem {{ range: {:?}, len: {}, hash: {} }}", self.range, self.len, self.hash,)
     }
 }
 
@@ -65,9 +60,7 @@ impl CacheItem {
     pub(crate) fn parse(file_name: &[u8]) -> Result<CacheItem, ChunkCacheError> {
         let buf = BASE64_ENGINE.decode(file_name)?;
         if buf.len() != CACHE_ITEM_FILE_NAME_BUF_SIZE {
-            return Err(ChunkCacheError::parse(
-                "decoded buf is not the right size for a cache item file name",
-            ));
+            return Err(ChunkCacheError::parse("decoded buf is not the right size for a cache item file name"));
         }
         let mut r = Cursor::new(buf);
         let start = read_u32(&mut r)?;
@@ -86,9 +79,7 @@ impl CacheItem {
     }
 }
 
-pub(super) fn range_contained_fn(
-    range: &Range,
-) -> impl FnMut(&CacheItem) -> std::cmp::Ordering + '_ {
+pub(super) fn range_contained_fn(range: &Range) -> impl FnMut(&CacheItem) -> std::cmp::Ordering + '_ {
     |item: &CacheItem| {
         if item.range.start > range.start {
             Ordering::Greater
@@ -117,9 +108,9 @@ mod tests {
     use cas_types::Range;
     use sorted_vec::SortedVec;
 
-    use crate::disk::{cache_item::CACHE_ITEM_FILE_NAME_BUF_SIZE, BASE64_ENGINE};
-
     use super::{range_contained_fn, CacheItem};
+    use crate::disk::cache_item::CACHE_ITEM_FILE_NAME_BUF_SIZE;
+    use crate::disk::BASE64_ENGINE;
 
     impl Default for CacheItem {
         fn default() -> Self {
@@ -134,10 +125,7 @@ mod tests {
     #[test]
     fn test_to_file_name_len() {
         let cache_item = CacheItem {
-            range: Range {
-                start: 0,
-                end: 1024,
-            },
+            range: Range { start: 0, end: 1024 },
             len: 16 << 20,
             hash: blake3::hash(&(1..100).collect::<Vec<u8>>()),
         };

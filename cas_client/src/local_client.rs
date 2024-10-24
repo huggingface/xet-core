@@ -1,19 +1,21 @@
-use crate::error::{CasClientError, Result};
-use crate::interface::UploadClient;
+use std::fs::{metadata, File};
+use std::io::{BufReader, BufWriter, Write};
+use std::path::PathBuf;
+
 use anyhow::anyhow;
 use async_trait::async_trait;
 use cas_object::CasObject;
 use cas_types::Key;
 use merklehash::MerkleHash;
 use tempfile::TempDir;
-use std::fs::{metadata, File};
-use std::io::{BufReader, BufWriter, Write};
-use std::path::PathBuf;
 use tracing::{debug, info};
+
+use crate::error::{CasClientError, Result};
+use crate::interface::UploadClient;
 
 #[derive(Debug)]
 pub struct LocalClient {
-    _tmp_dir : TempDir,
+    _tmp_dir: TempDir,
     pub path: PathBuf,
 }
 
@@ -21,14 +23,19 @@ impl Default for LocalClient {
     fn default() -> Self {
         let tmp_dir = TempDir::new().unwrap();
         let path = tmp_dir.path().to_owned();
-        Self { _tmp_dir: tmp_dir, path }
+        Self {
+            _tmp_dir: tmp_dir,
+            path,
+        }
     }
 }
 
 impl LocalClient {
-
     pub fn new(path: PathBuf) -> Self {
-        Self { _tmp_dir: TempDir::new().unwrap(), path }
+        Self {
+            _tmp_dir: TempDir::new().unwrap(),
+            path,
+        }
     }
 
     /// Internal function to get the path for a given hash entry
@@ -41,7 +48,8 @@ impl LocalClient {
         let mut ret: Vec<_> = Vec::new();
 
         // loop through the directory
-        self.path.read_dir()
+        self.path
+            .read_dir()
             .map_err(|x| CasClientError::InternalError(x.into()))?
             // take only entries which are ok
             .filter_map(|x| x.ok())
@@ -125,9 +133,7 @@ impl UploadClient for LocalClient {
             .suffix(".xorb")
             .tempfile_in(self.path.as_path())
             .map_err(|e| {
-                CasClientError::InternalError(anyhow!(
-                    "Unable to create temporary file for staging Xorbs, got {e:?}"
-                ))
+                CasClientError::InternalError(anyhow!("Unable to create temporary file for staging Xorbs, got {e:?}"))
             })?;
 
         let total_bytes_written;
@@ -160,11 +166,7 @@ impl UploadClient for LocalClient {
         Ok(())
     }
 
-    async fn exists(
-        &self,
-        prefix: &str,
-        hash: &MerkleHash,
-    ) -> Result<bool> {
+    async fn exists(&self, prefix: &str, hash: &MerkleHash) -> Result<bool> {
         let file_path = self.get_path_for_entry(prefix, hash);
 
         let res = metadata(&file_path);
@@ -185,33 +187,31 @@ impl UploadClient for LocalClient {
                 let mut reader = BufReader::new(file);
                 CasObject::deserialize(&mut reader)?;
                 Ok(true)
-            }
+            },
             Err(_) => Err(CasClientError::XORBNotFound(*hash)),
         }
     }
 }
 
 pub mod tests_utils {
-    use super::LocalClient;
-    use crate::{error::Result, CasClientError};
+    use std::fs::File;
+    use std::io::BufReader;
+
     use cas_object::CasObject;
     use merklehash::MerkleHash;
-    use std::{fs::File, io::BufReader};
     use tracing::error;
+
+    use super::LocalClient;
+    use crate::error::Result;
+    use crate::CasClientError;
 
     pub trait TestUtils {
         fn get(&self, prefix: &str, hash: &MerkleHash) -> Result<Vec<u8>>;
-        fn get_object_range(
-            &self,
-            prefix: &str,
-            hash: &MerkleHash,
-            ranges: Vec<(u32, u32)>,
-        ) -> Result<Vec<Vec<u8>>>;
+        fn get_object_range(&self, prefix: &str, hash: &MerkleHash, ranges: Vec<(u32, u32)>) -> Result<Vec<Vec<u8>>>;
         fn get_length(&self, prefix: &str, hash: &MerkleHash) -> Result<u32>;
     }
 
     impl TestUtils for LocalClient {
-
         fn get(&self, prefix: &str, hash: &MerkleHash) -> Result<Vec<u8>> {
             let file_path = self.get_path_for_entry(prefix, hash);
             let file = File::open(&file_path).map_err(|_| {
@@ -268,7 +268,7 @@ pub mod tests_utils {
                     let cas = CasObject::deserialize(&mut reader)?;
                     let length = cas.get_all_bytes(&mut reader)?.len();
                     Ok(length as u32)
-                }
+                },
                 Err(_) => Err(CasClientError::XORBNotFound(*hash)),
             }
         }
@@ -278,11 +278,12 @@ pub mod tests_utils {
 #[cfg(test)]
 mod tests {
 
-    use super::*;
     use cas_object::test_utils::*;
     use cas_object::CompressionScheme::LZ4;
     use merklehash::compute_data_hash;
     use tests_utils::TestUtils;
+
+    use super::*;
 
     #[tokio::test]
     async fn test_basic_put_get() {
@@ -293,17 +294,9 @@ mod tests {
 
         let data_again = data.clone();
 
-
         // Act & Assert
         let client = LocalClient::default();
-        assert!(client.put(
-            "key",
-            &hash,
-            data,
-            vec![(hash, chunk_boundaries)]
-        )
-        .await
-        .is_ok());
+        assert!(client.put("key", &hash, data, vec![(hash, chunk_boundaries)]).await.is_ok());
 
         let returned_data = client.get("key", &hash).unwrap();
         assert_eq!(data_again, returned_data);
@@ -312,20 +305,12 @@ mod tests {
     #[tokio::test]
     async fn test_basic_put_get_random_medium() {
         // Arrange
-        let (c, _, data, chunk_boundaries) =
-            build_cas_object(44, ChunkSize::Random(512, 15633), LZ4);
+        let (c, _, data, chunk_boundaries) = build_cas_object(44, ChunkSize::Random(512, 15633), LZ4);
         let data_again = data.clone();
 
         // Act & Assert
         let client = LocalClient::default();
-        assert!(client.put(
-            "",
-            &c.info.cashash,
-            data,
-            chunk_boundaries
-        )
-        .await
-        .is_ok());
+        assert!(client.put("", &c.info.cashash, data, chunk_boundaries).await.is_ok());
 
         let returned_data = client.get("", &c.info.cashash).unwrap();
         assert_eq!(data_again, returned_data);
@@ -334,23 +319,17 @@ mod tests {
     #[tokio::test]
     async fn test_basic_put_get_range_random_small() {
         // Arrange
-        let (c, _, data, chunk_and_boundaries) =
-            build_cas_object(3, ChunkSize::Random(512, 2048), LZ4);
+        let (c, _, data, chunk_and_boundaries) = build_cas_object(3, ChunkSize::Random(512, 2048), LZ4);
 
         // Act & Assert
         let client = LocalClient::default();
-        assert!(client.put(
-            "",
-            &c.info.cashash,
-            data.clone(),
-            chunk_and_boundaries.clone()
-        )
-        .await
-        .is_ok());
+        assert!(client
+            .put("", &c.info.cashash, data.clone(), chunk_and_boundaries.clone())
+            .await
+            .is_ok());
 
         let ranges: Vec<(u32, u32)> = vec![(0, 1), (2, 3)];
-        let returned_ranges =
-            client.get_object_range("", &c.info.cashash, ranges).unwrap();
+        let returned_ranges = client.get_object_range("", &c.info.cashash, ranges).unwrap();
 
         let expected = vec![
             data[0..chunk_and_boundaries[0].1 as usize].to_vec(),
@@ -380,10 +359,7 @@ mod tests {
     #[tokio::test]
     async fn test_missing_xorb() {
         // Arrange
-        let hash = MerkleHash::from_hex(
-            "d760aaf4beb07581956e24c847c47f1abd2e419166aa68259035bc412232e9da",
-        )
-        .unwrap();
+        let hash = MerkleHash::from_hex("d760aaf4beb07581956e24c847c47f1abd2e419166aa68259035bc412232e9da").unwrap();
 
         // Act & Assert
         let client = LocalClient::default();
@@ -398,24 +374,16 @@ mod tests {
         let hello_hash = merklehash::compute_data_hash(&hello[..]);
         // write "hello world"
         let client = LocalClient::default();
-        client.put(
-            "key",
-            &hello_hash,
-            hello.clone(),
-            vec![(hello_hash, hello.len() as u32)],
-        )
-        .await
-        .unwrap();
+        client
+            .put("key", &hello_hash, hello.clone(), vec![(hello_hash, hello.len() as u32)])
+            .await
+            .unwrap();
 
         // put the same value a second time. This should be ok.
-        client.put(
-            "key",
-            &hello_hash,
-            hello.clone(),
-            vec![(hello_hash, hello.len() as u32)],
-        )
-        .await
-        .unwrap();
+        client
+            .put("key", &hello_hash, hello.clone(), vec![(hello_hash, hello.len() as u32)])
+            .await
+            .unwrap();
 
         // we can list all entries
         let r = client.get_all_entries().unwrap();
@@ -431,40 +399,30 @@ mod tests {
         // content shorter than the chunk boundaries should fail
         assert_eq!(
             CasClientError::InvalidArguments,
-            client.put(
-                "hellp2",
-                &hello_hash,
-                "hellp wod".as_bytes().to_vec(),
-                vec![(hello_hash, hello.len() as u32)],
-            )
-            .await
-            .unwrap_err()
+            client
+                .put("hellp2", &hello_hash, "hellp wod".as_bytes().to_vec(), vec![(hello_hash, hello.len() as u32)],)
+                .await
+                .unwrap_err()
         );
 
         // content longer than the chunk boundaries should fail
         assert_eq!(
             CasClientError::InvalidArguments,
-            client.put(
-                "again",
-                &hello_hash,
-                "hello world again".as_bytes().to_vec(),
-                vec![(hello_hash, hello.len() as u32)],
-            )
-            .await
-            .unwrap_err()
+            client
+                .put(
+                    "again",
+                    &hello_hash,
+                    "hello world again".as_bytes().to_vec(),
+                    vec![(hello_hash, hello.len() as u32)],
+                )
+                .await
+                .unwrap_err()
         );
 
         // empty writes should fail
         assert_eq!(
             CasClientError::InvalidArguments,
-            client.put(
-                "key",
-                &hello_hash,
-                vec![],
-                vec![],
-            )
-            .await
-            .unwrap_err()
+            client.put("key", &hello_hash, vec![], vec![],).await.unwrap_err()
         );
 
         // compute a hash of something we do not have in the store
@@ -472,20 +430,12 @@ mod tests {
         let world_hash = merklehash::compute_data_hash(&world[..]);
 
         // get length of non-existant object should fail with XORBNotFound
-        assert_eq!(
-            CasClientError::XORBNotFound(world_hash),
-            client.get_length("key", &world_hash).unwrap_err()
-        );
+        assert_eq!(CasClientError::XORBNotFound(world_hash), client.get_length("key", &world_hash).unwrap_err());
 
         // read of non-existant object should fail with XORBNotFound
         assert!(client.get("key", &world_hash).is_err());
         // read range of non-existant object should fail with XORBNotFound
-        assert!(client.get_object_range(
-            "key",
-            &world_hash,
-            vec![(0, 5)]
-        )
-        .is_err());
+        assert!(client.get_object_range("key", &world_hash, vec![(0, 5)]).is_err());
 
         // we can delete non-existant things
         client.delete("key", &world_hash);
@@ -496,14 +446,8 @@ mod tests {
         assert_eq!(r.len(), 0);
 
         // now every read of that key should fail
-        assert_eq!(
-            CasClientError::XORBNotFound(hello_hash),
-            client.get_length("key", &hello_hash).unwrap_err()
-        );
-        assert_eq!(
-            CasClientError::XORBNotFound(hello_hash),
-            client.get("key", &hello_hash).unwrap_err()
-        );
+        assert_eq!(CasClientError::XORBNotFound(hello_hash), client.get_length("key", &hello_hash).unwrap_err());
+        assert_eq!(CasClientError::XORBNotFound(hello_hash), client.get("key", &hello_hash).unwrap_err());
     }
 
     #[tokio::test]
@@ -521,13 +465,9 @@ mod tests {
 
         // insert should succeed
         let client = LocalClient::default();
-        client.put(
-            "key",
-            &final_hash,
-            "helloworld".as_bytes().to_vec(),
-            vec![(hello_hash, 5), (world_hash, 10)],
-        )
-        .await
-        .unwrap();
+        client
+            .put("key", &final_hash, "helloworld".as_bytes().to_vec(), vec![(hello_hash, 5), (world_hash, 10)])
+            .await
+            .unwrap();
     }
 }

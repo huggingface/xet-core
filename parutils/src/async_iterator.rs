@@ -16,7 +16,6 @@ pub trait BatchedAsyncIterator<E: Send + Sync + 'static>: AsyncIterator<E> {
     ///
     /// If given, max_num dictates the maximum number of items to return.  If None, then all
     /// available items are returned.
-    ///
     async fn next_batch(&mut self, max_num: Option<usize>) -> Result<Vec<Self::Item>, E>;
 
     /// Returns the number of items remaining in the stream

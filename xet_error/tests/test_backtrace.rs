@@ -13,11 +13,13 @@ pub struct InnerBacktrace {
 
 #[cfg(feature = "error_generic_member_access")]
 pub mod structs {
-    use super::{Inner, InnerBacktrace};
     use std::backtrace::Backtrace;
     use std::error::{self, Error};
     use std::sync::Arc;
+
     use xet_error::Error;
+
+    use super::{Inner, InnerBacktrace};
 
     #[derive(Error, Debug)]
     #[error("...")]
@@ -147,11 +149,13 @@ pub mod structs {
 
 #[cfg(feature = "error_generic_member_access")]
 pub mod enums {
-    use super::{Inner, InnerBacktrace};
     use std::backtrace::Backtrace;
     use std::error;
     use std::sync::Arc;
+
     use xet_error::Error;
+
+    use super::{Inner, InnerBacktrace};
 
     #[derive(Error, Debug)]
     pub enum PlainBacktrace {

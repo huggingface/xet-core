@@ -1,10 +1,12 @@
+use std::collections::HashSet;
+
+use merklehash::MerkleHash;
+
 use crate::chunk_iterator::*;
 use crate::constants::*;
 use crate::internal_methods::*;
 use crate::merkledbbase::*;
 use crate::merklenode::*;
-use merklehash::MerkleHash;
-use std::collections::HashSet;
 
 /**
  * An opaque struct used to stage a batch collection of inserts (like a directory)
@@ -27,8 +29,7 @@ impl InsertionStaging {
     /// Merge with another Insertion Staging struct
     pub fn combine(&mut self, mut other: InsertionStaging) {
         self.file_roots.append(&mut other.file_roots);
-        self.nodes_without_cas_entry
-            .append(&mut other.nodes_without_cas_entry);
+        self.nodes_without_cas_entry.append(&mut other.nodes_without_cas_entry);
         self.nodes_without_cas_entry_length += other.nodes_without_cas_entry_length;
     }
 
@@ -46,12 +47,7 @@ impl InsertionStaging {
                 running_sum += self.nodes_without_cas_entry[i].len();
                 if running_sum >= self.cas_block_size {
                     let end = i + 1;
-                    let cas_root = merge(
-                        db,
-                        self.nodes_without_cas_entry[start..end].to_vec(),
-                        false,
-                        true,
-                    );
+                    let cas_root = merge(db, self.nodes_without_cas_entry[start..end].to_vec(), false, true);
                     self.cas_roots.push(cas_root);
 
                     for j in start..end {
@@ -66,12 +62,7 @@ impl InsertionStaging {
             self.nodes_without_cas_entry = self.nodes_without_cas_entry[start..].to_vec();
         }
         if flush && !self.nodes_without_cas_entry.is_empty() {
-            let cas_root = merge(
-                db,
-                std::mem::take(&mut self.nodes_without_cas_entry),
-                false,
-                true,
-            );
+            let cas_root = merge(db, std::mem::take(&mut self.nodes_without_cas_entry), false, true);
             self.cas_roots.push(cas_root);
         }
     }
@@ -101,10 +92,7 @@ pub trait MerkleDBHighLevelMethodsV1: MerkleDBBase {
         if chunk.is_empty() {
             return MerkleHash::default();
         }
-        let ch: Vec<MerkleNode> = chunk
-            .iter()
-            .map(|i| node_from_hash(self, &i.hash, i.length))
-            .collect();
+        let ch: Vec<MerkleNode> = chunk.iter().map(|i| node_from_hash(self, &i.hash, i.length)).collect();
 
         // we filter nodes_without_cas_entry to be unique
         // hashset return true if the set does not have it already present
@@ -112,23 +100,13 @@ pub trait MerkleDBHighLevelMethodsV1: MerkleDBBase {
         // select only unique entries.
         let mut nodes_without_cas_entry: Vec<MerkleNode> = ch
             .iter()
-            .filter(|x| {
-                !self
-                    .node_attributes(x.id())
-                    .unwrap_or_default()
-                    .has_cas_data()
-            })
+            .filter(|x| !self.node_attributes(x.id()).unwrap_or_default().has_cas_data())
             .filter(|x| staging.ids_in_nodes_without_cas_entry.insert(x.id()))
             .cloned()
             .collect();
         let file_root = merge(self, ch, true, false);
-        staging.nodes_without_cas_entry_length += nodes_without_cas_entry
-            .iter()
-            .map(|x| x.len())
-            .sum::<usize>();
-        staging
-            .nodes_without_cas_entry
-            .append(&mut nodes_without_cas_entry);
+        staging.nodes_without_cas_entry_length += nodes_without_cas_entry.iter().map(|x| x.len()).sum::<usize>();
+        staging.nodes_without_cas_entry.append(&mut nodes_without_cas_entry);
 
         staging.build_cas_nodes(self, false);
         let hash = *file_root.hash();

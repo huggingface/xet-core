@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::num::ParseIntError;
+
 use merklehash::MerkleHash;
 use serde::{Deserialize, Serialize};
 use serde_repr::{Deserialize_repr, Serialize_repr};

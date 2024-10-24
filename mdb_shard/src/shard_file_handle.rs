@@ -1,16 +1,17 @@
-use crate::cas_structs::CASChunkSequenceHeader;
-use crate::error::{MDBShardError, Result};
-use crate::file_structs::{FileDataSequenceEntry, MDBFileInfo};
-use crate::utils::{shard_file_name, temp_shard_file_name};
-use crate::{shard_format::MDBShardInfo, utils::parse_shard_filename};
-use merklehash::{compute_data_hash, HMACKey, HashedWrite, MerkleHash};
 use std::io::{BufReader, Cursor, Read, Seek, Write};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
+
+use merklehash::{compute_data_hash, HMACKey, HashedWrite, MerkleHash};
 use tracing::{debug, error, warn};
 
+use crate::cas_structs::CASChunkSequenceHeader;
+use crate::error::{MDBShardError, Result};
+use crate::file_structs::{FileDataSequenceEntry, MDBFileInfo};
+use crate::shard_format::MDBShardInfo;
+use crate::utils::{parse_shard_filename, shard_file_name, temp_shard_file_name};
+
 /// When a specific implementation of the  
-///
 #[derive(Debug, Clone, Default)]
 pub struct MDBShardFile {
     pub shard_hash: MerkleHash,
@@ -30,10 +31,7 @@ impl MDBShardFile {
         Ok(s)
     }
 
-    pub fn write_out_from_reader<R: Read + Seek>(
-        target_directory: impl AsRef<Path>,
-        reader: &mut R,
-    ) -> Result<Self> {
+    pub fn write_out_from_reader<R: Read + Seek>(target_directory: impl AsRef<Path>, reader: &mut R) -> Result<Self> {
         let target_directory = target_directory.as_ref();
 
         let mut hashed_write; // Need to access after file is closed.
@@ -62,27 +60,16 @@ impl MDBShardFile {
 
         std::fs::rename(&temp_file_name, &full_file_name)?;
 
-        Self::new(
-            shard_hash,
-            full_file_name,
-            MDBShardInfo::load_from_file(reader)?,
-        )
+        Self::new(shard_hash, full_file_name, MDBShardInfo::load_from_file(reader)?)
     }
 
     /// Loads the MDBShardFile struct from
-    ///
     pub fn load_from_file(path: &Path) -> Result<Self> {
         if let Some(shard_hash) = parse_shard_filename(path.to_str().unwrap()) {
             let mut f = std::fs::File::open(path)?;
-            Ok(Self::new(
-                shard_hash,
-                std::fs::canonicalize(path)?,
-                MDBShardInfo::load_from_file(&mut f)?,
-            )?)
+            Ok(Self::new(shard_hash, std::fs::canonicalize(path)?, MDBShardInfo::load_from_file(&mut f)?)?)
         } else {
-            Err(MDBShardError::BadFilename(format!(
-                "{path:?} not a valid MerkleDB filename."
-            )))
+            Err(MDBShardError::BadFilename(format!("{path:?} not a valid MerkleDB filename.")))
         }
     }
 
@@ -104,9 +91,7 @@ impl MDBShardFile {
                 shards.push((h, std::fs::canonicalize(path)?));
                 debug!("Registerd shard file '{file_name:?}'.");
             } else {
-                return Err(MDBShardError::BadFilename(format!(
-                    "Filename {file_name} not valid shard file name."
-                )));
+                return Err(MDBShardError::BadFilename(format!("Filename {file_name} not valid shard file name.")));
             }
         }
 
@@ -165,19 +150,12 @@ impl MDBShardFile {
     }
 
     pub fn get_reader(&self) -> Result<BufReader<std::fs::File>> {
-        Ok(BufReader::with_capacity(
-            2048,
-            std::fs::File::open(&self.path)?,
-        ))
+        Ok(BufReader::with_capacity(2048, std::fs::File::open(&self.path)?))
     }
 
     #[inline]
-    pub fn get_file_reconstruction_info(
-        &self,
-        file_hash: &MerkleHash,
-    ) -> Result<Option<MDBFileInfo>> {
-        self.shard
-            .get_file_reconstruction_info(&mut self.get_reader()?, file_hash)
+    pub fn get_file_reconstruction_info(&self, file_hash: &MerkleHash) -> Result<Option<MDBFileInfo>> {
+        self.shard.get_file_reconstruction_info(&mut self.get_reader()?, file_hash)
     }
 
     #[inline]
@@ -185,8 +163,7 @@ impl MDBShardFile {
         &self,
         query_hashes: &[MerkleHash],
     ) -> Result<Option<(usize, FileDataSequenceEntry)>> {
-        self.shard
-            .chunk_hash_dedup_query(&mut self.get_reader()?, query_hashes)
+        self.shard.chunk_hash_dedup_query(&mut self.get_reader()?, query_hashes)
     }
 
     #[inline]
@@ -211,8 +188,7 @@ impl MDBShardFile {
 
     #[inline]
     pub fn read_all_truncated_hashes(&self) -> Result<Vec<(u64, (u32, u32))>> {
-        self.shard
-            .read_all_truncated_hashes(&mut self.get_reader()?)
+        self.shard.read_all_truncated_hashes(&mut self.get_reader()?)
     }
 
     #[inline]

@@ -1,19 +1,19 @@
-use super::clean::BufferItem;
+use std::cmp::min;
+use std::pin::Pin;
+
 use lazy_static::lazy_static;
 use merkledb::constants::{
-    MAXIMUM_CHUNK_MULTIPLIER, MINIMUM_CHUNK_DIVISOR, N_LOW_VARIANCE_CDC_CHUNKERS,
-    TARGET_CDC_CHUNK_SIZE,
+    MAXIMUM_CHUNK_MULTIPLIER, MINIMUM_CHUNK_DIVISOR, N_LOW_VARIANCE_CDC_CHUNKERS, TARGET_CDC_CHUNK_SIZE,
 };
 use merkledb::Chunk;
 use merklehash::compute_data_hash;
-use rand_chacha::rand_core::RngCore;
-use rand_chacha::rand_core::SeedableRng;
+use rand_chacha::rand_core::{RngCore, SeedableRng};
 use rand_chacha::ChaChaRng;
-use std::cmp::min;
-use std::pin::Pin;
 use tokio::sync::mpsc::{Receiver, Sender};
 use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
+
+use super::clean::BufferItem;
 
 pub const HASH_SEED: u64 = 123456;
 
@@ -72,10 +72,7 @@ impl LowVarianceChunker {
                                 // so we should be careful to skip only minimum_chunk - 64 - 1
                                 if chunker.cur_chunk_len < chunker.minimum_chunk - MAX_WINDOW_SIZE {
                                     let max_advance = min(
-                                        chunker.minimum_chunk
-                                            - chunker.cur_chunk_len
-                                            - MAX_WINDOW_SIZE
-                                            - 1,
+                                        chunker.minimum_chunk - chunker.cur_chunk_len - MAX_WINDOW_SIZE - 1,
                                         read_bytes - cur_pos,
                                     );
                                     cur_pos += max_advance;
@@ -87,12 +84,10 @@ impl LowVarianceChunker {
 
                                 // If we have a lot of data, don't read all the way to the end when we'll stop reading
                                 // at the maximum chunk boundary.
-                                let read_end = read_bytes
-                                    .min(cur_pos + chunker.maximum_chunk - chunker.cur_chunk_len);
+                                let read_end = read_bytes.min(cur_pos + chunker.maximum_chunk - chunker.cur_chunk_len);
 
                                 if let Some(boundary) = unsafe {
-                                    (*chunker.cur_hasher.0)
-                                        .next_match(&readbuf[cur_pos..read_end], chunker.mask)
+                                    (*chunker.cur_hasher.0).next_match(&readbuf[cur_pos..read_end], chunker.mask)
                                 } {
                                     consume_len = boundary;
                                     create_chunk = true;
@@ -107,18 +102,15 @@ impl LowVarianceChunker {
                                 }
                                 chunker.cur_chunk_len += consume_len;
                                 cur_pos += consume_len;
-                                chunker
-                                    .chunkbuf
-                                    .extend_from_slice(&readbuf[chunk_buf_copy_start..cur_pos]);
+                                chunker.chunkbuf.extend_from_slice(&readbuf[chunk_buf_copy_start..cur_pos]);
                                 if create_chunk {
                                     // advance the current hash index.
                                     // we actually create a chunk when we run out of hashers
                                     unsafe { (*chunker.cur_hasher.0).set_hash(0) };
                                     chunker.cur_hash_index += 1;
                                     unsafe {
-                                        chunker.cur_hasher = HasherPointerBox(
-                                            chunker.hash.as_mut_ptr().add(chunker.cur_hash_index),
-                                        );
+                                        chunker.cur_hasher =
+                                            HasherPointerBox(chunker.hash.as_mut_ptr().add(chunker.cur_hash_index));
                                     }
                                     if chunker.cur_hash_index >= chunker.hash.len() {
                                         let res = (
@@ -129,25 +121,20 @@ impl LowVarianceChunker {
                                             std::mem::take(&mut chunker.chunkbuf),
                                         );
                                         // reset chunk buffer state and continue to find the next chunk
-                                        chunker
-                                            .yield_queue
-                                            .send(Some(res))
-                                            .await
-                                            .expect("Send chunk to channel error");
+                                        chunker.yield_queue.send(Some(res)).await.expect("Send chunk to channel error");
 
                                         chunker.chunkbuf.clear();
                                         chunker.cur_hash_index = 0;
-                                        chunker.cur_hasher =
-                                            HasherPointerBox(chunker.hash.as_mut_ptr());
+                                        chunker.cur_hasher = HasherPointerBox(chunker.hash.as_mut_ptr());
                                     }
                                     chunker.cur_chunk_len = 0;
                                 }
                             }
                         }
-                    }
+                    },
                     Some(BufferItem::Completed) => {
                         complete = true;
-                    }
+                    },
                     None => (),
                 }
             }
@@ -161,19 +148,11 @@ impl LowVarianceChunker {
                     },
                     std::mem::take(&mut chunker.chunkbuf),
                 );
-                chunker
-                    .yield_queue
-                    .send(Some(res))
-                    .await
-                    .expect("Send chunk to channel error");
+                chunker.yield_queue.send(Some(res)).await.expect("Send chunk to channel error");
             }
 
             // signal finish
-            chunker
-                .yield_queue
-                .send(None)
-                .await
-                .expect("Send chunk to channel error");
+            chunker.yield_queue.send(None).await.expect("Send chunk to channel error");
         })
     }
 }
@@ -261,12 +240,7 @@ pub fn chunk_target_default(
     data: Receiver<BufferItem<Vec<u8>>>,
     yield_queue: Sender<Option<ChunkYieldType>>,
 ) -> JoinHandle<()> {
-    let chunker = low_variance_chunk_target(
-        TARGET_CDC_CHUNK_SIZE,
-        N_LOW_VARIANCE_CDC_CHUNKERS,
-        data,
-        yield_queue,
-    );
+    let chunker = low_variance_chunk_target(TARGET_CDC_CHUNK_SIZE, N_LOW_VARIANCE_CDC_CHUNKERS, data, yield_queue);
 
     LowVarianceChunker::run(Mutex::new(chunker))
 }

@@ -1,8 +1,9 @@
-use crossterm::{cursor, QueueableCommand};
 use std::io::{stderr, Write};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
+
+use crossterm::{cursor, QueueableCommand};
 use utils::output_bytes;
 
 const MAX_PRINT_INTERVAL_MS: u64 = 250;
@@ -30,11 +31,7 @@ pub struct DataProgressReporter {
 }
 
 impl DataProgressReporter {
-    pub fn new(
-        message: &str,
-        total_unit_count: Option<usize>,
-        total_byte_count: Option<usize>,
-    ) -> Arc<Self> {
+    pub fn new(message: &str, total_unit_count: Option<usize>, total_byte_count: Option<usize>) -> Arc<Self> {
         Arc::new(Self {
             is_active: AtomicBool::new(true),
             disable: atty::isnt(atty::Stream::Stderr),
@@ -49,11 +46,7 @@ impl DataProgressReporter {
         })
     }
 
-    pub fn new_inactive(
-        message: &str,
-        total_unit_count: Option<usize>,
-        total_byte_count: Option<usize>,
-    ) -> Arc<Self> {
+    pub fn new_inactive(message: &str, total_unit_count: Option<usize>, total_byte_count: Option<usize>) -> Arc<Self> {
         let s = Self::new(message, total_unit_count, total_byte_count);
         s.is_active.store(false, Ordering::Relaxed);
         s
@@ -100,7 +93,6 @@ impl DataProgressReporter {
     /// Testing progress bar, bytes only: 25 KiB | 25 KiB/s.
     /// Testing progress bar, bytes only: 75 KiB | 75 KiB/s.
     /// Testing progress bar, bytes only: 75 KiB | 75 KiB/s, done.
-    ///
     pub fn register_progress(&self, unit_amount: Option<usize>, bytes: Option<usize>) {
         if let Some(c) = unit_amount {
             self.current_count.fetch_add(c, Ordering::Relaxed);
@@ -158,10 +150,7 @@ impl DataProgressReporter {
 
         let last_print_time = self.last_print_time.load(Ordering::Relaxed);
 
-        if !is_final
-            && last_print_time != 0
-            && elapsed_millis < last_print_time + MAX_PRINT_INTERVAL_MS
-        {
+        if !is_final && last_print_time != 0 && elapsed_millis < last_print_time + MAX_PRINT_INTERVAL_MS {
             return Ok(());
         }
 
@@ -174,10 +163,7 @@ impl DataProgressReporter {
         let last_print_time = self.last_print_time.load(Ordering::Relaxed);
 
         // Is this condition still valid?  Could have been updated while waiting for the lock.
-        if !is_final
-            && last_print_time != 0
-            && elapsed_millis < last_print_time + MAX_PRINT_INTERVAL_MS
-        {
+        if !is_final && last_print_time != 0 && elapsed_millis < last_print_time + MAX_PRINT_INTERVAL_MS {
             return Ok(());
         }
 
@@ -188,10 +174,7 @@ impl DataProgressReporter {
         // Now, get the info.
         let byte_rate = (1000 * current_bytes) / (usize::max(1000, elapsed_millis as usize));
 
-        let mut write_str = match (
-            self.total_count.load(Ordering::Relaxed),
-            self.total_bytes.load(Ordering::Relaxed),
-        ) {
+        let mut write_str = match (self.total_count.load(Ordering::Relaxed), self.total_bytes.load(Ordering::Relaxed)) {
             (0 | 1, 0) => {
                 match (current_count, current_bytes) {
                     (0, 0) => {
@@ -200,7 +183,7 @@ impl DataProgressReporter {
                         // No information yet.
                         // EX:  Uploading: ...
                         format!("{}: ...", self.message)
-                    }
+                    },
                     (0, b) => {
                         // Just the number of bytes transferred so far.
                         // EX:  Uploading: 2.5MB | 1MB/s.
@@ -211,17 +194,12 @@ impl DataProgressReporter {
                             &output_bytes(byte_rate),
                             if is_final { ", done." } else { "." }
                         )
-                    }
+                    },
                     (c, 0) => {
                         // Just the number of units completed, no info on total.
                         // EX:  Scanning Directories: 23 completed.
-                        format!(
-                            "{}: {} completed{}",
-                            self.message,
-                            c,
-                            if is_final { ", done." } else { "." }
-                        )
-                    }
+                        format!("{}: {} completed{}", self.message, c, if is_final { ", done." } else { "." })
+                    },
                     (c, b) => {
                         // Number of units completed and number of bytes, no info on totals:
                         // EX: Downloading: 45/??, 210 MB | 32MB/s.
@@ -229,18 +207,14 @@ impl DataProgressReporter {
                             "{}: {} / {}, {} | {}/s{}",
                             self.message,
                             c,
-                            if is_final {
-                                format!("{c}")
-                            } else {
-                                "??".to_owned()
-                            },
+                            if is_final { format!("{c}") } else { "??".to_owned() },
                             &output_bytes(b),
                             &output_bytes(byte_rate),
                             if is_final { ", done." } else { "." }
                         )
-                    }
+                    },
                 }
-            }
+            },
             (0 | 1, total_bytes) => {
                 // Number of bytes completed and total bytes.
                 // EX: Downloading: (210 MB / 1.2 GB) | 32MB/s.
@@ -253,7 +227,7 @@ impl DataProgressReporter {
                     &output_bytes(byte_rate),
                     if is_final { ", done." } else { "." }
                 )
-            }
+            },
             (total_count, 0) => {
                 if current_bytes != 0 {
                     // Number of units completed and bytes completed, no total byte information.
@@ -278,7 +252,7 @@ impl DataProgressReporter {
                         if is_final { ", done." } else { "." }
                     )
                 }
-            }
+            },
             (total_count, total_bytes) => {
                 // Number of units completed and bytes completed, total byte information (but total not used here..
                 // EX: Downloading: (750 / 1001), 453MB | 23MB/s.
@@ -292,7 +266,7 @@ impl DataProgressReporter {
                     &output_bytes(byte_rate),
                     if is_final { ", done." } else { "." }
                 )
-            }
+            },
         };
 
         let write_str_pad_len = lg_print_info.last_write_length.max(PRINT_LINE_MIN_WIDTH);
@@ -366,8 +340,7 @@ impl DataProgressReporter {
             stderr.queue(cursor::RestorePosition)?;
         }
 
-        self.last_print_time
-            .store(elapsed_millis + 1, Ordering::Relaxed);
+        self.last_print_time.store(elapsed_millis + 1, Ordering::Relaxed);
 
         Ok(())
     }

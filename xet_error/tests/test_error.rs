@@ -2,6 +2,7 @@
 
 use std::fmt::{self, Display};
 use std::io;
+
 use xet_error::Error;
 
 macro_rules! unimplemented_display {

@@ -1,14 +1,13 @@
-use std::{
-    collections::HashMap,
-    fs::{DirEntry, File},
-    io::{self, Cursor, ErrorKind, Read, Seek, SeekFrom, Write},
-    mem::size_of,
-    path::{Path, PathBuf},
-    sync::{Arc, Mutex, MutexGuard},
-};
+use std::collections::HashMap;
+use std::fs::{DirEntry, File};
+use std::io::{self, Cursor, ErrorKind, Read, Seek, SeekFrom, Write};
+use std::mem::size_of;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, MutexGuard};
 
 use base64::engine::general_purpose::URL_SAFE;
-use base64::{engine::GeneralPurpose, Engine};
+use base64::engine::GeneralPurpose;
+use base64::Engine;
 use cache_file_header::CacheFileHeader;
 use cache_item::{range_contained_fn, CacheItem};
 use cas_types::{Key, Range};
@@ -18,7 +17,8 @@ use merklehash::MerkleHash;
 use sorted_vec::SortedVec;
 use tracing::{debug, warn};
 
-use crate::{error::ChunkCacheError, CacheConfig, ChunkCache};
+use crate::error::ChunkCacheError;
+use crate::{CacheConfig, ChunkCache};
 
 mod cache_file_header;
 mod cache_item;
@@ -95,7 +95,6 @@ impl DiskCache {
     /// │       ├── [range 400-402, file_len, file_hash]
     /// │       ├── [range 404-405, file_len, file_hash]
     /// │       └── [range 679-700, file_len, file_hash]
-    ///
     pub fn initialize(config: &CacheConfig) -> Result<Self, ChunkCacheError> {
         let capacity = config.cache_size;
         let cache_root = config.cache_directory.clone();
@@ -109,10 +108,7 @@ impl DiskCache {
         })
     }
 
-    fn initialize_state(
-        cache_root: &PathBuf,
-        capacity: u64,
-    ) -> Result<CacheState, ChunkCacheError> {
+    fn initialize_state(cache_root: &PathBuf, capacity: u64) -> Result<CacheState, ChunkCacheError> {
         let mut state = HashMap::new();
         let mut total_bytes = 0;
         let mut num_items = 0;
@@ -170,7 +166,7 @@ impl DiskCache {
                     Err(e) => {
                         debug!("failed to decoded a directory name as a key: {e}");
                         continue;
-                    }
+                    },
                 };
 
                 let mut items = SortedVec::new();
@@ -230,7 +226,7 @@ impl DiskCache {
                         ErrorKind::NotFound => {
                             self.remove_item(key, &cache_item)?;
                             continue;
-                        }
+                        },
                         _ => return Err(e.into()),
                     },
                 };
@@ -246,9 +242,8 @@ impl DiskCache {
             }
 
             file_buf.seek(SeekFrom::Start(0))?;
-            let header_result = CacheFileHeader::deserialize(&mut file_buf).debug_error(format!(
-                "failed to deserialize cache file header on path: {path:?}"
-            ));
+            let header_result = CacheFileHeader::deserialize(&mut file_buf)
+                .debug_error(format!("failed to deserialize cache file header on path: {path:?}"));
             let header = if let Ok(header) = header_result {
                 header
             } else {
@@ -393,8 +388,7 @@ impl DiskCache {
         let idx_end = (range.end - cache_item.range.start + 1) as usize;
         for i in idx_start..idx_end - 1 {
             let stored_diff = header.chunk_byte_indices[i + 1] - header.chunk_byte_indices[i];
-            let given_diff =
-                chunk_byte_indices[i + 1 - idx_start] - chunk_byte_indices[i - idx_start];
+            let given_diff = chunk_byte_indices[i + 1 - idx_start] - chunk_byte_indices[i - idx_start];
             if stored_diff != given_diff {
                 debug!(
                     "failed to match chunk lens for these chunk offsets {} {:?}\n{} {:?}",
@@ -407,8 +401,7 @@ impl DiskCache {
             }
         }
 
-        let stored_data =
-            get_range_from_cache_file(&header, &mut r, range, cache_item.range.start)?;
+        let stored_data = get_range_from_cache_file(&header, &mut r, range, cache_item.range.start)?;
         if data != stored_data {
             return Err(ChunkCacheError::InvalidArguments);
         }
@@ -425,10 +418,7 @@ impl DiskCache {
         let mut paths = Vec::new();
         while to_remove > bytes_removed {
             let (key, idx) = self.random_item(&state);
-            let items = state
-                .inner
-                .get_mut(&key)
-                .ok_or(ChunkCacheError::Infallible)?;
+            let items = state.inner.get_mut(&key).ok_or(ChunkCacheError::Infallible)?;
             let cache_item = &items[idx];
             let len = cache_item.len;
             let path = self.item_path(&key, cache_item)?;
@@ -492,10 +482,7 @@ impl DiskCache {
     }
 
     fn item_path(&self, key: &Key, cache_item: &CacheItem) -> Result<PathBuf, ChunkCacheError> {
-        Ok(self
-            .cache_root
-            .join(key_dir(key))
-            .join(cache_item.file_name()?))
+        Ok(self.cache_root.join(key_dir(key)).join(cache_item.file_name()?))
     }
 }
 
@@ -522,9 +509,7 @@ fn get_range_from_cache_file<R: Read + Seek>(
         .chunk_byte_indices
         .get((range.end - start) as usize)
         .ok_or(ChunkCacheError::BadRange)?;
-    file_contents.seek(SeekFrom::Start(
-        (*start_byte as usize + header.header_len()) as u64,
-    ))?;
+    file_contents.seek(SeekFrom::Start((*start_byte as usize + header.header_len()) as u64))?;
     let mut buf = vec![0; (end_byte - start_byte) as usize];
     file_contents.read_exact(&mut buf)?;
     Ok(buf)
@@ -549,7 +534,7 @@ fn read_dir(path: impl AsRef<Path>) -> OptionResult<std::fs::ReadDir, ChunkCache
             } else {
                 Err(e.into())
             }
-        }
+        },
     }
 }
 
@@ -566,7 +551,7 @@ fn is_ok_dir(dir_result: Result<DirEntry, io::Error>) -> OptionResult<DirEntry, 
                 return Ok(None);
             }
             return Err(e.into());
-        }
+        },
     };
     let md = match dirent.metadata() {
         Ok(md) => md,
@@ -575,13 +560,10 @@ fn is_ok_dir(dir_result: Result<DirEntry, io::Error>) -> OptionResult<DirEntry, 
                 return Ok(None);
             }
             return Err(e.into());
-        }
+        },
     };
     if !md.is_dir() {
-        debug!(
-            "CACHE: expected directory at {:?}, is not directory",
-            dirent.path()
-        );
+        debug!("CACHE: expected directory at {:?}, is not directory", dirent.path());
         return Ok(None);
     }
     Ok(Some(dirent))
@@ -590,10 +572,7 @@ fn is_ok_dir(dir_result: Result<DirEntry, io::Error>) -> OptionResult<DirEntry, 
 // given a result from readdir attempts to parse it as a cache file handle
 // i.e. validate its file name against the contents (excluding file-hash-validation)
 // validate that it is a file, correct len, and is not too large.
-fn try_parse_cache_file(
-    file_result: io::Result<DirEntry>,
-    capacity: u64,
-) -> OptionResult<CacheItem, ChunkCacheError> {
+fn try_parse_cache_file(file_result: io::Result<DirEntry>, capacity: u64) -> OptionResult<CacheItem, ChunkCacheError> {
     let item = match file_result {
         Ok(item) => item,
         Err(e) => {
@@ -601,7 +580,7 @@ fn try_parse_cache_file(
                 return Ok(None);
             }
             return Err(e.into());
-        }
+        },
     };
     let md = match item.metadata() {
         Ok(md) => md,
@@ -610,7 +589,7 @@ fn try_parse_cache_file(
                 return Ok(None);
             }
             return Err(e.into());
-        }
+        },
     };
 
     if !md.is_file() {
@@ -633,13 +612,10 @@ fn try_parse_cache_file(
     {
         Ok(i) => i,
         Err(e) => {
-            warn!(
-                "not a valid cache file, removing: {:?} {e:?}",
-                item.file_name()
-            );
+            warn!("not a valid cache file, removing: {:?} {e:?}", item.file_name());
             remove_file(item.path())?;
             return Ok(None);
-        }
+        },
     };
     if md.len() != cache_item.len {
         // file is invalid, remove it
@@ -690,10 +666,7 @@ fn check_remove_dir(dir_path: impl AsRef<Path>) -> Result<(), ChunkCacheError> {
     remove_dir(&dir_path)?;
 
     // try to check and remove the prefix dir
-    let prefix_dir = dir_path
-        .as_ref()
-        .parent()
-        .ok_or(ChunkCacheError::Infallible)?;
+    let prefix_dir = dir_path.as_ref().parent().ok_or(ChunkCacheError::Infallible)?;
 
     let prefix_readdir = match read_dir(prefix_dir)? {
         Some(prd) => prd,
@@ -733,13 +706,7 @@ impl ChunkCache for DiskCache {
         self.get_impl(key, range)
     }
 
-    fn put(
-        &self,
-        key: &Key,
-        range: &Range,
-        chunk_byte_indices: &[u32],
-        data: &[u8],
-    ) -> Result<(), ChunkCacheError> {
+    fn put(&self, key: &Key, range: &Range, chunk_byte_indices: &[u32], data: &[u8]) -> Result<(), ChunkCacheError> {
         self.put_impl(key, range, chunk_byte_indices, data)
     }
 }
@@ -748,18 +715,14 @@ impl ChunkCache for DiskCache {
 mod tests {
     use std::collections::BTreeSet;
 
-    use crate::{
-        disk::{test_utils::*, try_parse_key},
-        CacheConfig,
-    };
-
     use cas_types::{Key, Range};
     use rand::thread_rng;
     use tempdir::TempDir;
 
-    use crate::ChunkCache;
-
     use super::{DiskCache, DEFAULT_CAPACITY};
+    use crate::disk::test_utils::*;
+    use crate::disk::try_parse_key;
+    use crate::{CacheConfig, ChunkCache};
 
     #[test]
     fn test_get_cache_empty() {
@@ -771,10 +734,7 @@ mod tests {
             ..Default::default()
         };
         let cache = DiskCache::initialize(&config).unwrap();
-        assert!(cache
-            .get(&random_key(&mut rng), &random_range(&mut rng))
-            .unwrap()
-            .is_none());
+        assert!(cache.get(&random_key(&mut rng), &random_range(&mut rng)).unwrap().is_none());
     }
 
     #[test]
@@ -798,10 +758,7 @@ mod tests {
 
         // hit
         assert!(cache.get(&key, &range).unwrap().is_some());
-        let miss_range = Range {
-            start: 100,
-            end: 101,
-        };
+        let miss_range = Range { start: 100, end: 101 };
         // miss
         assert!(cache.get(&key, &miss_range).unwrap().is_none());
     }
@@ -961,22 +918,8 @@ mod tests {
             assert!(get_result.unwrap().is_some(), "{i}");
         }
 
-        let cache_keys = cache
-            .state
-            .lock()
-            .unwrap()
-            .inner
-            .keys()
-            .cloned()
-            .collect::<BTreeSet<_>>();
-        let cache2_keys = cache2
-            .state
-            .lock()
-            .unwrap()
-            .inner
-            .keys()
-            .cloned()
-            .collect::<BTreeSet<_>>();
+        let cache_keys = cache.state.lock().unwrap().inner.keys().cloned().collect::<BTreeSet<_>>();
+        let cache2_keys = cache2.state.lock().unwrap().inner.keys().cloned().collect::<BTreeSet<_>>();
         assert_eq!(cache_keys, cache2_keys);
     }
 
@@ -1007,8 +950,7 @@ mod tests {
     #[test]
     fn test_initialize_stops_loading_early_with_too_many_files() {
         const LARGE_FILE: u64 = 1000;
-        let cache_root =
-            TempDir::new("initialize_stops_loading_early_with_too_many_files").unwrap();
+        let cache_root = TempDir::new("initialize_stops_loading_early_with_too_many_files").unwrap();
         let config = CacheConfig {
             cache_directory: cache_root.path().to_path_buf(),
             cache_size: LARGE_FILE * 10,
@@ -1029,12 +971,7 @@ mod tests {
         };
         let cache2 = DiskCache::initialize(&config).unwrap();
 
-        assert!(
-            cache2.total_bytes().unwrap() < cap2 * 3,
-            "{} < {}",
-            cache2.total_bytes().unwrap(),
-            cap2 * 3
-        );
+        assert!(cache2.total_bytes().unwrap() < cap2 * 3, "{} < {}", cache2.total_bytes().unwrap(), cap2 * 3);
     }
 
     #[test]
@@ -1064,18 +1001,14 @@ mod tests {
         assert!(get_result.unwrap().is_some());
 
         let (key2, range2, chunk_byte_indices2, data2) = it.next().unwrap();
-        assert!(cache2
-            .put(&key2, &range2, &chunk_byte_indices2, &data2)
-            .is_ok());
+        assert!(cache2.put(&key2, &range2, &chunk_byte_indices2, &data2).is_ok());
 
         let mut get_result_1 = cache2.get(&key, &range).unwrap();
         let mut i = 0;
         while get_result_1.is_some() && i < 50 {
             i += 1;
             let (key2, range2, chunk_byte_indices2, data2) = it.next().unwrap();
-            cache2
-                .put(&key2, &range2, &chunk_byte_indices2, &data2)
-                .unwrap();
+            cache2.put(&key2, &range2, &chunk_byte_indices2, &data2).unwrap();
             get_result_1 = cache2.get(&key, &range).unwrap();
         }
         if get_result_1.is_some() {
@@ -1110,9 +1043,7 @@ mod tests {
         };
         let left_chunk_byte_indices = &chunk_byte_indices[..chunk_byte_indices.len() - 1];
         let left_data = &data[..*left_chunk_byte_indices.last().unwrap() as usize];
-        assert!(cache
-            .put(&key, &left_range, left_chunk_byte_indices, left_data)
-            .is_ok());
+        assert!(cache.put(&key, &left_range, left_chunk_byte_indices, left_data).is_ok());
         assert_eq!(total_bytes, cache.total_bytes().unwrap());
 
         // right range
@@ -1120,14 +1051,10 @@ mod tests {
             start: range.start + 1,
             end: range.end,
         };
-        let right_chunk_byte_indices: Vec<u32> = (&chunk_byte_indices[1..])
-            .iter()
-            .map(|v| v - chunk_byte_indices[1])
-            .collect();
+        let right_chunk_byte_indices: Vec<u32> =
+            (&chunk_byte_indices[1..]).iter().map(|v| v - chunk_byte_indices[1]).collect();
         let right_data = &data[chunk_byte_indices[1] as usize..];
-        assert!(cache
-            .put(&key, &right_range, &right_chunk_byte_indices, right_data)
-            .is_ok());
+        assert!(cache.put(&key, &right_range, &right_chunk_byte_indices, right_data).is_ok());
         assert_eq!(total_bytes, cache.total_bytes().unwrap());
 
         // middle range
@@ -1135,17 +1062,14 @@ mod tests {
             start: range.start + 1,
             end: range.end - 1,
         };
-        let middle_chunk_byte_indices: Vec<u32> = (&chunk_byte_indices
-            [1..(chunk_byte_indices.len() - 1)])
+        let middle_chunk_byte_indices: Vec<u32> = (&chunk_byte_indices[1..(chunk_byte_indices.len() - 1)])
             .iter()
             .map(|v| v - chunk_byte_indices[1])
             .collect();
-        let middle_data = &data[chunk_byte_indices[1] as usize
-            ..chunk_byte_indices[chunk_byte_indices.len() - 2] as usize];
+        let middle_data =
+            &data[chunk_byte_indices[1] as usize..chunk_byte_indices[chunk_byte_indices.len() - 2] as usize];
 
-        assert!(cache
-            .put(&key, &middle_range, &middle_chunk_byte_indices, middle_data)
-            .is_ok());
+        assert!(cache.put(&key, &middle_range, &middle_chunk_byte_indices, middle_data).is_ok());
         assert_eq!(total_bytes, cache.total_bytes().unwrap());
     }
 
@@ -1171,9 +1095,7 @@ mod tests {
             }
             cache.put(&key, &range, &chunk_byte_indices, &data).unwrap();
             previously_put.push((key.clone(), range.clone()));
-            cache
-                .put(&key2, &range, &chunk_byte_indices, &data)
-                .unwrap();
+            cache.put(&key2, &range, &chunk_byte_indices, &data).unwrap();
             previously_put.push((key2, range));
         }
 
@@ -1201,9 +1123,9 @@ mod tests {
 mod concurrency_tests {
     use tempdir::TempDir;
 
-    use crate::{disk::DEFAULT_CAPACITY, CacheConfig, ChunkCache, RandomEntryIterator, RANGE_LEN};
-
     use super::DiskCache;
+    use crate::disk::DEFAULT_CAPACITY;
+    use crate::{CacheConfig, ChunkCache, RandomEntryIterator, RANGE_LEN};
 
     const NUM_ITEMS_PER_TASK: usize = 20;
 
@@ -1228,9 +1150,7 @@ mod concurrency_tests {
                 let mut kr = Vec::with_capacity(NUM_ITEMS_PER_TASK);
                 for _ in 0..NUM_ITEMS_PER_TASK {
                     let (key, range, chunk_byte_indices, data) = it.next().unwrap();
-                    assert!(cache_clone
-                        .put(&key, &range, &chunk_byte_indices, &data)
-                        .is_ok());
+                    assert!(cache_clone.put(&key, &range, &chunk_byte_indices, &data).is_ok());
                     kr.push((key, range));
                 }
                 for (key, range) in kr {
@@ -1264,9 +1184,7 @@ mod concurrency_tests {
                 let mut kr = Vec::with_capacity(NUM_ITEMS_PER_TASK);
                 for _ in 0..NUM_ITEMS_PER_TASK {
                     let (key, range, chunk_byte_indices, data) = it.next().unwrap();
-                    assert!(cache_clone
-                        .put(&key, &range, &chunk_byte_indices, &data)
-                        .is_ok());
+                    assert!(cache_clone.put(&key, &range, &chunk_byte_indices, &data).is_ok());
                     kr.push((key, range));
                 }
                 for (key, range) in kr {

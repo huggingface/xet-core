@@ -1,7 +1,8 @@
-use crate::errors::AuthError;
 use std::fmt::Debug;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
+
+use crate::errors::AuthError;
 
 /// Helper type for information about an auth token.
 /// Namely, the token itself and expiration time
@@ -27,9 +28,7 @@ pub struct ErrTokenRefresher;
 
 impl TokenRefresher for ErrTokenRefresher {
     fn refresh(&self) -> Result<TokenInfo, AuthError> {
-        Err(AuthError::RefreshFunctionNotCallable(
-            "Token refresh not expected".to_string(),
-        ))
+        Err(AuthError::RefreshFunctionNotCallable("Token refresh not expected".to_string()))
     }
 }
 
@@ -58,7 +57,8 @@ impl AuthConfig {
                 token_expiration: expiry.unwrap_or_default(),
                 token_refresher: refresher,
             }),
-            // Since no refreshing, we instead use the token with some expiration (no expiration means we expect this token to live forever.
+            // Since no refreshing, we instead use the token with some expiration (no expiration means we expect this
+            // token to live forever.
             (Some(token), expiry, None) => Some(Self {
                 token,
                 token_expiration: expiry.unwrap_or(u64::MAX),

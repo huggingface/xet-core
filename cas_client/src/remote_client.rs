@@ -1,26 +1,26 @@
-use crate::http_client;
-use crate::interface::*;
-use crate::Client;
-use crate::{error::Result, CasClientError};
+use std::collections::HashMap;
+use std::io::{Cursor, Write};
+use std::sync::Arc;
+
 use anyhow::anyhow;
 use async_trait::async_trait;
 use cas_object::CasObject;
-use cas_types::CASReconstructionFetchInfo;
-use cas_types::HexMerkleHash;
-use cas_types::Range;
-use cas_types::{CASReconstructionTerm, Key, QueryReconstructionResponse, UploadXorbResponse};
+use cas_types::{
+    CASReconstructionFetchInfo, CASReconstructionTerm, HexMerkleHash, Key, QueryReconstructionResponse, Range,
+    UploadXorbResponse,
+};
 use chunk_cache::{CacheConfig, ChunkCache, DiskCache};
 use error_printer::ErrorPrinter;
 use merklehash::MerkleHash;
 use reqwest::{StatusCode, Url};
 use reqwest_middleware::ClientWithMiddleware;
-use std::collections::HashMap;
-use std::io::{Cursor, Write};
-use std::sync::Arc;
-use tracing::info;
-use tracing::{debug, error};
+use tracing::{debug, error, info};
 use utils::auth::AuthConfig;
 use utils::singleflight;
+
+use crate::error::Result;
+use crate::interface::*;
+use crate::{http_client, CasClientError, Client};
 
 pub const CAS_ENDPOINT: &str = "http://localhost:8080";
 pub const PREFIX_DEFAULT: &str = "default";
@@ -35,17 +35,10 @@ pub struct RemoteClient {
 }
 
 impl RemoteClient {
-    pub fn new(
-        endpoint: &str,
-        auth: &Option<AuthConfig>,
-        cache_config: &Option<CacheConfig>,
-    ) -> Self {
+    pub fn new(endpoint: &str, auth: &Option<AuthConfig>, cache_config: &Option<CacheConfig>) -> Self {
         // use disk cache if cache_config provided.
         let disk_cache = if let Some(cache_config) = cache_config {
-            info!(
-                "Using disk cache directory: {:?}, size: {}.",
-                cache_config.cache_directory, cache_config.cache_size
-            );
+            info!("Using disk cache directory: {:?}, size: {}.", cache_config.cache_directory, cache_config.cache_size);
             DiskCache::initialize(cache_config)
                 .log_error("failed to initialize cache, not using cache")
                 .ok()
@@ -98,9 +91,7 @@ impl UploadClient for RemoteClient {
         match response.status() {
             StatusCode::OK => Ok(true),
             StatusCode::NOT_FOUND => Ok(false),
-            e => Err(CasClientError::InternalError(anyhow!(
-                "unrecognized status code {e}"
-            ))),
+            e => Err(CasClientError::InternalError(anyhow!("unrecognized status code {e}"))),
         }
     }
 }
@@ -116,8 +107,7 @@ impl ReconstructionClient for RemoteClient {
         // get manifest of xorbs to download, api call to CAS
         let manifest = self.get_reconstruction(hash, None).await?;
 
-        self.reconstruct_file_to_writer(http_client, manifest, None, writer)
-            .await?;
+        self.reconstruct_file_to_writer(http_client, manifest, None, writer).await?;
 
         Ok(())
     }
@@ -142,11 +132,7 @@ impl Reconstructable for RemoteClient {
         file_id: &MerkleHash,
         _bytes_range: Option<(u64, u64)>,
     ) -> Result<QueryReconstructionResponse> {
-        let url = Url::parse(&format!(
-            "{}/reconstruction/{}",
-            self.endpoint,
-            file_id.hex()
-        ))?;
+        let url = Url::parse(&format!("{}/reconstruction/{}", self.endpoint, file_id.hex()))?;
 
         let response = self
             .http_auth_client
@@ -230,13 +216,7 @@ impl RemoteClient {
             let disk_cache = self.disk_cache.clone();
             let fetch_info = fetch_info.clone();
             let single_flight_group = single_flight_group.clone();
-            tokio::spawn(get_one_term(
-                http_client,
-                disk_cache,
-                term,
-                fetch_info,
-                single_flight_group,
-            ))
+            tokio::spawn(get_one_term(http_client, disk_cache, term, fetch_info, single_flight_group))
         });
         for fut in term_data_futures {
             let term_data = fut
@@ -254,8 +234,7 @@ impl RemoteClient {
 // Right now if all ranges are fetched "at once" (all tasks spawned in brief succession)
 // they may get a cache miss, and issue the S3 get, we use a singleflight group
 // to avoid double gets for these requests, with the singleflight key being the S3 url.
-pub(crate) type ChunkDataSingleFlightGroup =
-    singleflight::Group<(Vec<u8>, Vec<u32>), CasClientError>;
+pub(crate) type ChunkDataSingleFlightGroup = singleflight::Group<(Vec<u8>, Vec<u32>), CasClientError>;
 
 /// fetch the data requested for the term argument (data from a range of chunks
 /// in a xorb).
@@ -379,10 +358,7 @@ async fn download_range(
     // remove this check to be agnostic to range-end-exclusive blob store requests
     let expected_len = fetch_term.url_range.end - fetch_term.url_range.start + 1;
     if xorb_bytes.len() as u32 != expected_len {
-        error!(
-            "got back a smaller byte range ({}) than requested ({expected_len}) from s3",
-            xorb_bytes.len()
-        );
+        error!("got back a smaller byte range ({}) than requested ({expected_len}) from s3", xorb_bytes.len());
         return Err(CasClientError::InvalidRange);
     }
     let mut readseek = Cursor::new(xorb_bytes);
@@ -393,9 +369,10 @@ async fn download_range(
 #[cfg(test)]
 mod tests {
 
-    use super::*;
     use cas_object::test_utils::*;
     use tracing_test::traced_test;
+
+    use super::*;
 
     #[ignore = "requires a running CAS server"]
     #[traced_test]
@@ -403,17 +380,12 @@ mod tests {
     async fn test_basic_put() {
         // Arrange
         let prefix = PREFIX_DEFAULT;
-        let (c, _, data, chunk_boundaries) = build_cas_object(
-            3,
-            ChunkSize::Random(512, 10248),
-            cas_object::CompressionScheme::LZ4,
-        );
+        let (c, _, data, chunk_boundaries) =
+            build_cas_object(3, ChunkSize::Random(512, 10248), cas_object::CompressionScheme::LZ4);
 
         let client = RemoteClient::new(CAS_ENDPOINT, &None, &None);
         // Act
-        let result = client
-            .put(prefix, &c.info.cashash, data, chunk_boundaries)
-            .await;
+        let result = client.put(prefix, &c.info.cashash, data, chunk_boundaries).await;
 
         // Assert
         assert!(result.is_ok());

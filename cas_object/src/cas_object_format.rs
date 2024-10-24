@@ -1,16 +1,17 @@
+use std::cmp::min;
+use std::io::{Cursor, Error, Read, Seek, Write};
+use std::mem::size_of;
+
+use anyhow::anyhow;
+use bytes::Buf;
+use merkledb::prelude::MerkleDBHighLevelMethodsV1;
+use merkledb::{Chunk, MerkleMemDB};
+use merklehash::{DataHash, MerkleHash};
+use tracing::warn;
+
 use crate::cas_chunk_format::{deserialize_chunk, serialize_chunk};
 use crate::error::CasObjectError;
 use crate::{range_hash_from_chunks, CompressionScheme};
-use anyhow::anyhow;
-use bytes::Buf;
-use merkledb::{prelude::MerkleDBHighLevelMethodsV1, Chunk, MerkleMemDB};
-use merklehash::{DataHash, MerkleHash};
-use std::{
-    cmp::min,
-    io::{Cursor, Error, Read, Seek, Write},
-    mem::size_of,
-};
-use tracing::warn;
 
 const CAS_OBJECT_FORMAT_IDENT: [u8; 7] = [b'X', b'E', b'T', b'B', b'L', b'O', b'B'];
 const CAS_OBJECT_FORMAT_VERSION: u8 = 0;
@@ -122,9 +123,7 @@ impl CasObjectInfo {
         read_bytes(&mut version)?;
 
         if version[0] != CAS_OBJECT_FORMAT_VERSION {
-            return Err(CasObjectError::FormatError(anyhow!(
-                "Xorb Invalid Format Version"
-            )));
+            return Err(CasObjectError::FormatError(anyhow!("Xorb Invalid Format Version")));
         }
 
         let mut buf = [0u8; size_of::<MerkleHash>()];
@@ -223,17 +222,13 @@ impl CasObject {
         let info_length = Self::get_info_length(reader)?;
 
         // now seek back that many bytes + size of length (u32) and read sequentially.
-        reader.seek(std::io::SeekFrom::End(
-            -(size_of::<u32>() as i64 + info_length as i64),
-        ))?;
+        reader.seek(std::io::SeekFrom::End(-(size_of::<u32>() as i64 + info_length as i64)))?;
 
         let (info, total_bytes_read) = CasObjectInfo::deserialize(reader)?;
 
         // validate that info_length matches what we read off of header
         if total_bytes_read != info_length {
-            return Err(CasObjectError::FormatError(anyhow!(
-                "Xorb Info Format Error"
-            )));
+            return Err(CasObjectError::FormatError(anyhow!("Xorb Info Format Error")));
         }
 
         Ok(Self { info, info_length })
@@ -265,9 +260,7 @@ impl CasObject {
             // now serialize chunk directly to writer (since chunks come first!)
             let chunk_written_bytes = serialize_chunk(chunk_raw_bytes, writer, compression_scheme)?;
             total_written_bytes += chunk_written_bytes;
-            cas.info
-                .chunk_boundary_offsets
-                .push(total_written_bytes as u32);
+            cas.info.chunk_boundary_offsets.push(total_written_bytes as u32);
 
             // update indexes and onto next chunk
             raw_start_idx = chunk_boundary;
@@ -289,10 +282,7 @@ impl CasObject {
     /// recomputing the hash and validating it matches CasObjectInfo.
     ///
     /// Returns Ok(true) if recomputed hash matches what is passed in.
-    pub fn validate_cas_object<R: Read + Seek>(
-        reader: &mut R,
-        hash: &MerkleHash,
-    ) -> Result<bool, CasObjectError> {
+    pub fn validate_cas_object<R: Read + Seek>(reader: &mut R, hash: &MerkleHash) -> Result<bool, CasObjectError> {
         // 1. deserialize to get Info
         let cas = CasObject::deserialize(reader)?;
 
@@ -338,9 +328,8 @@ impl CasObject {
         // end of for loop completes the content chunks, now should be able to deserialize an Info directly
         let cur_position = reader.stream_position()? as u32;
         let expected_position = cumulative_compressed_length;
-        let expected_from_end_position = reader.seek(std::io::SeekFrom::End(0))? as u32
-            - cas.info_length
-            - size_of::<u32>() as u32;
+        let expected_from_end_position =
+            reader.seek(std::io::SeekFrom::End(0))? as u32 - cas.info_length - size_of::<u32>() as u32;
         if cur_position != expected_position || cur_position != expected_from_end_position {
             warn!("XORB Validation: Content bytes after known chunks in Info object.");
             return Ok(false);
@@ -383,8 +372,7 @@ impl CasObject {
         }
 
         // Collect relevant hashes
-        let range_hashes =
-            self.info.chunk_hashes[chunk_start_index as usize..chunk_end_index as usize].as_ref();
+        let range_hashes = self.info.chunk_hashes[chunk_start_index as usize..chunk_end_index as usize].as_ref();
 
         Ok(range_hash_from_chunks(range_hashes))
     }
@@ -394,9 +382,7 @@ impl CasObject {
         self.validate_cas_object_info()?;
         match self.info.chunk_boundary_offsets.last() {
             Some(c) => Ok(*c),
-            None => Err(CasObjectError::FormatError(anyhow!(
-                "Cannot retrieve content length"
-            ))),
+            None => Err(CasObjectError::FormatError(anyhow!("Cannot retrieve content length"))),
         }
     }
 
@@ -462,11 +448,7 @@ impl CasObject {
     }
 
     /// Helper function to translate a range of chunk indices to physical byte offset range.
-    pub fn get_byte_offset(
-        &self,
-        chunk_index_start: u32,
-        chunk_index_end: u32,
-    ) -> Result<(u32, u32), CasObjectError> {
+    pub fn get_byte_offset(&self, chunk_index_start: u32, chunk_index_end: u32) -> Result<(u32, u32), CasObjectError> {
         self.validate_cas_object_info()?;
         if chunk_index_end <= chunk_index_start || chunk_index_end > self.info.num_chunks {
             return Err(CasObjectError::InvalidArguments);
@@ -484,9 +466,7 @@ impl CasObject {
     /// Helper method to verify that info object is complete
     fn validate_cas_object_info(&self) -> Result<(), CasObjectError> {
         if self.info.num_chunks == 0 {
-            return Err(CasObjectError::FormatError(anyhow!(
-                "Invalid CasObjectInfo, no chunks in CasObject."
-            )));
+            return Err(CasObjectError::FormatError(anyhow!("Invalid CasObjectInfo, no chunks in CasObject.")));
         }
 
         if self.info.num_chunks != self.info.chunk_boundary_offsets.len() as u32
@@ -498,9 +478,7 @@ impl CasObject {
         }
 
         if self.info.cashash == MerkleHash::default() {
-            return Err(CasObjectError::FormatError(anyhow!(
-                "Invalid CasObjectInfo, Missing cashash."
-            )));
+            return Err(CasObjectError::FormatError(anyhow!("Invalid CasObjectInfo, Missing cashash.")));
         }
 
         Ok(())
@@ -508,10 +486,12 @@ impl CasObject {
 }
 
 pub mod test_utils {
+    use merkledb::prelude::MerkleDBHighLevelMethodsV1;
+    use merkledb::{Chunk, MerkleMemDB};
+    use rand::Rng;
+
     use super::*;
     use crate::cas_chunk_format::serialize_chunk;
-    use merkledb::{prelude::MerkleDBHighLevelMethodsV1, Chunk, MerkleMemDB};
-    use rand::Rng;
 
     pub fn gen_random_bytes(size: u32) -> Vec<u8> {
         let mut rng = rand::thread_rng();
@@ -559,7 +539,7 @@ pub mod test_utils {
                 ChunkSize::Random(a, b) => {
                     let mut rng = rand::thread_rng();
                     rng.gen_range(a..=b)
-                }
+                },
                 ChunkSize::Fixed(size) => size,
             };
 
@@ -600,21 +580,17 @@ pub mod test_utils {
         let len = c.info.serialize(&mut buf).unwrap();
         c.info_length = len as u32;
 
-        (
-            c,
-            writer.get_ref().to_vec(),
-            data_contents_raw,
-            raw_chunk_boundaries,
-        )
+        (c, writer.get_ref().to_vec(), data_contents_raw, raw_chunk_boundaries)
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use std::io::Cursor;
+
     use super::test_utils::*;
     use super::*;
     use crate::chunk_verification::VERIFICATION_KEY;
-    use std::io::Cursor;
 
     #[test]
     fn test_default_header_initialization() {
@@ -654,10 +630,7 @@ mod tests {
             build_cas_object(3, ChunkSize::Fixed(100), CompressionScheme::None);
         // Act & Assert
         assert_eq!(c.info.num_chunks, 3);
-        assert_eq!(
-            c.info.chunk_boundary_offsets.len(),
-            c.info.num_chunks as usize
-        );
+        assert_eq!(c.info.chunk_boundary_offsets.len(), c.info.num_chunks as usize);
 
         let second_chunk_boundary = *c.info.chunk_boundary_offsets.get(1).unwrap();
         assert_eq!(second_chunk_boundary, 216); // 8-byte header, 3 chunks, so 2nd chunk boundary is at byte 216
@@ -678,12 +651,7 @@ mod tests {
         let (c, _cas_data, _raw_data, _raw_chunk_boundaries) =
             build_cas_object(3, ChunkSize::Fixed(100), CompressionScheme::None);
 
-        let hashes: Vec<u8> = c
-            .info
-            .chunk_hashes
-            .iter()
-            .flat_map(|hash| hash.as_bytes().to_vec())
-            .collect();
+        let hashes: Vec<u8> = c.info.chunk_hashes.iter().flat_map(|hash| hash.as_bytes().to_vec()).collect();
 
         let expected_hash = blake3::keyed_hash(&VERIFICATION_KEY, hashes.as_slice());
 
@@ -727,18 +695,9 @@ mod tests {
             build_cas_object(5, ChunkSize::Fixed(100), CompressionScheme::None);
 
         // Act & Assert
-        assert_eq!(
-            c.generate_chunk_range_hash(1, 6),
-            Err(CasObjectError::InvalidArguments)
-        );
-        assert_eq!(
-            c.generate_chunk_range_hash(100, 10),
-            Err(CasObjectError::InvalidArguments)
-        );
-        assert_eq!(
-            c.generate_chunk_range_hash(0, 0),
-            Err(CasObjectError::InvalidArguments)
-        );
+        assert_eq!(c.generate_chunk_range_hash(1, 6), Err(CasObjectError::InvalidArguments));
+        assert_eq!(c.generate_chunk_range_hash(100, 10), Err(CasObjectError::InvalidArguments));
+        assert_eq!(c.generate_chunk_range_hash(0, 0), Err(CasObjectError::InvalidArguments));
     }
 
     #[test]
@@ -752,12 +711,7 @@ mod tests {
         // no chunks
         let c = CasObject::default();
         let result = c.validate_cas_object_info();
-        assert_eq!(
-            result,
-            Err(CasObjectError::FormatError(anyhow!(
-                "Invalid CasObjectInfo, no chunks in CasObject."
-            )))
-        );
+        assert_eq!(result, Err(CasObjectError::FormatError(anyhow!("Invalid CasObjectInfo, no chunks in CasObject."))));
 
         // num_chunks doesn't match chunk_boundaries.len()
         let mut c = CasObject::default();
@@ -775,12 +729,7 @@ mod tests {
             build_cas_object(1, ChunkSize::Fixed(100), CompressionScheme::None);
         c.info.cashash = MerkleHash::default();
         let result = c.validate_cas_object_info();
-        assert_eq!(
-            result,
-            Err(CasObjectError::FormatError(anyhow!(
-                "Invalid CasObjectInfo, Missing cashash."
-            )))
-        );
+        assert_eq!(result, Err(CasObjectError::FormatError(anyhow!("Invalid CasObjectInfo, Missing cashash."))));
     }
 
     #[test]

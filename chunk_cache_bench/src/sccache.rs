@@ -1,14 +1,13 @@
-use std::{
-    ffi::{OsStr, OsString},
-    io::Write,
-    os::unix::ffi::OsStringExt,
-    path::PathBuf,
-    sync::{Arc, Mutex},
-};
+use std::ffi::{OsStr, OsString};
+use std::io::Write;
+use std::os::unix::ffi::OsStringExt;
+use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
 
 use base64::Engine;
 use cas_types::{Key, Range};
-use chunk_cache::{error::ChunkCacheError, ChunkCache};
+use chunk_cache::error::ChunkCacheError;
+use chunk_cache::ChunkCache;
 use sccache::lru_disk_cache::LruDiskCache;
 
 use crate::ChunkCacheExt;
@@ -33,11 +32,7 @@ impl ChunkCacheExt for SCCache {
 }
 
 impl ChunkCache for SCCache {
-    fn get(
-        &self,
-        key: &cas_types::Key,
-        range: &cas_types::Range,
-    ) -> Result<Option<Vec<u8>>, ChunkCacheError> {
+    fn get(&self, key: &cas_types::Key, range: &cas_types::Range) -> Result<Option<Vec<u8>>, ChunkCacheError> {
         let cache_key = CacheKey::new(key, range)?;
         let mut file = if let Ok(file) = self.cache.lock()?.get(&cache_key) {
             file
@@ -64,9 +59,7 @@ impl ChunkCache for SCCache {
             return Ok(());
         }
 
-        cache
-            .insert_bytes(cache_key, data)
-            .map_err(ChunkCacheError::general)?;
+        cache.insert_bytes(cache_key, data).map_err(ChunkCacheError::general)?;
         Ok(())
     }
 }
@@ -80,10 +73,7 @@ impl CacheKey {
         buf.write_all(key.hash.as_bytes())?;
         buf.write_all(key.prefix.as_bytes())?;
         buf.write_all(format!("{}_{}", range.start, range.end).as_bytes())?;
-        let result = base64::engine::general_purpose::URL_SAFE
-            .encode(buf)
-            .as_bytes()
-            .to_vec();
+        let result = base64::engine::general_purpose::URL_SAFE.encode(buf).as_bytes().to_vec();
         Ok(CacheKey(OsString::from_vec(result)))
     }
 }

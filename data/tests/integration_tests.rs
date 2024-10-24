@@ -1,5 +1,8 @@
+use std::io::Write;
+use std::path::Path;
+use std::process::Command;
+
 use anyhow::anyhow;
-use std::{io::Write, path::Path, process::Command};
 use tempfile::TempDir;
 use tracing::info;
 
@@ -38,11 +41,7 @@ impl IntegrationTest {
 
         std::fs::write(tmp_path_path.join("test_script.sh"), &self.test_script).unwrap();
 
-        std::fs::write(
-            tmp_path_path.join("initialize.sh"),
-            include_str!("integration_tests/initialize.sh"),
-        )
-        .unwrap();
+        std::fs::write(tmp_path_path.join("initialize.sh"), include_str!("integration_tests/initialize.sh")).unwrap();
 
         // Write the assets into the tmp path
         for (name, data) in self.assets.iter() {
@@ -59,14 +58,7 @@ impl IntegrationTest {
         let test_bin_path = env!("CARGO_BIN_EXE_x");
         let buildpath = Path::new(&test_bin_path).parent().unwrap();
         info!("Adding {:?} to path.", &buildpath);
-        cmd.env(
-            "PATH",
-            format!(
-                "{}:{}",
-                &buildpath.to_str().unwrap(),
-                &std::env::var("PATH").unwrap()
-            ),
-        );
+        cmd.env("PATH", format!("{}:{}", &buildpath.to_str().unwrap(), &std::env::var("PATH").unwrap()));
 
         // Now, to prevent ~/.gitconfig to be read, we need to reset the home directory; otherwise
         // these tests will not be run in an isolated environment.
@@ -102,10 +94,7 @@ impl IntegrationTest {
             let captures = error_re.captures(stderr_out);
 
             if let Some(captured_text) = captures {
-                Err(anyhow!(
-                    "Test failed: {}",
-                    captured_text.get(1).unwrap().as_str()
-                ))
+                Err(anyhow!("Test failed: {}", captured_text.get(1).unwrap().as_str()))
             } else {
                 Err(anyhow!("Test failed: Unknown Error."))
             }

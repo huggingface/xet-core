@@ -1,7 +1,8 @@
-use merklehash::MerkleHash;
 use std::fmt::Debug;
 use std::io::{Read, Write};
 use std::mem::size_of;
+
+use merklehash::MerkleHash;
 use utils::serialization_utils::*;
 
 pub const MDB_DEFAULT_CAS_FLAG: u32 = 0;
@@ -171,8 +172,7 @@ pub struct MDBCASInfo {
 
 impl MDBCASInfo {
     pub fn num_bytes(&self) -> u64 {
-        (size_of::<CASChunkSequenceHeader>()
-            + self.chunks.len() * size_of::<CASChunkSequenceEntry>()) as u64
+        (size_of::<CASChunkSequenceHeader>() + self.chunks.len() * size_of::<CASChunkSequenceEntry>()) as u64
     }
 
     pub fn deserialize<R: Read>(reader: &mut R) -> Result<Option<Self>, std::io::Error> {

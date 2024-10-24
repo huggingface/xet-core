@@ -20,7 +20,7 @@ members = [
     "chunk_cache_bench",
 ]
 
-exclude = ["hf_xet"]
+exclude = ["hf_xet", "chunk_cache_bench"]
 
 [profile.release]
 opt-level = 3

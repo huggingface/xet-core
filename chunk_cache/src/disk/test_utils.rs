@@ -2,7 +2,9 @@ use std::path::Path;
 
 use cas_types::{Key, Range};
 use merklehash::MerkleHash;
-use rand::{rngs::ThreadRng, seq::SliceRandom, thread_rng, Rng, SeedableRng};
+use rand::rngs::ThreadRng;
+use rand::seq::SliceRandom;
+use rand::{thread_rng, Rng, SeedableRng};
 
 #[cfg(test)]
 pub const RANGE_LEN: u32 = 16 << 10;
@@ -24,11 +26,11 @@ pub fn print_directory_contents(path: &Path) {
                         if path.is_dir() {
                             print_directory_contents(&path);
                         }
-                    }
+                    },
                     Err(e) => eprintln!("Error reading entry: {}", e),
                 }
             }
-        }
+        },
         Err(e) => eprintln!("Error reading directory: {}", e),
     }
 }
@@ -117,10 +119,7 @@ impl<T: Rng> Iterator for RandomEntryIterator<T> {
         let key = random_key(&mut self.rng);
         let range = if self.one_chunk_ranges {
             let start = self.rng.gen();
-            Range {
-                start,
-                end: start + 1,
-            }
+            Range { start, end: start + 1 }
         } else {
             random_range(&mut self.rng)
         };
@@ -146,11 +145,7 @@ mod tests {
                 "chunk_byte_indices len mismatch, range: {range:?}, cbi len: {}",
                 chunk_byte_indices.len()
             );
-            assert!(
-                chunk_byte_indices[0] == 0,
-                "chunk_byte_indices[0] != 0, is instead {}",
-                chunk_byte_indices[0]
-            );
+            assert!(chunk_byte_indices[0] == 0, "chunk_byte_indices[0] != 0, is instead {}", chunk_byte_indices[0]);
             assert!(
                 *chunk_byte_indices.last().unwrap() as usize == data.len(),
                 "chunk_byte_indices last value does not equal data.len() ({}), is instead {}",

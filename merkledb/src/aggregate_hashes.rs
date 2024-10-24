@@ -1,11 +1,10 @@
-use merklehash::MerkleHash;
-
 use blake3;
+use merklehash::MerkleHash;
 
 use crate::error::{MerkleDBError, Result};
 use crate::merkledb_highlevel_v2::MerkleDBHighLevelMethodsV2;
-use crate::MerkleNode;
-use crate::{merkledbbase::MerkleDBBase, MerkleMemDB};
+use crate::merkledbbase::MerkleDBBase;
+use crate::{MerkleMemDB, MerkleNode};
 
 // Given a list of hashes and sizes, compute the aggregate hash for a cas node.
 pub fn cas_node_hash(chunks: &[(MerkleHash, usize)]) -> MerkleHash {

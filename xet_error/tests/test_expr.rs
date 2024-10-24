@@ -5,6 +5,7 @@
 )]
 
 use std::fmt::Display;
+
 use xet_error::Error;
 
 // Some of the elaborate cases from the rcc codebase, which is a C compiler in
@@ -12,11 +13,7 @@ use xet_error::Error;
 #[derive(Error, Debug)]
 pub enum CompilerError {
     #[error("cannot shift {} by {maximum} or more bits (got {current})", if *.is_left { "left" } else { "right" })]
-    TooManyShiftBits {
-        is_left: bool,
-        maximum: u64,
-        current: u64,
-    },
+    TooManyShiftBits { is_left: bool, maximum: u64, current: u64 },
 
     #[error("#error {}", (.0).iter().copied().collect::<Vec<_>>().join(" "))]
     User(Vec<&'static str>),
@@ -73,9 +70,7 @@ fn test_rcc() {
 
     assert(
         "overflow while parsing signed integer literal",
-        CompilerError::IntegerOverflow {
-            is_signed: Some(true),
-        },
+        CompilerError::IntegerOverflow { is_signed: Some(true) },
     );
 }
 

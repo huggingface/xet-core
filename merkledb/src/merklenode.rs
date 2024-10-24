@@ -1,11 +1,11 @@
-use bitflags::bitflags;
-use merklehash::*;
-use serde::{Deserialize, Serialize};
 use std::cell::RefCell;
 use std::convert::TryInto;
 use std::fmt::Write;
 
+use bitflags::bitflags;
 pub use merklehash::MerkleHash;
+use merklehash::*;
+use serde::{Deserialize, Serialize};
 /// A more compact representation of nodes in the MerkleTree.
 /// The ID is a counter that begins at 1. 0 is not a valid ID.
 pub type MerkleNodeId = u64;
@@ -40,11 +40,11 @@ bitflags! {
     }
 }
 
-/**************************************************************************/
-/*                                                                        */
-/*                               MerkleNode                               */
-/*                                                                        */
-/**************************************************************************/
+/************************************************************************* */
+/*  */
+/* MerkleNode */
+/*  */
+/************************************************************************* */
 
 /**
  * Represents an immutable node in a MerkleDB. This node once constructed
@@ -99,12 +99,7 @@ impl MerkleNode {
         self.children = ch;
     }
     /// Constructs a new node
-    pub fn new(
-        id: MerkleNodeId,
-        hash: MerkleHash,
-        len: usize,
-        children: Vec<(MerkleNodeId, usize)>,
-    ) -> MerkleNode {
+    pub fn new(id: MerkleNodeId, hash: MerkleHash, len: usize, children: Vec<(MerkleNodeId, usize)>) -> MerkleNode {
         MerkleNode {
             id,
             hash,
@@ -145,11 +140,11 @@ pub fn hash_node_sequence(hash: &[MerkleNode]) -> MerkleHash {
     })
 }
 
-/**************************************************************************/
-/*                                                                        */
-/*                          MerkleNodeAttributes                          */
-/*                                                                        */
-/**************************************************************************/
+/************************************************************************* */
+/*  */
+/* MerkleNodeAttributes */
+/*  */
+/************************************************************************* */
 
 /**
  * Each node may have additional attributes to identify where we can go
@@ -242,16 +237,14 @@ impl MerkleNodeAttributes {
      * it has a CAS parent.
      */
     pub fn has_cas_data(&self) -> bool {
-        self.attributes.contains(DataTypeBitfield::CAS)
-            || self.parent[NodeDataType::CAS as usize] != ID_UNASSIGNED
+        self.attributes.contains(DataTypeBitfield::CAS) || self.parent[NodeDataType::CAS as usize] != ID_UNASSIGNED
     }
     /** Whether this node is a substring of a FILE entry.
      * This is a simple check: either this node is a FILE entry, or
      * it has a CAS parent.
      */
     pub fn has_file_data(&self) -> bool {
-        self.attributes.contains(DataTypeBitfield::FILE)
-            || self.parent[NodeDataType::FILE as usize] != ID_UNASSIGNED
+        self.attributes.contains(DataTypeBitfield::FILE) || self.parent[NodeDataType::FILE as usize] != ID_UNASSIGNED
     }
     /**
      * Checks if this is a substring of either a CAS or FILE entry.
@@ -267,11 +260,11 @@ impl MerkleNodeAttributes {
         self.attributes |= other.attributes;
     }
 }
-/**************************************************************************/
-/*                                                                        */
-/*                              ObjectRange                               */
-/*                                                                        */
-/**************************************************************************/
+/************************************************************************* */
+/*  */
+/* ObjectRange */
+/*  */
+/************************************************************************* */
 
 /**
  * Describes a range of bytes in an object.
@@ -322,11 +315,11 @@ pub fn simplify_ranges(ranges: &[ObjectRange]) -> Vec<ObjectRange> {
     ret
 }
 
-/**************************************************************************/
-/*                                                                        */
-/*          Conversion to and from bytes for the RocksDB storage          */
-/*                                                                        */
-/**************************************************************************/
+/************************************************************************* */
+/*  */
+/* Conversion to and from bytes for the RocksDB storage */
+/*  */
+/************************************************************************* */
 
 pub trait RocksDBConversion<T> {
     // TODO: can we do better than Vec<u8> here? This incurs a small heap alloc
