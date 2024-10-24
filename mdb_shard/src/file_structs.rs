@@ -1,10 +1,12 @@
-use crate::cas_structs::{CASChunkSequenceEntry, CASChunkSequenceHeader};
-use crate::shard_file::MDB_FILE_INFO_ENTRY_SIZE;
-use merklehash::MerkleHash;
 use std::fmt::Debug;
 use std::io::{Cursor, Read, Write};
 use std::mem::size_of;
+
+use merklehash::MerkleHash;
 use utils::serialization_utils::*;
+
+use crate::cas_structs::{CASChunkSequenceEntry, CASChunkSequenceHeader};
+use crate::shard_file::MDB_FILE_INFO_ENTRY_SIZE;
 
 pub const MDB_DEFAULT_FILE_FLAG: u32 = 0;
 pub const MDB_FILE_FLAG_WITH_VERIFICATION: u32 = 1 << 31;
@@ -370,10 +372,11 @@ impl MDBFileInfo {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::shard_file::test_routines::rng_hash;
     use rand::prelude::StdRng;
     use rand::{Rng, SeedableRng};
+
+    use super::*;
+    use crate::shard_file::test_routines::rng_hash;
 
     #[test]
     fn test_serde_has_metadata_ext() {
@@ -404,12 +407,7 @@ mod tests {
         let metadata_ext = Some(FileMetadataExt::new(sha256));
 
         let file_info = MDBFileInfo {
-            metadata: FileDataSequenceHeader::new(
-                file_hash,
-                *file_block_size,
-                contains_verification,
-                true,
-            ),
+            metadata: FileDataSequenceHeader::new(file_hash, *file_block_size, contains_verification, true),
             segments: file_contents,
             verification,
             metadata_ext,

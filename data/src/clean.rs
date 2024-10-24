@@ -1,20 +1,15 @@
-use crate::cas_interface::Client;
-use crate::chunking::{chunk_target_default, ChunkYieldType};
-use crate::configurations::FileQueryPolicy;
-use crate::constants::MIN_SPACING_BETWEEN_GLOBAL_DEDUP_QUERIES;
-use crate::data_processing::{register_new_cas_block, CASDataAggregator};
-use crate::errors::{DataProcessingError::*, Result};
-use crate::metrics::FILTER_BYTES_CLEANED;
-use crate::remote_shard_interface::RemoteShardInterface;
-use crate::repo_salt::RepoSalt;
-use crate::small_file_determination::{is_file_passthrough, is_possible_start_to_text_file};
-use crate::PointerFile;
+use std::collections::HashMap;
+use std::fmt::Write;
+use std::mem::take;
+use std::ops::DerefMut;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+
 use cas_object::range_hash_from_chunks;
 use error_printer::ErrorPrinter;
 use lazy_static::lazy_static;
 use mdb_shard::file_structs::{
-    FileDataSequenceEntry, FileDataSequenceHeader, FileMetadataExt, FileVerificationEntry,
-    MDBFileInfo,
+    FileDataSequenceEntry, FileDataSequenceHeader, FileMetadataExt, FileVerificationEntry, MDBFileInfo,
 };
 use mdb_shard::shard_file_reconstructor::FileReconstructor;
 use mdb_shard::{hash_is_global_dedup_eligible, ShardFileManager};
@@ -22,17 +17,24 @@ use merkledb::aggregate_hashes::file_node_hash;
 use merkledb::constants::TARGET_CAS_BLOCK_SIZE;
 use merklehash::MerkleHash;
 use rand::Rng; // TODO: this is just for generating random sha256 values instead of the real values
-use std::collections::HashMap;
-use std::fmt::Write;
-use std::mem::take;
-use std::ops::DerefMut;
-use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use tokio::sync::mpsc::error::TryRecvError;
 use tokio::sync::mpsc::{channel, Receiver, Sender};
 use tokio::sync::Mutex;
 use tokio::task::{JoinHandle, JoinSet};
 use tracing::{debug, error, warn};
+
+use crate::cas_interface::Client;
+use crate::chunking::{chunk_target_default, ChunkYieldType};
+use crate::configurations::FileQueryPolicy;
+use crate::constants::MIN_SPACING_BETWEEN_GLOBAL_DEDUP_QUERIES;
+use crate::data_processing::{register_new_cas_block, CASDataAggregator};
+use crate::errors::DataProcessingError::*;
+use crate::errors::Result;
+use crate::metrics::FILTER_BYTES_CLEANED;
+use crate::remote_shard_interface::RemoteShardInterface;
+use crate::repo_salt::RepoSalt;
+use crate::small_file_determination::{is_file_passthrough, is_possible_start_to_text_file};
+use crate::PointerFile;
 
 // Chunking is the bottleneck, changing batch size doesn't have a big impact.
 lazy_static! {
@@ -174,7 +176,7 @@ impl Cleaner {
                         Ok(None) | Err(TryRecvError::Disconnected) => {
                             finished = true;
                             break;
-                        }
+                        },
                         Err(TryRecvError::Empty) => {
                             if chunk_vec.is_empty() {
                                 // need to wait a bit to make sure at least one chunk to process
@@ -182,11 +184,11 @@ impl Cleaner {
                                     Some(chunk) => chunk_vec.push(chunk),
                                     None => {
                                         finished = true;
-                                    }
+                                    },
                                 }
                             }
                             break;
-                        }
+                        },
                     }
                 }
 
@@ -239,8 +241,7 @@ impl Cleaner {
         if let Some(mut buffer) = small_file_buffer.take() {
             buffer.extend_from_slice(data);
 
-            if !is_possible_start_to_text_file(&buffer) || buffer.len() >= self.small_file_threshold
-            {
+            if !is_possible_start_to_text_file(&buffer) || buffer.len() >= self.small_file_threshold {
                 self.add_data_to_chunking(BufferItem::Value(buffer)).await?;
 
                 // not passthrough, but just sent all buffered data + incoming data to chunker
@@ -311,8 +312,9 @@ impl Cleaner {
                     // any shards are present that give us more dedup ability.
                     //
                     // If we've already queried these against the global dedup, then we can proceed on without
-                    // re-querying anything.  Only doing this on the first pass also gaurantees that in the case of errors
-                    // on shard retrieval, we don't get stuck in a loop trying to download and reprocess.
+                    // re-querying anything.  Only doing this on the first pass also gaurantees that in the case of
+                    // errors on shard retrieval, we don't get stuck in a loop trying to download
+                    // and reprocess.
                 } else {
                     if enable_global_dedup          // Is enabled
                             && first_pass                   // Have we seen this on the previous pass?  If so, skip.
@@ -321,7 +323,8 @@ impl Cleaner {
                             && (global_chunk_index as isize // Limit by enforcing at least 4MB between chunk queries.
                             >= last_chunk_index_queried + MIN_SPACING_BETWEEN_GLOBAL_DEDUP_QUERIES as isize)
                     {
-                        // Now, query for a global dedup shard in the background to make sure that all the rest of this can continue.
+                        // Now, query for a global dedup shard in the background to make sure that all the rest of this
+                        // can continue.
                         let remote_shards = self.remote_shards.clone();
                         let query_chunk = chunk_hashes[local_chunk_index];
 
@@ -371,17 +374,12 @@ impl Cleaner {
             if !has_new_shards {
                 break;
             } else {
-                debug!(
-                    "New shard(s) available for dedup on {:?}; reprocessing chunks.",
-                    self.file_name
-                );
+                debug!("New shard(s) available for dedup on {:?}; reprocessing chunks.", self.file_name);
             }
         }
 
         // Record all the file hashes.
-        tracking_info
-            .file_hashes
-            .extend(chunks.iter().map(|(c, b)| (c.hash, b.len())));
+        tracking_info.file_hashes.extend(chunks.iter().map(|(c, b)| (c.hash, b.len())));
 
         // Now, go through and process all the data.
         let mut cur_idx = 0;
@@ -403,8 +401,7 @@ impl Cleaner {
                 // start a new entry?
                 if !tracking_info.file_info.is_empty()
                     && tracking_info.file_info.last().unwrap().cas_hash == fse.cas_hash
-                    && tracking_info.file_info.last().unwrap().chunk_index_end
-                        == fse.chunk_index_start
+                    && tracking_info.file_info.last().unwrap().chunk_index_end == fse.chunk_index_start
                 {
                     // This block is the contiguous continuation of the last entry
                     let last_entry = tracking_info.file_info.last_mut().unwrap();
@@ -430,9 +427,7 @@ impl Cleaner {
                     // This chunk will get the CAS hash updated when the local CAS block
                     // is full and registered.
                     let file_info_len = tracking_info.file_info.len();
-                    tracking_info
-                        .current_cas_file_info_indices
-                        .push(file_info_len);
+                    tracking_info.current_cas_file_info_indices.push(file_info_len);
 
                     tracking_info.file_info.push(FileDataSequenceEntry::new(
                         MerkleHash::default(),
@@ -457,9 +452,7 @@ impl Cleaner {
                     // This chunk will get the CAS hash updated when the local CAS block
                     // is full and registered.
                     let file_info_len = tracking_info.file_info.len();
-                    tracking_info
-                        .current_cas_file_info_indices
-                        .push(file_info_len);
+                    tracking_info.current_cas_file_info_indices.push(file_info_len);
 
                     let chunk_len = tracking_info.cas_data.chunks.len();
                     tracking_info.file_info.push(FileDataSequenceEntry::new(
@@ -474,9 +467,7 @@ impl Cleaner {
                 if add_new_data {
                     // Add in the chunk and cas information.
                     let cas_data_chunks_len = tracking_info.cas_data.chunks.len();
-                    tracking_info
-                        .current_cas_block_hashes
-                        .insert(chunk.hash, cas_data_chunks_len);
+                    tracking_info.current_cas_block_hashes.insert(chunk.hash, cas_data_chunks_len);
                     tracking_info.cas_data.chunks.push((chunk.hash, n_bytes));
                     tracking_info.cas_data.data.extend(bytes);
 
@@ -537,20 +528,15 @@ impl Cleaner {
     async fn summarize_dedup_info(&self) -> Result<(MerkleHash, u64)> {
         let mut tracking_info = self.tracking_info.lock().await;
 
-        let file_hash = file_node_hash(
-            &tracking_info.file_hashes,
-            &self.repo_salt.unwrap_or_default(),
-        )?;
+        let file_hash = file_node_hash(&tracking_info.file_hashes, &self.repo_salt.unwrap_or_default())?;
 
         let file_size = tracking_info.file_size;
 
         // Is the file registered already?  If so, nothing needs to be added now.
         let file_already_registered = match self.remote_shards.file_query_policy {
-            FileQueryPolicy::LocalFirst | FileQueryPolicy::LocalOnly => self
-                .shard_manager
-                .get_file_reconstruction_info(&file_hash)
-                .await?
-                .is_some(),
+            FileQueryPolicy::LocalFirst | FileQueryPolicy::LocalOnly => {
+                self.shard_manager.get_file_reconstruction_info(&file_hash).await?.is_some()
+            },
             FileQueryPolicy::ServerOnly => false,
         };
 
@@ -559,12 +545,8 @@ impl Cleaner {
             let mut cas_data_accumulator = self.global_cas_data.lock().await;
 
             let shift = cas_data_accumulator.chunks.len() as u32;
-            cas_data_accumulator
-                .data
-                .append(&mut tracking_info.cas_data.data);
-            cas_data_accumulator
-                .chunks
-                .append(&mut tracking_info.cas_data.chunks);
+            cas_data_accumulator.data.append(&mut tracking_info.cas_data.data);
+            cas_data_accumulator.chunks.append(&mut tracking_info.cas_data.chunks);
 
             let segments: Vec<_> = tracking_info
                 .file_info
@@ -572,11 +554,7 @@ impl Cleaner {
                 .map(|fi| {
                     // Transfering cas chunks from tracking_info.cas_data to cas_data_accumulator,
                     // shift chunk indices.
-                    let s = if fi.cas_hash == MerkleHash::default() {
-                        shift
-                    } else {
-                        0
-                    };
+                    let s = if fi.cas_hash == MerkleHash::default() { shift } else { 0 };
 
                     let mut new_fi = fi.clone();
                     new_fi.chunk_index_start += s;
@@ -591,8 +569,7 @@ impl Cleaner {
                 .iter()
                 .map(|entry| {
                     let n_chunks = (entry.chunk_index_end - entry.chunk_index_start) as usize;
-                    let chunk_hashes: Vec<_> = tracking_info.file_hashes
-                        [chunk_idx..chunk_idx + n_chunks]
+                    let chunk_hashes: Vec<_> = tracking_info.file_hashes[chunk_idx..chunk_idx + n_chunks]
                         .iter()
                         .map(|(hash, _)| *hash)
                         .collect();
@@ -615,21 +592,14 @@ impl Cleaner {
                 metadata_ext: self.sha256.map(FileMetadataExt::new),
             };
 
-            cas_data_accumulator.pending_file_info.push((
-                new_file_info,
-                tracking_info.current_cas_file_info_indices.clone(),
-            ));
+            cas_data_accumulator
+                .pending_file_info
+                .push((new_file_info, tracking_info.current_cas_file_info_indices.clone()));
 
             if cas_data_accumulator.data.len() >= TARGET_CAS_BLOCK_SIZE {
                 let mut new_cas_data = take(cas_data_accumulator.deref_mut());
                 drop(cas_data_accumulator); // Release the lock.
-                register_new_cas_block(
-                    &mut new_cas_data,
-                    &self.shard_manager,
-                    &self.cas,
-                    &self.cas_prefix,
-                )
-                .await?;
+                register_new_cas_block(&mut new_cas_data, &self.shard_manager, &self.cas, &self.cas_prefix).await?;
             } else {
                 drop(cas_data_accumulator);
             }
