@@ -46,9 +46,6 @@ pub enum CasClientError {
     #[error("Reqwest Error: {0}")]
     ReqwestError(#[from] reqwest::Error),
 
-    #[error("Serde Error: {0}")]
-    SerdeError(#[from] serde_json::Error),
-
     #[error("LMDB Error: {0}")]
     ShardDedupDBError(String),
 

@@ -111,7 +111,7 @@ impl Middleware for LoggingMiddleware {
     async fn handle(
         &self,
         req: Request,
-        extensions: &mut hyper::http::Extensions,
+        extensions: &mut http::Extensions,
         next: Next<'_>,
     ) -> reqwest_middleware::Result<Response> {
         let res = next.run(req, extensions).await;
@@ -166,7 +166,7 @@ impl Middleware for AuthMiddleware {
     async fn handle(
         &self,
         mut req: Request,
-        extensions: &mut hyper::http::Extensions,
+        extensions: &mut http::Extensions,
         next: Next<'_>,
     ) -> reqwest_middleware::Result<Response> {
         let token = self.get_token().map_err(reqwest_middleware::Error::Middleware)?;
