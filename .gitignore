@@ -14,6 +14,7 @@ debug/
 .DS_Store
 
 # VS Code configs
-.vscode
+.vscode/*
+!.vscode/settings.json
 venv
 **/*.env
