@@ -87,7 +87,7 @@ fn default_clean_config() -> Result<TranslatorConfig> {
             prefix: "default-merkledb".into(),
             cache_config: Some(CacheConfig {
                 cache_directory: path.join("shard-cache"),
-                cache_size: 0,      // ignored
+                cache_size: 0, // ignored
             }),
             staging_directory: Some(path.join("shard-session")),
         },
@@ -128,7 +128,7 @@ fn default_smudge_config() -> Result<TranslatorConfig> {
             prefix: "default-merkledb".into(),
             cache_config: Some(CacheConfig {
                 cache_directory: path.join("shard-cache"),
-                cache_size: 0,      // ignored
+                cache_size: 0, // ignored
             }),
             staging_directory: Some(path.join("shard-session")),
         },
@@ -166,7 +166,7 @@ async fn clean(mut reader: impl Read, mut writer: impl Write) -> Result<()> {
 
     let translator = PointerFileTranslator::new(default_clean_config()?).await?;
 
-    let handle = translator.start_clean(1024, None).await?;
+    let handle = translator.start_clean(1024, None, None).await?;
 
     loop {
         let bytes = reader.read(&mut read_buf)?;

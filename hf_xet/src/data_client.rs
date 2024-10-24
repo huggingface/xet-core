@@ -88,8 +88,11 @@ async fn clean_file(
     let mut read_buf = vec![0u8; READ_BLOCK_SIZE];
     let path = PathBuf::from(f);
     let mut reader = BufReader::new(File::open(path.clone())?);
+    if sha != "" {
+        return Err(DataProcessingError::InternalError("foo".to_string()));
+    }
 
-    let handle = processor.start_clean(1024, None).await?;
+    let handle = processor.start_clean(1024, None, Some(sha)).await?;
 
     loop {
         let bytes = reader.read(&mut read_buf)?;
@@ -124,6 +127,7 @@ mod tests {
     use super::*;
     use std::env::current_dir;
     use std::fs::canonicalize;
+    use utils::auth::NoOpTokenRefresher;
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
     async fn upload_files() {
@@ -132,12 +136,17 @@ mod tests {
 
         let abs_path = canonicalize(path).unwrap();
         let s = abs_path.to_string_lossy();
-        let files = vec![s.to_string()];
+        let files = vec![(s.to_string(), "my_sha".to_string())];
         let token = "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJyZXBvSWQiOiI2NzA1OTcyYTA3ODllNmFlZmU0MGE4NmYiLCJ1c2VySWQiOiI2NzA1OTcxODA3ODllNmFlZmU0MGE4NmMiLCJhY2Nlc3MiOiJ3cml0ZSIsImV4cCI6MTcyOTU2MDgyNH0.1VEE6N0NV4SjAktGyqkja0R2jWtO6WY7cu-Pe11CBJo";
         let initial_token = Some((token.to_string(), 1729560000));
-        let pointers = upload_async(files, None, initial_token, None)
-            .await
-            .unwrap();
+        let pointers = upload_async(
+            files,
+            None,
+            initial_token,
+            Some(Arc::new(NoOpTokenRefresher)),
+        )
+        .await
+        .unwrap();
         println!("files: {pointers:?}");
     }
 

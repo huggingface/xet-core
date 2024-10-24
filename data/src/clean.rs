@@ -10,9 +10,11 @@ use crate::repo_salt::RepoSalt;
 use crate::small_file_determination::{is_file_passthrough, is_possible_start_to_text_file};
 use crate::PointerFile;
 use cas_object::range_hash_from_chunks;
+use error_printer::ErrorPrinter;
 use lazy_static::lazy_static;
 use mdb_shard::file_structs::{
-    FileDataSequenceEntry, FileDataSequenceHeader, FileVerificationEntry, MDBFileInfo,
+    FileDataSequenceEntry, FileDataSequenceHeader, FileMetadataExt, FileVerificationEntry,
+    MDBFileInfo,
 };
 use mdb_shard::shard_file_reconstructor::FileReconstructor;
 use mdb_shard::{hash_is_global_dedup_eligible, ShardFileManager};
@@ -81,7 +83,7 @@ pub struct Cleaner {
 
     // Auxiliary info
     file_name: Option<PathBuf>,
-    sha256: Option<String>,
+    sha256: Option<MerkleHash>,
 }
 
 impl Cleaner {
@@ -105,6 +107,14 @@ impl Cleaner {
 
         let chunker = chunk_target_default(data_c, chunk_p);
 
+        // TODO: implement sha calculation in chunker
+        let sha256 = sha256
+            .or_else(rand_sha)
+            .as_ref()
+            .map(|hex| MerkleHash::from_hex(hex))
+            .transpose()
+            .log_error("hash is not a valid hex string".to_string())?;
+
         let cleaner = Arc::new(Cleaner {
             small_file_threshold,
             enable_global_dedup_queries,
@@ -120,7 +130,7 @@ impl Cleaner {
             tracking_info: Mutex::new(Default::default()),
             small_file_buffer: Mutex::new(Some(Vec::with_capacity(small_file_threshold))),
             file_name: file_name.map(|f| f.to_owned()),
-            sha256: sha256.or_else(rand_sha), // TODO: implement sha calculation in chunker
+            sha256,
         });
 
         Self::run(cleaner.clone(), chunk_c).await;
@@ -598,9 +608,11 @@ impl Cleaner {
                     file_hash,
                     tracking_info.file_info.len(),
                     true,
+                    self.sha256.is_some(),
                 ),
                 segments,
                 verification,
+                metadata_ext: self.sha256.map(FileMetadataExt::new),
             };
 
             cas_data_accumulator.pending_file_info.push((

@@ -471,18 +471,19 @@ mod tests {
     fn test_simple() -> Result<()> {
         // Both without verification
         let mem_shard_1 =
-            gen_specific_shard(&[(10, &[(21, 5)])], &[(100, &[(200, (0, 5))])], None)?;
+            gen_specific_shard(&[(10, &[(21, 5)])], &[(100, &[(200, (0, 5))])], None, None)?;
         let mem_shard_2 =
-            gen_specific_shard(&[(11, &[(22, 5)])], &[(101, &[(201, (0, 5))])], None)?;
+            gen_specific_shard(&[(11, &[(22, 5)])], &[(101, &[(201, (0, 5))])], None, None)?;
         test_operations(&mem_shard_1, &mem_shard_2)?;
 
         // One with verification
         let mem_shard_1 =
-            gen_specific_shard(&[(10, &[(21, 5)])], &[(100, &[(200, (0, 5))])], None)?;
+            gen_specific_shard(&[(10, &[(21, 5)])], &[(100, &[(200, (0, 5))])], None, None)?;
         let mem_shard_2 = gen_specific_shard(
             &[(11, &[(22, 5)])],
             &[(101, &[(201, (0, 5))])],
             Some(&[&[624]]),
+            None,
         )?;
         test_operations(&mem_shard_1, &mem_shard_2)?;
 
@@ -491,11 +492,13 @@ mod tests {
             &[(10, &[(21, 5)])],
             &[(100, &[(200, (0, 5))])],
             Some(&[&[485]]),
+            None,
         )?;
         let mem_shard_2 = gen_specific_shard(
             &[(11, &[(22, 5)])],
             &[(101, &[(201, (0, 5))])],
             Some(&[&[624]]),
+            None,
         )?;
         test_operations(&mem_shard_1, &mem_shard_2)
     }
@@ -504,9 +507,9 @@ mod tests {
     fn test_intersecting() -> Result<()> {
         // Both without verification
         let mem_shard_1 =
-            gen_specific_shard(&[(10, &[(21, 5)])], &[(100, &[(200, (0, 5))])], None)?;
+            gen_specific_shard(&[(10, &[(21, 5)])], &[(100, &[(200, (0, 5))])], None, None)?;
         let mem_shard_2 =
-            gen_specific_shard(&[(10, &[(21, 5)])], &[(100, &[(200, (0, 5))])], None)?;
+            gen_specific_shard(&[(10, &[(21, 5)])], &[(100, &[(200, (0, 5))])], None, None)?;
         test_operations(&mem_shard_1, &mem_shard_2)?;
 
         // One with verification
@@ -514,9 +517,10 @@ mod tests {
             &[(10, &[(21, 5)])],
             &[(100, &[(200, (0, 5))])],
             Some(&[&[23]]),
+            None,
         )?;
         let mem_shard_2 =
-            gen_specific_shard(&[(10, &[(21, 5)])], &[(100, &[(200, (0, 5))])], None)?;
+            gen_specific_shard(&[(10, &[(21, 5)])], &[(100, &[(200, (0, 5))])], None, None)?;
         test_operations(&mem_shard_1, &mem_shard_2)?;
 
         // Both with same verification
@@ -524,11 +528,13 @@ mod tests {
             &[(10, &[(21, 5)])],
             &[(100, &[(200, (0, 5))])],
             Some(&[&[95]]),
+            None,
         )?;
         let mem_shard_2 = gen_specific_shard(
             &[(10, &[(21, 5)])],
             &[(100, &[(200, (0, 5))])],
             Some(&[&[95]]),
+            None,
         )?;
         test_operations(&mem_shard_1, &mem_shard_2)
     }
@@ -537,21 +543,23 @@ mod tests {
     fn test_intersecting_2() -> Result<()> {
         // Both without verification
         let mem_shard_1 =
-            gen_specific_shard(&[(10, &[(21, 5)])], &[(100, &[(200, (0, 5))])], None)?;
+            gen_specific_shard(&[(10, &[(21, 5)])], &[(100, &[(200, (0, 5))])], None, None)?;
         let mem_shard_2 = gen_specific_shard(
             &[(10, &[(21, 5)]), (11, &[(22, 5)])],
             &[(100, &[(200, (0, 5))]), (101, &[(201, (0, 5))])],
+            None,
             None,
         )?;
         test_operations(&mem_shard_1, &mem_shard_2)?;
 
         // One with verification
         let mem_shard_1 =
-            gen_specific_shard(&[(10, &[(21, 5)])], &[(100, &[(200, (0, 5))])], None)?;
+            gen_specific_shard(&[(10, &[(21, 5)])], &[(100, &[(200, (0, 5))])], None, None)?;
         let mem_shard_2 = gen_specific_shard(
             &[(10, &[(21, 5)]), (11, &[(22, 5)])],
             &[(100, &[(200, (0, 5))]), (101, &[(201, (0, 5))])],
             Some(&[&[74], &[63]]),
+            None,
         )?;
         test_operations(&mem_shard_1, &mem_shard_2)?;
 
@@ -560,35 +568,41 @@ mod tests {
             &[(10, &[(21, 5)])],
             &[(100, &[(200, (0, 5))])],
             Some(&[&[365]]),
+            None,
         )?;
         let mem_shard_2 = gen_specific_shard(
             &[(10, &[(21, 5)]), (11, &[(22, 5)])],
             &[(100, &[(200, (0, 5))]), (101, &[(201, (0, 5))])],
             Some(&[&[365], &[48]]),
+            None,
         )?;
         test_operations(&mem_shard_1, &mem_shard_2)
     }
 
     #[test]
     fn test_empty() -> Result<()> {
-        let mem_shard_1 = gen_specific_shard(&[], &[], None)?;
-        let mem_shard_2 = gen_specific_shard(&[], &[], None)?;
+        let mem_shard_1 = gen_specific_shard(&[], &[], None, None)?;
+        let mem_shard_2 = gen_specific_shard(&[], &[], None, None)?;
 
         test_operations(&mem_shard_1, &mem_shard_2)
     }
     #[test]
     fn test_empty_2() -> Result<()> {
-        let mem_shard_1 = gen_random_shard(0, &[0], &[0], false)?;
-        let mem_shard_2 = gen_random_shard(1, &[0], &[0], false)?;
+        let mem_shard_1 = gen_random_shard(0, &[0], &[0], false, false)?;
+        let mem_shard_2 = gen_random_shard(1, &[0], &[0], false, false)?;
 
         test_operations(&mem_shard_1, &mem_shard_2)
     }
 
     #[test]
     fn test_random() -> Result<()> {
-        for (v1, v2) in &[(false, false), (false, true), (true, true)] {
-            let mem_shard_1 = gen_random_shard(0, &[1, 5, 10, 8], &[4, 3, 5, 9, 4, 6], *v1)?;
-            let mem_shard_2 = gen_random_shard(1, &[3, 5, 9, 8], &[8, 5, 5, 8, 5, 6], *v2)?;
+        for (v1, v2, v3) in &[
+            (false, false, false),
+            (false, true, true),
+            (true, true, true),
+        ] {
+            let mem_shard_1 = gen_random_shard(0, &[1, 5, 10, 8], &[4, 3, 5, 9, 4, 6], *v1, *v3)?;
+            let mem_shard_2 = gen_random_shard(1, &[3, 5, 9, 8], &[8, 5, 5, 8, 5, 6], *v2, *v3)?;
 
             test_operations(&mem_shard_1, &mem_shard_2)?;
 

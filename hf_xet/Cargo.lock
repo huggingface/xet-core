@@ -360,31 +360,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "cache"
-version = "0.14.5"
-dependencies = [
- "anyhow",
- "async-trait",
- "base64 0.13.1",
- "byteorder",
- "cas_types",
- "chrono",
- "lazy_static",
- "lru",
- "mockall",
- "prometheus",
- "tempfile",
- "tokio",
- "tracing",
- "tracing-attributes",
- "tracing-futures",
- "tracing-subscriber",
- "tracing-test",
- "utils",
- "xet_error",
-]
-
-[[package]]
 name = "cas_client"
 version = "0.14.5"
 dependencies = [
@@ -392,7 +367,6 @@ dependencies = [
  "async-trait",
  "bincode",
  "bytes",
- "cache",
  "cas_object",
  "cas_types",
  "chunk_cache",

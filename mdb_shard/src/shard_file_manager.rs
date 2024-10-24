@@ -568,9 +568,11 @@ mod tests {
                     simple_hash(*file_hash),
                     segments.len(),
                     false,
+                    false,
                 ),
                 segments: file_contents,
                 verification: vec![],
+                metadata_ext: None,
             };
 
             shard
@@ -654,12 +656,13 @@ mod tests {
                 })
                 .collect();
 
-            let metadata = FileDataSequenceHeader::new(file_hash, *file_block_size, false);
+            let metadata = FileDataSequenceHeader::new(file_hash, *file_block_size, false, false);
 
             let file_info = MDBFileInfo {
                 metadata,
                 segments,
                 verification: vec![],
+                metadata_ext: None,
             };
 
             shard

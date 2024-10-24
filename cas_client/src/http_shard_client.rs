@@ -1,4 +1,4 @@
-use crate::error::{Result, CasClientError};
+use crate::error::{CasClientError, Result};
 use crate::{build_auth_http_client, RegistrationClient, ShardClientInterface};
 use async_trait::async_trait;
 use bytes::Buf;
@@ -113,6 +113,7 @@ impl FileReconstructor<CasClientError> for HttpShardClient {
                     *file_hash,
                     response_info.reconstruction.len(),
                     false,
+                    false,
                 ),
                 segments: response_info
                     .reconstruction
@@ -127,6 +128,7 @@ impl FileReconstructor<CasClientError> for HttpShardClient {
                     })
                     .collect(),
                 verification: vec![],
+                metadata_ext: None,
             },
             None,
         )))
@@ -262,7 +264,7 @@ mod test {
 
         // test file reconstruction lookup
         let files = MDBShardInfo::read_file_info_ranges(&mut reader)?;
-        for (file_hash, _, _) in files {
+        for (file_hash, _, _, _) in files {
             let expected = shard.get_file_reconstruction_info(&file_hash)?.unwrap();
             let (result, _) = client
                 .get_file_reconstruction_info(&file_hash)

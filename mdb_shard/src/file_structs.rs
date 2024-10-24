@@ -9,6 +9,8 @@ use utils::serialization_utils::*;
 pub const MDB_DEFAULT_FILE_FLAG: u32 = 0;
 pub const MDB_FILE_FLAG_WITH_VERIFICATION: u32 = 1 << 31;
 pub const MDB_FILE_FLAG_VERIFICATION_MASK: u32 = 1 << 31;
+pub const MDB_FILE_FLAG_WITH_METADATA_EXT: u32 = 1 << 30;
+pub const MDB_FILE_FLAG_METADATA_EXT_MASK: u32 = 1 << 30;
 
 /// Each file consists of a FileDataSequenceHeader following
 /// a sequence of FileDataSequenceEntry and maybe a sequence
@@ -27,17 +29,21 @@ impl FileDataSequenceHeader {
         file_hash: MerkleHash,
         num_entries: I,
         contains_verification: bool,
+        contains_metadata_ext: bool,
     ) -> Self
     where
         <I as TryInto<u32>>::Error: std::fmt::Debug,
     {
+        let verification_flag = contains_verification
+            .then_some(MDB_FILE_FLAG_WITH_VERIFICATION)
+            .unwrap_or_default();
+        let metadata_ext_flag = contains_metadata_ext
+            .then_some(MDB_FILE_FLAG_WITH_METADATA_EXT)
+            .unwrap_or_default();
+        let file_flags = MDB_DEFAULT_FILE_FLAG | verification_flag | metadata_ext_flag;
         Self {
             file_hash,
-            file_flags: MDB_DEFAULT_FILE_FLAG
-                | match contains_verification {
-                    true => MDB_FILE_FLAG_WITH_VERIFICATION,
-                    false => 0,
-                },
+            file_flags,
             num_entries: num_entries.try_into().unwrap(),
             #[cfg(test)]
             _unused: 126846135456846514u64,
@@ -89,17 +95,22 @@ impl FileDataSequenceHeader {
         })
     }
 
+    pub fn contains_metadata_ext(&self) -> bool {
+        (self.file_flags & MDB_FILE_FLAG_METADATA_EXT_MASK) != 0
+    }
+
     pub fn contains_verification(&self) -> bool {
         (self.file_flags & MDB_FILE_FLAG_VERIFICATION_MASK) != 0
     }
 
     /// Get the number of info entries following the header in this shard,
-    /// this includes "FileDataSequenceEntry"s and "FileVerificationEntry"s.
+    /// this includes "FileDataSequenceEntry"s, "FileVerificationEntry"s, and "FileMetadataExt".
     pub fn num_info_entry_following(&self) -> u32 {
+        let num_metadata_ext = if self.contains_metadata_ext() { 1 } else { 0 };
         if self.contains_verification() {
-            self.num_entries * 2
+            self.num_entries * 2 + num_metadata_ext
         } else {
-            self.num_entries
+            self.num_entries + num_metadata_ext
         }
     }
 }
@@ -232,11 +243,55 @@ impl FileVerificationEntry {
     }
 }
 
+/// Extended metadata about the file (e.g. sha256). Stored in the FileInfo when the
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct FileMetadataExt {
+    pub sha256: MerkleHash,
+    pub _unused: [u64; 2],
+}
+
+impl FileMetadataExt {
+    pub fn new(sha256: MerkleHash) -> Self {
+        Self {
+            sha256,
+            _unused: Default::default(),
+        }
+    }
+
+    pub fn serialize<W: Write>(&self, writer: &mut W) -> Result<usize, std::io::Error> {
+        let mut buf = [0u8; size_of::<Self>()];
+
+        {
+            let mut writer = Cursor::new(&mut buf[..]);
+            write_hash(&mut writer, &self.sha256)?;
+            write_u64s(&mut writer, &self._unused)?;
+        }
+
+        writer.write_all(&buf)?;
+
+        Ok(size_of::<Self>())
+    }
+
+    pub fn deserialize<R: Read>(reader: &mut R) -> Result<Self, std::io::Error> {
+        let mut v = [0u8; size_of::<Self>()];
+        reader.read_exact(&mut v[..])?;
+
+        let mut reader_curs = Cursor::new(&v);
+        let reader = &mut reader_curs;
+
+        Ok(Self {
+            sha256: read_hash(reader)?.into(),
+            _unused: Default::default(),
+        })
+    }
+}
+
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct MDBFileInfo {
     pub metadata: FileDataSequenceHeader,
     pub segments: Vec<FileDataSequenceEntry>,
     pub verification: Vec<FileVerificationEntry>,
+    pub metadata_ext: Option<FileMetadataExt>,
 }
 
 impl MDBFileInfo {
@@ -263,6 +318,9 @@ impl MDBFileInfo {
                 bytes_written += verification.serialize(writer)?;
             }
         }
+        if let Some(metadata_ext) = self.metadata_ext.as_ref() {
+            bytes_written += metadata_ext.serialize(writer)?;
+        }
 
         Ok(bytes_written)
     }
@@ -288,15 +346,81 @@ impl MDBFileInfo {
                 verification.push(FileVerificationEntry::deserialize(reader)?);
             }
         }
+        let metadata_ext = metadata
+            .contains_metadata_ext()
+            .then(|| FileMetadataExt::deserialize(reader))
+            .transpose()?;
 
         Ok(Some(Self {
             metadata,
             segments,
             verification,
+            metadata_ext,
         }))
     }
 
     pub fn contains_verification(&self) -> bool {
         self.metadata.contains_verification()
+    }
+
+    pub fn contains_metadata_ext(&self) -> bool {
+        self.metadata.contains_metadata_ext()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::shard_file::test_routines::rng_hash;
+    use rand::prelude::StdRng;
+    use rand::{Rng, SeedableRng};
+
+    #[test]
+    fn test_serde_has_metadata_ext() {
+        let seed = 3;
+        let mut rng = StdRng::seed_from_u64(seed);
+        let file_block_size = &1;
+        let contains_verification = true;
+        let file_hash = rng_hash(rng.gen());
+
+        let file_contents: Vec<_> = (0..*file_block_size)
+            .map(|_| {
+                let lb = rng.gen_range(0..10000);
+                let ub = lb + rng.gen_range(0..10000);
+                FileDataSequenceEntry::new(rng_hash(rng.gen()), ub - lb, lb, ub)
+            })
+            .collect();
+
+        let verification = if contains_verification {
+            file_contents
+                .iter()
+                .map(|_| FileVerificationEntry::new(rng_hash(rng.gen())))
+                .collect()
+        } else {
+            vec![]
+        };
+
+        let sha256 = rng_hash(rng.gen());
+        let metadata_ext = Some(FileMetadataExt::new(sha256));
+
+        let file_info = MDBFileInfo {
+            metadata: FileDataSequenceHeader::new(
+                file_hash,
+                *file_block_size,
+                contains_verification,
+                true,
+            ),
+            segments: file_contents,
+            verification,
+            metadata_ext,
+        };
+
+        let size = file_info.num_bytes();
+        let mut buffer = Vec::new();
+        let data = file_info.serialize(&mut buffer).unwrap();
+        assert_eq!(data as u64, size);
+
+        let new_info = MDBFileInfo::deserialize(&mut &buffer[..]).unwrap().unwrap(); // Result<Option<Self>>
+        assert_eq!(file_info, new_info);
     }
 }
