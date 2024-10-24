@@ -17,7 +17,6 @@ use utils::serialization_utils::*;
 /// be present.  
 ///
 /// Returns the number of values found.  
-///
 pub fn search_on_sorted_u64s<
     Value: Default + Copy + std::fmt::Debug,
     R: Read + Seek,
