@@ -1,4 +1,6 @@
-use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
+use tracing_subscriber::layer::SubscriberExt;
+use tracing_subscriber::util::SubscriberInitExt;
+use tracing_subscriber::EnvFilter;
 
 /// Default log level for the library to use. Override using `RUST_LOG` env variable.
 /// TODO: probably change default to warn or error before shipping.

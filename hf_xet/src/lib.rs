@@ -3,12 +3,13 @@ mod data_client;
 mod log;
 mod token_refresh;
 
+use std::fmt::Debug;
+use std::sync::Arc;
+
 use data::PointerFile;
 use pyo3::exceptions::PyException;
 use pyo3::prelude::*;
 use pyo3::pyfunction;
-use std::fmt::Debug;
-use std::sync::Arc;
 use token_refresh::WrappedTokenRefresher;
 use utils::auth::TokenRefresher;
 

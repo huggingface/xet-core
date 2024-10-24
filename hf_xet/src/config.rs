@@ -1,9 +1,9 @@
-use data::configurations::*;
-use data::errors;
-use data::CacheConfig;
 use std::env::current_dir;
 use std::fs;
 use std::sync::Arc;
+
+use data::configurations::*;
+use data::{errors, CacheConfig};
 use utils::auth::{AuthConfig, TokenRefresher};
 
 pub const SMALL_FILE_THRESHOLD: usize = 1;
