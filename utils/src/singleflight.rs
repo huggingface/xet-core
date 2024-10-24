@@ -35,6 +35,7 @@
 //! }
 //! ```
 
+use std::collections::HashMap;
 use std::fmt::Debug;
 use std::future::Future;
 use std::marker::PhantomData;
@@ -44,7 +45,6 @@ use std::sync::Arc;
 use std::task::{ready, Context, Poll};
 
 use futures::future::Either;
-use hashbrown::HashMap;
 use parking_lot::RwLock;
 use pin_project::{pin_project, pinned_drop};
 use tokio::sync::{Mutex, Notify};
@@ -349,6 +349,7 @@ where
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
     use std::sync::atomic::{AtomicU32, Ordering};
     use std::sync::Arc;
     use std::time::Duration;
@@ -356,7 +357,6 @@ mod tests {
     use futures::future::join_all;
     use futures::stream::iter;
     use futures::StreamExt;
-    use hashbrown::HashMap;
     use tokio::sync::mpsc::error::SendError;
     use tokio::sync::mpsc::{channel, Sender};
     use tokio::sync::{Mutex, Notify};

@@ -8,42 +8,22 @@ name = "utils"
 path = "src/lib.rs"
 
 [dependencies]
-tonic = {version = "0.10.2", features = ["tls", "tls-roots", "transport"] }
-prost = "0.12.3"
-prost-types = "0.12.3"
-serde = {version = "1.0", features = ["derive"] }
-merklehash = { path = "../merklehash"} 
-xet_error = {path = "../xet_error"}
+serde = { version = "1.0", features = ["derive"] }
+merklehash = { path = "../merklehash" }
+xet_error = { path = "../xet_error" }
 futures = "0.3.28"
-tempfile = "3.9.0"
 
 # singleflight
-tokio = {version = "1", features = ["sync"] }
-hashbrown = "0.12.0"
+tokio = { version = "1", features = ["sync"] }
 parking_lot = "0.11"
-anyhow = "1"
 pin-project = "1.0.12"
 
 # consistenthash
-hashring = "0.3.0"
 tracing = "0.1.31"
-chrono = "0.4"
-lazy_static = "1.4.0"
-regex = "1.7.3"
 
-[build-dependencies]
-tonic-build = {version= "0.10.2", features=["transport"]}
 
 [dev-dependencies]
 tokio = { version = "1.36", features = ["full"] }
-futures = "0.3.21"
-clap = { version = "3.1.6", features = ["derive"] }
-http = "0.2.5"
-rand = "0.5"
-itertools = "0.10"
-
-[[example]]
-name = "infra"
 
 [features]
 strict = []
