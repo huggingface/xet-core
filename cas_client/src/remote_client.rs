@@ -6,8 +6,8 @@ use anyhow::anyhow;
 use async_trait::async_trait;
 use cas_object::CasObject;
 use cas_types::{
-    CASReconstructionFetchInfo, CASReconstructionTerm, ChunkRange, HexMerkleHash, HttpRange, Key,
-    QueryReconstructionResponse, UploadXorbResponse,
+    CASReconstructionFetchInfo, CASReconstructionTerm, HexMerkleHash, HttpRange, Key, QueryReconstructionResponse,
+    UploadXorbResponse,
 };
 use chunk_cache::{CacheConfig, ChunkCache, DiskCache};
 use error_printer::ErrorPrinter;
