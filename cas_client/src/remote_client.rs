@@ -369,7 +369,7 @@ async fn download_range(
 #[cfg(test)]
 mod tests {
 
-    use cas_object::test_utils::*;
+    use cas_object::test_utils::{build_cas_object, ChunkSize};
     use tracing_test::traced_test;
 
     use super::*;

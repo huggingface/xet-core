@@ -631,16 +631,12 @@ name = "cas_object"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "bincode",
  "blake3",
  "bytes",
- "cas_types",
- "http 1.1.0",
  "lz4_flex",
  "merkledb",
  "merklehash",
  "rand 0.8.5",
- "tempfile",
  "tracing",
  "xet_error",
 ]
@@ -649,7 +645,6 @@ dependencies = [
 name = "cas_types"
 version = "0.1.0"
 dependencies = [
- "anyhow",
  "merklehash",
  "serde",
  "serde_repr",
