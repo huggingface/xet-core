@@ -820,11 +820,11 @@ impl MDBShardInfo {
     /// Read all file info from shard and return a collection of
     /// (file_hash, (byte_start, byte_end) for file_data_sequence_entry,
     /// Option<(byte_start, byte_end)> for file_verification_entry,
-    /// Option<(byte_start, byte_end)> for metadata_ext.
+    /// and an Option<MerkleHash> for the SHA if it is present.
     #[allow(clippy::type_complexity)]
     pub fn read_file_info_ranges<R: Read + Seek>(
         reader: &mut R,
-    ) -> Result<Vec<(MerkleHash, (u64, u64), Option<(u64, u64)>, Option<(u64, u64)>)>> {
+    ) -> Result<Vec<(MerkleHash, (u64, u64), Option<(u64, u64)>, Option<MerkleHash>)>> {
         let mut ret = Vec::new();
 
         let _shard_header = MDBShardFileHeader::deserialize(reader)?;
@@ -853,21 +853,14 @@ impl MDBShardInfo {
                 None
             };
 
-            let metadata_ext_range = if header.contains_metadata_ext() {
-                let byte_start = byte_end;
-                reader.seek(SeekFrom::Current(size_of::<FileMetadataExt>() as i64))?;
-                let byte_end = reader.stream_position()?;
-                Some((byte_start, byte_end))
+            let sha256 = if header.contains_metadata_ext() {
+                let metadata_ext = FileMetadataExt::deserialize(reader)?;
+                Some(metadata_ext.sha256)
             } else {
                 None
             };
 
-            ret.push((
-                header.file_hash,
-                data_sequence_entry_byte_range,
-                verification_entry_byte_range,
-                metadata_ext_range,
-            ));
+            ret.push((header.file_hash, data_sequence_entry_byte_range, verification_entry_byte_range, sha256));
         }
 
         Ok(ret)
