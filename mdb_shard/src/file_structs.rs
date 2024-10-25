@@ -6,6 +6,7 @@ use merklehash::MerkleHash;
 use utils::serialization_utils::*;
 
 use crate::cas_structs::{CASChunkSequenceEntry, CASChunkSequenceHeader};
+use crate::error::MDBShardError;
 use crate::shard_file::MDB_FILE_INFO_ENTRY_SIZE;
 
 pub const MDB_DEFAULT_FILE_FLAG: u32 = 0;
@@ -115,6 +116,55 @@ impl FileDataSequenceHeader {
             self.num_entries + num_metadata_ext
         }
     }
+
+    /// Checks that the two headers correspond to the same file. Checks that
+    /// the file hashes are the same and that the number of entries are the
+    /// same.
+    pub fn check_same_file(header1: &Self, header2: &Self) -> Result<(), MDBShardError> {
+        if header1.file_hash != header2.file_hash {
+            return Err(MDBShardError::Other(format!(
+                "hashes don't match: {}, {}",
+                header1.file_hash, header2.file_hash
+            )));
+        }
+        if header1.num_entries != header2.num_entries {
+            return Err(MDBShardError::Other(format!(
+                "num entries for same hash don't match: {}, {}",
+                header1.num_entries, header2.num_entries
+            )));
+        }
+        Ok(())
+    }
+
+    /// Compares the flags of headers A and B to determine if either bitmap is a superset
+    /// of the other. Can return 4 possible responses:
+    /// 1. SuperA if A is a superset of B (e.g. A has validation and B has nothing)
+    /// 2. SuperB if B is a superset of A (e.g. B has metadata_ext and A has nothing)
+    /// 3. Neither if neither A nor B are supersets of each other (e.g. A has only validation, and B has only
+    ///    metadata_ext)
+    /// 4. Equal if both A and B have the same flags set.
+    pub fn compare_flag_superset(header_a: &Self, header_b: &Self) -> SupersetResult {
+        let flags0 = header_a.file_flags;
+        let flags1 = header_b.file_flags;
+        if flags0 == flags1 {
+            SupersetResult::Equal
+        } else if flags0 & flags1 == flags1 {
+            SupersetResult::SuperA
+        } else if flags1 & flags0 == flags0 {
+            SupersetResult::SuperB
+        } else {
+            SupersetResult::Neither
+        }
+    }
+}
+
+/// Result enum for comparing header flags for supersets.
+#[derive(Debug, Copy, Clone, Eq, PartialEq)]
+pub enum SupersetResult {
+    SuperA,
+    SuperB,
+    Neither,
+    Equal,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -368,14 +418,34 @@ impl MDBFileInfo {
     pub fn contains_metadata_ext(&self) -> bool {
         self.metadata.contains_metadata_ext()
     }
+
+    /// Merges the content of other into the content of self if needed.
+    /// After this call, self will have the verification info and metadata
+    /// extension if they exist in the other object but not this one.
+    pub fn merge_from(&mut self, other: &Self) -> Result<(), MDBShardError> {
+        FileDataSequenceHeader::check_same_file(&self.metadata, &other.metadata)?;
+        if self.contains_verification() != other.contains_verification() && other.contains_verification() {
+            // self doesn't have verification. Copy from other
+            self.metadata.file_flags |= MDB_FILE_FLAG_WITH_VERIFICATION;
+            self.verification.clone_from(&other.verification);
+        }
+        if self.contains_metadata_ext() != other.contains_metadata_ext() && other.contains_metadata_ext() {
+            // self doesn't have metadata extension. Copy from other
+            self.metadata.file_flags |= MDB_FILE_FLAG_WITH_METADATA_EXT;
+            self.metadata_ext.clone_from(&other.metadata_ext);
+        }
+        Ok(())
+    }
 }
 
 #[cfg(test)]
 mod tests {
+    use itertools::{iproduct, Itertools};
     use rand::prelude::StdRng;
     use rand::SeedableRng;
 
     use super::*;
+    use crate::shard_file::test_routines::simple_hash;
     use crate::shard_format::test_routines::gen_random_file_info;
 
     #[test]
@@ -395,5 +465,43 @@ mod tests {
 
         let new_info = MDBFileInfo::deserialize(&mut &buffer[..]).unwrap().unwrap(); // Result<Option<Self>>
         assert_eq!(file_info, new_info);
+    }
+
+    #[test]
+    fn test_compare_flags() {
+        let hash = simple_hash(42);
+        let bool_cases = vec![false, true];
+        // get 4 types of flags: 00, 01, 10, 11
+        let cases = iproduct!(bool_cases.clone(), bool_cases)
+            .map(|(has_validation, has_metadata_ext)| {
+                FileDataSequenceHeader::new(hash, 5, has_validation, has_metadata_ext)
+            })
+            .collect_vec();
+        // expected results from comparing these
+        let expected = vec![
+            SupersetResult::Equal,   // 00, 00
+            SupersetResult::SuperB,  // 00, 01
+            SupersetResult::SuperB,  // 00, 10
+            SupersetResult::SuperB,  // 00, 11
+            SupersetResult::SuperA,  // 01, 00
+            SupersetResult::Equal,   // 01, 01
+            SupersetResult::Neither, // 01, 10
+            SupersetResult::SuperB,  // 01, 11
+            SupersetResult::SuperA,  // 10, 00
+            SupersetResult::Neither, // 10, 01
+            SupersetResult::Equal,   // 10, 10
+            SupersetResult::SuperB,  // 10, 11
+            SupersetResult::SuperA,  // 11, 00
+            SupersetResult::SuperA,  // 11, 01
+            SupersetResult::SuperA,  // 11, 10
+            SupersetResult::Equal,   // 11, 11
+        ];
+
+        let results = cases
+            .iter()
+            .flat_map(|a| cases.iter().map(|b| FileDataSequenceHeader::compare_flag_superset(a, b)))
+            .collect_vec();
+
+        assert_eq!(expected, results);
     }
 }

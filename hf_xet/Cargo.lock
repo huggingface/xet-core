@@ -247,7 +247,7 @@ dependencies = [
  "file_utils",
  "heed",
  "http 1.1.0",
- "itertools",
+ "itertools 0.10.5",
  "mdb_shard",
  "merkledb",
  "merklehash",
@@ -1153,6 +1153,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "itertools"
+version = "0.13.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "413ee7dfc52ee1a4949ceeb7dbc8a33f2d6c088194d9f922fb8318faf1f01186"
+dependencies = [
+ "either",
+]
+
+[[package]]
 name = "itoa"
 version = "1.0.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1285,6 +1294,7 @@ dependencies = [
  "async-trait",
  "binary-heap-plus",
  "clap 3.2.25",
+ "itertools 0.13.0",
  "lazy_static",
  "merklehash",
  "more-asserts",
@@ -1327,7 +1337,7 @@ dependencies = [
  "clap 3.2.25",
  "futures",
  "gearhash",
- "itertools",
+ "itertools 0.10.5",
  "lazy_static",
  "merklehash",
  "parutils",

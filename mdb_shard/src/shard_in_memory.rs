@@ -6,11 +6,12 @@ use std::mem::size_of;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use itertools::Itertools;
 use merklehash::{HashedWrite, MerkleHash};
 use tracing::debug;
 
 use crate::cas_structs::*;
-use crate::error::Result;
+use crate::error::{MDBShardError, Result};
 use crate::file_structs::*;
 use crate::shard_format::MDBShardInfo;
 use crate::utils::{shard_file_name, temp_shard_file_name};
@@ -57,14 +58,19 @@ impl MDBInMemoryShard {
         });
 
         let mut file_content = self.file_content.clone();
-        other.file_content.iter().for_each(|(k, v)| {
-            if let Some(old_v) = file_content.insert(*k, v.clone()) {
-                // Use the old value if it contains more information (e.g. verification)
-                if old_v.num_bytes() > v.num_bytes() {
+        other
+            .file_content
+            .iter()
+            .map(|(k, v)| {
+                if let Some(mut old_v) = file_content.insert(*k, v.clone()) {
+                    // merge the contents to ensure we have all the information between
+                    // the two file contents (e.g. verification and metadata_ext)
+                    old_v.merge_from(v)?;
                     file_content.insert(*k, old_v);
-                }
-            }
-        });
+                };
+                Ok::<(), MDBShardError>(())
+            })
+            .try_collect()?;
 
         let mut chunk_hash_lookup = self.chunk_hash_lookup.clone();
         other.chunk_hash_lookup.iter().for_each(|(k, v)| {
