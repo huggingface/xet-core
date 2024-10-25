@@ -501,7 +501,6 @@ mod tests {
     use std::cmp::min;
     use std::time::Duration;
 
-    use more_asserts::assert_lt;
     use rand::prelude::*;
     use tempdir::TempDir;
 
@@ -932,7 +931,7 @@ mod tests {
             }
 
             if let Some(n) = last_num_files {
-                assert_lt!(n_merged_shards, n);
+                assert!(n_merged_shards < n, "n_merged_shards({n_merged_shards}) < n({n})");
             }
 
             last_num_files = Some(n_merged_shards);

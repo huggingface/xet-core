@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use base64::Engine;
-use cas_types::{Key, Range};
+use cas_types::{ChunkRange, Key};
 use chunk_cache::error::ChunkCacheError;
 use chunk_cache::ChunkCache;
 use sccache::lru_disk_cache::LruDiskCache;
@@ -32,7 +32,7 @@ impl ChunkCacheExt for SCCache {
 }
 
 impl ChunkCache for SCCache {
-    fn get(&self, key: &cas_types::Key, range: &cas_types::Range) -> Result<Option<Vec<u8>>, ChunkCacheError> {
+    fn get(&self, key: &cas_types::Key, range: &cas_types::ChunkRange) -> Result<Option<Vec<u8>>, ChunkCacheError> {
         let cache_key = CacheKey::new(key, range)?;
         let mut file = if let Ok(file) = self.cache.lock()?.get(&cache_key) {
             file
@@ -48,7 +48,7 @@ impl ChunkCache for SCCache {
     fn put(
         &self,
         key: &cas_types::Key,
-        range: &cas_types::Range,
+        range: &cas_types::ChunkRange,
         _chunk_byte_indices: &[u32],
         data: &[u8],
     ) -> Result<(), ChunkCacheError> {
@@ -68,7 +68,7 @@ impl ChunkCache for SCCache {
 struct CacheKey(OsString);
 
 impl CacheKey {
-    fn new(key: &Key, range: &Range) -> Result<Self, ChunkCacheError> {
+    fn new(key: &Key, range: &ChunkRange) -> Result<Self, ChunkCacheError> {
         let mut buf = Vec::new();
         buf.write_all(key.hash.as_bytes())?;
         buf.write_all(key.prefix.as_bytes())?;

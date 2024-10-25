@@ -2,7 +2,7 @@ use std::path::PathBuf;
 use std::process::{exit, Stdio};
 use std::time::{Duration, SystemTime};
 
-use cas_types::{Key, Range};
+use cas_types::{ChunkRange, Key};
 use chunk_cache::{CacheConfig, ChunkCache, DiskCache, RandomEntryIterator};
 use clap::{Args, Parser, Subcommand};
 use tempdir::TempDir;
@@ -101,7 +101,7 @@ fn child_main(args: ChildArgs) {
 
     eprintln!("initialized id: {id} with {} entries", cache.num_items().unwrap());
 
-    let mut saved = (0, Key::default(), Range::default());
+    let mut saved = (0, Key::default(), ChunkRange::default());
 
     let mut i = 0;
     let mut hits = 0f64;

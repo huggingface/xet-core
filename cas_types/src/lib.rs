@@ -1,5 +1,5 @@
+use core::fmt;
 use std::collections::HashMap;
-use std::num::ParseIntError;
 
 use merklehash::MerkleHash;
 use serde::{Deserialize, Serialize};
@@ -14,28 +14,35 @@ pub struct UploadXorbResponse {
     pub was_inserted: bool,
 }
 
+/// Start and exclusive-end range for chunk content
+pub type ChunkRange = Range<u32>;
+/// Start and exclusive-end range for file content
+pub type FileRange = Range<u64>;
+/// Start and inclusive-end range for HTTP range content
+pub type HttpRange = Range<u32>;
+
 // note that the standard PartialOrd/Ord impls will first check `start` then `end`
 #[derive(Debug, Serialize, Deserialize, Clone, Eq, PartialEq, PartialOrd, Ord, Default, Hash)]
-pub struct Range {
-    pub start: u32,
-    pub end: u32,
+pub struct Range<Idx> {
+    pub start: Idx,
+    pub end: Idx,
 }
 
-impl std::fmt::Display for Range {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl<Idx: fmt::Display> fmt::Display for Range<Idx> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let Range { start, end } = self;
         write!(f, "{start}-{end}")
     }
 }
 
 #[derive(Debug)]
-pub enum RangeParseError {
+pub enum RangeParseError<Idx: std::str::FromStr> {
     InvalidFormat,
-    ParseError(ParseIntError),
+    ParseError(Idx::Err),
 }
 
-impl TryFrom<&str> for Range {
-    type Error = RangeParseError;
+impl<Idx: std::str::FromStr> TryFrom<&str> for Range<Idx> {
+    type Error = RangeParseError<Idx>;
 
     fn try_from(value: &str) -> Result<Self, Self::Error> {
         let parts: Vec<&str> = value.splitn(2, '-').collect();
@@ -44,8 +51,8 @@ impl TryFrom<&str> for Range {
             return Err(RangeParseError::InvalidFormat);
         }
 
-        let start = parts[0].parse::<u32>().map_err(RangeParseError::ParseError)?;
-        let end = parts[1].parse::<u32>().map_err(RangeParseError::ParseError)?;
+        let start = parts[0].parse::<Idx>().map_err(RangeParseError::ParseError)?;
+        let end = parts[1].parse::<Idx>().map_err(RangeParseError::ParseError)?;
 
         Ok(Range { start, end })
     }
@@ -63,7 +70,7 @@ pub struct CASReconstructionTerm {
     // should have a length equal to `unpacked_length`
     pub unpacked_length: u32,
     // chunk index start and end in a xorb
-    pub range: Range,
+    pub range: ChunkRange,
 }
 
 /// To use a CASReconstructionFetchInfo fetch info all that's needed
@@ -75,10 +82,10 @@ pub struct CASReconstructionTerm {
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq, Hash)]
 pub struct CASReconstructionFetchInfo {
     // chunk index start and end in a xorb
-    pub range: Range,
+    pub range: ChunkRange,
     pub url: String,
     // byte index start and end in a xorb, used exclusively for Range header
-    pub url_range: Range,
+    pub url_range: HttpRange,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]

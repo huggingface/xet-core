@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use cas_types::{Key, Range};
+use cas_types::{ChunkRange, Key};
 use merklehash::MerkleHash;
 use rand::rngs::ThreadRng;
 use rand::seq::SliceRandom;
@@ -42,13 +42,13 @@ pub fn random_key(rng: &mut impl Rng) -> Key {
     }
 }
 
-pub fn random_range(rng: &mut impl Rng) -> Range {
+pub fn random_range(rng: &mut impl Rng) -> ChunkRange {
     let start = rng.gen::<u32>() % 1000;
     let end = start + 1 + rng.gen::<u32>() % (1024 - start);
-    Range { start, end }
+    ChunkRange { start, end }
 }
 
-pub fn random_bytes(rng: &mut impl Rng, range: &Range, len: u32) -> (Vec<u32>, Vec<u8>) {
+pub fn random_bytes(rng: &mut impl Rng, range: &ChunkRange, len: u32) -> (Vec<u32>, Vec<u8>) {
     let random_vec: Vec<u8> = (0..len).map(|_| rng.gen()).collect();
     if range.end - range.start == 0 {
         return (vec![0, len], random_vec);
@@ -95,7 +95,7 @@ impl<T: Rng> RandomEntryIterator<T> {
         self
     }
 
-    pub fn next_key_range(&mut self) -> (Key, Range) {
+    pub fn next_key_range(&mut self) -> (Key, ChunkRange) {
         (random_key(&mut self.rng), random_range(&mut self.rng))
     }
 }
@@ -113,13 +113,13 @@ impl Default for RandomEntryIterator<ThreadRng> {
 }
 
 impl<T: Rng> Iterator for RandomEntryIterator<T> {
-    type Item = (Key, Range, Vec<u32>, Vec<u8>);
+    type Item = (Key, ChunkRange, Vec<u32>, Vec<u8>);
 
     fn next(&mut self) -> Option<Self::Item> {
         let key = random_key(&mut self.rng);
         let range = if self.one_chunk_ranges {
             let start = self.rng.gen();
-            Range { start, end: start + 1 }
+            ChunkRange { start, end: start + 1 }
         } else {
             random_range(&mut self.rng)
         };

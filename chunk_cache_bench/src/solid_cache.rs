@@ -36,7 +36,7 @@ impl ChunkCacheExt for SolidCache {
 }
 
 impl ChunkCache for SolidCache {
-    fn get(&self, key: &cas_types::Key, range: &cas_types::Range) -> Result<Option<Vec<u8>>, ChunkCacheError> {
+    fn get(&self, key: &cas_types::Key, range: &cas_types::ChunkRange) -> Result<Option<Vec<u8>>, ChunkCacheError> {
         let start = range.start as i32;
         let end = range.end as i32;
 
@@ -62,7 +62,7 @@ impl ChunkCache for SolidCache {
     fn put(
         &self,
         key: &cas_types::Key,
-        range: &cas_types::Range,
+        range: &cas_types::ChunkRange,
         chunk_byte_indices: &[u32],
         data: &[u8],
     ) -> Result<(), ChunkCacheError> {

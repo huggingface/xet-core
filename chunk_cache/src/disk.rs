@@ -10,7 +10,7 @@ use base64::engine::GeneralPurpose;
 use base64::Engine;
 use cache_file_header::CacheFileHeader;
 use cache_item::{range_contained_fn, CacheItem};
-use cas_types::{Key, Range};
+use cas_types::{ChunkRange, Key};
 use error_printer::ErrorPrinter;
 use file_utils::SafeFileCreator;
 use merklehash::MerkleHash;
@@ -205,7 +205,7 @@ impl DiskCache {
         Ok(CacheState::new(state, num_items, total_bytes))
     }
 
-    fn get_impl(&self, key: &Key, range: &Range) -> OptionResult<Vec<u8>, ChunkCacheError> {
+    fn get_impl(&self, key: &Key, range: &ChunkRange) -> OptionResult<Vec<u8>, ChunkCacheError> {
         if range.start >= range.end {
             return Err(ChunkCacheError::InvalidArguments);
         }
@@ -257,7 +257,7 @@ impl DiskCache {
         }
     }
 
-    fn find_match(&self, key: &Key, range: &Range) -> OptionResult<CacheItem, ChunkCacheError> {
+    fn find_match(&self, key: &Key, range: &ChunkRange) -> OptionResult<CacheItem, ChunkCacheError> {
         let state = self.state.lock()?;
         let items = if let Some(items) = state.inner.get(key) {
             items
@@ -279,7 +279,7 @@ impl DiskCache {
     fn put_impl(
         &self,
         key: &Key,
-        range: &Range,
+        range: &ChunkRange,
         chunk_byte_indices: &[u32],
         data: &[u8],
     ) -> Result<(), ChunkCacheError> {
@@ -339,7 +339,7 @@ impl DiskCache {
     fn validate_match(
         &self,
         key: &Key,
-        range: &Range,
+        range: &ChunkRange,
         chunk_byte_indices: &[u32],
         data: &[u8],
         cache_item: &CacheItem,
@@ -498,7 +498,7 @@ fn strictly_increasing(chunk_byte_indices: &[u32]) -> bool {
 fn get_range_from_cache_file<R: Read + Seek>(
     header: &CacheFileHeader,
     file_contents: &mut R,
-    range: &Range,
+    range: &ChunkRange,
     start: u32,
 ) -> Result<Vec<u8>, ChunkCacheError> {
     let start_byte = header
@@ -702,11 +702,17 @@ fn key_dir(key: &Key) -> PathBuf {
 }
 
 impl ChunkCache for DiskCache {
-    fn get(&self, key: &Key, range: &Range) -> Result<Option<Vec<u8>>, ChunkCacheError> {
+    fn get(&self, key: &Key, range: &ChunkRange) -> Result<Option<Vec<u8>>, ChunkCacheError> {
         self.get_impl(key, range)
     }
 
-    fn put(&self, key: &Key, range: &Range, chunk_byte_indices: &[u32], data: &[u8]) -> Result<(), ChunkCacheError> {
+    fn put(
+        &self,
+        key: &Key,
+        range: &ChunkRange,
+        chunk_byte_indices: &[u32],
+        data: &[u8],
+    ) -> Result<(), ChunkCacheError> {
         self.put_impl(key, range, chunk_byte_indices, data)
     }
 }
@@ -715,7 +721,7 @@ impl ChunkCache for DiskCache {
 mod tests {
     use std::collections::BTreeSet;
 
-    use cas_types::{Key, Range};
+    use cas_types::{ChunkRange, Key};
     use rand::thread_rng;
     use tempdir::TempDir;
 
@@ -749,7 +755,7 @@ mod tests {
         let cache = DiskCache::initialize(&config).unwrap();
 
         let key = random_key(&mut rng);
-        let range = Range { start: 0, end: 4 };
+        let range = ChunkRange { start: 0, end: 4 };
         let (chunk_byte_indices, data) = random_bytes(&mut rng, &range, RANGE_LEN);
         let put_result = cache.put(&key, &range, &chunk_byte_indices, data.as_slice());
         assert!(put_result.is_ok(), "{put_result:?}");
@@ -758,7 +764,7 @@ mod tests {
 
         // hit
         assert!(cache.get(&key, &range).unwrap().is_some());
-        let miss_range = Range { start: 100, end: 101 };
+        let miss_range = ChunkRange { start: 100, end: 101 };
         // miss
         assert!(cache.get(&key, &miss_range).unwrap().is_none());
     }
@@ -775,7 +781,7 @@ mod tests {
         let cache = DiskCache::initialize(&config).unwrap();
 
         let key = random_key(&mut rng);
-        let range = Range { start: 0, end: 4 };
+        let range = ChunkRange { start: 0, end: 4 };
         let (chunk_byte_indices, data) = random_bytes(&mut rng, &range, RANGE_LEN);
         let put_result = cache.put(&key, &range, &chunk_byte_indices, data.as_slice());
         assert!(put_result.is_ok(), "{put_result:?}");
@@ -784,15 +790,15 @@ mod tests {
 
         for start in range.start..range.end {
             for end in (start + 1)..=range.end {
-                let get_result = cache.get(&key, &Range { start, end }).unwrap();
+                let get_result = cache.get(&key, &ChunkRange { start, end }).unwrap();
                 assert!(get_result.is_some(), "range: [{start} {end})");
-                let data_portion = get_data(&Range { start, end }, &chunk_byte_indices, &data);
+                let data_portion = get_data(&ChunkRange { start, end }, &chunk_byte_indices, &data);
                 assert_eq!(data_portion, get_result.unwrap())
             }
         }
     }
 
-    fn get_data<'a>(range: &Range, chunk_byte_indices: &[u32], data: &'a [u8]) -> &'a [u8] {
+    fn get_data<'a>(range: &ChunkRange, chunk_byte_indices: &[u32], data: &'a [u8]) -> &'a [u8] {
         let start = chunk_byte_indices[range.start as usize] as usize;
         let end = chunk_byte_indices[range.end as usize] as usize;
         &data[start..end]
@@ -1037,7 +1043,7 @@ mod tests {
         let total_bytes = cache.total_bytes().unwrap();
 
         // left range
-        let left_range = Range {
+        let left_range = ChunkRange {
             start: range.start,
             end: range.end - 1,
         };
@@ -1047,7 +1053,7 @@ mod tests {
         assert_eq!(total_bytes, cache.total_bytes().unwrap());
 
         // right range
-        let right_range = Range {
+        let right_range = ChunkRange {
             start: range.start + 1,
             end: range.end,
         };
@@ -1058,7 +1064,7 @@ mod tests {
         assert_eq!(total_bytes, cache.total_bytes().unwrap());
 
         // middle range
-        let middle_range = Range {
+        let middle_range = ChunkRange {
             start: range.start + 1,
             end: range.end - 1,
         };
@@ -1086,7 +1092,7 @@ mod tests {
         let cache = DiskCache::initialize(&config).unwrap();
         let mut it = RandomEntryIterator::default().with_one_chunk_ranges(true);
         let (key, _, _, _) = it.next().unwrap();
-        let mut previously_put: Vec<(Key, Range)> = Vec::new();
+        let mut previously_put: Vec<(Key, ChunkRange)> = Vec::new();
 
         for _ in 0..(NUM / 2) {
             let (key2, mut range, chunk_byte_indices, data) = it.next().unwrap();

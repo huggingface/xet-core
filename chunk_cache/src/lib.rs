@@ -3,7 +3,7 @@ pub mod error;
 
 use std::path::PathBuf;
 
-use cas_types::{Key, Range};
+use cas_types::{ChunkRange, Key};
 pub use disk::test_utils::*;
 pub use disk::DiskCache;
 use error::ChunkCacheError;
@@ -29,7 +29,7 @@ pub trait ChunkCache: Sync + Send {
     /// key is required to be a valid CAS Key
     /// range is intended to be an index range within the xorb with constraint
     ///     0 <= range.start < range.end <= num_chunks_in_xorb(key)
-    fn get(&self, key: &Key, range: &Range) -> Result<Option<Vec<u8>>, ChunkCacheError>;
+    fn get(&self, key: &Key, range: &ChunkRange) -> Result<Option<Vec<u8>>, ChunkCacheError>;
 
     /// put should return Ok(()) if the put succeeded with no error, check the error
     /// variant for issues with validating the input, cache state, IO, etc.
@@ -42,7 +42,13 @@ pub trait ChunkCache: Sync + Send {
     /// key is required to be a valid CAS Key
     /// range is intended to be an index range within the xorb with constraint
     ///     0 <= range.start < range.end <= num_chunks_in_xorb(key)
-    fn put(&self, key: &Key, range: &Range, chunk_byte_indices: &[u32], data: &[u8]) -> Result<(), ChunkCacheError>;
+    fn put(
+        &self,
+        key: &Key,
+        range: &ChunkRange,
+        chunk_byte_indices: &[u32],
+        data: &[u8],
+    ) -> Result<(), ChunkCacheError>;
 }
 
 #[derive(Debug)]

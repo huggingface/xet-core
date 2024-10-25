@@ -4,7 +4,7 @@ use std::mem::size_of;
 
 use base64::Engine;
 use blake3::Hash;
-use cas_types::Range;
+use cas_types::ChunkRange;
 use utils::serialization_utils::{read_u32, read_u64, write_u32, write_u64};
 
 use super::BASE64_ENGINE;
@@ -18,7 +18,7 @@ const CACHE_ITEM_FILE_NAME_BUF_SIZE: usize = size_of::<u32>() * 2 + size_of::<u6
 /// for validation.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct CacheItem {
-    pub(crate) range: Range,
+    pub(crate) range: ChunkRange,
     pub(crate) len: u64,
     pub(crate) hash: Hash,
 }
@@ -72,14 +72,14 @@ impl CacheItem {
         }
 
         Ok(Self {
-            range: Range { start, end },
+            range: ChunkRange { start, end },
             len,
             hash,
         })
     }
 }
 
-pub(super) fn range_contained_fn(range: &Range) -> impl FnMut(&CacheItem) -> std::cmp::Ordering + '_ {
+pub(super) fn range_contained_fn(range: &ChunkRange) -> impl FnMut(&CacheItem) -> std::cmp::Ordering + '_ {
     |item: &CacheItem| {
         if item.range.start > range.start {
             Ordering::Greater
@@ -105,7 +105,7 @@ pub fn read_hash(reader: &mut impl Read) -> Result<blake3::Hash, std::io::Error>
 mod tests {
     use base64::Engine;
     use blake3::OUT_LEN;
-    use cas_types::Range;
+    use cas_types::ChunkRange;
     use sorted_vec::SortedVec;
 
     use super::{range_contained_fn, CacheItem};
@@ -125,7 +125,7 @@ mod tests {
     #[test]
     fn test_to_file_name_len() {
         let cache_item = CacheItem {
-            range: Range { start: 0, end: 1024 },
+            range: ChunkRange { start: 0, end: 1024 },
             len: 16 << 20,
             hash: blake3::hash(&(1..100).collect::<Vec<u8>>()),
         };
@@ -137,11 +137,11 @@ mod tests {
 
     #[test]
     fn test_binary_search() {
-        let range = |i: u32| Range {
+        let range = |i: u32| ChunkRange {
             start: i * 100,
             end: (i + 1) * 100,
         };
-        let sub_range = |i: u32| Range {
+        let sub_range = |i: u32| ChunkRange {
             start: i * 100 + 20,
             end: (i + 1) * 100 - 1,
         };
