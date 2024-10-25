@@ -14,8 +14,12 @@ pub struct UploadXorbResponse {
     pub was_inserted: bool,
 }
 
+/// Start and exclusive-end range for chunk content
 pub type ChunkRange = Range<u32>;
+/// Start and exclusive-end range for file content
 pub type FileRange = Range<u64>;
+/// Start and inclusive-end range for HTTP range content
+pub type HttpRange = Range<u32>;
 
 // note that the standard PartialOrd/Ord impls will first check `start` then `end`
 #[derive(Debug, Serialize, Deserialize, Clone, Eq, PartialEq, PartialOrd, Ord, Default, Hash)]
@@ -81,7 +85,7 @@ pub struct CASReconstructionFetchInfo {
     pub range: ChunkRange,
     pub url: String,
     // byte index start and end in a xorb, used exclusively for Range header
-    pub url_range: ChunkRange,
+    pub url_range: HttpRange,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
