@@ -16,7 +16,6 @@ use crate::cas_interface::create_cas_client;
 use crate::clean::Cleaner;
 use crate::configurations::*;
 use crate::errors::*;
-use crate::metrics::FILTER_CAS_BYTES_PRODUCED;
 use crate::remote_shard_interface::RemoteShardInterface;
 use crate::shard_interface::create_shard_manager;
 use crate::PointerFile;
@@ -194,20 +193,8 @@ pub(crate) async fn register_new_cas_block(
     let cas_hash = cas_node_hash(&cas_data.chunks[..]);
 
     let raw_bytes_len = cas_data.data.len();
-    // We now assume that the server will compress Xorbs using lz4,
-    // without actually compressing the data client-side.
-    // The accounting logic will be moved to server-side in the future.
-    let compressed_bytes_len = lz4::block::compress(&cas_data.data, Some(lz4::block::CompressionMode::DEFAULT), false)
-        .map(|out| out.len())
-        .unwrap_or(raw_bytes_len)
-        .min(raw_bytes_len);
 
-    let metadata = CASChunkSequenceHeader::new_with_compression(
-        cas_hash,
-        cas_data.chunks.len(),
-        raw_bytes_len,
-        compressed_bytes_len,
-    );
+    let metadata = CASChunkSequenceHeader::new(cas_hash, cas_data.chunks.len(), raw_bytes_len);
 
     let mut pos = 0;
     let chunks: Vec<_> = cas_data
@@ -249,8 +236,6 @@ pub(crate) async fn register_new_cas_block(
 
         shard_manager.add_file_reconstruction_info(fi).await?;
     }
-
-    FILTER_CAS_BYTES_PRODUCED.inc_by(compressed_bytes_len as u64);
 
     cas_data.data.clear();
     cas_data.chunks.clear();
