@@ -7,14 +7,14 @@ edition = "2021"
 
 [dependencies]
 tokio = { version = "1.36", features = ["full"] }
-anyhow = "1"
-async-scoped = {version = "0.7", features = ["use-tokio"]}
+async-scoped = { version = "0.7", features = ["use-tokio"] }
 futures = "0.3.28"
 async-trait = "0.1.53"
-deadqueue = "0.2.4"
-tracing = "0.1.31"
-more-asserts = "0.3.*"
 len-trait = "0.6.1"
+
+[dev-dependencies]
+anyhow = "1"
+more-asserts = "0.3.*"
 
 [features]
 strict = []
