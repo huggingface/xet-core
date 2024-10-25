@@ -16,7 +16,8 @@ use mdb_shard::{hash_is_global_dedup_eligible, ShardFileManager};
 use merkledb::aggregate_hashes::file_node_hash;
 use merkledb::constants::TARGET_CAS_BLOCK_SIZE;
 use merklehash::MerkleHash;
-use rand::Rng; // TODO: this is just for generating random sha256 values instead of the real values
+use rand::Rng;
+// TODO: this is just for generating random sha256 values instead of the real values
 use tokio::sync::mpsc::error::TryRecvError;
 use tokio::sync::mpsc::{channel, Receiver, Sender};
 use tokio::sync::Mutex;
@@ -109,12 +110,13 @@ impl Cleaner {
 
         let chunker = chunk_target_default(data_c, chunk_p);
 
-        // TODO: implement sha calculation in chunker
+        // Converts the provided sha from a hex string to a MerkleHash.
+        // If the caller didn't provide a sha, we currently return an error.
+        // TODO: implement sha calculation in chunker if not provided
         let sha256 = sha256
-            .or_else(rand_sha)
             .as_ref()
-            .map(|hex| MerkleHash::from_hex(hex))
-            .transpose()
+            .map(|hex| MerkleHash::from_hex(hex)) // Option<Result<MerkleHash, Error>>
+            .ok_or(CleanTaskError("sha256 needs to be passed in by caller".to_string()))?
             .log_error("hash is not a valid hex string".to_string())?;
 
         let cleaner = Arc::new(Cleaner {
@@ -132,7 +134,7 @@ impl Cleaner {
             tracking_info: Mutex::new(Default::default()),
             small_file_buffer: Mutex::new(Some(Vec::with_capacity(small_file_threshold))),
             file_name: file_name.map(|f| f.to_owned()),
-            sha256,
+            sha256: Some(sha256),
         });
 
         Self::run(cleaner.clone(), chunk_c).await;
@@ -625,12 +627,4 @@ impl Cleaner {
         );
         Ok(pointer_file.to_string())
     }
-}
-
-fn rand_sha() -> Option<String> {
-    let sha = rand::thread_rng().gen::<[u8; 32]>().to_vec();
-    Some(sha.iter().fold(String::new(), |mut output, b| {
-        let _ = write!(output, "{b:02x}");
-        output
-    }))
 }
