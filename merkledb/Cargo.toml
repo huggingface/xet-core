@@ -9,13 +9,13 @@ edition = "2021"
 doctest = false
 
 [dependencies]
-merklehash = { path = "../merklehash"} 
-rand = "0.8.4"
+merklehash = { path = "../merklehash" }
+xet_error = { path = "../xet_error" }
+parutils = { path = "../parutils" }
+rand = "0.8.5"
 rand_core = "0.6.3"
 rand_chacha = "0.3.1"
-serde = {version="1.0.129", features = ["derive"]}
-structopt = "0.3.22"
-ron = "0.6.4"
+serde = { version = "1.0.129", features = ["derive"] }
 gearhash = "0.1.3"
 walkdir = "2.3.2"
 rayon = "1.5.1"
@@ -23,21 +23,17 @@ bincode = "1.3.3"
 rustc-hash = "1.1.0"
 tempfile = "3.2.0"
 bitflags = "1.3.2"
-itertools = "0.10.1"
-xet_error = {path = "../xet_error"}
 tracing = "0.1.31"
 async-trait = "0.1.9"
-tokio = { version = "1.36", features = ["full"] }
-futures = "0.3"
 lazy_static = "1.4.0"
 clap = { version = "3.1.6", features = ["derive"] }
 blake3 = "1.5.1"
-parutils = { path = "../parutils"}
 
 [dev-dependencies]
 criterion = { version = "0.3.5", features = ["html_reports"] }
 lazy_static = "1.4.0"
-async-scoped = {version = "0.7", features = ["use-tokio"]}
+async-scoped = { version = "0.7", features = ["use-tokio"] }
+tokio = { version = "1.36", features = ["full"] }
 
 [[bench]]
 name = "rolling_hash_benchmark"
