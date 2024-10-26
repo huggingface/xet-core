@@ -354,6 +354,10 @@ impl<W: Write> HashedWrite<W> {
         let digest = self.hasher.finalize();
         DataHash::from(digest.as_bytes())
     }
+
+    pub fn into_inner(self) -> W {
+        self.writer
+    }
 }
 
 impl<W: Write> Write for HashedWrite<W> {
