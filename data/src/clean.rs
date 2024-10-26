@@ -2,7 +2,9 @@ use std::collections::HashMap;
 use std::mem::take;
 use std::ops::DerefMut;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::time::Instant;
 
 use cas_object::range_hash_from_chunks;
 use lazy_static::lazy_static;
@@ -16,7 +18,7 @@ use tokio::sync::mpsc::error::TryRecvError;
 use tokio::sync::mpsc::{channel, Receiver, Sender};
 use tokio::sync::Mutex;
 use tokio::task::{JoinHandle, JoinSet};
-use tracing::{debug, error, warn};
+use tracing::{debug, error, info, warn};
 
 use crate::cas_interface::Client;
 use crate::chunking::{chunk_target_default, ChunkYieldType};
@@ -49,9 +51,25 @@ struct DedupFileTrackingInfo {
     file_hashes: Vec<(MerkleHash, usize)>,
     file_info: Vec<FileDataSequenceEntry>,
     current_cas_file_info_indices: Vec<usize>,
-    file_size: u64,
     current_cas_block_hashes: HashMap<MerkleHash, usize>,
     cas_data: CASDataAggregator,
+}
+
+#[derive(Debug)]
+struct CleanMetrics {
+    file_size: AtomicU64,
+    new_bytes_after_dedup: AtomicU64,
+    start_time: Instant,
+}
+
+impl Default for CleanMetrics {
+    fn default() -> Self {
+        Self {
+            file_size: 0.into(),
+            new_bytes_after_dedup: 0.into(),
+            start_time: Instant::now(),
+        }
+    }
 }
 
 pub struct Cleaner {
@@ -80,6 +98,9 @@ pub struct Cleaner {
 
     // Auxiliary info
     file_name: Option<PathBuf>,
+
+    // Metrics
+    metrics: CleanMetrics,
 }
 
 impl Cleaner {
@@ -117,6 +138,7 @@ impl Cleaner {
             tracking_info: Mutex::new(Default::default()),
             small_file_buffer: Mutex::new(Some(Vec::with_capacity(small_file_threshold))),
             file_name: file_name.map(|f| f.to_owned()),
+            metrics: Default::default(),
         });
 
         Self::run(cleaner.clone(), chunk_c).await;
@@ -126,6 +148,8 @@ impl Cleaner {
 
     pub async fn add_bytes(&self, data: Vec<u8>) -> Result<()> {
         self.task_is_running().await?;
+
+        self.metrics.file_size.fetch_add(data.len() as u64, Ordering::Relaxed);
 
         if !self.check_passthrough_status(&data).await? {
             self.add_data_to_chunking(BufferItem::Value(data)).await?
@@ -137,13 +161,29 @@ impl Cleaner {
     pub async fn result(&self) -> Result<String> {
         self.finish().await?;
 
-        let mut small_file_buffer = self.small_file_buffer.lock().await;
-        if let Some(buffer) = small_file_buffer.take() {
-            let small_file = String::from_utf8(buffer)?;
-            return Ok(small_file);
-        }
+        let duration = Instant::now().duration_since(self.metrics.start_time);
+        let file_size = self.metrics.file_size.load(Ordering::Relaxed);
 
-        self.to_pointer_file().await
+        // File is small, all data kept in the small file buffer.
+        let mut small_file_buffer = self.small_file_buffer.lock().await;
+        let (new_bytes, return_file) = if let Some(buffer) = small_file_buffer.take() {
+            let small_file = String::from_utf8(buffer)?;
+            (small_file.len() as u64, small_file)
+        } else {
+            let new_bytes = self.metrics.new_bytes_after_dedup.load(Ordering::Relaxed);
+            (new_bytes, self.to_pointer_file().await?)
+        };
+
+        info!(
+            "Cleaning file {:?} finished in {} s {} ms, processed {} bytes, produced {} bytes after dedup.",
+            self.file_name,
+            duration.as_secs(),
+            duration.subsec_millis(),
+            file_size,
+            new_bytes
+        );
+
+        Ok(return_file)
     }
 
     async fn run(cleaner: Arc<Self>, mut chunks: Receiver<Option<ChunkYieldType>>) {
@@ -379,7 +419,6 @@ impl Cleaner {
                 for i in cur_idx..(cur_idx + n_deduped) {
                     n_bytes += chunks[i].1.len();
                 }
-                tracking_info.file_size += n_bytes as u64;
 
                 // Do we modify the previous entry as this is the next logical chunk, or do we
                 // start a new entry?
@@ -401,7 +440,6 @@ impl Cleaner {
                 let (chunk, bytes) = &chunks[cur_idx];
 
                 n_bytes = chunks[cur_idx].1.len();
-                tracking_info.file_size += n_bytes as u64;
 
                 // This is new data.
                 let add_new_data;
@@ -454,6 +492,8 @@ impl Cleaner {
                     tracking_info.current_cas_block_hashes.insert(chunk.hash, cas_data_chunks_len);
                     tracking_info.cas_data.chunks.push((chunk.hash, n_bytes));
                     tracking_info.cas_data.data.extend(bytes);
+
+                    self.metrics.new_bytes_after_dedup.fetch_add(n_bytes as u64, Ordering::Relaxed);
 
                     if tracking_info.cas_data.data.len() > TARGET_CAS_BLOCK_SIZE {
                         let cas_hash = register_new_cas_block(
@@ -513,8 +553,6 @@ impl Cleaner {
         let mut tracking_info = self.tracking_info.lock().await;
 
         let file_hash = file_node_hash(&tracking_info.file_hashes, &self.repo_salt.unwrap_or_default())?;
-
-        let file_size = tracking_info.file_size;
 
         // Is the file registered already?  If so, nothing needs to be added now.
         let file_already_registered = match self.remote_shards.file_query_policy {
@@ -582,6 +620,7 @@ impl Cleaner {
                 drop(cas_data_accumulator);
             }
         }
+        let file_size = self.metrics.file_size.load(Ordering::Relaxed);
         // we only add to the counters if we see changes
         FILTER_BYTES_CLEANED.inc_by(file_size);
 
