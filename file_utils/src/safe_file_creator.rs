@@ -36,7 +36,7 @@ impl SafeFileCreator {
     }
 
     /// Safely creates a new file while a destination name can't be decided now. Users need to call
-    /// ```
+    /// ```ignore
     /// pub fn dest_at<P: AsRef<Path>>(dest_path: P)
     /// ```
     /// to set the destination before closing the file.
