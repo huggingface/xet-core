@@ -2,7 +2,7 @@ use std::io::Write;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use cas_types::QueryReconstructionResponse;
+use cas_types::{FileRange, QueryReconstructionResponse};
 use mdb_shard::shard_dedup_probe::ShardDedupProber;
 use mdb_shard::shard_file_reconstructor::FileReconstructor;
 use merklehash::MerkleHash;
@@ -48,7 +48,7 @@ pub trait UploadClient {
 /// by controlling the number of concurrent requests.
 #[async_trait]
 pub trait ReconstructionClient {
-    /// Get a entire file by file hash.
+    /// Get a entire file by file hash with an optional bytes range.
     ///
     /// The http_client passed in is a non-authenticated client. This is used to directly communicate
     /// with the backing store (S3) to retrieve xorbs.
@@ -56,19 +56,7 @@ pub trait ReconstructionClient {
         &self,
         http_client: Arc<ClientWithMiddleware>,
         hash: &MerkleHash,
-        writer: &mut Box<dyn Write + Send>,
-    ) -> Result<()>;
-
-    /// Get a entire file by file hash at a specific bytes range.
-    ///
-    /// The http_client passed in is a non-authenticated client. This is used to directly communicate
-    /// with the backing store (S3) to retrieve xorbs.
-    async fn get_file_byte_range(
-        &self,
-        http_client: Arc<ClientWithMiddleware>,
-        hash: &MerkleHash,
-        offset: u64,
-        length: u64,
+        byte_range: Option<FileRange>,
         writer: &mut Box<dyn Write + Send>,
     ) -> Result<()>;
 }
@@ -84,7 +72,7 @@ pub(crate) trait Reconstructable {
     async fn get_reconstruction(
         &self,
         hash: &MerkleHash,
-        byte_range: Option<(u64, u64)>,
+        byte_range: Option<FileRange>,
     ) -> Result<QueryReconstructionResponse>;
 }
 

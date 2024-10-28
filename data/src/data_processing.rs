@@ -5,6 +5,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use cas_client::Client;
+use cas_types::FileRange;
 use mdb_shard::cas_structs::{CASChunkSequenceEntry, CASChunkSequenceHeader, MDBCASInfo};
 use mdb_shard::file_structs::MDBFileInfo;
 use mdb_shard::ShardFileManager;
@@ -265,7 +266,7 @@ impl PointerFileTranslator {
         &self,
         pointer: &PointerFile,
         writer: &mut Box<dyn Write + Send>,
-        range: Option<(usize, usize)>,
+        range: Option<FileRange>,
     ) -> Result<()> {
         self.smudge_file_from_hash(&pointer.hash()?, writer, range).await
     }
@@ -274,10 +275,10 @@ impl PointerFileTranslator {
         &self,
         file_id: &MerkleHash,
         writer: &mut Box<dyn Write + Send>,
-        _range: Option<(usize, usize)>,
+        range: Option<FileRange>,
     ) -> Result<()> {
         let http_client = cas_client::build_http_client(&None)?;
-        self.cas.get_file(Arc::new(http_client), file_id, writer).await?;
+        self.cas.get_file(Arc::new(http_client), file_id, range, writer).await?;
         Ok(())
     }
 }

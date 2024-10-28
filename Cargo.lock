@@ -1145,6 +1145,7 @@ dependencies = [
  "async-trait",
  "cas_client",
  "cas_object",
+ "cas_types",
  "clap 3.2.25",
  "error_printer",
  "file_utils",

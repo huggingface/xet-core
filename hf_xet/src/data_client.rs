@@ -4,6 +4,7 @@ use std::io::{BufReader, Read, Write};
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use cas_types::FileRange;
 use data::errors::DataProcessingError;
 use data::{errors, PointerFile, PointerFileTranslator};
 use parutils::{tokio_par_for_each, ParallelError};

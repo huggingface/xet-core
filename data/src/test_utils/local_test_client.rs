@@ -6,6 +6,7 @@ use anyhow::anyhow;
 use async_trait::async_trait;
 use cas_client::tests_utils::*;
 use cas_client::{CasClientError, Client, LocalClient, ReconstructionClient, UploadClient};
+use cas_types::FileRange;
 use mdb_shard::shard_file_reconstructor::FileReconstructor;
 use mdb_shard::ShardFileManager;
 use merklehash::MerkleHash;
@@ -53,6 +54,7 @@ impl ReconstructionClient for LocalTestClient {
         &self,
         _http_client: Arc<ClientWithMiddleware>,
         hash: &MerkleHash,
+        byte_range: Option<FileRange>,
         writer: &mut Box<dyn Write + Send>,
     ) -> Result<(), CasClientError> {
         let Some((file_info, _)) = self
@@ -76,23 +78,13 @@ impl ReconstructionClient for LocalTestClient {
             else {
                 return Err(CasClientError::InvalidRange);
             };
+            let start = byte_range.as_ref().map(|range| range.start as usize).unwrap_or(0);
+            let end = byte_range.as_ref().map(|range| range.end as usize).unwrap_or(one_range.len());
 
-            writer.write_all(&one_range)?;
+            writer.write_all(&one_range[start..end])?;
         }
 
         Ok(())
-    }
-
-    #[allow(unused_variables)]
-    async fn get_file_byte_range(
-        &self,
-        _http_client: Arc<ClientWithMiddleware>,
-        hash: &MerkleHash,
-        offset: u64,
-        length: u64,
-        writer: &mut Box<dyn Write + Send>,
-    ) -> Result<(), CasClientError> {
-        todo!()
     }
 }
 

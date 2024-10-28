@@ -1,3 +1,4 @@
+use std::cmp::{max, min};
 use std::collections::HashMap;
 use std::io::{Cursor, Write};
 use std::sync::Arc;
@@ -6,11 +7,12 @@ use anyhow::anyhow;
 use async_trait::async_trait;
 use cas_object::CasObject;
 use cas_types::{
-    CASReconstructionFetchInfo, CASReconstructionTerm, HexMerkleHash, HttpRange, Key, QueryReconstructionResponse,
-    UploadXorbResponse,
+    CASReconstructionFetchInfo, CASReconstructionTerm, FileRange, HexMerkleHash, HttpRange, Key,
+    QueryReconstructionResponse, UploadXorbResponse,
 };
 use chunk_cache::{CacheConfig, ChunkCache, DiskCache};
 use error_printer::ErrorPrinter;
+use http::header::RANGE;
 use merklehash::MerkleHash;
 use reqwest::{StatusCode, Url};
 use reqwest_middleware::ClientWithMiddleware;
@@ -102,26 +104,16 @@ impl ReconstructionClient for RemoteClient {
         &self,
         http_client: Arc<ClientWithMiddleware>,
         hash: &MerkleHash,
+        byte_range: Option<FileRange>,
         writer: &mut Box<dyn Write + Send>,
     ) -> Result<()> {
         // get manifest of xorbs to download, api call to CAS
-        let manifest = self.get_reconstruction(hash, None).await?;
+        let manifest = self.get_reconstruction(hash, byte_range.clone()).await?;
 
-        self.reconstruct_file_to_writer(http_client, manifest, None, writer).await?;
+        self.reconstruct_file_to_writer(http_client, manifest, byte_range, writer)
+            .await?;
 
         Ok(())
-    }
-
-    #[allow(unused_variables)]
-    async fn get_file_byte_range(
-        &self,
-        http_client: Arc<ClientWithMiddleware>,
-        hash: &MerkleHash,
-        offset: u64,
-        length: u64,
-        writer: &mut Box<dyn Write + Send>,
-    ) -> Result<()> {
-        todo!()
     }
 }
 
@@ -130,13 +122,16 @@ impl Reconstructable for RemoteClient {
     async fn get_reconstruction(
         &self,
         file_id: &MerkleHash,
-        _bytes_range: Option<(u64, u64)>,
+        bytes_range: Option<FileRange>,
     ) -> Result<QueryReconstructionResponse> {
         let url = Url::parse(&format!("{}/reconstruction/{}", self.endpoint, file_id.hex()))?;
 
-        let response = self
-            .http_auth_client
-            .get(url)
+        let mut request = self.http_auth_client.get(url);
+        if let Some(range) = bytes_range {
+            // convert exclusive-end to inclusive-end range
+            request = request.header(RANGE, format!("{}-{}", range.start, range.end - 1))
+        }
+        let response = request
             .send()
             .await
             .log_error("error invoking reconstruction api")?
@@ -202,15 +197,20 @@ impl RemoteClient {
         &self,
         http_client: Arc<ClientWithMiddleware>,
         reconstruction_response: QueryReconstructionResponse,
-        _byte_range: Option<(u64, u64)>,
+        byte_range: Option<FileRange>,
         writer: &mut Box<dyn Write + Send>,
-    ) -> Result<usize> {
+    ) -> Result<u64> {
         let terms = reconstruction_response.terms;
         let fetch_info = Arc::new(reconstruction_response.fetch_info);
 
         let single_flight_group = Arc::new(singleflight::Group::new());
 
-        let total_len = terms.iter().fold(0, |acc, x| acc + x.unpacked_length);
+        let total_len = byte_range
+            .as_ref()
+            .map(|range| range.end - range.start)
+            // use the full reconstruction terms if fetching full range
+            .unwrap_or(terms.iter().fold(0, |acc, x| acc + x.unpacked_length as u64));
+        let mut remaining_len = total_len;
         let term_data_futures = terms.into_iter().map(|term| {
             let http_client = http_client.clone();
             let disk_cache = self.disk_cache.clone();
@@ -218,16 +218,22 @@ impl RemoteClient {
             let single_flight_group = single_flight_group.clone();
             tokio::spawn(get_one_term(http_client, disk_cache, term, fetch_info, single_flight_group))
         });
-        for fut in term_data_futures {
+        for (i, fut) in term_data_futures.enumerate() {
             let term_data = fut
                 .await
                 .map_err(|e| CasClientError::InternalError(anyhow!("join error {e}")))?
                 .log_error("error getting one term")?;
-            writer.write_all(&term_data)?;
+            let start = if i == 0 {
+                // use offset_into_first_range for the first term if needed
+                max(0, reconstruction_response.offset_into_first_range as usize)
+            } else {
+                0
+            };
+            let end: usize = min(remaining_len, term_data.len() as u64) as usize + start;
+            writer.write_all(&term_data[start..end])?;
+            remaining_len -= (end - start) as u64;
         }
-        // TODO: respect the offset_from_first_byte field of response
-        //  only necessary for range-reconstruction, not needed for full file
-        Ok(total_len as usize)
+        Ok(total_len)
     }
 }
 
