@@ -103,6 +103,19 @@ pub struct QueryReconstructionResponse {
     pub fetch_info: HashMap<HexMerkleHash, Vec<CASReconstructionFetchInfo>>,
 }
 
+// Response type for querying reconstruction for a batch of files
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct BatchQueryReconstructionResponse {
+    // Map of FileID to series of terms describing a xorb hash and chunk range to be retreived
+    // to reconstruct the file
+    pub files: HashMap<HexMerkleHash, Vec<CASReconstructionTerm>>,
+    // information to fetch xorb ranges to reconstruct the file
+    // each key is a hash that is present in the `terms` field reconstruction
+    // terms, the values are information we will need to fetch ranges from
+    // each xorb needed to reconstruct the file
+    pub fetch_info: HashMap<HexMerkleHash, Vec<CASReconstructionFetchInfo>>,
+}
+
 #[derive(Debug, Serialize_repr, Deserialize_repr, Clone, Copy)]
 #[repr(u8)]
 pub enum UploadShardResponseType {
