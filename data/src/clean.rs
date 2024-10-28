@@ -1,5 +1,4 @@
 use std::collections::HashMap;
-use std::fmt::Write;
 use std::mem::take;
 use std::ops::DerefMut;
 use std::path::{Path, PathBuf};
@@ -16,8 +15,6 @@ use mdb_shard::{hash_is_global_dedup_eligible, ShardFileManager};
 use merkledb::aggregate_hashes::file_node_hash;
 use merkledb::constants::TARGET_CAS_BLOCK_SIZE;
 use merklehash::MerkleHash;
-use rand::Rng;
-// TODO: this is just for generating random sha256 values instead of the real values
 use tokio::sync::mpsc::error::TryRecvError;
 use tokio::sync::mpsc::{channel, Receiver, Sender};
 use tokio::sync::Mutex;

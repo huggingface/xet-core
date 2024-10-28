@@ -188,7 +188,7 @@ fn set_operation<R: Read + Seek, W: Write>(
                     NextAction::Merge => {
                         let fh0 = file_data_header[0].as_ref().unwrap();
                         let fh1 = file_data_header[1].as_ref().unwrap();
-                        FileDataSequenceHeader::check_same_file(fh0, fh1)?;
+                        FileDataSequenceHeader::verify_same_file(fh0, fh1);
                         let has_verification = fh0.contains_verification() || fh1.contains_verification();
                         let has_metadata_ext = fh0.contains_metadata_ext() || fh1.contains_metadata_ext();
 

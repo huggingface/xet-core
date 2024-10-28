@@ -75,11 +75,8 @@ async fn clean_file(processor: &PointerFileTranslator, (f, sha): (String, String
     let mut read_buf = vec![0u8; READ_BLOCK_SIZE];
     let path = PathBuf::from(f);
     let mut reader = BufReader::new(File::open(path.clone())?);
-    if sha != "" {
-        return Err(DataProcessingError::InternalError("foo".to_string()));
-    }
-
-    let handle = processor.start_clean(1024, None, Some(sha)).await?;
+    let some_sha = (!sha.is_empty()).then_some(sha); // None if sha is empty
+    let handle = processor.start_clean(1024, None, some_sha).await?;
 
     loop {
         let bytes = reader.read(&mut read_buf)?;

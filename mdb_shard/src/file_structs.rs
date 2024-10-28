@@ -16,9 +16,9 @@ pub const MDB_FILE_FLAG_WITH_METADATA_EXT: u32 = 1 << 30;
 pub const MDB_FILE_FLAG_METADATA_EXT_MASK: u32 = 1 << 30;
 
 /// Each file consists of a FileDataSequenceHeader following
-/// a sequence of FileDataSequenceEntry and maybe a sequence
-/// of FileVerificationEntry, determined by file flags.
-
+/// a sequence of FileDataSequenceEntry, maybe a sequence
+/// of FileVerificationEntry, and maybe a FileMetadataExt
+/// determined by file flags.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct FileDataSequenceHeader {
     pub file_hash: MerkleHash,
@@ -117,23 +117,13 @@ impl FileDataSequenceHeader {
         }
     }
 
-    /// Checks that the two headers correspond to the same file. Checks that
+    /// Verifies that the two headers correspond to the same file. Checks that
     /// the file hashes are the same and that the number of entries are the
     /// same.
-    pub fn check_same_file(header1: &Self, header2: &Self) -> Result<(), MDBShardError> {
-        if header1.file_hash != header2.file_hash {
-            return Err(MDBShardError::Other(format!(
-                "hashes don't match: {}, {}",
-                header1.file_hash, header2.file_hash
-            )));
-        }
-        if header1.num_entries != header2.num_entries {
-            return Err(MDBShardError::Other(format!(
-                "num entries for same hash don't match: {}, {}",
-                header1.num_entries, header2.num_entries
-            )));
-        }
-        Ok(())
+    #[inline]
+    pub fn verify_same_file(header1: &Self, header2: &Self) {
+        debug_assert_eq!(header1.file_hash, header2.file_hash, "hashes don't match");
+        debug_assert_eq!(header1.num_entries, header2.num_entries, "num entries for same hash don't match");
     }
 
     /// Compares the flags of headers A and B to determine if either bitmap is a superset
@@ -423,7 +413,7 @@ impl MDBFileInfo {
     /// After this call, self will have the verification info and metadata
     /// extension if they exist in the other object but not this one.
     pub fn merge_from(&mut self, other: &Self) -> Result<(), MDBShardError> {
-        FileDataSequenceHeader::check_same_file(&self.metadata, &other.metadata)?;
+        FileDataSequenceHeader::verify_same_file(&self.metadata, &other.metadata);
         if self.contains_verification() != other.contains_verification() && other.contains_verification() {
             // self doesn't have verification. Copy from other
             self.metadata.file_flags |= MDB_FILE_FLAG_WITH_VERIFICATION;
