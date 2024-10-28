@@ -142,7 +142,7 @@ impl ShardDedupProber<CasClientError> for HttpShardClient {
             .get(url)
             .send()
             .await
-            .map_err(|e| CasClientError::Other(format!("request failed with code {e}")))?;
+            .map_err(|e| CasClientError::Other(format!("request failed with error {e}")))?;
 
         // Dedup shard not found, return empty result
         if !response.status().is_success() {
@@ -162,7 +162,7 @@ impl ShardDedupProber<CasClientError> for HttpShardClient {
         let file_name = local_shard_name(&shard_hash);
         let file_path = shard_cache_dir.join(file_name);
         let mut writer = hashed_writer.into_inner();
-        writer.dest_at(file_path);
+        writer.set_dest_path(file_path);
         writer.close()?;
 
         Ok(vec![shard_hash])

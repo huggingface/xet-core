@@ -21,7 +21,7 @@ impl SafeFileCreator {
     /// and a temporary file is created then renamed on close.
     pub fn new<P: AsRef<Path>>(dest_path: P) -> io::Result<Self> {
         let dest_path = dest_path.as_ref().to_path_buf();
-        let temp_path = Self::temp_file_path(Some(&dest_path));
+        let temp_path = Self::temp_file_path(Some(&dest_path))?;
 
         // This matches the permissions and ownership of the parent directory
         let file = create_file(&temp_path)?;
@@ -37,11 +37,11 @@ impl SafeFileCreator {
 
     /// Safely creates a new file while a destination name can't be decided now. Users need to call
     /// ```ignore
-    /// pub fn dest_at<P: AsRef<Path>>(dest_path: P)
+    /// pub fn set_dest_path<P: AsRef<Path>>(dest_path: P)
     /// ```
     /// to set the destination before closing the file.
     pub fn new_unnamed() -> io::Result<Self> {
-        let temp_path = Self::temp_file_path(None);
+        let temp_path = Self::temp_file_path(None)?;
 
         // This matches the permissions and ownership of the parent directory
         let file = create_file(&temp_path)?;
@@ -64,18 +64,27 @@ impl SafeFileCreator {
     }
 
     /// Generates a temporary file path in the same directory as the destination file
-    fn temp_file_path(dest_path: Option<&Path>) -> PathBuf {
-        let path = dest_path.map(|p| p.to_owned()).unwrap_or_default();
-        let parent = path.parent().map(|p| p.to_owned()).unwrap_or_else(std::env::temp_dir);
-        let file_name = path.file_name().unwrap_or_default().to_str().unwrap_or_default();
+    fn temp_file_path(dest_path: Option<&Path>) -> io::Result<PathBuf> {
+        let (parent, file_name) = match dest_path {
+            Some(p) => {
+                let parent = (p.parent().ok_or_else(|| {
+                    io::Error::new(io::ErrorKind::InvalidInput, "path doesn't have a valid parent directory")
+                }))?;
+                let file_name = p.file_name().ok_or_else(|| {
+                    io::Error::new(io::ErrorKind::InvalidInput, "path doesn't have a valid file name")
+                })?;
+                (parent.to_owned(), file_name.to_str().unwrap_or_default())
+            },
+            None => (std::env::temp_dir(), ""),
+        };
 
         let mut rng = thread_rng();
         let random_hash: String = (0..10).map(|_| rng.sample(Alphanumeric)).map(char::from).collect();
         let temp_file_name = format!(".{}.{hash}.tmp", file_name, hash = random_hash);
-        parent.join(temp_file_name)
+        Ok(parent.join(temp_file_name))
     }
 
-    pub fn dest_at<P: AsRef<Path>>(&mut self, dest_path: P) {
+    pub fn set_dest_path<P: AsRef<Path>>(&mut self, dest_path: P) {
         let dest_path = dest_path.as_ref().to_path_buf();
         self.dest_path = Some(dest_path);
     }
@@ -212,7 +221,7 @@ mod tests {
 
         let dir = tempdir().unwrap();
         let dest_path = dir.path().join("new_file.txt");
-        safe_file_creator.dest_at(&dest_path);
+        safe_file_creator.set_dest_path(&dest_path);
         safe_file_creator.close().unwrap();
 
         // Verify file contents
