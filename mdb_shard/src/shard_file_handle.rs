@@ -69,8 +69,7 @@ impl MDBShardFile {
         )
     }
 
-    /// Loads the MDBShardFile struct from
-    ///
+    /// Loads the MDBShardFile struct from a file path
     pub fn load_from_file(path: &Path) -> Result<Self> {
         if let Some(shard_hash) = parse_shard_filename(path.to_str().unwrap()) {
             let mut f = std::fs::File::open(path)?;

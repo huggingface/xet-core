@@ -113,11 +113,11 @@ fn set_operation<R: Read + Seek, W: Write>(
 
     footer.file_info_offset = out_offset;
 
+    // This is written later, after this section.
+    let mut file_lookup_data = Vec::<(u64, u32)>::new();
     {
         // Manually go through the whole file info section and
 
-        // TODO: if we run out of space someday, this should be made into a disk-backed stack.
-        let mut file_lookup_data = Vec::<(u64, u32)>::new();
         let mut current_index = 0;
 
         let load_next = |_r: &mut R, _s: &MDBShardInfo| -> Result<_> {
@@ -180,15 +180,11 @@ fn set_operation<R: Read + Seek, W: Write>(
             }
         }
         out_offset += FileDataSequenceHeader::bookend().serialize(out)? as u64;
-
-        footer.file_lookup_offset = out_offset;
-        footer.file_lookup_num_entry = file_lookup_data.len() as u64;
-        out_offset += (file_lookup_data.len() * (size_of::<u64>() + size_of::<u32>())) as u64;
-        for (h, idx) in file_lookup_data {
-            write_u64(out, h)?;
-            write_u32(out, idx)?;
-        }
     }
+
+    // These are written later.
+    let mut cas_lookup_data = Vec::<(u64, u32)>::new();
+    let mut chunk_lookup_data = Vec::<(u64, (u32, u32))>::new();
 
     {
         ///////////////////////////////////
@@ -198,12 +194,6 @@ fn set_operation<R: Read + Seek, W: Write>(
 
         r[0].seek(SeekFrom::Start(s[0].metadata.cas_info_offset))?;
         r[1].seek(SeekFrom::Start(s[1].metadata.cas_info_offset))?;
-
-        // Manually go through the whole file info section and
-
-        // TODO: if we run out of space someday, this should be made into a disk-backed stack.
-        let mut cas_lookup_data = Vec::<(u64, u32)>::new();
-        let mut chunk_lookup_data = Vec::<(u64, (u32, u32))>::new();
 
         let mut current_index = 0;
 
@@ -258,7 +248,21 @@ fn set_operation<R: Read + Seek, W: Write>(
         }
 
         out_offset += CASChunkSequenceHeader::bookend().serialize(out)? as u64;
+    }
 
+    // The file lookup table
+    {
+        footer.file_lookup_offset = out_offset;
+        footer.file_lookup_num_entry = file_lookup_data.len() as u64;
+        out_offset += (file_lookup_data.len() * (size_of::<u64>() + size_of::<u32>())) as u64;
+        for (h, idx) in file_lookup_data {
+            write_u64(out, h)?;
+            write_u32(out, idx)?;
+        }
+    }
+
+    // The cas lookup table
+    {
         // Write out the cas and chunk lookup sections.
         footer.cas_lookup_offset = out_offset;
         footer.cas_lookup_num_entry = cas_lookup_data.len() as u64;
@@ -268,8 +272,10 @@ fn set_operation<R: Read + Seek, W: Write>(
             write_u64(out, h)?;
             write_u32(out, idx)?;
         }
+    }
 
-        // TODO: use radix sort on this?
+    // The chunk lookup table.
+    {
         chunk_lookup_data.sort_unstable_by_key(|t| t.0);
 
         // Write out the cas and chunk lookup sections.

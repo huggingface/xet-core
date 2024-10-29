@@ -16,6 +16,7 @@ use crate::{
     file_structs::*,
     shard_format::MDBShardInfo,
     utils::{shard_file_name, temp_shard_file_name},
+    MDBShardFile,
 };
 
 #[allow(clippy::type_complexity)]
@@ -264,6 +265,12 @@ impl MDBInMemoryShard {
         std::fs::rename(&temp_file_name, &full_file_name)?;
 
         debug!("Wrote out in-memory shard to {full_file_name:?}.");
+
+        #[cfg(debug_assertions)]
+        {
+            let shard_file = MDBShardFile::load_from_file(&full_file_name)?;
+            shard_file.verify_shard_integrity();
+        }
 
         Ok(full_file_name)
     }

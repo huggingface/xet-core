@@ -29,14 +29,17 @@ const_assert!(MDB_CAS_INFO_ENTRY_SIZE == size_of::<CASChunkSequenceEntry>());
 
 const MDB_SHARD_FOOTER_SIZE: i64 = size_of::<MDBShardFileFooter>() as i64;
 
-const MDB_SHARD_HEADER_VERSION: u64 = 1;
+const MDB_SHARD_HEADER_VERSION: u64 = 2;
 
 const MDB_SHARD_FOOTER_VERSION: u64 = 1;
 
 // At the start of each shard file, insert a tag plus a magic-number sequence of bytes to ensure
 // that we are able to quickly identify a file as a shard file.
+
+// FOR NOW: Change the header tag to include BETA.  When we're ready to
 const MDB_SHARD_HEADER_TAG: [u8; 32] = [
-    b'H', b'F', b'R', b'e', b'p', b'o', b'M', b'e', b't', b'a', b'd', b'a', b't', b'a', 0, 85, 105,
+    // b'H', b'F', b'R', b'e', b'p', b'o', b'M', b'e', b't', b'a', b'd', b'a', b't', b'a', 0, 85, 105,
+    b'H', b'F', b'M', b'e', b't', b'a', b'd', b'a', b't', b'a', b'B', b'E', b'T', b'A', 0, 85, 105,
     103, 69, 106, 123, 129, 87, 131, 165, 189, 217, 92, 205, 209, 74, 169,
 ];
 
@@ -99,14 +102,19 @@ impl MDBShardFileHeader {
 pub struct MDBShardFileFooter {
     pub version: u64,
     pub file_info_offset: u64,
+    pub cas_info_offset: u64,
+
+    // Lookup tabels.  These come after the info sections to allow the shard to be partially
+    // read without including the header.
     pub file_lookup_offset: u64,
     pub file_lookup_num_entry: u64,
-    pub cas_info_offset: u64,
     pub cas_lookup_offset: u64,
     pub cas_lookup_num_entry: u64,
     pub chunk_lookup_offset: u64,
     pub chunk_lookup_num_entry: u64,
-    pub chunk_hash_hmac_key: HMACKey, // If zero, then no key.
+
+    // HMAC key protection for the chunk hashes.  If zero, then no key.
+    pub chunk_hash_hmac_key: HMACKey,
 
     // The creation time of this shard, in seconds since the epoc
     pub shard_creation_timestamp: u64,
@@ -128,9 +136,9 @@ impl Default for MDBShardFileFooter {
         Self {
             version: MDB_SHARD_FOOTER_VERSION,
             file_info_offset: 0,
+            cas_info_offset: 0,
             file_lookup_offset: 0,
             file_lookup_num_entry: 0,
-            cas_info_offset: 0,
             cas_lookup_offset: 0,
             cas_lookup_num_entry: 0,
             chunk_lookup_offset: 0,
@@ -161,9 +169,9 @@ impl MDBShardFileFooter {
 
         write_u64(writer, self.version)?;
         write_u64(writer, self.file_info_offset)?;
+        write_u64(writer, self.cas_info_offset)?;
         write_u64(writer, self.file_lookup_offset)?;
         write_u64(writer, self.file_lookup_num_entry)?;
-        write_u64(writer, self.cas_info_offset)?;
         write_u64(writer, self.cas_lookup_offset)?;
         write_u64(writer, self.cas_lookup_num_entry)?;
         write_u64(writer, self.chunk_lookup_offset)?;
@@ -193,9 +201,9 @@ impl MDBShardFileFooter {
         let mut obj = Self {
             version,
             file_info_offset: read_u64(reader)?,
+            cas_info_offset: read_u64(reader)?,
             file_lookup_offset: read_u64(reader)?,
             file_lookup_num_entry: read_u64(reader)?,
-            cas_info_offset: read_u64(reader)?,
             cas_lookup_offset: read_u64(reader)?,
             cas_lookup_num_entry: read_u64(reader)?,
             chunk_lookup_offset: read_u64(reader)?,
@@ -307,6 +315,15 @@ impl MDBShardInfo {
             Self::convert_and_save_file_info(writer, &mdb.file_content)?;
         bytes_pos += bytes_written;
 
+        // Write CAS info.
+        shard.metadata.cas_info_offset = bytes_pos as u64;
+        let (
+            (cas_lookup_keys, cas_lookup_vals),
+            (chunk_lookup_keys, chunk_lookup_vals),
+            bytes_written,
+        ) = Self::convert_and_save_cas_info(writer, &mdb.cas_content)?;
+        bytes_pos += bytes_written;
+
         // Write file info lookup table.
         shard.metadata.file_lookup_offset = bytes_pos as u64;
         shard.metadata.file_lookup_num_entry = file_lookup_keys.len() as u64;
@@ -320,15 +337,6 @@ impl MDBShardInfo {
         // Release memory.
         drop(file_lookup_keys);
         drop(file_lookup_vals);
-
-        // Write CAS info.
-        shard.metadata.cas_info_offset = bytes_pos as u64;
-        let (
-            (cas_lookup_keys, cas_lookup_vals),
-            (chunk_lookup_keys, chunk_lookup_vals),
-            bytes_written,
-        ) = Self::convert_and_save_cas_info(writer, &mdb.cas_content)?;
-        bytes_pos += bytes_written;
 
         // Write cas info lookup table.
         shard.metadata.cas_lookup_offset = bytes_pos as u64;
@@ -812,8 +820,9 @@ impl MDBShardInfo {
 
             let mut cas_index = 0;
 
-            reader.seek(SeekFrom::Start(self.metadata.cas_info_offset))?;
-            while reader.stream_position()? < self.metadata.cas_lookup_offset {
+            let (cas_lookup_start, cas_lookup_end) = self.cas_lookup_byte_range();
+            reader.seek(SeekFrom::Start(cas_lookup_start))?;
+            while reader.stream_position()? < cas_lookup_end {
                 let cas_header = CASChunkSequenceHeader::deserialize(reader)?;
 
                 for chunk_index in 0..cas_header.num_entries {
@@ -837,6 +846,41 @@ impl MDBShardInfo {
 
     pub fn total_num_chunks(&self) -> usize {
         self.metadata.chunk_lookup_num_entry as usize
+    }
+
+    pub fn file_info_byte_range(&self) -> (u64, u64) {
+        (
+            self.metadata.file_info_offset,
+            self.metadata.cas_info_offset,
+        )
+    }
+
+    pub fn cas_info_byte_range(&self) -> (u64, u64) {
+        (
+            self.metadata.cas_info_offset,
+            self.metadata.file_lookup_offset,
+        )
+    }
+
+    pub fn file_lookup_byte_range(&self) -> (u64, u64) {
+        (
+            self.metadata.file_lookup_offset,
+            self.metadata.cas_lookup_offset,
+        )
+    }
+
+    pub fn cas_lookup_byte_range(&self) -> (u64, u64) {
+        (
+            self.metadata.cas_lookup_offset,
+            self.metadata.chunk_lookup_offset,
+        )
+    }
+
+    pub fn chuck_lookup_byte_range(&self) -> (u64, u64) {
+        (
+            self.metadata.chunk_lookup_offset,
+            self.metadata.footer_offset,
+        )
     }
 
     /// Returns the number of bytes in the shard
@@ -866,15 +910,15 @@ impl MDBShardInfo {
     pub fn print_report(&self) {
         eprintln!(
             "Byte size of file info: {}",
-            self.metadata.file_lookup_offset - self.metadata.file_info_offset
-        );
-        eprintln!(
-            "Byte size of file lookup: {}",
-            self.metadata.cas_info_offset - self.metadata.file_lookup_offset
+            self.metadata.cas_info_offset - self.metadata.file_info_offset
         );
         eprintln!(
             "Byte size of cas info: {}",
-            self.metadata.cas_lookup_offset - self.metadata.cas_info_offset
+            self.metadata.file_lookup_offset - self.metadata.cas_info_offset
+        );
+        eprintln!(
+            "Byte size of file lookup: {}",
+            self.metadata.cas_lookup_offset - self.metadata.file_lookup_offset
         );
         eprintln!(
             "Byte size of cas lookup: {}",
@@ -1000,28 +1044,21 @@ impl MDBShardInfo {
         let mut byte_pos = 0;
         byte_pos += self.header.serialize(writer)?;
 
+        let (file_info_start, file_info_end) = self.file_info_byte_range();
         if include_file_info {
             reader.seek(SeekFrom::Start(self.metadata.file_info_offset))?;
-            byte_pos += copy(
-                &mut reader.take(self.metadata.cas_info_offset - self.metadata.file_info_offset),
-                writer,
-            )? as usize;
+            out_footer.file_info_offset = self.metadata.file_info_offset;
 
             // Okay to just copy these values over as there is nothing different between the two shards
             // up to this point.
-            out_footer.file_info_offset = self.metadata.file_info_offset;
-            out_footer.file_lookup_offset = self.metadata.file_lookup_offset;
-            out_footer.file_lookup_num_entry = self.metadata.file_lookup_num_entry;
+            byte_pos += copy(&mut reader.take(file_info_end - file_info_start), writer)? as usize;
         } else {
             out_footer.file_info_offset = self.metadata.file_info_offset;
 
             // Serialize a single block of 00 bytes as a guard for sequential reading.
             byte_pos += FileDataSequenceHeader::bookend().serialize(writer)?;
 
-            out_footer.file_lookup_offset = byte_pos as u64;
-            out_footer.file_lookup_num_entry = 0;
-
-            reader.seek(SeekFrom::Start(self.metadata.cas_info_offset))?;
+            reader.seek(SeekFrom::Start(file_info_end))?;
         }
 
         debug_assert_eq!(reader.stream_position()?, self.metadata.cas_info_offset);
@@ -1039,7 +1076,10 @@ impl MDBShardInfo {
 
         let mut cas_index = 0;
 
-        while reader.stream_position()? < self.metadata.cas_lookup_offset {
+        let (cas_info_start, cas_info_end) = self.cas_info_byte_range();
+        debug_assert_eq!(reader.stream_position()?, cas_info_start);
+
+        while reader.stream_position()? < cas_info_end {
             let cas_header = CASChunkSequenceHeader::deserialize(reader)?;
             byte_pos += cas_header.serialize(writer)?;
 
@@ -1060,15 +1100,33 @@ impl MDBShardInfo {
             cas_index += 1 + cas_header.num_entries;
         }
 
+        // The file lookup section.
+        let (file_lookup_start, file_lookup_end) = self.file_lookup_byte_range();
+        debug_assert_eq!(reader.stream_position()?, file_lookup_start);
+
+        out_footer.file_lookup_offset = byte_pos as u64;
+
+        if include_file_info {
+            byte_pos += copy(
+                &mut reader.take(file_lookup_end - file_lookup_start),
+                writer,
+            )? as usize;
+
+            out_footer.file_lookup_num_entry = self.metadata.file_lookup_num_entry;
+        } else {
+            out_footer.file_lookup_num_entry = 0;
+            reader.seek(SeekFrom::Start(file_lookup_end))?;
+        }
+
+        // CAS lookup section.
+        let (cas_lookup_start, cas_lookup_end) = self.cas_lookup_byte_range();
+        debug_assert_eq!(reader.stream_position()?, cas_lookup_start);
+
         out_footer.cas_lookup_offset = byte_pos as u64;
 
         if include_cas_lookup_table {
             // The cas lookup table should be the same, so just copy it directly
-            byte_pos += copy(
-                &mut reader
-                    .take(self.metadata.chunk_lookup_offset - self.metadata.cas_lookup_offset),
-                writer,
-            )? as usize;
+            byte_pos += copy(&mut reader.take(cas_lookup_end - cas_info_start), writer)? as usize;
             out_footer.cas_lookup_num_entry = self.metadata.cas_lookup_num_entry;
         } else {
             out_footer.cas_lookup_num_entry = 0;
