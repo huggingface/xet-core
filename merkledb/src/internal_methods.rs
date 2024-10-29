@@ -1,23 +1,20 @@
+use std::collections::{HashMap, HashSet};
+
 use super::constants::*;
 use super::merklenode::*;
 use crate::error::*;
 use crate::merkledbbase::MerkleDBBase;
-use std::collections::{HashMap, HashSet};
-/**************************************************************************/
-/*                                                                        */
-/*                          Internal Algorithms                           */
-/*                                                                        */
-/**************************************************************************/
+/************************************************************************* */
+/*  */
+/* Internal Algorithms */
+/*  */
+/************************************************************************* */
 
 /**
  * Inserts a leaf node described by just a hash and a length into a database,
  * returning an existing node if one already exists.
  */
-pub fn node_from_hash(
-    db: &mut (impl MerkleDBBase + ?Sized),
-    hash: &MerkleHash,
-    len: usize,
-) -> MerkleNode {
+pub fn node_from_hash(db: &mut (impl MerkleDBBase + ?Sized), hash: &MerkleHash, len: usize) -> MerkleNode {
     db.add_node(hash, len, Vec::new())
 }
 
@@ -25,11 +22,7 @@ pub fn node_from_hash(
  * Inserts an interior node described by just a hash and a length into a database,
  * returning an existing node if one already exists.
  */
-pub fn node_from_children(
-    db: &mut (impl MerkleDBBase + ?Sized),
-    children: &[MerkleNode],
-    len: usize,
-) -> MerkleNode {
+pub fn node_from_children(db: &mut (impl MerkleDBBase + ?Sized), children: &[MerkleNode], len: usize) -> MerkleNode {
     let hash = hash_node_sequence(children);
     let children_id: Vec<_> = children.iter().map(|x| (x.id(), x.len())).collect();
     db.add_node(&hash, len, children_id)
@@ -73,10 +66,9 @@ pub fn merge_one_level(
      *  hash distribution, this implies on average, the number of children
      *  is MEAN_TREE_BRANCHING_FACTOR,
      *  - OR this is the last node in the list.
-     *  - subject to each parent must have at least 2 children, and at most
-     *    MEAN_TREE_BRANCHING_FACTOR * 2 children: This ensures that
-     *    the graph always has at most 1/2 the number of parents as children.
-     *    and we don't have too wide branches.
+     *  - subject to each parent must have at least 2 children, and at most MEAN_TREE_BRANCHING_FACTOR * 2 children:
+     *    This ensures that the graph always has at most 1/2 the number of parents as children. and we don't have too
+     *    wide branches.
      *
      * We build a parent, update the indices, and shift start_idx to the
      * next index (idx + 1) to set up the window for the next parent.
@@ -110,11 +102,7 @@ pub fn merge_one_level(
             || idx + 1 == total_children
         {
             // cut a parent node here
-            let parent_node = node_from_children(
-                db,
-                &nodes[cur_children_start_idx..=idx],
-                cur_children_total_len,
-            );
+            let parent_node = node_from_children(db, &nodes[cur_children_start_idx..=idx], cur_children_total_len);
             let parent_id = parent_node.id();
             parents.push(parent_node);
             #[allow(clippy::needless_range_loop)]
@@ -152,8 +140,7 @@ fn assign_node_parents(
  * This is the return type of `find_descendent_reconstructor`.
  * It is used to describe how the root relates to the descendents found
  * and vice versa.
- * - For the root, how to put together the descendent nodes to construct the
- *   value at the root.
+ * - For the root, how to put together the descendent nodes to construct the value at the root.
  * - and for each descendent, what subrange of the root does it correspond to.
  */
 #[derive(Default)]
@@ -208,9 +195,7 @@ pub fn find_descendent_reconstructor_impl<'a>(
         // TODO: this will generally indicate a graph inconsistency and we may
         // need a way to diagnose this.
         if node.children().is_empty() {
-            return Err(MerkleDBError::GraphInvariantError(
-                "Reached a leaf while searching for descendents".into(),
-            ));
+            return Err(MerkleDBError::GraphInvariantError("Reached a leaf while searching for descendents".into()));
         }
         let mut concat_desc_range: Vec<ObjectRangeById> = Vec::new();
         for ch in node.children().iter() {
@@ -263,16 +248,15 @@ pub fn find_descendent_reconstructor(
         ..Default::default()
     };
 
-    ret.descendent_ranges_for_root
-        .clone_from(find_descendent_reconstructor_impl(
-            db,
-            root,
-            root_id,
-            0,
-            &mut visited,
-            &condition,
-            &mut ret.root_ranges_in_descendent,
-        )?);
+    ret.descendent_ranges_for_root.clone_from(find_descendent_reconstructor_impl(
+        db,
+        root,
+        root_id,
+        0,
+        &mut visited,
+        &condition,
+        &mut ret.root_ranges_in_descendent,
+    )?);
     Ok(ret)
 }
 
@@ -306,12 +290,9 @@ pub fn find_reconstruction(
 
     // make sure all succeeded
     if !root_reconstructors.iter().all(|x| x.is_ok()) {
-        return Err(MerkleDBError::GraphInvariantError(
-            "Reconstruction infeasible".into(),
-        ));
+        return Err(MerkleDBError::GraphInvariantError("Reconstruction infeasible".into()));
     }
-    let root_reconstructors: Vec<RootConstructionDescription> =
-        root_reconstructors.into_iter().flatten().collect();
+    let root_reconstructors: Vec<RootConstructionDescription> = root_reconstructors.into_iter().flatten().collect();
 
     let mut nodes_between_src_and_dest: HashSet<MerkleNodeId> = Default::default();
     for aroot in &root_reconstructors {
@@ -344,12 +325,7 @@ pub fn find_reconstruction(
     let n_to_dest: HashMap<MerkleNodeId, ObjectRangeById> = nodes_between_src_and_dest
         .iter()
         .map(|x| db.find_node_by_id(*x).unwrap())
-        .map(|x| {
-            (
-                x.id(),
-                find_ancestor_reconstructor(db, &x, dest_tag).unwrap(),
-            )
-        })
+        .map(|x| (x.id(), find_ancestor_reconstructor(db, &x, dest_tag).unwrap()))
         .collect();
 
     // each entry n_to_dest[N] = [F, start, end]
@@ -386,10 +362,7 @@ pub fn find_reconstruction(
                     }
                 })
                 .collect();
-            (
-                *db.find_node_by_id(*id).unwrap().hash(),
-                simplify_ranges(&new_ranges[..]),
-            )
+            (*db.find_node_by_id(*id).unwrap().hash(), simplify_ranges(&new_ranges[..]))
         })
         .collect())
 }

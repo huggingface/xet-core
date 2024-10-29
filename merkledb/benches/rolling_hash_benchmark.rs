@@ -1,9 +1,10 @@
+use std::collections::VecDeque;
+use std::fmt;
+
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
 use lazy_static::lazy_static;
-use rand_chacha::rand_core::RngCore;
-use rand_chacha::rand_core::SeedableRng;
+use rand_chacha::rand_core::{RngCore, SeedableRng};
 use rand_chacha::ChaChaRng;
-use std::{collections::VecDeque, fmt};
 
 pub trait RollingHash {
     fn clone(&self) -> Box<dyn RollingHash>;
@@ -95,9 +96,7 @@ impl RollingHash for SumHash {
         self.current_hash = self.current_hash.wrapping_add(self.bytehash[b as usize]);
         if self.history.len() > self.windowsize {
             let first = *(self.history.front().unwrap());
-            self.current_hash = self
-                .current_hash
-                .wrapping_sub(self.bytehash[first as usize]);
+            self.current_hash = self.current_hash.wrapping_sub(self.bytehash[first as usize]);
             self.history.pop_front();
         }
         self.current_hash
@@ -220,10 +219,7 @@ impl RollingHash for GearHash {
     }
     #[inline(always)]
     fn accumulate_byte(&mut self, b: u8) -> u32 {
-        self.current_hash = self
-            .current_hash
-            .wrapping_shl(1)
-            .wrapping_add(self.bytehash[b as usize]);
+        self.current_hash = self.current_hash.wrapping_shl(1).wrapping_add(self.bytehash[b as usize]);
         self.current_hash
     }
     #[inline(always)]

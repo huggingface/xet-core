@@ -1,5 +1,7 @@
+use std::fmt::Display;
+use std::str::FromStr;
+
 use anyhow::anyhow;
-use std::{fmt::Display, str::FromStr};
 
 #[repr(u8)]
 #[derive(Debug, PartialEq, Eq, Clone, Copy, Default)]
@@ -59,31 +61,17 @@ impl FromStr for CompressionScheme {
 
 #[cfg(test)]
 mod tests {
-    use super::CompressionScheme;
     use std::str::FromStr;
+
+    use super::CompressionScheme;
 
     #[test]
     fn test_from_str() {
-        assert_eq!(
-            CompressionScheme::from_str("LZ4").unwrap(),
-            CompressionScheme::LZ4
-        );
-        assert_eq!(
-            CompressionScheme::from_str("NONE").unwrap(),
-            CompressionScheme::None
-        );
-        assert_eq!(
-            CompressionScheme::from_str("NoNE").unwrap(),
-            CompressionScheme::None
-        );
-        assert_eq!(
-            CompressionScheme::from_str("none").unwrap(),
-            CompressionScheme::None
-        );
-        assert_eq!(
-            CompressionScheme::from_str("").unwrap(),
-            CompressionScheme::None
-        );
+        assert_eq!(CompressionScheme::from_str("LZ4").unwrap(), CompressionScheme::LZ4);
+        assert_eq!(CompressionScheme::from_str("NONE").unwrap(), CompressionScheme::None);
+        assert_eq!(CompressionScheme::from_str("NoNE").unwrap(), CompressionScheme::None);
+        assert_eq!(CompressionScheme::from_str("none").unwrap(), CompressionScheme::None);
+        assert_eq!(CompressionScheme::from_str("").unwrap(), CompressionScheme::None);
         assert!(CompressionScheme::from_str("not-scheme").is_err());
     }
 
@@ -92,5 +80,4 @@ mod tests {
         assert_eq!(Into::<&str>::into(CompressionScheme::LZ4), "lz4");
         assert_eq!(Into::<&str>::into(CompressionScheme::None), "none");
     }
-
 }

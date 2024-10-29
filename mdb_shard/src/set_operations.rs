@@ -1,22 +1,21 @@
-use crate::error::Result;
-use crate::file_structs::FileVerificationEntry;
-use crate::shard_file::MDB_FILE_INFO_ENTRY_SIZE;
-use crate::{
-    cas_structs::{CASChunkSequenceEntry, CASChunkSequenceHeader},
-    file_structs::{FileDataSequenceEntry, FileDataSequenceHeader},
-    shard_format::{MDBShardFileFooter, MDBShardFileHeader, MDBShardInfo},
-    utils::truncate_hash,
-};
+use std::env::current_dir;
+use std::fs::File;
+use std::io::{BufReader, BufWriter, Read, Seek, SeekFrom, Write};
+use std::mem::size_of;
+use std::path::Path;
+
 use merklehash::{HashedWrite, MerkleHash};
-use std::{
-    env::current_dir,
-    fs::File,
-    io::{BufReader, BufWriter, Read, Seek, SeekFrom, Write},
-    mem::size_of,
-    path::Path,
-};
 use utils::serialization_utils::*;
 use uuid::Uuid;
+
+use crate::cas_structs::{CASChunkSequenceEntry, CASChunkSequenceHeader};
+use crate::error::Result;
+use crate::file_structs::{
+    FileDataSequenceEntry, FileDataSequenceHeader, FileMetadataExt, FileVerificationEntry, SupersetResult,
+};
+use crate::shard_file::MDB_FILE_INFO_ENTRY_SIZE;
+use crate::shard_format::{MDBShardFileFooter, MDBShardFileHeader, MDBShardInfo};
+use crate::utils::truncate_hash;
 
 #[derive(PartialEq, Debug, Copy, Clone)]
 enum MDBSetOperation {
@@ -28,14 +27,11 @@ enum NextAction {
     CopyToOut,
     SkipOver,
     Nothing,
+    Merge,
 }
 
 #[inline]
-fn get_next_actions(
-    h1: Option<&MerkleHash>,
-    h2: Option<&MerkleHash>,
-    op: MDBSetOperation,
-) -> Option<[NextAction; 2]> {
+fn get_next_actions(h1: Option<&MerkleHash>, h2: Option<&MerkleHash>, op: MDBSetOperation) -> Option<[NextAction; 2]> {
     match (h1, h2) {
         (None, None) => None,
         (Some(_), None) => {
@@ -44,7 +40,7 @@ fn get_next_actions(
             } else {
                 Some([NextAction::SkipOver, NextAction::Nothing])
             }
-        }
+        },
         (None, Some(_)) => Some([NextAction::Nothing, NextAction::CopyToOut]),
         (Some(ft0), Some(ft1)) => match ft0.cmp(ft1) {
             std::cmp::Ordering::Less => {
@@ -53,14 +49,14 @@ fn get_next_actions(
                 } else {
                     Some([NextAction::SkipOver, NextAction::Nothing])
                 }
-            }
+            },
             std::cmp::Ordering::Equal => {
                 if op == MDBSetOperation::Union {
                     Some([NextAction::CopyToOut, NextAction::SkipOver])
                 } else {
                     Some([NextAction::SkipOver, NextAction::SkipOver])
                 }
-            }
+            },
             std::cmp::Ordering::Greater => Some([NextAction::Nothing, NextAction::CopyToOut]),
         },
     }
@@ -74,16 +70,29 @@ fn get_next_actions_for_file_info(
 ) -> Option<[NextAction; 2]> {
     // Special case for union operation on file info with same file hash.
     if let (Some(ft0), Some(ft1)) = (h1, h2) {
-        if std::cmp::Ordering::Equal == ft0.file_hash.cmp(&ft1.file_hash)
-            && op == MDBSetOperation::Union
-        {
+        if std::cmp::Ordering::Equal == ft0.file_hash.cmp(&ft1.file_hash) && op == MDBSetOperation::Union {
             // Now two parties have the same file hash, and union should produce only one copy.
-            // While one party may have more information than the other, e.g. verification
-            // information, union should produce one with more information.
-            return if ft0.num_info_entry_following() >= ft1.num_info_entry_following() {
-                Some([NextAction::CopyToOut, NextAction::SkipOver])
-            } else {
-                Some([NextAction::SkipOver, NextAction::CopyToOut])
+            // Which one to use is a bit tricky as we have multiple optional pieces of information.
+            // We can leverage whether one party's flags are a superset of the other to directly
+            // copy over one of the file info. If neither party's flags are a superset, we will
+            // need to merge both infos into a single, complete info with info from both parties.
+            //
+            // Note: we make an assumption that if info exists in both places, it is the same
+            // since we can't make a distinction of what is valid and what isn't.
+            let superset = FileDataSequenceHeader::compare_flag_superset(ft0, ft1);
+            return match superset {
+                SupersetResult::SuperA | SupersetResult::Equal => {
+                    // use ft0 since it has more info
+                    Some([NextAction::CopyToOut, NextAction::SkipOver])
+                },
+                SupersetResult::SuperB => {
+                    // use ft1 since it has more info
+                    Some([NextAction::SkipOver, NextAction::CopyToOut])
+                },
+                SupersetResult::Neither => {
+                    // need to merge as both have some info the other doesn't
+                    Some([NextAction::Merge, NextAction::Nothing]) // Note: merge advances both entries
+                },
             };
         }
     }
@@ -131,11 +140,9 @@ fn set_operation<R: Read + Seek, W: Write>(
 
         let mut file_data_header = [load_next(r[0], s[0])?, load_next(r[1], s[1])?];
 
-        while let Some(action) = get_next_actions_for_file_info(
-            file_data_header[0].as_ref(),
-            file_data_header[1].as_ref(),
-            op,
-        ) {
+        while let Some(action) =
+            get_next_actions_for_file_info(file_data_header[0].as_ref(), file_data_header[1].as_ref(), op)
+        {
             for i in [0, 1] {
                 match action[i] {
                     NextAction::CopyToOut => {
@@ -149,8 +156,7 @@ fn set_operation<R: Read + Seek, W: Write>(
                             entry.serialize(out)?;
                         }
 
-                        out_offset +=
-                            (fh.num_entries as u64) * (size_of::<FileDataSequenceEntry>() as u64);
+                        out_offset += (fh.num_entries as u64) * (size_of::<FileDataSequenceEntry>() as u64);
 
                         if fh.contains_verification() {
                             for _ in 0..fh.num_entries {
@@ -158,24 +164,95 @@ fn set_operation<R: Read + Seek, W: Write>(
                                 entry.serialize(out)?;
                             }
 
-                            out_offset += (fh.num_entries as u64)
-                                * (size_of::<FileVerificationEntry>() as u64);
+                            out_offset += (fh.num_entries as u64) * (size_of::<FileVerificationEntry>() as u64);
+                        }
+
+                        if fh.contains_metadata_ext() {
+                            let entry = FileMetadataExt::deserialize(r[i])?;
+                            out_offset += entry.serialize(out)? as u64;
                         }
 
                         file_lookup_data.push((truncate_hash(&fh.file_hash), current_index));
 
                         current_index += 1 + fh.num_info_entry_following();
                         file_data_header[i] = load_next(r[i], s[i])?;
-                    }
+                    },
                     NextAction::SkipOver => {
                         let fh = file_data_header[i].as_ref().unwrap();
                         r[i].seek(SeekFrom::Current(
-                            (fh.num_info_entry_following() as i64)
-                                * (MDB_FILE_INFO_ENTRY_SIZE as i64),
+                            (fh.num_info_entry_following() as i64) * (MDB_FILE_INFO_ENTRY_SIZE as i64),
                         ))?;
                         file_data_header[i] = load_next(r[i], s[i])?;
-                    }
-                    NextAction::Nothing => {}
+                    },
+                    NextAction::Nothing => {},
+                    NextAction::Merge => {
+                        let fh0 = file_data_header[0].as_ref().unwrap();
+                        let fh1 = file_data_header[1].as_ref().unwrap();
+                        FileDataSequenceHeader::verify_same_file(fh0, fh1);
+                        let has_verification = fh0.contains_verification() || fh1.contains_verification();
+                        let has_metadata_ext = fh0.contains_metadata_ext() || fh1.contains_metadata_ext();
+
+                        let header = FileDataSequenceHeader::new(
+                            fh0.file_hash,
+                            fh0.num_entries,
+                            has_verification,
+                            has_metadata_ext,
+                        );
+                        out_offset += header.serialize(out)? as u64;
+
+                        // copy over the entries from fh0 and advance forward with fh1
+                        for _ in 0..fh0.num_entries {
+                            let entry = FileDataSequenceEntry::deserialize(r[0])?;
+                            footer.materialized_bytes += entry.unpacked_segment_bytes as u64;
+                            entry.serialize(out)?;
+                        }
+
+                        out_offset += (fh0.num_entries as u64) * (size_of::<FileDataSequenceEntry>() as u64);
+                        r[1].seek(SeekFrom::Current((fh1.num_entries as i64) * (MDB_FILE_INFO_ENTRY_SIZE as i64)))?;
+
+                        // if we have verification entries, copy them over from the appropriate shard and
+                        // advance the other reader
+                        if has_verification {
+                            let (read_idx, advance_idx) = if fh0.contains_verification() { (0, 1) } else { (1, 0) };
+                            let (read_header, advance_header) = if fh0.contains_verification() {
+                                (fh0, fh1)
+                            } else {
+                                (fh1, fh0)
+                            };
+                            for _ in 0..read_header.num_entries {
+                                let entry = FileVerificationEntry::deserialize(r[read_idx])?;
+                                out_offset += entry.serialize(out)? as u64;
+                            }
+                            if advance_header.contains_verification() {
+                                r[advance_idx].seek(SeekFrom::Current(
+                                    (advance_header.num_entries as i64) * (MDB_FILE_INFO_ENTRY_SIZE as i64),
+                                ))?;
+                            }
+                        }
+
+                        // if we have metadata_ext, copy it over from the appropriate shard and advance the
+                        // other reader
+                        if has_metadata_ext {
+                            let (read_idx, advance_idx) = if fh0.contains_metadata_ext() { (0, 1) } else { (1, 0) };
+                            let (_read_header, advance_header) = if fh0.contains_metadata_ext() {
+                                (fh0, fh1)
+                            } else {
+                                (fh1, fh0)
+                            };
+                            let entry = FileMetadataExt::deserialize(r[read_idx])?;
+                            out_offset += entry.serialize(out)? as u64;
+                            if advance_header.contains_metadata_ext() {
+                                r[advance_idx].seek(SeekFrom::Current(MDB_FILE_INFO_ENTRY_SIZE as i64))?;
+                            }
+                        }
+
+                        file_lookup_data.push((truncate_hash(&fh0.file_hash), current_index));
+                        current_index += 1 + header.num_info_entry_following();
+
+                        // load the next items
+                        file_data_header[0] = load_next(r[0], s[0])?;
+                        file_data_header[1] = load_next(r[1], s[1])?;
+                    },
                 };
             }
         }
@@ -225,8 +302,7 @@ fn set_operation<R: Read + Seek, W: Write>(
                         for j in 0..fh.num_entries {
                             let chunk = CASChunkSequenceEntry::deserialize(r[i])?;
 
-                            chunk_lookup_data
-                                .push((truncate_hash(&chunk.chunk_hash), (current_index, j)));
+                            chunk_lookup_data.push((truncate_hash(&chunk.chunk_hash), (current_index, j)));
                             out_offset += chunk.serialize(out)? as u64;
                         }
 
@@ -234,15 +310,16 @@ fn set_operation<R: Read + Seek, W: Write>(
 
                         current_index += 1 + fh.num_entries;
                         cas_data_header[i] = load_next(r[i], s[i])?;
-                    }
+                    },
                     NextAction::SkipOver => {
                         let fh = cas_data_header[i].as_ref().unwrap();
                         r[i].seek(SeekFrom::Current(
                             (fh.num_entries as i64) * (size_of::<CASChunkSequenceEntry>() as i64),
                         ))?;
                         cas_data_header[i] = load_next(r[i], s[i])?;
-                    }
-                    NextAction::Nothing => {}
+                    },
+                    NextAction::Nothing => {},
+                    NextAction::Merge => {},
                 };
             }
         }
@@ -332,12 +409,7 @@ fn open_shard_with_bufreader(path: &Path) -> Result<(MDBShardInfo, BufReader<Fil
 }
 
 /// Merge two shard files, returning the Merkle hash of the resulting set operation
-fn shard_file_op(
-    f1: &Path,
-    f2: &Path,
-    out: &Path,
-    op: MDBSetOperation,
-) -> Result<(MerkleHash, MDBShardInfo)> {
+fn shard_file_op(f1: &Path, f2: &Path, out: &Path, op: MDBSetOperation) -> Result<(MerkleHash, MDBShardInfo)> {
     let cur_dir = current_dir()?;
     let dir = out.parent().unwrap_or(&cur_dir);
 
@@ -379,36 +451,31 @@ fn shard_file_op(
 
 /// Performs a set union operation on two shard files, writing the result to a third file and
 /// returning the MerkleHash of the resulting shard file.
-///
 pub fn shard_file_union(f1: &Path, f2: &Path, out: &Path) -> Result<(MerkleHash, MDBShardInfo)> {
     shard_file_op(f1, f2, out, MDBSetOperation::Union)
 }
 
 /// Performs a set difference operation on two shard files, writing the result to a third file and
 /// returning the MerkleHash of the resulting shard file.
-///
-pub fn shard_file_difference(
-    f1: &Path,
-    f2: &Path,
-    out: &Path,
-) -> Result<(MerkleHash, MDBShardInfo)> {
+pub fn shard_file_difference(f1: &Path, f2: &Path, out: &Path) -> Result<(MerkleHash, MDBShardInfo)> {
     shard_file_op(f1, f2, out, MDBSetOperation::Difference)
 }
 
 #[cfg(test)]
 mod tests {
     use std::io::Cursor;
+    use std::panic::catch_unwind;
 
-    use super::*;
-    use crate::error::Result;
-    use crate::{shard_format::test_routines::*, shard_in_memory::MDBInMemoryShard};
+    use itertools::iproduct;
     use merklehash::compute_data_hash;
     use tempdir::TempDir;
 
-    fn test_operations(
-        mem_shard_1: &MDBInMemoryShard,
-        mem_shard_2: &MDBInMemoryShard,
-    ) -> Result<()> {
+    use super::*;
+    use crate::error::Result;
+    use crate::shard_format::test_routines::*;
+    use crate::shard_in_memory::MDBInMemoryShard;
+
+    fn test_operations(mem_shard_1: &MDBInMemoryShard, mem_shard_2: &MDBInMemoryShard) -> Result<()> {
         let disk_shard_1 = convert_to_file(mem_shard_1)?;
         let disk_shard_2 = convert_to_file(mem_shard_2)?;
 
@@ -447,8 +514,7 @@ mod tests {
         verify_mdb_shards_match(&mem_union, Cursor::new(&shard_union))?;
 
         let disk_union_path = tmp_dir.path().join("shard_union.mdb");
-        let (disk_union_hash, _) =
-            shard_file_union(&shard_path_1, &shard_path_2, &disk_union_path)?;
+        let (disk_union_hash, _) = shard_file_union(&shard_path_1, &shard_path_2, &disk_union_path)?;
 
         let mut disk_union_reader = BufReader::new(File::open(&disk_union_path)?);
         verify_mdb_shards_match(&mem_union, &mut disk_union_reader)?;
@@ -460,141 +526,116 @@ mod tests {
         verify_mdb_shards_match(&mem_difference, Cursor::new(&shard_difference))?;
 
         let disk_difference_path = tmp_dir.path().join("shard_difference.mdb");
-        let (disk_difference_hash, _) =
-            shard_file_difference(&shard_path_1, &shard_path_2, &disk_difference_path)?;
+        let (disk_difference_hash, _) = shard_file_difference(&shard_path_1, &shard_path_2, &disk_difference_path)?;
 
         let mut disk_difference_reader = BufReader::new(File::open(&disk_difference_path)?);
         verify_mdb_shards_match(&mem_difference, &mut disk_difference_reader)?;
-        assert_eq!(
-            disk_difference_hash,
-            compute_data_hash(&shard_difference[..])
-        );
+        assert_eq!(disk_difference_hash, compute_data_hash(&shard_difference[..]));
 
         Ok(())
     }
 
+    /// generate the 4 different combinations of shards that can have the following content:
+    /// with/without verification
+    /// with/without extra metadata (i.e. file SHA)
+    ///
+    /// The response is a Vec of the shards with a "name" associated with the shard for ease
+    /// in debugging any errors.
+    #[allow(clippy::type_complexity)]
+    fn gen_specific_shard_cases(
+        name: &str,
+        cas_nodes: &[(u64, &[(u64, u32)])],
+        file_nodes: &[(u64, &[(u64, (u32, u32))])],
+        verifications: &[&[u64]],
+        metadata_exts: &[u64],
+    ) -> Result<Vec<(String, MDBInMemoryShard)>> {
+        Ok(vec![
+            (format!("{name}_None_None"), gen_specific_shard(cas_nodes, file_nodes, None, None)?),
+            (format!("{name}_Some_None"), gen_specific_shard(cas_nodes, file_nodes, Some(verifications), None)?),
+            (format!("{name}_None_Some"), gen_specific_shard(cas_nodes, file_nodes, None, Some(metadata_exts))?),
+            (
+                format!("{name}_Some_Some"),
+                gen_specific_shard(cas_nodes, file_nodes, Some(verifications), Some(metadata_exts))?,
+            ),
+        ])
+    }
+
     #[test]
     fn test_simple() -> Result<()> {
-        // Both without verification
-        let mem_shard_1 =
-            gen_specific_shard(&[(10, &[(21, 5)])], &[(100, &[(200, (0, 5))])], None)?;
-        let mem_shard_2 =
-            gen_specific_shard(&[(11, &[(22, 5)])], &[(101, &[(201, (0, 5))])], None)?;
-        test_operations(&mem_shard_1, &mem_shard_2)?;
-
-        // One with verification
-        let mem_shard_1 =
-            gen_specific_shard(&[(10, &[(21, 5)])], &[(100, &[(200, (0, 5))])], None)?;
-        let mem_shard_2 = gen_specific_shard(
-            &[(11, &[(22, 5)])],
-            &[(101, &[(201, (0, 5))])],
-            Some(&[&[624]]),
-        )?;
-        test_operations(&mem_shard_1, &mem_shard_2)?;
-
-        // Both with verification
-        let mem_shard_1 = gen_specific_shard(
-            &[(10, &[(21, 5)])],
-            &[(100, &[(200, (0, 5))])],
-            Some(&[&[485]]),
-        )?;
-        let mem_shard_2 = gen_specific_shard(
-            &[(11, &[(22, 5)])],
-            &[(101, &[(201, (0, 5))])],
-            Some(&[&[624]]),
-        )?;
-        test_operations(&mem_shard_1, &mem_shard_2)
+        let s1_vec =
+            gen_specific_shard_cases("s1", &[(10, &[(21, 5)])], &[(100, &[(200, (0, 5))])], &[&[485]], &[914])?;
+        let s2_vec =
+            gen_specific_shard_cases("s2", &[(11, &[(22, 5)])], &[(101, &[(201, (0, 5))])], &[&[624]], &[772])?;
+        for (s1, mem_shard_1) in s1_vec.iter() {
+            for (s2, mem_shard_2) in s2_vec.iter() {
+                catch_unwind(|| {
+                    test_operations(mem_shard_1, mem_shard_2).unwrap();
+                })
+                .unwrap_or_else(|_| panic!("Failed simple ops: {s1} U {s2}"));
+            }
+        }
+        Ok(())
     }
 
     #[test]
     fn test_intersecting() -> Result<()> {
-        // Both without verification
-        let mem_shard_1 =
-            gen_specific_shard(&[(10, &[(21, 5)])], &[(100, &[(200, (0, 5))])], None)?;
-        let mem_shard_2 =
-            gen_specific_shard(&[(10, &[(21, 5)])], &[(100, &[(200, (0, 5))])], None)?;
-        test_operations(&mem_shard_1, &mem_shard_2)?;
-
-        // One with verification
-        let mem_shard_1 = gen_specific_shard(
-            &[(10, &[(21, 5)])],
-            &[(100, &[(200, (0, 5))])],
-            Some(&[&[23]]),
-        )?;
-        let mem_shard_2 =
-            gen_specific_shard(&[(10, &[(21, 5)])], &[(100, &[(200, (0, 5))])], None)?;
-        test_operations(&mem_shard_1, &mem_shard_2)?;
-
-        // Both with same verification
-        let mem_shard_1 = gen_specific_shard(
-            &[(10, &[(21, 5)])],
-            &[(100, &[(200, (0, 5))])],
-            Some(&[&[95]]),
-        )?;
-        let mem_shard_2 = gen_specific_shard(
-            &[(10, &[(21, 5)])],
-            &[(100, &[(200, (0, 5))])],
-            Some(&[&[95]]),
-        )?;
-        test_operations(&mem_shard_1, &mem_shard_2)
+        let cases = gen_specific_shard_cases("s1", &[(10, &[(21, 5)])], &[(100, &[(200, (0, 5))])], &[&[95]], &[27])?;
+        for (s1, mem_shard_1) in cases.iter() {
+            for (s2, mem_shard_2) in cases.iter() {
+                catch_unwind(|| {
+                    test_operations(mem_shard_1, mem_shard_2).unwrap();
+                })
+                .unwrap_or_else(|_| panic!("Failed intersecting ops: {s1} U {s2}"));
+            }
+        }
+        Ok(())
     }
 
     #[test]
     fn test_intersecting_2() -> Result<()> {
-        // Both without verification
-        let mem_shard_1 =
-            gen_specific_shard(&[(10, &[(21, 5)])], &[(100, &[(200, (0, 5))])], None)?;
-        let mem_shard_2 = gen_specific_shard(
+        let s1_cases =
+            gen_specific_shard_cases("s1", &[(10, &[(21, 5)])], &[(100, &[(200, (0, 5))])], &[&[365]], &[9364])?;
+        let s2_cases = gen_specific_shard_cases(
+            "s2",
             &[(10, &[(21, 5)]), (11, &[(22, 5)])],
             &[(100, &[(200, (0, 5))]), (101, &[(201, (0, 5))])],
-            None,
+            &[&[365], &[48]],
+            &[9364, 252],
         )?;
-        test_operations(&mem_shard_1, &mem_shard_2)?;
 
-        // One with verification
-        let mem_shard_1 =
-            gen_specific_shard(&[(10, &[(21, 5)])], &[(100, &[(200, (0, 5))])], None)?;
-        let mem_shard_2 = gen_specific_shard(
-            &[(10, &[(21, 5)]), (11, &[(22, 5)])],
-            &[(100, &[(200, (0, 5))]), (101, &[(201, (0, 5))])],
-            Some(&[&[74], &[63]]),
-        )?;
-        test_operations(&mem_shard_1, &mem_shard_2)?;
-
-        // Both with verification, and same files have same verification
-        let mem_shard_1 = gen_specific_shard(
-            &[(10, &[(21, 5)])],
-            &[(100, &[(200, (0, 5))])],
-            Some(&[&[365]]),
-        )?;
-        let mem_shard_2 = gen_specific_shard(
-            &[(10, &[(21, 5)]), (11, &[(22, 5)])],
-            &[(100, &[(200, (0, 5))]), (101, &[(201, (0, 5))])],
-            Some(&[&[365], &[48]]),
-        )?;
-        test_operations(&mem_shard_1, &mem_shard_2)
+        for (s1, mem_shard_1) in s1_cases.iter() {
+            for (s2, mem_shard_2) in s2_cases.iter() {
+                catch_unwind(|| {
+                    test_operations(mem_shard_1, mem_shard_2).unwrap();
+                })
+                .unwrap_or_else(|_| panic!("Failed intersecting ops, multi-file: {s1} U {s2}"));
+            }
+        }
+        Ok(())
     }
 
     #[test]
     fn test_empty() -> Result<()> {
-        let mem_shard_1 = gen_specific_shard(&[], &[], None)?;
-        let mem_shard_2 = gen_specific_shard(&[], &[], None)?;
+        let mem_shard_1 = gen_specific_shard(&[], &[], None, None)?;
+        let mem_shard_2 = gen_specific_shard(&[], &[], None, None)?;
 
         test_operations(&mem_shard_1, &mem_shard_2)
     }
     #[test]
     fn test_empty_2() -> Result<()> {
-        let mem_shard_1 = gen_random_shard(0, &[0], &[0], false)?;
-        let mem_shard_2 = gen_random_shard(1, &[0], &[0], false)?;
+        let mem_shard_1 = gen_random_shard(0, &[0], &[0], false, false)?;
+        let mem_shard_2 = gen_random_shard(1, &[0], &[0], false, false)?;
 
         test_operations(&mem_shard_1, &mem_shard_2)
     }
 
     #[test]
     fn test_random() -> Result<()> {
-        for (v1, v2) in &[(false, false), (false, true), (true, true)] {
-            let mem_shard_1 = gen_random_shard(0, &[1, 5, 10, 8], &[4, 3, 5, 9, 4, 6], *v1)?;
-            let mem_shard_2 = gen_random_shard(1, &[3, 5, 9, 8], &[8, 5, 5, 8, 5, 6], *v2)?;
+        let bool_cases = vec![false, true];
+        let cases = iproduct!(bool_cases.clone(), bool_cases.clone(), bool_cases);
+        for (v1, v2, v3) in cases {
+            let mem_shard_1 = gen_random_shard(0, &[1, 5, 10, 8], &[4, 3, 5, 9, 4, 6], v1, v3)?;
+            let mem_shard_2 = gen_random_shard(1, &[3, 5, 9, 8], &[8, 5, 5, 8, 5, 6], v2, v3)?;
 
             test_operations(&mem_shard_1, &mem_shard_2)?;
 

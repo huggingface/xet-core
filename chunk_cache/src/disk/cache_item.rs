@@ -1,17 +1,16 @@
-use super::BASE64_ENGINE;
-use crate::error::ChunkCacheError;
+use std::cmp::Ordering;
+use std::io::{Cursor, Read, Write};
+use std::mem::size_of;
+
 use base64::Engine;
 use blake3::Hash;
-use cas_types::Range;
-use std::{
-    cmp::Ordering,
-    io::{Cursor, Read, Write},
-    mem::size_of,
-};
+use cas_types::ChunkRange;
 use utils::serialization_utils::{read_u32, read_u64, write_u32, write_u64};
 
-const CACHE_ITEM_FILE_NAME_BUF_SIZE: usize =
-    size_of::<u32>() * 2 + size_of::<u64>() + blake3::OUT_LEN;
+use super::BASE64_ENGINE;
+use crate::error::ChunkCacheError;
+
+const CACHE_ITEM_FILE_NAME_BUF_SIZE: usize = size_of::<u32>() * 2 + size_of::<u64>() + blake3::OUT_LEN;
 
 /// A CacheItem represents metadata for a single range in the cache
 /// it contains the range of chunks the item is for
@@ -19,18 +18,14 @@ const CACHE_ITEM_FILE_NAME_BUF_SIZE: usize =
 /// for validation.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct CacheItem {
-    pub(crate) range: Range,
+    pub(crate) range: ChunkRange,
     pub(crate) len: u64,
     pub(crate) hash: Hash,
 }
 
 impl std::fmt::Display for CacheItem {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "CacheItem {{ range: {:?}, len: {}, hash: {} }}",
-            self.range, self.len, self.hash,
-        )
+        write!(f, "CacheItem {{ range: {:?}, len: {}, hash: {} }}", self.range, self.len, self.hash,)
     }
 }
 
@@ -48,6 +43,9 @@ impl PartialOrd for CacheItem {
     }
 }
 
+/// CacheItem is represented on disk as the file name of a cache file
+/// the file name is created by base64 encoding a buffer that concatenates
+/// all attributes of the CacheItem, numbers being written in little endian order
 impl CacheItem {
     pub(crate) fn file_name(&self) -> Result<String, ChunkCacheError> {
         let mut buf = [0u8; CACHE_ITEM_FILE_NAME_BUF_SIZE];
@@ -62,9 +60,7 @@ impl CacheItem {
     pub(crate) fn parse(file_name: &[u8]) -> Result<CacheItem, ChunkCacheError> {
         let buf = BASE64_ENGINE.decode(file_name)?;
         if buf.len() != CACHE_ITEM_FILE_NAME_BUF_SIZE {
-            return Err(ChunkCacheError::parse(
-                "decoded buf is not the right size for a cache item file name",
-            ));
+            return Err(ChunkCacheError::parse("decoded buf is not the right size for a cache item file name"));
         }
         let mut r = Cursor::new(buf);
         let start = read_u32(&mut r)?;
@@ -76,16 +72,14 @@ impl CacheItem {
         }
 
         Ok(Self {
-            range: Range { start, end },
+            range: ChunkRange { start, end },
             len,
             hash,
         })
     }
 }
 
-pub(super) fn range_contained_fn(
-    range: &Range,
-) -> impl FnMut(&CacheItem) -> std::cmp::Ordering + '_ {
+pub(super) fn range_contained_fn(range: &ChunkRange) -> impl FnMut(&CacheItem) -> std::cmp::Ordering + '_ {
     |item: &CacheItem| {
         if item.range.start > range.start {
             Ordering::Greater
@@ -111,12 +105,12 @@ pub fn read_hash(reader: &mut impl Read) -> Result<blake3::Hash, std::io::Error>
 mod tests {
     use base64::Engine;
     use blake3::OUT_LEN;
-    use cas_types::Range;
+    use cas_types::ChunkRange;
     use sorted_vec::SortedVec;
 
-    use crate::disk::{cache_item::CACHE_ITEM_FILE_NAME_BUF_SIZE, BASE64_ENGINE};
-
     use super::{range_contained_fn, CacheItem};
+    use crate::disk::cache_item::CACHE_ITEM_FILE_NAME_BUF_SIZE;
+    use crate::disk::BASE64_ENGINE;
 
     impl Default for CacheItem {
         fn default() -> Self {
@@ -131,10 +125,7 @@ mod tests {
     #[test]
     fn test_to_file_name_len() {
         let cache_item = CacheItem {
-            range: Range {
-                start: 0,
-                end: 1024,
-            },
+            range: ChunkRange { start: 0, end: 1024 },
             len: 16 << 20,
             hash: blake3::hash(&(1..100).collect::<Vec<u8>>()),
         };
@@ -146,11 +137,11 @@ mod tests {
 
     #[test]
     fn test_binary_search() {
-        let range = |i: u32| Range {
+        let range = |i: u32| ChunkRange {
             start: i * 100,
             end: (i + 1) * 100,
         };
-        let sub_range = |i: u32| Range {
+        let sub_range = |i: u32| ChunkRange {
             start: i * 100 + 20,
             end: (i + 1) * 100 - 1,
         };

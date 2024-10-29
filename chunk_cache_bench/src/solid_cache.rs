@@ -1,6 +1,8 @@
-use crate::ChunkCacheExt;
-use chunk_cache::{error::ChunkCacheError, ChunkCache};
+use chunk_cache::error::ChunkCacheError;
+use chunk_cache::ChunkCache;
 use r2d2_postgres::postgres::NoTls;
+
+use crate::ChunkCacheExt;
 
 #[derive(Clone)]
 pub struct SolidCache {
@@ -24,10 +26,7 @@ impl SolidCache {
 }
 
 impl ChunkCacheExt for SolidCache {
-    fn _initialize(
-        _cache_root: std::path::PathBuf,
-        _capacity: u64,
-    ) -> Result<Self, ChunkCacheError> {
+    fn _initialize(_cache_root: std::path::PathBuf, _capacity: u64) -> Result<Self, ChunkCacheError> {
         Ok(Self::new())
     }
 
@@ -37,11 +36,7 @@ impl ChunkCacheExt for SolidCache {
 }
 
 impl ChunkCache for SolidCache {
-    fn get(
-        &self,
-        key: &cas_types::Key,
-        range: &cas_types::Range,
-    ) -> Result<Option<Vec<u8>>, ChunkCacheError> {
+    fn get(&self, key: &cas_types::Key, range: &cas_types::ChunkRange) -> Result<Option<Vec<u8>>, ChunkCacheError> {
         let start = range.start as i32;
         let end = range.end as i32;
 
@@ -56,10 +51,10 @@ impl ChunkCache for SolidCache {
 
         let start: i32 = row.get(1);
         let start = start as u32;
-        let chunk_byte_indicies: Vec<i32> = row.get(3);
+        let chunk_byte_indices: Vec<i32> = row.get(3);
         let data: &[u8] = row.get(4);
-        let first = chunk_byte_indicies[(range.start - start) as usize] as usize;
-        let last = chunk_byte_indicies[(range.end - start) as usize] as usize;
+        let first = chunk_byte_indices[(range.start - start) as usize] as usize;
+        let last = chunk_byte_indices[(range.end - start) as usize] as usize;
         let res = data[first..last].to_vec();
         Ok(Some(res))
     }
@@ -67,13 +62,13 @@ impl ChunkCache for SolidCache {
     fn put(
         &self,
         key: &cas_types::Key,
-        range: &cas_types::Range,
-        chunk_byte_indicies: &[u32],
+        range: &cas_types::ChunkRange,
+        chunk_byte_indices: &[u32],
         data: &[u8],
     ) -> Result<(), ChunkCacheError> {
         let start = range.start as i32;
         let end = range.end as i32;
-        let cbi: Vec<i32> = chunk_byte_indicies.iter().map(|v| *v as i32).collect();
+        let cbi: Vec<i32> = chunk_byte_indices.iter().map(|v| *v as i32).collect();
 
         let mut conn = self.pool.get().map_err(ChunkCacheError::general)?;
         if conn
@@ -87,9 +82,10 @@ impl ChunkCache for SolidCache {
         };
 
         conn.execute(
-            "INSERT INTO cache (key, start, \"end\", chunk_byte_indicies, data) VALUES ($1, $2, $3, $4, $5)",
-            &[&key.to_string(), &start, &end, &cbi, &data]
-        ).map_err(ChunkCacheError::general)?;
+            "INSERT INTO cache (key, start, \"end\", chunk_byte_indices, data) VALUES ($1, $2, $3, $4, $5)",
+            &[&key.to_string(), &start, &end, &cbi, &data],
+        )
+        .map_err(ChunkCacheError::general)?;
         Ok(())
     }
 }
@@ -108,8 +104,8 @@ mod tests {
         let mut it = RandomEntryIterator::new(thread_rng());
         let mut kr = Vec::new();
         for _ in 0..5 {
-            let (key, range, chunk_byte_indicies, data) = it.next().unwrap();
-            let result = cache.put(&key, &range, &chunk_byte_indicies, &data);
+            let (key, range, chunk_byte_indices, data) = it.next().unwrap();
+            let result = cache.put(&key, &range, &chunk_byte_indices, &data);
             assert!(result.is_ok(), "{result:?}");
             kr.push((key, range));
         }

@@ -1,9 +1,9 @@
+use std::string::FromUtf8Error;
+use std::sync::mpsc::RecvError;
+
 use cas_client::CasClientError;
 use mdb_shard::error::MDBShardError;
 use merkledb::error::MerkleDBError;
-use shard_client::error::ShardClientError;
-use std::string::FromUtf8Error;
-use std::sync::mpsc::RecvError;
 use utils::errors::{AuthError, SingleflightError};
 use xet_error::Error;
 
@@ -44,9 +44,6 @@ pub enum DataProcessingError {
 
     #[error("CAS service error : {0}")]
     CasClientError(#[from] CasClientError),
-
-    #[error("Shard service error: {0}")]
-    ShardClientError(#[from] ShardClientError),
 
     #[error("Subtask scheduling error: {0}")]
     JoinError(#[from] tokio::task::JoinError),

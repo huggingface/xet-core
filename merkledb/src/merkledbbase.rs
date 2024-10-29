@@ -94,7 +94,6 @@ pub trait MerkleDBBase {
     /// already exists.
     ///
     /// Note that changes may be commited until a flush() is issued.
-    ///
     fn maybe_add_node(
         &mut self,
         hash: &MerkleHash,
@@ -110,13 +109,7 @@ pub trait MerkleDBBase {
     /// That is, node_attribute(node.id) for a newly inserted node must succeed.
     ///
     /// Note that changes may be commited until a flush() is issued.
-    ///
-    fn add_node(
-        &mut self,
-        hash: &MerkleHash,
-        len: usize,
-        children: Vec<(MerkleNodeId, usize)>,
-    ) -> MerkleNode {
+    fn add_node(&mut self, hash: &MerkleHash, len: usize, children: Vec<(MerkleNodeId, usize)>) -> MerkleNode {
         self.maybe_add_node(hash, len, children).0
     }
 

@@ -1,14 +1,15 @@
-use crate::error::Result;
-use crate::set_operations::shard_set_union;
-use crate::shard_file_handle::MDBShardFile;
-use merklehash::MerkleHash;
 use std::collections::HashSet;
-use std::io::Cursor;
-use std::io::Read;
+use std::io::{Cursor, Read};
 use std::mem::swap;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
+
+use merklehash::MerkleHash;
 use tracing::debug;
+
+use crate::error::Result;
+use crate::set_operations::shard_set_union;
+use crate::shard_file_handle::MDBShardFile;
 
 // Merge a collection of shards.
 // After calling this, the passed in shards may be invalid -- i.e. may refer to a shard that doesn't exist.
@@ -17,10 +18,7 @@ use tracing::debug;
 // Ordering of staged shards is preserved.
 
 #[allow(clippy::needless_range_loop)] // The alternative is less readable IMO
-pub fn consolidate_shards_in_directory(
-    session_directory: &Path,
-    target_max_size: u64,
-) -> Result<Vec<MDBShardFile>> {
+pub fn consolidate_shards_in_directory(session_directory: &Path, target_max_size: u64) -> Result<Vec<MDBShardFile>> {
     let mut shards: Vec<(SystemTime, _)> = MDBShardFile::load_all(session_directory)?
         .into_iter()
         .map(|sf| Ok((std::fs::metadata(&sf.path)?.modified()?, sf)))
@@ -52,9 +50,7 @@ pub fn consolidate_shards_in_directory(
             let mut shards_to_remove = Vec::<(MerkleHash, PathBuf)>::new();
 
             for idx in (cur_idx + 1).. {
-                if idx == shards.len()
-                    || shards[idx].shard.num_bytes() + current_size >= target_max_size
-                {
+                if idx == shards.len() || shards[idx].shard.num_bytes() + current_size >= target_max_size {
                     ub_idx = idx;
                     break;
                 }
@@ -98,12 +94,7 @@ pub fn consolidate_shards_in_directory(
                 }
 
                 // Write out the shard.
-                let new_sfi = {
-                    MDBShardFile::write_out_from_reader(
-                        session_directory,
-                        &mut Cursor::new(&cur_data),
-                    )?
-                };
+                let new_sfi = { MDBShardFile::write_out_from_reader(session_directory, &mut Cursor::new(&cur_data))? };
 
                 debug!(
                     "Created merged shard {:?} from shards {:?}",

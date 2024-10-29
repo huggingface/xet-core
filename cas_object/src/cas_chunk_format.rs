@@ -1,13 +1,12 @@
-use std::{
-    io::{self, copy, Cursor, Read, Write},
-    mem::size_of,
-    slice,
-};
+use std::io::{self, copy, Cursor, Read, Write};
+use std::mem::size_of;
+use std::slice;
+
+use anyhow::anyhow;
+use lz4_flex::frame::{FrameDecoder, FrameEncoder};
 
 use crate::error::CasObjectError;
 use crate::CompressionScheme;
-use anyhow::anyhow;
-use lz4_flex::frame::{FrameDecoder, FrameEncoder};
 
 pub const CAS_CHUNK_HEADER_LENGTH: usize = size_of::<CASChunkHeader>();
 const CURRENT_VERSION: u8 = 0;
@@ -22,11 +21,7 @@ pub struct CASChunkHeader {
 }
 
 impl CASChunkHeader {
-    pub fn new(
-        compression_scheme: CompressionScheme,
-        compressed_length: u32,
-        uncompressed_length: u32,
-    ) -> Self {
+    pub fn new(compression_scheme: CompressionScheme, compressed_length: u32, uncompressed_length: u32) -> Self {
         let mut result = CASChunkHeader {
             version: CURRENT_VERSION,
             ..Default::default()
@@ -100,16 +95,11 @@ pub fn serialize_chunk<W: Write>(
             let mut enc = FrameEncoder::new(Vec::new());
             enc.write_all(chunk)
                 .map_err(|e| CasObjectError::InternalError(anyhow!("{e}")))?;
-            enc.finish()
-                .map_err(|e| CasObjectError::InternalError(anyhow!("{e}")))?
-        }
+            enc.finish().map_err(|e| CasObjectError::InternalError(anyhow!("{e}")))?
+        },
     };
     let compressed_len = compressed.len();
-    let header = CASChunkHeader::new(
-        compression_scheme,
-        compressed_len as u32,
-        uncompressed_len as u32,
-    );
+    let header = CASChunkHeader::new(compression_scheme, compressed_len as u32, uncompressed_len as u32);
 
     write_chunk_header(w, &header).map_err(|e| CasObjectError::InternalError(anyhow!("{e}")))?;
     w.write_all(&compressed)
@@ -121,26 +111,24 @@ pub fn serialize_chunk<W: Write>(
 pub fn deserialize_chunk_header<R: Read>(reader: &mut R) -> Result<CASChunkHeader, CasObjectError> {
     let mut result = CASChunkHeader::default();
     unsafe {
-        let buf = slice::from_raw_parts_mut(
-            &mut result as *mut _ as *mut u8,
-            size_of::<CASChunkHeader>(),
-        );
+        let buf = slice::from_raw_parts_mut(&mut result as *mut _ as *mut u8, size_of::<CASChunkHeader>());
         reader.read_exact(buf)?;
     }
 
     Ok(result)
 }
 
-pub fn deserialize_chunk<R: Read>(reader: &mut R) -> Result<(Vec<u8>, usize), CasObjectError> {
+pub fn deserialize_chunk<R: Read>(reader: &mut R) -> Result<(Vec<u8>, usize, u32), CasObjectError> {
     let mut buf = Vec::new();
-    let bytes_read = deserialize_chunk_to_writer(reader, &mut buf)?;
-    Ok((buf, bytes_read))
+    let (compressed_chunk_size, uncompressed_chunk_size) = deserialize_chunk_to_writer(reader, &mut buf)?;
+    Ok((buf, compressed_chunk_size, uncompressed_chunk_size))
 }
 
+/// Returns the compressed chunk size along with the uncompressed chunk size as a tuple, (compressed, uncompressed)
 pub fn deserialize_chunk_to_writer<R: Read, W: Write>(
     reader: &mut R,
     writer: &mut W,
-) -> Result<usize, CasObjectError> {
+) -> Result<(usize, u32), CasObjectError> {
     let header = deserialize_chunk_header(reader)?;
     let mut compressed_buf = vec![0u8; header.get_compressed_length() as usize];
     reader.read_exact(&mut compressed_buf)?;
@@ -149,11 +137,11 @@ pub fn deserialize_chunk_to_writer<R: Read, W: Write>(
         CompressionScheme::None => {
             writer.write_all(&compressed_buf)?;
             compressed_buf.len() as u32
-        }
+        },
         CompressionScheme::LZ4 => {
             let mut dec = FrameDecoder::new(Cursor::new(compressed_buf));
             copy(&mut dec, writer)? as u32
-        }
+        },
     };
 
     if uncompressed_len != header.get_uncompressed_length() {
@@ -162,46 +150,55 @@ pub fn deserialize_chunk_to_writer<R: Read, W: Write>(
         )));
     }
 
-    Ok(header.get_compressed_length() as usize + CAS_CHUNK_HEADER_LENGTH)
+    Ok((header.get_compressed_length() as usize + CAS_CHUNK_HEADER_LENGTH, uncompressed_len))
 }
 
-pub fn deserialize_chunks<R: Read>(reader: &mut R) -> Result<Vec<u8>, CasObjectError> {
+pub fn deserialize_chunks<R: Read>(reader: &mut R) -> Result<(Vec<u8>, Vec<u32>), CasObjectError> {
     let mut buf = Vec::new();
-    let _ = deserialize_chunks_to_writer(reader, &mut buf)?;
-    Ok(buf)
+    let (_, chunk_byte_indices) = deserialize_chunks_to_writer(reader, &mut buf)?;
+    Ok((buf, chunk_byte_indices))
 }
 
 pub fn deserialize_chunks_to_writer<R: Read, W: Write>(
     reader: &mut R,
     writer: &mut W,
-) -> Result<usize, CasObjectError> {
-    let mut num_written = 0;
+) -> Result<(usize, Vec<u32>), CasObjectError> {
+    let mut num_compressed_written = 0;
+    let mut num_uncompressed_written = 0;
+
+    // chunk indices are expected to record the byte indices of uncompressed chunks
+    // as they are read from the reader, so start with [0, len(uncompressed chunk 0..n), total length]
+    let mut chunk_byte_indices = Vec::<u32>::new();
+    chunk_byte_indices.push(num_compressed_written as u32);
 
     loop {
         match deserialize_chunk_to_writer(reader, writer) {
-            Ok(delta_written) => {
-                num_written += delta_written;
-            }
+            Ok((delta_written, uncompressed_chunk_len)) => {
+                num_compressed_written += delta_written;
+                num_uncompressed_written += uncompressed_chunk_len;
+                chunk_byte_indices.push(num_uncompressed_written); // record end of current chunk
+            },
             Err(CasObjectError::InternalIOError(e)) => {
                 if e.kind() == io::ErrorKind::UnexpectedEof {
                     break;
                 }
                 return Err(CasObjectError::InternalIOError(e));
-            }
+            },
             Err(e) => return Err(e),
         }
     }
 
-    Ok(num_written)
+    Ok((num_compressed_written, chunk_byte_indices))
 }
 
 #[cfg(test)]
 mod tests {
     use std::io::Cursor;
 
-    use super::*;
     use rand::Rng;
     use CompressionScheme;
+
+    use super::*;
 
     const COMP_LEN: u32 = 0x010203;
     const UNCOMP_LEN: u32 = 0x040506;
@@ -249,7 +246,7 @@ mod tests {
         write_chunk_header(&mut buf, &header).unwrap();
         buf.extend_from_slice(data);
 
-        let (data_copy, _) = deserialize_chunk(&mut Cursor::new(buf)).unwrap();
+        let (data_copy, _, _) = deserialize_chunk(&mut Cursor::new(buf)).unwrap();
         assert_eq!(data_copy.as_slice(), data);
     }
 
@@ -286,6 +283,14 @@ mod tests {
             let res = deserialize_chunks_to_writer(&mut Cursor::new(chunks), &mut buf);
             assert!(res.is_ok());
             assert_eq!(buf.len(), num_chunks as usize * CHUNK_SIZE);
+
+            // verify that chunk boundaries are correct
+            let (data, chunk_byte_indices) = res.unwrap();
+            assert!(data > 0);
+            assert_eq!(chunk_byte_indices.len(), num_chunks as usize + 1);
+            for i in 0..chunk_byte_indices.len() - 1 {
+                assert_eq!(chunk_byte_indices[i + 1] - chunk_byte_indices[i], CHUNK_SIZE as u32);
+            }
         }
     }
 }

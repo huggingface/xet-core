@@ -1,20 +1,16 @@
-use crate::errors::Result;
-use crate::repo_salt::RepoSalt;
 use std::path::PathBuf;
 use std::str::FromStr;
+
+use cas_client::CacheConfig;
 use utils::auth::AuthConfig;
+
+use crate::errors::Result;
+use crate::repo_salt::RepoSalt;
 
 #[derive(Debug)]
 pub enum Endpoint {
     Server(String),
     FileSystem(PathBuf),
-}
-
-#[derive(Debug)]
-pub struct CacheConfig {
-    pub cache_directory: PathBuf,
-    pub cache_size: u64,
-    pub cache_blocksize: u64,
 }
 
 #[derive(Debug)]
@@ -72,11 +68,8 @@ pub enum GlobalDedupPolicy {
     /// Never query for new shards using chunk hashes.
     Never,
 
-    /// Only query for new shards when using direct file access methods like `xet cp`
+    /// Always query for new shards by chunks
     #[default]
-    OnDirectAccess,
-
-    /// Always query for new shards by chunks (not recommended except for testing)
     Always,
 }
 
@@ -86,7 +79,6 @@ impl FromStr for GlobalDedupPolicy {
     fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
         match s.to_lowercase().as_str() {
             "never" => Ok(GlobalDedupPolicy::Never),
-            "direct_only" => Ok(GlobalDedupPolicy::OnDirectAccess),
             "always" => Ok(GlobalDedupPolicy::Always),
             _ => Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,

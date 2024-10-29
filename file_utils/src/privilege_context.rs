@@ -1,12 +1,12 @@
-use lazy_static::lazy_static;
-use std::{fs::File, path::Path};
-use tracing::error;
+use std::fs::File;
+#[cfg(unix)]
+use std::os::unix::fs::MetadataExt;
+use std::path::Path;
 
 #[cfg(unix)]
 use colored::Colorize;
-#[cfg(unix)]
-use std::os::unix::fs::MetadataExt;
-
+use lazy_static::lazy_static;
+use tracing::error;
 #[cfg(windows)]
 use winapi::um::{
     processthreadsapi::GetCurrentProcess,
@@ -64,16 +64,15 @@ pub fn is_elevated() -> bool {
 
 // Facts:
 // Assume there's a standard user A that is not a root user.
-// 1. On Unix systems, suppose there is a path 'dir/f' where 'dir' is created by A but 'f'
-//    created by 'sudo A', A can read, rename or remove 'dir/f'. This implies that it's enough
-//    to check the permission of 'dir' if we don't directly write into 'dir/f'. This is exactly
-//    how we interact with the xorb cache: if an eviction is deemed necessary, the replacement
-//    data is written to a tempfile first and then renamed to the to-be-evicted entry. So even
-//    if a certain cache file was created by 'sudo A', the eviction by 'A' will succeed.
-// 2. On Windows, 'Run as administrator' by logged in user A actually sets %HOMEPATH% to administrator's
-//    HOME, so by default the xet metadata folders are isolated. If 'run as admin A' explicility configures
-//    cache or repo path to another location owned by A, ACLs for the created path inherit from the parent
-//    folder, so A still has full control.
+// 1. On Unix systems, suppose there is a path 'dir/f' where 'dir' is created by A but 'f' created by 'sudo A', A can
+//    read, rename or remove 'dir/f'. This implies that it's enough to check the permission of 'dir' if we don't
+//    directly write into 'dir/f'. This is exactly how we interact with the xorb cache: if an eviction is deemed
+//    necessary, the replacement data is written to a tempfile first and then renamed to the to-be-evicted entry. So
+//    even if a certain cache file was created by 'sudo A', the eviction by 'A' will succeed.
+// 2. On Windows, 'Run as administrator' by logged in user A actually sets %HOMEPATH% to administrator's HOME, so by
+//    default the xet metadata folders are isolated. If 'run as admin A' explicility configures cache or repo path to
+//    another location owned by A, ACLs for the created path inherit from the parent folder, so A still has full
+//    control.
 
 #[derive(Debug, Clone, Copy)]
 pub enum PrivilgedExecutionContext {
@@ -155,10 +154,7 @@ impl PrivilgedExecutionContext {
         let path = path.as_path();
 
         let Some(pparent) = path.parent() else {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                format!("Path {path:?} has no parent."),
-            ));
+            return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, format!("Path {path:?} has no parent.")));
         };
 
         self.create_dir_all(pparent)?;
@@ -211,8 +207,12 @@ pub fn create_file(path: impl AsRef<Path>) -> std::io::Result<File> {
 fn permission_warning(path: &Path, recursive: bool) {
     #[cfg(unix)]
     {
-        let message = format!("The process doesn't have correct read-write permission into path {path:?}, please resets 
-        ownership by 'sudo chown{}{} {path:?}'.", if recursive {" -R "} else {" "}, whoami::username());
+        let message = format!(
+            "The process doesn't have correct read-write permission into path {path:?}, please resets 
+        ownership by 'sudo chown{}{} {path:?}'.",
+            if recursive { " -R " } else { " " },
+            whoami::username()
+        );
 
         eprintln!("{}", message.bright_blue());
     }

@@ -1,7 +1,0 @@
-syntax = "proto3";
-package AWS;
-import public "common.proto";
-
-service ALB {
-  rpc healthcheck(common.Empty) returns (common.Empty);
-}

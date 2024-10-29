@@ -1,4 +1,6 @@
-use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
+use tracing_subscriber::layer::SubscriberExt;
+use tracing_subscriber::util::SubscriberInitExt;
+use tracing_subscriber::EnvFilter;
 
 /// Default log level for the library to use. Override using `RUST_LOG` env variable.
 /// TODO: probably change default to warn or error before shipping.
@@ -15,8 +17,5 @@ pub fn initialize_logging() {
     let filter_layer = EnvFilter::try_from_default_env()
         .or_else(|_| EnvFilter::try_new(DEFAULT_LOG_LEVEL))
         .unwrap_or_default();
-    tracing_subscriber::registry()
-        .with(fmt_layer)
-        .with(filter_layer)
-        .init();
+    tracing_subscriber::registry().with(fmt_layer).with(filter_layer).init();
 }

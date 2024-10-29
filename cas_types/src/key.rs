@@ -1,10 +1,10 @@
-use crate::error::CasTypesError;
+use std::fmt::{Display, Formatter};
+use std::str::FromStr;
+
 use merklehash::MerkleHash;
 use serde::{Deserialize, Serialize};
-use std::{
-    fmt::{Display, Formatter},
-    str::FromStr,
-};
+
+use crate::error::CasTypesError;
 
 /// A Key indicates a prefixed merkle hash for some data stored in the CAS DB.
 #[derive(Debug, PartialEq, Default, Serialize, Deserialize, Ord, PartialOrd, Eq, Hash, Clone)]
@@ -28,8 +28,7 @@ impl FromStr for Key {
             return Err(CasTypesError::InvalidKey(s.to_owned()));
         };
 
-        let hash =
-            MerkleHash::from_hex(hash).map_err(|_| CasTypesError::InvalidKey(s.to_owned()))?;
+        let hash = MerkleHash::from_hex(hash).map_err(|_| CasTypesError::InvalidKey(s.to_owned()))?;
 
         Ok(Key {
             prefix: prefix.to_owned(),
@@ -38,12 +37,13 @@ impl FromStr for Key {
     }
 }
 
-mod hex {
+pub mod hex {
     pub mod serde {
+        use std::fmt;
+
         use merklehash::MerkleHash;
         use serde::de::{self, Visitor};
         use serde::{Deserializer, Serializer};
-        use std::fmt;
 
         pub fn serialize<S>(value: &MerkleHash, serializer: S) -> Result<S::Ok, S::Error>
         where
@@ -80,7 +80,7 @@ mod hex {
     }
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, PartialEq, Eq, Hash)]
 pub struct HexMerkleHash(#[serde(with = "hex::serde")] pub MerkleHash);
 
 impl From<MerkleHash> for HexMerkleHash {

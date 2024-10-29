@@ -1,13 +1,13 @@
+use std::collections::BTreeSet as Set;
+
+use proc_macro2::TokenStream;
+use quote::{format_ident, quote, quote_spanned, ToTokens};
+use syn::{Data, DeriveInput, GenericArgument, Member, PathArguments, Result, Token, Type, Visibility};
+
 use crate::ast::{Enum, Field, Input, Struct};
 use crate::attr::Trait;
 use crate::generics::InferredBounds;
 use crate::span::MemberSpan;
-use proc_macro2::TokenStream;
-use quote::{format_ident, quote, quote_spanned, ToTokens};
-use std::collections::BTreeSet as Set;
-use syn::{
-    Data, DeriveInput, GenericArgument, Member, PathArguments, Result, Token, Type, Visibility,
-};
 
 pub fn derive(node: &DeriveInput) -> Result<TokenStream> {
     let input = Input::from_syn(node)?;
@@ -250,9 +250,7 @@ fn impl_enum(input: Enum) -> TokenStream {
         let arms = input.variants.iter().map(|variant| {
             let ident = &variant.ident;
             match (variant.backtrace_field(), variant.source_field()) {
-                (Some(backtrace_field), Some(source_field))
-                    if backtrace_field.attrs.backtrace.is_none() =>
-                {
+                (Some(backtrace_field), Some(source_field)) if backtrace_field.attrs.backtrace.is_none() => {
                     let backtrace = &backtrace_field.member;
                     let source = &source_field.member;
                     let varsource = quote!(source);
@@ -289,10 +287,8 @@ fn impl_enum(input: Enum) -> TokenStream {
                             #self_provide
                         }
                     }
-                }
-                (Some(backtrace_field), Some(source_field))
-                    if backtrace_field.member == source_field.member =>
-                {
+                },
+                (Some(backtrace_field), Some(source_field)) if backtrace_field.member == source_field.member => {
                     let backtrace = &backtrace_field.member;
                     let varsource = quote!(source);
                     let source_provide = if type_is_option(source_field.ty) {
@@ -312,7 +308,7 @@ fn impl_enum(input: Enum) -> TokenStream {
                             #source_provide
                         }
                     }
-                }
+                },
                 (Some(backtrace_field), _) => {
                     let backtrace = &backtrace_field.member;
                     let body = if type_is_option(backtrace_field.ty) {
@@ -331,7 +327,7 @@ fn impl_enum(input: Enum) -> TokenStream {
                             #body
                         }
                     }
-                }
+                },
                 (None, _) => quote! {
                     #ty::#ident {..} => {}
                 },
@@ -351,12 +347,10 @@ fn impl_enum(input: Enum) -> TokenStream {
 
     let display_impl = if input.has_display() {
         let mut display_inferred_bounds = InferredBounds::new();
-        let has_bonus_display = input.variants.iter().any(|v| {
-            v.attrs
-                .display
-                .as_ref()
-                .map_or(false, |display| display.has_bonus_display)
-        });
+        let has_bonus_display = input
+            .variants
+            .iter()
+            .any(|v| v.attrs.display.as_ref().map_or(false, |display| display.has_bonus_display));
         let use_as_display = use_as_display(has_bonus_display);
         let void_deref = if input.variants.is_empty() {
             Some(quote!(*))
@@ -369,7 +363,7 @@ fn impl_enum(input: Enum) -> TokenStream {
                 Some(display) => {
                     display_implied_bounds.clone_from(&display.implied_bounds);
                     display.to_token_stream()
-                }
+                },
                 None => {
                     let only_field = match &variant.fields[0].member {
                         Member::Named(ident) => ident.clone(),
@@ -377,7 +371,7 @@ fn impl_enum(input: Enum) -> TokenStream {
                     };
                     display_implied_bounds.insert((0, Trait::Display));
                     quote!(::core::fmt::Display::fmt(#only_field, __formatter))
-                }
+                },
             };
             for (field, bound) in display_implied_bounds {
                 let field = &variant.fields[field];
@@ -457,7 +451,7 @@ fn fields_pat(fields: &[Field]) -> TokenStream {
                 Member::Named(_) => unreachable!(),
             });
             quote!((#(#vars),*))
-        }
+        },
         None => quote!({}),
     }
 }

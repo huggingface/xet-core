@@ -14,8 +14,8 @@ blake3 = "1.5.4"
 base64 = "0.22.1"
 tracing = "0.1.40"
 sorted-vec = "0.8.3"
-rand = "0.8"
-tempdir = "0.3.7"
+rand = "0.8.5"
 
 [dev-dependencies]
 tokio = { version = "1.36", features = ["full"] }
+tempdir = "0.3.7"

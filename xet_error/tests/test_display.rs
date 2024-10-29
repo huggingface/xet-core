@@ -1,6 +1,7 @@
 #![allow(clippy::uninlined_format_args)]
 
 use std::fmt::{self, Display};
+
 use xet_error::Error;
 
 fn assert<T: Display>(expected: &str, value: T) {
@@ -133,14 +134,8 @@ fn test_match() {
     })]
     struct Error(String, Option<usize>);
 
-    assert(
-        "error occurred with 1: ...",
-        Error("...".to_owned(), Some(1)),
-    );
-    assert(
-        "there was an empty error: ...",
-        Error("...".to_owned(), None),
-    );
+    assert("error occurred with 1: ...", Error("...".to_owned(), Some(1)));
+    assert("there was an empty error: ...", Error("...".to_owned(), None));
 }
 
 #[test]
@@ -162,14 +157,8 @@ fn test_nested_display() {
     })]
     struct Error(String, Option<usize>);
 
-    assert(
-        "error occurred with 1: ...",
-        Error("...".to_owned(), Some(1)),
-    );
-    assert(
-        "there was an empty error: ...",
-        Error("...".to_owned(), None),
-    );
+    assert("error occurred with 1: ...", Error("...".to_owned(), Some(1)));
+    assert("there was an empty error: ...", Error("...".to_owned(), None));
 }
 
 #[test]

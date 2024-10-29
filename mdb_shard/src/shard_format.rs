@@ -1,3 +1,16 @@
+use std::collections::{BTreeMap, HashMap};
+use std::io::{copy, Read, Seek, SeekFrom, Write};
+use std::mem::size_of;
+use std::ops::Add;
+use std::sync::Arc;
+use std::time::UNIX_EPOCH;
+
+use anyhow::anyhow;
+use merklehash::{HMACKey, MerkleHash};
+use static_assertions::const_assert;
+use tracing::debug;
+use utils::serialization_utils::*;
+
 use crate::cas_structs::*;
 use crate::constants::*;
 use crate::error::{MDBShardError, Result};
@@ -5,23 +18,13 @@ use crate::file_structs::*;
 use crate::interpolation_search::search_on_sorted_u64s;
 use crate::shard_in_memory::MDBInMemoryShard;
 use crate::utils::truncate_hash;
-use anyhow::anyhow;
-use merklehash::{HMACKey, MerkleHash};
-use static_assertions::const_assert;
-use std::collections::{BTreeMap, HashMap};
-use std::io::{copy, Read, Seek, SeekFrom, Write};
-use std::mem::size_of;
-use std::ops::Add;
-use std::sync::Arc;
-use std::time::UNIX_EPOCH;
-use tracing::debug;
-use utils::serialization_utils::*;
 
 // Same size for FileDataSequenceHeader and FileDataSequenceEntry
 pub const MDB_FILE_INFO_ENTRY_SIZE: usize = size_of::<[u64; 4]>() + 4 * size_of::<u32>();
 const_assert!(MDB_FILE_INFO_ENTRY_SIZE == size_of::<FileDataSequenceHeader>());
 const_assert!(MDB_FILE_INFO_ENTRY_SIZE == size_of::<FileDataSequenceEntry>());
 const_assert!(MDB_FILE_INFO_ENTRY_SIZE == size_of::<FileVerificationEntry>());
+const_assert!(MDB_FILE_INFO_ENTRY_SIZE == size_of::<FileMetadataExt>());
 // Same size for CASChunkSequenceHeader and CASChunkSequenceEntry
 const MDB_CAS_INFO_ENTRY_SIZE: usize = size_of::<[u64; 4]>() + 4 * size_of::<u32>();
 const_assert!(MDB_CAS_INFO_ENTRY_SIZE == size_of::<CASChunkSequenceHeader>());
@@ -39,8 +42,8 @@ const MDB_SHARD_FOOTER_VERSION: u64 = 1;
 // FOR NOW: Change the header tag to include BETA.  When we're ready to
 const MDB_SHARD_HEADER_TAG: [u8; 32] = [
     // b'H', b'F', b'R', b'e', b'p', b'o', b'M', b'e', b't', b'a', b'd', b'a', b't', b'a', 0, 85, 105,
-    b'H', b'F', b'M', b'e', b't', b'a', b'd', b'a', b't', b'a', b'B', b'E', b'T', b'A', 0, 85, 105,
-    103, 69, 106, 123, 129, 87, 131, 165, 189, 217, 92, 205, 209, 74, 169,
+    b'H', b'F', b'M', b'e', b't', b'a', b'd', b'a', b't', b'a', b'B', b'E', b'T', b'A', 0, 85, 105, 103, 69, 106, 123,
+    129, 87, 131, 165, 189, 217, 92, 205, 209, 74, 169,
 ];
 
 #[inline]
@@ -85,8 +88,7 @@ impl MDBShardFileHeader {
 
         if tag != MDB_SHARD_HEADER_TAG {
             return Err(MDBShardError::ShardVersionError(
-                "File does not appear to be a valid Merkle DB Shard file (Wrong Magic Number)."
-                    .to_owned(),
+                "File does not appear to be a valid Merkle DB Shard file (Wrong Magic Number).".to_owned(),
             ));
         }
 
@@ -317,11 +319,8 @@ impl MDBShardInfo {
 
         // Write CAS info.
         shard.metadata.cas_info_offset = bytes_pos as u64;
-        let (
-            (cas_lookup_keys, cas_lookup_vals),
-            (chunk_lookup_keys, chunk_lookup_vals),
-            bytes_written,
-        ) = Self::convert_and_save_cas_info(writer, &mdb.cas_content)?;
+        let ((cas_lookup_keys, cas_lookup_vals), (chunk_lookup_keys, chunk_lookup_vals), bytes_written) =
+            Self::convert_and_save_cas_info(writer, &mdb.cas_content)?;
         bytes_pos += bytes_written;
 
         // Write file info lookup table.
@@ -331,8 +330,7 @@ impl MDBShardInfo {
             write_u64(writer, e1)?;
             write_u32(writer, e2)?;
         }
-        bytes_pos +=
-            size_of::<u64>() * file_lookup_keys.len() + size_of::<u32>() * file_lookup_vals.len();
+        bytes_pos += size_of::<u64>() * file_lookup_keys.len() + size_of::<u32>() * file_lookup_vals.len();
 
         // Release memory.
         drop(file_lookup_keys);
@@ -345,8 +343,7 @@ impl MDBShardInfo {
             write_u64(writer, e1)?;
             write_u32(writer, e2)?;
         }
-        bytes_pos +=
-            size_of::<u64>() * cas_lookup_keys.len() + size_of::<u32>() * cas_lookup_vals.len();
+        bytes_pos += size_of::<u64>() * cas_lookup_keys.len() + size_of::<u32>() * cas_lookup_vals.len();
 
         // Write chunk lookup table.
         shard.metadata.chunk_lookup_offset = bytes_pos as u64;
@@ -356,8 +353,7 @@ impl MDBShardInfo {
             write_u32(writer, e2.0)?;
             write_u32(writer, e2.1)?;
         }
-        bytes_pos +=
-            size_of::<u64>() * chunk_lookup_keys.len() + size_of::<u64>() * chunk_lookup_vals.len();
+        bytes_pos += size_of::<u64>() * chunk_lookup_keys.len() + size_of::<u64>() * chunk_lookup_vals.len();
 
         // Update repo size information.
         shard.metadata.stored_bytes_on_disk = mdb.stored_bytes_on_disk();
@@ -448,10 +444,7 @@ impl MDBShardInfo {
         // No need to sort cas_lookup_ because BTreeMap is ordered and we truncate by the first 8 bytes.
 
         // Sort chunk lookup table by key.
-        let mut chunk_lookup_combined = chunk_lookup_keys
-            .iter()
-            .zip(chunk_lookup_vals.iter())
-            .collect::<Vec<_>>();
+        let mut chunk_lookup_combined = chunk_lookup_keys.iter().zip(chunk_lookup_vals.iter()).collect::<Vec<_>>();
 
         chunk_lookup_combined.sort_unstable_by_key(|&(k, _)| k);
 
@@ -496,9 +489,7 @@ impl MDBShardInfo {
         if num_indices < dest_indices.len() {
             Ok(num_indices)
         } else {
-            Err(MDBShardError::TruncatedHashCollisionError(truncate_hash(
-                file_hash,
-            )))
+            Err(MDBShardError::TruncatedHashCollisionError(truncate_hash(file_hash)))
         }
     }
 
@@ -521,9 +512,7 @@ impl MDBShardInfo {
         if num_indices < dest_indices.len() {
             Ok(num_indices)
         } else {
-            Err(MDBShardError::TruncatedHashCollisionError(truncate_hash(
-                cas_hash,
-            )))
+            Err(MDBShardError::TruncatedHashCollisionError(truncate_hash(cas_hash)))
         }
     }
 
@@ -556,56 +545,36 @@ impl MDBShardInfo {
     }
 
     /// Reads the file info from a specific index.  Note that this is the position
-    pub fn read_file_info<R: Read + Seek>(
-        &self,
-        reader: &mut R,
-        file_entry_index: u32,
-    ) -> Result<MDBFileInfo> {
+    pub fn read_file_info<R: Read + Seek>(&self, reader: &mut R, file_entry_index: u32) -> Result<MDBFileInfo> {
         reader.seek(SeekFrom::Start(
-            self.metadata.file_info_offset
-                + (MDB_FILE_INFO_ENTRY_SIZE as u64) * (file_entry_index as u64),
+            self.metadata.file_info_offset + (MDB_FILE_INFO_ENTRY_SIZE as u64) * (file_entry_index as u64),
         ))?;
 
         let Some(mdb_file) = MDBFileInfo::deserialize(reader)? else {
-            return Err(MDBShardError::InternalError(anyhow!(
-                "invalid file entry index"
-            )));
+            return Err(MDBShardError::InternalError(anyhow!("invalid file entry index")));
         };
 
         Ok(mdb_file)
     }
 
-    pub fn read_all_file_info_sections<R: Read + Seek>(
-        &self,
-        reader: &mut R,
-    ) -> Result<Vec<MDBFileInfo>> {
+    pub fn read_all_file_info_sections<R: Read + Seek>(&self, reader: &mut R) -> Result<Vec<MDBFileInfo>> {
         let mut ret = Vec::<MDBFileInfo>::with_capacity(self.num_file_entries());
 
         reader.seek(SeekFrom::Start(self.metadata.file_info_offset))?;
 
-        for _ in 0..self.num_file_entries() {
-            if let Some(mdb_file) = MDBFileInfo::deserialize(reader)? {
-                ret.push(mdb_file);
-            } else {
-                break;
-            }
+        while let Some(mdb_file) = MDBFileInfo::deserialize(reader)? {
+            ret.push(mdb_file);
         }
-
-        debug_assert!(ret.len() == self.num_file_entries());
 
         Ok(ret)
     }
 
-    pub fn read_all_cas_blocks<R: Read + Seek>(
-        &self,
-        reader: &mut R,
-    ) -> Result<Vec<(CASChunkSequenceHeader, u64)>> {
+    pub fn read_all_cas_blocks<R: Read + Seek>(&self, reader: &mut R) -> Result<Vec<(CASChunkSequenceHeader, u64)>> {
         // Reads all the cas blocks, returning a list of the cas info and the
         // starting position of that cas block.
 
-        let mut cas_blocks = Vec::<(CASChunkSequenceHeader, u64)>::with_capacity(
-            self.metadata.cas_lookup_num_entry as usize,
-        );
+        let mut cas_blocks =
+            Vec::<(CASChunkSequenceHeader, u64)>::with_capacity(self.metadata.cas_lookup_num_entry as usize);
 
         reader.seek(SeekFrom::Start(self.metadata.cas_info_offset))?;
 
@@ -615,9 +584,7 @@ impl MDBShardInfo {
             let n = cas_block.num_entries;
             cas_blocks.push((cas_block, pos));
 
-            reader.seek(SeekFrom::Current(
-                (size_of::<CASChunkSequenceEntry>() as i64) * (n as i64),
-            ))?;
+            reader.seek(SeekFrom::Current((size_of::<CASChunkSequenceEntry>() as i64) * (n as i64)))?;
         }
         Ok(cas_blocks)
     }
@@ -634,20 +601,12 @@ impl MDBShardInfo {
     }
 
     /// Returns a vector holding all the chunk hashes along with their (cas idx, entry idx) locations
-    pub fn read_all_cas_blocks_full<R: Read + Seek>(
-        &self,
-        reader: &mut R,
-    ) -> Result<Vec<MDBCASInfo>> {
+    pub fn read_all_cas_blocks_full<R: Read + Seek>(&self, reader: &mut R) -> Result<Vec<MDBCASInfo>> {
         let mut ret = Vec::with_capacity(self.num_cas_entries());
 
         reader.seek(SeekFrom::Start(self.metadata.cas_info_offset))?;
 
-        for _ in 0..(self.num_cas_entries() as u32) {
-            let Some(cas_info) = MDBCASInfo::deserialize(reader)? else {
-                return Err(MDBShardError::InternalError(anyhow!(
-                    "corrupted shard, detected cas info bookend before deserializing all cas block info"
-                )));
-            };
+        while let Some(cas_info) = MDBCASInfo::deserialize(reader)? {
             ret.push(cas_info);
         }
 
@@ -658,8 +617,7 @@ impl MDBShardInfo {
         // Reads all the cas blocks, returning a list of the cas info and the
         // starting position of that cas block.
 
-        let mut cas_lookup: Vec<(u64, u32)> =
-            Vec::with_capacity(self.metadata.cas_lookup_num_entry as usize);
+        let mut cas_lookup: Vec<(u64, u32)> = Vec::with_capacity(self.metadata.cas_lookup_num_entry as usize);
 
         reader.seek(SeekFrom::Start(self.metadata.cas_lookup_offset))?;
 
@@ -713,17 +671,14 @@ impl MDBShardInfo {
         }
 
         reader.seek(SeekFrom::Start(
-            self.metadata.cas_info_offset
-                + (MDB_CAS_INFO_ENTRY_SIZE as u64) * (cas_entry_index as u64),
+            self.metadata.cas_info_offset + (MDB_CAS_INFO_ENTRY_SIZE as u64) * (cas_entry_index as u64),
         ))?;
 
         let cas_header = CASChunkSequenceHeader::deserialize(reader)?;
 
         if cas_chunk_offset != 0 {
             // Jump forward to the chunk at chunk_offset.
-            reader.seek(SeekFrom::Current(
-                MDB_CAS_INFO_ENTRY_SIZE as i64 * cas_chunk_offset as i64,
-            ))?;
+            reader.seek(SeekFrom::Current(MDB_CAS_INFO_ENTRY_SIZE as i64 * cas_chunk_offset as i64))?;
         }
 
         // Now, read in data while the query hashes match.
@@ -744,9 +699,7 @@ impl MDBShardInfo {
 
             let chunk = CASChunkSequenceEntry::deserialize(reader)?;
 
-            if i == unkeyed_query_hashes.len()
-                || chunk.chunk_hash != self.keyed_chunk_hash(unkeyed_query_hashes[i])
-            {
+            if i == unkeyed_query_hashes.len() || chunk.chunk_hash != self.keyed_chunk_hash(unkeyed_query_hashes[i]) {
                 end_idx = i;
                 break;
             }
@@ -781,24 +734,18 @@ impl MDBShardInfo {
 
         // Lookup CAS block from chunk lookup.
         let mut dest_indices = [(0u32, 0u32); 8];
-        let num_indices =
-            self.get_cas_info_index_by_chunk(reader, &query_hashes[0], &mut dest_indices)?;
+        let num_indices = self.get_cas_info_index_by_chunk(reader, &query_hashes[0], &mut dest_indices)?;
 
         // Sequentially match chunks in that block.
         for &(cas_index, chunk_offset) in dest_indices.iter().take(num_indices) {
-            if let Some(cas) =
-                self.chunk_hash_dedup_query_direct(reader, query_hashes, cas_index, chunk_offset)?
-            {
+            if let Some(cas) = self.chunk_hash_dedup_query_direct(reader, query_hashes, cas_index, chunk_offset)? {
                 return Ok(Some(cas));
             }
         }
         Ok(None)
     }
 
-    pub fn read_all_truncated_hashes<R: Read + Seek>(
-        &self,
-        reader: &mut R,
-    ) -> Result<Vec<(u64, (u32, u32))>> {
+    pub fn read_all_truncated_hashes<R: Read + Seek>(&self, reader: &mut R) -> Result<Vec<(u64, (u32, u32))>> {
         let mut ret;
         if self.metadata.chunk_lookup_num_entry != 0 {
             ret = Vec::with_capacity(self.metadata.chunk_lookup_num_entry as usize);
@@ -849,38 +796,23 @@ impl MDBShardInfo {
     }
 
     pub fn file_info_byte_range(&self) -> (u64, u64) {
-        (
-            self.metadata.file_info_offset,
-            self.metadata.cas_info_offset,
-        )
+        (self.metadata.file_info_offset, self.metadata.cas_info_offset)
     }
 
     pub fn cas_info_byte_range(&self) -> (u64, u64) {
-        (
-            self.metadata.cas_info_offset,
-            self.metadata.file_lookup_offset,
-        )
+        (self.metadata.cas_info_offset, self.metadata.file_lookup_offset)
     }
 
     pub fn file_lookup_byte_range(&self) -> (u64, u64) {
-        (
-            self.metadata.file_lookup_offset,
-            self.metadata.cas_lookup_offset,
-        )
+        (self.metadata.file_lookup_offset, self.metadata.cas_lookup_offset)
     }
 
     pub fn cas_lookup_byte_range(&self) -> (u64, u64) {
-        (
-            self.metadata.cas_lookup_offset,
-            self.metadata.chunk_lookup_offset,
-        )
+        (self.metadata.cas_lookup_offset, self.metadata.chunk_lookup_offset)
     }
 
     pub fn chuck_lookup_byte_range(&self) -> (u64, u64) {
-        (
-            self.metadata.chunk_lookup_offset,
-            self.metadata.footer_offset,
-        )
+        (self.metadata.chunk_lookup_offset, self.metadata.footer_offset)
     }
 
     /// Returns the number of bytes in the shard
@@ -908,35 +840,44 @@ impl MDBShardInfo {
     }
 
     pub fn print_report(&self) {
+        // File info bytes.
+        let (file_info_start, file_info_end) = self.file_info_byte_range();
+        eprintln!("Byte size of file info: {}, ({file_info_start} - {file_info_end})", file_info_end - file_info_start);
+
+        // Cas info bytes.
+        let (cas_info_start, cas_info_end) = self.cas_info_byte_range();
+        eprintln!("Byte size of cas info: {}, ({cas_info_start} - {cas_info_end})", cas_info_end - cas_info_start);
+
+        // File lookup bytes.
+        let (file_lookup_start, file_lookup_end) = self.file_lookup_byte_range();
         eprintln!(
-            "Byte size of file info: {}",
-            self.metadata.cas_info_offset - self.metadata.file_info_offset
+            "Byte size of file lookup: {}, ({file_lookup_start} - {file_lookup_end})",
+            file_lookup_end - file_lookup_start
         );
+
+        // CAS lookup bytes.
+        let (cas_lookup_start, cas_lookup_end) = self.cas_lookup_byte_range();
         eprintln!(
-            "Byte size of cas info: {}",
-            self.metadata.file_lookup_offset - self.metadata.cas_info_offset
+            "Byte size of cas lookup: {}, ({cas_lookup_start} - {cas_lookup_end})",
+            cas_lookup_end - cas_lookup_start
         );
+
+        // Chunk lookup bytes.
+        let (chunk_lookup_start, chunk_lookup_end) = self.chuck_lookup_byte_range();
         eprintln!(
-            "Byte size of file lookup: {}",
-            self.metadata.cas_lookup_offset - self.metadata.file_lookup_offset
-        );
-        eprintln!(
-            "Byte size of cas lookup: {}",
-            self.metadata.chunk_lookup_offset - self.metadata.cas_lookup_offset
-        );
-        eprintln!(
-            "Byte size of chunk lookup: {}",
-            self.metadata.footer_offset - self.metadata.chunk_lookup_offset
+            "Byte size of chunk lookup: {}, ({chunk_lookup_start} - {chunk_lookup_end})",
+            chunk_lookup_end - chunk_lookup_start
         );
     }
 
     /// Read all file info from shard and return a collection of
     /// (file_hash, (byte_start, byte_end) for file_data_sequence_entry,
-    /// Option<(byte_start, byte_end)> for file_verification_entry).
+    /// Option<(byte_start, byte_end)> for file_verification_entry,
+    /// and an Option<MerkleHash> for the SHA if it is present.
     #[allow(clippy::type_complexity)]
     pub fn read_file_info_ranges<R: Read + Seek>(
         reader: &mut R,
-    ) -> Result<Vec<(MerkleHash, (u64, u64), Option<(u64, u64)>)>> {
+    ) -> Result<Vec<(MerkleHash, (u64, u64), Option<(u64, u64)>, Option<MerkleHash>)>> {
         let mut ret = Vec::new();
 
         let _shard_header = MDBShardFileHeader::deserialize(reader)?;
@@ -949,18 +890,15 @@ impl MDBShardInfo {
             }
 
             let byte_start = reader.stream_position()?;
-            reader.seek(SeekFrom::Current(
-                header.num_entries as i64 * size_of::<FileDataSequenceEntry>() as i64,
-            ))?;
+            reader.seek(SeekFrom::Current(header.num_entries as i64 * size_of::<FileDataSequenceEntry>() as i64))?;
             let byte_end = reader.stream_position()?;
 
             let data_sequence_entry_byte_range = (byte_start, byte_end);
 
             let verification_entry_byte_range = if header.contains_verification() {
                 let byte_start = byte_end;
-                reader.seek(SeekFrom::Current(
-                    header.num_entries as i64 * size_of::<FileVerificationEntry>() as i64,
-                ))?;
+                reader
+                    .seek(SeekFrom::Current(header.num_entries as i64 * size_of::<FileVerificationEntry>() as i64))?;
                 let byte_end = reader.stream_position()?;
 
                 Some((byte_start, byte_end))
@@ -968,11 +906,14 @@ impl MDBShardInfo {
                 None
             };
 
-            ret.push((
-                header.file_hash,
-                data_sequence_entry_byte_range,
-                verification_entry_byte_range,
-            ));
+            let sha256 = if header.contains_metadata_ext() {
+                let metadata_ext = FileMetadataExt::deserialize(reader)?;
+                Some(metadata_ext.sha256)
+            } else {
+                None
+            };
+
+            ret.push((header.file_hash, data_sequence_entry_byte_range, verification_entry_byte_range, sha256));
         }
 
         Ok(ret)
@@ -981,9 +922,7 @@ impl MDBShardInfo {
     /// Returns a list of chunk hashes for the global dedup service.
     /// The chunk hashes are either multiple of 'hash_filter_modulues',
     /// or the hash of the first chunk of a file present in the shard.
-    pub fn read_cas_chunks_for_global_dedup<R: Read + Seek>(
-        reader: &mut R,
-    ) -> Result<Vec<MerkleHash>> {
+    pub fn filter_cas_chunks_for_global_dedup<R: Read + Seek>(reader: &mut R) -> Result<Vec<MerkleHash>> {
         let mut ret = Vec::new();
 
         // First, go through and get all of the cas chunks.  This allows us to form the lookup for the CAS block
@@ -1016,8 +955,7 @@ impl MDBShardInfo {
             };
 
             // Scan the cas entries to get the proper index
-            let first_chunk_hash =
-                cas_chunks[*cas_block_index].chunks[entry.chunk_index_start as usize].chunk_hash;
+            let first_chunk_hash = cas_chunks[*cas_block_index].chunks[entry.chunk_index_start as usize].chunk_hash;
 
             ret.push(first_chunk_hash);
         }
@@ -1025,7 +963,8 @@ impl MDBShardInfo {
         Ok(ret)
     }
 
-    /// Export the current shard as an hmac keyed shard, returning the number of bytes written and the hash of the resulting data.
+    /// Export the current shard as an hmac keyed shard, returning the number of bytes written and the hash of the
+    /// resulting data.
     #[allow(clippy::too_many_arguments)]
     pub fn export_as_keyed_shard<R: Read + Seek, W: Write>(
         &self,
@@ -1045,16 +984,15 @@ impl MDBShardInfo {
         byte_pos += self.header.serialize(writer)?;
 
         let (file_info_start, file_info_end) = self.file_info_byte_range();
+        out_footer.file_info_offset = byte_pos as u64;
+
         if include_file_info {
             reader.seek(SeekFrom::Start(self.metadata.file_info_offset))?;
-            out_footer.file_info_offset = self.metadata.file_info_offset;
 
             // Okay to just copy these values over as there is nothing different between the two shards
             // up to this point.
             byte_pos += copy(&mut reader.take(file_info_end - file_info_start), writer)? as usize;
         } else {
-            out_footer.file_info_offset = self.metadata.file_info_offset;
-
             // Serialize a single block of 00 bytes as a guard for sequential reading.
             byte_pos += FileDataSequenceHeader::bookend().serialize(writer)?;
 
@@ -1107,10 +1045,7 @@ impl MDBShardInfo {
         out_footer.file_lookup_offset = byte_pos as u64;
 
         if include_file_info {
-            byte_pos += copy(
-                &mut reader.take(file_lookup_end - file_lookup_start),
-                writer,
-            )? as usize;
+            byte_pos += copy(&mut reader.take(file_lookup_end - file_lookup_start), writer)? as usize;
 
             out_footer.file_lookup_num_entry = self.metadata.file_lookup_num_entry;
         } else {
@@ -1127,6 +1062,7 @@ impl MDBShardInfo {
         if include_cas_lookup_table {
             // The cas lookup table should be the same, so just copy it directly
             byte_pos += copy(&mut reader.take(cas_lookup_end - cas_info_start), writer)? as usize;
+
             out_footer.cas_lookup_num_entry = self.metadata.cas_lookup_num_entry;
         } else {
             out_footer.cas_lookup_num_entry = 0;
@@ -1158,10 +1094,7 @@ impl MDBShardInfo {
 
         // Add in the timestamps.
         let creation_time = std::time::SystemTime::now();
-        out_footer.shard_creation_timestamp = creation_time
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
+        out_footer.shard_creation_timestamp = creation_time.duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
         out_footer.shard_key_expiry = creation_time
             .add(key_valid_for)
             .duration_since(UNIX_EPOCH)
@@ -1188,16 +1121,16 @@ pub mod test_routines {
     use std::io::{Cursor, Read, Seek};
     use std::mem::size_of;
 
-    use crate::cas_structs::{CASChunkSequenceEntry, CASChunkSequenceHeader, MDBCASInfo};
-    use crate::error::Result;
-    use crate::file_structs::{FileDataSequenceEntry, FileDataSequenceHeader, MDBFileInfo};
-    use crate::shard_format::MDBShardInfo;
-    use crate::shard_in_memory::MDBInMemoryShard;
     use merklehash::MerkleHash;
     use rand::rngs::{SmallRng, StdRng};
     use rand::{Rng, SeedableRng};
 
     use super::FileVerificationEntry;
+    use crate::cas_structs::{CASChunkSequenceEntry, CASChunkSequenceHeader, MDBCASInfo};
+    use crate::error::Result;
+    use crate::file_structs::{FileDataSequenceEntry, FileDataSequenceHeader, FileMetadataExt, MDBFileInfo};
+    use crate::shard_format::MDBShardInfo;
+    use crate::shard_in_memory::MDBInMemoryShard;
 
     pub fn simple_hash(n: u64) -> MerkleHash {
         MerkleHash::from([n, 1, 0, 0])
@@ -1220,6 +1153,7 @@ pub mod test_routines {
         cas_nodes: &[(u64, &[(u64, u32)])],
         file_nodes: &[(u64, &[(u64, (u32, u32))])],
         verifications: Option<&[&[u64]]>,
+        metadata_exts: Option<&[u64]>,
     ) -> Result<MDBInMemoryShard> {
         let mut shard = MDBInMemoryShard::default();
 
@@ -1238,18 +1172,19 @@ pub mod test_routines {
             })?;
         }
 
+        if let Some(exts) = metadata_exts {
+            assert_eq!(file_nodes.len(), exts.len());
+        }
+
         if let Some(verification) = verifications {
             assert_eq!(file_nodes.len(), verification.len());
 
-            for ((file_hash, segments), verification) in file_nodes.iter().zip(verification.iter())
-            {
+            for (i, ((file_hash, segments), verification)) in file_nodes.iter().zip(verification.iter()).enumerate() {
                 assert_eq!(segments.len(), verification.len());
 
                 let file_contents: Vec<_> = segments
                     .iter()
-                    .map(|(h, (lb, ub))| {
-                        FileDataSequenceEntry::new(simple_hash(*h), *ub - *lb, *lb, *ub)
-                    })
+                    .map(|(h, (lb, ub))| FileDataSequenceEntry::new(simple_hash(*h), *ub - *lb, *lb, *ub))
                     .collect();
 
                 let verification = verification
@@ -1257,33 +1192,39 @@ pub mod test_routines {
                     .map(|v: &u64| FileVerificationEntry::new(simple_hash(*v)))
                     .collect();
 
+                let metadata_ext = metadata_exts.map(|exts| FileMetadataExt::new(simple_hash(exts[i])));
+
                 shard.add_file_reconstruction_info(MDBFileInfo {
                     metadata: FileDataSequenceHeader::new(
                         simple_hash(*file_hash),
                         segments.len(),
                         true,
+                        metadata_ext.is_some(),
                     ),
                     segments: file_contents,
                     verification,
+                    metadata_ext,
                 })?;
             }
         } else {
-            for (file_hash, segments) in file_nodes.iter() {
+            for (i, (file_hash, segments)) in file_nodes.iter().enumerate() {
                 let file_contents: Vec<_> = segments
                     .iter()
-                    .map(|(h, (lb, ub))| {
-                        FileDataSequenceEntry::new(simple_hash(*h), *ub - *lb, *lb, *ub)
-                    })
+                    .map(|(h, (lb, ub))| FileDataSequenceEntry::new(simple_hash(*h), *ub - *lb, *lb, *ub))
                     .collect();
+
+                let metadata_ext = metadata_exts.map(|exts| FileMetadataExt::new(simple_hash(exts[i])));
 
                 shard.add_file_reconstruction_info(MDBFileInfo {
                     metadata: FileDataSequenceHeader::new(
                         simple_hash(*file_hash),
                         segments.len(),
                         false,
+                        metadata_ext.is_some(),
                     ),
                     segments: file_contents,
                     verification: vec![],
+                    metadata_ext,
                 })?;
             }
         }
@@ -1296,6 +1237,7 @@ pub mod test_routines {
         cas_block_sizes: &[usize],
         file_chunk_range_sizes: &[usize],
         contains_verification: bool,
+        contains_metadata_ext: bool,
     ) -> Result<MDBInMemoryShard> {
         // generate the cas content stuff.
         let mut shard = MDBInMemoryShard::default();
@@ -1306,11 +1248,7 @@ pub mod test_routines {
             let mut pos = 0u32;
 
             for _ in 0..*cas_block_size {
-                cas_block.push(CASChunkSequenceEntry::new(
-                    rng_hash(rng.gen()),
-                    rng.gen_range(10000..20000),
-                    pos,
-                ));
+                cas_block.push(CASChunkSequenceEntry::new(rng_hash(rng.gen()), rng.gen_range(10000..20000), pos));
                 pos += rng.gen_range(10000..20000);
             }
 
@@ -1321,37 +1259,55 @@ pub mod test_routines {
         }
 
         for file_block_size in file_chunk_range_sizes {
-            let file_hash = rng_hash(rng.gen());
-
-            let file_contents: Vec<_> = (0..*file_block_size)
-                .map(|_| {
-                    let lb = rng.gen_range(0..10000);
-                    let ub = lb + rng.gen_range(0..10000);
-                    FileDataSequenceEntry::new(rng_hash(rng.gen()), ub - lb, lb, ub)
-                })
-                .collect();
-
-            let verification = if contains_verification {
-                file_contents
-                    .iter()
-                    .map(|_| FileVerificationEntry::new(rng_hash(rng.gen())))
-                    .collect()
-            } else {
-                vec![]
-            };
-
-            shard.add_file_reconstruction_info(MDBFileInfo {
-                metadata: FileDataSequenceHeader::new(
-                    file_hash,
-                    *file_block_size,
-                    contains_verification,
-                ),
-                segments: file_contents,
-                verification,
-            })?;
+            shard.add_file_reconstruction_info(gen_random_file_info(
+                &mut rng,
+                file_block_size,
+                contains_verification,
+                contains_metadata_ext,
+            ))?;
         }
 
         Ok(shard)
+    }
+
+    pub fn gen_random_file_info(
+        rng: &mut StdRng,
+        file_block_size: &usize,
+        contains_verification: bool,
+        contains_metadata_ext: bool,
+    ) -> MDBFileInfo {
+        let file_hash = rng_hash(rng.gen());
+
+        let file_contents: Vec<_> = (0..*file_block_size)
+            .map(|_| {
+                let lb = rng.gen_range(0..10000);
+                let ub = lb + rng.gen_range(0..10000);
+                FileDataSequenceEntry::new(rng_hash(rng.gen()), ub - lb, lb, ub)
+            })
+            .collect();
+
+        let verification = if contains_verification {
+            file_contents
+                .iter()
+                .map(|_| FileVerificationEntry::new(rng_hash(rng.gen())))
+                .collect()
+        } else {
+            vec![]
+        };
+
+        let metadata_ext = contains_metadata_ext.then(|| rng_hash(rng.gen())).map(FileMetadataExt::new);
+
+        MDBFileInfo {
+            metadata: FileDataSequenceHeader::new(
+                file_hash,
+                *file_block_size,
+                contains_verification,
+                metadata_ext.is_some(),
+            ),
+            segments: file_contents,
+            verification,
+            metadata_ext,
+        }
     }
 
     pub fn verify_mdb_shard(shard: &MDBInMemoryShard) -> Result<()> {
@@ -1360,19 +1316,16 @@ pub mod test_routines {
         verify_mdb_shards_match(shard, Cursor::new(&buffer))
     }
 
-    pub fn verify_mdb_shards_match<R: Read + Seek>(
-        mem_shard: &MDBInMemoryShard,
-        shard_info: R,
-    ) -> Result<()> {
+    pub fn verify_mdb_shards_match<R: Read + Seek>(mem_shard: &MDBInMemoryShard, shard_info: R) -> Result<()> {
         let mut cursor = shard_info;
         // Now, test that the results on queries from the
         let shard_file = MDBShardInfo::load_from_file(&mut cursor)?;
 
-        assert_eq!(mem_shard.shard_file_size(), shard_file.num_bytes());
-        assert_eq!(
-            mem_shard.materialized_bytes(),
-            shard_file.materialized_bytes()
-        );
+        let mem_size = mem_shard.shard_file_size();
+        let disk_size = shard_file.num_bytes();
+
+        assert_eq!(mem_size, disk_size);
+        assert_eq!(mem_shard.materialized_bytes(), shard_file.materialized_bytes());
         assert_eq!(mem_shard.stored_bytes(), shard_file.stored_bytes());
 
         for (k, cas_block) in mem_shard.cas_content.iter() {
@@ -1382,8 +1335,7 @@ pub mod test_routines {
             for i in 0..cas_block.chunks.len() {
                 // Test the dedup query over a few hashes in which all the
                 // hashes queried are part of the cas_block.
-                let query_hashes_1: Vec<MerkleHash> = cas_block.chunks
-                    [i..(i + 3).min(cas_block.chunks.len())]
+                let query_hashes_1: Vec<MerkleHash> = cas_block.chunks[i..(i + 3).min(cas_block.chunks.len())]
                     .iter()
                     .map(|c| c.chunk_hash)
                     .collect();
@@ -1400,9 +1352,7 @@ pub mod test_routines {
                 for query_hashes in [&query_hashes_1, &query_hashes_2] {
                     let result_m = mem_shard.chunk_hash_dedup_query(query_hashes).unwrap();
 
-                    let result_f = shard_file
-                        .chunk_hash_dedup_query(&mut cursor, query_hashes)?
-                        .unwrap();
+                    let result_f = shard_file.chunk_hash_dedup_query(&mut cursor, query_hashes)?.unwrap();
 
                     // Returns a tuple of (num chunks matched, FileDataSequenceEntry)
                     assert_eq!(result_m.0, n_items_to_read);
@@ -1413,14 +1363,8 @@ pub mod test_routines {
                     assert_eq!(result_f.1.cas_hash, *k);
 
                     // Make sure the bounds are correct
-                    assert_eq!(
-                        (result_m.1.chunk_index_start, result_m.1.chunk_index_end),
-                        (lb, ub)
-                    );
-                    assert_eq!(
-                        (result_f.1.chunk_index_start, result_f.1.chunk_index_end),
-                        (lb, ub)
-                    );
+                    assert_eq!((result_m.1.chunk_index_start, result_m.1.chunk_index_end), (lb, ub));
+                    assert_eq!((result_f.1.chunk_index_start, result_f.1.chunk_index_end), (lb, ub));
 
                     // Make sure everything else equal.
                     assert_eq!(result_m, result_f);
@@ -1430,8 +1374,7 @@ pub mod test_routines {
 
         // Test get file reconstruction info.
         // Against some valid hashes,
-        let mut query_hashes: Vec<MerkleHash> =
-            mem_shard.file_content.iter().map(|file| *file.0).collect();
+        let mut query_hashes: Vec<MerkleHash> = mem_shard.file_content.iter().map(|file| *file.0).collect();
         // and a few (very likely) invalid somes.
         for i in 0..3 {
             query_hashes.push(rng_hash(1000000 + i as u64));
@@ -1478,21 +1421,17 @@ pub mod test_routines {
 
             assert_eq!(file_info.len(), mem_shard.file_content.len());
 
-            for (file_hash, data_byte_range, verification_byte_range) in file_info {
+            for (file_hash, data_byte_range, verification_byte_range, _metadata_ext_byte_range) in file_info {
                 let true_fie = mem_shard.file_content.get(&file_hash).unwrap();
 
                 // Check FileDataSequenceEntry
                 let (byte_start, byte_end) = data_byte_range;
                 cursor.seek(std::io::SeekFrom::Start(byte_start))?;
 
-                let num_entries =
-                    (byte_end - byte_start) / (size_of::<FileDataSequenceEntry>() as u64);
+                let num_entries = (byte_end - byte_start) / (size_of::<FileDataSequenceEntry>() as u64);
 
                 // No leftovers
-                assert_eq!(
-                    num_entries * (size_of::<FileDataSequenceEntry>() as u64),
-                    (byte_end - byte_start)
-                );
+                assert_eq!(num_entries * (size_of::<FileDataSequenceEntry>() as u64), (byte_end - byte_start));
 
                 assert_eq!(num_entries, true_fie.segments.len() as u64);
 
@@ -1510,14 +1449,10 @@ pub mod test_routines {
                 if let Some((byte_start, byte_end)) = verification_byte_range {
                     cursor.seek(std::io::SeekFrom::Start(byte_start))?;
 
-                    let num_entries =
-                        (byte_end - byte_start) / (size_of::<FileVerificationEntry>() as u64);
+                    let num_entries = (byte_end - byte_start) / (size_of::<FileVerificationEntry>() as u64);
 
                     // No leftovers
-                    assert_eq!(
-                        num_entries * (size_of::<FileVerificationEntry>() as u64),
-                        (byte_end - byte_start)
-                    );
+                    assert_eq!(num_entries * (size_of::<FileVerificationEntry>() as u64), (byte_end - byte_start));
 
                     assert_eq!(num_entries, true_fie.verification.len() as u64);
 
@@ -1540,16 +1475,21 @@ pub mod test_routines {
 
 #[cfg(test)]
 mod tests {
-    use crate::error::Result;
-
     use super::test_routines::*;
+    use crate::error::Result;
 
     #[test]
     fn test_simple() -> Result<()> {
-        let shard = gen_random_shard(0, &[1, 1], &[1], false)?;
+        let shard = gen_random_shard(0, &[1, 1], &[1], false, false)?;
         verify_mdb_shard(&shard)?;
 
-        let shard = gen_random_shard(0, &[1, 1], &[1], true)?;
+        let shard = gen_random_shard(0, &[1, 1], &[1], true, false)?;
+        verify_mdb_shard(&shard)?;
+
+        let shard = gen_random_shard(0, &[1, 1], &[1], false, true)?;
+        verify_mdb_shard(&shard)?;
+
+        let shard = gen_random_shard(0, &[1, 1], &[1], true, true)?;
         verify_mdb_shard(&shard)?;
 
         Ok(())
@@ -1557,14 +1497,17 @@ mod tests {
 
     #[test]
     fn test_specific() -> Result<()> {
-        let mem_shard_1 = gen_specific_shard(&[(0, &[(11, 5)])], &[(100, &[(200, (0, 5))])], None)?;
+        let mem_shard_1 = gen_specific_shard(&[(0, &[(11, 5)])], &[(100, &[(200, (0, 5))])], None, None)?;
         verify_mdb_shard(&mem_shard_1)?;
 
-        let mem_shard_1 = gen_specific_shard(
-            &[(0, &[(11, 5)])],
-            &[(100, &[(200, (0, 5))])],
-            Some(&[&[25]]),
-        )?;
+        let mem_shard_1 = gen_specific_shard(&[(0, &[(11, 5)])], &[(100, &[(200, (0, 5))])], Some(&[&[25]]), None)?;
+        verify_mdb_shard(&mem_shard_1)?;
+
+        let mem_shard_1 = gen_specific_shard(&[(0, &[(11, 5)])], &[(100, &[(200, (0, 5))])], None, Some(&[38]))?;
+        verify_mdb_shard(&mem_shard_1)?;
+
+        let mem_shard_1 =
+            gen_specific_shard(&[(0, &[(11, 5)])], &[(100, &[(200, (0, 5))])], Some(&[&[25]]), Some(&[38]))?;
         verify_mdb_shard(&mem_shard_1)?;
 
         Ok(())
@@ -1572,10 +1515,16 @@ mod tests {
 
     #[test]
     fn test_multiple() -> Result<()> {
-        let shard = gen_random_shard(0, &[1, 5, 10, 8], &[4, 3, 5, 9, 4, 6], false)?;
+        let shard = gen_random_shard(0, &[1, 5, 10, 8], &[4, 3, 5, 9, 4, 6], false, false)?;
         verify_mdb_shard(&shard)?;
 
-        let shard = gen_random_shard(0, &[1, 5, 10, 8], &[4, 3, 5, 9, 4, 6], true)?;
+        let shard = gen_random_shard(0, &[1, 5, 10, 8], &[4, 3, 5, 9, 4, 6], true, false)?;
+        verify_mdb_shard(&shard)?;
+
+        let shard = gen_random_shard(0, &[1, 5, 10, 8], &[4, 3, 5, 9, 4, 6], false, true)?;
+        verify_mdb_shard(&shard)?;
+
+        let shard = gen_random_shard(0, &[1, 5, 10, 8], &[4, 3, 5, 9, 4, 6], true, true)?;
         verify_mdb_shard(&shard)?;
 
         Ok(())
@@ -1583,10 +1532,16 @@ mod tests {
 
     #[test]
     fn test_corner_cases_empty() -> Result<()> {
-        let shard = gen_random_shard(0, &[0], &[0], false)?;
+        let shard = gen_random_shard(0, &[0], &[0], false, false)?;
         verify_mdb_shard(&shard)?;
 
-        let shard = gen_random_shard(0, &[0], &[0], true)?;
+        let shard = gen_random_shard(0, &[0], &[0], true, false)?;
+        verify_mdb_shard(&shard)?;
+
+        let shard = gen_random_shard(0, &[0], &[0], false, true)?;
+        verify_mdb_shard(&shard)?;
+
+        let shard = gen_random_shard(0, &[0], &[0], true, true)?;
         verify_mdb_shard(&shard)?;
 
         Ok(())
@@ -1594,10 +1549,16 @@ mod tests {
 
     #[test]
     fn test_corner_cases_empty_entries() -> Result<()> {
-        let shard = gen_random_shard(0, &[5, 6, 0, 10, 0], &[3, 4, 5, 0, 4, 0], false)?;
+        let shard = gen_random_shard(0, &[5, 6, 0, 10, 0], &[3, 4, 5, 0, 4, 0], false, false)?;
         verify_mdb_shard(&shard)?;
 
-        let shard = gen_random_shard(0, &[5, 6, 0, 10, 0], &[3, 4, 5, 0, 4, 0], true)?;
+        let shard = gen_random_shard(0, &[5, 6, 0, 10, 0], &[3, 4, 5, 0, 4, 0], true, false)?;
+        verify_mdb_shard(&shard)?;
+
+        let shard = gen_random_shard(0, &[5, 6, 0, 10, 0], &[3, 4, 5, 0, 4, 0], false, true)?;
+        verify_mdb_shard(&shard)?;
+
+        let shard = gen_random_shard(0, &[5, 6, 0, 10, 0], &[3, 4, 5, 0, 4, 0], true, true)?;
         verify_mdb_shard(&shard)?;
 
         Ok(())

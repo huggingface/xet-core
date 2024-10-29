@@ -1,6 +1,7 @@
-use ref_cast::RefCast;
 use std::fmt::Display;
 use std::path::{Path, PathBuf};
+
+use ref_cast::RefCast;
 use xet_error::Error;
 
 #[derive(Error, Debug)]

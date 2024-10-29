@@ -1,16 +1,17 @@
 mod disk;
 pub mod error;
 
-use cas_types::{Key, Range};
-use error::ChunkCacheError;
+use std::path::PathBuf;
 
+use cas_types::{ChunkRange, Key};
 pub use disk::test_utils::*;
 pub use disk::DiskCache;
+use error::ChunkCacheError;
 
 /// ChunkCache is a trait for storing and fetching Xorb ranges.
 /// implementors are expected to return bytes for a key and a given chunk range
 /// (no compression or further deserialization should be required)
-/// Range inputs use chunk indicies in a end exclusive way i.e. [start, end)
+/// Range inputs use chunk indices in a end exclusive way i.e. [start, end)
 ///
 /// implementors are allowed to evict data, a get after a put is not required to
 /// be a cache hit.
@@ -22,13 +23,13 @@ pub trait ChunkCache: Sync + Send {
     /// otherwise returns an Ok(Some(data)) where data matches exactly the bytes for
     /// the requested key and the requested chunk index range for that key
     ///
-    /// Given implementors are expected to be able to evict members there's no guarentee
+    /// Given implementors are expected to be able to evict members there's no guarantee
     /// that a previously put range will be a cache hit
     ///
     /// key is required to be a valid CAS Key
     /// range is intended to be an index range within the xorb with constraint
     ///     0 <= range.start < range.end <= num_chunks_in_xorb(key)
-    fn get(&self, key: &Key, range: &Range) -> Result<Option<Vec<u8>>, ChunkCacheError>;
+    fn get(&self, key: &Key, range: &ChunkRange) -> Result<Option<Vec<u8>>, ChunkCacheError>;
 
     /// put should return Ok(()) if the put succeeded with no error, check the error
     /// variant for issues with validating the input, cache state, IO, etc.
@@ -44,8 +45,23 @@ pub trait ChunkCache: Sync + Send {
     fn put(
         &self,
         key: &Key,
-        range: &Range,
-        chunk_byte_indicies: &[u32],
+        range: &ChunkRange,
+        chunk_byte_indices: &[u32],
         data: &[u8],
     ) -> Result<(), ChunkCacheError>;
+}
+
+#[derive(Debug)]
+pub struct CacheConfig {
+    pub cache_directory: PathBuf,
+    pub cache_size: u64,
+}
+
+impl Default for CacheConfig {
+    fn default() -> Self {
+        CacheConfig {
+            cache_directory: PathBuf::from("/tmp"),
+            cache_size: 10 << 30, // 10GB
+        }
+    }
 }

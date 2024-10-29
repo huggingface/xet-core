@@ -1,10 +1,8 @@
 #![allow(clippy::needless_raw_string_hashes)]
 
-use std::env;
-use std::fs;
 use std::path::Path;
 use std::process::{Command, ExitStatus, Stdio};
-use std::str;
+use std::{env, fs, str};
 
 // This code exercises the surface area that we expect of the Error generic
 // member access API. If the current toolchain is able to compile it, then
@@ -40,7 +38,7 @@ const PROBE: &str = r#"
 fn main() {
     match compile_probe() {
         Some(status) if status.success() => println!("cargo:rustc-cfg=error_generic_member_access"),
-        _ => {}
+        _ => {},
     }
 }
 

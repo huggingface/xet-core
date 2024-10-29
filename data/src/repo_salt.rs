@@ -1,6 +1,7 @@
-use crate::constants::REPO_SALT_LEN;
 use rand::{RngCore, SeedableRng};
 use rand_chacha::ChaCha20Rng;
+
+use crate::constants::REPO_SALT_LEN;
 
 pub type RepoSalt = [u8; REPO_SALT_LEN];
 

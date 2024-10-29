@@ -1,15 +1,14 @@
-use anyhow::Result;
-use clap::{Args, Parser, Subcommand};
-use data::{configurations::*, SMALL_FILE_THRESHOLD};
-use data::{PointerFile, PointerFileTranslator};
 use std::env::current_dir;
 use std::fs;
-use std::io::{Read, Write};
+use std::fs::File;
+use std::io::{BufReader, BufWriter, Read, Write};
 use std::path::PathBuf;
-use std::{
-    fs::File,
-    io::{BufReader, BufWriter},
-};
+
+use anyhow::Result;
+use cas_client::CacheConfig;
+use clap::{Args, Parser, Subcommand};
+use data::configurations::*;
+use data::{PointerFile, PointerFileTranslator, SMALL_FILE_THRESHOLD};
 
 #[derive(Parser)]
 struct XCommand {
@@ -77,7 +76,6 @@ fn default_clean_config() -> Result<TranslatorConfig> {
             cache_config: Some(CacheConfig {
                 cache_directory: path.join("cache"),
                 cache_size: 10 * 1024 * 1024 * 1024, // 10 GiB
-                cache_blocksize: 0,                  // ignored
             }),
             staging_directory: None,
         },
@@ -87,8 +85,7 @@ fn default_clean_config() -> Result<TranslatorConfig> {
             prefix: "default-merkledb".into(),
             cache_config: Some(CacheConfig {
                 cache_directory: path.join("shard-cache"),
-                cache_size: 0,      // ignored
-                cache_blocksize: 0, // ignored
+                cache_size: 0, // ignored
             }),
             staging_directory: Some(path.join("shard-session")),
         },
@@ -120,7 +117,6 @@ fn default_smudge_config() -> Result<TranslatorConfig> {
             cache_config: Some(CacheConfig {
                 cache_directory: path.join("cache"),
                 cache_size: 10 * 1024 * 1024 * 1024, // 10 GiB
-                cache_blocksize: 0,                  // ignored
             }),
             staging_directory: None,
         },
@@ -130,8 +126,7 @@ fn default_smudge_config() -> Result<TranslatorConfig> {
             prefix: "default-merkledb".into(),
             cache_config: Some(CacheConfig {
                 cache_directory: path.join("shard-cache"),
-                cache_size: 0,      // ignored
-                cache_blocksize: 0, // ignored
+                cache_size: 0, // ignored
             }),
             staging_directory: Some(path.join("shard-session")),
         },
@@ -149,13 +144,7 @@ fn default_smudge_config() -> Result<TranslatorConfig> {
 async fn clean_file(arg: &CleanArg) -> Result<()> {
     let reader = BufReader::new(File::open(&arg.file)?);
     let writer: Box<dyn Write> = match &arg.dest {
-        Some(path) => Box::new(
-            File::options()
-                .create(true)
-                .write(true)
-                .truncate(true)
-                .open(path)?,
-        ),
+        Some(path) => Box::new(File::options().create(true).write(true).truncate(true).open(path)?),
         None => Box::new(std::io::stdout()),
     };
 
@@ -169,7 +158,7 @@ async fn clean(mut reader: impl Read, mut writer: impl Write) -> Result<()> {
 
     let translator = PointerFileTranslator::new(default_clean_config()?).await?;
 
-    let handle = translator.start_clean(1024, None).await?;
+    let handle = translator.start_clean(1024, None, Some("0".repeat(64))).await?;
 
     loop {
         let bytes = reader.read(&mut read_buf)?;
@@ -194,13 +183,8 @@ async fn smudge_file(arg: &SmudgeArg) -> Result<()> {
         Some(path) => Box::new(File::open(path)?),
         None => Box::new(std::io::stdin()),
     };
-    let mut writer: Box<dyn Write + Send> = Box::new(BufWriter::new(
-        File::options()
-            .create(true)
-            .write(true)
-            .truncate(true)
-            .open(&arg.dest)?,
-    ));
+    let mut writer: Box<dyn Write + Send> =
+        Box::new(BufWriter::new(File::options().create(true).write(true).truncate(true).open(&arg.dest)?));
 
     smudge(reader, &mut writer).await?;
 
@@ -222,9 +206,7 @@ async fn smudge(mut reader: impl Read, writer: &mut Box<dyn Write + Send>) -> Re
 
     let translator = PointerFileTranslator::new(default_smudge_config()?).await?;
 
-    translator
-        .smudge_file_from_pointer(&pointer_file, writer, None)
-        .await?;
+    translator.smudge_file_from_pointer(&pointer_file, writer, None).await?;
 
     Ok(())
 }

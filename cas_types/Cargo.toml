@@ -5,7 +5,6 @@ edition = "2021"
 
 [dependencies]
 merklehash = { path = "../merklehash" }
-xet_error = { path = "../xet_error"}
-anyhow = "1.0.86"
+xet_error = { path = "../xet_error" }
 serde = { version = "1.0.208", features = ["derive"] }
 serde_repr = "0.1.19"

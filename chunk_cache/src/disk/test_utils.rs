@@ -1,8 +1,10 @@
 use std::path::Path;
 
-use cas_types::{Key, Range};
+use cas_types::{ChunkRange, Key};
 use merklehash::MerkleHash;
-use rand::{rngs::ThreadRng, seq::SliceRandom, thread_rng, Rng, SeedableRng};
+use rand::rngs::ThreadRng;
+use rand::seq::SliceRandom;
+use rand::{thread_rng, Rng, SeedableRng};
 
 #[cfg(test)]
 pub const RANGE_LEN: u32 = 16 << 10;
@@ -24,11 +26,11 @@ pub fn print_directory_contents(path: &Path) {
                         if path.is_dir() {
                             print_directory_contents(&path);
                         }
-                    }
+                    },
                     Err(e) => eprintln!("Error reading entry: {}", e),
                 }
             }
-        }
+        },
         Err(e) => eprintln!("Error reading directory: {}", e),
     }
 }
@@ -40,13 +42,13 @@ pub fn random_key(rng: &mut impl Rng) -> Key {
     }
 }
 
-pub fn random_range(rng: &mut impl Rng) -> Range {
+pub fn random_range(rng: &mut impl Rng) -> ChunkRange {
     let start = rng.gen::<u32>() % 1000;
     let end = start + 1 + rng.gen::<u32>() % (1024 - start);
-    Range { start, end }
+    ChunkRange { start, end }
 }
 
-pub fn random_bytes(rng: &mut impl Rng, range: &Range, len: u32) -> (Vec<u32>, Vec<u8>) {
+pub fn random_bytes(rng: &mut impl Rng, range: &ChunkRange, len: u32) -> (Vec<u32>, Vec<u8>) {
     let random_vec: Vec<u8> = (0..len).map(|_| rng.gen()).collect();
     if range.end - range.start == 0 {
         return (vec![0, len], random_vec);
@@ -93,7 +95,7 @@ impl<T: Rng> RandomEntryIterator<T> {
         self
     }
 
-    pub fn next_key_range(&mut self) -> (Key, Range) {
+    pub fn next_key_range(&mut self) -> (Key, ChunkRange) {
         (random_key(&mut self.rng), random_range(&mut self.rng))
     }
 }
@@ -111,16 +113,13 @@ impl Default for RandomEntryIterator<ThreadRng> {
 }
 
 impl<T: Rng> Iterator for RandomEntryIterator<T> {
-    type Item = (Key, Range, Vec<u32>, Vec<u8>);
+    type Item = (Key, ChunkRange, Vec<u32>, Vec<u8>);
 
     fn next(&mut self) -> Option<Self::Item> {
         let key = random_key(&mut self.rng);
         let range = if self.one_chunk_ranges {
             let start = self.rng.gen();
-            Range {
-                start,
-                end: start + 1,
-            }
+            ChunkRange { start, end: start + 1 }
         } else {
             random_range(&mut self.rng)
         };
@@ -139,23 +138,19 @@ mod tests {
     fn test_iter() {
         let mut it = RandomEntryIterator::default();
         for _ in 0..100 {
-            let (_key, range, chunk_byte_indicies, data) = it.next().unwrap();
+            let (_key, range, chunk_byte_indices, data) = it.next().unwrap();
             assert!(range.start < range.end, "invalid range: {range:?}");
             assert!(
-                chunk_byte_indicies.len() == (range.end - range.start + 1) as usize,
-                "chunk_byte_indicies len mismatch, range: {range:?}, cbi len: {}",
-                chunk_byte_indicies.len()
+                chunk_byte_indices.len() == (range.end - range.start + 1) as usize,
+                "chunk_byte_indices len mismatch, range: {range:?}, cbi len: {}",
+                chunk_byte_indices.len()
             );
+            assert!(chunk_byte_indices[0] == 0, "chunk_byte_indices[0] != 0, is instead {}", chunk_byte_indices[0]);
             assert!(
-                chunk_byte_indicies[0] == 0,
-                "chunk_byte_indicies[0] != 0, is instead {}",
-                chunk_byte_indicies[0]
-            );
-            assert!(
-                *chunk_byte_indicies.last().unwrap() as usize == data.len(),
-                "chunk_byte_indicies last value does not equal data.len() ({}), is instead {}",
+                *chunk_byte_indices.last().unwrap() as usize == data.len(),
+                "chunk_byte_indices last value does not equal data.len() ({}), is instead {}",
                 data.len(),
-                chunk_byte_indicies.last().unwrap()
+                chunk_byte_indices.last().unwrap()
             );
         }
     }
