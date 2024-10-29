@@ -42,6 +42,7 @@ prometheus = "0.13.0"
 
 # Other hashers for migration
 hashers = "1.0.1"
+sha2 = "0.10"
 
 # Need to specify this as optional to allow the openssl/vendored option below
 openssl = { version = "0.10", features = [], optional = true }
