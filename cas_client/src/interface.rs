@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::io::Write;
 use std::sync::Arc;
 
@@ -58,6 +59,12 @@ pub trait ReconstructionClient {
         hash: &MerkleHash,
         byte_range: Option<FileRange>,
         writer: &mut Box<dyn Write + Send>,
+    ) -> Result<()>;
+
+    async fn batch_get_file(
+        &self,
+        http_client: Arc<ClientWithMiddleware>,
+        files: HashMap<MerkleHash, &mut Box<dyn Write + Send>>,
     ) -> Result<()>;
 }
 
