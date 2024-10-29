@@ -755,19 +755,17 @@ impl MDBShardInfo {
                 ret.push((read_u64(reader)?, (read_u32(reader)?, read_u32(reader)?)));
             }
         } else {
+            let (cas_info_start, cas_info_end) = self.cas_info_byte_range();
+
             // We don't have the lookup table, so
-            let n_elements_cap = (self
-                .metadata
-                .cas_lookup_offset
-                .saturating_sub(self.metadata.cas_info_offset)) // Avoids excessive allocations and weird stuff.
-                as usize
-                / size_of::<CASChunkSequenceEntry>();
+            let n_elements_cap = (cas_info_end - cas_info_start) as usize / size_of::<CASChunkSequenceEntry>();
 
             ret = Vec::with_capacity(n_elements_cap);
 
             let mut cas_index = 0;
 
-            let (cas_lookup_start, cas_lookup_end) = self.cas_lookup_byte_range();
+            let (cas_lookup_start, cas_lookup_end) = self.cas_info_byte_range();
+
             reader.seek(SeekFrom::Start(cas_lookup_start))?;
             while reader.stream_position()? < cas_lookup_end {
                 let cas_header = CASChunkSequenceHeader::deserialize(reader)?;
