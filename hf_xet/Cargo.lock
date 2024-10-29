@@ -207,7 +207,7 @@ dependencies = [
  "file_utils",
  "heed",
  "http 1.1.0",
- "itertools",
+ "itertools 0.10.5",
  "mdb_shard",
  "merkledb",
  "merklehash",
@@ -408,7 +408,6 @@ dependencies = [
  "http 0.2.12",
  "lazy_static",
  "lru",
- "lz4",
  "mdb_shard",
  "merkledb",
  "merklehash",
@@ -1040,6 +1039,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "itertools"
+version = "0.13.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "413ee7dfc52ee1a4949ceeb7dbc8a33f2d6c088194d9f922fb8318faf1f01186"
+dependencies = [
+ "either",
+]
+
+[[package]]
 name = "itoa"
 version = "1.0.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1118,25 +1126,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "lz4"
-version = "1.27.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a231296ca742e418c43660cb68e082486ff2538e8db432bc818580f3965025ed"
-dependencies = [
- "lz4-sys",
-]
-
-[[package]]
-name = "lz4-sys"
-version = "1.11.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fcb44a01837a858d47e5a630d2ccf304c8efcc4b83b8f9f75b7a9ee4fcc6e57d"
-dependencies = [
- "cc",
- "libc",
-]
-
-[[package]]
 name = "lz4_flex"
 version = "0.11.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1161,6 +1150,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "clap",
+ "itertools 0.13.0",
  "lazy_static",
  "merklehash",
  "rand 0.8.5",

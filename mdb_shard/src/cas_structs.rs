@@ -16,7 +16,7 @@ pub struct CASChunkSequenceHeader {
     pub cas_flags: u32,
     pub num_entries: u32,
     pub num_bytes_in_cas: u32,
-    pub num_bytes_on_disk: u32, // the size after CAS block compression
+    pub num_bytes_on_disk: u32,
 }
 
 impl CASChunkSequenceHeader {
@@ -34,7 +34,7 @@ impl CASChunkSequenceHeader {
             cas_flags: MDB_DEFAULT_CAS_FLAG,
             num_entries: num_entries.try_into().unwrap(),
             num_bytes_in_cas: num_bytes_in_cas.try_into().unwrap(),
-            num_bytes_on_disk: num_bytes_in_cas.try_into().unwrap(),
+            num_bytes_on_disk: 0,
         }
     }
 
@@ -48,25 +48,6 @@ impl CASChunkSequenceHeader {
 
     pub fn is_bookend(&self) -> bool {
         self.cas_hash == [!0u64; 4].into()
-    }
-
-    pub fn new_with_compression<I1: TryInto<u32>, I2: TryInto<u32> + Copy>(
-        cas_hash: MerkleHash,
-        num_entries: I1,
-        num_bytes_in_cas: I2,
-        num_bytes_on_disk: I2,
-    ) -> Self
-    where
-        <I1 as TryInto<u32>>::Error: std::fmt::Debug,
-        <I2 as TryInto<u32>>::Error: std::fmt::Debug,
-    {
-        Self {
-            cas_hash,
-            cas_flags: MDB_DEFAULT_CAS_FLAG,
-            num_entries: num_entries.try_into().unwrap(),
-            num_bytes_in_cas: num_bytes_in_cas.try_into().unwrap(),
-            num_bytes_on_disk: num_bytes_on_disk.try_into().unwrap(),
-        }
     }
 
     pub fn serialize<W: Write>(&self, writer: &mut W) -> Result<usize, std::io::Error> {

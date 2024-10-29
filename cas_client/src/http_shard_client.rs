@@ -1,21 +1,17 @@
-use std::io::Read;
+use std::io::Write;
 use std::path::PathBuf;
-use std::str::FromStr;
 
 use async_trait::async_trait;
-use bytes::Buf;
 use cas_types::{Key, QueryReconstructionResponse, UploadShardResponse, UploadShardResponseType};
 use error_printer::ErrorPrinter;
-use file_utils::write_all_safe;
+use file_utils::SafeFileCreator;
 use mdb_shard::file_structs::{FileDataSequenceEntry, FileDataSequenceHeader, MDBFileInfo};
 use mdb_shard::shard_dedup_probe::ShardDedupProber;
 use mdb_shard::shard_file_reconstructor::FileReconstructor;
-use merklehash::MerkleHash;
+use merklehash::{HashedWrite, MerkleHash};
 use reqwest::Url;
 use reqwest_middleware::ClientWithMiddleware;
-use tokio::task::JoinSet;
 use utils::auth::AuthConfig;
-use utils::serialization_utils::read_u32;
 
 use crate::error::{CasClientError, Result};
 use crate::{build_auth_http_client, RegistrationClient, ShardClientInterface};
@@ -104,7 +100,7 @@ impl FileReconstructor<CasClientError> for HttpShardClient {
 
         Ok(Some((
             MDBFileInfo {
-                metadata: FileDataSequenceHeader::new(*file_hash, response_info.terms.len(), false),
+                metadata: FileDataSequenceHeader::new(*file_hash, response_info.terms.len(), false, false),
                 segments: response_info
                     .terms
                     .into_iter()
@@ -113,6 +109,7 @@ impl FileReconstructor<CasClientError> for HttpShardClient {
                     })
                     .collect(),
                 verification: vec![],
+                metadata_ext: None,
             },
             None,
         )))
@@ -141,59 +138,35 @@ impl ShardDedupProber<CasClientError> for HttpShardClient {
 
         let url = Url::parse(&format!("{0}/chunk/{key}", self.endpoint))?;
 
-        let response = self
+        let mut response = self
             .client
             .get(url)
             .send()
             .await
-            .map_err(|e| CasClientError::Other(format!("request failed with code {e}")))?;
-        let response_body = response.bytes().await?;
-        let mut reader = response_body.reader();
+            .map_err(|e| CasClientError::Other(format!("request failed with error {e}")))?;
 
-        let mut downloaded_shards = vec![];
-
-        let mut write_join_set = JoinSet::<Result<()>>::new();
-
-        // Return in the format of
-        // [
-        //     {
-        //         key_length: usize,              // 4 bytes little endian
-        //         key: [u8; key_length]
-        //     },
-        //     {
-        //         shard_content_length: usize,    // 4 bytes little endian
-        //         shard_content: [u8; shard_content_length]
-        //     }
-        // ] // Repeat for each shard
-        loop {
-            let Ok(key_length) = read_u32(&mut reader) else {
-                break;
-            };
-            let mut shard_key = vec![0u8; key_length as usize];
-            reader.read_exact(&mut shard_key)?;
-
-            let shard_key =
-                String::from_utf8(shard_key).map_err(|e| CasClientError::InvalidShardKey(format!("{e:?}")))?;
-            let shard_key = Key::from_str(&shard_key).map_err(|e| CasClientError::InvalidShardKey(format!("{e:?}")))?;
-            downloaded_shards.push(shard_key.hash);
-
-            let shard_content_length = read_u32(&mut reader)?;
-            let mut shard_content = vec![0u8; shard_content_length as usize];
-            reader.read_exact(&mut shard_content)?;
-
-            let file_name = local_shard_name(&shard_key.hash);
-            let file_path = shard_cache_dir.join(file_name);
-            write_join_set.spawn(async move {
-                write_all_safe(&file_path, &shard_content)?;
-                Ok(())
-            });
+        // Dedup shard not found, return empty result
+        if !response.status().is_success() {
+            return Ok(vec![]);
         }
 
-        while let Some(res) = write_join_set.join_next().await {
-            res.map_err(|e| CasClientError::Other(format!("Internal task error: {e:?}")))??;
-        }
+        let writer = SafeFileCreator::new_unnamed()?;
+        // Compute the actual hash to use as the shard file name
+        let mut hashed_writer = HashedWrite::new(writer);
 
-        Ok(downloaded_shards)
+        while let Some(chunk) = response.chunk().await? {
+            hashed_writer.write_all(&chunk)?;
+        }
+        hashed_writer.flush()?;
+
+        let shard_hash = hashed_writer.hash();
+        let file_name = local_shard_name(&shard_hash);
+        let file_path = shard_cache_dir.join(file_name);
+        let mut writer = hashed_writer.into_inner();
+        writer.set_dest_path(file_path);
+        writer.close()?;
+
+        Ok(vec![shard_hash])
     }
 }
 
@@ -240,7 +213,7 @@ mod test {
 
         // test file reconstruction lookup
         let files = MDBShardInfo::read_file_info_ranges(&mut reader)?;
-        for (file_hash, _, _) in files {
+        for (file_hash, _, _, _) in files {
             let expected = shard.get_file_reconstruction_info(&file_hash)?.unwrap();
             let (result, _) = client.get_file_reconstruction_info(&file_hash).await?.unwrap();
 

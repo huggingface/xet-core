@@ -17,7 +17,6 @@ use crate::cas_interface::create_cas_client;
 use crate::clean::Cleaner;
 use crate::configurations::*;
 use crate::errors::*;
-use crate::metrics::FILTER_CAS_BYTES_PRODUCED;
 use crate::remote_shard_interface::RemoteShardInterface;
 use crate::shard_interface::create_shard_manager;
 use crate::PointerFile;
@@ -101,9 +100,18 @@ impl PointerFileTranslator {
     /// Start to clean one file. When cleaning multiple files, each file should
     /// be associated with one Cleaner. This allows to launch multiple clean task
     /// simultaneously.
+    ///
     /// The caller is responsible for memory usage management, the parameter "buffer_size"
     /// indicates the maximum number of Vec<u8> in the internal buffer.
-    pub async fn start_clean(&self, buffer_size: usize, file_name: Option<&Path>) -> Result<Arc<Cleaner>> {
+    ///
+    /// An optional sha256 can be provided if the caller has already calculated it. If
+    /// not provided then TODO: the sha will be calculated as part of the cleaning process
+    pub async fn start_clean(
+        &self,
+        buffer_size: usize,
+        file_name: Option<&Path>,
+        sha256: Option<String>,
+    ) -> Result<Arc<Cleaner>> {
         let Some(ref dedup) = self.config.dedup_config else {
             return Err(DataProcessingError::DedupConfigError("empty dedup config".to_owned()));
         };
@@ -119,6 +127,7 @@ impl PointerFileTranslator {
             self.global_cas_data.clone(),
             buffer_size,
             file_name,
+            sha256,
         )
         .await
     }
@@ -195,20 +204,8 @@ pub(crate) async fn register_new_cas_block(
     let cas_hash = cas_node_hash(&cas_data.chunks[..]);
 
     let raw_bytes_len = cas_data.data.len();
-    // We now assume that the server will compress Xorbs using lz4,
-    // without actually compressing the data client-side.
-    // The accounting logic will be moved to server-side in the future.
-    let compressed_bytes_len = lz4::block::compress(&cas_data.data, Some(lz4::block::CompressionMode::DEFAULT), false)
-        .map(|out| out.len())
-        .unwrap_or(raw_bytes_len)
-        .min(raw_bytes_len);
 
-    let metadata = CASChunkSequenceHeader::new_with_compression(
-        cas_hash,
-        cas_data.chunks.len(),
-        raw_bytes_len,
-        compressed_bytes_len,
-    );
+    let metadata = CASChunkSequenceHeader::new(cas_hash, cas_data.chunks.len(), raw_bytes_len);
 
     let mut pos = 0;
     let chunks: Vec<_> = cas_data
@@ -250,8 +247,6 @@ pub(crate) async fn register_new_cas_block(
 
         shard_manager.add_file_reconstruction_info(fi).await?;
     }
-
-    FILTER_CAS_BYTES_PRODUCED.inc_by(compressed_bytes_len as u64);
 
     cas_data.data.clear();
     cas_data.chunks.clear();

@@ -498,7 +498,6 @@ impl ShardFileManager {
 
 #[cfg(test)]
 mod tests {
-
     use std::cmp::min;
     use std::time::Duration;
 
@@ -510,7 +509,7 @@ mod tests {
     use crate::error::Result;
     use crate::file_structs::FileDataSequenceHeader;
     use crate::session_directory::consolidate_shards_in_directory;
-    use crate::shard_format::test_routines::{rng_hash, simple_hash};
+    use crate::shard_format::test_routines::{gen_random_file_info, rng_hash, simple_hash};
 
     #[allow(clippy::type_complexity)]
     pub async fn fill_with_specific_shard(
@@ -543,9 +542,10 @@ mod tests {
                 .map(|(h, (lb, ub))| FileDataSequenceEntry::new(simple_hash(*h), *ub - *lb, *lb, *ub))
                 .collect();
             let file_info = MDBFileInfo {
-                metadata: FileDataSequenceHeader::new(simple_hash(*file_hash), segments.len(), false),
+                metadata: FileDataSequenceHeader::new(simple_hash(*file_hash), segments.len(), false, false),
                 segments: file_contents,
                 verification: vec![],
+                metadata_ext: None,
             };
 
             shard.add_file_reconstruction_info(file_info.clone()).await?;
@@ -607,24 +607,7 @@ mod tests {
         }
 
         for file_block_size in file_chunk_range_sizes {
-            let file_hash = rng_hash(rng.gen());
-
-            let segments: Vec<_> = (0..*file_block_size)
-                .map(|_| {
-                    let lb = rng.gen_range(0..10000);
-                    let ub = lb + rng.gen_range(0..10000);
-                    FileDataSequenceEntry::new(rng_hash(rng.gen()), ub - lb, lb, ub)
-                })
-                .collect();
-
-            let metadata = FileDataSequenceHeader::new(file_hash, *file_block_size, false);
-
-            let file_info = MDBFileInfo {
-                metadata,
-                segments,
-                verification: vec![],
-            };
-
+            let file_info = gen_random_file_info(&mut rng, file_block_size, false, false);
             shard.add_file_reconstruction_info(file_info.clone()).await?;
 
             in_mem_shard.add_file_reconstruction_info(file_info)?;

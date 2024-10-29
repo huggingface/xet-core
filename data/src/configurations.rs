@@ -68,11 +68,8 @@ pub enum GlobalDedupPolicy {
     /// Never query for new shards using chunk hashes.
     Never,
 
-    /// Only query for new shards when using direct file access methods like `xet cp`
+    /// Always query for new shards by chunks
     #[default]
-    OnDirectAccess,
-
-    /// Always query for new shards by chunks (not recommended except for testing)
     Always,
 }
 
@@ -82,7 +79,6 @@ impl FromStr for GlobalDedupPolicy {
     fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
         match s.to_lowercase().as_str() {
             "never" => Ok(GlobalDedupPolicy::Never),
-            "direct_only" => Ok(GlobalDedupPolicy::OnDirectAccess),
             "always" => Ok(GlobalDedupPolicy::Always),
             _ => Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
