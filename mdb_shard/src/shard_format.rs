@@ -153,14 +153,6 @@ impl Default for MDBShardFileFooter {
 
 impl MDBShardFileFooter {
     pub fn serialize<W: Write>(&self, writer: &mut W) -> Result<usize> {
-        let creation_timestamp = {
-            if self.shard_creation_timestamp == 0 {
-                current_timestamp()
-            } else {
-                self.shard_creation_timestamp
-            }
-        };
-
         write_u64(writer, self.version)?;
         write_u64(writer, self.file_info_offset)?;
         write_u64(writer, self.file_lookup_offset)?;
@@ -171,7 +163,7 @@ impl MDBShardFileFooter {
         write_u64(writer, self.chunk_lookup_offset)?;
         write_u64(writer, self.chunk_lookup_num_entry)?;
         write_hash(writer, &self.chunk_hash_hmac_key)?;
-        write_u64(writer, creation_timestamp)?;
+        write_u64(writer, self.shard_creation_timestamp)?;
         write_u64(writer, self.shard_key_expiry)?;
         write_u64s(writer, &self._buffer)?;
         write_u64(writer, self.stored_bytes_on_disk)?;
