@@ -184,8 +184,8 @@ impl Cleaner {
 
         self.metrics.file_size.fetch_add(data.len() as u64, Ordering::Relaxed);
 
+        self.sha_generator.update(&data)?;
         if !self.check_passthrough_status(&data).await? {
-            self.sha_generator.update(&data)?;
             self.add_data_to_chunking(BufferItem::Value(data)).await?
         }
 
@@ -560,7 +560,6 @@ impl Cleaner {
         let mut small_file_buffer = self.small_file_buffer.lock().await;
         if let Some(buffer) = small_file_buffer.take() {
             if !is_file_passthrough(&buffer, self.small_file_threshold) {
-                self.sha_generator.update(&buffer)?;
                 self.add_data_to_chunking(BufferItem::Value(buffer)).await?;
             } else {
                 // put back for return value
