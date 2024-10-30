@@ -95,6 +95,18 @@ impl From<HexMerkleHash> for MerkleHash {
     }
 }
 
+impl From<&HexMerkleHash> for MerkleHash {
+    fn from(value: &HexMerkleHash) -> Self {
+        value.0
+    }
+}
+
+impl From<&MerkleHash> for HexMerkleHash {
+    fn from(value: &MerkleHash) -> Self {
+        HexMerkleHash(*value)
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct HexKey {
     pub prefix: String,

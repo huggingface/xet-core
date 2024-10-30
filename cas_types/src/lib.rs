@@ -92,7 +92,7 @@ pub struct CASReconstructionFetchInfo {
 pub struct QueryReconstructionResponse {
     // For range query [a, b) into a file content, the location
     // of "a" into the first range.
-    pub offset_into_first_range: u32,
+    pub offset_into_first_range: u64,
     // Series of terms describing a xorb hash and chunk range to be retreived
     // to reconstruct the file
     pub terms: Vec<CASReconstructionTerm>,

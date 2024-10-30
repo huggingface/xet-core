@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::io::Write;
 use std::path::Path;
 use std::sync::Arc;
@@ -92,7 +93,7 @@ impl ReconstructionClient for LocalTestClient {
         &self,
         http_client: Arc<ClientWithMiddleware>,
         files: HashMap<MerkleHash, &mut Box<dyn Write + Send>>,
-    ) -> Result<()> {
+    ) -> Result<(), CasClientError> {
         todo!()
     }
 }
