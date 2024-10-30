@@ -199,7 +199,7 @@ impl RemoteClient {
             if is_first {
                 is_first = false;
             } else {
-                url_str.push_str("&");
+                url_str.push('&');
             }
             url_str.push_str("file_id=");
             url_str.push_str(hash.hex().as_str());
