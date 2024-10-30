@@ -143,10 +143,8 @@ impl ReconstructionClient for RemoteClient {
 
         // TODO: spawn threads to reconstruct each file
         for (hash, terms) in manifest.files {
-            let hash: MerkleHash = hash.into();
-            // guarenteed to find hash from check above
-            let w = files.get_mut(&hash).unwrap();
-            self.reconstruct_file_to_writer(http_client.clone(), terms, fetch_info.clone(), 0, None, *w)
+            let w = files.get_mut(&(hash.into())).unwrap();
+            self.reconstruct_file_to_writer(http_client.clone(), terms, fetch_info.clone(), 0, None, w)
                 .await?;
         }
 
