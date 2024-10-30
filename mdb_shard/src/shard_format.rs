@@ -571,8 +571,12 @@ impl MDBShardInfo {
 
         reader.seek(SeekFrom::Start(self.metadata.cas_info_offset))?;
 
-        while let Some(cas_block) = CASChunkSequenceHeader::deserialize(reader)? {
-            let pos = reader.stream_position()? - size_of::<CASChunkSequenceHeader>();
+        loop {
+            let pos = reader.stream_position()?;
+            let cas_block = CASChunkSequenceHeader::deserialize(reader)?;
+            if cas_block.is_bookend() {
+                break;
+            }
             let n = cas_block.num_entries;
             cas_blocks.push((cas_block, pos));
 
@@ -756,8 +760,8 @@ impl MDBShardInfo {
 
             let mut cas_index = 0;
 
-            reader.seek(SeekFrom::Start(cas_lookup_start))?;
-            while reader.stream_position()? < cas_lookup_end {
+            reader.seek(SeekFrom::Start(cas_info_start))?;
+            while reader.stream_position()? < cas_info_end {
                 let cas_header = CASChunkSequenceHeader::deserialize(reader)?;
 
                 for chunk_index in 0..cas_header.num_entries {
