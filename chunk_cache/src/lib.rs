@@ -7,6 +7,7 @@ use cas_types::{ChunkRange, Key};
 pub use disk::test_utils::*;
 pub use disk::DiskCache;
 use error::ChunkCacheError;
+use mockall::automock;
 
 /// ChunkCache is a trait for storing and fetching Xorb ranges.
 /// implementors are expected to return bytes for a key and a given chunk range
@@ -15,6 +16,7 @@ use error::ChunkCacheError;
 ///
 /// implementors are allowed to evict data, a get after a put is not required to
 /// be a cache hit.
+#[automock]
 pub trait ChunkCache: Sync + Send {
     /// get should return an Ok() variant if significant error occurred, check the error
     /// variant for issues with IO or parsing contents etc.

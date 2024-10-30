@@ -184,8 +184,6 @@ impl RemoteClient {
     /// to download files from S3/blob store using urls from the fetch information section of
     /// of the response it will use the provided http client.
     ///
-    /// TODO: respect the byte_range argument to reconstruct only a section.
-    ///
     /// To reconstruct, this function will iterate through each CASReconstructionTerm in the `terms` section
     /// of the QueryReconstructionResponse, fetching the data for that term. Each term is a range of chunks
     /// from a specific Xorb. The range is an end exclusive [start, end) chunk index range of the xorb
@@ -205,11 +203,11 @@ impl RemoteClient {
 
         let single_flight_group = Arc::new(singleflight::Group::new());
 
-        let total_len = byte_range
-            .as_ref()
-            .map(|range| range.end - range.start)
-            // use the full reconstruction terms if fetching full range
-            .unwrap_or(terms.iter().fold(0, |acc, x| acc + x.unpacked_length as u64));
+        let total_len = if let Some(range) = byte_range {
+            range.end - range.start
+        } else {
+            terms.iter().fold(0, |acc, x| acc + x.unpacked_length as u64)
+        };
         let mut remaining_len = total_len;
         let term_data_futures = terms.into_iter().map(|term| {
             let http_client = http_client.clone();
@@ -229,7 +227,7 @@ impl RemoteClient {
             } else {
                 0
             };
-            let end: usize = min(remaining_len, term_data.len() as u64) as usize + start;
+            let end: usize = min(remaining_len + start as u64, term_data.len() as u64) as usize;
             writer.write_all(&term_data[start..end])?;
             remaining_len -= (end - start) as u64;
         }
@@ -374,11 +372,26 @@ async fn download_range(
 
 #[cfg(test)]
 mod tests {
+    use std::fs::File;
+    use std::io::Read;
+    use std::ptr::write;
+    use std::rc::Rc;
 
     use cas_object::test_utils::{build_cas_object, ChunkSize};
+    use cas_types::ChunkRange;
+    use chunk_cache::MockChunkCache;
     use tracing_test::traced_test;
 
     use super::*;
+
+    // test reconstruction contains 20 chunks, where each chunk size is 10 bytes
+    const TEST_CHUNK_RANGE: ChunkRange = ChunkRange {
+        start: 0,
+        end: TEST_NUM_CHUNKS as u32,
+    };
+    const TEST_CHUNK_SIZE: usize = 10;
+    const TEST_NUM_CHUNKS: usize = 20;
+    const TEST_UNPACKED_LEN: u32 = (TEST_CHUNK_SIZE * TEST_NUM_CHUNKS) as u32;
 
     #[ignore = "requires a running CAS server"]
     #[traced_test]
@@ -395,5 +408,64 @@ mod tests {
 
         // Assert
         assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_reconstruct_file_to_writer() {
+        struct TestCase {
+            reconstruction_response: QueryReconstructionResponse,
+            range: Option<FileRange>,
+            expected_len: u64,
+            expect_error: bool,
+        }
+        let test_cases = vec![TestCase {
+            reconstruction_response: QueryReconstructionResponse {
+                offset_into_first_range: 0,
+                terms: vec![CASReconstructionTerm {
+                    hash: HexMerkleHash::default(),
+                    range: TEST_CHUNK_RANGE,
+                    unpacked_length: TEST_UNPACKED_LEN,
+                }],
+                fetch_info: HashMap::new(),
+            },
+            range: None,
+            expected_len: TEST_UNPACKED_LEN as u64,
+            expect_error: false,
+        }];
+        for test in test_cases {
+            let mut chunk_cache = MockChunkCache::new();
+            chunk_cache
+                .expect_get()
+                .returning(|_, range| Ok(Some(vec![1; (range.end - range.start) as usize * TEST_CHUNK_SIZE])));
+
+            let http_client = http_client::build_http_client(&None).unwrap();
+            let client = RemoteClient {
+                disk_cache: Some(Arc::new(chunk_cache)),
+                http_auth_client: http_client.clone(),
+                endpoint: "".to_string(),
+            };
+
+            let tmp = tempfile::Builder::new().tempfile().unwrap();
+
+            let path = tmp.path();
+            let mut v: Arc<File> = Arc::new(tmp.into_file());
+            let mut writer: Box<dyn Write + Send> = Box::new(v.clone());
+            let resp = client
+                .reconstruct_file_to_writer(
+                    Arc::new(http_client.clone()),
+                    test.reconstruction_response,
+                    test.range,
+                    &mut writer,
+                )
+                .await;
+            v.flush().unwrap();
+            assert_eq!(test.expect_error, resp.is_err());
+            if !test.expect_error {
+                assert_eq!(test.expected_len, resp.unwrap());
+                let mut out = Vec::new();
+                v.read_to_end(&mut out).unwrap();
+                assert_eq!(vec![1; test.expected_len as usize], out);
+            }
+        }
     }
 }
