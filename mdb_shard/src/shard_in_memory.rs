@@ -15,7 +15,7 @@ use crate::error::{MDBShardError, Result};
 use crate::file_structs::*;
 use crate::shard_format::MDBShardInfo;
 use crate::utils::{shard_file_name, temp_shard_file_name};
-use crate::MDBShardFile;
+
 
 #[allow(clippy::type_complexity)]
 #[derive(Clone, Default, Debug)]
@@ -265,6 +265,7 @@ impl MDBInMemoryShard {
 
         #[cfg(debug_assertions)]
         {
+            use crate::MDBShardFile;
             let shard_file = MDBShardFile::load_from_file(&full_file_name)?;
             shard_file.verify_shard_integrity();
         }
