@@ -106,8 +106,8 @@ pub struct MDBShardFileFooter {
     pub file_info_offset: u64,
     pub cas_info_offset: u64,
 
-    // Lookup tabels.  These come after the info sections to allow the shard to be partially
-    // read without including the header.
+    // Lookup tables.  These come after the info sections to allow the shard to be partially
+    // read without needing to read the footer.
     pub file_lookup_offset: u64,
     pub file_lookup_num_entry: u64,
     pub cas_lookup_offset: u64,
@@ -237,15 +237,6 @@ impl MDBShardFileFooter {
 ///     ],
 /// ], // Repeats per file.
 ///
-/// ----------------------------------------------------------------------------
-///  
-/// File info lookup.  This is a lookup of a truncated file hash to the
-/// location index in the File info section.
-///
-/// Sorted Vec<(u64, u32)> on the u64.
-///
-/// The first entry is the u64 truncated file hash, and the next entry is the
-/// index in the file info section of the element that starts the file reconstruction section.
 ///
 /// ----------------------------------------------------------------------------
 ///
@@ -260,6 +251,16 @@ impl MDBShardFileFooter {
 ///         CASChunkSequenceEntry, // (u32, u32) index in Chunk lookup directs here.
 ///     ],
 /// ], // Repeats per CAS.
+///
+/// ----------------------------------------------------------------------------
+///  
+/// File info lookup.  This is a lookup of a truncated file hash to the
+/// location index in the File info section.
+///
+/// Sorted Vec<(u64, u32)> on the u64.
+///
+/// The first entry is the u64 truncated file hash, and the next entry is the
+/// index in the file info section of the element that starts the file reconstruction section.
 ///
 /// ----------------------------------------------------------------------------
 ///
@@ -578,9 +579,8 @@ impl MDBShardInfo {
 
         reader.seek(SeekFrom::Start(self.metadata.cas_info_offset))?;
 
-        for _ in 0..self.metadata.cas_lookup_num_entry {
-            let pos = reader.stream_position()?;
-            let cas_block = CASChunkSequenceHeader::deserialize(reader)?;
+        while let Some(cas_block) = CASChunkSequenceHeader::deserialize(reader)? {
+            let pos = reader.stream_position()? - size_of::<CASChunkSequenceHeader>();
             let n = cas_block.num_entries;
             cas_blocks.push((cas_block, pos));
 
@@ -763,8 +763,6 @@ impl MDBShardInfo {
             ret = Vec::with_capacity(n_elements_cap);
 
             let mut cas_index = 0;
-
-            let (cas_lookup_start, cas_lookup_end) = self.cas_info_byte_range();
 
             reader.seek(SeekFrom::Start(cas_lookup_start))?;
             while reader.stream_position()? < cas_lookup_end {
@@ -1059,7 +1057,7 @@ impl MDBShardInfo {
 
         if include_cas_lookup_table {
             // The cas lookup table should be the same, so just copy it directly
-            byte_pos += copy(&mut reader.take(cas_lookup_end - cas_info_start), writer)? as usize;
+            byte_pos += copy(&mut reader.take(cas_lookup_end - cas_lookup_start), writer)? as usize;
 
             out_footer.cas_lookup_num_entry = self.metadata.cas_lookup_num_entry;
         } else {

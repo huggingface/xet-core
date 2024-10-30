@@ -16,7 +16,6 @@ use crate::file_structs::*;
 use crate::shard_format::MDBShardInfo;
 use crate::utils::{shard_file_name, temp_shard_file_name};
 
-
 #[allow(clippy::type_complexity)]
 #[derive(Clone, Default, Debug)]
 pub struct MDBInMemoryShard {
