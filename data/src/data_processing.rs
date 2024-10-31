@@ -65,10 +65,10 @@ pub struct PointerFileTranslator {
 
 // Constructors
 impl PointerFileTranslator {
-    pub async fn new(config: TranslatorConfig) -> Result<PointerFileTranslator> {
+    pub async fn new(config: TranslatorConfig, threadpool: tokio::runtime::Handle) -> Result<PointerFileTranslator> {
         let shard_manager = Arc::new(create_shard_manager(&config.shard_storage_config).await?);
 
-        let cas_client = create_cas_client(&config.cas_storage_config, &config.repo_info, shard_manager.clone())?;
+        let cas_client = create_cas_client(&config.cas_storage_config, &config.repo_info, shard_manager.clone(), threadpool)?;
 
         let remote_shards = {
             if let Some(dedup) = &config.dedup_config {

@@ -19,7 +19,7 @@ merkledb = { path = "../merkledb" }
 mdb_shard = { path = "../mdb_shard" }
 merklehash = { path = "../merklehash" }
 xet_error = { path = "../xet_error" }
-tokio = { version = "1.36", features = ["full"] }
+tokio = { version = "1.41", features = ["full"] }
 async-trait = "0.1.9"
 anyhow = "1"
 http = "1.1.0"

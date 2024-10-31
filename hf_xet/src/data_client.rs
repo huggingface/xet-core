@@ -19,6 +19,7 @@ const DEFAULT_CAS_ENDPOINT: &str = "http://localhost:8080";
 const READ_BLOCK_SIZE: usize = 1024 * 1024;
 
 pub async fn upload_async(
+    threadpool: tokio::runtime::Handle,
     file_paths: Vec<String>,
     endpoint: Option<String>,
     token_info: Option<(String, u64)>,
@@ -30,7 +31,7 @@ pub async fn upload_async(
     // for each file, return the filehash
     let config = default_config(endpoint.unwrap_or(DEFAULT_CAS_ENDPOINT.to_string()), token_info, token_refresher)?;
 
-    let processor = Arc::new(PointerFileTranslator::new(config).await?);
+    let processor = Arc::new(PointerFileTranslator::new(config, threadpool).await?);
     let processor = &processor;
     // for all files, clean them, producing pointer files.
     let pointers = tokio_par_for_each(file_paths, MAX_CONCURRENT_UPLOADS, |f, _| async {
@@ -50,13 +51,14 @@ pub async fn upload_async(
 }
 
 pub async fn download_async(
+    threadpool: tokio::runtime::Handle,
     pointer_files: Vec<PointerFile>,
     endpoint: Option<String>,
     token_info: Option<(String, u64)>,
     token_refresher: Option<Arc<dyn TokenRefresher>>,
 ) -> errors::Result<Vec<String>> {
     let config = default_config(endpoint.unwrap_or(DEFAULT_CAS_ENDPOINT.to_string()), token_info, token_refresher)?;
-    let processor = Arc::new(PointerFileTranslator::new(config).await?);
+    let processor = Arc::new(PointerFileTranslator::new(config, threadpool).await?);
     let processor = &processor;
     let paths = tokio_par_for_each(pointer_files, MAX_CONCURRENT_DOWNLOADS, |pointer_file, _| async move {
         let proc = processor.clone();

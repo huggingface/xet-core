@@ -34,10 +34,11 @@ pub struct RemoteClient {
     endpoint: String,
     http_auth_client: ClientWithMiddleware,
     disk_cache: Option<Arc<dyn ChunkCache>>,
+    threadpool: tokio::runtime::Handle,
 }
 
 impl RemoteClient {
-    pub fn new(endpoint: &str, auth: &Option<AuthConfig>, cache_config: &Option<CacheConfig>) -> Self {
+    pub fn new(threadpool: tokio::runtime::Handle, endpoint: &str, auth: &Option<AuthConfig>, cache_config: &Option<CacheConfig>) -> Self {
         // use disk cache if cache_config provided.
         let disk_cache = if let Some(cache_config) = cache_config {
             info!("Using disk cache directory: {:?}, size: {}.", cache_config.cache_directory, cache_config.cache_size);
@@ -53,6 +54,7 @@ impl RemoteClient {
             endpoint: endpoint.to_string(),
             http_auth_client: http_client::build_auth_http_client(auth, &None).unwrap(),
             disk_cache,
+            threadpool,
         }
     }
 }
@@ -280,35 +282,37 @@ pub async fn reconstruct_file_to_writer(
 ) -> Result<u64> {
     let single_flight_group = Arc::new(singleflight::Group::new());
 
-    let total_len = if let Some(range) = byte_range {
-        range.end - range.start
-    } else {
-        terms.iter().fold(0, |acc, x| acc + x.unpacked_length as u64)
-    };
-    let mut remaining_len = total_len;
-    let term_data_futures = terms.into_iter().map(|term| {
-        let http_client = http_client.clone();
-        let fetch_info = fetch_info.clone();
-        let single_flight_group = single_flight_group.clone();
-        tokio::spawn(get_one_term(http_client, cache.clone(), term, fetch_info, single_flight_group))
-    });
-    for (i, fut) in term_data_futures.enumerate() {
-        let term_data = fut
-            .await
-            .map_err(|e| CasClientError::InternalError(anyhow!("join error {e}")))?
-            .log_error("error getting one term")?;
-        let start = if i == 0 {
-            // use offset_into_first_range for the first term if needed
-            max(0, offset_into_first_range as usize)
+        let total_len = if let Some(range) = byte_range {
+            range.end - range.start
         } else {
-            0
+            terms.iter().fold(0, |acc, x| acc + x.unpacked_length as u64)
         };
-        let end: usize = min(remaining_len + start as u64, term_data.len() as u64) as usize;
-        writer.write_all(&term_data[start..end])?;
-        remaining_len -= (end - start) as u64;
+        let mut remaining_len = total_len;
+        let term_data_futures = terms.into_iter().map(|term| {
+            let http_client = http_client.clone();
+            let disk_cache = self.disk_cache.clone();
+            let fetch_info = fetch_info.clone();
+            let single_flight_group = single_flight_group.clone();
+            self.threadpool.spawn(get_one_term(http_client, disk_cache, term, fetch_info, single_flight_group))
+        });
+        for (i, fut) in term_data_futures.enumerate() {
+            let term_data = fut
+                .await
+                .map_err(|e| CasClientError::InternalError(anyhow!("join error {e}")))?
+                .log_error("error getting one term")?;
+            let start = if i == 0 {
+                // use offset_into_first_range for the first term if needed
+                max(0, offset_into_first_range as usize)
+            } else {
+                0
+            };
+            let end: usize = min(remaining_len + start as u64, term_data.len() as u64) as usize;
+            writer.write_all(&term_data[start..end])?;
+            remaining_len -= (end - start) as u64;
+        }
+        writer.flush()?;
+        Ok(total_len)
     }
-    writer.flush()?;
-    Ok(total_len)
 }
 
 // Right now if all ranges are fetched "at once" (all tasks spawned in brief succession)
@@ -496,7 +500,9 @@ mod tests {
         let (c, _, data, chunk_boundaries) =
             build_cas_object(3, ChunkSize::Random(512, 10248), cas_object::CompressionScheme::LZ4);
 
-        let client = RemoteClient::new(CAS_ENDPOINT, &None, &None);
+        let threadpool = tokio::runtime::Handle::current(); // since already running in [tokio::test]
+
+        let client = RemoteClient::new(threadpool, CAS_ENDPOINT, &None, &None);
         // Act
         let result = client.put(prefix, &c.info.cashash, data, chunk_boundaries).await;
 
@@ -593,6 +599,15 @@ mod tests {
                 .returning(|_, range| Ok(Some(vec![1; (range.end - range.start) as usize * TEST_CHUNK_SIZE])));
 
             let http_client = http_client::build_http_client(&None).unwrap();
+
+            let threadpool = tokio::runtime::Handle::current(); // since already running in [tokio::test]
+            
+            let client = RemoteClient {
+                disk_cache: Some(Arc::new(chunk_cache)),
+                http_auth_client: http_client.clone(),
+                endpoint: "".to_string(),
+                threadpool,
+            };
 
             let v = ThreadSafeBuffer::default();
             let mut writer: Box<dyn Write + Send> = Box::new(v.clone());

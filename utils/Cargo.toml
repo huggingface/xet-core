@@ -13,8 +13,8 @@ merklehash = { path = "../merklehash" }
 xet_error = { path = "../xet_error" }
 futures = "0.3.28"
 
-# singleflight
-tokio = { version = "1", features = ["sync"] }
+# singleflight & threadpool
+tokio = { version = "1.41", features = ["full"] }
 parking_lot = "0.11"
 pin-project = "1.0.12"
 
