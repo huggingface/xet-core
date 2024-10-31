@@ -17,7 +17,7 @@ mod error;
 mod http_client;
 mod interface;
 mod local_client;
-mod remote_client;
+pub mod remote_client;
 
 mod global_dedup_table;
 mod http_shard_client;
