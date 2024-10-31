@@ -373,11 +373,7 @@ async fn download_range(
 
 #[cfg(test)]
 mod tests {
-    use std::fs::File;
     use std::io::Read;
-    use std::ops::Deref;
-    use std::ptr::write;
-    use std::rc::Rc;
     use std::sync::Mutex;
 
     use cas_object::test_utils::{build_cas_object, ChunkSize};
