@@ -41,8 +41,7 @@ const MDB_SHARD_FOOTER_VERSION: u64 = 1;
 
 // FOR NOW: Change the header tag to include BETA.  When we're ready to
 const MDB_SHARD_HEADER_TAG: [u8; 32] = [
-    // b'H', b'F', b'R', b'e', b'p', b'o', b'M', b'e', b't', b'a', b'd', b'a', b't', b'a', 0, 85, 105,
-    b'H', b'F', b'M', b'e', b't', b'a', b'd', b'a', b't', b'a', b'B', b'E', b'T', b'A', 0, 85, 105, 103, 69, 106, 123,
+    b'H', b'F', b'R', b'e', b'p', b'o', b'M', b'e', b't', b'a', b'D', b'a', b't', b'a', 0, 85, 105, 103, 69, 106, 123,
     129, 87, 131, 165, 189, 217, 92, 205, 209, 74, 169,
 ];
 
