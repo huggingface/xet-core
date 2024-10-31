@@ -13,7 +13,6 @@ pyo3 = { version = "0.22.3", features = ["extension-module", "abi3-py37"] }
 
 data = { path = "../data" }
 utils = { path = "../utils" }
-cas_types = { path = "../cas_types" }
 tokio = { version = "1.36", features = ["full"] }
 parutils = { path = "../parutils" }
 tracing = "0.1.*"
