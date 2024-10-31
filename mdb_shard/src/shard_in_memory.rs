@@ -58,19 +58,14 @@ impl MDBInMemoryShard {
         });
 
         let mut file_content = self.file_content.clone();
-        other
-            .file_content
-            .iter()
-            .map(|(k, v)| {
-                if let Some(mut old_v) = file_content.insert(*k, v.clone()) {
-                    // merge the contents to ensure we have all the information between
-                    // the two file contents (e.g. verification and metadata_ext)
-                    old_v.merge_from(v)?;
-                    file_content.insert(*k, old_v);
-                };
-                Ok::<(), MDBShardError>(())
-            })
-            .try_collect()?;
+        for (k, v) in &other.file_content {
+            if let Some(mut old_v) = file_content.insert(*k, v.clone()) {
+                // merge the contents to ensure we have all the information between
+                // the two file contents (e.g. verification and metadata_ext)
+                old_v.merge_from(v)?;
+                file_content.insert(*k, old_v);
+            };
+        }
 
         let mut chunk_hash_lookup = self.chunk_hash_lookup.clone();
         other.chunk_hash_lookup.iter().for_each(|(k, v)| {
