@@ -6,12 +6,11 @@ use std::mem::size_of;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use itertools::Itertools;
 use merklehash::{HashedWrite, MerkleHash};
 use tracing::debug;
 
 use crate::cas_structs::*;
-use crate::error::{MDBShardError, Result};
+use crate::error::Result;
 use crate::file_structs::*;
 use crate::shard_format::MDBShardInfo;
 use crate::utils::{shard_file_name, temp_shard_file_name};
