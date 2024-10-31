@@ -5,6 +5,7 @@ mod token_refresh;
 
 use std::fmt::Debug;
 use std::sync::Arc;
+use std::sync::OnceLock;
 
 use data::PointerFile;
 use pyo3::exceptions::PyException;
@@ -14,7 +15,13 @@ use token_refresh::WrappedTokenRefresher;
 use utils::auth::TokenRefresher;
 use utils::threadpool::ThreadPool;
 
-let THREADPOOL = ThreadPool::new()?;
+
+fn get_threadpool() -> &'static ThreadPool {
+    static THREADPOOL: OnceLock<ThreadPool> = OnceLock::new();
+    THREADPOOL.get_or_init(|| {
+        ThreadPool::new()
+    })
+}
 
 #[pyfunction]
 #[pyo3(signature = (file_paths, endpoint, token_info, token_refresher), text_signature = "(file_paths: List[str], endpoint: Optional[str], token_info: Optional[(str, int)], token_refresher: Optional[Callable[[], (str, int)]]) -> List[PyPointerFile]")]
@@ -32,19 +39,11 @@ pub fn upload_files(
 
     // Release GIL to allow python concurrency
     py.allow_threads(move || {
-        Ok(THREADPOOL.block_on(async { data_client::upload_async(file_paths, endpoint, token_info, refresher).await })
-            .map_err(|e| PyException::new_err(format!("{e:?}"))?
-            .into_iter()
-            .map(PyPointerFile::from)
-            .collect())
-        /*Ok(tokio::runtime::Builder::new_multi_thread()
-            .enable_all()
-            .build()?
-            .block_on(async { data_client::upload_async(file_paths, endpoint, token_info, refresher).await })
+        Ok(get_threadpool().block_on(async { data_client::upload_async(get_threadpool().get_handle(), file_paths, endpoint, token_info, refresher).await })
             .map_err(|e| PyException::new_err(format!("{e:?}")))?
             .into_iter()
             .map(PyPointerFile::from)
-            .collect())*/
+            .collect())
     })
 }
 
@@ -64,16 +63,8 @@ pub fn download_files(
         .map(to_arc_dyn);
     // Release GIL to allow python concurrency
     py.allow_threads(move || {
-        Ok(THREADPOOL.block_on(async { data_client::download_async(threadpool.get_handle(), pfs, endpoint, token_info, refresher).await })
-            .map_err(|e| PyException::new_err(format!("{e:?}"))?
-            .into_iter()
-            .map(|p| p.to_string())
-            .collect())
-        /*tokio::runtime::Builder::new_multi_thread()
-            .enable_all()
-            .build()?
-            .block_on(async move { data_client::download_async(pfs, endpoint, token_info, refresher).await })
-            .map_err(|e| PyException::new_err(format!("{e:?}")))*/
+        get_threadpool().block_on(async move { data_client::download_async(get_threadpool().get_handle(), pfs, endpoint, token_info, refresher).await })
+            .map_err(|e| PyException::new_err(format!("{e:?}")))
     })
 }
 
@@ -129,7 +120,6 @@ impl PyPointerFile {
 #[pymodule]
 pub fn hf_xet(m: &Bound<'_, PyModule>) -> PyResult<()> {
     log::initialize_logging();
-    let threadpool = ThreadPool::new()?;
     m.add_function(wrap_pyfunction!(upload_files, m)?)?;
     m.add_function(wrap_pyfunction!(download_files, m)?)?;
     m.add_class::<PyPointerFile>()?;
