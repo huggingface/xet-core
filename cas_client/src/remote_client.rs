@@ -5,6 +5,11 @@ use std::sync::Arc;
 
 use anyhow::anyhow;
 use async_trait::async_trait;
+use http::header::RANGE;
+use reqwest::{StatusCode, Url};
+use reqwest_middleware::ClientWithMiddleware;
+use tracing::{debug, error, info};
+
 use cas_object::CasObject;
 use cas_types::{
     CASReconstructionFetchInfo, CASReconstructionTerm, FileRange, HexMerkleHash, HttpRange, Key,
@@ -12,17 +17,13 @@ use cas_types::{
 };
 use chunk_cache::{CacheConfig, ChunkCache, DiskCache};
 use error_printer::ErrorPrinter;
-use http::header::RANGE;
 use merklehash::MerkleHash;
-use reqwest::{StatusCode, Url};
-use reqwest_middleware::ClientWithMiddleware;
-use tracing::{debug, error, info};
 use utils::auth::AuthConfig;
 use utils::singleflight;
 
+use crate::{CasClientError, Client, http_client};
 use crate::error::Result;
 use crate::interface::*;
-use crate::{http_client, CasClientError, Client};
 
 pub const CAS_ENDPOINT: &str = "http://localhost:8080";
 pub const PREFIX_DEFAULT: &str = "default";
@@ -231,6 +232,7 @@ impl RemoteClient {
             writer.write_all(&term_data[start..end])?;
             remaining_len -= (end - start) as u64;
         }
+        writer.flush()?;
         Ok(total_len)
     }
 }
@@ -374,13 +376,16 @@ async fn download_range(
 mod tests {
     use std::fs::File;
     use std::io::Read;
+    use std::ops::Deref;
     use std::ptr::write;
     use std::rc::Rc;
+    use std::sync::Mutex;
+
+    use tracing_test::traced_test;
 
     use cas_object::test_utils::{build_cas_object, ChunkSize};
     use cas_types::ChunkRange;
     use chunk_cache::MockChunkCache;
-    use tracing_test::traced_test;
 
     use super::*;
 
@@ -392,6 +397,33 @@ mod tests {
     const TEST_CHUNK_SIZE: usize = 10;
     const TEST_NUM_CHUNKS: usize = 20;
     const TEST_UNPACKED_LEN: u32 = (TEST_CHUNK_SIZE * TEST_NUM_CHUNKS) as u32;
+
+    #[derive(Debug, Default, Clone)]
+    struct Buffer {
+        inner: Arc<Mutex<Cursor<Vec<u8>>>>,
+    }
+
+    impl Buffer {
+        pub fn value(&self) -> Vec<u8> {
+            self.inner.lock().unwrap().get_ref().clone()
+        }
+    }
+
+    impl Write for Buffer {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.inner.lock().map_err(|e| std::io::Error::other(format!("{e}")))?.write(buf)
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl Read for Buffer {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            self.inner.lock().map_err(|e| std::io::Error::other(format!("{e}")))?.read(buf)
+        }
+    }
 
     #[ignore = "requires a running CAS server"]
     #[traced_test]
@@ -418,20 +450,80 @@ mod tests {
             expected_len: u64,
             expect_error: bool,
         }
-        let test_cases = vec![TestCase {
-            reconstruction_response: QueryReconstructionResponse {
-                offset_into_first_range: 0,
-                terms: vec![CASReconstructionTerm {
-                    hash: HexMerkleHash::default(),
-                    range: TEST_CHUNK_RANGE,
-                    unpacked_length: TEST_UNPACKED_LEN,
-                }],
-                fetch_info: HashMap::new(),
+        let test_cases = vec![
+            // full file reconstruction
+            TestCase {
+                reconstruction_response: QueryReconstructionResponse {
+                    offset_into_first_range: 0,
+                    terms: vec![CASReconstructionTerm {
+                        hash: HexMerkleHash::default(),
+                        range: TEST_CHUNK_RANGE,
+                        unpacked_length: TEST_UNPACKED_LEN,
+                    }],
+                    fetch_info: HashMap::new(),
+                },
+                range: None,
+                expected_len: TEST_UNPACKED_LEN as u64,
+                expect_error: false,
             },
-            range: None,
-            expected_len: TEST_UNPACKED_LEN as u64,
-            expect_error: false,
-        }];
+            // skip first 100 bytes
+            TestCase {
+                reconstruction_response: QueryReconstructionResponse {
+                    offset_into_first_range: 100,
+                    terms: vec![CASReconstructionTerm {
+                        hash: HexMerkleHash::default(),
+                        range: TEST_CHUNK_RANGE,
+                        unpacked_length: TEST_UNPACKED_LEN,
+                    }],
+                    fetch_info: HashMap::new(),
+                },
+                range: Some(FileRange {
+                    start: 100,
+                    end: TEST_UNPACKED_LEN as u64,
+                }),
+                expected_len: (TEST_UNPACKED_LEN - 100) as u64,
+                expect_error: false,
+            },
+            // skip last 100 bytes
+            TestCase {
+                reconstruction_response: QueryReconstructionResponse {
+                    offset_into_first_range: 0,
+                    terms: vec![CASReconstructionTerm {
+                        hash: HexMerkleHash::default(),
+                        range: TEST_CHUNK_RANGE,
+                        unpacked_length: TEST_UNPACKED_LEN,
+                    }],
+                    fetch_info: HashMap::new(),
+                },
+                range: Some(FileRange {
+                    start: 0,
+                    end: (TEST_UNPACKED_LEN - 100) as u64,
+                }),
+                expected_len: (TEST_UNPACKED_LEN - 100) as u64,
+                expect_error: false,
+            },
+            // skip first and last 100 bytes, 2 terms
+            TestCase {
+                reconstruction_response: QueryReconstructionResponse {
+                    offset_into_first_range: 100,
+                    terms: vec![
+                        CASReconstructionTerm {
+                            hash: HexMerkleHash::default(),
+                            range: TEST_CHUNK_RANGE,
+                            unpacked_length: TEST_UNPACKED_LEN,
+                        };
+                        2
+                    ],
+                    fetch_info: HashMap::new(),
+                },
+                range: Some(FileRange {
+                    start: 100,
+                    end: (2 * TEST_UNPACKED_LEN - 100) as u64,
+                }),
+                expected_len: (2 * TEST_UNPACKED_LEN - 200) as u64,
+                expect_error: false,
+            },
+        ];
         for test in test_cases {
             let mut chunk_cache = MockChunkCache::new();
             chunk_cache
@@ -445,11 +537,9 @@ mod tests {
                 endpoint: "".to_string(),
             };
 
-            let tmp = tempfile::Builder::new().tempfile().unwrap();
-
-            let path = tmp.path();
-            let mut v: Arc<File> = Arc::new(tmp.into_file());
+            let v = Buffer::default();
             let mut writer: Box<dyn Write + Send> = Box::new(v.clone());
+
             let resp = client
                 .reconstruct_file_to_writer(
                     Arc::new(http_client.clone()),
@@ -458,13 +548,10 @@ mod tests {
                     &mut writer,
                 )
                 .await;
-            v.flush().unwrap();
             assert_eq!(test.expect_error, resp.is_err());
             if !test.expect_error {
                 assert_eq!(test.expected_len, resp.unwrap());
-                let mut out = Vec::new();
-                v.read_to_end(&mut out).unwrap();
-                assert_eq!(vec![1; test.expected_len as usize], out);
+                assert_eq!(vec![1; test.expected_len as usize], v.value());
             }
         }
     }
