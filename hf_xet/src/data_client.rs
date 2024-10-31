@@ -19,7 +19,7 @@ const DEFAULT_CAS_ENDPOINT: &str = "http://localhost:8080";
 const READ_BLOCK_SIZE: usize = 1024 * 1024;
 
 pub async fn upload_async(
-    file_paths: Vec<(String, String)>,
+    file_paths: Vec<String>,
     endpoint: Option<String>,
     token_info: Option<(String, u64)>,
     token_refresher: Option<Arc<dyn TokenRefresher>>,
@@ -71,12 +71,11 @@ pub async fn download_async(
     Ok(paths)
 }
 
-async fn clean_file(processor: &PointerFileTranslator, (f, sha): (String, String)) -> errors::Result<PointerFile> {
+async fn clean_file(processor: &PointerFileTranslator, f: String) -> errors::Result<PointerFile> {
     let mut read_buf = vec![0u8; READ_BLOCK_SIZE];
     let path = PathBuf::from(f);
     let mut reader = BufReader::new(File::open(path.clone())?);
-    let some_sha = (!sha.is_empty()).then_some(sha); // None if sha is empty
-    let handle = processor.start_clean(1024, None, some_sha).await?;
+    let handle = processor.start_clean(1024, None).await?;
 
     loop {
         let bytes = reader.read(&mut read_buf)?;
@@ -100,41 +99,4 @@ async fn smudge_file(proc: &PointerFileTranslator, pointer_file: &PointerFile) -
     let mut f: Box<dyn Write + Send> = Box::new(File::create(&path)?);
     proc.smudge_file_from_pointer(pointer_file, &mut f, None).await?;
     Ok(pointer_file.path().to_string())
-}
-
-#[cfg(test)]
-mod tests {
-    use std::env::current_dir;
-    use std::fs::canonicalize;
-
-    use utils::auth::NoOpTokenRefresher;
-
-    use super::*;
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
-    async fn upload_files() {
-        let cwd = current_dir().unwrap();
-        let path = cwd.join("src").join("data_client.rs");
-
-        let abs_path = canonicalize(path).unwrap();
-        let s = abs_path.to_string_lossy();
-        let files = vec![(s.to_string(), "my_sha".to_string())];
-        let token = "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJyZXBvSWQiOiI2NzA1OTcyYTA3ODllNmFlZmU0MGE4NmYiLCJ1c2VySWQiOiI2NzA1OTcxODA3ODllNmFlZmU0MGE4NmMiLCJhY2Nlc3MiOiJ3cml0ZSIsImV4cCI6MTcyOTU2MDgyNH0.1VEE6N0NV4SjAktGyqkja0R2jWtO6WY7cu-Pe11CBJo";
-        let initial_token = Some((token.to_string(), 1729560000));
-        let pointers = upload_async(files, None, initial_token, Some(Arc::new(NoOpTokenRefresher)))
-            .await
-            .unwrap();
-        println!("files: {pointers:?}");
-    }
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
-    async fn download_files() {
-        let pointers = vec![PointerFile::init_from_info(
-            "/tmp/foo.rs",
-            "6999733a46030e67f6f020651c91442ace735572458573df599106e54646867c",
-            4203,
-        )];
-        let paths = download_async(pointers, None, None, None).await.unwrap();
-        println!("paths: {paths:?}");
-    }
 }

@@ -158,7 +158,7 @@ async fn clean(mut reader: impl Read, mut writer: impl Write) -> Result<()> {
 
     let translator = PointerFileTranslator::new(default_clean_config()?).await?;
 
-    let handle = translator.start_clean(1024, None, Some("0".repeat(64))).await?;
+    let handle = translator.start_clean(1024, None).await?;
 
     loop {
         let bytes = reader.read(&mut read_buf)?;

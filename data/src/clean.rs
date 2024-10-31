@@ -3,11 +3,10 @@ use std::mem::take;
 use std::ops::DerefMut;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex as StdMutex};
 use std::time::Instant;
 
 use cas_object::range_hash_from_chunks;
-use error_printer::ErrorPrinter;
 use lazy_static::lazy_static;
 use mdb_shard::file_structs::{
     FileDataSequenceEntry, FileDataSequenceHeader, FileMetadataExt, FileVerificationEntry, MDBFileInfo,
@@ -17,6 +16,7 @@ use mdb_shard::{hash_is_global_dedup_eligible, ShardFileManager};
 use merkledb::aggregate_hashes::file_node_hash;
 use merkledb::constants::TARGET_CAS_BLOCK_SIZE;
 use merklehash::MerkleHash;
+use sha2::{Digest, Sha256};
 use tokio::sync::mpsc::error::TryRecvError;
 use tokio::sync::mpsc::{channel, Receiver, Sender};
 use tokio::sync::Mutex;
@@ -75,6 +75,34 @@ impl Default for CleanMetrics {
     }
 }
 
+/// Helper struct to generate a sha256 as a MerkleHash.
+#[derive(Debug)]
+struct ShaGenerator {
+    hasher: StdMutex<Sha256>,
+}
+impl ShaGenerator {
+    fn new() -> Self {
+        Self {
+            hasher: StdMutex::new(Sha256::new()),
+        }
+    }
+
+    /// Update the generator with some bytes.
+    fn update(&self, data: &[u8]) -> Result<()> {
+        let mut hasher = self.hasher.lock().map_err(|_| InternalError("mutex poisoned".to_string()))?;
+        hasher.update(data);
+        Ok(())
+    }
+
+    /// Generates a sha256 from the current state of the variant.
+    fn generate(&self) -> Result<MerkleHash> {
+        let hasher = self.hasher.lock().map_err(|_| InternalError("mutex poisoned".to_string()))?;
+        let sha256 = hasher.clone().finalize();
+        let hex_str = format!("{sha256:x}");
+        MerkleHash::from_hex(&hex_str).map_err(|e| CleanTaskError(format!("invalid sha256 hash generated: {e:?}")))
+    }
+}
+
 pub struct Cleaner {
     // Configurations
     small_file_threshold: usize,
@@ -101,7 +129,7 @@ pub struct Cleaner {
 
     // Auxiliary info
     file_name: Option<PathBuf>,
-    sha256: Option<MerkleHash>,
+    sha_generator: ShaGenerator,
 
     // Metrics
     metrics: CleanMetrics,
@@ -120,22 +148,12 @@ impl Cleaner {
         cas_data: Arc<Mutex<CASDataAggregator>>,
         buffer_size: usize,
         file_name: Option<&Path>,
-        sha256: Option<String>,
     ) -> Result<Arc<Self>> {
         let (data_p, data_c) = channel::<BufferItem<Vec<u8>>>(buffer_size);
 
         let (chunk_p, chunk_c) = channel::<Option<ChunkYieldType>>(buffer_size);
 
         let chunker = chunk_target_default(data_c, chunk_p);
-
-        // Converts the provided sha from a hex string to a MerkleHash.
-        // If the caller didn't provide a sha, we currently return an error.
-        // TODO: implement sha calculation in chunker if not provided
-        let sha256 = sha256
-            .as_ref()
-            .map(|hex| MerkleHash::from_hex(hex)) // Option<Result<MerkleHash, Error>>
-            .ok_or(CleanTaskError("sha256 needs to be passed in by caller".to_string()))?
-            .log_error("hash is not a valid hex string".to_string())?;
 
         let cleaner = Arc::new(Cleaner {
             small_file_threshold,
@@ -152,7 +170,7 @@ impl Cleaner {
             tracking_info: Mutex::new(Default::default()),
             small_file_buffer: Mutex::new(Some(Vec::with_capacity(small_file_threshold))),
             file_name: file_name.map(|f| f.to_owned()),
-            sha256: Some(sha256),
+            sha_generator: ShaGenerator::new(),
             metrics: Default::default(),
         });
 
@@ -166,6 +184,7 @@ impl Cleaner {
 
         self.metrics.file_size.fetch_add(data.len() as u64, Ordering::Relaxed);
 
+        self.sha_generator.update(&data)?;
         if !self.check_passthrough_status(&data).await? {
             self.add_data_to_chunking(BufferItem::Value(data)).await?
         }
@@ -617,16 +636,18 @@ impl Cleaner {
                 })
                 .collect();
 
+            let metadata_ext = Some(FileMetadataExt::new(self.sha_generator.generate()?));
+
             let new_file_info = MDBFileInfo {
                 metadata: FileDataSequenceHeader::new(
                     file_hash,
                     tracking_info.file_info.len(),
                     true,
-                    self.sha256.is_some(),
+                    metadata_ext.is_some(),
                 ),
                 segments,
                 verification,
-                metadata_ext: self.sha256.map(FileMetadataExt::new),
+                metadata_ext,
             };
 
             cas_data_accumulator
@@ -662,5 +683,32 @@ impl Cleaner {
             filesize,
         );
         Ok(pointer_file.to_string())
+    }
+}
+
+#[cfg(test)]
+mod sha_tests {
+    use super::*;
+
+    const TEST_DATA: &str = "some data";
+    // use `echo -n "..." | sha256sum` with the `TEST_DATA` contents to get the sha to compare against
+    const TEST_SHA: &str = "1307990e6ba5ca145eb35e99182a9bec46531bc54ddf656a602c780fa0240dee";
+
+    #[test]
+    fn test_sha_generation_builder() {
+        let sha_generator = ShaGenerator::new();
+        sha_generator.update(TEST_DATA.as_bytes()).unwrap();
+        let hash = sha_generator.generate().unwrap();
+        assert_eq!(TEST_SHA.to_string(), hash.hex());
+    }
+
+    #[test]
+    fn test_sha_generation_build_multiple_chunks() {
+        let sha_generator = ShaGenerator::new();
+        let td = TEST_DATA.as_bytes();
+        sha_generator.update(&td[0..4]).unwrap();
+        sha_generator.update(&td[4..td.len()]).unwrap();
+        let hash = sha_generator.generate().unwrap();
+        assert_eq!(TEST_SHA.to_string(), hash.hex());
     }
 }
