@@ -5,11 +5,6 @@ use std::sync::Arc;
 
 use anyhow::anyhow;
 use async_trait::async_trait;
-use http::header::RANGE;
-use reqwest::{StatusCode, Url};
-use reqwest_middleware::ClientWithMiddleware;
-use tracing::{debug, error, info};
-
 use cas_object::CasObject;
 use cas_types::{
     CASReconstructionFetchInfo, CASReconstructionTerm, FileRange, HexMerkleHash, HttpRange, Key,
@@ -17,13 +12,17 @@ use cas_types::{
 };
 use chunk_cache::{CacheConfig, ChunkCache, DiskCache};
 use error_printer::ErrorPrinter;
+use http::header::RANGE;
 use merklehash::MerkleHash;
+use reqwest::{StatusCode, Url};
+use reqwest_middleware::ClientWithMiddleware;
+use tracing::{debug, error, info};
 use utils::auth::AuthConfig;
 use utils::singleflight;
 
-use crate::{CasClientError, Client, http_client};
 use crate::error::Result;
 use crate::interface::*;
+use crate::{http_client, CasClientError, Client};
 
 pub const CAS_ENDPOINT: &str = "http://localhost:8080";
 pub const PREFIX_DEFAULT: &str = "default";
@@ -381,11 +380,10 @@ mod tests {
     use std::rc::Rc;
     use std::sync::Mutex;
 
-    use tracing_test::traced_test;
-
     use cas_object::test_utils::{build_cas_object, ChunkSize};
     use cas_types::ChunkRange;
     use chunk_cache::MockChunkCache;
+    use tracing_test::traced_test;
 
     use super::*;
 
