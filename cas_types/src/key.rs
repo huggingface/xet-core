@@ -83,6 +83,12 @@ pub mod hex {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, PartialEq, Eq, Hash)]
 pub struct HexMerkleHash(#[serde(with = "hex::serde")] pub MerkleHash);
 
+impl std::fmt::Display for HexMerkleHash {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0.hex())
+    }
+}
+
 impl From<MerkleHash> for HexMerkleHash {
     fn from(value: MerkleHash) -> Self {
         HexMerkleHash(value)
