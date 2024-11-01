@@ -7,6 +7,9 @@ use std::sync::Arc;
 use data::errors::DataProcessingError;
 use data::{errors, PointerFile, PointerFileTranslator};
 use parutils::{tokio_par_for_each, ParallelError};
+use tracing::{info, info_span, Instrument};
+use tracing_opentelemetry::OpenTelemetrySpanExt;
+use ulid::Ulid;
 use utils::auth::TokenRefresher;
 
 use crate::config::default_config;
@@ -24,29 +27,44 @@ pub async fn upload_async(
     token_info: Option<(String, u64)>,
     token_refresher: Option<Arc<dyn TokenRefresher>>,
 ) -> errors::Result<Vec<PointerFile>> {
-    // chunk files
-    // produce Xorbs + Shards
-    // upload shards and xorbs
-    // for each file, return the filehash
-    let config = default_config(endpoint.unwrap_or(DEFAULT_CAS_ENDPOINT.to_string()), token_info, token_refresher)?;
+    let session_id = Ulid::new().to_string();
+    let cur_span = info_span!("upload", session_id = session_id);
+    info!("{session_id}: uploading {} files", file_paths.len());
+    let ctx = cur_span.context();
+    async {
+        // chunk files
+        // produce Xorbs + Shards
+        // upload shards and xorbs
+        // for each file, return the filehash
+        let config = default_config(endpoint.unwrap_or(DEFAULT_CAS_ENDPOINT.to_string()), token_info, token_refresher)?;
+        let processor = Arc::new(PointerFileTranslator::new(config).await?);
+        let processor = &processor;
+        // for all files, clean them, producing pointer files.
+        let pointers = tokio_par_for_each(file_paths, MAX_CONCURRENT_UPLOADS, |f, _| {
+            let s = info_span!("clean_file", file = f);
+            s.set_parent(ctx.clone());
+            async {
+                let proc = processor.clone();
+                clean_file(&proc, f).await
+            }
+            .instrument(s)
+        })
+        .await
+        .map_err(|e| match e {
+            ParallelError::JoinError => DataProcessingError::InternalError("Join error".to_string()),
+            ParallelError::TaskError(e) => e,
+        })?;
 
-    let processor = Arc::new(PointerFileTranslator::new(config).await?);
-    let processor = &processor;
-    // for all files, clean them, producing pointer files.
-    let pointers = tokio_par_for_each(file_paths, MAX_CONCURRENT_UPLOADS, |f, _| async {
-        let proc = processor.clone();
-        clean_file(&proc, f).await
-    })
+        // Push the CAS blocks and flush the mdb to disk
+        processor
+            .finalize_cleaning()
+            .instrument(info_span!("finalize_cleaning"))
+            .await?;
+
+        Ok(pointers)
+    }
+    .instrument(cur_span)
     .await
-    .map_err(|e| match e {
-        ParallelError::JoinError => DataProcessingError::InternalError("Join error".to_string()),
-        ParallelError::TaskError(e) => e,
-    })?;
-
-    // Push the CAS blocks and flush the mdb to disk
-    processor.finalize_cleaning().await?;
-
-    Ok(pointers)
 }
 
 pub async fn download_async(
@@ -55,13 +73,24 @@ pub async fn download_async(
     token_info: Option<(String, u64)>,
     token_refresher: Option<Arc<dyn TokenRefresher>>,
 ) -> errors::Result<Vec<String>> {
+    let session_id = Ulid::new().to_string();
+    let cur_span = info_span!("download", session_id = session_id);
+    info!("{session_id}: downloading {} files", pointer_files.len());
+    let ctx = cur_span.context();
+
     let config = default_config(endpoint.unwrap_or(DEFAULT_CAS_ENDPOINT.to_string()), token_info, token_refresher)?;
     let processor = Arc::new(PointerFileTranslator::new(config).await?);
     let processor = &processor;
-    let paths = tokio_par_for_each(pointer_files, MAX_CONCURRENT_DOWNLOADS, |pointer_file, _| async move {
-        let proc = processor.clone();
-        smudge_file(&proc, &pointer_file).await
+    let paths = tokio_par_for_each(pointer_files, MAX_CONCURRENT_DOWNLOADS, |pointer_file, _| {
+        let s = info_span!("smudge_file", file = pointer_file.path());
+        s.set_parent(ctx.clone());
+        async move {
+            let proc = processor.clone();
+            smudge_file(&proc, &pointer_file).await
+        }
+        .instrument(s)
     })
+    .instrument(cur_span)
     .await
     .map_err(|e| match e {
         ParallelError::JoinError => DataProcessingError::InternalError("Join error".to_string()),
@@ -85,6 +114,7 @@ async fn clean_file(processor: &PointerFileTranslator, f: String) -> errors::Res
 
         handle.add_bytes(read_buf[0..bytes].to_vec()).await?;
     }
+    info!("Done reading file and sending to cleaner");
 
     let pf_str = handle.result().await?;
     let pf = PointerFile::init_from_string(&pf_str, path.to_str().unwrap());

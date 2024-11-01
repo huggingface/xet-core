@@ -21,7 +21,8 @@ use tokio::sync::mpsc::error::TryRecvError;
 use tokio::sync::mpsc::{channel, Receiver, Sender};
 use tokio::sync::Mutex;
 use tokio::task::{JoinHandle, JoinSet};
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, info, info_span, instrument, warn, Instrument};
+use tracing_opentelemetry::OpenTelemetrySpanExt;
 
 use crate::cas_interface::Client;
 use crate::chunking::{chunk_target_default, ChunkYieldType};
@@ -179,6 +180,7 @@ impl Cleaner {
         Ok(cleaner)
     }
 
+    #[instrument(skip_all, name = "cleaner::add_bytes", fields(num_bytes = data.len()))]
     pub async fn add_bytes(&self, data: Vec<u8>) -> Result<()> {
         self.task_is_running().await?;
 
@@ -193,7 +195,7 @@ impl Cleaner {
     }
 
     pub async fn result(&self) -> Result<String> {
-        self.finish().await?;
+        self.finish().instrument(info_span!("cleaner::finish")).await?;
 
         let duration = Instant::now().duration_since(self.metrics.start_time);
         let file_size = self.metrics.file_size.load(Ordering::Relaxed);
@@ -222,47 +224,58 @@ impl Cleaner {
 
     async fn run(cleaner: Arc<Self>, mut chunks: Receiver<Option<ChunkYieldType>>) {
         let cleaner_clone = cleaner.clone();
-        let dedup_task = tokio::spawn(async move {
-            loop {
-                let mut chunk_vec = Vec::with_capacity(*DEDUP_CHUNK_BATCH_SIZE);
+        let span = info_span!("cleaner::dedup_task");
+        let ctx = span.context();
+        let dedup_task = tokio::spawn(
+            async move {
+                let inner_span = info_span!("dedup_task::loop");
+                inner_span.set_parent(ctx);
+                async {
+                    loop {
+                        let mut chunk_vec = Vec::with_capacity(*DEDUP_CHUNK_BATCH_SIZE);
 
-                let mut finished = false;
+                        let mut finished = false;
 
-                for _ in 0..*DEDUP_CHUNK_BATCH_SIZE {
-                    match chunks.try_recv() {
-                        Ok(Some(chunk)) => chunk_vec.push(chunk),
-                        Ok(None) | Err(TryRecvError::Disconnected) => {
-                            finished = true;
-                            break;
-                        },
-                        Err(TryRecvError::Empty) => {
-                            if chunk_vec.is_empty() {
-                                // need to wait a bit to make sure at least one chunk to process
-                                match chunks.recv().await.flatten() {
-                                    Some(chunk) => chunk_vec.push(chunk),
-                                    None => {
-                                        finished = true;
-                                    },
-                                }
+                        for _ in 0..*DEDUP_CHUNK_BATCH_SIZE {
+                            match chunks.try_recv() {
+                                Ok(Some(chunk)) => chunk_vec.push(chunk),
+                                Ok(None) | Err(TryRecvError::Disconnected) => {
+                                    finished = true;
+                                    break;
+                                },
+                                Err(TryRecvError::Empty) => {
+                                    if chunk_vec.is_empty() {
+                                        // need to wait a bit to make sure at least one chunk to process
+                                        match chunks.recv().await.flatten() {
+                                            Some(chunk) => chunk_vec.push(chunk),
+                                            None => {
+                                                finished = true;
+                                            },
+                                        }
+                                    }
+                                    break;
+                                },
                             }
+                        }
+
+                        if !chunk_vec.is_empty() {
+                            let res = cleaner_clone.dedup(&chunk_vec).await;
+                            if res.is_err() {
+                                error!("Clean task error: {res:?}");
+                                break;
+                            }
+                        }
+
+                        if finished {
                             break;
-                        },
+                        }
                     }
                 }
-
-                if !chunk_vec.is_empty() {
-                    let res = cleaner_clone.dedup(&chunk_vec).await;
-                    if res.is_err() {
-                        error!("Clean task error: {res:?}");
-                        break;
-                    }
-                }
-
-                if finished {
-                    break;
-                }
+                .instrument(inner_span)
+                .await
             }
-        });
+            .instrument(span),
+        );
 
         let mut worker = cleaner.dedup_worker.lock().await;
 
@@ -316,6 +329,7 @@ impl Cleaner {
         Ok(false)
     }
 
+    // #[instrument(skip_all, err, name = "cleaner::dedup")]
     async fn dedup(&self, chunks: &[ChunkYieldType]) -> Result<()> {
         debug!("Dedup {} chunks", chunks.len());
         let mut tracking_info = self.tracking_info.lock().await;

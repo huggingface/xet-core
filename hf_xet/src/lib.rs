@@ -5,12 +5,14 @@ mod token_refresh;
 
 use std::fmt::Debug;
 use std::sync::Arc;
+use std::time::Duration;
 
 use data::PointerFile;
 use pyo3::exceptions::PyException;
 use pyo3::prelude::*;
 use pyo3::pyfunction;
 use token_refresh::WrappedTokenRefresher;
+use tokio::time::sleep;
 use utils::auth::TokenRefresher;
 
 #[pyfunction]
@@ -32,7 +34,12 @@ pub fn upload_files(
         Ok(tokio::runtime::Builder::new_multi_thread()
             .enable_all()
             .build()?
-            .block_on(async { data_client::upload_async(file_paths, endpoint, token_info, refresher).await })
+            .block_on(async {
+                log::initialize_logging();
+                let result = data_client::upload_async(file_paths, endpoint, token_info, refresher).await;
+                sleep(Duration::from_secs(5)).await;
+                result
+            })
             .map_err(|e| PyException::new_err(format!("{e:?}")))?
             .into_iter()
             .map(PyPointerFile::from)
@@ -59,7 +66,12 @@ pub fn download_files(
         tokio::runtime::Builder::new_multi_thread()
             .enable_all()
             .build()?
-            .block_on(async move { data_client::download_async(pfs, endpoint, token_info, refresher).await })
+            .block_on(async move {
+                log::initialize_logging();
+                let result = data_client::download_async(pfs, endpoint, token_info, refresher).await;
+                sleep(Duration::from_secs(5)).await;
+                result
+            })
             .map_err(|e| PyException::new_err(format!("{e:?}")))
     })
 }
@@ -115,7 +127,6 @@ impl PyPointerFile {
 
 #[pymodule]
 pub fn hf_xet(m: &Bound<'_, PyModule>) -> PyResult<()> {
-    log::initialize_logging();
     m.add_function(wrap_pyfunction!(upload_files, m)?)?;
     m.add_function(wrap_pyfunction!(download_files, m)?)?;
     m.add_class::<PyPointerFile>()?;

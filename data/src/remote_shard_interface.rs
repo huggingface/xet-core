@@ -14,7 +14,7 @@ use mdb_shard::MDBShardFile;
 use merklehash::MerkleHash;
 use parutils::tokio_par_for_each;
 use tokio::task::JoinHandle;
-use tracing::{debug, info};
+use tracing::{debug, info, info_span, Instrument};
 
 use super::configurations::{FileQueryPolicy, StorageConfig};
 use super::errors::{DataProcessingError, Result};
@@ -256,8 +256,10 @@ impl RemoteShardInterface {
     pub fn merge_shards(&self) -> Result<JoinHandle<std::result::Result<Vec<MDBShardFile>, MDBShardError>>> {
         let session_dir = self.shard_session_directory()?;
 
-        let merged_shards_jh =
-            tokio::spawn(async move { consolidate_shards_in_directory(&session_dir, MDB_SHARD_MIN_TARGET_SIZE) });
+        let merged_shards_jh = tokio::spawn(
+            async move { consolidate_shards_in_directory(&session_dir, MDB_SHARD_MIN_TARGET_SIZE) }
+                .instrument(info_span!("shard::merge_task")),
+        );
 
         Ok(merged_shards_jh)
     }

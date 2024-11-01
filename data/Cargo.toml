@@ -25,6 +25,7 @@ xet_error = { path = "../xet_error" }
 tokio = { version = "1.36", features = ["full"] }
 anyhow = "1"
 tracing = "0.1.*"
+tracing-opentelemetry = "0.27.0"
 async-trait = "0.1.53"
 clap = { version = "3.1.6", features = ["derive"] }
 http = "0.2.8"
