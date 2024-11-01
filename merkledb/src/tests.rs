@@ -173,7 +173,7 @@ mod component_tests {
 
         // check the CAS's produced are not excessively large. Just
         // a bit bigger than the target CAS block size.
-        const PEAK_CAS_BLOCK_SIZE: usize = CAS_BLOCK_SIZE + 50 * 1024;
+        const PEAK_CAS_BLOCK_SIZE: usize = CAS_BLOCK_SIZE + TARGET_CDC_CHUNK_SIZE * MAXIMUM_CHUNK_MULTIPLIER;
         //
         // there should be 1 unique CAS node
         let file_recon = mdb.reconstruct_from_cas(&[file_root]).unwrap();
