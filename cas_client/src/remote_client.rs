@@ -18,8 +18,7 @@ use reqwest::{StatusCode, Url};
 use reqwest_middleware::ClientWithMiddleware;
 use tracing::{debug, error, info};
 use utils::auth::AuthConfig;
-use utils::singleflight;
-use utils::ThreadPool;
+use utils::{singleflight, ThreadPool};
 
 use crate::error::Result;
 use crate::interface::*;

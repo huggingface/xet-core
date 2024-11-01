@@ -1,4 +1,5 @@
 use std::fmt::Display;
+use std::future::Future;
 
 /// This module provides a simple wrapper around Tokio's runtime to create a thread pool
 /// with some default settings. It is intended to be used as a singleton thread pool for
@@ -49,7 +50,6 @@ use std::fmt::Display;
 ///
 /// - `new_threadpool`: Creates a new Tokio runtime with the specified settings.
 use tokio::{self, task::JoinHandle};
-use std::future::Future;
 use tracing::info;
 
 pub struct ThreadPool {
@@ -91,7 +91,13 @@ impl ThreadPool {
 impl Display for ThreadPool {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let metrics = self.inner.metrics();
-        write!(f, "pool: num_workers: {:?}, num_alive_tasks: {:?}, global_queue_depth: {:?}", metrics.num_workers(), metrics.num_alive_tasks(), metrics.global_queue_depth())
+        write!(
+            f,
+            "pool: num_workers: {:?}, num_alive_tasks: {:?}, global_queue_depth: {:?}",
+            metrics.num_workers(),
+            metrics.num_alive_tasks(),
+            metrics.global_queue_depth()
+        )
     }
 }
 
@@ -100,10 +106,11 @@ impl Display for ThreadPool {
 /// Intentionally unwrap this because if it fails, the application should not continue.
 fn new_threadpool() -> tokio::runtime::Runtime {
     tokio::runtime::Builder::new_multi_thread()
-        .worker_threads(4)            // 4 active threads
-        .thread_name("hf_xet-")       // thread names will be hf_xet-1, hf_xet-2, etc.
+        .worker_threads(4) // 4 active threads
+        .thread_name("hf_xet-") // thread names will be hf_xet-1, hf_xet-2, etc.
         .thread_stack_size(8_000_000) // 8MB stack size, default is 2MB
-        .max_blocking_threads(100)    // max 100 threads can block IO
-        .enable_all()                      // enable all features, including IO/Timer/Signal/Reactor
-        .build().unwrap()
+        .max_blocking_threads(100) // max 100 threads can block IO
+        .enable_all() // enable all features, including IO/Timer/Signal/Reactor
+        .build()
+        .unwrap()
 }
