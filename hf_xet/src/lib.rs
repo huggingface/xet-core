@@ -16,7 +16,9 @@ use utils::ThreadPool;
 
 fn get_threadpool() -> Arc<ThreadPool> {
     static THREADPOOL: OnceLock<Arc<ThreadPool>> = OnceLock::new();
-    THREADPOOL.get_or_init(|| Arc::new(ThreadPool::new())).clone()
+    THREADPOOL.get_or_init(|| {
+        Arc::new(ThreadPool::new())
+    }).clone()
 }
 
 #[pyfunction]
@@ -35,10 +37,7 @@ pub fn upload_files(
 
     // Release GIL to allow python concurrency
     py.allow_threads(move || {
-        Ok(get_threadpool()
-            .block_on(async {
-                data_client::upload_async(get_threadpool(), file_paths, endpoint, token_info, refresher).await
-            })
+        Ok(get_threadpool().block_on(async { data_client::upload_async(get_threadpool(), file_paths, endpoint, token_info, refresher).await })
             .map_err(|e| PyException::new_err(format!("{e:?}")))?
             .into_iter()
             .map(PyPointerFile::from)
@@ -62,10 +61,7 @@ pub fn download_files(
         .map(to_arc_dyn);
     // Release GIL to allow python concurrency
     py.allow_threads(move || {
-        get_threadpool()
-            .block_on(async move {
-                data_client::download_async(get_threadpool(), pfs, endpoint, token_info, refresher).await
-            })
+        get_threadpool().block_on(async move { data_client::download_async(get_threadpool(), pfs, endpoint, token_info, refresher).await })
             .map_err(|e| PyException::new_err(format!("{e:?}")))
     })
 }

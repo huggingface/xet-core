@@ -319,6 +319,38 @@ pub async fn reconstruct_file_to_writer(
         writer.flush()?;
         Ok(total_len)
     }
+        let total_len = if let Some(range) = byte_range {
+            range.end - range.start
+        } else {
+            terms.iter().fold(0, |acc, x| acc + x.unpacked_length as u64)
+        };
+        let mut remaining_len = total_len;
+        let term_data_futures = terms.into_iter().map(|term| {
+            let http_client = http_client.clone();
+            let disk_cache = self.disk_cache.clone();
+            let fetch_info = fetch_info.clone();
+            let single_flight_group = single_flight_group.clone();
+            self.threadpool
+                .spawn(get_one_term(http_client, disk_cache, term, fetch_info, single_flight_group))
+        });
+        for (i, fut) in term_data_futures.enumerate() {
+            let term_data = fut
+                .await
+                .map_err(|e| CasClientError::InternalError(anyhow!("join error {e}")))?
+                .log_error("error getting one term")?;
+            let start = if i == 0 {
+                // use offset_into_first_range for the first term if needed
+                max(0, offset_into_first_range as usize)
+            } else {
+                0
+            };
+            let end: usize = min(remaining_len + start as u64, term_data.len() as u64) as usize;
+            writer.write_all(&term_data[start..end])?;
+            remaining_len -= (end - start) as u64;
+        }
+        writer.flush()?;
+        Ok(total_len)
+    }
 }
 
 // Right now if all ranges are fetched "at once" (all tasks spawned in brief succession)
@@ -624,6 +656,7 @@ mod tests {
                 test.range,
                 &mut writer,
             ));
+            
             assert_eq!(test.expect_error, resp.is_err());
             if !test.expect_error {
                 assert_eq!(test.expected_len, resp.unwrap());
