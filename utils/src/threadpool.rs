@@ -1,3 +1,5 @@
+use std::fmt::Display;
+
 /// This module provides a simple wrapper around Tokio's runtime to create a thread pool
 /// with some default settings. It is intended to be used as a singleton thread pool for
 /// the entire application.
@@ -8,7 +10,7 @@
 /// # Example
 ///
 /// ```rust
-/// use crate::threadpool::ThreadPool;
+/// use utils::ThreadPool;
 ///
 /// let pool = ThreadPool::new();
 ///
@@ -46,7 +48,9 @@
 /// # Functions
 ///
 /// - `new_threadpool`: Creates a new Tokio runtime with the specified settings.
-use tokio;
+use tokio::{self, task::JoinHandle};
+use std::future::Future;
+use tracing::info;
 
 pub struct ThreadPool {
     inner: tokio::runtime::Runtime,
@@ -65,19 +69,29 @@ impl ThreadPool {
         }
     }
 
-    pub fn block_on<F: std::future::Future>(&self, f: F) -> F::Output {
-        self.inner.block_on(f)
+    pub fn block_on<F: std::future::Future>(&self, future: F) -> F::Output {
+        info!("threadpool: block_on called, {}", self);
+        self.inner.block_on(future)
     }
 
-    pub fn spawn<F>(&self, f: F)
+    pub fn spawn<F>(&self, future: F) -> JoinHandle<F::Output>
     where
-        F: std::future::Future<Output = ()> + Send + 'static,
+        F: Future + Send + 'static,
+        F::Output: Send + 'static,
     {
-        self.inner.spawn(f);
+        info!("threadpool: spawn called, {}", self);
+        self.inner.spawn(future)
     }
 
     pub fn get_handle(&self) -> tokio::runtime::Handle {
         self.inner.handle().clone()
+    }
+}
+
+impl Display for ThreadPool {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let metrics = self.inner.metrics();
+        write!(f, "pool: num_workers: {:?}, num_alive_tasks: {:?}, global_queue_depth: {:?}", metrics.num_workers(), metrics.num_alive_tasks(), metrics.global_queue_depth())
     }
 }
 

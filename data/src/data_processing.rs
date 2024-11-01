@@ -12,6 +12,7 @@ use mdb_shard::ShardFileManager;
 use merkledb::aggregate_hashes::cas_node_hash;
 use merklehash::MerkleHash;
 use tokio::sync::Mutex;
+use utils::ThreadPool;
 
 use crate::cas_interface::create_cas_client;
 use crate::clean::Cleaner;
@@ -65,7 +66,7 @@ pub struct PointerFileTranslator {
 
 // Constructors
 impl PointerFileTranslator {
-    pub async fn new(config: TranslatorConfig, threadpool: tokio::runtime::Handle) -> Result<PointerFileTranslator> {
+    pub async fn new(config: TranslatorConfig, threadpool: Arc<ThreadPool>) -> Result<PointerFileTranslator> {
         let shard_manager = Arc::new(create_shard_manager(&config.shard_storage_config).await?);
 
         let cas_client = create_cas_client(&config.cas_storage_config, &config.repo_info, shard_manager.clone(), threadpool)?;

@@ -19,6 +19,7 @@ use reqwest_middleware::ClientWithMiddleware;
 use tracing::{debug, error, info};
 use utils::auth::AuthConfig;
 use utils::singleflight;
+use utils::ThreadPool;
 
 use crate::error::Result;
 use crate::interface::*;
@@ -34,11 +35,16 @@ pub struct RemoteClient {
     endpoint: String,
     http_auth_client: ClientWithMiddleware,
     disk_cache: Option<Arc<dyn ChunkCache>>,
-    threadpool: tokio::runtime::Handle,
+    threadpool: Arc<ThreadPool>,
 }
 
 impl RemoteClient {
-    pub fn new(threadpool: tokio::runtime::Handle, endpoint: &str, auth: &Option<AuthConfig>, cache_config: &Option<CacheConfig>) -> Self {
+    pub fn new(
+        threadpool: Arc<ThreadPool>,
+        endpoint: &str,
+        auth: &Option<AuthConfig>,
+        cache_config: &Option<CacheConfig>,
+    ) -> Self {
         // use disk cache if cache_config provided.
         let disk_cache = if let Some(cache_config) = cache_config {
             info!("Using disk cache directory: {:?}, size: {}.", cache_config.cache_directory, cache_config.cache_size);
@@ -293,7 +299,8 @@ pub async fn reconstruct_file_to_writer(
             let disk_cache = self.disk_cache.clone();
             let fetch_info = fetch_info.clone();
             let single_flight_group = single_flight_group.clone();
-            self.threadpool.spawn(get_one_term(http_client, disk_cache, term, fetch_info, single_flight_group))
+            self.threadpool
+                .spawn(get_one_term(http_client, disk_cache, term, fetch_info, single_flight_group))
         });
         for (i, fut) in term_data_futures.enumerate() {
             let term_data = fut
@@ -493,25 +500,24 @@ mod tests {
 
     #[ignore = "requires a running CAS server"]
     #[traced_test]
-    #[tokio::test]
-    async fn test_basic_put() {
+    #[test]
+    fn test_basic_put() {
         // Arrange
         let prefix = PREFIX_DEFAULT;
         let (c, _, data, chunk_boundaries) =
             build_cas_object(3, ChunkSize::Random(512, 10248), cas_object::CompressionScheme::LZ4);
 
-        let threadpool = tokio::runtime::Handle::current(); // since already running in [tokio::test]
-
-        let client = RemoteClient::new(threadpool, CAS_ENDPOINT, &None, &None);
+        let threadpool = Arc::new(ThreadPool::new());
+        let client = RemoteClient::new(threadpool.clone(), CAS_ENDPOINT, &None, &None);
         // Act
-        let result = client.put(prefix, &c.info.cashash, data, chunk_boundaries).await;
+        let result = threadpool.block_on(client.put(prefix, &c.info.cashash, data, chunk_boundaries));
 
         // Assert
         assert!(result.is_ok());
     }
 
-    #[tokio::test]
-    async fn test_reconstruct_file_to_writer() {
+    #[test]
+    fn test_reconstruct_file_to_writer() {
         struct TestCase {
             reconstruction_response: QueryReconstructionResponse,
             range: Option<FileRange>,
@@ -600,28 +606,25 @@ mod tests {
 
             let http_client = http_client::build_http_client(&None).unwrap();
 
-            let threadpool = tokio::runtime::Handle::current(); // since already running in [tokio::test]
-            
+            let threadpool = Arc::new(ThreadPool::new());
             let client = RemoteClient {
                 disk_cache: Some(Arc::new(chunk_cache)),
                 http_auth_client: http_client.clone(),
                 endpoint: "".to_string(),
-                threadpool,
+                threadpool: threadpool.clone(),
             };
 
             let v = ThreadSafeBuffer::default();
             let mut writer: Box<dyn Write + Send> = Box::new(v.clone());
 
-            let resp = reconstruct_file_to_writer(
+            let resp = threadpool.block_on(client.reconstruct_file_to_writer(
                 Arc::new(http_client.clone()),
                 test.reconstruction_response.terms,
                 Arc::new(test.reconstruction_response.fetch_info),
-                Some(Arc::new(chunk_cache)),
                 test.reconstruction_response.offset_into_first_range,
                 test.range,
                 &mut writer,
-            )
-            .await;
+            ));
             assert_eq!(test.expect_error, resp.is_err());
             if !test.expect_error {
                 assert_eq!(test.expected_len, resp.unwrap());

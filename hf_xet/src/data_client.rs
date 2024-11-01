@@ -8,6 +8,7 @@ use data::errors::DataProcessingError;
 use data::{errors, PointerFile, PointerFileTranslator};
 use parutils::{tokio_par_for_each, ParallelError};
 use utils::auth::TokenRefresher;
+use utils::ThreadPool;
 
 use crate::config::default_config;
 
@@ -19,7 +20,7 @@ const DEFAULT_CAS_ENDPOINT: &str = "http://localhost:8080";
 const READ_BLOCK_SIZE: usize = 1024 * 1024;
 
 pub async fn upload_async(
-    threadpool: tokio::runtime::Handle,
+    threadpool: Arc<ThreadPool>,
     file_paths: Vec<String>,
     endpoint: Option<String>,
     token_info: Option<(String, u64)>,
@@ -51,7 +52,7 @@ pub async fn upload_async(
 }
 
 pub async fn download_async(
-    threadpool: tokio::runtime::Handle,
+    threadpool: Arc<ThreadPool>,
     pointer_files: Vec<PointerFile>,
     endpoint: Option<String>,
     token_info: Option<(String, u64)>,
