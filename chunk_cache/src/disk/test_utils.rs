@@ -2,7 +2,7 @@ use std::path::Path;
 
 use cas_types::{ChunkRange, Key};
 use merklehash::MerkleHash;
-use rand::rngs::ThreadRng;
+use rand::rngs::{StdRng, ThreadRng};
 use rand::seq::SliceRandom;
 use rand::{thread_rng, Rng, SeedableRng};
 
@@ -103,6 +103,12 @@ impl<T: Rng> RandomEntryIterator<T> {
 impl<T: SeedableRng + Rng> RandomEntryIterator<T> {
     pub fn from_seed(seed: u64) -> Self {
         Self::new(T::seed_from_u64(seed))
+    }
+}
+
+impl RandomEntryIterator<StdRng> {
+    pub fn std_from_seed(seed: u64) -> Self {
+        Self::from_seed(seed)
     }
 }
 

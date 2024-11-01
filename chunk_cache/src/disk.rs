@@ -722,7 +722,8 @@ mod tests {
     use std::collections::BTreeSet;
 
     use cas_types::{ChunkRange, Key};
-    use rand::thread_rng;
+    use rand::rngs::StdRng;
+    use rand::SeedableRng;
     use tempdir::TempDir;
 
     use super::{DiskCache, DEFAULT_CAPACITY};
@@ -730,9 +731,11 @@ mod tests {
     use crate::disk::try_parse_key;
     use crate::{CacheConfig, ChunkCache};
 
+    const RANDOM_SEED: u64 = 9089 << 20 | 120043;
+
     #[test]
     fn test_get_cache_empty() {
-        let mut rng = thread_rng();
+        let mut rng = StdRng::seed_from_u64(RANDOM_SEED);
         let cache_root = TempDir::new("empty").unwrap();
         let config = CacheConfig {
             cache_directory: cache_root.path().to_path_buf(),
@@ -745,7 +748,7 @@ mod tests {
 
     #[test]
     fn test_put_get_simple() {
-        let mut rng = thread_rng();
+        let mut rng = StdRng::seed_from_u64(RANDOM_SEED);
         let cache_root = TempDir::new("put_get_simple").unwrap();
         let config = CacheConfig {
             cache_directory: cache_root.path().to_path_buf(),
@@ -771,7 +774,7 @@ mod tests {
 
     #[test]
     fn test_put_get_subrange() {
-        let mut rng = thread_rng();
+        let mut rng = StdRng::seed_from_u64(RANDOM_SEED);
         let cache_root = TempDir::new("put_get_subrange").unwrap();
         let config = CacheConfig {
             cache_directory: cache_root.path().to_path_buf(),
@@ -815,7 +818,7 @@ mod tests {
             ..Default::default()
         };
         let cache = DiskCache::initialize(&config).unwrap();
-        let mut it = RandomEntryIterator::default();
+        let mut it = RandomEntryIterator::std_from_seed(RANDOM_SEED);
 
         // fill the cache to almost capacity
         for _ in 0..MIN_NUM_KEYS {
@@ -839,7 +842,7 @@ mod tests {
             ..Default::default()
         };
         let cache = DiskCache::initialize(&config).unwrap();
-        let mut it = RandomEntryIterator::default().with_range_len(1000);
+        let mut it = RandomEntryIterator::std_from_seed(RANDOM_SEED).with_range_len(1000);
         let (key, range, offsets, data) = it.next().unwrap();
         assert!(cache.put(&key, &range, &offsets, &data).is_ok());
         assert!(cache.put(&key, &range, &offsets, &data).is_ok());
@@ -848,7 +851,7 @@ mod tests {
     #[test]
     fn test_overlap_range_data_mismatch_fail() {
         let setup = || {
-            let mut it = RandomEntryIterator::default();
+            let mut it = RandomEntryIterator::std_from_seed(RANDOM_SEED);
             let cache_root = TempDir::new("overlap_range_data_mismatch_fail").unwrap();
             let config = CacheConfig {
                 cache_directory: cache_root.path().to_path_buf(),
@@ -907,7 +910,7 @@ mod tests {
         };
         let cache = DiskCache::initialize(&config).unwrap();
 
-        let mut it = RandomEntryIterator::default();
+        let mut it = RandomEntryIterator::std_from_seed(RANDOM_SEED);
 
         let mut keys_and_ranges = Vec::new();
 
@@ -939,7 +942,7 @@ mod tests {
             ..Default::default()
         };
         let cache = DiskCache::initialize(&config).unwrap();
-        let mut it = RandomEntryIterator::default().with_range_len(LARGE_FILE as u32);
+        let mut it = RandomEntryIterator::std_from_seed(RANDOM_SEED).with_range_len(LARGE_FILE as u32);
 
         let (key, range, offsets, data) = it.next().unwrap();
         cache.put(&key, &range, &offsets, &data).unwrap();
@@ -963,7 +966,7 @@ mod tests {
             ..Default::default()
         };
         let cache = DiskCache::initialize(&config).unwrap();
-        let mut it = RandomEntryIterator::default().with_range_len(LARGE_FILE as u32);
+        let mut it = RandomEntryIterator::std_from_seed(RANDOM_SEED).with_range_len(LARGE_FILE as u32);
         for _ in 0..10 {
             let (key, range, offsets, data) = it.next().unwrap();
             cache.put(&key, &range, &offsets, &data).unwrap();
@@ -997,7 +1000,7 @@ mod tests {
             ..Default::default()
         };
         let cache = DiskCache::initialize(&config).unwrap();
-        let mut it = RandomEntryIterator::default();
+        let mut it = RandomEntryIterator::std_from_seed(RANDOM_SEED);
         let (key, range, chunk_byte_indices, data) = it.next().unwrap();
         cache.put(&key, &range, &chunk_byte_indices, &data).unwrap();
 
@@ -1038,7 +1041,7 @@ mod tests {
         };
         let cache = DiskCache::initialize(&config).unwrap();
 
-        let (key, range, chunk_byte_indices, data) = RandomEntryIterator::default().next().unwrap();
+        let (key, range, chunk_byte_indices, data) = RandomEntryIterator::std_from_seed(RANDOM_SEED).next().unwrap();
         cache.put(&key, &range, &chunk_byte_indices, &data).unwrap();
         let total_bytes = cache.total_bytes().unwrap();
 
@@ -1090,7 +1093,7 @@ mod tests {
             ..Default::default()
         };
         let cache = DiskCache::initialize(&config).unwrap();
-        let mut it = RandomEntryIterator::default().with_one_chunk_ranges(true);
+        let mut it = RandomEntryIterator::std_from_seed(RANDOM_SEED).with_one_chunk_ranges(true);
         let (key, _, _, _) = it.next().unwrap();
         let mut previously_put: Vec<(Key, ChunkRange)> = Vec::new();
 
@@ -1134,6 +1137,7 @@ mod concurrency_tests {
     use crate::{CacheConfig, ChunkCache, RandomEntryIterator, RANGE_LEN};
 
     const NUM_ITEMS_PER_TASK: usize = 20;
+    const RANDOM_SEED: u64 = 878987298749287;
 
     #[tokio::test]
     async fn test_run_concurrently() {
@@ -1152,7 +1156,7 @@ mod concurrency_tests {
         for _ in 0..num_tasks {
             let cache_clone = cache.clone();
             handles.push(tokio::spawn(async move {
-                let mut it = RandomEntryIterator::default();
+                let mut it = RandomEntryIterator::std_from_seed(RANDOM_SEED);
                 let mut kr = Vec::with_capacity(NUM_ITEMS_PER_TASK);
                 for _ in 0..NUM_ITEMS_PER_TASK {
                     let (key, range, chunk_byte_indices, data) = it.next().unwrap();
@@ -1186,7 +1190,7 @@ mod concurrency_tests {
         for _ in 0..num_tasks {
             let cache_clone = cache.clone();
             handles.push(tokio::spawn(async move {
-                let mut it = RandomEntryIterator::default();
+                let mut it = RandomEntryIterator::std_from_seed(RANDOM_SEED);
                 let mut kr = Vec::with_capacity(NUM_ITEMS_PER_TASK);
                 for _ in 0..NUM_ITEMS_PER_TASK {
                     let (key, range, chunk_byte_indices, data) = it.next().unwrap();
