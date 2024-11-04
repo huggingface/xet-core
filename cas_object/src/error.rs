@@ -1,5 +1,6 @@
 use std::convert::Infallible;
 
+use tracing::warn;
 use xet_error::Error;
 
 #[non_exhaustive]
@@ -33,5 +34,24 @@ pub type Result<T> = std::result::Result<T, CasObjectError>;
 impl PartialEq for CasObjectError {
     fn eq(&self, other: &CasObjectError) -> bool {
         std::mem::discriminant(self) == std::mem::discriminant(other)
+    }
+}
+
+/// Helper trait to swallow CAS object format errors. Used in object
+/// validation to reject the object instead of propagating errors.
+pub trait Validate<T> {
+    fn ok_for_format_error(self) -> Result<Option<T>>;
+}
+
+impl<T> Validate<T> for Result<T> {
+    fn ok_for_format_error(self) -> Result<Option<T>> {
+        match self {
+            Ok(v) => Ok(Some(v)),
+            Err(CasObjectError::FormatError(e)) => {
+                warn!("XORB Validation: {e}");
+                Ok(None)
+            },
+            Err(e) => Err(e),
+        }
     }
 }
