@@ -61,9 +61,7 @@ impl Command {
 
 fn get_threadpool() -> Arc<ThreadPool> {
     static THREADPOOL: OnceLock<Arc<ThreadPool>> = OnceLock::new();
-    THREADPOOL.get_or_init(|| {
-        Arc::new(ThreadPool::new())
-    }).clone()
+    THREADPOOL.get_or_init(|| Arc::new(ThreadPool::new())).clone()
 }
 
 fn main() {

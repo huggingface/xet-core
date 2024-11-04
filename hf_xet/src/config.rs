@@ -2,8 +2,6 @@ use std::env::current_dir;
 use std::fs;
 use std::sync::Arc;
 
-use dirs::home_dir;
-
 use data::configurations::*;
 use data::{errors, CacheConfig};
 use dirs::home_dir;
