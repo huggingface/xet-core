@@ -16,7 +16,17 @@ tracing = "0.1.40"
 sorted-vec = "0.8.3"
 rand = "0.8.5"
 mockall = "0.13.0"
+clap = { version = "4.5.20", optional = true, features = ["derive"] }
 
 [dev-dependencies]
 tokio = { version = "1.36", features = ["full"] }
 tempdir = "0.3.7"
+
+[[bin]]
+name = "cache_analysis"
+path = "./src/bin/analysis.rs"
+required-features = ["analysis"]
+
+
+[features]
+analysis = ["dep:clap"]

@@ -16,7 +16,7 @@ const CACHE_ITEM_FILE_NAME_BUF_SIZE: usize = size_of::<u32>() * 2 + size_of::<u6
 /// it contains the range of chunks the item is for
 /// the length of the file on disk and the hash of the file contents
 /// for validation.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(crate) struct CacheItem {
     pub(crate) range: ChunkRange,
     pub(crate) len: u64,
@@ -79,18 +79,6 @@ impl CacheItem {
     }
 }
 
-pub(super) fn range_contained_fn(range: &ChunkRange) -> impl FnMut(&CacheItem) -> std::cmp::Ordering + '_ {
-    |item: &CacheItem| {
-        if item.range.start > range.start {
-            Ordering::Greater
-        } else if item.range.end < range.end {
-            Ordering::Less
-        } else {
-            Ordering::Equal
-        }
-    }
-}
-
 pub fn write_hash(writer: &mut impl Write, hash: &blake3::Hash) -> Result<(), std::io::Error> {
     writer.write_all(hash.as_bytes())
 }
@@ -106,11 +94,9 @@ mod tests {
     use base64::Engine;
     use blake3::OUT_LEN;
     use cas_types::ChunkRange;
-    use sorted_vec::SortedVec;
 
-    use super::{range_contained_fn, CacheItem};
     use crate::disk::cache_item::CACHE_ITEM_FILE_NAME_BUF_SIZE;
-    use crate::disk::BASE64_ENGINE;
+    use crate::disk::{CacheItem, BASE64_ENGINE};
 
     impl Default for CacheItem {
         fn default() -> Self {
@@ -133,44 +119,5 @@ mod tests {
         let file_name = cache_item.file_name().unwrap();
         let decoded = BASE64_ENGINE.decode(file_name).unwrap();
         assert_eq!(decoded.len(), CACHE_ITEM_FILE_NAME_BUF_SIZE);
-    }
-
-    #[test]
-    fn test_binary_search() {
-        let range = |i: u32| ChunkRange {
-            start: i * 100,
-            end: (i + 1) * 100,
-        };
-        let sub_range = |i: u32| ChunkRange {
-            start: i * 100 + 20,
-            end: (i + 1) * 100 - 1,
-        };
-
-        let v = SortedVec::from(
-            (1..=10)
-                .map(|i| CacheItem {
-                    range: range(i),
-                    ..Default::default()
-                })
-                .collect::<Vec<_>>(),
-        );
-
-        for i in 1..=10 {
-            let r = range(i);
-            let sr = sub_range(i);
-
-            let idx_result = v.binary_search_by(range_contained_fn(&r));
-            assert!(idx_result.is_ok(), "{r} {idx_result:?}");
-            let idx = idx_result.unwrap();
-            assert_eq!(idx, (i - 1) as usize, "{r}, {i}");
-
-            let sr_idx_result = v.binary_search_by(range_contained_fn(&sr));
-            assert!(sr_idx_result.is_ok(), "{sr}, {sr_idx_result:?}");
-            let sr_idx = sr_idx_result.unwrap();
-            assert_eq!(sr_idx, (i - 1) as usize, "{sr}, {i}");
-        }
-
-        let out_range = range(100);
-        assert!(v.binary_search_by(range_contained_fn(&out_range)).is_err());
     }
 }

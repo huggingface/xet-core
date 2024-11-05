@@ -122,7 +122,6 @@ impl PyPointerFile {
 #[pymodule]
 pub fn hf_xet(m: &Bound<'_, PyModule>) -> PyResult<()> {
     log::initialize_logging();
-    let threadpool = ThreadPool::new()?;
     m.add_function(wrap_pyfunction!(upload_files, m)?)?;
     m.add_function(wrap_pyfunction!(download_files, m)?)?;
     m.add_class::<PyPointerFile>()?;
