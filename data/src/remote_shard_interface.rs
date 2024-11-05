@@ -1,5 +1,4 @@
 use std::ffi::OsStr;
-use std::os::unix::thread;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
