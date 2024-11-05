@@ -11,6 +11,7 @@ use mdb_shard::shard_file_reconstructor::FileReconstructor;
 use merklehash::{HashedWrite, MerkleHash};
 use reqwest::Url;
 use reqwest_middleware::ClientWithMiddleware;
+use tracing::instrument;
 use utils::auth::AuthConfig;
 
 use crate::error::{CasClientError, Result};
@@ -40,6 +41,7 @@ impl HttpShardClient {
 
 #[async_trait]
 impl RegistrationClient for HttpShardClient {
+    #[instrument(skip_all, name = "shard_client::upload_shard", fields(hash = hash.hex()))]
     async fn upload_shard(
         &self,
         prefix: &str,
@@ -82,6 +84,7 @@ impl RegistrationClient for HttpShardClient {
 
 #[async_trait]
 impl FileReconstructor<CasClientError> for HttpShardClient {
+    #[instrument(skip_all, name = "shard_client::get_file_reconstruction_info", fields(hash = file_hash.hex()))]
     async fn get_file_reconstruction_info(
         &self,
         file_hash: &MerkleHash,
@@ -118,6 +121,7 @@ impl FileReconstructor<CasClientError> for HttpShardClient {
 
 #[async_trait]
 impl ShardDedupProber<CasClientError> for HttpShardClient {
+    #[instrument(skip_all, name = "shard_client::get_dedup_shards")]
     async fn get_dedup_shards(
         &self,
         prefix: &str,

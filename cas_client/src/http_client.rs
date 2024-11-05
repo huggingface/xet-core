@@ -3,12 +3,13 @@ use std::time::Duration;
 
 use anyhow::anyhow;
 use error_printer::OptionPrinter;
+use http::Extensions;
 use reqwest::header::{HeaderValue, AUTHORIZATION};
 use reqwest::{Request, Response};
 use reqwest_middleware::{ClientBuilder, ClientWithMiddleware, Middleware, Next};
 use reqwest_retry::policies::ExponentialBackoff;
 use reqwest_retry::{default_on_request_failure, default_on_request_success, RetryTransientMiddleware, Retryable};
-use tracing::warn;
+use tracing::{info_span, warn, Instrument};
 use utils::auth::{AuthConfig, TokenProvider};
 
 use crate::CasClientError;
@@ -55,6 +56,7 @@ pub fn build_auth_http_client(
         .maybe_with(auth_middleware)
         .maybe_with(Some(retry_middleware))
         .maybe_with(logging_middleware)
+        .maybe_with(Some(TraceMiddleware))
         .build())
 }
 
@@ -72,6 +74,7 @@ pub fn build_http_client(
     Ok(ClientBuilder::new(reqwest_client)
         .maybe_with(Some(retry_middleware))
         .maybe_with(logging_middleware)
+        .maybe_with(Some(TraceMiddleware))
         .build())
 }
 
@@ -177,6 +180,21 @@ impl Middleware for AuthMiddleware {
     }
 }
 
+pub struct TraceMiddleware;
+
+#[async_trait::async_trait]
+impl Middleware for TraceMiddleware {
+    async fn handle(
+        &self,
+        req: Request,
+        extensions: &mut Extensions,
+        next: Next<'_>,
+    ) -> reqwest_middleware::Result<Response> {
+        let span = info_span!("client::request", method = %req.method(), url = req.url().as_str());
+        next.run(req, extensions).instrument(span).await
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::time::SystemTime;
@@ -264,6 +282,6 @@ mod tests {
         assert!(logs_contain("Status Code: 500. Retrying..."));
         assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
         assert_eq!(3, mock.hits());
-        assert_eq!(start_time.elapsed().unwrap() > Duration::from_secs(0), true);
+        assert!(start_time.elapsed().unwrap() > Duration::from_secs(0));
     }
 }

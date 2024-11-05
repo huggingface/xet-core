@@ -16,7 +16,9 @@ use http::header::RANGE;
 use merklehash::MerkleHash;
 use reqwest::{StatusCode, Url};
 use reqwest_middleware::ClientWithMiddleware;
-use tracing::{debug, error, info};
+use tracing::field::Empty;
+use tracing::{debug, error, info, info_span, instrument, Instrument, Span};
+use tracing_opentelemetry::OpenTelemetrySpanExt;
 use utils::auth::AuthConfig;
 use utils::singleflight;
 
@@ -163,6 +165,7 @@ impl ReconstructionClient for RemoteClient {
 
 #[async_trait]
 impl Reconstructable for RemoteClient {
+    #[instrument(skip_all, name = "remote_client::get_reconstruction")]
     async fn get_reconstruction(
         &self,
         file_id: &MerkleHash,
@@ -196,6 +199,7 @@ impl Reconstructable for RemoteClient {
 impl Client for RemoteClient {}
 
 impl RemoteClient {
+    #[instrument(skip_all, name = "remote_client::batch_get_reconstruction")]
     async fn batch_get_reconstruction(
         &self,
         file_ids: impl Iterator<Item = &MerkleHash>,
@@ -229,6 +233,7 @@ impl RemoteClient {
         Ok(query_reconstruction_response)
     }
 
+    #[instrument(skip_all, name = "remote_client::upload_xorb", fields(key = key.hash.hex(), num_chunks = chunk_and_boundaries.len()))]
     pub async fn upload(
         &self,
         key: &Key,
@@ -290,7 +295,16 @@ pub async fn reconstruct_file_to_writer(
         let http_client = http_client.clone();
         let fetch_info = fetch_info.clone();
         let single_flight_group = single_flight_group.clone();
-        tokio::spawn(get_one_term(http_client, cache.clone(), term, fetch_info, single_flight_group))
+        let ctx = Span::current().context();
+        let term_span = info_span!(
+            "remote_client::reconstruct_term_task",
+            hash = format!("{}", term.hash),
+            num_chunks = term.range.end - term.range.start
+        );
+        term_span.set_parent(ctx);
+        tokio::spawn(
+            get_one_term(http_client, cache.clone(), term, fetch_info, single_flight_group).instrument(term_span),
+        )
     });
     for (i, fut) in term_data_futures.enumerate() {
         let term_data = fut
@@ -369,19 +383,31 @@ pub(crate) async fn get_one_term(
     // then put into the cache if used
     let single_flight_group_key = fetch_term.url.as_str();
     let fetch_term_owned = fetch_term.clone();
+    let ctx = Span::current().context();
+    let single_flight_task = info_span!(
+        "remote_client::chunk_data_fetch_task",
+        singleflight_key = single_flight_group_key,
+        is_owner = false
+    );
+    single_flight_task.set_parent(ctx);
     let (mut data, chunk_byte_indices) = single_flight_group
-        .work_dump_caller_info(single_flight_group_key, async move {
-            let (data, chunk_byte_indices) = download_range(http_client, &fetch_term_owned).await?;
-            // now write it to cache, the whole fetched term
-            if let Some(cache) = disk_cache {
-                let key = Key {
-                    prefix: PREFIX_DEFAULT.to_string(),
-                    hash: term.hash.into(),
-                };
-                cache.put(&key, &fetch_term_owned.range, &chunk_byte_indices, &data)?;
+        .work_dump_caller_info(
+            single_flight_group_key,
+            async move {
+                Span::current().set_attribute("is_owner", true);
+                let (data, chunk_byte_indices) = download_range(http_client, &fetch_term_owned).await?;
+                // now write it to cache, the whole fetched term
+                if let Some(cache) = disk_cache {
+                    let key = Key {
+                        prefix: PREFIX_DEFAULT.to_string(),
+                        hash: term.hash.into(),
+                    };
+                    cache.put(&key, &fetch_term_owned.range, &chunk_byte_indices, &data)?;
+                }
+                Ok((data, chunk_byte_indices))
             }
-            Ok((data, chunk_byte_indices))
-        })
+            .instrument(single_flight_task),
+        )
         .await?;
 
     // if the requested range is smaller than the fetched range, trim it down to the right data
@@ -442,6 +468,7 @@ impl Write for ThreadSafeBuffer {
 /// use the provided http_client to make requests to S3/blob store using the url and url_range
 /// parts of a CASReconstructionFetchInfo. The url_range part is used directly in an http Range header
 /// value (see fn `range_header`).
+#[instrument(skip_all, name = "remote_client::download_range")]
 async fn download_range(
     http_client: Arc<ClientWithMiddleware>,
     fetch_term: &CASReconstructionFetchInfo,

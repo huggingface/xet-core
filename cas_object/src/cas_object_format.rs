@@ -281,8 +281,11 @@ impl CasObject {
     /// Verifies each chunk is valid and correctly represented in CasObjectInfo, along with
     /// recomputing the hash and validating it matches CasObjectInfo.
     ///
-    /// Returns Ok(true) if recomputed hash matches what is passed in.
-    pub fn validate_cas_object<R: Read + Seek>(reader: &mut R, hash: &MerkleHash) -> Result<bool, CasObjectError> {
+    /// Returns Ok(Some(cas object)) if recomputed hash matches what is passed in.
+    pub fn validate_cas_object<R: Read + Seek>(
+        reader: &mut R,
+        hash: &MerkleHash,
+    ) -> Result<Option<CasObject>, CasObjectError> {
         // 1. deserialize to get Info
         let cas = CasObject::deserialize(reader)?;
 
@@ -309,7 +312,7 @@ impl CasObject {
             // verify chunk hash
             if *cas.info.chunk_hashes.get(idx as usize).unwrap() != chunk_hash {
                 warn!("XORB Validation: Chunk hash does not match Info object.");
-                return Ok(false);
+                return Ok(None);
             }
 
             let boundary = *cas.info.chunk_boundary_offsets.get(idx as usize).unwrap();
@@ -317,7 +320,7 @@ impl CasObject {
             // verify that cas.chunk[n].len + 1 == cas.chunk_boundary_offsets[n]
             if (start_offset + compressed_chunk_length as u32) != boundary {
                 warn!("XORB Validation: Chunk boundary byte index does not match Info object.");
-                return Ok(false);
+                return Ok(None);
             }
 
             // set start offset of next chunk as the boundary of the current chunk
@@ -332,7 +335,7 @@ impl CasObject {
             reader.seek(std::io::SeekFrom::End(0))? as u32 - cas.info_length - size_of::<u32>() as u32;
         if cur_position != expected_position || cur_position != expected_from_end_position {
             warn!("XORB Validation: Content bytes after known chunks in Info object.");
-            return Ok(false);
+            return Ok(None);
         }
 
         // 4. combine hashes to get full xorb hash, compare to provided
@@ -343,10 +346,10 @@ impl CasObject {
 
         if *ret.hash() != *hash || *ret.hash() != cas.info.cashash {
             warn!("XORB Validation: Computed hash does not match provided hash or Info hash.");
-            return Ok(false);
+            return Ok(None);
         }
 
-        Ok(true)
+        Ok(Some(cas))
     }
 
     /// Generate a hash for securing a chunk range.
@@ -775,8 +778,8 @@ mod tests {
 
         assert_eq!(c2.info.cashash, c.info.cashash);
         assert_eq!(c.get_all_bytes(&mut writer), c.get_all_bytes(&mut reader));
-        assert!(CasObject::validate_cas_object(&mut reader, &c2.info.cashash).is_ok());
-        assert!(CasObject::validate_cas_object(&mut writer, &c.info.cashash).is_ok());
+        assert!(CasObject::validate_cas_object(&mut reader, &c2.info.cashash).unwrap().is_some());
+        assert!(CasObject::validate_cas_object(&mut writer, &c.info.cashash).unwrap().is_some());
     }
 
     #[test]
@@ -817,7 +820,7 @@ mod tests {
         )
         .is_ok());
 
-        assert!(CasObject::validate_cas_object(&mut buf, &c.info.cashash).unwrap());
+        assert!(CasObject::validate_cas_object(&mut buf, &c.info.cashash).unwrap().is_some());
     }
 
     #[test]
@@ -836,7 +839,7 @@ mod tests {
         )
         .is_ok());
 
-        assert!(CasObject::validate_cas_object(&mut buf, &c.info.cashash).unwrap());
+        assert!(CasObject::validate_cas_object(&mut buf, &c.info.cashash).unwrap().is_some());
 
         let mut reader = buf.clone();
         reader.set_position(0);
@@ -867,7 +870,7 @@ mod tests {
         )
         .is_ok());
 
-        assert!(CasObject::validate_cas_object(&mut buf, &c.info.cashash).unwrap());
+        assert!(CasObject::validate_cas_object(&mut buf, &c.info.cashash).unwrap().is_some());
 
         let mut reader = buf.clone();
         reader.set_position(0);
@@ -897,7 +900,7 @@ mod tests {
         )
         .is_ok());
 
-        assert!(CasObject::validate_cas_object(&mut buf, &c.info.cashash).unwrap());
+        assert!(CasObject::validate_cas_object(&mut buf, &c.info.cashash).unwrap().is_some());
 
         let mut reader = buf.clone();
         reader.set_position(0);
@@ -956,7 +959,7 @@ mod tests {
         )
         .is_ok());
 
-        assert!(CasObject::validate_cas_object(&mut buf, &c.info.cashash).unwrap());
+        assert!(CasObject::validate_cas_object(&mut buf, &c.info.cashash).unwrap().is_some());
 
         let mut reader = buf.clone();
         reader.set_position(0);
@@ -987,7 +990,7 @@ mod tests {
         )
         .is_ok());
 
-        assert!(CasObject::validate_cas_object(&mut buf, &c.info.cashash).unwrap());
+        assert!(CasObject::validate_cas_object(&mut buf, &c.info.cashash).unwrap().is_some());
 
         let mut reader = buf.clone();
         reader.set_position(0);

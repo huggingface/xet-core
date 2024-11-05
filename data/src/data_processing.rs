@@ -246,10 +246,7 @@ pub(crate) async fn register_new_cas_block(
             fi.segments[i].cas_hash = cas_hash;
         }
 
-        shard_manager
-            .add_file_reconstruction_info(fi)
-            .instrument(info_span!("shard_manager::add_file_reconstruction"))
-            .await?;
+        shard_manager.add_file_reconstruction_info(fi).await?;
     }
 
     cas_data.data.clear();
