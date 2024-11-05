@@ -281,8 +281,8 @@ impl DiskCache {
                 },
             };
 
-            // TODO: reintroduce hash validation of cache file, but not for every get, memoize success status per cache file
-            // let hash = compute_hash_from_reader(&mut file_buf)?;
+            // TODO: reintroduce hash validation of cache file, but not for every get, memoize success status per cache
+            // file let hash = compute_hash_from_reader(&mut file_buf)?;
             // if hash != cache_item.hash {
             //     debug!("file hash mismatch on path: {path:?}, key: {key}, item: {cache_item}");
             //     if to_print {

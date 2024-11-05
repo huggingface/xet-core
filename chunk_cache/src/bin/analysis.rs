@@ -1,8 +1,8 @@
-use std::{path::PathBuf, u64};
-
-use clap::Parser;
+use std::path::PathBuf;
+use std::u64;
 
 use chunk_cache::{CacheConfig, DiskCache};
+use clap::Parser;
 
 #[derive(Debug, Parser)]
 struct CacheAnalysisArgs {
