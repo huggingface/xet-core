@@ -30,6 +30,7 @@ pub const PREFIX_DEFAULT: &str = "default";
 
 const NUM_RETRIES: usize = 5;
 const BASE_RETRY_DELAY_MS: u64 = 3000;
+const NUM_CONCURRENT_RANGE_GETS: usize = 4;
 
 pub struct RemoteClient {
     endpoint: String,
@@ -46,7 +47,7 @@ impl RemoteClient {
         cache_config: &Option<CacheConfig>,
     ) -> Self {
         // use disk cache if cache_config provided.
-        let disk_cache = if let Some(cache_config) = cache_config {
+        let chunk_cache = if let Some(cache_config) = cache_config {
             info!("Using disk cache directory: {:?}, size: {}.", cache_config.cache_directory, cache_config.cache_size);
             DiskCache::initialize(cache_config)
                 .log_error("failed to initialize cache, not using cache")
@@ -59,7 +60,7 @@ impl RemoteClient {
         Self {
             endpoint: endpoint.to_string(),
             http_auth_client: http_client::build_auth_http_client(auth, &None).unwrap(),
-            chunk_cache: disk_cache,
+            chunk_cache,
             threadpool,
         }
     }
@@ -282,17 +283,16 @@ impl RemoteClient {
             terms.iter().fold(0, |acc, x| acc + x.unpacked_length as u64)
         };
 
-        let mut futs = Vec::with_capacity(terms.len());
-        for term in terms.into_iter() {
-            futs.push(get_one_term(http_client.clone(), self.chunk_cache.clone(), term, fetch_info.clone()));
-        }
+        let futs_iter = terms
+            .into_iter()
+            .map(|term| get_one_term(http_client.clone(), self.chunk_cache.clone(), term, fetch_info.clone()));
+        let mut futs_buffered_enumerated =
+            futures::stream::iter(futs_iter).buffered(NUM_CONCURRENT_RANGE_GETS).enumerate();
 
-        let mut futs = futures::stream::iter(futs).buffered(4);
-        let mut i = 0;
         let mut remaining_len = total_len;
-        while let Some(term_data_result) = futs.next().await {
-            let term_data = term_data_result.log_error("error fetching 1 term")?;
-            let start = if i == 0 {
+        while let Some((term_idx, term_data_result)) = futs_buffered_enumerated.next().await {
+            let term_data = term_data_result.log_error(format!("error fetching 1 term at index {term_idx}"))?;
+            let start = if term_idx == 0 {
                 // use offset_into_first_range for the first term if needed
                 max(0, offset_into_first_range as usize)
             } else {
@@ -301,7 +301,6 @@ impl RemoteClient {
             let end: usize = min(remaining_len + start as u64, term_data.len() as u64) as usize;
             writer.write_all(&term_data[start..end])?;
             remaining_len -= (end - start) as u64;
-            i += 1;
         }
 
         writer.flush()?;
@@ -322,7 +321,7 @@ impl RemoteClient {
 /// that matches our requested CASReconstructionTerm, it is considered a bad output from the CAS API.
 pub(crate) async fn get_one_term(
     http_client: Arc<ClientWithMiddleware>,
-    disk_cache: Option<Arc<dyn ChunkCache>>,
+    chunk_cache: Option<Arc<dyn ChunkCache>>,
     term: CASReconstructionTerm,
     fetch_info: Arc<HashMap<HexMerkleHash, Vec<CASReconstructionFetchInfo>>>,
 ) -> Result<Vec<u8>> {
@@ -333,7 +332,7 @@ pub(crate) async fn get_one_term(
     }
 
     // check disk cache for the exact range we want for the reconstruction term
-    if let Some(cache) = &disk_cache {
+    if let Some(cache) = &chunk_cache {
         let key = Key {
             prefix: PREFIX_DEFAULT.to_string(),
             hash: term.hash.into(),
@@ -363,7 +362,7 @@ pub(crate) async fn get_one_term(
     let (mut data, chunk_byte_indices) = download_range(http_client, &fetch_term).await?;
 
     // now write it to cache, the whole fetched term
-    if let Some(cache) = disk_cache {
+    if let Some(cache) = chunk_cache {
         let key = Key {
             prefix: PREFIX_DEFAULT.to_string(),
             hash: term.hash.into(),
