@@ -52,6 +52,11 @@ use std::future::Future;
 use tokio::{self, task::JoinHandle};
 use tracing::info;
 
+const THREADPOOL_NUM_WORKER_THREADS: usize = 4; // 4 active threads
+const THREADPOOL_THREAD_ID_PREFIX: &str = "hf-xet-"; // thread names will be hf_xet-1, hf_xet-2, etc.
+const THREADPOOL_STACK_SIZE: usize = 8_000_000; // 8MB stack size
+const THREADPOOL_MAX_BLOCKING_THREADS: usize = 100; // max 100 threads can block IO
+
 #[derive(Debug)]
 pub struct ThreadPool {
     inner: tokio::runtime::Runtime,
@@ -107,10 +112,10 @@ impl Display for ThreadPool {
 /// Intentionally unwrap this because if it fails, the application should not continue.
 fn new_threadpool() -> tokio::runtime::Runtime {
     tokio::runtime::Builder::new_multi_thread()
-        .worker_threads(4) // 4 active threads
-        .thread_name("hf_xet-") // thread names will be hf_xet-1, hf_xet-2, etc.
-        .thread_stack_size(8_000_000) // 8MB stack size, default is 2MB
-        .max_blocking_threads(100) // max 100 threads can block IO
+        .worker_threads(THREADPOOL_NUM_WORKER_THREADS) // 4 active threads
+        .thread_name(THREADPOOL_THREAD_ID_PREFIX) // thread names will be hf_xet-1, hf_xet-2, etc.
+        .thread_stack_size(THREADPOOL_STACK_SIZE) // 8MB stack size, default is 2MB
+        .max_blocking_threads(THREADPOOL_MAX_BLOCKING_THREADS) // max 100 threads can block IO
         .enable_all() // enable all features, including IO/Timer/Signal/Reactor
         .build()
         .unwrap()
