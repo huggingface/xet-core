@@ -275,7 +275,7 @@ impl RemoteClient {
         byte_range: Option<FileRange>,
         writer: &mut Box<dyn Write + Send>,
     ) -> Result<u64> {
-        let single_flight_group = Arc::new(singleflight::Group::new());
+        let single_flight_group = Arc::new(singleflight::Group::new(self.threadpool.clone()));
 
         let total_len = if let Some(range) = byte_range {
             range.end - range.start

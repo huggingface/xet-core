@@ -22,6 +22,7 @@ use tokio::sync::mpsc::{channel, Receiver, Sender};
 use tokio::sync::Mutex;
 use tokio::task::{JoinHandle, JoinSet};
 use tracing::{debug, error, info, warn};
+use utils::ThreadPool;
 
 use crate::cas_interface::Client;
 use crate::chunking::{chunk_target_default, ChunkYieldType};
@@ -133,6 +134,9 @@ pub struct Cleaner {
 
     // Metrics
     metrics: CleanMetrics,
+
+    // Threadpool
+    threadpool: Arc<ThreadPool>,
 }
 
 impl Cleaner {
@@ -148,12 +152,13 @@ impl Cleaner {
         cas_data: Arc<Mutex<CASDataAggregator>>,
         buffer_size: usize,
         file_name: Option<&Path>,
+        threadpool: Arc<ThreadPool>,
     ) -> Result<Arc<Self>> {
         let (data_p, data_c) = channel::<BufferItem<Vec<u8>>>(buffer_size);
 
         let (chunk_p, chunk_c) = channel::<Option<ChunkYieldType>>(buffer_size);
 
-        let chunker = chunk_target_default(data_c, chunk_p);
+        let chunker = chunk_target_default(data_c, chunk_p, threadpool.clone());
 
         let cleaner = Arc::new(Cleaner {
             small_file_threshold,
@@ -172,6 +177,7 @@ impl Cleaner {
             file_name: file_name.map(|f| f.to_owned()),
             sha_generator: ShaGenerator::new(),
             metrics: Default::default(),
+            threadpool,
         });
 
         Self::run(cleaner.clone(), chunk_c).await;
@@ -222,7 +228,7 @@ impl Cleaner {
 
     async fn run(cleaner: Arc<Self>, mut chunks: Receiver<Option<ChunkYieldType>>) {
         let cleaner_clone = cleaner.clone();
-        let dedup_task = tokio::spawn(async move {
+        let dedup_task = cleaner.threadpool.spawn(async move {
             loop {
                 let mut chunk_vec = Vec::with_capacity(*DEDUP_CHUNK_BATCH_SIZE);
 

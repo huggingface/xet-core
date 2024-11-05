@@ -1,4 +1,5 @@
 use std::ffi::OsStr;
+use std::os::unix::thread;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
@@ -15,6 +16,7 @@ use merklehash::MerkleHash;
 use parutils::tokio_par_for_each;
 use tokio::task::JoinHandle;
 use tracing::{debug, info};
+use utils::ThreadPool;
 
 use super::configurations::{FileQueryPolicy, StorageConfig};
 use super::errors::{DataProcessingError, Result};
@@ -35,6 +37,7 @@ pub struct RemoteShardInterface {
     pub shard_manager: Option<Arc<ShardFileManager>>,
     pub shard_client: Option<Arc<dyn ShardClientInterface>>,
     pub reconstruction_cache: Mutex<LruCache<merklehash::MerkleHash, (MDBFileInfo, Option<MerkleHash>)>>,
+    pub threadpool: Arc<ThreadPool>,
 }
 
 impl RemoteShardInterface {
@@ -43,8 +46,9 @@ impl RemoteShardInterface {
     pub async fn new_query_only(
         file_query_policy: FileQueryPolicy,
         shard_storage_config: &StorageConfig,
+        threadpool: Arc<ThreadPool>,
     ) -> Result<Arc<Self>> {
-        Self::new(file_query_policy, shard_storage_config, None, None, None).await
+        Self::new(file_query_policy, shard_storage_config, None, None, None, threadpool).await
     }
 
     pub async fn new(
@@ -53,6 +57,7 @@ impl RemoteShardInterface {
         shard_manager: Option<Arc<ShardFileManager>>,
         cas: Option<Arc<dyn Client + Send + Sync>>,
         repo_salt: Option<RepoSalt>,
+        threadpool: Arc<ThreadPool>,
     ) -> Result<Arc<Self>> {
         let shard_client = {
             if file_query_policy != FileQueryPolicy::LocalOnly {
@@ -81,6 +86,7 @@ impl RemoteShardInterface {
                 std::num::NonZero::new(FILE_RECONSTRUCTION_CACHE_SIZE).unwrap(),
             )),
             cas,
+            threadpool,
         }))
     }
 
@@ -256,8 +262,9 @@ impl RemoteShardInterface {
     pub fn merge_shards(&self) -> Result<JoinHandle<std::result::Result<Vec<MDBShardFile>, MDBShardError>>> {
         let session_dir = self.shard_session_directory()?;
 
-        let merged_shards_jh =
-            tokio::spawn(async move { consolidate_shards_in_directory(&session_dir, MDB_SHARD_MIN_TARGET_SIZE) });
+        let merged_shards_jh = self
+            .threadpool
+            .spawn(async move { consolidate_shards_in_directory(&session_dir, MDB_SHARD_MIN_TARGET_SIZE) });
 
         Ok(merged_shards_jh)
     }

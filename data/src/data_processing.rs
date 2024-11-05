@@ -62,6 +62,9 @@ pub struct PointerFileTranslator {
 
     /* ----- Deduped data shared across files ----- */
     global_cas_data: Arc<Mutex<CASDataAggregator>>,
+
+    /* ----- Threadpool to use for concurrent execution ----- */
+    threadpool: Arc<ThreadPool>,
 }
 
 // Constructors
@@ -69,8 +72,12 @@ impl PointerFileTranslator {
     pub async fn new(config: TranslatorConfig, threadpool: Arc<ThreadPool>) -> Result<PointerFileTranslator> {
         let shard_manager = Arc::new(create_shard_manager(&config.shard_storage_config).await?);
 
-        let cas_client =
-            create_cas_client(&config.cas_storage_config, &config.repo_info, shard_manager.clone(), threadpool)?;
+        let cas_client = create_cas_client(
+            &config.cas_storage_config,
+            &config.repo_info,
+            shard_manager.clone(),
+            threadpool.clone(),
+        )?;
 
         let remote_shards = {
             if let Some(dedup) = &config.dedup_config {
@@ -80,10 +87,16 @@ impl PointerFileTranslator {
                     Some(shard_manager.clone()),
                     Some(cas_client.clone()),
                     dedup.repo_salt,
+                    threadpool.clone(),
                 )
                 .await?
             } else {
-                RemoteShardInterface::new_query_only(config.file_query_policy, &config.shard_storage_config).await?
+                RemoteShardInterface::new_query_only(
+                    config.file_query_policy,
+                    &config.shard_storage_config,
+                    threadpool.clone(),
+                )
+                .await?
             }
         };
 
@@ -93,6 +106,7 @@ impl PointerFileTranslator {
             remote_shards,
             cas: cas_client,
             global_cas_data: Default::default(),
+            threadpool,
         })
     }
 }
@@ -121,6 +135,7 @@ impl PointerFileTranslator {
             self.global_cas_data.clone(),
             buffer_size,
             file_name,
+            self.threadpool.clone(),
         )
         .await
     }

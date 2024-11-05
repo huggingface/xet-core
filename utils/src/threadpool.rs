@@ -52,6 +52,7 @@ use std::future::Future;
 use tokio::{self, task::JoinHandle};
 use tracing::info;
 
+#[derive(Debug)]
 pub struct ThreadPool {
     inner: tokio::runtime::Runtime,
 }
