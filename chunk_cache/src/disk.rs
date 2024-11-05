@@ -376,35 +376,47 @@ impl DiskCache {
 
         let items = state.inner.entry(key.clone()).or_default();
 
+        // remove from state any items that would be encompassed by the new value
+        // first collect their indices, then remove them by index in reverse
         let mut to_remove: Vec<usize> = Vec::new();
         for (i, item) in items.iter().enumerate() {
             if item.range.start >= cache_item.range.start && item.range.end <= cache_item.range.end {
                 to_remove.push(i);
             }
         }
-        let mut paths = HashSet::new();
+
+        // collection of paths to remove from file system
+        let mut overlapping_item_paths = HashSet::new();
         let mut total_bytes_rm = 0;
         let num_items_rm = to_remove.len();
+        // removing by index in reverse to guarentee lower-index items aren't shifted/moved
         for item_idx in to_remove.into_iter().rev() {
             let item = items.swap_remove(item_idx);
-            paths.insert(self.item_path(key, &item)?);
+            overlapping_item_paths.insert(self.item_path(key, &item)?);
             total_bytes_rm += item.len;
         }
         state.num_items -= num_items_rm;
         state.total_bytes -= total_bytes_rm;
 
-        paths.extend(self.maybe_evict(&mut state, cache_item.len)?);
+        // add evicted paths to paths to remove from file system
+        let evicted_paths = self.maybe_evict(&mut state, cache_item.len)?;
 
+        // add the item info in-memory state after evictions are done
         state.num_items += 1;
         state.total_bytes += cache_item.len;
         let item_set = state.inner.entry(key.clone()).or_default();
         item_set.push(cache_item);
 
+        // release lock
         drop(state);
 
         // remove files after done with modifying in memory state and releasing lock
-        for path in paths {
+        for path in overlapping_item_paths {
             remove_file(&path)?;
+        }
+        for path in evicted_paths {
+            remove_file(&path)?;
+            // check and try to remove key path if all items evicted for key
             let dir_path = path.parent().ok_or(ChunkCacheError::Infallible)?;
             check_remove_dir(dir_path)?;
         }
@@ -488,6 +500,9 @@ impl DiskCache {
 
     /// removed items from the cache (including deleting from file system)
     /// until at least to_remove number of bytes have been removed
+    ///
+    /// removes data from in memory state and returns a list of file paths to delete
+    /// (so that deletion can occur after the locked state is dropped)
     fn maybe_evict(
         &self,
         state: &mut MutexGuard<'_, CacheState>,
@@ -531,17 +546,16 @@ impl DiskCache {
         panic!("should have returned")
     }
 
+    /// removes an item from both the in-memory state of the cache and the file system
     fn remove_item(&self, key: &Key, cache_item: &CacheItem) -> Result<(), ChunkCacheError> {
         {
             let mut state = self.state.lock()?;
             if let Some(items) = state.inner.get_mut(key) {
-                let idx =
-                    if let Some(idx) = items.iter().enumerate().find(|(_, item)| *item == cache_item).map(|(i, _)| i) {
-                        idx
-                    } else {
-                        // item is no longer in the state
-                        return Ok(());
-                    };
+                let idx = match index_of(items, cache_item) {
+                    Some(idx) => idx,
+                    // item is no longer in the state
+                    None => return Ok(()),
+                };
                 items.swap_remove(idx);
                 if items.is_empty() {
                     state.inner.remove(key);
@@ -564,6 +578,16 @@ impl DiskCache {
     fn item_path(&self, key: &Key, cache_item: &CacheItem) -> Result<PathBuf, ChunkCacheError> {
         Ok(self.cache_root.join(key_dir(key)).join(cache_item.file_name()?))
     }
+}
+
+#[inline]
+fn index_of<T: PartialEq>(list: &Vec<T>, value: &T) -> Option<usize> {
+    for (i, list_value) in list.iter().enumerate() {
+        if list_value == value {
+            return Some(i);
+        }
+    }
+    None
 }
 
 fn strictly_increasing(chunk_byte_indices: &[u32]) -> bool {
