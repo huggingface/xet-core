@@ -581,7 +581,7 @@ impl DiskCache {
 }
 
 #[inline]
-fn index_of<T: PartialEq>(list: &Vec<T>, value: &T) -> Option<usize> {
+fn index_of<T: PartialEq>(list: &[T], value: &T) -> Option<usize> {
     for (i, list_value) in list.iter().enumerate() {
         if list_value == value {
             return Some(i);
