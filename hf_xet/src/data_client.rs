@@ -39,7 +39,7 @@ pub async fn upload_async(
         // upload shards and xorbs
         // for each file, return the filehash
         let config = default_config(endpoint.unwrap_or(DEFAULT_CAS_ENDPOINT.to_string()), token_info, token_refresher)?;
-    
+
         let processor = Arc::new(PointerFileTranslator::new(config, threadpool).await?);
         let processor = &processor;
         // for all files, clean them, producing pointer files.
@@ -50,7 +50,7 @@ pub async fn upload_async(
                 let proc = processor.clone();
                 clean_file(&proc, f).await
             }
-                .instrument(s)
+            .instrument(s)
         })
         .await
         .map_err(|e| match e {
