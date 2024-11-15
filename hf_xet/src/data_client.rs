@@ -11,6 +11,7 @@ use tracing::{info, info_span, Instrument};
 use tracing_opentelemetry::OpenTelemetrySpanExt;
 use ulid::Ulid;
 use utils::auth::TokenRefresher;
+use utils::ThreadPool;
 
 use crate::config::default_config;
 
@@ -22,6 +23,7 @@ const DEFAULT_CAS_ENDPOINT: &str = "http://localhost:8080";
 const READ_BLOCK_SIZE: usize = 1024 * 1024;
 
 pub async fn upload_async(
+    threadpool: Arc<ThreadPool>,
     file_paths: Vec<String>,
     endpoint: Option<String>,
     token_info: Option<(String, u64)>,
@@ -37,7 +39,8 @@ pub async fn upload_async(
         // upload shards and xorbs
         // for each file, return the filehash
         let config = default_config(endpoint.unwrap_or(DEFAULT_CAS_ENDPOINT.to_string()), token_info, token_refresher)?;
-        let processor = Arc::new(PointerFileTranslator::new(config).await?);
+    
+        let processor = Arc::new(PointerFileTranslator::new(config, threadpool).await?);
         let processor = &processor;
         // for all files, clean them, producing pointer files.
         let pointers = tokio_par_for_each(file_paths, MAX_CONCURRENT_UPLOADS, |f, _| {
@@ -47,7 +50,7 @@ pub async fn upload_async(
                 let proc = processor.clone();
                 clean_file(&proc, f).await
             }
-            .instrument(s)
+                .instrument(s)
         })
         .await
         .map_err(|e| match e {
@@ -68,6 +71,7 @@ pub async fn upload_async(
 }
 
 pub async fn download_async(
+    threadpool: Arc<ThreadPool>,
     pointer_files: Vec<PointerFile>,
     endpoint: Option<String>,
     token_info: Option<(String, u64)>,
@@ -79,7 +83,7 @@ pub async fn download_async(
     let ctx = cur_span.context();
 
     let config = default_config(endpoint.unwrap_or(DEFAULT_CAS_ENDPOINT.to_string()), token_info, token_refresher)?;
-    let processor = Arc::new(PointerFileTranslator::new(config).await?);
+    let processor = Arc::new(PointerFileTranslator::new(config, threadpool).await?);
     let processor = &processor;
     let paths = tokio_par_for_each(pointer_files, MAX_CONCURRENT_DOWNLOADS, |pointer_file, _| {
         let s = info_span!("smudge_file", file = pointer_file.path());

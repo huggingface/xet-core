@@ -10,7 +10,7 @@ use merklehash::{DataHash, MerkleHash};
 use tracing::warn;
 
 use crate::cas_chunk_format::{deserialize_chunk, serialize_chunk};
-use crate::error::CasObjectError;
+use crate::error::{CasObjectError, Validate};
 use crate::{range_hash_from_chunks, CompressionScheme};
 
 const CAS_OBJECT_FORMAT_IDENT: [u8; 7] = [b'X', b'E', b'T', b'B', b'L', b'O', b'B'];
@@ -287,7 +287,14 @@ impl CasObject {
         hash: &MerkleHash,
     ) -> Result<Option<CasObject>, CasObjectError> {
         // 1. deserialize to get Info
-        let cas = CasObject::deserialize(reader)?;
+        // Errors can occur if either
+        // - the object doesn't have at least 4 bytes for the "info_length";
+        // - the object doesn't have enough bytes as claimed by "info_length";
+        // - the object info format is incorrect (e.g. ident mismatch);
+        // and we should reject instead of propagating the error.
+        let Some(cas) = CasObject::deserialize(reader).ok_for_format_error()? else {
+            return Ok(None);
+        };
 
         // 2. walk chunks from Info
         let mut hash_chunks: Vec<Chunk> = Vec::new();
@@ -299,7 +306,12 @@ impl CasObject {
         for idx in 0..cas.info.num_chunks {
             // deserialize each chunk
             reader.seek(std::io::SeekFrom::Start(start_offset as u64))?;
-            let (data, compressed_chunk_length, chunk_uncompressed_length) = deserialize_chunk(reader)?;
+            // Reject if chunk is corrupted
+            let Some((data, compressed_chunk_length, chunk_uncompressed_length)) =
+                deserialize_chunk(reader).ok_for_format_error()?
+            else {
+                return Ok(None);
+            };
 
             let chunk_hash = merklehash::compute_data_hash(&data);
             hash_chunks.push(Chunk {

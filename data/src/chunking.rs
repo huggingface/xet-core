@@ -1,4 +1,5 @@
 use std::cmp::min;
+use std::sync::Arc;
 
 use merkledb::constants::{MAXIMUM_CHUNK_MULTIPLIER, MINIMUM_CHUNK_DIVISOR, TARGET_CDC_CHUNK_SIZE};
 use merkledb::Chunk;
@@ -8,6 +9,7 @@ use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
 use tracing::{info_span, Instrument, Span};
 use tracing_opentelemetry::OpenTelemetrySpanExt;
+use utils::ThreadPool;
 
 use super::clean::BufferItem;
 
@@ -30,11 +32,11 @@ pub struct Chunker {
 }
 
 impl Chunker {
-    pub fn run(chunker: Mutex<Self>) -> JoinHandle<()> {
+    pub fn run(chunker: Mutex<Self>, threadpool: Arc<ThreadPool>) -> JoinHandle<()> {
         const MAX_WINDOW_SIZE: usize = 64;
 
         let ctx = Span::current().context();
-        tokio::spawn(async {
+        threadpool.spawn(async {
             let span = info_span!("chunker_task");
             span.set_parent(ctx);
             async move {
@@ -177,8 +179,9 @@ pub fn gearhash_chunk_target(
 pub fn chunk_target_default(
     data: Receiver<BufferItem<Vec<u8>>>,
     yield_queue: Sender<Option<ChunkYieldType>>,
+    threadpool: Arc<ThreadPool>,
 ) -> JoinHandle<()> {
     let chunker = gearhash_chunk_target(TARGET_CDC_CHUNK_SIZE, data, yield_queue);
 
-    Chunker::run(Mutex::new(chunker))
+    Chunker::run(Mutex::new(chunker), threadpool)
 }

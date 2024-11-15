@@ -19,7 +19,7 @@ merkledb = { path = "../merkledb" }
 mdb_shard = { path = "../mdb_shard" }
 merklehash = { path = "../merklehash" }
 xet_error = { path = "../xet_error" }
-tokio = { version = "1.36", features = ["full"] }
+tokio = { version = "1.41", features = ["full"] }
 async-trait = "0.1.9"
 anyhow = "1"
 http = "1.1.0"
@@ -33,6 +33,7 @@ reqwest-middleware = "0.3.3"
 url = "2.5.2"
 reqwest-retry = "0.6.1"
 heed = "0.11"
+futures = "0.3.31"
 
 [dev-dependencies]
 rand = "0.8.5"

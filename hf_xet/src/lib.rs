@@ -4,7 +4,7 @@ mod log;
 mod token_refresh;
 
 use std::fmt::Debug;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use data::PointerFile;
@@ -14,6 +14,20 @@ use pyo3::pyfunction;
 use token_refresh::WrappedTokenRefresher;
 use tokio::time::sleep;
 use utils::auth::TokenRefresher;
+use utils::ThreadPool;
+
+fn get_threadpool() -> Arc<ThreadPool> {
+    static THREADPOOL: OnceLock<Arc<ThreadPool>> = OnceLock::new();
+    THREADPOOL
+        .get_or_init(|| {
+            let threadpool = Arc::new(ThreadPool::new());
+            threadpool.block_on(async {
+                log::initialize_logging(); // needs to run within an async runtime
+            });
+            threadpool
+        })
+        .clone()
+}
 
 #[pyfunction]
 #[pyo3(signature = (file_paths, endpoint, token_info, token_refresher), text_signature = "(file_paths: List[str], endpoint: Optional[str], token_info: Optional[(str, int)], token_refresher: Optional[Callable[[], (str, int)]]) -> List[PyPointerFile]")]
@@ -31,12 +45,10 @@ pub fn upload_files(
 
     // Release GIL to allow python concurrency
     py.allow_threads(move || {
-        Ok(tokio::runtime::Builder::new_multi_thread()
-            .enable_all()
-            .build()?
+        Ok(get_threadpool()
             .block_on(async {
-                log::initialize_logging();
-                let result = data_client::upload_async(file_paths, endpoint, token_info, refresher).await;
+                let result =
+                    data_client::upload_async(get_threadpool(), file_paths, endpoint, token_info, refresher).await;
                 sleep(Duration::from_secs(5)).await;
                 result
             })
@@ -63,12 +75,9 @@ pub fn download_files(
         .map(to_arc_dyn);
     // Release GIL to allow python concurrency
     py.allow_threads(move || {
-        tokio::runtime::Builder::new_multi_thread()
-            .enable_all()
-            .build()?
+        get_threadpool()
             .block_on(async move {
-                log::initialize_logging();
-                let result = data_client::download_async(pfs, endpoint, token_info, refresher).await;
+                let result = data_client::download_async(get_threadpool(), pfs, endpoint, token_info, refresher).await;
                 sleep(Duration::from_secs(5)).await;
                 result
             })

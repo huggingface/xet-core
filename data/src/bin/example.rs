@@ -3,12 +3,14 @@ use std::fs;
 use std::fs::File;
 use std::io::{BufReader, BufWriter, Read, Write};
 use std::path::PathBuf;
+use std::sync::{Arc, OnceLock};
 
 use anyhow::Result;
 use cas_client::CacheConfig;
 use clap::{Args, Parser, Subcommand};
 use data::configurations::*;
 use data::{PointerFile, PointerFileTranslator, SMALL_FILE_THRESHOLD};
+use utils::ThreadPool;
 
 #[derive(Parser)]
 struct XCommand {
@@ -57,10 +59,14 @@ impl Command {
     }
 }
 
-#[tokio::main]
-async fn main() {
+fn get_threadpool() -> Arc<ThreadPool> {
+    static THREADPOOL: OnceLock<Arc<ThreadPool>> = OnceLock::new();
+    THREADPOOL.get_or_init(|| Arc::new(ThreadPool::new())).clone()
+}
+
+fn main() {
     let cli = XCommand::parse();
-    cli.run().await.unwrap();
+    get_threadpool().block_on(cli.run()).unwrap();
 }
 
 fn default_clean_config() -> Result<TranslatorConfig> {
@@ -156,7 +162,7 @@ async fn clean(mut reader: impl Read, mut writer: impl Write) -> Result<()> {
 
     let mut read_buf = vec![0u8; READ_BLOCK_SIZE];
 
-    let translator = PointerFileTranslator::new(default_clean_config()?).await?;
+    let translator = PointerFileTranslator::new(default_clean_config()?, get_threadpool()).await?;
 
     let handle = translator.start_clean(1024, None).await?;
 
@@ -204,7 +210,7 @@ async fn smudge(mut reader: impl Read, writer: &mut Box<dyn Write + Send>) -> Re
         return Ok(());
     }
 
-    let translator = PointerFileTranslator::new(default_smudge_config()?).await?;
+    let translator = PointerFileTranslator::new(default_smudge_config()?, get_threadpool()).await?;
 
     translator.smudge_file_from_pointer(&pointer_file, writer, None).await?;
 

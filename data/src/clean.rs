@@ -23,6 +23,7 @@ use tokio::sync::Mutex;
 use tokio::task::{JoinHandle, JoinSet};
 use tracing::{debug, error, info, info_span, instrument, warn, Instrument};
 use tracing_opentelemetry::OpenTelemetrySpanExt;
+use utils::ThreadPool;
 
 use crate::cas_interface::Client;
 use crate::chunking::{chunk_target_default, ChunkYieldType};
@@ -134,6 +135,9 @@ pub struct Cleaner {
 
     // Metrics
     metrics: CleanMetrics,
+
+    // Threadpool
+    threadpool: Arc<ThreadPool>,
 }
 
 impl Cleaner {
@@ -149,12 +153,13 @@ impl Cleaner {
         cas_data: Arc<Mutex<CASDataAggregator>>,
         buffer_size: usize,
         file_name: Option<&Path>,
+        threadpool: Arc<ThreadPool>,
     ) -> Result<Arc<Self>> {
         let (data_p, data_c) = channel::<BufferItem<Vec<u8>>>(buffer_size);
 
         let (chunk_p, chunk_c) = channel::<Option<ChunkYieldType>>(buffer_size);
 
-        let chunker = chunk_target_default(data_c, chunk_p);
+        let chunker = chunk_target_default(data_c, chunk_p, threadpool.clone());
 
         let cleaner = Arc::new(Cleaner {
             small_file_threshold,
@@ -173,6 +178,7 @@ impl Cleaner {
             file_name: file_name.map(|f| f.to_owned()),
             sha_generator: ShaGenerator::new(),
             metrics: Default::default(),
+            threadpool,
         });
 
         Self::run(cleaner.clone(), chunk_c).await;
@@ -226,7 +232,7 @@ impl Cleaner {
         let cleaner_clone = cleaner.clone();
         let span = info_span!("cleaner::dedup_task");
         let ctx = span.context();
-        let dedup_task = tokio::spawn(
+        let dedup_task = cleaner.threadpool.spawn(
             async move {
                 let inner_span = info_span!("dedup_task::loop");
                 inner_span.set_parent(ctx);

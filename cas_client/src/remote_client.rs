@@ -12,15 +12,15 @@ use cas_types::{
 };
 use chunk_cache::{CacheConfig, ChunkCache, DiskCache};
 use error_printer::ErrorPrinter;
+use futures::StreamExt;
 use http::header::RANGE;
 use merklehash::MerkleHash;
 use reqwest::{StatusCode, Url};
 use reqwest_middleware::ClientWithMiddleware;
-use tracing::field::Empty;
 use tracing::{debug, error, info, info_span, instrument, Instrument, Span};
 use tracing_opentelemetry::OpenTelemetrySpanExt;
 use utils::auth::AuthConfig;
-use utils::singleflight;
+use utils::ThreadPool;
 
 use crate::error::Result;
 use crate::interface::*;
@@ -31,17 +31,24 @@ pub const PREFIX_DEFAULT: &str = "default";
 
 const NUM_RETRIES: usize = 5;
 const BASE_RETRY_DELAY_MS: u64 = 3000;
+const NUM_CONCURRENT_RANGE_GETS: usize = 4;
 
 pub struct RemoteClient {
     endpoint: String,
     http_auth_client: ClientWithMiddleware,
-    disk_cache: Option<Arc<dyn ChunkCache>>,
+    chunk_cache: Option<Arc<dyn ChunkCache>>,
+    threadpool: Arc<ThreadPool>,
 }
 
 impl RemoteClient {
-    pub fn new(endpoint: &str, auth: &Option<AuthConfig>, cache_config: &Option<CacheConfig>) -> Self {
+    pub fn new(
+        threadpool: Arc<ThreadPool>,
+        endpoint: &str,
+        auth: &Option<AuthConfig>,
+        cache_config: &Option<CacheConfig>,
+    ) -> Self {
         // use disk cache if cache_config provided.
-        let disk_cache = if let Some(cache_config) = cache_config {
+        let chunk_cache = if let Some(cache_config) = cache_config {
             info!("Using disk cache directory: {:?}, size: {}.", cache_config.cache_directory, cache_config.cache_size);
             DiskCache::initialize(cache_config)
                 .log_error("failed to initialize cache, not using cache")
@@ -54,7 +61,8 @@ impl RemoteClient {
         Self {
             endpoint: endpoint.to_string(),
             http_auth_client: http_client::build_auth_http_client(auth, &None).unwrap(),
-            disk_cache,
+            chunk_cache,
+            threadpool,
         }
     }
 }
@@ -114,11 +122,10 @@ impl ReconstructionClient for RemoteClient {
 
         let terms = manifest.terms;
         let fetch_info = Arc::new(manifest.fetch_info);
-        reconstruct_file_to_writer(
+        self.reconstruct_file_to_writer(
             http_client,
             terms,
             fetch_info,
-            self.disk_cache.clone(),
             manifest.offset_into_first_range,
             byte_range,
             writer,
@@ -147,16 +154,8 @@ impl ReconstructionClient for RemoteClient {
         // TODO: spawn threads to reconstruct each file
         for (hash, terms) in manifest.files {
             let w = files.get_mut(&(hash.into())).unwrap();
-            reconstruct_file_to_writer(
-                http_client.clone(),
-                terms,
-                fetch_info.clone(),
-                self.disk_cache.clone(),
-                0,
-                None,
-                w,
-            )
-            .await?;
+            self.reconstruct_file_to_writer(http_client.clone(), terms, fetch_info.clone(), 0, None, w)
+                .await?;
         }
 
         Ok(())
@@ -233,7 +232,8 @@ impl RemoteClient {
         Ok(query_reconstruction_response)
     }
 
-    #[instrument(skip_all, name = "remote_client::upload_xorb", fields(key = key.hash.hex(), num_chunks = chunk_and_boundaries.len()))]
+    #[instrument(skip_all, name = "remote_client::upload_xorb", fields(key = key.hash.hex(), num_chunks = chunk_and_boundaries.len()
+    ))]
     pub async fn upload(
         &self,
         key: &Key,
@@ -261,74 +261,63 @@ impl RemoteClient {
 
         Ok(response_parsed.was_inserted)
     }
-}
 
-/// use the reconstruction response from CAS to re-create the described file for any calls
-/// to download files from S3/blob store using urls from the fetch information section of
-/// of the response it will use the provided http client.
-///
-/// To reconstruct, this function will iterate through each CASReconstructionTerm in the `terms` section
-/// of the QueryReconstructionResponse, fetching the data for that term. Each term is a range of chunks
-/// from a specific Xorb. The range is an end exclusive [start, end) chunk index range of the xorb
-/// specified by the hash key of the CASReconstructionTerm.
-///
-/// To fetch the data for each term, this function will consult the fetch_info section of the reconstruction
-/// response. See `get_one_term`.
-pub async fn reconstruct_file_to_writer(
-    http_client: Arc<ClientWithMiddleware>,
-    terms: Vec<CASReconstructionTerm>,
-    fetch_info: Arc<HashMap<HexMerkleHash, Vec<CASReconstructionFetchInfo>>>,
-    cache: Option<Arc<dyn ChunkCache>>,
-    offset_into_first_range: u64,
-    byte_range: Option<FileRange>,
-    writer: &mut Box<dyn Write + Send>,
-) -> Result<u64> {
-    let single_flight_group = Arc::new(singleflight::Group::new());
-
-    let total_len = if let Some(range) = byte_range {
-        range.end - range.start
-    } else {
-        terms.iter().fold(0, |acc, x| acc + x.unpacked_length as u64)
-    };
-    let mut remaining_len = total_len;
-    let term_data_futures = terms.into_iter().map(|term| {
-        let http_client = http_client.clone();
-        let fetch_info = fetch_info.clone();
-        let single_flight_group = single_flight_group.clone();
-        let ctx = Span::current().context();
-        let term_span = info_span!(
-            "remote_client::reconstruct_term_task",
-            hash = format!("{}", term.hash),
-            num_chunks = term.range.end - term.range.start
-        );
-        term_span.set_parent(ctx);
-        tokio::spawn(
-            get_one_term(http_client, cache.clone(), term, fetch_info, single_flight_group).instrument(term_span),
-        )
-    });
-    for (i, fut) in term_data_futures.enumerate() {
-        let term_data = fut
-            .await
-            .map_err(|e| CasClientError::InternalError(anyhow!("join error {e}")))?
-            .log_error("error getting one term")?;
-        let start = if i == 0 {
-            // use offset_into_first_range for the first term if needed
-            max(0, offset_into_first_range as usize)
+    /// use the reconstruction response from CAS to re-create the described file for any calls
+    /// to download files from S3/blob store using urls from the fetch information section of
+    /// of the response it will use the provided http client.
+    ///
+    /// To reconstruct, this function will iterate through each CASReconstructionTerm in the `terms` section
+    /// of the QueryReconstructionResponse, fetching the data for that term. Each term is a range of chunks
+    /// from a specific Xorb. The range is an end exclusive [start, end) chunk index range of the xorb
+    /// specified by the hash key of the CASReconstructionTerm.
+    ///
+    /// To fetch the data for each term, this function will consult the fetch_info section of the reconstruction
+    /// response. See `get_one_term`.
+    pub async fn reconstruct_file_to_writer(
+        &self,
+        http_client: Arc<ClientWithMiddleware>,
+        terms: Vec<CASReconstructionTerm>,
+        fetch_info: Arc<HashMap<HexMerkleHash, Vec<CASReconstructionFetchInfo>>>,
+        offset_into_first_range: u64,
+        byte_range: Option<FileRange>,
+        writer: &mut Box<dyn Write + Send>,
+    ) -> Result<u64> {
+        let total_len = if let Some(range) = byte_range {
+            range.end - range.start
         } else {
-            0
+            terms.iter().fold(0, |acc, x| acc + x.unpacked_length as u64)
         };
-        let end: usize = min(remaining_len + start as u64, term_data.len() as u64) as usize;
-        writer.write_all(&term_data[start..end])?;
-        remaining_len -= (end - start) as u64;
-    }
-    writer.flush()?;
-    Ok(total_len)
-}
+        let ctx = Span::current().context();
+        let futs_iter = terms.into_iter().map(|term| {
+            let term_span = info_span!(
+                "remote_client::reconstruct_term_task",
+                hash = format!("{}", term.hash),
+                num_chunks = term.range.end - term.range.start
+            );
+            term_span.set_parent(ctx.clone());
+            get_one_term(http_client.clone(), self.chunk_cache.clone(), term, fetch_info.clone()).instrument(term_span)
+        });
+        let mut futs_buffered_enumerated =
+            futures::stream::iter(futs_iter).buffered(NUM_CONCURRENT_RANGE_GETS).enumerate();
 
-// Right now if all ranges are fetched "at once" (all tasks spawned in brief succession)
-// they may get a cache miss, and issue the S3 get, we use a singleflight group
-// to avoid double gets for these requests, with the singleflight key being the S3 url.
-pub(crate) type ChunkDataSingleFlightGroup = singleflight::Group<(Vec<u8>, Vec<u32>), CasClientError>;
+        let mut remaining_len = total_len;
+        while let Some((term_idx, term_data_result)) = futs_buffered_enumerated.next().await {
+            let term_data = term_data_result.log_error(format!("error fetching 1 term at index {term_idx}"))?;
+            let start = if term_idx == 0 {
+                // use offset_into_first_range for the first term if needed
+                max(0, offset_into_first_range as usize)
+            } else {
+                0
+            };
+            let end: usize = min(remaining_len + start as u64, term_data.len() as u64) as usize;
+            writer.write_all(&term_data[start..end])?;
+            remaining_len -= (end - start) as u64;
+        }
+
+        writer.flush()?;
+        Ok(total_len)
+    }
+}
 
 /// fetch the data requested for the term argument (data from a range of chunks
 /// in a xorb).
@@ -343,10 +332,9 @@ pub(crate) type ChunkDataSingleFlightGroup = singleflight::Group<(Vec<u8>, Vec<u
 /// that matches our requested CASReconstructionTerm, it is considered a bad output from the CAS API.
 pub(crate) async fn get_one_term(
     http_client: Arc<ClientWithMiddleware>,
-    disk_cache: Option<Arc<dyn ChunkCache>>,
+    chunk_cache: Option<Arc<dyn ChunkCache>>,
     term: CASReconstructionTerm,
     fetch_info: Arc<HashMap<HexMerkleHash, Vec<CASReconstructionFetchInfo>>>,
-    single_flight_group: Arc<ChunkDataSingleFlightGroup>,
 ) -> Result<Vec<u8>> {
     debug!("term: {term:?}");
 
@@ -355,7 +343,7 @@ pub(crate) async fn get_one_term(
     }
 
     // check disk cache for the exact range we want for the reconstruction term
-    if let Some(cache) = &disk_cache {
+    if let Some(cache) = &chunk_cache {
         let key = Key {
             prefix: PREFIX_DEFAULT.to_string(),
             hash: term.hash.into(),
@@ -381,34 +369,17 @@ pub(crate) async fn get_one_term(
 
     // fetch the range from blob store and deserialize the chunks
     // then put into the cache if used
-    let single_flight_group_key = fetch_term.url.as_str();
-    let fetch_term_owned = fetch_term.clone();
-    let ctx = Span::current().context();
-    let single_flight_task = info_span!(
-        "remote_client::chunk_data_fetch_task",
-        singleflight_key = single_flight_group_key,
-        is_owner = false
-    );
-    single_flight_task.set_parent(ctx);
-    let (mut data, chunk_byte_indices) = single_flight_group
-        .work_dump_caller_info(
-            single_flight_group_key,
-            async move {
-                Span::current().set_attribute("is_owner", true);
-                let (data, chunk_byte_indices) = download_range(http_client, &fetch_term_owned).await?;
-                // now write it to cache, the whole fetched term
-                if let Some(cache) = disk_cache {
-                    let key = Key {
-                        prefix: PREFIX_DEFAULT.to_string(),
-                        hash: term.hash.into(),
-                    };
-                    cache.put(&key, &fetch_term_owned.range, &chunk_byte_indices, &data)?;
-                }
-                Ok((data, chunk_byte_indices))
-            }
-            .instrument(single_flight_task),
-        )
-        .await?;
+    // let single_flight_group_key = fetch_term.url.as_str();
+    let (mut data, chunk_byte_indices) = download_range(http_client, &fetch_term).await?;
+
+    // now write it to cache, the whole fetched term
+    if let Some(cache) = chunk_cache {
+        let key = Key {
+            prefix: PREFIX_DEFAULT.to_string(),
+            hash: term.hash.into(),
+        };
+        cache.put(&key, &fetch_term.range, &chunk_byte_indices, &data)?;
+    }
 
     // if the requested range is smaller than the fetched range, trim it down to the right data
     // the requested range cannot be larger than the fetched range.
@@ -516,23 +487,24 @@ mod tests {
 
     #[ignore = "requires a running CAS server"]
     #[traced_test]
-    #[tokio::test]
-    async fn test_basic_put() {
+    #[test]
+    fn test_basic_put() {
         // Arrange
         let prefix = PREFIX_DEFAULT;
         let (c, _, data, chunk_boundaries) =
             build_cas_object(3, ChunkSize::Random(512, 10248), cas_object::CompressionScheme::LZ4);
 
-        let client = RemoteClient::new(CAS_ENDPOINT, &None, &None);
+        let threadpool = Arc::new(ThreadPool::new());
+        let client = RemoteClient::new(threadpool.clone(), CAS_ENDPOINT, &None, &None);
         // Act
-        let result = client.put(prefix, &c.info.cashash, data, chunk_boundaries).await;
+        let result = threadpool.block_on(client.put(prefix, &c.info.cashash, data, chunk_boundaries));
 
         // Assert
         assert!(result.is_ok());
     }
 
-    #[tokio::test]
-    async fn test_reconstruct_file_to_writer() {
+    #[test]
+    fn test_reconstruct_file_to_writer() {
         struct TestCase {
             reconstruction_response: QueryReconstructionResponse,
             range: Option<FileRange>,
@@ -621,19 +593,26 @@ mod tests {
 
             let http_client = http_client::build_http_client(&None).unwrap();
 
+            let threadpool = Arc::new(ThreadPool::new());
+            let client = RemoteClient {
+                chunk_cache: Some(Arc::new(chunk_cache)),
+                http_auth_client: http_client.clone(),
+                endpoint: "".to_string(),
+                threadpool: threadpool.clone(),
+            };
+
             let v = ThreadSafeBuffer::default();
             let mut writer: Box<dyn Write + Send> = Box::new(v.clone());
 
-            let resp = reconstruct_file_to_writer(
+            let resp = threadpool.block_on(client.reconstruct_file_to_writer(
                 Arc::new(http_client.clone()),
                 test.reconstruction_response.terms,
                 Arc::new(test.reconstruction_response.fetch_info),
-                Some(Arc::new(chunk_cache)),
                 test.reconstruction_response.offset_into_first_range,
                 test.range,
                 &mut writer,
-            )
-            .await;
+            ));
+
             assert_eq!(test.expect_error, resp.is_err());
             if !test.expect_error {
                 assert_eq!(test.expected_len, resp.unwrap());
