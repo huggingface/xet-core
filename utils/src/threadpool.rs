@@ -54,7 +54,6 @@ use std::sync::atomic::Ordering::SeqCst;
 use tokio::{self, task::JoinHandle};
 use tracing::info;
 
-
 const THREADPOOL_NUM_WORKER_THREADS: usize = 4; // 4 active threads
 const THREADPOOL_THREAD_ID_PREFIX: &str = "hf-xet"; // thread names will be hf-xet-0, hf-xet-1, etc.
 const THREADPOOL_STACK_SIZE: usize = 8_000_000; // 8MB stack size
