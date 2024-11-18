@@ -25,6 +25,9 @@ use crate::error::Result;
 use crate::interface::*;
 use crate::{http_client, CasClientError, Client};
 
+#[cfg(feature = "recon-log")]
+mod reconstruction_log;
+
 pub const CAS_ENDPOINT: &str = "http://localhost:8080";
 pub const PREFIX_DEFAULT: &str = "default";
 
@@ -128,6 +131,8 @@ impl ReconstructionClient for RemoteClient {
             manifest.offset_into_first_range,
             byte_range,
             writer,
+            #[cfg(feature = "recon-log")]
+            hash,
         )
         .await?;
 
@@ -153,8 +158,17 @@ impl ReconstructionClient for RemoteClient {
         // TODO: spawn threads to reconstruct each file
         for (hash, terms) in manifest.files {
             let w = files.get_mut(&(hash.into())).unwrap();
-            self.reconstruct_file_to_writer(http_client.clone(), terms, fetch_info.clone(), 0, None, w)
-                .await?;
+            self.reconstruct_file_to_writer(
+                http_client.clone(),
+                terms,
+                fetch_info.clone(),
+                0,
+                None,
+                w,
+                #[cfg(feature = "recon-log")]
+                &hash.into(),
+            )
+            .await?;
         }
 
         Ok(())
@@ -276,6 +290,7 @@ impl RemoteClient {
         offset_into_first_range: u64,
         byte_range: Option<FileRange>,
         writer: &mut Box<dyn Write + Send>,
+        #[cfg(feature = "recon-log")] file_id: &MerkleHash,
     ) -> Result<u64> {
         let total_len = if let Some(range) = byte_range {
             range.end - range.start
@@ -283,23 +298,27 @@ impl RemoteClient {
             terms.iter().fold(0, |acc, x| acc + x.unpacked_length as u64)
         };
 
-        #[cfg(feature = "metrics")]
+        #[cfg(feature = "recon-log")]
         let (send, recv_handle) = {
             let (send, recv) = tokio::sync::mpsc::channel(terms.len());
-            let recv_handle =
-                self.threadpool
-                    .spawn(metrics::record_reconstruction_terms(file_id.clone(), recv, terms.len()));
+            let recv_handle = self.threadpool.spawn(reconstruction_log::record_reconstruction_terms(
+                file_id.clone(),
+                recv,
+                terms.len(),
+            ));
             (send, recv_handle)
         };
 
-        let futs_iter = terms.into_iter().map(|term| {
+        let futs_iter = terms.into_iter().enumerate().map(|(_i, term)| {
             get_one_term(
                 http_client.clone(),
                 self.chunk_cache.clone(),
                 term,
                 fetch_info.clone(),
-                #[cfg(feature = "metrics")]
+                #[cfg(feature = "recon-log")]
                 send.clone(),
+                #[cfg(feature = "recon-log")]
+                _i,
             )
         });
         let mut futs_buffered_enumerated =
@@ -321,7 +340,7 @@ impl RemoteClient {
 
         writer.flush()?;
 
-        #[cfg(feature = "metrics")]
+        #[cfg(feature = "recon-log")]
         {
             let (result,) = tokio::join!(recv_handle);
             result.map_err(|e| CasClientError::Other(format!("{e}")))??;
@@ -347,7 +366,12 @@ pub(crate) async fn get_one_term(
     chunk_cache: Option<Arc<dyn ChunkCache>>,
     term: CASReconstructionTerm,
     fetch_info: Arc<HashMap<HexMerkleHash, Vec<CASReconstructionFetchInfo>>>,
+    #[cfg(feature = "recon-log")] recon_log_sender: tokio::sync::mpsc::Sender<reconstruction_log::TermLog>,
+    #[cfg(feature = "recon-log")] term_idx: usize,
 ) -> Result<Vec<u8>> {
+    #[cfg(feature = "recon-log")]
+    let start_time = std::time::Instant::now();
+
     debug!("term: {term:?}");
 
     if term.range.end < term.range.start {
@@ -361,6 +385,19 @@ pub(crate) async fn get_one_term(
             hash: term.hash.into(),
         };
         if let Some(cached) = cache.get(&key, &term.range)? {
+            #[cfg(feature = "recon-log")]
+            let _ = recon_log_sender
+                .send(reconstruction_log::TermLog {
+                    hash: term.hash.into(),
+                    term_range: term.range.clone(),
+                    source: reconstruction_log::GetVariant::Cache,
+                    download_range: cas_types::ChunkRange::default(),
+                    time: start_time.elapsed(),
+                    term_idx,
+                    final_size: cached.len(),
+                    download_len: 0,
+                })
+                .await;
             return Ok(cached);
         }
     }
@@ -392,6 +429,20 @@ pub(crate) async fn get_one_term(
         };
         cache.put(&key, &fetch_term.range, &chunk_byte_indices, &data)?;
     }
+
+    #[cfg(feature = "recon-log")]
+    let _ = recon_log_sender
+        .send(reconstruction_log::TermLog {
+            hash: term.hash.into(),
+            term_range: term.range.clone(),
+            source: reconstruction_log::GetVariant::Download,
+            download_range: fetch_term.range.clone(),
+            time: start_time.elapsed(),
+            term_idx,
+            final_size: term.unpacked_length as usize,
+            download_len: data.len(),
+        })
+        .await;
 
     // if the requested range is smaller than the fetched range, trim it down to the right data
     // the requested range cannot be larger than the fetched range.
@@ -622,6 +673,8 @@ mod tests {
                 test.reconstruction_response.offset_into_first_range,
                 test.range,
                 &mut writer,
+                #[cfg(feature = "recon-log")]
+                &MerkleHash::default(),
             ));
 
             assert_eq!(test.expect_error, resp.is_err());

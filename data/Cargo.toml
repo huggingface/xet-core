@@ -67,3 +67,4 @@ reqwest = { version = "0.11.4", features = ["json"] }
 strict = []
 expensive_tests = []
 openssl_vendored = ["openssl/vendored"]
+recon-log = ["cas_client/recon-log"]

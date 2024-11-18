@@ -25,7 +25,7 @@ dirs = "5.0.1"
 async-once-cell = "0.5.4"
 
 [features]
-metrics = ["data/metrics"]
+recon-log = ["data/recon-log"]
 
 [profile.release]
 debug = true
