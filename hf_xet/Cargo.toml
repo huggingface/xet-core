@@ -22,3 +22,4 @@ tracing-subscriber = { version = "0.3", features = [
   "env-filter",
 ] }
 dirs = "5.0.1"
+async-once-cell = "0.5.4"
