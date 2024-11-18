@@ -283,9 +283,25 @@ impl RemoteClient {
             terms.iter().fold(0, |acc, x| acc + x.unpacked_length as u64)
         };
 
-        let futs_iter = terms
-            .into_iter()
-            .map(|term| get_one_term(http_client.clone(), self.chunk_cache.clone(), term, fetch_info.clone()));
+        #[cfg(feature = "metrics")]
+        let (send, recv_handle) = {
+            let (send, recv) = tokio::sync::mpsc::channel(terms.len());
+            let recv_handle =
+                self.threadpool
+                    .spawn(metrics::record_reconstruction_terms(file_id.clone(), recv, terms.len()));
+            (send, recv_handle)
+        };
+
+        let futs_iter = terms.into_iter().map(|term| {
+            get_one_term(
+                http_client.clone(),
+                self.chunk_cache.clone(),
+                term,
+                fetch_info.clone(),
+                #[cfg(feature = "metrics")]
+                send.clone(),
+            )
+        });
         let mut futs_buffered_enumerated =
             futures::stream::iter(futs_iter).buffered(NUM_CONCURRENT_RANGE_GETS).enumerate();
 
@@ -304,6 +320,13 @@ impl RemoteClient {
         }
 
         writer.flush()?;
+
+        #[cfg(feature = "metrics")]
+        {
+            let (result,) = tokio::join!(recv_handle);
+            result.map_err(|e| CasClientError::Other(format!("{e}")))??;
+        }
+
         Ok(total_len)
     }
 }

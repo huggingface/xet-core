@@ -23,3 +23,9 @@ tracing-subscriber = { version = "0.3", features = [
 ] }
 dirs = "5.0.1"
 async-once-cell = "0.5.4"
+
+[features]
+metrics = ["data/metrics"]
+
+[profile.release]
+debug = true
