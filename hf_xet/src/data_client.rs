@@ -26,9 +26,15 @@ async fn get_pointer_file_translator(
     threadpool: Arc<ThreadPool>,
 ) -> Arc<PointerFileTranslator> {
     static PFT: OnceCell<Arc<PointerFileTranslator>> = OnceCell::new();
-    PFT.get_or_init(async move { Arc::new(PointerFileTranslator::new(config, threadpool).await.unwrap()) })
-        .await
-        .clone()
+    PFT.get_or_init(async move {
+        Arc::new(
+            PointerFileTranslator::new(config, threadpool)
+                .await
+                .expect("pointer file translator creation failed"),
+        )
+    })
+    .await
+    .clone()
 }
 
 pub async fn upload_async(
