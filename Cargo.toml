@@ -19,7 +19,7 @@ members = [
     "chunk_cache",
 ]
 
-exclude = ["hf_xet", "chunk_cache_bench"]
+exclude = ["hf_xet", "chunk_cache_bench", "wasm-xet-core"]
 
 [profile.release]
 opt-level = 3
