@@ -1,5 +1,7 @@
 use std::fmt::Display;
 use std::future::Future;
+use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::Ordering::SeqCst;
 
 /// This module provides a simple wrapper around Tokio's runtime to create a thread pool
 /// with some default settings. It is intended to be used as a singleton thread pool for
@@ -37,7 +39,7 @@ use std::future::Future;
 ///
 /// The thread pool is configured with the following settings:
 /// - 4 worker threads
-/// - Thread names prefixed with "hf_xet-"
+/// - Thread names prefixed with "hf-xet-"
 /// - 8MB stack size per thread (default is 2MB)
 /// - Maximum of 100 blocking threads
 /// - All Tokio features enabled (IO, Timer, Signal, Reactor)
@@ -53,7 +55,7 @@ use tokio::{self, task::JoinHandle};
 use tracing::info;
 
 const THREADPOOL_NUM_WORKER_THREADS: usize = 4; // 4 active threads
-const THREADPOOL_THREAD_ID_PREFIX: &str = "hf-xet-"; // thread names will be hf_xet-1, hf_xet-2, etc.
+const THREADPOOL_THREAD_ID_PREFIX: &str = "hf-xet"; // thread names will be hf-xet-0, hf-xet-1, etc.
 const THREADPOOL_STACK_SIZE: usize = 8_000_000; // 8MB stack size
 const THREADPOOL_MAX_BLOCKING_THREADS: usize = 100; // max 100 threads can block IO
 
@@ -113,10 +115,19 @@ impl Display for ThreadPool {
 fn new_threadpool() -> tokio::runtime::Runtime {
     tokio::runtime::Builder::new_multi_thread()
         .worker_threads(THREADPOOL_NUM_WORKER_THREADS) // 4 active threads
-        .thread_name(THREADPOOL_THREAD_ID_PREFIX) // thread names will be hf_xet-1, hf_xet-2, etc.
+        .thread_name_fn(get_thread_name) // thread names will be hf-xet-0, hf-xet-1, etc.
         .thread_stack_size(THREADPOOL_STACK_SIZE) // 8MB stack size, default is 2MB
         .max_blocking_threads(THREADPOOL_MAX_BLOCKING_THREADS) // max 100 threads can block IO
         .enable_all() // enable all features, including IO/Timer/Signal/Reactor
         .build()
         .unwrap()
+}
+
+/// gets the name of a new thread for the threadpool. Names are prefixed with
+/// `THREADPOOL_THREAD_ID_PREFIX` and suffixed with a global counter:
+/// e.g. hf-xet-0, hf-xet-1, hf-xet-2, ...
+fn get_thread_name() -> String {
+    static ATOMIC_ID: AtomicUsize = AtomicUsize::new(0);
+    let id = ATOMIC_ID.fetch_add(1, SeqCst);
+    format!("{THREADPOOL_THREAD_ID_PREFIX}-{id}")
 }
