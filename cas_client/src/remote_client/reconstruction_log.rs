@@ -1,4 +1,6 @@
-use std::{env::current_dir, fs::OpenOptions, time::Duration};
+use std::env::current_dir;
+use std::fs::OpenOptions;
+use std::time::Duration;
 
 use cas_types::{ChunkRange, HexMerkleHash};
 use error_printer::ErrorPrinter;
@@ -6,7 +8,8 @@ use merklehash::MerkleHash;
 use serde::Serialize;
 use tokio::sync::mpsc::Receiver;
 
-use crate::{error::Result, CasClientError};
+use crate::error::Result;
+use crate::CasClientError;
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "snake_case")]
