@@ -7,6 +7,8 @@ use merklehash::compute_data_hash;
 use tokio::sync::mpsc::{Receiver, Sender};
 use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
+use tracing::{info_span, Instrument, Span};
+use tracing_opentelemetry::OpenTelemetrySpanExt;
 use utils::ThreadPool;
 
 use super::clean::BufferItem;
@@ -33,97 +35,105 @@ impl Chunker {
     pub fn run(chunker: Mutex<Self>, threadpool: Arc<ThreadPool>) -> JoinHandle<()> {
         const MAX_WINDOW_SIZE: usize = 64;
 
-        threadpool.spawn(async move {
-            let mut chunker = chunker.lock().await;
-            let mask = chunker.mask;
+        let ctx = Span::current().context();
+        threadpool.spawn(async {
+            let span = info_span!("chunker_task");
+            span.set_parent(ctx);
+            async move {
+                let mut chunker = chunker.lock().await;
+                let mask = chunker.mask;
 
-            loop {
-                match chunker.data_queue.recv().await {
-                    Some(BufferItem::Value(readbuf)) => {
-                        let read_bytes = readbuf.len();
-                        // 0 byte read is assumed EOF
-                        if read_bytes > 0 {
-                            let mut cur_pos = 0;
-                            while cur_pos < read_bytes {
-                                // every pass through this loop we either
-                                // 1: create a chunk
-                                // OR
-                                // 2: consume the entire buffer
-                                let chunk_buf_copy_start = cur_pos;
-                                // skip the minimum chunk size
-                                // and noting that the hash has a window size of 64
-                                // so we should be careful to skip only minimum_chunk - 64 - 1
-                                if chunker.cur_chunk_len < chunker.minimum_chunk - MAX_WINDOW_SIZE {
-                                    let max_advance = min(
-                                        chunker.minimum_chunk - chunker.cur_chunk_len - MAX_WINDOW_SIZE - 1,
-                                        read_bytes - cur_pos,
-                                    );
-                                    cur_pos += max_advance;
-                                    chunker.cur_chunk_len += max_advance;
-                                }
-                                let mut consume_len;
-                                let mut create_chunk = false;
-                                // find a chunk boundary after minimum chunk
+                loop {
+                    match chunker.data_queue.recv().await {
+                        Some(BufferItem::Value(readbuf)) => {
+                            let read_bytes = readbuf.len();
+                            // 0 byte read is assumed EOF
+                            if read_bytes > 0 {
+                                let mut cur_pos = 0;
+                                while cur_pos < read_bytes {
+                                    // every pass through this loop we either
+                                    // 1: create a chunk
+                                    // OR
+                                    // 2: consume the entire buffer
+                                    let chunk_buf_copy_start = cur_pos;
+                                    // skip the minimum chunk size
+                                    // and noting that the hash has a window size of 64
+                                    // so we should be careful to skip only minimum_chunk - 64 - 1
+                                    if chunker.cur_chunk_len < chunker.minimum_chunk - MAX_WINDOW_SIZE {
+                                        let max_advance = min(
+                                            chunker.minimum_chunk - chunker.cur_chunk_len - MAX_WINDOW_SIZE - 1,
+                                            read_bytes - cur_pos,
+                                        );
+                                        cur_pos += max_advance;
+                                        chunker.cur_chunk_len += max_advance;
+                                    }
+                                    let mut consume_len;
+                                    let mut create_chunk = false;
+                                    // find a chunk boundary after minimum chunk
 
-                                // If we have a lot of data, don't read all the way to the end when we'll stop reading
-                                // at the maximum chunk boundary.
-                                let read_end = read_bytes.min(cur_pos + chunker.maximum_chunk - chunker.cur_chunk_len);
+                                    // If we have a lot of data, don't read all the way to the end when we'll stop
+                                    // reading at the maximum chunk boundary.
+                                    let read_end =
+                                        read_bytes.min(cur_pos + chunker.maximum_chunk - chunker.cur_chunk_len);
 
-                                if let Some(boundary) = chunker.hash.next_match(&readbuf[cur_pos..read_end], mask) {
-                                    consume_len = boundary;
-                                    create_chunk = true;
-                                } else {
-                                    consume_len = read_end - cur_pos;
-                                }
+                                    if let Some(boundary) = chunker.hash.next_match(&readbuf[cur_pos..read_end], mask) {
+                                        consume_len = boundary;
+                                        create_chunk = true;
+                                    } else {
+                                        consume_len = read_end - cur_pos;
+                                    }
 
-                                // if we hit maximum chunk we must create a chunk
-                                if consume_len + chunker.cur_chunk_len >= chunker.maximum_chunk {
-                                    consume_len = chunker.maximum_chunk - chunker.cur_chunk_len;
-                                    create_chunk = true;
-                                }
-                                chunker.cur_chunk_len += consume_len;
-                                cur_pos += consume_len;
-                                chunker.chunkbuf.extend_from_slice(&readbuf[chunk_buf_copy_start..cur_pos]);
-                                if create_chunk {
-                                    let res = (
-                                        Chunk {
-                                            length: chunker.chunkbuf.len(),
-                                            hash: compute_data_hash(&chunker.chunkbuf[..]),
-                                        },
-                                        std::mem::take(&mut chunker.chunkbuf),
-                                    );
-                                    // reset chunk buffer state and continue to find the next chunk
-                                    chunker.yield_queue.send(Some(res)).await.expect("Send chunk to channel error");
+                                    // if we hit maximum chunk we must create a chunk
+                                    if consume_len + chunker.cur_chunk_len >= chunker.maximum_chunk {
+                                        consume_len = chunker.maximum_chunk - chunker.cur_chunk_len;
+                                        create_chunk = true;
+                                    }
+                                    chunker.cur_chunk_len += consume_len;
+                                    cur_pos += consume_len;
+                                    chunker.chunkbuf.extend_from_slice(&readbuf[chunk_buf_copy_start..cur_pos]);
+                                    if create_chunk {
+                                        let res = (
+                                            Chunk {
+                                                length: chunker.chunkbuf.len(),
+                                                hash: compute_data_hash(&chunker.chunkbuf[..]),
+                                            },
+                                            std::mem::take(&mut chunker.chunkbuf),
+                                        );
+                                        // reset chunk buffer state and continue to find the next chunk
+                                        chunker.yield_queue.send(Some(res)).await.expect("Send chunk to channel error");
 
-                                    chunker.chunkbuf.clear();
-                                    chunker.cur_chunk_len = 0;
+                                        chunker.chunkbuf.clear();
+                                        chunker.cur_chunk_len = 0;
 
-                                    chunker.hash.set_hash(0);
+                                        chunker.hash.set_hash(0);
+                                    }
                                 }
                             }
-                        }
-                    },
-                    Some(BufferItem::Completed) => {
-                        break;
-                    },
-                    None => (),
+                        },
+                        Some(BufferItem::Completed) => {
+                            break;
+                        },
+                        None => (),
+                    }
                 }
-            }
 
-            // main loop complete
-            if !chunker.chunkbuf.is_empty() {
-                let res = (
-                    Chunk {
-                        length: chunker.chunkbuf.len(),
-                        hash: compute_data_hash(&chunker.chunkbuf[..]),
-                    },
-                    std::mem::take(&mut chunker.chunkbuf),
-                );
-                chunker.yield_queue.send(Some(res)).await.expect("Send chunk to channel error");
-            }
+                // main loop complete
+                if !chunker.chunkbuf.is_empty() {
+                    let res = (
+                        Chunk {
+                            length: chunker.chunkbuf.len(),
+                            hash: compute_data_hash(&chunker.chunkbuf[..]),
+                        },
+                        std::mem::take(&mut chunker.chunkbuf),
+                    );
+                    chunker.yield_queue.send(Some(res)).await.expect("Send chunk to channel error");
+                }
 
-            // signal finish
-            chunker.yield_queue.send(None).await.expect("Send chunk to channel error");
+                // signal finish
+                chunker.yield_queue.send(None).await.expect("Send chunk to channel error");
+            }
+            .instrument(span)
+            .await
         })
     }
 }

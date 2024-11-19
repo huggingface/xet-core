@@ -12,6 +12,7 @@ use mdb_shard::ShardFileManager;
 use merkledb::aggregate_hashes::cas_node_hash;
 use merklehash::MerkleHash;
 use tokio::sync::Mutex;
+use tracing::{info_span, instrument, Instrument};
 use utils::ThreadPool;
 
 use crate::cas_interface::create_cas_client;
@@ -159,7 +160,10 @@ impl PointerFileTranslator {
         debug_assert!(new_cas_data.is_empty());
 
         // flush accumulated memory shard.
-        self.shard_manager.flush().await?;
+        self.shard_manager
+            .flush()
+            .instrument(info_span!("shard_manager::flush"))
+            .await?;
 
         self.upload().await?;
 
@@ -185,9 +189,13 @@ impl PointerFileTranslator {
 
         // Get a list of all the merged shards in order to upload them.
         let merged_shards = merged_shards_jh.await??;
+        let merged_shard_len = merged_shards.len();
 
         // Now, these need to be sent to the remote.
-        self.remote_shards.upload_and_register_shards(merged_shards).await?;
+        self.remote_shards
+            .upload_and_register_shards(merged_shards)
+            .instrument(info_span!("remote_shards::upload", "shard_len" = merged_shard_len))
+            .await?;
 
         // Finally, we can move all the mdb shards from the session directory, which is used
         // by the upload_shard task, to the cache.
@@ -203,6 +211,7 @@ impl PointerFileTranslator {
 }
 
 /// Clean operation helpers
+#[instrument(skip_all, name = "register_new_cas_block")]
 pub(crate) async fn register_new_cas_block(
     cas_data: &mut CASDataAggregator,
     shard_manager: &Arc<ShardFileManager>,
@@ -241,6 +250,7 @@ pub(crate) async fn register_new_cas_block(
         shard_manager.add_cas_block(cas_info).await?;
 
         cas.put(cas_prefix, &cas_hash, take(&mut cas_data.data), chunk_boundaries)
+            .instrument(info_span!("cas_client::put", cas_hash=?cas_hash))
             .await?;
     } else {
         debug_assert_eq!(cas_hash, MerkleHash::default());

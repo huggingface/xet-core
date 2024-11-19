@@ -14,7 +14,7 @@ use cas_types::{ChunkRange, Key};
 use error_printer::ErrorPrinter;
 use file_utils::SafeFileCreator;
 use merklehash::MerkleHash;
-use tracing::{debug, warn};
+use tracing::{debug, instrument, warn};
 #[cfg(feature = "analysis")]
 use utils::output_bytes;
 
@@ -239,6 +239,7 @@ impl DiskCache {
         Ok(CacheState::new(state, num_items, total_bytes))
     }
 
+    #[instrument(skip_all, name = "disk_cache::get_impl")]
     fn get_impl(&self, key: &Key, range: &ChunkRange) -> OptionResult<Vec<u8>, ChunkCacheError> {
         if range.start >= range.end {
             return Err(ChunkCacheError::InvalidArguments);
@@ -325,6 +326,7 @@ impl DiskCache {
         Ok(None)
     }
 
+    #[instrument(skip_all, name = "disk_cache::put_impl")]
     fn put_impl(
         &self,
         key: &Key,
@@ -737,6 +739,7 @@ fn try_parse_cache_file(file_result: io::Result<DirEntry>, capacity: u64) -> Opt
 }
 
 /// removes a file but disregards a "NotFound" error if the file is already gone
+#[instrument(skip_all, name = "disk_cache::remove_file")]
 fn remove_file(path: impl AsRef<Path>) -> Result<(), ChunkCacheError> {
     if let Err(e) = std::fs::remove_file(path) {
         if e.kind() != ErrorKind::NotFound {
@@ -747,6 +750,7 @@ fn remove_file(path: impl AsRef<Path>) -> Result<(), ChunkCacheError> {
 }
 
 /// removes a directory but disregards a "NotFound" error if the directory is already gone
+#[instrument(skip_all, name = "disk_cache::remove_dir")]
 fn remove_dir(path: impl AsRef<Path>) -> Result<(), ChunkCacheError> {
     if let Err(e) = std::fs::remove_dir(path) {
         if e.kind() != ErrorKind::NotFound {

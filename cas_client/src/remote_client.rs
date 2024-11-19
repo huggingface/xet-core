@@ -17,7 +17,8 @@ use http::header::RANGE;
 use merklehash::MerkleHash;
 use reqwest::{StatusCode, Url};
 use reqwest_middleware::ClientWithMiddleware;
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, info_span, instrument, Instrument, Span};
+use tracing_opentelemetry::OpenTelemetrySpanExt;
 use utils::auth::AuthConfig;
 use utils::ThreadPool;
 
@@ -163,6 +164,7 @@ impl ReconstructionClient for RemoteClient {
 
 #[async_trait]
 impl Reconstructable for RemoteClient {
+    #[instrument(skip_all, name = "remote_client::get_reconstruction")]
     async fn get_reconstruction(
         &self,
         file_id: &MerkleHash,
@@ -196,6 +198,7 @@ impl Reconstructable for RemoteClient {
 impl Client for RemoteClient {}
 
 impl RemoteClient {
+    #[instrument(skip_all, name = "remote_client::batch_get_reconstruction")]
     async fn batch_get_reconstruction(
         &self,
         file_ids: impl Iterator<Item = &MerkleHash>,
@@ -229,6 +232,8 @@ impl RemoteClient {
         Ok(query_reconstruction_response)
     }
 
+    #[instrument(skip_all, name = "remote_client::upload_xorb", fields(key = key.hash.hex(), num_chunks = chunk_and_boundaries.len()
+    ))]
     pub async fn upload(
         &self,
         key: &Key,
@@ -282,10 +287,16 @@ impl RemoteClient {
         } else {
             terms.iter().fold(0, |acc, x| acc + x.unpacked_length as u64)
         };
-
-        let futs_iter = terms
-            .into_iter()
-            .map(|term| get_one_term(http_client.clone(), self.chunk_cache.clone(), term, fetch_info.clone()));
+        let ctx = Span::current().context();
+        let futs_iter = terms.into_iter().map(|term| {
+            let term_span = info_span!(
+                "remote_client::reconstruct_term_task",
+                hash = format!("{}", term.hash),
+                num_chunks = term.range.end - term.range.start
+            );
+            term_span.set_parent(ctx.clone());
+            get_one_term(http_client.clone(), self.chunk_cache.clone(), term, fetch_info.clone()).instrument(term_span)
+        });
         let mut futs_buffered_enumerated =
             futures::stream::iter(futs_iter).buffered(NUM_CONCURRENT_RANGE_GETS).enumerate();
 
@@ -428,6 +439,7 @@ impl Write for ThreadSafeBuffer {
 /// use the provided http_client to make requests to S3/blob store using the url and url_range
 /// parts of a CASReconstructionFetchInfo. The url_range part is used directly in an http Range header
 /// value (see fn `range_header`).
+#[instrument(skip_all, name = "remote_client::download_range")]
 async fn download_range(
     http_client: Arc<ClientWithMiddleware>,
     fetch_term: &CASReconstructionFetchInfo,
