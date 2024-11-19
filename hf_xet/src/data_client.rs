@@ -5,10 +5,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use async_once_cell::OnceCell;
-<<<<<<< HEAD
 use data::configurations::TranslatorConfig;
-=======
->>>>>>> 29c75bc (draft save)
 use data::errors::DataProcessingError;
 use data::{errors, PointerFile, PointerFileTranslator};
 use parutils::{tokio_par_for_each, ParallelError};

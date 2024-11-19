@@ -309,6 +309,7 @@ impl RemoteClient {
             (send, recv_handle)
         };
 
+        #[allow(clippy::unused_enumerate_index)]
         let futs_iter = terms.into_iter().enumerate().map(|(_i, term)| {
             get_one_term(
                 http_client.clone(),
