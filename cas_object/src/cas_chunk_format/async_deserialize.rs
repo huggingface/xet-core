@@ -1,12 +1,14 @@
 use std::io::Write;
 use std::slice;
+
 use anyhow::anyhow;
 use bytes::Buf;
-use futures::{Stream};
+use futures::Stream;
 use tokio::io::{AsyncRead, AsyncReadExt};
 use tokio_util::io::StreamReader;
-use crate::{CASChunkHeader, CAS_CHUNK_HEADER_LENGTH};
+
 use crate::error::CasObjectError;
+use crate::{CASChunkHeader, CAS_CHUNK_HEADER_LENGTH};
 
 pub async fn deserialize_chunk_header<R: AsyncRead + Unpin>(reader: &mut R) -> Result<CASChunkHeader, CasObjectError> {
     let mut result = CASChunkHeader::default();
@@ -41,11 +43,12 @@ pub async fn deserialize_chunk_to_writer<R: AsyncRead + Unpin, W: Write>(
 pub async fn deserialize_chunks_to_writer_from_stream<B, E, S, W>(
     stream: S,
     writer: &mut W,
-) -> Result<(usize, Vec<u32>), CasObjectError> where
+) -> Result<(usize, Vec<u32>), CasObjectError>
+where
     B: Buf,
     E: Into<std::io::Error>,
-    S: Stream<Item=Result<B, E>> + Unpin,
-    W: Write
+    S: Stream<Item = Result<B, E>> + Unpin,
+    W: Write,
 {
     let mut stream_reader = StreamReader::new(stream);
 
@@ -77,12 +80,11 @@ pub async fn deserialize_chunks_to_writer_from_stream<B, E, S, W>(
     Ok((num_compressed_written, chunk_byte_indices))
 }
 
-pub async fn deserialize_chunks_from_stream<B, E, S>(
-    stream: S,
-) -> Result<(Vec<u8>, Vec<u32>), CasObjectError> where
+pub async fn deserialize_chunks_from_stream<B, E, S>(stream: S) -> Result<(Vec<u8>, Vec<u32>), CasObjectError>
+where
     B: Buf,
     E: Into<std::io::Error>,
-    S: Stream<Item=Result<B, E>> + Unpin,
+    S: Stream<Item = Result<B, E>> + Unpin,
 {
     let mut buf = Vec::new();
     let (_, chunk_byte_indices) = deserialize_chunks_to_writer_from_stream(stream, &mut buf).await?;
@@ -94,7 +96,9 @@ mod tests {
     use bytes::Bytes;
     use futures::Stream;
     use rand::{thread_rng, Rng};
-    use crate::{serialize_chunk, CompressionScheme, async_deserialize::deserialize_chunks_to_writer_from_stream};
+
+    use crate::async_deserialize::deserialize_chunks_to_writer_from_stream;
+    use crate::{serialize_chunk, CompressionScheme};
 
     fn gen_random_bytes(rng: &mut impl Rng, uncompressed_chunk_size: u32) -> Vec<u8> {
         let mut data = vec![0u8; uncompressed_chunk_size as usize];
@@ -113,7 +117,11 @@ mod tests {
         out
     }
 
-    fn get_stream(rng: &mut impl Rng, num_chunks: u32, compression_scheme: CompressionScheme) -> impl Stream<Item = Result<Bytes, std::io::Error>> + Unpin {
+    fn get_stream(
+        rng: &mut impl Rng,
+        num_chunks: u32,
+        compression_scheme: CompressionScheme,
+    ) -> impl Stream<Item = Result<Bytes, std::io::Error>> + Unpin {
         let data = get_chunks(rng, num_chunks, compression_scheme);
         if data.len() < 100 {
             return futures::stream::iter(vec![Ok(Bytes::from(data))]);
@@ -127,7 +135,6 @@ mod tests {
 
         futures::stream::iter(it)
     }
-
 
     #[tokio::test]
     async fn test_deserialize_multiple_chunks() {

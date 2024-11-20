@@ -147,7 +147,11 @@ pub fn deserialize_chunk_to_writer<R: Read, W: Write>(
     Ok((header.get_compressed_length() as usize + CAS_CHUNK_HEADER_LENGTH, uncompressed_len))
 }
 
-fn decompress_chunk_to_writer<W: Write>(header: CASChunkHeader, compressed_buf: &mut Vec<u8>, writer: &mut W) -> Result<u32, CasObjectError> {
+fn decompress_chunk_to_writer<W: Write>(
+    header: CASChunkHeader,
+    compressed_buf: &mut Vec<u8>,
+    writer: &mut W,
+) -> Result<u32, CasObjectError> {
     Ok(match header.get_compression_scheme() {
         CompressionScheme::None => {
             writer.write_all(&compressed_buf)?;
