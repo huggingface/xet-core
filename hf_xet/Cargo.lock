@@ -436,11 +436,13 @@ name = "data"
 version = "0.14.5"
 dependencies = [
  "anyhow",
+ "async-once-cell",
  "async-trait",
  "cas_client",
  "cas_object",
  "cas_types",
  "clap",
+ "dirs",
  "error_printer",
  "file_utils",
  "gearhash",
@@ -882,9 +884,7 @@ checksum = "d231dfb89cfffdbc30e7fc41579ed6066ad03abda9e567ccafae602b97ec5024"
 name = "hf_xet"
 version = "0.1.0"
 dependencies = [
- "async-once-cell",
  "data",
- "dirs",
  "parutils",
  "pyo3",
  "tokio",

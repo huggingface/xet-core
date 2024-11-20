@@ -1,12 +1,10 @@
-mod config;
-mod data_client;
 mod log;
 mod token_refresh;
 
 use std::fmt::Debug;
 use std::sync::{Arc, OnceLock};
 
-use data::PointerFile;
+use data::{data_client, PointerFile};
 use pyo3::exceptions::PyException;
 use pyo3::prelude::*;
 use pyo3::pyfunction;

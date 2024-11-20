@@ -17,9 +17,7 @@ tokio = { version = "1.36", features = ["full"] }
 parutils = { path = "../parutils" }
 tracing = "0.1.*"
 tracing-subscriber = { version = "0.3", features = [
-  "json",
-  "tracing-log",
-  "env-filter",
+    "json",
+    "tracing-log",
+    "env-filter",
 ] }
-dirs = "5.0.1"
-async-once-cell = "0.5.4"
