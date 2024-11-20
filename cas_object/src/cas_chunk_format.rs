@@ -154,7 +154,7 @@ fn decompress_chunk_to_writer<W: Write>(
 ) -> Result<u32, CasObjectError> {
     Ok(match header.get_compression_scheme() {
         CompressionScheme::None => {
-            writer.write_all(&compressed_buf)?;
+            writer.write_all(compressed_buf)?;
             compressed_buf.len() as u32
         },
         CompressionScheme::LZ4 => {
