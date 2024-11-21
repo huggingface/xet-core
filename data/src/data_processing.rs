@@ -238,10 +238,10 @@ pub(crate) async fn register_new_cas_block(
         .collect();
 
     if !cas_info.chunks.is_empty() {
-        shard_manager.add_cas_block(cas_info).await?;
-
         cas.put(cas_prefix, &cas_hash, take(&mut cas_data.data), chunk_boundaries)
             .await?;
+
+        shard_manager.add_cas_block(cas_info).await?;
     } else {
         debug_assert_eq!(cas_hash, MerkleHash::default());
     }
