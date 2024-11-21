@@ -1,6 +1,6 @@
 use std::io::Write;
-use std::slice;
 use std::mem::size_of;
+use std::slice;
 
 use anyhow::anyhow;
 use bytes::Buf;
