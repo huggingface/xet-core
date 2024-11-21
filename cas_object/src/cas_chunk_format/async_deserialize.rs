@@ -41,18 +41,10 @@ pub async fn deserialize_chunk_to_writer<R: AsyncRead + Unpin, W: Write>(
     Ok((header.get_compressed_length() as usize + CAS_CHUNK_HEADER_LENGTH, uncompressed_len))
 }
 
-pub async fn deserialize_chunks_to_writer_from_stream<B, E, S, W>(
-    stream: S,
+pub async fn deserialize_chunks_to_writer_from_async_read<R: AsyncRead + Unpin, W: Write>(
+    reader: &mut R,
     writer: &mut W,
-) -> Result<(usize, Vec<u32>), CasObjectError>
-where
-    B: Buf,
-    E: Into<std::io::Error>,
-    S: Stream<Item = Result<B, E>> + Unpin,
-    W: Write,
-{
-    let mut stream_reader = StreamReader::new(stream);
-
+) -> Result<(usize, Vec<u32>), CasObjectError> {
     let mut num_compressed_written = 0;
     let mut num_uncompressed_written = 0;
 
@@ -62,7 +54,7 @@ where
     chunk_byte_indices.push(num_compressed_written as u32);
 
     loop {
-        match deserialize_chunk_to_writer(&mut stream_reader, writer).await {
+        match deserialize_chunk_to_writer(reader, writer).await {
             Ok((delta_written, uncompressed_chunk_len)) => {
                 num_compressed_written += delta_written;
                 num_uncompressed_written += uncompressed_chunk_len;
@@ -79,6 +71,28 @@ where
     }
 
     Ok((num_compressed_written, chunk_byte_indices))
+}
+
+pub async fn deserialize_chunks_from_async_read<R: AsyncRead + Unpin>(
+    reader: &mut R,
+) -> Result<(Vec<u8>, Vec<u32>), CasObjectError> {
+    let mut buf = Vec::new();
+    let (_, chunk_byte_indices) = deserialize_chunks_to_writer_from_async_read(reader, &mut buf).await?;
+    Ok((buf, chunk_byte_indices))
+}
+
+pub async fn deserialize_chunks_to_writer_from_stream<B, E, S, W>(
+    stream: S,
+    writer: &mut W,
+) -> Result<(usize, Vec<u32>), CasObjectError>
+where
+    B: Buf,
+    E: Into<std::io::Error>,
+    S: Stream<Item = Result<B, E>> + Unpin,
+    W: Write,
+{
+    let mut stream_reader = StreamReader::new(stream);
+    deserialize_chunks_to_writer_from_async_read(&mut stream_reader, writer).await
 }
 
 pub async fn deserialize_chunks_from_stream<B, E, S>(stream: S) -> Result<(Vec<u8>, Vec<u32>), CasObjectError>
