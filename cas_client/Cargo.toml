@@ -10,7 +10,7 @@ strict = []
 
 [dependencies]
 cas_types = { version = "0.1.0", path = "../cas_types" }
-cas_object = { path = "../cas_object" }
+cas_object = { path = "../cas_object", features = ["async_chunk_deserialize"] }
 chunk_cache = { path = "../chunk_cache" }
 error_printer = { path = "../error_printer" }
 file_utils = { path = "../file_utils" }
@@ -27,7 +27,7 @@ tempfile = "3.13.0"
 tracing = "0.1.31"
 bytes = "1"
 itertools = "0.10"
-reqwest = { version = "0.12.7", features = ["json"] }
+reqwest = { version = "0.12.7", features = ["json", "stream"] }
 reqwest-middleware = "0.3.3"
 url = "2.5.2"
 reqwest-retry = "0.6.1"

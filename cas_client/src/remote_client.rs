@@ -12,7 +12,7 @@ use cas_types::{
 };
 use chunk_cache::{CacheConfig, ChunkCache, DiskCache};
 use error_printer::ErrorPrinter;
-use futures::StreamExt;
+use futures::{StreamExt, TryStreamExt};
 use http::header::RANGE;
 use merklehash::MerkleHash;
 use reqwest::{StatusCode, Url};
@@ -358,7 +358,6 @@ pub(crate) async fn get_one_term(
 
     // fetch the range from blob store and deserialize the chunks
     // then put into the cache if used
-    // let single_flight_group_key = fetch_term.url.as_str();
     let (mut data, chunk_byte_indices) = download_range(http_client, &fetch_term).await?;
 
     // now write it to cache, the whole fetched term
@@ -441,17 +440,21 @@ async fn download_range(
         .log_error("error getting from s3")?
         .error_for_status()
         .log_error("get from s3 error code")?;
-    let xorb_bytes = response.bytes().await?;
 
-    // + 1 since range S3/HTTP range is inclusive on both ends
-    // remove this check to be agnostic to range-end-exclusive blob store requests
-    let expected_len = fetch_term.url_range.end - fetch_term.url_range.start + 1;
-    if xorb_bytes.len() as u32 != expected_len {
-        error!("got back a smaller byte range ({}) than requested ({expected_len}) from s3", xorb_bytes.len());
-        return Err(CasClientError::InvalidRange);
+    if let Some(content_length) = response.content_length() {
+        // + 1 since range S3/HTTP range is inclusive on both ends
+        // remove this check to be agnostic to range-end-exclusive blob store requests
+        let expected_len = fetch_term.url_range.end - fetch_term.url_range.start + 1;
+        if content_length != expected_len as u64 {
+            error!("got back a smaller byte range ({content_length}) than requested ({expected_len}) from s3");
+            return Err(CasClientError::InvalidRange);
+        }
     }
-    let mut readseek = Cursor::new(xorb_bytes);
-    let (data, chunk_byte_indices) = cas_object::deserialize_chunks(&mut readseek)?;
+
+    let (data, chunk_byte_indices) = cas_object::async_deserialize::deserialize_chunks_from_stream(
+        response.bytes_stream().map_err(std::io::Error::other),
+    )
+    .await?;
     Ok((data, chunk_byte_indices))
 }
 
