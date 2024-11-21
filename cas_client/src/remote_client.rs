@@ -1,7 +1,7 @@
 use std::cmp::{max, min};
 use std::collections::{HashMap, HashSet};
 use std::io::{Cursor, Write};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use anyhow::anyhow;
 use async_trait::async_trait;
@@ -17,8 +17,9 @@ use http::header::RANGE;
 use merklehash::MerkleHash;
 use reqwest::{StatusCode, Url};
 use reqwest_middleware::ClientWithMiddleware;
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, trace};
 use utils::auth::AuthConfig;
+use utils::singleflight::Group;
 use utils::ThreadPool;
 
 use crate::error::Result;
@@ -32,11 +33,14 @@ const NUM_RETRIES: usize = 5;
 const BASE_RETRY_DELAY_MS: u64 = 3000;
 const NUM_CONCURRENT_RANGE_GETS: usize = 4;
 
+type RangeDownloadSingleFlight = Arc<Group<(Vec<u8>, Vec<u32>), CasClientError>>;
+
 pub struct RemoteClient {
     endpoint: String,
     http_auth_client: ClientWithMiddleware,
     chunk_cache: Option<Arc<dyn ChunkCache>>,
     threadpool: Arc<ThreadPool>,
+    range_download_single_flight: RangeDownloadSingleFlight,
 }
 
 impl RemoteClient {
@@ -56,12 +60,14 @@ impl RemoteClient {
         } else {
             None
         };
+        let range_download_single_flight = Arc::new(Group::new(threadpool.clone()));
 
         Self {
             endpoint: endpoint.to_string(),
             http_auth_client: http_client::build_auth_http_client(auth, &None).unwrap(),
             chunk_cache,
             threadpool,
+            range_download_single_flight,
         }
     }
 }
@@ -183,7 +189,7 @@ impl Reconstructable for RemoteClient {
             .log_error("reconstruction api returned error code")?;
 
         let len = response.content_length();
-        debug!("fileid: {file_id} query_reconstruction len {len:?}");
+        debug!("file_id: {file_id} query_reconstruction len {len:?}");
 
         let query_reconstruction_response: QueryReconstructionResponse = response
             .json()
@@ -259,7 +265,7 @@ impl RemoteClient {
 
     /// use the reconstruction response from CAS to re-create the described file for any calls
     /// to download files from S3/blob store using urls from the fetch information section of
-    /// of the response it will use the provided http client.
+    /// the response it will use the provided http client.
     ///
     /// To reconstruct, this function will iterate through each CASReconstructionTerm in the `terms` section
     /// of the QueryReconstructionResponse, fetching the data for that term. Each term is a range of chunks
@@ -283,9 +289,15 @@ impl RemoteClient {
             terms.iter().fold(0, |acc, x| acc + x.unpacked_length as u64)
         };
 
-        let futs_iter = terms
-            .into_iter()
-            .map(|term| get_one_term(http_client.clone(), self.chunk_cache.clone(), term, fetch_info.clone()));
+        let futs_iter = terms.into_iter().map(|term| {
+            get_one_term(
+                http_client.clone(),
+                self.chunk_cache.clone(),
+                term,
+                fetch_info.clone(),
+                self.range_download_single_flight.clone(),
+            )
+        });
         let mut futs_buffered_enumerated =
             futures::stream::iter(futs_iter).buffered(NUM_CONCURRENT_RANGE_GETS).enumerate();
 
@@ -317,13 +329,14 @@ impl RemoteClient {
 /// a fetch_info term that contains the requested term's range. Then:
 ///     download the url -> deserialize chunks -> trim the output to the requested term's chunk range
 ///
-/// If the fetch_info section (provided as in the QueryReconstrutionResponse) fails to contain a term
+/// If the fetch_info section (provided as in the QueryReconstructionResponse) fails to contain a term
 /// that matches our requested CASReconstructionTerm, it is considered a bad output from the CAS API.
 pub(crate) async fn get_one_term(
     http_client: Arc<ClientWithMiddleware>,
     chunk_cache: Option<Arc<dyn ChunkCache>>,
     term: CASReconstructionTerm,
     fetch_info: Arc<HashMap<HexMerkleHash, Vec<CASReconstructionFetchInfo>>>,
+    range_download_single_flight: RangeDownloadSingleFlight,
 ) -> Result<Vec<u8>> {
     debug!("term: {term:?}");
 
@@ -337,7 +350,7 @@ pub(crate) async fn get_one_term(
             prefix: PREFIX_DEFAULT.to_string(),
             hash: term.hash.into(),
         };
-        if let Some(cached) = cache.get(&key, &term.range)? {
+        if let Ok(Some(cached)) = cache.get(&key, &term.range).log_error("cache error") {
             return Ok(cached);
         }
     }
@@ -348,7 +361,7 @@ pub(crate) async fn get_one_term(
     let hash_fetch_info = fetch_info
         .get(&term.hash)
         .ok_or(CasClientError::InvalidArguments)
-        .log_error("invalid response from CAS server: failed to get term hash in fetchables")?;
+        .log_error("invalid response from CAS server: failed to get term hash in fetch info")?;
     let fetch_term = hash_fetch_info
         .iter()
         .find(|fterm| fterm.range.start <= term.range.start && fterm.range.end >= term.range.end)
@@ -358,7 +371,9 @@ pub(crate) async fn get_one_term(
 
     // fetch the range from blob store and deserialize the chunks
     // then put into the cache if used
-    let (mut data, chunk_byte_indices) = download_range(http_client, &fetch_term).await?;
+    let (mut data, chunk_byte_indices) = range_download_single_flight
+        .work_dump_caller_info(&fetch_term.url, download_range(http_client, fetch_term.clone(), term.hash))
+        .await?;
 
     // now write it to cache, the whole fetched term
     if let Some(cache) = chunk_cache {
@@ -401,40 +416,20 @@ fn range_header(range: &HttpRange) -> String {
     format!("bytes={}-{}", range.start, range.end)
 }
 
-#[derive(Debug, Default, Clone)]
-/// Thread-safe in-memory buffer that implements [Write](std::io::Write) trait and allows
-/// access to inner buffer
-pub struct ThreadSafeBuffer {
-    inner: Arc<Mutex<Cursor<Vec<u8>>>>,
-}
-
-impl ThreadSafeBuffer {
-    pub fn value(&self) -> Vec<u8> {
-        self.inner.lock().unwrap().get_ref().clone()
-    }
-}
-
-impl Write for ThreadSafeBuffer {
-    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        self.inner.lock().map_err(|e| std::io::Error::other(format!("{e}")))?.write(buf)
-    }
-
-    fn flush(&mut self) -> std::io::Result<()> {
-        Ok(())
-    }
-}
-
 /// use the provided http_client to make requests to S3/blob store using the url and url_range
-/// parts of a CASReconstructionFetchInfo. The url_range part is used directly in an http Range header
+/// parts of a CASReconstructionFetchInfo. The url_range part is used directly in a http Range header
 /// value (see fn `range_header`).
 async fn download_range(
     http_client: Arc<ClientWithMiddleware>,
-    fetch_term: &CASReconstructionFetchInfo,
+    fetch_term: CASReconstructionFetchInfo,
+    hash: HexMerkleHash,
 ) -> Result<(Vec<u8>, Vec<u32>)> {
+    trace!("{hash},{},{}", fetch_term.range.start, fetch_term.range.end);
+
     let url = Url::parse(fetch_term.url.as_str())?;
     let response = http_client
         .get(url)
-        .header(reqwest::header::RANGE, range_header(&fetch_term.url_range))
+        .header(RANGE, range_header(&fetch_term.url_range))
         .send()
         .await
         .log_error("error getting from s3")?
@@ -460,6 +455,32 @@ async fn download_range(
 
 #[cfg(test)]
 mod tests {
+
+    #[derive(Debug, Default, Clone)]
+    /// Thread-safe in-memory buffer that implements [Write](std::io::Write) trait and allows
+    /// access to inner buffer
+    pub struct ThreadSafeBuffer {
+        inner: Arc<Mutex<Cursor<Vec<u8>>>>,
+    }
+
+    impl ThreadSafeBuffer {
+        pub fn value(&self) -> Vec<u8> {
+            self.inner.lock().unwrap().get_ref().clone()
+        }
+    }
+
+    impl Write for ThreadSafeBuffer {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.inner.lock().map_err(|e| std::io::Error::other(format!("{e}")))?.write(buf)
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    use std::sync::Mutex;
+
     use cas_object::test_utils::{build_cas_object, ChunkSize};
     use cas_types::ChunkRange;
     use chunk_cache::MockChunkCache;
@@ -590,6 +611,7 @@ mod tests {
                 http_auth_client: http_client.clone(),
                 endpoint: "".to_string(),
                 threadpool: threadpool.clone(),
+                range_download_single_flight: Arc::new(Group::new(threadpool.clone())),
             };
 
             let v = ThreadSafeBuffer::default();
