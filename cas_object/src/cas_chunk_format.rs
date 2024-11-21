@@ -19,7 +19,7 @@ const CURRENT_VERSION: u8 = 0;
 pub struct CASChunkHeader {
     pub version: u8,              // 1 byte
     compressed_length: [u8; 3],   // 3 bytes
-    compression_scheme: u8,       // 1 byte
+    compression_scheme: u8,       // 1 byte  // if this is equal to 'B' (first 'B' in "XETBLOB") then it can be the start of the footer
     uncompressed_length: [u8; 3], // 3 bytes
 }
 
@@ -93,6 +93,7 @@ pub fn serialize_chunk<W: Write>(
     let uncompressed_len = chunk.len();
 
     let compressed = match compression_scheme {
+        CompressionScheme::InvalidB => return Err(CasObjectError::InvalidArguments),
         CompressionScheme::None => Vec::from(chunk),
         CompressionScheme::LZ4 => {
             let mut enc = FrameEncoder::new(Vec::new());
@@ -153,6 +154,7 @@ fn decompress_chunk_to_writer<W: Write>(
     writer: &mut W,
 ) -> Result<u32, CasObjectError> {
     Ok(match header.get_compression_scheme() {
+        CompressionScheme::InvalidB => return Err(CasObjectError::InvalidArguments),
         CompressionScheme::None => {
             writer.write_all(compressed_buf)?;
             compressed_buf.len() as u32
