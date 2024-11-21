@@ -123,16 +123,10 @@ mod tests {
         compression_scheme: CompressionScheme,
     ) -> impl Stream<Item = Result<Bytes, std::io::Error>> + Unpin {
         let data = get_chunks(rng, num_chunks, compression_scheme);
-        if data.len() < 100 {
-            return futures::stream::iter(vec![Ok(Bytes::from(data))]);
-        }
-        let chunks = data.chunks(data.len() / (2 + rng.gen::<usize>() % 8));
-
-        let mut it: Vec<Result<Bytes, std::io::Error>> = Vec::new();
-        for chunk in chunks {
-            it.push(Ok(Bytes::from(chunk.to_vec())));
-        }
-
+        let it = data
+            .chunks(data.len() / (2 + rng.gen::<usize>() % 8))
+            .map(|chunk| Ok(Bytes::copy_from_slice(chunk)))
+            .collect::<Vec<_>>();
         futures::stream::iter(it)
     }
 
