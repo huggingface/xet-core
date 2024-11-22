@@ -2,6 +2,7 @@ use std::fmt::Display;
 use std::str::FromStr;
 
 use anyhow::anyhow;
+use crate::error::CasObjectError;
 
 const CHAR_B: u8 = b'B';  // 98, invalid compression scheme
 
@@ -25,14 +26,14 @@ impl Display for CompressionScheme {
 }
 
 impl TryFrom<u8> for CompressionScheme {
-    type Error = anyhow::Error;
+    type Error = CasObjectError;
 
     fn try_from(value: u8) -> Result<Self, Self::Error> {
         match value {
             0 => Ok(CompressionScheme::None),
             1 => Ok(CompressionScheme::LZ4),
             CHAR_B => Ok(CompressionScheme::InvalidB),
-            _ => Err(anyhow!("cannot convert value {value} to CompressionScheme")),
+            _ => Err(CasObjectError::FormatError(anyhow!("cannot convert value {value} to CompressionScheme"))),
         }
     }
 }

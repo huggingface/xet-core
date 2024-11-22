@@ -55,8 +55,8 @@ impl CASChunkHeader {
         convert_three_byte_num(&self.uncompressed_length)
     }
 
-    pub fn get_compression_scheme(&self) -> CompressionScheme {
-        CompressionScheme::try_from(self.compression_scheme).unwrap_or_default()
+    pub fn get_compression_scheme(&self) -> Result<CompressionScheme, CasObjectError> {
+        CompressionScheme::try_from(self.compression_scheme)
     }
 
     pub fn set_compression_scheme(&mut self, compression_scheme: CompressionScheme) {
@@ -148,12 +148,12 @@ pub fn deserialize_chunk_to_writer<R: Read, W: Write>(
     Ok((header.get_compressed_length() as usize + CAS_CHUNK_HEADER_LENGTH, uncompressed_len))
 }
 
-fn decompress_chunk_to_writer<W: Write>(
+pub(crate) fn decompress_chunk_to_writer<W: Write>(
     header: CASChunkHeader,
     compressed_buf: &mut Vec<u8>,
     writer: &mut W,
 ) -> Result<u32, CasObjectError> {
-    Ok(match header.get_compression_scheme() {
+    let result = match header.get_compression_scheme()? {
         CompressionScheme::InvalidB => return Err(CasObjectError::InvalidArguments),
         CompressionScheme::None => {
             writer.write_all(compressed_buf)?;
@@ -163,7 +163,8 @@ fn decompress_chunk_to_writer<W: Write>(
             let mut dec = FrameDecoder::new(Cursor::new(compressed_buf));
             copy(&mut dec, writer)? as u32
         },
-    })
+    };
+    Ok(result)
 }
 
 pub fn deserialize_chunks<R: Read>(reader: &mut R) -> Result<(Vec<u8>, Vec<u32>), CasObjectError> {

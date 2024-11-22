@@ -102,7 +102,7 @@ impl CasObjectInfo {
     /// Construct CasObjectInfo object from Reader + Seek.
     ///
     /// Expects metadata struct is found at end of Reader, written out in struct order.
-    pub fn deserialize<R: Read + Seek>(reader: &mut R) -> Result<(Self, u32), CasObjectError> {
+    pub fn deserialize<R: Read>(reader: &mut R) -> Result<(Self, u32), CasObjectError> {
         let mut total_bytes_read: u32 = 0;
 
         // Helper function to read data and update the byte count
