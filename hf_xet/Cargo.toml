@@ -16,9 +16,13 @@ utils = { path = "../utils" }
 tokio = { version = "1.36", features = ["full"] }
 parutils = { path = "../parutils" }
 tracing = "0.1.*"
-tracing-subscriber = { version = "0.3", features = ["json", "tracing-log", "env-filter"] }
+tracing-subscriber = { version = "0.3", features = [
+    "json",
+    "tracing-log",
+    "env-filter",
+] }
 tracing-opentelemetry = "0.27.0"
+opentelemetry = "0.26.0"
 opentelemetry-otlp = { version = "0.26.0", features = ["default"] }
 opentelemetry_sdk = { version = "0.26.0", features = ["rt-tokio-current-thread"] }
-opentelemetry = "0.26.0"
 opentelemetry-semantic-conventions = "0.26.0"

@@ -121,7 +121,7 @@ impl FileReconstructor<CasClientError> for HttpShardClient {
 
 #[async_trait]
 impl ShardDedupProber<CasClientError> for HttpShardClient {
-    #[instrument(skip_all, name = "shard_client::get_dedup_shards")]
+    // #[instrument(skip_all, name = "shard_client::get_dedup_shards")]
     async fn get_dedup_shards(
         &self,
         prefix: &str,

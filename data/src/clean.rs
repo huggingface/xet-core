@@ -21,7 +21,7 @@ use tokio::sync::mpsc::error::TryRecvError;
 use tokio::sync::mpsc::{channel, Receiver, Sender};
 use tokio::sync::Mutex;
 use tokio::task::{JoinHandle, JoinSet};
-use tracing::{debug, error, info, info_span, instrument, warn, Instrument};
+use tracing::{debug, error, info, info_span, warn, Instrument, Span};
 use tracing_opentelemetry::OpenTelemetrySpanExt;
 use utils::ThreadPool;
 
@@ -32,7 +32,7 @@ use crate::constants::MIN_SPACING_BETWEEN_GLOBAL_DEDUP_QUERIES;
 use crate::data_processing::{register_new_cas_block, CASDataAggregator};
 use crate::errors::DataProcessingError::*;
 use crate::errors::Result;
-use crate::metrics::FILTER_BYTES_CLEANED;
+use crate::metrics::{FILTER_BYTES_CLEANED, RUNTIME_DEDUP_QUERY, RUNTIME_SHA256};
 use crate::remote_shard_interface::RemoteShardInterface;
 use crate::repo_salt::RepoSalt;
 use crate::small_file_determination::{is_file_passthrough, is_possible_start_to_text_file};
@@ -92,7 +92,9 @@ impl ShaGenerator {
     /// Update the generator with some bytes.
     fn update(&self, data: &[u8]) -> Result<()> {
         let mut hasher = self.hasher.lock().map_err(|_| InternalError("mutex poisoned".to_string()))?;
+        let s = Instant::now();
         hasher.update(data);
+        RUNTIME_SHA256.inc_by(s.elapsed().as_nanos().try_into().unwrap());
         Ok(())
     }
 
@@ -186,7 +188,7 @@ impl Cleaner {
         Ok(cleaner)
     }
 
-    #[instrument(skip_all, name = "cleaner::add_bytes", fields(num_bytes = data.len()))]
+    // #[instrument(skip_all, name = "cleaner::add_bytes", fields(num_bytes = data.len()))]
     pub async fn add_bytes(&self, data: Vec<u8>) -> Result<()> {
         self.task_is_running().await?;
 
@@ -337,6 +339,7 @@ impl Cleaner {
 
     // #[instrument(skip_all, err, name = "cleaner::dedup")]
     async fn dedup(&self, chunks: &[ChunkYieldType]) -> Result<()> {
+        let dedup_ctx = Span::current().context();
         debug!("Dedup {} chunks", chunks.len());
         let mut tracking_info = self.tracking_info.lock().await;
 
@@ -408,12 +411,18 @@ impl Cleaner {
 
                         let file_name = self.file_name.clone();
 
+                        let dedup_ctx_clone = dedup_ctx.clone();
                         global_dedup_queries.spawn(async move {
-                                let Ok(query_result) = remote_shards.query_dedup_shard_by_chunk(&query_chunk, &salt).await.map_err(|e| {
+                                let global_dedup_span = info_span!("cleaner::global_dedup_query");
+                                global_dedup_span.set_parent(dedup_ctx_clone);
+
+                                let s = Instant::now();
+                                let Ok(query_result) = remote_shards.query_dedup_shard_by_chunk(&query_chunk, &salt).instrument(global_dedup_span).await.map_err(|e| {
                                     debug!("Error encountered attempting to query global dedup table: {e:?}; ignoring.");
                                     e
                                 })
                                     else { return false; };
+                                RUNTIME_DEDUP_QUERY.inc_by(s.elapsed().as_nanos().try_into().unwrap());
 
                                 let Some(shard_hash) = query_result else {
                                     debug!("Queried shard for global dedup with hash {query_chunk:?}; nothing found.");

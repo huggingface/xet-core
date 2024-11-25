@@ -3,6 +3,7 @@ use std::mem::take;
 use std::ops::DerefMut;
 use std::path::Path;
 use std::sync::Arc;
+use std::time::Instant;
 
 use cas_client::Client;
 use cas_types::FileRange;
@@ -12,13 +13,14 @@ use mdb_shard::ShardFileManager;
 use merkledb::aggregate_hashes::cas_node_hash;
 use merklehash::MerkleHash;
 use tokio::sync::Mutex;
-use tracing::{info_span, instrument, Instrument};
+use tracing::{info, info_span, instrument, Instrument};
 use utils::ThreadPool;
 
 use crate::cas_interface::create_cas_client;
 use crate::clean::Cleaner;
 use crate::configurations::*;
 use crate::errors::*;
+use crate::metrics::{RUNTIME_CHUNKING, RUNTIME_DEDUP_QUERY, RUNTIME_HASHING, RUNTIME_SHA256, RUNTIME_XORB_UPLOAD};
 use crate::remote_shard_interface::RemoteShardInterface;
 use crate::shard_interface::create_shard_manager;
 use crate::PointerFile;
@@ -165,7 +167,30 @@ impl PointerFileTranslator {
             .instrument(info_span!("shard_manager::flush"))
             .await?;
 
+        let s = Instant::now();
         self.upload().await?;
+        let runtime_shard_upload = s.elapsed().as_millis();
+
+        let runtime_chunking = RUNTIME_CHUNKING.get() / 1000000;
+        RUNTIME_CHUNKING.reset();
+        let runtime_hashing = RUNTIME_HASHING.get() / 1000000;
+        RUNTIME_HASHING.reset();
+        let runtime_sha256 = RUNTIME_SHA256.get() / 1000000;
+        RUNTIME_SHA256.reset();
+        let runtime_dedup_query = RUNTIME_DEDUP_QUERY.get() / 1000000;
+        RUNTIME_DEDUP_QUERY.reset();
+        let runtime_xorb_upload = RUNTIME_XORB_UPLOAD.get() / 1000000;
+        RUNTIME_XORB_UPLOAD.reset();
+
+        info!(
+            "Runtimes:\n
+        Chunking: {runtime_chunking} ms\n
+        Hashing: {runtime_hashing} ms\n
+        SHA256: {runtime_sha256} ms\n
+        Dedup query: {runtime_dedup_query} ms\n
+        Xorb upload: {runtime_xorb_upload} ms\n
+        Shard upload: {runtime_shard_upload} ms"
+        );
 
         Ok(())
     }
@@ -247,9 +272,11 @@ pub(crate) async fn register_new_cas_block(
         .collect();
 
     if !cas_info.chunks.is_empty() {
+        let s = Instant::now();
         cas.put(cas_prefix, &cas_hash, take(&mut cas_data.data), chunk_boundaries)
             .instrument(info_span!("cas_client::put", cas_hash=?cas_hash))
             .await?;
+        RUNTIME_XORB_UPLOAD.inc_by(s.elapsed().as_nanos().try_into().unwrap());
 
         shard_manager.add_cas_block(cas_info).await?;
     } else {
