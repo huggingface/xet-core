@@ -9,6 +9,9 @@ use merkledb::{Chunk, MerkleMemDB};
 use merklehash::{DataHash, MerkleHash};
 use tracing::warn;
 
+#[cfg(feature = "stream_xorb")]
+use futures::AsyncReadExt;
+
 use crate::cas_chunk_format::{deserialize_chunk, serialize_chunk};
 use crate::error::{CasObjectError, Validate};
 use crate::{range_hash_from_chunks, CompressionScheme};
@@ -169,20 +172,20 @@ impl CasObjectInfo {
     ///
     /// verifies that the length of the footer data matches the length field at the very end of the buffer
     #[cfg(feature = "stream_xorb")]
-    pub async fn deserialize_async<R: futures::io::AsyncRead>(reader: &mut R) -> Result<(Self, u32), CasObjectError> {
+    pub async fn deserialize_async<R: futures::io::AsyncRead + Unpin>(reader: &mut R) -> Result<(Self, u32), CasObjectError> {
         let mut total_bytes_read: u32 = 0;
         // let mut tbr_ref = &mut total_bytes_read;
 
         // Helper function to read data and update the byte count
-        async fn read_bytes(
-            reader: &mut impl futures::io::AsyncRead,
+        async fn read_bytes<R: futures::io::AsyncRead + Unpin>(
+            reader: &mut R,
             total_bytes_read: &mut u32,
             buf: &mut [u8],
         ) -> Result<(), CasObjectError> {
             reader.read_exact(buf).await?;
             *total_bytes_read += buf.len() as u32;
             Ok(())
-        };
+        }
 
         let mut ident = [0u8; 7];
         read_bytes(reader, &mut total_bytes_read, &mut ident).await?;
@@ -220,7 +223,7 @@ impl CasObjectInfo {
         }
 
         let mut _buffer = [0u8; 16];
-        read_bytes(reader, &mut total_bytes_read, &mut _buffer)?;
+        read_bytes(reader, &mut total_bytes_read, &mut _buffer).await?;
 
         let mut info_length_buf = [0u8; size_of::<u32>()];
         read_bytes(reader, &mut total_bytes_read, &mut info_length_buf).await?;
