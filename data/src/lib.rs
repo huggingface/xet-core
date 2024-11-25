@@ -5,6 +5,7 @@ mod chunking;
 mod clean;
 pub mod configurations;
 mod constants;
+pub mod data_client;
 mod data_processing;
 pub mod errors;
 mod metrics;

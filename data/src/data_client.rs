@@ -5,9 +5,6 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use async_once_cell::OnceCell;
-use data::configurations::TranslatorConfig;
-use data::errors::DataProcessingError;
-use data::{errors, PointerFile, PointerFileTranslator};
 use parutils::{tokio_par_for_each, ParallelError};
 use tracing::{info, info_span, Instrument};
 use tracing_opentelemetry::OpenTelemetrySpanExt;
@@ -15,7 +12,9 @@ use ulid::Ulid;
 use utils::auth::TokenRefresher;
 use utils::ThreadPool;
 
-use crate::config::default_config;
+use crate::configurations::{default_config, TranslatorConfig};
+use crate::errors::DataProcessingError;
+use crate::{errors, PointerFile, PointerFileTranslator};
 
 /// The maximum git filter protocol packet size
 pub const MAX_CONCURRENT_UPLOADS: usize = 8; // TODO

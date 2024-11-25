@@ -1,4 +1,4 @@
-use std::io::{self, copy, Cursor, Read, Write};
+use std::io::{copy, Cursor, Read, Write};
 use std::mem::size_of;
 use std::slice;
 
@@ -7,6 +7,9 @@ use lz4_flex::frame::{FrameDecoder, FrameEncoder};
 
 use crate::error::CasObjectError;
 use crate::CompressionScheme;
+
+#[cfg(feature = "async_chunk_deserialize")]
+pub mod async_deserialize;
 
 pub const CAS_CHUNK_HEADER_LENGTH: usize = size_of::<CASChunkHeader>();
 const CURRENT_VERSION: u8 = 0;
@@ -133,16 +136,7 @@ pub fn deserialize_chunk_to_writer<R: Read, W: Write>(
     let mut compressed_buf = vec![0u8; header.get_compressed_length() as usize];
     reader.read_exact(&mut compressed_buf)?;
 
-    let uncompressed_len = match header.get_compression_scheme() {
-        CompressionScheme::None => {
-            writer.write_all(&compressed_buf)?;
-            compressed_buf.len() as u32
-        },
-        CompressionScheme::LZ4 => {
-            let mut dec = FrameDecoder::new(Cursor::new(compressed_buf));
-            copy(&mut dec, writer)? as u32
-        },
-    };
+    let uncompressed_len = decompress_chunk_to_writer(header, &mut compressed_buf, writer)?;
 
     if uncompressed_len != header.get_uncompressed_length() {
         return Err(CasObjectError::FormatError(anyhow!(
@@ -151,6 +145,23 @@ pub fn deserialize_chunk_to_writer<R: Read, W: Write>(
     }
 
     Ok((header.get_compressed_length() as usize + CAS_CHUNK_HEADER_LENGTH, uncompressed_len))
+}
+
+fn decompress_chunk_to_writer<W: Write>(
+    header: CASChunkHeader,
+    compressed_buf: &mut Vec<u8>,
+    writer: &mut W,
+) -> Result<u32, CasObjectError> {
+    Ok(match header.get_compression_scheme() {
+        CompressionScheme::None => {
+            writer.write_all(compressed_buf)?;
+            compressed_buf.len() as u32
+        },
+        CompressionScheme::LZ4 => {
+            let mut dec = FrameDecoder::new(Cursor::new(compressed_buf));
+            copy(&mut dec, writer)? as u32
+        },
+    })
 }
 
 pub fn deserialize_chunks<R: Read>(reader: &mut R) -> Result<(Vec<u8>, Vec<u32>), CasObjectError> {
@@ -179,7 +190,7 @@ pub fn deserialize_chunks_to_writer<R: Read, W: Write>(
                 chunk_byte_indices.push(num_uncompressed_written); // record end of current chunk
             },
             Err(CasObjectError::InternalIOError(e)) => {
-                if e.kind() == io::ErrorKind::UnexpectedEof {
+                if e.kind() == std::io::ErrorKind::UnexpectedEof {
                     break;
                 }
                 return Err(CasObjectError::InternalIOError(e));
