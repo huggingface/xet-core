@@ -445,7 +445,7 @@ async fn download_range(
         }
     }
 
-    let (data, chunk_byte_indices) = cas_object::async_deserialize::deserialize_chunks_from_stream(
+    let (data, chunk_byte_indices) = cas_object::deserialize_async::deserialize_chunks_from_stream(
         response.bytes_stream().map_err(std::io::Error::other),
     )
     .await?;

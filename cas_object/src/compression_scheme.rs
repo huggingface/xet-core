@@ -2,17 +2,16 @@ use std::fmt::Display;
 use std::str::FromStr;
 
 use anyhow::anyhow;
+
 use crate::error::CasObjectError;
 
-const CHAR_B: u8 = b'B';  // 98, invalid compression scheme
-
+/// Dis-allow the value of ascii capital letters as valid CompressionScheme, 65-90
 #[repr(u8)]
 #[derive(Debug, PartialEq, Eq, Clone, Copy, Default)]
 pub enum CompressionScheme {
     #[default]
     None = 0,
     LZ4 = 1,
-    InvalidB = CHAR_B,
 }
 
 impl Display for CompressionScheme {
@@ -20,7 +19,6 @@ impl Display for CompressionScheme {
         match self {
             CompressionScheme::None => write!(f, "none"),
             CompressionScheme::LZ4 => write!(f, "lz4"),
-            CompressionScheme::InvalidB => write!(f, "invalidB"),
         }
     }
 }
@@ -32,7 +30,6 @@ impl TryFrom<u8> for CompressionScheme {
         match value {
             0 => Ok(CompressionScheme::None),
             1 => Ok(CompressionScheme::LZ4),
-            CHAR_B => Ok(CompressionScheme::InvalidB),
             _ => Err(CasObjectError::FormatError(anyhow!("cannot convert value {value} to CompressionScheme"))),
         }
     }
@@ -43,7 +40,6 @@ impl From<&CompressionScheme> for &'static str {
         match value {
             CompressionScheme::None => "none",
             CompressionScheme::LZ4 => "lz4",
-            CompressionScheme::InvalidB => "invalidB",
         }
     }
 }

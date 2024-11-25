@@ -1,6 +1,5 @@
 use std::io::{copy, Cursor, Read, Write};
 use std::mem::size_of;
-use std::slice;
 
 use anyhow::anyhow;
 use lz4_flex::frame::{FrameDecoder, FrameEncoder};
@@ -9,7 +8,7 @@ use crate::error::CasObjectError;
 use crate::CompressionScheme;
 
 #[cfg(feature = "async_chunk_deserialize")]
-pub mod async_deserialize;
+pub mod deserialize_async;
 
 pub const CAS_CHUNK_HEADER_LENGTH: usize = size_of::<CASChunkHeader>();
 const CURRENT_VERSION: u8 = 0;
@@ -19,7 +18,7 @@ const CURRENT_VERSION: u8 = 0;
 pub struct CASChunkHeader {
     pub version: u8,              // 1 byte
     compressed_length: [u8; 3],   // 3 bytes
-    compression_scheme: u8,       // 1 byte  // if this is equal to 'B' (first 'B' in "XETBLOB") then it can be the start of the footer
+    compression_scheme: u8,       // 1 byte
     uncompressed_length: [u8; 3], // 3 bytes
 }
 
@@ -62,6 +61,18 @@ impl CASChunkHeader {
     pub fn set_compression_scheme(&mut self, compression_scheme: CompressionScheme) {
         self.compression_scheme = compression_scheme as u8;
     }
+
+    fn validate(&self) -> Result<(), CasObjectError> {
+        let _ = self.get_compression_scheme()?;
+        if self.version > CURRENT_VERSION {
+            return Err(CasObjectError::FormatError(anyhow!(
+                "chunk header version too high at {}, current version is {}",
+                self.version,
+                CURRENT_VERSION
+            )));
+        }
+        Ok(())
+    }
 }
 
 fn write_chunk_header<W: Write>(w: &mut W, chunk_header: &CASChunkHeader) -> std::io::Result<()> {
@@ -73,7 +84,7 @@ fn write_chunk_header<W: Write>(w: &mut W, chunk_header: &CASChunkHeader) -> std
 
 #[inline]
 fn copy_three_byte_num(buf: &mut [u8; 3], num: u32) {
-    debug_assert!(num < 16_777_216); // verify that chunk is under 16MB
+    debug_assert!(num < 16_777_216); // verify that num is under 16MB (3 byte unsigned max + 1, 1 << 24)
     let bytes = num.to_le_bytes(); // Convert u32 to little-endian bytes
     buf.copy_from_slice(&bytes[0..3]);
 }
@@ -93,7 +104,6 @@ pub fn serialize_chunk<W: Write>(
     let uncompressed_len = chunk.len();
 
     let compressed = match compression_scheme {
-        CompressionScheme::InvalidB => return Err(CasObjectError::InvalidArguments),
         CompressionScheme::None => Vec::from(chunk),
         CompressionScheme::LZ4 => {
             let mut enc = FrameEncoder::new(Vec::new());
@@ -112,14 +122,16 @@ pub fn serialize_chunk<W: Write>(
     Ok(size_of::<CASChunkHeader>() + compressed_len)
 }
 
-pub fn deserialize_chunk_header<R: Read>(reader: &mut R) -> Result<CASChunkHeader, CasObjectError> {
-    let mut result = CASChunkHeader::default();
-    unsafe {
-        let buf = slice::from_raw_parts_mut(&mut result as *mut _ as *mut u8, size_of::<CASChunkHeader>());
-        reader.read_exact(buf)?;
-    }
-
+pub fn parse_chunk_header(chunk_header_bytes: [u8; CAS_CHUNK_HEADER_LENGTH]) -> Result<CASChunkHeader, CasObjectError> {
+    let result: CASChunkHeader = unsafe { std::mem::transmute_copy(&chunk_header_bytes) };
+    result.validate()?;
     Ok(result)
+}
+
+pub fn deserialize_chunk_header<R: Read>(reader: &mut R) -> Result<CASChunkHeader, CasObjectError> {
+    let mut buf = [0u8; size_of::<CASChunkHeader>()];
+    reader.read_exact(&mut buf)?;
+    parse_chunk_header(buf)
 }
 
 pub fn deserialize_chunk<R: Read>(reader: &mut R) -> Result<(Vec<u8>, usize, u32), CasObjectError> {
@@ -154,7 +166,6 @@ pub(crate) fn decompress_chunk_to_writer<W: Write>(
     writer: &mut W,
 ) -> Result<u32, CasObjectError> {
     let result = match header.get_compression_scheme()? {
-        CompressionScheme::InvalidB => return Err(CasObjectError::InvalidArguments),
         CompressionScheme::None => {
             writer.write_all(compressed_buf)?;
             compressed_buf.len() as u32

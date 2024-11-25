@@ -13,8 +13,8 @@ use crate::cas_chunk_format::{deserialize_chunk, serialize_chunk};
 use crate::error::{CasObjectError, Validate};
 use crate::{range_hash_from_chunks, CompressionScheme};
 
-const CAS_OBJECT_FORMAT_IDENT: [u8; 7] = [b'X', b'E', b'T', b'B', b'L', b'O', b'B'];
-const CAS_OBJECT_FORMAT_VERSION: u8 = 0;
+pub(crate) const CAS_OBJECT_FORMAT_IDENT: [u8; 7] = [b'X', b'E', b'T', b'B', b'L', b'O', b'B'];
+pub(crate) const CAS_OBJECT_FORMAT_VERSION: u8 = 0;
 const CAS_OBJECT_INFO_DEFAULT_LENGTH: u32 = 60;
 
 #[derive(Clone, PartialEq, Eq, Debug)]
@@ -149,6 +149,92 @@ impl CasObjectInfo {
 
         let mut _buffer = [0u8; 16];
         read_bytes(&mut _buffer)?;
+
+        Ok((
+            CasObjectInfo {
+                ident,
+                version: version[0],
+                cashash,
+                num_chunks,
+                chunk_boundary_offsets,
+                chunk_hashes,
+                _buffer,
+            },
+            total_bytes_read,
+        ))
+    }
+
+    /// Construct CasObjectInfo object from AsyncRead.
+    /// assumes that the ident and version have already been read and verified.
+    ///
+    /// verifies that the length of the footer data matches the length field at the very end of the buffer
+    #[cfg(feature = "stream_xorb")]
+    pub async fn deserialize_async<R: futures::io::AsyncRead>(reader: &mut R) -> Result<(Self, u32), CasObjectError> {
+        let mut total_bytes_read: u32 = 0;
+        // let mut tbr_ref = &mut total_bytes_read;
+
+        // Helper function to read data and update the byte count
+        async fn read_bytes(
+            reader: &mut impl futures::io::AsyncRead,
+            total_bytes_read: &mut u32,
+            buf: &mut [u8],
+        ) -> Result<(), CasObjectError> {
+            reader.read_exact(buf).await?;
+            *total_bytes_read += buf.len() as u32;
+            Ok(())
+        };
+
+        let mut ident = [0u8; 7];
+        read_bytes(reader, &mut total_bytes_read, &mut ident).await?;
+
+        if ident != CAS_OBJECT_FORMAT_IDENT {
+            return Err(CasObjectError::FormatError(anyhow!("Xorb Invalid Ident")));
+        }
+
+        let mut version = [0u8; 1];
+        read_bytes(reader, &mut total_bytes_read, &mut version).await?;
+
+        if version[0] != CAS_OBJECT_FORMAT_VERSION {
+            return Err(CasObjectError::FormatError(anyhow!("Xorb Invalid Format Version")));
+        }
+
+        let mut buf = [0u8; size_of::<MerkleHash>()];
+        read_bytes(reader, &mut total_bytes_read, &mut buf).await?;
+        let cashash = MerkleHash::from(&buf);
+
+        let mut num_chunks = [0u8; size_of::<u32>()];
+        read_bytes(reader, &mut total_bytes_read, &mut num_chunks).await?;
+        let num_chunks = u32::from_le_bytes(num_chunks);
+
+        let mut chunk_boundary_offsets = Vec::with_capacity(num_chunks as usize);
+        for _ in 0..num_chunks {
+            let mut offset = [0u8; size_of::<u32>()];
+            read_bytes(reader, &mut total_bytes_read, &mut offset).await?;
+            chunk_boundary_offsets.push(u32::from_le_bytes(offset));
+        }
+        let mut chunk_hashes = Vec::with_capacity(num_chunks as usize);
+        for _ in 0..num_chunks {
+            let mut hash = [0u8; size_of::<MerkleHash>()];
+            read_bytes(reader, &mut total_bytes_read, &mut hash).await?;
+            chunk_hashes.push(MerkleHash::from(&hash));
+        }
+
+        let mut _buffer = [0u8; 16];
+        read_bytes(reader, &mut total_bytes_read, &mut _buffer)?;
+
+        let mut info_length_buf = [0u8; size_of::<u32>()];
+        read_bytes(reader, &mut total_bytes_read, &mut info_length_buf).await?;
+        let info_length = u32::from_le_bytes(info_length_buf);
+
+        if info_length + size_of::<u32>() as u32 != total_bytes_read {
+            return Err(CasObjectError::FormatError(anyhow!("Xorb Info Format Error")));
+        }
+
+        if reader.read(&mut [0u8; 8]).await? != 0 {
+            return Err(CasObjectError::FormatError(anyhow!(
+                "Xorb Reader has content past the end of serialized xorb"
+            )));
+        }
 
         Ok((
             CasObjectInfo {
