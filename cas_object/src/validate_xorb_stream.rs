@@ -1,9 +1,10 @@
+use std::pin::Pin;
+use std::task::{Context, Poll};
 use anyhow::anyhow;
+use futures::{AsyncRead, AsyncReadExt};
 use merkledb::prelude::MerkleDBHighLevelMethodsV1;
 use merkledb::{Chunk, MerkleMemDB};
 use merklehash::MerkleHash;
-use tokio::io::{AsyncRead, AsyncReadExt};
-
 use crate::cas_chunk_format::decompress_chunk_to_writer;
 use crate::cas_object_format::CAS_OBJECT_FORMAT_IDENT;
 use crate::error::{CasObjectError, Result, Validate};
@@ -63,5 +64,6 @@ async fn _validate_cas_object_from_async_read<R: AsyncRead + Unpin>(
     if ret.hash() != hash {
         return Err(CasObjectError::FormatError(anyhow!("xorb computed hash does not match provided hash")));
     }
+
     Ok((cas_object_info, chunks, indices))
 }
