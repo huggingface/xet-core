@@ -380,6 +380,7 @@ dependencies = [
  "file_utils",
  "merklehash",
  "mockall",
+ "once_cell",
  "rand 0.8.5",
  "tracing",
  "utils",

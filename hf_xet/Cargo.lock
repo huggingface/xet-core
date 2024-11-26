@@ -57,12 +57,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7c02d123df017efcdfbd739ef81735b36c5ba83ec3c59c80a9d7ecc718f92e50"
 
 [[package]]
-name = "async-once-cell"
-version = "0.5.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4288f83726785267c6f2ef073a3d83dc3f9b81464e9f99898240cced85fce35a"
-
-[[package]]
 name = "async-scoped"
 version = "0.7.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -292,6 +286,7 @@ dependencies = [
  "file_utils",
  "merklehash",
  "mockall",
+ "once_cell",
  "rand 0.8.5",
  "tracing",
  "utils",
@@ -427,7 +422,6 @@ name = "data"
 version = "0.14.5"
 dependencies = [
  "anyhow",
- "async-once-cell",
  "async-trait",
  "cas_client",
  "cas_object",

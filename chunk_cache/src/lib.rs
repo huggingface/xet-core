@@ -1,8 +1,10 @@
+mod cache_manager;
 mod disk;
 pub mod error;
 
 use std::path::PathBuf;
 
+pub use cache_manager::get_cache;
 use cas_types::{ChunkRange, Key};
 pub use disk::test_utils::*;
 pub use disk::DiskCache;
@@ -53,7 +55,7 @@ pub trait ChunkCache: Sync + Send {
     ) -> Result<(), ChunkCacheError>;
 }
 
-#[derive(Debug)]
+#[derive(Debug, Hash, PartialEq, Eq, PartialOrd, Ord, Clone)]
 pub struct CacheConfig {
     pub cache_directory: PathBuf,
     pub cache_size: u64,
