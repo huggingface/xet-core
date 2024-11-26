@@ -48,11 +48,12 @@ jobs:
           args: --release --out dist
           sccache: 'true'
           manylinux: auto
+        working_directory: hf_xet
       - name: Upload wheels
         uses: actions/upload-artifact@v4
         with:
           name: wheels-linux-${{ matrix.platform.target }}
-          path: dist
+          path: hf_xet/dist
 
   musllinux:
     runs-on: ${{ matrix.platform.runner }}
@@ -79,11 +80,12 @@ jobs:
           args: --release --out dist
           sccache: 'true'
           manylinux: musllinux_1_2
+        working_directory: hf_xet
       - name: Upload wheels
         uses: actions/upload-artifact@v4
         with:
           name: wheels-musllinux-${{ matrix.platform.target }}
-          path: dist
+          path: hf_xet/dist
 
   windows:
     runs-on: ${{ matrix.platform.runner }}
@@ -106,11 +108,12 @@ jobs:
           target: ${{ matrix.platform.target }}
           args: --release --out dist
           sccache: 'true'
+        working_directory: hf_xet
       - name: Upload wheels
         uses: actions/upload-artifact@v4
         with:
           name: wheels-windows-${{ matrix.platform.target }}
-          path: dist
+          path: hf_xet/dist
 
   macos:
     runs-on: ${{ matrix.platform.runner }}
@@ -132,11 +135,12 @@ jobs:
           target: ${{ matrix.platform.target }}
           args: --release --out dist
           sccache: 'true'
+        working_directory: hf_xet
       - name: Upload wheels
         uses: actions/upload-artifact@v4
         with:
           name: wheels-macos-${{ matrix.platform.target }}
-          path: dist
+          path: hf_xet/dist
 
   sdist:
     runs-on: ubuntu-latest
@@ -147,11 +151,12 @@ jobs:
         with:
           command: sdist
           args: --out dist
+        working_directory: hf_xet
       - name: Upload sdist
         uses: actions/upload-artifact@v4
         with:
           name: wheels-sdist
-          path: dist
+          path: hf_xet/dist
 
   release-pypi:
     name: Release PyPi
@@ -160,6 +165,7 @@ jobs:
     needs: [ linux, musllinux, windows, macos, sdist ]
     steps:
       - uses: actions/download-artifact@v4
+        working_directory: hf_xet
       - name: Publish to PyPI
         uses: PyO3/maturin-action@v1
         env:
@@ -167,6 +173,7 @@ jobs:
         with:
           command: upload
           args: --non-interactive --skip-existing wheels-*/*
+        working_directory: hf_xet
 
   release-github:
     name: Release GitHub
@@ -177,6 +184,8 @@ jobs:
     needs: [ linux, musllinux, windows, macos, sdist ]
     steps:
       - uses: actions/download-artifact@v4
+        working_directory: hf_xet
       - name: Publish to GitHub Releases
         run: |
           gh release upload ${{github.event.release.tag_name}} wheels-*/*
+        working_directory: hf_xet
