@@ -55,7 +55,7 @@ pub trait ChunkCache: Sync + Send {
     ) -> Result<(), ChunkCacheError>;
 }
 
-#[derive(Debug, Hash, PartialEq, Eq, PartialOrd, Ord, Clone)]
+#[derive(Debug, Clone)]
 pub struct CacheConfig {
     pub cache_directory: PathBuf,
     pub cache_size: u64,
