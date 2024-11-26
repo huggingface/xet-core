@@ -38,7 +38,7 @@ impl CacheManager {
             let weak = v.borrow().clone();
             // if upgrade from Weak to Arc is successful, returns the upgraded pointer
             if let Some(value) = weak.upgrade() {
-                return Ok(value)
+                return Ok(value);
             }
             // since upgrading failed, creates a new DiskCache, replaces the weak pointer with a
             // weak pointer to the new instance and then returns the Arc to the new cache instance
