@@ -1,10 +1,12 @@
 use std::pin::Pin;
 use std::task::{ready, Context, Poll};
+
 use anyhow::anyhow;
 use futures::{AsyncRead, AsyncReadExt};
 use merkledb::prelude::MerkleDBHighLevelMethodsV1;
 use merkledb::{Chunk, MerkleMemDB};
 use merklehash::MerkleHash;
+
 use crate::cas_chunk_format::decompress_chunk_to_writer;
 use crate::cas_object_format::CAS_OBJECT_FORMAT_IDENT;
 use crate::error::{CasObjectError, Result, Validate};
@@ -15,13 +17,13 @@ pub async fn validate_cas_object_from_async_read<R: AsyncRead + Unpin>(
     reader: &mut R,
     hash: &MerkleHash,
 ) -> Result<bool> {
-    _validate_cas_object_from_async_read(reader, hash).await.ok_for_format_error().map(Option::is_some)
+    _validate_cas_object_from_async_read(reader, hash)
+        .await
+        .ok_for_format_error()
+        .map(Option::is_some)
 }
 
-async fn _validate_cas_object_from_async_read<R: AsyncRead + Unpin>(
-    reader: &mut R,
-    hash: &MerkleHash,
-) -> Result<()> {
+async fn _validate_cas_object_from_async_read<R: AsyncRead + Unpin>(reader: &mut R, hash: &MerkleHash) -> Result<()> {
     let mut chunks = Vec::new();
     let mut indices = vec![0];
     let mut hash_chunks: Vec<Chunk> = Vec::new();
@@ -65,9 +67,5 @@ async fn _validate_cas_object_from_async_read<R: AsyncRead + Unpin>(
         return Err(CasObjectError::FormatError(anyhow!("xorb computed hash does not match provided hash")));
     }
 
-    let xorb = reader.consume();
-    Ok(xorb)
+    Ok(())
 }
-
-
-

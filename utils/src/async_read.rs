@@ -1,6 +1,7 @@
-use futures::AsyncRead;
 use std::pin::Pin;
 use std::task::{ready, Context, Poll};
+
+use futures::AsyncRead;
 
 // (AsyncRead) adaptor
 // wraps over an AsyncRead, copying all the contents read from the inner reader
@@ -34,9 +35,10 @@ impl<'a, T: AsyncRead + Unpin> CopyReader<'a, T> {
 #[cfg(test)]
 mod tests {
     use bytes::Bytes;
-    use super::*;
     use futures::io::Cursor;
     use futures::{AsyncReadExt, TryStreamExt};
+
+    use super::*;
 
     #[tokio::test]
     async fn test_copy_reader() {
@@ -58,10 +60,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_copy_reader_partially() {
-        let readers: Vec<Box<dyn AsyncRead + Unpin>> = vec![
-            Box::new(Cursor::new(vec![0x88; 1024])),
-            n_stream(10000),
-        ];
+        let readers: Vec<Box<dyn AsyncRead + Unpin>> = vec![Box::new(Cursor::new(vec![0x88; 1024])), n_stream(10000)];
 
         for mut reader in readers {
             let mut copy_reader = CopyReader::new(Pin::new(&mut reader));

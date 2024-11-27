@@ -4,13 +4,12 @@ use std::mem::size_of;
 
 use anyhow::anyhow;
 use bytes::Buf;
+#[cfg(feature = "stream_xorb")]
+use futures::AsyncReadExt;
 use merkledb::prelude::MerkleDBHighLevelMethodsV1;
 use merkledb::{Chunk, MerkleMemDB};
 use merklehash::{DataHash, MerkleHash};
 use tracing::warn;
-
-#[cfg(feature = "stream_xorb")]
-use futures::AsyncReadExt;
 
 use crate::cas_chunk_format::{deserialize_chunk, serialize_chunk};
 use crate::error::{CasObjectError, Validate};
@@ -172,7 +171,9 @@ impl CasObjectInfo {
     ///
     /// verifies that the length of the footer data matches the length field at the very end of the buffer
     #[cfg(feature = "stream_xorb")]
-    pub async fn deserialize_async<R: futures::io::AsyncRead + Unpin>(reader: &mut R) -> Result<(Self, u32), CasObjectError> {
+    pub async fn deserialize_async<R: futures::io::AsyncRead + Unpin>(
+        reader: &mut R,
+    ) -> Result<(Self, u32), CasObjectError> {
         let mut total_bytes_read: u32 = 0;
         // let mut tbr_ref = &mut total_bytes_read;
 
