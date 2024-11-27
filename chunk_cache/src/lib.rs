@@ -10,6 +10,7 @@ pub use disk::test_utils::*;
 pub use disk::DiskCache;
 use error::ChunkCacheError;
 use mockall::automock;
+
 use crate::disk::DEFAULT_CAPACITY;
 
 /// ChunkCache is a trait for storing and fetching Xorb ranges.
