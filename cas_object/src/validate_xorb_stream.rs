@@ -1,6 +1,3 @@
-use std::pin::Pin;
-use std::task::{ready, Context, Poll};
-
 use anyhow::anyhow;
 use futures::{AsyncRead, AsyncReadExt};
 use merkledb::prelude::MerkleDBHighLevelMethodsV1;
@@ -20,7 +17,7 @@ pub async fn validate_cas_object_from_async_read<R: AsyncRead + Unpin>(
     _validate_cas_object_from_async_read(reader, hash)
         .await
         .ok_for_format_error()
-        .map(Option::is_some)
+        .map(|o| o.is_some())
 }
 
 async fn _validate_cas_object_from_async_read<R: AsyncRead + Unpin>(reader: &mut R, hash: &MerkleHash) -> Result<()> {
