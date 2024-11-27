@@ -1,10 +1,11 @@
+use std::mem::size_of;
+
 use anyhow::anyhow;
 use error_printer::ErrorPrinter;
 use futures::{AsyncRead, AsyncReadExt};
 use merkledb::prelude::MerkleDBHighLevelMethodsV1;
 use merkledb::{Chunk, MerkleMemDB};
 use merklehash::MerkleHash;
-use std::mem::size_of;
 
 use crate::cas_chunk_format::decompress_chunk_to_writer;
 use crate::cas_object_format::CAS_OBJECT_FORMAT_IDENT;
