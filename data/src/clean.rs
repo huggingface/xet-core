@@ -26,7 +26,6 @@ use utils::ThreadPool;
 
 use crate::cas_interface::Client;
 use crate::chunking::{chunk_target_default, ChunkYieldType};
-use crate::configurations::FileQueryPolicy;
 use crate::constants::MIN_SPACING_BETWEEN_GLOBAL_DEDUP_QUERIES;
 use crate::data_processing::{register_new_cas_block, CASDataAggregator};
 use crate::errors::DataProcessingError::*;
@@ -594,13 +593,8 @@ impl Cleaner {
 
         let file_hash = file_node_hash(&tracking_info.file_hashes, &self.repo_salt.unwrap_or_default())?;
 
-        // Is the file registered already?  If so, nothing needs to be added now.
-        let file_already_registered = match self.remote_shards.file_query_policy {
-            FileQueryPolicy::LocalFirst | FileQueryPolicy::LocalOnly => {
-                self.shard_manager.get_file_reconstruction_info(&file_hash).await?.is_some()
-            },
-            FileQueryPolicy::ServerOnly => false,
-        };
+        // Is the file registered already based on local information? If so, nothing needs to be added now.
+        let file_already_registered = self.shard_manager.get_file_reconstruction_info(&file_hash).await?.is_some();
 
         if !file_already_registered {
             // Put an accumulated data into the struct-wide cas block for building a future chunk.
