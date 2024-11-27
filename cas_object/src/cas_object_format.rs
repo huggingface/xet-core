@@ -9,7 +9,7 @@ use futures::AsyncReadExt;
 use merkledb::prelude::MerkleDBHighLevelMethodsV1;
 use merkledb::{Chunk, MerkleMemDB};
 use merklehash::{DataHash, MerkleHash};
-use tracing::warn;
+use tracing::{error, warn};
 
 use crate::cas_chunk_format::{deserialize_chunk, serialize_chunk};
 use crate::error::{CasObjectError, Validate};
@@ -188,19 +188,19 @@ impl CasObjectInfo {
             Ok(())
         }
 
-        let mut ident = [0u8; 7];
-        read_bytes(reader, &mut total_bytes_read, &mut ident).await?;
-
-        if ident != CAS_OBJECT_FORMAT_IDENT {
-            return Err(CasObjectError::FormatError(anyhow!("Xorb Invalid Ident")));
-        }
-
-        let mut version = [0u8; 1];
-        read_bytes(reader, &mut total_bytes_read, &mut version).await?;
-
-        if version[0] != CAS_OBJECT_FORMAT_VERSION {
-            return Err(CasObjectError::FormatError(anyhow!("Xorb Invalid Format Version")));
-        }
+        // let mut ident = [0u8; 7];
+        // read_bytes(reader, &mut total_bytes_read, &mut ident).await?;
+        //
+        // if ident != CAS_OBJECT_FORMAT_IDENT {
+        //     return Err(CasObjectError::FormatError(anyhow!("Xorb Invalid Ident")));
+        // }
+        //
+        // let mut version = [0u8; 1];
+        // read_bytes(reader, &mut total_bytes_read, &mut version).await?;
+        //
+        // if version[0] != CAS_OBJECT_FORMAT_VERSION {
+        //     return Err(CasObjectError::FormatError(anyhow!("Xorb Invalid Format Version")));
+        // }
 
         let mut buf = [0u8; size_of::<MerkleHash>()];
         read_bytes(reader, &mut total_bytes_read, &mut buf).await?;
@@ -227,13 +227,18 @@ impl CasObjectInfo {
         read_bytes(reader, &mut total_bytes_read, &mut _buffer).await?;
 
         let mut info_length_buf = [0u8; size_of::<u32>()];
-        read_bytes(reader, &mut total_bytes_read, &mut info_length_buf).await?;
+        // not using read_bytes since we do not want to count these bytes in total_bytes_read
+        // the info_length u32 is not counted in its value
+        reader.read_exact(&mut info_length_buf).await?;
         let info_length = u32::from_le_bytes(info_length_buf);
 
-        if info_length + size_of::<u32>() as u32 != total_bytes_read {
+        // total_bytes_read + (8, previously read ident+version)
+        if info_length != total_bytes_read + 8 {
+            error!("info_length<{info_length}> != total_bytes_read<{total_bytes_read}> + 8 - 4");
             return Err(CasObjectError::FormatError(anyhow!("Xorb Info Format Error")));
         }
 
+        // verify we've read to the end
         if reader.read(&mut [0u8; 8]).await? != 0 {
             return Err(CasObjectError::FormatError(anyhow!(
                 "Xorb Reader has content past the end of serialized xorb"
@@ -242,8 +247,8 @@ impl CasObjectInfo {
 
         Ok((
             CasObjectInfo {
-                ident,
-                version: version[0],
+                ident: CAS_OBJECT_FORMAT_IDENT,
+                version: CAS_OBJECT_FORMAT_VERSION,//version[0],
                 cashash,
                 num_chunks,
                 chunk_boundary_offsets,
