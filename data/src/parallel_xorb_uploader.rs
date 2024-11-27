@@ -28,6 +28,9 @@ type XorbUploadSignalType = oneshot::Sender<()>;
 type XorbUploadInputType = QueueItem<XorbUploadValueType, XorbUploadSignalType>;
 type XorbUploadOutputType = QueueItem<(), XorbUploadSignalType>;
 
+/// Helper to parallelize xorb upload and registration.
+/// Calls to registering xorbs return immediately after computing a xorb hash so callers
+/// can continue with other work, and xorb data is queued internally to be uploaded and registered.
 pub(crate) struct ParallelXorbUploader {
     // Configurations
     cas_prefix: String,
@@ -76,7 +79,7 @@ impl ParallelXorbUploader {
             let stream_of_xorbs = tokio_stream::wrappers::ReceiverStream::new(xorbs);
             let mut buffered_upload = stream_of_xorbs
                 .map(|item| process_xorb_data_queue_item(item, &shard_manager, &cas, &cas_prefix))
-                .buffer_unordered(*MAX_CONCURRENT_XORB_UPLOADS);
+                .buffered(*MAX_CONCURRENT_XORB_UPLOADS);
 
             while let Some(ret) = buffered_upload.next().await {
                 match ret {
@@ -96,6 +99,8 @@ impl ParallelXorbUploader {
     }
 
     pub async fn register_new_cas_block(&self, cas_data: CASDataAggregator) -> Result<MerkleHash> {
+        self.task_is_running().await?;
+
         let cas_hash = cas_node_hash(&cas_data.chunks[..]);
 
         let sender = self.xorb_data_queue.lock().await;
@@ -119,6 +124,11 @@ impl ParallelXorbUploader {
     }
 
     pub async fn flush(&self) -> Result<()> {
+        // no need to flush if task already finished
+        if self.task_is_running().await.is_err() {
+            return Ok(());
+        }
+
         let sender = self.xorb_data_queue.lock().await;
         let (signal_tx, signal_rx) = oneshot::channel();
         sender
@@ -127,6 +137,16 @@ impl ParallelXorbUploader {
             .map_err(|e| InternalError(format!("{e}")))?;
 
         signal_rx.await.map_err(|e| InternalError(format!("{e}")))?;
+
+        Ok(())
+    }
+
+    async fn task_is_running(&self) -> Result<()> {
+        let uploader_worker = self.upload_worker.lock().await;
+
+        if uploader_worker.is_none() {
+            return Err(UploadTaskError("no active upload task".to_owned()));
+        }
 
         Ok(())
     }
@@ -158,6 +178,8 @@ async fn process_xorb_data_queue_item(
     }
 
     // register for dedup
+    // This should happen after uploading xorb above succeeded so not to
+    // leave invalid information in the local shard to dedup other xorbs.
     {
         let metadata = CASChunkSequenceHeader::new(cas_hash, chunks.len(), raw_bytes_len);
 
