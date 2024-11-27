@@ -1,10 +1,10 @@
 use anyhow::anyhow;
 use error_printer::ErrorPrinter;
 use futures::{AsyncRead, AsyncReadExt};
+use tracing::warn;
 use merkledb::prelude::MerkleDBHighLevelMethodsV1;
 use merkledb::{Chunk, MerkleMemDB};
 use merklehash::MerkleHash;
-use tracing::{error, info, warn};
 
 use crate::cas_chunk_format::decompress_chunk_to_writer;
 use crate::cas_object_format::CAS_OBJECT_FORMAT_IDENT;
@@ -30,18 +30,18 @@ async fn _validate_cas_object_from_async_read<R: AsyncRead + Unpin>(reader: &mut
         let mut buf8 = [0u8; 8];
         reader.read_exact(&mut buf8).await?;
         if buf8[..CAS_OBJECT_FORMAT_IDENT.len()] == CAS_OBJECT_FORMAT_IDENT {
-            if buf8[7] != crate::cas_object_format::CAS_OBJECT_FORMAT_VERSION {
+            let version = buf8[CAS_OBJECT_FORMAT_IDENT.len()..][0];
+            if version != crate::cas_object_format::CAS_OBJECT_FORMAT_VERSION {
                 return Err(CasObjectError::FormatError(anyhow!("Xorb Invalid Format Version")));
             }
             // try to parse footer
             let (cas_object_info, _) =
-                CasObjectInfo::deserialize_async(reader, buf8[..CAS_OBJECT_FORMAT_IDENT], buf8[7]).await?;
+                CasObjectInfo::deserialize_async(reader, version).await?;
             break cas_object_info;
         }
 
         // parse the chunk header, decompress the data, compute the hash
-        let chunk_header = parse_chunk_header(buf8)
-            .log_error(format!("failed to parse chunk header {buf8:?}, got {} chunks before", chunks.len()))?;
+        let chunk_header = parse_chunk_header(buf8).log_error(format!("failed to parse chunk header {buf8:?}"))?;
         let mut compressed_chunk_data = vec![0u8; chunk_header.get_compressed_length() as usize];
         reader.read_exact(&mut compressed_chunk_data).await?;
         let mut uncompressed_chunk_data = Vec::with_capacity(chunk_header.get_uncompressed_length() as usize);
@@ -60,14 +60,14 @@ async fn _validate_cas_object_from_async_read<R: AsyncRead + Unpin>(reader: &mut
             hash: chunk_hash,
             length: uncompressed_chunk_data.len(),
         });
-        chunk_boundary_offsets.push(chunk_boundary_offsets.last().unwrap_or(0) + compressed_chunk_data.len() as u32);
+        chunk_boundary_offsets.push(chunk_boundary_offsets.last().unwrap_or(&0) + compressed_chunk_data.len() as u32);
     };
 
     if cas_object_info.cashash != *hash {
         return Err(CasObjectError::FormatError(anyhow!("xorb listed hash does not match provided hash")));
     }
 
-    if cas_object_info.num_chunks != hash_chunks.len() {
+    if cas_object_info.num_chunks as usize != hash_chunks.len() {
         return Err(CasObjectError::FormatError(anyhow!(
             "xorb metadata lists {} chunks, but {} were deserialized",
             cas_object_info.num_chunks,
@@ -83,7 +83,7 @@ async fn _validate_cas_object_from_async_read<R: AsyncRead + Unpin>(reader: &mut
         )));
     }
     for (parsed, computed_chunk) in cas_object_info.chunk_hashes.iter().zip(hash_chunks.iter()) {
-        if parsed != computed_chunk.hash {
+        if parsed != &computed_chunk.hash {
             return Err(CasObjectError::FormatError(anyhow!(
                 "found chunk hash in xorb footer that does not match the corresponding chunk's computed hash"
             )));

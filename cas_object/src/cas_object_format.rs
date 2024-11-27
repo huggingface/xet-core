@@ -173,7 +173,6 @@ impl CasObjectInfo {
     #[cfg(feature = "stream_xorb")]
     pub async fn deserialize_async<R: futures::io::AsyncRead + Unpin>(
         reader: &mut R,
-        ident: [u8; 7],
         version: u8,
     ) -> Result<(Self, u32), CasObjectError> {
         // already read 8 bytes (ident + version)
@@ -224,7 +223,6 @@ impl CasObjectInfo {
         let info_length = u32::from_le_bytes(info_length_buf);
 
         if info_length != total_bytes_read {
-            error!("info_length<{info_length}> != total_bytes_read<{total_bytes_read}> + 8 - 4");
             return Err(CasObjectError::FormatError(anyhow!("Xorb Info Format Error")));
         }
 
@@ -237,7 +235,7 @@ impl CasObjectInfo {
 
         Ok((
             CasObjectInfo {
-                ident,
+                ident: CAS_OBJECT_FORMAT_IDENT,
                 version,
                 cashash,
                 num_chunks,
