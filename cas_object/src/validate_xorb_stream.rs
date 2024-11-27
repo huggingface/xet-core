@@ -35,7 +35,7 @@ async fn _validate_cas_object_from_async_read<R: AsyncRead + Unpin>(reader: &mut
                 return Err(CasObjectError::FormatError(anyhow!("Xorb Invalid Format Version")));
             }
             // try to parse footer
-            let (cas_object_info, _) = CasObjectInfo::deserialize_async(&mut reader).await?;
+            let (cas_object_info, _) = CasObjectInfo::deserialize_async(reader).await?;
             break cas_object_info;
         }
 
