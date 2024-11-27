@@ -10,6 +10,7 @@ pub use disk::test_utils::*;
 pub use disk::DiskCache;
 use error::ChunkCacheError;
 use mockall::automock;
+use crate::disk::DEFAULT_CAPACITY;
 
 /// ChunkCache is a trait for storing and fetching Xorb ranges.
 /// implementors are expected to return bytes for a key and a given chunk range
@@ -65,7 +66,7 @@ impl Default for CacheConfig {
     fn default() -> Self {
         CacheConfig {
             cache_directory: PathBuf::from("/tmp"),
-            cache_size: 10 << 30, // 10GB
+            cache_size: DEFAULT_CAPACITY,
         }
     }
 }
