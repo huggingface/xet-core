@@ -14,17 +14,14 @@ use crate::{parse_chunk_header, CasObjectInfo};
 pub async fn validate_cas_object_from_async_read<R: AsyncRead + Unpin>(
     reader: &mut R,
     hash: &MerkleHash,
-) -> Result<Option<Vec<u8>>> {
-// ) -> Result<Option<(crate::cas_object_format::CasObjectInfo, Vec<Vec<u8>>, Vec<u32>)>> {
-    _validate_cas_object_from_async_read(reader, hash).await.ok_for_format_error()
+) -> Result<bool> {
+    _validate_cas_object_from_async_read(reader, hash).await.ok_for_format_error().map(Option::is_some)
 }
 
 async fn _validate_cas_object_from_async_read<R: AsyncRead + Unpin>(
     reader: &mut R,
     hash: &MerkleHash,
-) -> Result<Vec<u8>> {
-// ) -> Result<(crate::cas_object_format::CasObjectInfo, Vec<Vec<u8>>, Vec<u32>)> {
-    let mut reader = Adaptor::new(Pin::new(reader));
+) -> Result<()> {
     let mut chunks = Vec::new();
     let mut indices = vec![0];
     let mut hash_chunks: Vec<Chunk> = Vec::new();
@@ -70,35 +67,7 @@ async fn _validate_cas_object_from_async_read<R: AsyncRead + Unpin>(
 
     let xorb = reader.consume();
     Ok(xorb)
-
-    // Ok((cas_object_info, chunks, indices))
 }
 
-// (AsyncRead) adaptor (name WIP)
-// wraps over an AsyncRead, copying all the contents read from the inner reader
-// and buffers it in an internal buffer which can be retrieved by calling .consume()
-// to return all the content that was read.
-struct Adaptor<'a, T: AsyncRead> {
-    src: Pin<&'a mut T>,
-    buf: Vec<u8>,
-}
 
-impl<'a, T: AsyncRead> AsyncRead for Adaptor<'a, T> {
-    fn poll_read(mut self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &mut [u8]) -> Poll<std::io::Result<usize>> {
-        let res = ready!(self.src.as_mut().poll_read(cx, buf))?;
-        self.buf.extend_from_slice(&buf[..res]);
-        Poll::Ready(Ok(res))
-    }
-}
-
-impl<'a, T: AsyncRead> Adaptor<'a, T>{
-    pub fn new(src: Pin<&'a mut T>) -> Self {
-        Self { src, buf: Vec::new() }
-    }
-
-    pub fn consume(self) -> Vec<u8> {
-        self.buf
-    }
-
-}
 

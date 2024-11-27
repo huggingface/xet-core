@@ -7,6 +7,9 @@ pub mod singleflight;
 mod threadpool;
 pub use threadpool::ThreadPool;
 
+mod async_read;
 mod output_bytes;
 
 pub use output_bytes::output_bytes;
+
+pub use async_read::CopyReader;
