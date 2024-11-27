@@ -173,9 +173,11 @@ impl CasObjectInfo {
     #[cfg(feature = "stream_xorb")]
     pub async fn deserialize_async<R: futures::io::AsyncRead + Unpin>(
         reader: &mut R,
+        ident: [u8; 7],
+        version: u8,
     ) -> Result<(Self, u32), CasObjectError> {
-        let mut total_bytes_read: u32 = 0;
-        // let mut tbr_ref = &mut total_bytes_read;
+        // already read 8 bytes (ident + version)
+        let mut total_bytes_read: u32 = (size_of::<[u8; 7]>() + size_of::<u8>()) as u32;
 
         // Helper function to read data and update the byte count
         async fn read_bytes<R: futures::io::AsyncRead + Unpin>(
@@ -188,19 +190,8 @@ impl CasObjectInfo {
             Ok(())
         }
 
-        // let mut ident = [0u8; 7];
-        // read_bytes(reader, &mut total_bytes_read, &mut ident).await?;
-        //
-        // if ident != CAS_OBJECT_FORMAT_IDENT {
-        //     return Err(CasObjectError::FormatError(anyhow!("Xorb Invalid Ident")));
-        // }
-        //
-        // let mut version = [0u8; 1];
-        // read_bytes(reader, &mut total_bytes_read, &mut version).await?;
-        //
-        // if version[0] != CAS_OBJECT_FORMAT_VERSION {
-        //     return Err(CasObjectError::FormatError(anyhow!("Xorb Invalid Format Version")));
-        // }
+        // notable difference from non-async version, we skip reading the ident and version
+        // these fields have been verified before.
 
         let mut buf = [0u8; size_of::<MerkleHash>()];
         read_bytes(reader, &mut total_bytes_read, &mut buf).await?;
@@ -232,8 +223,7 @@ impl CasObjectInfo {
         reader.read_exact(&mut info_length_buf).await?;
         let info_length = u32::from_le_bytes(info_length_buf);
 
-        // total_bytes_read + (8, previously read ident+version)
-        if info_length != total_bytes_read + 8 {
+        if info_length != total_bytes_read {
             error!("info_length<{info_length}> != total_bytes_read<{total_bytes_read}> + 8 - 4");
             return Err(CasObjectError::FormatError(anyhow!("Xorb Info Format Error")));
         }
@@ -247,8 +237,8 @@ impl CasObjectInfo {
 
         Ok((
             CasObjectInfo {
-                ident: CAS_OBJECT_FORMAT_IDENT,
-                version: CAS_OBJECT_FORMAT_VERSION,//version[0],
+                ident,
+                version,
                 cashash,
                 num_chunks,
                 chunk_boundary_offsets,

@@ -233,6 +233,7 @@ dependencies = [
  "anyhow",
  "blake3",
  "bytes",
+ "error_printer",
  "futures",
  "lz4_flex",
  "merkledb",
