@@ -42,13 +42,15 @@ async fn _validate_cas_object_from_async_read<R: AsyncRead + Unpin>(reader: &mut
 
         // parse the chunk header, decompress the data, compute the hash
         let chunk_header = parse_chunk_header(buf8).log_error(format!("failed to parse chunk header {buf8:?}"))?;
+
         let chunk_compressed_len = chunk_header.get_compressed_length() as usize;
         let mut compressed_chunk_data = vec![0u8; chunk_compressed_len];
         reader.read_exact(&mut compressed_chunk_data).await?;
+
         let chunk_uncompressed_expected_len = chunk_header.get_uncompressed_length() as usize;
         let mut uncompressed_chunk_data = Vec::with_capacity(chunk_uncompressed_expected_len);
         decompress_chunk_to_writer(chunk_header, &mut compressed_chunk_data, &mut uncompressed_chunk_data)?;
-        let chunk_hash = merklehash::compute_data_hash(&uncompressed_chunk_data);
+
         if chunk_uncompressed_expected_len != uncompressed_chunk_data.len() {
             return Err(CasObjectError::FormatError(anyhow!(
                 "chunk at index {} uncompressed len from header: {}, real uncompressed length: {} for xorb: {hash}",
@@ -58,10 +60,12 @@ async fn _validate_cas_object_from_async_read<R: AsyncRead + Unpin>(reader: &mut
             )));
         }
 
+        let chunk_hash = merklehash::compute_data_hash(&uncompressed_chunk_data);
         hash_chunks.push(Chunk {
             hash: chunk_hash,
             length: uncompressed_chunk_data.len(),
         });
+
         // next offset is computed with: previous offset + length of chunk header + chunk compressed_length
         chunk_boundary_offsets.push(
             chunk_boundary_offsets.last().unwrap_or(&0)
@@ -69,6 +73,8 @@ async fn _validate_cas_object_from_async_read<R: AsyncRead + Unpin>(reader: &mut
                 + chunk_compressed_len as u32,
         );
     };
+
+    // validating footer against chunks contents
 
     if cas_object_info.cashash != *hash {
         return Err(CasObjectError::FormatError(anyhow!("xorb listed hash does not match provided hash")));
@@ -81,14 +87,17 @@ async fn _validate_cas_object_from_async_read<R: AsyncRead + Unpin>(reader: &mut
             hash_chunks.len()
         )));
     }
+
     if chunk_boundary_offsets != cas_object_info.chunk_boundary_offsets {
         return Err(CasObjectError::FormatError(anyhow!("chunk boundary offsets do not match")));
     }
+
     if cas_object_info.chunk_hashes.len() != hash_chunks.len() {
         return Err(CasObjectError::FormatError(anyhow!(
             "xorb footer does not contain as many chunk as are in the xorb"
         )));
     }
+
     for (parsed, computed_chunk) in cas_object_info.chunk_hashes.iter().zip(hash_chunks.iter()) {
         if parsed != &computed_chunk.hash {
             return Err(CasObjectError::FormatError(anyhow!(
