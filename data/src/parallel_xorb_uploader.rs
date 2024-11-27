@@ -28,6 +28,9 @@ type XorbUploadSignalType = oneshot::Sender<()>;
 type XorbUploadInputType = QueueItem<XorbUploadValueType, XorbUploadSignalType>;
 type XorbUploadOutputType = QueueItem<(), XorbUploadSignalType>;
 
+/// Helper to parallelize xorb upload and registration.
+/// Calls to registering xorbs return immediately after computing a xorb hash so callers
+/// can continue with other work, and xorb data is queued internally to be uploaded and registered.
 pub(crate) struct ParallelXorbUploader {
     // Configurations
     cas_prefix: String,
@@ -76,7 +79,7 @@ impl ParallelXorbUploader {
             let stream_of_xorbs = tokio_stream::wrappers::ReceiverStream::new(xorbs);
             let mut buffered_upload = stream_of_xorbs
                 .map(|item| process_xorb_data_queue_item(item, &shard_manager, &cas, &cas_prefix))
-                .buffer_unordered(*MAX_CONCURRENT_XORB_UPLOADS);
+                .buffered(*MAX_CONCURRENT_XORB_UPLOADS);
 
             while let Some(ret) = buffered_upload.next().await {
                 match ret {
@@ -158,6 +161,8 @@ async fn process_xorb_data_queue_item(
     }
 
     // register for dedup
+    // This should happen after uploading xorb above succeeded so not to
+    // leave invalid information in the local shard to dedup other xorbs.
     {
         let metadata = CASChunkSequenceHeader::new(cas_hash, chunks.len(), raw_bytes_len);
 
