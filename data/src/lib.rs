@@ -9,6 +9,7 @@ pub mod data_client;
 mod data_processing;
 pub mod errors;
 mod metrics;
+mod parallel_xorb_uploader;
 mod pointer_file;
 mod remote_shard_interface;
 mod repo_salt;

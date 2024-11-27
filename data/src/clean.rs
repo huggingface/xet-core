@@ -24,14 +24,14 @@ use tokio::task::{JoinHandle, JoinSet};
 use tracing::{debug, error, info, warn};
 use utils::ThreadPool;
 
-use crate::cas_interface::Client;
 use crate::chunking::{chunk_target_default, ChunkYieldType};
 use crate::configurations::FileQueryPolicy;
 use crate::constants::MIN_SPACING_BETWEEN_GLOBAL_DEDUP_QUERIES;
-use crate::data_processing::{register_new_cas_block, CASDataAggregator};
+use crate::data_processing::CASDataAggregator;
 use crate::errors::DataProcessingError::*;
 use crate::errors::Result;
 use crate::metrics::FILTER_BYTES_CLEANED;
+use crate::parallel_xorb_uploader::ParallelXorbUploader;
 use crate::remote_shard_interface::RemoteShardInterface;
 use crate::repo_salt::RepoSalt;
 use crate::small_file_determination::{is_file_passthrough, is_possible_start_to_text_file};
@@ -114,7 +114,7 @@ pub struct Cleaner {
     // Utils
     shard_manager: Arc<ShardFileManager>,
     remote_shards: Arc<RemoteShardInterface>,
-    cas: Arc<dyn Client + Send + Sync>,
+    xorb_uploader: Arc<ParallelXorbUploader>,
 
     // External Data
     global_cas_data: Arc<Mutex<CASDataAggregator>>,
@@ -141,14 +141,14 @@ pub struct Cleaner {
 
 impl Cleaner {
     #[allow(clippy::too_many_arguments)]
-    pub async fn new(
+    pub(crate) async fn new(
         small_file_threshold: usize,
         enable_global_dedup_queries: bool,
         cas_prefix: String,
         repo_salt: Option<RepoSalt>,
         shard_manager: Arc<ShardFileManager>,
         remote_shards: Arc<RemoteShardInterface>,
-        cas: Arc<dyn Client + Send + Sync>,
+        xorb_uploader: Arc<ParallelXorbUploader>,
         cas_data: Arc<Mutex<CASDataAggregator>>,
         buffer_size: usize,
         file_name: Option<&Path>,
@@ -167,7 +167,7 @@ impl Cleaner {
             repo_salt,
             shard_manager,
             remote_shards,
-            cas,
+            xorb_uploader,
             global_cas_data: cas_data,
             chunk_data_queue: data_p,
             chunking_worker: Mutex::new(Some(chunker)),
@@ -536,13 +536,8 @@ impl Cleaner {
                     self.metrics.new_bytes_after_dedup.fetch_add(n_bytes as u64, Ordering::Relaxed);
 
                     if tracking_info.cas_data.data.len() > TARGET_CAS_BLOCK_SIZE {
-                        let cas_hash = register_new_cas_block(
-                            &mut tracking_info.cas_data,
-                            &self.shard_manager,
-                            &self.cas,
-                            &self.cas_prefix,
-                        )
-                        .await?;
+                        let cas_data = take(&mut tracking_info.cas_data);
+                        let cas_hash = self.xorb_uploader.register_new_cas_block(cas_data).await?;
 
                         for i in take(&mut tracking_info.current_cas_file_info_indices) {
                             tracking_info.file_info[i].cas_hash = cas_hash;
@@ -661,9 +656,9 @@ impl Cleaner {
                 .push((new_file_info, tracking_info.current_cas_file_info_indices.clone()));
 
             if cas_data_accumulator.data.len() >= TARGET_CAS_BLOCK_SIZE {
-                let mut new_cas_data = take(cas_data_accumulator.deref_mut());
+                let new_cas_data = take(cas_data_accumulator.deref_mut());
                 drop(cas_data_accumulator); // Release the lock.
-                register_new_cas_block(&mut new_cas_data, &self.shard_manager, &self.cas, &self.cas_prefix).await?;
+                self.xorb_uploader.register_new_cas_block(new_cas_data).await?;
             } else {
                 drop(cas_data_accumulator);
             }

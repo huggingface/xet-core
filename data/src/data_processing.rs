@@ -6,10 +6,8 @@ use std::sync::Arc;
 
 use cas_client::Client;
 use cas_types::FileRange;
-use mdb_shard::cas_structs::{CASChunkSequenceEntry, CASChunkSequenceHeader, MDBCASInfo};
 use mdb_shard::file_structs::MDBFileInfo;
 use mdb_shard::ShardFileManager;
-use merkledb::aggregate_hashes::cas_node_hash;
 use merklehash::MerkleHash;
 use tokio::sync::Mutex;
 use utils::ThreadPool;
@@ -17,13 +15,15 @@ use utils::ThreadPool;
 use crate::cas_interface::create_cas_client;
 use crate::clean::Cleaner;
 use crate::configurations::*;
+use crate::constants::MAX_CONCURRENT_XORB_UPLOADS;
 use crate::errors::*;
+use crate::parallel_xorb_uploader::ParallelXorbUploader;
 use crate::remote_shard_interface::RemoteShardInterface;
 use crate::shard_interface::create_shard_manager;
 use crate::PointerFile;
 
 #[derive(Default, Debug)]
-pub struct CASDataAggregator {
+pub(crate) struct CASDataAggregator {
     /// Bytes of all chunks accumulated in one CAS block concatenated together.
     pub data: Vec<u8>,
     /// Metadata of all chunks accumulated in one CAS block. Each entry is
@@ -59,6 +59,7 @@ pub struct PointerFileTranslator {
     shard_manager: Arc<ShardFileManager>,
     remote_shards: Arc<RemoteShardInterface>,
     cas: Arc<dyn Client + Send + Sync>,
+    xorb_uploader: Mutex<Option<Arc<ParallelXorbUploader>>>,
 
     /* ----- Deduped data shared across files ----- */
     global_cas_data: Arc<Mutex<CASDataAggregator>>,
@@ -105,6 +106,7 @@ impl PointerFileTranslator {
             shard_manager,
             remote_shards,
             cas: cas_client,
+            xorb_uploader: Mutex::new(None),
             global_cas_data: Default::default(),
             threadpool,
         })
@@ -124,6 +126,22 @@ impl PointerFileTranslator {
             return Err(DataProcessingError::DedupConfigError("empty dedup config".to_owned()));
         };
 
+        let mut xorb_uploader = self.xorb_uploader.lock().await;
+        let uploader = match xorb_uploader.take() {
+            Some(uploader) => uploader,
+            None => {
+                ParallelXorbUploader::new(
+                    &self.config.cas_storage_config.prefix,
+                    self.shard_manager.clone(),
+                    self.cas.clone(),
+                    self.threadpool.clone(),
+                    *MAX_CONCURRENT_XORB_UPLOADS * 2, // set buffer size to double the concurrent uploads should be enough
+                )
+                .await
+            },
+        };
+        *xorb_uploader = Some(uploader.clone());
+
         Cleaner::new(
             dedup.small_file_threshold,
             matches!(dedup.global_dedup_policy, GlobalDedupPolicy::Always),
@@ -131,7 +149,7 @@ impl PointerFileTranslator {
             dedup.repo_salt,
             self.shard_manager.clone(),
             self.remote_shards.clone(),
-            self.cas.clone(),
+            uploader,
             self.global_cas_data.clone(),
             buffer_size,
             file_name,
@@ -143,45 +161,30 @@ impl PointerFileTranslator {
     pub async fn finalize_cleaning(&self) -> Result<()> {
         // flush accumulated CAS data.
         let mut cas_data_accumulator = self.global_cas_data.lock().await;
-        let mut new_cas_data = take(cas_data_accumulator.deref_mut());
+        let new_cas_data = take(cas_data_accumulator.deref_mut());
         drop(cas_data_accumulator); // Release the lock.
 
+        let Some(ref xorb_uploader) = *self.xorb_uploader.lock().await else {
+            return Err(DataProcessingError::InternalError("no active xorb upload task".to_owned()));
+        };
+
         if !new_cas_data.is_empty() {
-            register_new_cas_block(
-                &mut new_cas_data,
-                &self.shard_manager,
-                &self.cas,
-                &self.config.cas_storage_config.prefix,
-            )
-            .await?;
+            xorb_uploader.register_new_cas_block(new_cas_data).await?;
         }
 
-        debug_assert!(new_cas_data.is_empty());
+        xorb_uploader.flush().await?;
 
         // flush accumulated memory shard.
         self.shard_manager.flush().await?;
 
-        self.upload().await?;
+        self.upload_shards().await?;
 
         Ok(())
     }
 
-    async fn upload(&self) -> Result<()> {
+    async fn upload_shards(&self) -> Result<()> {
         // First, get all the shards prepared and load them.
         let merged_shards_jh = self.remote_shards.merge_shards()?;
-
-        // Make sure that all the uploads and everything are in a good state before proceeding with
-        // anything changing the remote repository.
-        //
-        // Waiting until the CAS uploads finish avoids the following scenario:
-        // 1. user 1 commit file A and push, but network drops after
-        // sync_notes_to_remote before uploading cas finishes.
-        // 2. user 2 tries to git add the same file A, which on filter pulls in
-        // the new notes, and file A is 100% deduped so no CAS blocks will be created,
-        // and push.
-        //
-        // This results in a bad repo state.
-        self.upload_cas().await?;
 
         // Get a list of all the merged shards in order to upload them.
         let merged_shards = merged_shards_jh.await??;
@@ -195,72 +198,6 @@ impl PointerFileTranslator {
 
         Ok(())
     }
-
-    async fn upload_cas(&self) -> Result<()> {
-        // We don't have staging client support yet.
-        Ok(())
-    }
-}
-
-/// Clean operation helpers
-pub(crate) async fn register_new_cas_block(
-    cas_data: &mut CASDataAggregator,
-    shard_manager: &Arc<ShardFileManager>,
-    cas: &Arc<dyn Client + Send + Sync>,
-    cas_prefix: &str,
-) -> Result<MerkleHash> {
-    let cas_hash = cas_node_hash(&cas_data.chunks[..]);
-
-    let raw_bytes_len = cas_data.data.len();
-
-    let metadata = CASChunkSequenceHeader::new(cas_hash, cas_data.chunks.len(), raw_bytes_len);
-
-    let mut pos = 0;
-    let chunks: Vec<_> = cas_data
-        .chunks
-        .iter()
-        .map(|(h, len)| {
-            let result = CASChunkSequenceEntry::new(*h, *len, pos);
-            pos += *len;
-            result
-        })
-        .collect();
-    let cas_info = MDBCASInfo { metadata, chunks };
-
-    pos = 0;
-    let chunk_boundaries = cas_data
-        .chunks
-        .iter()
-        .map(|(hash, len)| {
-            pos += *len;
-            (*hash, pos as u32)
-        })
-        .collect();
-
-    if !cas_info.chunks.is_empty() {
-        cas.put(cas_prefix, &cas_hash, take(&mut cas_data.data), chunk_boundaries)
-            .await?;
-
-        shard_manager.add_cas_block(cas_info).await?;
-    } else {
-        debug_assert_eq!(cas_hash, MerkleHash::default());
-    }
-
-    // Now register any new files as needed.
-    for (mut fi, chunk_hash_indices) in take(&mut cas_data.pending_file_info) {
-        for i in chunk_hash_indices {
-            debug_assert_eq!(fi.segments[i].cas_hash, MerkleHash::default());
-            fi.segments[i].cas_hash = cas_hash;
-        }
-
-        shard_manager.add_file_reconstruction_info(fi).await?;
-    }
-
-    cas_data.data.clear();
-    cas_data.chunks.clear();
-    cas_data.pending_file_info.clear();
-
-    Ok(cas_hash)
 }
 
 /// Smudge operations

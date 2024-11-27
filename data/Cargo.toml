@@ -23,6 +23,8 @@ file_utils = { path = "../file_utils" }
 error_printer = { path = "../error_printer" }
 xet_error = { path = "../xet_error" }
 tokio = { version = "1.36", features = ["full"] }
+tokio-stream = "0.1.16"
+futures = "0.3.31"
 anyhow = "1"
 tracing = "0.1.*"
 async-trait = "0.1.53"
