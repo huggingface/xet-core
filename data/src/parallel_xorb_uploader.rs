@@ -99,6 +99,8 @@ impl ParallelXorbUploader {
     }
 
     pub async fn register_new_cas_block(&self, cas_data: CASDataAggregator) -> Result<MerkleHash> {
+        self.task_is_running().await?;
+
         let cas_hash = cas_node_hash(&cas_data.chunks[..]);
 
         let sender = self.xorb_data_queue.lock().await;
@@ -122,6 +124,11 @@ impl ParallelXorbUploader {
     }
 
     pub async fn flush(&self) -> Result<()> {
+        // no need to flush if task already finished
+        if self.task_is_running().await.is_err() {
+            return Ok(());
+        }
+
         let sender = self.xorb_data_queue.lock().await;
         let (signal_tx, signal_rx) = oneshot::channel();
         sender
@@ -130,6 +137,16 @@ impl ParallelXorbUploader {
             .map_err(|e| InternalError(format!("{e}")))?;
 
         signal_rx.await.map_err(|e| InternalError(format!("{e}")))?;
+
+        Ok(())
+    }
+
+    async fn task_is_running(&self) -> Result<()> {
+        let uploader_worker = self.upload_worker.lock().await;
+
+        if uploader_worker.is_none() {
+            return Err(UploadTaskError("no active upload task".to_owned()));
+        }
 
         Ok(())
     }
