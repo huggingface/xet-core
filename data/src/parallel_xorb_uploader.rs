@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{sync::Arc, time::Instant};
 
 use cas_client::Client;
 use futures::StreamExt;
@@ -15,9 +15,9 @@ use tokio::sync::{
 use tokio::task::JoinHandle;
 use utils::ThreadPool;
 
-use crate::constants::MAX_CONCURRENT_XORB_UPLOADS;
 use crate::data_processing::CASDataAggregator;
 use crate::errors::{DataProcessingError::*, *};
+use crate::{constants::MAX_CONCURRENT_XORB_UPLOADS, metrics::RUNTIME_XORB_UPLOAD};
 
 pub enum QueueItem<T: Send, S: Send> {
     Value(T),
@@ -174,7 +174,9 @@ async fn process_xorb_data_queue_item(
                 (*hash, pos as u32)
             })
             .collect();
+        let s = Instant::now();
         cas.put(cas_prefix, &cas_hash, data, chunk_and_boundaries).await?;
+        RUNTIME_XORB_UPLOAD.inc_by(s.elapsed().as_nanos().try_into().unwrap());
     }
 
     // register for dedup

@@ -17,7 +17,7 @@ use crate::errors::DataProcessingError;
 use crate::{errors, PointerFile, PointerFileTranslator};
 
 /// The maximum git filter protocol packet size
-pub const MAX_CONCURRENT_UPLOADS: usize = 8; // TODO
+pub const MAX_CONCURRENT_UPLOADS: usize = 1; // TODO
 pub const MAX_CONCURRENT_DOWNLOADS: usize = 8; // TODO
 
 const DEFAULT_CAS_ENDPOINT: &str = "http://localhost:8080";
