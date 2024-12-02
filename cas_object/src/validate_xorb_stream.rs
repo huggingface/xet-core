@@ -10,24 +10,23 @@ use merklehash::MerkleHash;
 use crate::cas_chunk_format::decompress_chunk_to_writer;
 use crate::cas_object_format::CAS_OBJECT_FORMAT_IDENT;
 use crate::error::{CasObjectError, Result, Validate};
-use crate::{parse_chunk_header, CASChunkHeader, CasObjectInfo};
+use crate::{parse_chunk_header, CASChunkHeader, CasObject, CasObjectInfo};
 
 // returns Ok(false) on a validation error, returns Err() on a real error
 // returns Ok(true) if no error occurred and the xorb is valid.
 pub async fn validate_cas_object_from_async_read<R: AsyncRead + Unpin>(
     reader: &mut R,
     hash: &MerkleHash,
-) -> Result<bool> {
+) -> Result<Option<CasObject>> {
     _validate_cas_object_from_async_read(reader, hash)
         .await
         .ok_for_format_error()
-        .map(|o| o.is_some())
 }
 
-async fn _validate_cas_object_from_async_read<R: AsyncRead + Unpin>(reader: &mut R, hash: &MerkleHash) -> Result<()> {
+async fn _validate_cas_object_from_async_read<R: AsyncRead + Unpin>(reader: &mut R, hash: &MerkleHash) -> Result<CasObject> {
     let mut chunk_boundary_offsets: Vec<u32> = Vec::new();
     let mut hash_chunks: Vec<Chunk> = Vec::new();
-    let cas_object_info: CasObjectInfo = loop {
+    let cas_object: CasObject = loop {
         let mut buf8 = [0u8; 8];
         reader.read_exact(&mut buf8).await?;
         if buf8[..CAS_OBJECT_FORMAT_IDENT.len()] == CAS_OBJECT_FORMAT_IDENT {
@@ -36,8 +35,8 @@ async fn _validate_cas_object_from_async_read<R: AsyncRead + Unpin>(reader: &mut
                 return Err(CasObjectError::FormatError(anyhow!("Xorb Invalid Format Version")));
             }
             // try to parse footer
-            let (cas_object_info, _) = CasObjectInfo::deserialize_async(reader, version).await?;
-            break cas_object_info;
+            let cas_object = CasObject::deserialize_async(reader, version).await?;
+            break cas_object;
         }
 
         // parse the chunk header, decompress the data, compute the hash
@@ -75,6 +74,7 @@ async fn _validate_cas_object_from_async_read<R: AsyncRead + Unpin>(reader: &mut
     };
 
     // validating footer against chunks contents
+    let cas_object_info = &cas_object.info;
 
     if cas_object_info.cashash != *hash {
         return Err(CasObjectError::FormatError(anyhow!("xorb listed hash does not match provided hash")));
@@ -115,5 +115,5 @@ async fn _validate_cas_object_from_async_read<R: AsyncRead + Unpin>(reader: &mut
         return Err(CasObjectError::FormatError(anyhow!("xorb computed hash does not match provided hash")));
     }
 
-    Ok(())
+    Ok(cas_object)
 }

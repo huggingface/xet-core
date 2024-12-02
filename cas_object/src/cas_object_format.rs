@@ -318,6 +318,22 @@ impl CasObject {
         Ok(Self { info, info_length })
     }
 
+    /// Construct CasObjectInfo object from AsyncRead.
+    /// assumes that the ident and version have already been read and verified.
+    ///
+    /// verifies that the length of the footer data matches the length field at the very end of the buffer
+    #[cfg(feature = "stream_xorb")]
+    pub async fn deserialize_async<R: futures::io::AsyncRead + Unpin>(
+        reader: &mut R,
+        version: u8,
+    ) -> Result<Self, CasObjectError> {
+        let (info, info_length) = CasObjectInfo::deserialize_async(reader, version).await?;
+        Ok(Self {
+            info,
+            info_length,
+        })
+    }
+
     /// Serialize into Cas Object from uncompressed data and chunk boundaries.
     /// Assumes correctness from caller: it's the receiver's responsibility to validate a cas object.
     pub fn serialize<W: Write + Seek>(
