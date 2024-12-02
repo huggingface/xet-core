@@ -15,7 +15,8 @@ use crate::cas_chunk_format::{deserialize_chunk, serialize_chunk};
 use crate::error::{CasObjectError, Validate};
 use crate::{range_hash_from_chunks, CompressionScheme};
 
-pub(crate) const CAS_OBJECT_FORMAT_IDENT: [u8; 7] = [b'X', b'E', b'T', b'B', b'L', b'O', b'B'];
+pub type CasObjectIdent = [u8; 7];
+pub(crate) const CAS_OBJECT_FORMAT_IDENT: CasObjectIdent = [b'X', b'E', b'T', b'B', b'L', b'O', b'B'];
 pub(crate) const CAS_OBJECT_FORMAT_VERSION: u8 = 0;
 const CAS_OBJECT_INFO_DEFAULT_LENGTH: u32 = 60;
 
@@ -23,7 +24,7 @@ const CAS_OBJECT_INFO_DEFAULT_LENGTH: u32 = 60;
 /// Info struct for [CasObject]. This is stored at the end of the XORB.
 pub struct CasObjectInfo {
     /// CAS identifier: "XETBLOB"
-    pub ident: [u8; 7],
+    pub ident: CasObjectIdent,
 
     /// Format version, expected to be 0 right now.
     pub version: u8,
@@ -176,7 +177,7 @@ impl CasObjectInfo {
         version: u8,
     ) -> Result<(Self, u32), CasObjectError> {
         // already read 8 bytes (ident + version)
-        let mut total_bytes_read: u32 = (size_of::<[u8; 7]>() + size_of::<u8>()) as u32;
+        let mut total_bytes_read: u32 = (size_of::<CasObjectIdent>() + size_of::<u8>()) as u32;
 
         // Helper function to read data and update the byte count
         async fn read_bytes<R: futures::io::AsyncRead + Unpin>(
