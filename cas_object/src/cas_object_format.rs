@@ -90,6 +90,7 @@ impl CasObjectInfo {
 
         // write variable field: chunk boundaries & hashes
         for offset in &self.chunk_boundary_offsets {
+            println!("offset: {offset} le {:?} in {:?}", offset.to_le_bytes(),  &self.chunk_boundary_offsets);
             write_bytes(&offset.to_le_bytes())?;
         }
         for hash in &self.chunk_hashes {
@@ -318,20 +319,15 @@ impl CasObject {
         Ok(Self { info, info_length })
     }
 
-    /// Construct CasObjectInfo object from AsyncRead.
+    /// Construct CasObject object from AsyncRead.
     /// assumes that the ident and version have already been read and verified.
-    ///
-    /// verifies that the length of the footer data matches the length field at the very end of the buffer
     #[cfg(feature = "stream_xorb")]
     pub async fn deserialize_async<R: futures::io::AsyncRead + Unpin>(
         reader: &mut R,
         version: u8,
     ) -> Result<Self, CasObjectError> {
         let (info, info_length) = CasObjectInfo::deserialize_async(reader, version).await?;
-        Ok(Self {
-            info,
-            info_length,
-        })
+        Ok(Self { info, info_length })
     }
 
     /// Serialize into Cas Object from uncompressed data and chunk boundaries.
@@ -701,11 +697,11 @@ pub mod test_utils {
 
 #[cfg(test)]
 mod tests {
-    use std::io::Cursor;
-
     use super::test_utils::*;
     use super::*;
     use crate::chunk_verification::VERIFICATION_KEY;
+    use futures::TryStreamExt;
+    use std::io::Cursor;
 
     #[test]
     fn test_default_header_initialization() {
@@ -1142,5 +1138,37 @@ mod tests {
 
         assert_eq!(c.info.num_chunks, c2.info.num_chunks);
         assert_eq!(raw_data, c2.get_all_bytes(&mut reader).unwrap());
+    }
+
+    #[cfg(feature = "stream_xorb")]
+    #[tokio::test]
+    async fn test_serialization_async_deserialization() {
+        // Arrange
+        let (c, _cas_data, raw_data, raw_chunk_boundaries) =
+            build_cas_object(64, ChunkSize::Random(512, 2048), CompressionScheme::LZ4);
+        let mut buf: Cursor<Vec<u8>> = Cursor::new(Vec::new());
+        // Act & Assert
+        assert!(CasObject::serialize(
+            &mut buf,
+            &c.info.cashash,
+            &raw_data,
+            &raw_chunk_boundaries,
+            CompressionScheme::LZ4
+        )
+        .is_ok());
+
+        let xorb_bytes = buf.into_inner();
+        // length - 4 byte for the info_length - info_length + ident + version (already read ident + version)
+        let start_pos = xorb_bytes.len() - size_of::<u32>() - c.info_length as usize
+            + size_of::<CasObjectIdent>()
+            + size_of::<u8>();
+
+        let chunks = xorb_bytes[start_pos..].chunks(10).map(|c| Ok(c)).collect::<Vec<_>>();
+        let mut xorb_footer_async_reader = futures::stream::iter(chunks).into_async_read();
+        let cas_object_result =
+            CasObject::deserialize_async(&mut xorb_footer_async_reader, CAS_OBJECT_FORMAT_VERSION).await;
+        assert!(cas_object_result.is_ok(), "{cas_object_result:?}");
+        let cas_object = cas_object_result.unwrap();
+        assert_eq!(c, cas_object);
     }
 }

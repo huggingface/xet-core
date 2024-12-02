@@ -10,7 +10,7 @@ use merklehash::MerkleHash;
 use crate::cas_chunk_format::decompress_chunk_to_writer;
 use crate::cas_object_format::CAS_OBJECT_FORMAT_IDENT;
 use crate::error::{CasObjectError, Result, Validate};
-use crate::{parse_chunk_header, CASChunkHeader, CasObject, CasObjectInfo};
+use crate::{parse_chunk_header, CASChunkHeader, CasObject};
 
 // returns Ok(false) on a validation error, returns Err() on a real error
 // returns Ok(true) if no error occurred and the xorb is valid.
@@ -18,12 +18,13 @@ pub async fn validate_cas_object_from_async_read<R: AsyncRead + Unpin>(
     reader: &mut R,
     hash: &MerkleHash,
 ) -> Result<Option<CasObject>> {
-    _validate_cas_object_from_async_read(reader, hash)
-        .await
-        .ok_for_format_error()
+    _validate_cas_object_from_async_read(reader, hash).await.ok_for_format_error()
 }
 
-async fn _validate_cas_object_from_async_read<R: AsyncRead + Unpin>(reader: &mut R, hash: &MerkleHash) -> Result<CasObject> {
+async fn _validate_cas_object_from_async_read<R: AsyncRead + Unpin>(
+    reader: &mut R,
+    hash: &MerkleHash,
+) -> Result<CasObject> {
     let mut chunk_boundary_offsets: Vec<u32> = Vec::new();
     let mut hash_chunks: Vec<Chunk> = Vec::new();
     let cas_object: CasObject = loop {
@@ -116,4 +117,64 @@ async fn _validate_cas_object_from_async_read<R: AsyncRead + Unpin>(reader: &mut
     }
 
     Ok(cas_object)
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::test_utils::*;
+    use crate::{validate_cas_object_from_async_read, CasObject, CompressionScheme};
+    use futures::{AsyncRead, TryStreamExt};
+    use std::io::Cursor;
+
+    fn get_xorb(
+        num_chunks: u32,
+        chunk_size: ChunkSize,
+        compression_scheme: CompressionScheme,
+        split: usize,
+    ) -> (CasObject, impl AsyncRead + Unpin) {
+        // Arrange
+        let (c, _cas_data, raw_data, raw_chunk_boundaries) =
+            build_cas_object(num_chunks, chunk_size, compression_scheme);
+        let mut buf: Cursor<Vec<u8>> = Cursor::new(Vec::new());
+        // Act & Assert
+        assert!(CasObject::serialize(
+            &mut buf,
+            &c.info.cashash,
+            &raw_data,
+            &raw_chunk_boundaries,
+            compression_scheme,
+        ).is_ok());
+
+
+        let xorb_bytes = buf.into_inner();
+        let split = xorb_bytes
+            .chunks(xorb_bytes.len() / split)
+            .map(|c| Ok(c.to_vec()))
+            .collect::<Vec<_>>();
+        let async_reader = futures::stream::iter(split).into_async_read();
+        (c, async_reader)
+    }
+
+    #[tokio::test]
+    async fn test_validate_xorb() {
+        let cases = [
+            (1, ChunkSize::Fixed(1000), CompressionScheme::None, 1),
+            (100, ChunkSize::Fixed(1000), CompressionScheme::None, 1),
+            (100, ChunkSize::Fixed(1000), CompressionScheme::LZ4, 1),
+            (100, ChunkSize::Fixed(1000), CompressionScheme::None, 10),
+            (100, ChunkSize::Fixed(1000), CompressionScheme::None, 100),
+            (100, ChunkSize::Random(512, 2048), CompressionScheme::LZ4, 100),
+            (1000, ChunkSize::Random(10 << 10, 20 << 10), CompressionScheme::LZ4, 2000), // chunk size 10KiB-20KiB
+        ];
+
+        for (i, (num_chunks, chunk_size, compression_scheme, split)) in cases.into_iter().enumerate() {
+            let (cas_object, mut xorb_reader) = get_xorb(num_chunks, chunk_size, compression_scheme, split);
+            let validated_result = validate_cas_object_from_async_read(&mut xorb_reader, &cas_object.info.cashash).await;
+            assert!(validated_result.is_ok());
+            let validated_option = validated_result.unwrap();
+            assert!(validated_option.is_some());
+            let validated = validated_option.unwrap();
+            assert_eq!(validated, cas_object, "failed to match footers, iter {i}");
+        }
+    }
 }
