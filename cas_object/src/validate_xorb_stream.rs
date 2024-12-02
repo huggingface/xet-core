@@ -121,10 +121,12 @@ async fn _validate_cas_object_from_async_read<R: AsyncRead + Unpin>(
 
 #[cfg(test)]
 mod tests {
+    use std::io::Cursor;
+
+    use futures::{AsyncRead, TryStreamExt};
+
     use crate::test_utils::*;
     use crate::{validate_cas_object_from_async_read, CasObject, CompressionScheme};
-    use futures::{AsyncRead, TryStreamExt};
-    use std::io::Cursor;
 
     fn get_xorb(
         num_chunks: u32,
@@ -137,14 +139,10 @@ mod tests {
             build_cas_object(num_chunks, chunk_size, compression_scheme);
         let mut buf: Cursor<Vec<u8>> = Cursor::new(Vec::new());
         // Act & Assert
-        assert!(CasObject::serialize(
-            &mut buf,
-            &c.info.cashash,
-            &raw_data,
-            &raw_chunk_boundaries,
-            compression_scheme,
-        ).is_ok());
-
+        assert!(
+            CasObject::serialize(&mut buf, &c.info.cashash, &raw_data, &raw_chunk_boundaries, compression_scheme,)
+                .is_ok()
+        );
 
         let xorb_bytes = buf.into_inner();
         let split = xorb_bytes
@@ -169,7 +167,8 @@ mod tests {
 
         for (i, (num_chunks, chunk_size, compression_scheme, split)) in cases.into_iter().enumerate() {
             let (cas_object, mut xorb_reader) = get_xorb(num_chunks, chunk_size, compression_scheme, split);
-            let validated_result = validate_cas_object_from_async_read(&mut xorb_reader, &cas_object.info.cashash).await;
+            let validated_result =
+                validate_cas_object_from_async_read(&mut xorb_reader, &cas_object.info.cashash).await;
             assert!(validated_result.is_ok());
             let validated_option = validated_result.unwrap();
             assert!(validated_option.is_some());

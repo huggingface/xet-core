@@ -90,7 +90,7 @@ impl CasObjectInfo {
 
         // write variable field: chunk boundaries & hashes
         for offset in &self.chunk_boundary_offsets {
-            println!("offset: {offset} le {:?} in {:?}", offset.to_le_bytes(),  &self.chunk_boundary_offsets);
+            println!("offset: {offset} le {:?} in {:?}", offset.to_le_bytes(), &self.chunk_boundary_offsets);
             write_bytes(&offset.to_le_bytes())?;
         }
         for hash in &self.chunk_hashes {
@@ -697,11 +697,13 @@ pub mod test_utils {
 
 #[cfg(test)]
 mod tests {
+    use std::io::Cursor;
+
+    use futures::TryStreamExt;
+
     use super::test_utils::*;
     use super::*;
     use crate::chunk_verification::VERIFICATION_KEY;
-    use futures::TryStreamExt;
-    use std::io::Cursor;
 
     #[test]
     fn test_default_header_initialization() {
