@@ -14,11 +14,7 @@ lz4_flex = "0.11.3"
 bytes = "1.7.2"
 rand = "0.8.5"
 blake3 = "1.5.4"
-futures = { version = "0.3.31", optional = true }
-tokio-util = {version = "0.7.12", optional = true, features = ["io"]}
-tokio = {version = "1.41.1", optional = true}
+futures = { version = "0.3.31" }
+tokio-util = {version = "0.7.12",  features = ["io"]}
+tokio = {version = "1.41.1" }
 
-[features]
-default = []
-async_chunk_deserialize = ["dep:futures", "dep:tokio-util", "dep:tokio"]
-stream_xorb = ["async_chunk_deserialize"]

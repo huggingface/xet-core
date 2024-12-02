@@ -4,7 +4,6 @@ use std::mem::size_of;
 
 use anyhow::anyhow;
 use bytes::Buf;
-#[cfg(feature = "stream_xorb")]
 use futures::AsyncReadExt;
 use merkledb::prelude::MerkleDBHighLevelMethodsV1;
 use merkledb::{Chunk, MerkleMemDB};
@@ -171,7 +170,6 @@ impl CasObjectInfo {
     /// assumes that the ident and version have already been read and verified.
     ///
     /// verifies that the length of the footer data matches the length field at the very end of the buffer
-    #[cfg(feature = "stream_xorb")]
     pub async fn deserialize_async<R: futures::io::AsyncRead + Unpin>(
         reader: &mut R,
         version: u8,
@@ -320,7 +318,6 @@ impl CasObject {
 
     /// Construct CasObject object from AsyncRead.
     /// assumes that the ident and version have already been read and verified.
-    #[cfg(feature = "stream_xorb")]
     pub async fn deserialize_async<R: futures::io::AsyncRead + Unpin>(
         reader: &mut R,
         version: u8,
@@ -1141,7 +1138,6 @@ mod tests {
         assert_eq!(raw_data, c2.get_all_bytes(&mut reader).unwrap());
     }
 
-    #[cfg(feature = "stream_xorb")]
     #[tokio::test]
     async fn test_serialization_async_deserialization() {
         // Arrange

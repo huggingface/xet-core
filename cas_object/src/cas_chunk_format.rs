@@ -7,7 +7,6 @@ use lz4_flex::frame::{FrameDecoder, FrameEncoder};
 use crate::error::CasObjectError;
 use crate::CompressionScheme;
 
-#[cfg(feature = "async_chunk_deserialize")]
 pub mod deserialize_async;
 
 pub const CAS_CHUNK_HEADER_LENGTH: usize = size_of::<CASChunkHeader>();
