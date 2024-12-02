@@ -90,7 +90,6 @@ impl CasObjectInfo {
 
         // write variable field: chunk boundaries & hashes
         for offset in &self.chunk_boundary_offsets {
-            println!("offset: {offset} le {:?} in {:?}", offset.to_le_bytes(), &self.chunk_boundary_offsets);
             write_bytes(&offset.to_le_bytes())?;
         }
         for hash in &self.chunk_hashes {
