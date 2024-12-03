@@ -1146,8 +1146,6 @@ impl MDBShardInfo {
                 debug_assert_eq!(file_lookup.len(), self_.metadata.file_lookup_num_entry as usize);
             }
 
-            debug_assert!(file_lookup.is_sorted_by_key(|s| s.0));
-
             for &(key, idx) in file_lookup.iter() {
                 write_u64(writer, key)?;
                 write_u32(writer, idx)?;
@@ -1167,8 +1165,6 @@ impl MDBShardInfo {
             if let Some(self_) = self_verification {
                 debug_assert_eq!(cas_lookup.len(), self_.metadata.cas_lookup_num_entry as usize);
             }
-
-            debug_assert!(cas_lookup.is_sorted_by_key(|s| s.0));
 
             for &(key, idx) in cas_lookup.iter() {
                 write_u64(writer, key)?;
