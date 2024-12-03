@@ -202,41 +202,43 @@ pub fn initialize_logging() {
             .with(telemetry_filter_layer)
             .init();
 
-        let _telemetry_task = tokio::task::spawn({
-            let log_buffer = Arc::clone(&telemetry_log_buffer);
-            let log_stats = Arc::clone(&telemetry_log_stats);
-            async move {
-                loop {
-                    let mut read_len: usize = 0;
-                    let mut http_header_map: HeaderMap = HeaderMap::new();
-                    {
-                        let mut buffer = log_buffer.lock().unwrap();
+        if let Some(endpoint) = get_telemetry_endpoint() {
+            let _telemetry_task = tokio::task::spawn({
+                let log_buffer = Arc::clone(&telemetry_log_buffer);
+                let log_stats = Arc::clone(&telemetry_log_stats);
+                let client = reqwest::Client::new();
+                let telemetry_url = format!("https://{endpoint}/{TELEMETRY_SUFFIX}");
+                async move {
+                    loop {
+                        let mut read_len: usize = 0;
+                        let mut http_header_map: HeaderMap = HeaderMap::new();
+                        {
+                            let mut buffer = log_buffer.lock().unwrap();
 
-                        if let Some(block) = buffer.read() {
-                            read_len = block.len();
-                            log_stats.bytes_read.fetch_add(read_len as u64, Ordering::Relaxed);
+                            if let Some(block) = buffer.read() {
+                                read_len = block.len();
+                                log_stats.bytes_read.fetch_add(read_len as u64, Ordering::Relaxed);
 
-                            if let Ok(deserialized) = serde_json::from_slice::<SerializableHeaders>(block) {
-                                if let Ok(http_header_map_deserialized) = deserialized.try_into() {
-                                    log_stats.records_read.fetch_add(1, Ordering::Relaxed);
-                                    http_header_map = http_header_map_deserialized;
+                                if let Ok(deserialized) = serde_json::from_slice::<SerializableHeaders>(block) {
+                                    if let Ok(http_header_map_deserialized) = deserialized.try_into() {
+                                        log_stats.records_read.fetch_add(1, Ordering::Relaxed);
+                                        http_header_map = http_header_map_deserialized;
+                                    } else {
+                                        log_stats.records_corrupted.fetch_add(1, Ordering::Relaxed);
+                                    }
                                 } else {
                                     log_stats.records_corrupted.fetch_add(1, Ordering::Relaxed);
                                 }
-                            } else {
-                                log_stats.records_corrupted.fetch_add(1, Ordering::Relaxed);
                             }
                         }
-                    }
-                    if read_len > 0 {
-                        let mut buffer = log_buffer.lock().unwrap();
-                        buffer.decommit(read_len);
-                    }
-                    if !http_header_map.is_empty() {
-                        if let Some(endpoint) = get_telemetry_endpoint() {
-                            let telemetry_url = format!("https://{endpoint}/{TELEMETRY_SUFFIX}");
-                            let client = reqwest::Client::new();
-                            if let Ok(response) = client.head(telemetry_url).headers(http_header_map).send().await {
+                        if read_len > 0 {
+                            let mut buffer = log_buffer.lock().unwrap();
+                            buffer.decommit(read_len);
+                        }
+                        if !http_header_map.is_empty() {
+                            if let Ok(response) =
+                                client.head(telemetry_url.clone()).headers(http_header_map).send().await
+                            {
                                 if response.status().is_success() {
                                     log_stats.records_transmitted.fetch_add(1, Ordering::Relaxed);
                                 } else {
@@ -246,11 +248,11 @@ pub fn initialize_logging() {
                                 log_stats.records_dropped.fetch_add(1, Ordering::Relaxed);
                             }
                         }
+                        tokio::time::sleep(tokio::time::Duration::from_millis(TELEMETRY_PERIOD_MS)).await;
                     }
-                    tokio::time::sleep(tokio::time::Duration::from_millis(TELEMETRY_PERIOD_MS)).await;
                 }
-            }
-        });
+            });
+        }
     }
 }
 
