@@ -24,6 +24,7 @@ bytes = "1.8.0"
 
 [dev-dependencies]
 tokio = { version = "1.36", features = ["full"] }
+tempfile = "3.14.0"
 
 [features]
 strict = []

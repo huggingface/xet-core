@@ -1,3 +1,4 @@
+use std::io::Write;
 use std::pin::Pin;
 use std::task::{ready, Context, Poll};
 
@@ -7,37 +8,34 @@ use futures::AsyncRead;
 // wraps over an AsyncRead, copying all the contents read from the inner reader
 // and buffers it in an internal buffer which can be retrieved by calling .consume()
 // to return a copy of all the content that was read.
-pub struct CopyReader<'a, T> {
+pub struct CopyReader<'a,'w, T,  W> {
     src: Pin<&'a mut T>,
-    buf: Vec<u8>,
+    writer: &'w mut W,
 }
 
-impl<'a, T: AsyncRead + Unpin> AsyncRead for CopyReader<'a, T> {
+impl<'a,'w, T: AsyncRead + Unpin,  W: Write> AsyncRead for CopyReader<'a,'w, T,  W> {
     fn poll_read(mut self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &mut [u8]) -> Poll<std::io::Result<usize>> {
         let res = ready!(self.src.as_mut().poll_read(cx, buf))?;
-        self.buf.extend_from_slice(&buf[..res]);
+        self.writer.write_all(&buf[..res])?;
         Poll::Ready(Ok(res))
     }
 }
 
-impl<'a, T: AsyncRead + Unpin> Unpin for CopyReader<'a, T> {}
+impl<'a, 'w, T: AsyncRead + Unpin, W: Write> Unpin for CopyReader<'a, 'w, T, W> {}
 
-impl<'a, T: AsyncRead + Unpin> CopyReader<'a, T> {
-    pub fn new(src: Pin<&'a mut T>) -> Self {
-        Self { src, buf: Vec::new() }
-    }
-
-    pub fn consume(self) -> Vec<u8> {
-        self.buf
+impl<'a, 'w, T: AsyncRead + Unpin, W: Write> CopyReader<'a, 'w, T, W> {
+    pub fn new(src: Pin<&'a mut T>, writer: &'w mut W) -> Self {
+        Self { src, writer }
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use std::io::{Read, Seek, SeekFrom};
     use bytes::Bytes;
     use futures::io::Cursor;
     use futures::{AsyncReadExt, TryStreamExt};
-
+    use tempfile::tempfile;
     use super::*;
 
     #[tokio::test]
@@ -51,10 +49,36 @@ mod tests {
         ];
 
         for mut reader in readers {
-            let mut copy_reader = CopyReader::new(Pin::new(&mut reader));
+            let mut writer = Vec::new();
+            let mut copy_reader = CopyReader::new(Pin::new(&mut reader), &mut writer);
             let mut buf = Vec::new();
             assert!(copy_reader.read_to_end(&mut buf).await.is_ok());
-            assert_eq!(buf, copy_reader.consume());
+            assert_eq!(buf, writer);
+        }
+    }
+
+    #[tokio::test]
+    async fn test_copy_reader_to_file() {
+        let readers: Vec<Box<dyn AsyncRead + Unpin>> = vec![
+            Box::new(Cursor::new("abcdeflaksjdlakjsldkajlfkjal".as_bytes())),
+            Box::new(Cursor::new(vec![0x88; 10000])),
+            n_stream(3),
+            n_stream(500),
+            n_stream(10000),
+        ];
+
+        for mut reader in readers {
+            let mut writer = tempfile().unwrap();
+            let mut copy_reader = CopyReader::new(Pin::new(&mut reader), &mut writer);
+            let mut buf = Vec::new();
+            assert!(copy_reader.read_to_end(&mut buf).await.is_ok());
+
+            // read file to compare contents
+            assert!(writer.seek(SeekFrom::Start(0)).is_ok());
+            let mut file_contents = Vec::new();
+            assert!(writer.read_to_end(&mut file_contents).is_ok());
+
+            assert_eq!(buf, file_contents);
         }
     }
 
@@ -63,10 +87,11 @@ mod tests {
         let readers: Vec<Box<dyn AsyncRead + Unpin>> = vec![Box::new(Cursor::new(vec![0x88; 1024])), n_stream(10000)];
 
         for mut reader in readers {
-            let mut copy_reader = CopyReader::new(Pin::new(&mut reader));
+            let mut writer = Vec::new();
+            let mut copy_reader = CopyReader::new(Pin::new(&mut reader), &mut writer);
             let mut buf = vec![0; 512];
             assert!(copy_reader.read_exact(&mut buf).await.is_ok());
-            assert_eq!(buf, copy_reader.consume());
+            assert_eq!(buf, writer);
         }
     }
 
