@@ -8,12 +8,12 @@ use futures::AsyncRead;
 // wraps over an AsyncRead, copying all the contents read from the inner reader
 // and buffers it in an internal buffer which can be retrieved by calling .consume()
 // to return a copy of all the content that was read.
-pub struct CopyReader<'r,'w, R,  W> {
+pub struct CopyReader<'r, 'w, R, W> {
     src: Pin<&'r mut R>,
     writer: &'w mut W,
 }
 
-impl<'r,'w, R: AsyncRead + Unpin,  W: Write> AsyncRead for CopyReader<'r,'w, R,  W> {
+impl<'r, 'w, R: AsyncRead + Unpin, W: Write> AsyncRead for CopyReader<'r, 'w, R, W> {
     fn poll_read(mut self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &mut [u8]) -> Poll<std::io::Result<usize>> {
         let res = ready!(self.src.as_mut().poll_read(cx, buf))?;
         self.writer.write_all(&buf[..res])?;
@@ -33,10 +33,12 @@ impl<'r, 'w, R: AsyncRead + Unpin, W: Write> CopyReader<'r, 'w, R, W> {
 #[cfg(test)]
 mod tests {
     use std::io::{Read, Seek, SeekFrom};
+
     use bytes::Bytes;
     use futures::io::Cursor;
     use futures::{AsyncReadExt, TryStreamExt};
     use tempfile::tempfile;
+
     use super::*;
 
     #[tokio::test]
