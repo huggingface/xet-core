@@ -1079,7 +1079,7 @@ impl MDBShardInfo {
 
                 // Put in the lookup information
                 file_lookup.push((truncate_hash(&file_metadata.file_hash), index));
-                index += (n_extended_bytes / MDB_FILE_INFO_ENTRY_SIZE) as u32;
+                index += (1 + num_entries + n_extended_bytes / MDB_FILE_INFO_ENTRY_SIZE) as u32;
             } else {
                 // Discard values until the next reader break.
                 copy(&mut reader.take(n_extended_bytes as u64), &mut std::io::sink())?;
