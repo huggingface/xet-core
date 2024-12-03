@@ -50,15 +50,19 @@ impl MDBShardFile {
             hashed_write = HashedWrite::new(out_file);
 
             std::io::copy(reader, &mut hashed_write)?;
+            hashed_write.flush()?;
         }
 
         // Get the hash
-        hashed_write.flush()?;
         let shard_hash = hashed_write.hash();
 
         let full_file_name = target_directory.join(shard_file_name(&shard_hash));
 
         std::fs::rename(&temp_file_name, &full_file_name)?;
+
+        let si = MDBShardInfo::load_from_file(reader)?;
+
+        debug_assert_eq!(MDBShardInfo::load_from_file(&mut Cursor::new(&mut std::fs::read(&full_file_name)?))?, si);
 
         Self::new(shard_hash, full_file_name, MDBShardInfo::load_from_file(reader)?)
     }
@@ -261,7 +265,7 @@ impl MDBShardFile {
         // Verify that the shard chunk lookup tables are correct.
 
         // Read from the lookup table section.
-        let read_truncated_hashes = self.read_all_truncated_hashes().unwrap();
+        let mut read_truncated_hashes = self.read_all_truncated_hashes().unwrap();
 
         let mut truncated_hashes = Vec::new();
 
@@ -276,7 +280,9 @@ impl MDBShardFile {
             cas_index += 1 + ci.chunks.len();
         }
 
+        read_truncated_hashes.sort_by_key(|s| s.0);
         truncated_hashes.sort_by_key(|s| s.0);
+
         assert_eq!(read_truncated_hashes, truncated_hashes);
     }
 }

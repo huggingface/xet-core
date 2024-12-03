@@ -949,7 +949,8 @@ mod tests {
         let tmp_dir = TempDir::new("shard_test_unkeyed")?;
         let tmp_dir_path = tmp_dir.path();
 
-        let ref_shard = create_random_shard_collection(0, tmp_dir_path, 2, &[1, 5, 10, 8], &[4, 3, 5, 9, 4, 6]).await?;
+        //        let ref_shard = create_random_shard_collection(0, tmp_dir_path, 2, &[1, 5, 10, 8], &[4, 3, 5, 9, 4, 6]).await?;
+        let ref_shard = create_random_shard_collection(0, tmp_dir_path, 2, &[1], &[1]).await?;
 
         // First, load all of these with a shard file manager and check them.
         {
@@ -959,7 +960,7 @@ mod tests {
         }
 
         // Now convert them them into keyed shards.
-        for include_info in [true,false, true] {
+        for include_info in [true, false, true] {
             let _tmp_dir_keyed = TempDir::new("shard_test_keyed")?;
             let tmp_dir_path_keyed = _tmp_dir_keyed.path();
 

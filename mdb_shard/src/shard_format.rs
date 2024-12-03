@@ -54,7 +54,7 @@ pub fn current_timestamp() -> u64 {
         .as_secs()
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct MDBShardFileHeader {
     // Header to be determined?  "XetHub MDB Shard File Version 1"
     pub tag: [u8; 32],
@@ -274,7 +274,7 @@ impl MDBShardFileFooter {
 /// in the CAS info section that is the start of the CAS block, and the subsequent u32 gives
 /// the offset index of the chunk in that CAS block.
 
-#[derive(Clone, Default, Debug)]
+#[derive(Clone, Default, Debug, PartialEq)]
 pub struct MDBShardInfo {
     pub header: MDBShardFileHeader,
     pub metadata: MDBShardFileFooter,
@@ -599,11 +599,15 @@ impl MDBShardInfo {
     pub fn read_all_cas_blocks_full<R: Read + Seek>(&self, reader: &mut R) -> Result<Vec<MDBCASInfo>> {
         let mut ret = Vec::with_capacity(self.num_cas_entries());
 
-        reader.seek(SeekFrom::Start(self.metadata.cas_info_offset))?;
+        let (cas_info_start, _cas_info_end) = self.cas_info_byte_range();
 
-        while let Some(cas_info) = MDBCASInfo::deserialize(reader)? {
+        reader.seek(SeekFrom::Start(cas_info_start)).unwrap();
+
+        while let Some(cas_info) = MDBCASInfo::deserialize(reader).unwrap() {
+            debug_assert!(reader.stream_position()? < _cas_info_end);
             ret.push(cas_info);
         }
+        debug_assert_eq!(reader.stream_position()?, _cas_info_end);
 
         Ok(ret)
     }
@@ -1040,6 +1044,7 @@ impl MDBShardInfo {
             let file_metadata = FileDataSequenceHeader::deserialize(reader)?;
 
             if file_metadata.is_bookend() {
+                // Serialize the bookend struct and move on.
                 byte_pos += file_metadata.serialize(writer)?;
                 break;
             }
@@ -1057,7 +1062,7 @@ impl MDBShardInfo {
             }
 
             if include_file_info {
-                file_metadata.serialize(writer)?;
+                byte_pos += file_metadata.serialize(writer)?;
 
                 // Need to read in the metadata values so we can calculate the materialized bytes
                 for _ in 0..num_entries {
@@ -1097,6 +1102,8 @@ impl MDBShardInfo {
 
         loop {
             let cas_metadata = CASChunkSequenceHeader::deserialize(reader)?;
+
+            // All metadata gets serialized.
             byte_pos += cas_metadata.serialize(writer)?;
 
             if cas_metadata.is_bookend() {
@@ -1199,6 +1206,7 @@ impl MDBShardInfo {
 
         // Add in the timestamps.
         let creation_time = std::time::SystemTime::now();
+
         out_footer.shard_creation_timestamp = creation_time.duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
         out_footer.shard_key_expiry = creation_time
             .add(key_valid_for)
