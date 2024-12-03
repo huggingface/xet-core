@@ -12,8 +12,14 @@ use crate::cas_object_format::CAS_OBJECT_FORMAT_IDENT;
 use crate::error::{CasObjectError, Result, Validate};
 use crate::{parse_chunk_header, CASChunkHeader, CasObject};
 
-// returns Ok(false) on a validation error, returns Err() on a real error
-// returns Ok(true) if no error occurred and the xorb is valid.
+/// takes an async reader to the entire xorb data and validated that the xorb is correctly formatted
+/// and returns the deserialized CasObject (metadata)
+///
+/// if either the hash stored in the metadata section of the validated xorb or the computed hash
+/// do not match the provided hash, this function considers the provided xorb invalid.
+///
+/// returns Ok(None) on a validation error, returns Err() on a real error
+/// returns Ok(<CasObject>) of no error occurred and the xorb is valid.
 pub async fn validate_cas_object_from_async_read<R: AsyncRead + Unpin>(
     reader: &mut R,
     hash: &MerkleHash,
@@ -21,6 +27,8 @@ pub async fn validate_cas_object_from_async_read<R: AsyncRead + Unpin>(
     _validate_cas_object_from_async_read(reader, hash).await.ok_for_format_error()
 }
 
+// matches validate_cas_object_from_async_read but returns Err(CasObjectError::FormatError(...)) on
+// an invalid xorb
 async fn _validate_cas_object_from_async_read<R: AsyncRead + Unpin>(
     reader: &mut R,
     hash: &MerkleHash,
