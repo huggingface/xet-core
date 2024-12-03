@@ -8,12 +8,12 @@ use futures::AsyncRead;
 // wraps over an AsyncRead, copying all the contents read from the inner reader
 // and buffers it in an internal buffer which can be retrieved by calling .consume()
 // to return a copy of all the content that was read.
-pub struct CopyReader<'a,'w, T,  W> {
-    src: Pin<&'a mut T>,
+pub struct CopyReader<'r,'w, R,  W> {
+    src: Pin<&'r mut R>,
     writer: &'w mut W,
 }
 
-impl<'a,'w, T: AsyncRead + Unpin,  W: Write> AsyncRead for CopyReader<'a,'w, T,  W> {
+impl<'r,'w, R: AsyncRead + Unpin,  W: Write> AsyncRead for CopyReader<'r,'w, R,  W> {
     fn poll_read(mut self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &mut [u8]) -> Poll<std::io::Result<usize>> {
         let res = ready!(self.src.as_mut().poll_read(cx, buf))?;
         self.writer.write_all(&buf[..res])?;
@@ -21,10 +21,11 @@ impl<'a,'w, T: AsyncRead + Unpin,  W: Write> AsyncRead for CopyReader<'a,'w, T, 
     }
 }
 
-impl<'a, 'w, T: AsyncRead + Unpin, W: Write> Unpin for CopyReader<'a, 'w, T, W> {}
+impl<'r, 'w, R: AsyncRead + Unpin, W: Write> Unpin for CopyReader<'r, 'w, R, W> {}
 
-impl<'a, 'w, T: AsyncRead + Unpin, W: Write> CopyReader<'a, 'w, T, W> {
-    pub fn new(src: Pin<&'a mut T>, writer: &'w mut W) -> Self {
+impl<'r, 'w, R: AsyncRead + Unpin, W: Write> CopyReader<'r, 'w, R, W> {
+    pub fn new(src: &'r mut R, writer: &'w mut W) -> Self {
+        let src = Pin::new(src);
         Self { src, writer }
     }
 }
@@ -50,7 +51,7 @@ mod tests {
 
         for mut reader in readers {
             let mut writer = Vec::new();
-            let mut copy_reader = CopyReader::new(Pin::new(&mut reader), &mut writer);
+            let mut copy_reader = CopyReader::new(&mut reader, &mut writer);
             let mut buf = Vec::new();
             assert!(copy_reader.read_to_end(&mut buf).await.is_ok());
             assert_eq!(buf, writer);
@@ -69,7 +70,7 @@ mod tests {
 
         for mut reader in readers {
             let mut writer = tempfile().unwrap();
-            let mut copy_reader = CopyReader::new(Pin::new(&mut reader), &mut writer);
+            let mut copy_reader = CopyReader::new(&mut reader, &mut writer);
             let mut buf = Vec::new();
             assert!(copy_reader.read_to_end(&mut buf).await.is_ok());
 
@@ -88,7 +89,7 @@ mod tests {
 
         for mut reader in readers {
             let mut writer = Vec::new();
-            let mut copy_reader = CopyReader::new(Pin::new(&mut reader), &mut writer);
+            let mut copy_reader = CopyReader::new(&mut reader, &mut writer);
             let mut buf = vec![0; 512];
             assert!(copy_reader.read_exact(&mut buf).await.is_ok());
             assert_eq!(buf, writer);
