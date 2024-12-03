@@ -12,7 +12,7 @@ use crate::cas_object_format::CAS_OBJECT_FORMAT_IDENT;
 use crate::error::{CasObjectError, Result, Validate};
 use crate::{parse_chunk_header, CASChunkHeader, CasObject};
 
-/// takes an async reader to the entire xorb data and validated that the xorb is correctly formatted
+/// takes an async reader to the entire xorb data and validates that the xorb is correctly formatted
 /// and returns the deserialized CasObject (metadata)
 ///
 /// if either the hash stored in the metadata section of the validated xorb or the computed hash
@@ -41,10 +41,13 @@ async fn _validate_cas_object_from_async_read<R: AsyncRead + Unpin>(
         if buf8[..CAS_OBJECT_FORMAT_IDENT.len()] == CAS_OBJECT_FORMAT_IDENT {
             let version = buf8[CAS_OBJECT_FORMAT_IDENT.len()..][0];
             if version != crate::cas_object_format::CAS_OBJECT_FORMAT_VERSION {
-                return Err(CasObjectError::FormatError(anyhow!("Xorb Invalid Format Version")));
+                return Err(CasObjectError::FormatError(anyhow!("Xorb Invalid Format Version: {version}")))
+                    .log_error(format!("invalid version for xorb: {hash}"));
             }
             // try to parse footer
-            let cas_object = CasObject::deserialize_async(reader, version).await?;
+            let cas_object = CasObject::deserialize_async(reader, version)
+                .await
+                .log_error("failed to deserialize footer")?;
             break cas_object;
         }
 
@@ -53,11 +56,16 @@ async fn _validate_cas_object_from_async_read<R: AsyncRead + Unpin>(
 
         let chunk_compressed_len = chunk_header.get_compressed_length() as usize;
         let mut compressed_chunk_data = vec![0u8; chunk_compressed_len];
-        reader.read_exact(&mut compressed_chunk_data).await?;
+        reader.read_exact(&mut compressed_chunk_data).await.log_error(format!(
+            "failed to read {} bytes chunk data at index {}",
+            chunk_compressed_len,
+            hash_chunks.len()
+        ))?;
 
         let chunk_uncompressed_expected_len = chunk_header.get_uncompressed_length() as usize;
         let mut uncompressed_chunk_data = Vec::with_capacity(chunk_uncompressed_expected_len);
-        decompress_chunk_to_writer(chunk_header, &mut compressed_chunk_data, &mut uncompressed_chunk_data)?;
+        decompress_chunk_to_writer(chunk_header, &mut compressed_chunk_data, &mut uncompressed_chunk_data)
+            .log_error(format!("failed to decompress chunk at index {}, xorb {hash}", hash_chunks.len()))?;
 
         if chunk_uncompressed_expected_len != uncompressed_chunk_data.len() {
             return Err(CasObjectError::FormatError(anyhow!(
@@ -65,7 +73,8 @@ async fn _validate_cas_object_from_async_read<R: AsyncRead + Unpin>(
                 hash_chunks.len(),
                 chunk_header.get_uncompressed_length(),
                 uncompressed_chunk_data.len()
-            )));
+            )))
+            .log_error("uncompressed chunk length mismatch");
         }
 
         let chunk_hash = merklehash::compute_data_hash(&uncompressed_chunk_data);
