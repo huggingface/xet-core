@@ -4,6 +4,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use bipbuffer::BipBuffer;
+use pyo3::prelude::*;
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 use serde::{Deserialize, Serialize};
 use tracing::{debug, Subscriber};
@@ -146,14 +147,42 @@ impl TryFrom<SerializableHeaders> for HeaderMap {
 pub struct LogBufferLayer {
     pub buffer: Arc<Mutex<BipBuffer<u8>>>,
     pub stats: Arc<LogBufferStats>,
+    telemetry_versions: String,
 }
 
 impl LogBufferLayer {
     pub fn new(size: usize) -> Self {
         let buffer = Arc::new(Mutex::new(BipBuffer::new(size)));
         let stats = Arc::new(LogBufferStats::default());
+        // populate remote telemetry calls with versions for python and hf_hub if possible
+        let mut telemetry_versions = String::new();
+        Python::with_gil(|py| {
+            // Get Python version
+            if let Ok(sys) = py.import("sys") {
+                if let Ok(version) = sys.getattr("version").and_then(|v| v.extract::<String>()) {
+                    if let Some(python_version_number) = version.split_whitespace().next() {
+                        telemetry_versions.push_str(&format!("python/{python_version_number}; "));
+                    }
+                }
+            }
 
-        Self { buffer, stats }
+            // Get huggingface_hub version
+            let package_name = "huggingface_hub";
+            if let Ok(importlib_metadata) = py.import("importlib.metadata") {
+                if let Ok(version) = importlib_metadata
+                    .call_method1("version", (package_name,))
+                    .and_then(|v| v.extract::<String>())
+                {
+                    telemetry_versions.push_str(&format!("hf_hub/{version}; "));
+                }
+            }
+        });
+
+        Self {
+            buffer,
+            stats,
+            telemetry_versions,
+        }
     }
 }
 
@@ -166,7 +195,7 @@ where
         let mut http_headers = HeaderMap::new();
 
         {
-            let mut user_agent = String::new();
+            let mut user_agent = self.telemetry_versions.clone();
             let mut visitor = |field: &tracing::field::Field, value: &dyn std::fmt::Debug| {
                 user_agent.push_str(&format!("{}/{:?}; ", field.name(), value));
             };
