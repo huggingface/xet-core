@@ -12,6 +12,7 @@ use mdb_shard::ShardFileManager;
 use merkledb::aggregate_hashes::cas_node_hash;
 use merklehash::MerkleHash;
 use tokio::sync::Mutex;
+use utils::progress::ProgressUpdater;
 use utils::ThreadPool;
 
 use crate::cas_interface::create_cas_client;
@@ -270,8 +271,9 @@ impl PointerFileTranslator {
         pointer: &PointerFile,
         writer: &mut Box<dyn Write + Send>,
         range: Option<FileRange>,
+        progress_updater: Option<Arc<dyn ProgressUpdater>>,
     ) -> Result<()> {
-        self.smudge_file_from_hash(&pointer.hash()?, writer, range).await
+        self.smudge_file_from_hash(&pointer.hash()?, writer, range, progress_updater).await
     }
 
     pub async fn smudge_file_from_hash(
@@ -279,9 +281,10 @@ impl PointerFileTranslator {
         file_id: &MerkleHash,
         writer: &mut Box<dyn Write + Send>,
         range: Option<FileRange>,
+        progress_updater: Option<Arc<dyn ProgressUpdater>>,
     ) -> Result<()> {
         let http_client = cas_client::build_http_client(&None)?;
-        self.cas.get_file(Arc::new(http_client), file_id, range, writer).await?;
+        self.cas.get_file(Arc::new(http_client), file_id, range, writer, progress_updater).await?;
         Ok(())
     }
 }

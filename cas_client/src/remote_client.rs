@@ -2,7 +2,6 @@ use std::cmp::{max, min};
 use std::collections::{HashMap, HashSet};
 use std::io::{Cursor, Write};
 use std::sync::Arc;
-
 use anyhow::anyhow;
 use async_trait::async_trait;
 use cas_object::CasObject;
@@ -17,8 +16,9 @@ use http::header::RANGE;
 use merklehash::MerkleHash;
 use reqwest::{StatusCode, Url};
 use reqwest_middleware::ClientWithMiddleware;
-use tracing::{debug, error, info, trace};
+use tracing::{debug, error, trace};
 use utils::auth::AuthConfig;
+use utils::progress::ProgressUpdater;
 use utils::singleflight::Group;
 use utils::ThreadPool;
 
@@ -52,7 +52,7 @@ impl RemoteClient {
     ) -> Self {
         // use disk cache if cache_config provided.
         let chunk_cache = if let Some(cache_config) = cache_config {
-            info!("Using disk cache directory: {:?}, size: {}.", cache_config.cache_directory, cache_config.cache_size);
+            debug!("Using disk cache directory: {:?}, size: {}.", cache_config.cache_directory, cache_config.cache_size);
             chunk_cache::get_cache(cache_config)
                 .log_error("failed to initialize cache, not using cache")
                 .ok()
@@ -120,6 +120,7 @@ impl ReconstructionClient for RemoteClient {
         hash: &MerkleHash,
         byte_range: Option<FileRange>,
         writer: &mut Box<dyn Write + Send>,
+        progress_updater: Option<Arc<dyn ProgressUpdater>>,
     ) -> Result<()> {
         // get manifest of xorbs to download, api call to CAS
         let manifest = self.get_reconstruction(hash, byte_range.clone()).await?;
@@ -133,6 +134,7 @@ impl ReconstructionClient for RemoteClient {
             manifest.offset_into_first_range,
             byte_range,
             writer,
+            progress_updater,
         )
         .await?;
 
@@ -158,7 +160,7 @@ impl ReconstructionClient for RemoteClient {
         // TODO: spawn threads to reconstruct each file
         for (hash, terms) in manifest.files {
             let w = files.get_mut(&(hash.into())).unwrap();
-            self.reconstruct_file_to_writer(http_client.clone(), terms, fetch_info.clone(), 0, None, w)
+            self.reconstruct_file_to_writer(http_client.clone(), terms, fetch_info.clone(), 0, None, w, None)
                 .await?;
         }
 
@@ -281,6 +283,7 @@ impl RemoteClient {
         offset_into_first_range: u64,
         byte_range: Option<FileRange>,
         writer: &mut Box<dyn Write + Send>,
+        progress_updater: Option<Arc<dyn ProgressUpdater>>,
     ) -> Result<u64> {
         let total_len = if let Some(range) = byte_range {
             range.end - range.start
@@ -311,10 +314,17 @@ impl RemoteClient {
             };
             let end: usize = min(remaining_len + start as u64, term_data.len() as u64) as usize;
             writer.write_all(&term_data[start..end])?;
-            remaining_len -= (end - start) as u64;
+            let len_written = (end - start) as u64;
+            remaining_len -= len_written;
+            progress_updater.as_ref().inspect(|updater| updater.update(len_written));
         }
 
         writer.flush()?;
+
+        progress_updater.as_ref().inspect(|updater| {
+            updater.update(total_len)
+        });
+
         Ok(total_len)
     }
 }
@@ -623,6 +633,7 @@ mod tests {
                 test.reconstruction_response.offset_into_first_range,
                 test.range,
                 &mut writer,
+                None,
             ));
 
             assert_eq!(test.expect_error, resp.is_err());
