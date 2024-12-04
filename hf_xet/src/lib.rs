@@ -1,4 +1,5 @@
 mod log;
+mod log_buffer;
 mod token_refresh;
 
 use std::fmt::Debug;
