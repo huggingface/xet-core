@@ -17,6 +17,7 @@ members = [
     "cas_object",
     "cas_types",
     "chunk_cache",
+    "visualization",
 ]
 
 exclude = ["hf_xet", "chunk_cache_bench"]

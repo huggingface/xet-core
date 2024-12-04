@@ -1,0 +1,10 @@
+[package]
+name = "visualization"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+cas_client = { path = "../cas_client" }
+data = { path = "../data" }
+utils = { path = "../utils" }
+tokio = { version = "1", features = ["full"] }

@@ -20,6 +20,7 @@ use crate::shard_in_memory::MDBInMemoryShard;
 use crate::utils::truncate_hash;
 
 /// A wrapper struct for the in-memory shard to make sure that it gets flushed on teardown.
+#[derive(Debug)]
 struct MDBShardFlushGuard {
     shard: MDBInMemoryShard,
     session_directory: Option<PathBuf>,
@@ -56,6 +57,7 @@ lazy_static! {
 }
 
 // The structure used as the target for the dedup lookup
+#[derive(Debug)]
 #[repr(packed)]
 struct ChunkCacheElement {
     cas_start_index: u32, // the index of the first chunk
@@ -63,7 +65,7 @@ struct ChunkCacheElement {
     shard_index: u16, // This one is last so that the u16 bits can be packed in.
 }
 
-#[derive(Default)]
+#[derive(Debug, Default)]
 struct KeyedShardCollection {
     hmac_key: HMACKey,
     shard_list: Vec<MDBShardFile>,
@@ -81,7 +83,7 @@ impl KeyedShardCollection {
 
 /// We have a couple levels of arc redirection here to handle the different queries needed.  
 /// This just holds the two things needed for lookup.
-#[derive(Default)]
+#[derive(Debug, Default)]
 struct ShardBookkeeper {
     shard_collections: Vec<KeyedShardCollection>,
     collection_by_key: HashMap<HMACKey, usize>,
@@ -103,6 +105,7 @@ impl ShardBookkeeper {
     }
 }
 
+#[derive(Debug)]
 pub struct ShardFileManager {
     shard_bookkeeper: Arc<RwLock<ShardBookkeeper>>,
     current_state: Arc<RwLock<MDBShardFlushGuard>>,

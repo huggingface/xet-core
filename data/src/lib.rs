@@ -12,7 +12,7 @@ mod metrics;
 mod pointer_file;
 mod remote_shard_interface;
 mod repo_salt;
-mod shard_interface;
+pub mod shard_interface;
 mod small_file_determination;
 mod test_utils;
 
