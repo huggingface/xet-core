@@ -2,6 +2,7 @@ use std::cmp::{max, min};
 use std::collections::{HashMap, HashSet};
 use std::io::{Cursor, Write};
 use std::sync::Arc;
+
 use anyhow::anyhow;
 use async_trait::async_trait;
 use cas_object::CasObject;
@@ -52,7 +53,10 @@ impl RemoteClient {
     ) -> Self {
         // use disk cache if cache_config provided.
         let chunk_cache = if let Some(cache_config) = cache_config {
-            debug!("Using disk cache directory: {:?}, size: {}.", cache_config.cache_directory, cache_config.cache_size);
+            debug!(
+                "Using disk cache directory: {:?}, size: {}.",
+                cache_config.cache_directory, cache_config.cache_size
+            );
             chunk_cache::get_cache(cache_config)
                 .log_error("failed to initialize cache, not using cache")
                 .ok()
@@ -275,6 +279,7 @@ impl RemoteClient {
     ///
     /// To fetch the data for each term, this function will consult the fetch_info section of the reconstruction
     /// response. See `get_one_term`.
+    #[allow(clippy::too_many_arguments)]
     pub async fn reconstruct_file_to_writer(
         &self,
         http_client: Arc<ClientWithMiddleware>,
@@ -321,9 +326,7 @@ impl RemoteClient {
 
         writer.flush()?;
 
-        progress_updater.as_ref().inspect(|updater| {
-            updater.update(total_len)
-        });
+        progress_updater.as_ref().inspect(|updater| updater.update(total_len));
 
         Ok(total_len)
     }

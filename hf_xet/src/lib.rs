@@ -2,17 +2,19 @@ mod log;
 mod progress_update;
 mod token_refresh;
 
-use crate::progress_update::WrappedProgressUpdater;
+use std::fmt::Debug;
+use std::sync::{Arc, OnceLock};
+
 use data::{data_client, PointerFile};
 use pyo3::exceptions::PyException;
 use pyo3::prelude::*;
 use pyo3::pyfunction;
-use std::fmt::Debug;
-use std::sync::{Arc, OnceLock};
 use token_refresh::WrappedTokenRefresher;
 use utils::auth::TokenRefresher;
 use utils::progress::ProgressUpdater;
 use utils::ThreadPool;
+
+use crate::progress_update::WrappedProgressUpdater;
 
 fn get_threadpool() -> Arc<ThreadPool> {
     static THREADPOOL: OnceLock<Arc<ThreadPool>> = OnceLock::new();
@@ -78,9 +80,7 @@ pub fn download_files(
     py.allow_threads(move || {
         get_threadpool()
             .block_on(async move {
-                let res =
-                    data_client::download_async(get_threadpool(), pfs, endpoint, token_info, refresher, updater).await;
-                res
+                data_client::download_async(get_threadpool(), pfs, endpoint, token_info, refresher, updater).await
             })
             .map_err(|e| PyException::new_err(format!("{e:?}")))
     })

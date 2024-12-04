@@ -1,7 +1,8 @@
+use std::fmt::{Debug, Formatter};
+
 use pyo3::exceptions::PyTypeError;
 use pyo3::prelude::PyAnyMethods;
 use pyo3::{Py, PyAny, PyErr, PyResult, Python};
-use std::fmt::{Debug, Formatter};
 use tracing::{error, trace};
 use utils::progress::ProgressUpdater;
 
@@ -49,7 +50,8 @@ impl ProgressUpdater for WrappedProgressUpdater {
                 error!("ProgressUpdater func: {} is not callable", self.name);
                 return;
             }
-            let _ = f.call1((total,))
+            let _ = f
+                .call1((total,))
                 .inspect_err(|e| error!("python exception trying to update progress bar {e:?}"));
         });
     }

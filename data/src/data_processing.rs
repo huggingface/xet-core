@@ -273,7 +273,8 @@ impl PointerFileTranslator {
         range: Option<FileRange>,
         progress_updater: Option<Arc<dyn ProgressUpdater>>,
     ) -> Result<()> {
-        self.smudge_file_from_hash(&pointer.hash()?, writer, range, progress_updater).await
+        self.smudge_file_from_hash(&pointer.hash()?, writer, range, progress_updater)
+            .await
     }
 
     pub async fn smudge_file_from_hash(
@@ -284,7 +285,9 @@ impl PointerFileTranslator {
         progress_updater: Option<Arc<dyn ProgressUpdater>>,
     ) -> Result<()> {
         let http_client = cas_client::build_http_client(&None)?;
-        self.cas.get_file(Arc::new(http_client), file_id, range, writer, progress_updater).await?;
+        self.cas
+            .get_file(Arc::new(http_client), file_id, range, writer, progress_updater)
+            .await?;
         Ok(())
     }
 }
