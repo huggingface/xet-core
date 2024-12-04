@@ -168,9 +168,10 @@ where
         {
             let mut user_agent = String::new();
             let mut visitor = |field: &tracing::field::Field, value: &dyn std::fmt::Debug| {
-                user_agent.push_str(&format!("{}:/{:?}; ", field.name(), value));
+                user_agent.push_str(&format!("{}/{:?}; ", field.name(), value));
             };
             event.record(&mut visitor);
+            user_agent = user_agent.replace("\"", "");
             if let Ok(header_value) = HeaderValue::from_str(&user_agent) {
                 http_headers.insert("User-Agent", header_value);
             } else {
