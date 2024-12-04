@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex};
 use bipbuffer::BipBuffer;
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 use serde::{Deserialize, Serialize};
-use tracing::Subscriber;
+use tracing::{debug, Subscriber};
 use tracing_subscriber::filter::FilterFn;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
@@ -138,10 +138,17 @@ where
         let mut http_headers = HeaderMap::new();
 
         {
+            let mut user_agent = String::new();
             let mut visitor = |field: &tracing::field::Field, value: &dyn std::fmt::Debug| {
-                http_headers.insert(field.name(), HeaderValue::from_str(&format!("{:?}", value)).unwrap());
+                user_agent.push_str(&format!("{}:/{:?}; ", field.name(), value));
             };
             event.record(&mut visitor);
+            if let Ok(header_value) = HeaderValue::from_str(&user_agent) {
+                http_headers.insert("User-Agent", header_value);
+            } else {
+                self.stats.records_refused.fetch_add(1, Ordering::Relaxed);
+                return;
+            }
         }
         let serializable: SerializableHeaders = (&http_headers).into();
         if let Ok(serialized_headers) = serde_json::to_string(&serializable) {
@@ -207,7 +214,7 @@ pub fn initialize_logging() {
                 let log_buffer = Arc::clone(&telemetry_log_buffer);
                 let log_stats = Arc::clone(&telemetry_log_stats);
                 let client = reqwest::Client::new();
-                let telemetry_url = format!("https://{endpoint}/{TELEMETRY_SUFFIX}");
+                let telemetry_url = format!("{endpoint}/{TELEMETRY_SUFFIX}");
                 async move {
                     loop {
                         let mut read_len: usize = 0;
@@ -242,9 +249,18 @@ pub fn initialize_logging() {
                                 if response.status().is_success() {
                                     log_stats.records_transmitted.fetch_add(1, Ordering::Relaxed);
                                 } else {
+                                    debug!(
+                                        "Failed to transmit telemetry to {}: HTTP status {}",
+                                        telemetry_url,
+                                        response.status()
+                                    );
                                     log_stats.records_dropped.fetch_add(1, Ordering::Relaxed);
                                 }
                             } else {
+                                debug!(
+                                    "Failed to send HEAD request to {}: Error occurred during transmission",
+                                    telemetry_url
+                                );
                                 log_stats.records_dropped.fetch_add(1, Ordering::Relaxed);
                             }
                         }
@@ -267,7 +283,7 @@ mod tests {
 
     #[test]
     fn test_buffer_layer() {
-        let buffer = Arc::new(Mutex::new(BipBuffer::new(36 * 2)));
+        let buffer = Arc::new(Mutex::new(BipBuffer::new(50 * 2)));
         let stats = Arc::new(LogBufferStats::default());
         let layer = LogBufferLayer {
             buffer: Arc::clone(&buffer),
@@ -276,10 +292,10 @@ mod tests {
 
         let subscriber = tracing_subscriber::registry().with(layer);
         tracing::subscriber::with_default(subscriber, || {
-            tracing::info!(target: "client_telemetry", "36 b event");
+            tracing::info!(target: "client_telemetry", "50 b event");
             assert_eq!(stats.records_written.load(Ordering::Relaxed), 1);
             assert_eq!(stats.records_refused.load(Ordering::Relaxed), 0);
-            assert_eq!(stats.bytes_written.load(Ordering::Relaxed), 36);
+            assert_eq!(stats.bytes_written.load(Ordering::Relaxed), 50);
             assert_eq!(stats.bytes_refused.load(Ordering::Relaxed), 0);
 
             for _ in 0..9 {
@@ -287,8 +303,8 @@ mod tests {
             }
             assert_eq!(stats.records_written.load(Ordering::Relaxed), 2);
             assert_eq!(stats.records_refused.load(Ordering::Relaxed), 8);
-            assert_eq!(stats.bytes_written.load(Ordering::Relaxed), 36 * 2);
-            assert_eq!(stats.bytes_refused.load(Ordering::Relaxed), 36 * 8);
+            assert_eq!(stats.bytes_written.load(Ordering::Relaxed), 50 * 2);
+            assert_eq!(stats.bytes_refused.load(Ordering::Relaxed), 50 * 8);
         });
     }
 

@@ -21,7 +21,7 @@ tracing-subscriber = { version = "0.3", features = [
     "tracing-log",
     "env-filter",
 ] }
-bipbuffer = "0.1.2"
+bipbuffer = "0.1"
 reqwest = "0.11.27"
 serde = { version = "1.0.215", features = ["derive"] }
 serde_json = "1.0.133"
