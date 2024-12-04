@@ -1,5 +1,5 @@
 use std::fmt::Debug;
-use std::io::{Read, Write};
+use std::io::{self, Cursor, Read, Write};
 use std::mem::size_of;
 
 use merklehash::MerkleHash;
@@ -181,5 +181,37 @@ impl MDBCASInfo {
         }
 
         Ok(n_out_bytes)
+    }
+}
+
+pub struct MDBCASInfoView {
+    header: CASChunkSequenceHeader,
+    data: Arc<[u8]>, // reference counted read-only vector
+    offset: usize,
+}
+
+impl MDBCASInfoView {
+    pub fn new(data: Arc<[u8]>, offset: usize) -> io::Result<Self> {
+        let mut reader = std::io::Cursor::new(&data[offset..]);
+        let header = CASChunkSequenceHeader::deserialize(&mut reader)?;
+        Ok(Self { header, data, offset })
+    }
+
+    pub fn cas_hash(&self) -> MerkleHash {
+        self.header.cas_hash
+    }
+
+    pub fn num_chunks(&self) -> usize {
+        self.header.num_entries as usize
+    }
+
+    pub fn chunk(&self, idx: usize) -> CASChunkSequenceEntry {
+        debug_assert!(idx < self.num_chunks());
+
+        CASChunkSequenceEntry::deserialize(&mut Cursor::new(
+            &self.data
+                [(self.offset + size_of::<CASChunkSequenceHeader>() + idx * size_of::<CASChunkSequenceEntry>())..],
+        ))
+        .expect("bookkeeping error on data bounds")
     }
 }
