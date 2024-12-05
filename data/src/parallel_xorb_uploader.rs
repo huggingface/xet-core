@@ -8,11 +8,14 @@ use mdb_shard::{
 };
 use merkledb::aggregate_hashes::cas_node_hash;
 use merklehash::MerkleHash;
-use tokio::sync::{
-    mpsc::{self, Receiver, Sender},
-    oneshot, Mutex,
-};
 use tokio::task::JoinHandle;
+use tokio::{
+    runtime::Handle,
+    sync::{
+        mpsc::{self, Receiver, Sender},
+        oneshot, Mutex,
+    },
+};
 use utils::ThreadPool;
 
 use crate::data_processing::CASDataAggregator;
@@ -149,6 +152,12 @@ impl ParallelXorbUploader {
         }
 
         Ok(())
+    }
+}
+
+impl Drop for ParallelXorbUploader {
+    fn drop(&mut self) {
+        tokio::task::block_in_place(|| Handle::current().block_on(async move { self.flush().await })).unwrap()
     }
 }
 
