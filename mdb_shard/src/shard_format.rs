@@ -286,11 +286,11 @@ impl MDBShardInfo {
 
         // Move cursor to beginning of shard file.
         reader.rewind()?;
-        obj.header = MDBShardFileHeader::deserialize(reader).unwrap();
+        obj.header = MDBShardFileHeader::deserialize(reader)?;
 
         // Move cursor to end of shard file minus footer size.
         reader.seek(SeekFrom::End(-MDB_SHARD_FOOTER_SIZE))?;
-        obj.metadata = MDBShardFileFooter::deserialize(reader).unwrap();
+        obj.metadata = MDBShardFileFooter::deserialize(reader)?;
 
         Ok(obj)
     }
@@ -601,9 +601,9 @@ impl MDBShardInfo {
 
         let (cas_info_start, _cas_info_end) = self.cas_info_byte_range();
 
-        reader.seek(SeekFrom::Start(cas_info_start)).unwrap();
+        reader.seek(SeekFrom::Start(cas_info_start))?;
 
-        while let Some(cas_info) = MDBCASInfo::deserialize(reader).unwrap() {
+        while let Some(cas_info) = MDBCASInfo::deserialize(reader)? {
             debug_assert!(reader.stream_position()? < _cas_info_end);
             ret.push(cas_info);
         }
