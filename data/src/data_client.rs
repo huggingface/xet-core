@@ -3,6 +3,7 @@ use std::fs::File;
 use std::io::{BufReader, Read, Write};
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Instant;
 
 use async_once_cell::OnceCell;
 use parutils::{tokio_par_for_each, ParallelError};
@@ -50,7 +51,8 @@ pub async fn upload_async(
     let cur_span = info_span!("upload", session_id = session_id);
     info!("{session_id}: uploading {} files", file_paths.len());
     let ctx = cur_span.context();
-    async {
+    let s = Instant::now();
+    let ret = async {
         // chunk files
         // produce Xorbs + Shards
         // upload shards and xorbs
@@ -84,7 +86,12 @@ pub async fn upload_async(
         Ok(pointers)
     }
     .instrument(cur_span)
-    .await
+    .await;
+
+    let duration = s.elapsed();
+    info!("Upload finished in {} s {} ms", duration.as_secs(), duration.subsec_millis());
+
+    ret
 }
 
 pub async fn download_async(
