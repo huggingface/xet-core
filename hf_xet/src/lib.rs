@@ -19,7 +19,7 @@ fn get_threadpool() -> Arc<ThreadPool> {
         .get_or_init(|| {
             let threadpool = Arc::new(ThreadPool::new());
             threadpool.block_on(async {
-                log::initialize_logging(); // needs to run within an async runtime
+                log::initialize_logging(threadpool.clone()); // needs to run within an async runtime
             });
             threadpool
         })

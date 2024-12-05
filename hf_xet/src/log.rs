@@ -1,15 +1,17 @@
 use std::env;
+use std::sync::Arc;
 
 use tracing_subscriber::filter::FilterFn;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::{EnvFilter, Layer};
+use utils::ThreadPool;
 
 use crate::log_buffer::{get_telemetry_task, LogBufferLayer, TELEMETRY_PRE_ALLOC_BYTES};
 
 const DEFAULT_LOG_LEVEL: &str = "info";
 
-pub fn initialize_logging() {
+pub fn initialize_logging(threadpool: Arc<ThreadPool>) {
     let fmt_layer = tracing_subscriber::fmt::layer()
         .with_line_number(true)
         .with_file(true)
@@ -36,6 +38,6 @@ pub fn initialize_logging() {
             .with(telemetry_filter_layer)
             .init();
 
-        let _telemetry_task = tokio::task::spawn(telemetry_task);
+        let _telemetry_task = threadpool.spawn(telemetry_task);
     }
 }

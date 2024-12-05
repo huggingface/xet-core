@@ -166,14 +166,16 @@ impl LogBufferLayer {
                 }
             }
 
-            // Get huggingface_hub version
-            let package_name = "huggingface_hub";
+            // Get huggingface_hub+hf_xet versions
+            let package_names = ["huggingface_hub", "hfxet"];
             if let Ok(importlib_metadata) = py.import("importlib.metadata") {
-                if let Ok(version) = importlib_metadata
-                    .call_method1("version", (package_name,))
-                    .and_then(|v| v.extract::<String>())
-                {
-                    telemetry_versions.push_str(&format!("hf_hub/{version}; "));
+                for package_name in package_names.iter() {
+                    if let Ok(version) = importlib_metadata
+                        .call_method1("version", (package_name,))
+                        .and_then(|v| v.extract::<String>())
+                    {
+                        telemetry_versions.push_str(&format!("{package_name}/{version}; "));
+                    }
                 }
             }
         });
