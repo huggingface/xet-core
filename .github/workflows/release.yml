@@ -165,7 +165,6 @@ jobs:
     needs: [ linux, musllinux, windows, macos, sdist ]
     steps:
       - uses: actions/download-artifact@v4
-        working_directory: hf_xet
       - name: Publish to PyPI
         uses: PyO3/maturin-action@v1
         env:
@@ -173,7 +172,6 @@ jobs:
         with:
           command: upload
           args: --non-interactive --skip-existing wheels-*/*
-          working-directory: hf_xet
 
   release-github:
     name: Release GitHub
@@ -184,8 +182,6 @@ jobs:
     needs: [ linux, musllinux, windows, macos, sdist ]
     steps:
       - uses: actions/download-artifact@v4
-        working_directory: hf_xet
       - name: Publish to GitHub Releases
         run: |
           gh release upload ${{github.event.release.tag_name}} wheels-*/*
-        working_directory: hf_xet
