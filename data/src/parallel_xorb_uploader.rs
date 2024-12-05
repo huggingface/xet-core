@@ -2,25 +2,20 @@ use std::sync::Arc;
 
 use cas_client::Client;
 use futures::StreamExt;
-use mdb_shard::{
-    cas_structs::{CASChunkSequenceEntry, CASChunkSequenceHeader, MDBCASInfo},
-    ShardFileManager,
-};
+use mdb_shard::cas_structs::{CASChunkSequenceEntry, CASChunkSequenceHeader, MDBCASInfo};
+use mdb_shard::ShardFileManager;
 use merkledb::aggregate_hashes::cas_node_hash;
 use merklehash::MerkleHash;
+use tokio::runtime::Handle;
+use tokio::sync::mpsc::{self, Receiver, Sender};
+use tokio::sync::{oneshot, Mutex};
 use tokio::task::JoinHandle;
-use tokio::{
-    runtime::Handle,
-    sync::{
-        mpsc::{self, Receiver, Sender},
-        oneshot, Mutex,
-    },
-};
 use utils::ThreadPool;
 
 use crate::constants::MAX_CONCURRENT_XORB_UPLOADS;
 use crate::data_processing::CASDataAggregator;
-use crate::errors::{DataProcessingError::*, *};
+use crate::errors::DataProcessingError::*;
+use crate::errors::*;
 
 pub enum QueueItem<T: Send, S: Send> {
     Value(T),
