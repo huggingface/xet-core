@@ -1,6 +1,7 @@
 use std::fmt::Debug;
-use std::io::{Cursor, Read, Write};
-use std::mem::{offset_of, size_of};
+use std::io::{self, Cursor, Read, Write};
+use std::mem::size_of;
+use std::sync::Arc;
 
 use merklehash::MerkleHash;
 use utils::serialization_utils::*;
@@ -8,7 +9,6 @@ use utils::serialization_utils::*;
 use crate::cas_structs::{CASChunkSequenceEntry, CASChunkSequenceHeader};
 use crate::error::MDBShardError;
 use crate::shard_file::MDB_FILE_INFO_ENTRY_SIZE;
-use crate::MDBShardFileHeader;
 
 pub const MDB_DEFAULT_FILE_FLAG: u32 = 0;
 pub const MDB_FILE_FLAG_WITH_VERIFICATION: u32 = 1 << 31;
@@ -434,7 +434,7 @@ impl MDBFileInfo {
 }
 
 pub struct MDBFileInfoView {
-    header: FileDataSequenceHeader,
+    metadata: FileDataSequenceHeader,
     data: Arc<[u8]>, // reference counted read-only vector
     offset: usize,
 }
@@ -442,57 +442,63 @@ pub struct MDBFileInfoView {
 impl MDBFileInfoView {
     /// Creates a new view of an MDBFileInfo object from a slice, checking it
     /// for the correct bounds.  Copies should be optimized out.
-    pub fn new(data: Arc<[u8]>, offset: usize) -> Result<Self> {
-        let header = FileDataSequenceHeader::deserialize(&mut Cursor::new(&data))?;
+    pub fn new(data: Arc<[u8]>, offset: usize) -> std::io::Result<Self> {
+        let metadata = FileDataSequenceHeader::deserialize(&mut Cursor::new(&data[offset..]))?;
 
         // Verify the correct number of entries
-        let n = header.num_entries as usize;
-        let contains_verification = header.contains_verification();
-        let contains_metadata_ext = header.contains_metadata_ext();
+        let n = metadata.num_entries as usize;
+        let contains_verification = metadata.contains_verification();
+        let contains_metadata_ext = metadata.contains_metadata_ext();
 
         let n_structs = 1 + n // The header and the followup entries 
             + (if contains_verification { n } else { 0 }) // verification entries 
             + (if contains_metadata_ext { 1 } else { 0 });
 
-        if data.len() < offset + n_structs * size_of::<FileDataSequenceEntry>() {
-            return std::io::Error::new(ErrorKind::UnexpectedEof, "Provided slice too small to read MDBFileInfoView");
+        if data.len() < offset + n_structs * MDB_FILE_INFO_ENTRY_SIZE {
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "Provided slice too small to read MDBFileInfoView",
+            ));
         }
 
-        Ok(s)
+        Ok(Self { metadata, data, offset })
+    }
+    pub fn metadata(&self) -> &FileDataSequenceHeader {
+        &self.metadata
     }
 
     #[inline]
     pub fn num_entries(&self) -> usize {
-        self.header.num_entries
+        self.metadata.num_entries as usize
     }
 
     #[inline]
-    pub fn file_hash(&self) -> usize {
-        self.header.file_hash
+    pub fn file_hash(&self) -> MerkleHash {
+        self.metadata.file_hash
     }
 
     #[inline]
     pub fn file_flags(&self) -> u32 {
-        self.header.file_flags
+        self.metadata.file_flags
     }
 
     #[inline]
     pub fn contains_metadata_ext(&self) -> bool {
-        self.header.contains_metadata_ext()
+        self.metadata.contains_metadata_ext()
     }
 
     #[inline]
     pub fn contains_verification(&self) -> bool {
-        self.header.contains_verification()
+        self.metadata.contains_verification()
     }
 
     pub fn entry(&self, idx: usize) -> FileDataSequenceEntry {
         debug_assert!(idx < self.num_entries());
 
         FileDataSequenceEntry::deserialize(&mut Cursor::new(
-            self.data[(self.offset + (1 + idx) * MDB_FILE_INFO_ENTRY_SIZE)..],
+            &self.data[(self.offset + (1 + idx) * MDB_FILE_INFO_ENTRY_SIZE)..],
         ))
-        .expect("bookkeeping error on data bounds")
+        .expect("bookkeeping error on data bounds for entry")
     }
 
     pub fn verification(&self, idx: usize) -> FileVerificationEntry {
@@ -502,6 +508,7 @@ impl MDBFileInfoView {
         FileVerificationEntry::deserialize(&mut Cursor::new(
             &self.data[(self.offset + (1 + self.num_entries() + idx) * MDB_FILE_INFO_ENTRY_SIZE)..],
         ))
+        .expect("bookkeeping error on data bounds for verification")
     }
 }
 

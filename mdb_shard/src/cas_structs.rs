@@ -1,6 +1,7 @@
 use std::fmt::Debug;
 use std::io::{self, Cursor, Read, Write};
 use std::mem::size_of;
+use std::sync::Arc;
 
 use merklehash::MerkleHash;
 use utils::serialization_utils::*;
@@ -185,7 +186,7 @@ impl MDBCASInfo {
 }
 
 pub struct MDBCASInfoView {
-    header: CASChunkSequenceHeader,
+    metadata: CASChunkSequenceHeader,
     data: Arc<[u8]>, // reference counted read-only vector
     offset: usize,
 }
@@ -193,16 +194,20 @@ pub struct MDBCASInfoView {
 impl MDBCASInfoView {
     pub fn new(data: Arc<[u8]>, offset: usize) -> io::Result<Self> {
         let mut reader = std::io::Cursor::new(&data[offset..]);
-        let header = CASChunkSequenceHeader::deserialize(&mut reader)?;
-        Ok(Self { header, data, offset })
+        let metadata = CASChunkSequenceHeader::deserialize(&mut reader)?;
+        Ok(Self { metadata, data, offset })
+    }
+
+    pub fn metadata(&self) -> &CASChunkSequenceHeader {
+        &self.metadata
     }
 
     pub fn cas_hash(&self) -> MerkleHash {
-        self.header.cas_hash
+        self.metadata.cas_hash
     }
 
     pub fn num_chunks(&self) -> usize {
-        self.header.num_entries as usize
+        self.metadata.num_entries as usize
     }
 
     pub fn chunk(&self, idx: usize) -> CASChunkSequenceEntry {
