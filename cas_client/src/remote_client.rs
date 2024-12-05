@@ -10,7 +10,7 @@ use cas_types::{
     BatchQueryReconstructionResponse, CASReconstructionFetchInfo, CASReconstructionTerm, FileRange, HexMerkleHash,
     HttpRange, Key, QueryReconstructionResponse, UploadXorbResponse,
 };
-use chunk_cache::{CacheConfig, ChunkCache, DiskCache};
+use chunk_cache::{CacheConfig, ChunkCache};
 use error_printer::ErrorPrinter;
 use futures::{StreamExt, TryStreamExt};
 use http::header::RANGE;
@@ -53,10 +53,9 @@ impl RemoteClient {
         // use disk cache if cache_config provided.
         let chunk_cache = if let Some(cache_config) = cache_config {
             info!("Using disk cache directory: {:?}, size: {}.", cache_config.cache_directory, cache_config.cache_size);
-            DiskCache::initialize(cache_config)
+            chunk_cache::get_cache(cache_config)
                 .log_error("failed to initialize cache, not using cache")
                 .ok()
-                .map(|disk_cache| Arc::new(disk_cache) as Arc<dyn ChunkCache>)
         } else {
             None
         };
@@ -446,7 +445,7 @@ async fn download_range(
         }
     }
 
-    let (data, chunk_byte_indices) = cas_object::async_deserialize::deserialize_chunks_from_stream(
+    let (data, chunk_byte_indices) = cas_object::deserialize_async::deserialize_chunks_from_stream(
         response.bytes_stream().map_err(std::io::Error::other),
     )
     .await?;

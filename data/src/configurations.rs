@@ -1,5 +1,4 @@
 use std::env::current_dir;
-use std::fs;
 use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::Arc;
@@ -135,7 +134,7 @@ pub fn default_config(
 ) -> errors::Result<TranslatorConfig> {
     let home = home_dir().unwrap_or(current_dir()?);
     let xet_path = home.join(".xet");
-    fs::create_dir_all(&xet_path)?;
+    std::fs::create_dir_all(&xet_path)?;
 
     let cache_path = home.join(".cache").join("huggingface").join("xet");
 

@@ -4,12 +4,11 @@ use std::io::{BufReader, Read, Write};
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use async_once_cell::OnceCell;
 use parutils::{tokio_par_for_each, ParallelError};
 use utils::auth::TokenRefresher;
 use utils::ThreadPool;
 
-use crate::configurations::{default_config, TranslatorConfig};
+use crate::configurations::default_config;
 use crate::errors::DataProcessingError;
 use crate::{errors, PointerFile, PointerFileTranslator};
 
@@ -19,22 +18,6 @@ pub const MAX_CONCURRENT_DOWNLOADS: usize = 8; // TODO
 
 const DEFAULT_CAS_ENDPOINT: &str = "http://localhost:8080";
 const READ_BLOCK_SIZE: usize = 1024 * 1024;
-
-async fn get_pointer_file_translator(
-    config: TranslatorConfig,
-    threadpool: Arc<ThreadPool>,
-) -> Arc<PointerFileTranslator> {
-    static PFT: OnceCell<Arc<PointerFileTranslator>> = OnceCell::new();
-    PFT.get_or_init(async move {
-        Arc::new(
-            PointerFileTranslator::new(config, threadpool)
-                .await
-                .expect("pointer file translator creation failed"),
-        )
-    })
-    .await
-    .clone()
-}
 
 pub async fn upload_async(
     threadpool: Arc<ThreadPool>,
@@ -49,7 +32,7 @@ pub async fn upload_async(
     // for each file, return the filehash
     let config = default_config(endpoint.unwrap_or(DEFAULT_CAS_ENDPOINT.to_string()), token_info, token_refresher)?;
 
-    let processor = get_pointer_file_translator(config, threadpool).await;
+    let processor = Arc::new(PointerFileTranslator::new(config, threadpool).await?);
     // for all files, clean them, producing pointer files.
     let pointers = tokio_par_for_each(file_paths, MAX_CONCURRENT_UPLOADS, |f, _| async {
         let proc = processor.clone();
@@ -76,7 +59,7 @@ pub async fn download_async(
 ) -> errors::Result<Vec<String>> {
     let config = default_config(endpoint.unwrap_or(DEFAULT_CAS_ENDPOINT.to_string()), token_info, token_refresher)?;
 
-    let processor = &get_pointer_file_translator(config, threadpool).await;
+    let processor = &Arc::new(PointerFileTranslator::new(config, threadpool).await?);
     let paths = tokio_par_for_each(pointer_files, MAX_CONCURRENT_DOWNLOADS, |pointer_file, _| async move {
         let proc = processor.clone();
         smudge_file(&proc, &pointer_file).await

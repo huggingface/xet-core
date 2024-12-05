@@ -1,13 +1,17 @@
+mod cache_manager;
 mod disk;
 pub mod error;
 
 use std::path::PathBuf;
 
+pub use cache_manager::get_cache;
 use cas_types::{ChunkRange, Key};
 pub use disk::test_utils::*;
 pub use disk::DiskCache;
 use error::ChunkCacheError;
 use mockall::automock;
+
+use crate::disk::DEFAULT_CAPACITY;
 
 /// ChunkCache is a trait for storing and fetching Xorb ranges.
 /// implementors are expected to return bytes for a key and a given chunk range
@@ -53,7 +57,7 @@ pub trait ChunkCache: Sync + Send {
     ) -> Result<(), ChunkCacheError>;
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct CacheConfig {
     pub cache_directory: PathBuf,
     pub cache_size: u64,
@@ -63,7 +67,7 @@ impl Default for CacheConfig {
     fn default() -> Self {
         CacheConfig {
             cache_directory: PathBuf::from("/tmp"),
-            cache_size: 10 << 30, // 10GB
+            cache_size: DEFAULT_CAPACITY,
         }
     }
 }
