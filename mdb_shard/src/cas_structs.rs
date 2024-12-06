@@ -186,7 +186,7 @@ impl MDBCASInfo {
 }
 
 pub struct MDBCASInfoView {
-    metadata: CASChunkSequenceHeader,
+    header: CASChunkSequenceHeader,
     data: Arc<[u8]>, // reference counted read-only vector
     offset: usize,
 }
@@ -194,29 +194,55 @@ pub struct MDBCASInfoView {
 impl MDBCASInfoView {
     pub fn new(data: Arc<[u8]>, offset: usize) -> io::Result<Self> {
         let mut reader = std::io::Cursor::new(&data[offset..]);
-        let metadata = CASChunkSequenceHeader::deserialize(&mut reader)?;
-        Ok(Self { metadata, data, offset })
+        let header = CASChunkSequenceHeader::deserialize(&mut reader)?;
+
+        Self::from_data_and_header(header, data, offset)
     }
 
-    pub fn metadata(&self) -> &CASChunkSequenceHeader {
-        &self.metadata
+    pub fn from_data_and_header(header: CASChunkSequenceHeader, data: Arc<[u8]>, offset: usize) -> io::Result<Self> {
+        let n = header.num_entries as usize;
+
+        let n_bytes = size_of::<CASChunkSequenceHeader>() + n * size_of::<CASChunkSequenceEntry>();
+
+        if data.len() < offset + n_bytes {
+            return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "Provided slice too small to read Cas Info"));
+        }
+
+        Ok(Self { header, data, offset })
+    }
+
+    pub fn header(&self) -> &CASChunkSequenceHeader {
+        &self.header
     }
 
     pub fn cas_hash(&self) -> MerkleHash {
-        self.metadata.cas_hash
+        self.header.cas_hash
     }
 
-    pub fn num_chunks(&self) -> usize {
-        self.metadata.num_entries as usize
+    pub fn num_entries(&self) -> usize {
+        self.header.num_entries as usize
     }
 
     pub fn chunk(&self, idx: usize) -> CASChunkSequenceEntry {
-        debug_assert!(idx < self.num_chunks());
+        debug_assert!(idx < self.num_entries());
 
         CASChunkSequenceEntry::deserialize(&mut Cursor::new(
             &self.data
                 [(self.offset + size_of::<CASChunkSequenceHeader>() + idx * size_of::<CASChunkSequenceEntry>())..],
         ))
         .expect("bookkeeping error on data bounds")
+    }
+
+    #[inline]
+    pub fn byte_size(&self) -> usize {
+        let n = self.num_entries();
+        size_of::<CASChunkSequenceHeader>() + n * size_of::<CASChunkSequenceEntry>()
+    }
+
+    #[inline]
+    pub fn serialize<W: Write>(&self, writer: &mut W) -> io::Result<usize> {
+        let n_bytes = self.byte_size();
+        writer.write_all(&self.data[self.offset..(self.offset + n_bytes)])?;
+        Ok(n_bytes)
     }
 }

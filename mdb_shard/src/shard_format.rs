@@ -1239,9 +1239,9 @@ pub mod test_routines {
     use crate::cas_structs::{CASChunkSequenceEntry, CASChunkSequenceHeader, MDBCASInfo};
     use crate::error::Result;
     use crate::file_structs::{FileDataSequenceEntry, FileDataSequenceHeader, FileMetadataExt, MDBFileInfo};
-    use crate::minimal_shard::MDBMinimalShard;
     use crate::shard_format::MDBShardInfo;
     use crate::shard_in_memory::MDBInMemoryShard;
+    use crate::streaming_shard::MDBMinimalShard;
 
     pub fn simple_hash(n: u64) -> MerkleHash {
         MerkleHash::from([n, 1, 0, 0])
@@ -1530,9 +1530,9 @@ pub mod test_routines {
             assert_eq!(&cas_blocks_full[i], cas.as_ref());
 
             let m_cas_chunk = min_shard.cas(i);
-            assert_eq!(m_cas_chunk.metadata(), &cas_blocks_full[i].metadata);
-            assert_eq!(m_cas_chunk.num_chunks(), cas_blocks_full[i].chunks.len());
-            for j in 0..m_cas_chunk.num_chunks() {
+            assert_eq!(m_cas_chunk.header(), &cas_blocks_full[i].metadata);
+            assert_eq!(m_cas_chunk.num_entries(), cas_blocks_full[i].chunks.len());
+            for j in 0..m_cas_chunk.num_entries() {
                 assert_eq!(cas_blocks_full[i].chunks[j], m_cas_chunk.chunk(j));
             }
         }
@@ -1563,7 +1563,7 @@ pub mod test_routines {
 
                 // Minimal view is good
                 let m_file_info = min_shard.file(i);
-                assert_eq!(m_file_info.metadata(), &true_fi.metadata);
+                assert_eq!(m_file_info.header(), &true_fi.metadata);
                 assert_eq!(m_file_info.num_entries(), true_fi.segments.len());
 
                 for j in 0..true_fi.metadata.num_entries as usize {

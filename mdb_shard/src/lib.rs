@@ -21,4 +21,4 @@ pub use shard_format::{MDBShardFileFooter, MDBShardFileHeader, MDBShardInfo};
 // Temporary to transition dependent code to new location
 pub mod shard_file;
 
-pub mod minimal_shard;
+pub mod streaming_shard;
