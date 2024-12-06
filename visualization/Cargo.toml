@@ -8,3 +8,8 @@ cas_client = { path = "../cas_client" }
 data = { path = "../data" }
 utils = { path = "../utils" }
 tokio = { version = "1", features = ["full"] }
+tracing-subscriber = { version = "0.3", features = [
+    "json",
+    "tracing-log",
+    "env-filter",
+] }

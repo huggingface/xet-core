@@ -1,26 +1,34 @@
-use std::env;
-use std::sync::Arc;
+use std::path::PathBuf;
 
-use cas_client::remote_client::CAS_ENDPOINT;
-use data::configurations::{Endpoint, FileQueryPolicy, StorageConfig, TranslatorConfig};
+use data::configurations::{Endpoint, StorageConfig};
 use data::shard_interface::create_shard_manager;
-use utils::auth::AuthConfig;
+use data::CacheConfig;
 
-#[tokio::main]
-async fn main() -> data::errors::Result<()> {
-    let config = TranslatorConfig {
-        file_query_policy: FileQueryPolicy::LocalFirst,
-        cas_storage_config: StorageConfig {
-            endpoint: Endpoint::Server(env::var("XET_CAS_SERVER").unwrap_or(CAS_ENDPOINT.to_string())),
-            auth: Some(AuthConfig{ token: todo!(), token_expiration: todo!(), token_refresher: todo!() }),
-            prefix: todo!(),
+/*
+            endpoint: ,
+            auth: Some(AuthConfig {
+                token: env::var("XET_CAS_TOKEN").unwrap_or("".to_string()),
+                token_expiration: SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs(),
+                token_refresher: Arc::new(NoOpTokenRefresher),
+            }),
+            prefix: "default-merkledb".into(),
             cache_config: todo!(),
             staging_directory: todo!(),
-        },
-        shard_storage_config: todo!(),
-        dedup_config: todo!(),
-        repo_info: todo!(),
+*/
+#[tokio::main]
+async fn main() -> data::errors::Result<()> {
+    let config = StorageConfig {
+        endpoint: Endpoint::FileSystem(PathBuf::from("/Users/zach/hf/data")),
+        auth: None,
+        prefix: "default-merkledb".into(),
+        cache_config: Some(CacheConfig {
+            cache_directory: PathBuf::from("/tmp/xet_shard_cache"),
+            cache_size: 1024 * 1024 * 1024,
+        }),
+        staging_directory: Some(PathBuf::from("/tmp/xet_shard_staging")),
     };
-    let shard_manager = Arc::new(create_shard_manager(&config.shard_storage_config).await?);
-    println!("Shard manager contains: {:?}", shard_manager);
+    let shard_manager_result = create_shard_manager(&config).await;
+    let shard_manager = shard_manager_result?;
+    println!("Shard manager contains: {:#?}", shard_manager);
+    Ok(())
 }
