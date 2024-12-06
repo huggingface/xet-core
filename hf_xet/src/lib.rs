@@ -1,4 +1,5 @@
 mod log;
+mod log_buffer;
 mod token_refresh;
 
 use std::fmt::Debug;
@@ -14,7 +15,15 @@ use utils::ThreadPool;
 
 fn get_threadpool() -> Arc<ThreadPool> {
     static THREADPOOL: OnceLock<Arc<ThreadPool>> = OnceLock::new();
-    THREADPOOL.get_or_init(|| Arc::new(ThreadPool::new())).clone()
+    THREADPOOL
+        .get_or_init(|| {
+            let threadpool = Arc::new(ThreadPool::new());
+            threadpool.block_on(async {
+                log::initialize_logging(threadpool.clone()); // needs to run within an async runtime
+            });
+            threadpool
+        })
+        .clone()
 }
 
 #[pyfunction]
@@ -119,7 +128,6 @@ impl PyPointerFile {
 
 #[pymodule]
 pub fn hf_xet(m: &Bound<'_, PyModule>) -> PyResult<()> {
-    log::initialize_logging();
     m.add_function(wrap_pyfunction!(upload_files, m)?)?;
     m.add_function(wrap_pyfunction!(download_files, m)?)?;
     m.add_class::<PyPointerFile>()?;

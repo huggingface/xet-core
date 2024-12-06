@@ -973,8 +973,15 @@ mod tests {
                     continue;
                 }
 
-                // Do some repeat keys to make sure that path is tested as well.
-                let key: HMACKey = rng_hash((i % 6) as u64);
+                let key: HMACKey = {
+                    if i == 1 {
+                        // This tests that the default route with no hmac translation is solid too
+                        HMACKey::default()
+                    } else {
+                        // Do some repeat keys to make sure that path is tested as well.
+                        rng_hash((i % 6) as u64)
+                    }
+                };
 
                 let shard = MDBShardFile::load_from_file(p)?;
 
@@ -989,7 +996,11 @@ mod tests {
                         include_info,
                     )
                     .unwrap();
-                assert_eq!(out.chunk_hmac_key(), Some(key));
+                if key != HMACKey::default() {
+                    assert_eq!(out.chunk_hmac_key(), Some(key));
+                } else {
+                    assert_eq!(out.chunk_hmac_key(), None);
+                }
             }
 
             // Now, verify that everything still works great.

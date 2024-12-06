@@ -3,7 +3,7 @@
 #
 #    maturin generate-ci github
 #
-name: CI
+name: Release
 
 on:
   push:
@@ -48,7 +48,7 @@ jobs:
           args: --release --out dist
           sccache: 'true'
           manylinux: auto
-        working_directory: hf_xet
+          working-directory: hf_xet
       - name: Upload wheels
         uses: actions/upload-artifact@v4
         with:
@@ -80,7 +80,7 @@ jobs:
           args: --release --out dist
           sccache: 'true'
           manylinux: musllinux_1_2
-        working_directory: hf_xet
+          working-directory: hf_xet
       - name: Upload wheels
         uses: actions/upload-artifact@v4
         with:
@@ -108,7 +108,7 @@ jobs:
           target: ${{ matrix.platform.target }}
           args: --release --out dist
           sccache: 'true'
-        working_directory: hf_xet
+          working-directory: hf_xet
       - name: Upload wheels
         uses: actions/upload-artifact@v4
         with:
@@ -135,7 +135,7 @@ jobs:
           target: ${{ matrix.platform.target }}
           args: --release --out dist
           sccache: 'true'
-        working_directory: hf_xet
+          working-directory: hf_xet
       - name: Upload wheels
         uses: actions/upload-artifact@v4
         with:
@@ -151,7 +151,7 @@ jobs:
         with:
           command: sdist
           args: --out dist
-        working_directory: hf_xet
+          working-directory: hf_xet
       - name: Upload sdist
         uses: actions/upload-artifact@v4
         with:
@@ -165,7 +165,6 @@ jobs:
     needs: [ linux, musllinux, windows, macos, sdist ]
     steps:
       - uses: actions/download-artifact@v4
-        working_directory: hf_xet
       - name: Publish to PyPI
         uses: PyO3/maturin-action@v1
         env:
@@ -173,7 +172,6 @@ jobs:
         with:
           command: upload
           args: --non-interactive --skip-existing wheels-*/*
-        working_directory: hf_xet
 
   release-github:
     name: Release GitHub
@@ -184,8 +182,6 @@ jobs:
     needs: [ linux, musllinux, windows, macos, sdist ]
     steps:
       - uses: actions/download-artifact@v4
-        working_directory: hf_xet
       - name: Publish to GitHub Releases
         run: |
           gh release upload ${{github.event.release.tag_name}} wheels-*/*
-        working_directory: hf_xet
