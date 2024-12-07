@@ -6,6 +6,8 @@ edition = "2021"
 [dependencies]
 cas_client = { path = "../cas_client" }
 data = { path = "../data" }
+mdb_shard = { path = "../mdb_shard" }
+merklehash = { path = "../merklehash" }
 utils = { path = "../utils" }
 tokio = { version = "1", features = ["full"] }
 tracing-subscriber = { version = "0.3", features = [

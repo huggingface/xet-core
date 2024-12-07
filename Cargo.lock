@@ -3725,6 +3725,8 @@ version = "0.1.0"
 dependencies = [
  "cas_client",
  "data",
+ "mdb_shard",
+ "merklehash",
  "tokio",
  "tracing-subscriber",
  "utils",

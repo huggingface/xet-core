@@ -161,20 +161,6 @@ impl ShardFileManager {
         Ok(s)
     }
 
-    pub async fn to_vis_json(&self) -> String {
-        let mut output = "[".to_string();
-        
-        for collection in self.shard_bookkeeper.read().await.shard_collections.iter() {
-            for shard in &collection.shard_list {
-                println!("Found shard {:#?}", shard);
-                shard.get_file_reconstruction_info(file_hash);
-            }
-        }
-
-        output += "]";
-        return output;
-    }
-
     /// Construct a new shard file manager that uses session_directory as the temporary dumping  
     pub async fn load_dir(session_directory: &Path) -> Result<Self> {
         Self::new(session_directory, true).await
@@ -357,7 +343,7 @@ impl FileReconstructor<MDBShardError> for ShardFileManager {
 
         for sc in current_shards.shard_collections.iter() {
             for si in sc.shard_list.iter() {
-                trace!("Querying for hash {file_hash:?} in {:?}.", si.path);
+                println!("Querying for hash {file_hash:?} in {:?}.", si.path);
                 if let Some(fi) = si.get_file_reconstruction_info(file_hash)? {
                     return Ok(Some((fi, Some(si.shard_hash))));
                 }
