@@ -161,6 +161,20 @@ impl ShardFileManager {
         Ok(s)
     }
 
+    pub async fn to_vis_json(&self) -> String {
+        let mut output = "[".to_string();
+        
+        for collection in self.shard_bookkeeper.read().await.shard_collections.iter() {
+            for shard in &collection.shard_list {
+                println!("Found shard {:#?}", shard);
+                shard.get_file_reconstruction_info(file_hash);
+            }
+        }
+
+        output += "]";
+        return output;
+    }
+
     /// Construct a new shard file manager that uses session_directory as the temporary dumping  
     pub async fn load_dir(session_directory: &Path) -> Result<Self> {
         Self::new(session_directory, true).await
