@@ -3,9 +3,8 @@ use std::fmt::Write;
 use std::io::{self, copy, Cursor, Read};
 use std::sync::Arc;
 
-use futures_io::AsyncRead;
+use futures_io;
 use merklehash::HMACKey;
-use tokio::io::AsyncRead;
 
 use crate::cas_structs::{CASChunkSequenceEntry, CASChunkSequenceHeader, MDBCASInfoView};
 use crate::error::Result;
@@ -217,6 +216,7 @@ where
 }
 
 // A minimal shard loaded in memory that could be useful by themselves.  In addition, this provides a testing surface for the above iteration routines.
+#[derive(Clone, Debug, PartialEq)]
 pub struct MDBMinimalShard {
     data: Arc<[u8]>,
     file_offsets: Vec<u32>,
@@ -247,7 +247,7 @@ impl MDBMinimalShard {
         FileDataSequenceHeader::bookend().serialize(&mut data_vec)?;
 
         // CAS stuff if needed
-        let cas_info_start = data_vec.len();
+        let cas_info_start = data_vec.len() as u32;
         let mut cas_offsets = Vec::<u32>::new();
 
         if include_cas {
@@ -308,7 +308,7 @@ impl MDBMinimalShard {
         }
 
         // Add in a CAS bookend struct so the shard can be serialized easily if needed.
-        let cas_info_start = data_vec.len();
+        let cas_info_start = data_vec.len() as u32;
         CASChunkSequenceHeader::bookend().serialize(&mut data_vec)?;
 
         // Aiming for minimal data usage, so shrink things to fit
@@ -397,10 +397,50 @@ impl MDBMinimalShard {
             materialized_bytes,
             stored_bytes,
             footer_offset: footer_start,
-            ..default::Default()
+            ..Default::default()
         }
         .serialize(writer)?;
 
         Ok(bytes)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io::Cursor;
+
+    use crate::{shard_file::test_routines::convert_to_file, shard_in_memory::MDBInMemoryShard};
+
+    use super::MDBMinimalShard;
+
+    async fn verify_minimal_shard(shard: &MDBInMemoryShard) -> Result<()> {
+        let buffer = convert_to_file(shard)?;
+
+        let min_shard = MDBMinimalShard::from_reader(&mut Cursor::new(&buffer), true, true).unwrap();
+
+        let min_shard_streaming = MDBInMemoryShard::from_reader_async(&mut Cursor::new(&buffer), true, true)
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_minimal_parse() -> Result<()> {
+        // Tests to make sure the async and non-async match.
+        let shard = gen_random_shard(0, &[1], &[1, 1], false, false)?;
+        verify_minimal_shard(&shard);
+
+        let shard = gen_random_shard(0, &[1, 5, 10, 8], &[4, 3, 5, 9, 4, 6], false, false)?;
+        verify_minimal_shard(&shard)?;
+
+        let shard = gen_random_shard(0, &[1, 5, 10, 8], &[4, 3, 5, 9, 4, 6], true, false)?;
+        verify_minimal_shard(&shard)?;
+
+        let shard = gen_random_shard(0, &[1, 5, 10, 8], &[4, 3, 5, 9, 4, 6], false, true)?;
+        verify_minimal_shard(&shard)?;
+
+        let shard = gen_random_shard(0, &[1, 5, 10, 8], &[4, 3, 5, 9, 4, 6], true, true)?;
+        verify_minimal_shard(&shard)?;
+
+        Ok(())
     }
 }
