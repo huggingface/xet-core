@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use async_trait::async_trait;
 use cas_client::Client;
 use futures::StreamExt;
 use mdb_shard::cas_structs::{CASChunkSequenceEntry, CASChunkSequenceHeader, MDBCASInfo};
@@ -16,6 +17,14 @@ use crate::constants::MAX_CONCURRENT_XORB_UPLOADS;
 use crate::data_processing::CASDataAggregator;
 use crate::errors::DataProcessingError::*;
 use crate::errors::*;
+
+#[async_trait]
+pub(crate) trait XorbUpload {
+    /// Register a block of data ready for upload and dedup, return the hash of the produced xorb.
+    async fn register_new_cas_block(&self, cas_data: CASDataAggregator) -> Result<MerkleHash>;
+    /// Flush all xorbs that are pending to be sent to remote.
+    async fn flush(&self) -> Result<()>;
+}
 
 pub enum QueueItem<T: Send, S: Send> {
     Value(T),
@@ -100,7 +109,20 @@ impl ParallelXorbUploader {
         *worker = Some(upload_task);
     }
 
-    pub async fn register_new_cas_block(&self, cas_data: CASDataAggregator) -> Result<MerkleHash> {
+    async fn task_is_running(&self) -> Result<()> {
+        let uploader_worker = self.upload_worker.lock().await;
+
+        if uploader_worker.is_none() {
+            return Err(UploadTaskError("no active upload task".to_owned()));
+        }
+
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl XorbUpload for ParallelXorbUploader {
+    async fn register_new_cas_block(&self, cas_data: CASDataAggregator) -> Result<MerkleHash> {
         self.task_is_running().await?;
 
         let cas_hash = cas_node_hash(&cas_data.chunks[..]);
@@ -128,7 +150,7 @@ impl ParallelXorbUploader {
     /// Flush makes sure all xorbs added to queue before this call are sent successfully
     /// to remote. This function can be called multiple times and should be called at
     /// least once before `ParallelXorbUploader` is dropped.
-    pub async fn flush(&self) -> Result<()> {
+    async fn flush(&self) -> Result<()> {
         // no need to flush if task already finished
         if self.task_is_running().await.is_err() {
             return Ok(());
@@ -142,16 +164,6 @@ impl ParallelXorbUploader {
             .map_err(|e| InternalError(format!("{e}")))?;
 
         signal_rx.await.map_err(|e| InternalError(format!("{e}")))?;
-
-        Ok(())
-    }
-
-    async fn task_is_running(&self) -> Result<()> {
-        let uploader_worker = self.upload_worker.lock().await;
-
-        if uploader_worker.is_none() {
-            return Err(UploadTaskError("no active upload task".to_owned()));
-        }
 
         Ok(())
     }

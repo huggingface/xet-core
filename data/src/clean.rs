@@ -31,7 +31,7 @@ use crate::data_processing::CASDataAggregator;
 use crate::errors::DataProcessingError::*;
 use crate::errors::Result;
 use crate::metrics::FILTER_BYTES_CLEANED;
-use crate::parallel_xorb_uploader::ParallelXorbUploader;
+use crate::parallel_xorb_uploader::XorbUpload;
 use crate::remote_shard_interface::RemoteShardInterface;
 use crate::repo_salt::RepoSalt;
 use crate::small_file_determination::{is_file_passthrough, is_possible_start_to_text_file};
@@ -114,7 +114,7 @@ pub struct Cleaner {
     // Utils
     shard_manager: Arc<ShardFileManager>,
     remote_shards: Arc<RemoteShardInterface>,
-    xorb_uploader: Arc<ParallelXorbUploader>,
+    xorb_uploader: Arc<dyn XorbUpload + Send + Sync>,
 
     // External Data
     global_cas_data: Arc<Mutex<CASDataAggregator>>,
@@ -148,7 +148,7 @@ impl Cleaner {
         repo_salt: Option<RepoSalt>,
         shard_manager: Arc<ShardFileManager>,
         remote_shards: Arc<RemoteShardInterface>,
-        xorb_uploader: Arc<ParallelXorbUploader>,
+        xorb_uploader: Arc<dyn XorbUpload + Send + Sync>,
         cas_data: Arc<Mutex<CASDataAggregator>>,
         buffer_size: usize,
         file_name: Option<&Path>,

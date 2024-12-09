@@ -17,7 +17,7 @@ use crate::clean::Cleaner;
 use crate::configurations::*;
 use crate::constants::MAX_CONCURRENT_XORB_UPLOADS;
 use crate::errors::*;
-use crate::parallel_xorb_uploader::ParallelXorbUploader;
+use crate::parallel_xorb_uploader::{ParallelXorbUploader, XorbUpload};
 use crate::remote_shard_interface::RemoteShardInterface;
 use crate::shard_interface::create_shard_manager;
 use crate::PointerFile;
@@ -59,7 +59,7 @@ pub struct PointerFileTranslator {
     shard_manager: Arc<ShardFileManager>,
     remote_shards: Arc<RemoteShardInterface>,
     cas: Arc<dyn Client + Send + Sync>,
-    xorb_uploader: Mutex<Option<Arc<ParallelXorbUploader>>>,
+    xorb_uploader: Mutex<Option<Arc<dyn XorbUpload + Send + Sync>>>,
 
     /* ----- Deduped data shared across files ----- */
     global_cas_data: Arc<Mutex<CASDataAggregator>>,
