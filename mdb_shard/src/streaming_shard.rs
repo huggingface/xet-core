@@ -1,4 +1,5 @@
 use std::io::{copy, Cursor, Read, Write};
+use std::mem::size_of;
 use std::sync::Arc;
 
 use futures_io::AsyncRead;
