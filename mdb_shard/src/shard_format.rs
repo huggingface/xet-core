@@ -125,7 +125,7 @@ pub struct MDBShardFileFooter {
     pub shard_key_expiry: u64,
 
     // More locations to stick in here if needed.
-    _buffer: [u64; 6],
+    pub _buffer: [u64; 6],
     pub stored_bytes_on_disk: u64,
     pub materialized_bytes: u64,
     pub stored_bytes: u64,
