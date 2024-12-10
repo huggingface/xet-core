@@ -215,7 +215,8 @@ where
     Ok(())
 }
 
-// A minimal shard loaded in memory that could be useful by themselves.  In addition, this provides a testing surface for the above iteration routines.
+// A minimal shard loaded in memory that could be useful by themselves.  In addition, this provides a testing surface
+// for the above iteration routines.
 #[derive(Clone, Debug, PartialEq)]
 pub struct MDBMinimalShard {
     data: Arc<[u8]>,
@@ -406,18 +407,16 @@ impl MDBMinimalShard {
 
 #[cfg(test)]
 mod tests {
-    use anyhow::Result;
     use std::io::Cursor;
 
-    use crate::{
-        cas_structs::MDBCASInfo,
-        file_structs::MDBFileInfo,
-        shard_file::test_routines::{convert_to_file, gen_random_shard},
-        shard_in_memory::MDBInMemoryShard,
-        MDBShardInfo,
-    };
+    use anyhow::Result;
 
     use super::MDBMinimalShard;
+    use crate::cas_structs::MDBCASInfo;
+    use crate::file_structs::MDBFileInfo;
+    use crate::shard_file::test_routines::{convert_to_file, gen_random_shard};
+    use crate::shard_in_memory::MDBInMemoryShard;
+    use crate::MDBShardInfo;
 
     fn verify_serialization(min_shard: &MDBMinimalShard, mem_shard: &MDBInMemoryShard) -> Result<()> {
         // Now verify that the serialized version is the same too.
