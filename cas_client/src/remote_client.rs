@@ -326,8 +326,6 @@ impl RemoteClient {
 
         writer.flush()?;
 
-        progress_updater.as_ref().inspect(|updater| updater.update(total_len));
-
         Ok(total_len)
     }
 }
