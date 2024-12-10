@@ -383,22 +383,22 @@ impl MDBMinimalShard {
         }
 
         // Now fill out the footer and write it out.
-        let mut footer = MDBShardFileFooter::default();
-
-        footer.file_info_offset = fs_start;
-        footer.cas_info_offset = self.cas_info_start as u64 + size_of::<MDBShardFileHeader>() as u64;
-        footer.file_lookup_offset = footer_start as u64;
-        footer.file_lookup_num_entry = 0;
-        footer.cas_lookup_offset = footer_start as u64;
-        footer.cas_lookup_num_entry = 0;
-        footer.chunk_lookup_offset = footer_start as u64;
-        footer.chunk_lookup_num_entry = 0;
-        footer.stored_bytes_on_disk = stored_bytes_on_disk;
-        footer.materialized_bytes = materialized_bytes;
-        footer.stored_bytes = stored_bytes;
-        footer.footer_offset = footer_start as u64;
-
-        footer.serialize(writer)?;
+        MDBShardFileFooter {
+            file_info_offset: fs_start,
+            cas_info_offset: self.cas_info_start as u64 + size_of::<MDBShardFileHeader>() as u64,
+            file_lookup_offset: footer_start as u64,
+            file_lookup_num_entry: 0,
+            cas_lookup_offset: footer_start as u64,
+            cas_lookup_num_entry: 0,
+            chunk_lookup_offset: footer_start as u64,
+            chunk_lookup_num_entry: 0,
+            stored_bytes_on_disk,
+            materialized_bytes,
+            stored_bytes,
+            footer_offset: footer_start as u64,
+            ..Default::default()
+        }
+        .serialize(writer)?;
 
         Ok(bytes)
     }
