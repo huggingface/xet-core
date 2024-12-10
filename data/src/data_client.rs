@@ -79,7 +79,6 @@ pub async fn download_async(
         tokio_par_for_each(pointer_files_plus, MAX_CONCURRENT_DOWNLOADS, |(pointer_file, updater), _| async move {
             let proc = processor.clone();
             let res = smudge_file(&proc, &pointer_file, updater).await;
-            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
             res
         })
         .await

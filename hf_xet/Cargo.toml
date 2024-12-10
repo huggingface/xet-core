@@ -11,6 +11,7 @@ crate-type = ["cdylib"]
 [dependencies]
 pyo3 = { version = "0.23.3", features = ["extension-module", "abi3-py37", "auto-initialize"] }
 
+error_printer = { path = "../error_printer" }
 data = { path = "../data" }
 utils = { path = "../utils" }
 tokio = { version = "1.36", features = ["full"] }

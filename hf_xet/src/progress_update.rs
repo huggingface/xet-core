@@ -1,13 +1,21 @@
 use std::fmt::{Debug, Formatter};
 
+use error_printer::ErrorPrinter;
 use pyo3::exceptions::PyTypeError;
 use pyo3::prelude::PyAnyMethods;
 use pyo3::{Py, PyAny, PyErr, PyResult, Python};
 use tracing::{error, trace};
 use utils::progress::ProgressUpdater;
 
-/// A wrapper struct of a python function to update a progress bar
+/// A wrapper over a passed-in python function to update
+/// the python process of some download/upload progress
+/// implements the ProgressUpdater trait and should be
+/// passed around as a ProgressUpdater trait object or
+/// as a template parameter
 pub struct WrappedProgressUpdater {
+    /// the function py_func is responsible for passing in the update value
+    /// into the python context. Expects 1 int (uint64) parameter that
+    /// is a number to increment the progress counter by.
     py_func: Py<PyAny>,
     name: String,
 }
@@ -42,8 +50,8 @@ impl WrappedProgressUpdater {
 }
 
 impl ProgressUpdater for WrappedProgressUpdater {
-    fn update(&self, total: u64) {
-        trace!("updating progress bar");
+    fn update(&self, increment: u64) {
+        trace!("updating progress bar with increment value: {increment}");
         Python::with_gil(|py| {
             let f = self.py_func.bind(py);
             if !f.is_callable() {
@@ -51,8 +59,8 @@ impl ProgressUpdater for WrappedProgressUpdater {
                 return;
             }
             let _ = f
-                .call1((total,))
-                .inspect_err(|e| error!("python exception trying to update progress bar {e:?}"));
+                .call1((increment,))
+                .log_error("python exception trying to update progress bar");
         });
     }
 }

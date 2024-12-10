@@ -896,6 +896,7 @@ version = "0.1.0"
 dependencies = [
  "bipbuffer",
  "data",
+ "error_printer",
  "parutils",
  "pyo3",
  "reqwest 0.11.27",
