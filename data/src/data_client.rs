@@ -78,8 +78,7 @@ pub async fn download_async(
     let paths =
         tokio_par_for_each(pointer_files_plus, MAX_CONCURRENT_DOWNLOADS, |(pointer_file, updater), _| async move {
             let proc = processor.clone();
-            let res = smudge_file(&proc, &pointer_file, updater).await;
-            res
+            smudge_file(&proc, &pointer_file, updater).await
         })
         .await
         .map_err(|e| match e {
