@@ -41,7 +41,9 @@ pub fn default_config(
     let (token, token_expiration) = token_info.unzip();
     let auth_cfg = AuthConfig::maybe_new(token, token_expiration, token_refresher);
 
-    let shard_staging_directory = tempdir_in(xet_path.join("shard-session"))?;
+    let shard_staging_root = xet_path.join("shard-session");
+    std::fs::create_dir_all(&shard_staging_root)?;
+    let shard_staging_directory = tempdir_in(shard_staging_root)?;
 
     let translator_config = TranslatorConfig {
         file_query_policy: FileQueryPolicy::ServerOnly,
