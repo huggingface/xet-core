@@ -7,7 +7,6 @@ use mdb_shard::cas_structs::{CASChunkSequenceEntry, CASChunkSequenceHeader, MDBC
 use mdb_shard::ShardFileManager;
 use merkledb::aggregate_hashes::cas_node_hash;
 use merklehash::MerkleHash;
-use tokio::runtime::Handle;
 use tokio::sync::mpsc::{self, Receiver, Sender};
 use tokio::sync::{oneshot, Mutex};
 use tokio::task::JoinHandle;
@@ -171,7 +170,7 @@ impl XorbUpload for ParallelXorbUploader {
 
 impl Drop for ParallelXorbUploader {
     fn drop(&mut self) {
-        let _ = tokio::task::block_in_place(|| Handle::current().block_on(async move { self.flush().await }));
+        let _ = self.threadpool.block_in_place(async { self.flush().await });
     }
 }
 

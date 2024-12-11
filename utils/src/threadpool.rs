@@ -94,6 +94,10 @@ impl ThreadPool {
     pub fn get_handle(&self) -> tokio::runtime::Handle {
         self.inner.handle().clone()
     }
+
+    pub fn block_in_place<F: std::future::Future>(&self, future: F) -> F::Output {
+        tokio::task::block_in_place(|| self.inner.handle().block_on(future))
+    }
 }
 
 impl Display for ThreadPool {
