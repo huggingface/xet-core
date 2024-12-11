@@ -28,8 +28,6 @@ jobs:
           - runner: cpu-high
             target: x86_64
           - runner: cpu-high
-            target: x86
-          - runner: cpu-high
             target: aarch64
           - runner: cpu-high
             target: armv7
@@ -64,8 +62,6 @@ jobs:
         platform:
           - runner: cpu-high
             target: x86_64
-          - runner: cpu-high
-            target: x86
           - runner: cpu-high
             target: aarch64
           - runner: cpu-high
