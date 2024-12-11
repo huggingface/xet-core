@@ -8,7 +8,7 @@ use std::sync::Arc;
 use cas_client::CacheConfig;
 use dirs::home_dir;
 use parutils::{tokio_par_for_each, ParallelError};
-use tempfile::{tempdir, tempdir_in, TempDir};
+use tempfile::{tempdir_in, TempDir};
 use utils::auth::{AuthConfig, TokenRefresher};
 use utils::progress::ProgressUpdater;
 use utils::ThreadPool;
