@@ -1405,6 +1405,8 @@ dependencies = [
  "anyhow",
  "async-trait",
  "clap",
+ "futures-io",
+ "futures-util",
  "itertools 0.13.0",
  "lazy_static",
  "merklehash",
