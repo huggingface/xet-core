@@ -61,6 +61,15 @@ hfxet.upload_files()
 hfxet.download_files()
 ```
 
+#### Building universal whl for MacOS:
+
+From hf_xet directory:
+```
+MACOSX_DEPLOYMENT_TARGET=10.9 maturin build --release --target universal2-apple-darwin --features openssl_vendored
+```
+
+Note: You may need to install x86_64: `rustup target add x86_64-apple-darwin`
+
 ## Testing
 
 Unit-tests are run with `cargo test`, benchmarks are run with `cargo bench`. Some crates have a main.rs that can be run for manual testing.
