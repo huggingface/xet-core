@@ -593,10 +593,11 @@ impl Cleaner {
 
         let file_hash = file_node_hash(&tracking_info.file_hashes, &self.repo_salt.unwrap_or_default())?;
 
-        // Is the file registered already based on local information? If so, nothing needs to be added now.
-        let file_already_registered = self.shard_manager.get_file_reconstruction_info(&file_hash).await?.is_some();
+        // Always register a new file info to be uploaded. This is because each file is associated with a repo and
+        // the client doesn't know with which repo this file is associated given local information.
+        // TODO: server exposes a HEAD repo_id/file_id endpoint so client can check if this file exists.
 
-        if !file_already_registered {
+        {
             // Put an accumulated data into the struct-wide cas block for building a future chunk.
             let mut cas_data_accumulator = self.global_cas_data.lock().await;
 
@@ -662,6 +663,7 @@ impl Cleaner {
                 drop(cas_data_accumulator);
             }
         }
+
         let file_size = self.metrics.file_size.load(Ordering::Relaxed);
         // we only add to the counters if we see changes
         FILTER_BYTES_CLEANED.inc_by(file_size);
