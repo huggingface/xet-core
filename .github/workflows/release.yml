@@ -46,7 +46,7 @@ jobs:
         uses: PyO3/maturin-action@v1
         with:
           target: ${{ matrix.platform.target }}
-          args: --release --out dist
+          args: --release --features openssl_vendored --out dist
           sccache: 'true'
           manylinux: auto
           working-directory: hf_xet
@@ -79,7 +79,7 @@ jobs:
         uses: PyO3/maturin-action@v1
         with:
           target: ${{ matrix.platform.target }}
-          args: --release --out dist
+          args: --release --features openssl_vendored --out dist
           sccache: 'true'
           manylinux: musllinux_1_2
           working-directory: hf_xet
