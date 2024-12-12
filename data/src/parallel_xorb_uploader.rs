@@ -43,7 +43,7 @@ pub(crate) struct ParallelXorbUploader {
     upload_tasks: Mutex<JoinSet<Result<()>>>,
 
     // Rate limiter
-    concurrency: Arc<Semaphore>,
+    rate_limiter: Arc<Semaphore>,
 
     // Theadpool
     threadpool: Arc<ThreadPool>,
@@ -54,7 +54,7 @@ impl ParallelXorbUploader {
         cas_prefix: &str,
         shard_manager: Arc<ShardFileManager>,
         cas: Arc<dyn Client + Send + Sync>,
-        n_concurrent_uploads: usize,
+        rate_limiter: Arc<Semaphore>,
         threadpool: Arc<ThreadPool>,
     ) -> Arc<Self> {
         Arc::new(ParallelXorbUploader {
@@ -62,7 +62,7 @@ impl ParallelXorbUploader {
             shard_manager,
             cas,
             upload_tasks: Mutex::new(JoinSet::new()),
-            concurrency: Arc::new(Semaphore::new(n_concurrent_uploads)),
+            rate_limiter,
             threadpool,
         })
     }
@@ -86,7 +86,7 @@ impl XorbUpload for ParallelXorbUploader {
 
         // Rate limiting, the acquired permit is dropped after the task completes.
         let permit = self
-            .concurrency
+            .rate_limiter
             .clone()
             .acquire_owned()
             .await

@@ -6,10 +6,11 @@ use std::sync::Arc;
 
 use cas_client::Client;
 use cas_types::FileRange;
+use lazy_static::lazy_static;
 use mdb_shard::file_structs::MDBFileInfo;
 use mdb_shard::ShardFileManager;
 use merklehash::MerkleHash;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, Semaphore};
 use utils::progress::ProgressUpdater;
 use utils::ThreadPool;
 
@@ -22,6 +23,10 @@ use crate::parallel_xorb_uploader::{ParallelXorbUploader, XorbUpload};
 use crate::remote_shard_interface::RemoteShardInterface;
 use crate::shard_interface::create_shard_manager;
 use crate::PointerFile;
+
+lazy_static! {
+    pub static ref XORB_UPLOAD_RATE_LIMITER: Arc<Semaphore> = Arc::new(Semaphore::new(*MAX_CONCURRENT_XORB_UPLOADS));
+}
 
 #[derive(Default, Debug)]
 pub(crate) struct CASDataAggregator {
@@ -135,7 +140,7 @@ impl PointerFileTranslator {
                     &self.config.cas_storage_config.prefix,
                     self.shard_manager.clone(),
                     self.cas.clone(),
-                    *MAX_CONCURRENT_XORB_UPLOADS,
+                    XORB_UPLOAD_RATE_LIMITER.clone(),
                     self.threadpool.clone(),
                 )
                 .await
