@@ -4,11 +4,13 @@ use std::fs::File;
 use std::io::{BufReader, Read, Write};
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Instant;
 
 use cas_client::CacheConfig;
 use dirs::home_dir;
 use parutils::{tokio_par_for_each, ParallelError};
 use tempfile::{tempdir_in, TempDir};
+use tracing::info;
 use utils::auth::{AuthConfig, TokenRefresher};
 use utils::progress::ProgressUpdater;
 use utils::ThreadPool;
@@ -90,6 +92,7 @@ pub async fn upload_async(
     token_info: Option<(String, u64)>,
     token_refresher: Option<Arc<dyn TokenRefresher>>,
 ) -> errors::Result<Vec<PointerFile>> {
+    let s = Instant::now();
     // chunk files
     // produce Xorbs + Shards
     // upload shards and xorbs
@@ -111,6 +114,9 @@ pub async fn upload_async(
 
     // Push the CAS blocks and flush the mdb to disk
     processor.finalize_cleaning().await?;
+
+    let duration = s.elapsed();
+    info!("Upload finished in {} s {} ms", duration.as_secs(), duration.subsec_millis());
 
     Ok(pointers)
 }

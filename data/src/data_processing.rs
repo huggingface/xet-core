@@ -3,6 +3,7 @@ use std::mem::take;
 use std::ops::DerefMut;
 use std::path::Path;
 use std::sync::Arc;
+use std::time::Instant;
 
 use cas_client::Client;
 use cas_types::FileRange;
@@ -11,6 +12,7 @@ use mdb_shard::file_structs::MDBFileInfo;
 use mdb_shard::ShardFileManager;
 use merklehash::MerkleHash;
 use tokio::sync::{Mutex, Semaphore};
+use tracing::info;
 use utils::progress::ProgressUpdater;
 use utils::ThreadPool;
 
@@ -19,6 +21,7 @@ use crate::clean::Cleaner;
 use crate::configurations::*;
 use crate::constants::MAX_CONCURRENT_XORB_UPLOADS;
 use crate::errors::*;
+use crate::metrics::*;
 use crate::parallel_xorb_uploader::{ParallelXorbUploader, XorbUpload};
 use crate::remote_shard_interface::RemoteShardInterface;
 use crate::shard_interface::create_shard_manager;
@@ -172,7 +175,30 @@ impl PointerFileTranslator {
         // flush accumulated memory shard.
         self.shard_manager.flush().await?;
 
+        let s = Instant::now();
         self.upload_shards().await?;
+        let runtime_shard_upload = s.elapsed().as_millis();
+
+        let runtime_chunking = RUNTIME_CHUNKING.get() / 1000000;
+        RUNTIME_CHUNKING.reset();
+        let runtime_hashing = RUNTIME_HASHING.get() / 1000000;
+        RUNTIME_HASHING.reset();
+        let runtime_sha256 = RUNTIME_SHA256.get() / 1000000;
+        RUNTIME_SHA256.reset();
+        let runtime_dedup_query = RUNTIME_DEDUP_QUERY.get() / 1000000;
+        RUNTIME_DEDUP_QUERY.reset();
+        let runtime_xorb_upload = RUNTIME_XORB_UPLOAD.get() / 1000000;
+        RUNTIME_XORB_UPLOAD.reset();
+
+        info!(
+            "Runtimes:\n
+        Chunking: {runtime_chunking} ms\n
+        Hashing: {runtime_hashing} ms\n
+        SHA256: {runtime_sha256} ms\n
+        Dedup query: {runtime_dedup_query} ms\n
+        Xorb upload: {runtime_xorb_upload} ms\n
+        Shard upload: {runtime_shard_upload} ms"
+        );
 
         Ok(())
     }

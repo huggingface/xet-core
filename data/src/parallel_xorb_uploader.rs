@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::time::Instant;
 
 use async_trait::async_trait;
 use cas_client::Client;
@@ -13,6 +14,7 @@ use utils::ThreadPool;
 use crate::data_processing::CASDataAggregator;
 use crate::errors::DataProcessingError::*;
 use crate::errors::*;
+use crate::metrics::RUNTIME_XORB_UPLOAD;
 
 #[async_trait]
 pub(crate) trait XorbUpload {
@@ -160,7 +162,9 @@ async fn upload_and_register_xorb(
                 (*hash, pos as u32)
             })
             .collect();
+        let s = Instant::now();
         cas.put(&cas_prefix, &cas_hash, data, chunk_and_boundaries).await?;
+        RUNTIME_XORB_UPLOAD.inc_by(s.elapsed().as_nanos().try_into().unwrap());
     }
 
     // register for dedup

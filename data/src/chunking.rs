@@ -1,5 +1,6 @@
 use std::cmp::min;
 use std::sync::Arc;
+use std::time::Instant;
 
 use merkledb::constants::{MAXIMUM_CHUNK_MULTIPLIER, MINIMUM_CHUNK_DIVISOR, TARGET_CDC_CHUNK_SIZE};
 use merkledb::Chunk;
@@ -8,6 +9,8 @@ use tokio::sync::mpsc::{Receiver, Sender};
 use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
 use utils::ThreadPool;
+
+use crate::metrics::{RUNTIME_CHUNKING, RUNTIME_HASHING};
 
 use super::clean::BufferItem;
 
@@ -69,12 +72,14 @@ impl Chunker {
                                 // at the maximum chunk boundary.
                                 let read_end = read_bytes.min(cur_pos + chunker.maximum_chunk - chunker.cur_chunk_len);
 
+                                let s = Instant::now();
                                 if let Some(boundary) = chunker.hash.next_match(&readbuf[cur_pos..read_end], mask) {
                                     consume_len = boundary;
                                     create_chunk = true;
                                 } else {
                                     consume_len = read_end - cur_pos;
                                 }
+                                RUNTIME_CHUNKING.inc_by(s.elapsed().as_nanos().try_into().unwrap());
 
                                 // if we hit maximum chunk we must create a chunk
                                 if consume_len + chunker.cur_chunk_len >= chunker.maximum_chunk {
@@ -88,7 +93,12 @@ impl Chunker {
                                     let res = (
                                         Chunk {
                                             length: chunker.chunkbuf.len(),
-                                            hash: compute_data_hash(&chunker.chunkbuf[..]),
+                                            hash: {
+                                                let s = Instant::now();
+                                                let hash = compute_data_hash(&chunker.chunkbuf[..]);
+                                                RUNTIME_HASHING.inc_by(s.elapsed().as_nanos().try_into().unwrap());
+                                                hash
+                                            },
                                         },
                                         std::mem::take(&mut chunker.chunkbuf),
                                     );

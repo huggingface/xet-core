@@ -28,7 +28,7 @@ use crate::constants::MIN_SPACING_BETWEEN_GLOBAL_DEDUP_QUERIES;
 use crate::data_processing::CASDataAggregator;
 use crate::errors::DataProcessingError::*;
 use crate::errors::Result;
-use crate::metrics::FILTER_BYTES_CLEANED;
+use crate::metrics::{FILTER_BYTES_CLEANED, RUNTIME_SHA256};
 use crate::parallel_xorb_uploader::XorbUpload;
 use crate::remote_shard_interface::RemoteShardInterface;
 use crate::repo_salt::RepoSalt;
@@ -89,7 +89,9 @@ impl ShaGenerator {
     /// Update the generator with some bytes.
     fn update(&self, data: &[u8]) -> Result<()> {
         let mut hasher = self.hasher.lock().map_err(|_| InternalError("mutex poisoned".to_string()))?;
+        let s = Instant::now();
         hasher.update(data);
+        RUNTIME_SHA256.inc_by(s.elapsed().as_nanos().try_into().unwrap());
         Ok(())
     }
 
