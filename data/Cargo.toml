@@ -41,6 +41,7 @@ dirs = "5.0.1"
 
 # metrics
 prometheus = "0.13.0"
+jsonwebtoken = "9.3.0"
 
 # Other hashers for migration
 hashers = "1.0.1"
@@ -49,6 +50,7 @@ hashers = "1.0.1"
 openssl = { version = "0.10", features = [], optional = true }
 glob = "0.3.1"
 reqwest-middleware = "0.3.3"
+chrono = "0.4.39"
 
 [target.'cfg(not(windows))'.dependencies]
 openssl = "0.10"

@@ -4,9 +4,10 @@ use std::ops::DerefMut;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
-use std::time::Instant;
+use std::time::SystemTime;
 
 use cas_object::range_hash_from_chunks;
+use chrono::{DateTime, Utc};
 use lazy_static::lazy_static;
 use mdb_shard::file_structs::{
     FileDataSequenceEntry, FileDataSequenceHeader, FileMetadataExt, FileVerificationEntry, MDBFileInfo,
@@ -62,7 +63,8 @@ struct DedupFileTrackingInfo {
 struct CleanMetrics {
     file_size: AtomicU64,
     new_bytes_after_dedup: AtomicU64,
-    start_time: Instant,
+    start_time: SystemTime,
+    repo_id: Option<String>,
 }
 
 impl Default for CleanMetrics {
@@ -70,7 +72,8 @@ impl Default for CleanMetrics {
         Self {
             file_size: 0.into(),
             new_bytes_after_dedup: 0.into(),
-            start_time: Instant::now(),
+            start_time: SystemTime::now(),
+            repo_id: None,
         }
     }
 }
@@ -154,6 +157,7 @@ impl Cleaner {
         file_name: Option<&Path>,
         threadpool: Arc<ThreadPool>,
         progress_updater: Option<Arc<dyn ProgressUpdater>>,
+        repo_id: Option<String>,
     ) -> Result<Arc<Self>> {
         let (data_p, data_c) = channel::<BufferItem<Vec<u8>>>(buffer_size);
 
@@ -177,7 +181,10 @@ impl Cleaner {
             small_file_buffer: Mutex::new(Some(Vec::with_capacity(small_file_threshold))),
             file_name: file_name.map(|f| f.to_owned()),
             sha_generator: ShaGenerator::new(),
-            metrics: Default::default(),
+            metrics: CleanMetrics {
+                repo_id,
+                ..Default::default()
+            },
             threadpool,
             progress_updater,
         });
@@ -203,7 +210,6 @@ impl Cleaner {
     pub async fn result(&self) -> Result<String> {
         self.finish().await?;
 
-        let duration = Instant::now().duration_since(self.metrics.start_time);
         let file_size = self.metrics.file_size.load(Ordering::Relaxed);
 
         // File is small, all data kept in the small file buffer.
@@ -216,13 +222,20 @@ impl Cleaner {
             (new_bytes, self.to_pointer_file().await?)
         };
 
+        let current_time = SystemTime::now();
+        let start: DateTime<Utc> = self.metrics.start_time.into();
+        let now: DateTime<Utc> = current_time.into();
+        // NB: xorb upload is happening in the background, this number is optimistic since it does
+        // not count transfer time of the uploaded xorbs, which is why `end_processing_ts`
         info!(
-            "Cleaning file {:?} finished in {} s {} ms, processed {} bytes, produced {} bytes after dedup.",
-            self.file_name,
-            duration.as_secs(),
-            duration.subsec_millis(),
-            file_size,
-            new_bytes
+            target: "client_telemetry",
+            action = "clean",
+            repo_id = ?self.metrics.repo_id,
+            file_name = ?self.file_name,
+            file_size_count = file_size,
+            new_bytes_count = new_bytes,
+            start_ts = start.to_rfc3339(),
+            end_processing_ts = now.to_rfc3339(),
         );
 
         Ok(return_file)

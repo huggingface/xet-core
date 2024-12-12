@@ -6,11 +6,13 @@ use std::sync::Arc;
 
 use cas_client::Client;
 use cas_types::FileRange;
+use jsonwebtoken::{decode, DecodingKey, Validation};
 use lazy_static::lazy_static;
 use mdb_shard::file_structs::MDBFileInfo;
 use mdb_shard::ShardFileManager;
 use merklehash::MerkleHash;
 use tokio::sync::{Mutex, Semaphore};
+use utils::auth::TokenClaim;
 use utils::progress::ProgressUpdater;
 use utils::ThreadPool;
 
@@ -73,6 +75,9 @@ pub struct PointerFileTranslator {
 
     /* ----- Threadpool to use for concurrent execution ----- */
     threadpool: Arc<ThreadPool>,
+
+    /* ----- Telemetry ----- */
+    repo_id: Option<String>,
 }
 
 // Constructors
@@ -123,6 +128,19 @@ impl PointerFileTranslator {
             upload_progress_updater.clone(),
         )
         .await;
+        let repo_id = config.cas_storage_config.auth.clone().and_then(|auth| {
+            let token = auth.token;
+            let mut validation = Validation::default();
+            validation.insecure_disable_signature_validation();
+
+            decode::<TokenClaim>(
+                &token,
+                &DecodingKey::from_secret("".as_ref()), // Secret is not used here
+                &validation,
+            )
+            .ok()
+            .map(|decoded| decoded.claims.repo_id.clone())
+        });
 
         Ok(Self {
             config,
@@ -133,6 +151,7 @@ impl PointerFileTranslator {
             global_cas_data: Default::default(),
             threadpool,
             upload_progress_updater,
+            repo_id,
         })
     }
 }
@@ -163,6 +182,7 @@ impl PointerFileTranslator {
             file_name,
             self.threadpool.clone(),
             self.upload_progress_updater.clone(),
+            self.repo_id.clone(),
         )
         .await
     }

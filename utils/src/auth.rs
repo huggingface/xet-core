@@ -2,6 +2,8 @@ use std::fmt::Debug;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use serde::{Deserialize, Serialize};
+
 use crate::errors::AuthError;
 
 /// Helper type for information about an auth token.
@@ -100,4 +102,13 @@ impl TokenProvider {
             .unwrap_or(u64::MAX);
         self.expiration <= cur_time
     }
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TokenClaim {
+    pub repo_id: String,
+    pub user_id: String,
+    pub access: String,
+    pub exp: usize,
 }
