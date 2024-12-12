@@ -84,7 +84,6 @@ pub fn default_config(
 }
 
 pub async fn upload_async(
-    threadpool: Arc<ThreadPool>,
     file_paths: Vec<String>,
     endpoint: Option<String>,
     token_info: Option<(String, u64)>,
@@ -116,7 +115,6 @@ pub async fn upload_async(
 }
 
 pub async fn download_async(
-    threadpool: Arc<ThreadPool>,
     pointer_files: Vec<PointerFile>,
     endpoint: Option<String>,
     token_info: Option<(String, u64)>,

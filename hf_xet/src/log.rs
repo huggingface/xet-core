@@ -16,7 +16,7 @@ const DEFAULT_LOG_LEVEL: &str = "warn";
 #[cfg(debug_assertions)]
 const DEFAULT_LOG_LEVEL: &str = "info";
 
-pub fn initialize_logging(threadpool: Arc<ThreadPool>) {
+pub fn initialize_logging(runtime: &tokio::runtime::Handle) {
     let fmt_layer = tracing_subscriber::fmt::layer()
         .with_line_number(true)
         .with_file(true)
@@ -43,6 +43,6 @@ pub fn initialize_logging(threadpool: Arc<ThreadPool>) {
             .with(telemetry_filter_layer)
             .init();
 
-        let _telemetry_task = threadpool.spawn(telemetry_task);
+        let _telemetry_task = runtime.spawn(telemetry_task);
     }
 }
