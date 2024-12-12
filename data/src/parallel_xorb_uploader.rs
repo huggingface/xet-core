@@ -85,6 +85,7 @@ impl XorbUpload for ParallelXorbUploader {
         let cas_hash = cas_node_hash(&cas_data.chunks[..]);
 
         // Rate limiting, the acquired permit is dropped after the task completes.
+        // The chosen Semaphore is fair, meaning xorbs added first will be scheduled to upload first.
         let permit = self
             .rate_limiter
             .clone()
