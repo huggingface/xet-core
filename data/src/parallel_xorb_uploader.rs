@@ -28,9 +28,8 @@ type XorbUploadValueType = (MerkleHash, Vec<u8>, Vec<(MerkleHash, usize)>);
 /// Calls to registering xorbs return immediately after computing a xorb hash so callers
 /// can continue with other work, and xorb data is queued internally to be uploaded and registered.
 ///
-/// It is critical to call [`flush`] before `ParallelXorbUploader` is dropped. Though
-/// dropping will attempt to wait for all transfers to finish, any errors
-/// that happen in the process of dropping will be ignored.
+/// It is critical to call [`flush`] before `ParallelXorbUploader` is dropped. Dropping will
+/// cancel all ongoing transfers automatically.
 pub(crate) struct ParallelXorbUploader {
     // Configurations
     cas_prefix: String,
@@ -132,12 +131,6 @@ impl XorbUpload for ParallelXorbUploader {
         }
 
         Ok(())
-    }
-}
-
-impl Drop for ParallelXorbUploader {
-    fn drop(&mut self) {
-        let _ = self.threadpool.block_in_place(async { self.flush().await });
     }
 }
 
