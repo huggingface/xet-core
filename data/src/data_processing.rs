@@ -65,7 +65,7 @@ pub struct PointerFileTranslator {
     shard_manager: Arc<ShardFileManager>,
     remote_shards: Arc<RemoteShardInterface>,
     cas: Arc<dyn Client + Send + Sync>,
-    xorb_uploader: Mutex<Option<Arc<dyn XorbUpload + Send + Sync>>>,
+    xorb_uploader: Arc<dyn XorbUpload + Send + Sync>,
 
     /* ----- Deduped data shared across files ----- */
     global_cas_data: Arc<Mutex<CASDataAggregator>>,
@@ -107,12 +107,21 @@ impl PointerFileTranslator {
             }
         };
 
+        let xorb_uploader = ParallelXorbUploader::new(
+            &config.cas_storage_config.prefix,
+            shard_manager.clone(),
+            cas_client.clone(),
+            XORB_UPLOAD_RATE_LIMITER.clone(),
+            threadpool.clone(),
+        )
+        .await;
+
         Ok(Self {
             config,
             shard_manager,
             remote_shards,
             cas: cas_client,
-            xorb_uploader: Mutex::new(None),
+            xorb_uploader,
             global_cas_data: Default::default(),
             threadpool,
         })
@@ -132,22 +141,6 @@ impl PointerFileTranslator {
             return Err(DataProcessingError::DedupConfigError("empty dedup config".to_owned()));
         };
 
-        let mut xorb_uploader = self.xorb_uploader.lock().await;
-        let uploader = match xorb_uploader.take() {
-            Some(uploader) => uploader,
-            None => {
-                ParallelXorbUploader::new(
-                    &self.config.cas_storage_config.prefix,
-                    self.shard_manager.clone(),
-                    self.cas.clone(),
-                    XORB_UPLOAD_RATE_LIMITER.clone(),
-                    self.threadpool.clone(),
-                )
-                .await
-            },
-        };
-        *xorb_uploader = Some(uploader.clone());
-
         Cleaner::new(
             dedup.small_file_threshold,
             matches!(dedup.global_dedup_policy, GlobalDedupPolicy::Always),
@@ -155,7 +148,7 @@ impl PointerFileTranslator {
             dedup.repo_salt,
             self.shard_manager.clone(),
             self.remote_shards.clone(),
-            uploader,
+            self.xorb_uploader.clone(),
             self.global_cas_data.clone(),
             buffer_size,
             file_name,
@@ -170,15 +163,11 @@ impl PointerFileTranslator {
         let new_cas_data = take(cas_data_accumulator.deref_mut());
         drop(cas_data_accumulator); // Release the lock.
 
-        let Some(ref xorb_uploader) = *self.xorb_uploader.lock().await else {
-            return Err(DataProcessingError::InternalError("no active xorb upload task".to_owned()));
-        };
-
         if !new_cas_data.is_empty() {
-            xorb_uploader.register_new_cas_block(new_cas_data).await?;
+            self.xorb_uploader.register_new_cas_block(new_cas_data).await?;
         }
 
-        xorb_uploader.flush().await?;
+        self.xorb_uploader.flush().await?;
 
         // flush accumulated memory shard.
         self.shard_manager.flush().await?;
