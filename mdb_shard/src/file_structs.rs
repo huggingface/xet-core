@@ -1,6 +1,7 @@
 use std::fmt::Debug;
-use std::io::{Cursor, Read, Write};
+use std::io::{self, Cursor, Read, Write};
 use std::mem::size_of;
+use std::sync::Arc;
 
 use merklehash::MerkleHash;
 use utils::serialization_utils::*;
@@ -20,6 +21,9 @@ pub const MDB_FILE_FLAG_METADATA_EXT_MASK: u32 = 1 << 30;
 /// of FileVerificationEntry, and maybe a FileMetadataExt
 /// determined by file flags.
 #[derive(Clone, Debug, Default, PartialEq)]
+// Already the case, but making it explicit here to avoid compiler
+// complaints on the offset_of calls.
+#[repr(C)]
 pub struct FileDataSequenceHeader {
     pub file_hash: MerkleHash,
     pub file_flags: u32,
@@ -158,6 +162,7 @@ pub enum SupersetResult {
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
+#[repr(C)] // Just making this explicit
 pub struct FileDataSequenceEntry {
     // maps to one or more CAS chunk(s)
     pub cas_hash: MerkleHash,
@@ -425,6 +430,110 @@ impl MDBFileInfo {
             self.metadata_ext.clone_from(&other.metadata_ext);
         }
         Ok(())
+    }
+}
+
+pub struct MDBFileInfoView {
+    header: FileDataSequenceHeader,
+    data: Arc<[u8]>, // reference counted read-only vector
+    offset: usize,
+}
+
+impl MDBFileInfoView {
+    /// Creates a new view of an MDBFileInfo object from a slice, checking it
+    /// for the correct bounds.  Copies should be optimized out.
+    pub fn new(data: Arc<[u8]>, offset: usize) -> std::io::Result<Self> {
+        let header = FileDataSequenceHeader::deserialize(&mut Cursor::new(&data[offset..]))?;
+        Self::from_data_and_header(header, data, offset)
+    }
+
+    pub fn from_data_and_header(
+        header: FileDataSequenceHeader,
+        data: Arc<[u8]>,
+        offset: usize,
+    ) -> std::io::Result<Self> {
+        // Verify the correct number of entries
+        let n = header.num_entries as usize;
+        let contains_verification = header.contains_verification();
+        let contains_metadata_ext = header.contains_metadata_ext();
+
+        let n_structs = 1 + n // The header and the followup entries 
+            + (if contains_verification { n } else { 0 }) // verification entries 
+            + (if contains_metadata_ext { 1 } else { 0 });
+
+        if data.len() < offset + n_structs * MDB_FILE_INFO_ENTRY_SIZE {
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "Provided slice too small to read MDBFileInfoView",
+            ));
+        }
+
+        Ok(Self { header, data, offset })
+    }
+    pub fn header(&self) -> &FileDataSequenceHeader {
+        &self.header
+    }
+
+    #[inline]
+    pub fn num_entries(&self) -> usize {
+        self.header.num_entries as usize
+    }
+
+    #[inline]
+    pub fn file_hash(&self) -> MerkleHash {
+        self.header.file_hash
+    }
+
+    #[inline]
+    pub fn file_flags(&self) -> u32 {
+        self.header.file_flags
+    }
+
+    #[inline]
+    pub fn contains_metadata_ext(&self) -> bool {
+        self.header.contains_metadata_ext()
+    }
+
+    #[inline]
+    pub fn contains_verification(&self) -> bool {
+        self.header.contains_verification()
+    }
+
+    #[inline]
+    pub fn entry(&self, idx: usize) -> FileDataSequenceEntry {
+        debug_assert!(idx < self.num_entries());
+
+        FileDataSequenceEntry::deserialize(&mut Cursor::new(
+            &self.data[(self.offset + (1 + idx) * MDB_FILE_INFO_ENTRY_SIZE)..],
+        ))
+        .expect("bookkeeping error on data bounds for entry")
+    }
+
+    #[inline]
+    pub fn verification(&self, idx: usize) -> FileVerificationEntry {
+        debug_assert!(self.contains_verification());
+        debug_assert!(idx < self.num_entries());
+
+        FileVerificationEntry::deserialize(&mut Cursor::new(
+            &self.data[(self.offset + (1 + self.num_entries() + idx) * MDB_FILE_INFO_ENTRY_SIZE)..],
+        ))
+        .expect("bookkeeping error on data bounds for verification")
+    }
+
+    pub fn byte_size(&self) -> usize {
+        let n = self.num_entries();
+        let n_structs = 1 + n // The header and the followup entries 
+            + (if self.contains_verification() { n } else { 0 }) // verification entries 
+            + (if self.contains_metadata_ext() { 1 } else { 0 });
+
+        n_structs * MDB_FILE_INFO_ENTRY_SIZE
+    }
+
+    #[inline]
+    pub fn serialize<W: Write>(&self, writer: &mut W) -> io::Result<usize> {
+        let n_bytes = self.byte_size();
+        writer.write_all(&self.data[self.offset..(self.offset + n_bytes)])?;
+        Ok(n_bytes)
     }
 }
 

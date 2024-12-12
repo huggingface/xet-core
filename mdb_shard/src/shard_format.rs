@@ -54,7 +54,7 @@ pub fn current_timestamp() -> u64 {
         .as_secs()
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct MDBShardFileHeader {
     // Header to be determined?  "XetHub MDB Shard File Version 1"
     pub tag: [u8; 32],
@@ -125,7 +125,7 @@ pub struct MDBShardFileFooter {
     pub shard_key_expiry: u64,
 
     // More locations to stick in here if needed.
-    _buffer: [u64; 6],
+    pub _buffer: [u64; 6],
     pub stored_bytes_on_disk: u64,
     pub materialized_bytes: u64,
     pub stored_bytes: u64,
@@ -274,7 +274,7 @@ impl MDBShardFileFooter {
 /// in the CAS info section that is the start of the CAS block, and the subsequent u32 gives
 /// the offset index of the chunk in that CAS block.
 
-#[derive(Clone, Default, Debug)]
+#[derive(Clone, Default, Debug, PartialEq)]
 pub struct MDBShardInfo {
     pub header: MDBShardFileHeader,
     pub metadata: MDBShardFileFooter,
@@ -286,11 +286,11 @@ impl MDBShardInfo {
 
         // Move cursor to beginning of shard file.
         reader.rewind()?;
-        obj.header = MDBShardFileHeader::deserialize(reader).unwrap();
+        obj.header = MDBShardFileHeader::deserialize(reader)?;
 
         // Move cursor to end of shard file minus footer size.
         reader.seek(SeekFrom::End(-MDB_SHARD_FOOTER_SIZE))?;
-        obj.metadata = MDBShardFileFooter::deserialize(reader).unwrap();
+        obj.metadata = MDBShardFileFooter::deserialize(reader)?;
 
         Ok(obj)
     }
@@ -599,11 +599,15 @@ impl MDBShardInfo {
     pub fn read_all_cas_blocks_full<R: Read + Seek>(&self, reader: &mut R) -> Result<Vec<MDBCASInfo>> {
         let mut ret = Vec::with_capacity(self.num_cas_entries());
 
-        reader.seek(SeekFrom::Start(self.metadata.cas_info_offset))?;
+        let (cas_info_start, _cas_info_end) = self.cas_info_byte_range();
+
+        reader.seek(SeekFrom::Start(cas_info_start))?;
 
         while let Some(cas_info) = MDBCASInfo::deserialize(reader)? {
+            debug_assert!(reader.stream_position()? < _cas_info_end);
             ret.push(cas_info);
         }
+        debug_assert_eq!(reader.stream_position()?, _cas_info_end);
 
         Ok(ret)
     }
@@ -954,8 +958,7 @@ impl MDBShardInfo {
         Ok(ret)
     }
 
-    /// Export the current shard as an hmac keyed shard, returning the number of bytes written and the hash of the
-    /// resulting data.
+    /// Export the current shard as an hmac keyed shard, returning the number of bytes written
     #[allow(clippy::too_many_arguments)]
     pub fn export_as_keyed_shard<R: Read + Seek, W: Write>(
         &self,
@@ -967,52 +970,151 @@ impl MDBShardInfo {
         include_cas_lookup_table: bool,
         include_chunk_lookup_table: bool,
     ) -> Result<usize> {
-        // Go through each of the sections, rewriting things as needed.
+        Self::export_as_keyed_shard_impl(
+            reader,
+            writer,
+            hmac_key,
+            key_valid_for,
+            include_file_info,
+            include_cas_lookup_table,
+            include_chunk_lookup_table,
+            Some(self),
+        )
+    }
+
+    /// Export the current shard as an hmac keyed shard,
+    #[allow(clippy::too_many_arguments)]
+    pub fn export_as_keyed_shard_streaming<R: Read + Seek, W: Write>(
+        reader: &mut R,
+        writer: &mut W,
+        hmac_key: HMACKey,
+        key_valid_for: std::time::Duration,
+        include_file_info: bool,
+        include_cas_lookup_table: bool,
+        include_chunk_lookup_table: bool,
+    ) -> Result<usize> {
+        Self::export_as_keyed_shard_impl(
+            reader,
+            writer,
+            hmac_key,
+            key_valid_for,
+            include_file_info,
+            include_cas_lookup_table,
+            include_chunk_lookup_table,
+            None,
+        )
+    }
+    /// Internal implementation of exporting the current shard as an hmac keyed shard,
+    #[allow(clippy::too_many_arguments)]
+    fn export_as_keyed_shard_impl<R: Read + Seek, W: Write>(
+        reader: &mut R,
+        writer: &mut W,
+        hmac_key: HMACKey,
+        key_valid_for: std::time::Duration,
+        include_file_info: bool,
+        include_cas_lookup_table: bool,
+        include_chunk_lookup_table: bool,
+        // Pass this in when we have it so we can use debug asserts for verification checking in tests.
+        self_verification: Option<&Self>,
+    ) -> Result<usize> {
+        // The footer at the end that will hold each of these sections.
         let mut out_footer = MDBShardFileFooter::default();
+
+        // Read in the header, verifying all the information.
+        let in_header = MDBShardFileHeader::deserialize(reader)?;
 
         // Dump out the header.
         let mut byte_pos = 0;
-        byte_pos += self.header.serialize(writer)?;
+        byte_pos += in_header.serialize(writer)?;
 
-        let (file_info_start, file_info_end) = self.file_info_byte_range();
+        // Read in all the file information.
         out_footer.file_info_offset = byte_pos as u64;
 
-        if include_file_info {
-            reader.seek(SeekFrom::Start(self.metadata.file_info_offset))?;
+        // Possibly save the lookup info here.
+        let mut file_lookup = Vec::<(u64, u32)>::new();
 
-            // Okay to just copy these values over as there is nothing different between the two shards
-            // up to this point.
-            byte_pos += copy(&mut reader.take(file_info_end - file_info_start), writer)? as usize;
-        } else {
-            // Serialize a single block of 00 bytes as a guard for sequential reading.
-            byte_pos += FileDataSequenceHeader::bookend().serialize(writer)?;
+        // Index of entry for lookup table
+        let mut index: u32 = 0;
 
-            reader.seek(SeekFrom::Start(file_info_end))?;
+        // materialized bytes for later storage
+
+        let mut materialized_bytes = 0;
+
+        loop {
+            let file_metadata = FileDataSequenceHeader::deserialize(reader)?;
+
+            if file_metadata.is_bookend() {
+                // Serialize the bookend struct and move on.
+                byte_pos += file_metadata.serialize(writer)?;
+                break;
+            }
+
+            let num_entries = file_metadata.num_entries as usize;
+
+            let mut n_extended_bytes = 0;
+
+            if file_metadata.contains_verification() {
+                n_extended_bytes += num_entries * size_of::<FileVerificationEntry>();
+            }
+
+            if file_metadata.contains_metadata_ext() {
+                n_extended_bytes += size_of::<FileMetadataExt>();
+            }
+
+            if include_file_info {
+                byte_pos += file_metadata.serialize(writer)?;
+
+                // Need to read in the metadata values so we can calculate the materialized bytes
+                for _ in 0..num_entries {
+                    let entry = FileDataSequenceEntry::deserialize(reader)?;
+                    materialized_bytes += entry.unpacked_segment_bytes as u64;
+                    byte_pos += entry.serialize(writer)?;
+                }
+
+                // Okay to just copy the rest of values over as there is nothing different between the two shards
+                // up to this point.
+                if n_extended_bytes != 0 {
+                    byte_pos += copy(&mut reader.take(n_extended_bytes as u64), writer)? as usize;
+                }
+
+                // Put in the lookup information
+                file_lookup.push((truncate_hash(&file_metadata.file_hash), index));
+                index += (1 + num_entries + n_extended_bytes / MDB_FILE_INFO_ENTRY_SIZE) as u32;
+            } else {
+                // Discard values until the next reader break.
+                copy(&mut reader.take(n_extended_bytes as u64), &mut std::io::sink())?;
+            }
         }
 
-        debug_assert_eq!(reader.stream_position()?, self.metadata.cas_info_offset);
+        if let Some(self_) = self_verification {
+            debug_assert_eq!(reader.stream_position()?, self_.metadata.cas_info_offset);
+        }
 
+        let mut cas_lookup = Vec::<(u64, u32)>::new();
+        let mut chunk_lookup = Vec::<(u64, (u32, u32))>::new();
+
+        // Now deal with all the cas information
         out_footer.cas_info_offset = byte_pos as u64;
 
-        // Now, go through and convert all the CAS blocks, including rehashing the CAS block chunks.
-        debug_assert_eq!(reader.stream_position()?, self.metadata.cas_info_offset);
-
-        let mut chunk_lookup = if include_chunk_lookup_table {
-            Vec::<(u64, (u32, u32))>::with_capacity(self.metadata.chunk_lookup_num_entry as usize)
-        } else {
-            Vec::<(u64, (u32, u32))>::new()
-        };
-
         let mut cas_index = 0;
+        let mut stored_bytes_on_disk = 0;
+        let mut stored_bytes = 0;
 
-        let (cas_info_start, cas_info_end) = self.cas_info_byte_range();
-        debug_assert_eq!(reader.stream_position()?, cas_info_start);
+        loop {
+            let cas_metadata = CASChunkSequenceHeader::deserialize(reader)?;
 
-        while reader.stream_position()? < cas_info_end {
-            let cas_header = CASChunkSequenceHeader::deserialize(reader)?;
-            byte_pos += cas_header.serialize(writer)?;
+            // All metadata gets serialized.
+            byte_pos += cas_metadata.serialize(writer)?;
 
-            for chunk_index in 0..cas_header.num_entries {
+            if cas_metadata.is_bookend() {
+                break;
+            }
+
+            if include_cas_lookup_table {
+                cas_lookup.push((truncate_hash(&cas_metadata.cas_hash), cas_index));
+            }
+
+            for chunk_index in 0..cas_metadata.num_entries {
                 let mut chunk = CASChunkSequenceEntry::deserialize(reader)?;
 
                 // MAke sure we don't actually put things into an unusable state.
@@ -1026,45 +1128,59 @@ impl MDBShardInfo {
 
                 byte_pos += chunk.serialize(writer)?;
             }
-            cas_index += 1 + cas_header.num_entries;
+
+            cas_index += 1 + cas_metadata.num_entries;
+            stored_bytes_on_disk += cas_metadata.num_bytes_on_disk as u64;
+            stored_bytes += cas_metadata.num_bytes_in_cas as u64;
         }
 
-        // The file lookup section.
-        let (file_lookup_start, file_lookup_end) = self.file_lookup_byte_range();
-        debug_assert_eq!(reader.stream_position()?, file_lookup_start);
+        if let Some(self_) = self_verification {
+            debug_assert_eq!(reader.stream_position()?, self_.metadata.file_lookup_offset);
+        }
 
+        // Copy over all the file lookup information if that's appropriate.
         out_footer.file_lookup_offset = byte_pos as u64;
 
         if include_file_info {
-            byte_pos += copy(&mut reader.take(file_lookup_end - file_lookup_start), writer)? as usize;
+            if let Some(self_) = self_verification {
+                debug_assert_eq!(file_lookup.len(), self_.metadata.file_lookup_num_entry as usize);
+            }
 
-            out_footer.file_lookup_num_entry = self.metadata.file_lookup_num_entry;
+            for &(key, idx) in file_lookup.iter() {
+                write_u64(writer, key)?;
+                write_u32(writer, idx)?;
+            }
+
+            byte_pos += file_lookup.len() * (size_of::<u64>() + size_of::<u32>());
+
+            out_footer.file_lookup_num_entry = file_lookup.len() as u64;
         } else {
             out_footer.file_lookup_num_entry = 0;
-            reader.seek(SeekFrom::Start(file_lookup_end))?;
         }
 
         // CAS lookup section.
-        let (cas_lookup_start, cas_lookup_end) = self.cas_lookup_byte_range();
-        debug_assert_eq!(reader.stream_position()?, cas_lookup_start);
-
         out_footer.cas_lookup_offset = byte_pos as u64;
 
         if include_cas_lookup_table {
-            // The cas lookup table should be the same, so just copy it directly
-            byte_pos += copy(&mut reader.take(cas_lookup_end - cas_lookup_start), writer)? as usize;
+            if let Some(self_) = self_verification {
+                debug_assert_eq!(cas_lookup.len(), self_.metadata.cas_lookup_num_entry as usize);
+            }
 
-            out_footer.cas_lookup_num_entry = self.metadata.cas_lookup_num_entry;
+            for &(key, idx) in cas_lookup.iter() {
+                write_u64(writer, key)?;
+                write_u32(writer, idx)?;
+            }
+
+            byte_pos += cas_lookup.len() * (size_of::<u64>() + size_of::<u32>());
+
+            out_footer.cas_lookup_num_entry = cas_lookup.len() as u64;
         } else {
             out_footer.cas_lookup_num_entry = 0;
-
-            // Normally we would put this in here to skip reading this section, but after this
-            // we're done with the file, and this seek is unneeded.
-            // reader.seek(SeekFrom::Start(self.metadata.chunk_lookup_offset))?;
         }
 
         out_footer.chunk_lookup_offset = byte_pos as u64;
 
+        // Chunk lookup section.
         if include_chunk_lookup_table {
             // This one is different now that it's hmac keyed, so we need to rebuild it.
             chunk_lookup.sort_by_key(|s| s.0);
@@ -1076,6 +1192,7 @@ impl MDBShardInfo {
             }
 
             byte_pos += chunk_lookup.len() * (size_of::<u64>() + 2 * size_of::<u32>());
+
             out_footer.chunk_lookup_num_entry = chunk_lookup.len() as u64;
         } else {
             out_footer.chunk_lookup_num_entry = 0;
@@ -1085,6 +1202,7 @@ impl MDBShardInfo {
 
         // Add in the timestamps.
         let creation_time = std::time::SystemTime::now();
+
         out_footer.shard_creation_timestamp = creation_time.duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
         out_footer.shard_key_expiry = creation_time
             .add(key_valid_for)
@@ -1093,8 +1211,9 @@ impl MDBShardInfo {
             .as_secs();
 
         // Copy over the stored information elsewhere
-        out_footer.materialized_bytes = self.metadata.materialized_bytes;
-        out_footer.stored_bytes = self.metadata.stored_bytes;
+        out_footer.materialized_bytes = materialized_bytes;
+        out_footer.stored_bytes_on_disk = stored_bytes_on_disk;
+        out_footer.stored_bytes = stored_bytes;
 
         // And we're done here!
         out_footer.footer_offset = byte_pos as u64;
@@ -1122,6 +1241,7 @@ pub mod test_routines {
     use crate::file_structs::{FileDataSequenceEntry, FileDataSequenceHeader, FileMetadataExt, MDBFileInfo};
     use crate::shard_format::MDBShardInfo;
     use crate::shard_in_memory::MDBInMemoryShard;
+    use crate::streaming_shard::MDBMinimalShard;
 
     pub fn simple_hash(n: u64) -> MerkleHash {
         MerkleHash::from([n, 1, 0, 0])
@@ -1312,6 +1432,10 @@ pub mod test_routines {
         // Now, test that the results on queries from the
         let shard_file = MDBShardInfo::load_from_file(&mut cursor)?;
 
+        // Test on the minimal shard format as well
+        cursor.rewind()?;
+        let min_shard = MDBMinimalShard::from_reader(&mut cursor, true, true).unwrap();
+
         let mem_size = mem_shard.shard_file_size();
         let disk_size = shard_file.num_bytes();
 
@@ -1390,6 +1514,7 @@ pub mod test_routines {
 
         // Make sure the cas blocks are correct
         let cas_blocks = shard_file.read_all_cas_blocks(&mut cursor)?;
+        assert_eq!(cas_blocks.len(), min_shard.num_cas());
 
         for (i, (cas_block, pos)) in cas_blocks.into_iter().enumerate() {
             let cas = mem_shard.cas_content.get(&cas_block.cas_hash).unwrap();
@@ -1403,6 +1528,13 @@ pub mod test_routines {
 
             assert_eq!(&read_cas, cas.as_ref());
             assert_eq!(&cas_blocks_full[i], cas.as_ref());
+
+            let m_cas_chunk = min_shard.cas(i);
+            assert_eq!(m_cas_chunk.header(), &cas_blocks_full[i].metadata);
+            assert_eq!(m_cas_chunk.num_entries(), cas_blocks_full[i].chunks.len());
+            for j in 0..m_cas_chunk.num_entries() {
+                assert_eq!(cas_blocks_full[i].chunks[j], m_cas_chunk.chunk(j));
+            }
         }
 
         // Make sure the file info section is good
@@ -1411,9 +1543,12 @@ pub mod test_routines {
             let file_info = MDBShardInfo::read_file_info_ranges(&mut cursor)?;
 
             assert_eq!(file_info.len(), mem_shard.file_content.len());
+            assert_eq!(file_info.len(), min_shard.num_files());
 
-            for (file_hash, data_byte_range, verification_byte_range, _metadata_ext_byte_range) in file_info {
-                let true_fie = mem_shard.file_content.get(&file_hash).unwrap();
+            for (i, (file_hash, data_byte_range, verification_byte_range, _metadata_ext_byte_range)) in
+                file_info.into_iter().enumerate()
+            {
+                let true_fi = mem_shard.file_content.get(&file_hash).unwrap();
 
                 // Check FileDataSequenceEntry
                 let (byte_start, byte_end) = data_byte_range;
@@ -1424,16 +1559,22 @@ pub mod test_routines {
                 // No leftovers
                 assert_eq!(num_entries * (size_of::<FileDataSequenceEntry>() as u64), (byte_end - byte_start));
 
-                assert_eq!(num_entries, true_fie.segments.len() as u64);
+                assert_eq!(num_entries, true_fi.segments.len() as u64);
 
-                for i in 0..true_fie.metadata.num_entries as u64 {
-                    let pos = byte_start + i * (size_of::<FileDataSequenceEntry>() as u64);
+                // Minimal view is good
+                let m_file_info = min_shard.file(i);
+                assert_eq!(m_file_info.header(), &true_fi.metadata);
+                assert_eq!(m_file_info.num_entries(), true_fi.segments.len());
+
+                for j in 0..true_fi.metadata.num_entries as usize {
+                    let pos = byte_start + (j * size_of::<FileDataSequenceEntry>()) as u64;
 
                     cursor.seek(std::io::SeekFrom::Start(pos))?;
 
                     let fie = FileDataSequenceEntry::deserialize(&mut cursor)?;
 
-                    assert_eq!(true_fie.segments[i as usize], fie);
+                    assert_eq!(true_fi.segments[j], fie);
+                    assert_eq!(m_file_info.entry(j), true_fi.segments[j])
                 }
 
                 // Check FileVerificationEntry if exists
@@ -1445,16 +1586,17 @@ pub mod test_routines {
                     // No leftovers
                     assert_eq!(num_entries * (size_of::<FileVerificationEntry>() as u64), (byte_end - byte_start));
 
-                    assert_eq!(num_entries, true_fie.verification.len() as u64);
+                    assert_eq!(num_entries, true_fi.verification.len() as u64);
 
-                    for i in 0..true_fie.metadata.num_entries as u64 {
-                        let pos = byte_start + i * (size_of::<FileVerificationEntry>() as u64);
+                    for j in 0..true_fi.metadata.num_entries as usize {
+                        let pos = byte_start + (j * size_of::<FileVerificationEntry>()) as u64;
 
                         cursor.seek(std::io::SeekFrom::Start(pos))?;
 
                         let fie = FileVerificationEntry::deserialize(&mut cursor)?;
 
-                        assert_eq!(true_fie.verification[i as usize], fie);
+                        assert_eq!(true_fi.verification[j], fie);
+                        assert_eq!(true_fi.verification[j], m_file_info.verification(j));
                     }
                 }
             }
@@ -1506,6 +1648,9 @@ mod tests {
 
     #[test]
     fn test_multiple() -> Result<()> {
+        let shard = gen_random_shard(0, &[1], &[1, 1], false, false)?;
+        verify_mdb_shard(&shard)?;
+
         let shard = gen_random_shard(0, &[1, 5, 10, 8], &[4, 3, 5, 9, 4, 6], false, false)?;
         verify_mdb_shard(&shard)?;
 

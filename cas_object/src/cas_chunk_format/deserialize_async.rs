@@ -17,7 +17,7 @@ pub async fn deserialize_chunk_header<R: AsyncRead + Unpin>(reader: &mut R) -> R
         let buf = slice::from_raw_parts_mut(&mut result as *mut _ as *mut u8, size_of::<CASChunkHeader>());
         reader.read_exact(buf).await?;
     }
-
+    result.validate()?;
     Ok(result)
 }
 
@@ -112,7 +112,7 @@ mod tests {
     use futures::Stream;
     use rand::{thread_rng, Rng};
 
-    use crate::async_deserialize::deserialize_chunks_to_writer_from_stream;
+    use crate::deserialize_async::deserialize_chunks_to_writer_from_stream;
     use crate::{serialize_chunk, CompressionScheme};
 
     fn gen_random_bytes(rng: &mut impl Rng, uncompressed_chunk_size: u32) -> Vec<u8> {

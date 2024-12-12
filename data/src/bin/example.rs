@@ -212,7 +212,7 @@ async fn smudge(mut reader: impl Read, writer: &mut Box<dyn Write + Send>) -> Re
 
     let translator = PointerFileTranslator::new(default_smudge_config()?, get_threadpool()).await?;
 
-    translator.smudge_file_from_pointer(&pointer_file, writer, None).await?;
+    translator.smudge_file_from_pointer(&pointer_file, writer, None, None).await?;
 
     Ok(())
 }

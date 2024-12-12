@@ -12,6 +12,7 @@ use mdb_shard::shard_file_reconstructor::FileReconstructor;
 use mdb_shard::ShardFileManager;
 use merklehash::MerkleHash;
 use reqwest_middleware::ClientWithMiddleware;
+use utils::progress::ProgressUpdater;
 
 /// A CAS client only for the purpose of testing. It utilizes LocalClient to upload
 /// and download xorbs and ShardFileManager to retrieve file reconstruction info.
@@ -57,6 +58,7 @@ impl ReconstructionClient for LocalTestClient {
         hash: &MerkleHash,
         byte_range: Option<FileRange>,
         writer: &mut Box<dyn Write + Send>,
+        _progress_updater: Option<Arc<dyn ProgressUpdater>>,
     ) -> Result<(), CasClientError> {
         let Some((file_info, _)) = self
             .shard_manager

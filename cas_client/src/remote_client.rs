@@ -10,15 +10,16 @@ use cas_types::{
     BatchQueryReconstructionResponse, CASReconstructionFetchInfo, CASReconstructionTerm, FileRange, HexMerkleHash,
     HttpRange, Key, QueryReconstructionResponse, UploadXorbResponse,
 };
-use chunk_cache::{CacheConfig, ChunkCache, DiskCache};
+use chunk_cache::{CacheConfig, ChunkCache};
 use error_printer::ErrorPrinter;
 use futures::{StreamExt, TryStreamExt};
 use http::header::RANGE;
 use merklehash::MerkleHash;
 use reqwest::{StatusCode, Url};
 use reqwest_middleware::ClientWithMiddleware;
-use tracing::{debug, error, info, trace};
+use tracing::{debug, error, trace};
 use utils::auth::AuthConfig;
+use utils::progress::ProgressUpdater;
 use utils::singleflight::Group;
 use utils::ThreadPool;
 
@@ -52,11 +53,13 @@ impl RemoteClient {
     ) -> Self {
         // use disk cache if cache_config provided.
         let chunk_cache = if let Some(cache_config) = cache_config {
-            info!("Using disk cache directory: {:?}, size: {}.", cache_config.cache_directory, cache_config.cache_size);
-            DiskCache::initialize(cache_config)
+            debug!(
+                "Using disk cache directory: {:?}, size: {}.",
+                cache_config.cache_directory, cache_config.cache_size
+            );
+            chunk_cache::get_cache(cache_config)
                 .log_error("failed to initialize cache, not using cache")
                 .ok()
-                .map(|disk_cache| Arc::new(disk_cache) as Arc<dyn ChunkCache>)
         } else {
             None
         };
@@ -121,6 +124,7 @@ impl ReconstructionClient for RemoteClient {
         hash: &MerkleHash,
         byte_range: Option<FileRange>,
         writer: &mut Box<dyn Write + Send>,
+        progress_updater: Option<Arc<dyn ProgressUpdater>>,
     ) -> Result<()> {
         // get manifest of xorbs to download, api call to CAS
         let manifest = self.get_reconstruction(hash, byte_range.clone()).await?;
@@ -134,6 +138,7 @@ impl ReconstructionClient for RemoteClient {
             manifest.offset_into_first_range,
             byte_range,
             writer,
+            progress_updater,
         )
         .await?;
 
@@ -159,7 +164,7 @@ impl ReconstructionClient for RemoteClient {
         // TODO: spawn threads to reconstruct each file
         for (hash, terms) in manifest.files {
             let w = files.get_mut(&(hash.into())).unwrap();
-            self.reconstruct_file_to_writer(http_client.clone(), terms, fetch_info.clone(), 0, None, w)
+            self.reconstruct_file_to_writer(http_client.clone(), terms, fetch_info.clone(), 0, None, w, None)
                 .await?;
         }
 
@@ -274,6 +279,7 @@ impl RemoteClient {
     ///
     /// To fetch the data for each term, this function will consult the fetch_info section of the reconstruction
     /// response. See `get_one_term`.
+    #[allow(clippy::too_many_arguments)]
     pub async fn reconstruct_file_to_writer(
         &self,
         http_client: Arc<ClientWithMiddleware>,
@@ -282,6 +288,7 @@ impl RemoteClient {
         offset_into_first_range: u64,
         byte_range: Option<FileRange>,
         writer: &mut Box<dyn Write + Send>,
+        progress_updater: Option<Arc<dyn ProgressUpdater>>,
     ) -> Result<u64> {
         let total_len = if let Some(range) = byte_range {
             range.end - range.start
@@ -312,10 +319,13 @@ impl RemoteClient {
             };
             let end: usize = min(remaining_len + start as u64, term_data.len() as u64) as usize;
             writer.write_all(&term_data[start..end])?;
-            remaining_len -= (end - start) as u64;
+            let len_written = (end - start) as u64;
+            remaining_len -= len_written;
+            progress_updater.as_ref().inspect(|updater| updater.update(len_written));
         }
 
         writer.flush()?;
+
         Ok(total_len)
     }
 }
@@ -446,7 +456,7 @@ async fn download_range(
         }
     }
 
-    let (data, chunk_byte_indices) = cas_object::async_deserialize::deserialize_chunks_from_stream(
+    let (data, chunk_byte_indices) = cas_object::deserialize_async::deserialize_chunks_from_stream(
         response.bytes_stream().map_err(std::io::Error::other),
     )
     .await?;
@@ -624,6 +634,7 @@ mod tests {
                 test.reconstruction_response.offset_into_first_range,
                 test.range,
                 &mut writer,
+                None,
             ));
 
             assert_eq!(test.expect_error, resp.is_err());

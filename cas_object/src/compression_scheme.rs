@@ -3,6 +3,9 @@ use std::str::FromStr;
 
 use anyhow::anyhow;
 
+use crate::error::CasObjectError;
+
+/// Dis-allow the value of ascii capital letters as valid CompressionScheme, 65-90
 #[repr(u8)]
 #[derive(Debug, PartialEq, Eq, Clone, Copy, Default)]
 pub enum CompressionScheme {
@@ -21,13 +24,13 @@ impl Display for CompressionScheme {
 }
 
 impl TryFrom<u8> for CompressionScheme {
-    type Error = anyhow::Error;
+    type Error = CasObjectError;
 
     fn try_from(value: u8) -> Result<Self, Self::Error> {
         match value {
             0 => Ok(CompressionScheme::None),
             1 => Ok(CompressionScheme::LZ4),
-            _ => Err(anyhow!("cannot convert value {value} to CompressionScheme")),
+            _ => Err(CasObjectError::FormatError(anyhow!("cannot convert value {value} to CompressionScheme"))),
         }
     }
 }

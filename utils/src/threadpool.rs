@@ -52,7 +52,7 @@ use std::sync::atomic::Ordering::SeqCst;
 ///
 /// - `new_threadpool`: Creates a new Tokio runtime with the specified settings.
 use tokio::{self, task::JoinHandle};
-use tracing::info;
+use tracing::debug;
 
 const THREADPOOL_NUM_WORKER_THREADS: usize = 4; // 4 active threads
 const THREADPOOL_THREAD_ID_PREFIX: &str = "hf-xet"; // thread names will be hf-xet-0, hf-xet-1, etc.
@@ -78,7 +78,7 @@ impl ThreadPool {
     }
 
     pub fn block_on<F: std::future::Future>(&self, future: F) -> F::Output {
-        info!("threadpool: block_on called, {}", self);
+        debug!("threadpool: block_on called, {}", self);
         self.inner.block_on(future)
     }
 
@@ -87,7 +87,7 @@ impl ThreadPool {
         F: Future + Send + 'static,
         F::Output: Send + 'static,
     {
-        info!("threadpool: spawn called, {}", self);
+        debug!("threadpool: spawn called, {}", self);
         self.inner.spawn(future)
     }
 

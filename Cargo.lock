@@ -219,12 +219,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "async-once-cell"
-version = "0.5.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4288f83726785267c6f2ef073a3d83dc3f9b81464e9f99898240cced85fce35a"
-
-[[package]]
 name = "async-process"
 version = "2.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -514,6 +508,7 @@ dependencies = [
  "anyhow",
  "blake3",
  "bytes",
+ "error_printer",
  "futures",
  "lz4_flex",
  "merkledb",
@@ -574,6 +569,7 @@ dependencies = [
  "file_utils",
  "merklehash",
  "mockall",
+ "once_cell",
  "rand 0.8.5",
  "tempdir",
  "tokio",
@@ -865,7 +861,6 @@ name = "data"
 version = "0.14.5"
 dependencies = [
  "anyhow",
- "async-once-cell",
  "async-trait",
  "cas_client",
  "cas_object",
@@ -1872,6 +1867,8 @@ dependencies = [
  "anyhow",
  "async-trait",
  "clap 3.2.25",
+ "futures-io",
+ "futures-util",
  "itertools 0.13.0",
  "lazy_static",
  "merklehash",
@@ -2799,9 +2796,9 @@ checksum = "08d43f7aa6b08d49f382cde6a7982047c3426db949b1424bc4b7ec9ae12c6ce2"
 
 [[package]]
 name = "rustix"
-version = "0.38.37"
+version = "0.38.41"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8acb788b847c24f28525660c4d7758620a7210875711f79e7f663cc152726811"
+checksum = "d7f649912bc1495e167a6edee79151c84b1bad49748cb4f1f1167f459f6224f6"
 dependencies = [
  "bitflags 2.6.0",
  "errno",
@@ -3259,9 +3256,9 @@ dependencies = [
 
 [[package]]
 name = "tempfile"
-version = "3.13.0"
+version = "3.14.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f0f2c9fc62d0beef6951ccffd757e241266a2c833136efbe35af6cd2567dca5b"
+checksum = "28cce251fcbc87fac86a866eeb0d6c2d536fc16d06f184bb61aeae11aa4cee0c"
 dependencies = [
  "cfg-if 1.0.0",
  "fastrand",
@@ -3667,11 +3664,12 @@ checksum = "06abde3611657adf66d383f00b093d7faecc7fa57071cce2578660c9f1010821"
 name = "utils"
 version = "0.14.5"
 dependencies = [
+ "bytes",
  "futures",
  "merklehash",
  "parking_lot 0.11.2",
  "pin-project",
- "serde",
+ "tempfile",
  "tokio",
  "tracing",
  "xet_error",

@@ -8,6 +8,7 @@ use mdb_shard::shard_dedup_probe::ShardDedupProber;
 use mdb_shard::shard_file_reconstructor::FileReconstructor;
 use merklehash::MerkleHash;
 use reqwest_middleware::ClientWithMiddleware;
+use utils::progress::ProgressUpdater;
 
 use crate::error::Result;
 use crate::CasClientError;
@@ -59,6 +60,7 @@ pub trait ReconstructionClient {
         hash: &MerkleHash,
         byte_range: Option<FileRange>,
         writer: &mut Box<dyn Write + Send>,
+        progress_updater: Option<Arc<dyn ProgressUpdater>>,
     ) -> Result<()>;
 
     async fn batch_get_file(

@@ -1,7 +1,10 @@
 mod log;
+mod log_buffer;
+mod progress_update;
 mod token_refresh;
 
 use std::fmt::Debug;
+use std::iter::IntoIterator;
 use std::sync::{Arc, OnceLock};
 
 use data::{data_client, PointerFile};
@@ -10,11 +13,22 @@ use pyo3::prelude::*;
 use pyo3::pyfunction;
 use token_refresh::WrappedTokenRefresher;
 use utils::auth::TokenRefresher;
+use utils::progress::ProgressUpdater;
 use utils::ThreadPool;
+
+use crate::progress_update::WrappedProgressUpdater;
 
 fn get_threadpool() -> Arc<ThreadPool> {
     static THREADPOOL: OnceLock<Arc<ThreadPool>> = OnceLock::new();
-    THREADPOOL.get_or_init(|| Arc::new(ThreadPool::new())).clone()
+    THREADPOOL
+        .get_or_init(|| {
+            let threadpool = Arc::new(ThreadPool::new());
+            threadpool.block_on(async {
+                log::initialize_logging(threadpool.clone()); // needs to run within an async runtime
+            });
+            threadpool
+        })
+        .clone()
 }
 
 #[pyfunction]
@@ -29,7 +43,7 @@ pub fn upload_files(
     let refresher = token_refresher
         .map(WrappedTokenRefresher::from_func)
         .transpose()?
-        .map(to_arc_dyn);
+        .map(to_arc_dyn_token_refresher);
 
     // Release GIL to allow python concurrency
     py.allow_threads(move || {
@@ -45,32 +59,50 @@ pub fn upload_files(
 }
 
 #[pyfunction]
-#[pyo3(signature = (files, endpoint, token_info, token_refresher), text_signature = "(files: List[PyPointerFile], endpoint: Optional[str], token_info: Optional[(str, int)], token_refresher: Optional[Callable[[], (str, int)]]) -> List[str]")]
+#[pyo3(signature = (files, endpoint, token_info, token_refresher, progress_updater), text_signature = "(files: List[PyPointerFile], endpoint: Optional[str], token_info: Optional[(str, int)], token_refresher: Optional[Callable[[], (str, int)]], progress_updater: Optional[List[Callable[[int], None]]]) -> List[str]")]
 pub fn download_files(
     py: Python,
     files: Vec<PyPointerFile>,
     endpoint: Option<String>,
     token_info: Option<(String, u64)>,
     token_refresher: Option<Py<PyAny>>,
+    progress_updater: Option<Vec<Py<PyAny>>>,
 ) -> PyResult<Vec<String>> {
-    let pfs = files.into_iter().map(PointerFile::from).collect();
+    let pfs: Vec<PointerFile> = files.into_iter().map(PointerFile::from).collect();
     let refresher = token_refresher
         .map(WrappedTokenRefresher::from_func)
         .transpose()?
-        .map(to_arc_dyn);
+        .map(to_arc_dyn_token_refresher);
+    let updaters = progress_updater.map(try_parse_progress_updaters).transpose()?;
     // Release GIL to allow python concurrency
     py.allow_threads(move || {
         get_threadpool()
             .block_on(async move {
-                data_client::download_async(get_threadpool(), pfs, endpoint, token_info, refresher).await
+                data_client::download_async(get_threadpool(), pfs, endpoint, token_info, refresher, updaters).await
             })
             .map_err(|e| PyException::new_err(format!("{e:?}")))
     })
 }
 
+fn try_parse_progress_updaters(funcs: Vec<Py<PyAny>>) -> PyResult<Vec<Arc<dyn ProgressUpdater>>> {
+    let mut updaters = Vec::with_capacity(funcs.len());
+    for updater_func in funcs {
+        let wrapped = WrappedProgressUpdater::from_func(updater_func)?;
+        let updater = to_arc_dyn_progress_updater(wrapped);
+        updaters.push(updater);
+    }
+    Ok(updaters)
+}
+
 // helper to convert the implemented WrappedTokenRefresher into an Arc<dyn TokenRefresher>
 #[inline]
-fn to_arc_dyn(r: WrappedTokenRefresher) -> Arc<dyn TokenRefresher> {
+fn to_arc_dyn_token_refresher(r: WrappedTokenRefresher) -> Arc<dyn TokenRefresher> {
+    Arc::new(r)
+}
+
+// helper to convert the implemented WrappedProgressUpdater into an Arc<dyn WrappedProgressUpdater>
+#[inline]
+fn to_arc_dyn_progress_updater(r: WrappedProgressUpdater) -> Arc<dyn ProgressUpdater> {
     Arc::new(r)
 }
 
@@ -119,7 +151,6 @@ impl PyPointerFile {
 
 #[pymodule]
 pub fn hf_xet(m: &Bound<'_, PyModule>) -> PyResult<()> {
-    log::initialize_logging();
     m.add_function(wrap_pyfunction!(upload_files, m)?)?;
     m.add_function(wrap_pyfunction!(download_files, m)?)?;
     m.add_class::<PyPointerFile>()?;

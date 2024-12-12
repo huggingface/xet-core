@@ -10,7 +10,7 @@ strict = []
 
 [dependencies]
 cas_types = { version = "0.1.0", path = "../cas_types" }
-cas_object = { path = "../cas_object", features = ["async_chunk_deserialize"] }
+cas_object = { path = "../cas_object" }
 chunk_cache = { path = "../chunk_cache" }
 error_printer = { path = "../error_printer" }
 file_utils = { path = "../file_utils" }

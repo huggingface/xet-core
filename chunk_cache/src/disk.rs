@@ -27,15 +27,13 @@ pub mod test_utils;
 
 // consistently use URL_SAFE (also file path safe) base64 codec
 pub(crate) const BASE64_ENGINE: GeneralPurpose = URL_SAFE;
-pub const DEFAULT_CAPACITY: u64 = 1 << 30; // 1 GB
+pub const DEFAULT_CAPACITY: u64 = 10 << 30; // 10 GB
 const PREFIX_DIR_NAME_LEN: usize = 2;
 
 type OptionResult<T, E> = Result<Option<T>, E>;
 
 #[derive(Debug, Clone)]
 struct CacheState {
-    // each set of cache items is a sorted set to take advantage of
-    // binary search for fast lookups, albeit the slower adds
     inner: HashMap<Key, Vec<CacheItem>>,
     num_items: usize,
     total_bytes: u64,

@@ -9,7 +9,7 @@ use crate::cas_structs::CASChunkSequenceHeader;
 use crate::error::{MDBShardError, Result};
 use crate::file_structs::{FileDataSequenceEntry, MDBFileInfo};
 use crate::shard_format::MDBShardInfo;
-use crate::utils::{parse_shard_filename, shard_file_name, temp_shard_file_name};
+use crate::utils::{parse_shard_filename, shard_file_name, temp_shard_file_name, truncate_hash};
 
 /// When a specific implementation of the  
 #[derive(Debug, Clone, Default)]
@@ -50,15 +50,19 @@ impl MDBShardFile {
             hashed_write = HashedWrite::new(out_file);
 
             std::io::copy(reader, &mut hashed_write)?;
+            hashed_write.flush()?;
         }
 
         // Get the hash
-        hashed_write.flush()?;
         let shard_hash = hashed_write.hash();
 
         let full_file_name = target_directory.join(shard_file_name(&shard_hash));
 
         std::fs::rename(&temp_file_name, &full_file_name)?;
+
+        let si = MDBShardInfo::load_from_file(reader)?;
+
+        debug_assert_eq!(MDBShardInfo::load_from_file(&mut Cursor::new(&mut std::fs::read(&full_file_name)?))?, si);
 
         Self::new(shard_hash, full_file_name, MDBShardInfo::load_from_file(reader)?)
     }
@@ -141,7 +145,10 @@ impl MDBShardFile {
             include_chunk_lookup_table,
         )?;
 
-        Self::write_out_from_reader(target_directory, &mut Cursor::new(output_bytes))
+        let written_out = Self::write_out_from_reader(target_directory, &mut Cursor::new(output_bytes))?;
+        written_out.verify_shard_integrity_debug_only();
+
+        Ok(written_out)
     }
 
     #[inline]
@@ -255,6 +262,27 @@ impl MDBShardFile {
         }
         debug!("Integrity test passed for shard {:?}", &self.path);
 
-        // TODO: More parts; but this will at least succeed on the server end.
+        // Verify that the shard chunk lookup tables are correct.
+
+        // Read from the lookup table section.
+        let mut read_truncated_hashes = self.read_all_truncated_hashes().unwrap();
+
+        let mut truncated_hashes = Vec::new();
+
+        let cas_blocks = self.shard.read_all_cas_blocks_full(&mut self.get_reader().unwrap()).unwrap();
+
+        // Read from the cas blocks
+        let mut cas_index = 0;
+        for ci in cas_blocks {
+            for (i, chunk) in ci.chunks.iter().enumerate() {
+                truncated_hashes.push((truncate_hash(&chunk.chunk_hash), (cas_index as u32, i as u32)));
+            }
+            cas_index += 1 + ci.chunks.len();
+        }
+
+        read_truncated_hashes.sort_by_key(|s| s.0);
+        truncated_hashes.sort_by_key(|s| s.0);
+
+        assert_eq!(read_truncated_hashes, truncated_hashes);
     }
 }
