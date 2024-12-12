@@ -27,14 +27,10 @@ jobs:
         platform:
           - runner: cpu-high
             target: x86_64
+            features: ""
           - runner: cpu-high
             target: aarch64
-          - runner: cpu-high
-            target: armv7
-    #          - runner: ubuntu-latest
-    #            target: s390x
-    #          - runner: ubuntu-latest
-    #            target: ppc64le
+            features: "--features openssl_vendored"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -44,7 +40,7 @@ jobs:
         uses: PyO3/maturin-action@v1
         with:
           target: ${{ matrix.platform.target }}
-          args: --release --features openssl_vendored --out dist
+          args: --release ${{ matrix.platform.features }} --out dist
           sccache: 'true'
           manylinux: auto
           working-directory: hf_xet
@@ -64,8 +60,6 @@ jobs:
             target: x86_64
           - runner: cpu-high
             target: aarch64
-          - runner: cpu-high
-            target: armv7
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
