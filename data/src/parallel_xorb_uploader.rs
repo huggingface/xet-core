@@ -2,17 +2,14 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use cas_client::Client;
-use futures::StreamExt;
 use mdb_shard::cas_structs::{CASChunkSequenceEntry, CASChunkSequenceHeader, MDBCASInfo};
 use mdb_shard::ShardFileManager;
 use merkledb::aggregate_hashes::cas_node_hash;
 use merklehash::MerkleHash;
-use tokio::sync::mpsc::{self, Receiver, Sender};
-use tokio::sync::{oneshot, Mutex};
-use tokio::task::JoinHandle;
+use tokio::sync::{Mutex, Semaphore};
+use tokio::task::JoinSet;
 use utils::ThreadPool;
 
-use crate::constants::MAX_CONCURRENT_XORB_UPLOADS;
 use crate::data_processing::CASDataAggregator;
 use crate::errors::DataProcessingError::*;
 use crate::errors::*;
@@ -25,14 +22,7 @@ pub(crate) trait XorbUpload {
     async fn flush(&self) -> Result<()>;
 }
 
-pub enum QueueItem<T: Send, S: Send> {
-    Value(T),
-    Flush(S),
-}
 type XorbUploadValueType = (MerkleHash, Vec<u8>, Vec<(MerkleHash, usize)>);
-type XorbUploadSignalType = oneshot::Sender<()>;
-type XorbUploadInputType = QueueItem<XorbUploadValueType, XorbUploadSignalType>;
-type XorbUploadOutputType = QueueItem<(), XorbUploadSignalType>;
 
 /// Helper to parallelize xorb upload and registration.
 /// Calls to registering xorbs return immediately after computing a xorb hash so callers
@@ -50,8 +40,10 @@ pub(crate) struct ParallelXorbUploader {
     cas: Arc<dyn Client + Send + Sync>,
 
     // Internal worker
-    xorb_data_queue: Mutex<Sender<XorbUploadInputType>>,
-    upload_worker: Mutex<Option<JoinHandle<()>>>,
+    upload_tasks: Mutex<JoinSet<Result<()>>>,
+
+    // Rate limiter
+    concurrency: Arc<Semaphore>,
 
     // Theadpool
     threadpool: Arc<ThreadPool>,
@@ -62,57 +54,23 @@ impl ParallelXorbUploader {
         cas_prefix: &str,
         shard_manager: Arc<ShardFileManager>,
         cas: Arc<dyn Client + Send + Sync>,
+        n_concurrent_uploads: usize,
         threadpool: Arc<ThreadPool>,
-        buffer_size: usize,
     ) -> Arc<Self> {
-        let (xorb_data_p, xorb_data_c) = mpsc::channel::<XorbUploadInputType>(buffer_size);
-
-        let uploader = Arc::new(ParallelXorbUploader {
+        Arc::new(ParallelXorbUploader {
             cas_prefix: cas_prefix.to_owned(),
             shard_manager,
             cas,
-            xorb_data_queue: Mutex::new(xorb_data_p),
-            upload_worker: Mutex::new(None),
+            upload_tasks: Mutex::new(JoinSet::new()),
+            concurrency: Arc::new(Semaphore::new(n_concurrent_uploads)),
             threadpool,
-        });
-
-        Self::run(uploader.clone(), xorb_data_c).await;
-
-        uploader
+        })
     }
 
-    async fn run(uploader: Arc<Self>, xorbs: Receiver<XorbUploadInputType>) {
-        let shard_manager = uploader.shard_manager.clone();
-        let cas = uploader.cas.clone();
-        let cas_prefix = uploader.cas_prefix.clone();
-        let upload_task = uploader.threadpool.spawn(async move {
-            let stream_of_xorbs = tokio_stream::wrappers::ReceiverStream::new(xorbs);
-            let mut buffered_upload = stream_of_xorbs
-                .map(|item| process_xorb_data_queue_item(item, &shard_manager, &cas, &cas_prefix))
-                .buffered(*MAX_CONCURRENT_XORB_UPLOADS);
-
-            while let Some(ret) = buffered_upload.next().await {
-                match ret {
-                    // All xorbs added to the queue before this signal were all uploaded successfully,
-                    // send out this signal.
-                    Ok(QueueItem::Flush(signal)) => signal.send(()).expect("Upload flush signal error"),
-                    Err(e) => {
-                        panic!("Uploading and registering Xorb failed with {e}");
-                    },
-                    // Uploaded a xorb successfully.
-                    _ => (),
-                }
-            }
-        });
-        let mut worker = uploader.upload_worker.lock().await;
-        *worker = Some(upload_task);
-    }
-
-    async fn task_is_running(&self) -> Result<()> {
-        let uploader_worker = self.upload_worker.lock().await;
-
-        if uploader_worker.is_none() {
-            return Err(UploadTaskError("no active upload task".to_owned()));
+    async fn status_is_ok(&self) -> Result<()> {
+        let mut upload_tasks = self.upload_tasks.lock().await;
+        while let Some(result) = upload_tasks.try_join_next() {
+            result??;
         }
 
         Ok(())
@@ -122,16 +80,32 @@ impl ParallelXorbUploader {
 #[async_trait]
 impl XorbUpload for ParallelXorbUploader {
     async fn register_new_cas_block(&self, cas_data: CASDataAggregator) -> Result<MerkleHash> {
-        self.task_is_running().await?;
+        self.status_is_ok().await?;
 
         let cas_hash = cas_node_hash(&cas_data.chunks[..]);
 
-        let sender = self.xorb_data_queue.lock().await;
-
-        sender
-            .send(QueueItem::Value((cas_hash, cas_data.data, cas_data.chunks)))
+        // Rate limiting, the acquired permit is dropped after the task completes.
+        let permit = self
+            .concurrency
+            .clone()
+            .acquire_owned()
             .await
-            .map_err(|e| InternalError(format!("{e}")))?;
+            .map_err(|e| UploadTaskError(e.to_string()))?;
+
+        let item = (cas_hash, cas_data.data, cas_data.chunks);
+        let shard_manager = self.shard_manager.clone();
+        let cas = self.cas.clone();
+        let cas_prefix = self.cas_prefix.clone();
+
+        let mut upload_tasks = self.upload_tasks.lock().await;
+        upload_tasks.spawn_on(
+            async move {
+                let ret = upload_and_register_xorb(item, shard_manager, cas, cas_prefix).await;
+                drop(permit);
+                ret
+            },
+            &self.threadpool.get_handle(),
+        );
 
         // Now register any new files as needed.
         for (mut fi, chunk_hash_indices) in cas_data.pending_file_info {
@@ -150,19 +124,11 @@ impl XorbUpload for ParallelXorbUploader {
     /// to remote. This function can be called multiple times and should be called at
     /// least once before `ParallelXorbUploader` is dropped.
     async fn flush(&self) -> Result<()> {
-        // no need to flush if task already finished
-        if self.task_is_running().await.is_err() {
-            return Ok(());
+        let mut upload_tasks = self.upload_tasks.lock().await;
+
+        while let Some(result) = upload_tasks.join_next().await {
+            result??;
         }
-
-        let sender = self.xorb_data_queue.lock().await;
-        let (signal_tx, signal_rx) = oneshot::channel();
-        sender
-            .send(QueueItem::Flush(signal_tx))
-            .await
-            .map_err(|e| InternalError(format!("{e}")))?;
-
-        signal_rx.await.map_err(|e| InternalError(format!("{e}")))?;
 
         Ok(())
     }
@@ -174,16 +140,13 @@ impl Drop for ParallelXorbUploader {
     }
 }
 
-async fn process_xorb_data_queue_item(
-    item: XorbUploadInputType,
-    shard_manager: &Arc<ShardFileManager>,
-    cas: &Arc<dyn Client + Send + Sync>,
-    cas_prefix: &str,
-) -> Result<XorbUploadOutputType> {
-    let (cas_hash, data, chunks) = match item {
-        QueueItem::Value(tuple) => tuple,
-        QueueItem::Flush(signal) => return Ok(QueueItem::Flush(signal)),
-    };
+async fn upload_and_register_xorb(
+    item: XorbUploadValueType,
+    shard_manager: Arc<ShardFileManager>,
+    cas: Arc<dyn Client + Send + Sync>,
+    cas_prefix: String,
+) -> Result<()> {
+    let (cas_hash, data, chunks) = item;
 
     let raw_bytes_len = data.len();
     // upload xorb
@@ -196,7 +159,7 @@ async fn process_xorb_data_queue_item(
                 (*hash, pos as u32)
             })
             .collect();
-        cas.put(cas_prefix, &cas_hash, data, chunk_and_boundaries).await?;
+        cas.put(&cas_prefix, &cas_hash, data, chunk_and_boundaries).await?;
     }
 
     // register for dedup
@@ -219,5 +182,5 @@ async fn process_xorb_data_queue_item(
         shard_manager.add_cas_block(cas_info).await?;
     }
 
-    Ok(QueueItem::Value(()))
+    Ok(())
 }

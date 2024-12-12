@@ -134,9 +134,8 @@ impl PointerFileTranslator {
                     &self.config.cas_storage_config.prefix,
                     self.shard_manager.clone(),
                     self.cas.clone(),
+                    *MAX_CONCURRENT_XORB_UPLOADS,
                     self.threadpool.clone(),
-                    *MAX_CONCURRENT_XORB_UPLOADS * 2, /* set buffer size to double the concurrent uploads should be
-                                                       * enough */
                 )
                 .await
             },
