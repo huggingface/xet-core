@@ -172,7 +172,7 @@ where
 
 /// Group represents a class of work and creates a space in which units of work
 /// can be executed with duplicate suppression.
-#[derive(Default, Debug)]
+#[derive(Debug)]
 pub struct Group<T, E>
 where
     T: ResultType + 'static,

@@ -14,6 +14,10 @@ use pyo3::pyfunction;
 use runtime::async_run;
 use token_refresh::WrappedTokenRefresher;
 use utils::auth::TokenRefresher;
+use utils::progress::ProgressUpdater;
+use utils::ThreadPool;
+
+use crate::progress_update::WrappedProgressUpdater;
 
 #[pyfunction]
 #[pyo3(signature = (file_paths, endpoint, token_info, token_refresher), text_signature = "(file_paths: List[str], endpoint: Optional[str], token_info: Optional[(str, int)], token_refresher: Optional[Callable[[], (str, int)]]) -> List[PyPointerFile]")]
@@ -26,8 +30,8 @@ pub fn upload_files(
 ) -> PyResult<Vec<PyPointerFile>> {
     let refresher = token_refresher.map(WrappedTokenRefresher::from_func).transpose()?.map(Arc::new);
 
-    async_run(py, async move {
-        let out: Vec<_> = data_client::upload_async(file_paths, endpoint, token_info, refresher)
+    async_run(py, move |threadpool| async move {
+        let out: Vec<_> = data_client::upload_async(threadpool, file_paths, endpoint, token_info, refresher.into())
             .await?
             .into_iter()
             .map(PyPointerFile::from)
@@ -51,7 +55,9 @@ pub fn download_files(
 
     let refresher = token_refresher.map(WrappedTokenRefresher::from_func).transpose()?.map(Arc::new);
     let updaters = progress_updater.map(try_parse_progress_updaters).transpose()?;
-    async_run(py, async move { data_client::download_async(pfs, endpoint, token_info, refresher, updaters).await })
+    async_run(py, move |threadpool| async move {
+        data_client::download_async(threadpool, pfs, endpoint, token_info, refresher.into(), updaters).await
+    })
 }
 
 fn try_parse_progress_updaters(funcs: Vec<Py<PyAny>>) -> PyResult<Vec<Arc<dyn ProgressUpdater>>> {

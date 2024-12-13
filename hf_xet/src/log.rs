@@ -16,7 +16,7 @@ const DEFAULT_LOG_LEVEL: &str = "warn";
 #[cfg(debug_assertions)]
 const DEFAULT_LOG_LEVEL: &str = "info";
 
-pub fn initialize_logging(runtime: &tokio::runtime::Handle) {
+pub fn initialize_logging(runtime: Arc<ThreadPool>) {
     let fmt_layer = tracing_subscriber::fmt::layer()
         .with_line_number(true)
         .with_file(true)
