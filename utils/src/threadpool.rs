@@ -1,4 +1,4 @@
-use std::fmt::Display;
+use std::{fmt::Display, time::Duration};
 use std::future::Future;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering::SeqCst;
@@ -93,6 +93,10 @@ impl ThreadPool {
 
     pub fn get_handle(&self) -> tokio::runtime::Handle {
         self.inner.handle().clone()
+    }
+
+    pub fn shutdown(self) {
+        self.inner.shutdown_timeout(Duration::from_millis(100));
     }
 }
 

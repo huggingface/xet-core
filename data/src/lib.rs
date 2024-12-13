@@ -10,7 +10,7 @@ mod data_processing;
 pub mod errors;
 mod metrics;
 mod pointer_file;
-mod remote_shard_interface;
+pub mod remote_shard_interface;
 mod repo_salt;
 pub mod shard_interface;
 mod small_file_determination;

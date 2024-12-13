@@ -343,7 +343,7 @@ impl FileReconstructor<MDBShardError> for ShardFileManager {
 
         for sc in current_shards.shard_collections.iter() {
             for si in sc.shard_list.iter() {
-                println!("Querying for hash {file_hash:?} in {:?}.", si.path);
+                trace!("Querying for hash {file_hash:?} in {:?}.", si.path);
                 if let Some(fi) = si.get_file_reconstruction_info(file_hash)? {
                     return Ok(Some((fi, Some(si.shard_hash))));
                 }
