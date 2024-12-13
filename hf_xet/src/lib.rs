@@ -32,24 +32,29 @@ fn get_threadpool() -> Arc<ThreadPool> {
 }
 
 #[pyfunction]
-#[pyo3(signature = (file_paths, endpoint, token_info, token_refresher), text_signature = "(file_paths: List[str], endpoint: Optional[str], token_info: Optional[(str, int)], token_refresher: Optional[Callable[[], (str, int)]]) -> List[PyPointerFile]")]
+#[pyo3(signature = (file_paths, endpoint, token_info, token_refresher, progress_updater), text_signature = "(file_paths: List[str], endpoint: Optional[str], token_info: Optional[(str, int)], token_refresher: Optional[Callable[[], (str, int)]], progress_updater: Optional[Callable[[int, None]]) -> List[PyPointerFile]")]
 pub fn upload_files(
     py: Python,
     file_paths: Vec<String>,
     endpoint: Option<String>,
     token_info: Option<(String, u64)>,
     token_refresher: Option<Py<PyAny>>,
+    progress_updater: Option<Py<PyAny>>,
 ) -> PyResult<Vec<PyPointerFile>> {
     let refresher = token_refresher
         .map(WrappedTokenRefresher::from_func)
         .transpose()?
         .map(to_arc_dyn_token_refresher);
+    let updater = progress_updater
+        .map(WrappedProgressUpdater::from_func)
+        .transpose()?
+        .map(to_arc_dyn_progress_updater);
 
     // Release GIL to allow python concurrency
     py.allow_threads(move || {
         Ok(get_threadpool()
             .block_on(async {
-                data_client::upload_async(get_threadpool(), file_paths, endpoint, token_info, refresher).await
+                data_client::upload_async(get_threadpool(), file_paths, endpoint, token_info, refresher, updater).await
             })
             .map_err(|e| PyException::new_err(format!("{e:?}")))?
             .into_iter()

@@ -162,7 +162,7 @@ async fn clean(mut reader: impl Read, mut writer: impl Write) -> Result<()> {
 
     let mut read_buf = vec![0u8; READ_BLOCK_SIZE];
 
-    let translator = PointerFileTranslator::new(default_clean_config()?, get_threadpool()).await?;
+    let translator = PointerFileTranslator::new(default_clean_config()?, get_threadpool(), None).await?;
 
     let handle = translator.start_clean(1024, None).await?;
 
@@ -210,7 +210,7 @@ async fn smudge(mut reader: impl Read, writer: &mut Box<dyn Write + Send>) -> Re
         return Ok(());
     }
 
-    let translator = PointerFileTranslator::new(default_smudge_config()?, get_threadpool()).await?;
+    let translator = PointerFileTranslator::new(default_smudge_config()?, get_threadpool(), None).await?;
 
     translator.smudge_file_from_pointer(&pointer_file, writer, None, None).await?;
 
