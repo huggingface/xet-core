@@ -77,7 +77,11 @@ pub struct PointerFileTranslator {
 
 // Constructors
 impl PointerFileTranslator {
-    pub async fn new(config: TranslatorConfig, threadpool: Arc<ThreadPool>, upload_progress_updater: Option<Arc<dyn ProgressUpdater>>) -> Result<PointerFileTranslator> {
+    pub async fn new(
+        config: TranslatorConfig,
+        threadpool: Arc<ThreadPool>,
+        upload_progress_updater: Option<Arc<dyn ProgressUpdater>>,
+    ) -> Result<PointerFileTranslator> {
         let shard_manager = Arc::new(create_shard_manager(&config.shard_storage_config).await?);
 
         let cas_client = create_cas_client(
