@@ -13,12 +13,6 @@ lazy_static! {
     static ref MULTITHREADED_RUNTIME: RwLock<Option<Arc<ThreadPool>>> = RwLock::new(None);
 }
 
-// A helper function to check Python signals within the GIL.
-fn check_python_signals(py: Python) -> PyResult<()> {
-    py.check_signals()?;
-    Ok(())
-}
-
 fn signal_check_background_loop(runtime: Arc<ThreadPool>) {
     const SIGNAL_CHECK_INTERVAL: Duration = Duration::from_millis(250);
 
