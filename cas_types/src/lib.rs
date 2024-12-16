@@ -107,7 +107,7 @@ pub struct QueryReconstructionResponse {
 // to get the reconstruction for multiple files at a time.
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct BatchQueryReconstructionRequest {
-    // listing of non-duplicate (enforced by HashSet)
+    // listing of non-duplicate (enforced by HashSet) keys (file ids) to get reconstructions for
     pub file_ids: HashSet<HexKey>,
 }
 
