@@ -113,7 +113,7 @@ impl From<&MerkleHash> for HexMerkleHash {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default, Hash)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, Hash, PartialEq, Eq)]
 pub struct HexKey {
     pub prefix: String,
     #[serde(with = "hex::serde")]
