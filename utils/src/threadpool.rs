@@ -158,14 +158,6 @@ impl ThreadPool {
         ret
     }
 
-    /// Call this function from within the tokio runtime to call an async function from a
-    /// non-async context.  However, it is expensive and use should be minimized.
-    pub fn internal_block_on<F: std::future::Future>(&self, future: F) -> F::Output {
-        debug!("threadpool: internal_block_on called, {}", self);
-        let handle = self.handle();
-        tokio::task::block_in_place(move || handle.block_on(future))
-    }
-
     /// Spawn an async task to run in the background on the current pool of worker threads.
     pub fn spawn<F>(&self, future: F) -> JoinHandle<F::Output>
     where
