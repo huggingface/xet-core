@@ -27,6 +27,9 @@ pub enum DataProcessingError {
     #[error("Clean task error: {0}")]
     CleanTaskError(String),
 
+    #[error("Upload task error: {0}")]
+    UploadTaskError(String),
+
     #[error("Internal error : {0}")]
     InternalError(String),
 

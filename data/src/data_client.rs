@@ -18,8 +18,8 @@ use crate::errors::DataProcessingError;
 use crate::{errors, PointerFile, PointerFileTranslator};
 
 // Concurrency in number of files
-pub const MAX_CONCURRENT_UPLOADS: usize = 8; // TODO
-pub const MAX_CONCURRENT_DOWNLOADS: usize = 8; // TODO
+const MAX_CONCURRENT_UPLOADS: usize = 8; // TODO
+const MAX_CONCURRENT_DOWNLOADS: usize = 8; // TODO
 
 // We now process every file delegated from the Python library.
 const SMALL_FILE_THRESHOLD: usize = 1;

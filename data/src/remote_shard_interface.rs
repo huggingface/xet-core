@@ -21,7 +21,7 @@ use super::configurations::{FileQueryPolicy, StorageConfig};
 use super::errors::{DataProcessingError, Result};
 use super::shard_interface::{create_shard_client, create_shard_manager};
 use crate::cas_interface::Client;
-use crate::constants::{FILE_RECONSTRUCTION_CACHE_SIZE, MAX_CONCURRENT_UPLOADS};
+use crate::constants::{FILE_RECONSTRUCTION_CACHE_SIZE, MAX_CONCURRENT_XORB_UPLOADS};
 use crate::repo_salt::RepoSalt;
 
 pub struct RemoteShardInterface {
@@ -279,7 +279,7 @@ impl RemoteShardInterface {
         let shard_prefix = self.shard_prefix.clone();
         let shard_prefix_ref = &shard_prefix;
 
-        tokio_par_for_each(shards, *MAX_CONCURRENT_UPLOADS, |si, _| async move {
+        tokio_par_for_each(shards, *MAX_CONCURRENT_XORB_UPLOADS, |si, _| async move {
             // For each shard:
             // 1. Upload directly to CAS.
             // 2. Sync to server.

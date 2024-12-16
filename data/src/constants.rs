@@ -1,13 +1,12 @@
 use lazy_static::lazy_static;
 
 lazy_static! {
-    // The xet library version.
+    /// The xet library version.
     pub static ref XET_VERSION: String =
         std::env::var("XET_VERSION").unwrap_or_else(|_| CURRENT_VERSION.to_string());
-    /// The maximum number of simultaneous download streams
-    pub static ref MAX_CONCURRENT_DOWNLOADS: usize = std::env::var("XET_CONCURRENT_DOWNLOADS").ok().and_then(|s| s.parse().ok()).unwrap_or(8);
-    /// The maximum number of simultaneous upload streams
-    pub static ref MAX_CONCURRENT_UPLOADS: usize = std::env::var("XET_CONCURRENT_UPLOADS").ok().and_then(|s| s.parse().ok()).unwrap_or(8);
+    /// The maximum number of simultaneous xorb upload streams.
+    /// The default value is 8 and can be overwritten by environment variable "XET_CONCURRENT_XORB_UPLOADS".
+    pub static ref MAX_CONCURRENT_XORB_UPLOADS: usize = std::env::var("XET_CONCURRENT_XORB_UPLOADS").ok().and_then(|s| s.parse().ok()).unwrap_or(8);
 }
 
 /// The maximum git filter protocol packet size
