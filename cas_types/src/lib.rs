@@ -103,13 +103,10 @@ pub struct QueryReconstructionResponse {
     pub fetch_info: HashMap<HexMerkleHash, Vec<CASReconstructionFetchInfo>>,
 }
 
-// Request json body struct representation for the POST /reconstructions endpoint
+// Request json body type representation for the POST /reconstructions endpoint
 // to get the reconstruction for multiple files at a time.
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct BatchQueryReconstructionRequest {
-    // listing of non-duplicate (enforced by HashSet) keys (file ids) to get reconstructions for
-    pub file_ids: HashSet<HexKey>,
-}
+// listing of non-duplicate (enforced by HashSet) keys (file ids) to get reconstructions for
+pub type BatchQueryReconstructionRequest = HashSet<HexKey>;
 
 // Response type for querying reconstruction for a batch of files
 #[derive(Debug, Serialize, Deserialize, Clone)]
