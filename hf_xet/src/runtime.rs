@@ -1,9 +1,8 @@
-use std::fmt::Debug;
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 
 use lazy_static::lazy_static;
-use pyo3::exceptions::PyKeyboardInterrupt;
+use pyo3::exceptions::{PyKeyboardInterrupt, PyRuntimeError};
 use pyo3::prelude::*;
 use utils::threadpool::{MultithreadedRuntimeError, ThreadPool};
 
@@ -135,18 +134,24 @@ fn get_threadpool() -> Result<Arc<ThreadPool>, MultithreadedRuntimeError> {
     Ok(runtime)
 }
 
-pub fn async_run<Out, E, F>(py: Python, execution_call: impl Fn(Arc<ThreadPool>) -> F) -> PyResult<Out>
+fn convert_multithreading_error(e: MultithreadedRuntimeError) -> PyErr {
+    PyRuntimeError::new_err(format!("Xet Runtime Error: {}", e))
+}
+
+pub fn async_run<Out, F>(py: Python, execution_call: impl FnOnce(Arc<ThreadPool>) -> F + Send) -> PyResult<Out>
 where
-    E: Debug + Send + Sync,
-    F: std::future::Future + Send + Sync + 'static,
-    F::Output: Into<Result<Out, E>> + Send + Sync,
+    F: std::future::Future + Send + 'static,
+    F::Output: Into<PyResult<Out>> + Send + Sync,
     Out: Send + Sync,
 {
     // Get a handle to the current runtime.
-    let runtime = get_threadpool()?;
+    let runtime = get_threadpool().map_err(convert_multithreading_error)?;
 
     // Release the gil
-    let result = py.allow_threads(move || runtime.external_run_async_task(execution_call))?;
+    let result: PyResult<Out> = py
+        .allow_threads(move || runtime.external_run_async_task(execution_call((&runtime).clone())))
+        .map_err(convert_multithreading_error)?
+        .into();
 
     // Now, check to see if there is a signal to propegate.
     let mut sig_lg = PYTHON_SIGNAL_PROPAGATION.lock().unwrap();
@@ -157,5 +162,5 @@ where
     }
 
     // Now return the result.
-    Ok(result)
+    result
 }

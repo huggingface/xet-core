@@ -132,7 +132,7 @@ impl ThreadPool {
     /// from within a task running on the runtime worker pool.  Doing so can lead to deadlocking.
     pub fn external_run_async_task<F>(&self, future: F) -> Result<F::Output, MultithreadedRuntimeError>
     where
-        F: std::future::Future + Send + Sync + 'static,
+        F: std::future::Future + Send + 'static,
         F::Output: Send + Sync,
     {
         self.external_executor_count.fetch_add(1, Ordering::SeqCst);
