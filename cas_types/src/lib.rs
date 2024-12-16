@@ -1,5 +1,5 @@
 use core::fmt;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use merklehash::MerkleHash;
 use serde::{Deserialize, Serialize};
@@ -101,6 +101,14 @@ pub struct QueryReconstructionResponse {
     // terms, the values are information we will need to fetch ranges from
     // each xorb needed to reconstruct the file
     pub fetch_info: HashMap<HexMerkleHash, Vec<CASReconstructionFetchInfo>>,
+}
+
+// Request json body struct representation for the POST /reconstructions endpoint
+// to get the reconstruction for multiple files at a time.
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct BatchQueryReconstructionRequest {
+    // listing of non-duplicate (enforced by HashSet)
+    pub file_ids: HashSet<HexKey>,
 }
 
 // Response type for querying reconstruction for a batch of files
