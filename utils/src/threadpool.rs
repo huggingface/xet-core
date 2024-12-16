@@ -164,7 +164,7 @@ impl ThreadPool {
     /// non-async context.  However, it is expensive and use should be minimized.
     pub fn internal_block_on<F: std::future::Future>(&self, future: F) -> F::Output {
         debug!("threadpool: internal_block_on called, {}", self);
-        let handle = self.handle.clone();
+        let handle = self.handle();
         tokio::task::block_in_place(move || handle.block_on(future))
     }
 
@@ -177,6 +177,10 @@ impl ThreadPool {
         // If the runtime has been shut down, this will immediately abort.
         debug!("threadpool: spawn called, {}", self);
         self.handle.spawn(future)
+    }
+
+    pub fn handle(&self) -> tokio::runtime::Handle {
+        self.handle.clone()
     }
 }
 

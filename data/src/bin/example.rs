@@ -61,12 +61,16 @@ impl Command {
 
 fn get_threadpool() -> Arc<ThreadPool> {
     static THREADPOOL: OnceLock<Arc<ThreadPool>> = OnceLock::new();
-    THREADPOOL.get_or_init(|| Arc::new(ThreadPool::new())).clone()
+    THREADPOOL
+        .get_or_init(|| Arc::new(ThreadPool::new().expect("Error starting multithreaded runtime.")))
+        .clone()
 }
 
 fn main() {
     let cli = XCommand::parse();
-    get_threadpool().block_on(cli.run()).unwrap();
+    let _ = get_threadpool()
+        .external_run_async_task(async move { cli.run().await })
+        .unwrap();
 }
 
 fn default_clean_config() -> Result<TranslatorConfig> {
@@ -149,7 +153,7 @@ fn default_smudge_config() -> Result<TranslatorConfig> {
 
 async fn clean_file(arg: &CleanArg) -> Result<()> {
     let reader = BufReader::new(File::open(&arg.file)?);
-    let writer: Box<dyn Write> = match &arg.dest {
+    let writer: Box<dyn Write + Send> = match &arg.dest {
         Some(path) => Box::new(File::options().create(true).write(true).truncate(true).open(path)?),
         None => Box::new(std::io::stdout()),
     };
@@ -185,7 +189,7 @@ async fn clean(mut reader: impl Read, mut writer: impl Write) -> Result<()> {
 }
 
 async fn smudge_file(arg: &SmudgeArg) -> Result<()> {
-    let reader: Box<dyn Read> = match &arg.file {
+    let reader: Box<dyn Read + Send> = match &arg.file {
         Some(path) => Box::new(File::open(path)?),
         None => Box::new(std::io::stdin()),
     };

@@ -257,6 +257,7 @@ mod tests {
         let layer = LogBufferLayer {
             buffer: Arc::clone(&buffer),
             stats: Arc::clone(&stats),
+            telemetry_versions: "Testing".to_owned(),
         };
 
         let subscriber = tracing_subscriber::registry().with(layer);

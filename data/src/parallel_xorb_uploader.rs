@@ -104,7 +104,7 @@ impl XorbUpload for ParallelXorbUploader {
                 drop(permit);
                 ret
             },
-            &self.threadpool.get_handle(),
+            &self.threadpool.handle(),
         );
 
         // Now register any new files as needed.

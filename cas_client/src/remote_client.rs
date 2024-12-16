@@ -516,10 +516,12 @@ mod tests {
         let (c, _, data, chunk_boundaries) =
             build_cas_object(3, ChunkSize::Random(512, 10248), cas_object::CompressionScheme::LZ4);
 
-        let threadpool = Arc::new(ThreadPool::new());
+        let threadpool = Arc::new(ThreadPool::new().unwrap());
         let client = RemoteClient::new(threadpool.clone(), CAS_ENDPOINT, &None, &None);
         // Act
-        let result = threadpool.block_on(client.put(prefix, &c.info.cashash, data, chunk_boundaries));
+        let result = threadpool
+            .external_run_async_task(async move { client.put(prefix, &c.info.cashash, data, chunk_boundaries).await })
+            .unwrap();
 
         // Assert
         assert!(result.is_ok());
@@ -615,7 +617,7 @@ mod tests {
 
             let http_client = http_client::build_http_client(&None).unwrap();
 
-            let threadpool = Arc::new(ThreadPool::new());
+            let threadpool = Arc::new(ThreadPool::new().unwrap());
             let client = RemoteClient {
                 chunk_cache: Some(Arc::new(chunk_cache)),
                 http_auth_client: http_client.clone(),
@@ -627,15 +629,21 @@ mod tests {
             let v = ThreadSafeBuffer::default();
             let mut writer: Box<dyn Write + Send> = Box::new(v.clone());
 
-            let resp = threadpool.block_on(client.reconstruct_file_to_writer(
-                Arc::new(http_client.clone()),
-                test.reconstruction_response.terms,
-                Arc::new(test.reconstruction_response.fetch_info),
-                test.reconstruction_response.offset_into_first_range,
-                test.range,
-                &mut writer,
-                None,
-            ));
+            let resp = threadpool
+                .external_run_async_task(async move {
+                    client
+                        .reconstruct_file_to_writer(
+                            Arc::new(http_client.clone()),
+                            test.reconstruction_response.terms,
+                            Arc::new(test.reconstruction_response.fetch_info),
+                            test.reconstruction_response.offset_into_first_range,
+                            test.range,
+                            &mut writer,
+                            None,
+                        )
+                        .await
+                })
+                .unwrap();
 
             assert_eq!(test.expect_error, resp.is_err());
             if !test.expect_error {
