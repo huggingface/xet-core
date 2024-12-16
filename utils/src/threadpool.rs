@@ -218,7 +218,7 @@ fn new_threadpool() -> Result<tokio::runtime::Runtime, MultithreadedRuntimeError
         .max_blocking_threads(THREADPOOL_MAX_BLOCKING_THREADS) // max 100 threads can block IO
         .enable_all() // enable all features, including IO/Timer/Signal/Reactor
         .build()
-        .map_err(|e| MultithreadedRuntimeError::RuntimeInitializationError(e))
+        .map_err(MultithreadedRuntimeError::RuntimeInitializationError)
 }
 
 /// gets the name of a new thread for the threadpool. Names are prefixed with
