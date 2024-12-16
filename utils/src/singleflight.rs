@@ -20,7 +20,7 @@
 //!
 //! #[tokio::main]
 //! async fn main() {
-//!     let threadpool = Arc::new(utils::ThreadPool::new());
+//!     let threadpool = Arc::new(utils::ThreadPool::new().unwrap());
 //!     let g = Arc::new(Group::<_, ()>::new(threadpool.clone()));
 //!     let mut handlers = Vec::new();
 //!     for _ in 0..10 {

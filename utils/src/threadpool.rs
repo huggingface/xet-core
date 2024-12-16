@@ -16,16 +16,14 @@ use std::time::Duration;
 /// ```rust
 /// use utils::ThreadPool;
 ///
-/// let pool = ThreadPool::new();
+/// let pool = ThreadPool::new().expect("Error initializing runtime.");
 ///
-/// pool.spawn(async {
-///     // Your async code here
-/// });
-///
-/// let result = pool.block_on(async {
-///     // Your async code here
-///     42
-/// });
+/// let result = pool
+///     .external_run_async_task(async {
+///         // Your async code here
+///         42
+///     })
+///     .expect("Task Error.");
 ///
 /// assert_eq!(result, 42);
 /// ```
