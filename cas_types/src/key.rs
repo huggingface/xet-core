@@ -83,7 +83,7 @@ pub mod hex {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, PartialEq, Eq, Hash)]
 pub struct HexMerkleHash(#[serde(with = "hex::serde")] pub MerkleHash);
 
-impl std::fmt::Display for HexMerkleHash {
+impl Display for HexMerkleHash {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.0.hex())
     }
@@ -113,7 +113,7 @@ impl From<&MerkleHash> for HexMerkleHash {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, Hash, PartialEq, Eq)]
 pub struct HexKey {
     pub prefix: String,
     #[serde(with = "hex::serde")]

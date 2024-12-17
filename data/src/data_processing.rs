@@ -66,6 +66,7 @@ pub struct PointerFileTranslator {
     remote_shards: Arc<RemoteShardInterface>,
     cas: Arc<dyn Client + Send + Sync>,
     xorb_uploader: Arc<dyn XorbUpload + Send + Sync>,
+    upload_progress_updater: Option<Arc<dyn ProgressUpdater>>,
 
     /* ----- Deduped data shared across files ----- */
     global_cas_data: Arc<Mutex<CASDataAggregator>>,
@@ -76,7 +77,11 @@ pub struct PointerFileTranslator {
 
 // Constructors
 impl PointerFileTranslator {
-    pub async fn new(config: TranslatorConfig, threadpool: Arc<ThreadPool>) -> Result<PointerFileTranslator> {
+    pub async fn new(
+        config: TranslatorConfig,
+        threadpool: Arc<ThreadPool>,
+        upload_progress_updater: Option<Arc<dyn ProgressUpdater>>,
+    ) -> Result<PointerFileTranslator> {
         let shard_manager = Arc::new(create_shard_manager(&config.shard_storage_config).await?);
 
         let cas_client = create_cas_client(
@@ -113,6 +118,7 @@ impl PointerFileTranslator {
             cas_client.clone(),
             XORB_UPLOAD_RATE_LIMITER.clone(),
             threadpool.clone(),
+            upload_progress_updater.clone(),
         )
         .await;
 
@@ -124,6 +130,7 @@ impl PointerFileTranslator {
             xorb_uploader,
             global_cas_data: Default::default(),
             threadpool,
+            upload_progress_updater,
         })
     }
 }
@@ -153,6 +160,7 @@ impl PointerFileTranslator {
             buffer_size,
             file_name,
             self.threadpool.clone(),
+            self.upload_progress_updater.clone(),
         )
         .await
     }

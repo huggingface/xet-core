@@ -89,6 +89,7 @@ pub async fn upload_async(
     endpoint: Option<String>,
     token_info: Option<(String, u64)>,
     token_refresher: Option<Arc<dyn TokenRefresher>>,
+    progress_updater: Option<Arc<dyn ProgressUpdater>>,
 ) -> errors::Result<Vec<PointerFile>> {
     // chunk files
     // produce Xorbs + Shards
@@ -97,7 +98,7 @@ pub async fn upload_async(
     let (config, _tempdir) =
         default_config(endpoint.unwrap_or(DEFAULT_CAS_ENDPOINT.to_string()), token_info, token_refresher)?;
 
-    let processor = Arc::new(PointerFileTranslator::new(config, threadpool).await?);
+    let processor = Arc::new(PointerFileTranslator::new(config, threadpool, progress_updater).await?);
     // for all files, clean them, producing pointer files.
     let pointers = tokio_par_for_each(file_paths, MAX_CONCURRENT_UPLOADS, |f, _| async {
         let proc = processor.clone();
@@ -139,7 +140,7 @@ pub async fn download_async(
     };
     let pointer_files_plus = pointer_files.into_iter().zip(updaters).collect::<Vec<_>>();
 
-    let processor = &Arc::new(PointerFileTranslator::new(config, threadpool).await?);
+    let processor = &Arc::new(PointerFileTranslator::new(config, threadpool, None).await?);
     let paths =
         tokio_par_for_each(pointer_files_plus, MAX_CONCURRENT_DOWNLOADS, |(pointer_file, updater), _| async move {
             let proc = processor.clone();

@@ -21,6 +21,7 @@ use tokio::sync::mpsc::{channel, Receiver, Sender};
 use tokio::sync::Mutex;
 use tokio::task::{JoinHandle, JoinSet};
 use tracing::{debug, error, info, warn};
+use utils::progress::ProgressUpdater;
 use utils::ThreadPool;
 
 use crate::chunking::{chunk_target_default, ChunkYieldType};
@@ -113,6 +114,7 @@ pub struct Cleaner {
     shard_manager: Arc<ShardFileManager>,
     remote_shards: Arc<RemoteShardInterface>,
     xorb_uploader: Arc<dyn XorbUpload + Send + Sync>,
+    progress_updater: Option<Arc<dyn ProgressUpdater>>,
 
     // External Data
     global_cas_data: Arc<Mutex<CASDataAggregator>>,
@@ -151,6 +153,7 @@ impl Cleaner {
         buffer_size: usize,
         file_name: Option<&Path>,
         threadpool: Arc<ThreadPool>,
+        progress_updater: Option<Arc<dyn ProgressUpdater>>,
     ) -> Result<Arc<Self>> {
         let (data_p, data_c) = channel::<BufferItem<Vec<u8>>>(buffer_size);
 
@@ -176,6 +179,7 @@ impl Cleaner {
             sha_generator: ShaGenerator::new(),
             metrics: Default::default(),
             threadpool,
+            progress_updater,
         });
 
         Self::run(cleaner.clone(), chunk_c).await;
@@ -541,6 +545,11 @@ impl Cleaner {
                             tracking_info.file_info[i].cas_hash = cas_hash;
                         }
                         tracking_info.current_cas_block_hashes.clear();
+                    }
+                } else {
+                    // Chunk does not get uploaded, we're already tracking the same chunk elsewhere
+                    if let Some(updater) = self.progress_updater.as_ref() {
+                        updater.update(n_bytes as u64);
                     }
                 }
 
