@@ -177,6 +177,21 @@ pub(crate) fn decompress_chunk_to_writer<W: Write>(
     Ok(result)
 }
 
+pub(crate) fn decompress_chunk_reader_to_writer<R: Read, W: Write>(
+    header: CASChunkHeader,
+    reader: &mut R,
+    writer: &mut W,
+) -> Result<u32, CasObjectError> {
+    let result = match header.get_compression_scheme()? {
+        CompressionScheme::None => copy(reader, writer)? as u32,
+        CompressionScheme::LZ4 => {
+            let mut dec = FrameDecoder::new(reader);
+            copy(&mut dec, writer)? as u32
+        },
+    };
+    Ok(result)
+}
+
 pub fn deserialize_chunks<R: Read>(reader: &mut R) -> Result<(Vec<u8>, Vec<u32>), CasObjectError> {
     let mut buf = Vec::new();
     let (_, chunk_byte_indices) = deserialize_chunks_to_writer(reader, &mut buf)?;

@@ -5,8 +5,9 @@ use std::slice;
 use anyhow::anyhow;
 use bytes::Buf;
 use futures::Stream;
-use tokio::io::{AsyncRead, AsyncReadExt};
-use tokio_util::io::StreamReader;
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite};
+use tokio_util::io::{StreamReader, SyncIoBridge};
+use tracing::error;
 
 use crate::error::CasObjectError;
 use crate::{CASChunkHeader, CAS_CHUNK_HEADER_LENGTH};
@@ -71,6 +72,58 @@ pub async fn deserialize_chunks_to_writer_from_async_read<R: AsyncRead + Unpin, 
     }
 
     Ok((num_compressed_written, chunk_byte_indices))
+}
+
+pub async fn deserialize_chunk_to_async_writer<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
+    reader: &mut R,
+    writer: &mut W,
+) -> Result<(), CasObjectError> {
+    let header = deserialize_chunk_header(reader).await?;
+    // TODO async-dl: needed ?
+    let reader = reader.take(header.get_compressed_length() as u64);
+
+    let mut reader = SyncIoBridge::new(reader);
+    let mut writer = SyncIoBridge::new(writer);
+
+    // TODO async-dl: without spawn_blocking we will starve the tokio runtime
+    // TODO async-dl: handle errors
+    match super::decompress_chunk_reader_to_writer(header, &mut reader, &mut writer) {
+        Ok(uncompressed_len) => {
+            if uncompressed_len != header.get_uncompressed_length() {
+                error!(
+                    "async-dl ERROR: {:?}",
+                    CasObjectError::FormatError(anyhow!(
+                        "chunk is corrupted, uncompressed bytes len doesn't agree with chunk header"
+                    ))
+                );
+            }
+        },
+        Err(err) => {
+            error!("async-dl ERROR: {err:?}");
+        },
+    }
+
+    Ok(())
+}
+
+pub async fn deserialize_chunks_from_async_read_into_async_write<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
+    reader: &mut R,
+    writer: &mut W,
+) -> Result<(), CasObjectError> {
+    loop {
+        match deserialize_chunk_to_async_writer(reader, writer).await {
+            Ok(_) => {},
+            Err(CasObjectError::InternalIOError(e)) => {
+                if e.kind() == std::io::ErrorKind::UnexpectedEof {
+                    break;
+                }
+                return Err(CasObjectError::InternalIOError(e));
+            },
+            Err(e) => return Err(e),
+        }
+    }
+
+    Ok(())
 }
 
 pub async fn deserialize_chunks_from_async_read<R: AsyncRead + Unpin>(
