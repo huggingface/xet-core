@@ -99,6 +99,7 @@ pub async fn upload_async(
         default_config(endpoint.unwrap_or(DEFAULT_CAS_ENDPOINT.to_string()), token_info, token_refresher)?;
 
     let processor = Arc::new(PointerFileTranslator::new(config, threadpool, progress_updater).await?);
+
     // for all files, clean them, producing pointer files.
     let pointers = tokio_par_for_each(file_paths, MAX_CONCURRENT_UPLOADS, |f, _| async {
         let proc = processor.clone();

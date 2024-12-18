@@ -20,7 +20,7 @@ use tokio::sync::mpsc::error::TryRecvError;
 use tokio::sync::mpsc::{channel, Receiver, Sender};
 use tokio::sync::Mutex;
 use tokio::task::{JoinHandle, JoinSet};
-use tracing::{debug, error, info, warn};
+use tracing::{debug, info, warn};
 use utils::progress::ProgressUpdater;
 use utils::ThreadPool;
 
@@ -121,8 +121,8 @@ pub struct Cleaner {
 
     // Internal workers
     chunk_data_queue: Sender<BufferItem<Vec<u8>>>,
-    chunking_worker: Mutex<Option<JoinHandle<()>>>,
-    dedup_worker: Mutex<Option<JoinHandle<()>>>,
+    chunking_worker: Mutex<Option<JoinHandle<Result<()>>>>,
+    dedup_worker: Mutex<Option<JoinHandle<Result<()>>>>,
 
     // Internal Data
     tracking_info: Mutex<DedupFileTrackingInfo>,
@@ -259,17 +259,14 @@ impl Cleaner {
                 }
 
                 if !chunk_vec.is_empty() {
-                    let res = cleaner_clone.dedup(&chunk_vec).await;
-                    if res.is_err() {
-                        error!("Clean task error: {res:?}");
-                        break;
-                    }
+                    cleaner_clone.dedup(&chunk_vec).await?;
                 }
 
                 if finished {
                     break;
                 }
             }
+            Ok(())
         });
 
         let mut worker = cleaner.dedup_worker.lock().await;
@@ -580,12 +577,12 @@ impl Cleaner {
 
         let mut chunking_worker = self.chunking_worker.lock().await;
         if let Some(task) = chunking_worker.take() {
-            task.await.map_err(|e| InternalError(format!("{e:?}")))?;
+            task.await.map_err(|e| InternalError(format!("{e:?}")))??;
         }
 
         let mut dedup_worker = self.dedup_worker.lock().await;
         if let Some(task) = dedup_worker.take() {
-            task.await.map_err(|e| InternalError(format!("{e:?}")))?;
+            task.await.map_err(|e| InternalError(format!("{e:?}")))??;
         }
 
         Ok(())

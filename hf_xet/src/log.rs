@@ -1,6 +1,7 @@
 use std::env;
 use std::sync::Arc;
 
+use pyo3::Python;
 use tracing_subscriber::filter::FilterFn;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
@@ -16,7 +17,7 @@ const DEFAULT_LOG_LEVEL: &str = "warn";
 #[cfg(debug_assertions)]
 const DEFAULT_LOG_LEVEL: &str = "info";
 
-pub fn initialize_logging(threadpool: Arc<ThreadPool>) {
+pub fn initialize_logging(py: Python, runtime: Arc<ThreadPool>) {
     let fmt_layer = tracing_subscriber::fmt::layer()
         .with_line_number(true)
         .with_file(true)
@@ -30,7 +31,7 @@ pub fn initialize_logging(threadpool: Arc<ThreadPool>) {
     if env::var("HF_HUB_DISABLE_TELEMETRY").as_deref() == Ok("1") {
         tracing_subscriber::registry().with(fmt_layer).with(filter_layer).init();
     } else {
-        let telemetry_buffer_layer = LogBufferLayer::new(TELEMETRY_PRE_ALLOC_BYTES);
+        let telemetry_buffer_layer = LogBufferLayer::new(py, TELEMETRY_PRE_ALLOC_BYTES);
         let telemetry_task =
             get_telemetry_task(telemetry_buffer_layer.buffer.clone(), telemetry_buffer_layer.stats.clone());
 
@@ -43,6 +44,6 @@ pub fn initialize_logging(threadpool: Arc<ThreadPool>) {
             .with(telemetry_filter_layer)
             .init();
 
-        let _telemetry_task = threadpool.spawn(telemetry_task);
+        let _telemetry_task = runtime.spawn(telemetry_task);
     }
 }

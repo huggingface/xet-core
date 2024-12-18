@@ -10,6 +10,7 @@ use tokio::task::JoinHandle;
 use utils::ThreadPool;
 
 use super::clean::BufferItem;
+use crate::errors::{DataProcessingError, Result};
 
 pub type ChunkYieldType = (Chunk, Vec<u8>);
 
@@ -30,7 +31,7 @@ pub struct Chunker {
 }
 
 impl Chunker {
-    pub fn run(chunker: Mutex<Self>, threadpool: Arc<ThreadPool>) -> JoinHandle<()> {
+    pub fn run(chunker: Mutex<Self>, threadpool: Arc<ThreadPool>) -> JoinHandle<Result<()>> {
         const MAX_WINDOW_SIZE: usize = 64;
 
         threadpool.spawn(async move {
@@ -93,7 +94,11 @@ impl Chunker {
                                         std::mem::take(&mut chunker.chunkbuf),
                                     );
                                     // reset chunk buffer state and continue to find the next chunk
-                                    chunker.yield_queue.send(Some(res)).await.expect("Send chunk to channel error");
+                                    chunker
+                                        .yield_queue
+                                        .send(Some(res))
+                                        .await
+                                        .map_err(|e| DataProcessingError::InternalError(format!("Send Error: {e}")))?;
 
                                     chunker.chunkbuf.clear();
                                     chunker.cur_chunk_len = 0;
@@ -119,11 +124,21 @@ impl Chunker {
                     },
                     std::mem::take(&mut chunker.chunkbuf),
                 );
-                chunker.yield_queue.send(Some(res)).await.expect("Send chunk to channel error");
+                chunker
+                    .yield_queue
+                    .send(Some(res))
+                    .await
+                    .map_err(|e| DataProcessingError::InternalError(format!("Send Error: {e}")))?;
             }
 
             // signal finish
-            chunker.yield_queue.send(None).await.expect("Send chunk to channel error");
+            chunker
+                .yield_queue
+                .send(None)
+                .await
+                .map_err(|e| DataProcessingError::InternalError(format!("Send Error: {e}")))?;
+
+            Ok(())
         })
     }
 }
@@ -170,7 +185,7 @@ pub fn chunk_target_default(
     data: Receiver<BufferItem<Vec<u8>>>,
     yield_queue: Sender<Option<ChunkYieldType>>,
     threadpool: Arc<ThreadPool>,
-) -> JoinHandle<()> {
+) -> JoinHandle<Result<()>> {
     let chunker = gearhash_chunk_target(TARGET_CDC_CHUNK_SIZE, data, yield_queue);
 
     Chunker::run(Mutex::new(chunker), threadpool)

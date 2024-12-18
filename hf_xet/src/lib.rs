@@ -1,40 +1,30 @@
 mod log;
 mod log_buffer;
 mod progress_update;
+mod runtime;
 mod token_refresh;
 
 use std::fmt::Debug;
 use std::iter::IntoIterator;
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
 
+use data::errors::DataProcessingError;
 use data::{data_client, PointerFile};
 use pyo3::exceptions::{PyException, PyRuntimeError};
 use pyo3::prelude::*;
 use pyo3::pyfunction;
+use runtime::async_run;
 use token_refresh::WrappedTokenRefresher;
-use utils::auth::TokenRefresher;
 use utils::progress::ProgressUpdater;
-use utils::ThreadPool;
 
 use crate::progress_update::WrappedProgressUpdater;
 
-fn get_threadpool() -> Arc<ThreadPool> {
-    static THREADPOOL: OnceLock<Arc<ThreadPool>> = OnceLock::new();
-    THREADPOOL
-        .get_or_init(|| {
-            let threadpool = Arc::new(ThreadPool::new().expect("Error initializing multithreaded runtime."));
-            let threadpool_ = threadpool.clone();
-            let _ = threadpool
-                .external_run_async_task(async move {
-                    log::initialize_logging(threadpool_); // needs to run within an async runtime
-                })
-                .map_err(|e| {
-                    eprintln!("Error initializing Xet logging: {e:?}");
-                    e
-                });
-            threadpool
-        })
-        .clone()
+fn convert_data_processing_error(e: DataProcessingError) -> PyErr {
+    if cfg!(debug_assertions) {
+        PyRuntimeError::new_err(format!("Data processing error: {e:?}"))
+    } else {
+        PyRuntimeError::new_err(format!("Data processing error: {e}"))
+    }
 }
 
 #[pyfunction]
@@ -47,26 +37,24 @@ pub fn upload_files(
     token_refresher: Option<Py<PyAny>>,
     progress_updater: Option<Py<PyAny>>,
 ) -> PyResult<Vec<PyPointerFile>> {
-    let refresher = token_refresher
-        .map(WrappedTokenRefresher::from_func)
-        .transpose()?
-        .map(to_arc_dyn_token_refresher);
-    let updater = progress_updater
-        .map(WrappedProgressUpdater::from_func)
-        .transpose()?
-        .map(to_arc_dyn_progress_updater);
+    let refresher = token_refresher.map(WrappedTokenRefresher::from_func).transpose()?;
+    let updater = progress_updater.map(WrappedProgressUpdater::from_func).transpose()?;
 
-    // Release GIL to allow python concurrency
-    py.allow_threads(move || {
-        Ok(get_threadpool()
-            .external_run_async_task(async move {
-                data_client::upload_async(get_threadpool(), file_paths, endpoint, token_info, refresher, updater).await
-            })
-            .map_err(|e| PyRuntimeError::new_err(format!("Runtime Error: {e:?}")))?
-            .map_err(|e| PyException::new_err(format!("{e:?}")))?
-            .into_iter()
-            .map(PyPointerFile::from)
-            .collect())
+    async_run(py, move |threadpool| async move {
+        let out: Vec<PyPointerFile> = data_client::upload_async(
+            threadpool,
+            file_paths,
+            endpoint,
+            token_info,
+            refresher.map(Arc::new),
+            updater.map(Arc::new),
+        )
+        .await
+        .map_err(convert_data_processing_error)?
+        .into_iter()
+        .map(PyPointerFile::from)
+        .collect();
+        PyResult::Ok(out)
     })
 }
 
@@ -80,43 +68,34 @@ pub fn download_files(
     token_refresher: Option<Py<PyAny>>,
     progress_updater: Option<Vec<Py<PyAny>>>,
 ) -> PyResult<Vec<String>> {
-    let pfs: Vec<PointerFile> = files.into_iter().map(PointerFile::from).collect();
-    let refresher = token_refresher
-        .map(WrappedTokenRefresher::from_func)
-        .transpose()?
-        .map(to_arc_dyn_token_refresher);
+    let pfs = files.into_iter().map(PointerFile::from).collect();
+
+    let refresher = token_refresher.map(WrappedTokenRefresher::from_func).transpose()?;
     let updaters = progress_updater.map(try_parse_progress_updaters).transpose()?;
-    // Release GIL to allow python concurrency
-    py.allow_threads(move || {
-        get_threadpool()
-            .external_run_async_task(async move {
-                data_client::download_async(get_threadpool(), pfs, endpoint, token_info, refresher, updaters).await
-            })
-            .map_err(|e| PyRuntimeError::new_err(format!("Runtime Error: {e:?}")))?
-            .map_err(|e| PyException::new_err(format!("{e:?}")))
+
+    async_run(py, move |threadpool| async move {
+        let out: Vec<String> = data_client::download_async(
+            threadpool,
+            pfs,
+            endpoint,
+            token_info,
+            refresher.map(Arc::new),
+            updaters.map(Arc::new),
+        )
+        .await
+        .map_err(convert_data_processing_error)?;
+
+        PyResult::Ok(out)
     })
 }
 
 fn try_parse_progress_updaters(funcs: Vec<Py<PyAny>>) -> PyResult<Vec<Arc<dyn ProgressUpdater>>> {
     let mut updaters = Vec::with_capacity(funcs.len());
     for updater_func in funcs {
-        let wrapped = WrappedProgressUpdater::from_func(updater_func)?;
-        let updater = to_arc_dyn_progress_updater(wrapped);
-        updaters.push(updater);
+        let wrapped = Arc::new(WrappedProgressUpdater::from_func(updater_func)?);
+        updaters.push(wrapped as Arc<dyn ProgressUpdater>);
     }
     Ok(updaters)
-}
-
-// helper to convert the implemented WrappedTokenRefresher into an Arc<dyn TokenRefresher>
-#[inline]
-fn to_arc_dyn_token_refresher(r: WrappedTokenRefresher) -> Arc<dyn TokenRefresher> {
-    Arc::new(r)
-}
-
-// helper to convert the implemented WrappedProgressUpdater into an Arc<dyn WrappedProgressUpdater>
-#[inline]
-fn to_arc_dyn_progress_updater(r: WrappedProgressUpdater) -> Arc<dyn ProgressUpdater> {
-    Arc::new(r)
 }
 
 #[pyclass]

@@ -1,7 +1,7 @@
 use std::fmt::Display;
 use std::future::Future;
 use std::sync::atomic::Ordering::SeqCst;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Duration;
 
 /// This module provides a simple wrapper around Tokio's runtime to create a thread pool
@@ -89,6 +89,9 @@ pub struct ThreadPool {
 
     // The number of external threads calling into this threadpool
     external_executor_count: AtomicUsize,
+
+    // Are we in the middle of a sigint shutdown?
+    sigint_shutdown: AtomicBool,
 }
 
 impl ThreadPool {
@@ -98,6 +101,7 @@ impl ThreadPool {
             handle: runtime.handle().clone(),
             runtime: std::sync::RwLock::new(Some(runtime)),
             external_executor_count: AtomicUsize::new(0),
+            sigint_shutdown: AtomicBool::new(false),
         })
     }
 
@@ -108,22 +112,33 @@ impl ThreadPool {
     }
 
     /// Cancels and shuts down the runtime.  All tasks currently running will be aborted.
-    pub fn cancel_all_and_shutdown(&self) {
+    pub fn perform_sigint_shutdown(&self) {
         // Shutdown with a timeout.  This waits up to 5 seconds for all the running tasks to complete or yield at an
         // await statement, then it drops the worker threads to force shutdown.  This may cause resource
         // leaks, but this is usually used in the context where the larger process needs to be shut down
         // anyway and thus that is okay.
+        self.sigint_shutdown.store(true, Ordering::SeqCst);
+
+        if cfg!(debug_assertions) {
+            eprintln!("SIGINT detected, shutting down.");
+        }
 
         // When a task is shut down, it will stop running at whichever .await it has yielded at.  All local
         // variables are destroyed by running their destructor.
         let maybe_runtime = self.runtime.write().expect("cancel_all called recursively.").take();
 
         let Some(runtime) = maybe_runtime else {
-            eprintln!("WARNING: cancel_all_and_shutdown called on runtime that has already been shut down.");
+            eprintln!("WARNING: perform_sigint_shutdown called on runtime that has already been shut down.");
             return;
         };
 
         runtime.shutdown_timeout(Duration::from_millis(RUNTIME_SHUTDOWN_WINDOW_MS));
+    }
+
+    /// Returns true if we're in the middle of a sigint shutdown,
+    /// and false otherwise.
+    pub fn in_sigint_shutdown(&self) -> bool {
+        self.sigint_shutdown.load(Ordering::SeqCst)
     }
 
     /// This function should ONLY be used by threads outside of tokio; it should not be called
