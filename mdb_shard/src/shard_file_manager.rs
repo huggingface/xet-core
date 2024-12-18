@@ -27,21 +27,11 @@ struct MDBShardFlushGuard {
 
 impl Drop for MDBShardFlushGuard {
     fn drop(&mut self) {
-        if self.shard.is_empty() {
-            return;
-        }
-
-        if let Some(sd) = &self.session_directory {
-            // Check if the flushing directory exists.
-            if !sd.is_dir() {
-                error!("Error flushing reconstruction data on shutdown: {sd:?} is not a directory or doesn't exist");
-                return;
+        if !self.shard.is_empty() {
+            // This is only supposed to happen on task cancellations, so we should
+            if cfg!(debug_assertions) {
+                eprintln!("[Debug] Warning: Shard dropped while data still present!  This is an error outside of task cancellation.");
             }
-
-            self.flush().unwrap_or_else(|e| {
-                error!("Error flushing reconstruction data on shutdown: {e:?}");
-                None
-            });
         }
     }
 }
