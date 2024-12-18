@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use anyhow::anyhow;
 use async_trait::async_trait;
-use cas_client::tests_utils::*;
+use cas_client::{tests_utils::*, UploadMetrics};
 use cas_client::{CasClientError, Client, LocalClient, ReconstructionClient, UploadClient};
 use cas_types::FileRange;
 use mdb_shard::shard_file_reconstructor::FileReconstructor;
@@ -41,7 +41,7 @@ impl UploadClient for LocalTestClient {
         hash: &MerkleHash,
         data: Vec<u8>,
         chunk_and_boundaries: Vec<(MerkleHash, u32)>,
-    ) -> Result<(), CasClientError> {
+    ) -> Result<UploadMetrics, CasClientError> {
         self.cas.put(prefix, hash, data, chunk_and_boundaries).await
     }
 

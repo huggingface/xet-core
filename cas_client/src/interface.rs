@@ -13,6 +13,12 @@ use utils::progress::ProgressUpdater;
 use crate::error::Result;
 use crate::CasClientError;
 
+/// Metrics regarding a XORB upload.
+#[derive(Debug)]
+pub struct UploadMetrics {
+    pub n_bytes: usize,
+}
+
 /// A Client to the CAS (Content Addressed Storage) service to allow storage and
 /// management of XORBs (Xet Object Remote Block). A XORB represents a collection
 /// of arbitrary bytes. These bytes are hashed according to a Xet Merkle Hash
@@ -35,7 +41,7 @@ pub trait UploadClient {
         hash: &MerkleHash,
         data: Vec<u8>,
         chunk_and_boundaries: Vec<(MerkleHash, u32)>,
-    ) -> Result<()>;
+    ) -> Result<UploadMetrics>;
 
     /// Check if a XORB already exists.
     async fn exists(&self, prefix: &str, hash: &MerkleHash) -> Result<bool>;

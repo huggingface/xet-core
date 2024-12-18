@@ -328,6 +328,7 @@ impl CasObject {
 
     /// Serialize into Cas Object from uncompressed data and chunk boundaries.
     /// Assumes correctness from caller: it's the receiver's responsibility to validate a cas object.
+    /// Returns a tuple of CasObject and number of bytes in the serialized XORB.
     pub fn serialize<W: Write + Seek>(
         writer: &mut W,
         hash: &MerkleHash,

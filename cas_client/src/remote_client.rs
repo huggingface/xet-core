@@ -83,13 +83,13 @@ impl UploadClient for RemoteClient {
         hash: &MerkleHash,
         data: Vec<u8>,
         chunk_and_boundaries: Vec<(MerkleHash, u32)>,
-    ) -> Result<()> {
+    ) -> Result<UploadMetrics> {
         let key = Key {
             prefix: prefix.to_string(),
             hash: *hash,
         };
 
-        let was_uploaded = self.upload(&key, &data, chunk_and_boundaries).await?;
+        let (was_uploaded, metrics) = self.upload(&key, &data, chunk_and_boundaries).await?;
 
         if !was_uploaded {
             debug!("{key:?} not inserted into CAS.");
@@ -97,7 +97,7 @@ impl UploadClient for RemoteClient {
             debug!("{key:?} inserted into CAS.");
         }
 
-        Ok(())
+        Ok(metrics)
     }
 
     async fn exists(&self, prefix: &str, hash: &MerkleHash) -> Result<bool> {
@@ -245,12 +245,12 @@ impl RemoteClient {
         key: &Key,
         contents: &[u8],
         chunk_and_boundaries: Vec<(MerkleHash, u32)>,
-    ) -> Result<bool> {
+    ) -> Result<(bool, UploadMetrics)> {
         let url = Url::parse(&format!("{}/xorb/{key}", self.endpoint))?;
 
         let mut writer = Cursor::new(Vec::new());
 
-        let (_, _) = CasObject::serialize(
+        let (_, n_bytes) = CasObject::serialize(
             &mut writer,
             &key.hash,
             contents,
@@ -265,7 +265,9 @@ impl RemoteClient {
         let response = self.http_auth_client.post(url).body(data).send().await?;
         let response_parsed: UploadXorbResponse = response.json().await?;
 
-        Ok(response_parsed.was_inserted)
+        let metrics = UploadMetrics { n_bytes };
+
+        Ok((response_parsed.was_inserted, metrics))
     }
 
     /// use the reconstruction response from CAS to re-create the described file for any calls

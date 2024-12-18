@@ -4,7 +4,7 @@
 pub use chunk_cache::CacheConfig;
 pub use http_client::{build_auth_http_client, build_http_client};
 use interface::RegistrationClient;
-pub use interface::{Client, ReconstructionClient, UploadClient};
+pub use interface::{Client, ReconstructionClient, UploadClient, UploadMetrics};
 pub use local_client::{tests_utils, LocalClient};
 pub use remote_client::RemoteClient;
 
