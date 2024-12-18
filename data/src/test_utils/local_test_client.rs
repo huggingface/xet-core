@@ -5,8 +5,8 @@ use std::sync::Arc;
 
 use anyhow::anyhow;
 use async_trait::async_trait;
-use cas_client::{tests_utils::*, UploadMetrics};
-use cas_client::{CasClientError, Client, LocalClient, ReconstructionClient, UploadClient};
+use cas_client::tests_utils::*;
+use cas_client::{CasClientError, Client, LocalClient, ReconstructionClient, UploadClient, UploadMetrics};
 use cas_types::FileRange;
 use mdb_shard::shard_file_reconstructor::FileReconstructor;
 use mdb_shard::ShardFileManager;
