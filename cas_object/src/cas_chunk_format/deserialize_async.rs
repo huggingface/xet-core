@@ -27,18 +27,21 @@ pub async fn deserialize_chunk_to_writer<R: AsyncRead + Unpin, W: Write>(
     writer: &mut W,
 ) -> Result<(usize, u32), CasObjectError> {
     let header = deserialize_chunk_header(reader).await?;
-    let mut compressed_buf = vec![0u8; header.get_compressed_length() as usize];
-    reader.read_exact(&mut compressed_buf).await?;
+    let mut compressed_data = vec![0u8; header.get_compressed_length() as usize];
+    reader.read_exact(&mut compressed_data).await?;
 
-    let uncompressed_len = super::decompress_chunk_to_writer(header, &mut compressed_buf, writer)?;
+    let uncompressed_data = header.get_compression_scheme()?.decompress_from_slice(&compressed_data)?;
+    let uncompressed_len = uncompressed_data.len();
 
-    if uncompressed_len != header.get_uncompressed_length() {
+    if uncompressed_len != header.get_uncompressed_length() as usize {
         return Err(CasObjectError::FormatError(anyhow!(
             "chunk is corrupted, uncompressed bytes len doesn't agree with chunk header"
         )));
     }
 
-    Ok((header.get_compressed_length() as usize + CAS_CHUNK_HEADER_LENGTH, uncompressed_len))
+    writer.write_all(&uncompressed_data)?;
+
+    Ok((header.get_compressed_length() as usize + CAS_CHUNK_HEADER_LENGTH, uncompressed_len as u32))
 }
 
 pub async fn deserialize_chunks_to_writer_from_async_read<R: AsyncRead + Unpin, W: Write>(

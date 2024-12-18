@@ -24,6 +24,9 @@ pub enum CasObjectError {
     #[error("Other Internal Error: {0}")]
     InternalError(anyhow::Error),
 
+    #[error("(De)Compression Error: {0}")]
+    CompressionError(#[from] lz4_flex::frame::Error),
+
     #[error("Internal Hash Parsing Error")]
     HashParsingError(#[from] Infallible),
 }
