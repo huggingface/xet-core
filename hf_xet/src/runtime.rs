@@ -65,14 +65,11 @@ fn check_sigint_handler() -> PyResult<()> {
     // Finally, store that we have installed it successfully.
     SIGINT_HANDLER_INSTALLED.0.store(true, Ordering::SeqCst);
 
-    eprintln!("SIGINT handler installed.");
-
     Ok(())
 }
 
 fn signal_check_background_loop() {
     const SIGNAL_CHECK_INTERVAL: Duration = Duration::from_millis(250);
-    eprintln!("Background signal loop checking started...");
 
     loop {
         std::thread::sleep(SIGNAL_CHECK_INTERVAL);
@@ -89,7 +86,7 @@ fn signal_check_background_loop() {
             if let Some(ref runtime) = maybe_runtime {
                 // See if we have anything going on that needs to be shut down.
                 if runtime.external_executor_count() != 0 {
-                    eprintln!("Cancellation detected; stopping current tasks.");
+                    eprintln!("Cancellation requested; stopping current tasks.");
                     runtime.perform_sigint_shutdown();
                 }
             }

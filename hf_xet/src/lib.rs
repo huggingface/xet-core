@@ -10,7 +10,7 @@ use std::sync::Arc;
 
 use data::errors::DataProcessingError;
 use data::{data_client, PointerFile};
-use pyo3::exceptions::{PyException, PyRuntimeError};
+use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
 use pyo3::pyfunction;
 use runtime::async_run;
@@ -37,8 +37,11 @@ pub fn upload_files(
     token_refresher: Option<Py<PyAny>>,
     progress_updater: Option<Py<PyAny>>,
 ) -> PyResult<Vec<PyPointerFile>> {
-    let refresher = token_refresher.map(WrappedTokenRefresher::from_func).transpose()?;
-    let updater = progress_updater.map(WrappedProgressUpdater::from_func).transpose()?;
+    let refresher = token_refresher.map(WrappedTokenRefresher::from_func).transpose()?.map(Arc::new);
+    let updater = progress_updater
+        .map(WrappedProgressUpdater::from_func)
+        .transpose()?
+        .map(Arc::new);
 
     async_run(py, move |threadpool| async move {
         let out: Vec<PyPointerFile> = data_client::upload_async(
@@ -46,8 +49,8 @@ pub fn upload_files(
             file_paths,
             endpoint,
             token_info,
-            refresher.map(Arc::new),
-            updater.map(Arc::new),
+            refresher.map(|v| v as Arc<_>),
+            updater.map(|v| v as Arc<_>),
         )
         .await
         .map_err(convert_data_processing_error)?
@@ -70,7 +73,7 @@ pub fn download_files(
 ) -> PyResult<Vec<String>> {
     let pfs = files.into_iter().map(PointerFile::from).collect();
 
-    let refresher = token_refresher.map(WrappedTokenRefresher::from_func).transpose()?;
+    let refresher = token_refresher.map(WrappedTokenRefresher::from_func).transpose()?.map(Arc::new);
     let updaters = progress_updater.map(try_parse_progress_updaters).transpose()?;
 
     async_run(py, move |threadpool| async move {
@@ -79,8 +82,8 @@ pub fn download_files(
             pfs,
             endpoint,
             token_info,
-            refresher.map(Arc::new),
-            updaters.map(Arc::new),
+            refresher.map(|v| v as Arc<_>),
+            updaters,
         )
         .await
         .map_err(convert_data_processing_error)?;
