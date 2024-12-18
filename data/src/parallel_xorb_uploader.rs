@@ -10,6 +10,7 @@ use merklehash::MerkleHash;
 use tokio::sync::{Mutex, Semaphore};
 use tokio::task::JoinSet;
 use tracing::info;
+use utils::progress::ProgressUpdater;
 use utils::ThreadPool;
 
 use crate::data_processing::CASDataAggregator;
@@ -121,6 +122,9 @@ pub(crate) struct ParallelXorbUploader {
 
     // Network metrics
     egress_stat: Mutex<NetworkStat>,
+
+    // Upload Progress
+    upload_progress_updater: Option<Arc<dyn ProgressUpdater>>,
 }
 
 impl ParallelXorbUploader {
@@ -130,6 +134,7 @@ impl ParallelXorbUploader {
         cas: Arc<dyn Client + Send + Sync>,
         rate_limiter: Arc<Semaphore>,
         threadpool: Arc<ThreadPool>,
+        upload_progress_updater: Option<Arc<dyn ProgressUpdater>>,
     ) -> Arc<Self> {
         Arc::new(ParallelXorbUploader {
             cas_prefix: cas_prefix.to_owned(),
@@ -139,6 +144,7 @@ impl ParallelXorbUploader {
             rate_limiter,
             threadpool,
             egress_stat: Mutex::new(NetworkStat::new(DEFAULT_NETWORK_STAT_REPORT_INTERVAL_SEC)), // report every 2 s
+            upload_progress_updater,
         })
     }
 
@@ -159,6 +165,8 @@ impl XorbUpload for ParallelXorbUploader {
     async fn register_new_cas_block(&self, cas_data: CASDataAggregator) -> Result<MerkleHash> {
         self.status_is_ok().await?;
 
+        let xorb_data_len = cas_data.data.len();
+
         let cas_hash = cas_node_hash(&cas_data.chunks[..]);
 
         // Rate limiting, the acquired permit is dropped after the task completes.
@@ -176,13 +184,17 @@ impl XorbUpload for ParallelXorbUploader {
         let cas_prefix = self.cas_prefix.clone();
 
         let mut upload_tasks = self.upload_tasks.lock().await;
+        let upload_progress_updater = self.upload_progress_updater.clone();
         upload_tasks.spawn_on(
             async move {
                 let ret = upload_and_register_xorb(item, shard_manager, cas, cas_prefix).await;
+                if let Some(updater) = upload_progress_updater {
+                    updater.update(xorb_data_len as u64);
+                }
                 drop(permit);
                 ret
             },
-            &self.threadpool.get_handle(),
+            &self.threadpool.handle(),
         );
 
         // Now register any new files as needed.

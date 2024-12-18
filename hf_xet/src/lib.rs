@@ -8,7 +8,7 @@ use std::iter::IntoIterator;
 use std::sync::{Arc, OnceLock};
 
 use data::{data_client, PointerFile};
-use pyo3::exceptions::PyException;
+use pyo3::exceptions::{PyException, PyRuntimeError};
 use pyo3::prelude::*;
 use pyo3::pyfunction;
 use token_refresh::WrappedTokenRefresher;
@@ -22,35 +22,47 @@ fn get_threadpool() -> Arc<ThreadPool> {
     static THREADPOOL: OnceLock<Arc<ThreadPool>> = OnceLock::new();
     THREADPOOL
         .get_or_init(|| {
-            let threadpool = Arc::new(ThreadPool::new());
-            threadpool.block_on(async {
-                log::initialize_logging(threadpool.clone()); // needs to run within an async runtime
-            });
+            let threadpool = Arc::new(ThreadPool::new().expect("Error initializing multithreaded runtime."));
+            let threadpool_ = threadpool.clone();
+            let _ = threadpool
+                .external_run_async_task(async move {
+                    log::initialize_logging(threadpool_); // needs to run within an async runtime
+                })
+                .map_err(|e| {
+                    eprintln!("Error initializing Xet logging: {e:?}");
+                    e
+                });
             threadpool
         })
         .clone()
 }
 
 #[pyfunction]
-#[pyo3(signature = (file_paths, endpoint, token_info, token_refresher), text_signature = "(file_paths: List[str], endpoint: Optional[str], token_info: Optional[(str, int)], token_refresher: Optional[Callable[[], (str, int)]]) -> List[PyPointerFile]")]
+#[pyo3(signature = (file_paths, endpoint, token_info, token_refresher, progress_updater), text_signature = "(file_paths: List[str], endpoint: Optional[str], token_info: Optional[(str, int)], token_refresher: Optional[Callable[[], (str, int)]], progress_updater: Optional[Callable[[int, None]]) -> List[PyPointerFile]")]
 pub fn upload_files(
     py: Python,
     file_paths: Vec<String>,
     endpoint: Option<String>,
     token_info: Option<(String, u64)>,
     token_refresher: Option<Py<PyAny>>,
+    progress_updater: Option<Py<PyAny>>,
 ) -> PyResult<Vec<PyPointerFile>> {
     let refresher = token_refresher
         .map(WrappedTokenRefresher::from_func)
         .transpose()?
         .map(to_arc_dyn_token_refresher);
+    let updater = progress_updater
+        .map(WrappedProgressUpdater::from_func)
+        .transpose()?
+        .map(to_arc_dyn_progress_updater);
 
     // Release GIL to allow python concurrency
     py.allow_threads(move || {
         Ok(get_threadpool()
-            .block_on(async {
-                data_client::upload_async(get_threadpool(), file_paths, endpoint, token_info, refresher).await
+            .external_run_async_task(async move {
+                data_client::upload_async(get_threadpool(), file_paths, endpoint, token_info, refresher, updater).await
             })
+            .map_err(|e| PyRuntimeError::new_err(format!("Runtime Error: {e:?}")))?
             .map_err(|e| PyException::new_err(format!("{e:?}")))?
             .into_iter()
             .map(PyPointerFile::from)
@@ -77,9 +89,10 @@ pub fn download_files(
     // Release GIL to allow python concurrency
     py.allow_threads(move || {
         get_threadpool()
-            .block_on(async move {
+            .external_run_async_task(async move {
                 data_client::download_async(get_threadpool(), pfs, endpoint, token_info, refresher, updaters).await
             })
+            .map_err(|e| PyRuntimeError::new_err(format!("Runtime Error: {e:?}")))?
             .map_err(|e| PyException::new_err(format!("{e:?}")))
     })
 }
