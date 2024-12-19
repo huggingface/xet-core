@@ -15,6 +15,5 @@ bytes = "1.7.2"
 rand = "0.8.5"
 blake3 = "1.5.4"
 futures = { version = "0.3.31" }
-tokio-util = {version = "0.7.12",  features = ["io"]}
-tokio = {version = "1.41.1" }
-
+tokio-util = { version = "0.7.12", features = ["io", "io-util"] }
+tokio = { version = "1.41.1" }
