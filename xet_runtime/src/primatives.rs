@@ -49,16 +49,18 @@ impl<T: Send + Sync> Future for ComputeJoinHandle<T> {
 pub struct AsyncJoinHandle<T: Send + Sync> {
     // Just wrap the inner struct and translates any errors to XetRuntimeErrors.
     inner: tokio::task::JoinHandle<T>,
+    runtime_handle: tokio::runtime::Handle,
 }
 
 impl<T: Send + Sync> AsyncJoinHandle<T> {
-    pub(crate) fn new(inner: tokio::task::JoinHandle<T>) -> Self {
-        Self { inner }
+    pub(crate) fn new(runtime_handle: tokio::runtime::Handle, inner: tokio::task::JoinHandle<T>) -> Self {
+        Self { inner, runtime_handle }
     }
 
-    /// Awaits the task, for API consistency with the ComputeJoinHandle
-    pub async fn join(self) -> Result<T> {
-        self.inner.await.map_err(map_join_error)
+    /// Join on an async task from the sync runtime.  Use join_handle.await it the
+    /// async context.  
+    pub fn join(self) -> Result<T> {
+        self.runtime_handle.block_on(self.inner).map_err(map_join_error)
     }
 }
 
@@ -210,6 +212,16 @@ where
     /// Removes and returns the next task result from the join set
     pub async fn join_next(&mut self) -> Result<Option<T>> {
         self.join_set.join_next().await.transpose().map_err(map_join_error)
+    }
+
+    /// Removes and returns the next task result from the join set; to be called
+    /// only from outside the async runtime.
+    pub fn join_next_blocking(&mut self) -> Result<Option<T>> {
+        let jnh = self.join_set.join_next();
+        self.runtime_handle
+            .block_on(async move { jnh.await })
+            .transpose()
+            .map_err(map_join_error)
     }
 
     /// Returns whether the join set is empty

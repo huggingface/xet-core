@@ -154,13 +154,15 @@ impl XetRuntime {
     }
 
     /// Spawn an async task to run in the background on the current pool of async worker threads.
-    pub fn spawn_async_task<F>(&self, future: F) -> AsyncJoinHandle<F::Output>
+    pub fn spawn_async_task<F>(&self, future: F) -> Result<AsyncJoinHandle<F::Output>>
     where
         F: Future + Send + 'static,
         F::Output: Send + Sync + 'static,
     {
+        self.check_for_cancellation()?;
+
         // If the runtime has been shut down, this will immediately abort.
-        AsyncJoinHandle::new(self.async_runtime.spawn(future))
+        Ok(AsyncJoinHandle::new(self.async_runtime.handle().clone(), self.async_runtime.spawn(future)))
     }
 
     /// Runs a set of compute functions in parallel on the input, returning a vector of results.
@@ -368,6 +370,13 @@ mod tests {
     }
 
     #[test]
+    fn test_spawn_async_background_task() {
+        let runtime = XetRuntime::new().unwrap();
+        let handle = runtime.spawn_async_task(async { 42 }).unwrap();
+        assert_eq!(handle.join().unwrap(), 42);
+    }
+
+    #[test]
     fn test_spawn_compute_task_fifo() {
         let runtime = XetRuntime::new().unwrap();
         let handle = runtime.spawn_compute_task_fifo(|| 42).unwrap();
@@ -398,7 +407,7 @@ mod tests {
 
         runtime
             .enter_runtime_async(async move {
-                let handle = runtime_.spawn_async_task(async { 42 });
+                let handle = runtime_.spawn_async_task(async { 42 }).unwrap();
 
                 let result = handle.await.unwrap();
                 assert_eq!(result, 42);
@@ -406,7 +415,7 @@ mod tests {
             .unwrap();
 
         // Now, make sure things can be passed around.
-        let handle = runtime.spawn_async_task(async { 42 });
+        let handle = runtime.spawn_async_task(async { 42 }).unwrap();
 
         runtime
             .run_async_task(async move {
@@ -414,6 +423,13 @@ mod tests {
                 assert_eq!(result, 42);
             })
             .unwrap();
+
+        // Now, make sure things can be passed around.
+        let handle = runtime.spawn_async_task(async { 42 }).unwrap();
+
+        // Retrieve from the sync context
+        let result = handle.join().unwrap();
+        assert_eq!(result, 42);
     }
 
     #[test]
@@ -520,5 +536,16 @@ mod tests {
             .run_async_task(async move { (joinset.join_next().await.unwrap(), joinset.join_next().await.unwrap()) })
             .unwrap();
         assert_eq!(result, (Some(42), None));
+    }
+
+    #[test]
+    fn test_async_joinset_blocking() {
+        let runtime = XetRuntime::new().unwrap();
+        let mut joinset = runtime.async_joinset();
+        joinset.spawn(async { 42 });
+        let result = joinset.join_next_blocking().unwrap();
+        assert_eq!(result, Some(42));
+        let result = joinset.join_next_blocking().unwrap();
+        assert_eq!(result, None);
     }
 }
