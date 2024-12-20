@@ -77,7 +77,7 @@ async fn run_shard_benchmark(
 
     // Now, spawn tasks to
     let counter = Arc::new(AtomicUsize::new(0));
-    let mdb = Arc::new(ShardFileManager::load_dir(dir).await?);
+    let mdb = Arc::new(ShardFileManager::load_dir(dir, false).await?);
 
     let start_time = Instant::now();
 

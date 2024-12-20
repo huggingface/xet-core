@@ -8,7 +8,10 @@ use super::configurations::Endpoint::*;
 use super::configurations::StorageConfig;
 use super::errors::Result;
 
-pub async fn create_shard_manager(shard_storage_config: &StorageConfig) -> Result<ShardFileManager> {
+pub async fn create_shard_manager(
+    shard_storage_config: &StorageConfig,
+    download_only_mode: bool,
+) -> Result<ShardFileManager> {
     let shard_session_directory = shard_storage_config
         .staging_directory
         .as_ref()
@@ -19,7 +22,7 @@ pub async fn create_shard_manager(shard_storage_config: &StorageConfig) -> Resul
         .expect("Need shard cache directory to create ShardFileManager")
         .cache_directory;
 
-    let shard_manager = ShardFileManager::load_dir(shard_session_directory).await?;
+    let shard_manager = ShardFileManager::load_dir(shard_session_directory, download_only_mode).await?;
 
     if shard_cache_directory.exists() {
         shard_manager.load_and_cleanup_shards_by_path(&[shard_cache_directory]).await?;
@@ -30,7 +33,10 @@ pub async fn create_shard_manager(shard_storage_config: &StorageConfig) -> Resul
     Ok(shard_manager)
 }
 
-pub async fn create_shard_client(shard_storage_config: &StorageConfig) -> Result<Arc<dyn ShardClientInterface>> {
+pub async fn create_shard_client(
+    shard_storage_config: &StorageConfig,
+    download_only_mode: bool,
+) -> Result<Arc<dyn ShardClientInterface>> {
     debug!("Shard endpoint = {:?}", shard_storage_config.endpoint);
     let client: Arc<dyn ShardClientInterface> = match &shard_storage_config.endpoint {
         Server(endpoint) => Arc::new(HttpShardClient::new(
@@ -41,7 +47,7 @@ pub async fn create_shard_client(shard_storage_config: &StorageConfig) -> Result
                 .as_ref()
                 .map(|cache| cache.cache_directory.clone()),
         )),
-        FileSystem(path) => Arc::new(LocalShardClient::new(path).await?),
+        FileSystem(path) => Arc::new(LocalShardClient::new(path, download_only_mode).await?),
     };
 
     Ok(client)

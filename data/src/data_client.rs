@@ -98,7 +98,7 @@ pub async fn upload_async(
     let (config, _tempdir) =
         default_config(endpoint.unwrap_or(DEFAULT_CAS_ENDPOINT.to_string()), token_info, token_refresher)?;
 
-    let processor = Arc::new(PointerFileTranslator::new(config, threadpool, progress_updater).await?);
+    let processor = Arc::new(PointerFileTranslator::new(config, threadpool, progress_updater, false).await?);
 
     // for all files, clean them, producing pointer files.
     let pointers = tokio_par_for_each(file_paths, MAX_CONCURRENT_UPLOADS, |f, _| async {
@@ -141,7 +141,7 @@ pub async fn download_async(
     };
     let pointer_files_plus = pointer_files.into_iter().zip(updaters).collect::<Vec<_>>();
 
-    let processor = &Arc::new(PointerFileTranslator::new(config, threadpool, None).await?);
+    let processor = &Arc::new(PointerFileTranslator::new(config, threadpool, None, true).await?);
     let paths =
         tokio_par_for_each(pointer_files_plus, MAX_CONCURRENT_DOWNLOADS, |(pointer_file, updater), _| async move {
             let proc = processor.clone();
