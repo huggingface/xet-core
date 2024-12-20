@@ -202,6 +202,7 @@ fn bg4_regroup(groups: &[Vec<u8>]) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use rand::Rng;
+    use std::mem::size_of;
 
     use super::*;
 
