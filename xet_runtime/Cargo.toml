@@ -1,0 +1,26 @@
+[package]
+name = "xet_runtime"
+version = "0.14.5"
+edition = "2021"
+
+[lib]
+name = "xet_runtime"
+path = "src/lib.rs"
+
+[dependencies]
+xet_error = { path = "../xet_error" }
+futures = "0.3.28"
+
+tokio = { version = "1.41", features = ["full"] }
+rayon = "1"
+oneshot = "0.1.8"
+crossbeam = "0.8"
+tracing = "0.1.*"
+num_cpus = "1.16.0"
+lazy_static = "1"
+
+[dev-dependencies]
+tempfile = "3.14.0"
+
+[features]
+strict = []
