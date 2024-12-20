@@ -354,6 +354,9 @@ fn get_async_thread_name() -> String {
 }
 
 mod tests {
+
+    // The rust nightly incorrectly thinks the use statement below is unused.
+    #[allow(unused_imports)]
     use super::*;
 
     #[test]
