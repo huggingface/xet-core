@@ -218,10 +218,7 @@ where
     /// only from outside the async runtime.
     pub fn join_next_blocking(&mut self) -> Result<Option<T>> {
         let jnh = self.join_set.join_next();
-        self.runtime_handle
-            .block_on(async move { jnh.await })
-            .transpose()
-            .map_err(map_join_error)
+        self.runtime_handle.block_on(jnh).transpose().map_err(map_join_error)
     }
 
     /// Returns whether the join set is empty
