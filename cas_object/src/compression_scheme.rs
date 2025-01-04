@@ -203,6 +203,7 @@ fn bg4_regroup(groups: &[Vec<u8>]) -> Vec<u8> {
 mod tests {
     use std::mem::size_of;
 
+    use half::prelude::*;
     use rand::Rng;
 
     use super::*;
@@ -252,15 +253,43 @@ mod tests {
             .flatten()
             .collect();
 
+        // f16, a.k.a binary16 format: sign (1 bit), exponent (5 bit), mantissa (10 bit)
+        let random_f16s_ng1_1: Vec<_> = (0..n / size_of::<f16>())
+            .map(|_| f16::from_f32(rng.gen_range(-1.0f32..=1.0)))
+            .map(|f| f.to_le_bytes())
+            .flatten()
+            .collect();
+        let random_f16s_0_2: Vec<_> = (0..n / size_of::<f16>())
+            .map(|_| f16::from_f32(rng.gen_range(0f32..=2.0)))
+            .map(|f| f.to_le_bytes())
+            .flatten()
+            .collect();
+
+        // bf16 format: sign (1 bit), exponent (8 bit), mantissa (7 bit)
+        let random_bf16s_ng1_1: Vec<_> = (0..n / size_of::<bf16>())
+            .map(|_| bf16::from_f32(rng.gen_range(-1.0f32..=1.0)))
+            .map(|f| f.to_le_bytes())
+            .flatten()
+            .collect();
+        let random_bf16s_0_2: Vec<_> = (0..n / size_of::<bf16>())
+            .map(|_| bf16::from_f32(rng.gen_range(0f32..=2.0)))
+            .map(|f| f.to_le_bytes())
+            .flatten()
+            .collect();
+
         let dataset = [
-            all_zeros,         // 180.04, 231.58
-            all_ones,          // 180.04, 231.58
-            all_0xff,          // 180.04, 231.58
-            random_u8s,        // 1.00, 1.00
-            random_f32s_ng1_1, // 1.08, 1.00
-            random_f32s_0_2,   // 1.15, 1.00
-            random_f64s_ng1_1, // 1.00, 1.00
-            random_f64s_0_2,   // 1.00, 1.00
+            all_zeros,          // 180.04, 231.58
+            all_ones,           // 180.04, 231.58
+            all_0xff,           // 180.04, 231.58
+            random_u8s,         // 1.00, 1.00
+            random_f32s_ng1_1,  // 1.08, 1.00
+            random_f32s_0_2,    // 1.15, 1.00
+            random_f64s_ng1_1,  // 1.00, 1.00
+            random_f64s_0_2,    // 1.00, 1.00
+            random_f16s_ng1_1,  // 1.00, 1.00
+            random_f16s_0_2,    // 1.00, 1.00
+            random_bf16s_ng1_1, // 1.18, 1.00
+            random_bf16s_0_2,   // 1.37, 1.00
         ];
 
         for data in dataset {
