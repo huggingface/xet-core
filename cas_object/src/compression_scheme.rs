@@ -77,13 +77,13 @@ impl CompressionScheme {
     }
 }
 
-fn lz4_compress_from_slice(data: &[u8]) -> Result<Vec<u8>> {
+pub fn lz4_compress_from_slice(data: &[u8]) -> Result<Vec<u8>> {
     let mut enc = FrameEncoder::new(Vec::new());
     enc.write_all(data)?;
     Ok(enc.finish()?)
 }
 
-fn lz4_decompress_from_slice(data: &[u8]) -> Result<Vec<u8>> {
+pub fn lz4_decompress_from_slice(data: &[u8]) -> Result<Vec<u8>> {
     let mut dest = vec![];
     lz4_decompress_from_reader(&mut Cursor::new(data), &mut dest)?;
     Ok(dest)
@@ -94,7 +94,7 @@ fn lz4_decompress_from_reader<R: Read, W: Write>(reader: &mut R, writer: &mut W)
     Ok(copy(&mut dec, writer)?)
 }
 
-fn bg4_lz4_compress_from_slice(data: &[u8]) -> Result<Vec<u8>> {
+pub fn bg4_lz4_compress_from_slice(data: &[u8]) -> Result<Vec<u8>> {
     let groups = bg4_split(data);
     let mut dest = vec![];
     for g in groups {
@@ -106,7 +106,7 @@ fn bg4_lz4_compress_from_slice(data: &[u8]) -> Result<Vec<u8>> {
     Ok(dest)
 }
 
-fn bg4_lz4_decompress_from_slice(data: &[u8]) -> Result<Vec<u8>> {
+pub fn bg4_lz4_decompress_from_slice(data: &[u8]) -> Result<Vec<u8>> {
     let mut dest = vec![];
     bg4_lz4_decompress_from_reader(&mut Cursor::new(data), &mut dest)?;
     Ok(dest)

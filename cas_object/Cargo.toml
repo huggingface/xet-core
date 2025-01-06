@@ -3,6 +3,11 @@ name = "cas_object"
 version = "0.1.0"
 edition = "2021"
 
+[[bench]]
+name = "compression_bench"
+harness = false
+bench = true
+
 [dependencies]
 xet_error = { path = "../xet_error" }
 error_printer = { path = "../error_printer" }
