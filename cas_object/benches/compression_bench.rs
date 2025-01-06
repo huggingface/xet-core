@@ -1,4 +1,5 @@
-use std::{mem::size_of, time::Instant};
+use std::mem::size_of;
+use std::time::Instant;
 
 use cas_object::*;
 use half::prelude::*;
