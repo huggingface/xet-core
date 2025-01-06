@@ -50,7 +50,8 @@ impl WrappedTokenRefresher {
 
 impl TokenRefresher for WrappedTokenRefresher {
     fn refresh(&self) -> Result<TokenInfo, AuthError> {
-        info!("refreshing token");
+        // This is causing log spew when the downloads run long enough
+        // info!("refreshing token");
         Python::with_gil(|py| {
             let f = self.py_func.bind(py);
             if !f.is_callable() {

@@ -15,7 +15,10 @@ pyo3 = { version = "0.23.3", features = [
     "auto-initialize",
 ] }
 
+lz4_flex = "0.11.3"
 error_printer = { path = "../error_printer" }
+cas_types = { path = "../cas_types" }
+cas_object = { path = "../cas_object" }
 data = { path = "../data" }
 utils = { path = "../utils" }
 tokio = { version = "1.36", features = ["full"] }
