@@ -229,7 +229,7 @@ dependencies = [
  "tracing",
  "url",
  "utils",
- "xet_error",
+ "thiserror",
 ]
 
 [[package]]
@@ -248,7 +248,7 @@ dependencies = [
  "tokio",
  "tokio-util",
  "tracing",
- "xet_error",
+ "thiserror",
 ]
 
 [[package]]
@@ -258,7 +258,7 @@ dependencies = [
  "merklehash",
  "serde",
  "serde_repr",
- "xet_error",
+ "thiserror",
 ]
 
 [[package]]
@@ -303,7 +303,7 @@ dependencies = [
  "rand 0.8.5",
  "tracing",
  "utils",
- "xet_error",
+ "thiserror",
 ]
 
 [[package]]
@@ -477,7 +477,7 @@ dependencies = [
  "toml",
  "tracing",
  "utils",
- "xet_error",
+ "thiserror",
 ]
 
 [[package]]
@@ -1437,7 +1437,7 @@ dependencies = [
  "tracing",
  "utils",
  "uuid",
- "xet_error",
+ "thiserror",
 ]
 
 [[package]]
@@ -1477,7 +1477,7 @@ dependencies = [
  "tempfile",
  "tracing",
  "walkdir",
- "xet_error",
+ "thiserror",
 ]
 
 [[package]]
@@ -2977,7 +2977,7 @@ dependencies = [
  "pin-project",
  "tokio",
  "tracing",
- "xet_error",
+ "thiserror",
 ]
 
 [[package]]
@@ -3401,7 +3401,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "xet_error"
+name = "thiserror"
 version = "0.14.5"
 dependencies = [
  "lazy_static",

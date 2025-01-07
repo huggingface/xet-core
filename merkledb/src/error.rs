@@ -1,6 +1,6 @@
 use std::io;
 
-use xet_error::Error;
+use thiserror::Error;
 
 #[derive(Error, Debug)]
 pub enum MerkleDBError {

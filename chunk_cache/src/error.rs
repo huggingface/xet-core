@@ -3,7 +3,7 @@ use std::str::Utf8Error;
 
 use base64::DecodeError;
 use merklehash::DataHashBytesParseError;
-use xet_error::Error;
+use thiserror::Error;
 
 #[derive(Debug, Error)]
 pub enum ChunkCacheError {

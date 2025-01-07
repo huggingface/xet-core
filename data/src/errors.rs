@@ -4,8 +4,9 @@ use std::sync::mpsc::RecvError;
 use cas_client::CasClientError;
 use mdb_shard::error::MDBShardError;
 use merkledb::error::MerkleDBError;
+use thiserror::Error;
+use tracing::error;
 use utils::errors::{AuthError, SingleflightError};
-use xet_error::Error;
 
 #[derive(Error, Debug)]
 pub enum DataProcessingError {
@@ -79,7 +80,7 @@ pub type Result<T> = std::result::Result<T, DataProcessingError>;
 impl From<SingleflightError<DataProcessingError>> for DataProcessingError {
     fn from(value: SingleflightError<DataProcessingError>) -> Self {
         let msg = format!("{value:?}");
-        xet_error::error_hook(&msg);
+        error!("{msg}");
         match value {
             SingleflightError::InternalError(e) => e,
             _ => DataProcessingError::InternalError(format!("SingleflightError: {msg}")),
