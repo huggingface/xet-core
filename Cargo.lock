@@ -4153,6 +4153,7 @@ name = "xet_runtime"
 version = "0.14.5"
 dependencies = [
  "crossbeam",
+ "error_printer",
  "futures",
  "lazy_static",
  "num_cpus",

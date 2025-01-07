@@ -3,8 +3,8 @@ use std::sync::atomic::Ordering::SeqCst;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 
+use error_printer::ErrorPrinter;
 use lazy_static::lazy_static;
-use tracing::debug;
 
 use crate::errors::{map_join_error, Result, RuntimeCancellation, XetRuntimeError};
 use crate::primatives::{AsyncJoinSet, ComputeJoinHandle, ComputeJoinSet};
@@ -184,10 +184,7 @@ impl XetRuntime {
 
         self.compute_threadpool.spawn(move || {
             let result = task();
-            let _ = tx.send(result).map_err(|e| {
-                debug!("Return result on join handle encountered error: {e:?}");
-                e
-            });
+            let _ = tx.send(result).debug_error("Return result on join handle encountered error.");
         });
 
         Ok(jh)
@@ -215,10 +212,7 @@ impl XetRuntime {
 
         self.compute_threadpool.spawn_fifo(move || {
             let result = task();
-            let _ = tx.send(result).map_err(|e| {
-                debug!("Return result on join handle encountered error: {e:?}");
-                e
-            });
+            let _ = tx.send(result).debug_error("Return result on join handle encountered error.");
         });
 
         Ok(jh)
