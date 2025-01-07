@@ -19,28 +19,109 @@ const COMPUTE_THREADPOOL_NUM_WORKER_THREADS: usize = 4;
 const COMPUTE_THREADPOOL_THREAD_ID_PREFIX: &str = "hf-xet-comp"; // thread names will be hf-xet-comp-0, hf-xet-comp-1, etc.
 
 lazy_static! {
-    static ref XET_RUNTIME: XetRuntime = XetRuntime::new().expect("Error Starting Xet Runtime");
+    static ref XET_RUNTIME: std::result::Result<XetRuntime, XetRuntimeError> = XetRuntime::new();
 }
 
+/// Returns a reference to the global runtime object.
 pub fn xet_runtime() -> &'static XetRuntime {
-    &XET_RUNTIME
+    &XET_RUNTIME.as_ref().expect("Error initializing Xet Runtime")
 }
 
-#[inline]
-pub fn cancellation_requested() -> bool {
-    xet_runtime().cancelation_requested()
+/// Returns a reference to the global runtime object, with error propegation.  This method
+/// should be preferred when using the runtime entrance methods.
+pub fn xet_runtime_checked() -> std::result::Result<&'static XetRuntime, &'static XetRuntimeError> {
+    XET_RUNTIME.as_ref()
 }
 
-/// Call this function within long-running loops or tasks to check whether a cancellation request
-/// (e.g. a CTRL-C press) has happened.  If so, it returns an error that can be handled outside.  
-#[inline]
-pub fn check_runtime_cancellation() -> std::result::Result<(), RuntimeCancellation> {
-    xet_runtime().check_for_cancellation()
-}
-
+/// A unified runtime that blends an async runtime (currently Tokio) and a
+/// compute threadpool (currently Rayon).  
+///
+/// It is built with several design objectives:
+///
+/// 1. **Isolate Async Logic**   Only a small portion of the codebase truly needs async features (like network I/O).
+///    `XetRuntime` ensures that only those portions rely on async, while allowing the rest of your code to remain
+///    synchronous and easier to reason about.
+///
+/// 2. **Abstract Away the Underlying Async Runtime**   We currently use tokio, but `XetRuntime` is written in such a
+///    way that you could swap out the async runtime with minimal changes to your application code.
+///
+/// 3. **Compute-Focused Non-Async Primitives**   Many operations (e.g., CPU-bound transformations, parallel loops, and
+///    concurrency constructs like join sets) are more easily implemented in a synchronous/multithreaded style.
+///    `XetRuntime` provides these compute primitives via a Rayon thread pool.
+///
+/// 4. **Asynchronous Entry Points from Sync Context**   The runtime exposes mechanisms for running async tasks from
+///    sync (blocking) contexts without requiring you to manage the thread runtime or worry about potential deadlocks.
+///
+/// 5. **Graceful Cancellation (e.g., Ctrl-C)**   A global cancellation flag can signal in-flight tasks to quit early,
+///    if you implement periodic checks in your workload.
+///
+/// Internally, the runtime wraps a Tokio multi-threaded runtime for async work
+/// and a Rayon thread pool for parallel compute work.
+///
+/// # Common Use Cases
+///
+/// - **CPU-Bound Parallel Work**: Use the `spawn_compute_task`, `par_for`, or `par_for_each` methods for parallelizing
+///   CPU-heavy tasks.
+/// - **Async I/O**: Run asynchronous tasks within the `tokio` runtime using `spawn_async_task` or `run_async_task`.
+/// - **Bridging Async and Sync**: For example, from an async context, run a CPU-bound task using
+///   `run_compute_task_from_async`; or from a sync context, run an async task using `run_async_task`.
+/// - **Joining Multiple Tasks**: Use `compute_joinset` or `async_joinset` to manage a group of tasks that can complete
+///   out of order.
+/// - **External Entrypoints**: Use `enter_runtime` or `enter_runtime_async` to safely invoke tasks in this runtime from
+///   code outside of your Rust process (e.g., Python bindings).
+///
+/// # Runtime Methods
+///
+/// - **Compute Tasks**
+///   - [`spawn_compute_task`](Self::spawn_compute_task)   Spawn a CPU-bound task on the compute threadpool that runs
+///     with any priority.
+///   - [`spawn_compute_task_fifo`](Self::spawn_compute_task_fifo)   Spawn a CPU-bound task that is gauranteed to start
+///     before other spawned FIFO tasks. Use this method to prioritize CPU tasks.
+///   - [`par_for`](Self::par_for) / [`par_for_each`](Self::par_for_each)   Parallel map/foreach style operations on
+///     collections.
+///   - [`compute_joinset`](Self::compute_joinset)   Create a group of compute tasks that are handled together.
+///
+/// - **Async Interop**
+///   - [`run_async_task`](Self::run_async_task)   Run an async future, blocking until complete.
+///   - [`spawn_async_task`](Self::spawn_async_task)   Spawn an async future, returning a handle that can be waited on
+///     later.
+///
+/// - **External Entrypoints**
+///   - [`enter_runtime`](Self::enter_runtime)   Safely call into the runtime from an external (non-runtime) thread.
+///   - [`enter_runtime_async`](Self::enter_runtime_async)   Same as above but for an async closure.
+///
+/// - **Cancellation**
+///   - [`request_task_cancellation`](Self::request_task_cancellation)   Signal all tasks to stop.  Used by CTRL-C
+///   - [`check_for_cancellation`](Self::check_for_cancellation)   Return an error if cancellation is requested.
+///   - [`cancelation_requested`](Self::cancelation_requested)   Check if a cancellation is in progress.
+///
+///
+///
+/// # Example
+///
+/// ```ignore
+/// use xet_runtime::xet_runtime;
+///
+/// // Run a simple CPU-bound task in parallel.
+/// let handle = xet_runtime().spawn_compute_task(|| {
+///     // Some heavy CPU-bound computation
+///     42
+/// })?;
+///
+/// // Retrieve the result.
+/// let answer = handle.join()?;
+/// assert_eq!(answer, 42);
+///
+/// // Run an async task from this synchronous context.
+/// let async_answer = xet_runtime().run_async_task(async {
+///     // Some async operation
+///     99
+/// });
+/// assert_eq!(async_answer, 99);
+/// ```
 #[derive(Debug)]
 pub struct XetRuntime {
-    //
+    // The specific runtime
     async_runtime: tokio::runtime::Runtime,
 
     // The number of external threads calling into this threadpool
@@ -54,7 +135,7 @@ pub struct XetRuntime {
 }
 
 impl XetRuntime {
-    /// Constructs the runtime.  Should typically be used from runtime() as the lazily initialized
+    /// Constructs the runtime.  Should typically be used from xet_runtime() as the lazily initialized
     /// static global above
     pub fn new() -> Result<Self> {
         let async_runtime = tokio::runtime::Builder::new_multi_thread()
@@ -85,11 +166,19 @@ impl XetRuntime {
     /// Spawns a compute task to be run on the current compute thread pool,
     /// returning a join handle to the result.  This task may be run in any
     /// order relative to the other tasks in the worker pool.
+    ///
+    /// # Example:
+    ///
+    /// ```
+    /// use xet_runtime::xet_runtime;
+    /// let handle = xet_runtime().spawn_compute_task(|| 42).unwrap();
+    /// assert_eq!(handle.join().unwrap(), 42);
+    /// ```
     pub fn spawn_compute_task<T: Send + Sync + 'static>(
         &self,
         task: impl FnOnce() -> T + Send + 'static,
     ) -> Result<ComputeJoinHandle<T>> {
-        self.check_for_cancellation()?;
+        self.check_cancellation()?;
 
         let (jh, tx) = ComputeJoinHandle::create();
 
@@ -108,11 +197,19 @@ impl XetRuntime {
     /// priority relative to other fifo threads.  All other FIFO spawned tasks will be started before
     /// this one is started.  This does not mean that this task will *finish* after
     /// the other tasks.
+    ///
+    /// # Example:
+    ///
+    /// ```
+    /// use xet_runtime::xet_runtime;
+    /// let handle = xet_runtime().spawn_compute_task_fifo(|| 42).unwrap();
+    /// assert_eq!(handle.join().unwrap(), 42);
+    /// ```
     pub fn spawn_compute_task_fifo<T: Send + Sync + 'static>(
         &self,
         task: impl FnOnce() -> T + Send + 'static,
     ) -> Result<ComputeJoinHandle<T>> {
-        self.check_for_cancellation()?;
+        self.check_cancellation()?;
 
         let (jh, tx) = ComputeJoinHandle::create();
 
@@ -129,6 +226,19 @@ impl XetRuntime {
 
     /// From an async context, run a compute task, yielding while that task finishes to avoid tying up an
     /// async worker.
+    ///
+    /// # Example:
+    ///
+    /// ```ignore
+    /// // In an async function:
+    /// use my_crate::xet_runtime;
+    /// async fn do_async_work() -> Result<()> {
+    ///     let rt = xet_runtime();
+    ///     let result = rt.run_compute_task_from_async(|| 42).await?;
+    ///     assert_eq!(result, 42);
+    ///     Ok(())
+    /// }
+    /// ```
     pub async fn run_compute_task_from_async<T: Send + Sync + 'static>(
         &self,
         task: impl FnOnce() -> T + Send + 'static,
@@ -144,7 +254,7 @@ impl XetRuntime {
         F: std::future::Future + Send + 'static,
         F::Output: Send + Sync + 'static,
     {
-        self.check_for_cancellation()?;
+        self.check_cancellation()?;
 
         self.async_runtime.block_on(async move {
             // Run the actual task on a task worker thread so we can get back information
@@ -159,13 +269,24 @@ impl XetRuntime {
         F: Future + Send + 'static,
         F::Output: Send + Sync + 'static,
     {
-        self.check_for_cancellation()?;
+        self.check_cancellation()?;
 
         // If the runtime has been shut down, this will immediately abort.
         Ok(AsyncJoinHandle::new(self.async_runtime.handle().clone(), self.async_runtime.spawn(future)))
     }
 
     /// Runs a set of compute functions in parallel on the input, returning a vector of results.
+    ///
+    /// If one item fails, the entire operation stops and returns that error.
+    ///
+    /// # Example:
+    ///
+    /// ```
+    /// use xet_runtime::xet_runtime;
+    /// let data = vec![1, 2, 3];
+    /// let results = xet_runtime().par_for(&data[..], |&x| Ok::<u64, ()>(x + 1)).unwrap();
+    /// assert_eq!(results, vec![2, 3, 4]);
+    /// ```
     pub fn par_for<F, T, I, E>(&self, inputs: I, func: F) -> std::result::Result<Vec<T>, E>
     where
         I: rayon::iter::IntoParallelIterator + Send,
@@ -209,7 +330,25 @@ impl XetRuntime {
         }
     }
 
-    /// Runs a set of compute functions in parallel on the input.
+    /// Similar to [`par_for`](Self::par_for), but returns `()` instead of
+    /// collecting results. If one item fails, the entire operation stops
+    /// and returns that error.
+    ///
+    /// # Example:
+    ///
+    /// ```
+    /// use xet_runtime::xet_runtime;
+    ///
+    /// let data = vec![1, 2, 3];
+    /// let res = xet_runtime().par_for_each(data, |x| {
+    ///     if x == 2 {
+    ///         Err("I don't like the number 2.")
+    ///     } else {
+    ///         Ok(())
+    ///     }
+    /// });
+    /// assert!(res.is_err());
+    /// ```
     pub fn par_for_each<F, I, E>(&self, inputs: I, func: F) -> std::result::Result<(), E>
     where
         I: rayon::iter::IntoParallelIterator + Send,
@@ -247,8 +386,17 @@ impl XetRuntime {
 
     /// Enter the runtime from an external call, running the given task as the entry point
     /// and returning the result.
+    ///
+    /// Returns a runtime cancellation error if cancellation has been requested.
+    ///
+    /// # Example:
+    ///
+    /// ```
+    /// use xet_runtime::xet_runtime;
+    /// let val = xet_runtime().enter_runtime(|| 42).unwrap();
+    /// assert_eq!(val, 42);
     pub fn enter_runtime<Out: Send + Sync>(&self, task: impl FnOnce() -> Out) -> Result<Out> {
-        self.check_for_cancellation()?;
+        self.check_cancellation()?;
 
         self.increment_external_executor_count();
 
@@ -267,12 +415,18 @@ impl XetRuntime {
     ///
     /// This function should ONLY be used by threads outside of tokio; it should not be called
     /// from within a task running on the runtime worker pool.  Doing so can lead to deadlocking.
+    ///
+    /// ```
+    /// use xet_runtime::xet_runtime_checked;
+    /// let val = xet_runtime_checked().unwrap().enter_runtime_async(async { 42 }).unwrap();
+    /// assert_eq!(val, 42);
+    /// ```
     pub fn enter_runtime_async<F>(&self, future: F) -> Result<F::Output>
     where
         F: std::future::Future + Send + 'static,
         F::Output: Send + Sync,
     {
-        self.check_for_cancellation()?;
+        self.check_cancellation()?;
 
         self.increment_external_executor_count();
         let ret = self.run_async_task(future);
@@ -280,14 +434,55 @@ impl XetRuntime {
         ret
     }
 
-    /// Create a JoinSet for use on the compute runtime.  A JoinSet allows a place for spawning a set of tasks
-    /// that can complete out of order.  Results are available as soon as any job completes.
+    /// Creates a new [`ComputeJoinSet`] that allows spawning multiple CPU-bound tasks in a group and
+    /// joining their results as they complete, in any order.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use xet_runtime::xet_runtime;
+    /// let mut join_set = xet_runtime().compute_joinset::<i32>();
+    ///
+    /// join_set.spawn(|| 42);
+    /// join_set.spawn(|| 99);
+    ///
+    /// let mut results = vec![];
+    ///
+    /// while let Some(res) = join_set.join_next().unwrap() {
+    ///     results.push(res);
+    /// }
+    ///
+    /// results.sort();
+    ///
+    /// assert_eq!(results, vec![42, 99]);
+    /// ```
     pub fn compute_joinset<ResultType: Send + Sync + 'static>(&self) -> ComputeJoinSet<ResultType> {
         ComputeJoinSet::new(self.compute_threadpool.clone())
     }
 
-    /// Create an async JoinSet for use on the async runtime.  A JoinSet allows a place for spawning a set of tasks
-    /// that can complete out of order.  Results are available as soon as any job completes.
+    /// Creates a new [`AsyncJoinSet`] that allows spawning multiple async
+    /// tasks and joining their results as they complete, in any order.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use xet_runtime::xet_runtime;
+    /// let mut join_set = xet_runtime().async_joinset();
+    ///
+    /// join_set.spawn(async { 42 });
+    /// join_set.spawn(async { 99 });
+    ///
+    /// let mut results = vec![];
+    ///
+    /// // NOTE: Use join_next().await in async code.
+    /// while let Some(res) = join_set.join_next_blocking().unwrap() {
+    ///     results.push(res);
+    /// }
+    ///
+    /// results.sort();
+    ///
+    /// assert_eq!(results, vec![42, 99]);
+    /// ```
     pub fn async_joinset<ResultType: Send + Sync + 'static>(&self) -> AsyncJoinSet<ResultType> {
         AsyncJoinSet::new(self.async_runtime.handle().clone())
     }
@@ -300,7 +495,7 @@ impl XetRuntime {
 
     /// Sets a global flag to signal that all tasks should be canceled.  
     /// It is up to individual tasks to call check_for_cancellation when appropriate,
-    /// preferably as frequently as possible.  
+    /// preferably frequently.
     pub fn request_task_cancellation(&self) {
         // Issue the flag to cause all the tasks to cancel.
         self.cancelation_requested.store(true, Ordering::SeqCst);
@@ -315,8 +510,19 @@ impl XetRuntime {
 
     /// If a cancellation has been requested, returns a RuntimeCancellation error.  Otherwise
     /// does nothing.  
+    ///
+    /// # Example:
+    ///
+    /// ```ignore
+    /// use xet_runtime::xet_runtime;
+    /// xet_runtime().check_cancellation()?;
+    ///
+    /// xet_runtime().request_task_cancellation()?;
+    ///
+    /// assert!(xet_runtime().check_cancellation().is_err());
+    /// ```
     #[inline]
-    pub fn check_for_cancellation(&self) -> std::result::Result<(), RuntimeCancellation> {
+    pub fn check_cancellation(&self) -> std::result::Result<(), RuntimeCancellation> {
         if self.cancelation_requested() {
             Err(RuntimeCancellation {})
         } else {
@@ -484,7 +690,7 @@ mod tests {
     fn test_check_for_cancellation() {
         let runtime = XetRuntime::new().unwrap();
         runtime.request_task_cancellation();
-        let result = runtime.check_for_cancellation();
+        let result = runtime.check_cancellation();
         assert!(result.is_err());
     }
 
