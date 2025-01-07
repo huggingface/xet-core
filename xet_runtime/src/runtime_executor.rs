@@ -92,8 +92,8 @@ pub fn xet_runtime_checked() -> std::result::Result<&'static XetRuntime, &'stati
 ///
 /// - **Cancellation**
 ///   - [`request_task_cancellation`](Self::request_task_cancellation)   Signal all tasks to stop.  Used by CTRL-C
-///   - [`check_for_cancellation`](Self::check_for_cancellation)   Return an error if cancellation is requested.
-///   - [`cancelation_requested`](Self::cancelation_requested)   Check if a cancellation is in progress.
+///   - [`check_cancellation`](Self::check_cancellation)   Return an error if cancellation is requested.
+///   - [`cancellation_requested`](Self::cancellation_requested)   Check if a cancellation is in progress.
 ///
 ///
 ///
@@ -128,7 +128,7 @@ pub struct XetRuntime {
     external_executor_count: AtomicUsize,
 
     // Are we in the middle of a sigint shutdown?
-    cancelation_requested: AtomicBool,
+    cancellation_requested: AtomicBool,
 
     // The rayon threadpool for tasks?
     compute_threadpool: Arc<rayon::ThreadPool>,
@@ -158,7 +158,7 @@ impl XetRuntime {
         Ok(Self {
             async_runtime,
             external_executor_count: AtomicUsize::new(0),
-            cancelation_requested: AtomicBool::new(false),
+            cancellation_requested: AtomicBool::new(false),
             compute_threadpool: Arc::new(compute_threadpool),
         })
     }
@@ -400,7 +400,7 @@ impl XetRuntime {
 
         self.increment_external_executor_count();
 
-        let ret = if self.cancelation_requested() {
+        let ret = if self.cancellation_requested() {
             Err(XetRuntimeError::RuntimeCancellation(RuntimeCancellation {}))
         } else {
             Ok(task())
@@ -498,14 +498,14 @@ impl XetRuntime {
     /// preferably frequently.
     pub fn request_task_cancellation(&self) {
         // Issue the flag to cause all the tasks to cancel.
-        self.cancelation_requested.store(true, Ordering::SeqCst);
+        self.cancellation_requested.store(true, Ordering::SeqCst);
     }
 
     /// Returns true if we're in the middle of a cancellation request (E.g. CTRL-C).
     /// and false otherwise.
     #[inline]
-    pub fn cancelation_requested(&self) -> bool {
-        self.cancelation_requested.load(Ordering::SeqCst)
+    pub fn cancellation_requested(&self) -> bool {
+        self.cancellation_requested.load(Ordering::SeqCst)
     }
 
     /// If a cancellation has been requested, returns a RuntimeCancellation error.  Otherwise
@@ -523,7 +523,7 @@ impl XetRuntime {
     /// ```
     #[inline]
     pub fn check_cancellation(&self) -> std::result::Result<(), RuntimeCancellation> {
-        if self.cancelation_requested() {
+        if self.cancellation_requested() {
             Err(RuntimeCancellation {})
         } else {
             Ok(())
@@ -545,7 +545,7 @@ impl XetRuntime {
 
         if prev_count == 1 {
             // This is the last thread leaving the runtime, so make sure the cancellation flag is cleared.
-            self.cancelation_requested.store(false, Ordering::Relaxed);
+            self.cancellation_requested.store(false, Ordering::Relaxed);
         }
     }
 }
@@ -683,7 +683,7 @@ mod tests {
     fn test_cancellation_request() {
         let runtime = XetRuntime::new().unwrap();
         runtime.request_task_cancellation();
-        assert!(runtime.cancelation_requested());
+        assert!(runtime.cancellation_requested());
     }
 
     #[test]
