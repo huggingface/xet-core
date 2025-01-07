@@ -24,7 +24,7 @@ lazy_static! {
 
 /// Returns a reference to the global runtime object.
 pub fn xet_runtime() -> &'static XetRuntime {
-    &XET_RUNTIME.as_ref().expect("Error initializing Xet Runtime")
+    XET_RUNTIME.as_ref().expect("Error initializing Xet Runtime")
 }
 
 /// Returns a reference to the global runtime object, with error propegation.  This method
