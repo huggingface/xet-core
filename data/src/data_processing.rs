@@ -81,8 +81,9 @@ impl PointerFileTranslator {
         config: TranslatorConfig,
         threadpool: Arc<ThreadPool>,
         upload_progress_updater: Option<Arc<dyn ProgressUpdater>>,
+        download_only: bool,
     ) -> Result<PointerFileTranslator> {
-        let shard_manager = Arc::new(create_shard_manager(&config.shard_storage_config).await?);
+        let shard_manager = Arc::new(create_shard_manager(&config.shard_storage_config, download_only).await?);
 
         let cas_client = create_cas_client(
             &config.cas_storage_config,
@@ -100,6 +101,7 @@ impl PointerFileTranslator {
                     Some(cas_client.clone()),
                     dedup.repo_salt,
                     threadpool.clone(),
+                    download_only,
                 )
                 .await?
             } else {

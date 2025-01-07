@@ -24,7 +24,7 @@ pub struct LocalShardClient {
 }
 
 impl LocalShardClient {
-    pub async fn new(cas_directory: &Path) -> Result<Self> {
+    pub async fn new(cas_directory: &Path, download_only_mode: bool) -> Result<Self> {
         let shard_directory = cas_directory.join("shards");
         if !shard_directory.exists() {
             std::fs::create_dir_all(&shard_directory).map_err(|e| {
@@ -32,8 +32,8 @@ impl LocalShardClient {
             })?;
         }
 
-        let shard_manager = ShardFileManager::load_dir(&shard_directory).await?;
-        shard_manager.load_and_cleanup_shards_by_path(&[&shard_directory]).await?;
+        // This loads and cleans all the shards in the session directory; no need to do it explicitly
+        let shard_manager = ShardFileManager::load_dir(&shard_directory, download_only_mode).await?;
 
         let global_dedup = DiskBasedGlobalDedupTable::open_or_create(cas_directory.join("ddb").join("chunk2shard.db"))?;
 

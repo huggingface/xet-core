@@ -47,7 +47,7 @@ impl RemoteShardInterface {
         shard_storage_config: &StorageConfig,
         threadpool: Arc<ThreadPool>,
     ) -> Result<Arc<Self>> {
-        Self::new(file_query_policy, shard_storage_config, None, None, None, threadpool).await
+        Self::new(file_query_policy, shard_storage_config, None, None, None, threadpool, true).await
     }
 
     pub async fn new(
@@ -57,18 +57,19 @@ impl RemoteShardInterface {
         cas: Option<Arc<dyn Client + Send + Sync>>,
         repo_salt: Option<RepoSalt>,
         threadpool: Arc<ThreadPool>,
+        download_only: bool,
     ) -> Result<Arc<Self>> {
         let shard_client = {
             if file_query_policy != FileQueryPolicy::LocalOnly {
                 debug!("data_processing: Setting up file reconstructor to query shard server.");
-                create_shard_client(shard_storage_config).await.ok()
+                create_shard_client(shard_storage_config, download_only).await.ok()
             } else {
                 None
             }
         };
 
         let shard_manager = if file_query_policy != FileQueryPolicy::ServerOnly && shard_manager.is_none() {
-            Some(Arc::new(create_shard_manager(shard_storage_config).await?))
+            Some(Arc::new(create_shard_manager(shard_storage_config, download_only).await?))
         } else {
             shard_manager
         };
