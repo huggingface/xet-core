@@ -1,10 +1,48 @@
-# Xet-Core
+<!---
+Copyright 2024 The Hugging Face Team. All rights reserved.
 
-## Purpose
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
 
-Xet-core is the repo responsible for Rust-based code running on the client machine. This includes the deduplication/chunking implementation, network communications to backend services (ex. CAS), and local disk caching. There are some crates in this repo that are shared with [xetcas](https://github.com/huggingface-internal/xetcas).
+    http://www.apache.org/licenses/LICENSE-2.0
 
-## Included Crates
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+-->
+<p align="center">
+    <!-- Uncomment when CircleCI is set up
+    <a href="https://circleci.com/gh/huggingface/xet-core"><img alt="Build" src="https://img.shields.io/circleci/build/github/huggingface/xet-core/main"></a>
+    -->
+    <a href="https://github.com/huggingface/xet-core/blob/main/LICENSE"><img alt="License" src="https://img.shields.io/github/license/huggingface/xet-core.svg?color=blue"></a>
+    <a href="https://github.com/huggingface/xet-core/releases"><img alt="GitHub release" src="https://img.shields.io/github/release/huggingface/xet-core.svg"></a>
+    <a href="https://github.com/huggingface/smolagents/blob/main/CODE_OF_CONDUCT.md"><img alt="Contributor Covenant" src="https://img.shields.io/badge/Contributor%20Covenant-v2.0%20adopted-ff69b4.svg"></a>
+</p>
+
+<h3 align="center">
+  <p>🤗 xet-core - xet client tech, used in <a target="_blank" href="https://github.com/huggingface/huggingface_hub/">huggingface_hub</a></p>
+</h3>
+
+## Welcome
+
+xet-core enables huggingface_hub to utilize xet storage for uploading and downloading to HF Hub. Xet storage provides chunk-based deduplication, efficient storage/retrieval with local disk caching, and backwards compatibility with Git LFS. This library is not meant to be used directly, and is instead intended to be used from [huggingface_hub](https://pypi.org/project/huggingface-hub).
+
+## Key features
+
+♻ **chunk-based deduplication implementation**: avoid transferring and storing chunks that are shared across binary files (models, datasets, etc).
+
+🤗 **Python bindings**: bindings for [huggingface_hub](https://github.com/huggingface/huggingface_hub/) package.
+
+↔ **network communications**: concurrent communication to HF Hub Xet backend services (CAS).
+
+🔖 **local disk caching**: chunk-based cache that sits alongside the existing [huggingface_hub disk cache](https://huggingface.co/docs/huggingface_hub/guides/manage-cache).
+
+## Local Development
+
+### Repo Organization - Rust Crates
 
 * [cas_client](src/cas_client): communication with CAS backend services, which include APIs for Xorbs and Shards.
 * [cas_object](src/cas_object): CAS object (Xorb) format and associated APIs, including chunks (ranges within Xorbs).
@@ -20,10 +58,10 @@ Xet-core is the repo responsible for Rust-based code running on the client machi
 * [merklehash](src/merklehash): DataHash type, 256-bit hash, widely used across many crates.
 * [parutils](src/parutils): Provides parallel execution utilities relying on Tokio (ex. parallel foreach).
 * [progress_reporting](src/progress_reporting): offers ReportedWriter so progress for Writer operations can be displayed.
-* [utils](src/utils): general utilities - **unclear how much is currently in use**
+* [utils](src/utils): general utilities, including singleflight, progress, serialization_utils and threadpool.
 * [xet_error](src/xet_error): Error utility crate, widely used for anyhow! logging in other crates.
 
-## Local Development
+### Build, Test & Benchmark
 
 To build xet-core, look at requirements in [GitHub Actions CI Workflow](.github/workflows/ci.yml) for the Rust toolchain to install. Follow Rust documentation for installing rustup and that version of the toolchain. Use the following steps for building, testing, benchmarking.
 
@@ -46,9 +84,14 @@ Benchmark:
 cargo bench
 ```
 
+Linting (requires Rust +nightly toolchain):
+```
+cargo +nightly fmt --manifest-path ./Cargo.toml --all
+```
+
 ### Building Python package and running locally:
 
-1. Create Python3 VirtualEnv: `python3 -mvenv ~/venv`
+1. Create Python3 virtualenv: `python3 -mvenv ~/venv`
 2. Activate virtualenv: `source ~/venv/bin/activate`
 3. Install maturin: `pip3 install maturin ipython`
 4. Go to hf_xet crate: `cd hf_xet`
@@ -70,20 +113,16 @@ MACOSX_DEPLOYMENT_TARGET=10.9 maturin build --release --target universal2-apple-
 
 Note: You may need to install x86_64: `rustup target add x86_64-apple-darwin`
 
-## Testing
+### Testing
 
 Unit-tests are run with `cargo test`, benchmarks are run with `cargo bench`. Some crates have a main.rs that can be run for manual testing.
 
-## References
+## Contributions (feature requests, bugs, etc.) are encouraged & appreciated 💙💚💛💜🧡❤️
 
-* [HF+Xet Storage Architecture](https://www.notion.so/huggingface2/Introduction-To-XetHub-Storage-Architecture-And-The-Integration-Path-54c3d14c682c4e41beab2364f273fc35?pvs=4)
-* [Chunk Cache Design](https://www.notion.so/huggingface2/Client-Data-Cache-10b1384ebcac80b59516d5ae258a17a7?pvs=4)
+Please join us in making xet-core better. We value everyone's contributions. Code is not the only way to help. Answering questions, helping each other, improving documentation, filing issues all help immensely. If you are interested in contributing (please do!), check out the [contribution guide](https://github.com/huggingface/xet-core/blob/main/CONTRIBUTING.md) for this repository.
 
-### Historical Design Documents
-* [Shard Server Design](https://www.notion.so/huggingface2/MerkleDBv2-Xet-CLI-Shard-Server-b634a45c35fc4832ae5ac477b99f50de?pvs=4)
-* [MerkleDB v2 Design](https://www.notion.so/huggingface2/MerkleDB-v2-1130ea85f14d49dc8de8ebef64cc33dd?pvs=4)
+## References & History
+
+* [Technical Blog posts](https://xethub.com/)
 * [Git is for Data 'CIDR paper](https://xethub.com/blog/git-is-for-data-published-in-cidr-2023)
-
-## Repo History
-
-A trimmed version of [xet-core](https://github.com/xetdata/xet-core). The xetdata/xet-core repo contains deep git-integration, along with very different backend services implementation.
+* History: xet-core is adapted from [xet-core](https://github.com/xetdata/xet-core), which contains deep git integration, along with very different backend services implementation.
