@@ -9,7 +9,7 @@ path = "src/lib.rs"
 
 [dependencies]
 merklehash = { path = "../merklehash" }
-xet_error = { path = "../xet_error" }
+thiserror = "2.0"
 futures = "0.3.28"
 
 # singleflight & threadpool

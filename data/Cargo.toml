@@ -21,7 +21,7 @@ utils = { path = "../utils" }
 parutils = { path = "../parutils" }
 file_utils = { path = "../file_utils" }
 error_printer = { path = "../error_printer" }
-xet_error = { path = "../xet_error" }
+thiserror = "2.0"
 tokio = { version = "1.36", features = ["full"] }
 anyhow = "1"
 tracing = "0.1.*"
