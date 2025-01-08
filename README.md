@@ -44,22 +44,22 @@ xet-core enables huggingface_hub to utilize xet storage for uploading and downlo
 
 ### Repo Organization - Rust Crates
 
-* [cas_client](src/cas_client): communication with CAS backend services, which include APIs for Xorbs and Shards.
-* [cas_object](src/cas_object): CAS object (Xorb) format and associated APIs, including chunks (ranges within Xorbs).
-* [cas_types](src/cas_types): common types shared across crates in xet-core and xetcas.
-* [chunk_cache](src/chunk_cache): local disk cache of Xorb chunks.
-* [chunk_cache_bench](src/chunk_cache_bench): benchmarking crate for chunk_cache.
-* [data](src/data): main driver for client operations - FilePointerTranslator drives hydrating or shrinking files.
-* [error_printer](src/error_printer): utility for printing errors conveniently.
-* [file_utils](src/file_utils): SafeFileCreator utility, used by chunk_cache.
-* [hf_xet](src/hf_xet): Python integration with Rust code, uses maturin to build hfxet Python package. Main integration with HF Hub Python package.
-* [mdb_shard](src/mdb_shard): Shard operations, including Shard format, dedupe probing, benchmarks, and utilities.
-* [merkledb](src/merkdledb): Chunking + deduplication implementation. Scanning files, building chunks, organizing them, etc.
-* [merklehash](src/merklehash): DataHash type, 256-bit hash, widely used across many crates.
-* [parutils](src/parutils): Provides parallel execution utilities relying on Tokio (ex. parallel foreach).
-* [progress_reporting](src/progress_reporting): offers ReportedWriter so progress for Writer operations can be displayed.
-* [utils](src/utils): general utilities, including singleflight, progress, serialization_utils and threadpool.
-* [xet_error](src/xet_error): Error utility crate, widely used for anyhow! logging in other crates.
+* [cas_client](./cas_client): communication with CAS backend services, which include APIs for Xorbs and Shards.
+* [cas_object](./cas_object): CAS object (Xorb) format and associated APIs, including chunks (ranges within Xorbs).
+* [cas_types](./cas_types): common types shared across crates in xet-core and xetcas.
+* [chunk_cache](./chunk_cache): local disk cache of Xorb chunks.
+* [chunk_cache_bench](./chunk_cache_bench): benchmarking crate for chunk_cache.
+* [data](./data): main driver for client operations - FilePointerTranslator drives hydrating or shrinking files.
+* [error_printer](./error_printer): utility for printing errors conveniently.
+* [file_utils](./file_utils): SafeFileCreator utility, used by chunk_cache.
+* [hf_xet](./hf_xet): Python integration with Rust code, uses maturin to build hfxet Python package. Main integration with HF Hub Python package.
+* [mdb_shard](./mdb_shard): Shard operations, including Shard format, dedupe probing, benchmarks, and utilities.
+* [merkledb](./merkdledb): Chunking + deduplication implementation. Scanning files, building chunks, organizing them, etc.
+* [merklehash](./merklehash): DataHash type, 256-bit hash, widely used across many crates.
+* [parutils](./parutils): Provides parallel execution utilities relying on Tokio (ex. parallel foreach).
+* [progress_reporting](./progress_reporting): offers ReportedWriter so progress for Writer operations can be displayed.
+* [utils](./utils): general utilities, including singleflight, progress, serialization_utils and threadpool.
+* [xet_error](./xet_error): Error utility crate, widely used for anyhow! logging in other crates.
 
 ### Build, Test & Benchmark
 
