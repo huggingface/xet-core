@@ -6,7 +6,7 @@ edition = "2021"
 [dependencies]
 cas_types = { path = "../cas_types" }
 merklehash = { path = "../merklehash" }
-xet_error = { path = "../xet_error" }
+thiserror = "2.0"
 error_printer = { path = "../error_printer" }
 file_utils = { path = "../file_utils" }
 utils = { path = "../utils" }

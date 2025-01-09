@@ -3,6 +3,7 @@ use std::future::Future;
 use std::sync::atomic::Ordering::SeqCst;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
+use thiserror::Error;
 /// This module provides a simple wrapper around Tokio's runtime to create a thread pool
 /// with some default settings. It is intended to be used as a singleton thread pool for
 /// the entire application.
@@ -52,7 +53,6 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use tokio;
 use tokio::task::{JoinError, JoinHandle};
 use tracing::{debug, error};
-use xet_error::Error;
 
 const THREADPOOL_NUM_WORKER_THREADS: usize = 4; // 4 active threads
 const THREADPOOL_THREAD_ID_PREFIX: &str = "hf-xet"; // thread names will be hf-xet-0, hf-xet-1, etc.

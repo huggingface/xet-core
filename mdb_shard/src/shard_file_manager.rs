@@ -27,21 +27,11 @@ struct MDBShardFlushGuard {
 
 impl Drop for MDBShardFlushGuard {
     fn drop(&mut self) {
-        if self.shard.is_empty() {
-            return;
-        }
-
-        if let Some(sd) = &self.session_directory {
-            // Check if the flushing directory exists.
-            if !sd.is_dir() {
-                error!("Error flushing reconstruction data on shutdown: {sd:?} is not a directory or doesn't exist");
-                return;
+        if !self.shard.is_empty() {
+            // This is only supposed to happen on task cancellations, so we should
+            if cfg!(debug_assertions) {
+                eprintln!("[Debug] Warning: Shard dropped while data still present!  This is an error outside of task cancellation.");
             }
-
-            self.flush().unwrap_or_else(|e| {
-                error!("Error flushing reconstruction data on shutdown: {e:?}");
-                None
-            });
         }
     }
 }
@@ -857,6 +847,7 @@ mod tests {
             let mut mdb = ShardFileManager::load_dir(tmp_dir.path(), false).await?;
             mdb.set_target_shard_min_size(T); // Set the targe shard size really low
             fill_with_random_shard(&mut mdb, &mut mdb_in_mem, 0, &[16; 16], &[16; 16]).await?;
+            mdb.flush().await?;
         }
         {
             let mut mdb = ShardFileManager::load_dir(tmp_dir.path(), false).await?;
@@ -867,6 +858,8 @@ mod tests {
             fill_with_random_shard(&mut mdb, &mut mdb_in_mem, 1, &[25; 25], &[25; 25]).await?;
 
             verify_mdb_shards_match(&mdb, &mdb_in_mem, true).await?;
+
+            mdb.flush().await?;
         }
 
         // Reload and verify
@@ -1092,31 +1085,6 @@ mod tests {
             let n_files = std::fs::read_dir(tmp_dir_path_keyed)?.map(|p| p.unwrap().path()).count();
 
             assert_eq!(n_files, 0);
-        }
-
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn test_teardown() -> Result<()> {
-        let tmp_dir = TempDir::new("gitxet_shard_test_1")?;
-        let mut mdb_in_mem = MDBInMemoryShard::default();
-
-        {
-            let mut mdb = ShardFileManager::load_dir(tmp_dir.path(), false).await?;
-
-            fill_with_specific_shard(&mut mdb, &mut mdb_in_mem, &[(0, &[(11, 5)])], &[(100, &[(200, (0, 5))])]).await?;
-
-            verify_mdb_shards_match(&mdb, &mdb_in_mem, true).await?;
-            // Note, no flush
-        }
-
-        {
-            // Now, make sure that this happens if this directory is opened up
-            let mdb2 = ShardFileManager::load_dir(tmp_dir.path(), false).await?;
-
-            // Make sure it's all in there this round.
-            verify_mdb_shards_match(&mdb2, &mdb_in_mem, true).await?;
         }
 
         Ok(())

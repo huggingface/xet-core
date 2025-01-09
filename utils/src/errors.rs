@@ -1,4 +1,4 @@
-use xet_error::Error;
+use thiserror::Error;
 
 #[derive(Debug, Error)]
 #[non_exhaustive]

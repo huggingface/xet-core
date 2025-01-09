@@ -1,7 +1,7 @@
 use std::convert::Infallible;
 
+use thiserror::Error;
 use tracing::warn;
-use xet_error::Error;
 
 #[non_exhaustive]
 #[derive(Error, Debug)]

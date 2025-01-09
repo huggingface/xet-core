@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-xet_error = { path = "../xet_error" }
+thiserror = "2.0"
 error_printer = { path = "../error_printer" }
 merkledb = { path = "../merkledb" }
 merklehash = { path = "../merklehash" }

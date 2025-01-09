@@ -13,7 +13,6 @@ members = [
     "parutils",
     "progress_reporting",
     "utils",
-    "xet_error",
     "cas_object",
     "cas_types",
     "chunk_cache",

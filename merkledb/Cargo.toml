@@ -10,7 +10,7 @@ doctest = false
 
 [dependencies]
 merklehash = { path = "../merklehash" }
-xet_error = { path = "../xet_error" }
+thiserror = "2.0"
 parutils = { path = "../parutils" }
 rand = "0.8.5"
 rand_core = "0.6.3"
