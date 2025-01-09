@@ -90,7 +90,7 @@ Formatting (requires nightly toolchain):
 cargo +nightly fmt --manifest-path ./Cargo.toml --all
 ```
 
-### Building Python package and running locally:
+### Building Python package and running locally (on *nix systems):
 
 1. Create Python3 virtualenv: `python3 -mvenv ~/venv`
 2. Activate virtualenv: `source ~/venv/bin/activate`
