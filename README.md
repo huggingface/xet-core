@@ -21,7 +21,6 @@ Xet-core is the repo responsible for Rust-based code running on the client machi
 * [parutils](src/parutils): Provides parallel execution utilities relying on Tokio (ex. parallel foreach).
 * [progress_reporting](src/progress_reporting): offers ReportedWriter so progress for Writer operations can be displayed.
 * [utils](src/utils): general utilities - **unclear how much is currently in use**
-* [thiserror](src/thiserror): Error utility crate, widely used for anyhow! logging in other crates.
 
 ## Local Development
 
