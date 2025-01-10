@@ -14,6 +14,11 @@ on:
       - '*'
   pull_request:
   workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Semantic version for PyPI release (tag will share the same name)'
+        required: true
+        default: 'v0.1.0'
 
 permissions:
   contents: read
@@ -160,8 +165,8 @@ jobs:
   release-pypi:
     name: Release PyPi
     runs-on: ubuntu-latest
-    if: false # ${{ startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch' }}
-    needs: [linux, musllinux, windows, macos, sdist]
+    if: ${{ github.event_name == 'workflow_dispatch' }}
+    needs: [github-release]
     permissions:
       # Use to sign the release artifacts
       id-token: write
@@ -169,6 +174,7 @@ jobs:
       contents: write
       # Used to generate artifact attestation
       attestations: write
+    environment: release
     steps:
       - uses: actions/download-artifact@v4
       - name: Generate artifact attestation
@@ -176,25 +182,21 @@ jobs:
         with:
           subject-path: 'wheels-*/*'
       - name: Publish to PyPI
-        if: ${{ startsWith(github.ref, 'refs/tags/') }}
         uses: PyO3/maturin-action@v1
-        env:
-          MATURIN_PYPI_TOKEN: ${{ secrets.PYPI_API_TOKEN }}
         with:
           command: upload
           args: --non-interactive --skip-existing wheels-*/*
 
-  release-github:
-    name: Release GitHub
+  github-release:
+    name: Create GitHub release
     runs-on: ubuntu-latest
     permissions:
       contents: write
-    if: ${{ startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch' }}
+    if: ${{ github.event_name == 'workflow_dispatch' }}
     needs: [ linux, musllinux, windows, macos, sdist ]
     steps:
+      - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
-      - name: Publish to GitHub Releases
-        env:
-          GH_TOKEN: ${{ github.token }}
+      - name: Create GitHub Release
         run: |
-          gh release upload ${{github.event.release.tag_name}} wheels-*/*
+          gh release create ${{ github.event.inputs.tag}} wheels-*/* --generate-notes --draft --prerelease
