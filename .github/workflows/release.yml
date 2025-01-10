@@ -52,23 +52,6 @@ jobs:
                 echo "Neither apt-get nor yum is installed. Please install a package manager."
                 exit 1
             fi
-      - name: Build free-threaded wheels
-        uses: PyO3/maturin-action@v1
-        with:
-          target: ${{ matrix.platform.target }}
-          args: --release ${{ matrix.platform.features }} --out dist -i python3.13t
-          sccache: 'true'
-          manylinux: auto
-          working-directory: hf_xet
-          before-script-linux: |
-            if command -v apt-get &> /dev/null; then
-                apt-get update && apt-get install libssl-dev libatomic-ops-dev -y
-            elif command -v yum &> /dev/null; then
-                yum install openssl-devel devtoolset-10-libatomic-devel perl-IPC-Cmd -y
-            else
-                echo "Neither apt-get nor yum is installed. Please install a package manager."
-                exit 1
-            fi
       - name: Upload wheels
         uses: actions/upload-artifact@v4
         with:
@@ -96,14 +79,6 @@ jobs:
         with:
           target: ${{ matrix.platform.target }}
           args: --release ${{ matrix.platform.features }} --out dist
-          sccache: 'true'
-          manylinux: musllinux_1_2
-          working-directory: hf_xet
-      - name: Build free-threaded wheels
-        uses: PyO3/maturin-action@v1
-        with:
-          target: ${{ matrix.platform.target }}
-          args: --release ${{ matrix.platform.features }} --out dist -i python3.13t
           sccache: 'true'
           manylinux: musllinux_1_2
           working-directory: hf_xet
@@ -158,13 +133,6 @@ jobs:
         with:
           target: ${{ matrix.platform.target }}
           args: --release --out dist
-          sccache: 'true'
-          working-directory: hf_xet
-      - name: Build free-threaded wheels
-        uses: PyO3/maturin-action@v1
-        with:
-          target: ${{ matrix.platform.target }}
-          args: --release --out dist -i python3.13t
           sccache: 'true'
           working-directory: hf_xet
       - name: Upload wheels
