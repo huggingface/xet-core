@@ -186,8 +186,7 @@ jobs:
           path: hf_xet/dist
 
   sdist:
-    runs-on:
-      group: ubuntu-latest
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - name: Build sdist
