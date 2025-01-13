@@ -100,16 +100,7 @@ fn signal_check_background_loop() {
     }
 }
 
-// This function initializes the runtime if not present, otherwise returns the existing one.
-fn get_threadpool(py: Python) -> PyResult<Arc<ThreadPool>> {
-    {
-        // First try a read lock to see if it's already initialized.
-        let guard = MULTITHREADED_RUNTIME.read().unwrap();
-        if let Some(ref existing) = *guard {
-            return Ok(existing.clone());
-        }
-    }
-
+pub fn init_threadpool(py: Python) -> PyResult<Arc<ThreadPool>> {
     // Need to initialize. Upgrade to write lock.
     let mut guard = MULTITHREADED_RUNTIME.write().unwrap();
 
@@ -121,9 +112,6 @@ fn get_threadpool(py: Python) -> PyResult<Arc<ThreadPool>> {
     // Create a new Tokio runtime.
     let runtime = Arc::new(ThreadPool::new().map_err(convert_multithreading_error)?);
 
-    // Initialize the logging
-    log::initialize_logging(py, runtime.clone());
-
     // Check the signal handler
     check_sigint_handler()?;
 
@@ -133,8 +121,36 @@ fn get_threadpool(py: Python) -> PyResult<Arc<ThreadPool>> {
     // Spawn a background non-tokio thread to check the sigint flag.
     std::thread::spawn(move || signal_check_background_loop());
 
-    // Return the handle to use to run tasks.
+    // Drop the guard and initialize the logging.
+    //
+    // We want to drop this first is that multiple threads entering this runtime
+    // may cause a deadlock if the thread that has the GIL tries to acquire the runtime,
+    // but then the logging expects the GIL in order to initialize it properly.
+    //
+    // In most cases, this will done on module initialization; however, after CTRL-C, the runtime is
+    // initialized lazily and so putting this here avoids the deadlock (and possibly some info! or other
+    // error statements may not be sent to python if the other thread continues ahead of the logging
+    // being initialized.)
+    drop(guard);
+
+    // Initialize the logging
+    log::initialize_logging(py, runtime.clone());
+
+    // Return the runtime
     Ok(runtime)
+}
+
+// This function initializes the runtime if not present, otherwise returns the existing one.
+fn get_threadpool(py: Python) -> PyResult<Arc<ThreadPool>> {
+    // First try a read lock to see if it's already initialized.
+    {
+        let guard = MULTITHREADED_RUNTIME.read().unwrap();
+        if let Some(ref existing) = *guard {
+            return Ok(existing.clone());
+        }
+    }
+    // Init and return
+    init_threadpool(py)
 }
 
 fn convert_multithreading_error(e: MultithreadedRuntimeError) -> PyErr {
