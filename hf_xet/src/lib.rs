@@ -145,7 +145,7 @@ impl PyPointerFile {
 }
 
 #[pymodule]
-pub fn hf_xet(py : Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
+pub fn hf_xet(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(upload_files, m)?)?;
     m.add_function(wrap_pyfunction!(download_files, m)?)?;
     m.add_class::<PyPointerFile>()?;
