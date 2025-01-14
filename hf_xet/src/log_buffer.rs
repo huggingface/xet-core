@@ -59,7 +59,10 @@ pub fn get_telemetry_endpoint() -> Option<String> {
     }))
 }
 
-pub async fn get_telemetry_task(log_buffer: Arc<Mutex<BipBuffer<u8>>>, log_stats: Arc<LogBufferStats>) {
+pub type TelemetryTaskInfo = (Arc<Mutex<BipBuffer<u8>>>, Arc<LogBufferStats>); 
+
+pub async fn get_telemetry_task(telemetry_task_info : TelemetryTaskInfo) {
+    let (log_buffer, log_stats) = telemetry_task_info;
     let client = reqwest::Client::new();
     let telemetry_url = format!("{}/{}", get_telemetry_endpoint().unwrap_or_default(), TELEMETRY_SUFFIX);
 

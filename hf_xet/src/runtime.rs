@@ -134,7 +134,7 @@ pub fn init_threadpool(py: Python) -> PyResult<Arc<ThreadPool>> {
     drop(guard);
 
     // Initialize the logging
-    log::initialize_logging(py, runtime.clone());
+    log::initialize_runtime_logging(py, runtime.clone());
 
     // Return the runtime
     Ok(runtime)
