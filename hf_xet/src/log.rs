@@ -17,7 +17,7 @@ const DEFAULT_LOG_LEVEL: &str = "warn";
 #[cfg(debug_assertions)]
 const DEFAULT_LOG_LEVEL: &str = "info";
 
-pub fn init_global_logging(py: Python) -> Option<TelemetryTaskInfo> {
+fn init_global_logging(py: Python) -> Option<TelemetryTaskInfo> {
     let fmt_layer = tracing_subscriber::fmt::layer()
         .with_line_number(true)
         .with_file(true)
