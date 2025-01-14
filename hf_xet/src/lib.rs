@@ -151,6 +151,6 @@ pub fn hf_xet(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyPointerFile>()?;
 
     // Init the threadpool
-    init_threadpool(py)?;
+    runtime::init_threadpool(py)?;
     Ok(())
 }

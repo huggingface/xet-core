@@ -1,5 +1,5 @@
 use std::env;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, OnceLock};
 
 use pyo3::Python;
 use tracing_subscriber::filter::FilterFn;
@@ -17,17 +17,7 @@ const DEFAULT_LOG_LEVEL: &str = "warn";
 #[cfg(debug_assertions)]
 const DEFAULT_LOG_LEVEL: &str = "info";
 
-lazy_static::lazy_static! {
-    static ref GLOBAL_TELEMETRY_TASK_INFO : Mutex<(bool, Option<TelemetryTaskInfo>)> = Mutex::new((false, None));
-}
-
-pub fn get_or_init_global_logging(py: Python) -> Option<TelemetryTaskInfo> {
-    let mut telemetry_task_info_lg = GLOBAL_TELEMETRY_TASK_INFO.lock().unwrap();
-
-    if telemetry_task_info_lg.0 {
-        return telemetry_task_info_lg.1.clone();
-    }
-
+pub fn init_global_logging(py: Python) -> Option<TelemetryTaskInfo> {
     let fmt_layer = tracing_subscriber::fmt::layer()
         .with_line_number(true)
         .with_file(true)
@@ -40,7 +30,6 @@ pub fn get_or_init_global_logging(py: Python) -> Option<TelemetryTaskInfo> {
 
     if env::var("HF_HUB_DISABLE_TELEMETRY").as_deref() == Ok("1") {
         tracing_subscriber::registry().with(fmt_layer).with(filter_layer).init();
-        *telemetry_task_info_lg = (true, None);
         None
     } else {
         let telemetry_buffer_layer = LogBufferLayer::new(py, TELEMETRY_PRE_ALLOC_BYTES);
@@ -56,18 +45,19 @@ pub fn get_or_init_global_logging(py: Python) -> Option<TelemetryTaskInfo> {
             .with(telemetry_filter_layer)
             .init();
 
-        *telemetry_task_info_lg = (true, Some(telemetry_task_info.clone()));
         Some(telemetry_task_info)
     }
 }
 
 pub fn initialize_runtime_logging(py: Python, runtime: Arc<ThreadPool>) {
+    static GLOBAL_TELEMETRY_TASK_INFO: OnceLock<Option<TelemetryTaskInfo>> = OnceLock::new();
+
     // First get or init the global logging componenents.
-    let telemetry_task_info = get_or_init_global_logging(py);
+    let telemetry_task_info = GLOBAL_TELEMETRY_TASK_INFO.get_or_init(move || init_global_logging(py));
 
     // Spawn the telemetry logging.
-    if let Some(tti) = telemetry_task_info {
-        let telemetry_task = get_telemetry_task(tti);
+    if let Some(ref tti) = telemetry_task_info {
+        let telemetry_task = get_telemetry_task(tti.clone());
         let _telemetry_task = runtime.spawn(telemetry_task);
     }
 }
