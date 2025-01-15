@@ -12,6 +12,7 @@ use tracing::{debug, info};
 
 use crate::error::{CasClientError, Result};
 use crate::interface::UploadClient;
+use crate::UploadMetrics;
 
 #[derive(Debug)]
 pub struct LocalClient {
@@ -105,7 +106,7 @@ impl UploadClient for LocalClient {
         hash: &MerkleHash,
         data: Vec<u8>,
         chunk_and_boundaries: Vec<(MerkleHash, u32)>,
-    ) -> Result<()> {
+    ) -> Result<UploadMetrics> {
         // no empty writes
         if chunk_and_boundaries.is_empty() || data.is_empty() {
             return Err(CasClientError::InvalidArguments);
@@ -120,7 +121,7 @@ impl UploadClient for LocalClient {
 
         if self.exists(prefix, hash).await? {
             info!("{prefix:?}/{hash:?} already exists in Local CAS; returning.");
-            return Ok(());
+            return Ok(UploadMetrics { n_bytes: data.len() });
         }
 
         let file_path = self.get_path_for_entry(prefix, hash);
@@ -136,8 +137,7 @@ impl UploadClient for LocalClient {
                 CasClientError::InternalError(anyhow!("Unable to create temporary file for staging Xorbs, got {e:?}"))
             })?;
 
-        let total_bytes_written;
-        {
+        let bytes_written = {
             let mut writer = BufWriter::new(&tempfile);
             let (_, bytes_written) = CasObject::serialize(
                 &mut writer,
@@ -148,8 +148,8 @@ impl UploadClient for LocalClient {
             )?;
             // flush before persisting
             writer.flush()?;
-            total_bytes_written = bytes_written;
-        }
+            bytes_written
+        };
 
         tempfile.persist(&file_path).map_err(|e| e.error)?;
 
@@ -161,9 +161,9 @@ impl UploadClient for LocalClient {
             let _ = std::fs::set_permissions(&file_path, permissions);
         }
 
-        info!("{file_path:?} successfully written with {total_bytes_written:?} bytes.");
+        info!("{file_path:?} successfully written with {bytes_written:?} bytes.");
 
-        Ok(())
+        Ok(UploadMetrics { n_bytes: bytes_written })
     }
 
     async fn exists(&self, prefix: &str, hash: &MerkleHash) -> Result<bool> {
