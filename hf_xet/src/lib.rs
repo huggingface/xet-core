@@ -19,6 +19,10 @@ use utils::progress::ProgressUpdater;
 
 use crate::progress_update::WrappedProgressUpdater;
 
+// For profiling
+#[cfg(feature = "profiling")]
+pub(crate) mod profiling;
+
 fn convert_data_processing_error(e: DataProcessingError) -> PyErr {
     if cfg!(debug_assertions) {
         PyRuntimeError::new_err(format!("Data processing error: {e:?}"))
@@ -152,5 +156,22 @@ pub fn hf_xet(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
 
     // Init the threadpool
     runtime::init_threadpool(py)?;
+
+    #[cfg(feature = "profiling")]
+    {
+        profiling::start_profiler();
+
+        // Setup to save the results at the end.
+        #[pyfunction]
+        fn profiler_cleanup() {
+            profiling::save_profiler_report();
+        }
+
+        m.add_function(wrap_pyfunction!(profiler_cleanup, m)?)?;
+
+        let atexit = PyModule::import(py, "atexit")?;
+        atexit.call_method1("register", (m.getattr("profiler_cleanup")?,))?;
+    }
+
     Ok(())
 }
