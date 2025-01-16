@@ -28,7 +28,9 @@ fn init_global_logging(py: Python) -> Option<TelemetryTaskInfo> {
         .or_else(|_| EnvFilter::try_new(DEFAULT_LOG_LEVEL))
         .unwrap_or_default();
 
-    if env::var("HF_HUB_DISABLE_TELEMETRY").as_deref() == Ok("1") {
+    // Client-side telemetry, default is OFF
+    // To enable telemetry set env var HF_HUB_ENABLE_TELEMETRY
+    if env::var("HF_HUB_ENABLE_TELEMETRY").is_err_and(|e| e == env::VarError::NotPresent) {
         tracing_subscriber::registry().with(fmt_layer).with(filter_layer).init();
         None
     } else {
