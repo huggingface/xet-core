@@ -1023,7 +1023,6 @@ dependencies = [
  "data",
  "error_printer",
  "lazy_static",
- "once_cell",
  "parutils",
  "pprof",
  "pyo3",
