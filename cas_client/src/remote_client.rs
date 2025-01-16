@@ -53,13 +53,17 @@ impl RemoteClient {
     ) -> Self {
         // use disk cache if cache_config provided.
         let chunk_cache = if let Some(cache_config) = cache_config {
-            debug!(
-                "Using disk cache directory: {:?}, size: {}.",
-                cache_config.cache_directory, cache_config.cache_size
-            );
-            chunk_cache::get_cache(cache_config)
-                .log_error("failed to initialize cache, not using cache")
-                .ok()
+            if std::env::var("HF_XET_DISABLE_CACHE").is_ok_and(|v| v.as_str() == "1") {
+                None
+            } else {
+                debug!(
+                    "Using disk cache directory: {:?}, size: {}.",
+                    cache_config.cache_directory, cache_config.cache_size
+                );
+                chunk_cache::get_cache(cache_config)
+                    .log_error("failed to initialize cache, not using cache")
+                    .ok()
+            }
         } else {
             None
         };
@@ -324,9 +328,7 @@ impl RemoteClient {
             num
         };
 
-
-        let mut futs_buffered_enumerated =
-            futures::stream::iter(futs_iter).buffered(buffer_num).enumerate();
+        let mut futs_buffered_enumerated = futures::stream::iter(futs_iter).buffered(buffer_num).enumerate();
 
         let mut remaining_len = total_len;
         while let Some((term_idx, term_data_result)) = futs_buffered_enumerated.next().await {
