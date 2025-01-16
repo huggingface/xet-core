@@ -295,6 +295,7 @@ impl RemoteClient {
         } else {
             terms.iter().fold(0, |acc, x| acc + x.unpacked_length as u64)
         };
+        let num_terms = terms.len();
 
         let futs_iter = terms.into_iter().map(|term| {
             get_one_term(
@@ -305,8 +306,27 @@ impl RemoteClient {
                 self.range_download_single_flight.clone(),
             )
         });
+
+        // TODO: remove this; only for experimentation
+        let buffer_num = {
+            let num = if let Ok(var) = std::env::var("HF_XET_NUM_BUFFER") {
+                match var.as_str() {
+                    "n_terms" | "n" | "num_terms" | "terms" => num_terms,
+                    "4" => 4,
+                    "8" => 8,
+                    "16" => 16,
+                    _ => NUM_CONCURRENT_RANGE_GETS,
+                }
+            } else {
+                NUM_CONCURRENT_RANGE_GETS
+            };
+            eprintln!("buffer num: {num}");
+            num
+        };
+
+
         let mut futs_buffered_enumerated =
-            futures::stream::iter(futs_iter).buffered(NUM_CONCURRENT_RANGE_GETS).enumerate();
+            futures::stream::iter(futs_iter).buffered(buffer_num).enumerate();
 
         let mut remaining_len = total_len;
         while let Some((term_idx, term_data_result)) = futs_buffered_enumerated.next().await {

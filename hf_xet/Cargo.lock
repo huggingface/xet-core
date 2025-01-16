@@ -1784,6 +1784,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "num_cpus"
+version = "1.16.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4161fcb6d602d4d2081af7c3a45852d875a03dd337a6bfdd6e06407b61342a43"
+dependencies = [
+ "hermit-abi 0.3.9",
+ "libc",
+]
+
+[[package]]
 name = "object"
 version = "0.36.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3307,6 +3317,7 @@ dependencies = [
  "bytes",
  "futures",
  "merklehash",
+ "num_cpus",
  "parking_lot 0.11.2",
  "pin-project",
  "thiserror 2.0.11",

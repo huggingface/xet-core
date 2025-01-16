@@ -208,12 +208,27 @@ impl Display for ThreadPool {
     }
 }
 
+// TODO: remove this; only for experimentation
+
 /// Intended to be used as a singleton threadpool for the entire application.
 /// This is a simple wrapper around tokio's runtime, with some default settings.
 /// Intentionally unwrap this because if it fails, the application should not continue.
 fn new_threadpool() -> Result<tokio::runtime::Runtime, MultithreadedRuntimeError> {
+    // TODO: remove this; only for experimentation
+    let num_worker_threads= if let Ok(var) = std::env::var("HF_XET_THREADPOOL_NUM_WORKER_THREADS") {
+        match var.as_str() {
+            "cpu" | "cpus" => num_cpus::get(),
+            "4" => 4,
+            "8" => 8,
+            "16" => 16,
+            _ => THREADPOOL_NUM_WORKER_THREADS,
+        }
+    } else {
+        THREADPOOL_NUM_WORKER_THREADS
+    };
+
     tokio::runtime::Builder::new_multi_thread()
-        .worker_threads(THREADPOOL_NUM_WORKER_THREADS) // 4 active threads
+        .worker_threads(num_worker_threads) // 4 active threads
         .thread_name_fn(get_thread_name) // thread names will be hf-xet-0, hf-xet-1, etc.
         .thread_stack_size(THREADPOOL_STACK_SIZE) // 8MB stack size, default is 2MB
         .max_blocking_threads(THREADPOOL_MAX_BLOCKING_THREADS) // max 100 threads can block IO
