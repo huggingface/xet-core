@@ -3,7 +3,6 @@ use std::io::{Cursor, Read, Write};
 use std::mem::size_of;
 
 use base64::Engine;
-use blake3::Hash;
 use cas_types::ChunkRange;
 use utils::serialization_utils::{read_u32, read_u64, write_u32, write_u64};
 
@@ -20,7 +19,7 @@ const CACHE_ITEM_FILE_NAME_BUF_SIZE: usize = size_of::<u32>() * 2 + size_of::<u6
 pub(crate) struct CacheItem {
     pub(crate) range: ChunkRange,
     pub(crate) len: u64,
-    pub(crate) hash: Hash,
+    pub(crate) hash: blake3::Hash,
 }
 
 impl std::fmt::Display for CacheItem {

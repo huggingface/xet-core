@@ -55,6 +55,7 @@ pub struct DiskCache {
     cache_root: PathBuf,
     capacity: u64,
     state: Arc<Mutex<CacheState>>,
+    hash_items: bool,
 }
 
 // helper for analysis binary to print inner state
@@ -137,6 +138,21 @@ impl DiskCache {
             state: Arc::new(Mutex::new(state)),
             cache_root,
             capacity,
+            hash_items: true,
+        })
+    }
+
+    pub fn initialize_no_hashing_cache(config: &CacheConfig) -> Result<Self, ChunkCacheError> {
+        let capacity = config.cache_size;
+        let cache_root = config.cache_directory.clone();
+
+        let state = Self::initialize_state(&cache_root, capacity)?;
+
+        Ok(Self {
+            state: Arc::new(Mutex::new(state)),
+            cache_root,
+            capacity,
+            hash_items: false,
         })
     }
 
@@ -352,7 +368,11 @@ impl DiskCache {
         let header = CacheFileHeader::new(chunk_byte_indices);
         let mut header_buf = Vec::with_capacity(header.header_len());
         header.serialize(&mut header_buf)?;
-        let hash = compute_hash(&header_buf, data);
+        let hash = if self.hash_items {
+            compute_hash(&header_buf, data)
+        } else {
+            blake3::Hash::from_bytes([0u8; blake3::OUT_LEN])
+        };
 
         let cache_item = CacheItem {
             range: range.clone(),
@@ -455,11 +475,14 @@ impl DiskCache {
             file.read_to_end(&mut buf)?;
             Cursor::new(buf)
         };
-        let hash = blake3::Hasher::new().update_reader(&mut r)?.finalize();
-        if hash != cache_item.hash {
-            self.remove_item(key, cache_item)?;
-            return Ok(false);
+        if self.hash_items {
+            let hash = blake3::Hasher::new().update_reader(&mut r)?.finalize();
+            if hash != cache_item.hash {
+                self.remove_item(key, cache_item)?;
+                return Ok(false);
+            }
         }
+
         r.seek(SeekFrom::Start(0))?;
         let header = if let Ok(header) = CacheFileHeader::deserialize(&mut r) {
             header
