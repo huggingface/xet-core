@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::{Duration, SystemTime};
+use std::time::Duration;
 
 use async_trait::async_trait;
 use lazy_static::lazy_static;
@@ -56,7 +56,7 @@ struct ChunkCacheElement {
 #[derive(Default)]
 struct KeyedShardCollection {
     hmac_key: HMACKey,
-    shard_list: Vec<MDBShardFile>,
+    shard_list: Vec<Arc<MDBShardFile>>,
     chunk_lookup: HashMap<u64, ChunkCacheElement>,
 }
 
@@ -171,7 +171,7 @@ impl ShardFileManager {
         paths: &[P],
         allow_expired_deletion: bool,
         expiration_deletion_buffer: Duration,
-    ) -> Result<Vec<MDBShardFile>> {
+    ) -> Result<Vec<Arc<MDBShardFile>>> {
         let mut new_shards = Vec::new();
 
         let current_time = current_timestamp();
@@ -190,7 +190,7 @@ impl ShardFileManager {
                     Some(s)
                 } else {
                     if allow_expired_deletion && expiry_time + expiration_deletion_buffer_secs <= current_time {
-                        deletion_candidates.push(s.path);
+                        deletion_candidates.push(s.path.clone());
                     }
 
                     None
@@ -208,28 +208,22 @@ impl ShardFileManager {
     }
 
     /// This is a wrapper function to register_shards_by_path that uses the defaults above.
-    pub async fn load_and_cleanup_shards_by_path<P: AsRef<Path>>(&self, paths: &[P]) -> Result<Vec<MDBShardFile>> {
+    pub async fn load_and_cleanup_shards_by_path<P: AsRef<Path>>(&self, paths: &[P]) -> Result<Vec<Arc<MDBShardFile>>> {
         self.register_shards_by_path(paths, true, Duration::new(MDB_SHARD_EXPIRATION_BUFFER, 0))
             .await
     }
 
-    pub async fn register_shards(&self, new_shards: &[MDBShardFile]) -> Result<()> {
+    pub async fn register_shards(&self, new_shards: &[Arc<MDBShardFile>]) -> Result<()> {
         let mut sbkp_lg = self.shard_bookkeeper.write().await;
 
         // Go through and register the shards in order of newest to oldest
-        let mut new_shards: Vec<(&MDBShardFile, SystemTime)> = new_shards
-            .iter()
-            .map(|s| {
-                let modified = std::fs::metadata(&s.path)?.modified()?;
-                Ok((s, modified))
-            })
-            .collect::<Result<Vec<_>>>()?;
+        let mut new_shards = Vec::from(new_shards);
 
         // Compare in reverse order to sort from newest to oldest
-        new_shards.sort_by(|(_, t1), (_, t2)| t2.cmp(t1));
+        new_shards.sort_by(|s1, s2| s2.last_modified_time.cmp(&s1.last_modified_time));
         let num_shards = new_shards.len();
 
-        for (s, _) in new_shards {
+        for s in new_shards {
             s.verify_shard_integrity_debug_only();
 
             if sbkp_lg.shard_lookup_by_shard_hash.contains_key(&s.shard_hash) {

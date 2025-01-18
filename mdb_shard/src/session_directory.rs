@@ -2,7 +2,7 @@ use std::collections::HashSet;
 use std::io::{Cursor, Read};
 use std::mem::swap;
 use std::path::{Path, PathBuf};
-use std::time::SystemTime;
+use std::sync::Arc;
 
 use merklehash::MerkleHash;
 use tracing::debug;
@@ -18,18 +18,18 @@ use crate::shard_file_handle::MDBShardFile;
 // Ordering of staged shards is preserved.
 
 #[allow(clippy::needless_range_loop)] // The alternative is less readable IMO
-pub fn consolidate_shards_in_directory(session_directory: &Path, target_max_size: u64) -> Result<Vec<MDBShardFile>> {
-    let mut shards: Vec<(SystemTime, _)> = MDBShardFile::load_all(session_directory)?
-        .into_iter()
-        .map(|sf| Ok((std::fs::metadata(&sf.path)?.modified()?, sf)))
-        .collect::<Result<Vec<_>>>()?;
+pub fn consolidate_shards_in_directory(
+    session_directory: &Path,
+    target_max_size: u64,
+) -> Result<Vec<Arc<MDBShardFile>>> {
+    let mut shards = MDBShardFile::load_all(session_directory)?;
 
-    shards.sort_unstable_by_key(|(t, _)| *t);
+    shards.sort_unstable_by_key(|si| si.last_modified_time);
 
     // Make not mutable
-    let shards: Vec<_> = shards.into_iter().map(|(_, s)| s).collect();
+    let shards = shards;
 
-    let mut finished_shards = Vec::<MDBShardFile>::with_capacity(shards.len());
+    let mut finished_shards = Vec::<Arc<MDBShardFile>>::with_capacity(shards.len());
     let mut finished_shard_hashes = HashSet::<MerkleHash>::with_capacity(shards.len());
 
     let mut cur_data = Vec::<u8>::with_capacity(target_max_size as usize);
@@ -40,7 +40,7 @@ pub fn consolidate_shards_in_directory(session_directory: &Path, target_max_size
 
     {
         while cur_idx < shards.len() {
-            let cur_sfi: &MDBShardFile = &shards[cur_idx];
+            let cur_sfi = &shards[cur_idx];
 
             // Now, see how many we can consolidate.
             let mut ub_idx = cur_idx + 1;

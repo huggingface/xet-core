@@ -1,6 +1,8 @@
+use std::collections::HashMap;
 use std::io::{BufReader, Cursor, Read, Seek, Write};
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::sync::{Arc, RwLock};
+use std::time::{Duration, SystemTime};
 
 use merklehash::{compute_data_hash, HMACKey, HashedWrite, MerkleHash};
 use tracing::{debug, error, warn};
@@ -12,26 +14,42 @@ use crate::shard_format::MDBShardInfo;
 use crate::utils::{parse_shard_filename, shard_file_name, temp_shard_file_name, truncate_hash};
 
 /// When a specific implementation of the  
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct MDBShardFile {
     pub shard_hash: MerkleHash,
     pub path: PathBuf,
     pub shard: MDBShardInfo,
+    pub last_modified_time: SystemTime,
+}
+
+impl Default for MDBShardFile {
+    fn default() -> Self {
+        Self {
+            shard_hash: MerkleHash::default(),
+            path: PathBuf::default(),
+            shard: MDBShardInfo::default(),
+            last_modified_time: SystemTime::UNIX_EPOCH,
+        }
+    }
 }
 
 impl MDBShardFile {
-    pub fn new(shard_hash: MerkleHash, path: PathBuf, shard: MDBShardInfo) -> Result<Self> {
-        let s = Self {
+    pub fn new(shard_hash: MerkleHash, path: PathBuf, shard: MDBShardInfo) -> Result<Arc<Self>> {
+        let s = Arc::new(Self {
+            last_modified_time: std::fs::metadata(&path)?.modified()?,
             shard_hash,
             path,
             shard,
-        };
+        });
 
         s.verify_shard_integrity_debug_only();
         Ok(s)
     }
 
-    pub fn write_out_from_reader<R: Read + Seek>(target_directory: impl AsRef<Path>, reader: &mut R) -> Result<Self> {
+    pub fn write_out_from_reader<R: Read + Seek>(
+        target_directory: impl AsRef<Path>,
+        reader: &mut R,
+    ) -> Result<Arc<Self>> {
         let target_directory = target_directory.as_ref();
 
         let mut hashed_write; // Need to access after file is closed.
@@ -64,51 +82,72 @@ impl MDBShardFile {
 
         debug_assert_eq!(MDBShardInfo::load_from_file(&mut Cursor::new(&mut std::fs::read(&full_file_name)?))?, si);
 
-        Self::new(shard_hash, full_file_name, MDBShardInfo::load_from_file(reader)?)
+        Ok(Arc::new(Self {
+            shard_hash,
+            path: std::path::absolute(full_file_name)?,
+            shard: MDBShardInfo::load_from_file(reader)?,
+            last_modified_time: SystemTime::now(),
+        }))
+    }
+
+    fn load_from_hash_and_path(shard_hash: MerkleHash, path: &Path) -> Result<Arc<Self>> {
+        lazy_static::lazy_static! {
+            static ref MDB_SHARD_FILE_CACHE: RwLock<HashMap<PathBuf, Arc<MDBShardFile>>> = RwLock::new(HashMap::default());
+        }
+
+        let path = std::path::absolute(path)?;
+
+        // First see if it's in the shard file cache.
+        {
+            let lg = MDB_SHARD_FILE_CACHE.read().unwrap();
+            if let Some(sf) = lg.get(&path) {
+                return Ok(sf.clone());
+            }
+        }
+
+        let mut f = std::fs::File::open(&path)?;
+
+        let sf = Arc::new(Self {
+            shard_hash,
+            path: path.clone(),
+            last_modified_time: f.metadata()?.modified()?,
+            shard: MDBShardInfo::load_from_file(&mut f)?,
+        });
+
+        MDB_SHARD_FILE_CACHE.write().unwrap().insert(path, sf.clone());
+
+        Ok(sf)
     }
 
     /// Loads the MDBShardFile struct from a file path
-    pub fn load_from_file(path: &Path) -> Result<Self> {
+    pub fn load_from_file(path: &Path) -> Result<Arc<Self>> {
         if let Some(shard_hash) = parse_shard_filename(path.to_str().unwrap()) {
-            let mut f = std::fs::File::open(path)?;
-            Ok(Self::new(shard_hash, std::fs::canonicalize(path)?, MDBShardInfo::load_from_file(&mut f)?)?)
+            Self::load_from_hash_and_path(shard_hash, path)
         } else {
             Err(MDBShardError::BadFilename(format!("{path:?} not a valid MerkleDB filename.")))
         }
     }
 
-    pub fn load_all(path: &Path) -> Result<Vec<Self>> {
-        let mut shards = Vec::new();
+    pub fn load_all(path: &Path) -> Result<Vec<Arc<Self>>> {
+        let mut ret = Vec::new();
 
         if path.is_dir() {
             for entry in std::fs::read_dir(path)? {
                 let entry = entry?;
                 if let Some(file_name) = entry.file_name().to_str() {
                     if let Some(h) = parse_shard_filename(file_name) {
-                        shards.push((h, std::fs::canonicalize(entry.path())?));
+                        ret.push(Self::load_from_hash_and_path(h, &path.join(file_name))?);
                     }
                     debug!("Found shard file '{file_name:?}'.");
                 }
             }
         } else if let Some(file_name) = path.to_str() {
             if let Some(h) = parse_shard_filename(file_name) {
-                shards.push((h, std::fs::canonicalize(path)?));
+                ret.push(Self::load_from_hash_and_path(h, &path.join(file_name))?);
                 debug!("Registerd shard file '{file_name:?}'.");
             } else {
                 return Err(MDBShardError::BadFilename(format!("Filename {file_name} not valid shard file name.")));
             }
-        }
-
-        let mut ret = Vec::with_capacity(shards.len());
-
-        for (shard_hash, path) in shards {
-            let mut f = std::fs::File::open(&path)?;
-
-            ret.push(MDBShardFile {
-                shard_hash,
-                path,
-                shard: MDBShardInfo::load_from_file(&mut f)?,
-            });
         }
 
         #[cfg(debug_assertions)]
@@ -132,7 +171,7 @@ impl MDBShardFile {
         include_file_info: bool,
         include_cas_lookup_table: bool,
         include_chunk_lookup_table: bool,
-    ) -> Result<Self> {
+    ) -> Result<Arc<Self>> {
         let mut output_bytes = Vec::<u8>::new();
 
         self.shard.export_as_keyed_shard(

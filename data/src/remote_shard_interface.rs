@@ -258,7 +258,7 @@ impl RemoteShardInterface {
         Ok(())
     }
 
-    pub fn merge_shards(&self) -> Result<JoinHandle<std::result::Result<Vec<MDBShardFile>, MDBShardError>>> {
+    pub fn merge_shards(&self) -> Result<JoinHandle<std::result::Result<Vec<Arc<MDBShardFile>>, MDBShardError>>> {
         let session_dir = self.shard_session_directory()?;
 
         let merged_shards_jh = self
@@ -268,7 +268,7 @@ impl RemoteShardInterface {
         Ok(merged_shards_jh)
     }
 
-    pub async fn upload_and_register_shards(&self, shards: Vec<MDBShardFile>) -> Result<()> {
+    pub async fn upload_and_register_shards(&self, shards: Vec<Arc<MDBShardFile>>) -> Result<()> {
         if shards.is_empty() {
             return Ok(());
         }
