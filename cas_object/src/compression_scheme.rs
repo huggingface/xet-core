@@ -1,11 +1,18 @@
 use std::borrow::Cow;
 use std::fmt::Display;
 use std::io::{copy, Cursor, Read, Write};
+use std::time::Instant;
 
 use anyhow::anyhow;
 use lz4_flex::frame::{FrameDecoder, FrameEncoder};
 
+use crate::byte_grouping::bg4::{bg4_regroup, bg4_split};
 use crate::error::{CasObjectError, Result};
+
+pub static mut BG4_SPLIT_RUNTIME: f64 = 0.;
+pub static mut BG4_REGROUP_RUNTIME: f64 = 0.;
+pub static mut BG4_LZ4_COMPRESS_RUNTIME: f64 = 0.;
+pub static mut BG4_LZ4_DECOMPRESS_RUNTIME: f64 = 0.;
 
 /// Dis-allow the value of ascii capital letters as valid CompressionScheme, 65-90
 #[repr(u8)]
@@ -95,12 +102,19 @@ fn lz4_decompress_from_reader<R: Read, W: Write>(reader: &mut R, writer: &mut W)
 }
 
 pub fn bg4_lz4_compress_from_slice(data: &[u8]) -> Result<Vec<u8>> {
+    let s = Instant::now();
     let groups = bg4_split(data);
+    unsafe {
+        BG4_SPLIT_RUNTIME += s.elapsed().as_secs_f64();
+    }
+
+    let s = Instant::now();
     let mut dest = vec![];
-    for g in groups {
-        let mut enc = FrameEncoder::new(&mut dest);
-        enc.write_all(&g)?;
-        enc.finish()?;
+    let mut enc = FrameEncoder::new(&mut dest);
+    enc.write_all(&groups)?;
+    enc.finish()?;
+    unsafe {
+        BG4_LZ4_COMPRESS_RUNTIME += s.elapsed().as_secs_f64();
     }
 
     Ok(dest)
@@ -113,90 +127,22 @@ pub fn bg4_lz4_decompress_from_slice(data: &[u8]) -> Result<Vec<u8>> {
 }
 
 fn bg4_lz4_decompress_from_reader<R: Read, W: Write>(reader: &mut R, writer: &mut W) -> Result<u64> {
-    let mut groups = vec![];
-    for _ in 0..4 {
-        let mut g = vec![];
-        FrameDecoder::new(&mut *reader).read_to_end(&mut g)?;
-        groups.push(g);
+    let s = Instant::now();
+    let mut g = vec![];
+    FrameDecoder::new(reader).read_to_end(&mut g)?;
+    unsafe {
+        BG4_LZ4_DECOMPRESS_RUNTIME += s.elapsed().as_secs_f64();
     }
 
-    let regrouped = bg4_regroup(&groups);
+    let s = Instant::now();
+    let regrouped = bg4_regroup(&g);
+    unsafe {
+        BG4_REGROUP_RUNTIME += s.elapsed().as_secs_f64();
+    }
 
     writer.write_all(&regrouped)?;
 
     Ok(regrouped.len() as u64)
-}
-
-fn bg4_split(data: &[u8]) -> [Vec<u8>; 4] {
-    let n = data.len();
-    let split = n / 4;
-    let rem = n & 4;
-    let mut d0 = vec![0u8; split + 1.min(rem)];
-    let mut d1 = vec![0u8; split + 1.min(rem.saturating_sub(1))];
-    let mut d2 = vec![0u8; split + 1.min(rem.saturating_sub(2))];
-    let mut d3 = vec![0u8; split];
-
-    for i in 0..split {
-        d0[i] = data[4 * i];
-        d1[i] = data[4 * i + 1];
-        d2[i] = data[4 * i + 2];
-        d3[i] = data[4 * i + 3];
-    }
-
-    match rem {
-        1 => {
-            d0[split] = data[4 * split];
-        },
-        2 => {
-            d0[split] = data[4 * split];
-            d1[split] = data[4 * split + 1];
-        },
-        3 => {
-            d0[split] = data[4 * split];
-            d1[split] = data[4 * split + 1];
-            d2[split] = data[4 * split + 2];
-        },
-        _ => (),
-    }
-
-    [d0, d1, d2, d3]
-}
-
-fn bg4_regroup(groups: &[Vec<u8>]) -> Vec<u8> {
-    let n = groups.iter().map(|g| g.len()).sum();
-    let split = n / 4;
-    let rem = n & 4;
-    let g0 = &groups[0];
-    let g1 = &groups[1];
-    let g2 = &groups[2];
-    let g3 = &groups[3];
-
-    let mut data = vec![0u8; n];
-
-    for i in 0..split {
-        data[4 * i] = g0[i];
-        data[4 * i + 1] = g1[i];
-        data[4 * i + 2] = g2[i];
-        data[4 * i + 3] = g3[i];
-    }
-
-    match rem {
-        1 => {
-            data[4 * split] = g0[split];
-        },
-        2 => {
-            data[4 * split] = g0[split];
-            data[4 * split + 1] = g1[split];
-        },
-        3 => {
-            data[4 * split] = g0[split];
-            data[4 * split + 1] = g1[split];
-            data[4 * split + 2] = g2[split];
-        },
-        _ => (),
-    }
-
-    data
 }
 
 #[cfg(test)]
@@ -227,83 +173,86 @@ mod tests {
     fn test_bg4_lz4() {
         let mut rng = rand::thread_rng();
 
-        let n = 64 * 1024;
-        let all_zeros = vec![0u8; n];
-        let all_ones = vec![1u8; n];
-        let all_0xff = vec![0xFF; n];
-        let random_u8s: Vec<_> = (0..n).map(|_| rng.gen_range(0..255)).collect();
-        let random_f32s_ng1_1: Vec<_> = (0..n / size_of::<f32>())
-            .map(|_| rng.gen_range(-1.0f32..=1.0))
-            .map(|f| f.to_le_bytes())
-            .flatten()
-            .collect();
-        let random_f32s_0_2: Vec<_> = (0..n / size_of::<f32>())
-            .map(|_| rng.gen_range(0f32..=2.0))
-            .map(|f| f.to_le_bytes())
-            .flatten()
-            .collect();
-        let random_f64s_ng1_1: Vec<_> = (0..n / size_of::<f64>())
-            .map(|_| rng.gen_range(-1.0f64..=1.0))
-            .map(|f| f.to_le_bytes())
-            .flatten()
-            .collect();
-        let random_f64s_0_2: Vec<_> = (0..n / size_of::<f64>())
-            .map(|_| rng.gen_range(0f64..=2.0))
-            .map(|f| f.to_le_bytes())
-            .flatten()
-            .collect();
+        for i in 0..4 {
+            let n = 64 * 1024 + i * 23;
+            let all_zeros = vec![0u8; n];
+            let all_ones = vec![1u8; n];
+            let all_0xff = vec![0xFF; n];
+            let random_u8s: Vec<_> = (0..n).map(|_| rng.gen_range(0..255)).collect();
+            let random_f32s_ng1_1: Vec<_> = (0..n / size_of::<f32>())
+                .map(|_| rng.gen_range(-1.0f32..=1.0))
+                .map(|f| f.to_le_bytes())
+                .flatten()
+                .collect();
+            let random_f32s_0_2: Vec<_> = (0..n / size_of::<f32>())
+                .map(|_| rng.gen_range(0f32..=2.0))
+                .map(|f| f.to_le_bytes())
+                .flatten()
+                .collect();
+            let random_f64s_ng1_1: Vec<_> = (0..n / size_of::<f64>())
+                .map(|_| rng.gen_range(-1.0f64..=1.0))
+                .map(|f| f.to_le_bytes())
+                .flatten()
+                .collect();
+            let random_f64s_0_2: Vec<_> = (0..n / size_of::<f64>())
+                .map(|_| rng.gen_range(0f64..=2.0))
+                .map(|f| f.to_le_bytes())
+                .flatten()
+                .collect();
 
-        // f16, a.k.a binary16 format: sign (1 bit), exponent (5 bit), mantissa (10 bit)
-        let random_f16s_ng1_1: Vec<_> = (0..n / size_of::<f16>())
-            .map(|_| f16::from_f32(rng.gen_range(-1.0f32..=1.0)))
-            .map(|f| f.to_le_bytes())
-            .flatten()
-            .collect();
-        let random_f16s_0_2: Vec<_> = (0..n / size_of::<f16>())
-            .map(|_| f16::from_f32(rng.gen_range(0f32..=2.0)))
-            .map(|f| f.to_le_bytes())
-            .flatten()
-            .collect();
+            // f16, a.k.a binary16 format: sign (1 bit), exponent (5 bit), mantissa (10 bit)
+            let random_f16s_ng1_1: Vec<_> = (0..n / size_of::<f16>())
+                .map(|_| f16::from_f32(rng.gen_range(-1.0f32..=1.0)))
+                .map(|f| f.to_le_bytes())
+                .flatten()
+                .collect();
+            let random_f16s_0_2: Vec<_> = (0..n / size_of::<f16>())
+                .map(|_| f16::from_f32(rng.gen_range(0f32..=2.0)))
+                .map(|f| f.to_le_bytes())
+                .flatten()
+                .collect();
 
-        // bf16 format: sign (1 bit), exponent (8 bit), mantissa (7 bit)
-        let random_bf16s_ng1_1: Vec<_> = (0..n / size_of::<bf16>())
-            .map(|_| bf16::from_f32(rng.gen_range(-1.0f32..=1.0)))
-            .map(|f| f.to_le_bytes())
-            .flatten()
-            .collect();
-        let random_bf16s_0_2: Vec<_> = (0..n / size_of::<bf16>())
-            .map(|_| bf16::from_f32(rng.gen_range(0f32..=2.0)))
-            .map(|f| f.to_le_bytes())
-            .flatten()
-            .collect();
+            // bf16 format: sign (1 bit), exponent (8 bit), mantissa (7 bit)
+            let random_bf16s_ng1_1: Vec<_> = (0..n / size_of::<bf16>())
+                .map(|_| bf16::from_f32(rng.gen_range(-1.0f32..=1.0)))
+                .map(|f| f.to_le_bytes())
+                .flatten()
+                .collect();
+            let random_bf16s_0_2: Vec<_> = (0..n / size_of::<bf16>())
+                .map(|_| bf16::from_f32(rng.gen_range(0f32..=2.0)))
+                .map(|f| f.to_le_bytes())
+                .flatten()
+                .collect();
 
-        let dataset = [
-            all_zeros,          // 180.04, 231.58
-            all_ones,           // 180.04, 231.58
-            all_0xff,           // 180.04, 231.58
-            random_u8s,         // 1.00, 1.00
-            random_f32s_ng1_1,  // 1.08, 1.00
-            random_f32s_0_2,    // 1.15, 1.00
-            random_f64s_ng1_1,  // 1.00, 1.00
-            random_f64s_0_2,    // 1.00, 1.00
-            random_f16s_ng1_1,  // 1.00, 1.00
-            random_f16s_0_2,    // 1.00, 1.00
-            random_bf16s_ng1_1, // 1.18, 1.00
-            random_bf16s_0_2,   // 1.37, 1.00
-        ];
+            let dataset = [
+                all_zeros,          // 231.58, 231.58
+                all_ones,           // 231.58, 231.58
+                all_0xff,           // 231.58, 231.58
+                random_u8s,         // 1.00, 1.00
+                random_f32s_ng1_1,  // 1.08, 1.00
+                random_f32s_0_2,    // 1.15, 1.00
+                random_f64s_ng1_1,  // 1.00, 1.00
+                random_f64s_0_2,    // 1.00, 1.00
+                random_f16s_ng1_1,  // 1.00, 1.00
+                random_f16s_0_2,    // 1.00, 1.00
+                random_bf16s_ng1_1, // 1.18, 1.00
+                random_bf16s_0_2,   // 1.37, 1.00
+            ];
 
-        for data in dataset {
-            let bg4_lz4_compressed = bg4_lz4_compress_from_slice(&data).unwrap();
-            let bg4_lz4_uncompressed = bg4_lz4_decompress_from_slice(&bg4_lz4_compressed).unwrap();
-            assert_eq!(data, bg4_lz4_uncompressed);
-            let lz4_compressed = lz4_compress_from_slice(&data).unwrap();
-            let lz4_uncompressed = lz4_decompress_from_slice(&lz4_compressed).unwrap();
-            assert_eq!(data, lz4_uncompressed);
-            println!(
-                "Compression ratio: {:.2}, {:.2}",
-                data.len() as f32 / bg4_lz4_compressed.len() as f32,
-                data.len() as f32 / lz4_compressed.len() as f32
-            );
+            for data in dataset {
+                let bg4_lz4_compressed = bg4_lz4_compress_from_slice(&data).unwrap();
+                let bg4_lz4_uncompressed = bg4_lz4_decompress_from_slice(&bg4_lz4_compressed).unwrap();
+                assert_eq!(data.len(), bg4_lz4_uncompressed.len());
+                assert_eq!(data, bg4_lz4_uncompressed);
+                let lz4_compressed = lz4_compress_from_slice(&data).unwrap();
+                let lz4_uncompressed = lz4_decompress_from_slice(&lz4_compressed).unwrap();
+                assert_eq!(data, lz4_uncompressed);
+                println!(
+                    "Compression ratio: {:.2}, {:.2}",
+                    data.len() as f32 / bg4_lz4_compressed.len() as f32,
+                    data.len() as f32 / lz4_compressed.len() as f32
+                );
+            }
         }
     }
 }
