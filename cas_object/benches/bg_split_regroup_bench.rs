@@ -6,6 +6,15 @@ use rand::Rng;
 
 use crate::byte_grouping::bg4;
 
+// Benchmark results on Apple M2 Max
+
+// split_separate speed: 2738.11 MB/s
+// regroup_separate speed: 2708.04 MB/s
+// split_together speed: 24439.23 MB/s
+// regroup_together speed: 32791.84 MB/s
+// regroup_together_cw_4 speed: 33268.32 MB/s
+// regroup_together_cw_8 speed: 13925.35 MB/s
+
 fn main() {
     let mut rng = rand::thread_rng();
 

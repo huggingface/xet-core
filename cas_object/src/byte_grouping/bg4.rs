@@ -1,3 +1,5 @@
+use std::ptr::copy_nonoverlapping;
+
 pub fn bg4_split_separate(data: &[u8]) -> [Vec<u8>; 4] {
     let n = data.len();
     let split = n / 4;
@@ -165,6 +167,7 @@ pub fn bg4_regroup_together_combined_write_4(g: &[u8]) -> Vec<u8> {
     let mut data = vec![0u8; n];
 
     unsafe {
+        let d_ptr = data.as_mut_ptr();
         let g0 = g.as_ptr();
         let g1 = g0.add(split + 1.min(rem));
         let g2 = g1.add(split + 1.min(rem.saturating_sub(1)));
@@ -172,7 +175,7 @@ pub fn bg4_regroup_together_combined_write_4(g: &[u8]) -> Vec<u8> {
 
         for i in 0..split {
             let fourbytes = [*g0.add(i), *g1.add(i), *g2.add(i), *g3.add(i)];
-            data[4 * i..4 * i + 4].copy_from_slice(&fourbytes[..]);
+            copy_nonoverlapping(&fourbytes as *const u8, d_ptr.add(4 * i), 4);
         }
 
         match rem {
@@ -203,6 +206,7 @@ pub fn bg4_regroup_together_combined_write_8(g: &[u8]) -> Vec<u8> {
     let mut data = vec![0u8; n];
 
     unsafe {
+        let d_ptr = data.as_mut_ptr();
         let g0 = g.as_ptr();
         let g1 = g0.add(split + 1.min(rem));
         let g2 = g1.add(split + 1.min(rem.saturating_sub(1)));
@@ -221,7 +225,7 @@ pub fn bg4_regroup_together_combined_write_8(g: &[u8]) -> Vec<u8> {
                 *g2.add(k),
                 *g3.add(k),
             ];
-            data[8 * i..8 * i + 8].copy_from_slice(&eightbytes[..]);
+            copy_nonoverlapping(&eightbytes as *const u8, d_ptr.add(8 * i), 8);
         }
 
         if split % 2 != 0 {
