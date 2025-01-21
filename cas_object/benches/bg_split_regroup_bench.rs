@@ -21,7 +21,6 @@ fn main() {
     bench_regroup_together(random_u8s.clone());
     bench_regroup_together_combined_write_4(random_u8s.clone());
     bench_regroup_together_combined_write_8(random_u8s.clone());
-    bench_regroup_together_combined_write_4x4(random_u8s.clone());
 }
 
 fn bench_speed_1(mut data: [Vec<u8>; 4], num_bytes: usize, f: fn(&[Vec<u8>]) -> u8, description: &str) {
@@ -139,18 +138,5 @@ fn bench_regroup_together_combined_write_8(g: Vec<u8>) {
             ret[0]
         },
         "regroup_together_cw_8",
-    )
-}
-
-fn bench_regroup_together_combined_write_4x4(g: Vec<u8>) {
-    let n = g.len();
-    bench_speed_2(
-        g,
-        n,
-        |g| {
-            let ret = bg4::bg4_regroup_together_combined_write_4x4(g);
-            ret[0]
-        },
-        "regroup_together_cw_4x4",
     )
 }

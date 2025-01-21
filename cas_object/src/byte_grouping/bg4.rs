@@ -250,67 +250,6 @@ pub fn bg4_regroup_together_combined_write_8(g: &[u8]) -> Vec<u8> {
     data
 }
 
-pub fn bg4_regroup_together_combined_write_4x4(g: &[u8]) -> Vec<u8> {
-    let n = g.len();
-    let split = n / 4;
-    let rem = n % 4;
-
-    let mut data = vec![0u8; n];
-
-    let g0 = g;
-    let g1 = &g0[split + 1.min(rem)..];
-    let g2 = &g1[split + 1.min(rem.saturating_sub(1))..];
-    let g3 = &g2[split + 1.min(rem.saturating_sub(2))..];
-
-    for i in 0..split / 4 {
-        let mut gbuf = [0u8; 16];
-
-        let g_idx = i * 4;
-        gbuf[0..4].copy_from_slice(&g0[g_idx..g_idx + 4]);
-        gbuf[4..8].copy_from_slice(&g1[g_idx..g_idx + 4]);
-        gbuf[8..12].copy_from_slice(&g2[g_idx..g_idx + 4]);
-        gbuf[12..16].copy_from_slice(&g3[g_idx..g_idx + 4]);
-
-        let d_idx = i * 16;
-
-        let d0 = [gbuf[0], gbuf[4], gbuf[8], gbuf[12]];
-        data[d_idx..d_idx + 4].copy_from_slice(&d0[..]);
-
-        let d2 = [gbuf[2], gbuf[6], gbuf[10], gbuf[14]];
-        data[d_idx + 8..d_idx + 12].copy_from_slice(&d2[..]);
-
-        let d1 = [gbuf[1], gbuf[5], gbuf[9], gbuf[13]];
-        data[d_idx + 4..d_idx + 8].copy_from_slice(&d1[..]);
-
-        let d3 = [gbuf[3], gbuf[7], gbuf[11], gbuf[15]];
-        data[d_idx + 12..d_idx + 16].copy_from_slice(&d3[..]);
-    }
-
-    for i in (1..=split % 4).rev() {
-        let g_idx = split - i;
-        let fourbytes = [g0[g_idx], g1[g_idx], g2[g_idx], g3[g_idx]];
-        data[4 * i..4 * i + 4].copy_from_slice(&fourbytes[..]);
-    }
-
-    match rem {
-        1 => {
-            data[4 * split] = g0[split];
-        },
-        2 => {
-            data[4 * split] = g0[split];
-            data[4 * split + 1] = g1[split];
-        },
-        3 => {
-            data[4 * split] = g0[split];
-            data[4 * split + 1] = g1[split];
-            data[4 * split + 2] = g2[split];
-        },
-        _ => (),
-    }
-
-    data
-}
-
 #[inline]
 pub fn bg4_regroup(g: &[u8]) -> Vec<u8> {
     bg4_regroup_together(g)
@@ -350,9 +289,6 @@ mod tests {
             assert_eq!(regrouped, data);
 
             let regrouped = bg4_regroup_together_combined_write_8(&groups);
-            assert_eq!(regrouped, data);
-
-            let regrouped = bg4_regroup_together_combined_write_4x4(&groups);
             assert_eq!(regrouped, data);
         }
     }
