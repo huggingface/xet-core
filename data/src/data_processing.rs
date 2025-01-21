@@ -12,7 +12,6 @@ use mdb_shard::file_structs::MDBFileInfo;
 use mdb_shard::ShardFileManager;
 use merklehash::MerkleHash;
 use tokio::sync::{Mutex, Semaphore};
-use utils::auth::TokenClaim;
 use utils::progress::ProgressUpdater;
 use utils::ThreadPool;
 
@@ -133,13 +132,16 @@ impl PointerFileTranslator {
             let mut validation = Validation::default();
             validation.insecure_disable_signature_validation();
 
-            decode::<TokenClaim>(
+            decode::<serde_json::Map<String, serde_json::Value>>(
                 &token,
                 &DecodingKey::from_secret("".as_ref()), // Secret is not used here
                 &validation,
             )
             .ok()
-            .map(|decoded| decoded.claims.repo_id.clone())
+            .and_then(|decoded| {
+                // Extract `repo_id` from the claims map
+                decoded.claims.get("repoId").and_then(|value| value.as_str().map(String::from))
+            })
         });
 
         Ok(Self {
