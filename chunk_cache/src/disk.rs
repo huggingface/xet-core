@@ -3,7 +3,7 @@ use std::fs::{DirEntry, File};
 use std::io::{self, Cursor, ErrorKind, Read, Seek, SeekFrom, Write};
 use std::mem::size_of;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, RwLock, RwLockWriteGuard};
 
 use base64::engine::general_purpose::URL_SAFE;
 use base64::engine::GeneralPurpose;
@@ -54,7 +54,7 @@ impl CacheState {
 pub struct DiskCache {
     cache_root: PathBuf,
     capacity: u64,
-    state: Arc<Mutex<CacheState>>,
+    state: Arc<RwLock<CacheState>>,
     hash_items: bool,
 }
 
@@ -93,12 +93,12 @@ impl DiskCache {
 
 impl DiskCache {
     pub fn num_items(&self) -> Result<usize, ChunkCacheError> {
-        let state = self.state.lock()?;
+        let state = self.state.read()?;
         Ok(state.num_items)
     }
 
     pub fn total_bytes(&self) -> Result<u64, ChunkCacheError> {
-        let state = self.state.lock()?;
+        let state = self.state.read()?;
         Ok(state.total_bytes)
     }
 
@@ -135,7 +135,7 @@ impl DiskCache {
         let state = Self::initialize_state(&cache_root, capacity)?;
 
         Ok(Self {
-            state: Arc::new(Mutex::new(state)),
+            state: Arc::new(RwLock::new(state)),
             cache_root,
             capacity,
             hash_items: true,
@@ -149,7 +149,7 @@ impl DiskCache {
         let state = Self::initialize_state(&cache_root, capacity)?;
 
         Ok(Self {
-            state: Arc::new(Mutex::new(state)),
+            state: Arc::new(RwLock::new(state)),
             cache_root,
             capacity,
             hash_items: false,
@@ -227,7 +227,7 @@ impl DiskCache {
 
                 // loop through cache items inside key directory
                 for item in key_readdir {
-                    let cache_item = match try_parse_cache_file(item, capacity) {
+                    let (cache_item, _) = match try_parse_cache_file(item, capacity) {
                         Ok(Some(ci)) => ci,
                         Ok(None) => continue,
                         Err(e) => return Err(e),
@@ -323,7 +323,7 @@ impl DiskCache {
     }
 
     fn find_match(&self, key: &Key, range: &ChunkRange) -> OptionResult<CacheItem, ChunkCacheError> {
-        let state = self.state.lock()?;
+        let state = self.state.read()?;
         let items = if let Some(items) = state.inner.get(key) {
             items
         } else {
@@ -390,7 +390,7 @@ impl DiskCache {
 
         // evict items after ensuring the file write but before committing to cache state
         // to avoid removing new item.
-        let mut state = self.state.lock()?;
+        let mut state = self.state.write()?;
 
         let items = state.inner.entry(key.clone()).or_default();
 
@@ -526,7 +526,7 @@ impl DiskCache {
     /// (so that deletion can occur after the locked state is dropped)
     fn maybe_evict(
         &self,
-        state: &mut MutexGuard<'_, CacheState>,
+        state: &mut RwLockWriteGuard<'_, CacheState>,
         expected_add: u64,
     ) -> Result<Vec<PathBuf>, ChunkCacheError> {
         let total_bytes = state.total_bytes;
@@ -553,7 +553,7 @@ impl DiskCache {
     }
 
     /// returns the key and index within that key for a random item
-    fn random_item(&self, state: &MutexGuard<'_, CacheState>) -> (Key, usize) {
+    fn random_item(&self, state: &CacheState) -> (Key, usize) {
         let num_items = state.num_items;
         let random_item = rand::random::<usize>() % num_items;
         let mut count = 0;
@@ -570,7 +570,7 @@ impl DiskCache {
     /// removes an item from both the in-memory state of the cache and the file system
     fn remove_item(&self, key: &Key, cache_item: &CacheItem) -> Result<(), ChunkCacheError> {
         {
-            let mut state = self.state.lock()?;
+            let mut state = self.state.write()?;
             if let Some(items) = state.inner.get_mut(key) {
                 let idx = match index_of(items, cache_item) {
                     Some(idx) => idx,
@@ -597,8 +597,12 @@ impl DiskCache {
     }
 
     fn item_path(&self, key: &Key, cache_item: &CacheItem) -> Result<PathBuf, ChunkCacheError> {
-        Ok(self.cache_root.join(key_dir(key)).join(cache_item.file_name()?))
+        item_path(&self.cache_root, key, cache_item)
     }
+}
+
+fn item_path(cache_root: &PathBuf, key: &Key, cache_item: &CacheItem) -> Result<PathBuf, ChunkCacheError> {
+    Ok(cache_root.join(key_dir(key)).join(cache_item.file_name()?))
 }
 
 #[inline]
@@ -644,6 +648,20 @@ fn compute_hash(header: &[u8], data: &[u8]) -> blake3::Hash {
     blake3::Hasher::new().update(header).update(data).finalize()
 }
 
+macro_rules! unwrap_or_return_io_result {
+    ($res:expr) => {
+        match $res {
+            Ok(v) => v,
+            Err(e) => {
+                if e.kind() == std::io::ErrorKind::NotFound {
+                    return Ok(None);
+                }
+                return Err(e.into());
+            },
+        }
+    };
+}
+
 // OLD
 // fn compute_hash_from_reader(r: &mut impl Read) -> Result<blake3::Hash, ChunkCacheError> {
 //     Ok(blake3::Hasher::new().update_reader(r)?.finalize())
@@ -652,16 +670,7 @@ fn compute_hash(header: &[u8], data: &[u8]) -> blake3::Hash {
 // wrapper over std::fs::read_dir
 // returns Ok(None) on a not found error
 fn read_dir(path: impl AsRef<Path>) -> OptionResult<std::fs::ReadDir, ChunkCacheError> {
-    match std::fs::read_dir(path) {
-        Ok(rd) => Ok(Some(rd)),
-        Err(e) => {
-            if e.kind() == ErrorKind::NotFound {
-                Ok(None)
-            } else {
-                Err(e.into())
-            }
-        },
-    }
+    Ok(Some(unwrap_or_return_io_result!(std::fs::read_dir(path))))
 }
 
 // returns Ok(Some(_)) if result dirent is a directory, Ok(None) if was removed
@@ -670,24 +679,8 @@ fn read_dir(path: impl AsRef<Path>) -> OptionResult<std::fs::ReadDir, ChunkCache
 //   but not attempt to parse it as a valid cache directory.
 // Err(_) if an unrecoverable error occurred
 fn is_ok_dir(dir_result: Result<DirEntry, io::Error>) -> OptionResult<DirEntry, ChunkCacheError> {
-    let dirent = match dir_result {
-        Ok(kd) => kd,
-        Err(e) => {
-            if e.kind() == ErrorKind::NotFound {
-                return Ok(None);
-            }
-            return Err(e.into());
-        },
-    };
-    let md = match dirent.metadata() {
-        Ok(md) => md,
-        Err(e) => {
-            if e.kind() == ErrorKind::NotFound {
-                return Ok(None);
-            }
-            return Err(e.into());
-        },
-    };
+    let dirent = unwrap_or_return_io_result!(dir_result);
+    let md = unwrap_or_return_io_result!(dirent.metadata());
     if !md.is_dir() {
         debug!("CACHE: expected directory at {:?}, is not directory", dirent.path());
         return Ok(None);
@@ -698,25 +691,12 @@ fn is_ok_dir(dir_result: Result<DirEntry, io::Error>) -> OptionResult<DirEntry, 
 // given a result from readdir attempts to parse it as a cache file handle
 // i.e. validate its file name against the contents (excluding file-hash-validation)
 // validate that it is a file, correct len, and is not too large.
-fn try_parse_cache_file(file_result: io::Result<DirEntry>, capacity: u64) -> OptionResult<CacheItem, ChunkCacheError> {
-    let item = match file_result {
-        Ok(item) => item,
-        Err(e) => {
-            if e.kind() == ErrorKind::NotFound {
-                return Ok(None);
-            }
-            return Err(e.into());
-        },
-    };
-    let md = match item.metadata() {
-        Ok(md) => md,
-        Err(e) => {
-            if e.kind() == ErrorKind::NotFound {
-                return Ok(None);
-            }
-            return Err(e.into());
-        },
-    };
+fn try_parse_cache_file(
+    file_result: io::Result<DirEntry>,
+    capacity: u64,
+) -> OptionResult<(CacheItem, PathBuf), ChunkCacheError> {
+    let item = unwrap_or_return_io_result!(file_result);
+    let md = unwrap_or_return_io_result!(item.metadata());
 
     if !md.is_file() {
         return Ok(None);
@@ -754,7 +734,8 @@ fn try_parse_cache_file(file_result: io::Result<DirEntry>, capacity: u64) -> Opt
         remove_file(item.path())?;
         return Ok(None);
     }
-    Ok(Some(cache_item))
+    let path = item.path();
+    Ok(Some((cache_item, path)))
 }
 
 /// removes a file but disregards a "NotFound" error if the file is already gone
@@ -1053,8 +1034,8 @@ mod tests {
             assert!(get_result.unwrap().is_some(), "{i}");
         }
 
-        let cache_keys = cache.state.lock().unwrap().inner.keys().cloned().collect::<BTreeSet<_>>();
-        let cache2_keys = cache2.state.lock().unwrap().inner.keys().cloned().collect::<BTreeSet<_>>();
+        let cache_keys = cache.state.read().unwrap().inner.keys().cloned().collect::<BTreeSet<_>>();
+        let cache2_keys = cache2.state.read().unwrap().inner.keys().cloned().collect::<BTreeSet<_>>();
         assert_eq!(cache_keys, cache2_keys);
     }
 
@@ -1248,7 +1229,7 @@ mod tests {
 
         // assert that we haven't evicted all keys for key with multiple items
         assert!(
-            cache.state.lock().unwrap().inner.contains_key(&key),
+            cache.state.read().unwrap().inner.contains_key(&key),
             "evicted key that should have remained in cache"
         );
     }
