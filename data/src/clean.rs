@@ -14,7 +14,7 @@ use mdb_shard::file_structs::{
 };
 use mdb_shard::{hash_is_global_dedup_eligible, ShardFileManager};
 use merkledb::aggregate_hashes::file_node_hash;
-use merkledb::constants::TARGET_CAS_BLOCK_SIZE;
+use merkledb::constants::{IDEAL_CAS_BLOCK_SIZE, TARGET_CAS_BLOCK_SIZE, TARGET_CDC_CHUNK_SIZE};
 use merklehash::MerkleHash;
 use sha2::{Digest, Sha256};
 use tokio::sync::mpsc::error::TryRecvError;
@@ -161,7 +161,7 @@ impl Cleaner {
     ) -> Result<Arc<Self>> {
         let (data_p, data_c) = channel::<BufferItem<Vec<u8>>>(buffer_size);
 
-        let (chunk_p, chunk_c) = channel::<Option<ChunkYieldType>>(buffer_size);
+        let (chunk_p, chunk_c) = channel::<Option<ChunkYieldType>>(IDEAL_CAS_BLOCK_SIZE / TARGET_CDC_CHUNK_SIZE); // enough to fill one CAS block
 
         let chunker = chunk_target_default(data_c, chunk_p, threadpool.clone());
 
