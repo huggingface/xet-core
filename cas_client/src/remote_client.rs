@@ -32,7 +32,7 @@ pub const PREFIX_DEFAULT: &str = "default";
 
 const NUM_RETRIES: usize = 5;
 const BASE_RETRY_DELAY_MS: u64 = 3000;
-const NUM_CONCURRENT_RANGE_GETS: usize = 4;
+const NUM_CONCURRENT_RANGE_GETS: usize = 8;
 
 type RangeDownloadSingleFlight = Arc<Group<(Vec<u8>, Vec<u32>), CasClientError>>;
 
