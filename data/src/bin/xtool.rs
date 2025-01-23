@@ -1,26 +1,20 @@
-use std::{
-    fs::File,
-    io::{BufWriter, Write},
-    path::PathBuf,
-    sync::Arc,
-};
+use std::fs::File;
+use std::io::{BufWriter, Write};
+use std::path::PathBuf;
+use std::sync::Arc;
 
 use anyhow::Result;
 use cas_client::build_http_client;
 use clap::{Args, Parser, Subcommand};
-use data::{
-    data_client::{clean_file, default_config},
-    errors::DataProcessingError,
-    PointerFileTranslator,
-};
+use data::data_client::{clean_file, default_config};
+use data::errors::DataProcessingError;
+use data::PointerFileTranslator;
 use mdb_shard::file_structs::MDBFileInfo;
 use parutils::{tokio_par_for_each, ParallelError};
 use reqwest_middleware::ClientWithMiddleware;
-use utils::{
-    auth::{TokenInfo, TokenRefresher},
-    errors::AuthError,
-    ThreadPool,
-};
+use utils::auth::{TokenInfo, TokenRefresher};
+use utils::errors::AuthError;
+use utils::ThreadPool;
 use walkdir::WalkDir;
 
 const DEFAULT_HF_ENDPOINT: &str = "https://huggingface.co";

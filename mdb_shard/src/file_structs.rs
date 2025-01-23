@@ -1,10 +1,10 @@
-use serde::Serialize;
 use std::fmt::Debug;
 use std::io::{self, Cursor, Read, Write};
 use std::mem::size_of;
 use std::sync::Arc;
 
 use merklehash::MerkleHash;
+use serde::Serialize;
 use utils::serialization_utils::*;
 
 use crate::cas_structs::{CASChunkSequenceEntry, CASChunkSequenceHeader};
