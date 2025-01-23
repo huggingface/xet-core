@@ -89,7 +89,7 @@ impl UploadClient for RemoteClient {
             hash: *hash,
         };
 
-        let was_uploaded = self.upload(&key, &data, chunk_and_boundaries).await?;
+        let was_uploaded = self.upload(&key, data, chunk_and_boundaries).await?;
 
         if !was_uploaded {
             debug!("{key:?} not inserted into CAS.");
@@ -243,7 +243,7 @@ impl RemoteClient {
     pub async fn upload(
         &self,
         key: &Key,
-        contents: &[u8],
+        contents: Vec<u8>,
         chunk_and_boundaries: Vec<(MerkleHash, u32)>,
     ) -> Result<bool> {
         let url = Url::parse(&format!("{}/xorb/{key}", self.endpoint))?;
@@ -253,10 +253,12 @@ impl RemoteClient {
         let (_, _) = CasObject::serialize(
             &mut writer,
             &key.hash,
-            contents,
+            &contents,
             &chunk_and_boundaries,
             cas_object::CompressionScheme::LZ4,
         )?;
+        // free memory before the "slow" network transfer below
+        drop(contents);
 
         debug!("Upload: POST to {url:?} for {key:?}");
         writer.set_position(0);
