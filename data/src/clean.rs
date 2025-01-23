@@ -26,7 +26,9 @@ use utils::progress::ProgressUpdater;
 use utils::ThreadPool;
 
 use crate::chunking::{chunk_target_default, ChunkYieldType};
-use crate::constants::{MIN_SPACING_BETWEEN_GLOBAL_DEDUP_QUERIES, NRANGES_IN_STREAMING_FRAGMENTATION_ESTIMATOR, MIN_N_CHUNKS_PER_RANGE};
+use crate::constants::{
+    MIN_N_CHUNKS_PER_RANGE, MIN_SPACING_BETWEEN_GLOBAL_DEDUP_QUERIES, NRANGES_IN_STREAMING_FRAGMENTATION_ESTIMATOR,
+};
 use crate::data_processing::CASDataAggregator;
 use crate::errors::DataProcessingError::*;
 use crate::errors::Result;
@@ -58,19 +60,19 @@ struct DedupFileTrackingInfo {
     current_cas_block_hashes: HashMap<MerkleHash, usize>,
     cas_data: CASDataAggregator,
     /// This tracks the number of chunks in each of the last N ranges
-    rolling_last_nranges: VecDeque<usize>, 
+    rolling_last_nranges: VecDeque<usize>,
     /// This tracks the total number of chunks in the last N ranges
-    rolling_nranges_chunks: usize 
+    rolling_nranges_chunks: usize,
 }
 
 impl DedupFileTrackingInfo {
-    fn increment_last_range_in_fragmentation_estimate(&mut self, nchunks:usize) {
+    fn increment_last_range_in_fragmentation_estimate(&mut self, nchunks: usize) {
         if let Some(back) = self.rolling_last_nranges.back_mut() {
             *back += nchunks;
             self.rolling_nranges_chunks += nchunks;
         }
     }
-    fn add_range_to_fragmentation_estimate(&mut self, nchunks:usize) {
+    fn add_range_to_fragmentation_estimate(&mut self, nchunks: usize) {
         self.rolling_last_nranges.push_back(nchunks);
         self.rolling_nranges_chunks += nchunks;
         if self.rolling_last_nranges.len() > NRANGES_IN_STREAMING_FRAGMENTATION_ESTIMATOR {
@@ -79,7 +81,7 @@ impl DedupFileTrackingInfo {
     }
     /// Returns the average number of chunks per range
     /// None if there is is not enough data for an estimate
-    fn rolling_chunks_per_range(&self)->Option<f32> {
+    fn rolling_chunks_per_range(&self) -> Option<f32> {
         if self.rolling_last_nranges.len() < NRANGES_IN_STREAMING_FRAGMENTATION_ESTIMATOR {
             None
         } else {

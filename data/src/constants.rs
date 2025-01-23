@@ -44,7 +44,7 @@ pub const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");
 pub const FILE_RECONSTRUCTION_CACHE_SIZE: usize = 65536;
 
 /// Number of ranges to use when estimating fragmentation
-pub const NRANGES_IN_STREAMING_FRAGMENTATION_ESTIMATOR: usize = 128;
+pub const NRANGES_IN_STREAMING_FRAGMENTATION_ESTIMATOR: usize = 32;
 
 /// Minimum number of chunks per range. Used to control fragmentation
 /// This targets an average of 1MB per range
