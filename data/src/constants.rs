@@ -42,3 +42,10 @@ pub const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");
 /// Maximum number of entries in the file construction cache
 /// which stores File Hash -> reconstruction instructions
 pub const FILE_RECONSTRUCTION_CACHE_SIZE: usize = 65536;
+
+/// Number of ranges to use when estimating fragmentation
+pub const NRANGES_IN_STREAMING_FRAGMENTATION_ESTIMATOR: usize = 128;
+
+/// Minimum number of chunks per range. Used to control fragmentation
+/// This targets an average of 1MB per range
+pub const MIN_N_CHUNKS_PER_RANGE: f32 = 16.0;
