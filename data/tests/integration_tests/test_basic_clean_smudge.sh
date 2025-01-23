@@ -29,4 +29,6 @@ assert_files_equal large.dat large.dat.2
 create_text_file small.txt key1 100 1
 
 x clean -d small.pft small.txt
-assert_files_equal small.pft small.txt # not converted to pointer file
+assert_is_pointer_file small.pft
+x smudge -f small.pft small.txt.2
+assert_files_equal small.txt small.txt.2

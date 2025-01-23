@@ -9,7 +9,7 @@ use anyhow::Result;
 use cas_client::CacheConfig;
 use clap::{Args, Parser, Subcommand};
 use data::configurations::*;
-use data::{PointerFile, PointerFileTranslator, SMALL_FILE_THRESHOLD};
+use data::{PointerFile, PointerFileTranslator};
 use utils::ThreadPool;
 
 #[derive(Parser)]
@@ -101,7 +101,6 @@ fn default_clean_config() -> Result<TranslatorConfig> {
         },
         dedup_config: Some(DedupConfig {
             repo_salt: None,
-            small_file_threshold: SMALL_FILE_THRESHOLD,
             global_dedup_policy: Default::default(),
         }),
         repo_info: Some(RepoInfo {

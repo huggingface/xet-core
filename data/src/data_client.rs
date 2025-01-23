@@ -28,9 +28,6 @@ lazy_static! {
 }
 const MAX_CONCURRENT_DOWNLOADS: usize = 8; // Download is not CPU-bound
 
-// We now process every file delegated from the Python library.
-const SMALL_FILE_THRESHOLD: usize = 1;
-
 const DEFAULT_CAS_ENDPOINT: &str = "http://localhost:8080";
 const READ_BLOCK_SIZE: usize = 1024 * 1024;
 
@@ -76,7 +73,6 @@ pub fn default_config(
         },
         dedup_config: Some(DedupConfig {
             repo_salt: None,
-            small_file_threshold: SMALL_FILE_THRESHOLD,
             global_dedup_policy: Default::default(),
         }),
         repo_info: Some(RepoInfo {

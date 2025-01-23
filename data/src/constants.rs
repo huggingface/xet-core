@@ -18,15 +18,6 @@ pub const GIT_MAX_PACKET_SIZE: usize = 65516;
 /// See gitxetcore::data::pointer_file for the explanation for this limit.
 pub const POINTER_FILE_LIMIT: usize = 150;
 
-/// If a file has size smaller than this threshold, AND if it "looks-like"
-/// text, we interpret this as a text file and passthrough the file, letting
-/// git handle it. See `small_file_determination.rs` for details.
-///
-/// We set this to be 1 less than a constant multiple of the GIT_MAX_PACKET_SIZE
-/// so we can read exactly up to that multiple of packets to determine if it
-/// is a small file.
-pub const SMALL_FILE_THRESHOLD: usize = 4 * GIT_MAX_PACKET_SIZE - 1;
-
 // Salt is 256-bit in length.
 pub const REPO_SALT_LEN: usize = 32;
 
