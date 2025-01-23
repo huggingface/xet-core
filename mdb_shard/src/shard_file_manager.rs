@@ -303,6 +303,21 @@ impl ShardFileManager {
             .shard_lookup_by_shard_hash
             .contains_key(shard_hash)
     }
+
+    pub async fn all_file_info_of_session(&self) -> Result<Vec<MDBFileInfo>> {
+        let Some(ref session_directory) = self.current_state.read().await.session_directory else {
+            return Ok(vec![]);
+        };
+
+        let shard_files = MDBShardFile::load_all(session_directory)?;
+
+        let mut all_file_info = vec![];
+        for shard in shard_files {
+            all_file_info.append(&mut shard.read_all_file_info_sections()?);
+        }
+
+        Ok(all_file_info)
+    }
 }
 
 #[async_trait]

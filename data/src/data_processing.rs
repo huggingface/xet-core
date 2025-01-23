@@ -61,6 +61,7 @@ impl CASDataAggregator {
 pub struct PointerFileTranslator {
     /* ----- Configurations ----- */
     config: TranslatorConfig,
+    dry_run: bool,
 
     /* ----- Utils ----- */
     shard_manager: Arc<ShardFileManager>,
@@ -86,6 +87,25 @@ impl PointerFileTranslator {
         threadpool: Arc<ThreadPool>,
         upload_progress_updater: Option<Arc<dyn ProgressUpdater>>,
         download_only: bool,
+    ) -> Result<PointerFileTranslator> {
+        PointerFileTranslator::new_impl(config, threadpool, upload_progress_updater, download_only, false).await
+    }
+
+    pub async fn dry_run(
+        config: TranslatorConfig,
+        threadpool: Arc<ThreadPool>,
+        upload_progress_updater: Option<Arc<dyn ProgressUpdater>>,
+        download_only: bool,
+    ) -> Result<PointerFileTranslator> {
+        PointerFileTranslator::new_impl(config, threadpool, upload_progress_updater, download_only, true).await
+    }
+
+    async fn new_impl(
+        config: TranslatorConfig,
+        threadpool: Arc<ThreadPool>,
+        upload_progress_updater: Option<Arc<dyn ProgressUpdater>>,
+        download_only: bool,
+        dry_run: bool,
     ) -> Result<PointerFileTranslator> {
         let shard_manager = Arc::new(create_shard_manager(&config.shard_storage_config, download_only).await?);
 
@@ -120,6 +140,7 @@ impl PointerFileTranslator {
 
         let xorb_uploader = ParallelXorbUploader::new(
             &config.cas_storage_config.prefix,
+            dry_run,
             shard_manager.clone(),
             cas_client.clone(),
             XORB_UPLOAD_RATE_LIMITER.clone(),
@@ -146,6 +167,7 @@ impl PointerFileTranslator {
 
         Ok(Self {
             config,
+            dry_run,
             shard_manager,
             remote_shards,
             cas: cas_client,
@@ -203,7 +225,9 @@ impl PointerFileTranslator {
         // flush accumulated memory shard.
         self.shard_manager.flush().await?;
 
-        self.upload_shards().await?;
+        if !self.dry_run {
+            self.upload_shards().await?;
+        }
 
         Ok(())
     }
@@ -223,6 +247,13 @@ impl PointerFileTranslator {
         self.remote_shards.move_session_shards_to_local_cache().await?;
 
         Ok(())
+    }
+
+    pub async fn summarize_file_info_of_session(&self) -> Result<Vec<MDBFileInfo>> {
+        self.shard_manager
+            .all_file_info_of_session()
+            .await
+            .map_err(DataProcessingError::from)
     }
 }
 

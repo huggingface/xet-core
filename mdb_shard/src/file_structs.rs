@@ -1,3 +1,4 @@
+use serde::Serialize;
 use std::fmt::Debug;
 use std::io::{self, Cursor, Read, Write};
 use std::mem::size_of;
@@ -20,7 +21,7 @@ pub const MDB_FILE_FLAG_METADATA_EXT_MASK: u32 = 1 << 30;
 /// a sequence of FileDataSequenceEntry, maybe a sequence
 /// of FileVerificationEntry, and maybe a FileMetadataExt
 /// determined by file flags.
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
 // Already the case, but making it explicit here to avoid compiler
 // complaints on the offset_of calls.
 #[repr(C)]
@@ -161,7 +162,7 @@ pub enum SupersetResult {
     Equal,
 }
 
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
 #[repr(C)] // Just making this explicit
 pub struct FileDataSequenceEntry {
     // maps to one or more CAS chunk(s)
@@ -248,7 +249,7 @@ impl FileDataSequenceEntry {
     }
 }
 
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
 pub struct FileVerificationEntry {
     pub range_hash: MerkleHash,
     pub _unused: [u64; 2],
@@ -291,7 +292,7 @@ impl FileVerificationEntry {
 }
 
 /// Extended metadata about the file (e.g. sha256). Stored in the FileInfo when the
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
 pub struct FileMetadataExt {
     pub sha256: MerkleHash,
     pub _unused: [u64; 2],
@@ -333,7 +334,7 @@ impl FileMetadataExt {
     }
 }
 
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
 pub struct MDBFileInfo {
     pub metadata: FileDataSequenceHeader,
     pub segments: Vec<FileDataSequenceEntry>,

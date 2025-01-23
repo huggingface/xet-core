@@ -159,7 +159,7 @@ pub async fn download_async(
     Ok(paths)
 }
 
-async fn clean_file(processor: &PointerFileTranslator, f: String) -> errors::Result<PointerFile> {
+pub async fn clean_file(processor: &PointerFileTranslator, f: String) -> errors::Result<PointerFile> {
     let mut read_buf = vec![0u8; READ_BLOCK_SIZE];
     let path = PathBuf::from(f);
     let mut reader = BufReader::new(File::open(path.clone())?);

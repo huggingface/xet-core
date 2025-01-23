@@ -34,6 +34,7 @@ type XorbUploadValueType = (MerkleHash, Vec<u8>, Vec<(MerkleHash, usize)>);
 pub(crate) struct ParallelXorbUploader {
     // Configurations
     cas_prefix: String,
+    dry_run: bool,
 
     // Utils
     shard_manager: Arc<ShardFileManager>,
@@ -55,6 +56,7 @@ pub(crate) struct ParallelXorbUploader {
 impl ParallelXorbUploader {
     pub async fn new(
         cas_prefix: &str,
+        dry_run: bool,
         shard_manager: Arc<ShardFileManager>,
         cas: Arc<dyn Client + Send + Sync>,
         rate_limiter: Arc<Semaphore>,
@@ -63,6 +65,7 @@ impl ParallelXorbUploader {
     ) -> Arc<Self> {
         Arc::new(ParallelXorbUploader {
             cas_prefix: cas_prefix.to_owned(),
+            dry_run,
             shard_manager,
             cas,
             upload_tasks: Mutex::new(JoinSet::new()),
@@ -107,9 +110,10 @@ impl XorbUpload for ParallelXorbUploader {
 
         let mut upload_tasks = self.upload_tasks.lock().await;
         let upload_progress_updater = self.upload_progress_updater.clone();
+        let dry_run = self.dry_run;
         upload_tasks.spawn_on(
             async move {
-                let ret = upload_and_register_xorb(item, shard_manager, cas, cas_prefix).await;
+                let ret = upload_and_register_xorb(item, shard_manager, cas, cas_prefix, dry_run).await;
                 if let Some(updater) = upload_progress_updater {
                     updater.update(xorb_data_len as u64);
                 }
@@ -151,12 +155,13 @@ async fn upload_and_register_xorb(
     shard_manager: Arc<ShardFileManager>,
     cas: Arc<dyn Client + Send + Sync>,
     cas_prefix: String,
+    dry_run: bool,
 ) -> Result<()> {
     let (cas_hash, data, chunks) = item;
 
     let raw_bytes_len = data.len();
     // upload xorb
-    {
+    if !dry_run {
         let mut pos = 0;
         let chunk_and_boundaries = chunks
             .iter()
