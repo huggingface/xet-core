@@ -47,6 +47,87 @@ impl CacheState {
             total_bytes,
         }
     }
+
+    fn remove_item(&mut self, key: &Key, cache_item: &CacheItem) {
+        let Some(items) = self.inner.get_mut(key) else {
+            return;
+        };
+        let Some(idx) = index_of(items, cache_item) else { return };
+
+        items.swap_remove(idx);
+        if items.is_empty() {
+            self.inner.remove(key);
+        }
+
+        self.total_bytes -= cache_item.len;
+        self.num_items -= 1;
+    }
+
+    fn remove_random_item(&mut self) -> Option<(Key, CacheItem)> {
+        if self.num_items == 0 {
+            return None;
+        }
+
+        let random_item = rand::random::<usize>() % self.num_items;
+        let mut count = 0;
+        for (key, items) in self.inner.iter_mut() {
+            if random_item < count + items.len() {
+                let item = items.swap_remove(random_item - count);
+                self.num_items -= 1;
+                self.total_bytes -= item.len;
+                return Some((key.clone(), item));
+            }
+            count += items.len();
+        }
+        panic!("BUG: must have found an item at this point")
+    }
+
+    fn evict_to_n_total_bytes(&mut self, final_size: u64) -> Vec<(Key, CacheItem)> {
+        let mut result = Vec::new();
+        while self.total_bytes > final_size {
+            let Some(random_item) = self.remove_random_item() else {
+                return result;
+            };
+            result.push(random_item);
+        }
+        result
+    }
+
+    fn remove_encompassing(&mut self, key: &Key, cache_item: &CacheItem) -> Vec<CacheItem> {
+        let Some(key_items) = self.inner.get_mut(key) else {
+            return Vec::new();
+        };
+        let mut indices_to_remove = Vec::new();
+        for (idx, existing_item) in key_items.iter().enumerate() {
+            if range_encompassing(&cache_item.range, &existing_item.range) {
+                indices_to_remove.push(idx)
+            }
+        }
+        let mut result = Vec::with_capacity(indices_to_remove.len());
+        // removing by index in reverse to guarantee lower-index items aren't shifted/moved onward
+        for idx in indices_to_remove.into_iter().rev() {
+            let removed_item = key_items.swap_remove(idx);
+            self.num_items -= 1;
+            self.total_bytes -= removed_item.len;
+            result.push(removed_item);
+        }
+        result
+    }
+
+    fn add_item(&mut self, key: &Key, cache_item: CacheItem) {
+        let item_bytes = cache_item.len;
+        if let Some(items) = self.inner.get_mut(key) {
+            items.push(cache_item);
+        } else {
+            self.inner.insert(key.clone(), vec![cache_item]);
+        }
+        self.total_bytes += item_bytes;
+        self.num_items += 1;
+    }
+}
+
+fn range_encompassing(range: &ChunkRange, sub_range: &ChunkRange) -> bool {
+    range.start <= sub_range.start && sub_range.end <= range.end
 }
 
 /// DiskCache is a ChunkCache implementor that saves data on the file system
@@ -259,13 +340,34 @@ impl DiskCache {
         }
 
         loop {
-            let cache_item = if let Some(item) = self.find_match(key, range)? {
-                item
-            } else {
+            let Some(cache_item) = self.find_match(key, range)? else {
                 return Ok(None);
             };
 
             let path = self.item_path(key, &cache_item)?;
+
+            let mut file_buf = match File::open(&path) {
+                Ok(file) => file,
+                Err(e) => match e.kind() {
+                    ErrorKind::NotFound => {
+                        self.remove_item(key, &cache_item)?;
+                        continue;
+                    },
+                    _ => return Err(e.into()),
+                },
+            };
+
+            file_buf.rewind()?;
+            let Ok(header) = CacheFileHeader::deserialize(&mut file_buf)
+                .debug_error(format!("failed to deserialize cache file header on path: {path:?}"))
+            else {
+                self.remove_item(key, &cache_item)?;
+                continue;
+            };
+
+            let start = cache_item.range.start;
+            let result_buf = get_range_from_cache_file(&header, &mut file_buf, range, start)?;
+            return Ok(Some(result_buf));
 
             // OLD, needed for hash validation, read file to buffer to do validation
             // let mut file_buf = {
@@ -284,17 +386,6 @@ impl DiskCache {
             //     // Cursor::new(buf)
             // };
 
-            let mut file_buf = match File::open(&path) {
-                Ok(file) => file,
-                Err(e) => match e.kind() {
-                    ErrorKind::NotFound => {
-                        self.remove_item(key, &cache_item)?;
-                        continue;
-                    },
-                    _ => return Err(e.into()),
-                },
-            };
-
             // TODO: reintroduce hash validation of cache file, but not for every get, memoize success status per cache
             // file let hash = compute_hash_from_reader(&mut file_buf)?;
             // if hash != cache_item.hash {
@@ -305,28 +396,12 @@ impl DiskCache {
             //     self.remove_item(key, &cache_item)?;
             //     continue;
             // }
-
-            file_buf.seek(SeekFrom::Start(0))?;
-            let header_result = CacheFileHeader::deserialize(&mut file_buf)
-                .debug_error(format!("failed to deserialize cache file header on path: {path:?}"));
-            let header = if let Ok(header) = header_result {
-                header
-            } else {
-                self.remove_item(key, &cache_item)?;
-                continue;
-            };
-
-            let start = cache_item.range.start;
-            let result_buf = get_range_from_cache_file(&header, &mut file_buf, range, start)?;
-            return Ok(Some(result_buf));
         }
     }
 
     fn find_match(&self, key: &Key, range: &ChunkRange) -> OptionResult<CacheItem, ChunkCacheError> {
         let state = self.state.read()?;
-        let items = if let Some(items) = state.inner.get(key) {
-            items
-        } else {
+        let Some(items) = state.inner.get(key) else {
             return Ok(None);
         };
 
@@ -348,7 +423,7 @@ impl DiskCache {
     ) -> Result<(), ChunkCacheError> {
         if range.start >= range.end
             || chunk_byte_indices.len() != (range.end - range.start + 1) as usize
-            // chunk_byte_indices is guarenteed to be more than 1 element at this point
+            // chunk_byte_indices is guaranteed to be more than 1 element at this point
             || chunk_byte_indices[0] != 0
             || *chunk_byte_indices.last().unwrap() as usize != data.len()
             || !strictly_increasing(chunk_byte_indices)
@@ -360,9 +435,17 @@ impl DiskCache {
 
         // check if we already contain the range
         while let Some(cache_item) = self.find_match(key, range)? {
-            if self.validate_match(key, range, chunk_byte_indices, data, &cache_item)? {
-                return Ok(());
+            // weak validation, simply: does the file exist
+            let path = self.item_path(key, &cache_item)?;
+            if path.exists() {
+                return Ok(())
+            } else {
+                self.remove_item(key, &cache_item)?;
             }
+            // TODO: clean up
+            // if self.validate_match(key, range, chunk_byte_indices, data, &cache_item)? {
+            //     return Ok(());
+            // }
         }
 
         let header = CacheFileHeader::new(chunk_byte_indices);
@@ -374,13 +457,13 @@ impl DiskCache {
             blake3::Hash::from_bytes([0u8; blake3::OUT_LEN])
         };
 
-        let cache_item = CacheItem {
+        let new_cache_item = CacheItem {
             range: range.clone(),
             len: (header_buf.len() + data.len()) as u64,
             hash,
         };
 
-        let path = self.item_path(key, &cache_item)?;
+        let path = self.item_path(key, &new_cache_item)?;
 
         let mut fw = SafeFileCreator::new(path)?;
 
@@ -389,51 +472,26 @@ impl DiskCache {
         fw.close()?;
 
         // evict items after ensuring the file write but before committing to cache state
-        // to avoid removing new item.
+        // to avoid accidentally removing new item.
         let mut state = self.state.write()?;
 
-        let items = state.inner.entry(key.clone()).or_default();
-
-        // remove from state any items that would be encompassed by the new value
-        // first collect their indices, then remove them by index in reverse
-        let mut to_remove: Vec<usize> = Vec::new();
-        for (i, item) in items.iter().enumerate() {
-            if item.range.start >= cache_item.range.start && item.range.end <= cache_item.range.end {
-                to_remove.push(i);
-            }
-        }
-
-        // collection of paths to remove from file system
-        let mut overlapping_item_paths = HashSet::new();
-        let mut total_bytes_rm = 0;
-        let num_items_rm = to_remove.len();
-        // removing by index in reverse to guarentee lower-index items aren't shifted/moved
-        for item_idx in to_remove.into_iter().rev() {
-            let item = items.swap_remove(item_idx);
-            overlapping_item_paths.insert(self.item_path(key, &item)?);
-            total_bytes_rm += item.len;
-        }
-        state.num_items -= num_items_rm;
-        state.total_bytes -= total_bytes_rm;
-
-        // add evicted paths to paths to remove from file system
-        let evicted_paths = self.maybe_evict(&mut state, cache_item.len)?;
-
-        // add the item info in-memory state after evictions are done
-        state.num_items += 1;
-        state.total_bytes += cache_item.len;
-        let item_set = state.inner.entry(key.clone()).or_default();
-        item_set.push(cache_item);
+        // also attempt to remove all items that could be served by the new item
+        let encompassed_removed = state.remove_encompassing(key, &new_cache_item);
+        let evicted = state.evict_to_n_total_bytes(self.capacity - new_cache_item.len);
+        state.add_item(key, new_cache_item);
 
         // release lock
         drop(state);
 
         // remove files after done with modifying in memory state and releasing lock
-        for path in overlapping_item_paths {
-            remove_file(&path)?;
+        for encompassed_item in encompassed_removed {
+            let path = self.item_path(key, &encompassed_item)?;
+            remove_file(path)?;
         }
-        for path in evicted_paths {
+        for (evicted_key, evicted_item) in evicted {
+            let path = self.item_path(&evicted_key, &evicted_item)?;
             remove_file(&path)?;
+
             // check and try to remove key path if all items evicted for key
             let dir_path = path.parent().ok_or(ChunkCacheError::Infallible)?;
             check_remove_dir(dir_path)?;
@@ -569,29 +627,11 @@ impl DiskCache {
 
     /// removes an item from both the in-memory state of the cache and the file system
     fn remove_item(&self, key: &Key, cache_item: &CacheItem) -> Result<(), ChunkCacheError> {
-        {
-            let mut state = self.state.write()?;
-            if let Some(items) = state.inner.get_mut(key) {
-                let idx = match index_of(items, cache_item) {
-                    Some(idx) => idx,
-                    // item is no longer in the state
-                    None => return Ok(()),
-                };
-                items.swap_remove(idx);
-                if items.is_empty() {
-                    state.inner.remove(key);
-                }
-                state.total_bytes -= cache_item.len;
-                state.num_items -= 1;
-            }
-        }
+        self.state.write()?.remove_item(key, cache_item);
 
         let path = self.item_path(key, cache_item)?;
-
-        if !path.exists() {
-            return Ok(());
-        }
         remove_file(&path)?;
+
         let dir_path = path.parent().ok_or(ChunkCacheError::Infallible)?;
         check_remove_dir(dir_path)
     }
