@@ -1,8 +1,9 @@
+use std::cell::RefCell;
 use std::fmt::Display;
 use std::future::Future;
 use std::sync::atomic::Ordering::SeqCst;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-
+use std::sync::Mutex;
 use thiserror::Error;
 /// This module provides a simple wrapper around Tokio's runtime to create a thread pool
 /// with some default settings. It is intended to be used as a singleton thread pool for
@@ -54,6 +55,8 @@ use tokio;
 use tokio::task::{JoinError, JoinHandle};
 use tracing::{debug, error};
 
+static NUM_THREAD_POOLS_CREATED: Mutex<RefCell<usize>> = Mutex::new(RefCell::new(0));
+
 const THREADPOOL_NUM_WORKER_THREADS: usize = 4; // 4 active threads
 const THREADPOOL_THREAD_ID_PREFIX: &str = "hf-xet"; // thread names will be hf-xet-0, hf-xet-1, etc.
 const THREADPOOL_STACK_SIZE: usize = 8_000_000; // 8MB stack size
@@ -91,17 +94,31 @@ pub struct ThreadPool {
 
     // Are we in the middle of a sigint shutdown?
     sigint_shutdown: AtomicBool,
+
+    id: usize,
 }
 
 impl ThreadPool {
     pub fn new() -> Result<Self, MultithreadedRuntimeError> {
         let runtime = new_threadpool()?;
+        let id = {
+            let guard = NUM_THREAD_POOLS_CREATED
+                .lock()
+                .map_err(|e| MultithreadedRuntimeError::Other(format!("{e}")))?;
+            let next_val = *guard.borrow() + 1;
+            guard.replace(next_val)
+        };
         Ok(Self {
             handle: runtime.handle().clone(),
             runtime: std::sync::RwLock::new(Some(runtime)),
             external_executor_count: AtomicUsize::new(0),
             sigint_shutdown: AtomicBool::new(false),
+            id,
         })
+    }
+
+    pub fn id(&self) -> usize {
+        self.id
     }
 
     /// Gives the number of concurrent calls to external_run_async_task.

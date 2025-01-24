@@ -57,7 +57,7 @@ impl RemoteClient {
                 "Using disk cache directory: {:?}, size: {}.",
                 cache_config.cache_directory, cache_config.cache_size
             );
-            chunk_cache::get_cache(cache_config)
+            chunk_cache::get_cache(cache_config, threadpool.clone())
                 .log_error("failed to initialize cache, not using cache")
                 .ok()
         } else {
@@ -324,6 +324,7 @@ impl RemoteClient {
             let len_written = (end - start) as u64;
             remaining_len -= len_written;
             progress_updater.as_ref().inspect(|updater| updater.update(len_written));
+            tracing::info!("finished term: {term_idx}");
         }
 
         writer.flush()?;
@@ -350,7 +351,7 @@ pub(crate) async fn get_one_term(
     fetch_info: Arc<HashMap<HexMerkleHash, Vec<CASReconstructionFetchInfo>>>,
     range_download_single_flight: RangeDownloadSingleFlight,
 ) -> Result<Vec<u8>> {
-    debug!("term: {term:?}");
+    tracing::info!("term: {term:?}");
 
     if term.range.end < term.range.start {
         return Err(CasClientError::InvalidRange);

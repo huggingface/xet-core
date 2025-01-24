@@ -11,7 +11,7 @@ strict = []
 [dependencies]
 cas_types = { version = "0.1.0", path = "../cas_types" }
 cas_object = { path = "../cas_object" }
-chunk_cache = { path = "../chunk_cache" }
+chunk_cache = { path = "../chunk_cache_fast", package = "chunk_cache_fast" }
 error_printer = { path = "../error_printer" }
 file_utils = { path = "../file_utils" }
 utils = { path = "../utils" }
