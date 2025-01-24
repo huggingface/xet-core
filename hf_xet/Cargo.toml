@@ -19,6 +19,7 @@ pyo3 = { version = "0.23.3", features = [
 error_printer = { path = "../error_printer" }
 data = { path = "../data" }
 utils = { path = "../utils" }
+xet_threadpool = { path = "../xet_threadpool" }
 tokio = { version = "1.36", features = ["full"] }
 parutils = { path = "../parutils" }
 tracing = "0.1.*"

@@ -9,6 +9,7 @@ path = "src/lib.rs"
 
 [dependencies]
 merklehash = { path = "../merklehash" }
+xet_threadpool = { path = "../xet_threadpool" }
 thiserror = "2.0"
 futures = "0.3.28"
 

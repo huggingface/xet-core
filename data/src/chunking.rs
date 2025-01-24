@@ -7,7 +7,7 @@ use merklehash::compute_data_hash;
 use tokio::sync::mpsc::{Receiver, Sender};
 use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
-use utils::ThreadPool;
+use xet_threadpool::ThreadPool;
 
 use super::clean::BufferItem;
 use crate::errors::{DataProcessingError, Result};

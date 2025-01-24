@@ -14,7 +14,7 @@ use parutils::{tokio_par_for_each, ParallelError};
 use tempfile::{tempdir_in, TempDir};
 use utils::auth::{AuthConfig, TokenRefresher};
 use utils::progress::ProgressUpdater;
-use utils::ThreadPool;
+use xet_threadpool::ThreadPool;
 
 use crate::configurations::*;
 use crate::errors::DataProcessingError;

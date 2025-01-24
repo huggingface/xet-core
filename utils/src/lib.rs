@@ -4,8 +4,6 @@ pub mod auth;
 pub mod errors;
 pub mod serialization_utils;
 pub mod singleflight;
-pub mod threadpool;
-pub use threadpool::ThreadPool;
 
 mod async_read;
 mod output_bytes;
