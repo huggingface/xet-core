@@ -205,7 +205,6 @@ impl Cleaner {
 
         let file_size = self.metrics.file_size.load(Ordering::Relaxed);
 
-        // File is small, all data kept in the small file buffer.
         let new_bytes = self.metrics.new_bytes_after_dedup.load(Ordering::Relaxed);
         let return_file = self.to_pointer_file().await?;
 
