@@ -550,7 +550,7 @@ impl Cleaner {
                 // This is new data.
                 let add_new_data;
 
-                if tracking_info.current_cas_block_hashes.get(&chunk.hash).is_some() && !forced_nodedupe {
+                if tracking_info.current_cas_block_hashes.contains_key(&chunk.hash) && !forced_nodedupe {
                     let idx = tracking_info.current_cas_block_hashes.get(&chunk.hash).unwrap();
                     let idx = *idx;
                     // This chunk will get the CAS hash updated when the local CAS block
