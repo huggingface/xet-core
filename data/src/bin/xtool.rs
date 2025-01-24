@@ -264,6 +264,7 @@ mod tests {
     use crate::HubClient;
 
     #[tokio::test]
+    #[ignore = "need valid token"]
     async fn test_get_jwt_token() -> Result<()> {
         let hub_client = HubClient {
             endpoint: "https://xethub-poc.us.dev.moon.huggingface.tech".to_owned(),
