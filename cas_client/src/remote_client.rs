@@ -324,7 +324,6 @@ impl RemoteClient {
             let len_written = (end - start) as u64;
             remaining_len -= len_written;
             progress_updater.as_ref().inspect(|updater| updater.update(len_written));
-            tracing::info!("finished term: {term_idx}");
         }
 
         writer.flush()?;
@@ -351,7 +350,7 @@ pub(crate) async fn get_one_term(
     fetch_info: Arc<HashMap<HexMerkleHash, Vec<CASReconstructionFetchInfo>>>,
     range_download_single_flight: RangeDownloadSingleFlight,
 ) -> Result<Vec<u8>> {
-    tracing::info!("term: {term:?}");
+    debug!("term: {term:?}");
 
     if term.range.end < term.range.start {
         return Err(CasClientError::InvalidRange);

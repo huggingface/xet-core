@@ -43,7 +43,7 @@ pub fn default_config(
     let xet_path = home.join(".xet");
     std::fs::create_dir_all(&xet_path)?;
 
-    let cache_path = home.join(".cache").join("huggingface").join("xet");
+    let cache_config = get_cache_config(&home);
 
     let (token, token_expiration) = token_info.unzip();
     let auth_cfg = AuthConfig::maybe_new(token, token_expiration, token_refresher);
@@ -58,10 +58,7 @@ pub fn default_config(
             endpoint: Endpoint::Server(endpoint.clone()),
             auth: auth_cfg.clone(),
             prefix: "default".into(),
-            cache_config: Some(CacheConfig {
-                cache_directory: cache_path.join("chunk-cache"),
-                cache_size: 10 * 1024 * 1024 * 1024, // 10 GiB
-            }),
+            cache_config,
             staging_directory: None,
         },
         shard_storage_config: StorageConfig {
@@ -88,6 +85,19 @@ pub fn default_config(
 
     // Return the temp dir so that it's not dropped and thus the directory deleted.
     Ok((translator_config, shard_staging_directory))
+}
+
+fn get_cache_config(home: &PathBuf) -> Option<CacheConfig> {
+    if std::env::var("HF_XET_CACHE_DISABLE").is_ok() {
+        return None;
+    }
+
+    let cache_directory = home.join(".cache").join("huggingface").join("xet").join("chunk-cache");
+
+    Some(CacheConfig {
+        cache_directory,
+        cache_size: 10 << 30, // 10 GiB
+    })
 }
 
 pub async fn upload_async(
