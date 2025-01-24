@@ -9,6 +9,7 @@ on:
   push:
     branches: 
       - main
+  pull_request:
   workflow_dispatch:
     inputs:
       tag:
@@ -36,6 +37,12 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: 3.x
+      - name: Upgrade GCC
+        if: ${{ matrix.platform.target }} == "aarch64"
+        run: |
+          sudo apt install gcc-10 g++-10
+          sudo update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-10 100 --slave /usr/bin/g++ g++ /usr/bin/g++-10 --slave /usr/bin/gcov gcov /usr/bin/gcov-10
+          sudo update-alternatives --set gcc /usr/bin/gcc-10
       - name: Build wheels
         uses: PyO3/maturin-action@v1
         with:
