@@ -61,25 +61,6 @@ pub struct DiskCache {
     file_remove_send: Sender<PathBuf>,
     state_editor_op_jh: JoinHandle<Result<(), ChunkCacheError>>,
     state_editor_op_send: Sender<StateEditorOp>,
-    put_times: Mutex<Vec<Duration>>,
-    get_times: Mutex<Vec<Duration>>,
-}
-
-impl Drop for DiskCache {
-    fn drop(&mut self) {
-        let put_times = self.put_times.lock().unwrap();
-        let get_times = self.get_times.lock().unwrap();
-        let num_puts = std::cmp::min(put_times.len(), 1) as f64;
-        let num_gets = std::cmp::min(get_times.len(), 1) as f64;
-
-        let total_puts = put_times.iter().fold(0f64, |acc, it| acc + it.as_micros() as f64);
-        let total_gets = get_times.iter().fold(0f64, |acc, it| acc + it.as_nanos() as f64);
-
-        let avg_puts = total_puts / num_puts;
-        let avg_gets = total_gets / num_gets;
-
-        info!("cache dropping: avg_puts {avg_puts} micro s avg_gets {avg_gets} ns");
-    }
 }
 
 impl DiskCache {
@@ -136,8 +117,6 @@ impl DiskCache {
             file_remove_send,
             state_editor_op_jh,
             state_editor_op_send,
-            put_times: Mutex::new(Vec::new()),
-            get_times: Mutex::new(Vec::new()),
         })
     }
 
@@ -146,10 +125,8 @@ impl DiskCache {
         let mut total_bytes = 0;
         let max_num_bytes = 2 * capacity;
 
-        let readdir = match read_dir(cache_root) {
-            Ok(Some(rd)) => rd,
-            Ok(None) => return Ok(state),
-            Err(e) => return Err(e),
+        let Some(readdir) = read_dir(cache_root)? else {
+            return Ok(state);
         };
 
         // loop through cache root directory, first level containing "prefix" directories
@@ -158,10 +135,8 @@ impl DiskCache {
             // this match pattern appears often in this function, and we could write a macro to replace it
             // however this puts an implicit change of control flow with continue/return cases that is
             // hard to decipher from a macro, so avoid replace it for readability
-            let key_prefix_dir = match is_ok_dir(key_prefix_dir) {
-                Ok(Some(dirent)) => dirent,
-                Ok(None) => continue,
-                Err(e) => return Err(e),
+            let Some(key_prefix_dir) = is_ok_dir(key_prefix_dir)? else {
+                continue;
             };
 
             let key_prefix_dir_name = key_prefix_dir.file_name();
@@ -170,18 +145,14 @@ impl DiskCache {
                 continue;
             }
 
-            let key_prefix_readdir = match read_dir(key_prefix_dir.path()) {
-                Ok(Some(rd)) => rd,
-                Ok(None) => continue,
-                Err(e) => return Err(e),
+            let Some(key_prefix_readdir) = read_dir(key_prefix_dir.path())? else {
+                continue;
             };
 
             // loop through key directories inside prefix directory
             for key_dir in key_prefix_readdir {
-                let key_dir = match is_ok_dir(key_dir) {
-                    Ok(Some(dirent)) => dirent,
-                    Ok(None) => continue,
-                    Err(e) => return Err(e),
+                let Some(key_dir) = is_ok_dir(key_dir)? else {
+                    continue;
                 };
 
                 let key_dir_name = key_dir.file_name();
@@ -193,29 +164,22 @@ impl DiskCache {
                     "{key_dir_name:?}",
                 );
 
-                let key = match try_parse_key(key_dir_name.as_encoded_bytes())
-                    .debug_error("failed to decoded a directory name as a key")
-                {
-                    Ok(key) => key,
-                    Err(_) => {
-                        continue;
-                    },
+                let Ok(key) = try_parse_key(key_dir_name.as_encoded_bytes())
+                    .debug_error(format!("failed to decoded a directory name \"{key_dir_name:?}\" as a key"))
+                else {
+                    continue;
                 };
 
                 let mut items = Vec::new();
 
-                let key_readdir = match read_dir(key_dir.path()) {
-                    Ok(Some(krd)) => krd,
-                    Ok(None) => continue,
-                    Err(e) => return Err(e),
+                let Some(key_readdir) = read_dir(key_dir.path())? else {
+                    continue;
                 };
 
                 // loop through cache items inside key directory
                 for item in key_readdir {
-                    let cache_item = match try_parse_cache_file(item, capacity) {
-                        Ok(Some(ci)) => ci,
-                        Ok(None) => continue,
-                        Err(e) => return Err(e),
+                    let Some(cache_item) = try_parse_cache_file(item, capacity)? else {
+                        continue;
                     };
 
                     total_bytes += cache_item.len;
@@ -574,14 +538,7 @@ impl Future for StateEditor {
 
 impl ChunkCache for DiskCache {
     fn get(&self, key: &Key, range: &ChunkRange) -> Result<Option<Vec<u8>>, ChunkCacheError> {
-        let start_time = Instant::now();
-        let res = self.get_impl(key, range);
-        let elapsed = start_time.elapsed();
-        info!("cache get elapsed {elapsed:?}");
-        // if let Ok(mut guard) = self.get_times.lock() {
-        //     guard.push(elapsed);
-        // }
-        res
+        self.get_impl(key, range)
     }
 
     fn put(
@@ -591,14 +548,7 @@ impl ChunkCache for DiskCache {
         chunk_byte_indices: &[u32],
         data: &[u8],
     ) -> Result<(), ChunkCacheError> {
-        let start_time = Instant::now();
-        let res = self.put_impl(key, range, chunk_byte_indices, data);
-        let elapsed = start_time.elapsed();
-        info!("cache put elapsed {elapsed:?}");
-        // if let Ok(mut guard) = self.put_times.lock() {
-        //     guard.push(elapsed);
-        // }
-        res
+        self.put_impl(key, range, chunk_byte_indices, data)
     }
 }
 
