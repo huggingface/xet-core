@@ -117,7 +117,7 @@ pub async fn upload_async(
     // Push the CAS blocks and flush the mdb to disk
     processor.finalize_cleaning().await?;
 
-    Ok(pointers)
+    Ok(pointers.into_iter().map(|(pt, _)| pt).collect())
 }
 
 pub async fn download_async(
@@ -159,7 +159,7 @@ pub async fn download_async(
     Ok(paths)
 }
 
-pub async fn clean_file(processor: &PointerFileTranslator, f: String) -> errors::Result<PointerFile> {
+pub async fn clean_file(processor: &PointerFileTranslator, f: String) -> errors::Result<(PointerFile, u64)> {
     let mut read_buf = vec![0u8; READ_BLOCK_SIZE];
     let path = PathBuf::from(f);
     let mut reader = BufReader::new(File::open(path.clone())?);
@@ -179,9 +179,9 @@ pub async fn clean_file(processor: &PointerFileTranslator, f: String) -> errors:
         handle.add_bytes(read_buf[0..bytes].to_vec()).await?;
     }
 
-    let pf_str = handle.result().await?;
+    let (pf_str, new_bytes) = handle.result().await?;
     let pf = PointerFile::init_from_string(&pf_str, path.to_str().unwrap());
-    Ok(pf)
+    Ok((pf, new_bytes))
 }
 
 async fn smudge_file(

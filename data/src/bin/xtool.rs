@@ -8,7 +8,7 @@ use cas_client::build_http_client;
 use clap::{Args, Parser, Subcommand};
 use data::data_client::{clean_file, default_config};
 use data::errors::DataProcessingError;
-use data::PointerFileTranslator;
+use data::{PointerFile, PointerFileTranslator};
 use mdb_shard::file_structs::MDBFileInfo;
 use parutils::{tokio_par_for_each, ParallelError};
 use reqwest_middleware::ClientWithMiddleware;
@@ -159,13 +159,20 @@ impl Command {
     async fn run(self, hub_client: HubClient, threadpool: Arc<ThreadPool>) -> Result<()> {
         match self {
             Command::Dedup(arg) => {
-                let all_file_info = dedup_files(arg.files, arg.recursive, hub_client, threadpool).await?;
-                let writer: Box<dyn Write> = if let Some(path) = arg.output {
+                let (all_file_info, clean_ret) = dedup_files(arg.files, arg.recursive, hub_client, threadpool).await?;
+                let mut writer: Box<dyn Write> = if let Some(path) = arg.output {
                     Box::new(BufWriter::new(File::options().create(true).write(true).truncate(true).open(path)?))
                 } else {
                     Box::new(std::io::stdout())
                 };
-                serde_json::to_writer(writer, &all_file_info)?;
+                serde_json::to_writer(&mut writer, &all_file_info)?;
+                writer.flush()?;
+
+                eprintln!("\n\nClean results:");
+                for (pf, new_bytes) in clean_ret {
+                    println!("{}: {} bytes -> {} bytes", pf.hash_string(), pf.filesize(), new_bytes);
+                }
+
                 Ok(())
             },
             Command::Query(arg) => query_file(arg.hash, hub_client, threadpool),
@@ -187,7 +194,7 @@ async fn dedup_files(
     recursive: bool,
     hub_client: HubClient,
     threadpool: Arc<ThreadPool>,
-) -> Result<Vec<MDBFileInfo>> {
+) -> Result<(Vec<MDBFileInfo>, Vec<(PointerFile, u64)>)> {
     let token_type = "write";
     let (endpoint, jwt_token, jwt_token_expiry) = hub_client.get_jwt_token(token_type).await?;
     let token_refresher = Arc::new(HubClientTokenRefresher {
@@ -224,7 +231,7 @@ async fn dedup_files(
 
     eprintln!("Dedupping {} files...", file_paths.len());
 
-    tokio_par_for_each(file_paths, num_workers, |f, _| async {
+    let clean_ret = tokio_par_for_each(file_paths, num_workers, |f, _| async {
         let proc = processor.clone();
         clean_file(&proc, f).await
     })
@@ -236,7 +243,9 @@ async fn dedup_files(
 
     processor.finalize_cleaning().await?;
 
-    processor.summarize_file_info_of_session().await.map_err(anyhow::Error::from)
+    let all_file_info = processor.summarize_file_info_of_session().await?;
+
+    Ok((all_file_info, clean_ret))
 }
 
 fn is_git_special_files(path: &str) -> bool {
