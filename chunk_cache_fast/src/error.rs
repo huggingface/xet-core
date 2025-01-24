@@ -1,7 +1,8 @@
-use base64::DecodeError;
-use merklehash::DataHashBytesParseError;
 use std::array::TryFromSliceError;
 use std::str::Utf8Error;
+
+use base64::DecodeError;
+use merklehash::DataHashBytesParseError;
 use thiserror::Error;
 
 #[derive(Debug, Error)]

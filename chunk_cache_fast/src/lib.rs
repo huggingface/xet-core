@@ -3,6 +3,7 @@ mod disk;
 pub mod error;
 
 use std::path::PathBuf;
+
 pub use cache_manager::get_cache;
 use cas_types::{ChunkRange, Key};
 pub use disk::test_utils::*;

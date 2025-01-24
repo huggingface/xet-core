@@ -12,6 +12,7 @@ use lazy_static::lazy_static;
 use merkledb::constants::IDEAL_CAS_BLOCK_SIZE;
 use parutils::{tokio_par_for_each, ParallelError};
 use tempfile::{tempdir_in, TempDir};
+use tracing::warn;
 use utils::auth::{AuthConfig, TokenRefresher};
 use utils::progress::ProgressUpdater;
 use utils::ThreadPool;
@@ -89,8 +90,10 @@ pub fn default_config(
 
 fn get_cache_config(home: &PathBuf) -> Option<CacheConfig> {
     if std::env::var("HF_XET_CACHE_DISABLE").is_ok() {
+        warn!("CACHE_DISABLED");
         return None;
     }
+    warn!("CACHE_ENABLED");
 
     let cache_directory = home.join(".cache").join("huggingface").join("xet").join("chunk-cache");
 

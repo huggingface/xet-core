@@ -4,6 +4,7 @@ use std::future::Future;
 use std::sync::atomic::Ordering::SeqCst;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Mutex;
+
 use thiserror::Error;
 /// This module provides a simple wrapper around Tokio's runtime to create a thread pool
 /// with some default settings. It is intended to be used as a singleton thread pool for

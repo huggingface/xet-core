@@ -17,7 +17,7 @@ use http::header::RANGE;
 use merklehash::MerkleHash;
 use reqwest::{StatusCode, Url};
 use reqwest_middleware::ClientWithMiddleware;
-use tracing::{debug, error, trace};
+use tracing::{debug, error, trace, warn};
 use utils::auth::AuthConfig;
 use utils::progress::ProgressUpdater;
 use utils::singleflight::Group;
@@ -53,10 +53,7 @@ impl RemoteClient {
     ) -> Self {
         // use disk cache if cache_config provided.
         let chunk_cache = if let Some(cache_config) = cache_config {
-            debug!(
-                "Using disk cache directory: {:?}, size: {}.",
-                cache_config.cache_directory, cache_config.cache_size
-            );
+            warn!("Using disk cache directory: {:?}, size: {}.", cache_config.cache_directory, cache_config.cache_size);
             chunk_cache::get_cache(cache_config, threadpool.clone())
                 .log_error("failed to initialize cache, not using cache")
                 .ok()

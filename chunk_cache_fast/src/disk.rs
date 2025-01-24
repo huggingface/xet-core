@@ -1,15 +1,3 @@
-use crate::disk::cache_file_header::CacheFileHeader;
-use crate::disk::cache_item::CacheItem;
-use crate::error::ChunkCacheError;
-use crate::{CacheConfig, ChunkCache};
-use base64::engine::general_purpose::URL_SAFE;
-use base64::engine::GeneralPurpose;
-use base64::Engine;
-use cas_types::{ChunkRange, Key};
-use dashmap::DashMap;
-use error_printer::ErrorPrinter;
-use file_utils::SafeFileCreator;
-use merklehash::MerkleHash;
 use std::fs::{DirEntry, File};
 use std::future::Future;
 use std::io;
@@ -20,9 +8,23 @@ use std::sync::mpsc::{channel, Receiver, Sender, TryRecvError};
 use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll};
 use std::time::{Duration, Instant};
+
+use base64::engine::general_purpose::URL_SAFE;
+use base64::engine::GeneralPurpose;
+use base64::Engine;
+use cas_types::{ChunkRange, Key};
+use dashmap::DashMap;
+use error_printer::ErrorPrinter;
+use file_utils::SafeFileCreator;
+use merklehash::MerkleHash;
 use tokio::task::JoinHandle;
 use tracing::{debug, info, warn};
 use utils::ThreadPool;
+
+use crate::disk::cache_file_header::CacheFileHeader;
+use crate::disk::cache_item::CacheItem;
+use crate::error::ChunkCacheError;
+use crate::{CacheConfig, ChunkCache};
 
 mod cache_file_header;
 mod cache_item;
