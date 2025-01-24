@@ -497,6 +497,7 @@ impl Cleaner {
 
             // check the fragmentation state and if it is pretty fragmented
             // we skip dedupe
+            let mut forced_nodedupe = false;
             if let Some((n_deduped, _)) = dedupe_query {
                 if let Some(chunks_per_range) = tracking_info.rolling_chunks_per_range() {
                     if chunks_per_range < MIN_N_CHUNKS_PER_RANGE {
@@ -507,6 +508,7 @@ impl Cleaner {
                         // the chunks per range and so we skip it.
                         if (n_deduped as f32) < chunks_per_range {
                             dedupe_query = None;
+                            forced_nodedupe = true;
                         }
                     }
                 }
@@ -548,7 +550,8 @@ impl Cleaner {
                 // This is new data.
                 let add_new_data;
 
-                if let Some(idx) = tracking_info.current_cas_block_hashes.get(&chunk.hash) {
+                if tracking_info.current_cas_block_hashes.get(&chunk.hash).is_some() && !forced_nodedupe {
+                    let idx = tracking_info.current_cas_block_hashes.get(&chunk.hash).unwrap();
                     let idx = *idx;
                     // This chunk will get the CAS hash updated when the local CAS block
                     // is full and registered.
