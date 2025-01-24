@@ -3,6 +3,7 @@ use std::io::{self, Cursor, Read, Write};
 use std::mem::size_of;
 use std::sync::Arc;
 
+use merklehash::data_hash::hex;
 use merklehash::MerkleHash;
 use serde::Serialize;
 use utils::serialization_utils::*;
@@ -26,6 +27,7 @@ pub const MDB_FILE_FLAG_METADATA_EXT_MASK: u32 = 1 << 30;
 // complaints on the offset_of calls.
 #[repr(C)]
 pub struct FileDataSequenceHeader {
+    #[serde(with = "hex::serde")]
     pub file_hash: MerkleHash,
     pub file_flags: u32,
     pub num_entries: u32,
@@ -166,6 +168,7 @@ pub enum SupersetResult {
 #[repr(C)] // Just making this explicit
 pub struct FileDataSequenceEntry {
     // maps to one or more CAS chunk(s)
+    #[serde(with = "hex::serde")]
     pub cas_hash: MerkleHash,
     pub cas_flags: u32,
     pub unpacked_segment_bytes: u32,
@@ -251,6 +254,7 @@ impl FileDataSequenceEntry {
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
 pub struct FileVerificationEntry {
+    #[serde(with = "hex::serde")]
     pub range_hash: MerkleHash,
     pub _unused: [u64; 2],
 }
@@ -294,6 +298,7 @@ impl FileVerificationEntry {
 /// Extended metadata about the file (e.g. sha256). Stored in the FileInfo when the
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
 pub struct FileMetadataExt {
+    #[serde(with = "hex::serde")]
     pub sha256: MerkleHash,
     pub _unused: [u64; 2],
 }
