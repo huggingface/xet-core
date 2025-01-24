@@ -66,7 +66,7 @@ pub fn default_config(
             auth: auth_cfg,
             prefix: "default-merkledb".into(),
             cache_config: Some(CacheConfig {
-                cache_directory: cache_path.join("shard-cache"),
+                cache_directory: home.join(".cache").join("huggingface").join("xet").join("shard-cache"),
                 cache_size: 0, // ignored
             }),
             staging_directory: Some(shard_staging_directory.path().to_owned()),
