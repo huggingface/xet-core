@@ -143,6 +143,11 @@ struct DedupArg {
     /// under these directories.
     #[clap(short, long)]
     recursive: bool,
+    /// Compute for files sequentially in the order as specified, or as enumerated
+    /// from directory walking if in recursive mode. This can be helpful to study
+    /// a set of files where there is a temporal relation.
+    #[clap(short, long)]
+    sequential: bool,
     /// If a file path is specified, write out the JSON formatted file reconstruction info
     /// to the file; otherwise write out to the stdout.
     #[clap(short, long)]
@@ -159,7 +164,8 @@ impl Command {
     async fn run(self, hub_client: HubClient, threadpool: Arc<ThreadPool>) -> Result<()> {
         match self {
             Command::Dedup(arg) => {
-                let (all_file_info, clean_ret) = dedup_files(arg.files, arg.recursive, hub_client, threadpool).await?;
+                let (all_file_info, clean_ret) =
+                    dedup_files(arg.files, arg.recursive, arg.sequential, hub_client, threadpool).await?;
                 let mut writer: Box<dyn Write> = if let Some(path) = arg.output {
                     Box::new(BufWriter::new(File::options().create(true).write(true).truncate(true).open(path)?))
                 } else {
@@ -192,6 +198,7 @@ fn main() -> Result<()> {
 async fn dedup_files(
     files: Vec<String>,
     recursive: bool,
+    sequential: bool,
     hub_client: HubClient,
     threadpool: Arc<ThreadPool>,
 ) -> Result<(Vec<MDBFileInfo>, Vec<(PointerFile, u64)>)> {
@@ -204,7 +211,7 @@ async fn dedup_files(
     }) as Arc<dyn TokenRefresher>;
     let (config, _tempdir) = default_config(endpoint, Some((jwt_token, jwt_token_expiry)), Some(token_refresher))?;
 
-    let num_workers = threadpool.num_worker_threads();
+    let num_workers = if sequential { 1 } else { threadpool.num_worker_threads() };
     let processor = Arc::new(PointerFileTranslator::dry_run(config, threadpool, None, false).await?);
 
     // Scan all files if under recursive mode
