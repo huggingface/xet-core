@@ -27,7 +27,8 @@ use utils::ThreadPool;
 
 use crate::chunking::{chunk_target_default, ChunkYieldType};
 use crate::constants::{
-    MIN_N_CHUNKS_PER_RANGE, MIN_SPACING_BETWEEN_GLOBAL_DEDUP_QUERIES, NRANGES_IN_STREAMING_FRAGMENTATION_ESTIMATOR,
+    MIN_N_CHUNKS_PER_RANGE_HIGH, MIN_N_CHUNKS_PER_RANGE_LOW, MIN_SPACING_BETWEEN_GLOBAL_DEDUP_QUERIES,
+    NRANGES_IN_STREAMING_FRAGMENTATION_ESTIMATOR,
 };
 use crate::data_processing::CASDataAggregator;
 use crate::errors::DataProcessingError::*;
@@ -63,6 +64,9 @@ struct DedupFileTrackingInfo {
     rolling_last_nranges: VecDeque<usize>,
     /// This tracks the total number of chunks in the last N ranges
     rolling_nranges_chunks: usize,
+    /// chooses between MIN_N_CHUNKS_PER_RANGE_HIGH or MIN_N_CHUNKS_PER_RANGE_LOW
+    /// Used to provide some hysteresis on the defrag decision
+    defrag_at_low_threshold: bool,
 }
 
 impl DedupFileTrackingInfo {
@@ -500,7 +504,12 @@ impl Cleaner {
             let mut forced_nodedupe = false;
             if let Some((n_deduped, _)) = dedupe_query {
                 if let Some(chunks_per_range) = tracking_info.rolling_chunks_per_range() {
-                    if chunks_per_range < MIN_N_CHUNKS_PER_RANGE {
+                    let target_cpr = if tracking_info.defrag_at_low_threshold {
+                        MIN_N_CHUNKS_PER_RANGE_LOW
+                    } else {
+                        MIN_N_CHUNKS_PER_RANGE_HIGH
+                    };
+                    if chunks_per_range < target_cpr {
                         // chunks per range is pretty poor, we should not dedupe.
                         // However, here we do get to look ahead a little bit
                         // and check the size of the next dedupe window.
@@ -509,7 +518,15 @@ impl Cleaner {
                         if (n_deduped as f32) < chunks_per_range {
                             dedupe_query = None;
                             forced_nodedupe = true;
+                            // once I start skipping dedupe, we try to raise
+                            // the cpr to the high threshold
+                            tracking_info.defrag_at_low_threshold = false;
                         }
+                    } else {
+                        // once I start deduping again, we lower CPR
+                        // to the low threshold so we allow for more small
+                        // fragments.
+                        tracking_info.defrag_at_low_threshold = true;
                     }
                 }
             }
