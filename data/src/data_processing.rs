@@ -172,7 +172,6 @@ impl PointerFileTranslator {
         };
 
         Cleaner::new(
-            dedup.small_file_threshold,
             matches!(dedup.global_dedup_policy, GlobalDedupPolicy::Always),
             self.config.cas_storage_config.prefix.clone(),
             dedup.repo_salt,

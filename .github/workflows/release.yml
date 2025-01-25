@@ -27,9 +27,11 @@ jobs:
         platform:
           - runner: ubuntu-22.04
             target: x86_64
+            manylinux: auto
             features: "--features openssl_vendored"
           - runner: ubuntu-22.04
             target: aarch64
+            manylinux: manylinux_2_28
             features: "--features openssl_vendored"
     steps:
       - uses: actions/checkout@v4
@@ -42,7 +44,7 @@ jobs:
           target: ${{ matrix.platform.target }}
           args: --release ${{ matrix.platform.features }} --out dist
           sccache: 'true'
-          manylinux: auto
+          manylinux: ${{ matrix.platform.manylinux }}
           working-directory: hf_xet
           before-script-linux: |
             if command -v apt-get &> /dev/null; then

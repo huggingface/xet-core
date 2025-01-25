@@ -25,7 +25,6 @@ pub struct StorageConfig {
 #[derive(Debug)]
 pub struct DedupConfig {
     pub repo_salt: Option<RepoSalt>,
-    pub small_file_threshold: usize,
     pub global_dedup_policy: GlobalDedupPolicy,
 }
 

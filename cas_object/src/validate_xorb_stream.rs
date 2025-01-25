@@ -7,7 +7,6 @@ use merkledb::prelude::MerkleDBHighLevelMethodsV1;
 use merkledb::{Chunk, MerkleMemDB};
 use merklehash::MerkleHash;
 
-use crate::cas_chunk_format::decompress_chunk_to_writer;
 use crate::cas_object_format::CAS_OBJECT_FORMAT_IDENT;
 use crate::error::{CasObjectError, Result, Validate};
 use crate::{parse_chunk_header, CASChunkHeader, CasObject};
@@ -63,8 +62,9 @@ async fn _validate_cas_object_from_async_read<R: AsyncRead + Unpin>(
         ))?;
 
         let chunk_uncompressed_expected_len = chunk_header.get_uncompressed_length() as usize;
-        let mut uncompressed_chunk_data = Vec::with_capacity(chunk_uncompressed_expected_len);
-        decompress_chunk_to_writer(chunk_header, &mut compressed_chunk_data, &mut uncompressed_chunk_data)
+        let uncompressed_chunk_data = chunk_header
+            .get_compression_scheme()?
+            .decompress_from_slice(&compressed_chunk_data)
             .log_error(format!("failed to decompress chunk at index {}, xorb {hash}", hash_chunks.len()))?;
 
         if chunk_uncompressed_expected_len != uncompressed_chunk_data.len() {

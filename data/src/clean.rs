@@ -34,7 +34,6 @@ use crate::metrics::FILTER_BYTES_CLEANED;
 use crate::parallel_xorb_uploader::XorbUpload;
 use crate::remote_shard_interface::RemoteShardInterface;
 use crate::repo_salt::RepoSalt;
-use crate::small_file_determination::{is_file_passthrough, is_possible_start_to_text_file};
 use crate::PointerFile;
 
 // Chunking is the bottleneck, changing batch size doesn't have a big impact.
@@ -108,7 +107,6 @@ impl ShaGenerator {
 
 pub struct Cleaner {
     // Configurations
-    small_file_threshold: usize,
     enable_global_dedup_queries: bool,
     cas_prefix: String,
     repo_salt: Option<RepoSalt>,
@@ -129,7 +127,6 @@ pub struct Cleaner {
 
     // Internal Data
     tracking_info: Mutex<DedupFileTrackingInfo>,
-    small_file_buffer: Mutex<Option<Vec<u8>>>,
 
     // Auxiliary info
     file_name: Option<PathBuf>,
@@ -145,7 +142,6 @@ pub struct Cleaner {
 impl Cleaner {
     #[allow(clippy::too_many_arguments)]
     pub(crate) async fn new(
-        small_file_threshold: usize,
         enable_global_dedup_queries: bool,
         cas_prefix: String,
         repo_salt: Option<RepoSalt>,
@@ -166,7 +162,6 @@ impl Cleaner {
         let chunker = chunk_target_default(data_c, chunk_p, threadpool.clone());
 
         let cleaner = Arc::new(Cleaner {
-            small_file_threshold,
             enable_global_dedup_queries,
             cas_prefix,
             repo_salt,
@@ -178,7 +173,6 @@ impl Cleaner {
             chunking_worker: Mutex::new(Some(chunker)),
             dedup_worker: Mutex::new(None),
             tracking_info: Mutex::new(Default::default()),
-            small_file_buffer: Mutex::new(Some(Vec::with_capacity(small_file_threshold))),
             file_name: file_name.map(|f| f.to_owned()),
             sha_generator: ShaGenerator::new(),
             metrics: CleanMetrics {
@@ -200,9 +194,8 @@ impl Cleaner {
         self.metrics.file_size.fetch_add(data.len() as u64, Ordering::Relaxed);
 
         self.sha_generator.update(&data)?;
-        if !self.check_passthrough_status(&data).await? {
-            self.add_data_to_chunking(BufferItem::Value(data)).await?
-        }
+
+        self.add_data_to_chunking(BufferItem::Value(data)).await?;
 
         Ok(())
     }
@@ -212,15 +205,8 @@ impl Cleaner {
 
         let file_size = self.metrics.file_size.load(Ordering::Relaxed);
 
-        // File is small, all data kept in the small file buffer.
-        let mut small_file_buffer = self.small_file_buffer.lock().await;
-        let (new_bytes, return_file) = if let Some(buffer) = small_file_buffer.take() {
-            let small_file = String::from_utf8(buffer)?;
-            (small_file.len() as u64, small_file)
-        } else {
-            let new_bytes = self.metrics.new_bytes_after_dedup.load(Ordering::Relaxed);
-            (new_bytes, self.to_pointer_file().await?)
-        };
+        let new_bytes = self.metrics.new_bytes_after_dedup.load(Ordering::Relaxed);
+        let return_file = self.to_pointer_file().await?;
 
         let current_time = SystemTime::now();
         let start: DateTime<Utc> = self.metrics.start_time.into();
@@ -306,32 +292,6 @@ impl Cleaner {
             .map_err(|e| InternalError(format!("{e}")))?;
 
         Ok(())
-    }
-
-    /// Check passthrough condition of data.
-    /// Return true if the incoming data is already processed inside,
-    /// otherwise return false and let the caller to handle the data.
-    async fn check_passthrough_status(&self, data: &[u8]) -> Result<bool> {
-        let mut small_file_buffer = self.small_file_buffer.lock().await;
-
-        if let Some(mut buffer) = small_file_buffer.take() {
-            buffer.extend_from_slice(data);
-
-            if !is_possible_start_to_text_file(&buffer) || buffer.len() >= self.small_file_threshold {
-                self.add_data_to_chunking(BufferItem::Value(buffer)).await?;
-
-                // not passthrough, but just sent all buffered data + incoming data to chunker
-                return Ok(true);
-            }
-
-            *small_file_buffer = Some(buffer);
-
-            // may be passthrough, keep accumulating
-            return Ok(true);
-        }
-
-        // not passthrough, already sent all buffered data to chunker
-        Ok(false)
     }
 
     async fn dedup(&self, chunks: &[ChunkYieldType]) -> Result<()> {
@@ -573,17 +533,6 @@ impl Cleaner {
 
     async fn finish(&self) -> Result<()> {
         self.task_is_running().await?;
-
-        // check if there is remaining data in buffer
-        let mut small_file_buffer = self.small_file_buffer.lock().await;
-        if let Some(buffer) = small_file_buffer.take() {
-            if !is_file_passthrough(&buffer, self.small_file_threshold) {
-                self.add_data_to_chunking(BufferItem::Value(buffer)).await?;
-            } else {
-                // put back for return value
-                *small_file_buffer = Some(buffer);
-            }
-        }
 
         // signal finish
         self.add_data_to_chunking(BufferItem::Completed).await?;

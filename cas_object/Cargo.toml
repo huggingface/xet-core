@@ -3,6 +3,16 @@ name = "cas_object"
 version = "0.1.0"
 edition = "2021"
 
+[[bench]]
+name = "compression_bench"
+harness = false
+bench = true
+
+[[bench]]
+name = "bg_split_regroup_bench"
+harness = false
+bench = true
+
 [dependencies]
 thiserror = "2.0"
 error_printer = { path = "../error_printer" }
@@ -17,4 +27,4 @@ blake3 = "1.5.4"
 futures = { version = "0.3.31" }
 tokio-util = {version = "0.7.12",  features = ["io"]}
 tokio = {version = "1.41.1" }
-
+half = "2.4.1"
