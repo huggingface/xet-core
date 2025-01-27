@@ -7,6 +7,9 @@ use std::num::ParseIntError;
 use std::ops::{Deref, DerefMut};
 use std::{fmt, str};
 
+// URL safe Base 64 encoding with ending characters removed.
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use base64::Engine as _;
 use safe_transmute::transmute_to_bytes;
 use serde::{Deserialize, Serialize};
 
@@ -152,9 +155,6 @@ impl DataHash {
     /// Gives a compact base64 representation of the hash that is more compact than hex and is
     /// also url and file name safe.    
     pub fn base64(&self) -> String {
-        // URL safe Base 64 encoding with ending characters removed.
-        use base64::engine::general_purpose::URL_SAFE_NO_PAD;
-        use base64::Engine as _;
         URL_SAFE_NO_PAD.encode(&self.as_bytes())
     }
 
@@ -179,8 +179,6 @@ impl DataHash {
 
     // Converts the hash from base64 (created by base64 above) to this.  Used for testing.
     pub fn from_base64(b64: &str) -> Result<DataHash, DataHashBytesParseError> {
-        use base64::engine::general_purpose::URL_SAFE_NO_PAD;
-        use base64::Engine as _;
         let bytes = URL_SAFE_NO_PAD.decode(b64.as_bytes()).map_err(|_| DataHashBytesParseError {})?;
         DataHash::from_slice(&bytes)
     }
