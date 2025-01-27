@@ -149,6 +149,15 @@ impl DataHash {
         format!("{:016x}{:016x}{:016x}{:016x}", self.0[0], self.0[1], self.0[2], self.0[3])
     }
 
+    /// Gives a compact base64 representation of the hash that is more compact than hex and is
+    /// also url and file name safe.    
+    pub fn base64(&self) -> String {
+        // URL safe Base 64 encoding with ending characters removed.
+        use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+        use base64::Engine as _;
+        URL_SAFE_NO_PAD.encode(&self.as_bytes())
+    }
+
     /// Parses a hexadecimal string as a DataHash, returning
     /// Err(DataHashHexParseError) on failure.
     pub fn from_hex(h: &str) -> Result<DataHash, DataHashHexParseError> {
@@ -166,6 +175,14 @@ impl DataHash {
         ret.0[2] = u64::from_str_radix(&h[32..48], 16)?;
         ret.0[3] = u64::from_str_radix(&h[48..64], 16)?;
         Ok(ret)
+    }
+
+    // Converts the hash from base64 (created by base64 above) to this.  Used for testing.
+    pub fn from_base64(b64: &str) -> Result<DataHash, DataHashBytesParseError> {
+        use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+        use base64::Engine as _;
+        let bytes = URL_SAFE_NO_PAD.decode(b64.as_bytes()).map_err(|_| DataHashBytesParseError {})?;
+        DataHash::from_slice(&bytes)
     }
 
     /// Returns the datahash as a raw byte slice.
@@ -444,5 +461,15 @@ mod tests {
 
         // Verify that the outputs are different
         assert_ne!(output1, output2,);
+    }
+
+    // Test the base64 usage.
+    #[test]
+    fn test_base64() {
+        let hash = compute_data_hash(&[0, 1, 2, 3]);
+
+        let b64 = hash.base64();
+
+        assert_eq!(hash, DataHash::from_base64(&b64).unwrap());
     }
 }

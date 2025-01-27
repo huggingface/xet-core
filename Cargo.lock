@@ -2005,6 +2005,7 @@ dependencies = [
 name = "merklehash"
 version = "0.14.5"
 dependencies = [
+ "base64 0.22.1",
  "blake3",
  "heed",
  "rand 0.8.5",
