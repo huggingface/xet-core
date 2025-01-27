@@ -155,7 +155,7 @@ impl DataHash {
     /// Gives a compact base64 representation of the hash that is more compact than hex and is
     /// also url and file name safe.    
     pub fn base64(&self) -> String {
-        URL_SAFE_NO_PAD.encode(&self.as_bytes())
+        URL_SAFE_NO_PAD.encode(self.as_bytes())
     }
 
     /// Parses a hexadecimal string as a DataHash, returning
