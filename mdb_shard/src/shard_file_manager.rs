@@ -46,7 +46,7 @@ lazy_static! {
 }
 
 // The structure used as the target for the dedup lookup
-#[repr(packed)]
+#[repr(Rust, packed)]
 struct ChunkCacheElement {
     cas_start_index: u32, // the index of the first chunk
     cas_chunk_offset: u16,
@@ -417,9 +417,9 @@ impl ShardFileManager {
         Ok(())
     }
 
-    async fn flush_internal<'a>(
+    async fn flush_internal(
         &self,
-        mem_shard: &mut tokio::sync::RwLockWriteGuard<'a, MDBShardFlushGuard>,
+        mem_shard: &mut tokio::sync::RwLockWriteGuard<'_, MDBShardFlushGuard>,
     ) -> Result<Option<PathBuf>> {
         Ok(if let Some(path) = mem_shard.flush()? {
             self.load_and_cleanup_shards_by_path(&[&path]).await?;

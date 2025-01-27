@@ -143,10 +143,7 @@ impl MDBInMemoryShard {
             return None;
         }
 
-        let (chunk_ref, chunk_index_start) = match self.chunk_hash_lookup.get(&query_hashes[0]) {
-            Some(s) => s,
-            None => return None,
-        };
+        let (chunk_ref, chunk_index_start) = self.chunk_hash_lookup.get(&query_hashes[0])?;
 
         let chunk_index_start = *chunk_index_start as usize;
 
