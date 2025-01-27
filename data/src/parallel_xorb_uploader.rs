@@ -9,7 +9,7 @@ use merklehash::MerkleHash;
 use tokio::sync::{Mutex, Semaphore};
 use tokio::task::JoinSet;
 use utils::progress::ProgressUpdater;
-use utils::ThreadPool;
+use xet_threadpool::ThreadPool;
 
 use crate::data_processing::CASDataAggregator;
 use crate::errors::DataProcessingError::*;

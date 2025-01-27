@@ -15,7 +15,7 @@ use merklehash::MerkleHash;
 use parutils::tokio_par_for_each;
 use tokio::task::JoinHandle;
 use tracing::{debug, info};
-use utils::ThreadPool;
+use xet_threadpool::ThreadPool;
 
 use super::configurations::{FileQueryPolicy, StorageConfig};
 use super::errors::{DataProcessingError, Result};

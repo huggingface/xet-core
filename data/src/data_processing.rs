@@ -13,7 +13,7 @@ use mdb_shard::ShardFileManager;
 use merklehash::MerkleHash;
 use tokio::sync::{Mutex, Semaphore};
 use utils::progress::ProgressUpdater;
-use utils::ThreadPool;
+use xet_threadpool::ThreadPool;
 
 use crate::cas_interface::create_cas_client;
 use crate::clean::Cleaner;

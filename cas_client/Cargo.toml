@@ -18,6 +18,7 @@ utils = { path = "../utils" }
 merkledb = { path = "../merkledb" }
 mdb_shard = { path = "../mdb_shard" }
 merklehash = { path = "../merklehash" }
+xet_threadpool = { path = "../xet_threadpool" }
 thiserror = "2.0"
 tokio = { version = "1.41", features = ["full"] }
 async-trait = "0.1.9"

@@ -14,7 +14,7 @@ use parutils::{tokio_par_for_each, ParallelError};
 use tempfile::{tempdir_in, TempDir};
 use utils::auth::{AuthConfig, TokenRefresher};
 use utils::progress::ProgressUpdater;
-use utils::ThreadPool;
+use xet_threadpool::ThreadPool;
 
 use crate::configurations::*;
 use crate::errors::DataProcessingError;
@@ -37,17 +37,32 @@ pub fn default_config(
     token_refresher: Option<Arc<dyn TokenRefresher>>,
 ) -> errors::Result<(TranslatorConfig, TempDir)> {
     let home = home_dir().unwrap_or(current_dir()?);
-    let xet_path = home.join(".xet");
-    std::fs::create_dir_all(&xet_path)?;
 
-    let cache_path = home.join(".cache").join("huggingface").join("xet");
+    let cache_root_path = home.join(".cache").join("huggingface").join("xet");
+
+    let staging_root = cache_root_path.join("staging");
+    std::fs::create_dir_all(&staging_root)?;
+    let shard_staging_directory = tempdir_in(staging_root)?;
 
     let (token, token_expiration) = token_info.unzip();
     let auth_cfg = AuthConfig::maybe_new(token, token_expiration, token_refresher);
 
-    let shard_staging_root = xet_path.join("shard-session");
-    std::fs::create_dir_all(&shard_staging_root)?;
-    let shard_staging_directory = tempdir_in(shard_staging_root)?;
+    // Calculate a fingerprint of the current endpoint to make sure caches stay separated.
+    let endpoint_tag = {
+        let endpoint_prefix = endpoint
+            .chars()
+            .take(16)
+            .map(|c| if c.is_alphanumeric() { c } else { '_' })
+            .collect::<String>();
+
+        // If more gets added
+        let endpoint_hash = merklehash::compute_data_hash(endpoint.as_bytes()).base64();
+
+        format!("{endpoint_prefix}-{}", &endpoint_hash[..16])
+    };
+
+    let cache_path = cache_root_path.join(endpoint_tag);
+    std::fs::create_dir_all(&cache_path)?;
 
     let translator_config = TranslatorConfig {
         file_query_policy: FileQueryPolicy::ServerOnly,
