@@ -1,5 +1,6 @@
 use std::io::Cursor;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use async_trait::async_trait;
 use itertools::Itertools;
@@ -18,7 +19,7 @@ use crate::{RegistrationClient, ShardClientInterface};
 /// Is intended to use for testing interactions between local repos that would normally
 /// require the use of the remote shard server.  
 pub struct LocalShardClient {
-    shard_manager: ShardFileManager,
+    shard_manager: Arc<ShardFileManager>,
     shard_directory: PathBuf,
     global_dedup: DiskBasedGlobalDedupTable,
 }

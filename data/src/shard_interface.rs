@@ -11,7 +11,7 @@ use super::errors::Result;
 pub async fn create_shard_manager(
     shard_storage_config: &StorageConfig,
     download_only_mode: bool,
-) -> Result<ShardFileManager> {
+) -> Result<Arc<ShardFileManager>> {
     let shard_session_directory = shard_storage_config
         .staging_directory
         .as_ref()
@@ -25,7 +25,7 @@ pub async fn create_shard_manager(
     let shard_manager = ShardFileManager::load_dir(shard_session_directory, download_only_mode).await?;
 
     if shard_cache_directory.exists() {
-        shard_manager.load_and_cleanup_shards_by_path(&[shard_cache_directory]).await?;
+        shard_manager.register_shards_by_path(&[shard_cache_directory]).await?;
     } else {
         warn!("Merkle DB Cache path {:?} does not exist, skipping registration.", shard_cache_directory);
     }

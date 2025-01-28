@@ -69,7 +69,7 @@ impl RemoteShardInterface {
         };
 
         let shard_manager = if file_query_policy != FileQueryPolicy::ServerOnly && shard_manager.is_none() {
-            Some(Arc::new(create_shard_manager(shard_storage_config, download_only).await?))
+            Some(create_shard_manager(shard_storage_config, download_only).await?)
         } else {
             shard_manager
         };
@@ -253,7 +253,7 @@ impl RemoteShardInterface {
 
         let shard_file = cache_dir.join(local_shard_name(shard_hash));
 
-        shard_manager.load_and_cleanup_shards_by_path(&[shard_file]).await?;
+        shard_manager.register_shards_by_path(&[shard_file]).await?;
 
         Ok(())
     }

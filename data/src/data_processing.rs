@@ -87,7 +87,7 @@ impl PointerFileTranslator {
         upload_progress_updater: Option<Arc<dyn ProgressUpdater>>,
         download_only: bool,
     ) -> Result<PointerFileTranslator> {
-        let shard_manager = Arc::new(create_shard_manager(&config.shard_storage_config, download_only).await?);
+        let shard_manager = create_shard_manager(&config.shard_storage_config, download_only).await?;
 
         let cas_client = create_cas_client(
             &config.cas_storage_config,
