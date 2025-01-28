@@ -62,14 +62,24 @@ macro_rules! print_metrics {
 
             // Load the values from the corresponding atomic variables
             let call_count = [<$prefix _CALL_COUNT>].load(Ordering::Relaxed);
-            let total_time = [<$prefix _TOTAL_TIME>].load(Ordering::Relaxed);
-            let max_time = [<$prefix _MAX_TIME>].load(Ordering::Relaxed);
+            let total_time = [<$prefix _TOTAL_TIME>].load(Ordering::Relaxed) as f64;
+            let max_time = [<$prefix _MAX_TIME>].load(Ordering::Relaxed) as f64;
 
             if call_count > 0 {
-                let avg_time = total_time / call_count;
+                let avg_time = total_time / (call_count as f64);
+                let (div, unit) = if avg_time > 1_000_000_000.0 {
+                    (1_000_000_000, "")
+                } else if avg_time > 1_000_000.0 {
+                    (1_000_000, "m")
+                } else if avg_time > 1_000.0 {
+                    (1_000, "u")
+                } else {
+                    (1, "n")
+                };
+                let div = div as f64;
                 println!(
-                    "{} Metrics:\n- Max Time: {} ns\n- Average Time: {} ns\n- Number of Calls: {}",
-                    $prefix, max_time, avg_time, call_count
+                    "{} Metrics:\n- Max Time: {:.2} {}s\n- Average Time: {:.2} {}s\n- Number of Calls: {}",
+                    $prefix, max_time / div, unit, avg_time / div, unit, call_count
                 );
             } else {
                 println!("{} Metrics:\n- No calls recorded yet.", $prefix);
