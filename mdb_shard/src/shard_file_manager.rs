@@ -91,13 +91,64 @@ impl ShardBookkeeper {
     }
 }
 
+pub struct SFMBuildParameters {
+    shard_directory: PathBuf,
+    clean_expired_shards: bool,
+    target_shard_size: u64,
+    chunk_dedup_enabled: bool,
+    shard_expiration_delete_buffer_secs: u64,
+    parent_sfm: Option<Arc<ShardFileManager>>,
+}
+
+impl SFMBuildParameters {
+    pub fn new(shard_directory: impl AsRef<Path>) -> Self {
+        Self {
+            shard_directory: shard_directory.as_ref().to_path_buf(),
+            clean_expired_shards: true,
+            target_shard_size: MDB_SHARD_MIN_TARGET_SIZE,
+            chunk_dedup_enabled: true,
+            shard_expiration_delete_buffer_secs: MDB_SHARD_EXPIRATION_BUFFER_SECS,
+            parent_sfm: None,
+        }
+    }
+
+    pub fn with_chunk_dedup(mut self, chunk_dedup_enabled: bool) -> Self {
+        self.chunk_dedup_enabled = chunk_dedup_enabled;
+        self
+    }
+    pub fn with_target_size(mut self, target_size: u64) -> Self {
+        self.target_shard_size = target_size;
+        self
+    }
+
+    pub fn with_parent_sfm(mut self, parent_sfm: Arc<ShardFileManager>) -> Self {
+        self.parent_sfm = Some(parent_sfm);
+        self
+    }
+
+    pub fn with_expired_shard_cleanup(mut self, cleanup: bool) -> Self {
+        self.clean_expired_shards = cleanup;
+        self
+    }
+
+    pub fn with_shard_expiration_delete_buffer(mut self, nsecs: u64) -> Self {
+        self.shard_expiration_delete_buffer_secs = nsecs;
+        self
+    }
+
+    pub async fn build(self) -> Result<Arc<ShardFileManager>> {
+        Ok(ShardFileManager::new_from_builder(self).await?.0)
+    }
+}
+
 pub struct ShardFileManager {
     shard_bookkeeper: Arc<RwLock<ShardBookkeeper>>,
     current_state: Arc<RwLock<MDBShardFlushGuard>>,
 
+    parent_sfm: Option<Arc<ShardFileManager>>,
     shard_directory: PathBuf,
     target_shard_min_size: u64,
-    chunk_dedup_disabled: bool,
+    chunk_dedup_enabled: bool,
 }
 
 /// Shard file manager to manage all the shards.  It is fully thread-safe and async enabled.
@@ -118,44 +169,20 @@ pub struct ShardFileManager {
 ///
 /// // new_shards is the list of new shards for this session.
 impl ShardFileManager {
-    /// Creates a new shard file manager at the
-    pub async fn new(
-        shard_directory: impl AsRef<Path>,
-        clean_expired_shards: bool,
-        disable_chunk_dedup: bool,
-    ) -> Result<Arc<Self>> {
-        Self::load_detail(
-            shard_directory,
-            clean_expired_shards,
-            disable_chunk_dedup,
-            MDB_SHARD_EXPIRATION_BUFFER_SECS,
-            MDB_SHARD_MIN_TARGET_SIZE,
-        )
-        .await
-        .map(|t| t.0)
+    pub fn builder(shard_directory: impl AsRef<Path>) -> SFMBuildParameters {
+        SFMBuildParameters::new(shard_directory)
     }
 
     /// Construct a new shard file manager that uses session_directory as the temporary dumping  
-    pub async fn load_dir(session_directory: &Path, disable_chunk_dedup: bool) -> Result<Arc<Self>> {
-        Self::load_detail(
-            session_directory,
-            true,
-            disable_chunk_dedup,
-            MDB_SHARD_EXPIRATION_BUFFER_SECS,
-            MDB_SHARD_MIN_TARGET_SIZE,
-        )
-        .await
-        .map(|t| t.0)
+    pub async fn load_dir(shard_directory: &Path, disable_chunk_dedup: bool) -> Result<Arc<Self>> {
+        Self::builder(shard_directory)
+            .with_chunk_dedup(!disable_chunk_dedup)
+            .build()
+            .await
     }
 
-    pub async fn load_detail(
-        shard_directory: impl AsRef<Path>,
-        clean_expired_shards: bool,
-        disable_chunk_dedup: bool,
-        shard_expiration_buffer_secs: u64,
-        target_shard_min_size: u64,
-    ) -> Result<(Arc<Self>, Vec<Arc<MDBShardFile>>)> {
-        let shard_directory = shard_directory.as_ref().to_path_buf();
+    pub async fn new_from_builder(sbp: SFMBuildParameters) -> Result<(Arc<Self>, Vec<Arc<MDBShardFile>>)> {
+        let shard_directory = &sbp.shard_directory;
 
         let mut new_shards = Vec::new();
 
@@ -172,7 +199,7 @@ impl ShardFileManager {
             if current_time < expiry_time {
                 Some(s)
             } else {
-                if clean_expired_shards && expiry_time + shard_expiration_buffer_secs <= current_time {
+                if sbp.clean_expired_shards && expiry_time + sbp.shard_expiration_delete_buffer_secs <= current_time {
                     deletion_candidates.push(s.path.clone());
                 }
 
@@ -190,9 +217,10 @@ impl ShardFileManager {
             current_state: Arc::new(RwLock::new(MDBShardFlushGuard {
                 shard: MDBInMemoryShard::default(),
             })),
-            shard_directory,
-            target_shard_min_size,
-            chunk_dedup_disabled: disable_chunk_dedup,
+            parent_sfm: sbp.parent_sfm,
+            shard_directory: sbp.shard_directory,
+            target_shard_min_size: sbp.target_shard_size,
+            chunk_dedup_enabled: sbp.chunk_dedup_enabled,
         };
 
         s.register_shards(&new_shards).await?;
@@ -241,7 +269,7 @@ impl ShardFileManager {
             }
 
             let update_chunk_lookup =
-                !self.chunk_dedup_disabled && sbkp_lg.total_indexed_chunks < *CHUNK_INDEX_TABLE_MAX_SIZE;
+                self.chunk_dedup_enabled && sbkp_lg.total_indexed_chunks < *CHUNK_INDEX_TABLE_MAX_SIZE;
 
             // Now add in the chunk indices.
             let shard_index;
@@ -348,7 +376,7 @@ impl ShardFileManager {
         &self,
         query_hashes: &[MerkleHash],
     ) -> Result<Option<(usize, FileDataSequenceEntry)>> {
-        if self.chunk_dedup_disabled {
+        if !self.chunk_dedup_enabled {
             return Err(MDBShardError::Other(
                 "Logic Error: shard_manager not initialized for dedup but dedup attempted.".to_owned(),
             ));
@@ -686,10 +714,7 @@ mod tests {
     }
 
     async fn sfm_with_target_shard_size(path: impl AsRef<Path>, target_size: u64) -> Result<Arc<ShardFileManager>> {
-        // Now, make sure that this happens if this directory is opened up
-        Ok(ShardFileManager::load_detail(path, false, false, MDB_SHARD_EXPIRATION_BUFFER_SECS, target_size)
-            .await?
-            .0)
+        ShardFileManager::builder(path).with_target_size(target_size).build().await
     }
 
     #[tokio::test]
@@ -997,6 +1022,14 @@ mod tests {
         Ok(())
     }
 
+    async fn shard_list_with_timestamp_filtering(path: &Path, del_buffer: u64) -> Result<Vec<Arc<MDBShardFile>>> {
+        let build_params = ShardFileManager::builder(path)
+            .with_expired_shard_cleanup(true)
+            .with_shard_expiration_delete_buffer(del_buffer);
+
+        Ok(ShardFileManager::new_from_builder(build_params).await?.1)
+    }
+
     #[tokio::test]
     async fn test_timestamp_filtering() -> Result<()> {
         let tmp_dir = TempDir::new("shard_test_timestamp")?;
@@ -1021,9 +1054,7 @@ mod tests {
             .unwrap();
 
         {
-            // Make sure this one gets loaded properly.
-            let (_shard_file_manager, loaded_shards) =
-                ShardFileManager::load_detail(tmp_dir_path_keyed, true, false, 100, MDB_SHARD_MIN_TARGET_SIZE).await?;
+            let loaded_shards = shard_list_with_timestamp_filtering(tmp_dir_path_keyed, 100).await?;
 
             assert_eq!(loaded_shards.len(), 1);
             assert_eq!(loaded_shards[0].shard_hash, out.shard_hash)
@@ -1033,9 +1064,7 @@ mod tests {
         std::thread::sleep(Duration::new(1, 250000000));
 
         {
-            // Now, it shouldn't load any of them.
-            let (_shard_file_manager, loaded_shards) =
-                ShardFileManager::load_detail(tmp_dir_path_keyed, true, false, 100, MDB_SHARD_MIN_TARGET_SIZE).await?;
+            let loaded_shards = shard_list_with_timestamp_filtering(tmp_dir_path_keyed, 100).await?;
 
             assert!(loaded_shards.is_empty());
 
@@ -1045,11 +1074,10 @@ mod tests {
             assert_eq!(n_files, 1);
         }
 
-        // Try again, but allow deletion.  Make sure it gets cleaned up.
+        // Try again, but allow deletion with 0 second buffer window.  Make sure it gets cleaned up.
         {
             // Now with zero deletion buffer time, so it should delete these shards
-            let (_shard_file_manager, loaded_shards) =
-                ShardFileManager::load_detail(tmp_dir_path_keyed, true, false, 0, MDB_SHARD_MIN_TARGET_SIZE).await?;
+            let loaded_shards = shard_list_with_timestamp_filtering(tmp_dir_path_keyed, 0).await?;
 
             assert!(loaded_shards.is_empty());
             let n_files = std::fs::read_dir(tmp_dir_path_keyed)?.map(|p| p.unwrap().path()).count();
