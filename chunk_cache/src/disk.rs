@@ -55,7 +55,6 @@ create_metrics!("EVICT_FN");
 create_metrics!("INITIALIZE");
 create_metrics!("COMPUTE_HASH");
 
-
 macro_rules! print_metrics {
     ($prefix:literal) => {
         paste::paste! {
@@ -101,28 +100,24 @@ macro_rules! track_metrics {
 
             // Update the metrics
             // paste! {
-            paste!{[<$prefix _CALL_COUNT>]}.fetch_add(1, Ordering::Relaxed);
+            paste! {[<$prefix _CALL_COUNT>]}.fetch_add(1, Ordering::Relaxed);
 
-            paste!{[<$prefix _TOTAL_TIME>]}.fetch_add(elapsed, Ordering::Relaxed);
+            paste! {[<$prefix _TOTAL_TIME>]}.fetch_add(elapsed, Ordering::Relaxed);
 
-            paste!{[<$prefix _MAX_TIME>]}
-                .fetch_update(
-                    Ordering::Relaxed,
-                    Ordering::Relaxed,
-                    |max_time| {
-                        if elapsed > max_time {
-                            Some(elapsed)
-                        } else {
-                            None
-                        }
-                    },
-                )
+            paste! {[<$prefix _MAX_TIME>]}
+                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |max_time| {
+                    if elapsed > max_time {
+                        Some(elapsed)
+                    } else {
+                        None
+                    }
+                })
                 .ok(); // Ignore the result of fetch_update
-            // }
-            // Return the result of the closure
+                       // }
+                       // Return the result of the closure
             result
         }
-    }
+    };
 }
 
 #[derive(Debug, Clone)]
@@ -193,6 +188,28 @@ impl Drop for DiskCache {
         print_metrics!("EVICT_FN");
         print_metrics!("INITIALIZE");
         print_metrics!("COMPUTE_HASH");
+
+        let total_time = (PUT_IMPL_TOTAL_TIME.load(Ordering::Relaxed)
+            + GET_IMPL_TOTAL_TIME.load(Ordering::Relaxed)
+            + INITIALIZE_TOTAL_TIME.load(Ordering::Relaxed)) as f64;
+
+        let total_calls = PUT_IMPL_CALL_COUNT.load(Ordering::Relaxed)
+            + GET_IMPL_CALL_COUNT.load(Ordering::Relaxed)
+            + INITIALIZE_CALL_COUNT.load(Ordering::Relaxed);
+
+        let (div, unit) = if total_time > 1_000_000_000.0 {
+            (1_000_000_000, "")
+        } else if total_time > 1_000_000.0 {
+            (1_000_000, "m")
+        } else if total_time > 1_000.0 {
+            (1_000, "u")
+        } else {
+            (1, "n")
+        };
+        let div = div as f64;
+
+        println!();
+        println!("Total time spent in cache\n- Time: {:.2} {}s\n- Number of Calls: {}", total_time / div, unit, total_calls);
     }
 }
 
@@ -310,7 +327,7 @@ impl DiskCache {
                     Err(e) => {
                         debug!("failed to decoded a directory name as a key: {e}");
                         continue;
-                    }
+                    },
                 };
 
                 let mut items = Vec::new();
@@ -399,10 +416,10 @@ impl DiskCache {
                             ErrorKind::NotFound => {
                                 self.remove_item(key, &cache_item)?;
                                 Ok::<Option<Vec<u8>>, ChunkCacheError>(None)
-                            }
+                            },
                             _ => Err(e.into()),
                         }
-                    }
+                    },
                 };
 
                 file_buf.seek(SeekFrom::Start(0))?;
@@ -765,7 +782,7 @@ fn read_dir(path: impl AsRef<Path>) -> OptionResult<std::fs::ReadDir, ChunkCache
             } else {
                 Err(e.into())
             }
-        }
+        },
     }
 }
 
@@ -782,7 +799,7 @@ fn is_ok_dir(dir_result: Result<DirEntry, io::Error>) -> OptionResult<DirEntry, 
                 return Ok(None);
             }
             return Err(e.into());
-        }
+        },
     };
     let md = match dirent.metadata() {
         Ok(md) => md,
@@ -791,7 +808,7 @@ fn is_ok_dir(dir_result: Result<DirEntry, io::Error>) -> OptionResult<DirEntry, 
                 return Ok(None);
             }
             return Err(e.into());
-        }
+        },
     };
     if !md.is_dir() {
         debug!("CACHE: expected directory at {:?}, is not directory", dirent.path());
@@ -811,7 +828,7 @@ fn try_parse_cache_file(file_result: io::Result<DirEntry>, capacity: u64) -> Opt
                 return Ok(None);
             }
             return Err(e.into());
-        }
+        },
     };
     let md = match item.metadata() {
         Ok(md) => md,
@@ -820,7 +837,7 @@ fn try_parse_cache_file(file_result: io::Result<DirEntry>, capacity: u64) -> Opt
                 return Ok(None);
             }
             return Err(e.into());
-        }
+        },
     };
 
     if !md.is_file() {
@@ -846,7 +863,7 @@ fn try_parse_cache_file(file_result: io::Result<DirEntry>, capacity: u64) -> Opt
             warn!("not a valid cache file, removing: {:?} {e:?}", item.file_name());
             remove_file(item.path())?;
             return Ok(None);
-        }
+        },
     };
     if md.len() != cache_item.len {
         // file is invalid, remove it
