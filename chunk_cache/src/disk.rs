@@ -77,8 +77,8 @@ macro_rules! print_metrics {
                 };
                 let div = div as f64;
                 println!(
-                    "{} Metrics:\n- Max Time: {:.2} {}s\n- Average Time: {:.2} {}s\n- Number of Calls: {}",
-                    $prefix, max_time / div, unit, avg_time / div, unit, call_count
+                    "{} Metrics:\n- Max Time: {:.2} {}s\n- Average Time: {:.2} {}s\n- Total Time: {:.2} {}s\n- Number of Calls: {}",
+                    $prefix, max_time / div, unit, avg_time / div, unit, total_time/ div, unit, call_count
                 );
             } else {
                 println!("{} Metrics:\n- No calls recorded yet.", $prefix);
