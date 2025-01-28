@@ -13,7 +13,7 @@ pub struct SafeFileCreator {
     dest_path: Option<PathBuf>,
     temp_path: PathBuf,
     original_metadata: Option<Metadata>,
-    writer: Option<BufWriter<File>>,
+    writer: Option<File>,
 }
 
 impl SafeFileCreator {
@@ -25,7 +25,7 @@ impl SafeFileCreator {
 
         // This matches the permissions and ownership of the parent directory
         let file = create_file(&temp_path)?;
-        let writer = BufWriter::new(file);
+        let writer = file; //BufWriter::new(file);
 
         Ok(SafeFileCreator {
             dest_path: Some(dest_path),
@@ -45,7 +45,7 @@ impl SafeFileCreator {
 
         // This matches the permissions and ownership of the parent directory
         let file = create_file(&temp_path)?;
-        let writer = BufWriter::new(file);
+        let writer = file;
 
         Ok(SafeFileCreator {
             dest_path: None,
@@ -122,7 +122,7 @@ impl SafeFileCreator {
         Ok(())
     }
 
-    fn writer(&mut self) -> io::Result<&mut BufWriter<File>> {
+    fn writer(&mut self) -> io::Result<&mut File> {
         match &mut self.writer {
             Some(wr) => Ok(wr),
             None => Err(std::io::Error::new(
