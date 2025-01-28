@@ -41,7 +41,7 @@ impl UploadClient for LocalTestClient {
         hash: &MerkleHash,
         data: Vec<u8>,
         chunk_and_boundaries: Vec<(MerkleHash, u32)>,
-    ) -> Result<(), CasClientError> {
+    ) -> Result<usize, CasClientError> {
         self.cas.put(prefix, hash, data, chunk_and_boundaries).await
     }
 

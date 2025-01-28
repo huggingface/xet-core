@@ -10,6 +10,10 @@ doctest = false
 name = "x"
 path = "src/bin/example.rs"
 
+[[bin]]
+name = "xtool"
+path = "src/bin/xtool.rs"
+
 [dependencies]
 cas_client = { path = "../cas_client" }
 cas_object = { path = "../cas_object" }
@@ -39,6 +43,7 @@ static_assertions = "1.1.0"
 gearhash = "0.1.3"
 rand_chacha = "0.3.1"
 dirs = "5.0.1"
+walkdir = "2.5.0"
 
 # metrics
 prometheus = "0.13.0"

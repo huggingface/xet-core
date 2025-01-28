@@ -243,6 +243,11 @@ impl MDBShardFile {
     }
 
     #[inline]
+    pub fn read_all_file_info_sections(&self) -> Result<Vec<MDBFileInfo>> {
+        self.shard.read_all_file_info_sections(&mut self.get_reader()?)
+    }
+
+    #[inline]
     pub fn verify_shard_integrity_debug_only(&self) {
         #[cfg(debug_assertions)]
         {

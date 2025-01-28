@@ -105,7 +105,7 @@ impl UploadClient for LocalClient {
         hash: &MerkleHash,
         data: Vec<u8>,
         chunk_and_boundaries: Vec<(MerkleHash, u32)>,
-    ) -> Result<()> {
+    ) -> Result<usize> {
         // no empty writes
         if chunk_and_boundaries.is_empty() || data.is_empty() {
             return Err(CasClientError::InvalidArguments);
@@ -120,7 +120,7 @@ impl UploadClient for LocalClient {
 
         if self.exists(prefix, hash).await? {
             info!("{prefix:?}/{hash:?} already exists in Local CAS; returning.");
-            return Ok(());
+            return Ok(0);
         }
 
         let file_path = self.get_path_for_entry(prefix, hash);
@@ -163,7 +163,7 @@ impl UploadClient for LocalClient {
 
         info!("{file_path:?} successfully written with {total_bytes_written:?} bytes.");
 
-        Ok(())
+        Ok(total_bytes_written)
     }
 
     async fn exists(&self, prefix: &str, hash: &MerkleHash) -> Result<bool> {

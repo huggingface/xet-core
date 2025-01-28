@@ -79,13 +79,27 @@ pub struct ThreadPool {
 
 impl ThreadPool {
     pub fn new() -> Result<Self, MultithreadedRuntimeError> {
-        let runtime = new_threadpool()?;
+        let runtime = new_threadpool(false)?;
         Ok(Self {
             handle: runtime.handle().clone(),
             runtime: std::sync::RwLock::new(Some(runtime)),
             external_executor_count: AtomicUsize::new(0),
             sigint_shutdown: AtomicBool::new(false),
         })
+    }
+
+    pub fn new_with_hardware_parallelism_limit() -> Result<Self, MultithreadedRuntimeError> {
+        let runtime = new_threadpool(true)?;
+        Ok(Self {
+            handle: runtime.handle().clone(),
+            runtime: std::sync::RwLock::new(Some(runtime)),
+            external_executor_count: AtomicUsize::new(0),
+            sigint_shutdown: AtomicBool::new(false),
+        })
+    }
+
+    pub fn num_worker_threads(&self) -> usize {
+        self.handle.metrics().num_workers()
     }
 
     /// Gives the number of concurrent calls to external_run_async_task.
@@ -195,9 +209,12 @@ impl Display for ThreadPool {
 /// Intended to be used as a singleton threadpool for the entire application.
 /// This is a simple wrapper around tokio's runtime, with some default settings.
 /// Intentionally unwrap this because if it fails, the application should not continue.
-fn new_threadpool() -> Result<tokio::runtime::Runtime, MultithreadedRuntimeError> {
-    tokio::runtime::Builder::new_multi_thread()
-        .worker_threads(THREADPOOL_NUM_WORKER_THREADS) // 4 active threads
+fn new_threadpool(maximum_worker_threads: bool) -> Result<tokio::runtime::Runtime, MultithreadedRuntimeError> {
+    let mut builder = tokio::runtime::Builder::new_multi_thread();
+    if !maximum_worker_threads {
+        builder.worker_threads(THREADPOOL_NUM_WORKER_THREADS); // 4 active threads
+    }
+    builder
         .thread_name_fn(get_thread_name) // thread names will be hf-xet-0, hf-xet-1, etc.
         .thread_stack_size(THREADPOOL_STACK_SIZE) // 8MB stack size, default is 2MB
         .max_blocking_threads(THREADPOOL_MAX_BLOCKING_THREADS) // max 100 threads can block IO
