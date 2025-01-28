@@ -50,6 +50,10 @@ macro_rules! create_metrics {
 create_metrics!("PUT_IMPL");
 create_metrics!("GET_IMPL");
 create_metrics!("FILE_WRITE");
+create_metrics!("FILE_WRITE_OPEN");
+create_metrics!("FILE_WRITE_HEADER");
+create_metrics!("FILE_WRITE_RANGE");
+create_metrics!("FILE_WRITE_CLOSE");
 create_metrics!("FILE_READ");
 create_metrics!("MUTEX_ACQUIRE");
 create_metrics!("EVICT_FN");
@@ -222,6 +226,10 @@ impl Drop for DiskCache {
         print_metrics!("PUT_IMPL");
         print_metrics!("GET_IMPL");
         print_metrics!("FILE_WRITE");
+        print_metrics!("FILE_WRITE_OPEN");
+        print_metrics!("FILE_WRITE_HEADER");
+        print_metrics!("FILE_WRITE_RANGE");
+        print_metrics!("FILE_WRITE_CLOSE");
         print_metrics!("FILE_READ");
         print_metrics!("MUTEX_ACQUIRE");
         print_metrics!("EVICT_FN");
@@ -553,10 +561,10 @@ impl DiskCache {
         let path = self.item_path(key, &cache_item)?;
 
         track_metrics!("FILE_WRITE", || -> Result<(), ChunkCacheError> {
-            let mut fw = SafeFileCreator::new(path)?;
-            fw.write_all(&header_buf)?;
-            fw.write_all(data)?;
-            fw.close()?;
+            let mut fw = track_metrics!("FILE_WRITE_OPEN", || SafeFileCreator::new(path))?;
+            track_metrics!("FILE_WRITE_HEADER", || fw.write_all(&header_buf))?;
+            track_metrics!("FILE_WRITE_RANGE", || fw.write_all(data))?;
+            track_metrics!("FILE_WRITE_CLOSE", || fw.close())?;
             Ok(())
         })?;
 
