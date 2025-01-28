@@ -27,7 +27,7 @@ use utils::ThreadPool;
 
 use crate::chunking::{chunk_target_default, ChunkYieldType};
 use crate::constants::{
-    MIN_N_CHUNKS_PER_RANGE_HIGH, MIN_N_CHUNKS_PER_RANGE_LOW, MIN_SPACING_BETWEEN_GLOBAL_DEDUP_QUERIES,
+    DEFAULT_MIN_N_CHUNKS_PER_RANGE, MIN_N_CHUNKS_PER_RANGE_HYSTERESIS_FACTOR, MIN_SPACING_BETWEEN_GLOBAL_DEDUP_QUERIES,
     NRANGES_IN_STREAMING_FRAGMENTATION_ESTIMATOR,
 };
 use crate::data_processing::CASDataAggregator;
@@ -48,6 +48,13 @@ lazy_static! {
         .unwrap_or(1);
 }
 
+lazy_static! {
+    pub static ref MIN_N_CHUNKS_PER_RANGE: f32 = std::env::var("XET_MIN_N_CHUNKS_PER_RANGE")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(DEFAULT_MIN_N_CHUNKS_PER_RANGE);
+}
+
 pub enum BufferItem<T: Send + Sync + 'static> {
     Value(T),
     Completed,
@@ -64,8 +71,9 @@ struct DedupFileTrackingInfo {
     rolling_last_nranges: VecDeque<usize>,
     /// This tracks the total number of chunks in the last N ranges
     rolling_nranges_chunks: usize,
-    /// chooses between MIN_N_CHUNKS_PER_RANGE_HIGH or MIN_N_CHUNKS_PER_RANGE_LOW
     /// Used to provide some hysteresis on the defrag decision
+    /// chooses between MIN_N_CHUNKS_PER_RANGE
+    /// or MIN_N_CHUNKS_PER_RANGE * HYSTERESIS_FACTOR (hysteresis factor < 1.0)
     defrag_at_low_threshold: bool,
 }
 
@@ -505,9 +513,9 @@ impl Cleaner {
             if let Some((n_deduped, _)) = dedupe_query {
                 if let Some(chunks_per_range) = tracking_info.rolling_chunks_per_range() {
                     let target_cpr = if tracking_info.defrag_at_low_threshold {
-                        MIN_N_CHUNKS_PER_RANGE_LOW
+                        (*MIN_N_CHUNKS_PER_RANGE) * MIN_N_CHUNKS_PER_RANGE_HYSTERESIS_FACTOR
                     } else {
-                        MIN_N_CHUNKS_PER_RANGE_HIGH
+                        *MIN_N_CHUNKS_PER_RANGE
                     };
                     if chunks_per_range < target_cpr {
                         // chunks per range is pretty poor, we should not dedupe.
