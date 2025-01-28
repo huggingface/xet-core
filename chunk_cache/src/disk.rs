@@ -1,9 +1,13 @@
+use paste::paste;
 use std::collections::{HashMap, HashSet};
 use std::fs::{DirEntry, File};
 use std::io::{self, Cursor, ErrorKind, Read, Seek, SeekFrom, Write};
 use std::mem::size_of;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::AtomicU64;
+use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex, MutexGuard};
+use std::time::Instant;
 
 use base64::engine::general_purpose::URL_SAFE;
 use base64::engine::GeneralPurpose;
@@ -31,6 +35,85 @@ pub const DEFAULT_CAPACITY: u64 = 10 << 30; // 10 GB
 const PREFIX_DIR_NAME_LEN: usize = 2;
 
 type OptionResult<T, E> = Result<Option<T>, E>;
+
+macro_rules! create_metrics {
+    ($prefix:literal) => {
+        paste::paste! {
+            static [<$prefix _CALL_COUNT>]: AtomicU64 = AtomicU64::new(0);
+            static [<$prefix _TOTAL_TIME>]: AtomicU64 = AtomicU64::new(0);
+            static [<$prefix _MAX_TIME>]: AtomicU64 = AtomicU64::new(0);
+        }
+    };
+}
+
+create_metrics!("PUT_IMPL");
+create_metrics!("GET_IMPL");
+create_metrics!("FILE_WRITE");
+create_metrics!("FILE_READ");
+create_metrics!("MUTEX_ACQUIRE");
+create_metrics!("EVICT_FN");
+create_metrics!("INITIALIZE");
+create_metrics!("COMPUTE_HASH");
+
+
+macro_rules! print_metrics {
+    ($prefix:literal) => {
+        paste::paste! {
+
+            // Load the values from the corresponding atomic variables
+            let call_count = [<$prefix _CALL_COUNT>].load(Ordering::Relaxed);
+            let total_time = [<$prefix _TOTAL_TIME>].load(Ordering::Relaxed);
+            let max_time = [<$prefix _MAX_TIME>].load(Ordering::Relaxed);
+
+            if call_count > 0 {
+                let avg_time = total_time / call_count;
+                println!(
+                    "{} Metrics:\n- Max Time: {} ns\n- Average Time: {} ns\n- Number of Calls: {}",
+                    $prefix, max_time, avg_time, call_count
+                );
+            } else {
+                println!("{} Metrics:\n- No calls recorded yet.", $prefix);
+            }
+
+        }
+    };
+}
+
+macro_rules! track_metrics {
+    ($prefix:literal, $closure:expr) => {
+        // paste! {
+        {
+            let start = Instant::now();
+            // Call the closure and capture its result
+            let result = $closure();
+
+            let elapsed = start.elapsed().as_nanos() as u64;
+
+            // Update the metrics
+            // paste! {
+            paste!{[<$prefix _CALL_COUNT>]}.fetch_add(1, Ordering::Relaxed);
+
+            paste!{[<$prefix _TOTAL_TIME>]}.fetch_add(elapsed, Ordering::Relaxed);
+
+            paste!{[<$prefix _MAX_TIME>]}
+                .fetch_update(
+                    Ordering::Relaxed,
+                    Ordering::Relaxed,
+                    |max_time| {
+                        if elapsed > max_time {
+                            Some(elapsed)
+                        } else {
+                            None
+                        }
+                    },
+                )
+                .ok(); // Ignore the result of fetch_update
+            // }
+            // Return the result of the closure
+            result
+        }
+    }
+}
 
 #[derive(Debug, Clone)]
 struct CacheState {
@@ -90,14 +173,32 @@ impl DiskCache {
     }
 }
 
+impl Drop for DiskCache {
+    fn drop(&mut self) {
+        print_metrics!("PUT_IMPL");
+        print_metrics!("GET_IMPL");
+        print_metrics!("FILE_WRITE");
+        print_metrics!("FILE_READ");
+        print_metrics!("MUTEX_ACQUIRE");
+        print_metrics!("EVICT_FN");
+        print_metrics!("INITIALIZE");
+        print_metrics!("COMPUTE_HASH");
+    }
+}
+
 impl DiskCache {
+    fn lock_state(&self) -> Result<MutexGuard<CacheState>, ChunkCacheError> {
+        let clo = || self.state.lock();
+        Ok(track_metrics!("MUTEX_ACQUIRE", clo)?)
+    }
+
     pub fn num_items(&self) -> Result<usize, ChunkCacheError> {
-        let state = self.state.lock()?;
+        let state = self.lock_state()?;
         Ok(state.num_items)
     }
 
     pub fn total_bytes(&self) -> Result<u64, ChunkCacheError> {
-        let state = self.state.lock()?;
+        let state = self.lock_state()?;
         Ok(state.total_bytes)
     }
 
@@ -131,7 +232,8 @@ impl DiskCache {
         let capacity = config.cache_size;
         let cache_root = config.cache_directory.clone();
 
-        let state = Self::initialize_state(&cache_root, capacity)?;
+        let clo = || Self::initialize_state(&cache_root, capacity);
+        let state = track_metrics!("INITIALIZE", clo)?;
 
         Ok(Self {
             state: Arc::new(Mutex::new(state)),
@@ -198,7 +300,7 @@ impl DiskCache {
                     Err(e) => {
                         debug!("failed to decoded a directory name as a key: {e}");
                         continue;
-                    },
+                    }
                 };
 
                 let mut items = Vec::new();
@@ -268,17 +370,6 @@ impl DiskCache {
             //     // Cursor::new(buf)
             // };
 
-            let mut file_buf = match File::open(&path) {
-                Ok(file) => file,
-                Err(e) => match e.kind() {
-                    ErrorKind::NotFound => {
-                        self.remove_item(key, &cache_item)?;
-                        continue;
-                    },
-                    _ => return Err(e.into()),
-                },
-            };
-
             // TODO: reintroduce hash validation of cache file, but not for every get, memoize success status per cache
             // file let hash = compute_hash_from_reader(&mut file_buf)?;
             // if hash != cache_item.hash {
@@ -290,24 +381,43 @@ impl DiskCache {
             //     continue;
             // }
 
-            file_buf.seek(SeekFrom::Start(0))?;
-            let header_result = CacheFileHeader::deserialize(&mut file_buf)
-                .debug_error(format!("failed to deserialize cache file header on path: {path:?}"));
-            let header = if let Ok(header) = header_result {
-                header
-            } else {
-                self.remove_item(key, &cache_item)?;
+            let clo = || {
+                let mut file_buf = match File::open(&path) {
+                    Ok(file) => file,
+                    Err(e) => {
+                        return match e.kind() {
+                            ErrorKind::NotFound => {
+                                self.remove_item(key, &cache_item)?;
+                                Ok::<Option<Vec<u8>>, ChunkCacheError>(None)
+                            }
+                            _ => Err(e.into()),
+                        }
+                    }
+                };
+
+                file_buf.seek(SeekFrom::Start(0))?;
+                let header_result = CacheFileHeader::deserialize(&mut file_buf)
+                    .debug_error(format!("failed to deserialize cache file header on path: {path:?}"));
+                let header = if let Ok(header) = header_result {
+                    header
+                } else {
+                    self.remove_item(key, &cache_item)?;
+                    return Ok(None);
+                };
+
+                let start = cache_item.range.start;
+                let result_buf = get_range_from_cache_file(&header, &mut file_buf, range, start)?;
+                Ok(Some(result_buf))
+            };
+            let Some(result_buf) = track_metrics!("FILE_READ", clo)? else {
                 continue;
             };
-
-            let start = cache_item.range.start;
-            let result_buf = get_range_from_cache_file(&header, &mut file_buf, range, start)?;
             return Ok(Some(result_buf));
         }
     }
 
     fn find_match(&self, key: &Key, range: &ChunkRange) -> OptionResult<CacheItem, ChunkCacheError> {
-        let state = self.state.lock()?;
+        let state = self.lock_state()?;
         let items = if let Some(items) = state.inner.get(key) {
             items
         } else {
@@ -362,51 +472,58 @@ impl DiskCache {
 
         let path = self.item_path(key, &cache_item)?;
 
-        let mut fw = SafeFileCreator::new(path)?;
+        let clo = || -> Result<(), ChunkCacheError> {
+            let mut fw = SafeFileCreator::new(path)?;
+            fw.write_all(&header_buf)?;
+            fw.write_all(data)?;
+            fw.close()?;
+            Ok(())
+        };
+        track_metrics!("FILE_WRITE", clo)?;
 
-        fw.write_all(&header_buf)?;
-        fw.write_all(data)?;
-        fw.close()?;
+        let clo = || {
+            // evict items after ensuring the file write but before committing to cache state
+            // to avoid removing new item.
+            let mut state = self.lock_state()?;
 
-        // evict items after ensuring the file write but before committing to cache state
-        // to avoid removing new item.
-        let mut state = self.state.lock()?;
+            let items = state.inner.entry(key.clone()).or_default();
 
-        let items = state.inner.entry(key.clone()).or_default();
-
-        // remove from state any items that would be encompassed by the new value
-        // first collect their indices, then remove them by index in reverse
-        let mut to_remove: Vec<usize> = Vec::new();
-        for (i, item) in items.iter().enumerate() {
-            if item.range.start >= cache_item.range.start && item.range.end <= cache_item.range.end {
-                to_remove.push(i);
+            // remove from state any items that would be encompassed by the new value
+            // first collect their indices, then remove them by index in reverse
+            let mut to_remove: Vec<usize> = Vec::new();
+            for (i, item) in items.iter().enumerate() {
+                if item.range.start >= cache_item.range.start && item.range.end <= cache_item.range.end {
+                    to_remove.push(i);
+                }
             }
-        }
 
-        // collection of paths to remove from file system
-        let mut overlapping_item_paths = HashSet::new();
-        let mut total_bytes_rm = 0;
-        let num_items_rm = to_remove.len();
-        // removing by index in reverse to guarentee lower-index items aren't shifted/moved
-        for item_idx in to_remove.into_iter().rev() {
-            let item = items.swap_remove(item_idx);
-            overlapping_item_paths.insert(self.item_path(key, &item)?);
-            total_bytes_rm += item.len;
-        }
-        state.num_items -= num_items_rm;
-        state.total_bytes -= total_bytes_rm;
+            // collection of paths to remove from file system
+            let mut overlapping_item_paths = HashSet::new();
+            let mut total_bytes_rm = 0;
+            let num_items_rm = to_remove.len();
+            // removing by index in reverse to guarentee lower-index items aren't shifted/moved
+            for item_idx in to_remove.into_iter().rev() {
+                let item = items.swap_remove(item_idx);
+                overlapping_item_paths.insert(self.item_path(key, &item)?);
+                total_bytes_rm += item.len;
+            }
+            state.num_items -= num_items_rm;
+            state.total_bytes -= total_bytes_rm;
 
-        // add evicted paths to paths to remove from file system
-        let evicted_paths = self.maybe_evict(&mut state, cache_item.len)?;
+            // add evicted paths to paths to remove from file system
+            let evicted_paths = self.maybe_evict(&mut state, cache_item.len)?;
 
-        // add the item info in-memory state after evictions are done
-        state.num_items += 1;
-        state.total_bytes += cache_item.len;
-        let item_set = state.inner.entry(key.clone()).or_default();
-        item_set.push(cache_item);
+            // add the item info in-memory state after evictions are done
+            state.num_items += 1;
+            state.total_bytes += cache_item.len;
+            let item_set = state.inner.entry(key.clone()).or_default();
+            item_set.push(cache_item);
 
-        // release lock
-        drop(state);
+            // release lock
+            drop(state);
+            Ok::<(HashSet<PathBuf>, Vec<PathBuf>), ChunkCacheError>((overlapping_item_paths, evicted_paths))
+        };
+        let (overlapping_item_paths, evicted_paths) = track_metrics!("EVICT_FN", clo)?;
 
         // remove files after done with modifying in memory state and releasing lock
         for path in overlapping_item_paths {
@@ -547,7 +664,7 @@ impl DiskCache {
     /// removes an item from both the in-memory state of the cache and the file system
     fn remove_item(&self, key: &Key, cache_item: &CacheItem) -> Result<(), ChunkCacheError> {
         {
-            let mut state = self.state.lock()?;
+            let mut state = self.lock_state()?;
             if let Some(items) = state.inner.get_mut(key) {
                 let idx = match index_of(items, cache_item) {
                     Some(idx) => idx,
@@ -618,7 +735,8 @@ fn get_range_from_cache_file<R: Read + Seek>(
 }
 
 fn compute_hash(header: &[u8], data: &[u8]) -> blake3::Hash {
-    blake3::Hasher::new().update(header).update(data).finalize()
+    let clo = || blake3::Hasher::new().update(header).update(data).finalize();
+    track_metrics!("COMPUTE_HASH", clo)
 }
 
 // OLD
@@ -637,7 +755,7 @@ fn read_dir(path: impl AsRef<Path>) -> OptionResult<std::fs::ReadDir, ChunkCache
             } else {
                 Err(e.into())
             }
-        },
+        }
     }
 }
 
@@ -654,7 +772,7 @@ fn is_ok_dir(dir_result: Result<DirEntry, io::Error>) -> OptionResult<DirEntry, 
                 return Ok(None);
             }
             return Err(e.into());
-        },
+        }
     };
     let md = match dirent.metadata() {
         Ok(md) => md,
@@ -663,7 +781,7 @@ fn is_ok_dir(dir_result: Result<DirEntry, io::Error>) -> OptionResult<DirEntry, 
                 return Ok(None);
             }
             return Err(e.into());
-        },
+        }
     };
     if !md.is_dir() {
         debug!("CACHE: expected directory at {:?}, is not directory", dirent.path());
@@ -683,7 +801,7 @@ fn try_parse_cache_file(file_result: io::Result<DirEntry>, capacity: u64) -> Opt
                 return Ok(None);
             }
             return Err(e.into());
-        },
+        }
     };
     let md = match item.metadata() {
         Ok(md) => md,
@@ -692,7 +810,7 @@ fn try_parse_cache_file(file_result: io::Result<DirEntry>, capacity: u64) -> Opt
                 return Ok(None);
             }
             return Err(e.into());
-        },
+        }
     };
 
     if !md.is_file() {
@@ -718,7 +836,7 @@ fn try_parse_cache_file(file_result: io::Result<DirEntry>, capacity: u64) -> Opt
             warn!("not a valid cache file, removing: {:?} {e:?}", item.file_name());
             remove_file(item.path())?;
             return Ok(None);
-        },
+        }
     };
     if md.len() != cache_item.len {
         // file is invalid, remove it
@@ -806,7 +924,8 @@ fn key_dir(key: &Key) -> PathBuf {
 
 impl ChunkCache for DiskCache {
     fn get(&self, key: &Key, range: &ChunkRange) -> Result<Option<Vec<u8>>, ChunkCacheError> {
-        self.get_impl(key, range)
+        let clo = || self.get_impl(key, range);
+        track_metrics!("GET_IMPL", clo)
     }
 
     fn put(
@@ -816,7 +935,8 @@ impl ChunkCache for DiskCache {
         chunk_byte_indices: &[u32],
         data: &[u8],
     ) -> Result<(), ChunkCacheError> {
-        self.put_impl(key, range, chunk_byte_indices, data)
+        let clo = || self.put_impl(key, range, chunk_byte_indices, data);
+        track_metrics!("PUT_IMPL", clo)
     }
 }
 
