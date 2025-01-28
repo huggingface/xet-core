@@ -7,6 +7,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use cas_client::CacheConfig;
+use cas_object::CompressionScheme;
 use dirs::home_dir;
 use lazy_static::lazy_static;
 use merkledb::constants::IDEAL_CAS_BLOCK_SIZE;
@@ -30,9 +31,11 @@ const MAX_CONCURRENT_DOWNLOADS: usize = 8; // Download is not CPU-bound
 
 const DEFAULT_CAS_ENDPOINT: &str = "http://localhost:8080";
 const READ_BLOCK_SIZE: usize = 1024 * 1024;
+const UPLOAD_XORB_COMPRESSION: CompressionScheme = CompressionScheme::LZ4;
 
 pub fn default_config(
     endpoint: String,
+    xorb_compression: Option<CompressionScheme>,
     token_info: Option<(String, u64)>,
     token_refresher: Option<Arc<dyn TokenRefresher>>,
 ) -> errors::Result<(TranslatorConfig, TempDir)> {
@@ -53,6 +56,7 @@ pub fn default_config(
         file_query_policy: FileQueryPolicy::ServerOnly,
         cas_storage_config: StorageConfig {
             endpoint: Endpoint::Server(endpoint.clone()),
+            compression: xorb_compression.unwrap_or_default(),
             auth: auth_cfg.clone(),
             prefix: "default".into(),
             cache_config: Some(CacheConfig {
@@ -63,6 +67,7 @@ pub fn default_config(
         },
         shard_storage_config: StorageConfig {
             endpoint: Endpoint::Server(endpoint),
+            compression: Default::default(),
             auth: auth_cfg,
             prefix: "default-merkledb".into(),
             cache_config: Some(CacheConfig {
@@ -98,8 +103,12 @@ pub async fn upload_async(
     // produce Xorbs + Shards
     // upload shards and xorbs
     // for each file, return the filehash
-    let (config, _tempdir) =
-        default_config(endpoint.unwrap_or(DEFAULT_CAS_ENDPOINT.to_string()), token_info, token_refresher)?;
+    let (config, _tempdir) = default_config(
+        endpoint.unwrap_or(DEFAULT_CAS_ENDPOINT.to_string()),
+        Some(UPLOAD_XORB_COMPRESSION),
+        token_info,
+        token_refresher,
+    )?;
 
     let processor = Arc::new(PointerFileTranslator::new(config, threadpool, progress_updater, false).await?);
 
@@ -136,7 +145,7 @@ pub async fn download_async(
         }
     }
     let (config, _tempdir) =
-        default_config(endpoint.unwrap_or(DEFAULT_CAS_ENDPOINT.to_string()), token_info, token_refresher)?;
+        default_config(endpoint.unwrap_or(DEFAULT_CAS_ENDPOINT.to_string()), None, token_info, token_refresher)?;
 
     let updaters = match progress_updaters {
         None => vec![None; pointer_files.len()],

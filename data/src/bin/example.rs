@@ -7,6 +7,7 @@ use std::sync::{Arc, OnceLock};
 
 use anyhow::Result;
 use cas_client::CacheConfig;
+use cas_object::CompressionScheme;
 use clap::{Args, Parser, Subcommand};
 use data::configurations::*;
 use data::{PointerFile, PointerFileTranslator};
@@ -81,6 +82,7 @@ fn default_clean_config() -> Result<TranslatorConfig> {
         file_query_policy: Default::default(),
         cas_storage_config: StorageConfig {
             endpoint: Endpoint::FileSystem(path.join("xorbs")),
+            compression: CompressionScheme::LZ4,
             auth: None,
             prefix: "default".into(),
             cache_config: Some(CacheConfig {
@@ -91,6 +93,7 @@ fn default_clean_config() -> Result<TranslatorConfig> {
         },
         shard_storage_config: StorageConfig {
             endpoint: Endpoint::FileSystem(path.join("xorbs")),
+            compression: Default::default(),
             auth: None,
             prefix: "default-merkledb".into(),
             cache_config: Some(CacheConfig {
@@ -121,6 +124,7 @@ fn default_smudge_config() -> Result<TranslatorConfig> {
         file_query_policy: Default::default(),
         cas_storage_config: StorageConfig {
             endpoint: Endpoint::FileSystem(path.join("xorbs")),
+            compression: CompressionScheme::LZ4,
             auth: None,
             prefix: "default".into(),
             cache_config: Some(CacheConfig {
@@ -131,6 +135,7 @@ fn default_smudge_config() -> Result<TranslatorConfig> {
         },
         shard_storage_config: StorageConfig {
             endpoint: Endpoint::FileSystem(path.join("xorbs")),
+            compression: Default::default(),
             auth: None,
             prefix: "default-merkledb".into(),
             cache_config: Some(CacheConfig {

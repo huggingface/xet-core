@@ -114,6 +114,7 @@ impl PointerFileTranslator {
             &config.repo_info,
             shard_manager.clone(),
             threadpool.clone(),
+            dry_run,
         )?;
 
         let remote_shards = {
@@ -140,7 +141,6 @@ impl PointerFileTranslator {
 
         let xorb_uploader = ParallelXorbUploader::new(
             &config.cas_storage_config.prefix,
-            dry_run,
             shard_manager.clone(),
             cas_client.clone(),
             XORB_UPLOAD_RATE_LIMITER.clone(),
@@ -210,7 +210,7 @@ impl PointerFileTranslator {
         .await
     }
 
-    pub async fn finalize_cleaning(&self) -> Result<()> {
+    pub async fn finalize_cleaning(&self) -> Result<u64> {
         // flush accumulated CAS data.
         let mut cas_data_accumulator = self.global_cas_data.lock().await;
         let new_cas_data = take(cas_data_accumulator.deref_mut());
@@ -220,7 +220,7 @@ impl PointerFileTranslator {
             self.xorb_uploader.register_new_cas_block(new_cas_data).await?;
         }
 
-        self.xorb_uploader.flush().await?;
+        let total_bytes_trans = self.xorb_uploader.flush().await?;
 
         // flush accumulated memory shard.
         self.shard_manager.flush().await?;
@@ -229,7 +229,7 @@ impl PointerFileTranslator {
             self.upload_shards().await?;
         }
 
-        Ok(())
+        Ok(total_bytes_trans)
     }
 
     async fn upload_shards(&self) -> Result<()> {

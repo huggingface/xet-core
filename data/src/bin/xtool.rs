@@ -5,6 +5,7 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use cas_client::build_http_client;
+use cas_object::CompressionScheme;
 use clap::{Args, Parser, Subcommand};
 use data::data_client::{clean_file, default_config};
 use data::errors::DataProcessingError;
@@ -152,6 +153,12 @@ struct DedupArg {
     /// to the file; otherwise write out to the stdout.
     #[clap(short, long)]
     output: Option<PathBuf>,
+    /// The compression scheme to use on XORB upload. Choices are
+    /// 0: no compression;
+    /// 1: LZ4 compression;
+    /// 2: 4 byte groups with LZ4 compression;
+    #[clap(short, long)]
+    compression: u8,
 }
 
 #[derive(Args)]
@@ -164,8 +171,15 @@ impl Command {
     async fn run(self, hub_client: HubClient, threadpool: Arc<ThreadPool>) -> Result<()> {
         match self {
             Command::Dedup(arg) => {
-                let (all_file_info, clean_ret) =
-                    dedup_files(arg.files, arg.recursive, arg.sequential, hub_client, threadpool).await?;
+                let (all_file_info, clean_ret, total_bytes_trans) = dedup_files(
+                    arg.files,
+                    arg.recursive,
+                    arg.sequential,
+                    hub_client,
+                    threadpool,
+                    arg.compression.try_into()?,
+                )
+                .await?;
                 let mut writer: Box<dyn Write> = if let Some(path) = arg.output {
                     Box::new(BufWriter::new(File::options().create(true).write(true).truncate(true).open(path)?))
                 } else {
@@ -178,6 +192,8 @@ impl Command {
                 for (pf, new_bytes) in clean_ret {
                     println!("{}: {} bytes -> {} bytes", pf.hash_string(), pf.filesize(), new_bytes);
                 }
+
+                eprintln!("Transmitted {total_bytes_trans} bytes in total.");
 
                 Ok(())
             },
@@ -201,7 +217,8 @@ async fn dedup_files(
     sequential: bool,
     hub_client: HubClient,
     threadpool: Arc<ThreadPool>,
-) -> Result<(Vec<MDBFileInfo>, Vec<(PointerFile, u64)>)> {
+    compression: CompressionScheme,
+) -> Result<(Vec<MDBFileInfo>, Vec<(PointerFile, u64)>, u64)> {
     let token_type = "write";
     let (endpoint, jwt_token, jwt_token_expiry) = hub_client.get_jwt_token(token_type).await?;
     let token_refresher = Arc::new(HubClientTokenRefresher {
@@ -209,7 +226,9 @@ async fn dedup_files(
         token_type: token_type.to_owned(),
         client: Arc::new(hub_client),
     }) as Arc<dyn TokenRefresher>;
-    let (config, _tempdir) = default_config(endpoint, Some((jwt_token, jwt_token_expiry)), Some(token_refresher))?;
+    eprintln!("Using {compression} compression");
+    let (config, _tempdir) =
+        default_config(endpoint, Some(compression), Some((jwt_token, jwt_token_expiry)), Some(token_refresher))?;
 
     let num_workers = if sequential { 1 } else { threadpool.num_worker_threads() };
     let processor = Arc::new(PointerFileTranslator::dry_run(config, threadpool, None, false).await?);
@@ -248,11 +267,11 @@ async fn dedup_files(
         ParallelError::TaskError(e) => e,
     })?;
 
-    processor.finalize_cleaning().await?;
+    let total_bytes_trans = processor.finalize_cleaning().await?;
 
     let all_file_info = processor.summarize_file_info_of_session().await?;
 
-    Ok((all_file_info, clean_ret))
+    Ok((all_file_info, clean_ret, total_bytes_trans))
 }
 
 fn is_git_special_files(path: &str) -> bool {

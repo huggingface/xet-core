@@ -1,3 +1,4 @@
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -19,8 +20,9 @@ use crate::errors::*;
 pub(crate) trait XorbUpload {
     /// Register a block of data ready for upload and dedup, return the hash of the produced xorb.
     async fn register_new_cas_block(&self, cas_data: CASDataAggregator) -> Result<MerkleHash>;
-    /// Flush all xorbs that are pending to be sent to remote.
-    async fn flush(&self) -> Result<()>;
+    /// Flush all xorbs that are pending to be sent to remote. Return the total number of bytes
+    /// put on network link.
+    async fn flush(&self) -> Result<u64>;
 }
 
 type XorbUploadValueType = (MerkleHash, Vec<u8>, Vec<(MerkleHash, usize)>);
@@ -34,14 +36,13 @@ type XorbUploadValueType = (MerkleHash, Vec<u8>, Vec<(MerkleHash, usize)>);
 pub(crate) struct ParallelXorbUploader {
     // Configurations
     cas_prefix: String,
-    dry_run: bool,
 
     // Utils
     shard_manager: Arc<ShardFileManager>,
     cas: Arc<dyn Client + Send + Sync>,
 
     // Internal worker
-    upload_tasks: Mutex<JoinSet<Result<()>>>,
+    upload_tasks: Mutex<JoinSet<Result<usize>>>,
 
     // Rate limiter
     rate_limiter: Arc<Semaphore>,
@@ -51,12 +52,14 @@ pub(crate) struct ParallelXorbUploader {
 
     // Upload Progress
     upload_progress_updater: Option<Arc<dyn ProgressUpdater>>,
+
+    // Metrics
+    total_bytes_trans: AtomicU64,
 }
 
 impl ParallelXorbUploader {
     pub async fn new(
         cas_prefix: &str,
-        dry_run: bool,
         shard_manager: Arc<ShardFileManager>,
         cas: Arc<dyn Client + Send + Sync>,
         rate_limiter: Arc<Semaphore>,
@@ -65,20 +68,20 @@ impl ParallelXorbUploader {
     ) -> Arc<Self> {
         Arc::new(ParallelXorbUploader {
             cas_prefix: cas_prefix.to_owned(),
-            dry_run,
             shard_manager,
             cas,
             upload_tasks: Mutex::new(JoinSet::new()),
             rate_limiter,
             threadpool,
             upload_progress_updater,
+            total_bytes_trans: 0.into(),
         })
     }
 
     async fn status_is_ok(&self) -> Result<()> {
         let mut upload_tasks = self.upload_tasks.lock().await;
         while let Some(result) = upload_tasks.try_join_next() {
-            result??;
+            self.total_bytes_trans.fetch_add(result?? as u64, Ordering::Relaxed);
         }
 
         Ok(())
@@ -110,10 +113,9 @@ impl XorbUpload for ParallelXorbUploader {
 
         let mut upload_tasks = self.upload_tasks.lock().await;
         let upload_progress_updater = self.upload_progress_updater.clone();
-        let dry_run = self.dry_run;
         upload_tasks.spawn_on(
             async move {
-                let ret = upload_and_register_xorb(item, shard_manager, cas, cas_prefix, dry_run).await;
+                let ret = upload_and_register_xorb(item, shard_manager, cas, cas_prefix).await;
                 if let Some(updater) = upload_progress_updater {
                     updater.update(xorb_data_len as u64);
                 }
@@ -139,14 +141,14 @@ impl XorbUpload for ParallelXorbUploader {
     /// Flush makes sure all xorbs added to queue before this call are sent successfully
     /// to remote. This function can be called multiple times and should be called at
     /// least once before `ParallelXorbUploader` is dropped.
-    async fn flush(&self) -> Result<()> {
+    async fn flush(&self) -> Result<u64> {
         let mut upload_tasks = self.upload_tasks.lock().await;
 
         while let Some(result) = upload_tasks.join_next().await {
-            result??;
+            self.total_bytes_trans.fetch_add(result?? as u64, Ordering::Relaxed);
         }
 
-        Ok(())
+        Ok(self.total_bytes_trans.load(Ordering::Relaxed))
     }
 }
 
@@ -155,13 +157,12 @@ async fn upload_and_register_xorb(
     shard_manager: Arc<ShardFileManager>,
     cas: Arc<dyn Client + Send + Sync>,
     cas_prefix: String,
-    dry_run: bool,
-) -> Result<()> {
+) -> Result<usize> {
     let (cas_hash, data, chunks) = item;
 
     let raw_bytes_len = data.len();
     // upload xorb
-    if !dry_run {
+    let nbytes_trans = {
         let mut pos = 0;
         let chunk_and_boundaries = chunks
             .iter()
@@ -170,8 +171,8 @@ async fn upload_and_register_xorb(
                 (*hash, pos as u32)
             })
             .collect();
-        cas.put(&cas_prefix, &cas_hash, data, chunk_and_boundaries).await?;
-    }
+        cas.put(&cas_prefix, &cas_hash, data, chunk_and_boundaries).await?
+    };
 
     // register for dedup
     // This should happen after uploading xorb above succeeded so not to
@@ -193,5 +194,5 @@ async fn upload_and_register_xorb(
         shard_manager.add_cas_block(cas_info).await?;
     }
 
-    Ok(())
+    Ok(nbytes_trans)
 }
