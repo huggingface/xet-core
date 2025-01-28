@@ -54,6 +54,9 @@ create_metrics!("MUTEX_ACQUIRE");
 create_metrics!("EVICT_FN");
 create_metrics!("INITIALIZE");
 create_metrics!("COMPUTE_HASH");
+create_metrics!("VALIDATE_MATCH");
+create_metrics!("REMOVE_FILE");
+create_metrics!("CHECK_REMOVE_DIR");
 
 macro_rules! print_metrics {
     ($prefix:literal) => {
@@ -188,6 +191,9 @@ impl Drop for DiskCache {
         print_metrics!("EVICT_FN");
         print_metrics!("INITIALIZE");
         print_metrics!("COMPUTE_HASH");
+        print_metrics!("VALIDATE_MATCH");
+        print_metrics!("REMOVE_FILE");
+        print_metrics!("CHECK_REMOVE_DIR");
 
         let total_time = (PUT_IMPL_TOTAL_TIME.load(Ordering::Relaxed)
             + GET_IMPL_TOTAL_TIME.load(Ordering::Relaxed)
@@ -209,7 +215,12 @@ impl Drop for DiskCache {
         let div = _div as f64;
 
         println!();
-        println!("Total time spent in cache\n- Time: {:.2} {}s\n- Number of Calls: {}", total_time / div, unit, total_calls);
+        println!(
+            "Total time spent in cache\n- Time: {:.2} {}s\n- Number of Calls: {}",
+            total_time / div,
+            unit,
+            total_calls
+        );
     }
 }
 
@@ -469,7 +480,7 @@ impl DiskCache {
     ) -> Result<(), ChunkCacheError> {
         if range.start >= range.end
             || chunk_byte_indices.len() != (range.end - range.start + 1) as usize
-            // chunk_byte_indices is guarenteed to be more than 1 element at this point
+            // chunk_byte_indices is guaranteed to be more than 1 element at this point
             || chunk_byte_indices[0] != 0
             || *chunk_byte_indices.last().unwrap() as usize != data.len()
             || !strictly_increasing(chunk_byte_indices)
@@ -481,7 +492,13 @@ impl DiskCache {
 
         // check if we already contain the range
         while let Some(cache_item) = self.find_match(key, range)? {
-            if self.validate_match(key, range, chunk_byte_indices, data, &cache_item)? {
+            if track_metrics!("VALIDATE_MATCH", || self.validate_match(
+                key,
+                range,
+                chunk_byte_indices,
+                data,
+                &cache_item
+            ))? {
                 return Ok(());
             }
         }
@@ -499,14 +516,13 @@ impl DiskCache {
 
         let path = self.item_path(key, &cache_item)?;
 
-        let clo = || -> Result<(), ChunkCacheError> {
+        track_metrics!("FILE_WRITE", || -> Result<(), ChunkCacheError> {
             let mut fw = SafeFileCreator::new(path)?;
             fw.write_all(&header_buf)?;
             fw.write_all(data)?;
             fw.close()?;
             Ok(())
-        };
-        track_metrics!("FILE_WRITE", clo)?;
+        })?;
 
         let clo = || {
             // evict items after ensuring the file write but before committing to cache state
@@ -528,7 +544,7 @@ impl DiskCache {
             let mut overlapping_item_paths = HashSet::new();
             let mut total_bytes_rm = 0;
             let num_items_rm = to_remove.len();
-            // removing by index in reverse to guarentee lower-index items aren't shifted/moved
+            // removing by index in reverse to guarantee lower-index items aren't shifted/moved
             for item_idx in to_remove.into_iter().rev() {
                 let item = items.swap_remove(item_idx);
                 overlapping_item_paths.insert(self.item_path(key, &item)?);
@@ -881,7 +897,7 @@ fn try_parse_cache_file(file_result: io::Result<DirEntry>, capacity: u64) -> Opt
 
 /// removes a file but disregards a "NotFound" error if the file is already gone
 fn remove_file(path: impl AsRef<Path>) -> Result<(), ChunkCacheError> {
-    if let Err(e) = std::fs::remove_file(path) {
+    if let Err(e) = track_metrics!("REMOVE_FILE", || std::fs::remove_file(path)) {
         if e.kind() != ErrorKind::NotFound {
             return Err(e.into());
         }
@@ -903,28 +919,30 @@ fn remove_dir(path: impl AsRef<Path>) -> Result<(), ChunkCacheError> {
 // assumes a misformatted path is an error
 // checks if the directory is empty and removes it if so, then checks if the prefix dir is empty and removes it if so
 fn check_remove_dir(dir_path: impl AsRef<Path>) -> Result<(), ChunkCacheError> {
-    let readdir = match read_dir(&dir_path)? {
-        Some(rd) => rd,
-        None => return Ok(()),
-    };
-    if readdir.peekable().peek().is_some() {
-        return Ok(());
-    }
-    // directory empty, remove it
-    remove_dir(&dir_path)?;
+    track_metrics!("CHECK_REMOVE_DIR", || {
+        let readdir = match read_dir(&dir_path)? {
+            Some(rd) => rd,
+            None => return Ok(()),
+        };
+        if readdir.peekable().peek().is_some() {
+            return Ok(());
+        }
+        // directory empty, remove it
+        remove_dir(&dir_path)?;
 
-    // try to check and remove the prefix dir
-    let prefix_dir = dir_path.as_ref().parent().ok_or(ChunkCacheError::Infallible)?;
+        // try to check and remove the prefix dir
+        let prefix_dir = dir_path.as_ref().parent().ok_or(ChunkCacheError::Infallible)?;
 
-    let prefix_readdir = match read_dir(prefix_dir)? {
-        Some(prd) => prd,
-        None => return Ok(()),
-    };
-    if prefix_readdir.peekable().peek().is_some() {
-        return Ok(());
-    }
-    // directory empty, remove it
-    remove_dir(prefix_dir)
+        let prefix_readdir = match read_dir(prefix_dir)? {
+            Some(prd) => prd,
+            None => return Ok(()),
+        };
+        if prefix_readdir.peekable().peek().is_some() {
+            return Ok(());
+        }
+        // directory empty, remove it
+        remove_dir(prefix_dir)
+    })
 }
 
 /// tries to parse just a Key from a file name encoded by fn `key_dir`
