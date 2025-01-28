@@ -10,7 +10,7 @@ use cas_types::{
     BatchQueryReconstructionResponse, CASReconstructionFetchInfo, CASReconstructionTerm, FileRange, HexMerkleHash,
     HttpRange, Key, QueryReconstructionResponse, UploadXorbResponse,
 };
-use chunk_cache::{CacheConfig, ChunkCache};
+use chunk_cache::{create_metrics, print_metrics, track_metrics_async, CacheConfig, ChunkCache};
 use error_printer::ErrorPrinter;
 use futures::{StreamExt, TryStreamExt};
 use http::header::RANGE;
@@ -22,6 +22,11 @@ use utils::auth::AuthConfig;
 use utils::progress::ProgressUpdater;
 use utils::singleflight::Group;
 use utils::ThreadPool;
+
+use std::sync::atomic::Ordering;
+use std::sync::atomic::AtomicU64;
+use std::time::Instant;
+use paste::paste;
 
 use crate::error::Result;
 use crate::interface::*;
@@ -204,6 +209,12 @@ impl Reconstructable for RemoteClient {
     }
 }
 
+create_metrics!("DOWNLOAD_TERM");
+
+pub fn print_remote_client_metrics() {
+    print_metrics!("DOWNLOAD_TERM");
+}
+
 impl Client for RemoteClient {}
 
 impl RemoteClient {
@@ -383,9 +394,11 @@ pub(crate) async fn get_one_term(
 
     // fetch the range from blob store and deserialize the chunks
     // then put into the cache if used
-    let (mut data, chunk_byte_indices) = range_download_single_flight
-        .work_dump_caller_info(&fetch_term.url, download_range(http_client, fetch_term.clone(), term.hash))
-        .await?;
+    let (mut data, chunk_byte_indices) = track_metrics_async!(
+        "DOWNLOAD_TERM",
+        range_download_single_flight
+            .work_dump_caller_info(&fetch_term.url, download_range(http_client, fetch_term.clone(), term.hash))
+    )?;
 
     // now write it to cache, the whole fetched term
     if let Some(cache) = chunk_cache {

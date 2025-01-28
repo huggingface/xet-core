@@ -33,6 +33,7 @@ url = "2.5.2"
 reqwest-retry = "0.6.1"
 heed = "0.11"
 futures = "0.3.31"
+paste = "1.0.15"
 
 [dev-dependencies]
 rand = "0.8.5"

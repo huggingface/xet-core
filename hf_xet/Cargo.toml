@@ -19,6 +19,7 @@ pyo3 = { version = "0.23.3", features = [
 error_printer = { path = "../error_printer" }
 data = { path = "../data" }
 chunk_cache = { path = "../chunk_cache" }
+cas_client = { path = "../cas_client" }
 utils = { path = "../utils" }
 tokio = { version = "1.36", features = ["full"] }
 parutils = { path = "../parutils" }

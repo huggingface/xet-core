@@ -19,6 +19,7 @@ use data::{data_client, PointerFile};
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
 use pyo3::pyfunction;
+use chunk_cache::{create_metrics, print_metrics, track_metrics};
 use runtime::async_run;
 use token_refresh::WrappedTokenRefresher;
 use utils::progress::ProgressUpdater;
@@ -89,7 +90,7 @@ pub fn download_files(
     let refresher = token_refresher.map(WrappedTokenRefresher::from_func).transpose()?.map(Arc::new);
     let updaters = progress_updater.map(try_parse_progress_updaters).transpose()?;
 
-    let clo = || async_run(py, move |threadpool| async move {
+    track_metrics!("DOWNLOAD_FILES", || async_run(py, move |threadpool| async move {
         let out: Vec<String> = data_client::download_async(
             threadpool,
             pfs,
@@ -102,8 +103,7 @@ pub fn download_files(
         .map_err(convert_data_processing_error)?;
 
         PyResult::Ok(out)
-    });
-    track_metrics!("DOWNLOAD_FILES", clo)
+    }))
 }
 
 fn try_parse_progress_updaters(funcs: Vec<Py<PyAny>>) -> PyResult<Vec<Arc<dyn ProgressUpdater>>> {
@@ -188,6 +188,7 @@ pub fn hf_xet(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
         // Setup to save the results at the end.
         #[pyfunction]
         fn print_cleanup() {
+            cas_client::remote_client::print_remote_client_metrics();
             print_metrics!("DOWNLOAD_FILES");
         }
 

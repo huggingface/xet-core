@@ -302,6 +302,7 @@ dependencies = [
  "mdb_shard",
  "merkledb",
  "merklehash",
+ "paste",
  "reqwest 0.12.9",
  "reqwest-middleware",
  "reqwest-retry",
@@ -1171,6 +1172,7 @@ name = "hf_xet"
 version = "0.1.2"
 dependencies = [
  "bipbuffer",
+ "cas_client",
  "chrono",
  "chunk_cache",
  "ctrlc",

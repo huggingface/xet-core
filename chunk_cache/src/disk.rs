@@ -126,6 +126,39 @@ macro_rules! track_metrics {
     };
 }
 
+#[macro_export]
+macro_rules! track_metrics_async {
+    ($prefix:literal, $future:expr) => {
+        // paste! {
+        {
+            let start = Instant::now();
+            // Call the closure and capture its result
+            let result = $future.await;
+
+            let elapsed = start.elapsed().as_nanos() as u64;
+
+            // Update the metrics
+            // paste! {
+            paste! {[<$prefix _CALL_COUNT>]}.fetch_add(1, Ordering::Relaxed);
+
+            paste! {[<$prefix _TOTAL_TIME>]}.fetch_add(elapsed, Ordering::Relaxed);
+
+            paste! {[<$prefix _MAX_TIME>]}
+                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |max_time| {
+                    if elapsed > max_time {
+                        Some(elapsed)
+                    } else {
+                        None
+                    }
+                })
+                .ok(); // Ignore the result of fetch_update
+                       // }
+                       // Return the result of the closure
+            result
+        }
+    };
+}
+
 #[derive(Debug, Clone)]
 struct CacheState {
     inner: HashMap<Key, Vec<CacheItem>>,
