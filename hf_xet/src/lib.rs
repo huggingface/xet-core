@@ -4,6 +4,12 @@ mod progress_update;
 mod runtime;
 mod token_refresh;
 
+use std::sync::atomic::Ordering;
+use std::sync::atomic::AtomicU64;
+use std::time::Instant;
+use paste::paste;
+
+
 use std::fmt::Debug;
 use std::iter::IntoIterator;
 use std::sync::Arc;
@@ -30,6 +36,7 @@ fn convert_data_processing_error(e: DataProcessingError) -> PyErr {
         PyRuntimeError::new_err(format!("Data processing error: {e}"))
     }
 }
+
 
 #[pyfunction]
 #[pyo3(signature = (file_paths, endpoint, token_info, token_refresher, progress_updater), text_signature = "(file_paths: List[str], endpoint: Optional[str], token_info: Optional[(str, int)], token_refresher: Optional[Callable[[], (str, int)]], progress_updater: Optional[Callable[[int, None]]) -> List[PyPointerFile]")]
@@ -65,6 +72,8 @@ pub fn upload_files(
     })
 }
 
+create_metrics!("DOWNLOAD_FILES");
+
 #[pyfunction]
 #[pyo3(signature = (files, endpoint, token_info, token_refresher, progress_updater), text_signature = "(files: List[PyPointerFile], endpoint: Optional[str], token_info: Optional[(str, int)], token_refresher: Optional[Callable[[], (str, int)]], progress_updater: Optional[List[Callable[[int], None]]]) -> List[str]")]
 pub fn download_files(
@@ -80,7 +89,7 @@ pub fn download_files(
     let refresher = token_refresher.map(WrappedTokenRefresher::from_func).transpose()?.map(Arc::new);
     let updaters = progress_updater.map(try_parse_progress_updaters).transpose()?;
 
-    async_run(py, move |threadpool| async move {
+    let clo = || async_run(py, move |threadpool| async move {
         let out: Vec<String> = data_client::download_async(
             threadpool,
             pfs,
@@ -93,7 +102,8 @@ pub fn download_files(
         .map_err(convert_data_processing_error)?;
 
         PyResult::Ok(out)
-    })
+    });
+    track_metrics!("DOWNLOAD_FILES", clo)
 }
 
 fn try_parse_progress_updaters(funcs: Vec<Py<PyAny>>) -> PyResult<Vec<Arc<dyn ProgressUpdater>>> {
@@ -171,6 +181,21 @@ pub fn hf_xet(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
 
         let atexit = PyModule::import(py, "atexit")?;
         atexit.call_method1("register", (m.getattr("profiler_cleanup")?,))?;
+    }
+
+    {
+
+        // Setup to save the results at the end.
+        #[pyfunction]
+        fn print_cleanup() {
+            print_metrics!("DOWNLOAD_FILES");
+        }
+
+        m.add_function(wrap_pyfunction!(print_cleanup, m)?)?;
+
+        let atexit = PyModule::import(py, "atexit")?;
+        atexit.call_method1("register", (m.getattr("print_cleanup")?,))?;
+
     }
 
     Ok(())

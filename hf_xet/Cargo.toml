@@ -18,6 +18,7 @@ pyo3 = { version = "0.23.3", features = [
 
 error_printer = { path = "../error_printer" }
 data = { path = "../data" }
+chunk_cache = { path = "../chunk_cache" }
 utils = { path = "../utils" }
 tokio = { version = "1.36", features = ["full"] }
 parutils = { path = "../parutils" }
@@ -39,6 +40,7 @@ pprof = { version = "0.14", features = [
     "prost",
     "protobuf-codec",
 ], optional = true }
+paste = "1.0.15"
 
 # Unix-specific dependencies
 [target.'cfg(unix)'.dependencies]

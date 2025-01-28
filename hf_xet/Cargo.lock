@@ -1172,11 +1172,13 @@ version = "0.1.2"
 dependencies = [
  "bipbuffer",
  "chrono",
+ "chunk_cache",
  "ctrlc",
  "data",
  "error_printer",
  "lazy_static",
  "parutils",
+ "paste",
  "pprof",
  "pyo3",
  "reqwest 0.11.27",

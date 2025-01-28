@@ -197,7 +197,7 @@ impl Drop for DiskCache {
             + GET_IMPL_CALL_COUNT.load(Ordering::Relaxed)
             + INITIALIZE_CALL_COUNT.load(Ordering::Relaxed);
 
-        let (div, unit) = if total_time > 1_000_000_000.0 {
+        let (_div, unit) = if total_time > 1_000_000_000.0 {
             (1_000_000_000, "")
         } else if total_time > 1_000_000.0 {
             (1_000_000, "m")
@@ -206,7 +206,7 @@ impl Drop for DiskCache {
         } else {
             (1, "n")
         };
-        let div = div as f64;
+        let div = _div as f64;
 
         println!();
         println!("Total time spent in cache\n- Time: {:.2} {}s\n- Number of Calls: {}", total_time / div, unit, total_calls);
