@@ -36,6 +36,7 @@ const PREFIX_DIR_NAME_LEN: usize = 2;
 
 type OptionResult<T, E> = Result<Option<T>, E>;
 
+#[macro_export]
 macro_rules! create_metrics {
     ($prefix:literal) => {
         paste::paste! {
@@ -58,6 +59,7 @@ create_metrics!("VALIDATE_MATCH");
 create_metrics!("REMOVE_FILE");
 create_metrics!("CHECK_REMOVE_DIR");
 
+#[macro_export]
 macro_rules! print_metrics {
     ($prefix:literal) => {
         paste::paste! {
@@ -91,6 +93,7 @@ macro_rules! print_metrics {
     };
 }
 
+#[macro_export]
 macro_rules! track_metrics {
     ($prefix:literal, $closure:expr) => {
         // paste! {
