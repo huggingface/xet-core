@@ -21,7 +21,7 @@ use tracing::{debug, error, trace};
 use utils::auth::AuthConfig;
 use utils::progress::ProgressUpdater;
 use utils::singleflight::Group;
-use utils::ThreadPool;
+use xet_threadpool::ThreadPool;
 
 use crate::error::Result;
 use crate::interface::*;

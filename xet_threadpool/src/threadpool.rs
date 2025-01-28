@@ -3,7 +3,6 @@ use std::future::Future;
 use std::sync::atomic::Ordering::SeqCst;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
-use thiserror::Error;
 /// This module provides a simple wrapper around Tokio's runtime to create a thread pool
 /// with some default settings. It is intended to be used as a singleton thread pool for
 /// the entire application.
@@ -14,7 +13,7 @@ use thiserror::Error;
 /// # Example
 ///
 /// ```rust
-/// use utils::ThreadPool;
+/// use xet_threadpool::ThreadPool;
 ///
 /// let pool = ThreadPool::new().expect("Error initializing runtime.");
 ///
@@ -51,30 +50,15 @@ use thiserror::Error;
 ///
 /// - `new_threadpool`: Creates a new Tokio runtime with the specified settings.
 use tokio;
-use tokio::task::{JoinError, JoinHandle};
+use tokio::task::JoinHandle;
 use tracing::{debug, error};
+
+use crate::errors::MultithreadedRuntimeError;
 
 const THREADPOOL_NUM_WORKER_THREADS: usize = 4; // 4 active threads
 const THREADPOOL_THREAD_ID_PREFIX: &str = "hf-xet"; // thread names will be hf-xet-0, hf-xet-1, etc.
 const THREADPOOL_STACK_SIZE: usize = 8_000_000; // 8MB stack size
 const THREADPOOL_MAX_BLOCKING_THREADS: usize = 100; // max 100 threads can block IO
-
-/// Define an error time for spawning external threads.
-#[derive(Debug, Error)]
-#[non_exhaustive]
-pub enum MultithreadedRuntimeError {
-    #[error("Error Initializing Multithreaded Runtime: {0:?}")]
-    RuntimeInitializationError(std::io::Error),
-
-    #[error("Task Panic: {0:?}.")]
-    TaskPanic(JoinError),
-
-    #[error("Task cancelled; possible runtime shutdown in progress ({0}).")]
-    TaskCanceled(String),
-
-    #[error("Unknown task runtime error: {0}")]
-    Other(String),
-}
 
 #[derive(Debug)]
 pub struct ThreadPool {

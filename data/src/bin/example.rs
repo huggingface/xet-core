@@ -11,7 +11,7 @@ use cas_object::CompressionScheme;
 use clap::{Args, Parser, Subcommand};
 use data::configurations::*;
 use data::{PointerFile, PointerFileTranslator};
-use utils::ThreadPool;
+use xet_threadpool::ThreadPool;
 
 #[derive(Parser)]
 struct XCommand {

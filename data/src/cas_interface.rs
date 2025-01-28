@@ -8,7 +8,7 @@ use cas_object::CompressionScheme;
 use mdb_shard::ShardFileManager;
 use tracing::info;
 use utils::auth::AuthConfig;
-use utils::ThreadPool;
+use xet_threadpool::ThreadPool;
 
 use crate::configurations::*;
 use crate::errors::Result;

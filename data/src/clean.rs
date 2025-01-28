@@ -23,7 +23,7 @@ use tokio::sync::Mutex;
 use tokio::task::{JoinHandle, JoinSet};
 use tracing::{debug, info, warn};
 use utils::progress::ProgressUpdater;
-use utils::ThreadPool;
+use xet_threadpool::ThreadPool;
 
 use crate::chunking::{chunk_target_default, ChunkYieldType};
 use crate::constants::MIN_SPACING_BETWEEN_GLOBAL_DEDUP_QUERIES;

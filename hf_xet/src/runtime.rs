@@ -5,7 +5,8 @@ use std::time::Duration;
 use lazy_static::lazy_static;
 use pyo3::exceptions::{PyKeyboardInterrupt, PyRuntimeError};
 use pyo3::prelude::*;
-use utils::threadpool::{MultithreadedRuntimeError, ThreadPool};
+use xet_threadpool::errors::MultithreadedRuntimeError;
+use xet_threadpool::ThreadPool;
 
 use crate::log;
 

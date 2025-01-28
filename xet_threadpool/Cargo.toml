@@ -1,0 +1,10 @@
+[package]
+name = "xet_threadpool"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+tokio = { version = "1.41", features = ["full"] }
+thiserror = "2.0"
+tracing = "0.1.31"
+lazy_static = "1"

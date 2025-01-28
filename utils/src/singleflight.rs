@@ -10,6 +10,7 @@
 //!
 //! use futures::future::join_all;
 //! use utils::singleflight::Group;
+//! use xet_threadpool;
 //!
 //! const RES: usize = 7;
 //!
@@ -20,7 +21,7 @@
 //!
 //! #[tokio::main]
 //! async fn main() {
-//!     let threadpool = Arc::new(utils::ThreadPool::new().unwrap());
+//!     let threadpool = Arc::new(xet_threadpool::ThreadPool::new().unwrap());
 //!     let g = Arc::new(Group::<_, ()>::new(threadpool.clone()));
 //!     let mut handlers = Vec::new();
 //!     for _ in 0..10 {
@@ -50,9 +51,9 @@ use parking_lot::RwLock;
 use pin_project::{pin_project, pinned_drop};
 use tokio::sync::{Mutex, Notify};
 use tracing::debug;
+use xet_threadpool::ThreadPool;
 
 pub use crate::errors::SingleflightError;
-use crate::ThreadPool;
 
 type SingleflightResult<T, E> = Result<T, SingleflightError<E>>;
 type CallMap<T, E> = HashMap<String, Arc<Call<T, E>>>;
@@ -366,11 +367,11 @@ mod tests {
     use tokio::sync::{Mutex, Notify};
     use tokio::task::JoinHandle;
     use tokio::time::timeout;
+    use xet_threadpool::ThreadPool;
 
     use super::Group;
     use crate::errors::SingleflightError;
     use crate::singleflight::{Call, OwnerTask};
-    use crate::ThreadPool;
 
     /// A period of time for waiters to wait for a notification from the owner
     /// task. This is expected to be sufficient time for the test futures to

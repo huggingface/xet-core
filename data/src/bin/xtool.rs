@@ -15,8 +15,8 @@ use parutils::{tokio_par_for_each, ParallelError};
 use reqwest_middleware::ClientWithMiddleware;
 use utils::auth::{TokenInfo, TokenRefresher};
 use utils::errors::AuthError;
-use utils::ThreadPool;
 use walkdir::WalkDir;
+use xet_threadpool::ThreadPool;
 
 const DEFAULT_HF_ENDPOINT: &str = "https://huggingface.co";
 
