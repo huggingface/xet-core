@@ -1,6 +1,3 @@
-use super::error::*;
-use super::merklenode::*;
-
 /**
 Basic Concepts
 ==============
@@ -70,6 +67,8 @@ Root: This are nodes in the MerkleDAG with no parent.
 
 File Root: This are nodes in the MerkleDAG which correspond to actual user files.
 */
+use super::error::*;
+use super::merklenode::*;
 
 /**
  * This defines the basic minimal database interface for a MerkleDB.

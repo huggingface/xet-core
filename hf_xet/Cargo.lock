@@ -346,10 +346,11 @@ name = "chunk_cache"
 version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
- "blake3",
  "cas_types",
+ "crc32fast",
  "error_printer",
  "file_utils",
+ "log",
  "merklehash",
  "mockall",
  "once_cell",
@@ -446,6 +447,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0ca741a962e1b0bff6d724a1a0958b686406e853bb14061f218562e1896f95e6"
 dependencies = [
  "libc",
+]
+
+[[package]]
+name = "crc32fast"
+version = "1.4.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a97769d94ddab943e4510d138150169a2758b5ef3eb191a9ee688de3e23ef7b3"
+dependencies = [
+ "cfg-if 1.0.0",
 ]
 
 [[package]]
@@ -1701,6 +1711,7 @@ dependencies = [
 name = "merklehash"
 version = "0.14.5"
 dependencies = [
+ "base64 0.22.1",
  "blake3",
  "heed",
  "rand 0.8.5",

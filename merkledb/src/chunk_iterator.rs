@@ -29,7 +29,7 @@ fn fill_buf(reader: &mut impl Read, buf: &mut [u8]) -> io::Result<usize> {
     reader.read(buf)
 }
 
-impl<'a, T: Read> Chunker<'a, T> {
+impl<T: Read> Chunker<'_, T> {
     fn gen(&mut self) -> Vec<Chunk> {
         let mut ret: Vec<Chunk> = Vec::with_capacity(1024);
         let mut chunkbuf: Vec<u8> = Vec::with_capacity(self.maximum_chunk);
@@ -136,7 +136,7 @@ pub struct LowVarianceChunker<'a, T: Read> {
     mask: u64,
 }
 
-impl<'a, T: Read> LowVarianceChunker<'a, T> {
+impl<T: Read> LowVarianceChunker<'_, T> {
     fn gen(&mut self) -> Vec<Chunk> {
         let mut ret: Vec<Chunk> = Vec::with_capacity(1024);
         let mut chunkbuf: Vec<u8> = Vec::with_capacity(self.maximum_chunk);

@@ -203,8 +203,8 @@ where
 
 struct HasherPointerBox<'a>(*mut gearhash::Hasher<'a>);
 
-unsafe impl<'a> Send for HasherPointerBox<'a> {}
-unsafe impl<'a> Sync for HasherPointerBox<'a> {}
+unsafe impl Send for HasherPointerBox<'_> {}
+unsafe impl Sync for HasherPointerBox<'_> {}
 
 /// low Variance Chunk Generator given an input stream. Do not use directly.
 /// Use `async_chunk_target_default` or `async_low_variance_chunk_target`.

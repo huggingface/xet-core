@@ -374,10 +374,11 @@ name = "chunk_cache"
 version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
- "blake3",
  "cas_types",
+ "crc32fast",
  "error_printer",
  "file_utils",
+ "log",
  "merklehash",
  "mockall",
  "once_cell",
@@ -1756,6 +1757,7 @@ dependencies = [
 name = "merklehash"
 version = "0.14.5"
 dependencies = [
+ "base64 0.22.1",
  "blake3",
  "heed",
  "rand 0.8.5",
@@ -3850,6 +3852,7 @@ dependencies = [
  "thiserror 2.0.11",
  "tokio",
  "tracing",
+ "xet_threadpool",
 ]
 
 [[package]]
@@ -4301,6 +4304,16 @@ dependencies = [
  "libc",
  "linux-raw-sys",
  "rustix",
+]
+
+[[package]]
+name = "xet_threadpool"
+version = "0.1.0"
+dependencies = [
+ "lazy_static",
+ "thiserror 2.0.11",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]

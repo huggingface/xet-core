@@ -44,7 +44,7 @@ lazy_static! {
 }
 
 // The structure used as the target for the dedup lookup
-#[repr(packed)]
+#[repr(Rust, packed)]
 struct ChunkCacheElement {
     cas_start_index: u32, // the index of the first chunk
     cas_chunk_offset: u16,
@@ -97,7 +97,6 @@ pub struct SFMBuildParameters {
     target_shard_size: u64,
     chunk_dedup_enabled: bool,
     shard_expiration_delete_buffer_secs: u64,
-    parent_sfm: Option<Arc<ShardFileManager>>,
 }
 
 impl SFMBuildParameters {
@@ -108,7 +107,6 @@ impl SFMBuildParameters {
             target_shard_size: MDB_SHARD_MIN_TARGET_SIZE,
             chunk_dedup_enabled: true,
             shard_expiration_delete_buffer_secs: MDB_SHARD_EXPIRATION_BUFFER_SECS,
-            parent_sfm: None,
         }
     }
 
@@ -118,11 +116,6 @@ impl SFMBuildParameters {
     }
     pub fn with_target_size(mut self, target_size: u64) -> Self {
         self.target_shard_size = target_size;
-        self
-    }
-
-    pub fn with_parent_sfm(mut self, parent_sfm: Arc<ShardFileManager>) -> Self {
-        self.parent_sfm = Some(parent_sfm);
         self
     }
 
@@ -145,7 +138,6 @@ pub struct ShardFileManager {
     shard_bookkeeper: Arc<RwLock<ShardBookkeeper>>,
     current_state: Arc<RwLock<MDBShardFlushGuard>>,
 
-    parent_sfm: Option<Arc<ShardFileManager>>,
     shard_directory: PathBuf,
     target_shard_min_size: u64,
     chunk_dedup_enabled: bool,
@@ -217,7 +209,6 @@ impl ShardFileManager {
             current_state: Arc::new(RwLock::new(MDBShardFlushGuard {
                 shard: MDBInMemoryShard::default(),
             })),
-            parent_sfm: sbp.parent_sfm,
             shard_directory: sbp.shard_directory,
             target_shard_min_size: sbp.target_shard_size,
             chunk_dedup_enabled: sbp.chunk_dedup_enabled,

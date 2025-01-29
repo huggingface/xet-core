@@ -63,7 +63,7 @@ pub mod hex {
         // Visitor for deserialization
         struct HexVisitor;
 
-        impl<'de> Visitor<'de> for HexVisitor {
+        impl Visitor<'_> for HexVisitor {
             type Value = MerkleHash;
 
             fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
