@@ -18,22 +18,6 @@ use crate::shard_file_reconstructor::FileReconstructor;
 use crate::shard_in_memory::MDBInMemoryShard;
 use crate::utils::truncate_hash;
 
-/// A wrapper struct for the in-memory shard to make sure that it gets flushed on teardown.
-struct MDBShardFlushGuard {
-    shard: MDBInMemoryShard,
-}
-
-impl Drop for MDBShardFlushGuard {
-    fn drop(&mut self) {
-        if !self.shard.is_empty() {
-            // This is only supposed to happen on task cancellations, so we should
-            if cfg!(debug_assertions) {
-                eprintln!("[Debug] Warning: Shard dropped while data still present!  This is an error outside of task cancellation.");
-            }
-        }
-    }
-}
-
 // Store a maximum of this many indices in memory
 const CHUNK_INDEX_TABLE_DEFAULT_MAX_SIZE: usize = 64 * 1024 * 1024;
 lazy_static! {
@@ -135,8 +119,8 @@ impl SFMBuildParameters {
 }
 
 pub struct ShardFileManager {
-    shard_bookkeeper: Arc<RwLock<ShardBookkeeper>>,
-    current_state: Arc<RwLock<MDBShardFlushGuard>>,
+    shard_bookkeeper: RwLock<ShardBookkeeper>,
+    current_state: RwLock<MDBInMemoryShard>,
 
     shard_directory: PathBuf,
     target_shard_min_size: u64,
@@ -205,10 +189,8 @@ impl ShardFileManager {
         }
 
         let s = Self {
-            shard_bookkeeper: Arc::new(RwLock::new(ShardBookkeeper::new())),
-            current_state: Arc::new(RwLock::new(MDBShardFlushGuard {
-                shard: MDBInMemoryShard::default(),
-            })),
+            shard_bookkeeper: RwLock::new(ShardBookkeeper::new()),
+            current_state: RwLock::new(MDBInMemoryShard::default()),
             shard_directory: sbp.shard_directory,
             target_shard_min_size: sbp.target_shard_size,
             chunk_dedup_enabled: sbp.chunk_dedup_enabled,
@@ -336,7 +318,7 @@ impl FileReconstructor<MDBShardError> for ShardFileManager {
         // First attempt the in-memory version of this.
         {
             let lg = self.current_state.read().await;
-            let file_info = lg.shard.get_file_reconstruction_info(file_hash);
+            let file_info = lg.get_file_reconstruction_info(file_hash);
             if let Some(fi) = file_info {
                 return Ok(Some((fi, None)));
             }
@@ -375,7 +357,7 @@ impl ShardFileManager {
         // First attempt the in-memory version of this.
         {
             let lg = self.current_state.read().await;
-            let ret = lg.shard.chunk_hash_dedup_query(query_hashes);
+            let ret = lg.chunk_hash_dedup_query(query_hashes);
             if ret.is_some() {
                 return Ok(ret);
             }
@@ -410,10 +392,10 @@ impl ShardFileManager {
     pub async fn add_cas_block(&self, cas_block_contents: MDBCASInfo) -> Result<()> {
         let mut lg = self.current_state.write().await;
 
-        lg.shard.add_cas_block(cas_block_contents)?;
+        lg.add_cas_block(cas_block_contents)?;
 
         // See if this put it over the target minimum size, allowing us to cut a new shard
-        if lg.shard.shard_file_size() >= self.target_shard_min_size {
+        if lg.shard_file_size() >= self.target_shard_min_size {
             // Drop the lock guard before doing the flush.
             drop(lg);
             self.flush().await?;
@@ -426,10 +408,10 @@ impl ShardFileManager {
     pub async fn add_file_reconstruction_info(&self, file_info: MDBFileInfo) -> Result<()> {
         let mut lg = self.current_state.write().await;
 
-        lg.shard.add_file_reconstruction_info(file_info)?;
+        lg.add_file_reconstruction_info(file_info)?;
 
         // See if this put it over the target minimum size, allowing us to cut a new shard
-        if lg.shard.shard_file_size() >= self.target_shard_min_size {
+        if lg.shard_file_size() >= self.target_shard_min_size {
             // Drop the lock guard before doing the flush.
             drop(lg);
             self.flush().await?;
@@ -447,12 +429,12 @@ impl ShardFileManager {
         {
             let mut lg = self.current_state.write().await;
 
-            if lg.shard.is_empty() {
+            if lg.is_empty() {
                 return Ok(None);
             }
 
-            new_shard_path = lg.shard.write_to_directory(&self.shard_directory)?;
-            lg.shard = MDBInMemoryShard::default();
+            new_shard_path = lg.write_to_directory(&self.shard_directory)?;
+            *lg = MDBInMemoryShard::default();
 
             info!("Shard manager flushed new shard to {new_shard_path:?}.");
         }
@@ -471,7 +453,7 @@ impl ShardFileManager {
         let mut bytes = 0;
         {
             let lg = self.current_state.read().await;
-            bytes += lg.shard.materialized_bytes();
+            bytes += lg.materialized_bytes();
         }
 
         for ksc in self.shard_bookkeeper.read().await.shard_collections.iter() {
@@ -488,7 +470,7 @@ impl ShardFileManager {
         let mut bytes = 0;
         {
             let lg = self.current_state.read().await;
-            bytes += lg.shard.stored_bytes();
+            bytes += lg.stored_bytes();
         }
 
         for ksc in self.shard_bookkeeper.read().await.shard_collections.iter() {
