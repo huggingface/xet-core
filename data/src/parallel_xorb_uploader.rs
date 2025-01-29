@@ -87,6 +87,8 @@ impl XorbUpload for ParallelXorbUploader {
     async fn register_new_cas_block(&self, cas_data: CASDataAggregator) -> Result<MerkleHash> {
         self.status_is_ok().await?;
 
+        // Only upload a new xorb if there is new data; it may be that an existing new file is formed only
+        // from existing chunks.
         let xorb_data_len = cas_data.data.len();
 
         let cas_hash = cas_node_hash(&cas_data.chunks[..]);
@@ -110,8 +112,10 @@ impl XorbUpload for ParallelXorbUploader {
         upload_tasks.spawn_on(
             async move {
                 let ret = upload_and_register_xorb(item, shard_manager, cas, cas_prefix).await;
-                if let Some(updater) = upload_progress_updater {
-                    updater.update(xorb_data_len as u64);
+                if ret.is_ok() {
+                    if let Some(updater) = upload_progress_updater {
+                        updater.update(xorb_data_len as u64);
+                    }
                 }
                 drop(permit);
                 ret
@@ -165,7 +169,8 @@ async fn upload_and_register_xorb(
                 (*hash, pos as u32)
             })
             .collect();
-        cas.put(&cas_prefix, &cas_hash, data, chunk_and_boundaries).await?;
+        // XXXXXX
+        cas.put(&cas_prefix, &cas_hash, data, chunk_and_boundaries).await.unwrap();
     }
 
     // register for dedup
@@ -185,7 +190,8 @@ async fn upload_and_register_xorb(
             .collect();
         let cas_info = MDBCASInfo { metadata, chunks };
 
-        shard_manager.add_cas_block(cas_info).await?;
+        // XXXXXXX
+        shard_manager.add_cas_block(cas_info).await.unwrap();
     }
 
     Ok(())

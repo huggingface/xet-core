@@ -1,12 +1,9 @@
-use std::env::current_dir;
-use std::fs;
 use std::fs::File;
 use std::io::{BufReader, BufWriter, Read, Write};
 use std::path::PathBuf;
 use std::sync::{Arc, OnceLock};
 
 use anyhow::Result;
-use cas_client::CacheConfig;
 use clap::{Args, Parser, Subcommand};
 use data::configurations::*;
 use data::{PointerFile, PointerFileTranslator};
@@ -73,83 +70,6 @@ fn main() {
         .unwrap();
 }
 
-fn default_clean_config() -> Result<TranslatorConfig> {
-    let path = current_dir()?.join("xet");
-    fs::create_dir_all(&path)?;
-
-    let translator_config = TranslatorConfig {
-        file_query_policy: Default::default(),
-        cas_storage_config: StorageConfig {
-            endpoint: Endpoint::FileSystem(path.join("xorbs")),
-            auth: None,
-            prefix: "default".into(),
-            cache_config: Some(CacheConfig {
-                cache_directory: path.join("cache"),
-                cache_size: 10 * 1024 * 1024 * 1024, // 10 GiB
-            }),
-            staging_directory: None,
-        },
-        shard_storage_config: StorageConfig {
-            endpoint: Endpoint::FileSystem(path.join("xorbs")),
-            auth: None,
-            prefix: "default-merkledb".into(),
-            cache_config: Some(CacheConfig {
-                cache_directory: path.join("shard-cache"),
-                cache_size: 0, // ignored
-            }),
-            staging_directory: Some(path.join("shard-session")),
-        },
-        dedup_config: Some(DedupConfig {
-            repo_salt: None,
-            global_dedup_policy: Default::default(),
-        }),
-        repo_info: Some(RepoInfo {
-            repo_paths: vec!["".into()],
-        }),
-    };
-
-    translator_config.validate()?;
-
-    Ok(translator_config)
-}
-
-fn default_smudge_config() -> Result<TranslatorConfig> {
-    let path = current_dir()?.join("xet");
-    fs::create_dir_all(&path)?;
-
-    let translator_config = TranslatorConfig {
-        file_query_policy: Default::default(),
-        cas_storage_config: StorageConfig {
-            endpoint: Endpoint::FileSystem(path.join("xorbs")),
-            auth: None,
-            prefix: "default".into(),
-            cache_config: Some(CacheConfig {
-                cache_directory: path.join("cache"),
-                cache_size: 10 * 1024 * 1024 * 1024, // 10 GiB
-            }),
-            staging_directory: None,
-        },
-        shard_storage_config: StorageConfig {
-            endpoint: Endpoint::FileSystem(path.join("xorbs")),
-            auth: None,
-            prefix: "default-merkledb".into(),
-            cache_config: Some(CacheConfig {
-                cache_directory: path.join("shard-cache"),
-                cache_size: 0, // ignored
-            }),
-            staging_directory: Some(path.join("shard-session")),
-        },
-        dedup_config: None,
-        repo_info: Some(RepoInfo {
-            repo_paths: vec!["".into()],
-        }),
-    };
-
-    translator_config.validate()?;
-
-    Ok(translator_config)
-}
-
 async fn clean_file(arg: &CleanArg) -> Result<()> {
     let reader = BufReader::new(File::open(&arg.file)?);
     let writer: Box<dyn Write + Send> = match &arg.dest {
@@ -165,7 +85,13 @@ async fn clean(mut reader: impl Read, mut writer: impl Write) -> Result<()> {
 
     let mut read_buf = vec![0u8; READ_BLOCK_SIZE];
 
-    let translator = PointerFileTranslator::new(default_clean_config()?, get_threadpool(), None, false).await?;
+    let translator = PointerFileTranslator::new(
+        TranslatorConfig::local_config(std::env::current_dir()?, true)?,
+        get_threadpool(),
+        None,
+        false,
+    )
+    .await?;
 
     let handle = translator.start_clean(1024, None).await?;
 
@@ -213,7 +139,13 @@ async fn smudge(mut reader: impl Read, writer: &mut Box<dyn Write + Send>) -> Re
         return Ok(());
     }
 
-    let translator = PointerFileTranslator::new(default_smudge_config()?, get_threadpool(), None, true).await?;
+    let translator = PointerFileTranslator::new(
+        TranslatorConfig::local_config(std::env::current_dir()?, true)?,
+        get_threadpool(),
+        None,
+        true,
+    )
+    .await?;
 
     translator.smudge_file_from_pointer(&pointer_file, writer, None, None).await?;
 

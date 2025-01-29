@@ -190,7 +190,7 @@ impl ShardFileManager {
 
         let mut deletion_candidates = Vec::new();
 
-        let shard_files = MDBShardFile::load_all(&shard_directory)?;
+        let shard_files = MDBShardFile::load_all(shard_directory)?;
 
         // Now, go through and filter out the ones that can't be used any more, and also filter out the ones that
         // can't be
@@ -229,13 +229,12 @@ impl ShardFileManager {
     }
 
     pub async fn register_shards_by_path<P: AsRef<Path>>(&self, new_shards: &[P]) -> Result<()> {
-        self.register_shards(
-            &new_shards
-                .into_iter()
-                .map(|p| MDBShardFile::load_from_file(p.as_ref()))
-                .collect::<Result<Vec<_>>>()?,
-        )
-        .await
+        let new_shards: Vec<Arc<_>> = new_shards.iter().try_fold(Vec::new(), |mut acc, p| {
+            acc.extend(MDBShardFile::load_all(p.as_ref())?);
+            Result::Ok(acc)
+        })?;
+
+        self.register_shards(&new_shards).await
     }
 
     pub async fn register_shards(&self, new_shards: &[Arc<MDBShardFile>]) -> Result<()> {

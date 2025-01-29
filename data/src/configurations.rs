@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
 use cas_client::CacheConfig;
@@ -97,6 +97,52 @@ pub struct TranslatorConfig {
 }
 
 impl TranslatorConfig {
+    pub fn local_config(base_dir: impl AsRef<Path>, enable_dedup: bool) -> Result<Self> {
+        let path = base_dir.as_ref().join("xet");
+        std::fs::create_dir_all(&path)?;
+
+        let translator_config = Self {
+            file_query_policy: Default::default(),
+            cas_storage_config: StorageConfig {
+                endpoint: Endpoint::FileSystem(path.join("xorbs")),
+                auth: None,
+                prefix: "default".into(),
+                cache_config: Some(CacheConfig {
+                    cache_directory: path.join("cache"),
+                    cache_size: 10 * 1024 * 1024 * 1024, // 10 GiB
+                }),
+                staging_directory: None,
+            },
+            shard_storage_config: StorageConfig {
+                endpoint: Endpoint::FileSystem(path.join("xorbs")),
+                auth: None,
+                prefix: "default-merkledb".into(),
+                cache_config: Some(CacheConfig {
+                    cache_directory: path.join("shard-cache"),
+                    cache_size: 0, // ignored
+                }),
+                staging_directory: Some(path.join("shard-session")),
+            },
+            dedup_config: {
+                if enable_dedup {
+                    Some(DedupConfig {
+                        repo_salt: None,
+                        global_dedup_policy: Default::default(),
+                    })
+                } else {
+                    None
+                }
+            },
+            repo_info: Some(RepoInfo {
+                repo_paths: vec!["".into()],
+            }),
+        };
+
+        translator_config.validate()?;
+
+        Ok(translator_config)
+    }
+
     pub fn validate(&self) -> Result<()> {
         if let Endpoint::FileSystem(path) = &self.cas_storage_config.endpoint {
             std::fs::create_dir_all(path)?;
