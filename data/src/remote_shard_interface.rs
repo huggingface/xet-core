@@ -317,8 +317,12 @@ impl RemoteShardInterface {
             if !file_type.is_file() || !is_shard_file(&file_path) {
                 continue;
             }
+            let dest_shard_name = cache_dir.join(file_path.file_name().unwrap());
 
-            std::fs::rename(&file_path, cache_dir.join(file_path.file_name().unwrap()))?;
+            std::fs::rename(&file_path, &dest_shard_name)?;
+
+            // Register this in any existing shard manager
+            ShardFileManager::register_shard_in_existing_managers(&dest_shard_name).await?;
         }
 
         Ok(())

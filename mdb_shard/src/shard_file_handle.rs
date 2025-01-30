@@ -5,11 +5,12 @@ use std::sync::{Arc, RwLock};
 use std::time::{Duration, SystemTime};
 
 use merklehash::{compute_data_hash, HMACKey, HashedWrite, MerkleHash};
-use tracing::{debug, error, warn};
+use tracing::{debug, error, info, warn};
 
 use crate::cas_structs::CASChunkSequenceHeader;
 use crate::error::{MDBShardError, Result};
 use crate::file_structs::{FileDataSequenceEntry, MDBFileInfo};
+use crate::shard_file::current_timestamp;
 use crate::shard_format::MDBShardInfo;
 use crate::utils::{parse_shard_filename, shard_file_name, temp_shard_file_name, truncate_hash};
 
@@ -128,37 +129,69 @@ impl MDBShardFile {
         }
     }
 
-    pub fn load_all(path: &Path) -> Result<Vec<Arc<Self>>> {
+    pub fn load_all_valid(path: impl AsRef<Path>) -> Result<Vec<Arc<Self>>> {
+        Self::load_all(path, false)
+    }
+
+    pub fn load_all(path: impl AsRef<Path>, load_expired: bool) -> Result<Vec<Arc<Self>>> {
+        let current_time = current_timestamp();
+
         let mut ret = Vec::new();
+
+        Self::scan_impl(path, |s| {
+            if load_expired || current_time <= s.shard.metadata.shard_key_expiry {
+                ret.push(s);
+            }
+
+            Ok(())
+        })?;
+
+        Ok(ret)
+    }
+
+    pub fn clean_expired_shards(path: impl AsRef<Path>, expiration_buffer_secs: u64) -> Result<()> {
+        let current_time = current_timestamp();
+
+        Self::scan_impl(path, |s| {
+            if s.shard.metadata.shard_key_expiry.saturating_add(expiration_buffer_secs) <= current_time {
+                info!("Deleting expired shard {:?}", &s.path);
+                let _ = std::fs::remove_file(&s.path);
+            }
+
+            Ok(())
+        })?;
+
+        Ok(())
+    }
+
+    #[inline]
+    fn scan_impl(path: impl AsRef<Path>, mut callback: impl FnMut(Arc<Self>) -> Result<()>) -> Result<()> {
+        let path = path.as_ref();
 
         if path.is_dir() {
             for entry in std::fs::read_dir(path)? {
                 let entry = entry?;
                 if let Some(file_name) = entry.file_name().to_str() {
                     if let Some(h) = parse_shard_filename(file_name) {
-                        ret.push(Self::load_from_hash_and_path(h, &path.join(file_name))?);
+                        let s = Self::load_from_hash_and_path(h, &path.join(file_name))?;
+                        s.verify_shard_integrity_debug_only();
+                        callback(s)?;
+                        debug!("Registerd shard file '{file_name:?}'.");
                     }
-                    debug!("Found shard file '{file_name:?}'.");
                 }
             }
         } else if let Some(file_name) = path.to_str() {
             if let Some(h) = parse_shard_filename(file_name) {
-                ret.push(Self::load_from_hash_and_path(h, &path.join(file_name))?);
+                let s = Self::load_from_hash_and_path(h, &path.join(file_name))?;
+                s.verify_shard_integrity_debug_only();
+                callback(s)?;
                 debug!("Registerd shard file '{file_name:?}'.");
             } else {
                 return Err(MDBShardError::BadFilename(format!("Filename {file_name} not valid shard file name.")));
             }
         }
 
-        #[cfg(debug_assertions)]
-        {
-            // In debug mode, verify all shards on loading to catch errors earlier.
-            for s in ret.iter() {
-                s.verify_shard_integrity_debug_only();
-            }
-        }
-
-        Ok(ret)
+        Ok(())
     }
 
     /// Write out the current shard, re-keyed with an hmac key, to the output directory in question, returning

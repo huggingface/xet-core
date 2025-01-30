@@ -34,7 +34,11 @@ impl LocalShardClient {
         }
 
         // This loads and cleans all the shards in the session directory; no need to do it explicitly
-        let shard_manager = ShardFileManager::load_dir(&shard_directory, download_only_mode).await?;
+        let shard_manager = ShardFileManager::builder(&shard_directory)
+            .with_chunk_dedup(!download_only_mode)
+            .with_expired_shard_cleanup(true)
+            .build()
+            .await?;
 
         let global_dedup = DiskBasedGlobalDedupTable::open_or_create(cas_directory.join("ddb").join("chunk2shard.db"))?;
 
