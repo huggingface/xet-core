@@ -1,10 +1,11 @@
 use std::io::{Read, Write};
 use std::mem::size_of;
 
-use crate::error::CasObjectError;
-use crate::CompressionScheme;
 use anyhow::anyhow;
 use merkledb::constants::MAXIMUM_CHUNK_SIZE;
+
+use crate::error::CasObjectError;
+use crate::CompressionScheme;
 
 pub mod deserialize_async;
 
