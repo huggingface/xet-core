@@ -69,13 +69,13 @@ impl CASChunkHeader {
                 CURRENT_VERSION
             )));
         }
-        if self.get_compressed_length() as usize > MAXIMUM_CHUNK_SIZE {
+        if self.get_compressed_length() as usize > MAXIMUM_CHUNK_SIZE * 2 {
             return Err(CasObjectError::FormatError(anyhow!(
                 "chunk header compressed length too large at {}, maximum: {MAXIMUM_CHUNK_SIZE}",
                 self.get_compressed_length()
             )));
         }
-        if self.get_compressed_length() as usize > MAXIMUM_CHUNK_SIZE {
+        if self.get_compressed_length() as usize > MAXIMUM_CHUNK_SIZE * 2 {
             return Err(CasObjectError::FormatError(anyhow!(
                 "chunk header uncompressed length too large at {}, maximum: {MAXIMUM_CHUNK_SIZE}",
                 self.get_uncompressed_length()
