@@ -108,6 +108,7 @@ pub async fn upload_async(
     token_info: Option<(String, u64)>,
     token_refresher: Option<Arc<dyn TokenRefresher>>,
     progress_updater: Option<Arc<dyn ProgressUpdater>>,
+    _repo_type: String,
 ) -> errors::Result<Vec<PointerFile>> {
     // chunk files
     // produce Xorbs + Shards
