@@ -26,14 +26,14 @@ pub async fn create_shard_manager(
     let cache_shard_manager = ShardFileManager::builder(shard_cache_directory)
         .with_chunk_dedup(!download_only_mode)
         .with_expired_shard_cleanup(true)
-        .with_caching(true)
+        .from_global_manager_cache(true)
         .build()
         .await?;
 
     let session_shard_manager = ShardFileManager::builder(shard_session_directory)
         .with_chunk_dedup(!download_only_mode)
         .with_expired_shard_cleanup(false)
-        .with_caching(false)
+        .from_global_manager_cache(false)
         .with_upstream_manager(cache_shard_manager)
         .build()
         .await?;
