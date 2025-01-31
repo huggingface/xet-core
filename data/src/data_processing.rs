@@ -194,9 +194,8 @@ impl PointerFileTranslator {
         let new_cas_data = take(cas_data_accumulator.deref_mut());
         drop(cas_data_accumulator); // Release the lock.
 
-        // Note: Only upload if there is new data; the file stuff here isn't really
-        //
-        if !new_cas_data.data.is_empty() {
+        // Upload if there is new data or info
+        if !new_cas_data.is_empty() {
             self.xorb_uploader.register_new_cas_block(new_cas_data).await?;
         }
 
