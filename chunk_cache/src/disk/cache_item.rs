@@ -1,4 +1,4 @@
-use std::fmt::Debug;
+use std::fmt::{Debug, Formatter};
 use std::hash::{Hash, Hasher};
 use std::io::Cursor;
 use std::mem::size_of;
@@ -17,6 +17,21 @@ use crate::error::ChunkCacheError;
 pub(crate) struct VerificationCell<T> {
     inner: T,
     verification: Arc<AtomicBool>,
+}
+
+impl<T: std::fmt::Display> std::fmt::Display for VerificationCell<T> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{} ({})",
+            self.inner,
+            if self.verification.load(std::sync::atomic::Ordering::Relaxed) {
+                "verified"
+            } else {
+                "unverified"
+            }
+        )
+    }
 }
 
 impl<T> AsRef<T> for VerificationCell<T> {
