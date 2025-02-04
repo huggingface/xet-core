@@ -253,10 +253,12 @@ impl DiskCache {
             };
 
             if !cache_item.is_verified() {
-                if crc32_from_reader(&mut file)? == cache_item.checksum {
+                let checksum = crc32_from_reader(&mut file)?;
+                if checksum == cache_item.checksum {
                     cache_item.verify();
                     file.rewind()?;
                 } else {
+                    warn!("computed checksum {checksum} mismatch on cache item {key}/{cache_item}");
                     self.remove_item(key, &cache_item)?;
                     continue;
                 }
