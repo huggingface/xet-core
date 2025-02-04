@@ -72,6 +72,9 @@ pub enum DataProcessingError {
 
     #[error("AuthError: {0}")]
     AuthError(#[from] AuthError),
+
+    #[error("Reqwest: {0}")]
+    ReqwestError(#[from] reqwest::Error),
 }
 
 pub type Result<T> = std::result::Result<T, DataProcessingError>;

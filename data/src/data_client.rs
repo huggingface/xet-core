@@ -8,6 +8,7 @@ use std::sync::Arc;
 
 use cas_client::CacheConfig;
 use dirs::home_dir;
+use futures::{AsyncReadExt, TryStreamExt};
 use lazy_static::lazy_static;
 use merkledb::constants::IDEAL_CAS_BLOCK_SIZE;
 use parutils::{tokio_par_for_each, ParallelError};
@@ -188,6 +189,39 @@ async fn clean_file(processor: &PointerFileTranslator, f: String) -> errors::Res
 
     loop {
         let bytes = reader.read(&mut read_buf)?;
+        if bytes == 0 {
+            break;
+        }
+
+        handle.add_bytes(read_buf[0..bytes].to_vec()).await?;
+    }
+
+    let pf_str = handle.result().await?;
+    let pf = PointerFile::init_from_string(&pf_str, path.to_str().unwrap());
+    Ok(pf)
+}
+
+async fn clean_file_from_url(
+    processor: &PointerFileTranslator,
+    file_url: String,
+    path: String,
+) -> errors::Result<PointerFile> {
+    let path = PathBuf::from(path);
+    let mut read_buf = vec![0u8; READ_BLOCK_SIZE];
+
+    let response = reqwest::get(file_url).await?;
+
+    let mut reader = response.bytes_stream().map_err(std::io::Error::other).into_async_read();
+
+    let handle = processor
+        .start_clean(
+            IDEAL_CAS_BLOCK_SIZE / READ_BLOCK_SIZE, // enough to fill one CAS block
+            Some(&path),                                             // for logging & telemetry
+        )
+        .await?;
+
+    loop {
+        let bytes = reader.read(&mut read_buf).await?;
         if bytes == 0 {
             break;
         }
