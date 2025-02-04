@@ -11,7 +11,6 @@ use base64::Engine;
 use cas_types::{ChunkRange, Key};
 use error_printer::ErrorPrinter;
 use file_utils::SafeFileCreator;
-use log::info;
 use merklehash::MerkleHash;
 use tracing::{debug, warn};
 #[cfg(feature = "analysis")]
