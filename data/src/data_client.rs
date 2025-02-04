@@ -216,7 +216,7 @@ async fn clean_file_from_url(
     let handle = processor
         .start_clean(
             IDEAL_CAS_BLOCK_SIZE / READ_BLOCK_SIZE, // enough to fill one CAS block
-            Some(&path),                                             // for logging & telemetry
+            Some(&path),                            // for logging & telemetry
         )
         .await?;
 
