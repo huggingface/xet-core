@@ -39,12 +39,22 @@ use crate::remote_shard_interface::RemoteShardInterface;
 use crate::repo_salt::RepoSalt;
 use crate::PointerFile;
 
-// Chunking is the bottleneck, changing batch size doesn't have a big impact.
+// Tradeoff is the memory size of the buffer vs. the following benefits:
+// 1. global dedup query -- when a chunk hash satisfies the condition for global dedup, we query
+// the global dedup server in parallel with chunking the rest of the hash.  We process the block of
+// chunks while that query is executed, but then wait until it finishes before either reprocessing
+// the chunks or exiting.  A larger batch size means more work is done in the round trip here in the case
+// of not hitting the global dedup, and more is reprocessed if the global dedup was successful.
+//
+// 2. When there are a lot of shards, dedup from a single match proceeds as far as possible through the chunks
+// while still matching, which saves a lot of time when there are a lot of shards and hmac keys to work through.
+//
+// 256 is chosen as a decent balance between memory and the above benefits.
 lazy_static! {
     pub static ref DEDUP_CHUNK_BATCH_SIZE: usize = std::env::var("XET_DEDUP_BATCHSIZE")
         .ok()
         .and_then(|s| s.parse().ok())
-        .unwrap_or(1);
+        .unwrap_or(256);
 }
 
 lazy_static! {
