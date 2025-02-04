@@ -257,9 +257,7 @@ impl DiskCache {
                 if crc32_from_reader(&mut file)? == cache_item.checksum {
                     cache_item.verify();
                     file.rewind()?;
-                    info!("verified {key} {cache_item}");
                 } else {
-                    info!("failed to verify {key} {cache_item}");
                     self.remove_item(key, &cache_item)?;
                     continue;
                 }
