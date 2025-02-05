@@ -6,6 +6,8 @@ use clap::Parser as _;
 use clap_derive::{Args, Parser, Subcommand};
 use file_utils::SafeFileCreator;
 use merklehash::MerkleHash;
+use parquet::{file::writer::SerializedFileWriter, record::RecordWriter};
+use parquet_derive::{ParquetRecordReader, ParquetRecordWriter};
 use serde::{Deserialize, Serialize};
 use std::fs::File;
 use std::io::{BufReader, Cursor, Read, Write};
@@ -136,17 +138,27 @@ struct ChunkCsv {
     chunk_index: u32,
     uncompressed_len: u32,
     compressed_len: u32,
-    compression_scheme: &'static str,
+    compression_scheme: String,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
-struct AllEncompassingCsv {
+#[derive(Debug, Default, Serialize, Deserialize)]
+struct CompleteRecordCsv {
     hash: HexMerkleHash,
     xorb_hash: HexMerkleHash,
     chunk_index: u32,
     uncompressed_len: u32,
     compressed_len: u32,
-    compression_scheme: &'static str,
+    compression_scheme: String,
+}
+
+#[derive(Debug, Default, ParquetRecordWriter, ParquetRecordReader)]
+struct CompleteRecordParquet {
+    hash: String,
+    xorb_hash: String,
+    chunk_index: u32,
+    uncompressed_len: u32,
+    compressed_len: u32,
+    compression_scheme: String,
 }
 
 fn reformat(reformat_args: ReformatArgs) {
@@ -157,10 +169,16 @@ fn reformat(reformat_args: ReformatArgs) {
     let xorbs_csv_file = SafeFileCreator::new(format!("{filename}.xorbs.csv")).unwrap();
     let chunks_csv_file = SafeFileCreator::new(format!("{filename}.chunks.csv")).unwrap();
     let mix_csv_file = SafeFileCreator::new(format!("{filename}.mix.csv")).unwrap();
+    let parquet_file = SafeFileCreator::new(format!("{filename}.parquet")).unwrap();
 
     let mut xorb_csv_writer = csv::Writer::from_writer(xorbs_csv_file);
     let mut chunks_csv_writer = csv::Writer::from_writer(chunks_csv_file);
     let mut mix_csv_writer = csv::Writer::from_writer(mix_csv_file);
+
+    let schema = vec![CompleteRecordParquet::default()].as_slice().schema().unwrap();
+
+    let mut parquet_writer = SerializedFileWriter::new(parquet_file, schema, Default::default()).unwrap();
+    let mut records = vec![];
 
     let mut i: u32 = 0;
     loop {
@@ -187,29 +205,55 @@ fn reformat(reformat_args: ReformatArgs) {
             },
         ) in entry.chunks.into_iter().enumerate()
         {
+            let chunk_index = chunk_index as u32;
+            let compression_scheme: &'static str = CompressionScheme::try_from(compression_scheme).unwrap().into();
             chunks_csv_writer
                 .serialize(ChunkCsv {
                     hash: hash.into(),
                     xorb_id: i,
-                    chunk_index: chunk_index as u32,
+                    chunk_index,
                     uncompressed_len,
                     compressed_len,
-                    compression_scheme: CompressionScheme::try_from(compression_scheme).unwrap().into(),
+                    compression_scheme: compression_scheme.to_string(),
                 })
                 .unwrap();
             mix_csv_writer
-                .serialize(AllEncompassingCsv {
+                .serialize(CompleteRecordCsv {
                     hash: hash.into(),
                     xorb_hash: entry.hash.into(),
-                    chunk_index: chunk_index as u32,
+                    chunk_index,
                     uncompressed_len,
                     compressed_len,
-                    compression_scheme: CompressionScheme::try_from(compression_scheme).unwrap().into(),
+                    compression_scheme: compression_scheme.to_string(),
                 })
                 .unwrap();
+            // let mut row_group = parquet_writer.next_row_group().unwrap();
+            records.push(CompleteRecordParquet {
+                hash: hash.hex(),
+                xorb_hash: entry.hash.hex(),
+                chunk_index: chunk_index as u32,
+                uncompressed_len,
+                compressed_len,
+                compression_scheme: compression_scheme.to_string(),
+            });
+            // std::slice::from_ref(&CompleteRecordParquet {
+            //     hash: hash.hex(),
+            //     xorb_hash: entry.hash.hex(),
+            //     chunk_index: chunk_index as u32,
+            //     uncompressed_len,
+            //     compressed_len,
+            //     compression_scheme: compression_scheme.to_string(),
+            // })
+            // .write_to_row_group(&mut row_group)
+            // .unwrap();
+            // row_group.close().unwrap();
         }
         i += 1;
     }
+    let mut row_group = parquet_writer.next_row_group().unwrap();
+    records.as_slice().write_to_row_group(&mut row_group).unwrap();
+    row_group.close().unwrap();
+    parquet_writer.close().unwrap();
 }
 
 fn print(print_args: PrintArgs) {
