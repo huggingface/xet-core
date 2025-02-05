@@ -19,6 +19,7 @@ struct ChunkMD {
     hash: MerkleHash,
     uncompressed_len: u32,
     compressed_len: u32,
+    compression_scheme: u8,
 }
 
 impl XorbEntry {
@@ -29,6 +30,7 @@ impl XorbEntry {
             write_hash(w, &chunk.hash).unwrap();
             write_u32(w, chunk.uncompressed_len).unwrap();
             write_u32(w, chunk.compressed_len).unwrap();
+            w.write_all(&[chunk.compression_scheme]).unwrap();
         }
     }
 
@@ -40,10 +42,16 @@ impl XorbEntry {
             let hash = read_hash(r).unwrap();
             let uncompressed_len = read_u32(r).unwrap();
             let compressed_len = read_u32(r).unwrap();
+            let compression_scheme = {
+                let mut _buf = [0u8; 1];
+                r.read_exact(&mut _buf).unwrap();
+                _buf[0]
+            };
             chunks.push(ChunkMD {
                 hash,
                 uncompressed_len,
                 compressed_len,
+                compression_scheme,
             });
         }
         Self { hash, chunks }
@@ -51,7 +59,7 @@ impl XorbEntry {
 }
 
 const BUCKET: &str = "xethub-poc-xorb-bucket";
-const XORBS_PREFIX: &str = "xorbs/default/0";
+const XORBS_PREFIX: &str = "xorbs/default/";
 const FILENAME: &str = "xorb.chunks";
 
 #[tokio::main]
@@ -62,10 +70,10 @@ async fn main() {
 
     let mut js = JoinSet::new();
 
-    let (xmd_send, xmd_recv) = tokio::sync::mpsc::channel(200);
+    let (xmd_send, xmd_recv) = tokio::sync::mpsc::channel(500);
     js.spawn(write_results(xmd_recv));
 
-    let (xkey_send, xkey_recv) = tokio::sync::mpsc::channel(1000);
+    let (xkey_send, xkey_recv) = tokio::sync::mpsc::channel(5000);
     js.spawn(list_bucket(s3.clone(), xkey_send));
 
     js.spawn(gather_xorb_info(s3.clone(), xkey_recv, xmd_send));
@@ -74,7 +82,7 @@ async fn main() {
     js.join_all().await;
 }
 
-const NUM_JOBS_CONCURRENT: usize = 100;
+const NUM_JOBS_CONCURRENT: usize = 1000;
 
 async fn gather_xorb_info(s3: Arc<Client>, mut jobs: Receiver<String>, out: Sender<XorbEntry>) {
     let mut done = false;
@@ -104,7 +112,6 @@ async fn gather_xorb_info(s3: Arc<Client>, mut jobs: Receiver<String>, out: Send
 }
 
 async fn process_job(s3: Arc<Client>, job: String) -> XorbEntry {
-    //println!("start job: {job}");
     let xorb_bytes = s3
         .get_object()
         .bucket(BUCKET)
@@ -139,17 +146,19 @@ async fn process_job(s3: Arc<Client>, job: String) -> XorbEntry {
             hash: chunk_hash.clone(),
             uncompressed_len: chunk_header.get_uncompressed_length(),
             compressed_len: chunk_header.get_compressed_length(),
+            compression_scheme: chunk_header.get_compression_scheme().unwrap() as u8,
         })
     }
-    //println!("end job: {job}");
     XorbEntry { hash, chunks }
 }
+
+const MAX_KEYS: i32 = 1000;
 
 async fn list_bucket(s3: Arc<Client>, send: Sender<String>) {
     println!("begin listing bucket");
     let mut response = s3
         .list_objects_v2()
-        .max_keys(200)
+        .max_keys(MAX_KEYS)
         .bucket(BUCKET)
         .prefix(XORBS_PREFIX)
         .send()
@@ -163,7 +172,7 @@ async fn list_bucket(s3: Arc<Client>, send: Sender<String>) {
         response = s3
             .list_objects_v2()
             .bucket(BUCKET)
-            .max_keys(200)
+            .max_keys(MAX_KEYS)
             .prefix(XORBS_PREFIX)
             .continuation_token(next_continuation_token)
             .send()
