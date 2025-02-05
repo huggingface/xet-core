@@ -51,7 +51,7 @@ impl XorbEntry {
 }
 
 const BUCKET: &str = "xethub-poc-xorb-bucket";
-const XORBS_PREFIX: &str = "xorbs/default/00";
+const XORBS_PREFIX: &str = "xorbs/default/0";
 const FILENAME: &str = "xorb.chunks";
 
 #[tokio::main]
@@ -104,7 +104,7 @@ async fn gather_xorb_info(s3: Arc<Client>, mut jobs: Receiver<String>, out: Send
 }
 
 async fn process_job(s3: Arc<Client>, job: String) -> XorbEntry {
-    println!("start job: {job}");
+    //println!("start job: {job}");
     let xorb_bytes = s3
         .get_object()
         .bucket(BUCKET)
@@ -141,7 +141,7 @@ async fn process_job(s3: Arc<Client>, job: String) -> XorbEntry {
             compressed_len: chunk_header.get_compressed_length(),
         })
     }
-    println!("end job: {job}");
+    //println!("end job: {job}");
     XorbEntry { hash, chunks }
 }
 
@@ -154,9 +154,6 @@ async fn list_bucket(s3: Arc<Client>, send: Sender<String>) {
         .prefix(XORBS_PREFIX)
         .send()
         .await
-        .inspect_err(|e| {
-            println!("error listing bucket: {e}");
-        })
         .unwrap();
     println!("listed {}, sending...", response.contents().len());
     for key in response.contents() {
@@ -184,9 +181,9 @@ async fn write_results(mut recv: Receiver<XorbEntry>) {
     let mut file = SafeFileCreator::new(FILENAME).unwrap();
     let mut i = 0;
     while let Some(entry) = recv.recv().await {
-        i += 1;
         println!("writing results for xorb ({i}) {} num chunks({})", entry.hash.hex(), entry.chunks.len());
         entry.serialize(&mut file);
+        i += 1;
     }
     println!("write_results done");
 }
