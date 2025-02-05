@@ -7,6 +7,12 @@ edition = "2021"
 merklehash = { path = "../merklehash"}
 cas_object = { path = "../cas_object" }
 utils = { path = "../utils" }
+file_utils = { path = "../file_utils" }
 tokio = { version = "1.43.0", features = ["full"] }
 aws-config = { version = "1.5.16", features = ["behavior-version-latest"] }
 aws-sdk-s3 = { version = "1.73.0", features = ["behavior-version-latest"] }
+futures = "0.3.31"
+futures-util = "0.3.31"
+crossbeam = { version = "0.8.4", features = ["crossbeam-channel"] }
+crossbeam-channel = "0.5.14"
+bytes = "1.10.0"
