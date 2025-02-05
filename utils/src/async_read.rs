@@ -13,7 +13,7 @@ pub struct CopyReader<'r, 'w, R, W> {
     writer: &'w mut W,
 }
 
-impl<'r, 'w, R: AsyncRead + Unpin, W: Write> AsyncRead for CopyReader<'r, 'w, R, W> {
+impl<R: AsyncRead + Unpin, W: Write> AsyncRead for CopyReader<'_, '_, R, W> {
     fn poll_read(mut self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &mut [u8]) -> Poll<std::io::Result<usize>> {
         let res = ready!(self.src.as_mut().poll_read(cx, buf))?;
         self.writer.write_all(&buf[..res])?;
@@ -21,7 +21,7 @@ impl<'r, 'w, R: AsyncRead + Unpin, W: Write> AsyncRead for CopyReader<'r, 'w, R,
     }
 }
 
-impl<'r, 'w, R: AsyncRead + Unpin, W: Write> Unpin for CopyReader<'r, 'w, R, W> {}
+impl<R: AsyncRead + Unpin, W: Write> Unpin for CopyReader<'_, '_, R, W> {}
 
 impl<'r, 'w, R: AsyncRead + Unpin, W: Write> CopyReader<'r, 'w, R, W> {
     pub fn new(src: &'r mut R, writer: &'w mut W) -> Self {

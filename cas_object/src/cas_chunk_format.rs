@@ -2,6 +2,7 @@ use std::io::{Read, Write};
 use std::mem::size_of;
 
 use anyhow::anyhow;
+use merkledb::constants::MAXIMUM_CHUNK_SIZE;
 
 use crate::error::CasObjectError;
 use crate::CompressionScheme;
@@ -67,6 +68,18 @@ impl CASChunkHeader {
                 "chunk header version too high at {}, current version is {}",
                 self.version,
                 CURRENT_VERSION
+            )));
+        }
+        if self.get_compressed_length() as usize > MAXIMUM_CHUNK_SIZE * 2 {
+            return Err(CasObjectError::FormatError(anyhow!(
+                "chunk header compressed length too large at {}, maximum: {MAXIMUM_CHUNK_SIZE}",
+                self.get_compressed_length()
+            )));
+        }
+        if self.get_compressed_length() as usize > MAXIMUM_CHUNK_SIZE * 2 {
+            return Err(CasObjectError::FormatError(anyhow!(
+                "chunk header uncompressed length too large at {}, maximum: {MAXIMUM_CHUNK_SIZE}",
+                self.get_uncompressed_length()
             )));
         }
         Ok(())

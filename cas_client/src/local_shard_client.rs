@@ -1,5 +1,6 @@
 use std::io::Cursor;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use async_trait::async_trait;
 use itertools::Itertools;
@@ -18,7 +19,7 @@ use crate::{RegistrationClient, ShardClientInterface};
 /// Is intended to use for testing interactions between local repos that would normally
 /// require the use of the remote shard server.  
 pub struct LocalShardClient {
-    shard_manager: ShardFileManager,
+    shard_manager: Arc<ShardFileManager>,
     shard_directory: PathBuf,
     global_dedup: DiskBasedGlobalDedupTable,
 }
@@ -33,7 +34,11 @@ impl LocalShardClient {
         }
 
         // This loads and cleans all the shards in the session directory; no need to do it explicitly
-        let shard_manager = ShardFileManager::load_dir(&shard_directory, download_only_mode).await?;
+        let shard_manager = ShardFileManager::builder(&shard_directory)
+            .with_chunk_dedup(!download_only_mode)
+            .with_expired_shard_cleanup(true)
+            .build()
+            .await?;
 
         let global_dedup = DiskBasedGlobalDedupTable::open_or_create(cas_directory.join("ddb").join("chunk2shard.db"))?;
 

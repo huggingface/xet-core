@@ -22,7 +22,7 @@ pub fn consolidate_shards_in_directory(
     session_directory: &Path,
     target_max_size: u64,
 ) -> Result<Vec<Arc<MDBShardFile>>> {
-    let mut shards = MDBShardFile::load_all(session_directory)?;
+    let mut shards = MDBShardFile::load_all_valid(session_directory)?;
 
     shards.sort_unstable_by_key(|si| si.last_modified_time);
 
