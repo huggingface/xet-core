@@ -1,13 +1,18 @@
 use aws_config::Region;
 use aws_sdk_s3::Client;
-use cas_object::{parse_chunk_header, CasObject, CAS_CHUNK_HEADER_LENGTH};
+use cas_object::{parse_chunk_header, CasObject, CompressionScheme, CAS_CHUNK_HEADER_LENGTH};
+use cas_types::HexMerkleHash;
+use clap::Parser as _;
+use clap_derive::{Args, Parser, Subcommand};
 use file_utils::SafeFileCreator;
-use futures_util::task::SpawnExt;
 use merklehash::MerkleHash;
-use std::io::{Cursor, Read, Write};
+use serde::{Deserialize, Serialize};
+use std::fs::File;
+use std::io::{BufReader, Cursor, Read, Write};
 use std::sync::Arc;
 use tokio::sync::mpsc::{Receiver, Sender};
 use tokio::task::JoinSet;
+use utils::output_bytes;
 use utils::serialization_utils::{read_hash, read_u32, write_hash, write_u32};
 
 struct XorbEntry {
@@ -34,8 +39,16 @@ impl XorbEntry {
         }
     }
 
-    fn deserialize(&self, r: &mut impl Read) -> Self {
-        let hash = read_hash(r).unwrap();
+    fn deserialize(r: &mut impl Read) -> Option<Self> {
+        let hash = match read_hash(r) {
+            Ok(hash) => hash,
+            Err(e) => {
+                if e.kind() == std::io::ErrorKind::UnexpectedEof {
+                    return None;
+                }
+                panic!("{e}");
+            },
+        };
         let num_chunks = read_u32(r).unwrap();
         let mut chunks = Vec::with_capacity(num_chunks as usize);
         for _ in 0..num_chunks {
@@ -54,8 +67,45 @@ impl XorbEntry {
                 compression_scheme,
             });
         }
-        Self { hash, chunks }
+        Some(Self { hash, chunks })
     }
+}
+
+#[derive(Parser, Debug, Clone)]
+struct Cli {
+    #[command(subcommand)]
+    command: Command,
+}
+
+#[derive(Subcommand, Debug, Clone)]
+enum Command {
+    Collect(CollectArgs),
+    Print(PrintArgs),
+    Reformat(ReformatArgs),
+}
+
+#[derive(Args, Debug, Clone)]
+struct ReformatArgs {
+    #[clap(long, short)]
+    filename: String,
+}
+
+#[derive(Args, Debug, Clone)]
+struct PrintArgs {
+    #[clap(long, short)]
+    num: Option<usize>,
+    #[clap(long, short)]
+    filename: String,
+}
+
+#[derive(Args, Debug, Clone)]
+struct CollectArgs {
+    #[clap(long, short, default_value = "xethub-poc-xorb-bucket")]
+    bucket: String,
+    #[clap(long, short, default_value = "")]
+    prefix: String,
+    #[clap(long, short, default_value = "100")]
+    num_workers: usize,
 }
 
 const BUCKET: &str = "xethub-poc-xorb-bucket";
@@ -64,6 +114,140 @@ const FILENAME: &str = "xorb.chunks";
 
 #[tokio::main]
 async fn main() {
+    let args = Cli::parse();
+    match args.command {
+        Command::Collect(collect_args) => collect(collect_args).await,
+        Command::Print(print_args) => print(print_args),
+        Command::Reformat(reformat_args) => reformat(reformat_args),
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct XorbCsv {
+    hash: HexMerkleHash,
+    id: u32,
+    num_chunks: u32,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct ChunkCsv {
+    hash: HexMerkleHash,
+    xorb_id: u32,
+    chunk_index: u32,
+    uncompressed_len: u32,
+    compressed_len: u32,
+    compression_scheme: &'static str,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct AllEncompassingCsv {
+    hash: HexMerkleHash,
+    xorb_hash: HexMerkleHash,
+    chunk_index: u32,
+    uncompressed_len: u32,
+    compressed_len: u32,
+    compression_scheme: &'static str,
+}
+
+fn reformat(reformat_args: ReformatArgs) {
+    let filename = &reformat_args.filename;
+    let file = File::open(filename).unwrap();
+    let mut reader = BufReader::new(file);
+
+    let xorbs_csv_file = SafeFileCreator::new(format!("{filename}.xorbs.csv")).unwrap();
+    let chunks_csv_file = SafeFileCreator::new(format!("{filename}.chunks.csv")).unwrap();
+    let mix_csv_file = SafeFileCreator::new(format!("{filename}.mix.csv")).unwrap();
+
+    let mut xorb_csv_writer = csv::Writer::from_writer(xorbs_csv_file);
+    let mut chunks_csv_writer = csv::Writer::from_writer(chunks_csv_file);
+    let mut mix_csv_writer = csv::Writer::from_writer(mix_csv_file);
+
+    let mut i: u32 = 0;
+    loop {
+        if i % 1000 == 0 {
+            println!("processing index {i}");
+        }
+        let Some(entry) = XorbEntry::deserialize(&mut reader) else {
+            break;
+        };
+        xorb_csv_writer
+            .serialize(XorbCsv {
+                hash: entry.hash.into(),
+                id: i,
+                num_chunks: entry.chunks.len() as u32,
+            })
+            .unwrap();
+        for (
+            chunk_index,
+            ChunkMD {
+                hash,
+                uncompressed_len,
+                compressed_len,
+                compression_scheme,
+            },
+        ) in entry.chunks.into_iter().enumerate()
+        {
+            chunks_csv_writer
+                .serialize(ChunkCsv {
+                    hash: hash.into(),
+                    xorb_id: i,
+                    chunk_index: chunk_index as u32,
+                    uncompressed_len,
+                    compressed_len,
+                    compression_scheme: CompressionScheme::try_from(compression_scheme).unwrap().into(),
+                })
+                .unwrap();
+            mix_csv_writer
+                .serialize(AllEncompassingCsv {
+                    hash: hash.into(),
+                    xorb_hash: entry.hash.into(),
+                    chunk_index: chunk_index as u32,
+                    uncompressed_len,
+                    compressed_len,
+                    compression_scheme: CompressionScheme::try_from(compression_scheme).unwrap().into(),
+                })
+                .unwrap();
+        }
+        i += 1;
+    }
+}
+
+fn print(print_args: PrintArgs) {
+    let file = File::open(print_args.filename).unwrap();
+    let mut reader = BufReader::new(file);
+    let max = print_args.num;
+    let mut i = 0;
+    loop {
+        let Some(entry) = XorbEntry::deserialize(&mut reader) else {
+            break;
+        };
+        println!("Xorb: {}", entry.hash.hex());
+        for (
+            chunk_index,
+            ChunkMD {
+                hash,
+                uncompressed_len,
+                compressed_len,
+                compression_scheme,
+            },
+        ) in entry.chunks.into_iter().enumerate()
+        {
+            let compression_scheme = CompressionScheme::try_from(compression_scheme).unwrap();
+            let compressed_len = output_bytes(compressed_len as usize);
+            let uncompressed_len = output_bytes(uncompressed_len as usize);
+            println!("  Chunk {chunk_index}: uncompressed({uncompressed_len}) compressed({compressed_len}) scheme: {compression_scheme} hash({hash})")
+        }
+
+        i += 1;
+        if let Some(max) = max {
+            if i >= max {
+                break;
+            }
+        }
+    }
+}
+
+async fn collect(collect_args: CollectArgs) {
     println!("started");
     let sdk_config = aws_config::from_env().region(Region::new("us-east-1")).load().await;
     let s3 = Arc::new(Client::from_conf(aws_sdk_s3::Config::from(&sdk_config)));
@@ -74,7 +258,7 @@ async fn main() {
     js.spawn(write_results(xmd_recv));
 
     let (xkey_send, xkey_recv) = tokio::sync::mpsc::channel(2000);
-    js.spawn(list_bucket(s3.clone(), xkey_send));
+    js.spawn(list_bucket(s3.clone(), xkey_send, format!("{XORBS_PREFIX}{}", collect_args.prefix)));
 
     js.spawn(gather_xorb_info(s3.clone(), xkey_recv, xmd_send));
 
@@ -154,13 +338,13 @@ async fn process_job(s3: Arc<Client>, job: String) -> XorbEntry {
 
 const MAX_KEYS: i32 = 1000;
 
-async fn list_bucket(s3: Arc<Client>, send: Sender<String>) {
+async fn list_bucket(s3: Arc<Client>, send: Sender<String>, prefix: String) {
     println!("begin listing bucket");
     let mut response = s3
         .list_objects_v2()
         .max_keys(MAX_KEYS)
         .bucket(BUCKET)
-        .prefix(XORBS_PREFIX)
+        .prefix(&prefix)
         .send()
         .await
         .unwrap();
@@ -173,7 +357,7 @@ async fn list_bucket(s3: Arc<Client>, send: Sender<String>) {
             .list_objects_v2()
             .bucket(BUCKET)
             .max_keys(MAX_KEYS)
-            .prefix(XORBS_PREFIX)
+            .prefix(&prefix)
             .continuation_token(next_continuation_token)
             .send()
             .await

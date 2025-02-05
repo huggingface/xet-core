@@ -967,7 +967,7 @@ version = "0.27.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3fce8dd7fcfcbf3a0a87d8f515194b49d6135acab73e18bd380d1d93bb1a15eb"
 dependencies = [
- "clap 4.5.20",
+ "clap 4.5.28",
  "heck 0.4.1",
  "indexmap 2.6.0",
  "log",
@@ -1266,28 +1266,6 @@ checksum = "2673cc8207403546f45f5fd319a974b1e6983ad1a3ee7e6041650013be041876"
 dependencies = [
  "cast",
  "itertools 0.10.5",
-]
-
-[[package]]
-name = "crossbeam"
-version = "0.8.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1137cd7e7fc0fb5d3c5a8678be38ec56e819125d8d7907411fe24ccb943faca8"
-dependencies = [
- "crossbeam-channel",
- "crossbeam-deque",
- "crossbeam-epoch",
- "crossbeam-queue",
- "crossbeam-utils",
-]
-
-[[package]]
-name = "crossbeam-channel"
-version = "0.5.14"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "06ba6d68e24814cb8de6bb986db8222d3a027d15872cabc0d18817bc3c0e4471"
-dependencies = [
- "crossbeam-utils",
 ]
 
 [[package]]
@@ -5343,14 +5321,16 @@ version = "0.1.0"
 dependencies = [
  "aws-config",
  "aws-sdk-s3",
- "bytes",
  "cas_object",
- "crossbeam",
- "crossbeam-channel",
+ "cas_types",
+ "clap 4.5.28",
+ "clap_derive 4.5.28",
+ "csv",
  "file_utils",
  "futures",
  "futures-util",
  "merklehash",
+ "serde",
  "tokio",
  "utils",
 ]
