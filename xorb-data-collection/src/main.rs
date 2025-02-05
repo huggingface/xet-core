@@ -73,7 +73,7 @@ async fn main() {
     let (xmd_send, xmd_recv) = tokio::sync::mpsc::channel(500);
     js.spawn(write_results(xmd_recv));
 
-    let (xkey_send, xkey_recv) = tokio::sync::mpsc::channel(5000);
+    let (xkey_send, xkey_recv) = tokio::sync::mpsc::channel(2000);
     js.spawn(list_bucket(s3.clone(), xkey_send));
 
     js.spawn(gather_xorb_info(s3.clone(), xkey_recv, xmd_send));
@@ -82,7 +82,7 @@ async fn main() {
     js.join_all().await;
 }
 
-const NUM_JOBS_CONCURRENT: usize = 1000;
+const NUM_JOBS_CONCURRENT: usize = 100;
 
 async fn gather_xorb_info(s3: Arc<Client>, mut jobs: Receiver<String>, out: Sender<XorbEntry>) {
     let mut done = false;
