@@ -181,7 +181,7 @@ impl Command {
                     arg.sequential,
                     hub_client,
                     threadpool,
-                    arg.compression.map(|c| CompressionScheme::try_from(c).ok()).flatten(),
+                    arg.compression.and_then(|c| CompressionScheme::try_from(c).ok()),
                     !arg.migrate,
                 )
                 .await?;
