@@ -31,7 +31,14 @@ const MAX_CONCURRENT_DOWNLOADS: usize = 8; // Download is not CPU-bound
 
 const DEFAULT_CAS_ENDPOINT: &str = "http://localhost:8080";
 const READ_BLOCK_SIZE: usize = 1024 * 1024;
-const UPLOAD_XORB_COMPRESSION: CompressionScheme = CompressionScheme::LZ4;
+const DEFAULT_XORB_COMPRESSION: CompressionScheme = CompressionScheme::LZ4;
+
+pub fn xorb_compression_for_repo_type(repo_type: &str) -> CompressionScheme {
+    match repo_type {
+        "model" | "models" => CompressionScheme::ByteGrouping4LZ4,
+        _ => DEFAULT_XORB_COMPRESSION,
+    }
+}
 
 pub fn default_config(
     endpoint: String,
@@ -71,7 +78,7 @@ pub fn default_config(
         file_query_policy: FileQueryPolicy::ServerOnly,
         cas_storage_config: StorageConfig {
             endpoint: Endpoint::Server(endpoint.clone()),
-            compression: xorb_compression.unwrap_or_default(),
+            compression: xorb_compression.unwrap_or(DEFAULT_XORB_COMPRESSION),
             auth: auth_cfg.clone(),
             prefix: "default".into(),
             cache_config: Some(CacheConfig {
@@ -82,7 +89,7 @@ pub fn default_config(
         },
         shard_storage_config: StorageConfig {
             endpoint: Endpoint::Server(endpoint),
-            compression: Default::default(),
+            compression: CompressionScheme::None,
             auth: auth_cfg,
             prefix: "default-merkledb".into(),
             cache_config: Some(CacheConfig {
@@ -113,7 +120,7 @@ pub async fn upload_async(
     token_info: Option<(String, u64)>,
     token_refresher: Option<Arc<dyn TokenRefresher>>,
     progress_updater: Option<Arc<dyn ProgressUpdater>>,
-    _repo_type: String,
+    repo_type: String,
 ) -> errors::Result<Vec<PointerFile>> {
     // chunk files
     // produce Xorbs + Shards
@@ -121,7 +128,7 @@ pub async fn upload_async(
     // for each file, return the filehash
     let (config, _tempdir) = default_config(
         endpoint.unwrap_or(DEFAULT_CAS_ENDPOINT.to_string()),
-        Some(UPLOAD_XORB_COMPRESSION),
+        xorb_compression_for_repo_type(&repo_type).into(),
         token_info,
         token_refresher,
     )?;

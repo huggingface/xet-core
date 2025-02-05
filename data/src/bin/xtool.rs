@@ -7,7 +7,7 @@ use anyhow::Result;
 use cas_client::build_http_client;
 use cas_object::CompressionScheme;
 use clap::{Args, Parser, Subcommand};
-use data::data_client::{clean_file, default_config};
+use data::data_client::{clean_file, default_config, xorb_compression_for_repo_type};
 use data::errors::DataProcessingError;
 use data::{PointerFile, PointerFileTranslator};
 use mdb_shard::file_structs::MDBFileInfo;
@@ -156,9 +156,10 @@ struct DedupArg {
     /// The compression scheme to use on XORB upload. Choices are
     /// 0: no compression;
     /// 1: LZ4 compression;
-    /// 2: 4 byte groups with LZ4 compression;
+    /// 2: 4 byte groups with LZ4 compression.
+    /// If not specified, this will be determined by the repo type.
     #[clap(short, long)]
-    compression: u8,
+    compression: Option<u8>,
     /// Migrate the files by actually uploading them to the CAS server.
     #[clap(short, long)]
     migrate: bool,
@@ -180,7 +181,7 @@ impl Command {
                     arg.sequential,
                     hub_client,
                     threadpool,
-                    arg.compression.try_into()?,
+                    arg.compression.map(|c| CompressionScheme::try_from(c).ok()).flatten(),
                     !arg.migrate,
                 )
                 .await?;
@@ -225,9 +226,12 @@ async fn dedup_files(
     sequential: bool,
     hub_client: HubClient,
     threadpool: Arc<ThreadPool>,
-    compression: CompressionScheme,
+    compression: Option<CompressionScheme>,
     dry_run: bool,
 ) -> Result<(Vec<MDBFileInfo>, Vec<(PointerFile, u64)>, u64)> {
+    let compression = compression.unwrap_or_else(|| xorb_compression_for_repo_type(&hub_client.repo_type));
+    eprintln!("Using {compression} compression");
+
     let token_type = "write";
     let (endpoint, jwt_token, jwt_token_expiry) = hub_client.get_jwt_token(token_type).await?;
     let token_refresher = Arc::new(HubClientTokenRefresher {
@@ -235,7 +239,7 @@ async fn dedup_files(
         token_type: token_type.to_owned(),
         client: Arc::new(hub_client),
     }) as Arc<dyn TokenRefresher>;
-    eprintln!("Using {compression} compression");
+
     let (config, _tempdir) =
         default_config(endpoint, Some(compression), Some((jwt_token, jwt_token_expiry)), Some(token_refresher))?;
 

@@ -559,6 +559,7 @@ dependencies = [
  "toml",
  "tracing",
  "utils",
+ "walkdir",
  "xet_threadpool",
 ]
 
@@ -1649,6 +1650,7 @@ dependencies = [
  "merklehash",
  "rand 0.8.5",
  "regex",
+ "serde",
  "static_assertions",
  "tempdir",
  "thiserror 2.0.11",
