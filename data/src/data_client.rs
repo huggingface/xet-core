@@ -6,7 +6,7 @@ use std::num::NonZero;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use cas_client::CacheConfig;
+use cas_client::{build_http_client, CacheConfig};
 use dirs::home_dir;
 use futures::{AsyncReadExt, TryStreamExt};
 use lazy_static::lazy_static;
@@ -209,7 +209,9 @@ async fn clean_file_from_url(
     let path = PathBuf::from(path);
     let mut read_buf = vec![0u8; READ_BLOCK_SIZE];
 
-    let response = reqwest::get(file_url).await?;
+    let client = build_http_client(&None)?;
+
+    let response = client.get(file_url).await?;
 
     let mut reader = response.bytes_stream().map_err(std::io::Error::other).into_async_read();
 
