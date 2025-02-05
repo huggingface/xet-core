@@ -241,7 +241,7 @@ impl DiskCache {
 
             let path = self.item_path(key, &cache_item)?;
 
-            let mut file_buf = match File::open(&path) {
+            let file_buf = match File::open(&path) {
                 Ok(file) => file,
                 Err(e) => match e.kind() {
                     ErrorKind::NotFound => {
@@ -255,8 +255,9 @@ impl DiskCache {
             // TODO: reintroduce checksum validation of cache file, but not for every get, memoize success status per
             // cache item
 
-            file_buf.seek(SeekFrom::Start(0))?;
-            let Ok(header) = CacheFileHeader::deserialize(&mut file_buf)
+            let mut file_reader = std::io::BufReader::new(file_buf);
+
+            let Ok(header) = CacheFileHeader::deserialize(&mut file_reader)
                 .debug_error(format!("failed to deserialize cache file header on path: {path:?}"))
             else {
                 self.remove_item(key, &cache_item)?;
@@ -264,7 +265,7 @@ impl DiskCache {
             };
 
             let start = cache_item.range.start;
-            let result_buf = get_range_from_cache_file(&header, &mut file_buf, range, start)?;
+            let result_buf = get_range_from_cache_file(&header, &mut file_reader, range, start)?;
             return Ok(Some(result_buf));
         }
     }
