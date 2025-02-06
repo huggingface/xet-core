@@ -1,14 +1,20 @@
 use aws_config::Region;
 use aws_sdk_s3::Client;
-use cas_object::{parse_chunk_header, CasObject, CompressionScheme, CAS_CHUNK_HEADER_LENGTH};
+use cas_object::{parse_chunk_header, range_hash_from_chunks, CasObject, CompressionScheme, CAS_CHUNK_HEADER_LENGTH};
 use cas_types::HexMerkleHash;
 use clap::Parser as _;
 use clap_derive::{Args, Parser, Subcommand};
 use file_utils::SafeFileCreator;
+use mdb_shard::file_structs::{
+    FileDataSequenceEntry, FileDataSequenceHeader, FileMetadataExt, FileVerificationEntry, MDBFileInfo,
+};
+use mdb_shard::shard_in_memory::MDBInMemoryShard;
+use merkledb::aggregate_hashes::file_node_hash;
 use merklehash::MerkleHash;
 use parquet::{file::writer::SerializedFileWriter, record::RecordWriter};
 use parquet_derive::{ParquetRecordReader, ParquetRecordWriter};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::fs::File;
 use std::io::{BufReader, Cursor, Read, Write};
 use std::sync::Arc;
@@ -84,6 +90,15 @@ enum Command {
     Collect(CollectArgs),
     Print(PrintArgs),
     Reformat(ReformatArgs),
+    GenShard(GenShardArgs),
+}
+
+#[derive(Args, Debug, Clone)]
+struct GenShardArgs {
+    #[clap(long, short)]
+    filename: String,
+    #[clap(long, short)]
+    num_chunks: Option<usize>,
 }
 
 #[derive(Args, Debug, Clone)]
@@ -121,7 +136,85 @@ async fn main() {
         Command::Collect(collect_args) => collect(collect_args).await,
         Command::Print(print_args) => print(print_args),
         Command::Reformat(reformat_args) => reformat(reformat_args),
+        Command::GenShard(gen_shard_args) => gen_shard(gen_shard_args),
     }
+}
+
+fn gen_shard(gen_shard_args: GenShardArgs) {
+    let filename = &gen_shard_args.filename;
+    let file = File::open(filename).unwrap();
+    let mut reader = BufReader::new(file);
+    let max = gen_shard_args.num_chunks;
+
+    let mut max_chunk_index = 0;
+
+    let mut segments = Vec::with_capacity(max.unwrap_or(10000));
+    let mut verification = Vec::with_capacity(max.unwrap_or(10000));
+    let mut chunk_hashes = Vec::with_capacity(max.unwrap_or(10000));
+
+    let mut xorbs = HashMap::with_capacity(40000);
+    let mut num_chunks = 0;
+    while let Some(entry) = XorbEntry::deserialize(&mut reader) {
+        max_chunk_index = max_chunk_index.max(entry.chunks.len());
+        num_chunks += entry.chunks.len();
+        xorbs.insert(entry.hash, entry.chunks);
+    }
+
+    println!("max chunk index {max_chunk_index}; num_chunks {num_chunks}");
+
+    if xorbs.len() == 0 {
+        panic!("no xorbs in file");
+    }
+
+    let mut iter = xorbs.iter();
+    let mut chunk_index = 0;
+    let mut technical_file_len = 0;
+    loop {
+        let Some((xorb_hash, chunks)) = iter.next() else {
+            iter = xorbs.iter();
+            chunk_index += 1;
+            println!("bumping chunk_index to {chunk_index}");
+            if chunk_index >= max_chunk_index {
+                break;
+            }
+            continue;
+        };
+        if chunks.len() <= chunk_index {
+            continue;
+        }
+
+        let chunk = &chunks[chunk_index];
+        let segment =
+            FileDataSequenceEntry::new(*xorb_hash, chunk.uncompressed_len, chunk_index as u32, chunk_index as u32 + 1);
+        segments.push(segment);
+        technical_file_len += chunk.uncompressed_len as u64;
+        let verification_entry = range_hash_from_chunks(&[chunk.hash]);
+        verification.push(FileVerificationEntry::new(verification_entry));
+        chunk_hashes.push((chunk.hash, chunk.uncompressed_len as usize));
+
+        if let Some(max) = max {
+            if segments.len() >= max {
+                break;
+            }
+        }
+    }
+
+    let file_hash = file_node_hash(&chunk_hashes, &Default::default()).unwrap();
+
+    let metadata_ext = Some(FileMetadataExt::new(
+        MerkleHash::from_hex("6666666666666666666666666666666666666666666666666666666666666666").unwrap(),
+    ));
+
+    let new_file_info = MDBFileInfo {
+        metadata: FileDataSequenceHeader::new(file_hash, segments.len(), true, metadata_ext.is_some()),
+        segments,
+        verification,
+        metadata_ext,
+    };
+    println!("technical file size: {technical_file_len}, {:?}", new_file_info.metadata);
+    let mut shard = MDBInMemoryShard::default();
+    shard.add_file_reconstruction_info(new_file_info).unwrap();
+    shard.write_to_directory(&std::env::current_dir().unwrap()).unwrap();
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -227,7 +320,6 @@ fn reformat(reformat_args: ReformatArgs) {
                     compression_scheme: compression_scheme.to_string(),
                 })
                 .unwrap();
-            // let mut row_group = parquet_writer.next_row_group().unwrap();
             records.push(CompleteRecordParquet {
                 hash: hash.hex(),
                 xorb_hash: entry.hash.hex(),
@@ -236,17 +328,6 @@ fn reformat(reformat_args: ReformatArgs) {
                 compressed_len,
                 compression_scheme: compression_scheme.to_string(),
             });
-            // std::slice::from_ref(&CompleteRecordParquet {
-            //     hash: hash.hex(),
-            //     xorb_hash: entry.hash.hex(),
-            //     chunk_index: chunk_index as u32,
-            //     uncompressed_len,
-            //     compressed_len,
-            //     compression_scheme: compression_scheme.to_string(),
-            // })
-            // .write_to_row_group(&mut row_group)
-            // .unwrap();
-            // row_group.close().unwrap();
         }
         i += 1;
     }

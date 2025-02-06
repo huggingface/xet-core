@@ -1,4 +1,5 @@
 .xorb.chunks*
+*.mdb
 *.xorbchunks
 *.csv
 *.parquet
