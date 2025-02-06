@@ -8,11 +8,10 @@ use parutils::{tokio_par_for_each, ParallelError};
 use utils::auth::TokenRefresher;
 use xet_threadpool::ThreadPool;
 
+use super::hub_client::{HubClient, HubClientTokenRefresher};
 use crate::data_client::{clean_file, default_config, xorb_compression_for_repo_type};
 use crate::errors::DataProcessingError;
 use crate::{PointerFile, PointerFileTranslator};
-
-use super::hub_client::{HubClient, HubClientTokenRefresher};
 
 /// Migrate files to the Hub with external async runtime.
 /// How to use:
@@ -23,7 +22,8 @@ use super::hub_client::{HubClient, HubClientTokenRefresher};
 /// let repo_type = "model";
 /// let repo_id = "your_repo_id";
 /// let handle = tokio::runtime::Handle::current();
-/// migrate_with_external_runtime(file_paths, hub_endpoint, hub_token, repo_type, repo_id, handle).await?;
+/// migrate_with_external_runtime(file_paths, hub_endpoint, hub_token, repo_type, repo_id, handle)
+///     .await?;
 /// ```
 pub async fn migrate_with_external_runtime(
     file_paths: Vec<String>,
