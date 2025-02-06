@@ -7,11 +7,10 @@ use anyhow::Result;
 use cas_client::build_http_client;
 use cas_object::CompressionScheme;
 use clap::{Args, Parser, Subcommand};
-use walkdir::WalkDir;
-use xet_threadpool::ThreadPool;
-
 use data::migration_tool::hub_client::HubClient;
 use data::migration_tool::migrate::migrate_files_impl;
+use walkdir::WalkDir;
+use xet_threadpool::ThreadPool;
 
 const DEFAULT_HF_ENDPOINT: &str = "https://huggingface.co";
 

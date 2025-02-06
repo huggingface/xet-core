@@ -17,13 +17,13 @@ use super::hub_client::{HubClient, HubClientTokenRefresher};
 /// Migrate files to the Hub with external async runtime.
 /// How to use:
 /// ```no_run
-///     let file_paths = vec!["/path/to/file1".to_string(), "/path/to/file2".to_string()];
-///     let hub_endpoint = "https://huggingface.co";
-///     let hub_token = "your_token";
-///     let repo_type = "model";
-///     let repo_id = "your_repo_id";
-///     let handle = tokio::runtime::Handle::current();
-///    migrate_with_external_runtime(file_paths, hub_endpoint, hub_token, repo_type, repo_id, handle).await?;
+/// let file_paths = vec!["/path/to/file1".to_string(), "/path/to/file2".to_string()];
+/// let hub_endpoint = "https://huggingface.co";
+/// let hub_token = "your_token";
+/// let repo_type = "model";
+/// let repo_id = "your_repo_id";
+/// let handle = tokio::runtime::Handle::current();
+/// migrate_with_external_runtime(file_paths, hub_endpoint, hub_token, repo_type, repo_id, handle).await?;
 /// ```
 pub async fn migrate_with_external_runtime(
     file_paths: Vec<String>,
