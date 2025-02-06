@@ -15,7 +15,8 @@ members = [
     "utils",
     "cas_object",
     "cas_types",
-    "chunk_cache", "xet_threadpool",
+    "chunk_cache",
+    "xet_threadpool"
 ]
 
 exclude = ["hf_xet", "chunk_cache_bench"]

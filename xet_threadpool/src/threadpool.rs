@@ -98,6 +98,15 @@ impl ThreadPool {
         })
     }
 
+    pub fn from_external(handle: tokio::runtime::Handle) -> Self {
+        Self {
+            runtime: std::sync::RwLock::new(None),
+            handle,
+            external_executor_count: 0.into(),
+            sigint_shutdown: false.into(),
+        }
+    }
+
     pub fn num_worker_threads(&self) -> usize {
         self.handle.metrics().num_workers()
     }
