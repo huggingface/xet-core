@@ -386,6 +386,50 @@ impl<W: Write> Write for HashedWrite<W> {
     }
 }
 
+pub mod hex {
+    pub mod serde {
+        use std::fmt;
+
+        use serde::de::{self, Visitor};
+        use serde::{Deserializer, Serializer};
+
+        use crate::DataHash;
+
+        pub fn serialize<S>(value: &DataHash, serializer: S) -> Result<S::Ok, S::Error>
+        where
+            S: Serializer,
+        {
+            let hex = value.hex();
+            serializer.serialize_str(&hex)
+        }
+
+        pub fn deserialize<'de, D>(deserializer: D) -> Result<DataHash, D::Error>
+        where
+            D: Deserializer<'de>,
+        {
+            deserializer.deserialize_str(HexVisitor)
+        }
+
+        // Visitor for deserialization
+        struct HexVisitor;
+
+        impl<'de> Visitor<'de> for HexVisitor {
+            type Value = DataHash;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+                formatter.write_str("a merklehash")
+            }
+
+            fn visit_str<E>(self, v: &str) -> Result<Self::Value, E>
+            where
+                E: de::Error,
+            {
+                DataHash::from_hex(v).map_err(|e| serde::de::Error::custom(e))
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::io::Write;

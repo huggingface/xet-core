@@ -61,6 +61,7 @@ impl CASDataAggregator {
 pub struct PointerFileTranslator {
     /* ----- Configurations ----- */
     config: TranslatorConfig,
+    dry_run: bool,
 
     /* ----- Utils ----- */
     shard_manager: Arc<ShardFileManager>,
@@ -87,6 +88,25 @@ impl PointerFileTranslator {
         upload_progress_updater: Option<Arc<dyn ProgressUpdater>>,
         download_only: bool,
     ) -> Result<PointerFileTranslator> {
+        PointerFileTranslator::new_impl(config, threadpool, upload_progress_updater, download_only, false).await
+    }
+
+    pub async fn dry_run(
+        config: TranslatorConfig,
+        threadpool: Arc<ThreadPool>,
+        upload_progress_updater: Option<Arc<dyn ProgressUpdater>>,
+        download_only: bool,
+    ) -> Result<PointerFileTranslator> {
+        PointerFileTranslator::new_impl(config, threadpool, upload_progress_updater, download_only, true).await
+    }
+
+    async fn new_impl(
+        config: TranslatorConfig,
+        threadpool: Arc<ThreadPool>,
+        upload_progress_updater: Option<Arc<dyn ProgressUpdater>>,
+        download_only: bool,
+        dry_run: bool,
+    ) -> Result<PointerFileTranslator> {
         let shard_manager = create_shard_manager(&config.shard_storage_config, download_only).await?;
 
         let cas_client = create_cas_client(
@@ -94,6 +114,7 @@ impl PointerFileTranslator {
             &config.repo_info,
             shard_manager.clone(),
             threadpool.clone(),
+            dry_run,
         )?;
 
         let remote_shards = {
@@ -146,6 +167,7 @@ impl PointerFileTranslator {
 
         Ok(Self {
             config,
+            dry_run,
             shard_manager,
             remote_shards,
             cas: cas_client,
@@ -188,7 +210,7 @@ impl PointerFileTranslator {
         .await
     }
 
-    pub async fn finalize_cleaning(&self) -> Result<()> {
+    pub async fn finalize_cleaning(&self) -> Result<u64> {
         // flush accumulated CAS data.
         let mut cas_data_accumulator = self.global_cas_data.lock().await;
         let new_cas_data = take(cas_data_accumulator.deref_mut());
@@ -199,14 +221,16 @@ impl PointerFileTranslator {
             self.xorb_uploader.register_new_cas_block(new_cas_data).await?;
         }
 
-        self.xorb_uploader.flush().await?;
+        let total_bytes_trans = self.xorb_uploader.flush().await?;
 
         // flush accumulated memory shard.
         self.shard_manager.flush().await?;
 
-        self.upload_shards().await?;
+        if !self.dry_run {
+            self.upload_shards().await?;
+        }
 
-        Ok(())
+        Ok(total_bytes_trans)
     }
 
     async fn upload_shards(&self) -> Result<()> {
@@ -224,6 +248,13 @@ impl PointerFileTranslator {
         self.remote_shards.move_session_shards_to_local_cache().await?;
 
         Ok(())
+    }
+
+    pub async fn summarize_file_info_of_session(&self) -> Result<Vec<MDBFileInfo>> {
+        self.shard_manager
+            .all_file_info_of_session()
+            .await
+            .map_err(DataProcessingError::from)
     }
 }
 
@@ -307,7 +338,7 @@ mod tests {
                 // Read blocks from the source file and hand them to the cleaning handle
                 handle.add_bytes(read_data).await.unwrap();
 
-                let pointer_file_contents = handle.result().await.unwrap();
+                let (pointer_file_contents, _) = handle.result().await.unwrap();
                 translator.finalize_cleaning().await.unwrap();
 
                 pf_out.write_all(pointer_file_contents.as_bytes()).unwrap();

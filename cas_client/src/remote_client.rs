@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use anyhow::anyhow;
 use async_trait::async_trait;
-use cas_object::CasObject;
+use cas_object::{CasObject, CompressionScheme};
 use cas_types::{
     BatchQueryReconstructionResponse, CASReconstructionFetchInfo, CASReconstructionTerm, FileRange, HexMerkleHash,
     HttpRange, Key, QueryReconstructionResponse, UploadXorbResponse,
@@ -38,6 +38,8 @@ type RangeDownloadSingleFlight = Arc<Group<(Vec<u8>, Vec<u32>), CasClientError>>
 
 pub struct RemoteClient {
     endpoint: String,
+    compression: CompressionScheme,
+    dry_run: bool,
     http_auth_client: ClientWithMiddleware,
     chunk_cache: Option<Arc<dyn ChunkCache>>,
     threadpool: Arc<ThreadPool>,
@@ -48,8 +50,10 @@ impl RemoteClient {
     pub fn new(
         threadpool: Arc<ThreadPool>,
         endpoint: &str,
+        compression: CompressionScheme,
         auth: &Option<AuthConfig>,
         cache_config: &Option<CacheConfig>,
+        dry_run: bool,
     ) -> Self {
         // use disk cache if cache_config provided.
         let chunk_cache = if let Some(cache_config) = cache_config {
@@ -67,6 +71,8 @@ impl RemoteClient {
 
         Self {
             endpoint: endpoint.to_string(),
+            compression,
+            dry_run,
             http_auth_client: http_client::build_auth_http_client(auth, &None).unwrap(),
             chunk_cache,
             threadpool,
@@ -83,13 +89,13 @@ impl UploadClient for RemoteClient {
         hash: &MerkleHash,
         data: Vec<u8>,
         chunk_and_boundaries: Vec<(MerkleHash, u32)>,
-    ) -> Result<()> {
+    ) -> Result<usize> {
         let key = Key {
             prefix: prefix.to_string(),
             hash: *hash,
         };
 
-        let was_uploaded = self.upload(&key, data, chunk_and_boundaries).await?;
+        let (was_uploaded, nbytes_trans) = self.upload(&key, data, chunk_and_boundaries).await?;
 
         if !was_uploaded {
             debug!("{key:?} not inserted into CAS.");
@@ -97,7 +103,7 @@ impl UploadClient for RemoteClient {
             debug!("{key:?} inserted into CAS.");
         }
 
-        Ok(())
+        Ok(nbytes_trans)
     }
 
     async fn exists(&self, prefix: &str, hash: &MerkleHash) -> Result<bool> {
@@ -245,18 +251,13 @@ impl RemoteClient {
         key: &Key,
         contents: Vec<u8>,
         chunk_and_boundaries: Vec<(MerkleHash, u32)>,
-    ) -> Result<bool> {
+    ) -> Result<(bool, usize)> {
         let url = Url::parse(&format!("{}/xorb/{key}", self.endpoint))?;
 
         let mut writer = Cursor::new(Vec::new());
 
-        let (_, _) = CasObject::serialize(
-            &mut writer,
-            &key.hash,
-            &contents,
-            &chunk_and_boundaries,
-            cas_object::CompressionScheme::LZ4,
-        )?;
+        let (_, nbytes_trans) =
+            CasObject::serialize(&mut writer, &key.hash, &contents, &chunk_and_boundaries, self.compression)?;
         // free memory before the "slow" network transfer below
         drop(contents);
 
@@ -264,10 +265,14 @@ impl RemoteClient {
         writer.set_position(0);
         let data = writer.into_inner();
 
-        let response = self.http_auth_client.post(url).body(data).send().await?;
-        let response_parsed: UploadXorbResponse = response.json().await?;
+        if !self.dry_run {
+            let response = self.http_auth_client.post(url).body(data).send().await?;
+            let response_parsed: UploadXorbResponse = response.json().await?;
 
-        Ok(response_parsed.was_inserted)
+            Ok((response_parsed.was_inserted, nbytes_trans))
+        } else {
+            Ok((true, nbytes_trans))
+        }
     }
 
     /// use the reconstruction response from CAS to re-create the described file for any calls
@@ -519,7 +524,7 @@ mod tests {
             build_cas_object(3, ChunkSize::Random(512, 10248), cas_object::CompressionScheme::LZ4);
 
         let threadpool = Arc::new(ThreadPool::new().unwrap());
-        let client = RemoteClient::new(threadpool.clone(), CAS_ENDPOINT, &None, &None);
+        let client = RemoteClient::new(threadpool.clone(), CAS_ENDPOINT, CompressionScheme::LZ4, &None, &None, false);
         // Act
         let result = threadpool
             .external_run_async_task(async move { client.put(prefix, &c.info.cashash, data, chunk_boundaries).await })
@@ -624,6 +629,8 @@ mod tests {
                 chunk_cache: Some(Arc::new(chunk_cache)),
                 http_auth_client: http_client.clone(),
                 endpoint: "".to_string(),
+                compression: CompressionScheme::LZ4,
+                dry_run: false,
                 threadpool: threadpool.clone(),
                 range_download_single_flight: Arc::new(Group::new(threadpool.clone())),
             };

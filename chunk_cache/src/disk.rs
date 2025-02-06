@@ -8,8 +8,6 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use base64::engine::general_purpose::URL_SAFE;
 use base64::engine::GeneralPurpose;
 use base64::Engine;
-use cache_file_header::CacheFileHeader;
-use cache_item::CacheItem;
 use cas_types::{ChunkRange, Key};
 use error_printer::ErrorPrinter;
 use file_utils::SafeFileCreator;
@@ -18,6 +16,8 @@ use tracing::{debug, warn};
 #[cfg(feature = "analysis")]
 use utils::output_bytes;
 
+use crate::disk::cache_file_header::CacheFileHeader;
+use crate::disk::cache_item::{CacheItem, VerificationCell};
 use crate::error::ChunkCacheError;
 use crate::{CacheConfig, ChunkCache};
 
@@ -34,13 +34,13 @@ type OptionResult<T, E> = Result<Option<T>, E>;
 
 #[derive(Debug, Clone)]
 struct CacheState {
-    inner: HashMap<Key, Vec<CacheItem>>,
+    inner: HashMap<Key, Vec<VerificationCell<CacheItem>>>,
     num_items: usize,
     total_bytes: u64,
 }
 
 impl CacheState {
-    fn new(state: HashMap<Key, Vec<CacheItem>>, num_items: usize, total_bytes: u64) -> Self {
+    fn new(state: HashMap<Key, Vec<VerificationCell<CacheItem>>>, num_items: usize, total_bytes: u64) -> Self {
         Self {
             inner: state,
             num_items,
@@ -211,7 +211,7 @@ impl DiskCache {
 
                     total_bytes += cache_item.len;
                     num_items += 1;
-                    items.push(cache_item);
+                    items.push(VerificationCell::new_unverified(cache_item));
 
                     // if already filled capacity, stop iterating over cache items
                     if total_bytes >= max_num_bytes {
@@ -241,7 +241,7 @@ impl DiskCache {
 
             let path = self.item_path(key, &cache_item)?;
 
-            let file_buf = match File::open(&path) {
+            let mut file = match File::open(&path) {
                 Ok(file) => file,
                 Err(e) => match e.kind() {
                     ErrorKind::NotFound => {
@@ -252,10 +252,19 @@ impl DiskCache {
                 },
             };
 
-            // TODO: reintroduce checksum validation of cache file, but not for every get, memoize success status per
-            // cache item
+            if !cache_item.is_verified() {
+                let checksum = crc32_from_reader(&mut file)?;
+                if checksum == cache_item.checksum {
+                    cache_item.verify();
+                    file.rewind()?;
+                } else {
+                    warn!("computed checksum {checksum} mismatch on cache item {key}/{cache_item}");
+                    self.remove_item(key, &cache_item)?;
+                    continue;
+                }
+            }
 
-            let mut file_reader = std::io::BufReader::new(file_buf);
+            let mut file_reader = std::io::BufReader::new(file);
 
             let Ok(header) = CacheFileHeader::deserialize(&mut file_reader)
                 .debug_error(format!("failed to deserialize cache file header on path: {path:?}"))
@@ -270,7 +279,7 @@ impl DiskCache {
         }
     }
 
-    fn find_match(&self, key: &Key, range: &ChunkRange) -> OptionResult<CacheItem, ChunkCacheError> {
+    fn find_match(&self, key: &Key, range: &ChunkRange) -> OptionResult<VerificationCell<CacheItem>, ChunkCacheError> {
         let state = self.state.lock()?;
         let Some(items) = state.inner.get(key) else {
             return Ok(None);
@@ -294,7 +303,7 @@ impl DiskCache {
     ) -> Result<(), ChunkCacheError> {
         if range.start >= range.end
         || chunk_byte_indices.len() != (range.end - range.start + 1) as usize
-        // chunk_byte_indices is guarenteed to be more than 1 element at this point
+        // chunk_byte_indices is guaranteed to be more than 1 element at this point
         || chunk_byte_indices[0] != 0
         || *chunk_byte_indices.last().unwrap() as usize != data.len()
         || !strictly_increasing(chunk_byte_indices)
@@ -371,7 +380,7 @@ impl DiskCache {
         state.num_items += 1;
         state.total_bytes += cache_item.len;
         let item_set = state.inner.entry(key.clone()).or_default();
-        item_set.push(cache_item);
+        item_set.push(VerificationCell::new_verified(cache_item));
 
         // release lock
         drop(state);
@@ -398,7 +407,7 @@ impl DiskCache {
         range: &ChunkRange,
         chunk_byte_indices: &[u32],
         data: &[u8],
-        cache_item: &CacheItem,
+        cache_item: &VerificationCell<CacheItem>,
     ) -> Result<bool, ChunkCacheError> {
         // this is a redundant check
         if range.start < cache_item.range.start || range.end > cache_item.range.end {
@@ -507,7 +516,7 @@ impl DiskCache {
     }
 
     /// removes an item from both the in-memory state of the cache and the file system
-    fn remove_item(&self, key: &Key, cache_item: &CacheItem) -> Result<(), ChunkCacheError> {
+    fn remove_item(&self, key: &Key, cache_item: &VerificationCell<CacheItem>) -> Result<(), ChunkCacheError> {
         {
             let mut state = self.state.lock()?;
             if let Some(items) = state.inner.get_mut(key) {
@@ -538,6 +547,20 @@ impl DiskCache {
     fn item_path(&self, key: &Key, cache_item: &CacheItem) -> Result<PathBuf, ChunkCacheError> {
         Ok(self.cache_root.join(key_dir(key)).join(cache_item.file_name()?))
     }
+}
+
+fn crc32_from_reader(reader: &mut impl Read) -> Result<u32, ChunkCacheError> {
+    const CRC_BUFFER_SIZE: usize = 4096;
+    let mut buf = [0u8; CRC_BUFFER_SIZE];
+    let mut hasher = crc32fast::Hasher::new();
+    loop {
+        let num_read = reader.read(&mut buf)?;
+        if num_read == 0 {
+            break;
+        }
+        hasher.update(&buf[..num_read])
+    }
+    Ok(hasher.finalize())
 }
 
 #[inline]

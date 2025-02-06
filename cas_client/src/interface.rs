@@ -35,7 +35,7 @@ pub trait UploadClient {
         hash: &MerkleHash,
         data: Vec<u8>,
         chunk_and_boundaries: Vec<(MerkleHash, u32)>,
-    ) -> Result<()>;
+    ) -> Result<usize>;
 
     /// Check if a XORB already exists.
     async fn exists(&self, prefix: &str, hash: &MerkleHash) -> Result<bool>;

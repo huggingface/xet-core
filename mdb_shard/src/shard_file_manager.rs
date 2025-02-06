@@ -373,6 +373,17 @@ impl ShardFileManager {
             .contains_key(shard_hash)
     }
 
+    pub async fn all_file_info_of_session(&self) -> Result<Vec<MDBFileInfo>> {
+        let shard_files = MDBShardFile::load_all_valid(&self.shard_directory)?;
+
+        let mut all_file_info = vec![];
+        for shard in shard_files {
+            all_file_info.append(&mut shard.read_all_file_info_sections()?);
+        }
+
+        Ok(all_file_info)
+    }
+
     pub async fn registered_shard_list(&self) -> Result<Vec<Arc<MDBShardFile>>> {
         let shards = self.shard_bookkeeper.read().await;
 

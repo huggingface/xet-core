@@ -253,7 +253,8 @@ impl Cleaner {
         Ok(())
     }
 
-    pub async fn result(&self) -> Result<String> {
+    /// Return the representation of file after clean and the number of new bytes after dedup
+    pub async fn result(&self) -> Result<(String, u64)> {
         self.finish().await?;
 
         let file_size = self.metrics.file_size.load(Ordering::Relaxed);
@@ -277,7 +278,7 @@ impl Cleaner {
             end_processing_ts = now.to_rfc3339(),
         );
 
-        Ok(return_file)
+        Ok((return_file, new_bytes))
     }
 
     async fn run(cleaner: Arc<Self>, mut chunks: Receiver<Option<ChunkYieldType>>) {

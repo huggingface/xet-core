@@ -1,6 +1,10 @@
-use std::cmp::Ordering;
+use std::fmt::{Debug, Formatter};
+use std::hash::{Hash, Hasher};
 use std::io::Cursor;
 use std::mem::size_of;
+use std::ops::Deref;
+use std::sync::atomic::AtomicBool;
+use std::sync::Arc;
 
 use base64::Engine;
 use cas_types::ChunkRange;
@@ -8,6 +12,79 @@ use utils::serialization_utils::{read_u32, read_u64, write_u32, write_u64};
 
 use super::BASE64_ENGINE;
 use crate::error::ChunkCacheError;
+
+#[derive(Debug, Clone)]
+pub(crate) struct VerificationCell<T> {
+    inner: T,
+    verification: Arc<AtomicBool>,
+}
+
+impl<T: std::fmt::Display> std::fmt::Display for VerificationCell<T> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{} ({})",
+            self.inner,
+            if self.verification.load(std::sync::atomic::Ordering::Relaxed) {
+                "verified"
+            } else {
+                "unverified"
+            }
+        )
+    }
+}
+
+impl<T> AsRef<T> for VerificationCell<T> {
+    fn as_ref(&self) -> &T {
+        &self.inner
+    }
+}
+
+impl<T> Deref for VerificationCell<T> {
+    type Target = T;
+
+    fn deref(&self) -> &Self::Target {
+        &self.inner
+    }
+}
+
+impl<T: Hash> Hash for VerificationCell<T> {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.inner.hash(state)
+    }
+}
+
+impl<T: PartialEq> PartialEq for VerificationCell<T> {
+    fn eq(&self, other: &Self) -> bool {
+        self.inner.eq(other)
+    }
+}
+
+impl<T: Debug + Clone> VerificationCell<T> {
+    pub fn new_unverified(inner: T) -> Self {
+        Self::new(inner, false)
+    }
+
+    pub fn new_verified(inner: T) -> Self {
+        Self::new(inner, true)
+    }
+
+    #[inline]
+    fn new(inner: T, verified: bool) -> Self {
+        Self {
+            inner,
+            verification: Arc::new(AtomicBool::new(verified)),
+        }
+    }
+
+    pub fn verify(&self) {
+        self.verification.store(true, std::sync::atomic::Ordering::Release)
+    }
+
+    pub fn is_verified(&self) -> bool {
+        self.verification.load(std::sync::atomic::Ordering::Relaxed)
+    }
+}
 
 // range start, range end, length, and checksum
 const CACHE_ITEM_FILE_NAME_BUF_SIZE: usize = size_of::<u32>() * 2 + size_of::<u64>() + size_of::<u32>();
@@ -32,7 +109,7 @@ impl std::fmt::Display for CacheItem {
 // impl PartialOrd & Ord to sort by the range to enable binary search over
 // sorted CacheItems using the range field to match a range for search
 impl Ord for CacheItem {
-    fn cmp(&self, other: &Self) -> Ordering {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
         self.range.cmp(&other.range)
     }
 }

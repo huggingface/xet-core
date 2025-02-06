@@ -133,7 +133,7 @@ impl MDBShardFile {
         Self::load_all(path, false)
     }
 
-    pub fn load_all(path: impl AsRef<Path>, load_expired: bool) -> Result<Vec<Arc<Self>>> {
+    fn load_all(path: impl AsRef<Path>, load_expired: bool) -> Result<Vec<Arc<Self>>> {
         let current_time = current_timestamp();
 
         let mut ret = Vec::new();
@@ -273,6 +273,11 @@ impl MDBShardFile {
     #[inline]
     pub fn read_full_cas_lookup(&self) -> Result<Vec<(u64, u32)>> {
         self.shard.read_full_cas_lookup(&mut self.get_reader()?)
+    }
+
+    #[inline]
+    pub fn read_all_file_info_sections(&self) -> Result<Vec<MDBFileInfo>> {
+        self.shard.read_all_file_info_sections(&mut self.get_reader()?)
     }
 
     #[inline]

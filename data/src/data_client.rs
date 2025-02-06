@@ -7,6 +7,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use cas_client::CacheConfig;
+use cas_object::CompressionScheme;
 use dirs::home_dir;
 use lazy_static::lazy_static;
 use merkledb::constants::IDEAL_CAS_BLOCK_SIZE;
@@ -30,9 +31,18 @@ const MAX_CONCURRENT_DOWNLOADS: usize = 8; // Download is not CPU-bound
 
 const DEFAULT_CAS_ENDPOINT: &str = "http://localhost:8080";
 const READ_BLOCK_SIZE: usize = 1024 * 1024;
+const DEFAULT_XORB_COMPRESSION: CompressionScheme = CompressionScheme::LZ4;
+
+pub fn xorb_compression_for_repo_type(repo_type: &str) -> CompressionScheme {
+    match repo_type {
+        "model" | "models" => CompressionScheme::ByteGrouping4LZ4,
+        _ => DEFAULT_XORB_COMPRESSION,
+    }
+}
 
 pub fn default_config(
     endpoint: String,
+    xorb_compression: Option<CompressionScheme>,
     token_info: Option<(String, u64)>,
     token_refresher: Option<Arc<dyn TokenRefresher>>,
 ) -> errors::Result<(TranslatorConfig, TempDir)> {
@@ -68,6 +78,7 @@ pub fn default_config(
         file_query_policy: FileQueryPolicy::ServerOnly,
         cas_storage_config: StorageConfig {
             endpoint: Endpoint::Server(endpoint.clone()),
+            compression: xorb_compression.unwrap_or(DEFAULT_XORB_COMPRESSION),
             auth: auth_cfg.clone(),
             prefix: "default".into(),
             cache_config: Some(CacheConfig {
@@ -78,6 +89,7 @@ pub fn default_config(
         },
         shard_storage_config: StorageConfig {
             endpoint: Endpoint::Server(endpoint),
+            compression: CompressionScheme::None,
             auth: auth_cfg,
             prefix: "default-merkledb".into(),
             cache_config: Some(CacheConfig {
@@ -108,14 +120,18 @@ pub async fn upload_async(
     token_info: Option<(String, u64)>,
     token_refresher: Option<Arc<dyn TokenRefresher>>,
     progress_updater: Option<Arc<dyn ProgressUpdater>>,
-    _repo_type: String,
+    repo_type: String,
 ) -> errors::Result<Vec<PointerFile>> {
     // chunk files
     // produce Xorbs + Shards
     // upload shards and xorbs
     // for each file, return the filehash
-    let (config, _tempdir) =
-        default_config(endpoint.unwrap_or(DEFAULT_CAS_ENDPOINT.to_string()), token_info, token_refresher)?;
+    let (config, _tempdir) = default_config(
+        endpoint.unwrap_or(DEFAULT_CAS_ENDPOINT.to_string()),
+        xorb_compression_for_repo_type(&repo_type).into(),
+        token_info,
+        token_refresher,
+    )?;
 
     let processor = Arc::new(PointerFileTranslator::new(config, threadpool, progress_updater, false).await?);
 
@@ -133,7 +149,7 @@ pub async fn upload_async(
     // Push the CAS blocks and flush the mdb to disk
     processor.finalize_cleaning().await?;
 
-    Ok(pointers)
+    Ok(pointers.into_iter().map(|(pt, _)| pt).collect())
 }
 
 pub async fn download_async(
@@ -152,7 +168,7 @@ pub async fn download_async(
         }
     }
     let (config, _tempdir) =
-        default_config(endpoint.unwrap_or(DEFAULT_CAS_ENDPOINT.to_string()), token_info, token_refresher)?;
+        default_config(endpoint.unwrap_or(DEFAULT_CAS_ENDPOINT.to_string()), None, token_info, token_refresher)?;
 
     let updaters = match progress_updaters {
         None => vec![None; pointer_files.len()],
@@ -175,7 +191,7 @@ pub async fn download_async(
     Ok(paths)
 }
 
-async fn clean_file(processor: &PointerFileTranslator, f: String) -> errors::Result<PointerFile> {
+pub async fn clean_file(processor: &PointerFileTranslator, f: String) -> errors::Result<(PointerFile, u64)> {
     let mut read_buf = vec![0u8; READ_BLOCK_SIZE];
     let path = PathBuf::from(f);
     let mut reader = BufReader::new(File::open(path.clone())?);
@@ -195,9 +211,9 @@ async fn clean_file(processor: &PointerFileTranslator, f: String) -> errors::Res
         handle.add_bytes(read_buf[0..bytes].to_vec()).await?;
     }
 
-    let pf_str = handle.result().await?;
+    let (pf_str, new_bytes) = handle.result().await?;
     let pf = PointerFile::init_from_string(&pf_str, path.to_str().unwrap());
-    Ok(pf)
+    Ok((pf, new_bytes))
 }
 
 async fn smudge_file(

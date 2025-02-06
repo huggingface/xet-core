@@ -1,6 +1,7 @@
 use std::fmt::{Display, Formatter};
 use std::str::FromStr;
 
+use merklehash::data_hash::hex;
 use merklehash::MerkleHash;
 use serde::{Deserialize, Serialize};
 
@@ -34,49 +35,6 @@ impl FromStr for Key {
             prefix: prefix.to_owned(),
             hash,
         })
-    }
-}
-
-pub mod hex {
-    pub mod serde {
-        use std::fmt;
-
-        use merklehash::MerkleHash;
-        use serde::de::{self, Visitor};
-        use serde::{Deserializer, Serializer};
-
-        pub fn serialize<S>(value: &MerkleHash, serializer: S) -> Result<S::Ok, S::Error>
-        where
-            S: Serializer,
-        {
-            let hex = value.hex();
-            serializer.serialize_str(&hex)
-        }
-
-        pub fn deserialize<'de, D>(deserializer: D) -> Result<MerkleHash, D::Error>
-        where
-            D: Deserializer<'de>,
-        {
-            deserializer.deserialize_str(HexVisitor)
-        }
-
-        // Visitor for deserialization
-        struct HexVisitor;
-
-        impl Visitor<'_> for HexVisitor {
-            type Value = MerkleHash;
-
-            fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
-                formatter.write_str("a merklehash")
-            }
-
-            fn visit_str<E>(self, v: &str) -> Result<Self::Value, E>
-            where
-                E: de::Error,
-            {
-                MerkleHash::from_hex(v).map_err(|e| serde::de::Error::custom(e))
-            }
-        }
     }
 }
 

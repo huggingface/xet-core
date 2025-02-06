@@ -2,6 +2,7 @@ use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
 use cas_client::CacheConfig;
+use cas_object::CompressionScheme;
 use utils::auth::AuthConfig;
 
 use crate::errors::Result;
@@ -16,6 +17,7 @@ pub enum Endpoint {
 #[derive(Debug)]
 pub struct StorageConfig {
     pub endpoint: Endpoint,
+    pub compression: CompressionScheme,
     pub auth: Option<AuthConfig>,
     pub prefix: String,
     pub cache_config: Option<CacheConfig>,
@@ -105,6 +107,7 @@ impl TranslatorConfig {
             file_query_policy: Default::default(),
             cas_storage_config: StorageConfig {
                 endpoint: Endpoint::FileSystem(path.join("xorbs")),
+                compression: Default::default(),
                 auth: None,
                 prefix: "default".into(),
                 cache_config: Some(CacheConfig {
@@ -115,6 +118,7 @@ impl TranslatorConfig {
             },
             shard_storage_config: StorageConfig {
                 endpoint: Endpoint::FileSystem(path.join("xorbs")),
+                compression: Default::default(),
                 auth: None,
                 prefix: "default-merkledb".into(),
                 cache_config: Some(CacheConfig {
