@@ -5057,6 +5057,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "tracing-serde"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "704b1aeb7be0d0a84fc9828cae51dab5970fee5088f83d1dd7ee6f6246fc6ff1"
+dependencies = [
+ "serde",
+ "tracing-core",
+]
+
+[[package]]
 name = "tracing-subscriber"
 version = "0.3.19"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5066,12 +5076,15 @@ dependencies = [
  "nu-ansi-term",
  "once_cell",
  "regex",
+ "serde",
+ "serde_json",
  "sharded-slab",
  "smallvec",
  "thread_local",
  "tracing",
  "tracing-core",
  "tracing-log",
+ "tracing-serde",
 ]
 
 [[package]]
@@ -5677,11 +5690,13 @@ version = "0.1.0"
 dependencies = [
  "aws-config",
  "aws-sdk-s3",
+ "cas_client",
  "cas_object",
  "cas_types",
  "clap 4.5.28",
  "clap_derive 4.5.28",
  "csv",
+ "data",
  "file_utils",
  "futures",
  "futures-util",
@@ -5693,7 +5708,9 @@ dependencies = [
  "rand 0.8.5",
  "serde",
  "tokio",
+ "tracing-subscriber",
  "utils",
+ "xet_threadpool",
 ]
 
 [[package]]

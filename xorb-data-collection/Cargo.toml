@@ -8,6 +8,9 @@ merklehash = { path = "../merklehash"}
 mdb_shard = { path = "../mdb_shard"}
 merkledb = { path = "../merkledb"}
 cas_object = { path = "../cas_object" }
+data = { path = "../data" }
+cas_client = { path = "../cas_client" }
+xet_threadpool = {path = "../xet_threadpool"}
 utils = { path = "../utils" }
 cas_types = { path = "../cas_types" }
 file_utils = { path = "../file_utils" }
@@ -23,3 +26,4 @@ serde = { version = "1.0.217", features = ["derive"] }
 parquet = "54.1.0"
 parquet_derive = "54.1.0"
 rand = "0.8.5"
+tracing-subscriber = { version = "0.3.19", features = ["env-filter", "json"] }

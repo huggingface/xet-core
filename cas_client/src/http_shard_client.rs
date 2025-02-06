@@ -20,7 +20,7 @@ const FORCE_SYNC_METHOD: reqwest::Method = reqwest::Method::PUT;
 const NON_FORCE_SYNC_METHOD: reqwest::Method = reqwest::Method::POST;
 
 /// Shard Client that uses HTTP for communication.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct HttpShardClient {
     endpoint: String,
     client: ClientWithMiddleware,

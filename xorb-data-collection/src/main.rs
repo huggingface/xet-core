@@ -1,9 +1,12 @@
 use aws_config::Region;
 use aws_sdk_s3::Client;
+use cas_client::remote_client::PREFIX_DEFAULT;
+use cas_client::{build_http_client, HttpShardClient, RegistrationClient};
 use cas_object::{parse_chunk_header, range_hash_from_chunks, CasObject, CompressionScheme, CAS_CHUNK_HEADER_LENGTH};
 use cas_types::HexMerkleHash;
 use clap::Parser as _;
 use clap_derive::{Args, Parser, Subcommand};
+use data::migration_tool::hub_client::{HubClient, HubClientTokenRefresher};
 use file_utils::SafeFileCreator;
 use mdb_shard::file_structs::{
     FileDataSequenceEntry, FileDataSequenceHeader, FileMetadataExt, FileVerificationEntry, MDBFileInfo,
@@ -20,6 +23,10 @@ use std::io::{BufReader, Cursor, Read, Write};
 use std::sync::Arc;
 use tokio::sync::mpsc::{Receiver, Sender};
 use tokio::task::JoinSet;
+use tracing_subscriber::EnvFilter;
+use tracing_subscriber::layer::SubscriberExt;
+use tracing_subscriber::util::SubscriberInitExt;
+use utils::auth::{AuthConfig, TokenRefresher};
 use utils::output_bytes;
 use utils::serialization_utils::{read_hash, read_u32, write_hash, write_u32};
 
@@ -91,6 +98,23 @@ enum Command {
     Print(PrintArgs),
     Reformat(ReformatArgs),
     GenShard(GenShardArgs),
+    UploadShard(UploadShardArgs),
+}
+
+#[derive(Args, Debug, Clone)]
+struct UploadShardArgs {
+    #[clap(long, short)]
+    filename: String,
+    #[clap(long, short)]
+    num_concurrent_uploads: Option<usize>,
+    #[clap(long, short)]
+    endpoint: Option<String>,
+    #[clap(long, short)]
+    token: Option<String>,
+    #[clap(long, short, default_value = "dataset")]
+    repo_type: String,
+    #[clap(long, short, default_value = "assaf/MS")]
+    repo_id: String,
 }
 
 #[derive(Args, Debug, Clone)]
@@ -131,13 +155,73 @@ const FILENAME: &str = "xorb.chunks";
 
 #[tokio::main]
 async fn main() {
+    initialize_logging();
     let args = Cli::parse();
     match args.command {
         Command::Collect(collect_args) => collect(collect_args).await,
         Command::Print(print_args) => print(print_args),
         Command::Reformat(reformat_args) => reformat(reformat_args),
         Command::GenShard(gen_shard_args) => gen_shard(gen_shard_args),
+        Command::UploadShard(upload_shard_args) => upload_shard(upload_shard_args).await,
     }
+}
+
+async fn upload_shard(upload_shard_args: UploadShardArgs) {
+    let UploadShardArgs {
+        filename,
+        num_concurrent_uploads,
+        endpoint,
+        token,
+        repo_type,
+        repo_id,
+    } = upload_shard_args;
+    let endpoint = endpoint.unwrap_or_else(|| std::env::var("HF_ENDPOINT").unwrap());
+    let token = token.unwrap_or_else(|| std::env::var("HF_TOKEN").unwrap());
+    let hub_client = HubClient {
+        endpoint,
+        token,
+        repo_type,
+        repo_id,
+        client: build_http_client(&None).unwrap(),
+    };
+
+    let shard_hash = MerkleHash::from_hex(filename.as_str().strip_suffix(".mdb").unwrap()).unwrap();
+    let shard_data = Arc::new(std::fs::read(filename).unwrap());
+
+    let token_type = "write";
+    let threadpool = Arc::new(xet_threadpool::ThreadPool::new().unwrap());
+
+    let (cas_endpoint, token, token_expiration) = hub_client.get_jwt_token(token_type).await.unwrap();
+    let token_refresher = Arc::new(HubClientTokenRefresher {
+        threadpool: threadpool.clone(),
+        token_type: token_type.to_owned(),
+        client: Arc::new(hub_client),
+    }) as Arc<dyn TokenRefresher>;
+
+    let shard_client = HttpShardClient::new(
+        cas_endpoint.as_str(),
+        &Some(AuthConfig {
+            token,
+            token_expiration,
+            token_refresher,
+        }),
+        None,
+    );
+
+    let mut js = JoinSet::new();
+    for _ in 0..num_concurrent_uploads.unwrap_or(1) {
+        let hash = shard_hash.clone();
+        let data = shard_data.clone();
+        let client = shard_client.clone();
+        js.spawn(async move {
+            client
+                .upload_shard(PREFIX_DEFAULT, hash.as_ref(), true, data.as_ref(), &Default::default())
+                .await
+                .unwrap();
+        });
+    }
+
+    js.join_all().await;
 }
 
 fn gen_shard(gen_shard_args: GenShardArgs) {
@@ -504,4 +588,23 @@ async fn write_results(mut recv: Receiver<XorbEntry>) {
         i += 1;
     }
     println!("write_results done");
+}
+
+const DEFAULT_LOG_LEVEL: &str = "info";
+
+pub fn initialize_logging() {
+    let fmt_layer = tracing_subscriber::fmt::layer()
+        .with_line_number(true)
+        .with_file(true)
+        .with_target(false)
+        .json();
+
+    let filter_layer = EnvFilter::try_from_default_env()
+        .or_else(|_| EnvFilter::try_new(DEFAULT_LOG_LEVEL))
+        .unwrap_or_default();
+
+    tracing_subscriber::registry()
+        .with(fmt_layer)
+        .with(filter_layer)
+        .init();
 }
