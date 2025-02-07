@@ -22,7 +22,7 @@ impl HubClient {
         let repo_type = self.repo_type.as_str();
         let repo_id = self.repo_id.as_str();
 
-        let url = format!("{endpoint}/api/{repo_type}s/{repo_id}/xet-{token_type}-token/main");
+        let url = format!("{endpoint}/api/{repo_type}/{repo_id}/xet-{token_type}-token/main");
 
         let response = self
             .client
@@ -80,7 +80,7 @@ mod tests {
         let hub_client = HubClient {
             endpoint: "https://xethub-poc.us.dev.moon.huggingface.tech".to_owned(),
             token: "[MASKED]".to_owned(),
-            repo_type: "dataset".to_owned(),
+            repo_type: "datasets".to_owned(),
             repo_id: "test/t2".to_owned(),
             client: build_http_client(&None)?,
         };

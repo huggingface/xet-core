@@ -19,7 +19,7 @@ use crate::{PointerFile, PointerFileTranslator};
 /// let file_paths = vec!["/path/to/file1".to_string(), "/path/to/file2".to_string()];
 /// let hub_endpoint = "https://huggingface.co";
 /// let hub_token = "your_token";
-/// let repo_type = "model";
+/// let repo_type = "models";
 /// let repo_id = "your_repo_id";
 /// let handle = tokio::runtime::Handle::current();
 /// migrate_with_external_runtime(file_paths, hub_endpoint, hub_token, repo_type, repo_id, handle)

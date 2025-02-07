@@ -31,7 +31,7 @@ struct CliOverrides {
     /// HF Hub access token.
     #[clap(long)]
     token: Option<String>, // if not specified we use env:HF_TOKEN
-    /// Type of the associated repo: "model", "dataset", or "space"
+    /// Type of the associated repo: "models", "datasets", or "spaces"
     #[clap(long)]
     repo_type: String,
     /// A namespace and a repo name separated by a '/'.
