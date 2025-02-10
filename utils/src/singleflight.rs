@@ -22,7 +22,7 @@
 //! #[tokio::main]
 //! async fn main() {
 //!     let threadpool = Arc::new(xet_threadpool::ThreadPool::new().unwrap());
-//!     let g = Arc::new(Group::<_, ()>::new(threadpool.clone()));
+//!     let g = Arc::new(Group::<_, ()>::new_with_threadpool(threadpool.clone()));
 //!     let mut handlers = Vec::new();
 //!     for _ in 0..10 {
 //!         let g = g.clone();
@@ -181,7 +181,7 @@ where
 {
     call_map: Arc<Mutex<CallMap<T, E>>>,
     _marker: PhantomData<fn(E)>,
-    threadpool: Arc<ThreadPool>,
+    threadpool: Option<Arc<ThreadPool>>,
 }
 
 impl<T, E: 'static> Group<T, E>
@@ -190,11 +190,11 @@ where
     E: ResultError,
 {
     /// Create a new Group to do work with.
-    pub fn new(threadpool: Arc<ThreadPool>) -> Group<T, E> {
+    pub fn new_with_threadpool(threadpool: Arc<ThreadPool>) -> Group<T, E> {
         Group {
             call_map: Arc::new(Mutex::new(HashMap::new())),
             _marker: PhantomData,
-            threadpool,
+            threadpool: Some(threadpool),
         }
     }
 
@@ -220,7 +220,11 @@ where
         if created {
             // spawn the owner task and wait
             let owner_task = OwnerTask::new(fut, call.clone());
-            let owner_handle = self.threadpool.spawn(owner_task);
+            let owner_handle = if let Some(threadpool) = self.threadpool.as_ref() {
+                threadpool.spawn(owner_task)
+            } else {
+                tokio::spawn(owner_task)
+            };
 
             // wait for the owner task and results to come back
             let (handle_result, future_result) = tokio::join!(owner_handle, results_future);
@@ -393,8 +397,8 @@ mod tests {
 
     #[test]
     fn test_simple() {
-        let threadpool = Arc::new(super::ThreadPool::new().unwrap());
-        let g = Group::new(threadpool.clone());
+        let threadpool = Arc::new(ThreadPool::new().unwrap());
+        let g = Group::new_with_threadpool(threadpool.clone());
         let res = threadpool
             .external_run_async_task(async move { g.work("key", return_res()).await })
             .unwrap()
@@ -406,8 +410,8 @@ mod tests {
     #[test]
     fn test_multiple_threads() {
         let times_called = Arc::new(AtomicU32::new(0));
-        let threadpool = Arc::new(super::ThreadPool::new().unwrap());
-        let g: Arc<Group<usize, ()>> = Arc::new(Group::new(threadpool.clone()));
+        let threadpool = Arc::new(ThreadPool::new().unwrap());
+        let g: Arc<Group<usize, ()>> = Arc::new(Group::new_with_threadpool(threadpool.clone()));
         let mut handlers: Vec<JoinHandle<(usize, bool)>> = Vec::new();
         let threadpool_ = threadpool.clone();
         let tasks = async move {
@@ -447,8 +451,8 @@ mod tests {
             Err("Error")
         }
 
-        let threadpool = Arc::new(super::ThreadPool::new().unwrap());
-        let g: Arc<Group<usize, &'static str>> = Arc::new(Group::new(threadpool.clone()));
+        let threadpool = Arc::new(ThreadPool::new().unwrap());
+        let g: Arc<Group<usize, &'static str>> = Arc::new(Group::new_with_threadpool(threadpool.clone()));
         let mut handlers = Vec::new();
 
         let threadpool_ = threadpool.clone();
@@ -477,7 +481,7 @@ mod tests {
         let times_called_x = Arc::new(AtomicU32::new(0));
         let times_called_y = Arc::new(AtomicU32::new(0));
 
-        let threadpool = Arc::new(super::ThreadPool::new().unwrap());
+        let threadpool = Arc::new(ThreadPool::new().unwrap());
 
         let threadpool_ = threadpool.clone();
         let tasks = async move {
@@ -519,7 +523,7 @@ mod tests {
         c: Arc<AtomicU32>,
         val: usize,
     ) -> Vec<JoinHandle<(usize, bool)>> {
-        let g: Arc<Group<usize, ()>> = Arc::new(Group::new(threadpool.clone()));
+        let g: Arc<Group<usize, ()>> = Arc::new(Group::new_with_threadpool(threadpool.clone()));
         let mut handlers = Vec::new();
         for _ in 0..times {
             let g = g.clone();
@@ -600,9 +604,9 @@ mod tests {
         that value, thus triggering a dependency within singleflight.
          */
 
-        let threadpool = Arc::new(super::ThreadPool::new().unwrap());
+        let threadpool = Arc::new(ThreadPool::new().unwrap());
         let _ = threadpool.clone().external_run_async_task(async move {
-            let group: Arc<Group<usize, ()>> = Arc::new(Group::new(threadpool.clone()));
+            let group: Arc<Group<usize, ()>> = Arc::new(Group::new_with_threadpool(threadpool.clone()));
             // communication channels
             let (send1, mut recv1) = channel::<usize>(1);
             let (send2, mut recv2) = channel::<usize>(1);

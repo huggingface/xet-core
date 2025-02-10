@@ -67,7 +67,7 @@ impl RemoteClient {
         } else {
             None
         };
-        let range_download_single_flight = Arc::new(Group::new(threadpool.clone()));
+        let range_download_single_flight = Arc::new(Group::new_with_threadpool(threadpool.clone()));
 
         Self {
             endpoint: endpoint.to_string(),
@@ -632,7 +632,7 @@ mod tests {
                 compression: CompressionScheme::LZ4,
                 dry_run: false,
                 threadpool: threadpool.clone(),
-                range_download_single_flight: Arc::new(Group::new(threadpool.clone())),
+                range_download_single_flight: Arc::new(Group::new_with_threadpool(threadpool.clone())),
             };
 
             let v = ThreadSafeBuffer::default();
