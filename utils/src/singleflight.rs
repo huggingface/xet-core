@@ -49,6 +49,7 @@ use std::task::{ready, Context, Poll};
 use futures::future::Either;
 use parking_lot::RwLock;
 use pin_project::{pin_project, pinned_drop};
+use tokio::runtime::Handle;
 use tokio::sync::{Mutex, Notify};
 use tracing::debug;
 use xet_threadpool::ThreadPool;
@@ -223,7 +224,7 @@ where
             let owner_handle = if let Some(threadpool) = self.threadpool.as_ref() {
                 threadpool.spawn(owner_task)
             } else {
-                tokio::spawn(owner_task)
+                Handle::current().spawn(owner_task)
             };
 
             // wait for the owner task and results to come back
