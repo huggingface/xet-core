@@ -21,8 +21,7 @@
 //!
 //! #[tokio::main]
 //! async fn main() {
-//!     let threadpool = Arc::new(xet_threadpool::ThreadPool::new().unwrap());
-//!     let g = Arc::new(Group::<_, ()>::new_with_threadpool(threadpool.clone()));
+//!     let g = Arc::new(Group::<_, ()>::new());
 //!     let mut handlers = Vec::new();
 //!     for _ in 0..10 {
 //!         let g = g.clone();
@@ -52,7 +51,6 @@ use pin_project::{pin_project, pinned_drop};
 use tokio::runtime::Handle;
 use tokio::sync::{Mutex, Notify};
 use tracing::debug;
-use xet_threadpool::ThreadPool;
 
 pub use crate::errors::SingleflightError;
 
@@ -182,7 +180,19 @@ where
 {
     call_map: Arc<Mutex<CallMap<T, E>>>,
     _marker: PhantomData<fn(E)>,
-    threadpool: Option<Arc<ThreadPool>>,
+}
+
+impl<T, E: 'static> Default for Group<T, E>
+where
+    T: ResultType + 'static,
+    E: ResultError,
+{
+    fn default() -> Self {
+        Self {
+            call_map: Arc::new(Default::default()),
+            _marker: Default::default(),
+        }
+    }
 }
 
 impl<T, E: 'static> Group<T, E>
@@ -191,12 +201,8 @@ where
     E: ResultError,
 {
     /// Create a new Group to do work with.
-    pub fn new_with_threadpool(threadpool: Arc<ThreadPool>) -> Group<T, E> {
-        Group {
-            call_map: Arc::new(Mutex::new(HashMap::new())),
-            _marker: PhantomData,
-            threadpool: Some(threadpool),
-        }
+    pub fn new() -> Group<T, E> {
+        Self::default()
     }
 
     /// Execute and return the value for a given function, making sure that only one
@@ -221,11 +227,7 @@ where
         if created {
             // spawn the owner task and wait
             let owner_task = OwnerTask::new(fut, call.clone());
-            let owner_handle = if let Some(threadpool) = self.threadpool.as_ref() {
-                threadpool.spawn(owner_task)
-            } else {
-                Handle::current().spawn(owner_task)
-            };
+            let owner_handle = Handle::current().spawn(owner_task);
 
             // wait for the owner task and results to come back
             let (handle_result, future_result) = tokio::join!(owner_handle, results_future);
@@ -367,6 +369,7 @@ mod tests {
     use futures::future::join_all;
     use futures::stream::iter;
     use futures::StreamExt;
+    use tokio::runtime::Handle;
     use tokio::sync::mpsc::error::SendError;
     use tokio::sync::mpsc::{channel, Sender};
     use tokio::sync::{Mutex, Notify};
@@ -397,9 +400,9 @@ mod tests {
     }
 
     #[test]
-    fn test_simple() {
+    fn test_simple_with_threadpool() {
         let threadpool = Arc::new(ThreadPool::new().unwrap());
-        let g = Group::new_with_threadpool(threadpool.clone());
+        let g = Group::new();
         let res = threadpool
             .external_run_async_task(async move { g.work("key", return_res()).await })
             .unwrap()
@@ -408,11 +411,19 @@ mod tests {
         assert_eq!(r, RES);
     }
 
+    #[tokio::test]
+    async fn test_simple() {
+        let g = Group::new();
+        let res = g.work("key", return_res()).await.0;
+        let r = res.unwrap();
+        assert_eq!(r, RES);
+    }
+
     #[test]
-    fn test_multiple_threads() {
+    fn test_multiple_threads_with_threadpool() {
         let times_called = Arc::new(AtomicU32::new(0));
         let threadpool = Arc::new(ThreadPool::new().unwrap());
-        let g: Arc<Group<usize, ()>> = Arc::new(Group::new_with_threadpool(threadpool.clone()));
+        let g: Arc<Group<usize, ()>> = Arc::new(Group::new());
         let mut handlers: Vec<JoinHandle<(usize, bool)>> = Vec::new();
         let threadpool_ = threadpool.clone();
         let tasks = async move {
@@ -442,8 +453,37 @@ mod tests {
         let _ = threadpool.external_run_async_task(tasks).unwrap();
     }
 
-    #[test]
-    fn test_error() {
+    #[tokio::test]
+    async fn test_multiple_threads() {
+        let times_called = Arc::new(AtomicU32::new(0));
+        let g: Arc<Group<usize, ()>> = Arc::new(Group::new());
+        let mut handlers: Vec<JoinHandle<(usize, bool)>> = Vec::new();
+        for _ in 0..10 {
+            let g = g.clone();
+            let counter = times_called.clone();
+            handlers.push(Handle::current().spawn(async move {
+                let tup = g.work("key", expensive_fn(counter, RES)).await;
+                let res = tup.0;
+                let fn_response = res.unwrap();
+                (fn_response, tup.1)
+            }));
+        }
+
+        let num_callers = join_all(handlers)
+            .await
+            .into_iter()
+            .map(|r| r.unwrap())
+            .filter(|(val, is_caller)| {
+                assert_eq!(*val, RES);
+                *is_caller
+            })
+            .count();
+        assert_eq!(1, num_callers);
+        assert_eq!(1, times_called.load(Ordering::SeqCst));
+    }
+
+    #[tokio::test]
+    async fn test_error() {
         let times_called = Arc::new(AtomicU32::new(0));
 
         async fn expensive_error_fn(x: Arc<AtomicU32>) -> Result<usize, &'static str> {
@@ -452,85 +492,67 @@ mod tests {
             Err("Error")
         }
 
-        let threadpool = Arc::new(ThreadPool::new().unwrap());
-        let g: Arc<Group<usize, &'static str>> = Arc::new(Group::new_with_threadpool(threadpool.clone()));
+        let g: Arc<Group<usize, &'static str>> = Arc::new(Group::new());
         let mut handlers = Vec::new();
 
-        let threadpool_ = threadpool.clone();
-        let tasks = async move {
-            for _ in 0..10 {
-                let g = g.clone();
-                let counter = times_called.clone();
-                handlers.push(threadpool_.spawn(async move {
-                    let tup = g.work("key", expensive_error_fn(counter)).await;
-                    let res = tup.0;
-                    assert!(res.is_err());
-                    tup.1
-                }));
-            }
+        for _ in 0..10 {
+            let g = g.clone();
+            let counter = times_called.clone();
+            handlers.push(Handle::current().spawn(async move {
+                let tup = g.work("key", expensive_error_fn(counter)).await;
+                let res = tup.0;
+                assert!(res.is_err());
+                tup.1
+            }));
+        }
 
-            let num_callers = join_all(handlers).await.into_iter().map(|r| r.unwrap()).filter(|b| *b).count();
-            assert_eq!(1, num_callers);
-            assert_eq!(1, times_called.load(Ordering::SeqCst));
-        };
-
-        let _ = threadpool.external_run_async_task(tasks).unwrap();
+        let num_callers = join_all(handlers).await.into_iter().map(|r| r.unwrap()).filter(|b| *b).count();
+        assert_eq!(1, num_callers);
+        assert_eq!(1, times_called.load(Ordering::SeqCst));
     }
 
-    #[test]
-    fn test_multiple_keys() {
+    #[tokio::test]
+    async fn test_multiple_keys() {
         let times_called_x = Arc::new(AtomicU32::new(0));
         let times_called_y = Arc::new(AtomicU32::new(0));
 
-        let threadpool = Arc::new(ThreadPool::new().unwrap());
+        let mut handlers1 = call_success_n_times(5, "key", times_called_x.clone(), 7);
+        let mut handlers2 = call_success_n_times(5, "key2", times_called_y.clone(), 13);
+        handlers1.append(&mut handlers2);
+        let count_x = AtomicU32::new(0);
+        let count_y = AtomicU32::new(0);
 
-        let threadpool_ = threadpool.clone();
-        let tasks = async move {
-            let mut handlers1 = call_success_n_times(threadpool_.clone(), 5, "key", times_called_x.clone(), 7);
-            let mut handlers2 = call_success_n_times(threadpool_.clone(), 5, "key2", times_called_y.clone(), 13);
-            handlers1.append(&mut handlers2);
-            let count_x = AtomicU32::new(0);
-            let count_y = AtomicU32::new(0);
-
-            let num_callers = join_all(handlers1)
-                .await
-                .into_iter()
-                .map(|r| r.unwrap())
-                .filter(|(val, is_caller)| {
-                    if *val == 7 {
-                        count_x.fetch_add(1, Ordering::SeqCst);
-                    } else if *val == 13 {
-                        count_y.fetch_add(1, Ordering::SeqCst);
-                    } else {
-                        panic!("joined a number not expected: {}", *val);
-                    }
-                    *is_caller
-                })
-                .count();
-            assert_eq!(2, num_callers);
-            assert_eq!(5, count_x.load(Ordering::SeqCst));
-            assert_eq!(5, count_y.load(Ordering::SeqCst));
-            assert_eq!(1, times_called_x.load(Ordering::SeqCst));
-            assert_eq!(1, times_called_y.load(Ordering::SeqCst));
-        };
-
-        let _ = threadpool.external_run_async_task(tasks);
+        let num_callers = join_all(handlers1)
+            .await
+            .into_iter()
+            .map(|r| r.unwrap())
+            .filter(|(val, is_caller)| {
+                if *val == 7 {
+                    count_x.fetch_add(1, Ordering::SeqCst);
+                } else if *val == 13 {
+                    count_y.fetch_add(1, Ordering::SeqCst);
+                } else {
+                    panic!("joined a number not expected: {}", *val);
+                }
+                *is_caller
+            })
+            .count();
+        assert_eq!(2, num_callers);
+        assert_eq!(5, count_x.load(Ordering::SeqCst));
+        assert_eq!(5, count_y.load(Ordering::SeqCst));
+        assert_eq!(1, times_called_x.load(Ordering::SeqCst));
+        assert_eq!(1, times_called_y.load(Ordering::SeqCst));
     }
 
-    fn call_success_n_times(
-        threadpool: Arc<ThreadPool>,
-        times: usize,
-        key: &str,
-        c: Arc<AtomicU32>,
-        val: usize,
-    ) -> Vec<JoinHandle<(usize, bool)>> {
-        let g: Arc<Group<usize, ()>> = Arc::new(Group::new_with_threadpool(threadpool.clone()));
+    // must be run in a #[tokio::test]
+    fn call_success_n_times(times: usize, key: &str, c: Arc<AtomicU32>, val: usize) -> Vec<JoinHandle<(usize, bool)>> {
+        let g: Arc<Group<usize, ()>> = Arc::new(Group::new());
         let mut handlers = Vec::new();
         for _ in 0..times {
             let g = g.clone();
             let counter = c.clone();
             let k = key.to_owned();
-            handlers.push(threadpool.spawn(async move {
+            handlers.push(Handle::current().spawn(async move {
                 let tup = g.work(k.as_str(), expensive_fn(counter, val)).await;
                 let res = tup.0;
                 let fn_response = res.unwrap();
@@ -589,8 +611,8 @@ mod tests {
         assert_eq!(1, call.num_waiters.load(Ordering::SeqCst)) // we should have had 1 waiter
     }
 
-    #[test]
-    fn test_deadlock() {
+    #[tokio::test]
+    async fn test_deadlock() {
         /*
         Each spawned tokio task is expected to send some ints to the main task via a bounded buffer.
         The ints are fetched using a futures::Buffered stream over some future. These futures will
@@ -605,69 +627,66 @@ mod tests {
         that value, thus triggering a dependency within singleflight.
          */
 
-        let threadpool = Arc::new(ThreadPool::new().unwrap());
-        let _ = threadpool.clone().external_run_async_task(async move {
-            let group: Arc<Group<usize, ()>> = Arc::new(Group::new_with_threadpool(threadpool.clone()));
-            // communication channels
-            let (send1, mut recv1) = channel::<usize>(1);
-            let (send2, mut recv2) = channel::<usize>(1);
-            // Items to return on the channels from the tasks.
-            let vals1: Vec<usize> = vec![1, 2, 3, 4, SHARED_ITEM];
-            let vals2: Vec<usize> = vec![6, 7, SHARED_ITEM, 8, 9];
+        let group: Arc<Group<usize, ()>> = Arc::new(Group::new());
+        // communication channels
+        let (send1, mut recv1) = channel::<usize>(1);
+        let (send2, mut recv2) = channel::<usize>(1);
+        // Items to return on the channels from the tasks.
+        let vals1: Vec<usize> = vec![1, 2, 3, 4, SHARED_ITEM];
+        let vals2: Vec<usize> = vec![6, 7, SHARED_ITEM, 8, 9];
 
-            // waiters allows us to define the order that sub-tasks run in the underlying tasks.
-            // We need this for 2 reasons:
-            // 1. SHARED_ITEM sub-task in t2 needs to block until we can ensure that it has a waiter
-            // 2. vals2[1] needs to block to ensure that t2's SHARED_ITEM starts.
-            let waiters: Arc<Mutex<HashMap<usize, Arc<Notify>>>> = Arc::new(Mutex::new(HashMap::new()));
-            {
-                let mut guard = waiters.lock().await;
-                guard.insert(vals2[1], Arc::new(Notify::new()));
-                guard.insert(SHARED_ITEM, Arc::new(Notify::new()));
+        // waiters allows us to define the order that sub-tasks run in the underlying tasks.
+        // We need this for 2 reasons:
+        // 1. SHARED_ITEM sub-task in t2 needs to block until we can ensure that it has a waiter
+        // 2. vals2[1] needs to block to ensure that t2's SHARED_ITEM starts.
+        let waiters: Arc<Mutex<HashMap<usize, Arc<Notify>>>> = Arc::new(Mutex::new(HashMap::new()));
+        {
+            let mut guard = waiters.lock().await;
+            guard.insert(vals2[1], Arc::new(Notify::new()));
+            guard.insert(SHARED_ITEM, Arc::new(Notify::new()));
+        }
+
+        // spawn tasks
+        let t1 = Handle::current().spawn(run_task(1, group.clone(), waiters.clone(), send1, false, vals1.clone()));
+        let t2 = Handle::current().spawn(run_task(2, group.clone(), waiters.clone(), send2, true, vals2.clone()));
+
+        // try to receive all the values from task1 without getting stuck.
+        for (i, expected_val) in vals1.into_iter().enumerate() {
+            if i == 3 {
+                // resume vals2[1] to allow task2 to get "stuck" waiting on send2.send()
+                println!("[main] notifying val: {}", vals2[1]);
+                let guard = waiters.lock().await;
+                guard.get(&vals2[1]).unwrap().notify_one();
+                println!("[main] notified val: {}", vals2[1])
             }
-
-            // spawn tasks
-            let t1 = threadpool.spawn(run_task(1, group.clone(), waiters.clone(), send1, false, vals1.clone()));
-            let t2 = threadpool.spawn(run_task(2, group.clone(), waiters.clone(), send2, true, vals2.clone()));
-
-            // try to receive all the values from task1 without getting stuck.
-            for (i, expected_val) in vals1.into_iter().enumerate() {
-                if i == 3 {
-                    // resume vals2[1] to allow task2 to get "stuck" waiting on send2.send()
-                    println!("[main] notifying val: {}", vals2[1]);
-                    let guard = waiters.lock().await;
-                    guard.get(&vals2[1]).unwrap().notify_one();
-                    println!("[main] notified val: {}", vals2[1])
-                }
-                if i == 4 {
-                    // resume task2's SHARED_ITEM sub-task since we now have a waiter (i.e. vals1[4]).
-                    println!("[main] notifying val: {}", SHARED_ITEM);
-                    let guard = waiters.lock().await;
-                    guard.get(&SHARED_ITEM).unwrap().notify_one();
-                    println!("[main] notified val: {}", SHARED_ITEM);
-                }
-                println!("[main] getting t1[{}]", i);
-                let res = timeout(WAITER_TIMEOUT, recv1.recv())
-                    .await
-                    .map_err(|_| format!("Timed out on task1 waiting for val: {}. Likely deadlock.", expected_val));
-                let val = res.unwrap().unwrap();
-                println!("[main] got val: {} from t1[{}]", val, i);
-                assert_eq!(expected_val, val);
+            if i == 4 {
+                // resume task2's SHARED_ITEM sub-task since we now have a waiter (i.e. vals1[4]).
+                println!("[main] notifying val: {}", SHARED_ITEM);
+                let guard = waiters.lock().await;
+                guard.get(&SHARED_ITEM).unwrap().notify_one();
+                println!("[main] notified val: {}", SHARED_ITEM);
             }
+            println!("[main] getting t1[{}]", i);
+            let res = timeout(WAITER_TIMEOUT, recv1.recv())
+                .await
+                .map_err(|_| format!("Timed out on task1 waiting for val: {}. Likely deadlock.", expected_val));
+            let val = res.unwrap().unwrap();
+            println!("[main] got val: {} from t1[{}]", val, i);
+            assert_eq!(expected_val, val);
+        }
 
-            // try to receive all the values from task2 without getting stuck.
-            for expected_val in vals2 {
-                let res = timeout(WAITER_TIMEOUT, recv2.recv())
-                    .await
-                    .map_err(|_| format!("Timed out on task2 waiting for val: {}. Likely deadlock.", expected_val));
-                let val = res.unwrap().unwrap();
-                assert_eq!(expected_val, val);
-            }
+        // try to receive all the values from task2 without getting stuck.
+        for expected_val in vals2 {
+            let res = timeout(WAITER_TIMEOUT, recv2.recv())
+                .await
+                .map_err(|_| format!("Timed out on task2 waiting for val: {}. Likely deadlock.", expected_val));
+            let val = res.unwrap().unwrap();
+            assert_eq!(expected_val, val);
+        }
 
-            // make sure t1,t2 completed successfully.
-            t1.await.unwrap().unwrap();
-            t2.await.unwrap().unwrap();
-        });
+        // make sure t1,t2 completed successfully.
+        t1.await.unwrap().unwrap();
+        t2.await.unwrap().unwrap();
     }
 
     const SHARED_ITEM: usize = 5;
