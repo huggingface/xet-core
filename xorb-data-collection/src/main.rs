@@ -189,7 +189,7 @@ async fn upload_shard(upload_shard_args: UploadShardArgs) {
     let shard_data = Arc::new(std::fs::read(filename).unwrap());
 
     let token_type = "write";
-    let threadpool = Arc::new(xet_threadpool::ThreadPool::new().unwrap());
+    let threadpool = Arc::new(xet_threadpool::ThreadPool::from_external(tokio::runtime::Handle::current()));
 
     let (cas_endpoint, token, token_expiration) = hub_client.get_jwt_token(token_type).await.unwrap();
     let token_refresher = Arc::new(HubClientTokenRefresher {
