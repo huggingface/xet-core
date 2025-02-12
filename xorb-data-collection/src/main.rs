@@ -298,7 +298,8 @@ fn gen_shard(gen_shard_args: GenShardArgs) {
     println!("technical file size: {technical_file_len}, {:?}", new_file_info.metadata);
     let mut shard = MDBInMemoryShard::default();
     shard.add_file_reconstruction_info(new_file_info).unwrap();
-    shard.write_to_directory(&std::env::current_dir().unwrap()).unwrap();
+    let shard_file_path = shard.write_to_directory(&std::env::current_dir().unwrap()).unwrap();
+    println!("shard written to {shard_file_path:?}");
 }
 
 #[derive(Debug, Serialize, Deserialize)]
