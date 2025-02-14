@@ -113,6 +113,8 @@ fn main() {
         let mut bg4_lz4_decompress_time = 0.;
         let mut lz4_compress_time = 0.;
         let mut lz4_decompress_time = 0.;
+        let mut bg2_lz4_compress_time = 0.;
+        let mut bg2_lz4_decompress_time = 0.;
 
         for _ in 0..ITER {
             let s = Instant::now();
@@ -131,6 +133,14 @@ fn main() {
             let _ = lz4_decompress_from_slice(&lz4_compressed).unwrap();
             lz4_decompress_time += s.elapsed().as_secs_f64();
 
+            let s = Instant::now();
+            let bg2_lz4_compressed = bg2_lz4_compress_from_slice(&data).unwrap();
+            bg2_lz4_compress_time += s.elapsed().as_secs_f64();
+
+            let s = Instant::now();
+            let _ = bg2_lz4_decompress_from_slice(&bg2_lz4_compressed).unwrap();
+            bg2_lz4_decompress_time += s.elapsed().as_secs_f64();
+
             // Prevent compilers from optimizing away iterations.
             data[0] = data[0].wrapping_mul(5).wrapping_add(13);
         }
@@ -147,6 +157,12 @@ fn main() {
             data.len() as f64 / 1e6 / lz4_decompress_time * ITER as f64
         );
 
+        print!(
+            "bg2_lz4 speed: compress at {:.2} MB/s, decompress at {:.2} MB/s; ",
+            data.len() as f64 / 1e6 / bg2_lz4_compress_time * ITER as f64,
+            data.len() as f64 / 1e6 / bg2_lz4_decompress_time * ITER as f64
+        );
+
         unsafe {
             println!("{BG4_SPLIT_RUNTIME} s, {BG4_LZ4_COMPRESS_RUNTIME} s , {BG4_LZ4_DECOMPRESS_RUNTIME} s, {BG4_REGROUP_RUNTIME} s");
         }
@@ -154,11 +170,13 @@ fn main() {
         // For CSV exporting
         unsafe {
             eprintln!(
-                "{:.2}, {:.2}, {:.2}, {:.2}, {}, {}, {}, {}",
+                "{:.2}, {:.2}, {:.2}, {:.2}, {:.2}, {:.2}, {}, {}, {}, {}",
                 data.len() as f64 / 1e6 / bg4_lz4_compress_time * ITER as f64,
                 data.len() as f64 / 1e6 / bg4_lz4_decompress_time * ITER as f64,
                 data.len() as f64 / 1e6 / lz4_compress_time * ITER as f64,
                 data.len() as f64 / 1e6 / lz4_decompress_time * ITER as f64,
+                data.len() as f64 / 1e6 / bg2_lz4_compress_time * ITER as f64,
+                data.len() as f64 / 1e6 / bg2_lz4_decompress_time * ITER as f64,
                 BG4_SPLIT_RUNTIME,
                 BG4_LZ4_COMPRESS_RUNTIME,
                 BG4_LZ4_DECOMPRESS_RUNTIME,

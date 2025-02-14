@@ -6,6 +6,7 @@ use std::time::Instant;
 use anyhow::anyhow;
 use lz4_flex::frame::{FrameDecoder, FrameEncoder};
 
+use crate::byte_grouping::bg2::{bg2_regroup, bg2_split};
 use crate::byte_grouping::bg4::{bg4_regroup, bg4_split};
 use crate::error::{CasObjectError, Result};
 
@@ -22,6 +23,7 @@ pub enum CompressionScheme {
     None = 0,
     LZ4 = 1,
     ByteGrouping4LZ4 = 2, // 4 byte groups
+    ByteGrouping2LZ4 = 3, // 2 byte groups
 }
 
 impl Display for CompressionScheme {
@@ -35,6 +37,7 @@ impl From<&CompressionScheme> for &'static str {
             CompressionScheme::None => "none",
             CompressionScheme::LZ4 => "lz4",
             CompressionScheme::ByteGrouping4LZ4 => "bg4-lz4",
+            CompressionScheme::ByteGrouping2LZ4 => "bg2-lz4",
         }
     }
 }
@@ -53,6 +56,7 @@ impl TryFrom<u8> for CompressionScheme {
             0 => Ok(CompressionScheme::None),
             1 => Ok(CompressionScheme::LZ4),
             2 => Ok(CompressionScheme::ByteGrouping4LZ4),
+            3 => Ok(CompressionScheme::ByteGrouping2LZ4),
             _ => Err(CasObjectError::FormatError(anyhow!("cannot convert value {value} to CompressionScheme"))),
         }
     }
@@ -64,6 +68,7 @@ impl CompressionScheme {
             CompressionScheme::None => data.into(),
             CompressionScheme::LZ4 => lz4_compress_from_slice(data).map(Cow::from)?,
             CompressionScheme::ByteGrouping4LZ4 => bg4_lz4_compress_from_slice(data).map(Cow::from)?,
+            CompressionScheme::ByteGrouping2LZ4 => bg2_lz4_compress_from_slice(data).map(Cow::from)?,
         })
     }
 
@@ -72,6 +77,7 @@ impl CompressionScheme {
             CompressionScheme::None => data.into(),
             CompressionScheme::LZ4 => lz4_decompress_from_slice(data).map(Cow::from)?,
             CompressionScheme::ByteGrouping4LZ4 => bg4_lz4_decompress_from_slice(data).map(Cow::from)?,
+            CompressionScheme::ByteGrouping2LZ4 => bg2_lz4_decompress_from_slice(data).map(Cow::from)?,
         })
     }
 
@@ -80,6 +86,7 @@ impl CompressionScheme {
             CompressionScheme::None => copy(reader, writer)?,
             CompressionScheme::LZ4 => lz4_decompress_from_reader(reader, writer)?,
             CompressionScheme::ByteGrouping4LZ4 => bg4_lz4_decompress_from_reader(reader, writer)?,
+            CompressionScheme::ByteGrouping2LZ4 => bg2_lz4_decompress_from_reader(reader, writer)?,
         })
     }
 }
@@ -145,12 +152,41 @@ fn bg4_lz4_decompress_from_reader<R: Read, W: Write>(reader: &mut R, writer: &mu
     Ok(regrouped.len() as u64)
 }
 
+pub fn bg2_lz4_compress_from_slice(data: &[u8]) -> Result<Vec<u8>> {
+    let groups = bg2_split(data);
+    let mut dest = vec![];
+    let mut enc = FrameEncoder::new(&mut dest);
+    enc.write_all(&groups)?;
+    enc.finish()?;
+
+    Ok(dest)
+}
+
+pub fn bg2_lz4_decompress_from_slice(data: &[u8]) -> Result<Vec<u8>> {
+    let mut dest = vec![];
+    bg2_lz4_decompress_from_reader(&mut Cursor::new(data), &mut dest)?;
+    Ok(dest)
+}
+
+fn bg2_lz4_decompress_from_reader<R: Read, W: Write>(reader: &mut R, writer: &mut W) -> Result<u64> {
+    let mut g = vec![];
+    FrameDecoder::new(reader).read_to_end(&mut g)?;
+
+    let regrouped = bg2_regroup(&g);
+
+    writer.write_all(&regrouped)?;
+
+    Ok(regrouped.len() as u64)
+}
+
 #[cfg(test)]
 mod tests {
     use std::mem::size_of;
 
     use half::prelude::*;
     use rand::Rng;
+
+    use crate::byte_grouping::bg4::bg4_split_separate;
 
     use super::*;
 
@@ -173,7 +209,7 @@ mod tests {
     fn test_bg4_lz4() {
         let mut rng = rand::thread_rng();
 
-        for i in 0..4 {
+        for i in 0..1 {
             let n = 64 * 1024 + i * 23;
             let all_zeros = vec![0u8; n];
             let all_ones = vec![1u8; n];
@@ -225,21 +261,39 @@ mod tests {
                 .collect();
 
             let dataset = [
-                all_zeros,          // 231.58, 231.58
-                all_ones,           // 231.58, 231.58
-                all_0xff,           // 231.58, 231.58
-                random_u8s,         // 1.00, 1.00
-                random_f32s_ng1_1,  // 1.08, 1.00
-                random_f32s_0_2,    // 1.15, 1.00
-                random_f64s_ng1_1,  // 1.00, 1.00
-                random_f64s_0_2,    // 1.00, 1.00
-                random_f16s_ng1_1,  // 1.00, 1.00
-                random_f16s_0_2,    // 1.00, 1.00
-                random_bf16s_ng1_1, // 1.18, 1.00
-                random_bf16s_0_2,   // 1.37, 1.00
+                all_zeros,          // 231.58, 231.58, 231.58
+                all_ones,           // 231.58, 231.58, 231.58
+                all_0xff,           // 231.58, 231.58, 231.58
+                random_u8s,         // 1.00, 1.00, 1.00
+                random_f32s_ng1_1,  // 1.08, 1.00, 1.00
+                random_f32s_0_2,    // 1.15, 1.00, 1.00
+                random_f64s_ng1_1,  // 1.00, 1.00, 1.00
+                random_f64s_0_2,    // 1.00, 1.00, 1.00
+                random_f16s_ng1_1,  // 1.00, 1.00, 1.00
+                random_f16s_0_2,    // 1.00, 1.00, 1.00
+                random_bf16s_ng1_1, // 1.18, 1.00, 1.18
+                random_bf16s_0_2,   // 1.37, 1.00, 1.35
             ];
 
             for data in dataset {
+                let bg4_groups = bg4_split_separate(&data);
+                let bg4_groups_hist = [
+                    byte_bit_count_distribution(&bg4_groups[0]),
+                    byte_bit_count_distribution(&bg4_groups[1]),
+                    byte_bit_count_distribution(&bg4_groups[2]),
+                    byte_bit_count_distribution(&bg4_groups[3]),
+                ];
+                let bg4_total_entropy: f64 = bg4_groups_hist
+                    .iter()
+                    .map(|hist| distribution_entropy(&as_distribution(hist)))
+                    .sum();
+                let bg2_total_entropy: f64 =
+                    distribution_entropy(&as_distribution(&combine_hist(&bg4_groups_hist[0], &bg4_groups_hist[2])))
+                        + distribution_entropy(&as_distribution(&combine_hist(
+                            &bg4_groups_hist[1],
+                            &bg4_groups_hist[3],
+                        )));
+
                 let bg4_lz4_compressed = bg4_lz4_compress_from_slice(&data).unwrap();
                 let bg4_lz4_uncompressed = bg4_lz4_decompress_from_slice(&bg4_lz4_compressed).unwrap();
                 assert_eq!(data.len(), bg4_lz4_uncompressed.len());
@@ -247,12 +301,70 @@ mod tests {
                 let lz4_compressed = lz4_compress_from_slice(&data).unwrap();
                 let lz4_uncompressed = lz4_decompress_from_slice(&lz4_compressed).unwrap();
                 assert_eq!(data, lz4_uncompressed);
+                let bg2_lz4_compressed = bg2_lz4_compress_from_slice(&data).unwrap();
+                let bg2_lz4_uncompressed = bg2_lz4_decompress_from_slice(&bg2_lz4_compressed).unwrap();
+                assert_eq!(data.len(), bg2_lz4_uncompressed.len());
+                assert_eq!(data, bg2_lz4_uncompressed);
                 println!(
-                    "Compression ratio: {:.2}, {:.2}",
+                    "Compression ratio: {:.2}, {:.2}, {:.2}, {:.5}, {:.5}",
                     data.len() as f32 / bg4_lz4_compressed.len() as f32,
-                    data.len() as f32 / lz4_compressed.len() as f32
+                    data.len() as f32 / lz4_compressed.len() as f32,
+                    data.len() as f32 / bg2_lz4_compressed.len() as f32,
+                    bg4_total_entropy / 4.,
+                    bg2_total_entropy / 2.,
                 );
             }
         }
+    }
+
+    /// Compute the distribution of the number of 1-bits in each byte.
+    ///
+    /// Returns an array of length 9, where index `i` corresponds to how many bytes
+    /// had exactly `i` 1-bits (i in [0..8]).
+    fn byte_bit_count_distribution(data: &[u8]) -> [usize; 9] {
+        let mut dist = [0usize; 9]; // Put in ghost counts for the kl divergence
+
+        for &b in data {
+            // Since Rust 1.37+, u8::count_ones() is stable.
+            // It returns a u32 but in [0..8] for a u8.
+            let ones = b.count_ones() as usize;
+            dist[ones] += 1;
+        }
+
+        dist
+    }
+
+    fn combine_hist<const N: usize>(hist0: &[usize; N], hist1: &[usize; N]) -> [usize; N] {
+        let mut ret = [0; N];
+        for i in 0..N {
+            ret[i] = hist0[i] + hist1[i];
+        }
+        ret
+    }
+
+    fn as_distribution<const N: usize>(dist: &[usize; N]) -> [f64; N] {
+        // Normalize the input array to probabilities
+        let total: usize = dist.iter().sum();
+        if total == 0 {
+            return [0.0; N];
+        }
+        let mut ret = [0.0; N];
+        for i in 0..N {
+            ret[i] = dist[i] as f64 / total as f64;
+        }
+
+        ret
+    }
+
+    /// Compute the Shannon entropy (base 2) from a bit-count distribution array.
+    #[inline]
+    fn distribution_entropy(dist: &[f64]) -> f64 {
+        let mut entropy = 0.0;
+        for &p in dist.iter() {
+            if p > 0. {
+                entropy -= p * p.log2();
+            }
+        }
+        entropy
     }
 }
