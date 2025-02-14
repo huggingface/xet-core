@@ -177,6 +177,8 @@ impl ThreadPool {
         ret
     }
 
+    /// This function can be safely used by threads inside of tokio to call an async function
+    /// from a sync function.
     pub fn internal_run_async_task<F>(&self, future: F) -> Result<F::Output, MultithreadedRuntimeError>
     where
         F: std::future::Future + Send + 'static,
