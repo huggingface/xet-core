@@ -8,7 +8,7 @@ use merklehash::{compute_data_hash, HMACKey, HashedWrite, MerkleHash};
 use tracing::{debug, error, info, warn};
 
 use crate::cas_structs::CASChunkSequenceHeader;
-use crate::error::{MDBShardError, Result};
+use crate::error::{CacheDeletionResilience, MDBShardError, Result};
 use crate::file_structs::{FileDataSequenceEntry, MDBFileInfo};
 use crate::shard_file::current_timestamp;
 use crate::shard_format::MDBShardInfo;
@@ -234,7 +234,12 @@ impl MDBShardFile {
 
     #[inline]
     pub fn get_file_reconstruction_info(&self, file_hash: &MerkleHash) -> Result<Option<MDBFileInfo>> {
-        self.shard.get_file_reconstruction_info(&mut self.get_reader()?, file_hash)
+        let reader = self.get_reader().ok_for_io_error_not_found()?;
+        let Some(mut reader) = reader else {
+            return Ok(None);
+        };
+
+        self.shard.get_file_reconstruction_info(&mut reader, file_hash)
     }
 
     #[inline]
@@ -242,7 +247,12 @@ impl MDBShardFile {
         &self,
         query_hashes: &[MerkleHash],
     ) -> Result<Option<(usize, FileDataSequenceEntry)>> {
-        self.shard.chunk_hash_dedup_query(&mut self.get_reader()?, query_hashes)
+        let reader = self.get_reader().ok_for_io_error_not_found()?;
+        let Some(mut reader) = reader else {
+            return Ok(None);
+        };
+
+        self.shard.chunk_hash_dedup_query(&mut reader, query_hashes)
     }
 
     #[inline]
@@ -252,12 +262,13 @@ impl MDBShardFile {
         cas_block_index: u32,
         cas_chunk_offset: u32,
     ) -> Result<Option<(usize, FileDataSequenceEntry)>> {
-        self.shard.chunk_hash_dedup_query_direct(
-            &mut self.get_reader()?,
-            query_hashes,
-            cas_block_index,
-            cas_chunk_offset,
-        )
+        let reader = self.get_reader().ok_for_io_error_not_found()?;
+        let Some(mut reader) = reader else {
+            return Ok(None);
+        };
+
+        self.shard
+            .chunk_hash_dedup_query_direct(&mut reader, query_hashes, cas_block_index, cas_chunk_offset)
     }
 
     #[inline]
