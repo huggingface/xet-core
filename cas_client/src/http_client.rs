@@ -9,7 +9,7 @@ use reqwest::{Request, Response};
 use reqwest_middleware::{ClientBuilder, ClientWithMiddleware, Middleware, Next};
 use reqwest_retry::policies::ExponentialBackoff;
 use reqwest_retry::{default_on_request_failure, default_on_request_success, RetryTransientMiddleware, Retryable};
-use tracing::{info, warn};
+use tracing::{debug, warn};
 use utils::auth::{AuthConfig, TokenProvider};
 
 use crate::{error, CasClientError};
@@ -120,7 +120,7 @@ impl Middleware for LoggingMiddleware {
             .inspect(|res| {
                 let status_code = res.status().as_u16();
                 let request_id = request_id_from_response(res);
-                info!(request_id, status_code, "Received CAS response");
+                debug!(request_id, status_code, "Received CAS response");
                 if Some(Retryable::Transient) == default_on_request_success(res) {
                     warn!(request_id, "Status Code: {status_code:?}. Retrying...");
                 }
