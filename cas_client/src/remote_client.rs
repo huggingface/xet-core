@@ -24,6 +24,7 @@ use utils::singleflight::Group;
 use xet_threadpool::ThreadPool;
 
 use crate::error::Result;
+use crate::http_client::ResponseErrorLogger;
 use crate::interface::*;
 use crate::{http_client, CasClientError, Client};
 
@@ -192,12 +193,7 @@ impl Reconstructable for RemoteClient {
             // convert exclusive-end to inclusive-end range
             request = request.header(RANGE, format!("{}-{}", range.start, range.end - 1))
         }
-        let response = request
-            .send()
-            .await
-            .log_error("error invoking reconstruction api")?
-            .error_for_status()
-            .log_error("reconstruction api returned error code")?;
+        let response = request.send().await.process_error("get_reconstruction")?;
 
         let len = response.content_length();
         debug!("file_id: {file_id} query_reconstruction len {len:?}");
@@ -235,9 +231,7 @@ impl RemoteClient {
             .get(url)
             .send()
             .await
-            .log_error("error invoking batch reconstruction api")?
-            .error_for_status()
-            .log_error("batch reconstruction api returned error code")?;
+            .process_error("batch_get_reconstruction")?;
 
         let query_reconstruction_response: BatchQueryReconstructionResponse = response
             .json()
@@ -266,7 +260,13 @@ impl RemoteClient {
         let data = writer.into_inner();
 
         if !self.dry_run {
-            let response = self.http_auth_client.post(url).body(data).send().await?;
+            let response = self
+                .http_auth_client
+                .post(url)
+                .body(data)
+                .send()
+                .await
+                .process_error("upload_xorb")?;
             let response_parsed: UploadXorbResponse = response.json().await?;
 
             Ok((response_parsed.was_inserted, nbytes_trans))

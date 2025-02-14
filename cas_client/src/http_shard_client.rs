@@ -14,6 +14,7 @@ use reqwest_middleware::ClientWithMiddleware;
 use utils::auth::AuthConfig;
 
 use crate::error::{CasClientError, Result};
+use crate::http_client::ResponseErrorLogger;
 use crate::{build_auth_http_client, RegistrationClient, ShardClientInterface};
 
 const FORCE_SYNC_METHOD: reqwest::Method = reqwest::Method::PUT;
@@ -66,9 +67,7 @@ impl RegistrationClient for HttpShardClient {
             .body(shard_data.to_vec())
             .send()
             .await
-            .log_error("failed request to upload_shard")?
-            .error_for_status()
-            .log_error("error status on upload_shard")?;
+            .process_error("upload_shard")?;
 
         let response_parsed: UploadShardResponse =
             response.json().await.log_error("error json decoding upload_shard response")?;
@@ -88,14 +87,7 @@ impl FileReconstructor<CasClientError> for HttpShardClient {
     ) -> Result<Option<(MDBFileInfo, Option<MerkleHash>)>> {
         let url = Url::parse(&format!("{}/reconstruction/{}", self.endpoint, file_hash.hex()))?;
 
-        let response = self
-            .client
-            .get(url)
-            .send()
-            .await
-            .log_error("error invoking reconstruction API")?
-            .error_for_status()
-            .log_error("reconstruction api error status")?;
+        let response = self.client.get(url).send().await.process_error("get_reconstruction_info")?;
         let response_info: QueryReconstructionResponse = response.json().await?;
 
         Ok(Some((
