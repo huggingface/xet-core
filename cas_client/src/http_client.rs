@@ -9,7 +9,7 @@ use reqwest::{Request, Response};
 use reqwest_middleware::{ClientBuilder, ClientWithMiddleware, Middleware, Next};
 use reqwest_retry::policies::ExponentialBackoff;
 use reqwest_retry::{default_on_request_failure, default_on_request_success, RetryTransientMiddleware, Retryable};
-use tracing::{error, info, warn};
+use tracing::{info, warn};
 use utils::auth::{AuthConfig, TokenProvider};
 
 use crate::{error, CasClientError};
@@ -121,12 +121,12 @@ impl Middleware for LoggingMiddleware {
                 let status_code = res.status().as_u16();
                 let request_id = request_id_from_response(res);
                 info!(request_id, status_code, "Received CAS response");
-                if Some(Retryable::Transient) == default_on_request_success(&res) {
+                if Some(Retryable::Transient) == default_on_request_success(res) {
                     warn!(request_id, "Status Code: {status_code:?}. Retrying...");
                 }
             })
             .inspect_err(|err| {
-                if Some(Retryable::Transient) == default_on_request_failure(&err) {
+                if Some(Retryable::Transient) == default_on_request_failure(err) {
                     warn!("{err:?}. Retrying...");
                 }
             })
@@ -186,7 +186,10 @@ pub trait ResponseErrorLogger<T> {
 }
 
 /// Add ResponseErrorLogger to Result<Response> for our requests.
-/// This logs an error if one occurred before receiving a response.
+/// This logs an error if one occurred before receiving a response or
+/// if the status code indicates a failure.
+/// As a result of these checks, the response is also transformed into a
+/// cas_client::error::Result instead of the raw reqwest_middleware::Result.
 impl ResponseErrorLogger<error::Result<Response>> for reqwest_middleware::Result<Response> {
     fn process_error(self, api: &str) -> error::Result<Response> {
         let res = self.log_error(format!("error invoking {api} api"))?;
@@ -292,6 +295,6 @@ mod tests {
         assert!(logs_contain("Status Code: 500. Retrying..."));
         assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
         assert_eq!(3, mock.hits());
-        assert_eq!(start_time.elapsed().unwrap() > Duration::from_secs(0), true);
+        assert!(start_time.elapsed().unwrap() > Duration::from_secs(0));
     }
 }
