@@ -28,3 +28,4 @@ futures = { version = "0.3.31" }
 tokio-util = {version = "0.7.12",  features = ["io"]}
 tokio = {version = "1.41.1" }
 half = "2.4.1"
+serde = { version = "1.0.129", features = ["derive"] }

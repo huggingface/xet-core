@@ -8,6 +8,7 @@ use futures::AsyncReadExt;
 use merkledb::prelude::MerkleDBHighLevelMethodsV1;
 use merkledb::{Chunk, MerkleMemDB};
 use merklehash::{DataHash, MerkleHash};
+use serde::Serialize;
 use tracing::warn;
 
 use crate::cas_chunk_format::{deserialize_chunk, serialize_chunk};
@@ -19,7 +20,7 @@ pub(crate) const CAS_OBJECT_FORMAT_IDENT: CasObjectIdent = [b'X', b'E', b'T', b'
 pub(crate) const CAS_OBJECT_FORMAT_VERSION: u8 = 0;
 const CAS_OBJECT_INFO_DEFAULT_LENGTH: u32 = 60;
 
-#[derive(Clone, PartialEq, Eq, Debug)]
+#[derive(Clone, PartialEq, Eq, Debug, Serialize)]
 /// Info struct for [CasObject]. This is stored at the end of the XORB.
 pub struct CasObjectInfo {
     /// CAS identifier: "XETBLOB"
@@ -247,7 +248,7 @@ impl CasObjectInfo {
     }
 }
 
-#[derive(Clone, PartialEq, Eq, Debug)]
+#[derive(Clone, PartialEq, Eq, Debug, Serialize)]
 /// XORB: 16MB data block for storing chunks.
 ///
 /// Has Info footer, and a set of functions that interact directly with XORB.
