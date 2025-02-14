@@ -60,7 +60,7 @@ impl TokenRefresher for HubClientTokenRefresher {
         let token_type = self.token_type.clone();
         let ret = self
             .threadpool
-            .external_run_async_task(async move { client.refresh_jwt_token(&token_type).await })
+            .internal_run_async_task(async move { client.refresh_jwt_token(&token_type).await })
             .map_err(|e| AuthError::TokenRefreshFailure(e.to_string()))?
             .map_err(|e| AuthError::TokenRefreshFailure(e.to_string()))?;
         Ok(ret)

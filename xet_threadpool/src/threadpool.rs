@@ -50,6 +50,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 ///
 /// - `new_threadpool`: Creates a new Tokio runtime with the specified settings.
 use tokio;
+use tokio::runtime::Handle;
 use tokio::task::JoinHandle;
 use tracing::{debug, error};
 
@@ -174,6 +175,27 @@ impl ThreadPool {
 
         self.external_executor_count.fetch_sub(1, Ordering::SeqCst);
         ret
+    }
+
+    pub fn internal_run_async_task<F>(&self, future: F) -> Result<F::Output, MultithreadedRuntimeError>
+    where
+        F: std::future::Future + Send + 'static,
+        F::Output: Send + 'static,
+    {
+        tokio::task::block_in_place(move || {
+            Handle::current().block_on(async { tokio::spawn(future).await }).map_err(|e| {
+                if e.is_panic() {
+                    // The task panic'd.  Pass this exception on.
+                    error!("Panic reported on xet worker task: {e:?}");
+                    MultithreadedRuntimeError::TaskPanic(e)
+                } else if e.is_cancelled() {
+                    // Likely caused by the runtime shutting down (e.g. with a keyboard CTRL-C).
+                    MultithreadedRuntimeError::TaskCanceled(format!("{e}"))
+                } else {
+                    MultithreadedRuntimeError::Other(format!("task join error: {e}"))
+                }
+            })
+        })
     }
 
     /// Spawn an async task to run in the background on the current pool of worker threads.
