@@ -50,6 +50,7 @@ pub struct CasObjectInfo {
     /// Merklehash for each chunk stored in the Xorb. Length of vector is num_chunks.
     pub chunk_hashes: Vec<MerkleHash>,
 
+    #[serde(skip)]
     /// Unused 16-byte buffer to allow for future extensibility.
     _buffer: [u8; 16],
 }
