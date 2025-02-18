@@ -118,6 +118,8 @@ impl Middleware for LoggingMiddleware {
         next.run(req, extensions)
             .await
             .inspect(|res| {
+                // Response received, debug log it and use the status code
+                // to check if we are retrying or not.
                 let status_code = res.status().as_u16();
                 let request_id = request_id_from_response(res);
                 debug!(request_id, status_code, "Received CAS response");
@@ -126,6 +128,7 @@ impl Middleware for LoggingMiddleware {
                 }
             })
             .inspect_err(|err| {
+                // Error received, check if we are retrying or not.
                 if Some(Retryable::Transient) == default_on_request_failure(err) {
                     warn!("{err:?}. Retrying...");
                 }
