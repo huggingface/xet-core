@@ -90,17 +90,6 @@ impl RemoteShardInterface {
         }))
     }
 
-    fn cas(&self) -> Result<Arc<dyn Client + Send + Sync>> {
-        let Some(cas) = self.cas.clone() else {
-            // Trigger error and backtrace
-            return Err(DataProcessingError::CASConfigError(
-                "tried to contact CAS service but cas client was not configured".to_owned(),
-            ))?;
-        };
-
-        Ok(cas)
-    }
-
     fn shard_client(&self) -> Result<Arc<dyn ShardClientInterface>> {
         let Some(shard_client) = self.shard_client.clone() else {
             // Trigger error and backtrace
@@ -144,77 +133,6 @@ impl RemoteShardInterface {
         };
 
         Ok(session_dir)
-    }
-
-    async fn query_server_for_file_reconstruction_info(
-        &self,
-        file_hash: &merklehash::MerkleHash,
-    ) -> Result<Option<(MDBFileInfo, Option<MerkleHash>)>> {
-        // In this case, no remote to query
-        if self.file_query_policy == FileQueryPolicy::LocalOnly {
-            return Ok(None);
-        }
-
-        Ok(self.shard_client()?.get_file_reconstruction_info(file_hash).await?)
-    }
-
-    async fn get_file_reconstruction_info_impl(
-        &self,
-        file_hash: &merklehash::MerkleHash,
-    ) -> Result<Option<(MDBFileInfo, Option<MerkleHash>)>> {
-        match self.file_query_policy {
-            FileQueryPolicy::LocalFirst => {
-                let local_info = self
-                    .shard_manager
-                    .as_ref()
-                    .ok_or_else(|| {
-                        MDBShardError::SmudgeQueryPolicyError(
-                            "Require ShardFileManager for smudge query policy other than 'server_only'".to_owned(),
-                        )
-                    })?
-                    .get_file_reconstruction_info(file_hash)
-                    .await?;
-
-                if local_info.is_some() {
-                    Ok(local_info)
-                } else {
-                    Ok(self.query_server_for_file_reconstruction_info(file_hash).await?)
-                }
-            },
-            FileQueryPolicy::ServerOnly => self.query_server_for_file_reconstruction_info(file_hash).await,
-            FileQueryPolicy::LocalOnly => Ok(self
-                .shard_manager
-                .as_ref()
-                .ok_or_else(|| {
-                    MDBShardError::SmudgeQueryPolicyError(
-                        "Require ShardFileManager for smudge query policy other than 'server_only'".to_owned(),
-                    )
-                })?
-                .get_file_reconstruction_info(file_hash)
-                .await?),
-        }
-    }
-
-    pub async fn get_file_reconstruction_info(
-        &self,
-        file_hash: &merklehash::MerkleHash,
-    ) -> Result<Option<(MDBFileInfo, Option<MerkleHash>)>> {
-        {
-            let mut reader = self.reconstruction_cache.lock().unwrap();
-            if let Some(res) = reader.get(file_hash) {
-                return Ok(Some(res.clone()));
-            }
-        }
-        let response = self.get_file_reconstruction_info_impl(file_hash).await;
-        match response {
-            Ok(None) => Ok(None),
-            Ok(Some(contents)) => {
-                // we only cache real stuff
-                self.reconstruction_cache.lock().unwrap().put(*file_hash, contents.clone());
-                Ok(Some(contents))
-            },
-            Err(e) => Err(e),
-        }
     }
 
     /// Probes which shards provides dedup information for a chunk.
