@@ -30,10 +30,6 @@ pub const LOCAL_CAS_SCHEME: &str = "local://";
 /// The current version
 pub const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");
 
-/// Maximum number of entries in the file construction cache
-/// which stores File Hash -> reconstruction instructions
-pub const FILE_RECONSTRUCTION_CACHE_SIZE: usize = 65536;
-
 /// Number of ranges to use when estimating fragmentation
 pub const NRANGES_IN_STREAMING_FRAGMENTATION_ESTIMATOR: usize = 128;
 
