@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::io::{BufReader, Cursor, Read, Seek, Write};
+use std::io::{BufReader, Cursor, ErrorKind, Read, Seek, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, SystemTime};
@@ -8,7 +8,7 @@ use merklehash::{compute_data_hash, HMACKey, HashedWrite, MerkleHash};
 use tracing::{debug, error, info, warn};
 
 use crate::cas_structs::CASChunkSequenceHeader;
-use crate::error::{not_found_as_none, MDBShardError, Result};
+use crate::error::{MDBShardError, Result};
 use crate::file_structs::{FileDataSequenceEntry, MDBFileInfo};
 use crate::shard_file::current_timestamp;
 use crate::shard_format::MDBShardInfo;
@@ -232,10 +232,26 @@ impl MDBShardFile {
         Ok(BufReader::with_capacity(2048, std::fs::File::open(&self.path)?))
     }
 
+    // Helper function to swallow io::ErrorKind::NotFound errors. In the case of
+    // a cached shard was registered but later deleted during the lifetime
+    // of a shard file manager, queries to this shard should not fail hard.
+    pub fn get_reader_if_present(&self) -> Result<Option<BufReader<std::fs::File>>> {
+        match self.get_reader() {
+            Ok(v) => Ok(Some(v)),
+            Err(MDBShardError::IOError(e)) => {
+                if e.kind() == ErrorKind::NotFound {
+                    Ok(None)
+                } else {
+                    Err(MDBShardError::IOError(e))
+                }
+            },
+            Err(other_err) => Err(other_err),
+        }
+    }
+
     #[inline]
     pub fn get_file_reconstruction_info(&self, file_hash: &MerkleHash) -> Result<Option<MDBFileInfo>> {
-        let reader = self.get_reader().map(Some).or_else(not_found_as_none)?;
-        let Some(mut reader) = reader else {
+        let Some(mut reader) = self.get_reader_if_present()? else {
             return Ok(None);
         };
 
@@ -247,8 +263,7 @@ impl MDBShardFile {
         &self,
         query_hashes: &[MerkleHash],
     ) -> Result<Option<(usize, FileDataSequenceEntry)>> {
-        let reader = self.get_reader().map(Some).or_else(not_found_as_none)?;
-        let Some(mut reader) = reader else {
+        let Some(mut reader) = self.get_reader_if_present()? else {
             return Ok(None);
         };
 
@@ -262,8 +277,7 @@ impl MDBShardFile {
         cas_block_index: u32,
         cas_chunk_offset: u32,
     ) -> Result<Option<(usize, FileDataSequenceEntry)>> {
-        let reader = self.get_reader().map(Some).or_else(not_found_as_none)?;
-        let Some(mut reader) = reader else {
+        let Some(mut reader) = self.get_reader_if_present()? else {
             return Ok(None);
         };
 
