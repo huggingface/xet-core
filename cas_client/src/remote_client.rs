@@ -5,6 +5,7 @@ use std::sync::Arc;
 
 use anyhow::anyhow;
 use async_trait::async_trait;
+use cas_object::byte_grouping::bg4::bg4_split_separate;
 use cas_object::{CasObject, CompressionScheme};
 use cas_types::{
     BatchQueryReconstructionResponse, CASReconstructionFetchInfo, CASReconstructionTerm, FileRange, HexMerkleHash,
@@ -256,8 +257,31 @@ impl RemoteClient {
 
         let mut writer = Cursor::new(Vec::new());
 
+        let bg4_groups = bg4_split_separate(&contents);
+        let bg4_groups_hist = [
+            byte_bit_count_distribution(&bg4_groups[0]),
+            byte_bit_count_distribution(&bg4_groups[1]),
+            byte_bit_count_distribution(&bg4_groups[2]),
+            byte_bit_count_distribution(&bg4_groups[3]),
+        ];
+        let bg4_total_entropy: f64 = bg4_groups_hist
+            .iter()
+            .map(|hist| distribution_entropy(&as_distribution(hist)))
+            .sum();
+        let bg4_total_entropy = bg4_total_entropy / 4.;
+        let bg2_total_entropy: f64 =
+            distribution_entropy(&as_distribution(&combine_hist(&bg4_groups_hist[0], &bg4_groups_hist[2])))
+                + distribution_entropy(&as_distribution(&combine_hist(&bg4_groups_hist[1], &bg4_groups_hist[3])));
+        let bg2_total_entropy = bg2_total_entropy / 2.;
+
+        let compression = if -(bg4_total_entropy - bg2_total_entropy) / bg2_total_entropy >= 5.0 / 100. {
+            CompressionScheme::ByteGrouping4LZ4
+        } else {
+            CompressionScheme::ByteGrouping2LZ4
+        };
+
         let (_, nbytes_trans) =
-            CasObject::serialize(&mut writer, &key.hash, &contents, &chunk_and_boundaries, self.compression)?;
+            CasObject::serialize(&mut writer, &key.hash, &contents, &chunk_and_boundaries, compression)?;
         // free memory before the "slow" network transfer below
         drop(contents);
 
@@ -661,4 +685,55 @@ mod tests {
             }
         }
     }
+}
+
+/// Compute the distribution of the number of 1-bits in each byte.
+///
+/// Returns an array of length 9, where index `i` corresponds to how many bytes
+/// had exactly `i` 1-bits (i in [0..8]).
+fn byte_bit_count_distribution(data: &[u8]) -> [usize; 9] {
+    let mut dist = [0usize; 9]; // Put in ghost counts for the kl divergence
+
+    for &b in data {
+        // Since Rust 1.37+, u8::count_ones() is stable.
+        // It returns a u32 but in [0..8] for a u8.
+        let ones = b.count_ones() as usize;
+        dist[ones] += 1;
+    }
+
+    dist
+}
+
+fn combine_hist<const N: usize>(hist0: &[usize; N], hist1: &[usize; N]) -> [usize; N] {
+    let mut ret = [0; N];
+    for i in 0..N {
+        ret[i] = hist0[i] + hist1[i];
+    }
+    ret
+}
+
+fn as_distribution<const N: usize>(dist: &[usize; N]) -> [f64; N] {
+    // Normalize the input array to probabilities
+    let total: usize = dist.iter().sum();
+    if total == 0 {
+        return [0.0; N];
+    }
+    let mut ret = [0.0; N];
+    for i in 0..N {
+        ret[i] = dist[i] as f64 / total as f64;
+    }
+
+    ret
+}
+
+/// Compute the Shannon entropy (base 2) from a bit-count distribution array.
+#[inline]
+fn distribution_entropy(dist: &[f64]) -> f64 {
+    let mut entropy = 0.0;
+    for &p in dist.iter() {
+        if p > 0. {
+            entropy -= p * p.log2();
+        }
+    }
+    entropy
 }
