@@ -115,20 +115,18 @@ pub fn serialize_chunk<W: Write>(
 ) -> Result<usize, CasObjectError> {
     let uncompressed_len = chunk.len();
 
-    let compressed = compression_scheme.compress_from_slice(chunk)?;
-    let compressed_len = compressed.len();
-    if compressed_len > uncompressed_len {
-        debug!("compression with compression scheme {compression_scheme} yielded a larger size ({compressed_len} B) rather than uncompressed ({uncompressed_len} B)");
+    let mut compressed = compression_scheme.compress_from_slice(chunk)?;
+    let (header, compressed) = if compressed.len() > uncompressed_len {
         let header = CASChunkHeader::new(CompressionScheme::None, uncompressed_len as u32, uncompressed_len as u32);
-        write_chunk_header(w, &header)?;
-        w.write_all(chunk)?;
-        return Ok(size_of::<CASChunkHeader>() + uncompressed_len);
+        (header, chunk.into())
+    } else {
+        let header = CASChunkHeader::new(compression_scheme, compressed.len() as u32, uncompressed_len as u32);
+        (header, compressed)
     };
-    let header = CASChunkHeader::new(compression_scheme, compressed_len as u32, uncompressed_len as u32);
     write_chunk_header(w, &header)?;
     w.write_all(&compressed)?;
 
-    Ok(size_of::<CASChunkHeader>() + compressed_len)
+    Ok(size_of::<CASChunkHeader>() + compressed.len())
 }
 
 pub fn parse_chunk_header(chunk_header_bytes: [u8; CAS_CHUNK_HEADER_LENGTH]) -> Result<CASChunkHeader, CasObjectError> {
