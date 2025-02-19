@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use cas_client::{HttpShardClient, LocalShardClient, ShardClientInterface};
+use cas_client::{HttpShardClient, LocalClient, ShardClientInterface};
 use mdb_shard::ShardFileManager;
 use tracing::debug;
 
@@ -41,10 +41,7 @@ pub async fn create_shard_manager(
     Ok(session_shard_manager)
 }
 
-pub async fn create_shard_client(
-    shard_storage_config: &StorageConfig,
-    download_only_mode: bool,
-) -> Result<Arc<dyn ShardClientInterface>> {
+pub async fn create_shard_client(shard_storage_config: &StorageConfig) -> Result<Arc<dyn ShardClientInterface>> {
     debug!("Shard endpoint = {:?}", shard_storage_config.endpoint);
     let client: Arc<dyn ShardClientInterface> = match &shard_storage_config.endpoint {
         Server(endpoint) => Arc::new(HttpShardClient::new(
@@ -55,7 +52,7 @@ pub async fn create_shard_client(
                 .as_ref()
                 .map(|cache| cache.cache_directory.clone()),
         )),
-        FileSystem(path) => Arc::new(LocalShardClient::new(path, download_only_mode).await?),
+        FileSystem(path) => Arc::new(LocalClient::new(path)?),
     };
 
     Ok(client)

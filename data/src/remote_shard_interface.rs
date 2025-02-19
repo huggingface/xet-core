@@ -58,7 +58,7 @@ impl RemoteShardInterface {
         let shard_client = {
             if file_query_policy != FileQueryPolicy::LocalOnly {
                 debug!("data_processing: Setting up file reconstructor to query shard server.");
-                create_shard_client(shard_storage_config, download_only).await.ok()
+                create_shard_client(shard_storage_config).await.ok()
             } else {
                 None
             }

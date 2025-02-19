@@ -67,7 +67,13 @@ pub trait ReconstructionClient {
         &self,
         http_client: Arc<ClientWithMiddleware>,
         files: HashMap<MerkleHash, &mut Box<dyn Write + Send>>,
-    ) -> Result<()>;
+    ) -> Result<()> {
+        // Provide the basic naive implementation as a default.
+        for (h, w) in files {
+            self.get_file(http_client.clone(), &h, None, w, None).await?;
+        }
+        Ok(())
+    }
 }
 
 pub trait Client: UploadClient + ReconstructionClient {}

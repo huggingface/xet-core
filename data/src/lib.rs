@@ -15,7 +15,6 @@ mod pointer_file;
 mod remote_shard_interface;
 mod repo_salt;
 mod shard_interface;
-mod test_utils;
 
 pub use cas_client::CacheConfig;
 pub use data_processing::PointerFileTranslator;

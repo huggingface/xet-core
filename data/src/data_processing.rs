@@ -109,13 +109,7 @@ impl PointerFileTranslator {
     ) -> Result<PointerFileTranslator> {
         let shard_manager = create_shard_manager(&config.shard_storage_config, download_only).await?;
 
-        let cas_client = create_cas_client(
-            &config.cas_storage_config,
-            &config.repo_info,
-            shard_manager.clone(),
-            threadpool.clone(),
-            dry_run,
-        )?;
+        let cas_client = create_cas_client(&config.cas_storage_config, &config.repo_info, threadpool.clone(), dry_run)?;
 
         let remote_shards = {
             if let Some(dedup) = &config.dedup_config {
@@ -310,7 +304,7 @@ mod tests {
     ///
     /// * `input_path`: path to the original file
     /// * `output_path`: path to write the pointer file
-    pub fn test_clean_file(runtime: Arc<ThreadPool>, input_path: &Path, output_path: &Path) {
+    async fn test_clean_file(runtime: Arc<ThreadPool>, cas_path: &Path, input_path: &Path, output_path: &Path) {
         let read_data = std::fs::read(input_path).unwrap().to_vec();
 
         let mut pf_out = Box::new(
@@ -322,35 +316,27 @@ mod tests {
                 .unwrap(),
         );
 
-        runtime
-            .external_run_async_task(async move {
-                let translator = PointerFileTranslator::new(
-                    TranslatorConfig::local_config(std::env::current_dir().unwrap(), true).unwrap(),
-                    get_threadpool(),
-                    None,
-                    false,
-                )
+        let translator =
+            PointerFileTranslator::new(TranslatorConfig::local_config(cas_path, true).unwrap(), runtime, None, false)
                 .await
                 .unwrap();
 
-                let handle = translator.start_clean(1024, None).await.unwrap();
+        let handle = translator.start_clean(1024, None).await.unwrap();
 
-                // Read blocks from the source file and hand them to the cleaning handle
-                handle.add_bytes(read_data).await.unwrap();
+        // Read blocks from the source file and hand them to the cleaning handle
+        handle.add_bytes(read_data).await.unwrap();
 
-                let (pointer_file_contents, _) = handle.result().await.unwrap();
-                translator.finalize_cleaning().await.unwrap();
+        let (pointer_file_contents, _) = handle.result().await.unwrap();
+        translator.finalize_cleaning().await.unwrap();
 
-                pf_out.write_all(pointer_file_contents.as_bytes()).unwrap();
-            })
-            .unwrap();
+        pf_out.write_all(pointer_file_contents.as_bytes()).unwrap();
     }
 
     /// Smudges (hydrates) a pointer file back into the original data.
     ///
     /// * `pointer_path`: path to the pointer file
     /// * `output_path`: path to write the hydrated/original file
-    fn test_smudge_file(runtime: Arc<ThreadPool>, pointer_path: &Path, output_path: &Path) {
+    async fn test_smudge_file(runtime: Arc<ThreadPool>, cas_path: &Path, pointer_path: &Path, output_path: &Path) {
         let mut reader = File::open(pointer_path).unwrap();
         let writer: Box<dyn Write + Send + 'static> = Box::new(
             OpenOptions::new()
@@ -361,31 +347,23 @@ mod tests {
                 .unwrap(),
         );
 
-        runtime
-            .external_run_async_task(async move {
-                let mut input = String::new();
-                reader.read_to_string(&mut input).unwrap();
+        let mut input = String::new();
+        reader.read_to_string(&mut input).unwrap();
 
-                let pointer_file = PointerFile::init_from_string(&input, "");
-                // If not a pointer file, do nothing
-                if !pointer_file.is_valid() {
-                    return;
-                }
+        let pointer_file = PointerFile::init_from_string(&input, "");
+        // If not a pointer file, do nothing
+        if !pointer_file.is_valid() {
+            return;
+        }
 
-                let translator = PointerFileTranslator::new(
-                    TranslatorConfig::local_config(std::env::current_dir().unwrap(), true).unwrap(),
-                    get_threadpool(),
-                    None,
-                    true,
-                )
+        let translator =
+            PointerFileTranslator::new(TranslatorConfig::local_config(cas_path, true).unwrap(), runtime, None, true)
                 .await
                 .unwrap();
 
-                translator
-                    .smudge_file_from_pointer(&pointer_file, &mut Box::new(writer), None, None)
-                    .await
-                    .unwrap();
-            })
+        translator
+            .smudge_file_from_pointer(&pointer_file, &mut Box::new(writer), None, None)
+            .await
             .unwrap();
     }
 
@@ -403,20 +381,27 @@ mod tests {
 
         let runtime = get_threadpool();
 
-        // 1. Write an original file in the temp directory
-        let original_path = temp.path().join("original.txt");
-        write(&original_path, original_data).unwrap();
+        runtime
+            .clone()
+            .external_run_async_task(async move {
+                let cas_path = temp.path().join("cas");
 
-        // 2. Clean it (convert it to a pointer file)
-        let pointer_path = temp.path().join("pointer.txt");
-        test_clean_file(runtime.clone(), &original_path, &pointer_path);
+                // 1. Write an original file in the temp directory
+                let original_path = temp.path().join("original.txt");
+                write(&original_path, original_data).unwrap();
 
-        // 3. Smudge it (hydrate the pointer file) to a new file
-        let hydrated_path = temp.path().join("hydrated.txt");
-        test_smudge_file(runtime.clone(), &pointer_path, &hydrated_path);
+                // 2. Clean it (convert it to a pointer file)
+                let pointer_path = temp.path().join("pointer.txt");
+                test_clean_file(runtime.clone(), &cas_path, &original_path, &pointer_path).await;
 
-        // 4. Verify that the round-tripped file matches the original
-        let result_data = read(hydrated_path).unwrap();
-        assert_eq!(original_data.to_vec(), result_data);
+                // 3. Smudge it (hydrate the pointer file) to a new file
+                let hydrated_path = temp.path().join("hydrated.txt");
+                test_smudge_file(runtime.clone(), &cas_path, &pointer_path, &hydrated_path).await;
+
+                // 4. Verify that the round-tripped file matches the original
+                let result_data = read(hydrated_path).unwrap();
+                assert_eq!(original_data.to_vec(), result_data);
+            })
+            .unwrap();
     }
 }

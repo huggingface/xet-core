@@ -1,60 +1,40 @@
 use std::fs::{metadata, File};
 use std::io::{BufReader, BufWriter, Cursor, Write};
-use std::path::{Path, PathBuf, PathBuf};
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use anyhow::anyhow;
 use async_trait::async_trait;
 use cas_object::CasObject;
-use cas_types::Key;
-use itertools::Itertools;
+use cas_types::{FileRange, Key};
+use heed::types::*;
 use mdb_shard::file_structs::MDBFileInfo;
 use mdb_shard::shard_dedup_probe::ShardDedupProber;
 use mdb_shard::shard_file_reconstructor::FileReconstructor;
 use mdb_shard::{MDBShardFile, MDBShardInfo, ShardFileManager};
 use merkledb::aggregate_hashes::with_salt;
 use merklehash::MerkleHash;
+use reqwest_middleware::ClientWithMiddleware;
 use tempfile::TempDir;
-use tracing::{debug, info};
+use tokio::runtime::Handle;
+use tracing::{debug, error, info, warn};
+use utils::progress::ProgressUpdater;
 
-use std::collections::HashMap;
-use std::path::Path;
-use std::sync::Arc;
-
-use heed::types::*;
-use heed::EnvOpenOptions;
-use itertools::Itertools;
-use merkledb::aggregate_hashes::with_salt;
-use merklehash::MerkleHash;
-use tokio::sync::RwLock;
-use tracing::{info, warn};
-
-
-use crate::error::{CasClientError, Result, Result};
-use crate::global_dedup_table::DiskBasedGlobalDedupTable;
+use crate::error::{CasClientError, Result};
 use crate::interface::UploadClient;
-use crate::{RegistrationClient, ShardClientInterface};
+use crate::{Client, ReconstructionClient, RegistrationClient, ShardClientInterface};
 
-
-
-
-
-
-
-
-#[derive(Debug)]
 pub struct LocalClient {
     tmp_dir: Option<TempDir>, // To hold directory to use for local testing
     base_dir: PathBuf,
-
+    xorb_dir: PathBuf,
+    shard_dir: PathBuf,
     shard_manager: Arc<ShardFileManager>,
-    shard_directory: PathBuf,
-    global_dedup_db_env : heed::Env,
-    global_dedup_table : heed::Database<OwnedType<MerkleHash>, OwnedType<MerkleHash>>
+    global_dedup_db_env: heed::Env,
+    global_dedup_table: heed::Database<OwnedType<MerkleHash>, OwnedType<MerkleHash>>,
 }
 
 impl LocalClient {
-
     pub fn temporary() -> Result<Self> {
         let tmp_dir = TempDir::new().unwrap();
         let path = tmp_dir.path().to_owned();
@@ -65,44 +45,57 @@ impl LocalClient {
     }
 
     pub fn new(path: impl AsRef<Path>) -> Result<Self> {
-        let base_dir = path.as_ref().to_path_buf(); 
+        let base_dir = std::path::absolute(path)?;
         if !base_dir.exists() {
             std::fs::create_dir_all(&base_dir)?;
         }
 
-        let shard_directory = base_dir.join("shards");
-        if !shard_directory.exists() {
-            std::fs::create_dir_all(&shard_directory)?;
+        let shard_dir = base_dir.join("shards");
+        if !shard_dir.exists() {
+            std::fs::create_dir_all(&shard_dir)?;
         }
 
-        let xorb_directory = base_dir.join("xorbs"); 
-        if !xorb_directory.exists() {
-            std::fs::create_dir_all(&xorb_directory)?;
+        let xorb_dir = base_dir.join("xorbs");
+        if !xorb_dir.exists() {
+            std::fs::create_dir_all(&xorb_dir)?;
         }
 
         let global_dedup_dir = base_dir.join("global_dedup_lookup.db");
         if !global_dedup_dir.exists() {
-            std::fs::create_dir_all(&xorb_directory)?;
+            std::fs::create_dir_all(&global_dedup_dir)?;
         }
 
-        // This loads and cleans all the shards in the session directory; no need to do it explicitly
-        let shard_manager = ShardFileManager::builder(&shard_directory)
-            .with_chunk_dedup(true)
-            .with_expired_shard_cleanup(true)
-            .build()
-            .await?;
+        // Open / setup the global dedup lookup
+        let global_dedup_db_env = heed::EnvOpenOptions::new()
+            .max_dbs(32)
+            .max_readers(32)
+            .open(&global_dedup_dir)
+            .map_err(|e| CasClientError::Other(format!("Error opening db at {global_dedup_dir:?}: {e}")))?;
 
-        let global_dedup = DiskBasedGlobalDedupTable::open_or_create(cas_directory.join("ddb").join("chunk2shard.db"))?;
+        let global_dedup_table = global_dedup_db_env
+            .create_database(None)
+            .map_err(|e| CasClientError::Other(format!("Error opening heed table: {e}")))?;
 
-        Self {
-            tmp_dir: None 
-            base_dir: path,
-        }
+        // Open / setup the shard lookup
+        let shard_directory_ = shard_dir.clone();
+        let shard_manager = tokio::task::block_in_place(|| {
+            Handle::current().block_on(async move { ShardFileManager::new(shard_directory_).await })
+        })?;
+
+        Ok(Self {
+            tmp_dir: None,
+            base_dir,
+            shard_dir,
+            xorb_dir,
+            shard_manager,
+            global_dedup_db_env,
+            global_dedup_table,
+        })
     }
 
     /// Internal function to get the path for a given hash entry
-    fn get_path_for_entry(&self, prefix: &str, hash: &MerkleHash) -> PathBuf {
-        self.base_dir.join(format!("{}.{}", prefix, hash.hex()))
+    fn get_path_for_entry(&self, hash: &MerkleHash) -> PathBuf {
+        self.xorb_dir.join(format!("default.{hash:?}"))
     }
 
     /// Returns all entries in the local client
@@ -110,7 +103,7 @@ impl LocalClient {
         let mut ret: Vec<_> = Vec::new();
 
         // loop through the directory
-        self.base_dir
+        self.xorb_dir
             .read_dir()
             .map_err(|x| CasClientError::InternalError(x.into()))?
             // take only entries which are ok
@@ -141,8 +134,8 @@ impl LocalClient {
     }
 
     /// Deletes an entry
-    pub fn delete(&self, prefix: &str, hash: &MerkleHash) {
-        let file_path = self.get_path_for_entry(prefix, hash);
+    pub fn delete(&self, hash: &MerkleHash) {
+        let file_path = self.get_path_for_entry(hash);
 
         // unset read-only for Windows to delete
         #[cfg(windows)]
@@ -156,6 +149,62 @@ impl LocalClient {
 
         let _ = std::fs::remove_file(file_path);
     }
+
+    pub fn get(&self, hash: &MerkleHash) -> Result<Vec<u8>> {
+        let file_path = self.get_path_for_entry(hash);
+        let file = File::open(&file_path).map_err(|_| {
+            error!("Unable to find file in local CAS {:?}", file_path);
+            CasClientError::XORBNotFound(*hash)
+        })?;
+
+        let mut reader = BufReader::new(file);
+        let cas = CasObject::deserialize(&mut reader)?;
+        let result = cas.get_all_bytes(&mut reader)?;
+        Ok(result)
+    }
+
+    /// Get uncompressed bytes from a CAS object within chunk ranges.
+    /// Each tuple in chunk_ranges represents a chunk index range [a, b)
+    fn get_object_range(&self, hash: &MerkleHash, chunk_ranges: Vec<(u32, u32)>) -> Result<Vec<Vec<u8>>> {
+        // Handle the case where we aren't asked for any real data.
+        if chunk_ranges.is_empty() {
+            return Ok(vec![vec![]]);
+        }
+
+        let file_path = self.get_path_for_entry(hash);
+        let file = File::open(&file_path).map_err(|_| {
+            error!("Unable to find file in local CAS {:?}", file_path);
+            CasClientError::XORBNotFound(*hash)
+        })?;
+
+        let mut reader = BufReader::new(file);
+        let cas = CasObject::deserialize(&mut reader)?;
+
+        let mut ret: Vec<Vec<u8>> = Vec::new();
+        for r in chunk_ranges {
+            if r.0 >= r.1 {
+                ret.push(vec![]);
+                continue;
+            }
+
+            let data = cas.get_bytes_by_chunk_range(&mut reader, r.0, r.1)?;
+            ret.push(data);
+        }
+        Ok(ret)
+    }
+
+    fn get_length(&self, hash: &MerkleHash) -> Result<u32> {
+        let file_path = self.get_path_for_entry(hash);
+        match File::open(file_path) {
+            Ok(file) => {
+                let mut reader = BufReader::new(file);
+                let cas = CasObject::deserialize(&mut reader)?;
+                let length = cas.get_all_bytes(&mut reader)?.len();
+                Ok(length as u32)
+            },
+            Err(_) => Err(CasClientError::XORBNotFound(*hash)),
+        }
+    }
 }
 
 /// LocalClient is responsible for writing/reading Xorbs on local disk.
@@ -163,7 +212,7 @@ impl LocalClient {
 impl UploadClient for LocalClient {
     async fn put(
         &self,
-        prefix: &str,
+        _prefix: &str,
         hash: &MerkleHash,
         data: Vec<u8>,
         chunk_and_boundaries: Vec<(MerkleHash, u32)>,
@@ -180,13 +229,13 @@ impl UploadClient for LocalClient {
 
         // moved hash validation into [CasObject::serialize], so removed from here.
 
-        if self.exists(prefix, hash).await? {
-            info!("{prefix:?}/{hash:?} already exists in Local CAS; returning.");
+        if self.exists("", hash).await? {
+            info!("object {hash:?} already exists in Local CAS; returning.");
             return Ok(0);
         }
 
-        let file_path = self.get_path_for_entry(prefix, hash);
-        info!("Writing XORB {prefix}/{hash:?} to local path {file_path:?}");
+        let file_path = self.get_path_for_entry(hash);
+        info!("Writing XORB {hash:?} to local path {file_path:?}");
 
         // we prefix with "[PID]." for now. We should be able to do a cleanup
         // in the future.
@@ -228,8 +277,8 @@ impl UploadClient for LocalClient {
         Ok(total_bytes_written)
     }
 
-    async fn exists(&self, prefix: &str, hash: &MerkleHash) -> Result<bool> {
-        let file_path = self.get_path_for_entry(prefix, hash);
+    async fn exists(&self, _prefix: &str, hash: &MerkleHash) -> Result<bool> {
+        let file_path = self.get_path_for_entry(hash);
 
         let res = metadata(&file_path);
 
@@ -255,86 +304,123 @@ impl UploadClient for LocalClient {
     }
 }
 
-pub mod tests_utils {
-    use std::fs::File;
-    use std::io::BufReader;
+#[async_trait]
+impl RegistrationClient for LocalClient {
+    async fn upload_shard(
+        &self,
+        _prefix: &str, // Prefix not used in current implementation
+        shard_hash: &MerkleHash,
+        _force_sync: bool,
+        shard_data: &[u8],
+        salt: &[u8; 32],
+    ) -> Result<bool> {
+        // Write out the shard to the shard directory.
+        let shard = MDBShardFile::write_out_from_reader(&self.shard_dir, &mut Cursor::new(shard_data))?;
 
-    use cas_object::CasObject;
-    use merklehash::MerkleHash;
-    use tracing::error;
+        self.shard_manager.register_shards(&[shard]).await?;
 
-    use super::LocalClient;
-    use crate::error::Result;
-    use crate::CasClientError;
+        // Add dedup info to the global dedup table.
+        let mut shard_reader = Cursor::new(shard_data);
 
-    pub trait TestUtils {
-        fn get(&self, prefix: &str, hash: &MerkleHash) -> Result<Vec<u8>>;
-        fn get_object_range(&self, prefix: &str, hash: &MerkleHash, ranges: Vec<(u32, u32)>) -> Result<Vec<Vec<u8>>>;
-        fn get_length(&self, prefix: &str, hash: &MerkleHash) -> Result<u32>;
-    }
+        let chunk_hashes = MDBShardInfo::filter_cas_chunks_for_global_dedup(&mut shard_reader)?;
 
-    impl TestUtils for LocalClient {
-        fn get(&self, prefix: &str, hash: &MerkleHash) -> Result<Vec<u8>> {
-            let file_path = self.get_path_for_entry(prefix, hash);
-            let file = File::open(&file_path).map_err(|_| {
-                error!("Unable to find file in local CAS {:?}", file_path);
-                CasClientError::XORBNotFound(*hash)
-            })?;
+        let mut write_txn = self.global_dedup_db_env.write_txn().map_err(map_heed_db_error)?;
 
-            let mut reader = BufReader::new(file);
-            let cas = CasObject::deserialize(&mut reader)?;
-            let result = cas.get_all_bytes(&mut reader)?;
-            Ok(result)
+        for chunk in chunk_hashes {
+            if let Ok(salted_chunk_hash) = with_salt(&chunk, salt) {
+                self.global_dedup_table
+                    .put(&mut write_txn, &salted_chunk_hash, shard_hash)
+                    .map_err(map_heed_db_error)?;
+            }
         }
 
-        /// Get uncompressed bytes from a CAS object within chunk ranges.
-        /// Each tuple in chunk_ranges represents a chunk index range [a, b)
-        fn get_object_range(
-            &self,
-            prefix: &str,
-            hash: &MerkleHash,
-            chunk_ranges: Vec<(u32, u32)>,
-        ) -> Result<Vec<Vec<u8>>> {
-            // Handle the case where we aren't asked for any real data.
-            if chunk_ranges.is_empty() {
-                return Ok(vec![vec![]]);
-            }
+        write_txn.commit().map_err(map_heed_db_error)?;
 
-            let file_path = self.get_path_for_entry(prefix, hash);
-            let file = File::open(&file_path).map_err(|_| {
-                error!("Unable to find file in local CAS {:?}", file_path);
-                CasClientError::XORBNotFound(*hash)
-            })?;
+        Ok(true)
+    }
+}
 
-            let mut reader = BufReader::new(file);
-            let cas = CasObject::deserialize(&mut reader)?;
+#[async_trait]
+impl FileReconstructor<CasClientError> for LocalClient {
+    /// Query the shard server for the file reconstruction info.
+    /// Returns the FileInfo for reconstructing the file and the shard ID that
+    /// defines the file info.
+    async fn get_file_reconstruction_info(
+        &self,
+        file_hash: &MerkleHash,
+    ) -> Result<Option<(MDBFileInfo, Option<MerkleHash>)>> {
+        Ok(self.shard_manager.get_file_reconstruction_info(file_hash).await?)
+    }
+}
 
-            let mut ret: Vec<Vec<u8>> = Vec::new();
-            for r in chunk_ranges {
-                if r.0 >= r.1 {
-                    ret.push(vec![]);
-                    continue;
+#[async_trait]
+impl ShardDedupProber<CasClientError> for LocalClient {
+    async fn get_dedup_shards(
+        &self,
+        _prefix: &str,
+        chunk_hash: &[MerkleHash],
+        salt: &[u8; 32],
+    ) -> Result<Vec<MerkleHash>> {
+        let mut ret = Vec::new();
+
+        let read_txn = self.global_dedup_db_env.read_txn().map_err(map_heed_db_error)?;
+
+        for h in chunk_hash {
+            if let Ok(sh) = with_salt(h, salt) {
+                if let Some(shard) = self.global_dedup_table.get(&read_txn, &sh).map_err(map_heed_db_error)? {
+                    ret.push(shard);
                 }
-
-                let data = cas.get_bytes_by_chunk_range(&mut reader, r.0, r.1)?;
-                ret.push(data);
-            }
-            Ok(ret)
-        }
-
-        fn get_length(&self, prefix: &str, hash: &MerkleHash) -> Result<u32> {
-            let file_path = self.get_path_for_entry(prefix, hash);
-            match File::open(file_path) {
-                Ok(file) => {
-                    let mut reader = BufReader::new(file);
-                    let cas = CasObject::deserialize(&mut reader)?;
-                    let length = cas.get_all_bytes(&mut reader)?.len();
-                    Ok(length as u32)
-                },
-                Err(_) => Err(CasClientError::XORBNotFound(*hash)),
             }
         }
+
+        Ok(ret)
     }
+}
+
+impl ShardClientInterface for LocalClient {}
+
+#[async_trait]
+impl ReconstructionClient for LocalClient {
+    async fn get_file(
+        &self,
+        _http_client: Arc<ClientWithMiddleware>,
+        hash: &MerkleHash,
+        byte_range: Option<FileRange>,
+        writer: &mut Box<dyn Write + Send>,
+        _progress_updater: Option<Arc<dyn ProgressUpdater>>,
+    ) -> Result<()> {
+        let Some((file_info, _)) = self
+            .shard_manager
+            .get_file_reconstruction_info(hash)
+            .await
+            .map_err(|e| anyhow!("{e}"))?
+        else {
+            return Err(CasClientError::FileNotFound(*hash));
+        };
+
+        for entry in file_info.segments {
+            let Some(one_range) = self
+                .get_object_range(&entry.cas_hash, vec![(entry.chunk_index_start, entry.chunk_index_end)])?
+                .pop()
+            else {
+                return Err(CasClientError::InvalidRange);
+            };
+            let start = byte_range.as_ref().map(|range| range.start as usize).unwrap_or(0);
+            let end = byte_range.as_ref().map(|range| range.end as usize).unwrap_or(one_range.len());
+
+            writer.write_all(&one_range[start..end])?;
+        }
+
+        Ok(())
+    }
+}
+
+impl Client for LocalClient {}
+
+fn map_heed_db_error(e: heed::Error) -> CasClientError {
+    let msg = format!("Global shard dedup database error: {e:?}");
+    warn!("{msg}");
+    CasClientError::Other(msg)
 }
 
 #[cfg(test)]
@@ -343,11 +429,10 @@ mod tests {
     use cas_object::test_utils::*;
     use cas_object::CompressionScheme::LZ4;
     use merklehash::compute_data_hash;
-    use tests_utils::TestUtils;
 
     use super::*;
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_basic_put_get() {
         // Arrange
         let data = gen_random_bytes(2048);
@@ -357,41 +442,41 @@ mod tests {
         let data_again = data.clone();
 
         // Act & Assert
-        let client = LocalClient::temporary();
+        let client = LocalClient::temporary().unwrap();
         assert!(client.put("key", &hash, data, vec![(hash, chunk_boundaries)]).await.is_ok());
 
-        let returned_data = client.get("key", &hash).unwrap();
+        let returned_data = client.get(&hash).unwrap();
         assert_eq!(data_again, returned_data);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_basic_put_get_random_medium() {
         // Arrange
         let (c, _, data, chunk_boundaries) = build_cas_object(44, ChunkSize::Random(512, 15633), LZ4);
         let data_again = data.clone();
 
         // Act & Assert
-        let client = LocalClient::temporary();
+        let client = LocalClient::temporary().unwrap();
         assert!(client.put("", &c.info.cashash, data, chunk_boundaries).await.is_ok());
 
-        let returned_data = client.get("", &c.info.cashash).unwrap();
+        let returned_data = client.get(&c.info.cashash).unwrap();
         assert_eq!(data_again, returned_data);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_basic_put_get_range_random_small() {
         // Arrange
         let (c, _, data, chunk_and_boundaries) = build_cas_object(3, ChunkSize::Random(512, 2048), LZ4);
 
         // Act & Assert
-        let client = LocalClient::temporary();
+        let client = LocalClient::temporary().unwrap();
         assert!(client
             .put("", &c.info.cashash, data.clone(), chunk_and_boundaries.clone())
             .await
             .is_ok());
 
         let ranges: Vec<(u32, u32)> = vec![(0, 1), (2, 3)];
-        let returned_ranges = client.get_object_range("", &c.info.cashash, ranges).unwrap();
+        let returned_ranges = client.get_object_range(&c.info.cashash, ranges).unwrap();
 
         let expected = vec![
             data[0..chunk_and_boundaries[0].1 as usize].to_vec(),
@@ -403,47 +488,47 @@ mod tests {
         }
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_basic_length() {
         // Arrange
         let (c, _, data, chunk_boundaries) = build_cas_object(1, ChunkSize::Fixed(2048), LZ4);
         let gen_length = data.len();
 
         // Act
-        let client = LocalClient::temporary();
+        let client = LocalClient::temporary().unwrap();
         assert!(client.put("", &c.info.cashash, data, chunk_boundaries).await.is_ok());
-        let len = client.get_length("", &c.info.cashash).unwrap();
+        let len = client.get_length(&c.info.cashash).unwrap();
 
         // Assert
         assert_eq!(len as usize, gen_length);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_missing_xorb() {
         // Arrange
         let hash = MerkleHash::from_hex("d760aaf4beb07581956e24c847c47f1abd2e419166aa68259035bc412232e9da").unwrap();
 
         // Act & Assert
-        let client = LocalClient::temporary();
-        let result = client.get("", &hash);
+        let client = LocalClient::temporary().unwrap();
+        let result = client.get(&hash);
         assert!(matches!(result, Err(CasClientError::XORBNotFound(_))));
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_failures() {
         let hello = "hello world".as_bytes().to_vec();
 
         let hello_hash = merklehash::compute_data_hash(&hello[..]);
         // write "hello world"
-        let client = LocalClient::temporary();
+        let client = LocalClient::temporary().unwrap();
         client
-            .put("key", &hello_hash, hello.clone(), vec![(hello_hash, hello.len() as u32)])
+            .put("default", &hello_hash, hello.clone(), vec![(hello_hash, hello.len() as u32)])
             .await
             .unwrap();
 
         // put the same value a second time. This should be ok.
         client
-            .put("key", &hello_hash, hello.clone(), vec![(hello_hash, hello.len() as u32)])
+            .put("default", &hello_hash, hello.clone(), vec![(hello_hash, hello.len() as u32)])
             .await
             .unwrap();
 
@@ -453,7 +538,7 @@ mod tests {
         assert_eq!(
             r,
             vec![Key {
-                prefix: "key".into(),
+                prefix: "default".into(),
                 hash: hello_hash
             }]
         );
@@ -492,27 +577,27 @@ mod tests {
         let world_hash = merklehash::compute_data_hash(&world[..]);
 
         // get length of non-existant object should fail with XORBNotFound
-        assert_eq!(CasClientError::XORBNotFound(world_hash), client.get_length("key", &world_hash).unwrap_err());
+        assert_eq!(CasClientError::XORBNotFound(world_hash), client.get_length(&world_hash).unwrap_err());
 
         // read of non-existant object should fail with XORBNotFound
-        assert!(client.get("key", &world_hash).is_err());
+        assert!(client.get(&world_hash).is_err());
         // read range of non-existant object should fail with XORBNotFound
-        assert!(client.get_object_range("key", &world_hash, vec![(0, 5)]).is_err());
+        assert!(client.get_object_range(&world_hash, vec![(0, 5)]).is_err());
 
         // we can delete non-existant things
-        client.delete("key", &world_hash);
+        client.delete(&world_hash);
 
         // delete the entry we inserted
-        client.delete("key", &hello_hash);
+        client.delete(&hello_hash);
         let r = client.get_all_entries().unwrap();
         assert_eq!(r.len(), 0);
 
         // now every read of that key should fail
-        assert_eq!(CasClientError::XORBNotFound(hello_hash), client.get_length("key", &hello_hash).unwrap_err());
-        assert_eq!(CasClientError::XORBNotFound(hello_hash), client.get("key", &hello_hash).unwrap_err());
+        assert_eq!(CasClientError::XORBNotFound(hello_hash), client.get_length(&hello_hash).unwrap_err());
+        assert_eq!(CasClientError::XORBNotFound(hello_hash), client.get(&hello_hash).unwrap_err());
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_hashing() {
         // hand construct a tree of 2 chunks
         let hello = "hello".as_bytes().to_vec();
@@ -526,7 +611,7 @@ mod tests {
         let final_hash = merkledb::detail::hash_node_sequence(&[hellonode, worldnode]);
 
         // insert should succeed
-        let client = LocalClient::temporary();
+        let client = LocalClient::temporary().unwrap();
         client
             .put("key", &final_hash, "helloworld".as_bytes().to_vec(), vec![(hello_hash, 5), (world_hash, 10)])
             .await
