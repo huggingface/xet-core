@@ -1,46 +1,108 @@
 use std::fs::{metadata, File};
-use std::io::{BufReader, BufWriter, Write};
-use std::path::PathBuf;
+use std::io::{BufReader, BufWriter, Cursor, Write};
+use std::path::{Path, PathBuf, PathBuf};
+use std::sync::Arc;
 
 use anyhow::anyhow;
 use async_trait::async_trait;
 use cas_object::CasObject;
 use cas_types::Key;
+use itertools::Itertools;
+use mdb_shard::file_structs::MDBFileInfo;
+use mdb_shard::shard_dedup_probe::ShardDedupProber;
+use mdb_shard::shard_file_reconstructor::FileReconstructor;
+use mdb_shard::{MDBShardFile, MDBShardInfo, ShardFileManager};
+use merkledb::aggregate_hashes::with_salt;
 use merklehash::MerkleHash;
 use tempfile::TempDir;
 use tracing::{debug, info};
 
-use crate::error::{CasClientError, Result};
+use std::collections::HashMap;
+use std::path::Path;
+use std::sync::Arc;
+
+use heed::types::*;
+use heed::EnvOpenOptions;
+use itertools::Itertools;
+use merkledb::aggregate_hashes::with_salt;
+use merklehash::MerkleHash;
+use tokio::sync::RwLock;
+use tracing::{info, warn};
+
+
+use crate::error::{CasClientError, Result, Result};
+use crate::global_dedup_table::DiskBasedGlobalDedupTable;
 use crate::interface::UploadClient;
+use crate::{RegistrationClient, ShardClientInterface};
+
+
+
+
+
+
+
 
 #[derive(Debug)]
 pub struct LocalClient {
-    _tmp_dir: TempDir,
-    pub path: PathBuf,
-}
+    tmp_dir: Option<TempDir>, // To hold directory to use for local testing
+    base_dir: PathBuf,
 
-impl Default for LocalClient {
-    fn default() -> Self {
-        let tmp_dir = TempDir::new().unwrap();
-        let path = tmp_dir.path().to_owned();
-        Self {
-            _tmp_dir: tmp_dir,
-            path,
-        }
-    }
+    shard_manager: Arc<ShardFileManager>,
+    shard_directory: PathBuf,
+    global_dedup_db_env : heed::Env,
+    global_dedup_table : heed::Database<OwnedType<MerkleHash>, OwnedType<MerkleHash>>
 }
 
 impl LocalClient {
-    pub fn new(path: PathBuf) -> Self {
+
+    pub fn temporary() -> Result<Self> {
+        let tmp_dir = TempDir::new().unwrap();
+        let path = tmp_dir.path().to_owned();
+        let mut s = Self::new(path)?;
+
+        s.tmp_dir = Some(tmp_dir);
+        Ok(s)
+    }
+
+    pub fn new(path: impl AsRef<Path>) -> Result<Self> {
+        let base_dir = path.as_ref().to_path_buf(); 
+        if !base_dir.exists() {
+            std::fs::create_dir_all(&base_dir)?;
+        }
+
+        let shard_directory = base_dir.join("shards");
+        if !shard_directory.exists() {
+            std::fs::create_dir_all(&shard_directory)?;
+        }
+
+        let xorb_directory = base_dir.join("xorbs"); 
+        if !xorb_directory.exists() {
+            std::fs::create_dir_all(&xorb_directory)?;
+        }
+
+        let global_dedup_dir = base_dir.join("global_dedup_lookup.db");
+        if !global_dedup_dir.exists() {
+            std::fs::create_dir_all(&xorb_directory)?;
+        }
+
+        // This loads and cleans all the shards in the session directory; no need to do it explicitly
+        let shard_manager = ShardFileManager::builder(&shard_directory)
+            .with_chunk_dedup(true)
+            .with_expired_shard_cleanup(true)
+            .build()
+            .await?;
+
+        let global_dedup = DiskBasedGlobalDedupTable::open_or_create(cas_directory.join("ddb").join("chunk2shard.db"))?;
+
         Self {
-            _tmp_dir: TempDir::new().unwrap(),
-            path,
+            tmp_dir: None 
+            base_dir: path,
         }
     }
 
     /// Internal function to get the path for a given hash entry
     fn get_path_for_entry(&self, prefix: &str, hash: &MerkleHash) -> PathBuf {
-        self.path.join(format!("{}.{}", prefix, hash.hex()))
+        self.base_dir.join(format!("{}.{}", prefix, hash.hex()))
     }
 
     /// Returns all entries in the local client
@@ -48,7 +110,7 @@ impl LocalClient {
         let mut ret: Vec<_> = Vec::new();
 
         // loop through the directory
-        self.path
+        self.base_dir
             .read_dir()
             .map_err(|x| CasClientError::InternalError(x.into()))?
             // take only entries which are ok
@@ -131,7 +193,7 @@ impl UploadClient for LocalClient {
         let tempfile = tempfile::Builder::new()
             .prefix(&format!("{}.", std::process::id()))
             .suffix(".xorb")
-            .tempfile_in(self.path.as_path())
+            .tempfile_in(self.base_dir.as_path())
             .map_err(|e| {
                 CasClientError::InternalError(anyhow!("Unable to create temporary file for staging Xorbs, got {e:?}"))
             })?;
@@ -295,7 +357,7 @@ mod tests {
         let data_again = data.clone();
 
         // Act & Assert
-        let client = LocalClient::default();
+        let client = LocalClient::temporary();
         assert!(client.put("key", &hash, data, vec![(hash, chunk_boundaries)]).await.is_ok());
 
         let returned_data = client.get("key", &hash).unwrap();
@@ -309,7 +371,7 @@ mod tests {
         let data_again = data.clone();
 
         // Act & Assert
-        let client = LocalClient::default();
+        let client = LocalClient::temporary();
         assert!(client.put("", &c.info.cashash, data, chunk_boundaries).await.is_ok());
 
         let returned_data = client.get("", &c.info.cashash).unwrap();
@@ -322,7 +384,7 @@ mod tests {
         let (c, _, data, chunk_and_boundaries) = build_cas_object(3, ChunkSize::Random(512, 2048), LZ4);
 
         // Act & Assert
-        let client = LocalClient::default();
+        let client = LocalClient::temporary();
         assert!(client
             .put("", &c.info.cashash, data.clone(), chunk_and_boundaries.clone())
             .await
@@ -348,7 +410,7 @@ mod tests {
         let gen_length = data.len();
 
         // Act
-        let client = LocalClient::default();
+        let client = LocalClient::temporary();
         assert!(client.put("", &c.info.cashash, data, chunk_boundaries).await.is_ok());
         let len = client.get_length("", &c.info.cashash).unwrap();
 
@@ -362,7 +424,7 @@ mod tests {
         let hash = MerkleHash::from_hex("d760aaf4beb07581956e24c847c47f1abd2e419166aa68259035bc412232e9da").unwrap();
 
         // Act & Assert
-        let client = LocalClient::default();
+        let client = LocalClient::temporary();
         let result = client.get("", &hash);
         assert!(matches!(result, Err(CasClientError::XORBNotFound(_))));
     }
@@ -373,7 +435,7 @@ mod tests {
 
         let hello_hash = merklehash::compute_data_hash(&hello[..]);
         // write "hello world"
-        let client = LocalClient::default();
+        let client = LocalClient::temporary();
         client
             .put("key", &hello_hash, hello.clone(), vec![(hello_hash, hello.len() as u32)])
             .await
@@ -464,7 +526,7 @@ mod tests {
         let final_hash = merkledb::detail::hash_node_sequence(&[hellonode, worldnode]);
 
         // insert should succeed
-        let client = LocalClient::default();
+        let client = LocalClient::temporary();
         client
             .put("key", &final_hash, "helloworld".as_bytes().to_vec(), vec![(hello_hash, 5), (world_hash, 10)])
             .await
