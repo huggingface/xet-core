@@ -3,7 +3,6 @@ use std::mem::size_of;
 
 use anyhow::anyhow;
 use merkledb::constants::MAXIMUM_CHUNK_SIZE;
-use tracing::debug;
 
 use crate::error::CasObjectError;
 use crate::CompressionScheme;
@@ -113,16 +112,16 @@ pub fn serialize_chunk<W: Write>(
     w: &mut W,
     compression_scheme: CompressionScheme,
 ) -> Result<usize, CasObjectError> {
-    let uncompressed_len = chunk.len();
+    let compressed = compression_scheme.compress_from_slice(chunk)?;
 
-    let mut compressed = compression_scheme.compress_from_slice(chunk)?;
-    let (header, compressed) = if compressed.len() >= uncompressed_len {
-        let header = CASChunkHeader::new(CompressionScheme::None, uncompressed_len as u32, uncompressed_len as u32);
-        (header, chunk.into())
+    // set compression scheme and compressed data buffer to no compression if the compressed
+    // length is longer than uncompressed
+    let (compression_scheme, compressed) = if compressed.len() >= chunk.len() {
+        (CompressionScheme::None, chunk.into())
     } else {
-        let header = CASChunkHeader::new(compression_scheme, compressed.len() as u32, uncompressed_len as u32);
-        (header, compressed)
+        (compression_scheme, compressed)
     };
+    let header = CASChunkHeader::new(compression_scheme, compressed.len() as u32, chunk.len() as u32);
     write_chunk_header(w, &header)?;
     w.write_all(&compressed)?;
 
