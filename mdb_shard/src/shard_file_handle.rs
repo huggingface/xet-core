@@ -8,7 +8,7 @@ use merklehash::{compute_data_hash, HMACKey, HashedWrite, MerkleHash};
 use tracing::{debug, error, info, warn};
 
 use crate::cas_structs::CASChunkSequenceHeader;
-use crate::error::{CacheDeletionResilience, MDBShardError, Result};
+use crate::error::{not_found_as_none, MDBShardError, Result};
 use crate::file_structs::{FileDataSequenceEntry, MDBFileInfo};
 use crate::shard_file::current_timestamp;
 use crate::shard_format::MDBShardInfo;
@@ -234,7 +234,7 @@ impl MDBShardFile {
 
     #[inline]
     pub fn get_file_reconstruction_info(&self, file_hash: &MerkleHash) -> Result<Option<MDBFileInfo>> {
-        let reader = self.get_reader().ok_for_io_error_not_found()?;
+        let reader = self.get_reader().map(Some).or_else(not_found_as_none)?;
         let Some(mut reader) = reader else {
             return Ok(None);
         };
@@ -247,7 +247,7 @@ impl MDBShardFile {
         &self,
         query_hashes: &[MerkleHash],
     ) -> Result<Option<(usize, FileDataSequenceEntry)>> {
-        let reader = self.get_reader().ok_for_io_error_not_found()?;
+        let reader = self.get_reader().map(Some).or_else(not_found_as_none)?;
         let Some(mut reader) = reader else {
             return Ok(None);
         };
@@ -262,7 +262,7 @@ impl MDBShardFile {
         cas_block_index: u32,
         cas_chunk_offset: u32,
     ) -> Result<Option<(usize, FileDataSequenceEntry)>> {
-        let reader = self.get_reader().ok_for_io_error_not_found()?;
+        let reader = self.get_reader().map(Some).or_else(not_found_as_none)?;
         let Some(mut reader) = reader else {
             return Ok(None);
         };

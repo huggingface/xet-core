@@ -50,25 +50,18 @@ impl PartialEq for MDBShardError {
     }
 }
 
-// Helper trait to swallow io::ErrorKind::NotFound errors. In the case of
-// a cache shard was registered but later deleted during the lifetime
-// of a shard file manager, dedup queries to this shard should not fail hard.
-pub trait CacheDeletionResilience<T> {
-    fn ok_for_io_error_not_found(self) -> Result<Option<T>>;
-}
-
-impl<T> CacheDeletionResilience<T> for Result<T> {
-    fn ok_for_io_error_not_found(self) -> Result<Option<T>> {
-        match self {
-            Ok(v) => Ok(Some(v)),
-            Err(MDBShardError::IOError(e)) => {
-                if e.kind() == io::ErrorKind::NotFound {
-                    Ok(None)
-                } else {
-                    Err(MDBShardError::IOError(e))
-                }
-            },
-            Err(other_err) => Err(other_err),
-        }
+// Helper function to swallow io::ErrorKind::NotFound errors. In the case of
+// a cached shard was registered but later deleted during the lifetime
+// of a shard file manager, queries to this shard should not fail hard.
+pub fn not_found_as_none<T>(e: MDBShardError) -> Result<Option<T>> {
+    match e {
+        MDBShardError::IOError(e) => {
+            if e.kind() == io::ErrorKind::NotFound {
+                Ok(None)
+            } else {
+                Err(MDBShardError::IOError(e))
+            }
+        },
+        other_err => Err(other_err),
     }
 }
