@@ -116,7 +116,7 @@ pub fn serialize_chunk<W: Write>(
     let uncompressed_len = chunk.len();
 
     let mut compressed = compression_scheme.compress_from_slice(chunk)?;
-    let (header, compressed) = if compressed.len() > uncompressed_len {
+    let (header, compressed) = if compressed.len() >= uncompressed_len {
         let header = CASChunkHeader::new(CompressionScheme::None, uncompressed_len as u32, uncompressed_len as u32);
         (header, chunk.into())
     } else {
