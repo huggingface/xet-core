@@ -398,17 +398,45 @@ impl ReconstructionClient for LocalClient {
             return Err(CasClientError::FileNotFound(*hash));
         };
 
+        let file_bytes = file_info.num_bytes() as usize;
+
+        let start = byte_range.as_ref().map(|range| range.start as usize).unwrap_or(0);
+        let end = byte_range
+            .as_ref()
+            .map(|range| range.end as usize)
+            .unwrap_or(file_bytes)
+            .min(file_bytes);
+
         for entry in file_info.segments {
+            let entry_start = entry.chunk_index_start as usize;
+            let entry_end = entry.chunk_index_end as usize;
+
+            let chunk_internal_start;
+            if entry_end <= start {
+                continue;
+            } else if entry_start <= start && start < entry_end {
+                chunk_internal_start = start - entry_start;
+            } else {
+                chunk_internal_start = 0;
+            }
+
+            let chunk_internal_end;
+            if end <= entry_start as usize {
+                break;
+            } else if entry_start <= end && end < entry_end {
+                chunk_internal_end = end - entry_start;
+            } else {
+                chunk_internal_end = entry_end - entry_start;
+            }
+
             let Some(one_range) = self
                 .get_object_range(&entry.cas_hash, vec![(entry.chunk_index_start, entry.chunk_index_end)])?
                 .pop()
             else {
                 return Err(CasClientError::InvalidRange);
             };
-            let start = byte_range.as_ref().map(|range| range.start as usize).unwrap_or(0);
-            let end = byte_range.as_ref().map(|range| range.end as usize).unwrap_or(one_range.len());
 
-            writer.write_all(&one_range[start..end])?;
+            writer.write_all(&one_range[chunk_internal_start..chunk_internal_end])?;
         }
 
         Ok(())
