@@ -72,9 +72,9 @@ pub async fn migrate_files_impl(
 
     let num_workers = if sequential { 1 } else { threadpool.num_worker_threads() };
     let processor = if dry_run {
-        Arc::new(FileUploadSession::dry_run(config, threadpool, None, false).await?)
+        Arc::new(FileUploadSession::dry_run(config, threadpool, None).await?)
     } else {
-        Arc::new(FileUploadSession::new(config, threadpool, None, false).await?)
+        Arc::new(FileUploadSession::new(config, threadpool, None).await?)
     };
 
     let clean_ret = tokio_par_for_each(file_paths, num_workers, |f, _| async {

@@ -85,13 +85,9 @@ async fn clean(mut reader: impl Read, mut writer: impl Write) -> Result<()> {
 
     let mut read_buf = vec![0u8; READ_BLOCK_SIZE];
 
-    let translator = FileUploadSession::new(
-        TranslatorConfig::local_config(std::env::current_dir()?, true)?,
-        get_threadpool(),
-        None,
-        false,
-    )
-    .await?;
+    let translator =
+        FileUploadSession::new(TranslatorConfig::local_config(std::env::current_dir()?, true)?, get_threadpool(), None)
+            .await?;
 
     let handle = translator.start_clean(1024, None).await?;
 

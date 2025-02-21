@@ -133,7 +133,7 @@ pub async fn upload_async(
         token_refresher,
     )?;
 
-    let processor = Arc::new(FileUploadSession::new(config, threadpool, progress_updater, false).await?);
+    let processor = Arc::new(FileUploadSession::new(config, threadpool, progress_updater).await?);
 
     // for all files, clean them, producing pointer files.
     let pointers = tokio_par_for_each(file_paths, *MAX_CONCURRENT_UPLOADS, |f, _| async {

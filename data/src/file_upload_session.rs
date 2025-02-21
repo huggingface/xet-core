@@ -85,28 +85,25 @@ impl FileUploadSession {
         config: TranslatorConfig,
         threadpool: Arc<ThreadPool>,
         upload_progress_updater: Option<Arc<dyn ProgressUpdater>>,
-        download_only: bool,
     ) -> Result<FileUploadSession> {
-        FileUploadSession::new_impl(config, threadpool, upload_progress_updater, download_only, false).await
+        FileUploadSession::new_impl(config, threadpool, upload_progress_updater, false).await
     }
 
     pub async fn dry_run(
         config: TranslatorConfig,
         threadpool: Arc<ThreadPool>,
         upload_progress_updater: Option<Arc<dyn ProgressUpdater>>,
-        download_only: bool,
     ) -> Result<FileUploadSession> {
-        FileUploadSession::new_impl(config, threadpool, upload_progress_updater, download_only, true).await
+        FileUploadSession::new_impl(config, threadpool, upload_progress_updater, true).await
     }
 
     async fn new_impl(
         config: TranslatorConfig,
         threadpool: Arc<ThreadPool>,
         upload_progress_updater: Option<Arc<dyn ProgressUpdater>>,
-        download_only: bool,
         dry_run: bool,
     ) -> Result<FileUploadSession> {
-        let shard_manager = create_shard_manager(&config.shard_storage_config, download_only).await?;
+        let shard_manager = create_shard_manager(&config.shard_storage_config, false).await?;
 
         let cas_client = create_cas_client(&config.cas_storage_config, threadpool.clone(), dry_run)?;
 
@@ -119,7 +116,7 @@ impl FileUploadSession {
                     Some(cas_client.clone()),
                     dedup.repo_salt,
                     threadpool.clone(),
-                    download_only,
+                    false,
                 )
                 .await?
             } else {
@@ -287,10 +284,9 @@ mod tests {
                 .unwrap(),
         );
 
-        let translator =
-            FileUploadSession::new(TranslatorConfig::local_config(cas_path, true).unwrap(), runtime, None, false)
-                .await
-                .unwrap();
+        let translator = FileUploadSession::new(TranslatorConfig::local_config(cas_path, true).unwrap(), runtime, None)
+            .await
+            .unwrap();
 
         let handle = translator.start_clean(1024, None).await.unwrap();
 
