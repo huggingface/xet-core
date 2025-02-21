@@ -2,12 +2,13 @@
 
 mod cas_interface;
 mod chunking;
-mod clean;
 pub mod configurations;
 mod constants;
 pub mod data_client;
-mod data_processing;
 pub mod errors;
+mod file_cleaner;
+mod file_downloader;
+mod file_upload_session;
 mod metrics;
 pub mod migration_tool;
 mod parallel_xorb_uploader;
@@ -17,5 +18,6 @@ mod repo_salt;
 mod shard_interface;
 
 pub use cas_client::CacheConfig;
-pub use data_processing::PointerFileTranslator;
+pub use file_downloader::FileDownloader;
+pub use file_upload_session::FileUploadSession;
 pub use pointer_file::PointerFile;

@@ -9,7 +9,7 @@ use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
 use xet_threadpool::ThreadPool;
 
-use super::clean::BufferItem;
+use super::file_cleaner::BufferItem;
 use crate::errors::{DataProcessingError, Result};
 
 pub type ChunkYieldType = (Chunk, Vec<u8>);

@@ -19,7 +19,7 @@ use xet_threadpool::ThreadPool;
 
 use crate::configurations::*;
 use crate::errors::DataProcessingError;
-use crate::{errors, PointerFile, PointerFileTranslator};
+use crate::{errors, FileDownloader, FileUploadSession, PointerFile};
 
 // Concurrency in number of files
 lazy_static! {
@@ -133,7 +133,7 @@ pub async fn upload_async(
         token_refresher,
     )?;
 
-    let processor = Arc::new(PointerFileTranslator::new(config, threadpool, progress_updater, false).await?);
+    let processor = Arc::new(FileUploadSession::new(config, threadpool, progress_updater, false).await?);
 
     // for all files, clean them, producing pointer files.
     let pointers = tokio_par_for_each(file_paths, *MAX_CONCURRENT_UPLOADS, |f, _| async {
@@ -176,7 +176,7 @@ pub async fn download_async(
     };
     let pointer_files_plus = pointer_files.into_iter().zip(updaters).collect::<Vec<_>>();
 
-    let processor = &Arc::new(PointerFileTranslator::new(config, threadpool, None, true).await?);
+    let processor = &Arc::new(FileDownloader::new(config, threadpool).await?);
     let paths =
         tokio_par_for_each(pointer_files_plus, MAX_CONCURRENT_DOWNLOADS, |(pointer_file, updater), _| async move {
             let proc = processor.clone();
@@ -191,7 +191,7 @@ pub async fn download_async(
     Ok(paths)
 }
 
-pub async fn clean_file(processor: &PointerFileTranslator, f: String) -> errors::Result<(PointerFile, u64)> {
+pub async fn clean_file(processor: &FileUploadSession, f: String) -> errors::Result<(PointerFile, u64)> {
     let mut read_buf = vec![0u8; READ_BLOCK_SIZE];
     let path = PathBuf::from(f);
     let mut reader = BufReader::new(File::open(path.clone())?);
@@ -217,7 +217,7 @@ pub async fn clean_file(processor: &PointerFileTranslator, f: String) -> errors:
 }
 
 async fn smudge_file(
-    proc: &PointerFileTranslator,
+    downloader: &FileDownloader,
     pointer_file: &PointerFile,
     progress_updater: Option<Arc<dyn ProgressUpdater>>,
 ) -> errors::Result<String> {
@@ -226,7 +226,8 @@ async fn smudge_file(
         fs::create_dir_all(parent_dir)?;
     }
     let mut f: Box<dyn Write + Send> = Box::new(File::create(&path)?);
-    proc.smudge_file_from_pointer(pointer_file, &mut f, None, progress_updater)
+    downloader
+        .smudge_file_from_pointer(pointer_file, &mut f, None, progress_updater)
         .await?;
     Ok(pointer_file.path().to_string())
 }

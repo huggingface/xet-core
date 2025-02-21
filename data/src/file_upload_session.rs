@@ -1,11 +1,9 @@
-use std::io::Write;
 use std::mem::take;
 use std::ops::DerefMut;
 use std::path::Path;
 use std::sync::Arc;
 
 use cas_client::Client;
-use cas_types::FileRange;
 use jsonwebtoken::{decode, DecodingKey, Validation};
 use lazy_static::lazy_static;
 use mdb_shard::file_structs::MDBFileInfo;
@@ -16,14 +14,13 @@ use utils::progress::ProgressUpdater;
 use xet_threadpool::ThreadPool;
 
 use crate::cas_interface::create_cas_client;
-use crate::clean::Cleaner;
 use crate::configurations::*;
 use crate::constants::MAX_CONCURRENT_XORB_UPLOADS;
 use crate::errors::*;
+use crate::file_cleaner::SingleFileCleaner;
 use crate::parallel_xorb_uploader::{ParallelXorbUploader, XorbUpload};
 use crate::remote_shard_interface::RemoteShardInterface;
 use crate::shard_interface::create_shard_manager;
-use crate::PointerFile;
 
 lazy_static! {
     pub static ref XORB_UPLOAD_RATE_LIMITER: Arc<Semaphore> = Arc::new(Semaphore::new(*MAX_CONCURRENT_XORB_UPLOADS));
@@ -57,8 +54,10 @@ impl CASDataAggregator {
 /// Manages the translation of files between the
 /// MerkleDB / pointer file format and the materialized version.
 ///
-/// This class handles the clean and smudge options.
-pub struct PointerFileTranslator {
+/// This class handles the clean operations.  It's meant to be a single atomic session
+/// that succeeds or fails as a unit;  i.e. all files get uploaded on finalization, and all shards
+/// and xorbs needed to reconstruct those files are properly uploaded and registered.
+pub struct FileUploadSession {
     /* ----- Configurations ----- */
     config: TranslatorConfig,
     dry_run: bool,
@@ -81,14 +80,14 @@ pub struct PointerFileTranslator {
 }
 
 // Constructors
-impl PointerFileTranslator {
+impl FileUploadSession {
     pub async fn new(
         config: TranslatorConfig,
         threadpool: Arc<ThreadPool>,
         upload_progress_updater: Option<Arc<dyn ProgressUpdater>>,
         download_only: bool,
-    ) -> Result<PointerFileTranslator> {
-        PointerFileTranslator::new_impl(config, threadpool, upload_progress_updater, download_only, false).await
+    ) -> Result<FileUploadSession> {
+        FileUploadSession::new_impl(config, threadpool, upload_progress_updater, download_only, false).await
     }
 
     pub async fn dry_run(
@@ -96,8 +95,8 @@ impl PointerFileTranslator {
         threadpool: Arc<ThreadPool>,
         upload_progress_updater: Option<Arc<dyn ProgressUpdater>>,
         download_only: bool,
-    ) -> Result<PointerFileTranslator> {
-        PointerFileTranslator::new_impl(config, threadpool, upload_progress_updater, download_only, true).await
+    ) -> Result<FileUploadSession> {
+        FileUploadSession::new_impl(config, threadpool, upload_progress_updater, download_only, true).await
     }
 
     async fn new_impl(
@@ -106,10 +105,10 @@ impl PointerFileTranslator {
         upload_progress_updater: Option<Arc<dyn ProgressUpdater>>,
         download_only: bool,
         dry_run: bool,
-    ) -> Result<PointerFileTranslator> {
+    ) -> Result<FileUploadSession> {
         let shard_manager = create_shard_manager(&config.shard_storage_config, download_only).await?;
 
-        let cas_client = create_cas_client(&config.cas_storage_config, &config.repo_info, threadpool.clone(), dry_run)?;
+        let cas_client = create_cas_client(&config.cas_storage_config, threadpool.clone(), dry_run)?;
 
         let remote_shards = {
             if let Some(dedup) = &config.dedup_config {
@@ -175,19 +174,19 @@ impl PointerFileTranslator {
 }
 
 /// Clean operations
-impl PointerFileTranslator {
+impl FileUploadSession {
     /// Start to clean one file. When cleaning multiple files, each file should
     /// be associated with one Cleaner. This allows to launch multiple clean task
     /// simultaneously.
     ///
     /// The caller is responsible for memory usage management, the parameter "buffer_size"
     /// indicates the maximum number of Vec<u8> in the internal buffer.
-    pub async fn start_clean(&self, buffer_size: usize, file_name: Option<&Path>) -> Result<Arc<Cleaner>> {
+    pub async fn start_clean(&self, buffer_size: usize, file_name: Option<&Path>) -> Result<Arc<SingleFileCleaner>> {
         let Some(ref dedup) = self.config.dedup_config else {
             return Err(DataProcessingError::DedupConfigError("empty dedup config".to_owned()));
         };
 
-        Cleaner::new(
+        SingleFileCleaner::new(
             matches!(dedup.global_dedup_policy, GlobalDedupPolicy::Always),
             self.config.cas_storage_config.prefix.clone(),
             dedup.repo_salt,
@@ -252,34 +251,6 @@ impl PointerFileTranslator {
     }
 }
 
-/// Smudge operations
-impl PointerFileTranslator {
-    pub async fn smudge_file_from_pointer(
-        &self,
-        pointer: &PointerFile,
-        writer: &mut Box<dyn Write + Send>,
-        range: Option<FileRange>,
-        progress_updater: Option<Arc<dyn ProgressUpdater>>,
-    ) -> Result<()> {
-        self.smudge_file_from_hash(&pointer.hash()?, writer, range, progress_updater)
-            .await
-    }
-
-    pub async fn smudge_file_from_hash(
-        &self,
-        file_id: &MerkleHash,
-        writer: &mut Box<dyn Write + Send>,
-        range: Option<FileRange>,
-        progress_updater: Option<Arc<dyn ProgressUpdater>>,
-    ) -> Result<()> {
-        let http_client = cas_client::build_http_client(&None)?;
-        self.cas
-            .get_file(Arc::new(http_client), file_id, range, writer, progress_updater)
-            .await?;
-        Ok(())
-    }
-}
-
 #[cfg(test)]
 mod tests {
 
@@ -290,7 +261,7 @@ mod tests {
 
     use xet_threadpool::ThreadPool;
 
-    use crate::{PointerFile, PointerFileTranslator};
+    use crate::{FileDownloader, FileUploadSession, PointerFile};
 
     /// Return a shared threadpool to be reused as needed.
     fn get_threadpool() -> Arc<ThreadPool> {
@@ -317,7 +288,7 @@ mod tests {
         );
 
         let translator =
-            PointerFileTranslator::new(TranslatorConfig::local_config(cas_path, true).unwrap(), runtime, None, false)
+            FileUploadSession::new(TranslatorConfig::local_config(cas_path, true).unwrap(), runtime, None, false)
                 .await
                 .unwrap();
 
@@ -356,10 +327,9 @@ mod tests {
             return;
         }
 
-        let translator =
-            PointerFileTranslator::new(TranslatorConfig::local_config(cas_path, true).unwrap(), runtime, None, true)
-                .await
-                .unwrap();
+        let translator = FileDownloader::new(TranslatorConfig::local_config(cas_path, true).unwrap(), runtime)
+            .await
+            .unwrap();
 
         translator
             .smudge_file_from_pointer(&pointer_file, &mut Box::new(writer), None, None)

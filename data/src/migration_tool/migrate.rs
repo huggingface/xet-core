@@ -11,7 +11,7 @@ use xet_threadpool::ThreadPool;
 use super::hub_client::{HubClient, HubClientTokenRefresher};
 use crate::data_client::{clean_file, default_config, xorb_compression_for_repo_type};
 use crate::errors::DataProcessingError;
-use crate::{PointerFile, PointerFileTranslator};
+use crate::{FileUploadSession, PointerFile};
 
 /// Migrate files to the Hub with external async runtime.
 /// How to use:
@@ -72,9 +72,9 @@ pub async fn migrate_files_impl(
 
     let num_workers = if sequential { 1 } else { threadpool.num_worker_threads() };
     let processor = if dry_run {
-        Arc::new(PointerFileTranslator::dry_run(config, threadpool, None, false).await?)
+        Arc::new(FileUploadSession::dry_run(config, threadpool, None, false).await?)
     } else {
-        Arc::new(PointerFileTranslator::new(config, threadpool, None, false).await?)
+        Arc::new(FileUploadSession::new(config, threadpool, None, false).await?)
     };
 
     let clean_ret = tokio_par_for_each(file_paths, num_workers, |f, _| async {
