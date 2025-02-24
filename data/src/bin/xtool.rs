@@ -1,14 +1,25 @@
+use std::cmp::min;
+use std::fmt::{Debug, Formatter};
 use std::fs::File;
-use std::io::{BufWriter, Write};
+use std::io::{BufReader, BufWriter, Read, Write};
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::Result;
 use cas_client::build_http_client;
 use cas_object::CompressionScheme;
 use clap::{Args, Parser, Subcommand};
+use data::data_client::{default_config, READ_BLOCK_SIZE};
 use data::migration_tool::hub_client::HubClient;
 use data::migration_tool::migrate::migrate_files_impl;
+use data::{PointerFile, PointerFileTranslator};
+use jsonwebtoken::{Algorithm, EncodingKey, Header};
+use merkledb::constants::IDEAL_CAS_BLOCK_SIZE;
+use rand::Rng;
+use serde::{Deserialize, Serialize};
+use utils::auth::{TokenInfo, TokenRefresher};
+use utils::errors::AuthError;
 use walkdir::WalkDir;
 use xet_threadpool::ThreadPool;
 
@@ -67,6 +78,8 @@ enum Command {
     Dedup(DedupArg),
     /// Queries reconstruction information about a file.
     Query(QueryArg),
+    /// Upload data to CAS
+    Upload(UploadArgs),
 }
 
 #[derive(Args)]
@@ -102,6 +115,19 @@ struct DedupArg {
 struct QueryArg {
     /// Xet-hash of a file
     hash: String,
+}
+
+#[derive(Args)]
+struct UploadArgs {
+    #[clap(short, long)]
+    size: u64,
+    #[clap(short, long)]
+    endpoint: String,
+    /// JWT token secret
+    #[clap(short, long)]
+    secret: String,
+    #[clap(short, long)]
+    repo_id: Option<String>,
 }
 
 impl Command {
@@ -142,6 +168,7 @@ impl Command {
                 Ok(())
             },
             Command::Query(_arg) => unimplemented!(),
+            Command::Upload(args) => upload_to_cas(args).await,
         }
     }
 }
@@ -174,6 +201,134 @@ fn walk_files(files: Vec<String>, recursive: bool) -> Vec<String> {
 
 fn is_git_special_files(path: &str) -> bool {
     matches!(path, ".git" | ".gitignore" | ".gitattributes")
+}
+
+async fn upload_to_cas(args: UploadArgs) -> Result<()> {
+    let token_refresher = Arc::new(UploadTokenRefresher::new(args.secret, args.repo_id));
+    let (config, _tempdir) = default_config(args.endpoint, Some(CompressionScheme::LZ4), None, Some(token_refresher))?;
+    let threadpool = Arc::new(ThreadPool::new()?);
+    let processor = Arc::new(PointerFileTranslator::new(config, threadpool, None, false).await?);
+    let mut reader = BufReader::new(RandomReader::new(args.size));
+    let path = PathBuf::from("foo");
+    let mut read_buf = vec![0u8; READ_BLOCK_SIZE];
+    let handle = processor
+        .start_clean(IDEAL_CAS_BLOCK_SIZE / READ_BLOCK_SIZE, Some(&path))
+        .await?;
+    loop {
+        let bytes = reader.read(&mut read_buf)?;
+        if bytes == 0 {
+            break;
+        }
+
+        handle.add_bytes(read_buf[0..bytes].to_vec()).await?;
+    }
+    let (pf_str, new_bytes) = handle.result().await?;
+    let pf = PointerFile::init_from_string(&pf_str, path.to_str().unwrap());
+    println!("cleaned: {} ({} total, {} new)", pf.hash_string(), pf.filesize(), new_bytes);
+
+    processor.finalize_cleaning().await?;
+    println!("uploaded");
+
+    Ok(())
+}
+
+struct RandomReader {
+    size: u64,
+    bytes_read: u64,
+}
+
+impl RandomReader {
+    fn new(size: u64) -> Self {
+        Self { size, bytes_read: 0 }
+    }
+}
+
+impl Read for RandomReader {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        if self.bytes_read >= self.size {
+            return Ok(0);
+        }
+        let remaining = self.size - self.bytes_read;
+        let bytes_to_fill = min(buf.len() as u64, remaining) as usize;
+        let mut rng = rand::thread_rng();
+        rng.fill(&mut buf[..bytes_to_fill]);
+        self.bytes_read += bytes_to_fill as u64;
+        Ok(bytes_to_fill)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_reader() {
+        let mut r = RandomReader::new(40);
+        let mut buf = [0u8; 30];
+        assert_eq!(30, r.read(&mut buf).unwrap());
+        assert_eq!(10, r.read(&mut buf).unwrap());
+        assert_eq!(0, r.read(&mut buf).unwrap());
+    }
+
+    #[test]
+    fn test_reader_exact() {
+        let mut r = RandomReader::new(40);
+        let mut buf = [0u8; 40];
+        assert_eq!(40, r.read(&mut buf).unwrap());
+        assert_eq!(0, r.read(&mut buf).unwrap());
+    }
+}
+
+const USER_ID: &str = "xtool-upload";
+const DEFAULT_REPO_ID: &str = "11111111";
+
+struct UploadTokenRefresher {
+    secret: EncodingKey,
+    repo_id: String,
+    user_id: String,
+}
+
+impl UploadTokenRefresher {
+    fn new(secret_str: String, repo_id: Option<String>) -> Self {
+        let secret = EncodingKey::from_secret(secret_str.as_bytes());
+        UploadTokenRefresher {
+            secret,
+            repo_id: repo_id.unwrap_or_else(|| DEFAULT_REPO_ID.to_owned()),
+            user_id: USER_ID.to_owned(),
+        }
+    }
+}
+
+// EncodingKey isn't Debug, so manually implement
+impl Debug for UploadTokenRefresher {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "StaticTokenRefresher: {}, {}", self.repo_id, self.user_id)
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TokenClaim {
+    pub repo_id: String,
+    pub user_id: String,
+    pub access: String,
+    pub exp: usize,
+}
+
+impl TokenRefresher for UploadTokenRefresher {
+    fn refresh(&self) -> std::result::Result<TokenInfo, AuthError> {
+        let exp_time = (SystemTime::now().duration_since(UNIX_EPOCH).unwrap() + Duration::from_secs(3600)).as_secs();
+        let claim = TokenClaim {
+            repo_id: self.repo_id.clone(),
+            user_id: self.user_id.clone(),
+            access: "write".to_string(),
+            exp: exp_time as usize,
+        };
+        let header = Header::new(Algorithm::HS256);
+        let token = jsonwebtoken::encode(&header, &claim, &self.secret)
+            .map_err(|e| AuthError::TokenRefreshFailure(e.to_string()))?;
+        Ok((token, exp_time))
+    }
 }
 
 fn main() -> Result<()> {

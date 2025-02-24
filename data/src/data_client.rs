@@ -30,7 +30,7 @@ lazy_static! {
 const MAX_CONCURRENT_DOWNLOADS: usize = 8; // Download is not CPU-bound
 
 const DEFAULT_CAS_ENDPOINT: &str = "http://localhost:8080";
-const READ_BLOCK_SIZE: usize = 1024 * 1024;
+pub const READ_BLOCK_SIZE: usize = 1024 * 1024;
 const DEFAULT_XORB_COMPRESSION: CompressionScheme = CompressionScheme::LZ4;
 
 pub fn xorb_compression_for_repo_type(repo_type: &str) -> CompressionScheme {
