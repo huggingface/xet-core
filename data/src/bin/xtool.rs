@@ -18,6 +18,9 @@ use jsonwebtoken::{Algorithm, EncodingKey, Header};
 use merkledb::constants::IDEAL_CAS_BLOCK_SIZE;
 use rand::Rng;
 use serde::{Deserialize, Serialize};
+use tracing_subscriber::layer::SubscriberExt;
+use tracing_subscriber::util::SubscriberInitExt;
+use tracing_subscriber::EnvFilter;
 use utils::auth::{TokenInfo, TokenRefresher};
 use utils::errors::AuthError;
 use walkdir::WalkDir;
@@ -331,10 +334,54 @@ impl TokenRefresher for UploadTokenRefresher {
 }
 
 fn main() -> Result<()> {
+    initialize_logging();
     let cli = XCommand::parse();
     let threadpool = Arc::new(ThreadPool::new_with_hardware_parallelism_limit()?);
     let threadpool_internal = threadpool.clone();
     threadpool.external_run_async_task(async move { cli.run(threadpool_internal).await })??;
 
     Ok(())
+}
+
+/// Default log level for the library to use. Override using `RUST_LOG` env variable.
+const DEFAULT_LOG_LEVEL: &str = "info";
+
+// example endpoint: http://host.docker.internal:4317
+pub fn initialize_logging() {
+    let fmt_layer = tracing_subscriber::fmt::layer()
+        .with_line_number(true)
+        .with_file(true)
+        .with_target(false)
+        .json();
+
+    let filter_layer = EnvFilter::try_from_default_env()
+        .or_else(|_| EnvFilter::try_new(DEFAULT_LOG_LEVEL))
+        .unwrap_or_default();
+
+    let name = "xtool".to_string();
+    // let otel_layer = config.trace_endpoint.as_ref().map(|endpoint| {
+    //     let otlp_exporter = opentelemetry_otlp::new_exporter().tonic().with_endpoint(endpoint);
+    //     let tracer = opentelemetry_otlp::new_pipeline()
+    //         .tracing()
+    //         .with_exporter(otlp_exporter)
+    //         .with_trace_config(Config::default().with_resource(Resource::new(vec![
+    //             KeyValue::new(opentelemetry_semantic_conventions::resource::SERVICE_NAME, name.clone()),
+    //             KeyValue::new(opentelemetry_semantic_conventions::resource::SERVICE_NAMESPACE, "xet"),
+    //             KeyValue::new(
+    //                 opentelemetry_semantic_conventions::resource::DEPLOYMENT_ENVIRONMENT_NAME,
+    //                 config.env.to_string(),
+    //             ),
+    //         ])))
+    //         .install_batch(opentelemetry_sdk::runtime::Tokio)
+    //         .unwrap()
+    //         .tracer(name);
+    //
+    //     OpenTelemetryLayer::new(tracer)
+    // });
+
+    tracing_subscriber::registry()
+        .with(fmt_layer)
+        .with(filter_layer)
+        // .with(otel_layer)
+        .init();
 }
