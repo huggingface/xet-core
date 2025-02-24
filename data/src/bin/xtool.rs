@@ -168,7 +168,7 @@ impl Command {
                 Ok(())
             },
             Command::Query(_arg) => unimplemented!(),
-            Command::Upload(args) => upload_to_cas(args).await,
+            Command::Upload(args) => upload_to_cas(args, threadpool).await,
         }
     }
 }
@@ -203,10 +203,9 @@ fn is_git_special_files(path: &str) -> bool {
     matches!(path, ".git" | ".gitignore" | ".gitattributes")
 }
 
-async fn upload_to_cas(args: UploadArgs) -> Result<()> {
+async fn upload_to_cas(args: UploadArgs, threadpool: Arc<ThreadPool>) -> Result<()> {
     let token_refresher = Arc::new(UploadTokenRefresher::new(args.secret, args.repo_id));
     let (config, _tempdir) = default_config(args.endpoint, Some(CompressionScheme::LZ4), None, Some(token_refresher))?;
-    let threadpool = Arc::new(ThreadPool::new()?);
     let processor = Arc::new(PointerFileTranslator::new(config, threadpool, None, false).await?);
     let mut reader = BufReader::new(RandomReader::new(args.size));
     let path = PathBuf::from("foo");
