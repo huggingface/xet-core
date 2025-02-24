@@ -115,7 +115,7 @@ fn analyze_data(data: &[u8]) -> AnalysisResult {
     }
 
     // 3. Compressed sizes from the two schemes (We'll assume you have these two functions available in scope)
-    let size_scheme_1 = lz4_compress_size(&data); // Scheme 1
+    let size_scheme_1 = lz4_compress_size(data); // Scheme 1
     let size_scheme_2 = bg4_lz4_compress_size(data); // Scheme 2
 
     // Return the results
@@ -157,7 +157,7 @@ async fn main() -> Result<()> {
     let mut wtr = Writer::from_path(&args.output)?;
 
     // Write CSV header
-    wtr.write_record(&[
+    wtr.write_record([
         "file",
         "offset",
         "length",
@@ -186,7 +186,7 @@ async fn main() -> Result<()> {
     // For each file:
     for (f_idx, file_path) in args.files.iter().enumerate() {
         // Open the file, get size
-        let Ok(mut file) = OpenOptions::new().read(true).open(&file_path) else {
+        let Ok(mut file) = OpenOptions::new().read(true).open(file_path) else {
             // Just use this as a lock to print.
             let _lg = writer.lock().await;
             eprintln!("Skipping {file_path}.");
@@ -198,7 +198,7 @@ async fn main() -> Result<()> {
 
         // Number of random blocks ~ file_size / 8K
         // Make sure we do at least 1 if the file is very small
-        let nblocks = (file_size / 8192).max(1).min(256 * 1024);
+        let nblocks = (file_size / 8192).clamp(1, 256 * 1024);
         let mut rng = StdRng::seed_from_u64(f_idx as u64);
 
         let target_count = args.max_per_file.min(nblocks);
@@ -253,7 +253,7 @@ async fn main() -> Result<()> {
                     // Write record to CSV
                     let mut writer_lg = writer.lock().await;
                     writer_lg
-                        .write_record(&[
+                        .write_record([
                             &file_path,
                             &offset.to_string(),
                             &block_size.to_string(),
@@ -290,7 +290,7 @@ async fn main() -> Result<()> {
         }
     }
 
-    let _ = proc_set.join_all();
+    let _ = proc_set.join_all().await;
 
     // Finalize CSV
     writer.lock().await.flush()?;

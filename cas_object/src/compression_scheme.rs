@@ -163,6 +163,12 @@ pub struct BG4Predictor {
 }
 
 /// Put this logic in.
+impl Default for BG4Predictor {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl BG4Predictor {
     pub fn new() -> Self {
         Self {
@@ -189,6 +195,7 @@ impl BG4Predictor {
         }
     }
 
+    #[allow(clippy::needless_range_loop)]
     pub fn bg4_recommended(&self) -> bool {
         // Add up the histograms into one base histogram.
 
