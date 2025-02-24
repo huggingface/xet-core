@@ -40,7 +40,6 @@ pub fn upload_files(
     token_info: Option<(String, u64)>,
     token_refresher: Option<Py<PyAny>>,
     progress_updater: Option<Py<PyAny>>,
-    repo_type: String,
 ) -> PyResult<Vec<PyPointerFile>> {
     let refresher = token_refresher.map(WrappedTokenRefresher::from_func).transpose()?.map(Arc::new);
     let updater = progress_updater
@@ -56,7 +55,6 @@ pub fn upload_files(
             token_info,
             refresher.map(|v| v as Arc<_>),
             updater.map(|v| v as Arc<_>),
-            repo_type,
         )
         .await
         .map_err(convert_data_processing_error)?

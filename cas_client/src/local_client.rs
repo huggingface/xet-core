@@ -255,7 +255,7 @@ impl UploadClient for LocalClient {
                 hash,
                 &data,
                 &chunk_and_boundaries,
-                cas_object::CompressionScheme::None,
+                Some(cas_object::CompressionScheme::None),
             )?;
             // flush before persisting
             writer.flush()?;

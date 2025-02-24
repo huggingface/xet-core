@@ -110,8 +110,10 @@ fn convert_three_byte_num(buf: &[u8; 3]) -> u32 {
 pub fn serialize_chunk<W: Write>(
     chunk: &[u8],
     w: &mut W,
-    compression_scheme: CompressionScheme,
+    compression_scheme: Option<CompressionScheme>,
 ) -> Result<usize, CasObjectError> {
+    let compression_scheme = compression_scheme.unwrap_or_else(|| CompressionScheme::choose_from_data(chunk));
+
     let compressed = compression_scheme.compress_from_slice(chunk)?;
 
     // set compression scheme and compressed data buffer to no compression if the compressed
@@ -276,7 +278,7 @@ mod tests {
         let mut out = Vec::new();
         for _ in 0..num_chunks {
             let data = gen_random_bytes(CHUNK_SIZE as u32);
-            serialize_chunk(&data, &mut out, compression_scheme).unwrap();
+            serialize_chunk(&data, &mut out, Some(compression_scheme)).unwrap();
         }
         out
     }
