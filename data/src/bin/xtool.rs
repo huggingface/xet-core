@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use cas_client::build_http_client;
 use cas_object::CompressionScheme;
 use clap::{Args, Parser, Subcommand};
@@ -16,8 +16,10 @@ use data::migration_tool::migrate::migrate_files_impl;
 use data::{PointerFile, PointerFileTranslator};
 use jsonwebtoken::{Algorithm, EncodingKey, Header};
 use merkledb::constants::IDEAL_CAS_BLOCK_SIZE;
+use parutils::tokio_par_for_each;
 use rand::Rng;
 use serde::{Deserialize, Serialize};
+use tracing::info;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::EnvFilter;
@@ -123,14 +125,14 @@ struct QueryArg {
 #[derive(Args)]
 struct UploadArgs {
     #[clap(short, long)]
-    size: u64,
-    #[clap(short, long)]
     endpoint: String,
     /// JWT token secret
-    #[clap(short, long)]
+    #[clap(short = 't', long)]
     secret: String,
     #[clap(short, long)]
-    repo_id: Option<String>,
+    size: u64,
+    #[clap(short, long)]
+    num: usize,
 }
 
 impl Command {
@@ -171,7 +173,7 @@ impl Command {
                 Ok(())
             },
             Command::Query(_arg) => unimplemented!(),
-            Command::Upload(args) => upload_to_cas(args, threadpool).await,
+            Command::Upload(args) => upload_to_cas(args, threadpool, hub_client.repo_id).await,
         }
     }
 }
@@ -206,12 +208,27 @@ fn is_git_special_files(path: &str) -> bool {
     matches!(path, ".git" | ".gitignore" | ".gitattributes")
 }
 
-async fn upload_to_cas(args: UploadArgs, threadpool: Arc<ThreadPool>) -> Result<()> {
-    let token_refresher = Arc::new(UploadTokenRefresher::new(args.secret, args.repo_id));
+async fn upload_to_cas(args: UploadArgs, threadpool: Arc<ThreadPool>, repo_id: String) -> Result<()> {
+    let token_refresher = Arc::new(UploadTokenRefresher::new(args.secret, repo_id));
     let (config, _tempdir) = default_config(args.endpoint, Some(CompressionScheme::LZ4), None, Some(token_refresher))?;
     let processor = Arc::new(PointerFileTranslator::new(config, threadpool, None, false).await?);
-    let mut reader = BufReader::new(RandomReader::new(args.size));
-    let path = PathBuf::from("foo");
+    let vec = (0..args.num).map(|i| format!("file-{i}")).collect();
+    tokio_par_for_each(vec, 8, |id, _| async {
+        let proc = processor.clone();
+        clean_file(&proc, id, args.size).await
+    })
+    .await
+    .map_err(|e| anyhow!("{e:?}"))?;
+
+    processor.finalize_cleaning().await?;
+    info!("uploaded xorbs and shards");
+
+    Ok(())
+}
+
+async fn clean_file(processor: &Arc<PointerFileTranslator>, id: String, size: u64) -> Result<()> {
+    let mut reader = BufReader::new(RandomReader::new(size));
+    let path = PathBuf::from(id);
     let mut read_buf = vec![0u8; READ_BLOCK_SIZE];
     let handle = processor
         .start_clean(IDEAL_CAS_BLOCK_SIZE / READ_BLOCK_SIZE, Some(&path))
@@ -226,11 +243,7 @@ async fn upload_to_cas(args: UploadArgs, threadpool: Arc<ThreadPool>) -> Result<
     }
     let (pf_str, new_bytes) = handle.result().await?;
     let pf = PointerFile::init_from_string(&pf_str, path.to_str().unwrap());
-    println!("cleaned: {} ({} total, {} new)", pf.hash_string(), pf.filesize(), new_bytes);
-
-    processor.finalize_cleaning().await?;
-    println!("uploaded");
-
+    info!("cleaned: {} ({} total, {} new)", pf.hash_string(), pf.filesize(), new_bytes);
     Ok(())
 }
 
@@ -291,11 +304,11 @@ struct UploadTokenRefresher {
 }
 
 impl UploadTokenRefresher {
-    fn new(secret_str: String, repo_id: Option<String>) -> Self {
+    fn new(secret_str: String, repo_id: String) -> Self {
         let secret = EncodingKey::from_secret(secret_str.as_bytes());
         UploadTokenRefresher {
             secret,
-            repo_id: repo_id.unwrap_or_else(|| DEFAULT_REPO_ID.to_owned()),
+            repo_id,
             user_id: USER_ID.to_owned(),
         }
     }
