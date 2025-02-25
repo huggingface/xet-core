@@ -8,9 +8,11 @@ use file_utils::SafeFileCreator;
 use mdb_shard::file_structs::{FileDataSequenceEntry, FileDataSequenceHeader, MDBFileInfo};
 use mdb_shard::shard_dedup_probe::ShardDedupProber;
 use mdb_shard::shard_file_reconstructor::FileReconstructor;
+use mdb_shard::utils::shard_file_name;
 use merklehash::{HashedWrite, MerkleHash};
 use reqwest::Url;
 use reqwest_middleware::ClientWithMiddleware;
+use tokio::runtime::Handle;
 use utils::auth::AuthConfig;
 
 use crate::error::{CasClientError, Result};
@@ -25,16 +27,16 @@ const NON_FORCE_SYNC_METHOD: reqwest::Method = reqwest::Method::POST;
 pub struct HttpShardClient {
     endpoint: String,
     client: ClientWithMiddleware,
-    cache_directory: Option<PathBuf>,
+    shard_cache_directory: PathBuf,
 }
 
 impl HttpShardClient {
-    pub fn new(endpoint: &str, auth_config: &Option<AuthConfig>, shard_cache_directory: Option<PathBuf>) -> Self {
+    pub fn new(endpoint: &str, auth_config: &Option<AuthConfig>, shard_cache_directory: PathBuf) -> Self {
         let client = build_auth_http_client(auth_config, &None).unwrap();
         HttpShardClient {
             endpoint: endpoint.into(),
             client,
-            cache_directory: shard_cache_directory.clone(),
+            shard_cache_directory,
         }
     }
 }
@@ -113,58 +115,55 @@ impl ShardDedupProber<CasClientError> for HttpShardClient {
     async fn get_dedup_shards(
         &self,
         prefix: &str,
-        chunk_hash: &[MerkleHash],
+        chunk_hashes: &[MerkleHash],
         _salt: &[u8; 32],
-    ) -> Result<Vec<MerkleHash>> {
-        debug_assert!(chunk_hash.len() == 1);
-        let Some(shard_cache_dir) = &self.cache_directory else {
-            return Err(CasClientError::ConfigurationError("cache directory not configured for shard storage".into()));
-        };
+    ) -> Result<Vec<PathBuf>> {
+        let mut dedup_queries = tokio::task::JoinSet::new();
+        let tokio_handle = Handle::current();
+
+        let mut ret = Vec::new();
 
         // The API endpoint now only supports non-batched dedup request and
         // ignores salt.
-        let key = Key {
-            prefix: prefix.into(),
-            hash: chunk_hash[0],
-        };
+        for chunk_hash in chunk_hashes {
+            let key = Key {
+                prefix: prefix.into(),
+                hash: chunk_hash.clone(),
+            };
 
-        let url = Url::parse(&format!("{0}/chunk/{key}", self.endpoint))?;
+            let url = Url::parse(&format!("{0}/chunk/{key}", self.endpoint))?;
 
-        let mut response = self
-            .client
-            .get(url)
-            .send()
-            .await
-            .map_err(|e| CasClientError::Other(format!("request failed with error {e}")))?;
-
-        // Dedup shard not found, return empty result
-        if !response.status().is_success() {
-            return Ok(vec![]);
+            dedup_queries.spawn_on(self.client.get(url).send(), &tokio_handle);
         }
 
-        let writer = SafeFileCreator::new_unnamed()?;
-        // Compute the actual hash to use as the shard file name
-        let mut hashed_writer = HashedWrite::new(writer);
+        for task in dedup_queries.join_all().await {
+            let mut response = task.map_err(|e| CasClientError::Other(format!("request failed with error {e}")))?;
 
-        while let Some(chunk) = response.chunk().await? {
-            hashed_writer.write_all(&chunk)?;
+            // Dedup shard not found, return empty result
+            if !response.status().is_success() {
+                return Ok(vec![]);
+            }
+
+            let writer = SafeFileCreator::new_unnamed()?;
+            // Compute the actual hash to use as the shard file name
+            let mut hashed_writer = HashedWrite::new(writer);
+
+            while let Some(chunk) = response.chunk().await? {
+                hashed_writer.write_all(&chunk)?;
+            }
+            hashed_writer.flush()?;
+
+            let shard_hash = hashed_writer.hash();
+            let file_path = self.shard_cache_directory.join(shard_file_name(&shard_hash));
+            let mut writer = hashed_writer.into_inner();
+            writer.set_dest_path(&file_path);
+            writer.close()?;
+
+            ret.push(file_path);
         }
-        hashed_writer.flush()?;
 
-        let shard_hash = hashed_writer.hash();
-        let file_name = local_shard_name(&shard_hash);
-        let file_path = shard_cache_dir.join(file_name);
-        let mut writer = hashed_writer.into_inner();
-        writer.set_dest_path(file_path);
-        writer.close()?;
-
-        Ok(vec![shard_hash])
+        Ok(ret)
     }
-}
-
-/// Construct a file name for a MDBShard stored under cache and session dir.
-fn local_shard_name(hash: &MerkleHash) -> PathBuf {
-    PathBuf::from(hash.to_string()).with_extension("mdb")
 }
 
 impl ShardClientInterface for HttpShardClient {}
@@ -176,6 +175,7 @@ mod test {
 
     use mdb_shard::shard_dedup_probe::ShardDedupProber;
     use mdb_shard::shard_file_reconstructor::FileReconstructor;
+    use mdb_shard::utils::parse_shard_filename;
     use mdb_shard::{MDBShardFile, MDBShardInfo};
     use merklehash::MerkleHash;
 
@@ -185,7 +185,7 @@ mod test {
     #[tokio::test]
     #[ignore = "need a local cas_server running"]
     async fn test_local() -> anyhow::Result<()> {
-        let client = HttpShardClient::new("http://localhost:8080", &None, Some(env::current_dir()?));
+        let client = HttpShardClient::new("http://localhost:8080", &None, env::current_dir()?);
 
         let path = PathBuf::from("./a7de567477348b23d23b667dba4d63d533c2ba7337cdc4297970bb494ba4699e.mdb");
 
@@ -217,7 +217,7 @@ mod test {
         for chunk in chunks {
             let expected = shard_hash;
             let result = client.get_dedup_shards("default-merkledb", &[chunk], &salt).await?;
-            assert_eq!(expected, result[0]);
+            assert_eq!(expected, parse_shard_filename(&result[0]).unwrap());
         }
 
         Ok(())
