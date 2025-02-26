@@ -10,7 +10,7 @@ use std::{fmt, str};
 // URL safe Base 64 encoding with ending characters removed.
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine as _;
-use safe_transmute::transmute_to_bytes;
+use safe_transmute::{transmute_to_bytes, transmute_to_bytes_mut};
 use serde::{Deserialize, Serialize};
 
 /************************************************************************* */
@@ -186,6 +186,11 @@ impl DataHash {
     /// Returns the datahash as a raw byte slice.
     pub fn as_bytes(&self) -> &[u8] {
         transmute_to_bytes(&self.0[..])
+    }
+
+    /// Returns the datahash as a raw byte slice.
+    pub fn as_mut_bytes(&mut self) -> &mut [u8] {
+        transmute_to_bytes_mut(&mut self.0[..])
     }
 
     pub fn from_slice(value: &[u8]) -> Result<Self, DataHashBytesParseError> {

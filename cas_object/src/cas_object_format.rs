@@ -1,5 +1,5 @@
 use std::cmp::min;
-use std::io::{Cursor, Error, Read, Seek, Write};
+use std::io::{Cursor, Read, Seek, Write};
 use std::mem::size_of;
 
 use anyhow::anyhow;
@@ -10,6 +10,7 @@ use merkledb::{Chunk, MerkleMemDB};
 use merklehash::{DataHash, MerkleHash};
 use serde::Serialize;
 use tracing::warn;
+use utils::serialization_utils::*;
 
 use crate::cas_chunk_format::{deserialize_chunk, serialize_chunk};
 use crate::error::{CasObjectError, Validate};
@@ -17,7 +18,13 @@ use crate::{range_hash_from_chunks, CompressionScheme};
 
 pub type CasObjectIdent = [u8; 7];
 pub(crate) const CAS_OBJECT_FORMAT_IDENT: CasObjectIdent = [b'X', b'E', b'T', b'B', b'L', b'O', b'B'];
-pub(crate) const CAS_OBJECT_FORMAT_VERSION: u8 = 0;
+pub(crate) const CAS_OBJECT_FORMAT_IDENT_HASHES: CasObjectIdent = [b'X', b'B', b'L', b'B', b'H', b'S', b'H'];
+pub(crate) const CAS_OBJECT_FORMAT_IDENT_BOUNDARIES: CasObjectIdent = [b'X', b'B', b'L', b'B', b'B', b'N', b'D'];
+pub(crate) const CAS_OBJECT_FORMAT_VERSION: u8 = 1;
+pub(crate) const CAS_OBJECT_FORMAT_HASHES_VERSION: u8 = 0;
+
+// This is 1 as we can test on the struct using this version field whether we have the unpacked boundary lengths
+pub(crate) const CAS_OBJECT_FORMAT_BOUNDARIES_VERSION: u8 = 1;
 const CAS_OBJECT_INFO_DEFAULT_LENGTH: u32 = 60;
 
 #[derive(Clone, PartialEq, Eq, Debug, Serialize)]
@@ -26,14 +33,44 @@ pub struct CasObjectInfo {
     /// CAS identifier: "XETBLOB"
     pub ident: CasObjectIdent,
 
-    /// Format version, expected to be 0 right now.
+    /// Format version, expected to be 1 right now.
     pub version: u8,
 
     /// 256-bits, 32-bytes, The CAS Hash of this Xorb.
     pub cashash: MerkleHash,
 
-    /// Total number of chunks in the Xorb. Length of chunk_boundary_offsets & chunk_hashes vectors.
+    /// Total number of chunks in the Xorb.  This is also duplicated in the serialization
+    /// at the start of each section.
     pub num_chunks: u32,
+
+    ///////////////////////////////////////////////////////////////////
+    /// The hashes section
+
+    /// CAS identifier: "XBLBHSH"
+    pub ident_hash_section: CasObjectIdent,
+
+    /// Format version, expected to be 1 right now.
+    pub hashes_version: u8,
+
+    /// Total number of chunks in the Xorb.  Duplicated here.
+    #[serde(skip)]
+    _num_chunks_2: u32,
+
+    /// Merklehash for each chunk stored in the Xorb. Length of vector is num_chunks.
+    pub chunk_hashes: Vec<MerkleHash>,
+
+    ///////////////////////////////////////////////////////////////////
+    /// The boundaries and index metadata
+
+    /// The identity for the metadata section; should be "XBLBMDT
+    pub ident_boundary_section: CasObjectIdent,
+
+    /// The version of the boundary section.
+    pub boundaries_version: u8,
+
+    /// Total number of chunks in the Xorb.  Duplicated here.
+    #[serde(skip)]
+    _num_chunks_3: u32,
 
     /// Byte offset marking the boundary of each chunk. Length of vector is num_chunks.
     ///
@@ -47,8 +84,10 @@ pub struct CasObjectInfo {
     /// ```
     pub chunk_boundary_offsets: Vec<u32>,
 
-    /// Merklehash for each chunk stored in the Xorb. Length of vector is num_chunks.
-    pub chunk_hashes: Vec<MerkleHash>,
+    /// The byte offsets of the chunks, assuming that each chunk gets unzipped and concatenated.  
+    /// This permits range queries on the contents of the xorb.  The uncompressed length of
+    /// chunk k can be determined by unpacked_chunk_offsets[k] - unpacked_chunk_offsets[k - 1].
+    pub unpacked_chunk_offsets: Vec<u32>,
 
     #[serde(skip)]
     /// Unused 16-byte buffer to allow for future extensibility.
@@ -62,8 +101,15 @@ impl Default for CasObjectInfo {
             version: CAS_OBJECT_FORMAT_VERSION,
             cashash: MerkleHash::default(),
             num_chunks: 0,
-            chunk_boundary_offsets: Vec::new(),
+            ident_hash_section: CAS_OBJECT_FORMAT_IDENT_HASHES,
+            hashes_version: CAS_OBJECT_FORMAT_HASHES_VERSION,
+            _num_chunks_2: 0,
             chunk_hashes: Vec::new(),
+            ident_boundary_section: CAS_OBJECT_FORMAT_IDENT_BOUNDARIES,
+            boundaries_version: CAS_OBJECT_FORMAT_BOUNDARIES_VERSION,
+            _num_chunks_3: 0,
+            chunk_boundary_offsets: Vec::new(),
+            unpacked_chunk_offsets: Vec::new(),
             _buffer: Default::default(),
         }
     }
@@ -74,39 +120,70 @@ impl CasObjectInfo {
     ///
     /// Assumes caller has set position of Writer to appropriate location for serialization.
     pub fn serialize<W: Write>(&self, writer: &mut W) -> Result<usize, CasObjectError> {
-        let mut total_bytes_written = 0;
+        let mut counting_writer = countio::Counter::new(writer);
+        let w = &mut counting_writer;
 
-        // Helper function to write data and update the byte count
-        let mut write_bytes = |data: &[u8]| -> Result<(), Error> {
-            writer.write_all(data)?;
-            total_bytes_written += data.len();
-            Ok(())
-        };
+        //////////////////////////////////////////////////////////////////////////////////////////////
+        // First section (Calf).  (Open to mooving to another name.)
+
+        write_bytes(w, &self.ident)?;
+        write_u8(w, self.version)?;
+        write_hash(w, &self.cashash)?;
+
+        // Write this out here, though it's written out multiple places.  Here as it applies all over
+        // the place.
+        write_u32(w, self.num_chunks)?;
+
+        //////////////////////////////////////////////////////////////////////////////////////////////
+        // Hash section (Ankle)
 
         // Write fixed-size fields, in order: ident, version, cashash, num_chunks
-        write_bytes(&self.ident)?;
-        write_bytes(&[self.version])?;
-        write_bytes(self.cashash.as_bytes())?;
-        write_bytes(&self.num_chunks.to_le_bytes())?;
+        write_bytes(w, &self.ident_hash_section)?;
+        write_u8(w, self.hashes_version)?;
 
-        // write variable field: chunk boundaries & hashes
-        for offset in &self.chunk_boundary_offsets {
-            write_bytes(&offset.to_le_bytes())?;
+        // Write this again.
+        write_u32(w, self.num_chunks)?;
+
+        if self.num_chunks as usize != self.chunk_hashes.len() {
+            debug_assert_eq!(self.num_chunks as usize, self.chunk_hashes.len());
+            return Err(CasObjectError::FormatError(anyhow!(
+                "Chunk hash vector not correct lengeth on serialization. ({}, expected {})",
+                self.chunk_hashes.len(),
+                self.num_chunks
+            )));
         }
+
         for hash in &self.chunk_hashes {
-            write_bytes(hash.as_bytes())?;
+            write_hash(w, hash)?;
+        }
+
+        //////////////////////////////////////////////////////////////////////////////////////////////
+        // Boundary Section (Foot).
+
+        write_bytes(w, &self.ident_boundary_section)?;
+        write_u8(w, self.boundaries_version)?;
+        write_u32(w, self.num_chunks)?;
+
+        // write variable field: chunk boundaries
+        for &offset in &self.chunk_boundary_offsets {
+            write_u32(w, offset)?;
+        }
+
+        // write variable field: unpacked chunk data offsets
+        for &offset in &self.unpacked_chunk_offsets {
+            write_u32(w, offset)?;
         }
 
         // write closing metadata
-        write_bytes(&self._buffer)?;
+        write_bytes(w, &self._buffer)?;
 
-        Ok(total_bytes_written)
+        Ok(w.writer_bytes())
     }
 
     /// Construct CasObjectInfo object from Reader + Seek.
     ///
     /// Expects metadata struct is found at end of Reader, written out in struct order.
-    pub fn deserialize<R: Read>(reader: &mut R) -> Result<(Self, u32), CasObjectError> {
+    pub fn deserialize_v0<R: Read>(reader: &mut R) -> Result<(Self, u32), CasObjectError> {
         let mut total_bytes_read: u32 = 0;
 
         // Helper function to read data and update the byte count
@@ -116,20 +193,7 @@ impl CasObjectInfo {
             Ok(())
         };
 
-        let mut ident = [0u8; 7];
-        read_bytes(&mut ident)?;
-
-        if ident != CAS_OBJECT_FORMAT_IDENT {
-            return Err(CasObjectError::FormatError(anyhow!("Xorb Invalid Ident")));
-        }
-
-        let mut version = [0u8; 1];
-        read_bytes(&mut version)?;
-
-        if version[0] != CAS_OBJECT_FORMAT_VERSION {
-            return Err(CasObjectError::FormatError(anyhow!("Xorb Invalid Format Version")));
-        }
-
+        // This assumes the xetblob_v0 has been read out.
         let mut buf = [0u8; size_of::<MerkleHash>()];
         read_bytes(&mut buf)?;
         let cashash = MerkleHash::from(&buf);
@@ -156,25 +220,133 @@ impl CasObjectInfo {
 
         Ok((
             CasObjectInfo {
-                ident,
-                version: version[0],
+                ident: CAS_OBJECT_FORMAT_IDENT,
+                version: 0,
                 cashash,
                 num_chunks,
-                chunk_boundary_offsets,
+
+                ident_hash_section: CAS_OBJECT_FORMAT_IDENT_HASHES,
+                hashes_version: CAS_OBJECT_FORMAT_HASHES_VERSION,
+                _num_chunks_2: num_chunks,
                 chunk_hashes,
+                ident_boundary_section: CAS_OBJECT_FORMAT_IDENT_BOUNDARIES,
+
+                // Set this to zero to denote this does not yet have the unpacked boundary lengths.
+                boundaries_version: 0,
+                _num_chunks_3: num_chunks,
+                chunk_boundary_offsets,
+                unpacked_chunk_offsets: Vec::new(), // Not known.
                 _buffer,
             },
             total_bytes_read,
         ))
     }
 
+    /// Construct CasObjectInfo object from Reader + Seek.
+    ///
+    /// Expects metadata struct is found at end of Reader, written out in struct order.
+    pub fn deserialize<R: Read>(reader: &mut R) -> Result<(Self, u32), CasObjectError> {
+        let mut counting_reader = countio::Counter::new(reader);
+        let r = &mut counting_reader;
+
+        let mut s = Self::default();
+
+        //////////////////////////////////////////////////////////////////////////////////////////////
+        // First section.
+
+        read_bytes(r, &mut s.ident)?;
+
+        if s.ident != CAS_OBJECT_FORMAT_IDENT {
+            return Err(CasObjectError::FormatError(anyhow!("Xorb Invalid Ident")));
+        }
+
+        s.version = read_u8(r)?;
+
+        if s.version == 0 {
+            let (sv0, _) = Self::deserialize_v0(r)?;
+            return Ok((sv0, r.reader_bytes() as u32));
+        } else if s.version != CAS_OBJECT_FORMAT_VERSION {
+            return Err(CasObjectError::FormatError(anyhow!("Xorb Invalid Format Version")));
+        }
+
+        s.cashash = read_hash(r)?;
+        s.num_chunks = read_u32(r)?;
+
+        //////////////////////////////////////////////////////////////////////////////////////////////
+        // Hash section
+
+        read_bytes(r, &mut s.ident_hash_section)?;
+
+        if s.ident_hash_section != CAS_OBJECT_FORMAT_IDENT_HASHES {
+            return Err(CasObjectError::FormatError(anyhow!("Xorb Invalid Ident for Hash Metadata Section")));
+        }
+
+        s.hashes_version = read_u8(r)?;
+
+        if s.hashes_version != CAS_OBJECT_FORMAT_HASHES_VERSION {
+            return Err(CasObjectError::FormatError(anyhow!("Xorb Invalid Format Version for Hash Metadata Section")));
+        }
+
+        s._num_chunks_2 = read_u32(r)?;
+
+        if s.num_chunks != s._num_chunks_2 {
+            return Err(CasObjectError::FormatError(anyhow!(
+                "Xorb Invalid: inconsistent num_chunks between metadata and hashes section."
+            )));
+        }
+
+        // Read in the hashes.
+        s.chunk_hashes.resize(s.num_chunks as usize, MerkleHash::default());
+        for s in s.chunk_hashes.iter_mut() {
+            *s = read_hash(r)?;
+        }
+
+        //////////////////////////////////////////////////////////////////////////////////////////////
+        // Boundary Section (Foot).
+
+        read_bytes(r, &mut s.ident_boundary_section)?;
+
+        if s.ident_boundary_section != CAS_OBJECT_FORMAT_IDENT_BOUNDARIES {
+            return Err(CasObjectError::FormatError(anyhow!("Xorb Invalid Ident for Boundary Metadata Section")));
+        }
+
+        s.boundaries_version = read_u8(r)?;
+
+        if s.boundaries_version != CAS_OBJECT_FORMAT_BOUNDARIES_VERSION {
+            return Err(CasObjectError::FormatError(anyhow!(
+                "Xorb Invalid Format Version for Boundaries Metadata Section"
+            )));
+        }
+
+        s._num_chunks_3 = read_u32(r)?;
+
+        if s.num_chunks != s._num_chunks_3 {
+            return Err(CasObjectError::FormatError(anyhow!(
+                "Xorb Invalid: inconsistent num_chunks between metadata and boundaries section."
+            )));
+        }
+
+        s.chunk_boundary_offsets.resize(s.num_chunks as usize, 0);
+        for b in s.chunk_boundary_offsets.iter_mut() {
+            *b = read_u32(r)?;
+        }
+
+        s.unpacked_chunk_offsets.resize(s.num_chunks as usize, 0);
+        for co in s.unpacked_chunk_offsets.iter_mut() {
+            *co = read_u32(r)?;
+        }
+
+        read_bytes(r, &mut s._buffer)?;
+
+        Ok((s, r.reader_bytes() as u32))
+    }
+
     /// Construct CasObjectInfo object from AsyncRead.
     /// assumes that the ident and version have already been read and verified.
     ///
     /// verifies that the length of the footer data matches the length field at the very end of the buffer
-    pub async fn deserialize_async<R: futures::io::AsyncRead + Unpin>(
+    pub async fn deserialize_async_v0<R: futures::io::AsyncRead + Unpin>(
         reader: &mut R,
-        version: u8,
     ) -> Result<(Self, u32), CasObjectError> {
         // already read 8 bytes (ident + version)
         let mut total_bytes_read: u32 = (size_of::<CasObjectIdent>() + size_of::<u8>()) as u32;
@@ -237,15 +409,127 @@ impl CasObjectInfo {
         Ok((
             CasObjectInfo {
                 ident: CAS_OBJECT_FORMAT_IDENT,
-                version,
+                version: 0,
                 cashash,
                 num_chunks,
-                chunk_boundary_offsets,
+
+                ident_hash_section: CAS_OBJECT_FORMAT_IDENT_HASHES,
+                hashes_version: CAS_OBJECT_FORMAT_HASHES_VERSION,
+                _num_chunks_2: num_chunks,
                 chunk_hashes,
+                ident_boundary_section: CAS_OBJECT_FORMAT_IDENT_BOUNDARIES,
+
+                // Set this to zero to denote this does not yet have the unpacked boundary lengths.
+                boundaries_version: 0,
+                _num_chunks_3: num_chunks,
+                chunk_boundary_offsets,
+                unpacked_chunk_offsets: Vec::new(), // Not known.
                 _buffer,
             },
             total_bytes_read,
         ))
+    }
+
+    pub async fn deserialize_async_v1<R: futures::io::AsyncRead + Unpin>(
+        reader: &mut R,
+    ) -> Result<(Self, u32), CasObjectError> {
+        let mut counting_reader = countio::Counter::new(reader);
+        let r = &mut counting_reader;
+
+        let mut s = Self::default();
+
+        // These have been read already above this
+        s.ident = CAS_OBJECT_FORMAT_IDENT;
+        s.version = 1;
+
+        s.cashash = read_hash_async(r).await?;
+        s.num_chunks = read_u32_async(r).await?;
+
+        //////////////////////////////////////////////////////////////////////////////////////////////
+        // Hash section
+
+        read_bytes_async(r, &mut s.ident_hash_section).await?;
+
+        if s.ident_hash_section != CAS_OBJECT_FORMAT_IDENT_HASHES {
+            return Err(CasObjectError::FormatError(anyhow!("Xorb Invalid Ident for Hash Metadata Section")));
+        }
+
+        s.hashes_version = read_u8_async(r).await?;
+
+        if s.hashes_version != CAS_OBJECT_FORMAT_HASHES_VERSION {
+            return Err(CasObjectError::FormatError(anyhow!("Xorb Invalid Format Version for Hash Metadata Section")));
+        }
+
+        s._num_chunks_2 = read_u32_async(r).await?;
+
+        if s.num_chunks != s._num_chunks_2 {
+            return Err(CasObjectError::FormatError(anyhow!(
+                "Xorb Invalid: inconsistent num_chunks between metadata and hashes section."
+            )));
+        }
+
+        // Read in the hashes.
+        s.chunk_hashes.resize(s.num_chunks as usize, MerkleHash::default());
+        for s in s.chunk_hashes.iter_mut() {
+            *s = read_hash_async(r).await?;
+        }
+
+        //////////////////////////////////////////////////////////////////////////////////////////////
+        // Boundary Section (Foot).
+
+        read_bytes_async(r, &mut s.ident_boundary_section).await?;
+
+        if s.ident_boundary_section != CAS_OBJECT_FORMAT_IDENT_BOUNDARIES {
+            return Err(CasObjectError::FormatError(anyhow!("Xorb Invalid Ident for Boundary Metadata Section")));
+        }
+
+        s.boundaries_version = read_u8_async(r).await?;
+
+        if s.boundaries_version != CAS_OBJECT_FORMAT_BOUNDARIES_VERSION {
+            return Err(CasObjectError::FormatError(anyhow!(
+                "Xorb Invalid Format Version for Boundaries Metadata Section"
+            )));
+        }
+
+        s._num_chunks_3 = read_u32_async(r).await?;
+
+        if s.num_chunks != s._num_chunks_3 {
+            return Err(CasObjectError::FormatError(anyhow!(
+                "Xorb Invalid: inconsistent num_chunks between metadata and boundaries section."
+            )));
+        }
+
+        s.chunk_boundary_offsets.resize(s.num_chunks as usize, 0);
+        for b in s.chunk_boundary_offsets.iter_mut() {
+            *b = read_u32_async(r).await?;
+        }
+
+        s.unpacked_chunk_offsets.resize(s.num_chunks as usize, 0);
+        for co in s.unpacked_chunk_offsets.iter_mut() {
+            *co = read_u32_async(r).await?;
+        }
+
+        read_bytes_async(r, &mut s._buffer).await?;
+
+        Ok((s, r.reader_bytes() as u32))
+    }
+    /// Construct CasObjectInfo object from AsyncRead.
+    /// assumes that the ident and version have already been read and verified.
+    ///
+    /// verifies that the length of the footer data matches the length field at the very end of the buffer
+    pub async fn deserialize_async<R: futures::io::AsyncRead + Unpin>(
+        reader: &mut R,
+        version: u8,
+    ) -> Result<(Self, u32), CasObjectError> {
+        if version == 0 {
+            Self::deserialize_async_v0(reader).await
+        } else if version == 1 {
+            Self::deserialize_async_v1(reader).await
+        } else {
+            Err(CasObjectError::FormatError(anyhow!(
+                "Xorb Format Error: Version {version} not supported by this code version."
+            )))
+        }
     }
 }
 
@@ -702,26 +986,6 @@ mod tests {
     use super::test_utils::*;
     use super::*;
     use crate::chunk_verification::VERIFICATION_KEY;
-
-    #[test]
-    fn test_default_header_initialization() {
-        // Create an instance using the Default trait
-        let default_instance = CasObjectInfo::default();
-
-        // Expected default values
-        let expected_default = CasObjectInfo {
-            ident: CAS_OBJECT_FORMAT_IDENT,
-            version: CAS_OBJECT_FORMAT_VERSION,
-            cashash: MerkleHash::default(),
-            num_chunks: 0,
-            chunk_boundary_offsets: Vec::new(),
-            chunk_hashes: Vec::new(),
-            _buffer: [0; 16],
-        };
-
-        // Assert that the default instance matches the expected values
-        assert_eq!(default_instance, expected_default);
-    }
 
     #[test]
     fn test_default_cas_object() {
