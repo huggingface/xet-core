@@ -159,7 +159,7 @@ impl ThreadPool {
         let ret = self.handle.block_on(async move {
             // Run the actual task on a task worker thread so we can get back information
             // on issues, including reporting panics as runtime errors.
-            tokio::spawn(future).await.map_err(|e| {
+            self.handle.spawn(future).await.map_err(|e| {
                 if e.is_panic() {
                     // The task panic'd.  Pass this exception on.
                     error!("Panic reported on xet worker task: {e:?}");

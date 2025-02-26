@@ -130,7 +130,7 @@ mod tests {
         let mut out = Vec::new();
         for _ in 0..num_chunks {
             let data = gen_random_bytes(rng, CHUNK_SIZE as u32);
-            serialize_chunk(&data, &mut out, compression_scheme).unwrap();
+            serialize_chunk(&data, &mut out, Some(compression_scheme)).unwrap();
         }
         out
     }

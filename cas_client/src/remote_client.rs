@@ -39,7 +39,7 @@ type RangeDownloadSingleFlight = Arc<Group<(Vec<u8>, Vec<u32>), CasClientError>>
 
 pub struct RemoteClient {
     endpoint: String,
-    compression: CompressionScheme,
+    compression: Option<CompressionScheme>,
     dry_run: bool,
     http_auth_client: ClientWithMiddleware,
     chunk_cache: Option<Arc<dyn ChunkCache>>,
@@ -51,7 +51,7 @@ impl RemoteClient {
     pub fn new(
         threadpool: Arc<ThreadPool>,
         endpoint: &str,
-        compression: CompressionScheme,
+        compression: Option<CompressionScheme>,
         auth: &Option<AuthConfig>,
         cache_config: &Option<CacheConfig>,
         dry_run: bool,
@@ -524,7 +524,8 @@ mod tests {
             build_cas_object(3, ChunkSize::Random(512, 10248), cas_object::CompressionScheme::LZ4);
 
         let threadpool = Arc::new(ThreadPool::new().unwrap());
-        let client = RemoteClient::new(threadpool.clone(), CAS_ENDPOINT, CompressionScheme::LZ4, &None, &None, false);
+        let client =
+            RemoteClient::new(threadpool.clone(), CAS_ENDPOINT, Some(CompressionScheme::LZ4), &None, &None, false);
         // Act
         let result = threadpool
             .external_run_async_task(async move { client.put(prefix, &c.info.cashash, data, chunk_boundaries).await })
@@ -629,7 +630,7 @@ mod tests {
                 chunk_cache: Some(Arc::new(chunk_cache)),
                 http_auth_client: http_client.clone(),
                 endpoint: "".to_string(),
-                compression: CompressionScheme::LZ4,
+                compression: Some(CompressionScheme::LZ4),
                 dry_run: false,
                 threadpool: threadpool.clone(),
                 range_download_single_flight: Arc::new(Group::new()),

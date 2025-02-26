@@ -156,10 +156,14 @@ mod tests {
             build_cas_object(num_chunks, chunk_size, compression_scheme);
         let mut buf: Cursor<Vec<u8>> = Cursor::new(Vec::new());
         // Act & Assert
-        assert!(
-            CasObject::serialize(&mut buf, &c.info.cashash, &raw_data, &raw_chunk_boundaries, compression_scheme,)
-                .is_ok()
-        );
+        assert!(CasObject::serialize(
+            &mut buf,
+            &c.info.cashash,
+            &raw_data,
+            &raw_chunk_boundaries,
+            Some(compression_scheme),
+        )
+        .is_ok());
 
         let xorb_bytes = buf.into_inner();
         let split = xorb_bytes

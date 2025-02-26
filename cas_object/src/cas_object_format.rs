@@ -335,7 +335,7 @@ impl CasObject {
         hash: &MerkleHash,
         data: &[u8],
         chunk_and_boundaries: &[(MerkleHash, u32)],
-        compression_scheme: CompressionScheme,
+        compression_scheme: Option<CompressionScheme>,
     ) -> Result<(Self, usize), CasObjectError> {
         let mut cas = CasObject::default();
         cas.info.cashash = *hash;
@@ -664,7 +664,7 @@ pub mod test_utils {
 
             // build chunk, create ChunkInfo and keep going
 
-            let bytes_written = serialize_chunk(&bytes, &mut writer, compression_scheme).unwrap();
+            let bytes_written = serialize_chunk(&bytes, &mut writer, Some(compression_scheme)).unwrap();
 
             total_bytes += bytes_written as u32;
 
@@ -856,7 +856,7 @@ mod tests {
             &c.info.cashash,
             &raw_data,
             &raw_chunk_boundaries,
-            CompressionScheme::LZ4
+            Some(CompressionScheme::LZ4)
         )
         .is_ok());
 
@@ -874,7 +874,7 @@ mod tests {
             &c.info.cashash,
             &c_bytes,
             &raw_chunk_boundaries,
-            CompressionScheme::None
+            Some(CompressionScheme::None)
         )
         .is_ok());
 
@@ -902,7 +902,7 @@ mod tests {
             &c.info.cashash,
             &raw_data,
             &raw_chunk_boundaries,
-            CompressionScheme::LZ4
+            Some(CompressionScheme::LZ4)
         )
         .is_ok());
 
@@ -924,7 +924,7 @@ mod tests {
             &c.info.cashash,
             &raw_data,
             &raw_chunk_boundaries,
-            CompressionScheme::None
+            Some(CompressionScheme::None)
         )
         .is_ok());
 
@@ -943,7 +943,7 @@ mod tests {
             &c.info.cashash,
             &raw_data,
             &raw_chunk_boundaries,
-            CompressionScheme::None
+            Some(CompressionScheme::None)
         )
         .is_ok());
 
@@ -974,7 +974,7 @@ mod tests {
             &c.info.cashash,
             &raw_data,
             &raw_chunk_boundaries,
-            CompressionScheme::None
+            Some(CompressionScheme::None)
         )
         .is_ok());
 
@@ -1004,7 +1004,7 @@ mod tests {
             &c.info.cashash,
             &raw_data,
             &raw_chunk_boundaries,
-            CompressionScheme::None
+            Some(CompressionScheme::None)
         )
         .is_ok());
 
@@ -1034,7 +1034,7 @@ mod tests {
             &c.info.cashash,
             &raw_data,
             &raw_chunk_boundaries,
-            CompressionScheme::LZ4
+            Some(CompressionScheme::LZ4)
         )
         .is_ok());
 
@@ -1063,7 +1063,7 @@ mod tests {
             &c.info.cashash,
             &raw_data,
             &raw_chunk_boundaries,
-            CompressionScheme::LZ4
+            Some(CompressionScheme::LZ4)
         )
         .is_ok());
 
@@ -1094,7 +1094,7 @@ mod tests {
             &c.info.cashash,
             &raw_data,
             &raw_chunk_boundaries,
-            CompressionScheme::LZ4
+            Some(CompressionScheme::LZ4)
         )
         .is_ok());
 
@@ -1124,7 +1124,7 @@ mod tests {
             &c.info.cashash,
             &raw_data,
             &raw_chunk_boundaries,
-            CompressionScheme::LZ4
+            Some(CompressionScheme::LZ4)
         )
         .is_ok());
 
@@ -1152,7 +1152,7 @@ mod tests {
             &c.info.cashash,
             &raw_data,
             &raw_chunk_boundaries,
-            CompressionScheme::LZ4
+            Some(CompressionScheme::LZ4)
         )
         .is_ok());
 

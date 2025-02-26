@@ -82,6 +82,19 @@ impl CompressionScheme {
             CompressionScheme::ByteGrouping4LZ4 => bg4_lz4_decompress_from_reader(reader, writer)?,
         })
     }
+
+    /// Chooses the compression scheme based on a KL-divergence heuristic.
+    pub fn choose_from_data(data: &[u8]) -> Self {
+        let mut bg4_predictor = BG4Predictor::new();
+
+        bg4_predictor.add_data(0, data);
+
+        if bg4_predictor.bg4_recommended() {
+            CompressionScheme::ByteGrouping4LZ4
+        } else {
+            CompressionScheme::LZ4
+        }
+    }
 }
 
 pub fn lz4_compress_from_slice(data: &[u8]) -> Result<Vec<u8>> {
@@ -143,6 +156,100 @@ fn bg4_lz4_decompress_from_reader<R: Read, W: Write>(reader: &mut R, writer: &mu
     writer.write_all(&regrouped)?;
 
     Ok(regrouped.len() as u64)
+}
+
+pub struct BG4Predictor {
+    histograms: [[u32; 9]; 4],
+
+    #[cfg(debug_assertions)]
+    histograms_check: [[u32; 9]; 4],
+}
+
+/// Put this logic in.
+impl Default for BG4Predictor {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl BG4Predictor {
+    pub fn new() -> Self {
+        Self {
+            histograms: [[0u32; 9]; 4],
+
+            #[cfg(debug_assertions)]
+            histograms_check: [[0u32; 9]; 4],
+        }
+    }
+
+    pub fn add_data(&mut self, offset: usize, data: &[u8]) {
+        // Do it using pointers for optimization.
+        unsafe {
+            let mut ptr = data.as_ptr();
+            let end_ptr = ptr.add(data.len());
+            let mut idx = (offset % 4) as u32;
+
+            let dest_ptr = self.histograms.as_mut_ptr() as *mut u32;
+
+            while ptr != end_ptr {
+                let n_ones = (*ptr).count_ones();
+                let loc = (idx % 4) * 9 + n_ones;
+                *(dest_ptr.add(loc as usize)) += 1;
+                ptr = ptr.add(1);
+                idx += 1
+            }
+        }
+
+        #[cfg(debug_assertions)]
+        {
+            for (i, &x) in data.iter().enumerate() {
+                self.histograms_check[(i + offset) % 4][x.count_ones() as usize] += 1;
+            }
+            assert_eq!(self.histograms_check, self.histograms);
+        }
+    }
+
+    #[allow(clippy::needless_range_loop)]
+    pub fn bg4_recommended(&self) -> bool {
+        // Add up the histograms into one base histogram.
+
+        // Put in a 1 as the base count to ensure that the probability of
+        // a state is never zero.
+        let mut base_counts = [1u32; 9];
+        let mut totals = [0u32; 4];
+
+        for i in 0..4 {
+            for j in 0..9 {
+                let c = self.histograms[i][j];
+                base_counts[j] += c;
+                totals[i] += c;
+            }
+        }
+
+        let base_total: u32 = totals.iter().sum();
+
+        let mut max_kl_div = 0f64;
+
+        // Now, calculate the maximum kl divergence between each of the 4
+        // byte group values from the base total.
+        for i in 0..4 {
+            let mut kl_div = 0.;
+            for j in 0..9 {
+                let p = self.histograms[i][j] as f64 / totals[i] as f64;
+                let q = base_counts[j] as f64 / base_total as f64;
+                kl_div += p * (p / q).ln();
+            }
+
+            max_kl_div = max_kl_div.max(kl_div);
+        }
+
+        // This criteria was chosen empirically by using logistic regression on
+        // the sampled features of a number of models and how well they predict
+        // whether bg4 is recommended.  This criteria is beautifully simple and
+        // also performs as well as any.  See the full analysis in the
+        // byte_grouping/compression_stats folder and code.
+        max_kl_div > 0.02
+    }
 }
 
 #[cfg(test)]
@@ -247,8 +354,9 @@ mod tests {
                 let lz4_compressed = lz4_compress_from_slice(&data).unwrap();
                 let lz4_uncompressed = lz4_decompress_from_slice(&lz4_compressed).unwrap();
                 assert_eq!(data, lz4_uncompressed);
+                let compression_scheme_predictor = CompressionScheme::choose_from_data(&data);
                 println!(
-                    "Compression ratio: {:.2}, {:.2}",
+                    "Compression ratio: {:.2}, {:.2} (KL predicted = {compression_scheme_predictor:?}",
                     data.len() as f32 / bg4_lz4_compressed.len() as f32,
                     data.len() as f32 / lz4_compressed.len() as f32
                 );

@@ -32,7 +32,7 @@ fn convert_data_processing_error(e: DataProcessingError) -> PyErr {
 }
 
 #[pyfunction]
-#[pyo3(signature = (file_paths, endpoint, token_info, token_refresher, progress_updater, repo_type), text_signature = "(file_paths: List[str], endpoint: Optional[str], token_info: Optional[(str, int)], token_refresher: Optional[Callable[[], (str, int)]], progress_updater: Optional[Callable[[int], None]], repo_type: str) -> List[PyPointerFile]")]
+#[pyo3(signature = (file_paths, endpoint, token_info, token_refresher, progress_updater), text_signature = "(file_paths: List[str], endpoint: Optional[str], token_info: Optional[(str, int)], token_refresher: Optional[Callable[[], (str, int)]], progress_updater: Optional[Callable[[int], None]]) -> List[PyPointerFile]")]
 pub fn upload_files(
     py: Python,
     file_paths: Vec<String>,
@@ -40,7 +40,6 @@ pub fn upload_files(
     token_info: Option<(String, u64)>,
     token_refresher: Option<Py<PyAny>>,
     progress_updater: Option<Py<PyAny>>,
-    repo_type: String,
 ) -> PyResult<Vec<PyPointerFile>> {
     let refresher = token_refresher.map(WrappedTokenRefresher::from_func).transpose()?.map(Arc::new);
     let updater = progress_updater
@@ -56,7 +55,6 @@ pub fn upload_files(
             token_info,
             refresher.map(|v| v as Arc<_>),
             updater.map(|v| v as Arc<_>),
-            repo_type,
         )
         .await
         .map_err(convert_data_processing_error)?
