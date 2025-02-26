@@ -21,7 +21,7 @@ use tokio::sync::mpsc::error::TryRecvError;
 use tokio::sync::mpsc::{channel, Receiver, Sender};
 use tokio::sync::Mutex;
 use tokio::task::{JoinHandle, JoinSet};
-use tracing::{debug, info, warn};
+use tracing::{debug, info};
 use utils::progress::ProgressUpdater;
 use xet_threadpool::ThreadPool;
 
@@ -377,7 +377,7 @@ impl SingleFileCleaner {
 
         for first_pass in [true, false] {
             // Set up a join set for tracking any global dedup queries.
-            let mut global_dedup_queries = JoinSet::<bool>::new();
+            let mut global_dedup_queries = JoinSet::<Result<bool>>::new();
 
             // Now, go through and test all of these for whether or not they can be deduplicated.
             let mut local_chunk_index = 0;
@@ -426,24 +426,20 @@ impl SingleFileCleaner {
                                     debug!("Error encountered attempting to query global dedup table: {e:?}; ignoring.");
                                     e
                                 })
-                                    else { return false; };
+                                    else { return Ok(false); };
 
-                                let Some(shard_hash) = query_result else {
+                                let Some(new_shard_file) = query_result else {
                                     debug!("Queried shard for global dedup with hash {query_chunk:?}; nothing found.");
-                                    return false;
+                                    return Ok(false);
                                 };
 
                                 // Okay, we have something, so go ahead and download it in the background.
-                                debug!("global dedup: {file_name:?} deduplicated by shard {shard_hash}; registering.");
-                                let Ok(_) = remote_shards.register_local_shard(&shard_hash).await.map_err(|e| {
-                                    warn!("Error encountered attempting to download and register shard {shard_hash} for deduplication : {e:?}; ignoring.");
-                                    e
-                                })
-                                    else { return false; };
+                                debug!("global dedup: {file_name:?} deduplicated by shard {new_shard_file:?}; registering.");
+                                ShardFileManager::register_shard_in_existing_managers(&new_shard_file).await?;
 
-                                debug!("global dedup: New shard {shard_hash} can be used for deduplication of {file_name:?}; reprocessing file.");
+                                debug!("global dedup: New shard {new_shard_file:?} can be used for deduplication of {file_name:?}; reprocessing file.");
 
-                                true
+                                Ok(true)
                             });
 
                         last_chunk_index_queried = global_chunk_index as isize
@@ -457,7 +453,7 @@ impl SingleFileCleaner {
             let mut has_new_shards = false;
             if first_pass {
                 while let Some(shard_probe_task) = global_dedup_queries.join_next().await {
-                    has_new_shards |= shard_probe_task?;
+                    has_new_shards |= shard_probe_task??;
                 }
             }
 

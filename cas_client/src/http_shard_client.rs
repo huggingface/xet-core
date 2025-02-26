@@ -6,17 +6,16 @@ use cas_types::{Key, QueryReconstructionResponse, UploadShardResponse, UploadSha
 use error_printer::ErrorPrinter;
 use file_utils::SafeFileCreator;
 use mdb_shard::file_structs::{FileDataSequenceEntry, FileDataSequenceHeader, MDBFileInfo};
-use mdb_shard::shard_dedup_probe::ShardDedupProber;
 use mdb_shard::shard_file_reconstructor::FileReconstructor;
 use mdb_shard::utils::shard_file_name;
 use merklehash::{HashedWrite, MerkleHash};
 use reqwest::Url;
 use reqwest_middleware::ClientWithMiddleware;
-use tokio::runtime::Handle;
 use utils::auth::AuthConfig;
 
 use crate::error::{CasClientError, Result};
 use crate::http_client::ResponseErrorLogger;
+use crate::interface::ShardDedupProber;
 use crate::{build_auth_http_client, RegistrationClient, ShardClientInterface};
 
 const FORCE_SYNC_METHOD: reqwest::Method = reqwest::Method::PUT;
@@ -111,58 +110,50 @@ impl FileReconstructor<CasClientError> for HttpShardClient {
 }
 
 #[async_trait]
-impl ShardDedupProber<CasClientError> for HttpShardClient {
-    async fn get_dedup_shards(
+impl ShardDedupProber for HttpShardClient {
+    async fn query_for_global_dedup_shard(
         &self,
         prefix: &str,
-        chunk_hashes: &[MerkleHash],
+        chunk_hash: &MerkleHash,
         _salt: &[u8; 32],
-    ) -> Result<Vec<PathBuf>> {
-        let mut dedup_queries = tokio::task::JoinSet::new();
-        let tokio_handle = Handle::current();
-
-        let mut ret = Vec::new();
-
+    ) -> Result<Option<PathBuf>> {
         // The API endpoint now only supports non-batched dedup request and
         // ignores salt.
-        for chunk_hash in chunk_hashes {
-            let key = Key {
-                prefix: prefix.into(),
-                hash: chunk_hash.clone(),
-            };
+        let key = Key {
+            prefix: prefix.into(),
+            hash: *chunk_hash,
+        };
 
-            let url = Url::parse(&format!("{0}/chunk/{key}", self.endpoint))?;
+        let url = Url::parse(&format!("{0}/chunk/{key}", self.endpoint))?;
 
-            dedup_queries.spawn_on(self.client.get(url).send(), &tokio_handle);
+        let mut response = self
+            .client
+            .get(url)
+            .send()
+            .await
+            .map_err(|e| CasClientError::Other(format!("request failed with error {e}")))?;
+
+        // Dedup shard not found, return empty result
+        if !response.status().is_success() {
+            return Ok(None);
         }
 
-        for task in dedup_queries.join_all().await {
-            let mut response = task.map_err(|e| CasClientError::Other(format!("request failed with error {e}")))?;
+        let writer = SafeFileCreator::new_unnamed()?;
+        // Compute the actual hash to use as the shard file name
+        let mut hashed_writer = HashedWrite::new(writer);
 
-            // Dedup shard not found, return empty result
-            if !response.status().is_success() {
-                return Ok(vec![]);
-            }
-
-            let writer = SafeFileCreator::new_unnamed()?;
-            // Compute the actual hash to use as the shard file name
-            let mut hashed_writer = HashedWrite::new(writer);
-
-            while let Some(chunk) = response.chunk().await? {
-                hashed_writer.write_all(&chunk)?;
-            }
-            hashed_writer.flush()?;
-
-            let shard_hash = hashed_writer.hash();
-            let file_path = self.shard_cache_directory.join(shard_file_name(&shard_hash));
-            let mut writer = hashed_writer.into_inner();
-            writer.set_dest_path(&file_path);
-            writer.close()?;
-
-            ret.push(file_path);
+        while let Some(chunk) = response.chunk().await? {
+            hashed_writer.write_all(&chunk)?;
         }
+        hashed_writer.flush()?;
 
-        Ok(ret)
+        let shard_hash = hashed_writer.hash();
+        let file_path = self.shard_cache_directory.join(shard_file_name(&shard_hash));
+        let mut writer = hashed_writer.into_inner();
+        writer.set_dest_path(&file_path);
+        writer.close()?;
+
+        Ok(Some(file_path))
     }
 }
 
@@ -173,13 +164,13 @@ mod test {
     use std::env;
     use std::path::PathBuf;
 
-    use mdb_shard::shard_dedup_probe::ShardDedupProber;
     use mdb_shard::shard_file_reconstructor::FileReconstructor;
     use mdb_shard::utils::parse_shard_filename;
     use mdb_shard::{MDBShardFile, MDBShardInfo};
     use merklehash::MerkleHash;
 
     use super::HttpShardClient;
+    use crate::interface::ShardDedupProber;
     use crate::RegistrationClient;
 
     #[tokio::test]
@@ -216,8 +207,11 @@ mod test {
         let chunks = MDBShardInfo::filter_cas_chunks_for_global_dedup(&mut reader)?;
         for chunk in chunks {
             let expected = shard_hash;
-            let result = client.get_dedup_shards("default-merkledb", &[chunk], &salt).await?;
-            assert_eq!(expected, parse_shard_filename(&result[0]).unwrap());
+            let result = client
+                .query_for_global_dedup_shard("default-merkledb", &chunk, &salt)
+                .await?
+                .unwrap();
+            assert_eq!(expected, parse_shard_filename(&result).unwrap());
         }
 
         Ok(())

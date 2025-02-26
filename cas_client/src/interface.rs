@@ -1,10 +1,10 @@
 use std::collections::HashMap;
 use std::io::Write;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use async_trait::async_trait;
 use cas_types::{FileRange, QueryReconstructionResponse};
-use mdb_shard::shard_dedup_probe::ShardDedupProber;
 use mdb_shard::shard_file_reconstructor::FileReconstructor;
 use merklehash::MerkleHash;
 use reqwest_middleware::ClientWithMiddleware;
@@ -91,13 +91,25 @@ pub(crate) trait Reconstructable {
     ) -> Result<QueryReconstructionResponse>;
 }
 
+/// Probes for shards that provide dedup information for a chunk, and, if
+/// any are found, writes them to disk and returns the path.
+#[async_trait]
+pub trait ShardDedupProber {
+    async fn query_for_global_dedup_shard(
+        &self,
+        prefix: &str,
+        chunk_hash: &MerkleHash,
+        salt: &[u8; 32],
+    ) -> Result<Option<PathBuf>>;
+}
+
 /// A Client to the Shard service. The shard service
 /// provides for
 /// 1. upload shard to the shard service
 /// 2. querying of file->reconstruction information
 /// 3. querying of chunk->shard information
 pub trait ShardClientInterface:
-    RegistrationClient + FileReconstructor<CasClientError> + ShardDedupProber<CasClientError> + Send + Sync
+    RegistrationClient + FileReconstructor<CasClientError> + ShardDedupProber + Send + Sync
 {
 }
 

@@ -5,7 +5,6 @@ pub mod file_structs;
 pub mod interpolation_search;
 pub mod session_directory;
 pub mod set_operations;
-pub mod shard_dedup_probe;
 pub mod shard_file_handle;
 pub mod shard_file_manager;
 pub mod shard_file_reconstructor;

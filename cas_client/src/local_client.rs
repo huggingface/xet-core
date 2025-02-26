@@ -1,4 +1,3 @@
-use std::collections::HashSet;
 use std::fs::{metadata, File};
 use std::io::{BufReader, BufWriter, Cursor, Write};
 use std::path::{Path, PathBuf};
@@ -10,7 +9,6 @@ use cas_object::CasObject;
 use cas_types::{FileRange, Key};
 use heed::types::*;
 use mdb_shard::file_structs::MDBFileInfo;
-use mdb_shard::shard_dedup_probe::ShardDedupProber;
 use mdb_shard::shard_file_reconstructor::FileReconstructor;
 use mdb_shard::utils::shard_file_name;
 use mdb_shard::{MDBShardFile, MDBShardInfo, ShardFileManager};
@@ -23,7 +21,7 @@ use tracing::{debug, error, info, warn};
 use utils::progress::ProgressUpdater;
 
 use crate::error::{CasClientError, Result};
-use crate::interface::UploadClient;
+use crate::interface::{ShardDedupProber, UploadClient};
 use crate::{Client, ReconstructionClient, RegistrationClient, ShardClientInterface};
 
 pub struct LocalClient {
@@ -35,15 +33,14 @@ pub struct LocalClient {
     global_dedup_db_env: heed::Env,
     global_dedup_table: heed::Database<OwnedType<MerkleHash>, OwnedType<MerkleHash>>,
 
-    shard_cache_dir: PathBuf,
+    shard_cache_dir: Option<PathBuf>,
 }
 
 impl LocalClient {
     pub fn temporary() -> Result<Self> {
         let tmp_dir = TempDir::new().unwrap();
         let path = tmp_dir.path().to_owned();
-        let shard_cache_dir = path.join("shard_cache");
-        let mut s = Self::new(path, shard_cache_dir)?;
+        let mut s = Self::new(path, None)?;
 
         s.tmp_dir = Some(tmp_dir);
         Ok(s)
@@ -52,13 +49,13 @@ impl LocalClient {
     pub fn temporary_with_global_dedup(shard_cache_dir: PathBuf) -> Result<Self> {
         let tmp_dir = TempDir::new().unwrap();
         let path = tmp_dir.path().to_owned();
-        let mut s = Self::new(path, shard_cache_dir)?;
+        let mut s = Self::new(path, Some(shard_cache_dir))?;
 
         s.tmp_dir = Some(tmp_dir);
         Ok(s)
     }
 
-    pub fn new(path: impl AsRef<Path>, shard_cache_dir: PathBuf) -> Result<Self> {
+    pub fn new(path: impl AsRef<Path>, shard_cache_dir: Option<PathBuf>) -> Result<Self> {
         let base_dir = std::path::absolute(path)?;
         if !base_dir.exists() {
             std::fs::create_dir_all(&base_dir)?;
@@ -369,34 +366,28 @@ impl FileReconstructor<CasClientError> for LocalClient {
 }
 
 #[async_trait]
-impl ShardDedupProber<CasClientError> for LocalClient {
-    async fn get_dedup_shards(
+impl ShardDedupProber for LocalClient {
+    async fn query_for_global_dedup_shard(
         &self,
         _prefix: &str,
-        chunk_hash: &[MerkleHash],
+        chunk_hash: &MerkleHash,
         salt: &[u8; 32],
-    ) -> Result<Vec<PathBuf>> {
-        let mut shards = HashSet::new();
-
+    ) -> Result<Option<PathBuf>> {
         let read_txn = self.global_dedup_db_env.read_txn().map_err(map_heed_db_error)?;
 
-        for h in chunk_hash {
-            if let Ok(sh) = with_salt(h, salt) {
-                if let Some(shard) = self.global_dedup_table.get(&read_txn, &sh).map_err(map_heed_db_error)? {
-                    shards.insert(shard);
-                }
+        let Some(shard_cache_dir) = self.shard_cache_dir.as_ref() else {
+            return Err(CasClientError::Other("Shard cache directory not set for get_dedup_shards.".to_owned()));
+        };
+
+        if let Ok(sh) = with_salt(chunk_hash, salt) {
+            if let Some(shard) = self.global_dedup_table.get(&read_txn, &sh).map_err(map_heed_db_error)? {
+                let filename = shard_file_name(&shard);
+                let dest = shard_cache_dir.join(&filename);
+                std::fs::copy(self.shard_dir.join(&filename), &dest)?;
+                return Ok(Some(dest));
             }
         }
-
-        let mut ret = Vec::with_capacity(shards.len());
-        for shard in shards {
-            let filename = shard_file_name(&shard);
-            let dest = self.shard_cache_dir.join(&filename);
-            std::fs::copy(self.shard_dir.join(&filename), &dest)?;
-            ret.push(dest);
-        }
-
-        Ok(ret)
+        Ok(None)
     }
 }
 
@@ -679,9 +670,12 @@ mod tests {
         assert_ne!(dedup_hashes.len(), 0);
 
         // Now do the query...
-        let new_shards = client.get_dedup_shards("default", &dedup_hashes, &[1; 32]).await.unwrap();
+        let new_shard = client
+            .query_for_global_dedup_shard("default", &dedup_hashes[0], &[1; 32])
+            .await
+            .unwrap()
+            .unwrap();
 
-        assert_eq!(new_shards.len(), 1);
-        assert_eq!(new_shards[0], shard_dir_2.join(shard_file_name(&shard_hash)));
+        assert_eq!(new_shard, shard_dir_2.join(shard_file_name(&shard_hash)));
     }
 }
