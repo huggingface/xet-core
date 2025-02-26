@@ -215,8 +215,8 @@ mod tests {
 
     use super::*;
 
-    const COMP_LEN: u32 = 0x010203;
-    const UNCOMP_LEN: u32 = 0x040506;
+    const COMP_LEN: u32 = 66051;
+    const UNCOMP_LEN: u32 = 131072;
 
     fn assert_chunk_header_deserialize_match(header: &CASChunkHeader, buf: &[u8]) {
         assert_eq!(buf[0], header.version);
