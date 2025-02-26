@@ -21,6 +21,6 @@ pub(crate) fn create_cas_client(
             &cas_storage_config.cache_config,
             dry_run,
         ))),
-        Endpoint::FileSystem(ref path) => Ok(Arc::new(LocalClient::new(path)?)),
+        Endpoint::FileSystem(ref path) => Ok(Arc::new(LocalClient::new(path, None)?)),
     }
 }

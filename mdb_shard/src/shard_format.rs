@@ -1350,9 +1350,46 @@ pub mod test_routines {
         contains_verification: bool,
         contains_metadata_ext: bool,
     ) -> Result<MDBInMemoryShard> {
+        gen_random_shard_impl(
+            seed,
+            cas_block_sizes,
+            file_chunk_range_sizes,
+            contains_verification,
+            contains_metadata_ext,
+            false,
+        )
+    }
+
+    pub fn gen_random_shard_with_cas_references(
+        seed: u64,
+        cas_block_sizes: &[usize],
+        file_chunk_range_sizes: &[usize],
+        contains_verification: bool,
+        contains_metadata_ext: bool,
+    ) -> Result<MDBInMemoryShard> {
+        gen_random_shard_impl(
+            seed,
+            cas_block_sizes,
+            file_chunk_range_sizes,
+            contains_verification,
+            contains_metadata_ext,
+            true,
+        )
+    }
+
+    pub fn gen_random_shard_impl(
+        seed: u64,
+        cas_block_sizes: &[usize],
+        file_chunk_range_sizes: &[usize],
+        contains_verification: bool,
+        contains_metadata_ext: bool,
+        files_cross_reference_cas: bool,
+    ) -> Result<MDBInMemoryShard> {
         // generate the cas content stuff.
         let mut shard = MDBInMemoryShard::default();
         let mut rng = StdRng::seed_from_u64(seed);
+
+        let mut cas_nodes = Vec::new();
 
         for cas_block_size in cas_block_sizes {
             let mut cas_block = Vec::<_>::new();
@@ -1363,19 +1400,32 @@ pub mod test_routines {
                 pos += rng.gen_range(10000..20000);
             }
 
-            shard.add_cas_block(MDBCASInfo {
+            let cas_block = MDBCASInfo {
                 metadata: CASChunkSequenceHeader::new(rng_hash(rng.gen()), *cas_block_size, pos),
                 chunks: cas_block,
-            })?;
+            };
+
+            if files_cross_reference_cas {
+                cas_nodes.push(cas_block.clone());
+            }
+
+            shard.add_cas_block(cas_block)?;
         }
 
         for file_block_size in file_chunk_range_sizes {
-            shard.add_file_reconstruction_info(gen_random_file_info(
-                &mut rng,
-                file_block_size,
-                contains_verification,
-                contains_metadata_ext,
-            ))?;
+            let file_info = if files_cross_reference_cas {
+                gen_random_file_info_with_cas_references(
+                    &mut rng,
+                    &cas_nodes,
+                    file_block_size,
+                    contains_verification,
+                    contains_metadata_ext,
+                )
+            } else {
+                gen_random_file_info(&mut rng, file_block_size, contains_verification, contains_metadata_ext)
+            };
+
+            shard.add_file_reconstruction_info(file_info)?;
         }
 
         Ok(shard)
@@ -1394,6 +1444,58 @@ pub mod test_routines {
                 let lb = rng.gen_range(0..10000);
                 let ub = lb + rng.gen_range(0..10000);
                 FileDataSequenceEntry::new(rng_hash(rng.gen()), ub - lb, lb, ub)
+            })
+            .collect();
+
+        let verification = if contains_verification {
+            file_contents
+                .iter()
+                .map(|_| FileVerificationEntry::new(rng_hash(rng.gen())))
+                .collect()
+        } else {
+            vec![]
+        };
+
+        let metadata_ext = contains_metadata_ext.then(|| rng_hash(rng.gen())).map(FileMetadataExt::new);
+
+        MDBFileInfo {
+            metadata: FileDataSequenceHeader::new(
+                file_hash,
+                *file_block_size,
+                contains_verification,
+                metadata_ext.is_some(),
+            ),
+            segments: file_contents,
+            verification,
+            metadata_ext,
+        }
+    }
+
+    pub fn gen_random_file_info_with_cas_references(
+        rng: &mut StdRng,
+        cas_nodes: &[MDBCASInfo],
+        file_block_size: &usize,
+        contains_verification: bool,
+        contains_metadata_ext: bool,
+    ) -> MDBFileInfo {
+        let file_hash = rng_hash(rng.gen()); // Not verified at the moment.
+
+        let file_contents: Vec<_> = (0..*file_block_size)
+            .map(|_| {
+                let cas_idx = rng.gen_range(0..cas_nodes.len());
+                let cas_block = &cas_nodes[cas_idx];
+                let start_idx = rng.gen_range(0..cas_block.chunks.len());
+                let end_idx = rng.gen_range((start_idx + 1)..=(cas_nodes[cas_idx].chunks.len()));
+
+                FileDataSequenceEntry::new(
+                    cas_block.metadata.cas_hash,
+                    cas_block.chunks[start_idx..end_idx]
+                        .iter()
+                        .map(|c| c.unpacked_segment_bytes)
+                        .sum(),
+                    start_idx as u32,
+                    end_idx as u32,
+                )
             })
             .collect();
 
