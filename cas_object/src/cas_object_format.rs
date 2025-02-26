@@ -531,6 +531,10 @@ impl CasObjectInfo {
             )))
         }
     }
+
+    pub fn upgrade_v0_to_v1<R: Read + Seek>(self, xorb_reader: &mut R) -> Result<Self, CasObjectError> {
+        todo!();
+    }
 }
 
 #[derive(Clone, PartialEq, Eq, Debug, Serialize)]
