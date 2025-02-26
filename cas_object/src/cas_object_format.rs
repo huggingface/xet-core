@@ -29,7 +29,236 @@ const CAS_OBJECT_INFO_DEFAULT_LENGTH: u32 = 60;
 
 #[derive(Clone, PartialEq, Eq, Debug, Serialize)]
 /// Info struct for [CasObject]. This is stored at the end of the XORB.
-pub struct CasObjectInfo {
+pub struct CasObjectInfoV1 {
+    /// CAS identifier: "XETBLOB"
+    pub ident: CasObjectIdent,
+
+    /// Format version, expected to be 0 right now.
+    pub version: u8,
+
+    /// 256-bits, 32-bytes, The CAS Hash of this Xorb.
+    pub cashash: MerkleHash,
+
+    /// Total number of chunks in the Xorb. Length of chunk_boundary_offsets & chunk_hashes vectors.
+    pub num_chunks: u32,
+
+    /// Byte offset marking the boundary of each chunk. Length of vector is num_chunks.
+    ///
+    /// This vector only contains boundaries, so assumes the first chunk starts at offset 0.
+    /// The final entry in vector is the total length of the chunks.
+    /// See example below.
+    /// chunk[n] are bytes in [chunk_boundary_offsets[n-1], chunk_boundary_offsets[n])
+    /// ```
+    /// // ex.             chunks: [  0,   1,   2,   3 ]
+    /// // chunk_boundary_offsets: [ 100, 200, 300, 400]
+    /// ```
+    pub chunk_boundary_offsets: Vec<u32>,
+
+    /// Merklehash for each chunk stored in the Xorb. Length of vector is num_chunks.
+    pub chunk_hashes: Vec<MerkleHash>,
+
+    #[serde(skip)]
+    /// Unused 16-byte buffer to allow for future extensibility.
+    _buffer: [u8; 16],
+}
+
+impl Default for CasObjectInfoV1 {
+    fn default() -> Self {
+        CasObjectInfoV1 {
+            ident: CAS_OBJECT_FORMAT_IDENT,
+            version: CAS_OBJECT_FORMAT_VERSION,
+            cashash: MerkleHash::default(),
+            num_chunks: 0,
+            chunk_boundary_offsets: Vec::new(),
+            chunk_hashes: Vec::new(),
+            _buffer: Default::default(),
+        }
+    }
+}
+
+impl CasObjectInfoV1 {
+    /// Serialize CasObjectInfo to provided Writer.
+    ///
+    /// Assumes caller has set position of Writer to appropriate location for serialization.
+    pub fn serialize<W: Write>(&self, writer: &mut W) -> Result<usize, CasObjectError> {
+        let mut total_bytes_written = 0;
+
+        // Helper function to write data and update the byte count
+        let mut write_bytes = |data: &[u8]| -> Result<(), Error> {
+            writer.write_all(data)?;
+            total_bytes_written += data.len();
+            Ok(())
+        };
+
+        // Write fixed-size fields, in order: ident, version, cashash, num_chunks
+        write_bytes(&self.ident)?;
+        write_bytes(&[self.version])?;
+        write_bytes(self.cashash.as_bytes())?;
+        write_bytes(&self.num_chunks.to_le_bytes())?;
+
+        // write variable field: chunk boundaries & hashes
+        for offset in &self.chunk_boundary_offsets {
+            write_bytes(&offset.to_le_bytes())?;
+        }
+        for hash in &self.chunk_hashes {
+            write_bytes(hash.as_bytes())?;
+        }
+
+        // write closing metadata
+        write_bytes(&self._buffer)?;
+
+        Ok(total_bytes_written)
+    }
+
+    /// Construct CasObjectInfo object from Reader + Seek.
+    ///
+    /// Expects metadata struct is found at end of Reader, written out in struct order.
+    pub fn deserialize<R: Read>(reader: &mut R) -> Result<(Self, u32), CasObjectError> {
+        let mut total_bytes_read: u32 = 0;
+
+        // Helper function to read data and update the byte count
+        let mut read_bytes = |data: &mut [u8]| -> Result<(), CasObjectError> {
+            reader.read_exact(data)?;
+            total_bytes_read += data.len() as u32;
+            Ok(())
+        };
+
+        let mut ident = [0u8; 7];
+        read_bytes(&mut ident)?;
+
+        if ident != CAS_OBJECT_FORMAT_IDENT {
+            return Err(CasObjectError::FormatError(anyhow!("Xorb Invalid Ident")));
+        }
+
+        let mut version = [0u8; 1];
+        read_bytes(&mut version)?;
+
+        if version[0] != CAS_OBJECT_FORMAT_VERSION {
+            return Err(CasObjectError::FormatError(anyhow!("Xorb Invalid Format Version")));
+        }
+
+        let mut buf = [0u8; size_of::<MerkleHash>()];
+        read_bytes(&mut buf)?;
+        let cashash = MerkleHash::from(&buf);
+
+        let mut num_chunks = [0u8; size_of::<u32>()];
+        read_bytes(&mut num_chunks)?;
+        let num_chunks = u32::from_le_bytes(num_chunks);
+
+        let mut chunk_boundary_offsets = Vec::with_capacity(num_chunks as usize);
+        for _ in 0..num_chunks {
+            let mut offset = [0u8; size_of::<u32>()];
+            read_bytes(&mut offset)?;
+            chunk_boundary_offsets.push(u32::from_le_bytes(offset));
+        }
+        let mut chunk_hashes = Vec::with_capacity(num_chunks as usize);
+        for _ in 0..num_chunks {
+            let mut hash = [0u8; size_of::<MerkleHash>()];
+            read_bytes(&mut hash)?;
+            chunk_hashes.push(MerkleHash::from(&hash));
+        }
+
+        let mut _buffer = [0u8; 16];
+        read_bytes(&mut _buffer)?;
+
+        Ok((
+            CasObjectInfoV1 {
+                ident,
+                version: version[0],
+                cashash,
+                num_chunks,
+                chunk_boundary_offsets,
+                chunk_hashes,
+                _buffer,
+            },
+            total_bytes_read,
+        ))
+    }
+
+    /// Construct CasObjectInfo object from AsyncRead.
+    /// assumes that the ident and version have already been read and verified.
+    ///
+    /// verifies that the length of the footer data matches the length field at the very end of the buffer
+    pub async fn deserialize_async<R: futures::io::AsyncRead + Unpin>(
+        reader: &mut R,
+        version: u8,
+    ) -> Result<(Self, u32), CasObjectError> {
+        // already read 8 bytes (ident + version)
+        let mut total_bytes_read: u32 = (size_of::<CasObjectIdent>() + size_of::<u8>()) as u32;
+
+        // Helper function to read data and update the byte count
+        async fn read_bytes<R: futures::io::AsyncRead + Unpin>(
+            reader: &mut R,
+            total_bytes_read: &mut u32,
+            buf: &mut [u8],
+        ) -> Result<(), CasObjectError> {
+            reader.read_exact(buf).await?;
+            *total_bytes_read += buf.len() as u32;
+            Ok(())
+        }
+
+        // notable difference from non-async version, we skip reading the ident and version
+        // these fields have been verified before.
+
+        let mut buf = [0u8; size_of::<MerkleHash>()];
+        read_bytes(reader, &mut total_bytes_read, &mut buf).await?;
+        let cashash = MerkleHash::from(&buf);
+
+        let mut num_chunks = [0u8; size_of::<u32>()];
+        read_bytes(reader, &mut total_bytes_read, &mut num_chunks).await?;
+        let num_chunks = u32::from_le_bytes(num_chunks);
+
+        let mut chunk_boundary_offsets = Vec::with_capacity(num_chunks as usize);
+        for _ in 0..num_chunks {
+            let mut offset = [0u8; size_of::<u32>()];
+            read_bytes(reader, &mut total_bytes_read, &mut offset).await?;
+            chunk_boundary_offsets.push(u32::from_le_bytes(offset));
+        }
+        let mut chunk_hashes = Vec::with_capacity(num_chunks as usize);
+        for _ in 0..num_chunks {
+            let mut hash = [0u8; size_of::<MerkleHash>()];
+            read_bytes(reader, &mut total_bytes_read, &mut hash).await?;
+            chunk_hashes.push(MerkleHash::from(&hash));
+        }
+
+        let mut _buffer = [0u8; 16];
+        read_bytes(reader, &mut total_bytes_read, &mut _buffer).await?;
+
+        let mut info_length_buf = [0u8; size_of::<u32>()];
+        // not using read_bytes since we do not want to count these bytes in total_bytes_read
+        // the info_length u32 is not counted in its value
+        reader.read_exact(&mut info_length_buf).await?;
+        let info_length = u32::from_le_bytes(info_length_buf);
+
+        if info_length != total_bytes_read {
+            return Err(CasObjectError::FormatError(anyhow!("Xorb Info Format Error")));
+        }
+
+        // verify we've read to the end
+        if reader.read(&mut [0u8; 8]).await? != 0 {
+            return Err(CasObjectError::FormatError(anyhow!(
+                "Xorb Reader has content past the end of serialized xorb"
+            )));
+        }
+
+        Ok((
+            CasObjectInfoV1 {
+                ident: CAS_OBJECT_FORMAT_IDENT,
+                version,
+                cashash,
+                num_chunks,
+                chunk_boundary_offsets,
+                chunk_hashes,
+                _buffer,
+            },
+            total_bytes_read,
+        ))
+    }
+}
+
+#[derive(Clone, PartialEq, Eq, Debug, Serialize)]
+/// Info struct for [CasObject]. This is stored at the end of the XORB.
+pub struct CasObjectInfoV2 {
     /// CAS identifier: "XETBLOB"
     pub ident: CasObjectIdent,
 
@@ -94,9 +323,9 @@ pub struct CasObjectInfo {
     _buffer: [u8; 16],
 }
 
-impl Default for CasObjectInfo {
+impl Default for CasObjectInfoV2 {
     fn default() -> Self {
-        CasObjectInfo {
+        CasObjectInfoV2 {
             ident: CAS_OBJECT_FORMAT_IDENT,
             version: CAS_OBJECT_FORMAT_VERSION,
             cashash: MerkleHash::default(),
@@ -115,7 +344,7 @@ impl Default for CasObjectInfo {
     }
 }
 
-impl CasObjectInfo {
+impl CasObjectInfoV2 {
     /// Serialize CasObjectInfo to provided Writer.
     ///
     /// Assumes caller has set position of Writer to appropriate location for serialization.
@@ -219,7 +448,7 @@ impl CasObjectInfo {
         read_bytes(&mut _buffer)?;
 
         Ok((
-            CasObjectInfo {
+            CasObjectInfoV2 {
                 ident: CAS_OBJECT_FORMAT_IDENT,
                 version: 0,
                 cashash,
@@ -407,7 +636,7 @@ impl CasObjectInfo {
         }
 
         Ok((
-            CasObjectInfo {
+            CasObjectInfoV2 {
                 ident: CAS_OBJECT_FORMAT_IDENT,
                 version: 0,
                 cashash,
@@ -532,7 +761,7 @@ impl CasObjectInfo {
         }
     }
 
-    pub fn upgrade_v0_to_v1<R: Read + Seek>(self, xorb_reader: &mut R) -> Result<Self, CasObjectError> {
+    pub fn from_v0<R: Read + Seek>(_s: CasObjectInfoV1, _xorb_reader: &mut R) -> Result<Self, CasObjectError> {
         todo!();
     }
 }
@@ -553,7 +782,7 @@ impl CasObjectInfo {
 /// [END OF XORB]
 pub struct CasObject {
     /// CasObjectInfo block see [CasObjectInfo] for details.
-    pub info: CasObjectInfo,
+    pub info: CasObjectInfoV2,
 
     /// Length of entire info block.
     ///
@@ -596,7 +825,7 @@ impl CasObject {
         // now seek back that many bytes + size of length (u32) and read sequentially.
         reader.seek(std::io::SeekFrom::End(-(size_of::<u32>() as i64 + info_length as i64)))?;
 
-        let (info, total_bytes_read) = CasObjectInfo::deserialize(reader)?;
+        let (info, total_bytes_read) = CasObjectInfoV2::deserialize(reader)?;
 
         // validate that info_length matches what we read off of header
         if total_bytes_read != info_length {
@@ -612,7 +841,7 @@ impl CasObject {
         reader: &mut R,
         version: u8,
     ) -> Result<Self, CasObjectError> {
-        let (info, info_length) = CasObjectInfo::deserialize_async(reader, version).await?;
+        let (info, info_length) = CasObjectInfoV2::deserialize_async(reader, version).await?;
         Ok(Self { info, info_length })
     }
 
