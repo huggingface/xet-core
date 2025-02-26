@@ -160,6 +160,9 @@ fn bg4_lz4_decompress_from_reader<R: Read, W: Write>(reader: &mut R, writer: &mu
 
 pub struct BG4Predictor {
     histograms: [[u32; 9]; 4],
+
+    #[cfg(debug_assertions)]
+    histograms_check: [[u32; 9]; 4],
 }
 
 /// Put this logic in.
@@ -173,6 +176,9 @@ impl BG4Predictor {
     pub fn new() -> Self {
         Self {
             histograms: [[0u32; 9]; 4],
+
+            #[cfg(debug_assertions)]
+            histograms_check: [[0u32; 9]; 4],
         }
     }
 
@@ -183,7 +189,7 @@ impl BG4Predictor {
             let end_ptr = ptr.add(data.len());
             let mut idx = (offset % 4) as u32;
 
-            let dest_ptr = self.histograms.as_mut_ptr() as *mut u8;
+            let dest_ptr = self.histograms.as_mut_ptr() as *mut u32;
 
             while ptr != end_ptr {
                 let n_ones = (*ptr).count_ones();
@@ -192,6 +198,14 @@ impl BG4Predictor {
                 ptr = ptr.add(1);
                 idx += 1
             }
+        }
+
+        #[cfg(debug_assertions)]
+        {
+            for (i, &x) in data.iter().enumerate() {
+                self.histograms_check[(i + offset) % 4][x.count_ones() as usize] += 1;
+            }
+            assert_eq!(self.histograms_check, self.histograms);
         }
     }
 
@@ -340,8 +354,9 @@ mod tests {
                 let lz4_compressed = lz4_compress_from_slice(&data).unwrap();
                 let lz4_uncompressed = lz4_decompress_from_slice(&lz4_compressed).unwrap();
                 assert_eq!(data, lz4_uncompressed);
+                let compression_scheme_predictor = CompressionScheme::choose_from_data(&data);
                 println!(
-                    "Compression ratio: {:.2}, {:.2}",
+                    "Compression ratio: {:.2}, {:.2} (KL predicted = {compression_scheme_predictor:?}",
                     data.len() as f32 / bg4_lz4_compressed.len() as f32,
                     data.len() as f32 / lz4_compressed.len() as f32
                 );
