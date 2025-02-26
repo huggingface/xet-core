@@ -373,6 +373,7 @@ impl TokenRefresher for UploadTokenRefresher {
 async fn download_from_bridge(args: BridgeArgs, _threadpool: Arc<ThreadPool>, repo_id: String) -> Result<()> {
     let access_key = "cas";
     let s3_config = aws_sdk_s3::Config::builder()
+        .behavior_version(BehaviorVersion::v2024_03_28())
         .force_path_style(true)
         .region(Region::new("us-east-1"))
         .endpoint_url(args.endpoint)
