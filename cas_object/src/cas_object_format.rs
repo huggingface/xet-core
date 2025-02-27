@@ -911,6 +911,20 @@ impl CasObject {
         Ok((cas, total_written_bytes))
     }
 
+    pub fn serialize_given_info<W: Write + Seek>(
+        w: &mut W,
+        info: CasObjectInfoV1,
+    ) -> Result<(Self, usize), CasObjectError> {
+        let mut total_written_bytes: usize = 0;
+        let info_length = info.serialize(w)? as u32;
+        total_written_bytes += info_length as usize;
+        write_u32(w, info_length)?;
+        total_written_bytes += size_of::<u32>();
+
+        let cas_object = Self { info, info_length };
+        Ok((cas_object, total_written_bytes))
+    }
+
     /// Validate CasObject.
     /// Verifies each chunk is valid and correctly represented in CasObjectInfo, along with
     /// recomputing the hash and validating it matches CasObjectInfo.
