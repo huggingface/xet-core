@@ -482,8 +482,9 @@ impl CasObjectInfoV1 {
         s.version = read_u8(r)?;
 
         if s.version == CAS_OBJECT_FORMAT_VERSION_V0 {
-            let (sv0, _) = CasObjectInfoV0::deserialize_v0(r)?;
-            return Ok((Self::from_v0(sv0), r.reader_bytes() as u32));
+            let (sv0, n) = CasObjectInfoV0::deserialize_v0(r)?;
+            // we don't have the missing info (unpacked_chunk_offsets), it's OK
+            return Ok((Self::from_v0(sv0), n));
         } else if s.version != CAS_OBJECT_FORMAT_VERSION {
             return Err(CasObjectError::FormatError(anyhow!("Xorb Invalid Format Version")));
         }
@@ -589,13 +590,13 @@ impl CasObjectInfoV1 {
         let mut counting_reader = countio::Counter::new(reader);
         let r = &mut counting_reader;
 
-        let mut s = Self::default();
-
-        // These have been read already above this
-        s.ident = CAS_OBJECT_FORMAT_IDENT;
-        s.version = CAS_OBJECT_FORMAT_VERSION;
-
-        s.cashash = read_hash_async(r).await?;
+        // ident and version have been read already above
+        let mut s = Self {
+            ident: CAS_OBJECT_FORMAT_IDENT,
+            version: CAS_OBJECT_FORMAT_VERSION,
+            cashash: read_hash_async(r).await?,
+            ..Default::default()
+        };
 
         //////////////////////////////////////////////////////////////////////////////////////////////
         // Hash section
@@ -695,6 +696,7 @@ impl CasObjectInfoV1 {
     ) -> Result<(Self, u32), CasObjectError> {
         if version == 0 {
             let (s, n) = CasObjectInfoV0::deserialize_async(reader, 0).await?;
+            // we don't have the missing info (unpacked_chunk_offsets), it's OK
             Ok((Self::from_v0(s), n))
         } else if version == 1 {
             Self::deserialize_async_v1(reader).await
@@ -778,10 +780,6 @@ impl CasObjectInfoV1 {
             + size_of_val(&self._num_chunks_2)
             + self.chunk_hashes.len() * size_of::<MerkleHash>()) as u32
             + self.boundary_section_offset_from_end;
-    }
-
-    pub fn fill_in_missing_v0_sections(self, mut data: impl Read + Seek) -> Self {
-        todo!();
     }
 }
 
