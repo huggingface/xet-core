@@ -9,7 +9,7 @@ use utils::auth::TokenRefresher;
 use xet_threadpool::ThreadPool;
 
 use super::hub_client::{HubClient, HubClientTokenRefresher};
-use crate::data_client::{clean_file, default_config, xorb_compression_for_repo_type};
+use crate::data_client::{clean_file, default_config};
 use crate::errors::DataProcessingError;
 use crate::{FileUploadSession, PointerFile};
 
@@ -56,9 +56,6 @@ pub async fn migrate_files_impl(
     compression: Option<CompressionScheme>,
     dry_run: bool,
 ) -> Result<(Vec<MDBFileInfo>, Vec<(PointerFile, u64)>, u64)> {
-    let compression = compression.unwrap_or_else(|| xorb_compression_for_repo_type(&hub_client.repo_type));
-    eprintln!("Using {compression} compression");
-
     let token_type = "write";
     let (endpoint, jwt_token, jwt_token_expiry) = hub_client.get_jwt_token(token_type).await?;
     let token_refresher = Arc::new(HubClientTokenRefresher {
@@ -68,7 +65,7 @@ pub async fn migrate_files_impl(
     }) as Arc<dyn TokenRefresher>;
 
     let (config, _tempdir) =
-        default_config(endpoint, Some(compression), Some((jwt_token, jwt_token_expiry)), Some(token_refresher))?;
+        default_config(endpoint, compression, Some((jwt_token, jwt_token_expiry)), Some(token_refresher))?;
 
     let num_workers = if sequential { 1 } else { threadpool.num_worker_threads() };
     let processor = if dry_run {

@@ -76,7 +76,8 @@ impl CASChunkHeader {
                 self.get_compressed_length()
             )));
         }
-        if self.get_compressed_length() as usize > MAXIMUM_CHUNK_SIZE * 2 {
+        // the max chunk size is strictly enforced
+        if self.get_uncompressed_length() as usize > MAXIMUM_CHUNK_SIZE {
             return Err(CasObjectError::FormatError(anyhow!(
                 "chunk header uncompressed length too large at {}, maximum: {MAXIMUM_CHUNK_SIZE}",
                 self.get_uncompressed_length()
@@ -110,8 +111,10 @@ fn convert_three_byte_num(buf: &[u8; 3]) -> u32 {
 pub fn serialize_chunk<W: Write>(
     chunk: &[u8],
     w: &mut W,
-    compression_scheme: CompressionScheme,
+    compression_scheme: Option<CompressionScheme>,
 ) -> Result<usize, CasObjectError> {
+    let compression_scheme = compression_scheme.unwrap_or_else(|| CompressionScheme::choose_from_data(chunk));
+
     let compressed = compression_scheme.compress_from_slice(chunk)?;
 
     // set compression scheme and compressed data buffer to no compression if the compressed
@@ -214,8 +217,8 @@ mod tests {
 
     use super::*;
 
-    const COMP_LEN: u32 = 0x010203;
-    const UNCOMP_LEN: u32 = 0x040506;
+    const COMP_LEN: u32 = 66051;
+    const UNCOMP_LEN: u32 = 131072;
 
     fn assert_chunk_header_deserialize_match(header: &CASChunkHeader, buf: &[u8]) {
         assert_eq!(buf[0], header.version);
@@ -276,7 +279,7 @@ mod tests {
         let mut out = Vec::new();
         for _ in 0..num_chunks {
             let data = gen_random_bytes(CHUNK_SIZE as u32);
-            serialize_chunk(&data, &mut out, compression_scheme).unwrap();
+            serialize_chunk(&data, &mut out, Some(compression_scheme)).unwrap();
         }
         out
     }
