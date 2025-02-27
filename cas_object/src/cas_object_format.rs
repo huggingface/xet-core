@@ -1,6 +1,6 @@
 use std::cmp::min;
 use std::io::{Cursor, Read, Seek, Write};
-use std::mem::size_of;
+use std::mem::{size_of, size_of_val};
 
 use anyhow::anyhow;
 use bytes::Buf;
