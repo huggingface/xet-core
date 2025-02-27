@@ -698,6 +698,10 @@ impl CasObjectInfoV1 {
             + self.chunk_hashes.len() * size_of::<u32>()) as u32
             + self.boundary_section_offset_from_end;
     }
+
+    pub fn fill_in_missing_v0_sections(self, mut data: impl Read + Seek) -> Self {
+        todo!();
+    }
 }
 
 #[derive(Clone, PartialEq, Eq, Debug, Serialize)]
