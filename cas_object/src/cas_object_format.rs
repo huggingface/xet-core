@@ -681,6 +681,38 @@ impl CasObjectInfoV1 {
         s
     }
 
+    pub fn from_v0_with_unpacked_chunk_offsets(src: CasObjectInfoV0, unpacked_chunk_offsets: Vec<u32>) -> Self {
+        if unpacked_chunk_offsets.len() != src.chunk_boundary_offsets.len() {
+            warn!(
+                "unpacked_chunk_offsets len ({}) does not match src chunk_boundary_offsets len ({})",
+                unpacked_chunk_offsets.len(),
+                src.chunk_boundary_offsets.len()
+            );
+        }
+        // Fill in all the appropriate fields from the V0 version.
+        let mut s = Self {
+            ident: src.ident,
+            version: 1,
+            cashash: src.cashash,
+            ident_hash_section: CAS_OBJECT_FORMAT_IDENT_HASHES,
+            hashes_version: CAS_OBJECT_FORMAT_HASHES_VERSION,
+            _num_chunks_2: src.num_chunks,
+            chunk_hashes: src.chunk_hashes,
+            ident_boundary_section: CAS_OBJECT_FORMAT_IDENT_BOUNDARIES,
+            boundaries_version: CAS_OBJECT_FORMAT_BOUNDARIES_VERSION_NO_UNPACKED_INFO,
+            _num_chunks_3: src.num_chunks,
+            chunk_boundary_offsets: src.chunk_boundary_offsets,
+            unpacked_chunk_offsets,
+            num_chunks: src.num_chunks,
+            hashes_section_offset_from_end: 0,
+            boundary_section_offset_from_end: 0,
+            _buffer: Default::default(),
+        };
+
+        s.fill_in_boundary_offsets();
+        s
+    }
+
     fn fill_in_boundary_offsets(&mut self) {
         self.boundary_section_offset_from_end = (size_of_val(&self.ident_boundary_section)
             + size_of_val(&self.boundaries_version)

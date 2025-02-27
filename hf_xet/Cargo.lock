@@ -271,6 +271,7 @@ dependencies = [
  "anyhow",
  "blake3",
  "bytes",
+ "countio",
  "error_printer",
  "futures",
  "half",
@@ -283,6 +284,7 @@ dependencies = [
  "tokio",
  "tokio-util",
  "tracing",
+ "utils",
 ]
 
 [[package]]
@@ -425,6 +427,15 @@ name = "core-foundation-sys"
 version = "0.8.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "773648b94d0e5d620f64f280777445740e61fe701025087ec8b57f45c791888b"
+
+[[package]]
+name = "countio"
+version = "0.2.19"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cdbee2fbff35a44b492c859b1b2e32e94b631f1d3ea2831dd8393861564180e3"
+dependencies = [
+ "futures-io",
+]
 
 [[package]]
 name = "cpp_demangle"
@@ -1588,9 +1599,9 @@ dependencies = [
 
 [[package]]
 name = "log"
-version = "0.4.22"
+version = "0.4.26"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a7a70ba024b9dc04c27ea2f0c0548feb474ec5c54bba33a7f72f873a39d07b24"
+checksum = "30bde2b3dc3671ae49d8e2e9f044c7c005836e7a023ee57cffa25ab82764bb9e"
 
 [[package]]
 name = "lz4_flex"
