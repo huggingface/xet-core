@@ -82,6 +82,15 @@ pub fn read_bytes<R: Read>(reader: &mut R, val: &mut [u8]) -> Result<(), std::io
 }
 
 #[inline]
+pub fn read_u32s<R: Read>(reader: &mut R, vs: &mut [u32]) -> Result<(), std::io::Error> {
+    for e in vs.iter_mut() {
+        *e = read_u32(reader)?;
+    }
+
+    Ok(())
+}
+
+#[inline]
 pub fn read_u64s<R: Read>(reader: &mut R, vs: &mut [u64]) -> Result<(), std::io::Error> {
     for e in vs.iter_mut() {
         *e = read_u64(reader)?;
@@ -111,6 +120,17 @@ pub async fn read_u32_async<R: futures::io::AsyncRead + Unpin>(reader: &mut R) -
     let mut buf = [0u8; size_of::<u32>()];
     reader.read_exact(&mut buf[..]).await?;
     Ok(u32::from_le_bytes(buf))
+}
+
+#[inline]
+pub async fn read_u32s_async<R: futures::io::AsyncRead + Unpin>(
+    reader: &mut R,
+    vs: &mut [u32],
+) -> Result<(), std::io::Error> {
+    for v in vs.iter_mut() {
+        *v = read_u32_async(reader).await?;
+    }
+    Ok(())
 }
 
 #[inline]
