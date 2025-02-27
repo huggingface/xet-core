@@ -750,7 +750,7 @@ impl CasObjectInfoV1 {
             _num_chunks_2: src.num_chunks,
             chunk_hashes: src.chunk_hashes,
             ident_boundary_section: CAS_OBJECT_FORMAT_IDENT_BOUNDARIES,
-            boundaries_version: CAS_OBJECT_FORMAT_BOUNDARIES_VERSION_NO_UNPACKED_INFO,
+            boundaries_version: CAS_OBJECT_FORMAT_BOUNDARIES_VERSION,
             _num_chunks_3: src.num_chunks,
             chunk_boundary_offsets: src.chunk_boundary_offsets,
             unpacked_chunk_offsets,
