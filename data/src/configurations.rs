@@ -17,7 +17,7 @@ pub enum Endpoint {
 #[derive(Debug)]
 pub struct StorageConfig {
     pub endpoint: Endpoint,
-    pub compression: CompressionScheme,
+    pub compression: Option<CompressionScheme>,
     pub auth: Option<AuthConfig>,
     pub prefix: String,
     pub cache_config: Option<CacheConfig>,
