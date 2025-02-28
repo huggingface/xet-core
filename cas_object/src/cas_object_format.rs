@@ -463,9 +463,9 @@ impl CasObjectInfoV1 {
         s.version = read_u8(r)?;
 
         if s.version == CAS_OBJECT_FORMAT_VERSION_V0 {
-            let (sv0, n) = CasObjectInfoV0::deserialize_v0(r)?;
+            let (sv0, _) = CasObjectInfoV0::deserialize_v0(r)?;
             // we don't have the missing info (unpacked_chunk_offsets), it's OK
-            return Ok((Self::from_v0(sv0), n));
+            return Ok((Self::from_v0(sv0), r.reader_bytes() as u32));
         } else if s.version != CAS_OBJECT_FORMAT_VERSION {
             return Err(CasObjectError::FormatError(anyhow!("Xorb Invalid Format Version")));
         }
@@ -1766,5 +1766,47 @@ mod tests {
         let mut unpacked_chunk_offsets = vec![0u32; num_chunks as usize];
         read_u32s(&mut reader, &mut unpacked_chunk_offsets).unwrap();
         assert_eq!(unpacked_chunk_offsets, c.info.unpacked_chunk_offsets);
+    }
+
+    #[test]
+    fn test_deserialize_from_v0_xorb() {
+        // build a v1 xorb
+        let (c, _cas_data, raw_data, raw_chunk_boundaries) =
+            build_cas_object(4, ChunkSize::Random(512, 2048), CompressionScheme::LZ4);
+        let mut buf: Cursor<Vec<u8>> = Cursor::new(Vec::new());
+
+        assert!(CasObject::serialize(
+            &mut buf,
+            &c.info.cashash,
+            &raw_data,
+            &raw_chunk_boundaries,
+            Some(CompressionScheme::LZ4),
+        )
+        .is_ok());
+
+        // Switch V1 footer to V0
+        let mut cas_info_v0 = CasObjectInfoV0::default();
+        cas_info_v0.cashash = c.info.cashash;
+        cas_info_v0.num_chunks = c.info.num_chunks;
+        cas_info_v0.chunk_boundary_offsets = c.info.chunk_boundary_offsets.clone();
+        cas_info_v0.chunk_hashes = c.info.chunk_hashes.clone();
+
+        let mut buf = buf.into_inner();
+        let serialized_chunks_length = c.get_contents_length().unwrap();
+        buf.resize(serialized_chunks_length as usize, 0);
+
+        let mut buf = Cursor::new(buf);
+        buf.seek(std::io::SeekFrom::End(0)).unwrap();
+        let info_length = cas_info_v0.serialize(&mut buf).unwrap() as u32;
+        write_u32(&mut buf, info_length).unwrap();
+
+        let xorb_bytes = buf.into_inner();
+        let mut reader = Cursor::new(xorb_bytes);
+        let ret = CasObject::deserialize(&mut reader).unwrap();
+        assert_eq!(ret.info.cashash, cas_info_v0.cashash);
+        assert_eq!(ret.info.num_chunks, cas_info_v0.num_chunks);
+        assert_eq!(ret.info.chunk_boundary_offsets, cas_info_v0.chunk_boundary_offsets);
+        assert_eq!(ret.info.chunk_hashes, cas_info_v0.chunk_hashes);
+        assert_eq!(ret.info._buffer, cas_info_v0._buffer);
     }
 }
