@@ -429,7 +429,10 @@ impl CasObjectInfoV1 {
         }
         write_u32s(w, &self.unpacked_chunk_offsets)?;
 
-        // Write this out here, though it's written out multiple places.  Here as it applies all over
+        //////////////////////////////////////////////////////////////////////////////////////////////
+        // Constant length end of footer (Toes).
+
+        // Write num_chunks here, though it's written out multiple places. Here as it applies all over
         // the place.
         write_u32(w, self.num_chunks)?;
 

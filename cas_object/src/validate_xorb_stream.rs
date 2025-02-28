@@ -170,30 +170,37 @@ async fn _validate_cas_object_from_async_read<R: AsyncRead + Unpin>(
         return Err(CasObjectError::FormatError(anyhow!("xorb computed hash does not match provided hash")));
     }
 
-    let cas_object = maybe_cas_object.unwrap_or_else(|| {
-        let mut unpacked_offset = 0;
-
-        let mut cas_info = CasObjectInfoV1::default();
-        cas_info.cashash = *hash;
-        cas_info.chunk_hashes = chunk_hash_and_size.iter().map(|chunk| chunk.hash).collect();
-        cas_info.chunk_boundary_offsets = compressed_chunk_boundary_offsets;
-        cas_info.unpacked_chunk_offsets = chunk_hash_and_size
-            .iter()
-            .map(|chunk| {
-                unpacked_offset += chunk.length;
-                unpacked_offset as u32
-            })
-            .collect();
-        cas_info.num_chunks = chunk_hash_and_size.len() as u32;
-        cas_info.fill_in_boundary_offsets();
-
-        CasObject {
-            info: cas_info,
-            info_length: 0,
-        }
-    });
+    let cas_object = maybe_cas_object
+        .unwrap_or_else(|| create_cas_object_from_parts(hash, compressed_chunk_boundary_offsets, chunk_hash_and_size));
 
     Ok((cas_object, go_back_bytes))
+}
+
+fn create_cas_object_from_parts(
+    hash: &MerkleHash,
+    compressed_chunk_boundary_offsets: Vec<u32>,
+    chunk_hash_and_size: Vec<Chunk>,
+) -> CasObject {
+    let mut unpacked_offset = 0;
+
+    let mut cas_info = CasObjectInfoV1::default();
+    cas_info.cashash = *hash;
+    cas_info.chunk_hashes = chunk_hash_and_size.iter().map(|chunk| chunk.hash).collect();
+    cas_info.chunk_boundary_offsets = compressed_chunk_boundary_offsets;
+    cas_info.unpacked_chunk_offsets = chunk_hash_and_size
+        .iter()
+        .map(|chunk| {
+            unpacked_offset += chunk.length;
+            unpacked_offset as u32
+        })
+        .collect();
+    cas_info.num_chunks = chunk_hash_and_size.len() as u32;
+    cas_info.fill_in_boundary_offsets();
+
+    CasObject {
+        info: cas_info,
+        info_length: 0,
+    }
 }
 
 #[cfg(test)]
