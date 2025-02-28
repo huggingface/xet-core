@@ -1,4 +1,4 @@
-use std::mem::size_of;
+use std::mem::{size_of, size_of_val};
 
 use anyhow::anyhow;
 use error_printer::ErrorPrinter;
@@ -205,8 +205,11 @@ mod tests {
     use rand::RngCore;
     use utils::serialization_utils::write_u32;
 
-    use crate::{test_utils::*, CasObjectInfoV0, CAS_OBJECT_FORMAT_VERSION, CAS_OBJECT_FORMAT_VERSION_V0};
-    use crate::{validate_cas_object_from_async_read, CasObject, CompressionScheme};
+    use crate::test_utils::*;
+    use crate::{
+        validate_cas_object_from_async_read, CasObject, CasObjectInfoV0, CompressionScheme, CAS_OBJECT_FORMAT_VERSION,
+        CAS_OBJECT_FORMAT_VERSION_V0,
+    };
 
     const NO_FOOTER_XORB: u8 = u8::MAX;
     const INVALID_FOOTER_XORB: u8 = u8::MAX - 1;
