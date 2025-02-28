@@ -199,6 +199,7 @@ async fn _validate_cas_object_from_async_read<R: AsyncRead + Unpin>(
 #[cfg(test)]
 mod tests {
     use std::io::{Cursor, Seek};
+    use std::mem::size_of;
     use std::u8;
 
     use futures::{AsyncRead, TryStreamExt};
