@@ -18,6 +18,7 @@ thiserror = "2.0"
 error_printer = { path = "../error_printer" }
 merkledb = { path = "../merkledb" }
 merklehash = { path = "../merklehash" }
+utils = { path = "../utils" }
 parutils = { path = "../parutils" }
 anyhow = "1.0.88"
 tracing = "0.1.40"
@@ -28,8 +29,9 @@ blake3 = "1.5.4"
 futures = { version = "0.3.31" }
 tokio-util = { version = "0.7.12", features = ["io"] }
 tokio = { version = "1.41.1" }
-serde = { version = "1.0.129", features = ["derive"] }
 half = "2.4.1"
+serde = { version = "1.0.129", features = ["derive"] }
+countio = { version = "0.2.19", features = ["futures"] }
 clap = { version = "4.1", features = ["derive"] }
 csv = "1.1"
 
