@@ -1705,21 +1705,66 @@ mod tests {
         assert_eq!(c, cas_object);
     }
 
-    // #[test]
-    // fn test_jump_pointer_in_metadata() {
-    //     let (c, _cas_data, raw_data, raw_chunk_boundaries) =
-    //         build_cas_object(4, ChunkSize::Random(512, 2048), CompressionScheme::LZ4);
-    //     let mut buf: Cursor<Vec<u8>> = Cursor::new(Vec::new());
-    //     // Act & Assert
-    //     assert!(CasObject::serialize(
-    //         &mut buf,
-    //         &c.info.cashash,
-    //         &raw_data,
-    //         &raw_chunk_boundaries,
-    //         Some(CompressionScheme::LZ4)
-    //     )
-    //     .is_ok());
+    #[test]
+    fn test_jump_pointer_in_metadata() {
+        let (c, _cas_data, raw_data, raw_chunk_boundaries) =
+            build_cas_object(4, ChunkSize::Random(512, 2048), CompressionScheme::LZ4);
+        let mut buf: Cursor<Vec<u8>> = Cursor::new(Vec::new());
+        // Act & Assert
+        assert!(CasObject::serialize(
+            &mut buf,
+            &c.info.cashash,
+            &raw_data,
+            &raw_chunk_boundaries,
+            Some(CompressionScheme::LZ4)
+        )
+        .is_ok());
 
-    //     let xorb_bytes = buf.into_inner();
-    // }
+        let xorb_bytes = buf.into_inner();
+
+        // Retrieve the jump pointers.
+        const JUMP_POINTER_BUFFER_AND_INFO_LENGTH_SIZE: usize =
+            size_of::<u32>() + size_of::<u32>() + size_of::<[u8; 16]>() + size_of::<u32>();
+
+        let jump_pointer_buffer_and_info_length_bytes =
+            &xorb_bytes[xorb_bytes.len() - JUMP_POINTER_BUFFER_AND_INFO_LENGTH_SIZE..];
+        let mut reader = Cursor::new(jump_pointer_buffer_and_info_length_bytes);
+        let hash_section_offset_from_info_end = read_u32(&mut reader).unwrap();
+        let boundary_section_offset_from_info_end = read_u32(&mut reader).unwrap();
+
+        // Now verify the hashes section
+        let hash_section =
+            &xorb_bytes[xorb_bytes.len() - size_of::<u32>() - hash_section_offset_from_info_end as usize..];
+        let mut reader = Cursor::new(hash_section);
+
+        let mut ident_hash_section = [0u8; 7];
+        read_bytes(&mut reader, &mut ident_hash_section).unwrap();
+        assert_eq!(ident_hash_section, c.info.ident_hash_section);
+        let hashes_version = read_u8(&mut reader).unwrap();
+        assert_eq!(hashes_version, c.info.hashes_version);
+        let num_chunks = read_u32(&mut reader).unwrap();
+        let mut chunk_hashes = vec![];
+        for _ in 0..num_chunks {
+            chunk_hashes.push(read_hash(&mut reader).unwrap());
+        }
+        assert_eq!(chunk_hashes, c.info.chunk_hashes);
+
+        // Now verify the boundaries section
+        let boundary_section =
+            &xorb_bytes[xorb_bytes.len() - size_of::<u32>() - boundary_section_offset_from_info_end as usize..];
+        let mut reader = Cursor::new(boundary_section);
+
+        let mut ident_boundary_section = [0u8; 7];
+        read_bytes(&mut reader, &mut ident_boundary_section).unwrap();
+        assert_eq!(ident_boundary_section, c.info.ident_boundary_section);
+        let boundaries_version = read_u8(&mut reader).unwrap();
+        assert_eq!(boundaries_version, c.info.boundaries_version);
+        let num_chunks = read_u32(&mut reader).unwrap();
+        let mut chunk_boundary_offsets = vec![0u32; num_chunks as usize];
+        read_u32s(&mut reader, &mut chunk_boundary_offsets).unwrap();
+        assert_eq!(chunk_boundary_offsets, c.info.chunk_boundary_offsets);
+        let mut unpacked_chunk_offsets = vec![0u32; num_chunks as usize];
+        read_u32s(&mut reader, &mut unpacked_chunk_offsets).unwrap();
+        assert_eq!(unpacked_chunk_offsets, c.info.unpacked_chunk_offsets);
+    }
 }
