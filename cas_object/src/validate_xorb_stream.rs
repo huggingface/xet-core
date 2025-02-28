@@ -21,15 +21,18 @@ use crate::{
 /// do not match the provided hash, this function considers the provided xorb invalid.
 ///
 /// returns Ok(None) on a validation error, returns Err() on a real error
-/// returns Ok(<CasObject, true>) of no error occurred and the xorb is valid.
-/// returns Ok(<CasObject, false>) if the xorb is old format or missing footer; in this case
+/// returns Ok(<CasObject, None>) of no error occurred and the xorb is valid.
+/// returns Ok(<CasObject, Some(0)>) if the xorb is missing a footer; in this case
 ///     a new footer is generated and stored in the returned CasObject, BUT with the
-///     "info_length" field set to 0. In this case only the "ident" and "version" of the
-///     footer is read.
+///     "info_length" field set to 0.
+/// returns Ok(<CasObject, Some(go_back_bytes)>) if the xorb is v0; in this case
+///     a new footer is generated and stored in the returned CasObject, BUT with the
+///     "info_length" field set to 0; "go_back_bytes" equals the number of bytes read
+///     from the header, i.e. the size of "ident" and "version".
 pub async fn validate_cas_object_from_async_read<R: AsyncRead + Unpin>(
     reader: &mut R,
     hash: &MerkleHash,
-) -> Result<Option<(CasObject, bool)>> {
+) -> Result<Option<(CasObject, Option<usize>)>> {
     _validate_cas_object_from_async_read(reader, hash).await.ok_for_format_error()
 }
 
@@ -38,10 +41,10 @@ pub async fn validate_cas_object_from_async_read<R: AsyncRead + Unpin>(
 async fn _validate_cas_object_from_async_read<R: AsyncRead + Unpin>(
     reader: &mut R,
     hash: &MerkleHash,
-) -> Result<(CasObject, bool)> {
+) -> Result<(CasObject, Option<usize>)> {
     let mut compressed_chunk_boundary_offsets: Vec<u32> = Vec::new();
     let mut chunk_hash_and_size: Vec<Chunk> = Vec::new();
-    let maybe_cas_object: Option<CasObject> = loop {
+    let (maybe_cas_object, go_back_bytes): (Option<CasObject>, Option<usize>) = loop {
         let mut buf8 = [0u8; 8];
         let mut bytes_read = 0;
         while bytes_read < size_of_val(&buf8) {
@@ -54,7 +57,7 @@ async fn _validate_cas_object_from_async_read<R: AsyncRead + Unpin>(
 
         if bytes_read == 0 {
             // no more bytes, meaning the client doesn't send the footer, we build a new footer.
-            break None;
+            break (None, Some(0));
         }
 
         if bytes_read != size_of_val(&buf8) {
@@ -75,10 +78,10 @@ async fn _validate_cas_object_from_async_read<R: AsyncRead + Unpin>(
                 let cas_object = CasObject::deserialize_async(reader, version)
                     .await
                     .log_error("failed to deserialize footer")?;
-                break Some(cas_object);
+                break (Some(cas_object), None);
             } else if version == CAS_OBJECT_FORMAT_VERSION_V0 {
                 // we see an old xorb, we build a new footer.
-                break None;
+                break (None, Some(size_of_val(&buf8)));
             }
         }
 
@@ -167,9 +170,7 @@ async fn _validate_cas_object_from_async_read<R: AsyncRead + Unpin>(
         return Err(CasObjectError::FormatError(anyhow!("xorb computed hash does not match provided hash")));
     }
 
-    if let Some(cas_object) = maybe_cas_object {
-        Ok((cas_object, true))
-    } else {
+    let cas_object = maybe_cas_object.unwrap_or_else(|| {
         let mut unpacked_offset = 0;
 
         let mut cas_info = CasObjectInfoV1::default();
@@ -186,14 +187,13 @@ async fn _validate_cas_object_from_async_read<R: AsyncRead + Unpin>(
         cas_info.num_chunks = chunk_hash_and_size.len() as u32;
         cas_info.fill_in_boundary_offsets();
 
-        Ok((
-            CasObject {
-                info: cas_info,
-                info_length: 0,
-            },
-            false,
-        ))
-    }
+        CasObject {
+            info: cas_info,
+            info_length: 0,
+        }
+    });
+
+    Ok((cas_object, go_back_bytes))
 }
 
 #[cfg(test)]
@@ -379,8 +379,8 @@ mod tests {
             assert!(validated_result.is_ok());
             let validated_option = validated_result.unwrap();
             assert!(validated_option.is_some());
-            let (validated, exist_and_is_latest) = validated_option.unwrap();
-            assert!(exist_and_is_latest);
+            let (validated, go_back_bytes) = validated_option.unwrap();
+            assert!(go_back_bytes.is_none());
             assert_eq!(validated, cas_object, "failed to match footers, iter {i}");
             assert_eq!(counting_xorb_reader.reader_bytes(), content_length + footer_length)
         }
@@ -407,8 +407,8 @@ mod tests {
             assert!(validated_result.is_ok());
             let validated_option = validated_result.unwrap();
             assert!(validated_option.is_some());
-            let (validated, exist_and_is_latest) = validated_option.unwrap();
-            assert_eq!(exist_and_is_latest, false);
+            let (validated, go_back_bytes) = validated_option.unwrap();
+            assert_eq!(go_back_bytes, Some(8));
             assert_eq!(validated.info_length, 0);
             assert_eq!(validated.info, cas_object.info, "failed to match footers, iter {i}");
             // only read up to ident and version in CasObjectInfoV0
@@ -437,8 +437,8 @@ mod tests {
             assert!(validated_result.is_ok());
             let validated_option = validated_result.unwrap();
             assert!(validated_option.is_some());
-            let (validated, exist_and_is_latest) = validated_option.unwrap();
-            assert_eq!(exist_and_is_latest, false);
+            let (validated, go_back_bytes) = validated_option.unwrap();
+            assert_eq!(go_back_bytes, Some(0));
             assert_eq!(validated.info_length, 0);
             assert_eq!(validated.info, cas_object.info, "failed to match footers, iter {i}");
             // only read up to the last byte of chunk list
