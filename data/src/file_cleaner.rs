@@ -433,7 +433,8 @@ impl SingleFileCleaner {
                                     return Ok(false);
                                 };
 
-                                // Okay, we have something, so go ahead and download it in the background.
+                                // The above process found something and downloaded it; it should now be in the cache directory and valid
+                                // for deduplication.  Register it and restart the dedup process at the start of this chunk. 
                                 debug!("global dedup: {file_name:?} deduplicated by shard {new_shard_file:?}; registering.");
                                 ShardFileManager::register_shard_in_existing_managers(&new_shard_file).await?;
 

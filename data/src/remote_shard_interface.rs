@@ -137,7 +137,7 @@ impl RemoteShardInterface {
         salt: &RepoSalt,
     ) -> Result<Option<PathBuf>> {
         if let Some(shard_client) = self.shard_client.as_ref() {
-            debug!("get_dedup_shards: querying for shards with chunk {:?}", chunk_hash[0]);
+            debug!("get_dedup_shards: querying for shards with chunk {chunk_hash:?}");
             Ok(shard_client
                 .query_for_global_dedup_shard(&self.shard_prefix, chunk_hash, salt)
                 .await?)
