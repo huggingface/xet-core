@@ -1,6 +1,6 @@
 #![allow(dead_code)]
 
-mod cas_interface;
+mod remote_client_interface;
 mod chunking;
 pub mod configurations;
 mod constants;

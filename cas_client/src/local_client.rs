@@ -14,7 +14,6 @@ use mdb_shard::utils::shard_file_name;
 use mdb_shard::{MDBShardFile, MDBShardInfo, ShardFileManager};
 use merkledb::aggregate_hashes::with_salt;
 use merklehash::MerkleHash;
-use reqwest_middleware::ClientWithMiddleware;
 use tempfile::TempDir;
 use tokio::runtime::Handle;
 use tracing::{debug, error, info, warn};
@@ -397,7 +396,6 @@ impl ShardClientInterface for LocalClient {}
 impl ReconstructionClient for LocalClient {
     async fn get_file(
         &self,
-        _http_client: Arc<ClientWithMiddleware>,
         hash: &MerkleHash,
         byte_range: Option<FileRange>,
         writer: &mut Box<dyn Write + Send>,

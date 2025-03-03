@@ -2,7 +2,6 @@ use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use cas_client::ShardClientInterface;
 use mdb_shard::constants::MDB_SHARD_MIN_TARGET_SIZE;
 use mdb_shard::error::MDBShardError;
 use mdb_shard::session_directory::consolidate_shards_in_directory;
@@ -16,9 +15,9 @@ use xet_threadpool::ThreadPool;
 
 use super::configurations::{FileQueryPolicy, StorageConfig};
 use super::errors::{DataProcessingError, Result};
-use super::shard_interface::{create_shard_client, create_shard_manager};
-use crate::cas_interface::Client;
+use super::shard_interface::create_shard_manager;
 use crate::constants::MAX_CONCURRENT_XORB_UPLOADS;
+use crate::remote_client_interface::Client;
 use crate::repo_salt::RepoSalt;
 
 pub struct RemoteShardInterface {
@@ -29,41 +28,21 @@ pub struct RemoteShardInterface {
 
     pub repo_salt: Option<RepoSalt>,
 
-    pub cas: Option<Arc<dyn Client + Send + Sync>>,
+    pub client: Arc<dyn Client + Send + Sync>,
     pub shard_manager: Option<Arc<ShardFileManager>>,
-    pub shard_client: Option<Arc<dyn ShardClientInterface>>,
     pub threadpool: Arc<ThreadPool>,
 }
 
 impl RemoteShardInterface {
-    /// Set up a lightweight version of this that can only use operations that query the remote server;
-    /// anything that tries to download or upload shards will cause a runtime error.
-    pub async fn new_query_only(
-        file_query_policy: FileQueryPolicy,
-        shard_storage_config: &StorageConfig,
-        threadpool: Arc<ThreadPool>,
-    ) -> Result<Arc<Self>> {
-        Self::new(file_query_policy, shard_storage_config, None, None, None, threadpool, true).await
-    }
-
     pub async fn new(
         file_query_policy: FileQueryPolicy,
         shard_storage_config: &StorageConfig,
         shard_manager: Option<Arc<ShardFileManager>>,
-        cas: Option<Arc<dyn Client + Send + Sync>>,
+        client: Arc<dyn Client + Send + Sync>,
         repo_salt: Option<RepoSalt>,
         threadpool: Arc<ThreadPool>,
         download_only: bool,
     ) -> Result<Arc<Self>> {
-        let shard_client = {
-            if file_query_policy != FileQueryPolicy::LocalOnly {
-                debug!("data_processing: Setting up file reconstructor to query shard server.");
-                create_shard_client(shard_storage_config).await.ok()
-            } else {
-                None
-            }
-        };
-
         let shard_manager = if file_query_policy != FileQueryPolicy::ServerOnly && shard_manager.is_none() {
             Some(create_shard_manager(shard_storage_config, download_only).await?)
         } else {
@@ -77,22 +56,9 @@ impl RemoteShardInterface {
             shard_session_directory: shard_storage_config.staging_directory.clone(),
             repo_salt,
             shard_manager,
-            shard_client,
-            cas,
+            client,
             threadpool,
         }))
-    }
-
-    fn shard_client(&self) -> Result<Arc<dyn ShardClientInterface>> {
-        let Some(shard_client) = self.shard_client.clone() else {
-            // Trigger error and backtrace
-            return Err(DataProcessingError::FileQueryPolicyError(format!(
-                "tried to contact Shard service but FileQueryPolicy was set to {:?}",
-                self.file_query_policy
-            )));
-        };
-
-        Ok(shard_client)
     }
 
     fn shard_manager(&self) -> Result<Arc<ShardFileManager>> {
@@ -136,14 +102,10 @@ impl RemoteShardInterface {
         chunk_hash: &MerkleHash,
         salt: &RepoSalt,
     ) -> Result<Option<PathBuf>> {
-        if let Some(shard_client) = self.shard_client.as_ref() {
-            debug!("get_dedup_shards: querying for shards with chunk {chunk_hash:?}");
-            Ok(shard_client
-                .query_for_global_dedup_shard(&self.shard_prefix, chunk_hash, salt)
-                .await?)
-        } else {
-            Ok(None)
-        }
+        Ok(self
+            .client
+            .query_for_global_dedup_shard(&self.shard_prefix, chunk_hash, salt)
+            .await?)
     }
 
     pub fn merge_shards(&self) -> Result<JoinHandle<std::result::Result<Vec<Arc<MDBShardFile>>, MDBShardError>>> {
@@ -162,25 +124,23 @@ impl RemoteShardInterface {
         }
 
         let salt = self.repo_salt()?;
-        let shard_client = self.shard_client()?;
-        let shard_client_ref = &shard_client;
-        let shard_prefix = self.shard_prefix.clone();
-        let shard_prefix_ref = &shard_prefix;
+        let shard_client = &self.client;
+        let shard_prefix = &self.shard_prefix;
 
         tokio_par_for_each(shards, *MAX_CONCURRENT_XORB_UPLOADS, |si, _| async move {
             // For each shard:
             // 1. Upload directly to CAS.
             // 2. Sync to server.
 
-            debug!("Uploading shard {shard_prefix_ref}/{:?} from staging area to CAS.", &si.shard_hash);
+            debug!("Uploading shard {shard_prefix}/{:?} from staging area to CAS.", &si.shard_hash);
             let data = std::fs::read(&si.path)?;
 
             // Upload the shard.
-            shard_client_ref
+            shard_client
                 .upload_shard(&self.shard_prefix, &si.shard_hash, false, &data, &salt)
                 .await?;
 
-            info!("Shard {shard_prefix_ref}/{:?} upload + sync completed successfully.", &si.shard_hash);
+            info!("Shard {shard_prefix}/{:?} upload + sync completed successfully.", &si.shard_hash);
 
             Ok(())
         })

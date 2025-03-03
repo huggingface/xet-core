@@ -7,7 +7,6 @@ use async_trait::async_trait;
 use cas_types::{FileRange, QueryReconstructionResponse};
 use mdb_shard::shard_file_reconstructor::FileReconstructor;
 use merklehash::MerkleHash;
-use reqwest_middleware::ClientWithMiddleware;
 use utils::progress::ProgressUpdater;
 
 use crate::error::Result;
@@ -56,27 +55,20 @@ pub trait ReconstructionClient {
     /// with the backing store (S3) to retrieve xorbs.
     async fn get_file(
         &self,
-        http_client: Arc<ClientWithMiddleware>,
         hash: &MerkleHash,
         byte_range: Option<FileRange>,
         writer: &mut Box<dyn Write + Send>,
         progress_updater: Option<Arc<dyn ProgressUpdater>>,
     ) -> Result<()>;
 
-    async fn batch_get_file(
-        &self,
-        http_client: Arc<ClientWithMiddleware>,
-        files: HashMap<MerkleHash, &mut Box<dyn Write + Send>>,
-    ) -> Result<()> {
+    async fn batch_get_file(&self, files: HashMap<MerkleHash, &mut Box<dyn Write + Send>>) -> Result<()> {
         // Provide the basic naive implementation as a default.
         for (h, w) in files {
-            self.get_file(http_client.clone(), &h, None, w, None).await?;
+            self.get_file(&h, None, w, None).await?;
         }
         Ok(())
     }
 }
-
-pub trait Client: UploadClient + ReconstructionClient {}
 
 /// A Client to the CAS (Content Addressed Storage) service that is able to obtain
 /// the reconstruction info of a file by FileID (MerkleHash).
@@ -103,16 +95,6 @@ pub trait ShardDedupProber {
     ) -> Result<Option<PathBuf>>;
 }
 
-/// A Client to the Shard service. The shard service
-/// provides for
-/// 1. upload shard to the shard service
-/// 2. querying of file->reconstruction information
-/// 3. querying of chunk->shard information
-pub trait ShardClientInterface:
-    RegistrationClient + FileReconstructor<CasClientError> + ShardDedupProber + Send + Sync
-{
-}
-
 #[async_trait]
 pub trait RegistrationClient {
     async fn upload_shard(
@@ -124,3 +106,15 @@ pub trait RegistrationClient {
         salt: &[u8; 32],
     ) -> Result<bool>;
 }
+
+/// A Client to the Shard service. The shard service
+/// provides for
+/// 1. upload shard to the shard service
+/// 2. querying of file->reconstruction information
+/// 3. querying of chunk->shard information
+pub trait ShardClientInterface:
+    RegistrationClient + FileReconstructor<CasClientError> + ShardDedupProber + Send + Sync
+{
+}
+
+pub trait Client: UploadClient + ReconstructionClient + ShardClientInterface {}
