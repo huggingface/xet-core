@@ -7,9 +7,9 @@ use merklehash::MerkleHash;
 use utils::progress::ProgressUpdater;
 use xet_threadpool::ThreadPool;
 
-use crate::remote_client_interface::create_remote_client;
 use crate::configurations::TranslatorConfig;
 use crate::errors::*;
+use crate::remote_client_interface::create_remote_client;
 use crate::PointerFile;
 
 /// Manages the download of files based on a hash or pointer file.

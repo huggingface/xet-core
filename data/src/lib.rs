@@ -1,6 +1,5 @@
 #![allow(dead_code)]
 
-mod remote_client_interface;
 mod chunking;
 pub mod configurations;
 mod constants;
@@ -13,6 +12,7 @@ mod metrics;
 pub mod migration_tool;
 mod parallel_xorb_uploader;
 mod pointer_file;
+mod remote_client_interface;
 mod remote_shard_interface;
 mod repo_salt;
 mod shard_interface;
