@@ -1,5 +1,6 @@
 use std::cmp::min;
 use std::fmt::{Debug, Formatter};
+use std::fs;
 use std::fs::File;
 use std::io::{sink, BufRead, BufReader, BufWriter, Read, Write};
 use std::path::PathBuf;
@@ -10,7 +11,8 @@ use anyhow::{anyhow, Result};
 use aws_sdk_s3::config::{BehaviorVersion, Credentials, Region};
 use aws_sdk_s3::presigning::PresigningConfig;
 use aws_sdk_s3::Client;
-use cas_client::build_http_client;
+use bytes::Bytes;
+use cas_client::{build_auth_http_client, build_http_client, ResponseErrorLogger, RetryConfig};
 use cas_object::CompressionScheme;
 use clap::{Args, Parser, Subcommand};
 use data::data_client::{default_config, READ_BLOCK_SIZE};
@@ -23,12 +25,13 @@ use merkledb::constants::IDEAL_CAS_BLOCK_SIZE;
 use parutils::{tokio_par_for_each, ParallelError};
 use rand::Rng;
 use reqwest::Url;
+use reqwest_middleware::ClientWithMiddleware;
 use serde::{Deserialize, Serialize};
 use tracing::{error, info};
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::EnvFilter;
-use utils::auth::{TokenInfo, TokenRefresher};
+use utils::auth::{AuthConfig, TokenInfo, TokenRefresher};
 use utils::errors::AuthError;
 use walkdir::WalkDir;
 use xet_threadpool::ThreadPool;
@@ -92,6 +95,8 @@ enum Command {
     Upload(UploadArgs),
     /// Download from bridge service
     Bridge(BridgeArgs),
+    /// Upload xorb file to CAS
+    UploadDirect(UploadDirectArgs),
 }
 
 #[derive(Args)]
@@ -197,6 +202,7 @@ impl Command {
             Command::Query(_arg) => unimplemented!(),
             Command::Upload(args) => upload_to_cas(args, threadpool, hub_client.repo_id).await,
             Command::Bridge(args) => download_from_bridge(args, threadpool, hub_client.repo_id).await,
+            Command::UploadDirect(args) => direct_upload_xorb(threadpool, args, hub_client.repo_id).await,
         }
     }
 }
@@ -440,6 +446,57 @@ fn parse_manifest(manifest: PathBuf) -> Result<Vec<String>> {
     let file = File::open(manifest)?;
     let reader = BufReader::new(file);
     Ok(reader.lines().collect::<std::io::Result<Vec<_>>>()?)
+}
+
+#[derive(Args, Clone)]
+pub struct UploadDirectArgs {
+    #[clap(short, long)]
+    endpoint: String,
+    /// JWT token secret
+    #[clap(short = 't', long)]
+    secret: String,
+    #[clap(short, long)]
+    path: PathBuf,
+    #[clap(long)]
+    hash: String,
+    #[clap(short, long)]
+    num: usize,
+    #[clap(long)]
+    parallelism: usize,
+}
+pub async fn direct_upload_xorb(_thread_pool: Arc<ThreadPool>, args: UploadDirectArgs, repo_id: String) -> Result<()> {
+    let client = new_client(args.secret.clone(), repo_id)?;
+    let data = fs::read(&args.path)?;
+    let data = Bytes::from(data);
+
+    let v = (0..args.num).collect::<Vec<usize>>();
+    tokio_par_for_each(v, args.parallelism, |_, _| async {
+        let client = client.clone();
+        let args = args.clone();
+        let data = data.clone();
+
+        let start = Instant::now();
+        let url = Url::parse(&format!("{}/xorb/default/{}", args.endpoint, args.hash))?;
+        let response = client.post(url).body(data).send().await.process_error("post_xorb")?;
+        let elapsed = start.elapsed().as_millis() as u64;
+        let status = response.status().as_u16();
+        info!(elapsed, status, "Uploaded xorb");
+        Ok(())
+    })
+    .await
+    .map_err(|e: ParallelError<anyhow::Error>| anyhow!("{e:?}"))?;
+    Ok(())
+}
+
+pub fn new_client(secret: String, repo_id: String) -> Result<Arc<ClientWithMiddleware>> {
+    let auth_config = Some(AuthConfig {
+        token: secret.clone(),
+        token_expiration: 0,
+        token_refresher: Arc::new(UploadTokenRefresher::new(secret, repo_id)),
+    });
+    let retry_config = Some(RetryConfig::default());
+    let client = build_auth_http_client(&auth_config, &retry_config)?;
+    Ok(Arc::new(client))
 }
 
 fn main() -> Result<()> {

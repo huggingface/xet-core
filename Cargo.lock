@@ -1389,6 +1389,7 @@ dependencies = [
  "async-trait",
  "aws-config",
  "aws-sdk-s3",
+ "bytes",
  "cas_client",
  "cas_object",
  "cas_types",
