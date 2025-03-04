@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use anyhow::Result;
+use cas_client::build_http_client;
 use reqwest_middleware::ClientWithMiddleware;
 use utils::auth::{TokenInfo, TokenRefresher};
 use utils::errors::AuthError;
@@ -16,6 +17,16 @@ pub struct HubClient {
 }
 
 impl HubClient {
+    pub fn new(endpoint: String, token: String, repo_type: String, repo_id: String) -> Result<Self> {
+        Ok(HubClient {
+            endpoint: endpoint.to_owned(),
+            token: token.to_owned(),
+            repo_type: repo_type.to_owned(),
+            repo_id: repo_id.to_owned(),
+            client: build_http_client(&None)?,
+        })
+    }
+
     // Get CAS access token from Hub access token. "token_type" is either "read" or "write".
     pub async fn get_jwt_token(&self, token_type: &str) -> Result<(String, String, u64)> {
         let endpoint = self.endpoint.as_str();

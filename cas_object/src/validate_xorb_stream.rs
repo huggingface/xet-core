@@ -159,6 +159,16 @@ async fn _validate_cas_object_from_async_read<R: AsyncRead + Unpin>(
                 )));
             }
         }
+
+        let mut prefixsum = 0;
+        for (parsed, computed_chunk) in cas_object_info.unpacked_chunk_offsets.iter().zip(chunk_hash_and_size.iter()) {
+            prefixsum += computed_chunk.length as u32;
+            if *parsed != prefixsum {
+                return Err(CasObjectError::FormatError(anyhow!(
+                    "found unpacked chunk offset in xorb footer that does not match the corresponding chunk's actual unpacked length"
+                )));
+            }
+        }
     }
 
     // combine hashes to get full xorb hash, compare to provided
