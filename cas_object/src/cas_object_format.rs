@@ -943,6 +943,7 @@ impl CasObject {
         // 2. walk chunks from Info
         let mut hash_chunks: Vec<Chunk> = Vec::new();
         let mut cumulative_compressed_length: u32 = 0;
+        let mut unpacked_chunk_offset = 0;
 
         let mut start_offset = 0;
         // Validate each chunk: iterate chunks, deserialize chunk, compare stored hash with
@@ -964,6 +965,7 @@ impl CasObject {
             });
 
             cumulative_compressed_length += compressed_chunk_length as u32;
+            unpacked_chunk_offset += chunk_uncompressed_length;
 
             // verify chunk hash
             if *cas.info.chunk_hashes.get(idx as usize).unwrap() != chunk_hash {
@@ -981,6 +983,14 @@ impl CasObject {
 
             // set start offset of next chunk as the boundary of the current chunk
             start_offset = boundary;
+
+            // verify unpacked chunk offsets
+            if cas.info.boundaries_version == CAS_OBJECT_FORMAT_BOUNDARIES_VERSION
+                && unpacked_chunk_offset != *cas.info.unpacked_chunk_offsets.get(idx as usize).unwrap()
+            {
+                warn!("XORB Validation: Chunk unpacked byte offset does not match Info object.");
+                return Ok(None);
+            }
         }
 
         // validate that Info/footer begins immediately after final content xorb.
