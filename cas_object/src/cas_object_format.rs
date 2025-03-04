@@ -1130,7 +1130,6 @@ impl CasObject {
 
         if self.info.num_chunks != self.info.chunk_boundary_offsets.len() as u32
             || self.info.num_chunks != self.info.chunk_hashes.len() as u32
-            || self.info.num_chunks != self.info.unpacked_chunk_offsets.len() as u32
         {
             return Err(CasObjectError::FormatError(anyhow!(
                 "Invalid CasObjectInfo, num chunks not matching boundaries or hashes."
