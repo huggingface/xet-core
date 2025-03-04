@@ -12,9 +12,9 @@ use tokio::task::JoinSet;
 use utils::progress::ProgressUpdater;
 use xet_threadpool::ThreadPool;
 
-use crate::data_processing::CASDataAggregator;
 use crate::errors::DataProcessingError::*;
 use crate::errors::*;
+use crate::file_upload_session::CASDataAggregator;
 
 #[async_trait]
 pub(crate) trait XorbUpload {

@@ -7,7 +7,6 @@ use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{anyhow, Result};
-use aws_config::meta::region::RegionProviderChain;
 use aws_sdk_s3::config::{BehaviorVersion, Credentials, Region};
 use aws_sdk_s3::presigning::PresigningConfig;
 use aws_sdk_s3::Client;
@@ -17,15 +16,15 @@ use clap::{Args, Parser, Subcommand};
 use data::data_client::{default_config, READ_BLOCK_SIZE};
 use data::migration_tool::hub_client::HubClient;
 use data::migration_tool::migrate::migrate_files_impl;
-use data::{PointerFile, PointerFileTranslator};
+use data::{FileUploadSession, PointerFile};
 use futures_util::StreamExt;
 use jsonwebtoken::{Algorithm, EncodingKey, Header};
 use merkledb::constants::IDEAL_CAS_BLOCK_SIZE;
 use parutils::{tokio_par_for_each, ParallelError};
 use rand::Rng;
-use reqwest::{Response, Url};
+use reqwest::Url;
 use serde::{Deserialize, Serialize};
-use tracing::{debug, error, info};
+use tracing::{error, info};
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::EnvFilter;
@@ -235,7 +234,7 @@ fn is_git_special_files(path: &str) -> bool {
 async fn upload_to_cas(args: UploadArgs, threadpool: Arc<ThreadPool>, repo_id: String) -> Result<()> {
     let token_refresher = Arc::new(UploadTokenRefresher::new(args.secret, repo_id));
     let (config, _tempdir) = default_config(args.endpoint, Some(CompressionScheme::LZ4), None, Some(token_refresher))?;
-    let processor = Arc::new(PointerFileTranslator::new(config, threadpool, None, false).await?);
+    let processor = Arc::new(FileUploadSession::new(config, threadpool, None).await?);
     let vec = (0..args.num).map(|i| format!("file-{i}")).collect();
     tokio_par_for_each(vec, 12, |id, _| async {
         let proc = processor.clone();
@@ -250,7 +249,7 @@ async fn upload_to_cas(args: UploadArgs, threadpool: Arc<ThreadPool>, repo_id: S
     Ok(())
 }
 
-async fn clean_file(processor: &Arc<PointerFileTranslator>, id: String, size: u64) -> Result<()> {
+async fn clean_file(processor: &Arc<FileUploadSession>, id: String, size: u64) -> Result<()> {
     let mut reader = BufReader::new(RandomReader::new(size));
     let path = PathBuf::from(id);
     let mut read_buf = vec![0u8; READ_BLOCK_SIZE];
@@ -430,6 +429,7 @@ async fn read_file(file: String, client: Arc<Client>, repo: String, start: &Inst
         let len = b.len() as u64;
         total_read += len;
         let read_elapsed = start.elapsed().as_millis() as u64 - elapsed;
+        let elapsed = start.elapsed().as_millis() as u64;
         info!(elapsed, read_elapsed, file, total_read, len, "read next chunk of data");
         dev_null.write_all(&b[..])?;
     }
@@ -467,7 +467,7 @@ pub fn initialize_logging() {
         .or_else(|_| EnvFilter::try_new(DEFAULT_LOG_LEVEL))
         .unwrap_or_default();
 
-    let name = "xtool".to_string();
+    // let name = "xtool".to_string();
     // let otel_layer = config.trace_endpoint.as_ref().map(|endpoint| {
     //     let otlp_exporter = opentelemetry_otlp::new_exporter().tonic().with_endpoint(endpoint);
     //     let tracer = opentelemetry_otlp::new_pipeline()

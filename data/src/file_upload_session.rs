@@ -1,11 +1,9 @@
-use std::io::Write;
 use std::mem::take;
 use std::ops::DerefMut;
 use std::path::Path;
 use std::sync::Arc;
 
 use cas_client::Client;
-use cas_types::FileRange;
 use jsonwebtoken::{decode, DecodingKey, Validation};
 use lazy_static::lazy_static;
 use mdb_shard::file_structs::MDBFileInfo;
@@ -16,14 +14,13 @@ use utils::progress::ProgressUpdater;
 use xet_threadpool::ThreadPool;
 
 use crate::cas_interface::create_cas_client;
-use crate::clean::Cleaner;
 use crate::configurations::*;
 use crate::constants::MAX_CONCURRENT_XORB_UPLOADS;
 use crate::errors::*;
+use crate::file_cleaner::SingleFileCleaner;
 use crate::parallel_xorb_uploader::{ParallelXorbUploader, XorbUpload};
 use crate::remote_shard_interface::RemoteShardInterface;
 use crate::shard_interface::create_shard_manager;
-use crate::PointerFile;
 
 lazy_static! {
     pub static ref XORB_UPLOAD_RATE_LIMITER: Arc<Semaphore> = Arc::new(Semaphore::new(*MAX_CONCURRENT_XORB_UPLOADS));
@@ -57,8 +54,10 @@ impl CASDataAggregator {
 /// Manages the translation of files between the
 /// MerkleDB / pointer file format and the materialized version.
 ///
-/// This class handles the clean and smudge options.
-pub struct PointerFileTranslator {
+/// This class handles the clean operations.  It's meant to be a single atomic session
+/// that succeeds or fails as a unit;  i.e. all files get uploaded on finalization, and all shards
+/// and xorbs needed to reconstruct those files are properly uploaded and registered.
+pub struct FileUploadSession {
     /* ----- Configurations ----- */
     config: TranslatorConfig,
     dry_run: bool,
@@ -81,41 +80,32 @@ pub struct PointerFileTranslator {
 }
 
 // Constructors
-impl PointerFileTranslator {
+impl FileUploadSession {
     pub async fn new(
         config: TranslatorConfig,
         threadpool: Arc<ThreadPool>,
         upload_progress_updater: Option<Arc<dyn ProgressUpdater>>,
-        download_only: bool,
-    ) -> Result<PointerFileTranslator> {
-        PointerFileTranslator::new_impl(config, threadpool, upload_progress_updater, download_only, false).await
+    ) -> Result<FileUploadSession> {
+        FileUploadSession::new_impl(config, threadpool, upload_progress_updater, false).await
     }
 
     pub async fn dry_run(
         config: TranslatorConfig,
         threadpool: Arc<ThreadPool>,
         upload_progress_updater: Option<Arc<dyn ProgressUpdater>>,
-        download_only: bool,
-    ) -> Result<PointerFileTranslator> {
-        PointerFileTranslator::new_impl(config, threadpool, upload_progress_updater, download_only, true).await
+    ) -> Result<FileUploadSession> {
+        FileUploadSession::new_impl(config, threadpool, upload_progress_updater, true).await
     }
 
     async fn new_impl(
         config: TranslatorConfig,
         threadpool: Arc<ThreadPool>,
         upload_progress_updater: Option<Arc<dyn ProgressUpdater>>,
-        download_only: bool,
         dry_run: bool,
-    ) -> Result<PointerFileTranslator> {
-        let shard_manager = create_shard_manager(&config.shard_storage_config, download_only).await?;
+    ) -> Result<FileUploadSession> {
+        let shard_manager = create_shard_manager(&config.shard_storage_config, false).await?;
 
-        let cas_client = create_cas_client(
-            &config.cas_storage_config,
-            &config.repo_info,
-            shard_manager.clone(),
-            threadpool.clone(),
-            dry_run,
-        )?;
+        let cas_client = create_cas_client(&config.cas_storage_config, threadpool.clone(), dry_run)?;
 
         let remote_shards = {
             if let Some(dedup) = &config.dedup_config {
@@ -126,7 +116,7 @@ impl PointerFileTranslator {
                     Some(cas_client.clone()),
                     dedup.repo_salt,
                     threadpool.clone(),
-                    download_only,
+                    false,
                 )
                 .await?
             } else {
@@ -181,19 +171,19 @@ impl PointerFileTranslator {
 }
 
 /// Clean operations
-impl PointerFileTranslator {
+impl FileUploadSession {
     /// Start to clean one file. When cleaning multiple files, each file should
     /// be associated with one Cleaner. This allows to launch multiple clean task
     /// simultaneously.
     ///
     /// The caller is responsible for memory usage management, the parameter "buffer_size"
     /// indicates the maximum number of Vec<u8> in the internal buffer.
-    pub async fn start_clean(&self, buffer_size: usize, file_name: Option<&Path>) -> Result<Arc<Cleaner>> {
+    pub async fn start_clean(&self, buffer_size: usize, file_name: Option<&Path>) -> Result<Arc<SingleFileCleaner>> {
         let Some(ref dedup) = self.config.dedup_config else {
             return Err(DataProcessingError::DedupConfigError("empty dedup config".to_owned()));
         };
 
-        Cleaner::new(
+        SingleFileCleaner::new(
             matches!(dedup.global_dedup_policy, GlobalDedupPolicy::Always),
             self.config.cas_storage_config.prefix.clone(),
             dedup.repo_salt,
@@ -258,34 +248,6 @@ impl PointerFileTranslator {
     }
 }
 
-/// Smudge operations
-impl PointerFileTranslator {
-    pub async fn smudge_file_from_pointer(
-        &self,
-        pointer: &PointerFile,
-        writer: &mut Box<dyn Write + Send>,
-        range: Option<FileRange>,
-        progress_updater: Option<Arc<dyn ProgressUpdater>>,
-    ) -> Result<()> {
-        self.smudge_file_from_hash(&pointer.hash()?, writer, range, progress_updater)
-            .await
-    }
-
-    pub async fn smudge_file_from_hash(
-        &self,
-        file_id: &MerkleHash,
-        writer: &mut Box<dyn Write + Send>,
-        range: Option<FileRange>,
-        progress_updater: Option<Arc<dyn ProgressUpdater>>,
-    ) -> Result<()> {
-        let http_client = cas_client::build_http_client(&None)?;
-        self.cas
-            .get_file(Arc::new(http_client), file_id, range, writer, progress_updater)
-            .await?;
-        Ok(())
-    }
-}
-
 #[cfg(test)]
 mod tests {
 
@@ -296,7 +258,7 @@ mod tests {
 
     use xet_threadpool::ThreadPool;
 
-    use crate::{PointerFile, PointerFileTranslator};
+    use crate::{FileDownloader, FileUploadSession, PointerFile};
 
     /// Return a shared threadpool to be reused as needed.
     fn get_threadpool() -> Arc<ThreadPool> {
@@ -310,7 +272,7 @@ mod tests {
     ///
     /// * `input_path`: path to the original file
     /// * `output_path`: path to write the pointer file
-    pub fn test_clean_file(runtime: Arc<ThreadPool>, input_path: &Path, output_path: &Path) {
+    async fn test_clean_file(runtime: Arc<ThreadPool>, cas_path: &Path, input_path: &Path, output_path: &Path) {
         let read_data = std::fs::read(input_path).unwrap().to_vec();
 
         let mut pf_out = Box::new(
@@ -322,35 +284,26 @@ mod tests {
                 .unwrap(),
         );
 
-        runtime
-            .external_run_async_task(async move {
-                let translator = PointerFileTranslator::new(
-                    TranslatorConfig::local_config(std::env::current_dir().unwrap(), true).unwrap(),
-                    get_threadpool(),
-                    None,
-                    false,
-                )
-                .await
-                .unwrap();
-
-                let handle = translator.start_clean(1024, None).await.unwrap();
-
-                // Read blocks from the source file and hand them to the cleaning handle
-                handle.add_bytes(read_data).await.unwrap();
-
-                let (pointer_file_contents, _) = handle.result().await.unwrap();
-                translator.finalize_cleaning().await.unwrap();
-
-                pf_out.write_all(pointer_file_contents.as_bytes()).unwrap();
-            })
+        let translator = FileUploadSession::new(TranslatorConfig::local_config(cas_path, true).unwrap(), runtime, None)
+            .await
             .unwrap();
+
+        let handle = translator.start_clean(1024, None).await.unwrap();
+
+        // Read blocks from the source file and hand them to the cleaning handle
+        handle.add_bytes(read_data).await.unwrap();
+
+        let (pointer_file_contents, _) = handle.result().await.unwrap();
+        translator.finalize_cleaning().await.unwrap();
+
+        pf_out.write_all(pointer_file_contents.as_bytes()).unwrap();
     }
 
     /// Smudges (hydrates) a pointer file back into the original data.
     ///
     /// * `pointer_path`: path to the pointer file
     /// * `output_path`: path to write the hydrated/original file
-    fn test_smudge_file(runtime: Arc<ThreadPool>, pointer_path: &Path, output_path: &Path) {
+    async fn test_smudge_file(runtime: Arc<ThreadPool>, cas_path: &Path, pointer_path: &Path, output_path: &Path) {
         let mut reader = File::open(pointer_path).unwrap();
         let writer: Box<dyn Write + Send + 'static> = Box::new(
             OpenOptions::new()
@@ -361,31 +314,22 @@ mod tests {
                 .unwrap(),
         );
 
-        runtime
-            .external_run_async_task(async move {
-                let mut input = String::new();
-                reader.read_to_string(&mut input).unwrap();
+        let mut input = String::new();
+        reader.read_to_string(&mut input).unwrap();
 
-                let pointer_file = PointerFile::init_from_string(&input, "");
-                // If not a pointer file, do nothing
-                if !pointer_file.is_valid() {
-                    return;
-                }
+        let pointer_file = PointerFile::init_from_string(&input, "");
+        // If not a pointer file, do nothing
+        if !pointer_file.is_valid() {
+            return;
+        }
 
-                let translator = PointerFileTranslator::new(
-                    TranslatorConfig::local_config(std::env::current_dir().unwrap(), true).unwrap(),
-                    get_threadpool(),
-                    None,
-                    true,
-                )
-                .await
-                .unwrap();
+        let translator = FileDownloader::new(TranslatorConfig::local_config(cas_path, true).unwrap(), runtime)
+            .await
+            .unwrap();
 
-                translator
-                    .smudge_file_from_pointer(&pointer_file, &mut Box::new(writer), None, None)
-                    .await
-                    .unwrap();
-            })
+        translator
+            .smudge_file_from_pointer(&pointer_file, &mut Box::new(writer), None, None)
+            .await
             .unwrap();
     }
 
@@ -403,20 +347,27 @@ mod tests {
 
         let runtime = get_threadpool();
 
-        // 1. Write an original file in the temp directory
-        let original_path = temp.path().join("original.txt");
-        write(&original_path, original_data).unwrap();
+        runtime
+            .clone()
+            .external_run_async_task(async move {
+                let cas_path = temp.path().join("cas");
 
-        // 2. Clean it (convert it to a pointer file)
-        let pointer_path = temp.path().join("pointer.txt");
-        test_clean_file(runtime.clone(), &original_path, &pointer_path);
+                // 1. Write an original file in the temp directory
+                let original_path = temp.path().join("original.txt");
+                write(&original_path, original_data).unwrap();
 
-        // 3. Smudge it (hydrate the pointer file) to a new file
-        let hydrated_path = temp.path().join("hydrated.txt");
-        test_smudge_file(runtime.clone(), &pointer_path, &hydrated_path);
+                // 2. Clean it (convert it to a pointer file)
+                let pointer_path = temp.path().join("pointer.txt");
+                test_clean_file(runtime.clone(), &cas_path, &original_path, &pointer_path).await;
 
-        // 4. Verify that the round-tripped file matches the original
-        let result_data = read(hydrated_path).unwrap();
-        assert_eq!(original_data.to_vec(), result_data);
+                // 3. Smudge it (hydrate the pointer file) to a new file
+                let hydrated_path = temp.path().join("hydrated.txt");
+                test_smudge_file(runtime.clone(), &cas_path, &pointer_path, &hydrated_path).await;
+
+                // 4. Verify that the round-tripped file matches the original
+                let result_data = read(hydrated_path).unwrap();
+                assert_eq!(original_data.to_vec(), result_data);
+            })
+            .unwrap();
     }
 }

@@ -58,7 +58,7 @@ impl RemoteShardInterface {
         let shard_client = {
             if file_query_policy != FileQueryPolicy::LocalOnly {
                 debug!("data_processing: Setting up file reconstructor to query shard server.");
-                create_shard_client(shard_storage_config, download_only).await.ok()
+                create_shard_client(shard_storage_config).await.ok()
             } else {
                 None
             }
@@ -131,42 +131,19 @@ impl RemoteShardInterface {
     /// Probes which shards provides dedup information for a chunk.
     /// Returns a list of shard hashes with key under 'prefix',
     /// Err(_) if an error occured.
-    async fn get_dedup_shards(&self, chunk_hash: &[MerkleHash], salt: &RepoSalt) -> Result<Vec<MerkleHash>> {
-        if chunk_hash.is_empty() {
-            return Ok(vec![]);
-        }
-
-        if let Some(shard_client) = self.shard_client.as_ref() {
-            debug!("get_dedup_shards: querying for shards with chunk {:?}", chunk_hash[0]);
-            Ok(shard_client.get_dedup_shards(&self.shard_prefix, chunk_hash, salt).await?)
-        } else {
-            Ok(vec![])
-        }
-    }
-
-    /// Convenience wrapper of above for single chunk query
     pub async fn query_dedup_shard_by_chunk(
         &self,
         chunk_hash: &MerkleHash,
         salt: &RepoSalt,
-    ) -> Result<Option<MerkleHash>> {
-        Ok(self.get_dedup_shards(&[*chunk_hash], salt).await?.pop())
-    }
-
-    pub async fn register_local_shard(&self, shard_hash: &MerkleHash) -> Result<()> {
-        let shard_manager = self.shard_manager()?;
-        let cache_dir = self.shard_cache_directory()?;
-
-        if shard_manager.shard_is_registered(shard_hash).await {
-            info!("register_local_shard: shard {shard_hash:?} already registered, ignore.");
-            return Ok(());
+    ) -> Result<Option<PathBuf>> {
+        if let Some(shard_client) = self.shard_client.as_ref() {
+            debug!("get_dedup_shards: querying for shards with chunk {chunk_hash:?}");
+            Ok(shard_client
+                .query_for_global_dedup_shard(&self.shard_prefix, chunk_hash, salt)
+                .await?)
+        } else {
+            Ok(None)
         }
-
-        let shard_file = cache_dir.join(local_shard_name(shard_hash));
-
-        shard_manager.register_shards_by_path(&[shard_file]).await?;
-
-        Ok(())
     }
 
     pub fn merge_shards(&self) -> Result<JoinHandle<std::result::Result<Vec<Arc<MDBShardFile>>, MDBShardError>>> {

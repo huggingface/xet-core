@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use cas_client::{HttpShardClient, LocalShardClient, ShardClientInterface};
+use cas_client::{HttpShardClient, LocalClient, ShardClientInterface};
 use mdb_shard::ShardFileManager;
 use tracing::debug;
 
@@ -41,21 +41,17 @@ pub async fn create_shard_manager(
     Ok(session_shard_manager)
 }
 
-pub async fn create_shard_client(
-    shard_storage_config: &StorageConfig,
-    download_only_mode: bool,
-) -> Result<Arc<dyn ShardClientInterface>> {
+pub async fn create_shard_client(shard_storage_config: &StorageConfig) -> Result<Arc<dyn ShardClientInterface>> {
     debug!("Shard endpoint = {:?}", shard_storage_config.endpoint);
+    let Some(shard_cache_config) = shard_storage_config.cache_config.clone() else {
+        return Err(crate::errors::DataProcessingError::CacheConfigError("Shard cache directory not set.".to_string()));
+    };
+
     let client: Arc<dyn ShardClientInterface> = match &shard_storage_config.endpoint {
-        Server(endpoint) => Arc::new(HttpShardClient::new(
-            endpoint,
-            &shard_storage_config.auth,
-            shard_storage_config
-                .cache_config
-                .as_ref()
-                .map(|cache| cache.cache_directory.clone()),
-        )),
-        FileSystem(path) => Arc::new(LocalShardClient::new(path, download_only_mode).await?),
+        Server(endpoint) => {
+            Arc::new(HttpShardClient::new(endpoint, &shard_storage_config.auth, shard_cache_config.cache_directory))
+        },
+        FileSystem(path) => Arc::new(LocalClient::new(path, Some(shard_cache_config.cache_directory))?),
     };
 
     Ok(client)

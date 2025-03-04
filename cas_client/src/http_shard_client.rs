@@ -6,8 +6,8 @@ use cas_types::{Key, QueryReconstructionResponse, UploadShardResponse, UploadSha
 use error_printer::ErrorPrinter;
 use file_utils::SafeFileCreator;
 use mdb_shard::file_structs::{FileDataSequenceEntry, FileDataSequenceHeader, MDBFileInfo};
-use mdb_shard::shard_dedup_probe::ShardDedupProber;
 use mdb_shard::shard_file_reconstructor::FileReconstructor;
+use mdb_shard::utils::shard_file_name;
 use merklehash::{HashedWrite, MerkleHash};
 use reqwest::Url;
 use reqwest_middleware::ClientWithMiddleware;
@@ -15,6 +15,7 @@ use utils::auth::AuthConfig;
 
 use crate::error::{CasClientError, Result};
 use crate::http_client::ResponseErrorLogger;
+use crate::interface::ShardDedupProber;
 use crate::{build_auth_http_client, RegistrationClient, ShardClientInterface};
 
 const FORCE_SYNC_METHOD: reqwest::Method = reqwest::Method::PUT;
@@ -25,16 +26,16 @@ const NON_FORCE_SYNC_METHOD: reqwest::Method = reqwest::Method::POST;
 pub struct HttpShardClient {
     endpoint: String,
     client: ClientWithMiddleware,
-    cache_directory: Option<PathBuf>,
+    shard_cache_directory: PathBuf,
 }
 
 impl HttpShardClient {
-    pub fn new(endpoint: &str, auth_config: &Option<AuthConfig>, shard_cache_directory: Option<PathBuf>) -> Self {
+    pub fn new(endpoint: &str, auth_config: &Option<AuthConfig>, shard_cache_directory: PathBuf) -> Self {
         let client = build_auth_http_client(auth_config, &None).unwrap();
         HttpShardClient {
             endpoint: endpoint.into(),
             client,
-            cache_directory: shard_cache_directory.clone(),
+            shard_cache_directory,
         }
     }
 }
@@ -109,23 +110,18 @@ impl FileReconstructor<CasClientError> for HttpShardClient {
 }
 
 #[async_trait]
-impl ShardDedupProber<CasClientError> for HttpShardClient {
-    async fn get_dedup_shards(
+impl ShardDedupProber for HttpShardClient {
+    async fn query_for_global_dedup_shard(
         &self,
         prefix: &str,
-        chunk_hash: &[MerkleHash],
+        chunk_hash: &MerkleHash,
         _salt: &[u8; 32],
-    ) -> Result<Vec<MerkleHash>> {
-        debug_assert!(chunk_hash.len() == 1);
-        let Some(shard_cache_dir) = &self.cache_directory else {
-            return Err(CasClientError::ConfigurationError("cache directory not configured for shard storage".into()));
-        };
-
+    ) -> Result<Option<PathBuf>> {
         // The API endpoint now only supports non-batched dedup request and
         // ignores salt.
         let key = Key {
             prefix: prefix.into(),
-            hash: chunk_hash[0],
+            hash: *chunk_hash,
         };
 
         let url = Url::parse(&format!("{0}/chunk/{key}", self.endpoint))?;
@@ -139,7 +135,7 @@ impl ShardDedupProber<CasClientError> for HttpShardClient {
 
         // Dedup shard not found, return empty result
         if !response.status().is_success() {
-            return Ok(vec![]);
+            return Ok(None);
         }
 
         let writer = SafeFileCreator::new_unnamed()?;
@@ -152,74 +148,13 @@ impl ShardDedupProber<CasClientError> for HttpShardClient {
         hashed_writer.flush()?;
 
         let shard_hash = hashed_writer.hash();
-        let file_name = local_shard_name(&shard_hash);
-        let file_path = shard_cache_dir.join(file_name);
+        let file_path = self.shard_cache_directory.join(shard_file_name(&shard_hash));
         let mut writer = hashed_writer.into_inner();
-        writer.set_dest_path(file_path);
+        writer.set_dest_path(&file_path);
         writer.close()?;
 
-        Ok(vec![shard_hash])
+        Ok(Some(file_path))
     }
-}
-
-/// Construct a file name for a MDBShard stored under cache and session dir.
-fn local_shard_name(hash: &MerkleHash) -> PathBuf {
-    PathBuf::from(hash.to_string()).with_extension("mdb")
 }
 
 impl ShardClientInterface for HttpShardClient {}
-
-#[cfg(test)]
-mod test {
-    use std::env;
-    use std::path::PathBuf;
-
-    use mdb_shard::shard_dedup_probe::ShardDedupProber;
-    use mdb_shard::shard_file_reconstructor::FileReconstructor;
-    use mdb_shard::{MDBShardFile, MDBShardInfo};
-    use merklehash::MerkleHash;
-
-    use super::HttpShardClient;
-    use crate::RegistrationClient;
-
-    #[tokio::test]
-    #[ignore = "need a local cas_server running"]
-    async fn test_local() -> anyhow::Result<()> {
-        let client = HttpShardClient::new("http://localhost:8080", &None, Some(env::current_dir()?));
-
-        let path = PathBuf::from("./a7de567477348b23d23b667dba4d63d533c2ba7337cdc4297970bb494ba4699e.mdb");
-
-        let shard_hash = MerkleHash::from_hex("a7de567477348b23d23b667dba4d63d533c2ba7337cdc4297970bb494ba4699e")?;
-
-        let shard_data = std::fs::read(&path)?;
-
-        let salt = [0u8; 32];
-
-        client
-            .upload_shard("default-merkledb", &shard_hash, true, &shard_data, &salt)
-            .await?;
-
-        let shard = MDBShardFile::load_from_file(&path)?;
-
-        let mut reader = shard.get_reader()?;
-
-        // test file reconstruction lookup
-        let files = MDBShardInfo::read_file_info_ranges(&mut reader)?;
-        for (file_hash, _, _, _) in files {
-            let expected = shard.get_file_reconstruction_info(&file_hash)?.unwrap();
-            let (result, _) = client.get_file_reconstruction_info(&file_hash).await?.unwrap();
-
-            assert_eq!(expected, result);
-        }
-
-        // test chunk dedup lookup
-        let chunks = MDBShardInfo::filter_cas_chunks_for_global_dedup(&mut reader)?;
-        for chunk in chunks {
-            let expected = shard_hash;
-            let result = client.get_dedup_shards("default-merkledb", &[chunk], &salt).await?;
-            assert_eq!(expected, result[0]);
-        }
-
-        Ok(())
-    }
-}

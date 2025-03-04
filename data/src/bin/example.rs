@@ -6,7 +6,7 @@ use std::sync::{Arc, OnceLock};
 use anyhow::Result;
 use clap::{Args, Parser, Subcommand};
 use data::configurations::*;
-use data::{PointerFile, PointerFileTranslator};
+use data::{FileDownloader, FileUploadSession, PointerFile};
 use xet_threadpool::ThreadPool;
 
 #[derive(Parser)]
@@ -85,13 +85,9 @@ async fn clean(mut reader: impl Read, mut writer: impl Write) -> Result<()> {
 
     let mut read_buf = vec![0u8; READ_BLOCK_SIZE];
 
-    let translator = PointerFileTranslator::new(
-        TranslatorConfig::local_config(std::env::current_dir()?, true)?,
-        get_threadpool(),
-        None,
-        false,
-    )
-    .await?;
+    let translator =
+        FileUploadSession::new(TranslatorConfig::local_config(std::env::current_dir()?, true)?, get_threadpool(), None)
+            .await?;
 
     let handle = translator.start_clean(1024, None).await?;
 
@@ -139,15 +135,10 @@ async fn smudge(mut reader: impl Read, writer: &mut Box<dyn Write + Send>) -> Re
         return Ok(());
     }
 
-    let translator = PointerFileTranslator::new(
-        TranslatorConfig::local_config(std::env::current_dir()?, true)?,
-        get_threadpool(),
-        None,
-        true,
-    )
-    .await?;
+    let downloader =
+        FileDownloader::new(TranslatorConfig::local_config(std::env::current_dir()?, true)?, get_threadpool()).await?;
 
-    translator.smudge_file_from_pointer(&pointer_file, writer, None, None).await?;
+    downloader.smudge_file_from_pointer(&pointer_file, writer, None, None).await?;
 
     Ok(())
 }
