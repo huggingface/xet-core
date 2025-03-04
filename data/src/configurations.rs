@@ -25,7 +25,7 @@ pub struct StorageConfig {
 }
 
 #[derive(Debug)]
-pub struct DedupConfig {
+pub struct GlobalDedupConfig {
     pub repo_salt: Option<RepoSalt>,
     pub global_dedup_policy: GlobalDedupPolicy,
 }
@@ -94,12 +94,12 @@ pub struct TranslatorConfig {
     pub file_query_policy: FileQueryPolicy,
     pub cas_storage_config: StorageConfig,
     pub shard_storage_config: StorageConfig,
-    pub dedup_config: Option<DedupConfig>,
+    pub dedup_config: GlobalDedupConfig,
     pub repo_info: Option<RepoInfo>,
 }
 
 impl TranslatorConfig {
-    pub fn local_config(base_dir: impl AsRef<Path>, enable_dedup: bool) -> Result<Self> {
+    pub fn local_config(base_dir: impl AsRef<Path>) -> Result<Self> {
         let path = base_dir.as_ref().join("xet");
         std::fs::create_dir_all(&path)?;
 
@@ -128,13 +128,9 @@ impl TranslatorConfig {
                 staging_directory: Some(path.join("shard-session")),
             },
             dedup_config: {
-                if enable_dedup {
-                    Some(DedupConfig {
-                        repo_salt: None,
-                        global_dedup_policy: Default::default(),
-                    })
-                } else {
-                    None
+                GlobalDedupConfig {
+                    repo_salt: None,
+                    global_dedup_policy: Default::default(),
                 }
             },
             repo_info: Some(RepoInfo {
