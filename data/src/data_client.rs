@@ -229,10 +229,12 @@ async fn smudge_file(
 }
 #[cfg(test)]
 mod tests {
-    use super::*;
     use std::env;
+
     use tempfile::tempdir;
-    
+
+    use super::*;
+
     #[test]
     fn test_default_config_with_hf_home() {
         let temp_dir = tempdir().unwrap();
@@ -244,9 +246,12 @@ mod tests {
         assert!(result.is_ok());
         let (config, _tempdir) = result.unwrap();
         assert!(config.cas_storage_config.cache_config.is_some());
-        assert!(
-            config.cas_storage_config.cache_config.unwrap().cache_directory.starts_with(&temp_dir.path())
-        );
+        assert!(config
+            .cas_storage_config
+            .cache_config
+            .unwrap()
+            .cache_directory
+            .starts_with(&temp_dir.path()));
 
         env::remove_var("HF_HOME");
     }
@@ -264,13 +269,16 @@ mod tests {
         assert!(result.is_ok());
         let (config, _tempdir) = result.unwrap();
         assert!(config.cas_storage_config.cache_config.is_some());
-        assert!(
-            config.cas_storage_config.cache_config.unwrap().cache_directory.starts_with(&temp_dir_xet_cache.path())
-        );
+        assert!(config
+            .cas_storage_config
+            .cache_config
+            .unwrap()
+            .cache_directory
+            .starts_with(&temp_dir_xet_cache.path()));
 
         env::remove_var("HF_XET_CACHE");
         env::remove_var("HF_HOME");
-        
+
         let temp_dir = tempdir().unwrap();
         env::set_var("HF_HOME", temp_dir.path().to_str().unwrap());
 
@@ -280,9 +288,12 @@ mod tests {
         assert!(result.is_ok());
         let (config, _tempdir) = result.unwrap();
         assert!(config.cas_storage_config.cache_config.is_some());
-        assert!(
-            config.cas_storage_config.cache_config.unwrap().cache_directory.starts_with(&temp_dir.path())
-        );
+        assert!(config
+            .cas_storage_config
+            .cache_config
+            .unwrap()
+            .cache_directory
+            .starts_with(&temp_dir.path()));
 
         env::remove_var("HF_HOME");
     }
@@ -298,9 +309,12 @@ mod tests {
         assert!(result.is_ok());
         let (config, _tempdir) = result.unwrap();
         assert!(config.cas_storage_config.cache_config.is_some());
-        assert!(
-            config.cas_storage_config.cache_config.unwrap().cache_directory.starts_with(&temp_dir.path())
-        );
+        assert!(config
+            .cas_storage_config
+            .cache_config
+            .unwrap()
+            .cache_directory
+            .starts_with(&temp_dir.path()));
 
         env::remove_var("HF_XET_CACHE");
     }
@@ -310,13 +324,20 @@ mod tests {
         let endpoint = "http://localhost:8080".to_string();
         let result = default_config(endpoint, None, None, None);
 
-        let expected = home_dir().unwrap_or(std::env::current_dir().unwrap()).join(".cache").join("huggingface").join("xet");
+        let expected = home_dir()
+            .unwrap_or(std::env::current_dir().unwrap())
+            .join(".cache")
+            .join("huggingface")
+            .join("xet");
 
         assert!(result.is_ok());
         let (config, _tempdir) = result.unwrap();
         assert!(config.cas_storage_config.cache_config.is_some());
-        assert!(
-            config.cas_storage_config.cache_config.unwrap().cache_directory.starts_with(&expected)
-        );
+        assert!(config
+            .cas_storage_config
+            .cache_config
+            .unwrap()
+            .cache_directory
+            .starts_with(&expected));
     }
 }
