@@ -232,8 +232,8 @@ async fn smudge_file(
 mod tests {
     use std::env;
 
-    use tempfile::tempdir;
     use serial_test::serial;
+    use tempfile::tempdir;
 
     use super::*;
 
