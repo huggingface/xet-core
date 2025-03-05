@@ -227,15 +227,18 @@ async fn smudge_file(
         .await?;
     Ok(pointer_file.path().to_string())
 }
+
 #[cfg(test)]
 mod tests {
     use std::env;
 
     use tempfile::tempdir;
+    use serial_test::serial;
 
     use super::*;
 
     #[test]
+    #[serial(default_config_env)]
     fn test_default_config_with_hf_home() {
         let temp_dir = tempdir().unwrap();
         env::set_var("HF_HOME", temp_dir.path().to_str().unwrap());
@@ -257,6 +260,7 @@ mod tests {
     }
 
     #[test]
+    #[serial(default_config_env)]
     fn test_default_config_with_hf_xet_cache_and_hf_home() {
         let temp_dir_xet_cache = tempdir().unwrap();
         let temp_dir_hf_home = tempdir().unwrap();
@@ -299,6 +303,7 @@ mod tests {
     }
 
     #[test]
+    #[serial(default_config_env)]
     fn test_default_config_with_hf_xet_cache() {
         let temp_dir = tempdir().unwrap();
         env::set_var("HF_XET_CACHE", temp_dir.path().to_str().unwrap());
@@ -320,6 +325,7 @@ mod tests {
     }
 
     #[test]
+    #[serial(default_config_env)]
     fn test_default_config_without_env_vars() {
         let endpoint = "http://localhost:8080".to_string();
         let result = default_config(endpoint, None, None, None);
