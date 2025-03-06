@@ -234,7 +234,7 @@ impl RemoteClient {
         let url: Url = url_str.parse()?;
 
         let response = self
-            .http_client
+            .authenticated_http_client
             .get(url)
             .send()
             .await
@@ -268,7 +268,7 @@ impl RemoteClient {
 
         if !self.dry_run {
             let response = self
-                .http_client
+                .authenticated_http_client
                 .post(url)
                 .body(data)
                 .send()
