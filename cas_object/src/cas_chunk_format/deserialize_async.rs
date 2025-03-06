@@ -44,6 +44,14 @@ pub async fn deserialize_chunk_to_writer<R: AsyncRead + Unpin, W: Write>(
     Ok((header.get_compressed_length() as usize + CAS_CHUNK_HEADER_LENGTH, uncompressed_len as u32))
 }
 
+pub async fn deserialize_chunk<R: AsyncRead + Unpin>(
+    reader: &mut R,
+) -> Result<(Vec<u8>, usize, u32), CasObjectError> {
+    let mut buf = Vec::new();
+    let (compressed_len, uncompressed_len) = deserialize_chunk_to_writer(reader, &mut buf).await?;
+    Ok((buf, compressed_len, uncompressed_len))
+}
+
 pub async fn deserialize_chunks_to_writer_from_async_read<R: AsyncRead + Unpin, W: Write>(
     reader: &mut R,
     writer: &mut W,
