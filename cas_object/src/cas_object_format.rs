@@ -1132,6 +1132,32 @@ impl CasObject {
         Ok((byte_offset_start, byte_offset_end))
     }
 
+    pub fn chunk_length(&self, chunk_index: u32) -> Result<u32, CasObjectError> {
+        self.validate_cas_object_info()?;
+        let chunk_index = chunk_index as usize;
+        if chunk_index >= self.info.unpacked_chunk_offsets.len() {}
+        let cumulative_sum = self.info.unpacked_chunk_offsets[chunk_index];
+        let before = match chunk_index {
+            0 => 0,
+            _ => self.info.chunk_boundary_offsets[chunk_index - 1],
+        };
+        Ok(cumulative_sum - before)
+    }
+
+    pub fn uncompressed_range_length(&self, chunk_index_start: u32, chunk_index_end: u32) -> Result<u32, CasObjectError> {
+        self.validate_cas_object_info()?;
+        if chunk_index_start >= chunk_index_end || chunk_index_end >= self.info.num_chunks {
+            return Err(CasObjectError::InvalidRange);
+        }
+
+        let before_start = match chunk_index_start {
+            0 => 0,
+            _ => self.info.chunk_boundary_offsets[chunk_index_start as usize - 1],
+        };
+        let end = self.info.chunk_boundary_offsets[chunk_index_end as usize];
+        Ok(end - before_start)
+    }
+
     /// Helper method to verify that info object is complete
     fn validate_cas_object_info(&self) -> Result<(), CasObjectError> {
         if self.info.num_chunks == 0 {
