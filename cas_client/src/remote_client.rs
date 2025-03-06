@@ -50,6 +50,7 @@ pub struct RemoteClient {
     compression: Option<CompressionScheme>,
     dry_run: bool,
     http_client: Arc<ClientWithMiddleware>,
+    authenticated_http_client: Arc<ClientWithMiddleware>,
     chunk_cache: Option<Arc<dyn ChunkCache>>,
     threadpool: Arc<ThreadPool>,
     range_download_single_flight: RangeDownloadSingleFlight,
@@ -84,7 +85,8 @@ impl RemoteClient {
             endpoint: endpoint.to_string(),
             compression,
             dry_run,
-            http_client: Arc::new(http_client::build_auth_http_client(auth, &None).unwrap()),
+            authenticated_http_client: Arc::new(http_client::build_auth_http_client(auth, &None).unwrap()),
+            http_client: Arc::new(http_client::build_http_client(&None).unwrap()),
             chunk_cache,
             threadpool,
             range_download_single_flight,
@@ -125,7 +127,7 @@ impl UploadClient for RemoteClient {
         };
 
         let url = Url::parse(&format!("{}/xorb/{key}", self.endpoint))?;
-        let response = self.http_client.head(url).send().await?;
+        let response = self.authenticated_http_client.head(url).send().await?;
         match response.status() {
             StatusCode::OK => Ok(true),
             StatusCode::NOT_FOUND => Ok(false),
@@ -193,7 +195,7 @@ impl Reconstructable for RemoteClient {
     ) -> Result<QueryReconstructionResponse> {
         let url = Url::parse(&format!("{}/reconstruction/{}", self.endpoint, file_id.hex()))?;
 
-        let mut request = self.http_client.get(url);
+        let mut request = self.authenticated_http_client.get(url);
         if let Some(range) = bytes_range {
             // convert exclusive-end to inclusive-end range
             request = request.header(RANGE, format!("{}-{}", range.start, range.end - 1))
@@ -497,7 +499,7 @@ impl RegistrationClient for RemoteClient {
         };
 
         let response = self
-            .http_client
+            .authenticated_http_client
             .request(method, url)
             .body(shard_data.to_vec())
             .send()
@@ -523,7 +525,7 @@ impl FileReconstructor<CasClientError> for RemoteClient {
         let url = Url::parse(&format!("{}/reconstruction/{}", self.endpoint, file_hash.hex()))?;
 
         let response = self
-            .http_client
+            .authenticated_http_client
             .get(url)
             .send()
             .await
@@ -572,7 +574,7 @@ impl ShardDedupProber for RemoteClient {
         let url = Url::parse(&format!("{0}/chunk/{key}", self.endpoint))?;
 
         let mut response = self
-            .http_client
+            .authenticated_http_client
             .get(url)
             .send()
             .await
@@ -769,6 +771,7 @@ mod tests {
             let threadpool = Arc::new(ThreadPool::new().unwrap());
             let client = RemoteClient {
                 chunk_cache: Some(Arc::new(chunk_cache)),
+                authenticated_http_client: http_client.clone(),
                 http_client,
                 endpoint: "".to_string(),
                 compression: Some(CompressionScheme::LZ4),
