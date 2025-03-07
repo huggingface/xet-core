@@ -30,9 +30,9 @@ use crate::constants::{
     DEFAULT_MIN_N_CHUNKS_PER_RANGE, MIN_N_CHUNKS_PER_RANGE_HYSTERESIS_FACTOR, MIN_SPACING_BETWEEN_GLOBAL_DEDUP_QUERIES,
     NRANGES_IN_STREAMING_FRAGMENTATION_ESTIMATOR,
 };
+use crate::data_aggregator::CASDataAggregator;
 use crate::errors::DataProcessingError::*;
 use crate::errors::Result;
-use crate::file_upload_session::CASDataAggregator;
 use crate::metrics::FILTER_BYTES_CLEANED;
 use crate::parallel_xorb_uploader::XorbUpload;
 use crate::remote_shard_interface::RemoteShardInterface;
@@ -644,77 +644,57 @@ impl SingleFileCleaner {
     async fn summarize_dedup_info(&self) -> Result<(MerkleHash, u64)> {
         let mut tracking_info = self.tracking_info.lock().await;
 
+        let mut chunk_idx = 0;
+
         let file_hash = file_node_hash(&tracking_info.file_hashes, &self.repo_salt.unwrap_or_default())?;
 
-        // Always register a new file info to be uploaded. This is because each file is associated with a repo and
-        // the client doesn't know with which repo this file is associated given local information.
-        // TODO: server exposes a HEAD repo_id/file_id endpoint so client can check if this file exists.
+        // Create the verification.
+        let verification = tracking_info
+            .file_info
+            .iter()
+            .map(|entry| {
+                let n_chunks = (entry.chunk_index_end - entry.chunk_index_start) as usize;
+                let chunk_hashes: Vec<_> = tracking_info.file_hashes[chunk_idx..chunk_idx + n_chunks]
+                    .iter()
+                    .map(|(hash, _)| *hash)
+                    .collect();
+                let range_hash = range_hash_from_chunks(&chunk_hashes);
+                chunk_idx += n_chunks;
 
-        {
-            // Put an accumulated data into the struct-wide cas block for building a future chunk.
-            let mut cas_data_accumulator = self.global_cas_data.lock().await;
+                FileVerificationEntry::new(range_hash)
+            })
+            .collect();
 
-            let shift = cas_data_accumulator.chunks.len() as u32;
-            cas_data_accumulator.data.append(&mut tracking_info.cas_data.data);
-            cas_data_accumulator.chunks.append(&mut tracking_info.cas_data.chunks);
+        // Create the metadata extension
+        let metadata_ext = Some(FileMetadataExt::new(self.sha_generator.generate()?));
 
-            let segments: Vec<_> = tracking_info
-                .file_info
-                .iter()
-                .map(|fi| {
-                    // Transfering cas chunks from tracking_info.cas_data to cas_data_accumulator,
-                    // shift chunk indices.
-                    let s = if fi.cas_hash == MerkleHash::default() { shift } else { 0 };
+        let file_info = MDBFileInfo {
+            metadata: FileDataSequenceHeader::new(
+                file_hash,
+                tracking_info.file_info.len(),
+                true,
+                metadata_ext.is_some(),
+            ),
+            segments: take(&mut tracking_info.file_info),
+            verification,
+            metadata_ext,
+        };
 
-                    let mut new_fi = fi.clone();
-                    new_fi.chunk_index_start += s;
-                    new_fi.chunk_index_end += s;
+        let mut local_data_aggregator = take(&mut tracking_info.cas_data);
+        local_data_aggregator
+            .pending_file_info
+            .push((file_info, take(&mut tracking_info.current_cas_file_info_indices)));
 
-                    new_fi
-                })
-                .collect();
+        // Put an accumulated data into the struct-wide cas block for building a future chunk.
+        let mut global_cas_data = self.global_cas_data.lock().await;
+        global_cas_data.merge_in(local_data_aggregator);
 
-            let mut chunk_idx = 0;
-            let verification = segments
-                .iter()
-                .map(|entry| {
-                    let n_chunks = (entry.chunk_index_end - entry.chunk_index_start) as usize;
-                    let chunk_hashes: Vec<_> = tracking_info.file_hashes[chunk_idx..chunk_idx + n_chunks]
-                        .iter()
-                        .map(|(hash, _)| *hash)
-                        .collect();
-                    let range_hash = range_hash_from_chunks(&chunk_hashes);
-                    chunk_idx += n_chunks;
-
-                    FileVerificationEntry::new(range_hash)
-                })
-                .collect();
-
-            let metadata_ext = Some(FileMetadataExt::new(self.sha_generator.generate()?));
-
-            let new_file_info = MDBFileInfo {
-                metadata: FileDataSequenceHeader::new(
-                    file_hash,
-                    tracking_info.file_info.len(),
-                    true,
-                    metadata_ext.is_some(),
-                ),
-                segments,
-                verification,
-                metadata_ext,
-            };
-
-            cas_data_accumulator
-                .pending_file_info
-                .push((new_file_info, tracking_info.current_cas_file_info_indices.clone()));
-
-            if cas_data_accumulator.data.len() >= TARGET_CAS_BLOCK_SIZE {
-                let new_cas_data = take(cas_data_accumulator.deref_mut());
-                drop(cas_data_accumulator); // Release the lock.
-                self.xorb_uploader.register_new_cas_block(new_cas_data).await?;
-            } else {
-                drop(cas_data_accumulator);
-            }
+        if global_cas_data.data.len() >= TARGET_CAS_BLOCK_SIZE {
+            let new_cas_data = take(global_cas_data.deref_mut());
+            drop(global_cas_data); // Release the lock.
+            self.xorb_uploader.register_new_cas_block(new_cas_data).await?;
+        } else {
+            drop(global_cas_data);
         }
 
         let file_size = self.metrics.file_size.load(Ordering::Relaxed);

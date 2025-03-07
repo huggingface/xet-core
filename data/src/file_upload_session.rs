@@ -8,7 +8,6 @@ use jsonwebtoken::{decode, DecodingKey, Validation};
 use lazy_static::lazy_static;
 use mdb_shard::file_structs::MDBFileInfo;
 use mdb_shard::ShardFileManager;
-use merklehash::MerkleHash;
 use tokio::sync::{Mutex, Semaphore};
 use utils::progress::ProgressUpdater;
 use xet_threadpool::ThreadPool;
@@ -16,6 +15,7 @@ use xet_threadpool::ThreadPool;
 use crate::cas_interface::create_cas_client;
 use crate::configurations::*;
 use crate::constants::MAX_CONCURRENT_XORB_UPLOADS;
+use crate::data_aggregator::CASDataAggregator;
 use crate::errors::*;
 use crate::file_cleaner::SingleFileCleaner;
 use crate::parallel_xorb_uploader::{ParallelXorbUploader, XorbUpload};
@@ -24,31 +24,6 @@ use crate::shard_interface::create_shard_manager;
 
 lazy_static! {
     pub static ref XORB_UPLOAD_RATE_LIMITER: Arc<Semaphore> = Arc::new(Semaphore::new(*MAX_CONCURRENT_XORB_UPLOADS));
-}
-
-#[derive(Default, Debug)]
-pub(crate) struct CASDataAggregator {
-    /// Bytes of all chunks accumulated in one CAS block concatenated together.
-    pub data: Vec<u8>,
-    /// Metadata of all chunks accumulated in one CAS block. Each entry is
-    /// (chunk hash, chunk size).
-    pub chunks: Vec<(MerkleHash, usize)>,
-    // The file info of files that are still being processed.
-    // As we're building this up, we assume that all files that do not have a size in the header are
-    // not finished yet and thus cannot be uploaded.
-    //
-    // All the cases the default hash for a cas info entry will be filled in with the cas hash for
-    // an entry once the cas block is finalized and uploaded.  These correspond to the indices given
-    // alongwith the file info.
-    // This tuple contains the file info (which may be modified) and the divisions in the chunks corresponding
-    // to this file.
-    pub pending_file_info: Vec<(MDBFileInfo, Vec<usize>)>,
-}
-
-impl CASDataAggregator {
-    pub fn is_empty(&self) -> bool {
-        self.data.is_empty() && self.chunks.is_empty() && self.pending_file_info.is_empty()
-    }
 }
 
 /// Manages the translation of files between the

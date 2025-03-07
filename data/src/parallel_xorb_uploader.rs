@@ -3,18 +3,16 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use cas_client::Client;
-use mdb_shard::cas_structs::{CASChunkSequenceEntry, CASChunkSequenceHeader, MDBCASInfo};
 use mdb_shard::ShardFileManager;
-use merkledb::aggregate_hashes::cas_node_hash;
 use merklehash::MerkleHash;
 use tokio::sync::{Mutex, Semaphore};
 use tokio::task::JoinSet;
 use utils::progress::ProgressUpdater;
 use xet_threadpool::ThreadPool;
 
+use crate::data_aggregator::CASDataAggregator;
 use crate::errors::DataProcessingError::*;
 use crate::errors::*;
-use crate::file_upload_session::CASDataAggregator;
 
 #[async_trait]
 pub(crate) trait XorbUpload {
@@ -103,9 +101,8 @@ impl XorbUpload for ParallelXorbUploader {
             }
             Ok(MerkleHash::default())
         } else {
-            let xorb_data_len = cas_data.data.len();
-
-            let cas_hash = cas_node_hash(&cas_data.chunks[..]);
+            let (cas_info, data, file_info) = cas_data.finalize();
+            let cas_hash = cas_info.metadata.cas_hash;
 
             // Rate limiting, the acquired permit is dropped after the task completes.
             // The chosen Semaphore is fair, meaning xorbs added first will be scheduled to upload first.
@@ -116,36 +113,32 @@ impl XorbUpload for ParallelXorbUploader {
                 .await
                 .map_err(|e| UploadTaskError(e.to_string()))?;
 
-            let item = (cas_hash, cas_data.data, cas_data.chunks);
             let shard_manager = self.shard_manager.clone();
-            let cas = self.cas.clone();
+            let client = self.cas.clone();
             let cas_prefix = self.cas_prefix.clone();
-
-            let mut upload_tasks = self.upload_tasks.lock().await;
             let upload_progress_updater = self.upload_progress_updater.clone();
-            upload_tasks.spawn_on(
+
+            self.upload_tasks.lock().await.spawn_on(
                 async move {
-                    let ret = upload_and_register_xorb(item, shard_manager, cas, cas_prefix).await;
-                    if ret.is_ok() {
-                        if let Some(updater) = upload_progress_updater {
-                            updater.update(xorb_data_len as u64);
-                        }
-                    }
+                    let n_bytes_transmitted = client
+                        .put(&cas_prefix, &cas_hash, data, cas_info.chunks_and_boundaries())
+                        .await?;
                     drop(permit);
-                    ret
+
+                    shard_manager.add_cas_block(cas_info).await?;
+
+                    if let Some(updater) = upload_progress_updater {
+                        updater.update(n_bytes_transmitted as u64);
+                    }
+                    Ok(n_bytes_transmitted)
                 },
                 &self.threadpool.handle(),
             );
 
-            // Now register any new files as needed.
-            for (mut fi, chunk_hash_indices) in cas_data.pending_file_info {
-                for i in chunk_hash_indices {
-                    debug_assert_eq!(fi.segments[i].cas_hash, MerkleHash::default());
-                    fi.segments[i].cas_hash = cas_hash;
-                }
-
+            for fi in file_info {
                 self.shard_manager.add_file_reconstruction_info(fi).await?;
             }
+
             Ok(cas_hash)
         }
     }
@@ -162,49 +155,4 @@ impl XorbUpload for ParallelXorbUploader {
 
         Ok(self.total_bytes_trans.load(Ordering::Relaxed))
     }
-}
-
-async fn upload_and_register_xorb(
-    item: XorbUploadValueType,
-    shard_manager: Arc<ShardFileManager>,
-    cas: Arc<dyn Client + Send + Sync>,
-    cas_prefix: String,
-) -> Result<usize> {
-    let (cas_hash, data, chunks) = item;
-
-    let raw_bytes_len = data.len();
-    // upload xorb
-    let nbytes_trans = {
-        let mut pos = 0;
-        let chunk_and_boundaries = chunks
-            .iter()
-            .map(|(hash, len)| {
-                pos += *len;
-                (*hash, pos as u32)
-            })
-            .collect();
-        cas.put(&cas_prefix, &cas_hash, data, chunk_and_boundaries).await?
-    };
-
-    // register for dedup
-    // This should happen after uploading xorb above succeeded so not to
-    // leave invalid information in the local shard to dedup other xorbs.
-    {
-        let metadata = CASChunkSequenceHeader::new(cas_hash, chunks.len(), raw_bytes_len);
-
-        let mut pos = 0;
-        let chunks: Vec<_> = chunks
-            .iter()
-            .map(|(h, len)| {
-                let result = CASChunkSequenceEntry::new(*h, *len, pos);
-                pos += *len;
-                result
-            })
-            .collect();
-        let cas_info = MDBCASInfo { metadata, chunks };
-
-        shard_manager.add_cas_block(cas_info).await?;
-    }
-
-    Ok(nbytes_trans)
 }

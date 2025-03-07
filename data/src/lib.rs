@@ -4,6 +4,7 @@ mod cas_interface;
 mod chunking;
 pub mod configurations;
 mod constants;
+mod data_aggregator;
 pub mod data_client;
 pub mod errors;
 mod file_cleaner;
