@@ -7,8 +7,7 @@ use std::path::PathBuf;
 pub use cache_manager::get_cache;
 use cas_types::{ChunkRange, Key};
 pub use disk::test_utils::*;
-pub use disk::DiskCache;
-pub use disk::DEFAULT_CAPACITY;
+pub use disk::{DiskCache, DEFAULT_CAPACITY};
 use error::ChunkCacheError;
 use mockall::automock;
 

@@ -3,11 +3,11 @@ use std::str::FromStr;
 
 use cas_client::CacheConfig;
 use cas_object::CompressionScheme;
+use chunk_cache::disk::DEFAULT_CAPACITY;
 use utils::auth::AuthConfig;
 
 use crate::errors::Result;
 use crate::repo_salt::RepoSalt;
-use chunk_cache::disk::DEFAULT_CAPACITY;
 
 #[derive(Debug)]
 pub enum Endpoint {

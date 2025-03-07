@@ -251,10 +251,10 @@ mod tests {
     fn test_cache_size_env_var() {
         // Test with different cache sizes
         let test_cases = vec![
-            (Some("5"), 5 << 30),    // 5GB
-            (Some("20"), 20 << 30),  // 20GB
-            (Some("1"), 1 << 30),    // 1GB
-            (None, DEFAULT_CAPACITY), // Default when not set
+            (Some("5"), 5 << 30),                // 5GB
+            (Some("20"), 20 << 30),              // 20GB
+            (Some("1"), 1 << 30),                // 1GB
+            (None, DEFAULT_CAPACITY),            // Default when not set
             (Some("invalid"), DEFAULT_CAPACITY), // Default when invalid value
         ];
 
@@ -267,7 +267,9 @@ mod tests {
             }
 
             // Verify the configured cache size matches the expected size
-            assert_eq!(get_configured_cache_size(), expected_size,
+            assert_eq!(
+                get_configured_cache_size(),
+                expected_size,
                 "Cache size mismatch for env var value {:?}. Expected {}GB, got {}GB",
                 env_value,
                 expected_size >> 30,
