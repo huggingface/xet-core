@@ -99,10 +99,10 @@ pub fn default_config(
             }),
             staging_directory: Some(shard_staging_directory.path().to_owned()),
         },
-        dedup_config: Some(DedupConfig {
+        dedup_config: GlobalDedupConfig {
             repo_salt: None,
             global_dedup_policy: Default::default(),
-        }),
+        },
         repo_info: Some(RepoInfo {
             repo_paths: vec!["".into()],
         }),

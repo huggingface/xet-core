@@ -1,6 +1,7 @@
 use std::cmp::{max, min};
 use std::collections::{HashMap, HashSet};
 use std::io::{Cursor, Write};
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use anyhow::anyhow;
@@ -8,13 +9,17 @@ use async_trait::async_trait;
 use cas_object::{CasObject, CompressionScheme};
 use cas_types::{
     BatchQueryReconstructionResponse, CASReconstructionFetchInfo, CASReconstructionTerm, FileRange, HexMerkleHash,
-    HttpRange, Key, QueryReconstructionResponse, UploadXorbResponse,
+    HttpRange, Key, QueryReconstructionResponse, UploadShardResponse, UploadShardResponseType, UploadXorbResponse,
 };
 use chunk_cache::{CacheConfig, ChunkCache};
 use error_printer::ErrorPrinter;
+use file_utils::SafeFileCreator;
 use futures::{StreamExt, TryStreamExt};
 use http::header::RANGE;
-use merklehash::MerkleHash;
+use mdb_shard::file_structs::{FileDataSequenceEntry, FileDataSequenceHeader, MDBFileInfo};
+use mdb_shard::shard_file_reconstructor::FileReconstructor;
+use mdb_shard::utils::shard_file_name;
+use merklehash::{HashedWrite, MerkleHash};
 use reqwest::{StatusCode, Url};
 use reqwest_middleware::ClientWithMiddleware;
 use tracing::{debug, error, trace};
@@ -23,10 +28,13 @@ use utils::progress::ProgressUpdater;
 use utils::singleflight::Group;
 use xet_threadpool::ThreadPool;
 
-use crate::error::Result;
+use crate::error::{CasClientError, Result};
 use crate::http_client::ResponseErrorLogger;
-use crate::interface::*;
-use crate::{http_client, CasClientError, Client};
+use crate::interface::{ShardDedupProber, *};
+use crate::{http_client, Client, RegistrationClient, ShardClientInterface};
+
+const FORCE_SYNC_METHOD: reqwest::Method = reqwest::Method::PUT;
+const NON_FORCE_SYNC_METHOD: reqwest::Method = reqwest::Method::POST;
 
 pub const CAS_ENDPOINT: &str = "http://localhost:8080";
 pub const PREFIX_DEFAULT: &str = "default";
@@ -41,10 +49,12 @@ pub struct RemoteClient {
     endpoint: String,
     compression: Option<CompressionScheme>,
     dry_run: bool,
-    http_auth_client: ClientWithMiddleware,
+    http_client: Arc<ClientWithMiddleware>,
+    authenticated_http_client: Arc<ClientWithMiddleware>,
     chunk_cache: Option<Arc<dyn ChunkCache>>,
     threadpool: Arc<ThreadPool>,
     range_download_single_flight: RangeDownloadSingleFlight,
+    shard_cache_directory: PathBuf,
 }
 
 impl RemoteClient {
@@ -54,6 +64,7 @@ impl RemoteClient {
         compression: Option<CompressionScheme>,
         auth: &Option<AuthConfig>,
         cache_config: &Option<CacheConfig>,
+        shard_cache_directory: PathBuf,
         dry_run: bool,
     ) -> Self {
         // use disk cache if cache_config provided.
@@ -74,10 +85,12 @@ impl RemoteClient {
             endpoint: endpoint.to_string(),
             compression,
             dry_run,
-            http_auth_client: http_client::build_auth_http_client(auth, &None).unwrap(),
+            authenticated_http_client: Arc::new(http_client::build_auth_http_client(auth, &None).unwrap()),
+            http_client: Arc::new(http_client::build_http_client(&None).unwrap()),
             chunk_cache,
             threadpool,
             range_download_single_flight,
+            shard_cache_directory,
         }
     }
 }
@@ -114,7 +127,7 @@ impl UploadClient for RemoteClient {
         };
 
         let url = Url::parse(&format!("{}/xorb/{key}", self.endpoint))?;
-        let response = self.http_auth_client.head(url).send().await?;
+        let response = self.authenticated_http_client.head(url).send().await?;
         match response.status() {
             StatusCode::OK => Ok(true),
             StatusCode::NOT_FOUND => Ok(false),
@@ -127,7 +140,6 @@ impl UploadClient for RemoteClient {
 impl ReconstructionClient for RemoteClient {
     async fn get_file(
         &self,
-        http_client: Arc<ClientWithMiddleware>,
         hash: &MerkleHash,
         byte_range: Option<FileRange>,
         writer: &mut Box<dyn Write + Send>,
@@ -139,7 +151,6 @@ impl ReconstructionClient for RemoteClient {
         let terms = manifest.terms;
         let fetch_info = Arc::new(manifest.fetch_info);
         self.reconstruct_file_to_writer(
-            http_client,
             terms,
             fetch_info,
             manifest.offset_into_first_range,
@@ -152,11 +163,7 @@ impl ReconstructionClient for RemoteClient {
         Ok(())
     }
 
-    async fn batch_get_file(
-        &self,
-        http_client: Arc<ClientWithMiddleware>,
-        mut files: HashMap<MerkleHash, &mut Box<dyn Write + Send>>,
-    ) -> Result<()> {
+    async fn batch_get_file(&self, mut files: HashMap<MerkleHash, &mut Box<dyn Write + Send>>) -> Result<()> {
         let requested_file_ids = files.keys().cloned().collect::<HashSet<_>>();
         let manifest = self.batch_get_reconstruction(requested_file_ids.iter()).await?;
         let fetch_info = Arc::new(manifest.fetch_info);
@@ -171,7 +178,7 @@ impl ReconstructionClient for RemoteClient {
         // TODO: spawn threads to reconstruct each file
         for (hash, terms) in manifest.files {
             let w = files.get_mut(&(hash.into())).unwrap();
-            self.reconstruct_file_to_writer(http_client.clone(), terms, fetch_info.clone(), 0, None, w, None)
+            self.reconstruct_file_to_writer(terms, fetch_info.clone(), 0, None, w, None)
                 .await?;
         }
 
@@ -188,7 +195,7 @@ impl Reconstructable for RemoteClient {
     ) -> Result<QueryReconstructionResponse> {
         let url = Url::parse(&format!("{}/reconstruction/{}", self.endpoint, file_id.hex()))?;
 
-        let mut request = self.http_auth_client.get(url);
+        let mut request = self.authenticated_http_client.get(url);
         if let Some(range) = bytes_range {
             // convert exclusive-end to inclusive-end range
             request = request.header(RANGE, format!("{}-{}", range.start, range.end - 1))
@@ -227,7 +234,7 @@ impl RemoteClient {
         let url: Url = url_str.parse()?;
 
         let response = self
-            .http_auth_client
+            .authenticated_http_client
             .get(url)
             .send()
             .await
@@ -261,7 +268,7 @@ impl RemoteClient {
 
         if !self.dry_run {
             let response = self
-                .http_auth_client
+                .authenticated_http_client
                 .post(url)
                 .body(data)
                 .send()
@@ -289,7 +296,6 @@ impl RemoteClient {
     #[allow(clippy::too_many_arguments)]
     pub async fn reconstruct_file_to_writer(
         &self,
-        http_client: Arc<ClientWithMiddleware>,
         terms: Vec<CASReconstructionTerm>,
         fetch_info: Arc<HashMap<HexMerkleHash, Vec<CASReconstructionFetchInfo>>>,
         offset_into_first_range: u64,
@@ -305,7 +311,7 @@ impl RemoteClient {
 
         let futs_iter = terms.into_iter().map(|term| {
             get_one_term(
-                http_client.clone(),
+                self.http_client.clone(),
                 self.chunk_cache.clone(),
                 term,
                 fetch_info.clone(),
@@ -470,6 +476,136 @@ async fn download_range(
     Ok((data, chunk_byte_indices))
 }
 
+#[async_trait]
+impl RegistrationClient for RemoteClient {
+    async fn upload_shard(
+        &self,
+        prefix: &str,
+        hash: &MerkleHash,
+        force_sync: bool,
+        shard_data: &[u8],
+        _salt: &[u8; 32],
+    ) -> Result<bool> {
+        let key = Key {
+            prefix: prefix.into(),
+            hash: *hash,
+        };
+
+        let url = Url::parse(&format!("{}/shard/{key}", self.endpoint))?;
+
+        let method = match force_sync {
+            true => FORCE_SYNC_METHOD,
+            false => NON_FORCE_SYNC_METHOD,
+        };
+
+        let response = self
+            .authenticated_http_client
+            .request(method, url)
+            .body(shard_data.to_vec())
+            .send()
+            .await
+            .process_error("upload_shard")?;
+
+        let response_parsed: UploadShardResponse =
+            response.json().await.log_error("error json decoding upload_shard response")?;
+
+        match response_parsed.result {
+            UploadShardResponseType::Exists => Ok(false),
+            UploadShardResponseType::SyncPerformed => Ok(true),
+        }
+    }
+}
+
+#[async_trait]
+impl FileReconstructor<CasClientError> for RemoteClient {
+    async fn get_file_reconstruction_info(
+        &self,
+        file_hash: &MerkleHash,
+    ) -> Result<Option<(MDBFileInfo, Option<MerkleHash>)>> {
+        let url = Url::parse(&format!("{}/reconstruction/{}", self.endpoint, file_hash.hex()))?;
+
+        let response = self
+            .authenticated_http_client
+            .get(url)
+            .send()
+            .await
+            .process_error("get_reconstruction_info")?;
+        let response_info: QueryReconstructionResponse = response.json().await?;
+
+        Ok(Some((
+            MDBFileInfo {
+                metadata: FileDataSequenceHeader::new(*file_hash, response_info.terms.len(), false, false),
+                segments: response_info
+                    .terms
+                    .into_iter()
+                    .map(|ce| {
+                        FileDataSequenceEntry::new(ce.hash.into(), ce.unpacked_length, ce.range.start, ce.range.end)
+                    })
+                    .collect(),
+                verification: vec![],
+                metadata_ext: None,
+            },
+            None,
+        )))
+    }
+}
+
+#[async_trait]
+impl ShardDedupProber for RemoteClient {
+    async fn query_for_global_dedup_shard(
+        &self,
+        prefix: &str,
+        chunk_hash: &MerkleHash,
+        _salt: &[u8; 32],
+    ) -> Result<Option<PathBuf>> {
+        if self.shard_cache_directory == PathBuf::default() {
+            return Err(CasClientError::ConfigurationError(
+                "Shard Write Directory not set; cannot download.".to_string(),
+            ));
+        }
+
+        // The API endpoint now only supports non-batched dedup request and
+        // ignores salt.
+        let key = Key {
+            prefix: prefix.into(),
+            hash: *chunk_hash,
+        };
+
+        let url = Url::parse(&format!("{0}/chunk/{key}", self.endpoint))?;
+
+        let mut response = self
+            .authenticated_http_client
+            .get(url)
+            .send()
+            .await
+            .map_err(|e| CasClientError::Other(format!("request failed with error {e}")))?;
+
+        // Dedup shard not found, return empty result
+        if !response.status().is_success() {
+            return Ok(None);
+        }
+
+        let writer = SafeFileCreator::new_unnamed()?;
+        // Compute the actual hash to use as the shard file name
+        let mut hashed_writer = HashedWrite::new(writer);
+
+        while let Some(chunk) = response.chunk().await? {
+            hashed_writer.write_all(&chunk)?;
+        }
+        hashed_writer.flush()?;
+
+        let shard_hash = hashed_writer.hash();
+        let file_path = self.shard_cache_directory.join(shard_file_name(&shard_hash));
+        let mut writer = hashed_writer.into_inner();
+        writer.set_dest_path(&file_path);
+        writer.close()?;
+
+        Ok(Some(file_path))
+    }
+}
+
+impl ShardClientInterface for RemoteClient {}
+
 #[cfg(test)]
 mod tests {
 
@@ -524,8 +660,15 @@ mod tests {
             build_cas_object(3, ChunkSize::Random(512, 10248), cas_object::CompressionScheme::LZ4);
 
         let threadpool = Arc::new(ThreadPool::new().unwrap());
-        let client =
-            RemoteClient::new(threadpool.clone(), CAS_ENDPOINT, Some(CompressionScheme::LZ4), &None, &None, false);
+        let client = RemoteClient::new(
+            threadpool.clone(),
+            CAS_ENDPOINT,
+            Some(CompressionScheme::LZ4),
+            &None,
+            &None,
+            "".into(),
+            false,
+        );
         // Act
         let result = threadpool
             .external_run_async_task(async move { client.put(prefix, &c.info.cashash, data, chunk_boundaries).await })
@@ -623,17 +766,19 @@ mod tests {
                 .expect_get()
                 .returning(|_, range| Ok(Some(vec![1; (range.end - range.start) as usize * TEST_CHUNK_SIZE])));
 
-            let http_client = http_client::build_http_client(&None).unwrap();
+            let http_client = Arc::new(http_client::build_http_client(&None).unwrap());
 
             let threadpool = Arc::new(ThreadPool::new().unwrap());
             let client = RemoteClient {
                 chunk_cache: Some(Arc::new(chunk_cache)),
-                http_auth_client: http_client.clone(),
+                authenticated_http_client: http_client.clone(),
+                http_client,
                 endpoint: "".to_string(),
                 compression: Some(CompressionScheme::LZ4),
                 dry_run: false,
                 threadpool: threadpool.clone(),
                 range_download_single_flight: Arc::new(Group::new()),
+                shard_cache_directory: "".into(),
             };
 
             let v = ThreadSafeBuffer::default();
@@ -643,7 +788,6 @@ mod tests {
                 .external_run_async_task(async move {
                     client
                         .reconstruct_file_to_writer(
-                            Arc::new(http_client.clone()),
                             test.reconstruction_response.terms,
                             Arc::new(test.reconstruction_response.fetch_info),
                             test.reconstruction_response.offset_into_first_range,

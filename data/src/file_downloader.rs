@@ -4,13 +4,12 @@ use std::sync::Arc;
 use cas_client::Client;
 use cas_types::FileRange;
 use merklehash::MerkleHash;
-use reqwest_middleware::ClientWithMiddleware;
 use utils::progress::ProgressUpdater;
 use xet_threadpool::ThreadPool;
 
-use crate::cas_interface::create_cas_client;
 use crate::configurations::TranslatorConfig;
 use crate::errors::*;
+use crate::remote_client_interface::create_remote_client;
 use crate::PointerFile;
 
 /// Manages the download of files based on a hash or pointer file.
@@ -21,22 +20,15 @@ use crate::PointerFile;
 pub struct FileDownloader {
     /* ----- Configurations ----- */
     config: TranslatorConfig,
-    cas: Arc<dyn Client + Send + Sync>,
-    http_client: Arc<ClientWithMiddleware>,
+    client: Arc<dyn Client + Send + Sync>,
 }
 
 /// Smudge operations
 impl FileDownloader {
     pub async fn new(config: TranslatorConfig, threadpool: Arc<ThreadPool>) -> Result<Self> {
-        let cas = create_cas_client(&config.cas_storage_config, threadpool.clone(), false)?;
+        let client = create_remote_client(&config, threadpool.clone(), false)?;
 
-        let http_client = Arc::new(cas_client::build_http_client(&None)?);
-
-        Ok(Self {
-            config,
-            cas,
-            http_client,
-        })
+        Ok(Self { config, client })
     }
 
     pub async fn smudge_file_from_pointer(
@@ -58,9 +50,7 @@ impl FileDownloader {
         progress_updater: Option<Arc<dyn ProgressUpdater>>,
     ) -> Result<()> {
         // Currently, this works by always directly querying the remote server.
-        self.cas
-            .get_file(self.http_client.clone(), file_id, range, writer, progress_updater)
-            .await?;
+        self.client.get_file(file_id, range, writer, progress_updater).await?;
         Ok(())
     }
 }

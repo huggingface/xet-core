@@ -13,12 +13,12 @@ use tokio::sync::{Mutex, Semaphore};
 use utils::progress::ProgressUpdater;
 use xet_threadpool::ThreadPool;
 
-use crate::cas_interface::create_cas_client;
 use crate::configurations::*;
 use crate::constants::MAX_CONCURRENT_XORB_UPLOADS;
 use crate::errors::*;
 use crate::file_cleaner::SingleFileCleaner;
 use crate::parallel_xorb_uploader::{ParallelXorbUploader, XorbUpload};
+use crate::remote_client_interface::create_remote_client;
 use crate::remote_shard_interface::RemoteShardInterface;
 use crate::shard_interface::create_shard_manager;
 
@@ -105,29 +105,18 @@ impl FileUploadSession {
     ) -> Result<FileUploadSession> {
         let shard_manager = create_shard_manager(&config.shard_storage_config, false).await?;
 
-        let cas_client = create_cas_client(&config.cas_storage_config, threadpool.clone(), dry_run)?;
+        let cas_client = create_remote_client(&config, threadpool.clone(), dry_run)?;
 
-        let remote_shards = {
-            if let Some(dedup) = &config.dedup_config {
-                RemoteShardInterface::new(
-                    config.file_query_policy,
-                    &config.shard_storage_config,
-                    Some(shard_manager.clone()),
-                    Some(cas_client.clone()),
-                    dedup.repo_salt,
-                    threadpool.clone(),
-                    false,
-                )
-                .await?
-            } else {
-                RemoteShardInterface::new_query_only(
-                    config.file_query_policy,
-                    &config.shard_storage_config,
-                    threadpool.clone(),
-                )
-                .await?
-            }
-        };
+        let remote_shards = RemoteShardInterface::new(
+            config.file_query_policy,
+            &config.shard_storage_config,
+            Some(shard_manager.clone()),
+            cas_client.clone(),
+            config.dedup_config.repo_salt,
+            threadpool.clone(),
+            false,
+        )
+        .await?;
 
         let xorb_uploader = ParallelXorbUploader::new(
             &config.cas_storage_config.prefix,
@@ -179,14 +168,10 @@ impl FileUploadSession {
     /// The caller is responsible for memory usage management, the parameter "buffer_size"
     /// indicates the maximum number of Vec<u8> in the internal buffer.
     pub async fn start_clean(&self, buffer_size: usize, file_name: Option<&Path>) -> Result<Arc<SingleFileCleaner>> {
-        let Some(ref dedup) = self.config.dedup_config else {
-            return Err(DataProcessingError::DedupConfigError("empty dedup config".to_owned()));
-        };
-
         SingleFileCleaner::new(
-            matches!(dedup.global_dedup_policy, GlobalDedupPolicy::Always),
+            matches!(self.config.dedup_config.global_dedup_policy, GlobalDedupPolicy::Always),
             self.config.cas_storage_config.prefix.clone(),
-            dedup.repo_salt,
+            self.config.dedup_config.repo_salt,
             self.shard_manager.clone(),
             self.remote_shards.clone(),
             self.xorb_uploader.clone(),
@@ -284,7 +269,7 @@ mod tests {
                 .unwrap(),
         );
 
-        let translator = FileUploadSession::new(TranslatorConfig::local_config(cas_path, true).unwrap(), runtime, None)
+        let translator = FileUploadSession::new(TranslatorConfig::local_config(cas_path).unwrap(), runtime, None)
             .await
             .unwrap();
 
@@ -323,7 +308,7 @@ mod tests {
             return;
         }
 
-        let translator = FileDownloader::new(TranslatorConfig::local_config(cas_path, true).unwrap(), runtime)
+        let translator = FileDownloader::new(TranslatorConfig::local_config(cas_path).unwrap(), runtime)
             .await
             .unwrap();
 
