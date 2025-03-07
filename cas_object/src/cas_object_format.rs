@@ -1132,6 +1132,8 @@ impl CasObject {
         Ok((byte_offset_start, byte_offset_end))
     }
 
+    /// given a valid chunk_index, returns the uncompressed chunk length for the chunk
+    /// at the given index, chunk_index must be less than the number of chunks in the xorb
     pub fn chunk_length(&self, chunk_index: u32) -> Result<u32, CasObjectError> {
         self.validate_cas_object_info()?;
         let chunk_index = chunk_index as usize;
@@ -1146,6 +1148,9 @@ impl CasObject {
         Ok(cumulative_sum - before)
     }
 
+    /// given a valid start and end, returns the uncompressed end-exclusive range length
+    /// meaning the length of the chunk range [chunk_index_start, chunk_index_end)
+    /// the following condition must be valid: chunk_index_end < chunk_index_end <= num_chunks
     pub fn uncompressed_range_length(
         &self,
         chunk_index_start: u32,
@@ -1854,5 +1859,58 @@ mod tests {
         assert_eq!(ret.info.chunk_boundary_offsets, cas_info_v0.chunk_boundary_offsets);
         assert_eq!(ret.info.chunk_hashes, cas_info_v0.chunk_hashes);
         assert_eq!(ret.info._buffer, cas_info_v0._buffer);
+    }
+
+    #[test]
+    fn test_chunk_length() {
+        const NUM_CHUNKS: u32 = 8;
+        let (c, _, _, _) = build_cas_object(NUM_CHUNKS, ChunkSize::Random(512, 2048), CompressionScheme::LZ4);
+
+        let mut cumulative_sum = 0;
+        for i in 0..NUM_CHUNKS {
+            let chunk_length_result = c.chunk_length(i);
+            assert!(chunk_length_result.is_ok());
+            let chunk_length = chunk_length_result.unwrap();
+            assert_eq!(chunk_length, c.info.unpacked_chunk_offsets[i as usize] - cumulative_sum);
+            cumulative_sum += chunk_length;
+        }
+    }
+
+    #[test]
+    fn test_chunk_length_invalid() {
+        const NUM_CHUNKS: u32 = 8;
+        let (c, _, _, _) = build_cas_object(NUM_CHUNKS, ChunkSize::Random(512, 2048), CompressionScheme::LZ4);
+
+        assert!(c.chunk_length(NUM_CHUNKS).is_err());
+        assert!(c.chunk_length(NUM_CHUNKS + 1).is_err());
+    }
+
+    #[test]
+    fn test_uncompressed_range_length() {
+        const NUM_CHUNKS: u32 = 4;
+        const CHUNK_SIZE: u32 = 512;
+        let (c, _, _, _) = build_cas_object(NUM_CHUNKS, ChunkSize::Fixed(CHUNK_SIZE), CompressionScheme::LZ4);
+
+        for start in 0..(NUM_CHUNKS - 1) {
+            for end in (start + 1)..NUM_CHUNKS {
+                let uncompressed_range_length_result = c.uncompressed_range_length(start, end);
+                assert!(uncompressed_range_length_result.is_ok());
+                let length = uncompressed_range_length_result.unwrap();
+                assert_eq!(length, CHUNK_SIZE * (end - start));
+            }
+        }
+    }
+
+    #[test]
+    fn test_uncompressed_range_length_invalid() {
+        const NUM_CHUNKS: u32 = 4;
+        const CHUNK_SIZE: u32 = 512;
+        let (c, _, _, _) = build_cas_object(NUM_CHUNKS, ChunkSize::Fixed(CHUNK_SIZE), CompressionScheme::LZ4);
+
+        assert!(c.uncompressed_range_length(0, 0).is_err());
+        assert!(c.uncompressed_range_length(1, 0).is_err());
+        assert!(c.uncompressed_range_length(0, NUM_CHUNKS + 1).is_err());
+        assert!(c.uncompressed_range_length(NUM_CHUNKS, NUM_CHUNKS + 1).is_err());
+        assert!(c.uncompressed_range_length(NUM_CHUNKS + 2, NUM_CHUNKS + 1).is_err());
     }
 }
