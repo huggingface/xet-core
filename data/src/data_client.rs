@@ -33,6 +33,14 @@ const MAX_CONCURRENT_DOWNLOADS: usize = 8; // Download is not CPU-bound
 const DEFAULT_CAS_ENDPOINT: &str = "http://localhost:8080";
 const READ_BLOCK_SIZE: usize = 1024 * 1024;
 
+fn get_configured_cache_size() -> u64 {
+    env::var("HF_XET_CACHE_SIZE_GB")
+        .ok()
+        .and_then(|s| s.parse::<u64>().ok())
+        .map(|size| size << 30) // Convert GB to bytes
+        .unwrap_or(DEFAULT_CAPACITY)
+}
+
 pub fn default_config(
     endpoint: String,
     xorb_compression: Option<CompressionScheme>,
@@ -85,7 +93,7 @@ pub fn default_config(
             prefix: "default".into(),
             cache_config: Some(CacheConfig {
                 cache_directory: cache_path.join("chunk-cache"),
-                cache_size: DEFAULT_CAPACITY,
+                cache_size: get_configured_cache_size(),
             }),
             staging_directory: None,
         },
@@ -237,6 +245,36 @@ mod tests {
     use tempfile::tempdir;
 
     use super::*;
+
+    #[test]
+    #[serial]
+    fn test_cache_size_env_var() {
+        // Test with different cache sizes
+        let test_cases = vec![
+            (Some("5"), 5 << 30),    // 5GB
+            (Some("20"), 20 << 30),  // 20GB
+            (Some("1"), 1 << 30),    // 1GB
+            (None, DEFAULT_CAPACITY), // Default when not set
+            (Some("invalid"), DEFAULT_CAPACITY), // Default when invalid value
+        ];
+
+        for (env_value, expected_size) in test_cases {
+            // Set or unset the environment variable
+            if let Some(value) = env_value {
+                env::set_var("HF_XET_CACHE_SIZE_GB", value);
+            } else {
+                env::remove_var("HF_XET_CACHE_SIZE_GB");
+            }
+
+            // Verify the configured cache size matches the expected size
+            assert_eq!(get_configured_cache_size(), expected_size,
+                "Cache size mismatch for env var value {:?}. Expected {}GB, got {}GB",
+                env_value,
+                expected_size >> 30,
+                get_configured_cache_size() >> 30
+            );
+        }
+    }
 
     #[test]
     #[serial(default_config_env)]
