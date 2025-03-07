@@ -1134,7 +1134,7 @@ impl CasObject {
 
     /// given a valid chunk_index, returns the uncompressed chunk length for the chunk
     /// at the given index, chunk_index must be less than the number of chunks in the xorb
-    pub fn chunk_length(&self, chunk_index: u32) -> Result<u32, CasObjectError> {
+    pub fn uncompressed_chunk_length(&self, chunk_index: u32) -> Result<u32, CasObjectError> {
         self.validate_cas_object_info()?;
         let chunk_index = chunk_index as usize;
         if chunk_index >= self.info.unpacked_chunk_offsets.len() {
@@ -1150,15 +1150,26 @@ impl CasObject {
 
     /// given a valid start and end, returns the uncompressed end-exclusive range length
     /// meaning the length of the chunk range [chunk_index_start, chunk_index_end)
-    /// the following condition must be valid: chunk_index_end < chunk_index_end <= num_chunks
+    /// the following conditions must be valid:
+    ///     chunk_index_start <= chunk_index_end &&
+    ///     chunk_index_end <= num_chunks &&
+    ///     chunk_index_start < num_chunks
     pub fn uncompressed_range_length(
         &self,
         chunk_index_start: u32,
         chunk_index_end: u32,
     ) -> Result<u32, CasObjectError> {
         self.validate_cas_object_info()?;
-        if chunk_index_start >= chunk_index_end || chunk_index_end > self.info.num_chunks {
+        if chunk_index_start > chunk_index_end
+            || chunk_index_end > self.info.num_chunks
+            || chunk_index_start >= self.info.num_chunks
+        {
             return Err(CasObjectError::InvalidArguments);
+        }
+
+        // this check is important if chunk_index_end is 0
+        if chunk_index_start == chunk_index_end {
+            return Ok(0);
         }
 
         let before_start = match chunk_index_start {
@@ -1862,13 +1873,13 @@ mod tests {
     }
 
     #[test]
-    fn test_chunk_length() {
+    fn test_uncompressed_chunk_length() {
         const NUM_CHUNKS: u32 = 8;
         let (c, _, _, _) = build_cas_object(NUM_CHUNKS, ChunkSize::Random(512, 2048), CompressionScheme::LZ4);
 
         let mut cumulative_sum = 0;
         for i in 0..NUM_CHUNKS {
-            let chunk_length_result = c.chunk_length(i);
+            let chunk_length_result = c.uncompressed_chunk_length(i);
             assert!(chunk_length_result.is_ok());
             let chunk_length = chunk_length_result.unwrap();
             assert_eq!(chunk_length, c.info.unpacked_chunk_offsets[i as usize] - cumulative_sum);
@@ -1877,12 +1888,12 @@ mod tests {
     }
 
     #[test]
-    fn test_chunk_length_invalid() {
+    fn test_uncompressed_chunk_length_invalid() {
         const NUM_CHUNKS: u32 = 8;
         let (c, _, _, _) = build_cas_object(NUM_CHUNKS, ChunkSize::Random(512, 2048), CompressionScheme::LZ4);
 
-        assert!(c.chunk_length(NUM_CHUNKS).is_err());
-        assert!(c.chunk_length(NUM_CHUNKS + 1).is_err());
+        assert!(c.uncompressed_chunk_length(NUM_CHUNKS).is_err());
+        assert!(c.uncompressed_chunk_length(NUM_CHUNKS + 1).is_err());
     }
 
     #[test]
@@ -1892,7 +1903,7 @@ mod tests {
         let (c, _, _, _) = build_cas_object(NUM_CHUNKS, ChunkSize::Fixed(CHUNK_SIZE), CompressionScheme::LZ4);
 
         for start in 0..(NUM_CHUNKS - 1) {
-            for end in (start + 1)..NUM_CHUNKS {
+            for end in start..NUM_CHUNKS {
                 let uncompressed_range_length_result = c.uncompressed_range_length(start, end);
                 assert!(uncompressed_range_length_result.is_ok());
                 let length = uncompressed_range_length_result.unwrap();
@@ -1907,7 +1918,6 @@ mod tests {
         const CHUNK_SIZE: u32 = 512;
         let (c, _, _, _) = build_cas_object(NUM_CHUNKS, ChunkSize::Fixed(CHUNK_SIZE), CompressionScheme::LZ4);
 
-        assert!(c.uncompressed_range_length(0, 0).is_err());
         assert!(c.uncompressed_range_length(1, 0).is_err());
         assert!(c.uncompressed_range_length(0, NUM_CHUNKS + 1).is_err());
         assert!(c.uncompressed_range_length(NUM_CHUNKS, NUM_CHUNKS + 1).is_err());
