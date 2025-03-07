@@ -183,6 +183,13 @@ impl MDBCASInfo {
 
         Ok(n_out_bytes)
     }
+
+    pub fn chunks_and_boundaries(&self) -> Vec<(MerkleHash, u32)> {
+        self.chunks
+            .iter()
+            .map(|entry| (entry.chunk_hash, entry.chunk_byte_range_start))
+            .collect()
+    }
 }
 
 pub struct MDBCASInfoView {

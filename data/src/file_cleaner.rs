@@ -30,9 +30,9 @@ use crate::constants::{
     DEFAULT_MIN_N_CHUNKS_PER_RANGE, MIN_N_CHUNKS_PER_RANGE_HYSTERESIS_FACTOR, MIN_SPACING_BETWEEN_GLOBAL_DEDUP_QUERIES,
     NRANGES_IN_STREAMING_FRAGMENTATION_ESTIMATOR,
 };
+use crate::data_aggregator::CASDataAggregator;
 use crate::errors::DataProcessingError::*;
 use crate::errors::Result;
-use crate::file_upload_session::CASDataAggregator;
 use crate::metrics::FILTER_BYTES_CLEANED;
 use crate::parallel_xorb_uploader::XorbUpload;
 use crate::remote_shard_interface::RemoteShardInterface;
