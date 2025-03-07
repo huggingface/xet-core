@@ -1,5 +1,5 @@
 mod cache_manager;
-mod disk;
+pub mod disk;
 pub mod error;
 
 use std::path::PathBuf;
@@ -8,10 +8,9 @@ pub use cache_manager::get_cache;
 use cas_types::{ChunkRange, Key};
 pub use disk::test_utils::*;
 pub use disk::DiskCache;
+pub use disk::DEFAULT_CAPACITY;
 use error::ChunkCacheError;
 use mockall::automock;
-
-use crate::disk::DEFAULT_CAPACITY;
 
 /// ChunkCache is a trait for storing and fetching Xorb ranges.
 /// implementors are expected to return bytes for a key and a given chunk range

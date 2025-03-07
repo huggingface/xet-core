@@ -917,6 +917,7 @@ dependencies = [
  "cas_object",
  "cas_types",
  "chrono",
+ "chunk_cache",
  "clap 3.2.25",
  "dirs",
  "error_printer",
