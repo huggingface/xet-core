@@ -813,6 +813,11 @@ mod tests {
     const RANDOM_SEED: u64 = 9089 << 20 | 120043;
 
     #[test]
+    fn test_default_capacity() {
+        assert_eq!(DEFAULT_CAPACITY, 10 << 30, "DEFAULT_CAPACITY should be 10GB");
+    }
+
+    #[test]
     fn test_get_cache_empty() {
         let mut rng = StdRng::seed_from_u64(RANDOM_SEED);
         let cache_root = TempDir::new("empty").unwrap();

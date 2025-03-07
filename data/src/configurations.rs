@@ -3,6 +3,7 @@ use std::str::FromStr;
 
 use cas_client::CacheConfig;
 use cas_object::CompressionScheme;
+use chunk_cache::disk::DEFAULT_CAPACITY;
 use utils::auth::AuthConfig;
 
 use crate::errors::Result;
@@ -112,7 +113,7 @@ impl TranslatorConfig {
                 prefix: "default".into(),
                 cache_config: Some(CacheConfig {
                     cache_directory: path.join("cache"),
-                    cache_size: 10 * 1024 * 1024 * 1024, // 10 GiB
+                    cache_size: DEFAULT_CAPACITY,
                 }),
                 staging_directory: None,
             },
