@@ -29,7 +29,7 @@ pub mod test_utils;
 pub(crate) const BASE64_ENGINE: GeneralPurpose = URL_SAFE;
 pub const DEFAULT_CAPACITY: u64 = {
     let default = 10 << 30; // 10 GB
-    std::env::var("XET_CACHE_SIZE")
+    std::env::var("HF_XET_CACHE_SIZE_GB")
         .ok()
         .and_then(|s| s.parse::<u64>().ok())
         .map(|size| size << 30) // Convert GB to bytes
