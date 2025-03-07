@@ -1141,7 +1141,7 @@ impl CasObject {
         let cumulative_sum = self.info.unpacked_chunk_offsets[chunk_index];
         let before = match chunk_index {
             0 => 0,
-            _ => self.info.chunk_boundary_offsets[chunk_index - 1],
+            _ => self.info.unpacked_chunk_offsets[chunk_index - 1],
         };
         Ok(cumulative_sum - before)
     }
@@ -1158,9 +1158,9 @@ impl CasObject {
 
         let before_start = match chunk_index_start {
             0 => 0,
-            _ => self.info.chunk_boundary_offsets[chunk_index_start as usize - 1],
+            _ => self.info.unpacked_chunk_offsets[chunk_index_start as usize - 1],
         };
-        let incl_end = self.info.chunk_boundary_offsets[chunk_index_end as usize - 1];
+        let incl_end = self.info.unpacked_chunk_offsets[chunk_index_end as usize - 1];
         Ok(incl_end - before_start)
     }
 
