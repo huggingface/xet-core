@@ -5,7 +5,6 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use cas_types::{FileRange, QueryReconstructionResponse};
-use mdb_shard::cas_structs::MDBCASInfo;
 use mdb_shard::shard_file_reconstructor::FileReconstructor;
 use merklehash::MerkleHash;
 use reqwest_middleware::ClientWithMiddleware;
