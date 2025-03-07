@@ -27,7 +27,14 @@ pub mod test_utils;
 
 // consistently use URL_SAFE (also file path safe) base64 codec
 pub(crate) const BASE64_ENGINE: GeneralPurpose = URL_SAFE;
-pub const DEFAULT_CAPACITY: u64 = 10 << 30; // 10 GB
+pub const DEFAULT_CAPACITY: u64 = {
+    let default = 10 << 30; // 10 GB
+    std::env::var("XET_CACHE_SIZE")
+        .ok()
+        .and_then(|s| s.parse::<u64>().ok())
+        .map(|size| size << 30) // Convert GB to bytes
+        .unwrap_or(default)
+};
 const PREFIX_DIR_NAME_LEN: usize = 2;
 
 type OptionResult<T, E> = Result<Option<T>, E>;

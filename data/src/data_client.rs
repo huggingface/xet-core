@@ -8,6 +8,7 @@ use std::{env, fs};
 
 use cas_client::CacheConfig;
 use cas_object::CompressionScheme;
+use chunk_cache::disk::DEFAULT_CAPACITY;
 use dirs::home_dir;
 use lazy_static::lazy_static;
 use merkledb::constants::IDEAL_CAS_BLOCK_SIZE;
@@ -84,7 +85,7 @@ pub fn default_config(
             prefix: "default".into(),
             cache_config: Some(CacheConfig {
                 cache_directory: cache_path.join("chunk-cache"),
-                cache_size: 10 * 1024 * 1024 * 1024, // 10 GiB
+                cache_size: DEFAULT_CAPACITY,
             }),
             staging_directory: None,
         },

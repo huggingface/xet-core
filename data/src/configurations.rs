@@ -7,6 +7,7 @@ use utils::auth::AuthConfig;
 
 use crate::errors::Result;
 use crate::repo_salt::RepoSalt;
+use chunk_cache::disk::DEFAULT_CAPACITY;
 
 #[derive(Debug)]
 pub enum Endpoint {
@@ -112,7 +113,7 @@ impl TranslatorConfig {
                 prefix: "default".into(),
                 cache_config: Some(CacheConfig {
                     cache_directory: path.join("cache"),
-                    cache_size: 10 * 1024 * 1024 * 1024, // 10 GiB
+                    cache_size: DEFAULT_CAPACITY,
                 }),
                 staging_directory: None,
             },
