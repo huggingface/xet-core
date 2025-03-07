@@ -3,11 +3,8 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use cas_client::Client;
-use mdb_shard::cas_structs::{CASChunkSequenceEntry, CASChunkSequenceHeader, MDBCASInfo};
 use mdb_shard::ShardFileManager;
-use merkledb::aggregate_hashes::cas_node_hash;
 use merklehash::MerkleHash;
-use tokio::runtime::Handle;
 use tokio::sync::{Mutex, Semaphore};
 use tokio::task::JoinSet;
 use utils::progress::ProgressUpdater;
