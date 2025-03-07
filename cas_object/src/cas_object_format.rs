@@ -1152,16 +1152,16 @@ impl CasObject {
         chunk_index_end: u32,
     ) -> Result<u32, CasObjectError> {
         self.validate_cas_object_info()?;
-        if chunk_index_start >= chunk_index_end || chunk_index_end >= self.info.num_chunks {
-            return Err(CasObjectError::InvalidRange);
+        if chunk_index_start >= chunk_index_end || chunk_index_end > self.info.num_chunks {
+            return Err(CasObjectError::InvalidArguments);
         }
 
         let before_start = match chunk_index_start {
             0 => 0,
             _ => self.info.chunk_boundary_offsets[chunk_index_start as usize - 1],
         };
-        let end = self.info.chunk_boundary_offsets[chunk_index_end as usize];
-        Ok(end - before_start)
+        let incl_end = self.info.chunk_boundary_offsets[chunk_index_end as usize - 1];
+        Ok(incl_end - before_start)
     }
 
     /// Helper method to verify that info object is complete
