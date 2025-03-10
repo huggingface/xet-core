@@ -89,6 +89,8 @@ async fn _validate_cas_object_from_async_read<R: AsyncRead + Unpin>(
         let chunk_header = parse_chunk_header(buf8).log_error(format!("failed to parse chunk header {buf8:?}"))?;
 
         let chunk_compressed_len = chunk_header.get_compressed_length() as usize;
+        // compressed length is validated above in chunk header parsing that it
+        // will not exceed maximum chunk size * 2.
         let mut compressed_chunk_data = vec![0u8; chunk_compressed_len];
         reader.read_exact(&mut compressed_chunk_data).await.log_error(format!(
             "failed to read {} bytes chunk data at index {}",
