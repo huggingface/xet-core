@@ -10,8 +10,6 @@ pub use remote_client::RemoteClient;
 pub use crate::error::CasClientError;
 pub use crate::interface::ShardClientInterface;
 
-pub mod config;
-
 mod error;
 mod http_client;
 mod interface;
