@@ -7,10 +7,9 @@ edition = "2021"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-anyhow = "1.0.97"
-gearhash = "0.1.3"
 serde = { version = "1.0.219", features = ["derive"] }
 serde-wasm-bindgen = "0.6.5"
 wasm-bindgen = "0.2.100"
 wasm-bindgen-futures = "0.4.50"
 merklehash = { path = "../merklehash" }
+chunking = { path = "../chunking" }
