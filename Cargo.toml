@@ -19,7 +19,7 @@ members = [
     "xet_threadpool"
 ]
 
-exclude = ["hf_xet", "chunk_cache_bench"]
+exclude = ["hf_xet", "chunk_cache_bench", "xet-core-wasm"]
 
 [profile.release]
 opt-level = 3
