@@ -251,7 +251,7 @@ impl SingleFileCleaner {
         let file_size = self.metrics.file_size.load(Ordering::Relaxed);
         let new_bytes = self.metrics.new_bytes_after_dedup.load(Ordering::Relaxed);
 
-        let return_file = self.to_pointer_file().await?;
+        let return_file = self.finalize_data_processing().await?;
 
         let current_time = SystemTime::now();
         let start: DateTime<Utc> = self.metrics.start_time.into();
@@ -270,7 +270,7 @@ impl SingleFileCleaner {
             end_processing_ts = now.to_rfc3339(),
         );
 
-        Ok((return_file, new_bytes))
+        Ok((return_file.to_string(), new_bytes))
     }
 
     async fn dedup(&mut self, chunks: &[Chunk]) -> Result<()> {
@@ -549,7 +549,7 @@ impl SingleFileCleaner {
         Ok(())
     }
 
-    async fn summarize_dedup_info(&mut self) -> Result<(MerkleHash, u64)> {
+    async fn finalize_data_processing(&mut self) -> Result<PointerFile> {
         let mut chunk_idx = 0;
 
         let file_hash = file_node_hash(&self.tracking_info.file_hashes, &self.repo_salt.unwrap_or_default())?;
@@ -610,21 +610,15 @@ impl SingleFileCleaner {
 
         self.tracking_info = Default::default();
 
-        Ok((file_hash, file_size))
-    }
-
-    async fn to_pointer_file(&mut self) -> Result<String> {
-        let (hash, filesize) = self.summarize_dedup_info().await?;
-        let pointer_file = PointerFile::init_from_info(
+        Ok(PointerFile::init_from_info(
             &self
                 .file_name
                 .clone()
                 .map(|f| f.to_str().unwrap_or_default().to_owned())
                 .unwrap_or_default(),
-            &hash.hex(),
-            filesize,
-        );
-        Ok(pointer_file.to_string())
+            &file_hash.hex(),
+            file_size,
+        ))
     }
 }
 

@@ -114,21 +114,22 @@ impl Chunker {
             self.chunkbuf.extend_from_slice(&data[0..consume_len]);
         }
 
-        let ret;
-        if create_chunk || (is_final && !self.chunkbuf.is_empty()) {
-            let chunk = Chunk {
-                hash: compute_data_hash(&self.chunkbuf[..]),
-                data: std::mem::take(&mut self.chunkbuf).into(),
-            };
+        let ret = {
+            if create_chunk || (is_final && !self.chunkbuf.is_empty()) {
+                let chunk = Chunk {
+                    hash: compute_data_hash(&self.chunkbuf[..]),
+                    data: std::mem::take(&mut self.chunkbuf).into(),
+                };
 
-            self.cur_chunk_len = 0;
+                self.cur_chunk_len = 0;
 
-            self.hash.set_hash(0);
+                self.hash.set_hash(0);
 
-            ret = (Some(chunk), consume_len)
-        } else {
-            ret = (None, consume_len)
-        }
+                (Some(chunk), consume_len)
+            } else {
+                (None, consume_len)
+            }
+        };
 
         // The amount of data consumed should never be more than the amount of data given.
         #[cfg(debug_assertions)]
