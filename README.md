@@ -22,7 +22,7 @@ limitations under the License.
 <h3 align="center">
   <p>🤗 xet-core - xet client tech, used in <a target="_blank" href="https://github.com/huggingface/huggingface_hub/">huggingface_hub</a></p>
 </h3>
-
+# TESTING DO NOT MERGE
 ## Welcome
 
 xet-core enables huggingface_hub to utilize xet storage for uploading and downloading to HF Hub. Xet storage provides chunk-based deduplication, efficient storage/retrieval with local disk caching, and backwards compatibility with Git LFS. This library is not meant to be used directly, and is instead intended to be used from [huggingface_hub](https://pypi.org/project/huggingface-hub).
