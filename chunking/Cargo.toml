@@ -1,0 +1,16 @@
+[package]
+name = "chunking"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+constants = { path = "../constants" }
+gearhash = "0.1.3"
+merklehash = { path = "../merklehash" }
+serde = { version = "1.0.217", features = ["derive"] }
+thiserror = "2.0.12"
+
+[target.'cfg(not(target_family = "wasm"))'.dependencies]
+tokio = { version = "1.36", features = ["full"] }
+merkledb = { path = "../merkledb" }
+xet_threadpool = { path = "../xet_threadpool" }
