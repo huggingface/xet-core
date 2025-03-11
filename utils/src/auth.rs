@@ -2,6 +2,8 @@ use std::fmt::Debug;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use async_trait::async_trait;
+
 use crate::errors::AuthError;
 
 /// Helper type for information about an auth token.
@@ -9,16 +11,18 @@ use crate::errors::AuthError;
 pub type TokenInfo = (String, u64);
 
 /// Helper to provide auth tokens to CAS.
+#[async_trait]
 pub trait TokenRefresher: Debug + Send + Sync {
     /// Get a new auth token for CAS and the unixtime (in seconds) for expiration
-    fn refresh(&self) -> Result<TokenInfo, AuthError>;
+    async fn refresh(&self) -> Result<TokenInfo, AuthError>;
 }
 
 #[derive(Debug)]
 pub struct NoOpTokenRefresher;
 
+#[async_trait]
 impl TokenRefresher for NoOpTokenRefresher {
-    fn refresh(&self) -> Result<TokenInfo, AuthError> {
+    async fn refresh(&self) -> Result<TokenInfo, AuthError> {
         Ok(("token".to_string(), 0))
     }
 }
@@ -26,8 +30,9 @@ impl TokenRefresher for NoOpTokenRefresher {
 #[derive(Debug)]
 pub struct ErrTokenRefresher;
 
+#[async_trait]
 impl TokenRefresher for ErrTokenRefresher {
-    fn refresh(&self) -> Result<TokenInfo, AuthError> {
+    async fn refresh(&self) -> Result<TokenInfo, AuthError> {
         Err(AuthError::RefreshFunctionNotCallable("Token refresh not expected".to_string()))
     }
 }
@@ -84,9 +89,9 @@ impl TokenProvider {
         }
     }
 
-    pub fn get_valid_token(&mut self) -> Result<String, AuthError> {
+    pub async fn get_valid_token(&mut self) -> Result<String, AuthError> {
         if self.is_expired() {
-            let (new_token, new_expiry) = self.refresher.refresh()?;
+            let (new_token, new_expiry) = self.refresher.refresh().await?;
             self.token = new_token;
             self.expiration = new_expiry;
         }

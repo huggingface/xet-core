@@ -21,6 +21,7 @@ pin-project = "1.0.12"
 # consistenthash
 tracing = "0.1.31"
 bytes = "1.8.0"
+async-trait = "0.1.87"
 
 
 [dev-dependencies]

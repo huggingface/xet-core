@@ -45,6 +45,12 @@ pub enum AuthError {
     TokenRefreshFailure(String),
 }
 
+impl AuthError {
+    pub fn token_refresh_failure(err: impl ToString) -> Self {
+        Self::TokenRefreshFailure(err.to_string())
+    }
+}
+
 impl<E: Send + std::fmt::Debug + Sync> Clone for SingleflightError<E> {
     fn clone(&self) -> Self {
         match self {

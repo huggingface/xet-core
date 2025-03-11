@@ -1,4 +1,4 @@
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::anyhow;
@@ -9,6 +9,7 @@ use reqwest::{Request, Response};
 use reqwest_middleware::{ClientBuilder, ClientWithMiddleware, Middleware, Next};
 use reqwest_retry::policies::ExponentialBackoff;
 use reqwest_retry::{default_on_request_failure, default_on_request_success, RetryTransientMiddleware, Retryable};
+use tokio::sync::Mutex;
 use tracing::{debug, warn};
 use utils::auth::{AuthConfig, TokenProvider};
 
@@ -152,9 +153,12 @@ impl AuthMiddleware {
     /// (e.g. to a remote service). During this time, no other CAS requests can proceed
     /// from this client until the token has been fetched. This is expected/ok since we
     /// don't have a valid token and thus any calls would fail.
-    fn get_token(&self) -> Result<String, anyhow::Error> {
-        let mut provider = self.token_provider.lock().map_err(|e| anyhow!("lock error: {e:?}"))?;
-        provider.get_valid_token().map_err(|e| anyhow!("couldn't get token: {e:?}"))
+    async fn get_token(&self) -> Result<String, anyhow::Error> {
+        let mut provider = self.token_provider.lock().await;
+        provider
+            .get_valid_token()
+            .await
+            .map_err(|e| anyhow!("couldn't get token: {e:?}"))
     }
 }
 
@@ -174,7 +178,7 @@ impl Middleware for AuthMiddleware {
         extensions: &mut http::Extensions,
         next: Next<'_>,
     ) -> reqwest_middleware::Result<Response> {
-        let token = self.get_token().map_err(reqwest_middleware::Error::Middleware)?;
+        let token = self.get_token().await.map_err(reqwest_middleware::Error::Middleware)?;
 
         let headers = req.headers_mut();
         headers.insert(AUTHORIZATION, HeaderValue::from_str(&format!("Bearer {}", token)).unwrap());

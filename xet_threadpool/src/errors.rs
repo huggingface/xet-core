@@ -16,3 +16,18 @@ pub enum MultithreadedRuntimeError {
     #[error("Unknown task runtime error: {0}")]
     Other(String),
 }
+
+impl From<tokio::task::JoinError> for MultithreadedRuntimeError {
+    fn from(err: tokio::task::JoinError) -> Self {
+        if err.is_panic() {
+            // The task panic'd.  Pass this exception on.
+            tracing::error!("Panic reported on xet worker task: {err:?}");
+            MultithreadedRuntimeError::TaskPanic(err)
+        } else if err.is_cancelled() {
+            // Likely caused by the runtime shutting down (e.g. with a keyboard CTRL-C).
+            MultithreadedRuntimeError::TaskCanceled(format!("{err}"))
+        } else {
+            MultithreadedRuntimeError::Other(format!("task join error: {err}"))
+        }
+    }
+}

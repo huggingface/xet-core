@@ -1,7 +1,12 @@
 use std::fmt::Display;
 use std::future::Future;
-use std::sync::atomic::Ordering::SeqCst;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
+use tokio::runtime::{Builder as TokioRuntimeBuilder, Handle as TokioRuntimeHandle, Runtime as TokioRuntime};
+use tokio::task::JoinHandle;
+use tracing::debug;
+
+use crate::errors::MultithreadedRuntimeError;
 
 /// This module provides a simple wrapper around Tokio's runtime to create a thread pool
 /// with some default settings. It is intended to be used as a singleton thread pool for
@@ -49,12 +54,6 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 /// # Functions
 ///
 /// - `new_threadpool`: Creates a new Tokio runtime with the specified settings.
-use tokio;
-use tokio::runtime::Handle;
-use tokio::task::JoinHandle;
-use tracing::{debug, error};
-
-use crate::errors::MultithreadedRuntimeError;
 
 const THREADPOOL_NUM_WORKER_THREADS: usize = 4; // 4 active threads
 const THREADPOOL_THREAD_ID_PREFIX: &str = "hf-xet"; // thread names will be hf-xet-0, hf-xet-1, etc.
@@ -64,12 +63,12 @@ const THREADPOOL_MAX_BLOCKING_THREADS: usize = 100; // max 100 threads can block
 #[derive(Debug)]
 pub struct ThreadPool {
     // This has to allow for exclusive access to enable shutdown when
-    runtime: std::sync::RwLock<Option<tokio::runtime::Runtime>>,
+    runtime: std::sync::RwLock<Option<TokioRuntime>>,
 
     // We use this handle when we actually enter the runtime to avoid the lock.  It is
     // the same as using the runtime, with the exception that it does not block a shutdown
     // while holding a reference to the runtime does.
-    handle: tokio::runtime::Handle,
+    handle: TokioRuntimeHandle,
 
     // The number of external threads calling into this threadpool
     external_executor_count: AtomicUsize,
@@ -151,7 +150,7 @@ impl ThreadPool {
     /// from within a task running on the runtime worker pool.  Doing so can lead to deadlocking.
     pub fn external_run_async_task<F>(&self, future: F) -> Result<F::Output, MultithreadedRuntimeError>
     where
-        F: std::future::Future + Send + 'static,
+        F: Future + Send + 'static,
         F::Output: Send + Sync,
     {
         self.external_executor_count.fetch_add(1, Ordering::SeqCst);
@@ -159,45 +158,11 @@ impl ThreadPool {
         let ret = self.handle.block_on(async move {
             // Run the actual task on a task worker thread so we can get back information
             // on issues, including reporting panics as runtime errors.
-            self.handle.spawn(future).await.map_err(|e| {
-                if e.is_panic() {
-                    // The task panic'd.  Pass this exception on.
-                    error!("Panic reported on xet worker task: {e:?}");
-                    MultithreadedRuntimeError::TaskPanic(e)
-                } else if e.is_cancelled() {
-                    // Likely caused by the runtime shutting down (e.g. with a keyboard CTRL-C).
-                    MultithreadedRuntimeError::TaskCanceled(format!("{e}"))
-                } else {
-                    MultithreadedRuntimeError::Other(format!("task join error: {e}"))
-                }
-            })
+            self.handle.spawn(future).await.map_err(MultithreadedRuntimeError::from)
         });
 
         self.external_executor_count.fetch_sub(1, Ordering::SeqCst);
         ret
-    }
-
-    /// This function can be safely used by threads inside of tokio to call an async function
-    /// from a sync function.
-    pub fn internal_run_async_task<F>(&self, future: F) -> Result<F::Output, MultithreadedRuntimeError>
-    where
-        F: std::future::Future + Send + 'static,
-        F::Output: Send + 'static,
-    {
-        tokio::task::block_in_place(move || {
-            Handle::current().block_on(async { tokio::spawn(future).await }).map_err(|e| {
-                if e.is_panic() {
-                    // The task panic'd.  Pass this exception on.
-                    error!("Panic reported on xet worker task: {e:?}");
-                    MultithreadedRuntimeError::TaskPanic(e)
-                } else if e.is_cancelled() {
-                    // Likely caused by the runtime shutting down (e.g. with a keyboard CTRL-C).
-                    MultithreadedRuntimeError::TaskCanceled(format!("{e}"))
-                } else {
-                    MultithreadedRuntimeError::Other(format!("task join error: {e}"))
-                }
-            })
-        })
     }
 
     /// Spawn an async task to run in the background on the current pool of worker threads.
@@ -242,8 +207,11 @@ impl Display for ThreadPool {
 /// Intended to be used as a singleton threadpool for the entire application.
 /// This is a simple wrapper around tokio's runtime, with some default settings.
 /// Intentionally unwrap this because if it fails, the application should not continue.
-fn new_threadpool(maximum_worker_threads: bool) -> Result<tokio::runtime::Runtime, MultithreadedRuntimeError> {
-    let mut builder = tokio::runtime::Builder::new_multi_thread();
+fn new_threadpool(maximum_worker_threads: bool) -> Result<TokioRuntime, MultithreadedRuntimeError> {
+    #[cfg(not(target_family = "wasm"))]
+    let mut builder = TokioRuntimeBuilder::new_multi_thread();
+    #[cfg(target_family = "wasm")]
+    let mut builder = TokioRuntimeBuilder::new_current_thread();
     if !maximum_worker_threads {
         builder.worker_threads(THREADPOOL_NUM_WORKER_THREADS); // 4 active threads
     }
@@ -261,6 +229,6 @@ fn new_threadpool(maximum_worker_threads: bool) -> Result<tokio::runtime::Runtim
 /// e.g. hf-xet-0, hf-xet-1, hf-xet-2, ...
 fn get_thread_name() -> String {
     static ATOMIC_ID: AtomicUsize = AtomicUsize::new(0);
-    let id = ATOMIC_ID.fetch_add(1, SeqCst);
+    let id = ATOMIC_ID.fetch_add(1, Ordering::SeqCst);
     format!("{THREADPOOL_THREAD_ID_PREFIX}-{id}")
 }

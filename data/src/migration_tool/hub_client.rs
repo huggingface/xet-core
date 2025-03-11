@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use anyhow::Result;
+use async_trait::async_trait;
 use cas_client::build_http_client;
 use reqwest_middleware::ClientWithMiddleware;
 use utils::auth::{TokenInfo, TokenRefresher};
@@ -65,16 +66,15 @@ pub struct HubClientTokenRefresher {
     pub client: Arc<HubClient>,
 }
 
+#[async_trait]
 impl TokenRefresher for HubClientTokenRefresher {
-    fn refresh(&self) -> std::result::Result<TokenInfo, AuthError> {
+    async fn refresh(&self) -> std::result::Result<TokenInfo, AuthError> {
         let client = self.client.clone();
         let token_type = self.token_type.clone();
-        let ret = self
-            .threadpool
-            .internal_run_async_task(async move { client.refresh_jwt_token(&token_type).await })
-            .map_err(|e| AuthError::TokenRefreshFailure(e.to_string()))?
-            .map_err(|e| AuthError::TokenRefreshFailure(e.to_string()))?;
-        Ok(ret)
+        client
+            .refresh_jwt_token(&token_type)
+            .await
+            .map_err(AuthError::token_refresh_failure)
     }
 }
 

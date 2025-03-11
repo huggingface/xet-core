@@ -1,5 +1,6 @@
 use std::fmt::{Debug, Formatter};
 
+use async_trait::async_trait;
 use pyo3::exceptions::PyTypeError;
 use pyo3::prelude::PyAnyMethods;
 use pyo3::{Py, PyAny, PyErr, PyResult, Python};
@@ -48,9 +49,9 @@ impl WrappedTokenRefresher {
     }
 }
 
+#[async_trait]
 impl TokenRefresher for WrappedTokenRefresher {
-    fn refresh(&self) -> Result<TokenInfo, AuthError> {
-        info!("refreshing token");
+    async fn refresh(&self) -> Result<TokenInfo, AuthError> {
         Python::with_gil(|py| {
             let f = self.py_func.bind(py);
             if !f.is_callable() {

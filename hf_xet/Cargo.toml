@@ -40,6 +40,7 @@ pprof = { version = "0.14", features = [
     "prost",
     "protobuf-codec",
 ], optional = true }
+async-trait = "0.1.87"
 
 # Unix-specific dependencies
 [target.'cfg(unix)'.dependencies]
