@@ -1,5 +1,5 @@
 use std::cmp::min;
-use std::io::{Cursor, Read, Seek, Write};
+use std::io::{Cursor, Read, Seek, SeekFrom, Write};
 use std::mem::{size_of, size_of_val};
 
 use anyhow::anyhow;
@@ -41,6 +41,7 @@ fn prealloc_num_chunks(declared_size: usize) -> usize {
     declared_size.min(AVERAGE_NUM_CHUNKS_PER_XORB * 9 / 8)
 }
 
+#[deprecated]
 #[derive(Clone, PartialEq, Eq, Debug, Serialize)]
 /// Info struct for [CasObject]. This is stored at the end of the XORB.
 pub struct CasObjectInfoV0 {
@@ -94,6 +95,7 @@ impl CasObjectInfoV0 {
     /// Serialize CasObjectInfoV0 to provided Writer.
     ///
     /// Assumes caller has set position of Writer to appropriate location for serialization.
+    #[deprecated]
     pub fn serialize<W: Write>(&self, writer: &mut W) -> Result<usize, CasObjectError> {
         let mut total_bytes_written = 0;
 
@@ -127,6 +129,7 @@ impl CasObjectInfoV0 {
     /// Construct CasObjectInfoV0 object from Read.
     ///
     /// Expects metadata struct is found at end of Reader, written out in struct order.
+    #[deprecated]
     pub fn deserialize<R: Read>(reader: &mut R) -> Result<(Self, u32), CasObjectError> {
         let mut total_bytes_read: u32 = 0;
 
@@ -156,6 +159,7 @@ impl CasObjectInfoV0 {
         Ok((s, total_bytes_read + bytes_read_v0))
     }
 
+    #[deprecated]
     pub fn deserialize_v0<R: Read>(reader: &mut R) -> Result<(Self, u32), CasObjectError> {
         let mut total_bytes_read: u32 = 0;
 
@@ -208,6 +212,7 @@ impl CasObjectInfoV0 {
     /// assumes that the ident and version have already been read and verified.
     ///
     /// verifies that the length of the footer data matches the length field at the very end of the buffer
+    #[deprecated]
     pub async fn deserialize_async<R: futures::io::AsyncRead + Unpin>(
         reader: &mut R,
         version: u8,
@@ -571,6 +576,72 @@ impl CasObjectInfoV1 {
         }
 
         if end_byte_offset - boundary_section_begin_byte_offset != s.boundary_section_offset_from_end as usize {
+            return Err(CasObjectError::FormatError(anyhow!(
+                "Xorb Invalid: incorrect boundary_section_offset_from_end."
+            )));
+        }
+
+        Ok((s, r.reader_bytes() as u32))
+    }
+
+    /// Construct CasObjectInfo object from Reader + Seek.
+    ///
+    /// Expects metadata struct is found at end of Reader, written out in struct order.
+    pub fn deserialize_only_boundaries_section<R: Read + Seek>(reader: &mut R) -> Result<(Self, u32), CasObjectError> {
+        let mut s = Self::default();
+
+        // info_length + size of _buffer + size of u32 for offset field
+        let offset_to_boundary_section_offset =
+            size_of::<u32>() + size_of_val(&s._buffer) + size_of_val(&s.boundary_section_offset_from_end);
+        reader.seek(SeekFrom::End(-(offset_to_boundary_section_offset as i64)))?;
+        let boundary_section_offset_from_end = read_u32(reader)?;
+        reader.seek(SeekFrom::End(-(boundary_section_offset_from_end as i64)))?;
+
+        let mut counting_reader = countio::Counter::new(reader);
+        let r = &mut counting_reader;
+
+        //////////////////////////////////////////////////////////////////////////////////////////////
+        // Boundary Section (Foot).
+
+        read_bytes(r, &mut s.ident_boundary_section)?;
+
+        if s.ident_boundary_section != CAS_OBJECT_FORMAT_IDENT_BOUNDARIES {
+            return Err(CasObjectError::FormatError(anyhow!("Xorb Invalid Ident for Boundary Metadata Section")));
+        }
+
+        s.boundaries_version = read_u8(r)?;
+
+        if s.boundaries_version != CAS_OBJECT_FORMAT_BOUNDARIES_VERSION {
+            return Err(CasObjectError::FormatError(anyhow!(
+                "Xorb Invalid Format Version for Boundaries Metadata Section"
+            )));
+        }
+
+        let num_chunks_boundaries_section = read_u32(r)?;
+
+        s.chunk_boundary_offsets.resize(num_chunks_boundaries_section as usize, 0);
+        read_u32s(r, &mut s.chunk_boundary_offsets)?;
+
+        s.unpacked_chunk_offsets.resize(num_chunks_boundaries_section as usize, 0);
+        read_u32s(r, &mut s.unpacked_chunk_offsets)?;
+
+        // Now the final parts here.
+        s.num_chunks = read_u32(r)?;
+
+        if s.num_chunks != num_chunks_boundaries_section {
+            return Err(CasObjectError::FormatError(anyhow!(
+                "Xorb Invalid: inconsistent num_chunks between metadata and hashes section."
+            )));
+        }
+
+        s.hashes_section_offset_from_end = read_u32(r)?;
+        s.boundary_section_offset_from_end = read_u32(r)?;
+
+        read_bytes(r, &mut s._buffer)?;
+
+        let end_byte_offset = r.reader_bytes();
+
+        if end_byte_offset != s.boundary_section_offset_from_end as usize {
             return Err(CasObjectError::FormatError(anyhow!(
                 "Xorb Invalid: incorrect boundary_section_offset_from_end."
             )));
