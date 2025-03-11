@@ -9,10 +9,7 @@ use merklehash::MerkleHash;
 
 use crate::cas_object_format::CAS_OBJECT_FORMAT_IDENT;
 use crate::error::{CasObjectError, Result, Validate};
-use crate::{
-    parse_chunk_header, CASChunkHeader, CasObject, CasObjectInfoV1, CAS_OBJECT_FORMAT_VERSION,
-    CAS_OBJECT_FORMAT_VERSION_V0,
-};
+use crate::{parse_chunk_header, CASChunkHeader, CasObject, CasObjectInfoV1, CAS_OBJECT_FORMAT_VERSION};
 
 /// takes an async reader to the entire xorb data and validates that the xorb is correctly formatted
 /// and returns the deserialized CasObject (metadata)
@@ -79,9 +76,6 @@ async fn _validate_cas_object_from_async_read<R: AsyncRead + Unpin>(
                     .await
                     .log_error("failed to deserialize footer")?;
                 break (Some(cas_object), None);
-            } else if version == CAS_OBJECT_FORMAT_VERSION_V0 {
-                // we see an old xorb, we build a new footer.
-                break (None, Some(size_of_val(&buf8)));
             }
         }
 
@@ -215,19 +209,15 @@ fn create_cas_object_from_parts(
 
 #[cfg(test)]
 mod tests {
-    use std::io::{Cursor, Seek};
+    use std::io::Cursor;
     use std::mem::size_of;
     use std::u8;
 
     use futures::{AsyncRead, TryStreamExt};
     use rand::RngCore;
-    use utils::serialization_utils::write_u32;
 
     use crate::test_utils::*;
-    use crate::{
-        validate_cas_object_from_async_read, CasObject, CasObjectInfoV0, CompressionScheme, CAS_OBJECT_FORMAT_VERSION,
-        CAS_OBJECT_FORMAT_VERSION_V0,
-    };
+    use crate::{validate_cas_object_from_async_read, CasObject, CompressionScheme, CAS_OBJECT_FORMAT_VERSION};
 
     const NO_FOOTER_XORB: u8 = u8::MAX;
     const INVALID_FOOTER_XORB: u8 = u8::MAX - 1;
@@ -252,44 +242,6 @@ mod tests {
 
         let footer_length = c.info_length as usize + size_of::<u32>();
         (c, buf.into_inner(), _cas_data.len(), footer_length)
-    }
-
-    fn v0_xorb(
-        num_chunks: u32,
-        chunk_size: ChunkSize,
-        compression_scheme: CompressionScheme,
-    ) -> (CasObject, Vec<u8>, usize, usize) {
-        let (c, cas_data, raw_data, raw_chunk_boundaries) =
-            build_cas_object(num_chunks, chunk_size, compression_scheme);
-        let mut buf: Cursor<Vec<u8>> = Cursor::new(Vec::new());
-
-        assert!(CasObject::serialize(
-            &mut buf,
-            &c.info.cashash,
-            &raw_data,
-            &raw_chunk_boundaries,
-            Some(compression_scheme),
-        )
-        .is_ok());
-
-        // Switch V1 footer to V0
-        let mut cas_info_v0 = CasObjectInfoV0::default();
-        cas_info_v0.cashash = c.info.cashash;
-        cas_info_v0.num_chunks = c.info.num_chunks;
-        cas_info_v0.chunk_boundary_offsets = c.info.chunk_boundary_offsets.clone();
-        cas_info_v0.chunk_hashes = c.info.chunk_hashes.clone();
-
-        let mut buf = buf.into_inner();
-        let serialized_chunks_length = c.get_contents_length().unwrap();
-        buf.resize(serialized_chunks_length as usize, 0);
-
-        let mut buf = Cursor::new(buf);
-        buf.seek(std::io::SeekFrom::End(0)).unwrap();
-        let info_length = cas_info_v0.serialize(&mut buf).unwrap() as u32;
-        write_u32(&mut buf, info_length).unwrap();
-
-        let footer_length = info_length as usize + size_of::<u32>();
-        (c, buf.into_inner(), cas_data.len(), footer_length)
     }
 
     fn no_footer_xorb(
@@ -360,7 +312,6 @@ mod tests {
         xorb_version: u8,
     ) -> (CasObject, impl AsyncRead + Unpin, usize, usize) {
         let (c, xorb_bytes, content_size, footer_size) = match xorb_version {
-            CAS_OBJECT_FORMAT_VERSION_V0 => v0_xorb(num_chunks, chunk_size, compression_scheme),
             CAS_OBJECT_FORMAT_VERSION => v1_xorb(num_chunks, chunk_size, compression_scheme),
             NO_FOOTER_XORB => no_footer_xorb(num_chunks, chunk_size, compression_scheme),
             INVALID_FOOTER_XORB => invalid_footer_xorb(num_chunks, chunk_size, compression_scheme),
@@ -400,36 +351,6 @@ mod tests {
             assert!(go_back_bytes.is_none());
             assert_eq!(validated, cas_object, "failed to match footers, iter {i}");
             assert_eq!(counting_xorb_reader.reader_bytes(), content_length + footer_length)
-        }
-    }
-
-    #[tokio::test]
-    async fn test_validate_v0_xorb() {
-        let cases = [
-            (1, ChunkSize::Fixed(1000), CompressionScheme::None, 1),
-            (100, ChunkSize::Fixed(1000), CompressionScheme::None, 1),
-            (100, ChunkSize::Fixed(1000), CompressionScheme::LZ4, 1),
-            (100, ChunkSize::Fixed(1000), CompressionScheme::None, 10),
-            (100, ChunkSize::Fixed(1000), CompressionScheme::None, 100),
-            (100, ChunkSize::Random(512, 2048), CompressionScheme::LZ4, 100),
-            (1000, ChunkSize::Random(10 << 10, 20 << 10), CompressionScheme::LZ4, 2000), // chunk size 10KiB-20KiB
-        ];
-
-        for (i, (num_chunks, chunk_size, compression_scheme, split)) in cases.into_iter().enumerate() {
-            let (cas_object, xorb_reader, content_length, _footer_length) =
-                get_xorb(num_chunks, chunk_size, compression_scheme, split, CAS_OBJECT_FORMAT_VERSION_V0);
-            let mut counting_xorb_reader = countio::Counter::new(xorb_reader);
-            let validated_result =
-                validate_cas_object_from_async_read(&mut counting_xorb_reader, &cas_object.info.cashash).await;
-            assert!(validated_result.is_ok());
-            let validated_option = validated_result.unwrap();
-            assert!(validated_option.is_some());
-            let (validated, go_back_bytes) = validated_option.unwrap();
-            assert_eq!(go_back_bytes, Some(8));
-            assert_eq!(validated.info_length, 0);
-            assert_eq!(validated.info, cas_object.info, "failed to match footers, iter {i}");
-            // only read up to ident and version in CasObjectInfoV0
-            assert_eq!(counting_xorb_reader.reader_bytes(), content_length + 8);
         }
     }
 
