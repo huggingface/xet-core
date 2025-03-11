@@ -39,8 +39,6 @@ impl CASDataAggregator {
 
         // Now that we have the CAS hash, fill in any blocks with the referencing xorb
         // hash as needed.
-
-        // Now register any new files as needed.
         for (fi, chunk_hash_indices) in self.pending_file_info.iter_mut() {
             for &i in chunk_hash_indices.iter() {
                 debug_assert_eq!(fi.segments[i].cas_hash, MerkleHash::default());
