@@ -8,19 +8,18 @@ use std::time::SystemTime;
 
 use cas_object::range_hash_from_chunks;
 use chrono::{DateTime, Utc};
-use chunking::{Chunk, Chunker};
+use chunking::Chunk;
 use lazy_static::lazy_static;
 use mdb_shard::file_structs::{
     FileDataSequenceEntry, FileDataSequenceHeader, FileMetadataExt, FileVerificationEntry, MDBFileInfo,
 };
 use mdb_shard::{hash_is_global_dedup_eligible, ShardFileManager};
 use merkledb::aggregate_hashes::file_node_hash;
-use merkledb::constants::{IDEAL_CAS_BLOCK_SIZE, TARGET_CAS_BLOCK_SIZE, TARGET_CDC_CHUNK_SIZE};
+use merkledb::constants::TARGET_CAS_BLOCK_SIZE;
 use merklehash::MerkleHash;
 use sha2::{Digest, Sha256};
-use tokio::sync::mpsc::error::TryRecvError;
 use tokio::sync::Mutex;
-use tokio::task::{JoinHandle, JoinSet};
+use tokio::task::JoinSet;
 use tracing::{debug, info};
 use utils::progress::ProgressUpdater;
 use xet_threadpool::ThreadPool;
@@ -200,7 +199,6 @@ impl SingleFileCleaner {
         remote_shards: Arc<RemoteShardInterface>,
         xorb_uploader: Arc<dyn XorbUpload + Send + Sync>,
         cas_data: Arc<Mutex<CASDataAggregator>>,
-        buffer_size: usize,
         file_name: Option<&Path>,
         threadpool: Arc<ThreadPool>,
         progress_updater: Option<Arc<dyn ProgressUpdater>>,
@@ -392,7 +390,9 @@ impl SingleFileCleaner {
         }
 
         // Record all the file hashes.
-        self.tracking_info.file_hashes.extend(chunks.iter().map(|c| (c.hash, c.length)));
+        self.tracking_info
+            .file_hashes
+            .extend(chunks.iter().map(|c| (c.hash, c.data.len())));
 
         // Now, go through and process all the data.
         let mut cur_idx = 0;
@@ -613,7 +613,7 @@ impl SingleFileCleaner {
         Ok((file_hash, file_size))
     }
 
-    async fn to_pointer_file(&self) -> Result<String> {
+    async fn to_pointer_file(&mut self) -> Result<String> {
         let (hash, filesize) = self.summarize_dedup_info().await?;
         let pointer_file = PointerFile::init_from_info(
             &self

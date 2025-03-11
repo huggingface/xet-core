@@ -142,7 +142,7 @@ impl FileUploadSession {
     ///
     /// The caller is responsible for memory usage management, the parameter "buffer_size"
     /// indicates the maximum number of Vec<u8> in the internal buffer.
-    pub async fn start_clean(&self, buffer_size: usize, file_name: Option<&Path>) -> Result<Arc<SingleFileCleaner>> {
+    pub fn start_clean(&self, file_name: Option<&Path>) -> SingleFileCleaner {
         SingleFileCleaner::new(
             matches!(self.config.dedup_config.global_dedup_policy, GlobalDedupPolicy::Always),
             self.config.cas_storage_config.prefix.clone(),
@@ -151,13 +151,11 @@ impl FileUploadSession {
             self.remote_shards.clone(),
             self.xorb_uploader.clone(),
             self.global_cas_data.clone(),
-            buffer_size,
             file_name,
             self.threadpool.clone(),
             self.upload_progress_updater.clone(),
             self.repo_id.clone(),
         )
-        .await
     }
 
     pub async fn finalize_cleaning(&self) -> Result<u64> {
@@ -244,17 +242,17 @@ mod tests {
                 .unwrap(),
         );
 
-        let translator = FileUploadSession::new(TranslatorConfig::local_config(cas_path).unwrap(), runtime, None)
+        let upload_session = FileUploadSession::new(TranslatorConfig::local_config(cas_path).unwrap(), runtime, None)
             .await
             .unwrap();
 
-        let handle = translator.start_clean(1024, None).await.unwrap();
+        let mut cleaner = upload_session.start_clean(None);
 
         // Read blocks from the source file and hand them to the cleaning handle
-        handle.add_data(&[read_data]).await.unwrap();
+        cleaner.add_data(&read_data[..]).await.unwrap();
 
-        let (pointer_file_contents, _) = handle.finish().await.unwrap();
-        translator.finalize_cleaning().await.unwrap();
+        let (pointer_file_contents, _) = cleaner.finish().await.unwrap();
+        upload_session.finalize_cleaning().await.unwrap();
 
         pf_out.write_all(pointer_file_contents.as_bytes()).unwrap();
     }

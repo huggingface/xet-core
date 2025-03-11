@@ -10,7 +10,6 @@ use cas_client::CacheConfig;
 use cas_object::CompressionScheme;
 use dirs::home_dir;
 use lazy_static::lazy_static;
-use merkledb::constants::IDEAL_CAS_BLOCK_SIZE;
 use parutils::{tokio_par_for_each, ParallelError};
 use tempfile::{tempdir_in, TempDir};
 use utils::auth::{AuthConfig, TokenRefresher};
@@ -191,12 +190,9 @@ pub async fn clean_file(processor: &FileUploadSession, f: String) -> errors::Res
     let mut read_buf = vec![0u8; READ_BLOCK_SIZE];
     let path = PathBuf::from(f);
     let mut reader = BufReader::new(File::open(path.clone())?);
-    let handle = processor
-        .start_clean(
-            IDEAL_CAS_BLOCK_SIZE / READ_BLOCK_SIZE, // enough to fill one CAS block
-            Some(&path),                            // for logging & telemetry
-        )
-        .await?;
+    let mut handle = processor.start_clean(
+        Some(&path), // for logging & telemetry
+    );
 
     loop {
         let bytes = reader.read(&mut read_buf)?;
