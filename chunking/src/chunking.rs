@@ -24,17 +24,16 @@ pub struct Chunker {
     // generator state
     chunkbuf: Vec<u8>,
     cur_chunk_len: usize,
+}
 
-    // input / output channels
-    chunk_callback: Box<dyn FnMut(Chunk) + Sync + Send>,
+impl Default for Chunker {
+    fn default() -> Self {
+        Self::new(TARGET_CDC_CHUNK_SIZE)
+    }
 }
 
 impl Chunker {
-    pub fn new_default(chunk_callback: Box<dyn FnMut(Chunk) + Sync + Send>) -> Self {
-        Self::new(TARGET_CDC_CHUNK_SIZE, chunk_callback)
-    }
-
-    pub fn new(target_chunk_size: usize, chunk_callback: Box<dyn FnMut(Chunk) + Sync + Send>) -> Self {
+    pub fn new(target_chunk_size: usize) -> Self {
         assert_eq!(target_chunk_size.count_ones(), 1);
         assert!(target_chunk_size > 1);
 
@@ -63,82 +62,110 @@ impl Chunker {
             // generator state init
             chunkbuf: Vec::with_capacity(maximum_chunk),
             cur_chunk_len: 0,
-            chunk_callback,
         }
     }
 
-    pub fn add_data(&mut self, data: &[u8]) {
+    /// Process more data; this is a continuation of any data from before when calls were
+    ///
+    /// Returns the next chunk, if available, and the amount of data that was digested.
+    ///
+    /// If is_final is true, then it is assumed that no more data after this block will come,
+    /// and any data currently present and at the end will be put into a final chunk.
+    pub fn next(&mut self, data: &[u8], is_final: bool) -> (Option<Chunk>, usize) {
         const MAX_WINDOW_SIZE: usize = 64;
+        let n_bytes = data.len();
 
-        let read_bytes = data.len();
+        let mut create_chunk = false;
+        let mut consume_len = 0;
 
-        let mut data_pos = 0;
-        while data_pos < read_bytes {
-            // every pass through this loop we either
-            // 1: create a chunk
-            // OR
-            // 2: consume the entire buffer
-            let chunk_buf_copy_start = data_pos;
-
+        // find a chunk boundary after minimum chunk
+        if n_bytes != 0 {
             // skip the minimum chunk size
             // and noting that the hash has a window size of 64
             // so we should be careful to skip only minimum_chunk - 64 - 1
             if self.cur_chunk_len < self.minimum_chunk - MAX_WINDOW_SIZE {
                 let max_advance =
-                    min(self.minimum_chunk - self.cur_chunk_len - MAX_WINDOW_SIZE - 1, read_bytes - data_pos);
-                data_pos += max_advance;
+                    min(self.minimum_chunk - self.cur_chunk_len - MAX_WINDOW_SIZE - 1, n_bytes - consume_len);
+                consume_len += max_advance;
                 self.cur_chunk_len += max_advance;
             }
-            let mut consume_len;
-            let mut create_chunk = false;
-            // find a chunk boundary after minimum chunk
 
             // If we have a lot of data, don't read all the way to the end when we'll stop reading
             // at the maximum chunk boundary.
-            let read_end = read_bytes.min(data_pos + self.maximum_chunk - self.cur_chunk_len);
+            let read_end = n_bytes.min(consume_len + self.maximum_chunk - self.cur_chunk_len);
 
-            if let Some(boundary) = self.hash.next_match(&data[data_pos..read_end], self.mask) {
-                consume_len = boundary;
+            let mut bytes_to_next_boundary;
+            if let Some(boundary) = self.hash.next_match(&data[consume_len..read_end], self.mask) {
+                bytes_to_next_boundary = boundary;
                 create_chunk = true;
             } else {
-                consume_len = read_end - data_pos;
+                bytes_to_next_boundary = read_end - consume_len;
             }
 
             // if we hit maximum chunk we must create a chunk
-            if consume_len + self.cur_chunk_len >= self.maximum_chunk {
-                consume_len = self.maximum_chunk - self.cur_chunk_len;
+            if bytes_to_next_boundary + self.cur_chunk_len >= self.maximum_chunk {
+                bytes_to_next_boundary = self.maximum_chunk - self.cur_chunk_len;
                 create_chunk = true;
             }
-            self.cur_chunk_len += consume_len;
-            data_pos += consume_len;
-            self.chunkbuf.extend_from_slice(&data[chunk_buf_copy_start..data_pos]);
-
-            if create_chunk {
-                let chunk = Chunk {
-                    length: self.chunkbuf.len(),
-                    hash: compute_data_hash(&self.chunkbuf[..]),
-                    data: Some(std::mem::take(&mut self.chunkbuf).into()),
-                };
-                (self.chunk_callback)(chunk);
-
-                self.cur_chunk_len = 0;
-
-                self.hash.set_hash(0);
-            }
+            self.cur_chunk_len += bytes_to_next_boundary;
+            consume_len += bytes_to_next_boundary;
+            self.chunkbuf.extend_from_slice(&data[0..consume_len]);
         }
-    }
 
-    pub fn finish(&mut self) {
-        // main loop complete
-        if !self.chunkbuf.is_empty() {
+        let ret;
+        if create_chunk || (is_final && !self.chunkbuf.is_empty()) {
             let chunk = Chunk {
                 length: self.chunkbuf.len(),
                 hash: compute_data_hash(&self.chunkbuf[..]),
                 data: Some(std::mem::take(&mut self.chunkbuf).into()),
             };
-            (self.chunk_callback)(chunk);
+
+            self.cur_chunk_len = 0;
+
+            self.hash.set_hash(0);
+
+            ret = (Some(chunk), consume_len)
+        } else {
+            ret = (None, consume_len)
+        }
+
+        // The amount of data consumed should never be more than the amount of data given.
+        #[cfg(debug_assertions)]
+        {
+            debug_assert!(ret.1 <= data.len());
+
+            // If no chunk is returned, then make sure all the data is consumed.
+            if ret.0.is_none() {
+                debug_assert_eq!(ret.1, data.len());
+            }
+        }
+
+        ret
+    }
+
+    /// Processes several blocks at once, returning
+    pub fn next_block(&mut self, data: &[u8], is_final: bool) -> Vec<Chunk> {
+        let mut ret = Vec::new();
+
+        let mut pos = 0;
+        loop {
+            debug_assert!(pos <= data.len());
+            if pos == data.len() {
+                return ret;
+            }
+
+            let (maybe_chunk, bytes_consumed) = self.next(&data[pos..], is_final);
+
+            if let Some(chunk) = maybe_chunk {
+                ret.push(chunk);
+            }
+
+            pos += bytes_consumed;
         }
     }
-}
 
-// Add in tests
+    // Simply returns the
+    pub fn finish(&mut self) -> Option<Chunk> {
+        self.next(&[], true).0
+    }
+}

@@ -8,6 +8,7 @@ use std::time::SystemTime;
 
 use cas_object::range_hash_from_chunks;
 use chrono::{DateTime, Utc};
+use chunking::Chunker;
 use lazy_static::lazy_static;
 use mdb_shard::file_structs::{
     FileDataSequenceEntry, FileDataSequenceHeader, FileMetadataExt, FileVerificationEntry, MDBFileInfo,
@@ -174,13 +175,14 @@ pub struct SingleFileCleaner {
     // External Data
     global_cas_data: Arc<Mutex<CASDataAggregator>>,
 
-    // Internal workers
-    chunk_data_queue: Sender<BufferItem<Vec<u8>>>,
-    chunking_worker: Mutex<Option<JoinHandle<Result<()>>>>,
-    dedup_worker: Mutex<Option<JoinHandle<Result<()>>>>,
+    // The dedup worker
+    dedup_worker: JoinHandle<Result<()>>,
+
+    // The chunker
+    chunker: chunking::Chunker,
 
     // Internal Data
-    tracking_info: Mutex<DedupFileTrackingInfo>,
+    tracking_info: DedupFileTrackingInfo,
 
     // Auxiliary info
     file_name: Option<PathBuf>,
@@ -195,7 +197,7 @@ pub struct SingleFileCleaner {
 
 impl SingleFileCleaner {
     #[allow(clippy::too_many_arguments)]
-    pub(crate) async fn new(
+    pub(crate) fn new(
         enable_global_dedup_queries: bool,
         cas_prefix: String,
         repo_salt: Option<RepoSalt>,
@@ -209,13 +211,7 @@ impl SingleFileCleaner {
         progress_updater: Option<Arc<dyn ProgressUpdater>>,
         repo_id: Option<String>,
     ) -> Result<Arc<Self>> {
-        let (data_p, data_c) = channel::<BufferItem<Vec<u8>>>(buffer_size);
-
-        let (chunk_p, chunk_c) = channel::<Option<ChunkYieldType>>(IDEAL_CAS_BLOCK_SIZE / TARGET_CDC_CHUNK_SIZE); // enough to fill one CAS block
-
-        let chunker = chunk_target_default(data_c, chunk_p, threadpool.clone());
-
-        let cleaner = Arc::new(SingleFileCleaner {
+        SingleFileCleaner {
             enable_global_dedup_queries,
             cas_prefix,
             repo_salt,
@@ -223,9 +219,8 @@ impl SingleFileCleaner {
             remote_shards,
             xorb_uploader,
             global_cas_data: cas_data,
-            chunk_data_queue: data_p,
-            chunking_worker: Mutex::new(Some(chunker)),
-            dedup_worker: Mutex::new(None),
+            dedup_worker: None,
+            chunker: chunking::Chunker::default(),
             tracking_info: Mutex::new(Default::default()),
             file_name: file_name.map(|f| f.to_owned()),
             sha_generator: ShaGenerator::new(),
@@ -235,32 +230,35 @@ impl SingleFileCleaner {
             },
             threadpool,
             progress_updater,
-        });
-
-        Self::run(cleaner.clone(), chunk_c).await;
-
-        Ok(cleaner)
+        }
     }
 
-    pub async fn add_bytes(&self, data: Vec<u8>) -> Result<()> {
-        self.task_is_running().await?;
-
+    pub async fn add_data(&mut self, data: &[u8]) -> Result<()> {
         self.metrics.file_size.fetch_add(data.len() as u64, Ordering::Relaxed);
 
-        self.sha_generator.update(&data)?;
+        self.sha_generator.update(data)?;
 
-        self.add_data_to_chunking(BufferItem::Value(data)).await?;
+        // Chunk the data.
+        let chunks = self.chunker.next_block(data, false);
+
+        // Run the dedup.
+        if !chunks.is_empty() {
+            self.dedup(&chunks).await?;
+        }
 
         Ok(())
     }
 
     /// Return the representation of file after clean and the number of new bytes after dedup
-    pub async fn result(&self) -> Result<(String, u64)> {
-        self.finish().await?;
+    pub async fn result(mut self) -> Result<(String, u64)> {
+        // Chunk the rest of the data.
+        if let Some(chunk) = self.chunker.finish() {
+            self.dedup(&[chunk]).await?;
+        }
 
         let file_size = self.metrics.file_size.load(Ordering::Relaxed);
-
         let new_bytes = self.metrics.new_bytes_after_dedup.load(Ordering::Relaxed);
+
         let return_file = self.to_pointer_file().await?;
 
         let current_time = SystemTime::now();
@@ -328,28 +326,7 @@ impl SingleFileCleaner {
         *worker = Some(dedup_task);
     }
 
-    async fn task_is_running(&self) -> Result<()> {
-        let dedup_worker = self.dedup_worker.lock().await;
-
-        let chunking_worker = self.chunking_worker.lock().await;
-
-        if dedup_worker.is_none() || chunking_worker.is_none() {
-            return Err(CleanTaskError("no active clean task".to_owned()));
-        };
-
-        Ok(())
-    }
-
-    async fn add_data_to_chunking(&self, it: BufferItem<Vec<u8>>) -> Result<()> {
-        self.chunk_data_queue
-            .send(it)
-            .await
-            .map_err(|e| InternalError(format!("{e}")))?;
-
-        Ok(())
-    }
-
-    async fn dedup(&self, chunks: &[ChunkYieldType]) -> Result<()> {
+    async fn dedup(&self, chunks: &[Chunk]) -> Result<()> {
         debug!("Dedup {} chunks", chunks.len());
         let mut tracking_info = self.tracking_info.lock().await;
 
@@ -617,25 +594,6 @@ impl SingleFileCleaner {
                 // Next round.
                 cur_idx += 1;
             }
-        }
-
-        Ok(())
-    }
-
-    async fn finish(&self) -> Result<()> {
-        self.task_is_running().await?;
-
-        // signal finish
-        self.add_data_to_chunking(BufferItem::Completed).await?;
-
-        let mut chunking_worker = self.chunking_worker.lock().await;
-        if let Some(task) = chunking_worker.take() {
-            task.await.map_err(|e| InternalError(format!("{e:?}")))??;
-        }
-
-        let mut dedup_worker = self.dedup_worker.lock().await;
-        if let Some(task) = dedup_worker.take() {
-            task.await.map_err(|e| InternalError(format!("{e:?}")))??;
         }
 
         Ok(())

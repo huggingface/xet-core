@@ -204,7 +204,7 @@ pub async fn clean_file(processor: &FileUploadSession, f: String) -> errors::Res
             break;
         }
 
-        handle.add_bytes(read_buf[0..bytes].to_vec()).await?;
+        handle.add_data(read_buf[0..bytes].to_vec()).await?;
     }
 
     let (pf_str, new_bytes) = handle.result().await?;
