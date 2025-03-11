@@ -100,7 +100,7 @@ async fn clean(mut reader: impl Read, mut writer: impl Write) -> Result<()> {
         handle.add_data(read_buf[0..bytes].to_vec()).await?;
     }
 
-    let (pointer_file, _) = handle.result().await?;
+    let (pointer_file, _) = handle.finish().await?;
 
     translator.finalize_cleaning().await?;
 

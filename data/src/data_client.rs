@@ -204,10 +204,10 @@ pub async fn clean_file(processor: &FileUploadSession, f: String) -> errors::Res
             break;
         }
 
-        handle.add_data(read_buf[0..bytes].to_vec()).await?;
+        handle.add_data(&read_buf[0..bytes]).await?;
     }
 
-    let (pf_str, new_bytes) = handle.result().await?;
+    let (pf_str, new_bytes) = handle.finish().await?;
     let pf = PointerFile::init_from_string(&pf_str, path.to_str().unwrap());
     Ok((pf, new_bytes))
 }

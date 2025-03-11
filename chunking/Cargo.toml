@@ -6,3 +6,6 @@ edition = "2024"
 [dependencies]
 gearhash = "0.1.3"
 merklehash = { path = "../merklehash" }
+
+[dev-dependencies]
+rand = "0.9.0"

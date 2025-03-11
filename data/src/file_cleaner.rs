@@ -8,7 +8,7 @@ use std::time::SystemTime;
 
 use cas_object::range_hash_from_chunks;
 use chrono::{DateTime, Utc};
-use chunking::Chunker;
+use chunking::{Chunk, Chunker};
 use lazy_static::lazy_static;
 use mdb_shard::file_structs::{
     FileDataSequenceEntry, FileDataSequenceHeader, FileMetadataExt, FileVerificationEntry, MDBFileInfo,
@@ -19,14 +19,12 @@ use merkledb::constants::{IDEAL_CAS_BLOCK_SIZE, TARGET_CAS_BLOCK_SIZE, TARGET_CD
 use merklehash::MerkleHash;
 use sha2::{Digest, Sha256};
 use tokio::sync::mpsc::error::TryRecvError;
-use tokio::sync::mpsc::{channel, Receiver, Sender};
 use tokio::sync::Mutex;
 use tokio::task::{JoinHandle, JoinSet};
 use tracing::{debug, info};
 use utils::progress::ProgressUpdater;
 use xet_threadpool::ThreadPool;
 
-use crate::chunking::{chunk_target_default, ChunkYieldType};
 use crate::constants::{
     DEFAULT_MIN_N_CHUNKS_PER_RANGE, MIN_N_CHUNKS_PER_RANGE_HYSTERESIS_FACTOR, MIN_SPACING_BETWEEN_GLOBAL_DEDUP_QUERIES,
     NRANGES_IN_STREAMING_FRAGMENTATION_ESTIMATOR,
@@ -175,9 +173,6 @@ pub struct SingleFileCleaner {
     // External Data
     global_cas_data: Arc<Mutex<CASDataAggregator>>,
 
-    // The dedup worker
-    dedup_worker: JoinHandle<Result<()>>,
-
     // The chunker
     chunker: chunking::Chunker,
 
@@ -210,18 +205,18 @@ impl SingleFileCleaner {
         threadpool: Arc<ThreadPool>,
         progress_updater: Option<Arc<dyn ProgressUpdater>>,
         repo_id: Option<String>,
-    ) -> Result<Arc<Self>> {
-        SingleFileCleaner {
+    ) -> Self {
+        Self {
             enable_global_dedup_queries,
             cas_prefix,
             repo_salt,
             shard_manager,
             remote_shards,
             xorb_uploader,
+            progress_updater,
             global_cas_data: cas_data,
-            dedup_worker: None,
             chunker: chunking::Chunker::default(),
-            tracking_info: Mutex::new(Default::default()),
+            tracking_info: Default::default(),
             file_name: file_name.map(|f| f.to_owned()),
             sha_generator: ShaGenerator::new(),
             metrics: CleanMetrics {
@@ -229,7 +224,6 @@ impl SingleFileCleaner {
                 ..Default::default()
             },
             threadpool,
-            progress_updater,
         }
     }
 
@@ -250,7 +244,7 @@ impl SingleFileCleaner {
     }
 
     /// Return the representation of file after clean and the number of new bytes after dedup
-    pub async fn result(mut self) -> Result<(String, u64)> {
+    pub async fn finish(mut self) -> Result<(String, u64)> {
         // Chunk the rest of the data.
         if let Some(chunk) = self.chunker.finish() {
             self.dedup(&[chunk]).await?;
@@ -264,6 +258,7 @@ impl SingleFileCleaner {
         let current_time = SystemTime::now();
         let start: DateTime<Utc> = self.metrics.start_time.into();
         let now: DateTime<Utc> = current_time.into();
+
         // NB: xorb upload is happening in the background, this number is optimistic since it does
         // not count transfer time of the uploaded xorbs, which is why `end_processing_ts`
         info!(
@@ -280,55 +275,8 @@ impl SingleFileCleaner {
         Ok((return_file, new_bytes))
     }
 
-    async fn run(cleaner: Arc<Self>, mut chunks: Receiver<Option<ChunkYieldType>>) {
-        let cleaner_clone = cleaner.clone();
-        let dedup_task = cleaner.threadpool.spawn(async move {
-            loop {
-                let mut chunk_vec = Vec::with_capacity(*DEDUP_CHUNK_BATCH_SIZE);
-
-                let mut finished = false;
-
-                for _ in 0..*DEDUP_CHUNK_BATCH_SIZE {
-                    match chunks.try_recv() {
-                        Ok(Some(chunk)) => chunk_vec.push(chunk),
-                        Ok(None) | Err(TryRecvError::Disconnected) => {
-                            finished = true;
-                            break;
-                        },
-                        Err(TryRecvError::Empty) => {
-                            if chunk_vec.is_empty() {
-                                // need to wait a bit to make sure at least one chunk to process
-                                match chunks.recv().await.flatten() {
-                                    Some(chunk) => chunk_vec.push(chunk),
-                                    None => {
-                                        finished = true;
-                                    },
-                                }
-                            }
-                            break;
-                        },
-                    }
-                }
-
-                if !chunk_vec.is_empty() {
-                    cleaner_clone.dedup(&chunk_vec).await?;
-                }
-
-                if finished {
-                    break;
-                }
-            }
-            Ok(())
-        });
-
-        let mut worker = cleaner.dedup_worker.lock().await;
-
-        *worker = Some(dedup_task);
-    }
-
-    async fn dedup(&self, chunks: &[Chunk]) -> Result<()> {
+    async fn dedup(&mut self, chunks: &[Chunk]) -> Result<()> {
         debug!("Dedup {} chunks", chunks.len());
-        let mut tracking_info = self.tracking_info.lock().await;
 
         let enable_global_dedup = self.enable_global_dedup_queries;
         let salt = self.repo_salt.unwrap_or_default();
@@ -336,10 +284,10 @@ impl SingleFileCleaner {
         // Last chunk queried.
         let mut last_chunk_index_queried = isize::MIN;
 
-        // All the previous chunk are stored here, use it as the global chunk index start.
-        let global_chunk_index_start = tracking_info.file_hashes.len();
+        // All the previous chunks are stored here, use it as the global chunk index start.
+        let global_chunk_index_start = self.tracking_info.file_hashes.len();
 
-        let chunk_hashes = Vec::from_iter(chunks.iter().map(|(c, _)| c.hash));
+        let chunk_hashes = Vec::from_iter(chunks.iter().map(|c| c.hash));
 
         // Now, parallelize the querying of potential new shards on the server end with
         // querying for dedup information of the chunks, which are the two most expensive
@@ -444,7 +392,7 @@ impl SingleFileCleaner {
         }
 
         // Record all the file hashes.
-        tracking_info.file_hashes.extend(chunks.iter().map(|(c, b)| (c.hash, b.len())));
+        self.tracking_info.file_hashes.extend(chunks.iter().map(|c| (c.hash, c.length)));
 
         // Now, go through and process all the data.
         let mut cur_idx = 0;
@@ -457,8 +405,8 @@ impl SingleFileCleaner {
             // we skip dedupe
             let mut forced_nodedupe = false;
             if let Some((n_deduped, _)) = dedupe_query {
-                if let Some(chunks_per_range) = tracking_info.rolling_chunks_per_range() {
-                    let target_cpr = if tracking_info.defrag_at_low_threshold {
+                if let Some(chunks_per_range) = self.tracking_info.rolling_chunks_per_range() {
+                    let target_cpr = if self.tracking_info.defrag_at_low_threshold {
                         (*MIN_N_CHUNKS_PER_RANGE) * MIN_N_CHUNKS_PER_RANGE_HYSTERESIS_FACTOR
                     } else {
                         *MIN_N_CHUNKS_PER_RANGE
@@ -474,13 +422,13 @@ impl SingleFileCleaner {
                             forced_nodedupe = true;
                             // once I start skipping dedupe, we try to raise
                             // the cpr to the high threshold
-                            tracking_info.defrag_at_low_threshold = false;
+                            self.tracking_info.defrag_at_low_threshold = false;
                         }
                     } else {
                         // once I start deduping again, we lower CPR
                         // to the low threshold so we allow for more small
                         // fragments.
-                        tracking_info.defrag_at_low_threshold = true;
+                        self.tracking_info.defrag_at_low_threshold = true;
                     }
                 }
             }
@@ -491,98 +439,100 @@ impl SingleFileCleaner {
                 // Update all the metrics.
                 #[allow(clippy::needless_range_loop)]
                 for i in cur_idx..(cur_idx + n_deduped) {
-                    n_bytes += chunks[i].1.len();
+                    n_bytes += chunks[i].data.len();
                 }
 
                 // Do we modify the previous entry as this is the next logical chunk, or do we
                 // start a new entry?
-                if !tracking_info.file_info.is_empty()
-                    && tracking_info.file_info.last().unwrap().cas_hash == fse.cas_hash
-                    && tracking_info.file_info.last().unwrap().chunk_index_end == fse.chunk_index_start
+                if !self.tracking_info.file_info.is_empty()
+                    && self.tracking_info.file_info.last().unwrap().cas_hash == fse.cas_hash
+                    && self.tracking_info.file_info.last().unwrap().chunk_index_end == fse.chunk_index_start
                 {
                     // This block is the contiguous continuation of the last entry
-                    let last_entry = tracking_info.file_info.last_mut().unwrap();
+                    let last_entry = self.tracking_info.file_info.last_mut().unwrap();
                     last_entry.unpacked_segment_bytes += n_bytes as u32;
                     last_entry.chunk_index_end = fse.chunk_index_end;
                     // update the fragmentation estimation window
-                    tracking_info.increment_last_range_in_fragmentation_estimate(n_deduped);
+                    self.tracking_info.increment_last_range_in_fragmentation_estimate(n_deduped);
                 } else {
                     // This block is new
-                    tracking_info.file_info.push(fse);
-                    tracking_info.add_range_to_fragmentation_estimate(n_deduped);
+                    self.tracking_info.file_info.push(fse);
+                    self.tracking_info.add_range_to_fragmentation_estimate(n_deduped);
                 }
 
                 cur_idx += n_deduped;
             } else {
-                let (chunk, bytes) = &chunks[cur_idx];
+                let chunk = &chunks[cur_idx];
 
-                n_bytes = chunks[cur_idx].1.len();
+                n_bytes = chunk.data.len();
 
                 // This is new data.
                 let add_new_data;
 
-                if tracking_info.current_cas_block_hashes.contains_key(&chunk.hash) && !forced_nodedupe {
-                    let idx = tracking_info.current_cas_block_hashes.get(&chunk.hash).unwrap();
+                if self.tracking_info.current_cas_block_hashes.contains_key(&chunk.hash) && !forced_nodedupe {
+                    let idx = self.tracking_info.current_cas_block_hashes.get(&chunk.hash).unwrap();
                     let idx = *idx;
                     // This chunk will get the CAS hash updated when the local CAS block
                     // is full and registered.
-                    let file_info_len = tracking_info.file_info.len();
-                    tracking_info.current_cas_file_info_indices.push(file_info_len);
+                    let file_info_len = self.tracking_info.file_info.len();
+                    self.tracking_info.current_cas_file_info_indices.push(file_info_len);
 
-                    tracking_info.file_info.push(FileDataSequenceEntry::new(
+                    self.tracking_info.file_info.push(FileDataSequenceEntry::new(
                         MerkleHash::default(),
                         n_bytes,
                         idx,
                         idx + 1,
                     ));
                     add_new_data = false;
-                } else if !tracking_info.file_info.is_empty()
-                    && tracking_info.file_info.last().unwrap().cas_hash == MerkleHash::default()
-                    && tracking_info.file_info.last().unwrap().chunk_index_end as usize
-                        == tracking_info.cas_data.chunks.len()
+                } else if !self.tracking_info.file_info.is_empty()
+                    && self.tracking_info.file_info.last().unwrap().cas_hash == MerkleHash::default()
+                    && self.tracking_info.file_info.last().unwrap().chunk_index_end as usize
+                        == self.tracking_info.cas_data.chunks.len()
                 {
                     // This is the next chunk in the CAS block we're building,
                     // in which case we can just modify the previous entry.
-                    let last_entry = tracking_info.file_info.last_mut().unwrap();
+                    let last_entry = self.tracking_info.file_info.last_mut().unwrap();
                     last_entry.unpacked_segment_bytes += n_bytes as u32;
                     last_entry.chunk_index_end += 1;
                     add_new_data = true;
-                    tracking_info.increment_last_range_in_fragmentation_estimate(1);
+                    self.tracking_info.increment_last_range_in_fragmentation_estimate(1);
                 } else {
                     // This block is unrelated to the previous one.
                     // This chunk will get the CAS hash updated when the local CAS block
                     // is full and registered.
-                    let file_info_len = tracking_info.file_info.len();
-                    tracking_info.current_cas_file_info_indices.push(file_info_len);
+                    let file_info_len = self.tracking_info.file_info.len();
+                    self.tracking_info.current_cas_file_info_indices.push(file_info_len);
 
-                    let chunk_len = tracking_info.cas_data.chunks.len();
-                    tracking_info.file_info.push(FileDataSequenceEntry::new(
+                    let chunk_len = self.tracking_info.cas_data.chunks.len();
+                    self.tracking_info.file_info.push(FileDataSequenceEntry::new(
                         MerkleHash::default(),
                         n_bytes,
                         chunk_len,
                         chunk_len + 1,
                     ));
-                    tracking_info.add_range_to_fragmentation_estimate(1);
+                    self.tracking_info.add_range_to_fragmentation_estimate(1);
                     add_new_data = true;
                 }
 
                 if add_new_data {
                     // Add in the chunk and cas information.
-                    let cas_data_chunks_len = tracking_info.cas_data.chunks.len();
-                    tracking_info.current_cas_block_hashes.insert(chunk.hash, cas_data_chunks_len);
-                    tracking_info.cas_data.chunks.push((chunk.hash, n_bytes));
-                    tracking_info.cas_data.data.extend(bytes);
+                    let cas_data_chunks_len = self.tracking_info.cas_data.chunks.len();
+                    self.tracking_info
+                        .current_cas_block_hashes
+                        .insert(chunk.hash, cas_data_chunks_len);
+                    self.tracking_info.cas_data.chunks.push((chunk.hash, n_bytes));
+                    self.tracking_info.cas_data.data.extend_from_slice(&chunk.data);
 
                     self.metrics.new_bytes_after_dedup.fetch_add(n_bytes as u64, Ordering::Relaxed);
 
-                    if tracking_info.cas_data.data.len() > TARGET_CAS_BLOCK_SIZE {
-                        let cas_data = take(&mut tracking_info.cas_data);
+                    if self.tracking_info.cas_data.data.len() > TARGET_CAS_BLOCK_SIZE {
+                        let cas_data = take(&mut self.tracking_info.cas_data);
                         let cas_hash = self.xorb_uploader.register_new_cas_block(cas_data).await?;
 
-                        for i in take(&mut tracking_info.current_cas_file_info_indices) {
-                            tracking_info.file_info[i].cas_hash = cas_hash;
+                        for i in take(&mut self.tracking_info.current_cas_file_info_indices) {
+                            self.tracking_info.file_info[i].cas_hash = cas_hash;
                         }
-                        tracking_info.current_cas_block_hashes.clear();
+                        self.tracking_info.current_cas_block_hashes.clear();
                     }
                 } else {
                     // Chunk does not get uploaded, we're already tracking the same chunk elsewhere
@@ -599,20 +549,19 @@ impl SingleFileCleaner {
         Ok(())
     }
 
-    async fn summarize_dedup_info(&self) -> Result<(MerkleHash, u64)> {
-        let mut tracking_info = self.tracking_info.lock().await;
-
+    async fn summarize_dedup_info(&mut self) -> Result<(MerkleHash, u64)> {
         let mut chunk_idx = 0;
 
-        let file_hash = file_node_hash(&tracking_info.file_hashes, &self.repo_salt.unwrap_or_default())?;
+        let file_hash = file_node_hash(&self.tracking_info.file_hashes, &self.repo_salt.unwrap_or_default())?;
 
         // Create the verification.
-        let verification = tracking_info
+        let verification = self
+            .tracking_info
             .file_info
             .iter()
             .map(|entry| {
                 let n_chunks = (entry.chunk_index_end - entry.chunk_index_start) as usize;
-                let chunk_hashes: Vec<_> = tracking_info.file_hashes[chunk_idx..chunk_idx + n_chunks]
+                let chunk_hashes: Vec<_> = self.tracking_info.file_hashes[chunk_idx..chunk_idx + n_chunks]
                     .iter()
                     .map(|(hash, _)| *hash)
                     .collect();
@@ -629,19 +578,19 @@ impl SingleFileCleaner {
         let file_info = MDBFileInfo {
             metadata: FileDataSequenceHeader::new(
                 file_hash,
-                tracking_info.file_info.len(),
+                self.tracking_info.file_info.len(),
                 true,
                 metadata_ext.is_some(),
             ),
-            segments: take(&mut tracking_info.file_info),
+            segments: take(&mut self.tracking_info.file_info),
             verification,
             metadata_ext,
         };
 
-        let mut local_data_aggregator = take(&mut tracking_info.cas_data);
+        let mut local_data_aggregator = take(&mut self.tracking_info.cas_data);
         local_data_aggregator
             .pending_file_info
-            .push((file_info, take(&mut tracking_info.current_cas_file_info_indices)));
+            .push((file_info, take(&mut self.tracking_info.current_cas_file_info_indices)));
 
         // Put an accumulated data into the struct-wide cas block for building a future chunk.
         let mut global_cas_data = self.global_cas_data.lock().await;
@@ -659,7 +608,7 @@ impl SingleFileCleaner {
         // we only add to the counters if we see changes
         FILTER_BYTES_CLEANED.inc_by(file_size);
 
-        *tracking_info = Default::default();
+        self.tracking_info = Default::default();
 
         Ok((file_hash, file_size))
     }

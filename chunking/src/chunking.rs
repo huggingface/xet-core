@@ -5,11 +5,10 @@ use merklehash::{MerkleHash, compute_data_hash};
 
 use crate::constants::{MAXIMUM_CHUNK_MULTIPLIER, MINIMUM_CHUNK_DIVISOR, TARGET_CDC_CHUNK_SIZE};
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Chunk {
     pub hash: MerkleHash,
-    pub length: usize,
-    pub data: Option<Arc<[u8]>>,
+    pub data: Arc<[u8]>,
 }
 
 /// Chunk Generator given an input stream. Do not use directly.
@@ -35,7 +34,10 @@ impl Default for Chunker {
 impl Chunker {
     pub fn new(target_chunk_size: usize) -> Self {
         assert_eq!(target_chunk_size.count_ones(), 1);
-        assert!(target_chunk_size > 1);
+
+        // Some of the logic only works if the target_chunk_size is greater than the
+        // window size of the hash.
+        assert!(target_chunk_size > 64);
 
         // note the strict lesser than. Combined with count_ones() == 1,
         // this limits to 2^31
@@ -72,7 +74,7 @@ impl Chunker {
     /// If is_final is true, then it is assumed that no more data after this block will come,
     /// and any data currently present and at the end will be put into a final chunk.
     pub fn next(&mut self, data: &[u8], is_final: bool) -> (Option<Chunk>, usize) {
-        const MAX_WINDOW_SIZE: usize = 64;
+        const HASH_WINDOW_SIZE: usize = 64;
         let n_bytes = data.len();
 
         let mut create_chunk = false;
@@ -83,9 +85,9 @@ impl Chunker {
             // skip the minimum chunk size
             // and noting that the hash has a window size of 64
             // so we should be careful to skip only minimum_chunk - 64 - 1
-            if self.cur_chunk_len < self.minimum_chunk - MAX_WINDOW_SIZE {
+            if self.cur_chunk_len + HASH_WINDOW_SIZE < self.minimum_chunk {
                 let max_advance =
-                    min(self.minimum_chunk - self.cur_chunk_len - MAX_WINDOW_SIZE - 1, n_bytes - consume_len);
+                    min(self.minimum_chunk - self.cur_chunk_len - HASH_WINDOW_SIZE - 1, n_bytes - consume_len);
                 consume_len += max_advance;
                 self.cur_chunk_len += max_advance;
             }
@@ -115,9 +117,8 @@ impl Chunker {
         let ret;
         if create_chunk || (is_final && !self.chunkbuf.is_empty()) {
             let chunk = Chunk {
-                length: self.chunkbuf.len(),
                 hash: compute_data_hash(&self.chunkbuf[..]),
-                data: Some(std::mem::take(&mut self.chunkbuf).into()),
+                data: std::mem::take(&mut self.chunkbuf).into(),
             };
 
             self.cur_chunk_len = 0;
@@ -167,5 +168,130 @@ impl Chunker {
     // Simply returns the
     pub fn finish(&mut self) -> Option<Chunk> {
         self.next(&[], true).0
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use rand::rngs::StdRng;
+    use rand::{Rng, SeedableRng};
+
+    use super::*;
+
+    /// A helper to create random test data using a specified `seed` and `len`.
+    /// Using a fixed seed ensures tests are reproducible.
+    fn make_test_data(seed: u64, len: usize) -> Vec<u8> {
+        let mut rng = StdRng::seed_from_u64(seed);
+        let mut data = vec![0; len];
+        rng.fill(&mut data[..]);
+        data
+    }
+
+    fn check_chunks_equal(chunks: &[Chunk], data: &[u8]) {
+        // Validate all the chunks are exact.
+        let mut new_vec = Vec::with_capacity(10000);
+        for c in chunks.iter() {
+            new_vec.extend_from_slice(&c.data[..]);
+        }
+
+        assert!(new_vec == data);
+    }
+
+    #[test]
+    fn test_empty_data_no_chunk_until_final() {
+        let mut chunker = Chunker::new(128);
+
+        // Passing empty slice without final => no chunk
+        let (chunk, consumed) = chunker.next(&[], false);
+        assert!(chunk.is_none());
+        assert_eq!(consumed, 0);
+
+        // Passing empty slice again with is_final = true => no leftover data, so no chunk
+        let (chunk, consumed) = chunker.next(&[], true);
+        assert!(chunk.is_none());
+        assert_eq!(consumed, 0);
+    }
+
+    #[test]
+    fn test_data_smaller_than_minimum_no_boundary() {
+        let mut chunker = Chunker::new(128);
+
+        // Create a small random data buffer. For example, length=3.
+        let data = make_test_data(0, 63);
+
+        // We expect no chunk until we finalize, because there's not enough data
+        // to trigger a boundary, nor to reach the maximum chunk size.
+        let (chunk, consumed) = chunker.next(&data, false);
+        assert!(chunk.is_none());
+        assert_eq!(consumed, data.len());
+
+        // Now finalize: we expect a chunk with the leftover data
+        let (chunk, consumed) = chunker.next(&[], true);
+        assert!(chunk.is_some());
+        assert_eq!(consumed, 0);
+
+        let chunk = chunk.unwrap();
+        assert_eq!(chunk.data.len(), 63);
+        assert_eq!(&chunk.data[..], &data[..], "Chunk should contain exactly what was passed in");
+    }
+
+    #[test]
+    fn test_multiple_chunks_produced() {
+        let mut chunker = Chunker::new(128);
+
+        // Produce 100 bytes of random data
+        let data = make_test_data(42, 10000);
+
+        // Pass everything at once, final = true
+        let chunks = chunker.next_block(&data, true);
+        assert!(!chunks.is_empty());
+
+        check_chunks_equal(&chunks, &data);
+    }
+
+    #[test]
+    fn test_repeated_calls_partial_consumption() {
+        // We'll feed in two pieces of data to ensure partial consumption
+
+        let data = make_test_data(42, 10000);
+
+        let mut chunks_1 = Vec::new();
+
+        let mut pos = 0;
+        let mut chunker = Chunker::new(128);
+
+        while pos < data.len() {
+            for i in 0..16 {
+                let next_pos = (pos + i).min(data.len());
+                chunks_1.append(&mut chunker.next_block(&data[pos..next_pos], next_pos == data.len()));
+                pos = next_pos;
+            }
+        }
+
+        check_chunks_equal(&chunks_1, &data);
+
+        // Now, rechunk with all at once and make sure it's equal.
+        let chunks_2 = Chunker::new(128).next_block(&data, true);
+
+        assert_eq!(chunks_1, chunks_2);
+    }
+
+    #[test]
+    fn test_exact_maximum_chunk() {
+        // If the data hits the maximum chunk size exactly, we should force a boundary.
+        // For target_chunk_size = 128, if MAXIMUM_CHUNK_MULTIPLIER = 2, then max = 256.
+        // Adjust if your constants differ.
+        let mut chunker = Chunker::new(512);
+
+        // Use constant data
+        let data = vec![0; 8 * MAXIMUM_CHUNK_MULTIPLIER * 512];
+
+        let chunks = chunker.next_block(&data, true);
+
+        assert_eq!(chunks.len(), 8);
+
+        for c in chunks.iter() {
+            assert_eq!(c.data.len(), MAXIMUM_CHUNK_MULTIPLIER * 512);
+        }
     }
 }

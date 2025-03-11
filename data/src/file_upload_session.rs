@@ -251,9 +251,9 @@ mod tests {
         let handle = translator.start_clean(1024, None).await.unwrap();
 
         // Read blocks from the source file and hand them to the cleaning handle
-        handle.add_data(read_data).await.unwrap();
+        handle.add_data(&[read_data]).await.unwrap();
 
-        let (pointer_file_contents, _) = handle.result().await.unwrap();
+        let (pointer_file_contents, _) = handle.finish().await.unwrap();
         translator.finalize_cleaning().await.unwrap();
 
         pf_out.write_all(pointer_file_contents.as_bytes()).unwrap();
