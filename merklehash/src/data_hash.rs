@@ -121,11 +121,14 @@ impl core::ops::Rem<u64> for DataHash {
     }
 }
 
+#[cfg(not(target_family = "wasm"))]
 unsafe impl heed::bytemuck::Zeroable for DataHash {
     fn zeroed() -> Self {
         DataHash([0; 4])
     }
 }
+
+#[cfg(not(target_family = "wasm"))]
 unsafe impl heed::bytemuck::Pod for DataHash {}
 
 /// The error type that is returned if [DataHash::from_hex] fails.
