@@ -53,9 +53,6 @@ pub struct FileDeduper<ErrorType> {
 
     /// The next chunk index that is eligible for global dedup queries
     next_chunk_index_elegible_for_global_dedup_query: usize,
-
-    /// The repo salt; defaults to MerkleHash::default()
-    repo_salt: MerkleHash,
 }
 
 impl<ErrorType> FileDeduper<ErrorType> {
@@ -73,12 +70,7 @@ impl<ErrorType> FileDeduper<ErrorType> {
             target_xorb_max_num_chunks: MAX_XORB_CHUNKS,
             min_spacing_between_global_dedup_queries: 0,
             next_chunk_index_elegible_for_global_dedup_query: 0,
-            repo_salt: MerkleHash::default(),
         }
-    }
-
-    pub fn set_repo_salt(&mut self, repo_salt: MerkleHash) {
-        self.repo_salt = repo_salt
     }
 
     pub fn process_chunks(&mut self, chunks: &[Chunk]) -> Result<(DeduplicationMetrics, Vec<RawXorbData>), ErrorType> {
