@@ -616,7 +616,10 @@ name = "chunking"
 version = "0.14.5"
 dependencies = [
  "gearhash",
+ "mdb_shard",
+ "merkledb",
  "merklehash",
+ "more-asserts",
  "rand 0.9.0",
 ]
 

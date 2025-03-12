@@ -1,7 +1,7 @@
 use std::cmp::min;
 use std::sync::Arc;
 
-use merklehash::{MerkleHash, compute_data_hash};
+use merklehash::{compute_data_hash, MerkleHash};
 
 use crate::constants::{MAXIMUM_CHUNK_MULTIPLIER, MINIMUM_CHUNK_DIVISOR, TARGET_CDC_CHUNK_SIZE};
 
@@ -9,6 +9,13 @@ use crate::constants::{MAXIMUM_CHUNK_MULTIPLIER, MINIMUM_CHUNK_DIVISOR, TARGET_C
 pub struct Chunk {
     pub hash: MerkleHash,
     pub data: Arc<[u8]>,
+}
+
+// For passing into the aggregate cas hash functions
+impl Into<(MerkleHash, usize)> for &Chunk {
+    fn into(self) -> (MerkleHash, usize) {
+        (self.hash, self.data.len())
+    }
 }
 
 /// Chunk Generator given an input stream. Do not use directly.
