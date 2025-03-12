@@ -37,7 +37,6 @@ mod tests {
     use bytes::Bytes;
     use futures::io::Cursor;
     use futures::{AsyncReadExt, TryStreamExt};
-    use tempfile::tempfile;
 
     use super::*;
 
@@ -60,6 +59,7 @@ mod tests {
         }
     }
 
+    #[cfg(not(target_family = "wasm"))]
     #[tokio::test]
     async fn test_copy_reader_to_file() {
         let readers: Vec<Box<dyn AsyncRead + Unpin>> = vec![
@@ -71,7 +71,7 @@ mod tests {
         ];
 
         for mut reader in readers {
-            let mut writer = tempfile().unwrap();
+            let mut writer = tempfile::tempfile().unwrap();
             let mut copy_reader = CopyReader::new(&mut reader, &mut writer);
             let mut buf = Vec::new();
             assert!(copy_reader.read_to_end(&mut buf).await.is_ok());
