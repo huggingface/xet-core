@@ -1,0 +1,4 @@
+[target.wasm32-unknown-unknown]
+# the following is necessary when compiling rand & getrandom for wasm
+# https://github.com/rust-random/getrandom/blob/master/README.md#webassembly-support
+rustflags = ['--cfg', 'getrandom_backend="wasm_js"']

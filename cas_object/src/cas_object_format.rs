@@ -5,6 +5,7 @@ use std::mem::{size_of, size_of_val};
 use anyhow::anyhow;
 use bytes::Buf;
 use futures::AsyncReadExt;
+use merkledb::constants::{IDEAL_CAS_BLOCK_SIZE, TARGET_CDC_CHUNK_SIZE};
 use merkledb::prelude::MerkleDBHighLevelMethodsV1;
 use merkledb::{Chunk, MerkleMemDB};
 use merklehash::{DataHash, MerkleHash};
@@ -29,6 +30,16 @@ pub(crate) const CAS_OBJECT_FORMAT_BOUNDARIES_VERSION_NO_UNPACKED_INFO: u8 = 0;
 pub(crate) const CAS_OBJECT_FORMAT_BOUNDARIES_VERSION: u8 = 1;
 const _CAS_OBJECT_INFO_DEFAULT_LENGTH_V0: u32 = 60;
 const CAS_OBJECT_INFO_DEFAULT_LENGTH: u32 = 92;
+
+const AVERAGE_NUM_CHUNKS_PER_XORB: usize = IDEAL_CAS_BLOCK_SIZE / TARGET_CDC_CHUNK_SIZE;
+// Decide array preallocation size based on the declared size, to prevent an adversarial
+// giant size that leads to OOM on allocation.
+#[inline]
+fn prealloc_num_chunks(declared_size: usize) -> usize {
+    // We add a bit buffer to the average size, hoping to reduce reallocation if
+    // the actual number of chunks exceeds AVERAGE_NUM_CHUNKS_PER_XORB.
+    declared_size.min(AVERAGE_NUM_CHUNKS_PER_XORB * 9 / 8)
+}
 
 #[derive(Clone, PartialEq, Eq, Debug, Serialize)]
 /// Info struct for [CasObject]. This is stored at the end of the XORB.
@@ -163,13 +174,13 @@ impl CasObjectInfoV0 {
         read_bytes(&mut num_chunks)?;
         let num_chunks = u32::from_le_bytes(num_chunks);
 
-        let mut chunk_boundary_offsets = Vec::with_capacity(num_chunks as usize);
+        let mut chunk_boundary_offsets = Vec::with_capacity(prealloc_num_chunks(num_chunks as usize));
         for _ in 0..num_chunks {
             let mut offset = [0u8; size_of::<u32>()];
             read_bytes(&mut offset)?;
             chunk_boundary_offsets.push(u32::from_le_bytes(offset));
         }
-        let mut chunk_hashes = Vec::with_capacity(num_chunks as usize);
+        let mut chunk_hashes = Vec::with_capacity(prealloc_num_chunks(num_chunks as usize));
         for _ in 0..num_chunks {
             let mut hash = [0u8; size_of::<MerkleHash>()];
             read_bytes(&mut hash)?;
@@ -226,13 +237,13 @@ impl CasObjectInfoV0 {
         read_bytes(reader, &mut total_bytes_read, &mut num_chunks).await?;
         let num_chunks = u32::from_le_bytes(num_chunks);
 
-        let mut chunk_boundary_offsets = Vec::with_capacity(num_chunks as usize);
+        let mut chunk_boundary_offsets = Vec::with_capacity(prealloc_num_chunks(num_chunks as usize));
         for _ in 0..num_chunks {
             let mut offset = [0u8; size_of::<u32>()];
             read_bytes(reader, &mut total_bytes_read, &mut offset).await?;
             chunk_boundary_offsets.push(u32::from_le_bytes(offset));
         }
-        let mut chunk_hashes = Vec::with_capacity(num_chunks as usize);
+        let mut chunk_hashes = Vec::with_capacity(prealloc_num_chunks(num_chunks as usize));
         for _ in 0..num_chunks {
             let mut hash = [0u8; size_of::<MerkleHash>()];
             read_bytes(reader, &mut total_bytes_read, &mut hash).await?;
@@ -495,9 +506,9 @@ impl CasObjectInfoV1 {
         let num_chunks_2 = read_u32(r)?;
 
         // Read in the hashes.
-        s.chunk_hashes.resize(num_chunks_2 as usize, MerkleHash::default());
-        for s in s.chunk_hashes.iter_mut() {
-            *s = read_hash(r)?;
+        s.chunk_hashes.reserve(prealloc_num_chunks(num_chunks_2 as usize));
+        for _ in 0..num_chunks_2 {
+            s.chunk_hashes.push(read_hash(r)?);
         }
 
         //////////////////////////////////////////////////////////////////////////////////////////////
@@ -527,11 +538,15 @@ impl CasObjectInfoV1 {
             )));
         }
 
-        s.chunk_boundary_offsets.resize(num_chunks_3 as usize, 0);
-        read_u32s(r, &mut s.chunk_boundary_offsets)?;
+        s.chunk_boundary_offsets.reserve(prealloc_num_chunks(num_chunks_3 as usize));
+        for _ in 0..num_chunks_3 {
+            s.chunk_boundary_offsets.push(read_u32(r)?);
+        }
 
-        s.unpacked_chunk_offsets.resize(num_chunks_3 as usize, 0);
-        read_u32s(r, &mut s.unpacked_chunk_offsets)?;
+        s.unpacked_chunk_offsets.reserve(prealloc_num_chunks(num_chunks_3 as usize));
+        for _ in 0..num_chunks_3 {
+            s.unpacked_chunk_offsets.push(read_u32(r)?);
+        }
 
         // Now the final parts here.
         s.num_chunks = read_u32(r)?;
@@ -601,9 +616,9 @@ impl CasObjectInfoV1 {
         let num_chunks_2 = read_u32_async(r).await?;
 
         // Read in the hashes.
-        s.chunk_hashes.resize(num_chunks_2 as usize, MerkleHash::default());
-        for s in s.chunk_hashes.iter_mut() {
-            *s = read_hash_async(r).await?;
+        s.chunk_hashes.reserve(prealloc_num_chunks(num_chunks_2 as usize));
+        for _ in 0..num_chunks_2 {
+            s.chunk_hashes.push(read_hash_async(r).await?);
         }
 
         //////////////////////////////////////////////////////////////////////////////////////////////
@@ -633,11 +648,15 @@ impl CasObjectInfoV1 {
             )));
         }
 
-        s.chunk_boundary_offsets.resize(num_chunks_3 as usize, 0);
-        read_u32s_async(r, &mut s.chunk_boundary_offsets).await?;
+        s.chunk_boundary_offsets.reserve(prealloc_num_chunks(num_chunks_3 as usize));
+        for _ in 0..num_chunks_3 {
+            s.chunk_boundary_offsets.push(read_u32_async(r).await?);
+        }
 
-        s.unpacked_chunk_offsets.resize(num_chunks_3 as usize, 0);
-        read_u32s_async(r, &mut s.unpacked_chunk_offsets).await?;
+        s.unpacked_chunk_offsets.reserve(prealloc_num_chunks(num_chunks_3 as usize));
+        for _ in 0..num_chunks_3 {
+            s.unpacked_chunk_offsets.push(read_u32_async(r).await?);
+        }
 
         s.num_chunks = read_u32_async(r).await?;
 
