@@ -6,9 +6,9 @@ pub mod serialization_utils;
 pub mod singleflight;
 
 mod async_read;
+pub mod limited_joinset;
 mod output_bytes;
 pub mod progress;
-pub mod limited_joinset;
 
 pub use async_read::CopyReader;
 pub use output_bytes::output_bytes;
