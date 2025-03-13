@@ -24,7 +24,6 @@ use utils::singleflight::Group;
 use xet_threadpool::ThreadPool;
 
 use crate::error::Result;
-use crate::http_client::ResponseErrorLogger;
 use crate::interface::*;
 use crate::{http_client, CasClientError, Client};
 
