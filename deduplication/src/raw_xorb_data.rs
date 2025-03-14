@@ -57,4 +57,16 @@ impl RawXorbData {
     pub fn num_bytes(&self) -> usize {
         self.cas_info.metadata.num_bytes_in_cas as usize
     }
+
+    // Todo: Push this Xorb data format all the way down to the compression levels to
+    // avoid this copy / memory overhead
+    pub fn to_vec(&self) -> Vec<u8> {
+        let mut new_vec = Vec::with_capacity(self.num_bytes());
+
+        for ch in self.data.iter() {
+            new_vec.extend_from_slice(&ch);
+        }
+
+        new_vec
+    }
 }

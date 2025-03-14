@@ -956,7 +956,9 @@ dependencies = [
 name = "deduplication"
 version = "0.14.5"
 dependencies = [
+ "async-trait",
  "gearhash",
+ "lazy_static",
  "mdb_shard",
  "merkledb",
  "merklehash",

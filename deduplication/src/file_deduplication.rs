@@ -7,18 +7,18 @@ use mdb_shard::file_structs::{
 use mdb_shard::hash_is_global_dedup_eligible;
 use merkledb::aggregate_hashes::file_node_hash;
 use merklehash::{range_hash_from_chunks, MerkleHash};
-use more_asserts::*;
+use more_asserts::{debug_assert_le, debug_assert_lt};
 
 use crate::constants::{MAX_XORB_BYTES, MAX_XORB_CHUNKS};
 use crate::data_aggregator::DataAggregator;
 use crate::dedup_metrics::DeduplicationMetrics;
 use crate::defrag_prevention::DefragPrevention;
-use crate::interfaces::ChunkDeduplicator;
+use crate::interfaces::DataInterface;
 use crate::raw_xorb_data::RawXorbData;
 use crate::Chunk;
 
-pub struct FileDeduper<ErrorType> {
-    dedup_manager: Box<dyn ChunkDeduplicator<ErrorType>>,
+pub struct FileDeduper<DataInterfaceType: DataInterface> {
+    data_mng: DataInterfaceType,
 
     /// The new data here that hasn't yet been deduplicated.
     new_data: Vec<Chunk>,
@@ -53,12 +53,18 @@ pub struct FileDeduper<ErrorType> {
 
     /// The next chunk index that is eligible for global dedup queries
     next_chunk_index_elegible_for_global_dedup_query: usize,
+
+    /// A list of the new xorbs produced by this file, by hash
+    new_xorbs: Vec<MerkleHash>,
+
+    /// The deduplication metrics for this file.
+    deduplication_metrics: DeduplicationMetrics,
 }
 
-impl<ErrorType> FileDeduper<ErrorType> {
-    pub fn new(dedup_manager: Box<dyn ChunkDeduplicator<ErrorType>>) -> Self {
+impl<DataInterfaceType: DataInterface> FileDeduper<DataInterfaceType> {
+    pub fn new(data_manager: DataInterfaceType) -> Self {
         Self {
-            dedup_manager,
+            data_mng: data_manager,
             new_data: Vec::new(),
             new_data_size: 0,
             new_data_hash_lookup: HashMap::new(),
@@ -70,15 +76,17 @@ impl<ErrorType> FileDeduper<ErrorType> {
             target_xorb_max_num_chunks: MAX_XORB_CHUNKS,
             min_spacing_between_global_dedup_queries: 0,
             next_chunk_index_elegible_for_global_dedup_query: 0,
+            new_xorbs: Vec::new(),
+            deduplication_metrics: DeduplicationMetrics::default(),
         }
     }
 
-    pub fn process_chunks(&mut self, chunks: &[Chunk]) -> Result<(DeduplicationMetrics, Vec<RawXorbData>), ErrorType> {
+    pub async fn process_chunks(
+        &mut self,
+        chunks: &[Chunk],
+    ) -> Result<DeduplicationMetrics, DataInterfaceType::ErrorType> {
         // track the different deduplication statistics.
         let mut dedup_metrics = DeduplicationMetrics::default();
-
-        // In case we need to cut new xorbs
-        let mut ret_xorbs = Vec::new();
 
         // All the previous chunk are stored here, use it as the global chunk index start.
         let global_chunk_index_start = self.chunk_hashes.len();
@@ -106,7 +114,7 @@ impl<ErrorType> FileDeduper<ErrorType> {
                 if let Some((n_deduped, _)) = &deduped_blocks[local_chunk_index] {
                     local_chunk_index += n_deduped;
                 } else if let Some((n_deduped, fse)) =
-                    self.dedup_manager.chunk_hash_dedup_query(&chunk_hashes[local_chunk_index..])?
+                    self.data_mng.chunk_hash_dedup_query(&chunk_hashes[local_chunk_index..]).await?
                 {
                     if !first_pass {
                         // This means new shards were discovered; so these are global dedup elegible.  We'll record
@@ -136,7 +144,7 @@ impl<ErrorType> FileDeduper<ErrorType> {
                         // Limit by enforcing at least 4MB between chunk queries.
                         && global_chunk_index >= self.next_chunk_index_elegible_for_global_dedup_query
                     {
-                        self.dedup_manager.register_global_dedup_query(chunk_hashes[local_chunk_index]);
+                        self.data_mng.register_global_dedup_query(chunk_hashes[local_chunk_index]);
                         self.next_chunk_index_elegible_for_global_dedup_query =
                             global_chunk_index + self.min_spacing_between_global_dedup_queries;
                     }
@@ -146,7 +154,7 @@ impl<ErrorType> FileDeduper<ErrorType> {
             }
 
             // Now, see if any of the chunk queries have completed.
-            let new_shards_added = self.dedup_manager.complete_global_dedup_queries()?;
+            let new_shards_added = self.data_mng.complete_global_dedup_queries().await?;
 
             if !new_shards_added {
                 break;
@@ -194,7 +202,9 @@ impl<ErrorType> FileDeduper<ErrorType> {
             if self.new_data_size + n_bytes > self.target_xorb_max_data_size
                 || self.new_data.len() + 1 > self.target_xorb_max_num_chunks
             {
-                ret_xorbs.push(self.cut_new_xorb());
+                let new_xorb = self.cut_new_xorb();
+                self.new_xorbs.push(new_xorb.hash());
+                self.data_mng.register_new_xorb(new_xorb).await?;
             }
 
             dedup_metrics.total_chunks += 1;
@@ -242,7 +252,9 @@ impl<ErrorType> FileDeduper<ErrorType> {
             cur_idx += 1;
         }
 
-        Ok((dedup_metrics, ret_xorbs))
+        self.deduplication_metrics.merge_in(&dedup_metrics);
+
+        Ok(dedup_metrics)
     }
 
     fn file_data_sequence_continues_current(&self, fse: &FileDataSequenceEntry) -> bool {
@@ -330,8 +342,14 @@ impl<ErrorType> FileDeduper<ErrorType> {
         }
     }
 
-    /// Convert the internal state to a DataAggregator object that can be  
-    pub fn finalize(self, file_hash_salt: Option<MerkleHash>, metadata_ext: Option<FileMetadataExt>) -> DataAggregator {
+    /// Finalize the internal state, converting remaining data to a DataAggregator object that contains the file info
+    /// and remaining data.  Also returns the aggregated deduplication metrics and the list of xorb hashes that were
+    /// registered as part of this run.
+    pub fn finalize(
+        self,
+        file_hash_salt: Option<MerkleHash>,
+        metadata_ext: Option<FileMetadataExt>,
+    ) -> (DataAggregator, DeduplicationMetrics, Vec<MerkleHash>) {
         let file_hash = file_node_hash(&self.chunk_hashes, &file_hash_salt.unwrap_or_default().into()).unwrap();
 
         let metadata = FileDataSequenceHeader::new(file_hash, self.file_info.len(), true, metadata_ext.is_some());
@@ -362,6 +380,8 @@ impl<ErrorType> FileDeduper<ErrorType> {
             metadata_ext,
         };
 
-        DataAggregator::new(self.new_data, fi, self.internally_referencing_entries)
+        let remaining_data = DataAggregator::new(self.new_data, fi, self.internally_referencing_entries);
+
+        (remaining_data, self.deduplication_metrics, self.new_xorbs)
     }
 }

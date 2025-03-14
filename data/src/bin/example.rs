@@ -102,7 +102,7 @@ async fn clean(mut reader: impl Read, mut writer: impl Write) -> Result<()> {
 
     let (pointer_file, _) = handle.finish().await?;
 
-    translator.finalize_cleaning().await?;
+    translator.finalize().await?;
 
     writer.write_all(pointer_file.as_bytes())?;
 

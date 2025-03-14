@@ -12,6 +12,13 @@ const NRANGES_IN_STREAMING_FRAGMENTATION_ESTIMATOR: usize = 128;
 const MIN_N_CHUNKS_PER_RANGE_HYSTERESIS_FACTOR: f32 = 0.5;
 const DEFAULT_MIN_N_CHUNKS_PER_RANGE: f32 = 8.0;
 
+lazy_static::lazy_static! {
+    static ref MIN_N_CHUNKS_PER_RANGE: f32 = std::env::var("XET_MIN_N_CHUNKS_PER_RANGE")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(DEFAULT_MIN_N_CHUNKS_PER_RANGE);
+}
+
 pub(crate) struct DefragPrevention {
     /// This tracks the number of chunks in each of the last N ranges
     rolling_last_nranges: VecDeque<usize>,
@@ -93,7 +100,7 @@ impl Default for DefragPrevention {
             rolling_last_nranges: VecDeque::with_capacity(NRANGES_IN_STREAMING_FRAGMENTATION_ESTIMATOR),
             rolling_nranges_chunks: 0,
             defrag_at_low_threshold: true,
-            min_chunks_per_range: DEFAULT_MIN_N_CHUNKS_PER_RANGE,
+            min_chunks_per_range: *MIN_N_CHUNKS_PER_RANGE,
             min_chunks_per_range_historesis_factor: MIN_N_CHUNKS_PER_RANGE_HYSTERESIS_FACTOR,
         }
     }

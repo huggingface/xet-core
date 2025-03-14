@@ -1,8 +1,8 @@
 #![allow(dead_code)]
 pub mod configurations;
 mod constants;
-mod data_aggregator;
 pub mod data_client;
+mod data_interface;
 pub mod errors;
 mod file_cleaner;
 mod file_downloader;
@@ -14,6 +14,7 @@ mod pointer_file;
 mod remote_client_interface;
 mod remote_shard_interface;
 mod repo_salt;
+mod sha256;
 mod shard_interface;
 
 pub use cas_client::CacheConfig;

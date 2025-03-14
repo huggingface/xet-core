@@ -142,7 +142,7 @@ pub async fn upload_async(
     })?;
 
     // Push the CAS blocks and flush the mdb to disk
-    processor.finalize_cleaning().await?;
+    processor.finalize().await?;
 
     Ok(pointers.into_iter().map(|(pt, _)| pt).collect())
 }

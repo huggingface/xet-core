@@ -1,14 +1,22 @@
 use std::mem::take;
 use std::ops::DerefMut;
 use std::path::Path;
+use std::sync::atomic::AtomicUsize;
 use std::sync::Arc;
+use std::thread::current;
 
 use cas_client::Client;
+use deduplication::constants::MAX_XORB_BYTES;
+use deduplication::DeduplicationMetrics;
 use jsonwebtoken::{decode, DecodingKey, Validation};
 use lazy_static::lazy_static;
+use mdb_shard::constants::MDB_SHARD_MIN_TARGET_SIZE;
 use mdb_shard::file_structs::MDBFileInfo;
+use mdb_shard::session_directory::consolidate_shards_in_directory;
 use mdb_shard::ShardFileManager;
+use prometheus::core::Atomic;
 use tokio::sync::{Mutex, Semaphore};
+use tokio::task::JoinSet;
 use utils::progress::ProgressUpdater;
 use xet_threadpool::ThreadPool;
 
@@ -20,10 +28,36 @@ use crate::file_cleaner::SingleFileCleaner;
 use crate::parallel_xorb_uploader::{ParallelXorbUploader, XorbUpload};
 use crate::remote_client_interface::create_remote_client;
 use crate::remote_shard_interface::RemoteShardInterface;
+use crate::repo_salt::RepoSalt;
 use crate::shard_interface::create_shard_manager;
 
 lazy_static! {
     pub static ref XORB_UPLOAD_RATE_LIMITER: Arc<Semaphore> = Arc::new(Semaphore::new(*MAX_CONCURRENT_XORB_UPLOADS));
+}
+
+// A struct that simply holds all the common information shared between cleaning sessions and other data upload tasks.
+pub struct FileUploadSessionState {
+    pub shard_manager: Arc<ShardFileManager>,
+
+    pub remote_shards: Arc<RemoteShardInterface>,
+    pub client: Arc<dyn Client + Send + Sync>,
+    pub xorb_uploader: ParallelXorbUploader,
+    pub upload_progress_updater: Option<Arc<dyn ProgressUpdater>>,
+
+    /// Threadpool to use for the execution.
+    pub threadpool: Arc<ThreadPool>,
+
+    /// The repo id, if present.
+    pub repo_id: Option<String>,
+
+    // The repo salt, if specified.  Defaults to RepoSalt::default()
+    pub repo_salt: RepoSalt,
+
+    /// If true, don't actually upload anything; just collect statistics.
+    pub dry_run: bool,
+
+    /// The configuration settings, if needed.
+    pub config: TranslatorConfig,
 }
 
 /// Manages the translation of files between the
@@ -33,25 +67,14 @@ lazy_static! {
 /// that succeeds or fails as a unit;  i.e. all files get uploaded on finalization, and all shards
 /// and xorbs needed to reconstruct those files are properly uploaded and registered.
 pub struct FileUploadSession {
-    /* ----- Configurations ----- */
-    config: TranslatorConfig,
-    dry_run: bool,
+    /// The information needed by other processes in uploading data.
+    state: Arc<FileUploadSessionState>,
 
-    /* ----- Utils ----- */
-    shard_manager: Arc<ShardFileManager>,
-    remote_shards: Arc<RemoteShardInterface>,
-    cas: Arc<dyn Client + Send + Sync>,
-    xorb_uploader: Arc<dyn XorbUpload + Send + Sync>,
-    upload_progress_updater: Option<Arc<dyn ProgressUpdater>>,
+    /// Deduplicated data shared across files.
+    current_session_data: Mutex<DataAggregator>,
 
-    /* ----- Deduped data shared across files ----- */
-    global_cas_data: Arc<Mutex<CASDataAggregator>>,
-
-    /* ----- Threadpool to use for concurrent execution ----- */
-    threadpool: Arc<ThreadPool>,
-
-    /* ----- Telemetry ----- */
-    repo_id: Option<String>,
+    /// Metrics for deduplication
+    deduplication_metrics: Mutex<DeduplicationMetrics>,
 }
 
 // Constructors
@@ -60,7 +83,7 @@ impl FileUploadSession {
         config: TranslatorConfig,
         threadpool: Arc<ThreadPool>,
         upload_progress_updater: Option<Arc<dyn ProgressUpdater>>,
-    ) -> Result<FileUploadSession> {
+    ) -> Result<Arc<FileUploadSession>> {
         FileUploadSession::new_impl(config, threadpool, upload_progress_updater, false).await
     }
 
@@ -68,7 +91,7 @@ impl FileUploadSession {
         config: TranslatorConfig,
         threadpool: Arc<ThreadPool>,
         upload_progress_updater: Option<Arc<dyn ProgressUpdater>>,
-    ) -> Result<FileUploadSession> {
+    ) -> Result<Arc<FileUploadSession>> {
         FileUploadSession::new_impl(config, threadpool, upload_progress_updater, true).await
     }
 
@@ -77,10 +100,10 @@ impl FileUploadSession {
         threadpool: Arc<ThreadPool>,
         upload_progress_updater: Option<Arc<dyn ProgressUpdater>>,
         dry_run: bool,
-    ) -> Result<FileUploadSession> {
+    ) -> Result<Arc<FileUploadSession>> {
         let shard_manager = create_shard_manager(&config.shard_storage_config, false).await?;
 
-        let cas_client = create_remote_client(&config, threadpool.clone(), dry_run)?;
+        let client = create_remote_client(&config, threadpool.clone(), dry_run)?;
 
         let remote_shards = RemoteShardInterface::new(
             config.file_query_policy,
@@ -102,6 +125,7 @@ impl FileUploadSession {
             upload_progress_updater.clone(),
         )
         .await;
+
         let repo_id = config.cas_storage_config.auth.clone().and_then(|auth| {
             let token = auth.token;
             let mut validation = Validation::default();
@@ -119,18 +143,24 @@ impl FileUploadSession {
             })
         });
 
-        Ok(Self {
-            config,
-            dry_run,
+        let state = Arc::new(FileUploadSessionState {
             shard_manager,
             remote_shards,
-            cas: cas_client,
+            client,
             xorb_uploader,
-            global_cas_data: Default::default(),
-            threadpool,
             upload_progress_updater,
+            threadpool,
             repo_id,
-        })
+            repo_salt: RepoSalt::default(),
+            dry_run,
+            config,
+        });
+
+        Ok(Arc::new(Self {
+            state,
+            current_session_data: Arc::new(Mutex::new(DataAggregator::default())),
+            deduplication_metrics: DeduplicationMetrics::default(),
+        }))
     }
 }
 
@@ -143,53 +173,101 @@ impl FileUploadSession {
     /// The caller is responsible for memory usage management, the parameter "buffer_size"
     /// indicates the maximum number of Vec<u8> in the internal buffer.
     pub fn start_clean(&self, file_name: Option<&Path>) -> SingleFileCleaner {
-        SingleFileCleaner::new(
-            matches!(self.config.dedup_config.global_dedup_policy, GlobalDedupPolicy::Always),
-            self.config.cas_storage_config.prefix.clone(),
-            self.config.dedup_config.repo_salt,
-            self.shard_manager.clone(),
-            self.remote_shards.clone(),
-            self.xorb_uploader.clone(),
-            self.global_cas_data.clone(),
-            file_name,
-            self.threadpool.clone(),
-            self.upload_progress_updater.clone(),
-            self.repo_id.clone(),
-        )
+        SingleFileCleaner::new(file_name, state.clone())
     }
 
-    pub async fn finalize_cleaning(&self) -> Result<u64> {
-        // flush accumulated CAS data.
-        let mut cas_data_accumulator = self.global_cas_data.lock().await;
-        let new_cas_data = take(cas_data_accumulator.deref_mut());
-        drop(cas_data_accumulator); // Release the lock.
+    pub async fn register_file_clean_completion(
+        &self,
+        file_name: Option<String>,
+        mut file_data: DataAggregator,
+        dedup_metrics: DeduplicationMetrics,
+    ) {
+        let mut data_to_upload = None;
 
-        // Upload if there is new data or info
-        if !new_cas_data.is_empty() {
-            self.xorb_uploader.register_new_cas_block(new_cas_data).await?;
+        // Merge in the remaining file data; uploading a new xorb if need be.
+        {
+            let mut current_session_data = self.current_session_data.lock().await;
+
+            // Do we need to cut one of these to a xorb?
+            if current_session_data.num_bytes() + file_data.num_bytes() > MAX_XORB_BYTES {
+                // Cut the larger one as a xorb, uploading it and registering the files.
+                if current_session_data.num_bytes() > file_data.num_bytes() {
+                    std::mem::swap(&mut current_session_data, &mut file_data);
+                }
+
+                // Now file data is larger
+                debug_assert_le!(current_session_data.num_bytes(), file_data.num_bytes());
+
+                // Actually upload this outside the lock
+                data_to_upload = Some(file_data);
+            } else {
+                current_session_data.merge_in(file_data);
+            }
         }
 
-        let total_bytes_trans = self.xorb_uploader.flush().await?;
-
-        // flush accumulated memory shard.
-        self.shard_manager.flush().await?;
-
-        if !self.dry_run {
-            self.upload_shards().await?;
+        if let Some(data_agg) = data_to_upload {
+            self.process_aggregated_data(data_agg).await?;
         }
+
+        // Now, aggregate the new dedup metrics.
+        self.deduplication_metrics.lock().await.merge_in(&dedup_metrics);
+    }
+
+    /// Process the aggregated data, uploading the data as a xorb and registering the files
+    async fn process_aggregated_data(&self, data_agg: DataAggregator) -> Result<()> {
+        let (xorb, new_files) = data_agg.finalize();
+
+        self.state.xorb_uploader.register_new_xorb_for_upload(xorb).await?;
+
+        for fi in new_files {
+            self.state.shard_manager.add_file_reconstruction_info(fi).await?;
+        }
+    }
+
+    /// Finalize the session, returning the aggregated metrics
+    pub async fn finalize(mut self) -> Result<DeduplicationMetrics> {
+        // Register the remaining xorbs for upload.
+        let data_agg = self.current_session_data.into_inner();
+        self.process_aggregated_data(data_agg).await?;
+
+        // Now, make sure all the remaining xorbs are uploaded.
+        let total_bytes_trans = self.state.xorb_uploader.finalize().await?;
+
+        // Flush the accumulated shard information to disk.
+        self.state.shard_manager.flush().await?;
 
         Ok(total_bytes_trans)
     }
 
-    async fn upload_shards(&self) -> Result<()> {
-        // First, get all the shards prepared and load them.
-        let merged_shards_jh = self.remote_shards.merge_shards()?;
+    pub async fn upload_and_register_session_shards(&self) -> Result<()> {
+        // Scan, merge, and fill out any shards in the session directory
+        let shard_list =
+            consolidate_shards_in_directory(&self.state.shard_manager.shard_directory(), MDB_SHARD_MIN_TARGET_SIZE)?;
 
-        // Get a list of all the merged shards in order to upload them.
-        let merged_shards = merged_shards_jh.await??;
+        // Upload all the shards.
+        let mut shard_uploads = JoinSet::<()>::new();
 
-        // Now, these need to be sent to the remote.
-        self.remote_shards.upload_and_register_shards(merged_shards).await?;
+        for sl in shard_list {
+            let salt = self.state.config.dedup_config.repo_salt.unwrap_or_default();
+            let shard_client = self.state.client.clone();
+            let shard_prefix = self.state.config.shard_storage_config.prefix.clone();
+
+            shard_uploads.spawn(async move {
+                debug!("Uploading shard {shard_prefix}/{:?} from staging area to CAS.", &si.shard_hash);
+                let data = std::fs::read(&si.path)?;
+
+                // Upload the shard.
+                shard_client
+                    .upload_shard(&shard_prefix, &si.shard_hash, false, &data, &salt)
+                    .await?;
+
+                info!("Shard {shard_prefix}/{:?} upload + sync completed successfully.", &si.shard_hash);
+
+                // Now that that succeeded, move that shard to the cache directory.
+
+                Ok(())
+            });
+        }
 
         // Finally, we can move all the mdb shards from the session directory, which is used
         // by the upload_shard task, to the cache.
@@ -252,7 +330,7 @@ mod tests {
         cleaner.add_data(&read_data[..]).await.unwrap();
 
         let (pointer_file_contents, _) = cleaner.finish().await.unwrap();
-        upload_session.finalize_cleaning().await.unwrap();
+        upload_session.finalize().await.unwrap();
 
         pf_out.write_all(pointer_file_contents.as_bytes()).unwrap();
     }
