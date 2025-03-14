@@ -19,7 +19,6 @@ error_printer = { path = "../error_printer" }
 merkledb = { path = "../merkledb" }
 merklehash = { path = "../merklehash" }
 utils = { path = "../utils" }
-parutils = { path = "../parutils" }
 anyhow = "1.0.88"
 tracing = "0.1.40"
 lz4_flex = "0.11.3"
