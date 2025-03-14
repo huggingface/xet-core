@@ -7,7 +7,10 @@ use crate::merkledbbase::MerkleDBBase;
 use crate::{MerkleMemDB, MerkleNode};
 
 // Given a list of hashes and sizes, compute the aggregate hash for a cas node.
-pub fn cas_node_hash(chunks: &[(MerkleHash, usize)]) -> MerkleHash {
+pub fn cas_node_hash<T>(chunks: &[T]) -> MerkleHash
+where
+    for<'a> &'a T: Into<(MerkleHash, usize)>,
+{
     // Create an ephemeral MDB.
     if chunks.is_empty() {
         return MerkleHash::default();
@@ -17,7 +20,10 @@ pub fn cas_node_hash(chunks: &[(MerkleHash, usize)]) -> MerkleHash {
 
     let nodes: Vec<MerkleNode> = chunks
         .iter()
-        .map(|(h, len)| mdb.maybe_add_node(h, *len, Vec::default()).0)
+        .map(|t| {
+            let t: (MerkleHash, usize) = t.into();
+            mdb.maybe_add_node(&t.0, t.1, Vec::default()).0
+        })
         .collect();
 
     let m = mdb.merge_to_cas(&nodes[..]);

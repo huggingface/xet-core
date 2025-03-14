@@ -1,6 +1,4 @@
 #![allow(dead_code)]
-
-mod chunking;
 pub mod configurations;
 mod constants;
 mod data_aggregator;
