@@ -1,13 +1,20 @@
 use std::sync::Arc;
+use std::time::Duration;
 
+use cas_client::Client;
+use mdb_shard::constants::MDB_SHARD_MIN_TARGET_SIZE;
+use mdb_shard::file_structs::FileDataSequenceEntry;
 use mdb_shard::session_directory::consolidate_shards_in_directory;
 use mdb_shard::ShardFileManager;
+use merklehash::MerkleHash;
 use tempfile::TempDir;
+use tokio::task::JoinSet;
+use tracing::{debug, info};
 
-use super::configurations::StorageConfig;
 use super::errors::Result;
 use crate::configurations::TranslatorConfig;
 use crate::constants::MDB_SHARD_LOCAL_CACHE_EXPIRATION_SECS;
+use crate::repo_salt::RepoSalt;
 
 pub struct SessionShardInterface {
     session_shard_manager: Arc<ShardFileManager>,
@@ -27,7 +34,7 @@ impl SessionShardInterface {
 
         // Create the shard session manager.
         let session_dir = shard_session_tempdir.path();
-        let session_shard_manager = ShardFileManager::new_in_session_directory(shard_session_dir).await?;
+        let session_shard_manager = ShardFileManager::new_in_session_directory(session_dir).await?;
 
         // Make the cache directory.
         let cache_dir = &config.shard_config.cache_directory;
@@ -44,10 +51,10 @@ impl SessionShardInterface {
     }
 
     /// Queries the client for global deduplication metrics
-    pub async fn query_dedup_shard_by_chunk(&self, chunk_hash: &MerkleHash, salt: &RepoSalt) -> Result<bool> {
+    pub async fn query_dedup_shard_by_chunk(&self, chunk_hash: &MerkleHash, repo_salt: &RepoSalt) -> Result<bool> {
         let Ok(query_result) = self
             .client
-            .query_dedup_shard_by_chunk(&chunk_hash, &repo_salt)
+            .query_dedup_shard_by_chunk(&chunk_hash, repo_salt)
             .await
             .map_err(|e| {
                 debug!("Error encountered attempting to query global dedup table: {e:?}; ignoring.");
@@ -58,16 +65,12 @@ impl SessionShardInterface {
         };
 
         let Some(new_shard_file) = query_result else {
-            debug!("Queried shard for global dedup with hash {query_chunk:?}; nothing found.");
             return Ok(false);
         };
 
         // The above process found something and downloaded it; it should now be in the cache directory and valid
         // for deduplication.  Register it and restart the dedup process at the start of this chunk.
-        debug!("global dedup: {file_name:?} deduplicated by shard {new_shard_file:?}; registering.");
         self.cache_shard_manager.register_shards_by_path(&[new_shard_file]).await?;
-
-        debug!("global dedup: New shard {new_shard_file:?} can be used for deduplication of {file_name:?}; reprocessing file.");
 
         Ok(true)
     }
@@ -84,7 +87,7 @@ impl SessionShardInterface {
         }
 
         // Now query in the cache shard manager.
-        self.cache_shard_manager.chunk_hash_dedup_query(query_hashes).await
+        Ok(self.cache_shard_manager.chunk_hash_dedup_query(query_hashes).await?)
     }
 
     // Consumes everything
@@ -97,7 +100,7 @@ impl SessionShardInterface {
             consolidate_shards_in_directory(&self.session_shard_manager.shard_directory(), MDB_SHARD_MIN_TARGET_SIZE)?;
 
         // Upload all the shards and move each to the common directory.
-        let mut shard_uploads = JoinSet::<()>::new();
+        let mut shard_uploads = JoinSet::<Result<()>>::new();
 
         for si in shard_list {
             let salt = self.config.shard_config.repo_salt;
@@ -119,17 +122,21 @@ impl SessionShardInterface {
                 // Now that the upload succeeded, move that shard to the cache directory, adding in an expiration time.
                 let new_shard_path = si.export_with_expiration(
                     cache_shard_manager.shard_directory(),
-                    MDB_SHARD_LOCAL_CACHE_EXPIRATION_SECS,
+                    Duration::from_secs(MDB_SHARD_LOCAL_CACHE_EXPIRATION_SECS),
                 )?;
 
                 // Register that new shard in the cache shard manager
-                cache_shard_manager.register_shards_by_path(&[new_shard_path]).await?;
+                cache_shard_manager.register_shards(&[new_shard_path]).await?;
 
                 Ok(())
             });
         }
 
         // Now, let them all complete in parallel
-        let _ = shard_uploads.join_all().await?;
+        while let Some(jh) = shard_uploads.join_next().await {
+            jh??;
+        }
+
+        Ok(())
     }
 }

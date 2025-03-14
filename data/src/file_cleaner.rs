@@ -1,41 +1,13 @@
-use std::collections::{HashMap, VecDeque};
-use std::mem::take;
-use std::ops::DerefMut;
-use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex as StdMutex};
-use std::time::SystemTime;
+use std::path::PathBuf;
+use std::sync::Arc;
 
-use cas_object::range_hash_from_chunks;
-use chrono::{DateTime, Utc};
-use chunking::Chunk;
-use deduplication::{DataInterface, DeduplicationMetrics, FileDeduper};
-use lazy_static::lazy_static;
-use mdb_shard::file_structs::{
-    FileDataSequenceEntry, FileDataSequenceHeader, FileMetadataExt, FileVerificationEntry, MDBFileInfo,
-};
-use mdb_shard::{hash_is_global_dedup_eligible, ShardFileManager};
-use merkledb::aggregate_hashes::file_node_hash;
-use merkledb::constants::TARGET_CAS_BLOCK_SIZE;
+use deduplication::{Chunk, Chunker, DeduplicationMetrics, FileDeduper};
+use mdb_shard::file_structs::FileMetadataExt;
 use merklehash::MerkleHash;
-use tokio::sync::Mutex;
-use tokio::task::JoinSet;
-use tracing::{debug, info};
-use utils::progress::ProgressUpdater;
-use xet_threadpool::ThreadPool;
 
-use crate::constants::{
-    DEFAULT_MIN_N_CHUNKS_PER_RANGE, MIN_N_CHUNKS_PER_RANGE_HYSTERESIS_FACTOR, MIN_SPACING_BETWEEN_GLOBAL_DEDUP_QUERIES,
-    NRANGES_IN_STREAMING_FRAGMENTATION_ESTIMATOR,
-};
-use crate::data_interface::{self, UploadSessionDataManager};
-use crate::errors::DataProcessingError::*;
+use crate::data_interface::UploadSessionDataManager;
 use crate::errors::Result;
 use crate::file_upload_session::FileUploadSession;
-use crate::metrics::FILTER_BYTES_CLEANED;
-use crate::parallel_xorb_uploader::XorbUpload;
-use crate::remote_shard_interface::RemoteShardInterface;
-use crate::repo_salt::RepoSalt;
 use crate::sha256::ShaGenerator;
 use crate::PointerFile;
 
@@ -48,7 +20,7 @@ pub struct SingleFileCleaner {
     session: Arc<FileUploadSession>,
 
     // The chunker
-    chunker: chunking::Chunker,
+    chunker: Chunker,
 
     // The deduplication interface.
     dedup_manager: FileDeduper<UploadSessionDataManager>,
@@ -61,7 +33,7 @@ pub struct SingleFileCleaner {
 }
 
 impl SingleFileCleaner {
-    pub(crate) fn new(file_name: Option<&Path>, session: Arc<FileUploadSession>) -> Self {
+    pub(crate) fn new(file_name: Option<PathBuf>, session: Arc<FileUploadSession>) -> Self {
         Self {
             file_name,
             dedup_manager: FileDeduper::new(UploadSessionDataManager::new(session.clone())),
@@ -74,18 +46,18 @@ impl SingleFileCleaner {
 
     pub async fn add_data(&mut self, data: Vec<u8>) -> Result<()> {
         // Chunk the data.
-        let chunks = self.chunker.next_block(&data[..], false);
+        let chunks: Arc<[Chunk]> = Arc::from(self.chunker.next_block(&data[..], false));
 
         // Done with the original data; drop it to free memory pressure.
         drop(data);
 
         // It's possible this didn't actually add any data in.
-        if chunks.empty() {
+        if chunks.is_empty() {
             return Ok(());
         }
 
         // Update the sha256 generator
-        self.sha_generator.update(chunks.clone())?;
+        self.sha_generator.update(chunks.clone());
 
         // Run the deduplication interface here.
         let metrics = self.dedup_manager.process_chunks(&chunks).await?;
@@ -109,13 +81,10 @@ impl SingleFileCleaner {
         // Now finish the deduplication process.
         let repo_salt = self.session.config.shard_config.repo_salt;
         let (remaining_file_data, deduplication_metrics, new_xorbs) =
-            self.dedup_manager.finalize(repo_salt, Some(metadata_ext)).await?;
+            self.dedup_manager.finalize(repo_salt, Some(metadata_ext));
 
-        let pointer_file = PointerFile::init_from_info(
-            self.file_name.unwrap_or_default(),
-            &sha256.hex(),
-            deduplication_metrics.total_bytes as u64,
-        );
+        let pointer_file =
+            PointerFile::init_from_info(&self.file_name, &sha256.hex(), deduplication_metrics.total_bytes as u64);
 
         // Let's check some things that should be invarients
         #[cfg(debug_assertions)]
@@ -135,7 +104,7 @@ impl SingleFileCleaner {
                 deduplication_metrics,
                 new_xorbs,
             )
-            .await?;
+            .await;
 
         // NB: xorb upload is happening in the background, this number is optimistic since it does
         // not count transfer time of the uploaded xorbs, which is why `end_processing_ts`

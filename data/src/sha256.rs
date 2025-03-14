@@ -1,11 +1,13 @@
-use std::thread::JoinHandle;
+use std::sync::Arc;
 
 use deduplication::Chunk;
-use sha2::Sha256;
+use merklehash::MerkleHash;
+use sha2::{Digest, Sha256};
+use tokio::task::JoinHandle;
 
 /// Helper struct to generate a sha256 hash as a MerkleHash.
 #[derive(Debug)]
-struct ShaGenerator {
+pub struct ShaGenerator {
     hasher: Option<JoinHandle<Sha256>>,
 }
 
@@ -21,13 +23,15 @@ impl ShaGenerator {
         // The previous task returns the hasher; we consume that and pass it on.
         self.hasher = Some(tokio::spawn(async move {
             let mut hasher = match current_state {
-                Some(jh) => jh.await,
-                None => Sha256::new(),
+                Some(jh) => jh.await.unwrap(),
+                None => Sha256::default(),
             };
 
             for chunk in new_chunks.iter() {
                 hasher.update(&chunk.data);
             }
+
+            hasher
         }));
     }
 
@@ -38,7 +42,7 @@ impl ShaGenerator {
             data: Arc::from(Vec::from(new_bytes)),
         };
 
-        self.update(Arc::new([data]));
+        self.update(Arc::new([new_chunk]));
     }
 
     /// Generates a sha256 from the current state of the variant.
@@ -46,8 +50,8 @@ impl ShaGenerator {
         let current_state = self.hasher.take();
 
         let hasher = match current_state {
-            Some(jh) => jh.await,
-            None => Sha256::new(),
+            Some(jh) => jh.await.unwrap(),
+            None => return MerkleHash::default(),
         };
 
         let digest = hasher.finalize();
@@ -57,7 +61,7 @@ impl ShaGenerator {
 
 #[cfg(test)]
 mod sha_tests {
-    use openssl::sha::sha256;
+    use rand::{thread_rng, Rng};
 
     use super::*;
 
@@ -69,8 +73,8 @@ mod sha_tests {
     #[tokio::test]
     async fn test_sha_generation_builder() {
         let mut sha_generator = ShaGenerator::new();
-        sha_generator.update_with_bytes(TEST_DATA.as_bytes()).await;
-        let hash = sha_generator.generate().await;
+        sha_generator.update_with_bytes(TEST_DATA.as_bytes());
+        let hash = sha_generator.finalize().await;
 
         assert_eq!(TEST_SHA.to_string(), hash.hex());
     }
@@ -79,8 +83,8 @@ mod sha_tests {
     async fn test_sha_generation_build_multiple_chunks() {
         let mut sha_generator = ShaGenerator::new();
         let td = TEST_DATA.as_bytes();
-        sha_generator.update_with_bytes(&td[0..4]).unwrap();
-        sha_generator.update_with_bytes(&td[4..td.len()]).unwrap();
+        sha_generator.update_with_bytes(&td[0..4]);
+        sha_generator.update_with_bytes(&td[4..td.len()]);
         let hash = sha_generator.finalize().await;
 
         assert_eq!(TEST_SHA.to_string(), hash.hex());
@@ -91,14 +95,15 @@ mod sha_tests {
         // Test multiple versions.
 
         // Generate 4096 bytes of random data
-        let rand_data = rand::random::<[u8; 4096]>();
+        let mut rand_data = [0u8; 4096];
+        thread_rng().fill(&mut rand_data[..]);
 
         let mut sha_generator = ShaGenerator::new();
 
         // Add in random chunks.
         let mut pos = 0;
         while pos < rand_data.len() {
-            let l = rand::random::gen_range(0..32);
+            let l = thread_rng().gen_range(0..32);
             let next_pos = (pos + l).min(rand_data.len());
             sha_generator.update_with_bytes(&rand_data[pos..next_pos]);
             pos = next_pos;
@@ -106,7 +111,7 @@ mod sha_tests {
 
         let out_hash = sha_generator.finalize().await;
 
-        let ref_hash = sha256::digest(&rand_data);
+        let ref_hash = Sha256::digest(&rand_data);
 
         assert_eq!(out_hash.as_bytes(), ref_hash.as_slice());
     }

@@ -4,7 +4,6 @@ use std::io::{BufReader, Read, Write};
 use std::num::NonZero;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::{env, fs};
 
 use cas_client::remote_client::PREFIX_DEFAULT;
 use cas_client::CacheConfig;
@@ -12,13 +11,13 @@ use cas_object::CompressionScheme;
 use dirs::home_dir;
 use lazy_static::lazy_static;
 use parutils::{tokio_par_for_each, ParallelError};
-use tempfile::{tempdir_in, TempDir};
 use utils::auth::{AuthConfig, TokenRefresher};
 use utils::progress::ProgressUpdater;
 use xet_threadpool::ThreadPool;
 
 use crate::configurations::*;
 use crate::errors::DataProcessingError;
+use crate::repo_salt::RepoSalt;
 use crate::{errors, FileDownloader, FileUploadSession, PointerFile};
 
 // Concurrency in number of files
@@ -37,7 +36,7 @@ pub fn default_config(
     xorb_compression: Option<CompressionScheme>,
     token_info: Option<(String, u64)>,
     token_refresher: Option<Arc<dyn TokenRefresher>>,
-) -> errors::Result<Arc<TranslatorConfig>> {
+) -> errors::Result<TranslatorConfig> {
     let home = home_dir().unwrap_or(current_dir()?);
 
     let cache_root_path = home.join(".cache").join("huggingface").join("xet");
@@ -65,7 +64,7 @@ pub fn default_config(
     let staging_root = cache_path.join("staging");
     std::fs::create_dir_all(&staging_root)?;
 
-    let translator_config = Arc::new(TranslatorConfig {
+    let translator_config = TranslatorConfig {
         data_config: DataConfig {
             endpoint: Endpoint::Server(endpoint.clone()),
             compression: xorb_compression,
@@ -82,12 +81,12 @@ pub fn default_config(
             cache_directory: cache_path.join("shard-cache"),
             session_directory: staging_root.join("shard-session"),
             global_dedup_policy: Default::default(),
-            repo_salt: None,
+            repo_salt: RepoSalt::default(),
         },
         repo_info: Some(RepoInfo {
             repo_paths: vec!["".into()],
         }),
-    });
+    };
 
     // Return the temp dir so that it's not dropped and thus the directory deleted.
     Ok(translator_config)
@@ -105,7 +104,7 @@ pub async fn upload_async(
     // produce Xorbs + Shards
     // upload shards and xorbs
     // for each file, return the filehash
-    let (config, _tempdir) =
+    let config =
         default_config(endpoint.unwrap_or(DEFAULT_CAS_ENDPOINT.to_string()), None, token_info, token_refresher)?;
 
     let upload_session = FileUploadSession::new(config, threadpool, progress_updater).await?;
@@ -122,9 +121,9 @@ pub async fn upload_async(
     })?;
 
     // Push the CAS blocks and flush the mdb to disk
-    upload_session.finalize_cleaning().await?;
+    let metrics = upload_session.finalize().await?;
 
-    Ok(pointers.into_iter().map(|(pt, _)| pt).collect())
+    Ok(pointers)
 }
 
 pub async fn download_async(
@@ -142,7 +141,7 @@ pub async fn download_async(
             ));
         }
     }
-    let (config, _tempdir) =
+    let config =
         default_config(endpoint.unwrap_or(DEFAULT_CAS_ENDPOINT.to_string()), None, token_info, token_refresher)?;
 
     let updaters = match progress_updaters {

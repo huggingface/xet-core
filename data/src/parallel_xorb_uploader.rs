@@ -1,15 +1,14 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
-use async_trait::async_trait;
 use cas_client::Client;
-use mdb_shard::ShardFileManager;
-use merklehash::MerkleHash;
+use deduplication::RawXorbData;
 use tokio::sync::{Mutex, Semaphore};
 use tokio::task::JoinSet;
 use utils::progress::ProgressUpdater;
 use xet_threadpool::ThreadPool;
 
+use crate::constants::MAX_CONCURRENT_XORB_UPLOADS;
 use crate::errors::DataProcessingError::*;
 use crate::errors::*;
 
@@ -52,8 +51,8 @@ impl ParallelXorbUploader {
         client: Arc<dyn Client + Send + Sync>,
         threadpool: Arc<ThreadPool>,
         upload_progress_updater: Option<Arc<dyn ProgressUpdater>>,
-    ) -> Arc<Self> {
-        Arc::new(ParallelXorbUploader {
+    ) -> Self {
+        ParallelXorbUploader {
             cas_prefix: cas_prefix.to_owned(),
             client,
             upload_tasks: Mutex::new(JoinSet::new()),
@@ -61,7 +60,7 @@ impl ParallelXorbUploader {
             threadpool,
             upload_progress_updater,
             total_bytes_trans: 0.into(),
-        })
+        }
     }
 
     async fn status_is_ok(&self) -> Result<()> {
@@ -87,16 +86,17 @@ impl ParallelXorbUploader {
             .await
             .map_err(|e| UploadTaskError(e.to_string()))?;
 
-        let client = self.cas.clone();
+        let client = self.client.clone();
         let cas_prefix = self.cas_prefix.clone();
         let upload_progress_updater = self.upload_progress_updater.clone();
 
         self.upload_tasks.lock().await.spawn_on(
             async move {
-                let (cas_info, data, file_info) = cas_data.finalize();
-                let cas_hash = cas_info.metadata.cas_hash;
+                let n_bytes_transmitted = client
+                    .put(&cas_prefix, &xorb.hash(), xorb.to_vec(), xorb.cas_info.chunks_and_boundaries())
+                    .await?;
 
-                shard_manager.add_cas_block(cas_info).await?;
+                drop(permit);
 
                 if let Some(updater) = upload_progress_updater {
                     updater.update(n_bytes_transmitted as u64);
@@ -105,6 +105,8 @@ impl ParallelXorbUploader {
             },
             &self.threadpool.handle(),
         );
+
+        Ok(())
     }
 
     /// Flush makes sure all xorbs added to queue before this call are sent successfully

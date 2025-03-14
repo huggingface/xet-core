@@ -930,6 +930,7 @@ dependencies = [
  "mdb_shard",
  "merkledb",
  "merklehash",
+ "more-asserts",
  "openssl",
  "parutils",
  "prometheus",

@@ -144,7 +144,10 @@ impl<DataInterfaceType: DataInterface> FileDeduper<DataInterfaceType> {
                         // Limit by enforcing at least 4MB between chunk queries.
                         && global_chunk_index >= self.next_chunk_index_elegible_for_global_dedup_query
                     {
-                        self.data_mng.register_global_dedup_query(chunk_hashes[local_chunk_index]);
+                        self.data_mng
+                            .register_global_dedup_query(chunk_hashes[local_chunk_index])
+                            .await?;
+
                         self.next_chunk_index_elegible_for_global_dedup_query =
                             global_chunk_index + self.min_spacing_between_global_dedup_queries;
                     }
@@ -347,10 +350,10 @@ impl<DataInterfaceType: DataInterface> FileDeduper<DataInterfaceType> {
     /// registered as part of this run.
     pub fn finalize(
         self,
-        file_hash_salt: Option<MerkleHash>,
+        file_hash_salt: MerkleHash,
         metadata_ext: Option<FileMetadataExt>,
     ) -> (DataAggregator, DeduplicationMetrics, Vec<MerkleHash>) {
-        let file_hash = file_node_hash(&self.chunk_hashes, &file_hash_salt.unwrap_or_default().into()).unwrap();
+        let file_hash = file_node_hash(&self.chunk_hashes, &file_hash_salt.into()).unwrap();
 
         let metadata = FileDataSequenceHeader::new(file_hash, self.file_info.len(), true, metadata_ext.is_some());
 

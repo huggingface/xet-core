@@ -37,7 +37,8 @@ impl RawXorbData {
 
         debug_assert_le!(num_bytes, MAX_XORB_BYTES);
 
-        let cas_hash = cas_node_hash(chunks);
+        let hash_and_len: Vec<_> = chunks.iter().map(|c| (c.hash, c.data.len())).collect();
+        let cas_hash = cas_node_hash(&hash_and_len);
 
         // Build the MDBCASInfo struct.
         let metadata = CASChunkSequenceHeader::new(cas_hash, chunks.len(), num_bytes);

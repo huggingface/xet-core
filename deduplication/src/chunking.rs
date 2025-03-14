@@ -11,13 +11,6 @@ pub struct Chunk {
     pub data: Arc<[u8]>,
 }
 
-// For passing into the aggregate cas hash functions
-impl Into<(MerkleHash, usize)> for &Chunk {
-    fn into(self) -> (MerkleHash, usize) {
-        (self.hash, self.data.len())
-    }
-}
-
 /// Chunk Generator given an input stream. Do not use directly.
 /// Use `chunk_target_default`.
 pub struct Chunker {

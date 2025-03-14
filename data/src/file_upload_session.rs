@@ -1,36 +1,23 @@
-use std::mem::take;
-use std::ops::DerefMut;
-use std::path::Path;
-use std::sync::atomic::AtomicUsize;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::thread::current;
 
 use cas_client::Client;
 use deduplication::constants::MAX_XORB_BYTES;
-use deduplication::DeduplicationMetrics;
+use deduplication::{DataAggregator, DeduplicationMetrics};
 use jsonwebtoken::{decode, DecodingKey, Validation};
-use lazy_static::lazy_static;
-use mdb_shard::constants::MDB_SHARD_MIN_TARGET_SIZE;
 use mdb_shard::file_structs::MDBFileInfo;
-use mdb_shard::session_directory::consolidate_shards_in_directory;
-use mdb_shard::ShardFileManager;
-use prometheus::core::Atomic;
-use tokio::sync::{Mutex, Semaphore};
-use tokio::task::JoinSet;
+use merklehash::MerkleHash;
+use more_asserts::*;
+use tokio::sync::Mutex;
 use utils::progress::ProgressUpdater;
 use xet_threadpool::ThreadPool;
 
 use crate::configurations::*;
-use crate::constants::MAX_CONCURRENT_XORB_UPLOADS;
-use crate::data_aggregator::CASDataAggregator;
 use crate::errors::*;
 use crate::file_cleaner::SingleFileCleaner;
-use crate::parallel_xorb_uploader::{ParallelXorbUploader, XorbUpload};
+use crate::parallel_xorb_uploader::ParallelXorbUploader;
 use crate::remote_client_interface::create_remote_client;
-use crate::remote_shard_interface::RemoteShardInterface;
-use crate::repo_salt::RepoSalt;
-use crate::shard_interface;
-use crate::shard_interface::{create_shard_manager, SessionShardInterface};
+use crate::shard_interface::SessionShardInterface;
 
 /// Manages the translation of files between the
 /// MerkleDB / pointer file format and the materialized version.
@@ -41,7 +28,7 @@ use crate::shard_interface::{create_shard_manager, SessionShardInterface};
 pub struct FileUploadSession {
     // The parts of this that manage the
     pub(crate) client: Arc<dyn Client + Send + Sync>,
-    pub(crate) shard_interface: Arc<SessionShardInterface>,
+    pub(crate) shard_interface: SessionShardInterface,
     pub(crate) xorb_uploader: ParallelXorbUploader,
 
     pub(crate) upload_progress_updater: Option<Arc<dyn ProgressUpdater>>,
@@ -56,7 +43,7 @@ pub struct FileUploadSession {
     pub(crate) dry_run: bool,
 
     /// The configuration settings, if needed.
-    pub(crate) config: TranslatorConfig,
+    pub(crate) config: Arc<TranslatorConfig>,
 
     /// Deduplicated data shared across files.
     current_session_data: Mutex<DataAggregator>,
@@ -89,6 +76,7 @@ impl FileUploadSession {
         upload_progress_updater: Option<Arc<dyn ProgressUpdater>>,
         dry_run: bool,
     ) -> Result<Arc<FileUploadSession>> {
+        let config = Arc::new(config);
         let client = create_remote_client(&config, threadpool.clone(), dry_run)?;
 
         let xorb_uploader = ParallelXorbUploader::new(
@@ -126,8 +114,8 @@ impl FileUploadSession {
             repo_id,
             dry_run,
             config,
-            current_session_data: Arc::new(Mutex::new(DataAggregator::default())),
-            deduplication_metrics: DeduplicationMetrics::default(),
+            current_session_data: Mutex::new(DataAggregator::default()),
+            deduplication_metrics: Mutex::new(DeduplicationMetrics::default()),
         }))
     }
 }
@@ -140,7 +128,7 @@ impl FileUploadSession {
     ///
     /// The caller is responsible for memory usage management, the parameter "buffer_size"
     /// indicates the maximum number of Vec<u8> in the internal buffer.
-    pub fn start_clean(self: &Arc<self>, file_name: Option<&Path>) -> SingleFileCleaner {
+    pub fn start_clean(self: &Arc<Self>, file_name: Option<PathBuf>) -> SingleFileCleaner {
         SingleFileCleaner::new(file_name, self.clone())
     }
 
@@ -162,7 +150,7 @@ impl FileUploadSession {
             if current_session_data.num_bytes() + file_data.num_bytes() > MAX_XORB_BYTES {
                 // Cut the larger one as a xorb, uploading it and registering the files.
                 if current_session_data.num_bytes() > file_data.num_bytes() {
-                    std::mem::swap(&mut current_session_data, &mut file_data);
+                    std::mem::swap(&mut *current_session_data, &mut file_data);
                 }
 
                 // Now file data is larger
@@ -187,11 +175,13 @@ impl FileUploadSession {
     async fn process_aggregated_data(&self, data_agg: DataAggregator) -> Result<()> {
         let (xorb, new_files) = data_agg.finalize();
 
-        self.state.xorb_uploader.register_new_xorb_for_upload(xorb).await?;
+        self.xorb_uploader.register_new_xorb_for_upload(xorb).await?;
 
         for fi in new_files {
-            self.state.shard_manager.add_file_reconstruction_info(fi).await?;
+            self.shard_interface.add_file_reconstruction_info(fi).await?;
         }
+
+        Ok(())
     }
 
     /// Finalize the session, returning the aggregated metrics
@@ -211,10 +201,11 @@ impl FileUploadSession {
     }
 
     pub async fn summarize_file_info_of_session(&self) -> Result<Vec<MDBFileInfo>> {
-        self.shard_manager
-            .all_file_info_of_session()
-            .await
-            .map_err(DataProcessingError::from)
+        todo!();
+        /*        self.shard_manager
+        .all_file_info_of_session()
+        .await
+        .map_err(DataProcessingError::from) */
     }
 }
 

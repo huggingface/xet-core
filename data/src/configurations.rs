@@ -99,7 +99,7 @@ impl TranslatorConfig {
                 cache_directory: path.join("shard-cache"),
                 session_directory: path.join("shard-session"),
                 global_dedup_policy: Default::default(),
-                repo_salt: None,
+                repo_salt: RepoSalt::default(),
             },
             repo_info: Some(RepoInfo {
                 repo_paths: vec!["".into()],
