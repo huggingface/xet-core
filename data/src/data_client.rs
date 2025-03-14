@@ -6,6 +6,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::{env, fs};
 
+use cas_client::remote_client::PREFIX_DEFAULT;
 use cas_client::CacheConfig;
 use cas_object::CompressionScheme;
 use dirs::home_dir;
@@ -36,23 +37,10 @@ pub fn default_config(
     xorb_compression: Option<CompressionScheme>,
     token_info: Option<(String, u64)>,
     token_refresher: Option<Arc<dyn TokenRefresher>>,
-) -> errors::Result<(TranslatorConfig, TempDir)> {
-    // if HF_HOME is set use that instead of ~/.cache/huggingface
-    // if HF_XET_CACHE is set use that instead of ~/.cache/huggingface/xet
-    // HF_XET_CACHE takes precedence over HF_HOME
-    let cache_root_path = if env::var("HF_XET_CACHE").is_ok() {
-        PathBuf::from(env::var("HF_XET_CACHE").unwrap())
-    } else if env::var("HF_HOME").is_ok() {
-        let home = env::var("HF_HOME").unwrap();
-        PathBuf::from(home).join("xet")
-    } else {
-        let home = home_dir().unwrap_or(current_dir()?);
-        home.join(".cache").join("huggingface").join("xet")
-    };
+) -> errors::Result<Arc<TranslatorConfig>> {
+    let home = home_dir().unwrap_or(current_dir()?);
 
-    let staging_root = cache_root_path.join("staging");
-    std::fs::create_dir_all(&staging_root)?;
-    let shard_staging_directory = tempdir_in(staging_root)?;
+    let cache_root_path = home.join(".cache").join("huggingface").join("xet");
 
     let (token, token_expiration) = token_info.unzip();
     let auth_cfg = AuthConfig::maybe_new(token, token_expiration, token_refresher);
@@ -74,43 +62,35 @@ pub fn default_config(
     let cache_path = cache_root_path.join(endpoint_tag);
     std::fs::create_dir_all(&cache_path)?;
 
-    let translator_config = TranslatorConfig {
-        file_query_policy: FileQueryPolicy::ServerOnly,
-        cas_storage_config: StorageConfig {
+    let staging_root = cache_path.join("staging");
+    std::fs::create_dir_all(&staging_root)?;
+
+    let translator_config = Arc::new(TranslatorConfig {
+        data_config: DataConfig {
             endpoint: Endpoint::Server(endpoint.clone()),
             compression: xorb_compression,
             auth: auth_cfg.clone(),
-            prefix: "default".into(),
-            cache_config: Some(CacheConfig {
+            prefix: PREFIX_DEFAULT.into(),
+            cache_config: CacheConfig {
                 cache_directory: cache_path.join("chunk-cache"),
                 cache_size: 10 * 1024 * 1024 * 1024, // 10 GiB
-            }),
+            },
             staging_directory: None,
         },
-        shard_storage_config: StorageConfig {
-            endpoint: Endpoint::Server(endpoint),
-            compression: None,
-            auth: auth_cfg,
-            prefix: "default-merkledb".into(),
-            cache_config: Some(CacheConfig {
-                cache_directory: cache_path.join("shard-cache"),
-                cache_size: 0, // ignored
-            }),
-            staging_directory: Some(shard_staging_directory.path().to_owned()),
-        },
-        dedup_config: GlobalDedupConfig {
-            repo_salt: None,
+        shard_config: ShardConfig {
+            prefix: PREFIX_DEFAULT.into(),
+            cache_directory: cache_path.join("shard-cache"),
+            session_directory: staging_root.join("shard-session"),
             global_dedup_policy: Default::default(),
+            repo_salt: None,
         },
         repo_info: Some(RepoInfo {
             repo_paths: vec!["".into()],
         }),
-    };
-
-    translator_config.validate()?;
+    });
 
     // Return the temp dir so that it's not dropped and thus the directory deleted.
-    Ok((translator_config, shard_staging_directory))
+    Ok(translator_config)
 }
 
 pub async fn upload_async(
@@ -128,11 +108,11 @@ pub async fn upload_async(
     let (config, _tempdir) =
         default_config(endpoint.unwrap_or(DEFAULT_CAS_ENDPOINT.to_string()), None, token_info, token_refresher)?;
 
-    let processor = Arc::new(FileUploadSession::new(config, threadpool, progress_updater).await?);
+    let upload_session = FileUploadSession::new(config, threadpool, progress_updater).await?;
 
     // for all files, clean them, producing pointer files.
     let pointers = tokio_par_for_each(file_paths, *MAX_CONCURRENT_UPLOADS, |f, _| async {
-        let proc = processor.clone();
+        let proc = upload_session.clone();
         clean_file(&proc, f).await
     })
     .await
@@ -142,7 +122,7 @@ pub async fn upload_async(
     })?;
 
     // Push the CAS blocks and flush the mdb to disk
-    processor.finalize().await?;
+    upload_session.finalize_cleaning().await?;
 
     Ok(pointers.into_iter().map(|(pt, _)| pt).collect())
 }
@@ -186,7 +166,7 @@ pub async fn download_async(
     Ok(paths)
 }
 
-pub async fn clean_file(processor: &FileUploadSession, f: String) -> errors::Result<(PointerFile, u64)> {
+pub async fn clean_file(processor: &FileUploadSession, f: String) -> errors::Result<PointerFile> {
     let mut read_buf = vec![0u8; READ_BLOCK_SIZE];
     let path = PathBuf::from(f);
     let mut reader = BufReader::new(File::open(path.clone())?);
@@ -203,9 +183,8 @@ pub async fn clean_file(processor: &FileUploadSession, f: String) -> errors::Res
         handle.add_data(&read_buf[0..bytes]).await?;
     }
 
-    let (pf_str, new_bytes) = handle.finish().await?;
-    let pf = PointerFile::init_from_string(&pf_str, path.to_str().unwrap());
-    Ok((pf, new_bytes))
+    let pf = handle.finish().await?;
+    Ok(pf)
 }
 
 async fn smudge_file(

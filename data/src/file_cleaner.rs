@@ -31,7 +31,7 @@ use crate::constants::{
 use crate::data_interface::{self, UploadSessionDataManager};
 use crate::errors::DataProcessingError::*;
 use crate::errors::Result;
-use crate::file_upload_session::FileUploadSessionState;
+use crate::file_upload_session::FileUploadSession;
 use crate::metrics::FILTER_BYTES_CLEANED;
 use crate::parallel_xorb_uploader::XorbUpload;
 use crate::remote_shard_interface::RemoteShardInterface;
@@ -45,7 +45,7 @@ pub struct SingleFileCleaner {
     file_name: Option<PathBuf>,
 
     // Common state
-    state: Arc<FileUploadSessionState>,
+    session: Arc<FileUploadSession>,
 
     // The chunker
     chunker: chunking::Chunker,
@@ -61,12 +61,12 @@ pub struct SingleFileCleaner {
 }
 
 impl SingleFileCleaner {
-    pub(crate) fn new(file_name: Option<&Path>, state: Arc<FileUploadSessionState>) -> Self {
+    pub(crate) fn new(file_name: Option<&Path>, session: Arc<FileUploadSession>) -> Self {
         Self {
             file_name,
-            state: state.clone(),
+            dedup_manager: FileDeduper::new(UploadSessionDataManager::new(session.clone())),
+            session,
             chunker: deduplication::Chunker::default(),
-            dedup_manager: FileDeduper::new(UploadSessionDataManager::new(state)),
             metrics: DeduplicationMetrics::default(),
             sha_generator: ShaGenerator::new(),
         }
@@ -94,38 +94,53 @@ impl SingleFileCleaner {
         Ok(())
     }
 
-    /// Return the representation of file after clean and the number of new bytes after dedup
-    pub async fn finish(mut self) -> Result<(String, DataAggregator, DeduplicationMetrics)> {
+    /// Return the representation of the file after clean as a pointer file instance.
+    pub async fn finish(mut self) -> Result<PointerFile> {
         // Chunk the rest of the data.
         if let Some(chunk) = self.chunker.finish() {
             let metrics = self.dedup_manager.process_chunks(&[chunk]).await?;
             self.metrics.merge_in(&metrics);
         }
 
-        // Finalize the sha256 hashing
+        // Finalize the sha256 hashing and create the metadata extension
         let sha256: MerkleHash = self.sha_generator.finalize().await;
-
-        // Prepare the metadata extension
         let metadata_ext = FileMetadataExt::new(sha256);
 
         // Now finish the deduplication process.
-        let repo_salt = self.state.config.dedup_config.repo_salt;
+        let repo_salt = self.session.config.shard_config.repo_salt;
         let (remaining_file_data, deduplication_metrics, new_xorbs) =
             self.dedup_manager.finalize(repo_salt, Some(metadata_ext)).await?;
 
-        self.session.register
+        let pointer_file = PointerFile::init_from_info(
+            self.file_name.unwrap_or_default(),
+            &sha256.hex(),
+            deduplication_metrics.total_bytes as u64,
+        );
 
-        let file_size = self.metrics.file_size.load(Ordering::Relaxed);
-        let new_bytes = self.metrics.new_bytes_after_dedup.load(Ordering::Relaxed);
+        // Let's check some things that should be invarients
+        #[cfg(debug_assertions)]
+        {
+            // There should be exactly one file referenced in the remaining file data.
+            debug_assert_eq!(remaining_file_data.pending_file_info.len(), 1);
 
-        let return_file = self.finalize_data_processing().await?;
+            // The size should be total bytes
+            //            debug_assert_eq!(remaining_file_data.pending_file_info[0].file_info)
+        }
 
-        let current_time = SystemTime::now();
-        let start: DateTime<Utc> = self.metrics.start_time.into();
-        let now: DateTime<Utc> = current_time.into();
+        // Now, return all this information to the
+        self.session
+            .register_single_file_clean_completion(
+                self.file_name,
+                remaining_file_data,
+                deduplication_metrics,
+                new_xorbs,
+            )
+            .await?;
 
         // NB: xorb upload is happening in the background, this number is optimistic since it does
         // not count transfer time of the uploaded xorbs, which is why `end_processing_ts`
+
+        /* TODO: bring this back.
         info!(
             target: "client_telemetry",
             action = "clean",
@@ -136,6 +151,7 @@ impl SingleFileCleaner {
             start_ts = start.to_rfc3339(),
             end_processing_ts = now.to_rfc3339(),
         );
+        */
 
         Ok((return_file.to_string(), new_bytes))
     }

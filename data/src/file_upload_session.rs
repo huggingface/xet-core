@@ -29,36 +29,8 @@ use crate::parallel_xorb_uploader::{ParallelXorbUploader, XorbUpload};
 use crate::remote_client_interface::create_remote_client;
 use crate::remote_shard_interface::RemoteShardInterface;
 use crate::repo_salt::RepoSalt;
-use crate::shard_interface::create_shard_manager;
-
-lazy_static! {
-    pub static ref XORB_UPLOAD_RATE_LIMITER: Arc<Semaphore> = Arc::new(Semaphore::new(*MAX_CONCURRENT_XORB_UPLOADS));
-}
-
-// A struct that simply holds all the common information shared between cleaning sessions and other data upload tasks.
-pub struct FileUploadSessionState {
-    pub shard_manager: Arc<ShardFileManager>,
-
-    pub remote_shards: Arc<RemoteShardInterface>,
-    pub client: Arc<dyn Client + Send + Sync>,
-    pub xorb_uploader: ParallelXorbUploader,
-    pub upload_progress_updater: Option<Arc<dyn ProgressUpdater>>,
-
-    /// Threadpool to use for the execution.
-    pub threadpool: Arc<ThreadPool>,
-
-    /// The repo id, if present.
-    pub repo_id: Option<String>,
-
-    // The repo salt, if specified.  Defaults to RepoSalt::default()
-    pub repo_salt: RepoSalt,
-
-    /// If true, don't actually upload anything; just collect statistics.
-    pub dry_run: bool,
-
-    /// The configuration settings, if needed.
-    pub config: TranslatorConfig,
-}
+use crate::shard_interface;
+use crate::shard_interface::{create_shard_manager, SessionShardInterface};
 
 /// Manages the translation of files between the
 /// MerkleDB / pointer file format and the materialized version.
@@ -67,8 +39,24 @@ pub struct FileUploadSessionState {
 /// that succeeds or fails as a unit;  i.e. all files get uploaded on finalization, and all shards
 /// and xorbs needed to reconstruct those files are properly uploaded and registered.
 pub struct FileUploadSession {
-    /// The information needed by other processes in uploading data.
-    state: Arc<FileUploadSessionState>,
+    // The parts of this that manage the
+    pub(crate) client: Arc<dyn Client + Send + Sync>,
+    pub(crate) shard_interface: Arc<SessionShardInterface>,
+    pub(crate) xorb_uploader: ParallelXorbUploader,
+
+    pub(crate) upload_progress_updater: Option<Arc<dyn ProgressUpdater>>,
+
+    /// Threadpool to use for the execution.
+    pub(crate) threadpool: Arc<ThreadPool>,
+
+    /// The repo id, if present.
+    pub(crate) repo_id: Option<String>,
+
+    /// If true, don't actually upload anything; just collect statistics.
+    pub(crate) dry_run: bool,
+
+    /// The configuration settings, if needed.
+    pub(crate) config: TranslatorConfig,
 
     /// Deduplicated data shared across files.
     current_session_data: Mutex<DataAggregator>,
@@ -101,32 +89,18 @@ impl FileUploadSession {
         upload_progress_updater: Option<Arc<dyn ProgressUpdater>>,
         dry_run: bool,
     ) -> Result<Arc<FileUploadSession>> {
-        let shard_manager = create_shard_manager(&config.shard_storage_config, false).await?;
-
         let client = create_remote_client(&config, threadpool.clone(), dry_run)?;
 
-        let remote_shards = RemoteShardInterface::new(
-            config.file_query_policy,
-            &config.shard_storage_config,
-            Some(shard_manager.clone()),
-            cas_client.clone(),
-            config.dedup_config.repo_salt,
-            threadpool.clone(),
-            false,
-        )
-        .await?;
-
         let xorb_uploader = ParallelXorbUploader::new(
-            &config.cas_storage_config.prefix,
-            shard_manager.clone(),
-            cas_client.clone(),
-            XORB_UPLOAD_RATE_LIMITER.clone(),
+            config.data_config.prefix.to_owned(),
+            client.clone(),
             threadpool.clone(),
             upload_progress_updater.clone(),
-        )
-        .await;
+        );
 
-        let repo_id = config.cas_storage_config.auth.clone().and_then(|auth| {
+        let shard_interface = SessionShardInterface::new(config.clone(), client.clone()).await?;
+
+        let repo_id = config.data_config.auth.clone().and_then(|auth| {
             let token = auth.token;
             let mut validation = Validation::default();
             validation.insecure_disable_signature_validation();
@@ -143,21 +117,15 @@ impl FileUploadSession {
             })
         });
 
-        let state = Arc::new(FileUploadSessionState {
-            shard_manager,
-            remote_shards,
+        Ok(Arc::new(Self {
+            shard_interface,
             client,
             xorb_uploader,
             upload_progress_updater,
             threadpool,
             repo_id,
-            repo_salt: RepoSalt::default(),
             dry_run,
             config,
-        });
-
-        Ok(Arc::new(Self {
-            state,
             current_session_data: Arc::new(Mutex::new(DataAggregator::default())),
             deduplication_metrics: DeduplicationMetrics::default(),
         }))
@@ -172,15 +140,17 @@ impl FileUploadSession {
     ///
     /// The caller is responsible for memory usage management, the parameter "buffer_size"
     /// indicates the maximum number of Vec<u8> in the internal buffer.
-    pub fn start_clean(&self, file_name: Option<&Path>) -> SingleFileCleaner {
-        SingleFileCleaner::new(file_name, state.clone())
+    pub fn start_clean(self: &Arc<self>, file_name: Option<&Path>) -> SingleFileCleaner {
+        SingleFileCleaner::new(file_name, self.clone())
     }
 
-    pub async fn register_file_clean_completion(
+    /// Meant to be called by the finalize() method of the SingleFileCleaner
+    pub(crate) async fn register_single_file_clean_completion(
         &self,
         file_name: Option<String>,
         mut file_data: DataAggregator,
         dedup_metrics: DeduplicationMetrics,
+        xorbs_dependencies: Vec<MerkleHash>,
     ) {
         let mut data_to_upload = None;
 
@@ -231,49 +201,13 @@ impl FileUploadSession {
         self.process_aggregated_data(data_agg).await?;
 
         // Now, make sure all the remaining xorbs are uploaded.
-        let total_bytes_trans = self.state.xorb_uploader.finalize().await?;
+        let total_bytes_trans = self.xorb_uploader.finalize().await?;
 
-        // Flush the accumulated shard information to disk.
-        self.state.shard_manager.flush().await?;
+        // Upload and register the current shards in the session, moving them
+        // to the cache.
+        self.shard_interface.upload_and_register_current_shards().await?;
 
         Ok(total_bytes_trans)
-    }
-
-    pub async fn upload_and_register_session_shards(&self) -> Result<()> {
-        // Scan, merge, and fill out any shards in the session directory
-        let shard_list =
-            consolidate_shards_in_directory(&self.state.shard_manager.shard_directory(), MDB_SHARD_MIN_TARGET_SIZE)?;
-
-        // Upload all the shards.
-        let mut shard_uploads = JoinSet::<()>::new();
-
-        for sl in shard_list {
-            let salt = self.state.config.dedup_config.repo_salt.unwrap_or_default();
-            let shard_client = self.state.client.clone();
-            let shard_prefix = self.state.config.shard_storage_config.prefix.clone();
-
-            shard_uploads.spawn(async move {
-                debug!("Uploading shard {shard_prefix}/{:?} from staging area to CAS.", &si.shard_hash);
-                let data = std::fs::read(&si.path)?;
-
-                // Upload the shard.
-                shard_client
-                    .upload_shard(&shard_prefix, &si.shard_hash, false, &data, &salt)
-                    .await?;
-
-                info!("Shard {shard_prefix}/{:?} upload + sync completed successfully.", &si.shard_hash);
-
-                // Now that that succeeded, move that shard to the cache directory.
-
-                Ok(())
-            });
-        }
-
-        // Finally, we can move all the mdb shards from the session directory, which is used
-        // by the upload_shard task, to the cache.
-        self.remote_shards.move_session_shards_to_local_cache().await?;
-
-        Ok(())
     }
 
     pub async fn summarize_file_info_of_session(&self) -> Result<Vec<MDBFileInfo>> {

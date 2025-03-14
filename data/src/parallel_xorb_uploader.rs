@@ -13,6 +13,10 @@ use xet_threadpool::ThreadPool;
 use crate::errors::DataProcessingError::*;
 use crate::errors::*;
 
+lazy_static::lazy_static! {
+    pub static ref XORB_UPLOAD_RATE_LIMITER: Arc<Semaphore> = Arc::new(Semaphore::new(*MAX_CONCURRENT_XORB_UPLOADS));
+}
+
 /// Helper to parallelize xorb upload and registration.
 /// Calls to registering xorbs return immediately after computing a xorb hash so callers
 /// can continue with other work, and xorb data is queued internally to be uploaded and registered.
@@ -24,8 +28,7 @@ pub(crate) struct ParallelXorbUploader {
     cas_prefix: String,
 
     // Utils
-    shard_manager: Arc<ShardFileManager>,
-    cas: Arc<dyn Client + Send + Sync>,
+    client: Arc<dyn Client + Send + Sync>,
 
     // Internal worker
     upload_tasks: Mutex<JoinSet<Result<usize>>>,
@@ -44,20 +47,17 @@ pub(crate) struct ParallelXorbUploader {
 }
 
 impl ParallelXorbUploader {
-    pub async fn new(
-        cas_prefix: &str,
-        shard_manager: Arc<ShardFileManager>,
+    pub fn new(
+        cas_prefix: String,
         client: Arc<dyn Client + Send + Sync>,
-        rate_limiter: Arc<Semaphore>,
         threadpool: Arc<ThreadPool>,
         upload_progress_updater: Option<Arc<dyn ProgressUpdater>>,
     ) -> Arc<Self> {
         Arc::new(ParallelXorbUploader {
             cas_prefix: cas_prefix.to_owned(),
-            shard_manager,
-            cas: client,
+            client,
             upload_tasks: Mutex::new(JoinSet::new()),
-            rate_limiter,
+            rate_limiter: XORB_UPLOAD_RATE_LIMITER.clone(),
             threadpool,
             upload_progress_updater,
             total_bytes_trans: 0.into(),

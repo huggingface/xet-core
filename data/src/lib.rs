@@ -12,7 +12,6 @@ pub mod migration_tool;
 mod parallel_xorb_uploader;
 mod pointer_file;
 mod remote_client_interface;
-mod remote_shard_interface;
 mod repo_salt;
 mod sha256;
 mod shard_interface;
