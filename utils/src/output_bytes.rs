@@ -45,6 +45,7 @@ mod tests {
         assert_eq!("999.99 MiB", output_bytes(1_048_565_514));
         assert_eq!("1 GiB", output_bytes(1_073_741_824));
         assert_eq!("1.00 GiB", output_bytes(1_073_741_825));
+        #[cfg(not(target_family = "wasm"))]
         assert_eq!("999.99 GiB", output_bytes(1_073_731_086_581));
         #[cfg(not(target_family = "wasm"))]
         assert_eq!("1 TiB", output_bytes(1_099_511_627_776));

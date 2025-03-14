@@ -32,6 +32,7 @@ impl<'r, 'w, R: AsyncRead + Unpin, W: Write> CopyReader<'r, 'w, R, W> {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(not(target_family = "wasm"))]
     use std::io::{Read, Seek, SeekFrom};
 
     use bytes::Bytes;
