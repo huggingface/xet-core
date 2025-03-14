@@ -84,7 +84,7 @@ pub async fn migrate_files_impl(
         ParallelError::TaskError(e) => e,
     })?;
 
-    let total_bytes_trans = processor.finalize_cleaning().await?;
+    let total_bytes_trans = processor.finalize().await?;
 
     if dry_run {
         let all_file_info = processor.summarize_file_info_of_session().await?;

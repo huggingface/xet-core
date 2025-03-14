@@ -403,7 +403,7 @@ pub fn shard_set_difference<R: Read + Seek, W: Write>(
 fn open_shard_with_bufreader(path: &Path) -> Result<(MDBShardInfo, BufReader<File>)> {
     let mut reader = BufReader::new(File::open(path)?);
 
-    let mdb = MDBShardInfo::load_from_file(&mut reader)?;
+    let mdb = MDBShardInfo::load_from_reader(&mut reader)?;
 
     Ok((mdb, reader))
 }
@@ -503,10 +503,10 @@ mod tests {
             .write_all(&disk_shard_2[..])?;
 
         let mut r1 = Cursor::new(&disk_shard_1);
-        let s1 = MDBShardInfo::load_from_file(&mut r1)?;
+        let s1 = MDBShardInfo::load_from_reader(&mut r1)?;
 
         let mut r2 = Cursor::new(&disk_shard_2);
-        let s2 = MDBShardInfo::load_from_file(&mut r2)?;
+        let s2 = MDBShardInfo::load_from_reader(&mut r2)?;
 
         let mem_union = mem_shard_1.union(mem_shard_2)?;
         let mut shard_union = Vec::<u8>::new();

@@ -40,4 +40,9 @@ pub const NRANGES_IN_STREAMING_FRAGMENTATION_ESTIMATOR: usize = 128;
 /// when CPR drops below hysteresis * target_cpr, and will start again when
 /// CPR increases above target CPR.
 pub const MIN_N_CHUNKS_PER_RANGE_HYSTERESIS_FACTOR: f32 = 0.5;
+
 pub const DEFAULT_MIN_N_CHUNKS_PER_RANGE: f32 = 8.0;
+
+/// The expiration time of a local shard when first placed in the local shard cache.  Currently
+/// set to 3 weeks.  
+pub const MDB_SHARD_LOCAL_CACHE_EXPIRATION_SECS: u64 = 3 * 7 * 24 * 3600;

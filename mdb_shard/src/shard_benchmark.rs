@@ -70,14 +70,14 @@ async fn run_shard_benchmark(
                 shard.num_cas_entries(),
                 shard.num_cas_entries() * CAS_BLOCK_SIZE
             );
-            MDBShardInfo::load_from_file(&mut File::open(path)?)?.print_report();
+            MDBShardInfo::load_from_reader(&mut File::open(path)?)?.print_report();
         }
     }
     eprintln!("Shards created.");
 
     // Now, spawn tasks to
     let counter = Arc::new(AtomicUsize::new(0));
-    let mdb = Arc::new(ShardFileManager::new(dir).await?);
+    let mdb = ShardFileManager::new_in_session_directory(dir).await?;
 
     let start_time = Instant::now();
 

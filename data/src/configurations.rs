@@ -1,6 +1,8 @@
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
+use std::sync::Arc;
 
+use cas_client::remote_client::PREFIX_DEFAULT;
 use cas_client::CacheConfig;
 use cas_object::CompressionScheme;
 use utils::auth::AuthConfig;
@@ -15,53 +17,23 @@ pub enum Endpoint {
 }
 
 #[derive(Debug)]
-pub struct StorageConfig {
+pub struct DataConfig {
     pub endpoint: Endpoint,
     pub compression: Option<CompressionScheme>,
     pub auth: Option<AuthConfig>,
     pub prefix: String,
-    pub cache_config: Option<CacheConfig>,
+    pub cache_config: CacheConfig,
     pub staging_directory: Option<PathBuf>,
 }
 
 #[derive(Debug)]
 pub struct GlobalDedupConfig {
-    pub repo_salt: Option<RepoSalt>,
     pub global_dedup_policy: GlobalDedupPolicy,
 }
 
 #[derive(Debug)]
 pub struct RepoInfo {
     pub repo_paths: Vec<String>,
-}
-
-#[derive(PartialEq, Default, Clone, Debug, Copy)]
-pub enum FileQueryPolicy {
-    /// Query local first, then the shard server.
-    #[default]
-    LocalFirst,
-
-    /// Only query the server; ignore local shards.
-    ServerOnly,
-
-    /// Only query local shards.
-    LocalOnly,
-}
-
-impl FromStr for FileQueryPolicy {
-    type Err = std::io::Error;
-
-    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
-        match s.to_lowercase().as_str() {
-            "local_first" => Ok(FileQueryPolicy::LocalFirst),
-            "server_only" => Ok(FileQueryPolicy::ServerOnly),
-            "local_only" => Ok(FileQueryPolicy::LocalOnly),
-            _ => Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                format!("Invalid file smudge policy, should be one of local_first, server_only, local_only: {}", s),
-            )),
-        }
-    }
 }
 
 #[derive(PartialEq, Default, Clone, Debug, Copy)]
@@ -90,80 +62,50 @@ impl FromStr for GlobalDedupPolicy {
 }
 
 #[derive(Debug)]
+pub struct ShardConfig {
+    pub prefix: String,
+    pub session_directory: PathBuf,
+    pub cache_directory: PathBuf,
+    pub global_dedup_policy: GlobalDedupPolicy,
+    pub repo_salt: RepoSalt,
+}
+
+#[derive(Debug)]
 pub struct TranslatorConfig {
-    pub file_query_policy: FileQueryPolicy,
-    pub cas_storage_config: StorageConfig,
-    pub shard_storage_config: StorageConfig,
-    pub dedup_config: GlobalDedupConfig,
+    pub data_config: DataConfig,
+    pub shard_config: ShardConfig,
     pub repo_info: Option<RepoInfo>,
 }
 
 impl TranslatorConfig {
-    pub fn local_config(base_dir: impl AsRef<Path>) -> Result<Self> {
+    pub fn local_config(base_dir: impl AsRef<Path>) -> Result<Arc<Self>> {
         let path = base_dir.as_ref().join("xet");
         std::fs::create_dir_all(&path)?;
 
         let translator_config = Self {
-            file_query_policy: Default::default(),
-            cas_storage_config: StorageConfig {
+            data_config: DataConfig {
                 endpoint: Endpoint::FileSystem(path.join("xorbs")),
                 compression: Default::default(),
                 auth: None,
-                prefix: "default".into(),
-                cache_config: Some(CacheConfig {
+                prefix: PREFIX_DEFAULT.into(),
+                cache_config: CacheConfig {
                     cache_directory: path.join("cache"),
                     cache_size: 10 * 1024 * 1024 * 1024, // 10 GiB
-                }),
+                },
                 staging_directory: None,
             },
-            shard_storage_config: StorageConfig {
-                endpoint: Endpoint::FileSystem(path.join("xorbs")),
-                compression: Default::default(),
-                auth: None,
-                prefix: "default-merkledb".into(),
-                cache_config: Some(CacheConfig {
-                    cache_directory: path.join("shard-cache"),
-                    cache_size: 0, // ignored
-                }),
-                staging_directory: Some(path.join("shard-session")),
-            },
-            dedup_config: {
-                GlobalDedupConfig {
-                    repo_salt: None,
-                    global_dedup_policy: Default::default(),
-                }
+            shard_config: ShardConfig {
+                prefix: PREFIX_DEFAULT.into(),
+                cache_directory: path.join("shard-cache"),
+                session_directory: path.join("shard-session"),
+                global_dedup_policy: Default::default(),
+                repo_salt: RepoSalt::default(),
             },
             repo_info: Some(RepoInfo {
                 repo_paths: vec!["".into()],
             }),
         };
 
-        translator_config.validate()?;
-
-        Ok(translator_config)
-    }
-
-    pub fn validate(&self) -> Result<()> {
-        if let Endpoint::FileSystem(path) = &self.cas_storage_config.endpoint {
-            std::fs::create_dir_all(path)?;
-        }
-        if let Some(cache) = &self.cas_storage_config.cache_config {
-            std::fs::create_dir_all(&cache.cache_directory)?;
-        }
-        if let Some(path) = &self.cas_storage_config.staging_directory {
-            std::fs::create_dir_all(path)?;
-        }
-
-        if let Endpoint::FileSystem(path) = &self.shard_storage_config.endpoint {
-            std::fs::create_dir_all(path)?;
-        }
-        if let Some(cache) = &self.shard_storage_config.cache_config {
-            std::fs::create_dir_all(&cache.cache_directory)?;
-        }
-        if let Some(path) = &self.shard_storage_config.staging_directory {
-            std::fs::create_dir_all(path)?;
-        }
-
-        Ok(())
+        Ok(Arc::new(translator_config))
     }
 }
