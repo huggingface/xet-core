@@ -1010,7 +1010,7 @@ mod tests {
     }
 
     async fn shard_list_with_timestamp_filtering(path: &Path) -> Result<Vec<Arc<MDBShardFile>>> {
-        Ok(ShardFileManager::new_impl(path, true, MDB_SHARD_MIN_TARGET_SIZE)
+        Ok(ShardFileManager::new_impl(path, false, MDB_SHARD_MIN_TARGET_SIZE)
             .await?
             .registered_shard_list()
             .await?)
