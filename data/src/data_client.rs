@@ -196,7 +196,7 @@ pub async fn clean_file(
         handle.add_data(&read_buf[0..bytes]).await?;
     }
 
-    Ok(handle.finish().await?)
+    handle.finish().await
 }
 
 async fn smudge_file(

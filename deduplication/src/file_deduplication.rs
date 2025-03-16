@@ -275,7 +275,7 @@ impl<DataInterfaceType: DataInterface> FileDeduper<DataInterfaceType> {
         if self.file_data_sequence_continues_current(&fse) {
             // This block is the contiguous continuation of the last entry
             let last_entry = self.file_info.last_mut().unwrap();
-            last_entry.unpacked_segment_bytes += fse.unpacked_segment_bytes as u32;
+            last_entry.unpacked_segment_bytes += fse.unpacked_segment_bytes;
             last_entry.chunk_index_end = fse.chunk_index_end;
 
             // Update the fragmentation estimation window
@@ -329,8 +329,8 @@ impl<DataInterfaceType: DataInterface> FileDeduper<DataInterfaceType> {
             let mut n_bytes = self.new_data[base_idx].data.len();
 
             let mut end_idx = base_idx + 1;
-            for i in 1..chunks.len() {
-                if let Some(&idx) = self.new_data_hash_lookup.get(&chunks[i]) {
+            for (i, chunk) in chunks.iter().enumerate().skip(1) {
+                if let Some(&idx) = self.new_data_hash_lookup.get(chunk) {
                     if idx == base_idx + i {
                         end_idx = idx + 1;
                         n_bytes += self.new_data[idx].data.len();
@@ -356,7 +356,7 @@ impl<DataInterfaceType: DataInterface> FileDeduper<DataInterfaceType> {
         file_hash_salt: [u8; 32],
         metadata_ext: Option<FileMetadataExt>,
     ) -> (MerkleHash, DataAggregator, DeduplicationMetrics, Vec<MerkleHash>) {
-        let file_hash = file_node_hash(&self.chunk_hashes, &file_hash_salt.into()).unwrap();
+        let file_hash = file_node_hash(&self.chunk_hashes, &file_hash_salt).unwrap();
 
         let metadata = FileDataSequenceHeader::new(file_hash, self.file_info.len(), true, metadata_ext.is_some());
 

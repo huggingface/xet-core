@@ -57,7 +57,7 @@ impl SessionShardInterface {
     pub async fn query_dedup_shard_by_chunk(&self, chunk_hash: &MerkleHash, repo_salt: &RepoSalt) -> Result<bool> {
         let Ok(query_result) = self
             .client
-            .query_for_global_dedup_shard(&self.config.shard_config.prefix, &chunk_hash, repo_salt)
+            .query_for_global_dedup_shard(&self.config.shard_config.prefix, chunk_hash, repo_salt)
             .await
             .map_err(|e| {
                 debug!("Error encountered attempting to query global dedup table: {e:?}; ignoring.");
@@ -124,7 +124,7 @@ impl SessionShardInterface {
 
         // First, scan, merge, and fill out any shards in the session directory
         let shard_list =
-            consolidate_shards_in_directory(&self.session_shard_manager.shard_directory(), MDB_SHARD_MIN_TARGET_SIZE)?;
+            consolidate_shards_in_directory(self.session_shard_manager.shard_directory(), MDB_SHARD_MIN_TARGET_SIZE)?;
 
         // Upload all the shards and move each to the common directory.
         let mut shard_uploads = JoinSet::<Result<()>>::new();
