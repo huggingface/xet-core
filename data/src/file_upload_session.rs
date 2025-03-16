@@ -204,7 +204,7 @@ impl FileUploadSession {
 
         // Upload and register the current shards in the session, moving them
         // to the cache.
-        metrics.shard_bytes_uploaded = self.shard_interface.upload_and_register_current_shards().await?;
+        metrics.shard_bytes_uploaded = self.shard_interface.upload_and_register_session_shards().await?;
 
         metrics.total_bytes_uploaded = metrics.shard_bytes_uploaded + metrics.xorb_bytes_uploaded;
 

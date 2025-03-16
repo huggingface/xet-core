@@ -113,15 +113,15 @@ impl SessionShardInterface {
         Ok(())
     }
 
+    /// Returns a list of all file info currently in the session directory.  Must be called before
+    /// upload_and_register_session_shards.
     pub async fn session_file_info_list(&self) -> Result<Vec<MDBFileInfo>> {
         Ok(self.session_shard_manager.all_file_info().await?)
     }
 
     /// Uploads everything in the current session directory.  This must be called after all xorbs
     /// have completed their upload.
-    /// 
-    ///  
-    pub async fn upload_and_register_current_shards(&self) -> Result<usize> {
+    pub async fn upload_and_register_session_shards(&self) -> Result<usize> {
         // First, flush everything to disk.
         self.session_shard_manager.flush().await?;
 
