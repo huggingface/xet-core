@@ -2,7 +2,7 @@ use std::mem::{swap, take};
 use std::sync::Arc;
 
 use cas_client::Client;
-use cas_object::constants::MAX_XORB_BYTES;
+use cas_object::constants::{MAX_XORB_BYTES, MAX_XORB_CHUNKS};
 use deduplication::{DataAggregator, DeduplicationMetrics};
 use jsonwebtoken::{decode, DecodingKey, Validation};
 use mdb_shard::file_structs::MDBFileInfo;
@@ -136,14 +136,14 @@ impl FileUploadSession {
         dedup_metrics: &DeduplicationMetrics,
         _xorbs_dependencies: Vec<MerkleHash>,
     ) -> Result<()> {
-        let mut data_to_upload = None;
-
         // Merge in the remaining file data; uploading a new xorb if need be.
         {
             let mut current_session_data = self.current_session_data.lock().await;
 
             // Do we need to cut one of these to a xorb?
-            if current_session_data.num_bytes() + file_data.num_bytes() > MAX_XORB_BYTES {
+            if current_session_data.num_bytes() + file_data.num_bytes() > MAX_XORB_BYTES
+                || current_session_data.num_chunks() + file_data.num_chunks() > MAX_XORB_CHUNKS
+            {
                 // Cut the larger one as a xorb, uploading it and registering the files.
                 if current_session_data.num_bytes() > file_data.num_bytes() {
                     swap(&mut *current_session_data, &mut file_data);
@@ -153,14 +153,12 @@ impl FileUploadSession {
                 debug_assert_le!(current_session_data.num_bytes(), file_data.num_bytes());
 
                 // Actually upload this outside the lock
-                data_to_upload = Some(file_data);
+                drop(current_session_data);
+
+                self.process_aggregated_data(file_data).await?;
             } else {
                 current_session_data.merge_in(file_data);
             }
-        }
-
-        if let Some(data_agg) = data_to_upload {
-            self.process_aggregated_data(data_agg).await?;
         }
 
         // Now, aggregate the new dedup metrics.

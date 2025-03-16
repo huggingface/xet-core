@@ -41,15 +41,9 @@ pub struct FileDeduper<DataInterfaceType: DataInterface> {
     /// Tracking the defragmentation of the file specification.
     defrag_tracker: DefragPrevention,
 
-    /// The maximum number of bytes in a xorb. Can be changed by testing code.
-    pub target_xorb_max_data_size: usize,
-
-    /// The maximum number of chunks in a xorb. Can be changed by testing code.
-    pub target_xorb_max_num_chunks: usize,
-
     /// The minimum number of chunks to wait for between generating global
     /// dedup queries.  Can be changed by testing code.
-    pub min_spacing_between_global_dedup_queries: usize,
+    min_spacing_between_global_dedup_queries: usize,
 
     /// The next chunk index that is eligible for global dedup queries
     next_chunk_index_elegible_for_global_dedup_query: usize,
@@ -72,8 +66,6 @@ impl<DataInterfaceType: DataInterface> FileDeduper<DataInterfaceType> {
             file_info: Vec::new(),
             internally_referencing_entries: Vec::new(),
             defrag_tracker: DefragPrevention::default(),
-            target_xorb_max_data_size: MAX_XORB_BYTES,
-            target_xorb_max_num_chunks: MAX_XORB_CHUNKS,
             min_spacing_between_global_dedup_queries: 0,
             next_chunk_index_elegible_for_global_dedup_query: 0,
             new_xorbs: Vec::new(),
@@ -201,20 +193,15 @@ impl<DataInterfaceType: DataInterface> FileDeduper<DataInterfaceType> {
             // Okay, now we need to add new data.
             let n_bytes = chunks[cur_idx].data.len();
 
+            dedup_metrics.total_chunks += 1;
+            dedup_metrics.total_bytes += n_bytes;
+
             // Do we need to cut a new xorb first?
-            if self.new_data_size + n_bytes > self.target_xorb_max_data_size
-                || self.new_data.len() + 1 > self.target_xorb_max_num_chunks
-            {
+            if self.new_data_size + n_bytes > MAX_XORB_BYTES || self.new_data.len() + 1 > MAX_XORB_CHUNKS {
                 let new_xorb = self.cut_new_xorb();
                 self.new_xorbs.push(new_xorb.hash());
                 self.data_mng.register_new_xorb(new_xorb).await?;
             }
-
-            dedup_metrics.total_chunks += 1;
-            dedup_metrics.total_bytes += n_bytes;
-
-            // This is a new data block.
-            let add_new_data;
 
             if !self.file_info.is_empty()
                 && self.file_info.last().unwrap().cas_hash == MerkleHash::default()
@@ -225,7 +212,6 @@ impl<DataInterfaceType: DataInterface> FileDeduper<DataInterfaceType> {
                 let last_entry = self.file_info.last_mut().unwrap();
                 last_entry.unpacked_segment_bytes += n_bytes as u32;
                 last_entry.chunk_index_end += 1;
-                add_new_data = true;
                 self.defrag_tracker.increment_last_range_in_fragmentation_estimate(1);
             } else {
                 // This block is unrelated to the previous one.
@@ -242,14 +228,12 @@ impl<DataInterfaceType: DataInterface> FileDeduper<DataInterfaceType> {
                     chunk_idx + 1,
                 ));
                 self.defrag_tracker.add_range_to_fragmentation_estimate(1);
-                add_new_data = true;
             }
 
-            if add_new_data {
-                let chunk = chunks[cur_idx].clone();
-                self.new_data_hash_lookup.insert(chunk.hash, self.new_data.len());
-                self.new_data.push(chunk);
-            }
+            let chunk = chunks[cur_idx].clone();
+            self.new_data_size += chunk.data.len();
+            self.new_data_hash_lookup.insert(chunk.hash, self.new_data.len());
+            self.new_data.push(chunk);
 
             // Next round.
             cur_idx += 1;
@@ -316,6 +300,12 @@ impl<DataInterfaceType: DataInterface> FileDeduper<DataInterfaceType> {
                 debug_assert_ne!(fse.cas_hash, MerkleHash::default());
             }
         }
+
+        // Clear out the old data.
+        self.new_data.clear();
+        self.new_data_hash_lookup.clear();
+        self.new_data_size = 0;
+        self.internally_referencing_entries.clear();
 
         new_xorb
     }

@@ -6,6 +6,7 @@ mod tests {
     use std::path::Path;
 
     use cas_object::constants::MAX_XORB_BYTES;
+    use deduplication::constants::TARGET_CDC_CHUNK_SIZE;
     use rand::rngs::StdRng;
     // rand crates
     use rand::RngCore;
@@ -17,6 +18,9 @@ mod tests {
     use crate::configurations::TranslatorConfig;
     use crate::data_client::clean_file;
     use crate::{FileDownloader, FileUploadSession, PointerFile};
+
+    // Use small xorbs here.
+    const TESTING_TARGET_XORB_NUM_BYTES: usize = 5 * TARGET_CDC_CHUNK_SIZE;
 
     /// Creates or overwrites a single file in `dir` with `size` bytes of random data.
     /// Panics on any I/O error. Returns the total number of bytes written (=`size`).
@@ -166,12 +170,12 @@ mod tests {
         check_directories_match(&src_dir, &dest_dir);
     }
 
-    #[tokio::test(flavor = "multi_thread")]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_simple_directory() {
         check_clean_smudge_files(&[("a", 16)]).await;
     }
 
-    #[tokio::test(flavor = "multi_thread")]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_multiple() {
         check_clean_smudge_files(&[("a", 16), ("b", 8)]).await;
     }
@@ -182,12 +186,12 @@ mod tests {
         check_clean_smudge_files(&files).await;
     }
 
-    #[tokio::test(flavor = "multi_thread")]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_single_large() {
         check_clean_smudge_files(&[("a", MAX_XORB_BYTES + 1)]).await;
     }
 
-    #[tokio::test(flavor = "multi_thread")]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_multiple_large() {
         check_clean_smudge_files(&[("a", MAX_XORB_BYTES + 1), ("b", MAX_XORB_BYTES + 2)]).await;
     }
