@@ -1,4 +1,4 @@
-use crate::MerkleHash;
+use merklehash::MerkleHash;
 
 /// The hash key used for generating chunk range hash for shard verification
 pub const VERIFICATION_KEY: [u8; 32] = [

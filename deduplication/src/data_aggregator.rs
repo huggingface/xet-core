@@ -9,7 +9,7 @@ use crate::Chunk;
 #[derive(Default, Debug)]
 pub struct DataAggregator {
     // Bytes of all chunks accumulated in one CAS block concatenated together.
-    chunks: Vec<Chunk>,
+    pub chunks: Vec<Chunk>,
 
     // Number of bytes
     num_bytes: usize,
@@ -23,7 +23,7 @@ pub struct DataAggregator {
     // alongwith the file info.
     // This tuple contains the file info (which may be modified) and the divisions in the chunks corresponding
     // to this file.
-    pending_file_info: Vec<(MDBFileInfo, Vec<usize>)>,
+    pub pending_file_info: Vec<(MDBFileInfo, Vec<usize>)>,
 }
 
 impl DataAggregator {

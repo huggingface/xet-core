@@ -2,8 +2,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use cas_client::Client;
+use mdb_shard::cas_structs::MDBCASInfo;
 use mdb_shard::constants::MDB_SHARD_MIN_TARGET_SIZE;
-use mdb_shard::file_structs::FileDataSequenceEntry;
+use mdb_shard::file_structs::{FileDataSequenceEntry, MDBFileInfo};
 use mdb_shard::session_directory::consolidate_shards_in_directory;
 use mdb_shard::ShardFileManager;
 use merklehash::MerkleHash;
@@ -54,7 +55,7 @@ impl SessionShardInterface {
     pub async fn query_dedup_shard_by_chunk(&self, chunk_hash: &MerkleHash, repo_salt: &RepoSalt) -> Result<bool> {
         let Ok(query_result) = self
             .client
-            .query_dedup_shard_by_chunk(&chunk_hash, repo_salt)
+            .query_for_global_dedup_shard(&self.config.shard_config.prefix, &chunk_hash, repo_salt)
             .await
             .map_err(|e| {
                 debug!("Error encountered attempting to query global dedup table: {e:?}; ignoring.");
@@ -90,8 +91,17 @@ impl SessionShardInterface {
         Ok(self.cache_shard_manager.chunk_hash_dedup_query(query_hashes).await?)
     }
 
+    // Add everything to the session shard manager
+    pub async fn add_cas_block(&self, cas_block_contents: MDBCASInfo) -> Result<()> {
+        Ok(self.session_shard_manager.add_cas_block(cas_block_contents).await?)
+    }
+
+    pub async fn add_file_reconstruction_info(&self, file_info: MDBFileInfo) -> Result<()> {
+        Ok(self.session_shard_manager.add_file_reconstruction_info(file_info).await?)
+    }
+
     // Consumes everything
-    pub async fn upload_and_register_current_shards(self) -> Result<()> {
+    pub async fn upload_and_register_current_shards(&self) -> Result<()> {
         // First, flush everything to disk.
         self.session_shard_manager.flush().await?;
 

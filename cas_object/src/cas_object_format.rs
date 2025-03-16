@@ -1333,10 +1333,10 @@ mod tests {
     use std::io::Cursor;
 
     use futures::TryStreamExt;
-    use merklehash::range_hash_from_chunks;
 
     use super::test_utils::*;
     use super::*;
+    use crate::chunk_verification::VERIFICATION_KEY;
 
     #[test]
     fn test_default_cas_object() {

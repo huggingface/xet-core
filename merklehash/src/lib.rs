@@ -47,6 +47,3 @@
 pub mod data_hash;
 pub use data_hash::*;
 pub type MerkleHash = DataHash;
-
-mod chunk_verification;
-pub use chunk_verification::range_hash_from_chunks;

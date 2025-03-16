@@ -1,4 +1,4 @@
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use cas_client::Client;
@@ -42,7 +42,7 @@ pub(crate) struct ParallelXorbUploader {
     upload_progress_updater: Option<Arc<dyn ProgressUpdater>>,
 
     // Metrics
-    total_bytes_trans: AtomicU64,
+    total_bytes_trans: AtomicUsize,
 }
 
 impl ParallelXorbUploader {
@@ -66,7 +66,7 @@ impl ParallelXorbUploader {
     async fn status_is_ok(&self) -> Result<()> {
         let mut upload_tasks = self.upload_tasks.lock().await;
         while let Some(result) = upload_tasks.try_join_next() {
-            self.total_bytes_trans.fetch_add(result?? as u64, Ordering::Relaxed);
+            self.total_bytes_trans.fetch_add(result??, Ordering::Relaxed);
         }
 
         Ok(())
@@ -112,11 +112,11 @@ impl ParallelXorbUploader {
     /// Flush makes sure all xorbs added to queue before this call are sent successfully
     /// to remote. This function can be called multiple times and should be called at
     /// least once before `ParallelXorbUploader` is dropped.
-    pub async fn finalize(&self) -> Result<u64> {
+    pub async fn finalize(&self) -> Result<usize> {
         let mut upload_tasks = self.upload_tasks.lock().await;
 
         while let Some(result) = upload_tasks.join_next().await {
-            self.total_bytes_trans.fetch_add(result?? as u64, Ordering::Relaxed);
+            self.total_bytes_trans.fetch_add(result??, Ordering::Relaxed);
         }
 
         Ok(self.total_bytes_trans.load(Ordering::Relaxed))

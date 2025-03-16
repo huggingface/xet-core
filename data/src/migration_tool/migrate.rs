@@ -64,8 +64,7 @@ pub async fn migrate_files_impl(
         client: Arc::new(hub_client),
     }) as Arc<dyn TokenRefresher>;
 
-    let (config, _tempdir) =
-        default_config(endpoint, compression, Some((jwt_token, jwt_token_expiry)), Some(token_refresher))?;
+    let config = default_config(endpoint, compression, Some((jwt_token, jwt_token_expiry)), Some(token_refresher))?;
 
     let num_workers = if sequential { 1 } else { threadpool.num_worker_threads() };
     let processor = if dry_run {

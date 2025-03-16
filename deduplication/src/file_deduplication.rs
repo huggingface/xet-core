@@ -6,7 +6,7 @@ use mdb_shard::file_structs::{
 };
 use mdb_shard::hash_is_global_dedup_eligible;
 use merkledb::aggregate_hashes::file_node_hash;
-use merklehash::{range_hash_from_chunks, MerkleHash};
+use merklehash::MerkleHash;
 use more_asserts::{debug_assert_le, debug_assert_lt};
 
 use crate::constants::{MAX_XORB_BYTES, MAX_XORB_CHUNKS};
@@ -350,7 +350,7 @@ impl<DataInterfaceType: DataInterface> FileDeduper<DataInterfaceType> {
     /// registered as part of this run.
     pub fn finalize(
         self,
-        file_hash_salt: MerkleHash,
+        file_hash_salt: [u8; 32],
         metadata_ext: Option<FileMetadataExt>,
     ) -> (DataAggregator, DeduplicationMetrics, Vec<MerkleHash>) {
         let file_hash = file_node_hash(&self.chunk_hashes, &file_hash_salt.into()).unwrap();

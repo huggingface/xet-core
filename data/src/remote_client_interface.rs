@@ -20,13 +20,8 @@ pub(crate) fn create_remote_client(
             endpoint,
             cas_storage_config.compression,
             &cas_storage_config.auth,
-            &cas_storage_config.cache_config,
-            config
-                .shard_storage_config
-                .cache_config
-                .as_ref()
-                .map(|c| c.cache_directory.clone())
-                .unwrap_or_default(),
+            &Some(cas_storage_config.cache_config.clone()),
+            config.shard_config.cache_directory.clone(),
             dry_run,
         ))),
         Endpoint::FileSystem(ref path) => Ok(Arc::new(LocalClient::new(path, None)?)),

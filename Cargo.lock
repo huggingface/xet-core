@@ -528,6 +528,7 @@ dependencies = [
  "lz4_flex",
  "merkledb",
  "merklehash",
+ "more-asserts",
  "parutils",
  "rand 0.8.5",
  "serde",
@@ -958,6 +959,7 @@ name = "deduplication"
 version = "0.14.5"
 dependencies = [
  "async-trait",
+ "cas_object",
  "gearhash",
  "lazy_static",
  "mdb_shard",

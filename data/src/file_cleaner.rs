@@ -1,4 +1,3 @@
-use std::path::PathBuf;
 use std::sync::Arc;
 
 use deduplication::{Chunk, Chunker, DeduplicationMetrics, FileDeduper};
@@ -14,7 +13,7 @@ use crate::PointerFile;
 /// A class that encapsulates the clean and data task around a single file.
 pub struct SingleFileCleaner {
     // Auxiliary info
-    file_name: Option<PathBuf>,
+    file_name: String,
 
     // Common state
     session: Arc<FileUploadSession>,
@@ -33,7 +32,7 @@ pub struct SingleFileCleaner {
 }
 
 impl SingleFileCleaner {
-    pub(crate) fn new(file_name: Option<PathBuf>, session: Arc<FileUploadSession>) -> Self {
+    pub(crate) fn new(file_name: String, session: Arc<FileUploadSession>) -> Self {
         Self {
             file_name,
             dedup_manager: FileDeduper::new(UploadSessionDataManager::new(session.clone())),
@@ -44,12 +43,9 @@ impl SingleFileCleaner {
         }
     }
 
-    pub async fn add_data(&mut self, data: Vec<u8>) -> Result<()> {
+    pub async fn add_data(&mut self, data: &[u8]) -> Result<()> {
         // Chunk the data.
-        let chunks: Arc<[Chunk]> = Arc::from(self.chunker.next_block(&data[..], false));
-
-        // Done with the original data; drop it to free memory pressure.
-        drop(data);
+        let chunks: Arc<[Chunk]> = Arc::from(self.chunker.next_block(data, false));
 
         // It's possible this didn't actually add any data in.
         if chunks.is_empty() {
@@ -93,7 +89,7 @@ impl SingleFileCleaner {
             debug_assert_eq!(remaining_file_data.pending_file_info.len(), 1);
 
             // The size should be total bytes
-            //            debug_assert_eq!(remaining_file_data.pending_file_info[0].file_info)
+            debug_assert_eq!(remaining_file_data.pending_file_info[0].0.file_size(), pointer_file.filesize() as usize)
         }
 
         // Now, return all this information to the
@@ -122,6 +118,6 @@ impl SingleFileCleaner {
         );
         */
 
-        Ok((return_file.to_string(), new_bytes))
+        Ok(pointer_file)
     }
 }

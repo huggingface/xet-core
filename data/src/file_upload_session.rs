@@ -1,4 +1,3 @@
-use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use cas_client::Client;
@@ -55,7 +54,7 @@ pub struct FileUploadSession {
 // Constructors
 impl FileUploadSession {
     pub async fn new(
-        config: TranslatorConfig,
+        config: Arc<TranslatorConfig>,
         threadpool: Arc<ThreadPool>,
         upload_progress_updater: Option<Arc<dyn ProgressUpdater>>,
     ) -> Result<Arc<FileUploadSession>> {
@@ -63,7 +62,7 @@ impl FileUploadSession {
     }
 
     pub async fn dry_run(
-        config: TranslatorConfig,
+        config: Arc<TranslatorConfig>,
         threadpool: Arc<ThreadPool>,
         upload_progress_updater: Option<Arc<dyn ProgressUpdater>>,
     ) -> Result<Arc<FileUploadSession>> {
@@ -71,12 +70,11 @@ impl FileUploadSession {
     }
 
     async fn new_impl(
-        config: TranslatorConfig,
+        config: Arc<TranslatorConfig>,
         threadpool: Arc<ThreadPool>,
         upload_progress_updater: Option<Arc<dyn ProgressUpdater>>,
         dry_run: bool,
     ) -> Result<Arc<FileUploadSession>> {
-        let config = Arc::new(config);
         let client = create_remote_client(&config, threadpool.clone(), dry_run)?;
 
         let xorb_uploader = ParallelXorbUploader::new(
@@ -128,18 +126,18 @@ impl FileUploadSession {
     ///
     /// The caller is responsible for memory usage management, the parameter "buffer_size"
     /// indicates the maximum number of Vec<u8> in the internal buffer.
-    pub fn start_clean(self: &Arc<Self>, file_name: Option<PathBuf>) -> SingleFileCleaner {
+    pub fn start_clean(self: &Arc<Self>, file_name: String) -> SingleFileCleaner {
         SingleFileCleaner::new(file_name, self.clone())
     }
 
     /// Meant to be called by the finalize() method of the SingleFileCleaner
     pub(crate) async fn register_single_file_clean_completion(
         &self,
-        file_name: Option<String>,
+        _file_name: String,
         mut file_data: DataAggregator,
         dedup_metrics: DeduplicationMetrics,
-        xorbs_dependencies: Vec<MerkleHash>,
-    ) {
+        _xorbs_dependencies: Vec<MerkleHash>,
+    ) -> Result<()> {
         let mut data_to_upload = None;
 
         // Merge in the remaining file data; uploading a new xorb if need be.
@@ -169,6 +167,8 @@ impl FileUploadSession {
 
         // Now, aggregate the new dedup metrics.
         self.deduplication_metrics.lock().await.merge_in(&dedup_metrics);
+
+        Ok(())
     }
 
     /// Process the aggregated data, uploading the data as a xorb and registering the files
@@ -185,19 +185,22 @@ impl FileUploadSession {
     }
 
     /// Finalize the session, returning the aggregated metrics
-    pub async fn finalize(mut self) -> Result<DeduplicationMetrics> {
+    pub async fn finalize(self: Arc<Self>) -> Result<DeduplicationMetrics> {
         // Register the remaining xorbs for upload.
-        let data_agg = self.current_session_data.into_inner();
+        let data_agg = std::mem::take(&mut *self.current_session_data.lock().await);
         self.process_aggregated_data(data_agg).await?;
 
         // Now, make sure all the remaining xorbs are uploaded.
-        let total_bytes_trans = self.xorb_uploader.finalize().await?;
+        let total_bytes_uploaded = self.xorb_uploader.finalize().await?;
 
         // Upload and register the current shards in the session, moving them
         // to the cache.
         self.shard_interface.upload_and_register_current_shards().await?;
 
-        Ok(total_bytes_trans)
+        let mut metrics = std::mem::take(&mut *self.deduplication_metrics.lock().await);
+
+        metrics.total_bytes_uploaded = total_bytes_uploaded;
+        Ok(metrics)
     }
 
     pub async fn summarize_file_info_of_session(&self) -> Result<Vec<MDBFileInfo>> {
@@ -249,15 +252,15 @@ mod tests {
             .await
             .unwrap();
 
-        let mut cleaner = upload_session.start_clean(None);
+        let mut cleaner = upload_session.start_clean("test".to_owned());
 
         // Read blocks from the source file and hand them to the cleaning handle
         cleaner.add_data(&read_data[..]).await.unwrap();
 
-        let (pointer_file_contents, _) = cleaner.finish().await.unwrap();
+        let pointer_file_contents = cleaner.finish().await.unwrap();
         upload_session.finalize().await.unwrap();
 
-        pf_out.write_all(pointer_file_contents.as_bytes()).unwrap();
+        pf_out.write_all(pointer_file_contents.to_string().as_bytes()).unwrap();
     }
 
     /// Smudges (hydrates) a pointer file back into the original data.

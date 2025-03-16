@@ -36,7 +36,7 @@ pub fn default_config(
     xorb_compression: Option<CompressionScheme>,
     token_info: Option<(String, u64)>,
     token_refresher: Option<Arc<dyn TokenRefresher>>,
-) -> errors::Result<TranslatorConfig> {
+) -> errors::Result<Arc<TranslatorConfig>> {
     let home = home_dir().unwrap_or(current_dir()?);
 
     let cache_root_path = home.join(".cache").join("huggingface").join("xet");
@@ -89,7 +89,7 @@ pub fn default_config(
     };
 
     // Return the temp dir so that it's not dropped and thus the directory deleted.
-    Ok(translator_config)
+    Ok(Arc::new(translator_config))
 }
 
 pub async fn upload_async(
@@ -111,8 +111,7 @@ pub async fn upload_async(
 
     // for all files, clean them, producing pointer files.
     let pointers = tokio_par_for_each(file_paths, *MAX_CONCURRENT_UPLOADS, |f, _| async {
-        let proc = upload_session.clone();
-        clean_file(&proc, f).await
+        clean_file(upload_session.clone(), f).await
     })
     .await
     .map_err(|e| match e {
@@ -122,6 +121,8 @@ pub async fn upload_async(
 
     // Push the CAS blocks and flush the mdb to disk
     let metrics = upload_session.finalize().await?;
+
+    // TODO: Report on metrics
 
     Ok(pointers)
 }
@@ -165,13 +166,11 @@ pub async fn download_async(
     Ok(paths)
 }
 
-pub async fn clean_file(processor: &FileUploadSession, f: String) -> errors::Result<PointerFile> {
+pub async fn clean_file(processor: Arc<FileUploadSession>, filename: String) -> errors::Result<PointerFile> {
     let mut read_buf = vec![0u8; READ_BLOCK_SIZE];
-    let path = PathBuf::from(f);
-    let mut reader = BufReader::new(File::open(path.clone())?);
-    let mut handle = processor.start_clean(
-        Some(&path), // for logging & telemetry
-    );
+    let mut reader = File::open(&filename)?;
+
+    let mut handle = processor.start_clean(filename);
 
     loop {
         let bytes = reader.read(&mut read_buf)?;
@@ -193,7 +192,7 @@ async fn smudge_file(
 ) -> errors::Result<String> {
     let path = PathBuf::from(pointer_file.path());
     if let Some(parent_dir) = path.parent() {
-        fs::create_dir_all(parent_dir)?;
+        std::fs::create_dir_all(parent_dir)?;
     }
     let mut f: Box<dyn Write + Send> = Box::new(File::create(&path)?);
     downloader
@@ -221,14 +220,8 @@ mod tests {
         let result = default_config(endpoint, None, None, None);
 
         assert!(result.is_ok());
-        let (config, _tempdir) = result.unwrap();
-        assert!(config.cas_storage_config.cache_config.is_some());
-        assert!(config
-            .cas_storage_config
-            .cache_config
-            .unwrap()
-            .cache_directory
-            .starts_with(&temp_dir.path()));
+        let config = result.unwrap();
+        assert!(config.data_config.cache_config.cache_directory.starts_with(&temp_dir.path()));
 
         env::remove_var("HF_HOME");
     }
@@ -245,12 +238,10 @@ mod tests {
         let result = default_config(endpoint, None, None, None);
 
         assert!(result.is_ok());
-        let (config, _tempdir) = result.unwrap();
-        assert!(config.cas_storage_config.cache_config.is_some());
+        let config = result.unwrap();
         assert!(config
-            .cas_storage_config
+            .data_config
             .cache_config
-            .unwrap()
             .cache_directory
             .starts_with(&temp_dir_xet_cache.path()));
 
@@ -264,14 +255,8 @@ mod tests {
         let result = default_config(endpoint, None, None, None);
 
         assert!(result.is_ok());
-        let (config, _tempdir) = result.unwrap();
-        assert!(config.cas_storage_config.cache_config.is_some());
-        assert!(config
-            .cas_storage_config
-            .cache_config
-            .unwrap()
-            .cache_directory
-            .starts_with(&temp_dir.path()));
+        let config = result.unwrap();
+        assert!(config.data_config.cache_config.cache_directory.starts_with(&temp_dir.path()));
 
         env::remove_var("HF_HOME");
     }
@@ -286,14 +271,8 @@ mod tests {
         let result = default_config(endpoint, None, None, None);
 
         assert!(result.is_ok());
-        let (config, _tempdir) = result.unwrap();
-        assert!(config.cas_storage_config.cache_config.is_some());
-        assert!(config
-            .cas_storage_config
-            .cache_config
-            .unwrap()
-            .cache_directory
-            .starts_with(&temp_dir.path()));
+        let config = result.unwrap();
+        assert!(config.data_config.cache_config.cache_directory.starts_with(&temp_dir.path()));
 
         env::remove_var("HF_XET_CACHE");
     }
@@ -311,13 +290,7 @@ mod tests {
             .join("xet");
 
         assert!(result.is_ok());
-        let (config, _tempdir) = result.unwrap();
-        assert!(config.cas_storage_config.cache_config.is_some());
-        assert!(config
-            .cas_storage_config
-            .cache_config
-            .unwrap()
-            .cache_directory
-            .starts_with(&expected));
+        let config = result.unwrap();
+        assert!(config.data_config.cache_config.cache_directory.starts_with(&expected));
     }
 }

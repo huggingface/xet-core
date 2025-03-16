@@ -12,7 +12,7 @@ pub struct DeduplicationMetrics {
     pub deduped_chunks_by_global_dedup: usize,
     pub defrag_prevented_dedup_chunks: usize,
 
-    pub new_xorb_count: usize,
+    pub total_bytes_uploaded: usize,
 }
 
 /// Implement + for the metrics above, so they can be added
@@ -32,6 +32,6 @@ impl DeduplicationMetrics {
         self.deduped_chunks_by_global_dedup += other.deduped_chunks_by_global_dedup;
         self.defrag_prevented_dedup_chunks += other.defrag_prevented_dedup_chunks;
 
-        self.new_xorb_count += other.new_xorb_count;
+        self.total_bytes_uploaded += other.total_bytes_uploaded;
     }
 }
