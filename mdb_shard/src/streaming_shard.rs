@@ -424,7 +424,7 @@ mod tests {
         let mut reloaded_shard = Vec::new();
         min_shard.serialize(&mut reloaded_shard)?;
 
-        let si = MDBShardInfo::load_from_file(&mut Cursor::new(&reloaded_shard))?;
+        let si = MDBShardInfo::load_from_reader(&mut Cursor::new(&reloaded_shard))?;
 
         let file_info: Vec<MDBFileInfo> = si.read_all_file_info_sections(&mut Cursor::new(&reloaded_shard))?;
         let mem_file_info: Vec<_> = mem_shard.file_content.clone().into_values().collect();

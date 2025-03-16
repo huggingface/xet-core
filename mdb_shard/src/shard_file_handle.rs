@@ -1,5 +1,7 @@
 use std::collections::HashMap;
+use std::fs::File;
 use std::io::{BufReader, Cursor, ErrorKind, Read, Seek, Write};
+use std::ops::Add;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, SystemTime};
@@ -13,6 +15,7 @@ use crate::file_structs::{FileDataSequenceEntry, MDBFileInfo};
 use crate::shard_file::current_timestamp;
 use crate::shard_format::MDBShardInfo;
 use crate::utils::{parse_shard_filename, shard_file_name, temp_shard_file_name, truncate_hash};
+use crate::MDBShardFileFooter;
 
 /// When a specific implementation of the  
 #[derive(Debug, Clone)]
@@ -47,10 +50,7 @@ impl MDBShardFile {
         Ok(s)
     }
 
-    pub fn write_out_from_reader<R: Read + Seek>(
-        target_directory: impl AsRef<Path>,
-        reader: &mut R,
-    ) -> Result<Arc<Self>> {
+    pub fn write_out_from_reader<R: Read>(target_directory: impl AsRef<Path>, reader: &mut R) -> Result<Arc<Self>> {
         let target_directory = target_directory.as_ref();
 
         let mut hashed_write; // Need to access after file is closed.
@@ -79,16 +79,32 @@ impl MDBShardFile {
 
         std::fs::rename(&temp_file_name, &full_file_name)?;
 
-        let si = MDBShardInfo::load_from_file(reader)?;
+        Self::load_from_hash_and_path(shard_hash, &full_file_name)
+    }
 
-        debug_assert_eq!(MDBShardInfo::load_from_file(&mut Cursor::new(&mut std::fs::read(&full_file_name)?))?, si);
+    pub fn export_with_expiration(
+        &self,
+        target_directory: impl AsRef<Path>,
+        shard_valid_for: Duration,
+    ) -> Result<Arc<Self>> {
+        // New footer with the proper expiration added.
+        let mut out_footer = self.shard.metadata.clone();
 
-        Ok(Arc::new(Self {
-            shard_hash,
-            path: std::path::absolute(full_file_name)?,
-            shard: MDBShardInfo::load_from_file(reader)?,
-            last_modified_time: SystemTime::now(),
-        }))
+        out_footer.shard_key_expiry = SystemTime::now()
+            .add(shard_valid_for)
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+
+        let mut out_footer_bytes = Vec::<u8>::with_capacity(std::mem::size_of::<MDBShardFileFooter>());
+        out_footer.serialize(&mut out_footer_bytes)?;
+
+        let reader = File::open(&self.path)?;
+
+        Self::write_out_from_reader(
+            target_directory,
+            &mut reader.take(out_footer.footer_offset).chain(Cursor::new(out_footer_bytes)),
+        )
     }
 
     fn load_from_hash_and_path(shard_hash: MerkleHash, path: &Path) -> Result<Arc<Self>> {
@@ -112,7 +128,7 @@ impl MDBShardFile {
             shard_hash,
             path: path.clone(),
             last_modified_time: f.metadata()?.modified()?,
-            shard: MDBShardInfo::load_from_file(&mut f)?,
+            shard: MDBShardInfo::load_from_reader(&mut f)?,
         });
 
         MDB_SHARD_FILE_CACHE.write().unwrap().insert(path, sf.clone());

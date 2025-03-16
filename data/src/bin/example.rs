@@ -89,7 +89,7 @@ async fn clean(mut reader: impl Read, mut writer: impl Write) -> Result<()> {
         FileUploadSession::new(TranslatorConfig::local_config(std::env::current_dir()?)?, get_threadpool(), None)
             .await?;
 
-    let handle = translator.start_clean(1024, None).await?;
+    let mut handle = translator.start_clean("".to_owned());
 
     loop {
         let bytes = reader.read(&mut read_buf)?;
@@ -97,14 +97,14 @@ async fn clean(mut reader: impl Read, mut writer: impl Write) -> Result<()> {
             break;
         }
 
-        handle.add_bytes(read_buf[0..bytes].to_vec()).await?;
+        handle.add_data(&read_buf[0..bytes]).await?;
     }
 
-    let (pointer_file, _) = handle.result().await?;
+    let (pointer_file, _) = handle.finish().await?;
 
-    translator.finalize_cleaning().await?;
+    translator.finalize().await?;
 
-    writer.write_all(pointer_file.as_bytes())?;
+    writer.write_all(pointer_file.to_string().as_bytes())?;
 
     Ok(())
 }

@@ -1,15 +1,19 @@
-use mdb_shard::cas_structs::{CASChunkSequenceEntry, CASChunkSequenceHeader, MDBCASInfo};
+use cas_object::constants::MAX_XORB_BYTES;
 use mdb_shard::file_structs::MDBFileInfo;
-use merkledb::aggregate_hashes::cas_node_hash;
 use merklehash::MerkleHash;
+use more_asserts::*;
+
+use crate::raw_xorb_data::RawXorbData;
+use crate::Chunk;
 
 #[derive(Default, Debug)]
-pub(crate) struct CASDataAggregator {
-    /// Bytes of all chunks accumulated in one CAS block concatenated together.
-    pub data: Vec<u8>,
-    /// Metadata of all chunks accumulated in one CAS block. Each entry is
-    /// (chunk hash, chunk size).
-    pub chunks: Vec<(MerkleHash, usize)>,
+pub struct DataAggregator {
+    // Bytes of all chunks accumulated in one CAS block concatenated together.
+    pub chunks: Vec<Chunk>,
+
+    // Number of bytes
+    num_bytes: usize,
+
     // The file info of files that are still being processed.
     // As we're building this up, we assume that all files that do not have a size in the header are
     // not finished yet and thus cannot be uploaded.
@@ -22,51 +26,63 @@ pub(crate) struct CASDataAggregator {
     pub pending_file_info: Vec<(MDBFileInfo, Vec<usize>)>,
 }
 
-impl CASDataAggregator {
-    pub fn is_empty(&self) -> bool {
-        self.data.is_empty() && self.chunks.is_empty() && self.pending_file_info.is_empty()
+impl DataAggregator {
+    pub(crate) fn new(
+        chunks: Vec<Chunk>,
+        pending_file_info: MDBFileInfo,
+        internally_referencing_entries: Vec<usize>,
+    ) -> Self {
+        let num_bytes = chunks.iter().map(|c| c.data.len()).sum();
+        Self {
+            chunks,
+            num_bytes,
+            pending_file_info: vec![(pending_file_info, internally_referencing_entries)],
+        }
     }
 
-    pub fn size(&self) -> usize {
-        self.data.len()
+    pub fn is_empty(&self) -> bool {
+        self.chunks.is_empty() && self.pending_file_info.is_empty()
+    }
+
+    pub fn num_chunks(&self) -> usize {
+        self.chunks.len()
+    }
+
+    pub fn num_bytes(&self) -> usize {
+        self.num_bytes
     }
 
     /// Finalize the result, returning the CAS info, xorb data, and the file info that's included in this.
-    pub fn finalize(mut self) -> (MDBCASInfo, Vec<u8>, Vec<MDBFileInfo>) {
+    pub fn finalize(mut self) -> (RawXorbData, Vec<MDBFileInfo>) {
         // First, cut the xorb for this one.
-        let raw_bytes_len = self.data.len();
-        let cas_hash = cas_node_hash(&self.chunks[..]);
+        let xorb_data = RawXorbData::from_chunks(&self.chunks);
+        let xorb_hash = xorb_data.hash();
 
         // Now that we have the CAS hash, fill in any blocks with the referencing xorb
         // hash as needed.
         for (fi, chunk_hash_indices) in self.pending_file_info.iter_mut() {
-            for &i in chunk_hash_indices.iter() {
+            for i in std::mem::take(chunk_hash_indices) {
                 debug_assert_eq!(fi.segments[i].cas_hash, MerkleHash::default());
-                fi.segments[i].cas_hash = cas_hash;
+                fi.segments[i].cas_hash = xorb_hash;
+            }
+
+            #[cfg(debug_assertions)]
+            {
+                // Make sure our bookkeeping along the way was good.
+                for fse in fi.segments.iter() {
+                    debug_assert_ne!(fse.cas_hash, MerkleHash::default());
+                }
             }
         }
 
-        // Build the MDBCASInfo struct.
-        let metadata = CASChunkSequenceHeader::new(cas_hash, self.chunks.len(), raw_bytes_len);
-
-        let mut pos = 0;
-        let chunks: Vec<_> = self
-            .chunks
-            .iter()
-            .map(|(h, len)| {
-                let ret = CASChunkSequenceEntry::new(*h, *len, pos);
-                pos += *len;
-                ret
-            })
-            .collect();
-        let cas_info = MDBCASInfo { metadata, chunks };
-
-        (cas_info, self.data, self.pending_file_info.into_iter().map(|(fi, _)| fi).collect())
+        (xorb_data, self.pending_file_info.into_iter().map(|(fi, _)| fi).collect())
     }
 
-    pub fn merge_in(&mut self, mut other: CASDataAggregator) {
+    pub fn merge_in(&mut self, mut other: DataAggregator) {
+        debug_assert_le!(self.num_bytes() + other.num_bytes(), MAX_XORB_BYTES);
+        debug_assert_le!(self.num_chunks() + other.num_chunks(), MAX_XORB_BYTES);
+
         let shift = self.chunks.len() as u32;
-        self.data.append(&mut other.data);
         self.chunks.append(&mut other.chunks);
 
         // Adjust the chunk indices and shifts for

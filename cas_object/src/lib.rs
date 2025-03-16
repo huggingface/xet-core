@@ -3,6 +3,7 @@ mod cas_chunk_format;
 mod cas_object_format;
 mod chunk_verification;
 mod compression_scheme;
+pub mod constants;
 pub mod error;
 mod validate_xorb_stream;
 

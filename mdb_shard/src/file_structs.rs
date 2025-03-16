@@ -353,6 +353,11 @@ impl MDBFileInfo {
             + self.metadata.num_info_entry_following() as u64 * MDB_FILE_INFO_ENTRY_SIZE as u64
     }
 
+    /// The size of the file if unpacked.
+    pub fn file_size(&self) -> usize {
+        self.segments.iter().map(|fse| fse.unpacked_segment_bytes as usize).sum()
+    }
+
     pub fn serialize<W: Write>(&self, writer: &mut W) -> Result<usize, std::io::Error> {
         if self.contains_verification() {
             debug_assert!(self.segments.len() == self.verification.len());

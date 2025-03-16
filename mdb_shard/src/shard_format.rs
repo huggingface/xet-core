@@ -281,7 +281,7 @@ pub struct MDBShardInfo {
 }
 
 impl MDBShardInfo {
-    pub fn load_from_file<R: Read + Seek>(reader: &mut R) -> Result<Self> {
+    pub fn load_from_reader<R: Read + Seek>(reader: &mut R) -> Result<Self> {
         let mut obj = Self::default();
 
         // Move cursor to beginning of shard file.
@@ -922,7 +922,7 @@ impl MDBShardInfo {
 
         // First, go through and get all of the cas chunks.  This allows us to form the lookup for the CAS block
         // hashes later.
-        let shard = MDBShardInfo::load_from_file(reader)?;
+        let shard = MDBShardInfo::load_from_reader(reader)?;
 
         let cas_chunks = shard.read_all_cas_blocks_full(reader)?;
         let mut cas_block_lookup = HashMap::<MerkleHash, usize>::with_capacity(cas_chunks.len());
@@ -1204,6 +1204,7 @@ impl MDBShardInfo {
         let creation_time = std::time::SystemTime::now();
 
         out_footer.shard_creation_timestamp = creation_time.duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
+
         out_footer.shard_key_expiry = creation_time
             .add(key_valid_for)
             .duration_since(UNIX_EPOCH)
@@ -1532,7 +1533,7 @@ pub mod test_routines {
     pub fn verify_mdb_shards_match<R: Read + Seek>(mem_shard: &MDBInMemoryShard, shard_info: R) -> Result<()> {
         let mut cursor = shard_info;
         // Now, test that the results on queries from the
-        let shard_file = MDBShardInfo::load_from_file(&mut cursor)?;
+        let shard_file = MDBShardInfo::load_from_reader(&mut cursor)?;
 
         // Test on the minimal shard format as well
         cursor.rewind()?;
