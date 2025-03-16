@@ -96,7 +96,7 @@ impl MDBShardFile {
             .unwrap_or_default()
             .as_secs();
 
-        let mut out_footer_bytes = Vec::<u8>::with_capacity(size_of::<MDBShardFileFooter>());
+        let mut out_footer_bytes = Vec::<u8>::with_capacity(std::mem::size_of::<MDBShardFileFooter>());
         out_footer.serialize(&mut out_footer_bytes)?;
 
         let reader = File::open(&self.path)?;
