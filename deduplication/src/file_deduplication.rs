@@ -256,6 +256,7 @@ impl<DataInterfaceType: DataInterface> FileDeduper<DataInterfaceType> {
         }
 
         self.deduplication_metrics.merge_in(&dedup_metrics);
+        self.chunk_hashes.extend(chunks.iter().map(|c| (c.hash, c.data.len())));
 
         Ok(dedup_metrics)
     }

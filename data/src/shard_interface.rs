@@ -7,6 +7,7 @@ use mdb_shard::cas_structs::MDBCASInfo;
 use mdb_shard::constants::MDB_SHARD_MIN_TARGET_SIZE;
 use mdb_shard::file_structs::{FileDataSequenceEntry, MDBFileInfo};
 use mdb_shard::session_directory::consolidate_shards_in_directory;
+use mdb_shard::shard_file_reconstructor::FileReconstructor;
 use mdb_shard::ShardFileManager;
 use merklehash::MerkleHash;
 use tempfile::TempDir;
@@ -98,7 +99,18 @@ impl SessionShardInterface {
     }
 
     pub async fn add_file_reconstruction_info(&self, file_info: MDBFileInfo) -> Result<()> {
-        Ok(self.session_shard_manager.add_file_reconstruction_info(file_info).await?)
+        // Only add the file reconstruction info if it's not already in the cache.  In this
+        // case, it's already been uploaded.
+        if self
+            .cache_shard_manager
+            .get_file_reconstruction_info(&file_info.metadata.file_hash)
+            .await?
+            .is_none()
+        {
+            self.session_shard_manager.add_file_reconstruction_info(file_info).await?;
+        }
+
+        Ok(())
     }
 
     pub async fn session_file_info_list(&self) -> Result<Vec<MDBFileInfo>> {
