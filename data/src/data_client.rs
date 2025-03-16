@@ -1,3 +1,4 @@
+use std::env;
 use std::env::current_dir;
 use std::fs::File;
 use std::io::{Read, Write};
@@ -38,9 +39,18 @@ pub fn default_config(
     token_info: Option<(String, u64)>,
     token_refresher: Option<Arc<dyn TokenRefresher>>,
 ) -> errors::Result<Arc<TranslatorConfig>> {
-    let home = home_dir().unwrap_or(current_dir()?);
-
-    let cache_root_path = home.join(".cache").join("huggingface").join("xet");
+    // if HF_HOME is set use that instead of ~/.cache/huggingface
+    // if HF_XET_CACHE is set use that instead of ~/.cache/huggingface/xet
+    // HF_XET_CACHE takes precedence over HF_HOME
+    let cache_root_path = if env::var("HF_XET_CACHE").is_ok() {
+        PathBuf::from(env::var("HF_XET_CACHE").unwrap())
+    } else if env::var("HF_HOME").is_ok() {
+        let home = env::var("HF_HOME").unwrap();
+        PathBuf::from(home).join("xet")
+    } else {
+        let home = home_dir().unwrap_or(current_dir()?);
+        home.join(".cache").join("huggingface").join("xet")
+    };
 
     let (token, token_expiration) = token_info.unzip();
     let auth_cfg = AuthConfig::maybe_new(token, token_expiration, token_refresher);

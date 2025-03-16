@@ -21,7 +21,7 @@ pub struct DeduplicationMetrics {
 /// and updated after each call to process_chunks.
 
 impl DeduplicationMetrics {
-    pub fn merge_in(mut self, other: &Self) {
+    pub fn merge_in(&mut self, other: &Self) {
         self.total_bytes += other.total_bytes;
         self.deduped_bytes += other.deduped_bytes;
         self.new_bytes += other.new_bytes;
