@@ -61,6 +61,7 @@ impl SingleFileCleaner {
     pub async fn finish(mut self) -> Result<(PointerFile, DeduplicationMetrics)> {
         // Chunk the rest of the data.
         if let Some(chunk) = self.chunker.finish() {
+            self.sha_generator.update(Arc::new([chunk.clone()]));
             self.dedup_manager.process_chunks(&[chunk]).await?;
         }
 
@@ -70,11 +71,11 @@ impl SingleFileCleaner {
 
         // Now finish the deduplication process.
         let repo_salt = self.session.config.shard_config.repo_salt;
-        let (remaining_file_data, deduplication_metrics, new_xorbs) =
+        let (file_hash, remaining_file_data, deduplication_metrics, new_xorbs) =
             self.dedup_manager.finalize(repo_salt, Some(metadata_ext));
 
         let pointer_file =
-            PointerFile::init_from_info(&self.file_name, &sha256.hex(), deduplication_metrics.total_bytes as u64);
+            PointerFile::init_from_info(&self.file_name, &file_hash.hex(), deduplication_metrics.total_bytes as u64);
 
         // Let's check some things that should be invarients
         #[cfg(debug_assertions)]

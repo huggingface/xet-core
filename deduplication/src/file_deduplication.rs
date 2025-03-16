@@ -349,11 +349,13 @@ impl<DataInterfaceType: DataInterface> FileDeduper<DataInterfaceType> {
     /// Finalize the internal state, converting remaining data to a DataAggregator object that contains the file info
     /// and remaining data.  Also returns the aggregated deduplication metrics and the list of xorb hashes that were
     /// registered as part of this run.
+    ///
+    /// Returns (file hash, data aggregation, deduplication metrics, new xorb list)
     pub fn finalize(
         self,
         file_hash_salt: [u8; 32],
         metadata_ext: Option<FileMetadataExt>,
-    ) -> (DataAggregator, DeduplicationMetrics, Vec<MerkleHash>) {
+    ) -> (MerkleHash, DataAggregator, DeduplicationMetrics, Vec<MerkleHash>) {
         let file_hash = file_node_hash(&self.chunk_hashes, &file_hash_salt.into()).unwrap();
 
         let metadata = FileDataSequenceHeader::new(file_hash, self.file_info.len(), true, metadata_ext.is_some());
@@ -386,6 +388,6 @@ impl<DataInterfaceType: DataInterface> FileDeduper<DataInterfaceType> {
 
         let remaining_data = DataAggregator::new(self.new_data, fi, self.internally_referencing_entries);
 
-        (remaining_data, self.deduplication_metrics, self.new_xorbs)
+        (file_hash, remaining_data, self.deduplication_metrics, self.new_xorbs)
     }
 }
