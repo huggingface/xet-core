@@ -16,6 +16,9 @@ mod repo_salt;
 mod sha256;
 mod shard_interface;
 
+#[cfg(debug_assertions)]
+mod test_clean_smudge;
+
 pub use cas_client::CacheConfig;
 pub use file_downloader::FileDownloader;
 pub use file_upload_session::FileUploadSession;

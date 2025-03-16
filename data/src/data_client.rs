@@ -3,7 +3,7 @@ use std::env::current_dir;
 use std::fs::File;
 use std::io::{Read, Write};
 use std::num::NonZero;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use cas_client::remote_client::PREFIX_DEFAULT;
@@ -180,12 +180,12 @@ pub async fn download_async(
 
 pub async fn clean_file(
     processor: Arc<FileUploadSession>,
-    filename: String,
+    filename: impl AsRef<Path>,
 ) -> errors::Result<(PointerFile, DeduplicationMetrics)> {
     let mut read_buf = vec![0u8; READ_BLOCK_SIZE];
     let mut reader = File::open(&filename)?;
 
-    let mut handle = processor.start_clean(filename);
+    let mut handle = processor.start_clean(filename.as_ref().to_string_lossy().into());
 
     loop {
         let bytes = reader.read(&mut read_buf)?;
@@ -196,7 +196,7 @@ pub async fn clean_file(
         handle.add_data(&read_buf[0..bytes]).await?;
     }
 
-    handle.finish().await
+    Ok(handle.finish().await?)
 }
 
 async fn smudge_file(

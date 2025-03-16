@@ -117,7 +117,10 @@ impl SessionShardInterface {
         Ok(self.session_shard_manager.all_file_info().await?)
     }
 
-    // Consumes everything
+    /// Uploads everything in the current session directory.  This must be called after all xorbs
+    /// have completed their upload.
+    /// 
+    ///  
     pub async fn upload_and_register_current_shards(&self) -> Result<usize> {
         // First, flush everything to disk.
         self.session_shard_manager.flush().await?;
