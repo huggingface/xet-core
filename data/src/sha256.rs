@@ -54,8 +54,9 @@ impl ShaGenerator {
             None => return MerkleHash::default(),
         };
 
-        let digest = hasher.finalize();
-        MerkleHash::try_from(digest.as_slice()).unwrap()
+        let sha256 = hasher.finalize();
+        let hex_str = format!("{sha256:x}");
+        MerkleHash::from_hex(&hex_str).unwrap()
     }
 }
 
@@ -111,8 +112,8 @@ mod sha_tests {
 
         let out_hash = sha_generator.finalize().await;
 
-        let ref_hash = Sha256::digest(&rand_data);
+        let ref_hash = format!("{:x}", Sha256::digest(&rand_data));
 
-        assert_eq!(out_hash.as_bytes(), ref_hash.as_slice());
+        assert_eq!(out_hash.hex(), ref_hash);
     }
 }

@@ -1,3 +1,4 @@
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -100,8 +101,12 @@ impl SessionShardInterface {
         Ok(self.session_shard_manager.add_file_reconstruction_info(file_info).await?)
     }
 
+    pub async fn session_file_info_list(&self) -> Result<Vec<MDBFileInfo>> {
+        Ok(self.session_shard_manager.all_file_info().await?)
+    }
+
     // Consumes everything
-    pub async fn upload_and_register_current_shards(&self) -> Result<()> {
+    pub async fn upload_and_register_current_shards(&self) -> Result<usize> {
         // First, flush everything to disk.
         self.session_shard_manager.flush().await?;
 
@@ -112,16 +117,20 @@ impl SessionShardInterface {
         // Upload all the shards and move each to the common directory.
         let mut shard_uploads = JoinSet::<Result<()>>::new();
 
+        let xorb_bytes_uploaded = Arc::new(AtomicUsize::new(0));
+
         for si in shard_list {
             let salt = self.config.shard_config.repo_salt;
             let shard_client = self.client.clone();
             let shard_prefix = self.config.shard_config.prefix.clone();
             let cache_shard_manager = self.cache_shard_manager.clone();
+            let xorb_bytes_uploaded = xorb_bytes_uploaded.clone();
 
             shard_uploads.spawn(async move {
                 debug!("Uploading shard {shard_prefix}/{:?} from staging area to CAS.", &si.shard_hash);
                 let data = std::fs::read(&si.path)?;
 
+                xorb_bytes_uploaded.fetch_add(data.len(), Ordering::Relaxed);
                 // Upload the shard.
                 shard_client
                     .upload_shard(&shard_prefix, &si.shard_hash, false, &data, &salt)
@@ -147,6 +156,6 @@ impl SessionShardInterface {
             jh??;
         }
 
-        Ok(())
+        Ok(xorb_bytes_uploaded.load(Ordering::Relaxed))
     }
 }

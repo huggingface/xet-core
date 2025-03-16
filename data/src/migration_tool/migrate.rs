@@ -68,14 +68,15 @@ pub async fn migrate_files_impl(
 
     let num_workers = if sequential { 1 } else { threadpool.num_worker_threads() };
     let processor = if dry_run {
-        Arc::new(FileUploadSession::dry_run(config, threadpool, None).await?)
+        FileUploadSession::dry_run(config, threadpool, None).await?
     } else {
-        Arc::new(FileUploadSession::new(config, threadpool, None).await?)
+        FileUploadSession::new(config, threadpool, None).await?
     };
 
     let clean_ret = tokio_par_for_each(file_paths, num_workers, |f, _| async {
         let proc = processor.clone();
-        clean_file(&proc, f).await
+        let (pf, metrics) = clean_file(proc, f).await?;
+        Ok((pf, metrics.new_bytes as u64))
     })
     .await
     .map_err(|e| match e {
@@ -83,12 +84,11 @@ pub async fn migrate_files_impl(
         ParallelError::TaskError(e) => e,
     })?;
 
-    let total_bytes_trans = processor.finalize().await?;
-
     if dry_run {
-        let all_file_info = processor.summarize_file_info_of_session().await?;
-        Ok((all_file_info, clean_ret, total_bytes_trans))
+        let (metrics, all_file_info) = processor.finalize_with_file_info().await?;
+        Ok((all_file_info, clean_ret, metrics.total_bytes_uploaded as u64))
     } else {
-        Ok((vec![], clean_ret, total_bytes_trans))
+        let metrics = processor.finalize().await?;
+        Ok((vec![], clean_ret, metrics.total_bytes_uploaded as u64))
     }
 }

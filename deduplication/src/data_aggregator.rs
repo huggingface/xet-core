@@ -1,8 +1,8 @@
+use cas_object::constants::MAX_XORB_BYTES;
 use mdb_shard::file_structs::MDBFileInfo;
 use merklehash::MerkleHash;
 use more_asserts::*;
 
-use crate::constants::MAX_XORB_BYTES;
 use crate::raw_xorb_data::RawXorbData;
 use crate::Chunk;
 

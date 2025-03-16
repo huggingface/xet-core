@@ -298,10 +298,13 @@ impl ShardFileManager {
             .contains_key(shard_hash)
     }
 
-    pub async fn all_file_info_of_session(&self) -> Result<Vec<MDBFileInfo>> {
+    pub async fn all_file_info(&self) -> Result<Vec<MDBFileInfo>> {
+        // Start with everything that is now in-memory
+        let mut all_file_info: Vec<MDBFileInfo> =
+            self.current_state.read().await.file_content.values().cloned().collect();
+
         let shard_files = MDBShardFile::load_all_valid(&self.shard_directory)?;
 
-        let mut all_file_info = vec![];
         for shard in shard_files {
             all_file_info.append(&mut shard.read_all_file_info_sections()?);
         }

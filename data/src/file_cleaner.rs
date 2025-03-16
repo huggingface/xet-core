@@ -24,9 +24,6 @@ pub struct SingleFileCleaner {
     // The deduplication interface.
     dedup_manager: FileDeduper<UploadSessionDataManager>,
 
-    // Internal Data
-    metrics: DeduplicationMetrics,
-
     // Generating the sha256 hash
     sha_generator: ShaGenerator,
 }
@@ -38,7 +35,6 @@ impl SingleFileCleaner {
             dedup_manager: FileDeduper::new(UploadSessionDataManager::new(session.clone())),
             session,
             chunker: deduplication::Chunker::default(),
-            metrics: DeduplicationMetrics::default(),
             sha_generator: ShaGenerator::new(),
         }
     }
@@ -56,18 +52,16 @@ impl SingleFileCleaner {
         self.sha_generator.update(chunks.clone());
 
         // Run the deduplication interface here.
-        let metrics = self.dedup_manager.process_chunks(&chunks).await?;
-        self.metrics.merge_in(&metrics);
+        self.dedup_manager.process_chunks(&chunks).await?;
 
         Ok(())
     }
 
     /// Return the representation of the file after clean as a pointer file instance.
-    pub async fn finish(mut self) -> Result<PointerFile> {
+    pub async fn finish(mut self) -> Result<(PointerFile, DeduplicationMetrics)> {
         // Chunk the rest of the data.
         if let Some(chunk) = self.chunker.finish() {
-            let metrics = self.dedup_manager.process_chunks(&[chunk]).await?;
-            self.metrics.merge_in(&metrics);
+            self.dedup_manager.process_chunks(&[chunk]).await?;
         }
 
         // Finalize the sha256 hashing and create the metadata extension
@@ -97,10 +91,10 @@ impl SingleFileCleaner {
             .register_single_file_clean_completion(
                 self.file_name,
                 remaining_file_data,
-                deduplication_metrics,
+                &deduplication_metrics,
                 new_xorbs,
             )
-            .await;
+            .await?;
 
         // NB: xorb upload is happening in the background, this number is optimistic since it does
         // not count transfer time of the uploaded xorbs, which is why `end_processing_ts`
@@ -118,6 +112,6 @@ impl SingleFileCleaner {
         );
         */
 
-        Ok(pointer_file)
+        Ok((pointer_file, deduplication_metrics))
     }
 }

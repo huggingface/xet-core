@@ -1,6 +1,6 @@
 use std::env::current_dir;
 use std::fs::File;
-use std::io::{BufReader, Read, Write};
+use std::io::{Read, Write};
 use std::num::NonZero;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -8,6 +8,7 @@ use std::sync::Arc;
 use cas_client::remote_client::PREFIX_DEFAULT;
 use cas_client::CacheConfig;
 use cas_object::CompressionScheme;
+use deduplication::DeduplicationMetrics;
 use dirs::home_dir;
 use lazy_static::lazy_static;
 use parutils::{tokio_par_for_each, ParallelError};
@@ -111,7 +112,8 @@ pub async fn upload_async(
 
     // for all files, clean them, producing pointer files.
     let pointers = tokio_par_for_each(file_paths, *MAX_CONCURRENT_UPLOADS, |f, _| async {
-        clean_file(upload_session.clone(), f).await
+        let (pf, _metrics) = clean_file(upload_session.clone(), f).await?;
+        Ok(pf)
     })
     .await
     .map_err(|e| match e {
@@ -120,7 +122,7 @@ pub async fn upload_async(
     })?;
 
     // Push the CAS blocks and flush the mdb to disk
-    let metrics = upload_session.finalize().await?;
+    let _metrics = upload_session.finalize().await?;
 
     // TODO: Report on metrics
 
@@ -166,7 +168,10 @@ pub async fn download_async(
     Ok(paths)
 }
 
-pub async fn clean_file(processor: Arc<FileUploadSession>, filename: String) -> errors::Result<PointerFile> {
+pub async fn clean_file(
+    processor: Arc<FileUploadSession>,
+    filename: String,
+) -> errors::Result<(PointerFile, DeduplicationMetrics)> {
     let mut read_buf = vec![0u8; READ_BLOCK_SIZE];
     let mut reader = File::open(&filename)?;
 
@@ -181,8 +186,7 @@ pub async fn clean_file(processor: Arc<FileUploadSession>, filename: String) -> 
         handle.add_data(&read_buf[0..bytes]).await?;
     }
 
-    let pf = handle.finish().await?;
-    Ok(pf)
+    Ok(handle.finish().await?)
 }
 
 async fn smudge_file(

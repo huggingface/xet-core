@@ -6,6 +6,7 @@ use mdb_shard::file_structs::FileDataSequenceEntry;
 use merklehash::MerkleHash;
 use tokio::task::JoinSet;
 
+use crate::configurations::GlobalDedupPolicy;
 use crate::errors::Result;
 use crate::file_upload_session::FileUploadSession;
 
@@ -24,7 +25,7 @@ impl UploadSessionDataManager {
     }
 
     fn global_dedup_queries_enabled(&self) -> bool {
-        todo!()
+        matches!(self.session.config.shard_config.global_dedup_policy, GlobalDedupPolicy::Always)
     }
 }
 

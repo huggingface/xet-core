@@ -1,7 +1,8 @@
+use std::mem::{swap, take};
 use std::sync::Arc;
 
 use cas_client::Client;
-use deduplication::constants::MAX_XORB_BYTES;
+use cas_object::constants::MAX_XORB_BYTES;
 use deduplication::{DataAggregator, DeduplicationMetrics};
 use jsonwebtoken::{decode, DecodingKey, Validation};
 use mdb_shard::file_structs::MDBFileInfo;
@@ -116,10 +117,7 @@ impl FileUploadSession {
             deduplication_metrics: Mutex::new(DeduplicationMetrics::default()),
         }))
     }
-}
 
-/// Clean operations
-impl FileUploadSession {
     /// Start to clean one file. When cleaning multiple files, each file should
     /// be associated with one Cleaner. This allows to launch multiple clean task
     /// simultaneously.
@@ -135,7 +133,7 @@ impl FileUploadSession {
         &self,
         _file_name: String,
         mut file_data: DataAggregator,
-        dedup_metrics: DeduplicationMetrics,
+        dedup_metrics: &DeduplicationMetrics,
         _xorbs_dependencies: Vec<MerkleHash>,
     ) -> Result<()> {
         let mut data_to_upload = None;
@@ -148,7 +146,7 @@ impl FileUploadSession {
             if current_session_data.num_bytes() + file_data.num_bytes() > MAX_XORB_BYTES {
                 // Cut the larger one as a xorb, uploading it and registering the files.
                 if current_session_data.num_bytes() > file_data.num_bytes() {
-                    std::mem::swap(&mut *current_session_data, &mut file_data);
+                    swap(&mut *current_session_data, &mut file_data);
                 }
 
                 // Now file data is larger
@@ -166,7 +164,7 @@ impl FileUploadSession {
         }
 
         // Now, aggregate the new dedup metrics.
-        self.deduplication_metrics.lock().await.merge_in(&dedup_metrics);
+        self.deduplication_metrics.lock().await.merge_in(dedup_metrics);
 
         Ok(())
     }
@@ -184,31 +182,43 @@ impl FileUploadSession {
         Ok(())
     }
 
-    /// Finalize the session, returning the aggregated metrics
-    pub async fn finalize(self: Arc<Self>) -> Result<DeduplicationMetrics> {
+    /// Finalize with  
+    async fn finalize_impl(self: Arc<Self>, return_files: bool) -> Result<(DeduplicationMetrics, Vec<MDBFileInfo>)> {
+        // This should be used as if it's consuming the class, as it effectively empties all the states.
+        debug_assert_eq!(Arc::strong_count(&self), 1);
+
         // Register the remaining xorbs for upload.
-        let data_agg = std::mem::take(&mut *self.current_session_data.lock().await);
+        let data_agg = take(&mut *self.current_session_data.lock().await);
         self.process_aggregated_data(data_agg).await?;
 
         // Now, make sure all the remaining xorbs are uploaded.
-        let total_bytes_uploaded = self.xorb_uploader.finalize().await?;
+        let mut metrics = take(&mut *self.deduplication_metrics.lock().await);
+
+        metrics.xorb_bytes_uploaded = self.xorb_uploader.finalize().await?;
+
+        let all_file_info = {
+            if return_files {
+                self.shard_interface.session_file_info_list().await?
+            } else {
+                Vec::new()
+            }
+        };
 
         // Upload and register the current shards in the session, moving them
         // to the cache.
-        self.shard_interface.upload_and_register_current_shards().await?;
+        metrics.shard_bytes_uploaded = self.shard_interface.upload_and_register_current_shards().await?;
 
-        let mut metrics = std::mem::take(&mut *self.deduplication_metrics.lock().await);
+        metrics.total_bytes_uploaded = metrics.shard_bytes_uploaded + metrics.xorb_bytes_uploaded;
 
-        metrics.total_bytes_uploaded = total_bytes_uploaded;
-        Ok(metrics)
+        Ok((metrics, all_file_info))
     }
 
-    pub async fn summarize_file_info_of_session(&self) -> Result<Vec<MDBFileInfo>> {
-        todo!();
-        /*        self.shard_manager
-        .all_file_info_of_session()
-        .await
-        .map_err(DataProcessingError::from) */
+    pub async fn finalize(self: Arc<Self>) -> Result<DeduplicationMetrics> {
+        Ok(self.finalize_impl(false).await?.0)
+    }
+
+    pub async fn finalize_with_file_info(self: Arc<Self>) -> Result<(DeduplicationMetrics, Vec<MDBFileInfo>)> {
+        self.finalize_impl(false).await
     }
 }
 
@@ -257,7 +267,7 @@ mod tests {
         // Read blocks from the source file and hand them to the cleaning handle
         cleaner.add_data(&read_data[..]).await.unwrap();
 
-        let pointer_file_contents = cleaner.finish().await.unwrap();
+        let (pointer_file_contents, _metrics) = cleaner.finish().await.unwrap();
         upload_session.finalize().await.unwrap();
 
         pf_out.write_all(pointer_file_contents.to_string().as_bytes()).unwrap();

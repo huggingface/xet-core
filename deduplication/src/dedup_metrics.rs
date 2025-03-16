@@ -12,6 +12,8 @@ pub struct DeduplicationMetrics {
     pub deduped_chunks_by_global_dedup: usize,
     pub defrag_prevented_dedup_chunks: usize,
 
+    pub xorb_bytes_uploaded: usize,
+    pub shard_bytes_uploaded: usize,
     pub total_bytes_uploaded: usize,
 }
 
@@ -32,6 +34,8 @@ impl DeduplicationMetrics {
         self.deduped_chunks_by_global_dedup += other.deduped_chunks_by_global_dedup;
         self.defrag_prevented_dedup_chunks += other.defrag_prevented_dedup_chunks;
 
+        self.xorb_bytes_uploaded += other.xorb_bytes_uploaded;
+        self.shard_bytes_uploaded += other.shard_bytes_uploaded;
         self.total_bytes_uploaded += other.total_bytes_uploaded;
     }
 }
