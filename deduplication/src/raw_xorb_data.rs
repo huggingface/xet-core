@@ -65,7 +65,7 @@ impl RawXorbData {
         let mut new_vec = Vec::with_capacity(self.num_bytes());
 
         for ch in self.data.iter() {
-            new_vec.extend_from_slice(&ch);
+            new_vec.extend_from_slice(ch);
         }
 
         new_vec
