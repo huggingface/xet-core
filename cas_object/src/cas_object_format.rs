@@ -650,6 +650,10 @@ impl CasObjectInfoV1 {
             )));
         }
 
+        // set the version and ident field since this is a valid CasObjectInfoV1
+        s.hashes_version = 0;
+        debug_assert!(s.chunk_hashes.is_empty());
+
         Ok((s, r.reader_bytes() as u32))
     }
 
@@ -2019,38 +2023,44 @@ mod tests {
 
     #[test]
     fn test_deserialize_only_boundaries_section() {
-        const NUM_CHUNKS: u32 = 100;
         const CHUNK_SIZE: u32 = 100;
         const COMPRESSION_SCHEME: CompressionScheme = CompressionScheme::None;
 
-        let (c, _, raw_data, raw_chunk_boundaries) =
-            build_cas_object(NUM_CHUNKS, ChunkSize::Fixed(CHUNK_SIZE), COMPRESSION_SCHEME);
+        for num_chunks in [1, 10, 100, 1000] {
+            let (c, _, raw_data, raw_chunk_boundaries) =
+                build_cas_object(num_chunks, ChunkSize::Fixed(CHUNK_SIZE), COMPRESSION_SCHEME);
 
-        // Act & Assert
-        let mut writer: Cursor<Vec<u8>> = Cursor::new(Vec::new());
-        assert!(CasObject::serialize(
-            &mut writer,
-            &c.info.cashash,
-            &raw_data,
-            &raw_chunk_boundaries,
-            Some(COMPRESSION_SCHEME)
-        )
-        .is_ok());
-        let original = c.info;
+            // Act & Assert
+            let mut writer: Cursor<Vec<u8>> = Cursor::new(Vec::new());
+            assert!(CasObject::serialize(
+                &mut writer,
+                &c.info.cashash,
+                &raw_data,
+                &raw_chunk_boundaries,
+                Some(COMPRESSION_SCHEME)
+            )
+                .is_ok());
+            let original = c.info;
 
-        writer.seek(SeekFrom::Start(0)).unwrap();
+            writer.seek(SeekFrom::Start(0)).unwrap();
 
-        let result = CasObjectInfoV1::deserialize_only_boundaries_section(&mut writer);
-        assert!(result.is_ok());
-        let (boundaries_footer, _num_read) = result.unwrap();
+            let result = CasObjectInfoV1::deserialize_only_boundaries_section(&mut writer);
+            assert!(result.is_ok());
+            let (boundaries_footer, _num_read) = result.unwrap();
 
-        assert_eq!(boundaries_footer.version, original.version);
-        assert_eq!(boundaries_footer.ident_boundary_section, original.ident_boundary_section);
-        assert_eq!(boundaries_footer.boundaries_version, original.boundaries_version);
-        assert_eq!(boundaries_footer.num_chunks, original.num_chunks);
-        assert_eq!(boundaries_footer.boundary_section_offset_from_end, original.boundary_section_offset_from_end);
-        assert_eq!(boundaries_footer.chunk_boundary_offsets, original.chunk_boundary_offsets);
-        assert_eq!(boundaries_footer.unpacked_chunk_offsets, original.unpacked_chunk_offsets);
-        assert!(boundaries_footer.chunk_hashes.is_empty());
+            assert_eq!(boundaries_footer.version, original.version);
+            assert_eq!(boundaries_footer.ident_boundary_section, original.ident_boundary_section);
+            assert_eq!(boundaries_footer.boundaries_version, original.boundaries_version);
+            assert_eq!(boundaries_footer.num_chunks, num_chunks);
+            assert_eq!(boundaries_footer.num_chunks, original.num_chunks);
+            assert_eq!(boundaries_footer.boundary_section_offset_from_end, original.boundary_section_offset_from_end);
+            assert_eq!(boundaries_footer.hashes_section_offset_from_end, original.hashes_section_offset_from_end);
+            assert_eq!(boundaries_footer.chunk_boundary_offsets, original.chunk_boundary_offsets);
+            assert_eq!(boundaries_footer.unpacked_chunk_offsets, original.unpacked_chunk_offsets);
+
+            // check that the hashes are not filled in
+            assert!(boundaries_footer.chunk_hashes.is_empty());
+        }
+
     }
 }
