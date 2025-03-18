@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use deduplication::{DataInterface, RawXorbData};
+use deduplication::{DeduplicationDataInterface, RawXorbData};
 use mdb_shard::file_structs::FileDataSequenceEntry;
 use merklehash::MerkleHash;
 use tokio::task::JoinSet;
@@ -30,7 +30,7 @@ impl UploadSessionDataManager {
 }
 
 #[async_trait]
-impl DataInterface for UploadSessionDataManager {
+impl DeduplicationDataInterface for UploadSessionDataManager {
     type ErrorType = crate::errors::DataProcessingError;
 
     /// Query for possible

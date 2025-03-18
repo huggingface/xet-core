@@ -7,7 +7,7 @@ use merklehash::MerkleHash;
 use crate::raw_xorb_data::RawXorbData;
 
 #[async_trait]
-pub trait DataInterface: Send + Sync + 'static {
+pub trait DeduplicationDataInterface: Send + Sync + 'static {
     // The error type used for the interface
     type ErrorType;
 

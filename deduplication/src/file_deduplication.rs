@@ -13,11 +13,11 @@ use more_asserts::{debug_assert_le, debug_assert_lt};
 use crate::data_aggregator::DataAggregator;
 use crate::dedup_metrics::DeduplicationMetrics;
 use crate::defrag_prevention::DefragPrevention;
-use crate::interfaces::DataInterface;
+use crate::interfaces::DeduplicationDataInterface;
 use crate::raw_xorb_data::RawXorbData;
 use crate::Chunk;
 
-pub struct FileDeduper<DataInterfaceType: DataInterface> {
+pub struct FileDeduper<DataInterfaceType: DeduplicationDataInterface> {
     data_mng: DataInterfaceType,
 
     /// The new data here that hasn't yet been deduplicated.
@@ -55,7 +55,7 @@ pub struct FileDeduper<DataInterfaceType: DataInterface> {
     deduplication_metrics: DeduplicationMetrics,
 }
 
-impl<DataInterfaceType: DataInterface> FileDeduper<DataInterfaceType> {
+impl<DataInterfaceType: DeduplicationDataInterface> FileDeduper<DataInterfaceType> {
     pub fn new(data_manager: DataInterfaceType) -> Self {
         Self {
             data_mng: data_manager,

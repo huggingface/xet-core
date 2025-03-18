@@ -64,32 +64,35 @@ impl DefragPrevention {
 
     /// Check to see if we should update against this entry or continue from the previous one?
     pub(crate) fn allow_dedup_on_next_range(&mut self, dedup_range_size: usize) -> bool {
-        if let Some(chunks_per_range) = self.rolling_chunks_per_range() {
-            let target_cpr = if self.defrag_at_low_threshold {
-                self.min_chunks_per_range * self.min_chunks_per_range_historesis_factor
-            } else {
-                self.min_chunks_per_range
-            };
+        let Some(chunks_per_range) = self.rolling_chunks_per_range() else {
+            return true;
+        };
 
-            if chunks_per_range < target_cpr {
-                // chunks per range is pretty poor, we should not dedupe.
-                // However, here we do get to look ahead a little bit
-                // and check the size of the next dedupe window.
-                // if it is too small, it is not going to improve
-                // the chunks per range and so we skip it.
-                if (dedup_range_size as f32) < chunks_per_range {
-                    // once I start skipping dedupe, we try to raise
-                    // the cpr to the high threshold
-                    self.defrag_at_low_threshold = false;
-                    return false;
-                }
-            } else {
-                // once I start deduping again, we lower CPR
-                // to the low threshold so we allow for more small
-                // fragments.
-                self.defrag_at_low_threshold = true;
+        let target_cpr = if self.defrag_at_low_threshold {
+            self.min_chunks_per_range * self.min_chunks_per_range_historesis_factor
+        } else {
+            self.min_chunks_per_range
+        };
+
+        if chunks_per_range < target_cpr {
+            // chunks per range is pretty poor, we should not dedupe.
+            // However, here we do get to look ahead a little bit
+            // and check the size of the next dedupe window.
+            // if it is too small, it is not going to improve
+            // the chunks per range and so we skip it.
+            if (dedup_range_size as f32) < chunks_per_range {
+                // once I start skipping dedupe, we try to raise
+                // the cpr to the high threshold
+                self.defrag_at_low_threshold = false;
+                return false;
             }
+        } else {
+            // once I start deduping again, we lower CPR
+            // to the low threshold so we allow for more small
+            // fragments.
+            self.defrag_at_low_threshold = true;
         }
+
         true
     }
 }

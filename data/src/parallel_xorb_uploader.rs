@@ -77,6 +77,11 @@ impl ParallelXorbUploader {
     pub async fn register_new_xorb_for_upload(&self, xorb: RawXorbData) -> Result<()> {
         self.status_is_ok().await?;
 
+        // No need to process an empty xorb.
+        if xorb.num_bytes() == 0 {
+            return Ok(());
+        }
+
         // Acquire a permit for uploading; the acquired permit is dropped after the task completes.
         // The chosen Semaphore is fair, meaning xorbs added first will be scheduled to upload first.
         let permit = self

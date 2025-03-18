@@ -64,11 +64,14 @@ impl DataAggregator {
 
         // Now that we have the CAS hash, fill in any blocks with the referencing xorb
         // hash as needed.
-        for (fi, chunk_hash_indices) in self.pending_file_info.iter_mut() {
-            for i in std::mem::take(chunk_hash_indices) {
+        for (fi, chunk_hash_indices_ref) in self.pending_file_info.iter_mut() {
+            for &i in chunk_hash_indices_ref.iter() {
                 debug_assert_eq!(fi.segments[i].cas_hash, MerkleHash::default());
                 fi.segments[i].cas_hash = xorb_hash;
             }
+
+            // Incorporated this info, so clear this.
+            chunk_hash_indices_ref.clear();
 
             #[cfg(debug_assertions)]
             {
