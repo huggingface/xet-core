@@ -155,10 +155,17 @@ impl FileUploadSession {
                 // Actually upload this outside the lock
                 drop(current_session_data);
 
-                self.process_aggregated_data(file_data).await?;
+                self.process_aggregated_data_as_xorb(file_data).await?;
             } else {
                 current_session_data.merge_in(file_data);
             }
+        }
+
+        #[cfg(debug_assertions)]
+        {
+            let current_session_data = self.current_session_data.lock().await;
+            debug_assert_le!(current_session_data.num_bytes(), MAX_XORB_BYTES);
+            debug_assert_le!(current_session_data.num_chunks(), MAX_XORB_CHUNKS);
         }
 
         // Now, aggregate the new dedup metrics.
@@ -168,8 +175,10 @@ impl FileUploadSession {
     }
 
     /// Process the aggregated data, uploading the data as a xorb and registering the files
-    async fn process_aggregated_data(&self, data_agg: DataAggregator) -> Result<()> {
+    async fn process_aggregated_data_as_xorb(&self, data_agg: DataAggregator) -> Result<()> {
         let (xorb, new_files) = data_agg.finalize();
+        debug_assert_le!(xorb.num_bytes(), MAX_XORB_BYTES);
+        debug_assert_le!(xorb.data.len(), MAX_XORB_CHUNKS);
 
         self.xorb_uploader.register_new_xorb_for_upload(xorb).await?;
 
@@ -187,7 +196,7 @@ impl FileUploadSession {
 
         // Register the remaining xorbs for upload.
         let data_agg = take(&mut *self.current_session_data.lock().await);
-        self.process_aggregated_data(data_agg).await?;
+        self.process_aggregated_data_as_xorb(data_agg).await?;
 
         // Now, make sure all the remaining xorbs are uploaded.
         let mut metrics = take(&mut *self.deduplication_metrics.lock().await);

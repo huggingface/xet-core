@@ -192,7 +192,21 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_two_small_multiple_xorbs() {
+        check_clean_smudge_files(&[("a", MAX_XORB_BYTES / 2 + 1), ("b", MAX_XORB_BYTES / 2 + 1)]).await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_multiple_large() {
         check_clean_smudge_files(&[("a", MAX_XORB_BYTES + 1), ("b", MAX_XORB_BYTES + 2)]).await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_many_small_multiple_xorbs() {
+        let n = 16;
+        let size = MAX_XORB_BYTES / 8 + 1; // Will need 3 xorbs.
+
+        let files: Vec<_> = (0..n).map(|idx| (format!("f_{idx}"), size)).collect();
+        check_clean_smudge_files(&files).await;
     }
 }

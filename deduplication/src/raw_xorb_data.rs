@@ -56,7 +56,11 @@ impl RawXorbData {
     }
 
     pub fn num_bytes(&self) -> usize {
-        self.cas_info.metadata.num_bytes_in_cas as usize
+        let n = self.cas_info.metadata.num_bytes_in_cas as usize;
+
+        debug_assert_eq!(n, self.data.iter().map(|c| c.len()).sum::<usize>());
+
+        n
     }
 
     // Todo: Push this Xorb data format all the way down to the compression levels to
