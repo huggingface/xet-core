@@ -16,7 +16,7 @@ members = [
     "cas_object",
     "cas_types",
     "chunk_cache",
-    "xet_threadpool"
+    "xet_threadpool",
 ]
 
 exclude = ["hf_xet", "chunk_cache_bench"]
@@ -28,5 +28,5 @@ debug = 1
 
 [profile.opt-test]
 inherits = "dev"
-opt-level = 1
+opt-level = 3
 debug = 1
