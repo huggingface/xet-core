@@ -60,6 +60,7 @@ macro_rules! configurable_constants {
     }
 }
 
+#[cfg(not(doctest))]
 /// A macro for **tests** that sets `XET_<GLOBAL_NAME>` to `$value` **before**
 /// the global is initialized, and then checks that the global actually picks up
 /// that value. If the global was already accessed (thus initialized), or if it
@@ -71,7 +72,8 @@ macro_rules! configurable_constants {
 ///
 /// # Example
 /// ```rust
-/// configurable_globals! {
+/// use utils::{configurable_constants, test_set_global};
+/// configurable_constants! {
 ///    /// Target chunk size
 ///    CHUNK_TARGET_SIZE : u64 = 1024;
 ///
@@ -79,7 +81,7 @@ macro_rules! configurable_constants {
 ///    MAX_CHUNK_SIZE : u64 = release_fixed(4096);
 /// }
 ///
-/// [test]
+/// #[test]
 /// fn test_chunk_size() {
 ///     // Must be called before the first use of CHUNK_TARGET_SIZE:
 ///     test_set_global!(CHUNK_TARGET_SIZE, 2048);
