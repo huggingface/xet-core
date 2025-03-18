@@ -6,13 +6,20 @@ use merklehash::MerkleHash;
 
 use crate::raw_xorb_data::RawXorbData;
 
-/// A trait given to the  
+/// The interface needed for the deduplication routines to run.  To use the deduplication code,
+/// define a struct that implements these methods.  This struct must be given by value to the FileDeduper
+/// struct on creation.
+///
+/// The two primary methods are chunk_hash_dedup_query, which determines whether and how a chunk can be deduped,  
+/// and register_new_xorb, which is called intermittently when a new block of data is available for upload.
+///
+/// The global dedup query functions are optional but needed if global dedup is to be enabled.
 #[async_trait]
 pub trait DeduplicationDataInterface: Send + Sync + 'static {
-    // The error type used for the interface
+    /// The error type used for the interface
     type ErrorType;
 
-    /// Query for possible
+    /// Query for possible shards that
     async fn chunk_hash_dedup_query(
         &self,
         query_hashes: &[MerkleHash],
