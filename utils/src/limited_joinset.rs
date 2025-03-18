@@ -1,85 +1,47 @@
 use std::collections::VecDeque;
 use std::future::Future;
 use std::num::NonZeroUsize;
-
-use tokio::task::{JoinError, JoinSet as TokioJoinSet};
+use std::sync::Arc;
+use tokio::sync::Semaphore;
+use tokio::task::{AbortHandle, JoinError, JoinSet as TokioJoinSet};
 
 struct JoinSet<T> {
     inner: TokioJoinSet<T>,
-    max_concurrent: NonZeroUsize,
-    tasks_queue: VecDeque<Box<dyn Future<Output = T> + Send + 'static + Unpin>>,
-    reaped: VecDeque<Result<T, JoinError>>,
+    semaphore: Arc<Semaphore>,
 }
 
 impl<T: Send + 'static> JoinSet<T> {
-    pub fn new(max_concurrent: NonZeroUsize) -> Self {
+    pub fn new(max_concurrent: usize) -> Self {
         Self {
             inner: TokioJoinSet::new(),
-            max_concurrent,
-            tasks_queue: VecDeque::new(),
-            reaped: VecDeque::new(),
+            semaphore: Arc::new(Semaphore::new(max_concurrent)),
         }
     }
 
-    pub fn spawn<F>(&mut self, task: F)
+    pub fn spawn<F>(&mut self, task: F) -> AbortHandle
     where
         F: Future<Output = T> + Unpin + Send + 'static,
     {
-        self.try_reap();
-        if self.inner.len() < self.max_concurrent.get() {
-            self.inner.spawn(task);
-            return;
-        }
-        self.tasks_queue.push_back(Box::new(task));
+        let semaphore = self.semaphore.clone();
+        self.inner.spawn(async move {
+            let _permit = semaphore.acquire().await;
+            task.await
+        })
     }
 
     pub fn try_join_next(&mut self) -> Option<Result<T, JoinError>> {
-        self.try_reap();
-        self.reaped.pop_front()
+        self.inner.try_join_next()
     }
 
     pub async fn join_next(&mut self) -> Option<Result<T, JoinError>> {
-        if let Some(ready) = self.try_join_next() {
-            // ready value
-            Some(ready)
-        } else {
-            // none-ready to be reaped, return the next in the inner joinset
-            // or a none value if it is empty
-            self.inner.join_next().await
-        }
-    }
-
-    pub fn try_reap(&mut self) {
-        // try to retrieve any ready tasks and put them in the reaped queue
-        while let Some(reaped_value) = self.inner.try_join_next() {
-            self.reaped.push_back(reaped_value);
-        }
-        // refill inner join set
-        while self.inner.len() < self.max_concurrent.get() {
-            if let Some(task) = self.tasks_queue.pop_front() {
-                self.inner.spawn(task);
-            } else {
-                break;
-            }
-        }
-    }
-
-    pub fn from_iter<F>(max_concurrent: NonZeroUsize, it: impl Iterator<Item = F>) -> Self
-    where
-        F: Future<Output = T> + Unpin + Send + 'static,
-    {
-        let mut res = Self::new(max_concurrent);
-        for f in it {
-            res.spawn(f);
-        }
-        res
+        self.inner.join_next().await
     }
 
     pub fn len(&self) -> usize {
-        self.inner.len() + self.tasks_queue.len() + self.reaped.len()
+        self.inner.len()
     }
 
     pub fn is_empty(&self) -> bool {
-        self.inner.is_empty() && self.reaped.is_empty()
+        self.inner.is_empty()
     }
 }
