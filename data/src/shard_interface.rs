@@ -3,6 +3,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use cas_client::Client;
+use error_printer::ErrorPrinter;
 use mdb_shard::cas_structs::MDBCASInfo;
 use mdb_shard::constants::MDB_SHARD_MIN_TARGET_SIZE;
 use mdb_shard::file_structs::{FileDataSequenceEntry, MDBFileInfo};
@@ -55,19 +56,12 @@ impl SessionShardInterface {
 
     /// Queries the client for global deduplication metrics
     pub async fn query_dedup_shard_by_chunk(&self, chunk_hash: &MerkleHash, repo_salt: &RepoSalt) -> Result<bool> {
-        let Ok(query_result) = self
+        let Ok(Some(new_shard_file)) = self
             .client
             .query_for_global_dedup_shard(&self.config.shard_config.prefix, chunk_hash, repo_salt)
             .await
-            .map_err(|e| {
-                debug!("Error encountered attempting to query global dedup table: {e:?}; ignoring.");
-                e
-            })
+            .info_error("Error attempting to query global dedup lookup.")
         else {
-            return Ok(false);
-        };
-
-        let Some(new_shard_file) = query_result else {
             return Ok(false);
         };
 

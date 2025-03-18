@@ -2,7 +2,7 @@
 pub mod configurations;
 mod constants;
 pub mod data_client;
-mod data_interface;
+mod deduplication_interface;
 pub mod errors;
 mod file_cleaner;
 mod file_downloader;

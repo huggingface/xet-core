@@ -180,6 +180,16 @@ mod tests {
         check_clean_smudge_files(&[("a", 16), ("b", 8)]).await;
     }
 
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_with_empty_file() {
+        check_clean_smudge_files(&[("a", 16), ("b", 8), ("c", 0)]).await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_with_all_empty_files() {
+        check_clean_smudge_files(&[("a", 0), ("b", 0), ("c", 0)]).await;
+    }
+
     #[tokio::test(flavor = "multi_thread")]
     async fn test_many_small() {
         let files: Vec<_> = (0..32).map(|idx| (format!("f_{idx}"), idx % 8)).collect();

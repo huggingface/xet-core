@@ -12,8 +12,8 @@ use more_asserts::{debug_assert_le, debug_assert_lt};
 
 use crate::data_aggregator::DataAggregator;
 use crate::dedup_metrics::DeduplicationMetrics;
+use crate::interface::DeduplicationDataInterface;
 use crate::defrag_prevention::DefragPrevention;
-use crate::interfaces::DeduplicationDataInterface;
 use crate::raw_xorb_data::RawXorbData;
 use crate::Chunk;
 
