@@ -854,6 +854,10 @@ impl CasObjectInfoV1 {
             + self.chunk_hashes.len() * size_of::<MerkleHash>()) as u32
             + self.boundary_section_offset_from_end;
     }
+
+    pub fn has_chunk_hashes(&self) -> bool {
+        !self.chunk_hashes.is_empty()
+    }
 }
 
 #[derive(Clone, PartialEq, Eq, Debug, Serialize)]
@@ -2059,6 +2063,8 @@ mod tests {
 
             // check that the hashes are not filled in
             assert!(boundaries_footer.chunk_hashes.is_empty());
+            assert!(!boundaries_footer.has_chunk_hashes());
+            assert!(original.has_chunk_hashes());
         }
     }
 }
