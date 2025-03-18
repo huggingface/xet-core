@@ -1,11 +1,10 @@
-use std::collections::VecDeque;
 use std::future::Future;
-use std::num::NonZeroUsize;
 use std::sync::Arc;
+
 use tokio::sync::Semaphore;
 use tokio::task::{AbortHandle, JoinError, JoinSet as TokioJoinSet};
 
-struct JoinSet<T> {
+pub struct JoinSet<T> {
     inner: TokioJoinSet<T>,
     semaphore: Arc<Semaphore>,
 }
