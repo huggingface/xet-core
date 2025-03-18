@@ -79,7 +79,7 @@ macro_rules! configurable_constants {
 ///    MAX_CHUNK_SIZE : u64 = release_fixed(4096);
 /// }
 ///
-/// #[test]
+/// [test]
 /// fn test_chunk_size() {
 ///     // Must be called before the first use of CHUNK_TARGET_SIZE:
 ///     test_set_global!(CHUNK_TARGET_SIZE, 2048);
