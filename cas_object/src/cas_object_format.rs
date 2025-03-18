@@ -41,9 +41,9 @@ fn prealloc_num_chunks(declared_size: usize) -> usize {
     declared_size.min(AVERAGE_NUM_CHUNKS_PER_XORB * 9 / 8)
 }
 
-#[deprecated]
 #[derive(Clone, PartialEq, Eq, Debug, Serialize)]
 /// Info struct for [CasObject]. This is stored at the end of the XORB.
+/// DO NOT USE in any new code
 pub struct CasObjectInfoV0 {
     /// CAS identifier: "XETBLOB"
     pub ident: CasObjectIdent,
@@ -159,7 +159,6 @@ impl CasObjectInfoV0 {
         Ok((s, total_bytes_read + bytes_read_v0))
     }
 
-    #[deprecated]
     pub fn deserialize_v0<R: Read>(reader: &mut R) -> Result<(Self, u32), CasObjectError> {
         let mut total_bytes_read: u32 = 0;
 
@@ -212,7 +211,6 @@ impl CasObjectInfoV0 {
     /// assumes that the ident and version have already been read and verified.
     ///
     /// verifies that the length of the footer data matches the length field at the very end of the buffer
-    #[deprecated]
     pub async fn deserialize_async<R: futures::io::AsyncRead + Unpin>(
         reader: &mut R,
         version: u8,
@@ -1956,6 +1954,7 @@ mod tests {
 
         let mut buf = Cursor::new(buf);
         buf.seek(SeekFrom::End(0)).unwrap();
+        #[allow(deprecated)]
         let info_length = cas_info_v0.serialize(&mut buf).unwrap() as u32;
         write_u32(&mut buf, info_length).unwrap();
 
@@ -2039,7 +2038,7 @@ mod tests {
                 &raw_chunk_boundaries,
                 Some(COMPRESSION_SCHEME)
             )
-                .is_ok());
+            .is_ok());
             let original = c.info;
 
             writer.seek(SeekFrom::Start(0)).unwrap();
@@ -2061,6 +2060,5 @@ mod tests {
             // check that the hashes are not filled in
             assert!(boundaries_footer.chunk_hashes.is_empty());
         }
-
     }
 }
