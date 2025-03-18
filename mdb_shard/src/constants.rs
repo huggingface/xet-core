@@ -1,6 +1,6 @@
-use utils::{configurable_globals, release_fixed};
+use utils::configurable_constants;
 
-configurable_globals! {
+configurable_constants! {
 
     /// The target shard size; shards.
     MDB_SHARD_TARGET_SIZE : u64 = 64 * 1024 * 1024;
