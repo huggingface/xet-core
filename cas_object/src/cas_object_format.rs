@@ -594,7 +594,10 @@ impl CasObjectInfoV1 {
         let offset_to_boundary_section_offset =
             size_of::<u32>() + size_of_val(&s._buffer) + size_of_val(&s.boundary_section_offset_from_end);
         reader.seek(SeekFrom::End(-(offset_to_boundary_section_offset as i64)))?;
-        let boundary_section_offset_from_end = read_u32(reader)?;
+        let mut boundary_section_offset_from_end = read_u32(reader)?;
+
+        // add 4 bytes to offset from info_length at the end
+        boundary_section_offset_from_end += size_of::<u32>() as u32;
         reader.seek(SeekFrom::End(-(boundary_section_offset_from_end as i64)))?;
 
         let mut counting_reader = countio::Counter::new(reader);
@@ -1948,7 +1951,7 @@ mod tests {
         buf.resize(serialized_chunks_length as usize, 0);
 
         let mut buf = Cursor::new(buf);
-        buf.seek(std::io::SeekFrom::End(0)).unwrap();
+        buf.seek(SeekFrom::End(0)).unwrap();
         let info_length = cas_info_v0.serialize(&mut buf).unwrap() as u32;
         write_u32(&mut buf, info_length).unwrap();
 
@@ -2012,5 +2015,42 @@ mod tests {
         assert!(c.uncompressed_range_length(0, NUM_CHUNKS + 1).is_err());
         assert!(c.uncompressed_range_length(NUM_CHUNKS, NUM_CHUNKS + 1).is_err());
         assert!(c.uncompressed_range_length(NUM_CHUNKS + 2, NUM_CHUNKS + 1).is_err());
+    }
+
+    #[test]
+    fn test_deserialize_only_boundaries_section() {
+        const NUM_CHUNKS: u32 = 100;
+        const CHUNK_SIZE: u32 = 100;
+        const COMPRESSION_SCHEME: CompressionScheme = CompressionScheme::None;
+
+        let (c, _, raw_data, raw_chunk_boundaries) =
+            build_cas_object(NUM_CHUNKS, ChunkSize::Fixed(CHUNK_SIZE), COMPRESSION_SCHEME);
+
+        // Act & Assert
+        let mut writer: Cursor<Vec<u8>> = Cursor::new(Vec::new());
+        assert!(CasObject::serialize(
+            &mut writer,
+            &c.info.cashash,
+            &raw_data,
+            &raw_chunk_boundaries,
+            Some(COMPRESSION_SCHEME)
+        )
+        .is_ok());
+        let original = c.info;
+
+        writer.seek(SeekFrom::Start(0)).unwrap();
+
+        let result = CasObjectInfoV1::deserialize_only_boundaries_section(&mut writer);
+        assert!(result.is_ok());
+        let (boundaries_footer, _num_read) = result.unwrap();
+
+        assert_eq!(boundaries_footer.version, original.version);
+        assert_eq!(boundaries_footer.ident_boundary_section, original.ident_boundary_section);
+        assert_eq!(boundaries_footer.boundaries_version, original.boundaries_version);
+        assert_eq!(boundaries_footer.num_chunks, original.num_chunks);
+        assert_eq!(boundaries_footer.boundary_section_offset_from_end, original.boundary_section_offset_from_end);
+        assert_eq!(boundaries_footer.chunk_boundary_offsets, original.chunk_boundary_offsets);
+        assert_eq!(boundaries_footer.unpacked_chunk_offsets, original.unpacked_chunk_offsets);
+        assert!(boundaries_footer.chunk_hashes.is_empty());
     }
 }
