@@ -12,7 +12,7 @@ use cas_types::{ChunkRange, Key};
 use error_printer::ErrorPrinter;
 use file_utils::SafeFileCreator;
 use merklehash::MerkleHash;
-use tracing::{debug, warn};
+use tracing::{debug, info, warn};
 #[cfg(feature = "analysis")]
 use utils::output_bytes;
 
@@ -147,6 +147,12 @@ impl DiskCache {
         let mut num_items = 0;
         let max_num_bytes = 2 * capacity;
 
+        // short circuit if no capacity to cache.
+        if capacity == 0 {
+            info!("cache capacity is 0, not loading any cache state");
+            return Ok(CacheState::new(state, 0, 0));
+        }
+
         let Some(cache_root_readdir) = read_dir(cache_root)? else {
             return Ok(CacheState::new(state, 0, 0));
         };
@@ -168,7 +174,7 @@ impl DiskCache {
                 continue;
             };
 
-            // loop throught key directories inside prefix directory
+            // loop through key directories inside prefix directory
             for key_dir in key_prefix_readdir {
                 let key_dir = match is_ok_dir(key_dir) {
                     Ok(Some(dirent)) => dirent,

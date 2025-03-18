@@ -247,10 +247,11 @@ mod tests {
     use super::*;
 
     #[test]
-    #[serial]
+    #[serial(xet_cache_size)]
     fn test_cache_size_env_var() {
         // Test with different cache sizes
         let test_cases = vec![
+            (Some("0"), 0),                      // 0GB (disable chunk-cache)
             (Some("5"), 5 << 30),                // 5GB
             (Some("20"), 20 << 30),              // 20GB
             (Some("1"), 1 << 30),                // 1GB
@@ -275,7 +276,19 @@ mod tests {
                 expected_size >> 30,
                 get_configured_cache_size() >> 30
             );
-        }
+
+            let endpoint = "http://localhost:8080".to_string();
+            let result = default_config(endpoint, None, None, None);
+
+            assert!(result.is_ok());
+            let (config, _tempdir) = result.unwrap();
+            assert!(config.cas_storage_config.cache_config.is_some());
+            assert_eq!(config
+                .cas_storage_config
+                .cache_config
+                .unwrap()
+                .cache_size, expected_size);
+            }
     }
 
     #[test]
