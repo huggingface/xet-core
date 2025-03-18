@@ -113,7 +113,7 @@ impl RemoteShardInterface {
 
         let merged_shards_jh = self
             .threadpool
-            .spawn(async move { consolidate_shards_in_directory(&session_dir, MDB_SHARD_MIN_TARGET_SIZE) });
+            .spawn(async move { consolidate_shards_in_directory(&session_dir, *MDB_SHARD_MIN_TARGET_SIZE) });
 
         Ok(merged_shards_jh)
     }

@@ -3,28 +3,18 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use lazy_static::lazy_static;
 use merklehash::{HMACKey, MerkleHash};
 use tokio::sync::RwLock;
 use tracing::{debug, info, trace};
 
 use crate::cas_structs::*;
-use crate::constants::{MDB_SHARD_EXPIRATION_BUFFER_SECS, MDB_SHARD_MIN_TARGET_SIZE};
+use crate::constants::*;
 use crate::error::{MDBShardError, Result};
 use crate::file_structs::*;
 use crate::shard_file_handle::MDBShardFile;
 use crate::shard_file_reconstructor::FileReconstructor;
 use crate::shard_in_memory::MDBInMemoryShard;
 use crate::utils::truncate_hash;
-
-// Store a maximum of this many indices in memory
-const CHUNK_INDEX_TABLE_DEFAULT_MAX_SIZE: usize = 64 * 1024 * 1024;
-lazy_static! {
-    static ref CHUNK_INDEX_TABLE_MAX_SIZE: usize = std::env::var("XET_CHUNK_INDEX_TABLE_MAX_SIZE")
-        .ok()
-        .and_then(|s| s.parse::<usize>().ok())
-        .unwrap_or(CHUNK_INDEX_TABLE_DEFAULT_MAX_SIZE);
-}
 
 // The shard manager cache
 lazy_static::lazy_static! {
@@ -94,9 +84,9 @@ impl ShardFileManagerOptions {
         Self {
             shard_directory: shard_directory.as_ref().to_path_buf(),
             clean_expired_shards: true,
-            target_shard_size: MDB_SHARD_MIN_TARGET_SIZE,
+            target_shard_size: *MDB_SHARD_MIN_TARGET_SIZE,
             chunk_dedup_enabled: true,
-            shard_expiration_delete_buffer_secs: MDB_SHARD_EXPIRATION_BUFFER_SECS,
+            shard_expiration_delete_buffer_secs: *MDB_SHARD_EXPIRATION_BUFFER_SECS,
             cache_shard_manager: false,
             upstream_manager: None,
         }
@@ -126,7 +116,7 @@ impl ShardFileManagerOptions {
 
     pub fn with_expired_shard_cleanup(mut self, cleanup: bool) -> Self {
         self.clean_expired_shards = cleanup;
-        self.shard_expiration_delete_buffer_secs = MDB_SHARD_EXPIRATION_BUFFER_SECS;
+        self.shard_expiration_delete_buffer_secs = *MDB_SHARD_EXPIRATION_BUFFER_SECS;
         self
     }
 
@@ -835,7 +825,7 @@ mod tests {
             verify_mdb_shards_match(&mdb2, &mdb_in_mem, true).await?;
 
             // Now, merge shards in the background.
-            let merged_shards = consolidate_shards_in_directory(tmp_dir.path(), MDB_SHARD_MIN_TARGET_SIZE)?;
+            let merged_shards = consolidate_shards_in_directory(tmp_dir.path(), *MDB_SHARD_MIN_TARGET_SIZE)?;
 
             assert_eq!(merged_shards.len(), 1);
             for si in merged_shards {
@@ -916,7 +906,8 @@ mod tests {
             }
 
             {
-                let merged_shards = consolidate_shards_in_directory(tmp_dir.path(), MDB_SHARD_MIN_TARGET_SIZE).unwrap();
+                let merged_shards =
+                    consolidate_shards_in_directory(tmp_dir.path(), *MDB_SHARD_MIN_TARGET_SIZE).unwrap();
 
                 assert_eq!(merged_shards.len(), 1);
 
