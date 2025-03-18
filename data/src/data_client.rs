@@ -283,12 +283,8 @@ mod tests {
             assert!(result.is_ok());
             let (config, _tempdir) = result.unwrap();
             assert!(config.cas_storage_config.cache_config.is_some());
-            assert_eq!(config
-                .cas_storage_config
-                .cache_config
-                .unwrap()
-                .cache_size, expected_size);
-            }
+            assert_eq!(config.cas_storage_config.cache_config.unwrap().cache_size, expected_size);
+        }
     }
 
     #[test]
