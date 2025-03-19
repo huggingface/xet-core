@@ -1,6 +1,4 @@
-use utils::configurable_constants;
-
-configurable_constants! {
+utils::configurable_constants! {
 
     /// The target shard size; shards.
     ref MDB_SHARD_TARGET_SIZE: u64 = 64 * 1024 * 1024;

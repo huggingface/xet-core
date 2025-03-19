@@ -21,7 +21,7 @@ pub struct RawXorbData {
 impl RawXorbData {
     // Construct from raw chunks.  chunk data from raw chunks.
     pub fn from_chunks(chunks: &[Chunk]) -> Self {
-        debug_assert_le!(chunks.len(), MAX_XORB_CHUNKS);
+        debug_assert_le!(chunks.len(), *MAX_XORB_CHUNKS);
 
         let mut data = Vec::with_capacity(chunks.len());
         let mut chunk_seq_entries = Vec::with_capacity(chunks.len());
@@ -35,7 +35,7 @@ impl RawXorbData {
         }
         let num_bytes = pos;
 
-        debug_assert_le!(num_bytes, MAX_XORB_BYTES);
+        debug_assert_le!(num_bytes, *MAX_XORB_BYTES);
 
         let hash_and_len: Vec<_> = chunks.iter().map(|c| (c.hash, c.data.len())).collect();
         let cas_hash = cas_node_hash(&hash_and_len);

@@ -112,7 +112,7 @@ impl SessionShardInterface {
 
         // First, scan, merge, and fill out any shards in the session directory
         let shard_list =
-            consolidate_shards_in_directory(self.session_shard_manager.shard_directory(), MDB_SHARD_MIN_TARGET_SIZE)?;
+            consolidate_shards_in_directory(self.session_shard_manager.shard_directory(), *MDB_SHARD_MIN_TARGET_SIZE)?;
 
         // Upload all the shards and move each to the common directory.
         let mut shard_uploads = JoinSet::<Result<()>>::new();

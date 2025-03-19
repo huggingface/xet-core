@@ -17,6 +17,9 @@ impl<T> From<T> for GlobalConfigMode<T> {
     }
 }
 
+// Reexport this so that dependencies don't have weird other dependencies
+pub use lazy_static::lazy_static;
+
 #[macro_export]
 macro_rules! configurable_constants {
     ($(
@@ -26,7 +29,7 @@ macro_rules! configurable_constants {
         $(
             #[allow(unused_imports)]
             use utils::constant_declarations::*;
-            lazy_static::lazy_static! {
+            lazy_static! {
                 $(#[$meta])*
                 pub static ref $name: $type = {
                     let v : GlobalConfigMode<$type> = ($value).into();

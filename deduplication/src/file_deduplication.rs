@@ -12,8 +12,8 @@ use more_asserts::{debug_assert_le, debug_assert_lt};
 
 use crate::data_aggregator::DataAggregator;
 use crate::dedup_metrics::DeduplicationMetrics;
-use crate::interface::DeduplicationDataInterface;
 use crate::defrag_prevention::DefragPrevention;
+use crate::interface::DeduplicationDataInterface;
 use crate::raw_xorb_data::RawXorbData;
 use crate::Chunk;
 
@@ -197,7 +197,7 @@ impl<DataInterfaceType: DeduplicationDataInterface> FileDeduper<DataInterfaceTyp
             dedup_metrics.total_bytes += n_bytes;
 
             // Do we need to cut a new xorb first?
-            if self.new_data_size + n_bytes > MAX_XORB_BYTES || self.new_data.len() + 1 > MAX_XORB_CHUNKS {
+            if self.new_data_size + n_bytes > *MAX_XORB_BYTES || self.new_data.len() + 1 > *MAX_XORB_CHUNKS {
                 let new_xorb = self.cut_new_xorb();
                 self.new_xorbs.push(new_xorb.hash());
                 self.data_mng.register_new_xorb(new_xorb).await?;

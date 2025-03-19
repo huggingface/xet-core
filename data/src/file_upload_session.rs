@@ -141,8 +141,8 @@ impl FileUploadSession {
             let mut current_session_data = self.current_session_data.lock().await;
 
             // Do we need to cut one of these to a xorb?
-            if current_session_data.num_bytes() + file_data.num_bytes() > MAX_XORB_BYTES
-                || current_session_data.num_chunks() + file_data.num_chunks() > MAX_XORB_CHUNKS
+            if current_session_data.num_bytes() + file_data.num_bytes() > *MAX_XORB_BYTES
+                || current_session_data.num_chunks() + file_data.num_chunks() > *MAX_XORB_CHUNKS
             {
                 // Cut the larger one as a xorb, uploading it and registering the files.
                 if current_session_data.num_bytes() > file_data.num_bytes() {
@@ -164,8 +164,8 @@ impl FileUploadSession {
         #[cfg(debug_assertions)]
         {
             let current_session_data = self.current_session_data.lock().await;
-            debug_assert_le!(current_session_data.num_bytes(), MAX_XORB_BYTES);
-            debug_assert_le!(current_session_data.num_chunks(), MAX_XORB_CHUNKS);
+            debug_assert_le!(current_session_data.num_bytes(), *MAX_XORB_BYTES);
+            debug_assert_le!(current_session_data.num_chunks(), *MAX_XORB_CHUNKS);
         }
 
         // Now, aggregate the new dedup metrics.
@@ -177,8 +177,8 @@ impl FileUploadSession {
     /// Process the aggregated data, uploading the data as a xorb and registering the files
     async fn process_aggregated_data_as_xorb(&self, data_agg: DataAggregator) -> Result<()> {
         let (xorb, new_files) = data_agg.finalize();
-        debug_assert_le!(xorb.num_bytes(), MAX_XORB_BYTES);
-        debug_assert_le!(xorb.data.len(), MAX_XORB_CHUNKS);
+        debug_assert_le!(xorb.num_bytes(), *MAX_XORB_BYTES);
+        debug_assert_le!(xorb.data.len(), *MAX_XORB_CHUNKS);
 
         self.xorb_uploader.register_new_xorb_for_upload(xorb).await?;
 

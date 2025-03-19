@@ -5,8 +5,8 @@ mod tests {
     use std::io::{Read, Write};
     use std::path::Path;
 
-    use cas_object::constants::MAX_XORB_BYTES;
-    use deduplication::constants::TARGET_CDC_CHUNK_SIZE;
+    use cas_object::constants::{MAX_XORB_BYTES, MAX_XORB_CHUNKS};
+    use deduplication::constants::TARGET_CHUNK_SIZE;
     use rand::rngs::StdRng;
     // rand crates
     use rand::RngCore;
@@ -18,9 +18,6 @@ mod tests {
     use crate::configurations::TranslatorConfig;
     use crate::data_client::clean_file;
     use crate::{FileDownloader, FileUploadSession, PointerFile};
-
-    // Use small xorbs here.
-    const TESTING_TARGET_XORB_NUM_BYTES: usize = 5 * TARGET_CDC_CHUNK_SIZE;
 
     /// Creates or overwrites a single file in `dir` with `size` bytes of random data.
     /// Panics on any I/O error. Returns the total number of bytes written (=`size`).
@@ -170,53 +167,70 @@ mod tests {
         check_directories_match(&src_dir, &dest_dir);
     }
 
+    fn setup_env() {
+        // Do these tests with small chunks and xorbs so that we can make sure that all the different edge
+        // cases are hit.
+        utils::test_set_global!(TARGET_CHUNK_SIZE, 8 * 1024);
+        utils::test_set_global!(MAX_XORB_BYTES, 5 * (*TARGET_CHUNK_SIZE));
+        utils::test_set_global!(MAX_XORB_CHUNKS, 8);
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_simple_directory() {
+        setup_env();
         check_clean_smudge_files(&[("a", 16)]).await;
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_multiple() {
+        setup_env();
         check_clean_smudge_files(&[("a", 16), ("b", 8)]).await;
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_with_empty_file() {
+        setup_env();
         check_clean_smudge_files(&[("a", 16), ("b", 8), ("c", 0)]).await;
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_with_all_empty_files() {
+        setup_env();
         check_clean_smudge_files(&[("a", 0), ("b", 0), ("c", 0)]).await;
     }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_many_small() {
+        setup_env();
         let files: Vec<_> = (0..32).map(|idx| (format!("f_{idx}"), idx % 8)).collect();
         check_clean_smudge_files(&files).await;
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_single_large() {
-        check_clean_smudge_files(&[("a", MAX_XORB_BYTES + 1)]).await;
+        setup_env();
+        check_clean_smudge_files(&[("a", *MAX_XORB_BYTES + 1)]).await;
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_two_small_multiple_xorbs() {
-        check_clean_smudge_files(&[("a", MAX_XORB_BYTES / 2 + 1), ("b", MAX_XORB_BYTES / 2 + 1)]).await;
+        setup_env();
+        check_clean_smudge_files(&[("a", *MAX_XORB_BYTES / 2 + 1), ("b", *MAX_XORB_BYTES / 2 + 1)]).await;
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_multiple_large() {
-        check_clean_smudge_files(&[("a", MAX_XORB_BYTES + 1), ("b", MAX_XORB_BYTES + 2)]).await;
+        setup_env();
+        check_clean_smudge_files(&[("a", *MAX_XORB_BYTES + 1), ("b", *MAX_XORB_BYTES + 2)]).await;
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_many_small_multiple_xorbs() {
         let n = 16;
-        let size = MAX_XORB_BYTES / 8 + 1; // Will need 3 xorbs.
+        let size = *MAX_XORB_BYTES / 8 + 1; // Will need 3 xorbs.
 
         let files: Vec<_> = (0..n).map(|idx| (format!("f_{idx}"), size)).collect();
+        setup_env();
         check_clean_smudge_files(&files).await;
     }
 }

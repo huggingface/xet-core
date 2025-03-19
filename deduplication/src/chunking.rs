@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use merklehash::{compute_data_hash, MerkleHash};
 
-use crate::constants::{MAXIMUM_CHUNK_MULTIPLIER, MINIMUM_CHUNK_DIVISOR, TARGET_CDC_CHUNK_SIZE};
+use crate::constants::{MAXIMUM_CHUNK_MULTIPLIER, MINIMUM_CHUNK_DIVISOR, TARGET_CHUNK_SIZE};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Chunk {
@@ -27,7 +27,7 @@ pub struct Chunker {
 
 impl Default for Chunker {
     fn default() -> Self {
-        Self::new(TARGET_CDC_CHUNK_SIZE)
+        Self::new(*TARGET_CHUNK_SIZE)
     }
 }
 
@@ -49,8 +49,8 @@ impl Chunker {
         // bits of the gear hash are affected by only a small number of bytes
         // really. we just shift it all the way left.
         let mask = mask << mask.leading_zeros();
-        let minimum_chunk = target_chunk_size / MINIMUM_CHUNK_DIVISOR;
-        let maximum_chunk = target_chunk_size * MAXIMUM_CHUNK_MULTIPLIER;
+        let minimum_chunk = target_chunk_size / *MINIMUM_CHUNK_DIVISOR;
+        let maximum_chunk = target_chunk_size * *MAXIMUM_CHUNK_MULTIPLIER;
 
         assert!(maximum_chunk > minimum_chunk);
 
@@ -285,14 +285,14 @@ mod tests {
         let mut chunker = Chunker::new(512);
 
         // Use constant data
-        let data = vec![0; 8 * MAXIMUM_CHUNK_MULTIPLIER * 512];
+        let data = vec![0; 8 * *MAXIMUM_CHUNK_MULTIPLIER * 512];
 
         let chunks = chunker.next_block(&data, true);
 
         assert_eq!(chunks.len(), 8);
 
         for c in chunks.iter() {
-            assert_eq!(c.data.len(), MAXIMUM_CHUNK_MULTIPLIER * 512);
+            assert_eq!(c.data.len(), *MAXIMUM_CHUNK_MULTIPLIER * 512);
         }
     }
 }

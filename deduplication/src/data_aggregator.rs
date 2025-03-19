@@ -59,8 +59,8 @@ impl DataAggregator {
         let xorb_data = RawXorbData::from_chunks(&self.chunks);
         let xorb_hash = xorb_data.hash();
 
-        debug_assert_le!(self.num_bytes(), MAX_XORB_BYTES);
-        debug_assert_le!(self.num_chunks(), MAX_XORB_CHUNKS);
+        debug_assert_le!(self.num_bytes(), *MAX_XORB_BYTES);
+        debug_assert_le!(self.num_chunks(), *MAX_XORB_CHUNKS);
 
         // Now that we have the CAS hash, fill in any blocks with the referencing xorb
         // hash as needed.
@@ -86,8 +86,8 @@ impl DataAggregator {
     }
 
     pub fn merge_in(&mut self, mut other: DataAggregator) {
-        debug_assert_le!(self.num_bytes() + other.num_bytes(), MAX_XORB_BYTES);
-        debug_assert_le!(self.num_chunks() + other.num_chunks(), MAX_XORB_BYTES);
+        debug_assert_le!(self.num_bytes() + other.num_bytes(), *MAX_XORB_BYTES);
+        debug_assert_le!(self.num_chunks() + other.num_chunks(), *MAX_XORB_BYTES);
 
         let shift = self.chunks.len() as u32;
         self.chunks.append(&mut other.chunks);

@@ -107,12 +107,12 @@ pub struct ShardFileManager {
 /// // new_shards is the list of new shards for this session.
 impl ShardFileManager {
     pub async fn new_in_session_directory(session_directory: impl AsRef<Path>) -> Result<Arc<Self>> {
-        Self::new_impl(session_directory, false, MDB_SHARD_MIN_TARGET_SIZE).await
+        Self::new_impl(session_directory, false, *MDB_SHARD_MIN_TARGET_SIZE).await
     }
 
     // Construction functions
     pub async fn new_in_cache_directory(cache_directory: impl AsRef<Path>) -> Result<Arc<Self>> {
-        Self::new_impl(cache_directory, true, MDB_SHARD_MIN_TARGET_SIZE).await
+        Self::new_impl(cache_directory, true, *MDB_SHARD_MIN_TARGET_SIZE).await
     }
 
     async fn new_impl(directory: impl AsRef<Path>, is_cachable: bool, target_shard_min_size: u64) -> Result<Arc<Self>> {
@@ -189,7 +189,7 @@ impl ShardFileManager {
         let needs_clean = self.shard_directory_cleaned.swap(true, std::sync::atomic::Ordering::Relaxed);
 
         if needs_clean {
-            MDBShardFile::clean_expired_shards(&self.shard_directory, MDB_SHARD_EXPIRATION_BUFFER_SECS)?;
+            MDBShardFile::clean_expired_shards(&self.shard_directory, *MDB_SHARD_EXPIRATION_BUFFER_SECS)?;
         }
 
         Ok(())
@@ -737,7 +737,7 @@ mod tests {
             verify_mdb_shards_match(&mdb2, &mdb_in_mem, true).await?;
 
             // Now, merge shards in the background.
-            let merged_shards = consolidate_shards_in_directory(tmp_dir.path(), MDB_SHARD_MIN_TARGET_SIZE)?;
+            let merged_shards = consolidate_shards_in_directory(tmp_dir.path(), *MDB_SHARD_MIN_TARGET_SIZE)?;
 
             assert_eq!(merged_shards.len(), 1);
             for si in merged_shards {
@@ -812,7 +812,8 @@ mod tests {
             }
 
             {
-                let merged_shards = consolidate_shards_in_directory(tmp_dir.path(), MDB_SHARD_MIN_TARGET_SIZE).unwrap();
+                let merged_shards =
+                    consolidate_shards_in_directory(tmp_dir.path(), *MDB_SHARD_MIN_TARGET_SIZE).unwrap();
 
                 assert_eq!(merged_shards.len(), 1);
 
@@ -1010,7 +1011,7 @@ mod tests {
     }
 
     async fn shard_list_with_timestamp_filtering(path: &Path) -> Result<Vec<Arc<MDBShardFile>>> {
-        Ok(ShardFileManager::new_impl(path, false, MDB_SHARD_MIN_TARGET_SIZE)
+        Ok(ShardFileManager::new_impl(path, false, *MDB_SHARD_MIN_TARGET_SIZE)
             .await?
             .registered_shard_list()
             .await?)
