@@ -99,12 +99,15 @@ macro_rules! test_set_globals {
 
                 if actual_value != val {
                     panic!(
-                        "test_set_global! failed: wanted {} to be {}, but got {}",
+                        "test_set_global! failed: wanted {} to be {:?}, but got {:?}",
                         stringify!($var_name),
                         val,
                         actual_value
                     );
                 }
+                eprintln!("> Set {} to {:?}",
+                        stringify!($var_name),
+                        val);
             )+
         }
     }
