@@ -32,7 +32,7 @@ impl<T> From<T> for GlobalConfigMode<T> {
 macro_rules! configurable_constants {
     ($(
         $(#[$meta:meta])*
-        $name:ident : $type:ty = $value:expr;
+        ref $name:ident : $type:ty = $value:expr;
     )+) => {
         $(
             #[allow(unused_imports)]
@@ -75,10 +75,10 @@ macro_rules! configurable_constants {
 /// use utils::{configurable_constants, test_set_global};
 /// configurable_constants! {
 ///    /// Target chunk size
-///    CHUNK_TARGET_SIZE : u64 = 1024;
+///    ref CHUNK_TARGET_SIZE: u64 = 1024;
 ///
 ///    /// Max Chunk size, only adjustable in testing mode.
-///    MAX_CHUNK_SIZE : u64 = release_fixed(4096);
+///    ref MAX_CHUNK_SIZE: u64 = release_fixed(4096);
 /// }
 ///
 /// #[test]
