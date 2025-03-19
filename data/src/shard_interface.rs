@@ -141,7 +141,7 @@ impl SessionShardInterface {
                 // Now that the upload succeeded, move that shard to the cache directory, adding in an expiration time.
                 let new_shard_path = si.export_with_expiration(
                     cache_shard_manager.shard_directory(),
-                    Duration::from_secs(MDB_SHARD_LOCAL_CACHE_EXPIRATION_SECS),
+                    Duration::from_secs(*MDB_SHARD_LOCAL_CACHE_EXPIRATION_SECS),
                 )?;
 
                 // Register that new shard in the cache shard manager

@@ -4,10 +4,10 @@ utils::configurable_constants! {
     ref MIN_SPACING_BETWEEN_GLOBAL_DEDUP_QUERIES: usize = 256;
 
     /// scheme for a local filesystem based CAS server
-    ref LOCAL_CAS_SCHEME: &str = "local://";
+    ref LOCAL_CAS_SCHEME: String = "local://".to_owned();
 
     /// The current version
-    ref CURRENT_VERSION: &str = release_fixed( env!("CARGO_PKG_VERSION"));
+    ref CURRENT_VERSION: String = release_fixed( env!("CARGO_PKG_VERSION").to_owned());
 
     /// Number of ranges to use when estimating fragmentation
     ref NRANGES_IN_STREAMING_FRAGMENTATION_ESTIMATOR: usize = 128;
