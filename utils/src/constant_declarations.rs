@@ -1,7 +1,6 @@
 /// A small marker struct so you can write `release_fixed(1234)`.
 /// In debug builds, we allow env override; in release, we ignore env.
 pub enum GlobalConfigMode<T> {
-    Fixed(T),
     ReleaseFixed(T),
     EnvConfigurable(T),
 }
@@ -9,16 +8,6 @@ pub enum GlobalConfigMode<T> {
 #[allow(dead_code)]
 pub fn release_fixed<T>(t: T) -> GlobalConfigMode<T> {
     GlobalConfigMode::ReleaseFixed(t)
-}
-
-#[allow(dead_code)]
-pub fn fixed<T>(t: T) -> GlobalConfigMode<T> {
-    GlobalConfigMode::Fixed(t)
-}
-
-#[allow(dead_code)]
-pub fn env_configurable<T>(t: T) -> GlobalConfigMode<T> {
-    GlobalConfigMode::EnvConfigurable(t)
 }
 
 // Make env_configurable the default
@@ -49,7 +38,6 @@ macro_rules! configurable_constants {
                     };
 
                     match (v, cfg!(debug_assertions)) {
-                        (GlobalConfigMode::Fixed(v), _) => v,
                         (GlobalConfigMode::ReleaseFixed(v), false) => v,
                         (GlobalConfigMode::ReleaseFixed(v), true) => try_load_from_env(v),
                         (GlobalConfigMode::EnvConfigurable(v), _) => try_load_from_env(v),
@@ -57,7 +45,7 @@ macro_rules! configurable_constants {
                 };
             }
         )+
-    }
+    };
 }
 
 #[cfg(not(doctest))]
