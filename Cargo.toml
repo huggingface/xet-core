@@ -28,5 +28,5 @@ debug = 1
 
 [profile.opt-test]
 inherits = "dev"
-opt-level = 1
+opt-level = 3
 debug = 1

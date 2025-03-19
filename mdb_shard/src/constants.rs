@@ -1,13 +1,27 @@
-pub const MDB_SHARD_TARGET_SIZE: u64 = 64 * 1024 * 1024;
-pub const MDB_SHARD_MIN_TARGET_SIZE: u64 = 48 * 1024 * 1024;
+use utils::configurable_constants;
 
-pub const MDB_SHARD_GLOBAL_DEDUP_CHUNK_MODULUS: u64 = 1024;
+configurable_constants! {
 
-/// The amount of time a shard should be expired by before it's deleted, in seconds.  
-/// By default set to 7 days.
-pub const MDB_SHARD_EXPIRATION_BUFFER_SECS: u64 = 7 * 24 * 3600;
+    /// The target shard size; shards.
+    ref MDB_SHARD_TARGET_SIZE: u64 = 64 * 1024 * 1024;
+
+    /// Minimum shard size; shards are aggregated until they are at least this.
+    ref MDB_SHARD_MIN_TARGET_SIZE: u64 = 64 * 1024 * 1024;
+
+    /// The global dedup chunk modulus; a chunk is considered global dedup
+    /// eligible if the hash modulus this value is zero.
+    ref MDB_SHARD_GLOBAL_DEDUP_CHUNK_MODULUS: u64 = release_fixed(1024);
+
+    /// The amount of time a shard should be expired by before it's deleted, in seconds.
+    /// By default set to 7 days.
+    ref MDB_SHARD_EXPIRATION_BUFFER_SECS: u64 = 7 * 24 * 3600;
+
+    /// The maximum size of the chunk index table that's stored in memory.  After this,
+    /// no new chunks are loaded for deduplication.
+    ref CHUNK_INDEX_TABLE_MAX_SIZE: usize = 64 * 1024 * 1024;
+}
 
 // How the MDB_SHARD_GLOBAL_DEDUP_CHUNK_MODULUS is used.
 pub fn hash_is_global_dedup_eligible(h: &merklehash::MerkleHash) -> bool {
-    (*h) % MDB_SHARD_GLOBAL_DEDUP_CHUNK_MODULUS == 0
+    (*h) % *MDB_SHARD_GLOBAL_DEDUP_CHUNK_MODULUS == 0
 }
