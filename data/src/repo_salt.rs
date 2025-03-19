@@ -1,7 +1,8 @@
 use rand::{RngCore, SeedableRng};
 use rand_chacha::ChaCha20Rng;
 
-use crate::constants::REPO_SALT_LEN;
+// Salt is 256-bit in length.
+pub const REPO_SALT_LEN: usize = 32;
 
 pub type RepoSalt = [u8; REPO_SALT_LEN];
 

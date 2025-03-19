@@ -40,6 +40,7 @@ impl ShaGenerator {
         let new_chunk = Chunk {
             hash: MerkleHash::default(), // not used
             data: Arc::from(Vec::from(new_bytes)),
+            _permit: None,
         };
 
         self.update(Arc::new([new_chunk]));
