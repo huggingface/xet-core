@@ -74,11 +74,12 @@ mod tests {
         }
 
         let mut outs = Vec::new();
-        while let Ok(Some(value)) = join_set.join_next().await {
+        while let Some(Ok(value)) = join_set.join_next().await {
             outs.push(value);
         }
 
         // expect that the task returning 3 was spawned after at least 1 other task finished
+        assert_eq!(outs.len(), 4);
         for (i, out) in outs.into_iter().enumerate() {
             if out == 3 {
                 assert!(i > 0);
