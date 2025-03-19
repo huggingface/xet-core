@@ -51,6 +51,8 @@ macro_rules! configurable_constants {
     };
 }
 
+pub use ctor as ctor_reexport;
+
 #[cfg(not(doctest))]
 /// A macro for **tests** that sets `XET_<GLOBAL_NAME>` to `$value` **before**
 /// the global is initialized, and then checks that the global actually picks up
@@ -72,28 +74,38 @@ macro_rules! configurable_constants {
 ///    ref MAX_CHUNK_SIZE: u64 = release_fixed(4096);
 /// }
 ///
-/// fn test_chunk_size() {
-///     // Must be called before the first use of CHUNK_TARGET_SIZE:
-///     test_set_global!(CHUNK_TARGET_SIZE, 2048);
-///     assert_eq!(*CHUNK_TARGET_SIZE, 2048);
-/// }
+/// test_set_global!(CHUNK_TARGET_SIZE, 2048);
+/// assert_eq!(*CHUNK_TARGET_SIZE, 2048);
 /// ```
 #[macro_export]
-macro_rules! test_set_global {
-    ($global_name:ident, $value:expr) => {{
-        let env_var_name = concat!("XET_", stringify!($global_name));
-        ::std::env::set_var(env_var_name, $value.to_string());
+macro_rules! test_set_globals {
+    ($(
+        $var_name:ident = $val:expr;
+    )+) => {
+        use utils::constant_declarations::ctor_reexport as ctor;
 
-        // Force lazy_static to be read now:
-        let actual_value = *$global_name;
+        #[ctor::ctor]
+        fn set_globals_on_load() {
+            $(
+                let val = $val;
 
-        if actual_value != $value {
-            panic!(
-                "test_set_global! failed: wanted {} to be {}, but got {}",
-                stringify!($global_name),
-                $value,
-                actual_value
-            );
+                // Construct the environment variable name, e.g. "XET_MAX_NUM_CHUNKS"
+                let env_name = concat!("XET_", stringify!($var_name));
+                // Convert the $val to a string and set it
+                std::env::set_var(env_name, val.to_string());
+
+                // Force lazy_static to be read now:
+                let actual_value = *$var_name;
+
+                if actual_value != val {
+                    panic!(
+                        "test_set_global! failed: wanted {} to be {}, but got {}",
+                        stringify!($var_name),
+                        val,
+                        actual_value
+                    );
+                }
+            )+
         }
-    }};
+    }
 }
