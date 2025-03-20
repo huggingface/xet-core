@@ -8,11 +8,12 @@ use jsonwebtoken::{decode, DecodingKey, Validation};
 use mdb_shard::file_structs::MDBFileInfo;
 use merklehash::MerkleHash;
 use more_asserts::*;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, Semaphore};
 use utils::progress::ProgressUpdater;
 use xet_threadpool::ThreadPool;
 
 use crate::configurations::*;
+use crate::constants::CHUNK_MEMORY_USAGE_PER_UPLOAD_SESSION;
 use crate::errors::*;
 use crate::file_cleaner::SingleFileCleaner;
 use crate::parallel_xorb_uploader::ParallelXorbUploader;
@@ -44,6 +45,9 @@ pub struct FileUploadSession {
 
     /// The configuration settings, if needed.
     pub(crate) config: Arc<TranslatorConfig>,
+
+    /// The amount of memory allowed for use by the chunks.
+    pub(crate) chunk_memory_limit: Arc<Semaphore>,
 
     /// Deduplicated data shared across files.
     current_session_data: Mutex<DataAggregator>,
@@ -115,6 +119,7 @@ impl FileUploadSession {
             config,
             current_session_data: Mutex::new(DataAggregator::default()),
             deduplication_metrics: Mutex::new(DeduplicationMetrics::default()),
+            chunk_memory_limit: Arc::new(Semaphore::new(*CHUNK_MEMORY_USAGE_PER_UPLOAD_SESSION)),
         }))
     }
 

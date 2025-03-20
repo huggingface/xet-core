@@ -1,3 +1,4 @@
+use std::mem::take;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
@@ -74,7 +75,7 @@ impl ParallelXorbUploader {
 }
 
 impl ParallelXorbUploader {
-    pub async fn register_new_xorb_for_upload(&self, xorb: RawXorbData) -> Result<()> {
+    pub async fn register_new_xorb_for_upload(&self, mut xorb: RawXorbData) -> Result<()> {
         self.status_is_ok().await?;
 
         // No need to process an empty xorb.
@@ -91,6 +92,12 @@ impl ParallelXorbUploader {
             .await
             .map_err(|e| UploadTaskError(e.to_string()))?;
 
+        // Immediately extract the components from the xorb and drop it, releasing the chunk memory allocation.
+        let xorb_vec = xorb.to_vec();
+        let xorb_hash = xorb.hash();
+        let cas_info = take(&mut xorb.cas_info);
+        drop(xorb);
+
         let client = self.client.clone();
         let cas_prefix = self.cas_prefix.clone();
         let upload_progress_updater = self.upload_progress_updater.clone();
@@ -98,7 +105,7 @@ impl ParallelXorbUploader {
         self.upload_tasks.lock().await.spawn_on(
             async move {
                 let n_bytes_transmitted = client
-                    .put(&cas_prefix, &xorb.hash(), xorb.to_vec(), xorb.cas_info.chunks_and_boundaries())
+                    .put(&cas_prefix, &xorb_hash, xorb_vec, cas_info.chunks_and_boundaries())
                     .await?;
 
                 drop(upload_permit);

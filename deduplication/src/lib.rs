@@ -7,7 +7,7 @@ mod file_deduplication;
 mod interface;
 mod raw_xorb_data;
 
-pub use chunking::{Chunk, Chunker};
+pub use chunking::{Chunk, ChunkPermitType, Chunker};
 pub use data_aggregator::DataAggregator;
 pub use dedup_metrics::DeduplicationMetrics;
 pub use file_deduplication::FileDeduper;

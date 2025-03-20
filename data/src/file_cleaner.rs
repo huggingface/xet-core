@@ -1,9 +1,11 @@
 use std::sync::Arc;
 
-use deduplication::{Chunk, Chunker, DeduplicationMetrics, FileDeduper};
+use deduplication::{Chunk, ChunkPermitType, Chunker, DeduplicationMetrics, FileDeduper};
 use mdb_shard::file_structs::FileMetadataExt;
+use merkledb::constants::MAXIMUM_CHUNK_SIZE;
 use merklehash::MerkleHash;
 
+use crate::constants::DATA_INGESTION_BUFFER_SIZE;
 use crate::deduplication_interface::UploadSessionDataManager;
 use crate::errors::Result;
 use crate::file_upload_session::FileUploadSession;
@@ -40,8 +42,36 @@ impl SingleFileCleaner {
     }
 
     pub async fn add_data(&mut self, data: &[u8]) -> Result<()> {
+        // Handle the case where this is called with a huge amount of data,
+
+        if data.len() > *DATA_INGESTION_BUFFER_SIZE {
+            let mut pos = 0;
+            while pos < data.len() {
+                let next_pos = usize::min(pos + *DATA_INGESTION_BUFFER_SIZE, data.len());
+                self.add_data_impl(&data[pos..next_pos]).await?;
+                pos = next_pos;
+            }
+        } else {
+            self.add_data_impl(data).await?;
+        }
+        Ok(())
+    }
+
+    async fn add_data_impl(&mut self, data: &[u8]) -> Result<()> {
+        // Acquire the chunk memory permit; need a little extra to account for possible previous
+        // chunk data added to this one.  This variable is captured by the acquisition function
+        // and thus any remaining permits are released right after the chunking is finished.
+        let mut chunk_block_permit = self
+            .session
+            .chunk_memory_limit
+            .clone()
+            .acquire_many_owned((data.len() + MAXIMUM_CHUNK_SIZE) as u32)
+            .await?;
+
         // Chunk the data.
-        let chunks: Arc<[Chunk]> = Arc::from(self.chunker.next_block(data, false));
+        let chunks: Arc<[Chunk]> = Arc::from(self.chunker.next_block_with_permit(data, false, |n_bytes| {
+            chunk_block_permit.split(n_bytes).map(|c| Arc::new(c) as ChunkPermitType)
+        }));
 
         // It's possible this didn't actually add any data in.
         if chunks.is_empty() {

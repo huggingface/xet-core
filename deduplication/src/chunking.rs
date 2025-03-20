@@ -5,10 +5,41 @@ use merklehash::{compute_data_hash, MerkleHash};
 
 use crate::constants::{MAXIMUM_CHUNK_MULTIPLIER, MINIMUM_CHUNK_DIVISOR, TARGET_CHUNK_SIZE};
 
-#[derive(Debug, Clone, PartialEq)]
+// Permits are expected to implement a drop trait; on drop, the
+// permit is released.  tokio::sync::OwnedSemaphorePermit works for this.
+pub type ChunkPermitType = Arc<dyn Send + Sync + 'static>;
+
+#[derive(Clone)]
 pub struct Chunk {
     pub hash: MerkleHash,
     pub data: Arc<[u8]>,
+    pub _permit: Option<ChunkPermitType>,
+}
+
+impl Chunk {
+    pub fn new(hash: MerkleHash, data: Vec<u8>) -> Self {
+        Self {
+            hash,
+            data: Arc::from(data),
+            _permit: None,
+        }
+    }
+}
+
+// Implement debug for Chunk
+impl std::fmt::Debug for Chunk {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // Only print the hash and length, e.g. Chunk(len={}, hash={})
+        write!(f, "Chunk(len={}, hash={:?})", self.data.len(), self.hash)
+    }
+}
+
+impl PartialEq for Chunk {
+    fn eq(&self, other: &Self) -> bool {
+        let ret = self.hash == other.hash;
+        debug_assert_eq!(ret, self.data == other.data);
+        ret
+    }
 }
 
 /// Chunk Generator given an input stream. Do not use directly.
@@ -73,7 +104,17 @@ impl Chunker {
     ///
     /// If is_final is true, then it is assumed that no more data after this block will come,
     /// and any data currently present and at the end will be put into a final chunk.
+    #[inline]
     pub fn next(&mut self, data: &[u8], is_final: bool) -> (Option<Chunk>, usize) {
+        self.next_with_permit(data, is_final, |_| None)
+    }
+
+    pub fn next_with_permit(
+        &mut self,
+        data: &[u8],
+        is_final: bool,
+        mut acquire_permit: impl FnMut(usize) -> Option<ChunkPermitType>,
+    ) -> (Option<Chunk>, usize) {
         const HASH_WINDOW_SIZE: usize = 64;
         let n_bytes = data.len();
 
@@ -117,6 +158,7 @@ impl Chunker {
         let ret = {
             if create_chunk || (is_final && !self.chunkbuf.is_empty()) {
                 let chunk = Chunk {
+                    _permit: acquire_permit(self.chunkbuf.len()),
                     hash: compute_data_hash(&self.chunkbuf[..]),
                     data: std::mem::take(&mut self.chunkbuf).into(),
                 };
@@ -145,8 +187,21 @@ impl Chunker {
         ret
     }
 
-    /// Processes several blocks at once, returning
+    /// Processes several blocks at once, returning a vector of all chunks
+    /// generated from that data.
     pub fn next_block(&mut self, data: &[u8], is_final: bool) -> Vec<Chunk> {
+        self.next_block_with_permit(data, is_final, |_| None)
+    }
+
+    /// Processes several blocks at once, returning a vector of all chunks
+    /// generated from that data.  The permit function is called for each chunk to
+    /// optionally return a permit.
+    pub fn next_block_with_permit(
+        &mut self,
+        data: &[u8],
+        is_final: bool,
+        mut acquire_permit: impl FnMut(usize) -> Option<ChunkPermitType>,
+    ) -> Vec<Chunk> {
         let mut ret = Vec::new();
 
         let mut pos = 0;
@@ -156,7 +211,7 @@ impl Chunker {
                 return ret;
             }
 
-            let (maybe_chunk, bytes_consumed) = self.next(&data[pos..], is_final);
+            let (maybe_chunk, bytes_consumed) = self.next_with_permit(&data[pos..], is_final, &mut acquire_permit);
 
             if let Some(chunk) = maybe_chunk {
                 ret.push(chunk);
@@ -169,6 +224,10 @@ impl Chunker {
     // Finishes, returning the final chunk if it exists
     pub fn finish(mut self) -> Option<Chunk> {
         self.next(&[], true).0
+    }
+
+    pub fn finish_with_permit(mut self, acquire_permit: impl FnMut(usize) -> Option<ChunkPermitType>) -> Option<Chunk> {
+        self.next_with_permit(&[], true, acquire_permit).0
     }
 }
 

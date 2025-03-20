@@ -1,5 +1,6 @@
 utils::configurable_constants! {
 
+
     // Approximately 4 MB min spacing between global dedup queries.  Calculated by 4MB / TARGET_CHUNK_SIZE
     ref MIN_SPACING_BETWEEN_GLOBAL_DEDUP_QUERIES: usize = 256;
 
@@ -29,4 +30,19 @@ utils::configurable_constants! {
     /// The maximum number of simultaneous xorb upload streams.
     /// The default value is 8 and can be overwritten by environment variable "XET_CONCURRENT_XORB_UPLOADS".
     ref MAX_CONCURRENT_XORB_UPLOADS: usize = 8;
+
+    /// The amount of data to process at once while chunking through files and incoming data
+    ref DATA_INGESTION_BUFFER_SIZE : usize = 16 * 1024 * 1024;
+
+    /// This is the target memory usage of chunks within an upload session.  This should be enough to
+    /// ensure that buffers are filled while uploading new xorbs, assuming that up to MAX_XORB_BYTES
+    /// are tied up in an intermediate xorb.
+    ///
+    /// As soon as new xorbs get queued in the
+    /// MAX_CONCURRENT_XORB_UPLOADS path, the memory is put to that process and those chunks are released.
+    ///
+    /// This is tracked on a per-session basis to avoid a potential deadlock where all chunk permits
+    /// are tied up in a multiplicity of intermediate xorb buffers.
+    ref CHUNK_MEMORY_USAGE_PER_UPLOAD_SESSION: usize = 512 * 1024 * 1024;
+
 }

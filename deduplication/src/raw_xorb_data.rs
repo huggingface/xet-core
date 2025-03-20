@@ -1,5 +1,3 @@
-use std::sync::Arc;
-
 use cas_object::constants::{MAX_XORB_BYTES, MAX_XORB_CHUNKS};
 use mdb_shard::cas_structs::{CASChunkSequenceEntry, CASChunkSequenceHeader, MDBCASInfo};
 use merkledb::aggregate_hashes::cas_node_hash;
@@ -12,7 +10,7 @@ use crate::Chunk;
 #[derive(Default, Debug)]
 pub struct RawXorbData {
     /// The data for the xorb info.
-    pub data: Vec<Arc<[u8]>>,
+    pub data: Vec<Chunk>,
 
     /// The cas info associated with the current xorb.
     pub cas_info: MDBCASInfo,
@@ -30,7 +28,7 @@ impl RawXorbData {
         let mut pos = 0;
         for c in chunks {
             chunk_seq_entries.push(CASChunkSequenceEntry::new(c.hash, c.data.len(), pos));
-            data.push(c.data.clone());
+            data.push(c.clone());
             pos += c.data.len();
         }
         let num_bytes = pos;
@@ -58,7 +56,7 @@ impl RawXorbData {
     pub fn num_bytes(&self) -> usize {
         let n = self.cas_info.metadata.num_bytes_in_cas as usize;
 
-        debug_assert_eq!(n, self.data.iter().map(|c| c.len()).sum::<usize>());
+        debug_assert_eq!(n, self.data.iter().map(|c| c.data.len()).sum::<usize>());
 
         n
     }
@@ -69,7 +67,7 @@ impl RawXorbData {
         let mut new_vec = Vec::with_capacity(self.num_bytes());
 
         for ch in self.data.iter() {
-            new_vec.extend_from_slice(ch);
+            new_vec.extend_from_slice(&ch.data);
         }
 
         new_vec

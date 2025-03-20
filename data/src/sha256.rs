@@ -37,10 +37,10 @@ impl ShaGenerator {
 
     // For testing purposes
     pub fn update_with_bytes(&mut self, new_bytes: &[u8]) {
-        let new_chunk = Chunk {
-            hash: MerkleHash::default(), // not used
-            data: Arc::from(Vec::from(new_bytes)),
-        };
+        let new_chunk = Chunk::new(
+            MerkleHash::default(), // not used
+            Vec::from(new_bytes),
+        );
 
         self.update(Arc::new([new_chunk]));
     }

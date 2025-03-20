@@ -72,6 +72,9 @@ pub enum DataProcessingError {
 
     #[error("AuthError: {0}")]
     AuthError(#[from] AuthError),
+
+    #[error("Closed Semaphore: {0}")]
+    ClosedSemaphoreError(#[from] tokio::sync::AcquireError),
 }
 
 pub type Result<T> = std::result::Result<T, DataProcessingError>;
