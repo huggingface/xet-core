@@ -203,12 +203,10 @@ impl FileUploadSession {
 
         metrics.xorb_bytes_uploaded = self.xorb_uploader.finalize().await?;
 
-        let all_file_info = {
-            if return_files {
-                self.shard_interface.session_file_info_list().await?
-            } else {
-                Vec::new()
-            }
+        let all_file_info = if return_files {
+            self.shard_interface.session_file_info_list().await?
+        } else {
+            Vec::new()
         };
 
         // Upload and register the current shards in the session, moving them
