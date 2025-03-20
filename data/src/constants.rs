@@ -10,9 +10,6 @@ utils::configurable_constants! {
     /// The current version
     ref CURRENT_VERSION: String = release_fixed( env!("CARGO_PKG_VERSION").to_owned());
 
-    /// Number of ranges to use when estimating fragmentation
-    ref NRANGES_IN_STREAMING_FRAGMENTATION_ESTIMATOR: usize = 128;
-
     /// Minimum number of chunks per range. Used to control fragmentation
     /// This targets an average of 1MB per range.
     /// The hysteresis factor multiplied by the target Chunks Per Range (CPR) controls
@@ -43,7 +40,7 @@ utils::configurable_constants! {
     ref CHUNK_MEMORY_USAGE_PER_UPLOAD_SESSION: usize = 512 * 1024 * 1024;
 
     /// The amount of data to process at once while chunking through files and incoming data
-    ref DATA_INGESTION_BUFFER_SIZE : usize = 8 * 1024 * 1024;
+    ref DATA_INGESTION_BUFFER_SIZE : usize = 4 * 1024 * 1024;
 
     /// The maximum number of files to ingest at once on the upload path
     ref MAX_CONCURRENT_FILE_INGESTION: usize = 8;
