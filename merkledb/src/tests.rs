@@ -5,7 +5,7 @@ mod component_tests {
     use std::io::Cursor;
 
     use merklehash::{compute_data_hash, MerkleHash};
-    use parutils::AsyncIterator;
+    use utils::async_iterator::AsyncIterator;
 
     use crate::async_chunk_iterator::async_low_variance_chunk_target;
     use crate::chunk_iterator::*;
@@ -408,7 +408,7 @@ mod component_tests {
         let mut rng = rand::rngs::StdRng::seed_from_u64(seed);
 
         while start < input.len() {
-            let tlen: u16 = rng.gen::<u16>() % 4096;
+            let tlen: u16 = rng.random::<u16>() % 4096;
             let mut end = start + tlen as usize;
             if end > input.len() {
                 end = input.len();
@@ -453,7 +453,7 @@ mod component_tests {
         let mut rng = rand::rngs::StdRng::seed_from_u64(seed);
 
         while start < input.len() {
-            let tlen: u16 = rng.gen::<u16>() % 4096;
+            let tlen: u16 = rng.random::<u16>() % 4096;
             let mut end = start + tlen as usize;
             if end > input.len() {
                 end = input.len();

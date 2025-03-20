@@ -1,10 +1,12 @@
-use cas_object::constants::{MAX_XORB_BYTES, MAX_XORB_CHUNKS};
 use mdb_shard::file_structs::MDBFileInfo;
 use merklehash::MerkleHash;
 use more_asserts::*;
 
 use crate::raw_xorb_data::RawXorbData;
 use crate::Chunk;
+
+const MAX_XORB_BYTES: usize = 64 * 1024 * 1024;
+const MAX_XORB_CHUNKS: usize = 8 * 1024;
 
 #[derive(Default, Debug)]
 pub struct DataAggregator {
@@ -27,11 +29,7 @@ pub struct DataAggregator {
 }
 
 impl DataAggregator {
-    pub(crate) fn new(
-        chunks: Vec<Chunk>,
-        pending_file_info: MDBFileInfo,
-        internally_referencing_entries: Vec<usize>,
-    ) -> Self {
+    pub fn new(chunks: Vec<Chunk>, pending_file_info: MDBFileInfo, internally_referencing_entries: Vec<usize>) -> Self {
         let num_bytes = chunks.iter().map(|c| c.data.len()).sum();
         Self {
             chunks,
@@ -59,8 +57,8 @@ impl DataAggregator {
         let xorb_data = RawXorbData::from_chunks(&self.chunks);
         let xorb_hash = xorb_data.hash();
 
-        debug_assert_le!(self.num_bytes(), *MAX_XORB_BYTES);
-        debug_assert_le!(self.num_chunks(), *MAX_XORB_CHUNKS);
+        debug_assert_le!(self.num_bytes(), MAX_XORB_BYTES);
+        debug_assert_le!(self.num_chunks(), MAX_XORB_CHUNKS);
 
         // Now that we have the CAS hash, fill in any blocks with the referencing xorb
         // hash as needed.
@@ -86,8 +84,8 @@ impl DataAggregator {
     }
 
     pub fn merge_in(&mut self, mut other: DataAggregator) {
-        debug_assert_le!(self.num_bytes() + other.num_bytes(), *MAX_XORB_BYTES);
-        debug_assert_le!(self.num_chunks() + other.num_chunks(), *MAX_XORB_BYTES);
+        debug_assert_le!(self.num_bytes() + other.num_bytes(), MAX_XORB_BYTES);
+        debug_assert_le!(self.num_chunks() + other.num_chunks(), MAX_XORB_BYTES);
 
         let shift = self.chunks.len() as u32;
         self.chunks.append(&mut other.chunks);

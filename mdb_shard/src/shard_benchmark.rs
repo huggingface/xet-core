@@ -15,7 +15,7 @@ use mdb_shard::shard_in_memory::MDBInMemoryShard;
 use merklehash::MerkleHash;
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
-use tempdir::TempDir;
+use tempfile::tempdir_in;
 use tokio::time;
 
 const CAS_BLOCK_SIZE: usize = 512;
@@ -211,7 +211,7 @@ async fn main() {
         .parse()
         .expect("Failed to parse hit_percent");
 
-    let temp_dir = TempDir::new("git-xet-shard").expect("Failed to create temp dir");
+    let temp_dir = tempdir_in("git-xet-shard").expect("Failed to create temp dir");
 
     let dir: &str = arg_res.value_of("dir").unwrap();
 

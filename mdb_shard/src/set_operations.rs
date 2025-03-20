@@ -468,7 +468,7 @@ mod tests {
 
     use itertools::iproduct;
     use merklehash::compute_data_hash;
-    use tempdir::TempDir;
+    use tempfile::{tempdir, tempdir_in};
 
     use super::*;
     use crate::error::Result;
@@ -483,7 +483,7 @@ mod tests {
         verify_mdb_shards_match(mem_shard_2, Cursor::new(&disk_shard_2))?;
 
         // Now write these out to disk to verify them
-        let tmp_dir = TempDir::new("gitxet_shard_set_test")?;
+        let tmp_dir = tempdir_in("gitxet_shard_set_test")?;
 
         let shard_path_1 = tmp_dir.path().join("shard_1.mdb");
         let shard_path_2 = tmp_dir.path().join("shard_2.mdb");
