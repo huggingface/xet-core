@@ -1,7 +1,7 @@
 use std::mem::{swap, take};
 use std::sync::Arc;
 
-use cas_client::Client;
+use cas_client::{Client, DryRunClient};
 use cas_object::constants::{MAX_XORB_BYTES, MAX_XORB_CHUNKS};
 use deduplication::{DataAggregator, DeduplicationMetrics};
 use jsonwebtoken::{decode, DecodingKey, Validation};
@@ -39,9 +39,6 @@ pub struct FileUploadSession {
     /// The repo id, if present.
     pub(crate) repo_id: Option<String>,
 
-    /// If true, don't actually upload anything; just collect statistics.
-    pub(crate) dry_run: bool,
-
     /// The configuration settings, if needed.
     pub(crate) config: Arc<TranslatorConfig>,
 
@@ -78,6 +75,15 @@ impl FileUploadSession {
     ) -> Result<Arc<FileUploadSession>> {
         let client = create_remote_client(&config, threadpool.clone(), dry_run)?;
 
+        // Is this a dry run?  If so, wrap the given client with one that swallows all uploads.
+        let client = {
+            if dry_run {
+                Arc::new(DryRunClient::new(client))
+            } else {
+                client
+            }
+        };
+
         let xorb_uploader = ParallelXorbUploader::new(
             config.data_config.prefix.to_owned(),
             client.clone(),
@@ -111,7 +117,6 @@ impl FileUploadSession {
             upload_progress_updater,
             threadpool,
             repo_id,
-            dry_run,
             config,
             current_session_data: Mutex::new(DataAggregator::default()),
             deduplication_metrics: Mutex::new(DeduplicationMetrics::default()),

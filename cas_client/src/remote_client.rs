@@ -213,8 +213,6 @@ impl Reconstructable for RemoteClient {
     }
 }
 
-impl Client for RemoteClient {}
-
 impl RemoteClient {
     async fn batch_get_reconstruction(
         &self,
@@ -605,6 +603,9 @@ impl ShardDedupProber for RemoteClient {
 }
 
 impl ShardClientInterface for RemoteClient {}
+
+// Finally we can just declare this.
+impl Client for RemoteClient {}
 
 #[cfg(test)]
 mod tests {
