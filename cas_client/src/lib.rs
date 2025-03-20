@@ -1,6 +1,7 @@
 #![allow(dead_code)]
 
 pub use chunk_cache::CacheConfig;
+pub use dry_run_client::DryRunClient;
 pub use http_client::{build_auth_http_client, build_http_client};
 use interface::RegistrationClient;
 pub use interface::{Client, ReconstructionClient, UploadClient};
@@ -10,6 +11,7 @@ pub use remote_client::RemoteClient;
 pub use crate::error::CasClientError;
 pub use crate::interface::ShardClientInterface;
 
+pub mod dry_run_client;
 mod error;
 mod http_client;
 mod interface;
