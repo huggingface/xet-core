@@ -9,7 +9,6 @@ path = "src/lib.rs"
 
 [dependencies]
 merklehash = { path = "../merklehash" }
-xet_threadpool = { path = "../xet_threadpool" }
 thiserror = "2.0"
 futures = "0.3.28"
 lazy_static = "1.4.0"
@@ -17,7 +16,7 @@ paste = "0.1"
 ctor = "0.1"
 
 # singleflight & threadpool
-tokio = { version = "1.41", features = ["full"] }
+tokio = { version = "1.41", features = ["sync", "time", "rt", "macros"] }
 parking_lot = "0.11"
 pin-project = "1.0.12"
 
@@ -28,8 +27,10 @@ async-trait = "0.1.87"
 
 
 [dev-dependencies]
-tokio = { version = "1.36", features = ["full"] }
+tokio = { version = "1.36", features = ["sync", "time", "rt", "macros"] }
 tempfile = "3.14.0"
+xet_threadpool = { path = "../xet_threadpool" }
+
 
 [features]
 strict = []

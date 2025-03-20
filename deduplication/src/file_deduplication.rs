@@ -1,7 +1,6 @@
 use std::collections::HashMap;
 use std::result::Result;
 
-use cas_object::constants::{MAX_XORB_BYTES, MAX_XORB_CHUNKS};
 use mdb_shard::file_structs::{
     FileDataSequenceEntry, FileDataSequenceHeader, FileMetadataExt, FileVerificationEntry, MDBFileInfo,
 };
@@ -16,6 +15,9 @@ use crate::defrag_prevention::DefragPrevention;
 use crate::interface::DeduplicationDataInterface;
 use crate::raw_xorb_data::RawXorbData;
 use crate::Chunk;
+
+const MAX_XORB_BYTES: usize = 64 * 1024 * 1024;
+const MAX_XORB_CHUNKS: usize = 8 * 1024;
 
 pub struct FileDeduper<DataInterfaceType: DeduplicationDataInterface> {
     data_mng: DataInterfaceType,
@@ -197,7 +199,7 @@ impl<DataInterfaceType: DeduplicationDataInterface> FileDeduper<DataInterfaceTyp
             dedup_metrics.total_bytes += n_bytes;
 
             // Do we need to cut a new xorb first?
-            if self.new_data_size + n_bytes > *MAX_XORB_BYTES || self.new_data.len() + 1 > *MAX_XORB_CHUNKS {
+            if self.new_data_size + n_bytes > MAX_XORB_BYTES || self.new_data.len() + 1 > MAX_XORB_CHUNKS {
                 let new_xorb = self.cut_new_xorb();
                 self.new_xorbs.push(new_xorb.hash());
                 self.data_mng.register_new_xorb(new_xorb).await?;
@@ -362,7 +364,7 @@ impl<DataInterfaceType: DeduplicationDataInterface> FileDeduper<DataInterfaceTyp
                     .iter()
                     .map(|(hash, _)| *hash)
                     .collect();
-                let range_hash = cas_object::range_hash_from_chunks(&chunk_hashes);
+                let range_hash = range_hash_from_chunks(&chunk_hashes);
                 chunk_idx += n_chunks;
 
                 FileVerificationEntry::new(range_hash)
@@ -380,4 +382,18 @@ impl<DataInterfaceType: DeduplicationDataInterface> FileDeduper<DataInterfaceTyp
 
         (file_hash, remaining_data, self.deduplication_metrics, self.new_xorbs)
     }
+}
+
+pub const VERIFICATION_KEY: [u8; 32] = [
+    127, 24, 87, 214, 206, 86, 237, 102, 18, 127, 249, 19, 231, 165, 195, 243, 164, 205, 38, 213, 181, 219, 73, 230,
+    65, 36, 152, 127, 40, 251, 148, 195,
+];
+
+fn range_hash_from_chunks(chunks: &[MerkleHash]) -> MerkleHash {
+    let combined: Vec<u8> = chunks.iter().flat_map(|hash| hash.as_bytes().to_vec()).collect();
+
+    // now apply hmac to hashes and return
+    let range_hash = blake3::keyed_hash(&VERIFICATION_KEY, combined.as_slice());
+
+    MerkleHash::from(range_hash.as_bytes())
 }

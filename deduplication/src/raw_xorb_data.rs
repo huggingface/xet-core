@@ -1,12 +1,14 @@
 use std::sync::Arc;
 
-use cas_object::constants::{MAX_XORB_BYTES, MAX_XORB_CHUNKS};
 use mdb_shard::cas_structs::{CASChunkSequenceEntry, CASChunkSequenceHeader, MDBCASInfo};
 use merkledb::aggregate_hashes::cas_node_hash;
 use merklehash::MerkleHash;
 use more_asserts::*;
 
 use crate::Chunk;
+
+const MAX_XORB_BYTES: usize = 64 * 1024 * 1024;
+const MAX_XORB_CHUNKS: usize = 8 * 1024;
 
 /// This struct is the data needed to cut a
 #[derive(Default, Debug)]
@@ -21,7 +23,7 @@ pub struct RawXorbData {
 impl RawXorbData {
     // Construct from raw chunks.  chunk data from raw chunks.
     pub fn from_chunks(chunks: &[Chunk]) -> Self {
-        debug_assert_le!(chunks.len(), *MAX_XORB_CHUNKS);
+        debug_assert_le!(chunks.len(), MAX_XORB_CHUNKS);
 
         let mut data = Vec::with_capacity(chunks.len());
         let mut chunk_seq_entries = Vec::with_capacity(chunks.len());
@@ -35,7 +37,7 @@ impl RawXorbData {
         }
         let num_bytes = pos;
 
-        debug_assert_le!(num_bytes, *MAX_XORB_BYTES);
+        debug_assert_le!(num_bytes, MAX_XORB_BYTES);
 
         let hash_and_len: Vec<_> = chunks.iter().map(|c| (c.hash, c.data.len())).collect();
         let cas_hash = cas_node_hash(&hash_and_len);
