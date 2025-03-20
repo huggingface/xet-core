@@ -63,7 +63,7 @@ impl SingleFileCleaner {
         // and thus any remaining permits are released right after the chunking is finished.
         let mut chunk_block_permit = self
             .session
-            .chunk_memory_limit
+            .chunk_memory_limiter
             .clone()
             .acquire_many_owned((data.len() + MAXIMUM_CHUNK_SIZE) as u32)
             .await?;

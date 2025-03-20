@@ -47,7 +47,7 @@ pub struct FileUploadSession {
     pub(crate) config: Arc<TranslatorConfig>,
 
     /// The amount of memory allowed for use by the chunks.
-    pub(crate) chunk_memory_limit: Arc<Semaphore>,
+    pub(crate) chunk_memory_limiter: Arc<Semaphore>,
 
     /// Deduplicated data shared across files.
     current_session_data: Mutex<DataAggregator>,
@@ -119,7 +119,7 @@ impl FileUploadSession {
             config,
             current_session_data: Mutex::new(DataAggregator::default()),
             deduplication_metrics: Mutex::new(DeduplicationMetrics::default()),
-            chunk_memory_limit: Arc::new(Semaphore::new(*CHUNK_MEMORY_USAGE_PER_UPLOAD_SESSION)),
+            chunk_memory_limiter: Arc::new(Semaphore::new(*CHUNK_MEMORY_USAGE_PER_UPLOAD_SESSION)),
         }))
     }
 
