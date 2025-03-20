@@ -10,16 +10,6 @@ utils::configurable_constants! {
     /// The current version
     ref CURRENT_VERSION: String = release_fixed( env!("CARGO_PKG_VERSION").to_owned());
 
-    /// Minimum number of chunks per range. Used to control fragmentation
-    /// This targets an average of 1MB per range.
-    /// The hysteresis factor multiplied by the target Chunks Per Range (CPR) controls
-    /// the low end of the hysteresis range. Basically, dedupe will stop
-    /// when CPR drops below hysteresis * target_cpr, and will start again when
-    /// CPR increases above target CPR.
-    ref MIN_N_CHUNKS_PER_RANGE_HYSTERESIS_FACTOR: f32 = 0.5;
-
-    ref DEFAULT_MIN_N_CHUNKS_PER_RANGE: f32 = 8.0;
-
     /// The expiration time of a local shard when first placed in the local shard cache.  Currently
     /// set to 3 weeks.
     ref MDB_SHARD_LOCAL_CACHE_EXPIRATION_SECS: u64 = 3 * 7 * 24 * 3600;
