@@ -33,7 +33,7 @@ pub(crate) struct ParallelXorbUploader {
     upload_tasks: Mutex<JoinSet<Result<usize>>>,
 
     // Rate limiter
-    rate_limiter: Arc<Semaphore>,
+    parallel_upload_limiter: Arc<Semaphore>,
 
     // Theadpool
     threadpool: Arc<ThreadPool>,
@@ -56,7 +56,7 @@ impl ParallelXorbUploader {
             cas_prefix: cas_prefix.to_owned(),
             client,
             upload_tasks: Mutex::new(JoinSet::new()),
-            rate_limiter: XORB_UPLOAD_RATE_LIMITER.clone(),
+            parallel_upload_limiter: XORB_UPLOAD_RATE_LIMITER.clone(),
             threadpool,
             upload_progress_updater,
             total_bytes_trans: 0.into(),
@@ -84,8 +84,8 @@ impl ParallelXorbUploader {
 
         // Acquire a permit for uploading; the acquired permit is dropped after the task completes.
         // The chosen Semaphore is fair, meaning xorbs added first will be scheduled to upload first.
-        let permit = self
-            .rate_limiter
+        let upload_permit = self
+            .parallel_upload_limiter
             .clone()
             .acquire_owned()
             .await
@@ -101,7 +101,7 @@ impl ParallelXorbUploader {
                     .put(&cas_prefix, &xorb.hash(), xorb.to_vec(), xorb.cas_info.chunks_and_boundaries())
                     .await?;
 
-                drop(permit);
+                drop(upload_permit);
 
                 if let Some(updater) = upload_progress_updater {
                     updater.update(n_bytes_transmitted as u64);

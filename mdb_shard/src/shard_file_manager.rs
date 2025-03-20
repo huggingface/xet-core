@@ -4,28 +4,18 @@ use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use lazy_static::lazy_static;
 use merklehash::{HMACKey, MerkleHash};
 use tokio::sync::RwLock;
 use tracing::{debug, info, trace};
 
 use crate::cas_structs::*;
-use crate::constants::{MDB_SHARD_EXPIRATION_BUFFER_SECS, MDB_SHARD_MIN_TARGET_SIZE};
+use crate::constants::{CHUNK_INDEX_TABLE_MAX_SIZE, MDB_SHARD_EXPIRATION_BUFFER_SECS, MDB_SHARD_MIN_TARGET_SIZE};
 use crate::error::{MDBShardError, Result};
 use crate::file_structs::*;
 use crate::shard_file_handle::MDBShardFile;
 use crate::shard_file_reconstructor::FileReconstructor;
 use crate::shard_in_memory::MDBInMemoryShard;
 use crate::utils::truncate_hash;
-
-// Store a maximum of this many indices in memory
-const CHUNK_INDEX_TABLE_DEFAULT_MAX_SIZE: usize = 64 * 1024 * 1024;
-lazy_static! {
-    static ref CHUNK_INDEX_TABLE_MAX_SIZE: usize = std::env::var("XET_CHUNK_INDEX_TABLE_MAX_SIZE")
-        .ok()
-        .and_then(|s| s.parse::<usize>().ok())
-        .unwrap_or(CHUNK_INDEX_TABLE_DEFAULT_MAX_SIZE);
-}
 
 // The shard manager cache
 lazy_static::lazy_static! {

@@ -56,7 +56,7 @@ impl ShaGenerator {
 
         let sha256 = hasher.finalize();
         let hex_str = format!("{sha256:x}");
-        Ok(MerkleHash::from_hex(&hex_str).unwrap())
+        Ok(MerkleHash::from_hex(&hex_str).expect("Converting sha256 to merklehash."))
     }
 }
 

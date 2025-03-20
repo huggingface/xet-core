@@ -66,7 +66,7 @@ impl SingleFileCleaner {
         }
 
         // Finalize the sha256 hashing and create the metadata extension
-        let sha256: MerkleHash = self.sha_generator.finalize().await;
+        let sha256: MerkleHash = self.sha_generator.finalize().await?;
         let metadata_ext = FileMetadataExt::new(sha256);
 
         // Now finish the deduplication process.
