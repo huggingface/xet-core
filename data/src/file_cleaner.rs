@@ -84,6 +84,11 @@ impl SingleFileCleaner {
         // Run the deduplication interface here.
         self.dedup_manager.process_chunks(&chunks).await?;
 
+        // Update the progress bar
+        if let Some(updater) = self.session.upload_progress_updater.as_ref() {
+            updater.update(chunks.len() as u64);
+        }
+
         Ok(())
     }
 

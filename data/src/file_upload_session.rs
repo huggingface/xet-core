@@ -194,7 +194,7 @@ impl FileUploadSession {
         Ok(())
     }
 
-    /// Finalize with  
+    /// Finalize everthing.
     async fn finalize_impl(self: Arc<Self>, return_files: bool) -> Result<(DeduplicationMetrics, Vec<MDBFileInfo>)> {
         // This should be used as if it's consuming the class, as it effectively empties all the states.
         debug_assert_eq!(Arc::strong_count(&self), 1);

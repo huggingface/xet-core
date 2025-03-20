@@ -2,7 +2,6 @@ use std::env;
 use std::env::current_dir;
 use std::fs::File;
 use std::io::{Read, Write};
-use std::num::NonZero;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -11,26 +10,19 @@ use cas_client::CacheConfig;
 use cas_object::CompressionScheme;
 use deduplication::DeduplicationMetrics;
 use dirs::home_dir;
-use lazy_static::lazy_static;
 use parutils::{tokio_par_for_each, ParallelError};
 use utils::auth::{AuthConfig, TokenRefresher};
 use utils::progress::ProgressUpdater;
 use xet_threadpool::ThreadPool;
 
 use crate::configurations::*;
+use crate::constants::{MAX_CONCURRENT_DOWNLOADS, MAX_CONCURRENT_FILE_INGESTION};
 use crate::errors::DataProcessingError;
 use crate::repo_salt::RepoSalt;
 use crate::{errors, FileDownloader, FileUploadSession, PointerFile};
 
-// Concurrency in number of files
-lazy_static! {
-    // Upload may be CPU-bound, this depends on network bandwidth and CPU speed
-    static ref MAX_CONCURRENT_UPLOADS: usize =
-        std::thread::available_parallelism().unwrap_or(NonZero::new(8).unwrap()).get();
-}
-const MAX_CONCURRENT_DOWNLOADS: usize = 8; // Download is not CPU-bound
-
 const DEFAULT_CAS_ENDPOINT: &str = "http://localhost:8080";
+
 const READ_BLOCK_SIZE: usize = 1024 * 1024;
 
 pub fn default_config(
@@ -121,7 +113,7 @@ pub async fn upload_async(
     let upload_session = FileUploadSession::new(config, threadpool, progress_updater).await?;
 
     // for all files, clean them, producing pointer files.
-    let pointers = tokio_par_for_each(file_paths, *MAX_CONCURRENT_UPLOADS, |f, _| async {
+    let pointers = tokio_par_for_each(file_paths, *MAX_CONCURRENT_FILE_INGESTION, |f, _| async {
         let (pf, _metrics) = clean_file(upload_session.clone(), f).await?;
         Ok(pf)
     })
@@ -165,7 +157,7 @@ pub async fn download_async(
 
     let processor = &Arc::new(FileDownloader::new(config, threadpool).await?);
     let paths =
-        tokio_par_for_each(pointer_files_plus, MAX_CONCURRENT_DOWNLOADS, |(pointer_file, updater), _| async move {
+        tokio_par_for_each(pointer_files_plus, *MAX_CONCURRENT_DOWNLOADS, |(pointer_file, updater), _| async move {
             let proc = processor.clone();
             smudge_file(&proc, &pointer_file, updater).await
         })

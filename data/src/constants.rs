@@ -31,9 +31,6 @@ utils::configurable_constants! {
     /// The default value is 8 and can be overwritten by environment variable "XET_CONCURRENT_XORB_UPLOADS".
     ref MAX_CONCURRENT_XORB_UPLOADS: usize = 8;
 
-    /// The amount of data to process at once while chunking through files and incoming data
-    ref DATA_INGESTION_BUFFER_SIZE : usize = 16 * 1024 * 1024;
-
     /// This is the target memory usage of chunks within an upload session.  This should be enough to
     /// ensure that buffers are filled while uploading new xorbs, assuming that up to MAX_XORB_BYTES
     /// are tied up in an intermediate xorb.
@@ -44,5 +41,14 @@ utils::configurable_constants! {
     /// This is tracked on a per-session basis to avoid a potential deadlock where all chunk permits
     /// are tied up in a multiplicity of intermediate xorb buffers.
     ref CHUNK_MEMORY_USAGE_PER_UPLOAD_SESSION: usize = 512 * 1024 * 1024;
+
+    /// The amount of data to process at once while chunking through files and incoming data
+    ref DATA_INGESTION_BUFFER_SIZE : usize = 8 * 1024 * 1024;
+
+    /// The maximum number of files to ingest at once on the upload path
+    ref MAX_CONCURRENT_FILE_INGESTION: usize = 8;
+
+    /// The maximum number of files to download at one time.
+    ref MAX_CONCURRENT_DOWNLOADS : usize = 8;
 
 }
