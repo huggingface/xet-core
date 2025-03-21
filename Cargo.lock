@@ -528,7 +528,6 @@ dependencies = [
  "lz4_flex",
  "merkledb",
  "merklehash",
- "parutils",
  "rand 0.8.5",
  "serde",
  "thiserror 2.0.11",
