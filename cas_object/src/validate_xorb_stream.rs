@@ -287,6 +287,7 @@ mod tests {
 
         let mut buf = Cursor::new(buf);
         buf.seek(std::io::SeekFrom::End(0)).unwrap();
+        #[allow(deprecated)]
         let info_length = cas_info_v0.serialize(&mut buf).unwrap() as u32;
         write_u32(&mut buf, info_length).unwrap();
 
