@@ -39,10 +39,10 @@ pub struct RepoInfo {
 #[derive(PartialEq, Default, Clone, Debug, Copy)]
 pub enum GlobalDedupPolicy {
     /// Never query for new shards using chunk hashes.
+    #[default]
     Never,
 
     /// Always query for new shards by chunks
-    #[default]
     Always,
 }
 

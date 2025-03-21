@@ -204,14 +204,17 @@ impl FileUploadSession {
         metrics.xorb_bytes_uploaded = self.xorb_uploader.finalize().await?;
 
         let all_file_info = if return_files {
-            self.shard_interface.session_file_info_list().await?
+            // self.shard_interface.session_file_info_list().await?
+            Vec::new()
         } else {
             Vec::new()
         };
 
         // Upload and register the current shards in the session, moving them
         // to the cache.
-        metrics.shard_bytes_uploaded = self.shard_interface.upload_and_register_session_shards().await?;
+        if !return_files {
+            metrics.shard_bytes_uploaded = self.shard_interface.upload_and_register_session_shards().await?;
+        }
 
         metrics.total_bytes_uploaded = metrics.shard_bytes_uploaded + metrics.xorb_bytes_uploaded;
 
@@ -223,7 +226,7 @@ impl FileUploadSession {
     }
 
     pub async fn finalize_with_file_info(self: Arc<Self>) -> Result<(DeduplicationMetrics, Vec<MDBFileInfo>)> {
-        self.finalize_impl(false).await
+        self.finalize_impl(true).await
     }
 }
 

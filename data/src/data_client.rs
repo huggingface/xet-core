@@ -179,14 +179,37 @@ pub async fn clean_file(
 
     let mut handle = processor.start_clean(filename.as_ref().to_string_lossy().into());
 
-    loop {
-        let bytes = reader.read(&mut read_buf)?;
-        if bytes == 0 {
-            break;
-        }
+    // loop {
+    //     let bytes = reader.read(&mut read_buf)?;
+    //     if bytes == 0 {
+    //         break;
+    //     }
 
-        handle.add_data(&read_buf[0..bytes]).await?;
+    //     handle.add_data(&read_buf[0..bytes]).await?;
+    // }
+
+    let (tx, rx) = std::sync::mpsc::sync_channel(64);
+    let disk_thread = std::thread::spawn(move || {
+        loop {
+            let bytes = reader.read(&mut read_buf)?;
+            if bytes == 0 {
+                break;
+            }
+
+            tx.send(read_buf[0..bytes].to_vec()).unwrap();
+        }
+        drop(tx);
+
+        Ok::<(), std::io::Error>(())
+    });
+
+    while let Ok(data) = rx.recv() {
+        handle.add_data(&data).await?;
     }
+
+    disk_thread
+        .join()
+        .map_err(|e| DataProcessingError::InternalError(format!("{e:?}")))??;
 
     handle.finish().await
 }
