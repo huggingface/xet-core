@@ -2,11 +2,10 @@ use std::fs::{create_dir_all, read_dir, File};
 use std::io::{Read, Write};
 use std::path::Path;
 
-use cas_object::constants::{MAX_XORB_BYTES, MAX_XORB_CHUNKS};
 use data::configurations::TranslatorConfig;
 use data::data_client::clean_file;
 use data::{FileDownloader, FileUploadSession, PointerFile};
-use deduplication::constants::TARGET_CHUNK_SIZE;
+use deduplication::constants::{MAX_XORB_BYTES, MAX_XORB_CHUNKS, TARGET_CHUNK_SIZE};
 use rand::rngs::StdRng;
 // rand crates
 use rand::RngCore;

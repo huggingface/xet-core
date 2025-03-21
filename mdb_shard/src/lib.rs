@@ -1,4 +1,5 @@
 pub mod cas_structs;
+pub mod chunk_verification;
 pub mod constants;
 pub mod error;
 pub mod file_structs;

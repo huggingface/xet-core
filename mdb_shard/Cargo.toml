@@ -24,6 +24,7 @@ itertools = "0.13.0"
 futures-io = "0.3.31"
 futures-util = "0.3.31"
 serde = { version = "1.0.215", features = ["derive"] }
+blake3 = "1.5.4"
 
 [[bin]]
 name = "shard_benchmark"

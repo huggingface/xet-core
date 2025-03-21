@@ -1,11 +1,11 @@
 use std::sync::Arc;
 
-use cas_object::constants::{MAX_XORB_BYTES, MAX_XORB_CHUNKS};
 use mdb_shard::cas_structs::{CASChunkSequenceEntry, CASChunkSequenceHeader, MDBCASInfo};
 use merkledb::aggregate_hashes::cas_node_hash;
 use merklehash::MerkleHash;
 use more_asserts::*;
 
+use crate::constants::{MAX_XORB_BYTES, MAX_XORB_CHUNKS};
 use crate::Chunk;
 
 /// This struct is the data needed to cut a

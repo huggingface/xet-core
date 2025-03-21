@@ -526,6 +526,7 @@ dependencies = [
  "futures",
  "half 2.4.1",
  "lz4_flex",
+ "mdb_shard",
  "merkledb",
  "merklehash",
  "more-asserts",
@@ -969,7 +970,6 @@ name = "deduplication"
 version = "0.14.5"
 dependencies = [
  "async-trait",
- "cas_object",
  "gearhash",
  "lazy_static",
  "mdb_shard",
@@ -2136,6 +2136,7 @@ version = "0.14.5"
 dependencies = [
  "anyhow",
  "async-trait",
+ "blake3",
  "clap 3.2.25",
  "futures-io",
  "futures-util",

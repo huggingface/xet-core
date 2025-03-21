@@ -1,7 +1,6 @@
 use std::collections::HashMap;
 use std::result::Result;
 
-use cas_object::constants::{MAX_XORB_BYTES, MAX_XORB_CHUNKS};
 use mdb_shard::file_structs::{
     FileDataSequenceEntry, FileDataSequenceHeader, FileMetadataExt, FileVerificationEntry, MDBFileInfo,
 };
@@ -10,6 +9,7 @@ use merkledb::aggregate_hashes::file_node_hash;
 use merklehash::MerkleHash;
 use more_asserts::{debug_assert_le, debug_assert_lt};
 
+use crate::constants::{MAX_XORB_BYTES, MAX_XORB_CHUNKS};
 use crate::data_aggregator::DataAggregator;
 use crate::dedup_metrics::DeduplicationMetrics;
 use crate::defrag_prevention::DefragPrevention;
@@ -362,7 +362,7 @@ impl<DataInterfaceType: DeduplicationDataInterface> FileDeduper<DataInterfaceTyp
                     .iter()
                     .map(|(hash, _)| *hash)
                     .collect();
-                let range_hash = cas_object::range_hash_from_chunks(&chunk_hashes);
+                let range_hash = mdb_shard::chunk_verification::range_hash_from_chunks(&chunk_hashes);
                 chunk_idx += n_chunks;
 
                 FileVerificationEntry::new(range_hash)

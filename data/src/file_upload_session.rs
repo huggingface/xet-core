@@ -2,7 +2,7 @@ use std::mem::{swap, take};
 use std::sync::Arc;
 
 use cas_client::Client;
-use cas_object::constants::{MAX_XORB_BYTES, MAX_XORB_CHUNKS};
+use deduplication::constants::{MAX_XORB_BYTES, MAX_XORB_CHUNKS};
 use deduplication::{DataAggregator, DeduplicationMetrics};
 use jsonwebtoken::{decode, DecodingKey, Validation};
 use mdb_shard::file_structs::MDBFileInfo;
