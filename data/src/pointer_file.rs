@@ -8,7 +8,11 @@ use static_assertions::const_assert;
 use toml::Value;
 use tracing::{debug, error, warn};
 
-use crate::constants::POINTER_FILE_LIMIT;
+/// We put a limit on the pointer file size so that
+/// we don't ever try to read a whole giant blob into memory when
+/// trying to clean or smudge.
+/// See gitxetcore::data::pointer_file for the explanation for this limit.
+pub const POINTER_FILE_LIMIT: usize = 150;
 
 const HEADER_PREFIX: &str = "# xet version ";
 const CURRENT_VERSION: &str = "0";

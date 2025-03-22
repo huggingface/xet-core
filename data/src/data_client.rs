@@ -1,43 +1,34 @@
+use std::env;
 use std::env::current_dir;
 use std::fs::File;
-use std::io::{BufReader, Read, Write};
-use std::num::NonZero;
-use std::path::PathBuf;
+use std::io::{Read, Write};
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::{env, fs};
 
+use cas_client::remote_client::PREFIX_DEFAULT;
 use cas_client::CacheConfig;
 use cas_object::CompressionScheme;
+use deduplication::DeduplicationMetrics;
 use dirs::home_dir;
-use lazy_static::lazy_static;
-use merkledb::constants::IDEAL_CAS_BLOCK_SIZE;
 use parutils::{tokio_par_for_each, ParallelError};
-use tempfile::{tempdir_in, TempDir};
 use utils::auth::{AuthConfig, TokenRefresher};
 use utils::progress::ProgressUpdater;
 use xet_threadpool::ThreadPool;
 
 use crate::configurations::*;
+use crate::constants::{INGESTION_BLOCK_SIZE, MAX_CONCURRENT_DOWNLOADS, MAX_CONCURRENT_FILE_INGESTION};
 use crate::errors::DataProcessingError;
+use crate::repo_salt::RepoSalt;
 use crate::{errors, FileDownloader, FileUploadSession, PointerFile};
 
-// Concurrency in number of files
-lazy_static! {
-    // Upload may be CPU-bound, this depends on network bandwidth and CPU speed
-    static ref MAX_CONCURRENT_UPLOADS: usize =
-        std::thread::available_parallelism().unwrap_or(NonZero::new(8).unwrap()).get();
-}
-const MAX_CONCURRENT_DOWNLOADS: usize = 8; // Download is not CPU-bound
-
 const DEFAULT_CAS_ENDPOINT: &str = "http://localhost:8080";
-const READ_BLOCK_SIZE: usize = 1024 * 1024;
 
 pub fn default_config(
     endpoint: String,
     xorb_compression: Option<CompressionScheme>,
     token_info: Option<(String, u64)>,
     token_refresher: Option<Arc<dyn TokenRefresher>>,
-) -> errors::Result<(TranslatorConfig, TempDir)> {
+) -> errors::Result<Arc<TranslatorConfig>> {
     // if HF_HOME is set use that instead of ~/.cache/huggingface
     // if HF_XET_CACHE is set use that instead of ~/.cache/huggingface/xet
     // HF_XET_CACHE takes precedence over HF_HOME
@@ -50,10 +41,6 @@ pub fn default_config(
         let home = home_dir().unwrap_or(current_dir()?);
         home.join(".cache").join("huggingface").join("xet")
     };
-
-    let staging_root = cache_root_path.join("staging");
-    std::fs::create_dir_all(&staging_root)?;
-    let shard_staging_directory = tempdir_in(staging_root)?;
 
     let (token, token_expiration) = token_info.unzip();
     let auth_cfg = AuthConfig::maybe_new(token, token_expiration, token_refresher);
@@ -75,43 +62,35 @@ pub fn default_config(
     let cache_path = cache_root_path.join(endpoint_tag);
     std::fs::create_dir_all(&cache_path)?;
 
+    let staging_root = cache_path.join("staging");
+    std::fs::create_dir_all(&staging_root)?;
+
     let translator_config = TranslatorConfig {
-        file_query_policy: FileQueryPolicy::ServerOnly,
-        cas_storage_config: StorageConfig {
+        data_config: DataConfig {
             endpoint: Endpoint::Server(endpoint.clone()),
             compression: xorb_compression,
             auth: auth_cfg.clone(),
-            prefix: "default".into(),
-            cache_config: Some(CacheConfig {
+            prefix: PREFIX_DEFAULT.into(),
+            cache_config: CacheConfig {
                 cache_directory: cache_path.join("chunk-cache"),
                 cache_size: 10 * 1024 * 1024 * 1024, // 10 GiB
-            }),
+            },
             staging_directory: None,
         },
-        shard_storage_config: StorageConfig {
-            endpoint: Endpoint::Server(endpoint),
-            compression: None,
-            auth: auth_cfg,
-            prefix: "default-merkledb".into(),
-            cache_config: Some(CacheConfig {
-                cache_directory: cache_path.join("shard-cache"),
-                cache_size: 0, // ignored
-            }),
-            staging_directory: Some(shard_staging_directory.path().to_owned()),
-        },
-        dedup_config: GlobalDedupConfig {
-            repo_salt: None,
+        shard_config: ShardConfig {
+            prefix: PREFIX_DEFAULT.into(),
+            cache_directory: cache_path.join("shard-cache"),
+            session_directory: staging_root.join("shard-session"),
             global_dedup_policy: Default::default(),
+            repo_salt: RepoSalt::default(),
         },
         repo_info: Some(RepoInfo {
             repo_paths: vec!["".into()],
         }),
     };
 
-    translator_config.validate()?;
-
     // Return the temp dir so that it's not dropped and thus the directory deleted.
-    Ok((translator_config, shard_staging_directory))
+    Ok(Arc::new(translator_config))
 }
 
 pub async fn upload_async(
@@ -126,15 +105,15 @@ pub async fn upload_async(
     // produce Xorbs + Shards
     // upload shards and xorbs
     // for each file, return the filehash
-    let (config, _tempdir) =
+    let config =
         default_config(endpoint.unwrap_or(DEFAULT_CAS_ENDPOINT.to_string()), None, token_info, token_refresher)?;
 
-    let processor = Arc::new(FileUploadSession::new(config, threadpool, progress_updater).await?);
+    let upload_session = FileUploadSession::new(config, threadpool, progress_updater).await?;
 
     // for all files, clean them, producing pointer files.
-    let pointers = tokio_par_for_each(file_paths, *MAX_CONCURRENT_UPLOADS, |f, _| async {
-        let proc = processor.clone();
-        clean_file(&proc, f).await
+    let pointers = tokio_par_for_each(file_paths, *MAX_CONCURRENT_FILE_INGESTION, |f, _| async {
+        let (pf, _metrics) = clean_file(upload_session.clone(), f).await?;
+        Ok(pf)
     })
     .await
     .map_err(|e| match e {
@@ -143,9 +122,11 @@ pub async fn upload_async(
     })?;
 
     // Push the CAS blocks and flush the mdb to disk
-    processor.finalize_cleaning().await?;
+    let _metrics = upload_session.finalize().await?;
 
-    Ok(pointers.into_iter().map(|(pt, _)| pt).collect())
+    // TODO: Report on metrics
+
+    Ok(pointers)
 }
 
 pub async fn download_async(
@@ -163,7 +144,7 @@ pub async fn download_async(
             ));
         }
     }
-    let (config, _tempdir) =
+    let config =
         default_config(endpoint.unwrap_or(DEFAULT_CAS_ENDPOINT.to_string()), None, token_info, token_refresher)?;
 
     let updaters = match progress_updaters {
@@ -174,7 +155,7 @@ pub async fn download_async(
 
     let processor = &Arc::new(FileDownloader::new(config, threadpool).await?);
     let paths =
-        tokio_par_for_each(pointer_files_plus, MAX_CONCURRENT_DOWNLOADS, |(pointer_file, updater), _| async move {
+        tokio_par_for_each(pointer_files_plus, *MAX_CONCURRENT_DOWNLOADS, |(pointer_file, updater), _| async move {
             let proc = processor.clone();
             smudge_file(&proc, &pointer_file, updater).await
         })
@@ -187,29 +168,27 @@ pub async fn download_async(
     Ok(paths)
 }
 
-pub async fn clean_file(processor: &FileUploadSession, f: String) -> errors::Result<(PointerFile, u64)> {
-    let mut read_buf = vec![0u8; READ_BLOCK_SIZE];
-    let path = PathBuf::from(f);
-    let mut reader = BufReader::new(File::open(path.clone())?);
-    let handle = processor
-        .start_clean(
-            IDEAL_CAS_BLOCK_SIZE / READ_BLOCK_SIZE, // enough to fill one CAS block
-            Some(&path),                            // for logging & telemetry
-        )
-        .await?;
+pub async fn clean_file(
+    processor: Arc<FileUploadSession>,
+    filename: impl AsRef<Path>,
+) -> errors::Result<(PointerFile, DeduplicationMetrics)> {
+    let mut reader = File::open(&filename)?;
+
+    let n = reader.metadata()?.len() as usize;
+    let mut buffer = vec![0u8; usize::min(n, *INGESTION_BLOCK_SIZE)];
+
+    let mut handle = processor.start_clean(filename.as_ref().to_string_lossy().into());
 
     loop {
-        let bytes = reader.read(&mut read_buf)?;
+        let bytes = reader.read(&mut buffer)?;
         if bytes == 0 {
             break;
         }
 
-        handle.add_bytes(read_buf[0..bytes].to_vec()).await?;
+        handle.add_data(&buffer[0..bytes]).await?;
     }
 
-    let (pf_str, new_bytes) = handle.result().await?;
-    let pf = PointerFile::init_from_string(&pf_str, path.to_str().unwrap());
-    Ok((pf, new_bytes))
+    handle.finish().await
 }
 
 async fn smudge_file(
@@ -219,7 +198,7 @@ async fn smudge_file(
 ) -> errors::Result<String> {
     let path = PathBuf::from(pointer_file.path());
     if let Some(parent_dir) = path.parent() {
-        fs::create_dir_all(parent_dir)?;
+        std::fs::create_dir_all(parent_dir)?;
     }
     let mut f: Box<dyn Write + Send> = Box::new(File::create(&path)?);
     downloader
@@ -247,14 +226,8 @@ mod tests {
         let result = default_config(endpoint, None, None, None);
 
         assert!(result.is_ok());
-        let (config, _tempdir) = result.unwrap();
-        assert!(config.cas_storage_config.cache_config.is_some());
-        assert!(config
-            .cas_storage_config
-            .cache_config
-            .unwrap()
-            .cache_directory
-            .starts_with(&temp_dir.path()));
+        let config = result.unwrap();
+        assert!(config.data_config.cache_config.cache_directory.starts_with(&temp_dir.path()));
 
         env::remove_var("HF_HOME");
     }
@@ -271,12 +244,10 @@ mod tests {
         let result = default_config(endpoint, None, None, None);
 
         assert!(result.is_ok());
-        let (config, _tempdir) = result.unwrap();
-        assert!(config.cas_storage_config.cache_config.is_some());
+        let config = result.unwrap();
         assert!(config
-            .cas_storage_config
+            .data_config
             .cache_config
-            .unwrap()
             .cache_directory
             .starts_with(&temp_dir_xet_cache.path()));
 
@@ -290,14 +261,8 @@ mod tests {
         let result = default_config(endpoint, None, None, None);
 
         assert!(result.is_ok());
-        let (config, _tempdir) = result.unwrap();
-        assert!(config.cas_storage_config.cache_config.is_some());
-        assert!(config
-            .cas_storage_config
-            .cache_config
-            .unwrap()
-            .cache_directory
-            .starts_with(&temp_dir.path()));
+        let config = result.unwrap();
+        assert!(config.data_config.cache_config.cache_directory.starts_with(&temp_dir.path()));
 
         env::remove_var("HF_HOME");
     }
@@ -312,14 +277,8 @@ mod tests {
         let result = default_config(endpoint, None, None, None);
 
         assert!(result.is_ok());
-        let (config, _tempdir) = result.unwrap();
-        assert!(config.cas_storage_config.cache_config.is_some());
-        assert!(config
-            .cas_storage_config
-            .cache_config
-            .unwrap()
-            .cache_directory
-            .starts_with(&temp_dir.path()));
+        let config = result.unwrap();
+        assert!(config.data_config.cache_config.cache_directory.starts_with(&temp_dir.path()));
 
         env::remove_var("HF_XET_CACHE");
     }
@@ -337,13 +296,7 @@ mod tests {
             .join("xet");
 
         assert!(result.is_ok());
-        let (config, _tempdir) = result.unwrap();
-        assert!(config.cas_storage_config.cache_config.is_some());
-        assert!(config
-            .cas_storage_config
-            .cache_config
-            .unwrap()
-            .cache_directory
-            .starts_with(&expected));
+        let config = result.unwrap();
+        assert!(config.data_config.cache_config.cache_directory.starts_with(&expected));
     }
 }

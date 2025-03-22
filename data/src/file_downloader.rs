@@ -19,13 +19,13 @@ use crate::PointerFile;
 /// and xorbs needed to reconstruct those files are properly uploaded and registered.
 pub struct FileDownloader {
     /* ----- Configurations ----- */
-    config: TranslatorConfig,
+    config: Arc<TranslatorConfig>,
     client: Arc<dyn Client + Send + Sync>,
 }
 
 /// Smudge operations
 impl FileDownloader {
-    pub async fn new(config: TranslatorConfig, threadpool: Arc<ThreadPool>) -> Result<Self> {
+    pub async fn new(config: Arc<TranslatorConfig>, threadpool: Arc<ThreadPool>) -> Result<Self> {
         let client = create_remote_client(&config, threadpool.clone(), false)?;
 
         Ok(Self { config, client })

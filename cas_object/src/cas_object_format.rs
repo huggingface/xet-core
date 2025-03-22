@@ -5,6 +5,7 @@ use std::mem::{size_of, size_of_val};
 use anyhow::anyhow;
 use bytes::Buf;
 use futures::AsyncReadExt;
+use mdb_shard::chunk_verification::range_hash_from_chunks;
 use merkledb::constants::{IDEAL_CAS_BLOCK_SIZE, TARGET_CDC_CHUNK_SIZE};
 use merkledb::prelude::MerkleDBHighLevelMethodsV1;
 use merkledb::{Chunk, MerkleMemDB};
@@ -15,7 +16,7 @@ use utils::serialization_utils::*;
 
 use crate::cas_chunk_format::{deserialize_chunk, serialize_chunk};
 use crate::error::{CasObjectError, Validate};
-use crate::{range_hash_from_chunks, CompressionScheme};
+use crate::CompressionScheme;
 
 pub type CasObjectIdent = [u8; 7];
 pub(crate) const CAS_OBJECT_FORMAT_IDENT: CasObjectIdent = [b'X', b'E', b'T', b'B', b'L', b'O', b'B'];
@@ -1333,10 +1334,10 @@ mod tests {
     use std::io::Cursor;
 
     use futures::TryStreamExt;
+    use mdb_shard::chunk_verification::VERIFICATION_KEY;
 
     use super::test_utils::*;
     use super::*;
-    use crate::chunk_verification::VERIFICATION_KEY;
 
     #[test]
     fn test_default_cas_object() {

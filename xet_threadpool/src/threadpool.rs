@@ -1,6 +1,7 @@
 use std::fmt::Display;
 use std::future::Future;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::Arc;
 
 use tokio::runtime::{Builder as TokioRuntimeBuilder, Handle as TokioRuntimeHandle, Runtime as TokioRuntime};
 use tokio::task::JoinHandle;
@@ -86,6 +87,13 @@ impl ThreadPool {
             external_executor_count: AtomicUsize::new(0),
             sigint_shutdown: AtomicBool::new(false),
         })
+    }
+
+    /// Use this when already running within a tokio runtime; this simply
+    /// pulls in the handle from the current runtime.  Can be used in testing functions
+    /// when the runtime needs to be passed in as an argument to current functions.
+    pub fn from_current_runtime() -> Arc<Self> {
+        Arc::new(Self::from_external(TokioRuntimeHandle::current()))
     }
 
     pub fn new_with_hardware_parallelism_limit() -> Result<Self, MultithreadedRuntimeError> {
