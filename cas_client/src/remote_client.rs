@@ -486,6 +486,10 @@ impl RegistrationClient for RemoteClient {
         shard_data: &[u8],
         _salt: &[u8; 32],
     ) -> Result<bool> {
+        if self.dry_run {
+            return Ok(true);
+        }
+
         let key = Key {
             prefix: prefix.into(),
             hash: *hash,
