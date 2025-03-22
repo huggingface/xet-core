@@ -195,6 +195,8 @@ impl<DataInterfaceType: DeduplicationDataInterface> FileDeduper<DataInterfaceTyp
 
             dedup_metrics.total_chunks += 1;
             dedup_metrics.total_bytes += n_bytes;
+            dedup_metrics.new_bytes += n_bytes;
+            dedup_metrics.new_chunks += 1;
 
             // Do we need to cut a new xorb first?
             if self.new_data_size + n_bytes > *MAX_XORB_BYTES || self.new_data.len() + 1 > *MAX_XORB_CHUNKS {
