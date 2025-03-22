@@ -16,14 +16,12 @@ use utils::progress::ProgressUpdater;
 use xet_threadpool::ThreadPool;
 
 use crate::configurations::*;
-use crate::constants::{MAX_CONCURRENT_DOWNLOADS, MAX_CONCURRENT_FILE_INGESTION};
+use crate::constants::{INGESTION_BLOCK_SIZE, MAX_CONCURRENT_DOWNLOADS, MAX_CONCURRENT_FILE_INGESTION};
 use crate::errors::DataProcessingError;
 use crate::repo_salt::RepoSalt;
 use crate::{errors, FileDownloader, FileUploadSession, PointerFile};
 
 const DEFAULT_CAS_ENDPOINT: &str = "http://localhost:8080";
-
-const READ_BLOCK_SIZE: usize = 1024 * 1024;
 
 pub fn default_config(
     endpoint: String,
@@ -174,18 +172,20 @@ pub async fn clean_file(
     processor: Arc<FileUploadSession>,
     filename: impl AsRef<Path>,
 ) -> errors::Result<(PointerFile, DeduplicationMetrics)> {
-    let mut read_buf = vec![0u8; READ_BLOCK_SIZE];
     let mut reader = File::open(&filename)?;
+
+    let n = reader.metadata()?.len() as usize;
+    let mut buffer = vec![0u8; usize::min(n, *INGESTION_BLOCK_SIZE)];
 
     let mut handle = processor.start_clean(filename.as_ref().to_string_lossy().into());
 
     loop {
-        let bytes = reader.read(&mut read_buf)?;
+        let bytes = reader.read(&mut buffer)?;
         if bytes == 0 {
             break;
         }
 
-        handle.add_data(&read_buf[0..bytes]).await?;
+        handle.add_data(&buffer[0..bytes]).await?;
     }
 
     handle.finish().await

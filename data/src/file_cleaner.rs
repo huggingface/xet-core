@@ -4,6 +4,7 @@ use deduplication::{Chunk, Chunker, DeduplicationMetrics, FileDeduper};
 use mdb_shard::file_structs::FileMetadataExt;
 use merklehash::MerkleHash;
 
+use crate::constants::INGESTION_BLOCK_SIZE;
 use crate::deduplication_interface::UploadSessionDataManager;
 use crate::errors::Result;
 use crate::file_upload_session::FileUploadSession;
@@ -40,6 +41,21 @@ impl SingleFileCleaner {
     }
 
     pub async fn add_data(&mut self, data: &[u8]) -> Result<()> {
+        if data.len() > *INGESTION_BLOCK_SIZE {
+            let mut pos = 0;
+            while pos < data.len() {
+                let next_pos = usize::min(pos + *INGESTION_BLOCK_SIZE, data.len());
+                self.add_data_impl(&data[pos..next_pos]).await?;
+                pos = next_pos;
+            }
+        } else {
+            self.add_data_impl(data).await?;
+        }
+
+        Ok(())
+    }
+
+    async fn add_data_impl(&mut self, data: &[u8]) -> Result<()> {
         // Chunk the data.
         let chunks: Arc<[Chunk]> = Arc::from(self.chunker.next_block(data, false));
 
@@ -49,7 +65,7 @@ impl SingleFileCleaner {
         }
 
         // Update the sha256 generator
-        self.sha_generator.update(chunks.clone());
+        self.sha_generator.update(chunks.clone()).await?;
 
         // Run the deduplication interface here.
         self.dedup_manager.process_chunks(&chunks).await?;
@@ -66,7 +82,7 @@ impl SingleFileCleaner {
     pub async fn finish(mut self) -> Result<(PointerFile, DeduplicationMetrics)> {
         // Chunk the rest of the data.
         if let Some(chunk) = self.chunker.finish() {
-            self.sha_generator.update(Arc::new([chunk.clone()]));
+            self.sha_generator.update(Arc::new([chunk.clone()])).await?;
             self.dedup_manager.process_chunks(&[chunk]).await?;
         }
 
