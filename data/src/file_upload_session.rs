@@ -223,7 +223,7 @@ impl FileUploadSession {
     }
 
     pub async fn finalize_with_file_info(self: Arc<Self>) -> Result<(DeduplicationMetrics, Vec<MDBFileInfo>)> {
-        self.finalize_impl(false).await
+        self.finalize_impl(true).await
     }
 }
 
