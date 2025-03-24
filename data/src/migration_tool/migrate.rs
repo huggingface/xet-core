@@ -28,6 +28,7 @@ use crate::{FileUploadSession, PointerFile};
 pub async fn migrate_with_external_runtime(
     file_paths: Vec<String>,
     hub_endpoint: &str,
+    cas_endpoint: Option<String>,
     hub_token: &str,
     repo_type: &str,
     repo_id: &str,
@@ -43,7 +44,7 @@ pub async fn migrate_with_external_runtime(
 
     let threadpool = Arc::new(ThreadPool::from_external(handle));
 
-    migrate_files_impl(file_paths, false, hub_client, threadpool, None, false).await?;
+    migrate_files_impl(file_paths, false, hub_client, cas_endpoint, threadpool, None, false).await?;
 
     Ok(())
 }
@@ -52,6 +53,7 @@ pub async fn migrate_files_impl(
     file_paths: Vec<String>,
     sequential: bool,
     hub_client: HubClient,
+    cas_endpoint: Option<String>,
     threadpool: Arc<ThreadPool>,
     compression: Option<CompressionScheme>,
     dry_run: bool,
@@ -63,9 +65,10 @@ pub async fn migrate_files_impl(
         token_type: token_type.to_owned(),
         client: Arc::new(hub_client),
     }) as Arc<dyn TokenRefresher>;
+    let cas = cas_endpoint.unwrap_or(endpoint);
 
     let (config, _tempdir) =
-        default_config(endpoint, compression, Some((jwt_token, jwt_token_expiry)), Some(token_refresher))?;
+        default_config(cas, compression, Some((jwt_token, jwt_token_expiry)), Some(token_refresher))?;
 
     let num_workers = if sequential { 1 } else { threadpool.num_worker_threads() };
     let processor = if dry_run {
@@ -78,11 +81,11 @@ pub async fn migrate_files_impl(
         let proc = processor.clone();
         clean_file(&proc, f).await
     })
-    .await
-    .map_err(|e| match e {
-        ParallelError::JoinError => DataProcessingError::InternalError("Join error".to_string()),
-        ParallelError::TaskError(e) => e,
-    })?;
+        .await
+        .map_err(|e| match e {
+            ParallelError::JoinError => DataProcessingError::InternalError("Join error".to_string()),
+            ParallelError::TaskError(e) => e,
+        })?;
 
     let total_bytes_trans = processor.finalize_cleaning().await?;
 
