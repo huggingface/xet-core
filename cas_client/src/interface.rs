@@ -59,14 +59,15 @@ pub trait ReconstructionClient {
         byte_range: Option<FileRange>,
         writer: &mut Box<dyn Write + Send>,
         progress_updater: Option<Arc<dyn ProgressUpdater>>,
-    ) -> Result<()>;
+    ) -> Result<u64>;
 
-    async fn batch_get_file(&self, files: HashMap<MerkleHash, &mut Box<dyn Write + Send>>) -> Result<()> {
+    async fn batch_get_file(&self, files: HashMap<MerkleHash, &mut Box<dyn Write + Send>>) -> Result<u64> {
+        let mut n_bytes = 0;
         // Provide the basic naive implementation as a default.
         for (h, w) in files {
-            self.get_file(&h, None, w, None).await?;
+            n_bytes += self.get_file(&h, None, w, None).await?;
         }
-        Ok(())
+        Ok(n_bytes)
     }
 }
 

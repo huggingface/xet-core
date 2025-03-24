@@ -144,7 +144,7 @@ impl ReconstructionClient for RemoteClient {
         byte_range: Option<FileRange>,
         writer: &mut Box<dyn Write + Send>,
         progress_updater: Option<Arc<dyn ProgressUpdater>>,
-    ) -> Result<()> {
+    ) -> Result<u64> {
         // get manifest of xorbs to download, api call to CAS
         let manifest = self.get_reconstruction(hash, byte_range.clone()).await?;
 
@@ -158,12 +158,10 @@ impl ReconstructionClient for RemoteClient {
             writer,
             progress_updater,
         )
-        .await?;
-
-        Ok(())
+        .await
     }
 
-    async fn batch_get_file(&self, mut files: HashMap<MerkleHash, &mut Box<dyn Write + Send>>) -> Result<()> {
+    async fn batch_get_file(&self, mut files: HashMap<MerkleHash, &mut Box<dyn Write + Send>>) -> Result<u64> {
         let requested_file_ids = files.keys().cloned().collect::<HashSet<_>>();
         let manifest = self.batch_get_reconstruction(requested_file_ids.iter()).await?;
         let fetch_info = Arc::new(manifest.fetch_info);
@@ -176,13 +174,15 @@ impl ReconstructionClient for RemoteClient {
         }
 
         // TODO: spawn threads to reconstruct each file
+        let mut ret_size = 0;
         for (hash, terms) in manifest.files {
             let w = files.get_mut(&(hash.into())).unwrap();
-            self.reconstruct_file_to_writer(terms, fetch_info.clone(), 0, None, w, None)
+            ret_size += self
+                .reconstruct_file_to_writer(terms, fetch_info.clone(), 0, None, w, None)
                 .await?;
         }
 
-        Ok(())
+        Ok(ret_size)
     }
 }
 

@@ -16,6 +16,7 @@ use crate::configurations::*;
 use crate::errors::*;
 use crate::file_cleaner::SingleFileCleaner;
 use crate::parallel_xorb_uploader::ParallelXorbUploader;
+use crate::prometheus_metrics;
 use crate::remote_client_interface::create_remote_client;
 use crate::shard_interface::SessionShardInterface;
 
@@ -38,9 +39,6 @@ pub struct FileUploadSession {
 
     /// The repo id, if present.
     pub(crate) repo_id: Option<String>,
-
-    /// If true, don't actually upload anything; just collect statistics.
-    pub(crate) dry_run: bool,
 
     /// The configuration settings, if needed.
     pub(crate) config: Arc<TranslatorConfig>,
@@ -111,7 +109,6 @@ impl FileUploadSession {
             upload_progress_updater,
             threadpool,
             repo_id,
-            dry_run,
             config,
             current_session_data: Mutex::new(DataAggregator::default()),
             deduplication_metrics: Mutex::new(DeduplicationMetrics::default()),
@@ -215,6 +212,10 @@ impl FileUploadSession {
 
         metrics.total_bytes_uploaded = metrics.shard_bytes_uploaded + metrics.xorb_bytes_uploaded;
 
+        // Update the global counters
+        prometheus_metrics::FILTER_CAS_BYTES_PRODUCED.inc_by(metrics.new_bytes as u64);
+        prometheus_metrics::FILTER_BYTES_CLEANED.inc_by(metrics.total_bytes as u64);
+
         Ok((metrics, all_file_info))
     }
 
@@ -307,7 +308,7 @@ mod tests {
             .unwrap();
 
         translator
-            .smudge_file_from_pointer(&pointer_file, &mut Box::new(writer), None, None)
+            .smudge_file_from_pointer(&pointer_file, &mut (Box::new(writer) as Box<dyn Write + Send>), None, None)
             .await
             .unwrap();
     }

@@ -930,6 +930,7 @@ dependencies = [
  "cas_types",
  "chrono",
  "clap 3.2.25",
+ "countio",
  "deduplication",
  "dirs",
  "error_printer",
