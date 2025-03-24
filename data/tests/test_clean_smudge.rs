@@ -141,13 +141,16 @@ async fn hydrate_directory(cas_dir: &Path, ptr_dir: &Path, out_dir: &Path) {
         let out_filename = out_dir.join(entry.file_name());
 
         // Create an output file for writing
-        let file_out = File::create(&out_filename).unwrap();
+        let mut file_out: Box<dyn Write + Send> = Box::new(File::create(&out_filename).unwrap());
 
         // Pointer file.
         let pf = PointerFile::init_from_path(entry.path());
         assert!(pf.is_valid());
 
-        downloader.smudge_file_from_pointer(&pf, file_out, None, None).await.unwrap();
+        downloader
+            .smudge_file_from_pointer(&pf, &mut file_out, None, None)
+            .await
+            .unwrap();
     }
 }
 

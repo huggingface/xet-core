@@ -82,8 +82,22 @@ impl ParallelXorbUploader {
             return Ok(());
         }
 
-        // Acquire a permit for uploading; the acquired permit is dropped after the task completes.
-        // The chosen Semaphore is fair, meaning xorbs added first will be scheduled to upload first.
+        let client = self.client.clone();
+        let cas_prefix = self.cas_prefix.clone();
+        let upload_progress_updater = self.upload_progress_updater.clone();
+
+        let xorb_hash = xorb.hash();
+        let xorb_data = xorb.to_vec();
+        let chunks_and_boundaries = xorb.cas_info.chunks_and_boundaries();
+
+        drop(xorb);
+
+        // Acquire a permit for uploading before we spawn the task; the acquired permit is dropped after the task
+        // completes. The chosen Semaphore is fair, meaning xorbs added first will be scheduled to upload first.
+        //
+        // It's also important to acquire the permit before the task is launched; otherwise, we may spawn an unlimited
+        // number of tasks that end up using up a ton of memory; this forces the pipeline to block here while the upload
+        // is happening.
         let upload_permit = self
             .parallel_upload_limiter
             .clone()
@@ -91,15 +105,9 @@ impl ParallelXorbUploader {
             .await
             .map_err(|e| UploadTaskError(e.to_string()))?;
 
-        let client = self.client.clone();
-        let cas_prefix = self.cas_prefix.clone();
-        let upload_progress_updater = self.upload_progress_updater.clone();
-
         self.upload_tasks.lock().await.spawn_on(
             async move {
-                let n_bytes_transmitted = client
-                    .put(&cas_prefix, &xorb.hash(), xorb.to_vec(), xorb.cas_info.chunks_and_boundaries())
-                    .await?;
+                let n_bytes_transmitted = client.put(&cas_prefix, &xorb_hash, xorb_data, chunks_and_boundaries).await?;
 
                 drop(upload_permit);
 
