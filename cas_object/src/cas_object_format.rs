@@ -648,8 +648,6 @@ impl CasObjectInfoV1 {
             )));
         }
 
-        // set the version and ident field since this is a valid CasObjectInfoV1
-        s.hashes_version = 0;
         debug_assert!(s.chunk_hashes.is_empty());
 
         Ok((s, r.reader_bytes() as u32))
@@ -2062,7 +2060,6 @@ mod tests {
             assert_eq!(boundaries_footer.unpacked_chunk_offsets, original.unpacked_chunk_offsets);
 
             // check that the hashes are not filled in
-            assert!(boundaries_footer.chunk_hashes.is_empty());
             assert!(!boundaries_footer.has_chunk_hashes());
             assert!(original.has_chunk_hashes());
         }
