@@ -120,7 +120,7 @@ impl Command {
                     arg.compression.and_then(|c| CompressionScheme::try_from(c).ok()),
                     !arg.migrate,
                 )
-                    .await?;
+                .await?;
 
                 // Print file info for analysis
                 if !arg.migrate {
@@ -141,7 +141,7 @@ impl Command {
                 eprintln!("Transmitted {total_bytes_trans} bytes in total.");
 
                 Ok(())
-            }
+            },
             Command::Query(_arg) => unimplemented!(),
         }
     }

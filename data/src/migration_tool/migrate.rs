@@ -81,11 +81,11 @@ pub async fn migrate_files_impl(
         let proc = processor.clone();
         clean_file(&proc, f).await
     })
-        .await
-        .map_err(|e| match e {
-            ParallelError::JoinError => DataProcessingError::InternalError("Join error".to_string()),
-            ParallelError::TaskError(e) => e,
-        })?;
+    .await
+    .map_err(|e| match e {
+        ParallelError::JoinError => DataProcessingError::InternalError("Join error".to_string()),
+        ParallelError::TaskError(e) => e,
+    })?;
 
     let total_bytes_trans = processor.finalize_cleaning().await?;
 
