@@ -3,18 +3,13 @@ use std::sync::Arc;
 
 use cas_client::Client;
 use deduplication::RawXorbData;
-use tokio::sync::{Mutex, Semaphore};
+use tokio::sync::Mutex;
 use tokio::task::JoinSet;
 use utils::progress::ProgressUpdater;
 use xet_threadpool::ThreadPool;
 
-use crate::constants::MAX_CONCURRENT_XORB_UPLOADS;
-use crate::errors::DataProcessingError::*;
 use crate::errors::*;
-
-lazy_static::lazy_static! {
-    pub static ref XORB_UPLOAD_RATE_LIMITER: Arc<Semaphore> = Arc::new(Semaphore::new(*MAX_CONCURRENT_XORB_UPLOADS));
-}
+use crate::file_upload_session::UPLOAD_CONCURRENCY_LIMITER;
 
 /// Helper to parallelize xorb upload and registration.
 /// Calls to registering xorbs return immediately after computing a xorb hash so callers
@@ -31,9 +26,6 @@ pub(crate) struct ParallelXorbUploader {
 
     // Internal worker
     upload_tasks: Mutex<JoinSet<Result<usize>>>,
-
-    // Rate limiter
-    parallel_upload_limiter: Arc<Semaphore>,
 
     // Theadpool
     threadpool: Arc<ThreadPool>,
@@ -56,7 +48,6 @@ impl ParallelXorbUploader {
             cas_prefix: cas_prefix.to_owned(),
             client,
             upload_tasks: Mutex::new(JoinSet::new()),
-            parallel_upload_limiter: XORB_UPLOAD_RATE_LIMITER.clone(),
             threadpool,
             upload_progress_updater,
             total_bytes_trans: 0.into(),
@@ -98,12 +89,11 @@ impl ParallelXorbUploader {
         // It's also important to acquire the permit before the task is launched; otherwise, we may spawn an unlimited
         // number of tasks that end up using up a ton of memory; this forces the pipeline to block here while the upload
         // is happening.
-        let upload_permit = self
-            .parallel_upload_limiter
+        let upload_permit = UPLOAD_CONCURRENCY_LIMITER
             .clone()
             .acquire_owned()
             .await
-            .map_err(|e| UploadTaskError(e.to_string()))?;
+            .map_err(|e| DataProcessingError::UploadTaskError(e.to_string()))?;
 
         self.upload_tasks.lock().await.spawn_on(
             async move {

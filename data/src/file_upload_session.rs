@@ -8,17 +8,22 @@ use jsonwebtoken::{decode, DecodingKey, Validation};
 use mdb_shard::file_structs::MDBFileInfo;
 use merklehash::MerkleHash;
 use more_asserts::*;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, Semaphore};
 use utils::progress::ProgressUpdater;
 use xet_threadpool::ThreadPool;
 
 use crate::configurations::*;
+use crate::constants::MAX_CONCURRENT_UPLOADS;
 use crate::errors::*;
 use crate::file_cleaner::SingleFileCleaner;
 use crate::parallel_xorb_uploader::ParallelXorbUploader;
 use crate::prometheus_metrics;
 use crate::remote_client_interface::create_remote_client;
 use crate::shard_interface::SessionShardInterface;
+
+lazy_static::lazy_static! {
+    pub(crate) static ref UPLOAD_CONCURRENCY_LIMITER: Arc<Semaphore> = Arc::new(Semaphore::new(*MAX_CONCURRENT_UPLOADS));
+}
 
 /// Manages the translation of files between the
 /// MerkleDB / pointer file format and the materialized version.

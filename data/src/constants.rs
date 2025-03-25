@@ -15,7 +15,7 @@ utils::configurable_constants! {
 
     /// The maximum number of simultaneous xorb upload streams.
     /// The default value is 8 and can be overwritten by environment variable "XET_CONCURRENT_XORB_UPLOADS".
-    ref MAX_CONCURRENT_XORB_UPLOADS: usize = 8;
+    ref MAX_CONCURRENT_UPLOADS: usize = 8;
 
     /// The maximum number of files to ingest at once on the upload path
     ref MAX_CONCURRENT_FILE_INGESTION: usize = 8;

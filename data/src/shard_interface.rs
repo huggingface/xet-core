@@ -14,9 +14,10 @@ use tempfile::TempDir;
 use tokio::task::JoinSet;
 use tracing::{debug, info};
 
-use super::errors::Result;
 use crate::configurations::TranslatorConfig;
 use crate::constants::MDB_SHARD_LOCAL_CACHE_EXPIRATION_SECS;
+use crate::errors::{DataProcessingError, Result};
+use crate::file_upload_session::UPLOAD_CONCURRENCY_LIMITER;
 use crate::repo_salt::RepoSalt;
 
 pub struct SessionShardInterface {
@@ -126,6 +127,18 @@ impl SessionShardInterface {
             let cache_shard_manager = self.cache_shard_manager.clone();
             let shard_bytes_uploaded = shard_bytes_uploaded.clone();
 
+            // Acquire a permit for uploading before we spawn the task; the acquired permit is dropped after the task
+            // completes. The chosen Semaphore is fair, meaning xorbs added first will be scheduled to upload first.
+            //
+            // It's also important to acquire the permit before the task is launched; otherwise, we may spawn an
+            // unlimited number of tasks that end up using up a ton of memory; this forces the pipeline to
+            // block here while the upload is happening.
+            let upload_permit = UPLOAD_CONCURRENCY_LIMITER
+                .clone()
+                .acquire_owned()
+                .await
+                .map_err(|e| DataProcessingError::UploadTaskError(e.to_string()))?;
+
             shard_uploads.spawn(async move {
                 debug!("Uploading shard {shard_prefix}/{:?} from staging area to CAS.", &si.shard_hash);
                 let data = std::fs::read(&si.path)?;
@@ -135,6 +148,9 @@ impl SessionShardInterface {
                 shard_client
                     .upload_shard(&shard_prefix, &si.shard_hash, false, &data, &salt)
                     .await?;
+
+                // Done with the upload, drop the permit.
+                drop(upload_permit);
 
                 info!("Shard {shard_prefix}/{:?} upload + sync completed successfully.", &si.shard_hash);
 
