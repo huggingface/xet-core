@@ -1,8 +1,10 @@
 use std::sync::Arc;
 
+use chrono::{DateTime, Utc};
 use deduplication::{Chunk, Chunker, DeduplicationMetrics, FileDeduper};
 use mdb_shard::file_structs::FileMetadataExt;
 use merklehash::MerkleHash;
+use tracing::info;
 
 use crate::constants::INGESTION_BLOCK_SIZE;
 use crate::deduplication_interface::UploadSessionDataManager;
@@ -27,6 +29,9 @@ pub struct SingleFileCleaner {
 
     // Generating the sha256 hash
     sha_generator: ShaGenerator,
+
+    // Start time
+    start_time: DateTime<Utc>,
 }
 
 impl SingleFileCleaner {
@@ -37,6 +42,7 @@ impl SingleFileCleaner {
             session,
             chunker: deduplication::Chunker::default(),
             sha_generator: ShaGenerator::new(),
+            start_time: Utc::now(),
         }
     }
 
@@ -68,11 +74,11 @@ impl SingleFileCleaner {
         self.sha_generator.update(chunks.clone()).await?;
 
         // Run the deduplication interface here.
-        self.dedup_manager.process_chunks(&chunks).await?;
+        let block_metrics = self.dedup_manager.process_chunks(&chunks).await?;
 
-        // Update the progress bar
+        // Update the progress bar with the deduped bytes
         if let Some(updater) = self.session.upload_progress_updater.as_ref() {
-            updater.update(chunks.len() as u64);
+            updater.update(block_metrics.deduped_bytes as u64);
         }
 
         Ok(())
@@ -111,7 +117,7 @@ impl SingleFileCleaner {
         // Now, return all this information to the
         self.session
             .register_single_file_clean_completion(
-                self.file_name,
+                self.file_name.clone(),
                 remaining_file_data,
                 &deduplication_metrics,
                 new_xorbs,
@@ -121,18 +127,15 @@ impl SingleFileCleaner {
         // NB: xorb upload is happening in the background, this number is optimistic since it does
         // not count transfer time of the uploaded xorbs, which is why `end_processing_ts`
 
-        /* TODO: bring this back.
         info!(
             target: "client_telemetry",
             action = "clean",
-            repo_id = ?self.metrics.repo_id,
-            file_name = ?self.file_name,
-            file_size_count = file_size,
-            new_bytes_count = new_bytes,
-            start_ts = start.to_rfc3339(),
-            end_processing_ts = now.to_rfc3339(),
+            file_name = &self.file_name,
+            file_size_count = deduplication_metrics.total_bytes,
+            new_bytes_count = deduplication_metrics.new_bytes,
+            start_ts = self.start_time.to_rfc3339(),
+            end_processing_ts = Utc::now().to_rfc3339(),
         );
-        */
 
         Ok((pointer_file, deduplication_metrics))
     }
