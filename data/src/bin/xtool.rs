@@ -115,6 +115,7 @@ impl Command {
                     file_paths,
                     arg.sequential,
                     hub_client,
+                    None,
                     threadpool,
                     arg.compression.and_then(|c| CompressionScheme::try_from(c).ok()),
                     !arg.migrate,

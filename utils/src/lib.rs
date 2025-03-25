@@ -6,6 +6,7 @@ pub mod serialization_utils;
 pub mod singleflight;
 
 mod async_read;
+pub mod limited_joinset;
 mod output_bytes;
 pub mod progress;
 
