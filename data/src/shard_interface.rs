@@ -27,11 +27,17 @@ pub struct SessionShardInterface {
     client: Arc<dyn Client + Send + Sync>,
     config: Arc<TranslatorConfig>,
 
+    dry_run: bool,
+
     _shard_session_dir: TempDir,
 }
 
 impl SessionShardInterface {
-    pub async fn new(config: Arc<TranslatorConfig>, client: Arc<dyn Client + Send + Sync>) -> Result<Self> {
+    pub async fn new(
+        config: Arc<TranslatorConfig>,
+        client: Arc<dyn Client + Send + Sync>,
+        dry_run: bool,
+    ) -> Result<Self> {
         // Create a temporary session directory where we hold all the shards before upload.
         std::fs::create_dir_all(&config.shard_config.session_directory)?;
         let shard_session_tempdir = TempDir::new_in(&config.shard_config.session_directory)?;
@@ -50,6 +56,7 @@ impl SessionShardInterface {
             cache_shard_manager,
             client,
             config,
+            dry_run,
             _shard_session_dir: shard_session_tempdir,
         })
     }
@@ -126,6 +133,7 @@ impl SessionShardInterface {
             let shard_prefix = self.config.shard_config.prefix.clone();
             let cache_shard_manager = self.cache_shard_manager.clone();
             let shard_bytes_uploaded = shard_bytes_uploaded.clone();
+            let dry_run = self.dry_run;
 
             // Acquire a permit for uploading before we spawn the task; the acquired permit is dropped after the task
             // completes. The chosen Semaphore is fair, meaning xorbs added first will be scheduled to upload first.
@@ -144,6 +152,12 @@ impl SessionShardInterface {
                 let data = std::fs::read(&si.path)?;
 
                 shard_bytes_uploaded.fetch_add(data.len(), Ordering::Relaxed);
+
+                if dry_run {
+                    // In dry run mode, don't upload the shards or move them to the cache.
+                    return Ok(());
+                }
+
                 // Upload the shard.
                 shard_client
                     .upload_shard(&shard_prefix, &si.shard_hash, false, &data, &salt)

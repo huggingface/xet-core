@@ -88,7 +88,7 @@ impl FileUploadSession {
             upload_progress_updater.clone(),
         );
 
-        let shard_interface = SessionShardInterface::new(config.clone(), client.clone()).await?;
+        let shard_interface = SessionShardInterface::new(config.clone(), client.clone(), dry_run).await?;
 
         let repo_id = config.data_config.auth.clone().and_then(|auth| {
             let token = auth.token;
