@@ -19,6 +19,7 @@ members = [
     "xet_threadpool",
     "deduplication",
     "hf_xet_js",
+    "wasm-bindgen-blob-reader",
 ]
 
 exclude = ["hf_xet", "chunk_cache_bench"]

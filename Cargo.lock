@@ -1536,6 +1536,7 @@ name = "hf_xet_js"
 version = "0.1.0"
 dependencies = [
  "cas_types",
+ "futures",
  "hex",
  "merklehash",
  "serde",
@@ -1543,6 +1544,7 @@ dependencies = [
  "sha2",
  "thiserror 2.0.12",
  "wasm-bindgen",
+ "wasm-bindgen-blob-reader",
  "wasm-bindgen-file-reader",
  "wasm-bindgen-futures",
  "web-sys",
@@ -4229,6 +4231,16 @@ dependencies = [
  "quote",
  "syn 2.0.98",
  "wasm-bindgen-shared",
+]
+
+[[package]]
+name = "wasm-bindgen-blob-reader"
+version = "1.0.0"
+dependencies = [
+ "futures",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "web-sys",
 ]
 
 [[package]]
