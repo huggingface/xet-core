@@ -1,0 +1,39 @@
+[package]
+name = "hf_xet_js"
+version = "0.1.0"
+edition = "2021"
+
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+serde = { version = "1.0.219", features = ["derive"] }
+serde-wasm-bindgen = "0.6.5"
+thiserror = "2.0.12"
+wasm-bindgen = "0.2.100"
+wasm-bindgen-futures = "0.4.50"
+merklehash = { path = "../merklehash" }
+cas_types = { path = "../cas_types" }
+#cas_client = { path = "../cas_client" }
+wasm-bindgen-file-reader = "1.0.0"
+hex = "0.4.3"
+sha2 = "0.10.8"
+
+[dependencies.web-sys]
+version = "0.3.77"
+features = [
+  "Window",
+  "SharedWorkerGlobalScope",
+  "EventTarget",
+  "WorkerGlobalScope",
+  "SharedWorker",
+  "File",
+  "Blob",
+  "console",
+  "ReadableStream",
+  "WritableStream",
+  "ReadableStreamDefaultController",
+  "ReadableStreamDefaultReader",
+]
+
