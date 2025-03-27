@@ -1,5 +1,5 @@
 {
-  "name": "my-library",
+  "name": "@huggingface/xet",
   "author": "Assaf Vayner <assaf@huggingface.co>",
   "version": "0.1.0",
   "description": "WebAssembly bindings for xet storage backend",
@@ -11,9 +11,13 @@
     "pkg/**/*.wasm",
     "pkg/**/*.wasm.d.ts"
   ],
-  "keywords": [],
+  "keywords": ["huggingface", "xet", "WebAssembly"],
   "license": "MIT",
   "scripts": {
+    "lint": "eslint --quiet --fix --ext .cjs,.ts .eslintrc.cjs",
+    "lint:check": "eslint --ext .cjs,.ts .eslintrc.cjs",
+    "format": "prettier --write package.json .prettierrc .vscode .eslintrc.cjs e2e .github *.md",
+    "format:check": "prettier --check package.json .prettierrc .vscode .eslintrc.cjs .github *.md",
     "build:wasm-pack": "wasm-pack build",
     "build:typescript": "tsc -b --pretty -v",
     "build": "npm run build:wasm-pack && npm run build:typescript",
@@ -22,5 +26,6 @@
   "devDependencies": {
     "typescript": "5.1.3",
     "wasm-pack": "0.12.0"
-  }
+  },
+  "packageManager": "pnpm@9.15.4+sha512.b2dc20e2fc72b3e18848459b37359a32064663e5627a51e4c74b2c29dd8e8e0491483c3abb40789cfd578bf362fb6ba8261b05f0387d76792ed6e23ea3b1b6a0"
 }

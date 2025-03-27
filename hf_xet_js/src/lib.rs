@@ -3,17 +3,17 @@ mod utils;
 mod error;
 
 pub use types::*;
-use utils::sha256_from_reader;
-use wasm_bindgen_file_reader::WebSysFile;
+use utils::sha256_from_async_reader;
 
 use merklehash::MerkleHash;
 use std::io::{Seek, SeekFrom, Write};
 use std::sync::atomic::AtomicU32;
 use std::sync::atomic::Ordering::SeqCst;
+use serde::Serialize;
 use wasm_bindgen::JsCast;
 use wasm_bindgen::{prelude::*, JsObject};
-use web_sys::js_sys::{Function, Reflect, Uint8Array};
-use web_sys::{console, Blob, File, ReadableStream, ReadableStreamDefaultController};
+use web_sys::{console, Blob};
+use wasm_bindgen_blob_reader::BlobReader;
 use crate::error::HFXetJSError;
 
 static CALL_COUNT: AtomicU32 = AtomicU32::new(0);
@@ -47,12 +47,38 @@ macro_rules! log {
 //     console::log_1(&JsValue::from_str(&message.to_string()));
 // }
 
+#[wasm_bindgen]
+extern "C" {
+    pub type TokenInfo;
+
+    #[wasm_bindgen(method, getter)]
+    pub fn endpoint(this: &TokenInfo) -> String;
+    #[wasm_bindgen(method, getter)]
+    pub fn token(this: &TokenInfo) -> String;
+    #[wasm_bindgen(method, getter)]
+    pub fn expiry(this: &TokenInfo) -> u64;
+
+    pub type TokenRefresher;
+
+    #[wasm_bindgen(method)]
+    pub async fn refresh_token(this: &TokenRefresher) -> TokenInfo;
+}
+
 // #[wasm_bindgen]
-// extern "C" {
-//     type TokenRefresher;
-//
-//     #[wasm_bindgen(method)]
-//     async fn refresh_token(this: &TokenRefresher) -> JsValue;
+// pub struct TokenInfo {
+//     token: String,
+//     endpoint: String,
+//     expiry: u64,
+// }
+
+
+
+// #[wasm_bindgen]
+// impl TokenInfo {
+//     #[wasm_bindgen(constructor)]
+//     pub fn new(token: String, endpoint: String, expiry: u64) -> Self {
+//         Self { token, endpoint, expiry }
+//     }
 // }
 
 ///
@@ -75,29 +101,28 @@ macro_rules! log {
 
 #[wasm_bindgen]
 pub async fn upload_async(
-    files: Vec<File>,
-    url: String,
-    token: String,
+    files: Vec<Blob>,
+    token_info: TokenInfo,
+    token_refresher: TokenRefresher,
 ) -> Result<JsValue, JsValue> {
     log!("upload_async");
-    let output = _upload_async(files, url, token).await?;
+    let output = _upload_async(files, token_info, token_refresher).await?;
     serde_wasm_bindgen::to_value(&output).map_err(JsValue::from)
 }
 
 pub async fn _upload_async(
-    files: Vec<File>,
-    url: String,
-    token: String,
+    files: Vec<Blob>,
+    token_info: TokenInfo,
+    token_refresher: TokenRefresher,
 ) -> Result<Vec<PointerFile>, HFXetJSError> {
     let value = CALL_COUNT.fetch_add(1, SeqCst);
     log!("call count value = {value}");
 
-    let files_it = files.into_iter().map(|file| {
-        let path = file.name().to_string();
+    let files_it = files.into_iter().map(|file | {
         let size = file.size();
-        log!("path = {path:?}; size = {size:?}");
-        let reader = WebSysFile::new(file);
-        (reader, path, size)
+        let reader = file;
+        // let reader = WebSysFile::new(file);
+        (reader, size)
     });
 
     // if files.is_empty() {
@@ -117,13 +142,11 @@ pub async fn _upload_async(
     // log("uploading files passed validation");
 
     Ok(files_it
-        .map(|(mut reader, path, size)| {
-            reader.seek(SeekFrom::Start(0)).unwrap();
+        .map(|(blob, size)| {
             PointerFile {
                 hash: MerkleHash::default(),
                 size: size as u64,
-                path,
-                sha256: sha256_from_reader(&mut reader).unwrap(),
+                sha256: sha256_from_async_reader(&mut BlobReader::new(blob)).unwrap(),
             }
         })
         .collect())
@@ -131,25 +154,29 @@ pub async fn _upload_async(
 
 #[wasm_bindgen]
 pub async fn download_async(
-    repo: String,
-    file: String,
-    writer: Blob,
-    url: String,
-    token: String,
+    repo_id: String,
+    pointer_files: Vec<PointerFile>,
+    token_info: TokenInfo,
+    token_refresher: TokenRefresher,
 ) -> Result<JsValue, JsValue> {
     log!("download_async");
-    let output = _download_async(repo, file, writer, url, token).await?;
+    let output = _download_async(repo_id, pointer_files, token_info, token_refresher).await?;
     serde_wasm_bindgen::to_value(&output).map_err(JsValue::from)
 }
 
+#[wasm_bindgen]
+#[derive(Serialize)]
+struct Downloadable {
+    // blob: Blob,
+}
+
 async fn _download_async(
-    _repo: String,
-    _file: String,
-    _writer: Blob,
-    _url: String,
-    _token: String,
-) -> Result<(), HFXetJSError> {
-    Ok(())
+    repo_id: String,
+    pointer_files: Vec<PointerFile>,
+    token_info: TokenInfo,
+    token_refresher: TokenRefresher,
+) -> Result<Vec<Downloadable>, HFXetJSError> {
+    Ok(vec![])
 }
 
 // #[wasm_bindgen]
