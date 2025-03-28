@@ -247,9 +247,6 @@ impl FileUploadSession {
 
     /// Finalize everthing.
     async fn finalize_impl(self: Arc<Self>, return_files: bool) -> Result<(DeduplicationMetrics, Vec<MDBFileInfo>)> {
-        // This should be used as if it's consuming the class, as it effectively empties all the states.
-        debug_assert_eq!(Arc::strong_count(&self), 1);
-
         // Register the remaining xorbs for upload.
         let data_agg = take(&mut *self.current_session_data.lock().await);
         self.process_aggregated_data_as_xorb(data_agg).await?;
@@ -263,6 +260,11 @@ impl FileUploadSession {
         while let Some(result) = upload_tasks.join_next().await {
             result??;
         }
+
+        // Now that all the tasks there are completed, there shouldn't be any other references to this session
+        // hanging around; i.e. the self in this shession should be used as if it's consuming the class, as it
+        // effectively empties all the states.
+        debug_assert_eq!(Arc::strong_count(&self), 1);
 
         let all_file_info = if return_files {
             self.shard_interface.session_file_info_list().await?
