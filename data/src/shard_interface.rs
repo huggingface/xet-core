@@ -16,8 +16,8 @@ use tracing::{debug, info};
 
 use crate::configurations::TranslatorConfig;
 use crate::constants::MDB_SHARD_LOCAL_CACHE_EXPIRATION_SECS;
-use crate::errors::{DataProcessingError, Result};
-use crate::file_upload_session::UPLOAD_CONCURRENCY_LIMITER;
+use crate::errors::Result;
+use crate::file_upload_session::acquire_upload_permit;
 use crate::repo_salt::RepoSalt;
 
 pub struct SessionShardInterface {
@@ -141,11 +141,7 @@ impl SessionShardInterface {
             // It's also important to acquire the permit before the task is launched; otherwise, we may spawn an
             // unlimited number of tasks that end up using up a ton of memory; this forces the pipeline to
             // block here while the upload is happening.
-            let upload_permit = UPLOAD_CONCURRENCY_LIMITER
-                .clone()
-                .acquire_owned()
-                .await
-                .map_err(|e| DataProcessingError::UploadTaskError(e.to_string()))?;
+            let upload_permit = acquire_upload_permit().await?;
 
             shard_uploads.spawn(async move {
                 debug!("Uploading shard {shard_prefix}/{:?} from staging area to CAS.", &si.shard_hash);
