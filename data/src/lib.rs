@@ -8,7 +8,6 @@ mod file_cleaner;
 mod file_downloader;
 mod file_upload_session;
 pub mod migration_tool;
-mod parallel_xorb_uploader;
 mod pointer_file;
 mod prometheus_metrics;
 mod remote_client_interface;

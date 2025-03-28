@@ -87,7 +87,7 @@ impl DeduplicationDataInterface for UploadSessionDataManager {
         self.session.shard_interface.add_cas_block(xorb.cas_info.clone()).await?;
 
         // Begin the process for upload.
-        self.session.xorb_uploader.register_new_xorb_for_upload(xorb).await?;
+        self.session.register_new_xorb_for_upload(xorb).await?;
 
         Ok(())
     }

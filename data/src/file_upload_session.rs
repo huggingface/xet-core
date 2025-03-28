@@ -3,12 +3,13 @@ use std::sync::Arc;
 
 use cas_client::Client;
 use deduplication::constants::{MAX_XORB_BYTES, MAX_XORB_CHUNKS};
-use deduplication::{DataAggregator, DeduplicationMetrics};
+use deduplication::{DataAggregator, DeduplicationMetrics, RawXorbData};
 use jsonwebtoken::{decode, DecodingKey, Validation};
 use mdb_shard::file_structs::MDBFileInfo;
 use merklehash::MerkleHash;
 use more_asserts::*;
-use tokio::sync::{Mutex, Semaphore};
+use tokio::sync::{Mutex, OwnedSemaphorePermit, Semaphore};
+use tokio::task::JoinSet;
 use utils::progress::ProgressUpdater;
 use xet_threadpool::ThreadPool;
 
@@ -16,13 +17,28 @@ use crate::configurations::*;
 use crate::constants::MAX_CONCURRENT_UPLOADS;
 use crate::errors::*;
 use crate::file_cleaner::SingleFileCleaner;
-use crate::parallel_xorb_uploader::ParallelXorbUploader;
 use crate::prometheus_metrics;
 use crate::remote_client_interface::create_remote_client;
 use crate::shard_interface::SessionShardInterface;
 
 lazy_static::lazy_static! {
-    pub(crate) static ref UPLOAD_CONCURRENCY_LIMITER: Arc<Semaphore> = Arc::new(Semaphore::new(*MAX_CONCURRENT_UPLOADS));
+     static ref UPLOAD_CONCURRENCY_LIMITER: Arc<Semaphore> = Arc::new(Semaphore::new(*MAX_CONCURRENT_UPLOADS));
+}
+/// Acquire a permit for uploading xorbs and shards to ensure that we don't overwhelm the server
+/// or fill up the local host with in-memory data waiting to be uploaded.
+///
+/// The chosen Semaphore is fair, meaning xorbs and shards added first will be scheduled to upload first.
+///
+/// It's also important to acquire the permit before the task is launched; otherwise, we may spawn an unlimited
+/// number of tasks that end up using up a ton of memory; this forces the pipeline to block here while the upload
+/// is happening.
+pub(crate) async fn acquire_upload_permit() -> Result<OwnedSemaphorePermit> {
+    let upload_permit = UPLOAD_CONCURRENCY_LIMITER
+        .clone()
+        .acquire_owned()
+        .await
+        .map_err(|e| DataProcessingError::UploadTaskError(e.to_string()))?;
+    Ok(upload_permit)
 }
 
 /// Manages the translation of files between the
@@ -35,7 +51,6 @@ pub struct FileUploadSession {
     // The parts of this that manage the
     pub(crate) client: Arc<dyn Client + Send + Sync>,
     pub(crate) shard_interface: SessionShardInterface,
-    pub(crate) xorb_uploader: ParallelXorbUploader,
 
     pub(crate) upload_progress_updater: Option<Arc<dyn ProgressUpdater>>,
 
@@ -53,6 +68,9 @@ pub struct FileUploadSession {
 
     /// Metrics for deduplication
     deduplication_metrics: Mutex<DeduplicationMetrics>,
+
+    // Internal worker
+    xorb_upload_tasks: Mutex<JoinSet<Result<()>>>,
 }
 
 // Constructors
@@ -81,13 +99,6 @@ impl FileUploadSession {
     ) -> Result<Arc<FileUploadSession>> {
         let client = create_remote_client(&config, threadpool.clone(), dry_run)?;
 
-        let xorb_uploader = ParallelXorbUploader::new(
-            config.data_config.prefix.to_owned(),
-            client.clone(),
-            threadpool.clone(),
-            upload_progress_updater.clone(),
-        );
-
         let shard_interface = SessionShardInterface::new(config.clone(), client.clone(), dry_run).await?;
 
         let repo_id = config.data_config.auth.clone().and_then(|auth| {
@@ -110,13 +121,13 @@ impl FileUploadSession {
         Ok(Arc::new(Self {
             shard_interface,
             client,
-            xorb_uploader,
             upload_progress_updater,
             threadpool,
             repo_id,
             config,
             current_session_data: Mutex::new(DataAggregator::default()),
             deduplication_metrics: Mutex::new(DeduplicationMetrics::default()),
+            xorb_upload_tasks: Mutex::new(JoinSet::new()),
         }))
     }
 
@@ -130,9 +141,52 @@ impl FileUploadSession {
         SingleFileCleaner::new(file_name, self.clone())
     }
 
+    pub(crate) async fn register_new_xorb_for_upload(self: &Arc<Self>, xorb: RawXorbData) -> Result<()> {
+        // First check the current xorb upload tasks to see if they
+        {
+            let mut upload_tasks = self.xorb_upload_tasks.lock().await;
+            while let Some(result) = upload_tasks.try_join_next() {
+                result??;
+            }
+        }
+
+        // No need to process an empty xorb.
+        if xorb.num_bytes() == 0 {
+            return Ok(());
+        }
+
+        let xorb_hash = xorb.hash();
+        let xorb_data = xorb.to_vec();
+        let chunks_and_boundaries = xorb.cas_info.chunks_and_boundaries();
+
+        drop(xorb);
+
+        let session = self.clone();
+        let upload_permit = acquire_upload_permit().await?;
+        let cas_prefix = session.config.data_config.prefix.clone();
+
+        self.xorb_upload_tasks.lock().await.spawn(async move {
+            let n_bytes_transmitted = session
+                .client
+                .put(&cas_prefix, &xorb_hash, xorb_data, chunks_and_boundaries)
+                .await?;
+
+            drop(upload_permit);
+
+            if let Some(updater) = session.upload_progress_updater.as_ref() {
+                updater.update(n_bytes_transmitted as u64);
+            }
+
+            session.deduplication_metrics.lock().await.xorb_bytes_uploaded += n_bytes_transmitted;
+            Ok(())
+        });
+
+        Ok(())
+    }
+
     /// Meant to be called by the finalize() method of the SingleFileCleaner
     pub(crate) async fn register_single_file_clean_completion(
-        &self,
+        self: &Arc<Self>,
         _file_name: String,
         mut file_data: DataAggregator,
         dedup_metrics: &DeduplicationMetrics,
@@ -177,12 +231,12 @@ impl FileUploadSession {
     }
 
     /// Process the aggregated data, uploading the data as a xorb and registering the files
-    async fn process_aggregated_data_as_xorb(&self, data_agg: DataAggregator) -> Result<()> {
+    async fn process_aggregated_data_as_xorb(self: &Arc<Self>, data_agg: DataAggregator) -> Result<()> {
         let (xorb, new_files) = data_agg.finalize();
         debug_assert_le!(xorb.num_bytes(), *MAX_XORB_BYTES);
         debug_assert_le!(xorb.data.len(), *MAX_XORB_CHUNKS);
 
-        self.xorb_uploader.register_new_xorb_for_upload(xorb).await?;
+        self.register_new_xorb_for_upload(xorb).await?;
 
         for fi in new_files {
             self.shard_interface.add_file_reconstruction_info(fi).await?;
@@ -203,7 +257,12 @@ impl FileUploadSession {
         // Now, make sure all the remaining xorbs are uploaded.
         let mut metrics = take(&mut *self.deduplication_metrics.lock().await);
 
-        metrics.xorb_bytes_uploaded = self.xorb_uploader.finalize().await?;
+        // Finalize the xorb uploads.
+        let mut upload_tasks = take(&mut *self.xorb_upload_tasks.lock().await);
+
+        while let Some(result) = upload_tasks.join_next().await {
+            result??;
+        }
 
         let all_file_info = if return_files {
             self.shard_interface.session_file_info_list().await?
@@ -214,7 +273,6 @@ impl FileUploadSession {
         // Upload and register the current shards in the session, moving them
         // to the cache.
         metrics.shard_bytes_uploaded = self.shard_interface.upload_and_register_session_shards().await?;
-
         metrics.total_bytes_uploaded = metrics.shard_bytes_uploaded + metrics.xorb_bytes_uploaded;
 
         // Update the global counters
