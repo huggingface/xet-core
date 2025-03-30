@@ -1,20 +1,20 @@
+mod error;
 mod types;
 mod utils;
-mod error;
 
 pub use types::*;
 use utils::sha256_from_async_reader;
 
+use crate::error::HFXetJSError;
 use merklehash::MerkleHash;
+use serde::Serialize;
 use std::io::{Seek, SeekFrom, Write};
 use std::sync::atomic::AtomicU32;
 use std::sync::atomic::Ordering::SeqCst;
-use serde::Serialize;
 use wasm_bindgen::JsCast;
 use wasm_bindgen::{prelude::*, JsObject};
-use web_sys::{console, Blob};
 use wasm_bindgen_blob_reader::BlobReader;
-use crate::error::HFXetJSError;
+use web_sys::{console, Blob};
 
 static CALL_COUNT: AtomicU32 = AtomicU32::new(0);
 
@@ -71,8 +71,6 @@ extern "C" {
 //     expiry: u64,
 // }
 
-
-
 // #[wasm_bindgen]
 // impl TokenInfo {
 //     #[wasm_bindgen(constructor)]
@@ -118,12 +116,12 @@ pub async fn _upload_async(
     let value = CALL_COUNT.fetch_add(1, SeqCst);
     log!("call count value = {value}");
 
-    let files_it = files.into_iter().map(|file | {
+    let files_it = files.into_iter().map(|file| {
         let size = file.size();
         let reader = file;
         // let reader = WebSysFile::new(file);
         (reader, size)
-    });
+    }).collect::<Vec<_>>();
 
     // if files.is_empty() {
     //     return Err(SharedWorkerError::invalid_arguments("no files provided"));
@@ -141,17 +139,19 @@ pub async fn _upload_async(
     //
     // log("uploading files passed validation");
 
-    Ok(files_it
-        .map(|(blob, size)| {
-            PointerFile {
-                hash: MerkleHash::default(),
-                size: size as u64,
-                sha256: sha256_from_async_reader(&mut BlobReader::new(blob)).unwrap(),
-            }
-        })
-        .collect())
+    let mut pfs = Vec::with_capacity(files_it.len());
+    for (blob, size) in files_it.into_iter() {
+        let mut reader = BlobReader::new(blob).unwrap();
+        let pf = PointerFile {
+            hash: MerkleHash::default(),
+            size: size as u64,
+            sha256: sha256_from_async_reader(&mut reader).await.unwrap(),
+        };
+    }
+    Ok(pfs)
 }
 
+// TODO: consider if to do at all :shrug:
 #[wasm_bindgen]
 pub async fn download_async(
     repo_id: String,
@@ -164,18 +164,14 @@ pub async fn download_async(
     serde_wasm_bindgen::to_value(&output).map_err(JsValue::from)
 }
 
-#[wasm_bindgen]
-#[derive(Serialize)]
-struct Downloadable {
-    // blob: Blob,
-}
+
 
 async fn _download_async(
     repo_id: String,
     pointer_files: Vec<PointerFile>,
     token_info: TokenInfo,
     token_refresher: TokenRefresher,
-) -> Result<Vec<Downloadable>, HFXetJSError> {
+) -> Result<Vec<String>, HFXetJSError> {
     Ok(vec![])
 }
 

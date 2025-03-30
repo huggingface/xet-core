@@ -12,8 +12,11 @@ const HUGGINGFACE_HEADER_X_XET_HASH = "X-Xet-Hash";
 const HUGGINGFACE_HEADER_X_XET_REFRESH_ROUTE = "X-Xet-Refresh-Route";
 
 class TokenInfo {
-	constructor(private readonly _token: string, private readonly _endpoint: string, private readonly _expiry: BigInt) {
-	}
+	constructor(
+		private readonly _token: string,
+		private readonly _endpoint: string,
+		private readonly _expiry: BigInt
+	) {}
 
 	public get token() {
 		return this._token;
@@ -36,11 +39,18 @@ class TokenRefresher {
 	private readonly repo_id: string;
 	private readonly revision: string;
 
-	constructor(endpoint: string, repo_type: RepoType, repo_id: string, hub_token: string, token_type: TokenType, revision: string) {
+	constructor(
+		endpoint: string,
+		repo_type: RepoType,
+		repo_id: string,
+		hub_token: string,
+		token_type: TokenType,
+		revision: string
+	) {
 		this.endpoint = endpoint;
 		this.repo_type = repo_type;
 		this.repo_id = repo_id;
-		this.headers = { "Authorization": `Bearer ${hub_token}` };
+		this.headers = { Authorization: `Bearer ${hub_token}` };
 		this.token_type = token_type;
 		this.revision = revision;
 	}
@@ -50,6 +60,7 @@ class TokenRefresher {
 		let token_response: Response;
 		try {
 			token_response = await fetch(url, { headers: this.headers });
+			console.log(token_response);
 		} catch (e) {
 			console.error(`error refreshing token: ${e}`);
 			throw e;
@@ -58,19 +69,38 @@ class TokenRefresher {
 		const cas_endpoint: string = response_headers.get(HUGGINGFACE_HEADER_X_XET_ENDPOINT) ?? "";
 		const token: string = response_headers.get(HUGGINGFACE_HEADER_X_XET_ACCESS_TOKEN) ?? "";
 		const expiry: number = parseInt(response_headers.get(HUGGINGFACE_HEADER_X_XET_EXPIRATION) ?? "");
+		console.log(`expiry ${expiry}`);
 
-		return new TokenInfo(token, cas_endpoint, BigInt(expiry));
+		return new TokenInfo(token, cas_endpoint, BigInt(isNaN(expiry) ? 0 : expiry));
 	}
 }
 
 export async function upload_xet_files(repo_type: RepoType, repo_id: string, files: Blob[]): Promise<PointerFile[]> {
-	const token_refresher = new TokenRefresher("https://huggingface.co", repo_type, repo_id, "hub_token_TODO", "write", "main");
+	const token_refresher = new TokenRefresher(
+		"https://huggingface.co",
+		repo_type,
+		repo_id,
+		"hub_token_TODO",
+		"write",
+		"main"
+	);
 	let token_info = await token_refresher.refresh_token();
 	return await upload_async(files, token_info, token_refresher);
 }
 
-export async function download_xet_files(repo_type: RepoType, repo_id: string, pointer_files: PointerFile[]): Promise<Blob[]> {
-	const token_refresher = new TokenRefresher("https://huggingface.co", repo_type, repo_id, "hub_token_TODO", "read", "main");
+export async function download_xet_files(
+	repo_type: RepoType,
+	repo_id: string,
+	pointer_files: PointerFile[]
+): Promise<Blob[]> {
+	const token_refresher = new TokenRefresher(
+		"https://huggingface.co",
+		repo_type,
+		repo_id,
+		"hub_token_TODO",
+		"read",
+		"main"
+	);
 	let token_info = await token_refresher.refresh_token();
 
 	// return await download_async(files, token_info, token_refresher);

@@ -11,7 +11,7 @@
     "strictNullChecks": true,
     "skipLibCheck": true,
     "noImplicitOverride": true,
-    "outDir": "./pkg",
+    "outDir": "./dist",
     "declaration": true,
     "declarationMap": true
   },

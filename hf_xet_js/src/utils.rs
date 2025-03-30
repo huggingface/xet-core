@@ -1,7 +1,7 @@
 use futures::{AsyncRead, AsyncReadExt};
 use sha2::{Digest, Sha256};
 
-pub async fn sha256_from_async_reader<R: AsyncRead>(reader: &mut R) -> std::io::Result<String> {
+pub async fn sha256_from_async_reader<R: AsyncRead + Unpin>(reader: &mut R) -> std::io::Result<String> {
     let mut hasher = Sha256::new();
     let mut buffer = [0u8; 1024];
 
