@@ -1,7 +1,6 @@
 use std::sync::Arc;
 
 use anyhow::Result;
-use cas_client::build_http_client;
 use cas_object::CompressionScheme;
 use mdb_shard::file_structs::MDBFileInfo;
 use parutils::{tokio_par_for_each, ParallelError};
@@ -34,13 +33,7 @@ pub async fn migrate_with_external_runtime(
     repo_id: &str,
     handle: tokio::runtime::Handle,
 ) -> Result<()> {
-    let hub_client = HubClient {
-        endpoint: hub_endpoint.to_owned(),
-        token: hub_token.to_owned(),
-        repo_type: repo_type.to_owned(),
-        repo_id: repo_id.to_owned(),
-        client: build_http_client(&None)?,
-    };
+    let hub_client = HubClient::new(hub_endpoint, hub_token, repo_type, repo_id)?;
 
     let threadpool = Arc::new(ThreadPool::from_external(handle));
 

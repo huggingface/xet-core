@@ -4,7 +4,6 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use anyhow::Result;
-use cas_client::build_http_client;
 use cas_object::CompressionScheme;
 use clap::{Args, Parser, Subcommand};
 use data::migration_tool::hub_client::HubClient;
@@ -49,13 +48,7 @@ impl XCommand {
             .overrides
             .token
             .unwrap_or_else(|| std::env::var("HF_TOKEN").unwrap_or_default());
-        let hub_client = HubClient {
-            endpoint,
-            token,
-            repo_type: self.overrides.repo_type,
-            repo_id: self.overrides.repo_id,
-            client: build_http_client(&None)?,
-        };
+        let hub_client = HubClient::new(&endpoint, &token, &self.overrides.repo_type, &self.overrides.repo_id)?;
 
         self.command.run(hub_client, threadpool).await
     }

@@ -4,11 +4,15 @@ use std::time::Duration;
 use anyhow::anyhow;
 use cas_types::REQUEST_ID_HEADER;
 use error_printer::{ErrorPrinter, OptionPrinter};
+use http::StatusCode;
 use reqwest::header::{HeaderValue, AUTHORIZATION};
 use reqwest::{Request, Response};
 use reqwest_middleware::{ClientBuilder, ClientWithMiddleware, Middleware, Next};
 use reqwest_retry::policies::ExponentialBackoff;
-use reqwest_retry::{default_on_request_failure, default_on_request_success, RetryTransientMiddleware, Retryable};
+use reqwest_retry::{
+    default_on_request_failure, default_on_request_success, DefaultRetryableStrategy, RetryTransientMiddleware,
+    Retryable, RetryableStrategy,
+};
 use tokio::sync::Mutex;
 use tracing::{debug, warn};
 use utils::auth::{AuthConfig, TokenProvider};
@@ -19,7 +23,23 @@ const NUM_RETRIES: u32 = 5;
 const BASE_RETRY_DELAY_MS: u64 = 3000; // 3s
 const BASE_RETRY_MAX_DURATION_MS: u64 = 6 * 60 * 1000; // 6m
 
-pub struct RetryConfig {
+/// A strategy that doesn't retry on 429, and defaults to `DefaultRetryableStrategy` otherwise.
+pub struct No429RetryStratey;
+
+impl RetryableStrategy for No429RetryStratey {
+    fn handle(&self, res: &Result<reqwest::Response, reqwest_middleware::Error>) -> Option<Retryable> {
+        if let Ok(success) = res {
+            if success.status() == StatusCode::TOO_MANY_REQUESTS {
+                return Some(Retryable::Fatal);
+            }
+        }
+
+        const DEFAULT_STRATEGY: DefaultRetryableStrategy = DefaultRetryableStrategy;
+        DEFAULT_STRATEGY.handle(res)
+    }
+}
+
+pub struct RetryConfig<R: RetryableStrategy> {
     /// Number of retries for transient errors.
     num_retries: u32,
 
@@ -28,30 +48,43 @@ pub struct RetryConfig {
 
     /// Base max duration for retry attempts, default to 6m.
     max_retry_interval_ms: u64,
+
+    strategy: R,
 }
 
-impl Default for RetryConfig {
+impl Default for RetryConfig<DefaultRetryableStrategy> {
+    // Use `DefaultRetryableStrategy` which retries on 5xx/400/429 status codes, and retries on transient errors.
+    // See reqwest-retry/src/retryable_strategy.rs
     fn default() -> Self {
         Self {
             num_retries: NUM_RETRIES,
             min_retry_interval_ms: BASE_RETRY_DELAY_MS,
             max_retry_interval_ms: BASE_RETRY_MAX_DURATION_MS,
+            strategy: DefaultRetryableStrategy,
+        }
+    }
+}
+
+impl RetryConfig<No429RetryStratey> {
+    pub fn no429retry() -> Self {
+        Self {
+            num_retries: NUM_RETRIES,
+            min_retry_interval_ms: BASE_RETRY_DELAY_MS,
+            max_retry_interval_ms: BASE_RETRY_MAX_DURATION_MS,
+            strategy: No429RetryStratey,
         }
     }
 }
 
 /// Builds authenticated HTTP Client to talk to CAS.
 /// Includes retry middleware with exponential backoff.
-pub fn build_auth_http_client(
+pub fn build_auth_http_client<R: RetryableStrategy + Send + Sync + 'static>(
     auth_config: &Option<AuthConfig>,
-    retry_config: &Option<RetryConfig>,
+    retry_config: RetryConfig<R>,
 ) -> std::result::Result<ClientWithMiddleware, CasClientError> {
     let auth_middleware = auth_config.as_ref().map(AuthMiddleware::from).info_none("CAS auth disabled");
     let logging_middleware = Some(LoggingMiddleware);
-    let retry_middleware = match retry_config {
-        Some(config) => get_retry_middleware(config),
-        None => get_retry_middleware(&RetryConfig::default()),
-    };
+    let retry_middleware = get_retry_middleware(retry_config);
     let reqwest_client = reqwest::Client::builder().build()?;
     Ok(ClientBuilder::new(reqwest_client)
         .maybe_with(auth_middleware)
@@ -62,13 +95,10 @@ pub fn build_auth_http_client(
 
 /// Builds HTTP Client to talk to CAS.
 /// Includes retry middleware with exponential backoff.
-pub fn build_http_client(
-    retry_config: &Option<RetryConfig>,
+pub fn build_http_client<R: RetryableStrategy + Send + Sync + 'static>(
+    retry_config: RetryConfig<R>,
 ) -> std::result::Result<ClientWithMiddleware, CasClientError> {
-    let retry_middleware = match retry_config {
-        Some(config) => get_retry_middleware(config),
-        None => get_retry_middleware(&RetryConfig::default()),
-    };
+    let retry_middleware = get_retry_middleware(retry_config);
     let logging_middleware = Some(LoggingMiddleware);
     let reqwest_client = reqwest::Client::builder().build()?;
     Ok(ClientBuilder::new(reqwest_client)
@@ -78,7 +108,9 @@ pub fn build_http_client(
 }
 
 /// Configurable Retry middleware with exponential backoff and configurable number of retries using reqwest-retry
-fn get_retry_middleware(config: &RetryConfig) -> RetryTransientMiddleware<ExponentialBackoff> {
+fn get_retry_middleware<R: RetryableStrategy + Send + Sync>(
+    config: RetryConfig<R>,
+) -> RetryTransientMiddleware<ExponentialBackoff, R> {
     let retry_policy = ExponentialBackoff::builder()
         .retry_bounds(
             Duration::from_millis(config.min_retry_interval_ms),
@@ -86,9 +118,7 @@ fn get_retry_middleware(config: &RetryConfig) -> RetryTransientMiddleware<Expone
         )
         .build_with_max_retries(config.num_retries);
 
-    // Uses DefaultRetryableStrategy which retries on 5xx/400/429 status codes, and retries on transient errors.
-    // See https://github.com/TrueLayer/reqwest-middleware/blob/cf06f0962aae543526756ff7e1aa5e5cd0c42e42/reqwest-retry/src/retryable_strategy.rs#L97
-    RetryTransientMiddleware::new_with_policy(retry_policy)
+    RetryTransientMiddleware::new_with_policy_and_strategy(retry_policy, config.strategy)
 }
 
 /// Helper trait to allow the reqwest_middleware client to optionally add a middleware.
@@ -239,8 +269,9 @@ mod tests {
             num_retries: 1,
             min_retry_interval_ms: 0,
             max_retry_interval_ms: 3000,
+            strategy: DefaultRetryableStrategy,
         };
-        let client = build_auth_http_client(&None, &Some(retry_config)).unwrap();
+        let client = build_auth_http_client(&None, retry_config).unwrap();
 
         // Act & Assert - should retry and log
         let response = client.get(server.url("/data")).send().await.unwrap();
@@ -265,8 +296,9 @@ mod tests {
             num_retries: 2,
             min_retry_interval_ms: 0,
             max_retry_interval_ms: 3000,
+            strategy: DefaultRetryableStrategy,
         };
-        let client = build_auth_http_client(&None, &Some(retry_config)).unwrap();
+        let client = build_auth_http_client(&None, retry_config).unwrap();
 
         // Act & Assert - should retry and log
         let response = client.get(server.url("/data")).send().await.unwrap();
@@ -292,8 +324,9 @@ mod tests {
             num_retries: 2,
             min_retry_interval_ms: 1000,
             max_retry_interval_ms: 6000,
+            strategy: DefaultRetryableStrategy,
         };
-        let client = build_auth_http_client(&None, &Some(retry_config)).unwrap();
+        let client = build_auth_http_client(&None, retry_config).unwrap();
 
         // Act & Assert - should retry and log
         let response = client.get(server.url("/data")).send().await.unwrap();

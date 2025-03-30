@@ -29,7 +29,7 @@ use utils::singleflight::Group;
 use xet_threadpool::ThreadPool;
 
 use crate::error::{CasClientError, Result};
-use crate::http_client::ResponseErrorLogger;
+use crate::http_client::{ResponseErrorLogger, RetryConfig};
 use crate::interface::{ShardDedupProber, *};
 use crate::{http_client, Client, RegistrationClient, ShardClientInterface};
 
@@ -51,6 +51,7 @@ pub struct RemoteClient {
     dry_run: bool,
     http_client: Arc<ClientWithMiddleware>,
     authenticated_http_client: Arc<ClientWithMiddleware>,
+    conservative_authenticated_http_client: Arc<ClientWithMiddleware>,
     chunk_cache: Option<Arc<dyn ChunkCache>>,
     threadpool: Arc<ThreadPool>,
     range_download_single_flight: RangeDownloadSingleFlight,
@@ -85,8 +86,13 @@ impl RemoteClient {
             endpoint: endpoint.to_string(),
             compression,
             dry_run,
-            authenticated_http_client: Arc::new(http_client::build_auth_http_client(auth, &None).unwrap()),
-            http_client: Arc::new(http_client::build_http_client(&None).unwrap()),
+            authenticated_http_client: Arc::new(
+                http_client::build_auth_http_client(auth, RetryConfig::default()).unwrap(),
+            ),
+            conservative_authenticated_http_client: Arc::new(
+                http_client::build_auth_http_client(auth, RetryConfig::no429retry()).unwrap(),
+            ),
+            http_client: Arc::new(http_client::build_http_client(RetryConfig::default()).unwrap()),
             chunk_cache,
             threadpool,
             range_download_single_flight,
@@ -578,7 +584,7 @@ impl ShardDedupProber for RemoteClient {
         let url = Url::parse(&format!("{0}/chunk/{key}", self.endpoint))?;
 
         let mut response = self
-            .authenticated_http_client
+            .conservative_authenticated_http_client
             .get(url)
             .send()
             .await
@@ -770,12 +776,13 @@ mod tests {
                 .expect_get()
                 .returning(|_, range| Ok(Some(vec![1; (range.end - range.start) as usize * TEST_CHUNK_SIZE])));
 
-            let http_client = Arc::new(http_client::build_http_client(&None).unwrap());
+            let http_client = Arc::new(http_client::build_http_client(RetryConfig::default()).unwrap());
 
             let threadpool = Arc::new(ThreadPool::new().unwrap());
             let client = RemoteClient {
                 chunk_cache: Some(Arc::new(chunk_cache)),
                 authenticated_http_client: http_client.clone(),
+                conservative_authenticated_http_client: http_client.clone(),
                 http_client,
                 endpoint: "".to_string(),
                 compression: Some(CompressionScheme::LZ4),

@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use async_trait::async_trait;
-use cas_client::build_http_client;
+use cas_client::{build_http_client, RetryConfig};
 use reqwest_middleware::ClientWithMiddleware;
 use utils::auth::{TokenInfo, TokenRefresher};
 use utils::errors::AuthError;
@@ -18,13 +18,13 @@ pub struct HubClient {
 }
 
 impl HubClient {
-    pub fn new(endpoint: String, token: String, repo_type: String, repo_id: String) -> Result<Self> {
+    pub fn new(endpoint: &str, token: &str, repo_type: &str, repo_id: &str) -> Result<Self> {
         Ok(HubClient {
             endpoint: endpoint.to_owned(),
             token: token.to_owned(),
             repo_type: repo_type.to_owned(),
             repo_id: repo_id.to_owned(),
-            client: build_http_client(&None)?,
+            client: build_http_client(RetryConfig::default())?,
         })
     }
 
@@ -81,7 +81,7 @@ impl TokenRefresher for HubClientTokenRefresher {
 #[cfg(test)]
 mod tests {
     use anyhow::Result;
-    use cas_client::build_http_client;
+    use cas_client::{build_http_client, RetryConfig};
 
     use super::HubClient;
 
@@ -93,7 +93,7 @@ mod tests {
             token: "[MASKED]".to_owned(),
             repo_type: "dataset".to_owned(),
             repo_id: "test/t2".to_owned(),
-            client: build_http_client(&None)?,
+            client: build_http_client(RetryConfig::default())?,
         };
 
         let (cas_endpoint, jwt_token, jwt_token_expiry) = hub_client.get_jwt_token("read").await?;
