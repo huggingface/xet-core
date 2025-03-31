@@ -176,7 +176,7 @@ pub mod buffer {
 
     impl BufferProvider {
         pub fn get_writer_at(&self, _start: u64) -> Result<Box<dyn Write + Send>> {
-            Ok(Box::new(self.buf.clone())) // TODO: fix tests once we start writing in parallel
+            Ok(Box::new(self.buf.clone()))
         }
     }
 

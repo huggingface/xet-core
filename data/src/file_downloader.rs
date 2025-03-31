@@ -56,9 +56,3 @@ impl FileDownloader {
         Ok(n_bytes)
     }
 }
-
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn test_smudge_file_from_pointer() {}
-}
