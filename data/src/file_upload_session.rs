@@ -349,7 +349,7 @@ mod tests {
     /// * `output_path`: path to write the hydrated/original file
     async fn test_smudge_file(runtime: Arc<ThreadPool>, cas_path: &Path, pointer_path: &Path, output_path: &Path) {
         let mut reader = File::open(pointer_path).unwrap();
-        let writer = WriteProvider::File(FileProvider::new(output_path.to_path_buf()));
+        let writer = OutputProvider::File(FileProvider::new(output_path.to_path_buf()));
 
         let mut input = String::new();
         reader.read_to_string(&mut input).unwrap();
@@ -372,12 +372,10 @@ mod tests {
 
     use std::fs::{read, write};
 
-    use cas_client::{FileProvider, WriteProvider};
+    use cas_client::{FileProvider, OutputProvider};
     use tempfile::tempdir;
 
-    /// Unit tests
     use super::*;
-
 
     #[test]
     fn test_clean_smudge_round_trip() {

@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use cas_client::{Client, WriteProvider};
+use cas_client::{Client, OutputProvider};
 use cas_types::FileRange;
 use merklehash::MerkleHash;
 use utils::progress::ProgressUpdater;
@@ -33,23 +33,23 @@ impl FileDownloader {
     pub async fn smudge_file_from_pointer(
         &self,
         pointer: &PointerFile,
-        writer: &WriteProvider,
+        output: &OutputProvider,
         range: Option<FileRange>,
         progress_updater: Option<Arc<dyn ProgressUpdater>>,
     ) -> Result<u64> {
-        self.smudge_file_from_hash(&pointer.hash()?, writer, range, progress_updater)
+        self.smudge_file_from_hash(&pointer.hash()?, output, range, progress_updater)
             .await
     }
 
     pub async fn smudge_file_from_hash(
         &self,
         file_id: &MerkleHash,
-        writer: &WriteProvider,
+        output: &OutputProvider,
         range: Option<FileRange>,
         progress_updater: Option<Arc<dyn ProgressUpdater>>,
     ) -> Result<u64> {
         // Currently, this works by always directly querying the remote server.
-        let n_bytes = self.client.get_file(file_id, range, writer, progress_updater).await?;
+        let n_bytes = self.client.get_file(file_id, range, output, progress_updater).await?;
 
         prometheus_metrics::FILTER_BYTES_SMUDGED.inc_by(n_bytes);
 

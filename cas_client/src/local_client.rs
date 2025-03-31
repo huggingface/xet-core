@@ -20,7 +20,7 @@ use tracing::{debug, error, info, warn};
 use utils::progress::ProgressUpdater;
 
 use crate::error::{CasClientError, Result};
-use crate::interface::{ShardDedupProber, UploadClient, WriteProvider};
+use crate::interface::{OutputProvider, ShardDedupProber, UploadClient};
 use crate::{Client, ReconstructionClient, RegistrationClient, ShardClientInterface};
 
 pub struct LocalClient {
@@ -399,7 +399,7 @@ impl ReconstructionClient for LocalClient {
         &self,
         hash: &MerkleHash,
         byte_range: Option<FileRange>,
-        writer: &WriteProvider,
+        output_provider: &OutputProvider,
         _progress_updater: Option<Arc<dyn ProgressUpdater>>,
     ) -> Result<u64> {
         let Some((file_info, _)) = self
@@ -410,7 +410,7 @@ impl ReconstructionClient for LocalClient {
         else {
             return Err(CasClientError::FileNotFound(*hash));
         };
-        let mut writer = writer.get_writer_at(0)?;
+        let mut writer = output_provider.get_writer_at(0)?;
 
         // This is just used for testing, so inefficient is fine.
         let mut file_vec = Vec::new();

@@ -1,5 +1,6 @@
 use std::cmp::{max, min};
 use std::collections::{HashMap, HashSet};
+use std::env;
 use std::io::{Cursor, Write};
 use std::ops::Range;
 use std::path::PathBuf;
@@ -45,6 +46,8 @@ pub const PREFIX_DEFAULT: &str = "default";
 const NUM_RETRIES: usize = 5;
 const BASE_RETRY_DELAY_MS: u64 = 3000;
 const NUM_CONCURRENT_RANGE_GETS: usize = 8;
+
+const ENV_RECONSTRUCT_WRITE_PARALLEL: &str = "HF_XET_RECONSTRUCT_WRITE_PARALLEL";
 
 type RangeDownloadSingleFlight = Arc<Group<(Vec<u8>, Vec<u32>), CasClientError>>;
 
@@ -145,26 +148,40 @@ impl ReconstructionClient for RemoteClient {
         &self,
         hash: &MerkleHash,
         byte_range: Option<FileRange>,
-        writer: &WriteProvider,
+        output_provider: &OutputProvider,
         progress_updater: Option<Arc<dyn ProgressUpdater>>,
     ) -> Result<u64> {
         // get manifest of xorbs to download, api call to CAS
         let manifest = self.get_reconstruction(hash, byte_range.clone()).await?;
-
         let terms = manifest.terms;
         let fetch_info = Arc::new(manifest.fetch_info);
-        self.reconstruct_file_to_writer(
-            terms,
-            fetch_info,
-            manifest.offset_into_first_range,
-            byte_range,
-            writer,
-            progress_updater,
-        )
-        .await
+
+        // If the user has set the `ENV_RECONSTRUCT_WRITE_PARALLEL` env variable, then we should
+        // write the file to the output in parallel instead of sequentially.
+        if env::var(ENV_RECONSTRUCT_WRITE_PARALLEL).is_ok() {
+            self.reconstruct_file_to_writer_parallel(
+                terms,
+                fetch_info,
+                manifest.offset_into_first_range,
+                byte_range,
+                output_provider,
+                progress_updater,
+            )
+            .await
+        } else {
+            self.reconstruct_file_to_writer(
+                terms,
+                fetch_info,
+                manifest.offset_into_first_range,
+                byte_range,
+                output_provider,
+                progress_updater,
+            )
+            .await
+        }
     }
 
-    async fn batch_get_file(&self, files: HashMap<MerkleHash, &WriteProvider>) -> Result<u64> {
+    async fn batch_get_file(&self, files: HashMap<MerkleHash, &OutputProvider>) -> Result<u64> {
         let requested_file_ids = files.keys().cloned().collect::<HashSet<_>>();
         let manifest = self.batch_get_reconstruction(requested_file_ids.iter()).await?;
         let fetch_info = Arc::new(manifest.fetch_info);
@@ -180,9 +197,13 @@ impl ReconstructionClient for RemoteClient {
         let mut ret_size = 0;
         for (hash, terms) in manifest.files {
             let w = files.get(&(hash.into())).unwrap();
-            ret_size += self
-                .reconstruct_file_to_writer(terms, fetch_info.clone(), 0, None, w, None)
-                .await?;
+            ret_size += if env::var(ENV_RECONSTRUCT_WRITE_PARALLEL).is_ok() {
+                self.reconstruct_file_to_writer_parallel(terms, fetch_info.clone(), 0, None, w, None)
+                    .await?
+            } else {
+                self.reconstruct_file_to_writer(terms, fetch_info.clone(), 0, None, w, None)
+                    .await?
+            }
         }
 
         Ok(ret_size)
@@ -303,7 +324,7 @@ impl RemoteClient {
         fetch_info: Arc<HashMap<HexMerkleHash, Vec<CASReconstructionFetchInfo>>>,
         offset_into_first_range: u64,
         byte_range: Option<FileRange>,
-        writer: &WriteProvider,
+        writer: &OutputProvider,
         progress_updater: Option<Arc<dyn ProgressUpdater>>,
     ) -> Result<u64> {
         let total_len = if let Some(range) = byte_range {
@@ -346,36 +367,39 @@ impl RemoteClient {
         Ok(total_len)
     }
 
+    /// Uses the reconstruction response and optionally requested FileRange to re-create a file,
+    /// outputting the file content via indicated OutputProvider.
+    ///
+    /// Unlike `reconstruct_file_to_writer`, this function will spawn a task for writing each
+    /// term to the output, with each task writing to its part of the file.
     pub async fn reconstruct_file_to_writer_parallel(
         &self,
-        manifest: QueryReconstructionResponse,
+        terms: Vec<CASReconstructionTerm>,
+        fetch_info: Arc<HashMap<HexMerkleHash, Vec<CASReconstructionFetchInfo>>>,
+        offset_into_first_range: u64,
         byte_range: Option<FileRange>,
-        writer: &WriteProvider,
+        output_provider: &OutputProvider,
         progress_updater: Option<Arc<dyn ProgressUpdater>>,
     ) -> Result<u64> {
         let total_len = if let Some(range) = byte_range {
             range.end - range.start
         } else {
-            manifest.terms.iter().fold(0, |acc, x| acc + x.unpacked_length as u64)
+            terms.iter().fold(0, |acc, x| acc + x.unpacked_length as u64)
         };
         let task_info = TermWriteTask {
             http_client: self.http_client.clone(),
             chunk_cache: self.chunk_cache.clone(),
             range_download_single_flight: self.range_download_single_flight.clone(),
-            fetch_info: Arc::new(manifest.fetch_info),
+            fetch_info,
             semaphore: Arc::new(Semaphore::new(NUM_CONCURRENT_RANGE_GETS)),
-            writer: writer.clone(),
+            output: output_provider.clone(),
         };
         // Build term tasks, computing the offsets needed for the downloaded term and
         // offset for the output.
         let mut bytes_written = 0;
         let mut remaining = total_len;
-        let terms = manifest.terms.into_iter().enumerate().map(|(idx, term)| {
-            let start = if idx == 0 {
-                manifest.offset_into_first_range as usize
-            } else {
-                0
-            };
+        let terms = terms.into_iter().enumerate().map(|(idx, term)| {
+            let start = if idx == 0 { offset_into_first_range as usize } else { 0 };
             let end = min(start as u64 + remaining, term.unpacked_length as u64) as usize;
             let file_offset = bytes_written;
             let len = (end - start) as u64;
@@ -420,12 +444,12 @@ struct TermWriteTask {
     range_download_single_flight: RangeDownloadSingleFlight,
     fetch_info: Arc<HashMap<HexMerkleHash, Vec<CASReconstructionFetchInfo>>>,
     semaphore: Arc<Semaphore>,
-    writer: WriteProvider,
+    output: OutputProvider,
 }
 
 impl TermWriteTask {
     /// Download the term and write it to the underlying storage.
-    async fn write_term(self, term: CASReconstructionTerm, term_range: Range<usize>, file_start: u64) -> Result<u64> {
+    async fn write_term(self, term: CASReconstructionTerm, term_range: Range<usize>, file_offset: u64) -> Result<u64> {
         // acquire permit from the semaphore limiting the download parallelism.
         let _permit = self
             .semaphore
@@ -451,7 +475,7 @@ impl TermWriteTask {
         let len = (term_range.end - term_range.start) as u64;
 
         // write the term
-        let mut writer = self.writer.get_writer_at(file_start)?;
+        let mut writer = self.output.get_writer_at(file_offset)?;
         writer.write_all(&term_data[term_range])?;
         writer.flush()?;
         Ok(len)
@@ -773,6 +797,7 @@ mod tests {
 
     #[test]
     fn test_reconstruct_file_to_writer() {
+        #[derive(Clone)]
         struct TestCase {
             reconstruction_response: QueryReconstructionResponse,
             range: Option<FileRange>,
@@ -854,6 +879,8 @@ mod tests {
             },
         ];
         for test in test_cases {
+            let test1 = test.clone();
+            // test writing to file term-by-term
             let mut chunk_cache = MockChunkCache::new();
             chunk_cache
                 .expect_get()
@@ -876,12 +903,54 @@ mod tests {
 
             let provider = BufferProvider::default();
             let buf = provider.buf.clone();
-            let writer = WriteProvider::Buffer(provider);
-
+            let writer = OutputProvider::Buffer(provider);
             let resp = threadpool
                 .external_run_async_task(async move {
                     client
                         .reconstruct_file_to_writer(
+                            test1.reconstruction_response.terms,
+                            Arc::new(test1.reconstruction_response.fetch_info),
+                            test1.reconstruction_response.offset_into_first_range,
+                            test1.range,
+                            &writer,
+                            None,
+                        )
+                        .await
+                })
+                .unwrap();
+            assert_eq!(test1.expect_error, resp.is_err());
+            if !test1.expect_error {
+                assert_eq!(test1.expected_len, resp.unwrap());
+                assert_eq!(vec![1; test1.expected_len as usize], buf.value());
+            }
+
+            // test writing terms to file in parallel
+            let mut chunk_cache = MockChunkCache::new();
+            chunk_cache
+                .expect_get()
+                .returning(|_, range| Ok(Some(vec![1; (range.end - range.start) as usize * TEST_CHUNK_SIZE])));
+
+            let http_client = Arc::new(http_client::build_http_client(&None).unwrap());
+
+            let threadpool = Arc::new(ThreadPool::new().unwrap());
+            let client = RemoteClient {
+                chunk_cache: Some(Arc::new(chunk_cache)),
+                authenticated_http_client: http_client.clone(),
+                http_client,
+                endpoint: "".to_string(),
+                compression: Some(CompressionScheme::LZ4),
+                dry_run: false,
+                threadpool: threadpool.clone(),
+                range_download_single_flight: Arc::new(Group::new()),
+                shard_cache_directory: "".into(),
+            };
+            let provider = BufferProvider::default();
+            let buf = provider.buf.clone();
+            let writer = OutputProvider::Buffer(provider);
+            let resp = threadpool
+                .external_run_async_task(async move {
+                    client
+                        .reconstruct_file_to_writer_parallel(
                             test.reconstruction_response.terms,
                             Arc::new(test.reconstruction_response.fetch_info),
                             test.reconstruction_response.offset_into_first_range,

@@ -58,11 +58,11 @@ pub trait ReconstructionClient {
         &self,
         hash: &MerkleHash,
         byte_range: Option<FileRange>,
-        writer: &WriteProvider,
+        output_provider: &OutputProvider,
         progress_updater: Option<Arc<dyn ProgressUpdater>>,
     ) -> Result<u64>;
 
-    async fn batch_get_file(&self, files: HashMap<MerkleHash, &WriteProvider>) -> Result<u64> {
+    async fn batch_get_file(&self, files: HashMap<MerkleHash, &OutputProvider>) -> Result<u64> {
         let mut n_bytes = 0;
         // Provide the basic naive implementation as a default.
         for (h, w) in files {
@@ -74,19 +74,19 @@ pub trait ReconstructionClient {
 
 /// Enum of different output formats to write reconstructed files.
 #[derive(Debug, Clone)]
-pub enum WriteProvider {
+pub enum OutputProvider {
     File(FileProvider),
     #[cfg(test)]
     Buffer(buffer::BufferProvider),
 }
 
-impl WriteProvider {
+impl OutputProvider {
     /// Create a new writer to start writing at the indicated start location.
     pub(crate) fn get_writer_at(&self, start: u64) -> Result<Box<dyn Write + Send>> {
         match self {
-            WriteProvider::File(fp) => fp.get_writer_at(start),
+            OutputProvider::File(fp) => fp.get_writer_at(start),
             #[cfg(test)]
-            WriteProvider::Buffer(bp) => bp.get_writer_at(start),
+            OutputProvider::Buffer(bp) => bp.get_writer_at(start),
         }
     }
 }

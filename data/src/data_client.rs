@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use cas_client::remote_client::PREFIX_DEFAULT;
-use cas_client::{CacheConfig, FileProvider, WriteProvider};
+use cas_client::{CacheConfig, FileProvider, OutputProvider};
 use cas_object::CompressionScheme;
 use deduplication::DeduplicationMetrics;
 use dirs::home_dir;
@@ -200,7 +200,7 @@ async fn smudge_file(
     if let Some(parent_dir) = path.parent() {
         std::fs::create_dir_all(parent_dir)?;
     }
-    let output = WriteProvider::File(FileProvider::new(path));
+    let output = OutputProvider::File(FileProvider::new(path));
     downloader
         .smudge_file_from_pointer(pointer_file, &output, None, progress_updater)
         .await?;
