@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -56,11 +56,11 @@ pub trait ReconstructionClient {
         &self,
         hash: &MerkleHash,
         byte_range: Option<FileRange>,
-        path: &PathBuf,
+        path: &Path,
         progress_updater: Option<Arc<dyn ProgressUpdater>>,
     ) -> Result<u64>;
 
-    async fn batch_get_file(&self, files: HashMap<MerkleHash, &PathBuf>) -> Result<u64> {
+    async fn batch_get_file(&self, files: HashMap<MerkleHash, &Path>) -> Result<u64> {
         let mut n_bytes = 0;
         // Provide the basic naive implementation as a default.
         for (h, f) in files {

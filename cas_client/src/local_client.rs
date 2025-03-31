@@ -401,7 +401,7 @@ impl ReconstructionClient for LocalClient {
         &self,
         hash: &MerkleHash,
         byte_range: Option<FileRange>,
-        path: &PathBuf,
+        path: &Path,
         _progress_updater: Option<Arc<dyn ProgressUpdater>>,
     ) -> Result<u64> {
         let Some((file_info, _)) = self

@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::io::{Cursor, SeekFrom, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use anyhow::anyhow;
@@ -13,6 +13,7 @@ use cas_types::{
 use chunk_cache::{CacheConfig, ChunkCache};
 use error_printer::ErrorPrinter;
 use file_utils::SafeFileCreator;
+use futures::stream::FuturesUnordered;
 use futures::{StreamExt, TryStreamExt};
 use http::header::RANGE;
 use mdb_shard::file_structs::{FileDataSequenceEntry, FileDataSequenceHeader, MDBFileInfo};
@@ -143,7 +144,7 @@ impl ReconstructionClient for RemoteClient {
         &self,
         hash: &MerkleHash,
         byte_range: Option<FileRange>,
-        path: &PathBuf,
+        path: &Path,
         progress_updater: Option<Arc<dyn ProgressUpdater>>,
     ) -> Result<u64> {
         // get manifest of xorbs to download, api call to CAS
@@ -162,7 +163,7 @@ impl ReconstructionClient for RemoteClient {
         .await
     }
 
-    async fn batch_get_file(&self, files: HashMap<MerkleHash, &PathBuf>) -> Result<u64> {
+    async fn batch_get_file(&self, files: HashMap<MerkleHash, &Path>) -> Result<u64> {
         let requested_file_ids = files.keys().cloned().collect::<HashSet<_>>();
         let manifest = self.batch_get_reconstruction(requested_file_ids.iter()).await?;
         let fetch_info = Arc::new(manifest.fetch_info);
@@ -301,11 +302,11 @@ impl RemoteClient {
         fetch_info: Arc<HashMap<HexMerkleHash, Vec<CASReconstructionFetchInfo>>>,
         offset_into_first_range: u64,
         byte_range: Option<FileRange>,
-        path: &PathBuf,
+        path: &Path,
         progress_updater: Option<Arc<dyn ProgressUpdater>>,
     ) -> Result<u64> {
         let term_lengths = terms.iter().map(|x| x.unpacked_length as u64).collect::<Vec<_>>();
-        let mut file_range_per_term = vec![FileRange::default(); terms.len()];
+        let file_range_per_term = &mut vec![FileRange::default(); terms.len()];
         for item in file_range_per_term.iter_mut() {
             item.start = 0;
             item.end = 0;
@@ -346,38 +347,55 @@ impl RemoteClient {
         } else {
             term_lengths.iter().sum()
         };
-        let futs_iter = terms.into_iter().enumerate().map(async |(idx, term)| {
+        let futs_iter = terms.into_iter().enumerate().map(|(idx, term)| {
+            let path_cloned = path.to_path_buf();
             let fetch_info_clone = fetch_info.clone();
-            let mut file = OpenOptions::new().write(true).truncate(false).create(true).open(&path).await?;
-            let term_data = get_one_term(
-                self.http_client.clone(),
-                self.chunk_cache.clone(),
-                term,
-                fetch_info_clone,
-                self.range_download_single_flight.clone(),
-            )
-            .await
-            .log_error(format!("error fetching 1 term at index {idx}"))?;
-            let seek = file_range_per_term[..idx].iter().fold(0, |acc, x| acc + x.end - x.start);
-            let (start, end) = (file_range_per_term[idx].start as usize, file_range_per_term[idx].end as usize);
-            file.seek(SeekFrom::Start(seek)).await?;
-            file.write_all(&term_data[start..end]).await?;
-            Ok::<u64, CasClientError>((end - start) as u64)
+            let file_range_per_term_cloned = file_range_per_term.clone();
+            let http_client = self.http_client.clone();
+            let chunk_cache = self.chunk_cache.clone();
+            let range_download_single_flight = self.range_download_single_flight.clone();
+            async move {
+                let mut file = OpenOptions::new()
+                    .write(true)
+                    .truncate(false)
+                    .create(true)
+                    .open(path_cloned)
+                    .await?;
+                let term_data =
+                    get_one_term(http_client, chunk_cache, term, fetch_info_clone, range_download_single_flight)
+                        .await
+                        .log_error(format!("error fetching 1 term at index {idx}"))?;
+                let seek = file_range_per_term_cloned[..idx].iter().fold(0, |acc, x| acc + x.end - x.start);
+                let (start, end) =
+                    (file_range_per_term_cloned[idx].start as usize, file_range_per_term_cloned[idx].end as usize);
+                file.seek(SeekFrom::Start(seek)).await?;
+                file.write_all(&term_data[start..end]).await?;
+                Ok::<u64, CasClientError>((end - start) as u64)
+            }
         });
-        let mut futs_buffered_enumerated =
-            futures::stream::iter(futs_iter).buffered(NUM_CONCURRENT_RANGE_GETS).enumerate();
 
-        while let Some((idx, result)) = futs_buffered_enumerated.next().await {
+        // spawn futures in the threadpool
+        let mut joins = FuturesUnordered::new();
+        futs_iter.for_each(|term| {
+            let handle = self.threadpool.spawn(term);
+            joins.push(handle);
+        });
+
+        while let Some(result) = joins.next().await {
             match result {
-                Err(e) => {
-                    error!("error writing term {idx} to file: {e}");
-                    return Err(CasClientError::Other(format!("error writing term {idx} to file: {e}")));
+                Ok(Err(e)) => {
+                    error!("error writing term to file: {e}");
+                    return Err(CasClientError::Other(format!("error writing term to file: {e}")));
                 },
-                Ok(d) => {
+                Ok(Ok(d)) => {
                     if let Some(updater) = &progress_updater {
                         updater.update(d);
                     }
-                    debug!("wrote term {idx} to file");
+                    debug!("wrote term to file");
+                },
+                Err(e) => {
+                    error!("error writing term to file: {e}");
+                    return Err(CasClientError::Other(format!("error writing term to file: {e}")));
                 },
             }
         }

@@ -1,6 +1,6 @@
 use std::fs::File;
 use std::io::{BufReader, Read, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
 
 use anyhow::Result;
@@ -120,7 +120,7 @@ async fn smudge_file(arg: &SmudgeArg) -> Result<()> {
     Ok(())
 }
 
-async fn smudge(mut reader: impl Read, path: &PathBuf) -> Result<()> {
+async fn smudge(mut reader: impl Read, path: &Path) -> Result<()> {
     let mut input = String::new();
     reader.read_to_string(&mut input)?;
 
@@ -134,7 +134,7 @@ async fn smudge(mut reader: impl Read, path: &PathBuf) -> Result<()> {
     let downloader =
         FileDownloader::new(TranslatorConfig::local_config(std::env::current_dir()?)?, get_threadpool()).await?;
 
-    downloader.smudge_file_from_pointer(&pointer_file, &path, None, None).await?;
+    downloader.smudge_file_from_pointer(&pointer_file, path, None, None).await?;
 
     Ok(())
 }

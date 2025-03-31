@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::Path;
 use std::sync::Arc;
 
 use cas_client::Client;
@@ -34,7 +34,7 @@ impl FileDownloader {
     pub async fn smudge_file_from_pointer(
         &self,
         pointer: &PointerFile,
-        path: &PathBuf,
+        path: &Path,
         range: Option<FileRange>,
         progress_updater: Option<Arc<dyn ProgressUpdater>>,
     ) -> Result<u64> {
@@ -45,7 +45,7 @@ impl FileDownloader {
     pub async fn smudge_file_from_hash(
         &self,
         file_id: &MerkleHash,
-        path: &PathBuf,
+        path: &Path,
         range: Option<FileRange>,
         progress_updater: Option<Arc<dyn ProgressUpdater>>,
     ) -> Result<u64> {
