@@ -1,7 +1,7 @@
 use std::env;
 use std::env::current_dir;
 use std::fs::File;
-use std::io::{Read};
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
