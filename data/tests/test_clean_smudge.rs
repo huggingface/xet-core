@@ -2,7 +2,7 @@ use std::fs::{create_dir_all, read_dir, File};
 use std::io::{Read, Write};
 use std::path::Path;
 
-use cas_client::{FileWriteProvider, WriteProvider};
+use cas_client::{FileProvider, WriteProvider};
 use data::configurations::TranslatorConfig;
 use data::data_client::clean_file;
 use data::{FileDownloader, FileUploadSession, PointerFile};
@@ -142,7 +142,7 @@ async fn hydrate_directory(cas_dir: &Path, ptr_dir: &Path, out_dir: &Path) {
         let out_filename = out_dir.join(entry.file_name());
 
         // Create an output file for writing
-        let file_out = WriteProvider::File(FileWriteProvider::new(out_filename));
+        let file_out = WriteProvider::File(FileProvider::new(out_filename));
 
         // Pointer file.
         let pf = PointerFile::init_from_path(entry.path());

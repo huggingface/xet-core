@@ -1,6 +1,7 @@
 use std::cmp::{max, min};
 use std::collections::{HashMap, HashSet};
 use std::io::{Cursor, Write};
+use std::ops::Range;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -14,6 +15,7 @@ use cas_types::{
 use chunk_cache::{CacheConfig, ChunkCache};
 use error_printer::ErrorPrinter;
 use file_utils::SafeFileCreator;
+use futures::stream::FuturesUnordered;
 use futures::{StreamExt, TryStreamExt};
 use http::header::RANGE;
 use mdb_shard::file_structs::{FileDataSequenceEntry, FileDataSequenceHeader, MDBFileInfo};
@@ -22,6 +24,7 @@ use mdb_shard::utils::shard_file_name;
 use merklehash::{HashedWrite, MerkleHash};
 use reqwest::{StatusCode, Url};
 use reqwest_middleware::ClientWithMiddleware;
+use tokio::sync::Semaphore;
 use tracing::{debug, error, trace};
 use utils::auth::AuthConfig;
 use utils::progress::ProgressUpdater;
@@ -178,7 +181,7 @@ impl ReconstructionClient for RemoteClient {
         for (hash, terms) in manifest.files {
             let w = files.get(&(hash.into())).unwrap();
             ret_size += self
-                .reconstruct_file_to_writer(terms, fetch_info.clone(), 0, None, *w, None)
+                .reconstruct_file_to_writer(terms, fetch_info.clone(), 0, None, w, None)
                 .await?;
         }
 
@@ -341,6 +344,117 @@ impl RemoteClient {
         writer.flush()?;
 
         Ok(total_len)
+    }
+
+    pub async fn reconstruct_file_to_writer_parallel(
+        &self,
+        manifest: QueryReconstructionResponse,
+        byte_range: Option<FileRange>,
+        writer: &WriteProvider,
+        progress_updater: Option<Arc<dyn ProgressUpdater>>,
+    ) -> Result<u64> {
+        let total_len = if let Some(range) = byte_range {
+            range.end - range.start
+        } else {
+            manifest.terms.iter().fold(0, |acc, x| acc + x.unpacked_length as u64)
+        };
+        let task_info = TermWriteTask {
+            http_client: self.http_client.clone(),
+            chunk_cache: self.chunk_cache.clone(),
+            range_download_single_flight: self.range_download_single_flight.clone(),
+            fetch_info: Arc::new(manifest.fetch_info),
+            semaphore: Arc::new(Semaphore::new(NUM_CONCURRENT_RANGE_GETS)),
+            writer: writer.clone(),
+        };
+        // Build term tasks, computing the offsets needed for the downloaded term and
+        // offset for the output.
+        let mut bytes_written = 0;
+        let mut remaining = total_len;
+        let terms = manifest.terms.into_iter().enumerate().map(|(idx, term)| {
+            let start = if idx == 0 {
+                manifest.offset_into_first_range as usize
+            } else {
+                0
+            };
+            let end = min(start as u64 + remaining, term.unpacked_length as u64) as usize;
+            let file_offset = bytes_written;
+            let len = (end - start) as u64;
+
+            bytes_written += len;
+            remaining -= len;
+
+            let task = task_info.clone();
+            task.write_term(term, start..end, file_offset)
+        });
+
+        // Spawn the tasks
+        let mut handles = FuturesUnordered::new();
+        terms.for_each(|term| {
+            let handle = self.threadpool.spawn(term);
+            handles.push(handle);
+        });
+
+        // Join the tasks as they come in.
+        let mut total_written = 0;
+        while let Some(result) = handles.next().await {
+            match result {
+                Ok(Ok(len_written)) => {
+                    progress_updater.as_ref().inspect(|updater| updater.update(len_written));
+                    total_written += len_written;
+                },
+                Ok(Err(e)) => Err(e)?,
+                Err(e) => Err(CasClientError::Other(format!("Error joining download task {e:?}")))?,
+            }
+        }
+        Ok(total_written)
+    }
+}
+
+/// Helper object containing the structs needed when downloading and writing a term during
+/// reconstruction. Can be cheaply cloned so that the write_term function can be spawned for
+/// each term.
+#[derive(Clone)]
+struct TermWriteTask {
+    http_client: Arc<ClientWithMiddleware>,
+    chunk_cache: Option<Arc<dyn ChunkCache>>,
+    range_download_single_flight: RangeDownloadSingleFlight,
+    fetch_info: Arc<HashMap<HexMerkleHash, Vec<CASReconstructionFetchInfo>>>,
+    semaphore: Arc<Semaphore>,
+    writer: WriteProvider,
+}
+
+impl TermWriteTask {
+    /// Download the term and write it to the underlying storage.
+    async fn write_term(self, term: CASReconstructionTerm, term_range: Range<usize>, file_start: u64) -> Result<u64> {
+        // acquire permit from the semaphore limiting the download parallelism.
+        let _permit = self
+            .semaphore
+            .acquire_owned()
+            .await
+            .log_error("Couldn't download term")
+            .map_err(|_| CasClientError::Other("couldn't acquire semaphore".to_string()))?;
+
+        // download the term
+        let term_data =
+            get_one_term(self.http_client, self.chunk_cache, term, self.fetch_info, self.range_download_single_flight)
+                .await
+                .log_error("error fetching 1 term")?;
+
+        if term_range.end > term_data.len() {
+            error!(
+                "Error: expected term range: {} larger than received term length: {}",
+                term_range.end,
+                term_data.len()
+            );
+            return Err(CasClientError::Other("term range received invalid".to_string()));
+        }
+        let len = (term_range.end - term_range.start) as u64;
+
+        // write the term
+        let mut writer = self.writer.get_writer_at(file_start)?;
+        writer.write_all(&term_data[term_range])?;
+        writer.flush()?;
+        Ok(len)
     }
 }
 
@@ -636,8 +750,7 @@ mod tests {
     fn test_basic_put() {
         // Arrange
         let prefix = PREFIX_DEFAULT;
-        let (c, _, data, chunk_boundaries) =
-            build_cas_object(3, ChunkSize::Random(512, 10248), cas_object::CompressionScheme::LZ4);
+        let (c, _, data, chunk_boundaries) = build_cas_object(3, ChunkSize::Random(512, 10248), CompressionScheme::LZ4);
 
         let threadpool = Arc::new(ThreadPool::new().unwrap());
         let client = RemoteClient::new(

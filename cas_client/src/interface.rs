@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::fs::{File, OpenOptions};
+use std::fs::OpenOptions;
 use std::io::{Seek, SeekFrom, Write};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -72,10 +72,10 @@ pub trait ReconstructionClient {
     }
 }
 
-/// Enum of different output formats to write reconstructed files to.
+/// Enum of different output formats to write reconstructed files.
 #[derive(Debug, Clone)]
 pub enum WriteProvider {
-    File(FileWriteProvider),
+    File(FileProvider),
     #[cfg(test)]
     Buffer(buffer::BufferProvider),
 }
@@ -84,31 +84,32 @@ impl WriteProvider {
     /// Create a new writer to start writing at the indicated start location.
     pub(crate) fn get_writer_at(&self, start: u64) -> Result<Box<dyn Write + Send>> {
         match self {
-            WriteProvider::File(fp) => fp.get_writer_at(start).map(|x| Box::new(x) as Box<dyn Write + Send>),
+            WriteProvider::File(fp) => fp.get_writer_at(start),
             #[cfg(test)]
-            WriteProvider::Buffer(bp) => bp.get_writer_at(start).map(|x| Box::new(x) as Box<dyn Write + Send>),
+            WriteProvider::Buffer(bp) => bp.get_writer_at(start),
         }
     }
 }
 
+/// Provides new Writers to a file located at a particular location
 #[derive(Debug, Clone)]
-pub struct FileWriteProvider {
+pub struct FileProvider {
     filename: PathBuf,
 }
 
-impl FileWriteProvider {
+impl FileProvider {
     pub fn new(filename: PathBuf) -> Self {
         Self { filename }
     }
 
-    fn get_writer_at(&self, start: u64) -> Result<File> {
+    fn get_writer_at(&self, start: u64) -> Result<Box<dyn Write + Send>> {
         let mut file = OpenOptions::new()
             .write(true)
             .truncate(false)
             .create(true)
             .open(&self.filename)?;
         file.seek(SeekFrom::Start(start))?;
-        Ok(file)
+        Ok(Box::new(file))
     }
 }
 
@@ -174,8 +175,8 @@ pub mod buffer {
     }
 
     impl BufferProvider {
-        pub fn get_writer_at(&self, _start: u64) -> Result<ThreadSafeBuffer> {
-            Ok(self.buf.clone()) // TODO: fix tests once we start writing in parallel
+        pub fn get_writer_at(&self, _start: u64) -> Result<Box<dyn Write + Send>> {
+            Ok(Box::new(self.buf.clone())) // TODO: fix tests once we start writing in parallel
         }
     }
 
