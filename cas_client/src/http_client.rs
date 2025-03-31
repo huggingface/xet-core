@@ -258,73 +258,184 @@ mod tests {
     #[tokio::test]
     #[traced_test]
     async fn test_retry_policy_500() {
-        // Arrange
-        let server = MockServer::start();
-        let mock_500 = server.mock(|when, then| {
-            when.method(GET).path("/data");
-            then.status(500).body("500: Internal Server Error");
-        });
+        {
+            // Arrange
+            let server = MockServer::start();
+            let mock = server.mock(|when, then| {
+                when.method(GET).path("/data");
+                then.status(500).body("500: Internal Server Error");
+            });
 
-        let retry_config = RetryConfig {
-            num_retries: 1,
-            min_retry_interval_ms: 0,
-            max_retry_interval_ms: 3000,
-            strategy: DefaultRetryableStrategy,
-        };
-        let client = build_auth_http_client(&None, retry_config).unwrap();
+            let retry_config = RetryConfig {
+                num_retries: 1,
+                min_retry_interval_ms: 0,
+                max_retry_interval_ms: 3000,
+                strategy: DefaultRetryableStrategy,
+            };
+            let client = build_auth_http_client(&None, retry_config).unwrap();
 
-        // Act & Assert - should retry and log
-        let response = client.get(server.url("/data")).send().await.unwrap();
+            // Act & Assert - should retry and log
+            let response = client.get(server.url("/data")).send().await.unwrap();
 
-        // Assert
-        assert!(logs_contain("Status Code: 500. Retrying..."));
-        assert_eq!(2, mock_500.hits());
-        assert_eq!(response.status(), 500);
+            // Assert
+            assert!(logs_contain("Status Code: 500. Retrying..."));
+            assert_eq!(2, mock.hits());
+            assert_eq!(response.status(), 500);
+        }
+
+        {
+            // Arrange
+            let server = MockServer::start();
+            let mock = server.mock(|when, then| {
+                when.method(GET).path("/data");
+                then.status(500).body("500: Internal Server Error");
+            });
+
+            let retry_config = RetryConfig {
+                num_retries: 1,
+                min_retry_interval_ms: 0,
+                max_retry_interval_ms: 3000,
+                strategy: No429RetryStratey,
+            };
+            let client = build_auth_http_client(&None, retry_config).unwrap();
+
+            // Act & Assert - should retry and log
+            let response = client.get(server.url("/data")).send().await.unwrap();
+
+            // Assert
+            assert!(logs_contain("Status Code: 500. Retrying..."));
+            assert_eq!(2, mock.hits());
+            assert_eq!(response.status(), 500);
+        }
     }
 
     #[tokio::test]
     #[traced_test]
     async fn test_retry_policy_timeout() {
-        // Arrange
-        let server = MockServer::start();
-        let mock = server.mock(|when, then| {
-            when.method(GET).path("/data");
-            then.status(StatusCode::REQUEST_TIMEOUT.as_u16()).body("Request Timeout");
-        });
+        {
+            // Arrange
+            let server = MockServer::start();
+            let mock = server.mock(|when, then| {
+                when.method(GET).path("/data");
+                then.status(StatusCode::REQUEST_TIMEOUT.as_u16()).body("Request Timeout");
+            });
 
-        let retry_config = RetryConfig {
-            num_retries: 2,
-            min_retry_interval_ms: 0,
-            max_retry_interval_ms: 3000,
-            strategy: DefaultRetryableStrategy,
-        };
-        let client = build_auth_http_client(&None, retry_config).unwrap();
+            let retry_config = RetryConfig {
+                num_retries: 2,
+                min_retry_interval_ms: 0,
+                max_retry_interval_ms: 3000,
+                strategy: DefaultRetryableStrategy,
+            };
+            let client = build_auth_http_client(&None, retry_config).unwrap();
 
-        // Act & Assert - should retry and log
-        let response = client.get(server.url("/data")).send().await.unwrap();
+            // Act & Assert - should retry and log
+            let response = client.get(server.url("/data")).send().await.unwrap();
 
-        // Assert
-        assert!(logs_contain("Status Code: 408. Retrying..."));
-        assert_eq!(3, mock.hits());
-        assert_eq!(response.status(), StatusCode::REQUEST_TIMEOUT);
+            // Assert
+            assert!(logs_contain("Status Code: 408. Retrying..."));
+            assert_eq!(3, mock.hits());
+            assert_eq!(response.status(), StatusCode::REQUEST_TIMEOUT);
+        }
+
+        {
+            // Arrange
+            let server = MockServer::start();
+            let mock = server.mock(|when, then| {
+                when.method(GET).path("/data");
+                then.status(StatusCode::REQUEST_TIMEOUT.as_u16()).body("Request Timeout");
+            });
+
+            let retry_config = RetryConfig {
+                num_retries: 2,
+                min_retry_interval_ms: 0,
+                max_retry_interval_ms: 3000,
+                strategy: No429RetryStratey,
+            };
+            let client = build_auth_http_client(&None, retry_config).unwrap();
+
+            // Act & Assert - should retry and log
+            let response = client.get(server.url("/data")).send().await.unwrap();
+
+            // Assert
+            assert!(logs_contain("Status Code: 408. Retrying..."));
+            assert_eq!(3, mock.hits());
+            assert_eq!(response.status(), StatusCode::REQUEST_TIMEOUT);
+        }
     }
 
     #[tokio::test]
     #[traced_test]
     async fn test_retry_policy_delay() {
+        {
+            // Arrange
+            let start_time = SystemTime::now();
+            let server = MockServer::start();
+            let mock = server.mock(|when, then| {
+                when.method(GET).path("/data");
+                then.status(StatusCode::INTERNAL_SERVER_ERROR.as_u16());
+            });
+
+            let retry_config = RetryConfig {
+                num_retries: 2,
+                min_retry_interval_ms: 1000,
+                max_retry_interval_ms: 6000,
+                strategy: DefaultRetryableStrategy,
+            };
+            let client = build_auth_http_client(&None, retry_config).unwrap();
+
+            // Act & Assert - should retry and log
+            let response = client.get(server.url("/data")).send().await.unwrap();
+
+            // Assert
+            assert!(logs_contain("Status Code: 500. Retrying..."));
+            assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+            assert_eq!(3, mock.hits());
+            assert!(start_time.elapsed().unwrap() > Duration::from_secs(0));
+        }
+
+        {
+            // Arrange
+            let start_time = SystemTime::now();
+            let server = MockServer::start();
+            let mock = server.mock(|when, then| {
+                when.method(GET).path("/data");
+                then.status(StatusCode::INTERNAL_SERVER_ERROR.as_u16());
+            });
+
+            let retry_config = RetryConfig {
+                num_retries: 2,
+                min_retry_interval_ms: 1000,
+                max_retry_interval_ms: 6000,
+                strategy: No429RetryStratey,
+            };
+            let client = build_auth_http_client(&None, retry_config).unwrap();
+
+            // Act & Assert - should retry and log
+            let response = client.get(server.url("/data")).send().await.unwrap();
+
+            // Assert
+            assert!(logs_contain("Status Code: 500. Retrying..."));
+            assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+            assert_eq!(3, mock.hits());
+            assert!(start_time.elapsed().unwrap() > Duration::from_secs(0));
+        }
+    }
+
+    #[tokio::test]
+    #[traced_test]
+    async fn test_no_429_retry() {
         // Arrange
-        let start_time = SystemTime::now();
         let server = MockServer::start();
         let mock = server.mock(|when, then| {
             when.method(GET).path("/data");
-            then.status(StatusCode::INTERNAL_SERVER_ERROR.as_u16());
+            then.status(StatusCode::TOO_MANY_REQUESTS.as_u16());
         });
 
         let retry_config = RetryConfig {
-            num_retries: 2,
+            num_retries: 10,
             min_retry_interval_ms: 1000,
             max_retry_interval_ms: 6000,
-            strategy: DefaultRetryableStrategy,
+            strategy: No429RetryStratey,
         };
         let client = build_auth_http_client(&None, retry_config).unwrap();
 
@@ -332,9 +443,7 @@ mod tests {
         let response = client.get(server.url("/data")).send().await.unwrap();
 
         // Assert
-        assert!(logs_contain("Status Code: 500. Retrying..."));
-        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
-        assert_eq!(3, mock.hits());
-        assert!(start_time.elapsed().unwrap() > Duration::from_secs(0));
+        assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(1, mock.hits());
     }
 }
