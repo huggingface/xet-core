@@ -21,7 +21,7 @@ utils::configurable_constants! {
     ref MAX_CONCURRENT_FILE_INGESTION: usize = 8;
 
     /// The maximum number of files to download at one time.
-    ref MAX_CONCURRENT_DOWNLOADS : usize = 8;
+    ref MAX_CONCURRENT_DOWNLOADS : usize = 16;
 
     /// The maximum block size from a file to process at once.
     ref INGESTION_BLOCK_SIZE : usize = 8 * 1024 * 1024;

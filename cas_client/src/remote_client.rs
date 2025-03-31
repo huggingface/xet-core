@@ -1,9 +1,7 @@
-use std::cmp::{max, min};
 use std::collections::{HashMap, HashSet};
-use std::io::{Cursor, Write};
+use std::io::{Cursor, SeekFrom, Write};
 use std::path::PathBuf;
 use std::sync::Arc;
-
 use anyhow::anyhow;
 use async_trait::async_trait;
 use cas_object::{CasObject, CompressionScheme};
@@ -22,6 +20,8 @@ use mdb_shard::utils::shard_file_name;
 use merklehash::{HashedWrite, MerkleHash};
 use reqwest::{StatusCode, Url};
 use reqwest_middleware::ClientWithMiddleware;
+use tokio::fs::OpenOptions;
+use tokio::io::{AsyncSeekExt, AsyncWriteExt};
 use tracing::{debug, error, trace};
 use utils::auth::AuthConfig;
 use utils::progress::ProgressUpdater;
@@ -41,7 +41,7 @@ pub const PREFIX_DEFAULT: &str = "default";
 
 const NUM_RETRIES: usize = 5;
 const BASE_RETRY_DELAY_MS: u64 = 3000;
-const NUM_CONCURRENT_RANGE_GETS: usize = 8;
+const NUM_CONCURRENT_RANGE_GETS: usize = 16;
 
 type RangeDownloadSingleFlight = Arc<Group<(Vec<u8>, Vec<u32>), CasClientError>>;
 
@@ -142,7 +142,7 @@ impl ReconstructionClient for RemoteClient {
         &self,
         hash: &MerkleHash,
         byte_range: Option<FileRange>,
-        writer: &mut Box<dyn Write + Send>,
+        path: &PathBuf,
         progress_updater: Option<Arc<dyn ProgressUpdater>>,
     ) -> Result<u64> {
         // get manifest of xorbs to download, api call to CAS
@@ -155,13 +155,13 @@ impl ReconstructionClient for RemoteClient {
             fetch_info,
             manifest.offset_into_first_range,
             byte_range,
-            writer,
+            path,
             progress_updater,
         )
         .await
     }
 
-    async fn batch_get_file(&self, mut files: HashMap<MerkleHash, &mut Box<dyn Write + Send>>) -> Result<u64> {
+    async fn batch_get_file(&self, files: HashMap<MerkleHash, &PathBuf>) -> Result<u64> {
         let requested_file_ids = files.keys().cloned().collect::<HashSet<_>>();
         let manifest = self.batch_get_reconstruction(requested_file_ids.iter()).await?;
         let fetch_info = Arc::new(manifest.fetch_info);
@@ -176,9 +176,9 @@ impl ReconstructionClient for RemoteClient {
         // TODO: spawn threads to reconstruct each file
         let mut ret_size = 0;
         for (hash, terms) in manifest.files {
-            let w = files.get_mut(&(hash.into())).unwrap();
+            let f = *files.get(&(hash.into())).unwrap();
             ret_size += self
-                .reconstruct_file_to_writer(terms, fetch_info.clone(), 0, None, w, None)
+                .reconstruct_file_to_writer(terms, fetch_info.clone(), 0, None, f, None)
                 .await?;
         }
 
@@ -300,45 +300,90 @@ impl RemoteClient {
         fetch_info: Arc<HashMap<HexMerkleHash, Vec<CASReconstructionFetchInfo>>>,
         offset_into_first_range: u64,
         byte_range: Option<FileRange>,
-        writer: &mut Box<dyn Write + Send>,
+        path: &PathBuf,
         progress_updater: Option<Arc<dyn ProgressUpdater>>,
     ) -> Result<u64> {
+        let term_lengths = terms.iter().map(|x| x.unpacked_length as u64).collect::<Vec<_>>();
+        let mut file_range_per_term = vec![FileRange::default(); terms.len()];
+        for item in file_range_per_term.iter_mut() {
+            item.start = 0;
+            item.end = 0;
+        }
+        if let Some(byte_range) = &byte_range {
+            let mut current_offset = 0;
+            for (idx, (term_range, &length)) in file_range_per_term
+                .iter_mut()
+                .zip(term_lengths.iter())
+                .enumerate()
+            {
+                // FIXME I don't understand why the current logic does not take the start range into account
+                // term_range.start = if byte_range.start < current_offset + length && byte_range.start >= current_offset {
+                //     byte_range.start - current_offset
+                // } else {
+                //     0
+                // };
+                // Adjust the end based on whether the byte_range.end is within the current term.
+                term_range.end = if byte_range.end > current_offset && byte_range.end <= current_offset + length {
+                    byte_range.end - current_offset
+                } else {
+                    length
+                };
+
+                // For the first term, account for offset_into_first_range.
+                if idx == 0 {
+                    term_range.start += offset_into_first_range;
+                }
+
+                // Update the current offset for the next iteration.
+                current_offset += length;
+            }
+        } else {
+            for (term_range, &length) in file_range_per_term.iter_mut().zip(term_lengths.iter()) {
+                term_range.start = 0;
+                term_range.end = length;
+            }
+        }
+
         let total_len = if let Some(range) = byte_range {
             range.end - range.start
         } else {
-            terms.iter().fold(0, |acc, x| acc + x.unpacked_length as u64)
+            term_lengths.iter().sum()
         };
-
-        let futs_iter = terms.into_iter().map(|term| {
-            get_one_term(
+        let futs_iter = terms.into_iter().enumerate().map(async |(idx, term)| {
+            let fetch_info_clone = fetch_info.clone();
+            let mut file = OpenOptions::new().write(true).truncate(false).create(true).open(&path).await?;
+            let term_data = get_one_term(
                 self.http_client.clone(),
                 self.chunk_cache.clone(),
                 term,
-                fetch_info.clone(),
+                fetch_info_clone,
                 self.range_download_single_flight.clone(),
             )
+            .await
+            .log_error(format!("error fetching 1 term at index {idx}"))?;
+            let seek = file_range_per_term[..idx].iter().fold(0, |acc, x| acc + x.end - x.start);
+            let (start, end) = (file_range_per_term[idx].start as usize, file_range_per_term[idx].end as usize);
+            file.seek(SeekFrom::Start(seek)).await?;
+            file.write_all(&term_data[start..end]).await?;
+            Ok::<u64, CasClientError>((end - start) as u64)
         });
         let mut futs_buffered_enumerated =
             futures::stream::iter(futs_iter).buffered(NUM_CONCURRENT_RANGE_GETS).enumerate();
 
-        let mut remaining_len = total_len;
-        while let Some((term_idx, term_data_result)) = futs_buffered_enumerated.next().await {
-            let term_data = term_data_result.log_error(format!("error fetching 1 term at index {term_idx}"))?;
-            let start = if term_idx == 0 {
-                // use offset_into_first_range for the first term if needed
-                max(0, offset_into_first_range as usize)
-            } else {
-                0
-            };
-            let end: usize = min(remaining_len + start as u64, term_data.len() as u64) as usize;
-            writer.write_all(&term_data[start..end])?;
-            let len_written = (end - start) as u64;
-            remaining_len -= len_written;
-            progress_updater.as_ref().inspect(|updater| updater.update(len_written));
+        while let Some((idx, result)) = futs_buffered_enumerated.next().await {
+            match result {
+                Err(e) => {
+                    error!("error writing term {idx} to file: {e}");
+                    return Err(CasClientError::Other(format!("error writing term {idx} to file: {e}")));
+                },
+                Ok(d) => {
+                    if let Some(updater) = &progress_updater {
+                        updater.update(d);
+                    }
+                    debug!("wrote term {idx} to file");
+                },
+            }
         }
-
-        writer.flush()?;
-
         Ok(total_len)
     }
 }
@@ -628,7 +673,9 @@ mod tests {
 
     impl Write for ThreadSafeBuffer {
         fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-            self.inner.lock().map_err(|e| std::io::Error::other(format!("{e}")))?.write(buf)
+            //self.inner.lock().map_err(|e| std::io::Error::other(format!("{e}")))?.write(buf)
+            let mut inner = self.inner.lock().map_err(|e| std::io::Error::other(format!("{e}")))?;
+            std::io::Write::write(&mut *inner, buf)
         }
 
         fn flush(&mut self) -> std::io::Result<()> {
@@ -636,6 +683,7 @@ mod tests {
         }
     }
 
+    use std::io::Read;
     use std::sync::Mutex;
 
     use cas_object::test_utils::{build_cas_object, ChunkSize};
@@ -683,7 +731,7 @@ mod tests {
     }
 
     #[test]
-    fn test_reconstruct_file_to_writer() {
+    fn test_reconstruct_file_to_path() {
         struct TestCase {
             reconstruction_response: QueryReconstructionResponse,
             range: Option<FileRange>,
@@ -785,9 +833,11 @@ mod tests {
                 shard_cache_directory: "".into(),
             };
 
-            let v = ThreadSafeBuffer::default();
-            let mut writer: Box<dyn Write + Send> = Box::new(v.clone());
+            // create temporary file
+            let temp_file = tempfile::NamedTempFile::new().unwrap();
+            let path = temp_file.path().to_path_buf();
 
+            let path_cloned = path.clone();
             let resp = threadpool
                 .external_run_async_task(async move {
                     client
@@ -796,17 +846,21 @@ mod tests {
                             Arc::new(test.reconstruction_response.fetch_info),
                             test.reconstruction_response.offset_into_first_range,
                             test.range,
-                            &mut writer,
+                            &path_cloned,
                             None,
                         )
                         .await
                 })
                 .unwrap();
+            // read file to buffer
+            let mut file = std::fs::OpenOptions::new().read(true).write(false).open(path).unwrap();
+            let mut buf = vec![0; test.expected_len as usize];
+            file.read_exact(&mut buf).unwrap();
 
             assert_eq!(test.expect_error, resp.is_err());
             if !test.expect_error {
                 assert_eq!(test.expected_len, resp.unwrap());
-                assert_eq!(vec![1; test.expected_len as usize], v.value());
+                assert_eq!(vec![1; test.expected_len as usize], buf);
             }
         }
     }

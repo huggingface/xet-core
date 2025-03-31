@@ -15,6 +15,8 @@ use mdb_shard::{MDBShardFile, MDBShardInfo, ShardFileManager};
 use merkledb::aggregate_hashes::with_salt;
 use merklehash::MerkleHash;
 use tempfile::TempDir;
+use tokio::fs::OpenOptions;
+use tokio::io::AsyncWriteExt;
 use tokio::runtime::Handle;
 use tracing::{debug, error, info, warn};
 use utils::progress::ProgressUpdater;
@@ -399,7 +401,7 @@ impl ReconstructionClient for LocalClient {
         &self,
         hash: &MerkleHash,
         byte_range: Option<FileRange>,
-        writer: &mut Box<dyn Write + Send>,
+        path: &PathBuf,
         _progress_updater: Option<Arc<dyn ProgressUpdater>>,
     ) -> Result<u64> {
         let Some((file_info, _)) = self
@@ -428,7 +430,8 @@ impl ReconstructionClient for LocalClient {
             .unwrap_or(file_vec.len())
             .min(file_vec.len());
 
-        writer.write_all(&file_vec[start..end])?;
+        let mut file = OpenOptions::new().write(true).truncate(false).create(true).open(&path).await?;
+        file.write_all(&file_vec[start..end]).await?;
 
         Ok((end - start) as u64)
     }

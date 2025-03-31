@@ -1,5 +1,5 @@
 use std::fs::File;
-use std::io::{BufReader, BufWriter, Read, Write};
+use std::io::{BufReader, Read, Write};
 use std::path::PathBuf;
 use std::sync::{Arc, OnceLock};
 
@@ -114,17 +114,13 @@ async fn smudge_file(arg: &SmudgeArg) -> Result<()> {
         Some(path) => Box::new(File::open(path)?),
         None => Box::new(std::io::stdin()),
     };
-    let mut writer: Box<dyn Write + Send> =
-        Box::new(BufWriter::new(File::options().create(true).write(true).truncate(true).open(&arg.dest)?));
 
-    smudge(reader, &mut writer).await?;
-
-    writer.flush()?;
+    smudge(reader, &arg.dest).await?;
 
     Ok(())
 }
 
-async fn smudge(mut reader: impl Read, writer: &mut Box<dyn Write + Send>) -> Result<()> {
+async fn smudge(mut reader: impl Read, path: &PathBuf) -> Result<()> {
     let mut input = String::new();
     reader.read_to_string(&mut input)?;
 
@@ -138,7 +134,7 @@ async fn smudge(mut reader: impl Read, writer: &mut Box<dyn Write + Send>) -> Re
     let downloader =
         FileDownloader::new(TranslatorConfig::local_config(std::env::current_dir()?)?, get_threadpool()).await?;
 
-    downloader.smudge_file_from_pointer(&pointer_file, writer, None, None).await?;
+    downloader.smudge_file_from_pointer(&pointer_file, &path, None, None).await?;
 
     Ok(())
 }

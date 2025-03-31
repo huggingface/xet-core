@@ -1,7 +1,7 @@
 use std::env;
 use std::env::current_dir;
 use std::fs::File;
-use std::io::{Read, Write};
+use std::io::{Read};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -200,9 +200,8 @@ async fn smudge_file(
     if let Some(parent_dir) = path.parent() {
         std::fs::create_dir_all(parent_dir)?;
     }
-    let mut f: Box<dyn Write + Send> = Box::new(File::create(&path)?);
     downloader
-        .smudge_file_from_pointer(pointer_file, &mut f, None, progress_updater)
+        .smudge_file_from_pointer(pointer_file, &path, None, progress_updater)
         .await?;
     Ok(pointer_file.path().to_string())
 }
