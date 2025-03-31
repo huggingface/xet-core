@@ -295,7 +295,6 @@ impl FileUploadSession {
 
 #[cfg(test)]
 mod tests {
-
     use std::fs::{File, OpenOptions};
     use std::io::{Read, Write};
     use std::path::Path;
@@ -350,14 +349,7 @@ mod tests {
     /// * `output_path`: path to write the hydrated/original file
     async fn test_smudge_file(runtime: Arc<ThreadPool>, cas_path: &Path, pointer_path: &Path, output_path: &Path) {
         let mut reader = File::open(pointer_path).unwrap();
-        let writer: Box<dyn Write + Send + 'static> = Box::new(
-            OpenOptions::new()
-                .create(true)
-                .write(true)
-                .truncate(true)
-                .open(output_path)
-                .unwrap(),
-        );
+        let writer = WriteProvider::File(FileWriteProvider::new(output_path.to_path_buf()));
 
         let mut input = String::new();
         reader.read_to_string(&mut input).unwrap();
@@ -373,17 +365,19 @@ mod tests {
             .unwrap();
 
         translator
-            .smudge_file_from_pointer(&pointer_file, &mut (Box::new(writer) as Box<dyn Write + Send>), None, None)
+            .smudge_file_from_pointer(&pointer_file, &writer, None, None)
             .await
             .unwrap();
     }
 
     use std::fs::{read, write};
 
+    use cas_client::{FileWriteProvider, WriteProvider};
     use tempfile::tempdir;
 
     /// Unit tests
     use super::*;
+
 
     #[test]
     fn test_clean_smudge_round_trip() {

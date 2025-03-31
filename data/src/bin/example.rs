@@ -1,9 +1,10 @@
 use std::fs::File;
-use std::io::{BufReader, BufWriter, Read, Write};
+use std::io::{BufReader, Read, Write};
 use std::path::PathBuf;
 use std::sync::{Arc, OnceLock};
 
 use anyhow::Result;
+use cas_client::{FileWriteProvider, WriteProvider};
 use clap::{Args, Parser, Subcommand};
 use data::configurations::*;
 use data::{FileDownloader, FileUploadSession, PointerFile};
@@ -114,17 +115,16 @@ async fn smudge_file(arg: &SmudgeArg) -> Result<()> {
         Some(path) => Box::new(File::open(path)?),
         None => Box::new(std::io::stdin()),
     };
-    let mut writer: Box<dyn Write + Send> =
-        Box::new(BufWriter::new(File::options().create(true).write(true).truncate(true).open(&arg.dest)?));
 
-    smudge(reader, &mut writer).await?;
+    let writer = WriteProvider::File(FileWriteProvider::new(arg.dest.clone()));
+    smudge(reader, &writer).await?;
 
-    writer.flush()?;
+    // writer.flush()?;
 
     Ok(())
 }
 
-async fn smudge(mut reader: impl Read, writer: &mut Box<dyn Write + Send>) -> Result<()> {
+async fn smudge(mut reader: impl Read, writer: &WriteProvider) -> Result<()> {
     let mut input = String::new();
     reader.read_to_string(&mut input)?;
 

@@ -1,7 +1,6 @@
-use std::io::Write;
 use std::sync::Arc;
 
-use cas_client::Client;
+use cas_client::{Client, WriteProvider};
 use cas_types::FileRange;
 use merklehash::MerkleHash;
 use utils::progress::ProgressUpdater;
@@ -34,7 +33,7 @@ impl FileDownloader {
     pub async fn smudge_file_from_pointer(
         &self,
         pointer: &PointerFile,
-        writer: &mut Box<dyn Write + Send>,
+        writer: &WriteProvider,
         range: Option<FileRange>,
         progress_updater: Option<Arc<dyn ProgressUpdater>>,
     ) -> Result<u64> {
@@ -45,7 +44,7 @@ impl FileDownloader {
     pub async fn smudge_file_from_hash(
         &self,
         file_id: &MerkleHash,
-        writer: &mut Box<dyn Write + Send>,
+        writer: &WriteProvider,
         range: Option<FileRange>,
         progress_updater: Option<Arc<dyn ProgressUpdater>>,
     ) -> Result<u64> {
@@ -56,4 +55,10 @@ impl FileDownloader {
 
         Ok(n_bytes)
     }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn test_smudge_file_from_pointer() {}
 }

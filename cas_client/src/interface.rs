@@ -1,5 +1,6 @@
 use std::collections::HashMap;
-use std::io::Write;
+use std::fs::{File, OpenOptions};
+use std::io::{Seek, SeekFrom, Write};
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -44,12 +45,12 @@ pub trait UploadClient {
 /// pointer file based on FileID (MerkleHash).
 ///
 /// To simplify this crate, it is intentional that the client does not create its own http_client or
-/// spawn its own threads. Instead, it is expected to be given the parallism harness/threadpool/queue
+/// spawn its own threads. Instead, it is expected to be given the parallelism harness/threadpool/queue
 /// on which it is expected to run. This allows the caller to better optimize overall system utilization
 /// by controlling the number of concurrent requests.
 #[async_trait]
 pub trait ReconstructionClient {
-    /// Get a entire file by file hash with an optional bytes range.
+    /// Get an entire file by file hash with an optional bytes range.
     ///
     /// The http_client passed in is a non-authenticated client. This is used to directly communicate
     /// with the backing store (S3) to retrieve xorbs.
@@ -57,17 +58,57 @@ pub trait ReconstructionClient {
         &self,
         hash: &MerkleHash,
         byte_range: Option<FileRange>,
-        writer: &mut Box<dyn Write + Send>,
+        writer: &WriteProvider,
         progress_updater: Option<Arc<dyn ProgressUpdater>>,
     ) -> Result<u64>;
 
-    async fn batch_get_file(&self, files: HashMap<MerkleHash, &mut Box<dyn Write + Send>>) -> Result<u64> {
+    async fn batch_get_file(&self, files: HashMap<MerkleHash, &WriteProvider>) -> Result<u64> {
         let mut n_bytes = 0;
         // Provide the basic naive implementation as a default.
         for (h, w) in files {
             n_bytes += self.get_file(&h, None, w, None).await?;
         }
         Ok(n_bytes)
+    }
+}
+
+/// Enum of different output formats to write reconstructed files to.
+#[derive(Debug, Clone)]
+pub enum WriteProvider {
+    File(FileWriteProvider),
+    #[cfg(test)]
+    Buffer(buffer::BufferProvider),
+}
+
+impl WriteProvider {
+    /// Create a new writer to start writing at the indicated start location.
+    pub(crate) fn get_writer_at(&self, start: u64) -> Result<Box<dyn Write + Send>> {
+        match self {
+            WriteProvider::File(fp) => fp.get_writer_at(start).map(|x| Box::new(x) as Box<dyn Write + Send>),
+            #[cfg(test)]
+            WriteProvider::Buffer(bp) => bp.get_writer_at(start).map(|x| Box::new(x) as Box<dyn Write + Send>),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct FileWriteProvider {
+    filename: PathBuf,
+}
+
+impl FileWriteProvider {
+    pub fn new(filename: PathBuf) -> Self {
+        Self { filename }
+    }
+
+    fn get_writer_at(&self, start: u64) -> Result<File> {
+        let mut file = OpenOptions::new()
+            .write(true)
+            .truncate(false)
+            .create(true)
+            .open(&self.filename)?;
+        file.seek(SeekFrom::Start(start))?;
+        Ok(file)
     }
 }
 
@@ -119,3 +160,45 @@ pub trait ShardClientInterface:
 }
 
 pub trait Client: UploadClient + ReconstructionClient + ShardClientInterface {}
+
+#[cfg(test)]
+pub mod buffer {
+    use std::io::Cursor;
+    use std::sync::Mutex;
+
+    use super::*;
+
+    #[derive(Debug, Default, Clone)]
+    pub struct BufferProvider {
+        pub buf: ThreadSafeBuffer,
+    }
+
+    impl BufferProvider {
+        pub fn get_writer_at(&self, _start: u64) -> Result<ThreadSafeBuffer> {
+            Ok(self.buf.clone()) // TODO: fix tests once we start writing in parallel
+        }
+    }
+
+    #[derive(Debug, Default, Clone)]
+    /// Thread-safe in-memory buffer that implements [Write](Write) trait and allows
+    /// access to inner buffer
+    pub struct ThreadSafeBuffer {
+        inner: Arc<Mutex<Cursor<Vec<u8>>>>,
+    }
+
+    impl ThreadSafeBuffer {
+        pub fn value(&self) -> Vec<u8> {
+            self.inner.lock().unwrap().get_ref().clone()
+        }
+    }
+
+    impl Write for ThreadSafeBuffer {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.inner.lock().map_err(|e| std::io::Error::other(format!("{e}")))?.write(buf)
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+}

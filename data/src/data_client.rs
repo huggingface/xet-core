@@ -1,12 +1,12 @@
 use std::env;
 use std::env::current_dir;
 use std::fs::File;
-use std::io::{Read, Write};
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use cas_client::remote_client::PREFIX_DEFAULT;
-use cas_client::CacheConfig;
+use cas_client::{CacheConfig, FileWriteProvider, WriteProvider};
 use cas_object::CompressionScheme;
 use deduplication::DeduplicationMetrics;
 use dirs::home_dir;
@@ -200,9 +200,9 @@ async fn smudge_file(
     if let Some(parent_dir) = path.parent() {
         std::fs::create_dir_all(parent_dir)?;
     }
-    let mut f: Box<dyn Write + Send> = Box::new(File::create(&path)?);
+    let f = WriteProvider::File(FileWriteProvider::new(path));
     downloader
-        .smudge_file_from_pointer(pointer_file, &mut f, None, progress_updater)
+        .smudge_file_from_pointer(pointer_file, &f, None, progress_updater)
         .await?;
     Ok(pointer_file.path().to_string())
 }

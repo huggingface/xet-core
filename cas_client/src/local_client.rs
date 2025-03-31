@@ -20,7 +20,7 @@ use tracing::{debug, error, info, warn};
 use utils::progress::ProgressUpdater;
 
 use crate::error::{CasClientError, Result};
-use crate::interface::{ShardDedupProber, UploadClient};
+use crate::interface::{ShardDedupProber, UploadClient, WriteProvider};
 use crate::{Client, ReconstructionClient, RegistrationClient, ShardClientInterface};
 
 pub struct LocalClient {
@@ -399,7 +399,7 @@ impl ReconstructionClient for LocalClient {
         &self,
         hash: &MerkleHash,
         byte_range: Option<FileRange>,
-        writer: &mut Box<dyn Write + Send>,
+        writer: &WriteProvider,
         _progress_updater: Option<Arc<dyn ProgressUpdater>>,
     ) -> Result<u64> {
         let Some((file_info, _)) = self
@@ -410,6 +410,7 @@ impl ReconstructionClient for LocalClient {
         else {
             return Err(CasClientError::FileNotFound(*hash));
         };
+        let mut writer = writer.get_writer_at(0)?;
 
         // This is just used for testing, so inefficient is fine.
         let mut file_vec = Vec::new();
@@ -444,7 +445,6 @@ fn map_heed_db_error(e: heed::Error) -> CasClientError {
 
 #[cfg(test)]
 mod tests {
-
     use cas_object::test_utils::*;
     use cas_object::CompressionScheme::LZ4;
     use mdb_shard::utils::parse_shard_filename;

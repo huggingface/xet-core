@@ -142,7 +142,7 @@ impl ReconstructionClient for RemoteClient {
         &self,
         hash: &MerkleHash,
         byte_range: Option<FileRange>,
-        writer: &mut Box<dyn Write + Send>,
+        writer: &WriteProvider,
         progress_updater: Option<Arc<dyn ProgressUpdater>>,
     ) -> Result<u64> {
         // get manifest of xorbs to download, api call to CAS
@@ -161,7 +161,7 @@ impl ReconstructionClient for RemoteClient {
         .await
     }
 
-    async fn batch_get_file(&self, mut files: HashMap<MerkleHash, &mut Box<dyn Write + Send>>) -> Result<u64> {
+    async fn batch_get_file(&self, files: HashMap<MerkleHash, &WriteProvider>) -> Result<u64> {
         let requested_file_ids = files.keys().cloned().collect::<HashSet<_>>();
         let manifest = self.batch_get_reconstruction(requested_file_ids.iter()).await?;
         let fetch_info = Arc::new(manifest.fetch_info);
@@ -176,9 +176,9 @@ impl ReconstructionClient for RemoteClient {
         // TODO: spawn threads to reconstruct each file
         let mut ret_size = 0;
         for (hash, terms) in manifest.files {
-            let w = files.get_mut(&(hash.into())).unwrap();
+            let w = files.get(&(hash.into())).unwrap();
             ret_size += self
-                .reconstruct_file_to_writer(terms, fetch_info.clone(), 0, None, w, None)
+                .reconstruct_file_to_writer(terms, fetch_info.clone(), 0, None, *w, None)
                 .await?;
         }
 
@@ -300,7 +300,7 @@ impl RemoteClient {
         fetch_info: Arc<HashMap<HexMerkleHash, Vec<CASReconstructionFetchInfo>>>,
         offset_into_first_range: u64,
         byte_range: Option<FileRange>,
-        writer: &mut Box<dyn Write + Send>,
+        writer: &WriteProvider,
         progress_updater: Option<Arc<dyn ProgressUpdater>>,
     ) -> Result<u64> {
         let total_len = if let Some(range) = byte_range {
@@ -308,6 +308,7 @@ impl RemoteClient {
         } else {
             terms.iter().fold(0, |acc, x| acc + x.unpacked_length as u64)
         };
+        let mut writer = writer.get_writer_at(0)?;
 
         let futs_iter = terms.into_iter().map(|term| {
             get_one_term(
@@ -612,38 +613,13 @@ impl ShardClientInterface for RemoteClient {}
 
 #[cfg(test)]
 mod tests {
-
-    #[derive(Debug, Default, Clone)]
-    /// Thread-safe in-memory buffer that implements [Write](std::io::Write) trait and allows
-    /// access to inner buffer
-    pub struct ThreadSafeBuffer {
-        inner: Arc<Mutex<Cursor<Vec<u8>>>>,
-    }
-
-    impl ThreadSafeBuffer {
-        pub fn value(&self) -> Vec<u8> {
-            self.inner.lock().unwrap().get_ref().clone()
-        }
-    }
-
-    impl Write for ThreadSafeBuffer {
-        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-            self.inner.lock().map_err(|e| std::io::Error::other(format!("{e}")))?.write(buf)
-        }
-
-        fn flush(&mut self) -> std::io::Result<()> {
-            Ok(())
-        }
-    }
-
-    use std::sync::Mutex;
-
     use cas_object::test_utils::{build_cas_object, ChunkSize};
     use cas_types::ChunkRange;
     use chunk_cache::MockChunkCache;
     use tracing_test::traced_test;
 
     use super::*;
+    use crate::interface::buffer::BufferProvider;
 
     // test reconstruction contains 20 chunks, where each chunk size is 10 bytes
     const TEST_CHUNK_RANGE: ChunkRange = ChunkRange {
@@ -785,8 +761,9 @@ mod tests {
                 shard_cache_directory: "".into(),
             };
 
-            let v = ThreadSafeBuffer::default();
-            let mut writer: Box<dyn Write + Send> = Box::new(v.clone());
+            let provider = BufferProvider::default();
+            let buf = provider.buf.clone();
+            let writer = WriteProvider::Buffer(provider);
 
             let resp = threadpool
                 .external_run_async_task(async move {
@@ -796,7 +773,7 @@ mod tests {
                             Arc::new(test.reconstruction_response.fetch_info),
                             test.reconstruction_response.offset_into_first_range,
                             test.range,
-                            &mut writer,
+                            &writer,
                             None,
                         )
                         .await
@@ -806,7 +783,7 @@ mod tests {
             assert_eq!(test.expect_error, resp.is_err());
             if !test.expect_error {
                 assert_eq!(test.expected_len, resp.unwrap());
-                assert_eq!(vec![1; test.expected_len as usize], v.value());
+                assert_eq!(vec![1; test.expected_len as usize], buf.value());
             }
         }
     }
