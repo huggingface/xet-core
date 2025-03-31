@@ -142,7 +142,7 @@ impl FileUploadSession {
     }
 
     pub(crate) async fn register_new_xorb_for_upload(self: &Arc<Self>, xorb: RawXorbData) -> Result<()> {
-        // First check the current xorb upload tasks to see if they
+        // First check the current xorb upload tasks to see if any can be cleaned up.
         {
             let mut upload_tasks = self.xorb_upload_tasks.lock().await;
             while let Some(result) = upload_tasks.try_join_next() {
