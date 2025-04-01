@@ -941,12 +941,13 @@ mod tests {
                 .expect_get()
                 .returning(|_, range| Ok(Some(vec![1; (range.end - range.start) as usize * TEST_CHUNK_SIZE])));
 
-            let http_client = Arc::new(http_client::build_http_client(&None).unwrap());
+            let http_client = Arc::new(http_client::build_http_client(RetryConfig::default()).unwrap());
 
             let threadpool = Arc::new(ThreadPool::new().unwrap());
             let client = RemoteClient {
                 chunk_cache: Some(Arc::new(chunk_cache)),
                 authenticated_http_client: http_client.clone(),
+                conservative_authenticated_http_client: http_client.clone(),
                 http_client,
                 endpoint: "".to_string(),
                 compression: Some(CompressionScheme::LZ4),
