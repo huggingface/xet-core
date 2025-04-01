@@ -7,11 +7,7 @@
 	"types": "dist/index.d.ts",
 	"files": [
 		"dist/**/*.js",
-		"dist/**/*.d.ts",
-		"pkg/**/*.js",
-		"pkg/**/*.d.ts",
-		"pkg/**/*.wasm",
-		"pkg/**/*.wasm.d.ts"
+		"dist/**/*.d.ts"
 	],
 	"keywords": [
 		"huggingface",
@@ -28,6 +24,9 @@
 		"build:typescript": "tsc -b --pretty -v",
 		"build": "npm run build:wasm-pack && npm run build:typescript",
 		"package": "npm pack"
+	},
+	"dependencies": {
+		"hf_xet_js": "./pkg"
 	},
 	"devDependencies": {
 		"@eslint/eslintrc": "^3.3.1",

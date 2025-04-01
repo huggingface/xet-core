@@ -1,3 +1,4 @@
+use std::convert::Into;
 use merklehash::MerkleHash;
 use serde::{Deserialize, Serialize};
 use wasm_bindgen::prelude::*;
@@ -19,5 +20,23 @@ impl PointerFile {
             size,
             sha256,
         }
+    }
+}
+
+#[wasm_bindgen]
+impl PointerFile {
+    #[wasm_bindgen(getter)]
+    pub fn hash(&self) -> JsValue {
+        JsValue::from(self.hash.to_string())
+    }
+
+    #[wasm_bindgen(getter)]
+    pub fn size(&self) -> JsValue {
+        JsValue::from(self.size)
+    }
+
+    #[wasm_bindgen(getter)]
+    pub fn sha256(&self) -> JsValue {
+        JsValue::from(self.sha256.to_string())
     }
 }

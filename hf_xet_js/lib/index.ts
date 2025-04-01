@@ -1,6 +1,5 @@
-import { upload_async, download_async, PointerFile } from "../pkg/hf_xet_js";
+import { upload_async, download_async, PointerFile as WasmPointerFile } from "hf_xet_js";
 
-export { PointerFile } from "../pkg/hf_xet_js";
 
 type TokenType = "write" | "read";
 type RepoType = "model" | "dataset" | "space";
@@ -15,8 +14,9 @@ class TokenInfo {
 	constructor(
 		private readonly _token: string,
 		private readonly _endpoint: string,
-		private readonly _expiry: BigInt
-	) {}
+		private readonly _expiry: BigInt,
+	) {
+	}
 
 	public get token() {
 		return this._token;
@@ -45,7 +45,7 @@ class TokenRefresher {
 		repo_id: string,
 		hub_token: string,
 		token_type: TokenType,
-		revision: string
+		revision: string,
 	) {
 		this.endpoint = endpoint;
 		this.repo_type = repo_type;
@@ -60,7 +60,6 @@ class TokenRefresher {
 		let token_response: Response;
 		try {
 			token_response = await fetch(url, { headers: this.headers });
-			console.log(token_response);
 		} catch (e) {
 			console.error(`error refreshing token: ${e}`);
 			throw e;
@@ -68,30 +67,38 @@ class TokenRefresher {
 		let response_headers = token_response.headers;
 		const cas_endpoint: string = response_headers.get(HUGGINGFACE_HEADER_X_XET_ENDPOINT) ?? "";
 		const token: string = response_headers.get(HUGGINGFACE_HEADER_X_XET_ACCESS_TOKEN) ?? "";
-		const expiry: number = parseInt(response_headers.get(HUGGINGFACE_HEADER_X_XET_EXPIRATION) ?? "");
-		console.log(`expiry ${expiry}`);
+		const expiry: number = parseInt(response_headers.get(HUGGINGFACE_HEADER_X_XET_EXPIRATION) ?? "") ?? 0;
 
 		return new TokenInfo(token, cas_endpoint, BigInt(isNaN(expiry) ? 0 : expiry));
 	}
 }
 
-export async function upload_xet_files(repo_type: RepoType, repo_id: string, files: Blob[]): Promise<PointerFile[]> {
-	const token_refresher = new TokenRefresher(
+export class PointerFile {
+	constructor(public readonly hash: string, public readonly size: number, public readonly sha256: string) {
+	}
+}
+
+function convertPointerFile(pf: WasmPointerFile): PointerFile {
+	return new PointerFile(pf.hash, pf.size, pf.sha256);
+}
+
+export async function uploadXetFiles(repoType: RepoType, repoId: string, files: Blob[]): Promise<PointerFile[]> {
+	const tokenRefresher = new TokenRefresher(
 		"https://huggingface.co",
-		repo_type,
-		repo_id,
+		repoType,
+		repoId,
 		"hub_token_TODO",
 		"write",
-		"main"
+		"main",
 	);
-	let token_info = await token_refresher.refresh_token();
-	return await upload_async(files, token_info, token_refresher);
+	let initialTokenInfo = await tokenRefresher.refresh_token();
+	return await upload_async(files, initialTokenInfo, tokenRefresher);
 }
 
 export async function download_xet_files(
 	repo_type: RepoType,
 	repo_id: string,
-	pointer_files: PointerFile[]
+	pointer_files: PointerFile[],
 ): Promise<Blob[]> {
 	const token_refresher = new TokenRefresher(
 		"https://huggingface.co",
@@ -99,7 +106,7 @@ export async function download_xet_files(
 		repo_id,
 		"hub_token_TODO",
 		"read",
-		"main"
+		"main",
 	);
 	let token_info = await token_refresher.refresh_token();
 

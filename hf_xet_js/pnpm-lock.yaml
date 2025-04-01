@@ -7,6 +7,10 @@ settings:
 importers:
 
   .:
+    dependencies:
+      hf_xet_js:
+        specifier: ./pkg
+        version: link:pkg
     devDependencies:
       '@eslint/eslintrc':
         specifier: ^3.3.1
