@@ -1,4 +1,3 @@
-use std::env;
 use std::fs::File;
 use std::io::{BufWriter, Write};
 use std::path::PathBuf;
@@ -107,7 +106,7 @@ struct DedupArg {
 #[derive(Args)]
 struct QueryArg {
     /// Xet-hash of a file
-    #[clap(short, long)]
+    #[clap(long)]
     hash: String,
     #[clap(short, long)]
     repo_id: String,
@@ -158,13 +157,6 @@ impl Command {
             Command::Query(arg) => {
                 let path = arg.output.unwrap_or_else(|| PathBuf::from(format!("file-{}", arg.hash)));
 
-                let hub_client = HubClient {
-                    endpoint: "https://huggingface.co".to_string(),
-                    token: env::var("TOKEN")?,
-                    repo_type: arg.repo_type,
-                    repo_id: arg.repo_id,
-                    client: build_http_client(&None)?,
-                };
                 let token_type = "write";
                 let (endpoint, jwt_token, jwt_token_expiry) = hub_client.get_jwt_token(token_type).await?;
                 let token_refresher = Arc::new(HubClientTokenRefresher {
