@@ -314,12 +314,6 @@ impl RemoteClient {
         if let Some(byte_range) = &byte_range {
             let mut current_offset = 0;
             for (idx, (term_range, &length)) in file_range_per_term.iter_mut().zip(term_lengths.iter()).enumerate() {
-                // FIXME I don't understand why the current logic does not take the start range into account
-                // term_range.start = if byte_range.start < current_offset + length && byte_range.start >=
-                // current_offset {     byte_range.start - current_offset
-                // } else {
-                //     0
-                // };
                 // Adjust the end based on whether the byte_range.end is within the current term.
                 term_range.end = if byte_range.end > current_offset && byte_range.end <= current_offset + length {
                     byte_range.end - current_offset
