@@ -6,8 +6,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use anyhow::Result;
-use cas_client::OutputProvider::File;
-use cas_client::{build_http_client, FileProvider};
+use cas_client::{build_http_client, FileProvider, OutputProvider};
 use cas_object::CompressionScheme;
 use clap::{Args, Parser, Subcommand};
 use data::data_client::default_config;
@@ -180,7 +179,7 @@ impl Command {
 
                 let downloader = FileDownloader::new(config, threadpool).await?;
                 let hash = MerkleHash::from_hex(&arg.hash)?;
-                let out = File(FileProvider::new(path));
+                let out = OutputProvider::File(FileProvider::new(path));
                 println!("Smudge: {hash:?}");
                 let start = Instant::now();
                 let bytes_read = downloader.smudge_file_from_hash(&hash, &out, None, None).await?;
