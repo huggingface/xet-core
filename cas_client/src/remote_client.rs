@@ -3,7 +3,7 @@ use std::io::{Cursor, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use anyhow::anyhow;
+use anyhow::{anyhow};
 use async_trait::async_trait;
 use cas_object::{CasObject, CompressionScheme};
 use cas_types::{
@@ -24,6 +24,7 @@ use reqwest::{StatusCode, Url};
 use reqwest_middleware::ClientWithMiddleware;
 use tokio::fs::OpenOptions;
 use tokio::io::{AsyncSeekExt, AsyncWriteExt};
+use tokio::sync::Semaphore;
 use tracing::{debug, error, trace};
 use utils::auth::AuthConfig;
 use utils::progress::ProgressUpdater;
@@ -341,6 +342,7 @@ impl RemoteClient {
         } else {
             term_lengths.iter().sum()
         };
+        let semaphore = Arc::new(Semaphore::new(NUM_CONCURRENT_RANGE_GETS));
         let futs_iter = terms.into_iter().enumerate().map(|(idx, term)| {
             let path_cloned = path.to_path_buf();
             let fetch_info_clone = fetch_info.clone();
@@ -348,7 +350,9 @@ impl RemoteClient {
             let http_client = self.http_client.clone();
             let chunk_cache = self.chunk_cache.clone();
             let range_download_single_flight = self.range_download_single_flight.clone();
+            let semaphore = semaphore.clone();
             async move {
+                let _permit = semaphore.acquire_owned().await.map_err(|_| CasClientError::InternalError(anyhow!("Unable to acquire lock to download term.")))?;
                 let mut file = OpenOptions::new()
                     .write(true)
                     .truncate(false)
