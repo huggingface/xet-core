@@ -175,15 +175,18 @@ pub mod buffer {
     }
 
     impl BufferProvider {
-        pub fn get_writer_at(&self, _start: u64) -> Result<Box<dyn Write + Send>> {
-            Ok(Box::new(self.buf.clone()))
+        pub fn get_writer_at(&self, start: u64) -> Result<Box<dyn Write + Send>> {
+            let mut buffer = self.buf.clone();
+            buffer.idx = start;
+            Ok(Box::new(buffer))
         }
     }
 
     #[derive(Debug, Default, Clone)]
-    /// Thread-safe in-memory buffer that implements [Write](Write) trait and allows
-    /// access to inner buffer
+    /// Thread-safe in-memory buffer that implements [Write](Write) trait at some position
+    /// within an underlying buffer and allows access to inner buffer.
     pub struct ThreadSafeBuffer {
+        idx: u64,
         inner: Arc<Mutex<Cursor<Vec<u8>>>>,
     }
 
@@ -195,7 +198,11 @@ pub mod buffer {
 
     impl Write for ThreadSafeBuffer {
         fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-            self.inner.lock().map_err(|e| std::io::Error::other(format!("{e}")))?.write(buf)
+            let mut guard = self.inner.lock().map_err(|e| std::io::Error::other(format!("{e}")))?;
+            guard.set_position(self.idx);
+            let num_written = guard.write(buf)?;
+            self.idx = guard.position();
+            Ok(num_written)
         }
 
         fn flush(&mut self) -> std::io::Result<()> {
