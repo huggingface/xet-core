@@ -109,10 +109,6 @@ struct QueryArg {
     #[clap(long)]
     hash: String,
     #[clap(short, long)]
-    repo_id: String,
-    #[clap(short, long)]
-    repo_type: String,
-    #[clap(short, long)]
     output: Option<PathBuf>,
 }
 
@@ -157,7 +153,7 @@ impl Command {
             Command::Query(arg) => {
                 let path = arg.output.unwrap_or_else(|| PathBuf::from(format!("file-{}", arg.hash)));
 
-                let token_type = "write";
+                let token_type = "read";
                 let (endpoint, jwt_token, jwt_token_expiry) = hub_client.get_jwt_token(token_type).await?;
                 let token_refresher = Arc::new(HubClientTokenRefresher {
                     threadpool: threadpool.clone(),
