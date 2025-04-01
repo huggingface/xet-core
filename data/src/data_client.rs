@@ -2,6 +2,7 @@ use std::env;
 use std::env::current_dir;
 use std::fs::File;
 use std::io::{Read, Write};
+use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -12,7 +13,7 @@ use deduplication::DeduplicationMetrics;
 use dirs::home_dir;
 use parutils::{tokio_par_for_each, ParallelError};
 use utils::auth::{AuthConfig, TokenRefresher};
-use utils::progress::ProgressUpdater;
+use utils::progress::TrackingProgressUpdater;
 use xet_threadpool::ThreadPool;
 
 use crate::configurations::*;
@@ -99,7 +100,7 @@ pub async fn upload_async(
     endpoint: Option<String>,
     token_info: Option<(String, u64)>,
     token_refresher: Option<Arc<dyn TokenRefresher>>,
-    progress_updater: Option<Arc<dyn ProgressUpdater>>,
+    progress_updater: Option<Arc<dyn TrackingProgressUpdater>>,
 ) -> errors::Result<Vec<PointerFile>> {
     // chunk files
     // produce Xorbs + Shards
@@ -135,7 +136,7 @@ pub async fn download_async(
     endpoint: Option<String>,
     token_info: Option<(String, u64)>,
     token_refresher: Option<Arc<dyn TokenRefresher>>,
-    progress_updaters: Option<Vec<Arc<dyn ProgressUpdater>>>,
+    progress_updaters: Option<Vec<Arc<dyn TrackingProgressUpdater>>>,
 ) -> errors::Result<Vec<String>> {
     if let Some(updaters) = &progress_updaters {
         if updaters.len() != pointer_files.len() {
@@ -174,10 +175,10 @@ pub async fn clean_file(
 ) -> errors::Result<(PointerFile, DeduplicationMetrics)> {
     let mut reader = File::open(&filename)?;
 
-    let n = reader.metadata()?.len() as usize;
-    let mut buffer = vec![0u8; usize::min(n, *INGESTION_BLOCK_SIZE)];
+    let n = reader.metadata()?.size();
+    let mut buffer = vec![0u8; u64::min(n, *INGESTION_BLOCK_SIZE as u64) as usize];
 
-    let mut handle = processor.start_clean(filename.as_ref().to_string_lossy().into());
+    let mut handle = processor.start_clean(filename.as_ref().to_string_lossy().into(), n).await;
 
     loop {
         let bytes = reader.read(&mut buffer)?;
@@ -194,7 +195,7 @@ pub async fn clean_file(
 async fn smudge_file(
     downloader: &FileDownloader,
     pointer_file: &PointerFile,
-    progress_updater: Option<Arc<dyn ProgressUpdater>>,
+    progress_updater: Option<Arc<dyn TrackingProgressUpdater>>,
 ) -> errors::Result<String> {
     let path = PathBuf::from(pointer_file.path());
     if let Some(parent_dir) = path.parent() {

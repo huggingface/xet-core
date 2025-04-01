@@ -5,7 +5,7 @@ use pyo3::exceptions::PyTypeError;
 use pyo3::prelude::PyAnyMethods;
 use pyo3::{Py, PyAny, PyErr, PyResult, Python};
 use tracing::{error, trace};
-use utils::progress::ProgressUpdater;
+use utils::progress::{ProgressUpdate, TrackingProgressUpdater};
 
 /// A wrapper over a passed-in python function to update
 /// the python process of some download/upload progress
@@ -49,18 +49,25 @@ impl WrappedProgressUpdater {
     }
 }
 
-impl ProgressUpdater for WrappedProgressUpdater {
-    fn update(&self, increment: u64) {
-        trace!("updating progress bar with increment value: {increment}");
+// TODO: This is now connected via the old interface, which doesn't account for any of the
+// per-file tracking information.
+impl TrackingProgressUpdater for WrappedProgressUpdater {
+    fn register_updates(&self, updates: &[ProgressUpdate]) {
         Python::with_gil(|py| {
             let f = self.py_func.bind(py);
             if !f.is_callable() {
                 error!("ProgressUpdater func: {} is not callable", self.name);
                 return;
             }
-            let _ = f
-                .call1((increment,))
-                .log_error("python exception trying to update progress bar");
+            for update in updates {
+                // TODO: Connect the full information in the ProgressUpdate struct to python.
+                let increment = update.update_increment;
+                trace!("updating progress bar with increment value: {increment}");
+
+                let _ = f
+                    .call1((increment,))
+                    .log_error("python exception trying to update progress bar");
+            }
         });
     }
 }

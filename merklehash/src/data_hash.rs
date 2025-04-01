@@ -10,7 +10,9 @@ use std::{fmt, str};
 // URL safe Base 64 encoding with ending characters removed.
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine as _;
-use safe_transmute::transmute_to_bytes;
+use rand::rngs::SmallRng;
+use rand::{RngCore, SeedableRng};
+use safe_transmute::{transmute_to_bytes, transmute_to_bytes_mut};
 use serde::{Deserialize, Serialize};
 
 /************************************************************************* */
@@ -203,6 +205,13 @@ impl DataHash {
         }
         Ok(hash)
     }
+
+    pub fn random_from_seed(seed: u64) -> Self {
+        let mut s = Self::default();
+        let mut rng = SmallRng::seed_from_u64(seed);
+        rng.fill_bytes(transmute_to_bytes_mut(&mut s.0[..]));
+        s
+    }
 }
 
 // Just use the same type here; rename for code legibility.
@@ -214,6 +223,11 @@ impl DataHash {
     pub fn hmac(&self, key: HMACKey) -> Self {
         // Use the blake 3 keyed hash method as the HMac
         Self::from(*blake3::keyed_hash(&key.into(), self.as_bytes()).as_bytes())
+    }
+
+    /// A marker struct of all 1 bits to use, as all zeros refers to the segment of zero bytes.
+    pub fn marker() -> Self {
+        DataHash([!0u64; 4])
     }
 }
 

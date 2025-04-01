@@ -7,7 +7,7 @@ use async_trait::async_trait;
 use cas_types::{FileRange, QueryReconstructionResponse};
 use mdb_shard::shard_file_reconstructor::FileReconstructor;
 use merklehash::MerkleHash;
-use utils::progress::ProgressUpdater;
+use utils::progress::SimpleProgressUpdater;
 
 use crate::error::Result;
 use crate::CasClientError;
@@ -58,7 +58,7 @@ pub trait ReconstructionClient {
         hash: &MerkleHash,
         byte_range: Option<FileRange>,
         writer: &mut Box<dyn Write + Send>,
-        progress_updater: Option<Arc<dyn ProgressUpdater>>,
+        progress_updater: Option<Arc<dyn SimpleProgressUpdater>>,
     ) -> Result<u64>;
 
     async fn batch_get_file(&self, files: HashMap<MerkleHash, &mut Box<dyn Write + Send>>) -> Result<u64> {

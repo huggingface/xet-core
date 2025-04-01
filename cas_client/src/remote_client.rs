@@ -24,7 +24,7 @@ use reqwest::{StatusCode, Url};
 use reqwest_middleware::ClientWithMiddleware;
 use tracing::{debug, error, trace};
 use utils::auth::AuthConfig;
-use utils::progress::ProgressUpdater;
+use utils::progress::SimpleProgressUpdater;
 use utils::singleflight::Group;
 use xet_threadpool::ThreadPool;
 
@@ -143,7 +143,7 @@ impl ReconstructionClient for RemoteClient {
         hash: &MerkleHash,
         byte_range: Option<FileRange>,
         writer: &mut Box<dyn Write + Send>,
-        progress_updater: Option<Arc<dyn ProgressUpdater>>,
+        progress_updater: Option<Arc<dyn SimpleProgressUpdater>>,
     ) -> Result<u64> {
         // get manifest of xorbs to download, api call to CAS
         let manifest = self.get_reconstruction(hash, byte_range.clone()).await?;
@@ -301,13 +301,15 @@ impl RemoteClient {
         offset_into_first_range: u64,
         byte_range: Option<FileRange>,
         writer: &mut Box<dyn Write + Send>,
-        progress_updater: Option<Arc<dyn ProgressUpdater>>,
+        progress_updater: Option<Arc<dyn SimpleProgressUpdater>>,
     ) -> Result<u64> {
         let total_len = if let Some(range) = byte_range {
             range.end - range.start
         } else {
             terms.iter().fold(0, |acc, x| acc + x.unpacked_length as u64)
         };
+
+        progress_updater.as_ref().inspect(|updater| updater.set_total(total_len));
 
         let futs_iter = terms.into_iter().map(|term| {
             get_one_term(

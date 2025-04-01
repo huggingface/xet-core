@@ -398,8 +398,8 @@ impl MDBShardFile {
             cas_index += 1 + ci.chunks.len();
         }
 
-        read_truncated_hashes.sort_by_key(|s| s.0);
-        truncated_hashes.sort_by_key(|s| s.0);
+        read_truncated_hashes.sort();
+        truncated_hashes.sort();
 
         assert_eq!(read_truncated_hashes, truncated_hashes);
     }

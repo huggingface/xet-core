@@ -1,5 +1,6 @@
 use std::fs::File;
-use std::io::{BufReader, BufWriter, Read, Write};
+use std::io::{BufWriter, Read, Write};
+use std::os::unix::fs::MetadataExt;
 use std::path::PathBuf;
 use std::sync::{Arc, OnceLock};
 
@@ -71,16 +72,18 @@ fn main() {
 }
 
 async fn clean_file(arg: &CleanArg) -> Result<()> {
-    let reader = BufReader::new(File::open(&arg.file)?);
+    let file_reader = File::open(&arg.file)?;
+    let file_size = file_reader.metadata()?.size();
+
     let writer: Box<dyn Write + Send> = match &arg.dest {
         Some(path) => Box::new(File::options().create(true).write(true).truncate(true).open(path)?),
         None => Box::new(std::io::stdout()),
     };
 
-    clean(reader, writer).await
+    clean(file_reader, writer, file_size).await
 }
 
-async fn clean(mut reader: impl Read, mut writer: impl Write) -> Result<()> {
+async fn clean(mut reader: impl Read, mut writer: impl Write, size: u64) -> Result<()> {
     const READ_BLOCK_SIZE: usize = 1024 * 1024;
 
     let mut read_buf = vec![0u8; READ_BLOCK_SIZE];
@@ -89,7 +92,9 @@ async fn clean(mut reader: impl Read, mut writer: impl Write) -> Result<()> {
         FileUploadSession::new(TranslatorConfig::local_config(std::env::current_dir()?)?, get_threadpool(), None)
             .await?;
 
-    let mut handle = translator.start_clean("".to_owned());
+    let mut handle = translator.start_clean("".into(), size).await;
+
+    let mut size_read = 0;
 
     loop {
         let bytes = reader.read(&mut read_buf)?;
@@ -98,7 +103,10 @@ async fn clean(mut reader: impl Read, mut writer: impl Write) -> Result<()> {
         }
 
         handle.add_data(&read_buf[0..bytes]).await?;
+        size_read += bytes as u64;
     }
+
+    debug_assert_eq!(size_read, size);
 
     let (pointer_file, _) = handle.finish().await?;
 

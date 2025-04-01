@@ -9,6 +9,7 @@ mod file_downloader;
 mod file_upload_session;
 pub mod migration_tool;
 mod pointer_file;
+mod progress_tracking;
 mod prometheus_metrics;
 mod remote_client_interface;
 mod repo_salt;
