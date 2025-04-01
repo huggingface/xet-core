@@ -47,7 +47,7 @@ const NUM_RETRIES: usize = 5;
 const BASE_RETRY_DELAY_MS: u64 = 3000;
 const NUM_CONCURRENT_RANGE_GETS: usize = 16;
 
-const ENV_RECONSTRUCT_WRITE_PARALLEL: &str = "HF_XET_RECONSTRUCT_WRITE_PARALLEL";
+const ENV_RECONSTRUCT_WRITE_SEQUENTIALLY: &str = "HF_XET_RECONSTRUCT_WRITE_SEQUENTIALLY";
 
 type RangeDownloadSingleFlight = Arc<Group<(Vec<u8>, Vec<u32>), CasClientError>>;
 
@@ -156,10 +156,10 @@ impl ReconstructionClient for RemoteClient {
         let terms = manifest.terms;
         let fetch_info = Arc::new(manifest.fetch_info);
 
-        // If the user has set the `ENV_RECONSTRUCT_WRITE_PARALLEL` env variable, then we should
-        // write the file to the output in parallel instead of sequentially.
-        if !env::var(ENV_RECONSTRUCT_WRITE_PARALLEL).is_ok() {
-            self.reconstruct_file_to_writer_parallel(
+        // If the user has set the `ENV_RECONSTRUCT_WRITE_SEQUENTIALLY` env variable, then we should
+        // write the file to the output sequentially instead of in parallel.
+        if env::var(ENV_RECONSTRUCT_WRITE_SEQUENTIALLY).is_ok() {
+            self.reconstruct_file_to_writer(
                 terms,
                 fetch_info,
                 manifest.offset_into_first_range,
@@ -169,7 +169,7 @@ impl ReconstructionClient for RemoteClient {
             )
             .await
         } else {
-            self.reconstruct_file_to_writer(
+            self.reconstruct_file_to_writer_parallel(
                 terms,
                 fetch_info,
                 manifest.offset_into_first_range,
@@ -197,11 +197,11 @@ impl ReconstructionClient for RemoteClient {
         let mut ret_size = 0;
         for (hash, terms) in manifest.files {
             let w = files.get(&(hash.into())).unwrap();
-            ret_size += if !env::var(ENV_RECONSTRUCT_WRITE_PARALLEL).is_ok() {
-                self.reconstruct_file_to_writer_parallel(terms, fetch_info.clone(), 0, None, w, None)
+            ret_size += if env::var(ENV_RECONSTRUCT_WRITE_SEQUENTIALLY).is_ok() {
+                self.reconstruct_file_to_writer(terms, fetch_info.clone(), 0, None, w, None)
                     .await?
             } else {
-                self.reconstruct_file_to_writer(terms, fetch_info.clone(), 0, None, w, None)
+                self.reconstruct_file_to_writer_parallel(terms, fetch_info.clone(), 0, None, w, None)
                     .await?
             }
         }
@@ -451,12 +451,12 @@ impl TermWriteTask {
     /// Download the term and write it to the underlying storage.
     async fn write_term(self, term: CASReconstructionTerm, term_range: Range<usize>, file_offset: u64) -> Result<u64> {
         // acquire permit from the semaphore limiting the download parallelism.
-        // let _permit = self
-        //     .semaphore
-        //     .acquire_owned()
-        //     .await
-        //     .log_error("Couldn't download term")
-        //     .map_err(|_| CasClientError::Other("couldn't acquire semaphore".to_string()))?;
+        let _permit = self
+            .semaphore
+            .acquire_owned()
+            .await
+            .log_error("Couldn't download term")
+            .map_err(|_| CasClientError::Other("couldn't acquire semaphore".to_string()))?;
 
         // download the term
         let term_data =

@@ -185,11 +185,12 @@ pub mod buffer {
     #[derive(Debug, Default, Clone)]
     /// Thread-safe in-memory buffer that implements [Write](Write) trait at some position
     /// within an underlying buffer and allows access to inner buffer.
+    /// Thread-safe in-memory buffer that implements [Write](Write) trait and allows
+    /// access to inner buffer
     pub struct ThreadSafeBuffer {
         idx: u64,
         inner: Arc<Mutex<Cursor<Vec<u8>>>>,
     }
-
     impl ThreadSafeBuffer {
         pub fn value(&self) -> Vec<u8> {
             self.inner.lock().unwrap().get_ref().clone()
