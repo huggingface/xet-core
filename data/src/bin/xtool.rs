@@ -1,14 +1,21 @@
+use std::env;
 use std::fs::File;
 use std::io::{BufWriter, Write};
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Instant;
 
 use anyhow::Result;
-use cas_client::build_http_client;
+use cas_client::OutputProvider::File;
+use cas_client::{build_http_client, FileProvider};
 use cas_object::CompressionScheme;
 use clap::{Args, Parser, Subcommand};
-use data::migration_tool::hub_client::HubClient;
+use data::data_client::default_config;
+use data::migration_tool::hub_client::{HubClient, HubClientTokenRefresher};
 use data::migration_tool::migrate::migrate_files_impl;
+use data::FileDownloader;
+use merklehash::MerkleHash;
+use utils::auth::TokenRefresher;
 use walkdir::WalkDir;
 use xet_threadpool::ThreadPool;
 
@@ -101,7 +108,14 @@ struct DedupArg {
 #[derive(Args)]
 struct QueryArg {
     /// Xet-hash of a file
+    #[clap(short, long)]
     hash: String,
+    #[clap(short, long)]
+    repo_id: String,
+    #[clap(short, long)]
+    repo_type: String,
+    #[clap(short, long)]
+    output: Option<PathBuf>,
 }
 
 impl Command {
@@ -142,7 +156,37 @@ impl Command {
 
                 Ok(())
             },
-            Command::Query(_arg) => unimplemented!(),
+            Command::Query(arg) => {
+                let path = arg.output.unwrap_or_else(|| PathBuf::from(format!("file-{}", arg.hash)));
+
+                let hub_client = HubClient {
+                    endpoint: "https://huggingface.co".to_string(),
+                    token: env::var("TOKEN")?,
+                    repo_type: arg.repo_type,
+                    repo_id: arg.repo_id,
+                    client: build_http_client(&None)?,
+                };
+                let token_type = "write";
+                let (endpoint, jwt_token, jwt_token_expiry) = hub_client.get_jwt_token(token_type).await?;
+                let token_refresher = Arc::new(HubClientTokenRefresher {
+                    threadpool: threadpool.clone(),
+                    token_type: token_type.to_owned(),
+                    client: Arc::new(hub_client),
+                }) as Arc<dyn TokenRefresher>;
+                let cas = endpoint;
+                println!("CAS: {cas}");
+
+                let config = default_config(cas, None, Some((jwt_token, jwt_token_expiry)), Some(token_refresher))?;
+
+                let downloader = FileDownloader::new(config, threadpool).await?;
+                let hash = MerkleHash::from_hex(&arg.hash)?;
+                let out = File(FileProvider::new(path));
+                println!("Smudge: {hash:?}");
+                let start = Instant::now();
+                let bytes_read = downloader.smudge_file_from_hash(&hash, &out, None, None).await?;
+                println!("Done: {bytes_read},{}", start.elapsed().as_millis());
+                Ok(())
+            },
         }
     }
 }
