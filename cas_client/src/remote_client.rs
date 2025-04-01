@@ -42,16 +42,14 @@ const NON_FORCE_SYNC_METHOD: reqwest::Method = reqwest::Method::POST;
 pub const CAS_ENDPOINT: &str = "http://localhost:8080";
 pub const PREFIX_DEFAULT: &str = "default";
 
-const NUM_RETRIES: usize = 5;
-const BASE_RETRY_DELAY_MS: u64 = 3000;
-const NUM_CONCURRENT_RANGE_GETS: usize = 16;
+utils::configurable_constants! {
+   ref NUM_CONCURRENT_RANGE_GETS: usize = 16;
 
 // Env (XET_RECONSTRUCT_WRITE_SEQUENTIALLY) to switch to writing terms sequentially to disk.
 // Benchmarks have shown that on SSD machines, writing in parallel seems to far outperform
 // sequential term writes.
 // However, this is not likely the case for writing to HDD and may in fact be worse,
 // so for those machines, setting this env may help download perf.
-utils::configurable_constants! {
     ref RECONSTRUCT_WRITE_SEQUENTIALLY: bool = false;
 }
 
@@ -355,8 +353,9 @@ impl RemoteClient {
                 self.range_download_single_flight.clone(),
             )
         });
-        let mut futs_buffered_enumerated =
-            futures::stream::iter(futs_iter).buffered(NUM_CONCURRENT_RANGE_GETS).enumerate();
+        let mut futs_buffered_enumerated = futures::stream::iter(futs_iter)
+            .buffered(*NUM_CONCURRENT_RANGE_GETS)
+            .enumerate();
 
         let mut remaining_len = total_len;
         while let Some((term_idx, term_data_result)) = futs_buffered_enumerated.next().await {
@@ -403,7 +402,7 @@ impl RemoteClient {
             chunk_cache: self.chunk_cache.clone(),
             range_download_single_flight: self.range_download_single_flight.clone(),
             fetch_info,
-            semaphore: Arc::new(Semaphore::new(NUM_CONCURRENT_RANGE_GETS)),
+            semaphore: Arc::new(Semaphore::new(*NUM_CONCURRENT_RANGE_GETS)),
             output: output_provider.clone(),
         };
         // Build term tasks, computing the offsets needed for the downloaded term and
@@ -943,7 +942,7 @@ mod tests {
                 .expect_get()
                 .returning(|_, range| Ok(Some(vec![1; (range.end - range.start) as usize * TEST_CHUNK_SIZE])));
 
-            let http_client = Arc::new(http_client::build_http_client(&None).unwrap());
+            let http_client = Arc::new(http_client::build_http_client(RetryConfig::default()).unwrap());
 
             let threadpool = Arc::new(ThreadPool::new().unwrap());
             let client = RemoteClient {
@@ -956,6 +955,9 @@ mod tests {
                 threadpool: threadpool.clone(),
                 range_download_single_flight: Arc::new(Group::new()),
                 shard_cache_directory: "".into(),
+                conservative_authenticated_http_client: Arc::new(
+                    http_client::build_http_client(RetryConfig::no429retry()).unwrap(),
+                ),
             };
             let provider = BufferProvider::default();
             let buf = provider.buf.clone();
