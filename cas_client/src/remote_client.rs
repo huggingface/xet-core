@@ -47,6 +47,10 @@ const NUM_RETRIES: usize = 5;
 const BASE_RETRY_DELAY_MS: u64 = 3000;
 const NUM_CONCURRENT_RANGE_GETS: usize = 16;
 
+/// Env to switch to writing terms sequentially to disk. Benchmarks have shown that on
+/// SSD machines, writing in parallel seems to far outperform sequential term writes.
+/// However, this is not likely the case for writing to HDD and may in fact be worse,
+/// so for those machines, setting this env may help download perf.
 const ENV_RECONSTRUCT_WRITE_SEQUENTIALLY: &str = "HF_XET_RECONSTRUCT_WRITE_SEQUENTIALLY";
 
 type RangeDownloadSingleFlight = Arc<Group<(Vec<u8>, Vec<u32>), CasClientError>>;
