@@ -27,7 +27,7 @@ pub mod test_utils;
 
 // consistently use URL_SAFE (also file path safe) base64 codec
 pub(crate) const BASE64_ENGINE: GeneralPurpose = URL_SAFE;
-pub const DEFAULT_CAPACITY: u64 = 10 << 30; // 10 GB
+pub const DEFAULT_CHUNK_CACHE_CAPACITY: u64 = 10 << 30; // 10 GB
 const PREFIX_DIR_NAME_LEN: usize = 2;
 
 type OptionResult<T, E> = Result<Option<T>, E>;
@@ -674,10 +674,10 @@ fn try_parse_cache_file(file_result: io::Result<DirEntry>, capacity: u64) -> Opt
     if !md.is_file() {
         return Ok(None);
     }
-    if md.len() > DEFAULT_CAPACITY {
+    if md.len() > DEFAULT_CHUNK_CACHE_CAPACITY {
         return Err(ChunkCacheError::general(format!(
             "Cache directory contains a file larger than {} GB, cache directory state is invalid",
-            (DEFAULT_CAPACITY as f64 / (1 << 30) as f64)
+            (DEFAULT_CHUNK_CACHE_CAPACITY as f64 / (1 << 30) as f64)
         )));
     }
 
@@ -805,7 +805,7 @@ mod tests {
     use rand::SeedableRng;
     use tempdir::TempDir;
 
-    use super::{DiskCache, DEFAULT_CAPACITY};
+    use super::{DiskCache, DEFAULT_CHUNK_CACHE_CAPACITY};
     use crate::disk::test_utils::*;
     use crate::disk::try_parse_key;
     use crate::{CacheConfig, ChunkCache};
@@ -818,7 +818,7 @@ mod tests {
         let cache_root = TempDir::new("empty").unwrap();
         let config = CacheConfig {
             cache_directory: cache_root.path().to_path_buf(),
-            cache_size: DEFAULT_CAPACITY,
+            cache_size: DEFAULT_CHUNK_CACHE_CAPACITY,
             ..Default::default()
         };
         let cache = DiskCache::initialize(&config).unwrap();
@@ -831,7 +831,7 @@ mod tests {
         let cache_root = TempDir::new("put_get_simple").unwrap();
         let config = CacheConfig {
             cache_directory: cache_root.path().to_path_buf(),
-            cache_size: DEFAULT_CAPACITY,
+            cache_size: DEFAULT_CHUNK_CACHE_CAPACITY,
             ..Default::default()
         };
         let cache = DiskCache::initialize(&config).unwrap();
@@ -857,7 +857,7 @@ mod tests {
         let cache_root = TempDir::new("put_get_subrange").unwrap();
         let config = CacheConfig {
             cache_directory: cache_root.path().to_path_buf(),
-            cache_size: DEFAULT_CAPACITY,
+            cache_size: DEFAULT_CHUNK_CACHE_CAPACITY,
             ..Default::default()
         };
         let cache = DiskCache::initialize(&config).unwrap();
@@ -917,7 +917,7 @@ mod tests {
         let cache_root = TempDir::new("same_puts_noop").unwrap();
         let config = CacheConfig {
             cache_directory: cache_root.path().to_path_buf(),
-            cache_size: DEFAULT_CAPACITY,
+            cache_size: DEFAULT_CHUNK_CACHE_CAPACITY,
             ..Default::default()
         };
         let cache = DiskCache::initialize(&config).unwrap();
@@ -934,7 +934,7 @@ mod tests {
             let cache_root = TempDir::new("overlap_range_data_mismatch_fail").unwrap();
             let config = CacheConfig {
                 cache_directory: cache_root.path().to_path_buf(),
-                cache_size: DEFAULT_CAPACITY,
+                cache_size: DEFAULT_CHUNK_CACHE_CAPACITY,
                 ..Default::default()
             };
             let cache = DiskCache::initialize(&config).unwrap();
@@ -984,7 +984,7 @@ mod tests {
         let cache_root = TempDir::new("initialize_non_empty").unwrap();
         let config = CacheConfig {
             cache_directory: cache_root.path().to_path_buf(),
-            cache_size: DEFAULT_CAPACITY,
+            cache_size: DEFAULT_CHUNK_CACHE_CAPACITY,
             ..Default::default()
         };
         let cache = DiskCache::initialize(&config).unwrap();
@@ -1017,7 +1017,7 @@ mod tests {
         let cache_root = TempDir::new("initialize_too_large_file").unwrap();
         let config = CacheConfig {
             cache_directory: cache_root.path().to_path_buf(),
-            cache_size: DEFAULT_CAPACITY,
+            cache_size: DEFAULT_CHUNK_CACHE_CAPACITY,
             ..Default::default()
         };
         let cache = DiskCache::initialize(&config).unwrap();
@@ -1115,7 +1115,7 @@ mod tests {
         let cache_root = TempDir::new("put_subrange").unwrap();
         let config = CacheConfig {
             cache_directory: cache_root.path().to_path_buf(),
-            cache_size: DEFAULT_CAPACITY,
+            cache_size: DEFAULT_CHUNK_CACHE_CAPACITY,
             ..Default::default()
         };
         let cache = DiskCache::initialize(&config).unwrap();
@@ -1212,7 +1212,7 @@ mod concurrency_tests {
     use tempdir::TempDir;
 
     use super::DiskCache;
-    use crate::disk::DEFAULT_CAPACITY;
+    use crate::disk::DEFAULT_CHUNK_CACHE_CAPACITY;
     use crate::{CacheConfig, ChunkCache, RandomEntryIterator, RANGE_LEN};
 
     const NUM_ITEMS_PER_TASK: usize = 20;
@@ -1224,7 +1224,7 @@ mod concurrency_tests {
 
         let config = CacheConfig {
             cache_directory: cache_root.path().to_path_buf(),
-            cache_size: DEFAULT_CAPACITY,
+            cache_size: DEFAULT_CHUNK_CACHE_CAPACITY,
             ..Default::default()
         };
         let cache = DiskCache::initialize(&config).unwrap();

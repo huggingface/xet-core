@@ -10,6 +10,10 @@ use utils::auth::AuthConfig;
 use crate::errors::Result;
 use crate::repo_salt::RepoSalt;
 
+utils::configurable_constants! {
+    ref CHUNK_CACHE_SIZE: u64 = cas_client::DEFAULT_CHUNK_CACHE_CAPACITY;
+}
+
 #[derive(Debug)]
 pub enum Endpoint {
     Server(String),
@@ -90,7 +94,7 @@ impl TranslatorConfig {
                 prefix: PREFIX_DEFAULT.into(),
                 cache_config: CacheConfig {
                     cache_directory: path.join("cache"),
-                    cache_size: 10 * 1024 * 1024 * 1024, // 10 GiB
+                    cache_size: *CHUNK_CACHE_SIZE,
                 },
                 staging_directory: None,
             },
