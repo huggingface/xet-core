@@ -80,13 +80,17 @@ impl RemoteClient {
     ) -> Self {
         // use disk cache if cache_config provided.
         let chunk_cache = if let Some(cache_config) = cache_config {
-            debug!(
-                "Using disk cache directory: {:?}, size: {}.",
-                cache_config.cache_directory, cache_config.cache_size
-            );
-            chunk_cache::get_cache(cache_config)
-                .log_error("failed to initialize cache, not using cache")
-                .ok()
+            if cache_config.cache_size == 0 {
+                None
+            } else {
+                debug!(
+                    "Using disk cache directory: {:?}, size: {}.",
+                    cache_config.cache_directory, cache_config.cache_size
+                );
+                chunk_cache::get_cache(cache_config)
+                    .log_error("failed to initialize cache, not using cache")
+                    .ok()
+            }
         } else {
             None
         };
