@@ -1210,16 +1210,15 @@ mod tests {
             "evicted key that should have remained in cache"
         );
     }
-    
+
     #[test]
     fn test_initialize_with_cache_size_0() {
         assert!(DiskCache::initialize(&CacheConfig {
             cache_directory: "/tmp".into(),
             cache_size: 0,
-        }).is_err());
-
+        })
+        .is_err());
     }
-    
 }
 
 #[cfg(test)]
