@@ -11,7 +11,7 @@ use crate::errors::Result;
 use crate::repo_salt::RepoSalt;
 
 utils::configurable_constants! {
-    ref CHUNK_CACHE_SIZE: u64 = cas_client::DEFAULT_CHUNK_CACHE_CAPACITY;
+    ref CHUNK_CACHE_SIZE_BYTES: u64 = cas_client::DEFAULT_CHUNK_CACHE_CAPACITY;
 }
 
 #[derive(Debug)]
