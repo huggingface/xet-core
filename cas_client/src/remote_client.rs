@@ -943,12 +943,14 @@ mod tests {
                 .returning(|_, range| Ok(Some(vec![1; (range.end - range.start) as usize * TEST_CHUNK_SIZE])));
 
             let http_client = Arc::new(http_client::build_http_client(RetryConfig::default()).unwrap());
+            let authenticated_http_client = http_client.clone();
+            let conservative_authenticated_http_client =
+                Arc::new(http_client::build_http_client(RetryConfig::no429retry()).unwrap());
 
             let threadpool = Arc::new(ThreadPool::new().unwrap());
             let client = RemoteClient {
                 chunk_cache: Some(Arc::new(chunk_cache)),
-                authenticated_http_client: http_client.clone(),
-                conservative_authenticated_http_client: http_client.clone(),
+                authenticated_http_client,
                 http_client,
                 endpoint: "".to_string(),
                 compression: Some(CompressionScheme::LZ4),
@@ -956,9 +958,7 @@ mod tests {
                 threadpool: threadpool.clone(),
                 range_download_single_flight: Arc::new(Group::new()),
                 shard_cache_directory: "".into(),
-                conservative_authenticated_http_client: Arc::new(
-                    http_client::build_http_client(RetryConfig::no429retry()).unwrap(),
-                ),
+                conservative_authenticated_http_client,
             };
             let provider = BufferProvider::default();
             let buf = provider.buf.clone();
