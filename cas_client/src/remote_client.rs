@@ -25,7 +25,7 @@ use merklehash::{HashedWrite, MerkleHash};
 use reqwest::{StatusCode, Url};
 use reqwest_middleware::ClientWithMiddleware;
 use tokio::sync::Semaphore;
-use tracing::{debug, error, trace};
+use tracing::{debug, error, info, trace};
 use utils::auth::AuthConfig;
 use utils::progress::ProgressUpdater;
 use utils::singleflight::Group;
@@ -81,6 +81,7 @@ impl RemoteClient {
         // use disk cache if cache_config provided.
         let chunk_cache = if let Some(cache_config) = cache_config {
             if cache_config.cache_size == 0 {
+                info!("Chunk cache size set to 0, disabling chunk cache");
                 None
             } else {
                 debug!(
