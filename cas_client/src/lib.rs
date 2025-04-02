@@ -1,7 +1,6 @@
 #![allow(dead_code)]
 
-pub use chunk_cache::CacheConfig;
-pub use chunk_cache::DEFAULT_CHUNK_CACHE_CAPACITY;
+pub use chunk_cache::{CacheConfig, DEFAULT_CHUNK_CACHE_CAPACITY};
 pub use http_client::{build_auth_http_client, build_http_client, RetryConfig};
 use interface::RegistrationClient;
 pub use interface::{Client, FileProvider, OutputProvider, ReconstructionClient, UploadClient};
