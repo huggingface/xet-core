@@ -45,7 +45,7 @@ pub const PREFIX_DEFAULT: &str = "default";
 utils::configurable_constants! {
    ref NUM_CONCURRENT_RANGE_GETS: usize = 16;
 
-// Env (XET_RECONSTRUCT_WRITE_SEQUENTIALLY) to switch to writing terms sequentially to disk.
+// Env (HF_XET_RECONSTRUCT_WRITE_SEQUENTIALLY) to switch to writing terms sequentially to disk.
 // Benchmarks have shown that on SSD machines, writing in parallel seems to far outperform
 // sequential term writes.
 // However, this is not likely the case for writing to HDD and may in fact be worse,
@@ -170,7 +170,7 @@ impl ReconstructionClient for RemoteClient {
         let terms = manifest.terms;
         let fetch_info = Arc::new(manifest.fetch_info);
 
-        // If the user has set the `XET_RECONSTRUCT_WRITE_SEQUENTIALLY=true` env variable, then we
+        // If the user has set the `HF_XET_RECONSTRUCT_WRITE_SEQUENTIALLY=true` env variable, then we
         // should write the file to the output sequentially instead of in parallel.
         if *RECONSTRUCT_WRITE_SEQUENTIALLY {
             self.reconstruct_file_to_writer(

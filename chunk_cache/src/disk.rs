@@ -106,6 +106,8 @@ impl DiskCache {
     /// the cache file system layout is rooted at the provided config.cache_directory and initialize
     /// will attempt to load any pre-existing cache state into memory.
     ///
+    /// an configured size of 0 caused initialization to fail
+    ///
     /// The cache layout is as follows:
     ///
     /// each key (cas hash) in the cache is a directory, containing "cache items" that each provide
@@ -129,6 +131,9 @@ impl DiskCache {
     /// │       ├── [range 404-405, file_len, file_hash]
     /// │       └── [range 679-700, file_len, file_hash]
     pub fn initialize(config: &CacheConfig) -> Result<Self, ChunkCacheError> {
+        if config.cache_size == 0 {
+            return Err(ChunkCacheError::InvalidArguments);
+        }
         let capacity = config.cache_size;
         let cache_root = config.cache_directory.clone();
 
@@ -1205,6 +1210,16 @@ mod tests {
             "evicted key that should have remained in cache"
         );
     }
+    
+    #[test]
+    fn test_initialize_with_cache_size_0() {
+        assert!(DiskCache::initialize(&CacheConfig {
+            cache_directory: "/tmp".into(),
+            cache_size: 0,
+        }).is_err());
+
+    }
+    
 }
 
 #[cfg(test)]
