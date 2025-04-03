@@ -2,6 +2,7 @@ use std::fs::Metadata;
 #[cfg(unix)]
 use std::os::unix::fs::MetadataExt;
 use std::path::Path;
+#[cfg(unix)]
 use std::time::SystemTime;
 
 /// Matches the metadata of a file to another file's metadata
