@@ -60,9 +60,11 @@ fn test_some() {
 }
 
 fn check_logs<F: Fn(&str) -> bool>(logs_contain: F, log_level: &str, line_num: i32) {
-    let expected_line = format!("{}:{}", file!(), line_num);
-
     assert!(logs_contain(log_level));
     assert!(logs_contain("opt is None"));
+    #[cfg(not(windows))]
+    let expected_line = format!("{}:{}", file!(), line_num);
+    #[cfg(windows)]
+    let expected_line = format!("{}:{}", file!(), line_num).replace("/", "\\");
     assert!(logs_contain(&expected_line));
 }
