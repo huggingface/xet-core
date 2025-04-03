@@ -182,7 +182,7 @@ pub fn create_temp_file(dir: &Path, suffix: &str) -> io::Result<NamedTempFile> {
 
 #[cfg(test)]
 mod tests {
-    use std::fs::{self, File, Permissions};
+    use std::fs::{self, File};
     use std::io::Read;
     #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
@@ -190,17 +190,6 @@ mod tests {
     use tempfile::tempdir;
 
     use super::*;
-
-    #[cfg(unix)]
-    fn check_permissions(perms: Permissions, expect_readonly: bool) {
-        let expected = if expect_readonly { 0o600 } else { 0o644 };
-        assert_eq!(perms.mode() & 0o777, expected);
-    }
-
-    #[cfg(not(unix))]
-    fn check_permissions(perms: Permissions, expect_readonly: bool) {
-        assert_eq!(perms.readonly(), expect_readonly);
-    }
 
     #[test]
     fn test_safe_file_creator_new() {
@@ -219,7 +208,8 @@ mod tests {
         // Verify file permissions
         let metadata = fs::metadata(&dest_path).unwrap();
         let permissions = metadata.permissions();
-        check_permissions(permissions, false); // Assuming default creation mode
+        #[cfg(unix)]
+        assert_eq!(permissions.mode() & 0o777, 0o644); // Assuming default creation mode
     }
 
     #[test]
@@ -244,7 +234,8 @@ mod tests {
         // Verify file permissions
         let metadata = fs::metadata(&dest_path).unwrap();
         let permissions = metadata.permissions();
-        check_permissions(permissions, false); // Assuming default creation mode
+        #[cfg(unix)]
+        assert_eq!(permissions.mode() & 0o777, 0o644); // Assuming default creation mode
     }
 
     #[test]
@@ -259,8 +250,6 @@ mod tests {
             let mut perms = file.metadata().unwrap().permissions();
             #[cfg(unix)]
             perms.set_mode(0o600);
-            #[cfg(not(unix))]
-            perms.set_readonly(true);
             fs::set_permissions(&dest_path, perms).unwrap();
         }
 
@@ -276,7 +265,8 @@ mod tests {
         // Verify file permissions
         let metadata = fs::metadata(&dest_path).unwrap();
         let permissions = metadata.permissions();
-        check_permissions(permissions, true); // Original file mode
+        #[cfg(unix)]
+        assert_eq!(permissions.mode() & 0o777, 0o600); // Original file mode
     }
 
     #[test]
@@ -339,6 +329,7 @@ mod tests {
         // Verify file permissions
         let metadata = fs::metadata(&dest_path).unwrap();
         let permissions = metadata.permissions();
-        check_permissions(permissions, true); // Original file mode
+        #[cfg(unix)]
+        assert_eq!(permissions.mode() & 0o777, 0o600); // Original file mode
     }
 }

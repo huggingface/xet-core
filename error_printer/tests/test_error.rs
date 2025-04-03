@@ -65,7 +65,7 @@ fn check_logs<F: Fn(&str) -> bool>(logs_contain: F, log_level: &str, line_num: i
     #[cfg(not(windows))]
     let expected_line = format!("{}:{}", file!(), line_num);
     #[cfg(windows)]
-    let expected_line = format!("{}:{}", file!(), line_num).replace("/", "\\");
+    let expected_line = format!("{}:{}", file!(), line_num).replace("\\", "\\\\");
 
     assert!(logs_contain(&expected_line));
 }
