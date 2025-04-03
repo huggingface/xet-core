@@ -105,7 +105,7 @@ pub fn check_directories_match(dir1: &Path, dir2: &Path) {
 async fn dehydrate_directory(cas_dir: &Path, src_dir: &Path, ptr_dir: &Path) {
     let config = TranslatorConfig::local_config(cas_dir).unwrap();
 
-    std::fs::create_dir_all(&ptr_dir).unwrap();
+    create_dir_all(ptr_dir).unwrap();
 
     let upload_session = FileUploadSession::new(config.clone(), ThreadPool::from_current_runtime(), None)
         .await
@@ -132,7 +132,7 @@ async fn dehydrate_directory(cas_dir: &Path, src_dir: &Path, ptr_dir: &Path) {
 async fn hydrate_directory(cas_dir: &Path, ptr_dir: &Path, out_dir: &Path) {
     let config = TranslatorConfig::local_config(cas_dir).unwrap();
 
-    std::fs::create_dir_all(&out_dir).unwrap();
+    create_dir_all(out_dir).unwrap();
 
     let downloader = FileDownloader::new(config, ThreadPool::from_current_runtime()).await.unwrap();
 

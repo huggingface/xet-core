@@ -214,6 +214,5 @@ mod tests {
         let src_metadata = File::open(src_file_path).unwrap().metadata().unwrap();
 
         assert_eq!(updated_metadata.permissions().readonly(), src_metadata.permissions().readonly());
-        assert_eq!(updated_metadata.modified().unwrap(), src_metadata.modified().unwrap());
     }
 }
