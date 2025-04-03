@@ -154,6 +154,7 @@ impl LocalClient {
         {
             if let Ok(metadata) = std::fs::metadata(&file_path) {
                 let mut permissions = metadata.permissions();
+                #[allow(clippy::permissions_set_readonly_false)]
                 permissions.set_readonly(false);
                 let _ = std::fs::set_permissions(&file_path, permissions);
             }
