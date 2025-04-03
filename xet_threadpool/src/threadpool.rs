@@ -9,6 +9,11 @@ use tracing::debug;
 
 use crate::errors::MultithreadedRuntimeError;
 
+const THREADPOOL_NUM_WORKER_THREADS: usize = 4; // 4 active threads
+const THREADPOOL_THREAD_ID_PREFIX: &str = "hf-xet"; // thread names will be hf-xet-0, hf-xet-1, etc.
+const THREADPOOL_STACK_SIZE: usize = 8_000_000; // 8MB stack size
+const THREADPOOL_MAX_BLOCKING_THREADS: usize = 100; // max 100 threads can block IO
+
 /// This module provides a simple wrapper around Tokio's runtime to create a thread pool
 /// with some default settings. It is intended to be used as a singleton thread pool for
 /// the entire application.
@@ -55,11 +60,6 @@ use crate::errors::MultithreadedRuntimeError;
 /// # Functions
 ///
 /// - `new_threadpool`: Creates a new Tokio runtime with the specified settings.
-
-const THREADPOOL_NUM_WORKER_THREADS: usize = 4; // 4 active threads
-const THREADPOOL_THREAD_ID_PREFIX: &str = "hf-xet"; // thread names will be hf-xet-0, hf-xet-1, etc.
-const THREADPOOL_STACK_SIZE: usize = 8_000_000; // 8MB stack size
-const THREADPOOL_MAX_BLOCKING_THREADS: usize = 100; // max 100 threads can block IO
 
 #[derive(Debug)]
 pub struct ThreadPool {
