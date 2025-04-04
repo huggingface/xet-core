@@ -86,6 +86,12 @@ impl<T: Debug + Clone> VerificationCell<T> {
     }
 }
 
+impl<T: PartialEq> PartialEq<T> for VerificationCell<T> {
+    fn eq(&self, other: &T) -> bool {
+        self.inner.eq(other)
+    }
+}
+
 // range start, range end, length, and checksum
 const CACHE_ITEM_FILE_NAME_BUF_SIZE: usize = size_of::<u32>() * 2 + size_of::<u64>() + size_of::<u32>();
 
@@ -101,7 +107,7 @@ pub(crate) struct CacheItem {
 }
 
 impl std::fmt::Display for CacheItem {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         write!(f, "CacheItem {{ range: {:?}, len: {}, checksum: {} }}", self.range, self.len, self.checksum,)
     }
 }

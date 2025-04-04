@@ -367,8 +367,13 @@ impl DiskCache {
         // removing by index in reverse to guarantee lower-index items aren't shifted/moved
         for item_idx in to_remove.into_iter().rev() {
             let item = items.swap_remove(item_idx);
-            overlapping_item_paths.insert(self.item_path(key, &item)?);
-            total_bytes_rm += item.len;
+            // We only remove from the disk if the item found is not equal to the cache_item
+            // we just wrote. This can happen when multiple put calls are made for the same
+            // item simultaneously.
+            if item != cache_item {
+                overlapping_item_paths.insert(self.item_path(key, &item)?);
+                total_bytes_rm += item.len;
+            }
         }
         state.num_items -= num_items_rm;
         state.total_bytes -= total_bytes_rm;
@@ -1285,5 +1290,45 @@ mod concurrency_tests {
         for handle in handles {
             handle.await.expect("join should not error");
         }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_run_concurrently_thundering_herd() {
+        let cache_root = TempDir::new("run_concurrently_thundering_herd").unwrap();
+        let config = CacheConfig {
+            cache_directory: cache_root.path().to_path_buf(),
+            cache_size: RANGE_LEN as u64 * NUM_ITEMS_PER_TASK as u64,
+        };
+        let cache = DiskCache::initialize(&config).unwrap();
+
+        // data inserted is the same
+        let mut it = RandomEntryIterator::std_from_seed(RANDOM_SEED);
+        let (key, range, chunk_byte_indices, data) = it.next().unwrap();
+
+        // Spawn tasks to simultaneously insert into cache
+        let num_tasks = 64;
+        let mut handles = Vec::with_capacity(num_tasks as usize);
+        for _ in 0..num_tasks {
+            let cache_clone = cache.clone();
+            let key = key.clone();
+            let range = range.clone();
+            let chunk_byte_indices = chunk_byte_indices.clone();
+            let data_clone = data.clone();
+            handles.push(tokio::spawn(async move {
+                let res = cache_clone.put(&key, &range, &chunk_byte_indices, &data_clone);
+                assert!(res.is_ok(), "err: {res:?}");
+            }))
+        }
+
+        for handle in handles {
+            handle.await.expect("join should not error");
+        }
+
+        // check that there is only 1 term in the cache for this data
+        let state = cache.state.lock().unwrap();
+        let items = state.inner.get(&key).unwrap();
+
+        let num = items.iter().filter(|item| item.range == range).count();
+        assert_eq!(num, 1);
     }
 }
