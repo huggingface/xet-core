@@ -11,7 +11,11 @@ pub use disk::DiskCache;
 use error::ChunkCacheError;
 use mockall::automock;
 
-use crate::disk::DEFAULT_CAPACITY;
+pub use crate::disk::DEFAULT_CHUNK_CACHE_CAPACITY;
+
+utils::configurable_constants! {
+    ref CHUNK_CACHE_SIZE_BYTES: u64 = DEFAULT_CHUNK_CACHE_CAPACITY;
+}
 
 /// ChunkCache is a trait for storing and fetching Xorb ranges.
 /// implementors are expected to return bytes for a key and a given chunk range
@@ -67,7 +71,7 @@ impl Default for CacheConfig {
     fn default() -> Self {
         CacheConfig {
             cache_directory: PathBuf::from("/tmp"),
-            cache_size: DEFAULT_CAPACITY,
+            cache_size: *CHUNK_CACHE_SIZE_BYTES,
         }
     }
 }

@@ -1,6 +1,5 @@
 use std::cmp::{max, min};
 use std::collections::{HashMap, HashSet};
-use std::env;
 use std::io::{Cursor, Write};
 use std::ops::Range;
 use std::path::PathBuf;
@@ -26,7 +25,7 @@ use merklehash::{HashedWrite, MerkleHash};
 use reqwest::{StatusCode, Url};
 use reqwest_middleware::ClientWithMiddleware;
 use tokio::sync::Semaphore;
-use tracing::{debug, error, trace};
+use tracing::{debug, error, info, trace};
 use utils::auth::AuthConfig;
 use utils::progress::ProgressUpdater;
 use utils::singleflight::Group;
@@ -43,15 +42,16 @@ const NON_FORCE_SYNC_METHOD: reqwest::Method = reqwest::Method::POST;
 pub const CAS_ENDPOINT: &str = "http://localhost:8080";
 pub const PREFIX_DEFAULT: &str = "default";
 
-const NUM_RETRIES: usize = 5;
-const BASE_RETRY_DELAY_MS: u64 = 3000;
-const NUM_CONCURRENT_RANGE_GETS: usize = 16;
+utils::configurable_constants! {
+   ref NUM_CONCURRENT_RANGE_GETS: usize = 16;
 
-/// Env to switch to writing terms sequentially to disk. Benchmarks have shown that on
-/// SSD machines, writing in parallel seems to far outperform sequential term writes.
-/// However, this is not likely the case for writing to HDD and may in fact be worse,
-/// so for those machines, setting this env may help download perf.
-const ENV_RECONSTRUCT_WRITE_SEQUENTIALLY: &str = "HF_XET_RECONSTRUCT_WRITE_SEQUENTIALLY";
+// Env (HF_XET_RECONSTRUCT_WRITE_SEQUENTIALLY) to switch to writing terms sequentially to disk.
+// Benchmarks have shown that on SSD machines, writing in parallel seems to far outperform
+// sequential term writes.
+// However, this is not likely the case for writing to HDD and may in fact be worse,
+// so for those machines, setting this env may help download perf.
+    ref RECONSTRUCT_WRITE_SEQUENTIALLY: bool = false;
+}
 
 type RangeDownloadSingleFlight = Arc<Group<(Vec<u8>, Vec<u32>), CasClientError>>;
 
@@ -80,13 +80,18 @@ impl RemoteClient {
     ) -> Self {
         // use disk cache if cache_config provided.
         let chunk_cache = if let Some(cache_config) = cache_config {
-            debug!(
-                "Using disk cache directory: {:?}, size: {}.",
-                cache_config.cache_directory, cache_config.cache_size
-            );
-            chunk_cache::get_cache(cache_config)
-                .log_error("failed to initialize cache, not using cache")
-                .ok()
+            if cache_config.cache_size == 0 {
+                info!("Chunk cache size set to 0, disabling chunk cache");
+                None
+            } else {
+                debug!(
+                    "Using disk cache directory: {:?}, size: {}.",
+                    cache_config.cache_directory, cache_config.cache_size
+                );
+                chunk_cache::get_cache(cache_config)
+                    .log_error("failed to initialize cache, not using cache")
+                    .ok()
+            }
         } else {
             None
         };
@@ -166,9 +171,9 @@ impl ReconstructionClient for RemoteClient {
         let terms = manifest.terms;
         let fetch_info = Arc::new(manifest.fetch_info);
 
-        // If the user has set the `ENV_RECONSTRUCT_WRITE_SEQUENTIALLY` env variable, then we should
-        // write the file to the output sequentially instead of in parallel.
-        if env::var(ENV_RECONSTRUCT_WRITE_SEQUENTIALLY).is_ok() {
+        // If the user has set the `HF_XET_RECONSTRUCT_WRITE_SEQUENTIALLY=true` env variable, then we
+        // should write the file to the output sequentially instead of in parallel.
+        if *RECONSTRUCT_WRITE_SEQUENTIALLY {
             self.reconstruct_file_to_writer(
                 terms,
                 fetch_info,
@@ -207,7 +212,7 @@ impl ReconstructionClient for RemoteClient {
         let mut ret_size = 0;
         for (hash, terms) in manifest.files {
             let w = files.get(&(hash.into())).unwrap();
-            ret_size += if env::var(ENV_RECONSTRUCT_WRITE_SEQUENTIALLY).is_ok() {
+            ret_size += if *RECONSTRUCT_WRITE_SEQUENTIALLY {
                 self.reconstruct_file_to_writer(terms, fetch_info.clone(), 0, None, w, None)
                     .await?
             } else {
@@ -353,8 +358,9 @@ impl RemoteClient {
                 self.range_download_single_flight.clone(),
             )
         });
-        let mut futs_buffered_enumerated =
-            futures::stream::iter(futs_iter).buffered(NUM_CONCURRENT_RANGE_GETS).enumerate();
+        let mut futs_buffered_enumerated = futures::stream::iter(futs_iter)
+            .buffered(*NUM_CONCURRENT_RANGE_GETS)
+            .enumerate();
 
         let mut remaining_len = total_len;
         while let Some((term_idx, term_data_result)) = futs_buffered_enumerated.next().await {
@@ -401,7 +407,7 @@ impl RemoteClient {
             chunk_cache: self.chunk_cache.clone(),
             range_download_single_flight: self.range_download_single_flight.clone(),
             fetch_info,
-            semaphore: Arc::new(Semaphore::new(NUM_CONCURRENT_RANGE_GETS)),
+            semaphore: Arc::new(Semaphore::new(*NUM_CONCURRENT_RANGE_GETS)),
             output: output_provider.clone(),
         };
         // Build term tasks, computing the offsets needed for the downloaded term and
@@ -942,12 +948,14 @@ mod tests {
                 .returning(|_, range| Ok(Some(vec![1; (range.end - range.start) as usize * TEST_CHUNK_SIZE])));
 
             let http_client = Arc::new(http_client::build_http_client(RetryConfig::default()).unwrap());
+            let authenticated_http_client = http_client.clone();
+            let conservative_authenticated_http_client =
+                Arc::new(http_client::build_http_client(RetryConfig::no429retry()).unwrap());
 
             let threadpool = Arc::new(ThreadPool::new().unwrap());
             let client = RemoteClient {
                 chunk_cache: Some(Arc::new(chunk_cache)),
-                authenticated_http_client: http_client.clone(),
-                conservative_authenticated_http_client: http_client.clone(),
+                authenticated_http_client,
                 http_client,
                 endpoint: "".to_string(),
                 compression: Some(CompressionScheme::LZ4),
@@ -955,6 +963,7 @@ mod tests {
                 threadpool: threadpool.clone(),
                 range_download_single_flight: Arc::new(Group::new()),
                 shard_cache_directory: "".into(),
+                conservative_authenticated_http_client,
             };
             let provider = BufferProvider::default();
             let buf = provider.buf.clone();

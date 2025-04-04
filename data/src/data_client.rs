@@ -21,7 +21,9 @@ use crate::errors::DataProcessingError;
 use crate::repo_salt::RepoSalt;
 use crate::{errors, FileDownloader, FileUploadSession, PointerFile};
 
-const DEFAULT_CAS_ENDPOINT: &str = "http://localhost:8080";
+utils::configurable_constants! {
+    ref DEFAULT_CAS_ENDPOINT: String = "http://localhost:8080".to_string();
+}
 
 pub fn default_config(
     endpoint: String,
@@ -105,8 +107,7 @@ pub async fn upload_async(
     // produce Xorbs + Shards
     // upload shards and xorbs
     // for each file, return the filehash
-    let config =
-        default_config(endpoint.unwrap_or(DEFAULT_CAS_ENDPOINT.to_string()), None, token_info, token_refresher)?;
+    let config = default_config(endpoint.unwrap_or(DEFAULT_CAS_ENDPOINT.clone()), None, token_info, token_refresher)?;
 
     let upload_session = FileUploadSession::new(config, threadpool, progress_updater).await?;
 

@@ -245,14 +245,14 @@ mod test {
 
         /* For Unix
             1. Run the below shell script in an empty dir with standard privileges.
-            2. Set env var 'XET_TEST_PATH' to this path.
+            2. Set env var 'HF_XET_TEST_PATH' to this path.
             3. Build the test executable by running 'cargo test -p gitxetcore --lib --no-run'.
             4. Locate the path to the executable as TEST_EXE
             5. Run test with a non-root user: 'TEST_EXE config::permission::test::test_create_dir_all --exact --nocapture --include-ignored'
             sudo mkdir rootdir
         */
 
-        let test_path = std::env::var("XET_TEST_PATH")?;
+        let test_path = std::env::var("HF_XET_TEST_PATH")?;
         std::env::set_current_dir(test_path)?;
         let permission = PrivilgedExecutionContext::current();
 
@@ -271,7 +271,7 @@ mod test {
 
         /* For Unix
             1. Run the below shell script in an empty dir with standard privileges.
-            2. Set env var 'XET_TEST_PATH' to this path.
+            2. Set env var 'HF_XET_TEST_PATH' to this path.
             3. Build the test executable by running 'cargo test -p gitxetcore --lib --no-run'.
             4. Locate the path to the executable as TEST_EXE
             5. Run test with a non-root user: 'sudo -E TEST_EXE config::permission::test::test_create_dir_all_sudo --exact --nocapture --include-ignored'
@@ -279,7 +279,7 @@ mod test {
             mkdir regdir
         */
 
-        let test_path = std::env::var("XET_TEST_PATH")?;
+        let test_path = std::env::var("HF_XET_TEST_PATH")?;
         std::env::set_current_dir(test_path)?;
         let permission = PrivilgedExecutionContext::current();
 
@@ -307,7 +307,7 @@ mod test {
 
         /* For Unix
             1. Run the below shell script in an empty dir with standard privileges.
-            2. Set env var 'XET_TEST_PATH' to this path.
+            2. Set env var 'HF_XET_TEST_PATH' to this path.
             3. Build the test executable by running 'cargo test -p gitxetcore --lib --no-run'.
             4. Locate the path to the executable as TEST_EXE
             5. Run test with a non-root user: 'TEST_EXE config::permission::test::test_create_file --exact --nocapture --include-ignored'
@@ -316,7 +316,7 @@ mod test {
         sudo touch rootdir/file
          */
 
-        let test_path = std::env::var("XET_TEST_PATH")?;
+        let test_path = std::env::var("HF_XET_TEST_PATH")?;
         std::env::set_current_dir(test_path)?;
         let permission = PrivilgedExecutionContext::current();
 
@@ -341,14 +341,14 @@ mod test {
 
         /* For Unix
             1. Run the below shell script in an empty dir with standard privileges.
-            2. Set env var 'XET_TEST_PATH' to this path.
+            2. Set env var 'HF_XET_TEST_PATH' to this path.
             3. Build the test executable by running 'cargo test -p gitxetcore --lib --no-run'.
             4. Locate the path to the executable as TEST_EXE
             5. Run test with a non-root user: 'sudo -E TEST_EXE config::permission::test::test_create_file_sudo --exact --nocapture --include-ignored'
             mkdir regdir
         */
 
-        let test_path = std::env::var("XET_TEST_PATH")?;
+        let test_path = std::env::var("HF_XET_TEST_PATH")?;
         std::env::set_current_dir(test_path)?;
 
         let test = Path::new("regdir/regdir1/regdir2/file");

@@ -416,7 +416,7 @@ pub mod hex {
         // Visitor for deserialization
         struct HexVisitor;
 
-        impl<'de> Visitor<'de> for HexVisitor {
+        impl Visitor<'_> for HexVisitor {
             type Value = DataHash;
 
             fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {

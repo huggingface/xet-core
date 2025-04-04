@@ -34,7 +34,7 @@ macro_rules! configurable_constants {
                 pub static ref $name: $type = {
                     let v : GlobalConfigMode<$type> = ($value).into();
                     let try_load_from_env = |v_| {
-                        std::env::var(concat!("XET_",stringify!($name)))
+                        std::env::var(concat!("HF_XET_",stringify!($name)))
                             .ok()
                             .and_then(|s| s.parse::<$type>().ok())
                             .unwrap_or(v_)
@@ -54,7 +54,7 @@ macro_rules! configurable_constants {
 pub use ctor as ctor_reexport;
 
 #[cfg(not(doctest))]
-/// A macro for **tests** that sets `XET_<GLOBAL_NAME>` to `$value` **before**
+/// A macro for **tests** that sets `HF_XET_<GLOBAL_NAME>` to `$value` **before**
 /// the global is initialized, and then checks that the global actually picks up
 /// that value. If the global was already accessed (thus initialized), or if it
 /// doesn't match after being set, this macro panics.
@@ -89,8 +89,8 @@ macro_rules! test_set_globals {
             $(
                 let val = $val;
 
-                // Construct the environment variable name, e.g. "XET_MAX_NUM_CHUNKS"
-                let env_name = concat!("XET_", stringify!($var_name));
+                // Construct the environment variable name, e.g. "HF_XET_MAX_NUM_CHUNKS"
+                let env_name = concat!("HF_XET_", stringify!($var_name));
                 // Convert the $val to a string and set it
                 std::env::set_var(env_name, val.to_string());
 

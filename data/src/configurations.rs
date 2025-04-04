@@ -3,7 +3,7 @@ use std::str::FromStr;
 use std::sync::Arc;
 
 use cas_client::remote_client::PREFIX_DEFAULT;
-use cas_client::CacheConfig;
+use cas_client::{CacheConfig, CHUNK_CACHE_SIZE_BYTES};
 use cas_object::CompressionScheme;
 use utils::auth::AuthConfig;
 
@@ -90,7 +90,7 @@ impl TranslatorConfig {
                 prefix: PREFIX_DEFAULT.into(),
                 cache_config: CacheConfig {
                     cache_directory: path.join("cache"),
-                    cache_size: 10 * 1024 * 1024 * 1024, // 10 GiB
+                    cache_size: *CHUNK_CACHE_SIZE_BYTES,
                 },
                 staging_directory: None,
             },
