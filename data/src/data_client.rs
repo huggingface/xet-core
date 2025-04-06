@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use cas_client::remote_client::PREFIX_DEFAULT;
-use cas_client::{CacheConfig, FileProvider, OutputProvider};
+use cas_client::{CacheConfig, FileProvider, OutputProvider, CHUNK_CACHE_SIZE_BYTES};
 use cas_object::CompressionScheme;
 use deduplication::DeduplicationMetrics;
 use dirs::home_dir;
@@ -75,7 +75,7 @@ pub fn default_config(
             prefix: PREFIX_DEFAULT.into(),
             cache_config: CacheConfig {
                 cache_directory: cache_path.join("chunk-cache"),
-                cache_size: 10 * 1024 * 1024 * 1024, // 10 GiB
+                cache_size: *CHUNK_CACHE_SIZE_BYTES,
             },
             staging_directory: None,
         },
