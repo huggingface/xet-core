@@ -97,6 +97,8 @@ enum Command {
     Bridge(BridgeArgs),
     /// Upload xorb file to CAS
     UploadDirect(UploadDirectArgs),
+    /// Upload shard file to CAS
+    UploadShard(UploadShardArgs),
 }
 
 #[derive(Args)]
@@ -203,6 +205,7 @@ impl Command {
             Command::Upload(args) => upload_to_cas(args, threadpool, hub_client.repo_id).await,
             Command::Bridge(args) => download_from_bridge(args, threadpool, hub_client.repo_id).await,
             Command::UploadDirect(args) => direct_upload_xorb(threadpool, args, hub_client.repo_id).await,
+            Command::UploadShard(args) => direct_upload_shard(threadpool, args, hub_client.repo_id).await,
         }
     }
 }
@@ -485,6 +488,38 @@ pub async fn direct_upload_xorb(_thread_pool: Arc<ThreadPool>, args: UploadDirec
     })
     .await
     .map_err(|e: ParallelError<anyhow::Error>| anyhow!("{e:?}"))?;
+    Ok(())
+}
+
+#[derive(Args, Clone)]
+pub struct UploadShardArgs {
+    #[clap(short, long)]
+    endpoint: String,
+    /// JWT token secret
+    #[clap(short = 't', long)]
+    secret: String,
+    #[clap(short, long)]
+    path: PathBuf,
+    #[clap(long)]
+    hash: String,
+}
+
+pub async fn direct_upload_shard(_thread_pool: Arc<ThreadPool>, args: UploadShardArgs, repo_id: String) -> Result<()> {
+    let client = new_client(args.secret.clone(), repo_id)?;
+    let data = fs::read(&args.path)?;
+    let data = Bytes::from(data);
+
+    let client = client.clone();
+    let args = args.clone();
+    let data = data.clone();
+
+    let start = Instant::now();
+    let url = Url::parse(&format!("{}/shard/default-merkledb/{}", args.endpoint, args.hash))?;
+    let response = client.post(url).body(data).send().await.process_error("post_shard")?;
+    let elapsed = start.elapsed().as_millis() as u64;
+    let status = response.status().as_u16();
+    let headers = response.headers();
+    info!(elapsed, status, headers = ?headers, "Uploaded shard");
     Ok(())
 }
 
