@@ -161,7 +161,7 @@ pub fn hf_xet(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     // logs before init_threadpool will not be visible
     runtime::init_threadpool(py)?;
 
-    if utils::is_network_fs(&XET_CACHE_PATH) {
+    if utils::is_network_fs(&XET_CACHE_PATH).unwrap_or_default() {
         // TODO: check high perf mode/cache status and change to a warn log if not enabled
         tracing::debug!("hf-xet detected your cache and session path is on a network file system, this can cause performance issues, consider setting HF_XET_HIGH_PERFORMANCE=1 or disabling the cache");
     }
