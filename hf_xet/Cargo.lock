@@ -848,7 +848,6 @@ dependencies = [
  "lazy_static",
  "libc",
  "rand 0.8.5",
- "tempfile",
  "tracing",
  "whoami",
  "winapi",

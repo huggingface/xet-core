@@ -7,7 +7,6 @@ edition = "2021"
 tracing = "0.1.*"
 libc = "0.2"
 lazy_static = "1.4.0"
-tempfile = "3.2.0"
 rand = "0.8.5"
 
 [target.'cfg(windows)'.dependencies]
@@ -25,3 +24,4 @@ colored = "2.0.0"
 
 [dev-dependencies]
 anyhow = "1"
+tempfile = "3.2.0"

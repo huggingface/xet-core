@@ -4,7 +4,6 @@ use std::path::{Path, PathBuf};
 
 use rand::distributions::Alphanumeric;
 use rand::{thread_rng, Rng};
-use tempfile::NamedTempFile;
 
 use crate::create_file;
 use crate::file_metadata::set_file_metadata;
@@ -149,35 +148,6 @@ impl Drop for SafeFileCreator {
             eprintln!("Error: Failed to close writer for {:?}: {}", &self.dest_path, e);
         }
     }
-}
-
-/// Write all bytes
-pub fn write_all_safe(path: &Path, bytes: &[u8]) -> io::Result<()> {
-    if !path.as_os_str().is_empty() {
-        let dir = path.parent().ok_or_else(|| {
-            io::Error::new(io::ErrorKind::InvalidInput, format!("Unable to find parent path from {path:?}"))
-        })?;
-
-        // Make sure dir exists.
-        if !dir.exists() {
-            fs::create_dir_all(dir)?;
-        }
-
-        let mut tempfile = create_temp_file(dir, "")?;
-        tempfile.write_all(bytes)?;
-        tempfile.persist(path).map_err(|e| e.error)?;
-    }
-
-    Ok(())
-}
-
-pub fn create_temp_file(dir: &Path, suffix: &str) -> io::Result<NamedTempFile> {
-    let tempfile = tempfile::Builder::new()
-        .prefix(&format!("{}.", std::process::id()))
-        .suffix(suffix)
-        .tempfile_in(dir)?;
-
-    Ok(tempfile)
 }
 
 #[cfg(test)]
