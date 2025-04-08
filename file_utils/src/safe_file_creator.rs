@@ -21,7 +21,16 @@ impl SafeFileCreator {
     /// and a temporary file is created then renamed on close.
     pub fn new<P: AsRef<Path>>(dest_path: P) -> io::Result<Self> {
         let dest_path = dest_path.as_ref().to_path_buf();
-        let temp_path = Self::temp_file_path(Some(&dest_path))?;
+
+        let parent = dest_path
+            .parent()
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "path doesn't have a valid parent directory"))?;
+        let file_name = parent
+            .file_name()
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "path doesn't have a valid file name"))?
+            .to_str();
+
+        let temp_path = Self::temp_file_path(parent, file_name);
 
         // This matches the permissions and ownership of the parent directory
         let file = create_file(&temp_path)?;
@@ -40,8 +49,8 @@ impl SafeFileCreator {
     /// pub fn set_dest_path<P: AsRef<Path>>(dest_path: P)
     /// ```
     /// to set the destination before closing the file.
-    pub fn new_unnamed() -> io::Result<Self> {
-        let temp_path = Self::temp_file_path(None)?;
+    pub fn new_unnamed(temp_root: impl AsRef<Path>) -> io::Result<Self> {
+        let temp_path = Self::temp_file_path(temp_root, None);
 
         // This matches the permissions and ownership of the parent directory
         let file = create_file(&temp_path)?;
@@ -64,24 +73,15 @@ impl SafeFileCreator {
     }
 
     /// Generates a temporary file path in the same directory as the destination file
-    fn temp_file_path(dest_path: Option<&Path>) -> io::Result<PathBuf> {
-        let (parent, file_name) = match dest_path {
-            Some(p) => {
-                let parent = p.parent().ok_or_else(|| {
-                    io::Error::new(io::ErrorKind::InvalidInput, "path doesn't have a valid parent directory")
-                })?;
-                let file_name = p.file_name().ok_or_else(|| {
-                    io::Error::new(io::ErrorKind::InvalidInput, "path doesn't have a valid file name")
-                })?;
-                (parent.to_owned(), file_name.to_str().unwrap_or_default())
-            },
-            None => (std::env::temp_dir(), ""),
-        };
-
+    fn temp_file_path(dest_dir: impl AsRef<Path>, file: Option<&str>) -> PathBuf {
         let mut rng = thread_rng();
         let random_hash: String = (0..10).map(|_| rng.sample(Alphanumeric)).map(char::from).collect();
-        let temp_file_name = format!(".{}.{hash}.tmp", file_name, hash = random_hash);
-        Ok(parent.join(temp_file_name))
+        let temp_file_name = if let Some(filename) = file {
+            format!(".{filename}.{random_hash}.tmp")
+        } else {
+            format!(".{random_hash}.tmp")
+        };
+        dest_dir.as_ref().join(temp_file_name)
     }
 
     pub fn set_dest_path<P: AsRef<Path>>(&mut self, dest_path: P) {
@@ -214,7 +214,8 @@ mod tests {
 
     #[test]
     fn test_safe_file_creator_new_unnamed() {
-        let mut safe_file_creator = SafeFileCreator::new_unnamed().unwrap();
+        let _dir = tempdir().unwrap();
+        let mut safe_file_creator = SafeFileCreator::new_unnamed(_dir.path()).unwrap();
         writeln!(safe_file_creator, "Hello, world!").unwrap();
 
         // Test error checking

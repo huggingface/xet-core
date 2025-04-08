@@ -744,7 +744,7 @@ impl ShardDedupProber for RemoteClient {
             return Ok(None);
         }
 
-        let writer = SafeFileCreator::new_unnamed()?;
+        let writer = SafeFileCreator::new_unnamed(&self.shard_cache_directory)?;
         // Compute the actual hash to use as the shard file name
         let mut hashed_writer = HashedWrite::new(writer);
 
