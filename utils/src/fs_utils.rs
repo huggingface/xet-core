@@ -3,9 +3,10 @@ pub use linux::*;
 
 #[cfg(target_os = "linux")]
 mod linux {
+    use std::path::Path;
+
     use nix::libc;
     use nix::sys::statfs;
-    use std::path::Path;
 
     // code/s not in libc
     const LUSTRE_SUPER_MAGIC: libc::__fsword_t = 0x0BD00BD0;
@@ -27,8 +28,11 @@ mod linux {
 }
 
 #[cfg(not(target_os = "linux"))]
+pub use not_linux::*;
+
+#[cfg(not(target_os = "linux"))]
 mod not_linux {
-    pub fn is_network_fs(path: impl AsRef<Path>) -> anyhow::Result<bool> {
+    pub fn is_network_fs(_path: impl AsRef<std::path::Path>) -> anyhow::Result<bool> {
         Ok(false)
     }
 }

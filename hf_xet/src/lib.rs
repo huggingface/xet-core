@@ -8,6 +8,7 @@ use std::fmt::Debug;
 use std::iter::IntoIterator;
 use std::sync::Arc;
 
+use data::data_client::XET_CACHE_PATH;
 use data::errors::DataProcessingError;
 use data::{data_client, PointerFile};
 use pyo3::exceptions::PyRuntimeError;
@@ -156,7 +157,14 @@ pub fn hf_xet(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyPointerFile>()?;
 
     // Init the threadpool
+    // this also initializes the tracing subscriber enabling logs.
+    // logs before init_threadpool will not be visible
     runtime::init_threadpool(py)?;
+
+    if utils::is_network_fs(&XET_CACHE_PATH) {
+        // TODO: check high perf mode/cache status and change to a warn log if not enabled
+        tracing::debug!("hf-xet detected your cache and session path is on a network file system, this can cause performance issues, consider setting HF_XET_HIGH_PERFORMANCE=1 or disabling the cache");
+    }
 
     #[cfg(feature = "profiling")]
     {
