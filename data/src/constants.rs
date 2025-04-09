@@ -17,19 +17,19 @@ utils::configurable_constants! {
     /// The default value is 8 and can be overwritten by environment variable "XET_CONCURRENT_XORB_UPLOADS".
     ref MAX_CONCURRENT_UPLOADS: usize = GlobalConfigMode::HighPerformanceOption {
         standard: 8,
-        high_performance: 256,
+        high_performance: 100,
     };
 
     /// The maximum number of files to ingest at once on the upload path
     ref MAX_CONCURRENT_FILE_INGESTION: usize =  GlobalConfigMode::HighPerformanceOption {
         standard: 8,
-        high_performance: 256
+        high_performance: 100,
     };
 
     /// The maximum number of files to download at one time.
     ref MAX_CONCURRENT_DOWNLOADS : usize = GlobalConfigMode::HighPerformanceOption {
         standard: 8,
-        high_performance: 256,
+        high_performance: 100,
     };
 
     /// The maximum block size from a file to process at once.
