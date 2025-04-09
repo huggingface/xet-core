@@ -487,37 +487,40 @@ impl DiskCache {
         let mut bytes_removed = 0;
         let mut paths = Vec::new();
         while to_remove > bytes_removed {
-            let (key, idx) = self.random_item(state);
-            let items = state.inner.get_mut(&key).ok_or(ChunkCacheError::Infallible)?;
-            let cache_item = &items[idx];
-            let len = cache_item.len;
-            let path = self.item_path(&key, cache_item)?;
-            paths.push(path);
-            items.remove(idx);
-            if items.is_empty() {
-                state.inner.remove(&key);
+            if let Some((key, idx)) = self.random_item(state) {
+                let items = state.inner.get_mut(&key).ok_or(ChunkCacheError::Infallible)?;
+                let cache_item = &items[idx];
+                let len = cache_item.len;
+                let path = self.item_path(&key, cache_item)?;
+                paths.push(path);
+                items.remove(idx);
+                if items.is_empty() {
+                    state.inner.remove(&key);
+                }
+                state.total_bytes -= len;
+                state.num_items -= 1;
+                bytes_removed += len as i64;
             }
-            state.total_bytes -= len;
-            state.num_items -= 1;
-            bytes_removed += len as i64;
         }
 
         Ok(paths)
     }
 
     /// returns the key and index within that key for a random item
-    fn random_item(&self, state: &MutexGuard<'_, CacheState>) -> (Key, usize) {
+    fn random_item(&self, state: &MutexGuard<'_, CacheState>) -> Option<(Key, usize)> {
         let num_items = state.num_items;
+        if num_items == 0 {
+            return None;
+        }
         let random_item = rand::random::<usize>() % num_items;
         let mut count = 0;
         for (key, items) in state.inner.iter() {
             if random_item < count + items.len() {
-                return (key.clone(), random_item - count);
+                return Some((key.clone(), random_item - count));
             }
             count += items.len();
         }
-
-        panic!("should have returned")
+        return None;
     }
 
     /// removes an item from both the in-memory state of the cache and the file system
