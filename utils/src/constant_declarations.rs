@@ -117,12 +117,27 @@ macro_rules! test_set_globals {
     }
 }
 
+fn get_high_performance_flag() -> bool {
+    let val = if let Ok(val) = std::env::var(concat!("HF_XET_", "HIGH_PERFORMANCE")) {
+        val
+    } else if let Ok(val) = std::env::var(concat!("HF_XET_", "HP")) {
+        val
+    } else {
+        return false;
+    };
+    if let Ok(val) = val.parse::<bool>() {
+        val
+    } else if let Ok(val) = val.parse::<usize>() {
+        val == 1
+    } else {
+        false
+    }
+}
+
 lazy_static! {
-    static ref HIGH_PERFORMANCE: usize = std::env::var(concat!("HF_XET_", "HIGH_PERFORMANCE"))
-        .map(|v| v.parse().unwrap_or(0))
-        .unwrap_or(0);
+    pub static ref HIGH_PERFORMANCE: bool = get_high_performance_flag();
 }
 
 pub fn is_high_performance() -> bool {
-    *HIGH_PERFORMANCE == 1
+    *HIGH_PERFORMANCE
 }

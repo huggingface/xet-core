@@ -9,7 +9,6 @@ use tracing::debug;
 
 use crate::errors::MultithreadedRuntimeError;
 
-const THREADPOOL_NUM_WORKER_THREADS: usize = 4; // 4 active threads
 const THREADPOOL_THREAD_ID_PREFIX: &str = "hf-xet"; // thread names will be hf-xet-0, hf-xet-1, etc.
 const THREADPOOL_STACK_SIZE: usize = 8_000_000; // 8MB stack size
 const THREADPOOL_MAX_BLOCKING_THREADS: usize = 100; // max 100 threads can block IO
@@ -80,7 +79,7 @@ pub struct ThreadPool {
 
 impl ThreadPool {
     pub fn new() -> Result<Self, MultithreadedRuntimeError> {
-        let runtime = new_threadpool(false)?;
+        let runtime = new_threadpool()?;
         Ok(Self {
             handle: runtime.handle().clone(),
             runtime: std::sync::RwLock::new(Some(runtime)),
@@ -94,16 +93,6 @@ impl ThreadPool {
     /// when the runtime needs to be passed in as an argument to current functions.
     pub fn from_current_runtime() -> Arc<Self> {
         Arc::new(Self::from_external(TokioRuntimeHandle::current()))
-    }
-
-    pub fn new_with_hardware_parallelism_limit() -> Result<Self, MultithreadedRuntimeError> {
-        let runtime = new_threadpool(true)?;
-        Ok(Self {
-            handle: runtime.handle().clone(),
-            runtime: std::sync::RwLock::new(Some(runtime)),
-            external_executor_count: AtomicUsize::new(0),
-            sigint_shutdown: AtomicBool::new(false),
-        })
     }
 
     pub fn from_external(handle: tokio::runtime::Handle) -> Self {
@@ -215,14 +204,12 @@ impl Display for ThreadPool {
 /// Intended to be used as a singleton threadpool for the entire application.
 /// This is a simple wrapper around tokio's runtime, with some default settings.
 /// Intentionally unwrap this because if it fails, the application should not continue.
-fn new_threadpool(maximum_worker_threads: bool) -> Result<TokioRuntime, MultithreadedRuntimeError> {
+fn new_threadpool() -> Result<TokioRuntime, MultithreadedRuntimeError> {
     #[cfg(not(target_family = "wasm"))]
     let mut builder = TokioRuntimeBuilder::new_multi_thread();
     #[cfg(target_family = "wasm")]
     let mut builder = TokioRuntimeBuilder::new_current_thread();
-    if !maximum_worker_threads {
-        builder.worker_threads(THREADPOOL_NUM_WORKER_THREADS); // 4 active threads
-    }
+
     builder
         .thread_name_fn(get_thread_name) // thread names will be hf-xet-0, hf-xet-1, etc.
         .thread_stack_size(THREADPOOL_STACK_SIZE) // 8MB stack size, default is 2MB

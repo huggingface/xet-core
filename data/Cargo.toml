@@ -6,8 +6,9 @@ edition = "2021"
 [lib]
 doctest = false
 
-[[example]]
-name = "main"
+[[bin]]
+name = "x"
+path = "src/bin/example.rs"
 
 [[bin]]
 name = "xtool"
