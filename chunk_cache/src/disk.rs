@@ -500,6 +500,8 @@ impl DiskCache {
                 state.total_bytes -= len;
                 state.num_items -= 1;
                 bytes_removed += len as i64;
+            } else {
+                break;
             }
         }
 
