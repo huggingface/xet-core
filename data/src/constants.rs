@@ -15,13 +15,22 @@ utils::configurable_constants! {
 
     /// The maximum number of simultaneous xorb upload streams.
     /// The default value is 8 and can be overwritten by environment variable "XET_CONCURRENT_XORB_UPLOADS".
-    ref MAX_CONCURRENT_UPLOADS: usize = 8;
+    ref MAX_CONCURRENT_UPLOADS: usize = GlobalConfigMode::HighPerformanceOption {
+        standard: 8,
+        high_performance: 256,
+    };
 
     /// The maximum number of files to ingest at once on the upload path
-    ref MAX_CONCURRENT_FILE_INGESTION: usize = 8;
+    ref MAX_CONCURRENT_FILE_INGESTION: usize =  GlobalConfigMode::HighPerformanceOption {
+        standard: 8,
+        high_performance: 256
+    };
 
     /// The maximum number of files to download at one time.
-    ref MAX_CONCURRENT_DOWNLOADS : usize = 8;
+    ref MAX_CONCURRENT_DOWNLOADS : usize = GlobalConfigMode::HighPerformanceOption {
+        standard: 8,
+        high_performance: 256,
+    };
 
     /// The maximum block size from a file to process at once.
     ref INGESTION_BLOCK_SIZE : usize = 8 * 1024 * 1024;

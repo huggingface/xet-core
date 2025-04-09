@@ -42,8 +42,16 @@ const NON_FORCE_SYNC_METHOD: reqwest::Method = reqwest::Method::POST;
 pub const CAS_ENDPOINT: &str = "http://localhost:8080";
 pub const PREFIX_DEFAULT: &str = "default";
 
+pub const DEFAULT_NUM_CONCURRENT_RANGE_GETS: usize = 16;
+pub const DEFAULT_HIGH_PERF_NUM_CONCURRENT_RANGE_GETS: usize = 100;
+
 utils::configurable_constants! {
-   ref NUM_CONCURRENT_RANGE_GETS: usize = 16;
+    // ref HIGH_PERFORMANCE: usize = 0;
+    // ref NUM_CONCURRENT_RANGE_GETS: usize = if high_perf_mode() { DEFAULT_HIGH_PERF_NUM_CONCURRENT_RANGE_GETS } else { DEFAULT_NUM_CONCURRENT_RANGE_GETS };
+    ref NUM_CONCURRENT_RANGE_GETS: usize = GlobalConfigMode::HighPerformanceOption {
+        standard: DEFAULT_NUM_CONCURRENT_RANGE_GETS,
+        high_performance: DEFAULT_HIGH_PERF_NUM_CONCURRENT_RANGE_GETS,
+    };
 
 // Env (HF_XET_RECONSTRUCT_WRITE_SEQUENTIALLY) to switch to writing terms sequentially to disk.
 // Benchmarks have shown that on SSD machines, writing in parallel seems to far outperform
