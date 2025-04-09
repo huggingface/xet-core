@@ -43,8 +43,6 @@ pub const CAS_ENDPOINT: &str = "http://localhost:8080";
 pub const PREFIX_DEFAULT: &str = "default";
 
 utils::configurable_constants! {
-    // ref HIGH_PERFORMANCE: usize = 0;
-    // ref NUM_CONCURRENT_RANGE_GETS: usize = if high_perf_mode() { DEFAULT_HIGH_PERF_NUM_CONCURRENT_RANGE_GETS } else { DEFAULT_NUM_CONCURRENT_RANGE_GETS };
     ref NUM_CONCURRENT_RANGE_GETS: usize = GlobalConfigMode::HighPerformanceOption {
         standard: 16,
         high_performance: 100,

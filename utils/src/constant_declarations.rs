@@ -138,6 +138,7 @@ lazy_static! {
     pub static ref HIGH_PERFORMANCE: bool = get_high_performance_flag();
 }
 
+#[inline]
 pub fn is_high_performance() -> bool {
     *HIGH_PERFORMANCE
 }
