@@ -522,7 +522,7 @@ impl DiskCache {
             }
             count += items.len();
         }
-        return None;
+        None
     }
 
     /// removes an item from both the in-memory state of the cache and the file system
