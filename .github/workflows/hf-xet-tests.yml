@@ -26,7 +26,7 @@ jobs:
           python-version: '3.10'
       - name: Create venv
         run: python3 -m venv .venv
-      - name: Build wheels
+      - name: Build wheel
         uses: PyO3/maturin-action@v1
         with:
           command: develop
@@ -39,4 +39,4 @@ jobs:
       - name: Run huggingface_hub xet tests
         run: |
           source .venv/bin/activate
-          HF_HUB_ENABLE_HF_TRANSFER=1 pytest huggingface_hub/tests/test_xet_*.py
+          pytest huggingface_hub/tests/test_xet_*.py
