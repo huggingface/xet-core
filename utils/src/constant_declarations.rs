@@ -135,6 +135,9 @@ fn get_high_performance_flag() -> bool {
 }
 
 lazy_static! {
+    /// To set the high performance mode to true, set either of the following environment variables to 1 or true:
+    ///  - HF_XET_HIGH_PERFORMANCE
+    ///  - HF_XET_HP
     pub static ref HIGH_PERFORMANCE: bool = get_high_performance_flag();
 }
 
