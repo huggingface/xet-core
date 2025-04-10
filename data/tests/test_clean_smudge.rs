@@ -9,6 +9,7 @@ use data::{FileDownloader, FileUploadSession, PointerFile};
 use deduplication::constants::{MAX_XORB_BYTES, MAX_XORB_CHUNKS, TARGET_CHUNK_SIZE};
 use rand::rngs::StdRng;
 // rand crates
+use error_printer::ErrorPrinter;
 use rand::RngCore;
 use rand::SeedableRng;
 use tempfile::TempDir;
@@ -109,7 +110,7 @@ async fn dehydrate_directory(cas_dir: &Path, src_dir: &Path, ptr_dir: &Path) {
 
     let upload_session = FileUploadSession::new(config.clone(), ThreadPool::from_current_runtime(), None)
         .await
-        .unwrap();
+        .expect("Failed to create FileUploadSession");
 
     let mut upload_tasks = JoinSet::new();
 
@@ -119,14 +120,20 @@ async fn dehydrate_directory(cas_dir: &Path, src_dir: &Path, ptr_dir: &Path) {
         let upload_session = upload_session.clone();
 
         upload_tasks.spawn(async move {
-            let (pf, _metrics) = clean_file(upload_session.clone(), entry.path()).await.unwrap();
+            let (pf, _metrics) = clean_file(upload_session.clone(), entry.path())
+                .await
+                .expect(&format!("Failed to clean file {:?}", entry.path()));
             std::fs::write(out_file, pf.to_string()).unwrap();
         });
     }
 
     upload_tasks.join_all().await;
 
-    upload_session.finalize().await.unwrap();
+    upload_session
+        .finalize()
+        .await
+        .log_error("Failed to finalize FileUploadSession")
+        .expect("Failed to finalize FileUploadSession");
 }
 
 async fn hydrate_directory(cas_dir: &Path, ptr_dir: &Path, out_dir: &Path) {
