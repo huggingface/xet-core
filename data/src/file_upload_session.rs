@@ -248,8 +248,11 @@ impl FileUploadSession {
     /// Finalize everything.
     async fn finalize_impl(self: Arc<Self>, return_files: bool) -> Result<(DeduplicationMetrics, Vec<MDBFileInfo>)> {
         // Register the remaining xorbs for upload.
+        println!("start of finalize_impl");
         let data_agg = take(&mut *self.current_session_data.lock().await);
-        self.process_aggregated_data_as_xorb(data_agg).await?;
+        println!("start of process_aggregated_data_as_xorb");
+        self.process_aggregated_data_as_xorb(data_agg).await.inspect_err(|e| println!("{e}"))?;
+        println!("end of process_aggregated_data_as_xorb");
 
         // Now, make sure all the remaining xorbs are uploaded.
         let mut metrics = take(&mut *self.deduplication_metrics.lock().await);
@@ -267,14 +270,18 @@ impl FileUploadSession {
         debug_assert_eq!(Arc::strong_count(&self), 1);
 
         let all_file_info = if return_files {
-            self.shard_interface.session_file_info_list().await?
+            println!("before session_file_info_list");
+            self.shard_interface.session_file_info_list().await.inspect_err(|e| println!("{e}"))?
         } else {
             Vec::new()
         };
+        println!("after session_file_info_list");
 
         // Upload and register the current shards in the session, moving them
         // to the cache.
-        metrics.shard_bytes_uploaded = self.shard_interface.upload_and_register_session_shards().await?;
+        println!("before upload_and_register_session_shards");
+        metrics.shard_bytes_uploaded = self.shard_interface.upload_and_register_session_shards().await.inspect_err(|e| println!("error upload and register shard {e}"))?;
+        println!("after upload_and_register_session_shards");
         metrics.total_bytes_uploaded = metrics.shard_bytes_uploaded + metrics.xorb_bytes_uploaded;
 
         // Update the global counters
