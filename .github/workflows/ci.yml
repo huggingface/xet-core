@@ -54,4 +54,4 @@ jobs:
 #          cargo clippy -r --verbose -- -D warnings # elevates warnings to errors
       - name: Build and Test
         run: |
-          cargo test --verbose --no-fail-fast --features "strict"
+          cargo test --verbose --no-fail-fast --features "strict" -p data --test test_clean_smudge
