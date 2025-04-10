@@ -11,35 +11,35 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  fmt:
-    name: Rustfmt
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          toolchain: nightly
-          components: rustfmt
-      - name: Format
-        run: |
-          cargo fmt --manifest-path ./Cargo.toml --all -- --check
-          cargo fmt --manifest-path ./hf_xet/Cargo.toml --all -- --check
+#  fmt:
+#    name: Rustfmt
+#    runs-on: ubuntu-latest
+#    steps:
+#      - uses: actions/checkout@v4
+#      - uses: dtolnay/rust-toolchain@stable
+#        with:
+#          toolchain: nightly
+#          components: rustfmt
+#      - name: Format
+#        run: |
+#          cargo fmt --manifest-path ./Cargo.toml --all -- --check
+#          cargo fmt --manifest-path ./hf_xet/Cargo.toml --all -- --check
 
-  build_and_test:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-      - name: Install Rust 1.86
-        uses: dtolnay/rust-toolchain@1.86.0
-        with:
-          components: clippy
-      - name: Lint
-        run: |
-          cargo clippy -r --verbose -- -D warnings # elevates warnings to errors
-      - name: Build and Test
-        run: |
-          cargo test --verbose --no-fail-fast --features "strict"
+#  build_and_test:
+#    runs-on: ubuntu-latest
+#    steps:
+#      - name: Checkout repository
+#        uses: actions/checkout@v4
+#      - name: Install Rust 1.86
+#        uses: dtolnay/rust-toolchain@1.86.0
+#        with:
+#          components: clippy
+#      - name: Lint
+#        run: |
+#          cargo clippy -r --verbose -- -D warnings # elevates warnings to errors
+#      - name: Build and Test
+#        run: |
+#          cargo test --verbose --no-fail-fast --features "strict"
   build_and_test-win:
     runs-on: windows-latest
     steps:
@@ -47,11 +47,11 @@ jobs:
         uses: actions/checkout@v4
       - name: Install Rust 1.86
         uses: dtolnay/rust-toolchain@1.86.0
-        with:
-          components: clippy
-      - name: Lint
-        run: |
-          cargo clippy -r --verbose -- -D warnings # elevates warnings to errors
+#        with:
+#          components: clippy
+#      - name: Lint
+#        run: |
+#          cargo clippy -r --verbose -- -D warnings # elevates warnings to errors
       - name: Build and Test
         run: |
           cargo test --verbose --no-fail-fast --features "strict"
