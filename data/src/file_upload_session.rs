@@ -245,7 +245,7 @@ impl FileUploadSession {
         Ok(())
     }
 
-    /// Finalize everthing.
+    /// Finalize everything.
     async fn finalize_impl(self: Arc<Self>, return_files: bool) -> Result<(DeduplicationMetrics, Vec<MDBFileInfo>)> {
         // Register the remaining xorbs for upload.
         let data_agg = take(&mut *self.current_session_data.lock().await);
