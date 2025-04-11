@@ -242,7 +242,11 @@ impl UploadClient for LocalClient {
 
         // moved hash validation into [CasObject::serialize], so removed from here.
 
-        if self.exists("", hash).await? {
+        if self
+            .exists("", hash)
+            .await
+            .inspect_err(|e| println!("error on exists! {hash} {e}"))?
+        {
             info!("object {hash:?} already exists in Local CAS; returning.");
             return Ok(0);
         }
@@ -257,6 +261,7 @@ impl UploadClient for LocalClient {
             .suffix(".xorb")
             .tempfile_in(self.base_dir.as_path())
             .map_err(|e| {
+                println!("error creating temporary file base dir: {} {e}", self.base_dir.as_path().display());
                 CasClientError::InternalError(anyhow!("Unable to create temporary file for staging Xorbs, got {e:?}"))
             })?;
 
@@ -269,13 +274,18 @@ impl UploadClient for LocalClient {
                 &data,
                 &chunk_and_boundaries,
                 Some(cas_object::CompressionScheme::None),
-            )?;
+            )
+            .inspect_err(|e| println!("error serialize and write {e}"))?;
             // flush before persisting
-            writer.flush()?;
+            writer.flush().inspect_err(|e| println!("error flush {e}"))?;
             total_bytes_written = bytes_written;
         }
 
-        tempfile.persist(&file_path).map_err(|e| e.error)?;
+        tempfile.persist(&file_path).map_err(|e| {
+            println!("error persisting temporary file {e} to {}", file_path.as_path().display());
+
+            e.error
+        })?;
 
         // attempt to set to readonly on unix.
         // On windows, this may pose issues if a xorb has recently
