@@ -312,8 +312,6 @@ impl DiskCache {
         || chunk_byte_indices[0] != 0
         || *chunk_byte_indices.last().unwrap() as usize != data.len()
         || !strictly_increasing(chunk_byte_indices)
-        // assert 1 new range doesn't take up more than 10% of capacity
-        || data.len() > (self.capacity as usize / 10)
         {
             return Err(ChunkCacheError::InvalidArguments);
         }
