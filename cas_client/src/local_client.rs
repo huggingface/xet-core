@@ -36,6 +36,7 @@ pub struct LocalClient {
 }
 
 impl LocalClient {
+    #[cfg(test)]
     pub fn temporary() -> Result<Self> {
         let tmp_dir = TempDir::new().unwrap();
         let path = tmp_dir.path().to_owned();
@@ -45,6 +46,7 @@ impl LocalClient {
         Ok(s)
     }
 
+    #[cfg(test)]
     pub fn temporary_with_global_dedup(shard_cache_dir: PathBuf) -> Result<Self> {
         let tmp_dir = TempDir::new().unwrap();
         let path = tmp_dir.path().to_owned();
@@ -282,8 +284,9 @@ impl UploadClient for LocalClient {
             total_bytes_written = bytes_written;
         }
 
+        let tempfile_path = tempfile.path().clone();
         tempfile.persist(&file_path).map_err(|e| {
-            println!("error persisting temporary file {e} to {}", file_path.as_path().display());
+            println!("error persisting temporary file {e} from {tempfile_path:?} to {}", file_path.as_path().display());
 
             e.error
         })?;

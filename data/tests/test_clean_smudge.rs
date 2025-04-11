@@ -164,6 +164,7 @@ async fn hydrate_directory(cas_dir: &Path, ptr_dir: &Path, out_dir: &Path) {
 async fn check_clean_smudge_files(file_list: &[(impl AsRef<str>, usize)]) {
     let _temp_dir = TempDir::new().unwrap();
     let temp_path = _temp_dir.path();
+    println!("test tempdir {}", temp_path.display());
 
     let cas_dir = temp_path.join("cas");
     let src_dir = temp_path.join("src");
@@ -221,8 +222,6 @@ fn print_system_info() {
     }
 }
 
-
-
 fn setup_env() {
     #[cfg(windows)]
     print_system_info();
@@ -273,7 +272,6 @@ mod tests {
     async fn test_two_small_multiple_xorbs() {
         setup_env();
         check_clean_smudge_files(&[("a", *MAX_XORB_BYTES / 2 + 1), ("b", *MAX_XORB_BYTES / 2 + 1)]).await;
-
 
         println!("test passed, failing in order to show logs");
         assert!(false);
