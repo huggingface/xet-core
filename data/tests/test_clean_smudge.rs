@@ -273,6 +273,10 @@ mod tests {
     async fn test_two_small_multiple_xorbs() {
         setup_env();
         check_clean_smudge_files(&[("a", *MAX_XORB_BYTES / 2 + 1), ("b", *MAX_XORB_BYTES / 2 + 1)]).await;
+
+
+        println!("test passed, failing in order to show logs");
+        assert!(false);
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

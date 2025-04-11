@@ -59,6 +59,7 @@ impl LocalClient {
         if !base_dir.exists() {
             std::fs::create_dir_all(&base_dir)?;
         }
+        println!("LocalClient:new base_dir: {base_dir:?}");
 
         let shard_dir = base_dir.join("shards");
         if !shard_dir.exists() {
