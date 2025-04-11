@@ -1,5 +1,6 @@
 use std::fs::{create_dir_all, read_dir, File};
 use std::io::{Read, Write};
+use std::mem::MaybeUninit;
 use std::path::Path;
 
 use cas_client::{FileProvider, OutputProvider};
@@ -12,6 +13,7 @@ use rand::rngs::StdRng;
 use error_printer::ErrorPrinter;
 use rand::RngCore;
 use rand::SeedableRng;
+use sysinfo::System;
 use tempfile::TempDir;
 use tokio::task::JoinSet;
 use utils::test_set_globals;
@@ -176,13 +178,59 @@ async fn check_clean_smudge_files(file_list: &[(impl AsRef<str>, usize)]) {
     check_directories_match(&src_dir, &dest_dir);
 }
 
-fn setup_env() {}
+#[cfg(windows)]
+fn print_system_info() {
+    let mut sys = System::new_all();
+    sys.refresh_all();
+
+    println!("=== Basic System Info ===");
+    println!("OS:            {}", System::name().unwrap_or("Unknown".into()));
+    println!("OS Version:    {}", System::os_version().unwrap_or("Unknown".into()));
+    println!("Kernel Version:{}", System::kernel_version().unwrap_or("Unknown".into()));
+    println!("Architecture:  {}", whoami::arch());
+    println!("Hostname:      {}", System::host_name().unwrap_or("Unknown".into()));
+    println!("Username:      {}", whoami::username());
+    println!("Realname:      {}", whoami::realname());
+    println!("Desktop Env:   {}", whoami::desktop_env());
+    println!("Device Name:   {}", whoami::devicename());
+
+    println!("\n=== CPU Info ===");
+    for cpu in sys.cpus() {
+        println!("CPU: {} | Frequency: {} MHz | Usage: {:.2}%", cpu.brand(), cpu.frequency(), cpu.cpu_usage());
+    }
+
+    println!("\n=== Memory Info ===");
+    println!("Total memory:  {} MB", sys.total_memory() / 1024);
+    println!("Used memory:   {} MB", sys.used_memory() / 1024);
+    println!("Total swap:    {} MB", sys.total_swap() / 1024);
+    println!("Used swap:     {} MB", sys.used_swap() / 1024);
+
+    println!("\n=== Windows System Info ===");
+    unsafe {
+        let mut sysinfo: winapi::um::sysinfoapi::SYSTEM_INFO = MaybeUninit::zeroed().assume_init();
+        winapi::um::sysinfoapi::GetSystemInfo(&mut sysinfo);
+
+        println!("Number of processors:   {}", sysinfo.dwNumberOfProcessors);
+        println!("Page size:              {} bytes", sysinfo.dwPageSize);
+        println!("Processor type:         {}", sysinfo.dwProcessorType);
+    }
+
+    println!("\n=== Environment Variables ===");
+    for (key, value) in std::env::vars() {
+        println!("{} = {}", key, value);
+    }
+}
+
+
+
+fn setup_env() {
+    #[cfg(windows)]
+    print_system_info();
+}
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::mem::MaybeUninit;
-    use sysinfo::System;
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_simple_directory() {
@@ -241,55 +289,5 @@ mod tests {
         let files: Vec<_> = (0..n).map(|idx| (format!("f_{idx}"), size)).collect();
         setup_env();
         check_clean_smudge_files(&files).await;
-    }
-
-    #[cfg(windows)]
-    fn print_system_info() {
-        let mut sys = System::new_all();
-        sys.refresh_all();
-
-        println!("=== Basic System Info ===");
-        println!("OS:            {}", System::name().unwrap_or("Unknown".into()));
-        println!("OS Version:    {}", System::os_version().unwrap_or("Unknown".into()));
-        println!("Kernel Version:{}", System::kernel_version().unwrap_or("Unknown".into()));
-        println!("Architecture:  {}", whoami::arch());
-        println!("Hostname:      {}", System::host_name().unwrap_or("Unknown".into()));
-        println!("Username:      {}", whoami::username());
-        println!("Realname:      {}", whoami::realname());
-        println!("Desktop Env:   {}", whoami::desktop_env());
-        println!("Device Name:   {}", whoami::devicename());
-
-        println!("\n=== CPU Info ===");
-        for cpu in sys.cpus() {
-            println!("CPU: {} | Frequency: {} MHz | Usage: {:.2}%", cpu.brand(), cpu.frequency(), cpu.cpu_usage());
-        }
-
-        println!("\n=== Memory Info ===");
-        println!("Total memory:  {} MB", sys.total_memory() / 1024);
-        println!("Used memory:   {} MB", sys.used_memory() / 1024);
-        println!("Total swap:    {} MB", sys.total_swap() / 1024);
-        println!("Used swap:     {} MB", sys.used_swap() / 1024);
-
-        println!("\n=== Windows System Info ===");
-        unsafe {
-            let mut sysinfo: winapi::um::sysinfoapi::SYSTEM_INFO = MaybeUninit::zeroed().assume_init();
-            winapi::um::sysinfoapi::GetSystemInfo(&mut sysinfo);
-
-            println!("Number of processors:   {}", sysinfo.dwNumberOfProcessors);
-            println!("Page size:              {} bytes", sysinfo.dwPageSize);
-            println!("Processor type:         {}", sysinfo.dwProcessorType);
-        }
-
-        println!("\n=== Environment Variables ===");
-        for (key, value) in std::env::vars() {
-            println!("{} = {}", key, value);
-        }
-    }
-
-    #[cfg(windows)]
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn test_windows() {
-        print_system_info();
-        assert!(false);
     }
 }
