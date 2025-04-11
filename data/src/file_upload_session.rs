@@ -236,10 +236,14 @@ impl FileUploadSession {
         debug_assert_le!(xorb.num_bytes(), *MAX_XORB_BYTES);
         debug_assert_le!(xorb.data.len(), *MAX_XORB_CHUNKS);
 
-        self.register_new_xorb_for_upload(xorb).await?;
+        println!("before register_new_xorb_for_upload");
+        self.register_new_xorb_for_upload(xorb).await.inspect_err(|e| println!("register_new_xorb_for_upload err {e}"))?;
+        println!("after register_new_xorb_for_upload");
 
-        for fi in new_files {
-            self.shard_interface.add_file_reconstruction_info(fi).await?;
+        for (i, fi) in new_files.into_iter().enumerate() {
+            println!("before add_file_reconstruction_info {i}, {fi:?}");
+            self.shard_interface.add_file_reconstruction_info(fi).await.inspect_err(|e| println!("{i} add_file_reconstruction_info err {e}"))?;
+            println!("after add_file_reconstruction_info {i}");
         }
 
         Ok(())
