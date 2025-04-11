@@ -284,7 +284,7 @@ impl UploadClient for LocalClient {
             total_bytes_written = bytes_written;
         }
 
-        let tempfile_path = tempfile.path().clone();
+        let tempfile_path = tempfile.path().to_owned();
         tempfile.persist(&file_path).map_err(|e| {
             println!("error persisting temporary file {e} from {tempfile_path:?} to {}", file_path.as_path().display());
 
