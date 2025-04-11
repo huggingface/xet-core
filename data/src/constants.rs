@@ -14,7 +14,8 @@ utils::configurable_constants! {
     ref MDB_SHARD_LOCAL_CACHE_EXPIRATION_SECS: u64 = 3 * 7 * 24 * 3600;
 
     /// The maximum number of simultaneous xorb upload streams.
-    /// The default value is 8 and can be overwritten by environment variable "XET_CONCURRENT_XORB_UPLOADS".
+    /// can be overwritten by environment variable "HF_XET_CONCURRENT_XORB_UPLOADS".
+    /// The default value changes from 8 to 100 when "High Performance Mode" is enabled
     ref MAX_CONCURRENT_UPLOADS: usize = GlobalConfigMode::HighPerformanceOption {
         standard: 8,
         high_performance: 100,
