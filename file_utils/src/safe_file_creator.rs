@@ -1,5 +1,5 @@
 use std::fs::{self, File, Metadata};
-use std::io::{self, BufWriter, Write};
+use std::io::{self, BufWriter, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
 use rand::distributions::Alphanumeric;
@@ -139,6 +139,12 @@ impl Write for SafeFileCreator {
 
     fn flush(&mut self) -> io::Result<()> {
         self.writer()?.flush()
+    }
+}
+
+impl Seek for SafeFileCreator {
+    fn seek(&mut self, pos: SeekFrom) -> io::Result<u64> {
+        self.writer()?.seek(pos)
     }
 }
 

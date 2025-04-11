@@ -1,5 +1,5 @@
 use std::fs::{metadata, File};
-use std::io::{BufReader, BufWriter, Cursor, Write};
+use std::io::{BufReader, Cursor, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -7,6 +7,7 @@ use anyhow::anyhow;
 use async_trait::async_trait;
 use cas_object::CasObject;
 use cas_types::{FileRange, Key};
+use file_utils::SafeFileCreator;
 use heed::types::*;
 use mdb_shard::file_structs::MDBFileInfo;
 use mdb_shard::shard_file_reconstructor::FileReconstructor;
@@ -250,32 +251,15 @@ impl UploadClient for LocalClient {
         let file_path = self.get_path_for_entry(hash);
         info!("Writing XORB {hash:?} to local path {file_path:?}");
 
-        // we prefix with "[PID]." for now. We should be able to do a cleanup
-        // in the future.
-        let tempfile = tempfile::Builder::new()
-            .prefix(&format!("{}.", std::process::id()))
-            .suffix(".xorb")
-            .tempfile_in(self.base_dir.as_path())
-            .map_err(|e| {
-                CasClientError::InternalError(anyhow!("Unable to create temporary file for staging Xorbs, got {e:?}"))
-            })?;
-
-        let total_bytes_written;
-        {
-            let mut writer = BufWriter::new(&tempfile);
-            let (_, bytes_written) = CasObject::serialize(
-                &mut writer,
-                hash,
-                &data,
-                &chunk_and_boundaries,
-                Some(cas_object::CompressionScheme::None),
-            )?;
-            // flush before persisting
-            writer.flush()?;
-            total_bytes_written = bytes_written;
-        }
-
-        tempfile.persist(&file_path).map_err(|e| e.error)?;
+        let mut file = SafeFileCreator::new(&file_path)?;
+        let (_, bytes_written) = CasObject::serialize(
+            &mut file,
+            hash,
+            &data,
+            &chunk_and_boundaries,
+            Some(cas_object::CompressionScheme::None),
+        )?;
+        file.close()?;
 
         // attempt to set to readonly on unix.
         // On windows, this may pose issues if a xorb has recently
@@ -288,9 +272,9 @@ impl UploadClient for LocalClient {
             let _ = std::fs::set_permissions(&file_path, permissions);
         }
 
-        info!("{file_path:?} successfully written with {total_bytes_written:?} bytes.");
+        info!("{file_path:?} successfully written with {bytes_written} bytes.");
 
-        Ok(total_bytes_written)
+        Ok(bytes_written)
     }
 
     async fn exists(&self, _prefix: &str, hash: &MerkleHash) -> Result<bool> {
@@ -302,7 +286,7 @@ impl UploadClient for LocalClient {
             return Ok(false);
         }
 
-        if !res.unwrap().is_file() {
+        if !res?.is_file() {
             return Err(CasClientError::InternalError(anyhow!(
                 "Attempting to write to {:?}, but it is not a file",
                 file_path
