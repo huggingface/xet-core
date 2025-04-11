@@ -200,7 +200,9 @@ pub fn create_dir_all(path: impl AsRef<Path>) -> std::io::Result<()> {
 }
 
 pub fn create_file(path: impl AsRef<Path>) -> std::io::Result<File> {
-    PrivilgedExecutionContext::current().create_file(path)
+    PrivilgedExecutionContext::current()
+        .create_file(path.as_ref())
+        .inspect_err(|e| println!("create error {e}, path: {:?}", path.as_ref().display()))
 }
 
 #[allow(unused_variables)]

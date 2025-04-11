@@ -236,20 +236,34 @@ impl FileUploadSession {
         debug_assert_le!(xorb.num_bytes(), *MAX_XORB_BYTES);
         debug_assert_le!(xorb.data.len(), *MAX_XORB_CHUNKS);
 
-        self.register_new_xorb_for_upload(xorb).await?;
+        println!("before register_new_xorb_for_upload");
+        self.register_new_xorb_for_upload(xorb)
+            .await
+            .inspect_err(|e| println!("register_new_xorb_for_upload err {e}"))?;
+        println!("after register_new_xorb_for_upload");
 
-        for fi in new_files {
-            self.shard_interface.add_file_reconstruction_info(fi).await?;
+        for (i, fi) in new_files.into_iter().enumerate() {
+            println!("before add_file_reconstruction_info {i}, {fi:?}");
+            self.shard_interface
+                .add_file_reconstruction_info(fi)
+                .await
+                .inspect_err(|e| println!("{i} add_file_reconstruction_info err {e}"))?;
+            println!("after add_file_reconstruction_info {i}");
         }
 
         Ok(())
     }
 
-    /// Finalize everthing.
+    /// Finalize everything.
     async fn finalize_impl(self: Arc<Self>, return_files: bool) -> Result<(DeduplicationMetrics, Vec<MDBFileInfo>)> {
         // Register the remaining xorbs for upload.
+        println!("start of finalize_impl");
         let data_agg = take(&mut *self.current_session_data.lock().await);
-        self.process_aggregated_data_as_xorb(data_agg).await?;
+        println!("start of process_aggregated_data_as_xorb");
+        self.process_aggregated_data_as_xorb(data_agg)
+            .await
+            .inspect_err(|e| println!("{e}"))?;
+        println!("end of process_aggregated_data_as_xorb");
 
         // Now, make sure all the remaining xorbs are uploaded.
         let mut metrics = take(&mut *self.deduplication_metrics.lock().await);
@@ -258,8 +272,9 @@ impl FileUploadSession {
         let mut upload_tasks = take(&mut *self.xorb_upload_tasks.lock().await);
 
         while let Some(result) = upload_tasks.join_next().await {
-            result??;
+            result?.inspect_err(|e| println!("upload task error {e}"))?;
         }
+        println!("end of joining upload_tasks");
 
         // Now that all the tasks there are completed, there shouldn't be any other references to this session
         // hanging around; i.e. the self in this shession should be used as if it's consuming the class, as it
@@ -267,14 +282,25 @@ impl FileUploadSession {
         debug_assert_eq!(Arc::strong_count(&self), 1);
 
         let all_file_info = if return_files {
-            self.shard_interface.session_file_info_list().await?
+            println!("before session_file_info_list");
+            self.shard_interface
+                .session_file_info_list()
+                .await
+                .inspect_err(|e| println!("{e}"))?
         } else {
             Vec::new()
         };
+        println!("after session_file_info_list");
 
         // Upload and register the current shards in the session, moving them
         // to the cache.
-        metrics.shard_bytes_uploaded = self.shard_interface.upload_and_register_session_shards().await?;
+        println!("before upload_and_register_session_shards");
+        metrics.shard_bytes_uploaded = self
+            .shard_interface
+            .upload_and_register_session_shards()
+            .await
+            .inspect_err(|e| println!("error upload and register shard {e}"))?;
+        println!("after upload_and_register_session_shards");
         metrics.total_bytes_uploaded = metrics.shard_bytes_uploaded + metrics.xorb_bytes_uploaded;
 
         // Update the global counters

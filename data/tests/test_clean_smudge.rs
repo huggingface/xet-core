@@ -1,5 +1,6 @@
 use std::fs::{create_dir_all, read_dir, File};
 use std::io::{Read, Write};
+use std::mem::MaybeUninit;
 use std::path::Path;
 
 use cas_client::{FileProvider, OutputProvider};
@@ -9,8 +10,10 @@ use data::{FileDownloader, FileUploadSession, PointerFile};
 use deduplication::constants::{MAX_XORB_BYTES, MAX_XORB_CHUNKS, TARGET_CHUNK_SIZE};
 use rand::rngs::StdRng;
 // rand crates
+use error_printer::ErrorPrinter;
 use rand::RngCore;
 use rand::SeedableRng;
+use sysinfo::System;
 use tempfile::TempDir;
 use tokio::task::JoinSet;
 use utils::test_set_globals;
@@ -109,7 +112,7 @@ async fn dehydrate_directory(cas_dir: &Path, src_dir: &Path, ptr_dir: &Path) {
 
     let upload_session = FileUploadSession::new(config.clone(), ThreadPool::from_current_runtime(), None)
         .await
-        .unwrap();
+        .expect("Failed to create FileUploadSession");
 
     let mut upload_tasks = JoinSet::new();
 
@@ -119,14 +122,20 @@ async fn dehydrate_directory(cas_dir: &Path, src_dir: &Path, ptr_dir: &Path) {
         let upload_session = upload_session.clone();
 
         upload_tasks.spawn(async move {
-            let (pf, _metrics) = clean_file(upload_session.clone(), entry.path()).await.unwrap();
+            let (pf, _metrics) = clean_file(upload_session.clone(), entry.path())
+                .await
+                .expect(&format!("Failed to clean file {:?}", entry.path()));
             std::fs::write(out_file, pf.to_string()).unwrap();
         });
     }
 
     upload_tasks.join_all().await;
 
-    upload_session.finalize().await.unwrap();
+    upload_session
+        .finalize()
+        .await
+        .log_error("Failed to finalize FileUploadSession")
+        .expect("Failed to finalize FileUploadSession");
 }
 
 async fn hydrate_directory(cas_dir: &Path, ptr_dir: &Path, out_dir: &Path) {
@@ -155,6 +164,7 @@ async fn hydrate_directory(cas_dir: &Path, ptr_dir: &Path, out_dir: &Path) {
 async fn check_clean_smudge_files(file_list: &[(impl AsRef<str>, usize)]) {
     let _temp_dir = TempDir::new().unwrap();
     let temp_path = _temp_dir.path();
+    println!("test tempdir {}", temp_path.display());
 
     let cas_dir = temp_path.join("cas");
     let src_dir = temp_path.join("src");
@@ -169,7 +179,53 @@ async fn check_clean_smudge_files(file_list: &[(impl AsRef<str>, usize)]) {
     check_directories_match(&src_dir, &dest_dir);
 }
 
-fn setup_env() {}
+#[cfg(windows)]
+fn print_system_info() {
+    let mut sys = System::new_all();
+    sys.refresh_all();
+
+    println!("=== Basic System Info ===");
+    println!("OS:            {}", System::name().unwrap_or("Unknown".into()));
+    println!("OS Version:    {}", System::os_version().unwrap_or("Unknown".into()));
+    println!("Kernel Version:{}", System::kernel_version().unwrap_or("Unknown".into()));
+    println!("Architecture:  {}", whoami::arch());
+    println!("Hostname:      {}", System::host_name().unwrap_or("Unknown".into()));
+    println!("Username:      {}", whoami::username());
+    println!("Realname:      {}", whoami::realname());
+    println!("Desktop Env:   {}", whoami::desktop_env());
+    println!("Device Name:   {}", whoami::devicename());
+
+    println!("\n=== CPU Info ===");
+    for cpu in sys.cpus() {
+        println!("CPU: {} | Frequency: {} MHz | Usage: {:.2}%", cpu.brand(), cpu.frequency(), cpu.cpu_usage());
+    }
+
+    println!("\n=== Memory Info ===");
+    println!("Total memory:  {} MB", sys.total_memory() / 1024);
+    println!("Used memory:   {} MB", sys.used_memory() / 1024);
+    println!("Total swap:    {} MB", sys.total_swap() / 1024);
+    println!("Used swap:     {} MB", sys.used_swap() / 1024);
+
+    println!("\n=== Windows System Info ===");
+    unsafe {
+        let mut sysinfo: winapi::um::sysinfoapi::SYSTEM_INFO = MaybeUninit::zeroed().assume_init();
+        winapi::um::sysinfoapi::GetSystemInfo(&mut sysinfo);
+
+        println!("Number of processors:   {}", sysinfo.dwNumberOfProcessors);
+        println!("Page size:              {} bytes", sysinfo.dwPageSize);
+        println!("Processor type:         {}", sysinfo.dwProcessorType);
+    }
+
+    println!("\n=== Environment Variables ===");
+    for (key, value) in std::env::vars() {
+        println!("{} = {}", key, value);
+    }
+}
+
+fn setup_env() {
+    #[cfg(windows)]
+    print_system_info();
+}
 
 #[cfg(test)]
 mod tests {
@@ -216,6 +272,9 @@ mod tests {
     async fn test_two_small_multiple_xorbs() {
         setup_env();
         check_clean_smudge_files(&[("a", *MAX_XORB_BYTES / 2 + 1), ("b", *MAX_XORB_BYTES / 2 + 1)]).await;
+
+        println!("test passed, failing in order to show logs");
+        assert!(false);
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

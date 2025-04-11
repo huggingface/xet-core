@@ -36,6 +36,7 @@ pub struct LocalClient {
 }
 
 impl LocalClient {
+    #[cfg(test)]
     pub fn temporary() -> Result<Self> {
         let tmp_dir = TempDir::new().unwrap();
         let path = tmp_dir.path().to_owned();
@@ -45,6 +46,7 @@ impl LocalClient {
         Ok(s)
     }
 
+    #[cfg(test)]
     pub fn temporary_with_global_dedup(shard_cache_dir: PathBuf) -> Result<Self> {
         let tmp_dir = TempDir::new().unwrap();
         let path = tmp_dir.path().to_owned();
@@ -59,6 +61,7 @@ impl LocalClient {
         if !base_dir.exists() {
             std::fs::create_dir_all(&base_dir)?;
         }
+        println!("LocalClient:new base_dir: {base_dir:?}");
 
         let shard_dir = base_dir.join("shards");
         if !shard_dir.exists() {
@@ -242,7 +245,11 @@ impl UploadClient for LocalClient {
 
         // moved hash validation into [CasObject::serialize], so removed from here.
 
-        if self.exists("", hash).await? {
+        if self
+            .exists("", hash)
+            .await
+            .inspect_err(|e| println!("error on exists! {hash} {e}"))?
+        {
             info!("object {hash:?} already exists in Local CAS; returning.");
             return Ok(0);
         }
@@ -257,6 +264,7 @@ impl UploadClient for LocalClient {
             .suffix(".xorb")
             .tempfile_in(self.base_dir.as_path())
             .map_err(|e| {
+                println!("error creating temporary file base dir: {} {e}", self.base_dir.as_path().display());
                 CasClientError::InternalError(anyhow!("Unable to create temporary file for staging Xorbs, got {e:?}"))
             })?;
 
@@ -269,13 +277,19 @@ impl UploadClient for LocalClient {
                 &data,
                 &chunk_and_boundaries,
                 Some(cas_object::CompressionScheme::None),
-            )?;
+            )
+            .inspect_err(|e| println!("error serialize and write {e}"))?;
             // flush before persisting
-            writer.flush()?;
+            writer.flush().inspect_err(|e| println!("error flush {e}"))?;
             total_bytes_written = bytes_written;
         }
 
-        tempfile.persist(&file_path).map_err(|e| e.error)?;
+        let tempfile_path = tempfile.path().to_owned();
+        tempfile.persist(&file_path).map_err(|e| {
+            println!("error persisting temporary file {e} from {tempfile_path:?} to {}", file_path.as_path().display());
+
+            e.error
+        })?;
 
         // attempt to set to readonly on unix.
         // On windows, this may pose issues if a xorb has recently
