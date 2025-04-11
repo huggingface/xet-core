@@ -272,7 +272,7 @@ impl FileUploadSession {
         let mut upload_tasks = take(&mut *self.xorb_upload_tasks.lock().await);
 
         while let Some(result) = upload_tasks.join_next().await {
-            result?.inspect_err(|e| println!("upload task join error {e}"))?;
+            result?.inspect_err(|e| println!("upload task error {e}"))?;
         }
         println!("end of joining upload_tasks");
 

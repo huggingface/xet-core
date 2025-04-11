@@ -102,7 +102,8 @@ impl SafeFileCreator {
         drop(writer);
 
         // Replace the original file with the new file
-        fs::rename(&self.temp_path, dest_path)?;
+        fs::rename(&self.temp_path, dest_path)
+            .inspect_err(|e| println!("fs rename error {e}, from {:?} to {dest_path:?}", &self.temp_path))?;
 
         if let Some(metadata) = self.original_metadata.as_ref() {
             set_file_metadata(dest_path, metadata, false)?;
