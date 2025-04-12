@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use async_trait::async_trait;
 use cas_client::{build_http_client, RetryConfig};
 use reqwest_middleware::ClientWithMiddleware;
@@ -45,9 +45,21 @@ impl HubClient {
             .await?;
 
         let headers = response.headers();
-        let cas_endpoint = headers["X-Xet-Cas-Url"].to_str()?.to_owned();
-        let jwt_token: String = headers["X-Xet-Access-Token"].to_str()?.to_owned();
-        let jwt_token_expiry: u64 = headers["X-Xet-Token-Expiration"].to_str()?.parse()?;
+        let cas_endpoint = headers
+            .get("X-Xet-Cas-Url")
+            .ok_or(anyhow!("CAS url not found"))?
+            .to_str()?
+            .to_owned();
+        let jwt_token: String = headers
+            .get("X-Xet-Access-Token")
+            .ok_or(anyhow!("access token not found"))?
+            .to_str()?
+            .to_owned();
+        let jwt_token_expiry: u64 = headers
+            .get("X-Xet-Token-Expiration")
+            .ok_or(anyhow!("token expiration not found"))?
+            .to_str()?
+            .parse()?;
 
         Ok((cas_endpoint, jwt_token, jwt_token_expiry))
     }
