@@ -58,17 +58,19 @@ impl FileRange {
         (segment, remainder)
     }
 
-    pub fn len(&self) -> u64 {
+    pub fn length(&self) -> u64 {
         self.end - self.start
     }
 }
 
 // note that the standard PartialOrd/Ord impls will first check `start` then `end`
-#[derive(Debug, Serialize, Deserialize, Clone, Eq, PartialEq, PartialOrd, Ord, Default, Hash, Copy)]
+#[derive(Debug, Serialize, Deserialize, Clone, Eq, PartialEq, PartialOrd, Ord, Default, Hash)]
 pub struct Range<Idx> {
     pub start: Idx,
     pub end: Idx,
 }
+
+impl<T: Copy> Copy for Range<T> {}
 
 impl<Idx: fmt::Display> fmt::Display for Range<Idx> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {

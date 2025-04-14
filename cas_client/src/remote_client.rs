@@ -1,25 +1,22 @@
-use std::cmp::{max, min};
-use std::collections::{HashMap, HashSet};
+use std::cmp::min;
 use std::io::{Cursor, Write};
-use std::ops::Range;
+use std::mem::take;
 use std::path::PathBuf;
-use std::sync::{Arc, RwLock};
-use std::time::{Duration, Instant};
+use std::sync::{Arc, Mutex};
 
 use anyhow::anyhow;
 use async_trait::async_trait;
 use cas_object::{CasObject, CompressionScheme};
 use cas_types::{
-    BatchQueryReconstructionResponse, CASReconstructionFetchInfo, CASReconstructionTerm, ChunkRange, FileRange,
-    HexMerkleHash, HttpRange, Key, QueryReconstructionResponse, UploadShardResponse, UploadShardResponseType,
-    UploadXorbResponse,
+    BatchQueryReconstructionResponse, FileRange, Key, QueryReconstructionResponse, UploadShardResponse,
+    UploadShardResponseType, UploadXorbResponse,
 };
 use chunk_cache::{CacheConfig, ChunkCache};
 use deduplication::constants::MAX_XORB_BYTES;
 use error_printer::ErrorPrinter;
 use file_utils::SafeFileCreator;
 use futures::stream::{FuturesOrdered, FuturesUnordered};
-use futures::{StreamExt, TryStreamExt};
+use futures::StreamExt;
 use http::header::RANGE;
 use mdb_shard::file_structs::{FileDataSequenceEntry, FileDataSequenceHeader, MDBFileInfo};
 use mdb_shard::shard_file_reconstructor::FileReconstructor;
@@ -27,14 +24,15 @@ use mdb_shard::utils::shard_file_name;
 use merklehash::{HashedWrite, MerkleHash};
 use reqwest::{StatusCode, Url};
 use reqwest_middleware::ClientWithMiddleware;
-use tokio::sync::{mpsc, Mutex, Semaphore};
+use tokio::sync::{mpsc, Semaphore};
 use tokio::task::JoinHandle;
-use tracing::{debug, error, info, trace};
+use tracing::{debug, info};
 use utils::auth::AuthConfig;
 use utils::progress::ProgressUpdater;
 use utils::singleflight::Group;
 use xet_threadpool::ThreadPool;
 
+use crate::download_utils::*;
 use crate::error::{CasClientError, Result};
 use crate::http_client::{ResponseErrorLogger, RetryConfig};
 use crate::interface::{ShardDedupProber, *};
@@ -168,62 +166,20 @@ impl ReconstructionClient for RemoteClient {
         output_provider: &OutputProvider,
         progress_updater: Option<Arc<dyn ProgressUpdater>>,
     ) -> Result<u64> {
-        // get manifest of xorbs to download, api call to CAS
-        let manifest = self.get_reconstruction(hash, byte_range.clone()).await?;
-        let terms = manifest.terms;
-        let fetch_info = Arc::new(manifest.fetch_info);
-
         // If the user has set the `HF_XET_RECONSTRUCT_WRITE_SEQUENTIALLY=true` env variable, then we
         // should write the file to the output sequentially instead of in parallel.
         if *RECONSTRUCT_WRITE_SEQUENTIALLY {
-            self.reconstruct_file_to_writer(
-                terms,
-                fetch_info,
-                manifest.offset_into_first_range,
-                byte_range,
-                output_provider,
-                progress_updater,
-            )
-            .await
+            self.reconstruct_file_to_writer_segmented(hash, byte_range, output_provider, progress_updater)
+                .await
         } else {
-            self.reconstruct_file_to_writer_parallel(
-                terms,
-                fetch_info,
-                manifest.offset_into_first_range,
+            self.reconstruct_file_to_writer_segmented_parallel_write(
+                hash,
                 byte_range,
                 output_provider,
                 progress_updater,
             )
             .await
         }
-    }
-
-    async fn batch_get_file(&self, files: HashMap<MerkleHash, &OutputProvider>) -> Result<u64> {
-        let requested_file_ids = files.keys().cloned().collect::<HashSet<_>>();
-        let manifest = self.batch_get_reconstruction(requested_file_ids.iter()).await?;
-        let fetch_info = Arc::new(manifest.fetch_info);
-
-        let received_file_ids: HashSet<MerkleHash> = manifest.files.keys().map(Into::into).collect::<HashSet<_>>();
-        if requested_file_ids != received_file_ids {
-            return Err(CasClientError::Other(
-                "CAS returned a batch response not matching requested files".to_string(),
-            ));
-        }
-
-        // TODO: spawn threads to reconstruct each file
-        let mut ret_size = 0;
-        for (hash, terms) in manifest.files {
-            let w = files.get(&(hash.into())).unwrap();
-            ret_size += if *RECONSTRUCT_WRITE_SEQUENTIALLY {
-                self.reconstruct_file_to_writer(terms, fetch_info.clone(), 0, None, w, None)
-                    .await?
-            } else {
-                self.reconstruct_file_to_writer_parallel(terms, fetch_info.clone(), 0, None, w, None)
-                    .await?
-            }
-        }
-
-        Ok(ret_size)
     }
 }
 
@@ -244,7 +200,7 @@ impl Reconstructable for RemoteClient {
     }
 }
 
-async fn get_reconstruction_with_endpoint_and_client(
+pub(crate) async fn get_reconstruction_with_endpoint_and_client(
     endpoint: &str,
     client: &ClientWithMiddleware,
     file_id: &MerkleHash,
@@ -270,166 +226,6 @@ async fn get_reconstruction_with_endpoint_and_client(
 }
 
 impl Client for RemoteClient {}
-
-#[derive(Clone, Debug)]
-enum DownloadRangeResult {
-    Data(Vec<u8>, Vec<u32>),
-    // This is a workaround to propagate the underlying request error as
-    // the underlying reqwest_middleware::Error doesn't impl Clone.
-    // Otherwise, if two download tasks with the same key in the single flight
-    // group failed, the caller will get the origin error but the waiter will
-    // get a `WaiterInternalError` wrapping a copy of the error message ("{e:?}"),
-    // making it impossible to be examined programmatically.
-    Forbidden,
-}
-type RangeDownloadSingleFlight = Arc<Group<DownloadRangeResult, CasClientError>>;
-
-struct FetchInfo {
-    file_hash: MerkleHash,
-    file_range: FileRange,
-    endpoint: String,
-    client: Arc<ClientWithMiddleware>,
-    inner: RwLock<HashMap<HexMerkleHash, Vec<CASReconstructionFetchInfo>>>,
-    version: Mutex<u32>,
-}
-
-impl FetchInfo {
-    fn new(file_hash: MerkleHash, file_range: FileRange, endpoint: String, client: Arc<ClientWithMiddleware>) -> Self {
-        Self {
-            file_hash,
-            file_range,
-            endpoint,
-            client,
-            inner: Default::default(),
-            version: Mutex::new(0),
-        }
-    }
-
-    // consumes self and split the file range into a segment of size `segment_size`
-    // and a remainder.
-    fn take_segment(self, segment_size: u64) -> (Self, Option<Self>) {
-        let (first_segment, remainder) = self.file_range.take_segment(segment_size);
-
-        (
-            FetchInfo::new(self.file_hash, first_segment, self.endpoint.clone(), self.client.clone()),
-            remainder.map(|r| FetchInfo::new(self.file_hash, r, self.endpoint, self.client)),
-        )
-    }
-
-    async fn find(&self, key: (HexMerkleHash, ChunkRange)) -> Result<(CASReconstructionFetchInfo, u32)> {
-        let v = *self.version.lock().await;
-
-        let (hash, range) = key;
-        let map = self.inner.read().map_err(|e| anyhow!("{e:?}"))?;
-        let hash_fetch_info = map
-            .get(&hash)
-            .ok_or(CasClientError::InvalidArguments)
-            .log_error("invalid response from CAS server: failed to get term hash in fetch info")?;
-        let fetch_term = hash_fetch_info
-            .iter()
-            .find(|fterm| fterm.range.start <= range.start && fterm.range.end >= range.end)
-            .ok_or(CasClientError::InvalidArguments)
-            .log_error("invalid response from CAS server: failed to match hash in fetch_info")?
-            .clone();
-
-        Ok((fetch_term, v))
-    }
-
-    async fn query(&self) -> Result<(u64, Vec<CASReconstructionTerm>)> {
-        let manifest = get_reconstruction_with_endpoint_and_client(
-            &self.endpoint,
-            &self.client,
-            &self.file_hash,
-            Some(self.file_range),
-        )
-        .await?;
-
-        *self.inner.write().map_err(|e| anyhow!("{e:?}"))? = manifest.fetch_info;
-
-        Ok((manifest.offset_into_first_range, manifest.terms))
-    }
-
-    async fn refresh(&self, vhint: u32) -> Result<()> {
-        // Our term download tasks run in concurrent, so at this point
-        // it's possible that
-        // 1. some other TermDownload is also calling refersh();
-        // 2. some other TermDownload called refresh and the fetch info
-        //    is already new, but the term calling into this refresh()
-        //    didn't see the update yet.
-
-        // Mutex on `version` ensures only one refresh happens at a time.
-        let mut v = self.version.lock().await;
-        // Version check ensures we don't refresh again if some other
-        // TermDownload already refreshed recently.
-        if *v > vhint {
-            // Already refreshed.
-            return Ok(());
-        }
-
-        self.query().await?;
-
-        *v += 1;
-
-        Ok(())
-    }
-}
-
-struct TermDownload {
-    term: CASReconstructionTerm,
-    skip_bytes: u64,
-    fetch_info: Arc<FetchInfo>,
-    chunk_cache: Option<Arc<dyn ChunkCache>>,
-    range_download_single_flight: RangeDownloadSingleFlight,
-}
-
-#[derive(Debug)]
-struct TermDownloadResult {
-    data: Vec<u8>,
-    duration: Duration,
-    n_retries_on_403: u32,
-}
-
-impl TermDownload {
-    async fn run(self) -> Result<TermDownloadResult> {
-        let instant = Instant::now();
-        let mut n_retries_on_403 = 0;
-
-        let key = (self.term.hash, self.term.range);
-        let mut data = loop {
-            let (fetch_info, v) = self.fetch_info.find(key.clone()).await?;
-
-            let range_data = get_one_term(
-                self.fetch_info.client.clone(),
-                self.chunk_cache.clone(),
-                self.term.clone(),
-                fetch_info,
-                self.range_download_single_flight.clone(),
-            )
-            .await;
-
-            if let Err(CasClientError::PresignedUrlExpirationError) = range_data {
-                self.fetch_info.refresh(v).await?;
-                n_retries_on_403 += 1;
-                continue;
-            }
-
-            break range_data?;
-        };
-
-        data.truncate(self.skip_bytes as usize);
-
-        Ok(TermDownloadResult {
-            data,
-            duration: instant.elapsed(),
-            n_retries_on_403,
-        })
-    }
-}
-
-enum DownloadQueueItem {
-    Term(TermDownload),
-    Metadata(FetchInfo),
-}
 
 impl RemoteClient {
     async fn batch_get_reconstruction(
@@ -498,6 +294,10 @@ impl RemoteClient {
         }
     }
 
+    // Segmented download such that the file reconstruction and fetch info is not queried in its entirety
+    // at the beginning of the download, but queried in segments. Range downloadeds are executed with
+    // a certain degree of parallilism, but writing out to storage is sequential. Ideal when the external
+    // storage uses HDDs.
     async fn reconstruct_file_to_writer_segmented(
         &self,
         file_hash: &MerkleHash,
@@ -505,28 +305,27 @@ impl RemoteClient {
         writer: &OutputProvider,
         progress_updater: Option<Arc<dyn ProgressUpdater>>,
     ) -> Result<u64> {
-        let (task_tx, mut task_rx) = mpsc::unbounded_channel::<DownloadQueueItem>();
-        let running_downloads = Arc::new(Mutex::new(FuturesOrdered::new()));
+        // queue size is inherently bounded by degree of concurrency.
+        let (task_tx, mut task_rx) = mpsc::unbounded_channel::<DownloadQueueItem<TermDownload>>();
+        let running_downloads = Arc::new(tokio::sync::Mutex::new(FuturesOrdered::new()));
 
-        let max_segment_size_in_bytes = *MAX_XORB_BYTES as u64 * *NUM_CONCURRENT_RANGE_GETS as u64;
+        let n_range_in_segment = Arc::new(Mutex::new(*NUM_CONCURRENT_RANGE_GETS));
         let file_reconstruct_range = byte_range.unwrap_or_else(|| FileRange::full());
-        let total_len = file_reconstruct_range.len();
+        let total_len = file_reconstruct_range.length();
 
         // kick start the download by enqueue the fetch info task.
-        task_tx
-            .send(DownloadQueueItem::Metadata(FetchInfo::new(
-                *file_hash,
-                file_reconstruct_range,
-                self.endpoint.clone(),
-                self.authenticated_http_client.clone(),
-            )))
-            .map_err(|e| anyhow!("{e:?}"))?;
+        task_tx.send(DownloadQueueItem::Metadata(FetchInfo::new(
+            *file_hash,
+            file_reconstruct_range,
+            self.endpoint.clone(),
+            self.authenticated_http_client.clone(),
+        )))?;
 
         // Start the queue processing logic
         //
         // If the queue item is `DownloadQueueItem::Metadata`, it fetches the file reconstruction info
-        // of the first segment, whose size is linear to `NUM_CONCURRENT_RANGE_GETS`. Once fetches, term
-        // download tasks are enqueued and spawned with the degree of concurrency equal to `NUM_CONCURRENT_RANGE_GETS`.
+        // of the first segment, whose size is linear to `num_concurrent_range_gets`. Once fetched, term
+        // download tasks are enqueued and spawned with the degree of concurrency equal to `num_concurrent_range_gets`.
         // After the above, a task that defines fetching the remainder of the file reconstruction info is enqueued,
         // which will execute after the first of the above term download tasks finishes.
         let range_get_concurrency = Arc::new(Semaphore::new(*NUM_CONCURRENT_RANGE_GETS));
@@ -534,16 +333,20 @@ impl RemoteClient {
         let running_downloads_clone = running_downloads.clone();
         let chunk_cache = self.chunk_cache.clone();
         let range_download_single_flight = self.range_download_single_flight.clone();
-        let range_get_concurrency_clone = range_get_concurrency.clone();
+        let download_scheduler = DownloadScheduler {
+            n_range_in_segment: n_range_in_segment.clone(),
+            n_concurrent_download_task: range_get_concurrency.clone(),
+        };
+
         let queue_dispatcher: JoinHandle<Result<()>> = self.threadpool.spawn(async move {
             while let Some(item) = task_rx.recv().await {
-                let sem = range_get_concurrency_clone.clone();
+                let sem = range_get_concurrency.clone();
                 match item {
                     DownloadQueueItem::Term(term_download) => {
                         // acquire the permit before spawning the task, so that there's limited
                         // number of active downloads.
-                        let permit = sem.acquire_owned().await.map_err(|e| anyhow!("{e:?}"))?;
-                        let future: JoinHandle<Result<TermDownloadResult>> = threadpool.spawn(async move {
+                        let permit = sem.acquire_owned().await?;
+                        let future: JoinHandle<Result<TermDownloadResult<Vec<u8>>>> = threadpool.spawn(async move {
                             let data = term_download.run().await?;
                             drop(permit);
                             Ok(data)
@@ -552,28 +355,29 @@ impl RemoteClient {
                     },
                     DownloadQueueItem::Metadata(fetch_info) => {
                         // query for the file info of the first segment
-                        let (segment, maybe_remainder) = fetch_info.take_segment(max_segment_size_in_bytes);
+                        let segment_size = *n_range_in_segment.lock()? as u64 * *MAX_XORB_BYTES as u64;
+                        info!("querying file info of size {segment_size}");
+                        let (segment, maybe_remainder) = fetch_info.take_segment(segment_size);
 
                         let (offset_into_first_range, terms) = segment.query().await?;
                         let segment = Arc::new(segment);
                         // define the term download tasks
+                        info!("enqueueing {} download tasks", terms.len());
                         for (i, term) in terms.into_iter().enumerate() {
-                            task_tx
-                                .send(DownloadQueueItem::Term(TermDownload {
-                                    term,
-                                    skip_bytes: if i == 0 { offset_into_first_range } else { 0 },
-                                    fetch_info: segment.clone(),
-                                    chunk_cache: chunk_cache.clone(),
-                                    range_download_single_flight: range_download_single_flight.clone(),
-                                }))
-                                .map_err(|e| anyhow!("{e:?}"))?;
+                            let download_task = TermDownload {
+                                term,
+                                skip_bytes: if i == 0 { offset_into_first_range } else { 0 },
+                                fetch_info: segment.clone(),
+                                chunk_cache: chunk_cache.clone(),
+                                range_download_single_flight: range_download_single_flight.clone(),
+                            };
+                            debug!("enqueueing {download_task:?}");
+                            task_tx.send(DownloadQueueItem::Term(download_task))?;
                         }
 
                         // enqueue the remainder of file info fetch task
                         if let Some(remainder) = maybe_remainder {
-                            task_tx
-                                .send(DownloadQueueItem::Metadata(remainder))
-                                .map_err(|e| anyhow!("{e:?}"))?;
+                            task_tx.send(DownloadQueueItem::Metadata(remainder))?;
                         }
                     },
                 }
@@ -586,275 +390,151 @@ impl RemoteClient {
         let mut total_written = 0;
         while let Some(result) = running_downloads.lock().await.next().await {
             match result {
-                Ok(Ok(download_result)) => {
-                    let data = download_result.data;
-                    // If not range get file, total_len is u64::MAX and this will always
+                Ok(Ok(mut download_result)) => {
+                    let data = take(&mut download_result.data);
+                    // If not get file with `Some(byte_range)`, total_len is u64::MAX and this will always
                     // write the full range.
                     let write_len = min(total_len - total_written, data.len() as u64);
                     writer.write_all(&data[..write_len as usize])?;
                     total_written += write_len;
                     progress_updater.as_ref().inspect(|updater| updater.update(write_len));
 
-                    // Now inspect the download metrics and tune download degree of concurrency
-                    if download_result.n_retries_on_403 > 0 {
-                        range_get_concurrency.forget_permits(1);
-                    } else {
-                        range_get_concurrency.add_permits(1);
-                    }
+                    // Now inspect the download metrics and tune the download degree of concurrency
+                    download_scheduler.tune_on(download_result)?;
                 },
                 Ok(Err(e)) => Err(e)?,
                 Err(e) => Err(anyhow!("{e:?}"))?,
             }
         }
 
-        queue_dispatcher.await.map_err(|e| anyhow!("{e:?}"))??;
+        queue_dispatcher.await??;
 
         Ok(total_written)
     }
 
-    /// Uses the reconstruction response and optionally requested FileRange to re-create a file,
-    /// outputting the file content via indicated OutputProvider.
-    ///
-    /// Unlike `reconstruct_file_to_writer`, this function will spawn a task for writing each
-    /// term to the output, with each task writing to its part of the file.
-    pub async fn reconstruct_file_to_writer_parallel(
+    // Segmented download such that the file reconstruction and fetch info is not queried in its entirety
+    // at the beginning of the download, but queried in segments. Range downloadeds are executed with
+    // a certain degree of parallilism, and so does writing out to storage. Ideal when the external
+    // storage is fast at seeks, e.g. RAM or SSDs.
+    async fn reconstruct_file_to_writer_segmented_parallel_write(
         &self,
-        terms: Vec<CASReconstructionTerm>,
-        fetch_info: Arc<HashMap<HexMerkleHash, Vec<CASReconstructionFetchInfo>>>,
-        offset_into_first_range: u64,
+        file_hash: &MerkleHash,
         byte_range: Option<FileRange>,
-        output_provider: &OutputProvider,
+        writer: &OutputProvider,
         progress_updater: Option<Arc<dyn ProgressUpdater>>,
     ) -> Result<u64> {
-        let total_len = if let Some(range) = byte_range {
-            range.end - range.start
-        } else {
-            terms.iter().fold(0, |acc, x| acc + x.unpacked_length as u64)
-        };
-        let task_info = TermWriteTask {
-            http_client: self.http_client.clone(),
-            chunk_cache: self.chunk_cache.clone(),
-            range_download_single_flight: self.range_download_single_flight.clone(),
-            fetch_info,
-            semaphore: Arc::new(Semaphore::new(*NUM_CONCURRENT_RANGE_GETS)),
-            output: output_provider.clone(),
-        };
-        // Build term tasks, computing the offsets needed for the downloaded term and
-        // offset for the output.
-        let mut bytes_written = 0;
-        let mut remaining = total_len;
-        let term_tasks = terms.into_iter().enumerate().map(|(idx, term)| {
-            let start = if idx == 0 { offset_into_first_range as usize } else { 0 };
-            let end = min(start as u64 + remaining, term.unpacked_length as u64) as usize;
-            let file_offset = bytes_written;
-            let len = (end - start) as u64;
+        // queue size is inherently bounded by degree of concurrency.
+        let (task_tx, mut task_rx) = mpsc::unbounded_channel::<DownloadQueueItem<TermDownloadAndWrite>>();
+        // note this uses `FuturesUnordered`
+        let running_downloads = Arc::new(tokio::sync::Mutex::new(FuturesUnordered::new()));
 
-            bytes_written += len;
-            remaining -= len;
+        let n_range_in_segment = Arc::new(Mutex::new(*NUM_CONCURRENT_RANGE_GETS));
+        let file_reconstruct_range = byte_range.unwrap_or_else(|| FileRange::full());
+        let total_len = file_reconstruct_range.length();
 
-            let task = task_info.clone();
-            task.write_term(term, start..end, file_offset)
+        // kick start the download by enqueue the fetch info task.
+        task_tx.send(DownloadQueueItem::Metadata(FetchInfo::new(
+            *file_hash,
+            file_reconstruct_range,
+            self.endpoint.clone(),
+            self.authenticated_http_client.clone(),
+        )))?;
+
+        // Start the queue processing logic
+        //
+        // If the queue item is `DownloadQueueItem::Metadata`, it fetches the file reconstruction info
+        // of the first segment, whose size is linear to `num_concurrent_range_gets`. Once fetched, term
+        // download tasks are enqueued and spawned with the degree of concurrency equal to `num_concurrent_range_gets`.
+        // After the above, a task that defines fetching the remainder of the file reconstruction info is enqueued,
+        // which will execute after the first of the above term download tasks finishes.
+        let range_get_concurrency = Arc::new(Semaphore::new(*NUM_CONCURRENT_RANGE_GETS));
+        let threadpool = self.threadpool.clone();
+        let running_downloads_clone = running_downloads.clone();
+        let chunk_cache = self.chunk_cache.clone();
+        let range_download_single_flight = self.range_download_single_flight.clone();
+        let download_scheduler = DownloadScheduler {
+            n_range_in_segment: n_range_in_segment.clone(),
+            n_concurrent_download_task: range_get_concurrency.clone(),
+        };
+        let writer_clone = writer.clone();
+
+        let queue_dispatcher: JoinHandle<Result<()>> = self.threadpool.spawn(async move {
+            let mut total_written = 0;
+            while let Some(item) = task_rx.recv().await {
+                let sem = range_get_concurrency.clone();
+                match item {
+                    DownloadQueueItem::Term(term_download) => {
+                        // acquire the permit before spawning the task, so that there's limited
+                        // number of active downloads.
+                        let permit = sem.acquire_owned().await?;
+                        let future: JoinHandle<Result<TermDownloadResult<usize>>> = threadpool.spawn(async move {
+                            let data = term_download.run().await?;
+                            drop(permit);
+                            Ok(data)
+                        });
+                        running_downloads_clone.lock().await.push(future);
+                    },
+                    DownloadQueueItem::Metadata(fetch_info) => {
+                        // query for the file info of the first segment
+                        let segment_size = *n_range_in_segment.lock()? as u64 * *MAX_XORB_BYTES as u64;
+                        info!("querying file info of size {segment_size}");
+                        let (segment, maybe_remainder) = fetch_info.take_segment(segment_size);
+
+                        let (offset_into_first_range, terms) = segment.query().await?;
+                        let segment = Arc::new(segment);
+                        // define the term download tasks
+                        info!("enqueueing {} download tasks", terms.len());
+                        for (i, term) in terms.into_iter().enumerate() {
+                            let write_len = min(total_len - total_written, term.unpacked_length as u64);
+                            let download_and_write_task = TermDownloadAndWrite {
+                                download: TermDownload {
+                                    term,
+                                    skip_bytes: if i == 0 { offset_into_first_range } else { 0 },
+                                    fetch_info: segment.clone(),
+                                    chunk_cache: chunk_cache.clone(),
+                                    range_download_single_flight: range_download_single_flight.clone(),
+                                },
+                                take: write_len as usize,
+                                file_offset: total_written,
+                                output: writer_clone.clone(),
+                            };
+                            debug!("enqueueing {download_and_write_task:?}");
+                            task_tx.send(DownloadQueueItem::Term(download_and_write_task))?;
+
+                            total_written += write_len;
+                        }
+
+                        // enqueue the remainder of file info fetch task
+                        if let Some(remainder) = maybe_remainder {
+                            task_tx.send(DownloadQueueItem::Metadata(remainder))?;
+                        }
+                    },
+                }
+            }
+
+            Ok(())
         });
 
-        // Spawn the tasks
-        let mut handles = FuturesUnordered::new();
-        term_tasks.for_each(|task| {
-            let handle = self.threadpool.spawn(task);
-            handles.push(handle);
-        });
-
-        // Join the tasks as they come in.
         let mut total_written = 0;
-        while let Some(result) = handles.next().await {
+        while let Some(result) = running_downloads.lock().await.next().await {
             match result {
-                Ok(Ok(len_written)) => {
-                    progress_updater.as_ref().inspect(|updater| updater.update(len_written));
-                    total_written += len_written;
+                Ok(Ok(download_result)) => {
+                    let write_len = download_result.data;
+                    total_written += write_len as u64;
+                    progress_updater.as_ref().inspect(|updater| updater.update(write_len as u64));
+
+                    // Now inspect the download metrics and tune the download degree of concurrency
+                    download_scheduler.tune_on(download_result)?;
                 },
                 Ok(Err(e)) => Err(e)?,
-                Err(e) => Err(CasClientError::Other(format!("Error joining download task {e:?}")))?,
+                Err(e) => Err(anyhow!("{e:?}"))?,
             }
         }
+
+        queue_dispatcher.await??;
+
         Ok(total_written)
     }
-}
-
-/// Helper object containing the structs needed when downloading and writing a term during
-/// reconstruction. Can be cheaply cloned so that the write_term function can be spawned for
-/// each term.
-#[derive(Clone)]
-struct TermWriteTask {
-    http_client: Arc<ClientWithMiddleware>,
-    chunk_cache: Option<Arc<dyn ChunkCache>>,
-    range_download_single_flight: RangeDownloadSingleFlight,
-    fetch_info: Arc<HashMap<HexMerkleHash, Vec<CASReconstructionFetchInfo>>>,
-    semaphore: Arc<Semaphore>,
-    output: OutputProvider,
-}
-
-impl TermWriteTask {
-    /// Download the term and write it to the underlying storage.
-    async fn write_term(self, term: CASReconstructionTerm, term_range: Range<usize>, file_offset: u64) -> Result<u64> {
-        // acquire permit from the semaphore limiting the download parallelism.
-        let _permit = self
-            .semaphore
-            .acquire_owned()
-            .await
-            .log_error("Couldn't download term")
-            .map_err(|_| CasClientError::Other("couldn't acquire semaphore".to_string()))?;
-
-        // download the term
-        let term_data =
-            get_one_term(self.http_client, self.chunk_cache, term, self.fetch_info, self.range_download_single_flight)
-                .await
-                .log_error("error fetching 1 term")?;
-
-        if term_range.end > term_data.len() {
-            error!(
-                "Error: expected term range: {} larger than received term length: {}",
-                term_range.end,
-                term_data.len()
-            );
-            return Err(CasClientError::Other("term range received invalid".to_string()));
-        }
-        let len = (term_range.end - term_range.start) as u64;
-
-        // write the term
-        let mut writer = self.output.get_writer_at(file_offset)?;
-        writer.write_all(&term_data[term_range])?;
-        writer.flush()?;
-        Ok(len)
-    }
-}
-
-/// fetch the data requested for the term argument (data from a range of chunks
-/// in a xorb).
-/// if provided, it will first check a ChunkCache for the existence of this range.
-///
-/// To fetch the data from S3/blob store, get_one_term will match the term's hash/xorb to a vec of
-/// CASReconstructionFetchInfo in the fetch_info information. Then pick from this vec (by a linear scan)
-/// a fetch_info term that contains the requested term's range. Then:
-///     download the url -> deserialize chunks -> trim the output to the requested term's chunk range
-///
-/// If the fetch_info section (provided as in the QueryReconstructionResponse) fails to contain a term
-/// that matches our requested CASReconstructionTerm, it is considered a bad output from the CAS API.
-pub(crate) async fn get_one_term(
-    http_client: Arc<ClientWithMiddleware>,
-    chunk_cache: Option<Arc<dyn ChunkCache>>,
-    term: CASReconstructionTerm,
-    fetch_term: CASReconstructionFetchInfo,
-    range_download_single_flight: RangeDownloadSingleFlight,
-) -> Result<Vec<u8>> {
-    debug!("term: {term:?}");
-
-    if term.range.end < term.range.start {
-        return Err(CasClientError::InvalidRange);
-    }
-
-    // check disk cache for the exact range we want for the reconstruction term
-    if let Some(cache) = &chunk_cache {
-        let key = Key {
-            prefix: PREFIX_DEFAULT.to_string(),
-            hash: term.hash.into(),
-        };
-        if let Ok(Some(cached)) = cache.get(&key, &term.range).log_error("cache error") {
-            return Ok(cached);
-        }
-    }
-
-    // fetch the range from blob store and deserialize the chunks
-    // then put into the cache if used
-    let download_range_result = range_download_single_flight
-        .work_dump_caller_info(&fetch_term.url, download_range(http_client, fetch_term.clone(), term.hash))
-        .await?;
-
-    let DownloadRangeResult::Data(mut data, chunk_byte_indices) = download_range_result else {
-        return Err(CasClientError::PresignedUrlExpirationError);
-    };
-
-    // now write it to cache, the whole fetched term
-    if let Some(cache) = chunk_cache {
-        let key = Key {
-            prefix: PREFIX_DEFAULT.to_string(),
-            hash: term.hash.into(),
-        };
-        cache.put(&key, &fetch_term.range, &chunk_byte_indices, &data)?;
-    }
-
-    // if the requested range is smaller than the fetched range, trim it down to the right data
-    // the requested range cannot be larger than the fetched range.
-    // "else" case data matches exact, save some work, return whole data.
-    if term.range != fetch_term.range {
-        let start_idx = term.range.start - fetch_term.range.start;
-        let end_idx = term.range.end - fetch_term.range.start;
-        let start_byte_index = chunk_byte_indices[start_idx as usize] as usize;
-        let end_byte_index = chunk_byte_indices[end_idx as usize] as usize;
-        debug_assert!(start_byte_index < data.len());
-        debug_assert!(end_byte_index <= data.len());
-        debug_assert!(start_byte_index < end_byte_index);
-        // [0, len] -> [0, end_byte_index)
-        data.truncate(end_byte_index);
-        // [0, end_byte_index) -> [start_byte_index, end_byte_index)
-        data = data.split_off(start_byte_index);
-    }
-
-    if data.len() != term.unpacked_length as usize {
-        return Err(CasClientError::Other(format!(
-            "result term data length {} did not match expected value {}",
-            data.len(),
-            term.unpacked_length
-        )));
-    }
-
-    Ok(data)
-}
-
-fn range_header(range: &HttpRange) -> String {
-    format!("bytes={}-{}", range.start, range.end)
-}
-
-/// use the provided http_client to make requests to S3/blob store using the url and url_range
-/// parts of a CASReconstructionFetchInfo. The url_range part is used directly in a http Range header
-/// value (see fn `range_header`).
-async fn download_range(
-    http_client: Arc<ClientWithMiddleware>,
-    fetch_term: CASReconstructionFetchInfo,
-    hash: HexMerkleHash,
-) -> Result<DownloadRangeResult> {
-    trace!("{hash},{},{}", fetch_term.range.start, fetch_term.range.end);
-
-    let url = Url::parse(fetch_term.url.as_str())?;
-    let response = match http_client
-        .get(url)
-        .header(RANGE, range_header(&fetch_term.url_range))
-        .send()
-        .await
-        .log_error("error getting from s3")?
-        .error_for_status()
-        .log_error("get from s3 error code")
-    {
-        Ok(response) => response,
-        Err(e) => match e.status() {
-            Some(StatusCode::FORBIDDEN) => return Ok(DownloadRangeResult::Forbidden),
-            _ => return Err(e.into()),
-        },
-    };
-
-    if let Some(content_length) = response.content_length() {
-        // + 1 since range S3/HTTP range is inclusive on both ends
-        // remove this check to be agnostic to range-end-exclusive blob store requests
-        let expected_len = fetch_term.url_range.end - fetch_term.url_range.start + 1;
-        if content_length != expected_len as u64 {
-            error!("got back a smaller byte range ({content_length}) than requested ({expected_len}) from s3");
-            return Err(CasClientError::InvalidRange);
-        }
-    }
-
-    let (data, chunk_byte_indices) = cas_object::deserialize_async::deserialize_chunks_from_stream(
-        response.bytes_stream().map_err(std::io::Error::other),
-    )
-    .await?;
-    Ok(DownloadRangeResult::Data(data, chunk_byte_indices))
 }
 
 #[async_trait]
@@ -993,8 +673,10 @@ impl ShardClientInterface for RemoteClient {}
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+
     use cas_object::test_utils::{build_cas_object, ChunkSize};
-    use cas_types::ChunkRange;
+    use cas_types::{CASReconstructionTerm, ChunkRange, HexMerkleHash};
     use chunk_cache::MockChunkCache;
     use tracing_test::traced_test;
 

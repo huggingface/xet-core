@@ -1,6 +1,8 @@
-use cas_types::CASReconstructionTerm;
+use anyhow::anyhow;
 use merklehash::MerkleHash;
 use thiserror::Error;
+use tokio::sync::{mpsc::error::SendError, AcquireError};
+use tokio::task::JoinError;
 
 #[non_exhaustive]
 #[derive(Error, Debug)]
@@ -75,5 +77,29 @@ impl From<utils::errors::SingleflightError<CasClientError>> for CasClientError {
             utils::singleflight::SingleflightError::InternalError(e) => e,
             e => CasClientError::Other(format!("single flight error: {e}")),
         }
+    }
+}
+
+impl<T> From<std::sync::PoisonError<T>> for CasClientError {
+    fn from(value: std::sync::PoisonError<T>) -> Self {
+        CasClientError::InternalError(anyhow!("{value:?}"))
+    }
+}
+
+impl From<AcquireError> for CasClientError {
+    fn from(value: AcquireError) -> Self {
+        CasClientError::InternalError(anyhow!("{value:?}"))
+    }
+}
+
+impl<T> From<SendError<T>> for CasClientError {
+    fn from(value: SendError<T>) -> Self {
+        CasClientError::InternalError(anyhow!("{value:?}"))
+    }
+}
+
+impl From<JoinError> for CasClientError {
+    fn from(value: JoinError) -> Self {
+        CasClientError::InternalError(anyhow!("{value:?}"))
     }
 }
