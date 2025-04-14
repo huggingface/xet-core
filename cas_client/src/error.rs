@@ -1,3 +1,4 @@
+use cas_types::CASReconstructionTerm;
 use merklehash::MerkleHash;
 use thiserror::Error;
 
@@ -51,6 +52,9 @@ pub enum CasClientError {
 
     #[error("CAS object not found for hash: {0}")]
     XORBNotFound(MerkleHash),
+
+    #[error("Presigned S3 URL Expired on fetching range")]
+    PresignedUrlExpirationError,
 }
 
 // Define our own result type here (this seems to be the standard).

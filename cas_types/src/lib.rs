@@ -1,5 +1,8 @@
 use core::fmt;
-use std::collections::{HashMap, HashSet};
+use std::{
+    cmp::min,
+    collections::{HashMap, HashSet},
+};
 
 use merklehash::MerkleHash;
 use serde::{Deserialize, Serialize};
@@ -27,8 +30,41 @@ pub type FileRange = Range<u64>;
 /// Start and inclusive-end range for HTTP range content
 pub type HttpRange = Range<u32>;
 
+impl FileRange {
+    pub fn full() -> Self {
+        Self {
+            start: 0,
+            end: u64::MAX,
+        }
+    }
+
+    // consumes self and split the range into a segment of size `segment_size`
+    // and a remainder.
+    pub fn take_segment(self, segment_size: u64) -> (Self, Option<Self>) {
+        let segment = FileRange {
+            start: self.start,
+            end: min(self.end, self.start + segment_size),
+        };
+
+        let remainder = if segment.end == self.end {
+            None
+        } else {
+            Some(FileRange {
+                start: segment.end,
+                end: self.end,
+            })
+        };
+
+        (segment, remainder)
+    }
+
+    pub fn len(&self) -> u64 {
+        self.end - self.start
+    }
+}
+
 // note that the standard PartialOrd/Ord impls will first check `start` then `end`
-#[derive(Debug, Serialize, Deserialize, Clone, Eq, PartialEq, PartialOrd, Ord, Default, Hash)]
+#[derive(Debug, Serialize, Deserialize, Clone, Eq, PartialEq, PartialOrd, Ord, Default, Hash, Copy)]
 pub struct Range<Idx> {
     pub start: Idx,
     pub end: Idx,

@@ -488,6 +488,7 @@ dependencies = [
  "cas_object",
  "cas_types",
  "chunk_cache",
+ "deduplication",
  "error_printer",
  "file_utils",
  "futures",
