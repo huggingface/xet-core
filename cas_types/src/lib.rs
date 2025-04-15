@@ -34,6 +34,8 @@ pub struct Range<Idx> {
     pub end: Idx,
 }
 
+impl<Idx: Copy> Copy for Range<Idx> {}
+
 impl<Idx: fmt::Display> fmt::Display for Range<Idx> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let Range { start, end } = self;

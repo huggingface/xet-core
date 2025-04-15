@@ -19,7 +19,7 @@ use utils::output_bytes;
 use crate::disk::cache_file_header::CacheFileHeader;
 use crate::disk::cache_item::{CacheItem, VerificationCell};
 use crate::error::ChunkCacheError;
-use crate::{CacheConfig, ChunkCache};
+use crate::{CacheConfig, CacheRange, ChunkCache};
 
 mod cache_file_header;
 mod cache_item;
@@ -234,7 +234,7 @@ impl DiskCache {
         Ok(CacheState::new(state, num_items, total_bytes))
     }
 
-    fn get_impl(&self, key: &Key, range: &ChunkRange) -> OptionResult<Vec<u8>, ChunkCacheError> {
+    fn get_impl(&self, key: &Key, range: &ChunkRange) -> OptionResult<CacheRange, ChunkCacheError> {
         if range.start >= range.end {
             return Err(ChunkCacheError::InvalidArguments);
         }
@@ -468,8 +468,8 @@ impl DiskCache {
             }
         }
 
-        let stored_data = get_range_from_cache_file(&header, &mut reader, range, cache_item.range.start)?;
-        if data != stored_data {
+        let stored = get_range_from_cache_file(&header, &mut reader, range, cache_item.range.start)?;
+        if data.as_ref() != stored.data.as_ref() {
             return Err(ChunkCacheError::InvalidArguments);
         }
         Ok(true)
@@ -600,19 +600,26 @@ fn get_range_from_cache_file<R: Read + Seek>(
     file_contents: &mut R,
     range: &ChunkRange,
     start: u32,
-) -> Result<Vec<u8>, ChunkCacheError> {
-    let start_byte = header
-        .chunk_byte_indices
-        .get((range.start - start) as usize)
-        .ok_or(ChunkCacheError::BadRange)?;
-    let end_byte = header
-        .chunk_byte_indices
-        .get((range.end - start) as usize)
-        .ok_or(ChunkCacheError::BadRange)?;
+) -> Result<CacheRange, ChunkCacheError> {
+    let start_idx = (range.start - start) as usize;
+    let end_idx = (range.end - start) as usize;
+    let start_byte = header.chunk_byte_indices.get(start_idx).ok_or(ChunkCacheError::BadRange)?;
+    let end_byte = header.chunk_byte_indices.get(end_idx).ok_or(ChunkCacheError::BadRange)?;
     file_contents.seek(SeekFrom::Start((*start_byte as usize + header.header_len()) as u64))?;
-    let mut buf = vec![0; (end_byte - start_byte) as usize];
-    file_contents.read_exact(&mut buf)?;
-    Ok(buf)
+    let mut data = vec![0; (end_byte - start_byte) as usize];
+    file_contents.read_exact(&mut data)?;
+    let offsets: Vec<u32> = header.chunk_byte_indices[start_idx..=end_idx]
+        .iter()
+        .map(|v| *v - header.chunk_byte_indices[start_idx])
+        .collect();
+
+    debug_assert_eq!(range.end - range.start, offsets.len() as u32 - 1);
+
+    Ok(CacheRange {
+        offsets: offsets.into(),
+        data: data.into(),
+        range: range.clone(),
+    })
 }
 
 // wrapper over std::fs::read_dir
@@ -794,7 +801,7 @@ fn key_dir(key: &Key) -> PathBuf {
 }
 
 impl ChunkCache for DiskCache {
-    fn get(&self, key: &Key, range: &ChunkRange) -> Result<Option<Vec<u8>>, ChunkCacheError> {
+    fn get(&self, key: &Key, range: &ChunkRange) -> Result<Option<CacheRange>, ChunkCacheError> {
         self.get_impl(key, range)
     }
 
@@ -858,7 +865,13 @@ mod tests {
         print_directory_contents(cache_root.as_ref());
 
         // hit
-        assert!(cache.get(&key, &range).unwrap().is_some());
+        let cache_result = cache.get(&key, &range).unwrap();
+        assert!(cache_result.is_some());
+        let cache_range = cache_result.unwrap();
+        assert_eq!(cache_range.data.as_ref(), data.as_slice());
+        assert_eq!(cache_range.range, range);
+        assert_eq!(cache_range.offsets.as_ref(), chunk_byte_indices.as_slice());
+
         let miss_range = ChunkRange { start: 100, end: 101 };
         // miss
         assert!(cache.get(&key, &miss_range).unwrap().is_none());
@@ -876,6 +889,7 @@ mod tests {
         let cache = DiskCache::initialize(&config).unwrap();
 
         let key = random_key(&mut rng);
+        // following parts of test assume overall inserted range includes chunk 0
         let range = ChunkRange { start: 0, end: 4 };
         let (chunk_byte_indices, data) = random_bytes(&mut rng, &range, RANGE_LEN);
         let put_result = cache.put(&key, &range, &chunk_byte_indices, data.as_slice());
@@ -885,18 +899,28 @@ mod tests {
 
         for start in range.start..range.end {
             for end in (start + 1)..=range.end {
-                let get_result = cache.get(&key, &ChunkRange { start, end }).unwrap();
+                let sub_range = ChunkRange { start, end };
+                let get_result = cache.get(&key, &sub_range).unwrap();
                 assert!(get_result.is_some(), "range: [{start} {end})");
-                let data_portion = get_data(&ChunkRange { start, end }, &chunk_byte_indices, &data);
-                assert_eq!(data_portion, get_result.unwrap())
+                let cache_range = get_result.unwrap();
+                assert_eq!(cache_range.range, sub_range);
+                // assert that offsets has 1 more item than the range len difference
+                assert_eq!(cache_range.offsets.len() as u32, sub_range.end - sub_range.start + 1);
+
+                for (expected, actual) in chunk_byte_indices[(start as usize)..=(end as usize)]
+                    .iter()
+                    .map(|v| *v - chunk_byte_indices[start as usize])
+                    .zip(cache_range.offsets.iter())
+                {
+                    assert_eq!(*actual, expected);
+                }
+
+                let start_byte = chunk_byte_indices[sub_range.start as usize] as usize;
+                let end_byte = chunk_byte_indices[sub_range.end as usize] as usize;
+                let data_portion = &data[start_byte..end_byte];
+                assert_eq!(data_portion, cache_range.data.as_ref());
             }
         }
-    }
-
-    fn get_data<'a>(range: &ChunkRange, chunk_byte_indices: &[u32], data: &'a [u8]) -> &'a [u8] {
-        let start = chunk_byte_indices[range.start as usize] as usize;
-        let end = chunk_byte_indices[range.end as usize] as usize;
-        &data[start..end]
     }
 
     #[test]

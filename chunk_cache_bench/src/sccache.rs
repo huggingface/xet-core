@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex};
 use base64::Engine;
 use cas_types::{ChunkRange, Key};
 use chunk_cache::error::ChunkCacheError;
-use chunk_cache::ChunkCache;
+use chunk_cache::{CacheRange, ChunkCache};
 use sccache::lru_disk_cache::LruDiskCache;
 
 use crate::ChunkCacheExt;
@@ -32,7 +32,7 @@ impl ChunkCacheExt for SCCache {
 }
 
 impl ChunkCache for SCCache {
-    fn get(&self, key: &cas_types::Key, range: &cas_types::ChunkRange) -> Result<Option<Vec<u8>>, ChunkCacheError> {
+    fn get(&self, key: &cas_types::Key, range: &cas_types::ChunkRange) -> Result<Option<CacheRange>, ChunkCacheError> {
         let cache_key = CacheKey::new(key, range)?;
         let mut file = if let Ok(file) = self.cache.lock()?.get(&cache_key) {
             file
@@ -42,7 +42,11 @@ impl ChunkCache for SCCache {
 
         let mut res = Vec::new();
         file.read_to_end(&mut res)?;
-        Ok(Some(res))
+        Ok(Some(CacheRange {
+            offsets: (range.start..=range.end).collect::<Vec<_>>().into(),
+            data: res.into(),
+            range: range.clone(),
+        }))
     }
 
     fn put(
