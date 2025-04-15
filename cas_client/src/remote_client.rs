@@ -170,7 +170,7 @@ impl ReconstructionClient for RemoteClient {
         progress_updater: Option<Arc<dyn ProgressUpdater>>,
     ) -> Result<u64> {
         // get manifest of xorbs to download, api call to CAS
-        let manifest = self.get_reconstruction(hash, byte_range.clone()).await?;
+        let manifest = self.get_reconstruction(hash, byte_range).await?;
         let terms = manifest.terms;
         let fetch_info = Arc::new(manifest.fetch_info);
 
@@ -532,7 +532,7 @@ pub(crate) async fn get_one_term(
             hash: term.hash.into(),
         };
         if let Ok(Some(cached)) = cache.get(&key, &term.range).log_error("cache error") {
-            return Ok(cached);
+            return Ok(cached.data.to_vec());
         }
     }
 

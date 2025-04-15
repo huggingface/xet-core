@@ -2,14 +2,15 @@ mod cache_manager;
 mod disk;
 pub mod error;
 
+use std::path::PathBuf;
+use std::sync::Arc;
+
 pub use cache_manager::get_cache;
 use cas_types::{ChunkRange, Key};
 pub use disk::test_utils::*;
 pub use disk::DiskCache;
 use error::ChunkCacheError;
 use mockall::automock;
-use std::path::PathBuf;
-use std::sync::Arc;
 
 pub use crate::disk::DEFAULT_CHUNK_CACHE_CAPACITY;
 

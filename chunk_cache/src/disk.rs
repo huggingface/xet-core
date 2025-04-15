@@ -334,7 +334,7 @@ impl DiskCache {
         };
 
         let cache_item = CacheItem {
-            range: range.clone(),
+            range: *range,
             len: (header_buf.len() + data.len()) as u64,
             checksum,
         };
@@ -469,7 +469,7 @@ impl DiskCache {
         }
 
         let stored = get_range_from_cache_file(&header, &mut reader, range, cache_item.range.start)?;
-        if data.as_ref() != stored.data.as_ref() {
+        if data != stored.data.as_ref() {
             return Err(ChunkCacheError::InvalidArguments);
         }
         Ok(true)
@@ -618,7 +618,7 @@ fn get_range_from_cache_file<R: Read + Seek>(
     Ok(CacheRange {
         offsets: offsets.into(),
         data: data.into(),
-        range: range.clone(),
+        range: *range,
     })
 }
 
