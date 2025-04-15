@@ -103,12 +103,8 @@ impl From<FileRange> for HttpRange {
 pub struct Range<Idx, Kind> {
     pub start: Idx,
     pub end: Idx,
-    #[cfg(test)]
     #[serde(skip)]
     pub _marker: PhantomData<Kind>,
-    #[cfg(not(test))]
-    #[serde(skip)]
-    _marker: PhantomData<Kind>,
 }
 
 impl<Idx, Kind> Range<Idx, Kind> {
