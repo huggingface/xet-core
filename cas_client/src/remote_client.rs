@@ -1,4 +1,3 @@
-use std::cmp::min;
 use std::io::{Cursor, Write};
 use std::mem::take;
 use std::path::PathBuf;
@@ -353,10 +352,12 @@ impl RemoteClient {
         let end_signal_clone = end_signal.clone();
 
         let queue_dispatcher: JoinHandle<Result<()>> = self.threadpool.spawn(async move {
+            let mut remaining_total_len = total_len;
             while let Some(item) = task_rx.recv().await {
                 match item {
                     DownloadQueueItem::End => {
                         // everything processed
+                        info!("download queue emptyed");
                         end_signal_clone.store(true, Ordering::Relaxed);
                         break;
                     },
@@ -386,15 +387,25 @@ impl RemoteClient {
 
                         let segment = Arc::new(segment);
                         // define the term download tasks
+                        let mut remaining_segment_len = segment_size;
                         info!("enqueueing {} download tasks", terms.len());
                         for (i, term) in terms.into_iter().enumerate() {
+                            let skip_bytes = if i == 0 { offset_into_first_range } else { 0 };
+                            let take = remaining_total_len
+                                .min(remaining_segment_len)
+                                .min(term.unpacked_length as u64 - skip_bytes);
+
                             let download_task = TermDownload {
                                 term,
-                                skip_bytes: if i == 0 { offset_into_first_range } else { 0 },
+                                skip_bytes,
+                                take,
                                 fetch_info: segment.clone(),
                                 chunk_cache: chunk_cache.clone(),
                                 range_download_single_flight: range_download_single_flight.clone(),
                             };
+
+                            remaining_total_len -= take;
+                            remaining_segment_len -= take;
                             debug!("enqueueing {download_task:?}");
                             task_tx.send(DownloadQueueItem::Term(download_task))?;
                         }
@@ -413,6 +424,7 @@ impl RemoteClient {
         let mut writer = writer.get_writer_at(0)?;
         let mut total_written = 0;
         loop {
+            // polling the futures queue will return None when there's no future in it yet.
             let Some(result) = running_downloads.lock().await.next().await else {
                 if end_signal.load(Ordering::Relaxed) {
                     break;
@@ -423,13 +435,9 @@ impl RemoteClient {
             match result {
                 Ok(Ok(mut download_result)) => {
                     let data = take(&mut download_result.data);
-                    // If not get file with `Some(byte_range)`, total_len is u64::MAX and this will always
-                    // write the full range.
-                    let write_len = min(total_len - total_written, data.len() as u64);
-                    writer.write_all(&data[..write_len as usize])?;
-                    total_written += write_len;
-                    info!("writing {write_len} bytes, total {total_written} bytes");
-                    progress_updater.as_ref().inspect(|updater| updater.update(write_len));
+                    writer.write_all(&data)?;
+                    progress_updater.as_ref().inspect(|updater| updater.update(data.len() as u64));
+                    total_written += data.len() as u64;
 
                     // Now inspect the download metrics and tune the download degree of concurrency
                     download_scheduler.tune_on(download_result)?;
@@ -491,11 +499,12 @@ impl RemoteClient {
         let writer_clone = writer.clone();
 
         let queue_dispatcher: JoinHandle<Result<()>> = self.threadpool.spawn(async move {
-            let mut total_written = 0;
+            let mut remaining_total_len = total_len;
             while let Some(item) = task_rx.recv().await {
                 match item {
                     DownloadQueueItem::End => {
                         // everything processed
+                        info!("download queue emptyed");
                         end_signal_clone.store(true, Ordering::Relaxed);
                         break;
                     },
@@ -525,25 +534,31 @@ impl RemoteClient {
 
                         let segment = Arc::new(segment);
                         // define the term download tasks
+                        let mut remaining_segment_len = segment_size;
                         info!("enqueueing {} download tasks", terms.len());
                         for (i, term) in terms.into_iter().enumerate() {
-                            let write_len = min(total_len - total_written, term.unpacked_length as u64);
+                            let skip_bytes = if i == 0 { offset_into_first_range } else { 0 };
+                            let take = remaining_total_len
+                                .min(remaining_segment_len)
+                                .min(term.unpacked_length as u64 - skip_bytes);
+
                             let download_and_write_task = TermDownloadAndWrite {
                                 download: TermDownload {
                                     term,
-                                    skip_bytes: if i == 0 { offset_into_first_range } else { 0 },
+                                    skip_bytes,
+                                    take,
                                     fetch_info: segment.clone(),
                                     chunk_cache: chunk_cache.clone(),
                                     range_download_single_flight: range_download_single_flight.clone(),
                                 },
-                                take: write_len as usize,
-                                write_offset: total_written,
+                                write_offset: total_len - remaining_total_len,
                                 output: writer_clone.clone(),
                             };
+
+                            remaining_total_len -= take;
+                            remaining_segment_len -= take;
                             debug!("enqueueing {download_and_write_task:?}");
                             task_tx.send(DownloadQueueItem::Term(download_and_write_task))?;
-
-                            total_written += write_len;
                         }
 
                         // enqueue the remainder of file info fetch task
@@ -559,6 +574,7 @@ impl RemoteClient {
 
         let mut total_written = 0;
         loop {
+            // polling the futures queue will return None when there's no future in it yet.
             let Some(result) = running_downloads.lock().await.next().await else {
                 if end_signal.load(Ordering::Relaxed) {
                     break;

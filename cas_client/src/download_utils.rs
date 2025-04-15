@@ -139,7 +139,10 @@ impl FetchInfo {
 #[derivative(Debug)]
 pub(crate) struct TermDownload {
     pub term: CASReconstructionTerm,
-    pub skip_bytes: u64,            // number of bytes to skip at the front
+    pub skip_bytes: u64, // number of bytes to skip at the front
+    pub take: u64,       // number of bytes to take after skipping bytes,
+    // effectively taking [skip_bytes..skip_bytes+take]
+    // out of the downloaded range
     pub fetch_info: Arc<FetchInfo>, // utility to get URL to download this term
     #[derivative(Debug = "ignore")]
     pub chunk_cache: Option<Arc<dyn ChunkCache>>,
@@ -181,7 +184,13 @@ impl TermDownload {
             break range_data?;
         };
 
-        data = data.split_off(self.skip_bytes.try_into().log_error("incorrect offset into range")?);
+        let skip_bytes = self.skip_bytes.try_into().log_error("incorrect offset into range")?;
+        let take = self.take.try_into().log_error("incorrect take bytes")?;
+        if skip_bytes > 0 {
+            data = data[skip_bytes..skip_bytes + take].to_vec()
+        } else {
+            data.truncate(take);
+        }
 
         Ok(TermDownloadResult {
             data,
@@ -196,7 +205,6 @@ impl TermDownload {
 #[derive(Debug)]
 pub(crate) struct TermDownloadAndWrite {
     pub download: TermDownload,
-    pub take: usize,       // number of bytes to write out from the download result
     pub write_offset: u64, // start position of the writer to write to
     pub output: OutputProvider,
 }
@@ -205,15 +213,14 @@ impl TermDownloadAndWrite {
     /// Download the term and write it to the underlying storage, retry on 403
     pub async fn run(self) -> Result<TermDownloadResult<usize>> {
         let download_result = self.download.run().await?;
-        let data = &download_result.data[..self.take];
 
         // write out the term
         let mut writer = self.output.get_writer_at(self.write_offset)?;
-        writer.write_all(&data)?;
+        writer.write_all(&download_result.data)?;
         writer.flush()?;
 
         Ok(TermDownloadResult {
-            data: self.take,
+            data: download_result.data.len(),
             duration: download_result.duration,
             n_retries_on_403: download_result.n_retries_on_403,
         })
