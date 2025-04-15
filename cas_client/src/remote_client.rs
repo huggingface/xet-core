@@ -897,14 +897,26 @@ mod tests {
                 expect_error: false,
             },
         ];
+
+        fn mock_chunk_cache() -> impl ChunkCache {
+            let mut chunk_cache = MockChunkCache::new();
+            chunk_cache.expect_get().returning(|_, range| {
+                Ok(Some(chunk_cache::CacheRange {
+                    offsets: (range.start..=range.end)
+                        .map(|x| x * TEST_CHUNK_SIZE as u32)
+                        .collect::<Vec<_>>()
+                        .into(),
+                    data: vec![1; (range.end - range.start) as usize * TEST_CHUNK_SIZE].into(),
+                    range: range.clone(),
+                }))
+            });
+            chunk_cache
+        }
+
         for test in test_cases {
             let test1 = test.clone();
             // test writing to file term-by-term
-            let mut chunk_cache = MockChunkCache::new();
-            chunk_cache
-                .expect_get()
-                .returning(|_, range| Ok(Some(vec![1; (range.end - range.start) as usize * TEST_CHUNK_SIZE])));
-
+            let chunk_cache = mock_chunk_cache();
             let http_client = Arc::new(http_client::build_http_client(RetryConfig::default()).unwrap());
 
             let threadpool = Arc::new(ThreadPool::new().unwrap());
@@ -945,10 +957,7 @@ mod tests {
             }
 
             // test writing terms to file in parallel
-            let mut chunk_cache = MockChunkCache::new();
-            chunk_cache
-                .expect_get()
-                .returning(|_, range| Ok(Some(vec![1; (range.end - range.start) as usize * TEST_CHUNK_SIZE])));
+            let chunk_cache = mock_chunk_cache();
 
             let http_client = Arc::new(http_client::build_http_client(RetryConfig::default()).unwrap());
             let authenticated_http_client = http_client.clone();
