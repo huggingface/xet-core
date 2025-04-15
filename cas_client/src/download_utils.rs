@@ -6,6 +6,7 @@ use cas_types::{
     CASReconstructionFetchInfo, CASReconstructionTerm, ChunkRange, FileRange, HexMerkleHash, HttpRange, Key,
 };
 use chunk_cache::ChunkCache;
+use deduplication::constants::MAX_XORB_BYTES;
 use derivative::Derivative;
 use error_printer::ErrorPrinter;
 use futures::TryStreamExt;
@@ -13,7 +14,7 @@ use http::header::RANGE;
 use http::StatusCode;
 use merklehash::MerkleHash;
 use reqwest_middleware::ClientWithMiddleware;
-use tokio::sync::Semaphore;
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tracing::{debug, error, info, trace};
 use url::Url;
 use utils::singleflight::Group;
@@ -224,11 +225,30 @@ pub(crate) enum DownloadQueueItem<T> {
 }
 
 pub struct DownloadScheduler {
-    pub n_range_in_segment: Arc<Mutex<usize>>,
-    pub n_concurrent_download_task: Arc<Semaphore>,
+    n_range_in_segment: Mutex<usize>,
+    n_concurrent_download_task: Arc<Semaphore>,
 }
 
 impl DownloadScheduler {
+    pub fn new(n_concurrent_range_get: usize) -> Arc<Self> {
+        Arc::new(Self {
+            n_range_in_segment: Mutex::new(n_concurrent_range_get),
+            n_concurrent_download_task: Arc::new(Semaphore::new(n_concurrent_range_get)),
+        })
+    }
+
+    pub async fn download_permit(&self) -> Result<OwnedSemaphorePermit> {
+        self.n_concurrent_download_task
+            .clone()
+            .acquire_owned()
+            .await
+            .map_err(CasClientError::from)
+    }
+
+    pub fn next_segment_size(&self) -> Result<u64> {
+        Ok(*self.n_range_in_segment.lock()? as u64 * *MAX_XORB_BYTES as u64)
+    }
+
     pub fn tune_on<T>(&self, metrics: TermDownloadResult<T>) -> Result<()> {
         if metrics.n_retries_on_403 > 0 {
             info!("detected retries on 403, shrinking segment size by one range");

@@ -2,7 +2,7 @@ use std::cmp::min;
 use std::io::{Cursor, Write};
 use std::mem::take;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use anyhow::anyhow;
 use async_trait::async_trait;
@@ -12,7 +12,6 @@ use cas_types::{
     UploadShardResponseType, UploadXorbResponse,
 };
 use chunk_cache::{CacheConfig, ChunkCache};
-use deduplication::constants::MAX_XORB_BYTES;
 use error_printer::ErrorPrinter;
 use file_utils::SafeFileCreator;
 use futures::stream::{FuturesOrdered, FuturesUnordered};
@@ -24,7 +23,7 @@ use mdb_shard::utils::shard_file_name;
 use merklehash::{HashedWrite, MerkleHash};
 use reqwest::{StatusCode, Url};
 use reqwest_middleware::ClientWithMiddleware;
-use tokio::sync::{mpsc, Semaphore};
+use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tracing::{debug, info};
 use utils::auth::AuthConfig;
@@ -309,7 +308,7 @@ impl RemoteClient {
         let (task_tx, mut task_rx) = mpsc::unbounded_channel::<DownloadQueueItem<TermDownload>>();
         let running_downloads = Arc::new(tokio::sync::Mutex::new(FuturesOrdered::new()));
 
-        let n_range_in_segment = Arc::new(Mutex::new(*NUM_CONCURRENT_RANGE_GETS));
+        // derive the actual range to reconstruct
         let file_reconstruct_range = byte_range.unwrap_or_else(|| FileRange::full());
         let total_len = file_reconstruct_range.length();
 
@@ -328,24 +327,20 @@ impl RemoteClient {
         // download tasks are enqueued and spawned with the degree of concurrency equal to `num_concurrent_range_gets`.
         // After the above, a task that defines fetching the remainder of the file reconstruction info is enqueued,
         // which will execute after the first of the above term download tasks finishes.
-        let range_get_concurrency = Arc::new(Semaphore::new(*NUM_CONCURRENT_RANGE_GETS));
         let threadpool = self.threadpool.clone();
         let running_downloads_clone = running_downloads.clone();
         let chunk_cache = self.chunk_cache.clone();
         let range_download_single_flight = self.range_download_single_flight.clone();
-        let download_scheduler = DownloadScheduler {
-            n_range_in_segment: n_range_in_segment.clone(),
-            n_concurrent_download_task: range_get_concurrency.clone(),
-        };
+        let download_scheduler = DownloadScheduler::new(*NUM_CONCURRENT_RANGE_GETS);
+        let download_scheduler_clone = download_scheduler.clone();
 
         let queue_dispatcher: JoinHandle<Result<()>> = self.threadpool.spawn(async move {
             while let Some(item) = task_rx.recv().await {
-                let sem = range_get_concurrency.clone();
                 match item {
                     DownloadQueueItem::Term(term_download) => {
                         // acquire the permit before spawning the task, so that there's limited
                         // number of active downloads.
-                        let permit = sem.acquire_owned().await?;
+                        let permit = download_scheduler_clone.download_permit().await?;
                         let future: JoinHandle<Result<TermDownloadResult<Vec<u8>>>> = threadpool.spawn(async move {
                             let data = term_download.run().await?;
                             drop(permit);
@@ -355,7 +350,7 @@ impl RemoteClient {
                     },
                     DownloadQueueItem::Metadata(fetch_info) => {
                         // query for the file info of the first segment
-                        let segment_size = *n_range_in_segment.lock()? as u64 * *MAX_XORB_BYTES as u64;
+                        let segment_size = download_scheduler_clone.next_segment_size()?;
                         info!("querying file info of size {segment_size}");
                         let (segment, maybe_remainder) = fetch_info.take_segment(segment_size);
 
@@ -428,7 +423,7 @@ impl RemoteClient {
         // note this uses `FuturesUnordered`
         let running_downloads = Arc::new(tokio::sync::Mutex::new(FuturesUnordered::new()));
 
-        let n_range_in_segment = Arc::new(Mutex::new(*NUM_CONCURRENT_RANGE_GETS));
+        // derive the actual range to reconstruct
         let file_reconstruct_range = byte_range.unwrap_or_else(|| FileRange::full());
         let total_len = file_reconstruct_range.length();
 
@@ -447,26 +442,22 @@ impl RemoteClient {
         // download tasks are enqueued and spawned with the degree of concurrency equal to `num_concurrent_range_gets`.
         // After the above, a task that defines fetching the remainder of the file reconstruction info is enqueued,
         // which will execute after the first of the above term download tasks finishes.
-        let range_get_concurrency = Arc::new(Semaphore::new(*NUM_CONCURRENT_RANGE_GETS));
         let threadpool = self.threadpool.clone();
         let running_downloads_clone = running_downloads.clone();
         let chunk_cache = self.chunk_cache.clone();
         let range_download_single_flight = self.range_download_single_flight.clone();
-        let download_scheduler = DownloadScheduler {
-            n_range_in_segment: n_range_in_segment.clone(),
-            n_concurrent_download_task: range_get_concurrency.clone(),
-        };
+        let download_scheduler = DownloadScheduler::new(*NUM_CONCURRENT_RANGE_GETS);
+        let download_scheduler_clone = download_scheduler.clone();
         let writer_clone = writer.clone();
 
         let queue_dispatcher: JoinHandle<Result<()>> = self.threadpool.spawn(async move {
             let mut total_written = 0;
             while let Some(item) = task_rx.recv().await {
-                let sem = range_get_concurrency.clone();
                 match item {
                     DownloadQueueItem::Term(term_download) => {
                         // acquire the permit before spawning the task, so that there's limited
                         // number of active downloads.
-                        let permit = sem.acquire_owned().await?;
+                        let permit = download_scheduler_clone.download_permit().await?;
                         let future: JoinHandle<Result<TermDownloadResult<usize>>> = threadpool.spawn(async move {
                             let data = term_download.run().await?;
                             drop(permit);
@@ -476,7 +467,7 @@ impl RemoteClient {
                     },
                     DownloadQueueItem::Metadata(fetch_info) => {
                         // query for the file info of the first segment
-                        let segment_size = *n_range_in_segment.lock()? as u64 * *MAX_XORB_BYTES as u64;
+                        let segment_size = download_scheduler_clone.next_segment_size()?;
                         info!("querying file info of size {segment_size}");
                         let (segment, maybe_remainder) = fetch_info.take_segment(segment_size);
 
