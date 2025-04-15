@@ -163,7 +163,7 @@ impl TermDownload {
 
         let key = (self.term.hash, self.term.range);
         let mut data = loop {
-            let (fetch_info, v) = self.fetch_info.find(key.clone()).await?;
+            let (fetch_info, v) = self.fetch_info.find(key).await?;
 
             let range_data = get_one_term(
                 self.fetch_info.client.clone(),
@@ -386,7 +386,7 @@ async fn download_range(
 
     if let Some(content_length) = response.content_length() {
         let expected_len = fetch_term.url_range.length();
-        if content_length != expected_len as u64 {
+        if content_length != expected_len {
             error!("got back a smaller byte range ({content_length}) than requested ({expected_len}) from s3");
             return Err(CasClientError::InvalidRange);
         }

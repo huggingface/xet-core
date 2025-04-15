@@ -327,7 +327,7 @@ impl RemoteClient {
         let running_downloads = Arc::new(tokio::sync::Mutex::new(FuturesOrdered::new()));
 
         // derive the actual range to reconstruct
-        let file_reconstruct_range = byte_range.unwrap_or_else(|| FileRange::full());
+        let file_reconstruct_range = byte_range.unwrap_or_else(FileRange::full);
         let total_len = file_reconstruct_range.length();
 
         // kick start the download by enqueue the fetch info task.
@@ -473,7 +473,7 @@ impl RemoteClient {
         let running_downloads = Arc::new(tokio::sync::Mutex::new(FuturesUnordered::new()));
 
         // derive the actual range to reconstruct
-        let file_reconstruct_range = byte_range.unwrap_or_else(|| FileRange::full());
+        let file_reconstruct_range = byte_range.unwrap_or_else(FileRange::full);
         let total_len = file_reconstruct_range.length();
 
         // kick start the download by enqueue the fetch info task.
