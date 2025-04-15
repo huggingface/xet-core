@@ -16,7 +16,7 @@ use tokio::task::JoinSet;
 use utils::test_set_globals;
 use xet_threadpool::ThreadPool;
 
-// Runt this test suite with small chunks and xorbs so that we can make sure that all the different edge
+// Runs this test suite with small chunks and xorbs so that we can make sure that all the different edge
 // cases are hit.
 test_set_globals! {
     TARGET_CHUNK_SIZE = 8 * 1024;

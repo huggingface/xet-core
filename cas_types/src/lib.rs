@@ -24,6 +24,8 @@ pub struct UploadXorbResponse {
     pub was_inserted: bool,
 }
 
+/// These types are defined to help differentiate the Range<,> type aliases,
+/// so that they don't silently cast to each other without range adjustements.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Default, Hash, Copy)]
 pub struct _C;
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Default, Hash, Copy)]

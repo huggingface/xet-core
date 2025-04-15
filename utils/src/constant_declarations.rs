@@ -3,6 +3,7 @@
 pub enum GlobalConfigMode<T> {
     ReleaseFixed(T),
     EnvConfigurable(T),
+    HighPerformanceOption { standard: T, high_performance: T },
 }
 
 #[allow(dead_code)]
@@ -44,6 +45,7 @@ macro_rules! configurable_constants {
                         (GlobalConfigMode::ReleaseFixed(v), false) => v,
                         (GlobalConfigMode::ReleaseFixed(v), true) => try_load_from_env(v),
                         (GlobalConfigMode::EnvConfigurable(v), _) => try_load_from_env(v),
+                        (GlobalConfigMode::HighPerformanceOption { standard, high_performance }, _) => try_load_from_env(if is_high_performance() { high_performance } else { standard }),
                     }
                 };
             }
@@ -65,7 +67,7 @@ pub use ctor as ctor_reexport;
 ///
 /// # Example
 /// ```rust
-/// use utils::{configurable_constants, test_set_global};
+/// use utils::{configurable_constants, test_set_globals};
 /// configurable_constants! {
 ///    /// Target chunk size
 ///    ref CHUNK_TARGET_SIZE: u64 = 1024;
@@ -74,7 +76,9 @@ pub use ctor as ctor_reexport;
 ///    ref MAX_CHUNK_SIZE: u64 = release_fixed(4096);
 /// }
 ///
-/// test_set_global!(CHUNK_TARGET_SIZE, 2048);
+/// test_set_globals! {
+///    CHUNK_TARGET_SIZE = 2048;
+/// }
 /// assert_eq!(*CHUNK_TARGET_SIZE, 2048);
 /// ```
 #[macro_export]
@@ -111,4 +115,33 @@ macro_rules! test_set_globals {
             )+
         }
     }
+}
+
+fn get_high_performance_flag() -> bool {
+    let val = if let Ok(val) = std::env::var(concat!("HF_XET_", "HIGH_PERFORMANCE")) {
+        val
+    } else if let Ok(val) = std::env::var(concat!("HF_XET_", "HP")) {
+        val
+    } else {
+        return false;
+    };
+    if let Ok(val) = val.parse::<bool>() {
+        val
+    } else if let Ok(val) = val.parse::<usize>() {
+        val == 1
+    } else {
+        false
+    }
+}
+
+lazy_static! {
+    /// To set the high performance mode to true, set either of the following environment variables to 1 or true:
+    ///  - HF_XET_HIGH_PERFORMANCE
+    ///  - HF_XET_HP
+    pub static ref HIGH_PERFORMANCE: bool = get_high_performance_flag();
+}
+
+#[inline]
+pub fn is_high_performance() -> bool {
+    *HIGH_PERFORMANCE
 }

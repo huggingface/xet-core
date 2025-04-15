@@ -3,6 +3,7 @@ mod disk;
 pub mod error;
 
 use std::path::PathBuf;
+use std::sync::Arc;
 
 pub use cache_manager::get_cache;
 use cas_types::{ChunkRange, Key};
@@ -15,6 +16,19 @@ pub use crate::disk::DEFAULT_CHUNK_CACHE_CAPACITY;
 
 utils::configurable_constants! {
     ref CHUNK_CACHE_SIZE_BYTES: u64 = DEFAULT_CHUNK_CACHE_CAPACITY;
+}
+
+/// Return dto for cache gets
+/// offsets has 1 more than then number of chunks in the specified range
+/// suppose the range is for chunks [2, 5) then offsets may look like:
+/// [0, 2000, 4000, 6000] where chunk 2 is made of bytes [0, 2000)
+/// chunk 3 [2000, 4000) and chunk 4 is [4000, 6000).
+/// It is guaranteed that the first number in offsets is 0 and the last number is data.len()
+#[derive(Debug, Clone)]
+pub struct CacheRange {
+    pub offsets: Arc<[u32]>,
+    pub data: Arc<[u8]>,
+    pub range: ChunkRange,
 }
 
 /// ChunkCache is a trait for storing and fetching Xorb ranges.
@@ -39,7 +53,7 @@ pub trait ChunkCache: Sync + Send {
     /// key is required to be a valid CAS Key
     /// range is intended to be an index range within the xorb with constraint
     ///     0 <= range.start < range.end <= num_chunks_in_xorb(key)
-    fn get(&self, key: &Key, range: &ChunkRange) -> Result<Option<Vec<u8>>, ChunkCacheError>;
+    fn get(&self, key: &Key, range: &ChunkRange) -> Result<Option<CacheRange>, ChunkCacheError>;
 
     /// put should return Ok(()) if the put succeeded with no error, check the error
     /// variant for issues with validating the input, cache state, IO, etc.

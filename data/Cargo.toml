@@ -23,7 +23,6 @@ merklehash = { path = "../merklehash" }
 mdb_shard = { path = "../mdb_shard" }
 utils = { path = "../utils" }
 parutils = { path = "../parutils" }
-file_utils = { path = "../file_utils" }
 error_printer = { path = "../error_printer" }
 xet_threadpool = { path = "../xet_threadpool" }
 deduplication = { path = "../deduplication" }
@@ -33,7 +32,6 @@ anyhow = "1"
 tracing = "0.1.*"
 async-trait = "0.1.53"
 clap = { version = "3.1.6", features = ["derive"] }
-http = "0.2.8"
 tempfile = "3.2.0"
 regex = "1.5.6"
 lazy_static = "1.4.0"
@@ -44,19 +42,14 @@ rand_chacha = "0.3.1"
 dirs = "5.0.1"
 walkdir = "2.5.0"
 more-asserts = "0.3.1"
-countio = { version = "0.2.19", features = ["futures"] }
 
 # metrics
 prometheus = "0.13.0"
 jsonwebtoken = "9.3.0"
 serde_json = "1.0.133"
 
-# Other hashers for migration
-hashers = "1.0.1"
-
 # Need to specify this as optional to allow the openssl/vendored option below
 openssl = { version = "0.10", features = [], optional = true }
-glob = "0.3.1"
 reqwest-middleware = "0.3.3"
 chrono = "0.4.39"
 

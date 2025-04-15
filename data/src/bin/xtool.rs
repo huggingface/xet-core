@@ -172,7 +172,7 @@ fn is_git_special_files(path: &str) -> bool {
 
 fn main() -> Result<()> {
     let cli = XCommand::parse();
-    let threadpool = Arc::new(ThreadPool::new_with_hardware_parallelism_limit()?);
+    let threadpool = Arc::new(ThreadPool::new()?);
     let threadpool_internal = threadpool.clone();
     threadpool.external_run_async_task(async move { cli.run(threadpool_internal).await })??;
 

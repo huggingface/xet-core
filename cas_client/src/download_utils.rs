@@ -307,7 +307,7 @@ pub(crate) async fn get_one_term(
             hash: term.hash.into(),
         };
         if let Ok(Some(cached)) = cache.get(&key, &term.range).log_error("cache error") {
-            return Ok(cached);
+            return Ok(cached.data.to_vec());
         }
     }
 

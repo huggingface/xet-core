@@ -1,5 +1,5 @@
 use chunk_cache::error::ChunkCacheError;
-use chunk_cache::ChunkCache;
+use chunk_cache::{CacheRange, ChunkCache};
 use r2d2_postgres::postgres::NoTls;
 
 use crate::ChunkCacheExt;
@@ -36,7 +36,7 @@ impl ChunkCacheExt for SolidCache {
 }
 
 impl ChunkCache for SolidCache {
-    fn get(&self, key: &cas_types::Key, range: &cas_types::ChunkRange) -> Result<Option<Vec<u8>>, ChunkCacheError> {
+    fn get(&self, key: &cas_types::Key, range: &cas_types::ChunkRange) -> Result<Option<CacheRange>, ChunkCacheError> {
         let start = range.start as i32;
         let end = range.end as i32;
 
@@ -56,7 +56,15 @@ impl ChunkCache for SolidCache {
         let first = chunk_byte_indices[(range.start - start) as usize] as usize;
         let last = chunk_byte_indices[(range.end - start) as usize] as usize;
         let res = data[first..last].to_vec();
-        Ok(Some(res))
+        Ok(Some(CacheRange {
+            offsets: chunk_byte_indices[(range.start - start) as usize..=(range.end - start) as usize]
+                .iter()
+                .map(|v| (*v - chunk_byte_indices[(range.start - start) as usize]) as u32)
+                .collect::<Vec<_>>()
+                .into(),
+            data: res.into(),
+            range: range.clone(),
+        }))
     }
 
     fn put(
