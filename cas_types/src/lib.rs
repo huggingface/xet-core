@@ -2,6 +2,7 @@ use core::fmt;
 use std::{
     cmp::min,
     collections::{HashMap, HashSet},
+    marker::PhantomData,
 };
 
 use merklehash::MerkleHash;
@@ -23,18 +24,26 @@ pub struct UploadXorbResponse {
     pub was_inserted: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Default, Hash, Copy)]
+pub struct _C;
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Default, Hash, Copy)]
+pub struct _F;
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Default, Hash, Copy)]
+pub struct _H;
+
 /// Start and exclusive-end range for chunk content
-pub type ChunkRange = Range<u32>;
+pub type ChunkRange = Range<u32, _C>;
 /// Start and exclusive-end range for file content
-pub type FileRange = Range<u64>;
+pub type FileRange = Range<u64, _F>;
 /// Start and inclusive-end range for HTTP range content
-pub type HttpRange = Range<u32>;
+pub type HttpRange = Range<u64, _H>;
 
 impl FileRange {
     pub fn full() -> Self {
         Self {
             start: 0,
             end: u64::MAX,
+            _marker: PhantomData,
         }
     }
 
@@ -44,6 +53,7 @@ impl FileRange {
         let segment = FileRange {
             start: self.start,
             end: min(self.end, self.start + segment_size),
+            _marker: PhantomData,
         };
 
         let remainder = if segment.end == self.end {
@@ -52,6 +62,7 @@ impl FileRange {
             Some(FileRange {
                 start: segment.end,
                 end: self.end,
+                _marker: PhantomData,
             })
         };
 
@@ -63,19 +74,58 @@ impl FileRange {
     }
 }
 
-// note that the standard PartialOrd/Ord impls will first check `start` then `end`
-#[derive(Debug, Serialize, Deserialize, Clone, Eq, PartialEq, PartialOrd, Ord, Default, Hash)]
-pub struct Range<Idx> {
-    pub start: Idx,
-    pub end: Idx,
+impl From<HttpRange> for FileRange {
+    fn from(value: HttpRange) -> Self {
+        // right inclusive to right exclusive
+        FileRange::new(value.start, value.end + 1)
+    }
 }
 
-impl<T: Copy> Copy for Range<T> {}
+impl HttpRange {
+    pub fn range_header(&self) -> String {
+        format!("bytes={self}")
+    }
 
-impl<Idx: fmt::Display> fmt::Display for Range<Idx> {
+    pub fn length(&self) -> u64 {
+        self.end - self.start + 1
+    }
+}
+
+impl From<FileRange> for HttpRange {
+    fn from(value: FileRange) -> Self {
+        // right exclusive to right inclusive
+        HttpRange::new(value.start, value.end - 1)
+    }
+}
+
+// note that the standard PartialOrd/Ord impls will first check `start` then `end`
+#[derive(Debug, Serialize, Deserialize, Clone, Eq, PartialEq, PartialOrd, Ord, Default, Hash)]
+pub struct Range<Idx, Kind> {
+    pub start: Idx,
+    pub end: Idx,
+    #[cfg(test)]
+    #[serde(skip)]
+    pub _marker: PhantomData<Kind>,
+    #[cfg(not(test))]
+    #[serde(skip)]
+    _marker: PhantomData<Kind>,
+}
+
+impl<Idx, Kind> Range<Idx, Kind> {
+    pub fn new(start: Idx, end: Idx) -> Self {
+        Self {
+            start,
+            end,
+            _marker: PhantomData,
+        }
+    }
+}
+
+impl<T: Copy, Kind: Copy> Copy for Range<T, Kind> {}
+
+impl<Idx: fmt::Display, Kind> fmt::Display for Range<Idx, Kind> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let Range { start, end } = self;
-        write!(f, "{start}-{end}")
+        write!(f, "{}-{}", self.start, self.end)
     }
 }
 
@@ -85,7 +135,7 @@ pub enum RangeParseError<Idx: std::str::FromStr> {
     ParseError(Idx::Err),
 }
 
-impl<Idx: std::str::FromStr> TryFrom<&str> for Range<Idx> {
+impl<Idx: std::str::FromStr, Kind> TryFrom<&str> for Range<Idx, Kind> {
     type Error = RangeParseError<Idx>;
 
     fn try_from(value: &str) -> Result<Self, Self::Error> {
@@ -98,7 +148,11 @@ impl<Idx: std::str::FromStr> TryFrom<&str> for Range<Idx> {
         let start = parts[0].parse::<Idx>().map_err(RangeParseError::ParseError)?;
         let end = parts[1].parse::<Idx>().map_err(RangeParseError::ParseError)?;
 
-        Ok(Range { start, end })
+        Ok(Range {
+            start,
+            end,
+            _marker: PhantomData,
+        })
     }
 }
 

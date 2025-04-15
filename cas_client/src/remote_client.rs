@@ -2,13 +2,14 @@ use std::cmp::min;
 use std::io::{Cursor, Write};
 use std::mem::take;
 use std::path::PathBuf;
+use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
 
 use anyhow::anyhow;
 use async_trait::async_trait;
 use cas_object::{CasObject, CompressionScheme};
 use cas_types::{
-    BatchQueryReconstructionResponse, FileRange, Key, QueryReconstructionResponse, UploadShardResponse,
+    BatchQueryReconstructionResponse, FileRange, HttpRange, Key, QueryReconstructionResponse, UploadShardResponse,
     UploadShardResponseType, UploadXorbResponse,
 };
 use chunk_cache::{CacheConfig, ChunkCache};
@@ -168,9 +169,11 @@ impl ReconstructionClient for RemoteClient {
         // If the user has set the `HF_XET_RECONSTRUCT_WRITE_SEQUENTIALLY=true` env variable, then we
         // should write the file to the output sequentially instead of in parallel.
         if *RECONSTRUCT_WRITE_SEQUENTIALLY {
+            info!("reconstruct terms sequentially");
             self.reconstruct_file_to_writer_segmented(hash, byte_range, output_provider, progress_updater)
                 .await
         } else {
+            info!("reconstruct terms in parallel");
             self.reconstruct_file_to_writer_segmented_parallel_write(
                 hash,
                 byte_range,
@@ -188,7 +191,7 @@ impl Reconstructable for RemoteClient {
         &self,
         file_id: &MerkleHash,
         bytes_range: Option<FileRange>,
-    ) -> Result<QueryReconstructionResponse> {
+    ) -> Result<Option<QueryReconstructionResponse>> {
         get_reconstruction_with_endpoint_and_client(
             &self.endpoint,
             &self.authenticated_http_client,
@@ -204,15 +207,28 @@ pub(crate) async fn get_reconstruction_with_endpoint_and_client(
     client: &ClientWithMiddleware,
     file_id: &MerkleHash,
     bytes_range: Option<FileRange>,
-) -> Result<QueryReconstructionResponse> {
+) -> Result<Option<QueryReconstructionResponse>> {
     let url = Url::parse(&format!("{}/reconstruction/{}", endpoint, file_id.hex()))?;
 
     let mut request = client.get(url);
     if let Some(range) = bytes_range {
         // convert exclusive-end to inclusive-end range
-        request = request.header(RANGE, format!("{}-{}", range.start, range.end - 1))
+        request = request.header(RANGE, HttpRange::from(range).range_header())
     }
-    let response = request.send().await.process_error("get_reconstruction")?;
+    let response = request.send().await.process_error("get_reconstruction");
+
+    let Ok(response) = response else {
+        let e = response.unwrap_err();
+
+        // bytes_range not satisfiable
+        if let CasClientError::ReqwestError(e) = &e {
+            if let Some(StatusCode::RANGE_NOT_SATISFIABLE) = e.status() {
+                return Ok(None);
+            }
+        }
+
+        return Err(e);
+    };
 
     let len = response.content_length();
     debug!("file_id: {file_id} query_reconstruction len {len:?}");
@@ -221,7 +237,7 @@ pub(crate) async fn get_reconstruction_with_endpoint_and_client(
         .json()
         .await
         .log_error("error json parsing QueryReconstructionResponse")?;
-    Ok(query_reconstruction_response)
+    Ok(Some(query_reconstruction_response))
 }
 
 impl Client for RemoteClient {}
@@ -337,10 +353,15 @@ impl RemoteClient {
         let queue_dispatcher: JoinHandle<Result<()>> = self.threadpool.spawn(async move {
             while let Some(item) = task_rx.recv().await {
                 match item {
+                    DownloadQueueItem::End => {
+                        // everything processed
+                        break;
+                    },
                     DownloadQueueItem::Term(term_download) => {
                         // acquire the permit before spawning the task, so that there's limited
                         // number of active downloads.
                         let permit = download_scheduler_clone.download_permit().await?;
+                        debug!("spawning 1 download task");
                         let future: JoinHandle<Result<TermDownloadResult<Vec<u8>>>> = threadpool.spawn(async move {
                             let data = term_download.run().await?;
                             drop(permit);
@@ -354,7 +375,12 @@ impl RemoteClient {
                         info!("querying file info of size {segment_size}");
                         let (segment, maybe_remainder) = fetch_info.take_segment(segment_size);
 
-                        let (offset_into_first_range, terms) = segment.query().await?;
+                        let Some((offset_into_first_range, terms)) = segment.query().await? else {
+                            // signal termination
+                            task_tx.send(DownloadQueueItem::End)?;
+                            continue;
+                        };
+
                         let segment = Arc::new(segment);
                         // define the term download tasks
                         info!("enqueueing {} download tasks", terms.len());
@@ -392,6 +418,7 @@ impl RemoteClient {
                     let write_len = min(total_len - total_written, data.len() as u64);
                     writer.write_all(&data[..write_len as usize])?;
                     total_written += write_len;
+                    info!("writing {write_len} bytes, total {total_written} bytes");
                     progress_updater.as_ref().inspect(|updater| updater.update(write_len));
 
                     // Now inspect the download metrics and tune the download degree of concurrency
@@ -401,6 +428,7 @@ impl RemoteClient {
                 Err(e) => Err(anyhow!("{e:?}"))?,
             }
         }
+        writer.flush()?;
 
         queue_dispatcher.await??;
 
@@ -454,10 +482,15 @@ impl RemoteClient {
             let mut total_written = 0;
             while let Some(item) = task_rx.recv().await {
                 match item {
+                    DownloadQueueItem::End => {
+                        // everything processed
+                        break;
+                    },
                     DownloadQueueItem::Term(term_download) => {
                         // acquire the permit before spawning the task, so that there's limited
                         // number of active downloads.
                         let permit = download_scheduler_clone.download_permit().await?;
+                        info!("spawning 1 download task");
                         let future: JoinHandle<Result<TermDownloadResult<usize>>> = threadpool.spawn(async move {
                             let data = term_download.run().await?;
                             drop(permit);
@@ -471,7 +504,12 @@ impl RemoteClient {
                         info!("querying file info of size {segment_size}");
                         let (segment, maybe_remainder) = fetch_info.take_segment(segment_size);
 
-                        let (offset_into_first_range, terms) = segment.query().await?;
+                        let Some((offset_into_first_range, terms)) = segment.query().await? else {
+                            // signal termination
+                            task_tx.send(DownloadQueueItem::End)?;
+                            continue;
+                        };
+
                         let segment = Arc::new(segment);
                         // define the term download tasks
                         info!("enqueueing {} download tasks", terms.len());
@@ -486,7 +524,7 @@ impl RemoteClient {
                                     range_download_single_flight: range_download_single_flight.clone(),
                                 },
                                 take: write_len as usize,
-                                file_offset: total_written,
+                                write_offset: total_written,
                                 output: writer_clone.clone(),
                             };
                             debug!("enqueueing {download_and_write_task:?}");
@@ -678,6 +716,7 @@ mod tests {
     const TEST_CHUNK_RANGE: ChunkRange = ChunkRange {
         start: 0,
         end: TEST_NUM_CHUNKS as u32,
+        _marker: std::marker::PhantomData,
     };
     const TEST_CHUNK_SIZE: usize = 10;
     const TEST_NUM_CHUNKS: usize = 20;
@@ -746,10 +785,7 @@ mod tests {
                     }],
                     fetch_info: HashMap::new(),
                 },
-                range: Some(FileRange {
-                    start: 100,
-                    end: TEST_UNPACKED_LEN as u64,
-                }),
+                range: Some(FileRange::new(100, TEST_UNPACKED_LEN as u64)),
                 expected_len: (TEST_UNPACKED_LEN - 100) as u64,
                 expect_error: false,
             },
@@ -764,10 +800,7 @@ mod tests {
                     }],
                     fetch_info: HashMap::new(),
                 },
-                range: Some(FileRange {
-                    start: 0,
-                    end: (TEST_UNPACKED_LEN - 100) as u64,
-                }),
+                range: Some(FileRange::new(0, (TEST_UNPACKED_LEN - 100) as u64)),
                 expected_len: (TEST_UNPACKED_LEN - 100) as u64,
                 expect_error: false,
             },
@@ -785,10 +818,7 @@ mod tests {
                     ],
                     fetch_info: HashMap::new(),
                 },
-                range: Some(FileRange {
-                    start: 100,
-                    end: (2 * TEST_UNPACKED_LEN - 100) as u64,
-                }),
+                range: Some(FileRange::new(100, (2 * TEST_UNPACKED_LEN - 100) as u64)),
                 expected_len: (2 * TEST_UNPACKED_LEN - 200) as u64,
                 expect_error: false,
             },

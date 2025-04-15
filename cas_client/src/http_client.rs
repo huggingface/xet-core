@@ -232,7 +232,8 @@ impl ResponseErrorLogger<error::Result<Response>> for reqwest_middleware::Result
         let res = self.log_error(format!("error invoking {api} api"))?;
         let request_id = request_id_from_response(&res);
         let error_message = format!("{api} api failed: request id: {request_id}");
-        Ok(res.error_for_status().log_error(error_message)?)
+        // not all status codes mean fatal error
+        Ok(res.error_for_status().info_error(error_message)?)
     }
 }
 

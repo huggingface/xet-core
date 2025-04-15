@@ -1,3 +1,5 @@
+use std::num::TryFromIntError;
+
 use anyhow::anyhow;
 use merklehash::MerkleHash;
 use thiserror::Error;
@@ -100,6 +102,12 @@ impl<T> From<SendError<T>> for CasClientError {
 
 impl From<JoinError> for CasClientError {
     fn from(value: JoinError) -> Self {
+        CasClientError::InternalError(anyhow!("{value:?}"))
+    }
+}
+
+impl From<TryFromIntError> for CasClientError {
+    fn from(value: TryFromIntError) -> Self {
         CasClientError::InternalError(anyhow!("{value:?}"))
     }
 }

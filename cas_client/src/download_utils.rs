@@ -2,9 +2,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 
-use cas_types::{
-    CASReconstructionFetchInfo, CASReconstructionTerm, ChunkRange, FileRange, HexMerkleHash, HttpRange, Key,
-};
+use cas_types::{CASReconstructionFetchInfo, CASReconstructionTerm, ChunkRange, FileRange, HexMerkleHash, Key};
 use chunk_cache::ChunkCache;
 use deduplication::constants::MAX_XORB_BYTES;
 use derivative::Derivative;
@@ -93,18 +91,21 @@ impl FetchInfo {
         Ok((fetch_term, v))
     }
 
-    pub async fn query(&self) -> Result<(u64, Vec<CASReconstructionTerm>)> {
-        let manifest = get_reconstruction_with_endpoint_and_client(
+    pub async fn query(&self) -> Result<Option<(u64, Vec<CASReconstructionTerm>)>> {
+        let Some(manifest) = get_reconstruction_with_endpoint_and_client(
             &self.endpoint,
             &self.client,
             &self.file_hash,
             Some(self.file_range),
         )
-        .await?;
+        .await?
+        else {
+            return Ok(None);
+        };
 
         *self.inner.write()? = manifest.fetch_info;
 
-        Ok((manifest.offset_into_first_range, manifest.terms))
+        Ok(Some((manifest.offset_into_first_range, manifest.terms)))
     }
 
     pub async fn refresh(&self, vhint: u32) -> Result<()> {
@@ -138,8 +139,8 @@ impl FetchInfo {
 #[derivative(Debug)]
 pub(crate) struct TermDownload {
     pub term: CASReconstructionTerm,
-    pub skip_bytes: u64,
-    pub fetch_info: Arc<FetchInfo>,
+    pub skip_bytes: u64,            // number of bytes to skip at the front
+    pub fetch_info: Arc<FetchInfo>, // utility to get URL to download this term
     #[derivative(Debug = "ignore")]
     pub chunk_cache: Option<Arc<dyn ChunkCache>>,
     pub range_download_single_flight: RangeDownloadSingleFlight,
@@ -147,8 +148,8 @@ pub(crate) struct TermDownload {
 
 #[derive(Debug)]
 pub(crate) struct TermDownloadResult<T> {
-    pub data: T,
-    pub duration: Duration,
+    pub data: T,            // download result
+    pub duration: Duration, // duration to download
     pub n_retries_on_403: u32,
 }
 
@@ -180,7 +181,7 @@ impl TermDownload {
             break range_data?;
         };
 
-        data.truncate(self.skip_bytes as usize);
+        data = data.split_off(self.skip_bytes.try_into().log_error("incorrect offset into range")?);
 
         Ok(TermDownloadResult {
             data,
@@ -195,8 +196,8 @@ impl TermDownload {
 #[derive(Debug)]
 pub(crate) struct TermDownloadAndWrite {
     pub download: TermDownload,
-    pub take: usize,
-    pub file_offset: u64,
+    pub take: usize,       // number of bytes to write out from the download result
+    pub write_offset: u64, // start position of the writer to write to
     pub output: OutputProvider,
 }
 
@@ -207,7 +208,7 @@ impl TermDownloadAndWrite {
         let data = &download_result.data[..self.take];
 
         // write out the term
-        let mut writer = self.output.get_writer_at(self.file_offset)?;
+        let mut writer = self.output.get_writer_at(self.write_offset)?;
         writer.write_all(&data)?;
         writer.flush()?;
 
@@ -220,12 +221,13 @@ impl TermDownloadAndWrite {
 }
 
 pub(crate) enum DownloadQueueItem<T> {
+    End,
     Term(T),
     Metadata(FetchInfo),
 }
 
 pub struct DownloadScheduler {
-    n_range_in_segment: Mutex<usize>,
+    n_range_in_segment: Mutex<usize>, // number of range in a segment to fetch file reconstruction info
     n_concurrent_download_task: Arc<Semaphore>,
 }
 
@@ -362,7 +364,7 @@ async fn download_range(
     let url = Url::parse(fetch_term.url.as_str())?;
     let response = match http_client
         .get(url)
-        .header(RANGE, range_header(&fetch_term.url_range))
+        .header(RANGE, fetch_term.url_range.range_header())
         .send()
         .await
         .log_error("error getting from s3")?
@@ -377,9 +379,7 @@ async fn download_range(
     };
 
     if let Some(content_length) = response.content_length() {
-        // + 1 since range S3/HTTP range is inclusive on both ends
-        // remove this check to be agnostic to range-end-exclusive blob store requests
-        let expected_len = fetch_term.url_range.end - fetch_term.url_range.start + 1;
+        let expected_len = fetch_term.url_range.length();
         if content_length != expected_len as u64 {
             error!("got back a smaller byte range ({content_length}) than requested ({expected_len}) from s3");
             return Err(CasClientError::InvalidRange);
@@ -391,8 +391,4 @@ async fn download_range(
     )
     .await?;
     Ok(DownloadRangeResult::Data(data, chunk_byte_indices))
-}
-
-fn range_header(range: &HttpRange) -> String {
-    format!("bytes={range}")
 }

@@ -45,7 +45,7 @@ pub fn random_key(rng: &mut impl Rng) -> Key {
 pub fn random_range(rng: &mut impl Rng) -> ChunkRange {
     let start = rng.gen::<u32>() % 1000;
     let end = start + 1 + rng.gen::<u32>() % (1024 - start);
-    ChunkRange { start, end }
+    ChunkRange::new(start, end)
 }
 
 pub fn random_bytes(rng: &mut impl Rng, range: &ChunkRange, len: u32) -> (Vec<u32>, Vec<u8>) {
@@ -125,7 +125,7 @@ impl<T: Rng> Iterator for RandomEntryIterator<T> {
         let key = random_key(&mut self.rng);
         let range = if self.one_chunk_ranges {
             let start = self.rng.gen();
-            ChunkRange { start, end: start + 1 }
+            ChunkRange::new(start, start + 1)
         } else {
             random_range(&mut self.rng)
         };
