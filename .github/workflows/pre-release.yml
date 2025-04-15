@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Tag to test (e.g., 1.0.3rc2)"
+        description: "Tag to test (e.g., v1.0.3rc2)"
         required: true
 jobs:
   trigger_rc_testing:
