@@ -3,10 +3,16 @@ use std::io::{BufWriter, Write};
 use std::path::PathBuf;
 
 use anyhow::Result;
+use cas_client::Reconstructable;
+use cas_client::RemoteClient;
 use cas_object::CompressionScheme;
+use cas_types::{FileRange, QueryReconstructionResponse};
 use clap::{Args, Parser, Subcommand};
-use data::migration_tool::hub_client::HubClient;
+use data::data_client::default_config;
+use data::migration_tool::hub_client::{HubClient, HubClientTokenRefresher};
 use data::migration_tool::migrate::migrate_files_impl;
+use merklehash::MerkleHash;
+use utils::auth::TokenRefresher;
 use walkdir::WalkDir;
 use xet_threadpool::ThreadPool;
 
@@ -92,8 +98,11 @@ struct DedupArg {
 
 #[derive(Args)]
 struct QueryArg {
-    /// Xet-hash of a file
+    /// Xet-hash of a file.
     hash: String,
+    /// Query regarding a certain range in bytes: [start, end), specified
+    /// in the format of "start-end".
+    bytes_range: Option<FileRange>,
 }
 
 impl Command {
@@ -133,7 +142,14 @@ impl Command {
 
                 Ok(())
             },
-            Command::Query(_arg) => unimplemented!(),
+            Command::Query(arg) => {
+                let file_hash = MerkleHash::from_hex(&arg.hash)?;
+                let ret = query_reconstruction(file_hash, arg.bytes_range, hub_client, threadpool).await?;
+
+                eprintln!("{ret:?}");
+
+                Ok(())
+            },
         }
     }
 }
@@ -166,6 +182,38 @@ fn walk_files(files: Vec<String>, recursive: bool) -> Vec<String> {
 
 fn is_git_special_files(path: &str) -> bool {
     matches!(path, ".git" | ".gitignore" | ".gitattributes")
+}
+
+async fn query_reconstruction(
+    file_hash: MerkleHash,
+    bytes_range: Option<FileRange>,
+    hub_client: HubClient,
+    threadpool: Arc<ThreadPool>,
+) -> Result<Option<QueryReconstructionResponse>> {
+    let token_type = "read";
+    let (endpoint, jwt_token, jwt_token_expiry) = hub_client.get_jwt_token(token_type).await?;
+    let token_refresher = Arc::new(HubClientTokenRefresher {
+        threadpool: threadpool.clone(),
+        token_type: token_type.to_owned(),
+        client: Arc::new(hub_client),
+    }) as Arc<dyn TokenRefresher>;
+
+    let config = default_config(endpoint.clone(), None, Some((jwt_token, jwt_token_expiry)), Some(token_refresher))?;
+    let cas_storage_config = &config.data_config;
+    let remote_client = RemoteClient::new(
+        threadpool,
+        &endpoint,
+        cas_storage_config.compression,
+        &cas_storage_config.auth,
+        &Some(cas_storage_config.cache_config.clone()),
+        config.shard_config.cache_directory.clone(),
+        true,
+    );
+
+    remote_client
+        .get_reconstruction(&file_hash, bytes_range)
+        .await
+        .map_err(anyhow::Error::from)
 }
 
 fn main() -> Result<()> {
