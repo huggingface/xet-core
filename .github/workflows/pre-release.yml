@@ -1,4 +1,5 @@
-name: hf-xet prerelease
+name: hf-xet prerelease testing
+# This workflow is triggered when a new pre-release build is triggered by the release workflow. 
 
 on:
   push:
