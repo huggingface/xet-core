@@ -3,7 +3,8 @@ use std::num::TryFromIntError;
 use anyhow::anyhow;
 use merklehash::MerkleHash;
 use thiserror::Error;
-use tokio::sync::{mpsc::error::SendError, AcquireError};
+use tokio::sync::mpsc::error::SendError;
+use tokio::sync::AcquireError;
 use tokio::task::JoinError;
 
 #[non_exhaustive]

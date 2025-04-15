@@ -112,9 +112,8 @@ impl FetchInfo {
         // Our term download tasks run in concurrent, so at this point
         // it's possible that
         // 1. some other TermDownload is also calling refersh();
-        // 2. some other TermDownload called refresh and the fetch info
-        //    is already new, but the term calling into this refresh()
-        //    didn't see the update yet.
+        // 2. some other TermDownload called refresh and the fetch info is already new, but the term calling into this
+        // refresh() didn't see the update yet.
 
         // Mutex on `version` ensures only one refresh happens at a time.
         let mut v = self.version.lock().await;

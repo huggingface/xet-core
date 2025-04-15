@@ -1,9 +1,7 @@
 use core::fmt;
-use std::{
-    cmp::min,
-    collections::{HashMap, HashSet},
-    marker::PhantomData,
-};
+use std::cmp::min;
+use std::collections::{HashMap, HashSet};
+use std::marker::PhantomData;
 
 use merklehash::MerkleHash;
 use serde::{Deserialize, Serialize};
