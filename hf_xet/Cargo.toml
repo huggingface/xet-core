@@ -20,7 +20,7 @@ error_printer = { path = "../error_printer" }
 data = { path = "../data" }
 utils = { path = "../utils" }
 xet_threadpool = { path = "../xet_threadpool" }
-tokio = { version = "1.36", features = ["full"] }
+tokio = { version = "1.44", features = ["full"] }
 parutils = { path = "../parutils" }
 tracing = "0.1.*"
 tracing-subscriber = { version = "0.3", features = [
