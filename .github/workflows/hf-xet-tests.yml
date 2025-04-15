@@ -16,7 +16,9 @@ jobs:
   hub-python-tests:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      # checkout out xet-core
+      - uses: actions/checkout@v4 
+      # checkout out huggingface_hub
       - uses: actions/checkout@v4
         with:
           repository: huggingface/huggingface_hub
