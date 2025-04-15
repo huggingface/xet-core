@@ -2,7 +2,7 @@ use std::cmp::min;
 use std::io::{Cursor, Write};
 use std::mem::take;
 use std::path::PathBuf;
-use std::sync::atomic::AtomicU64;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use anyhow::anyhow;
@@ -349,12 +349,15 @@ impl RemoteClient {
         let range_download_single_flight = self.range_download_single_flight.clone();
         let download_scheduler = DownloadScheduler::new(*NUM_CONCURRENT_RANGE_GETS);
         let download_scheduler_clone = download_scheduler.clone();
+        let end_signal = Arc::new(AtomicBool::new(false));
+        let end_signal_clone = end_signal.clone();
 
         let queue_dispatcher: JoinHandle<Result<()>> = self.threadpool.spawn(async move {
             while let Some(item) = task_rx.recv().await {
                 match item {
                     DownloadQueueItem::End => {
                         // everything processed
+                        end_signal_clone.store(true, Ordering::Relaxed);
                         break;
                     },
                     DownloadQueueItem::Term(term_download) => {
@@ -409,7 +412,14 @@ impl RemoteClient {
 
         let mut writer = writer.get_writer_at(0)?;
         let mut total_written = 0;
-        while let Some(result) = running_downloads.lock().await.next().await {
+        loop {
+            let Some(result) = running_downloads.lock().await.next().await else {
+                if end_signal.load(Ordering::Relaxed) {
+                    break;
+                } else {
+                    continue;
+                }
+            };
             match result {
                 Ok(Ok(mut download_result)) => {
                     let data = take(&mut download_result.data);
@@ -476,6 +486,8 @@ impl RemoteClient {
         let range_download_single_flight = self.range_download_single_flight.clone();
         let download_scheduler = DownloadScheduler::new(*NUM_CONCURRENT_RANGE_GETS);
         let download_scheduler_clone = download_scheduler.clone();
+        let end_signal = Arc::new(AtomicBool::new(false));
+        let end_signal_clone = end_signal.clone();
         let writer_clone = writer.clone();
 
         let queue_dispatcher: JoinHandle<Result<()>> = self.threadpool.spawn(async move {
@@ -484,6 +496,7 @@ impl RemoteClient {
                 match item {
                     DownloadQueueItem::End => {
                         // everything processed
+                        end_signal_clone.store(true, Ordering::Relaxed);
                         break;
                     },
                     DownloadQueueItem::Term(term_download) => {
@@ -545,7 +558,14 @@ impl RemoteClient {
         });
 
         let mut total_written = 0;
-        while let Some(result) = running_downloads.lock().await.next().await {
+        loop {
+            let Some(result) = running_downloads.lock().await.next().await else {
+                if end_signal.load(Ordering::Relaxed) {
+                    break;
+                } else {
+                    continue;
+                }
+            };
             match result {
                 Ok(Ok(download_result)) => {
                     let write_len = download_result.data;
