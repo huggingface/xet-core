@@ -514,7 +514,7 @@ pub async fn direct_upload_shard(_thread_pool: Arc<ThreadPool>, args: UploadShar
     let data = data.clone();
 
     let start = Instant::now();
-    let url = Url::parse(&format!("{}/shard/default-merkledb/{}", args.endpoint, args.hash))?;
+    let url = Url::parse(&format!("{}/shard/jg-test/{}", args.endpoint, args.hash))?;
     let response = client.post(url).body(data).send().await.process_error("post_shard")?;
     let elapsed = start.elapsed().as_millis() as u64;
     let status = response.status().as_u16();
