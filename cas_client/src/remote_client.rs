@@ -1,6 +1,7 @@
 use std::io::{Cursor, Write};
 use std::mem::take;
 use std::path::PathBuf;
+use std::result::Result as stdResult;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
@@ -14,7 +15,7 @@ use cas_types::{
 use chunk_cache::{CacheConfig, ChunkCache};
 use error_printer::ErrorPrinter;
 use file_utils::SafeFileCreator;
-use futures::stream::{FuturesOrdered, FuturesUnordered};
+use futures::stream::FuturesOrdered;
 use futures::StreamExt;
 use http::header::RANGE;
 use mdb_shard::file_structs::{FileDataSequenceEntry, FileDataSequenceHeader, MDBFileInfo};
@@ -24,7 +25,7 @@ use merklehash::{HashedWrite, MerkleHash};
 use reqwest::{StatusCode, Url};
 use reqwest_middleware::ClientWithMiddleware;
 use tokio::sync::mpsc;
-use tokio::task::JoinHandle;
+use tokio::task::{JoinError, JoinHandle, JoinSet};
 use tracing::{debug, info};
 use utils::auth::AuthConfig;
 use utils::progress::ProgressUpdater;
@@ -469,8 +470,7 @@ impl RemoteClient {
     ) -> Result<u64> {
         // queue size is inherently bounded by degree of concurrency.
         let (task_tx, mut task_rx) = mpsc::unbounded_channel::<DownloadQueueItem<TermDownloadAndWrite>>();
-        // note this uses `FuturesUnordered`
-        let running_downloads = Arc::new(tokio::sync::Mutex::new(FuturesUnordered::new()));
+        let mut running_downloads = JoinSet::<Result<TermDownloadResult<usize>>>::new();
 
         // derive the actual range to reconstruct
         let file_reconstruct_range = byte_range.unwrap_or_else(FileRange::full);
@@ -491,115 +491,105 @@ impl RemoteClient {
         // download tasks are enqueued and spawned with the degree of concurrency equal to `num_concurrent_range_gets`.
         // After the above, a task that defines fetching the remainder of the file reconstruction info is enqueued,
         // which will execute after the first of the above term download tasks finishes.
-        let threadpool = self.threadpool.clone();
-        let running_downloads_clone = running_downloads.clone();
-        let chunk_cache = self.chunk_cache.clone();
-        let range_download_single_flight = self.range_download_single_flight.clone();
         let download_scheduler = DownloadScheduler::new(*NUM_CONCURRENT_RANGE_GETS);
-        let download_scheduler_clone = download_scheduler.clone();
-        let end_signal = Arc::new(AtomicBool::new(false));
-        let end_signal_clone = end_signal.clone();
-        let writer_clone = writer.clone();
 
-        let queue_dispatcher: JoinHandle<Result<()>> = self.threadpool.spawn(async move {
-            let mut remaining_total_len = total_len;
-            while let Some(item) = task_rx.recv().await {
-                match item {
-                    DownloadQueueItem::End => {
-                        // everything processed
-                        info!("download queue emptyed");
-                        end_signal_clone.store(true, Ordering::Relaxed);
-                        break;
+        let process_result =
+            move |result: stdResult<stdResult<TermDownloadResult<usize>, CasClientError>, JoinError>,
+                  total_written: &mut u64,
+                  download_scheduler: &DownloadScheduler|
+                  -> Result<()> {
+                match result {
+                    Ok(Ok(download_result)) => {
+                        let write_len = download_result.data;
+                        *total_written += write_len as u64;
+                        progress_updater.as_ref().inspect(|updater| updater.update(write_len as u64));
+
+                        // Now inspect the download metrics and tune the download degree of concurrency
+                        download_scheduler.tune_on(download_result)?;
+                        Ok(())
                     },
-                    DownloadQueueItem::Term(term_download) => {
-                        // acquire the permit before spawning the task, so that there's limited
-                        // number of active downloads.
-                        let permit = download_scheduler_clone.download_permit().await?;
-                        info!("spawning 1 download task");
-                        let future: JoinHandle<Result<TermDownloadResult<usize>>> = threadpool.spawn(async move {
-                            let data = term_download.run().await?;
-                            drop(permit);
-                            Ok(data)
-                        });
-                        running_downloads_clone.lock().await.push(future);
-                    },
-                    DownloadQueueItem::Metadata(fetch_info) => {
-                        // query for the file info of the first segment
-                        let segment_size = download_scheduler_clone.next_segment_size()?;
-                        info!("querying file info of size {segment_size}");
-                        let (segment, maybe_remainder) = fetch_info.take_segment(segment_size);
-
-                        let Some((offset_into_first_range, terms)) = segment.query().await? else {
-                            // signal termination
-                            task_tx.send(DownloadQueueItem::End)?;
-                            continue;
-                        };
-
-                        let segment = Arc::new(segment);
-                        // define the term download tasks
-                        let mut remaining_segment_len = segment_size;
-                        info!("enqueueing {} download tasks", terms.len());
-                        for (i, term) in terms.into_iter().enumerate() {
-                            let skip_bytes = if i == 0 { offset_into_first_range } else { 0 };
-                            let take = remaining_total_len
-                                .min(remaining_segment_len)
-                                .min(term.unpacked_length as u64 - skip_bytes);
-
-                            let download_and_write_task = TermDownloadAndWrite {
-                                download: TermDownload {
-                                    term,
-                                    skip_bytes,
-                                    take,
-                                    fetch_info: segment.clone(),
-                                    chunk_cache: chunk_cache.clone(),
-                                    range_download_single_flight: range_download_single_flight.clone(),
-                                },
-                                write_offset: total_len - remaining_total_len,
-                                output: writer_clone.clone(),
-                            };
-
-                            remaining_total_len -= take;
-                            remaining_segment_len -= take;
-                            debug!("enqueueing {download_and_write_task:?}");
-                            task_tx.send(DownloadQueueItem::Term(download_and_write_task))?;
-                        }
-
-                        // enqueue the remainder of file info fetch task
-                        if let Some(remainder) = maybe_remainder {
-                            task_tx.send(DownloadQueueItem::Metadata(remainder))?;
-                        }
-                    },
-                }
-            }
-
-            Ok(())
-        });
-
-        let mut total_written = 0;
-        loop {
-            // polling the futures queue will return None when there's no future in it yet.
-            let Some(result) = running_downloads.lock().await.next().await else {
-                if end_signal.load(Ordering::Relaxed) {
-                    break;
-                } else {
-                    continue;
+                    Ok(Err(e)) => Err(e)?,
+                    Err(e) => Err(anyhow!("{e:?}"))?,
                 }
             };
-            match result {
-                Ok(Ok(download_result)) => {
-                    let write_len = download_result.data;
-                    total_written += write_len as u64;
-                    progress_updater.as_ref().inspect(|updater| updater.update(write_len as u64));
 
-                    // Now inspect the download metrics and tune the download degree of concurrency
-                    download_scheduler.tune_on(download_result)?;
+        let mut total_written = 0;
+        let mut remaining_total_len = total_len;
+        while let Some(item) = task_rx.recv().await {
+            // first try to join some tasks
+            while let Some(result) = running_downloads.try_join_next() {
+                process_result(result, &mut total_written, &download_scheduler)?;
+            }
+
+            match item {
+                DownloadQueueItem::End => {
+                    // everything processed
+                    debug!("download queue emptyed");
+                    break;
                 },
-                Ok(Err(e)) => Err(e)?,
-                Err(e) => Err(anyhow!("{e:?}"))?,
+                DownloadQueueItem::Term(term_download) => {
+                    // acquire the permit before spawning the task, so that there's limited
+                    // number of active downloads.
+                    let permit = download_scheduler.download_permit().await?;
+                    debug!("spawning 1 download task");
+                    running_downloads.spawn(async move {
+                        let data = term_download.run().await?;
+                        drop(permit);
+                        Ok(data)
+                    });
+                },
+                DownloadQueueItem::Metadata(fetch_info) => {
+                    // query for the file info of the first segment
+                    let segment_size = download_scheduler.next_segment_size()?;
+                    debug!("querying file info of size {segment_size}");
+                    let (segment, maybe_remainder) = fetch_info.take_segment(segment_size);
+
+                    let Some((offset_into_first_range, terms)) = segment.query().await? else {
+                        // signal termination
+                        task_tx.send(DownloadQueueItem::End)?;
+                        continue;
+                    };
+
+                    let segment = Arc::new(segment);
+                    // define the term download tasks
+                    let mut remaining_segment_len = segment_size;
+                    debug!("enqueueing {} download tasks", terms.len());
+                    for (i, term) in terms.into_iter().enumerate() {
+                        let skip_bytes = if i == 0 { offset_into_first_range } else { 0 };
+                        let take = remaining_total_len
+                            .min(remaining_segment_len)
+                            .min(term.unpacked_length as u64 - skip_bytes);
+
+                        let download_and_write_task = TermDownloadAndWrite {
+                            download: TermDownload {
+                                term,
+                                skip_bytes,
+                                take,
+                                fetch_info: segment.clone(),
+                                chunk_cache: self.chunk_cache.clone(),
+                                range_download_single_flight: self.range_download_single_flight.clone(),
+                            },
+                            write_offset: total_len - remaining_total_len,
+                            output: writer.clone(),
+                        };
+
+                        remaining_total_len -= take;
+                        remaining_segment_len -= take;
+                        debug!("enqueueing {download_and_write_task:?}");
+                        task_tx.send(DownloadQueueItem::Term(download_and_write_task))?;
+                    }
+
+                    // enqueue the remainder of file info fetch task
+                    if let Some(remainder) = maybe_remainder {
+                        task_tx.send(DownloadQueueItem::Metadata(remainder))?;
+                    }
+                },
             }
         }
 
-        queue_dispatcher.await??;
+        while let Some(result) = running_downloads.join_next().await {
+            process_result(result, &mut total_written, &download_scheduler)?;
+        }
 
         Ok(total_written)
     }

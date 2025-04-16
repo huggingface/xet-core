@@ -132,7 +132,7 @@ impl FetchInfo {
     }
 }
 
-/// Helper object containing the structs needed when downloading and writing a term in parallel
+/// Helper object containing the structs needed when downloading a term in parallel
 /// during reconstruction.
 #[derive(Derivative)]
 #[derivative(Debug)]
