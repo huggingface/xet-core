@@ -2,7 +2,6 @@ use std::io::{Cursor, Write};
 use std::mem::take;
 use std::path::PathBuf;
 use std::result::Result as stdResult;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use anyhow::anyhow;
@@ -15,8 +14,6 @@ use cas_types::{
 use chunk_cache::{CacheConfig, ChunkCache};
 use error_printer::ErrorPrinter;
 use file_utils::SafeFileCreator;
-use futures::stream::FuturesOrdered;
-use futures::StreamExt;
 use http::header::RANGE;
 use mdb_shard::file_structs::{FileDataSequenceEntry, FileDataSequenceHeader, MDBFileInfo};
 use mdb_shard::shard_file_reconstructor::FileReconstructor;
@@ -24,7 +21,7 @@ use mdb_shard::utils::shard_file_name;
 use merklehash::{HashedWrite, MerkleHash};
 use reqwest::{StatusCode, Url};
 use reqwest_middleware::ClientWithMiddleware;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, OwnedSemaphorePermit};
 use tokio::task::{JoinError, JoinHandle, JoinSet};
 use tracing::{debug, info};
 use utils::auth::AuthConfig;
@@ -325,7 +322,8 @@ impl RemoteClient {
     ) -> Result<u64> {
         // queue size is inherently bounded by degree of concurrency.
         let (task_tx, mut task_rx) = mpsc::unbounded_channel::<DownloadQueueItem<TermDownload>>();
-        let running_downloads = Arc::new(tokio::sync::Mutex::new(FuturesOrdered::new()));
+        let (running_downloads_tx, mut running_downloads_rx) =
+            mpsc::unbounded_channel::<JoinHandle<Result<(TermDownloadResult<Vec<u8>>, OwnedSemaphorePermit)>>>();
 
         // derive the actual range to reconstruct
         let file_reconstruct_range = byte_range.unwrap_or_else(FileRange::full);
@@ -347,13 +345,10 @@ impl RemoteClient {
         // After the above, a task that defines fetching the remainder of the file reconstruction info is enqueued,
         // which will execute after the first of the above term download tasks finishes.
         let threadpool = self.threadpool.clone();
-        let running_downloads_clone = running_downloads.clone();
         let chunk_cache = self.chunk_cache.clone();
         let range_download_single_flight = self.range_download_single_flight.clone();
         let download_scheduler = DownloadScheduler::new(*NUM_CONCURRENT_RANGE_GETS);
         let download_scheduler_clone = download_scheduler.clone();
-        let end_signal = Arc::new(AtomicBool::new(false));
-        let end_signal_clone = end_signal.clone();
 
         let queue_dispatcher: JoinHandle<Result<()>> = self.threadpool.spawn(async move {
             let mut remaining_total_len = total_len;
@@ -362,7 +357,7 @@ impl RemoteClient {
                     DownloadQueueItem::End => {
                         // everything processed
                         info!("download queue emptyed");
-                        end_signal_clone.store(true, Ordering::Relaxed);
+                        drop(running_downloads_tx);
                         break;
                     },
                     DownloadQueueItem::Term(term_download) => {
@@ -370,12 +365,12 @@ impl RemoteClient {
                         // number of active downloads.
                         let permit = download_scheduler_clone.download_permit().await?;
                         debug!("spawning 1 download task");
-                        let future: JoinHandle<Result<TermDownloadResult<Vec<u8>>>> = threadpool.spawn(async move {
-                            let data = term_download.run().await?;
-                            drop(permit);
-                            Ok(data)
-                        });
-                        running_downloads_clone.lock().await.push_back(future);
+                        let future: JoinHandle<Result<(TermDownloadResult<Vec<u8>>, OwnedSemaphorePermit)>> =
+                            threadpool.spawn(async move {
+                                let data = term_download.run().await?;
+                                Ok((data, permit))
+                            });
+                        running_downloads_tx.send(future)?;
                     },
                     DownloadQueueItem::Metadata(fetch_info) => {
                         // query for the file info of the first segment
@@ -427,19 +422,14 @@ impl RemoteClient {
 
         let mut writer = writer.get_writer_at(0)?;
         let mut total_written = 0;
-        loop {
-            // polling the futures queue will return None when there's no future in it yet.
-            let Some(result) = running_downloads.lock().await.next().await else {
-                if end_signal.load(Ordering::Relaxed) {
-                    break;
-                } else {
-                    continue;
-                }
-            };
-            match result {
-                Ok(Ok(mut download_result)) => {
+        while let Some(result) = running_downloads_rx.recv().await {
+            match result.await {
+                Ok(Ok((mut download_result, permit))) => {
                     let data = take(&mut download_result.data);
                     writer.write_all(&data)?;
+                    // drop permit after data written out so they don't accumulate in memory unbounded
+                    drop(permit);
+
                     progress_updater.as_ref().inspect(|updater| updater.update(data.len() as u64));
                     total_written += data.len() as u64;
 
