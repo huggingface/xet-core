@@ -61,7 +61,7 @@ pub async fn deserialize_chunks_to_writer_from_async_read<R: AsyncRead + Unpin, 
     // chunk indices are expected to record the byte indices of uncompressed chunks
     // as they are read from the reader, so start with [0, len(uncompressed chunk 0..n), total length]
     let mut chunk_byte_indices = Vec::<u32>::new();
-    chunk_byte_indices.push(num_compressed_written as u32);
+    chunk_byte_indices.push(num_uncompressed_written);
 
     loop {
         match deserialize_chunk_to_writer(reader, writer).await {
