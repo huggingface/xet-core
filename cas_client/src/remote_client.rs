@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::io::{Cursor, Write};
 use std::mem::take;
 use std::path::PathBuf;
@@ -8,8 +9,8 @@ use anyhow::anyhow;
 use async_trait::async_trait;
 use cas_object::{CasObject, CompressionScheme};
 use cas_types::{
-    BatchQueryReconstructionResponse, FileRange, HttpRange, Key, QueryReconstructionResponse, UploadShardResponse,
-    UploadShardResponseType, UploadXorbResponse,
+    BatchQueryReconstructionResponse, CASReconstructionTerm, ChunkRange, FileRange, HttpRange, Key,
+    QueryReconstructionResponse, UploadShardResponse, UploadShardResponseType, UploadXorbResponse,
 };
 use chunk_cache::{CacheConfig, ChunkCache};
 use error_printer::ErrorPrinter;
@@ -174,7 +175,8 @@ impl ReconstructionClient for RemoteClient {
                 .await
         } else {
             info!("reconstruct terms in parallel");
-            self.reconstruct_file_to_writer_segmented_parallel_write(
+            self.reconstruct_file_to_writer_segmented_parallel_write_by_fetch_info(
+                // self.reconstruct_file_to_writer_segmented_parallel_write(
                 hash,
                 byte_range,
                 output_provider,
@@ -361,7 +363,7 @@ impl RemoteClient {
                         drop(running_downloads_tx);
                         break;
                     },
-                    DownloadQueueItem::Term(term_download) => {
+                    DownloadQueueItem::DownloadTask(term_download) => {
                         // acquire the permit before spawning the task, so that there's limited
                         // number of active downloads.
                         let permit = download_scheduler_clone.download_permit().await?;
@@ -408,7 +410,7 @@ impl RemoteClient {
                             remaining_total_len -= take;
                             remaining_segment_len -= take;
                             debug!("enqueueing {download_task:?}");
-                            task_tx.send(DownloadQueueItem::Term(download_task))?;
+                            task_tx.send(DownloadQueueItem::DownloadTask(download_task))?;
                         }
 
                         // enqueue the remainder of file info fetch task
@@ -520,7 +522,7 @@ impl RemoteClient {
                     debug!("download queue emptyed");
                     break;
                 },
-                DownloadQueueItem::Term(term_download) => {
+                DownloadQueueItem::DownloadTask(term_download) => {
                     // acquire the permit before spawning the task, so that there's limited
                     // number of active downloads.
                     let permit = download_scheduler.download_permit().await?;
@@ -570,7 +572,7 @@ impl RemoteClient {
                         remaining_total_len -= take;
                         remaining_segment_len -= take;
                         debug!("enqueueing {download_and_write_task:?}");
-                        task_tx.send(DownloadQueueItem::Term(download_and_write_task))?;
+                        task_tx.send(DownloadQueueItem::DownloadTask(download_and_write_task))?;
                     }
 
                     // enqueue the remainder of file info fetch task
@@ -587,6 +589,195 @@ impl RemoteClient {
 
         Ok(total_written)
     }
+
+    async fn reconstruct_file_to_writer_segmented_parallel_write_by_fetch_info(
+        &self,
+        file_hash: &MerkleHash,
+        byte_range: Option<FileRange>,
+        writer: &OutputProvider,
+        progress_updater: Option<Arc<dyn ProgressUpdater>>,
+    ) -> Result<u64> {
+        // queue size is inherently bounded by degree of concurrency.
+        let (task_tx, mut task_rx) = mpsc::unbounded_channel::<DownloadQueueItem<XorbRangeDownloadAndWrite>>();
+        let mut running_downloads = JoinSet::<Result<TermDownloadResult<usize>>>::new();
+
+        // derive the actual range to reconstruct
+        let file_reconstruct_range = byte_range.unwrap_or_else(FileRange::full);
+        let total_len = file_reconstruct_range.length();
+
+        // kick-start the download by enqueue the fetch info task.
+        task_tx.send(DownloadQueueItem::Metadata(FetchInfo::new(
+            *file_hash,
+            file_reconstruct_range,
+            self.endpoint.clone(),
+            self.authenticated_http_client.clone(),
+        )))?;
+
+        // Start the queue processing logic
+        //
+        // If the queue item is `DownloadQueueItem::Metadata`, it fetches the file reconstruction info
+        // of the first segment, whose size is linear to `num_concurrent_range_gets`. Once fetched, term
+        // download tasks are enqueued and spawned with the degree of concurrency equal to `num_concurrent_range_gets`.
+        // After the above, a task that defines fetching the remainder of the file reconstruction info is enqueued,
+        // which will execute after the first of the above term download tasks finishes.
+        let download_scheduler = DownloadScheduler::new(*NUM_CONCURRENT_RANGE_GETS);
+        //
+        // let process_result =
+        //     move |result: stdResult<stdResult<TermDownloadResult<usize>, CasClientError>, JoinError>,
+        //           total_written: &mut u64,
+        //           download_scheduler: &DownloadScheduler|
+        //           -> Result<()> {
+        //         let download_result = result.map_err(|e| anyhow!("{e:?}"))??;
+        //         let write_len = download_result.data;
+        //         *total_written += write_len as u64;
+        //         progress_updater.as_ref().inspect(|updater| updater.update(write_len as u64));
+        //
+        //         // Now inspect the download metrics and tune the download degree of concurrency
+        //         download_scheduler.tune_on(download_result)?;
+        //         Ok(())
+        //     };
+
+        let mut total_written = 0;
+
+        let mut process_result =
+            |result: stdResult<stdResult<TermDownloadResult<usize>, CasClientError>, JoinError>| -> Result<()> {
+                let download_result = result.map_err(|e| anyhow!("{e:?}"))??;
+                let write_len = download_result.data;
+                total_written += write_len as u64;
+                progress_updater.as_ref().inspect(|updater| updater.update(write_len as u64));
+                download_scheduler.tune_on(download_result)?;
+
+                Ok(())
+            };
+
+        while let Some(item) = task_rx.recv().await {
+            // first try to join some tasks
+            while let Some(result) = running_downloads.try_join_next() {
+                process_result(result)?;
+                // process_result(result, &mut total_written, &download_scheduler)?;
+            }
+
+            match item {
+                DownloadQueueItem::End => {
+                    // everything processed
+                    debug!("download queue emptyed");
+                    break;
+                },
+                DownloadQueueItem::DownloadTask(term_download) => {
+                    // acquire the permit before spawning the task, so that there's limited
+                    // number of active downloads.
+                    let permit = download_scheduler.download_permit().await?;
+                    debug!("spawning 1 download task");
+                    running_downloads.spawn(async move {
+                        let data = term_download.run().await?;
+                        drop(permit);
+                        Ok(data)
+                    });
+                },
+                DownloadQueueItem::Metadata(fetch_info) => {
+                    // query for the file info of the first segment
+                    let segment_size = download_scheduler.next_segment_size()?;
+                    debug!("querying file info of size {segment_size}");
+                    let (segment, maybe_remainder) = fetch_info.take_segment(segment_size);
+
+                    let Some((offset_into_first_range, terms)) = segment.query().await? else {
+                        // signal termination
+                        task_tx.send(DownloadQueueItem::End)?;
+                        continue;
+                    };
+
+                    let segment = Arc::new(segment);
+                    let tasks = make_tasks(
+                        &segment,
+                        terms,
+                        offset_into_first_range,
+                        segment_size,
+                        total_len,
+                        writer,
+                        &self.chunk_cache,
+                        &self.range_download_single_flight,
+                    )
+                    .await?;
+
+                    // define the term download tasks
+                    debug!("enqueueing {} download tasks", tasks.len());
+                    for task_def in tasks {
+                        debug!("enqueueing {task_def:?}");
+                        task_tx.send(DownloadQueueItem::DownloadTask(task_def))?;
+                    }
+
+                    // enqueue the remainder of file info fetch task
+                    if let Some(remainder) = maybe_remainder {
+                        task_tx.send(DownloadQueueItem::Metadata(remainder))?;
+                    }
+                },
+            }
+        }
+
+        while let Some(result) = running_downloads.join_next().await {
+            process_result(result)?;
+            // process_result(result, &mut total_written, &download_scheduler)?;
+        }
+
+        Ok(total_written)
+    }
+}
+
+async fn make_tasks(
+    fetch_info: &Arc<FetchInfo>,
+    terms: Vec<CASReconstructionTerm>,
+    offset_into_first_range: u64,
+    segment_size: u64,
+    remaining_total_len: u64,
+    writer: &OutputProvider,
+    chunk_cache: &Option<Arc<dyn ChunkCache>>,
+    single_flight: &RangeDownloadSingleFlight,
+) -> Result<Vec<XorbRangeDownloadAndWrite>> {
+    let mut fetch_info_term_map: HashMap<(MerkleHash, ChunkRange), XorbRangeDownloadAndWrite> = HashMap::new();
+    let mut writer_offset = 0;
+    let mut total_taken = 0;
+    for (i, term) in terms.iter().enumerate() {
+        let (individual_fetch_info, _) = fetch_info.find((term.hash.into(), term.range)).await?;
+
+        let skip_bytes = if i == 0 { offset_into_first_range } else { 0 };
+        let take = (term.unpacked_length as u64 - skip_bytes)
+            .min(segment_size - total_taken)
+            .min(remaining_total_len - total_taken);
+        let write_term = XorbRangeDownloadWriteTerm {
+            // term details
+            range: term.range,
+            unpacked_length: term.unpacked_length,
+
+            // write details
+            skip_bytes,
+            take,
+            writer_offset,
+        };
+
+        if let Some(job) = fetch_info_term_map.get_mut(&(term.hash.into(), individual_fetch_info.range)) {
+            job.terms.push(write_term);
+        } else {
+            fetch_info_term_map.insert(
+                (term.hash.into(), individual_fetch_info.range),
+                XorbRangeDownloadAndWrite {
+                    xorb_range_download: XorbRangeDownload {
+                        hash: term.hash.into(),
+                        range: individual_fetch_info.range,
+                        fetch_info: fetch_info.clone(),
+                        chunk_cache: chunk_cache.clone(),
+                        range_download_single_flight: single_flight.clone(),
+                    },
+                    terms: vec![write_term],
+                    output: writer.clone(),
+                },
+            );
+        }
+        writer_offset += term.unpacked_length as u64;
+        total_taken += take;
+    }
+
+    let tasks = fetch_info_term_map.into_values().collect();
+    Ok(tasks)
 }
 
 #[async_trait]

@@ -263,7 +263,7 @@ impl XorbRangeDownload {
         let (data, chunk_byte_indices) = loop {
             let (fetch_term, v) = self.fetch_info.find(key).await?;
 
-            let DownloadRangeResult::Data(mut data, chunk_byte_indices) = check_cache_download_range(
+            let DownloadRangeResult::Data(data, chunk_byte_indices) = check_cache_download_range(
                 self.fetch_info.client.clone(),
                 self.chunk_cache.clone(),
                 fetch_term,
@@ -293,14 +293,14 @@ impl XorbRangeDownload {
 #[derive(Debug, Clone)]
 pub(crate) struct XorbRangeDownloadWriteTerm {
     // term details
-    range: ChunkRange,   // sub-range of chunks to write
-    unpacked_bytes: u32, // total unpacked length of sub-range
+    pub range: ChunkRange,    // sub-range of chunks to write
+    pub unpacked_length: u32, // total unpacked length of sub-range
 
     // write details
-    skip_bytes: u64, // number of bytes to skip at the start of the specified range
-    take: u64,       // number of bytes to take after skipping `skip_bytes` bytes
+    pub skip_bytes: u64, // number of bytes to skip at the start of the specified range
+    pub take: u64,       // number of bytes to take after skipping `skip_bytes` bytes
     // effectively taking [skip_bytes..skip_bytes+take]
-    writer_offset: u64, // offset into the file at which to write this term
+    pub writer_offset: u64, // offset into the file at which to write this term
 }
 
 /// Helper object containing the structs needed when downloading a term in parallel
@@ -352,7 +352,7 @@ fn get_sub_range<'data>(
 
 pub(crate) enum DownloadQueueItem<T> {
     End,
-    Term(T),
+    DownloadTask(T),
     Metadata(FetchInfo),
 }
 
@@ -441,7 +441,7 @@ pub(crate) async fn get_one_term(
         .work_dump_caller_info(&fetch_term.url, download_range(http_client, fetch_term.clone(), term.hash.into()))
         .await?;
 
-    let DownloadRangeResult::Data(mut data, chunk_byte_indices) = download_range_result else {
+    let DownloadRangeResult::Data(data, chunk_byte_indices) = download_range_result else {
         return Err(CasClientError::PresignedUrlExpirationError);
     };
 
@@ -453,6 +453,8 @@ pub(crate) async fn get_one_term(
         };
         cache.put(&key, &fetch_term.range, &chunk_byte_indices, &data)?;
     }
+
+    let mut data = data.to_vec();
 
     // if the requested range is smaller than the fetched range, trim it down to the right data
     // the requested range cannot be larger than the fetched range.
@@ -502,7 +504,7 @@ async fn check_cache_download_range(
         }
     }
 
-    let DownloadRangeResult::Data(mut data, chunk_byte_indices) = download_range(http_client, fetch_term, hash).await?
+    let DownloadRangeResult::Data(data, chunk_byte_indices) = download_range(http_client, fetch_term, hash).await?
     else {
         return Ok(DownloadRangeResult::Forbidden);
     };
