@@ -252,6 +252,44 @@ pub(crate) struct XorbRangeDownload {
     pub range_download_single_flight: RangeDownloadSingleFlight,
 }
 
+#[derive(Derivative)]
+#[derivative(Debug, Clone)]
+pub(crate) struct XorbRangeDownloadGenerator {
+    pub fetch_info: Arc<FetchInfo>, // utility to get URL to download this term
+    #[derivative(Debug = "ignore")]
+    pub chunk_cache: Option<Arc<dyn ChunkCache>>,
+    pub range_download_single_flight: RangeDownloadSingleFlight,
+}
+
+impl XorbRangeDownloadGenerator {
+    pub fn new(
+        fetch_info: Arc<FetchInfo>,
+        chunk_cache: Option<Arc<dyn ChunkCache>>,
+        range_download_single_flight: RangeDownloadSingleFlight,
+    ) -> Self {
+        Self {
+            fetch_info,
+            chunk_cache,
+            range_download_single_flight,
+        }
+    }
+
+    pub fn generate(&self, hash: MerkleHash, range: ChunkRange) -> XorbRangeDownload {
+        let Self {
+            fetch_info,
+            chunk_cache,
+            range_download_single_flight,
+        } = self.clone();
+        XorbRangeDownload {
+            hash,
+            range,
+            fetch_info,
+            chunk_cache,
+            range_download_single_flight,
+        }
+    }
+}
+
 impl XorbRangeDownload {
     // Download and return results, retry on 403
     pub async fn run(self) -> Result<XorbRangeDownloadOutput> {
@@ -277,7 +315,7 @@ impl XorbRangeDownload {
                 continue;
             };
 
-            break (data.into(), chunk_byte_indices.into());
+            break (data, chunk_byte_indices);
         };
 
         Ok(XorbRangeDownloadOutput {
@@ -521,7 +559,7 @@ async fn check_cache_download_range(
         )?;
     }
 
-    Ok(DownloadRangeResult::Data(data.into(), chunk_byte_indices.into()))
+    Ok(DownloadRangeResult::Data(data, chunk_byte_indices))
 }
 
 /// use the provided http_client to make requests to S3/blob store using the url and url_range

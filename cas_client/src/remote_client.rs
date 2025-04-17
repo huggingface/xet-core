@@ -677,9 +677,12 @@ impl RemoteClient {
                         offset_into_first_range,
                         segment_size,
                         total_len,
+                        XorbRangeDownloadGenerator::new(
+                            segment.clone(),
+                            self.chunk_cache.clone(),
+                            self.range_download_single_flight.clone(),
+                        ),
                         writer,
-                        &self.chunk_cache,
-                        &self.range_download_single_flight,
                     )
                     .await?;
 
@@ -714,9 +717,8 @@ async fn make_tasks(
     offset_into_first_range: u64,
     segment_size: u64,
     remaining_total_len: u64,
+    xorb_range_download_generator: XorbRangeDownloadGenerator,
     writer: &OutputProvider,
-    chunk_cache: &Option<Arc<dyn ChunkCache>>,
-    single_flight: &RangeDownloadSingleFlight,
 ) -> Result<Vec<XorbRangeDownloadAndWrite>> {
     let mut fetch_info_term_map: HashMap<(MerkleHash, ChunkRange), XorbRangeDownloadAndWrite> = HashMap::new();
     let mut writer_offset = 0;
@@ -745,13 +747,8 @@ async fn make_tasks(
             fetch_info_term_map.insert(
                 (term.hash.into(), individual_fetch_info.range),
                 XorbRangeDownloadAndWrite {
-                    xorb_range_download: XorbRangeDownload {
-                        hash: term.hash.into(),
-                        range: individual_fetch_info.range,
-                        fetch_info: fetch_info.clone(),
-                        chunk_cache: chunk_cache.clone(),
-                        range_download_single_flight: single_flight.clone(),
-                    },
+                    xorb_range_download: xorb_range_download_generator
+                        .generate(term.hash.into(), individual_fetch_info.range),
                     terms: vec![write_term],
                     output: writer.clone(),
                 },
