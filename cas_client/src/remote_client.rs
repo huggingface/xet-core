@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::io::{Cursor, Write};
 use std::mem::take;
 use std::path::PathBuf;
@@ -597,8 +597,7 @@ impl RemoteClient {
         writer: &OutputProvider,
         progress_updater: Option<Arc<dyn ProgressUpdater>>,
     ) -> Result<u64> {
-        // queue size is inherently bounded by degree of concurrency.
-        let (task_tx, mut task_rx) = mpsc::unbounded_channel::<DownloadQueueItem<XorbRangeDownloadAndWrite>>();
+        let mut task_queue: VecDeque<DownloadQueueItem<XorbRangeDownloadAndWrite>> = VecDeque::new();
         let mut running_downloads = JoinSet::<Result<TermDownloadResult<usize>>>::new();
 
         // derive the actual range to reconstruct
@@ -606,12 +605,12 @@ impl RemoteClient {
         let total_len = file_reconstruct_range.length();
 
         // kick-start the download by enqueue the fetch info task.
-        task_tx.send(DownloadQueueItem::Metadata(FetchInfo::new(
+        task_queue.push_back(DownloadQueueItem::Metadata(FetchInfo::new(
             *file_hash,
             file_reconstruct_range,
             self.endpoint.clone(),
             self.authenticated_http_client.clone(),
-        )))?;
+        )));
 
         // Start the queue processing logic
         //
@@ -621,21 +620,6 @@ impl RemoteClient {
         // After the above, a task that defines fetching the remainder of the file reconstruction info is enqueued,
         // which will execute after the first of the above term download tasks finishes.
         let download_scheduler = DownloadScheduler::new(*NUM_CONCURRENT_RANGE_GETS);
-        //
-        // let process_result =
-        //     move |result: stdResult<stdResult<TermDownloadResult<usize>, CasClientError>, JoinError>,
-        //           total_written: &mut u64,
-        //           download_scheduler: &DownloadScheduler|
-        //           -> Result<()> {
-        //         let download_result = result.map_err(|e| anyhow!("{e:?}"))??;
-        //         let write_len = download_result.data;
-        //         *total_written += write_len as u64;
-        //         progress_updater.as_ref().inspect(|updater| updater.update(write_len as u64));
-        //
-        //         // Now inspect the download metrics and tune the download degree of concurrency
-        //         download_scheduler.tune_on(download_result)?;
-        //         Ok(())
-        //     };
 
         let mut total_written = 0;
 
@@ -650,7 +634,7 @@ impl RemoteClient {
                 Ok(())
             };
 
-        while let Some(item) = task_rx.recv().await {
+        while let Some(item) = task_queue.pop_front() {
             // first try to join some tasks
             while let Some(result) = running_downloads.try_join_next() {
                 process_result(result)?;
@@ -663,13 +647,13 @@ impl RemoteClient {
                     debug!("download queue emptyed");
                     break;
                 },
-                DownloadQueueItem::DownloadTask(term_download) => {
+                DownloadQueueItem::DownloadTask(download_and_write_task) => {
                     // acquire the permit before spawning the task, so that there's limited
                     // number of active downloads.
                     let permit = download_scheduler.download_permit().await?;
                     debug!("spawning 1 download task");
                     running_downloads.spawn(async move {
-                        let data = term_download.run().await?;
+                        let data = download_and_write_task.run().await?;
                         drop(permit);
                         Ok(data)
                     });
@@ -682,7 +666,7 @@ impl RemoteClient {
 
                     let Some((offset_into_first_range, terms)) = segment.query().await? else {
                         // signal termination
-                        task_tx.send(DownloadQueueItem::End)?;
+                        task_queue.push_back(DownloadQueueItem::End);
                         continue;
                     };
 
@@ -703,12 +687,13 @@ impl RemoteClient {
                     debug!("enqueueing {} download tasks", tasks.len());
                     for task_def in tasks {
                         debug!("enqueueing {task_def:?}");
-                        task_tx.send(DownloadQueueItem::DownloadTask(task_def))?;
+                        task_queue.push_back(DownloadQueueItem::DownloadTask(task_def));
+                        // task_tx.send(DownloadQueueItem::DownloadTask(task_def))?;
                     }
 
                     // enqueue the remainder of file info fetch task
                     if let Some(remainder) = maybe_remainder {
-                        task_tx.send(DownloadQueueItem::Metadata(remainder))?;
+                        task_queue.push_back(DownloadQueueItem::Metadata(remainder));
                     }
                 },
             }
