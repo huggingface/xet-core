@@ -1,4 +1,3 @@
-mod chunking;
 pub mod constants;
 mod data_aggregator;
 mod dedup_metrics;
@@ -7,7 +6,7 @@ mod file_deduplication;
 mod interface;
 mod raw_xorb_data;
 
-pub use chunking::{Chunk, Chunker};
+pub use chunking::*;
 pub use data_aggregator::DataAggregator;
 pub use dedup_metrics::DeduplicationMetrics;
 pub use file_deduplication::FileDeduper;

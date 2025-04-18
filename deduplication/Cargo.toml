@@ -9,6 +9,7 @@ merklehash = { path = "../merklehash" }
 mdb_shard = { path = "../mdb_shard" }
 merkledb = { path = "../merkledb" }
 utils = { path = "../utils" }
+chunking = { path = "../chunking" }
 more-asserts = "0.3.1"
 async-trait = "0.1.53"
 lazy_static = "1.4.0"

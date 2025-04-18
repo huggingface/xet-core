@@ -614,6 +614,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "chunking"
+version = "0.1.0"
+dependencies = [
+ "gearhash",
+ "merklehash",
+ "rand 0.9.0",
+ "utils",
+]
+
+[[package]]
 name = "clap"
 version = "2.34.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -966,6 +976,7 @@ name = "deduplication"
 version = "0.14.5"
 dependencies = [
  "async-trait",
+ "chunking",
  "gearhash",
  "lazy_static",
  "mdb_shard",
