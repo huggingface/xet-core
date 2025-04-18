@@ -118,7 +118,7 @@ impl LocalClient {
         // loop through the directory
         self.xorb_dir
             .read_dir()
-            .map_err(|x| CasClientError::internal(x))?
+            .map_err(CasClientError::internal)?
             // take only entries which are ok
             .filter_map(|x| x.ok())
             // take only entries whose filenames convert into strings

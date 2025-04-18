@@ -729,13 +729,14 @@ impl ShardClientInterface for RemoteClient {}
 
 #[cfg(test)]
 mod tests {
-    use std::{collections::HashMap, vec};
+    use std::collections::HashMap;
 
     use anyhow::Result;
     use cas_object::test_utils::{build_cas_object, ChunkSize};
     use cas_types::{CASReconstructionFetchInfo, CASReconstructionTerm, ChunkRange};
     use deduplication::constants::MAX_XORB_BYTES;
-    use httpmock::{Method::GET, MockServer};
+    use httpmock::Method::GET;
+    use httpmock::MockServer;
     use merkledb::constants::TARGET_CDC_CHUNK_SIZE;
     use tracing_test::traced_test;
 
