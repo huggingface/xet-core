@@ -114,16 +114,17 @@ impl FileProvider {
 }
 
 /// A Client to the CAS (Content Addressed Storage) service that is able to obtain
-/// the reconstruction info of a file by FileID (MerkleHash).
-/// This trait is meant for internal (caching): external users to this crate don't
-/// access these trait functions.
+/// the reconstruction info of a file by FileID (MerkleHash). Return
+/// - Ok(Some(response)) if the query succeeded,
+/// - Ok(None) if the specified range can't be satisfied,
+/// - Err(e) for other errors.
 #[async_trait]
-pub(crate) trait Reconstructable {
+pub trait Reconstructable {
     async fn get_reconstruction(
         &self,
         hash: &MerkleHash,
         byte_range: Option<FileRange>,
-    ) -> Result<QueryReconstructionResponse>;
+    ) -> Result<Option<QueryReconstructionResponse>>;
 }
 
 /// Probes for shards that provide dedup information for a chunk, and, if

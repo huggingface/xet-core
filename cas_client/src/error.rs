@@ -1,5 +1,12 @@
+use std::fmt::Debug;
+use std::num::TryFromIntError;
+
+use anyhow::anyhow;
 use merklehash::MerkleHash;
 use thiserror::Error;
+use tokio::sync::mpsc::error::SendError;
+use tokio::sync::AcquireError;
+use tokio::task::JoinError;
 
 #[non_exhaustive]
 #[derive(Error, Debug)]
@@ -51,6 +58,15 @@ pub enum CasClientError {
 
     #[error("CAS object not found for hash: {0}")]
     XORBNotFound(MerkleHash),
+
+    #[error("Presigned S3 URL Expired on fetching range")]
+    PresignedUrlExpirationError,
+}
+
+impl CasClientError {
+    pub fn internal<T: Debug>(value: T) -> Self {
+        CasClientError::InternalError(anyhow!("{value:?}"))
+    }
 }
 
 // Define our own result type here (this seems to be the standard).
@@ -71,5 +87,35 @@ impl From<utils::errors::SingleflightError<CasClientError>> for CasClientError {
             utils::singleflight::SingleflightError::InternalError(e) => e,
             e => CasClientError::Other(format!("single flight error: {e}")),
         }
+    }
+}
+
+impl<T> From<std::sync::PoisonError<T>> for CasClientError {
+    fn from(value: std::sync::PoisonError<T>) -> Self {
+        Self::internal(value)
+    }
+}
+
+impl From<AcquireError> for CasClientError {
+    fn from(value: AcquireError) -> Self {
+        Self::internal(value)
+    }
+}
+
+impl<T> From<SendError<T>> for CasClientError {
+    fn from(value: SendError<T>) -> Self {
+        Self::internal(value)
+    }
+}
+
+impl From<JoinError> for CasClientError {
+    fn from(value: JoinError) -> Self {
+        Self::internal(value)
+    }
+}
+
+impl From<TryFromIntError> for CasClientError {
+    fn from(value: TryFromIntError) -> Self {
+        Self::internal(value)
     }
 }
