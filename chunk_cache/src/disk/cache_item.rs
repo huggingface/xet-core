@@ -155,7 +155,7 @@ impl CacheItem {
         }
 
         Ok(Self {
-            range: ChunkRange { start, end },
+            range: ChunkRange::new(start, end),
             len,
             checksum,
         })
@@ -183,7 +183,7 @@ mod tests {
     #[test]
     fn test_to_file_name_len() {
         let cache_item = CacheItem {
-            range: ChunkRange { start: 0, end: 1024 },
+            range: ChunkRange::new(0, 1024),
             len: 16 << 20,
             checksum: 10000,
         };

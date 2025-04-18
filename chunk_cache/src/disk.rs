@@ -857,7 +857,7 @@ mod tests {
         let cache = DiskCache::initialize(&config).unwrap();
 
         let key = random_key(&mut rng);
-        let range = ChunkRange { start: 0, end: 4 };
+        let range = ChunkRange::new(0, 4);
         let (chunk_byte_indices, data) = random_bytes(&mut rng, &range, RANGE_LEN);
         let put_result = cache.put(&key, &range, &chunk_byte_indices, data.as_slice());
         assert!(put_result.is_ok(), "{put_result:?}");
@@ -872,7 +872,7 @@ mod tests {
         assert_eq!(cache_range.range, range);
         assert_eq!(cache_range.offsets.as_ref(), chunk_byte_indices.as_slice());
 
-        let miss_range = ChunkRange { start: 100, end: 101 };
+        let miss_range = ChunkRange::new(100, 101);
         // miss
         assert!(cache.get(&key, &miss_range).unwrap().is_none());
     }
@@ -890,7 +890,7 @@ mod tests {
 
         let key = random_key(&mut rng);
         // following parts of test assume overall inserted range includes chunk 0
-        let range = ChunkRange { start: 0, end: 4 };
+        let range = ChunkRange::new(0, 4);
         let (chunk_byte_indices, data) = random_bytes(&mut rng, &range, RANGE_LEN);
         let put_result = cache.put(&key, &range, &chunk_byte_indices, data.as_slice());
         assert!(put_result.is_ok(), "{put_result:?}");
@@ -899,7 +899,7 @@ mod tests {
 
         for start in range.start..range.end {
             for end in (start + 1)..=range.end {
-                let sub_range = ChunkRange { start, end };
+                let sub_range = ChunkRange::new(start, end);
                 let get_result = cache.get(&key, &sub_range).unwrap();
                 assert!(get_result.is_some(), "range: [{start} {end})");
                 let cache_range = get_result.unwrap();
@@ -1162,20 +1162,14 @@ mod tests {
         let total_bytes = cache.total_bytes().unwrap();
 
         // left range
-        let left_range = ChunkRange {
-            start: range.start,
-            end: range.end - 1,
-        };
+        let left_range = ChunkRange::new(range.start, range.end - 1);
         let left_chunk_byte_indices = &chunk_byte_indices[..chunk_byte_indices.len() - 1];
         let left_data = &data[..*left_chunk_byte_indices.last().unwrap() as usize];
         assert!(cache.put(&key, &left_range, left_chunk_byte_indices, left_data).is_ok());
         assert_eq!(total_bytes, cache.total_bytes().unwrap());
 
         // right range
-        let right_range = ChunkRange {
-            start: range.start + 1,
-            end: range.end,
-        };
+        let right_range = ChunkRange::new(range.start + 1, range.end);
         let right_chunk_byte_indices: Vec<u32> =
             (&chunk_byte_indices[1..]).iter().map(|v| v - chunk_byte_indices[1]).collect();
         let right_data = &data[chunk_byte_indices[1] as usize..];
@@ -1183,10 +1177,7 @@ mod tests {
         assert_eq!(total_bytes, cache.total_bytes().unwrap());
 
         // middle range
-        let middle_range = ChunkRange {
-            start: range.start + 1,
-            end: range.end - 1,
-        };
+        let middle_range = ChunkRange::new(range.start + 1, range.end - 1);
         let middle_chunk_byte_indices: Vec<u32> = (&chunk_byte_indices[1..(chunk_byte_indices.len() - 1)])
             .iter()
             .map(|v| v - chunk_byte_indices[1])
