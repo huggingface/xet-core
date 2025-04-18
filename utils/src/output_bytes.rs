@@ -4,7 +4,6 @@
 /// * `v` - the size in bytes
 pub fn output_bytes(v: u64) -> String {
     let map = vec![
-        #[cfg(not(target_arch = "wasm32"))]
         (1_099_511_627_776, "TiB"),
         (1_073_741_824, "GiB"),
         (1_048_576, "MiB"),
@@ -45,12 +44,9 @@ mod tests {
         assert_eq!("999.99 MiB", output_bytes(1_048_565_514));
         assert_eq!("1 GiB", output_bytes(1_073_741_824));
         assert_eq!("1.00 GiB", output_bytes(1_073_741_825));
-        #[cfg(not(target_arch = "wasm32"))]
-        {
-            assert_eq!("999.99 GiB", output_bytes(1_073_731_086_581));
-            assert_eq!("1 TiB", output_bytes(1_099_511_627_776));
-            assert_eq!("1.00 TiB", output_bytes(1_099_511_627_777));
-            assert_eq!("1234.57 TiB", output_bytes(1_357_424_070_303_416));
-        }
+        assert_eq!("999.99 GiB", output_bytes(1_073_731_086_581));
+        assert_eq!("1 TiB", output_bytes(1_099_511_627_776));
+        assert_eq!("1.00 TiB", output_bytes(1_099_511_627_777));
+        assert_eq!("1234.57 TiB", output_bytes(1_357_424_070_303_416));
     }
 }
