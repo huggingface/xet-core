@@ -40,11 +40,7 @@ pub type HttpRange = Range<u64, _H>;
 
 impl FileRange {
     pub fn full() -> Self {
-        Self {
-            start: 0,
-            end: u64::MAX,
-            _marker: PhantomData,
-        }
+        Self::new(0, u64::MAX)
     }
 
     // consumes self and split the range into a segment of size `segment_size`
@@ -230,4 +226,43 @@ pub struct UploadShardResponse {
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct QueryChunkResponse {
     pub shard: MerkleHash,
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::*;
+
+    #[test]
+    fn test_file_range_segment() {
+        let file_range = FileRange::full();
+        let segment_size = 824820;
+
+        let (segment, remainder) = file_range.take_segment(segment_size);
+
+        assert_eq!(segment, FileRange::new(0, segment_size));
+        assert_eq!(remainder, Some(FileRange::new(segment_size, u64::MAX)));
+    }
+
+    #[test]
+    fn test_file_range_segment_no_remainder() {
+        let file_range = FileRange::new(50, 100);
+        let segment_size = 40;
+
+        let (s1, remainder) = file_range.take_segment(segment_size);
+
+        assert_eq!(s1, FileRange::new(50, 90));
+        assert_eq!(remainder, Some(FileRange::new(90, 100)));
+
+        let (s2, remainder) = remainder.unwrap().take_segment(segment_size);
+
+        assert_eq!(s2, FileRange::new(90, 100));
+        assert_eq!(remainder, None);
+    }
+
+    #[test]
+    fn test_http_range_type_casting() {
+        assert_eq!(HttpRange::from(FileRange::new(0, 10)), HttpRange::new(0, 9));
+
+        assert_eq!(FileRange::from(HttpRange::new(0, 10)), FileRange::new(0, 11));
+    }
 }

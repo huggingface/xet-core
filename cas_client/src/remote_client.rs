@@ -310,8 +310,8 @@ impl RemoteClient {
     }
 
     // Segmented download such that the file reconstruction and fetch info is not queried in its entirety
-    // at the beginning of the download, but queried in segments. Range downloadeds are executed with
-    // a certain degree of parallilism, but writing out to storage is sequential. Ideal when the external
+    // at the beginning of the download, but queried in segments. Range downloads are executed with
+    // a certain degree of parallelism, but writing out to storage is sequential. Ideal when the external
     // storage uses HDDs.
     async fn reconstruct_file_to_writer_segmented(
         &self,
@@ -346,6 +346,7 @@ impl RemoteClient {
         // which will execute after the first of the above term download tasks finishes.
         let threadpool = self.threadpool.clone();
         let chunk_cache = self.chunk_cache.clone();
+        let term_download_client = self.http_client.clone();
         let range_download_single_flight = self.range_download_single_flight.clone();
         let download_scheduler = DownloadScheduler::new(*NUM_CONCURRENT_RANGE_GETS);
         let download_scheduler_clone = download_scheduler.clone();
@@ -356,7 +357,7 @@ impl RemoteClient {
                 match item {
                     DownloadQueueItem::End => {
                         // everything processed
-                        info!("download queue emptyed");
+                        debug!("download queue emptyed");
                         drop(running_downloads_tx);
                         break;
                     },
@@ -375,7 +376,7 @@ impl RemoteClient {
                     DownloadQueueItem::Metadata(fetch_info) => {
                         // query for the file info of the first segment
                         let segment_size = download_scheduler_clone.next_segment_size()?;
-                        info!("querying file info of size {segment_size}");
+                        debug!("querying file info of size {segment_size}");
                         let (segment, maybe_remainder) = fetch_info.take_segment(segment_size);
 
                         let Some((offset_into_first_range, terms)) = segment.query().await? else {
@@ -400,6 +401,7 @@ impl RemoteClient {
                                 take,
                                 fetch_info: segment.clone(),
                                 chunk_cache: chunk_cache.clone(),
+                                client: term_download_client.clone(),
                                 range_download_single_flight: range_download_single_flight.clone(),
                             };
 
@@ -448,8 +450,8 @@ impl RemoteClient {
     }
 
     // Segmented download such that the file reconstruction and fetch info is not queried in its entirety
-    // at the beginning of the download, but queried in segments. Range downloadeds are executed with
-    // a certain degree of parallilism, and so does writing out to storage. Ideal when the external
+    // at the beginning of the download, but queried in segments. Range downloads are executed with
+    // a certain degree of parallelism, and so does writing out to storage. Ideal when the external
     // storage is fast at seeks, e.g. RAM or SSDs.
     async fn reconstruct_file_to_writer_segmented_parallel_write(
         &self,
@@ -481,6 +483,7 @@ impl RemoteClient {
         // download tasks are enqueued and spawned with the degree of concurrency equal to `num_concurrent_range_gets`.
         // After the above, a task that defines fetching the remainder of the file reconstruction info is enqueued,
         // which will execute after the first of the above term download tasks finishes.
+        let term_download_client = self.http_client.clone();
         let download_scheduler = DownloadScheduler::new(*NUM_CONCURRENT_RANGE_GETS);
 
         let process_result =
@@ -557,6 +560,7 @@ impl RemoteClient {
                                 take,
                                 fetch_info: segment.clone(),
                                 chunk_cache: self.chunk_cache.clone(),
+                                client: term_download_client.clone(),
                                 range_download_single_flight: self.range_download_single_flight.clone(),
                             },
                             write_offset: total_len - remaining_total_len,

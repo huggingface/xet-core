@@ -39,7 +39,7 @@ pub(crate) struct FetchInfo {
     file_hash: MerkleHash,
     file_range: FileRange,
     endpoint: String,
-    client: Arc<ClientWithMiddleware>,
+    client: Arc<ClientWithMiddleware>, // only used for fetching file info
     inner: RwLock<HashMap<HexMerkleHash, Vec<CASReconstructionFetchInfo>>>,
     version: tokio::sync::Mutex<u32>,
 }
@@ -145,6 +145,7 @@ pub(crate) struct TermDownload {
     pub fetch_info: Arc<FetchInfo>, // utility to get URL to download this term
     #[derivative(Debug = "ignore")]
     pub chunk_cache: Option<Arc<dyn ChunkCache>>,
+    pub client: Arc<ClientWithMiddleware>, // only used for downloading range
     pub range_download_single_flight: RangeDownloadSingleFlight,
 }
 
@@ -166,7 +167,7 @@ impl TermDownload {
             let (fetch_info, v) = self.fetch_info.find(key).await?;
 
             let range_data = get_one_term(
-                self.fetch_info.client.clone(),
+                self.client.clone(),
                 self.chunk_cache.clone(),
                 self.term.clone(),
                 fetch_info,
@@ -268,6 +269,7 @@ impl DownloadScheduler {
         } else {
             // TODO: check download speed and consider if we should increase or decrease
             info!("expanding segment size by one range");
+            *self.n_range_in_segment.lock()? += 1;
             self.n_concurrent_download_task.add_permits(1);
         }
 
@@ -397,4 +399,216 @@ async fn download_range(
     )
     .await?;
     Ok(DownloadRangeResult::Data(data, chunk_byte_indices))
+}
+
+#[cfg(test)]
+mod tests {
+    use anyhow::Result;
+    use cas_types::{HttpRange, QueryReconstructionResponse};
+    use httpmock::prelude::*;
+    use tokio::task::JoinSet;
+    use tokio::time::sleep;
+
+    use super::*;
+    use crate::{build_http_client, RetryConfig};
+
+    #[tokio::test]
+    async fn test_fetch_info_query_and_find() -> Result<()> {
+        // Arrange test data
+        let file_range = FileRange::new(100, 200);
+
+        // fetch info of xorb with hash "0...1" and two coalesced ranges
+        let xorb1: HexMerkleHash = MerkleHash::from_hex(&format!("{:0>64}", "1")).unwrap().into();
+        let x1range = vec![
+            CASReconstructionFetchInfo {
+                range: ChunkRange::new(5, 20),
+                url: "".to_owned(),
+                url_range: HttpRange::new(34, 400),
+            },
+            CASReconstructionFetchInfo {
+                range: ChunkRange::new(40, 87),
+                url: "".to_owned(),
+                url_range: HttpRange::new(589, 1034),
+            },
+        ];
+
+        // fetch info of xorb with hash "0...2" and two coalesced ranges
+        let xorb2: HexMerkleHash = MerkleHash::from_hex(&format!("{:0>64}", "2")).unwrap().into();
+        let x2range = vec![
+            CASReconstructionFetchInfo {
+                range: ChunkRange::new(2, 20),
+                url: "".to_owned(),
+                url_range: HttpRange::new(56, 400),
+            },
+            CASReconstructionFetchInfo {
+                range: ChunkRange::new(23, 96),
+                url: "".to_owned(),
+                url_range: HttpRange::new(1560, 10348),
+            },
+        ];
+
+        // Arrange server
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(GET)
+                .path(format!("/reconstruction/{}", MerkleHash::default()))
+                .header(RANGE.as_str(), HttpRange::from(file_range).range_header());
+            let response = QueryReconstructionResponse {
+                offset_into_first_range: 0,
+                terms: Default::default(),
+                fetch_info: HashMap::from([(xorb1, x1range.clone()), (xorb2, x2range.clone())]),
+            };
+            then.status(200).json_body(serde_json::json!(response));
+        });
+
+        let fetch_info = FetchInfo::new(
+            MerkleHash::default(),
+            file_range,
+            server.base_url(),
+            Arc::new(build_http_client(RetryConfig::default())?),
+        );
+
+        fetch_info.query().await?;
+
+        // Test find fetch info
+        let test_range1 = ChunkRange::new(6, 8);
+        let (fi, _) = fetch_info.find((xorb1, test_range1)).await?;
+        assert_eq!(x1range[0], fi);
+        let test_range2 = ChunkRange::new(20, 40);
+        let ret = fetch_info.find((xorb1, test_range2)).await;
+        assert!(ret.is_err());
+        let test_range3 = ChunkRange::new(40, 88);
+        let ret = fetch_info.find((xorb1, test_range3)).await;
+        assert!(ret.is_err());
+
+        let (fi, _) = fetch_info.find((xorb2, test_range1)).await?;
+        assert_eq!(x2range[0], fi);
+        let test_range4 = x2range[1].range;
+        let (fi, _) = fetch_info.find((xorb2, test_range4)).await?;
+        assert_eq!(x2range[1], fi);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_fetch_info_concurrent_refresh() -> Result<()> {
+        let file_range_to_refresh = FileRange::new(100, 200);
+
+        // Arrange server
+        let server = MockServer::start();
+        let mock = server.mock(|when, then| {
+            when.method(GET)
+                .path(format!("/reconstruction/{}", MerkleHash::default()))
+                .header(RANGE.as_str(), HttpRange::from(file_range_to_refresh).range_header());
+            let response = QueryReconstructionResponse {
+                offset_into_first_range: 0,
+                terms: Default::default(),
+                fetch_info: Default::default(),
+            };
+            then.status(200).json_body(serde_json::json!(response));
+        });
+
+        let fetch_info = Arc::new(FetchInfo::new(
+            MerkleHash::default(),
+            file_range_to_refresh,
+            server.base_url(),
+            Arc::new(build_http_client(RetryConfig::default())?),
+        ));
+
+        // Spawn multiple tasks each calling into refresh with a different delay in
+        // [0, 1000] ms, where the refresh itself takes 100 ms to finish. This means
+        // some are refreshing at the same time, and for the rest when they call
+        // refresh() the operation was done recently.
+        let mut tasks = JoinSet::<Result<()>>::new();
+        for i in 0..100 {
+            let fi = fetch_info.clone();
+            tasks.spawn(async move {
+                let v = 0;
+                sleep(Duration::from_millis(i * 10)).await;
+                Ok(fi.refresh(v).await?)
+            });
+        }
+
+        tasks.join_all().await;
+
+        // Assert that only one refresh happened.
+        assert_eq!(*fetch_info.version.lock().await, 1);
+        assert_eq!(mock.hits(), 1);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_term_download_and_refresh() -> Result<()> {
+        // Arrange test data
+        let file_range = FileRange::new(0, 200);
+        let server = MockServer::start();
+
+        // fetch info fo xorb with hash "0...1" and two coalesced ranges
+        let xorb1: HexMerkleHash = MerkleHash::from_hex(&format!("{:0>64}", "1")).unwrap().into();
+        let x1range = vec![CASReconstructionFetchInfo {
+            range: ChunkRange::new(5, 20),
+            url: server.url(format!("/get_xorb/{xorb1}/")),
+            url_range: HttpRange::new(34, 400),
+        }];
+
+        // Arrange server
+        let mock_fi = server.mock(|when, then| {
+            when.method(GET)
+                .path(format!("/reconstruction/{}", MerkleHash::default()))
+                .header(RANGE.as_str(), HttpRange::from(file_range).range_header());
+            let response = QueryReconstructionResponse {
+                offset_into_first_range: 0,
+                terms: vec![CASReconstructionTerm {
+                    hash: xorb1,
+                    unpacked_length: 100,
+                    range: ChunkRange::new(6, 7),
+                }],
+                fetch_info: HashMap::from([(xorb1, x1range.clone())]),
+            };
+            then.status(200)
+                .json_body(serde_json::json!(response))
+                .delay(Duration::from_millis(100));
+        });
+
+        // Test download once and get 403
+        let mock_data = server.mock(|when, then| {
+            when.method(GET)
+                .path(format!("/get_xorb/{xorb1}/"))
+                .header(RANGE.as_str(), x1range[0].url_range.range_header());
+            then.status(403).delay(Duration::from_millis(100));
+        });
+
+        let fetch_info = FetchInfo::new(
+            MerkleHash::default(),
+            file_range,
+            server.base_url(),
+            Arc::new(build_http_client(RetryConfig::default())?),
+        );
+
+        let (offset_info_first_range, terms) = fetch_info.query().await?.unwrap();
+
+        let download_task = TermDownload {
+            term: terms[0].clone(),
+            skip_bytes: offset_info_first_range,
+            take: file_range.length(),
+            fetch_info: Arc::new(fetch_info),
+            chunk_cache: None,
+            client: Arc::new(build_http_client(RetryConfig::default())?),
+            range_download_single_flight: Arc::new(Group::new()),
+        };
+
+        let handle = tokio::spawn(async move { download_task.run().await });
+
+        // Wait for the download_task to refresh and retry for a couple of times.
+        tokio::time::sleep(Duration::from_secs(1)).await;
+
+        // download task will not return if keep hitting 403
+        handle.abort();
+
+        assert!(mock_fi.hits() >= 2);
+        assert!(mock_data.hits() >= 2);
+
+        Ok(())
+    }
 }
