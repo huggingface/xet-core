@@ -152,7 +152,7 @@ impl UploadClient for RemoteClient {
         match response.status() {
             StatusCode::OK => Ok(true),
             StatusCode::NOT_FOUND => Ok(false),
-            e => Err(CasClientError::InternalError(anyhow!("unrecognized status code {e}"))),
+            e => Err(CasClientError::internal(format!("unrecognized status code {e}"))),
         }
     }
 }
@@ -388,7 +388,7 @@ impl RemoteClient {
                         let segment = Arc::new(segment);
                         // define the term download tasks
                         let mut remaining_segment_len = segment_size;
-                        info!("enqueueing {} download tasks", terms.len());
+                        debug!("enqueueing {} download tasks", terms.len());
                         for (i, term) in terms.into_iter().enumerate() {
                             let skip_bytes = if i == 0 { offset_into_first_range } else { 0 };
                             let take = remaining_total_len
@@ -414,6 +414,8 @@ impl RemoteClient {
                         // enqueue the remainder of file info fetch task
                         if let Some(remainder) = maybe_remainder {
                             task_tx.send(DownloadQueueItem::Metadata(remainder))?;
+                        } else {
+                            task_tx.send(DownloadQueueItem::End)?;
                         }
                     },
                 }
@@ -576,6 +578,8 @@ impl RemoteClient {
                     // enqueue the remainder of file info fetch task
                     if let Some(remainder) = maybe_remainder {
                         task_tx.send(DownloadQueueItem::Metadata(remainder))?;
+                    } else {
+                        task_tx.send(DownloadQueueItem::End)?;
                     }
                 },
             }
@@ -725,25 +729,18 @@ impl ShardClientInterface for RemoteClient {}
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
+    use std::{collections::HashMap, vec};
 
+    use anyhow::Result;
     use cas_object::test_utils::{build_cas_object, ChunkSize};
-    use cas_types::{CASReconstructionTerm, ChunkRange, HexMerkleHash};
-    use chunk_cache::MockChunkCache;
+    use cas_types::{CASReconstructionFetchInfo, CASReconstructionTerm, ChunkRange};
+    use deduplication::constants::MAX_XORB_BYTES;
+    use httpmock::{Method::GET, MockServer};
+    use merkledb::constants::TARGET_CDC_CHUNK_SIZE;
     use tracing_test::traced_test;
 
     use super::*;
     use crate::interface::buffer::BufferProvider;
-
-    // test reconstruction contains 20 chunks, where each chunk size is 10 bytes
-    const TEST_CHUNK_RANGE: ChunkRange = ChunkRange {
-        start: 0,
-        end: TEST_NUM_CHUNKS as u32,
-        _marker: std::marker::PhantomData,
-    };
-    const TEST_CHUNK_SIZE: usize = 10;
-    const TEST_NUM_CHUNKS: usize = 20;
-    const TEST_UNPACKED_LEN: u32 = (TEST_CHUNK_SIZE * TEST_NUM_CHUNKS) as u32;
 
     #[ignore = "requires a running CAS server"]
     #[traced_test]
@@ -770,5 +767,407 @@ mod tests {
 
         // Assert
         assert!(result.is_ok());
+    }
+
+    #[derive(Clone)]
+    struct TestCase {
+        file_hash: MerkleHash,
+        reconstruction_response: QueryReconstructionResponse,
+        file_range: FileRange,
+        expected_data: Vec<u8>,
+        expect_error: bool,
+    }
+
+    const NUM_CHUNKS: u32 = 128;
+    const CHUNK_SIZE: u32 = TARGET_CDC_CHUNK_SIZE as u32;
+
+    macro_rules! mock_no_match_range_header {
+        ($range_to_compare:expr) => {
+            |req| {
+                let Some(h) = &req.headers else {
+                    return false;
+                };
+                let Some((_range_header, range_value)) =
+                    h.iter().find(|(k, _v)| k.eq_ignore_ascii_case(RANGE.as_str()))
+                else {
+                    return false;
+                };
+
+                let Ok(range) = HttpRange::try_from(range_value.trim_start_matches("bytes=")) else {
+                    return false;
+                };
+
+                range != $range_to_compare
+            }
+        };
+    }
+
+    #[test]
+    fn test_reconstruct_file_full_file() -> Result<()> {
+        // Arrange server
+        let server = MockServer::start();
+
+        let xorb_hash: MerkleHash = MerkleHash::default();
+        let (cas_object, chunks_serialized, raw_data, _raw_data_chunk_hash_and_boundaries) =
+            build_cas_object(NUM_CHUNKS, ChunkSize::Fixed(CHUNK_SIZE), CompressionScheme::ByteGrouping4LZ4);
+
+        // Workaround to make this variable const. Change this accordingly if
+        // real value of the two static variables below change.
+        const FIRST_SEGMENT_SIZE: u64 = 16 * 64 * 1024 * 1024;
+        assert_eq!(FIRST_SEGMENT_SIZE, *NUM_CONCURRENT_RANGE_GETS as u64 * *MAX_XORB_BYTES as u64);
+
+        // Test case: full file reconstruction
+        const FIRST_SEGMENT_FILE_RANGE: FileRange = FileRange {
+            start: 0,
+            end: FIRST_SEGMENT_SIZE,
+            _marker: std::marker::PhantomData,
+        };
+
+        let test_case = TestCase {
+            file_hash: MerkleHash::from_hex(&format!("{:0>64}", "1"))?, // "0....1"
+            reconstruction_response: QueryReconstructionResponse {
+                offset_into_first_range: 0,
+                terms: vec![CASReconstructionTerm {
+                    hash: xorb_hash.into(),
+                    range: ChunkRange::new(0, NUM_CHUNKS),
+                    unpacked_length: raw_data.len() as u32,
+                }],
+                fetch_info: HashMap::from([(
+                    xorb_hash.into(),
+                    vec![CASReconstructionFetchInfo {
+                        range: ChunkRange::new(0, NUM_CHUNKS),
+                        url: server.url(format!("/get_xorb/{xorb_hash}/")),
+                        url_range: {
+                            let (start, end) = cas_object.get_byte_offset(0, NUM_CHUNKS)?;
+                            HttpRange::from(FileRange::new(start as u64, end as u64))
+                        },
+                    }],
+                )]),
+            },
+            file_range: FileRange::full(),
+            expected_data: raw_data,
+            expect_error: false,
+        };
+
+        // Arrange server mocks
+        let _mock_fi_416 = server.mock(|when, then| {
+            when.method(GET)
+                .path(format!("/reconstruction/{}", test_case.file_hash))
+                .matches(mock_no_match_range_header!(HttpRange::from(FIRST_SEGMENT_FILE_RANGE)));
+            then.status(416);
+        });
+        let _mock_fi_200 = server.mock(|when, then| {
+            let w = when.method(GET).path(format!("/reconstruction/{}", test_case.file_hash));
+            w.header(RANGE.as_str(), HttpRange::from(FIRST_SEGMENT_FILE_RANGE).range_header());
+            then.status(200).json_body_obj(&test_case.reconstruction_response);
+        });
+        for (k, v) in &test_case.reconstruction_response.fetch_info {
+            for term in v {
+                let data = FileRange::from(term.url_range);
+                let data = chunks_serialized[data.start as usize..data.end as usize].to_vec();
+                let _mock_data = server.mock(|when, then| {
+                    when.method(GET)
+                        .path(format!("/get_xorb/{k}/"))
+                        .header(RANGE.as_str(), term.url_range.range_header());
+                    then.status(200).body(&data);
+                });
+            }
+        }
+
+        test_reconstruct_file(test_case, &server.base_url())
+    }
+
+    #[test]
+    fn test_reconstruct_file_skip_front_bytes() -> Result<()> {
+        // Arrange server
+        let server = MockServer::start();
+
+        let xorb_hash: MerkleHash = MerkleHash::default();
+        let (cas_object, chunks_serialized, raw_data, _raw_data_chunk_hash_and_boundaries) =
+            build_cas_object(NUM_CHUNKS, ChunkSize::Fixed(CHUNK_SIZE), CompressionScheme::ByteGrouping4LZ4);
+
+        // Workaround to make this variable const. Change this accordingly if
+        // real value of the two static variables below change.
+        const FIRST_SEGMENT_SIZE: u64 = 16 * 64 * 1024 * 1024;
+        assert_eq!(FIRST_SEGMENT_SIZE, *NUM_CONCURRENT_RANGE_GETS as u64 * *MAX_XORB_BYTES as u64);
+
+        // Test case: skip first 100 bytes
+        const SKIP_BYTES: u64 = 100;
+        const FIRST_SEGMENT_FILE_RANGE: FileRange = FileRange {
+            start: SKIP_BYTES,
+            end: SKIP_BYTES + FIRST_SEGMENT_SIZE,
+            _marker: std::marker::PhantomData,
+        };
+
+        let test_case = TestCase {
+            file_hash: MerkleHash::from_hex(&format!("{:0>64}", "1"))?, // "0....1"
+            reconstruction_response: QueryReconstructionResponse {
+                offset_into_first_range: SKIP_BYTES,
+                terms: vec![CASReconstructionTerm {
+                    hash: xorb_hash.into(),
+                    range: ChunkRange::new(0, NUM_CHUNKS),
+                    unpacked_length: raw_data.len() as u32,
+                }],
+                fetch_info: HashMap::from([(
+                    xorb_hash.into(),
+                    vec![CASReconstructionFetchInfo {
+                        range: ChunkRange::new(0, NUM_CHUNKS),
+                        url: server.url(format!("/get_xorb/{xorb_hash}/")),
+                        url_range: {
+                            let (start, end) = cas_object.get_byte_offset(0, NUM_CHUNKS)?;
+                            HttpRange::from(FileRange::new(start as u64, end as u64))
+                        },
+                    }],
+                )]),
+            },
+            file_range: FileRange::new(SKIP_BYTES, u64::MAX),
+            expected_data: raw_data[SKIP_BYTES as usize..].to_vec(),
+            expect_error: false,
+        };
+
+        // Arrange server mocks
+        let _mock_fi_416 = server.mock(|when, then| {
+            when.method(GET)
+                .path(format!("/reconstruction/{}", test_case.file_hash))
+                .matches(mock_no_match_range_header!(HttpRange::from(FIRST_SEGMENT_FILE_RANGE)));
+            then.status(416);
+        });
+        let _mock_fi_200 = server.mock(|when, then| {
+            let w = when.method(GET).path(format!("/reconstruction/{}", test_case.file_hash));
+            w.header(RANGE.as_str(), HttpRange::from(FIRST_SEGMENT_FILE_RANGE).range_header());
+            then.status(200).json_body_obj(&test_case.reconstruction_response);
+        });
+        for (k, v) in &test_case.reconstruction_response.fetch_info {
+            for term in v {
+                let data = FileRange::from(term.url_range);
+                let data = chunks_serialized[data.start as usize..data.end as usize].to_vec();
+                let _mock_data = server.mock(|when, then| {
+                    when.method(GET)
+                        .path(format!("/get_xorb/{k}/"))
+                        .header(RANGE.as_str(), term.url_range.range_header());
+                    then.status(200).body(&data);
+                });
+            }
+        }
+
+        test_reconstruct_file(test_case, &server.base_url())
+    }
+
+    #[test]
+    fn test_reconstruct_file_skip_back_bytes() -> Result<()> {
+        // Arrange server
+        let server = MockServer::start();
+
+        let xorb_hash: MerkleHash = MerkleHash::default();
+        let (cas_object, chunks_serialized, raw_data, _raw_data_chunk_hash_and_boundaries) =
+            build_cas_object(NUM_CHUNKS, ChunkSize::Fixed(CHUNK_SIZE), CompressionScheme::ByteGrouping4LZ4);
+
+        // Test case: skip last 100 bytes
+        const FILE_SIZE: u64 = NUM_CHUNKS as u64 * CHUNK_SIZE as u64;
+        const SKIP_BYTES: u64 = 100;
+        const FIRST_SEGMENT_FILE_RANGE: FileRange = FileRange {
+            start: 0,
+            end: FILE_SIZE - SKIP_BYTES,
+            _marker: std::marker::PhantomData,
+        };
+
+        let test_case = TestCase {
+            file_hash: MerkleHash::from_hex(&format!("{:0>64}", "1"))?, // "0....1"
+            reconstruction_response: QueryReconstructionResponse {
+                offset_into_first_range: 0,
+                terms: vec![CASReconstructionTerm {
+                    hash: xorb_hash.into(),
+                    range: ChunkRange::new(0, NUM_CHUNKS),
+                    unpacked_length: raw_data.len() as u32,
+                }],
+                fetch_info: HashMap::from([(
+                    xorb_hash.into(),
+                    vec![CASReconstructionFetchInfo {
+                        range: ChunkRange::new(0, NUM_CHUNKS),
+                        url: server.url(format!("/get_xorb/{xorb_hash}/")),
+                        url_range: {
+                            let (start, end) = cas_object.get_byte_offset(0, NUM_CHUNKS)?;
+                            HttpRange::from(FileRange::new(start as u64, end as u64))
+                        },
+                    }],
+                )]),
+            },
+            file_range: FileRange::new(0, FILE_SIZE - SKIP_BYTES),
+            expected_data: raw_data[..(FILE_SIZE - SKIP_BYTES) as usize].to_vec(),
+            expect_error: false,
+        };
+
+        // Arrange server mocks
+        let _mock_fi_416 = server.mock(|when, then| {
+            when.method(GET)
+                .path(format!("/reconstruction/{}", test_case.file_hash))
+                .matches(mock_no_match_range_header!(HttpRange::from(FIRST_SEGMENT_FILE_RANGE)));
+            then.status(416);
+        });
+        let _mock_fi_200 = server.mock(|when, then| {
+            let w = when.method(GET).path(format!("/reconstruction/{}", test_case.file_hash));
+            w.header(RANGE.as_str(), HttpRange::from(FIRST_SEGMENT_FILE_RANGE).range_header());
+            then.status(200).json_body_obj(&test_case.reconstruction_response);
+        });
+        for (k, v) in &test_case.reconstruction_response.fetch_info {
+            for term in v {
+                let data = FileRange::from(term.url_range);
+                let data = chunks_serialized[data.start as usize..data.end as usize].to_vec();
+                let _mock_data = server.mock(|when, then| {
+                    when.method(GET)
+                        .path(format!("/get_xorb/{k}/"))
+                        .header(RANGE.as_str(), term.url_range.range_header());
+                    then.status(200).body(&data);
+                });
+            }
+        }
+
+        test_reconstruct_file(test_case, &server.base_url())
+    }
+
+    #[test]
+    fn test_reconstruct_file_two_terms() -> Result<()> {
+        // Arrange server
+        let server = MockServer::start();
+
+        let xorb_hash_1: MerkleHash = MerkleHash::from_hex(&format!("{:0>64}", "1"))?; // "0....1"
+        let xorb_hash_2: MerkleHash = MerkleHash::from_hex(&format!("{:0>64}", "2"))?; // "0....2"
+        let (cas_object, chunks_serialized, raw_data, _raw_data_chunk_hash_and_boundaries) =
+            build_cas_object(NUM_CHUNKS, ChunkSize::Fixed(CHUNK_SIZE), CompressionScheme::ByteGrouping4LZ4);
+
+        // Test case: two terms and skip first and last 100 bytes
+        const FILE_SIZE: u64 = (NUM_CHUNKS - 1) as u64 * CHUNK_SIZE as u64;
+        const SKIP_BYTES: u64 = 100;
+        const FIRST_SEGMENT_FILE_RANGE: FileRange = FileRange {
+            start: SKIP_BYTES,
+            end: FILE_SIZE - SKIP_BYTES,
+            _marker: std::marker::PhantomData,
+        };
+
+        let test_case = TestCase {
+            file_hash: MerkleHash::from_hex(&format!("{:0>64}", "1"))?, // "0....3"
+            reconstruction_response: QueryReconstructionResponse {
+                offset_into_first_range: SKIP_BYTES,
+                terms: vec![
+                    CASReconstructionTerm {
+                        hash: xorb_hash_1.into(),
+                        range: ChunkRange::new(0, 5),
+                        unpacked_length: CHUNK_SIZE * 5,
+                    },
+                    CASReconstructionTerm {
+                        hash: xorb_hash_2.into(),
+                        range: ChunkRange::new(6, NUM_CHUNKS),
+                        unpacked_length: CHUNK_SIZE * (NUM_CHUNKS - 6),
+                    },
+                ],
+                fetch_info: HashMap::from([
+                    (
+                        // this constructs the first term
+                        xorb_hash_1.into(),
+                        vec![CASReconstructionFetchInfo {
+                            range: ChunkRange::new(0, 7),
+                            url: server.url(format!("/get_xorb/{xorb_hash_1}/")),
+                            url_range: {
+                                let (start, end) = cas_object.get_byte_offset(0, 7)?;
+                                HttpRange::from(FileRange::new(start as u64, end as u64))
+                            },
+                        }],
+                    ),
+                    (
+                        // this constructs the second term
+                        xorb_hash_2.into(),
+                        vec![CASReconstructionFetchInfo {
+                            range: ChunkRange::new(4, NUM_CHUNKS),
+                            url: server.url(format!("/get_xorb/{xorb_hash_2}/")),
+                            url_range: {
+                                let (start, end) = cas_object.get_byte_offset(4, NUM_CHUNKS)?;
+                                HttpRange::from(FileRange::new(start as u64, end as u64))
+                            },
+                        }],
+                    ),
+                ]),
+            },
+            file_range: FileRange::new(SKIP_BYTES, FILE_SIZE - SKIP_BYTES),
+            expected_data: [
+                &raw_data[SKIP_BYTES as usize..(5 * CHUNK_SIZE) as usize],
+                &raw_data[(6 * CHUNK_SIZE) as usize as usize..(NUM_CHUNKS * CHUNK_SIZE) as usize - SKIP_BYTES as usize],
+            ]
+            .concat(),
+            expect_error: false,
+        };
+
+        // Arrange server mocks
+        let _mock_fi_416 = server.mock(|when, then| {
+            when.method(GET)
+                .path(format!("/reconstruction/{}", test_case.file_hash))
+                .matches(mock_no_match_range_header!(HttpRange::from(FIRST_SEGMENT_FILE_RANGE)));
+            then.status(416);
+        });
+        let _mock_fi_200 = server.mock(|when, then| {
+            let w = when.method(GET).path(format!("/reconstruction/{}", test_case.file_hash));
+            w.header(RANGE.as_str(), HttpRange::from(FIRST_SEGMENT_FILE_RANGE).range_header());
+            then.status(200).json_body_obj(&test_case.reconstruction_response);
+        });
+        for (k, v) in &test_case.reconstruction_response.fetch_info {
+            for term in v {
+                let data = FileRange::from(term.url_range);
+                let data = chunks_serialized[data.start as usize..data.end as usize].to_vec();
+                let _mock_data = server.mock(|when, then| {
+                    when.method(GET)
+                        .path(format!("/get_xorb/{k}/"))
+                        .header(RANGE.as_str(), term.url_range.range_header());
+                    then.status(200).body(&data);
+                });
+            }
+        }
+
+        test_reconstruct_file(test_case, &server.base_url())
+    }
+
+    fn test_reconstruct_file(test_case: TestCase, endpoint: &str) -> Result<()> {
+        let threadpool = Arc::new(ThreadPool::new()?);
+
+        // test reconstruct and sequential write
+        let test = test_case.clone();
+        let client = RemoteClient::new(threadpool.clone(), endpoint, None, &None, &None, "".into(), false);
+        let provider = BufferProvider::default();
+        let buf = provider.buf.clone();
+        let writer = OutputProvider::Buffer(provider);
+        let resp = threadpool.external_run_async_task(async move {
+            client
+                .reconstruct_file_to_writer_segmented(&test.file_hash, Some(test.file_range), &writer, None)
+                .await
+        })?;
+
+        assert_eq!(test.expect_error, resp.is_err());
+        if !test.expect_error {
+            assert_eq!(test.expected_data.len() as u64, resp.unwrap());
+            assert_eq!(test.expected_data, buf.value());
+        }
+
+        // test reconstruct and parallel write
+        let test = test_case;
+        let client = RemoteClient::new(threadpool.clone(), endpoint, None, &None, &None, "".into(), false);
+        let provider = BufferProvider::default();
+        let buf = provider.buf.clone();
+        let writer = OutputProvider::Buffer(provider);
+        let resp = threadpool.external_run_async_task(async move {
+            client
+                .reconstruct_file_to_writer_segmented_parallel_write(
+                    &test.file_hash,
+                    Some(test.file_range),
+                    &writer,
+                    None,
+                )
+                .await
+        })?;
+
+        assert_eq!(test.expect_error, resp.is_err());
+        if !test.expect_error {
+            assert_eq!(test.expected_data.len() as u64, resp.unwrap());
+            assert_eq!(test.expected_data, buf.value());
+        }
+
+        Ok(())
     }
 }

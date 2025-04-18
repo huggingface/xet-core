@@ -1333,7 +1333,7 @@ pub mod test_utils {
     }
 
     /// Utility test method for creating a cas object
-    /// Returns (CasObject, chunks serialized, raw data, raw data chunk boundaries)
+    /// Returns (CasObject, chunks serialized, raw data, raw data chunk hash and boundaries)
     #[allow(clippy::type_complexity)]
     pub fn build_cas_object(
         num_chunks: u32,

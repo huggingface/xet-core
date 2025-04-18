@@ -117,7 +117,7 @@ impl LocalClient {
         // loop through the directory
         self.xorb_dir
             .read_dir()
-            .map_err(|x| CasClientError::InternalError(x.into()))?
+            .map_err(|x| CasClientError::internal(x))?
             // take only entries which are ok
             .filter_map(|x| x.ok())
             // take only entries whose filenames convert into strings
@@ -257,7 +257,7 @@ impl UploadClient for LocalClient {
             .suffix(".xorb")
             .tempfile_in(self.base_dir.as_path())
             .map_err(|e| {
-                CasClientError::InternalError(anyhow!("Unable to create temporary file for staging Xorbs, got {e:?}"))
+                CasClientError::internal(format!("Unable to create temporary file for staging Xorbs, got {e:?}"))
             })?;
 
         let total_bytes_written;
@@ -303,7 +303,7 @@ impl UploadClient for LocalClient {
         }
 
         if !res.unwrap().is_file() {
-            return Err(CasClientError::InternalError(anyhow!(
+            return Err(CasClientError::internal(format!(
                 "Attempting to write to {:?}, but it is not a file",
                 file_path
             )));

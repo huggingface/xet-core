@@ -1,3 +1,4 @@
+use std::fmt::Debug;
 use std::num::TryFromIntError;
 
 use anyhow::anyhow;
@@ -62,6 +63,12 @@ pub enum CasClientError {
     PresignedUrlExpirationError,
 }
 
+impl CasClientError {
+    pub fn internal<T: Debug>(value: T) -> Self {
+        CasClientError::InternalError(anyhow!("{value:?}"))
+    }
+}
+
 // Define our own result type here (this seems to be the standard).
 pub type Result<T> = std::result::Result<T, CasClientError>;
 
@@ -85,30 +92,30 @@ impl From<utils::errors::SingleflightError<CasClientError>> for CasClientError {
 
 impl<T> From<std::sync::PoisonError<T>> for CasClientError {
     fn from(value: std::sync::PoisonError<T>) -> Self {
-        CasClientError::InternalError(anyhow!("{value:?}"))
+        Self::internal(value)
     }
 }
 
 impl From<AcquireError> for CasClientError {
     fn from(value: AcquireError) -> Self {
-        CasClientError::InternalError(anyhow!("{value:?}"))
+        Self::internal(value)
     }
 }
 
 impl<T> From<SendError<T>> for CasClientError {
     fn from(value: SendError<T>) -> Self {
-        CasClientError::InternalError(anyhow!("{value:?}"))
+        Self::internal(value)
     }
 }
 
 impl From<JoinError> for CasClientError {
     fn from(value: JoinError) -> Self {
-        CasClientError::InternalError(anyhow!("{value:?}"))
+        Self::internal(value)
     }
 }
 
 impl From<TryFromIntError> for CasClientError {
     fn from(value: TryFromIntError) -> Self {
-        CasClientError::InternalError(anyhow!("{value:?}"))
+        Self::internal(value)
     }
 }
