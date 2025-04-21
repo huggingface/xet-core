@@ -227,9 +227,12 @@ impl TermDownloadAndWrite {
     }
 }
 
-// this could be a TermDownloadResult<(Arc<[u8]>, Arc<[u32]>)>
+#[derive(Derivative)]
+#[derivative(Debug)]
 pub(crate) struct XorbRangeDownloadOutput {
+    #[derivative(Debug = "ignore")]
     data: Arc<[u8]>,
+    #[derivative(Debug = "ignore")]
     chunk_byte_indices: Arc<[u32]>,
     range: ChunkRange,
 
@@ -361,12 +364,18 @@ impl XorbRangeDownloadAndWrite {
         let mut total_written = 0;
         for term in self.terms {
             let sub_range_data = get_sub_range(&download_result, &term);
+            let start = term.skip_bytes as usize;
+            let end = (term.take + term.skip_bytes) as usize;
+            if start >= sub_range_data.len() || end > sub_range_data.len() {
+                return Err(CasClientError::InvalidRange);
+            }
+            let data = &sub_range_data[start..end];
 
             // write out the term
             let mut writer = self.output.get_writer_at(term.writer_offset)?;
-            writer.write_all(sub_range_data)?;
+            writer.write_all(data)?;
             writer.flush()?;
-            total_written += sub_range_data.len();
+            total_written += data.len();
         }
 
         Ok(TermDownloadResult {

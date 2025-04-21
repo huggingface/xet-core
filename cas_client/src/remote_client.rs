@@ -566,7 +566,6 @@ impl RemoteClient {
 
         while let Some(result) = running_downloads.join_next().await {
             process_result(result)?;
-            // process_result(result, &mut total_written, &download_scheduler)?;
         }
 
         Ok(total_written)
@@ -584,14 +583,13 @@ async fn make_tasks(
 ) -> Result<Vec<XorbRangeDownloadAndWrite>> {
     let mut fetch_info_term_map: HashMap<(MerkleHash, ChunkRange), XorbRangeDownloadAndWrite> = HashMap::new();
     let mut writer_offset = 0;
-    let mut total_taken = 0;
     for (i, term) in terms.iter().enumerate() {
         let (individual_fetch_info, _) = fetch_info.find((term.hash.into(), term.range)).await?;
 
         let skip_bytes = if i == 0 { offset_into_first_range } else { 0 };
         let take = (term.unpacked_length as u64 - skip_bytes)
-            .min(segment_size - total_taken)
-            .min(remaining_total_len - total_taken);
+            .min(segment_size - writer_offset)
+            .min(remaining_total_len - writer_offset);
         let write_term = XorbRangeDownloadWriteTerm {
             // term details
             range: term.range,
@@ -616,8 +614,7 @@ async fn make_tasks(
                 },
             );
         }
-        writer_offset += term.unpacked_length as u64;
-        total_taken += take;
+        writer_offset += take;
     }
 
     let tasks = fetch_info_term_map.into_values().collect();
@@ -763,11 +760,8 @@ mod tests {
     use std::collections::HashMap;
 
     use anyhow::Result;
-    use cas_object::test_utils::{build_cas_object, build_cas_object, ChunkSize, ChunkSize};
-    use cas_types::{
-        CASReconstructionFetchInfo, CASReconstructionTerm, CASReconstructionTerm, ChunkRange, ChunkRange, HexMerkleHash,
-    };
-    use chunk_cache::MockChunkCache;
+    use cas_object::test_utils::{build_cas_object, ChunkSize};
+    use cas_types::{CASReconstructionFetchInfo, CASReconstructionTerm, ChunkRange};
     use deduplication::constants::MAX_XORB_BYTES;
     use httpmock::Method::GET;
     use httpmock::MockServer;
@@ -821,6 +815,13 @@ mod tests {
         file_range: FileRange,
         expected_data: Vec<u8>,
         expect_error: bool,
+        name: &'static str,
+    }
+
+    impl std::fmt::Display for TestCase {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(f, "{}, file_range: {}, error expected: {}", self.name, self.file_range, self.expect_error)
+        }
     }
 
     const NUM_CHUNKS: u32 = 128;
@@ -892,6 +893,7 @@ mod tests {
             file_range: FileRange::full(),
             expected_data: raw_data,
             expect_error: false,
+            name: "full_file",
         };
 
         // Arrange server mocks
@@ -968,6 +970,7 @@ mod tests {
             file_range: FileRange::new(SKIP_BYTES, u64::MAX),
             expected_data: raw_data[SKIP_BYTES as usize..].to_vec(),
             expect_error: false,
+            name: "skip_front_bytes",
         };
 
         // Arrange server mocks
@@ -1040,6 +1043,7 @@ mod tests {
             file_range: FileRange::new(0, FILE_SIZE - SKIP_BYTES),
             expected_data: raw_data[..(FILE_SIZE - SKIP_BYTES) as usize].to_vec(),
             expect_error: false,
+            name: "skip_back_bytes",
         };
 
         // Arrange server mocks
@@ -1139,6 +1143,7 @@ mod tests {
             ]
             .concat(),
             expect_error: false,
+            name: "two_terms",
         };
 
         // Arrange server mocks
@@ -1186,8 +1191,8 @@ mod tests {
 
         assert_eq!(test.expect_error, resp.is_err());
         if !test.expect_error {
-            assert_eq!(test.expected_data.len() as u64, resp.unwrap());
-            assert_eq!(test.expected_data, buf.value());
+            assert_eq!(test.expected_data.len() as u64, resp.unwrap(), "response len mismatch {test}");
+            assert_eq!(test.expected_data, buf.value(), "response data mismatch {test}");
         }
 
         // test reconstruct and parallel write
@@ -1209,8 +1214,12 @@ mod tests {
 
         assert_eq!(test.expect_error, resp.is_err());
         if !test.expect_error {
-            assert_eq!(test.expected_data.len() as u64, resp.unwrap());
-            assert_eq!(test.expected_data, buf.value());
+            assert_eq!(test.expected_data.len() as u64, resp.unwrap(), "response len mismatch {test}");
+            assert_eq!(test.expected_data.len(), buf.len(), "written len mismatch {test}");
+            assert_eq!(test.expected_data[..100], buf.value()[..100], "response data mismatch {test}");
+            let l = test.expected_data.len() - 100;
+            assert_eq!(test.expected_data[l..], buf.value()[l..], "response data mismatch {test}");
+            assert_eq!(test.expected_data, buf.value(), "response data mismatch {test}");
         }
 
         Ok(())

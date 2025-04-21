@@ -196,6 +196,10 @@ pub mod buffer {
         pub fn value(&self) -> Vec<u8> {
             self.inner.lock().unwrap().get_ref().clone()
         }
+
+        pub fn len(&self) -> usize {
+            self.inner.lock().unwrap().get_ref().len()
+        }
     }
 
     impl Write for ThreadSafeBuffer {
