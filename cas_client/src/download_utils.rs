@@ -623,7 +623,7 @@ mod tests {
         let file_range = FileRange::new(100, 200);
 
         // fetch info of xorb with hash "0...1" and two coalesced ranges
-        let xorb1: HexMerkleHash = MerkleHash::from_hex(&format!("{:0>64}", "1")).unwrap().into();
+        let xorb1: MerkleHash = MerkleHash::from_hex(&format!("{:0>64}", "1"))?;
         let x1range = vec![
             CASReconstructionFetchInfo {
                 range: ChunkRange::new(5, 20),
@@ -638,7 +638,7 @@ mod tests {
         ];
 
         // fetch info of xorb with hash "0...2" and two coalesced ranges
-        let xorb2: HexMerkleHash = MerkleHash::from_hex(&format!("{:0>64}", "2")).unwrap().into();
+        let xorb2: MerkleHash = MerkleHash::from_hex(&format!("{:0>64}", "2"))?;
         let x2range = vec![
             CASReconstructionFetchInfo {
                 range: ChunkRange::new(2, 20),
@@ -661,9 +661,9 @@ mod tests {
             let response = QueryReconstructionResponse {
                 offset_into_first_range: 0,
                 terms: Default::default(),
-                fetch_info: HashMap::from([(xorb1, x1range.clone()), (xorb2, x2range.clone())]),
+                fetch_info: HashMap::from([(xorb1.into(), x1range.clone()), (xorb2.into(), x2range.clone())]),
             };
-            then.status(200).json_body(serde_json::json!(response));
+            then.status(200).json_body_obj(&response);
         });
 
         let fetch_info = FetchInfo::new(
@@ -710,7 +710,7 @@ mod tests {
                 terms: Default::default(),
                 fetch_info: Default::default(),
             };
-            then.status(200).json_body(serde_json::json!(response));
+            then.status(200).json_body_obj(&response);
         });
 
         let fetch_info = Arc::new(FetchInfo::new(
@@ -750,7 +750,7 @@ mod tests {
         let server = MockServer::start();
 
         // fetch info fo xorb with hash "0...1" and two coalesced ranges
-        let xorb1: HexMerkleHash = MerkleHash::from_hex(&format!("{:0>64}", "1")).unwrap().into();
+        let xorb1: MerkleHash = MerkleHash::from_hex(&format!("{:0>64}", "1"))?;
         let x1range = vec![CASReconstructionFetchInfo {
             range: ChunkRange::new(5, 20),
             url: server.url(format!("/get_xorb/{xorb1}/")),
@@ -765,15 +765,13 @@ mod tests {
             let response = QueryReconstructionResponse {
                 offset_into_first_range: 0,
                 terms: vec![CASReconstructionTerm {
-                    hash: xorb1,
+                    hash: xorb1.into(),
                     unpacked_length: 100,
                     range: ChunkRange::new(6, 7),
                 }],
-                fetch_info: HashMap::from([(xorb1, x1range.clone())]),
+                fetch_info: HashMap::from([(xorb1.into(), x1range.clone())]),
             };
-            then.status(200)
-                .json_body(serde_json::json!(response))
-                .delay(Duration::from_millis(100));
+            then.status(200).json_body_obj(&response).delay(Duration::from_millis(100));
         });
 
         // Test download once and get 403

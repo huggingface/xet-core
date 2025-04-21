@@ -68,7 +68,7 @@ impl DiskCache {
         println!(
             "total items: {}, total bytes {} for the whole cache",
             total_num_items,
-            output_bytes(total_total_bytes as usize)
+            output_bytes(total_total_bytes)
         );
 
         for (key, items) in state.inner.iter() {
@@ -76,14 +76,14 @@ impl DiskCache {
             let num_items = items.len();
             let total_bytes: usize = items.iter().map(|item| item.len).fold(0usize, |acc, len| acc + len as usize);
             println!("key: {key}");
-            println!("\ttotal items: {}, total bytes {} for key {key}", num_items, output_bytes(total_bytes));
+            println!("\ttotal items: {}, total bytes {} for key {key}", num_items, output_bytes(total_bytes as u64));
             println!();
             for item in items.iter() {
                 println!(
                     "\titem: chunk range [{}-{}) ; len({}); checksum({})",
                     item.range.start,
                     item.range.end,
-                    output_bytes(item.len as usize),
+                    output_bytes(item.len),
                     item.checksum,
                 );
             }

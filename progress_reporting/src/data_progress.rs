@@ -190,8 +190,8 @@ impl DataProgressReporter {
                         format!(
                             "{}: {} | {}/s{}",
                             self.message,
-                            &output_bytes(b),
-                            &output_bytes(byte_rate),
+                            &output_bytes(b as u64),
+                            &output_bytes(byte_rate as u64),
                             if is_final { ", done." } else { "." }
                         )
                     },
@@ -208,8 +208,8 @@ impl DataProgressReporter {
                             self.message,
                             c,
                             if is_final { format!("{c}") } else { "??".to_owned() },
-                            &output_bytes(b),
-                            &output_bytes(byte_rate),
+                            &output_bytes(b as u64),
+                            &output_bytes(byte_rate as u64),
                             if is_final { ", done." } else { "." }
                         )
                     },
@@ -222,9 +222,9 @@ impl DataProgressReporter {
                 format!(
                     "{}: ({} / {}) | {}/s{}",
                     self.message,
-                    &output_bytes(if is_final { total_bytes } else { current_bytes }),
-                    &output_bytes(total_bytes),
-                    &output_bytes(byte_rate),
+                    &output_bytes(if is_final { total_bytes } else { current_bytes } as u64),
+                    &output_bytes(total_bytes as u64),
+                    &output_bytes(byte_rate as u64),
                     if is_final { ", done." } else { "." }
                 )
             },
@@ -237,8 +237,8 @@ impl DataProgressReporter {
                         self.message,
                         if is_final { total_count } else { current_count },
                         total_count,
-                        &output_bytes(current_bytes),
-                        &output_bytes(byte_rate),
+                        &output_bytes(current_bytes as u64),
+                        &output_bytes(byte_rate as u64),
                         if is_final { ", done." } else { "." }
                     )
                 } else {
@@ -262,8 +262,8 @@ impl DataProgressReporter {
                     self.message,
                     if is_final { total_count } else { current_count },
                     total_count,
-                    &output_bytes(if is_final { total_bytes } else { current_bytes }),
-                    &output_bytes(byte_rate),
+                    &output_bytes(if is_final { total_bytes } else { current_bytes } as u64),
+                    &output_bytes(byte_rate as u64),
                     if is_final { ", done." } else { "." }
                 )
             },
