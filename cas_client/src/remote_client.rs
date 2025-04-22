@@ -1216,9 +1216,9 @@ mod tests {
         if !test.expect_error {
             assert_eq!(test.expected_data.len() as u64, resp.unwrap(), "response len mismatch {test}");
             assert_eq!(test.expected_data.len(), buf.len(), "written len mismatch {test}");
-            assert_eq!(test.expected_data[..100], buf.value()[..100], "response data mismatch {test}");
-            let l = test.expected_data.len() - 100;
-            assert_eq!(test.expected_data[l..], buf.value()[l..], "response data mismatch {test}");
+            assert_eq!(test.expected_data[..100], buf.value()[..100], "response data head mismatch {test}");
+            let tail_start = test.expected_data.len() - 100;
+            assert_eq!(test.expected_data[tail_start..], buf.value()[tail_start..], "response data tail mismatch {test}");
             assert_eq!(test.expected_data, buf.value(), "response data mismatch {test}");
         }
 
