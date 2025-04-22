@@ -18,8 +18,8 @@ extern "C" {
     fn expiration(this: &TokenInfo) -> u64;
 
     type TokenRefresher;
-    #[wasm_bindgen(method)]
-    async fn refresh_token(this: &TokenRefresher) -> TokenInfo;
+    #[wasm_bindgen(method, catch)]
+    async fn refresh_token(this: &TokenRefresher) -> Result<TokenInfo, JsValue>;
 }
 
 impl From<TokenInfo> for utils::auth::TokenInfo {
