@@ -324,7 +324,7 @@ impl RemoteClient {
         // queue size is inherently bounded by degree of concurrency.
         let (task_tx, mut task_rx) = mpsc::unbounded_channel::<DownloadQueueItem<TermDownload>>();
         let (running_downloads_tx, mut running_downloads_rx) =
-            mpsc::unbounded_channel::<JoinHandle<Result<(TermDownloadResult<Vec<u8>>, OwnedSemaphorePermit)>>>();
+            mpsc::unbounded_channel::<JoinHandle<Result<(DownloadTaskResult<Vec<u8>>, OwnedSemaphorePermit)>>>();
 
         // derive the actual range to reconstruct
         let file_reconstruct_range = byte_range.unwrap_or_else(FileRange::full);
@@ -367,7 +367,7 @@ impl RemoteClient {
                         // number of active downloads.
                         let permit = download_scheduler_clone.download_permit().await?;
                         debug!("spawning 1 download task");
-                        let future: JoinHandle<Result<(TermDownloadResult<Vec<u8>>, OwnedSemaphorePermit)>> =
+                        let future: JoinHandle<Result<(DownloadTaskResult<Vec<u8>>, OwnedSemaphorePermit)>> =
                             threadpool.spawn(async move {
                                 let data = term_download.run().await?;
                                 Ok((data, permit))
@@ -460,7 +460,7 @@ impl RemoteClient {
         progress_updater: Option<Arc<dyn ProgressUpdater>>,
     ) -> Result<u64> {
         let mut task_queue: VecDeque<DownloadQueueItem<XorbRangeDownloadAndWrite>> = VecDeque::new();
-        let mut running_downloads = JoinSet::<Result<TermDownloadResult<usize>>>::new();
+        let mut running_downloads = JoinSet::<Result<DownloadTaskResult<usize>>>::new();
 
         // derive the actual range to reconstruct
         let file_reconstruct_range = byte_range.unwrap_or_else(FileRange::full);
@@ -486,7 +486,7 @@ impl RemoteClient {
         let mut total_written = 0;
 
         let mut process_result =
-            |result: stdResult<stdResult<TermDownloadResult<usize>, CasClientError>, JoinError>| -> Result<()> {
+            |result: stdResult<stdResult<DownloadTaskResult<usize>, CasClientError>, JoinError>| -> Result<()> {
                 let download_result = result.map_err(|e| anyhow!("{e:?}"))??;
                 let write_len = download_result.data;
                 total_written += write_len as u64;

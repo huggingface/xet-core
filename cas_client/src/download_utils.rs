@@ -150,15 +150,15 @@ pub(crate) struct TermDownload {
 }
 
 #[derive(Debug)]
-pub(crate) struct TermDownloadResult<T> {
-    pub data: T,            // download result
+pub(crate) struct DownloadTaskResult<T> {
+    pub data: T,            // actual result value
     pub duration: Duration, // duration to download
     pub n_retries_on_403: u32,
 }
 
 impl TermDownload {
     // Download and return results, retry on 403
-    pub async fn run(self) -> Result<TermDownloadResult<Vec<u8>>> {
+    pub async fn run(self) -> Result<DownloadTaskResult<Vec<u8>>> {
         let instant = Instant::now();
         let mut n_retries_on_403 = 0;
 
@@ -192,7 +192,7 @@ impl TermDownload {
             data.truncate(take);
         }
 
-        Ok(TermDownloadResult {
+        Ok(DownloadTaskResult {
             data,
             duration: instant.elapsed(),
             n_retries_on_403,
@@ -211,7 +211,7 @@ pub(crate) struct TermDownloadAndWrite {
 
 impl TermDownloadAndWrite {
     /// Download the term and write it to the underlying storage, retry on 403
-    pub async fn run(self) -> Result<TermDownloadResult<usize>> {
+    pub async fn run(self) -> Result<DownloadTaskResult<usize>> {
         let download_result = self.download.run().await?;
 
         // write out the term
@@ -219,7 +219,7 @@ impl TermDownloadAndWrite {
         writer.write_all(&download_result.data)?;
         writer.flush()?;
 
-        Ok(TermDownloadResult {
+        Ok(DownloadTaskResult {
             data: download_result.data.len(),
             duration: download_result.duration,
             n_retries_on_403: download_result.n_retries_on_403,
@@ -358,7 +358,7 @@ pub(crate) struct XorbRangeDownloadAndWrite {
 
 impl XorbRangeDownloadAndWrite {
     /// Download the range and write all respective terms to the underlying storage, retry on 403
-    pub async fn run(self) -> Result<TermDownloadResult<usize>> {
+    pub async fn run(self) -> Result<DownloadTaskResult<usize>> {
         let download_result = self.xorb_range_download.run().await?;
 
         let mut total_written = 0;
@@ -378,7 +378,7 @@ impl XorbRangeDownloadAndWrite {
             total_written += data.len();
         }
 
-        Ok(TermDownloadResult {
+        Ok(DownloadTaskResult {
             data: total_written,
             duration: download_result.duration,
             n_retries_on_403: download_result.n_retries_on_403,
@@ -428,7 +428,7 @@ impl DownloadScheduler {
         Ok(*self.n_range_in_segment.lock()? as u64 * *MAX_XORB_BYTES as u64)
     }
 
-    pub fn tune_on<T>(&self, metrics: TermDownloadResult<T>) -> Result<()> {
+    pub fn tune_on<T>(&self, metrics: DownloadTaskResult<T>) -> Result<()> {
         if metrics.n_retries_on_403 > 0 {
             info!("detected retries on 403, shrinking segment size by one range");
             let mut num_range_in_segment = self.n_range_in_segment.lock()?;
@@ -589,13 +589,13 @@ async fn download_range(
         .await
         .log_error("error getting from s3")?
         .error_for_status()
-        .log_error("get from s3 error code")
+        .log_error(format!("get from s3 error code {:?}", fetch_term.url_range))
     {
         Ok(response) => response,
         Err(e) => {
             return match e.status() {
                 Some(StatusCode::FORBIDDEN) => Ok(DownloadRangeResult::Forbidden),
-                _ => Err(e.into()),
+                e => Err(e.into()),
             }
         },
     };
