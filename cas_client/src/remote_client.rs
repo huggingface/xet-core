@@ -46,13 +46,15 @@ utils::configurable_constants! {
         standard: 16,
         high_performance: 100,
     };
+}
 
+utils::configurable_bool_constants! {
 // Env (HF_XET_RECONSTRUCT_WRITE_SEQUENTIALLY) to switch to writing terms sequentially to disk.
 // Benchmarks have shown that on SSD machines, writing in parallel seems to far outperform
 // sequential term writes.
 // However, this is not likely the case for writing to HDD and may in fact be worse,
 // so for those machines, setting this env may help download perf.
-    ref RECONSTRUCT_WRITE_SEQUENTIALLY: bool = false;
+    ref RECONSTRUCT_WRITE_SEQUENTIALLY = false;
 }
 
 pub struct RemoteClient {
