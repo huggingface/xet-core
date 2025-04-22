@@ -95,8 +95,38 @@ pub fn default_config(
     Ok(Arc::new(translator_config))
 }
 
+pub async fn upload_bytes_async(
+    thread_pool: Arc<ThreadPool>,
+    file_contents: Vec<(Vec<u8>, String)>,
+    endpoint: Option<String>,
+    token_info: Option<(String, u64)>,
+    token_refresher: Option<Arc<dyn TokenRefresher>>,
+    progress_updater: Option<Arc<dyn ProgressUpdater>>,
+) -> errors::Result<Vec<PointerFile>> {
+    let config = default_config(endpoint.unwrap_or(DEFAULT_CAS_ENDPOINT.clone()), None, token_info, token_refresher)?;
+
+    let upload_session = FileUploadSession::new(config, thread_pool, progress_updater).await?;
+
+    // clean the bytes
+    let pointers = tokio_par_for_each(file_contents, *MAX_CONCURRENT_FILE_INGESTION, |f, _| async {
+        // TODO: brian - try to refactor the need for the file_key
+        let (pf, _metrics) = clean_bytes(upload_session.clone(), f.0, f.1).await?;
+        Ok(pf)
+    })
+    .await
+    .map_err(|e| match e {
+        ParallelError::JoinError => DataProcessingError::InternalError("Join error".to_string()),
+        ParallelError::TaskError(e) => e,
+    })?;
+
+    // Push the CAS blocks and flush the mdb to disk
+    let _metrics = upload_session.finalize().await?;
+
+    Ok(pointers)
+}
+
 pub async fn upload_async(
-    threadpool: Arc<ThreadPool>,
+    thread_pool: Arc<ThreadPool>,
     file_paths: Vec<String>,
     endpoint: Option<String>,
     token_info: Option<(String, u64)>,
@@ -109,7 +139,7 @@ pub async fn upload_async(
     // for each file, return the filehash
     let config = default_config(endpoint.unwrap_or(DEFAULT_CAS_ENDPOINT.clone()), None, token_info, token_refresher)?;
 
-    let upload_session = FileUploadSession::new(config, threadpool, progress_updater).await?;
+    let upload_session = FileUploadSession::new(config, thread_pool, progress_updater).await?;
 
     // for all files, clean them, producing pointer files.
     let pointers = tokio_par_for_each(file_paths, *MAX_CONCURRENT_FILE_INGESTION, |f, _| async {
@@ -167,6 +197,16 @@ pub async fn download_async(
         })?;
 
     Ok(paths)
+}
+
+pub async fn clean_bytes(
+    processor: Arc<FileUploadSession>,
+    bytes: Vec<u8>,
+    file_key: impl AsRef<Path>,
+) -> errors::Result<(PointerFile, DeduplicationMetrics)> {
+    let mut handle = processor.start_clean(file_key.as_ref().to_string_lossy().into());
+    handle.add_data(&bytes).await?;
+    handle.finish().await
 }
 
 pub async fn clean_file(

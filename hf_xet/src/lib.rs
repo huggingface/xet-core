@@ -32,6 +32,41 @@ fn convert_data_processing_error(e: DataProcessingError) -> PyErr {
 }
 
 #[pyfunction]
+#[pyo3(signature = (file_contents, endpoint, token_info, token_refresher, progress_updater, _repo_type), text_signature = "(file_contents: List[(bytes, str)], endpoint: Optional[str], token_info: Optional[(str, int)], token_refresher: Optional[Callable[[], (str, int)]], progress_updater: Optional[Callable[[int], None]], _repo_type: Optional[str]) -> List[PyPointerFile]")]
+pub fn upload_bytes(
+    py: Python, 
+    file_contents: Vec<(Vec<u8>, String)>, 
+    endpoint: Option<String>, 
+    token_info: Option<(String, u64)>, 
+    token_refresher: Option<Py<PyAny>>, 
+    progress_updater: Option<Py<PyAny>>, 
+    _repo_type: Option<String>
+) -> PyResult<Vec<PyPointerFile>> {
+    let refresher = token_refresher.map(WrappedTokenRefresher::from_func).transpose()?.map(Arc::new);
+    let updater = progress_updater
+        .map(WrappedProgressUpdater::from_func)
+        .transpose()?
+        .map(Arc::new);
+
+    async_run(py, move |thread_pool| async move {
+        let out: Vec<PyPointerFile> = data_client::upload_bytes_async(
+            thread_pool,
+            file_contents,
+            endpoint,
+            token_info,
+            refresher.map(|v| v as Arc<_>),
+            updater.map(|v| v as Arc<_>),
+        )
+        .await
+        .map_err(convert_data_processing_error)?
+        .into_iter()
+        .map(PyPointerFile::from)
+        .collect();
+        PyResult::Ok(out)
+    })
+}
+
+#[pyfunction]
 #[pyo3(signature = (file_paths, endpoint, token_info, token_refresher, progress_updater, _repo_type), text_signature = "(file_paths: List[str], endpoint: Optional[str], token_info: Optional[(str, int)], token_refresher: Optional[Callable[[], (str, int)]], progress_updater: Optional[Callable[[int], None]], _repo_type: Optional[str]) -> List[PyPointerFile]")]
 pub fn upload_files(
     py: Python,
@@ -152,6 +187,7 @@ impl PyPointerFile {
 #[pymodule]
 pub fn hf_xet(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(upload_files, m)?)?;
+    m.add_function(wrap_pyfunction!(upload_bytes, m)?)?;
     m.add_function(wrap_pyfunction!(download_files, m)?)?;
     m.add_class::<PyPointerFile>()?;
 
