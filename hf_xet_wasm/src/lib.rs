@@ -2,8 +2,43 @@ use cas_types::HexMerkleHash;
 use chunking::{Chunker, TARGET_CHUNK_SIZE};
 use merklehash::MerkleHash;
 use serde::{Deserialize, Serialize};
+use std::fmt::{Debug, Formatter};
+use std::sync::Arc;
+use utils::auth::AuthConfig;
+use utils::errors::AuthError;
 use wasm_bindgen::prelude::*;
 use web_sys::js_sys::{ArrayBuffer, Uint8Array};
+
+#[wasm_bindgen]
+extern "C" {
+    type TokenInfo;
+    #[wasm_bindgen(method, getter)]
+    fn token(this: &TokenInfo) -> String;
+    #[wasm_bindgen(method, getter)]
+    fn expiration(this: &TokenInfo) -> u64;
+
+    type TokenRefresher;
+    #[wasm_bindgen(method)]
+    async fn refresh_token(this: &TokenRefresher) -> TokenInfo;
+}
+
+impl From<TokenInfo> for utils::auth::TokenInfo {
+    fn from(value: TokenInfo) -> Self {
+        (value.token(), value.expiration())
+    }
+}
+
+impl Debug for TokenRefresher {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "TokenRefresher")
+    }
+}
+
+impl utils::auth::TokenRefresher for TokenRefresher {
+    async fn refresh(&self) -> Result<utils::auth::TokenInfo, AuthError> {
+        Ok(utils::auth::TokenInfo::from(self.refresh_token().await))
+    }
+}
 
 const INGESTION_BLOCK_SIZE: usize = 8 * 1024 * 1024;
 
@@ -35,7 +70,7 @@ impl ChunkInfo {
 
 /// takes a Uint8Array of bytes representing data
 #[wasm_bindgen]
-pub fn chunk_vec(data: Vec<u8>) -> JsValue {
+pub fn chunk(data: Vec<u8>) -> JsValue {
     let mut chunker = Chunker::new(*TARGET_CHUNK_SIZE);
 
     let mut result = Vec::new();
@@ -59,30 +94,49 @@ pub fn chunk_vec(data: Vec<u8>) -> JsValue {
     serde_wasm_bindgen::to_value(&result).expect("failed to serialize result")
 }
 
+struct Clients {
+    authenticated_http_client: Arc<http_client::ClientWithMiddleware>,
+    conservative_authenticated_http_client: Arc<http_client::ClientWithMiddleware>,
+    http_client: Arc<http_client::ClientWithMiddleware>,
+}
+
+impl Clients {
+    fn new(auth: Option<AuthConfig>) -> Self {
+        Self {
+            authenticated_http_client: Arc::new(
+                http_client::build_auth_http_client(&auth, http_client::RetryConfig::default()).unwrap(),
+            ),
+            conservative_authenticated_http_client: Arc::new(
+                http_client::build_auth_http_client(&auth, http_client::RetryConfig::no429retry()).unwrap(),
+            ),
+            http_client: Arc::new(http_client::build_http_client(http_client::RetryConfig::default()).unwrap()),
+        }
+    }
+}
+
 #[wasm_bindgen]
-pub fn chunk_array_buffer(data: ArrayBuffer) -> JsValue {
-    let mut chunker = Chunker::new(*TARGET_CHUNK_SIZE);
+pub struct XetSession {
+    cas_endpoint: String,
+    clients: Clients,
+}
 
-    let mut result = Vec::new();
-
-    let len = data.byte_length();
-    for i in (0..len).step_by(INGESTION_BLOCK_SIZE) {
-        let data_slice = Uint8Array::new(&data.slice_with_end(i, (i + INGESTION_BLOCK_SIZE as u32).min(len)));
-        let chunks = chunker.next_block(&data_slice.to_vec(), false);
-        for chunk in chunks {
-            result.push(ChunkInfo {
-                len: chunk.data.len() as u32,
-                hash: chunk.hash.into(),
-            });
+#[wasm_bindgen]
+impl XetSession {
+    #[wasm_bindgen(constructor)]
+    pub fn new(cas_endpoint: String, token: String, token_expiration: u64, token_refresher: TokenRefresher) -> Self {
+        let auth = AuthConfig {
+            token,
+            token_expiration,
+            token_refresher: Arc::new(token_refresher),
+        };
+        Self {
+            cas_endpoint,
+            clients: Clients::new(Some(auth)),
         }
     }
 
-    if let Some(chunk) = chunker.finish() {
-        result.push(ChunkInfo {
-            len: chunk.data.len() as u32,
-            hash: chunk.hash.into(),
-        });
+    #[wasm_bindgen(js_name = "chunk")]
+    pub fn chunk(data: Vec<u8>) -> JsValue {
+        chunk(data)
     }
-
-    serde_wasm_bindgen::to_value(&result).expect("failed to serialize result")
 }

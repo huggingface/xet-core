@@ -2,8 +2,6 @@ use std::fmt::Debug;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use async_trait::async_trait;
-
 use crate::errors::AuthError;
 
 /// Helper type for information about an auth token.
@@ -11,7 +9,8 @@ use crate::errors::AuthError;
 pub type TokenInfo = (String, u64);
 
 /// Helper to provide auth tokens to CAS.
-#[async_trait]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
 pub trait TokenRefresher: Debug + Send + Sync {
     /// Get a new auth token for CAS and the unixtime (in seconds) for expiration
     async fn refresh(&self) -> Result<TokenInfo, AuthError>;
@@ -20,7 +19,8 @@ pub trait TokenRefresher: Debug + Send + Sync {
 #[derive(Debug)]
 pub struct NoOpTokenRefresher;
 
-#[async_trait]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
 impl TokenRefresher for NoOpTokenRefresher {
     async fn refresh(&self) -> Result<TokenInfo, AuthError> {
         Ok(("token".to_string(), 0))
@@ -30,7 +30,8 @@ impl TokenRefresher for NoOpTokenRefresher {
 #[derive(Debug)]
 pub struct ErrTokenRefresher;
 
-#[async_trait]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
 impl TokenRefresher for ErrTokenRefresher {
     async fn refresh(&self) -> Result<TokenInfo, AuthError> {
         Err(AuthError::RefreshFunctionNotCallable("Token refresh not expected".to_string()))

@@ -20,7 +20,6 @@ use mdb_shard::shard_file_reconstructor::FileReconstructor;
 use mdb_shard::utils::shard_file_name;
 use merklehash::{HashedWrite, MerkleHash};
 use reqwest::{StatusCode, Url};
-use reqwest_middleware::ClientWithMiddleware;
 use tokio::sync::{mpsc, OwnedSemaphorePermit};
 use tokio::task::{JoinError, JoinHandle, JoinSet};
 use tracing::{debug, info};
@@ -31,9 +30,9 @@ use xet_threadpool::ThreadPool;
 
 use crate::download_utils::*;
 use crate::error::{CasClientError, Result};
-use crate::http_client::{ResponseErrorLogger, RetryConfig};
 use crate::interface::{ShardDedupProber, *};
-use crate::{http_client, Client, RegistrationClient, ShardClientInterface};
+use crate::{Client, RegistrationClient, ShardClientInterface};
+use http_client::{self, ClientWithMiddleware, ResponseErrorLogger, RetryConfig};
 
 const FORCE_SYNC_METHOD: reqwest::Method = reqwest::Method::PUT;
 const NON_FORCE_SYNC_METHOD: reqwest::Method = reqwest::Method::POST;
@@ -148,7 +147,12 @@ impl UploadClient for RemoteClient {
         };
 
         let url = Url::parse(&format!("{}/xorb/{key}", self.endpoint))?;
-        let response = self.authenticated_http_client.head(url).send().await?;
+        let response = self
+            .authenticated_http_client
+            .head(url)
+            .send()
+            .await
+            .map_err(CasClientError::from)?;
         match response.status() {
             StatusCode::OK => Ok(true),
             StatusCode::NOT_FOUND => Ok(false),
@@ -180,7 +184,7 @@ impl ReconstructionClient for RemoteClient {
                 output_provider,
                 progress_updater,
             )
-            .await
+                .await
         }
     }
 }
@@ -198,7 +202,7 @@ impl Reconstructable for RemoteClient {
             file_id,
             bytes_range,
         )
-        .await
+            .await
     }
 }
 
@@ -221,13 +225,11 @@ pub(crate) async fn get_reconstruction_with_endpoint_and_client(
         let e = response.unwrap_err();
 
         // bytes_range not satisfiable
-        if let CasClientError::ReqwestError(e) = &e {
-            if let Some(StatusCode::RANGE_NOT_SATISFIABLE) = e.status() {
-                return Ok(None);
-            }
+        if let Some(StatusCode::RANGE_NOT_SATISFIABLE) = e.status() {
+            return Ok(None);
         }
 
-        return Err(e);
+        return Err(e.into());
     };
 
     let len = response.content_length();
@@ -245,7 +247,7 @@ impl Client for RemoteClient {}
 impl RemoteClient {
     async fn batch_get_reconstruction(
         &self,
-        file_ids: impl Iterator<Item = &MerkleHash>,
+        file_ids: impl Iterator<Item=&MerkleHash>,
     ) -> Result<BatchQueryReconstructionResponse> {
         let mut url_str = format!("{}/reconstructions?", self.endpoint);
         let mut is_first = true;
@@ -265,7 +267,8 @@ impl RemoteClient {
             .get(url)
             .send()
             .await
-            .process_error("batch_get_reconstruction")?;
+            .process_error("batch_get_reconstruction")
+            .map_err(CasClientError::from)?;
 
         let query_reconstruction_response: BatchQueryReconstructionResponse = response
             .json()
@@ -300,7 +303,8 @@ impl RemoteClient {
                 .body(data)
                 .send()
                 .await
-                .process_error("upload_xorb")?;
+                .process_error("upload_xorb")
+                .map_err(CasClientError::from)?;
             let response_parsed: UploadXorbResponse = response.json().await?;
 
             Ok((response_parsed.was_inserted, nbytes_trans))
@@ -360,7 +364,7 @@ impl RemoteClient {
                         debug!("download queue emptyed");
                         drop(running_downloads_tx);
                         break;
-                    },
+                    }
                     DownloadQueueItem::Term(term_download) => {
                         // acquire the permit before spawning the task, so that there's limited
                         // number of active downloads.
@@ -372,7 +376,7 @@ impl RemoteClient {
                                 Ok((data, permit))
                             });
                         running_downloads_tx.send(future)?;
-                    },
+                    }
                     DownloadQueueItem::Metadata(fetch_info) => {
                         // query for the file info of the first segment
                         let segment_size = download_scheduler_clone.next_segment_size()?;
@@ -417,7 +421,7 @@ impl RemoteClient {
                         } else {
                             task_tx.send(DownloadQueueItem::End)?;
                         }
-                    },
+                    }
                 }
             }
 
@@ -439,7 +443,7 @@ impl RemoteClient {
 
                     // Now inspect the download metrics and tune the download degree of concurrency
                     download_scheduler.tune_on(download_result)?;
-                },
+                }
                 Ok(Err(e)) => Err(e)?,
                 Err(e) => Err(anyhow!("{e:?}"))?,
             }
@@ -502,7 +506,7 @@ impl RemoteClient {
                         // Now inspect the download metrics and tune the download degree of concurrency
                         download_scheduler.tune_on(download_result)?;
                         Ok(())
-                    },
+                    }
                     Ok(Err(e)) => Err(e)?,
                     Err(e) => Err(anyhow!("{e:?}"))?,
                 }
@@ -521,7 +525,7 @@ impl RemoteClient {
                     // everything processed
                     debug!("download queue emptyed");
                     break;
-                },
+                }
                 DownloadQueueItem::Term(term_download) => {
                     // acquire the permit before spawning the task, so that there's limited
                     // number of active downloads.
@@ -532,7 +536,7 @@ impl RemoteClient {
                         drop(permit);
                         Ok(data)
                     });
-                },
+                }
                 DownloadQueueItem::Metadata(fetch_info) => {
                     // query for the file info of the first segment
                     let segment_size = download_scheduler.next_segment_size()?;
@@ -581,7 +585,7 @@ impl RemoteClient {
                     } else {
                         task_tx.send(DownloadQueueItem::End)?;
                     }
-                },
+                }
             }
         }
 
@@ -625,7 +629,8 @@ impl RegistrationClient for RemoteClient {
             .body(shard_data.to_vec())
             .send()
             .await
-            .process_error("upload_shard")?;
+            .process_error("upload_shard")
+            .map_err(CasClientError::from)?;
 
         let response_parsed: UploadShardResponse =
             response.json().await.log_error("error json decoding upload_shard response")?;
@@ -650,7 +655,8 @@ impl FileReconstructor<CasClientError> for RemoteClient {
             .get(url)
             .send()
             .await
-            .process_error("get_reconstruction_info")?;
+            .process_error("get_reconstruction_info")
+            .map_err(CasClientError::from)?;
         let response_info: QueryReconstructionResponse = response.json().await?;
 
         Ok(Some((
@@ -1093,7 +1099,7 @@ mod tests {
                 &raw_data[SKIP_BYTES as usize..(5 * CHUNK_SIZE) as usize],
                 &raw_data[(6 * CHUNK_SIZE) as usize as usize..(NUM_CHUNKS * CHUNK_SIZE) as usize - SKIP_BYTES as usize],
             ]
-            .concat(),
+                .concat(),
             expect_error: false,
         };
 

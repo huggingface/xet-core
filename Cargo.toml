@@ -17,7 +17,9 @@ members = [
     "cas_types",
     "chunk_cache",
     "xet_threadpool",
-    "deduplication", "chunking",
+    "deduplication",
+    "chunking",
+    "http_client",
 ]
 
 exclude = ["hf_xet", "hf_xet_wasm", "chunk_cache_bench"]

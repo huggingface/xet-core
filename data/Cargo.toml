@@ -15,6 +15,7 @@ name = "xtool"
 path = "src/bin/xtool.rs"
 
 [dependencies]
+http_client = { path = "../http_client" }
 cas_client = { path = "../cas_client" }
 cas_object = { path = "../cas_object" }
 cas_types = { path = "../cas_types" }
@@ -50,7 +51,6 @@ serde_json = "1.0.133"
 
 # Need to specify this as optional to allow the openssl/vendored option below
 openssl = { version = "0.10", features = [], optional = true }
-reqwest-middleware = "0.3.3"
 chrono = "0.4.39"
 
 [target.'cfg(not(windows))'.dependencies]

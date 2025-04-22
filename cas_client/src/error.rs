@@ -48,7 +48,7 @@ pub enum CasClientError {
     ParseError(#[from] url::ParseError),
 
     #[error("ReqwestMiddleware Error: {0}")]
-    ReqwestMiddlewareError(#[from] reqwest_middleware::Error),
+    ReqwestMiddlewareError(#[from] http_client::ReqwestMiddlewareError),
 
     #[error("Reqwest Error: {0}")]
     ReqwestError(#[from] reqwest::Error),

@@ -11,6 +11,8 @@ crate-type = ["cdylib", "rlib"]
 chunking = { path = "../chunking" }
 merklehash = { path = "../merklehash" }
 cas_types = { path = "../cas_types" }
+http_client = { path = "../http_client" }
+utils = { path = "../utils" }
 
 # wasm deps
 serde-wasm-bindgen = "0.6.5"

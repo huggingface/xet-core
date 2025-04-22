@@ -6,7 +6,8 @@ use cas_client::{FileProvider, OutputProvider};
 use data::configurations::TranslatorConfig;
 use data::data_client::clean_file;
 use data::{FileDownloader, FileUploadSession, PointerFile};
-use deduplication::constants::{MAX_XORB_BYTES, MAX_XORB_CHUNKS, TARGET_CHUNK_SIZE};
+use deduplication::constants::{MAX_XORB_BYTES, MAX_XORB_CHUNKS};
+use deduplication::TARGET_CHUNK_SIZE;
 use rand::rngs::StdRng;
 // rand crates
 use rand::RngCore;

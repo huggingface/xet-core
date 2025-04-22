@@ -5,29 +5,30 @@ use anyhow::anyhow;
 use cas_types::REQUEST_ID_HEADER;
 use error_printer::{ErrorPrinter, OptionPrinter};
 use http::StatusCode;
-use reqwest::header::{HeaderValue, AUTHORIZATION};
+use reqwest::header::{AUTHORIZATION, HeaderValue};
 use reqwest::{Request, Response};
-use reqwest_middleware::{ClientBuilder, ClientWithMiddleware, Middleware, Next};
+use reqwest_middleware::{ClientBuilder, Middleware, Next};
 use reqwest_retry::policies::ExponentialBackoff;
 use reqwest_retry::{
-    default_on_request_failure, default_on_request_success, DefaultRetryableStrategy, RetryTransientMiddleware,
-    Retryable, RetryableStrategy,
+    DefaultRetryableStrategy, RetryTransientMiddleware, Retryable, RetryableStrategy, default_on_request_failure,
+    default_on_request_success,
 };
 use tokio::sync::Mutex;
 use tracing::{debug, warn};
 use utils::auth::{AuthConfig, TokenProvider};
 
-use crate::{error, CasClientError};
+pub use reqwest_middleware::ClientWithMiddleware;
+pub use reqwest_middleware::Error as ReqwestMiddlewareError;
 
 const NUM_RETRIES: u32 = 5;
 const BASE_RETRY_DELAY_MS: u64 = 3000; // 3s
 const BASE_RETRY_MAX_DURATION_MS: u64 = 6 * 60 * 1000; // 6m
 
 /// A strategy that doesn't retry on 429, and defaults to `DefaultRetryableStrategy` otherwise.
-pub struct No429RetryStratey;
+pub struct No429RetryStrategy;
 
-impl RetryableStrategy for No429RetryStratey {
-    fn handle(&self, res: &Result<reqwest::Response, reqwest_middleware::Error>) -> Option<Retryable> {
+impl RetryableStrategy for No429RetryStrategy {
+    fn handle(&self, res: &Result<Response, ReqwestMiddlewareError>) -> Option<Retryable> {
         if let Ok(success) = res {
             if success.status() == StatusCode::TOO_MANY_REQUESTS {
                 return Some(Retryable::Fatal);
@@ -65,13 +66,13 @@ impl Default for RetryConfig<DefaultRetryableStrategy> {
     }
 }
 
-impl RetryConfig<No429RetryStratey> {
+impl RetryConfig<No429RetryStrategy> {
     pub fn no429retry() -> Self {
         Self {
             num_retries: NUM_RETRIES,
             min_retry_interval_ms: BASE_RETRY_DELAY_MS,
             max_retry_interval_ms: BASE_RETRY_MAX_DURATION_MS,
-            strategy: No429RetryStratey,
+            strategy: No429RetryStrategy,
         }
     }
 }
@@ -81,7 +82,7 @@ impl RetryConfig<No429RetryStratey> {
 pub fn build_auth_http_client<R: RetryableStrategy + Send + Sync + 'static>(
     auth_config: &Option<AuthConfig>,
     retry_config: RetryConfig<R>,
-) -> std::result::Result<ClientWithMiddleware, CasClientError> {
+) -> Result<ClientWithMiddleware, reqwest::Error> {
     let auth_middleware = auth_config.as_ref().map(AuthMiddleware::from).info_none("CAS auth disabled");
     let logging_middleware = Some(LoggingMiddleware);
     let retry_middleware = get_retry_middleware(retry_config);
@@ -97,7 +98,7 @@ pub fn build_auth_http_client<R: RetryableStrategy + Send + Sync + 'static>(
 /// Includes retry middleware with exponential backoff.
 pub fn build_http_client<R: RetryableStrategy + Send + Sync + 'static>(
     retry_config: RetryConfig<R>,
-) -> std::result::Result<ClientWithMiddleware, CasClientError> {
+) -> Result<ClientWithMiddleware, reqwest::Error> {
     let retry_middleware = get_retry_middleware(retry_config);
     let logging_middleware = Some(LoggingMiddleware);
     let reqwest_client = reqwest::Client::builder().build()?;
@@ -138,7 +139,8 @@ impl OptionalMiddleware for ClientBuilder {
 /// Adds logging middleware that will trace::warn! on retryable errors.
 pub struct LoggingMiddleware;
 
-#[async_trait::async_trait]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
 impl Middleware for LoggingMiddleware {
     async fn handle(
         &self,
@@ -163,8 +165,7 @@ impl Middleware for LoggingMiddleware {
                 if Some(Retryable::Transient) == default_on_request_failure(err) {
                     warn!("{err:?}. Retrying...");
                 }
-            })
-    }
+            })    }
 }
 
 /// AuthMiddleware is a thread-safe middleware that adds a CAS auth token to outbound requests.
@@ -200,7 +201,8 @@ impl From<&AuthConfig> for AuthMiddleware {
     }
 }
 
-#[async_trait::async_trait]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
 impl Middleware for AuthMiddleware {
     async fn handle(
         &self,
@@ -208,27 +210,24 @@ impl Middleware for AuthMiddleware {
         extensions: &mut http::Extensions,
         next: Next<'_>,
     ) -> reqwest_middleware::Result<Response> {
-        let token = self.get_token().await.map_err(reqwest_middleware::Error::Middleware)?;
+        let token = self.get_token().await.map_err(ReqwestMiddlewareError::Middleware)?;
 
         let headers = req.headers_mut();
         headers.insert(AUTHORIZATION, HeaderValue::from_str(&format!("Bearer {}", token)).unwrap());
-        next.run(req, extensions).await
-    }
+        next.run(req, extensions).await    }
 }
 
 /// Helper trait to log the different types of errors that come back from a request to CAS,
 /// transforming the implementation into some new error type.
-pub trait ResponseErrorLogger<T> {
-    fn process_error(self, api: &str) -> T;
+pub trait ResponseErrorLogger {
+    fn process_error(self, api: &str) -> Self;
 }
 
 /// Add ResponseErrorLogger to Result<Response> for our requests.
 /// This logs an error if one occurred before receiving a response or
 /// if the status code indicates a failure.
-/// As a result of these checks, the response is also transformed into a
-/// cas_client::error::Result instead of the raw reqwest_middleware::Result.
-impl ResponseErrorLogger<error::Result<Response>> for reqwest_middleware::Result<Response> {
-    fn process_error(self, api: &str) -> error::Result<Response> {
+impl ResponseErrorLogger for reqwest_middleware::Result<Response> {
+    fn process_error(self, api: &str) -> Self {
         let res = self.log_error(format!("error invoking {api} api"))?;
         let request_id = request_id_from_response(&res);
         let error_message = format!("{api} api failed: request id: {request_id}");
@@ -246,6 +245,7 @@ pub fn request_id_from_response(res: &Response) -> &str {
     request_id
 }
 
+#[cfg(not(target_family = "wasm"))]
 #[cfg(test)]
 mod tests {
     use std::time::SystemTime;
@@ -296,7 +296,7 @@ mod tests {
                 num_retries: 1,
                 min_retry_interval_ms: 0,
                 max_retry_interval_ms: 3000,
-                strategy: No429RetryStratey,
+                strategy: No429RetryStrategy,
             };
             let client = build_auth_http_client(&None, retry_config).unwrap();
 
@@ -350,7 +350,7 @@ mod tests {
                 num_retries: 2,
                 min_retry_interval_ms: 0,
                 max_retry_interval_ms: 3000,
-                strategy: No429RetryStratey,
+                strategy: No429RetryStrategy,
             };
             let client = build_auth_http_client(&None, retry_config).unwrap();
 
@@ -407,7 +407,7 @@ mod tests {
                 num_retries: 2,
                 min_retry_interval_ms: 1000,
                 max_retry_interval_ms: 6000,
-                strategy: No429RetryStratey,
+                strategy: No429RetryStrategy,
             };
             let client = build_auth_http_client(&None, retry_config).unwrap();
 
@@ -436,7 +436,7 @@ mod tests {
             num_retries: 10,
             min_retry_interval_ms: 1000,
             max_retry_interval_ms: 6000,
-            strategy: No429RetryStratey,
+            strategy: No429RetryStrategy,
         };
         let client = build_auth_http_client(&None, retry_config).unwrap();
 
