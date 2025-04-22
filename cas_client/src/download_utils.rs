@@ -252,7 +252,7 @@ pub(crate) struct XorbRangeDownload {
     pub fetch_info: Arc<FetchInfo>, // utility to get URL to download this term
     #[derivative(Debug = "ignore")]
     pub chunk_cache: Option<Arc<dyn ChunkCache>>,
-    pub range_download_single_flight: RangeDownloadSingleFlight,
+    http_client: Arc<ClientWithMiddleware>,
 }
 
 #[derive(Derivative)]
@@ -261,19 +261,19 @@ pub(crate) struct XorbRangeDownloadGenerator {
     pub fetch_info: Arc<FetchInfo>, // utility to get URL to download this term
     #[derivative(Debug = "ignore")]
     pub chunk_cache: Option<Arc<dyn ChunkCache>>,
-    pub range_download_single_flight: RangeDownloadSingleFlight,
+    http_client: Arc<ClientWithMiddleware>,
 }
 
 impl XorbRangeDownloadGenerator {
     pub fn new(
         fetch_info: Arc<FetchInfo>,
         chunk_cache: Option<Arc<dyn ChunkCache>>,
-        range_download_single_flight: RangeDownloadSingleFlight,
+        http_client: Arc<ClientWithMiddleware>,
     ) -> Self {
         Self {
             fetch_info,
             chunk_cache,
-            range_download_single_flight,
+            http_client,
         }
     }
 
@@ -281,14 +281,14 @@ impl XorbRangeDownloadGenerator {
         let Self {
             fetch_info,
             chunk_cache,
-            range_download_single_flight,
+            http_client,
         } = self.clone();
         XorbRangeDownload {
             hash,
             range,
             fetch_info,
             chunk_cache,
-            range_download_single_flight,
+            http_client,
         }
     }
 }
@@ -305,7 +305,7 @@ impl XorbRangeDownload {
             let (fetch_term, v) = self.fetch_info.find(key).await?;
 
             let DownloadRangeResult::Data(data, chunk_byte_indices) = check_cache_download_range(
-                self.fetch_info.client.clone(),
+                self.http_client.clone(),
                 self.chunk_cache.clone(),
                 fetch_term,
                 self.hash,
