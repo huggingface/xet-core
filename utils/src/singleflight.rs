@@ -212,7 +212,7 @@ where
     ///
     /// On error, the owner will receive the original error returned from the function
     /// as a SingleflightError::InternalError, all waiters will receive a copy of the
-    /// error message wrapped in a: SingleflightError::WaiterInternalError.
+    /// error message wrapped in a SingleflightError::WaiterInternalError.
     /// This is due to the fact that most error types don't implement Clone (e.g. anyhow::Error)
     /// and thus we can't clone the original error for all of the waiters.
     pub async fn work(

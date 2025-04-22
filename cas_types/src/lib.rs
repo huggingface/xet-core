@@ -1,5 +1,7 @@
 use core::fmt;
+use std::cmp::min;
 use std::collections::{HashMap, HashSet};
+use std::marker::PhantomData;
 
 use merklehash::MerkleHash;
 use serde::{Deserialize, Serialize};
@@ -20,26 +22,102 @@ pub struct UploadXorbResponse {
     pub was_inserted: bool,
 }
 
+/// These types are defined to help differentiate the Range<,> type aliases,
+/// so that they don't silently cast to each other without range adjustements.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Default, Hash, Copy)]
+pub struct _C;
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Default, Hash, Copy)]
+pub struct _F;
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Default, Hash, Copy)]
+pub struct _H;
+
 /// Start and exclusive-end range for chunk content
-pub type ChunkRange = Range<u32>;
+pub type ChunkRange = Range<u32, _C>;
 /// Start and exclusive-end range for file content
-pub type FileRange = Range<u64>;
+pub type FileRange = Range<u64, _F>;
 /// Start and inclusive-end range for HTTP range content
-pub type HttpRange = Range<u32>;
+pub type HttpRange = Range<u64, _H>;
+
+impl FileRange {
+    pub fn full() -> Self {
+        Self::new(0, u64::MAX)
+    }
+
+    // consumes self and split the range into a segment of size `segment_size`
+    // and a remainder.
+    pub fn take_segment(self, segment_size: u64) -> (Self, Option<Self>) {
+        let segment = FileRange {
+            start: self.start,
+            end: min(self.end, self.start + segment_size),
+            _marker: PhantomData,
+        };
+
+        let remainder = if segment.end == self.end {
+            None
+        } else {
+            Some(FileRange {
+                start: segment.end,
+                end: self.end,
+                _marker: PhantomData,
+            })
+        };
+
+        (segment, remainder)
+    }
+
+    pub fn length(&self) -> u64 {
+        self.end - self.start
+    }
+}
+
+impl From<HttpRange> for FileRange {
+    fn from(value: HttpRange) -> Self {
+        // right inclusive to right exclusive
+        FileRange::new(value.start, value.end + 1)
+    }
+}
+
+impl HttpRange {
+    pub fn range_header(&self) -> String {
+        format!("bytes={self}")
+    }
+
+    pub fn length(&self) -> u64 {
+        self.end - self.start + 1
+    }
+}
+
+impl From<FileRange> for HttpRange {
+    fn from(value: FileRange) -> Self {
+        // right exclusive to right inclusive
+        HttpRange::new(value.start, value.end - 1)
+    }
+}
 
 // note that the standard PartialOrd/Ord impls will first check `start` then `end`
 #[derive(Debug, Serialize, Deserialize, Clone, Eq, PartialEq, PartialOrd, Ord, Default, Hash)]
-pub struct Range<Idx> {
+pub struct Range<Idx, Kind> {
     pub start: Idx,
     pub end: Idx,
+    #[serde(skip)]
+    pub _marker: PhantomData<Kind>,
 }
 
-impl<Idx: Copy> Copy for Range<Idx> {}
+impl<Idx, Kind> Range<Idx, Kind> {
+    pub fn new(start: Idx, end: Idx) -> Self {
+        Self {
+            start,
+            end,
+            _marker: PhantomData,
+        }
+    }
+}
 
-impl<Idx: fmt::Display> fmt::Display for Range<Idx> {
+impl<T: Copy, Kind: Copy> Copy for Range<T, Kind> {}
+
+impl<Idx: fmt::Display, Kind> fmt::Display for Range<Idx, Kind> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let Range { start, end } = self;
-        write!(f, "{start}-{end}")
+        write!(f, "{}-{}", self.start, self.end)
     }
 }
 
@@ -49,7 +127,7 @@ pub enum RangeParseError<Idx: std::str::FromStr> {
     ParseError(Idx::Err),
 }
 
-impl<Idx: std::str::FromStr> TryFrom<&str> for Range<Idx> {
+impl<Idx: std::str::FromStr, Kind> TryFrom<&str> for Range<Idx, Kind> {
     type Error = RangeParseError<Idx>;
 
     fn try_from(value: &str) -> Result<Self, Self::Error> {
@@ -62,7 +140,11 @@ impl<Idx: std::str::FromStr> TryFrom<&str> for Range<Idx> {
         let start = parts[0].parse::<Idx>().map_err(RangeParseError::ParseError)?;
         let end = parts[1].parse::<Idx>().map_err(RangeParseError::ParseError)?;
 
-        Ok(Range { start, end })
+        Ok(Range {
+            start,
+            end,
+            _marker: PhantomData,
+        })
     }
 }
 
@@ -144,4 +226,43 @@ pub struct UploadShardResponse {
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct QueryChunkResponse {
     pub shard: MerkleHash,
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::*;
+
+    #[test]
+    fn test_file_range_segment() {
+        let file_range = FileRange::full();
+        let segment_size = 824820;
+
+        let (segment, remainder) = file_range.take_segment(segment_size);
+
+        assert_eq!(segment, FileRange::new(0, segment_size));
+        assert_eq!(remainder, Some(FileRange::new(segment_size, u64::MAX)));
+    }
+
+    #[test]
+    fn test_file_range_segment_no_remainder() {
+        let file_range = FileRange::new(50, 100);
+        let segment_size = 40;
+
+        let (s1, remainder) = file_range.take_segment(segment_size);
+
+        assert_eq!(s1, FileRange::new(50, 90));
+        assert_eq!(remainder, Some(FileRange::new(90, 100)));
+
+        let (s2, remainder) = remainder.unwrap().take_segment(segment_size);
+
+        assert_eq!(s2, FileRange::new(90, 100));
+        assert_eq!(remainder, None);
+    }
+
+    #[test]
+    fn test_http_range_type_casting() {
+        assert_eq!(HttpRange::from(FileRange::new(0, 10)), HttpRange::new(0, 9));
+
+        assert_eq!(FileRange::from(HttpRange::new(0, 10)), FileRange::new(0, 11));
+    }
 }
