@@ -595,7 +595,7 @@ async fn download_range(
         Err(e) => {
             return match e.status() {
                 Some(StatusCode::FORBIDDEN) => Ok(DownloadRangeResult::Forbidden),
-                e => Err(e.into()),
+                _ => Err(e.into()),
             }
         },
     };
