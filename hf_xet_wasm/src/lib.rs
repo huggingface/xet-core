@@ -9,36 +9,13 @@ use utils::errors::AuthError;
 use wasm_bindgen::prelude::*;
 use web_sys::js_sys::{ArrayBuffer, Uint8Array};
 
-#[wasm_bindgen]
-extern "C" {
-    type TokenInfo;
-    #[wasm_bindgen(method, getter)]
-    fn token(this: &TokenInfo) -> String;
-    #[wasm_bindgen(method, getter)]
-    fn expiration(this: &TokenInfo) -> u64;
+pub(crate) mod session;
+pub(crate) mod auth;
 
-    type TokenRefresher;
-    #[wasm_bindgen(method, catch)]
-    async fn refresh_token(this: &TokenRefresher) -> Result<TokenInfo, JsValue>;
-}
+pub use session::*;
+pub use auth::*;
 
-impl From<TokenInfo> for utils::auth::TokenInfo {
-    fn from(value: TokenInfo) -> Self {
-        (value.token(), value.expiration())
-    }
-}
 
-impl Debug for TokenRefresher {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(f, "TokenRefresher")
-    }
-}
-
-impl utils::auth::TokenRefresher for TokenRefresher {
-    async fn refresh(&self) -> Result<utils::auth::TokenInfo, AuthError> {
-        Ok(utils::auth::TokenInfo::from(self.refresh_token().await))
-    }
-}
 
 const INGESTION_BLOCK_SIZE: usize = 8 * 1024 * 1024;
 

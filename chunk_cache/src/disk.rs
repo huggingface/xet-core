@@ -173,7 +173,7 @@ impl DiskCache {
                 continue;
             };
 
-            // loop throught key directories inside prefix directory
+            // loop through key directories inside prefix directory
             for key_dir in key_prefix_readdir {
                 let key_dir = match is_ok_dir(key_dir) {
                     Ok(Some(dirent)) => dirent,
@@ -746,6 +746,7 @@ fn remove_dir(path: impl AsRef<Path>) -> Result<(), ChunkCacheError> {
         if e.kind() != ErrorKind::NotFound {
             return Err(e.into());
         }
+        if e.kind() == ErrorKind::DirectoryNotEmpty {}
     }
     Ok(())
 }
