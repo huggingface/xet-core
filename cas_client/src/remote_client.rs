@@ -539,7 +539,11 @@ impl RemoteClient {
                         offset_into_first_range,
                         segment_size,
                         total_len,
-                        XorbRangeDownloadGenerator::new(segment.clone(), self.chunk_cache.clone(), self.http_client.clone()),
+                        XorbRangeDownloadGenerator::new(
+                            segment.clone(),
+                            self.chunk_cache.clone(),
+                            self.http_client.clone(),
+                        ),
                         writer,
                     )
                     .await?;
