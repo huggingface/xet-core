@@ -30,7 +30,7 @@ jobs:
           fi
           SEM_VERSION=${TAG#v}
           TRIMMED_VERSION=${SEM_VERSION//-}
-          echo "VERSION=${TRIMMED_VERSION}" >> $GITHUB_ENV
+          echo "VERSION=${TRIMMED_VERSION}" >> $GITHUB_OUTPUT
 
       - name: Checkout target repo
         uses: actions/checkout@v4
