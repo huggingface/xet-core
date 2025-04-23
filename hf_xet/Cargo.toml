@@ -14,6 +14,7 @@ pyo3 = { version = "0.23.3", features = [
     "extension-module",
     "abi3-py37",
     "auto-initialize",
+    "experimental-async",
 ] }
 
 error_printer = { path = "../error_printer" }
@@ -41,6 +42,7 @@ pprof = { version = "0.14", features = [
     "protobuf-codec",
 ], optional = true }
 async-trait = "0.1.87"
+async-once-cell = "0.5.4"
 
 # Unix-specific dependencies
 [target.'cfg(unix)'.dependencies]

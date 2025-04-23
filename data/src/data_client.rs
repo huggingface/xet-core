@@ -113,7 +113,7 @@ pub async fn upload_async(
 
     // for all files, clean them, producing pointer files.
     let pointers = tokio_par_for_each(file_paths, *MAX_CONCURRENT_FILE_INGESTION, |f, _| async {
-        let (pf, _metrics) = clean_file(upload_session.clone(), f).await?;
+        let (pf, _metrics) = clean_file(upload_session.clone(), f, None).await?;
         Ok(pf)
     })
     .await
@@ -172,13 +172,14 @@ pub async fn download_async(
 pub async fn clean_file(
     processor: Arc<FileUploadSession>,
     filename: impl AsRef<Path>,
+    _progress_updater: Option<Arc<dyn ProgressUpdater>>,
 ) -> errors::Result<(PointerFile, DeduplicationMetrics)> {
     let mut reader = File::open(&filename)?;
 
     let n = reader.metadata()?.len() as usize;
     let mut buffer = vec![0u8; usize::min(n, *INGESTION_BLOCK_SIZE)];
 
-    let mut handle = processor.start_clean(filename.as_ref().to_string_lossy().into());
+    let mut handle = processor.start_clean(filename.as_ref().to_string_lossy().into(), );
 
     loop {
         let bytes = reader.read(&mut buffer)?;

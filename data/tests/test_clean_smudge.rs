@@ -119,7 +119,7 @@ async fn dehydrate_directory(cas_dir: &Path, src_dir: &Path, ptr_dir: &Path) {
         let upload_session = upload_session.clone();
 
         upload_tasks.spawn(async move {
-            let (pf, _metrics) = clean_file(upload_session.clone(), entry.path()).await.unwrap();
+            let (pf, _metrics) = clean_file(upload_session.clone(), entry.path(), None).await.unwrap();
             std::fs::write(out_file, pf.to_string()).unwrap();
         });
     }

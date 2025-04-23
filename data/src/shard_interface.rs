@@ -1,7 +1,13 @@
+use std::collections::VecDeque;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
+use crate::configurations::TranslatorConfig;
+use crate::constants::MDB_SHARD_LOCAL_CACHE_EXPIRATION_SECS;
+use crate::errors::Result;
+use crate::file_upload_session::acquire_upload_permit;
+use crate::repo_salt::RepoSalt;
 use cas_client::Client;
 use error_printer::ErrorPrinter;
 use mdb_shard::cas_structs::MDBCASInfo;
@@ -11,14 +17,9 @@ use mdb_shard::session_directory::consolidate_shards_in_directory;
 use mdb_shard::ShardFileManager;
 use merklehash::MerkleHash;
 use tempfile::TempDir;
-use tokio::task::JoinSet;
+use tokio::task::JoinHandle;
 use tracing::{debug, info};
-
-use crate::configurations::TranslatorConfig;
-use crate::constants::MDB_SHARD_LOCAL_CACHE_EXPIRATION_SECS;
-use crate::errors::Result;
-use crate::file_upload_session::acquire_upload_permit;
-use crate::repo_salt::RepoSalt;
+use xet_threadpool::ThreadPool;
 
 pub struct SessionShardInterface {
     session_shard_manager: Arc<ShardFileManager>,
@@ -30,12 +31,14 @@ pub struct SessionShardInterface {
     dry_run: bool,
 
     _shard_session_dir: TempDir,
+    pub threadpool: Arc<ThreadPool>,
 }
 
 impl SessionShardInterface {
     pub async fn new(
         config: Arc<TranslatorConfig>,
         client: Arc<dyn Client + Send + Sync>,
+        threadpool: Arc<ThreadPool>,
         dry_run: bool,
     ) -> Result<Self> {
         // Create a temporary session directory where we hold all the shards before upload.
@@ -52,6 +55,7 @@ impl SessionShardInterface {
         let cache_shard_manager = ShardFileManager::new_in_cache_directory(cache_dir).await?;
 
         Ok(Self {
+            threadpool,
             session_shard_manager,
             cache_shard_manager,
             client,
@@ -123,7 +127,7 @@ impl SessionShardInterface {
             consolidate_shards_in_directory(self.session_shard_manager.shard_directory(), *MDB_SHARD_MIN_TARGET_SIZE)?;
 
         // Upload all the shards and move each to the common directory.
-        let mut shard_uploads = JoinSet::<Result<()>>::new();
+        let mut shard_uploads: VecDeque<JoinHandle<Result<()>>> = VecDeque::new();
 
         let shard_bytes_uploaded = Arc::new(AtomicUsize::new(0));
 
@@ -143,7 +147,7 @@ impl SessionShardInterface {
             // block here while the upload is happening.
             let upload_permit = acquire_upload_permit().await?;
 
-            shard_uploads.spawn(async move {
+            shard_uploads.push_back(self.threadpool.spawn(async move {
                 debug!("Uploading shard {shard_prefix}/{:?} from staging area to CAS.", &si.shard_hash);
                 let data = std::fs::read(&si.path)?;
 
@@ -174,12 +178,12 @@ impl SessionShardInterface {
                 cache_shard_manager.register_shards(&[new_shard_path]).await?;
 
                 Ok(())
-            });
+            }));
         }
 
         // Now, let them all complete in parallel
-        while let Some(jh) = shard_uploads.join_next().await {
-            jh??;
+        while let Some(jh) = shard_uploads.pop_front() {
+            jh.await??;
         }
 
         Ok(shard_bytes_uploaded.load(Ordering::Relaxed))

@@ -71,7 +71,7 @@ pub async fn migrate_files_impl(
 
     let clean_ret = tokio_par_for_each(file_paths, num_workers, |f, _| async {
         let proc = processor.clone();
-        let (pf, metrics) = clean_file(proc, f).await?;
+        let (pf, metrics) = clean_file(proc, f, None).await?;
         Ok((pf, metrics.new_bytes as u64))
     })
     .await

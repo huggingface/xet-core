@@ -18,10 +18,12 @@ use token_refresh::WrappedTokenRefresher;
 use utils::progress::ProgressUpdater;
 
 use crate::progress_update::WrappedProgressUpdater;
+use crate::session::PyXetSession;
 
 // For profiling
 #[cfg(feature = "profiling")]
 pub(crate) mod profiling;
+mod session;
 
 fn convert_data_processing_error(e: DataProcessingError) -> PyErr {
     if cfg!(debug_assertions) {
@@ -97,6 +99,11 @@ pub fn download_files(
     })
 }
 
+fn try_parse_progress_updater(func: Py<PyAny>) -> PyResult<Arc<dyn ProgressUpdater>> {
+    let wrapped = Arc::new(WrappedProgressUpdater::from_func(func)?);
+    Ok(wrapped as Arc<dyn ProgressUpdater>)
+}
+
 fn try_parse_progress_updaters(funcs: Vec<Py<PyAny>>) -> PyResult<Vec<Arc<dyn ProgressUpdater>>> {
     let mut updaters = Vec::with_capacity(funcs.len());
     for updater_func in funcs {
@@ -154,6 +161,7 @@ pub fn hf_xet(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(upload_files, m)?)?;
     m.add_function(wrap_pyfunction!(download_files, m)?)?;
     m.add_class::<PyPointerFile>()?;
+    m.add_class::<PyXetSession>()?;
 
     // Init the threadpool
     runtime::init_threadpool(py)?;

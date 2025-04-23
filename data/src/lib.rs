@@ -1,6 +1,6 @@
 #![allow(dead_code)]
 pub mod configurations;
-mod constants;
+pub mod constants;
 pub mod data_client;
 mod deduplication_interface;
 pub mod errors;
@@ -15,7 +15,7 @@ mod repo_salt;
 mod sha256;
 mod shard_interface;
 
-pub use cas_client::CacheConfig;
+pub use cas_client::{CacheConfig, OutputProvider, FileProvider};
 pub use file_downloader::FileDownloader;
 pub use file_upload_session::FileUploadSession;
 pub use pointer_file::PointerFile;

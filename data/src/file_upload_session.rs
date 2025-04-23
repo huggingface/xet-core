@@ -1,3 +1,4 @@
+use std::collections::VecDeque;
 use std::mem::{swap, take};
 use std::sync::Arc;
 
@@ -9,7 +10,7 @@ use mdb_shard::file_structs::MDBFileInfo;
 use merklehash::MerkleHash;
 use more_asserts::*;
 use tokio::sync::{Mutex, OwnedSemaphorePermit, Semaphore};
-use tokio::task::JoinSet;
+use tokio::task::JoinHandle;
 use utils::progress::ProgressUpdater;
 use xet_threadpool::ThreadPool;
 
@@ -70,7 +71,7 @@ pub struct FileUploadSession {
     deduplication_metrics: Mutex<DeduplicationMetrics>,
 
     // Internal worker
-    xorb_upload_tasks: Mutex<JoinSet<Result<()>>>,
+    xorb_upload_tasks: Mutex<VecDeque<JoinHandle<Result<()>>>>,
 }
 
 // Constructors
@@ -99,7 +100,7 @@ impl FileUploadSession {
     ) -> Result<Arc<FileUploadSession>> {
         let client = create_remote_client(&config, threadpool.clone(), dry_run)?;
 
-        let shard_interface = SessionShardInterface::new(config.clone(), client.clone(), dry_run).await?;
+        let shard_interface = SessionShardInterface::new(config.clone(), client.clone(), threadpool.clone(), dry_run).await?;
 
         let repo_id = config.data_config.auth.clone().and_then(|auth| {
             let token = auth.token;
@@ -127,7 +128,7 @@ impl FileUploadSession {
             config,
             current_session_data: Mutex::new(DataAggregator::default()),
             deduplication_metrics: Mutex::new(DeduplicationMetrics::default()),
-            xorb_upload_tasks: Mutex::new(JoinSet::new()),
+            xorb_upload_tasks: Mutex::new(VecDeque::new()),
         }))
     }
 
@@ -145,8 +146,15 @@ impl FileUploadSession {
         // First check the current xorb upload tasks to see if any can be cleaned up.
         {
             let mut upload_tasks = self.xorb_upload_tasks.lock().await;
-            while let Some(result) = upload_tasks.try_join_next() {
-                result??;
+            while let Some(result) = upload_tasks.pop_front() {
+                if result.is_finished() {
+                    // This task is done, so we can drop it.
+                    result.await??;
+                } else {
+                    // This task is still running, so we need to keep it.
+                    upload_tasks.push_front(result);
+                    break;
+                }
             }
         }
 
@@ -165,7 +173,7 @@ impl FileUploadSession {
         let upload_permit = acquire_upload_permit().await?;
         let cas_prefix = session.config.data_config.prefix.clone();
 
-        self.xorb_upload_tasks.lock().await.spawn(async move {
+        self.xorb_upload_tasks.lock().await.push_back(self.threadpool.spawn(async move {
             let n_bytes_transmitted = session
                 .client
                 .put(&cas_prefix, &xorb_hash, xorb_data, chunks_and_boundaries)
@@ -179,7 +187,7 @@ impl FileUploadSession {
 
             session.deduplication_metrics.lock().await.xorb_bytes_uploaded += n_bytes_transmitted;
             Ok(())
-        });
+        }));
 
         Ok(())
     }
@@ -245,8 +253,8 @@ impl FileUploadSession {
         Ok(())
     }
 
-    /// Finalize everthing.
-    async fn finalize_impl(self: Arc<Self>, return_files: bool) -> Result<(DeduplicationMetrics, Vec<MDBFileInfo>)> {
+    /// Finalize everything.
+    async fn finalize_impl(self: &Arc<Self>, return_files: bool) -> Result<(DeduplicationMetrics, Vec<MDBFileInfo>)> {
         // Register the remaining xorbs for upload.
         let data_agg = take(&mut *self.current_session_data.lock().await);
         self.process_aggregated_data_as_xorb(data_agg).await?;
@@ -257,8 +265,8 @@ impl FileUploadSession {
         // Finalize the xorb uploads.
         let mut upload_tasks = take(&mut *self.xorb_upload_tasks.lock().await);
 
-        while let Some(result) = upload_tasks.join_next().await {
-            result??;
+        while let Some(result) = upload_tasks.pop_front() {
+            result.await??;
         }
 
         // Now that all the tasks there are completed, there shouldn't be any other references to this session
@@ -284,11 +292,11 @@ impl FileUploadSession {
         Ok((metrics, all_file_info))
     }
 
-    pub async fn finalize(self: Arc<Self>) -> Result<DeduplicationMetrics> {
+    pub async fn finalize(self: &Arc<Self>) -> Result<DeduplicationMetrics> {
         Ok(self.finalize_impl(false).await?.0)
     }
 
-    pub async fn finalize_with_file_info(self: Arc<Self>) -> Result<(DeduplicationMetrics, Vec<MDBFileInfo>)> {
+    pub async fn finalize_with_file_info(self: &Arc<Self>) -> Result<(DeduplicationMetrics, Vec<MDBFileInfo>)> {
         self.finalize_impl(true).await
     }
 }

@@ -142,7 +142,7 @@ pub fn init_threadpool(py: Python) -> PyResult<Arc<ThreadPool>> {
 }
 
 // This function initializes the runtime if not present, otherwise returns the existing one.
-fn get_threadpool(py: Python) -> PyResult<Arc<ThreadPool>> {
+pub(crate) fn get_threadpool(py: Python) -> PyResult<Arc<ThreadPool>> {
     // First try a read lock to see if it's already initialized.
     {
         let guard = MULTITHREADED_RUNTIME.read().unwrap();
