@@ -20,14 +20,17 @@ jobs:
         target-repo: ["huggingface_hub"]
 
     steps:
-      - name: Determine version from tag
+      - name: Determine PyPi version from tag
         id: get-version
         run: |
           if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
-            echo "VERSION=${{ inputs.tag }}" >> $GITHUB_OUTPUT
+            TAG=${{ inputs.tag }}
           else
-            echo "VERSION=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+            TAG=${GITHUB_REF#refs/tags/}
           fi
+          SEM_VERSION=${TAG#v}
+          TRIMMED_VERSION=${SEM_VERSION//-}
+          echo "VERSION=${TRIMMED_VERSION}" >> $GITHUB_ENV
 
       - name: Checkout target repo
         uses: actions/checkout@v4
@@ -77,5 +80,6 @@ jobs:
       - name: Print URLs for manual check
         run: |
           VERSION=${{ steps.get-version.outputs.VERSION }}
+          BRANCH_NAME="ci-test-hf-xet-${VERSION}-release"
           echo "https://github.com/xet-core/${{ matrix.target-repo }}/actions"
           echo "https://github.com/xet-core/${{ matrix.target-repo }}/compare/main...${BRANCH_NAME}"
