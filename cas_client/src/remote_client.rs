@@ -1218,7 +1218,11 @@ mod tests {
             assert_eq!(test.expected_data.len(), buf.len(), "written len mismatch {test}");
             assert_eq!(test.expected_data[..100], buf.value()[..100], "response data head mismatch {test}");
             let tail_start = test.expected_data.len() - 100;
-            assert_eq!(test.expected_data[tail_start..], buf.value()[tail_start..], "response data tail mismatch {test}");
+            assert_eq!(
+                test.expected_data[tail_start..],
+                buf.value()[tail_start..],
+                "response data tail mismatch {test}"
+            );
             assert_eq!(test.expected_data, buf.value(), "response data mismatch {test}");
         }
 
