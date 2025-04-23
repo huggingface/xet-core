@@ -381,9 +381,11 @@ async fn download_range(
         .log_error("get from s3 error code")
     {
         Ok(response) => response,
-        Err(e) => return match e.status() {
-            Some(StatusCode::FORBIDDEN) => Ok(DownloadRangeResult::Forbidden),
-            _ => Err(e.into()),
+        Err(e) => {
+            return match e.status() {
+                Some(StatusCode::FORBIDDEN) => Ok(DownloadRangeResult::Forbidden),
+                _ => Err(e.into()),
+            }
         },
     };
 

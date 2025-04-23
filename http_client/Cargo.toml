@@ -10,9 +10,9 @@ cas_types = { path = "../cas_types" }
 anyhow = "1.0.97"
 http = "1.3.1"
 reqwest = "0.12.15"
-reqwest-middleware = "0.4.1"
 tracing = "0.1.41"
 async-trait = "0.1.88"
+reqwest-middleware = "0.4.1"
 reqwest-retry = "0.7.0"
 tokio = {  version = "1.44.1" , features = ["sync"] }
 

@@ -8,6 +8,7 @@ use http::StatusCode;
 use reqwest::header::{AUTHORIZATION, HeaderValue};
 use reqwest::{Request, Response};
 use reqwest_middleware::{ClientBuilder, Middleware, Next};
+pub use reqwest_middleware::{ClientWithMiddleware, Error as ReqwestMiddlewareError};
 use reqwest_retry::policies::ExponentialBackoff;
 use reqwest_retry::{
     DefaultRetryableStrategy, RetryTransientMiddleware, Retryable, RetryableStrategy, default_on_request_failure,
@@ -16,9 +17,6 @@ use reqwest_retry::{
 use tokio::sync::Mutex;
 use tracing::{debug, warn};
 use utils::auth::{AuthConfig, TokenProvider};
-
-pub use reqwest_middleware::ClientWithMiddleware;
-pub use reqwest_middleware::Error as ReqwestMiddlewareError;
 
 const NUM_RETRIES: u32 = 5;
 const BASE_RETRY_DELAY_MS: u64 = 3000; // 3s
@@ -165,7 +163,8 @@ impl Middleware for LoggingMiddleware {
                 if Some(Retryable::Transient) == default_on_request_failure(err) {
                     warn!("{err:?}. Retrying...");
                 }
-            })    }
+            })
+    }
 }
 
 /// AuthMiddleware is a thread-safe middleware that adds a CAS auth token to outbound requests.
@@ -214,7 +213,8 @@ impl Middleware for AuthMiddleware {
 
         let headers = req.headers_mut();
         headers.insert(AUTHORIZATION, HeaderValue::from_str(&format!("Bearer {}", token)).unwrap());
-        next.run(req, extensions).await    }
+        next.run(req, extensions).await
+    }
 }
 
 /// Helper trait to log the different types of errors that come back from a request to CAS,

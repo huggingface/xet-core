@@ -15,6 +15,7 @@ use chunk_cache::{CacheConfig, ChunkCache};
 use error_printer::ErrorPrinter;
 use file_utils::SafeFileCreator;
 use http::header::RANGE;
+use http_client::{self, ClientWithMiddleware, ResponseErrorLogger, RetryConfig};
 use mdb_shard::file_structs::{FileDataSequenceEntry, FileDataSequenceHeader, MDBFileInfo};
 use mdb_shard::shard_file_reconstructor::FileReconstructor;
 use mdb_shard::utils::shard_file_name;
@@ -32,7 +33,6 @@ use crate::download_utils::*;
 use crate::error::{CasClientError, Result};
 use crate::interface::{ShardDedupProber, *};
 use crate::{Client, RegistrationClient, ShardClientInterface};
-use http_client::{self, ClientWithMiddleware, ResponseErrorLogger, RetryConfig};
 
 const FORCE_SYNC_METHOD: reqwest::Method = reqwest::Method::PUT;
 const NON_FORCE_SYNC_METHOD: reqwest::Method = reqwest::Method::POST;
@@ -184,7 +184,7 @@ impl ReconstructionClient for RemoteClient {
                 output_provider,
                 progress_updater,
             )
-                .await
+            .await
         }
     }
 }
@@ -202,7 +202,7 @@ impl Reconstructable for RemoteClient {
             file_id,
             bytes_range,
         )
-            .await
+        .await
     }
 }
 
@@ -247,7 +247,7 @@ impl Client for RemoteClient {}
 impl RemoteClient {
     async fn batch_get_reconstruction(
         &self,
-        file_ids: impl Iterator<Item=&MerkleHash>,
+        file_ids: impl Iterator<Item = &MerkleHash>,
     ) -> Result<BatchQueryReconstructionResponse> {
         let mut url_str = format!("{}/reconstructions?", self.endpoint);
         let mut is_first = true;
@@ -364,7 +364,7 @@ impl RemoteClient {
                         debug!("download queue emptyed");
                         drop(running_downloads_tx);
                         break;
-                    }
+                    },
                     DownloadQueueItem::Term(term_download) => {
                         // acquire the permit before spawning the task, so that there's limited
                         // number of active downloads.
@@ -376,7 +376,7 @@ impl RemoteClient {
                                 Ok((data, permit))
                             });
                         running_downloads_tx.send(future)?;
-                    }
+                    },
                     DownloadQueueItem::Metadata(fetch_info) => {
                         // query for the file info of the first segment
                         let segment_size = download_scheduler_clone.next_segment_size()?;
@@ -421,7 +421,7 @@ impl RemoteClient {
                         } else {
                             task_tx.send(DownloadQueueItem::End)?;
                         }
-                    }
+                    },
                 }
             }
 
@@ -443,7 +443,7 @@ impl RemoteClient {
 
                     // Now inspect the download metrics and tune the download degree of concurrency
                     download_scheduler.tune_on(download_result)?;
-                }
+                },
                 Ok(Err(e)) => Err(e)?,
                 Err(e) => Err(anyhow!("{e:?}"))?,
             }
@@ -506,7 +506,7 @@ impl RemoteClient {
                         // Now inspect the download metrics and tune the download degree of concurrency
                         download_scheduler.tune_on(download_result)?;
                         Ok(())
-                    }
+                    },
                     Ok(Err(e)) => Err(e)?,
                     Err(e) => Err(anyhow!("{e:?}"))?,
                 }
@@ -525,7 +525,7 @@ impl RemoteClient {
                     // everything processed
                     debug!("download queue emptyed");
                     break;
-                }
+                },
                 DownloadQueueItem::Term(term_download) => {
                     // acquire the permit before spawning the task, so that there's limited
                     // number of active downloads.
@@ -536,7 +536,7 @@ impl RemoteClient {
                         drop(permit);
                         Ok(data)
                     });
-                }
+                },
                 DownloadQueueItem::Metadata(fetch_info) => {
                     // query for the file info of the first segment
                     let segment_size = download_scheduler.next_segment_size()?;
@@ -585,7 +585,7 @@ impl RemoteClient {
                     } else {
                         task_tx.send(DownloadQueueItem::End)?;
                     }
-                }
+                },
             }
         }
 
@@ -1099,7 +1099,7 @@ mod tests {
                 &raw_data[SKIP_BYTES as usize..(5 * CHUNK_SIZE) as usize],
                 &raw_data[(6 * CHUNK_SIZE) as usize as usize..(NUM_CHUNKS * CHUNK_SIZE) as usize - SKIP_BYTES as usize],
             ]
-                .concat(),
+            .concat(),
             expect_error: false,
         };
 

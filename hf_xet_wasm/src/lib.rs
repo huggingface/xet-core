@@ -2,20 +2,14 @@ use cas_types::HexMerkleHash;
 use chunking::{Chunker, TARGET_CHUNK_SIZE};
 use merklehash::MerkleHash;
 use serde::{Deserialize, Serialize};
-use std::fmt::{Debug, Formatter};
-use std::sync::Arc;
-use utils::auth::AuthConfig;
-use utils::errors::AuthError;
 use wasm_bindgen::prelude::*;
-use web_sys::js_sys::{ArrayBuffer, Uint8Array};
 
-pub(crate) mod session;
 pub(crate) mod auth;
+mod blob_reader;
+pub(crate) mod session;
 
-pub use session::*;
 pub use auth::*;
-
-
+pub use session::XetSession;
 
 const INGESTION_BLOCK_SIZE: usize = 8 * 1024 * 1024;
 
@@ -69,51 +63,4 @@ pub fn chunk(data: Vec<u8>) -> JsValue {
     }
 
     serde_wasm_bindgen::to_value(&result).expect("failed to serialize result")
-}
-
-struct Clients {
-    authenticated_http_client: Arc<http_client::ClientWithMiddleware>,
-    conservative_authenticated_http_client: Arc<http_client::ClientWithMiddleware>,
-    http_client: Arc<http_client::ClientWithMiddleware>,
-}
-
-impl Clients {
-    fn new(auth: Option<AuthConfig>) -> Self {
-        Self {
-            authenticated_http_client: Arc::new(
-                http_client::build_auth_http_client(&auth, http_client::RetryConfig::default()).unwrap(),
-            ),
-            conservative_authenticated_http_client: Arc::new(
-                http_client::build_auth_http_client(&auth, http_client::RetryConfig::no429retry()).unwrap(),
-            ),
-            http_client: Arc::new(http_client::build_http_client(http_client::RetryConfig::default()).unwrap()),
-        }
-    }
-}
-
-#[wasm_bindgen]
-pub struct XetSession {
-    cas_endpoint: String,
-    clients: Clients,
-}
-
-#[wasm_bindgen]
-impl XetSession {
-    #[wasm_bindgen(constructor)]
-    pub fn new(cas_endpoint: String, token: String, token_expiration: u64, token_refresher: TokenRefresher) -> Self {
-        let auth = AuthConfig {
-            token,
-            token_expiration,
-            token_refresher: Arc::new(token_refresher),
-        };
-        Self {
-            cas_endpoint,
-            clients: Clients::new(Some(auth)),
-        }
-    }
-
-    #[wasm_bindgen(js_name = "chunk")]
-    pub fn chunk(data: Vec<u8>) -> JsValue {
-        chunk(data)
-    }
 }
