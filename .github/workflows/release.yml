@@ -42,7 +42,9 @@ jobs:
         run: |
           TAG=${{ github.event.inputs.tag }}
           VERSION=${TAG#v}
-          sed -i '/^version /s/=.*$/= "'"$VERSION"'"/' hf_xet/Cargo.toml
+          if [ -n "$VERSION" ]; then
+            sed -i '/^version /s/=.*$/= "'"$VERSION"'"/' hf_xet/Cargo.toml
+          fi
       - name: Build wheels
         uses: PyO3/maturin-action@v1
         with:
@@ -86,7 +88,9 @@ jobs:
         run: |
           TAG=${{ github.event.inputs.tag }}
           VERSION=${TAG#v}
-          sed -i '/^version /s/=.*$/= "'"$VERSION"'"/' hf_xet/Cargo.toml
+          if [ -n "$VERSION" ]; then
+            sed -i '/^version /s/=.*$/= "'"$VERSION"'"/' hf_xet/Cargo.toml
+          fi
       - name: Build wheels
         uses: PyO3/maturin-action@v1
         with:
@@ -119,7 +123,9 @@ jobs:
         run: |
           TAG=${{ github.event.inputs.tag }}
           VERSION=${TAG#v}
-          sed -i '/^version /s/=.*$/= "'"$VERSION"'"/' hf_xet/Cargo.toml
+          if [ -n "$VERSION" ]; then
+            sed -i '/^version /s/=.*$/= "'"$VERSION"'"/' hf_xet/Cargo.toml
+          fi
       - name: Build wheels
         uses: PyO3/maturin-action@v1
         with:
@@ -151,7 +157,9 @@ jobs:
         run: |
           TAG=${{ github.event.inputs.tag }}
           VERSION=${TAG#v}
-          sed -i '' '/^version /s/=.*$/= "'"$VERSION"'"/' hf_xet/Cargo.toml
+          if [ -n "$VERSION" ]; then
+            sed -i '' '/^version /s/=.*$/= "'"$VERSION"'"/' hf_xet/Cargo.toml
+          fi
       - name: Build wheels
         uses: PyO3/maturin-action@v1
         with:
