@@ -16,7 +16,7 @@ use crate::XetFileInfo;
 /// A class that encapsulates the clean and data task around a single file.
 pub struct SingleFileCleaner {
     // Auxiliary info
-    file_name: String,
+    file_name: Option<String>,
 
     // Common state
     session: Arc<FileUploadSession>,
@@ -35,7 +35,7 @@ pub struct SingleFileCleaner {
 }
 
 impl SingleFileCleaner {
-    pub(crate) fn new(file_name: String, session: Arc<FileUploadSession>) -> Self {
+    pub(crate) fn new(file_name: Option<String>, session: Arc<FileUploadSession>) -> Self {
         Self {
             file_name,
             dedup_manager: FileDeduper::new(UploadSessionDataManager::new(session.clone())),
@@ -118,12 +118,7 @@ impl SingleFileCleaner {
 
         // Now, return all this information to the
         self.session
-            .register_single_file_clean_completion(
-                self.file_name.clone(),
-                remaining_file_data,
-                &deduplication_metrics,
-                new_xorbs,
-            )
+            .register_single_file_clean_completion(remaining_file_data, &deduplication_metrics, new_xorbs)
             .await?;
 
         // NB: xorb upload is happening in the background, this number is optimistic since it does

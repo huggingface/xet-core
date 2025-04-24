@@ -137,7 +137,7 @@ impl FileUploadSession {
     ///
     /// The caller is responsible for memory usage management, the parameter "buffer_size"
     /// indicates the maximum number of Vec<u8> in the internal buffer.
-    pub fn start_clean(self: &Arc<Self>, file_name: String) -> SingleFileCleaner {
+    pub fn start_clean(self: &Arc<Self>, file_name: Option<String>) -> SingleFileCleaner {
         SingleFileCleaner::new(file_name, self.clone())
     }
 
@@ -187,7 +187,6 @@ impl FileUploadSession {
     /// Meant to be called by the finalize() method of the SingleFileCleaner
     pub(crate) async fn register_single_file_clean_completion(
         self: &Arc<Self>,
-        _file_name: String,
         mut file_data: DataAggregator,
         dedup_metrics: &DeduplicationMetrics,
         _xorbs_dependencies: Vec<MerkleHash>,

@@ -32,10 +32,10 @@ fn convert_data_processing_error(e: DataProcessingError) -> PyErr {
 }
 
 #[pyfunction]
-#[pyo3(signature = (file_contents, endpoint, token_info, token_refresher, progress_updater, _repo_type), text_signature = "(file_contents: List[(bytes, str)], endpoint: Optional[str], token_info: Optional[(str, int)], token_refresher: Optional[Callable[[], (str, int)]], progress_updater: Optional[Callable[[int], None]], _repo_type: Optional[str]) -> List[PyUploadResult]")]
+#[pyo3(signature = (file_contents, endpoint, token_info, token_refresher, progress_updater, _repo_type), text_signature = "(file_contents: List[bytes], endpoint: Optional[str], token_info: Optional[(str, int)], token_refresher: Optional[Callable[[], (str, int)]], progress_updater: Optional[Callable[[int], None]], _repo_type: Optional[str]) -> List[PyUploadResult]")]
 pub fn upload_bytes(
     py: Python, 
-    file_contents: Vec<(Vec<u8>, String)>, 
+    file_contents: Vec<Vec<u8>>, 
     endpoint: Option<String>, 
     token_info: Option<(String, u64)>, 
     token_refresher: Option<Py<PyAny>>, 

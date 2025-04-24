@@ -97,7 +97,7 @@ pub fn default_config(
 
 pub async fn upload_bytes_async(
     thread_pool: Arc<ThreadPool>,
-    file_contents: Vec<(Vec<u8>, String)>,
+    file_contents: Vec<Vec<u8>>,
     endpoint: Option<String>,
     token_info: Option<(String, u64)>,
     token_refresher: Option<Arc<dyn TokenRefresher>>,
@@ -110,7 +110,7 @@ pub async fn upload_bytes_async(
     // clean the bytes
     let files = tokio_par_for_each(file_contents, *MAX_CONCURRENT_FILE_INGESTION, |f, _| async {
         // TODO: brian - try to refactor the need for the file_key
-        let (xf, _metrics) = clean_bytes(upload_session.clone(), f.0, f.1).await?;
+        let (xf, _metrics) = clean_bytes(upload_session.clone(), f).await?;
         Ok(xf)
     })
     .await
@@ -205,9 +205,8 @@ pub async fn download_async(
 pub async fn clean_bytes(
     processor: Arc<FileUploadSession>,
     bytes: Vec<u8>,
-    file_key: impl AsRef<Path>,
 ) -> errors::Result<(XetFileInfo, DeduplicationMetrics)> {
-    let mut handle = processor.start_clean(file_key.as_ref().to_string_lossy().into());
+    let mut handle = processor.start_clean(None);
     handle.add_data(&bytes).await?;
     handle.finish().await
 }
@@ -221,7 +220,7 @@ pub async fn clean_file(
     let n = reader.metadata()?.len() as usize;
     let mut buffer = vec![0u8; usize::min(n, *INGESTION_BLOCK_SIZE)];
 
-    let mut handle = processor.start_clean(filename.as_ref().to_string_lossy().into());
+    let mut handle = processor.start_clean(Some(filename.as_ref().to_string_lossy().into()));
 
     loop {
         let bytes = reader.read(&mut buffer)?;
