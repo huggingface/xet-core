@@ -9,15 +9,14 @@ edition = "2021"
 merklehash = { path = "../merklehash" }
 thiserror = "2.0"
 utils = { path = "../utils" }
-tempdir = "0.3.7"
-tokio = { version = "1.36", features = ["full"] }
+tempfile = "3.19.1"
+tokio = { version = "1.44", features = ["sync"] }
 lazy_static = "1.4.0"
 regex = "1.5"
 tracing = "0.1.*"
-uuid = { version = "1.3.2", features = ["v4"] }
 clap = { version = "3.1.6", features = ["derive"] }
 anyhow = "1"
-rand = { version = "0.8.5", features = ["small_rng"] }
+rand = { version = "0.9", features = ["small_rng"] }
 async-trait = "0.1.9"
 static_assertions = "1.1.0"
 itertools = "0.13.0"
@@ -25,6 +24,11 @@ futures-io = "0.3.31"
 futures-util = "0.3.31"
 serde = { version = "1.0.215", features = ["derive"] }
 blake3 = "1.5.4"
+
+[target.'cfg(target_family = "wasm")'.dependencies]
+uuid = { version = "1", features = ["v4", "js"] }
+[target.'cfg(not(target_family = "wasm"))'.dependencies]
+uuid = { version = "1", features = ["v4"] }
 
 [[bin]]
 name = "shard_benchmark"
