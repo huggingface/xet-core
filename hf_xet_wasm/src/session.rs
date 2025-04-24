@@ -1,5 +1,10 @@
+#![allow(dead_code)]
+
 use crate::auth::WrappedTokenRefresher;
+use crate::blob_reader::BlobReader;
+use crate::console_log;
 use cas_types::HexMerkleHash;
+use futures::AsyncReadExt;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use utils::auth::AuthConfig;
@@ -12,11 +17,12 @@ struct PointerFile {
     pub file_hash: HexMerkleHash,
 }
 
+// begin "bogus" section, this will change when we can hook into the data crate
+
 type DataProcessingError = std::io::Error;
 
 #[async_trait::async_trait]
 trait UploadSession {
-
     async fn finalize(&self) -> Result<(), DataProcessingError>;
     async fn start_clean(&self, path: String) -> Arc<dyn Cleaner>;
 }
@@ -30,12 +36,11 @@ impl UploadSession for UploadSessionImpl {
         Ok(())
     }
 
-    async fn start_clean(&self, path: String) -> Arc<dyn Cleaner> {
+    async fn start_clean(&self, _path: String) -> Arc<dyn Cleaner> {
         // Start a clean session
         Arc::new(CleanerImpl)
     }
 }
-
 
 #[async_trait::async_trait]
 trait Cleaner {
@@ -47,7 +52,7 @@ struct CleanerImpl;
 
 #[async_trait::async_trait]
 impl Cleaner for CleanerImpl {
-    async fn add_data(&mut self, data: &[u8]) -> Result<(), DataProcessingError> {
+    async fn add_data(&mut self, _data: &[u8]) -> Result<(), DataProcessingError> {
         // Add data to the cleaner
         Ok(())
     }
@@ -58,6 +63,9 @@ impl Cleaner for CleanerImpl {
     }
 }
 
+// end "bogus"
+
+/// This struct is a stand-in for the actual CAS remote client.
 struct Clients {
     authenticated_http_client: Arc<http_client::ClientWithMiddleware>,
     conservative_authenticated_http_client: Arc<http_client::ClientWithMiddleware>,
@@ -121,13 +129,25 @@ impl XetSession {
     pub async fn upload_file_from_blob(&self, blob: Blob) -> Result<(), JsValue> {
         // read from blob async
         let _ = self.upload.start_clean("".to_string()).await;
+
+        let mut reader = BlobReader::new(blob).unwrap();
+
+        let mut _v = vec![];
+        reader
+            .read_to_end(&mut _v)
+            .await
+            .map_err(|e| JsValue::from_str(&format!("{:?}", e)))?;
+
         Ok(())
     }
 
     #[wasm_bindgen]
     pub async fn flush(&self) -> Result<(), JsValue> {
         // flush the session
-        self.upload.finalize().await.map_err(|e| JsValue::from_str(&format!("{:?}", e)))?;
+        self.upload
+            .finalize()
+            .await
+            .map_err(|e| JsValue::from_str(&format!("{:?}", e)))?;
         Ok(())
     }
 }

@@ -1,6 +1,6 @@
+#![allow(dead_code)]
 use cas_types::HexMerkleHash;
 use chunking::{Chunker, TARGET_CHUNK_SIZE};
-use merklehash::MerkleHash;
 use serde::{Deserialize, Serialize};
 use wasm_bindgen::prelude::*;
 
@@ -22,12 +22,6 @@ pub struct ChunkInfo {
 
 #[wasm_bindgen]
 impl ChunkInfo {
-    #[wasm_bindgen(constructor)]
-    pub fn js_new(len: u32, hash: String) -> Self {
-        let hash = MerkleHash::from_hex(&hash).expect("failed to parse hex hash").into();
-        Self { len, hash }
-    }
-
     #[wasm_bindgen(getter)]
     pub fn len(&self) -> u32 {
         self.len
@@ -40,6 +34,7 @@ impl ChunkInfo {
 }
 
 /// takes a Uint8Array of bytes representing data
+/// returns ChunkInfo[]
 #[wasm_bindgen]
 pub fn chunk(data: Vec<u8>) -> JsValue {
     let mut chunker = Chunker::new(*TARGET_CHUNK_SIZE);
@@ -63,4 +58,11 @@ pub fn chunk(data: Vec<u8>) -> JsValue {
     }
 
     serde_wasm_bindgen::to_value(&result).expect("failed to serialize result")
+}
+
+#[macro_export]
+macro_rules! console_log {
+    // Note that this is using the `log` function imported above during
+    // `bare_bones`
+    ($($t:tt)*) => (web_sys::console::log_1(&format_args!($($t)*).to_string().into()))
 }

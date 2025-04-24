@@ -17,6 +17,10 @@ extern "C" {
     pub async fn refresh_token(this: &TokenRefresher) -> Result<TokenInfo, JsValue>;
 }
 
+/// interface TokenRefresher {
+///    refresh_token(): Promise<TokenInfo>;
+/// }
+
 impl From<TokenInfo> for utils::auth::TokenInfo {
     fn from(value: TokenInfo) -> Self {
         (value.token(), value.expiration())
