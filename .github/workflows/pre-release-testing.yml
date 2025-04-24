@@ -31,6 +31,7 @@ jobs:
           SEM_VERSION=${TAG#v}
           TRIMMED_VERSION=${SEM_VERSION//-}
           echo "VERSION=${TRIMMED_VERSION}" >> $GITHUB_OUTPUT
+          echo "BRANCH_NAME=ci_test_hf_xet_${TRIMMED_VERSION}_release" >> $GITHUB_OUTPUT
 
       - name: Checkout target repo
         uses: actions/checkout@v4
@@ -59,13 +60,13 @@ jobs:
         run: |
           cd ${{ matrix.target-repo }}
           VERSION=${{ steps.get-version.outputs.VERSION }}
-          BRANCH_NAME="ci-test-hf-xet-${VERSION}-release"
+          BRANCH_NAME=${{ steps.get-version.outputs.BRANCH_NAME }}
 
           # Create and checkout new branch
           git checkout -b $BRANCH_NAME
 
-          # Update dependencies using sed
-          sed -i -E "s/\"hf_xet>=*\"/\"hf_xet==${VERSION}\"/" setup.py
+          # Update hf_xet dependency to use the fixed rc version
+          sed -i -E "s/hf(_|-)xet(>|<|=)=(([0-9]+\.[0-9]+\.[0-9]+)|([0-9]+\.[0-9]+\.[0-9]+,<[0-9]+\.[0-9]+\.[0-9]+))/hf_xet==${VERSION}/g" setup.py
           git add setup.py
 
           # Any line with `uv pip install --prerelease=allow` in the `.github/` folder must be updated with `--prerelease=allow` flag
@@ -80,6 +81,7 @@ jobs:
       - name: Print URLs for manual check
         run: |
           VERSION=${{ steps.get-version.outputs.VERSION }}
-          BRANCH_NAME="ci-test-hf-xet-${VERSION}-release"
-          echo "https://github.com/xet-core/${{ matrix.target-repo }}/actions"
-          echo "https://github.com/xet-core/${{ matrix.target-repo }}/compare/main...${BRANCH_NAME}"
+          BRANCH_NAME=${{ steps.get-version.outputs.BRANCH_NAME }}
+          echo "https://github.com/huggingface/${{ matrix.target-repo }}/actions"
+          echo "https://github.com/huggingface/${{matrix.target-repo}}/tree/refs/heads/${BRANCH_NAME}"
+          echo "https://github.com/huggingface/huggingface_hub/${{ matrix.target-repo }}/compare/main...${BRANCH_NAME}"
