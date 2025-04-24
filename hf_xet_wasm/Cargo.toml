@@ -24,6 +24,7 @@ log = "0.4.27"
 web-sys = {version = "0.3.77", features = ["ReadableStreamDefaultReader", "Blob", "File"]}
 async-trait = "0.1.88"
 tokio = {version = "1.44.1", features = ["sync"]}
+js-sys = "0.3.77"
 
 [profile.release]
 # Tell `rustc` to optimize for small code size.

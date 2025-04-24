@@ -507,6 +507,7 @@ dependencies = [
  "chunking",
  "futures",
  "http_client",
+ "js-sys",
  "log",
  "merklehash",
  "serde",
