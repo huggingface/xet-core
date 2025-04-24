@@ -5,6 +5,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use cas_object::CompressionScheme;
 use cas_types::{FileRange, QueryReconstructionResponse};
 use mdb_shard::shard_file_reconstructor::FileReconstructor;
 use merklehash::MerkleHash;
@@ -35,6 +36,7 @@ pub trait UploadClient {
         hash: &MerkleHash,
         data: Vec<u8>,
         chunk_and_boundaries: Vec<(MerkleHash, u32)>,
+        compression: Option<CompressionScheme>
     ) -> Result<usize>;
 
     /// Check if a XORB already exists.

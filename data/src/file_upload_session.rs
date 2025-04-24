@@ -2,6 +2,7 @@ use std::mem::{swap, take};
 use std::sync::Arc;
 
 use cas_client::Client;
+use cas_object::CompressionScheme;
 use deduplication::constants::{MAX_XORB_BYTES, MAX_XORB_CHUNKS};
 use deduplication::{DataAggregator, DeduplicationMetrics, RawXorbData};
 use jsonwebtoken::{decode, DecodingKey, Validation};
@@ -69,8 +70,13 @@ pub struct FileUploadSession {
     /// Metrics for deduplication
     deduplication_metrics: Mutex<DeduplicationMetrics>,
 
-    // Internal worker
+    /// Internal worker
     xorb_upload_tasks: Mutex<JoinSet<Result<()>>>,
+
+    /// The current compression scheme in use. If initialized to None, 
+    /// This may change as upload progresses and statistics about the 
+    /// preferred scheme is collected
+    compression_scheme: Option<CompressionScheme>,
 }
 
 // Constructors
@@ -117,6 +123,7 @@ impl FileUploadSession {
                 decoded.claims.get("repoId").and_then(|value| value.as_str().map(String::from))
             })
         });
+        let compression_scheme = config.data_config.compression;
 
         Ok(Arc::new(Self {
             shard_interface,
@@ -128,6 +135,7 @@ impl FileUploadSession {
             current_session_data: Mutex::new(DataAggregator::default()),
             deduplication_metrics: Mutex::new(DeduplicationMetrics::default()),
             xorb_upload_tasks: Mutex::new(JoinSet::new()),
+            compression_scheme
         }))
     }
 
@@ -164,11 +172,11 @@ impl FileUploadSession {
         let session = self.clone();
         let upload_permit = acquire_upload_permit().await?;
         let cas_prefix = session.config.data_config.prefix.clone();
-
+        let compression_scheme = self.compression_scheme;
         self.xorb_upload_tasks.lock().await.spawn(async move {
             let n_bytes_transmitted = session
                 .client
-                .put(&cas_prefix, &xorb_hash, xorb_data, chunks_and_boundaries)
+                .put(&cas_prefix, &xorb_hash, xorb_data, chunks_and_boundaries, compression_scheme)
                 .await?;
 
             drop(upload_permit);
