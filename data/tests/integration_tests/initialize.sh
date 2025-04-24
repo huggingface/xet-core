@@ -64,7 +64,7 @@ export -f assert_files_not_equal
 
 assert_is_pointer_file() {
   file=$1
-  match=$(cat $file | head -n 1 | grep -F '# xet version' || echo "")
+  match=$(cat $file | grep -F 'hash' | grep -F "file_size" || echo "")
   [[ ! -z "$match" ]] || die "File $file does not appear to be a pointer file."
 }
 export -f assert_is_pointer_file
@@ -75,8 +75,10 @@ assert_pointer_file_size() {
 
   assert_is_pointer_file $file
 
-  filesize=$(cat $file | grep -F filesize | sed -E 's|.*filesize = ([0-9]+).*|\1|' || echo "")
-  [[ $filesize == $size ]] || die "Pointer file $file gives incorrect size; $filesize, expected $size."
+  filesize=$(cat $file | grep -F file_size | sed -E 's|.*file_size:([0-9]+).*|\1|' || echo "")
+  filesize_trimmed="${filesize::-1}"
+
+  [[ $filesize == $size || $filesize_trimmed == $size ]] || die "Pointer file $file gives incorrect size; $filesize, expected $size."
 }
 export -f assert_pointer_file_size
 

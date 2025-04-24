@@ -9,7 +9,7 @@ use std::iter::IntoIterator;
 use std::sync::Arc;
 
 use data::errors::DataProcessingError;
-use data::{data_client, PointerFile};
+use data::{data_client, XetFileInfo};
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
 use pyo3::pyfunction;
@@ -32,7 +32,7 @@ fn convert_data_processing_error(e: DataProcessingError) -> PyErr {
 }
 
 #[pyfunction]
-#[pyo3(signature = (file_contents, endpoint, token_info, token_refresher, progress_updater, _repo_type), text_signature = "(file_contents: List[(bytes, str)], endpoint: Optional[str], token_info: Optional[(str, int)], token_refresher: Optional[Callable[[], (str, int)]], progress_updater: Optional[Callable[[int], None]], _repo_type: Optional[str]) -> List[PyPointerFile]")]
+#[pyo3(signature = (file_contents, endpoint, token_info, token_refresher, progress_updater, _repo_type), text_signature = "(file_contents: List[(bytes, str)], endpoint: Optional[str], token_info: Optional[(str, int)], token_refresher: Optional[Callable[[], (str, int)]], progress_updater: Optional[Callable[[int], None]], _repo_type: Optional[str]) -> List[PyUploadResult]")]
 pub fn upload_bytes(
     py: Python, 
     file_contents: Vec<(Vec<u8>, String)>, 
@@ -41,7 +41,7 @@ pub fn upload_bytes(
     token_refresher: Option<Py<PyAny>>, 
     progress_updater: Option<Py<PyAny>>, 
     _repo_type: Option<String>
-) -> PyResult<Vec<PyPointerFile>> {
+) -> PyResult<Vec<PyUploadResult>> {
     let refresher = token_refresher.map(WrappedTokenRefresher::from_func).transpose()?.map(Arc::new);
     let updater = progress_updater
         .map(WrappedProgressUpdater::from_func)
@@ -49,7 +49,7 @@ pub fn upload_bytes(
         .map(Arc::new);
 
     async_run(py, move |thread_pool| async move {
-        let out: Vec<PyPointerFile> = data_client::upload_bytes_async(
+        let out: Vec<PyUploadResult> = data_client::upload_bytes_async(
             thread_pool,
             file_contents,
             endpoint,
@@ -60,14 +60,14 @@ pub fn upload_bytes(
         .await
         .map_err(convert_data_processing_error)?
         .into_iter()
-        .map(PyPointerFile::from)
+        .map(PyUploadResult::from)
         .collect();
         PyResult::Ok(out)
     })
 }
 
 #[pyfunction]
-#[pyo3(signature = (file_paths, endpoint, token_info, token_refresher, progress_updater, _repo_type), text_signature = "(file_paths: List[str], endpoint: Optional[str], token_info: Optional[(str, int)], token_refresher: Optional[Callable[[], (str, int)]], progress_updater: Optional[Callable[[int], None]], _repo_type: Optional[str]) -> List[PyPointerFile]")]
+#[pyo3(signature = (file_paths, endpoint, token_info, token_refresher, progress_updater, _repo_type), text_signature = "(file_paths: List[str], endpoint: Optional[str], token_info: Optional[(str, int)], token_refresher: Optional[Callable[[], (str, int)]], progress_updater: Optional[Callable[[int], None]], _repo_type: Optional[str]) -> List[PyUploadResult]")]
 pub fn upload_files(
     py: Python,
     file_paths: Vec<String>,
@@ -76,7 +76,7 @@ pub fn upload_files(
     token_refresher: Option<Py<PyAny>>,
     progress_updater: Option<Py<PyAny>>,
     _repo_type: Option<String>,
-) -> PyResult<Vec<PyPointerFile>> {
+) -> PyResult<Vec<PyUploadResult>> {
     let refresher = token_refresher.map(WrappedTokenRefresher::from_func).transpose()?.map(Arc::new);
     let updater = progress_updater
         .map(WrappedProgressUpdater::from_func)
@@ -84,7 +84,7 @@ pub fn upload_files(
         .map(Arc::new);
 
     async_run(py, move |threadpool| async move {
-        let out: Vec<PyPointerFile> = data_client::upload_async(
+        let out: Vec<PyUploadResult> = data_client::upload_async(
             threadpool,
             file_paths,
             endpoint,
@@ -95,7 +95,7 @@ pub fn upload_files(
         .await
         .map_err(convert_data_processing_error)?
         .into_iter()
-        .map(PyPointerFile::from)
+        .map(PyUploadResult::from)
         .collect();
         PyResult::Ok(out)
     })
@@ -111,7 +111,10 @@ pub fn download_files(
     token_refresher: Option<Py<PyAny>>,
     progress_updater: Option<Vec<Py<PyAny>>>,
 ) -> PyResult<Vec<String>> {
-    let pfs = files.into_iter().map(PointerFile::from).collect();
+    // TODO: brian - remove this clone
+    let pfs = files.into_iter().map(|x| {
+        (XetFileInfo::from(x.clone()), x.path)
+    }).collect();
 
     let refresher = token_refresher.map(WrappedTokenRefresher::from_func).transpose()?.map(Arc::new);
     let updaters = progress_updater.map(try_parse_progress_updaters).transpose()?;
@@ -152,19 +155,27 @@ pub struct PyPointerFile {
     filesize: u64,
 }
 
-impl From<PointerFile> for PyPointerFile {
-    fn from(pf: PointerFile) -> Self {
+#[pyclass]
+#[derive(Clone, Debug)]
+pub struct PyUploadResult {
+    #[pyo3(get)]
+    pub hash: String,
+    #[pyo3(get)]
+    pub file_size: u64,
+}
+
+impl From<XetFileInfo> for PyUploadResult {
+    fn from(xf: XetFileInfo) -> Self {
         Self {
-            path: pf.path().to_string(),
-            hash: pf.hash_string().to_string(),
-            filesize: pf.filesize(),
+            hash: xf.hash_string(),
+            file_size: xf.file_size() as u64,
         }
     }
 }
 
-impl From<PyPointerFile> for PointerFile {
+impl From<PyPointerFile> for XetFileInfo {
     fn from(pf: PyPointerFile) -> Self {
-        PointerFile::init_from_info(&pf.path, &pf.hash, pf.filesize)
+        XetFileInfo::new(pf.hash, pf.filesize as usize)
     }
 }
 

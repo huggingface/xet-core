@@ -11,7 +11,7 @@ use crate::deduplication_interface::UploadSessionDataManager;
 use crate::errors::Result;
 use crate::file_upload_session::FileUploadSession;
 use crate::sha256::ShaGenerator;
-use crate::PointerFile;
+use crate::XetFileInfo;
 
 /// A class that encapsulates the clean and data task around a single file.
 pub struct SingleFileCleaner {
@@ -85,7 +85,7 @@ impl SingleFileCleaner {
     }
 
     /// Return the representation of the file after clean as a pointer file instance.
-    pub async fn finish(mut self) -> Result<(PointerFile, DeduplicationMetrics)> {
+    pub async fn finish(mut self) -> Result<(XetFileInfo, DeduplicationMetrics)> {
         // Chunk the rest of the data.
         if let Some(chunk) = self.chunker.finish() {
             self.sha_generator.update(Arc::new([chunk.clone()])).await?;
@@ -101,8 +101,7 @@ impl SingleFileCleaner {
         let (file_hash, remaining_file_data, deduplication_metrics, new_xorbs) =
             self.dedup_manager.finalize(repo_salt, Some(metadata_ext));
 
-        let pointer_file =
-            PointerFile::init_from_info(&self.file_name, &file_hash.hex(), deduplication_metrics.total_bytes as u64);
+        let file_info = XetFileInfo::new(file_hash.hex(), deduplication_metrics.total_bytes);
 
         // Let's check some things that should be invarients
         #[cfg(debug_assertions)]
@@ -111,7 +110,10 @@ impl SingleFileCleaner {
             debug_assert_eq!(remaining_file_data.pending_file_info.len(), 1);
 
             // The size should be total bytes
-            debug_assert_eq!(remaining_file_data.pending_file_info[0].0.file_size(), pointer_file.filesize() as usize)
+            debug_assert_eq!(
+                remaining_file_data.pending_file_info[0].0.file_size(),
+                deduplication_metrics.total_bytes as usize
+            )
         }
 
         // Now, return all this information to the
@@ -137,6 +139,6 @@ impl SingleFileCleaner {
             end_processing_ts = Utc::now().to_rfc3339(),
         );
 
-        Ok((pointer_file, deduplication_metrics))
+        Ok((file_info, deduplication_metrics))
     }
 }

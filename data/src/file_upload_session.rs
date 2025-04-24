@@ -302,7 +302,7 @@ mod tests {
 
     use xet_threadpool::ThreadPool;
 
-    use crate::{FileDownloader, FileUploadSession, PointerFile};
+    use crate::{FileDownloader, FileUploadSession, XetFileInfo};
 
     /// Return a shared threadpool to be reused as needed.
     fn get_threadpool() -> Arc<ThreadPool> {
@@ -337,10 +337,12 @@ mod tests {
         // Read blocks from the source file and hand them to the cleaning handle
         cleaner.add_data(&read_data[..]).await.unwrap();
 
-        let (pointer_file_contents, _metrics) = cleaner.finish().await.unwrap();
+        let (xet_file_info, _metrics) = cleaner.finish().await.unwrap();
         upload_session.finalize().await.unwrap();
 
-        pf_out.write_all(pointer_file_contents.to_string().as_bytes()).unwrap();
+        pf_out
+            .write_all(serde_json::to_string(&xet_file_info).unwrap().as_bytes())
+            .unwrap();
     }
 
     /// Smudges (hydrates) a pointer file back into the original data.
@@ -354,18 +356,19 @@ mod tests {
         let mut input = String::new();
         reader.read_to_string(&mut input).unwrap();
 
-        let pointer_file = PointerFile::init_from_string(&input, "");
-        // If not a pointer file, do nothing
-        if !pointer_file.is_valid() {
-            return;
-        }
+        let xet_file = serde_json::from_str::<XetFileInfo>(&input).unwrap();
 
         let translator = FileDownloader::new(TranslatorConfig::local_config(cas_path).unwrap(), runtime)
             .await
             .unwrap();
 
         translator
-            .smudge_file_from_pointer(&pointer_file, &writer, None, None)
+            .smudge_file_from_hash(
+                &xet_file.merkle_hash().expect("File hash is not a valid file hash"),
+                &writer,
+                None,
+                None,
+            )
             .await
             .unwrap();
     }

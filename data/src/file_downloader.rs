@@ -9,7 +9,7 @@ use xet_threadpool::ThreadPool;
 use crate::configurations::TranslatorConfig;
 use crate::errors::*;
 use crate::remote_client_interface::create_remote_client;
-use crate::{prometheus_metrics, PointerFile};
+use crate::{prometheus_metrics, XetFileInfo};
 
 /// Manages the download of files based on a hash or pointer file.
 ///
@@ -32,12 +32,12 @@ impl FileDownloader {
 
     pub async fn smudge_file_from_pointer(
         &self,
-        pointer: &PointerFile,
+        file_info: &XetFileInfo,
         output: &OutputProvider,
         range: Option<FileRange>,
         progress_updater: Option<Arc<dyn ProgressUpdater>>,
     ) -> Result<u64> {
-        self.smudge_file_from_hash(&pointer.hash()?, output, range, progress_updater)
+        self.smudge_file_from_hash(&file_info.merkle_hash()?, output, range, progress_updater)
             .await
     }
 
