@@ -23,6 +23,7 @@ pub enum CompressionScheme {
     LZ4 = 1,
     ByteGrouping4LZ4 = 2, // 4 byte groups
 }
+pub const NUM_COMPRESSION_SCHEMES: usize = 3;
 
 impl Display for CompressionScheme {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
