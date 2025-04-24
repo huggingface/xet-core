@@ -123,7 +123,7 @@ impl UploadClient for RemoteClient {
         hash: &MerkleHash,
         data: Vec<u8>,
         chunk_and_boundaries: Vec<(MerkleHash, u32)>,
-        compression: Option<CompressionScheme>
+        compression: Option<CompressionScheme>,
     ) -> Result<usize> {
         let key = Key {
             prefix: prefix.to_string(),
@@ -753,17 +753,14 @@ mod tests {
         let (c, _, data, chunk_boundaries) = build_cas_object(3, ChunkSize::Random(512, 10248), CompressionScheme::LZ4);
 
         let threadpool = Arc::new(ThreadPool::new().unwrap());
-        let client = RemoteClient::new(
-            threadpool.clone(),
-            CAS_ENDPOINT,
-            &None,
-            &None,
-            "".into(),
-            false,
-        );
+        let client = RemoteClient::new(threadpool.clone(), CAS_ENDPOINT, &None, &None, "".into(), false);
         // Act
         let result = threadpool
-            .external_run_async_task(async move { client.put(prefix, &c.info.cashash, data, chunk_boundaries, Some(CompressionScheme::LZ4)).await })
+            .external_run_async_task(async move {
+                client
+                    .put(prefix, &c.info.cashash, data, chunk_boundaries, Some(CompressionScheme::LZ4))
+                    .await
+            })
             .unwrap();
 
         // Assert
@@ -1091,7 +1088,7 @@ mod tests {
             file_range: FileRange::new(SKIP_BYTES, FILE_SIZE - SKIP_BYTES),
             expected_data: [
                 &raw_data[SKIP_BYTES as usize..(5 * CHUNK_SIZE) as usize],
-                &raw_data[(6 * CHUNK_SIZE) as usize as usize..(NUM_CHUNKS * CHUNK_SIZE) as usize - SKIP_BYTES as usize],
+                &raw_data[(6 * CHUNK_SIZE) as usize..(NUM_CHUNKS * CHUNK_SIZE) as usize - SKIP_BYTES as usize],
             ]
             .concat(),
             expect_error: false,

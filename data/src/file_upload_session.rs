@@ -73,8 +73,8 @@ pub struct FileUploadSession {
     /// Internal worker
     xorb_upload_tasks: Mutex<JoinSet<Result<()>>>,
 
-    /// The current compression scheme in use. If initialized to None, 
-    /// This may change as upload progresses and statistics about the 
+    /// The current compression scheme in use. If initialized to None,
+    /// This may change as upload progresses and statistics about the
     /// preferred scheme is collected. Currently we use the 1st Xorb
     /// to determine the compression scheme. Then lock it from then on.
     compression_scheme: Mutex<Option<CompressionScheme>>,
@@ -136,7 +136,7 @@ impl FileUploadSession {
             current_session_data: Mutex::new(DataAggregator::default()),
             deduplication_metrics: Mutex::new(DeduplicationMetrics::default()),
             xorb_upload_tasks: Mutex::new(JoinSet::new()),
-            compression_scheme
+            compression_scheme,
         }))
     }
 
@@ -164,9 +164,11 @@ impl FileUploadSession {
             return Ok(());
         }
 
-        let mut compression_scheme = self.compression_scheme.lock().await.clone();
+        let mut compression_scheme = *self.compression_scheme.lock().await;
+        // if compression scheme is None, we use the first Xorb to determine
+        // the appropriate scheme and lock it for all remaining xorbs.
         if compression_scheme.is_none() {
-            let mut compression_scheme_vote = [0 as usize; NUM_COMPRESSION_SCHEMES];
+            let mut compression_scheme_vote = [0_usize; NUM_COMPRESSION_SCHEMES];
             for i in xorb.data.iter() {
                 let scheme = CompressionScheme::choose_from_data(i);
                 compression_scheme_vote[scheme as usize] += 1;
@@ -180,7 +182,6 @@ impl FileUploadSession {
             compression_scheme = Some(CompressionScheme::try_from(prefered_scheme as u8).unwrap());
             *self.compression_scheme.lock().await = compression_scheme;
         }
-
 
         let xorb_hash = xorb.hash();
         let xorb_data = xorb.to_vec();

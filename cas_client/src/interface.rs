@@ -36,7 +36,7 @@ pub trait UploadClient {
         hash: &MerkleHash,
         data: Vec<u8>,
         chunk_and_boundaries: Vec<(MerkleHash, u32)>,
-        compression: Option<CompressionScheme>
+        compression: Option<CompressionScheme>,
     ) -> Result<usize>;
 
     /// Check if a XORB already exists.
