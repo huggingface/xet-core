@@ -1,4 +1,4 @@
-mod blob_reader;
+pub mod blob_reader;
 mod configurations;
 mod errors;
 mod sha256;

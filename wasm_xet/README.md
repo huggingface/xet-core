@@ -18,7 +18,7 @@ cargo install sfz
 
 - Serve the web
 ```bash
-sfz --coi -r web
+sfz --coi -r examples
 ```
 
 - Observe in browser

@@ -10,7 +10,7 @@
         <input type="file" id="file_picker" name="file_picker">
     </p>
     <script type="module">
-        import init from "./wasm_xet.js";
+        import init, { test_async_blob_reader } from "./target/simple.js";
         await init();
         // let ret = await test_threads();
         // console.log("test_threads says: " + ret);
@@ -21,10 +21,7 @@
                 console.log("eventListener 'change' inside simple.html runs");
                 let file = this.files[0];
                 console.log("cleaning file: " + file);
-                // let ret = await clean_file(file, "abc", "def");
-                // let ret = await process_file();
-                // test_async_blob_reader(file).then((x) => { console.log("clean result: 0x" + x) });
-                clean_file(file, "", "").then((x) => { console.log("clean result: 0x" + x) });
+                test_async_blob_reader(file).then((x) => { console.log("test result: " + x) });
             },
             false
         );

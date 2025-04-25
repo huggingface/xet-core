@@ -13,9 +13,9 @@ set -ex
 #   shared memory, passive segments, etc.
 
 RUSTFLAGS='-C target-feature=+atomics,+bulk-memory,+mutable-globals --cfg getrandom_backend="wasm_js"' \
-    cargo +nightly build --target wasm32-unknown-unknown --release -Z build-std=std,panic_abort
+    cargo +nightly build --example simple --target wasm32-unknown-unknown --release -Z build-std=std,panic_abort
 
 RUSTFLAGS='--cfg getrandom_backend="wasm_js"' wasm-bindgen \
-    target/wasm32-unknown-unknown/release/wasm_xet.wasm \
-    --out-dir ./web/ \
+    target/wasm32-unknown-unknown/release/examples/simple.wasm \
+    --out-dir ./examples/target/ \
     --target web

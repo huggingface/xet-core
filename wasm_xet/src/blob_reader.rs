@@ -2,12 +2,11 @@ use std::cell::RefCell;
 use std::future::Future;
 use std::pin::Pin;
 use std::task::{Context, Poll};
+
 use wasm_bindgen_futures::JsFuture;
-use web_sys::{
-    js_sys::{Reflect, Uint8Array},
-    wasm_bindgen::{JsCast, JsValue},
-    Blob, ReadableStreamDefaultReader,
-};
+use web_sys::js_sys::{Reflect, Uint8Array};
+use web_sys::wasm_bindgen::{JsCast, JsValue};
+use web_sys::{Blob, ReadableStreamDefaultReader};
 
 #[derive(Default)]
 enum BlobReaderState {
@@ -47,6 +46,7 @@ impl futures::AsyncRead for BlobReader {
         let (poll_result, next_state) = match state {
             BlobReaderState::Done => (Poll::Ready(Ok(0)), BlobReaderState::Done),
             BlobReaderState::Init => {
+                cx.waker().wake_by_ref();
                 (Poll::Pending, BlobReaderState::AwaitBuf(Box::pin(JsFuture::from(self.reader.read()))))
             },
             BlobReaderState::LeftOverBuf(mut inner) => {
@@ -84,6 +84,7 @@ impl futures::AsyncRead for BlobReader {
                     .dyn_into()
                     .map_err(std_io_err_from_js_value)?;
                 let data = js_data.to_vec();
+                cx.waker().wake_by_ref();
                 (Poll::Pending, BlobReaderState::LeftOverBuf(data))
             },
         };
