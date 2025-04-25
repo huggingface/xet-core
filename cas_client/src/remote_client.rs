@@ -585,7 +585,7 @@ async fn make_download_by_fetch_info_tasks(
     terms: Vec<CASReconstructionTerm>,
     offset_into_first_range: u64,
     segment_size: u64,
-    remaining_total_len: u64,
+    total_len: u64,
     chunk_cache: Option<Arc<dyn ChunkCache>>,
     http_client: Arc<ClientWithMiddleware>,
     writer: &OutputProvider,
@@ -598,7 +598,7 @@ async fn make_download_by_fetch_info_tasks(
         let skip_bytes = if i == 0 { offset_into_first_range } else { 0 };
         let take = (term.unpacked_length as u64 - skip_bytes)
             .min(segment_size - writer_offset)
-            .min(remaining_total_len - writer_offset);
+            .min(total_len - writer_offset);
         let write_term = XorbRangeDownloadWriteTerm {
             // term details
             range: term.range,
@@ -1075,7 +1075,6 @@ mod tests {
         test_reconstruct_file(test_case, &server.base_url())
     }
 
-    // TODO add larger test
     #[test]
     fn test_reconstruct_file_two_terms() -> Result<()> {
         // Arrange server
