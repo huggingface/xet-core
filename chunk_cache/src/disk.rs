@@ -469,7 +469,7 @@ impl DiskCache {
         }
 
         let stored = get_range_from_cache_file(&header, &mut reader, range, cache_item.range.start)?;
-        if data != stored.data.as_ref() {
+        if data != stored.data {
             return Err(ChunkCacheError::InvalidArguments);
         }
         Ok(true)
@@ -616,8 +616,8 @@ fn get_range_from_cache_file<R: Read + Seek>(
     debug_assert_eq!(range.end - range.start, offsets.len() as u32 - 1);
 
     Ok(CacheRange {
-        offsets: offsets.into(),
-        data: data.into(),
+        offsets,
+        data,
         range: *range,
     })
 }
@@ -868,9 +868,9 @@ mod tests {
         let cache_result = cache.get(&key, &range).unwrap();
         assert!(cache_result.is_some());
         let cache_range = cache_result.unwrap();
-        assert_eq!(cache_range.data.as_ref(), data.as_slice());
+        assert_eq!(cache_range.data, data);
         assert_eq!(cache_range.range, range);
-        assert_eq!(cache_range.offsets.as_ref(), chunk_byte_indices.as_slice());
+        assert_eq!(cache_range.offsets, chunk_byte_indices);
 
         let miss_range = ChunkRange::new(100, 101);
         // miss
@@ -918,7 +918,7 @@ mod tests {
                 let start_byte = chunk_byte_indices[sub_range.start as usize] as usize;
                 let end_byte = chunk_byte_indices[sub_range.end as usize] as usize;
                 let data_portion = &data[start_byte..end_byte];
-                assert_eq!(data_portion, cache_range.data.as_ref());
+                assert_eq!(data_portion, cache_range.data);
             }
         }
     }

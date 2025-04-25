@@ -23,7 +23,7 @@ use crate::OutputProvider;
 
 #[derive(Clone, Debug)]
 pub(crate) enum DownloadRangeResult {
-    Data(Arc<[u8]>, Arc<[u32]>),
+    Data(Vec<u8>, Vec<u32>),
     // This is a workaround to propagate the underlying request error as
     // the underlying reqwest_middleware::Error doesn't impl Clone.
     // Otherwise, if two download tasks with the same key in the single flight
@@ -192,6 +192,10 @@ impl TermDownload {
             data.truncate(take);
         }
 
+        if data.len() != take {
+            return Err(CasClientError::InvalidRange);
+        }
+
         Ok(DownloadTaskResult {
             data,
             duration: instant.elapsed(),
@@ -231,9 +235,9 @@ impl TermDownloadAndWrite {
 #[derivative(Debug)]
 pub(crate) struct XorbRangeDownloadOutput {
     #[derivative(Debug = "ignore")]
-    data: Arc<[u8]>,
+    data: Vec<u8>,
     #[derivative(Debug = "ignore")]
-    chunk_byte_indices: Arc<[u32]>,
+    chunk_byte_indices: Vec<u32>,
     range: ChunkRange,
 
     duration: Duration,
@@ -450,7 +454,7 @@ pub(crate) async fn get_one_term(
         .work_dump_caller_info(&fetch_term.url, download_range(http_client, fetch_term.clone(), term.hash.into()))
         .await?;
 
-    let DownloadRangeResult::Data(data, chunk_byte_indices) = download_range_result else {
+    let DownloadRangeResult::Data(mut data, chunk_byte_indices) = download_range_result else {
         return Err(CasClientError::PresignedUrlExpirationError);
     };
 
@@ -463,8 +467,6 @@ pub(crate) async fn get_one_term(
         cache.put(&key, &fetch_term.range, &chunk_byte_indices, &data)?;
     }
 
-    let mut data = data.to_vec();
-
     // if the requested range is smaller than the fetched range, trim it down to the right data
     // the requested range cannot be larger than the fetched range.
     // "else" case data matches exact, save some work, return whole data.
@@ -476,11 +478,7 @@ pub(crate) async fn get_one_term(
         debug_assert!(start_byte_index < data.len());
         debug_assert!(end_byte_index <= data.len());
         debug_assert!(start_byte_index < end_byte_index);
-        // [0, len] -> [0, end_byte_index)
-        data.truncate(end_byte_index);
-        // [0, end_byte_index) -> [start_byte_index, end_byte_index)
-        let (_, sliced) = data.split_at(start_byte_index);
-        data = sliced.into();
+        data = data[start_byte_index..end_byte_index].to_vec();
     }
 
     if data.len() != term.unpacked_length as usize {
@@ -574,7 +572,7 @@ async fn download_range(
         response.bytes_stream().map_err(std::io::Error::other),
     )
     .await?;
-    Ok(DownloadRangeResult::Data(data.into(), chunk_byte_indices.into()))
+    Ok(DownloadRangeResult::Data(data, chunk_byte_indices))
 }
 
 #[cfg(test)]

@@ -3,7 +3,6 @@ mod disk;
 pub mod error;
 
 use std::path::PathBuf;
-use std::sync::Arc;
 
 pub use cache_manager::get_cache;
 use cas_types::{ChunkRange, Key};
@@ -26,8 +25,8 @@ utils::configurable_constants! {
 /// It is guaranteed that the first number in offsets is 0 and the last number is data.len()
 #[derive(Debug, Clone)]
 pub struct CacheRange {
-    pub offsets: Arc<[u32]>,
-    pub data: Arc<[u8]>,
+    pub offsets: Vec<u32>,
+    pub data: Vec<u8>,
     pub range: ChunkRange,
 }
 
