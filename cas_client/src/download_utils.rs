@@ -252,45 +252,7 @@ pub(crate) struct XorbRangeDownload {
     pub fetch_info: Arc<FetchInfo>, // utility to get URL to download this term
     #[derivative(Debug = "ignore")]
     pub chunk_cache: Option<Arc<dyn ChunkCache>>,
-    http_client: Arc<ClientWithMiddleware>,
-}
-
-#[derive(Derivative)]
-#[derivative(Debug, Clone)]
-pub(crate) struct XorbRangeDownloadGenerator {
-    pub fetch_info: Arc<FetchInfo>, // utility to get URL to download this term
-    #[derivative(Debug = "ignore")]
-    pub chunk_cache: Option<Arc<dyn ChunkCache>>,
-    http_client: Arc<ClientWithMiddleware>,
-}
-
-impl XorbRangeDownloadGenerator {
-    pub fn new(
-        fetch_info: Arc<FetchInfo>,
-        chunk_cache: Option<Arc<dyn ChunkCache>>,
-        http_client: Arc<ClientWithMiddleware>,
-    ) -> Self {
-        Self {
-            fetch_info,
-            chunk_cache,
-            http_client,
-        }
-    }
-
-    pub fn generate(&self, hash: MerkleHash, range: ChunkRange) -> XorbRangeDownload {
-        let Self {
-            fetch_info,
-            chunk_cache,
-            http_client,
-        } = self.clone();
-        XorbRangeDownload {
-            hash,
-            range,
-            fetch_info,
-            chunk_cache,
-            http_client,
-        }
-    }
+    pub http_client: Arc<ClientWithMiddleware>,
 }
 
 impl XorbRangeDownload {

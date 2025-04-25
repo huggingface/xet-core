@@ -452,6 +452,8 @@ impl RemoteClient {
         Ok(total_written)
     }
 
+    // a certain degree of parallelism, and so does writing out to storage. Ideal when the external
+    // storage is fast at seeks, e.g. RAM or SSDs.
     async fn reconstruct_file_to_writer_segmented_parallel_write_by_fetch_info(
         &self,
         file_hash: &MerkleHash,
@@ -500,7 +502,6 @@ impl RemoteClient {
             // first try to join some tasks
             while let Some(result) = running_downloads.try_join_next() {
                 process_result(result)?;
-                // process_result(result, &mut total_written, &download_scheduler)?;
             }
 
             match item {
@@ -533,17 +534,14 @@ impl RemoteClient {
                     };
 
                     let segment = Arc::new(segment);
-                    let tasks = make_tasks(
+                    let tasks = make_download_by_fetch_info_tasks(
                         &segment,
                         terms,
                         offset_into_first_range,
                         segment_size,
                         total_len,
-                        XorbRangeDownloadGenerator::new(
-                            segment.clone(),
-                            self.chunk_cache.clone(),
-                            self.http_client.clone(),
-                        ),
+                        self.chunk_cache.clone(),
+                        self.http_client.clone(),
                         writer,
                     )
                     .await?;
@@ -553,7 +551,6 @@ impl RemoteClient {
                     for task_def in tasks {
                         debug!("enqueueing {task_def:?}");
                         task_queue.push_back(DownloadQueueItem::DownloadTask(task_def));
-                        // task_tx.send(DownloadQueueItem::DownloadTask(task_def))?;
                     }
 
                     // enqueue the remainder of file info fetch task
@@ -572,13 +569,25 @@ impl RemoteClient {
     }
 }
 
-async fn make_tasks(
+/// Helper function to create the tasks for the download and write by fetch_info.
+///
+/// Creates a mapping between fetch_info instance, keyed on hash and range, mapping to any terms
+/// (chunk sequences that map to portions of a file) that can be fulfilled by the same fetch_info instance.
+///
+/// For each fetch_info object in the mapping creates a new task definition that will download the
+/// data for that fetch_info and write it to the output provider for all terms that can be fulfilled
+///
+/// The result tasks in this function are not ordered in any way, particularly not with respect to
+/// the order of terms in the file.
+#[allow(clippy::too_many_arguments)]
+async fn make_download_by_fetch_info_tasks(
     fetch_info: &Arc<FetchInfo>,
     terms: Vec<CASReconstructionTerm>,
     offset_into_first_range: u64,
     segment_size: u64,
     remaining_total_len: u64,
-    xorb_range_download_generator: XorbRangeDownloadGenerator,
+    chunk_cache: Option<Arc<dyn ChunkCache>>,
+    http_client: Arc<ClientWithMiddleware>,
     writer: &OutputProvider,
 ) -> Result<Vec<XorbRangeDownloadAndWrite>> {
     let mut fetch_info_term_map: HashMap<(MerkleHash, ChunkRange), XorbRangeDownloadAndWrite> = HashMap::new();
@@ -601,19 +610,21 @@ async fn make_tasks(
             writer_offset,
         };
 
-        if let Some(job) = fetch_info_term_map.get_mut(&(term.hash.into(), individual_fetch_info.range)) {
-            job.terms.push(write_term);
-        } else {
-            fetch_info_term_map.insert(
-                (term.hash.into(), individual_fetch_info.range),
-                XorbRangeDownloadAndWrite {
-                    xorb_range_download: xorb_range_download_generator
-                        .generate(term.hash.into(), individual_fetch_info.range),
-                    terms: vec![write_term],
-                    output: writer.clone(),
+        let task = fetch_info_term_map
+            .entry((term.hash.into(), individual_fetch_info.range))
+            .or_insert_with(|| XorbRangeDownloadAndWrite {
+                xorb_range_download: XorbRangeDownload {
+                    hash: term.hash.into(),
+                    range: individual_fetch_info.range,
+                    fetch_info: fetch_info.clone(),
+                    chunk_cache: chunk_cache.clone(),
+                    http_client: http_client.clone(),
                 },
-            );
-        }
+                terms: vec![],
+                output: writer.clone(),
+            });
+        task.terms.push(write_term);
+
         writer_offset += take;
     }
 
@@ -770,16 +781,6 @@ mod tests {
 
     use super::*;
     use crate::interface::buffer::BufferProvider;
-
-    // test reconstruction contains 20 chunks, where each chunk size is 10 bytes
-    const TEST_CHUNK_RANGE: ChunkRange = ChunkRange {
-        start: 0,
-        end: TEST_NUM_CHUNKS as u32,
-        _marker: std::marker::PhantomData,
-    };
-    const TEST_CHUNK_SIZE: usize = 10;
-    const TEST_NUM_CHUNKS: usize = 20;
-    const TEST_UNPACKED_LEN: u32 = (TEST_CHUNK_SIZE * TEST_NUM_CHUNKS) as u32;
 
     #[ignore = "requires a running CAS server"]
     #[traced_test]
@@ -1074,6 +1075,7 @@ mod tests {
         test_reconstruct_file(test_case, &server.base_url())
     }
 
+    // TODO add larger test
     #[test]
     fn test_reconstruct_file_two_terms() -> Result<()> {
         // Arrange server
