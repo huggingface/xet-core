@@ -72,13 +72,13 @@ impl FetchInfo {
         )
     }
 
-    pub async fn find(&self, key: (HexMerkleHash, ChunkRange)) -> Result<(CASReconstructionFetchInfo, u32)> {
+    pub async fn find(&self, key: (MerkleHash, ChunkRange)) -> Result<(CASReconstructionFetchInfo, u32)> {
         let v = *self.version.lock().await;
 
         let (hash, range) = key;
         let map = self.inner.read()?;
         let hash_fetch_info = map
-            .get(&hash)
+            .get(&hash.into())
             .ok_or(CasClientError::InvalidArguments)
             .log_error("invalid response from CAS server: failed to get term hash in fetch info")?;
         let fetch_term = hash_fetch_info
@@ -142,27 +142,30 @@ pub(crate) struct TermDownload {
     pub take: u64,       // number of bytes to take after skipping bytes,
     // effectively taking [skip_bytes..skip_bytes+take]
     // out of the downloaded range
+    #[derivative(Debug = "ignore")]
     pub fetch_info: Arc<FetchInfo>, // utility to get URL to download this term
     #[derivative(Debug = "ignore")]
     pub chunk_cache: Option<Arc<dyn ChunkCache>>,
+    #[derivative(Debug = "ignore")]
     pub client: Arc<ClientWithMiddleware>, // only used for downloading range
+    #[derivative(Debug = "ignore")]
     pub range_download_single_flight: RangeDownloadSingleFlight,
 }
 
 #[derive(Debug)]
-pub(crate) struct TermDownloadResult<T> {
-    pub data: T,            // download result
+pub(crate) struct DownloadTaskResult<T> {
+    pub data: T,            // actual result value
     pub duration: Duration, // duration to download
     pub n_retries_on_403: u32,
 }
 
 impl TermDownload {
     // Download and return results, retry on 403
-    pub async fn run(self) -> Result<TermDownloadResult<Vec<u8>>> {
+    pub async fn run(self) -> Result<DownloadTaskResult<Vec<u8>>> {
         let instant = Instant::now();
         let mut n_retries_on_403 = 0;
 
-        let key = (self.term.hash, self.term.range);
+        let key = (self.term.hash.into(), self.term.range);
         let mut data = loop {
             let (fetch_info, v) = self.fetch_info.find(key).await?;
 
@@ -192,7 +195,11 @@ impl TermDownload {
             data.truncate(take);
         }
 
-        Ok(TermDownloadResult {
+        if data.len() != take {
+            return Err(CasClientError::InvalidRange);
+        }
+
+        Ok(DownloadTaskResult {
             data,
             duration: instant.elapsed(),
             n_retries_on_403,
@@ -211,7 +218,7 @@ pub(crate) struct TermDownloadAndWrite {
 
 impl TermDownloadAndWrite {
     /// Download the term and write it to the underlying storage, retry on 403
-    pub async fn run(self) -> Result<TermDownloadResult<usize>> {
+    pub async fn run(self) -> Result<DownloadTaskResult<usize>> {
         let download_result = self.download.run().await?;
 
         // write out the term
@@ -219,7 +226,7 @@ impl TermDownloadAndWrite {
         writer.write_all(&download_result.data)?;
         writer.flush()?;
 
-        Ok(TermDownloadResult {
+        Ok(DownloadTaskResult {
             data: download_result.data.len(),
             duration: download_result.duration,
             n_retries_on_403: download_result.n_retries_on_403,
@@ -227,9 +234,141 @@ impl TermDownloadAndWrite {
     }
 }
 
+#[derive(Derivative)]
+#[derivative(Debug)]
+pub(crate) struct XorbRangeDownloadOutput {
+    #[derivative(Debug = "ignore")]
+    data: Vec<u8>,
+    #[derivative(Debug = "ignore")]
+    chunk_byte_indices: Vec<u32>,
+    range: ChunkRange,
+
+    duration: Duration,
+    n_retries_on_403: u32,
+}
+
+/// Helper object containing the structs needed when downloading a term in parallel
+/// during reconstruction.
+#[derive(Derivative)]
+#[derivative(Debug)]
+pub(crate) struct XorbRangeDownload {
+    // together these 2 form the key to a fetch info item
+    pub hash: MerkleHash,
+    pub range: ChunkRange,
+
+    pub fetch_info: Arc<FetchInfo>, // utility to get URL to download this term
+    #[derivative(Debug = "ignore")]
+    pub chunk_cache: Option<Arc<dyn ChunkCache>>,
+    pub http_client: Arc<ClientWithMiddleware>,
+}
+
+impl XorbRangeDownload {
+    // Download and return results, retry on 403
+    pub async fn run(self) -> Result<XorbRangeDownloadOutput> {
+        let instant = Instant::now();
+        let mut n_retries_on_403 = 0;
+
+        let key = (self.hash, self.range);
+
+        let (data, chunk_byte_indices) = loop {
+            let (fetch_term, v) = self.fetch_info.find(key).await?;
+
+            let DownloadRangeResult::Data(data, chunk_byte_indices) = check_cache_download_range(
+                self.http_client.clone(),
+                self.chunk_cache.clone(),
+                fetch_term,
+                self.hash,
+                self.range,
+            )
+            .await?
+            else {
+                self.fetch_info.refresh(v).await?;
+                n_retries_on_403 += 1;
+                continue;
+            };
+
+            break (data, chunk_byte_indices);
+        };
+
+        Ok(XorbRangeDownloadOutput {
+            data,
+            chunk_byte_indices,
+            range: self.range,
+            duration: instant.elapsed(),
+            n_retries_on_403,
+        })
+    }
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct XorbRangeDownloadWriteTerm {
+    // term details
+    pub range: ChunkRange,    // sub-range of chunks to write
+    pub unpacked_length: u32, // total unpacked length of sub-range
+
+    // write details
+    pub skip_bytes: u64, // number of bytes to skip at the start of the specified range
+    pub take: u64,       // number of bytes to take after skipping `skip_bytes` bytes
+    // effectively taking [skip_bytes..skip_bytes+take]
+    pub writer_offset: u64, // offset into the file at which to write this term
+}
+
+/// Helper object containing the structs needed when downloading a term in parallel
+/// during reconstruction.
+#[derive(Debug)]
+pub(crate) struct XorbRangeDownloadAndWrite {
+    pub xorb_range_download: XorbRangeDownload,
+
+    // write info for each term
+    pub terms: Vec<XorbRangeDownloadWriteTerm>,
+
+    pub output: OutputProvider,
+}
+
+impl XorbRangeDownloadAndWrite {
+    /// Download the range and write all respective terms to the underlying storage, retry on 403
+    pub async fn run(self) -> Result<DownloadTaskResult<usize>> {
+        let download_result = self.xorb_range_download.run().await?;
+
+        let mut total_written = 0;
+        for term in self.terms {
+            let sub_range_data = get_sub_range(&download_result, &term);
+            let start = term.skip_bytes as usize;
+            let end = (term.take + term.skip_bytes) as usize;
+            if start >= sub_range_data.len() || end > sub_range_data.len() {
+                return Err(CasClientError::InvalidRange);
+            }
+            let data = &sub_range_data[start..end];
+
+            // write out the term
+            let mut writer = self.output.get_writer_at(term.writer_offset)?;
+            writer.write_all(data)?;
+            writer.flush()?;
+            total_written += data.len();
+        }
+
+        Ok(DownloadTaskResult {
+            data: total_written,
+            duration: download_result.duration,
+            n_retries_on_403: download_result.n_retries_on_403,
+        })
+    }
+}
+
+fn get_sub_range<'data>(
+    download_output: &'data XorbRangeDownloadOutput,
+    write_term: &XorbRangeDownloadWriteTerm,
+) -> &'data [u8] {
+    let term_range = write_term.range;
+    let total_range = download_output.range;
+    let start = download_output.chunk_byte_indices[term_range.start as usize - total_range.start as usize];
+    let end = download_output.chunk_byte_indices[term_range.end as usize - total_range.start as usize];
+    &download_output.data[start as usize..end as usize]
+}
+
 pub(crate) enum DownloadQueueItem<T> {
     End,
-    Term(T),
+    DownloadTask(T),
     Metadata(FetchInfo),
 }
 
@@ -258,7 +397,7 @@ impl DownloadScheduler {
         Ok(*self.n_range_in_segment.lock()? as u64 * *MAX_XORB_BYTES as u64)
     }
 
-    pub fn tune_on<T>(&self, metrics: TermDownloadResult<T>) -> Result<()> {
+    pub fn tune_on<T>(&self, metrics: DownloadTaskResult<T>) -> Result<()> {
         if metrics.n_retries_on_403 > 0 {
             info!("detected retries on 403, shrinking segment size by one range");
             let mut num_range_in_segment = self.n_range_in_segment.lock()?;
@@ -315,7 +454,7 @@ pub(crate) async fn get_one_term(
     // fetch the range from blob store and deserialize the chunks
     // then put into the cache if used
     let download_range_result = range_download_single_flight
-        .work_dump_caller_info(&fetch_term.url, download_range(http_client, fetch_term.clone(), term.hash))
+        .work_dump_caller_info(&fetch_term.url, download_range(http_client, fetch_term.clone(), term.hash.into()))
         .await?;
 
     let DownloadRangeResult::Data(mut data, chunk_byte_indices) = download_range_result else {
@@ -344,10 +483,7 @@ pub(crate) async fn get_one_term(
         debug_assert!(start_byte_index < data.len());
         debug_assert!(end_byte_index <= data.len());
         debug_assert!(start_byte_index < end_byte_index);
-        // [0, len] -> [0, end_byte_index)
-        data.truncate(end_byte_index);
-        // [0, end_byte_index) -> [start_byte_index, end_byte_index)
-        data = data.split_off(start_byte_index);
+        data = data[start_byte_index..end_byte_index].to_vec();
     }
 
     if data.len() != term.unpacked_length as usize {
@@ -361,13 +497,52 @@ pub(crate) async fn get_one_term(
     Ok(data)
 }
 
+async fn check_cache_download_range(
+    http_client: Arc<ClientWithMiddleware>,
+    chunk_cache: Option<Arc<dyn ChunkCache>>,
+    fetch_term: CASReconstructionFetchInfo,
+    hash: MerkleHash,
+    range: ChunkRange,
+) -> Result<DownloadRangeResult> {
+    if let Some(cache) = chunk_cache.as_ref() {
+        if let Some(cache_result) = cache.get(
+            &Key {
+                prefix: PREFIX_DEFAULT.to_string(),
+                hash,
+            },
+            &range,
+        )? {
+            return Ok(DownloadRangeResult::Data(cache_result.data, cache_result.offsets));
+        }
+    }
+
+    let DownloadRangeResult::Data(data, chunk_byte_indices) = download_range(http_client, fetch_term, hash).await?
+    else {
+        return Ok(DownloadRangeResult::Forbidden);
+    };
+
+    if let Some(cache) = chunk_cache.as_ref() {
+        cache.put(
+            &Key {
+                prefix: PREFIX_DEFAULT.to_string(),
+                hash,
+            },
+            &range,
+            &chunk_byte_indices,
+            &data,
+        )?;
+    }
+
+    Ok(DownloadRangeResult::Data(data, chunk_byte_indices))
+}
+
 /// use the provided http_client to make requests to S3/blob store using the url and url_range
 /// parts of a CASReconstructionFetchInfo. The url_range part is used directly in a http Range header
 /// value (see fn `range_header`).
 async fn download_range(
     http_client: Arc<ClientWithMiddleware>,
     fetch_term: CASReconstructionFetchInfo,
-    hash: HexMerkleHash,
+    hash: MerkleHash,
 ) -> Result<DownloadRangeResult> {
     trace!("{hash},{},{}", fetch_term.range.start, fetch_term.range.end);
 
@@ -379,12 +554,14 @@ async fn download_range(
         .await
         .log_error("error getting from s3")?
         .error_for_status()
-        .log_error("get from s3 error code")
+        .log_error(format!("get from s3 error code {:?}", fetch_term.url_range))
     {
         Ok(response) => response,
-        Err(e) => match e.status() {
-            Some(StatusCode::FORBIDDEN) => return Ok(DownloadRangeResult::Forbidden),
-            _ => return Err(e.into()),
+        Err(e) => {
+            return match e.status() {
+                Some(StatusCode::FORBIDDEN) => Ok(DownloadRangeResult::Forbidden),
+                _ => Err(e.into()),
+            }
         },
     };
 
@@ -420,7 +597,7 @@ mod tests {
         let file_range = FileRange::new(100, 200);
 
         // fetch info of xorb with hash "0...1" and two coalesced ranges
-        let xorb1: HexMerkleHash = MerkleHash::from_hex(&format!("{:0>64}", "1"))?.into();
+        let xorb1: MerkleHash = MerkleHash::from_hex(&format!("{:0>64}", "1"))?;
         let x1range = vec![
             CASReconstructionFetchInfo {
                 range: ChunkRange::new(5, 20),
@@ -435,7 +612,7 @@ mod tests {
         ];
 
         // fetch info of xorb with hash "0...2" and two coalesced ranges
-        let xorb2: HexMerkleHash = MerkleHash::from_hex(&format!("{:0>64}", "2"))?.into();
+        let xorb2: MerkleHash = MerkleHash::from_hex(&format!("{:0>64}", "2"))?;
         let x2range = vec![
             CASReconstructionFetchInfo {
                 range: ChunkRange::new(2, 20),
@@ -458,7 +635,7 @@ mod tests {
             let response = QueryReconstructionResponse {
                 offset_into_first_range: 0,
                 terms: Default::default(),
-                fetch_info: HashMap::from([(xorb1, x1range.clone()), (xorb2, x2range.clone())]),
+                fetch_info: HashMap::from([(xorb1.into(), x1range.clone()), (xorb2.into(), x2range.clone())]),
             };
             then.status(200).json_body_obj(&response);
         });
@@ -547,7 +724,7 @@ mod tests {
         let server = MockServer::start();
 
         // fetch info fo xorb with hash "0...1" and two coalesced ranges
-        let xorb1: HexMerkleHash = MerkleHash::from_hex(&format!("{:0>64}", "1"))?.into();
+        let xorb1: MerkleHash = MerkleHash::from_hex(&format!("{:0>64}", "1"))?;
         let x1range = vec![CASReconstructionFetchInfo {
             range: ChunkRange::new(5, 20),
             url: server.url(format!("/get_xorb/{xorb1}/")),
@@ -562,11 +739,11 @@ mod tests {
             let response = QueryReconstructionResponse {
                 offset_into_first_range: 0,
                 terms: vec![CASReconstructionTerm {
-                    hash: xorb1,
+                    hash: xorb1.into(),
                     unpacked_length: 100,
                     range: ChunkRange::new(6, 7),
                 }],
-                fetch_info: HashMap::from([(xorb1, x1range.clone())]),
+                fetch_info: HashMap::from([(xorb1.into(), x1range.clone())]),
             };
             then.status(200).json_body_obj(&response).delay(Duration::from_millis(100));
         });
