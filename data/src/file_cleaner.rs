@@ -15,20 +15,20 @@ use crate::file_upload_session::FileUploadSession;
 use crate::sha256::ShaGenerator;
 use crate::PointerFile;
 
-/// A little set of helper types to allow us to background the
-/// dedupe_manager::process_chunks operation.
-/// The design is that there is only 1 instance of the FileDeduper in a Cell
-/// so there can only be a single reference to it.
-///
-/// SingleFileCleaner::dedup_manager initializes as Foreground(Some(deduper))
-///
-/// - get_deduper() will return the Cell and empty out dedup_manager
-/// (whatever state it current is in) turning it into Foreground(None).
-/// If dedup_manager is already in Background, it will wait for the JoinHandle to finish
-/// and return the Cell (once again resetting dedup_manager to Foreground(None))
-///
-/// - deduper_process_chunks() will start processing of new chunks in background
-/// and switch dedup_manager into Background(JoinHandle)
+// A little set of helper types to allow us to background the
+// dedupe_manager::process_chunks operation.
+// The design is that there is only 1 instance of the FileDeduper in a Cell
+// so there can only be a single reference to it.
+//
+// SingleFileCleaner::dedup_manager initializes as Foreground(Some(deduper))
+//
+// - get_deduper() will return the Cell and empty out dedup_manager
+// (whatever state it current is in) turning it into Foreground(None).
+// If dedup_manager is already in Background, it will wait for the JoinHandle to finish
+// and return the Cell (once again resetting dedup_manager to Foreground(None))
+//
+// - deduper_process_chunks() will start processing of new chunks in background
+// and switch dedup_manager into Background(JoinHandle)
 type DedupeBoxType = Cell<FileDeduper<UploadSessionDataManager>>;
 type ProcessChunksResult = Result<DeduplicationMetrics>;
 enum DedupManagerBackgrounder {
