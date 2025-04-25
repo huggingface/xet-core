@@ -112,7 +112,6 @@ pub fn download_files(
     progress_updater: Option<Vec<Py<PyAny>>>,
 ) -> PyResult<Vec<String>> {
     let file_infos = files.into_iter().map(<(XetFileInfo, DestinationPath)>::from).collect();
-
     let refresher = token_refresher.map(WrappedTokenRefresher::from_func).transpose()?.map(Arc::new);
     let updaters = progress_updater.map(try_parse_progress_updaters).transpose()?;
 
@@ -141,11 +140,8 @@ fn try_parse_progress_updaters(funcs: Vec<Py<PyAny>>) -> PyResult<Vec<Arc<dyn Pr
     Ok(updaters)
 }
 
-// TODO: on the next major version update, remove this type alias
-// This is used to support backward compatibility for PyPointerFile with old versions of huggingface_hub
-type PyPointerFile = PyXetDownloadInfo;
-
-#[pyclass]
+// TODO: we won't need to subclass this in the next major version update.
+#[pyclass(subclass)]
 #[derive(Clone, Debug)]
 pub struct PyXetDownloadInfo {
     #[pyo3(get, set)]
@@ -154,32 +150,6 @@ pub struct PyXetDownloadInfo {
     hash: String,
     #[pyo3(get)]
     file_size: u64,
-}
-
-#[pyclass]
-#[derive(Clone, Debug)]
-pub struct PyXetFileInfo {
-    #[pyo3(get)]
-    pub hash: String,
-    #[pyo3(get)]
-    pub file_size: u64,
-}
-
-type DestinationPath = String;
-
-impl From<XetFileInfo> for PyXetFileInfo {
-    fn from(xf: XetFileInfo) -> Self {
-        Self {
-            hash: xf.hash().to_owned(),
-            file_size: xf.file_size() as u64,
-        }
-    }
-}
-
-impl From<PyXetDownloadInfo> for (XetFileInfo, DestinationPath) {
-    fn from(pf: PyXetDownloadInfo) -> Self {
-        (XetFileInfo::new(pf.hash, pf.file_size as usize), pf.destination_path)
-    }
 }
 
 #[pymethods]
@@ -200,23 +170,55 @@ impl PyXetDownloadInfo {
     fn __repr__(&self) -> String {
         format!("PyXetDownloadInfo({}, {}, {})", self.destination_path, self.hash, self.file_size)
     }
+}
 
-    // TODO: remove these setters and getters in the next major version update
-    #[setter]
-    fn set_path(&mut self, path: String) {
-        self.destination_path = path;
+// TODO: on the next major version update, delete this class and the trait implementation.
+// This is used to support backward compatibility for PyPointerFile with old versions of huggingface_hub
+#[pyclass(extends=PyXetDownloadInfo)]
+#[derive(Clone, Debug)]
+pub struct PyPointerFile {}
+
+#[pymethods]
+impl PyPointerFile {
+    #[new]
+    pub fn new(path: String, hash: String, filesize: u64) -> (Self, PyXetDownloadInfo) {
+        (PyPointerFile{}, PyXetDownloadInfo::new(path, hash, filesize))
     }
 
-    #[getter]
-    fn get_path(&self) -> String {
-        self.destination_path.clone()
+    fn __str__(&self) -> String {
+        format!("{self:?}")
     }
 
-    #[getter]
-    fn get_filesize(&self) -> u64 {
-        self.file_size
+    fn __repr__(self_: PyRef<'_, Self>) -> String {
+        let super_ = self_.as_super();
+        format!("PyPointerFile({}, {}, {})", super_.destination_path, super_.hash, super_.file_size)
     }
-    // end TODO
+
+
+    fn get_path(self_: PyRef<'_, Self>) -> String {
+        self_.as_super().destination_path.clone()
+    }
+
+    fn get_hash(self_: PyRef<'_, Self>) -> String {
+        self_.as_super().hash.clone()
+    }
+
+    fn set_path(mut self_: PyRefMut<'_, Self>, path: String) {
+        self_.as_super().destination_path = path;
+    }
+
+    fn set_filesize(mut self_: PyRefMut<'_, Self>, filesize: u64) {
+        self_.as_super().file_size = filesize;
+    }
+}
+
+#[pyclass]
+#[derive(Clone, Debug)]
+pub struct PyXetFileInfo {
+    #[pyo3(get)]
+    pub hash: String,
+    #[pyo3(get)]
+    pub file_size: u64,
 }
 
 #[pymethods]
@@ -234,6 +236,25 @@ impl PyXetFileInfo {
         format!("PyXetFileInfo({}, {})", self.hash, self.file_size)
     }
 }
+
+type DestinationPath = String;
+
+impl From<XetFileInfo> for PyXetFileInfo {
+    fn from(xf: XetFileInfo) -> Self {
+        Self {
+            hash: xf.hash().to_owned(),
+            file_size: xf.file_size() as u64,
+        }
+    }
+}
+
+impl From<PyXetDownloadInfo> for (XetFileInfo, DestinationPath) {
+    fn from(pf: PyXetDownloadInfo) -> Self {
+        (XetFileInfo::new(pf.hash, pf.file_size as usize), pf.destination_path)
+    }
+}
+
+
 
 #[pymodule]
 pub fn hf_xet(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
