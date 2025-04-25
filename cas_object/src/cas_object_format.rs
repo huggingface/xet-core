@@ -1856,7 +1856,7 @@ mod tests {
             + size_of::<CasObjectIdent>()
             + size_of::<u8>();
 
-        let chunks = xorb_bytes[start_pos..].chunks(10).map(Ok).collect::<Vec<_>>();
+        let chunks = xorb_bytes[start_pos..].chunks(10).map(|c| Ok(c)).collect::<Vec<_>>();
         let mut xorb_footer_async_reader = futures::stream::iter(chunks).into_async_read();
         let cas_object_result =
             CasObject::deserialize_async(&mut xorb_footer_async_reader, CAS_OBJECT_FORMAT_VERSION).await;

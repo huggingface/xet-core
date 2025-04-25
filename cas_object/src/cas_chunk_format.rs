@@ -213,6 +213,7 @@ mod tests {
     use std::io::Cursor;
 
     use rand::Rng;
+    use CompressionScheme;
 
     use super::*;
 

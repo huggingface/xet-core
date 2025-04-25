@@ -59,6 +59,7 @@ utils::configurable_bool_constants! {
 
 pub struct RemoteClient {
     endpoint: String,
+    compression: Option<CompressionScheme>,
     dry_run: bool,
     http_client: Arc<ClientWithMiddleware>,
     authenticated_http_client: Arc<ClientWithMiddleware>,
@@ -73,6 +74,7 @@ impl RemoteClient {
     pub fn new(
         threadpool: Arc<ThreadPool>,
         endpoint: &str,
+        compression: Option<CompressionScheme>,
         auth: &Option<AuthConfig>,
         cache_config: &Option<CacheConfig>,
         shard_cache_directory: PathBuf,
@@ -99,6 +101,7 @@ impl RemoteClient {
 
         Self {
             endpoint: endpoint.to_string(),
+            compression,
             dry_run,
             authenticated_http_client: Arc::new(
                 http_client::build_auth_http_client(auth, RetryConfig::default()).unwrap(),
@@ -123,14 +126,13 @@ impl UploadClient for RemoteClient {
         hash: &MerkleHash,
         data: Vec<u8>,
         chunk_and_boundaries: Vec<(MerkleHash, u32)>,
-        compression: Option<CompressionScheme>,
     ) -> Result<usize> {
         let key = Key {
             prefix: prefix.to_string(),
             hash: *hash,
         };
 
-        let (was_uploaded, nbytes_trans) = self.upload(&key, data, chunk_and_boundaries, compression).await?;
+        let (was_uploaded, nbytes_trans) = self.upload(&key, data, chunk_and_boundaries).await?;
 
         if !was_uploaded {
             debug!("{key:?} not inserted into CAS.");
@@ -279,14 +281,13 @@ impl RemoteClient {
         key: &Key,
         contents: Vec<u8>,
         chunk_and_boundaries: Vec<(MerkleHash, u32)>,
-        compression: Option<CompressionScheme>,
     ) -> Result<(bool, usize)> {
         let url = Url::parse(&format!("{}/xorb/{key}", self.endpoint))?;
 
         let mut writer = Cursor::new(Vec::new());
 
         let (_, nbytes_trans) =
-            CasObject::serialize(&mut writer, &key.hash, &contents, &chunk_and_boundaries, compression)?;
+            CasObject::serialize(&mut writer, &key.hash, &contents, &chunk_and_boundaries, self.compression)?;
         // free memory before the "slow" network transfer below
         drop(contents);
 
@@ -753,14 +754,18 @@ mod tests {
         let (c, _, data, chunk_boundaries) = build_cas_object(3, ChunkSize::Random(512, 10248), CompressionScheme::LZ4);
 
         let threadpool = Arc::new(ThreadPool::new().unwrap());
-        let client = RemoteClient::new(threadpool.clone(), CAS_ENDPOINT, &None, &None, "".into(), false);
+        let client = RemoteClient::new(
+            threadpool.clone(),
+            CAS_ENDPOINT,
+            Some(CompressionScheme::LZ4),
+            &None,
+            &None,
+            "".into(),
+            false,
+        );
         // Act
         let result = threadpool
-            .external_run_async_task(async move {
-                client
-                    .put(prefix, &c.info.cashash, data, chunk_boundaries, Some(CompressionScheme::LZ4))
-                    .await
-            })
+            .external_run_async_task(async move { client.put(prefix, &c.info.cashash, data, chunk_boundaries).await })
             .unwrap();
 
         // Assert
@@ -1088,7 +1093,7 @@ mod tests {
             file_range: FileRange::new(SKIP_BYTES, FILE_SIZE - SKIP_BYTES),
             expected_data: [
                 &raw_data[SKIP_BYTES as usize..(5 * CHUNK_SIZE) as usize],
-                &raw_data[(6 * CHUNK_SIZE) as usize..(NUM_CHUNKS * CHUNK_SIZE) as usize - SKIP_BYTES as usize],
+                &raw_data[(6 * CHUNK_SIZE) as usize as usize..(NUM_CHUNKS * CHUNK_SIZE) as usize - SKIP_BYTES as usize],
             ]
             .concat(),
             expect_error: false,
@@ -1127,7 +1132,7 @@ mod tests {
 
         // test reconstruct and sequential write
         let test = test_case.clone();
-        let client = RemoteClient::new(threadpool.clone(), endpoint, &None, &None, "".into(), false);
+        let client = RemoteClient::new(threadpool.clone(), endpoint, None, &None, &None, "".into(), false);
         let provider = BufferProvider::default();
         let buf = provider.buf.clone();
         let writer = OutputProvider::Buffer(provider);
@@ -1145,7 +1150,7 @@ mod tests {
 
         // test reconstruct and parallel write
         let test = test_case;
-        let client = RemoteClient::new(threadpool.clone(), endpoint, &None, &None, "".into(), false);
+        let client = RemoteClient::new(threadpool.clone(), endpoint, None, &None, &None, "".into(), false);
         let provider = BufferProvider::default();
         let buf = provider.buf.clone();
         let writer = OutputProvider::Buffer(provider);

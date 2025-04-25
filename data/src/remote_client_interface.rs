@@ -18,6 +18,7 @@ pub(crate) fn create_remote_client(
         Endpoint::Server(ref endpoint) => Ok(Arc::new(RemoteClient::new(
             threadpool,
             endpoint,
+            cas_storage_config.compression,
             &cas_storage_config.auth,
             &Some(cas_storage_config.cache_config.clone()),
             config.shard_config.cache_directory.clone(),

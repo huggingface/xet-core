@@ -2,7 +2,6 @@ use std::mem::{swap, take};
 use std::sync::Arc;
 
 use cas_client::Client;
-use cas_object::{CompressionScheme, NUM_COMPRESSION_SCHEMES};
 use deduplication::constants::{MAX_XORB_BYTES, MAX_XORB_CHUNKS};
 use deduplication::{DataAggregator, DeduplicationMetrics, RawXorbData};
 use jsonwebtoken::{decode, DecodingKey, Validation};
@@ -70,14 +69,8 @@ pub struct FileUploadSession {
     /// Metrics for deduplication
     deduplication_metrics: Mutex<DeduplicationMetrics>,
 
-    /// Internal worker
+    // Internal worker
     xorb_upload_tasks: Mutex<JoinSet<Result<()>>>,
-
-    /// The current compression scheme in use. If initialized to None,
-    /// This may change as upload progresses and statistics about the
-    /// preferred scheme is collected. Currently we use the 1st Xorb
-    /// to determine the compression scheme. Then lock it from then on.
-    compression_scheme: Mutex<Option<CompressionScheme>>,
 }
 
 // Constructors
@@ -124,7 +117,6 @@ impl FileUploadSession {
                 decoded.claims.get("repoId").and_then(|value| value.as_str().map(String::from))
             })
         });
-        let compression_scheme = Mutex::new(config.data_config.compression);
 
         Ok(Arc::new(Self {
             shard_interface,
@@ -136,7 +128,6 @@ impl FileUploadSession {
             current_session_data: Mutex::new(DataAggregator::default()),
             deduplication_metrics: Mutex::new(DeduplicationMetrics::default()),
             xorb_upload_tasks: Mutex::new(JoinSet::new()),
-            compression_scheme,
         }))
     }
 
@@ -164,25 +155,6 @@ impl FileUploadSession {
             return Ok(());
         }
 
-        let mut compression_scheme = *self.compression_scheme.lock().await;
-        // if compression scheme is None, we use the first Xorb to determine
-        // the appropriate scheme and lock it for all remaining xorbs.
-        if compression_scheme.is_none() {
-            let mut compression_scheme_vote = [0_usize; NUM_COMPRESSION_SCHEMES];
-            for i in xorb.data.iter() {
-                let scheme = CompressionScheme::choose_from_data(i);
-                compression_scheme_vote[scheme as usize] += 1;
-            }
-            let mut prefered_scheme = 0;
-            for i in 1..NUM_COMPRESSION_SCHEMES {
-                if compression_scheme_vote[i] > compression_scheme_vote[prefered_scheme] {
-                    prefered_scheme = i;
-                }
-            }
-            compression_scheme = Some(CompressionScheme::try_from(prefered_scheme as u8).unwrap());
-            *self.compression_scheme.lock().await = compression_scheme;
-        }
-
         let xorb_hash = xorb.hash();
         let xorb_data = xorb.to_vec();
         let chunks_and_boundaries = xorb.cas_info.chunks_and_boundaries();
@@ -192,10 +164,11 @@ impl FileUploadSession {
         let session = self.clone();
         let upload_permit = acquire_upload_permit().await?;
         let cas_prefix = session.config.data_config.prefix.clone();
+
         self.xorb_upload_tasks.lock().await.spawn(async move {
             let n_bytes_transmitted = session
                 .client
-                .put(&cas_prefix, &xorb_hash, xorb_data, chunks_and_boundaries, compression_scheme)
+                .put(&cas_prefix, &xorb_hash, xorb_data, chunks_and_boundaries)
                 .await?;
 
             drop(upload_permit);
