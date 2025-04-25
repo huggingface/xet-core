@@ -90,7 +90,7 @@ async fn clean(mut reader: impl Read, mut writer: impl Write) -> Result<()> {
         FileUploadSession::new(TranslatorConfig::local_config(std::env::current_dir()?)?, get_threadpool(), None)
             .await?;
 
-    let mut handle = translator.start_clean("".to_owned());
+    let mut handle = translator.start_clean(None);
 
     loop {
         let bytes = reader.read(&mut read_buf)?;

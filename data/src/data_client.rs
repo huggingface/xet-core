@@ -108,9 +108,8 @@ pub async fn upload_bytes_async(
     let upload_session = FileUploadSession::new(config, thread_pool, progress_updater).await?;
 
     // clean the bytes
-    let files = tokio_par_for_each(file_contents, *MAX_CONCURRENT_FILE_INGESTION, |f, _| async {
-        // TODO: brian - try to refactor the need for the file_key
-        let (xf, _metrics) = clean_bytes(upload_session.clone(), f).await?;
+    let files = tokio_par_for_each(file_contents, *MAX_CONCURRENT_FILE_INGESTION, |file_data, _| async {
+        let (xf, _metrics) = clean_bytes(upload_session.clone(), file_data).await?;
         Ok(xf)
     })
     .await

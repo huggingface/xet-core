@@ -331,7 +331,7 @@ mod tests {
             .await
             .unwrap();
 
-        let mut cleaner = upload_session.start_clean("test".to_owned());
+        let mut cleaner = upload_session.start_clean(Some("test".to_owned()));
 
         // Read blocks from the source file and hand them to the cleaning handle
         cleaner.add_data(&read_data[..]).await.unwrap();

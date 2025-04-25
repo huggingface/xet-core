@@ -111,10 +111,7 @@ pub fn download_files(
     token_refresher: Option<Py<PyAny>>,
     progress_updater: Option<Vec<Py<PyAny>>>,
 ) -> PyResult<Vec<String>> {
-    // TODO: brian - remove this clone
-    let pfs = files.into_iter().map(|x| {
-        (XetFileInfo::from(x.clone()), x.path)
-    }).collect();
+    let file_infos = files.into_iter().map(<(XetFileInfo, SourceFilePath)>::from).collect();
 
     let refresher = token_refresher.map(WrappedTokenRefresher::from_func).transpose()?.map(Arc::new);
     let updaters = progress_updater.map(try_parse_progress_updaters).transpose()?;
@@ -122,7 +119,7 @@ pub fn download_files(
     async_run(py, move |threadpool| async move {
         let out: Vec<String> = data_client::download_async(
             threadpool,
-            pfs,
+            file_infos,
             endpoint,
             token_info,
             refresher.map(|v| v as Arc<_>),
@@ -151,8 +148,8 @@ pub struct PyPointerFile {
     path: String,
     #[pyo3(get)]
     hash: String,
-    #[pyo3(get)]
-    filesize: u64,
+    #[pyo3(get, name="filesize")]
+    file_size: u64,
 }
 
 #[pyclass]
@@ -164,6 +161,8 @@ pub struct PyUploadResult {
     pub file_size: u64,
 }
 
+type SourceFilePath = String;
+
 impl From<XetFileInfo> for PyUploadResult {
     fn from(xf: XetFileInfo) -> Self {
         Self {
@@ -173,17 +172,17 @@ impl From<XetFileInfo> for PyUploadResult {
     }
 }
 
-impl From<PyPointerFile> for XetFileInfo {
+impl From<PyPointerFile> for (XetFileInfo, SourceFilePath) {
     fn from(pf: PyPointerFile) -> Self {
-        XetFileInfo::new(pf.hash, pf.filesize as usize)
+        (XetFileInfo::new(pf.hash, pf.file_size as usize), pf.path)
     }
 }
 
 #[pymethods]
 impl PyPointerFile {
     #[new]
-    pub fn new(path: String, hash: String, filesize: u64) -> Self {
-        Self { path, hash, filesize }
+    pub fn new(path: String, hash: String, file_size: u64) -> Self {
+        Self { path, hash, file_size }
     }
 
     fn __str__(&self) -> String {
@@ -191,7 +190,23 @@ impl PyPointerFile {
     }
 
     fn __repr__(&self) -> String {
-        format!("PyPointerFile({}, {}, {})", self.path, self.hash, self.filesize)
+        format!("PyPointerFile({}, {}, {})", self.path, self.hash, self.file_size)
+    }
+}
+
+#[pymethods]
+impl PyUploadResult {
+    #[new]
+    pub fn new(hash: String, file_size: u64) -> Self {
+        Self { hash, file_size }
+    }
+
+    fn __str__(&self) -> String {
+        format!("{self:?}")
+    }
+
+    fn __repr__(&self) -> String {
+        format!("PyUploadResult({}, {})", self.hash, self.file_size)
     }
 }
 
