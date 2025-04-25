@@ -1,6 +1,6 @@
+use error_printer::ErrorPrinter;
 use merklehash::{DataHashHexParseError, MerkleHash};
 use serde::{Deserialize, Serialize};
-use tracing::error;
 
 /// A struct that wraps a the Xet file information.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
