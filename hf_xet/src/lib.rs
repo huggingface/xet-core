@@ -32,7 +32,7 @@ fn convert_data_processing_error(e: DataProcessingError) -> PyErr {
 }
 
 #[pyfunction]
-#[pyo3(signature = (file_contents, endpoint, token_info, token_refresher, progress_updater, _repo_type), text_signature = "(file_contents: List[bytes], endpoint: Optional[str], token_info: Optional[(str, int)], token_refresher: Optional[Callable[[], (str, int)]], progress_updater: Optional[Callable[[int], None]], _repo_type: Optional[str]) -> List[PyUploadResult]")]
+#[pyo3(signature = (file_contents, endpoint, token_info, token_refresher, progress_updater, _repo_type), text_signature = "(file_contents: List[bytes], endpoint: Optional[str], token_info: Optional[(str, int)], token_refresher: Optional[Callable[[], (str, int)]], progress_updater: Optional[Callable[[int], None]], _repo_type: Optional[str]) -> List[PyXetFileInfo]")]
 pub fn upload_bytes(
     py: Python, 
     file_contents: Vec<Vec<u8>>, 
@@ -41,7 +41,7 @@ pub fn upload_bytes(
     token_refresher: Option<Py<PyAny>>, 
     progress_updater: Option<Py<PyAny>>, 
     _repo_type: Option<String>
-) -> PyResult<Vec<PyUploadResult>> {
+) -> PyResult<Vec<PyXetFileInfo>> {
     let refresher = token_refresher.map(WrappedTokenRefresher::from_func).transpose()?.map(Arc::new);
     let updater = progress_updater
         .map(WrappedProgressUpdater::from_func)
@@ -49,7 +49,7 @@ pub fn upload_bytes(
         .map(Arc::new);
 
     async_run(py, move |thread_pool| async move {
-        let out: Vec<PyUploadResult> = data_client::upload_bytes_async(
+        let out: Vec<PyXetFileInfo> = data_client::upload_bytes_async(
             thread_pool,
             file_contents,
             endpoint,
@@ -60,14 +60,14 @@ pub fn upload_bytes(
         .await
         .map_err(convert_data_processing_error)?
         .into_iter()
-        .map(PyUploadResult::from)
+        .map(PyXetFileInfo::from)
         .collect();
         PyResult::Ok(out)
     })
 }
 
 #[pyfunction]
-#[pyo3(signature = (file_paths, endpoint, token_info, token_refresher, progress_updater, _repo_type), text_signature = "(file_paths: List[str], endpoint: Optional[str], token_info: Optional[(str, int)], token_refresher: Optional[Callable[[], (str, int)]], progress_updater: Optional[Callable[[int], None]], _repo_type: Optional[str]) -> List[PyUploadResult]")]
+#[pyo3(signature = (file_paths, endpoint, token_info, token_refresher, progress_updater, _repo_type), text_signature = "(file_paths: List[str], endpoint: Optional[str], token_info: Optional[(str, int)], token_refresher: Optional[Callable[[], (str, int)]], progress_updater: Optional[Callable[[int], None]], _repo_type: Optional[str]) -> List[PyXetFileInfo]")]
 pub fn upload_files(
     py: Python,
     file_paths: Vec<String>,
@@ -76,7 +76,7 @@ pub fn upload_files(
     token_refresher: Option<Py<PyAny>>,
     progress_updater: Option<Py<PyAny>>,
     _repo_type: Option<String>,
-) -> PyResult<Vec<PyUploadResult>> {
+) -> PyResult<Vec<PyXetFileInfo>> {
     let refresher = token_refresher.map(WrappedTokenRefresher::from_func).transpose()?.map(Arc::new);
     let updater = progress_updater
         .map(WrappedProgressUpdater::from_func)
@@ -84,7 +84,7 @@ pub fn upload_files(
         .map(Arc::new);
 
     async_run(py, move |threadpool| async move {
-        let out: Vec<PyUploadResult> = data_client::upload_async(
+        let out: Vec<PyXetFileInfo> = data_client::upload_async(
             threadpool,
             file_paths,
             endpoint,
@@ -95,23 +95,23 @@ pub fn upload_files(
         .await
         .map_err(convert_data_processing_error)?
         .into_iter()
-        .map(PyUploadResult::from)
+        .map(PyXetFileInfo::from)
         .collect();
         PyResult::Ok(out)
     })
 }
 
 #[pyfunction]
-#[pyo3(signature = (files, endpoint, token_info, token_refresher, progress_updater), text_signature = "(files: List[PyPointerFile], endpoint: Optional[str], token_info: Optional[(str, int)], token_refresher: Optional[Callable[[], (str, int)]], progress_updater: Optional[List[Callable[[int], None]]]) -> List[str]")]
+#[pyo3(signature = (files, endpoint, token_info, token_refresher, progress_updater), text_signature = "(files: List[PyXetDownloadInfo], endpoint: Optional[str], token_info: Optional[(str, int)], token_refresher: Optional[Callable[[], (str, int)]], progress_updater: Optional[List[Callable[[int], None]]]) -> List[str]")]
 pub fn download_files(
     py: Python,
-    files: Vec<PyPointerFile>,
+    files: Vec<PyXetDownloadInfo>,
     endpoint: Option<String>,
     token_info: Option<(String, u64)>,
     token_refresher: Option<Py<PyAny>>,
     progress_updater: Option<Vec<Py<PyAny>>>,
 ) -> PyResult<Vec<String>> {
-    let file_infos = files.into_iter().map(<(XetFileInfo, SourceFilePath)>::from).collect();
+    let file_infos = files.into_iter().map(<(XetFileInfo, DestinationPath)>::from).collect();
 
     let refresher = token_refresher.map(WrappedTokenRefresher::from_func).transpose()?.map(Arc::new);
     let updaters = progress_updater.map(try_parse_progress_updaters).transpose()?;
@@ -141,29 +141,33 @@ fn try_parse_progress_updaters(funcs: Vec<Py<PyAny>>) -> PyResult<Vec<Arc<dyn Pr
     Ok(updaters)
 }
 
+// TODO: on a major version release, remove this type alias
+// This is used to support backward compatibility for PyPointerFile with old versions of huggingface_hub
+type PyPointerFile = PyXetDownloadInfo;
+
 #[pyclass]
 #[derive(Clone, Debug)]
-pub struct PyPointerFile {
+pub struct PyXetDownloadInfo {
     #[pyo3(get, set)]
-    path: String,
+    destination_path: String,
     #[pyo3(get)]
     hash: String,
-    #[pyo3(get, name="filesize")]
+    #[pyo3(get)]
     file_size: u64,
 }
 
 #[pyclass]
 #[derive(Clone, Debug)]
-pub struct PyUploadResult {
+pub struct PyXetFileInfo {
     #[pyo3(get)]
     pub hash: String,
     #[pyo3(get)]
     pub file_size: u64,
 }
 
-type SourceFilePath = String;
+type DestinationPath = String;
 
-impl From<XetFileInfo> for PyUploadResult {
+impl From<XetFileInfo> for PyXetFileInfo {
     fn from(xf: XetFileInfo) -> Self {
         Self {
             hash: xf.hash_string(),
@@ -172,17 +176,17 @@ impl From<XetFileInfo> for PyUploadResult {
     }
 }
 
-impl From<PyPointerFile> for (XetFileInfo, SourceFilePath) {
-    fn from(pf: PyPointerFile) -> Self {
-        (XetFileInfo::new(pf.hash, pf.file_size as usize), pf.path)
+impl From<PyXetDownloadInfo> for (XetFileInfo, DestinationPath) {
+    fn from(pf: PyXetDownloadInfo) -> Self {
+        (XetFileInfo::new(pf.hash, pf.file_size as usize), pf.destination_path)
     }
 }
 
 #[pymethods]
-impl PyPointerFile {
+impl PyXetDownloadInfo {
     #[new]
-    pub fn new(path: String, hash: String, file_size: u64) -> Self {
-        Self { path, hash, file_size }
+    pub fn new(destination_path: String, hash: String, file_size: u64) -> Self {
+        Self { destination_path, hash, file_size }
     }
 
     fn __str__(&self) -> String {
@@ -190,12 +194,30 @@ impl PyPointerFile {
     }
 
     fn __repr__(&self) -> String {
-        format!("PyPointerFile({}, {}, {})", self.path, self.hash, self.file_size)
+        format!("PyXetDownloadInfo({}, {}, {})", self.destination_path, self.hash, self.file_size)
     }
+
+    // TODO: remove these setters and getters in the next major version update
+    #[setter]
+    fn set_path(&mut self, path: String) {
+        self.destination_path = path;
+    }
+
+    #[getter]
+    fn get_path(&self) -> String {
+        self.destination_path.clone()
+    }
+
+    #[getter]
+    fn get_filesize(&self) -> u64 {
+        self.file_size
+    }
+    // end TODO
+
 }
 
 #[pymethods]
-impl PyUploadResult {
+impl PyXetFileInfo {
     #[new]
     pub fn new(hash: String, file_size: u64) -> Self {
         Self { hash, file_size }
@@ -206,7 +228,7 @@ impl PyUploadResult {
     }
 
     fn __repr__(&self) -> String {
-        format!("PyUploadResult({}, {})", self.hash, self.file_size)
+        format!("PyXetFileInfo({}, {})", self.hash, self.file_size)
     }
 }
 
@@ -215,6 +237,10 @@ pub fn hf_xet(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(upload_files, m)?)?;
     m.add_function(wrap_pyfunction!(upload_bytes, m)?)?;
     m.add_function(wrap_pyfunction!(download_files, m)?)?;
+    m.add_class::<PyXetDownloadInfo>()?;
+    // TODO: remove this during the next major version update. 
+    // This supports backward compatibility for PyPointerFile with old versions 
+    // huggingface_hub.
     m.add_class::<PyPointerFile>()?;
 
     // Init the threadpool
