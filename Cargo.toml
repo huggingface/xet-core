@@ -18,7 +18,6 @@ members = [
     "chunk_cache",
     "xet_threadpool",
     "deduplication",
-    "hf_xet_js",
 ]
 
 exclude = ["hf_xet", "chunk_cache_bench", "wasm_xet"]
