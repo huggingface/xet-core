@@ -5,6 +5,7 @@ use deduplication::{Chunk, Chunker, DeduplicationMetrics, FileDeduper};
 use mdb_shard::file_structs::FileMetadataExt;
 use merklehash::MerkleHash;
 use tracing::info;
+use tokio::task::{JoinError, JoinHandle};
 
 use crate::constants::INGESTION_BLOCK_SIZE;
 use crate::deduplication_interface::UploadSessionDataManager;
@@ -12,6 +13,14 @@ use crate::errors::Result;
 use crate::file_upload_session::FileUploadSession;
 use crate::sha256::ShaGenerator;
 use crate::PointerFile;
+
+type DedupeBoxType = Arc<FileDeduper<UploadSessionDataManager>>;
+type ProcessChunksResult = Result<DeduplicationMetrics>;
+enum DedupManagerBackgrounder {
+    Empty,
+    Foreground(DedupeBoxType),
+    Background(JoinHandle<std::result::Result<(DedupeBoxType, ProcessChunksResult), JoinError>>),
+}
 
 /// A class that encapsulates the clean and data task around a single file.
 pub struct SingleFileCleaner {
@@ -25,7 +34,7 @@ pub struct SingleFileCleaner {
     chunker: Chunker,
 
     // The deduplication interface.
-    dedup_manager: FileDeduper<UploadSessionDataManager>,
+    dedup_manager: DedupManagerBackgrounder,
 
     // Generating the sha256 hash
     sha_generator: ShaGenerator,
@@ -36,14 +45,51 @@ pub struct SingleFileCleaner {
 
 impl SingleFileCleaner {
     pub(crate) fn new(file_name: String, session: Arc<FileUploadSession>) -> Self {
+        let deduper = Arc::new(FileDeduper::new(UploadSessionDataManager::new(session.clone())));
         Self {
             file_name,
-            dedup_manager: FileDeduper::new(UploadSessionDataManager::new(session.clone())),
+            dedup_manager: DedupManagerBackgrounder::Foreground(deduper),
             session,
             chunker: deduplication::Chunker::default(),
             sha_generator: ShaGenerator::new(),
             start_time: Utc::now(),
         }
+    }
+
+    async fn get_deduper(&mut self) -> Result<DedupeBoxType> {
+        match self.dedup_manager {
+            DedupManagerBackgrounder::Empty => {
+                panic!("No deduper");
+            }
+            DedupManagerBackgrounder::Foreground(ref deduper) => {
+                Ok(deduper.clone())
+            }
+            DedupManagerBackgrounder::Background(ref mut jh) => {
+                let (deduper, block_metrics) = jh.await??;
+                let block_metrics = block_metrics?;
+
+                // Update the progress bar with the deduped bytes
+                if let Some(updater) = self.session.upload_progress_updater.as_ref() {
+                    updater.update(block_metrics.deduped_bytes as u64);
+                }
+                self.dedup_manager = DedupManagerBackgrounder::Foreground(deduper.clone());
+                Ok(deduper)
+            }
+        }
+    }
+    async fn get_deduper_drop(&mut self) -> Result<DedupeBoxType> {
+        let deduper = self.get_deduper().await?;
+        self.dedup_manager = DedupManagerBackgrounder::Empty;
+        Ok(deduper)
+    }
+    async fn deduper_process_chunks(&mut self, chunks: Arc<[Chunk]>) -> Result<()> {
+        let mut deduper = self.get_deduper().await?;
+        self.dedup_manager = DedupManagerBackgrounder::Background(
+            tokio::spawn(async move {
+                let res = Arc::get_mut(&mut deduper).unwrap().process_chunks(&chunks).await;
+                Ok((deduper, res))
+        }));
+        Ok(())
     }
 
     pub async fn add_data(&mut self, data: &[u8]) -> Result<()> {
@@ -74,12 +120,7 @@ impl SingleFileCleaner {
         self.sha_generator.update(chunks.clone()).await?;
 
         // Run the deduplication interface here.
-        let block_metrics = self.dedup_manager.process_chunks(&chunks).await?;
-
-        // Update the progress bar with the deduped bytes
-        if let Some(updater) = self.session.upload_progress_updater.as_ref() {
-            updater.update(block_metrics.deduped_bytes as u64);
-        }
+        self.deduper_process_chunks(chunks).await?;
 
         Ok(())
     }
@@ -87,9 +128,10 @@ impl SingleFileCleaner {
     /// Return the representation of the file after clean as a pointer file instance.
     pub async fn finish(mut self) -> Result<(PointerFile, DeduplicationMetrics)> {
         // Chunk the rest of the data.
+        let mut deduper = Arc::into_inner(self.get_deduper_drop().await?).unwrap();
         if let Some(chunk) = self.chunker.finish() {
             self.sha_generator.update(Arc::new([chunk.clone()])).await?;
-            self.dedup_manager.process_chunks(&[chunk]).await?;
+            deduper.process_chunks(&[chunk]).await?;
         }
 
         // Finalize the sha256 hashing and create the metadata extension
@@ -99,7 +141,7 @@ impl SingleFileCleaner {
         // Now finish the deduplication process.
         let repo_salt = self.session.config.shard_config.repo_salt;
         let (file_hash, remaining_file_data, deduplication_metrics, new_xorbs) =
-            self.dedup_manager.finalize(repo_salt, Some(metadata_ext));
+            deduper.finalize(repo_salt, Some(metadata_ext));
 
         let pointer_file =
             PointerFile::init_from_info(&self.file_name, &file_hash.hex(), deduplication_metrics.total_bytes as u64);
