@@ -1,0 +1,12 @@
+[package]
+name = "chunking"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+gearhash = "0.1.3"
+merklehash = { path = "../merklehash" }
+utils = { path = "../utils"}
+
+[dev-dependencies]
+rand = "0.9.0"

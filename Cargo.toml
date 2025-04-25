@@ -16,10 +16,11 @@ members = [
     "cas_object",
     "cas_types",
     "chunk_cache",
-    "xet_threadpool", 
-    "deduplication"]
+    "xet_threadpool",
+    "deduplication", "chunking",
+]
 
-exclude = ["hf_xet", "chunk_cache_bench"]
+exclude = ["hf_xet", "hf_xet_wasm", "chunk_cache_bench"]
 
 [profile.release]
 opt-level = 3
