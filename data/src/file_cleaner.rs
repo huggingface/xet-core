@@ -1,12 +1,12 @@
-use std::sync::Arc;
 use std::cell::Cell;
+use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
 use deduplication::{Chunk, Chunker, DeduplicationMetrics, FileDeduper};
 use mdb_shard::file_structs::FileMetadataExt;
 use merklehash::MerkleHash;
-use tracing::info;
 use tokio::task::{JoinError, JoinHandle};
+use tracing::info;
 
 use crate::constants::INGESTION_BLOCK_SIZE;
 use crate::deduplication_interface::UploadSessionDataManager;
@@ -15,19 +15,19 @@ use crate::file_upload_session::FileUploadSession;
 use crate::sha256::ShaGenerator;
 use crate::PointerFile;
 
-/// A little set of helper types to allow us to background the 
-/// dedupe_manager::process_chunks operation. 
+/// A little set of helper types to allow us to background the
+/// dedupe_manager::process_chunks operation.
 /// The design is that there is only 1 instance of the FileDeduper in a Cell
 /// so there can only be a single reference to it.
-/// 
+///
 /// SingleFileCleaner::dedup_manager initializes as Foreground(Some(deduper))
-/// 
-/// - get_deduper() will return the Cell and empty out dedup_manager 
+///
+/// - get_deduper() will return the Cell and empty out dedup_manager
 /// (whatever state it current is in) turning it into Foreground(None).
 /// If dedup_manager is already in Background, it will wait for the JoinHandle to finish
 /// and return the Cell (once again resetting dedup_manager to Foreground(None))
 ///
-/// - deduper_process_chunks() will start processing of new chunks in background 
+/// - deduper_process_chunks() will start processing of new chunks in background
 /// and switch dedup_manager into Background(JoinHandle)
 type DedupeBoxType = Cell<FileDeduper<UploadSessionDataManager>>;
 type ProcessChunksResult = Result<DeduplicationMetrics>;
@@ -77,17 +77,15 @@ impl SingleFileCleaner {
             DedupManagerBackgrounder::Foreground(ref mut deduper) => {
                 let deduper = deduper.take();
                 match deduper {
-                    Some(deduper) => {
-                        Ok(deduper)
-                    }
+                    Some(deduper) => Ok(deduper),
                     None => {
                         // This should be impossible
                         panic!("Deduper lost");
-                    }
+                    },
                 }
-            }
+            },
             DedupManagerBackgrounder::Background(ref mut jh) => {
-                // note that the join handle has the *only* reference to the 
+                // note that the join handle has the *only* reference to the
                 // deduper. So yes, there are some conditions (Tokio join failure)
                 // in which we will lose the deduper completely.
                 // But those conditions are unlikely to be recoverable anyway..?
@@ -100,31 +98,30 @@ impl SingleFileCleaner {
                         if let Some(updater) = self.session.upload_progress_updater.as_ref() {
                             updater.update(block_metrics.deduped_bytes as u64);
                         }
-                    }
+                    },
                     Err(e) => {
                         // This is an error case, we need to return the error
                         // but we also need to make sure that the deduper is
                         // in a state where it can be used again.
                         self.dedup_manager = DedupManagerBackgrounder::Foreground(Some(deduper));
                         return Err(e);
-                    }
+                    },
                 }
 
                 self.dedup_manager = DedupManagerBackgrounder::Foreground(None);
                 Ok(deduper)
-            }
+            },
         }
     }
 
-    /// Gets the dedupe manager to process new chunks, by first 
+    /// Gets the dedupe manager to process new chunks, by first
     /// waiting for background operations to complete, then triggering a
     /// new background task.
     async fn deduper_process_chunks(&mut self, chunks: Arc<[Chunk]>) -> Result<()> {
         let mut deduper = self.get_deduper().await?;
-        self.dedup_manager = DedupManagerBackgrounder::Background(
-            tokio::spawn(async move {
-                let res = deduper.get_mut().process_chunks(&chunks).await;
-                Ok((deduper, res))
+        self.dedup_manager = DedupManagerBackgrounder::Background(tokio::spawn(async move {
+            let res = deduper.get_mut().process_chunks(&chunks).await;
+            Ok((deduper, res))
         }));
         Ok(())
     }
