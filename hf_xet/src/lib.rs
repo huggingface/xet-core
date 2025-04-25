@@ -182,7 +182,7 @@ pub struct PyPointerFile {}
 impl PyPointerFile {
     #[new]
     pub fn new(path: String, hash: String, filesize: u64) -> (Self, PyXetDownloadInfo) {
-        (PyPointerFile{}, PyXetDownloadInfo::new(path, hash, filesize))
+        (PyPointerFile {}, PyXetDownloadInfo::new(path, hash, filesize))
     }
 
     fn __str__(&self) -> String {
@@ -193,7 +193,6 @@ impl PyPointerFile {
         let super_ = self_.as_super();
         format!("PyPointerFile({}, {}, {})", super_.destination_path, super_.hash, super_.file_size)
     }
-
 
     fn get_path(self_: PyRef<'_, Self>) -> String {
         self_.as_super().destination_path.clone()
@@ -253,8 +252,6 @@ impl From<PyXetDownloadInfo> for (XetFileInfo, DestinationPath) {
         (XetFileInfo::new(pf.hash, pf.file_size as usize), pf.destination_path)
     }
 }
-
-
 
 #[pymodule]
 pub fn hf_xet(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
