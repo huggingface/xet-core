@@ -128,7 +128,7 @@ impl Command {
 
                 eprintln!("\n\nClean results:");
                 for (xf, new_bytes) in clean_ret {
-                    println!("{}: {} bytes -> {} bytes", xf.hash_string(), xf.file_size(), new_bytes);
+                    println!("{}: {} bytes -> {} bytes", xf.hash(), xf.file_size(), new_bytes);
                 }
 
                 eprintln!("Transmitted {total_bytes_trans} bytes in total.");

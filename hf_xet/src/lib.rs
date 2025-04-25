@@ -141,7 +141,7 @@ fn try_parse_progress_updaters(funcs: Vec<Py<PyAny>>) -> PyResult<Vec<Arc<dyn Pr
     Ok(updaters)
 }
 
-// TODO: on a major version release, remove this type alias
+// TODO: on the next major version update, remove this type alias
 // This is used to support backward compatibility for PyPointerFile with old versions of huggingface_hub
 type PyPointerFile = PyXetDownloadInfo;
 
@@ -170,7 +170,7 @@ type DestinationPath = String;
 impl From<XetFileInfo> for PyXetFileInfo {
     fn from(xf: XetFileInfo) -> Self {
         Self {
-            hash: xf.hash_string(),
+            hash: xf.hash().to_owned(),
             file_size: xf.file_size() as u64,
         }
     }
