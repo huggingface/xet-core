@@ -30,10 +30,7 @@ impl XetFileInfo {
 
     /// Returns the parsed merkle hash of the file.
     pub fn merkle_hash(&self) -> std::result::Result<MerkleHash, DataHashHexParseError> {
-        MerkleHash::from_hex(&self.hash).map_err(|e| {
-            error!("Error parsing hash value for file info {e:?}");
-            e
-        })
+        MerkleHash::from_hex(&self.hash).log_error("Error parsing hash value for file info")
     }
 
     /// Returns the size of the file.
