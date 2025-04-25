@@ -34,13 +34,13 @@ fn convert_data_processing_error(e: DataProcessingError) -> PyErr {
 #[pyfunction]
 #[pyo3(signature = (file_contents, endpoint, token_info, token_refresher, progress_updater, _repo_type), text_signature = "(file_contents: List[bytes], endpoint: Optional[str], token_info: Optional[(str, int)], token_refresher: Optional[Callable[[], (str, int)]], progress_updater: Optional[Callable[[int], None]], _repo_type: Optional[str]) -> List[PyXetFileInfo]")]
 pub fn upload_bytes(
-    py: Python, 
-    file_contents: Vec<Vec<u8>>, 
-    endpoint: Option<String>, 
-    token_info: Option<(String, u64)>, 
-    token_refresher: Option<Py<PyAny>>, 
-    progress_updater: Option<Py<PyAny>>, 
-    _repo_type: Option<String>
+    py: Python,
+    file_contents: Vec<Vec<u8>>,
+    endpoint: Option<String>,
+    token_info: Option<(String, u64)>,
+    token_refresher: Option<Py<PyAny>>,
+    progress_updater: Option<Py<PyAny>>,
+    _repo_type: Option<String>,
 ) -> PyResult<Vec<PyXetFileInfo>> {
     let refresher = token_refresher.map(WrappedTokenRefresher::from_func).transpose()?.map(Arc::new);
     let updater = progress_updater
@@ -186,7 +186,11 @@ impl From<PyXetDownloadInfo> for (XetFileInfo, DestinationPath) {
 impl PyXetDownloadInfo {
     #[new]
     pub fn new(destination_path: String, hash: String, file_size: u64) -> Self {
-        Self { destination_path, hash, file_size }
+        Self { 
+            destination_path,
+            hash,
+            file_size
+        }
     }
 
     fn __str__(&self) -> String {
@@ -213,7 +217,6 @@ impl PyXetDownloadInfo {
         self.file_size
     }
     // end TODO
-
 }
 
 #[pymethods]
@@ -238,8 +241,8 @@ pub fn hf_xet(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(upload_bytes, m)?)?;
     m.add_function(wrap_pyfunction!(download_files, m)?)?;
     m.add_class::<PyXetDownloadInfo>()?;
-    // TODO: remove this during the next major version update. 
-    // This supports backward compatibility for PyPointerFile with old versions 
+    // TODO: remove this during the next major version update.
+    // This supports backward compatibility for PyPointerFile with old versions
     // huggingface_hub.
     m.add_class::<PyPointerFile>()?;
 
