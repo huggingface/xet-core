@@ -1218,6 +1218,8 @@ mod tests {
         if !test.expect_error {
             assert_eq!(test.expected_data.len() as u64, resp.unwrap(), "response len mismatch {test}");
             assert_eq!(test.expected_data.len(), buf.len(), "written len mismatch {test}");
+
+            // check the first 100 bytes and last 100 bytes first, if they aren't equal it will not print too data
             assert_eq!(test.expected_data[..100], buf.value()[..100], "response data head mismatch {test}");
             let tail_start = test.expected_data.len() - 100;
             assert_eq!(
