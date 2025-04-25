@@ -486,6 +486,7 @@ impl RemoteClient {
         let download_scheduler = DownloadScheduler::new(*NUM_CONCURRENT_RANGE_GETS);
 
         let mut total_written = 0;
+        let mut segment_initial_writer_offset = 0;
 
         let mut process_result =
             |result: stdResult<stdResult<DownloadTaskResult<usize>, CasClientError>, JoinError>| -> Result<()> {
@@ -540,6 +541,7 @@ impl RemoteClient {
                         offset_into_first_range,
                         segment_size,
                         total_len,
+                        segment_initial_writer_offset,
                         self.chunk_cache.clone(),
                         self.http_client.clone(),
                         writer,
@@ -557,6 +559,8 @@ impl RemoteClient {
                     if let Some(remainder) = maybe_remainder {
                         task_queue.push_back(DownloadQueueItem::Metadata(remainder));
                     }
+
+                    segment_initial_writer_offset += segment_size;
                 },
             }
         }
@@ -586,12 +590,13 @@ async fn make_download_by_fetch_info_tasks(
     offset_into_first_range: u64,
     segment_size: u64,
     total_len: u64,
+    segment_initial_writer_offset: u64,
     chunk_cache: Option<Arc<dyn ChunkCache>>,
     http_client: Arc<ClientWithMiddleware>,
     writer: &OutputProvider,
 ) -> Result<Vec<XorbRangeDownloadAndWrite>> {
     let mut fetch_info_term_map: HashMap<(MerkleHash, ChunkRange), XorbRangeDownloadAndWrite> = HashMap::new();
-    let mut writer_offset = 0;
+    let mut writer_offset = segment_initial_writer_offset;
     for (i, term) in terms.iter().enumerate() {
         let (individual_fetch_info, _) = fetch_info.find((term.hash.into(), term.range)).await?;
 
