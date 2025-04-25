@@ -17,7 +17,7 @@ impl XetFileInfo {
     ///
     /// # Arguments
     ///
-    /// * `hash` - The Merkle hash of the file.
+    /// * `hash` - The Xet hash of the file. This is a Merkle hash string.
     /// * `file_size` - The size of the file.
     pub fn new(hash: String, file_size: usize) -> Self {
         Self { hash, file_size }

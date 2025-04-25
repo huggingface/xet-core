@@ -126,13 +126,20 @@ async fn smudge(mut reader: impl Read, writer: &OutputProvider) -> Result<()> {
     let mut input = String::new();
     reader.read_to_string(&mut input)?;
 
-    let pointer_file: XetFileInfo = serde_json::from_str(&input)
+    let xet_file: XetFileInfo = serde_json::from_str(&input)
         .map_err(|_| anyhow::anyhow!("Failed to parse xet file info. Please check the format."))?;
 
     let downloader =
         FileDownloader::new(TranslatorConfig::local_config(std::env::current_dir()?)?, get_threadpool()).await?;
 
-    downloader.smudge_file_from_pointer(&pointer_file, writer, None, None).await?;
+    downloader
+        .smudge_file_from_hash(
+            &xet_file.merkle_hash().map_err(|_| anyhow::anyhow!("Xet hash is corrupted"))?,
+            writer,
+            None,
+            None,
+        )
+        .await?;
 
     Ok(())
 }
