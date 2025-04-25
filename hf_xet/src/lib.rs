@@ -186,10 +186,10 @@ impl From<PyXetDownloadInfo> for (XetFileInfo, DestinationPath) {
 impl PyXetDownloadInfo {
     #[new]
     pub fn new(destination_path: String, hash: String, file_size: u64) -> Self {
-        Self { 
+        Self {
             destination_path,
             hash,
-            file_size
+            file_size,
         }
     }
 
