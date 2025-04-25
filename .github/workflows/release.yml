@@ -177,6 +177,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Update version in toml
+        run: |
+          TAG=${{ github.event.inputs.tag }}
+          VERSION=${TAG#v}
+          if [ -n "$VERSION" ]; then
+            sed -i '' '/^version /s/=.*$/= "'"$VERSION"'"/' hf_xet/Cargo.toml
+          fi
       - name: Build sdist
         uses: PyO3/maturin-action@v1
         with:
