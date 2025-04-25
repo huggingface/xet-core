@@ -166,7 +166,10 @@ impl SingleFileCleaner {
         let mut deduper = self.get_deduper().await?;
         if let Some(chunk) = self.chunker.finish() {
             self.sha_generator.update(Arc::new([chunk.clone()])).await?;
-            deduper.get_mut().process_chunks(&[chunk]).await?;
+            let block_metrics = deduper.get_mut().process_chunks(&[chunk]).await?;
+            if let Some(updater) = self.session.upload_progress_updater.as_ref() {
+                updater.update(block_metrics.deduped_bytes as u64);
+            }
         }
 
         // Finalize the sha256 hashing and create the metadata extension
