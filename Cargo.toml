@@ -20,7 +20,7 @@ members = [
     "deduplication",
 ]
 
-exclude = ["hf_xet", "chunk_cache_bench", "wasm_xet"]
+exclude = ["hf_xet", "chunk_cache_bench", "hf_xet_wasm"]
 
 [profile.release]
 opt-level = 3
