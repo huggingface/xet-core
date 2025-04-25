@@ -142,10 +142,13 @@ pub(crate) struct TermDownload {
     pub take: u64,       // number of bytes to take after skipping bytes,
     // effectively taking [skip_bytes..skip_bytes+take]
     // out of the downloaded range
+    #[derivative(Debug = "ignore")]
     pub fetch_info: Arc<FetchInfo>, // utility to get URL to download this term
     #[derivative(Debug = "ignore")]
     pub chunk_cache: Option<Arc<dyn ChunkCache>>,
+    #[derivative(Debug = "ignore")]
     pub client: Arc<ClientWithMiddleware>, // only used for downloading range
+    #[derivative(Debug = "ignore")]
     pub range_download_single_flight: RangeDownloadSingleFlight,
 }
 

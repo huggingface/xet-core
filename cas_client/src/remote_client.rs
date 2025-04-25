@@ -551,7 +551,6 @@ impl RemoteClient {
                     // define the term download tasks
                     debug!("enqueueing {} download tasks", tasks.len());
                     for task_def in tasks {
-                        debug!("enqueueing {task_def:?}");
                         task_queue.push_back(DownloadQueueItem::DownloadTask(task_def));
                     }
 
