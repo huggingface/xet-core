@@ -1,0 +1,34 @@
+<html>
+
+<head>
+    <meta charset="UTF-8" />
+</head>
+
+<body>
+    <p>
+        <label for="file_picker">Choose a file to upload with Xet:</label>
+        <input type="file" id="file_picker" name="file_picker">
+    </p>
+    <script type="module">
+        import init from "./wasm_xet.js";
+        await init();
+        // let ret = await test_threads();
+        // console.log("test_threads says: " + ret);
+
+        document.getElementById("file_picker").addEventListener(
+            "change",
+            function () {
+                console.log("eventListener 'change' inside simple.html runs");
+                let file = this.files[0];
+                console.log("cleaning file: " + file);
+                // let ret = await clean_file(file, "abc", "def");
+                // let ret = await process_file();
+                // test_async_blob_reader(file).then((x) => { console.log("clean result: 0x" + x) });
+                clean_file(file, "", "").then((x) => { console.log("clean result: 0x" + x) });
+            },
+            false
+        );
+    </script>
+</body>
+
+</html>
