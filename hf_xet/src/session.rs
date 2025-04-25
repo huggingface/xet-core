@@ -1,6 +1,5 @@
 use crate::{
-    convert_data_processing_error, token_refresh::WrappedTokenRefresher,
-    try_parse_progress_updater, PyPointerFile,
+    convert_data_processing_error, token_refresh::WrappedTokenRefresher, try_parse_progress_updater, PyPointerFile,
 };
 use data::configurations::TranslatorConfig;
 use data::data_client::{clean_file, default_config, DEFAULT_CAS_ENDPOINT};
