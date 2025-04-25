@@ -7,6 +7,7 @@ use merkledb::constants::MAXIMUM_CHUNK_SIZE;
 use crate::error::CasObjectError;
 use crate::CompressionScheme;
 
+#[cfg(not(target_family = "wasm"))]
 pub mod deserialize_async;
 
 pub const CAS_CHUNK_HEADER_LENGTH: usize = size_of::<CASChunkHeader>();

@@ -531,8 +531,6 @@ dependencies = [
  "mdb_shard",
  "merkledb",
  "merklehash",
- "more-asserts",
- "parutils",
  "rand 0.9.0",
  "serde",
  "thiserror 2.0.11",

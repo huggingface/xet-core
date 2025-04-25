@@ -148,8 +148,19 @@ struct Args {
     files: Vec<String>,
 }
 
+#[cfg(not(target_family = "wasm"))]
 #[tokio::main]
 async fn main() -> Result<()> {
+    _main().await
+}
+
+#[cfg(target_family = "wasm")]
+#[tokio::main(flavor = "current_thread")]
+async fn main() -> Result<()> {
+    _main().await
+}
+
+async fn _main() -> Result<()> {
     // Parse command-line arguments
     let args = Args::parse();
 
