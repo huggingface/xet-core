@@ -75,10 +75,9 @@ assert_pointer_file_size() {
 
   assert_is_pointer_file $file
 
-  filesize=$(cat $file | grep -F file_size | sed -E 's|.*file_size:([0-9]+).*|\1|' || echo "")
-  filesize_trimmed="${filesize::-1}"
+  filesize=$(cat $file | grep -F file_size | sed -E 's|.*\"file_size\":([0-9]+).*|\1|' || echo "")
 
-  [[ $filesize == $size || $filesize_trimmed == $size ]] || die "Pointer file $file gives incorrect size; $filesize, expected $size."
+  [[ $filesize == $size ]] || die "Pointer file $file gives incorrect size; $filesize, expected $size."
 }
 export -f assert_pointer_file_size
 
