@@ -25,7 +25,7 @@ use tokio::sync::{mpsc, OwnedSemaphorePermit};
 use tokio::task::{JoinError, JoinHandle, JoinSet};
 use tracing::{debug, info};
 use utils::auth::AuthConfig;
-use utils::progress::ProgressUpdater;
+use utils::progress::SimpleProgressUpdater;
 use utils::singleflight::Group;
 use xet_threadpool::ThreadPool;
 
@@ -166,7 +166,7 @@ impl ReconstructionClient for RemoteClient {
         hash: &MerkleHash,
         byte_range: Option<FileRange>,
         output_provider: &OutputProvider,
-        progress_updater: Option<Arc<dyn ProgressUpdater>>,
+        progress_updater: Option<Arc<dyn SimpleProgressUpdater>>,
     ) -> Result<u64> {
         // If the user has set the `HF_XET_RECONSTRUCT_WRITE_SEQUENTIALLY=true` env variable, then we
         // should write the file to the output sequentially instead of in parallel.
@@ -320,7 +320,7 @@ impl RemoteClient {
         file_hash: &MerkleHash,
         byte_range: Option<FileRange>,
         writer: &OutputProvider,
-        progress_updater: Option<Arc<dyn ProgressUpdater>>,
+        progress_updater: Option<Arc<dyn SimpleProgressUpdater>>,
     ) -> Result<u64> {
         // queue size is inherently bounded by degree of concurrency.
         let (task_tx, mut task_rx) = mpsc::unbounded_channel::<DownloadQueueItem<TermDownload>>();
@@ -462,7 +462,7 @@ impl RemoteClient {
         file_hash: &MerkleHash,
         byte_range: Option<FileRange>,
         writer: &OutputProvider,
-        progress_updater: Option<Arc<dyn ProgressUpdater>>,
+        progress_updater: Option<Arc<dyn SimpleProgressUpdater>>,
     ) -> Result<u64> {
         // queue size is inherently bounded by degree of concurrency.
         let (task_tx, mut task_rx) = mpsc::unbounded_channel::<DownloadQueueItem<TermDownloadAndWrite>>();

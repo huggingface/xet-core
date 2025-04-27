@@ -18,12 +18,12 @@ pub struct DataAggregator {
     // As we're building this up, we assume that all files that do not have a size in the header are
     // not finished yet and thus cannot be uploaded.
     //
-    // All the cases the default hash for a cas info entry will be filled in with the cas hash for
+    // All the cases the marker hash for a cas info entry will be filled in with the cas hash for
     // an entry once the cas block is finalized and uploaded.  These correspond to the indices given
     // alongwith the file info.
     // This tuple contains the file info (which may be modified) and the divisions in the chunks corresponding
-    // to this file.
-    pub pending_file_info: Vec<(MDBFileInfo, Vec<usize>)>,
+    // to this file.  It also includes an optional file ID
+    pub pending_file_info: Vec<(MDBFileInfo, Vec<usize>, u64)>,
 }
 
 impl DataAggregator {
@@ -31,12 +31,13 @@ impl DataAggregator {
         chunks: Vec<Chunk>,
         pending_file_info: MDBFileInfo,
         internally_referencing_entries: Vec<usize>,
+        file_id: u64,
     ) -> Self {
         let num_bytes = chunks.iter().map(|c| c.data.len()).sum();
         Self {
             chunks,
             num_bytes,
-            pending_file_info: vec![(pending_file_info, internally_referencing_entries)],
+            pending_file_info: vec![(pending_file_info, internally_referencing_entries, file_id)],
         }
     }
 
@@ -53,8 +54,10 @@ impl DataAggregator {
         self.num_bytes
     }
 
-    /// Finalize the result, returning the CAS info, xorb data, and the file info that's included in this.
-    pub fn finalize(mut self) -> (RawXorbData, Vec<MDBFileInfo>) {
+    /// Finalize the result, returning the xorb data, and a Vec of (file_id, file_info, n_bytes_in_xorb);
+    /// i.e. the file info that's included in this along
+    /// with the number of bytes in each file that is part of this xorb.
+    pub fn finalize(mut self) -> (RawXorbData, Vec<(u64, MDBFileInfo, u64)>) {
         // First, cut the xorb for this one.
         let xorb_data = RawXorbData::from_chunks(&self.chunks);
         let xorb_hash = xorb_data.hash();
@@ -62,12 +65,15 @@ impl DataAggregator {
         debug_assert_le!(self.num_bytes(), *MAX_XORB_BYTES);
         debug_assert_le!(self.num_chunks(), *MAX_XORB_CHUNKS);
 
+        let mut ret = vec![0u64; self.pending_file_info.len()];
+
         // Now that we have the CAS hash, fill in any blocks with the referencing xorb
         // hash as needed.
-        for (fi, chunk_hash_indices_ref) in self.pending_file_info.iter_mut() {
+        for (f_idx, (fi, chunk_hash_indices_ref, _file_id)) in self.pending_file_info.iter_mut().enumerate() {
             for &i in chunk_hash_indices_ref.iter() {
-                debug_assert_eq!(fi.segments[i].cas_hash, MerkleHash::default());
+                debug_assert_eq!(fi.segments[i].cas_hash, MerkleHash::marker());
                 fi.segments[i].cas_hash = xorb_hash;
+                ret[f_idx] += fi.segments[i].unpacked_segment_bytes as u64;
             }
 
             // Incorporated this info, so clear this.
@@ -77,12 +83,19 @@ impl DataAggregator {
             {
                 // Make sure our bookkeeping along the way was good.
                 for fse in fi.segments.iter() {
-                    debug_assert_ne!(fse.cas_hash, MerkleHash::default());
+                    debug_assert_ne!(fse.cas_hash, MerkleHash::marker());
                 }
             }
         }
 
-        (xorb_data, self.pending_file_info.into_iter().map(|(fi, _)| fi).collect())
+        (
+            xorb_data,
+            self.pending_file_info
+                .into_iter()
+                .zip(ret)
+                .map(|((fi, _, file_id), byte_count)| (file_id, fi, byte_count))
+                .collect(),
+        )
     }
 
     pub fn merge_in(&mut self, mut other: DataAggregator) {
@@ -99,7 +112,7 @@ impl DataAggregator {
                 // To transfer the cas chunks from the other data aggregator to this one,
                 // shift chunk indices so the new index start and end values reflect the
                 // append opperation above.
-                if fi.cas_hash == MerkleHash::default() {
+                if fi.cas_hash == MerkleHash::marker() {
                     fi.chunk_index_start += shift;
                     fi.chunk_index_end += shift;
                 }

@@ -15,7 +15,7 @@ use pyo3::prelude::*;
 use pyo3::pyfunction;
 use runtime::async_run;
 use token_refresh::WrappedTokenRefresher;
-use utils::progress::ProgressUpdater;
+use utils::progress::TrackingProgressUpdater;
 
 use crate::progress_update::WrappedProgressUpdater;
 
@@ -97,11 +97,11 @@ pub fn download_files(
     })
 }
 
-fn try_parse_progress_updaters(funcs: Vec<Py<PyAny>>) -> PyResult<Vec<Arc<dyn ProgressUpdater>>> {
+fn try_parse_progress_updaters(funcs: Vec<Py<PyAny>>) -> PyResult<Vec<Arc<dyn TrackingProgressUpdater>>> {
     let mut updaters = Vec::with_capacity(funcs.len());
     for updater_func in funcs {
         let wrapped = Arc::new(WrappedProgressUpdater::from_func(updater_func)?);
-        updaters.push(wrapped as Arc<dyn ProgressUpdater>);
+        updaters.push(wrapped as Arc<dyn TrackingProgressUpdater>);
     }
     Ok(updaters)
 }

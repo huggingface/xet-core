@@ -10,13 +10,17 @@ use crate::constants::INGESTION_BLOCK_SIZE;
 use crate::deduplication_interface::UploadSessionDataManager;
 use crate::errors::Result;
 use crate::file_upload_session::FileUploadSession;
+use crate::progress_tracking::CompletionTrackerFileId;
 use crate::sha256::ShaGenerator;
 use crate::PointerFile;
 
 /// A class that encapsulates the clean and data task around a single file.
 pub struct SingleFileCleaner {
     // Auxiliary info
-    file_name: String,
+    file_name: Arc<str>,
+
+    // The id for completion tracking
+    file_id: CompletionTrackerFileId,
 
     // Common state
     session: Arc<FileUploadSession>,
@@ -35,10 +39,11 @@ pub struct SingleFileCleaner {
 }
 
 impl SingleFileCleaner {
-    pub(crate) fn new(file_name: String, session: Arc<FileUploadSession>) -> Self {
+    pub(crate) fn new(file_name: Arc<str>, file_id: CompletionTrackerFileId, session: Arc<FileUploadSession>) -> Self {
         Self {
             file_name,
-            dedup_manager: FileDeduper::new(UploadSessionDataManager::new(session.clone())),
+            file_id,
+            dedup_manager: FileDeduper::new(UploadSessionDataManager::new(session.clone(), file_id), file_id),
             session,
             chunker: deduplication::Chunker::default(),
             sha_generator: ShaGenerator::new(),
@@ -74,12 +79,7 @@ impl SingleFileCleaner {
         self.sha_generator.update(chunks.clone()).await?;
 
         // Run the deduplication interface here.
-        let block_metrics = self.dedup_manager.process_chunks(&chunks).await?;
-
-        // Update the progress bar with the deduped bytes
-        if let Some(updater) = self.session.upload_progress_updater.as_ref() {
-            updater.update(block_metrics.deduped_bytes as u64);
-        }
+        self.dedup_manager.process_chunks(&chunks).await?;
 
         Ok(())
     }
@@ -98,7 +98,7 @@ impl SingleFileCleaner {
 
         // Now finish the deduplication process.
         let repo_salt = self.session.config.shard_config.repo_salt;
-        let (file_hash, remaining_file_data, deduplication_metrics, new_xorbs) =
+        let (file_hash, remaining_file_data, deduplication_metrics) =
             self.dedup_manager.finalize(repo_salt, Some(metadata_ext));
 
         let pointer_file =
@@ -116,12 +116,7 @@ impl SingleFileCleaner {
 
         // Now, return all this information to the
         self.session
-            .register_single_file_clean_completion(
-                self.file_name.clone(),
-                remaining_file_data,
-                &deduplication_metrics,
-                new_xorbs,
-            )
+            .register_single_file_clean_completion(remaining_file_data, &deduplication_metrics)
             .await?;
 
         // NB: xorb upload is happening in the background, this number is optimistic since it does
@@ -130,7 +125,7 @@ impl SingleFileCleaner {
         info!(
             target: "client_telemetry",
             action = "clean",
-            file_name = &self.file_name,
+            file_name = self.file_name.to_string(),
             file_size_count = deduplication_metrics.total_bytes,
             new_bytes_count = deduplication_metrics.new_bytes,
             start_ts = self.start_time.to_rfc3339(),
