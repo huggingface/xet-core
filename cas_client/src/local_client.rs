@@ -21,7 +21,7 @@ use tracing::{debug, error, info, warn};
 use utils::progress::ProgressUpdater;
 
 use crate::error::{CasClientError, Result};
-use crate::interface::{OutputProvider, ShardDedupProber, UploadClient};
+use crate::interface::{OutputProvider, ShardDedupProbe, UploadClient};
 use crate::{Client, ReconstructionClient, RegistrationClient, ShardClientInterface};
 
 pub struct LocalClient {
@@ -354,7 +354,7 @@ impl FileReconstructor<CasClientError> for LocalClient {
 }
 
 #[async_trait]
-impl ShardDedupProber for LocalClient {
+impl ShardDedupProbe for LocalClient {
     async fn query_for_global_dedup_shard(
         &self,
         _prefix: &str,

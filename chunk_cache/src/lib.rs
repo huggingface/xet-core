@@ -34,7 +34,7 @@ pub struct CacheRange {
 /// ChunkCache is a trait for storing and fetching Xorb ranges.
 /// implementors are expected to return bytes for a key and a given chunk range
 /// (no compression or further deserialization should be required)
-/// Range inputs use chunk indices in a end exclusive way i.e. [start, end)
+/// Range inputs use chunk indices in an end exclusive way i.e. [start, end)
 ///
 /// implementors are allowed to evict data, a get after a put is not required to
 /// be a cache hit.

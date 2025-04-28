@@ -5,7 +5,6 @@ use std::result::Result as stdResult;
 use std::sync::Arc;
 
 use anyhow::anyhow;
-use async_trait::async_trait;
 use cas_object::{CasObject, CompressionScheme};
 use cas_types::{
     BatchQueryReconstructionResponse, FileRange, HttpRange, Key, QueryReconstructionResponse, UploadShardResponse,
@@ -14,6 +13,7 @@ use cas_types::{
 use chunk_cache::{CacheConfig, ChunkCache};
 use error_printer::ErrorPrinter;
 use file_utils::SafeFileCreator;
+use futures::StreamExt;
 use http::header::RANGE;
 use mdb_shard::file_structs::{FileDataSequenceEntry, FileDataSequenceHeader, MDBFileInfo};
 use mdb_shard::shard_file_reconstructor::FileReconstructor;
@@ -26,13 +26,15 @@ use tokio::task::{JoinError, JoinHandle, JoinSet};
 use tracing::{debug, info};
 use utils::auth::AuthConfig;
 use utils::progress::ProgressUpdater;
+#[cfg(not(target_family = "wasm"))]
 use utils::singleflight::Group;
 use xet_threadpool::ThreadPool;
 
+#[cfg(not(target_family = "wasm"))]
 use crate::download_utils::*;
 use crate::error::{CasClientError, Result};
 use crate::http_client::{ResponseErrorLogger, RetryConfig};
-use crate::interface::{ShardDedupProber, *};
+use crate::interface::{ShardDedupProbe, *};
 use crate::{http_client, Client, RegistrationClient, ShardClientInterface};
 
 const FORCE_SYNC_METHOD: reqwest::Method = reqwest::Method::PUT;
@@ -66,6 +68,7 @@ pub struct RemoteClient {
     conservative_authenticated_http_client: Arc<ClientWithMiddleware>,
     chunk_cache: Option<Arc<dyn ChunkCache>>,
     threadpool: Arc<ThreadPool>,
+    #[cfg(not(target_family = "wasm"))]
     range_download_single_flight: RangeDownloadSingleFlight,
     shard_cache_directory: PathBuf,
 }
@@ -97,7 +100,6 @@ impl RemoteClient {
         } else {
             None
         };
-        let range_download_single_flight = Arc::new(Group::new());
 
         Self {
             endpoint: endpoint.to_string(),
@@ -112,13 +114,15 @@ impl RemoteClient {
             http_client: Arc::new(http_client::build_http_client(RetryConfig::default()).unwrap()),
             chunk_cache,
             threadpool,
-            range_download_single_flight,
+            #[cfg(not(target_family = "wasm"))]
+            range_download_single_flight: Arc::new(Group::new()),
             shard_cache_directory,
         }
     }
 }
 
-#[async_trait]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
 impl UploadClient for RemoteClient {
     async fn put(
         &self,
@@ -159,7 +163,9 @@ impl UploadClient for RemoteClient {
     }
 }
 
-#[async_trait]
+#[cfg(not(target_family = "wasm"))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
 impl ReconstructionClient for RemoteClient {
     async fn get_file(
         &self,
@@ -187,8 +193,10 @@ impl ReconstructionClient for RemoteClient {
     }
 }
 
-#[async_trait]
-impl Reconstructable for RemoteClient {
+#[cfg(not(target_family = "wasm"))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+impl Reconstruct for RemoteClient {
     async fn get_reconstruction(
         &self,
         file_id: &MerkleHash,
@@ -244,6 +252,7 @@ pub(crate) async fn get_reconstruction_with_endpoint_and_client(
 
 impl Client for RemoteClient {}
 
+#[cfg(not(target_family = "wasm"))]
 impl RemoteClient {
     async fn batch_get_reconstruction(
         &self,
@@ -274,41 +283,6 @@ impl RemoteClient {
             .await
             .log_error("error json parsing BatchQueryReconstructionResponse")?;
         Ok(query_reconstruction_response)
-    }
-
-    pub async fn upload(
-        &self,
-        key: &Key,
-        contents: Vec<u8>,
-        chunk_and_boundaries: Vec<(MerkleHash, u32)>,
-    ) -> Result<(bool, usize)> {
-        let url = Url::parse(&format!("{}/xorb/{key}", self.endpoint))?;
-
-        let mut writer = Cursor::new(Vec::new());
-
-        let (_, nbytes_trans) =
-            CasObject::serialize(&mut writer, &key.hash, &contents, &chunk_and_boundaries, self.compression)?;
-        // free memory before the "slow" network transfer below
-        drop(contents);
-
-        debug!("Upload: POST to {url:?} for {key:?}");
-        writer.set_position(0);
-        let data = writer.into_inner();
-
-        if !self.dry_run {
-            let response = self
-                .authenticated_http_client
-                .post(url)
-                .body(data)
-                .send()
-                .await
-                .process_error("upload_xorb")?;
-            let response_parsed: UploadXorbResponse = response.json().await?;
-
-            Ok((response_parsed.was_inserted, nbytes_trans))
-        } else {
-            Ok((true, nbytes_trans))
-        }
     }
 
     // Segmented download such that the file reconstruction and fetch info is not queried in its entirety
@@ -595,7 +569,46 @@ impl RemoteClient {
     }
 }
 
-#[async_trait]
+/// upload impls
+impl RemoteClient {
+    pub async fn upload(
+        &self,
+        key: &Key,
+        contents: Vec<u8>,
+        chunk_and_boundaries: Vec<(MerkleHash, u32)>,
+    ) -> Result<(bool, usize)> {
+        let url = Url::parse(&format!("{}/xorb/{key}", self.endpoint))?;
+
+        let mut writer = Cursor::new(Vec::new());
+
+        let (_, nbytes_trans) =
+            CasObject::serialize(&mut writer, &key.hash, &contents, &chunk_and_boundaries, self.compression)?;
+        // free memory before the "slow" network transfer below
+        drop(contents);
+
+        debug!("Upload: POST to {url:?} for {key:?}");
+        writer.set_position(0);
+        let data = writer.into_inner();
+
+        if !self.dry_run {
+            let response = self
+                .authenticated_http_client
+                .post(url)
+                .body(data)
+                .send()
+                .await
+                .process_error("upload_xorb")?;
+            let response_parsed: UploadXorbResponse = response.json().await?;
+
+            Ok((response_parsed.was_inserted, nbytes_trans))
+        } else {
+            Ok((true, nbytes_trans))
+        }
+    }
+}
+
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
 impl RegistrationClient for RemoteClient {
     async fn upload_shard(
         &self,
@@ -639,7 +652,8 @@ impl RegistrationClient for RemoteClient {
     }
 }
 
-#[async_trait]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
 impl FileReconstructor<CasClientError> for RemoteClient {
     async fn get_file_reconstruction_info(
         &self,
@@ -673,8 +687,9 @@ impl FileReconstructor<CasClientError> for RemoteClient {
     }
 }
 
-#[async_trait]
-impl ShardDedupProber for RemoteClient {
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+impl ShardDedupProbe for RemoteClient {
     async fn query_for_global_dedup_shard(
         &self,
         prefix: &str,
@@ -696,7 +711,7 @@ impl ShardDedupProber for RemoteClient {
 
         let url = Url::parse(&format!("{0}/chunk/{key}", self.endpoint))?;
 
-        let mut response = self
+        let response = self
             .conservative_authenticated_http_client
             .get(url)
             .send()
@@ -712,7 +727,10 @@ impl ShardDedupProber for RemoteClient {
         // Compute the actual hash to use as the shard file name
         let mut hashed_writer = HashedWrite::new(writer);
 
-        while let Some(chunk) = response.chunk().await? {
+        let mut bytes_stream = response.bytes_stream();
+
+        while let Some(chunk) = bytes_stream.next().await {
+            let chunk = chunk?;
             hashed_writer.write_all(&chunk)?;
         }
         hashed_writer.flush()?;
@@ -730,6 +748,7 @@ impl ShardDedupProber for RemoteClient {
 impl ShardClientInterface for RemoteClient {}
 
 #[cfg(test)]
+#[cfg(not(target_family = "wasm"))]
 mod tests {
     use std::collections::HashMap;
 
