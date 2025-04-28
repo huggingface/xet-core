@@ -21,6 +21,10 @@ impl<T> From<T> for GlobalConfigMode<T> {
 // Reexport this so that dependencies don't have weird other dependencies
 pub use lazy_static::lazy_static;
 
+pub fn convert_value_to_bool(s: String) -> bool {
+    matches!(s.to_uppercase().as_str(), "1" | "ON" | "YES" | "TRUE")
+}
+
 #[macro_export]
 macro_rules! configurable_constants {
     ($(
@@ -38,6 +42,41 @@ macro_rules! configurable_constants {
                         std::env::var(concat!("HF_XET_",stringify!($name)))
                             .ok()
                             .and_then(|s| s.parse::<$type>().ok())
+                            .unwrap_or(v_)
+                    };
+
+                    match (v, cfg!(debug_assertions)) {
+                        (GlobalConfigMode::ReleaseFixed(v), false) => v,
+                        (GlobalConfigMode::ReleaseFixed(v), true) => try_load_from_env(v),
+                        (GlobalConfigMode::EnvConfigurable(v), _) => try_load_from_env(v),
+                        (GlobalConfigMode::HighPerformanceOption { standard, high_performance }, _) => try_load_from_env(if is_high_performance() { high_performance } else { standard }),
+                    }
+                };
+            }
+        )+
+    };
+}
+
+/// using configurable_bool_constants will set the variable to true if the environment variable is found
+/// and is set to a "truthy" value defined as one of `{"1", "ON", "YES", "TRUE"}` (case-insensitive).
+/// Any other value (or undefined) will be considered as `False`.
+#[macro_export]
+macro_rules! configurable_bool_constants {
+    ($(
+        $(#[$meta:meta])*
+        ref $name:ident = $value:expr;
+    )+) => {
+        $(
+            #[allow(unused_imports)]
+            use utils::constant_declarations::*;
+            lazy_static! {
+                $(#[$meta])*
+                pub static ref $name: bool = {
+                    let v : GlobalConfigMode<bool> = ($value).into();
+                    let try_load_from_env = |v_| {
+                        std::env::var(concat!("HF_XET_",stringify!($name)))
+                            .ok()
+                            .map(convert_value_to_bool)
                             .unwrap_or(v_)
                     };
 
@@ -118,17 +157,10 @@ macro_rules! test_set_globals {
 }
 
 fn get_high_performance_flag() -> bool {
-    let val = if let Ok(val) = std::env::var(concat!("HF_XET_", "HIGH_PERFORMANCE")) {
-        val
+    if let Ok(val) = std::env::var(concat!("HF_XET_", "HIGH_PERFORMANCE")) {
+        convert_value_to_bool(val)
     } else if let Ok(val) = std::env::var(concat!("HF_XET_", "HP")) {
-        val
-    } else {
-        return false;
-    };
-    if let Ok(val) = val.parse::<bool>() {
-        val
-    } else if let Ok(val) = val.parse::<usize>() {
-        val == 1
+        convert_value_to_bool(val)
     } else {
         false
     }
