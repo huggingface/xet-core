@@ -1,11 +1,10 @@
 [package]
-name = "wasm_xet"
+name = "hf_xet_wasm"
 version = "0.0.1"
 edition = "2021"
 
-#[features]
-#default = ["es_modules"]
-#es_modules = []
+[lib]
+crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 wasm-bindgen = "0.2.95"
@@ -42,9 +41,10 @@ thiserror = "2.0"
 async-channel = "2.3.1"
 
 merklehash = { path = "../merklehash" }
-deduplication = {path = "../deduplication" }
-mdb_shard = {path = "../mdb_shard" }
-merkledb = {path = "../merkledb" }
+deduplication = { path = "../deduplication" }
+mdb_shard = { path = "../mdb_shard" }
+merkledb = { path = "../merkledb" }
+utils = { path = "../utils" }
 
 [package.metadata.docs.rs]
 targets = ["wasm32-unknown-unknown"]
