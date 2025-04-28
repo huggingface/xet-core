@@ -1,10 +1,8 @@
 use std::collections::HashMap;
-use std::fs::OpenOptions;
 use std::io::{Seek, SeekFrom, Write};
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use async_trait::async_trait;
 use cas_types::{FileRange, QueryReconstructionResponse};
 use mdb_shard::shard_file_reconstructor::FileReconstructor;
 use merklehash::MerkleHash;
@@ -18,7 +16,8 @@ use crate::CasClientError;
 /// of arbitrary bytes. These bytes are hashed according to a Xet Merkle Hash
 /// producing a Merkle Tree. XORBs in the CAS are identified by a combination of
 /// a prefix namespacing the XORB and the hash at the root of the Merkle Tree.
-#[async_trait]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
 pub trait UploadClient {
     /// Insert the provided data into the CAS as a XORB indicated by the prefix and hash.
     /// The hash will be verified on the SERVER-side according to the chunk boundaries.
@@ -48,7 +47,8 @@ pub trait UploadClient {
 /// spawn its own threads. Instead, it is expected to be given the parallelism harness/threadpool/queue
 /// on which it is expected to run. This allows the caller to better optimize overall system utilization
 /// by controlling the number of concurrent requests.
-#[async_trait]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
 pub trait ReconstructionClient {
     /// Get an entire file by file hash with an optional bytes range.
     ///
@@ -75,6 +75,7 @@ pub trait ReconstructionClient {
 /// Enum of different output formats to write reconstructed files.
 #[derive(Debug, Clone)]
 pub enum OutputProvider {
+    #[cfg(not(target_family = "wasm"))]
     File(FileProvider),
     #[cfg(test)]
     Buffer(buffer::BufferProvider),
@@ -82,28 +83,33 @@ pub enum OutputProvider {
 
 impl OutputProvider {
     /// Create a new writer to start writing at the indicated start location.
-    pub(crate) fn get_writer_at(&self, start: u64) -> Result<Box<dyn Write + Send>> {
+    pub(crate) fn get_writer_at(&self, _start: u64) -> Result<Box<dyn Write + Send>> {
         match self {
-            OutputProvider::File(fp) => fp.get_writer_at(start),
+            #[cfg(not(target_family = "wasm"))]
+            OutputProvider::File(fp) => fp.get_writer_at(_start),
             #[cfg(test)]
-            OutputProvider::Buffer(bp) => bp.get_writer_at(start),
+            OutputProvider::Buffer(bp) => bp.get_writer_at(_start),
+            #[allow(unreachable_patterns)]
+            _ => todo!(),
         }
     }
 }
 
 /// Provides new Writers to a file located at a particular location
+#[cfg(not(target_family = "wasm"))]
 #[derive(Debug, Clone)]
 pub struct FileProvider {
     filename: PathBuf,
 }
 
+#[cfg(not(target_family = "wasm"))]
 impl FileProvider {
     pub fn new(filename: PathBuf) -> Self {
         Self { filename }
     }
 
     fn get_writer_at(&self, start: u64) -> Result<Box<dyn Write + Send>> {
-        let mut file = OpenOptions::new()
+        let mut file = std::fs::OpenOptions::new()
             .write(true)
             .truncate(false)
             .create(true)
@@ -118,7 +124,8 @@ impl FileProvider {
 /// - Ok(Some(response)) if the query succeeded,
 /// - Ok(None) if the specified range can't be satisfied,
 /// - Err(e) for other errors.
-#[async_trait]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
 pub trait Reconstructable {
     async fn get_reconstruction(
         &self,
@@ -129,7 +136,8 @@ pub trait Reconstructable {
 
 /// Probes for shards that provide dedup information for a chunk, and, if
 /// any are found, writes them to disk and returns the path.
-#[async_trait]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
 pub trait ShardDedupProber {
     async fn query_for_global_dedup_shard(
         &self,
@@ -139,7 +147,8 @@ pub trait ShardDedupProber {
     ) -> Result<Option<PathBuf>>;
 }
 
-#[async_trait]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
 pub trait RegistrationClient {
     async fn upload_shard(
         &self,

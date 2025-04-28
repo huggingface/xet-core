@@ -52,6 +52,9 @@ fn is_elevated_impl() -> bool {
             elevation.TokenIsElevated != 0
         }
     }
+
+    #[cfg(target_family = "wasm")]
+    false
 }
 
 lazy_static! {

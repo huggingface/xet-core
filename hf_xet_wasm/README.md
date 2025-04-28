@@ -24,3 +24,22 @@ sfz --coi -r examples
 - Observe in browser
 In browser, go to URL http://127.0.0.1:5000, hit F12 and check the output
 under the "Console" tab.
+
+## Building the exportable package
+
+Install wasm-pack
+
+```bash
+cargo install wasm-pack
+```
+
+```bash
+wasm-pack build
+```
+
+To use, import in js in the following way
+```js
+import {}
+
+
+```

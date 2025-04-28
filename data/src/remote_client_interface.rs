@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 pub use cas_client::Client;
-use cas_client::{LocalClient, RemoteClient};
+use cas_client::RemoteClient;
 use xet_threadpool::ThreadPool;
 
 use crate::configurations::*;
@@ -14,8 +14,8 @@ pub(crate) fn create_remote_client(
 ) -> Result<Arc<dyn Client + Send + Sync>> {
     let cas_storage_config = &config.data_config;
 
-    match cas_storage_config.endpoint {
-        Endpoint::Server(ref endpoint) => Ok(Arc::new(RemoteClient::new(
+    let client = match cas_storage_config.endpoint {
+        Endpoint::Server(ref endpoint) => Arc::new(RemoteClient::new(
             threadpool,
             endpoint,
             cas_storage_config.compression,
@@ -23,7 +23,20 @@ pub(crate) fn create_remote_client(
             &Some(cas_storage_config.cache_config.clone()),
             config.shard_config.cache_directory.clone(),
             dry_run,
-        ))),
-        Endpoint::FileSystem(ref path) => Ok(Arc::new(LocalClient::new(path, None)?)),
-    }
+        )),
+        Endpoint::FileSystem(ref path) => {
+            #[cfg(not(target_family = "wasm"))]
+            {
+                Arc::new(cas_client::LocalClient::new(path, None)?)
+            }
+
+            #[cfg(target_family = "wasm")]
+            {
+                return Err(crate::errors::DataProcessingError::CASConfigError(
+                    "FileSystem endpoint is not supported in WASM".to_string(),
+                ));
+            }
+        },
+    };
+    Ok(client)
 }

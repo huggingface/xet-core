@@ -146,6 +146,7 @@ pub(crate) struct TermDownload {
     #[derivative(Debug = "ignore")]
     pub chunk_cache: Option<Arc<dyn ChunkCache>>,
     pub client: Arc<ClientWithMiddleware>, // only used for downloading range
+    #[cfg(not(target_family = "wasm"))]
     pub range_download_single_flight: RangeDownloadSingleFlight,
 }
 
@@ -171,6 +172,7 @@ impl TermDownload {
                 self.chunk_cache.clone(),
                 self.term.clone(),
                 fetch_info,
+                #[cfg(not(target_family = "wasm"))]
                 self.range_download_single_flight.clone(),
             )
             .await;
@@ -293,7 +295,7 @@ pub(crate) async fn get_one_term(
     chunk_cache: Option<Arc<dyn ChunkCache>>,
     term: CASReconstructionTerm,
     fetch_term: CASReconstructionFetchInfo,
-    range_download_single_flight: RangeDownloadSingleFlight,
+    #[cfg(not(target_family = "wasm"))] range_download_single_flight: RangeDownloadSingleFlight,
 ) -> Result<Vec<u8>> {
     debug!("term: {term:?}");
 
@@ -314,9 +316,12 @@ pub(crate) async fn get_one_term(
 
     // fetch the range from blob store and deserialize the chunks
     // then put into the cache if used
+    #[cfg(not(target_family = "wasm"))]
     let download_range_result = range_download_single_flight
         .work_dump_caller_info(&fetch_term.url, download_range(http_client, fetch_term.clone(), term.hash))
         .await?;
+    #[cfg(target_family = "wasm")]
+    let download_range_result = download_range(http_client, fetch_term.clone(), term.hash).await?;
 
     let DownloadRangeResult::Data(mut data, chunk_byte_indices) = download_range_result else {
         return Err(CasClientError::PresignedUrlExpirationError);
@@ -394,10 +399,14 @@ async fn download_range(
         }
     }
 
+    #[cfg(not(target_family = "wasm"))]
     let (data, chunk_byte_indices) = cas_object::deserialize_async::deserialize_chunks_from_stream(
         response.bytes_stream().map_err(std::io::Error::other),
     )
     .await?;
+    #[cfg(target_family = "wasm")]
+    let (data, chunk_byte_indices) =
+        cas_object::deserialize_chunks(&mut std::io::Cursor::new(response.bytes().await?))?;
     Ok(DownloadRangeResult::Data(data, chunk_byte_indices))
 }
 

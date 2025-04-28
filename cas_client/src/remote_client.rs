@@ -5,7 +5,6 @@ use std::result::Result as stdResult;
 use std::sync::Arc;
 
 use anyhow::anyhow;
-use async_trait::async_trait;
 use cas_object::{CasObject, CompressionScheme};
 use cas_types::{
     BatchQueryReconstructionResponse, FileRange, HttpRange, Key, QueryReconstructionResponse, UploadShardResponse,
@@ -14,6 +13,7 @@ use cas_types::{
 use chunk_cache::{CacheConfig, ChunkCache};
 use error_printer::ErrorPrinter;
 use file_utils::SafeFileCreator;
+use futures::StreamExt;
 use http::header::RANGE;
 use mdb_shard::file_structs::{FileDataSequenceEntry, FileDataSequenceHeader, MDBFileInfo};
 use mdb_shard::shard_file_reconstructor::FileReconstructor;
@@ -26,6 +26,7 @@ use tokio::task::{JoinError, JoinHandle, JoinSet};
 use tracing::{debug, info};
 use utils::auth::AuthConfig;
 use utils::progress::ProgressUpdater;
+#[cfg(not(target_family = "wasm"))]
 use utils::singleflight::Group;
 use xet_threadpool::ThreadPool;
 
@@ -66,6 +67,7 @@ pub struct RemoteClient {
     conservative_authenticated_http_client: Arc<ClientWithMiddleware>,
     chunk_cache: Option<Arc<dyn ChunkCache>>,
     threadpool: Arc<ThreadPool>,
+    #[cfg(not(target_family = "wasm"))]
     range_download_single_flight: RangeDownloadSingleFlight,
     shard_cache_directory: PathBuf,
 }
@@ -97,6 +99,7 @@ impl RemoteClient {
         } else {
             None
         };
+        #[cfg(not(target_family = "wasm"))]
         let range_download_single_flight = Arc::new(Group::new());
 
         Self {
@@ -112,13 +115,15 @@ impl RemoteClient {
             http_client: Arc::new(http_client::build_http_client(RetryConfig::default()).unwrap()),
             chunk_cache,
             threadpool,
+            #[cfg(not(target_family = "wasm"))]
             range_download_single_flight,
             shard_cache_directory,
         }
     }
 }
 
-#[async_trait]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
 impl UploadClient for RemoteClient {
     async fn put(
         &self,
@@ -159,7 +164,8 @@ impl UploadClient for RemoteClient {
     }
 }
 
-#[async_trait]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
 impl ReconstructionClient for RemoteClient {
     async fn get_file(
         &self,
@@ -187,7 +193,8 @@ impl ReconstructionClient for RemoteClient {
     }
 }
 
-#[async_trait]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
 impl Reconstructable for RemoteClient {
     async fn get_reconstruction(
         &self,
@@ -349,6 +356,7 @@ impl RemoteClient {
         let threadpool = self.threadpool.clone();
         let chunk_cache = self.chunk_cache.clone();
         let term_download_client = self.http_client.clone();
+        #[cfg(not(target_family = "wasm"))]
         let range_download_single_flight = self.range_download_single_flight.clone();
         let download_scheduler = DownloadScheduler::new(*NUM_CONCURRENT_RANGE_GETS);
         let download_scheduler_clone = download_scheduler.clone();
@@ -404,6 +412,7 @@ impl RemoteClient {
                                 fetch_info: segment.clone(),
                                 chunk_cache: chunk_cache.clone(),
                                 client: term_download_client.clone(),
+                                #[cfg(not(target_family = "wasm"))]
                                 range_download_single_flight: range_download_single_flight.clone(),
                             };
 
@@ -595,7 +604,8 @@ impl RemoteClient {
     }
 }
 
-#[async_trait]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
 impl RegistrationClient for RemoteClient {
     async fn upload_shard(
         &self,
@@ -639,7 +649,8 @@ impl RegistrationClient for RemoteClient {
     }
 }
 
-#[async_trait]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
 impl FileReconstructor<CasClientError> for RemoteClient {
     async fn get_file_reconstruction_info(
         &self,
@@ -673,7 +684,8 @@ impl FileReconstructor<CasClientError> for RemoteClient {
     }
 }
 
-#[async_trait]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
 impl ShardDedupProber for RemoteClient {
     async fn query_for_global_dedup_shard(
         &self,
@@ -696,7 +708,7 @@ impl ShardDedupProber for RemoteClient {
 
         let url = Url::parse(&format!("{0}/chunk/{key}", self.endpoint))?;
 
-        let mut response = self
+        let response = self
             .conservative_authenticated_http_client
             .get(url)
             .send()
@@ -712,7 +724,9 @@ impl ShardDedupProber for RemoteClient {
         // Compute the actual hash to use as the shard file name
         let mut hashed_writer = HashedWrite::new(writer);
 
-        while let Some(chunk) = response.chunk().await? {
+        let mut stream = response.bytes_stream();
+        while let Some(chunk) = stream.next().await {
+            let chunk = chunk?;
             hashed_writer.write_all(&chunk)?;
         }
         hashed_writer.flush()?;
