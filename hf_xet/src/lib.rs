@@ -232,7 +232,7 @@ impl PyXetUploadInfo {
     }
 
     fn __repr__(&self) -> String {
-        format!("PyXetFileInfo({}, {})", self.hash, self.file_size)
+        format!("PyXetUploadInfo({}, {})", self.hash, self.file_size)
     }
 }
 
