@@ -199,9 +199,7 @@ pub use upload::*;
 #[cfg(test)]
 pub mod buffer {
     use std::io::Cursor;
-    use std::sync::Mutex;
-
-    use super::*;
+    use std::sync::{Arc, Mutex};
 
     #[derive(Debug, Default, Clone)]
     pub struct BufferProvider {
@@ -209,7 +207,7 @@ pub mod buffer {
     }
 
     impl BufferProvider {
-        pub fn get_writer_at(&self, start: u64) -> Result<Box<dyn Write + Send>> {
+        pub fn get_writer_at(&self, start: u64) -> crate::error::Result<Box<dyn std::io::Write + Send>> {
             let mut buffer = self.buf.clone();
             buffer.idx = start;
             Ok(Box::new(buffer))
@@ -231,7 +229,7 @@ pub mod buffer {
         }
     }
 
-    impl Write for ThreadSafeBuffer {
+    impl std::io::Write for ThreadSafeBuffer {
         fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
             let mut guard = self.inner.lock().map_err(|e| std::io::Error::other(format!("{e}")))?;
             guard.set_position(self.idx);
