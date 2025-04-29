@@ -194,20 +194,19 @@ impl PyPointerFile {
         format!("PyPointerFile({}, {}, {})", super_.destination_path, super_.hash, super_.file_size)
     }
 
+    #[getter]
     fn get_path(self_: PyRef<'_, Self>) -> String {
         self_.as_super().destination_path.clone()
     }
 
-    fn get_hash(self_: PyRef<'_, Self>) -> String {
-        self_.as_super().hash.clone()
-    }
-
+    #[setter]
     fn set_path(mut self_: PyRefMut<'_, Self>, path: String) {
         self_.as_super().destination_path = path;
     }
 
-    fn set_filesize(mut self_: PyRefMut<'_, Self>, filesize: u64) {
-        self_.as_super().file_size = filesize;
+    #[getter]
+    fn filesize(self_: PyRef<'_, Self>) -> u64 {
+        self_.as_super().file_size 
     }
 }
 
@@ -233,6 +232,12 @@ impl PyXetUploadInfo {
 
     fn __repr__(&self) -> String {
         format!("PyXetUploadInfo({}, {})", self.hash, self.file_size)
+    }
+
+    /// TODO: Remove these getters in the next major version update.
+    #[getter]
+    fn filesize(self_: PyRef<'_, Self>) -> u64 {
+        self_.file_size
     }
 }
 
