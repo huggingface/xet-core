@@ -64,11 +64,16 @@ pub enum CasClientError {
 }
 
 impl From<reqwest::Error> for CasClientError {
-    fn from(value: reqwest::Error) -> Self {
-        // strip non-domain info from url, primarily query parameters which can be sensitive information
-        let domain = value.url().and_then(|url| url.domain()).unwrap_or_default().to_string();
+    fn from(mut value: reqwest::Error) -> Self {
+        // strip query params from url
+        let url = if let Some(url) = value.url_mut() {
+            url.set_query(None);
+            url.to_string()
+        } else {
+            "no-url".to_string()
+        };
         let value = value.without_url();
-        CasClientError::ReqwestError(value, domain)
+        CasClientError::ReqwestError(value, url)
     }
 }
 
