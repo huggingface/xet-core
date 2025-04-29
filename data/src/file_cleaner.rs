@@ -30,7 +30,7 @@ use crate::PointerFile;
 //
 // - deduper_process_chunks() will start processing of new chunks in background
 // and switch dedup_manager into Background(JoinHandle)
-type DedupeBoxType = Cell<FileDeduper<UploadSessionDataManager>>;
+type DedupeBoxType = Box<Cell<FileDeduper<UploadSessionDataManager>>>;
 type ProcessChunksResult = Result<DeduplicationMetrics>;
 enum DedupManagerBackgrounder {
     Foreground(Option<DedupeBoxType>),
@@ -63,7 +63,8 @@ pub struct SingleFileCleaner {
 
 impl SingleFileCleaner {
     pub(crate) fn new(file_name: Arc<str>, file_id: CompletionTrackerFileId, session: Arc<FileUploadSession>) -> Self {
-        let deduper = Cell::new(FileDeduper::new(UploadSessionDataManager::new(session.clone(), file_id), file_id));
+        let deduper =
+            Box::new(Cell::new(FileDeduper::new(UploadSessionDataManager::new(session.clone(), file_id), file_id)));
         Self {
             file_name,
             file_id,

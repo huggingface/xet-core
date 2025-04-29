@@ -11,7 +11,7 @@ use merklehash::MerkleHash;
 use more_asserts::*;
 use tokio::sync::{Mutex, OwnedSemaphorePermit, Semaphore};
 use tokio::task::JoinSet;
-use utils::progress::{NoOpProgressUpdater, ProgressUpdaterVerificationWrapper, TrackingProgressUpdater};
+use utils::progress::{NoOpProgressUpdater, TrackingProgressUpdater};
 use xet_threadpool::ThreadPool;
 
 use crate::configurations::*;
@@ -81,7 +81,7 @@ pub struct FileUploadSession {
     session_xorbs: Mutex<HashSet<MerkleHash>>,
 
     #[cfg(debug_assertions)]
-    progress_verification_tracker: Arc<ProgressUpdaterVerificationWrapper>,
+    progress_verification_tracker: Arc<utils::progress::ProgressUpdaterVerificationWrapper>,
 }
 
 // Constructors
@@ -114,7 +114,7 @@ impl FileUploadSession {
         // and correctness.  This is checked at the end.
         #[cfg(debug_assertions)]
         let (progress_updater, progress_verification_tracker) = {
-            let updater = ProgressUpdaterVerificationWrapper::new(progress_updater);
+            let updater = utils::progress::ProgressUpdaterVerificationWrapper::new(progress_updater);
 
             (updater.clone() as Arc<dyn TrackingProgressUpdater>, updater)
         };
