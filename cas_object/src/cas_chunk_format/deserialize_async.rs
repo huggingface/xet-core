@@ -120,7 +120,7 @@ where
 mod tests {
     use bytes::Bytes;
     use futures::Stream;
-    use rand::{thread_rng, Rng};
+    use rand::{rng, Rng};
 
     use crate::deserialize_async::deserialize_chunks_to_writer_from_stream;
     use crate::{serialize_chunk, CompressionScheme};
@@ -149,7 +149,7 @@ mod tests {
     ) -> impl Stream<Item = Result<Bytes, std::io::Error>> + Unpin {
         let data = get_chunks(rng, num_chunks, compression_scheme);
         let it = data
-            .chunks(data.len() / (2 + rng.gen::<usize>() % 8))
+            .chunks(data.len() / (2 + rng.random::<u64>() % 8) as usize)
             .map(|chunk| Ok(Bytes::copy_from_slice(chunk)))
             .collect::<Vec<_>>();
         futures::stream::iter(it)
@@ -165,7 +165,7 @@ mod tests {
             (100, CompressionScheme::LZ4),
             (1000, CompressionScheme::LZ4),
         ];
-        let rng = &mut thread_rng();
+        let rng = &mut rng();
         for (num_chunks, compression_scheme) in cases {
             let stream = get_stream(rng, num_chunks, compression_scheme);
             let mut buf = Vec::new();

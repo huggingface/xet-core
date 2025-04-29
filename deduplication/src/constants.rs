@@ -4,13 +4,16 @@ utils::configurable_constants! {
     ref TARGET_CHUNK_SIZE: usize = release_fixed(64 * 1024);
 
     /// TARGET_CDC_CHUNK_SIZE / MINIMUM_CHUNK_DIVISOR is the smallest chunk size
+    /// Note that this is not a threshold but a recommendation.
+    /// Smaller chunks can be produced if size of a file is smaller than this number.
     ref MINIMUM_CHUNK_DIVISOR: usize = release_fixed(8);
 
     /// TARGET_CDC_CHUNK_SIZE * MAXIMUM_CHUNK_MULTIPLIER is the largest chunk size
+    /// Note that this is a limit.
     ref MAXIMUM_CHUNK_MULTIPLIER: usize = release_fixed(2);
 
     /// The maximum number of bytes to go in a single xorb.
-    ref MAX_XORB_BYTES: usize = 64 * 1024 * 1024;
+    ref MAX_XORB_BYTES: usize = release_fixed(64 * 1024 * 1024);
 
     /// The maximum number of chunks to go in a single xorb.
     /// Chunks are targeted at 64K, for ~1024 chunks per xorb, but

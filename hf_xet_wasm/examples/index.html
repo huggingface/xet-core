@@ -1,0 +1,31 @@
+<html>
+
+<head>
+    <meta charset="UTF-8" />
+</head>
+
+<body>
+    <p>
+        <label for="file_picker">Choose a file to upload with Xet:</label>
+        <input type="file" id="file_picker" name="file_picker">
+    </p>
+    <script type="module">
+        import init, { test_async_blob_reader } from "./target/simple.js";
+        await init();
+        // let ret = await test_threads();
+        // console.log("test_threads says: " + ret);
+
+        document.getElementById("file_picker").addEventListener(
+            "change",
+            function () {
+                console.log("eventListener 'change' inside simple.html runs");
+                let file = this.files[0];
+                console.log("cleaning file: " + file);
+                test_async_blob_reader(file).then((x) => { console.log("test result: " + x) });
+            },
+            false
+        );
+    </script>
+</body>
+
+</html>

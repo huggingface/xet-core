@@ -494,7 +494,7 @@ mod tests {
     use std::time::Duration;
 
     use rand::prelude::*;
-    use tempdir::TempDir;
+    use tempfile::TempDir;
 
     use super::*;
     use crate::cas_structs::{CASChunkSequenceEntry, CASChunkSequenceHeader};
@@ -564,7 +564,7 @@ mod tests {
         let mut reference_shard = MDBInMemoryShard::default();
 
         for _ in 0..n_shards {
-            fill_with_random_shard(&sfm, &mut reference_shard, rng.gen(), cas_block_sizes, file_chunk_range_sizes)
+            fill_with_random_shard(&sfm, &mut reference_shard, rng.random(), cas_block_sizes, file_chunk_range_sizes)
                 .await?;
 
             sfm.flush().await?;
@@ -588,10 +588,10 @@ mod tests {
             let mut pos = 0u32;
 
             for _ in 0..*cas_block_size {
-                chunks.push(CASChunkSequenceEntry::new(rng_hash(rng.gen()), rng.gen_range(10000..20000), pos));
-                pos += rng.gen_range(10000..20000);
+                chunks.push(CASChunkSequenceEntry::new(rng_hash(rng.random()), rng.random_range(10000..20000), pos));
+                pos += rng.random_range(10000..20000);
             }
-            let metadata = CASChunkSequenceHeader::new(rng_hash(rng.gen()), *cas_block_size, pos);
+            let metadata = CASChunkSequenceHeader::new(rng_hash(rng.random()), *cas_block_size, pos);
             let mdb_cas_info = MDBCASInfo { metadata, chunks };
 
             shard.add_cas_block(mdb_cas_info.clone()).await?;
@@ -696,7 +696,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_basic_retrieval() -> Result<()> {
-        let tmp_dir = TempDir::new("gitxet_shard_test_1")?;
+        let tmp_dir = TempDir::with_prefix("gitxet_shard_test_1")?;
         let mut mdb_in_mem = MDBInMemoryShard::default();
 
         {
@@ -743,7 +743,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_larger_simulated() -> Result<()> {
-        let tmp_dir = TempDir::new("gitxet_shard_test_2")?;
+        let tmp_dir = TempDir::with_prefix("gitxet_shard_test_2")?;
         let mut mdb_in_mem = MDBInMemoryShard::default();
         let mdb = ShardFileManager::new_in_session_directory(tmp_dir.path()).await?;
 
@@ -774,7 +774,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_process_session_management() -> Result<()> {
-        let tmp_dir = TempDir::new("gitxet_shard_test_3").unwrap();
+        let tmp_dir = TempDir::with_prefix("gitxet_shard_test_3").unwrap();
         let mut mdb_in_mem = MDBInMemoryShard::default();
 
         for sesh in 0..3 {
@@ -825,7 +825,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_flush_and_consolidation() -> Result<()> {
-        let tmp_dir = TempDir::new("gitxet_shard_test_4b")?;
+        let tmp_dir = TempDir::with_prefix("gitxet_shard_test_4b")?;
         let mut mdb_in_mem = MDBInMemoryShard::default();
 
         const T: u64 = 10000;
@@ -876,7 +876,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_size_threshholds() -> Result<()> {
-        let tmp_dir = TempDir::new("gitxet_shard_test_4")?;
+        let tmp_dir = TempDir::with_prefix("gitxet_shard_test_4")?;
         let mut mdb_in_mem = MDBInMemoryShard::default();
 
         const T: u64 = 4096;
@@ -935,7 +935,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_keyed_shard_tooling() -> Result<()> {
-        let tmp_dir = TempDir::new("shard_test_unkeyed")?;
+        let tmp_dir = TempDir::with_prefix("shard_test_unkeyed")?;
         let tmp_dir_path = tmp_dir.path();
 
         let ref_shard = create_random_shard_collection(0, tmp_dir_path, 2, &[1, 5, 10, 8], &[4, 3, 5, 9, 4, 6]).await?;
@@ -948,7 +948,7 @@ mod tests {
 
         // Now convert them them into keyed shards.
         for include_info in [false, true] {
-            let _tmp_dir_keyed = TempDir::new("shard_test_keyed")?;
+            let _tmp_dir_keyed = TempDir::with_prefix("shard_test_keyed")?;
             let tmp_dir_path_keyed = _tmp_dir_keyed.path();
 
             // Enumerate all the .mdbshard files in the tmp_dir_path directory
@@ -1009,7 +1009,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_timestamp_filtering() -> Result<()> {
-        let tmp_dir = TempDir::new("shard_test_timestamp")?;
+        let tmp_dir = TempDir::with_prefix("shard_test_timestamp")?;
         let tmp_dir_path = tmp_dir.path();
 
         // Just create a single shard; we'll key it with other keys and timestamps and then test loading.
@@ -1022,7 +1022,7 @@ mod tests {
 
         let shard = MDBShardFile::load_from_file(&path)?;
 
-        let _tmp_dir_keyed = TempDir::new("shard_test_keyed_1")?;
+        let _tmp_dir_keyed = TempDir::with_prefix("shard_test_keyed_1")?;
         let tmp_dir_path_keyed = _tmp_dir_keyed.path();
 
         // Reexport this shard as a keyed shards.
@@ -1071,7 +1071,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_export_expiration() -> Result<()> {
-        let tmp_dir = TempDir::new("shard_test_timestamp_2")?;
+        let tmp_dir = TempDir::with_prefix("shard_test_timestamp_2")?;
         let tmp_dir_path = tmp_dir.path();
 
         // Just create a single shard; we'll key it with other keys and timestamps and then test loading.
@@ -1081,7 +1081,7 @@ mod tests {
 
         let shard = MDBShardFile::load_from_file(&path)?;
 
-        let _tmp_dir_expiry = TempDir::new("shard_test_expiry_2")?;
+        let _tmp_dir_expiry = TempDir::with_prefix("shard_test_expiry_2")?;
         let tmp_dir_path_expiry = _tmp_dir_expiry.path();
 
         // Create another that has an expiration date of one second from now.

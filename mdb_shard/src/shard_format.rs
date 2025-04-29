@@ -1249,7 +1249,7 @@ pub mod test_routines {
     }
     pub fn rng_hash(seed: u64) -> MerkleHash {
         let mut rng = SmallRng::seed_from_u64(seed);
-        MerkleHash::from([rng.gen(), rng.gen(), rng.gen(), rng.gen()])
+        MerkleHash::from([rng.random(), rng.random(), rng.random(), rng.random()])
     }
 
     pub fn convert_to_file(shard: &MDBInMemoryShard) -> Result<Vec<u8>> {
@@ -1397,12 +1397,12 @@ pub mod test_routines {
             let mut pos = 0u32;
 
             for _ in 0..*cas_block_size {
-                cas_block.push(CASChunkSequenceEntry::new(rng_hash(rng.gen()), rng.gen_range(10000..20000), pos));
-                pos += rng.gen_range(10000..20000);
+                cas_block.push(CASChunkSequenceEntry::new(rng_hash(rng.random()), rng.random_range(10000..20000), pos));
+                pos += rng.random_range(10000..20000);
             }
 
             let cas_block = MDBCASInfo {
-                metadata: CASChunkSequenceHeader::new(rng_hash(rng.gen()), *cas_block_size, pos),
+                metadata: CASChunkSequenceHeader::new(rng_hash(rng.random()), *cas_block_size, pos),
                 chunks: cas_block,
             };
 
@@ -1438,26 +1438,26 @@ pub mod test_routines {
         contains_verification: bool,
         contains_metadata_ext: bool,
     ) -> MDBFileInfo {
-        let file_hash = rng_hash(rng.gen());
+        let file_hash = rng_hash(rng.random());
 
         let file_contents: Vec<_> = (0..*file_block_size)
             .map(|_| {
-                let lb = rng.gen_range(0..10000);
-                let ub = lb + rng.gen_range(0..10000);
-                FileDataSequenceEntry::new(rng_hash(rng.gen()), ub - lb, lb, ub)
+                let lb = rng.random_range(0..10000);
+                let ub = lb + rng.random_range(0..10000);
+                FileDataSequenceEntry::new(rng_hash(rng.random()), ub - lb, lb, ub)
             })
             .collect();
 
         let verification = if contains_verification {
             file_contents
                 .iter()
-                .map(|_| FileVerificationEntry::new(rng_hash(rng.gen())))
+                .map(|_| FileVerificationEntry::new(rng_hash(rng.random())))
                 .collect()
         } else {
             vec![]
         };
 
-        let metadata_ext = contains_metadata_ext.then(|| rng_hash(rng.gen())).map(FileMetadataExt::new);
+        let metadata_ext = contains_metadata_ext.then(|| rng_hash(rng.random())).map(FileMetadataExt::new);
 
         MDBFileInfo {
             metadata: FileDataSequenceHeader::new(
@@ -1479,14 +1479,14 @@ pub mod test_routines {
         contains_verification: bool,
         contains_metadata_ext: bool,
     ) -> MDBFileInfo {
-        let file_hash = rng_hash(rng.gen()); // Not verified at the moment.
+        let file_hash = rng_hash(rng.random()); // Not verified at the moment.
 
         let file_contents: Vec<_> = (0..*file_block_size)
             .map(|_| {
-                let cas_idx = rng.gen_range(0..cas_nodes.len());
+                let cas_idx = rng.random_range(0..cas_nodes.len());
                 let cas_block = &cas_nodes[cas_idx];
-                let start_idx = rng.gen_range(0..cas_block.chunks.len());
-                let end_idx = rng.gen_range((start_idx + 1)..=(cas_nodes[cas_idx].chunks.len()));
+                let start_idx = rng.random_range(0..cas_block.chunks.len());
+                let end_idx = rng.random_range((start_idx + 1)..=(cas_nodes[cas_idx].chunks.len()));
 
                 FileDataSequenceEntry::new(
                     cas_block.metadata.cas_hash,
@@ -1503,13 +1503,13 @@ pub mod test_routines {
         let verification = if contains_verification {
             file_contents
                 .iter()
-                .map(|_| FileVerificationEntry::new(rng_hash(rng.gen())))
+                .map(|_| FileVerificationEntry::new(rng_hash(rng.random())))
                 .collect()
         } else {
             vec![]
         };
 
-        let metadata_ext = contains_metadata_ext.then(|| rng_hash(rng.gen())).map(FileMetadataExt::new);
+        let metadata_ext = contains_metadata_ext.then(|| rng_hash(rng.random())).map(FileMetadataExt::new);
 
         MDBFileInfo {
             metadata: FileDataSequenceHeader::new(

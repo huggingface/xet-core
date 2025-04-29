@@ -271,7 +271,7 @@ mod tests {
         let mut rng = StdRng::seed_from_u64(0);
 
         for _ in 0..100 {
-            v.push(rng.gen());
+            v.push(rng.random());
         }
 
         test_interpolation_search(&v[..], &[0, u64::MAX])
@@ -283,8 +283,8 @@ mod tests {
         let mut rng = StdRng::seed_from_u64(0);
 
         for _ in 0..200 {
-            let len = rng.gen_range(1..8);
-            let x: u64 = rng.gen();
+            let len = rng.random_range(1..8);
+            let x: u64 = rng.random();
             v.resize(v.len() + len, x);
         }
 

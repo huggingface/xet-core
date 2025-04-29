@@ -7,6 +7,7 @@ use merkledb::constants::MAXIMUM_CHUNK_SIZE;
 use crate::error::CasObjectError;
 use crate::CompressionScheme;
 
+#[cfg(not(target_family = "wasm"))]
 pub mod deserialize_async;
 
 pub const CAS_CHUNK_HEADER_LENGTH: usize = size_of::<CASChunkHeader>();
@@ -267,7 +268,7 @@ mod tests {
     }
 
     fn gen_random_bytes(uncompressed_chunk_size: u32) -> Vec<u8> {
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rng();
         let mut data = vec![0u8; uncompressed_chunk_size as usize];
         rng.fill(&mut data[..]);
         data
