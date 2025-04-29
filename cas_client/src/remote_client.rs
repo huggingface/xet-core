@@ -15,7 +15,6 @@ use cas_types::{
 use chunk_cache::{CacheConfig, ChunkCache};
 use error_printer::ErrorPrinter;
 use file_utils::SafeFileCreator;
-use futures::StreamExt;
 use http::header::RANGE;
 use mdb_shard::file_structs::{FileDataSequenceEntry, FileDataSequenceHeader, MDBFileInfo};
 use mdb_shard::shard_file_reconstructor::FileReconstructor;
@@ -729,7 +728,7 @@ impl ShardDedupProbe for RemoteClient {
         chunk_hash: &MerkleHash,
         _salt: &[u8; 32],
     ) -> Result<Option<PathBuf>> {
-        let Some(response) = self.query_dedup_api(prefix, chunk_hash).await? else {
+        let Some(mut response) = self.query_dedup_api(prefix, chunk_hash).await? else {
             return Ok(None);
         };
 
@@ -737,10 +736,7 @@ impl ShardDedupProbe for RemoteClient {
         // Compute the actual hash to use as the shard file name
         let mut hashed_writer = HashedWrite::new(writer);
 
-        let mut bytes_stream = response.bytes_stream();
-
-        while let Some(chunk) = bytes_stream.next().await {
-            let chunk = chunk?;
+        while let Some(chunk) = response.chunk().await? {
             hashed_writer.write_all(&chunk)?;
         }
         hashed_writer.flush()?;
