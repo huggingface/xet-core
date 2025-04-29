@@ -124,8 +124,6 @@ mod download {
 }
 
 mod upload {
-    use std::path::PathBuf;
-
     use merklehash::MerkleHash;
 
     use crate::error::Result;
@@ -148,12 +146,20 @@ mod upload {
     #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
     #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
     pub trait ShardDedupProbe {
+        #[cfg(not(target_family = "wasm"))]
         async fn query_for_global_dedup_shard(
             &self,
             prefix: &str,
             chunk_hash: &MerkleHash,
             salt: &[u8; 32],
-        ) -> Result<Option<PathBuf>>;
+        ) -> Result<Option<std::path::PathBuf>>;
+        #[cfg(target_family = "wasm")]
+        async fn query_for_global_dedup_shard_in_memory(
+            &self,
+            prefix: &str,
+            chunk_hash: &MerkleHash,
+            salt: &[u8; 32],
+        ) -> Result<Option<Vec<u8>>>;
     }
 
     /// A Client to the CAS (Content Addressed Storage) service to allow storage and

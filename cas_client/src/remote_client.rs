@@ -1,3 +1,5 @@
+#![cfg_attr(target_family = "wasm", allow(unused_imports))]
+
 use std::io::{Cursor, Write};
 use std::mem::take;
 use std::path::PathBuf;
@@ -19,7 +21,7 @@ use mdb_shard::file_structs::{FileDataSequenceEntry, FileDataSequenceHeader, MDB
 use mdb_shard::shard_file_reconstructor::FileReconstructor;
 use mdb_shard::utils::shard_file_name;
 use merklehash::{HashedWrite, MerkleHash};
-use reqwest::{StatusCode, Url};
+use reqwest::{Response, StatusCode, Url};
 use reqwest_middleware::ClientWithMiddleware;
 use tokio::sync::{mpsc, OwnedSemaphorePermit};
 use tokio::task::{JoinError, JoinHandle, JoinSet};
@@ -118,6 +120,36 @@ impl RemoteClient {
             range_download_single_flight: Arc::new(Group::new()),
             shard_cache_directory,
         }
+    }
+
+    async fn query_dedup_api(&self, prefix: &str, chunk_hash: &MerkleHash) -> Result<Option<Response>> {
+        if self.shard_cache_directory == PathBuf::default() {
+            return Err(CasClientError::ConfigurationError(
+                "Shard Write Directory not set; cannot download.".to_string(),
+            ));
+        }
+
+        // The API endpoint now only supports non-batched dedup request and
+        // ignores salt.
+        let key = Key {
+            prefix: prefix.into(),
+            hash: *chunk_hash,
+        };
+
+        let url = Url::parse(&format!("{0}/chunk/{key}", self.endpoint))?;
+
+        let response = self
+            .conservative_authenticated_http_client
+            .get(url)
+            .send()
+            .await
+            .map_err(|e| CasClientError::Other(format!("request failed with error {e}")))?;
+
+        // Dedup shard not found, return empty result
+        if !response.status().is_success() {
+            return Ok(None);
+        }
+        Ok(Some(response))
     }
 }
 
@@ -690,38 +722,16 @@ impl FileReconstructor<CasClientError> for RemoteClient {
 #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
 impl ShardDedupProbe for RemoteClient {
+    #[cfg(not(target_family = "wasm"))]
     async fn query_for_global_dedup_shard(
         &self,
         prefix: &str,
         chunk_hash: &MerkleHash,
         _salt: &[u8; 32],
     ) -> Result<Option<PathBuf>> {
-        if self.shard_cache_directory == PathBuf::default() {
-            return Err(CasClientError::ConfigurationError(
-                "Shard Write Directory not set; cannot download.".to_string(),
-            ));
-        }
-
-        // The API endpoint now only supports non-batched dedup request and
-        // ignores salt.
-        let key = Key {
-            prefix: prefix.into(),
-            hash: *chunk_hash,
-        };
-
-        let url = Url::parse(&format!("{0}/chunk/{key}", self.endpoint))?;
-
-        let response = self
-            .conservative_authenticated_http_client
-            .get(url)
-            .send()
-            .await
-            .map_err(|e| CasClientError::Other(format!("request failed with error {e}")))?;
-
-        // Dedup shard not found, return empty result
-        if !response.status().is_success() {
+        let Some(response) = self.query_dedup_api(prefix, chunk_hash).await? else {
             return Ok(None);
-        }
+        };
 
         let writer = SafeFileCreator::new_unnamed(&self.shard_cache_directory)?;
         // Compute the actual hash to use as the shard file name
@@ -742,6 +752,27 @@ impl ShardDedupProbe for RemoteClient {
         writer.close()?;
 
         Ok(Some(file_path))
+    }
+
+    #[cfg(target_family = "wasm")]
+    async fn query_for_global_dedup_shard_in_memory(
+        &self,
+        prefix: &str,
+        chunk_hash: &MerkleHash,
+        _salt: &[u8; 32],
+    ) -> Result<Option<Vec<u8>>> {
+        let Some(response) = self.query_dedup_api(prefix, chunk_hash).await? else {
+            return Ok(None);
+        };
+
+        let mut shard_data = Vec::with_capacity(response.content_length().unwrap_or(0) as usize);
+        let mut bytes_stream = response.bytes_stream();
+
+        while let Some(chunk) = bytes_stream.next().await {
+            let chunk = chunk?;
+            shard_data.write_all(&chunk)?;
+        }
+        Ok(Some(shard_data))
     }
 }
 
