@@ -13,7 +13,7 @@ use crate::deduplication_interface::UploadSessionDataManager;
 use crate::errors::Result;
 use crate::file_upload_session::FileUploadSession;
 use crate::sha256::ShaGenerator;
-use crate::PointerFile;
+use crate::XetFileInfo;
 
 // A little set of helper types to allow us to background the
 // dedupe_manager::process_chunks operation.
@@ -39,7 +39,7 @@ enum DedupManagerBackgrounder {
 /// A class that encapsulates the clean and data task around a single file.
 pub struct SingleFileCleaner {
     // Auxiliary info
-    file_name: String,
+    file_name: Option<String>,
 
     // Common state
     session: Arc<FileUploadSession>,
@@ -58,7 +58,7 @@ pub struct SingleFileCleaner {
 }
 
 impl SingleFileCleaner {
-    pub(crate) fn new(file_name: String, session: Arc<FileUploadSession>) -> Self {
+    pub(crate) fn new(file_name: Option<String>, session: Arc<FileUploadSession>) -> Self {
         let deduper = Cell::new(FileDeduper::new(UploadSessionDataManager::new(session.clone())));
         Self {
             file_name,
@@ -160,7 +160,7 @@ impl SingleFileCleaner {
     }
 
     /// Return the representation of the file after clean as a pointer file instance.
-    pub async fn finish(mut self) -> Result<(PointerFile, DeduplicationMetrics)> {
+    pub async fn finish(mut self) -> Result<(XetFileInfo, DeduplicationMetrics)> {
         // Chunk the rest of the data.
         // note that get_deduper returns the only reference to the deduper
         let mut deduper = self.get_deduper().await?;
@@ -181,8 +181,7 @@ impl SingleFileCleaner {
         let (file_hash, remaining_file_data, deduplication_metrics, new_xorbs) =
             deduper.into_inner().finalize(repo_salt, Some(metadata_ext));
 
-        let pointer_file =
-            PointerFile::init_from_info(&self.file_name, &file_hash.hex(), deduplication_metrics.total_bytes as u64);
+        let file_info = XetFileInfo::new(file_hash.hex(), deduplication_metrics.total_bytes);
 
         // Let's check some things that should be invarients
         #[cfg(debug_assertions)]
@@ -191,17 +190,15 @@ impl SingleFileCleaner {
             debug_assert_eq!(remaining_file_data.pending_file_info.len(), 1);
 
             // The size should be total bytes
-            debug_assert_eq!(remaining_file_data.pending_file_info[0].0.file_size(), pointer_file.filesize() as usize)
+            debug_assert_eq!(
+                remaining_file_data.pending_file_info[0].0.file_size(),
+                deduplication_metrics.total_bytes as usize
+            )
         }
 
         // Now, return all this information to the
         self.session
-            .register_single_file_clean_completion(
-                self.file_name.clone(),
-                remaining_file_data,
-                &deduplication_metrics,
-                new_xorbs,
-            )
+            .register_single_file_clean_completion(remaining_file_data, &deduplication_metrics, new_xorbs)
             .await?;
 
         // NB: xorb upload is happening in the background, this number is optimistic since it does
@@ -217,6 +214,6 @@ impl SingleFileCleaner {
             end_processing_ts = Utc::now().to_rfc3339(),
         );
 
-        Ok((pointer_file, deduplication_metrics))
+        Ok((file_info, deduplication_metrics))
     }
 }

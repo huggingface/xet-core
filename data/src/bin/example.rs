@@ -7,7 +7,7 @@ use anyhow::Result;
 use cas_client::{FileProvider, OutputProvider};
 use clap::{Args, Parser, Subcommand};
 use data::configurations::*;
-use data::{FileDownloader, FileUploadSession, PointerFile};
+use data::{FileDownloader, FileUploadSession, XetFileInfo};
 use xet_threadpool::ThreadPool;
 
 #[derive(Parser)]
@@ -90,7 +90,7 @@ async fn clean(mut reader: impl Read, mut writer: impl Write) -> Result<()> {
         FileUploadSession::new(TranslatorConfig::local_config(std::env::current_dir()?)?, get_threadpool(), None)
             .await?;
 
-    let mut handle = translator.start_clean("".to_owned());
+    let mut handle = translator.start_clean(None);
 
     loop {
         let bytes = reader.read(&mut read_buf)?;
@@ -101,11 +101,11 @@ async fn clean(mut reader: impl Read, mut writer: impl Write) -> Result<()> {
         handle.add_data(&read_buf[0..bytes]).await?;
     }
 
-    let (pointer_file, _) = handle.finish().await?;
+    let (file_info, _) = handle.finish().await?;
 
     translator.finalize().await?;
 
-    writer.write_all(pointer_file.to_string().as_bytes())?;
+    writer.write_all(serde_json::to_string(&file_info)?.as_bytes())?;
 
     Ok(())
 }
@@ -126,17 +126,20 @@ async fn smudge(mut reader: impl Read, writer: &OutputProvider) -> Result<()> {
     let mut input = String::new();
     reader.read_to_string(&mut input)?;
 
-    let pointer_file = PointerFile::init_from_string(&input, "");
-
-    // not a pointer file, leave it as it is.
-    if !pointer_file.is_valid() {
-        return Ok(());
-    }
+    let xet_file: XetFileInfo = serde_json::from_str(&input)
+        .map_err(|_| anyhow::anyhow!("Failed to parse xet file info. Please check the format."))?;
 
     let downloader =
         FileDownloader::new(TranslatorConfig::local_config(std::env::current_dir()?)?, get_threadpool()).await?;
 
-    downloader.smudge_file_from_pointer(&pointer_file, writer, None, None).await?;
+    downloader
+        .smudge_file_from_hash(
+            &xet_file.merkle_hash().map_err(|_| anyhow::anyhow!("Xet hash is corrupted"))?,
+            writer,
+            None,
+            None,
+        )
+        .await?;
 
     Ok(())
 }

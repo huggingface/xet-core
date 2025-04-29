@@ -5,7 +5,7 @@ use std::path::Path;
 use cas_client::{FileProvider, OutputProvider};
 use data::configurations::TranslatorConfig;
 use data::data_client::clean_file;
-use data::{FileDownloader, FileUploadSession, PointerFile};
+use data::{FileDownloader, FileUploadSession, XetFileInfo};
 use deduplication::constants::{MAX_XORB_BYTES, MAX_XORB_CHUNKS, TARGET_CHUNK_SIZE};
 use rand::rngs::StdRng;
 // rand crates
@@ -119,8 +119,8 @@ async fn dehydrate_directory(cas_dir: &Path, src_dir: &Path, ptr_dir: &Path) {
         let upload_session = upload_session.clone();
 
         upload_tasks.spawn(async move {
-            let (pf, _metrics) = clean_file(upload_session.clone(), entry.path()).await.unwrap();
-            std::fs::write(out_file, pf.to_string()).unwrap();
+            let (xf, _metrics) = clean_file(upload_session.clone(), entry.path()).await.unwrap();
+            std::fs::write(out_file, serde_json::to_string(&xf).unwrap()).unwrap();
         });
     }
 
@@ -145,10 +145,12 @@ async fn hydrate_directory(cas_dir: &Path, ptr_dir: &Path, out_dir: &Path) {
         let file_out = OutputProvider::File(FileProvider::new(out_filename));
 
         // Pointer file.
-        let pf = PointerFile::init_from_path(entry.path());
-        assert!(pf.is_valid());
+        let xf: XetFileInfo = serde_json::from_reader(File::open(entry.path()).unwrap()).unwrap();
 
-        downloader.smudge_file_from_pointer(&pf, &file_out, None, None).await.unwrap();
+        downloader
+            .smudge_file_from_hash(&xf.merkle_hash().unwrap(), &file_out, None, None)
+            .await
+            .unwrap();
     }
 }
 

@@ -680,6 +680,7 @@ dependencies = [
  "regex",
  "reqwest 0.11.27",
  "reqwest-middleware",
+ "serde",
  "serde_json",
  "sha2",
  "static_assertions",
