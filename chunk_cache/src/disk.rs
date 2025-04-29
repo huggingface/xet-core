@@ -172,7 +172,7 @@ impl DiskCache {
                 continue;
             };
 
-            // loop throught key directories inside prefix directory
+            // loop through key directories inside prefix directory
             for key_dir in key_prefix_readdir {
                 let key_dir = match is_ok_dir(key_dir) {
                     Ok(Some(dirent)) => dirent,
@@ -285,6 +285,15 @@ impl DiskCache {
 
     fn find_match(&self, key: &Key, range: &ChunkRange) -> OptionResult<VerificationCell<CacheItem>, ChunkCacheError> {
         let state = self.state.lock()?;
+        self.find_match_with_state(&state, key, range)
+    }
+
+    fn find_match_with_state(
+        &self,
+        state: &MutexGuard<'_, CacheState>,
+        key: &Key,
+        range: &ChunkRange,
+    ) -> OptionResult<VerificationCell<CacheItem>, ChunkCacheError> {
         let Some(items) = state.inner.get(key) else {
             return Ok(None);
         };
@@ -344,18 +353,27 @@ impl DiskCache {
             checksum,
         };
 
-        {
-            // write cache item file
-            let path = self.item_path(key, &cache_item)?;
-            let mut fw = SafeFileCreator::new(path)?;
-            fw.write_all(&header_buf)?;
-            fw.write_all(data)?;
-            fw.close()?;
-        }
+        // write cache item file
+        let path = self.item_path(key, &cache_item)?;
+        let mut fw = SafeFileCreator::new(path)?;
+        fw.write_all(&header_buf)?;
+        fw.write_all(data)?;
 
         // evict items after ensuring the file write but before committing to cache state
         // to avoid removing new item.
         let mut state = self.state.lock()?;
+
+        // acquiring lock to state before closing the file
+        // this will ensure that this thread is the only one writing to the final
+        // cache file but allowing other threads to modify the state while we write the file
+        // before committing it.
+        if self.find_match_with_state(&state, key, range)?.is_some() {
+            // another thread already added this item or overlapping item while this thread
+            // was writing the file
+            fw.abort()?;
+            return Ok(());
+        }
+        fw.close()?;
 
         // add evicted paths to paths to remove from file system
         let evicted_paths = self.maybe_evict(&mut state, cache_item.len)?;
