@@ -1,6 +1,5 @@
 use std::fs::{create_dir_all, read_dir, File};
 use std::io::{Read, Write};
-use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 
 use cas_client::{FileProvider, OutputProvider};
@@ -142,7 +141,7 @@ async fn dehydrate_directory(cas_dir: &Path, src_dir: &Path, ptr_dir: &Path) {
         upload_tasks.spawn(async move {
             let (pf, metrics) = clean_file(upload_session.clone(), entry.path()).await.unwrap();
             // make sure the total_bytes processed in the metrics matches the file size
-            assert_eq!(metrics.total_bytes as u64, entry.metadata().unwrap().size());
+            assert_eq!(metrics.total_bytes as u64, entry.metadata().unwrap().len());
             std::fs::write(out_file, pf.to_string()).unwrap();
         });
     }
