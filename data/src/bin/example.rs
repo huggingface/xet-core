@@ -1,6 +1,5 @@
 use std::fs::File;
 use std::io::{Read, Write};
-use std::os::unix::fs::MetadataExt;
 use std::path::PathBuf;
 use std::sync::{Arc, OnceLock};
 
@@ -74,7 +73,7 @@ fn main() {
 
 async fn clean_file(arg: &CleanArg) -> Result<()> {
     let file_reader = File::open(&arg.file)?;
-    let file_size = file_reader.metadata()?.size();
+    let file_size = file_reader.metadata()?.len();
 
     let writer: Box<dyn Write + Send> = match &arg.dest {
         Some(path) => Box::new(File::options().create(true).write(true).truncate(true).open(path)?),
