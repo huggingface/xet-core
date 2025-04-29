@@ -2,7 +2,6 @@ use std::env;
 use std::env::current_dir;
 use std::fs::File;
 use std::io::Read;
-use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -176,7 +175,7 @@ pub async fn clean_file(
 ) -> errors::Result<(PointerFile, DeduplicationMetrics)> {
     let mut reader = File::open(&filename)?;
 
-    let n = reader.metadata()?.size();
+    let n = reader.metadata()?.len();
     let mut buffer = vec![0u8; u64::min(n, *INGESTION_BLOCK_SIZE as u64) as usize];
 
     let mut handle = processor.start_clean(filename.as_ref().to_string_lossy().into(), n).await;
