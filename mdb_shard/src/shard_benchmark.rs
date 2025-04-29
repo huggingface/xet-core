@@ -15,7 +15,7 @@ use mdb_shard::shard_in_memory::MDBInMemoryShard;
 use merklehash::MerkleHash;
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
-use tempdir::TempDir;
+use tempfile::TempDir;
 use tokio::time;
 
 const CAS_BLOCK_SIZE: usize = 512;
@@ -93,10 +93,10 @@ async fn run_shard_benchmark(
             eprintln!("Worker {t:?} running.");
 
             loop {
-                let mut hash_val = rng.gen();
+                let mut hash_val = rng.random();
 
                 let mut file_info = Vec::<MerkleHash>::with_capacity(file_contiguity);
-                let hit = rng.gen_bool(block_hit_proportion);
+                let hit = rng.random_bool(block_hit_proportion);
 
                 for _ in 0..file_contiguity {
                     let h_seed = if hit { hash_val % top } else { hash_val };
@@ -211,7 +211,7 @@ async fn main() {
         .parse()
         .expect("Failed to parse hit_percent");
 
-    let temp_dir = TempDir::new("git-xet-shard").expect("Failed to create temp dir");
+    let temp_dir = TempDir::with_prefix("git-xet-shard").expect("Failed to create temp dir");
 
     let dir: &str = arg_res.value_of("dir").unwrap();
 

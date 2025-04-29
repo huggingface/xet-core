@@ -343,7 +343,7 @@ mod tests {
         buf.resize(serialized_chunks_length as usize, 0);
 
         // Now add some maybe existing but less than 8 bytes
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rng();
         let some_nonzero_size_less_than_8 = rng.next_u32() % 7 + 1;
         let mut some_bytes = vec![0u8; some_nonzero_size_less_than_8 as usize];
         rng.fill_bytes(&mut some_bytes);

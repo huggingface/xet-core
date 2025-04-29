@@ -267,10 +267,10 @@ mod tests {
 
     #[test]
     fn test_split_regroup_separate() {
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rng();
 
         for n in [64 * 1024, 64 * 1024 - 53, 64 * 1024 + 135] {
-            let data: Vec<_> = (0..n).map(|_| rng.gen_range(0..255)).collect();
+            let data: Vec<_> = (0..n).map(|_| rng.random_range(0..255)).collect();
             let groups = bg4_split_separate(&data);
             let regrouped = bg4_regroup_separate(&groups);
 
@@ -280,10 +280,10 @@ mod tests {
 
     #[test]
     fn test_split_regroup_together() {
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rng();
 
         for n in [64 * 1024, 64 * 1024 - 53, 64 * 1024 + 135] {
-            let data: Vec<_> = (0..n).map(|_| rng.gen_range(0..255)).collect();
+            let data: Vec<_> = (0..n).map(|_| rng.random_range(0..255)).collect();
             let groups = bg4_split_together(&data);
 
             let regrouped = bg4_regroup_together(&groups);
