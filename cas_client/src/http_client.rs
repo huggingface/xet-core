@@ -229,11 +229,13 @@ pub trait ResponseErrorLogger<T> {
 /// cas_client::error::Result instead of the raw reqwest_middleware::Result.
 impl ResponseErrorLogger<error::Result<Response>> for reqwest_middleware::Result<Response> {
     fn process_error(self, api: &str) -> error::Result<Response> {
-        let res = self.log_error(format!("error invoking {api} api"))?;
+        let res = self
+            .map_err(CasClientError::from)
+            .log_error(format!("error invoking {api} api"))?;
         let request_id = request_id_from_response(&res);
         let error_message = format!("{api} api failed: request id: {request_id}");
         // not all status codes mean fatal error
-        Ok(res.error_for_status().info_error(error_message)?)
+        res.error_for_status().map_err(CasClientError::from).info_error(error_message)
     }
 }
 
