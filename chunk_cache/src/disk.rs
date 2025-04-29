@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::fs::{DirEntry, File};
 use std::io::{self, Cursor, ErrorKind, Read, Seek, SeekFrom, Write};
 use std::mem::size_of;
@@ -11,7 +11,6 @@ use base64::Engine;
 use cas_types::{ChunkRange, Key};
 use error_printer::ErrorPrinter;
 use file_utils::SafeFileCreator;
-use log::info;
 use merklehash::MerkleHash;
 use tracing::{debug, error, warn};
 use utils::output_bytes;
@@ -475,7 +474,7 @@ impl DiskCache {
                 state.total_bytes -= len;
                 state.num_items -= 1;
             } else {
-                error!("attempted to evict item that is not found in cache state {key}, {idx}");
+                error!("attempted to evict item, but no item could be found to be evicted");
                 break;
             }
         }
@@ -805,15 +804,16 @@ impl ChunkCache for DiskCache {
 mod tests {
     use std::collections::BTreeSet;
 
-    use super::{DiskCache, DEFAULT_CHUNK_CACHE_CAPACITY};
-    use crate::disk::test_utils::*;
-    use crate::disk::try_parse_key;
-    use crate::{CacheConfig, ChunkCache};
     use cas_types::{ChunkRange, Key};
     use rand::rngs::StdRng;
     use rand::SeedableRng;
     use tempdir::TempDir;
     use utils::output_bytes;
+
+    use super::{DiskCache, DEFAULT_CHUNK_CACHE_CAPACITY};
+    use crate::disk::test_utils::*;
+    use crate::disk::try_parse_key;
+    use crate::{CacheConfig, ChunkCache};
 
     const RANDOM_SEED: u64 = 9089 << 20 | 120043;
 
