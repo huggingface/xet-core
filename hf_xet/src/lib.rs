@@ -206,7 +206,7 @@ impl PyPointerFile {
 
     #[getter]
     fn filesize(self_: PyRef<'_, Self>) -> u64 {
-        self_.as_super().file_size 
+        self_.as_super().file_size
     }
 }
 
