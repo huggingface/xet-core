@@ -3,6 +3,9 @@ use std::fmt::Debug;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
+use async_trait::async_trait;
+use tokio::sync::Mutex;
+
 /// A class to make all the bookkeeping clear with the
 #[derive(Clone, Debug)]
 pub struct ProgressUpdate {
@@ -14,20 +17,22 @@ pub struct ProgressUpdate {
 
 /// A simple progress updater that simply reports when
 /// progress has occured.
+#[async_trait]
 pub trait SimpleProgressUpdater: Debug + Send + Sync {
     /// updater takes 1 parameter which is an increment value to progress
     /// **not the total progress value**
-    fn update(&self, increment: u64);
+    async fn update(&self, increment: u64);
 
     /// Optionally sets the total number of items available.
-    fn set_total(&self, _n_units: u64) {}
+    async fn set_total(&self, _n_units: u64) {}
 }
 
 /// The trait that a progress updater that reports per-item progress completion.
+#[async_trait]
 pub trait TrackingProgressUpdater: Debug + Send + Sync {
     /// Register a set of updates as a list of ProgressUpdate instances, which
     /// contain the name and progress information.    
-    fn register_updates(&self, updates: &[ProgressUpdate]);
+    async fn register_updates(&self, updates: &[ProgressUpdate]);
 }
 
 /// This struct allows us to wrap the larger progress updater in a simple form for
@@ -56,8 +61,9 @@ impl ItemProgressUpdater {
 }
 
 /// In case we just want to
+#[async_trait]
 impl SimpleProgressUpdater for ItemProgressUpdater {
-    fn update(&self, increment: u64) {
+    async fn update(&self, increment: u64) {
         self.completed_count.fetch_add(increment, Ordering::Relaxed);
 
         let progress_update = ProgressUpdate {
@@ -67,10 +73,10 @@ impl SimpleProgressUpdater for ItemProgressUpdater {
             update_increment: increment,
         };
 
-        self.inner.register_updates(&[progress_update]);
+        self.inner.register_updates(&[progress_update]).await;
     }
 
-    fn set_total(&self, n_units: u64) {
+    async fn set_total(&self, n_units: u64) {
         self.total_count.store(n_units, Ordering::Relaxed);
     }
 }
@@ -84,12 +90,14 @@ impl NoOpProgressUpdater {
     }
 }
 
+#[async_trait]
 impl SimpleProgressUpdater for NoOpProgressUpdater {
-    fn update(&self, _increment: u64) {}
+    async fn update(&self, _increment: u64) {}
 }
 
+#[async_trait]
 impl TrackingProgressUpdater for NoOpProgressUpdater {
-    fn register_updates(&self, _updates: &[ProgressUpdate]) {}
+    async fn register_updates(&self, _updates: &[ProgressUpdate]) {}
 }
 
 /// Internal structure to track and validate progress data for one item.
@@ -109,7 +117,7 @@ struct ItemProgressData {
 #[derive(Debug)]
 pub struct ProgressUpdaterVerificationWrapper {
     inner: Arc<dyn TrackingProgressUpdater>,
-    items: std::sync::Mutex<HashMap<Arc<str>, ItemProgressData>>,
+    items: Mutex<HashMap<Arc<str>, ItemProgressData>>,
 }
 
 impl ProgressUpdaterVerificationWrapper {
@@ -118,14 +126,14 @@ impl ProgressUpdaterVerificationWrapper {
     pub fn new(inner: Arc<dyn TrackingProgressUpdater>) -> Arc<Self> {
         Arc::new(Self {
             inner,
-            items: std::sync::Mutex::new(HashMap::new()),
+            items: Mutex::new(HashMap::new()),
         })
     }
 
     /// Once all uploads are done, call this to ensure that every item is fully complete.
     /// Panics if any item is still incomplete (i.e. `last_completed < total_count`).
-    pub fn assert_complete(&self) {
-        let map = self.items.lock().expect("items lock poisoned");
+    pub async fn assert_complete(&self) {
+        let map = self.items.lock().await;
         for (item_name, data) in &*map {
             assert_eq!(
                 data.last_completed, data.total_count,
@@ -136,11 +144,12 @@ impl ProgressUpdaterVerificationWrapper {
     }
 }
 
+#[async_trait]
 impl TrackingProgressUpdater for ProgressUpdaterVerificationWrapper {
-    fn register_updates(&self, updates: &[ProgressUpdate]) {
+    async fn register_updates(&self, updates: &[ProgressUpdate]) {
         {
             // First, capture and validate
-            let mut map = self.items.lock().expect("items lock poisoned");
+            let mut map = self.items.lock().await;
             for up in updates {
                 let entry = map.entry(up.item_name.clone()).or_insert(ItemProgressData {
                     total_count: 0,
@@ -192,7 +201,7 @@ impl TrackingProgressUpdater for ProgressUpdaterVerificationWrapper {
         }
 
         // Now forward them to the inner updater
-        self.inner.register_updates(updates);
+        self.inner.register_updates(updates).await;
     }
 }
 
@@ -204,18 +213,19 @@ mod tests {
     /// In real code, this could log to a file, update a UI, etc.
     #[derive(Debug, Default)]
     struct DummyLogger {
-        pub all_updates: std::sync::Mutex<Vec<ProgressUpdate>>,
+        pub all_updates: Mutex<Vec<ProgressUpdate>>,
     }
 
+    #[async_trait]
     impl TrackingProgressUpdater for DummyLogger {
-        fn register_updates(&self, updates: &[ProgressUpdate]) {
-            let mut guard = self.all_updates.lock().unwrap();
+        async fn register_updates(&self, updates: &[ProgressUpdate]) {
+            let mut guard = self.all_updates.lock().await;
             guard.extend_from_slice(updates);
         }
     }
 
-    #[test]
-    fn test_verification_wrapper() {
+    #[tokio::test]
+    async fn test_verification_wrapper() {
         // Create an actual inner logger or progress sink
         let logger = Arc::new(DummyLogger::default());
 
@@ -223,42 +233,46 @@ mod tests {
         let wrapper = ProgressUpdaterVerificationWrapper::new(logger.clone());
 
         // Let's register some progress updates
-        wrapper.register_updates(&[
-            ProgressUpdate {
-                item_name: Arc::from("fileA"),
-                total_count: 100,
-                completed_count: 50,
-                update_increment: 50, // from 0->50
-            },
-            ProgressUpdate {
-                item_name: Arc::from("fileB"),
-                total_count: 200,
-                completed_count: 100,
-                update_increment: 100, // from 0->100
-            },
-        ]);
+        wrapper
+            .register_updates(&[
+                ProgressUpdate {
+                    item_name: Arc::from("fileA"),
+                    total_count: 100,
+                    completed_count: 50,
+                    update_increment: 50, // from 0->50
+                },
+                ProgressUpdate {
+                    item_name: Arc::from("fileB"),
+                    total_count: 200,
+                    completed_count: 100,
+                    update_increment: 100, // from 0->100
+                },
+            ])
+            .await;
 
         // Shouldn't be complete yet. We'll do one more set of updates to finalize.
-        wrapper.register_updates(&[
-            ProgressUpdate {
-                item_name: Arc::from("fileA"),
-                total_count: 100,
-                completed_count: 100,
-                update_increment: 50, // from 50->100
-            },
-            ProgressUpdate {
-                item_name: Arc::from("fileB"),
-                total_count: 200,
-                completed_count: 200,
-                update_increment: 100, // from 100->200
-            },
-        ]);
+        wrapper
+            .register_updates(&[
+                ProgressUpdate {
+                    item_name: Arc::from("fileA"),
+                    total_count: 100,
+                    completed_count: 100,
+                    update_increment: 50, // from 50->100
+                },
+                ProgressUpdate {
+                    item_name: Arc::from("fileB"),
+                    total_count: 200,
+                    completed_count: 200,
+                    update_increment: 100, // from 100->200
+                },
+            ])
+            .await;
 
         // Now all items should be fully complete
-        wrapper.assert_complete();
+        wrapper.assert_complete().await;
 
         // We can also inspect the inner logger's captured updates:
-        let final_updates = logger.all_updates.lock().unwrap();
+        let final_updates = logger.all_updates.lock().await;
         assert_eq!(final_updates.len(), 4, "We sent 4 updates total");
     }
 }

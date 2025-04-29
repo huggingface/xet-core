@@ -246,7 +246,7 @@ impl CompletionTracker {
         let updates = self.inner.lock().await.register_dependencies(dependencies);
 
         if !updates.is_empty() {
-            self.progress_reporter.register_updates(&updates);
+            self.progress_reporter.register_updates(&updates).await;
         }
     }
 
@@ -254,7 +254,7 @@ impl CompletionTracker {
         let updates = self.inner.lock().await.register_xorb_upload_completion(xorb_hash);
 
         if !updates.is_empty() {
-            self.progress_reporter.register_updates(&updates);
+            self.progress_reporter.register_updates(&updates).await;
         }
     }
 
@@ -329,7 +329,7 @@ mod tests {
         // Confirm internal consistency in the tracker
         tracker.assert_complete().await;
         // Confirm the updates themselves were valid
-        verifier.assert_complete();
+        verifier.assert_complete().await;
     }
 
     /// Multiple files sharing one xorb, with partial "already uploaded" logic
@@ -392,7 +392,7 @@ mod tests {
         assert!(tracker.is_complete().await);
 
         tracker.assert_complete().await;
-        verifier.assert_complete();
+        verifier.assert_complete().await;
     }
 
     /// One file, multiple xorbs, partial "already_uploaded" scenario
@@ -436,7 +436,7 @@ mod tests {
         assert!(tracker.is_complete().await);
 
         tracker.assert_complete().await;
-        verifier.assert_complete();
+        verifier.assert_complete().await;
     }
 
     /// Xorb is completed before dependencies are registered,
@@ -464,7 +464,7 @@ mod tests {
         assert!(tracker.is_complete().await);
 
         tracker.assert_complete().await;
-        verifier.assert_complete();
+        verifier.assert_complete().await;
     }
 
     /// Demonstrates leftover references if we do contradictory logic,
@@ -492,6 +492,6 @@ mod tests {
         assert!(tracker.is_complete().await);
 
         tracker.assert_complete().await;
-        verifier.assert_complete();
+        verifier.assert_complete().await;
     }
 }

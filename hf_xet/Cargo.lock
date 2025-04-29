@@ -663,20 +663,9 @@ dependencies = [
  "cas_types",
  "chrono",
  "clap 3.2.25",
-<<<<<<< HEAD
- "countio",
  "deduplication",
  "dirs",
  "error_printer",
- "file_utils",
- "glob",
- "hashers",
- "http 0.2.12",
-=======
- "deduplication",
- "dirs",
- "error_printer",
->>>>>>> origin/main
  "jsonwebtoken",
  "lazy_static",
  "mdb_shard",

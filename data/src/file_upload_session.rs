@@ -367,7 +367,7 @@ impl FileUploadSession {
             self.completion_tracker.assert_complete().await;
 
             // Checks that all the progress updates were received correctly.
-            self.progress_verification_tracker.assert_complete();
+            self.progress_verification_tracker.assert_complete().await;
         }
 
         Ok((metrics, all_file_info))

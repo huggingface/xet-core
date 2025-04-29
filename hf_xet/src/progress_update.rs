@@ -50,9 +50,11 @@ impl WrappedProgressUpdater {
 }
 
 // TODO: This is now connected via the old interface, which doesn't account for any of the
-// per-file tracking information.
+// per-file tracking information.  Once the python end exposess an API in which these per-file
+// updates can be tracked properly, this interface here should be changed.
+#[async_trait::async_trait]
 impl TrackingProgressUpdater for WrappedProgressUpdater {
-    fn register_updates(&self, updates: &[ProgressUpdate]) {
+    async fn register_updates(&self, updates: &[ProgressUpdate]) {
         Python::with_gil(|py| {
             let f = self.py_func.bind(py);
             if !f.is_callable() {
