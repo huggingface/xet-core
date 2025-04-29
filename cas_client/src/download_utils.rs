@@ -377,14 +377,20 @@ async fn download_range(
         .header(RANGE, fetch_term.url_range.range_header())
         .send()
         .await
-        .log_error("error getting from s3")?
+        .map_err(CasClientError::from)
+        .log_error("error downloading range")?
         .error_for_status()
-        .log_error("get from s3 error code")
     {
         Ok(response) => response,
-        Err(e) => match e.status() {
-            Some(StatusCode::FORBIDDEN) => return Ok(DownloadRangeResult::Forbidden),
-            _ => return Err(e.into()),
+        Err(e) => {
+            return match e.status() {
+                Some(StatusCode::FORBIDDEN) => {
+                    info!("error code {} for hash {hash}, will re-fetch reconstruction", StatusCode::FORBIDDEN,);
+                    Ok(DownloadRangeResult::Forbidden)
+                },
+                _ => Err(e.into()),
+            }
+            .log_error("error code")
         },
     };
 
