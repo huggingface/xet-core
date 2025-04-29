@@ -235,4 +235,4 @@ jobs:
         env: 
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create ${{ github.event.inputs.tag}} wheels-*/* --generate-notes --prerelease
+          gh release create ${{ github.event.inputs.tag}} wheels-*/* --generate-notes --prerelease --target ${{github.sha}}
