@@ -12,7 +12,7 @@ use cas_types::{ChunkRange, Key};
 use error_printer::ErrorPrinter;
 use file_utils::SafeFileCreator;
 use merklehash::MerkleHash;
-use tracing::{debug, error, warn};
+use tracing::{debug, error};
 use utils::output_bytes;
 
 use crate::disk::cache_file_header::CacheFileHeader;
@@ -262,7 +262,7 @@ impl DiskCache {
                     cache_item.verify();
                     file.rewind()?;
                 } else {
-                    warn!("computed checksum {checksum} mismatch on cache item {key}/{cache_item}");
+                    debug!("computed checksum {checksum} mismatch on cache item {key}/{cache_item}");
                     self.remove_item(key, &cache_item)?;
                     continue;
                 }
@@ -713,14 +713,14 @@ fn try_parse_cache_file(file_result: io::Result<DirEntry>, capacity: u64) -> Opt
     {
         Ok(i) => i,
         Err(e) => {
-            warn!("not a valid cache file, removing: {:?} {e:?}", item.file_name());
+            debug!("not a valid cache file, removing: {:?} {e:?}", item.file_name());
             remove_file(item.path())?;
             return Ok(None);
         },
     };
     if md.len() != cache_item.len {
         // file is invalid, remove it
-        warn!(
+        debug!(
             "cache file len {} does not match expected length {}, removing path: {:?}",
             md.len(),
             cache_item.len,
