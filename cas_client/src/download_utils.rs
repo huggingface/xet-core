@@ -268,7 +268,7 @@ impl DownloadScheduler {
             self.n_concurrent_download_task.forget_permits(1);
         } else {
             // TODO: check download speed and consider if we should increase or decrease
-            info!("expanding segment size by one range");
+            debug!("expanding segment size by one range");
             *self.n_range_in_segment.lock()? += 1;
             self.n_concurrent_download_task.add_permits(1);
         }

@@ -75,23 +75,23 @@ pub fn is_elevated() -> bool {
 //    control.
 
 #[derive(Debug, Clone, Copy)]
-pub enum PrivilgedExecutionContext {
+pub enum PrivilegedExecutionContext {
     Regular,
     Elevated,
 }
 
-impl PrivilgedExecutionContext {
-    pub fn current() -> PrivilgedExecutionContext {
+impl PrivilegedExecutionContext {
+    pub fn current() -> PrivilegedExecutionContext {
         match is_elevated() {
-            false => PrivilgedExecutionContext::Regular,
-            true => PrivilgedExecutionContext::Elevated,
+            false => PrivilegedExecutionContext::Regular,
+            true => PrivilegedExecutionContext::Elevated,
         }
     }
 
     pub fn is_elevated(&self) -> bool {
         match self {
-            PrivilgedExecutionContext::Regular => false,
-            PrivilgedExecutionContext::Elevated => true,
+            PrivilegedExecutionContext::Regular => false,
+            PrivilegedExecutionContext::Elevated => true,
         }
     }
 
@@ -196,11 +196,11 @@ impl PrivilgedExecutionContext {
 }
 
 pub fn create_dir_all(path: impl AsRef<Path>) -> std::io::Result<()> {
-    PrivilgedExecutionContext::current().create_dir_all(path)
+    PrivilegedExecutionContext::current().create_dir_all(path)
 }
 
 pub fn create_file(path: impl AsRef<Path>) -> std::io::Result<File> {
-    PrivilgedExecutionContext::current().create_file(path)
+    PrivilegedExecutionContext::current().create_file(path)
 }
 
 #[allow(unused_variables)]
@@ -236,7 +236,7 @@ mod test {
     use std::os::unix::fs::MetadataExt;
     use std::path::Path;
 
-    use super::{PrivilgedExecutionContext, WARNING_PRINTED};
+    use super::{PrivilegedExecutionContext, WARNING_PRINTED};
 
     #[test]
     #[ignore = "run manually"]
@@ -254,7 +254,7 @@ mod test {
 
         let test_path = std::env::var("HF_XET_TEST_PATH")?;
         std::env::set_current_dir(test_path)?;
-        let permission = PrivilgedExecutionContext::current();
+        let permission = PrivilegedExecutionContext::current();
 
         let test = Path::new("rootdir/regdir1/regdir2");
 
@@ -281,7 +281,7 @@ mod test {
 
         let test_path = std::env::var("HF_XET_TEST_PATH")?;
         std::env::set_current_dir(test_path)?;
-        let permission = PrivilgedExecutionContext::current();
+        let permission = PrivilegedExecutionContext::current();
 
         let test = Path::new("regdir/regdir1/regdir2");
 
@@ -318,7 +318,7 @@ mod test {
 
         let test_path = std::env::var("HF_XET_TEST_PATH")?;
         std::env::set_current_dir(test_path)?;
-        let permission = PrivilgedExecutionContext::current();
+        let permission = PrivilegedExecutionContext::current();
 
         let test1 = Path::new("rootdir/regdir1/regdir2/file");
 
@@ -353,7 +353,7 @@ mod test {
 
         let test = Path::new("regdir/regdir1/regdir2/file");
 
-        let permission = PrivilgedExecutionContext::current();
+        let permission = PrivilegedExecutionContext::current();
         permission.create_file(test)?;
 
         assert!(test.exists());
