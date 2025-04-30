@@ -3953,7 +3953,6 @@ dependencies = [
  "thiserror 2.0.11",
  "tokio",
  "tracing",
- "xet_threadpool",
 ]
 
 [[package]]
@@ -4426,15 +4425,6 @@ dependencies = [
  "libc",
  "linux-raw-sys",
  "rustix",
-]
-
-[[package]]
-name = "xet_threadpool"
-version = "0.1.0"
-dependencies = [
- "thiserror 2.0.11",
- "tokio",
- "tracing",
 ]
 
 [[package]]
