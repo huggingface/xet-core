@@ -11,10 +11,12 @@ use cas_client::{CacheConfig, FileProvider, OutputProvider, RetryConfig, CHUNK_C
 use cas_object::CompressionScheme;
 use deduplication::DeduplicationMetrics;
 use dirs::home_dir;
+use futures::TryStreamExt;
 use parutils::{tokio_par_for_each, ParallelError};
 use reqwest::IntoUrl;
 use tokio::io::AsyncReadExt;
 use tokio_util::io::StreamReader;
+use tracing::error;
 use utils::auth::{AuthConfig, TokenRefresher};
 use utils::progress::ProgressUpdater;
 use xet_threadpool::ThreadPool;
@@ -248,15 +250,16 @@ impl Display for StreamReadError {
 
 impl std::error::Error for StreamReadError {}
 
-fn retryable_stream_read_error(err: DataProcessingError) -> bool {
+// returns true if the error is StreamReadError
+// any other error kind is not considered retryable
+fn retryable_stream_read_error(err: &DataProcessingError) -> bool {
     let DataProcessingError::IOError(io_err) = err else {
         return false;
     };
-
-    let Some(inner) = io_err.into_inner() else {
+    let Some(inner_ref) = io_err.get_ref() else {
         return false;
     };
-    let Some(_stream_error) = inner.downcast_ref::<StreamReadError>() else {
+    let Some(_stream_read_error) = inner_ref.downcast_ref::<StreamReadError>() else {
         return false;
     };
     true
@@ -264,29 +267,53 @@ fn retryable_stream_read_error(err: DataProcessingError) -> bool {
 
 pub async fn clean_file_from_url(
     processor: Arc<FileUploadSession>,
-    url: impl IntoUrl,
+    url: impl IntoUrl + Clone,
 ) -> errors::Result<(XetFileInfo, DeduplicationMetrics)> {
     let url_str = url.as_str().to_string();
-    let client = cas_client::build_http_client(RetryConfig::default())?;
+    let client = Arc::new(cas_client::build_http_client(RetryConfig::default())?);
 
-    let response = client.get(url).send().await?.error_for_status()?;
-    let n = response.content_length().map(|v| v as usize).unwrap_or(*INGESTION_BLOCK_SIZE);
-    let mut buffer = vec![0u8; usize::min(n, *INGESTION_BLOCK_SIZE)];
-    let stream = response.bytes_stream().map_err(|e| std::io::Error::other(StreamReadError));
-    let mut reader = StreamReader::new(stream);
-
-    let mut handle = processor.start_clean(Some(url_str));
-
+    const MAX_NUM_STREAM_RETRIES: usize = 5;
+    let mut try_num = 1;
     loop {
-        let bytes = reader.read(&mut buffer).await?;
-        if bytes == 0 {
-            break;
+        let client = client.clone();
+        let result = async move {
+            let response = client.get(url).send().await?.error_for_status()?;
+            let n = response.content_length().map(|v| v as usize).unwrap_or(*INGESTION_BLOCK_SIZE);
+            let mut buffer = vec![0u8; usize::min(n, *INGESTION_BLOCK_SIZE)];
+            let stream = response.bytes_stream().map_err(|e| {
+                error!("error reading from stream: {e}");
+                std::io::Error::other(StreamReadError)
+            });
+            let mut reader = StreamReader::new(stream);
+
+            let mut handle = processor.start_clean(Some(url_str.clone()));
+
+            loop {
+                let bytes = reader.read(&mut buffer).await?;
+                if bytes == 0 {
+                    break;
+                }
+
+                handle.add_data(&buffer[..bytes]).await?;
+            }
+
+            handle.finish().await
         }
-
-        handle.add_data(&buffer[..bytes]).await?;
+        .await;
+        if let Err(e) = result {
+            if try_num == MAX_NUM_STREAM_RETRIES {
+                return Err(e);
+            }
+            if retryable_stream_read_error(&e) {
+                try_num += 1;
+                continue;
+            } else {
+                return Err(e);
+            }
+        } else {
+            return result;
+        }
     }
-
-    handle.finish().await
 }
 
 async fn smudge_file(

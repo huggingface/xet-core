@@ -1,7 +1,6 @@
 use std::string::FromUtf8Error;
 use std::sync::mpsc::RecvError;
 
-use crate::errors::DataProcessingError::CasClientError;
 use cas_client::CasClientError;
 use mdb_shard::error::MDBShardError;
 use merkledb::error::MerkleDBError;
@@ -76,6 +75,12 @@ pub enum DataProcessingError {
 }
 
 pub type Result<T> = std::result::Result<T, DataProcessingError>;
+
+impl From<reqwest_middleware::Error> for DataProcessingError {
+    fn from(value: reqwest_middleware::Error) -> Self {
+        DataProcessingError::from(CasClientError::from(value))
+    }
+}
 
 impl From<reqwest::Error> for DataProcessingError {
     fn from(value: reqwest::Error) -> Self {
