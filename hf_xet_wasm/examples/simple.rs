@@ -1,7 +1,7 @@
 use futures::AsyncReadExt;
 use wasm_bindgen::prelude::*;
 use wasm_thread as thread;
-use wasm_xet::blob_reader::BlobReader;
+use hf_wasm_xet::blob_reader::BlobReader;
 
 fn main() {
     #[cfg(target_arch = "wasm32")]

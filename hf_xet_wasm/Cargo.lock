@@ -686,6 +686,35 @@ dependencies = [
 ]
 
 [[package]]
+name = "hf_wasm_xet"
+version = "0.0.1"
+dependencies = [
+ "async-channel",
+ "async-trait",
+ "blake3",
+ "console_error_panic_hook",
+ "console_log",
+ "deduplication",
+ "env_logger",
+ "futures",
+ "futures-io",
+ "getrandom",
+ "js-sys",
+ "log",
+ "mdb_shard",
+ "merkledb",
+ "merklehash",
+ "sha2",
+ "thiserror",
+ "tokio",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "wasm-bindgen-test",
+ "wasm_thread",
+ "web-sys",
+]
+
+[[package]]
 name = "icu_collections"
 version = "1.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1014,6 +1043,16 @@ dependencies = [
  "rand",
  "safe-transmute",
  "serde",
+]
+
+[[package]]
+name = "minicov"
+version = "0.3.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f27fe9f1cc3c22e1687f9446c2083c4c5fc7f0bcf1c7a86bdbded14985895b4b"
+dependencies = [
+ "cc",
+ "walkdir",
 ]
 
 [[package]]
@@ -1781,6 +1820,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "wasm-bindgen-test"
+version = "0.3.50"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "66c8d5e33ca3b6d9fa3b4676d774c5778031d27a578c2b007f905acf816152c3"
+dependencies = [
+ "js-sys",
+ "minicov",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "wasm-bindgen-test-macro",
+]
+
+[[package]]
+name = "wasm-bindgen-test-macro"
+version = "0.3.50"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "17d5042cc5fa009658f9a7333ef24291b1291a25b6382dd68862a7f3b969f69b"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.100",
+]
+
+[[package]]
 name = "wasm_thread"
 version = "0.3.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1789,34 +1852,6 @@ dependencies = [
  "futures",
  "js-sys",
  "wasm-bindgen",
- "web-sys",
-]
-
-[[package]]
-name = "wasm_xet"
-version = "0.0.1"
-dependencies = [
- "async-channel",
- "async-trait",
- "blake3",
- "console_error_panic_hook",
- "console_log",
- "deduplication",
- "env_logger",
- "futures",
- "futures-io",
- "getrandom",
- "js-sys",
- "log",
- "mdb_shard",
- "merkledb",
- "merklehash",
- "sha2",
- "thiserror",
- "tokio",
- "wasm-bindgen",
- "wasm-bindgen-futures",
- "wasm_thread",
  "web-sys",
 ]
 
