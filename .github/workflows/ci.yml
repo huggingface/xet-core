@@ -61,15 +61,15 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
-      - name: install wasm-pack
-        uses: jetli/wasm-pack-action@v0.4.0
-        with:
-          version: 'latest'
       - name: Install Rust 1.86
         uses: dtolnay/rust-toolchain@1.86.0
         with:
           targets: wasm32-unknown-unknown
           components: clippy
+      - name: install wasm-pack
+        run: |
+          cargo install wasm-pack
+          # should attempt to consider using jetli/wasm-pack-action@v0.4.0 to speed this up
       - name: Build hf_xet_wasm
         working-directory: hf_xet_wasm
         run: |
