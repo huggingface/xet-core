@@ -22,6 +22,8 @@ use crate::progress_update::WrappedProgressUpdater;
 // For profiling
 #[cfg(feature = "profiling")]
 pub(crate) mod profiling;
+#[cfg(feature = "session")]
+pub mod session;
 
 fn convert_data_processing_error(e: DataProcessingError) -> PyErr {
     if cfg!(debug_assertions) {
@@ -138,6 +140,11 @@ fn try_parse_progress_updaters(funcs: Vec<Py<PyAny>>) -> PyResult<Vec<Arc<dyn Pr
         updaters.push(wrapped as Arc<dyn ProgressUpdater>);
     }
     Ok(updaters)
+}
+
+fn try_parse_progress_updater(func: Py<PyAny>) -> PyResult<Arc<dyn ProgressUpdater>> {
+    let wrapped = Arc::new(WrappedProgressUpdater::from_func(func)?);
+    Ok(wrapped as Arc<dyn ProgressUpdater>)
 }
 
 // TODO: we won't need to subclass this in the next major version update.

@@ -233,7 +233,7 @@ pub async fn clean_file(
     handle.finish().await
 }
 
-async fn smudge_file(
+pub async fn smudge_file(
     downloader: &FileDownloader,
     file_info: &XetFileInfo,
     file_path: &str,

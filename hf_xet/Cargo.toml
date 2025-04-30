@@ -21,7 +21,6 @@ data = { path = "../data" }
 utils = { path = "../utils" }
 xet_threadpool = { path = "../xet_threadpool" }
 tokio = { version = "1.36", features = ["full"] }
-parutils = { path = "../parutils" }
 tracing = "0.1.*"
 tracing-subscriber = { version = "0.3", features = [
     "json",
@@ -41,6 +40,7 @@ pprof = { version = "0.14", features = [
     "protobuf-codec",
 ], optional = true }
 async-trait = "0.1.87"
+async-once-cell = "0.5.4"
 
 # Unix-specific dependencies
 [target.'cfg(unix)'.dependencies]
@@ -53,6 +53,7 @@ ctrlc = "3.4"
 [features]
 openssl_vendored = ["data/openssl_vendored"]
 profiling = ["pprof"]
+session = ["pyo3/experimental-async"]
 
 [profile.release]
 debug = true
