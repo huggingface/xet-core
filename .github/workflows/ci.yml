@@ -74,5 +74,4 @@ jobs:
         working-directory: hf_xet_wasm
         run: |
           wasm-pack build
-          wasm-pack test --headless --chrome
-          wasm-pack test --headless --firefox
+          wasm-pack test --node --firefox --chrome --headless
