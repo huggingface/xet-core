@@ -1,16 +1,20 @@
 use std::env;
 use std::env::current_dir;
+use std::fmt::{Debug, Display, Formatter};
 use std::fs::File;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use cas_client::remote_client::PREFIX_DEFAULT;
-use cas_client::{CacheConfig, FileProvider, OutputProvider, CHUNK_CACHE_SIZE_BYTES};
+use cas_client::{CacheConfig, FileProvider, OutputProvider, RetryConfig, CHUNK_CACHE_SIZE_BYTES};
 use cas_object::CompressionScheme;
 use deduplication::DeduplicationMetrics;
 use dirs::home_dir;
 use parutils::{tokio_par_for_each, ParallelError};
+use reqwest::IntoUrl;
+use tokio::io::AsyncReadExt;
+use tokio_util::io::StreamReader;
 use utils::auth::{AuthConfig, TokenRefresher};
 use utils::progress::ProgressUpdater;
 use xet_threadpool::ThreadPool;
@@ -228,6 +232,58 @@ pub async fn clean_file(
         }
 
         handle.add_data(&buffer[0..bytes]).await?;
+    }
+
+    handle.finish().await
+}
+
+#[derive(Debug)]
+struct StreamReadError;
+
+impl Display for StreamReadError {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "StreamReadError")
+    }
+}
+
+impl std::error::Error for StreamReadError {}
+
+fn retryable_stream_read_error(err: DataProcessingError) -> bool {
+    let DataProcessingError::IOError(io_err) = err else {
+        return false;
+    };
+
+    let Some(inner) = io_err.into_inner() else {
+        return false;
+    };
+    let Some(_stream_error) = inner.downcast_ref::<StreamReadError>() else {
+        return false;
+    };
+    true
+}
+
+pub async fn clean_file_from_url(
+    processor: Arc<FileUploadSession>,
+    url: impl IntoUrl,
+) -> errors::Result<(XetFileInfo, DeduplicationMetrics)> {
+    let url_str = url.as_str().to_string();
+    let client = cas_client::build_http_client(RetryConfig::default())?;
+
+    let response = client.get(url).send().await?.error_for_status()?;
+    let n = response.content_length().map(|v| v as usize).unwrap_or(*INGESTION_BLOCK_SIZE);
+    let mut buffer = vec![0u8; usize::min(n, *INGESTION_BLOCK_SIZE)];
+    let stream = response.bytes_stream().map_err(|e| std::io::Error::other(StreamReadError));
+    let mut reader = StreamReader::new(stream);
+
+    let mut handle = processor.start_clean(Some(url_str));
+
+    loop {
+        let bytes = reader.read(&mut buffer).await?;
+        if bytes == 0 {
+            break;
+        }
+
+        handle.add_data(&buffer[..bytes]).await?;
     }
 
     handle.finish().await
