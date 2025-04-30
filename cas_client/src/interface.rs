@@ -1,5 +1,6 @@
-use crate::CasClientError;
 use mdb_shard::shard_file_reconstructor::FileReconstructor;
+
+use crate::CasClientError;
 
 /// A Client to the Shard service. The shard service
 /// provides for
