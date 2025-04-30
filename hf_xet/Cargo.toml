@@ -41,6 +41,7 @@ pprof = { version = "0.14", features = [
 ], optional = true }
 async-trait = "0.1.87"
 async-once-cell = "0.5.4"
+base64 = "0.22.1"
 
 # Unix-specific dependencies
 [target.'cfg(unix)'.dependencies]
