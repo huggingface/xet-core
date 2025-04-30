@@ -269,14 +269,14 @@ pub async fn clean_file_from_url(
     processor: Arc<FileUploadSession>,
     url: impl IntoUrl + Clone,
 ) -> errors::Result<(XetFileInfo, DeduplicationMetrics)> {
-    let url_str = url.as_str().to_string();
     let client = Arc::new(cas_client::build_http_client(RetryConfig::default())?);
 
     const MAX_NUM_STREAM_RETRIES: usize = 5;
     let mut try_num = 1;
     loop {
-        let client = client.clone();
-        let result = async move {
+        let url = url.clone();
+        let result = async {
+            let url_str = url.as_str().to_string();
             let response = client.get(url).send().await?.error_for_status()?;
             let n = response.content_length().map(|v| v as usize).unwrap_or(*INGESTION_BLOCK_SIZE);
             let mut buffer = vec![0u8; usize::min(n, *INGESTION_BLOCK_SIZE)];
@@ -286,7 +286,7 @@ pub async fn clean_file_from_url(
             });
             let mut reader = StreamReader::new(stream);
 
-            let mut handle = processor.start_clean(Some(url_str.clone()));
+            let mut handle = processor.start_clean(Some(url_str));
 
             loop {
                 let bytes = reader.read(&mut buffer).await?;
