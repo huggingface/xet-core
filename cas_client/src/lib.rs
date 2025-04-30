@@ -5,9 +5,11 @@ pub use http_client::{build_auth_http_client, build_http_client, RetryConfig};
 use interface::RegistrationClient;
 pub use interface::{Client, UploadClient};
 #[cfg(not(target_family = "wasm"))]
-pub use interface::{FileProvider, OutputProvider, Reconstruct, ReconstructionClient};
+pub use interface::{Reconstruct, ReconstructionClient};
 #[cfg(not(target_family = "wasm"))]
 pub use local_client::LocalClient;
+#[cfg(not(target_family = "wasm"))]
+pub use output_provider::{FileProvider, OutputProvider};
 pub use remote_client::RemoteClient;
 
 pub use crate::error::CasClientError;
@@ -20,4 +22,6 @@ mod http_client;
 mod interface;
 #[cfg(not(target_family = "wasm"))]
 mod local_client;
+#[cfg(not(target_family = "wasm"))]
+mod output_provider;
 pub mod remote_client;

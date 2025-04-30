@@ -36,6 +36,8 @@ use crate::download_utils::*;
 use crate::error::{CasClientError, Result};
 use crate::http_client::{ResponseErrorLogger, RetryConfig};
 use crate::interface::{ShardDedupProbe, *};
+#[cfg(not(target_family = "wasm"))]
+use crate::output_provider::OutputProvider;
 use crate::{http_client, Client, RegistrationClient, ShardClientInterface};
 
 const FORCE_SYNC_METHOD: reqwest::Method = reqwest::Method::PUT;
@@ -122,12 +124,6 @@ impl RemoteClient {
     }
 
     async fn query_dedup_api(&self, prefix: &str, chunk_hash: &MerkleHash) -> Result<Option<Response>> {
-        if self.shard_cache_directory == PathBuf::default() {
-            return Err(CasClientError::ConfigurationError(
-                "Shard Write Directory not set; cannot download.".to_string(),
-            ));
-        }
-
         // The API endpoint now only supports non-batched dedup request and
         // ignores salt.
         let key = Key {
@@ -728,6 +724,12 @@ impl ShardDedupProbe for RemoteClient {
         chunk_hash: &MerkleHash,
         _salt: &[u8; 32],
     ) -> Result<Option<PathBuf>> {
+        if self.shard_cache_directory == PathBuf::default() {
+            return Err(CasClientError::ConfigurationError(
+                "Shard Write Directory not set; cannot download.".to_string(),
+            ));
+        }
+
         let Some(mut response) = self.query_dedup_api(prefix, chunk_hash).await? else {
             return Ok(None);
         };
@@ -761,14 +763,7 @@ impl ShardDedupProbe for RemoteClient {
             return Ok(None);
         };
 
-        let mut shard_data = Vec::with_capacity(response.content_length().unwrap_or(0) as usize);
-        let mut bytes_stream = response.bytes_stream();
-
-        while let Some(chunk) = bytes_stream.next().await {
-            let chunk = chunk?;
-            shard_data.write_all(&chunk)?;
-        }
-        Ok(Some(shard_data))
+        Ok(Some(response.bytes().await?.to_vec()))
     }
 }
 
@@ -789,7 +784,7 @@ mod tests {
     use tracing_test::traced_test;
 
     use super::*;
-    use crate::interface::buffer::BufferProvider;
+    use crate::output_provider::BufferProvider;
 
     #[ignore = "requires a running CAS server"]
     #[traced_test]
