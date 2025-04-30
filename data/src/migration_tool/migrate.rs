@@ -43,6 +43,9 @@ pub async fn migrate_with_external_runtime(
     Ok(())
 }
 
+/// mdb file info (if dryrun), cleaned file info, total bytes uploaded
+pub type MigrationInfo = (Vec<MDBFileInfo>, Vec<(XetFileInfo, u64)>, u64);
+
 #[instrument(skip_all, name = "migrate_files", fields(session_id = tracing::field::Empty, num_files = file_paths.len()))]
 pub async fn migrate_files_impl(
     file_paths: Vec<String>,
@@ -52,7 +55,7 @@ pub async fn migrate_files_impl(
     threadpool: Arc<ThreadPool>,
     compression: Option<CompressionScheme>,
     dry_run: bool,
-) -> Result<(Vec<MDBFileInfo>, Vec<(XetFileInfo, u64)>, u64)> {
+) -> Result<MigrationInfo> {
     let token_type = "write";
     let (endpoint, jwt_token, jwt_token_expiry) = hub_client.get_jwt_token(token_type).await?;
     let token_refresher = Arc::new(HubClientTokenRefresher {

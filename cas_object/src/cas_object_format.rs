@@ -272,6 +272,7 @@ impl CasObjectInfoV0 {
     }
 }
 
+#[allow(clippy::empty_line_after_doc_comments)]
 #[derive(Clone, PartialEq, Eq, Debug, Serialize)]
 /// Info struct for [CasObject]. This is stored at the end of the XORB.
 pub struct CasObjectInfoV1 {

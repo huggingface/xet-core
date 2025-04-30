@@ -165,7 +165,7 @@ impl SingleFileCleaner {
     }
 
     /// Return the representation of the file after clean as a pointer file instance.
-    #[instrument(skip_all, name = "FileCleaner:::finish", fields(file_name=self.file_name))]
+    #[instrument(skip_all, name = "FileCleaner::finish", fields(file_name=self.file_name))]
     pub async fn finish(mut self) -> Result<(XetFileInfo, DeduplicationMetrics)> {
         // Chunk the rest of the data.
         // note that get_deduper returns the only reference to the deduper

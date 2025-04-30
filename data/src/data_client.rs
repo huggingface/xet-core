@@ -241,7 +241,7 @@ pub async fn clean_file(
 
     let n = reader.metadata()?.len() as usize;
     let span = Span::current();
-    span.record("file.name", &filename.as_ref().to_str());
+    span.record("file.name", filename.as_ref().to_str());
     span.record("file.len", n);
     let mut buffer = vec![0u8; usize::min(n, *INGESTION_BLOCK_SIZE)];
 
