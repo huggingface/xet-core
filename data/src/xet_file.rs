@@ -39,6 +39,6 @@ impl XetFileInfo {
     }
 
     pub fn as_pointer_file(&self) -> std::result::Result<String, serde_json::Error> {
-        Ok(serde_json::to_string(self)?)
+        serde_json::to_string(self)
     }
 }
