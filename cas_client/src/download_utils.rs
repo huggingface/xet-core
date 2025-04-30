@@ -18,8 +18,8 @@ use url::Url;
 use utils::singleflight::Group;
 
 use crate::error::{CasClientError, Result};
+use crate::output_provider::OutputProvider;
 use crate::remote_client::{get_reconstruction_with_endpoint_and_client, PREFIX_DEFAULT};
-use crate::OutputProvider;
 
 #[derive(Clone, Debug)]
 pub(crate) enum DownloadRangeResult {
