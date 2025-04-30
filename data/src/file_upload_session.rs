@@ -165,9 +165,12 @@ impl FileUploadSession {
     ///
     /// The caller is responsible for memory usage management, the parameter "buffer_size"
     /// indicates the maximum number of Vec<u8> in the internal buffer.
-    pub async fn start_clean(self: &Arc<Self>, file_name: Arc<str>, size: u64) -> SingleFileCleaner {
+    pub async fn start_clean(self: &Arc<Self>, file_name: Option<Arc<str>>, size: u64) -> SingleFileCleaner {
         // Get a new file id for the completion tracking
-        let file_id = self.completion_tracker.register_new_file(file_name.clone(), size).await;
+        let file_id = self
+            .completion_tracker
+            .register_new_file(file_name.clone().unwrap_or_default(), size)
+            .await;
 
         SingleFileCleaner::new(file_name, file_id, self.clone())
     }
@@ -412,7 +415,7 @@ mod tests {
 
     use xet_threadpool::ThreadPool;
 
-    use crate::{FileDownloader, FileUploadSession, PointerFile};
+    use crate::{FileDownloader, FileUploadSession, XetFileInfo};
 
     /// Return a shared threadpool to be reused as needed.
     fn get_threadpool() -> Arc<ThreadPool> {
@@ -442,15 +445,17 @@ mod tests {
             .await
             .unwrap();
 
-        let mut cleaner = upload_session.start_clean("test".into(), read_data.len() as u64).await;
+        let mut cleaner = upload_session.start_clean(Some("test".into()), read_data.len() as u64).await;
 
         // Read blocks from the source file and hand them to the cleaning handle
         cleaner.add_data(&read_data[..]).await.unwrap();
 
-        let (pointer_file_contents, _metrics) = cleaner.finish().await.unwrap();
+        let (xet_file_info, _metrics) = cleaner.finish().await.unwrap();
         upload_session.finalize().await.unwrap();
 
-        pf_out.write_all(pointer_file_contents.to_string().as_bytes()).unwrap();
+        pf_out
+            .write_all(serde_json::to_string(&xet_file_info).unwrap().as_bytes())
+            .unwrap();
     }
 
     /// Smudges (hydrates) a pointer file back into the original data.
@@ -464,18 +469,20 @@ mod tests {
         let mut input = String::new();
         reader.read_to_string(&mut input).unwrap();
 
-        let pointer_file = PointerFile::init_from_string(&input, "");
-        // If not a pointer file, do nothing
-        if !pointer_file.is_valid() {
-            return;
-        }
+        let xet_file = serde_json::from_str::<XetFileInfo>(&input).unwrap();
 
         let translator = FileDownloader::new(TranslatorConfig::local_config(cas_path).unwrap(), runtime)
             .await
             .unwrap();
 
         translator
-            .smudge_file_from_pointer(&pointer_file, &writer, None, None)
+            .smudge_file_from_hash(
+                &xet_file.merkle_hash().expect("File hash is not a valid file hash"),
+                output_path.to_string_lossy().into(),
+                &writer,
+                None,
+                None,
+            )
             .await
             .unwrap();
     }

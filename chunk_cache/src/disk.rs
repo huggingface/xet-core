@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::fs::{DirEntry, File};
 use std::io::{self, Cursor, ErrorKind, Read, Seek, SeekFrom, Write};
 use std::mem::size_of;
@@ -12,8 +12,7 @@ use cas_types::{ChunkRange, Key};
 use error_printer::ErrorPrinter;
 use file_utils::SafeFileCreator;
 use merklehash::MerkleHash;
-use tracing::{debug, warn};
-#[cfg(feature = "analysis")]
+use tracing::{debug, error};
 use utils::output_bytes;
 
 use crate::disk::cache_file_header::CacheFileHeader;
@@ -173,7 +172,7 @@ impl DiskCache {
                 continue;
             };
 
-            // loop throught key directories inside prefix directory
+            // loop through key directories inside prefix directory
             for key_dir in key_prefix_readdir {
                 let key_dir = match is_ok_dir(key_dir) {
                     Ok(Some(dirent)) => dirent,
@@ -263,7 +262,7 @@ impl DiskCache {
                     cache_item.verify();
                     file.rewind()?;
                 } else {
-                    warn!("computed checksum {checksum} mismatch on cache item {key}/{cache_item}");
+                    debug!("computed checksum {checksum} mismatch on cache item {key}/{cache_item}");
                     self.remove_item(key, &cache_item)?;
                     continue;
                 }
@@ -286,6 +285,15 @@ impl DiskCache {
 
     fn find_match(&self, key: &Key, range: &ChunkRange) -> OptionResult<VerificationCell<CacheItem>, ChunkCacheError> {
         let state = self.state.lock()?;
+        self.find_match_with_state(&state, key, range)
+    }
+
+    fn find_match_with_state(
+        &self,
+        state: &MutexGuard<'_, CacheState>,
+        key: &Key,
+        range: &ChunkRange,
+    ) -> OptionResult<VerificationCell<CacheItem>, ChunkCacheError> {
         let Some(items) = state.inner.get(key) else {
             return Ok(None);
         };
@@ -307,11 +315,11 @@ impl DiskCache {
         data: &[u8],
     ) -> Result<(), ChunkCacheError> {
         if range.start >= range.end
-        || chunk_byte_indices.len() != (range.end - range.start + 1) as usize
-        // chunk_byte_indices is guaranteed to be more than 1 element at this point
-        || chunk_byte_indices[0] != 0
-        || *chunk_byte_indices.last().unwrap() as usize != data.len()
-        || !strictly_increasing(chunk_byte_indices)
+            || chunk_byte_indices.len() != (range.end - range.start + 1) as usize
+            // chunk_byte_indices is guaranteed to be more than 1 element at this point
+            || chunk_byte_indices[0] != 0
+            || *chunk_byte_indices.last().unwrap() as usize != data.len()
+            || !strictly_increasing(chunk_byte_indices)
         {
             return Err(ChunkCacheError::InvalidArguments);
         }
@@ -326,6 +334,12 @@ impl DiskCache {
         let header = CacheFileHeader::new(chunk_byte_indices);
         let mut header_buf = Vec::with_capacity(header.header_len());
         header.serialize(&mut header_buf)?;
+        let len = (header_buf.len() + data.len()) as u64;
+        if len > self.capacity {
+            // refusing to add this item as it is too large for the cache with configured capacity
+            return Ok(());
+        }
+
         let checksum = {
             let mut hasher = crc32fast::Hasher::new();
             hasher.update(&header_buf);
@@ -335,51 +349,31 @@ impl DiskCache {
 
         let cache_item = CacheItem {
             range: *range,
-            len: (header_buf.len() + data.len()) as u64,
+            len,
             checksum,
         };
 
-        {
-            // write cache item file
-            let path = self.item_path(key, &cache_item)?;
-            let mut fw = SafeFileCreator::new(path)?;
-            fw.write_all(&header_buf)?;
-            fw.write_all(data)?;
-            fw.close()?;
-        }
+        // write cache item file
+        let path = self.item_path(key, &cache_item)?;
+        let mut fw = SafeFileCreator::new(path)?;
+        fw.write_all(&header_buf)?;
+        fw.write_all(data)?;
 
         // evict items after ensuring the file write but before committing to cache state
         // to avoid removing new item.
         let mut state = self.state.lock()?;
 
-        let items = state.inner.entry(key.clone()).or_default();
-
-        // remove from state any items that would be encompassed by the new value
-        // first collect their indices, then remove them by index in reverse
-        let mut to_remove: Vec<usize> = Vec::new();
-        for (i, item) in items.iter().enumerate() {
-            if item.range.start >= cache_item.range.start && item.range.end <= cache_item.range.end {
-                to_remove.push(i);
-            }
+        // acquiring lock to state before closing the file
+        // this will ensure that this thread is the only one writing to the final
+        // cache file but allowing other threads to modify the state while we write the file
+        // before committing it.
+        if self.find_match_with_state(&state, key, range)?.is_some() {
+            // another thread already added this item or overlapping item while this thread
+            // was writing the file
+            fw.abort()?;
+            return Ok(());
         }
-
-        // collection of paths to remove from file system
-        let mut overlapping_item_paths = HashSet::new();
-        let mut total_bytes_rm = 0;
-        let num_items_rm = to_remove.len();
-        // removing by index in reverse to guarantee lower-index items aren't shifted/moved
-        for item_idx in to_remove.into_iter().rev() {
-            let item = items.swap_remove(item_idx);
-            // We only remove from the disk if the item found is not equal to the cache_item
-            // we just wrote. This can happen when multiple put calls are made for the same
-            // item simultaneously.
-            if item != cache_item {
-                overlapping_item_paths.insert(self.item_path(key, &item)?);
-                total_bytes_rm += item.len;
-            }
-        }
-        state.num_items -= num_items_rm;
-        state.total_bytes -= total_bytes_rm;
+        fw.close()?;
 
         // add evicted paths to paths to remove from file system
         let evicted_paths = self.maybe_evict(&mut state, cache_item.len)?;
@@ -394,9 +388,6 @@ impl DiskCache {
         drop(state);
 
         // remove files after done with modifying in memory state and releasing lock
-        for path in overlapping_item_paths {
-            remove_file(&path)?;
-        }
         for path in evicted_paths {
             remove_file(&path)?;
             // check and try to remove key path if all items evicted for key
@@ -485,39 +476,48 @@ impl DiskCache {
         state: &mut MutexGuard<'_, CacheState>,
         expected_add: u64,
     ) -> Result<Vec<PathBuf>, ChunkCacheError> {
-        let total_bytes = state.total_bytes;
-        let to_remove = total_bytes as i64 - self.capacity as i64 + expected_add as i64;
-        let mut bytes_removed = 0;
+        let original_total_bytes = state.total_bytes;
         let mut paths = Vec::new();
-        while to_remove > bytes_removed {
+        while state.total_bytes + expected_add > self.capacity {
             if let Some((key, idx)) = self.random_item(state) {
                 let items = state.inner.get_mut(&key).ok_or(ChunkCacheError::Infallible)?;
                 let cache_item = &items[idx];
                 let len = cache_item.len;
                 let path = self.item_path(&key, cache_item)?;
                 paths.push(path);
-                items.remove(idx);
+                items.swap_remove(idx);
                 if items.is_empty() {
                     state.inner.remove(&key);
                 }
                 state.total_bytes -= len;
                 state.num_items -= 1;
-                bytes_removed += len as i64;
             } else {
+                error!("attempted to evict item, but no item could be found to be evicted");
                 break;
             }
         }
+        debug!(
+            "cache evicting {} items totaling {}",
+            paths.len(),
+            output_bytes(original_total_bytes - state.total_bytes)
+        );
 
         Ok(paths)
     }
 
     /// returns the key and index within that key for a random item
     fn random_item(&self, state: &MutexGuard<'_, CacheState>) -> Option<(Key, usize)> {
-        let num_items = state.num_items;
-        if num_items == 0 {
+        debug_assert_eq!(
+            state.inner.values().map(|v| v.len()).sum::<usize>(),
+            state.num_items,
+            "real num items != stored num items"
+        );
+
+        if state.num_items == 0 {
+            error!("cache random_item for eviction: no items in cache");
             return None;
         }
-        let random_item = rand::random::<usize>() % num_items;
+        let random_item = rand::random::<usize>() % state.num_items;
         let mut count = 0;
         for (key, items) in state.inner.iter() {
             if random_item < count + items.len() {
@@ -525,6 +525,8 @@ impl DiskCache {
             }
             count += items.len();
         }
+        // should never occur
+        error!("cache random_item for eviction: tried to return random item error not enough items");
         None
     }
 
@@ -711,14 +713,14 @@ fn try_parse_cache_file(file_result: io::Result<DirEntry>, capacity: u64) -> Opt
     {
         Ok(i) => i,
         Err(e) => {
-            warn!("not a valid cache file, removing: {:?} {e:?}", item.file_name());
+            debug!("not a valid cache file, removing: {:?} {e:?}", item.file_name());
             remove_file(item.path())?;
             return Ok(None);
         },
     };
     if md.len() != cache_item.len {
         // file is invalid, remove it
-        warn!(
+        debug!(
             "cache file len {} does not match expected length {}, removing path: {:?}",
             md.len(),
             cache_item.len,
@@ -824,6 +826,7 @@ mod tests {
     use rand::rngs::StdRng;
     use rand::SeedableRng;
     use tempdir::TempDir;
+    use utils::output_bytes;
 
     use super::{DiskCache, DEFAULT_CHUNK_CACHE_CAPACITY};
     use crate::disk::test_utils::*;
@@ -941,12 +944,12 @@ mod tests {
             let (key, range, offsets, data) = it.next().unwrap();
             assert!(cache.put(&key, &range, &offsets, &data).is_ok());
         }
-        assert!(cache.total_bytes().unwrap() <= CAP);
+        let total_bytes = cache.total_bytes().unwrap();
+        assert!(total_bytes <= CAP, "cache size: {} <= {}", output_bytes(total_bytes), output_bytes(CAP));
 
         let (key, range, offsets, data) = it.next().unwrap();
         let result = cache.put(&key, &range, &offsets, &data);
         assert!(result.is_ok());
-        assert!(cache.total_bytes().unwrap() <= CAP);
     }
 
     #[test]

@@ -14,7 +14,7 @@ use crate::errors::Result;
 use crate::file_upload_session::FileUploadSession;
 use crate::progress_tracking::CompletionTrackerFileId;
 use crate::sha256::ShaGenerator;
-use crate::PointerFile;
+use crate::XetFileInfo;
 
 // A little set of helper types to allow us to background the
 // dedupe_manager::process_chunks operation.
@@ -39,11 +39,11 @@ enum DedupManagerBackgrounder {
 
 /// A class that encapsulates the clean and data task around a single file.
 pub struct SingleFileCleaner {
-    // Auxiliary info
-    file_name: Arc<str>,
-
     // The id for completion tracking
     file_id: CompletionTrackerFileId,
+
+    // File name, if known.
+    file_name: Option<Arc<str>>,
 
     // Common state
     session: Arc<FileUploadSession>,
@@ -62,9 +62,14 @@ pub struct SingleFileCleaner {
 }
 
 impl SingleFileCleaner {
-    pub(crate) fn new(file_name: Arc<str>, file_id: CompletionTrackerFileId, session: Arc<FileUploadSession>) -> Self {
+    pub(crate) fn new(
+        file_name: Option<Arc<str>>,
+        file_id: CompletionTrackerFileId,
+        session: Arc<FileUploadSession>,
+    ) -> Self {
         let deduper =
             Box::new(Cell::new(FileDeduper::new(UploadSessionDataManager::new(session.clone(), file_id), file_id)));
+
         Self {
             file_name,
             file_id,
@@ -162,7 +167,7 @@ impl SingleFileCleaner {
     }
 
     /// Return the representation of the file after clean as a pointer file instance.
-    pub async fn finish(mut self) -> Result<(PointerFile, DeduplicationMetrics)> {
+    pub async fn finish(mut self) -> Result<(XetFileInfo, DeduplicationMetrics)> {
         // Chunk the rest of the data.
         // note that get_deduper returns the only reference to the deduper
         let mut deduper = self.get_deduper().await?;
@@ -181,8 +186,7 @@ impl SingleFileCleaner {
         let (file_hash, remaining_file_data, deduplication_metrics) =
             deduper.into_inner().finalize(repo_salt, Some(metadata_ext));
 
-        let pointer_file =
-            PointerFile::init_from_info(&self.file_name, &file_hash.hex(), deduplication_metrics.total_bytes as u64);
+        let file_info = XetFileInfo::new(file_hash.hex(), deduplication_metrics.total_bytes);
 
         // Let's check some things that should be invarients
         #[cfg(debug_assertions)]
@@ -191,7 +195,10 @@ impl SingleFileCleaner {
             debug_assert_eq!(remaining_file_data.pending_file_info.len(), 1);
 
             // The size should be total bytes
-            debug_assert_eq!(remaining_file_data.pending_file_info[0].0.file_size(), pointer_file.filesize() as usize)
+            debug_assert_eq!(
+                remaining_file_data.pending_file_info[0].0.file_size(),
+                deduplication_metrics.total_bytes as usize
+            )
         }
 
         // Now, return all this information to the
@@ -205,13 +212,13 @@ impl SingleFileCleaner {
         info!(
             target: "client_telemetry",
             action = "clean",
-            file_name = self.file_name.to_string(),
+            file_name = self.file_name.unwrap_or_default().to_string(),
             file_size_count = deduplication_metrics.total_bytes,
             new_bytes_count = deduplication_metrics.new_bytes,
             start_ts = self.start_time.to_rfc3339(),
             end_processing_ts = Utc::now().to_rfc3339(),
         );
 
-        Ok((pointer_file, deduplication_metrics))
+        Ok((file_info, deduplication_metrics))
     }
 }

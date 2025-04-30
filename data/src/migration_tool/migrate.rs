@@ -10,7 +10,7 @@ use xet_threadpool::ThreadPool;
 use super::hub_client::{HubClient, HubClientTokenRefresher};
 use crate::data_client::{clean_file, default_config};
 use crate::errors::DataProcessingError;
-use crate::{FileUploadSession, PointerFile};
+use crate::{FileUploadSession, XetFileInfo};
 
 /// Migrate files to the Hub with external async runtime.
 /// How to use:
@@ -50,7 +50,7 @@ pub async fn migrate_files_impl(
     threadpool: Arc<ThreadPool>,
     compression: Option<CompressionScheme>,
     dry_run: bool,
-) -> Result<(Vec<MDBFileInfo>, Vec<(PointerFile, u64)>, u64)> {
+) -> Result<(Vec<MDBFileInfo>, Vec<(XetFileInfo, u64)>, u64)> {
     let token_type = "write";
     let (endpoint, jwt_token, jwt_token_expiry) = hub_client.get_jwt_token(token_type).await?;
     let token_refresher = Arc::new(HubClientTokenRefresher {

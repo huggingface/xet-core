@@ -223,7 +223,7 @@ pub(crate) async fn get_reconstruction_with_endpoint_and_client(
         let e = response.unwrap_err();
 
         // bytes_range not satisfiable
-        if let CasClientError::ReqwestError(e) = &e {
+        if let CasClientError::ReqwestError(e, _) = &e {
             if let Some(StatusCode::RANGE_NOT_SATISFIABLE) = e.status() {
                 return Ok(None);
             }

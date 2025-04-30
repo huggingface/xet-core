@@ -19,7 +19,7 @@ use crate::configurations::*;
 use crate::constants::{INGESTION_BLOCK_SIZE, MAX_CONCURRENT_DOWNLOADS, MAX_CONCURRENT_FILE_INGESTION};
 use crate::errors::DataProcessingError;
 use crate::repo_salt::RepoSalt;
-use crate::{errors, FileDownloader, FileUploadSession, PointerFile};
+use crate::{errors, FileDownloader, FileUploadSession, XetFileInfo};
 
 utils::configurable_constants! {
     ref DEFAULT_CAS_ENDPOINT: String = "http://localhost:8080".to_string();
@@ -95,26 +95,55 @@ pub fn default_config(
     Ok(Arc::new(translator_config))
 }
 
+pub async fn upload_bytes_async(
+    thread_pool: Arc<ThreadPool>,
+    file_contents: Vec<Vec<u8>>,
+    endpoint: Option<String>,
+    token_info: Option<(String, u64)>,
+    token_refresher: Option<Arc<dyn TokenRefresher>>,
+    progress_updater: Option<Arc<dyn TrackingProgressUpdater>>,
+) -> errors::Result<Vec<XetFileInfo>> {
+    let config = default_config(endpoint.unwrap_or(DEFAULT_CAS_ENDPOINT.clone()), None, token_info, token_refresher)?;
+
+    let upload_session = FileUploadSession::new(config, thread_pool, progress_updater).await?;
+
+    // clean the bytes
+    let files = tokio_par_for_each(file_contents, *MAX_CONCURRENT_FILE_INGESTION, |file_data, _| async {
+        let (xf, _metrics) = clean_bytes(upload_session.clone(), file_data).await?;
+        Ok(xf)
+    })
+    .await
+    .map_err(|e| match e {
+        ParallelError::JoinError => DataProcessingError::InternalError("Join error".to_string()),
+        ParallelError::TaskError(e) => e,
+    })?;
+
+    // Push the CAS blocks and flush the mdb to disk
+    let _metrics = upload_session.finalize().await?;
+
+    Ok(files)
+}
+
 pub async fn upload_async(
-    threadpool: Arc<ThreadPool>,
+    thread_pool: Arc<ThreadPool>,
     file_paths: Vec<String>,
     endpoint: Option<String>,
     token_info: Option<(String, u64)>,
     token_refresher: Option<Arc<dyn TokenRefresher>>,
     progress_updater: Option<Arc<dyn TrackingProgressUpdater>>,
-) -> errors::Result<Vec<PointerFile>> {
+) -> errors::Result<Vec<XetFileInfo>> {
     // chunk files
     // produce Xorbs + Shards
     // upload shards and xorbs
     // for each file, return the filehash
     let config = default_config(endpoint.unwrap_or(DEFAULT_CAS_ENDPOINT.clone()), None, token_info, token_refresher)?;
 
-    let upload_session = FileUploadSession::new(config, threadpool, progress_updater).await?;
+    let upload_session = FileUploadSession::new(config, thread_pool, progress_updater).await?;
 
     // for all files, clean them, producing pointer files.
-    let pointers = tokio_par_for_each(file_paths, *MAX_CONCURRENT_FILE_INGESTION, |f, _| async {
-        let (pf, _metrics) = clean_file(upload_session.clone(), f).await?;
-        Ok(pf)
+    let files = tokio_par_for_each(file_paths, *MAX_CONCURRENT_FILE_INGESTION, |f, _| async {
+        let (xf, _metrics) = clean_file(upload_session.clone(), f).await?;
+        Ok(xf)
     })
     .await
     .map_err(|e| match e {
@@ -127,19 +156,19 @@ pub async fn upload_async(
 
     // TODO: Report on metrics
 
-    Ok(pointers)
+    Ok(files)
 }
 
 pub async fn download_async(
     threadpool: Arc<ThreadPool>,
-    pointer_files: Vec<PointerFile>,
+    file_infos: Vec<(XetFileInfo, String)>,
     endpoint: Option<String>,
     token_info: Option<(String, u64)>,
     token_refresher: Option<Arc<dyn TokenRefresher>>,
     progress_updaters: Option<Vec<Arc<dyn TrackingProgressUpdater>>>,
 ) -> errors::Result<Vec<String>> {
     if let Some(updaters) = &progress_updaters {
-        if updaters.len() != pointer_files.len() {
+        if updaters.len() != file_infos.len() {
             return Err(DataProcessingError::ParameterError(
                 "updaters are not same length as pointer_files".to_string(),
             ));
@@ -149,36 +178,48 @@ pub async fn download_async(
         default_config(endpoint.unwrap_or(DEFAULT_CAS_ENDPOINT.to_string()), None, token_info, token_refresher)?;
 
     let updaters = match progress_updaters {
-        None => vec![None; pointer_files.len()],
+        None => vec![None; file_infos.len()],
         Some(updaters) => updaters.into_iter().map(Some).collect(),
     };
-    let pointer_files_plus = pointer_files.into_iter().zip(updaters).collect::<Vec<_>>();
+    let pointer_files_plus = file_infos.into_iter().zip(updaters).collect::<Vec<_>>();
 
     let processor = &Arc::new(FileDownloader::new(config, threadpool).await?);
-    let paths =
-        tokio_par_for_each(pointer_files_plus, *MAX_CONCURRENT_DOWNLOADS, |(pointer_file, updater), _| async move {
+    let paths = tokio_par_for_each(
+        pointer_files_plus,
+        *MAX_CONCURRENT_DOWNLOADS,
+        |((file_info, file_path), updater), _| async move {
             let proc = processor.clone();
-            smudge_file(&proc, &pointer_file, updater).await
-        })
-        .await
-        .map_err(|e| match e {
-            ParallelError::JoinError => DataProcessingError::InternalError("Join error".to_string()),
-            ParallelError::TaskError(e) => e,
-        })?;
+            smudge_file(&proc, &file_info, &file_path, updater).await
+        },
+    )
+    .await
+    .map_err(|e| match e {
+        ParallelError::JoinError => DataProcessingError::InternalError("Join error".to_string()),
+        ParallelError::TaskError(e) => e,
+    })?;
 
     Ok(paths)
+}
+
+pub async fn clean_bytes(
+    processor: Arc<FileUploadSession>,
+    bytes: Vec<u8>,
+) -> errors::Result<(XetFileInfo, DeduplicationMetrics)> {
+    let mut handle = processor.start_clean(None, bytes.len() as u64).await;
+    handle.add_data(&bytes).await?;
+    handle.finish().await
 }
 
 pub async fn clean_file(
     processor: Arc<FileUploadSession>,
     filename: impl AsRef<Path>,
-) -> errors::Result<(PointerFile, DeduplicationMetrics)> {
+) -> errors::Result<(XetFileInfo, DeduplicationMetrics)> {
     let mut reader = File::open(&filename)?;
 
     let n = reader.metadata()?.len();
     let mut buffer = vec![0u8; u64::min(n, *INGESTION_BLOCK_SIZE as u64) as usize];
 
-    let mut handle = processor.start_clean(filename.as_ref().to_string_lossy().into(), n).await;
+    let mut handle = processor.start_clean(Some(filename.as_ref().to_string_lossy().into()), n).await;
 
     loop {
         let bytes = reader.read(&mut buffer)?;
@@ -194,18 +235,19 @@ pub async fn clean_file(
 
 async fn smudge_file(
     downloader: &FileDownloader,
-    pointer_file: &PointerFile,
+    file_info: &XetFileInfo,
+    file_path: &str,
     progress_updater: Option<Arc<dyn TrackingProgressUpdater>>,
 ) -> errors::Result<String> {
-    let path = PathBuf::from(pointer_file.path());
+    let path = PathBuf::from(file_path);
     if let Some(parent_dir) = path.parent() {
         std::fs::create_dir_all(parent_dir)?;
     }
     let output = OutputProvider::File(FileProvider::new(path));
     downloader
-        .smudge_file_from_pointer(pointer_file, &output, None, progress_updater)
+        .smudge_file_from_hash(&file_info.merkle_hash()?, file_path.into(), &output, None, progress_updater)
         .await?;
-    Ok(pointer_file.path().to_string())
+    Ok(file_path.to_string())
 }
 
 #[cfg(test)]
