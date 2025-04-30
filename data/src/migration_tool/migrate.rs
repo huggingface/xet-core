@@ -4,11 +4,12 @@ use anyhow::Result;
 use cas_object::CompressionScheme;
 use mdb_shard::file_structs::MDBFileInfo;
 use parutils::{tokio_par_for_each, ParallelError};
+use tracing::{info_span, instrument, Instrument, Span};
 use utils::auth::TokenRefresher;
 use xet_threadpool::ThreadPool;
 
 use super::hub_client::{HubClient, HubClientTokenRefresher};
-use crate::data_client::{clean_file, default_config};
+use crate::data_client::{add_spans, clean_file, default_config};
 use crate::errors::DataProcessingError;
 use crate::{FileUploadSession, XetFileInfo};
 
@@ -42,6 +43,7 @@ pub async fn migrate_with_external_runtime(
     Ok(())
 }
 
+#[instrument(skip_all, name = "migrate_files", fields(session_id = tracing::field::Empty, num_files = file_paths.len()))]
 pub async fn migrate_files_impl(
     file_paths: Vec<String>,
     sequential: bool,
@@ -61,6 +63,7 @@ pub async fn migrate_files_impl(
     let cas = cas_endpoint.unwrap_or(endpoint);
 
     let config = default_config(cas, compression, Some((jwt_token, jwt_token_expiry)), Some(token_refresher))?;
+    Span::current().record("session_id", &config.session_id);
 
     let num_workers = if sequential { 1 } else { threadpool.num_worker_threads() };
     let processor = if dry_run {
@@ -69,10 +72,15 @@ pub async fn migrate_files_impl(
         FileUploadSession::new(config, threadpool, None).await?
     };
 
-    let clean_ret = tokio_par_for_each(file_paths, num_workers, |f, _| async {
-        let proc = processor.clone();
-        let (pf, metrics) = clean_file(proc, f).await?;
-        Ok((pf, metrics.new_bytes as u64))
+    let file_paths_plus = add_spans(file_paths, || info_span!("migration::clean_file"));
+
+    let clean_ret = tokio_par_for_each(file_paths_plus, num_workers, |(f, span), _| {
+        async {
+            let proc = processor.clone();
+            let (pf, metrics) = clean_file(proc, f).await?;
+            Ok((pf, metrics.new_bytes as u64))
+        }
+        .instrument(span.unwrap_or_else(|| info_span!("unexpected_span")))
     })
     .await
     .map_err(|e| match e {

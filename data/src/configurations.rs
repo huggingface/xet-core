@@ -75,6 +75,7 @@ pub struct TranslatorConfig {
     pub data_config: DataConfig,
     pub shard_config: ShardConfig,
     pub repo_info: Option<RepoInfo>,
+    pub session_id: Option<String>,
 }
 
 impl TranslatorConfig {
@@ -104,6 +105,7 @@ impl TranslatorConfig {
             repo_info: Some(RepoInfo {
                 repo_paths: vec!["".into()],
             }),
+            session_id: None,
         };
 
         Ok(Arc::new(translator_config))

@@ -11,6 +11,8 @@ use cas_object::CompressionScheme;
 use deduplication::DeduplicationMetrics;
 use dirs::home_dir;
 use parutils::{tokio_par_for_each, ParallelError};
+use tracing::{info_span, instrument, Instrument, Span};
+use ulid::Ulid;
 use utils::auth::{AuthConfig, TokenRefresher};
 use utils::progress::ProgressUpdater;
 use xet_threadpool::ThreadPool;
@@ -89,12 +91,14 @@ pub fn default_config(
         repo_info: Some(RepoInfo {
             repo_paths: vec!["".into()],
         }),
+        session_id: Some(Ulid::new().to_string()),
     };
 
     // Return the temp dir so that it's not dropped and thus the directory deleted.
     Ok(Arc::new(translator_config))
 }
 
+#[instrument(skip_all, name = "data_client::upload_bytes", fields(session_id = tracing::field::Empty, num_files=file_contents.len()))]
 pub async fn upload_bytes_async(
     thread_pool: Arc<ThreadPool>,
     file_contents: Vec<Vec<u8>>,
@@ -104,13 +108,18 @@ pub async fn upload_bytes_async(
     progress_updater: Option<Arc<dyn ProgressUpdater>>,
 ) -> errors::Result<Vec<XetFileInfo>> {
     let config = default_config(endpoint.unwrap_or(DEFAULT_CAS_ENDPOINT.clone()), None, token_info, token_refresher)?;
+    Span::current().record("session_id", &config.session_id);
 
     let upload_session = FileUploadSession::new(config, thread_pool, progress_updater).await?;
+    let files_plus = add_spans(file_contents, || info_span!("clean_task"));
 
     // clean the bytes
-    let files = tokio_par_for_each(file_contents, *MAX_CONCURRENT_FILE_INGESTION, |file_data, _| async {
-        let (xf, _metrics) = clean_bytes(upload_session.clone(), file_data).await?;
-        Ok(xf)
+    let files = tokio_par_for_each(files_plus, *MAX_CONCURRENT_FILE_INGESTION, |(file_data, span), _| {
+        async {
+            let (xf, _metrics) = clean_bytes(upload_session.clone(), file_data).await?;
+            Ok(xf)
+        }
+        .instrument(span.unwrap_or_else(|| info_span!("unexpected_span")))
     })
     .await
     .map_err(|e| match e {
@@ -124,6 +133,7 @@ pub async fn upload_bytes_async(
     Ok(files)
 }
 
+#[instrument(skip_all, name = "data_client::upload_files", fields(session_id = tracing::field::Empty, num_files=file_paths.len()))]
 pub async fn upload_async(
     thread_pool: Arc<ThreadPool>,
     file_paths: Vec<String>,
@@ -137,13 +147,18 @@ pub async fn upload_async(
     // upload shards and xorbs
     // for each file, return the filehash
     let config = default_config(endpoint.unwrap_or(DEFAULT_CAS_ENDPOINT.clone()), None, token_info, token_refresher)?;
+    Span::current().record("session_id", &config.session_id);
 
     let upload_session = FileUploadSession::new(config, thread_pool, progress_updater).await?;
+    let files_plus = add_spans(file_paths, || info_span!("clean_file_task"));
 
     // for all files, clean them, producing pointer files.
-    let files = tokio_par_for_each(file_paths, *MAX_CONCURRENT_FILE_INGESTION, |f, _| async {
-        let (xf, _metrics) = clean_file(upload_session.clone(), f).await?;
-        Ok(xf)
+    let files = tokio_par_for_each(files_plus, *MAX_CONCURRENT_FILE_INGESTION, |(f, span), _| {
+        async {
+            let (xf, _metrics) = clean_file(upload_session.clone(), f).await?;
+            Ok(xf)
+        }
+        .instrument(span.unwrap_or_else(|| info_span!("unexpected_span")))
     })
     .await
     .map_err(|e| match e {
@@ -159,6 +174,7 @@ pub async fn upload_async(
     Ok(files)
 }
 
+#[instrument(skip_all, name = "data_client::download", fields(session_id = tracing::field::Empty, num_files=file_infos.len()))]
 pub async fn download_async(
     threadpool: Arc<ThreadPool>,
     file_infos: Vec<(XetFileInfo, String)>,
@@ -176,20 +192,25 @@ pub async fn download_async(
     }
     let config =
         default_config(endpoint.unwrap_or(DEFAULT_CAS_ENDPOINT.to_string()), None, token_info, token_refresher)?;
+    Span::current().record("session_id", &config.session_id);
 
     let updaters = match progress_updaters {
         None => vec![None; file_infos.len()],
         Some(updaters) => updaters.into_iter().map(Some).collect(),
     };
     let pointer_files_plus = file_infos.into_iter().zip(updaters).collect::<Vec<_>>();
+    let pointer_files_plus = add_spans(pointer_files_plus, || info_span!("download_file"));
 
     let processor = &Arc::new(FileDownloader::new(config, threadpool).await?);
     let paths = tokio_par_for_each(
         pointer_files_plus,
         *MAX_CONCURRENT_DOWNLOADS,
-        |((file_info, file_path), updater), _| async move {
-            let proc = processor.clone();
-            smudge_file(&proc, &file_info, &file_path, updater).await
+        |(((file_info, file_path), updater), span), _| {
+            async move {
+                let proc = processor.clone();
+                smudge_file(&proc, &file_info, &file_path, updater).await
+            }
+            .instrument(span.unwrap_or_else(|| info_span!("unexpected_span")))
         },
     )
     .await
@@ -201,6 +222,7 @@ pub async fn download_async(
     Ok(paths)
 }
 
+#[instrument(skip_all, name = "clean_bytes", fields(bytes.len = bytes.len()))]
 pub async fn clean_bytes(
     processor: Arc<FileUploadSession>,
     bytes: Vec<u8>,
@@ -210,6 +232,7 @@ pub async fn clean_bytes(
     handle.finish().await
 }
 
+#[instrument(skip_all, name = "clean_file", fields(file.name = tracing::field::Empty, file.len = tracing::field::Empty))]
 pub async fn clean_file(
     processor: Arc<FileUploadSession>,
     filename: impl AsRef<Path>,
@@ -217,6 +240,9 @@ pub async fn clean_file(
     let mut reader = File::open(&filename)?;
 
     let n = reader.metadata()?.len() as usize;
+    let span = Span::current();
+    span.record("file.name", &filename.as_ref().to_str());
+    span.record("file.len", n);
     let mut buffer = vec![0u8; usize::min(n, *INGESTION_BLOCK_SIZE)];
 
     let mut handle = processor.start_clean(Some(filename.as_ref().to_string_lossy().into()));
@@ -250,12 +276,23 @@ async fn smudge_file(
     Ok(file_path.to_string())
 }
 
+/// Adds spans to the indicated list for each element.
+///
+/// Although a span will be added for each element, we need an Option<Span> since
+/// tokio_par_for_each requires the input list be Default, which Span isn't.
+pub fn add_spans<I, F: Fn() -> Span>(v: Vec<I>, create_span: F) -> Vec<(I, Option<Span>)> {
+    let spans: Vec<Option<Span>> = v.iter().map(|_| Some(create_span())).collect();
+    v.into_iter().zip(spans).collect()
+}
+
 #[cfg(test)]
 mod tests {
     use std::env;
 
     use serial_test::serial;
     use tempfile::tempdir;
+    use tracing::info;
+    use tracing_test::traced_test;
 
     use super::*;
 
@@ -341,5 +378,42 @@ mod tests {
         assert!(result.is_ok());
         let config = result.unwrap();
         assert!(config.data_config.cache_config.cache_directory.starts_with(&expected));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    #[traced_test]
+    async fn test_add_spans() {
+        let outer_span = info_span!("outer_span");
+        async {
+            let v = vec!["a", "b", "c"];
+            let expected_len = v.len();
+            let v_plus = add_spans(v, || info_span!("task_span"));
+            assert_eq!(v_plus.len(), expected_len);
+            tokio_par_for_each(v_plus, expected_len, |(s, span), i| {
+                async move {
+                    info!("inside: {s},{i}");
+                    Ok::<(), ()>(())
+                }
+                .instrument(span.unwrap())
+            })
+            .await
+            .unwrap();
+        }
+        .instrument(outer_span)
+        .await;
+
+        assert!(logs_contain("inside: a,0"));
+        assert!(logs_contain("inside: b,1"));
+        assert!(logs_contain("inside: c,2"));
+        logs_assert(|lines: &[&str]| {
+            match lines
+                .iter()
+                .filter(|line| line.contains("task_span") && line.contains("outer_span"))
+                .count()
+            {
+                3 => Ok(()),
+                n => Err(format!("Expected 3 lines, got {n}")),
+            }
+        });
     }
 }

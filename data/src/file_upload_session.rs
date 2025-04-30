@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::mem::{swap, take};
 use std::sync::Arc;
 
@@ -10,6 +11,8 @@ use merklehash::MerkleHash;
 use more_asserts::*;
 use tokio::sync::{Mutex, OwnedSemaphorePermit, Semaphore};
 use tokio::task::JoinSet;
+use tracing::instrument;
+use ulid::Ulid;
 use utils::progress::ProgressUpdater;
 use xet_threadpool::ThreadPool;
 
@@ -97,7 +100,12 @@ impl FileUploadSession {
         upload_progress_updater: Option<Arc<dyn ProgressUpdater>>,
         dry_run: bool,
     ) -> Result<Arc<FileUploadSession>> {
-        let client = create_remote_client(&config, threadpool.clone(), dry_run)?;
+        let session_id = config
+            .session_id
+            .as_ref()
+            .map(Cow::Borrowed)
+            .unwrap_or_else(|| Cow::Owned(Ulid::new().to_string()));
+        let client = create_remote_client(&config, threadpool.clone(), &session_id, dry_run)?;
 
         let shard_interface = SessionShardInterface::new(config.clone(), client.clone(), dry_run).await?;
 
@@ -141,6 +149,7 @@ impl FileUploadSession {
         SingleFileCleaner::new(file_name, self.clone())
     }
 
+    #[instrument(skip_all, name="FileUploadSession::register_new_xorb_for_upload", fields(xorb_len = xorb.num_bytes()))]
     pub(crate) async fn register_new_xorb_for_upload(self: &Arc<Self>, xorb: RawXorbData) -> Result<()> {
         // First check the current xorb upload tasks to see if any can be cleaned up.
         {
@@ -185,6 +194,7 @@ impl FileUploadSession {
     }
 
     /// Meant to be called by the finalize() method of the SingleFileCleaner
+    #[instrument(skip_all, name="FileUploadSession::register_single_file_clean_completion", fields(num_bytes = file_data.num_bytes(), num_chunks = file_data.num_chunks()))]
     pub(crate) async fn register_single_file_clean_completion(
         self: &Arc<Self>,
         mut file_data: DataAggregator,
@@ -244,7 +254,8 @@ impl FileUploadSession {
         Ok(())
     }
 
-    /// Finalize everthing.
+    /// Finalize everything.
+    #[instrument(skip_all, name="FileUploadSession::finalize", fields(session.id))]
     async fn finalize_impl(self: Arc<Self>, return_files: bool) -> Result<(DeduplicationMetrics, Vec<MDBFileInfo>)> {
         // Register the remaining xorbs for upload.
         let data_agg = take(&mut *self.current_session_data.lock().await);
