@@ -14,6 +14,7 @@ pyo3 = { version = "0.23.3", features = [
     "extension-module",
     "abi3-py37",
     "auto-initialize",
+    "experimental-async",
 ] }
 
 error_printer = { path = "../error_printer" }
@@ -21,7 +22,6 @@ data = { path = "../data" }
 utils = { path = "../utils" }
 xet_threadpool = { path = "../xet_threadpool" }
 tokio = { version = "1.36", features = ["full"] }
-parutils = { path = "../parutils" }
 tracing = "0.1.*"
 tracing-subscriber = { version = "0.3", features = [
     "json",
@@ -41,6 +41,8 @@ pprof = { version = "0.14", features = [
     "protobuf-codec",
 ], optional = true }
 async-trait = "0.1.87"
+async-once-cell = "0.5.4"
+base64 = "0.22.1"
 
 # Unix-specific dependencies
 [target.'cfg(unix)'.dependencies]
