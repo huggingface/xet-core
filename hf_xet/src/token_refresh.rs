@@ -1,8 +1,9 @@
+use std::fmt::{Debug, Formatter};
+
 use async_trait::async_trait;
 use pyo3::exceptions::PyTypeError;
 use pyo3::prelude::PyAnyMethods;
 use pyo3::{Py, PyAny, PyErr, PyResult, Python};
-use std::fmt::{Debug, Formatter};
 use tracing::error;
 use utils::auth::{TokenInfo, TokenRefresher};
 use utils::errors::AuthError;

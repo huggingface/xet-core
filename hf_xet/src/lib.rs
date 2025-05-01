@@ -22,7 +22,6 @@ use crate::progress_update::WrappedProgressUpdater;
 // For profiling
 #[cfg(feature = "profiling")]
 pub(crate) mod profiling;
-#[cfg(feature = "session")]
 pub mod session;
 
 fn convert_data_processing_error(e: DataProcessingError) -> PyErr {
@@ -64,7 +63,7 @@ pub fn upload_bytes(
         .into_iter()
         .map(PyXetUploadInfo::from)
         .collect();
-        PyResult::Ok(out)
+        Ok(out)
     })
 }
 
@@ -99,7 +98,7 @@ pub fn upload_files(
         .into_iter()
         .map(PyXetUploadInfo::from)
         .collect();
-        PyResult::Ok(out)
+        Ok(out)
     })
 }
 
@@ -129,7 +128,7 @@ pub fn download_files(
         .await
         .map_err(convert_data_processing_error)?;
 
-        PyResult::Ok(out)
+        Ok(out)
     })
 }
 

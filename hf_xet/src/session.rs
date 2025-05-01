@@ -1,23 +1,24 @@
+use std::collections::HashMap;
+use std::fs::File;
+use std::io::Read;
+use std::sync::Arc;
+
+use base64::{engine::general_purpose::STANDARD, engine::GeneralPurpose, Engine};
+use data::configurations::TranslatorConfig;
+use data::data_client::default_config;
+use data::{FileDownloader, FileUploadSession, XetFileInfo, INGESTION_BLOCK_SIZE};
+use error_printer::ErrorPrinter;
+use pyo3::{pyclass, pymethods, Py, PyAny, PyResult, Python};
+use utils::auth::TokenRefresher;
+
 use crate::log_buffer::HF_DEFAULT_ENDPOINT;
 use crate::runtime::init_threadpool;
 use crate::token_refresh::WrappedTokenRefresher;
 use crate::{
     convert_data_processing_error, try_parse_progress_updater, DestinationPath, PyXetDownloadInfo, PyXetUploadInfo,
 };
-use base64::engine::general_purpose::STANDARD;
-use base64::engine::GeneralPurpose;
-use base64::Engine;
-use data::configurations::TranslatorConfig;
-use data::data_client::default_config;
-use data::{FileDownloader, FileUploadSession, XetFileInfo, INGESTION_BLOCK_SIZE};
-use error_printer::ErrorPrinter;
-use pyo3::Python;
-use pyo3::{pyclass, pymethods, Py, PyAny, PyResult};
-use std::collections::HashMap;
-use std::fs::File;
-use std::io::Read;
-use std::sync::Arc;
-use utils::auth::TokenRefresher;
+
+const TRACKER_ID_ENCODER_DECODER: GeneralPurpose = STANDARD;
 
 /// XetSession is per-repo specific
 #[pyclass]
@@ -56,6 +57,7 @@ impl XetSession {
         })
     }
 
+    #[pyo3(signature = (tracker_id, file_path, progress_updater=None))]
     pub async fn upload_file(
         &self,
         tracker_id: String,
@@ -69,7 +71,8 @@ impl XetSession {
         let n = reader.metadata()?.len() as usize;
         let mut buffer = vec![0u8; usize::min(n, *INGESTION_BLOCK_SIZE)];
 
-        let mut handle = file_upload_session.start_clean(Some(STANDARD.encode(tracker_id.as_bytes())));
+        let mut handle =
+            file_upload_session.start_clean(Some(TRACKER_ID_ENCODER_DECODER.encode(tracker_id.as_bytes())));
 
         loop {
             let bytes = reader.read(&mut buffer)?;
@@ -86,6 +89,7 @@ impl XetSession {
         Ok(())
     }
 
+    #[pyo3(signature = (tracker_id, file_bytes, progress_updater=None))]
     pub async fn upload_bytes(
         &self,
         tracker_id: String,
@@ -101,6 +105,8 @@ impl XetSession {
     }
 
     pub async fn flush(&self) -> PyResult<HashMap<String, PyXetUploadInfo>> {
+        let _file_upload_session = self.file_upload_session().await;
+
         Ok(HashMap::new())
     }
 
