@@ -5,6 +5,7 @@ use deduplication::{DeduplicationDataInterface, RawXorbData};
 use mdb_shard::file_structs::FileDataSequenceEntry;
 use merklehash::MerkleHash;
 use tokio::task::JoinSet;
+use tracing::Instrument;
 
 use crate::configurations::GlobalDedupPolicy;
 use crate::errors::Result;
@@ -52,16 +53,19 @@ impl DeduplicationDataInterface for UploadSessionDataManager {
         // can continue.
         let session: Arc<FileUploadSession> = self.session.clone();
 
-        self.active_global_dedup_queries.spawn(async move {
-            let repo_salt = &session.config.shard_config.repo_salt;
+        self.active_global_dedup_queries.spawn(
+            async move {
+                let repo_salt = &session.config.shard_config.repo_salt;
 
-            session
-                .shard_interface
-                .query_dedup_shard_by_chunk(&chunk_hash, repo_salt)
-                .await?;
+                session
+                    .shard_interface
+                    .query_dedup_shard_by_chunk(&chunk_hash, repo_salt)
+                    .await?;
 
-            Ok(true)
-        });
+                Ok(true)
+            }
+            .instrument(tracing::info_span!("UploadSessionDataManager::dedup_task")),
+        );
 
         Ok(())
     }

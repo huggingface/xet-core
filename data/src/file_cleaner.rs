@@ -6,7 +6,7 @@ use deduplication::{Chunk, Chunker, DeduplicationMetrics, FileDeduper};
 use mdb_shard::file_structs::FileMetadataExt;
 use merklehash::MerkleHash;
 use tokio::task::{JoinError, JoinHandle};
-use tracing::{info, info_span, instrument, Instrument};
+use tracing::{debug_span, info, instrument, Instrument};
 
 use crate::constants::INGESTION_BLOCK_SIZE;
 use crate::deduplication_interface::UploadSessionDataManager;
@@ -125,12 +125,12 @@ impl SingleFileCleaner {
                 let res = deduper.get_mut().process_chunks(&chunks).await;
                 Ok((deduper, res))
             }
-            .instrument(info_span!("deduper::process_chunks_task", num_chunks)),
+            .instrument(debug_span!("deduper::process_chunks_task", num_chunks).or_current()),
         ));
         Ok(())
     }
 
-    #[instrument(skip_all, name = "FileCleaner::add_data", fields(file_name=self.file_name, len=data.len()))]
+    #[instrument(skip_all, level="debug", name = "FileCleaner::add_data", fields(file_name=self.file_name, len=data.len()))]
     pub async fn add_data(&mut self, data: &[u8]) -> Result<()> {
         if data.len() > *INGESTION_BLOCK_SIZE {
             let mut pos = 0;

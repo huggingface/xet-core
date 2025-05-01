@@ -11,7 +11,7 @@ use merklehash::MerkleHash;
 use more_asserts::*;
 use tokio::sync::{Mutex, OwnedSemaphorePermit, Semaphore};
 use tokio::task::JoinSet;
-use tracing::instrument;
+use tracing::{info_span, instrument, Instrument};
 use ulid::Ulid;
 use utils::progress::ProgressUpdater;
 use xet_threadpool::ThreadPool;
@@ -174,21 +174,24 @@ impl FileUploadSession {
         let upload_permit = acquire_upload_permit().await?;
         let cas_prefix = session.config.data_config.prefix.clone();
 
-        self.xorb_upload_tasks.lock().await.spawn(async move {
-            let n_bytes_transmitted = session
-                .client
-                .put(&cas_prefix, &xorb_hash, xorb_data, chunks_and_boundaries)
-                .await?;
+        self.xorb_upload_tasks.lock().await.spawn(
+            async move {
+                let n_bytes_transmitted = session
+                    .client
+                    .put(&cas_prefix, &xorb_hash, xorb_data, chunks_and_boundaries)
+                    .await?;
 
-            drop(upload_permit);
+                drop(upload_permit);
 
-            if let Some(updater) = session.upload_progress_updater.as_ref() {
-                updater.update(n_bytes_transmitted as u64);
+                if let Some(updater) = session.upload_progress_updater.as_ref() {
+                    updater.update(n_bytes_transmitted as u64);
+                }
+
+                session.deduplication_metrics.lock().await.xorb_bytes_uploaded += n_bytes_transmitted;
+                Ok(())
             }
-
-            session.deduplication_metrics.lock().await.xorb_bytes_uploaded += n_bytes_transmitted;
-            Ok(())
-        });
+            .instrument(info_span!("FileUploadSession::upload_xorb_task", xorb.hash = xorb_hash.hex())),
+        );
 
         Ok(())
     }
