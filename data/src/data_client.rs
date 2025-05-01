@@ -12,7 +12,7 @@ use deduplication::DeduplicationMetrics;
 use dirs::home_dir;
 use parutils::{tokio_par_for_each, ParallelError};
 use utils::auth::{AuthConfig, TokenRefresher};
-use utils::progress::ProgressUpdater;
+use utils::progress::TrackingProgressUpdater;
 use xet_threadpool::ThreadPool;
 
 use crate::configurations::*;
@@ -101,7 +101,7 @@ pub async fn upload_bytes_async(
     endpoint: Option<String>,
     token_info: Option<(String, u64)>,
     token_refresher: Option<Arc<dyn TokenRefresher>>,
-    progress_updater: Option<Arc<dyn ProgressUpdater>>,
+    progress_updater: Option<Arc<dyn TrackingProgressUpdater>>,
 ) -> errors::Result<Vec<XetFileInfo>> {
     let config = default_config(endpoint.unwrap_or(DEFAULT_CAS_ENDPOINT.clone()), None, token_info, token_refresher)?;
 
@@ -130,7 +130,7 @@ pub async fn upload_async(
     endpoint: Option<String>,
     token_info: Option<(String, u64)>,
     token_refresher: Option<Arc<dyn TokenRefresher>>,
-    progress_updater: Option<Arc<dyn ProgressUpdater>>,
+    progress_updater: Option<Arc<dyn TrackingProgressUpdater>>,
 ) -> errors::Result<Vec<XetFileInfo>> {
     // chunk files
     // produce Xorbs + Shards
@@ -165,7 +165,7 @@ pub async fn download_async(
     endpoint: Option<String>,
     token_info: Option<(String, u64)>,
     token_refresher: Option<Arc<dyn TokenRefresher>>,
-    progress_updaters: Option<Vec<Arc<dyn ProgressUpdater>>>,
+    progress_updaters: Option<Vec<Arc<dyn TrackingProgressUpdater>>>,
 ) -> errors::Result<Vec<String>> {
     if let Some(updaters) = &progress_updaters {
         if updaters.len() != file_infos.len() {
@@ -205,7 +205,7 @@ pub async fn clean_bytes(
     processor: Arc<FileUploadSession>,
     bytes: Vec<u8>,
 ) -> errors::Result<(XetFileInfo, DeduplicationMetrics)> {
-    let mut handle = processor.start_clean(None);
+    let mut handle = processor.start_clean(None, bytes.len() as u64).await;
     handle.add_data(&bytes).await?;
     handle.finish().await
 }
@@ -216,10 +216,10 @@ pub async fn clean_file(
 ) -> errors::Result<(XetFileInfo, DeduplicationMetrics)> {
     let mut reader = File::open(&filename)?;
 
-    let n = reader.metadata()?.len() as usize;
-    let mut buffer = vec![0u8; usize::min(n, *INGESTION_BLOCK_SIZE)];
+    let n = reader.metadata()?.len();
+    let mut buffer = vec![0u8; u64::min(n, *INGESTION_BLOCK_SIZE as u64) as usize];
 
-    let mut handle = processor.start_clean(Some(filename.as_ref().to_string_lossy().into()));
+    let mut handle = processor.start_clean(Some(filename.as_ref().to_string_lossy().into()), n).await;
 
     loop {
         let bytes = reader.read(&mut buffer)?;
@@ -237,7 +237,7 @@ async fn smudge_file(
     downloader: &FileDownloader,
     file_info: &XetFileInfo,
     file_path: &str,
-    progress_updater: Option<Arc<dyn ProgressUpdater>>,
+    progress_updater: Option<Arc<dyn TrackingProgressUpdater>>,
 ) -> errors::Result<String> {
     let path = PathBuf::from(file_path);
     if let Some(parent_dir) = path.parent() {
@@ -245,7 +245,7 @@ async fn smudge_file(
     }
     let output = OutputProvider::File(FileProvider::new(path));
     downloader
-        .smudge_file_from_hash(&file_info.merkle_hash()?, &output, None, progress_updater)
+        .smudge_file_from_hash(&file_info.merkle_hash()?, file_path.into(), &output, None, progress_updater)
         .await?;
     Ok(file_path.to_string())
 }

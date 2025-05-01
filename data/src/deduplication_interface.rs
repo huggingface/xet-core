@@ -9,16 +9,18 @@ use tokio::task::JoinSet;
 use crate::configurations::GlobalDedupPolicy;
 use crate::errors::Result;
 use crate::file_upload_session::FileUploadSession;
+use crate::progress_tracking::CompletionTrackerFileId;
 
 pub struct UploadSessionDataManager {
+    file_id: CompletionTrackerFileId,
     session: Arc<FileUploadSession>,
-
     active_global_dedup_queries: JoinSet<Result<bool>>,
 }
 
 impl UploadSessionDataManager {
-    pub fn new(session: Arc<FileUploadSession>) -> Self {
+    pub fn new(session: Arc<FileUploadSession>, file_id: CompletionTrackerFileId) -> Self {
         Self {
+            file_id,
             session,
             active_global_dedup_queries: Default::default(),
         }
@@ -90,5 +92,10 @@ impl DeduplicationDataInterface for UploadSessionDataManager {
         self.session.register_new_xorb_for_upload(xorb).await?;
 
         Ok(())
+    }
+
+    /// Periodically registers xorb dependencies; used for progress tracking.
+    async fn register_xorb_dependencies(&mut self, dependencies: &[(MerkleHash, u64)]) {
+        self.session.register_xorb_dependencies(self.file_id, dependencies).await;
     }
 }

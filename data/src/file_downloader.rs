@@ -3,7 +3,7 @@ use std::sync::Arc;
 use cas_client::{Client, OutputProvider};
 use cas_types::FileRange;
 use merklehash::MerkleHash;
-use utils::progress::ProgressUpdater;
+use utils::progress::{ItemProgressUpdater, SimpleProgressUpdater, TrackingProgressUpdater};
 use xet_threadpool::ThreadPool;
 
 use crate::configurations::TranslatorConfig;
@@ -33,12 +33,16 @@ impl FileDownloader {
     pub async fn smudge_file_from_hash(
         &self,
         file_id: &MerkleHash,
+        file_name: Arc<str>,
         output: &OutputProvider,
         range: Option<FileRange>,
-        progress_updater: Option<Arc<dyn ProgressUpdater>>,
+        progress_updater: Option<Arc<dyn TrackingProgressUpdater>>,
     ) -> Result<u64> {
+        let file_progress_tracker =
+            progress_updater.map(|p| ItemProgressUpdater::new(p, file_name, None) as Arc<dyn SimpleProgressUpdater>);
+
         // Currently, this works by always directly querying the remote server.
-        let n_bytes = self.client.get_file(file_id, range, output, progress_updater).await?;
+        let n_bytes = self.client.get_file(file_id, range, output, file_progress_tracker).await?;
 
         prometheus_metrics::FILTER_BYTES_SMUDGED.inc_by(n_bytes);
 

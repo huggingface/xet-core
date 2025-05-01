@@ -1,5 +1,5 @@
 use std::fs::File;
-use std::io::{BufReader, Read, Write};
+use std::io::{Read, Write};
 use std::path::PathBuf;
 use std::sync::{Arc, OnceLock};
 
@@ -72,16 +72,18 @@ fn main() {
 }
 
 async fn clean_file(arg: &CleanArg) -> Result<()> {
-    let reader = BufReader::new(File::open(&arg.file)?);
+    let file_reader = File::open(&arg.file)?;
+    let file_size = file_reader.metadata()?.len();
+
     let writer: Box<dyn Write + Send> = match &arg.dest {
         Some(path) => Box::new(File::options().create(true).write(true).truncate(true).open(path)?),
         None => Box::new(std::io::stdout()),
     };
 
-    clean(reader, writer).await
+    clean(file_reader, writer, file_size).await
 }
 
-async fn clean(mut reader: impl Read, mut writer: impl Write) -> Result<()> {
+async fn clean(mut reader: impl Read, mut writer: impl Write, size: u64) -> Result<()> {
     const READ_BLOCK_SIZE: usize = 1024 * 1024;
 
     let mut read_buf = vec![0u8; READ_BLOCK_SIZE];
@@ -90,7 +92,8 @@ async fn clean(mut reader: impl Read, mut writer: impl Write) -> Result<()> {
         FileUploadSession::new(TranslatorConfig::local_config(std::env::current_dir()?)?, get_threadpool(), None)
             .await?;
 
-    let mut handle = translator.start_clean(None);
+    let mut size_read = 0;
+    let mut handle = translator.start_clean(None, size).await;
 
     loop {
         let bytes = reader.read(&mut read_buf)?;
@@ -99,13 +102,16 @@ async fn clean(mut reader: impl Read, mut writer: impl Write) -> Result<()> {
         }
 
         handle.add_data(&read_buf[0..bytes]).await?;
+        size_read += bytes as u64;
     }
+
+    debug_assert_eq!(size_read, size);
 
     let (file_info, _) = handle.finish().await?;
 
     translator.finalize().await?;
 
-    writer.write_all(serde_json::to_string(&file_info)?.as_bytes())?;
+    writer.write_all(file_info.as_pointer_file()?.as_bytes())?;
 
     Ok(())
 }
@@ -117,12 +123,12 @@ async fn smudge_file(arg: &SmudgeArg) -> Result<()> {
     };
 
     let writer = OutputProvider::File(FileProvider::new(arg.dest.clone()));
-    smudge(reader, &writer).await?;
+    smudge(arg.dest.to_string_lossy().into(), reader, &writer).await?;
 
     Ok(())
 }
 
-async fn smudge(mut reader: impl Read, writer: &OutputProvider) -> Result<()> {
+async fn smudge(name: Arc<str>, mut reader: impl Read, writer: &OutputProvider) -> Result<()> {
     let mut input = String::new();
     reader.read_to_string(&mut input)?;
 
@@ -135,6 +141,7 @@ async fn smudge(mut reader: impl Read, writer: &OutputProvider) -> Result<()> {
     downloader
         .smudge_file_from_hash(
             &xet_file.merkle_hash().map_err(|_| anyhow::anyhow!("Xet hash is corrupted"))?,
+            name,
             writer,
             None,
             None,
