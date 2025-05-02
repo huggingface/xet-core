@@ -23,7 +23,7 @@ use reqwest::{StatusCode, Url};
 use reqwest_middleware::ClientWithMiddleware;
 use tokio::sync::{mpsc, OwnedSemaphorePermit};
 use tokio::task::{JoinError, JoinHandle, JoinSet};
-use tracing::{debug, info};
+use tracing::{debug, info, instrument};
 use utils::auth::AuthConfig;
 use utils::progress::SimpleProgressUpdater;
 use utils::singleflight::Group;
@@ -31,7 +31,7 @@ use xet_threadpool::ThreadPool;
 
 use crate::download_utils::*;
 use crate::error::{CasClientError, Result};
-use crate::http_client::{ResponseErrorLogger, RetryConfig};
+use crate::http_client::{Api, ResponseErrorLogger, RetryConfig};
 use crate::interface::{ShardDedupProber, *};
 use crate::{http_client, Client, RegistrationClient, ShardClientInterface};
 
@@ -71,6 +71,7 @@ pub struct RemoteClient {
 }
 
 impl RemoteClient {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         threadpool: Arc<ThreadPool>,
         endpoint: &str,
@@ -78,6 +79,7 @@ impl RemoteClient {
         auth: &Option<AuthConfig>,
         cache_config: &Option<CacheConfig>,
         shard_cache_directory: PathBuf,
+        session_id: &str,
         dry_run: bool,
     ) -> Self {
         // use disk cache if cache_config provided.
@@ -104,12 +106,12 @@ impl RemoteClient {
             compression,
             dry_run,
             authenticated_http_client: Arc::new(
-                http_client::build_auth_http_client(auth, RetryConfig::default()).unwrap(),
+                http_client::build_auth_http_client(auth, RetryConfig::default(), session_id).unwrap(),
             ),
             conservative_authenticated_http_client: Arc::new(
-                http_client::build_auth_http_client(auth, RetryConfig::no429retry()).unwrap(),
+                http_client::build_auth_http_client(auth, RetryConfig::no429retry(), session_id).unwrap(),
             ),
-            http_client: Arc::new(http_client::build_http_client(RetryConfig::default()).unwrap()),
+            http_client: Arc::new(http_client::build_http_client(RetryConfig::default(), session_id).unwrap()),
             chunk_cache,
             threadpool,
             range_download_single_flight,
@@ -212,7 +214,7 @@ pub(crate) async fn get_reconstruction_with_endpoint_and_client(
 ) -> Result<Option<QueryReconstructionResponse>> {
     let url = Url::parse(&format!("{}/reconstruction/{}", endpoint, file_id.hex()))?;
 
-    let mut request = client.get(url);
+    let mut request = client.get(url).with_extension(Api("cas::get_reconstruction"));
     if let Some(range) = bytes_range {
         // convert exclusive-end to inclusive-end range
         request = request.header(RANGE, HttpRange::from(range).range_header())
@@ -245,6 +247,7 @@ pub(crate) async fn get_reconstruction_with_endpoint_and_client(
 impl Client for RemoteClient {}
 
 impl RemoteClient {
+    #[instrument(skip_all, name = "RemoteClient::batch_get_reconstruction")]
     async fn batch_get_reconstruction(
         &self,
         file_ids: impl Iterator<Item = &MerkleHash>,
@@ -265,6 +268,7 @@ impl RemoteClient {
         let response = self
             .authenticated_http_client
             .get(url)
+            .with_extension(Api("cas::batch_get_reconstruction"))
             .send()
             .await
             .process_error("batch_get_reconstruction")?;
@@ -276,6 +280,7 @@ impl RemoteClient {
         Ok(query_reconstruction_response)
     }
 
+    #[instrument(skip_all, name="RemoteClient::upload_xorb", fields(key = key.to_string(), xorb.len = contents.len(), xorb.num_chunks = chunk_and_boundaries.len()))]
     pub async fn upload(
         &self,
         key: &Key,
@@ -299,6 +304,7 @@ impl RemoteClient {
             let response = self
                 .authenticated_http_client
                 .post(url)
+                .with_extension(Api("cas::upload_xorb"))
                 .body(data)
                 .send()
                 .await
@@ -315,6 +321,7 @@ impl RemoteClient {
     // at the beginning of the download, but queried in segments. Range downloads are executed with
     // a certain degree of parallelism, but writing out to storage is sequential. Ideal when the external
     // storage uses HDDs.
+    #[instrument(skip_all, name="RemoteClient::reconstruct_file_segmented", fields(file.hash = file_hash.hex()))]
     async fn reconstruct_file_to_writer_segmented(
         &self,
         file_hash: &MerkleHash,
@@ -460,6 +467,7 @@ impl RemoteClient {
     // at the beginning of the download, but queried in segments. Range downloads are executed with
     // a certain degree of parallelism, and so does writing out to storage. Ideal when the external
     // storage is fast at seeks, e.g. RAM or SSDs.
+    #[instrument(skip_all, name="RemoteClient::reconstruct_file_segmented_parallel", fields(file.hash = file_hash.hex()))]
     async fn reconstruct_file_to_writer_segmented_parallel_write(
         &self,
         file_hash: &MerkleHash,
@@ -605,6 +613,7 @@ impl RemoteClient {
 
 #[async_trait]
 impl RegistrationClient for RemoteClient {
+    #[instrument(skip_all, name="RemoteClient::upload_shard", fields(shard.hash = hash.hex(), shard.len = shard_data.len()))]
     async fn upload_shard(
         &self,
         prefix: &str,
@@ -632,6 +641,7 @@ impl RegistrationClient for RemoteClient {
         let response = self
             .authenticated_http_client
             .request(method, url)
+            .with_extension(Api("cas::upload_shard"))
             .body(shard_data.to_vec())
             .send()
             .await
@@ -649,6 +659,7 @@ impl RegistrationClient for RemoteClient {
 
 #[async_trait]
 impl FileReconstructor<CasClientError> for RemoteClient {
+    #[instrument(skip_all, name="RemoteClient::get_file_reconstruction", fields(file.hash = file_hash.hex()))]
     async fn get_file_reconstruction_info(
         &self,
         file_hash: &MerkleHash,
@@ -658,6 +669,7 @@ impl FileReconstructor<CasClientError> for RemoteClient {
         let response = self
             .authenticated_http_client
             .get(url)
+            .with_extension(Api("cas::get_reconstruction_info"))
             .send()
             .await
             .process_error("get_reconstruction_info")?;
@@ -683,6 +695,7 @@ impl FileReconstructor<CasClientError> for RemoteClient {
 
 #[async_trait]
 impl ShardDedupProber for RemoteClient {
+    #[instrument(skip_all, name = "RemoteClient::query_global_dedup")]
     async fn query_for_global_dedup_shard(
         &self,
         prefix: &str,
@@ -707,6 +720,7 @@ impl ShardDedupProber for RemoteClient {
         let mut response = self
             .conservative_authenticated_http_client
             .get(url)
+            .with_extension(Api("cas::query_dedup"))
             .send()
             .await
             .map_err(|e| CasClientError::Other(format!("request failed with error {e}")))?;
@@ -769,6 +783,7 @@ mod tests {
             &None,
             &None,
             "".into(),
+            "",
             false,
         );
         // Act
@@ -1140,7 +1155,7 @@ mod tests {
 
         // test reconstruct and sequential write
         let test = test_case.clone();
-        let client = RemoteClient::new(threadpool.clone(), endpoint, None, &None, &None, "".into(), false);
+        let client = RemoteClient::new(threadpool.clone(), endpoint, None, &None, &None, "".into(), "", false);
         let provider = BufferProvider::default();
         let buf = provider.buf.clone();
         let writer = OutputProvider::Buffer(provider);
@@ -1158,7 +1173,7 @@ mod tests {
 
         // test reconstruct and parallel write
         let test = test_case;
-        let client = RemoteClient::new(threadpool.clone(), endpoint, None, &None, &None, "".into(), false);
+        let client = RemoteClient::new(threadpool.clone(), endpoint, None, &None, &None, "".into(), "", false);
         let provider = BufferProvider::default();
         let buf = provider.buf.clone();
         let writer = OutputProvider::Buffer(provider);

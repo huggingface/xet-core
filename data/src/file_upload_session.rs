@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::collections::HashSet;
 use std::mem::{swap, take};
 use std::sync::Arc;
@@ -11,6 +12,8 @@ use merklehash::MerkleHash;
 use more_asserts::*;
 use tokio::sync::{Mutex, OwnedSemaphorePermit, Semaphore};
 use tokio::task::JoinSet;
+use tracing::{info_span, instrument, Instrument};
+use ulid::Ulid;
 use utils::progress::{NoOpProgressUpdater, TrackingProgressUpdater};
 use xet_threadpool::ThreadPool;
 
@@ -108,6 +111,12 @@ impl FileUploadSession {
         upload_progress_updater: Option<Arc<dyn TrackingProgressUpdater>>,
         dry_run: bool,
     ) -> Result<Arc<FileUploadSession>> {
+        let session_id = config
+            .session_id
+            .as_ref()
+            .map(Cow::Borrowed)
+            .unwrap_or_else(|| Cow::Owned(Ulid::new().to_string()));
+
         let progress_updater = upload_progress_updater.unwrap_or_else(|| Arc::new(NoOpProgressUpdater));
 
         // When debug assertions are enabled, track all the progress updates for consistency
@@ -121,7 +130,7 @@ impl FileUploadSession {
 
         let completion_tracker = Arc::new(CompletionTracker::new(progress_updater));
 
-        let client = create_remote_client(&config, threadpool.clone(), dry_run)?;
+        let client = create_remote_client(&config, threadpool.clone(), &session_id, dry_run)?;
 
         let shard_interface = SessionShardInterface::new(config.clone(), client.clone(), dry_run).await?;
 
@@ -177,6 +186,7 @@ impl FileUploadSession {
 
     /// Registers a new xorb for upload, returning true if the xorb was added to the upload queue and false
     /// if it was already in the queue and didn't need to be uploaded again.
+    #[instrument(skip_all, name="FileUploadSession::register_new_xorb_for_upload", fields(xorb_len = xorb.num_bytes()))]
     pub(crate) async fn register_new_xorb_for_upload(self: &Arc<Self>, xorb: RawXorbData) -> Result<bool> {
         // First check the current xorb upload tasks to see if any can be cleaned up.
         {
@@ -216,26 +226,30 @@ impl FileUploadSession {
         let upload_permit = acquire_upload_permit().await?;
         let cas_prefix = session.config.data_config.prefix.clone();
 
-        self.xorb_upload_tasks.lock().await.spawn(async move {
-            let n_bytes_transmitted = session
-                .client
-                .put(&cas_prefix, &xorb_hash, xorb_data, chunks_and_boundaries)
-                .await?;
+        self.xorb_upload_tasks.lock().await.spawn(
+            async move {
+                let n_bytes_transmitted = session
+                    .client
+                    .put(&cas_prefix, &xorb_hash, xorb_data, chunks_and_boundaries)
+                    .await?;
 
-            drop(upload_permit);
+                drop(upload_permit);
 
-            // Register that the xorb has been uploaded.
-            session.completion_tracker.register_xorb_upload_completion(xorb_hash).await;
+                // Register that the xorb has been uploaded.
+                session.completion_tracker.register_xorb_upload_completion(xorb_hash).await;
 
-            // Record the number of bytes uploaded.
-            session.deduplication_metrics.lock().await.xorb_bytes_uploaded += n_bytes_transmitted;
-            Ok(())
-        });
+                // Record the number of bytes uploaded.
+                session.deduplication_metrics.lock().await.xorb_bytes_uploaded += n_bytes_transmitted;
+                Ok(())
+            }
+            .instrument(info_span!("FileUploadSession::upload_xorb_task", xorb.hash = xorb_hash.hex())),
+        );
 
         Ok(true)
     }
 
     /// Meant to be called by the finalize() method of the SingleFileCleaner
+    #[instrument(skip_all, name="FileUploadSession::register_single_file_clean_completion", fields(num_bytes = file_data.num_bytes(), num_chunks = file_data.num_chunks()))]
     pub(crate) async fn register_single_file_clean_completion(
         self: &Arc<Self>,
         mut file_data: DataAggregator,
@@ -328,7 +342,8 @@ impl FileUploadSession {
         self.completion_tracker.register_dependencies(&dependencies).await;
     }
 
-    /// Finalize everthing.
+    /// Finalize everything.
+    #[instrument(skip_all, name="FileUploadSession::finalize", fields(session.id))]
     async fn finalize_impl(self: Arc<Self>, return_files: bool) -> Result<(DeduplicationMetrics, Vec<MDBFileInfo>)> {
         // Register the remaining xorbs for upload.
         let data_agg = take(&mut *self.current_session_data.lock().await);
@@ -430,7 +445,7 @@ mod tests {
     /// * `input_path`: path to the original file
     /// * `output_path`: path to write the pointer file
     async fn test_clean_file(runtime: Arc<ThreadPool>, cas_path: &Path, input_path: &Path, output_path: &Path) {
-        let read_data = std::fs::read(input_path).unwrap().to_vec();
+        let read_data = read(input_path).unwrap().to_vec();
 
         let mut pf_out = Box::new(
             OpenOptions::new()

@@ -1,8 +1,11 @@
+use std::borrow::Cow;
 use std::sync::Arc;
 
 use cas_client::{Client, OutputProvider};
 use cas_types::FileRange;
 use merklehash::MerkleHash;
+use tracing::instrument;
+use ulid::Ulid;
 use utils::progress::{ItemProgressUpdater, SimpleProgressUpdater, TrackingProgressUpdater};
 use xet_threadpool::ThreadPool;
 
@@ -25,11 +28,17 @@ pub struct FileDownloader {
 /// Smudge operations
 impl FileDownloader {
     pub async fn new(config: Arc<TranslatorConfig>, threadpool: Arc<ThreadPool>) -> Result<Self> {
-        let client = create_remote_client(&config, threadpool.clone(), false)?;
+        let session_id = config
+            .session_id
+            .as_ref()
+            .map(Cow::Borrowed)
+            .unwrap_or_else(|| Cow::Owned(Ulid::new().to_string()));
+        let client = create_remote_client(&config, threadpool.clone(), &session_id, false)?;
 
         Ok(Self { config, client })
     }
 
+    #[instrument(skip_all, name = "FileDownloader::smudge_file_from_hash", fields(hash=file_id.hex()))]
     pub async fn smudge_file_from_hash(
         &self,
         file_id: &MerkleHash,
