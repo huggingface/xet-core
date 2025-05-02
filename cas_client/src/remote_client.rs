@@ -25,7 +25,7 @@ use tokio::sync::{mpsc, OwnedSemaphorePermit};
 use tokio::task::{JoinError, JoinHandle, JoinSet};
 use tracing::{debug, info, instrument};
 use utils::auth::AuthConfig;
-use utils::progress::ProgressUpdater;
+use utils::progress::SimpleProgressUpdater;
 use utils::singleflight::Group;
 use xet_threadpool::ThreadPool;
 
@@ -168,7 +168,7 @@ impl ReconstructionClient for RemoteClient {
         hash: &MerkleHash,
         byte_range: Option<FileRange>,
         output_provider: &OutputProvider,
-        progress_updater: Option<Arc<dyn ProgressUpdater>>,
+        progress_updater: Option<Arc<dyn SimpleProgressUpdater>>,
     ) -> Result<u64> {
         // If the user has set the `HF_XET_RECONSTRUCT_WRITE_SEQUENTIALLY=true` env variable, then we
         // should write the file to the output sequentially instead of in parallel.
@@ -327,7 +327,7 @@ impl RemoteClient {
         file_hash: &MerkleHash,
         byte_range: Option<FileRange>,
         writer: &OutputProvider,
-        progress_updater: Option<Arc<dyn ProgressUpdater>>,
+        progress_updater: Option<Arc<dyn SimpleProgressUpdater>>,
     ) -> Result<u64> {
         // queue size is inherently bounded by degree of concurrency.
         let (task_tx, mut task_rx) = mpsc::unbounded_channel::<DownloadQueueItem<TermDownload>>();
@@ -443,7 +443,10 @@ impl RemoteClient {
                     // drop permit after data written out so they don't accumulate in memory unbounded
                     drop(permit);
 
-                    progress_updater.as_ref().inspect(|updater| updater.update(data.len() as u64));
+                    if let Some(updater) = progress_updater.as_ref() {
+                        updater.update(data.len() as u64).await;
+                    }
+
                     total_written += data.len() as u64;
 
                     // Now inspect the download metrics and tune the download degree of concurrency
@@ -470,7 +473,7 @@ impl RemoteClient {
         file_hash: &MerkleHash,
         byte_range: Option<FileRange>,
         writer: &OutputProvider,
-        progress_updater: Option<Arc<dyn ProgressUpdater>>,
+        progress_updater: Option<Arc<dyn SimpleProgressUpdater>>,
     ) -> Result<u64> {
         // queue size is inherently bounded by degree of concurrency.
         let (task_tx, mut task_rx) = mpsc::unbounded_channel::<DownloadQueueItem<TermDownloadAndWrite>>();
@@ -502,16 +505,15 @@ impl RemoteClient {
             move |result: stdResult<stdResult<TermDownloadResult<usize>, CasClientError>, JoinError>,
                   total_written: &mut u64,
                   download_scheduler: &DownloadScheduler|
-                  -> Result<()> {
+                  -> Result<u64> {
                 match result {
                     Ok(Ok(download_result)) => {
-                        let write_len = download_result.data;
-                        *total_written += write_len as u64;
-                        progress_updater.as_ref().inspect(|updater| updater.update(write_len as u64));
+                        let write_len = download_result.data as u64;
+                        *total_written += write_len;
 
                         // Now inspect the download metrics and tune the download degree of concurrency
                         download_scheduler.tune_on(download_result)?;
-                        Ok(())
+                        Ok(write_len)
                     },
                     Ok(Err(e)) => Err(e)?,
                     Err(e) => Err(anyhow!("{e:?}"))?,
@@ -523,7 +525,10 @@ impl RemoteClient {
         while let Some(item) = task_rx.recv().await {
             // first try to join some tasks
             while let Some(result) = running_downloads.try_join_next() {
-                process_result(result, &mut total_written, &download_scheduler)?;
+                let write_len = process_result(result, &mut total_written, &download_scheduler)?;
+                if let Some(updater) = progress_updater.as_ref() {
+                    updater.update(write_len).await;
+                }
             }
 
             match item {
@@ -596,7 +601,10 @@ impl RemoteClient {
         }
 
         while let Some(result) = running_downloads.join_next().await {
-            process_result(result, &mut total_written, &download_scheduler)?;
+            let write_len = process_result(result, &mut total_written, &download_scheduler)?;
+            if let Some(updater) = progress_updater.as_ref() {
+                updater.update(write_len).await;
+            }
         }
 
         Ok(total_written)

@@ -12,6 +12,7 @@ use crate::constants::INGESTION_BLOCK_SIZE;
 use crate::deduplication_interface::UploadSessionDataManager;
 use crate::errors::Result;
 use crate::file_upload_session::FileUploadSession;
+use crate::progress_tracking::CompletionTrackerFileId;
 use crate::sha256::ShaGenerator;
 use crate::XetFileInfo;
 
@@ -29,7 +30,7 @@ use crate::XetFileInfo;
 //
 // - deduper_process_chunks() will start processing of new chunks in background
 // and switch dedup_manager into Background(JoinHandle)
-type DedupeBoxType = Cell<FileDeduper<UploadSessionDataManager>>;
+type DedupeBoxType = Box<Cell<FileDeduper<UploadSessionDataManager>>>;
 type ProcessChunksResult = Result<DeduplicationMetrics>;
 enum DedupManagerBackgrounder {
     Foreground(Option<DedupeBoxType>),
@@ -38,8 +39,11 @@ enum DedupManagerBackgrounder {
 
 /// A class that encapsulates the clean and data task around a single file.
 pub struct SingleFileCleaner {
-    // Auxiliary info
-    file_name: Option<String>,
+    // The id for completion tracking
+    file_id: CompletionTrackerFileId,
+
+    // File name, if known.
+    file_name: Option<Arc<str>>,
 
     // Common state
     session: Arc<FileUploadSession>,
@@ -58,10 +62,17 @@ pub struct SingleFileCleaner {
 }
 
 impl SingleFileCleaner {
-    pub(crate) fn new(file_name: Option<String>, session: Arc<FileUploadSession>) -> Self {
-        let deduper = Cell::new(FileDeduper::new(UploadSessionDataManager::new(session.clone())));
+    pub(crate) fn new(
+        file_name: Option<Arc<str>>,
+        file_id: CompletionTrackerFileId,
+        session: Arc<FileUploadSession>,
+    ) -> Self {
+        let deduper =
+            Box::new(Cell::new(FileDeduper::new(UploadSessionDataManager::new(session.clone(), file_id), file_id)));
+
         Self {
             file_name,
+            file_id,
             dedup_manager: DedupManagerBackgrounder::Foreground(Some(deduper)),
             session,
             chunker: deduplication::Chunker::default(),
@@ -89,15 +100,11 @@ impl SingleFileCleaner {
                 // deduper. So yes, there are some conditions (Tokio join failure)
                 // in which we will lose the deduper completely.
                 // But those conditions are unlikely to be recoverable anyway..?
-                let (deduper, block_metrics) = jh.await??;
-                match block_metrics {
-                    Ok(block_metrics) => {
+                let (deduper, result) = jh.await??;
+                match result {
+                    Ok(_) => {
                         // This is the normal case, we are done.
                         self.dedup_manager = DedupManagerBackgrounder::Foreground(None);
-                        // Update the progress bar with the deduped bytes
-                        if let Some(updater) = self.session.upload_progress_updater.as_ref() {
-                            updater.update(block_metrics.deduped_bytes as u64);
-                        }
                     },
                     Err(e) => {
                         // This is an error case, we need to return the error
@@ -130,7 +137,7 @@ impl SingleFileCleaner {
         Ok(())
     }
 
-    #[instrument(skip_all, level="debug", name = "FileCleaner::add_data", fields(file_name=self.file_name, len=data.len()))]
+    #[instrument(skip_all, level="debug", name = "FileCleaner::add_data", fields(file_name=self.file_name.as_ref().map(|s|s.to_string()), len=data.len()))]
     pub async fn add_data(&mut self, data: &[u8]) -> Result<()> {
         if data.len() > *INGESTION_BLOCK_SIZE {
             let mut pos = 0;
@@ -165,17 +172,14 @@ impl SingleFileCleaner {
     }
 
     /// Return the representation of the file after clean as a pointer file instance.
-    #[instrument(skip_all, name = "FileCleaner::finish", fields(file_name=self.file_name))]
+    #[instrument(skip_all, name = "FileCleaner::finish", fields(file_name=self.file_name.as_ref().map(|s|s.to_string())))]
     pub async fn finish(mut self) -> Result<(XetFileInfo, DeduplicationMetrics)> {
         // Chunk the rest of the data.
         // note that get_deduper returns the only reference to the deduper
         let mut deduper = self.get_deduper().await?;
         if let Some(chunk) = self.chunker.finish() {
             self.sha_generator.update(Arc::new([chunk.clone()])).await?;
-            let block_metrics = deduper.get_mut().process_chunks(&[chunk]).await?;
-            if let Some(updater) = self.session.upload_progress_updater.as_ref() {
-                updater.update(block_metrics.deduped_bytes as u64);
-            }
+            deduper.get_mut().process_chunks(&[chunk]).await?;
         }
 
         // Finalize the sha256 hashing and create the metadata extension
@@ -184,7 +188,8 @@ impl SingleFileCleaner {
 
         // Now finish the deduplication process.
         let repo_salt = self.session.config.shard_config.repo_salt;
-        let (file_hash, remaining_file_data, deduplication_metrics, new_xorbs) =
+
+        let (file_hash, remaining_file_data, deduplication_metrics) =
             deduper.into_inner().finalize(repo_salt, Some(metadata_ext));
 
         let file_info = XetFileInfo::new(file_hash.hex(), deduplication_metrics.total_bytes);
@@ -201,7 +206,7 @@ impl SingleFileCleaner {
 
         // Now, return all this information to the
         self.session
-            .register_single_file_clean_completion(remaining_file_data, &deduplication_metrics, new_xorbs)
+            .register_single_file_clean_completion(remaining_file_data, &deduplication_metrics)
             .await?;
 
         // NB: xorb upload is happening in the background, this number is optimistic since it does
@@ -210,7 +215,7 @@ impl SingleFileCleaner {
         info!(
             target: "client_telemetry",
             action = "clean",
-            file_name = &self.file_name,
+            file_name = self.file_name.unwrap_or_default().to_string(),
             file_size_count = deduplication_metrics.total_bytes,
             new_bytes_count = deduplication_metrics.new_bytes,
             start_ts = self.start_time.to_rfc3339(),

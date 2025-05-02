@@ -37,4 +37,8 @@ impl XetFileInfo {
     pub fn file_size(&self) -> usize {
         self.file_size
     }
+
+    pub fn as_pointer_file(&self) -> std::result::Result<String, serde_json::Error> {
+        serde_json::to_string(self)
+    }
 }
