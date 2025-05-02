@@ -78,6 +78,7 @@ impl RetryConfig<No429RetryStratey> {
 
 /// Builds authenticated HTTP Client to talk to CAS.
 /// Includes retry middleware with exponential backoff.
+#[allow(unused_variables)]
 pub fn build_auth_http_client<R: RetryableStrategy + Send + Sync + 'static>(
     auth_config: &Option<AuthConfig>,
     retry_config: RetryConfig<R>,
@@ -106,6 +107,7 @@ pub fn build_auth_http_client<R: RetryableStrategy + Send + Sync + 'static>(
 
 /// Builds HTTP Client to talk to CAS.
 /// Includes retry middleware with exponential backoff.
+#[allow(unused_variables)]
 pub fn build_http_client<R: RetryableStrategy + Send + Sync + 'static>(
     retry_config: RetryConfig<R>,
 ) -> std::result::Result<ClientWithMiddleware, CasClientError> {

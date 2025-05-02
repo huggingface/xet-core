@@ -142,7 +142,7 @@ pub async fn clean_file(file: web_sys::File, endpoint: String, jwt_token: String
 
     let upload_session = Arc::new(FileUploadSession::new(Arc::new(config)));
 
-    let mut handle = upload_session.start_clean();
+    let mut handle = upload_session.start_clean("".to_string());
 
     const READ_BUF_SIZE: usize = 8 * 1024 * 1024;
     let mut buf = vec![0u8; READ_BUF_SIZE];
