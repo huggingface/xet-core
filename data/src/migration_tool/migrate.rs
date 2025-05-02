@@ -75,9 +75,9 @@ pub async fn migrate_files_impl(
         FileUploadSession::new(config, threadpool, None).await?
     };
 
-    let file_paths_plus = add_spans(file_paths, || info_span!("migration::clean_file"));
+    let file_paths_with_spans = add_spans(file_paths, || info_span!("migration::clean_file"));
 
-    let clean_ret = tokio_par_for_each(file_paths_plus, num_workers, |(f, span), _| {
+    let clean_ret = tokio_par_for_each(file_paths_with_spans, num_workers, |(f, span), _| {
         async {
             let proc = processor.clone();
             let (pf, metrics) = clean_file(proc, f).await?;

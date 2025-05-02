@@ -111,12 +111,12 @@ pub async fn upload_bytes_async(
     Span::current().record("session_id", &config.session_id);
 
     let upload_session = FileUploadSession::new(config, thread_pool, progress_updater).await?;
-    let files_plus = add_spans(file_contents, || info_span!("clean_task"));
+    let blobs_with_spans = add_spans(file_contents, || info_span!("clean_task"));
 
     // clean the bytes
-    let files = tokio_par_for_each(files_plus, *MAX_CONCURRENT_FILE_INGESTION, |(file_data, span), _| {
+    let files = tokio_par_for_each(blobs_with_spans, *MAX_CONCURRENT_FILE_INGESTION, |(blob, span), _| {
         async {
-            let (xf, _metrics) = clean_bytes(upload_session.clone(), file_data).await?;
+            let (xf, _metrics) = clean_bytes(upload_session.clone(), blob).await?;
             Ok(xf)
         }
         .instrument(span.unwrap_or_else(|| info_span!("unexpected_span")))
@@ -150,10 +150,10 @@ pub async fn upload_async(
     Span::current().record("session_id", &config.session_id);
 
     let upload_session = FileUploadSession::new(config, thread_pool, progress_updater).await?;
-    let files_plus = add_spans(file_paths, || info_span!("clean_file_task"));
+    let files_with_spans = add_spans(file_paths, || info_span!("clean_file_task"));
 
     // for all files, clean them, producing pointer files.
-    let files = tokio_par_for_each(files_plus, *MAX_CONCURRENT_FILE_INGESTION, |(f, span), _| {
+    let files = tokio_par_for_each(files_with_spans, *MAX_CONCURRENT_FILE_INGESTION, |(f, span), _| {
         async {
             let (xf, _metrics) = clean_file(upload_session.clone(), f).await?;
             Ok(xf)
@@ -198,12 +198,12 @@ pub async fn download_async(
         None => vec![None; file_infos.len()],
         Some(updaters) => updaters.into_iter().map(Some).collect(),
     };
-    let pointer_files_plus = file_infos.into_iter().zip(updaters).collect::<Vec<_>>();
-    let pointer_files_plus = add_spans(pointer_files_plus, || info_span!("download_file"));
+    let file_with_progress = file_infos.into_iter().zip(updaters).collect::<Vec<_>>();
+    let extended_file_info_list = add_spans(file_with_progress, || info_span!("download_file"));
 
     let processor = &Arc::new(FileDownloader::new(config, threadpool).await?);
     let paths = tokio_par_for_each(
-        pointer_files_plus,
+        extended_file_info_list,
         *MAX_CONCURRENT_DOWNLOADS,
         |(((file_info, file_path), updater), span), _| {
             async move {
