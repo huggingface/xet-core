@@ -2,6 +2,7 @@
 
 <head>
     <meta charset="UTF-8" />
+    <script type="text/javascript" src="xet_meta.js"></script>
 </head>
 
 <body>
@@ -10,18 +11,38 @@
         <input type="file" id="file_picker" name="file_picker">
     </p>
     <script type="module">
-        import init, { test_async_blob_reader } from "./target/simple.js";
+        import init, { test_async_blob_reader, clean_file } from "./target/simple.js";
         await init();
         // let ret = await test_threads();
         // console.log("test_threads says: " + ret);
 
         document.getElementById("file_picker").addEventListener(
             "change",
-            function () {
+            async function () {
                 console.log("eventListener 'change' inside simple.html runs");
+
                 let file = this.files[0];
                 console.log("cleaning file: " + file);
-                test_async_blob_reader(file).then((x) => { console.log("test result: " + x) });
+
+                console.log("getting auth info...");
+
+                let xetmetadata = await fetchXetMetadataFromRepoInfo({
+                    tokenType: "write",
+                    repoId: "[FILL THIS]",
+                    repoType: "dataset",
+                    headers: {
+                        "Authorization": "Bearer [FILL THIS]",
+                        "User-Agent": "xet-wasm"
+                    },
+                });
+
+                console.log("CAS endpoint: " + xetmetadata.endpoint);
+                console.log("CAS token: " + xetmetadata.accessToken);
+                console.log("CAS token expiry: " + xetmetadata.expirationUnixEpoch);
+
+                // let ret = await test_async_blob_reader(file);
+                let ret = await clean_file(file, xetmetadata.endpoint, xetmetadata.accessToken, BigInt(xetmetadata.expirationUnixEpoch));
+                console.log("test result: " + ret);
             },
             false
         );

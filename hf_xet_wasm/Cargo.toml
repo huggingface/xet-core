@@ -42,9 +42,13 @@ thiserror = "2.0"
 async-channel = "2.3.1"
 
 merklehash = { path = "../merklehash" }
-deduplication = {path = "../deduplication" }
-mdb_shard = {path = "../mdb_shard" }
-merkledb = {path = "../merkledb" }
+deduplication = { path = "../deduplication" }
+mdb_shard = { path = "../mdb_shard" }
+merkledb = { path = "../merkledb" }
+cas_object = { path = "../cas_object" }
+cas_client = { path = "../cas_client" }
+utils = { path = "../utils" }
+
 
 [package.metadata.docs.rs]
 targets = ["wasm32-unknown-unknown"]

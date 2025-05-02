@@ -70,20 +70,21 @@ pub struct RemoteClient {
     authenticated_http_client: Arc<ClientWithMiddleware>,
     conservative_authenticated_http_client: Arc<ClientWithMiddleware>,
     chunk_cache: Option<Arc<dyn ChunkCache>>,
+    #[cfg(not(target_family = "wasm"))]
     threadpool: Arc<ThreadPool>,
     #[cfg(not(target_family = "wasm"))]
     range_download_single_flight: RangeDownloadSingleFlight,
-    shard_cache_directory: PathBuf,
+    shard_cache_directory: Option<PathBuf>,
 }
 
 impl RemoteClient {
     pub fn new(
-        threadpool: Arc<ThreadPool>,
+        #[cfg(not(target_family = "wasm"))] threadpool: Arc<ThreadPool>,
         endpoint: &str,
         compression: Option<CompressionScheme>,
         auth: &Option<AuthConfig>,
         cache_config: &Option<CacheConfig>,
-        shard_cache_directory: PathBuf,
+        shard_cache_directory: Option<PathBuf>,
         dry_run: bool,
     ) -> Self {
         // use disk cache if cache_config provided.
@@ -116,6 +117,7 @@ impl RemoteClient {
             ),
             http_client: Arc::new(http_client::build_http_client(RetryConfig::default()).unwrap()),
             chunk_cache,
+            #[cfg(not(target_family = "wasm"))]
             threadpool,
             #[cfg(not(target_family = "wasm"))]
             range_download_single_flight: Arc::new(Group::new()),
@@ -148,8 +150,8 @@ impl RemoteClient {
     }
 }
 
-#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
-#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_family = "wasm"), async_trait::async_trait)]
+#[cfg_attr(target_family = "wasm", async_trait::async_trait(?Send))]
 impl UploadClient for RemoteClient {
     async fn put(
         &self,
@@ -191,8 +193,7 @@ impl UploadClient for RemoteClient {
 }
 
 #[cfg(not(target_family = "wasm"))]
-#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
-#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[async_trait::async_trait]
 impl ReconstructionClient for RemoteClient {
     async fn get_file(
         &self,
@@ -221,8 +222,7 @@ impl ReconstructionClient for RemoteClient {
 }
 
 #[cfg(not(target_family = "wasm"))]
-#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
-#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[async_trait::async_trait]
 impl Reconstruct for RemoteClient {
     async fn get_reconstruction(
         &self,
@@ -634,8 +634,8 @@ impl RemoteClient {
     }
 }
 
-#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
-#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_family = "wasm"), async_trait::async_trait)]
+#[cfg_attr(target_family = "wasm", async_trait::async_trait(?Send))]
 impl RegistrationClient for RemoteClient {
     async fn upload_shard(
         &self,
@@ -679,8 +679,8 @@ impl RegistrationClient for RemoteClient {
     }
 }
 
-#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
-#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_family = "wasm"), async_trait::async_trait)]
+#[cfg_attr(target_family = "wasm", async_trait::async_trait(?Send))]
 impl FileReconstructor<CasClientError> for RemoteClient {
     async fn get_file_reconstruction_info(
         &self,
@@ -714,8 +714,8 @@ impl FileReconstructor<CasClientError> for RemoteClient {
     }
 }
 
-#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
-#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_family = "wasm"), async_trait::async_trait)]
+#[cfg_attr(target_family = "wasm", async_trait::async_trait(?Send))]
 impl ShardDedupProbe for RemoteClient {
     #[cfg(not(target_family = "wasm"))]
     async fn query_for_global_dedup_shard(
@@ -724,17 +724,17 @@ impl ShardDedupProbe for RemoteClient {
         chunk_hash: &MerkleHash,
         _salt: &[u8; 32],
     ) -> Result<Option<PathBuf>> {
-        if self.shard_cache_directory == PathBuf::default() {
+        let Some(ref shard_cache_directory) = self.shard_cache_directory else {
             return Err(CasClientError::ConfigurationError(
                 "Shard Write Directory not set; cannot download.".to_string(),
             ));
-        }
+        };
 
         let Some(mut response) = self.query_dedup_api(prefix, chunk_hash).await? else {
             return Ok(None);
         };
 
-        let writer = SafeFileCreator::new_unnamed(&self.shard_cache_directory)?;
+        let writer = SafeFileCreator::new_unnamed(shard_cache_directory)?;
         // Compute the actual hash to use as the shard file name
         let mut hashed_writer = HashedWrite::new(writer);
 
@@ -744,7 +744,7 @@ impl ShardDedupProbe for RemoteClient {
         hashed_writer.flush()?;
 
         let shard_hash = hashed_writer.hash();
-        let file_path = self.shard_cache_directory.join(shard_file_name(&shard_hash));
+        let file_path = shard_cache_directory.join(shard_file_name(&shard_hash));
         let mut writer = hashed_writer.into_inner();
         writer.set_dest_path(&file_path);
         writer.close()?;
@@ -752,7 +752,7 @@ impl ShardDedupProbe for RemoteClient {
         Ok(Some(file_path))
     }
 
-    #[cfg(target_family = "wasm")]
+    // #[cfg(target_family = "wasm")]
     async fn query_for_global_dedup_shard_in_memory(
         &self,
         prefix: &str,
@@ -801,7 +801,7 @@ mod tests {
             Some(CompressionScheme::LZ4),
             &None,
             &None,
-            "".into(),
+            None,
             false,
         );
         // Act
@@ -1173,7 +1173,7 @@ mod tests {
 
         // test reconstruct and sequential write
         let test = test_case.clone();
-        let client = RemoteClient::new(threadpool.clone(), endpoint, None, &None, &None, "".into(), false);
+        let client = RemoteClient::new(threadpool.clone(), endpoint, None, &None, &None, None, false);
         let provider = BufferProvider::default();
         let buf = provider.buf.clone();
         let writer = OutputProvider::Buffer(provider);
@@ -1191,7 +1191,7 @@ mod tests {
 
         // test reconstruct and parallel write
         let test = test_case;
-        let client = RemoteClient::new(threadpool.clone(), endpoint, None, &None, &None, "".into(), false);
+        let client = RemoteClient::new(threadpool.clone(), endpoint, None, &None, &None, None, false);
         let provider = BufferProvider::default();
         let buf = provider.buf.clone();
         let writer = OutputProvider::Buffer(provider);

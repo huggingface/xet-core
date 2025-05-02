@@ -1,8 +1,11 @@
+use cas_object::CompressionScheme;
+use utils::auth::AuthConfig;
+
 #[derive(Debug)]
 pub struct DataConfig {
     pub endpoint: String,
-    // pub compression: Option<CompressionScheme>,
-    // pub auth: Option<AuthConfig>,
+    pub compression: Option<CompressionScheme>,
+    pub auth: Option<AuthConfig>,
     pub prefix: String,
 }
 

@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use deduplication::Chunk;
 use merklehash::MerkleHash;
-use sha2::Sha256;
+use sha2::{Digest, Sha256};
 
 use super::errors::*;
 
@@ -17,11 +17,15 @@ impl ShaGenerator {
         }
     }
 
-    pub async fn update(&mut self, new_chunks: Arc<[Chunk]>) -> Result<()> {
-        todo!()
+    pub async fn update(&mut self, new_chunks: Arc<[Chunk]>) {
+        for chunk in new_chunks.iter() {
+            self.hasher.update(&chunk.data);
+        }
     }
 
-    pub async fn finalize(mut self) -> Result<MerkleHash> {
-        todo!()
+    pub async fn finalize(self) -> Result<MerkleHash> {
+        let sha256 = self.hasher.finalize();
+        let hex_str = format!("{sha256:x}");
+        Ok(MerkleHash::from_hex(&hex_str)?)
     }
 }

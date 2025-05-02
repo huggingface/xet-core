@@ -84,13 +84,24 @@ pub fn build_auth_http_client<R: RetryableStrategy + Send + Sync + 'static>(
 ) -> std::result::Result<ClientWithMiddleware, CasClientError> {
     let auth_middleware = auth_config.as_ref().map(AuthMiddleware::from).info_none("CAS auth disabled");
     let logging_middleware = Some(LoggingMiddleware);
-    let retry_middleware = get_retry_middleware(retry_config);
+
     let reqwest_client = reqwest::Client::builder().build()?;
-    Ok(ClientBuilder::new(reqwest_client)
-        .maybe_with(auth_middleware)
-        .maybe_with(Some(retry_middleware))
-        .maybe_with(logging_middleware)
-        .build())
+    #[cfg(not(target_family = "wasm"))]
+    {
+        let retry_middleware = get_retry_middleware(retry_config);
+        Ok(ClientBuilder::new(reqwest_client)
+            .maybe_with(auth_middleware)
+            .maybe_with(Some(retry_middleware))
+            .maybe_with(logging_middleware)
+            .build())
+    }
+    #[cfg(target_family = "wasm")]
+    {
+        Ok(ClientBuilder::new(reqwest_client)
+            .maybe_with(auth_middleware)
+            .maybe_with(logging_middleware)
+            .build())
+    }
 }
 
 /// Builds HTTP Client to talk to CAS.
@@ -98,13 +109,20 @@ pub fn build_auth_http_client<R: RetryableStrategy + Send + Sync + 'static>(
 pub fn build_http_client<R: RetryableStrategy + Send + Sync + 'static>(
     retry_config: RetryConfig<R>,
 ) -> std::result::Result<ClientWithMiddleware, CasClientError> {
-    let retry_middleware = get_retry_middleware(retry_config);
     let logging_middleware = Some(LoggingMiddleware);
     let reqwest_client = reqwest::Client::builder().build()?;
-    Ok(ClientBuilder::new(reqwest_client)
-        .maybe_with(Some(retry_middleware))
-        .maybe_with(logging_middleware)
-        .build())
+    #[cfg(not(target_family = "wasm"))]
+    {
+        let retry_middleware = get_retry_middleware(retry_config);
+        Ok(ClientBuilder::new(reqwest_client)
+            .maybe_with(Some(retry_middleware))
+            .maybe_with(logging_middleware)
+            .build())
+    }
+    #[cfg(target_family = "wasm")]
+    {
+        Ok(ClientBuilder::new(reqwest_client).maybe_with(logging_middleware).build())
+    }
 }
 
 /// Configurable Retry middleware with exponential backoff and configurable number of retries using reqwest-retry
@@ -138,8 +156,8 @@ impl OptionalMiddleware for ClientBuilder {
 /// Adds logging middleware that will trace::warn! on retryable errors.
 pub struct LoggingMiddleware;
 
-#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
-#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_family = "wasm"), async_trait::async_trait)]
+#[cfg_attr(target_family = "wasm", async_trait::async_trait(?Send))]
 impl Middleware for LoggingMiddleware {
     async fn handle(
         &self,
@@ -201,8 +219,8 @@ impl From<&AuthConfig> for AuthMiddleware {
     }
 }
 
-#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
-#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_family = "wasm"), async_trait::async_trait)]
+#[cfg_attr(target_family = "wasm", async_trait::async_trait(?Send))]
 impl Middleware for AuthMiddleware {
     async fn handle(
         &self,

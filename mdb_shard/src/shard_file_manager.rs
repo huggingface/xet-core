@@ -312,8 +312,8 @@ impl ShardFileManager {
     }
 }
 
-#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
-#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_family = "wasm"), async_trait::async_trait)]
+#[cfg_attr(target_family = "wasm", async_trait::async_trait(?Send))]
 impl FileReconstructor<MDBShardError> for ShardFileManager {
     // Given a file pointer, returns the information needed to reconstruct the file.
     // The information is stored in the destination vector dest_results.  The function

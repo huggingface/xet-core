@@ -21,7 +21,7 @@ pub(crate) fn create_remote_client(
             cas_storage_config.compression,
             &cas_storage_config.auth,
             &Some(cas_storage_config.cache_config.clone()),
-            config.shard_config.cache_directory.clone(),
+            Some(config.shard_config.cache_directory.clone()),
             dry_run,
         ))),
         Endpoint::FileSystem(ref path) => {

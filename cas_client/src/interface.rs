@@ -40,8 +40,8 @@ mod download {
     /// spawn its own threads. Instead, it is expected to be given the parallelism harness/threadpool/queue
     /// on which it is expected to run. This allows the caller to better optimize overall system utilization
     /// by controlling the number of concurrent requests.
-    #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
-    #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+    #[cfg_attr(not(target_family = "wasm"), async_trait::async_trait)]
+    #[cfg_attr(target_family = "wasm", async_trait::async_trait(?Send))]
     pub trait ReconstructionClient {
         /// Get an entire file by file hash with an optional bytes range.
         ///
@@ -70,8 +70,8 @@ mod download {
     /// - Ok(Some(response)) if the query succeeded,
     /// - Ok(None) if the specified range can't be satisfied,
     /// - Err(e) for other errors.
-    #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
-    #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+    #[cfg_attr(not(target_family = "wasm"), async_trait::async_trait)]
+    #[cfg_attr(target_family = "wasm", async_trait::async_trait(?Send))]
     pub trait Reconstruct {
         async fn get_reconstruction(
             &self,
@@ -86,8 +86,8 @@ mod upload {
 
     use crate::error::Result;
 
-    #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
-    #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+    #[cfg_attr(not(target_family = "wasm"), async_trait::async_trait)]
+    #[cfg_attr(target_family = "wasm", async_trait::async_trait(?Send))]
     pub trait RegistrationClient {
         async fn upload_shard(
             &self,
@@ -101,8 +101,8 @@ mod upload {
 
     /// Probes for shards that provide dedup information for a chunk, and, if
     /// any are found, writes them to disk and returns the path.
-    #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
-    #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+    #[cfg_attr(not(target_family = "wasm"), async_trait::async_trait)]
+    #[cfg_attr(target_family = "wasm", async_trait::async_trait(?Send))]
     pub trait ShardDedupProbe {
         #[cfg(not(target_family = "wasm"))]
         async fn query_for_global_dedup_shard(
@@ -111,7 +111,7 @@ mod upload {
             chunk_hash: &MerkleHash,
             salt: &[u8; 32],
         ) -> Result<Option<std::path::PathBuf>>;
-        #[cfg(target_family = "wasm")]
+        // #[cfg(target_family = "wasm")]
         async fn query_for_global_dedup_shard_in_memory(
             &self,
             prefix: &str,
@@ -125,8 +125,8 @@ mod upload {
     /// of arbitrary bytes. These bytes are hashed according to a Xet Merkle Hash
     /// producing a Merkle Tree. XORBs in the CAS are identified by a combination of
     /// a prefix namespacing the XORB and the hash at the root of the Merkle Tree.
-    #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
-    #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+    #[cfg_attr(not(target_family = "wasm"), async_trait::async_trait)]
+    #[cfg_attr(target_family = "wasm", async_trait::async_trait(?Send))]
     pub trait UploadClient {
         /// Insert the provided data into the CAS as a XORB indicated by the prefix and hash.
         /// The hash will be verified on the SERVER-side according to the chunk boundaries.

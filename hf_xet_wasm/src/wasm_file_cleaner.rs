@@ -37,6 +37,7 @@ impl SingleFileCleaner {
     pub async fn add_data(&mut self, data: &[u8]) -> Result<()> {
         // Chunk the data.
         let chunks: Arc<[Chunk]> = Arc::from(self.chunker.next_block(data, false));
+        log::info!("chunked into {} chunks", chunks.len());
 
         // It's possible this didn't actually add any data in.
         if chunks.is_empty() {
@@ -44,10 +45,12 @@ impl SingleFileCleaner {
         }
 
         // Update the sha256 generator
-        self.sha_generator.update(chunks.clone()).await?;
+        self.sha_generator.update(chunks.clone()).await;
 
         // Run the deduplication interface here.
-        let block_metrics = self.dedup_manager.process_chunks(&chunks).await?;
+        let dedup_metrics = self.dedup_manager.process_chunks(&chunks).await?;
+
+        log::info!("{}/{} chunks deduped", dedup_metrics.deduped_chunks, dedup_metrics.total_chunks);
 
         Ok(())
     }
@@ -56,7 +59,7 @@ impl SingleFileCleaner {
     pub async fn finish(mut self) -> Result<(MerkleHash, DeduplicationMetrics)> {
         // Chunk the rest of the data.
         if let Some(chunk) = self.chunker.finish() {
-            self.sha_generator.update(Arc::new([chunk.clone()])).await?;
+            self.sha_generator.update(Arc::new([chunk.clone()])).await;
             self.dedup_manager.process_chunks(&[chunk]).await?;
         }
 

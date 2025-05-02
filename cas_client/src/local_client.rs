@@ -378,6 +378,21 @@ impl ShardDedupProbe for LocalClient {
         }
         Ok(None)
     }
+
+    async fn query_for_global_dedup_shard_in_memory(
+        &self,
+        prefix: &str,
+        chunk_hash: &MerkleHash,
+        salt: &[u8; 32],
+    ) -> Result<Option<Vec<u8>>> {
+        let ret = self.query_for_global_dedup_shard(prefix, chunk_hash, salt).await?;
+
+        let Some(path) = ret else {
+            return Ok(None);
+        };
+
+        Ok(Some(std::fs::read(path)?))
+    }
 }
 
 impl ShardClientInterface for LocalClient {}
