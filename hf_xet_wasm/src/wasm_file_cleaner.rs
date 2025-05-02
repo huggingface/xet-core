@@ -11,6 +11,8 @@ use super::wasm_file_upload_session::FileUploadSession;
 
 /// A class that encapsulates the clean and data task around a single file for wasm runtime.
 pub struct SingleFileCleaner {
+    _tracker: String,
+
     // Common state
     session: Arc<FileUploadSession>,
 
@@ -25,8 +27,9 @@ pub struct SingleFileCleaner {
 }
 
 impl SingleFileCleaner {
-    pub fn new(session: Arc<FileUploadSession>) -> Self {
+    pub fn new(session: Arc<FileUploadSession>, _tracker: String) -> Self {
         Self {
+            _tracker,
             session: session.clone(),
             chunker: Chunker::default(),
             dedup_manager: FileDeduper::new(UploadSessionDataManager::new(session)),

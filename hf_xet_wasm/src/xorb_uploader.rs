@@ -65,7 +65,7 @@ impl XorbUploader {
         self.input_queues[self.index]
             .send(input)
             .await
-            .map_err(DataProcessingError::internal);
+            .map_err(DataProcessingError::internal)?;
 
         self.index = (self.index + 1) % self.workers.len();
 
@@ -108,7 +108,7 @@ fn upload_worker(
                 log::info!("worker get value message, uploading");
                 let ret = client.put(&cas_prefix, &xorb_hash, xorb_data, chunks_and_boundaries).await;
 
-                output.send(ret).await;
+                let _ = output.send(ret).await;
             }
         })
     })

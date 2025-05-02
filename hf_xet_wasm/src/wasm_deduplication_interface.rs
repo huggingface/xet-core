@@ -84,10 +84,10 @@ impl DeduplicationDataInterface for UploadSessionDataManager {
                 let keyed_shard = self.shard.entry(hmac_key).or_insert(MDBInMemoryShard::default());
 
                 for ci in cas_info {
-                    keyed_shard.add_cas_block(ci);
+                    keyed_shard.add_cas_block(ci)?;
                 }
 
-                any_result = true;
+                any_result = true
             }
         }
 

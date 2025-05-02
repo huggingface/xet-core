@@ -49,7 +49,8 @@ impl WrappedTokenRefresher {
     }
 }
 
-#[async_trait]
+#[cfg_attr(not(target_family = "wasm"), async_trait::async_trait)]
+#[cfg_attr(target_family = "wasm", async_trait::async_trait(?Send))]
 impl TokenRefresher for WrappedTokenRefresher {
     async fn refresh(&self) -> Result<TokenInfo, AuthError> {
         Python::with_gil(|py| {
