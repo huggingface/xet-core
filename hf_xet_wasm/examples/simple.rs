@@ -6,9 +6,9 @@ use tokio::sync::mpsc;
 use utils::auth::AuthConfig;
 use wasm_bindgen::prelude::*;
 use wasm_thread as thread;
-use wasm_xet::blob_reader::BlobReader;
-use wasm_xet::configurations::{DataConfig, RepoSalt, ShardConfig, TranslatorConfig};
-use wasm_xet::wasm_file_upload_session::FileUploadSession;
+use hf_xet_wasm::blob_reader::BlobReader;
+use hf_xet_wasm::configurations::{DataConfig, RepoSalt, ShardConfig, TranslatorConfig};
+use hf_xet_wasm::wasm_file_upload_session::FileUploadSession;
 
 fn main() {
     #[cfg(target_arch = "wasm32")]
@@ -20,7 +20,7 @@ fn main() {
     #[cfg(not(target_arch = "wasm32"))]
     env_logger::init_from_env(env_logger::Env::default().filter_or(env_logger::DEFAULT_FILTER_ENV, "info"));
 
-    log::info!("Starting init wasm_xet...");
+    log::info!("Starting init hf_xet_wasm...");
 
     log::info!("Done");
 }
@@ -80,7 +80,7 @@ pub async fn test_async_blob_reader(file: web_sys::File) -> String {
                     let s: u32 = data_local.iter().map(|&x| x as u32).sum();
                     sum += s;
                 }
-                o_tx.send(sum).await;
+                let _ = o_tx.send(sum).await;
             })
         }));
         let Ok(()) = tx.send(data_local).await else {
@@ -91,7 +91,6 @@ pub async fn test_async_blob_reader(file: web_sys::File) -> String {
         log::info!("data sent");
     }
 
-    let mut id = inputs.len() - 1;
     for (id, input) in inputs.into_iter().enumerate() {
         log::info!("closing input {id}");
         drop(input);
@@ -167,7 +166,7 @@ pub async fn clean_file(file: web_sys::File, endpoint: String, jwt_token: String
 
         log::info!("processed {total_read} bytes");
     }
-    let Ok((file_hash, metrics)) = handle.finish().await else {
+    let Ok((file_hash, _metrics)) = handle.finish().await else {
         log::info!("failed to finish cleaner");
         return "".to_owned();
     };

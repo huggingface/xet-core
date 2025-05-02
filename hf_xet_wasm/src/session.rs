@@ -10,9 +10,10 @@ use utils::auth::AuthConfig;
 use wasm_bindgen::prelude::*;
 use web_sys::Blob;
 
+use crate::auth::{TokenInfo, TokenRefresher, WrappedTokenRefresher};
 use crate::blob_reader::BlobReader;
 use crate::configurations::{DataConfig, RepoSalt, ShardConfig, TranslatorConfig};
-use crate::interface::auth::WrappedTokenRefresher;
+use crate::wasm_file_upload_session::FileUploadSession;
 
 fn convert_error(e: impl std::error::Error) -> JsValue {
     JsValue::from(format!("{e:?}"))
@@ -24,19 +25,15 @@ struct PointerFile {
     pub file_hash: HexMerkleHash,
 }
 
-#[wasm_bindgen]
+#[wasm_bindgen(js_name = "XetSession")]
 pub struct XetSession {
-    upload: Arc<crate::wasm_file_upload_session::FileUploadSession>,
+    upload: Arc<FileUploadSession>,
 }
 
-#[wasm_bindgen]
+#[wasm_bindgen(js_class = "XetSession")]
 impl XetSession {
     #[wasm_bindgen(constructor)]
-    pub fn new(
-        endpoint: String,
-        token_info: super::auth::TokenInfo,
-        token_refresher: super::auth::TokenRefresher,
-    ) -> Self {
+    pub fn new(endpoint: String, token_info: TokenInfo, token_refresher: TokenRefresher) -> Self {
         let (token, token_expiration): utils::auth::TokenInfo = token_info.into();
         let auth = AuthConfig {
             token,
@@ -56,7 +53,7 @@ impl XetSession {
                 repo_salt: RepoSalt::default(),
             },
         };
-        let upload = crate::wasm_file_upload_session::FileUploadSession::new(Arc::new(config));
+        let upload = FileUploadSession::new(Arc::new(config));
 
         Self {
             upload: Arc::new(upload),

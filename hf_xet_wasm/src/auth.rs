@@ -14,7 +14,7 @@ extern "C" {
     pub fn expiration(this: &TokenInfo) -> u64;
 
     pub type TokenRefresher;
-    #[wasm_bindgen(method, catch)]
+    #[wasm_bindgen(method, catch, js_name="refreshToken")]
     pub async fn refresh_token(this: &TokenRefresher) -> Result<TokenInfo, JsValue>;
 }
 
