@@ -301,6 +301,9 @@ impl FileUploadSession {
         debug_assert_le!(xorb.num_bytes(), *MAX_XORB_BYTES);
         debug_assert_le!(xorb.data.len(), *MAX_XORB_CHUNKS);
 
+        // Add the xorb info to the current shard.
+        self.shard_interface.add_cas_block(xorb.cas_info.clone()).await?;
+
         // Now, we need to scan all the file dependencies for dependencies on this xorb, as
         // these would not have been registered yet.
         self.register_new_xorb_for_upload(xorb).await?;
