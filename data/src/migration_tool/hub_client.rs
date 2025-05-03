@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
-use cas_client::{build_http_client, RetryConfig};
+use cas_client::{build_http_client, Api, RetryConfig};
 use reqwest_middleware::ClientWithMiddleware;
 use utils::auth::{TokenInfo, TokenRefresher};
 use utils::errors::AuthError;
@@ -24,7 +24,7 @@ impl HubClient {
             token: token.to_owned(),
             repo_type: repo_type.to_owned(),
             repo_id: repo_id.to_owned(),
-            client: build_http_client(RetryConfig::default())?,
+            client: build_http_client(RetryConfig::default(), "")?,
         })
     }
 
@@ -39,6 +39,7 @@ impl HubClient {
         let response = self
             .client
             .get(url)
+            .with_extension(Api("xet-token"))
             .bearer_auth(&self.token)
             .header("user-agent", "xtool")
             .send()
@@ -105,7 +106,7 @@ mod tests {
             token: "[MASKED]".to_owned(),
             repo_type: "dataset".to_owned(),
             repo_id: "test/t2".to_owned(),
-            client: build_http_client(RetryConfig::default())?,
+            client: build_http_client(RetryConfig::default(), "")?,
         };
 
         let (cas_endpoint, jwt_token, jwt_token_expiry) = hub_client.get_jwt_token("read").await?;

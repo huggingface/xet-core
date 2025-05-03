@@ -12,7 +12,7 @@ use mdb_shard::ShardFileManager;
 use merklehash::MerkleHash;
 use tempfile::TempDir;
 use tokio::task::JoinSet;
-use tracing::{debug, info};
+use tracing::{debug, info, info_span, Instrument};
 
 use crate::configurations::TranslatorConfig;
 use crate::constants::MDB_SHARD_LOCAL_CACHE_EXPIRATION_SECS;
@@ -143,38 +143,42 @@ impl SessionShardInterface {
             // block here while the upload is happening.
             let upload_permit = acquire_upload_permit().await?;
 
-            shard_uploads.spawn(async move {
-                debug!("Uploading shard {shard_prefix}/{:?} from staging area to CAS.", &si.shard_hash);
-                let data = std::fs::read(&si.path)?;
+            shard_uploads.spawn(
+                async move {
+                    debug!("Uploading shard {shard_prefix}/{:?} from staging area to CAS.", &si.shard_hash);
+                    let data = std::fs::read(&si.path)?;
 
-                shard_bytes_uploaded.fetch_add(data.len(), Ordering::Relaxed);
+                    shard_bytes_uploaded.fetch_add(data.len(), Ordering::Relaxed);
 
-                if dry_run {
-                    // In dry run mode, don't upload the shards or move them to the cache.
-                    return Ok(());
+                    if dry_run {
+                        // In dry run mode, don't upload the shards or move them to the cache.
+                        return Ok(());
+                    }
+
+                    // Upload the shard.
+                    shard_client
+                        .upload_shard(&shard_prefix, &si.shard_hash, false, &data, &salt)
+                        .await?;
+
+                    // Done with the upload, drop the permit.
+                    drop(upload_permit);
+
+                    info!("Shard {shard_prefix}/{:?} upload + sync completed successfully.", &si.shard_hash);
+
+                    // Now that the upload succeeded, move that shard to the cache directory, adding in an expiration
+                    // time.
+                    let new_shard_path = si.export_with_expiration(
+                        cache_shard_manager.shard_directory(),
+                        Duration::from_secs(*MDB_SHARD_LOCAL_CACHE_EXPIRATION_SECS),
+                    )?;
+
+                    // Register that new shard in the cache shard manager
+                    cache_shard_manager.register_shards(&[new_shard_path]).await?;
+
+                    Ok(())
                 }
-
-                // Upload the shard.
-                shard_client
-                    .upload_shard(&shard_prefix, &si.shard_hash, false, &data, &salt)
-                    .await?;
-
-                // Done with the upload, drop the permit.
-                drop(upload_permit);
-
-                info!("Shard {shard_prefix}/{:?} upload + sync completed successfully.", &si.shard_hash);
-
-                // Now that the upload succeeded, move that shard to the cache directory, adding in an expiration time.
-                let new_shard_path = si.export_with_expiration(
-                    cache_shard_manager.shard_directory(),
-                    Duration::from_secs(*MDB_SHARD_LOCAL_CACHE_EXPIRATION_SECS),
-                )?;
-
-                // Register that new shard in the cache shard manager
-                cache_shard_manager.register_shards(&[new_shard_path]).await?;
-
-                Ok(())
-            });
+                .instrument(info_span!("shard_session::upload_shard_task")),
+            );
         }
 
         // Now, let them all complete in parallel

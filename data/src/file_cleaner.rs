@@ -6,7 +6,7 @@ use chrono::{DateTime, Utc};
 use deduplication::{Chunk, Chunker, DeduplicationMetrics, FileDeduper};
 use mdb_shard::file_structs::FileMetadataExt;
 use merklehash::MerkleHash;
-use tracing::info;
+use tracing::{debug_span, info, instrument, Instrument};
 
 use crate::constants::INGESTION_BLOCK_SIZE;
 use crate::deduplication_interface::UploadSessionDataManager;
@@ -67,16 +67,21 @@ impl SingleFileCleaner {
         // Handle the move out by replacing it with a dummy future discarded below.
         let mut deduper = std::mem::replace(&mut self.dedup_manager_fut, Box::pin(future::pending())).await?;
 
-        let dedup_background = tokio::spawn(async move {
-            deduper.process_chunks(&chunks).await?;
-            Ok(deduper)
-        });
+        let num_chunks = chunks.len();
+        let dedup_background = tokio::spawn(
+            async move {
+                deduper.process_chunks(&chunks).await?;
+                Ok(deduper)
+            }
+            .instrument(debug_span!("deduper::process_chunks_task", num_chunks).or_current()),
+        );
 
         self.dedup_manager_fut = Box::pin(async move { dedup_background.await? });
 
         Ok(())
     }
 
+    #[instrument(skip_all, level="debug", name = "FileCleaner::add_data", fields(file_name=self.file_name.as_ref().map(|s|s.to_string()), len=data.len()))]
     pub async fn add_data(&mut self, data: &[u8]) -> Result<()> {
         if data.len() > *INGESTION_BLOCK_SIZE {
             let mut pos = 0;
@@ -111,10 +116,11 @@ impl SingleFileCleaner {
     }
 
     /// Return the representation of the file after clean as a pointer file instance.
+    #[instrument(skip_all, name = "FileCleaner::finish", fields(file_name=self.file_name.as_ref().map(|s|s.to_string())))]
     pub async fn finish(mut self) -> Result<(XetFileInfo, DeduplicationMetrics)> {
         // Chunk the rest of the data.
         if let Some(chunk) = self.chunker.finish() {
-            let data = Arc::new([chunk.clone()]);
+            let data = Arc::new([chunk]);
             self.sha_generator.update(data.clone()).await?;
             self.deduper_process_chunks(data).await?;
         }
@@ -131,7 +137,7 @@ impl SingleFileCleaner {
 
         let file_info = XetFileInfo::new(file_hash.hex(), deduplication_metrics.total_bytes);
 
-        // Let's check some things that should be invarients
+        // Let's check some things that should be invariants
         #[cfg(debug_assertions)]
         {
             // There should be exactly one file referenced in the remaining file data.

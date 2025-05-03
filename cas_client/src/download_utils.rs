@@ -18,6 +18,7 @@ use url::Url;
 use utils::singleflight::Group;
 
 use crate::error::{CasClientError, Result};
+use crate::http_client::Api;
 use crate::remote_client::{get_reconstruction_with_endpoint_and_client, PREFIX_DEFAULT};
 use crate::OutputProvider;
 
@@ -375,6 +376,7 @@ async fn download_range(
     let response = match http_client
         .get(url)
         .header(RANGE, fetch_term.url_range.range_header())
+        .with_extension(Api("s3::get_range"))
         .send()
         .await
         .map_err(CasClientError::from)
@@ -473,7 +475,7 @@ mod tests {
             MerkleHash::default(),
             file_range,
             server.base_url(),
-            Arc::new(build_http_client(RetryConfig::default())?),
+            Arc::new(build_http_client(RetryConfig::default(), "")?),
         );
 
         fetch_info.query().await?;
@@ -520,7 +522,7 @@ mod tests {
             MerkleHash::default(),
             file_range_to_refresh,
             server.base_url(),
-            Arc::new(build_http_client(RetryConfig::default())?),
+            Arc::new(build_http_client(RetryConfig::default(), "")?),
         ));
 
         // Spawn multiple tasks each calling into refresh with a different delay in
@@ -589,7 +591,7 @@ mod tests {
             MerkleHash::default(),
             file_range,
             server.base_url(),
-            Arc::new(build_http_client(RetryConfig::default())?),
+            Arc::new(build_http_client(RetryConfig::default(), "")?),
         );
 
         let (offset_info_first_range, terms) = fetch_info.query().await?.unwrap();
@@ -600,7 +602,7 @@ mod tests {
             take: file_range.length(),
             fetch_info: Arc::new(fetch_info),
             chunk_cache: None,
-            client: Arc::new(build_http_client(RetryConfig::default())?),
+            client: Arc::new(build_http_client(RetryConfig::default(), "")?),
             range_download_single_flight: Arc::new(Group::new()),
         };
 

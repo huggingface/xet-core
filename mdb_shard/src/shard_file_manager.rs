@@ -6,7 +6,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use merklehash::{HMACKey, MerkleHash};
 use tokio::sync::RwLock;
-use tracing::{debug, info, trace};
+use tracing::{debug, info, instrument, trace};
 
 use crate::cas_structs::*;
 use crate::constants::{CHUNK_INDEX_TABLE_MAX_SIZE, MDB_SHARD_EXPIRATION_BUFFER_SECS, MDB_SHARD_MIN_TARGET_SIZE};
@@ -427,6 +427,7 @@ impl ShardFileManager {
 
     /// Flush the current state of the in-memory lookups to a shard in the session directory,
     /// returning the hash of the shard and the file written, or None if no file was written.
+    #[instrument(skip_all, name = "ShardFileManager::flush")]
     pub async fn flush(&self) -> Result<Option<PathBuf>> {
         let new_shard_path;
 
