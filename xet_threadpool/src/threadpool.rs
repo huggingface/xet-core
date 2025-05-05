@@ -77,7 +77,7 @@ pub struct ThreadPool {
 // the worker threads in the runtime.  This way, XetRuntime::current() will always refer to
 // the runtime active with that worker thread.
 thread_local! {
-    static THREAD_RUNTIME_REF: RefCell<Option<Arc<ThreadPool>>> = RefCell::new(None);
+    static THREAD_RUNTIME_REF: RefCell<Option<Arc<ThreadPool>>> = const { RefCell::new(None) };
 }
 
 impl ThreadPool {
