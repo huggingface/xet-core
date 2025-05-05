@@ -1,11 +1,11 @@
-use std::cell::Cell;
+use std::future::{self, Future};
+use std::pin::Pin;
 use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
 use deduplication::{Chunk, Chunker, DeduplicationMetrics, FileDeduper};
 use mdb_shard::file_structs::FileMetadataExt;
 use merklehash::MerkleHash;
-use tokio::task::{JoinError, JoinHandle};
 use tracing::{debug_span, info, instrument, Instrument};
 
 use crate::constants::INGESTION_BLOCK_SIZE;
@@ -15,27 +15,6 @@ use crate::file_upload_session::FileUploadSession;
 use crate::progress_tracking::CompletionTrackerFileId;
 use crate::sha256::ShaGenerator;
 use crate::XetFileInfo;
-
-// A little set of helper types to allow us to background the
-// dedupe_manager::process_chunks operation.
-// The design is that there is only 1 instance of the FileDeduper in a Cell
-// so there can only be a single reference to it.
-//
-// SingleFileCleaner::dedup_manager initializes as Foreground(Some(deduper))
-//
-// - get_deduper() will return the Cell and empty out dedup_manager
-// (whatever state it current is in) turning it into Foreground(None).
-// If dedup_manager is already in Background, it will wait for the JoinHandle to finish
-// and return the Cell (once again resetting dedup_manager to Foreground(None))
-//
-// - deduper_process_chunks() will start processing of new chunks in background
-// and switch dedup_manager into Background(JoinHandle)
-type DedupeBoxType = Box<Cell<FileDeduper<UploadSessionDataManager>>>;
-type ProcessChunksResult = Result<DeduplicationMetrics>;
-enum DedupManagerBackgrounder {
-    Foreground(Option<DedupeBoxType>),
-    Background(JoinHandle<std::result::Result<(DedupeBoxType, ProcessChunksResult), JoinError>>),
-}
 
 /// A class that encapsulates the clean and data task around a single file.
 pub struct SingleFileCleaner {
@@ -51,8 +30,9 @@ pub struct SingleFileCleaner {
     // The chunker
     chunker: Chunker,
 
-    // The deduplication interface.
-    dedup_manager: DedupManagerBackgrounder,
+    // The deduplication interface.  Use a future that always returns the dedup manager
+    // on await so that we can background this part.
+    dedup_manager_fut: Pin<Box<dyn Future<Output = Result<FileDeduper<UploadSessionDataManager>>> + Send + 'static>>,
 
     // Generating the sha256 hash
     sha_generator: ShaGenerator,
@@ -67,13 +47,12 @@ impl SingleFileCleaner {
         file_id: CompletionTrackerFileId,
         session: Arc<FileUploadSession>,
     ) -> Self {
-        let deduper =
-            Box::new(Cell::new(FileDeduper::new(UploadSessionDataManager::new(session.clone(), file_id), file_id)));
+        let deduper = FileDeduper::new(UploadSessionDataManager::new(session.clone(), file_id), file_id);
 
         Self {
             file_name,
             file_id,
-            dedup_manager: DedupManagerBackgrounder::Foreground(Some(deduper)),
+            dedup_manager_fut: Box::pin(async move { Ok(deduper) }),
             session,
             chunker: deduplication::Chunker::default(),
             sha_generator: ShaGenerator::new(),
@@ -81,59 +60,24 @@ impl SingleFileCleaner {
         }
     }
 
-    /// Returns the dedupe manager, resetting the state to Foreground(None),
-    /// waiting for background operations to complete.
-    async fn get_deduper(&mut self) -> Result<DedupeBoxType> {
-        match self.dedup_manager {
-            DedupManagerBackgrounder::Foreground(ref mut deduper) => {
-                let deduper = deduper.take();
-                match deduper {
-                    Some(deduper) => Ok(deduper),
-                    None => {
-                        // This should be impossible
-                        panic!("Deduper lost");
-                    },
-                }
-            },
-            DedupManagerBackgrounder::Background(ref mut jh) => {
-                // note that the join handle has the *only* reference to the
-                // deduper. So yes, there are some conditions (Tokio join failure)
-                // in which we will lose the deduper completely.
-                // But those conditions are unlikely to be recoverable anyway..?
-                let (deduper, result) = jh.await??;
-                match result {
-                    Ok(_) => {
-                        // This is the normal case, we are done.
-                        self.dedup_manager = DedupManagerBackgrounder::Foreground(None);
-                    },
-                    Err(e) => {
-                        // This is an error case, we need to return the error
-                        // but we also need to make sure that the deduper is
-                        // in a state where it can be used again.
-                        self.dedup_manager = DedupManagerBackgrounder::Foreground(Some(deduper));
-                        return Err(e);
-                    },
-                }
-
-                self.dedup_manager = DedupManagerBackgrounder::Foreground(None);
-                Ok(deduper)
-            },
-        }
-    }
-
     /// Gets the dedupe manager to process new chunks, by first
     /// waiting for background operations to complete, then triggering a
     /// new background task.
     async fn deduper_process_chunks(&mut self, chunks: Arc<[Chunk]>) -> Result<()> {
-        let mut deduper = self.get_deduper().await?;
+        // Handle the move out by replacing it with a dummy future discarded below.
+        let mut deduper = std::mem::replace(&mut self.dedup_manager_fut, Box::pin(future::pending())).await?;
+
         let num_chunks = chunks.len();
-        self.dedup_manager = DedupManagerBackgrounder::Background(tokio::spawn(
+        let dedup_background = tokio::spawn(
             async move {
-                let res = deduper.get_mut().process_chunks(&chunks).await;
-                Ok((deduper, res))
+                deduper.process_chunks(&chunks).await?;
+                Ok(deduper)
             }
             .instrument(debug_span!("deduper::process_chunks_task", num_chunks).or_current()),
-        ));
+        );
+
+        self.dedup_manager_fut = Box::pin(async move { dedup_background.await? });
+
         Ok(())
     }
 
@@ -175,11 +119,10 @@ impl SingleFileCleaner {
     #[instrument(skip_all, name = "FileCleaner::finish", fields(file_name=self.file_name.as_ref().map(|s|s.to_string())))]
     pub async fn finish(mut self) -> Result<(XetFileInfo, DeduplicationMetrics)> {
         // Chunk the rest of the data.
-        // note that get_deduper returns the only reference to the deduper
-        let mut deduper = self.get_deduper().await?;
         if let Some(chunk) = self.chunker.finish() {
-            self.sha_generator.update(Arc::new([chunk.clone()])).await?;
-            deduper.get_mut().process_chunks(&[chunk]).await?;
+            let data = Arc::new([chunk]);
+            self.sha_generator.update(data.clone()).await?;
+            self.deduper_process_chunks(data).await?;
         }
 
         // Finalize the sha256 hashing and create the metadata extension
@@ -190,7 +133,7 @@ impl SingleFileCleaner {
         let repo_salt = self.session.config.shard_config.repo_salt;
 
         let (file_hash, remaining_file_data, deduplication_metrics) =
-            deduper.into_inner().finalize(repo_salt, Some(metadata_ext));
+            self.dedup_manager_fut.await?.finalize(repo_salt, Some(metadata_ext));
 
         let file_info = XetFileInfo::new(file_hash.hex(), deduplication_metrics.total_bytes);
 
