@@ -36,7 +36,7 @@ pub async fn migrate_with_external_runtime(
 ) -> Result<()> {
     let hub_client = HubClient::new(hub_endpoint, hub_token, repo_type, repo_id)?;
 
-    let threadpool = Arc::new(ThreadPool::from_external(handle));
+    let threadpool = ThreadPool::from_external(handle);
 
     migrate_files_impl(file_paths, false, hub_client, cas_endpoint, threadpool, None, false).await?;
 

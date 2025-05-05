@@ -436,7 +436,7 @@ mod tests {
     fn get_threadpool() -> Arc<ThreadPool> {
         static THREADPOOL: OnceLock<Arc<ThreadPool>> = OnceLock::new();
         THREADPOOL
-            .get_or_init(|| Arc::new(ThreadPool::new().expect("Error starting multithreaded runtime.")))
+            .get_or_init(|| ThreadPool::new().expect("Error starting multithreaded runtime."))
             .clone()
     }
 

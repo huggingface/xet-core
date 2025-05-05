@@ -127,7 +127,7 @@ async fn dehydrate_directory(cas_dir: &Path, src_dir: &Path, ptr_dir: &Path) {
 
     create_dir_all(ptr_dir).unwrap();
 
-    let upload_session = FileUploadSession::new(config.clone(), ThreadPool::from_current_runtime(), None)
+    let upload_session = FileUploadSession::new(config.clone(), ThreadPool::current(), None)
         .await
         .unwrap();
 
@@ -155,7 +155,7 @@ async fn hydrate_directory(cas_dir: &Path, ptr_dir: &Path, dest_dir: &Path) {
 
     create_dir_all(dest_dir).unwrap();
 
-    let downloader = FileDownloader::new(config, ThreadPool::from_current_runtime()).await.unwrap();
+    let downloader = FileDownloader::new(config, ThreadPool::current()).await.unwrap();
 
     for entry in read_dir(ptr_dir).unwrap() {
         let entry = entry.unwrap();
@@ -210,7 +210,7 @@ async fn dehydrate_directory_sequential(cas_dir: &Path, src_dir: &Path, ptr_dir:
     let config = TranslatorConfig::local_config(cas_dir).unwrap();
     std::fs::create_dir_all(ptr_dir).unwrap();
 
-    let upload_session = FileUploadSession::new(config.clone(), ThreadPool::from_current_runtime(), None)
+    let upload_session = FileUploadSession::new(config.clone(), ThreadPool::current(), None)
         .await
         .unwrap();
 

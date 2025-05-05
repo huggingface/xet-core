@@ -111,7 +111,7 @@ pub fn init_threadpool(py: Python) -> PyResult<Arc<ThreadPool>> {
     }
 
     // Create a new Tokio runtime.
-    let runtime = Arc::new(ThreadPool::new().map_err(convert_multithreading_error)?);
+    let runtime = ThreadPool::new().map_err(convert_multithreading_error)?;
 
     // Check the signal handler
     check_sigint_handler()?;

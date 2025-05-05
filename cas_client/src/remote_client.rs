@@ -775,7 +775,7 @@ mod tests {
         let prefix = PREFIX_DEFAULT;
         let (c, _, data, chunk_boundaries) = build_cas_object(3, ChunkSize::Random(512, 10248), CompressionScheme::LZ4);
 
-        let threadpool = Arc::new(ThreadPool::new().unwrap());
+        let threadpool = ThreadPool::new().unwrap();
         let client = RemoteClient::new(
             threadpool.clone(),
             CAS_ENDPOINT,
@@ -1151,7 +1151,7 @@ mod tests {
     }
 
     fn test_reconstruct_file(test_case: TestCase, endpoint: &str) -> Result<()> {
-        let threadpool = Arc::new(ThreadPool::new()?);
+        let threadpool = ThreadPool::new()?;
 
         // test reconstruct and sequential write
         let test = test_case.clone();
