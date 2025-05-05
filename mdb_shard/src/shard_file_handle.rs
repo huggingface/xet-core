@@ -404,3 +404,31 @@ impl MDBShardFile {
         assert_eq!(read_truncated_hashes, truncated_hashes);
     }
 }
+
+#[cfg(test)]
+mod test {
+    use std::path::Path;
+
+    use crate::MDBShardInfo;
+
+    use super::MDBShardFile;
+
+    #[test]
+    fn testst() -> anyhow::Result<()> {
+        let path =
+            Path::new("/Users/di/Downloads/f59b5c123af0c078b04ae0b444150076c68bfccb4d54f325f9f775cfee5e7329.mdb");
+        let shard = MDBShardFile::load_from_file(&path)?;
+
+        let f = shard.read_all_file_info_sections()?;
+        println!("{f:?}");
+
+        let c = shard.read_all_cas_blocks()?;
+        println!("{c:?}");
+
+        let mut reader = shard.get_reader()?;
+        let a = MDBShardInfo::filter_cas_chunks_for_global_dedup(&mut reader)?;
+        println!("{a:?}");
+
+        Ok(())
+    }
+}

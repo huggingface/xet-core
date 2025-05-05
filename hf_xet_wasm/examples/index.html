@@ -3,6 +3,7 @@
 <head>
     <meta charset="UTF-8" />
     <script type="text/javascript" src="xet_meta.js"></script>
+    <script type="text/javascript" src="commit.js"></script>
 </head>
 
 <body>
@@ -10,39 +11,44 @@
         <label for="file_picker">Choose a file to upload with Xet:</label>
         <input type="file" id="file_picker" name="file_picker">
     </p>
+    <div id="result"></div>
     <script type="module">
-        import init, { test_async_blob_reader, clean_file } from "./target/simple.js";
+        import init, { thread_async_channel, test_async_blob_reader, clean_file } from "./target/simple.js";
         await init();
-        // let ret = await test_threads();
-        // console.log("test_threads says: " + ret);
+
+        // var ret = await thread_async_channel();
+        // console.log("thread_async_channel says: " + ret);
 
         document.getElementById("file_picker").addEventListener(
             "change",
             async function () {
-                console.log("eventListener 'change' inside simple.html runs");
+                const repo_type = "[FILL_ME]";
+                const repo_id = "[FILL_ME]";
+                const hf_token = "[FILL_ME]";
 
-                let file = this.files[0];
-                console.log("cleaning file: " + file);
+                const file = this.files[0];
 
                 console.log("getting auth info...");
 
-                let xetmetadata = await fetchXetMetadataFromRepoInfo({
+                const xetmetadata = await fetchXetMetadataFromRepoInfo({
                     tokenType: "write",
-                    repoId: "[FILL THIS]",
-                    repoType: "dataset",
+                    repoId: repo_id,
+                    repoType: repo_type,
                     headers: {
-                        "Authorization": "Bearer [FILL THIS]",
+                        "Authorization": `Bearer ${hf_token}`,
                         "User-Agent": "xet-wasm"
                     },
                 });
 
-                console.log("CAS endpoint: " + xetmetadata.endpoint);
-                console.log("CAS token: " + xetmetadata.accessToken);
-                console.log("CAS token expiry: " + xetmetadata.expirationUnixEpoch);
+                const file_name = file.name;
+                const file_size = file.size;
 
                 // let ret = await test_async_blob_reader(file);
-                let ret = await clean_file(file, xetmetadata.endpoint, xetmetadata.accessToken, BigInt(xetmetadata.expirationUnixEpoch));
-                console.log("test result: " + ret);
+                let sha256 = await clean_file(file, xetmetadata.endpoint, xetmetadata.accessToken, BigInt(xetmetadata.expirationUnixEpoch));
+                console.log("result: " + sha256);
+
+                let response = await commit(file_name, sha256, file_size, repo_type, repo_id, "main", hf_token);
+                document.getElementById('result').textContent = response;
             },
             false
         );

@@ -1,14 +1,21 @@
 use std::sync::Arc;
 
+use anyhow::anyhow;
+use cas_client::{build_http_client, Client, RemoteClient, RetryConfig};
+use cas_object::test_utils::build_cas_object;
 use cas_object::CompressionScheme;
 use futures::AsyncReadExt;
+use hf_xet_wasm::blob_reader::BlobReader;
+use hf_xet_wasm::configurations::{DataConfig, RepoSalt, ShardConfig, TranslatorConfig};
+use hf_xet_wasm::wasm_file_upload_session::FileUploadSession;
+use merklehash::MerkleHash;
+use reqwest::header;
 use tokio::sync::mpsc;
-use utils::auth::AuthConfig;
+use utils::auth::{self, AuthConfig};
 use wasm_bindgen::prelude::*;
+use wasm_bindgen_futures::JsFuture;
 use wasm_thread as thread;
-use wasm_xet::blob_reader::BlobReader;
-use wasm_xet::configurations::{DataConfig, RepoSalt, ShardConfig, TranslatorConfig};
-use wasm_xet::wasm_file_upload_session::FileUploadSession;
+use web_sys::{DedicatedWorkerGlobalScope, Headers, Request, RequestInit, RequestMode, Response};
 
 fn main() {
     #[cfg(target_arch = "wasm32")]
@@ -20,9 +27,35 @@ fn main() {
     #[cfg(not(target_arch = "wasm32"))]
     env_logger::init_from_env(env_logger::Env::default().filter_or(env_logger::DEFAULT_FILTER_ENV, "info"));
 
-    log::info!("Starting init wasm_xet...");
+    log::info!("Starting init hf_xet_wasm...");
 
     log::info!("Done");
+}
+
+#[wasm_bindgen]
+pub async fn thread_async_channel() -> String {
+    // Exchange a series of messages over async channel.
+    let (thread_tx, mut main_rx) = mpsc::channel::<String>(2);
+    let (main_tx, mut thread_rx) = mpsc::channel::<String>(2);
+
+    thread::spawn(|| {
+        futures::executor::block_on(async move {
+            thread::sleep(std::time::Duration::from_millis(100));
+            thread_tx.send("Hello".to_string()).await.unwrap();
+            let mut msg = thread_rx.recv().await.unwrap();
+            msg.push_str("!");
+            thread_tx.send(msg).await.unwrap();
+        })
+    });
+
+    let mut msg = main_rx.recv().await.unwrap();
+    msg.push_str(" world");
+    main_tx.send(msg).await.unwrap();
+
+    let result = main_rx.recv().await.unwrap();
+    assert_eq!(result, "Hello world!");
+
+    result
 }
 
 #[wasm_bindgen]
@@ -115,15 +148,17 @@ pub async fn test_async_blob_reader(file: web_sys::File) -> String {
 
 #[wasm_bindgen]
 pub async fn clean_file(file: web_sys::File, endpoint: String, jwt_token: String, expiration: u64) -> String {
-    log::info!("clean_file called with {file:?}, {endpoint}, {jwt_token}, {expiration}");
+    log::debug!("clean_file called with {file:?}, {endpoint}, {jwt_token}, {expiration}");
+
+    let filename = file.name();
 
     let Ok(blob) = file.slice() else {
-        log::info!("failed to convert a file to blob");
+        log::error!("failed to convert a file to blob");
         return "".to_owned();
     };
 
     let Ok(mut reader) = BlobReader::new(blob) else {
-        log::info!("failed to get a reader for blob");
+        log::error!("failed to get a reader for blob");
         return "".to_owned();
     };
 
@@ -149,7 +184,7 @@ pub async fn clean_file(file: web_sys::File, endpoint: String, jwt_token: String
     let mut total_read = 0;
     loop {
         let Ok(bytes) = reader.read(&mut buf).await else {
-            log::info!("failed to read from reader");
+            log::error!("failed to read from reader");
             return "".to_owned();
         };
         if bytes == 0 {
@@ -158,26 +193,26 @@ pub async fn clean_file(file: web_sys::File, endpoint: String, jwt_token: String
 
         total_read += bytes;
 
-        log::info!("adding {bytes} bytes to cleaner");
+        log::debug!("adding {bytes} bytes to cleaner");
 
         let Ok(()) = handle.add_data(&buf[0..bytes]).await else {
-            log::info!("failed to add data into cleaner");
+            log::error!("failed to add data into cleaner");
             return "".to_owned();
         };
 
-        log::info!("processed {total_read} bytes");
+        log::debug!("processed {total_read} bytes");
     }
-    let Ok((file_hash, metrics)) = handle.finish().await else {
-        log::info!("failed to finish cleaner");
+    let Ok((file_hash, sha256, metrics)) = handle.finish().await else {
+        log::error!("failed to finish cleaner");
         return "".to_owned();
     };
 
-    log::info!("cleaner finished with {file_hash}");
+    log::debug!("cleaner finished with xet hash {file_hash}, sha256 {sha256}");
 
     let Ok(()) = upload_session.finalize().await else {
-        log::info!("failed to finalize upload session");
+        log::error!("failed to finalize upload session");
         return "".to_owned();
     };
 
-    file_hash.to_string()
+    sha256.to_string()
 }

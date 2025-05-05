@@ -45,7 +45,7 @@ async function fetchXetMetadataFromRepoInfo({
      * @throws {Error} If the Hub API returned an error or the response is improperly formatted.
      */
 
-    const url = `https://huggingface.co/api/${repoType}s/${repoId}/xet-${tokenType}-token/main}`;
+    const url = `https://huggingface.co/api/${repoType}s/${repoId}/xet-${tokenType}-token/main`;
     console.log(`${url}`);
 
     return fetchXetMetadataWithUrl(url, headers, params);

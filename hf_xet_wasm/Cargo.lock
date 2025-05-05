@@ -244,6 +244,7 @@ dependencies = [
  "futures",
  "heed",
  "http",
+ "log",
  "mdb_shard",
  "merkledb",
  "merklehash",
@@ -1019,6 +1020,42 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "62b467343b94ba476dcb2500d242dadbb39557df889310ac77c5d99100aaac33"
 dependencies = [
  "libc",
+]
+
+[[package]]
+name = "hf_xet_wasm"
+version = "0.0.1"
+dependencies = [
+ "anyhow",
+ "async-channel",
+ "async-trait",
+ "blake3",
+ "cas_client",
+ "cas_object",
+ "console_error_panic_hook",
+ "console_log",
+ "deduplication",
+ "env_logger",
+ "futures",
+ "futures-io",
+ "getrandom 0.3.2",
+ "js-sys",
+ "log",
+ "mdb_shard",
+ "merkledb",
+ "merklehash",
+ "reqwest",
+ "serde_json",
+ "sha2",
+ "thiserror 2.0.12",
+ "tokio",
+ "tokio-stream",
+ "tokio_with_wasm",
+ "utils",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "wasm_thread",
+ "web-sys",
 ]
 
 [[package]]
@@ -2567,6 +2604,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "tokio-stream"
+version = "0.1.17"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "eca58d7bba4a75707817a2c44174253f9236b2d5fbd055602e9d5c07c139a047"
+dependencies = [
+ "futures-core",
+ "pin-project-lite",
+ "tokio",
+]
+
+[[package]]
 name = "tokio-util"
 version = "0.7.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2577,6 +2625,30 @@ dependencies = [
  "futures-sink",
  "pin-project-lite",
  "tokio",
+]
+
+[[package]]
+name = "tokio_with_wasm"
+version = "0.8.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e42d20f41cbfe26740d0c2fb320d44ce7dfa716be135cb663e99a48248a0e897"
+dependencies = [
+ "js-sys",
+ "tokio",
+ "tokio_with_wasm_proc",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "web-sys",
+]
+
+[[package]]
+name = "tokio_with_wasm_proc"
+version = "0.8.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ee80eb7e23abaa636caa9afe6042c6d8a8c0686165b8165f4fbf2988f0dd347f"
+dependencies = [
+ "quote",
+ "syn 2.0.100",
 ]
 
 [[package]]
@@ -2709,6 +2781,7 @@ dependencies = [
  "ctor",
  "futures",
  "lazy_static",
+ "log",
  "merklehash",
  "parking_lot 0.11.2",
  "paste",
@@ -2889,37 +2962,6 @@ dependencies = [
  "futures",
  "js-sys",
  "wasm-bindgen",
- "web-sys",
-]
-
-[[package]]
-name = "wasm_xet"
-version = "0.0.1"
-dependencies = [
- "async-channel",
- "async-trait",
- "blake3",
- "cas_client",
- "cas_object",
- "console_error_panic_hook",
- "console_log",
- "deduplication",
- "env_logger",
- "futures",
- "futures-io",
- "getrandom 0.3.2",
- "js-sys",
- "log",
- "mdb_shard",
- "merkledb",
- "merklehash",
- "sha2",
- "thiserror 2.0.12",
- "tokio",
- "utils",
- "wasm-bindgen",
- "wasm-bindgen-futures",
- "wasm_thread",
  "web-sys",
 ]
 

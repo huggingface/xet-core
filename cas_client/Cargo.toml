@@ -33,6 +33,7 @@ url = "2.5.2"
 reqwest-retry = "0.7.0"
 futures = "0.3.31"
 derivative = "2.2.0"
+log = "0.4.22"
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
 heed = "0.11"

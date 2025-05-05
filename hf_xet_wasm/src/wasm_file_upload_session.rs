@@ -12,7 +12,7 @@ use tokio::sync::Mutex;
 use super::configurations::TranslatorConfig;
 use super::errors::*;
 use crate::wasm_file_cleaner::SingleFileCleaner;
-use crate::xorb_uploader::{self, XorbUploader};
+use crate::xorb_uploader::{XorbUploader, XorbUploaderLocalSequential, XorbUploaderSpawnParallel};
 
 static UPLOAD_CONCURRENCY: usize = 1;
 
@@ -28,7 +28,7 @@ pub struct FileUploadSession {
 
     pub(crate) client: Arc<dyn Client + Send + Sync>,
     pub(crate) session_shard: Mutex<MDBInMemoryShard>,
-    xorb_uploader: Mutex<Option<XorbUploader>>,
+    xorb_uploader: Mutex<Option<Box<dyn XorbUploader + Send>>>,
 
     /// Deduplicated data shared across files.
     current_session_data: Mutex<DataAggregator>,
@@ -45,13 +45,15 @@ impl FileUploadSession {
             false,
         ));
 
+        // let xorb_uploader =
+        //     Box::new(XorbUploaderLocalSequential::new(client.clone(), &config.data_config.prefix,
+        // UPLOAD_CONCURRENCY));
+        let xorb_uploader =
+            Box::new(XorbUploaderSpawnParallel::new(client.clone(), &config.data_config.prefix, UPLOAD_CONCURRENCY));
+
         Self {
             session_shard: Mutex::new(MDBInMemoryShard::default()),
-            xorb_uploader: Mutex::new(Some(XorbUploader::new(
-                client.clone(),
-                &config.data_config.prefix,
-                UPLOAD_CONCURRENCY,
-            ))),
+            xorb_uploader: Mutex::new(Some(xorb_uploader)),
             config,
             client,
             current_session_data: Mutex::new(DataAggregator::default()),
@@ -97,6 +99,10 @@ impl FileUploadSession {
     async fn process_aggregated_data_as_xorb(self: &Arc<Self>, data_agg: DataAggregator) -> Result<()> {
         let (xorb, new_files) = data_agg.finalize();
 
+        // Add the xorb info to the current shard.
+        if xorb.num_bytes() > 0 {
+            self.session_shard.lock().await.add_cas_block(xorb.cas_info.clone())?;
+        }
         self.register_new_xorb_for_upload(xorb).await?;
 
         for fi in new_files {
@@ -132,7 +138,7 @@ impl FileUploadSession {
         self.process_aggregated_data_as_xorb(data_agg).await?;
 
         // Finalize the xorb uploads.
-        if let Some(xorb_uploader) = self.xorb_uploader.lock().await.take() {
+        if let Some(mut xorb_uploader) = self.xorb_uploader.lock().await.take() {
             xorb_uploader.finalize().await?;
         }
 
@@ -158,6 +164,8 @@ impl FileUploadSession {
 
         let shard_hash = hashed_write.hash();
         let shard_data = hashed_write.into_inner();
+
+        log::info!("shard hash: {shard_hash}, {} bytes", shard_data.len());
 
         self.client
             .upload_shard(
