@@ -301,18 +301,21 @@ impl FileUploadSession {
         debug_assert_le!(xorb.num_bytes(), *MAX_XORB_BYTES);
         debug_assert_le!(xorb.data.len(), *MAX_XORB_CHUNKS);
 
-        // Add the xorb info to the current shard.
-        self.shard_interface.add_cas_block(xorb.cas_info.clone()).await?;
+        if xorb.num_bytes() > 0 {
+            // Add the xorb info to the current shard.
+            self.shard_interface.add_cas_block(xorb.cas_info.clone()).await?;
+
+            self.register_new_xorb_for_upload(xorb).await?;
+        }
 
         // Now, we need to scan all the file dependencies for dependencies on this xorb, as
         // these would not have been registered yet.
-        self.register_new_xorb_for_upload(xorb).await?;
 
         let mut new_dependencies = Vec::with_capacity(new_files.len());
 
         {
             for (file_id, fi, bytes_in_xorb) in new_files {
-                if xorb_hash == MerkleHash::default() || bytes_in_xorb != 0 {
+                if xorb_hash != MerkleHash::default() && bytes_in_xorb != 0 {
                     new_dependencies.push((file_id, xorb_hash, bytes_in_xorb, false));
                 }
 
