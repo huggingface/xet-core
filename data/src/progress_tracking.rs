@@ -217,7 +217,7 @@ impl CompletionTrackerImpl {
 
         // Check each xorb to ensure it's marked completed and no file references remain
         for (hash, xorb_dep) in self.xorbs.iter() {
-            assert!(xorb_dep.is_completed, "Xorb {:?} is not marked completed.", hash);
+            assert!(xorb_dep.is_completed, "Xorb {hash:?} is not marked completed.");
             assert!(
                 xorb_dep.file_indices.is_empty(),
                 "Xorb {:?} still has file references: {:?}",

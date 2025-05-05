@@ -222,7 +222,7 @@ impl Middleware for AuthMiddleware {
         let token = self.get_token().await.map_err(reqwest_middleware::Error::Middleware)?;
 
         let headers = req.headers_mut();
-        headers.insert(AUTHORIZATION, HeaderValue::from_str(&format!("Bearer {}", token)).unwrap());
+        headers.insert(AUTHORIZATION, HeaderValue::from_str(&format!("Bearer {token}")).unwrap());
         next.run(req, extensions).await
     }
 }

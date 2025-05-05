@@ -27,11 +27,11 @@ pub fn print_directory_contents(path: &Path) {
                             print_directory_contents(&path);
                         }
                     },
-                    Err(e) => eprintln!("Error reading entry: {}", e),
+                    Err(e) => eprintln!("Error reading entry: {e}"),
                 }
             }
         },
-        Err(e) => eprintln!("Error reading directory: {}", e),
+        Err(e) => eprintln!("Error reading directory: {e}"),
     }
 }
 

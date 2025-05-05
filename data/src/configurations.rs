@@ -55,7 +55,7 @@ impl FromStr for GlobalDedupPolicy {
             "always" => Ok(GlobalDedupPolicy::Always),
             _ => Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
-                format!("Invalid global dedup query policy, should be one of never, direct_only, always: {}", s),
+                format!("Invalid global dedup query policy, should be one of never, direct_only, always: {s}"),
             )),
         }
     }

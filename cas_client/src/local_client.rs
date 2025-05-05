@@ -288,8 +288,7 @@ impl UploadClient for LocalClient {
 
         if !res.unwrap().is_file() {
             return Err(CasClientError::internal(format!(
-                "Attempting to write to {:?}, but it is not a file",
-                file_path
+                "Attempting to write to {file_path:?}, but it is not a file"
             )));
         };
 
