@@ -21,9 +21,7 @@ use crate::{FileUploadSession, XetFileInfo};
 /// let hub_token = "your_token";
 /// let repo_type = "model";
 /// let repo_id = "your_repo_id";
-/// let handle = tokio::runtime::Handle::current();
-/// migrate_with_external_runtime(file_paths, hub_endpoint, hub_token, repo_type, repo_id, handle)
-///     .await?;
+/// migrate_with_external_runtime(file_paths, hub_endpoint, hub_token, repo_type, repo_id).await?;
 /// ```
 pub async fn migrate_with_external_runtime(
     file_paths: Vec<String>,
@@ -32,13 +30,10 @@ pub async fn migrate_with_external_runtime(
     hub_token: &str,
     repo_type: &str,
     repo_id: &str,
-    handle: tokio::runtime::Handle,
 ) -> Result<()> {
     let hub_client = HubClient::new(hub_endpoint, hub_token, repo_type, repo_id)?;
 
-    let threadpool = ThreadPool::from_external(handle);
-
-    migrate_files_impl(file_paths, false, hub_client, cas_endpoint, threadpool, None, false).await?;
+    migrate_files_impl(file_paths, false, hub_client, cas_endpoint, None, false).await?;
 
     Ok(())
 }
@@ -52,14 +47,12 @@ pub async fn migrate_files_impl(
     sequential: bool,
     hub_client: HubClient,
     cas_endpoint: Option<String>,
-    threadpool: Arc<ThreadPool>,
     compression: Option<CompressionScheme>,
     dry_run: bool,
 ) -> Result<MigrationInfo> {
     let token_type = "write";
     let (endpoint, jwt_token, jwt_token_expiry) = hub_client.get_jwt_token(token_type).await?;
     let token_refresher = Arc::new(HubClientTokenRefresher {
-        threadpool: threadpool.clone(),
         token_type: token_type.to_owned(),
         client: Arc::new(hub_client),
     }) as Arc<dyn TokenRefresher>;
@@ -68,11 +61,15 @@ pub async fn migrate_files_impl(
     let config = default_config(cas, compression, Some((jwt_token, jwt_token_expiry)), Some(token_refresher))?;
     Span::current().record("session_id", &config.session_id);
 
-    let num_workers = if sequential { 1 } else { threadpool.num_worker_threads() };
-    let processor = if dry_run {
-        FileUploadSession::dry_run(config, threadpool, None).await?
+    let num_workers = if sequential {
+        1
     } else {
-        FileUploadSession::new(config, threadpool, None).await?
+        ThreadPool::current().num_worker_threads()
+    };
+    let processor = if dry_run {
+        FileUploadSession::dry_run(config, None).await?
+    } else {
+        FileUploadSession::new(config, None).await?
     };
 
     let file_paths_with_spans = add_spans(file_paths, || info_span!("migration::clean_file"));

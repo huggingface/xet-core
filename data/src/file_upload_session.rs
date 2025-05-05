@@ -15,7 +15,6 @@ use tokio::task::JoinSet;
 use tracing::{info_span, instrument, Instrument};
 use ulid::Ulid;
 use utils::progress::{NoOpProgressUpdater, TrackingProgressUpdater};
-use xet_threadpool::ThreadPool;
 
 use crate::configurations::*;
 use crate::constants::MAX_CONCURRENT_UPLOADS;
@@ -58,9 +57,6 @@ pub struct FileUploadSession {
     pub(crate) client: Arc<dyn Client + Send + Sync>,
     pub(crate) shard_interface: SessionShardInterface,
 
-    /// Threadpool to use for the execution.
-    pub(crate) threadpool: Arc<ThreadPool>,
-
     /// The repo id, if present.
     pub(crate) repo_id: Option<String>,
 
@@ -91,23 +87,20 @@ pub struct FileUploadSession {
 impl FileUploadSession {
     pub async fn new(
         config: Arc<TranslatorConfig>,
-        threadpool: Arc<ThreadPool>,
         upload_progress_updater: Option<Arc<dyn TrackingProgressUpdater>>,
     ) -> Result<Arc<FileUploadSession>> {
-        FileUploadSession::new_impl(config, threadpool, upload_progress_updater, false).await
+        FileUploadSession::new_impl(config, upload_progress_updater, false).await
     }
 
     pub async fn dry_run(
         config: Arc<TranslatorConfig>,
-        threadpool: Arc<ThreadPool>,
         upload_progress_updater: Option<Arc<dyn TrackingProgressUpdater>>,
     ) -> Result<Arc<FileUploadSession>> {
-        FileUploadSession::new_impl(config, threadpool, upload_progress_updater, true).await
+        FileUploadSession::new_impl(config, upload_progress_updater, true).await
     }
 
     async fn new_impl(
         config: Arc<TranslatorConfig>,
-        threadpool: Arc<ThreadPool>,
         upload_progress_updater: Option<Arc<dyn TrackingProgressUpdater>>,
         dry_run: bool,
     ) -> Result<Arc<FileUploadSession>> {
@@ -130,7 +123,7 @@ impl FileUploadSession {
 
         let completion_tracker = Arc::new(CompletionTracker::new(progress_updater));
 
-        let client = create_remote_client(&config, threadpool.clone(), &session_id, dry_run)?;
+        let client = create_remote_client(&config, &session_id, dry_run)?;
 
         let shard_interface = SessionShardInterface::new(config.clone(), client.clone(), dry_run).await?;
 
@@ -154,7 +147,6 @@ impl FileUploadSession {
         Ok(Arc::new(Self {
             shard_interface,
             client,
-            threadpool,
             repo_id,
             config,
             completion_tracker,
@@ -444,7 +436,7 @@ mod tests {
     ///
     /// * `input_path`: path to the original file
     /// * `output_path`: path to write the pointer file
-    async fn test_clean_file(runtime: Arc<ThreadPool>, cas_path: &Path, input_path: &Path, output_path: &Path) {
+    async fn test_clean_file(cas_path: &Path, input_path: &Path, output_path: &Path) {
         let read_data = read(input_path).unwrap().to_vec();
 
         let mut pf_out = Box::new(
@@ -456,7 +448,7 @@ mod tests {
                 .unwrap(),
         );
 
-        let upload_session = FileUploadSession::new(TranslatorConfig::local_config(cas_path).unwrap(), runtime, None)
+        let upload_session = FileUploadSession::new(TranslatorConfig::local_config(cas_path).unwrap(), None)
             .await
             .unwrap();
 
@@ -477,7 +469,7 @@ mod tests {
     ///
     /// * `pointer_path`: path to the pointer file
     /// * `output_path`: path to write the hydrated/original file
-    async fn test_smudge_file(runtime: Arc<ThreadPool>, cas_path: &Path, pointer_path: &Path, output_path: &Path) {
+    async fn test_smudge_file(cas_path: &Path, pointer_path: &Path, output_path: &Path) {
         let mut reader = File::open(pointer_path).unwrap();
         let writer = OutputProvider::File(FileProvider::new(output_path.to_path_buf()));
 
@@ -486,7 +478,7 @@ mod tests {
 
         let xet_file = serde_json::from_str::<XetFileInfo>(&input).unwrap();
 
-        let translator = FileDownloader::new(TranslatorConfig::local_config(cas_path).unwrap(), runtime)
+        let translator = FileDownloader::new(TranslatorConfig::local_config(cas_path).unwrap())
             .await
             .unwrap();
 
@@ -527,11 +519,11 @@ mod tests {
 
                 // 2. Clean it (convert it to a pointer file)
                 let pointer_path = temp.path().join("pointer.txt");
-                test_clean_file(runtime.clone(), &cas_path, &original_path, &pointer_path).await;
+                test_clean_file(&cas_path, &original_path, &pointer_path).await;
 
                 // 3. Smudge it (hydrate the pointer file) to a new file
                 let hydrated_path = temp.path().join("hydrated.txt");
-                test_smudge_file(runtime.clone(), &cas_path, &pointer_path, &hydrated_path).await;
+                test_smudge_file(&cas_path, &pointer_path, &hydrated_path).await;
 
                 // 4. Verify that the round-tripped file matches the original
                 let result_data = read(hydrated_path).unwrap();

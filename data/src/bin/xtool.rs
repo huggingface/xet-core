@@ -1,7 +1,6 @@
 use std::fs::File;
 use std::io::{BufWriter, Write};
 use std::path::PathBuf;
-use std::sync::Arc;
 
 use anyhow::Result;
 use cas_object::CompressionScheme;
@@ -39,7 +38,7 @@ struct CliOverrides {
 }
 
 impl XCommand {
-    async fn run(self, threadpool: Arc<ThreadPool>) -> Result<()> {
+    async fn run(self) -> Result<()> {
         let endpoint = self
             .overrides
             .endpoint
@@ -50,7 +49,7 @@ impl XCommand {
             .unwrap_or_else(|| std::env::var("HF_TOKEN").unwrap_or_default());
         let hub_client = HubClient::new(&endpoint, &token, &self.overrides.repo_type, &self.overrides.repo_id)?;
 
-        self.command.run(hub_client, threadpool).await
+        self.command.run(hub_client).await
     }
 }
 
@@ -98,7 +97,7 @@ struct QueryArg {
 }
 
 impl Command {
-    async fn run(self, hub_client: HubClient, threadpool: Arc<ThreadPool>) -> Result<()> {
+    async fn run(self, hub_client: HubClient) -> Result<()> {
         match self {
             Command::Dedup(arg) => {
                 let file_paths = walk_files(arg.files, arg.recursive);
@@ -109,7 +108,6 @@ impl Command {
                     arg.sequential,
                     hub_client,
                     None,
-                    threadpool,
                     arg.compression.and_then(|c| CompressionScheme::try_from(c).ok()),
                     !arg.migrate,
                 )
@@ -173,8 +171,7 @@ fn is_git_special_files(path: &str) -> bool {
 fn main() -> Result<()> {
     let cli = XCommand::parse();
     let threadpool = ThreadPool::new()?;
-    let threadpool_internal = threadpool.clone();
-    threadpool.external_run_async_task(async move { cli.run(threadpool_internal).await })??;
+    threadpool.external_run_async_task(async move { cli.run().await })??;
 
     Ok(())
 }

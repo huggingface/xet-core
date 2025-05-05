@@ -88,9 +88,7 @@ async fn clean(mut reader: impl Read, mut writer: impl Write, size: u64) -> Resu
 
     let mut read_buf = vec![0u8; READ_BLOCK_SIZE];
 
-    let translator =
-        FileUploadSession::new(TranslatorConfig::local_config(std::env::current_dir()?)?, get_threadpool(), None)
-            .await?;
+    let translator = FileUploadSession::new(TranslatorConfig::local_config(std::env::current_dir()?)?, None).await?;
 
     let mut size_read = 0;
     let mut handle = translator.start_clean(None, size).await;
@@ -135,8 +133,7 @@ async fn smudge(name: Arc<str>, mut reader: impl Read, writer: &OutputProvider) 
     let xet_file: XetFileInfo = serde_json::from_str(&input)
         .map_err(|_| anyhow::anyhow!("Failed to parse xet file info. Please check the format."))?;
 
-    let downloader =
-        FileDownloader::new(TranslatorConfig::local_config(std::env::current_dir()?)?, get_threadpool()).await?;
+    let downloader = FileDownloader::new(TranslatorConfig::local_config(std::env::current_dir()?)?).await?;
 
     downloader
         .smudge_file_from_hash(
