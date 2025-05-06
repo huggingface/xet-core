@@ -1,6 +1,7 @@
 use std::cell::RefCell;
 use std::fmt::Display;
 use std::future::Future;
+use std::ops::Mul;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, OnceLock};
 
@@ -13,6 +14,8 @@ use crate::errors::MultithreadedRuntimeError;
 const THREADPOOL_THREAD_ID_PREFIX: &str = "hf-xet"; // thread names will be hf-xet-0, hf-xet-1, etc.
 const THREADPOOL_STACK_SIZE: usize = 8_000_000; // 8MB stack size
 const THREADPOOL_MAX_BLOCKING_THREADS: usize = 100; // max 100 threads can block IO
+
+const THREADPOOL_NUM_IO_WORKERS: usize = 2; // Number of worker threads used to handle the IO.
 
 /// This module provides a simple wrapper around Tokio's runtime to create a thread pool
 /// with some default settings. It is intended to be used as a singleton thread pool for
@@ -59,18 +62,37 @@ const THREADPOOL_MAX_BLOCKING_THREADS: usize = 100; // max 100 threads can block
 #[derive(Debug)]
 pub struct ThreadPool {
     // The runtime used when
-    runtime: std::sync::RwLock<Option<TokioRuntime>>,
+    runtime: std::sync::RwLock<Option<TPRuntimes>>,
 
     // We use this handle when we actually enter the runtime to avoid the lock.  It is
     // the same as using the runtime, with the exception that it does not block a shutdown
     // while holding a reference to the runtime does.
-    handle_ref: OnceLock<TokioRuntimeHandle>,
+    handle_ref: OnceLock<TPHandles>,
 
     // The number of external threads calling into this threadpool
     external_executor_count: AtomicUsize,
 
     // Are we in the middle of a sigint shutdown?
     sigint_shutdown: AtomicBool,
+}
+
+#[derive(Debug)]
+#[cfg(not(target_family = "wasm"))]
+struct TPRuntimes {
+    io_runtime: TokioRuntime,
+    compute_runtime: TokioRuntime,
+}
+
+#[derive(Debug)]
+#[cfg(target_family = "wasm")]
+struct TPRuntimes {
+    runtime: TokioRuntime,
+}
+
+#[derive(Debug)]
+struct TPHandles {
+    io_handle: TokioRuntimeHandle,
+    compute_handle: TokioRuntimeHandle,
 }
 
 // Use thread-local references to the runtime that are set on initilization among all
@@ -126,33 +148,72 @@ impl ThreadPool {
             THREAD_RUNTIME_REF.set(Some(rt_c.clone()));
         };
 
-        // Set the name of a new thread for the threadpool. Names are prefixed with
-        // `THREADPOOL_THREAD_ID_PREFIX` and suffixed with a counter:
-        // e.g. hf-xet-0, hf-xet-1, hf-xet-2, ...
-        let thread_id = AtomicUsize::new(0);
-        let get_thread_name = move || {
-            let id = thread_id.fetch_add(1, Ordering::Relaxed);
-            format!("{THREADPOOL_THREAD_ID_PREFIX}-{id}")
+        #[cfg(not(target_family = "wasm"))]
+        let (runtimes, handles) = {
+            // Set the name of a new thread for the threadpool. Names are prefixed with
+            // `THREADPOOL_THREAD_ID_PREFIX` and suffixed with a counter:
+            // e.g. for io: hf-xet-io-0, hf-xet-io-1, hf-xet-io-2, ...
+            // or for compute: hf-xet-compute-0, ...
+            let io_thread_id = AtomicUsize::new(0);
+            let get_io_thread_name = move || {
+                let id = io_thread_id.fetch_add(1, Ordering::Relaxed);
+                format!("{THREADPOOL_THREAD_ID_PREFIX}-io-{id}")
+            };
+
+            let compute_thread_id = AtomicUsize::new(0);
+            let get_compute_thread_name = move || {
+                let id = compute_thread_id.fetch_add(1, Ordering::Relaxed);
+                format!("{THREADPOOL_THREAD_ID_PREFIX}-compute-{id}")
+            };
+
+            let runtimes = TPRuntimes {
+                io_runtime: TokioRuntimeBuilder::new_multi_thread()
+                    .thread_name_fn(get_io_thread_name) // thread names will be hf-xet-0, hf-xet-1, etc.
+                    .worker_threads(THREADPOOL_NUM_IO_WORKERS)
+                    .on_thread_start(set_threadlocal_reference.clone()) // Set the local runtime reference.
+                    .thread_stack_size(THREADPOOL_STACK_SIZE) // 8MB stack size, default is 2MB
+                    .enable_all() // enable all features, including IO/Timer/Signal/Reactor
+                    .build()
+                    .map_err(MultithreadedRuntimeError::RuntimeInitializationError)?,
+
+                compute_runtime: TokioRuntimeBuilder::new_multi_thread()
+                    .thread_name_fn(get_compute_thread_name) // thread names will be hf-xet-0, hf-xet-1, etc.
+                    .on_thread_start(set_threadlocal_reference) // Set the local runtime reference.
+                    .thread_stack_size(THREADPOOL_STACK_SIZE) // 8MB stack size, default is 2MB
+                    .max_blocking_threads(THREADPOOL_MAX_BLOCKING_THREADS) // max 100 threads can block IO
+                    .build()
+                    .map_err(MultithreadedRuntimeError::RuntimeInitializationError)?,
+            };
+
+            let handles = TPHandles {
+                io_handle: runtimes.io_runtime.handle().clone(),
+                compute_handle: runtimes.compute_runtime.handle().clone(),
+            };
+
+            (runtimes, handles)
         };
 
-        #[cfg(not(target_family = "wasm"))]
-        let mut builder = TokioRuntimeBuilder::new_multi_thread();
         #[cfg(target_family = "wasm")]
-        let mut builder = TokioRuntimeBuilder::new_current_thread();
+        let (runtimes, handles) = {
+            let runtime = TokioRuntimeBuilder::new_current_thread()
+                .on_thread_start(set_threadlocal_reference) // Set the local runtime reference.
+                .thread_stack_size(THREADPOOL_STACK_SIZE) // 8MB stack size, default is 2MB
+                .enable_all() // enable all features, including IO/Timer/Signal/Reactor
+                .build()
+                .map_err(MultithreadedRuntimeError::RuntimeInitializationError)?;
 
-        let tokio_rt = builder
-            .thread_name_fn(get_thread_name) // thread names will be hf-xet-0, hf-xet-1, etc.
-            .on_thread_start(set_threadlocal_reference) // Set the local runtime reference.
-            .thread_stack_size(THREADPOOL_STACK_SIZE) // 8MB stack size, default is 2MB
-            .max_blocking_threads(THREADPOOL_MAX_BLOCKING_THREADS) // max 100 threads can block IO
-            .enable_all() // enable all features, including IO/Timer/Signal/Reactor
-            .build()
-            .map_err(MultithreadedRuntimeError::RuntimeInitializationError)?;
+            // Here, it's just one
+            let handles = TPHandles {
+                io_handle: runtime.handle().clone(),
+                compute_handle: runtime.handle().clone(),
+            };
+
+            (TPRuntimes { runtime }, handles)
+        };
 
         // Now that the runtime is created, fill out the original struct.
-        let handle = tokio_rt.handle().clone();
-        *rt.runtime.write().unwrap() = Some(tokio_rt); // Only fails if other thread destroyed mutex; unwrap ok.
-        rt.handle_ref.set(handle).unwrap(); // Only fails if set called twice; unwrap ok.
+        *rt.runtime.write().unwrap() = Some(runtimes); // Only fails if other thread destroyed mutex; unwrap ok.
+        rt.handle_ref.set(handles).unwrap(); // Only fails if set called twice; unwrap ok.
 
         Ok(rt)
     }
@@ -160,19 +221,37 @@ impl ThreadPool {
     pub fn from_external(rt_handle: TokioRuntimeHandle) -> Arc<Self> {
         Arc::new(Self {
             runtime: std::sync::RwLock::new(None),
-            handle_ref: rt_handle.into(),
+            handle_ref: TPHandles {
+                // From the external environment, use the same handle for both
+                io_handle: rt_handle.clone(),
+                compute_handle: rt_handle,
+            }
+            .into(),
             external_executor_count: 0.into(),
             sigint_shutdown: false.into(),
         })
     }
 
     #[inline]
-    pub fn handle(&self) -> TokioRuntimeHandle {
-        self.handle_ref.get().expect("Not initialized with handle set.").clone()
+    pub fn compute_handle(&self) -> TokioRuntimeHandle {
+        self.handle_ref
+            .get()
+            .expect("Not initialized with handle set.")
+            .compute_handle
+            .clone()
+    }
+
+    #[inline]
+    pub fn io_handle(&self) -> TokioRuntimeHandle {
+        self.handle_ref
+            .get()
+            .expect("Not initialized with handle set.")
+            .io_handle
+            .clone()
     }
 
     pub fn num_worker_threads(&self) -> usize {
-        self.handle().metrics().num_workers()
+        self.compute_handle().metrics().num_workers()
     }
 
     /// Gives the number of concurrent calls to external_run_async_task.
@@ -219,25 +298,29 @@ impl ThreadPool {
     {
         self.external_executor_count.fetch_add(1, Ordering::SeqCst);
 
-        let ret = self.handle().block_on(async move {
+        let ret = self.compute_handle().block_on(async move {
             // Run the actual task on a task worker thread so we can get back information
             // on issues, including reporting panics as runtime errors.
-            self.handle().spawn(future).await.map_err(MultithreadedRuntimeError::from)
+            self.compute_handle()
+                .spawn(future)
+                .await
+                .map_err(MultithreadedRuntimeError::from)
         });
 
         self.external_executor_count.fetch_sub(1, Ordering::SeqCst);
         ret
     }
 
-    /// Spawn an async task to run in the background on the current pool of worker threads.
-    pub fn spawn<F>(&self, future: F) -> JoinHandle<F::Output>
+    pub async fn run_io<F>(future: F) -> Result<F::Output, MultithreadedRuntimeError>
     where
         F: Future + Send + 'static,
         F::Output: Send + 'static,
     {
-        // If the runtime has been shut down, this will immediately abort.
-        debug!("threadpool: spawn called, {}", self);
-        self.handle().spawn(future)
+        ThreadPool::current()
+            .io_handle()
+            .spawn(future)
+            .await
+            .map_err(MultithreadedRuntimeError::from)
     }
 }
 
@@ -253,13 +336,13 @@ impl Display for ThreadPool {
             return write!(f, "Terminated Tokio Runtime Handle; cancel_all_and_shutdown called.");
         };
 
-        let metrics = runtime.metrics();
+        let compute_metrics = runtime.compute_runtime.metrics();
         write!(
             f,
-            "pool: num_workers: {:?}, num_alive_tasks: {:?}, global_queue_depth: {:?}",
-            metrics.num_workers(),
-            metrics.num_alive_tasks(),
-            metrics.global_queue_depth()
+            "compute pool: num_workers: {:?}, num_alive_tasks: {:?}, global_queue_depth: {:?}",
+            compute_metrics.num_workers(),
+            compute_metrics.num_alive_tasks(),
+            compute_metrics.global_queue_depth()
         )
     }
 }
