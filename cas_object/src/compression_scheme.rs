@@ -191,7 +191,7 @@ impl BG4Predictor {
 
             let dest_ptr = self.histograms.as_mut_ptr() as *mut u32;
 
-            while ptr != end_ptr {
+            while !std::ptr::eq(ptr, end_ptr) {
                 let n_ones = (*ptr).count_ones();
                 let loc = (idx % 4) * 9 + n_ones;
                 *(dest_ptr.add(loc as usize)) += 1;
