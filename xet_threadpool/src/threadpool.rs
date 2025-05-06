@@ -1,13 +1,10 @@
 use std::cell::RefCell;
 use std::fmt::Display;
 use std::future::Future;
-use std::ops::Mul;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, OnceLock};
 
 use tokio::runtime::{Builder as TokioRuntimeBuilder, Handle as TokioRuntimeHandle, Runtime as TokioRuntime};
-use tokio::task::JoinHandle;
-use tracing::debug;
 
 use crate::errors::MultithreadedRuntimeError;
 
@@ -181,6 +178,7 @@ impl ThreadPool {
                     .on_thread_start(set_threadlocal_reference) // Set the local runtime reference.
                     .thread_stack_size(THREADPOOL_STACK_SIZE) // 8MB stack size, default is 2MB
                     .max_blocking_threads(THREADPOOL_MAX_BLOCKING_THREADS) // max 100 threads can block IO
+                    .enable_time() // Enable timers; but io should be relegated to the io runtime
                     .build()
                     .map_err(MultithreadedRuntimeError::RuntimeInitializationError)?,
             };
@@ -311,7 +309,7 @@ impl ThreadPool {
         ret
     }
 
-    pub async fn run_io<F>(future: F) -> Result<F::Output, MultithreadedRuntimeError>
+    pub async fn execute_io_task<F>(future: F) -> Result<F::Output, MultithreadedRuntimeError>
     where
         F: Future + Send + 'static,
         F::Output: Send + 'static,

@@ -422,15 +422,14 @@ mod tests {
     #[test]
     fn test_multiple_threads_with_threadpool() {
         let times_called = Arc::new(AtomicU32::new(0));
-        let threadpool = Arc::new(ThreadPool::new().unwrap());
+        let threadpool = ThreadPool::new().unwrap();
         let g: Arc<Group<usize, ()>> = Arc::new(Group::new());
         let mut handlers: Vec<JoinHandle<(usize, bool)>> = Vec::new();
-        let threadpool_ = threadpool.clone();
         let tasks = async move {
             for _ in 0..10 {
                 let g = g.clone();
                 let counter = times_called.clone();
-                handlers.push(threadpool_.spawn(async move {
+                handlers.push(tokio::spawn(async move {
                     let tup = g.work("key", expensive_fn(counter, RES)).await;
                     let res = tup.0;
                     let fn_response = res.unwrap();

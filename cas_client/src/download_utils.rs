@@ -16,6 +16,7 @@ use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tracing::{debug, error, info, trace};
 use url::Url;
 use utils::singleflight::Group;
+use xet_threadpool::ThreadPool;
 
 use crate::error::{CasClientError, Result};
 use crate::http_client::Api;
@@ -373,15 +374,17 @@ async fn download_range(
     trace!("{hash},{},{}", fetch_term.range.start, fetch_term.range.end);
 
     let url = Url::parse(fetch_term.url.as_str())?;
-    let response = match http_client
-        .get(url)
-        .header(RANGE, fetch_term.url_range.range_header())
-        .with_extension(Api("s3::get_range"))
-        .send()
-        .await
-        .map_err(CasClientError::from)
-        .log_error("error downloading range")?
-        .error_for_status()
+    let response = match ThreadPool::execute_io_task(
+        http_client
+            .get(url)
+            .header(RANGE, fetch_term.url_range.range_header())
+            .with_extension(Api("s3::get_range"))
+            .send(),
+    )
+    .await?
+    .map_err(CasClientError::from)
+    .log_error("error downloading range")?
+    .error_for_status()
     {
         Ok(response) => response,
         Err(e) => {

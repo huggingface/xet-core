@@ -149,7 +149,7 @@ impl UploadClient for RemoteClient {
         };
 
         let url = Url::parse(&format!("{}/xorb/{key}", self.endpoint))?;
-        let response = self.authenticated_http_client.head(url).send().await?;
+        let response = ThreadPool::execute_io_task(self.authenticated_http_client.head(url).send()).await??;
         match response.status() {
             StatusCode::OK => Ok(true),
             StatusCode::NOT_FOUND => Ok(false),
@@ -216,7 +216,9 @@ pub(crate) async fn get_reconstruction_with_endpoint_and_client(
         // convert exclusive-end to inclusive-end range
         request = request.header(RANGE, HttpRange::from(range).range_header())
     }
-    let response = request.send().await.process_error("get_reconstruction");
+    let response = ThreadPool::execute_io_task(request.send())
+        .await?
+        .process_error("get_reconstruction");
 
     let Ok(response) = response else {
         let e = response.unwrap_err();
@@ -262,13 +264,14 @@ impl RemoteClient {
         }
         let url: Url = url_str.parse()?;
 
-        let response = self
-            .authenticated_http_client
-            .get(url)
-            .with_extension(Api("cas::batch_get_reconstruction"))
-            .send()
-            .await
-            .process_error("batch_get_reconstruction")?;
+        let response = ThreadPool::execute_io_task(
+            self.authenticated_http_client
+                .get(url)
+                .with_extension(Api("cas::batch_get_reconstruction"))
+                .send(),
+        )
+        .await?
+        .process_error("batch_get_reconstruction")?;
 
         let query_reconstruction_response: BatchQueryReconstructionResponse = response
             .json()
@@ -298,14 +301,15 @@ impl RemoteClient {
         let data = writer.into_inner();
 
         if !self.dry_run {
-            let response = self
-                .authenticated_http_client
-                .post(url)
-                .with_extension(Api("cas::upload_xorb"))
-                .body(data)
-                .send()
-                .await
-                .process_error("upload_xorb")?;
+            let response = ThreadPool::execute_io_task(
+                self.authenticated_http_client
+                    .post(url)
+                    .with_extension(Api("cas::upload_xorb"))
+                    .body(data)
+                    .send(),
+            )
+            .await?
+            .process_error("upload_xorb")?;
             let response_parsed: UploadXorbResponse = response.json().await?;
 
             Ok((response_parsed.was_inserted, nbytes_trans))
@@ -350,14 +354,13 @@ impl RemoteClient {
         // download tasks are enqueued and spawned with the degree of concurrency equal to `num_concurrent_range_gets`.
         // After the above, a task that defines fetching the remainder of the file reconstruction info is enqueued,
         // which will execute after the first of the above term download tasks finishes.
-        let threadpool = ThreadPool::current();
         let chunk_cache = self.chunk_cache.clone();
         let term_download_client = self.http_client.clone();
         let range_download_single_flight = self.range_download_single_flight.clone();
         let download_scheduler = DownloadScheduler::new(*NUM_CONCURRENT_RANGE_GETS);
         let download_scheduler_clone = download_scheduler.clone();
 
-        let queue_dispatcher: JoinHandle<Result<()>> = threadpool.clone().spawn(async move {
+        let queue_dispatcher: JoinHandle<Result<()>> = tokio::spawn(async move {
             let mut remaining_total_len = total_len;
             while let Some(item) = task_rx.recv().await {
                 match item {
@@ -373,7 +376,7 @@ impl RemoteClient {
                         let permit = download_scheduler_clone.download_permit().await?;
                         debug!("spawning 1 download task");
                         let future: JoinHandle<Result<(TermDownloadResult<Vec<u8>>, OwnedSemaphorePermit)>> =
-                            threadpool.spawn(async move {
+                            tokio::spawn(async move {
                                 let data = term_download.run().await?;
                                 Ok((data, permit))
                             });
@@ -635,14 +638,15 @@ impl RegistrationClient for RemoteClient {
             false => NON_FORCE_SYNC_METHOD,
         };
 
-        let response = self
-            .authenticated_http_client
-            .request(method, url)
-            .with_extension(Api("cas::upload_shard"))
-            .body(shard_data.to_vec())
-            .send()
-            .await
-            .process_error("upload_shard")?;
+        let response = ThreadPool::execute_io_task(
+            self.authenticated_http_client
+                .request(method, url)
+                .with_extension(Api("cas::upload_shard"))
+                .body(shard_data.to_vec())
+                .send(),
+        )
+        .await?
+        .process_error("upload_shard")?;
 
         let response_parsed: UploadShardResponse =
             response.json().await.log_error("error json decoding upload_shard response")?;
@@ -663,13 +667,14 @@ impl FileReconstructor<CasClientError> for RemoteClient {
     ) -> Result<Option<(MDBFileInfo, Option<MerkleHash>)>> {
         let url = Url::parse(&format!("{}/reconstruction/{}", self.endpoint, file_hash.hex()))?;
 
-        let response = self
-            .authenticated_http_client
-            .get(url)
-            .with_extension(Api("cas::get_reconstruction_info"))
-            .send()
-            .await
-            .process_error("get_reconstruction_info")?;
+        let response = ThreadPool::execute_io_task(
+            self.authenticated_http_client
+                .get(url)
+                .with_extension(Api("cas::get_reconstruction_info"))
+                .send(),
+        )
+        .await?
+        .process_error("get_reconstruction_info")?;
         let response_info: QueryReconstructionResponse = response.json().await?;
 
         Ok(Some((
@@ -714,13 +719,14 @@ impl ShardDedupProber for RemoteClient {
 
         let url = Url::parse(&format!("{0}/chunk/{key}", self.endpoint))?;
 
-        let mut response = self
-            .conservative_authenticated_http_client
-            .get(url)
-            .with_extension(Api("cas::query_dedup"))
-            .send()
-            .await
-            .map_err(|e| CasClientError::Other(format!("request failed with error {e}")))?;
+        let mut response = ThreadPool::execute_io_task(
+            self.conservative_authenticated_http_client
+                .get(url)
+                .with_extension(Api("cas::query_dedup"))
+                .send(),
+        )
+        .await?
+        .map_err(|e| CasClientError::Other(format!("request failed with error {e}")))?;
 
         // Dedup shard not found, return empty result
         if !response.status().is_success() {
@@ -772,7 +778,7 @@ mod tests {
         let prefix = PREFIX_DEFAULT;
         let (c, _, data, chunk_boundaries) = build_cas_object(3, ChunkSize::Random(512, 10248), CompressionScheme::LZ4);
 
-        let threadpool = ThreadPool::new().unwrap();
+        let threadpool = Arc::new(ThreadPool::new().unwrap());
 
         let client = RemoteClient::new(CAS_ENDPOINT, Some(CompressionScheme::LZ4), &None, &None, "".into(), "", false);
         // Act
@@ -1140,7 +1146,7 @@ mod tests {
     }
 
     fn test_reconstruct_file(test_case: TestCase, endpoint: &str) -> Result<()> {
-        let threadpool = ThreadPool::new()?;
+        let threadpool = Arc::new(ThreadPool::new()?);
 
         // test reconstruct and sequential write
         let test = test_case.clone();

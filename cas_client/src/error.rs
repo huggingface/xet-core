@@ -7,6 +7,7 @@ use thiserror::Error;
 use tokio::sync::mpsc::error::SendError;
 use tokio::sync::AcquireError;
 use tokio::task::JoinError;
+use xet_threadpool::errors::MultithreadedRuntimeError;
 
 #[non_exhaustive]
 #[derive(Error, Debug)]
@@ -61,6 +62,9 @@ pub enum CasClientError {
 
     #[error("Presigned S3 URL Expired on fetching range")]
     PresignedUrlExpirationError,
+
+    #[error("RuntimeError: {0}")]
+    MultithreadedRuntimeError(#[from] MultithreadedRuntimeError),
 }
 
 impl From<reqwest::Error> for CasClientError {
