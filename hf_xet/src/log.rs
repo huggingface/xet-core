@@ -60,6 +60,6 @@ pub fn initialize_runtime_logging(py: Python, runtime: Arc<ThreadPool>) {
     // Spawn the telemetry logging.
     if let Some(ref tti) = telemetry_task_info {
         let telemetry_task = get_telemetry_task(tti.clone());
-        let _telemetry_task = runtime.spawn(telemetry_task);
+        let _telemetry_task = runtime.compute_handle().spawn(telemetry_task);
     }
 }

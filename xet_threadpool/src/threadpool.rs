@@ -10,6 +10,8 @@ use crate::errors::MultithreadedRuntimeError;
 
 const THREADPOOL_THREAD_ID_PREFIX: &str = "hf-xet"; // thread names will be hf-xet-0, hf-xet-1, etc.
 const THREADPOOL_STACK_SIZE: usize = 8_000_000; // 8MB stack size
+
+const THREADPOOL_IO_STACK_SIZE: usize = 2_000_000; // 2MB stack size; lightweight here.
 const THREADPOOL_MAX_BLOCKING_THREADS: usize = 100; // max 100 threads can block IO
 
 const THREADPOOL_NUM_IO_WORKERS: usize = 2; // Number of worker threads used to handle the IO.
@@ -168,7 +170,7 @@ impl ThreadPool {
                     .thread_name_fn(get_io_thread_name) // thread names will be hf-xet-0, hf-xet-1, etc.
                     .worker_threads(THREADPOOL_NUM_IO_WORKERS)
                     .on_thread_start(set_threadlocal_reference.clone()) // Set the local runtime reference.
-                    .thread_stack_size(THREADPOOL_STACK_SIZE) // 8MB stack size, default is 2MB
+                    .thread_stack_size(THREADPOOL_IO_STACK_SIZE) // 8MB stack size, default is 2MB
                     .enable_all() // enable all features, including IO/Timer/Signal/Reactor
                     .build()
                     .map_err(MultithreadedRuntimeError::RuntimeInitializationError)?,
