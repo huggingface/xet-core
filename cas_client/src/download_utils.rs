@@ -57,7 +57,7 @@ pub(crate) enum DownloadRangeResult {
 pub(crate) type RangeDownloadSingleFlight = Arc<Group<DownloadRangeResult, CasClientError>>;
 
 #[derive(Debug)]
-pub(crate) struct FetchInfo {
+pub struct FetchInfo {
     file_hash: MerkleHash,
     pub(crate) file_range: FileRange,
     endpoint: String,
