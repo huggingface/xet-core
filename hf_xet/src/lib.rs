@@ -43,10 +43,7 @@ pub fn upload_bytes(
     _repo_type: Option<String>,
 ) -> PyResult<Vec<PyXetUploadInfo>> {
     let refresher = token_refresher.map(WrappedTokenRefresher::from_func).transpose()?.map(Arc::new);
-    let updater = progress_updater
-        .map(WrappedProgressUpdater::from_func)
-        .transpose()?
-        .map(Arc::new);
+    let updater = progress_updater.map(WrappedProgressUpdater::new).transpose()?.map(Arc::new);
 
     async_run(py, async move {
         let out: Vec<PyXetUploadInfo> = data_client::upload_bytes_async(
@@ -77,10 +74,7 @@ pub fn upload_files(
     _repo_type: Option<String>,
 ) -> PyResult<Vec<PyXetUploadInfo>> {
     let refresher = token_refresher.map(WrappedTokenRefresher::from_func).transpose()?.map(Arc::new);
-    let updater = progress_updater
-        .map(WrappedProgressUpdater::from_func)
-        .transpose()?
-        .map(Arc::new);
+    let updater = progress_updater.map(WrappedProgressUpdater::new).transpose()?.map(Arc::new);
 
     async_run(py, async move {
         let out: Vec<PyXetUploadInfo> = data_client::upload_async(
@@ -126,7 +120,7 @@ pub fn download_files(
 fn try_parse_progress_updaters(funcs: Vec<Py<PyAny>>) -> PyResult<Vec<Arc<dyn TrackingProgressUpdater>>> {
     let mut updaters = Vec::with_capacity(funcs.len());
     for updater_func in funcs {
-        let wrapped = Arc::new(WrappedProgressUpdater::from_func(updater_func)?);
+        let wrapped = Arc::new(WrappedProgressUpdater::new(updater_func)?);
         updaters.push(wrapped as Arc<dyn TrackingProgressUpdater>);
     }
     Ok(updaters)
