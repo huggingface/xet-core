@@ -15,7 +15,6 @@ use tracing::{info_span, instrument, Instrument, Span};
 use ulid::Ulid;
 use utils::auth::{AuthConfig, TokenRefresher};
 use utils::progress::TrackingProgressUpdater;
-use xet_threadpool::ThreadPool;
 
 use crate::configurations::*;
 use crate::constants::{INGESTION_BLOCK_SIZE, MAX_CONCURRENT_DOWNLOADS, MAX_CONCURRENT_FILE_INGESTION};
@@ -100,7 +99,6 @@ pub fn default_config(
 
 #[instrument(skip_all, name = "data_client::upload_bytes", fields(session_id = tracing::field::Empty, num_files=file_contents.len()))]
 pub async fn upload_bytes_async(
-    thread_pool: Arc<ThreadPool>,
     file_contents: Vec<Vec<u8>>,
     endpoint: Option<String>,
     token_info: Option<(String, u64)>,
@@ -110,7 +108,7 @@ pub async fn upload_bytes_async(
     let config = default_config(endpoint.unwrap_or(DEFAULT_CAS_ENDPOINT.clone()), None, token_info, token_refresher)?;
     Span::current().record("session_id", &config.session_id);
 
-    let upload_session = FileUploadSession::new(config, thread_pool, progress_updater).await?;
+    let upload_session = FileUploadSession::new(config, progress_updater).await?;
     let blobs_with_spans = add_spans(file_contents, || info_span!("clean_task"));
 
     // clean the bytes
@@ -135,7 +133,6 @@ pub async fn upload_bytes_async(
 
 #[instrument(skip_all, name = "data_client::upload_files", fields(session_id = tracing::field::Empty, num_files=file_paths.len()))]
 pub async fn upload_async(
-    thread_pool: Arc<ThreadPool>,
     file_paths: Vec<String>,
     endpoint: Option<String>,
     token_info: Option<(String, u64)>,
@@ -149,7 +146,7 @@ pub async fn upload_async(
     let config = default_config(endpoint.unwrap_or(DEFAULT_CAS_ENDPOINT.clone()), None, token_info, token_refresher)?;
     Span::current().record("session_id", &config.session_id);
 
-    let upload_session = FileUploadSession::new(config, thread_pool, progress_updater).await?;
+    let upload_session = FileUploadSession::new(config, progress_updater).await?;
     let files_with_spans = add_spans(file_paths, || info_span!("clean_file_task"));
 
     // for all files, clean them, producing pointer files.
@@ -176,7 +173,6 @@ pub async fn upload_async(
 
 #[instrument(skip_all, name = "data_client::download", fields(session_id = tracing::field::Empty, num_files=file_infos.len()))]
 pub async fn download_async(
-    threadpool: Arc<ThreadPool>,
     file_infos: Vec<(XetFileInfo, String)>,
     endpoint: Option<String>,
     token_info: Option<(String, u64)>,
@@ -201,7 +197,7 @@ pub async fn download_async(
     let file_with_progress = file_infos.into_iter().zip(updaters).collect::<Vec<_>>();
     let extended_file_info_list = add_spans(file_with_progress, || info_span!("download_file"));
 
-    let processor = &Arc::new(FileDownloader::new(config, threadpool).await?);
+    let processor = &Arc::new(FileDownloader::new(config).await?);
     let paths = tokio_par_for_each(
         extended_file_info_list,
         *MAX_CONCURRENT_DOWNLOADS,

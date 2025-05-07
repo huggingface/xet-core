@@ -65,7 +65,6 @@ pub struct RemoteClient {
     authenticated_http_client: Arc<ClientWithMiddleware>,
     conservative_authenticated_http_client: Arc<ClientWithMiddleware>,
     chunk_cache: Option<Arc<dyn ChunkCache>>,
-    threadpool: Arc<ThreadPool>,
     range_download_single_flight: RangeDownloadSingleFlight,
     shard_cache_directory: PathBuf,
 }
@@ -73,7 +72,6 @@ pub struct RemoteClient {
 impl RemoteClient {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
-        threadpool: Arc<ThreadPool>,
         endpoint: &str,
         compression: Option<CompressionScheme>,
         auth: &Option<AuthConfig>,
@@ -113,7 +111,6 @@ impl RemoteClient {
             ),
             http_client: Arc::new(http_client::build_http_client(RetryConfig::default(), session_id).unwrap()),
             chunk_cache,
-            threadpool,
             range_download_single_flight,
             shard_cache_directory,
         }
@@ -353,14 +350,14 @@ impl RemoteClient {
         // download tasks are enqueued and spawned with the degree of concurrency equal to `num_concurrent_range_gets`.
         // After the above, a task that defines fetching the remainder of the file reconstruction info is enqueued,
         // which will execute after the first of the above term download tasks finishes.
-        let threadpool = self.threadpool.clone();
+        let threadpool = ThreadPool::current();
         let chunk_cache = self.chunk_cache.clone();
         let term_download_client = self.http_client.clone();
         let range_download_single_flight = self.range_download_single_flight.clone();
         let download_scheduler = DownloadScheduler::new(*NUM_CONCURRENT_RANGE_GETS);
         let download_scheduler_clone = download_scheduler.clone();
 
-        let queue_dispatcher: JoinHandle<Result<()>> = self.threadpool.spawn(async move {
+        let queue_dispatcher: JoinHandle<Result<()>> = threadpool.clone().spawn(async move {
             let mut remaining_total_len = total_len;
             while let Some(item) = task_rx.recv().await {
                 match item {
@@ -775,17 +772,9 @@ mod tests {
         let prefix = PREFIX_DEFAULT;
         let (c, _, data, chunk_boundaries) = build_cas_object(3, ChunkSize::Random(512, 10248), CompressionScheme::LZ4);
 
-        let threadpool = Arc::new(ThreadPool::new().unwrap());
-        let client = RemoteClient::new(
-            threadpool.clone(),
-            CAS_ENDPOINT,
-            Some(CompressionScheme::LZ4),
-            &None,
-            &None,
-            "".into(),
-            "",
-            false,
-        );
+        let threadpool = ThreadPool::new().unwrap();
+
+        let client = RemoteClient::new(CAS_ENDPOINT, Some(CompressionScheme::LZ4), &None, &None, "".into(), "", false);
         // Act
         let result = threadpool
             .external_run_async_task(async move { client.put(prefix, &c.info.cashash, data, chunk_boundaries).await })
@@ -1151,11 +1140,11 @@ mod tests {
     }
 
     fn test_reconstruct_file(test_case: TestCase, endpoint: &str) -> Result<()> {
-        let threadpool = Arc::new(ThreadPool::new()?);
+        let threadpool = ThreadPool::new()?;
 
         // test reconstruct and sequential write
         let test = test_case.clone();
-        let client = RemoteClient::new(threadpool.clone(), endpoint, None, &None, &None, "".into(), "", false);
+        let client = RemoteClient::new(endpoint, None, &None, &None, "".into(), "", false);
         let provider = BufferProvider::default();
         let buf = provider.buf.clone();
         let writer = OutputProvider::Buffer(provider);
@@ -1173,7 +1162,7 @@ mod tests {
 
         // test reconstruct and parallel write
         let test = test_case;
-        let client = RemoteClient::new(threadpool.clone(), endpoint, None, &None, &None, "".into(), "", false);
+        let client = RemoteClient::new(endpoint, None, &None, &None, "".into(), "", false);
         let provider = BufferProvider::default();
         let buf = provider.buf.clone();
         let writer = OutputProvider::Buffer(provider);

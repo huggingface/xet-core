@@ -48,9 +48,8 @@ pub fn upload_bytes(
         .transpose()?
         .map(Arc::new);
 
-    async_run(py, move |thread_pool| async move {
+    async_run(py, async move {
         let out: Vec<PyXetUploadInfo> = data_client::upload_bytes_async(
-            thread_pool,
             file_contents,
             endpoint,
             token_info,
@@ -83,9 +82,8 @@ pub fn upload_files(
         .transpose()?
         .map(Arc::new);
 
-    async_run(py, move |threadpool| async move {
+    async_run(py, async move {
         let out: Vec<PyXetUploadInfo> = data_client::upload_async(
-            threadpool,
             file_paths,
             endpoint,
             token_info,
@@ -115,17 +113,11 @@ pub fn download_files(
     let refresher = token_refresher.map(WrappedTokenRefresher::from_func).transpose()?.map(Arc::new);
     let updaters = progress_updater.map(try_parse_progress_updaters).transpose()?;
 
-    async_run(py, move |threadpool| async move {
-        let out: Vec<String> = data_client::download_async(
-            threadpool,
-            file_infos,
-            endpoint,
-            token_info,
-            refresher.map(|v| v as Arc<_>),
-            updaters,
-        )
-        .await
-        .map_err(convert_data_processing_error)?;
+    async_run(py, async move {
+        let out: Vec<String> =
+            data_client::download_async(file_infos, endpoint, token_info, refresher.map(|v| v as Arc<_>), updaters)
+                .await
+                .map_err(convert_data_processing_error)?;
 
         PyResult::Ok(out)
     })

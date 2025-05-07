@@ -7,7 +7,6 @@ use merklehash::MerkleHash;
 use tracing::instrument;
 use ulid::Ulid;
 use utils::progress::{ItemProgressUpdater, SimpleProgressUpdater, TrackingProgressUpdater};
-use xet_threadpool::ThreadPool;
 
 use crate::configurations::TranslatorConfig;
 use crate::errors::*;
@@ -27,13 +26,13 @@ pub struct FileDownloader {
 
 /// Smudge operations
 impl FileDownloader {
-    pub async fn new(config: Arc<TranslatorConfig>, threadpool: Arc<ThreadPool>) -> Result<Self> {
+    pub async fn new(config: Arc<TranslatorConfig>) -> Result<Self> {
         let session_id = config
             .session_id
             .as_ref()
             .map(Cow::Borrowed)
             .unwrap_or_else(|| Cow::Owned(Ulid::new().to_string()));
-        let client = create_remote_client(&config, threadpool.clone(), &session_id, false)?;
+        let client = create_remote_client(&config, &session_id, false)?;
 
         Ok(Self { config, client })
     }
