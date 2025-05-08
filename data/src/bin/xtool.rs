@@ -1,6 +1,7 @@
 use std::fs::File;
 use std::io::{BufWriter, Write};
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use anyhow::Result;
 use cas_client::Reconstructable;
@@ -144,7 +145,7 @@ impl Command {
             },
             Command::Query(arg) => {
                 let file_hash = MerkleHash::from_hex(&arg.hash)?;
-                let ret = query_reconstruction(file_hash, arg.bytes_range, hub_client, threadpool).await?;
+                let ret = query_reconstruction(file_hash, arg.bytes_range, hub_client).await?;
 
                 eprintln!("{ret:?}");
 
@@ -188,12 +189,10 @@ async fn query_reconstruction(
     file_hash: MerkleHash,
     bytes_range: Option<FileRange>,
     hub_client: HubClient,
-    threadpool: Arc<ThreadPool>,
 ) -> Result<Option<QueryReconstructionResponse>> {
     let token_type = "read";
     let (endpoint, jwt_token, jwt_token_expiry) = hub_client.get_jwt_token(token_type).await?;
     let token_refresher = Arc::new(HubClientTokenRefresher {
-        threadpool: threadpool.clone(),
         token_type: token_type.to_owned(),
         client: Arc::new(hub_client),
     }) as Arc<dyn TokenRefresher>;
@@ -201,12 +200,12 @@ async fn query_reconstruction(
     let config = default_config(endpoint.clone(), None, Some((jwt_token, jwt_token_expiry)), Some(token_refresher))?;
     let cas_storage_config = &config.data_config;
     let remote_client = RemoteClient::new(
-        threadpool,
         &endpoint,
         cas_storage_config.compression,
         &cas_storage_config.auth,
         &Some(cas_storage_config.cache_config.clone()),
         config.shard_config.cache_directory.clone(),
+        "".into(),
         true,
     );
 
