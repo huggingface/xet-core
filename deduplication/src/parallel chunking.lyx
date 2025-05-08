@@ -1,0 +1,836 @@
+#LyX 2.3 created this file. For more info see http://www.lyx.org/
+\lyxformat 544
+\begin_document
+\begin_header
+\save_transient_properties true
+\origin unavailable
+\textclass article
+\use_default_options true
+\maintain_unincluded_children false
+\language english
+\language_package default
+\inputencoding auto
+\fontencoding global
+\font_roman "default" "default"
+\font_sans "default" "default"
+\font_typewriter "default" "default"
+\font_math "auto" "auto"
+\font_default_family default
+\use_non_tex_fonts false
+\font_sc false
+\font_osf false
+\font_sf_scale 100 100
+\font_tt_scale 100 100
+\use_microtype false
+\use_dash_ligatures true
+\graphics default
+\default_output_format default
+\output_sync 0
+\bibtex_command default
+\index_command default
+\paperfontsize default
+\use_hyperref false
+\papersize default
+\use_geometry false
+\use_package amsmath 1
+\use_package amssymb 1
+\use_package cancel 1
+\use_package esint 1
+\use_package mathdots 1
+\use_package mathtools 1
+\use_package mhchem 1
+\use_package stackrel 1
+\use_package stmaryrd 1
+\use_package undertilde 1
+\cite_engine basic
+\cite_engine_type default
+\use_bibtopic false
+\use_indices false
+\paperorientation portrait
+\suppress_date false
+\justification true
+\use_refstyle 1
+\use_minted 0
+\index Index
+\shortcut idx
+\color #008000
+\end_index
+\secnumdepth 3
+\tocdepth 3
+\paragraph_separation indent
+\paragraph_indentation default
+\is_math_indent 0
+\math_numbering_side default
+\quotes_style english
+\dynamic_quotes 0
+\papercolumns 1
+\papersides 1
+\paperpagestyle default
+\tracking_changes false
+\output_changes false
+\html_math_output 0
+\html_css_as_file 0
+\html_be_strict false
+\end_header
+
+\begin_body
+
+\begin_layout Title
+Parallel Chunking
+\end_layout
+
+\begin_layout Author
+Yucheng Low
+\end_layout
+
+\begin_layout Section
+Content Defined Chunking
+\end_layout
+
+\begin_layout Standard
+The basic principle of Content Defined Chunking (CDC) is to split a file
+ into smaller chunks, produce variable sized-chunks, that are mostly stable
+ to insertions and deletions.
+ This is as opposed to fixed-size chunking where a file is split into constant
+ sized chunks where insertions/deletions which are not exactly chunk aligned
+ will cause all remaining chunks to be modified.
+ Content defined chunking is excellent at data duplication as files with
+ similar contents (for instance two neural network models stored as different
+ file formats) can deduplicate against each other effectively.
+ 
+\end_layout
+
+\begin_layout Standard
+We will not go too deep into implementation and usage of content defined
+ chunking here.
+ We recommend reading the GearHash paper, or our prior paper Git is for
+ Data for a more detailed description.
+ A challenge with CDC is that due to the variable block sizes, it is generally
+ necessary to start chunking from the start of the file.
+ However, this can be a performance issue with very large files in which
+ the CDC procedure can be a bottleneck and that is what we will like to
+ address in this paper.
+\end_layout
+
+\begin_layout Standard
+Instead of assuming any particular chunking procedure, we will just rely
+ on a simplified formal description.
+ Given a determinstic rolling hash function 
+\begin_inset Formula $H(x)\rightarrow\{0,1\}$
+\end_inset
+
+ which accepts a short string of length 
+\begin_inset Formula $k$
+\end_inset
+
+ and returns an boolean.
+ Given a string 
+\begin_inset Formula $S$
+\end_inset
+
+.
+ The basic CDC procedure works as follows:
+\end_layout
+
+\begin_layout LyX-Code
+ChunkStart = 0
+\end_layout
+
+\begin_layout LyX-Code
+for 
+\begin_inset Formula $i$
+\end_inset
+
+ in [0, 
+\begin_inset Formula $|S|-k$
+\end_inset
+
+):
+\end_layout
+
+\begin_deeper
+\begin_layout LyX-Code
+if H(file[
+\begin_inset Formula $i$
+\end_inset
+
+...
+\begin_inset Formula $i+k$
+\end_inset
+
+]) == 1:
+\end_layout
+
+\begin_deeper
+\begin_layout LyX-Code
+AddChunk(file[ChunkStart...
+\begin_inset Formula $i$
+\end_inset
+
+])
+\end_layout
+
+\begin_layout LyX-Code
+ChunkStart = 
+\begin_inset Formula $i$
+\end_inset
+
+
+\end_layout
+
+\end_deeper
+\end_deeper
+\begin_layout LyX-Code
+AddChunk(file[ChunkStart...])
+\end_layout
+
+\begin_layout Standard
+A minimum (
+\begin_inset Formula $m$
+\end_inset
+
+) and maximum (
+\begin_inset Formula $M$
+\end_inset
+
+) chunk size is normally used to avoid too tiny and overly large chunks:
+\end_layout
+
+\begin_layout LyX-Code
+ChunkStart = 0
+\end_layout
+
+\begin_layout LyX-Code
+for 
+\begin_inset Formula $i$
+\end_inset
+
+ in [0, 
+\begin_inset Formula $|S|-k$
+\end_inset
+
+)):
+\end_layout
+
+\begin_deeper
+\begin_layout LyX-Code
+if (
+\begin_inset Formula $i$
+\end_inset
+
+ - ChunkStart 
+\begin_inset Formula $\ge M$
+\end_inset
+
+) or (H(file[
+\begin_inset Formula $i$
+\end_inset
+
+...
+\begin_inset Formula $i+k$
+\end_inset
+
+]) == 1 and 
+\begin_inset Formula $i$
+\end_inset
+
+ - ChunkStart 
+\begin_inset Formula $\ge m$
+\end_inset
+
+):
+\end_layout
+
+\begin_deeper
+\begin_layout LyX-Code
+AddChunk(file[ChunkStart\SpecialChar endofsentence
+..
+\begin_inset Formula $i$
+\end_inset
+
+])
+\end_layout
+
+\begin_layout LyX-Code
+ChunkStart = 
+\begin_inset Formula $i$
+\end_inset
+
+
+\end_layout
+
+\end_deeper
+\end_deeper
+\begin_layout LyX-Code
+AddChunk(file[ChunkStart...])
+\end_layout
+
+\begin_layout Standard
+(Note that this simplified formulation does not cover more advanced procedures
+ like the the low variance chunking method in the Git Is for Data Paper,
+ nor the adaptive chunking method in FastCDC).
+\end_layout
+
+\begin_layout Standard
+The goal is to find conditions in which we can 
+\begin_inset Quotes eld
+\end_inset
+
+seek
+\begin_inset Quotes erd
+\end_inset
+
+ into an arbitrary location 
+\begin_inset Formula $|S|$
+\end_inset
+
+ and find a set of chunks that are guaranteed to align with chunks produced
+ by starting from the beginning of the file with the basic CDC procedure
+ above.
+\end_layout
+
+\begin_layout Section
+Parallel Chunking
+\end_layout
+
+\begin_layout Standard
+Consider two threads, first thread beginning chunking from 
+\begin_inset Formula $S[0]$
+\end_inset
+
+ and second thread beginning chunking from an arbitrary location.
+ 
+\end_layout
+
+\begin_layout Standard
+Under what condition will the chunks produced by thread 2 be gauranteed
+ to line up with the chunks produced by thread 1?
+\end_layout
+
+\begin_layout Standard
+Assume that second thread finds 3 consecutive chunk boundaries 
+\begin_inset Formula $c_{0},c_{1}$
+\end_inset
+
+ and 
+\begin_inset Formula $c_{2}$
+\end_inset
+
+ with the following conditions:
+\end_layout
+
+\begin_layout Enumerate
+The chunk sizes are not 
+\begin_inset Quotes eld
+\end_inset
+
+near
+\begin_inset Quotes erd
+\end_inset
+
+ the chunk size limits: 
+\begin_inset Formula $m<c_{1}-c_{0}\le M-m$
+\end_inset
+
+ and 
+\begin_inset Formula $m<c_{2}-c_{1}\le M-m$
+\end_inset
+
+.
+ 
+\end_layout
+
+\begin_layout Enumerate
+There is no other chunk boundary within between 
+\begin_inset Formula $S[c_{0}...c_{2}]$
+\end_inset
+
+.
+ i.e.
+ there is no substring 
+\begin_inset Formula $s$
+\end_inset
+
+ of length 
+\begin_inset Formula $k$
+\end_inset
+
+ in the range 
+\begin_inset Formula $S[c_{0}...c_{2}+k]$
+\end_inset
+
+ such that 
+\begin_inset Formula $H(s)=1$
+\end_inset
+
+.
+ (Equivalently, the basic chunking procedure will find 
+\begin_inset Formula $c_{1},c_{2}$
+\end_inset
+
+ a if I start chunking from 
+\begin_inset Formula $c_{1}$
+\end_inset
+
+ and set 
+\begin_inset Formula $m=0$
+\end_inset
+
+)
+\end_layout
+
+\begin_layout Standard
+Then, we claim that first thread will align with the second thread on either
+ 
+\begin_inset Formula $c_{1}$
+\end_inset
+
+ or 
+\begin_inset Formula $c_{2}$
+\end_inset
+
+ and so produce the same chunks after that.
+\end_layout
+
+\begin_layout Subsection*
+Proof
+\end_layout
+
+\begin_layout Standard
+Let 
+\begin_inset Formula $b$
+\end_inset
+
+ the first thread's final chunk boundary such that 
+\begin_inset Formula $b\le c_{1}$
+\end_inset
+
+.
+\end_layout
+
+\begin_layout Standard
+Note that 
+\begin_inset Formula $c_{1}-M\le b$
+\end_inset
+
+ as since the maximum chunk size is 
+\begin_inset Formula $M$
+\end_inset
+
+.
+\end_layout
+
+\begin_layout Standard
+There are 4 cases.
+\end_layout
+
+\begin_layout Paragraph*
+
+\series bold
+Case 1
+\end_layout
+
+\begin_layout Standard
+If 
+\begin_inset Formula $c_{1}-M<b\le c_{0}-m$
+\end_inset
+
+ , 
+\end_layout
+
+\begin_layout Standard
+As 
+\begin_inset Formula $b$
+\end_inset
+
+ is the last chunk boundary found by first thread where 
+\begin_inset Formula $b\le c_{1}$
+\end_inset
+
+ then there must not be another chunk between 
+\begin_inset Formula $c_{1}-M$
+\end_inset
+
+ and 
+\begin_inset Formula $c_{0}$
+\end_inset
+
+ as that will be contradiction.
+\end_layout
+
+\begin_layout Standard
+So since 
+\begin_inset Formula $b+m\le c_{0}$
+\end_inset
+
+ , then 
+\begin_inset Formula $c_{0}$
+\end_inset
+
+ must be next chunk boundary found.
+ After which we have aligned with the second thread.
+\end_layout
+
+\begin_layout Paragraph*
+
+\series bold
+Case 2
+\end_layout
+
+\begin_layout Standard
+If 
+\begin_inset Formula $c_{0}-m<b\le c_{0}$
+\end_inset
+
+ .
+ 
+\end_layout
+
+\begin_layout Standard
+The next chunk boundary found by first thread must be between 
+\begin_inset Formula $b+m$
+\end_inset
+
+ and 
+\begin_inset Formula $b+M$
+\end_inset
+
+.
+\end_layout
+
+\begin_layout Standard
+From the case condition and condition 1, 
+\begin_inset Formula $b+m\le c_{0}+m<c_{1}$
+\end_inset
+
+
+\end_layout
+
+\begin_layout Standard
+And from the case condition 
+\begin_inset Formula $b+M>c_{1}$
+\end_inset
+
+
+\end_layout
+
+\begin_layout Standard
+So combining 
+\begin_inset Formula $b+m<c_{1}<b+M$
+\end_inset
+
+
+\end_layout
+
+\begin_layout Standard
+Hence 
+\begin_inset Formula $c_{1}$
+\end_inset
+
+ will be found by first thread.
+\end_layout
+
+\begin_layout Paragraph*
+
+\series bold
+Case 3
+\end_layout
+
+\begin_layout Standard
+If 
+\begin_inset Formula $c_{0}<b\le c_{1}-m$
+\end_inset
+
+.
+ 
+\end_layout
+
+\begin_layout Standard
+As the next chunk boundary found by Thread 1 must be between 
+\begin_inset Formula $b+m$
+\end_inset
+
+ and 
+\begin_inset Formula $b+M$
+\end_inset
+
+,
+\end_layout
+
+\begin_layout Standard
+We have 
+\begin_inset Formula $b+m\le c_{1}$
+\end_inset
+
+ from the case condition.
+\end_layout
+
+\begin_layout Standard
+and 
+\begin_inset Formula $b+M>c_{0}+M>c_{1}$
+\end_inset
+
+ combining the case condition and that 
+\begin_inset Formula $c_{1}-c_{0}\le M-m$
+\end_inset
+
+ from condition 1.
+\end_layout
+
+\begin_layout Standard
+So combining 
+\begin_inset Formula $b+m<c_{1}\le b+M$
+\end_inset
+
+
+\end_layout
+
+\begin_layout Standard
+As there are no other chunk boundaries from condition 2, 
+\begin_inset Formula $c_{1}$
+\end_inset
+
+ must be found by the first thread.
+\end_layout
+
+\begin_layout Paragraph*
+
+\series bold
+Case 4
+\end_layout
+
+\begin_layout Standard
+If 
+\begin_inset Formula $c_{1}-m<b\le c_{1}$
+\end_inset
+
+.
+ 
+\end_layout
+
+\begin_layout Standard
+As the next chunk boundary found by Thread 1 must be between 
+\begin_inset Formula $b+m$
+\end_inset
+
+ and 
+\begin_inset Formula $b+M$
+\end_inset
+
+,
+\end_layout
+
+\begin_layout Standard
+We must have 
+\begin_inset Formula $b+m<c_{2}$
+\end_inset
+
+ from the case condition and condition 1.
+\end_layout
+
+\begin_layout Standard
+Also, 
+\begin_inset Formula $b+M>c_{1}+M-m\ge c_{2}$
+\end_inset
+
+ combining the case condition and that 
+\begin_inset Formula $c_{2}-c_{1}\le M-m$
+\end_inset
+
+ from condition 1.
+\end_layout
+
+\begin_layout Standard
+So combining 
+\begin_inset Formula $b+m<c_{2}\le b+M$
+\end_inset
+
+
+\end_layout
+
+\begin_layout Standard
+As there are no other chunk boundaries from condition 2, 
+\begin_inset Formula $c_{2}$
+\end_inset
+
+ must be found by the first thread.
+\end_layout
+
+\begin_layout Section
+Implementation Errors
+\end_layout
+
+\begin_layout Standard
+Now this procedure assumes that the hashing procedure *always* operates
+ on a consistent window of 
+\begin_inset Formula $k$
+\end_inset
+
+ bytes.
+ However, as it turns in our implementation this is not the case.
+ Specifically the Rust Gear Hash implementation is streamed and combining
+ with a common performance optimization of skipping 
+\begin_inset Formula $m$
+\end_inset
+
+ bytes, we really have the following implementation:
+\end_layout
+
+\begin_layout LyX-Code
+ChunkStart = 0
+\end_layout
+
+\begin_layout LyX-Code
+HashStreamStart = 0
+\end_layout
+
+\begin_layout LyX-Code
+while 
+\begin_inset Formula $i<|S|:$
+\end_inset
+
+
+\end_layout
+
+\begin_deeper
+\begin_layout LyX-Code
+if (
+\begin_inset Formula $i$
+\end_inset
+
+ - ChunkStart 
+\begin_inset Formula $\ge M$
+\end_inset
+
+) or (H(file[HashStreamStart...
+\begin_inset Formula $i$
+\end_inset
+
+]) == 1):
+\end_layout
+
+\begin_deeper
+\begin_layout LyX-Code
+AddChunk(file[ChunkStart, i])
+\end_layout
+
+\begin_layout LyX-Code
+ChunkStart = 
+\begin_inset Formula $i$
+\end_inset
+
+
+\end_layout
+
+\begin_layout LyX-Code
+HashStreamStart = 
+\begin_inset Formula $i+m$
+\end_inset
+
+
+\end_layout
+
+\begin_layout LyX-Code
+\begin_inset Formula $i=i+m$
+\end_inset
+
+
+\end_layout
+
+\end_deeper
+\begin_layout LyX-Code
+\begin_inset Formula $i=i+1$
+\end_inset
+
+
+\end_layout
+
+\end_deeper
+\begin_layout LyX-Code
+AddChunk(file[ChunkStart...])
+\end_layout
+
+\begin_layout Standard
+Which has the odd side effect that for bytes 
+\begin_inset Formula $m$
+\end_inset
+
+ to 
+\begin_inset Formula $m+k$
+\end_inset
+
+ within a chunk we are hashing less than 
+\begin_inset Formula $k$
+\end_inset
+
+ bytes.
+ This means that in general, the hash output is 
+\series bold
+a function of the starting point of a chunk
+\series default
+, and can disagree on hash values for positions 
+\begin_inset Formula $m$
+\end_inset
+
+ to 
+\begin_inset Formula $m+k$
+\end_inset
+
+ of a chunk.
+\end_layout
+
+\begin_layout Standard
+We can describe this using the following alternative notation for the hash
+ function 
+\begin_inset Formula $H.$
+\end_inset
+
+
+\end_layout
+
+\begin_layout Standard
+\begin_inset Formula $H(a,b)\rightarrow\{0,1\}|b>a+m$
+\end_inset
+
+ which is the output of the rolling hash chunking procedure on bytes 
+\begin_inset Formula $S[a...b]$
+\end_inset
+
+.
+ Note that this is still a rolling hash and its output in the usual case
+ will depend only on the right-most 
+\begin_inset Formula $k$
+\end_inset
+
+ bytes of the string 
+\begin_inset Formula $S[a...b]$
+\end_inset
+
+.
+ The implementation error above means that 
+\begin_inset Formula $H(a_{1},b_{1})=H(a_{2},b_{1})$
+\end_inset
+
+ IFF 
+\begin_inset Formula $m+k\le b_{1}-a_{1}$
+\end_inset
+
+ and 
+\begin_inset Formula $m+k\le b_{2}-a_{2}$
+\end_inset
+
+.
+\end_layout
+
+\begin_layout Standard
+Now, with this implementation, can we still perform parallel chunking?
+\end_layout
+
+\begin_layout Standard
+I do not believe so.
+ Due to the hash disagreement, under adverserial settings it is possible
+ to construct two chunk sequences which will *never* align.
+\end_layout
+
+\end_body
+\end_document
