@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use deduplication::{DeduplicationDataInterface, RawXorbData};
+use deduplication::{DeduplicationDataInterface, FileXorbDependency, RawXorbData};
 use mdb_shard::file_structs::FileDataSequenceEntry;
 use merklehash::MerkleHash;
 use tokio::task::JoinSet;
@@ -40,7 +40,7 @@ impl DeduplicationDataInterface for UploadSessionDataManager {
     async fn chunk_hash_dedup_query(
         &self,
         query_hashes: &[MerkleHash],
-    ) -> Result<Option<(usize, FileDataSequenceEntry)>> {
+    ) -> Result<Option<(usize, FileDataSequenceEntry, bool)>> {
         Ok(self.session.shard_interface.chunk_hash_dedup_query(query_hashes).await?)
     }
 
@@ -88,18 +88,14 @@ impl DeduplicationDataInterface for UploadSessionDataManager {
 
     /// Registers a Xorb of new data that has no deduplication references.
     async fn register_new_xorb(&mut self, xorb: RawXorbData) -> Result<()> {
-        // Add the xorb info to the current shard.  Note that we need to ensure all the xorb
-        // uploads complete correctly before any shards get uploaded.
-        self.session.shard_interface.add_cas_block(xorb.cas_info.clone()).await?;
-
         // Begin the process for upload.
-        self.session.register_new_xorb_for_upload(xorb).await?;
+        self.session.register_new_xorb(xorb).await?;
 
         Ok(())
     }
 
     /// Periodically registers xorb dependencies; used for progress tracking.
-    async fn register_xorb_dependencies(&mut self, dependencies: &[(MerkleHash, u64)]) {
-        self.session.register_xorb_dependencies(self.file_id, dependencies).await;
+    async fn register_xorb_dependencies(&mut self, dependencies: &[FileXorbDependency]) {
+        self.session.register_xorb_dependencies(dependencies).await;
     }
 }

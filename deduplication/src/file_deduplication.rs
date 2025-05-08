@@ -13,7 +13,7 @@ use crate::constants::{MAX_XORB_BYTES, MAX_XORB_CHUNKS};
 use crate::data_aggregator::DataAggregator;
 use crate::dedup_metrics::DeduplicationMetrics;
 use crate::defrag_prevention::DefragPrevention;
-use crate::interface::DeduplicationDataInterface;
+use crate::interface::{DeduplicationDataInterface, FileXorbDependency};
 use crate::raw_xorb_data::RawXorbData;
 use crate::Chunk;
 
@@ -106,9 +106,9 @@ impl<DataInterfaceType: DeduplicationDataInterface> FileDeduper<DataInterfaceTyp
                 let global_chunk_index = global_chunk_index_start + local_chunk_index;
 
                 // First check to see if we don't already know what these blocks are from a previous pass.
-                if let Some((n_deduped, _)) = &deduped_blocks[local_chunk_index] {
+                if let Some((n_deduped, _, _)) = &deduped_blocks[local_chunk_index] {
                     local_chunk_index += n_deduped;
-                } else if let Some((n_deduped, fse)) =
+                } else if let Some((n_deduped, fse, is_uploaded_shard)) =
                     self.data_mng.chunk_hash_dedup_query(&chunk_hashes[local_chunk_index..]).await?
                 {
                     if !first_pass {
@@ -118,7 +118,7 @@ impl<DataInterfaceType: DeduplicationDataInterface> FileDeduper<DataInterfaceTyp
                         dedup_metrics.deduped_bytes_by_global_dedup += fse.unpacked_segment_bytes as usize;
                     }
 
-                    deduped_blocks[local_chunk_index] = Some((n_deduped, fse));
+                    deduped_blocks[local_chunk_index] = Some((n_deduped, fse, is_uploaded_shard));
                     local_chunk_index += n_deduped;
 
                     // Now see if we can issue a background query against the global dedup server to see if
@@ -171,7 +171,7 @@ impl<DataInterfaceType: DeduplicationDataInterface> FileDeduper<DataInterfaceTyp
                 dedupe_query = self.dedup_query_against_local_data(&chunk_hashes[cur_idx..]);
             }
 
-            if let Some((n_deduped, fse)) = dedupe_query {
+            if let Some((n_deduped, fse, is_external)) = dedupe_query {
                 dedup_metrics.deduped_chunks += n_deduped;
                 dedup_metrics.deduped_bytes += fse.unpacked_segment_bytes as usize;
                 dedup_metrics.total_chunks += n_deduped;
@@ -184,10 +184,14 @@ impl<DataInterfaceType: DeduplicationDataInterface> FileDeduper<DataInterfaceTyp
                 {
                     // Report this as a dependency
                     // The case where it's dededuped against the present xorb is handled
-                    // when the xorb gets cut and we know the hash.  Exclude the case where
-                    // it's an empty file dependent on the empty xorb.
+                    // when the xorb gets cut and we know the hash.
                     if fse.cas_hash != MerkleHash::marker() {
-                        xorb_dependencies.push((fse.cas_hash, fse.unpacked_segment_bytes as u64));
+                        xorb_dependencies.push(FileXorbDependency {
+                            file_id: self.file_id,
+                            xorb_hash: fse.cas_hash,
+                            n_bytes: fse.unpacked_segment_bytes as u64,
+                            is_external,
+                        });
                     }
 
                     // We found one or more chunk hashes present
@@ -211,7 +215,13 @@ impl<DataInterfaceType: DeduplicationDataInterface> FileDeduper<DataInterfaceTyp
 
             // Do we need to cut a new xorb first?
             if self.new_data_size + n_bytes > *MAX_XORB_BYTES || self.new_data.len() + 1 > *MAX_XORB_CHUNKS {
-                let new_xorb = self.cut_new_xorb().await;
+                let new_xorb = self.cut_new_xorb();
+                xorb_dependencies.push(FileXorbDependency {
+                    file_id: self.file_id,
+                    xorb_hash: new_xorb.hash(),
+                    n_bytes: new_xorb.num_bytes() as u64,
+                    is_external: false,
+                });
                 self.data_mng.register_new_xorb(new_xorb).await?;
             }
 
@@ -293,13 +303,11 @@ impl<DataInterfaceType: DeduplicationDataInterface> FileDeduper<DataInterfaceTyp
     }
 
     /// Cut a new xorb from the existing data.  
-    async fn cut_new_xorb(&mut self) -> RawXorbData {
+    fn cut_new_xorb(&mut self) -> RawXorbData {
         // Cut the new xorb.
         let new_xorb = RawXorbData::from_chunks(&self.new_data[..]);
 
         let xorb_hash = new_xorb.hash();
-
-        let mut xorb_bytes = 0;
 
         // Go through and replace all the indices in the file sequence entries with
         // the new xorb if referenced.
@@ -310,7 +318,6 @@ impl<DataInterfaceType: DeduplicationDataInterface> FileDeduper<DataInterfaceTyp
             debug_assert_le!(fse.chunk_index_end as usize, self.new_data.len());
 
             fse.cas_hash = xorb_hash;
-            xorb_bytes += fse.unpacked_segment_bytes as u64;
         }
 
         #[cfg(debug_assertions)]
@@ -327,15 +334,15 @@ impl<DataInterfaceType: DeduplicationDataInterface> FileDeduper<DataInterfaceTyp
         self.new_data_size = 0;
         self.internally_referencing_entries.clear();
 
-        // Update the dependencies.
-        self.data_mng.register_xorb_dependencies(&[(xorb_hash, xorb_bytes)]).await;
-
         new_xorb
     }
 
     /// Do a query against the local data; this would return an entry with MerkleHash::marker(), which
     /// would need to get filled in.
-    fn dedup_query_against_local_data(&mut self, chunks: &[MerkleHash]) -> Option<(usize, FileDataSequenceEntry)> {
+    fn dedup_query_against_local_data(
+        &mut self,
+        chunks: &[MerkleHash],
+    ) -> Option<(usize, FileDataSequenceEntry, bool)> {
         // It's important for the defrag prevention to have a good estimate of the number of chunks in
         // a row that can be deduplicated, so this pulls through the
         if let Some(&base_idx) = self.new_data_hash_lookup.get(&chunks[0]) {
@@ -353,7 +360,11 @@ impl<DataInterfaceType: DeduplicationDataInterface> FileDeduper<DataInterfaceTyp
                 break;
             }
 
-            Some((end_idx - base_idx, FileDataSequenceEntry::new(MerkleHash::marker(), n_bytes, base_idx, end_idx)))
+            Some((
+                end_idx - base_idx,
+                FileDataSequenceEntry::new(MerkleHash::marker(), n_bytes, base_idx, end_idx),
+                false,
+            ))
         } else {
             None
         }
