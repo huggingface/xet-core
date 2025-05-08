@@ -301,13 +301,6 @@ impl FileUploadSession {
         debug_assert_le!(xorb.num_bytes(), *MAX_XORB_BYTES);
         debug_assert_le!(xorb.data.len(), *MAX_XORB_CHUNKS);
 
-        if xorb.num_bytes() > 0 {
-            // Add the xorb info to the current shard.
-            self.shard_interface.add_cas_block(xorb.cas_info.clone()).await?;
-        }
-
-        self.register_new_xorb_for_upload(xorb).await?;
-
         // Now, we need to scan all the file dependencies for dependencies on this xorb, as
         // these would not have been registered yet.
 
@@ -324,6 +317,15 @@ impl FileUploadSession {
         }
 
         self.completion_tracker.register_dependencies(&new_dependencies).await;
+
+        if xorb.num_bytes() > 0 {
+            // Add the xorb info to the current shard.
+            self.shard_interface.add_cas_block(xorb.cas_info.clone()).await?;
+        }
+
+        // Now, with all those dependencies correct, we can register the new xorb for upload; when
+        // it completes, then everything will be properly in place.
+        self.register_new_xorb_for_upload(xorb).await?;
 
         Ok(())
     }
