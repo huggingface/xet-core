@@ -187,7 +187,7 @@ impl FileUploadSession {
     /// Registers a new xorb for upload, returning true if the xorb was added to the upload queue and false
     /// if it was already in the queue and didn't need to be uploaded again.
     #[instrument(skip_all, name="FileUploadSession::register_new_xorb_for_upload", fields(xorb_len = xorb.num_bytes()))]
-    pub(crate) async fn register_new_xorb_for_upload(self: &Arc<Self>, xorb: RawXorbData) -> Result<bool> {
+    pub(crate) async fn register_new_xorb(self: &Arc<Self>, xorb: RawXorbData) -> Result<bool> {
         // First check the current xorb upload tasks to see if any can be cleaned up.
         {
             let mut upload_tasks = self.xorb_upload_tasks.lock().await;
@@ -216,6 +216,11 @@ impl FileUploadSession {
             self.completion_tracker.register_xorb_upload_completion(xorb_hash).await;
             return Ok(true);
         }
+
+        // Now that we've recorded that this xorb is locally produced, we can allow other threads
+        // to dedup against it.  Putting this in before self.session_xorbs register it leads
+        // to some race conditions on how the updates are made.
+        self.shard_interface.add_cas_block(xorb.cas_info.clone()).await?;
 
         let xorb_data = xorb.to_vec();
         let chunks_and_boundaries = xorb.cas_info.chunks_and_boundaries();
@@ -318,14 +323,9 @@ impl FileUploadSession {
 
         self.completion_tracker.register_dependencies(&new_dependencies).await;
 
-        if xorb.num_bytes() > 0 {
-            // Add the xorb info to the current shard.
-            self.shard_interface.add_cas_block(xorb.cas_info.clone()).await?;
-        }
-
         // Now, with all those dependencies correct, we can register the new xorb for upload; when
         // it completes, then everything will be properly in place.
-        self.register_new_xorb_for_upload(xorb).await?;
+        self.register_new_xorb(xorb).await?;
 
         Ok(())
     }
@@ -340,9 +340,9 @@ impl FileUploadSession {
         let mut dependencies = Vec::with_capacity(xorb_dependencies.len());
 
         {
-            let xorb_lookup = self.session_xorbs.lock().await;
+            let session_xorbs = self.session_xorbs.lock().await;
             for &(xorb_hash, n_bytes) in xorb_dependencies {
-                let is_uploaded_out_of_session = !xorb_lookup.contains(&xorb_hash);
+                let is_uploaded_out_of_session = !session_xorbs.contains(&xorb_hash);
                 dependencies.push((file_id, xorb_hash, n_bytes, is_uploaded_out_of_session));
             }
         }

@@ -88,12 +88,8 @@ impl DeduplicationDataInterface for UploadSessionDataManager {
 
     /// Registers a Xorb of new data that has no deduplication references.
     async fn register_new_xorb(&mut self, xorb: RawXorbData) -> Result<()> {
-        // Add the xorb info to the current shard.  Note that we need to ensure all the xorb
-        // uploads complete correctly before any shards get uploaded.
-        self.session.shard_interface.add_cas_block(xorb.cas_info.clone()).await?;
-
         // Begin the process for upload.
-        self.session.register_new_xorb_for_upload(xorb).await?;
+        self.session.register_new_xorb(xorb).await?;
 
         Ok(())
     }

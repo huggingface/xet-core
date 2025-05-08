@@ -82,10 +82,10 @@ impl CompletionTrackerImpl {
     ) -> Vec<ProgressUpdate> {
         let mut ret = Vec::new();
 
-        for &(file_id, xorb_hash, n_bytes, is_completed) in dependencies {
+        for &(file_id, xorb_hash, n_bytes, is_external_xorb) in dependencies {
             let file_entry = &mut self.files[file_id as usize];
 
-            if is_completed {
+            if is_external_xorb {
                 file_entry.completed_bytes += n_bytes;
                 debug_assert_le!(file_entry.completed_bytes, file_entry.total_bytes);
 
