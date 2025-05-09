@@ -27,7 +27,6 @@ use tracing::{debug, info, instrument};
 use utils::auth::AuthConfig;
 use utils::progress::SimpleProgressUpdater;
 use utils::singleflight::Group;
-use xet_threadpool::ThreadPool;
 
 use crate::download_utils::*;
 use crate::error::{CasClientError, Result};
@@ -350,14 +349,13 @@ impl RemoteClient {
         // download tasks are enqueued and spawned with the degree of concurrency equal to `num_concurrent_range_gets`.
         // After the above, a task that defines fetching the remainder of the file reconstruction info is enqueued,
         // which will execute after the first of the above term download tasks finishes.
-        let threadpool = ThreadPool::current();
         let chunk_cache = self.chunk_cache.clone();
         let term_download_client = self.http_client.clone();
         let range_download_single_flight = self.range_download_single_flight.clone();
         let download_scheduler = DownloadScheduler::new(*NUM_CONCURRENT_RANGE_GETS);
         let download_scheduler_clone = download_scheduler.clone();
 
-        let queue_dispatcher: JoinHandle<Result<()>> = threadpool.clone().spawn(async move {
+        let queue_dispatcher: JoinHandle<Result<()>> = tokio::spawn(async move {
             let mut remaining_total_len = total_len;
             while let Some(item) = task_rx.recv().await {
                 match item {
@@ -373,7 +371,7 @@ impl RemoteClient {
                         let permit = download_scheduler_clone.download_permit().await?;
                         debug!("spawning 1 download task");
                         let future: JoinHandle<Result<(TermDownloadResult<Vec<u8>>, OwnedSemaphorePermit)>> =
-                            threadpool.spawn(async move {
+                            tokio::spawn(async move {
                                 let data = term_download.run().await?;
                                 Ok((data, permit))
                             });
