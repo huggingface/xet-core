@@ -58,3 +58,8 @@ profiling = ["pprof"]
 [profile.release]
 debug = true
 opt-level = 3
+
+[profile.opt-test]
+inherits = "dev"
+debug = true
+opt-level = 3
