@@ -214,9 +214,9 @@ async fn main() -> Result<()> {
         // For each random block
         for idx in 0..nblocks {
             // Choose random block size in [32K..96K], clamp to file size
-            let block_size = rng.gen_range(32_768..=98_304).min(file_size);
+            let block_size = rng.random_range(32_768..=98_304).min(file_size);
 
-            let offset = rng.gen_range(0..=(file_size - block_size));
+            let offset = rng.random_range(0..=(file_size - block_size));
 
             let load_permit = max_limiter.clone().acquire_owned().await.unwrap();
 

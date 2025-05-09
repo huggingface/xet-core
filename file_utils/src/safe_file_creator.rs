@@ -88,6 +88,18 @@ impl SafeFileCreator {
         self.dest_path = Some(dest_path);
     }
 
+    // abort the writing process and delete the temporary file
+    pub fn abort(&mut self) -> io::Result<()> {
+        if self.writer.is_none() {
+            return Ok(());
+        }
+        self.writer = None;
+        if self.temp_path.exists() {
+            fs::remove_file(&self.temp_path)?;
+        }
+        Ok(())
+    }
+
     /// Closes the writer and replaces the original file with the temporary file
     pub fn close(&mut self) -> io::Result<()> {
         let Some(dest_path) = &self.dest_path else {

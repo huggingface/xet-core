@@ -44,12 +44,16 @@ impl FileDataSequenceHeader {
     where
         <I as TryInto<u32>>::Error: std::fmt::Debug,
     {
-        let verification_flag = contains_verification
-            .then_some(MDB_FILE_FLAG_WITH_VERIFICATION)
-            .unwrap_or_default();
-        let metadata_ext_flag = contains_metadata_ext
-            .then_some(MDB_FILE_FLAG_WITH_METADATA_EXT)
-            .unwrap_or_default();
+        let verification_flag = if contains_verification {
+            MDB_FILE_FLAG_WITH_VERIFICATION
+        } else {
+            Default::default()
+        };
+        let metadata_ext_flag = if contains_metadata_ext {
+            MDB_FILE_FLAG_WITH_METADATA_EXT
+        } else {
+            Default::default()
+        };
         let file_flags = MDB_DEFAULT_FILE_FLAG | verification_flag | metadata_ext_flag;
         Self {
             file_hash,

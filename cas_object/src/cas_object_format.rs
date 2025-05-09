@@ -272,6 +272,7 @@ impl CasObjectInfoV0 {
     }
 }
 
+#[allow(clippy::empty_line_after_doc_comments)]
 #[derive(Clone, PartialEq, Eq, Debug, Serialize)]
 /// Info struct for [CasObject]. This is stored at the end of the XORB.
 pub struct CasObjectInfoV1 {
@@ -1311,7 +1312,7 @@ pub mod test_utils {
     use crate::cas_chunk_format::serialize_chunk;
 
     pub fn gen_random_bytes(size: u32) -> Vec<u8> {
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rng();
         let mut data = vec![0u8; size as usize];
         rng.fill(&mut data[..]);
         data
@@ -1354,8 +1355,8 @@ pub mod test_utils {
         for _idx in 0..num_chunks {
             let chunk_size: u32 = match chunk_size {
                 ChunkSize::Random(a, b) => {
-                    let mut rng = rand::thread_rng();
-                    rng.gen_range(a..=b)
+                    let mut rng = rand::rng();
+                    rng.random_range(a..=b)
                 },
                 ChunkSize::Fixed(size) => size,
             };

@@ -167,7 +167,7 @@ impl Chunker {
     }
 
     // Finishes, returning the final chunk if it exists
-    pub fn finish(mut self) -> Option<Chunk> {
+    pub fn finish(&mut self) -> Option<Chunk> {
         self.next(&[], true).0
     }
 }

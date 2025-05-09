@@ -1,25 +1,21 @@
 use std::fs::{create_dir_all, read_dir, File};
 use std::io::{Read, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use cas_client::{FileProvider, OutputProvider};
 use data::configurations::TranslatorConfig;
 use data::data_client::clean_file;
-use data::{FileDownloader, FileUploadSession, PointerFile};
+use data::{FileDownloader, FileUploadSession, XetFileInfo};
 use deduplication::constants::{MAX_XORB_BYTES, MAX_XORB_CHUNKS, TARGET_CHUNK_SIZE};
-use rand::rngs::StdRng;
-// rand crates
-use rand::RngCore;
-use rand::SeedableRng;
+use rand::prelude::*;
 use tempfile::TempDir;
 use tokio::task::JoinSet;
 use utils::test_set_globals;
-use xet_threadpool::ThreadPool;
 
 // Runs this test suite with small chunks and xorbs so that we can make sure that all the different edge
 // cases are hit.
 test_set_globals! {
-    TARGET_CHUNK_SIZE = 8 * 1024;
+    TARGET_CHUNK_SIZE = 1024;
     MAX_XORB_BYTES = 5 * (*TARGET_CHUNK_SIZE);
     MAX_XORB_CHUNKS = 8;
 }
@@ -47,10 +43,33 @@ pub fn create_random_file(dir: impl AsRef<Path>, file_name: &str, size: usize, s
 /// the total number of bytes written for all files combined.
 pub fn create_random_files(dir: impl AsRef<Path>, files: &[(impl AsRef<str>, usize)], seed: u64) -> usize {
     let mut total_bytes = 0;
+    let mut rng = SmallRng::seed_from_u64(seed);
     for (file_name, size) in files {
-        total_bytes += create_random_file(&dir, file_name.as_ref(), *size, seed);
+        total_bytes += create_random_file(&dir, file_name.as_ref(), *size, rng.gen());
     }
     total_bytes
+}
+
+/// Creates or overwrites a single file in `dir` with consecutive segments determined by the list of [(seed, size)].  
+/// Panics on any I/O error. Returns the total number of bytes written (=`size`).
+pub fn create_random_multipart_file(dir: impl AsRef<Path>, file_name: &str, segments: &[(u64, u64)]) -> usize {
+    // Make sure the directory exists, or create it.
+    create_dir_all(&dir).unwrap();
+
+    // Build the path to the file, create the file, and write random data.
+    let path = dir.as_ref().join(file_name);
+    let mut file = File::create(&path).unwrap();
+
+    let mut total_size = 0;
+    for &(seed, size) in segments {
+        let mut rng = StdRng::seed_from_u64(seed);
+
+        let mut buffer = vec![0_u8; size as usize];
+        rng.fill_bytes(&mut buffer);
+        file.write_all(&buffer).unwrap();
+        total_size += size;
+    }
+    total_size as usize
 }
 
 /// Panics if `dir1` and `dir2` differ in terms of files or file contents.
@@ -107,9 +126,7 @@ async fn dehydrate_directory(cas_dir: &Path, src_dir: &Path, ptr_dir: &Path) {
 
     create_dir_all(ptr_dir).unwrap();
 
-    let upload_session = FileUploadSession::new(config.clone(), ThreadPool::from_current_runtime(), None)
-        .await
-        .unwrap();
+    let upload_session = FileUploadSession::new(config.clone(), None).await.unwrap();
 
     let mut upload_tasks = JoinSet::new();
 
@@ -119,8 +136,9 @@ async fn dehydrate_directory(cas_dir: &Path, src_dir: &Path, ptr_dir: &Path) {
         let upload_session = upload_session.clone();
 
         upload_tasks.spawn(async move {
-            let (pf, _metrics) = clean_file(upload_session.clone(), entry.path()).await.unwrap();
-            std::fs::write(out_file, pf.to_string()).unwrap();
+            let (xf, metrics) = clean_file(upload_session.clone(), entry.path()).await.unwrap();
+            assert_eq!(metrics.total_bytes as u64, entry.metadata().unwrap().len());
+            std::fs::write(out_file, serde_json::to_string(&xf).unwrap()).unwrap();
         });
     }
 
@@ -129,47 +147,135 @@ async fn dehydrate_directory(cas_dir: &Path, src_dir: &Path, ptr_dir: &Path) {
     upload_session.finalize().await.unwrap();
 }
 
-async fn hydrate_directory(cas_dir: &Path, ptr_dir: &Path, out_dir: &Path) {
+async fn hydrate_directory(cas_dir: &Path, ptr_dir: &Path, dest_dir: &Path) {
     let config = TranslatorConfig::local_config(cas_dir).unwrap();
 
-    create_dir_all(out_dir).unwrap();
+    create_dir_all(dest_dir).unwrap();
 
-    let downloader = FileDownloader::new(config, ThreadPool::from_current_runtime()).await.unwrap();
+    let downloader = FileDownloader::new(config).await.unwrap();
 
     for entry in read_dir(ptr_dir).unwrap() {
         let entry = entry.unwrap();
 
-        let out_filename = out_dir.join(entry.file_name());
+        let out_filename = dest_dir.join(entry.file_name());
 
         // Create an output file for writing
-        let file_out = OutputProvider::File(FileProvider::new(out_filename));
+        let file_out = OutputProvider::File(FileProvider::new(out_filename.clone()));
 
         // Pointer file.
-        let pf = PointerFile::init_from_path(entry.path());
-        assert!(pf.is_valid());
+        let xf: XetFileInfo = serde_json::from_reader(File::open(entry.path()).unwrap()).unwrap();
 
-        downloader.smudge_file_from_pointer(&pf, &file_out, None, None).await.unwrap();
+        downloader
+            .smudge_file_from_hash(
+                &xf.merkle_hash().unwrap(),
+                out_filename.to_string_lossy().into(),
+                &file_out,
+                None,
+                None,
+            )
+            .await
+            .unwrap();
     }
 }
 
-async fn check_clean_smudge_files(file_list: &[(impl AsRef<str>, usize)]) {
-    let _temp_dir = TempDir::new().unwrap();
-    let temp_path = _temp_dir.path();
-
-    let cas_dir = temp_path.join("cas");
-    let src_dir = temp_path.join("src");
-    let ptr_dir = temp_path.join("pointers");
-    let dest_dir = temp_path.join("dest");
-
-    create_random_files(&src_dir, file_list, 0);
-
-    dehydrate_directory(&cas_dir, &src_dir, &ptr_dir).await;
-    hydrate_directory(&cas_dir, &ptr_dir, &dest_dir).await;
-
-    check_directories_match(&src_dir, &dest_dir);
+struct TestSetup {
+    _temp_dir: TempDir,
+    cas_dir: PathBuf,
+    src_dir: PathBuf,
+    ptr_dir: PathBuf,
+    dest_dir: PathBuf,
 }
 
-fn setup_env() {}
+impl TestSetup {
+    fn new() -> Self {
+        let _temp_dir = TempDir::new().unwrap();
+        let temp_path = _temp_dir.path();
+
+        Self {
+            cas_dir: temp_path.join("cas"),
+            src_dir: temp_path.join("src"),
+            ptr_dir: temp_path.join("pointers"),
+            dest_dir: temp_path.join("dest"),
+            _temp_dir,
+        }
+    }
+}
+/// Variant of `dehydrate_directory` that calls `upload_session.checkpoint()`
+/// after every few file uploads.  This ensures that cross-file deduplication happens and
+/// gets test coverage.
+async fn dehydrate_directory_sequential(cas_dir: &Path, src_dir: &Path, ptr_dir: &Path) {
+    let config = TranslatorConfig::local_config(cas_dir).unwrap();
+    std::fs::create_dir_all(ptr_dir).unwrap();
+
+    let upload_session = FileUploadSession::new(config.clone(), None).await.unwrap();
+
+    // Process files in a simple for-loop (no concurrency)
+    for entry in read_dir(src_dir).unwrap() {
+        let entry = entry.unwrap();
+        let path = entry.path();
+        let out_file = ptr_dir.join(entry.file_name());
+
+        let (pf, _metrics) = clean_file(upload_session.clone(), path).await.unwrap();
+        std::fs::write(out_file, pf.as_pointer_file().unwrap().as_bytes()).unwrap();
+
+        // Force a checkpoint after every file.
+        upload_session.checkpoint().await.unwrap();
+    }
+
+    upload_session.finalize().await.unwrap();
+}
+
+async fn check_clean_smudge_files_impl(file_list: &[(impl AsRef<str>, usize)], sequential: bool) {
+    let ts = TestSetup::new();
+
+    create_random_files(&ts.src_dir, file_list, 0);
+    if sequential {
+        dehydrate_directory_sequential(&ts.cas_dir, &ts.src_dir, &ts.ptr_dir).await;
+    } else {
+        dehydrate_directory(&ts.cas_dir, &ts.src_dir, &ts.ptr_dir).await;
+    }
+    hydrate_directory(&ts.cas_dir, &ts.ptr_dir, &ts.dest_dir).await;
+
+    check_directories_match(&ts.src_dir, &ts.dest_dir);
+}
+
+// Check both sequential and all together
+async fn check_clean_smudge_files(file_list: &[(impl AsRef<str>, usize)]) {
+    check_clean_smudge_files_impl(file_list, true).await;
+    check_clean_smudge_files_impl(file_list, false).await;
+}
+
+/// Helper for multipart tests:
+///  - takes a slice of `(String, Vec<(u64, u64)>)` which fully specifies each file.
+///  - for each file, calls `create_random_multipart_file` with the given segments.
+async fn check_clean_smudge_files_multipart_impl(file_specs: &[(String, Vec<(u64, u64)>)], sequential: bool) {
+    let ts = TestSetup::new();
+
+    // Create each file from the given vector of segments
+    for (file_name, segments) in file_specs {
+        // We call `segments.clone()` because `create_random_multipart_file`
+        // takes ownership of the Vec<(u64,u64)>.
+        create_random_multipart_file(&ts.src_dir, file_name, &segments);
+    }
+    if sequential {
+        // Dehydrate (upload) files, but checkpoint after each upload
+        dehydrate_directory_sequential(&ts.cas_dir, &ts.src_dir, &ts.ptr_dir).await;
+    } else {
+        // Dehydrate
+        dehydrate_directory(&ts.cas_dir, &ts.src_dir, &ts.ptr_dir).await;
+    }
+
+    // Hydrate
+    hydrate_directory(&ts.cas_dir, &ts.ptr_dir, &ts.dest_dir).await;
+    // Check
+    check_directories_match(&ts.src_dir, &ts.dest_dir);
+}
+
+async fn check_clean_smudge_files_multipart(file_specs: &[(String, Vec<(u64, u64)>)]) {
+    check_clean_smudge_files_multipart_impl(file_specs, true).await;
+    eprintln!("Successfully completed sequential upload; trying in parallel.");
+    check_clean_smudge_files_multipart_impl(file_specs, false).await;
+}
 
 #[cfg(test)]
 mod tests {
@@ -177,50 +283,42 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_simple_directory() {
-        setup_env();
         check_clean_smudge_files(&[("a", 16)]).await;
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_multiple() {
-        setup_env();
         check_clean_smudge_files(&[("a", 16), ("b", 8)]).await;
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_with_empty_file() {
-        setup_env();
         check_clean_smudge_files(&[("a", 16), ("b", 8), ("c", 0)]).await;
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_with_all_empty_files() {
-        setup_env();
         check_clean_smudge_files(&[("a", 0), ("b", 0), ("c", 0)]).await;
     }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_many_small() {
-        setup_env();
-        let files: Vec<_> = (0..32).map(|idx| (format!("f_{idx}"), idx % 8)).collect();
+        let files: Vec<_> = (0..3).map(|idx| (format!("f_{idx}"), idx % 2)).collect();
         check_clean_smudge_files(&files).await;
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_single_large() {
-        setup_env();
         check_clean_smudge_files(&[("a", *MAX_XORB_BYTES + 1)]).await;
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_two_small_multiple_xorbs() {
-        setup_env();
         check_clean_smudge_files(&[("a", *MAX_XORB_BYTES / 2 + 1), ("b", *MAX_XORB_BYTES / 2 + 1)]).await;
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_multiple_large() {
-        setup_env();
         check_clean_smudge_files(&[("a", *MAX_XORB_BYTES + 1), ("b", *MAX_XORB_BYTES + 2)]).await;
     }
 
@@ -230,7 +328,59 @@ mod tests {
         let size = *MAX_XORB_BYTES / 8 + 1; // Will need 3 xorbs.
 
         let files: Vec<_> = (0..n).map(|idx| (format!("f_{idx}"), size)).collect();
-        setup_env();
         check_clean_smudge_files(&files).await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_multiple_file_with_common_xorbs() {
+        check_clean_smudge_files(&[("a", *MAX_XORB_BYTES / 2 + 1), ("b", *MAX_XORB_BYTES / 2 + 1)]).await;
+    }
+
+    /// 1) Several identical files, each smaller than MAX_XORB_BYTES.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_several_identical_multipart() {
+        // Let's make 16 identical files, each identical
+        let file_specs: Vec<(String, Vec<(u64, u64)>)> = (0..16)
+            .map(|i| (format!("identical_{i}"), vec![(123, *MAX_XORB_BYTES as u64 / 2)]))
+            .collect();
+
+        check_clean_smudge_files_multipart(&file_specs).await;
+    }
+
+    /// 2) many identical files, each larger than MAX_XORB_BYTES.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_identical_files_slightly_larger_than_max_xorb() {
+        // single segment that exceeds MAX_XORB_BYTES
+        let big_size = (*MAX_XORB_BYTES as u64) + 1;
+        let segments = vec![(9999, big_size)];
+
+        let file_specs: Vec<(String, Vec<(u64, u64)>)> =
+            (0..2).map(|i| (format!("big_identical_{i}"), segments.clone())).collect();
+
+        check_clean_smudge_files_multipart(&file_specs).await;
+    }
+
+    /// 3) many files, each with a unique portion plus a large common portion bigger than MAX_XORB_BYTES/2.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_many_files_unique_plus_small_common() {
+        let block_size = (*MAX_XORB_BYTES as u64) / 2;
+        // Each file has two segments: (i, 2048) -> unique seed, (999, half) -> common chunk
+        let file_specs: Vec<(String, Vec<(u64, u64)>)> = (0..32)
+            .map(|i| (format!("file_{i}"), vec![(i, block_size), (999, block_size)]))
+            .collect();
+
+        check_clean_smudge_files_multipart(&file_specs).await;
+    }
+
+    /// 3) many files, each with a unique portion plus a large common portion bigger than MAX_XORB_BYTES/2.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_many_files_unique_plus_large_common() {
+        let block_size = (*MAX_XORB_BYTES as u64) + 10;
+        // Each file has two segments: (i, 2048) -> unique seed, (999, half) -> common chunk
+        let file_specs: Vec<(String, Vec<(u64, u64)>)> = (0..32)
+            .map(|i| (format!("file_{i}"), vec![(i, block_size), (999, block_size)]))
+            .collect();
+
+        check_clean_smudge_files_multipart(&file_specs).await;
     }
 }

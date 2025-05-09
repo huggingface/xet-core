@@ -18,6 +18,7 @@ use url::Url;
 use utils::singleflight::Group;
 
 use crate::error::{CasClientError, Result};
+use crate::http_client::Api;
 use crate::remote_client::{get_reconstruction_with_endpoint_and_client, PREFIX_DEFAULT};
 use crate::OutputProvider;
 
@@ -268,7 +269,7 @@ impl DownloadScheduler {
             self.n_concurrent_download_task.forget_permits(1);
         } else {
             // TODO: check download speed and consider if we should increase or decrease
-            info!("expanding segment size by one range");
+            debug!("expanding segment size by one range");
             *self.n_range_in_segment.lock()? += 1;
             self.n_concurrent_download_task.add_permits(1);
         }
@@ -375,16 +376,23 @@ async fn download_range(
     let response = match http_client
         .get(url)
         .header(RANGE, fetch_term.url_range.range_header())
+        .with_extension(Api("s3::get_range"))
         .send()
         .await
-        .log_error("error getting from s3")?
+        .map_err(CasClientError::from)
+        .log_error("error downloading range")?
         .error_for_status()
-        .log_error("get from s3 error code")
     {
         Ok(response) => response,
-        Err(e) => match e.status() {
-            Some(StatusCode::FORBIDDEN) => return Ok(DownloadRangeResult::Forbidden),
-            _ => return Err(e.into()),
+        Err(e) => {
+            return match e.status() {
+                Some(StatusCode::FORBIDDEN) => {
+                    info!("error code {} for hash {hash}, will re-fetch reconstruction", StatusCode::FORBIDDEN,);
+                    Ok(DownloadRangeResult::Forbidden)
+                },
+                _ => Err(e.into()),
+            }
+            .log_error("error code")
         },
     };
 
@@ -467,7 +475,7 @@ mod tests {
             MerkleHash::default(),
             file_range,
             server.base_url(),
-            Arc::new(build_http_client(RetryConfig::default())?),
+            Arc::new(build_http_client(RetryConfig::default(), "")?),
         );
 
         fetch_info.query().await?;
@@ -514,7 +522,7 @@ mod tests {
             MerkleHash::default(),
             file_range_to_refresh,
             server.base_url(),
-            Arc::new(build_http_client(RetryConfig::default())?),
+            Arc::new(build_http_client(RetryConfig::default(), "")?),
         ));
 
         // Spawn multiple tasks each calling into refresh with a different delay in
@@ -583,7 +591,7 @@ mod tests {
             MerkleHash::default(),
             file_range,
             server.base_url(),
-            Arc::new(build_http_client(RetryConfig::default())?),
+            Arc::new(build_http_client(RetryConfig::default(), "")?),
         );
 
         let (offset_info_first_range, terms) = fetch_info.query().await?.unwrap();
@@ -594,7 +602,7 @@ mod tests {
             take: file_range.length(),
             fetch_info: Arc::new(fetch_info),
             chunk_cache: None,
-            client: Arc::new(build_http_client(RetryConfig::default())?),
+            client: Arc::new(build_http_client(RetryConfig::default(), "")?),
             range_download_single_flight: Arc::new(Group::new()),
         };
 

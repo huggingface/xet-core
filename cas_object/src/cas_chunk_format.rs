@@ -266,7 +266,7 @@ mod tests {
     }
 
     fn gen_random_bytes(uncompressed_chunk_size: u32) -> Vec<u8> {
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rng();
         let mut data = vec![0u8; uncompressed_chunk_size as usize];
         rng.fill(&mut data[..]);
         data

@@ -18,7 +18,7 @@ use merklehash::MerkleHash;
 use tempfile::TempDir;
 use tokio::runtime::Handle;
 use tracing::{debug, error, info, warn};
-use utils::progress::ProgressUpdater;
+use utils::progress::SimpleProgressUpdater;
 
 use crate::error::{CasClientError, Result};
 use crate::interface::{OutputProvider, ShardDedupProber, UploadClient};
@@ -283,8 +283,7 @@ impl UploadClient for LocalClient {
 
         if !res.unwrap().is_file() {
             return Err(CasClientError::internal(format!(
-                "Attempting to write to {:?}, but it is not a file",
-                file_path
+                "Attempting to write to {file_path:?}, but it is not a file"
             )));
         };
 
@@ -383,7 +382,7 @@ impl ReconstructionClient for LocalClient {
         hash: &MerkleHash,
         byte_range: Option<FileRange>,
         output_provider: &OutputProvider,
-        _progress_updater: Option<Arc<dyn ProgressUpdater>>,
+        _progress_updater: Option<Arc<dyn SimpleProgressUpdater>>,
     ) -> Result<u64> {
         let Some((file_info, _)) = self
             .shard_manager

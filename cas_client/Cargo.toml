@@ -19,14 +19,14 @@ merkledb = { path = "../merkledb" }
 mdb_shard = { path = "../mdb_shard" }
 merklehash = { path = "../merklehash" }
 xet_threadpool = { path = "../xet_threadpool" }
-deduplication = {path = "../deduplication" }
+deduplication = { path = "../deduplication" }
 thiserror = "2.0"
-tokio = { version = "1.41", features = ["sync"] }
+tokio = { version = "1.44", features = ["sync"] }
 async-trait = "0.1.9"
 anyhow = "1"
 http = "1.1.0"
 tempfile = "3.13.0"
-tracing = "0.1.31"
+tracing = "0.1.41"
 bytes = "1"
 itertools = "0.10"
 reqwest = { version = "0.12.7", features = ["json", "stream"] }

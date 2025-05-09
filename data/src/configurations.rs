@@ -55,7 +55,7 @@ impl FromStr for GlobalDedupPolicy {
             "always" => Ok(GlobalDedupPolicy::Always),
             _ => Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
-                format!("Invalid global dedup query policy, should be one of never, direct_only, always: {}", s),
+                format!("Invalid global dedup query policy, should be one of never, direct_only, always: {s}"),
             )),
         }
     }
@@ -75,6 +75,7 @@ pub struct TranslatorConfig {
     pub data_config: DataConfig,
     pub shard_config: ShardConfig,
     pub repo_info: Option<RepoInfo>,
+    pub session_id: Option<String>,
 }
 
 impl TranslatorConfig {
@@ -104,6 +105,7 @@ impl TranslatorConfig {
             repo_info: Some(RepoInfo {
                 repo_paths: vec!["".into()],
             }),
+            session_id: None,
         };
 
         Ok(Arc::new(translator_config))

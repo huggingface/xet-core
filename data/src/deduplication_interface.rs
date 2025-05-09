@@ -5,20 +5,23 @@ use deduplication::{DeduplicationDataInterface, RawXorbData};
 use mdb_shard::file_structs::FileDataSequenceEntry;
 use merklehash::MerkleHash;
 use tokio::task::JoinSet;
+use tracing::Instrument;
 
 use crate::configurations::GlobalDedupPolicy;
 use crate::errors::Result;
 use crate::file_upload_session::FileUploadSession;
+use crate::progress_tracking::CompletionTrackerFileId;
 
 pub struct UploadSessionDataManager {
+    file_id: CompletionTrackerFileId,
     session: Arc<FileUploadSession>,
-
     active_global_dedup_queries: JoinSet<Result<bool>>,
 }
 
 impl UploadSessionDataManager {
-    pub fn new(session: Arc<FileUploadSession>) -> Self {
+    pub fn new(session: Arc<FileUploadSession>, file_id: CompletionTrackerFileId) -> Self {
         Self {
+            file_id,
             session,
             active_global_dedup_queries: Default::default(),
         }
@@ -52,16 +55,19 @@ impl DeduplicationDataInterface for UploadSessionDataManager {
         // can continue.
         let session: Arc<FileUploadSession> = self.session.clone();
 
-        self.active_global_dedup_queries.spawn(async move {
-            let repo_salt = &session.config.shard_config.repo_salt;
+        self.active_global_dedup_queries.spawn(
+            async move {
+                let repo_salt = &session.config.shard_config.repo_salt;
 
-            session
-                .shard_interface
-                .query_dedup_shard_by_chunk(&chunk_hash, repo_salt)
-                .await?;
+                session
+                    .shard_interface
+                    .query_dedup_shard_by_chunk(&chunk_hash, repo_salt)
+                    .await?;
 
-            Ok(true)
-        });
+                Ok(true)
+            }
+            .instrument(tracing::info_span!("UploadSessionDataManager::dedup_task")),
+        );
 
         Ok(())
     }
@@ -90,5 +96,10 @@ impl DeduplicationDataInterface for UploadSessionDataManager {
         self.session.register_new_xorb_for_upload(xorb).await?;
 
         Ok(())
+    }
+
+    /// Periodically registers xorb dependencies; used for progress tracking.
+    async fn register_xorb_dependencies(&mut self, dependencies: &[(MerkleHash, u64)]) {
+        self.session.register_xorb_dependencies(self.file_id, dependencies).await;
     }
 }

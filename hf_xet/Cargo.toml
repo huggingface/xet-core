@@ -1,6 +1,6 @@
 [package]
 name = "hf_xet"
-version = "1.0.3"
+version = "1.1.0"
 edition = "2021"
 license = "Apache-2.0"
 
@@ -41,6 +41,7 @@ pprof = { version = "0.14", features = [
     "protobuf-codec",
 ], optional = true }
 async-trait = "0.1.87"
+itertools = "0.14.0"
 
 # Unix-specific dependencies
 [target.'cfg(unix)'.dependencies]

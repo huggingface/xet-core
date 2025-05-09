@@ -192,7 +192,7 @@ impl BG4Predictor {
 
             let dest_ptr = self.histograms.as_mut_ptr() as *mut u32;
 
-            while ptr != end_ptr {
+            while !std::ptr::eq(ptr, end_ptr) {
                 let n_ones = (*ptr).count_ones();
                 let loc = (idx % 4) * 9 + n_ones;
                 *(dest_ptr.add(loc as usize)) += 1;
@@ -279,48 +279,48 @@ mod tests {
 
     #[test]
     fn test_bg4_lz4() {
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rng();
 
         for i in 0..4 {
             let n = 64 * 1024 + i * 23;
             let all_zeros = vec![0u8; n];
             let all_ones = vec![1u8; n];
             let all_0xff = vec![0xFF; n];
-            let random_u8s: Vec<_> = (0..n).map(|_| rng.gen_range(0..255)).collect();
+            let random_u8s: Vec<_> = (0..n).map(|_| rng.random_range(0..255)).collect();
             let random_f32s_ng1_1: Vec<_> = (0..n / size_of::<f32>())
-                .map(|_| rng.gen_range(-1.0f32..=1.0))
+                .map(|_| rng.random_range(-1.0f32..=1.0))
                 .flat_map(|f| f.to_le_bytes())
                 .collect();
             let random_f32s_0_2: Vec<_> = (0..n / size_of::<f32>())
-                .map(|_| rng.gen_range(0f32..=2.0))
+                .map(|_| rng.random_range(0f32..=2.0))
                 .flat_map(|f| f.to_le_bytes())
                 .collect();
             let random_f64s_ng1_1: Vec<_> = (0..n / size_of::<f64>())
-                .map(|_| rng.gen_range(-1.0f64..=1.0))
+                .map(|_| rng.random_range(-1.0f64..=1.0))
                 .flat_map(|f| f.to_le_bytes())
                 .collect();
             let random_f64s_0_2: Vec<_> = (0..n / size_of::<f64>())
-                .map(|_| rng.gen_range(0f64..=2.0))
+                .map(|_| rng.random_range(0f64..=2.0))
                 .flat_map(|f| f.to_le_bytes())
                 .collect();
 
             // f16, a.k.a binary16 format: sign (1 bit), exponent (5 bit), mantissa (10 bit)
             let random_f16s_ng1_1: Vec<_> = (0..n / size_of::<f16>())
-                .map(|_| f16::from_f32(rng.gen_range(-1.0f32..=1.0)))
+                .map(|_| f16::from_f32(rng.random_range(-1.0f32..=1.0)))
                 .flat_map(|f| f.to_le_bytes())
                 .collect();
             let random_f16s_0_2: Vec<_> = (0..n / size_of::<f16>())
-                .map(|_| f16::from_f32(rng.gen_range(0f32..=2.0)))
+                .map(|_| f16::from_f32(rng.random_range(0f32..=2.0)))
                 .flat_map(|f| f.to_le_bytes())
                 .collect();
 
             // bf16 format: sign (1 bit), exponent (8 bit), mantissa (7 bit)
             let random_bf16s_ng1_1: Vec<_> = (0..n / size_of::<bf16>())
-                .map(|_| bf16::from_f32(rng.gen_range(-1.0f32..=1.0)))
+                .map(|_| bf16::from_f32(rng.random_range(-1.0f32..=1.0)))
                 .flat_map(|f| f.to_le_bytes())
                 .collect();
             let random_bf16s_0_2: Vec<_> = (0..n / size_of::<bf16>())
-                .map(|_| bf16::from_f32(rng.gen_range(0f32..=2.0)))
+                .map(|_| bf16::from_f32(rng.random_range(0f32..=2.0)))
                 .flat_map(|f| f.to_le_bytes())
                 .collect();
 
