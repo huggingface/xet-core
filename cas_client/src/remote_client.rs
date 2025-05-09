@@ -758,6 +758,7 @@ mod tests {
     use httpmock::MockServer;
     use merkledb::constants::TARGET_CDC_CHUNK_SIZE;
     use tracing_test::traced_test;
+    use xet_threadpool::ThreadPool;
 
     use super::*;
     use crate::interface::buffer::BufferProvider;
