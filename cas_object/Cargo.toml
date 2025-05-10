@@ -14,6 +14,8 @@ harness = false
 bench = true
 
 [dependencies]
+tokio = { version = "1.44", features = ["full"] }
+half = "2.4.1"
 thiserror = "2.0"
 error_printer = { path = "../error_printer" }
 merkledb = { path = "../merkledb" }
@@ -28,8 +30,6 @@ bytes = "1.7.2"
 rand = "0.9"
 blake3 = "1.5.4"
 futures = { version = "0.3.31" }
-tokio = { version = "1.44", features = ["sync", "time", "rt", "macros"] }
-half = "2.4.1"
 serde = { version = "1.0.129", features = ["derive"] }
 countio = { version = "0.2.19", features = ["futures"] }
 clap = { version = "4.1", features = ["derive"] }
