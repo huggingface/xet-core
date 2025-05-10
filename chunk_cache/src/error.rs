@@ -4,6 +4,7 @@ use std::str::Utf8Error;
 use base64::DecodeError;
 use merklehash::DataHashBytesParseError;
 use thiserror::Error;
+use tokio::task::JoinError;
 
 #[derive(Debug, Error)]
 pub enum ChunkCacheError {
@@ -23,6 +24,9 @@ pub enum ChunkCacheError {
     LockPoison,
     #[error("invalid arguments")]
     InvalidArguments,
+
+    #[error("RuntimeError")]
+    RuntimeError(#[from] JoinError),
 }
 
 impl ChunkCacheError {

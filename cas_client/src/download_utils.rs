@@ -308,7 +308,7 @@ pub(crate) async fn get_one_term(
             prefix: PREFIX_DEFAULT.to_string(),
             hash: term.hash.into(),
         };
-        if let Ok(Some(cached)) = cache.get(&key, &term.range).log_error("cache error") {
+        if let Ok(Some(cached)) = cache.get(&key, &term.range).await.log_error("cache error") {
             return Ok(cached.data.to_vec());
         }
     }
@@ -329,7 +329,7 @@ pub(crate) async fn get_one_term(
             prefix: PREFIX_DEFAULT.to_string(),
             hash: term.hash.into(),
         };
-        if let Err(e) = cache.put(&key, &fetch_term.range, &chunk_byte_indices, &data) {
+        if let Err(e) = cache.put(&key, &fetch_term.range, &chunk_byte_indices, &data).await {
             info!("Writing to local cache failed, continuing. Error: {}", e);
         }
     }
