@@ -6,8 +6,8 @@ use std::time::Instant;
 use anyhow::anyhow;
 use lz4_flex::frame::{FrameDecoder, FrameEncoder};
 
-use crate::bg4_prediction::BG4Predictor;
 use crate::byte_grouping::bg4::{bg4_regroup, bg4_split};
+use crate::byte_grouping::BG4Predictor;
 use crate::error::{CasObjectError, Result};
 
 pub static mut BG4_SPLIT_RUNTIME: f64 = 0.;

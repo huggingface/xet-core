@@ -1,4 +1,3 @@
-mod bg4_prediction;
 pub mod byte_grouping;
 mod cas_chunk_format;
 mod cas_object_format;
