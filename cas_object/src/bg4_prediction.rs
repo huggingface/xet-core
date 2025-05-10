@@ -14,26 +14,38 @@ impl BG4Predictor {
 
     #[inline(always)]
     unsafe fn process_u128(&mut self, offset: usize, v: u128, byte_range: (usize, usize)) {
+        // This is a reference version that uses the SWAR bit twiddling trick; see Hacker's delight for reference.
+        // A lot of very cheap operations on 16 bytes at a time is likely faster than running popcnt on each byte.
+        #[allow(dead_code)]
+        #[inline(always)]
+        fn calc_per_byte_popcnt(mut v: u128) -> [u8; 16] {
+            const M1: u128 = 0x5555_5555_5555_5555_5555_5555_5555_5555u128;
+            const M2: u128 = 0x3333_3333_3333_3333_3333_3333_3333_3333u128;
+            const M3: u128 = 0x0F0F_0F0F_0F0F_0F0F_0F0F_0F0F_0F0F_0F0Fu128;
+
+            v = v - ((v >> 1) & M1);
+            v = (v & M2) + ((v >> 2) & M2);
+            v = (v + (v >> 4)) & M3;
+            v.to_le_bytes()
+        }
+
+        // On Arm/Neon (e.g. Mac M1, M2, etc.), there is a builtin simd instruction for this.
         #[cfg(all(target_arch = "aarch64", target_feature = "neon"))]
         let per_byte_popcnt = {
             use core::arch::aarch64::{uint8x16_t, vcntq_u8};
             let input = core::mem::transmute::<[u8; 16], uint8x16_t>(v.to_le_bytes());
             let result = vcntq_u8(input);
-            core::mem::transmute::<uint8x16_t, [u8; 16]>(result)
+            let per_byte_popcnt = core::mem::transmute::<uint8x16_t, [u8; 16]>(result);
+
+            // Check the fallback version in debug mode.
+            debug_assert_eq!(per_byte_popcnt, calc_per_byte_popcnt(v));
+
+            per_byte_popcnt
         };
 
+        // On other archetectures, use the fallback method.
         #[cfg(not(all(target_arch = "aarch64", target_feature = "neon")))]
-        let per_byte_popcnt = {
-            const M1: u128 = 0x5555_5555_5555_5555_5555_5555_5555_5555u128;
-            const M2: u128 = 0x3333_3333_3333_3333_3333_3333_3333_3333u128;
-            const M3: u128 = 0x0F0F_0F0F_0F0F_0F0F_0F0F_0F0F_0F0F_0F0Fu128;
-
-            let mut v = v;
-            v = v - ((v >> 1) & M1);
-            v = (v & M2) + ((v >> 2) & M2);
-            v = (v + (v >> 4)) & M3;
-            v.to_le_bytes()
-        };
+        let per_byte_popcnt = calc_per_byte_popcnt(v);
 
         let dest_ptr = self.histograms.as_mut_ptr() as *mut u32;
 
