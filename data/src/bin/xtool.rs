@@ -200,7 +200,6 @@ async fn query_reconstruction(
     let cas_storage_config = &config.data_config;
     let remote_client = RemoteClient::new(
         &endpoint,
-        cas_storage_config.compression,
         &cas_storage_config.auth,
         &Some(cas_storage_config.cache_config.clone()),
         config.shard_config.cache_directory.clone(),
