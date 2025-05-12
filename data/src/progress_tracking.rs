@@ -1,7 +1,8 @@
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::mem::take;
 use std::sync::Arc;
 
+use deduplication::FileXorbDependency;
 use merklehash::MerkleHash;
 use more_asserts::debug_assert_le;
 use tokio::sync::Mutex;
@@ -16,7 +17,7 @@ pub type CompletionTrackerFileId = u64;
 #[derive(Default)]
 struct XorbDependency {
     /// List of file indices that need this xorb.
-    file_indices: Vec<usize>,
+    file_indices: BTreeSet<usize>,
 
     /// True if the xorb has already been updated successfully.
     is_completed: bool,
@@ -76,50 +77,48 @@ impl CompletionTrackerImpl {
 
     /// Registers that all or part of a given file (by `file_id`) depends on one or more
     /// xorbs; Given a list of (xorb_hash, n_bytes, already_uploaded), registers the progress.
-    fn register_dependencies(
-        &mut self,
-        dependencies: &[(CompletionTrackerFileId, MerkleHash, u64, bool)],
-    ) -> Vec<ProgressUpdate> {
+    fn register_dependencies(&mut self, dependencies: &[FileXorbDependency]) -> Vec<ProgressUpdate> {
         let mut ret = Vec::new();
 
-        for &(file_id, xorb_hash, n_bytes, is_completed) in dependencies {
-            let file_entry = &mut self.files[file_id as usize];
+        for dep in dependencies {
+            let file_entry = &mut self.files[dep.file_id as usize];
 
-            if is_completed {
-                file_entry.completed_bytes += n_bytes;
+            if dep.is_external {
+                // This is the freebie case, where we can just increment the progress.
+                file_entry.completed_bytes += dep.n_bytes;
                 debug_assert_le!(file_entry.completed_bytes, file_entry.total_bytes);
 
                 let progress_update = ProgressUpdate {
                     item_name: file_entry.name.clone(),
                     total_count: file_entry.total_bytes,
                     completed_count: file_entry.completed_bytes,
-                    update_increment: n_bytes,
+                    update_increment: dep.n_bytes,
                 };
 
                 ret.push(progress_update);
             } else {
                 // Make sure we aren't putting in an unfinished xorb, which
                 // tracks with MerkleHash::marker().
-                debug_assert_ne!(xorb_hash, MerkleHash::marker());
+                debug_assert_ne!(dep.xorb_hash, MerkleHash::marker());
 
-                let entry = self.xorbs.entry(xorb_hash).or_default();
+                let entry = self.xorbs.entry(dep.xorb_hash).or_default();
 
                 // If the entry has already been completed, then just mark this as completed.
                 if entry.is_completed {
-                    file_entry.completed_bytes += n_bytes;
+                    file_entry.completed_bytes += dep.n_bytes;
                     debug_assert_le!(file_entry.completed_bytes, file_entry.total_bytes);
 
                     let progress_update = ProgressUpdate {
                         item_name: file_entry.name.clone(),
                         total_count: file_entry.total_bytes,
                         completed_count: file_entry.completed_bytes,
-                        update_increment: n_bytes,
+                        update_increment: dep.n_bytes,
                     };
                     ret.push(progress_update);
                 } else {
                     // Insert a new xorb entry if needed.
-                    entry.file_indices.push(file_id as usize);
-                    *file_entry.remaining_xorbs_parts.entry(xorb_hash).or_default() += n_bytes;
+                    entry.file_indices.insert(dep.file_id as usize);
+                    *file_entry.remaining_xorbs_parts.entry(dep.xorb_hash).or_default() += dep.n_bytes;
                 }
             }
         }
@@ -242,7 +241,7 @@ impl CompletionTracker {
     }
 
     /// Register a list of (file_id, xorb_hash, usize, bool)
-    pub async fn register_dependencies(&self, dependencies: &[(CompletionTrackerFileId, MerkleHash, u64, bool)]) {
+    pub async fn register_dependencies(&self, dependencies: &[FileXorbDependency]) {
         let updates = self.inner.lock().await.register_dependencies(dependencies);
 
         if !updates.is_empty() {
@@ -302,7 +301,14 @@ mod tests {
 
         // fileA depends on x for 100 bytes, already uploaded
         let x = MerkleHash::random_from_seed(1);
-        tracker.register_dependencies(&[(file_a, x, 100, true)]).await;
+        tracker
+            .register_dependencies(&[FileXorbDependency {
+                file_id: file_a,
+                xorb_hash: x,
+                n_bytes: 100,
+                is_external: true,
+            }])
+            .await;
 
         // Now fileA is 100/100, fileB is 0/50 => done=100, total=150
         let (done, total) = tracker.status().await;
@@ -312,7 +318,14 @@ mod tests {
 
         // fileB depends on y for 50 bytes, not yet uploaded
         let y = MerkleHash::random_from_seed(2);
-        tracker.register_dependencies(&[(file_b, y, 50, false)]).await;
+        tracker
+            .register_dependencies(&[FileXorbDependency {
+                file_id: file_b,
+                xorb_hash: y,
+                n_bytes: 50,
+                is_external: false,
+            }])
+            .await;
 
         let (done, total) = tracker.status().await;
         assert_eq!(done, 100);
@@ -353,7 +366,20 @@ mod tests {
         // fileA => xhash 100 bytes (not uploaded)
         // fileB => xhash 200 bytes (already uploaded)
         tracker
-            .register_dependencies(&[(file_a, xhash, 100, false), (file_b, xhash, 200, true)])
+            .register_dependencies(&[
+                FileXorbDependency {
+                    file_id: file_a,
+                    xorb_hash: xhash,
+                    n_bytes: 100,
+                    is_external: false,
+                },
+                FileXorbDependency {
+                    file_id: file_b,
+                    xorb_hash: xhash,
+                    n_bytes: 200,
+                    is_external: true,
+                },
+            ])
             .await;
 
         let (done, total) = tracker.status().await;
@@ -370,14 +396,28 @@ mod tests {
 
         // Suppose fileA is 100/200. We'll "fix" it with x2 => 100 bytes (already uploaded)
         let x2 = MerkleHash::random_from_seed(2);
-        tracker.register_dependencies(&[(file_a, x2, 100, true)]).await;
+        tracker
+            .register_dependencies(&[FileXorbDependency {
+                file_id: file_a,
+                xorb_hash: x2,
+                n_bytes: 100,
+                is_external: true,
+            }])
+            .await;
 
         let (done, total) = tracker.status().await;
         assert_eq!(done, 400); // A:200, B:200
         assert_eq!(total, 500);
 
         // B's remaining 100 bytes also from x2, not uploaded
-        tracker.register_dependencies(&[(file_b, x2, 100, false)]).await;
+        tracker
+            .register_dependencies(&[FileXorbDependency {
+                file_id: file_b,
+                xorb_hash: x2,
+                n_bytes: 100,
+                is_external: false,
+            }])
+            .await;
 
         let (done, total) = tracker.status().await;
         assert_eq!(done, 400);
@@ -413,7 +453,26 @@ mod tests {
         // x2 => 100 bytes, already uploaded
         // x3 => 100 bytes, not uploaded
         tracker
-            .register_dependencies(&[(f, x1, 100, false), (f, x2, 100, true), (f, x3, 100, false)])
+            .register_dependencies(&[
+                FileXorbDependency {
+                    file_id: f,
+                    xorb_hash: x1,
+                    n_bytes: 100,
+                    is_external: false,
+                },
+                FileXorbDependency {
+                    file_id: f,
+                    xorb_hash: x2,
+                    n_bytes: 100,
+                    is_external: true,
+                },
+                FileXorbDependency {
+                    file_id: f,
+                    xorb_hash: x3,
+                    n_bytes: 100,
+                    is_external: false,
+                },
+            ])
             .await;
 
         let (done, total) = tracker.status().await;
@@ -456,7 +515,14 @@ mod tests {
 
         // Now we register that file depends on x for 50 bytes, "already_uploaded=false"
         // but the tracker sees x is completed => immediate credit.
-        tracker.register_dependencies(&[(file_id, x, 50, false)]).await;
+        tracker
+            .register_dependencies(&[FileXorbDependency {
+                file_id,
+                xorb_hash: x,
+                n_bytes: 50,
+                is_external: false,
+            }])
+            .await;
 
         let (done, total) = tracker.status().await;
         assert_eq!(done, 50);
@@ -484,7 +550,14 @@ mod tests {
 
         // Then register a dependency with "already_uploaded=false"
         // The code sees x.is_completed==true => immediate credit for 100 bytes
-        tracker.register_dependencies(&[(file_id, x, 100, false)]).await;
+        tracker
+            .register_dependencies(&[FileXorbDependency {
+                file_id,
+                xorb_hash: x,
+                n_bytes: 100,
+                is_external: false,
+            }])
+            .await;
 
         let (done, total) = tracker.status().await;
         assert_eq!(done, 100);
