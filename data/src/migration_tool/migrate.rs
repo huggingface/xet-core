@@ -78,7 +78,7 @@ pub async fn migrate_files_impl(
         async {
             let proc = processor.clone();
             let (pf, metrics) = clean_file(proc, f).await?;
-            Ok((pf, metrics.new_bytes as u64))
+            Ok((pf, metrics.new_bytes))
         }
         .instrument(span.unwrap_or_else(|| info_span!("unexpected_span")))
     })
@@ -90,7 +90,7 @@ pub async fn migrate_files_impl(
 
     if dry_run {
         let (metrics, all_file_info) = processor.finalize_with_file_info().await?;
-        Ok((all_file_info, clean_ret, metrics.total_bytes_uploaded as u64))
+        Ok((all_file_info, clean_ret, metrics.total_bytes_uploaded))
     } else {
         let metrics = processor.finalize().await?;
         Ok((vec![], clean_ret, metrics.total_bytes_uploaded as u64))
