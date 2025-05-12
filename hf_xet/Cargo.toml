@@ -41,6 +41,7 @@ pprof = { version = "0.14", features = [
     "protobuf-codec",
 ], optional = true }
 async-trait = "0.1.87"
+itertools = "0.14.0"
 
 # Unix-specific dependencies
 [target.'cfg(unix)'.dependencies]

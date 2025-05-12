@@ -2,10 +2,13 @@ use core::fmt;
 use std::cmp::min;
 use std::collections::{HashMap, HashSet};
 use std::marker::PhantomData;
+use std::str::FromStr;
 
+use derivative::Derivative;
 use merklehash::MerkleHash;
 use serde::{Deserialize, Serialize};
 use serde_repr::{Deserialize_repr, Serialize_repr};
+use thiserror::Error;
 
 mod error;
 mod key;
@@ -95,11 +98,13 @@ impl From<FileRange> for HttpRange {
 }
 
 // note that the standard PartialOrd/Ord impls will first check `start` then `end`
-#[derive(Debug, Serialize, Deserialize, Clone, Eq, PartialEq, PartialOrd, Ord, Default, Hash)]
+#[derive(Derivative, Serialize, Deserialize, Clone, Eq, PartialEq, PartialOrd, Ord, Default, Hash)]
+#[derivative(Debug)]
 pub struct Range<Idx, Kind> {
     pub start: Idx,
     pub end: Idx,
     #[serde(skip)]
+    #[derivative(Debug = "ignore")]
     pub _marker: PhantomData<Kind>,
 }
 
@@ -121,13 +126,15 @@ impl<Idx: fmt::Display, Kind> fmt::Display for Range<Idx, Kind> {
     }
 }
 
-#[derive(Debug)]
+#[derive(Error, Debug)]
 pub enum RangeParseError<Idx: std::str::FromStr> {
+    #[error("Invalid format, expect [start]-[end]")]
     InvalidFormat,
+    #[error("Incorrect number: {0}")]
     ParseError(Idx::Err),
 }
 
-impl<Idx: std::str::FromStr, Kind> TryFrom<&str> for Range<Idx, Kind> {
+impl<Idx: FromStr, Kind> TryFrom<&str> for Range<Idx, Kind> {
     type Error = RangeParseError<Idx>;
 
     fn try_from(value: &str) -> Result<Self, Self::Error> {
@@ -145,6 +152,14 @@ impl<Idx: std::str::FromStr, Kind> TryFrom<&str> for Range<Idx, Kind> {
             end,
             _marker: PhantomData,
         })
+    }
+}
+
+impl<Idx: FromStr, Kind> FromStr for Range<Idx, Kind> {
+    type Err = RangeParseError<Idx>;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        Self::try_from(value)
     }
 }
 
