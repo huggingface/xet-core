@@ -393,8 +393,8 @@ impl FileUploadSession {
         metrics.total_bytes_uploaded = metrics.shard_bytes_uploaded + metrics.xorb_bytes_uploaded;
 
         // Update the global counters
-        prometheus_metrics::FILTER_CAS_BYTES_PRODUCED.inc_by(metrics.new_bytes as u64);
-        prometheus_metrics::FILTER_BYTES_CLEANED.inc_by(metrics.total_bytes as u64);
+        prometheus_metrics::FILTER_CAS_BYTES_PRODUCED.inc_by(metrics.new_bytes);
+        prometheus_metrics::FILTER_BYTES_CLEANED.inc_by(metrics.total_bytes);
 
         #[cfg(debug_assertions)]
         {
