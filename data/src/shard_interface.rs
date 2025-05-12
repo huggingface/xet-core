@@ -1,4 +1,4 @@
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -119,7 +119,7 @@ impl SessionShardInterface {
 
     /// Uploads everything in the current session directory.  This must be called after all xorbs
     /// have completed their upload.
-    pub async fn upload_and_register_session_shards(&self) -> Result<usize> {
+    pub async fn upload_and_register_session_shards(&self) -> Result<u64> {
         // First, flush everything to disk.
         self.session_shard_manager.flush().await?;
 
@@ -130,7 +130,7 @@ impl SessionShardInterface {
         // Upload all the shards and move each to the common directory.
         let mut shard_uploads = JoinSet::<Result<()>>::new();
 
-        let shard_bytes_uploaded = Arc::new(AtomicUsize::new(0));
+        let shard_bytes_uploaded = Arc::new(AtomicU64::new(0));
 
         for si in shard_list {
             let salt = self.config.shard_config.repo_salt;
@@ -153,7 +153,7 @@ impl SessionShardInterface {
                     debug!("Uploading shard {shard_prefix}/{:?} from staging area to CAS.", &si.shard_hash);
                     let data = std::fs::read(&si.path)?;
 
-                    shard_bytes_uploaded.fetch_add(data.len(), Ordering::Relaxed);
+                    shard_bytes_uploaded.fetch_add(data.len() as u64, Ordering::Relaxed);
 
                     if dry_run {
                         // In dry run mode, don't upload the shards or move them to the cache.

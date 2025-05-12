@@ -200,6 +200,7 @@ impl TestSetup {
         }
     }
 }
+
 /// Variant of `dehydrate_directory` that calls `upload_session.checkpoint()`
 /// after every few file uploads.  This ensures that cross-file deduplication happens and
 /// gets test coverage.

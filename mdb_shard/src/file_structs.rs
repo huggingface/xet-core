@@ -358,8 +358,8 @@ impl MDBFileInfo {
     }
 
     /// The size of the file if unpacked.
-    pub fn file_size(&self) -> usize {
-        self.segments.iter().map(|fse| fse.unpacked_segment_bytes as usize).sum()
+    pub fn file_size(&self) -> u64 {
+        self.segments.iter().map(|fse| fse.unpacked_segment_bytes as u64).sum()
     }
 
     pub fn serialize<W: Write>(&self, writer: &mut W) -> Result<usize, std::io::Error> {

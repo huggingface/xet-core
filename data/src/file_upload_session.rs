@@ -265,7 +265,7 @@ impl FileUploadSession {
                 session.completion_tracker.register_xorb_upload_completion(xorb_hash).await;
 
                 // Record the number of bytes uploaded.
-                session.deduplication_metrics.lock().await.xorb_bytes_uploaded += n_bytes_transmitted;
+                session.deduplication_metrics.lock().await.xorb_bytes_uploaded += n_bytes_transmitted as u64;
                 Ok(())
             }
             .instrument(info_span!("FileUploadSession::upload_xorb_task", xorb.hash = xorb_hash.hex())),
