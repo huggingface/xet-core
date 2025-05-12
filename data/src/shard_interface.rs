@@ -79,19 +79,24 @@ impl SessionShardInterface {
         Ok(true)
     }
 
+    /// Returns the number of chunks and xorb to dedup against, as well as whether it's already known to be uploaded.
     pub async fn chunk_hash_dedup_query(
         &self,
         query_hashes: &[MerkleHash],
-    ) -> Result<Option<(usize, FileDataSequenceEntry)>> {
+    ) -> Result<Option<(usize, FileDataSequenceEntry, bool)>> {
         // First check for a deduplication hit in the session directory, then in the common cache directory.
         let res = self.session_shard_manager.chunk_hash_dedup_query(query_hashes).await?;
 
-        if res.is_some() {
-            return Ok(res);
+        if let Some((n_entries, fse)) = res {
+            return Ok(Some((n_entries, fse, false)));
         }
 
-        // Now query in the cache shard manager.
-        Ok(self.cache_shard_manager.chunk_hash_dedup_query(query_hashes).await?)
+        // Now query in the cache shard manager; these shards have already been uploaded.
+        if let Some((n_entries, fse)) = self.cache_shard_manager.chunk_hash_dedup_query(query_hashes).await? {
+            Ok(Some((n_entries, fse, true)))
+        } else {
+            Ok(None)
+        }
     }
 
     // Add the cas information to the session shard manager
