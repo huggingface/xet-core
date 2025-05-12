@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use cas_object::CompressionScheme;
+use cas_object::SerializedCasObject;
 use cas_types::{FileRange, QueryReconstructionResponse};
 use mdb_shard::shard_file_reconstructor::FileReconstructor;
 use merklehash::MerkleHash;
@@ -27,17 +27,7 @@ pub trait UploadClient {
     /// must be the length of data. For instance, if data="helloworld" with 2 chunks
     /// ["hello" "world"], chunk_boundaries should be [5, 10].
     /// Empty data and empty chunk boundaries are not accepted.
-    ///
-    /// Note that put may background in some implementations and a flush()
-    /// will be needed.
-    async fn put(
-        &self,
-        prefix: &str,
-        hash: &MerkleHash,
-        data: Vec<u8>,
-        chunk_and_boundaries: Vec<(MerkleHash, u32)>,
-        compression: Option<CompressionScheme>,
-    ) -> Result<usize>;
+    async fn upload_xorb(&self, prefix: &str, serialized_cas_object: SerializedCasObject) -> Result<u64>;
 
     /// Check if a XORB already exists.
     async fn exists(&self, prefix: &str, hash: &MerkleHash) -> Result<bool>;

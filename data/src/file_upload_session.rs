@@ -4,7 +4,7 @@ use std::mem::{swap, take};
 use std::sync::Arc;
 
 use cas_client::Client;
-use cas_object::{CompressionScheme, NUM_COMPRESSION_SCHEMES};
+use cas_object::{CompressionScheme, SerializedCasObject, NUM_COMPRESSION_SCHEMES};
 use deduplication::constants::{MAX_XORB_BYTES, MAX_XORB_CHUNKS};
 use deduplication::{DataAggregator, DeduplicationMetrics, RawXorbData};
 use jsonwebtoken::{decode, DecodingKey, Validation};
@@ -237,11 +237,13 @@ impl FileUploadSession {
             *self.compression_scheme.lock().await = compression_scheme;
         }
 
-        let xorb_hash = xorb.hash();
-        let xorb_data = xorb.to_vec();
-        let chunks_and_boundaries = xorb.cas_info.chunks_and_boundaries();
+        // Drop the lock on this; get just the value.
+        let compression_scheme = compression_scheme.clone();
 
-        drop(xorb);
+        let xorb_hash = xorb.hash();
+
+        // Serialize the object
+        let cas_object = SerializedCasObject::from_xorb(xorb, compression_scheme)?;
 
         let session = self.clone();
         let upload_permit = acquire_upload_permit().await?;
@@ -249,10 +251,7 @@ impl FileUploadSession {
 
         self.xorb_upload_tasks.lock().await.spawn(
             async move {
-                let n_bytes_transmitted = session
-                    .client
-                    .put(&cas_prefix, &xorb_hash, xorb_data, chunks_and_boundaries, compression_scheme)
-                    .await?;
+                let n_bytes_transmitted = session.client.upload_xorb(&cas_prefix, cas_object).await?;
 
                 drop(upload_permit);
 

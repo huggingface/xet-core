@@ -63,8 +63,8 @@ impl RawXorbData {
         n
     }
 
-    // Todo: Push this Xorb data format all the way down to the compression levels to
-    // avoid this copy / memory overhead
+    // Used largely for testing to test newer serialization method against known older one.
+    #[allow(dead_code)]
     pub fn to_vec(&self) -> Vec<u8> {
         let mut new_vec = Vec::with_capacity(self.num_bytes());
 
