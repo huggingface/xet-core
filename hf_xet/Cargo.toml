@@ -56,5 +56,10 @@ openssl_vendored = ["data/openssl_vendored"]
 profiling = ["pprof"]
 
 [profile.release]
-debug = true
+debug = "line-tables-only"
 opt-level = 3
+
+# Uncomment the below for lto + Os
+# opt-level = "s"
+# lto = true
+
