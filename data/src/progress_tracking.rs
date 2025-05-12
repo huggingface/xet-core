@@ -118,7 +118,6 @@ impl CompletionTrackerImpl {
                 } else {
                     // Insert a new xorb entry if needed.
                     entry.file_indices.insert(dep.file_id as usize);
-                    eprintln!("Registering dep: {} -> {}", dep.file_id, dep.xorb_hash);
                     *file_entry.remaining_xorbs_parts.entry(dep.xorb_hash).or_default() += dep.n_bytes;
                 }
             }
