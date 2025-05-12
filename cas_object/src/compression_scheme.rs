@@ -24,6 +24,7 @@ pub enum CompressionScheme {
     LZ4 = 1,
     ByteGrouping4LZ4 = 2, // 4 byte groups
 }
+pub const NUM_COMPRESSION_SCHEMES: usize = 3;
 
 impl Display for CompressionScheme {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -195,47 +196,39 @@ mod tests {
             let random_u8s: Vec<_> = (0..n).map(|_| rng.random_range(0..255)).collect();
             let random_f32s_ng1_1: Vec<_> = (0..n / size_of::<f32>())
                 .map(|_| rng.random_range(-1.0f32..=1.0))
-                .map(|f| f.to_le_bytes())
-                .flatten()
+                .flat_map(|f| f.to_le_bytes())
                 .collect();
             let random_f32s_0_2: Vec<_> = (0..n / size_of::<f32>())
                 .map(|_| rng.random_range(0f32..=2.0))
-                .map(|f| f.to_le_bytes())
-                .flatten()
+                .flat_map(|f| f.to_le_bytes())
                 .collect();
             let random_f64s_ng1_1: Vec<_> = (0..n / size_of::<f64>())
                 .map(|_| rng.random_range(-1.0f64..=1.0))
-                .map(|f| f.to_le_bytes())
-                .flatten()
+                .flat_map(|f| f.to_le_bytes())
                 .collect();
             let random_f64s_0_2: Vec<_> = (0..n / size_of::<f64>())
                 .map(|_| rng.random_range(0f64..=2.0))
-                .map(|f| f.to_le_bytes())
-                .flatten()
+                .flat_map(|f| f.to_le_bytes())
                 .collect();
 
             // f16, a.k.a binary16 format: sign (1 bit), exponent (5 bit), mantissa (10 bit)
             let random_f16s_ng1_1: Vec<_> = (0..n / size_of::<f16>())
                 .map(|_| f16::from_f32(rng.random_range(-1.0f32..=1.0)))
-                .map(|f| f.to_le_bytes())
-                .flatten()
+                .flat_map(|f| f.to_le_bytes())
                 .collect();
             let random_f16s_0_2: Vec<_> = (0..n / size_of::<f16>())
                 .map(|_| f16::from_f32(rng.random_range(0f32..=2.0)))
-                .map(|f| f.to_le_bytes())
-                .flatten()
+                .flat_map(|f| f.to_le_bytes())
                 .collect();
 
             // bf16 format: sign (1 bit), exponent (8 bit), mantissa (7 bit)
             let random_bf16s_ng1_1: Vec<_> = (0..n / size_of::<bf16>())
                 .map(|_| bf16::from_f32(rng.random_range(-1.0f32..=1.0)))
-                .map(|f| f.to_le_bytes())
-                .flatten()
+                .flat_map(|f| f.to_le_bytes())
                 .collect();
             let random_bf16s_0_2: Vec<_> = (0..n / size_of::<bf16>())
                 .map(|_| bf16::from_f32(rng.random_range(0f32..=2.0)))
-                .map(|f| f.to_le_bytes())
-                .flatten()
+                .flat_map(|f| f.to_le_bytes())
                 .collect();
 
             let dataset = [

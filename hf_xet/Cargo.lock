@@ -342,6 +342,7 @@ dependencies = [
 name = "cas_types"
 version = "0.1.0"
 dependencies = [
+ "derivative",
  "merklehash",
  "serde",
  "serde_repr",
