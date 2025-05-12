@@ -242,9 +242,6 @@ impl FileUploadSession {
             *self.compression_scheme.lock().await = compression_scheme;
         }
 
-        // Drop the lock on this; get just the value.
-        let compression_scheme = compression_scheme.clone();
-
         let xorb_hash = xorb.hash();
 
         // Serialize the object

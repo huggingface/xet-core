@@ -1417,7 +1417,7 @@ impl SerializedCasObject {
     ) -> Result<Self, CasObjectError> {
         let mut writer = Cursor::new(Vec::new());
 
-        CasObject::serialize(&mut writer, &hash, &data, &chunk_and_boundaries, compression)?;
+        CasObject::serialize(&mut writer, hash, &data, &chunk_and_boundaries, compression)?;
 
         Ok(Self {
             serialized_data: writer.into_inner(),
