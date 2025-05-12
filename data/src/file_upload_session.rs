@@ -244,8 +244,9 @@ impl FileUploadSession {
 
         let xorb_hash = xorb.hash();
 
-        // Serialize the object
-        let cas_object = SerializedCasObject::from_xorb(xorb, compression_scheme)?;
+        // Serialize the object; this can be relatively expensive, so run it on a compute thread.
+        let cas_object =
+            tokio::task::spawn_blocking(move || SerializedCasObject::from_xorb(xorb, compression_scheme)).await??;
 
         let session = self.clone();
         let upload_permit = acquire_upload_permit().await?;
