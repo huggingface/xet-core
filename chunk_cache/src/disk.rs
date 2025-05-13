@@ -74,23 +74,22 @@ impl CacheState {
         let mut ret = Vec::new();
 
         while self.total_bytes > max_total_bytes {
-            if let Some((key, idx)) = self.random_item() {
-                let items = self.inner.get_mut(&key).ok_or(ChunkCacheError::Infallible)?;
-                let cache_item = items.swap_remove(idx);
-                let len = cache_item.len;
-
-                if items.is_empty() {
-                    self.inner.remove(&key);
-                }
-
-                ret.push((key, cache_item));
-
-                self.total_bytes -= len;
-                self.num_items -= 1;
-            } else {
+            let Some((key, idx)) = self.random_item() else {
                 error!("attempted to evict item, but no item could be found to be evicted");
                 break;
+            };
+            let items = self.inner.get_mut(&key).ok_or(ChunkCacheError::Infallible)?;
+            let cache_item = items.swap_remove(idx);
+            let len = cache_item.len;
+
+            if items.is_empty() {
+                self.inner.remove(&key);
             }
+
+            ret.push((key, cache_item));
+
+            self.total_bytes -= len;
+            self.num_items -= 1;
         }
         debug!(
             "cache evicting {} items totaling {}",
@@ -515,7 +514,7 @@ impl DiskCache {
         }
 
         let stored = get_range_from_cache_file(&header, &mut reader, range, cache_item.range.start)?;
-        if data != stored.data.as_ref() {
+        if data != &stored.data {
             return Err(ChunkCacheError::InvalidArguments);
         }
         Ok(true)
@@ -868,9 +867,9 @@ mod tests {
         let cache_result = cache.get(&key, &range).await.unwrap();
         assert!(cache_result.is_some());
         let cache_range = cache_result.unwrap();
-        assert_eq!(cache_range.data.as_ref(), data.as_slice());
+        assert_eq!(cache_range.data, data);
         assert_eq!(cache_range.range, range);
-        assert_eq!(cache_range.offsets.as_ref(), chunk_byte_indices.as_slice());
+        assert_eq!(cache_range.offsets, chunk_byte_indices);
 
         let miss_range = ChunkRange::new(100, 101);
         // miss
@@ -918,7 +917,7 @@ mod tests {
                 let start_byte = chunk_byte_indices[sub_range.start as usize] as usize;
                 let end_byte = chunk_byte_indices[sub_range.end as usize] as usize;
                 let data_portion = &data[start_byte..end_byte];
-                assert_eq!(data_portion, cache_range.data.as_ref());
+                assert_eq!(data_portion, &cache_range.data);
             }
         }
     }
