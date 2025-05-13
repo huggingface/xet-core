@@ -35,8 +35,13 @@ impl ChunkCacheExt for SolidCache {
     }
 }
 
+#[async_trait::async_trait]
 impl ChunkCache for SolidCache {
-    fn get(&self, key: &cas_types::Key, range: &cas_types::ChunkRange) -> Result<Option<CacheRange>, ChunkCacheError> {
+    async fn get(
+        &self,
+        key: &cas_types::Key,
+        range: &cas_types::ChunkRange,
+    ) -> Result<Option<CacheRange>, ChunkCacheError> {
         let start = range.start as i32;
         let end = range.end as i32;
 
@@ -67,7 +72,7 @@ impl ChunkCache for SolidCache {
         }))
     }
 
-    fn put(
+    async fn put(
         &self,
         key: &cas_types::Key,
         range: &cas_types::ChunkRange,
@@ -105,39 +110,39 @@ mod tests {
 
     use super::SolidCache;
 
-    #[test]
+    #[tokio::test]
     #[ignore = "need a running postgres"]
-    fn test_postgres() {
+    async fn test_postgres() {
         let cache = SolidCache::new();
         let mut it = RandomEntryIterator::new(thread_rng());
         let mut kr = Vec::new();
         for _ in 0..5 {
             let (key, range, chunk_byte_indices, data) = it.next().unwrap();
-            let result = cache.put(&key, &range, &chunk_byte_indices, &data);
+            let result = cache.put(&key, &range, &chunk_byte_indices, &data).await;
             assert!(result.is_ok(), "{result:?}");
             kr.push((key, range));
         }
         for (key, range) in kr {
-            let result = cache.get(&key, &range);
+            let result = cache.get(&key, &range).await;
             assert!(result.is_ok(), "{result:?}");
             let result = result.unwrap();
             assert!(result.is_some(), "{result:?}");
         }
         let (key, range) = it.next_key_range();
-        let result = cache.get(&key, &range);
+        let result = cache.get(&key, &range).await;
         assert!(result.is_ok(), "{result:?}");
         let result = result.unwrap();
         assert!(result.is_none(), "{result:?}");
     }
 
-    #[test]
+    #[tokio::test]
     #[ignore = "need a running postgres"]
-    fn test_postgres_get_miss() {
+    async fn test_postgres_get_miss() {
         let cache = SolidCache::new();
         let mut it = RandomEntryIterator::new(thread_rng());
 
         let (key, range) = it.next_key_range();
-        let result = cache.get(&key, &range);
+        let result = cache.get(&key, &range).await;
         assert!(result.is_ok(), "{result:?}");
         let result = result.unwrap();
         assert!(result.is_none(), "{result:?}");
