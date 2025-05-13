@@ -41,7 +41,7 @@ pub fn upload_bytes(
     token_refresher: Option<Py<PyAny>>,
     progress_updater: Option<Py<PyAny>>,
     _repo_type: Option<String>,
-) -> PyResult<Vec<PyXetUploadInfo>>{
+) -> PyResult<Vec<PyXetUploadInfo>> {
     let refresher = token_refresher.map(WrappedTokenRefresher::from_func).transpose()?.map(Arc::new);
     let updater = progress_updater.map(WrappedProgressUpdater::new).transpose()?.map(Arc::new);
 
@@ -72,7 +72,7 @@ pub fn upload_files(
     token_refresher: Option<Py<PyAny>>,
     progress_updater: Option<Py<PyAny>>,
     _repo_type: Option<String>,
-) -> PyResult<Vec<PyXetUploadInfo>>{
+) -> PyResult<Vec<PyXetUploadInfo>> {
     let refresher = token_refresher.map(WrappedTokenRefresher::from_func).transpose()?.map(Arc::new);
     let updater = progress_updater.map(WrappedProgressUpdater::new).transpose()?.map(Arc::new);
 
@@ -102,7 +102,7 @@ pub fn download_files(
     token_info: Option<(String, u64)>,
     token_refresher: Option<Py<PyAny>>,
     progress_updater: Option<Vec<Py<PyAny>>>,
-) -> PyResult<Vec<String>>{
+) -> PyResult<Vec<String>> {
     let file_infos = files.into_iter().map(<(XetFileInfo, DestinationPath)>::from).collect();
     let refresher = token_refresher.map(WrappedTokenRefresher::from_func).transpose()?.map(Arc::new);
     let updaters = progress_updater.map(try_parse_progress_updaters).transpose()?;
