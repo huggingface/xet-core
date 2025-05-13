@@ -58,8 +58,11 @@ profiling = ["pprof"]
 [profile.release]
 debug = "line-tables-only"
 opt-level = 3
-
 # Uncomment the below for lto + Os
 # opt-level = "s"
 # lto = true
 
+[profile.opt-test]
+inherits = "dev"
+debug = true
+opt-level = 3
