@@ -413,6 +413,7 @@ fn map_heed_db_error(e: heed::Error) -> CasClientError {
 mod tests {
     use cas_object::test_utils::*;
     use cas_object::CompressionScheme::LZ4;
+    use deduplication::test_utils::raw_xorb_to_vec;
     use mdb_shard::utils::parse_shard_filename;
 
     use super::*;
@@ -420,9 +421,9 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_basic_put_get() {
         let xorb = build_raw_xorb(1, ChunkSize::Fixed(2048));
-        let data = xorb.to_vec();
+        let data = raw_xorb_to_vec(&xorb);
 
-        let cas_object = SerializedCasObject::from_xorb_with_verification(xorb, None).unwrap();
+        let cas_object = build_and_verify_cas_object(xorb, None);
         let hash = cas_object.hash;
 
         // Act & Assert
@@ -436,9 +437,9 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_basic_put_get_random_medium() {
         let xorb = build_raw_xorb(44, ChunkSize::Random(512, 15633));
-        let data = xorb.to_vec();
+        let data = raw_xorb_to_vec(&xorb);
 
-        let cas_object = SerializedCasObject::from_xorb_with_verification(xorb, Some(LZ4)).unwrap();
+        let cas_object = build_and_verify_cas_object(xorb, Some(LZ4));
         let hash = cas_object.hash;
 
         // Act & Assert
@@ -452,10 +453,10 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_basic_put_get_range_random_small() {
         let xorb = build_raw_xorb(3, ChunkSize::Random(512, 15633));
-        let data = xorb.to_vec();
+        let data = raw_xorb_to_vec(&xorb);
         let chunk_and_boundaries = xorb.cas_info.chunks_and_boundaries();
 
-        let cas_object = SerializedCasObject::from_xorb_with_verification(xorb, Some(LZ4)).unwrap();
+        let cas_object = build_and_verify_cas_object(xorb, Some(LZ4));
         let hash = cas_object.hash;
 
         // Act & Assert
@@ -478,9 +479,9 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_basic_length() {
         let xorb = build_raw_xorb(1, ChunkSize::Fixed(2048));
-        let data = xorb.to_vec();
+        let data = raw_xorb_to_vec(&xorb);
 
-        let cas_object = SerializedCasObject::from_xorb_with_verification(xorb, Some(LZ4)).unwrap();
+        let cas_object = build_and_verify_cas_object(xorb, Some(LZ4));
         let hash = cas_object.hash;
 
         let gen_length = data.len();
@@ -511,7 +512,7 @@ mod tests {
 
         let hello_hash = merklehash::compute_data_hash(&hello[..]);
 
-        let cas_object = SerializedCasObject::from_components(
+        let cas_object = serialized_cas_object_from_components(
             &hello_hash,
             hello.clone(),
             vec![(hello_hash, hello.len() as u32)],
@@ -523,7 +524,7 @@ mod tests {
         let client = LocalClient::temporary().unwrap();
         client.upload_xorb("default", cas_object).await.unwrap();
 
-        let cas_object = SerializedCasObject::from_components(
+        let cas_object = serialized_cas_object_from_components(
             &hello_hash,
             hello.clone(),
             vec![(hello_hash, hello.len() as u32)],
@@ -588,7 +589,7 @@ mod tests {
         client
             .upload_xorb(
                 "key",
-                SerializedCasObject::from_components(
+                serialized_cas_object_from_components(
                     &final_hash,
                     "helloworld".as_bytes().to_vec(),
                     vec![(hello_hash, 5), (world_hash, 10)],

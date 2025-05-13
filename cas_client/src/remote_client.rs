@@ -727,7 +727,7 @@ mod tests {
     use std::collections::HashMap;
 
     use anyhow::Result;
-    use cas_object::test_utils::{build_cas_object, build_raw_xorb, ChunkSize};
+    use cas_object::test_utils::*;
     use cas_object::CompressionScheme;
     use cas_types::{CASReconstructionFetchInfo, CASReconstructionTerm, ChunkRange};
     use deduplication::constants::MAX_XORB_BYTES;
@@ -751,8 +751,7 @@ mod tests {
         let threadpool = ThreadPool::new().unwrap();
         let client = RemoteClient::new(CAS_ENDPOINT, &None, &None, "".into(), "", false);
 
-        let cas_object =
-            SerializedCasObject::from_xorb_with_verification(raw_xorb, Some(CompressionScheme::LZ4)).unwrap();
+        let cas_object = build_and_verify_cas_object(raw_xorb, Some(CompressionScheme::LZ4));
 
         // Act
         let result = threadpool

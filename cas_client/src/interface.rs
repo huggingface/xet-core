@@ -21,12 +21,7 @@ use crate::CasClientError;
 /// a prefix namespacing the XORB and the hash at the root of the Merkle Tree.
 #[async_trait]
 pub trait UploadClient {
-    /// Insert the provided data into the CAS as a XORB indicated by the prefix and hash.
-    /// The hash will be verified on the SERVER-side according to the chunk boundaries.
-    /// Chunk Boundaries must be complete; i.e. the last entry in chunk boundary
-    /// must be the length of data. For instance, if data="helloworld" with 2 chunks
-    /// ["hello" "world"], chunk_boundaries should be [5, 10].
-    /// Empty data and empty chunk boundaries are not accepted.
+    /// Insert a serialized XORB into the CAS, returning the number of bytes read.  See   
     async fn upload_xorb(&self, prefix: &str, serialized_cas_object: SerializedCasObject) -> Result<u64>;
 
     /// Check if a XORB already exists.

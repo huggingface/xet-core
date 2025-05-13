@@ -4,6 +4,7 @@ use std::mem::{size_of, size_of_val};
 
 use anyhow::anyhow;
 use bytes::Buf;
+use deduplication::test_utils::raw_xorb_to_vec;
 use deduplication::RawXorbData;
 use futures::AsyncReadExt;
 use mdb_shard::chunk_verification::range_hash_from_chunks;
@@ -958,55 +959,6 @@ impl CasObject {
         Ok(Self { info, info_length })
     }
 
-    /// Serialize into Cas Object from uncompressed data and chunk boundaries.
-    /// Assumes correctness from caller: it's the receiver's responsibility to validate a cas object.
-    pub fn serialize<W: Write + Seek>(
-        writer: &mut W,
-        hash: &MerkleHash,
-        data: &[u8],
-        chunk_and_boundaries: &[(MerkleHash, u32)],
-        compression_scheme: Option<CompressionScheme>,
-    ) -> Result<(Self, usize), CasObjectError> {
-        let mut cas = CasObject::default();
-        cas.info.cashash = *hash;
-        cas.info.num_chunks = chunk_and_boundaries.len() as u32;
-        cas.info.chunk_boundary_offsets = Vec::with_capacity(cas.info.num_chunks as usize);
-        cas.info.chunk_hashes = chunk_and_boundaries.iter().map(|(hash, _)| *hash).collect();
-        cas.info.unpacked_chunk_offsets = chunk_and_boundaries
-            .iter()
-            .map(|(_, unpacked_chunk_boundary)| *unpacked_chunk_boundary)
-            .collect();
-
-        let mut total_written_bytes: usize = 0;
-
-        let mut raw_start_idx = 0;
-        for boundary in chunk_and_boundaries {
-            let chunk_boundary: u32 = boundary.1;
-
-            let chunk_raw_bytes = &data[raw_start_idx as usize..chunk_boundary as usize];
-
-            // now serialize chunk directly to writer (since chunks come first!)
-            let chunk_written_bytes = serialize_chunk(chunk_raw_bytes, writer, compression_scheme)?;
-            total_written_bytes += chunk_written_bytes;
-            cas.info.chunk_boundary_offsets.push(total_written_bytes as u32);
-
-            // update indexes and onto next chunk
-            raw_start_idx = chunk_boundary;
-        }
-
-        cas.info.fill_in_boundary_offsets();
-
-        // now that footer is ready, write out to writer.
-        let info_length = cas.info.serialize(writer)?;
-        cas.info_length = info_length as u32;
-        total_written_bytes += info_length;
-
-        writer.write_all(&cas.info_length.to_le_bytes())?;
-        total_written_bytes += size_of::<u32>();
-
-        Ok((cas, total_written_bytes))
-    }
-
     pub fn serialize_given_info<W: Write + Seek>(
         w: &mut W,
         info: CasObjectInfoV1,
@@ -1320,25 +1272,8 @@ pub struct SerializedCasObject {
 }
 
 impl SerializedCasObject {
+    /// Builds the xorb from raw xorb data.
     pub fn from_xorb(xorb: RawXorbData, compression_scheme: Option<CompressionScheme>) -> Result<Self, CasObjectError> {
-        Self::from_xorb_impl(xorb, compression_scheme, false)
-    }
-
-    // Used in testing
-    #[allow(dead_code)]
-    pub fn from_xorb_with_verification(
-        xorb: RawXorbData,
-        compression_scheme: Option<CompressionScheme>,
-    ) -> Result<Self, CasObjectError> {
-        Self::from_xorb_impl(xorb, compression_scheme, true)
-    }
-
-    /// Builds the xorb from
-    fn from_xorb_impl(
-        xorb: RawXorbData,
-        compression_scheme: Option<CompressionScheme>,
-        verify_against_previous: bool,
-    ) -> Result<Self, CasObjectError> {
         let mut cas = CasObject::default();
         cas.info.cashash = xorb.hash();
 
@@ -1347,21 +1282,6 @@ impl SerializedCasObject {
         let num_chunks = xorb.data.len();
 
         let chunks_and_boundaries = xorb.cas_info.chunks_and_boundaries();
-
-        // For testing, check the current serialization method against the older version, byte for byte.
-        let mut verification_data = Vec::new();
-
-        if verify_against_previous {
-            // This is the older path;
-            let xorb_data = xorb.to_vec();
-
-            let mut writer = Cursor::new(&mut verification_data);
-
-            let (_, nbytes_trans) =
-                CasObject::serialize(&mut writer, &xorb_hash, &xorb_data, &chunks_and_boundaries, compression_scheme)?;
-
-            assert_eq!(verification_data.len(), nbytes_trans);
-        }
 
         cas.info.num_chunks = chunks_and_boundaries.len() as u32;
         cas.info.chunk_boundary_offsets = Vec::with_capacity(cas.info.num_chunks as usize);
@@ -1406,26 +1326,6 @@ impl SerializedCasObject {
             num_chunks,
         })
     }
-
-    // Used in testing
-    #[allow(dead_code)]
-    pub fn from_components(
-        hash: &MerkleHash,
-        data: Vec<u8>,
-        chunk_and_boundaries: Vec<(MerkleHash, u32)>,
-        compression: Option<CompressionScheme>,
-    ) -> Result<Self, CasObjectError> {
-        let mut writer = Cursor::new(Vec::new());
-
-        CasObject::serialize(&mut writer, hash, &data, &chunk_and_boundaries, compression)?;
-
-        Ok(Self {
-            serialized_data: writer.into_inner(),
-            hash: *hash,
-            raw_num_bytes: data.len() as u64,
-            num_chunks: chunk_and_boundaries.len(),
-        })
-    }
 }
 
 pub mod test_utils {
@@ -1435,6 +1335,111 @@ pub mod test_utils {
 
     use super::*;
     use crate::cas_chunk_format::serialize_chunk;
+
+    /// The reference version of the code serializing components of a raw cas object to
+    /// a stream.  Replaced by SerializedCasObject::from_xorb; used here for correctness testing.
+    pub fn serialize_xorb_to_stream_reference<W: Write + Seek>(
+        writer: &mut W,
+        hash: &MerkleHash,
+        data: &[u8],
+        chunk_and_boundaries: &[(MerkleHash, u32)],
+        compression_scheme: Option<CompressionScheme>,
+    ) -> Result<(CasObject, usize), CasObjectError> {
+        let mut cas = CasObject::default();
+        cas.info.cashash = *hash;
+        cas.info.num_chunks = chunk_and_boundaries.len() as u32;
+        cas.info.chunk_boundary_offsets = Vec::with_capacity(cas.info.num_chunks as usize);
+        cas.info.chunk_hashes = chunk_and_boundaries.iter().map(|(hash, _)| *hash).collect();
+        cas.info.unpacked_chunk_offsets = chunk_and_boundaries
+            .iter()
+            .map(|(_, unpacked_chunk_boundary)| *unpacked_chunk_boundary)
+            .collect();
+
+        let mut total_written_bytes: usize = 0;
+
+        let mut raw_start_idx = 0;
+        for boundary in chunk_and_boundaries {
+            let chunk_boundary: u32 = boundary.1;
+
+            let chunk_raw_bytes = &data[raw_start_idx as usize..chunk_boundary as usize];
+
+            // now serialize chunk directly to writer (since chunks come first!)
+            let chunk_written_bytes = serialize_chunk(chunk_raw_bytes, writer, compression_scheme)?;
+            total_written_bytes += chunk_written_bytes;
+            cas.info.chunk_boundary_offsets.push(total_written_bytes as u32);
+
+            // update indexes and onto next chunk
+            raw_start_idx = chunk_boundary;
+        }
+
+        cas.info.fill_in_boundary_offsets();
+
+        // now that footer is ready, write out to writer.
+        let info_length = cas.info.serialize(writer)?;
+        cas.info_length = info_length as u32;
+        total_written_bytes += info_length;
+
+        writer.write_all(&cas.info_length.to_le_bytes())?;
+        total_written_bytes += size_of::<u32>();
+
+        Ok((cas, total_written_bytes))
+    }
+
+    /// Serialize into Cas Object from uncompressed data and chunk boundaries.
+    /// Assumes correctness from caller: it's the receiver's responsibility to validate a cas object.
+    pub fn serialized_cas_object_from_components(
+        hash: &MerkleHash,
+        data: Vec<u8>,
+        chunk_and_boundaries: Vec<(MerkleHash, u32)>,
+        compression: Option<CompressionScheme>,
+    ) -> Result<SerializedCasObject, CasObjectError> {
+        let mut writer = Cursor::new(Vec::new());
+
+        serialize_xorb_to_stream_reference(&mut writer, hash, &data, &chunk_and_boundaries, compression)?;
+
+        Ok(SerializedCasObject {
+            serialized_data: writer.into_inner(),
+            hash: *hash,
+            raw_num_bytes: data.len() as u64,
+            num_chunks: chunk_and_boundaries.len(),
+        })
+    }
+
+    pub fn verify_serialized_cas_object(
+        xorb: &RawXorbData,
+        compression_scheme: Option<CompressionScheme>,
+        cas_object: &SerializedCasObject,
+    ) {
+        let xorb_hash = xorb.hash();
+        let num_chunks = xorb.data.len();
+
+        let chunks_and_boundaries = xorb.cas_info.chunks_and_boundaries();
+
+        // For testing, check the current serialization method against the older version, byte for byte.
+        let mut verification_data = Vec::new();
+
+        // This is the older path;
+        let xorb_data = raw_xorb_to_vec(&xorb);
+
+        let mut writer = Cursor::new(&mut verification_data);
+
+        let (_, nbytes_trans) = serialize_xorb_to_stream_reference(
+            &mut writer,
+            &xorb_hash,
+            &xorb_data,
+            &chunks_and_boundaries,
+            compression_scheme,
+        )
+        .unwrap();
+
+        assert_eq!(verification_data.len(), nbytes_trans);
+
+        assert_eq!(cas_object.serialized_data, verification_data);
+
+        assert_eq!(cas_object.raw_num_bytes, xorb.num_bytes() as u64);
+
+        assert_eq!(cas_object.num_chunks, num_chunks);
+    }
 
     pub fn gen_random_bytes(size: u32) -> Vec<u8> {
         let mut rng = rand::rng();
@@ -1482,6 +1487,17 @@ pub mod test_utils {
         RawXorbData::from_chunks(&chunks)
 
         // Now, validate that this is actually the same
+    }
+
+    pub fn build_and_verify_cas_object(
+        xorb: RawXorbData,
+        compression_scheme: Option<CompressionScheme>,
+    ) -> SerializedCasObject {
+        let cas_object = SerializedCasObject::from_xorb(xorb.clone(), compression_scheme).unwrap();
+
+        verify_serialized_cas_object(&xorb, compression_scheme, &cas_object);
+
+        cas_object
     }
 
     /// Utility test method for creating a cas object
@@ -1697,7 +1713,7 @@ mod tests {
 
         // Act & Assert
         let mut writer: Cursor<Vec<u8>> = Cursor::new(Vec::new());
-        assert!(CasObject::serialize(
+        assert!(serialize_xorb_to_stream_reference(
             &mut writer,
             &c.info.cashash,
             &raw_data,
@@ -1715,7 +1731,7 @@ mod tests {
         let c_bytes = c.get_all_bytes(&mut reader).unwrap();
 
         let mut writer: Cursor<Vec<u8>> = Cursor::new(Vec::new());
-        assert!(CasObject::serialize(
+        assert!(serialize_xorb_to_stream_reference(
             &mut writer,
             &c.info.cashash,
             &c_bytes,
@@ -1743,7 +1759,7 @@ mod tests {
             build_cas_object(55, ChunkSize::Fixed(53212), CompressionScheme::LZ4);
         // Act & Assert
         let mut buf: Cursor<Vec<u8>> = Cursor::new(Vec::new());
-        assert!(CasObject::serialize(
+        assert!(serialize_xorb_to_stream_reference(
             &mut buf,
             &c.info.cashash,
             &raw_data,
@@ -1765,7 +1781,7 @@ mod tests {
             build_cas_object(3, ChunkSize::Fixed(100), CompressionScheme::None);
         let mut buf: Cursor<Vec<u8>> = Cursor::new(Vec::new());
         // Act & Assert
-        assert!(CasObject::serialize(
+        assert!(serialize_xorb_to_stream_reference(
             &mut buf,
             &c.info.cashash,
             &raw_data,
@@ -1784,7 +1800,7 @@ mod tests {
             build_cas_object(32, ChunkSize::Fixed(16384), CompressionScheme::None);
         let mut buf: Cursor<Vec<u8>> = Cursor::new(Vec::new());
         // Act & Assert
-        assert!(CasObject::serialize(
+        assert!(serialize_xorb_to_stream_reference(
             &mut buf,
             &c.info.cashash,
             &raw_data,
@@ -1815,7 +1831,7 @@ mod tests {
             build_cas_object(32, ChunkSize::Random(512, 65536), CompressionScheme::None);
         let mut buf: Cursor<Vec<u8>> = Cursor::new(Vec::new());
         // Act & Assert
-        assert!(CasObject::serialize(
+        assert!(serialize_xorb_to_stream_reference(
             &mut buf,
             &c.info.cashash,
             &raw_data,
@@ -1845,7 +1861,7 @@ mod tests {
             build_cas_object(256, ChunkSize::Random(512, 65536), CompressionScheme::None);
         let mut buf: Cursor<Vec<u8>> = Cursor::new(Vec::new());
         // Act & Assert
-        assert!(CasObject::serialize(
+        assert!(serialize_xorb_to_stream_reference(
             &mut buf,
             &c.info.cashash,
             &raw_data,
@@ -1875,7 +1891,7 @@ mod tests {
             build_cas_object(1, ChunkSize::Fixed(8), CompressionScheme::LZ4);
         let mut writer: Cursor<Vec<u8>> = Cursor::new(Vec::new());
         // Act & Assert
-        assert!(CasObject::serialize(
+        assert!(serialize_xorb_to_stream_reference(
             &mut writer,
             &c.info.cashash,
             &raw_data,
@@ -1904,7 +1920,7 @@ mod tests {
             build_cas_object(32, ChunkSize::Fixed(16384), CompressionScheme::LZ4);
         let mut buf: Cursor<Vec<u8>> = Cursor::new(Vec::new());
         // Act & Assert
-        assert!(CasObject::serialize(
+        assert!(serialize_xorb_to_stream_reference(
             &mut buf,
             &c.info.cashash,
             &raw_data,
@@ -1935,7 +1951,7 @@ mod tests {
             build_cas_object(32, ChunkSize::Random(512, 65536), CompressionScheme::LZ4);
         let mut buf: Cursor<Vec<u8>> = Cursor::new(Vec::new());
         // Act & Assert
-        assert!(CasObject::serialize(
+        assert!(serialize_xorb_to_stream_reference(
             &mut buf,
             &c.info.cashash,
             &raw_data,
@@ -1965,7 +1981,7 @@ mod tests {
             build_cas_object(256, ChunkSize::Random(512, 65536), CompressionScheme::LZ4);
         let mut writer: Cursor<Vec<u8>> = Cursor::new(Vec::new());
         // Act & Assert
-        assert!(CasObject::serialize(
+        assert!(serialize_xorb_to_stream_reference(
             &mut writer,
             &c.info.cashash,
             &raw_data,
@@ -1993,7 +2009,7 @@ mod tests {
             build_cas_object(64, ChunkSize::Random(512, 2048), CompressionScheme::LZ4);
         let mut buf: Cursor<Vec<u8>> = Cursor::new(Vec::new());
         // Act & Assert
-        assert!(CasObject::serialize(
+        assert!(serialize_xorb_to_stream_reference(
             &mut buf,
             &c.info.cashash,
             &raw_data,
@@ -2023,7 +2039,7 @@ mod tests {
             build_cas_object(4, ChunkSize::Random(512, 2048), CompressionScheme::LZ4);
         let mut buf: Cursor<Vec<u8>> = Cursor::new(Vec::new());
         // Act & Assert
-        assert!(CasObject::serialize(
+        assert!(serialize_xorb_to_stream_reference(
             &mut buf,
             &c.info.cashash,
             &raw_data,
@@ -2087,7 +2103,7 @@ mod tests {
             build_cas_object(4, ChunkSize::Random(512, 2048), CompressionScheme::LZ4);
         let mut buf: Cursor<Vec<u8>> = Cursor::new(Vec::new());
 
-        assert!(CasObject::serialize(
+        assert!(serialize_xorb_to_stream_reference(
             &mut buf,
             &c.info.cashash,
             &raw_data,
@@ -2186,7 +2202,7 @@ mod tests {
 
             // Act & Assert
             let mut writer: Cursor<Vec<u8>> = Cursor::new(Vec::new());
-            assert!(CasObject::serialize(
+            assert!(serialize_xorb_to_stream_reference(
                 &mut writer,
                 &c.info.cashash,
                 &raw_data,

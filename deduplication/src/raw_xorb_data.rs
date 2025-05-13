@@ -9,7 +9,7 @@ use crate::constants::{MAX_XORB_BYTES, MAX_XORB_CHUNKS};
 use crate::Chunk;
 
 /// This struct is the data needed to cut a
-#[derive(Default, Debug)]
+#[derive(Default, Debug, Clone)]
 pub struct RawXorbData {
     /// The data for the xorb info.
     pub data: Vec<Arc<[u8]>>,
@@ -62,13 +62,15 @@ impl RawXorbData {
 
         n
     }
+}
 
-    // Used largely for testing to test newer serialization method against known older one.
-    #[allow(dead_code)]
-    pub fn to_vec(&self) -> Vec<u8> {
-        let mut new_vec = Vec::with_capacity(self.num_bytes());
+pub mod test_utils {
+    use super::RawXorbData;
 
-        for ch in self.data.iter() {
+    pub fn raw_xorb_to_vec(xorb: &RawXorbData) -> Vec<u8> {
+        let mut new_vec = Vec::with_capacity(xorb.num_bytes());
+
+        for ch in xorb.data.iter() {
             new_vec.extend_from_slice(ch);
         }
 
