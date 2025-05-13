@@ -8,12 +8,13 @@ use mdb_shard::hash_is_global_dedup_eligible;
 use merkledb::aggregate_hashes::file_node_hash;
 use merklehash::MerkleHash;
 use more_asserts::{debug_assert_le, debug_assert_lt};
+use progress_tracking::upload_tracking::FileXorbDependency;
 
 use crate::constants::{MAX_XORB_BYTES, MAX_XORB_CHUNKS};
 use crate::data_aggregator::DataAggregator;
 use crate::dedup_metrics::DeduplicationMetrics;
 use crate::defrag_prevention::DefragPrevention;
-use crate::interface::{DeduplicationDataInterface, FileXorbDependency};
+use crate::interface::DeduplicationDataInterface;
 use crate::raw_xorb_data::RawXorbData;
 use crate::Chunk;
 

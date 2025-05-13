@@ -11,10 +11,10 @@ use cas_object::CompressionScheme;
 use deduplication::DeduplicationMetrics;
 use dirs::home_dir;
 use parutils::{tokio_par_for_each, ParallelError};
+use progress_tracking::TrackingProgressUpdater;
 use tracing::{info_span, instrument, Instrument, Span};
 use ulid::Ulid;
 use utils::auth::{AuthConfig, TokenRefresher};
-use utils::progress::TrackingProgressUpdater;
 
 use crate::configurations::*;
 use crate::constants::{INGESTION_BLOCK_SIZE, MAX_CONCURRENT_DOWNLOADS, MAX_CONCURRENT_FILE_INGESTION};
