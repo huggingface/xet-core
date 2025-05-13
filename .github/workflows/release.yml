@@ -184,6 +184,9 @@ jobs:
           if [ -n "$VERSION" ]; then
             sed -i '/^version /s/=.*$/= "'"$VERSION"'"/' hf_xet/Cargo.toml
           fi
+          # maturin sdist will copy an edited pyproject.toml to the repo root, so we need to 
+          # update the python path in pyproject.toml to account for that.
+          sed -i '/^python\-source =/ s/= .*/= "hf_xet\/python"/' hf_xet/pyproject.toml
       - name: Build sdist
         uses: PyO3/maturin-action@v1
         with:
