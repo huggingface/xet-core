@@ -6,6 +6,7 @@ build-backend = "maturin"
 name = "hf-xet"
 requires-python = ">=3.8"
 description = "Fast transfer of large files with the Hugging Face Hub."
+license = { file = "LICENSE" }
 classifiers = [
     "Programming Language :: Rust",
     "Programming Language :: Python :: Implementation :: CPython",
@@ -25,5 +26,5 @@ Issues = "https://github.com/huggingface/xet-core/issues"
 Repository = "https://github.com/huggingface/xet-core.git"
 
 [tool.maturin]
-python-source = "hf_xet/python"
+python-source = "python"
 features = ["pyo3/extension-module"]
