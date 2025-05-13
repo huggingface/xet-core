@@ -565,7 +565,7 @@ impl RemoteClient {
                     let segment = Arc::new(segment);
 
                     // define the term download tasks
-                    let tasks = make_tasks(
+                    let tasks = map_fetch_info_into_download_tasks(
                         segment.clone(),
                         terms,
                         offset_into_first_range,
@@ -603,7 +603,8 @@ impl RemoteClient {
     }
 }
 
-async fn make_tasks(
+#[allow(clippy::too_many_arguments)]
+async fn map_fetch_info_into_download_tasks(
     segment: Arc<FetchInfo>,
     terms: Vec<CASReconstructionTerm>,
     offset_into_first_range: u64,
@@ -628,7 +629,7 @@ async fn make_tasks(
     let mut fetch_info_term_map: HashMap<(MerkleHash, ChunkRange), FetchTermDownloadOnceAndWriteEverywhereUsed> =
         HashMap::new();
     for (i, term) in terms.into_iter().enumerate() {
-        let (individual_fetch_info, _) = segment.find((term.hash.into(), term.range)).await?;
+        let (individual_fetch_info, _) = segment.find((term.hash, term.range)).await?;
 
         let skip_bytes = if i == 0 { offset_into_first_range } else { 0 };
         // amount to take is min of the whole term after skipped bytes or the remainder of the segment

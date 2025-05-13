@@ -153,9 +153,9 @@ pub(crate) struct SequentialTermDownload {
     pub term: CASReconstructionTerm,
     pub download: FetchTermDownload,
     pub skip_bytes: u64, // number of bytes to skip at the front
-    pub take: u64,       // number of bytes to take after skipping bytes,
-                         // effectively taking [skip_bytes..skip_bytes+take]
-                         // out of the downloaded range
+    pub take: u64,       /* number of bytes to take after skipping bytes,
+                          * effectively taking [skip_bytes..skip_bytes+take]
+                          * out of the downloaded range */
 }
 
 impl SequentialTermDownload {
@@ -286,8 +286,7 @@ impl FetchTermDownloadOnceAndWriteEverywhereUsed {
             chunk_range,
         } = download_result.data;
         debug_assert_eq!(chunk_byte_indices.len(), (chunk_range.end - chunk_range.start + 1) as usize);
-        debug_assert!(chunk_byte_indices.len() > 0);
-        debug_assert_eq!(*chunk_byte_indices.last().expect("checked len > 0") as usize, data.len());
+        debug_assert_eq!(*chunk_byte_indices.last().expect("checked len is something") as usize, data.len());
 
         // write out the data
         let mut total_written = 0;

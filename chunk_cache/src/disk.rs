@@ -514,7 +514,7 @@ impl DiskCache {
         }
 
         let stored = get_range_from_cache_file(&header, &mut reader, range, cache_item.range.start)?;
-        if data != &stored.data {
+        if data != stored.data {
             return Err(ChunkCacheError::InvalidArguments);
         }
         Ok(true)
@@ -609,8 +609,8 @@ fn get_range_from_cache_file<R: Read + Seek>(
     debug_assert_eq!(range.end - range.start, offsets.len() as u32 - 1);
 
     Ok(CacheRange {
-        offsets: offsets.into(),
-        data: data.into(),
+        offsets,
+        data,
         range: *range,
     })
 }
