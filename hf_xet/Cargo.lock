@@ -342,6 +342,7 @@ dependencies = [
 name = "cas_types"
 version = "0.1.0"
 dependencies = [
+ "derivative",
  "merklehash",
  "serde",
  "serde_repr",
@@ -1186,7 +1187,7 @@ checksum = "fbf6a919d6cf397374f7dfeeea91d974c7c0a7221d0d0f4f20d859d329e53fcc"
 
 [[package]]
 name = "hf_xet"
-version = "1.1.0"
+version = "1.1.1"
 dependencies = [
  "async-trait",
  "bipbuffer",

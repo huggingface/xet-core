@@ -200,6 +200,7 @@ impl TestSetup {
         }
     }
 }
+
 /// Variant of `dehydrate_directory` that calls `upload_session.checkpoint()`
 /// after every few file uploads.  This ensures that cross-file deduplication happens and
 /// gets test coverage.
@@ -339,7 +340,7 @@ mod tests {
     /// 1) Several identical files, each smaller than MAX_XORB_BYTES.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_several_identical_multipart() {
-        // Let's make 16 identical files, each identical
+        // Let's make 16 files, each identical and smaller than a xorb
         let file_specs: Vec<(String, Vec<(u64, u64)>)> = (0..16)
             .map(|i| (format!("identical_{i}"), vec![(123, *MAX_XORB_BYTES as u64 / 2)]))
             .collect();

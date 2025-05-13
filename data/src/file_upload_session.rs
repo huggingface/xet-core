@@ -4,8 +4,9 @@ use std::mem::{swap, take};
 use std::sync::Arc;
 
 use cas_client::Client;
+use cas_object::{CompressionScheme, NUM_COMPRESSION_SCHEMES};
 use deduplication::constants::{MAX_XORB_BYTES, MAX_XORB_CHUNKS};
-use deduplication::{DataAggregator, DeduplicationMetrics, RawXorbData};
+use deduplication::{DataAggregator, DeduplicationMetrics, FileXorbDependency, RawXorbData};
 use jsonwebtoken::{decode, DecodingKey, Validation};
 use mdb_shard::file_structs::MDBFileInfo;
 use merklehash::MerkleHash;
@@ -20,7 +21,7 @@ use crate::configurations::*;
 use crate::constants::MAX_CONCURRENT_UPLOADS;
 use crate::errors::*;
 use crate::file_cleaner::SingleFileCleaner;
-use crate::progress_tracking::{CompletionTracker, CompletionTrackerFileId};
+use crate::progress_tracking::CompletionTracker;
 use crate::prometheus_metrics;
 use crate::remote_client_interface::create_remote_client;
 use crate::shard_interface::SessionShardInterface;
@@ -74,6 +75,12 @@ pub struct FileUploadSession {
 
     /// Internal worker
     xorb_upload_tasks: Mutex<JoinSet<Result<()>>>,
+
+    /// The current compression scheme in use. If initialized to None,
+    /// This may change as upload progresses and statistics about the
+    /// preferred scheme is collected. Currently we use the 1st Xorb
+    /// to determine the compression scheme. Then lock it from then on.
+    compression_scheme: Mutex<Option<CompressionScheme>>,
 
     /// Xorbs that have been uploaded as part of this session -- and thus are tracked in the
     /// completion tracker.
@@ -143,6 +150,7 @@ impl FileUploadSession {
                 decoded.claims.get("repoId").and_then(|value| value.as_str().map(String::from))
             })
         });
+        let compression_scheme = Mutex::new(config.data_config.compression);
 
         Ok(Arc::new(Self {
             shard_interface,
@@ -153,6 +161,7 @@ impl FileUploadSession {
             current_session_data: Mutex::new(DataAggregator::default()),
             deduplication_metrics: Mutex::new(DeduplicationMetrics::default()),
             xorb_upload_tasks: Mutex::new(JoinSet::new()),
+            compression_scheme,
             session_xorbs: Mutex::new(HashSet::new()),
 
             #[cfg(debug_assertions)]
@@ -179,7 +188,7 @@ impl FileUploadSession {
     /// Registers a new xorb for upload, returning true if the xorb was added to the upload queue and false
     /// if it was already in the queue and didn't need to be uploaded again.
     #[instrument(skip_all, name="FileUploadSession::register_new_xorb_for_upload", fields(xorb_len = xorb.num_bytes()))]
-    pub(crate) async fn register_new_xorb_for_upload(self: &Arc<Self>, xorb: RawXorbData) -> Result<bool> {
+    pub(crate) async fn register_new_xorb(self: &Arc<Self>, xorb: RawXorbData) -> Result<bool> {
         // First check the current xorb upload tasks to see if any can be cleaned up.
         {
             let mut upload_tasks = self.xorb_upload_tasks.lock().await;
@@ -195,7 +204,7 @@ impl FileUploadSession {
         //
         // In some circumstances, we can cut to instances of the same xorb, namely when there are two files
         // with the same starting data that get processed simultaneously.  When this happens, we only upload
-        // the first one, returning early
+        // the first one, returning early here.
         let new_xorb = self.session_xorbs.lock().await.insert(xorb_hash);
 
         if !new_xorb {
@@ -209,6 +218,31 @@ impl FileUploadSession {
             return Ok(true);
         }
 
+        // This xorb is in the session upload queue, so other threads can go ahead and dedup against it.
+        // No session shard data gets uploaded until all the xorbs have been successfully uploaded, so
+        // this is safe.
+        self.shard_interface.add_cas_block(xorb.cas_info.clone()).await?;
+
+        let mut compression_scheme = *self.compression_scheme.lock().await;
+        // if compression scheme is None, we use the first Xorb to determine
+        // the appropriate scheme and lock it for all remaining xorbs.
+        if compression_scheme.is_none() {
+            let mut compression_scheme_vote = [0_usize; NUM_COMPRESSION_SCHEMES];
+            for i in xorb.data.iter() {
+                let scheme = CompressionScheme::choose_from_data(i);
+                compression_scheme_vote[scheme as usize] += 1;
+            }
+            let mut prefered_scheme = 0;
+            for i in 1..NUM_COMPRESSION_SCHEMES {
+                if compression_scheme_vote[i] > compression_scheme_vote[prefered_scheme] {
+                    prefered_scheme = i;
+                }
+            }
+            compression_scheme = Some(CompressionScheme::try_from(prefered_scheme as u8).unwrap());
+            *self.compression_scheme.lock().await = compression_scheme;
+        }
+
+        let xorb_hash = xorb.hash();
         let xorb_data = xorb.to_vec();
         let chunks_and_boundaries = xorb.cas_info.chunks_and_boundaries();
 
@@ -222,7 +256,7 @@ impl FileUploadSession {
             async move {
                 let n_bytes_transmitted = session
                     .client
-                    .put(&cas_prefix, &xorb_hash, xorb_data, chunks_and_boundaries)
+                    .put(&cas_prefix, &xorb_hash, xorb_data, chunks_and_boundaries, compression_scheme)
                     .await?;
 
                 drop(upload_permit);
@@ -231,7 +265,7 @@ impl FileUploadSession {
                 session.completion_tracker.register_xorb_upload_completion(xorb_hash).await;
 
                 // Record the number of bytes uploaded.
-                session.deduplication_metrics.lock().await.xorb_bytes_uploaded += n_bytes_transmitted;
+                session.deduplication_metrics.lock().await.xorb_bytes_uploaded += n_bytes_transmitted as u64;
                 Ok(())
             }
             .instrument(info_span!("FileUploadSession::upload_xorb_task", xorb.hash = xorb_hash.hex())),
@@ -294,44 +328,35 @@ impl FileUploadSession {
         debug_assert_le!(xorb.data.len(), *MAX_XORB_CHUNKS);
 
         // Now, we need to scan all the file dependencies for dependencies on this xorb, as
-        // these would not have been registered yet.
-        self.register_new_xorb_for_upload(xorb).await?;
-
+        // these would not have been registered yet as we just got the xorb hash.
         let mut new_dependencies = Vec::with_capacity(new_files.len());
 
         {
             for (file_id, fi, bytes_in_xorb) in new_files {
-                if xorb_hash == MerkleHash::default() || bytes_in_xorb != 0 {
-                    new_dependencies.push((file_id, xorb_hash, bytes_in_xorb, false));
-                }
+                new_dependencies.push(FileXorbDependency {
+                    file_id,
+                    xorb_hash,
+                    n_bytes: bytes_in_xorb,
+                    is_external: false,
+                });
 
+                // Record the reconstruction.
                 self.shard_interface.add_file_reconstruction_info(fi).await?;
             }
         }
 
         self.completion_tracker.register_dependencies(&new_dependencies).await;
 
+        // Now we can go ahead and start the upload process; this is spun off into a background thread
+        // but might as well get it started.
+        self.register_new_xorb(xorb).await?;
+
         Ok(())
     }
 
     /// Register a xorb dependencies that is given as part of the dedup process.
-    pub(crate) async fn register_xorb_dependencies(
-        self: &Arc<Self>,
-        file_id: CompletionTrackerFileId,
-        xorb_dependencies: &[(MerkleHash, u64)],
-    ) {
-        // See what dependencies we own:
-        let mut dependencies = Vec::with_capacity(xorb_dependencies.len());
-
-        {
-            let xorb_lookup = self.session_xorbs.lock().await;
-            for &(xorb_hash, n_bytes) in xorb_dependencies {
-                let is_uploaded_out_of_session = !xorb_lookup.contains(&xorb_hash);
-                dependencies.push((file_id, xorb_hash, n_bytes, is_uploaded_out_of_session));
-            }
-        }
-
-        self.completion_tracker.register_dependencies(&dependencies).await;
+    pub(crate) async fn register_xorb_dependencies(self: &Arc<Self>, xorb_dependencies: &[FileXorbDependency]) {
+        self.completion_tracker.register_dependencies(xorb_dependencies).await;
     }
 
     /// Finalize everything.
@@ -368,8 +393,8 @@ impl FileUploadSession {
         metrics.total_bytes_uploaded = metrics.shard_bytes_uploaded + metrics.xorb_bytes_uploaded;
 
         // Update the global counters
-        prometheus_metrics::FILTER_CAS_BYTES_PRODUCED.inc_by(metrics.new_bytes as u64);
-        prometheus_metrics::FILTER_BYTES_CLEANED.inc_by(metrics.total_bytes as u64);
+        prometheus_metrics::FILTER_CAS_BYTES_PRODUCED.inc_by(metrics.new_bytes);
+        prometheus_metrics::FILTER_BYTES_CLEANED.inc_by(metrics.total_bytes);
 
         #[cfg(debug_assertions)]
         {

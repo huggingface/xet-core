@@ -27,7 +27,6 @@ use tracing::{debug, info, instrument};
 use utils::auth::AuthConfig;
 use utils::progress::SimpleProgressUpdater;
 use utils::singleflight::Group;
-use xet_threadpool::ThreadPool;
 
 use crate::download_utils::*;
 use crate::error::{CasClientError, Result};
@@ -59,7 +58,6 @@ utils::configurable_bool_constants! {
 
 pub struct RemoteClient {
     endpoint: String,
-    compression: Option<CompressionScheme>,
     dry_run: bool,
     http_client: Arc<ClientWithMiddleware>,
     authenticated_http_client: Arc<ClientWithMiddleware>,
@@ -73,7 +71,6 @@ impl RemoteClient {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         endpoint: &str,
-        compression: Option<CompressionScheme>,
         auth: &Option<AuthConfig>,
         cache_config: &Option<CacheConfig>,
         shard_cache_directory: PathBuf,
@@ -101,7 +98,6 @@ impl RemoteClient {
 
         Self {
             endpoint: endpoint.to_string(),
-            compression,
             dry_run,
             authenticated_http_client: Arc::new(
                 http_client::build_auth_http_client(auth, RetryConfig::default(), session_id).unwrap(),
@@ -125,13 +121,14 @@ impl UploadClient for RemoteClient {
         hash: &MerkleHash,
         data: Vec<u8>,
         chunk_and_boundaries: Vec<(MerkleHash, u32)>,
+        compression: Option<CompressionScheme>,
     ) -> Result<usize> {
         let key = Key {
             prefix: prefix.to_string(),
             hash: *hash,
         };
 
-        let (was_uploaded, nbytes_trans) = self.upload(&key, data, chunk_and_boundaries).await?;
+        let (was_uploaded, nbytes_trans) = self.upload(&key, data, chunk_and_boundaries, compression).await?;
 
         if !was_uploaded {
             debug!("{key:?} not inserted into CAS.");
@@ -283,13 +280,14 @@ impl RemoteClient {
         key: &Key,
         contents: Vec<u8>,
         chunk_and_boundaries: Vec<(MerkleHash, u32)>,
+        compression: Option<CompressionScheme>,
     ) -> Result<(bool, usize)> {
         let url = Url::parse(&format!("{}/xorb/{key}", self.endpoint))?;
 
         let mut writer = Cursor::new(Vec::new());
 
         let (_, nbytes_trans) =
-            CasObject::serialize(&mut writer, &key.hash, &contents, &chunk_and_boundaries, self.compression)?;
+            CasObject::serialize(&mut writer, &key.hash, &contents, &chunk_and_boundaries, compression)?;
         // free memory before the "slow" network transfer below
         drop(contents);
 
@@ -350,14 +348,13 @@ impl RemoteClient {
         // download tasks are enqueued and spawned with the degree of concurrency equal to `num_concurrent_range_gets`.
         // After the above, a task that defines fetching the remainder of the file reconstruction info is enqueued,
         // which will execute after the first of the above term download tasks finishes.
-        let threadpool = ThreadPool::current();
         let chunk_cache = self.chunk_cache.clone();
         let term_download_client = self.http_client.clone();
         let range_download_single_flight = self.range_download_single_flight.clone();
         let download_scheduler = DownloadScheduler::new(*NUM_CONCURRENT_RANGE_GETS);
         let download_scheduler_clone = download_scheduler.clone();
 
-        let queue_dispatcher: JoinHandle<Result<()>> = threadpool.clone().spawn(async move {
+        let queue_dispatcher: JoinHandle<Result<()>> = tokio::spawn(async move {
             let mut remaining_total_len = total_len;
             while let Some(item) = task_rx.recv().await {
                 match item {
@@ -373,7 +370,7 @@ impl RemoteClient {
                         let permit = download_scheduler_clone.download_permit().await?;
                         debug!("spawning 1 download task");
                         let future: JoinHandle<Result<(TermDownloadResult<Vec<u8>>, OwnedSemaphorePermit)>> =
-                            threadpool.spawn(async move {
+                            tokio::spawn(async move {
                                 let data = term_download.run().await?;
                                 Ok((data, permit))
                             });
@@ -760,6 +757,7 @@ mod tests {
     use httpmock::MockServer;
     use merkledb::constants::TARGET_CDC_CHUNK_SIZE;
     use tracing_test::traced_test;
+    use xet_threadpool::ThreadPool;
 
     use super::*;
     use crate::interface::buffer::BufferProvider;
@@ -773,11 +771,14 @@ mod tests {
         let (c, _, data, chunk_boundaries) = build_cas_object(3, ChunkSize::Random(512, 10248), CompressionScheme::LZ4);
 
         let threadpool = ThreadPool::new().unwrap();
-
-        let client = RemoteClient::new(CAS_ENDPOINT, Some(CompressionScheme::LZ4), &None, &None, "".into(), "", false);
+        let client = RemoteClient::new(CAS_ENDPOINT, &None, &None, "".into(), "", false);
         // Act
         let result = threadpool
-            .external_run_async_task(async move { client.put(prefix, &c.info.cashash, data, chunk_boundaries).await })
+            .external_run_async_task(async move {
+                client
+                    .put(prefix, &c.info.cashash, data, chunk_boundaries, Some(CompressionScheme::LZ4))
+                    .await
+            })
             .unwrap();
 
         // Assert
@@ -1105,7 +1106,7 @@ mod tests {
             file_range: FileRange::new(SKIP_BYTES, FILE_SIZE - SKIP_BYTES),
             expected_data: [
                 &raw_data[SKIP_BYTES as usize..(5 * CHUNK_SIZE) as usize],
-                &raw_data[(6 * CHUNK_SIZE) as usize as usize..(NUM_CHUNKS * CHUNK_SIZE) as usize - SKIP_BYTES as usize],
+                &raw_data[(6 * CHUNK_SIZE) as usize..(NUM_CHUNKS * CHUNK_SIZE) as usize - SKIP_BYTES as usize],
             ]
             .concat(),
             expect_error: false,
@@ -1144,7 +1145,7 @@ mod tests {
 
         // test reconstruct and sequential write
         let test = test_case.clone();
-        let client = RemoteClient::new(endpoint, None, &None, &None, "".into(), "", false);
+        let client = RemoteClient::new(endpoint, &None, &None, "".into(), "", false);
         let provider = BufferProvider::default();
         let buf = provider.buf.clone();
         let writer = OutputProvider::Buffer(provider);
@@ -1162,7 +1163,7 @@ mod tests {
 
         // test reconstruct and parallel write
         let test = test_case;
-        let client = RemoteClient::new(endpoint, None, &None, &None, "".into(), "", false);
+        let client = RemoteClient::new(endpoint, &None, &None, "".into(), "", false);
         let provider = BufferProvider::default();
         let buf = provider.buf.clone();
         let writer = OutputProvider::Buffer(provider);
