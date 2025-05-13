@@ -21,6 +21,7 @@ merklehash = { path = "../merklehash" }
 mdb_shard = { path = "../mdb_shard" }
 utils = { path = "../utils" }
 parutils = { path = "../parutils" }
+deduplication = { path = "../deduplication" }
 anyhow = "1.0.88"
 tracing = "0.1.40"
 lz4_flex = "0.11.3"
@@ -42,3 +43,7 @@ tokio-util = { version = "0.7.12", features = ["io"] }
 [[bin]]
 path = "src/byte_grouping/compression_stats/collect_compression_stats.rs"
 name = "collect_compression_stats"
+
+[[bin]]
+path = "src/byte_grouping/bg4_prediction_benchmark.rs"
+name = "bg4_prediction_benchmark"

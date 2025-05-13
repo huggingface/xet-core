@@ -2,11 +2,18 @@ use std::collections::{BTreeSet, HashMap};
 use std::mem::take;
 use std::sync::Arc;
 
-use deduplication::FileXorbDependency;
 use merklehash::MerkleHash;
 use more_asserts::debug_assert_le;
 use tokio::sync::Mutex;
-use utils::progress::{ProgressUpdate, TrackingProgressUpdater};
+
+use crate::{ProgressUpdate, TrackingProgressUpdater};
+
+pub struct FileXorbDependency {
+    pub file_id: u64,
+    pub xorb_hash: MerkleHash,
+    pub n_bytes: u64,
+    pub is_external: bool,
+}
 
 /// A type with with to track a File ID; reporting is done by Arc<str>, but
 /// this ensures the bookkeeping is correct across duplicates and speeds up the
@@ -242,7 +249,9 @@ impl CompletionTracker {
 
     /// Register a list of (file_id, xorb_hash, usize, bool)
     pub async fn register_dependencies(&self, dependencies: &[FileXorbDependency]) {
-        let updates = self.inner.lock().await.register_dependencies(dependencies);
+        let mut update_lock = self.inner.lock().await;
+
+        let updates = update_lock.register_dependencies(dependencies);
 
         if !updates.is_empty() {
             self.progress_reporter.register_updates(&updates).await;
@@ -250,7 +259,9 @@ impl CompletionTracker {
     }
 
     pub async fn register_xorb_upload_completion(&self, xorb_hash: MerkleHash) {
-        let updates = self.inner.lock().await.register_xorb_upload_completion(xorb_hash);
+        let mut update_lock = self.inner.lock().await;
+
+        let updates = update_lock.register_xorb_upload_completion(xorb_hash);
 
         if !updates.is_empty() {
             self.progress_reporter.register_updates(&updates).await;
@@ -276,9 +287,10 @@ impl CompletionTracker {
 #[cfg(test)]
 mod tests {
     use merklehash::MerkleHash;
-    use utils::progress::{NoOpProgressUpdater, ProgressUpdaterVerificationWrapper};
 
     use super::*;
+    use crate::verification_wrapper::ProgressUpdaterVerificationWrapper;
+    use crate::NoOpProgressUpdater;
 
     /// A basic test showing partial updates and final completion checks
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

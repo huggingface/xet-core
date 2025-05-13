@@ -10,12 +10,12 @@ use std::sync::Arc;
 
 use data::errors::DataProcessingError;
 use data::{data_client, XetFileInfo};
+use progress_tracking::TrackingProgressUpdater;
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
 use pyo3::pyfunction;
 use runtime::async_run;
 use token_refresh::WrappedTokenRefresher;
-use utils::progress::TrackingProgressUpdater;
 
 use crate::progress_update::WrappedProgressUpdater;
 
@@ -233,14 +233,14 @@ impl From<XetFileInfo> for PyXetUploadInfo {
     fn from(xf: XetFileInfo) -> Self {
         Self {
             hash: xf.hash().to_owned(),
-            file_size: xf.file_size() as u64,
+            file_size: xf.file_size(),
         }
     }
 }
 
 impl From<PyXetDownloadInfo> for (XetFileInfo, DestinationPath) {
     fn from(pf: PyXetDownloadInfo) -> Self {
-        (XetFileInfo::new(pf.hash, pf.file_size as usize), pf.destination_path)
+        (XetFileInfo::new(pf.hash, pf.file_size), pf.destination_path)
     }
 }
 

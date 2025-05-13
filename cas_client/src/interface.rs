@@ -5,11 +5,11 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use cas_object::CompressionScheme;
+use cas_object::SerializedCasObject;
 use cas_types::{FileRange, QueryReconstructionResponse};
 use mdb_shard::shard_file_reconstructor::FileReconstructor;
 use merklehash::MerkleHash;
-use utils::progress::SimpleProgressUpdater;
+use progress_tracking::SimpleProgressUpdater;
 
 use crate::error::Result;
 use crate::CasClientError;
@@ -21,23 +21,8 @@ use crate::CasClientError;
 /// a prefix namespacing the XORB and the hash at the root of the Merkle Tree.
 #[async_trait]
 pub trait UploadClient {
-    /// Insert the provided data into the CAS as a XORB indicated by the prefix and hash.
-    /// The hash will be verified on the SERVER-side according to the chunk boundaries.
-    /// Chunk Boundaries must be complete; i.e. the last entry in chunk boundary
-    /// must be the length of data. For instance, if data="helloworld" with 2 chunks
-    /// ["hello" "world"], chunk_boundaries should be [5, 10].
-    /// Empty data and empty chunk boundaries are not accepted.
-    ///
-    /// Note that put may background in some implementations and a flush()
-    /// will be needed.
-    async fn put(
-        &self,
-        prefix: &str,
-        hash: &MerkleHash,
-        data: Vec<u8>,
-        chunk_and_boundaries: Vec<(MerkleHash, u32)>,
-        compression: Option<CompressionScheme>,
-    ) -> Result<usize>;
+    /// Insert a serialized XORB into the CAS, returning the number of bytes read.  See   
+    async fn upload_xorb(&self, prefix: &str, serialized_cas_object: SerializedCasObject) -> Result<u64>;
 
     /// Check if a XORB already exists.
     async fn exists(&self, prefix: &str, hash: &MerkleHash) -> Result<bool>;

@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use anyhow::anyhow;
 use async_trait::async_trait;
-use cas_object::{CasObject, CompressionScheme};
+use cas_object::SerializedCasObject;
 use cas_types::{
     BatchQueryReconstructionResponse, CASReconstructionTerm, ChunkRange, FileRange, HttpRange, Key,
     QueryReconstructionResponse, UploadShardResponse, UploadShardResponseType, UploadXorbResponse,
@@ -20,13 +20,13 @@ use mdb_shard::file_structs::{FileDataSequenceEntry, FileDataSequenceHeader, MDB
 use mdb_shard::shard_file_reconstructor::FileReconstructor;
 use mdb_shard::utils::shard_file_name;
 use merklehash::{HashedWrite, MerkleHash};
+use progress_tracking::SimpleProgressUpdater;
 use reqwest::{StatusCode, Url};
 use reqwest_middleware::ClientWithMiddleware;
 use tokio::sync::{mpsc, OwnedSemaphorePermit};
 use tokio::task::{JoinError, JoinHandle, JoinSet};
 use tracing::{debug, info, instrument};
 use utils::auth::AuthConfig;
-use utils::progress::SimpleProgressUpdater;
 use utils::singleflight::Group;
 
 use crate::download_utils::*;
@@ -116,28 +116,43 @@ impl RemoteClient {
 
 #[async_trait]
 impl UploadClient for RemoteClient {
-    async fn put(
-        &self,
-        prefix: &str,
-        hash: &MerkleHash,
-        data: Vec<u8>,
-        chunk_and_boundaries: Vec<(MerkleHash, u32)>,
-        compression: Option<CompressionScheme>,
-    ) -> Result<usize> {
+    #[instrument(skip_all, name="RemoteClient::upload_xorb", fields(key = Key{prefix : prefix.to_string(), hash : serialized_cas_object.hash}.to_string(), 
+                 xorb.len = serialized_cas_object.serialized_data.len(), xorb.num_chunks = serialized_cas_object.num_chunks))]
+    async fn upload_xorb(&self, prefix: &str, serialized_cas_object: SerializedCasObject) -> Result<u64> {
         let key = Key {
             prefix: prefix.to_string(),
-            hash: *hash,
+            hash: serialized_cas_object.hash,
         };
 
-        let (was_uploaded, nbytes_trans) = self.upload(&key, data, chunk_and_boundaries, compression).await?;
+        let url = Url::parse(&format!("{}/xorb/{key}", self.endpoint))?;
 
-        if !was_uploaded {
+        let n_bytes = serialized_cas_object.serialized_data.len();
+
+        let xorb_uploaded = {
+            if !self.dry_run {
+                let response = self
+                    .authenticated_http_client
+                    .post(url)
+                    .with_extension(Api("cas::upload_xorb"))
+                    .body(serialized_cas_object.serialized_data)
+                    .send()
+                    .await
+                    .process_error("upload_xorb")?;
+                let response_parsed: UploadXorbResponse = response.json().await?;
+
+                response_parsed.was_inserted
+            } else {
+                true
+            }
+        };
+
+        if !xorb_uploaded {
             debug!("{key:?} not inserted into CAS.");
         } else {
             debug!("{key:?} inserted into CAS.");
         }
 
-        Ok(nbytes_trans)
+        Ok(n_bytes as u64)
     }
 
     async fn exists(&self, prefix: &str, hash: &MerkleHash) -> Result<bool> {
@@ -273,45 +288,6 @@ impl RemoteClient {
             .await
             .log_error("error json parsing BatchQueryReconstructionResponse")?;
         Ok(query_reconstruction_response)
-    }
-
-    #[instrument(skip_all, name = "RemoteClient::upload_xorb", fields(key = key.to_string(), xorb.len = contents.len(), xorb.num_chunks = chunk_and_boundaries.len()
-    ))]
-    pub async fn upload(
-        &self,
-        key: &Key,
-        contents: Vec<u8>,
-        chunk_and_boundaries: Vec<(MerkleHash, u32)>,
-        compression: Option<CompressionScheme>,
-    ) -> Result<(bool, usize)> {
-        let url = Url::parse(&format!("{}/xorb/{key}", self.endpoint))?;
-
-        let mut writer = Cursor::new(Vec::new());
-
-        let (_, nbytes_trans) =
-            CasObject::serialize(&mut writer, &key.hash, &contents, &chunk_and_boundaries, compression)?;
-        // free memory before the "slow" network transfer below
-        drop(contents);
-
-        debug!("Upload: POST to {url:?} for {key:?}");
-        writer.set_position(0);
-        let data = writer.into_inner();
-
-        if !self.dry_run {
-            let response = self
-                .authenticated_http_client
-                .post(url)
-                .with_extension(Api("cas::upload_xorb"))
-                .body(data)
-                .send()
-                .await
-                .process_error("upload_xorb")?;
-            let response_parsed: UploadXorbResponse = response.json().await?;
-
-            Ok((response_parsed.was_inserted, nbytes_trans))
-        } else {
-            Ok((true, nbytes_trans))
-        }
     }
 
     // Segmented download such that the file reconstruction and fetch info is not queried in its entirety
@@ -816,7 +792,8 @@ mod tests {
     use std::collections::HashMap;
 
     use anyhow::Result;
-    use cas_object::test_utils::{build_cas_object, ChunkSize};
+    use cas_object::test_utils::*;
+    use cas_object::CompressionScheme;
     use cas_types::{CASReconstructionFetchInfo, CASReconstructionTerm, ChunkRange};
     use deduplication::constants::MAX_XORB_BYTES;
     use httpmock::Method::GET;
@@ -834,17 +811,16 @@ mod tests {
     fn test_basic_put() {
         // Arrange
         let prefix = PREFIX_DEFAULT;
-        let (c, _, data, chunk_boundaries) = build_cas_object(3, ChunkSize::Random(512, 10248), CompressionScheme::LZ4);
+        let raw_xorb = build_raw_xorb(3, ChunkSize::Random(512, 10248));
 
         let threadpool = ThreadPool::new().unwrap();
         let client = RemoteClient::new(CAS_ENDPOINT, &None, &None, "".into(), "", false);
+
+        let cas_object = build_and_verify_cas_object(raw_xorb, Some(CompressionScheme::LZ4));
+
         // Act
         let result = threadpool
-            .external_run_async_task(async move {
-                client
-                    .put(prefix, &c.info.cashash, data, chunk_boundaries, Some(CompressionScheme::LZ4))
-                    .await
-            })
+            .external_run_async_task(async move { client.upload_xorb(prefix, cas_object).await })
             .unwrap();
 
         // Assert

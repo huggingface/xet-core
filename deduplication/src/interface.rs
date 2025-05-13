@@ -3,15 +3,9 @@ use std::result::Result;
 use async_trait::async_trait;
 use mdb_shard::file_structs::FileDataSequenceEntry;
 use merklehash::MerkleHash;
+use progress_tracking::upload_tracking::FileXorbDependency;
 
 use crate::raw_xorb_data::RawXorbData;
-
-pub struct FileXorbDependency {
-    pub file_id: u64,
-    pub xorb_hash: MerkleHash,
-    pub n_bytes: u64,
-    pub is_external: bool,
-}
 
 /// The interface needed for the deduplication routines to run.  To use the deduplication code,
 /// define a struct that implements these methods.  This struct must be given by value to the FileDeduper

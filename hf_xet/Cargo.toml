@@ -16,6 +16,7 @@ pyo3 = { version = "0.23.3", features = [
     "auto-initialize",
 ] }
 
+progress_tracking = { path = "../progress_tracking" }
 error_printer = { path = "../error_printer" }
 data = { path = "../data" }
 utils = { path = "../utils" }
@@ -58,8 +59,11 @@ profiling = ["pprof"]
 [profile.release]
 debug = "line-tables-only"
 opt-level = 3
-
 # Uncomment the below for lto + Os
 # opt-level = "s"
 # lto = true
 
+[profile.opt-test]
+inherits = "dev"
+debug = true
+opt-level = 3

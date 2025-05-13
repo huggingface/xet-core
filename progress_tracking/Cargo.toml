@@ -1,0 +1,10 @@
+[package]
+name = "progress_tracking"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+async-trait = "0.1.53"
+merklehash = { path = "../merklehash" }
+tokio = { version = "1.44", features = ["sync"] }
+more-asserts = "0.3.1"

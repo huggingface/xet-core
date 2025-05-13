@@ -6,13 +6,13 @@ use chrono::{DateTime, Utc};
 use deduplication::{Chunk, Chunker, DeduplicationMetrics, FileDeduper};
 use mdb_shard::file_structs::FileMetadataExt;
 use merklehash::MerkleHash;
+use progress_tracking::upload_tracking::CompletionTrackerFileId;
 use tracing::{debug_span, info, instrument, Instrument};
 
 use crate::constants::INGESTION_BLOCK_SIZE;
 use crate::deduplication_interface::UploadSessionDataManager;
 use crate::errors::Result;
 use crate::file_upload_session::FileUploadSession;
-use crate::progress_tracking::CompletionTrackerFileId;
 use crate::sha256::ShaGenerator;
 use crate::XetFileInfo;
 

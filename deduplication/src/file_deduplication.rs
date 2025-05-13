@@ -8,12 +8,13 @@ use mdb_shard::hash_is_global_dedup_eligible;
 use merkledb::aggregate_hashes::file_node_hash;
 use merklehash::MerkleHash;
 use more_asserts::{debug_assert_le, debug_assert_lt};
+use progress_tracking::upload_tracking::FileXorbDependency;
 
 use crate::constants::{MAX_XORB_BYTES, MAX_XORB_CHUNKS};
 use crate::data_aggregator::DataAggregator;
 use crate::dedup_metrics::DeduplicationMetrics;
 use crate::defrag_prevention::DefragPrevention;
-use crate::interface::{DeduplicationDataInterface, FileXorbDependency};
+use crate::interface::DeduplicationDataInterface;
 use crate::raw_xorb_data::RawXorbData;
 use crate::Chunk;
 
@@ -114,8 +115,8 @@ impl<DataInterfaceType: DeduplicationDataInterface> FileDeduper<DataInterfaceTyp
                     if !first_pass {
                         // This means new shards were discovered; so these are global dedup elegible.  We'll record
                         // the rest later on
-                        dedup_metrics.deduped_chunks_by_global_dedup += n_deduped;
-                        dedup_metrics.deduped_bytes_by_global_dedup += fse.unpacked_segment_bytes as usize;
+                        dedup_metrics.deduped_chunks_by_global_dedup += n_deduped as u64;
+                        dedup_metrics.deduped_bytes_by_global_dedup += fse.unpacked_segment_bytes as u64;
                     }
 
                     deduped_blocks[local_chunk_index] = Some((n_deduped, fse, is_uploaded_shard));
@@ -172,10 +173,10 @@ impl<DataInterfaceType: DeduplicationDataInterface> FileDeduper<DataInterfaceTyp
             }
 
             if let Some((n_deduped, fse, is_external)) = dedupe_query {
-                dedup_metrics.deduped_chunks += n_deduped;
-                dedup_metrics.deduped_bytes += fse.unpacked_segment_bytes as usize;
-                dedup_metrics.total_chunks += n_deduped;
-                dedup_metrics.total_bytes += fse.unpacked_segment_bytes as usize;
+                dedup_metrics.deduped_chunks += n_deduped as u64;
+                dedup_metrics.deduped_bytes += fse.unpacked_segment_bytes as u64;
+                dedup_metrics.total_chunks += n_deduped as u64;
+                dedup_metrics.total_bytes += fse.unpacked_segment_bytes as u64;
 
                 // check the fragmentation state and if it is pretty fragmented,
                 // we skip dedupe.  However, continuing the previous is always fine.
@@ -200,8 +201,8 @@ impl<DataInterfaceType: DeduplicationDataInterface> FileDeduper<DataInterfaceTyp
                     cur_idx += n_deduped;
                     continue;
                 } else {
-                    dedup_metrics.defrag_prevented_dedup_chunks += n_deduped;
-                    dedup_metrics.defrag_prevented_dedup_bytes += fse.unpacked_segment_bytes as usize;
+                    dedup_metrics.defrag_prevented_dedup_chunks += n_deduped as u64;
+                    dedup_metrics.defrag_prevented_dedup_bytes += fse.unpacked_segment_bytes as u64;
                 }
             }
 
@@ -209,8 +210,8 @@ impl<DataInterfaceType: DeduplicationDataInterface> FileDeduper<DataInterfaceTyp
             let n_bytes = chunks[cur_idx].data.len();
 
             dedup_metrics.total_chunks += 1;
-            dedup_metrics.total_bytes += n_bytes;
-            dedup_metrics.new_bytes += n_bytes;
+            dedup_metrics.total_bytes += n_bytes as u64;
+            dedup_metrics.new_bytes += n_bytes as u64;
             dedup_metrics.new_chunks += 1;
 
             // Do we need to cut a new xorb first?
