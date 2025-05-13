@@ -11,7 +11,6 @@ members = [
     "merklehash",
     "mdb_shard",
     "parutils",
-    "progress_reporting",
     "utils",
     "cas_object",
     "cas_types",
