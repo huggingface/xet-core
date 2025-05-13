@@ -2,6 +2,7 @@ use std::string::FromUtf8Error;
 use std::sync::mpsc::RecvError;
 
 use cas_client::CasClientError;
+use cas_object::error::CasObjectError;
 use mdb_shard::error::MDBShardError;
 use merkledb::error::MerkleDBError;
 use thiserror::Error;
@@ -48,6 +49,9 @@ pub enum DataProcessingError {
 
     #[error("CAS service error : {0}")]
     CasClientError(#[from] CasClientError),
+
+    #[error("Xorb Serialization error : {0}")]
+    XorbSerializationError(#[from] CasObjectError),
 
     #[error("Subtask scheduling error: {0}")]
     JoinError(#[from] tokio::task::JoinError),

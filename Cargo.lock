@@ -524,6 +524,7 @@ dependencies = [
  "clap 4.5.28",
  "countio",
  "csv",
+ "deduplication",
  "error_printer",
  "futures",
  "half 2.4.1",

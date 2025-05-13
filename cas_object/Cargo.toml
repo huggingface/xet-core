@@ -21,6 +21,7 @@ merklehash = { path = "../merklehash" }
 mdb_shard = { path = "../mdb_shard" }
 utils = { path = "../utils" }
 parutils = { path = "../parutils" }
+deduplication = { path = "../deduplication" }
 anyhow = "1.0.88"
 tracing = "0.1.40"
 lz4_flex = "0.11.3"

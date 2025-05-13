@@ -120,7 +120,7 @@ pub fn init_threadpool(py: Python) -> PyResult<Arc<ThreadPool>> {
     *guard = Some(runtime.clone());
 
     // Spawn a background non-tokio thread to check the sigint flag.
-    std::thread::spawn(move || signal_check_background_loop());
+    std::thread::spawn(signal_check_background_loop);
 
     // Drop the guard and initialize the logging.
     //
@@ -155,7 +155,7 @@ fn get_threadpool(py: Python) -> PyResult<Arc<ThreadPool>> {
 }
 
 fn convert_multithreading_error(e: MultithreadedRuntimeError) -> PyErr {
-    PyRuntimeError::new_err(format!("Xet Runtime Error: {}", e))
+    PyRuntimeError::new_err(format!("Xet Runtime Error: {e}"))
 }
 
 pub fn async_run<Out, F>(py: Python, execution_call: F) -> PyResult<Out>

@@ -233,14 +233,14 @@ impl From<XetFileInfo> for PyXetUploadInfo {
     fn from(xf: XetFileInfo) -> Self {
         Self {
             hash: xf.hash().to_owned(),
-            file_size: xf.file_size() as u64,
+            file_size: xf.file_size(),
         }
     }
 }
 
 impl From<PyXetDownloadInfo> for (XetFileInfo, DestinationPath) {
     fn from(pf: PyXetDownloadInfo) -> Self {
-        (XetFileInfo::new(pf.hash, pf.file_size as u64), pf.destination_path)
+        (XetFileInfo::new(pf.hash, pf.file_size), pf.destination_path)
     }
 }
 

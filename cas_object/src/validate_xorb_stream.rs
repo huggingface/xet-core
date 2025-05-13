@@ -243,7 +243,7 @@ mod tests {
             build_cas_object(num_chunks, chunk_size, compression_scheme);
         let mut buf: Cursor<Vec<u8>> = Cursor::new(Vec::new());
 
-        assert!(CasObject::serialize(
+        assert!(serialize_xorb_to_stream_reference(
             &mut buf,
             &c.info.cashash,
             &raw_data,
@@ -265,7 +265,7 @@ mod tests {
             build_cas_object(num_chunks, chunk_size, compression_scheme);
         let mut buf: Cursor<Vec<u8>> = Cursor::new(Vec::new());
 
-        assert!(CasObject::serialize(
+        assert!(serialize_xorb_to_stream_reference(
             &mut buf,
             &c.info.cashash,
             &raw_data,
@@ -304,7 +304,7 @@ mod tests {
             build_cas_object(num_chunks, chunk_size, compression_scheme);
         let mut buf: Cursor<Vec<u8>> = Cursor::new(Vec::new());
 
-        assert!(CasObject::serialize(
+        assert!(serialize_xorb_to_stream_reference(
             &mut buf,
             &c.info.cashash,
             &raw_data,
@@ -329,7 +329,7 @@ mod tests {
             build_cas_object(num_chunks, chunk_size, compression_scheme);
         let mut buf: Cursor<Vec<u8>> = Cursor::new(Vec::new());
 
-        assert!(CasObject::serialize(
+        assert!(serialize_xorb_to_stream_reference(
             &mut buf,
             &c.info.cashash,
             &raw_data,
