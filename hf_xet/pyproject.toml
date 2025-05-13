@@ -16,5 +16,5 @@ tests = [
     "pytest",
 ]
 [tool.maturin]
-python-source = "python"
+python-source = "hf_xet/python"
 features = ["pyo3/extension-module"]
