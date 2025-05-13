@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::io::{Cursor, Write};
+use std::io::Write;
 use std::mem::take;
 use std::path::PathBuf;
 use std::result::Result as stdResult;
@@ -116,8 +116,9 @@ impl RemoteClient {
 
 #[async_trait]
 impl UploadClient for RemoteClient {
-    #[instrument(skip_all, name="RemoteClient::upload_xorb", fields(key = Key{prefix : prefix.to_string(), hash : serialized_cas_object.hash}.to_string(), 
-                 xorb.len = serialized_cas_object.serialized_data.len(), xorb.num_chunks = serialized_cas_object.num_chunks))]
+    #[instrument(skip_all, name = "RemoteClient::upload_xorb", fields(key = Key{prefix : prefix.to_string(), hash : serialized_cas_object.hash}.to_string(),
+                 xorb.len = serialized_cas_object.serialized_data.len(), xorb.num_chunks = serialized_cas_object.num_chunks
+    ))]
     async fn upload_xorb(&self, prefix: &str, serialized_cas_object: SerializedCasObject) -> Result<u64> {
         let key = Key {
             prefix: prefix.to_string(),
