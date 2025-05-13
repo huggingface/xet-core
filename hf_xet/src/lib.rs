@@ -240,7 +240,7 @@ impl From<XetFileInfo> for PyXetUploadInfo {
 
 impl From<PyXetDownloadInfo> for (XetFileInfo, DestinationPath) {
     fn from(pf: PyXetDownloadInfo) -> Self {
-        (XetFileInfo::new(pf.hash, pf.file_size as usize), pf.destination_path)
+        (XetFileInfo::new(pf.hash, pf.file_size as u64), pf.destination_path)
     }
 }
 

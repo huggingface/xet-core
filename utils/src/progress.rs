@@ -147,57 +147,55 @@ impl ProgressUpdaterVerificationWrapper {
 #[async_trait]
 impl TrackingProgressUpdater for ProgressUpdaterVerificationWrapper {
     async fn register_updates(&self, updates: &[ProgressUpdate]) {
-        {
-            // First, capture and validate
-            let mut map = self.items.lock().await;
-            for up in updates {
-                let entry = map.entry(up.item_name.clone()).or_insert(ItemProgressData {
-                    total_count: 0,
-                    last_completed: 0,
-                });
+        // First, capture and validate
+        let mut map = self.items.lock().await;
+        for up in updates {
+            let entry = map.entry(up.item_name.clone()).or_insert(ItemProgressData {
+                total_count: 0,
+                last_completed: 0,
+            });
 
-                // If first time seeing total_count for this item, record it.
-                // Otherwise, ensure it stays consistent.
-                if entry.total_count == 0 {
-                    entry.total_count = up.total_count;
-                } else {
-                    assert_eq!(
-                        entry.total_count, up.total_count,
-                        "Inconsistent total_count for '{}'; was {}, now {}",
-                        up.item_name, entry.total_count, up.total_count
-                    );
-                }
-
-                // Check increments:
-                // 1) `completed_count` should never go down
-                assert!(
-                    up.completed_count >= entry.last_completed,
-                    "Item '{}' completed_count went backwards: old={}, new={}",
-                    up.item_name,
-                    entry.last_completed,
-                    up.completed_count
-                );
-
-                // 2) `completed_count` must not exceed `total_count`
-                assert!(
-                    up.completed_count <= up.total_count,
-                    "Item '{}' completed_count {} exceeds total {}",
-                    up.item_name,
-                    up.completed_count,
-                    up.total_count
-                );
-
-                // 3) The increment must match the difference
-                let expected_new = entry.last_completed + up.update_increment;
+            // If first time seeing total_count for this item, record it.
+            // Otherwise, ensure it stays consistent.
+            if entry.total_count == 0 {
+                entry.total_count = up.total_count;
+            } else {
                 assert_eq!(
-                    up.completed_count, expected_new,
-                    "Item '{}': mismatch: last_completed={} + update_increment={} != completed_count={}",
-                    up.item_name, entry.last_completed, up.update_increment, up.completed_count
+                    entry.total_count, up.total_count,
+                    "Inconsistent total_count for '{}'; was {}, now {}",
+                    up.item_name, entry.total_count, up.total_count
                 );
-
-                // Update item record
-                entry.last_completed = up.completed_count;
             }
+
+            // Check increments:
+            // 1) `completed_count` should never go down
+            assert!(
+                up.completed_count >= entry.last_completed,
+                "Item '{}' completed_count went backwards: old={}, new={}",
+                up.item_name,
+                entry.last_completed,
+                up.completed_count
+            );
+
+            // 2) `completed_count` must not exceed `total_count`
+            assert!(
+                up.completed_count <= up.total_count,
+                "Item '{}' completed_count {} exceeds total {}",
+                up.item_name,
+                up.completed_count,
+                up.total_count
+            );
+
+            // 3) The increment must match the difference
+            let expected_new = entry.last_completed + up.update_increment;
+            assert_eq!(
+                up.completed_count, expected_new,
+                "Item '{}': mismatch: last_completed={} + update_increment={} != completed_count={}",
+                up.item_name, entry.last_completed, up.update_increment, up.completed_count
+            );
+
+            // Update item record
+            entry.last_completed = up.completed_count;
         }
 
         // Now forward them to the inner updater
