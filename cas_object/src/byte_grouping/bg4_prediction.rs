@@ -3,18 +3,17 @@ pub struct BG4Predictor {
     histograms: [[u32; 9]; 4],
 }
 
-#[allow(dead_code)] // Allow dead code in this struct, as several methods
-                    // are used only by the benchmark programs or testing.
+#[allow(dead_code)] // A lot of methods are only used for testing or benchmarking
 impl BG4Predictor {
-    // Older reference version; used for testing, ensures that the histograms are accurate.
-    #[allow(dead_code)]
+    /// Reference version; used for testing, ensures that the histograms are accurate.
     pub fn add_data_reference(&mut self, offset: usize, data: &[u8]) {
         for (i, &x) in data.iter().enumerate() {
             self.histograms[(i + offset) % 4][x.count_ones() as usize] += 1;
         }
     }
 
-    // Older method for benchmark comparison; avoids bounds checks
+    /// Older method for benchmark comparison; avoids bounds checks
+    #[allow(dead_code)]
     pub fn add_data_v1(&mut self, offset: usize, data: &[u8]) {
         unsafe {
             let mut ptr = data.as_ptr();
@@ -46,9 +45,9 @@ impl BG4Predictor {
         }
     }
 
-    // This is a reference version that uses the SWAR bit twiddling trick; see Hacker's delight for reference.
-    // A lot of very cheap operations on 16 bytes at a time is likely faster than running popcnt on each byte.
-    // On other archetectures, use the fallback method.
+    /// This is a reference version that uses the SWAR bit twiddling trick; see Hacker's delight for reference.
+    /// A lot of very cheap operations on 16 bytes at a time is likely faster than running popcnt on each byte.
+    /// On other archetectures, used as the fallback method.
     #[inline(always)]
     fn popcnt_u128_swar(v: u128) -> u128 {
         const M1: u128 = 0x5555_5555_5555_5555_5555_5555_5555_5555u128;
@@ -129,6 +128,8 @@ impl BG4Predictor {
                 // We can add the counts directly here; as long as 9 * BLOCK_SIZE < 256 so each byte doesn't overflow
                 // into the next byte over.
                 for i in 0..raw_input.len() {
+                    // Ensure we're handling endianess correctly.  Should optimize out endian switching calls on
+                    // little-endian machines.
                     *popcnt_v.get_unchecked_mut(i) =
                         calc_u128_popcnt(u128::from_le_bytes(raw_input.get_unchecked(i).to_ne_bytes()));
                 }
