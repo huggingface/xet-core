@@ -1419,7 +1419,7 @@ pub mod test_utils {
         let mut verification_data = Vec::new();
 
         // This is the older path;
-        let xorb_data = raw_xorb_to_vec(&xorb);
+        let xorb_data = raw_xorb_to_vec(xorb);
 
         let mut writer = Cursor::new(&mut verification_data);
 
