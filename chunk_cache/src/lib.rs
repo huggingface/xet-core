@@ -5,6 +5,7 @@ pub mod error;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use async_trait::async_trait;
 pub use cache_manager::get_cache;
 use cas_types::{ChunkRange, Key};
 pub use disk::test_utils::*;
@@ -39,6 +40,7 @@ pub struct CacheRange {
 /// implementors are allowed to evict data, a get after a put is not required to
 /// be a cache hit.
 #[automock]
+#[async_trait]
 pub trait ChunkCache: Sync + Send {
     /// get should return an Ok() variant if significant error occurred, check the error
     /// variant for issues with IO or parsing contents etc.
@@ -53,7 +55,7 @@ pub trait ChunkCache: Sync + Send {
     /// key is required to be a valid CAS Key
     /// range is intended to be an index range within the xorb with constraint
     ///     0 <= range.start < range.end <= num_chunks_in_xorb(key)
-    fn get(&self, key: &Key, range: &ChunkRange) -> Result<Option<CacheRange>, ChunkCacheError>;
+    async fn get(&self, key: &Key, range: &ChunkRange) -> Result<Option<CacheRange>, ChunkCacheError>;
 
     /// put should return Ok(()) if the put succeeded with no error, check the error
     /// variant for issues with validating the input, cache state, IO, etc.
@@ -66,7 +68,7 @@ pub trait ChunkCache: Sync + Send {
     /// key is required to be a valid CAS Key
     /// range is intended to be an index range within the xorb with constraint
     ///     0 <= range.start < range.end <= num_chunks_in_xorb(key)
-    fn put(
+    async fn put(
         &self,
         key: &Key,
         range: &ChunkRange,

@@ -242,7 +242,9 @@ impl CompletionTracker {
 
     /// Register a list of (file_id, xorb_hash, usize, bool)
     pub async fn register_dependencies(&self, dependencies: &[FileXorbDependency]) {
-        let updates = self.inner.lock().await.register_dependencies(dependencies);
+        let mut update_lock = self.inner.lock().await;
+
+        let updates = update_lock.register_dependencies(dependencies);
 
         if !updates.is_empty() {
             self.progress_reporter.register_updates(&updates).await;
@@ -250,7 +252,9 @@ impl CompletionTracker {
     }
 
     pub async fn register_xorb_upload_completion(&self, xorb_hash: MerkleHash) {
-        let updates = self.inner.lock().await.register_xorb_upload_completion(xorb_hash);
+        let mut update_lock = self.inner.lock().await;
+
+        let updates = update_lock.register_xorb_upload_completion(xorb_hash);
 
         if !updates.is_empty() {
             self.progress_reporter.register_updates(&updates).await;
