@@ -6,22 +6,24 @@ use std::sync::Arc;
 use cas_client::Client;
 use cas_object::{CompressionScheme, SerializedCasObject, NUM_COMPRESSION_SCHEMES};
 use deduplication::constants::{MAX_XORB_BYTES, MAX_XORB_CHUNKS};
-use deduplication::{DataAggregator, DeduplicationMetrics, FileXorbDependency, RawXorbData};
+use deduplication::{DataAggregator, DeduplicationMetrics, RawXorbData};
 use jsonwebtoken::{decode, DecodingKey, Validation};
 use mdb_shard::file_structs::MDBFileInfo;
 use merklehash::MerkleHash;
 use more_asserts::*;
+use progress_tracking::upload_tracking::{CompletionTracker, FileXorbDependency};
+#[cfg(debug_assertions)] // Used here to verify the update accuracy
+use progress_tracking::verification_wrapper::ProgressUpdaterVerificationWrapper;
+use progress_tracking::{NoOpProgressUpdater, TrackingProgressUpdater};
 use tokio::sync::{Mutex, OwnedSemaphorePermit, Semaphore};
 use tokio::task::JoinSet;
 use tracing::{info_span, instrument, Instrument};
 use ulid::Ulid;
-use utils::progress::{NoOpProgressUpdater, TrackingProgressUpdater};
 
 use crate::configurations::*;
 use crate::constants::MAX_CONCURRENT_UPLOADS;
 use crate::errors::*;
 use crate::file_cleaner::SingleFileCleaner;
-use crate::progress_tracking::CompletionTracker;
 use crate::prometheus_metrics;
 use crate::remote_client_interface::create_remote_client;
 use crate::shard_interface::SessionShardInterface;
@@ -87,7 +89,7 @@ pub struct FileUploadSession {
     session_xorbs: Mutex<HashSet<MerkleHash>>,
 
     #[cfg(debug_assertions)]
-    progress_verification_tracker: Arc<utils::progress::ProgressUpdaterVerificationWrapper>,
+    progress_verification_tracker: Arc<ProgressUpdaterVerificationWrapper>,
 }
 
 // Constructors
@@ -123,7 +125,7 @@ impl FileUploadSession {
         // and correctness.  This is checked at the end.
         #[cfg(debug_assertions)]
         let (progress_updater, progress_verification_tracker) = {
-            let updater = utils::progress::ProgressUpdaterVerificationWrapper::new(progress_updater);
+            let updater = ProgressUpdaterVerificationWrapper::new(progress_updater);
 
             (updater.clone() as Arc<dyn TrackingProgressUpdater>, updater)
         };

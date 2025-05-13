@@ -298,6 +298,7 @@ dependencies = [
  "mdb_shard",
  "merkledb",
  "merklehash",
+ "progress_tracking",
  "reqwest 0.12.9",
  "reqwest-middleware",
  "reqwest-retry",
@@ -678,6 +679,7 @@ dependencies = [
  "more-asserts",
  "openssl",
  "parutils",
+ "progress_tracking",
  "prometheus",
  "rand 0.8.5",
  "rand_chacha 0.3.1",
@@ -719,6 +721,7 @@ dependencies = [
  "merkledb",
  "merklehash",
  "more-asserts",
+ "progress_tracking",
  "utils",
 ]
 
@@ -1202,6 +1205,7 @@ dependencies = [
  "lazy_static",
  "parutils",
  "pprof",
+ "progress_tracking",
  "pyo3",
  "reqwest 0.11.27",
  "serde",
@@ -2354,6 +2358,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f139b0662de085916d1fb67d2b4169d1addddda1919e696f3252b740b629986e"
 dependencies = [
  "unicode-ident",
+]
+
+[[package]]
+name = "progress_tracking"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "merklehash",
+ "more-asserts",
+ "tokio",
 ]
 
 [[package]]

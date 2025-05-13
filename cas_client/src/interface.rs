@@ -9,7 +9,7 @@ use cas_object::SerializedCasObject;
 use cas_types::{FileRange, QueryReconstructionResponse};
 use mdb_shard::shard_file_reconstructor::FileReconstructor;
 use merklehash::MerkleHash;
-use utils::progress::SimpleProgressUpdater;
+use progress_tracking::SimpleProgressUpdater;
 
 use crate::error::Result;
 use crate::CasClientError;

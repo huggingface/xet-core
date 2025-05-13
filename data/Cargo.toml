@@ -26,6 +26,7 @@ parutils = { path = "../parutils" }
 error_printer = { path = "../error_printer" }
 xet_threadpool = { path = "../xet_threadpool" }
 deduplication = { path = "../deduplication" }
+progress_tracking = { path = "../progress_tracking" }
 thiserror = "2.0"
 tokio = { version = "1.44", features = ["full"] }
 anyhow = "1"

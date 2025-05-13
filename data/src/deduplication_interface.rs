@@ -1,16 +1,16 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use deduplication::{DeduplicationDataInterface, FileXorbDependency, RawXorbData};
+use deduplication::{DeduplicationDataInterface, RawXorbData};
 use mdb_shard::file_structs::FileDataSequenceEntry;
 use merklehash::MerkleHash;
+use progress_tracking::upload_tracking::{CompletionTrackerFileId, FileXorbDependency};
 use tokio::task::JoinSet;
 use tracing::Instrument;
 
 use crate::configurations::GlobalDedupPolicy;
 use crate::errors::Result;
 use crate::file_upload_session::FileUploadSession;
-use crate::progress_tracking::CompletionTrackerFileId;
 
 pub struct UploadSessionDataManager {
     file_id: CompletionTrackerFileId,

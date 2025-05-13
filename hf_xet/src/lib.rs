@@ -10,12 +10,12 @@ use std::sync::Arc;
 
 use data::errors::DataProcessingError;
 use data::{data_client, XetFileInfo};
+use progress_tracking::TrackingProgressUpdater;
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
 use pyo3::pyfunction;
 use runtime::async_run;
 use token_refresh::WrappedTokenRefresher;
-use utils::progress::TrackingProgressUpdater;
 
 use crate::progress_update::WrappedProgressUpdater;
 
