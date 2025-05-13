@@ -1,12 +1,12 @@
 // Implements BG4 prediction by examinining the maximum KL divergence between
-// the distribution of per-byte popcounts on the 4 slices formed by taking the 
-// i'th byte of each 4-byte block.  This predicts whether bg4 byte rearranging 
-// will help with the compression with good accuracy.  See the analysis in   
-// the accompaning scripts to reproduce the experiments. 
+// the distribution of per-byte popcounts on the 4 slices formed by taking the
+// i'th byte of each 4-byte block.  This predicts whether bg4 byte rearranging
+// will help with the compression with good accuracy.  See the analysis in
+// the accompaning scripts to reproduce the experiments.
 //
-// The below methods implement several ways to calculate the per-byte popcnt.  
+// The below methods implement several ways to calculate the per-byte popcnt.
 //
-// Benchmarking these on an Mac M1, we get: 
+// Benchmarking these on an Mac M1, we get:
 //
 // Reference: 1608.03 MB/s
 // V1: 1663.79 MB/s
@@ -14,7 +14,7 @@
 // Neon: 3222.63 MB/s (simd method with neon)
 //
 // The default currently is to use Neon on Aarch64 when supported and fall back
-// to SWAR elsewhere. 
+// to SWAR elsewhere.
 
 #[derive(Default)]
 pub struct BG4Predictor {
