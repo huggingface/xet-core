@@ -20,6 +20,7 @@ mdb_shard = { path = "../mdb_shard" }
 merklehash = { path = "../merklehash" }
 xet_threadpool = { path = "../xet_threadpool" }
 deduplication = { path = "../deduplication" }
+progress_tracking = { path = "../progress_tracking" }
 thiserror = "2.0"
 tokio = { version = "1.44", features = ["sync"] }
 async-trait = "0.1.9"

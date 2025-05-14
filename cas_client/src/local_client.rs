@@ -15,10 +15,10 @@ use mdb_shard::utils::shard_file_name;
 use mdb_shard::{MDBShardFile, MDBShardInfo, ShardFileManager};
 use merkledb::aggregate_hashes::with_salt;
 use merklehash::MerkleHash;
+use progress_tracking::SimpleProgressUpdater;
 use tempfile::TempDir;
 use tokio::runtime::Handle;
 use tracing::{debug, error, info, warn};
-use utils::progress::SimpleProgressUpdater;
 
 use crate::error::{CasClientError, Result};
 use crate::interface::{OutputProvider, ShardDedupProber, UploadClient};

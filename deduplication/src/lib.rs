@@ -11,5 +11,5 @@ pub use chunking::{find_partitions, Chunk, Chunker};
 pub use data_aggregator::DataAggregator;
 pub use dedup_metrics::DeduplicationMetrics;
 pub use file_deduplication::FileDeduper;
-pub use interface::{DeduplicationDataInterface, FileXorbDependency};
+pub use interface::DeduplicationDataInterface;
 pub use raw_xorb_data::{test_utils, RawXorbData};

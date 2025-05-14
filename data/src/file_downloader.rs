@@ -4,9 +4,9 @@ use std::sync::Arc;
 use cas_client::{Client, OutputProvider};
 use cas_types::FileRange;
 use merklehash::MerkleHash;
+use progress_tracking::{ItemProgressUpdater, SimpleProgressUpdater, TrackingProgressUpdater};
 use tracing::instrument;
 use ulid::Ulid;
-use utils::progress::{ItemProgressUpdater, SimpleProgressUpdater, TrackingProgressUpdater};
 
 use crate::configurations::TranslatorConfig;
 use crate::errors::*;

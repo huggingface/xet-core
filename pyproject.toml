@@ -26,5 +26,6 @@ Issues = "https://github.com/huggingface/xet-core/issues"
 Repository = "https://github.com/huggingface/xet-core.git"
 
 [tool.maturin]
-python-source = "python"
+python-source = "hf_xet/python"
 features = ["pyo3/extension-module"]
+manifest-path = "hf_xet/Cargo.toml"

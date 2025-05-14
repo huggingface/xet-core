@@ -2,12 +2,12 @@ use std::fmt::{Debug, Formatter};
 
 use error_printer::ErrorPrinter;
 use itertools::Itertools;
+use progress_tracking::{ProgressUpdate, TrackingProgressUpdater};
 use pyo3::exceptions::PyTypeError;
 use pyo3::prelude::PyAnyMethods;
 use pyo3::types::{IntoPyDict, PyString};
 use pyo3::{IntoPyObject, Py, PyAny, PyResult, Python};
 use tracing::error;
-use utils::progress::{ProgressUpdate, TrackingProgressUpdater};
 
 /// A wrapper over a passed-in python function to update
 /// the python process of some download/upload progress
