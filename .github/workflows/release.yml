@@ -184,15 +184,23 @@ jobs:
           if [ -n "$VERSION" ]; then
             sed -i '/^version /s/=.*$/= "'"$VERSION"'"/' hf_xet/Cargo.toml
           fi
-          # maturin sdist will overwrite an edited pyproject.toml in the repo root, so we need to 
-          # update the python path in pyproject.toml to account for that.
-          sed -i '/^python\-source =/ s/= .*/= "hf_xet\/python"/' hf_xet/pyproject.toml
       - name: Build sdist
         uses: PyO3/maturin-action@v1
         with:
           command: sdist
           args: --out dist
           working-directory: hf_xet
+      - name: Patch sdist
+        run: |
+          TAG=${{ github.event.inputs.tag }}
+          VERSION=${TAG#v}
+          pushd hf_xet/dist
+          # maturin sdist will overwrite an edited pyproject.toml in the repo root, so we need to 
+          # update the python path in the built pyproject.toml to account for that.
+          tar -xvzf hf_xet-${VERSION}.tar.gz
+          sed -i '/^python\-source =/ s/= .*/= "hf_xet\/python"/' hf_xet-${VERSION}/pyproject.toml
+          tar -cvzf hf_xet-${VERSION}.tar.gz hf_xet-${VERSION} 
+          rm -rf hf_xet-${VERSION}
       - name: Upload sdist
         uses: actions/upload-artifact@v4
         with:
