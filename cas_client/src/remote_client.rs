@@ -178,7 +178,7 @@ impl UploadClient for RemoteClient {
             debug!("{key:?} inserted into CAS.");
         }
 
-        Ok(n_upload_bytes as u64)
+        Ok(n_upload_bytes)
     }
 
     async fn exists(&self, prefix: &str, hash: &MerkleHash) -> Result<bool> {
