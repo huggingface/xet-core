@@ -500,6 +500,7 @@ dependencies = [
  "mdb_shard",
  "merkledb",
  "merklehash",
+ "more-asserts",
  "progress_tracking",
  "rand 0.8.5",
  "reqwest 0.12.12",
