@@ -2,7 +2,7 @@ use std::fmt::{Debug, Formatter};
 
 use error_printer::ErrorPrinter;
 use itertools::Itertools;
-use progress_tracking::{ProgressUpdate, TrackingProgressUpdater};
+use progress_tracking::{ProgressUpdateBatch, TrackingProgressUpdater};
 use pyo3::exceptions::PyTypeError;
 use pyo3::prelude::PyAnyMethods;
 use pyo3::types::{IntoPyDict, PyString};
@@ -112,7 +112,7 @@ impl WrappedProgressUpdater {
         })
     }
 
-    async fn register_updates_impl(&self, updates: &[ProgressUpdate]) -> PyResult<()> {
+    async fn register_updates_impl(&self, updates: ProgressUpdateBatch) -> PyResult<()> {
         Python::with_gil(|py| {
             let f = self.py_func.bind(py);
 
@@ -127,7 +127,7 @@ impl WrappedProgressUpdater {
                     str2py(DETAILED_PROGRESS_ARG_NAMES[3])?,
                 ];
 
-                for update in updates {
+                for update in updates.item_updates {
                     let kwargs = [
                         (args[0].clone_ref(py), str2py(&update.item_name)?),
                         (args[1].clone_ref(py), int2py(update.completed_count)?),
@@ -139,7 +139,7 @@ impl WrappedProgressUpdater {
                     f.call((), Some(&kwargs))?;
                 }
             } else {
-                let update_increment: u64 = updates.iter().map(|pr| pr.update_increment).sum();
+                let update_increment: u64 = updates.item_updates.iter().map(|pr| pr.update_increment).sum();
                 let _ = f.call1((update_increment,))?;
             }
 
@@ -150,7 +150,7 @@ impl WrappedProgressUpdater {
 
 #[async_trait::async_trait]
 impl TrackingProgressUpdater for WrappedProgressUpdater {
-    async fn register_updates(&self, updates: &[ProgressUpdate]) {
+    async fn register_updates(&self, updates: ProgressUpdateBatch) {
         if self.progress_updating_enabled {
             let _ = self
                 .register_updates_impl(updates)

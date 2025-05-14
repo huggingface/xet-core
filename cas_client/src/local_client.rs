@@ -15,7 +15,8 @@ use mdb_shard::utils::shard_file_name;
 use mdb_shard::{MDBShardFile, MDBShardInfo, ShardFileManager};
 use merkledb::aggregate_hashes::with_salt;
 use merklehash::MerkleHash;
-use progress_tracking::SimpleProgressUpdater;
+use progress_tracking::item_tracking::SingleItemProgressUpdater;
+use progress_tracking::upload_tracking::CompletionTracker;
 use tempfile::TempDir;
 use tokio::runtime::Handle;
 use tracing::{debug, error, info, warn};
@@ -224,7 +225,12 @@ impl LocalClient {
 /// LocalClient is responsible for writing/reading Xorbs on local disk.
 #[async_trait]
 impl UploadClient for LocalClient {
-    async fn upload_xorb(&self, _prefix: &str, serialized_cas_object: SerializedCasObject) -> Result<u64> {
+    async fn upload_xorb(
+        &self,
+        _prefix: &str,
+        serialized_cas_object: SerializedCasObject,
+        upload_tracker: Option<Arc<CompletionTracker>>,
+    ) -> Result<u64> {
         // moved hash validation into [CasObject::serialize], so removed from here.
         let hash = &serialized_cas_object.hash;
         if self.exists("", hash).await? {
@@ -236,7 +242,29 @@ impl UploadClient for LocalClient {
         info!("Writing XORB {hash:?} to local path {file_path:?}");
 
         let mut file = SafeFileCreator::new(&file_path)?;
-        file.write_all(&serialized_cas_object.serialized_data)?;
+
+        // Do a partial work of this to test the upload_tracker.
+
+        for i in 0..10 {
+            let start = (i * serialized_cas_object.serialized_data.len()) / 10;
+            let end = ((i + 1) * serialized_cas_object.serialized_data.len()) / 10;
+
+            file.write_all(&serialized_cas_object.serialized_data[start..end])?;
+
+            if let Some(upload_tracker) = &upload_tracker {
+                // Do this carefully so that we don't perpetually underflow
+                let adjusted_byte_start = (i * serialized_cas_object.raw_num_bytes as usize) / 10;
+                let adjusted_byte_end = ((i + 1) * serialized_cas_object.raw_num_bytes as usize) / 10;
+
+                let adjusted_progress = adjusted_byte_end - adjusted_byte_start;
+
+                // Now report the progress.
+                upload_tracker
+                    .register_xorb_upload_progress(*hash, adjusted_progress as u64)
+                    .await;
+            }
+        }
+
         let bytes_written = serialized_cas_object.serialized_data.len();
         file.close()?;
 
@@ -366,7 +394,7 @@ impl ReconstructionClient for LocalClient {
         hash: &MerkleHash,
         byte_range: Option<FileRange>,
         output_provider: &OutputProvider,
-        _progress_updater: Option<Arc<dyn SimpleProgressUpdater>>,
+        _progress_updater: Option<Arc<SingleItemProgressUpdater>>,
     ) -> Result<u64> {
         let Some((file_info, _)) = self
             .shard_manager
@@ -428,7 +456,7 @@ mod tests {
 
         // Act & Assert
         let client = LocalClient::temporary().unwrap();
-        assert!(client.upload_xorb("key", cas_object).await.is_ok());
+        assert!(client.upload_xorb("key", cas_object, None).await.is_ok());
 
         let returned_data = client.get(&hash).unwrap();
         assert_eq!(data, returned_data);
@@ -444,7 +472,7 @@ mod tests {
 
         // Act & Assert
         let client = LocalClient::temporary().unwrap();
-        assert!(client.upload_xorb("", cas_object).await.is_ok());
+        assert!(client.upload_xorb("", cas_object, None).await.is_ok());
 
         let returned_data = client.get(&hash).unwrap();
         assert_eq!(data, returned_data);
@@ -461,7 +489,7 @@ mod tests {
 
         // Act & Assert
         let client = LocalClient::temporary().unwrap();
-        assert!(client.upload_xorb("", cas_object).await.is_ok());
+        assert!(client.upload_xorb("", cas_object, None).await.is_ok());
 
         let ranges: Vec<(u32, u32)> = vec![(0, 1), (2, 3)];
         let returned_ranges = client.get_object_range(&hash, ranges).unwrap();
@@ -488,7 +516,7 @@ mod tests {
 
         // Act
         let client = LocalClient::temporary().unwrap();
-        assert!(client.upload_xorb("", cas_object).await.is_ok());
+        assert!(client.upload_xorb("", cas_object, None).await.is_ok());
         let len = client.get_length(&hash).unwrap();
 
         // Assert
@@ -522,7 +550,7 @@ mod tests {
 
         // write "hello world"
         let client = LocalClient::temporary().unwrap();
-        client.upload_xorb("default", cas_object).await.unwrap();
+        client.upload_xorb("default", cas_object, None).await.unwrap();
 
         let cas_object = serialized_cas_object_from_components(
             &hello_hash,
@@ -533,7 +561,7 @@ mod tests {
         .unwrap();
 
         // put the same value a second time. This should be ok.
-        client.upload_xorb("default", cas_object).await.unwrap();
+        client.upload_xorb("default", cas_object, None).await.unwrap();
 
         // we can list all entries
         let r = client.get_all_entries().unwrap();
@@ -596,6 +624,7 @@ mod tests {
                     None,
                 )
                 .unwrap(),
+                None,
             )
             .await
             .unwrap();

@@ -19,7 +19,8 @@ use mdb_shard::file_structs::{FileDataSequenceEntry, FileDataSequenceHeader, MDB
 use mdb_shard::shard_file_reconstructor::FileReconstructor;
 use mdb_shard::utils::shard_file_name;
 use merklehash::{HashedWrite, MerkleHash};
-use progress_tracking::SimpleProgressUpdater;
+use progress_tracking::item_tracking::SingleItemProgressUpdater;
+use progress_tracking::upload_tracking::CompletionTracker;
 use reqwest::{StatusCode, Url};
 use reqwest_middleware::ClientWithMiddleware;
 use tokio::sync::{mpsc, OwnedSemaphorePermit};
@@ -117,7 +118,12 @@ impl RemoteClient {
 impl UploadClient for RemoteClient {
     #[instrument(skip_all, name="RemoteClient::upload_xorb", fields(key = Key{prefix : prefix.to_string(), hash : serialized_cas_object.hash}.to_string(), 
                  xorb.len = serialized_cas_object.serialized_data.len(), xorb.num_chunks = serialized_cas_object.num_chunks))]
-    async fn upload_xorb(&self, prefix: &str, serialized_cas_object: SerializedCasObject) -> Result<u64> {
+    async fn upload_xorb(
+        &self,
+        prefix: &str,
+        serialized_cas_object: SerializedCasObject,
+        _upload_tracker: Option<Arc<CompletionTracker>>,
+    ) -> Result<u64> {
         let key = Key {
             prefix: prefix.to_string(),
             hash: serialized_cas_object.hash,
@@ -177,7 +183,7 @@ impl ReconstructionClient for RemoteClient {
         hash: &MerkleHash,
         byte_range: Option<FileRange>,
         output_provider: &OutputProvider,
-        progress_updater: Option<Arc<dyn SimpleProgressUpdater>>,
+        progress_updater: Option<Arc<SingleItemProgressUpdater>>,
     ) -> Result<u64> {
         // If the user has set the `HF_XET_RECONSTRUCT_WRITE_SEQUENTIALLY=true` env variable, then we
         // should write the file to the output sequentially instead of in parallel.
@@ -299,7 +305,7 @@ impl RemoteClient {
         file_hash: &MerkleHash,
         byte_range: Option<FileRange>,
         writer: &OutputProvider,
-        progress_updater: Option<Arc<dyn SimpleProgressUpdater>>,
+        progress_updater: Option<Arc<SingleItemProgressUpdater>>,
     ) -> Result<u64> {
         // queue size is inherently bounded by degree of concurrency.
         let (task_tx, mut task_rx) = mpsc::unbounded_channel::<DownloadQueueItem<TermDownload>>();
@@ -444,7 +450,7 @@ impl RemoteClient {
         file_hash: &MerkleHash,
         byte_range: Option<FileRange>,
         writer: &OutputProvider,
-        progress_updater: Option<Arc<dyn SimpleProgressUpdater>>,
+        progress_updater: Option<Arc<SingleItemProgressUpdater>>,
     ) -> Result<u64> {
         // queue size is inherently bounded by degree of concurrency.
         let (task_tx, mut task_rx) = mpsc::unbounded_channel::<DownloadQueueItem<TermDownloadAndWrite>>();
@@ -755,7 +761,7 @@ mod tests {
 
         // Act
         let result = threadpool
-            .external_run_async_task(async move { client.upload_xorb(prefix, cas_object).await })
+            .external_run_async_task(async move { client.upload_xorb(prefix, cas_object, None).await })
             .unwrap();
 
         // Assert

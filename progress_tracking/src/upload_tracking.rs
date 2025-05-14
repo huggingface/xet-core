@@ -1,12 +1,13 @@
+use std::collections::hash_map::Entry as HashMapEntry;
 use std::collections::{BTreeSet, HashMap};
 use std::mem::take;
 use std::sync::Arc;
 
 use merklehash::MerkleHash;
-use more_asserts::debug_assert_le;
+use more_asserts::{debug_assert_ge, debug_assert_le};
 use tokio::sync::Mutex;
 
-use crate::{ProgressUpdate, TrackingProgressUpdater};
+use crate::{ProgressUpdate, ProgressUpdateBatch, TrackingProgressUpdater};
 
 pub struct FileXorbDependency {
     pub file_id: u64,
@@ -26,6 +27,12 @@ struct XorbDependency {
     /// List of file indices that need this xorb.
     file_indices: BTreeSet<usize>,
 
+    /// Number of bytes completed so far
+    completed_bytes: u64,
+
+    /// Number of bytes in that xorb.
+    xorb_size: u64,
+
     /// True if the xorb has already been updated successfully.
     is_completed: bool,
 }
@@ -34,14 +41,17 @@ struct XorbDependency {
 struct FileDependency {
     /// Human-readable name of the file.
     name: Arc<str>,
+
     /// Total size of this file in bytes.
     total_bytes: u64,
+
     /// Total bytes already uploaded for this file (across its xorbs).
     completed_bytes: u64,
-    /// Mapping of xorb_hash -> number of bytes of the file contained in that xorb.  Only
+
+    /// Mapping of xorb_hash -> (number of completed bytes / number of bytes of the file contained in that xorb).  Only
     /// xorbs that are not uploaded yet are tracked here.
     /// Once an xorb is uploaded, we remove it from here (and add to `completed_bytes`).
-    remaining_xorbs_parts: HashMap<MerkleHash, u64>,
+    remaining_xorbs_parts: HashMap<MerkleHash, (u64, u64)>,
 }
 
 /// Tracks all files and all xorbs, allowing you to register file
@@ -53,6 +63,10 @@ struct CompletionTrackerImpl {
     files: Vec<FileDependency>,
     /// Map of xorb hash -> its dependency info (which files rely on it).
     xorbs: HashMap<MerkleHash, XorbDependency>,
+
+    /// Keep track of the totals across all xorbs.
+    total_bytes: u64,
+    total_bytes_completed: u64,
 }
 
 pub struct CompletionTracker {
@@ -84,8 +98,8 @@ impl CompletionTrackerImpl {
 
     /// Registers that all or part of a given file (by `file_id`) depends on one or more
     /// xorbs; Given a list of (xorb_hash, n_bytes, already_uploaded), registers the progress.
-    fn register_dependencies(&mut self, dependencies: &[FileXorbDependency]) -> Vec<ProgressUpdate> {
-        let mut ret = Vec::new();
+    fn register_dependencies(&mut self, dependencies: &[FileXorbDependency]) -> ProgressUpdateBatch {
+        let mut item_updates = Vec::new();
 
         for dep in dependencies {
             let file_entry = &mut self.files[dep.file_id as usize];
@@ -102,7 +116,7 @@ impl CompletionTrackerImpl {
                     update_increment: dep.n_bytes,
                 };
 
-                ret.push(progress_update);
+                item_updates.push(progress_update);
             } else {
                 // Make sure we aren't putting in an unfinished xorb, which
                 // tracks with MerkleHash::marker().
@@ -121,38 +135,72 @@ impl CompletionTrackerImpl {
                         completed_count: file_entry.completed_bytes,
                         update_increment: dep.n_bytes,
                     };
-                    ret.push(progress_update);
+                    item_updates.push(progress_update);
                 } else {
                     // Insert a new xorb entry if needed.
                     entry.file_indices.insert(dep.file_id as usize);
-                    *file_entry.remaining_xorbs_parts.entry(dep.xorb_hash).or_default() += dep.n_bytes;
+                    file_entry.remaining_xorbs_parts.entry(dep.xorb_hash).or_default().1 += dep.n_bytes;
                 }
             }
         }
 
-        ret
+        // There may be a lot of per-file updates, but these don't actually count against the new byte total;
+        // this is counted only using xorbs.
+        ProgressUpdateBatch {
+            item_updates,
+            total_bytes: self.total_bytes,
+            total_bytes_completed: self.total_bytes_completed,
+            total_bytes_completion_increment: 0,
+        }
     }
 
-    /// Called when a xorb is finished uploading. We look up which files depend on that
+    /// Register a new xorb.  Returns true if the xorb is already in the queue, and false
+    /// if not.
+    fn register_new_xorb(&mut self, xorb_hash: MerkleHash, xorb_size: u64) -> bool {
+        match self.xorbs.entry(xorb_hash) {
+            HashMapEntry::Occupied(occupied_entry) => {
+                debug_assert_eq!(occupied_entry.get().xorb_size, xorb_size);
+                true
+            },
+            HashMapEntry::Vacant(vacant_entry) => {
+                vacant_entry.insert(XorbDependency {
+                    file_indices: Default::default(),
+                    xorb_size,
+                    completed_bytes: 0,
+                    is_completed: false,
+                });
+
+                self.total_bytes += xorb_size;
+
+                false
+            },
+        }
+    }
+
+    /// Called when a xorb is finished uploading.  We look up which files depend on that
     /// xorb and update their `completed_bytes`, removing the xorb from their
     /// `remaining_xorbs_parts`.
-    fn register_xorb_upload_completion(&mut self, xorb_hash: MerkleHash) -> Vec<ProgressUpdate> {
-        let file_indices = {
+    fn register_xorb_upload_completion(&mut self, xorb_hash: MerkleHash) -> ProgressUpdateBatch {
+        let (file_indices, byte_completion_increment) = {
+            // Should have been registered above with register_xorb
+            debug_assert!(self.xorbs.contains_key(&xorb_hash));
+
             // Mark as completed, return the list of files to mark as completed.
             let entry = self.xorbs.entry(xorb_hash).or_default();
 
-            // It's possible that this was already uploaded previously due to mulitple identical files
-            // in the mix.  In this case, don't register it a second time.
-            if entry.is_completed {
-                return vec![];
-            }
+            // How many new bytes uploaded do we have to write out to the total_completed_bytes?
+            let new_byte_increment = entry.xorb_size - entry.completed_bytes;
+
+            // This should be present but not completed.
+            debug_assert!(!entry.is_completed);
 
             entry.is_completed = true;
-            take(&mut entry.file_indices)
+
+            (take(&mut entry.file_indices), new_byte_increment)
         };
 
         // Mark all the relevant files as completed
-        let mut entry_update_list = Vec::with_capacity(file_indices.len());
+        let mut item_updates = Vec::with_capacity(file_indices.len());
 
         // For each file that depends on this xorb, remove the relevant
         // part from `remaining_xorbs_parts` and add to `completed_bytes`.
@@ -162,21 +210,128 @@ impl CompletionTrackerImpl {
             debug_assert!(file_entry.remaining_xorbs_parts.contains_key(&xorb_hash));
 
             // This xorb is completed, so remove the number of bytes in that file needed by that xorb.
-            let n_bytes = file_entry.remaining_xorbs_parts.remove(&xorb_hash).unwrap_or(0);
-            debug_assert_le!(n_bytes + file_entry.completed_bytes, file_entry.total_bytes);
-            file_entry.completed_bytes += n_bytes;
+            let (completed_bytes, total_bytes) = file_entry.remaining_xorbs_parts.remove(&xorb_hash).unwrap_or((0, 0));
+            debug_assert_le!(completed_bytes, total_bytes);
 
-            let progress_update = ProgressUpdate {
-                item_name: file_entry.name.clone(),
-                total_count: file_entry.total_bytes,
-                completed_count: file_entry.completed_bytes,
-                update_increment: n_bytes,
-            };
+            let n_bytes_remaining = total_bytes - completed_bytes;
 
-            entry_update_list.push(progress_update);
+            if n_bytes_remaining > 0 {
+                file_entry.completed_bytes += n_bytes_remaining;
+
+                let progress_update = ProgressUpdate {
+                    item_name: file_entry.name.clone(),
+                    total_count: file_entry.total_bytes,
+                    completed_count: file_entry.completed_bytes,
+                    update_increment: n_bytes_remaining,
+                };
+
+                item_updates.push(progress_update);
+            }
         }
 
-        entry_update_list
+        debug_assert_le!(self.total_bytes_completed + byte_completion_increment, self.total_bytes);
+        self.total_bytes_completed += byte_completion_increment;
+
+        ProgressUpdateBatch {
+            item_updates,
+            total_bytes: self.total_bytes,
+            total_bytes_completed: self.total_bytes_completed,
+            total_bytes_completion_increment: byte_completion_increment,
+        }
+    }
+
+    /// Register partial upload progress of a xorb; new_byte_progress is the number of new bytes uploaded.
+    ///
+    /// If force_proper_ordering is true, then all the updates should arrive before register_xorb_upload_completion;
+    /// if debug_assertions are on, then all the details will be checked.  If this is false, then the updates can
+    /// arrive out of order and will simply be ignored if the register_xorb_upload_completion has been called.
+    fn register_xorb_upload_progress(
+        &mut self,
+        xorb_hash: MerkleHash,
+        new_byte_progress: u64,
+        check_ordering: bool,
+    ) -> ProgressUpdateBatch {
+        // Should have already been registered.
+        debug_assert!(self.xorbs.contains_key(&xorb_hash));
+
+        // Mark as completed, return the list of files to mark as completed.
+        let entry = self.xorbs.entry(xorb_hash).or_default();
+
+        // If this update could arrive out of order, check to see if it's needed and ignore if not.
+        if !check_ordering && entry.is_completed {
+            // Return an empty update
+            return ProgressUpdateBatch {
+                item_updates: vec![],
+                total_bytes: self.total_bytes,
+                total_bytes_completed: self.total_bytes_completed,
+                total_bytes_completion_increment: 0,
+            };
+        }
+
+        // Should not be completed when this is called.
+        debug_assert!(!entry.is_completed);
+
+        // Is the update reasonable?
+        debug_assert_le!(entry.completed_bytes + new_byte_progress, entry.xorb_size);
+
+        entry.completed_bytes += new_byte_progress;
+
+        let new_completion_ratio = (entry.completed_bytes as f64) / (entry.xorb_size as f64);
+
+        // Mark all the relevant files as completed
+        let mut item_updates = Vec::with_capacity(entry.file_indices.len());
+
+        // For each file that depends on this xorb, update a proportion of that remove the relevant
+        // part from `remaining_xorbs_parts` and add to `completed_bytes`.
+        for &file_id in entry.file_indices.iter() {
+            let file_entry = &mut self.files[file_id];
+
+            // Should be registered there.
+            debug_assert!(file_entry.remaining_xorbs_parts.contains_key(&xorb_hash));
+
+            // Update
+            let incremental_update = 'update: {
+                let Some((completed_bytes, total_bytes)) = file_entry.remaining_xorbs_parts.get_mut(&xorb_hash) else {
+                    break 'update 0;
+                };
+                debug_assert_le!(*completed_bytes, *total_bytes);
+
+                // Use floor so as to not inproperly report completion when there is still some to go.
+                let new_completion_bytes = ((*total_bytes as f64) * new_completion_ratio).floor() as u64;
+
+                // Make sure this is an update
+                debug_assert_ge!(new_completion_bytes, *completed_bytes);
+
+                let incremental_update = new_completion_bytes.saturating_sub(*completed_bytes);
+                *completed_bytes += incremental_update;
+
+                debug_assert_le!(*completed_bytes, *total_bytes);
+
+                incremental_update
+            };
+
+            if incremental_update != 0 {
+                file_entry.completed_bytes += incremental_update;
+
+                let progress_update = ProgressUpdate {
+                    item_name: file_entry.name.clone(),
+                    total_count: file_entry.total_bytes,
+                    completed_count: file_entry.completed_bytes,
+                    update_increment: incremental_update,
+                };
+
+                item_updates.push(progress_update);
+            }
+        }
+        
+        self.total_bytes_completed += new_byte_progress;
+
+        ProgressUpdateBatch {
+            item_updates,
+            total_bytes: self.total_bytes,
+            total_bytes_completed: self.total_bytes_completed,
+            total_bytes_completion_increment: new_byte_progress,
+        }
     }
 
     pub fn status(&self) -> (u64, u64) {
@@ -247,14 +402,18 @@ impl CompletionTracker {
         self.inner.lock().await.register_new_file(name, n_bytes)
     }
 
+    pub async fn register_new_xorb(&self, xorb_hash: MerkleHash, xorb_size: u64) -> bool {
+        self.inner.lock().await.register_new_xorb(xorb_hash, xorb_size)
+    }
+
     /// Register a list of (file_id, xorb_hash, usize, bool)
     pub async fn register_dependencies(&self, dependencies: &[FileXorbDependency]) {
         let mut update_lock = self.inner.lock().await;
 
         let updates = update_lock.register_dependencies(dependencies);
 
-        if !updates.is_empty() {
-            self.progress_reporter.register_updates(&updates).await;
+        if updates.total_bytes_completion_increment != 0 || !updates.item_updates.is_empty() {
+            self.progress_reporter.register_updates(updates).await;
         }
     }
 
@@ -263,8 +422,36 @@ impl CompletionTracker {
 
         let updates = update_lock.register_xorb_upload_completion(xorb_hash);
 
-        if !updates.is_empty() {
-            self.progress_reporter.register_updates(&updates).await;
+        if updates.total_bytes_completion_increment != 0 || !updates.item_updates.is_empty() {
+            self.progress_reporter.register_updates(updates).await;
+        }
+    }
+
+    pub async fn register_xorb_upload_progress(&self, xorb_hash: MerkleHash, new_byte_progress: u64) {
+        self.register_xorb_upload_progress_impl(xorb_hash, new_byte_progress, true)
+            .await;
+    }
+
+    pub fn register_xorb_upload_progress_background(self: Arc<Self>, xorb_hash: MerkleHash, new_byte_progress: u64) {
+        // register partial progress in the background; if this happens out of order, no worries.
+        tokio::spawn(async move {
+            self.register_xorb_upload_progress_impl(xorb_hash, new_byte_progress, false)
+                .await
+        });
+    }
+
+    async fn register_xorb_upload_progress_impl(
+        &self,
+        xorb_hash: MerkleHash,
+        new_byte_progress: u64,
+        check_ordering: bool,
+    ) {
+        let mut update_lock = self.inner.lock().await;
+
+        let updates = update_lock.register_xorb_upload_progress(xorb_hash, new_byte_progress, check_ordering);
+
+        if updates.total_bytes_completion_increment != 0 || !updates.item_updates.is_empty() {
+            self.progress_reporter.register_updates(updates).await;
         }
     }
 
@@ -289,8 +476,8 @@ mod tests {
     use merklehash::MerkleHash;
 
     use super::*;
+    use crate::no_op_tracker::NoOpProgressUpdater;
     use crate::verification_wrapper::ProgressUpdaterVerificationWrapper;
-    use crate::NoOpProgressUpdater;
 
     /// A basic test showing partial updates and final completion checks
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -375,6 +562,8 @@ mod tests {
         // Shared xorb
         let xhash = MerkleHash::random_from_seed(1);
 
+        tracker.register_new_xorb(xhash, 1000).await;
+
         // fileA => xhash 100 bytes (not uploaded)
         // fileB => xhash 200 bytes (already uploaded)
         tracker
@@ -408,6 +597,9 @@ mod tests {
 
         // Suppose fileA is 100/200. We'll "fix" it with x2 => 100 bytes (already uploaded)
         let x2 = MerkleHash::random_from_seed(2);
+
+        tracker.register_new_xorb(x2, 1000).await;
+
         tracker
             .register_dependencies(&[FileXorbDependency {
                 file_id: file_a,
@@ -459,6 +651,9 @@ mod tests {
         let x1 = MerkleHash::random_from_seed(1);
         let x2 = MerkleHash::random_from_seed(2);
         let x3 = MerkleHash::random_from_seed(3);
+
+        tracker.register_new_xorb(x1, 100).await;
+        tracker.register_new_xorb(x3, 100).await;
 
         // bigFile depends on:
         // x1 => 100 bytes, not uploaded
@@ -523,6 +718,8 @@ mod tests {
 
         // xhash completed before we mention any dependencies
         let x = MerkleHash::random_from_seed(999);
+        tracker.register_new_xorb(x, 1000).await;
+
         tracker.register_xorb_upload_completion(x).await;
 
         // Now we register that file depends on x for 50 bytes, "already_uploaded=false"
@@ -556,6 +753,8 @@ mod tests {
 
         let file_id = tracker.register_new_file("someFile", 100).await;
         let x = MerkleHash::random_from_seed(123);
+
+        tracker.register_new_xorb(x, 1000).await;
 
         // Mark x as completed, no dependencies known
         tracker.register_xorb_upload_completion(x).await;
