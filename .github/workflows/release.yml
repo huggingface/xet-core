@@ -195,15 +195,21 @@ jobs:
         uses: PyO3/maturin-action@v1
         with:
           target: ${{ matrix.platform.target }}
-          args: --release --out dist
+          args: --profile release-dbgsymbols --out dist
           sccache: 'true'
           working-directory: hf_xet
-      # TODO: brian - test this out
+      - name: Retarget and copy debug symbols
+        run: |
+          TARGET=${{ matrix.platform.target }}
+          mkdir hf_xet/dbg
+          pushd hf_xet/target/release-dbgsymbols/deps
+          sed -i '' "s/binary-path:.*/binary-path: '.\/hf_xet.abi3.so'/" libhf_xet.dylib.dSYM/Contents/Resources/Relocations/${TARGET}/libhf_xet.dylib.yml
+          cp -r libhf_xet.dylib.dSYM ../../../dbg/
       - name: Upload debug symbols
         uses: actions/upload-artifact@v4
         with:
-          name: target/release/hf_xet.pdb
-          path: dbg-windows-${{ matrix.platform.target }}/hf_xet.pdb
+          name: hf_xet/dbg/libhf_xet.dylib.dSYM
+          path: dbg-macos-${{ matrix.platform.target }}
       - name: Upload wheels
         uses: actions/upload-artifact@v4
         with:
