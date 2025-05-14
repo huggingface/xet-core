@@ -193,14 +193,15 @@ jobs:
       - name: Patch sdist
         run: |
           TAG=${{ github.event.inputs.tag }}
-          VERSION=${TAG#v}
+          # strip out the v and - from the tag to get the python version
+          PYVERSION=${TAG//[v-]/}
           pushd hf_xet/dist
           # maturin sdist will overwrite an edited pyproject.toml in the repo root, so we need to 
           # update the python path in the built pyproject.toml to account for that.
-          tar -xvzf hf_xet-${VERSION}.tar.gz
-          sed -i '/^python\-source =/ s/= .*/= "hf_xet\/python"/' hf_xet-${VERSION}/pyproject.toml
-          tar -cvzf hf_xet-${VERSION}.tar.gz hf_xet-${VERSION} 
-          rm -rf hf_xet-${VERSION}
+          tar -xvzf hf_xet-${PYVERSION}.tar.gz
+          sed -i '/^python\-source =/ s/= .*/= "hf_xet\/python"/' hf_xet-${PYVERSION}/pyproject.toml
+          tar -cvzf hf_xet-${PYVERSION}.tar.gz hf_xet-${PYVERSION} 
+          rm -rf hf_xet-${PYVERSION}
       - name: Upload sdist
         uses: actions/upload-artifact@v4
         with:
