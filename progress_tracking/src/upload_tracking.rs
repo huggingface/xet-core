@@ -323,7 +323,7 @@ impl CompletionTrackerImpl {
                 item_updates.push(progress_update);
             }
         }
-        
+
         self.total_bytes_completed += new_byte_progress;
 
         ProgressUpdateBatch {
