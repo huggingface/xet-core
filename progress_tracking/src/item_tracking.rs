@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use more_asserts::debug_assert_le;
 
-use crate::progress_info::{ProgressUpdate, ProgressUpdateBatch};
+use crate::progress_info::{ItemProgressUpdate, ProgressUpdate};
 use crate::TrackingProgressUpdater;
 
 /// This wraps a TrackingProgressUpdater, translating per-item updates to a full progress report.
@@ -42,7 +42,7 @@ impl ItemProgressUpdater {
         })
     }
 
-    async fn do_item_update(self: Arc<Self>, progress_update: ProgressUpdate) {
+    async fn do_item_update(self: Arc<Self>, progress_update: ItemProgressUpdate) {
         let update_increment = progress_update.update_increment;
 
         let total_bytes_completed_old = self
@@ -50,7 +50,7 @@ impl ItemProgressUpdater {
             .fetch_add(progress_update.update_increment, Ordering::Relaxed);
 
         self.inner
-            .register_updates(ProgressUpdateBatch {
+            .register_updates(ProgressUpdate {
                 item_updates: vec![progress_update],
                 total_bytes: self.total_bytes.load(Ordering::Relaxed),
                 total_bytes_completed: total_bytes_completed_old + update_increment,
@@ -81,7 +81,7 @@ impl SingleItemProgressUpdater {
 
         self.inner
             .clone()
-            .do_item_update(ProgressUpdate {
+            .do_item_update(ItemProgressUpdate {
                 item_name: self.item_name.clone(),
                 total_count: self.byte_count.load(Ordering::Relaxed),
                 completed_count: old_completed_count + increment,

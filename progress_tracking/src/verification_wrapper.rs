@@ -5,7 +5,7 @@ use async_trait::async_trait;
 use more_asserts::assert_le;
 use tokio::sync::Mutex;
 
-use crate::{ProgressUpdateBatch, TrackingProgressUpdater};
+use crate::{ProgressUpdate, TrackingProgressUpdater};
 
 /// Internal structure to track and validate progress data for one item.
 #[derive(Debug)]
@@ -63,7 +63,7 @@ impl ProgressUpdaterVerificationWrapper {
 
 #[async_trait]
 impl TrackingProgressUpdater for ProgressUpdaterVerificationWrapper {
-    async fn register_updates(&self, update: ProgressUpdateBatch) {
+    async fn register_updates(&self, update: ProgressUpdate) {
         // First, capture and validate
         let mut tr = self.tr.lock().await;
 
@@ -150,18 +150,18 @@ impl TrackingProgressUpdater for ProgressUpdaterVerificationWrapper {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ProgressUpdate;
+    use crate::ItemProgressUpdate;
 
     /// A trivial `TrackingProgressUpdater` for testing, which just stores all updates.
     /// In real code, this could log to a file, update a UI, etc.
     #[derive(Debug, Default)]
     struct DummyLogger {
-        pub all_updates: Mutex<Vec<ProgressUpdate>>,
+        pub all_updates: Mutex<Vec<ItemProgressUpdate>>,
     }
 
     #[async_trait]
     impl TrackingProgressUpdater for DummyLogger {
-        async fn register_updates(&self, updates: ProgressUpdateBatch) {
+        async fn register_updates(&self, updates: ProgressUpdate) {
             let mut guard = self.all_updates.lock().await;
             guard.extend_from_slice(&updates.item_updates);
         }
@@ -177,15 +177,15 @@ mod tests {
 
         // Let's register some progress updates
         wrapper
-            .register_updates(ProgressUpdateBatch {
+            .register_updates(ProgressUpdate {
                 item_updates: vec![
-                    ProgressUpdate {
+                    ItemProgressUpdate {
                         item_name: Arc::from("fileA"),
                         total_count: 100,
                         completed_count: 50,
                         update_increment: 50, // from 0->50
                     },
-                    ProgressUpdate {
+                    ItemProgressUpdate {
                         item_name: Arc::from("fileB"),
                         total_count: 200,
                         completed_count: 100,
@@ -200,15 +200,15 @@ mod tests {
 
         // Shouldn't be complete yet. We'll do one more set of updates to finalize.
         wrapper
-            .register_updates(ProgressUpdateBatch {
+            .register_updates(ProgressUpdate {
                 item_updates: vec![
-                    ProgressUpdate {
+                    ItemProgressUpdate {
                         item_name: Arc::from("fileA"),
                         total_count: 100,
                         completed_count: 100,
                         update_increment: 50, // from 50->100
                     },
-                    ProgressUpdate {
+                    ItemProgressUpdate {
                         item_name: Arc::from("fileB"),
                         total_count: 200,
                         completed_count: 200,

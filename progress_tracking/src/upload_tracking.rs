@@ -7,7 +7,7 @@ use merklehash::MerkleHash;
 use more_asserts::{debug_assert_ge, debug_assert_le};
 use tokio::sync::Mutex;
 
-use crate::{ProgressUpdate, ProgressUpdateBatch, TrackingProgressUpdater};
+use crate::{ItemProgressUpdate, ProgressUpdate, TrackingProgressUpdater};
 
 pub struct FileXorbDependency {
     pub file_id: u64,
@@ -98,7 +98,7 @@ impl CompletionTrackerImpl {
 
     /// Registers that all or part of a given file (by `file_id`) depends on one or more
     /// xorbs; Given a list of (xorb_hash, n_bytes, already_uploaded), registers the progress.
-    fn register_dependencies(&mut self, dependencies: &[FileXorbDependency]) -> ProgressUpdateBatch {
+    fn register_dependencies(&mut self, dependencies: &[FileXorbDependency]) -> ProgressUpdate {
         let mut item_updates = Vec::new();
 
         for dep in dependencies {
@@ -109,7 +109,7 @@ impl CompletionTrackerImpl {
                 file_entry.completed_bytes += dep.n_bytes;
                 debug_assert_le!(file_entry.completed_bytes, file_entry.total_bytes);
 
-                let progress_update = ProgressUpdate {
+                let progress_update = ItemProgressUpdate {
                     item_name: file_entry.name.clone(),
                     total_count: file_entry.total_bytes,
                     completed_count: file_entry.completed_bytes,
@@ -129,7 +129,7 @@ impl CompletionTrackerImpl {
                     file_entry.completed_bytes += dep.n_bytes;
                     debug_assert_le!(file_entry.completed_bytes, file_entry.total_bytes);
 
-                    let progress_update = ProgressUpdate {
+                    let progress_update = ItemProgressUpdate {
                         item_name: file_entry.name.clone(),
                         total_count: file_entry.total_bytes,
                         completed_count: file_entry.completed_bytes,
@@ -146,7 +146,7 @@ impl CompletionTrackerImpl {
 
         // There may be a lot of per-file updates, but these don't actually count against the new byte total;
         // this is counted only using xorbs.
-        ProgressUpdateBatch {
+        ProgressUpdate {
             item_updates,
             total_bytes: self.total_bytes,
             total_bytes_completed: self.total_bytes_completed,
@@ -180,7 +180,7 @@ impl CompletionTrackerImpl {
     /// Called when a xorb is finished uploading.  We look up which files depend on that
     /// xorb and update their `completed_bytes`, removing the xorb from their
     /// `remaining_xorbs_parts`.
-    fn register_xorb_upload_completion(&mut self, xorb_hash: MerkleHash) -> ProgressUpdateBatch {
+    fn register_xorb_upload_completion(&mut self, xorb_hash: MerkleHash) -> ProgressUpdate {
         let (file_indices, byte_completion_increment) = {
             // Should have been registered above with register_xorb
             debug_assert!(self.xorbs.contains_key(&xorb_hash));
@@ -218,7 +218,7 @@ impl CompletionTrackerImpl {
             if n_bytes_remaining > 0 {
                 file_entry.completed_bytes += n_bytes_remaining;
 
-                let progress_update = ProgressUpdate {
+                let progress_update = ItemProgressUpdate {
                     item_name: file_entry.name.clone(),
                     total_count: file_entry.total_bytes,
                     completed_count: file_entry.completed_bytes,
@@ -232,7 +232,7 @@ impl CompletionTrackerImpl {
         debug_assert_le!(self.total_bytes_completed + byte_completion_increment, self.total_bytes);
         self.total_bytes_completed += byte_completion_increment;
 
-        ProgressUpdateBatch {
+        ProgressUpdate {
             item_updates,
             total_bytes: self.total_bytes,
             total_bytes_completed: self.total_bytes_completed,
@@ -250,7 +250,7 @@ impl CompletionTrackerImpl {
         xorb_hash: MerkleHash,
         new_byte_progress: u64,
         check_ordering: bool,
-    ) -> ProgressUpdateBatch {
+    ) -> ProgressUpdate {
         // Should have already been registered.
         debug_assert!(self.xorbs.contains_key(&xorb_hash));
 
@@ -260,7 +260,7 @@ impl CompletionTrackerImpl {
         // If this update could arrive out of order, check to see if it's needed and ignore if not.
         if !check_ordering && entry.is_completed {
             // Return an empty update
-            return ProgressUpdateBatch {
+            return ProgressUpdate {
                 item_updates: vec![],
                 total_bytes: self.total_bytes,
                 total_bytes_completed: self.total_bytes_completed,
@@ -313,7 +313,7 @@ impl CompletionTrackerImpl {
             if incremental_update != 0 {
                 file_entry.completed_bytes += incremental_update;
 
-                let progress_update = ProgressUpdate {
+                let progress_update = ItemProgressUpdate {
                     item_name: file_entry.name.clone(),
                     total_count: file_entry.total_bytes,
                     completed_count: file_entry.completed_bytes,
@@ -326,7 +326,7 @@ impl CompletionTrackerImpl {
 
         self.total_bytes_completed += new_byte_progress;
 
-        ProgressUpdateBatch {
+        ProgressUpdate {
             item_updates,
             total_bytes: self.total_bytes,
             total_bytes_completed: self.total_bytes_completed,

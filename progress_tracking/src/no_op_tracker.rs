@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use crate::{ProgressUpdateBatch, TrackingProgressUpdater};
+use crate::{ProgressUpdate, TrackingProgressUpdater};
 
 #[derive(Debug, Default)]
 pub struct NoOpProgressUpdater;
@@ -13,5 +13,5 @@ impl NoOpProgressUpdater {
 
 #[async_trait::async_trait]
 impl TrackingProgressUpdater for NoOpProgressUpdater {
-    async fn register_updates(&self, _updates: ProgressUpdateBatch) {}
+    async fn register_updates(&self, _updates: ProgressUpdate) {}
 }

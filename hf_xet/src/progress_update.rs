@@ -2,7 +2,7 @@ use std::fmt::{Debug, Formatter};
 
 use error_printer::ErrorPrinter;
 use itertools::Itertools;
-use progress_tracking::{ProgressUpdateBatch, TrackingProgressUpdater};
+use progress_tracking::{ProgressUpdate, TrackingProgressUpdater};
 use pyo3::exceptions::PyTypeError;
 use pyo3::prelude::PyAnyMethods;
 use pyo3::types::{IntoPyDict, PyString};
@@ -112,7 +112,7 @@ impl WrappedProgressUpdater {
         })
     }
 
-    async fn register_updates_impl(&self, updates: ProgressUpdateBatch) -> PyResult<()> {
+    async fn register_updates_impl(&self, updates: ProgressUpdate) -> PyResult<()> {
         Python::with_gil(|py| {
             let f = self.py_func.bind(py);
 
@@ -150,7 +150,7 @@ impl WrappedProgressUpdater {
 
 #[async_trait::async_trait]
 impl TrackingProgressUpdater for WrappedProgressUpdater {
-    async fn register_updates(&self, updates: ProgressUpdateBatch) {
+    async fn register_updates(&self, updates: ProgressUpdate) {
         if self.progress_updating_enabled {
             let _ = self
                 .register_updates_impl(updates)
