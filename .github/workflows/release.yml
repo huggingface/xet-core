@@ -195,7 +195,7 @@ jobs:
         uses: PyO3/maturin-action@v1
         with:
           target: ${{ matrix.platform.target }}
-          args: --profile release-dbgsymbols --out dist
+          args: --profile release-dbgsymbols --strip --out dist
           sccache: 'true'
           working-directory: hf_xet
       - name: Retarget and copy debug symbols
