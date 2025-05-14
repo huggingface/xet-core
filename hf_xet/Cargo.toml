@@ -57,11 +57,18 @@ openssl_vendored = ["data/openssl_vendored"]
 profiling = ["pprof"]
 
 [profile.release]
-debug = "line-tables-only"
-opt-level = 3
-# Uncomment the below for lto + Os
-# opt-level = "s"
-# lto = true
+split-debuginfo = "packed"
+opt-level = "s"
+lto = true
+codegen-units = 1
+
+# on manylinux, maturin + split-debuginfo doesn't output debug symbols, so
+# we opt to strip these out manually in the release process.
+[profile.release-dbgsymbols]
+inherits = "release"
+debug = true
+split-debuginfo = "none"
+
 
 [profile.opt-test]
 inherits = "dev"

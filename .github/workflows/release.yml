@@ -38,6 +38,11 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: 3.x
+          cache: 'pip'
+      - name: Install wheel tooling
+        run: |
+          python -m pip install --upgrade pip
+          pip install wheel
       - name: Update version in toml
         run: |
           TAG=${{ github.event.inputs.tag }}
@@ -49,7 +54,7 @@ jobs:
         uses: PyO3/maturin-action@v1
         with:
           target: ${{ matrix.platform.target }}
-          args: --release ${{ matrix.platform.features }} --out dist
+          args: --profile release-dbgsymbols ${{ matrix.platform.features }} --out dist
           sccache: 'true'
           manylinux: ${{ matrix.platform.manylinux }}
           working-directory: hf_xet
@@ -62,6 +67,19 @@ jobs:
                 echo "Neither apt-get nor yum is installed. Please install a package manager."
                 exit 1
             fi
+      - name: Strip debug symbols into a separate file
+        run: |
+          wheel unpack hf_xet/dist/*.whl
+          objcopy --only-keep-debug hf_xet-1.1.1/hf_xet/hf_xet.abi3.so hf_xet-1.1.1/hf_xet/hf_xet.abi3.so.dbg
+          objcopy --strip-debug hf_xet-1.1.1/hf_xet/hf_xet.abi3.so
+          objcopy --add-gnu-debuglink=hf_xet-1.1.1/hf_xet/hf_xet.abi3.so.dbg hf_xet-1.1.1/hf_xet/hf_xet.abi3.so
+          mv hf_xet-1.1.1/hf_xet/hf_xet.abi3.so.dbg hf_xet.abi3.so.debug
+          wheel pack hf_xet* --dest-dir hf_xet/dist
+      - name: Upload debug symbols
+        uses: actions/upload-artifact@v4
+        with:
+          name: hf_xet.abi3.so.dbg
+          path: dbg-manylinux-${{ matrix.platform.target }}/hf_xet.abi3.so.dbg 
       - name: Upload wheels
         uses: actions/upload-artifact@v4
         with:
@@ -95,10 +113,23 @@ jobs:
         uses: PyO3/maturin-action@v1
         with:
           target: ${{ matrix.platform.target }}
-          args: --release ${{ matrix.platform.features }} --out dist
+          args: --profile release-dbgsymbols ${{ matrix.platform.features }} --out dist
           sccache: 'true'
           manylinux: musllinux_1_2
           working-directory: hf_xet
+      - name: Strip debug symbols into a separate file
+        run: |
+          wheel unpack hf_xet/dist/*.whl
+          objcopy --only-keep-debug hf_xet-1.1.1/hf_xet/hf_xet.abi3.so hf_xet-1.1.1/hf_xet/hf_xet.abi3.so.dbg
+          objcopy --strip-debug hf_xet-1.1.1/hf_xet/hf_xet.abi3.so
+          objcopy --add-gnu-debuglink=hf_xet-1.1.1/hf_xet/hf_xet.abi3.so.dbg hf_xet-1.1.1/hf_xet/hf_xet.abi3.so
+          mv hf_xet-1.1.1/hf_xet/hf_xet.abi3.so.dbg hf_xet.abi3.so.debug
+          wheel pack hf_xet* --dest-dir hf_xet/dist
+      - name: Upload debug symbols
+        uses: actions/upload-artifact@v4
+        with:
+          name: hf_xet.abi3.so.dbg
+          path: dbg-musllinux-${{ matrix.platform.target }}/hf_xet.abi3.so.dbg 
       - name: Upload wheels
         uses: actions/upload-artifact@v4
         with:
@@ -167,6 +198,12 @@ jobs:
           args: --release --out dist
           sccache: 'true'
           working-directory: hf_xet
+      # TODO: brian - test this out
+      - name: Upload debug symbols
+        uses: actions/upload-artifact@v4
+        with:
+          name: target/release/hf_xet.pdb
+          path: dbg-windows-${{ matrix.platform.target }}/hf_xet.pdb
       - name: Upload wheels
         uses: actions/upload-artifact@v4
         with:
@@ -235,4 +272,4 @@ jobs:
         env: 
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create ${{ github.event.inputs.tag}} wheels-*/* --generate-notes --prerelease --target ${{github.sha}}
+          gh release create ${{ github.event.inputs.tag}} wheels-*/* dbg-*/* --generate-notes --prerelease --target ${{github.sha}}
