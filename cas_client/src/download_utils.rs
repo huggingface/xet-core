@@ -377,7 +377,10 @@ impl tokio_retry::Condition<CasClientError> for ChunkRangeDeserializeFromBytesSt
             return false;
         };
         // errors that indicate reading the body failed
-        inner_reqwest_err.is_body() || inner_reqwest_err.is_decode() || inner_reqwest_err.is_timeout()
+        inner_reqwest_err.is_body()
+            || inner_reqwest_err.is_decode()
+            || inner_reqwest_err.is_timeout()
+            || inner_reqwest_err.is_request()
     }
 }
 
