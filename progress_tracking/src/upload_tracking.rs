@@ -37,6 +37,12 @@ struct XorbDependency {
     is_completed: bool,
 }
 
+#[derive(Default, Debug)]
+struct XorbPartCompletionStats {
+    completed_bytes: u64,
+    n_bytes: u64,
+}
+
 /// Represents a file that depends on one or more xorbs.
 struct FileDependency {
     /// Human-readable name of the file.
@@ -51,7 +57,7 @@ struct FileDependency {
     /// Mapping of xorb_hash -> (number of completed bytes / number of bytes of the file contained in that xorb).  Only
     /// xorbs that are not uploaded yet are tracked here.
     /// Once an xorb is uploaded, we remove it from here (and add to `completed_bytes`).
-    remaining_xorbs_parts: HashMap<MerkleHash, (u64, u64)>,
+    remaining_xorbs_parts: HashMap<MerkleHash, XorbPartCompletionStats>,
 }
 
 /// Tracks all files and all xorbs, allowing you to register file
@@ -137,9 +143,11 @@ impl CompletionTrackerImpl {
                     };
                     item_updates.push(progress_update);
                 } else {
-                    // Insert a new xorb entry if needed.
+                    // Set the reference here to this file
                     entry.file_indices.insert(dep.file_id as usize);
-                    file_entry.remaining_xorbs_parts.entry(dep.xorb_hash).or_default().1 += dep.n_bytes;
+
+                    // Set the reference here to the xorb
+                    file_entry.remaining_xorbs_parts.entry(dep.xorb_hash).or_default().n_bytes += dep.n_bytes;
                 }
             }
         }
@@ -210,10 +218,10 @@ impl CompletionTrackerImpl {
             debug_assert!(file_entry.remaining_xorbs_parts.contains_key(&xorb_hash));
 
             // This xorb is completed, so remove the number of bytes in that file needed by that xorb.
-            let (completed_bytes, total_bytes) = file_entry.remaining_xorbs_parts.remove(&xorb_hash).unwrap_or((0, 0));
-            debug_assert_le!(completed_bytes, total_bytes);
+            let xorb_part = file_entry.remaining_xorbs_parts.remove(&xorb_hash).unwrap_or_default();
+            debug_assert_le!(xorb_part.completed_bytes, xorb_part.n_bytes);
 
-            let n_bytes_remaining = total_bytes - completed_bytes;
+            let n_bytes_remaining = xorb_part.n_bytes - xorb_part.completed_bytes;
 
             if n_bytes_remaining > 0 {
                 file_entry.completed_bytes += n_bytes_remaining;
@@ -291,21 +299,21 @@ impl CompletionTrackerImpl {
 
             // Update
             let incremental_update = 'update: {
-                let Some((completed_bytes, total_bytes)) = file_entry.remaining_xorbs_parts.get_mut(&xorb_hash) else {
+                let Some(xorb_part) = file_entry.remaining_xorbs_parts.get_mut(&xorb_hash) else {
                     break 'update 0;
                 };
-                debug_assert_le!(*completed_bytes, *total_bytes);
+                debug_assert_le!(xorb_part.completed_bytes, xorb_part.n_bytes);
 
                 // Use floor so as to not inproperly report completion when there is still some to go.
-                let new_completion_bytes = ((*total_bytes as f64) * new_completion_ratio).floor() as u64;
+                let new_completion_bytes = ((xorb_part.n_bytes as f64) * new_completion_ratio).floor() as u64;
 
                 // Make sure this is an update
-                debug_assert_ge!(new_completion_bytes, *completed_bytes);
+                debug_assert_ge!(new_completion_bytes, xorb_part.completed_bytes);
 
-                let incremental_update = new_completion_bytes.saturating_sub(*completed_bytes);
-                *completed_bytes += incremental_update;
+                let incremental_update = new_completion_bytes.saturating_sub(xorb_part.completed_bytes);
+                xorb_part.completed_bytes += incremental_update;
 
-                debug_assert_le!(*completed_bytes, *total_bytes);
+                debug_assert_le!(xorb_part.completed_bytes, xorb_part.n_bytes);
 
                 incremental_update
             };
