@@ -33,7 +33,6 @@ use crate::download_utils::*;
 use crate::error::{CasClientError, Result};
 use crate::http_client::{Api, ResponseErrorLogger, RetryConfig};
 use crate::interface::{ShardDedupProber, *};
-use crate::upload_progress_stream::UploadProgressStream;
 use crate::{http_client, Client, RegistrationClient, ShardClientInterface};
 
 const FORCE_SYNC_METHOD: reqwest::Method = reqwest::Method::PUT;
@@ -126,7 +125,7 @@ impl UploadClient for RemoteClient {
         &self,
         prefix: &str,
         serialized_cas_object: SerializedCasObject,
-        upload_tracker: Option<Arc<CompletionTracker>>,
+        _upload_tracker: Option<Arc<CompletionTracker>>,
     ) -> Result<u64> {
         let key = Key {
             prefix: prefix.to_string(),
@@ -136,6 +135,12 @@ impl UploadClient for RemoteClient {
         let url = Url::parse(&format!("{}/xorb/{key}", self.endpoint))?;
 
         let n_upload_bytes = serialized_cas_object.serialized_data.len() as u64;
+
+        // Backing out the incremental progress reporting for now until we figure out the middleware issue.
+
+        /*
+        use crate::upload_progress_stream::UploadProgressStream;
+
         let n_raw_bytes = serialized_cas_object.raw_num_bytes;
         let xorb_hash = serialized_cas_object.hash;
 
@@ -153,6 +158,7 @@ impl UploadClient for RemoteClient {
             *UPLOAD_REPORTING_BLOCK_SIZE,
             progress_callback,
         );
+        */
 
         let xorb_uploaded = {
             if !self.dry_run {
@@ -160,7 +166,8 @@ impl UploadClient for RemoteClient {
                     .authenticated_http_client
                     .post(url)
                     .with_extension(Api("cas::upload_xorb"))
-                    .body(Body::wrap_stream(upload_stream))
+                    // This breaks the retry middleware: .body(Body::wrap_stream(upload_stream))
+                    .body(Body::from(serialized_cas_object.serialized_data))
                     .send()
                     .await
                     .process_error("upload_xorb")?;
