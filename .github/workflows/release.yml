@@ -258,7 +258,7 @@ jobs:
       - name: Patch sdist
         run: |
           pushd hf_xet/dist
-          DISTFILE=$(ls -tr1 hf-xet-*.tar.gz | tail -n 1)
+          DISTFILE=$(ls -tr1 hf_xet-*.tar.gz | tail -n 1)
           DISTNAME=${DISTFILE%.tar.gz}
           # maturin sdist will overwrite an edited pyproject.toml in the repo root, so we need to 
           # update the python path in the built pyproject.toml to account for that.
