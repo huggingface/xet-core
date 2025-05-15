@@ -439,9 +439,9 @@ pub(crate) async fn get_one_fetch_term_data(
     Ok(term_download_output)
 }
 
-struct RetryCondition;
+struct ChunkRangeDeserializeFromBytesStreamRetryCondition;
 
-impl tokio_retry::Condition<CasClientError> for RetryCondition {
+impl tokio_retry::Condition<CasClientError> for ChunkRangeDeserializeFromBytesStreamRetryCondition {
     fn should_retry(&mut self, err: &CasClientError) -> bool {
         // we only care about retrying some error yielded by trying to deserialize the stream
         let CasClientError::CasObjectError(CasObjectError::InternalIOError(cas_object_io_err)) = err else {
@@ -512,7 +512,7 @@ async fn download_fetch_term_data(
                 chunk_range: fetch_term.range,
             }))
         },
-        RetryCondition,
+        ChunkRangeDeserializeFromBytesStreamRetryCondition,
     )
     .await
 }
