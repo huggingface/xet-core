@@ -19,9 +19,9 @@ use utils::auth::{AuthConfig, TokenProvider};
 
 use crate::{error, CasClientError};
 
-const NUM_RETRIES: u32 = 5;
-const BASE_RETRY_DELAY_MS: u64 = 3000; // 3s
-const BASE_RETRY_MAX_DURATION_MS: u64 = 6 * 60 * 1000; // 6m
+pub(crate) const NUM_RETRIES: u32 = 5;
+pub(crate) const BASE_RETRY_DELAY_MS: u64 = 3000; // 3s
+pub(crate) const BASE_RETRY_MAX_DURATION_MS: u64 = 6 * 60 * 1000; // 6m
 
 /// A strategy that doesn't retry on 429, and defaults to `DefaultRetryableStrategy` otherwise.
 pub struct No429RetryStrategy;
