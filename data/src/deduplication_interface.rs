@@ -89,7 +89,7 @@ impl DeduplicationDataInterface for UploadSessionDataManager {
     /// Registers a Xorb of new data that has no deduplication references.
     async fn register_new_xorb(&mut self, xorb: RawXorbData) -> Result<()> {
         // Begin the process for upload.
-        self.session.register_new_xorb(xorb).await?;
+        self.session.register_new_xorb(xorb, &[]).await?;
 
         Ok(())
     }
