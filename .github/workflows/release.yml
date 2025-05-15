@@ -9,6 +9,7 @@ on:
   push:
     branches: 
       - main
+      - brian/test-release-builds
   workflow_dispatch:
     inputs:
       tag:
