@@ -69,17 +69,21 @@ jobs:
             fi
       - name: Strip debug symbols into a separate file
         run: |
-          wheel unpack hf_xet/dist/*.whl
-          objcopy --only-keep-debug hf_xet-1.1.1/hf_xet/hf_xet.abi3.so hf_xet-1.1.1/hf_xet/hf_xet.abi3.so.dbg
-          objcopy --strip-debug hf_xet-1.1.1/hf_xet/hf_xet.abi3.so
-          objcopy --add-gnu-debuglink=hf_xet-1.1.1/hf_xet/hf_xet.abi3.so.dbg hf_xet-1.1.1/hf_xet/hf_xet.abi3.so
-          mv hf_xet-1.1.1/hf_xet/hf_xet.abi3.so.dbg hf_xet.abi3.so.debug
-          wheel pack hf_xet* --dest-dir hf_xet/dist
+          mkdir hf_xet/dbg
+          pushd hf_xet/dist
+          LATEST_WHEEL=$(ls -tr1 *.whl | tail -n 1)
+          WHEEL_VERSION=$(echo $LATEST_WHEEL | cut -d '-' -f 2)
+          wheel unpack $LATEST_WHEEL 
+          objcopy --only-keep-debug hf_xet-${WHEEL_VERSION}/hf_xet/hf_xet.abi3.so hf_xet-${WHEEL_VERSION}/hf_xet/hf_xet.abi3.so.dbg
+          objcopy --strip-debug hf_xet-${WHEEL_VERSION}/hf_xet/hf_xet.abi3.so
+          objcopy --add-gnu-debuglink=hf_xet-${WHEEL_VERSION}/hf_xet/hf_xet.abi3.so.dbg hf_xet-${WHEEL_VERSION}/hf_xet/hf_xet.abi3.so
+          mv hf_xet-${WHEEL_VERSION}/hf_xet/hf_xet.abi3.so.dbg ../../dbg/hf_xet.abi3.so.dbg
+          wheel pack hf_xet-${WHEEL_VERSION} 
       - name: Upload debug symbols
         uses: actions/upload-artifact@v4
         with:
-          name: hf_xet.abi3.so.dbg
-          path: dbg-manylinux-${{ matrix.platform.target }}/hf_xet.abi3.so.dbg 
+          name: dbg-manylinux-${{ matrix.platform.target }}
+          path: hf_xet/dbg
       - name: Upload wheels
         uses: actions/upload-artifact@v4
         with:
@@ -119,17 +123,21 @@ jobs:
           working-directory: hf_xet
       - name: Strip debug symbols into a separate file
         run: |
-          wheel unpack hf_xet/dist/*.whl
-          objcopy --only-keep-debug hf_xet-1.1.1/hf_xet/hf_xet.abi3.so hf_xet-1.1.1/hf_xet/hf_xet.abi3.so.dbg
-          objcopy --strip-debug hf_xet-1.1.1/hf_xet/hf_xet.abi3.so
-          objcopy --add-gnu-debuglink=hf_xet-1.1.1/hf_xet/hf_xet.abi3.so.dbg hf_xet-1.1.1/hf_xet/hf_xet.abi3.so
-          mv hf_xet-1.1.1/hf_xet/hf_xet.abi3.so.dbg hf_xet.abi3.so.debug
-          wheel pack hf_xet* --dest-dir hf_xet/dist
+          mkdir hf_xet/dbg
+          pushd hf_xet/dist
+          LATEST_WHEEL=$(ls -tr1 *.whl | tail -n 1)
+          WHEEL_VERSION=$(echo $LATEST_WHEEL | cut -d '-' -f 2)
+          wheel unpack $LATEST_WHEEL 
+          objcopy --only-keep-debug hf_xet-${WHEEL_VERSION}/hf_xet/hf_xet.abi3.so hf_xet-${WHEEL_VERSION}/hf_xet/hf_xet.abi3.so.dbg
+          objcopy --strip-debug hf_xet-${WHEEL_VERSION}/hf_xet/hf_xet.abi3.so
+          objcopy --add-gnu-debuglink=hf_xet-${WHEEL_VERSION}/hf_xet/hf_xet.abi3.so.dbg hf_xet-${WHEEL_VERSION}/hf_xet/hf_xet.abi3.so
+          mv hf_xet-${WHEEL_VERSION}/hf_xet/hf_xet.abi3.so.dbg ../dbg/hf_xet.abi3.so.dbg
+          wheel pack hf_xet-${WHEEL_VERSION} 
       - name: Upload debug symbols
         uses: actions/upload-artifact@v4
         with:
-          name: hf_xet.abi3.so.dbg
-          path: dbg-musllinux-${{ matrix.platform.target }}/hf_xet.abi3.so.dbg 
+          path: dbg-musllinux-${{ matrix.platform.target }}
+          name: hf_xet/dbg
       - name: Upload wheels
         uses: actions/upload-artifact@v4
         with:
@@ -164,6 +172,15 @@ jobs:
           args: --release --out dist
           sccache: 'true'
           working-directory: hf_xet
+      - name: Copy debug symbols
+        run: |
+          mkdir hf_xet/dbg
+          cp hf_xet/target/release/hf_xet.pdb hf_xet/dbg/ 
+      - name: Upload debug symbols
+        uses: actions/upload-artifact@v4
+        with:
+          name: dbg-windows-${{ matrix.platform.target }}
+          path: hf_xet/dbg
       - name: Upload wheels
         uses: actions/upload-artifact@v4
         with:
@@ -208,8 +225,8 @@ jobs:
       - name: Upload debug symbols
         uses: actions/upload-artifact@v4
         with:
-          name: hf_xet/dbg/libhf_xet.dylib.dSYM
-          path: dbg-macos-${{ matrix.platform.target }}
+          name: dbg-macos-${{ matrix.platform.target }}
+          path: hf_xet/dbg
       - name: Upload wheels
         uses: actions/upload-artifact@v4
         with:
