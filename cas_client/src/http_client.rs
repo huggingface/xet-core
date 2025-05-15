@@ -96,6 +96,22 @@ pub fn build_auth_http_client<R: RetryableStrategy + Send + Sync + 'static>(
         .build())
 }
 
+/// Builds authenticated HTTP Client to talk to CAS.
+pub fn build_auth_http_client_no_retry(
+    auth_config: &Option<AuthConfig>,
+    session_id: &str,
+) -> Result<ClientWithMiddleware, CasClientError> {
+    let auth_middleware = auth_config.as_ref().map(AuthMiddleware::from).info_none("CAS auth disabled");
+    let logging_middleware = Some(LoggingMiddleware);
+    let session_middleware = (!session_id.is_empty()).then(|| SessionMiddleware(session_id.to_owned()));
+    let reqwest_client = reqwest::Client::builder().build()?;
+    Ok(ClientBuilder::new(reqwest_client)
+        .maybe_with(auth_middleware)
+        .maybe_with(logging_middleware)
+        .maybe_with(session_middleware)
+        .build())
+}
+
 /// Builds HTTP Client to talk to CAS.
 /// Includes retry middleware with exponential backoff.
 pub fn build_http_client<R: RetryableStrategy + Send + Sync + 'static>(

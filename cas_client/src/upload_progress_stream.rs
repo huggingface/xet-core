@@ -2,7 +2,7 @@ use std::pin::Pin;
 use std::task::{Context, Poll};
 
 use bytes::Bytes;
-use futures::Stream;
+use http_body::{Body as HttpBody, Frame, SizeHint};
 use more_asserts::*;
 
 pub struct UploadProgressStream<F>
@@ -16,14 +16,18 @@ where
     last_update: usize,
 }
 
-impl<F> Stream for UploadProgressStream<F>
+impl<F> HttpBody for UploadProgressStream<F>
 where
     F: FnMut(u64) + Send + Unpin + 'static,
 {
-    type Item = std::result::Result<Bytes, std::io::Error>;
+    type Data = Bytes;
+    type Error = std::io::Error;
 
     // Send the next block of data; also update the
-    fn poll_next(mut self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+    fn poll_frame(
+        mut self: Pin<&mut Self>,
+        _cx: &mut Context<'_>,
+    ) -> Poll<Option<Result<http_body::Frame<Self::Data>, Self::Error>>> {
         debug_assert_le!(self.bytes_sent, self.data.len());
 
         if self.bytes_sent == self.data.len() {
@@ -45,7 +49,15 @@ where
         self.last_update = slice_end - slice_start;
         self.bytes_sent = slice_end;
 
-        Poll::Ready(Some(Ok(self.data.slice(slice_start..slice_end))))
+        Poll::Ready(Some(Ok(Frame::data(self.data.slice(slice_start..slice_end)))))
+    }
+
+    fn is_end_stream(&self) -> bool {
+        self.bytes_sent == self.data.len()
+    }
+
+    fn size_hint(&self) -> SizeHint {
+        SizeHint::with_exact(self.data.len() as u64)
     }
 }
 

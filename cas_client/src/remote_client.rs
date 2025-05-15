@@ -48,7 +48,7 @@ utils::configurable_constants! {
     };
 
     // Send a report of successful partial upload every 512kb.
-    ref UPLOAD_REPORTING_BLOCK_SIZE : usize = 512 * 1024;
+    ref UPLOAD_REPORTING_BLOCK_SIZE : usize = 512 * 1024 * 1024;
 }
 
 utils::configurable_bool_constants! {
@@ -65,6 +65,7 @@ pub struct RemoteClient {
     dry_run: bool,
     http_client: Arc<ClientWithMiddleware>,
     authenticated_http_client: Arc<ClientWithMiddleware>,
+    authenticated_http_client_no_retry: Arc<ClientWithMiddleware>,
     conservative_authenticated_http_client: Arc<ClientWithMiddleware>,
     chunk_cache: Option<Arc<dyn ChunkCache>>,
     range_download_single_flight: RangeDownloadSingleFlight,
@@ -106,6 +107,9 @@ impl RemoteClient {
             authenticated_http_client: Arc::new(
                 http_client::build_auth_http_client(auth, RetryConfig::default(), session_id).unwrap(),
             ),
+            authenticated_http_client_no_retry: Arc::new(
+                http_client::build_auth_http_client_no_retry(auth, session_id).unwrap(),
+            ),
             conservative_authenticated_http_client: Arc::new(
                 http_client::build_auth_http_client(auth, RetryConfig::no429retry(), session_id).unwrap(),
             ),
@@ -125,7 +129,7 @@ impl UploadClient for RemoteClient {
         &self,
         prefix: &str,
         serialized_cas_object: SerializedCasObject,
-        _upload_tracker: Option<Arc<CompletionTracker>>,
+        upload_tracker: Option<Arc<CompletionTracker>>,
     ) -> Result<u64> {
         let key = Key {
             prefix: prefix.to_string(),
@@ -137,8 +141,6 @@ impl UploadClient for RemoteClient {
         let n_upload_bytes = serialized_cas_object.serialized_data.len() as u64;
 
         // Backing out the incremental progress reporting for now until we figure out the middleware issue.
-
-        /*
         use crate::upload_progress_stream::UploadProgressStream;
 
         let n_raw_bytes = serialized_cas_object.raw_num_bytes;
@@ -158,16 +160,14 @@ impl UploadClient for RemoteClient {
             *UPLOAD_REPORTING_BLOCK_SIZE,
             progress_callback,
         );
-        */
-
         let xorb_uploaded = {
             if !self.dry_run {
                 let response = self
-                    .authenticated_http_client
+                    .authenticated_http_client_no_retry
                     .post(url)
                     .with_extension(Api("cas::upload_xorb"))
-                    // This breaks the retry middleware: .body(Body::wrap_stream(upload_stream))
-                    .body(Body::from(serialized_cas_object.serialized_data))
+                    .body(Body::wrap(upload_stream))
+                    // .body(Body::from(serialized_cas_object.serialized_data))
                     .send()
                     .await
                     .process_error("upload_xorb")?;
