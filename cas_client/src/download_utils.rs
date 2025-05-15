@@ -2,6 +2,11 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 
+use crate::error::{CasClientError, Result};
+use crate::http_client::{Api, BASE_RETRY_DELAY_MS, BASE_RETRY_MAX_DURATION_MS, NUM_RETRIES};
+use crate::remote_client::{get_reconstruction_with_endpoint_and_client, PREFIX_DEFAULT};
+use crate::OutputProvider;
+use cas_object::error::CasObjectError;
 use cas_types::{CASReconstructionFetchInfo, CASReconstructionTerm, ChunkRange, FileRange, HexMerkleHash, Key};
 use chunk_cache::ChunkCache;
 use deduplication::constants::MAX_XORB_BYTES;
@@ -13,14 +18,10 @@ use http::StatusCode;
 use merklehash::MerkleHash;
 use reqwest_middleware::ClientWithMiddleware;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
+use tokio_retry::strategy::ExponentialBackoff;
 use tracing::{debug, error, info, trace};
 use url::Url;
 use utils::singleflight::Group;
-
-use crate::error::{CasClientError, Result};
-use crate::http_client::Api;
-use crate::remote_client::{get_reconstruction_with_endpoint_and_client, PREFIX_DEFAULT};
-use crate::OutputProvider;
 
 #[derive(Clone, Debug)]
 pub(crate) enum DownloadRangeResult {
@@ -360,6 +361,25 @@ pub(crate) async fn get_one_term(
     Ok(data)
 }
 
+struct ChunkRangeDeserializeFromBytesStreamRetryCondition;
+
+impl tokio_retry::Condition<CasClientError> for ChunkRangeDeserializeFromBytesStreamRetryCondition {
+    fn should_retry(&mut self, err: &CasClientError) -> bool {
+        // we only care about retrying some error yielded by trying to deserialize the stream
+        let CasClientError::CasObjectError(CasObjectError::InternalIOError(cas_object_io_err)) = err else {
+            return false;
+        };
+        let Some(inner) = cas_object_io_err.get_ref() else {
+            return false;
+        };
+        let Some(inner_reqwest_err) = inner.downcast_ref::<reqwest::Error>() else {
+            return false;
+        };
+        // errors that indicate reading the body failed
+        inner_reqwest_err.is_body() || inner_reqwest_err.is_decode() || inner_reqwest_err.is_timeout()
+    }
+}
+
 /// use the provided http_client to make requests to S3/blob store using the url and url_range
 /// parts of a CASReconstructionFetchInfo. The url_range part is used directly in a http Range header
 /// value (see fn `range_header`).
@@ -371,42 +391,50 @@ async fn download_range(
     trace!("{hash},{},{}", fetch_term.range.start, fetch_term.range.end);
 
     let url = Url::parse(fetch_term.url.as_str())?;
-    let response = match http_client
-        .get(url)
-        .header(RANGE, fetch_term.url_range.range_header())
-        .with_extension(Api("s3::get_range"))
-        .send()
-        .await
-        .map_err(CasClientError::from)
-        .log_error("error downloading range")?
-        .error_for_status()
-    {
-        Ok(response) => response,
-        Err(e) => {
-            return match e.status() {
-                Some(StatusCode::FORBIDDEN) => {
-                    info!("error code {} for hash {hash}, will re-fetch reconstruction", StatusCode::FORBIDDEN,);
-                    Ok(DownloadRangeResult::Forbidden)
-                },
-                _ => Err(e.into()),
+
+    tokio_retry::RetryIf::spawn(
+        ExponentialBackoff::from_millis(BASE_RETRY_DELAY_MS)
+            .max_delay(Duration::from_millis(BASE_RETRY_MAX_DURATION_MS))
+            .take(NUM_RETRIES as usize),
+        || async {
+            let response = match http_client
+                .get(url.clone())
+                .header(RANGE, fetch_term.url_range.range_header())
+                .with_extension(Api("s3::get_range"))
+                .send()
+                .await
+                .map_err(CasClientError::from)
+                .log_error("error downloading range")?
+                .error_for_status()
+            {
+                Ok(response) => response,
+                Err(e) => return match e.status() {
+                    Some(StatusCode::FORBIDDEN) => {
+                        info!("error code {} for hash {hash}, will re-fetch reconstruction", StatusCode::FORBIDDEN,);
+                        Ok(DownloadRangeResult::Forbidden)
+                    },
+                    _ => Err(e.into()),
+                }
+                .log_error("error code"),
+            };
+
+            if let Some(content_length) = response.content_length() {
+                let expected_len = fetch_term.url_range.length();
+                if content_length != expected_len {
+                    error!("got back a smaller byte range ({content_length}) than requested ({expected_len}) from s3");
+                    return Err(CasClientError::InvalidRange);
+                }
             }
-            .log_error("error code")
+
+            let (data, chunk_byte_indices) = cas_object::deserialize_async::deserialize_chunks_from_stream(
+                response.bytes_stream().map_err(std::io::Error::other),
+            )
+            .await?;
+            Ok(DownloadRangeResult::Data(data, chunk_byte_indices))
         },
-    };
-
-    if let Some(content_length) = response.content_length() {
-        let expected_len = fetch_term.url_range.length();
-        if content_length != expected_len {
-            error!("got back a smaller byte range ({content_length}) than requested ({expected_len}) from s3");
-            return Err(CasClientError::InvalidRange);
-        }
-    }
-
-    let (data, chunk_byte_indices) = cas_object::deserialize_async::deserialize_chunks_from_stream(
-        response.bytes_stream().map_err(std::io::Error::other),
+        ChunkRangeDeserializeFromBytesStreamRetryCondition,
     )
-    .await?;
-    Ok(DownloadRangeResult::Data(data, chunk_byte_indices))
+    .await
 }
 
 #[cfg(test)]
