@@ -20,8 +20,9 @@ use mdb_shard::file_structs::{FileDataSequenceEntry, FileDataSequenceHeader, MDB
 use mdb_shard::shard_file_reconstructor::FileReconstructor;
 use mdb_shard::utils::shard_file_name;
 use merklehash::{HashedWrite, MerkleHash};
-use progress_tracking::SimpleProgressUpdater;
-use reqwest::{StatusCode, Url};
+use progress_tracking::item_tracking::SingleItemProgressUpdater;
+use progress_tracking::upload_tracking::CompletionTracker;
+use reqwest::{Body, StatusCode, Url};
 use reqwest_middleware::ClientWithMiddleware;
 use tokio::sync::{mpsc, OwnedSemaphorePermit};
 use tokio::task::{JoinError, JoinHandle, JoinSet};
@@ -33,6 +34,7 @@ use crate::download_utils::*;
 use crate::error::{CasClientError, Result};
 use crate::http_client::{Api, ResponseErrorLogger, RetryConfig};
 use crate::interface::{ShardDedupProber, *};
+use crate::upload_progress_stream::UploadProgressStream;
 use crate::{http_client, Client, RegistrationClient, ShardClientInterface};
 
 const FORCE_SYNC_METHOD: reqwest::Method = reqwest::Method::PUT;
@@ -46,6 +48,9 @@ utils::configurable_constants! {
         standard: 16,
         high_performance: 100,
     };
+
+    // Send a report of successful partial upload every 512kb.
+    ref UPLOAD_REPORTING_BLOCK_SIZE : usize = 512 * 1024;
 }
 
 utils::configurable_bool_constants! {
@@ -116,10 +121,14 @@ impl RemoteClient {
 
 #[async_trait]
 impl UploadClient for RemoteClient {
-    #[instrument(skip_all, name = "RemoteClient::upload_xorb", fields(key = Key{prefix : prefix.to_string(), hash : serialized_cas_object.hash}.to_string(),
-                 xorb.len = serialized_cas_object.serialized_data.len(), xorb.num_chunks = serialized_cas_object.num_chunks
-    ))]
-    async fn upload_xorb(&self, prefix: &str, serialized_cas_object: SerializedCasObject) -> Result<u64> {
+    #[instrument(skip_all, name="RemoteClient::upload_xorb", fields(key = Key{prefix : prefix.to_string(), hash : serialized_cas_object.hash}.to_string(), 
+                 xorb.len = serialized_cas_object.serialized_data.len(), xorb.num_chunks = serialized_cas_object.num_chunks))]
+    async fn upload_xorb(
+        &self,
+        prefix: &str,
+        serialized_cas_object: SerializedCasObject,
+        upload_tracker: Option<Arc<CompletionTracker>>,
+    ) -> Result<u64> {
         let key = Key {
             prefix: prefix.to_string(),
             hash: serialized_cas_object.hash,
@@ -127,7 +136,24 @@ impl UploadClient for RemoteClient {
 
         let url = Url::parse(&format!("{}/xorb/{key}", self.endpoint))?;
 
-        let n_bytes = serialized_cas_object.serialized_data.len();
+        let n_upload_bytes = serialized_cas_object.serialized_data.len() as u64;
+        let n_raw_bytes = serialized_cas_object.raw_num_bytes;
+        let xorb_hash = serialized_cas_object.hash;
+
+        let progress_callback = move |bytes_sent: u64| {
+            if let Some(utr) = upload_tracker.as_ref() {
+                // First, recallibrate the sending, as the compressed size is different than the actual data size.
+                let adjusted_update = (bytes_sent * n_raw_bytes) / n_upload_bytes;
+
+                utr.clone().register_xorb_upload_progress_background(xorb_hash, adjusted_update);
+            }
+        };
+
+        let upload_stream = UploadProgressStream::new(
+            serialized_cas_object.serialized_data,
+            *UPLOAD_REPORTING_BLOCK_SIZE,
+            progress_callback,
+        );
 
         let xorb_uploaded = {
             if !self.dry_run {
@@ -135,7 +161,7 @@ impl UploadClient for RemoteClient {
                     .authenticated_http_client
                     .post(url)
                     .with_extension(Api("cas::upload_xorb"))
-                    .body(serialized_cas_object.serialized_data)
+                    .body(Body::wrap_stream(upload_stream))
                     .send()
                     .await
                     .process_error("upload_xorb")?;
@@ -153,7 +179,7 @@ impl UploadClient for RemoteClient {
             debug!("{key:?} inserted into CAS.");
         }
 
-        Ok(n_bytes as u64)
+        Ok(n_upload_bytes)
     }
 
     async fn exists(&self, prefix: &str, hash: &MerkleHash) -> Result<bool> {
@@ -179,7 +205,7 @@ impl ReconstructionClient for RemoteClient {
         hash: &MerkleHash,
         byte_range: Option<FileRange>,
         output_provider: &OutputProvider,
-        progress_updater: Option<Arc<dyn SimpleProgressUpdater>>,
+        progress_updater: Option<Arc<SingleItemProgressUpdater>>,
     ) -> Result<u64> {
         // If the user has set the `HF_XET_RECONSTRUCT_WRITE_SEQUENTIALLY=true` env variable, then we
         // should write the file to the output sequentially instead of in parallel.
@@ -302,7 +328,7 @@ impl RemoteClient {
         file_hash: &MerkleHash,
         byte_range: Option<FileRange>,
         writer: &OutputProvider,
-        progress_updater: Option<Arc<dyn SimpleProgressUpdater>>,
+        progress_updater: Option<Arc<SingleItemProgressUpdater>>,
     ) -> Result<u64> {
         // queue size is inherently bounded by degree of concurrency.
         let (task_tx, mut task_rx) = mpsc::unbounded_channel::<DownloadQueueItem<SequentialTermDownload>>();
@@ -453,7 +479,7 @@ impl RemoteClient {
         file_hash: &MerkleHash,
         byte_range: Option<FileRange>,
         writer: &OutputProvider,
-        progress_updater: Option<Arc<dyn SimpleProgressUpdater>>,
+        progress_updater: Option<Arc<SingleItemProgressUpdater>>,
     ) -> Result<u64> {
         // queue size is inherently bounded by degree of concurrency.
         let (task_tx, mut task_rx) =
@@ -821,7 +847,7 @@ mod tests {
 
         // Act
         let result = threadpool
-            .external_run_async_task(async move { client.upload_xorb(prefix, cas_object).await })
+            .external_run_async_task(async move { client.upload_xorb(prefix, cas_object, None).await })
             .unwrap();
 
         // Assert

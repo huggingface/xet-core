@@ -298,6 +298,7 @@ dependencies = [
  "mdb_shard",
  "merkledb",
  "merklehash",
+ "more-asserts",
  "progress_tracking",
  "reqwest",
  "reqwest-middleware",

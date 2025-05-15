@@ -16,3 +16,4 @@ mod http_client;
 mod interface;
 mod local_client;
 pub mod remote_client;
+mod upload_progress_stream;

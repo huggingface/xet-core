@@ -9,7 +9,8 @@ use cas_object::SerializedCasObject;
 use cas_types::{FileRange, QueryReconstructionResponse};
 use mdb_shard::shard_file_reconstructor::FileReconstructor;
 use merklehash::MerkleHash;
-use progress_tracking::SimpleProgressUpdater;
+use progress_tracking::item_tracking::SingleItemProgressUpdater;
+use progress_tracking::upload_tracking::CompletionTracker;
 
 use crate::error::Result;
 use crate::CasClientError;
@@ -22,7 +23,12 @@ use crate::CasClientError;
 #[async_trait]
 pub trait UploadClient {
     /// Insert a serialized XORB into the CAS, returning the number of bytes read.  See   
-    async fn upload_xorb(&self, prefix: &str, serialized_cas_object: SerializedCasObject) -> Result<u64>;
+    async fn upload_xorb(
+        &self,
+        prefix: &str,
+        serialized_cas_object: SerializedCasObject,
+        upload_tracker: Option<Arc<CompletionTracker>>,
+    ) -> Result<u64>;
 
     /// Check if a XORB already exists.
     async fn exists(&self, prefix: &str, hash: &MerkleHash) -> Result<bool>;
@@ -46,7 +52,7 @@ pub trait ReconstructionClient {
         hash: &MerkleHash,
         byte_range: Option<FileRange>,
         output_provider: &OutputProvider,
-        progress_updater: Option<Arc<dyn SimpleProgressUpdater>>,
+        progress_updater: Option<Arc<SingleItemProgressUpdater>>,
     ) -> Result<u64>;
 
     async fn batch_get_file(&self, files: HashMap<MerkleHash, &OutputProvider>) -> Result<u64> {
