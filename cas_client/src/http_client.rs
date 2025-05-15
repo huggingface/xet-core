@@ -24,9 +24,9 @@ const BASE_RETRY_DELAY_MS: u64 = 3000; // 3s
 const BASE_RETRY_MAX_DURATION_MS: u64 = 6 * 60 * 1000; // 6m
 
 /// A strategy that doesn't retry on 429, and defaults to `DefaultRetryableStrategy` otherwise.
-pub struct No429RetryStratey;
+pub struct No429RetryStrategy;
 
-impl RetryableStrategy for No429RetryStratey {
+impl RetryableStrategy for No429RetryStrategy {
     fn handle(&self, res: &Result<reqwest::Response, reqwest_middleware::Error>) -> Option<Retryable> {
         if let Ok(success) = res {
             if success.status() == StatusCode::TOO_MANY_REQUESTS {
@@ -65,13 +65,13 @@ impl Default for RetryConfig<DefaultRetryableStrategy> {
     }
 }
 
-impl RetryConfig<No429RetryStratey> {
+impl RetryConfig<No429RetryStrategy> {
     pub fn no429retry() -> Self {
         Self {
             num_retries: NUM_RETRIES,
             min_retry_interval_ms: BASE_RETRY_DELAY_MS,
             max_retry_interval_ms: BASE_RETRY_MAX_DURATION_MS,
-            strategy: No429RetryStratey,
+            strategy: No429RetryStrategy,
         }
     }
 }
@@ -90,7 +90,7 @@ pub fn build_auth_http_client<R: RetryableStrategy + Send + Sync + 'static>(
     let reqwest_client = reqwest::Client::builder().build()?;
     Ok(ClientBuilder::new(reqwest_client)
         .maybe_with(auth_middleware)
-        .maybe_with(Some(retry_middleware))
+        .with(retry_middleware)
         .maybe_with(logging_middleware)
         .maybe_with(session_middleware)
         .build())
@@ -107,7 +107,7 @@ pub fn build_http_client<R: RetryableStrategy + Send + Sync + 'static>(
     let session_middleware = (!session_id.is_empty()).then(|| SessionMiddleware(session_id.to_owned()));
     let reqwest_client = reqwest::Client::builder().build()?;
     Ok(ClientBuilder::new(reqwest_client)
-        .maybe_with(Some(retry_middleware))
+        .with(retry_middleware)
         .maybe_with(logging_middleware)
         .maybe_with(session_middleware)
         .build())
@@ -325,7 +325,7 @@ mod tests {
                 num_retries: 1,
                 min_retry_interval_ms: 0,
                 max_retry_interval_ms: 3000,
-                strategy: No429RetryStratey,
+                strategy: No429RetryStrategy,
             };
             let client = build_auth_http_client(&None, retry_config, "").unwrap();
 
@@ -379,7 +379,7 @@ mod tests {
                 num_retries: 2,
                 min_retry_interval_ms: 0,
                 max_retry_interval_ms: 3000,
-                strategy: No429RetryStratey,
+                strategy: No429RetryStrategy,
             };
             let client = build_auth_http_client(&None, retry_config, "").unwrap();
 
@@ -436,7 +436,7 @@ mod tests {
                 num_retries: 2,
                 min_retry_interval_ms: 1000,
                 max_retry_interval_ms: 6000,
-                strategy: No429RetryStratey,
+                strategy: No429RetryStrategy,
             };
             let client = build_auth_http_client(&None, retry_config, "").unwrap();
 
@@ -465,7 +465,7 @@ mod tests {
             num_retries: 10,
             min_retry_interval_ms: 1000,
             max_retry_interval_ms: 6000,
-            strategy: No429RetryStratey,
+            strategy: No429RetryStrategy,
         };
         let client = build_auth_http_client(&None, retry_config, "").unwrap();
 
