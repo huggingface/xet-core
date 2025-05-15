@@ -2,9 +2,24 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use more_asserts::assert_le;
 use tokio::sync::Mutex;
 
 use crate::{ProgressUpdate, TrackingProgressUpdater};
+
+/// Internal structure to track and validate progress data for one item.
+#[derive(Debug)]
+struct ItemProgressData {
+    total_count: u64,
+    last_completed: u64,
+}
+
+#[derive(Debug, Default)]
+pub struct ProgressUpdaterVerificationWrapperImpl {
+    items: HashMap<Arc<str>, ItemProgressData>,
+    total_bytes: u64,
+    total_bytes_completed: u64,
+}
 
 /// A wrapper that forwards updates to an inner `TrackingProgressUpdater`
 /// while also validating each update for correctness:
@@ -16,14 +31,7 @@ use crate::{ProgressUpdate, TrackingProgressUpdater};
 #[derive(Debug)]
 pub struct ProgressUpdaterVerificationWrapper {
     inner: Arc<dyn TrackingProgressUpdater>,
-    items: Mutex<HashMap<Arc<str>, ItemProgressData>>,
-}
-
-/// Internal structure to track and validate progress data for one item.
-#[derive(Debug)]
-struct ItemProgressData {
-    total_count: u64,
-    last_completed: u64,
+    tr: Mutex<ProgressUpdaterVerificationWrapperImpl>,
 }
 
 impl ProgressUpdaterVerificationWrapper {
@@ -32,31 +40,35 @@ impl ProgressUpdaterVerificationWrapper {
     pub fn new(inner: Arc<dyn TrackingProgressUpdater>) -> Arc<Self> {
         Arc::new(Self {
             inner,
-            items: Mutex::new(HashMap::new()),
+            tr: Mutex::new(ProgressUpdaterVerificationWrapperImpl::default()),
         })
     }
 
     /// Once all uploads are done, call this to ensure that every item is fully complete.
     /// Panics if any item is still incomplete (i.e. `last_completed < total_count`).
     pub async fn assert_complete(&self) {
-        let map = self.items.lock().await;
-        for (item_name, data) in &*map {
+        let tr = self.tr.lock().await;
+
+        for (item_name, data) in tr.items.iter() {
             assert_eq!(
                 data.last_completed, data.total_count,
                 "Item '{}' is not fully complete: {}/{}",
                 item_name, data.last_completed, data.total_count
             );
         }
+
+        assert_eq!(tr.total_bytes_completed, tr.total_bytes);
     }
 }
 
 #[async_trait]
 impl TrackingProgressUpdater for ProgressUpdaterVerificationWrapper {
-    async fn register_updates(&self, updates: &[ProgressUpdate]) {
+    async fn register_updates(&self, update: ProgressUpdate) {
         // First, capture and validate
-        let mut map = self.items.lock().await;
-        for up in updates {
-            let entry = map.entry(up.item_name.clone()).or_insert(ItemProgressData {
+        let mut tr = self.tr.lock().await;
+
+        for up in update.item_updates.iter() {
+            let entry = tr.items.entry(up.item_name.clone()).or_insert(ItemProgressData {
                 total_count: 0,
                 last_completed: 0,
             });
@@ -104,27 +116,54 @@ impl TrackingProgressUpdater for ProgressUpdaterVerificationWrapper {
             entry.last_completed = up.completed_count;
         }
 
+        assert_le!(
+            tr.total_bytes,
+            update.total_bytes,
+            "New total bytes {} a decrease from previous report of total bytes {}",
+            update.total_bytes,
+            tr.total_bytes
+        );
+
+        tr.total_bytes = tr.total_bytes.max(update.total_bytes);
+
+        assert_le!(
+            tr.total_bytes_completed,
+            update.total_bytes_completed,
+            "New total bytes completed {} a decrease from previous report of total bytes {}",
+            update.total_bytes_completed,
+            tr.total_bytes_completed
+        );
+
+        tr.total_bytes_completed += update.total_bytes_completion_increment;
+
+        assert_eq!(
+            tr.total_bytes_completed, update.total_bytes_completed,
+            "Total bytes completed {} does not match tracked total bytes {}",
+            update.total_bytes_completed, tr.total_bytes_completed
+        );
+
         // Now forward them to the inner updater
-        self.inner.register_updates(updates).await;
+        self.inner.register_updates(update).await;
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ItemProgressUpdate;
 
     /// A trivial `TrackingProgressUpdater` for testing, which just stores all updates.
     /// In real code, this could log to a file, update a UI, etc.
     #[derive(Debug, Default)]
     struct DummyLogger {
-        pub all_updates: Mutex<Vec<ProgressUpdate>>,
+        pub all_updates: Mutex<Vec<ItemProgressUpdate>>,
     }
 
     #[async_trait]
     impl TrackingProgressUpdater for DummyLogger {
-        async fn register_updates(&self, updates: &[ProgressUpdate]) {
+        async fn register_updates(&self, updates: ProgressUpdate) {
             let mut guard = self.all_updates.lock().await;
-            guard.extend_from_slice(updates);
+            guard.extend_from_slice(&updates.item_updates);
         }
     }
 
@@ -138,38 +177,48 @@ mod tests {
 
         // Let's register some progress updates
         wrapper
-            .register_updates(&[
-                ProgressUpdate {
-                    item_name: Arc::from("fileA"),
-                    total_count: 100,
-                    completed_count: 50,
-                    update_increment: 50, // from 0->50
-                },
-                ProgressUpdate {
-                    item_name: Arc::from("fileB"),
-                    total_count: 200,
-                    completed_count: 100,
-                    update_increment: 100, // from 0->100
-                },
-            ])
+            .register_updates(ProgressUpdate {
+                item_updates: vec![
+                    ItemProgressUpdate {
+                        item_name: Arc::from("fileA"),
+                        total_count: 100,
+                        completed_count: 50,
+                        update_increment: 50, // from 0->50
+                    },
+                    ItemProgressUpdate {
+                        item_name: Arc::from("fileB"),
+                        total_count: 200,
+                        completed_count: 100,
+                        update_increment: 100, // from 0->100
+                    },
+                ],
+                total_bytes: 200,
+                total_bytes_completed: 100,
+                total_bytes_completion_increment: 100,
+            })
             .await;
 
         // Shouldn't be complete yet. We'll do one more set of updates to finalize.
         wrapper
-            .register_updates(&[
-                ProgressUpdate {
-                    item_name: Arc::from("fileA"),
-                    total_count: 100,
-                    completed_count: 100,
-                    update_increment: 50, // from 50->100
-                },
-                ProgressUpdate {
-                    item_name: Arc::from("fileB"),
-                    total_count: 200,
-                    completed_count: 200,
-                    update_increment: 100, // from 100->200
-                },
-            ])
+            .register_updates(ProgressUpdate {
+                item_updates: vec![
+                    ItemProgressUpdate {
+                        item_name: Arc::from("fileA"),
+                        total_count: 100,
+                        completed_count: 100,
+                        update_increment: 50, // from 50->100
+                    },
+                    ItemProgressUpdate {
+                        item_name: Arc::from("fileB"),
+                        total_count: 200,
+                        completed_count: 200,
+                        update_increment: 100, // from 100->200
+                    },
+                ],
+                total_bytes: 200,
+                total_bytes_completed: 200,
+                total_bytes_completion_increment: 100,
+            })
             .await;
 
         // Now all items should be fully complete

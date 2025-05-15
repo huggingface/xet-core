@@ -37,6 +37,7 @@ reqwest-retry = "0.6.1"
 heed = "0.11"
 futures = "0.3.31"
 derivative = "2.2.0"
+more-asserts = "0.3.1"
 
 [dev-dependencies]
 rand = "0.8.5"
