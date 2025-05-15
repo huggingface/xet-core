@@ -38,6 +38,11 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: 3.x
+          cache: 'pip'
+      - name: Install wheel tooling
+        run: |
+          python -m pip install --upgrade pip
+          pip install wheel
       - name: Update version in toml
         run: |
           TAG=${{ github.event.inputs.tag }}
@@ -49,7 +54,7 @@ jobs:
         uses: PyO3/maturin-action@v1
         with:
           target: ${{ matrix.platform.target }}
-          args: --release ${{ matrix.platform.features }} --out dist
+          args: --profile release-dbgsymbols ${{ matrix.platform.features }} --out dist
           sccache: 'true'
           manylinux: ${{ matrix.platform.manylinux }}
           working-directory: hf_xet
@@ -62,6 +67,23 @@ jobs:
                 echo "Neither apt-get nor yum is installed. Please install a package manager."
                 exit 1
             fi
+      - name: Strip debug symbols into a separate file
+        run: |
+          mkdir hf_xet/dbg
+          pushd hf_xet/dist
+          LATEST_WHEEL=$(ls -tr1 *.whl | tail -n 1)
+          WHEEL_VERSION=$(echo $LATEST_WHEEL | cut -d '-' -f 2)
+          wheel unpack $LATEST_WHEEL 
+          objcopy --only-keep-debug hf_xet-${WHEEL_VERSION}/hf_xet/hf_xet.abi3.so hf_xet-${WHEEL_VERSION}/hf_xet/hf_xet.abi3.so.dbg
+          objcopy --strip-debug hf_xet-${WHEEL_VERSION}/hf_xet/hf_xet.abi3.so
+          objcopy --add-gnu-debuglink=hf_xet-${WHEEL_VERSION}/hf_xet/hf_xet.abi3.so.dbg hf_xet-${WHEEL_VERSION}/hf_xet/hf_xet.abi3.so
+          mv hf_xet-${WHEEL_VERSION}/hf_xet/hf_xet.abi3.so.dbg ../../dbg/hf_xet.abi3.so.dbg
+          wheel pack hf_xet-${WHEEL_VERSION} 
+      - name: Upload debug symbols
+        uses: actions/upload-artifact@v4
+        with:
+          name: dbg-manylinux-${{ matrix.platform.target }}
+          path: hf_xet/dbg
       - name: Upload wheels
         uses: actions/upload-artifact@v4
         with:
@@ -84,6 +106,11 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: 3.x
+          cache: 'pip'
+      - name: Install wheel tooling
+        run: |
+          python -m pip install --upgrade pip
+          pip install wheel 
       - name: Update version in toml
         run: |
           TAG=${{ github.event.inputs.tag }}
@@ -95,10 +122,27 @@ jobs:
         uses: PyO3/maturin-action@v1
         with:
           target: ${{ matrix.platform.target }}
-          args: --release ${{ matrix.platform.features }} --out dist
+          args: --profile release-dbgsymbols ${{ matrix.platform.features }} --out dist
           sccache: 'true'
           manylinux: musllinux_1_2
           working-directory: hf_xet
+      - name: Strip debug symbols into a separate file
+        run: |
+          mkdir hf_xet/dbg
+          pushd hf_xet/dist
+          LATEST_WHEEL=$(ls -tr1 *.whl | tail -n 1)
+          WHEEL_VERSION=$(echo $LATEST_WHEEL | cut -d '-' -f 2)
+          wheel unpack $LATEST_WHEEL 
+          objcopy --only-keep-debug hf_xet-${WHEEL_VERSION}/hf_xet/hf_xet.abi3.so hf_xet-${WHEEL_VERSION}/hf_xet/hf_xet.abi3.so.dbg
+          objcopy --strip-debug hf_xet-${WHEEL_VERSION}/hf_xet/hf_xet.abi3.so
+          objcopy --add-gnu-debuglink=hf_xet-${WHEEL_VERSION}/hf_xet/hf_xet.abi3.so.dbg hf_xet-${WHEEL_VERSION}/hf_xet/hf_xet.abi3.so
+          mv hf_xet-${WHEEL_VERSION}/hf_xet/hf_xet.abi3.so.dbg ../dbg/hf_xet.abi3.so.dbg
+          wheel pack hf_xet-${WHEEL_VERSION} 
+      - name: Upload debug symbols
+        uses: actions/upload-artifact@v4
+        with:
+          path: dbg-musllinux-${{ matrix.platform.target }}
+          name: hf_xet/dbg
       - name: Upload wheels
         uses: actions/upload-artifact@v4
         with:
@@ -133,6 +177,15 @@ jobs:
           args: --release --out dist
           sccache: 'true'
           working-directory: hf_xet
+      - name: Copy debug symbols
+        run: |
+          mkdir hf_xet/dbg
+          cp hf_xet/target/release/hf_xet.pdb hf_xet/dbg/ 
+      - name: Upload debug symbols
+        uses: actions/upload-artifact@v4
+        with:
+          name: dbg-windows-${{ matrix.platform.target }}
+          path: hf_xet/dbg
       - name: Upload wheels
         uses: actions/upload-artifact@v4
         with:
@@ -164,9 +217,21 @@ jobs:
         uses: PyO3/maturin-action@v1
         with:
           target: ${{ matrix.platform.target }}
-          args: --release --out dist
+          args: --profile release-dbgsymbols --strip --out dist
           sccache: 'true'
           working-directory: hf_xet
+      - name: Retarget and copy debug symbols
+        run: |
+          TARGET=${{ matrix.platform.target }}
+          mkdir hf_xet/dbg
+          pushd hf_xet/target/release-dbgsymbols/deps
+          sed -i '' "s/binary-path:.*/binary-path: '.\/hf_xet.abi3.so'/" libhf_xet.dylib.dSYM/Contents/Resources/Relocations/${TARGET}/libhf_xet.dylib.yml
+          cp -r libhf_xet.dylib.dSYM ../../../dbg/
+      - name: Upload debug symbols
+        uses: actions/upload-artifact@v4
+        with:
+          name: dbg-macos-${{ matrix.platform.target }}
+          path: hf_xet/dbg
       - name: Upload wheels
         uses: actions/upload-artifact@v4
         with:
@@ -193,7 +258,7 @@ jobs:
       - name: Patch sdist
         run: |
           pushd hf_xet/dist
-          DISTFILE=$(ls -tr | grep hf_xet- | tail -n 1)
+          DISTFILE=$(ls -tr1 hf-xet-*.tar.gz | tail -n 1)
           DISTNAME=${DISTFILE%.tar.gz}
           # maturin sdist will overwrite an edited pyproject.toml in the repo root, so we need to 
           # update the python path in the built pyproject.toml to account for that.
@@ -246,4 +311,4 @@ jobs:
         env: 
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create ${{ github.event.inputs.tag}} wheels-*/* --generate-notes --prerelease --target ${{github.sha}}
+          gh release create ${{ github.event.inputs.tag}} wheels-*/* dbg-*/* --generate-notes --prerelease --target ${{github.sha}}
