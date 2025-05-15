@@ -161,7 +161,7 @@ pub(crate) struct SequentialTermDownload {
 impl SequentialTermDownload {
     pub async fn run(self) -> Result<TermDownloadResult<Vec<u8>>> {
         let TermDownloadResult {
-            data,
+            payload: data,
             duration,
             n_retries_on_403,
         } = self.download.run().await?;
@@ -190,7 +190,7 @@ impl SequentialTermDownload {
         let final_term_data = &data_slice[skip_bytes..skip_bytes + take];
 
         Ok(TermDownloadResult {
-            data: final_term_data.to_vec(),
+            payload: final_term_data.to_vec(),
             duration,
             n_retries_on_403,
         })
@@ -199,7 +199,7 @@ impl SequentialTermDownload {
 
 #[derive(Debug)]
 pub(crate) struct TermDownloadResult<T> {
-    pub data: T,            // download result
+    pub payload: T,         // download result
     pub duration: Duration, // duration to download
     pub n_retries_on_403: u32,
 }
@@ -250,7 +250,7 @@ impl FetchTermDownload {
         };
 
         Ok(TermDownloadResult {
-            data,
+            payload: data,
             duration: instant.elapsed(),
             n_retries_on_403,
         })
@@ -284,7 +284,7 @@ impl FetchTermDownloadOnceAndWriteEverywhereUsed {
             data,
             chunk_byte_indices,
             chunk_range,
-        } = download_result.data;
+        } = download_result.payload;
         debug_assert_eq!(chunk_byte_indices.len(), (chunk_range.end - chunk_range.start + 1) as usize);
         debug_assert_eq!(*chunk_byte_indices.last().expect("checked len is something") as usize, data.len());
 
@@ -321,7 +321,7 @@ impl FetchTermDownloadOnceAndWriteEverywhereUsed {
         }
 
         Ok(TermDownloadResult {
-            data: total_written,
+            payload: total_written,
             duration: download_result.duration,
             n_retries_on_403: download_result.n_retries_on_403,
         })

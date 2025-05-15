@@ -2,7 +2,6 @@ use std::collections::HashMap;
 use std::io::Write;
 use std::mem::take;
 use std::path::PathBuf;
-use std::result::Result as stdResult;
 use std::sync::Arc;
 
 use anyhow::anyhow;
@@ -25,7 +24,7 @@ use progress_tracking::upload_tracking::CompletionTracker;
 use reqwest::{Body, StatusCode, Url};
 use reqwest_middleware::ClientWithMiddleware;
 use tokio::sync::{mpsc, OwnedSemaphorePermit};
-use tokio::task::{JoinError, JoinHandle, JoinSet};
+use tokio::task::{JoinHandle, JoinSet};
 use tracing::{debug, info, instrument};
 use utils::auth::AuthConfig;
 use utils::singleflight::Group;
@@ -121,8 +120,9 @@ impl RemoteClient {
 
 #[async_trait]
 impl UploadClient for RemoteClient {
-    #[instrument(skip_all, name="RemoteClient::upload_xorb", fields(key = Key{prefix : prefix.to_string(), hash : serialized_cas_object.hash}.to_string(), 
-                 xorb.len = serialized_cas_object.serialized_data.len(), xorb.num_chunks = serialized_cas_object.num_chunks))]
+    #[instrument(skip_all, name = "RemoteClient::upload_xorb", fields(key = Key{prefix : prefix.to_string(), hash : serialized_cas_object.hash}.to_string(),
+                 xorb.len = serialized_cas_object.serialized_data.len(), xorb.num_chunks = serialized_cas_object.num_chunks
+    ))]
     async fn upload_xorb(
         &self,
         prefix: &str,
@@ -443,7 +443,7 @@ impl RemoteClient {
         while let Some(result) = running_downloads_rx.recv().await {
             match result.await {
                 Ok(Ok((mut download_result, permit))) => {
-                    let data = take(&mut download_result.data);
+                    let data = take(&mut download_result.payload);
                     writer.write_all(&data)?;
                     // drop permit after data written out so they don't accumulate in memory unbounded
                     drop(permit);
@@ -508,29 +508,23 @@ impl RemoteClient {
         let term_download_client = self.http_client.clone();
         let download_scheduler = DownloadScheduler::new(*NUM_CONCURRENT_RANGE_GETS);
 
-        let process_result = move |result: stdResult<stdResult<TermDownloadResult<u64>, CasClientError>, JoinError>,
+        let process_result = move |result: TermDownloadResult<u64>,
                                    total_written: &mut u64,
                                    download_scheduler: &DownloadScheduler|
               -> Result<u64> {
-            match result {
-                Ok(Ok(download_result)) => {
-                    let write_len = download_result.data;
-                    *total_written += write_len;
+            let write_len = result.payload;
+            *total_written += write_len;
 
-                    // Now inspect the download metrics and tune the download degree of concurrency
-                    download_scheduler.tune_on(download_result)?;
-                    Ok(write_len)
-                },
-                Ok(Err(e)) => Err(e)?,
-                Err(e) => Err(anyhow!("{e:?}"))?,
-            }
+            // Now inspect the download metrics and tune the download degree of concurrency
+            download_scheduler.tune_on(result)?;
+            Ok(write_len)
         };
 
         let mut total_written = 0;
         while let Some(item) = task_rx.recv().await {
             // first try to join some tasks
             while let Some(result) = running_downloads.try_join_next() {
-                let write_len = process_result(result, &mut total_written, &download_scheduler)?;
+                let write_len = process_result(result??, &mut total_written, &download_scheduler)?;
                 if let Some(updater) = progress_updater.as_ref() {
                     updater.update(write_len).await;
                 }
@@ -596,7 +590,7 @@ impl RemoteClient {
         }
 
         while let Some(result) = running_downloads.join_next().await {
-            let write_len = process_result(result, &mut total_written, &download_scheduler)?;
+            let write_len = process_result(result??, &mut total_written, &download_scheduler)?;
             if let Some(updater) = progress_updater.as_ref() {
                 updater.update(write_len).await;
             }
