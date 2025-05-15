@@ -2,10 +2,6 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 
-use crate::error::{CasClientError, Result};
-use crate::http_client::{Api, BASE_RETRY_DELAY_MS, BASE_RETRY_MAX_DURATION_MS, NUM_RETRIES};
-use crate::remote_client::{get_reconstruction_with_endpoint_and_client, PREFIX_DEFAULT};
-use crate::OutputProvider;
 use cas_object::error::CasObjectError;
 use cas_types::{CASReconstructionFetchInfo, CASReconstructionTerm, ChunkRange, FileRange, HexMerkleHash, Key};
 use chunk_cache::ChunkCache;
@@ -22,6 +18,11 @@ use tokio_retry::strategy::ExponentialBackoff;
 use tracing::{debug, error, info, trace};
 use url::Url;
 use utils::singleflight::Group;
+
+use crate::error::{CasClientError, Result};
+use crate::http_client::{Api, BASE_RETRY_DELAY_MS, BASE_RETRY_MAX_DURATION_MS, NUM_RETRIES};
+use crate::remote_client::{get_reconstruction_with_endpoint_and_client, PREFIX_DEFAULT};
+use crate::OutputProvider;
 
 #[derive(Clone, Debug)]
 pub(crate) enum DownloadRangeResult {
