@@ -62,8 +62,9 @@ opt-level = "s"
 lto = true
 codegen-units = 1
 
-# on manylinux, maturin + split-debuginfo doesn't output debug symbols, so
-# we opt to strip these out manually in the release process.
+# on manylinux and macos maturin + split-debuginfo doesn't output debug symbols for .so objects, 
+# so we need a different profile to build. For mac, the below settings will output a .dSYM
+# file. For Linux, we are stripping them manually using binutils.
 [profile.release-dbgsymbols]
 inherits = "release"
 debug = true
