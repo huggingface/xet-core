@@ -294,7 +294,6 @@ dependencies = [
  "futures",
  "heed",
  "http 1.1.0",
- "http-body 1.0.1",
  "itertools 0.10.5",
  "mdb_shard",
  "merkledb",

@@ -15,7 +15,7 @@ use crate::log_buffer::{get_telemetry_task, LogBufferLayer, TelemetryTaskInfo, T
 const DEFAULT_LOG_LEVEL: &str = "warn";
 
 #[cfg(debug_assertions)]
-const DEFAULT_LOG_LEVEL: &str = "warn";
+const DEFAULT_LOG_LEVEL: &str = "info";
 
 fn init_global_logging(py: Python) -> Option<TelemetryTaskInfo> {
     let fmt_layer = tracing_subscriber::fmt::layer()

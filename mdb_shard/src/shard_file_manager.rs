@@ -274,7 +274,7 @@ impl ShardFileManager {
         }
 
         if num_shards != 0 {
-            debug!("Registered {num_shards} new shards.");
+            info!("Registered {num_shards} new shards.");
         }
 
         Ok(())

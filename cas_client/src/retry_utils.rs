@@ -26,13 +26,11 @@ use crate::RetryConfig;
 /// no further retries are allowed or the error is non-retryable.
 ///
 /// # Example
-/// ```rust
 /// let result = reqwest_retry_wrapper(
 ///     || client.get("https://example.com").send(),
 ///     RetryConfig<DefaultRetryableStrategy>::default()
 /// )
 /// .await;
-/// ```
 pub async fn retry_wrapper<R, RequestFuture>(
     create_request: impl Fn() -> RequestFuture,
     retry_config: RetryConfig<R>,
