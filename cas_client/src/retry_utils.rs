@@ -33,14 +33,13 @@ use crate::RetryConfig;
 /// )
 /// .await;
 /// ```
-pub async fn reqwest_retry_wrapper<R, F, Fut>(
-    create_request: F,
+pub async fn retry_wrapper<R, RequestFuture>(
+    create_request: impl Fn() -> RequestFuture,
     retry_config: RetryConfig<R>,
 ) -> Result<reqwest::Response, Error>
 where
     R: RetryableStrategy + Send + Sync,
-    F: Fn() -> Fut,
-    Fut: Future<Output = Result<reqwest::Response, Error>>,
+    RequestFuture: Future<Output = Result<reqwest::Response, Error>>,
 {
     let (retry_policy, strategy) = get_retry_policy_and_strategy(retry_config);
     let start_time = SystemTime::now();
@@ -54,19 +53,18 @@ where
         }
 
         // Do we retry?
-        let Some(Retryable::Transient) = strategy.handle(&result) else {
-            return result;
-        };
-
-        match retry_policy.should_retry(start_time, attempt) {
-            RetryDecision::Retry { execute_after } => {
+        if matches!(strategy.handle(&result), Some(Retryable::Transient)) {
+            // Does our retry count / timing policy allow us to retry, and when?
+            if let RetryDecision::Retry { execute_after } = retry_policy.should_retry(start_time, attempt) {
                 // Retry after system time is a specific value.
                 if let Ok(wait_dur) = execute_after.duration_since(SystemTime::now()) {
                     tokio::time::sleep(wait_dur).await;
                 }
-            },
-            RetryDecision::DoNotRetry => return result,
+                continue;
+            }
         }
+
+        return result;
     }
 
     unreachable!("Retry loop should exit via return on success or final failure");

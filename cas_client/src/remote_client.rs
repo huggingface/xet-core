@@ -34,6 +34,7 @@ use crate::download_utils::*;
 use crate::error::{CasClientError, Result};
 use crate::http_client::{Api, ResponseErrorLogger, RetryConfig};
 use crate::interface::{ShardDedupProber, *};
+use crate::retry_utils::retry_wrapper;
 use crate::{http_client, Client, RegistrationClient, ShardClientInterface};
 
 const FORCE_SYNC_METHOD: reqwest::Method = reqwest::Method::PUT;
@@ -161,17 +162,27 @@ impl UploadClient for RemoteClient {
             *UPLOAD_REPORTING_BLOCK_SIZE,
             progress_callback,
         );
+
         let xorb_uploaded = {
             if !self.dry_run {
-                let response = self
-                    .authenticated_http_client_no_retry
-                    .post(url)
-                    .with_extension(Api("cas::upload_xorb"))
-                    .header(CONTENT_LENGTH, HeaderValue::from(n_upload_bytes)) // this line took WAY too long to figure out
-                    .body(Body::wrap_stream(upload_stream))
-                    .send()
-                    .await
-                    .process_error("upload_xorb")?;
+                let client = self.authenticated_http_client_no_retry.clone();
+
+                let response = retry_wrapper(
+                    move || {
+                        let upload_stream = upload_stream.clone_with_reset();
+                        let url = url.clone();
+
+                        client
+                            .post(url)
+                            .with_extension(Api("cas::upload_xorb"))
+                            .header(CONTENT_LENGTH, HeaderValue::from(n_upload_bytes)) // this line took WAY too long to figure out
+                            .body(Body::wrap_stream(upload_stream))
+                            .send()
+                    },
+                    RetryConfig::default(),
+                )
+                .await?;
+
                 let response_parsed: UploadXorbResponse = response.json().await?;
 
                 response_parsed.was_inserted
