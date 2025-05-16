@@ -57,11 +57,19 @@ openssl_vendored = ["data/openssl_vendored"]
 profiling = ["pprof"]
 
 [profile.release]
-debug = "line-tables-only"
-opt-level = 3
-# Uncomment the below for lto + Os
-# opt-level = "s"
-# lto = true
+split-debuginfo = "packed"
+opt-level = "s"
+lto = true
+codegen-units = 1
+
+# on manylinux and macos maturin + split-debuginfo doesn't output debug symbols for .so objects, 
+# so we need a different profile to build. For mac, the below settings will output a .dSYM
+# file. For Linux, we are stripping them manually using binutils.
+[profile.release-dbgsymbols]
+inherits = "release"
+debug = true
+split-debuginfo = "none"
+
 
 [profile.opt-test]
 inherits = "dev"
