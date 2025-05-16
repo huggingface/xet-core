@@ -89,6 +89,9 @@ jobs:
           mv hf_xet-${WHEEL_VERSION}/hf_xet/hf_xet.abi3.so.dbg ../hf_xet/dbg/hf_xet.abi3.so.dbg
           wheel pack hf_xet-${WHEEL_VERSION} 
           rm -rf hf_xet-${WHEEL_VERSION}
+          zip -r hf_xet.abi3.so.dbg.linux-${{ matrix.platform.target }}.zip ../hf_xet/dbg/hf_xet.abi3.so.dbg
+          rm ../hf_xet/dbg/hf_xet.abi3.so.dbg
+          mv hf_xet.abi3.so.dbg.linux-${{ matrix.platform.target }}.zip ../hf_xet/dbg/
       - name: Upload debug symbols
         uses: actions/upload-artifact@v4
         with:
@@ -158,6 +161,9 @@ jobs:
           mv hf_xet-${WHEEL_VERSION}/hf_xet/hf_xet.abi3.so.dbg ../hf_xet/dbg/hf_xet.abi3.so.dbg
           wheel pack hf_xet-${WHEEL_VERSION} 
           rm -rf hf_xet-${WHEEL_VERSION}
+          zip -r hf_xet.abi3.so.dbg.musllinux-${{ matrix.platform.target }}.zip ../hf_xet/dbg/hf_xet.abi3.so.dbg
+          rm ../hf_xet/dbg/hf_xet.abi3.so.dbg
+          mv hf_xet.abi3.so.dbg.musllinux-${{ matrix.platform.target }}.zip ../hf_xet/dbg/
       - name: Upload debug symbols
         uses: actions/upload-artifact@v4
         with:
@@ -202,7 +208,8 @@ jobs:
         shell: bash
         run: |
           mkdir hf_xet/dbg
-          cp hf_xet/target/${{ matrix.platform.rust_target }}/release/hf_xet.pdb hf_xet/dbg/ 
+          zip -r hf_xet.pdb.windows-${{ matrix.platform.target }}.zip hf_xet/target/${{ matrix.platform.rust_target }}/release/hf_xet.pdb
+          cp hf_xet.pdb.windows-${{ matrix.platform.target }}.zip hf_xet/dbg/
       - name: Upload debug symbols
         uses: actions/upload-artifact@v4
         with:
@@ -250,8 +257,8 @@ jobs:
           mkdir hf_xet/dbg
           pushd hf_xet/target/${{ matrix.platform.rust_target}}/release-dbgsymbols/deps
           sed -i '' "s/binary-path:.*/binary-path: '.\/hf_xet.abi3.so'/" libhf_xet.dylib.dSYM/Contents/Resources/Relocations/${TARGET}/libhf_xet.dylib.yml
-          zip -r libhf_xet.dylib.dSYM.zip libhf_xet.dylib.dSYM
-          cp libhf_xet.dylib.dSYM.zip ../../../../dbg/
+          zip -r libhf_xet.dylib.dSYM.macos-${TARGET}.zip libhf_xet.dylib.dSYM
+          cp libhf_xet.dylib.dSYM.macos-${TARGET}.zip ../../../../dbg/
       - name: Upload debug symbols
         uses: actions/upload-artifact@v4
         with:
