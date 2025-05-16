@@ -250,7 +250,8 @@ jobs:
           mkdir hf_xet/dbg
           pushd hf_xet/target/${{ matrix.platform.rust_target}}/release-dbgsymbols/deps
           sed -i '' "s/binary-path:.*/binary-path: '.\/hf_xet.abi3.so'/" libhf_xet.dylib.dSYM/Contents/Resources/Relocations/${TARGET}/libhf_xet.dylib.yml
-          cp -r libhf_xet.dylib.dSYM ../../../../dbg/
+          zip -r libhf_xet.dylib.dSYM.zip libhf_xet.dylib.dSYM
+          cp libhf_xet.dylib.dSYM.zip ../../../../dbg/
       - name: Upload debug symbols
         uses: actions/upload-artifact@v4
         with:
