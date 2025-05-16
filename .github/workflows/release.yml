@@ -208,8 +208,7 @@ jobs:
         shell: bash
         run: |
           mkdir hf_xet/dbg
-          zip -r hf_xet.pdb.windows-${{ matrix.platform.target }}.zip hf_xet/target/${{ matrix.platform.rust_target }}/release/hf_xet.pdb
-          cp hf_xet.pdb.windows-${{ matrix.platform.target }}.zip hf_xet/dbg/
+          cp hf_xet/target/${{ matrix.platform.rust_target }}/release/hf_xet.pdb hf_xet/dbg/
       - name: Upload debug symbols
         uses: actions/upload-artifact@v4
         with:
