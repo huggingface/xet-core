@@ -14,7 +14,8 @@ use cas_types::{
 use chunk_cache::{CacheConfig, ChunkCache};
 use error_printer::ErrorPrinter;
 use file_utils::SafeFileCreator;
-use http::header::RANGE;
+use http::header::{CONTENT_LENGTH, RANGE};
+use http::HeaderValue;
 use mdb_shard::file_structs::{FileDataSequenceEntry, FileDataSequenceHeader, MDBFileInfo};
 use mdb_shard::shard_file_reconstructor::FileReconstructor;
 use mdb_shard::utils::shard_file_name;
@@ -48,7 +49,7 @@ utils::configurable_constants! {
     };
 
     // Send a report of successful partial upload every 512kb.
-    ref UPLOAD_REPORTING_BLOCK_SIZE : usize = 512 * 1024 * 1024;
+    ref UPLOAD_REPORTING_BLOCK_SIZE : usize = 512 * 1024;
 }
 
 utils::configurable_bool_constants! {
@@ -166,8 +167,8 @@ impl UploadClient for RemoteClient {
                     .authenticated_http_client_no_retry
                     .post(url)
                     .with_extension(Api("cas::upload_xorb"))
-                    .body(Body::wrap(upload_stream))
-                    // .body(Body::from(serialized_cas_object.serialized_data))
+                    .header(CONTENT_LENGTH, HeaderValue::from(n_upload_bytes)) // this line took WAY too long to figure out
+                    .body(Body::wrap_stream(upload_stream))
                     .send()
                     .await
                     .process_error("upload_xorb")?;

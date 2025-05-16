@@ -129,18 +129,27 @@ pub fn build_http_client<R: RetryableStrategy + Send + Sync + 'static>(
         .build())
 }
 
+/// RetryStrategy
+pub fn get_retry_policy_and_strategy<R: RetryableStrategy + Send + Sync>(
+    config: RetryConfig<R>,
+) -> (ExponentialBackoff, R) {
+    (
+        ExponentialBackoff::builder()
+            .retry_bounds(
+                Duration::from_millis(config.min_retry_interval_ms),
+                Duration::from_millis(config.max_retry_interval_ms),
+            )
+            .build_with_max_retries(config.num_retries),
+        config.strategy,
+    )
+}
+
 /// Configurable Retry middleware with exponential backoff and configurable number of retries using reqwest-retry
 fn get_retry_middleware<R: RetryableStrategy + Send + Sync>(
     config: RetryConfig<R>,
 ) -> RetryTransientMiddleware<ExponentialBackoff, R> {
-    let retry_policy = ExponentialBackoff::builder()
-        .retry_bounds(
-            Duration::from_millis(config.min_retry_interval_ms),
-            Duration::from_millis(config.max_retry_interval_ms),
-        )
-        .build_with_max_retries(config.num_retries);
-
-    RetryTransientMiddleware::new_with_policy_and_strategy(retry_policy, config.strategy)
+    let (policy, strategy) = get_retry_policy_and_strategy(config);
+    RetryTransientMiddleware::new_with_policy_and_strategy(policy, strategy)
 }
 
 /// Helper trait to allow the reqwest_middleware client to optionally add a middleware.
