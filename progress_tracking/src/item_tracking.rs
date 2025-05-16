@@ -36,31 +36,57 @@ impl ItemProgressUpdater {
 
         Arc::new(SingleItemProgressUpdater {
             item_name,
-            byte_count: 0.into(),
+            n_bytes: 0.into(),
             completed_count: 0.into(),
             inner: self.clone(),
         })
     }
 
     async fn do_item_update(self: Arc<Self>, progress_update: ItemProgressUpdate) {
-        let update_increment = progress_update.update_increment;
+        let update_increment = progress_update.bytes_completion_increment;
 
-        let total_bytes_completed_old = self
-            .total_bytes_completed
-            .fetch_add(progress_update.update_increment, Ordering::Relaxed);
+        // For now, with this simple interface, just track both process and transfer updates as
+        // exactly the same.  A later PR can split these out in the download path.
+
+        let total_bytes_completed_old = self.total_bytes_completed.fetch_add(update_increment, Ordering::Relaxed);
+
+        let total_bytes = self.total_bytes.load(Ordering::Relaxed);
+        let total_bytes_completed = total_bytes_completed_old + update_increment;
 
         self.inner
             .register_updates(ProgressUpdate {
                 item_updates: vec![progress_update],
-                total_bytes: self.total_bytes.load(Ordering::Relaxed),
-                total_bytes_completed: total_bytes_completed_old + update_increment,
+                total_bytes,
+                total_bytes_increment: 0,
+                total_bytes_completed,
                 total_bytes_completion_increment: update_increment,
+                total_transfer_bytes: total_bytes,
+                total_transfer_bytes_increment: 0,
+                total_transfer_bytes_completed: total_bytes_completed,
+                total_transfer_bytes_completion_increment: update_increment,
             })
             .await;
     }
 
-    fn adjust_total_bytes(self: &Arc<Self>, increase_byte_total: u64) {
-        self.total_bytes.fetch_add(increase_byte_total, Ordering::Relaxed);
+    async fn adjust_total_bytes(self: &Arc<Self>, increase_byte_total: u64) {
+        let total_process_bytes_old = self.total_bytes.fetch_add(increase_byte_total, Ordering::Relaxed);
+
+        let total_bytes = total_process_bytes_old + increase_byte_total;
+        let total_bytes_completed = self.total_bytes_completed.load(Ordering::Relaxed);
+
+        self.inner
+            .register_updates(ProgressUpdate {
+                item_updates: vec![],
+                total_bytes,
+                total_bytes_increment: increase_byte_total,
+                total_bytes_completed,
+                total_bytes_completion_increment: 0,
+                total_transfer_bytes: total_bytes,
+                total_transfer_bytes_increment: increase_byte_total,
+                total_transfer_bytes_completed: total_bytes_completed,
+                total_transfer_bytes_completion_increment: 0,
+            })
+            .await;
     }
 }
 
@@ -69,7 +95,7 @@ impl ItemProgressUpdater {
 #[derive(Debug)]
 pub struct SingleItemProgressUpdater {
     item_name: Arc<str>,
-    byte_count: AtomicU64,
+    n_bytes: AtomicU64,
     completed_count: AtomicU64,
     inner: Arc<ItemProgressUpdater>,
 }
@@ -83,21 +109,21 @@ impl SingleItemProgressUpdater {
             .clone()
             .do_item_update(ItemProgressUpdate {
                 item_name: self.item_name.clone(),
-                total_count: self.byte_count.load(Ordering::Relaxed),
-                completed_count: old_completed_count + increment,
-                update_increment: increment,
+                total_bytes: self.n_bytes.load(Ordering::Relaxed),
+                bytes_completed: old_completed_count + increment,
+                bytes_completion_increment: increment,
             })
             .await;
     }
 
     pub async fn set_total(&self, n_bytes: u64) {
-        let old_value = self.byte_count.swap(n_bytes, Ordering::Relaxed);
+        let old_value = self.n_bytes.swap(n_bytes, Ordering::Relaxed);
 
         // Should only increment stuff here.
         debug_assert_le!(old_value, n_bytes);
 
         if old_value != n_bytes {
-            self.inner.adjust_total_bytes(old_value - n_bytes);
+            self.inner.adjust_total_bytes(old_value - n_bytes).await;
         }
     }
 }

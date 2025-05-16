@@ -5,9 +5,45 @@ use itertools::Itertools;
 use progress_tracking::{ProgressUpdate, TrackingProgressUpdater};
 use pyo3::exceptions::PyTypeError;
 use pyo3::prelude::PyAnyMethods;
-use pyo3::types::{IntoPyDict, PyString};
-use pyo3::{IntoPyObject, Py, PyAny, PyResult, Python};
+use pyo3::types::{IntoPyDict, PyList, PyString};
+use pyo3::{pyclass, IntoPyObjectExt, Py, PyAny, PyResult, Python};
 use tracing::error;
+
+/// Update class for per-item updates
+#[pyclass]
+pub struct PyItemProgressUpdate {
+    #[pyo3(get)]
+    pub item_name: Py<PyString>,
+    #[pyo3(get)]
+    pub total_bytes: u64,
+    #[pyo3(get)]
+    pub bytes_completed: u64,
+    #[pyo3(get)]
+    pub bytes_completion_increment: u64,
+}
+
+/// Update class for total updates
+#[pyclass]
+pub struct PyTotalProgressUpdate {
+    #[pyo3(get)]
+    pub total_bytes: u64,
+    #[pyo3(get)]
+    pub total_bytes_increment: u64,
+    #[pyo3(get)]
+    pub total_bytes_completed: u64,
+    #[pyo3(get)]
+    pub total_bytes_completion_increment: u64,
+
+    #[pyo3(get)]
+    pub total_transfer_bytes: u64,
+    #[pyo3(get)]
+    pub total_transfer_bytes_increment: u64,
+
+    #[pyo3(get)]
+    pub total_transfer_bytes_completed: u64,
+    #[pyo3(get)]
+    pub total_transfer_bytes_completion_increment: u64,
+}
 
 /// A wrapper over a passed-in python function to update
 /// the python process of some download/upload progress
@@ -35,7 +71,7 @@ impl Debug for WrappedProgressUpdater {
     }
 }
 
-const DETAILED_PROGRESS_ARG_NAMES: [&str; 4] = ["item_id", "bytes_completed", "total_bytes", "update_increment"];
+const DETAILED_PROGRESS_ARG_NAMES: [&str; 2] = ["total_update", "item_updates"];
 
 impl WrappedProgressUpdater {
     pub fn new(py_func: Py<PyAny>) -> PyResult<Self> {
@@ -81,7 +117,7 @@ impl WrappedProgressUpdater {
 
             let update_with_detailed_progress = match param_names.len() {
                 1 => false,
-                4 => {
+                2 => {
                     if param_names
                         .iter()
                         .zip(DETAILED_PROGRESS_ARG_NAMES.into_iter())
@@ -90,14 +126,14 @@ impl WrappedProgressUpdater {
                         true
                     } else {
                         return Err(PyTypeError::new_err(format!(
-                            "Function {name} must have either one argument or four named arguments ({})",
+                            "Function {name} must have either one argument or two named arguments ({})",
                             DETAILED_PROGRESS_ARG_NAMES.iter().join(", ")
                         )));
                     }
                 },
                 _ => {
                     return Err(PyTypeError::new_err(format!(
-                        "Function {name} must take exactly 1 or 4 arguments, but got {}",
+                        "Function {name} must take exactly 1 or 2 arguments, but got {}",
                         param_names.len()
                     )))
                 },
@@ -117,29 +153,52 @@ impl WrappedProgressUpdater {
             let f = self.py_func.bind(py);
 
             if self.update_with_detailed_progress {
-                let str2py = |c: &str| -> PyResult<Py<PyAny>> { Ok(c.into_pyobject(py)?.into()) };
-                let int2py = |v: u64| -> PyResult<Py<PyAny>> { Ok(v.into_pyobject(py)?.into()) };
+                let total_update_report: Py<PyAny> = Py::new(
+                    py,
+                    PyTotalProgressUpdate {
+                        total_bytes: updates.total_bytes,
+                        total_bytes_increment: updates.total_bytes_increment,
+                        total_bytes_completed: updates.total_bytes_completed,
+                        total_bytes_completion_increment: updates.total_bytes_completion_increment,
+                        total_transfer_bytes: updates.total_transfer_bytes,
+                        total_transfer_bytes_increment: updates.total_transfer_bytes_increment,
+                        total_transfer_bytes_completed: updates.total_transfer_bytes_completed,
+                        total_transfer_bytes_completion_increment: updates.total_transfer_bytes_completion_increment,
+                    },
+                )?
+                .into_py_any(py)?;
 
-                let args = [
-                    str2py(DETAILED_PROGRESS_ARG_NAMES[0])?,
-                    str2py(DETAILED_PROGRESS_ARG_NAMES[1])?,
-                    str2py(DETAILED_PROGRESS_ARG_NAMES[2])?,
-                    str2py(DETAILED_PROGRESS_ARG_NAMES[3])?,
-                ];
+                let item_updates_v: Vec<Py<PyAny>> = updates
+                    .item_updates
+                    .into_iter()
+                    .map(|u| {
+                        Py::new(
+                            py,
+                            PyItemProgressUpdate {
+                                item_name: PyString::new(py, &u.item_name).into(),
+                                total_bytes: u.total_bytes,
+                                bytes_completed: u.bytes_completed,
+                                bytes_completion_increment: u.bytes_completion_increment,
+                            },
+                        )?
+                        .into_py_any(py)
+                    })
+                    .collect::<PyResult<Vec<_>>>()?;
 
-                for update in updates.item_updates {
-                    let kwargs = [
-                        (args[0].clone_ref(py), str2py(&update.item_name)?),
-                        (args[1].clone_ref(py), int2py(update.completed_count)?),
-                        (args[2].clone_ref(py), int2py(update.total_count)?),
-                        (args[3].clone_ref(py), int2py(update.update_increment)?),
-                    ]
-                    .into_py_dict(py)?;
+                let item_updates: Py<PyAny> = PyList::new(py, item_updates_v)?.into_py_any(py)?;
 
-                    f.call((), Some(&kwargs))?;
-                }
+                let argname_total_update: Py<PyAny> = DETAILED_PROGRESS_ARG_NAMES[0].into_py_any(py)?;
+                let argname_item_updates: Py<PyAny> = DETAILED_PROGRESS_ARG_NAMES[1].into_py_any(py)?;
+
+                let kwargs = [
+                    (argname_total_update, total_update_report),
+                    (argname_item_updates, item_updates),
+                ]
+                .into_py_dict(py)?;
+
+                f.call((), Some(&kwargs))?;
             } else {
-                let update_increment: u64 = updates.item_updates.iter().map(|pr| pr.update_increment).sum();
+                let update_increment: u64 = updates.item_updates.iter().map(|pr| pr.bytes_completion_increment).sum();
                 let _ = f.call1((update_increment,))?;
             }
 
