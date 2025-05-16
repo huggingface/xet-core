@@ -6,11 +6,11 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-rand = { version = "0.8.5", features = ["small_rng"] }
-blake3 = "1.5.1"
-safe-transmute = "0.11.2"
-serde = { version = "1.0.129", features = ["derive"] }
-base64 = "0.22.1"
+rand = { workspace = true, features = ["small_rng"] }
+blake3 = { workspace = true }
+safe-transmute = { workspace = true }
+serde = { workspace = true }
+base64 = { workspace = true }
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
 heed = "0.11"

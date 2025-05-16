@@ -14,7 +14,6 @@ harness = false
 bench = true
 
 [dependencies]
-thiserror = "2.0"
 error_printer = { path = "../error_printer" }
 merkledb = { path = "../merkledb" }
 merklehash = { path = "../merklehash" }
@@ -22,20 +21,21 @@ mdb_shard = { path = "../mdb_shard" }
 utils = { path = "../utils" }
 parutils = { path = "../parutils" }
 deduplication = { path = "../deduplication" }
-anyhow = "1.0.88"
-tracing = "0.1.40"
-lz4_flex = "0.11.3"
-bytes = "1.7.2"
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+lz4_flex = { workspace = true }
+bytes = { workspace = true }
 rand = "0.9"
-blake3 = "1.5.4"
-futures = { version = "0.3.31" }
-tokio = { version = "1.44", features = ["sync", "time", "rt", "macros"] }
+blake3 = { workspace = true }
+futures = { workspace = true }
+tokio = { workspace = true, features = ["sync", "time", "rt", "macros"] }
 half = "2.4.1"
-serde = { version = "1.0.129", features = ["derive"] }
-countio = { version = "0.2.19", features = ["futures"] }
+serde = { workspace = true }
+countio = { workspace = true }
 clap = { version = "4.1", features = ["derive"] }
-csv = "1.1"
-more-asserts = "0.3.1"
+csv = { workspace = true }
+more-asserts = { workspace = true }
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
 tokio-util = { version = "0.7.12", features = ["io"] }

@@ -496,7 +496,7 @@ dependencies = [
  "heed",
  "http 1.2.0",
  "httpmock",
- "itertools 0.10.5",
+ "itertools 0.13.0",
  "mdb_shard",
  "merkledb",
  "merklehash",
@@ -609,11 +609,10 @@ dependencies = [
  "crc32fast",
  "error_printer",
  "file_utils",
- "log",
  "merklehash",
  "mockall",
  "once_cell",
- "rand 0.8.5",
+ "rand 0.9.0",
  "tempdir",
  "thiserror 2.0.11",
  "tokio",
@@ -926,8 +925,8 @@ dependencies = [
  "parutils",
  "progress_tracking",
  "prometheus",
- "rand 0.8.5",
- "rand_chacha 0.3.1",
+ "rand 0.9.0",
+ "rand_chacha 0.9.0",
  "regex",
  "reqwest 0.11.27",
  "reqwest-middleware",
@@ -1142,7 +1141,7 @@ dependencies = [
  "colored",
  "lazy_static",
  "libc",
- "rand 0.8.5",
+ "rand 0.9.0",
  "tempfile",
  "tracing",
  "whoami",
@@ -2172,7 +2171,7 @@ dependencies = [
  "blake3",
  "getrandom 0.3.1",
  "heed",
- "rand 0.8.5",
+ "rand 0.9.0",
  "safe-transmute",
  "serde",
 ]
@@ -3615,9 +3614,9 @@ dependencies = [
 
 [[package]]
 name = "tempfile"
-version = "3.19.1"
+version = "3.20.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7437ac7763b9b123ccf33c338a5cc1bac6f69b45a136c19bdd8a65e3916435bf"
+checksum = "e8a64e3985349f2441a1a9ef0b853f869006c3855f2cda6862a94d26ebb9d6a1"
 dependencies = [
  "fastrand",
  "getrandom 0.3.1",

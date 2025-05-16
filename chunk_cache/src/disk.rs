@@ -113,7 +113,7 @@ impl CacheState {
             error!("cache random_item for eviction: no items in cache");
             return None;
         }
-        let random_item = rand::random::<usize>() % self.num_items;
+        let random_item = rand::random::<u32>() as usize % self.num_items;
         let mut count = 0;
         for (key, items) in self.inner.iter() {
             if random_item < count + items.len() {
@@ -1003,7 +1003,7 @@ mod tests {
 
         // not matching
         let (_cache_root, cache, key, range, mut offsets, data) = setup().await;
-        offsets[1] = offsets[1] + 1;
+        offsets[1] += 1;
         assert!(cache.put(&key, &range, &offsets, &data).await.is_err());
 
         // bad data
@@ -1013,7 +1013,7 @@ mod tests {
 
         // data changed
         let (_cache_root, cache, key, range, offsets, mut data) = setup().await;
-        data[0] = data[0] + 1;
+        data[0] += 1;
         assert!(cache.put(&key, &range, &offsets, &data).await.is_err());
     }
 

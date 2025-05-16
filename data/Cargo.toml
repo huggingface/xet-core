@@ -27,34 +27,34 @@ error_printer = { path = "../error_printer" }
 xet_threadpool = { path = "../xet_threadpool" }
 deduplication = { path = "../deduplication" }
 progress_tracking = { path = "../progress_tracking" }
-thiserror = "2.0"
-tokio = { version = "1.44", features = ["full"] }
-anyhow = "1"
-tracing = "0.1.*"
-async-trait = "0.1.53"
-clap = { version = "3.1.6", features = ["derive"] }
-tempfile = "3.2.0"
-regex = "1.5.6"
-lazy_static = "1.4.0"
-rand = "0.8.5"
-toml = "0.5"
-static_assertions = "1.1.0"
-rand_chacha = "0.3.1"
-dirs = "5.0.1"
-walkdir = "2.5.0"
-more-asserts = "0.3.1"
-serde = { version = "1.0.215", features = ["derive"] }
-ulid = "1.2.1"
+thiserror = { workspace = true }
+tokio = { workspace = true, features = ["full"] }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+async-trait = { workspace = true }
+clap = { workspace = true, features = ["derive"] }
+tempfile = { workspace = true }
+regex = { workspace = true }
+lazy_static = { workspace = true }
+rand = { workspace = true }
+toml = { workspace = true }
+static_assertions = { workspace = true }
+rand_chacha = { workspace = true }
+dirs = { workspace = true }
+walkdir = { workspace = true }
+more-asserts = { workspace = true }
+serde = { workspace = true }
+ulid = { workspace = true }
 
 # metrics
-prometheus = "0.13.0"
-jsonwebtoken = "9.3.0"
-serde_json = "1.0.133"
+prometheus = { workspace = true }
+jsonwebtoken = { workspace = true }
+serde_json = { workspace = true }
 
 # Need to specify this as optional to allow the openssl/vendored option below
 openssl = { version = "0.10", features = [], optional = true }
-reqwest-middleware = "0.3.3"
-chrono = "0.4.39"
+reqwest-middleware = { workspace = true }
+chrono = { workspace = true }
 
 [target.'cfg(not(windows))'.dependencies]
 openssl = "0.10"

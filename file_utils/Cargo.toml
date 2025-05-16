@@ -4,10 +4,10 @@ version = "0.14.2"
 edition = "2021"
 
 [dependencies]
-tracing = "0.1.*"
-libc = "0.2"
-lazy_static = "1.4.0"
-rand = "0.8.5"
+tracing = { workspace = true }
+libc = { workspace = true }
+lazy_static = { workspace = true }
+rand = { workspace = true }
 
 [target.'cfg(windows)'.dependencies]
 winapi = { version = "0.3", features = [
