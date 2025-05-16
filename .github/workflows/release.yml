@@ -336,4 +336,9 @@ jobs:
         env: 
           GH_TOKEN: ${{ github.token }}
         run: |
+          ls -l
+          echo "wheels"
+          ls -l wheels-*/*
+          echo "dbg"
+          ls -l dbg-*/*
           gh release create ${{ github.event.inputs.tag}} wheels-*/* dbg-*/* --generate-notes --prerelease --target ${{github.sha}}
