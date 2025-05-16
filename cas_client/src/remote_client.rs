@@ -175,7 +175,7 @@ impl UploadClient for RemoteClient {
                         client
                             .post(url)
                             .with_extension(Api("cas::upload_xorb"))
-                            .header(CONTENT_LENGTH, HeaderValue::from(n_upload_bytes)) // this line took WAY too long to figure out
+                            .header(CONTENT_LENGTH, HeaderValue::from(n_upload_bytes)) // must be set because of streaming
                             .body(Body::wrap_stream(upload_stream))
                             .send()
                     },
