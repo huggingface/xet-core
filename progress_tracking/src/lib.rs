@@ -1,3 +1,4 @@
+pub mod aggregator;
 pub mod item_tracking;
 mod no_op_tracker;
 mod progress_info;
