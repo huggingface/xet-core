@@ -15,4 +15,7 @@ pub trait TrackingProgressUpdater: std::fmt::Debug + Send + Sync {
     /// Register a set of updates as a list of ProgressUpdate instances, which
     /// contain the name and progress information.    
     async fn register_updates(&self, updates: ProgressUpdate);
+
+    /// Flush any updates out, if needed
+    async fn flush(&self) {}
 }

@@ -422,7 +422,7 @@ impl CompletionTrackerImpl {
         }
     }
 
-    pub fn status(&self) -> (u64, u64) {
+    fn status(&self) -> (u64, u64) {
         let (mut sum_completed, mut sum_total) = (0, 0);
         for file in &self.files {
             sum_completed += file.completed_bytes;
@@ -431,7 +431,7 @@ impl CompletionTrackerImpl {
         (sum_completed, sum_total)
     }
 
-    pub fn is_complete(&self) -> bool {
+    fn is_complete(&self) -> bool {
         let (done, total) = self.status();
 
         #[cfg(debug_assertions)]
@@ -572,6 +572,11 @@ impl CompletionTracker {
     /// Async wrapper that locks the internal struct and calls the sync `verify_complete`.
     pub async fn assert_complete(&self) {
         self.inner.lock().await.assert_complete();
+    }
+
+    /// Flush the progress reporter
+    pub async fn flush(&self) {
+        self.progress_reporter.flush().await;
     }
 }
 

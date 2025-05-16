@@ -77,10 +77,6 @@ impl AggregatingProgressUpdater {
         })
     }
 
-    pub async fn flush(&self) {
-        Self::flush_inner(&self.inner, &self.state).await;
-    }
-
     async fn flush_inner(inner: &Arc<dyn TrackingProgressUpdater>, state: &Arc<Mutex<AggregationState>>) {
         let mut state_guard = state.lock().await;
 
@@ -107,6 +103,9 @@ impl TrackingProgressUpdater for AggregatingProgressUpdater {
     async fn register_updates(&self, updates: ProgressUpdate) {
         let mut state = self.state.lock().await;
         state.merge_in(updates);
+    }
+    async fn flush(&self) {
+        Self::flush_inner(&self.inner, &self.state).await;
     }
 }
 
