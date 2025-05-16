@@ -26,11 +26,11 @@ anyhow = { workspace = true }
 tracing = { workspace = true }
 lz4_flex = { workspace = true }
 bytes = { workspace = true }
-rand = "0.9"
+rand = { workspace = true }
 blake3 = { workspace = true }
 futures = { workspace = true }
 tokio = { workspace = true, features = ["sync", "time", "rt", "macros"] }
-half = "2.4.1"
+half = { workspace = true }
 serde = { workspace = true }
 countio = { workspace = true }
 clap = { version = "4.1", features = ["derive"] }

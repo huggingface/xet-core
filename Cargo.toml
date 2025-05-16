@@ -88,3 +88,4 @@ countio = { version = "0.2.19", features = ["futures"] }
 http = "1"
 url = "2.5"
 heed = "0.11"
+half = "2.4"
