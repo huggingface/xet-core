@@ -92,7 +92,7 @@ jobs:
       - name: Upload debug symbols
         uses: actions/upload-artifact@v4
         with:
-          name: dbg-manylinux-${{ matrix.platform.target }}
+          name: dbg-linux-${{ matrix.platform.target }}
           path: hf_xet/dbg
       - name: Upload wheels
         uses: actions/upload-artifact@v4
