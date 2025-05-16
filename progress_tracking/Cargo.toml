@@ -6,6 +6,7 @@ edition = "2021"
 [dependencies]
 async-trait = "0.1.53"
 merklehash = { path = "../merklehash" }
+utils = { path = "../utils" }
 tokio = { version = "1.44", features = ["sync", "test-util"] }
 more-asserts = "0.3.1"
 
