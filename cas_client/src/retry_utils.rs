@@ -45,13 +45,8 @@ where
     for attempt in 0.. {
         let result = create_request().await;
 
-        // If all is ok, then return.
-        if result.is_ok() {
-            return result;
-        }
-
         // Do we retry?
-        if matches!(strategy.handle(&result), Some(Retryable::Transient)) {
+        if !result.is_ok() && matches!(strategy.handle(&result), Some(Retryable::Transient)) {
             // Does our retry count / timing policy allow us to retry, and when?
             if let RetryDecision::Retry { execute_after } = retry_policy.should_retry(start_time, attempt) {
                 // Retry after system time is a specific value.
