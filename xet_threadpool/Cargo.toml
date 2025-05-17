@@ -4,9 +4,8 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-lazy_static = { workspace = true }
 thiserror = { workspace = true }
-tokio = { workspace = true, features = ["sync", "macros", "rt", "time", "io-util"] }
+tokio = { workspace = true, features = ["time", "rt", "macros", "io-util"] }
 tracing = { workspace = true }
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]

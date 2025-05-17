@@ -45,11 +45,9 @@ regex = { workspace = true }
 reqwest-middleware = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-static_assertions = { workspace = true }
 tempfile = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["full"] }
-toml = { workspace = true }
 tracing = { workspace = true }
 ulid = { workspace = true }
 walkdir = { workspace = true }

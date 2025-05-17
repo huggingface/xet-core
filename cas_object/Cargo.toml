@@ -19,7 +19,6 @@ error_printer = { path = "../error_printer" }
 mdb_shard = { path = "../mdb_shard" }
 merkledb = { path = "../merkledb" }
 merklehash = { path = "../merklehash" }
-parutils = { path = "../parutils" }
 utils = { path = "../utils" }
 
 anyhow = { workspace = true }
@@ -31,15 +30,14 @@ csv = { workspace = true }
 futures = { workspace = true }
 half = { workspace = true }
 lz4_flex = { workspace = true }
-more-asserts = { workspace = true }
 rand = { workspace = true }
 serde = { workspace = true }
 thiserror = { workspace = true }
-tokio = { workspace = true, features = ["sync", "time", "rt", "macros"] }
+tokio = { workspace = true, features = ["time", "rt", "macros"] }
 tracing = { workspace = true }
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
-tokio-util = { workspace = true, features = ["io"] }
+tokio-util = { workspace = true }
 
 [[bin]]
 path = "src/byte_grouping/compression_stats/collect_compression_stats.rs"

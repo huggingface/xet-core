@@ -22,7 +22,7 @@ serde = { workspace = true }
 static_assertions = { workspace = true }
 tempfile = { workspace = true }
 thiserror = { workspace = true }
-tokio = { workspace = true, features = ["sync"] }
+tokio = { workspace = true }
 tracing = { workspace = true }
 
 [target.'cfg(target_family = "wasm")'.dependencies]

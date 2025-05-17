@@ -283,7 +283,6 @@ dependencies = [
  "futures",
  "heed",
  "http",
- "itertools 0.13.0",
  "mdb_shard",
  "merkledb",
  "merklehash",
@@ -320,8 +319,6 @@ dependencies = [
  "mdb_shard",
  "merkledb",
  "merklehash",
- "more-asserts",
- "parutils",
  "rand 0.9.1",
  "serde",
  "thiserror 2.0.11",
@@ -640,11 +637,9 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
- "static_assertions",
  "tempfile",
  "thiserror 2.0.11",
  "tokio",
- "toml",
  "tracing",
  "ulid",
  "utils",
@@ -667,7 +662,6 @@ version = "0.14.5"
 dependencies = [
  "async-trait",
  "gearhash",
- "lazy_static",
  "mdb_shard",
  "merkledb",
  "merklehash",
@@ -1114,7 +1108,6 @@ dependencies = [
  "error_printer",
  "itertools 0.14.0",
  "lazy_static",
- "parutils",
  "pprof",
  "progress_tracking",
  "pyo3",
@@ -1536,15 +1529,6 @@ name = "lazy_static"
 version = "1.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bbd2bcb4c963f2ddae06a2efc7e9f3591312473c50c6685e1f298068316e66fe"
-
-[[package]]
-name = "len-trait"
-version = "0.6.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "723558ab8acaa07cb831b424cd164b587ddc1648b34748a30953c404e9a4a65b"
-dependencies = [
- "cfg-if 0.1.10",
-]
 
 [[package]]
 name = "libc"
@@ -2007,29 +1991,8 @@ name = "parutils"
 version = "0.14.5"
 dependencies = [
  "async-scoped",
- "async-trait",
  "futures",
- "len-trait",
  "tokio",
-]
-
-[[package]]
-name = "paste"
-version = "0.1.18"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "45ca20c77d80be666aef2b45486da86238fabe33e38306bd3118fe4af33fa880"
-dependencies = [
- "paste-impl",
- "proc-macro-hack",
-]
-
-[[package]]
-name = "paste-impl"
-version = "0.1.18"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d95a7db200b97ef370c8e6de0088252f7e0dfff7d047a28528e47456c0fc98b6"
-dependencies = [
- "proc-macro-hack",
 ]
 
 [[package]]
@@ -2157,12 +2120,6 @@ dependencies = [
  "predicates-core",
  "termtree",
 ]
-
-[[package]]
-name = "proc-macro-hack"
-version = "0.5.20+deprecated"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "dc375e1527247fe1a97d8b7156678dfe7c1af2fc075c9a4db3690ecd2a148068"
 
 [[package]]
 name = "proc-macro2"
@@ -3276,15 +3233,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "toml"
-version = "0.5.11"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f4f7f0dd8d50a853a531c426359045b1998f04219d88799810762cd4ad314234"
-dependencies = [
- "serde",
-]
-
-[[package]]
 name = "tower-service"
 version = "0.3.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3454,7 +3402,6 @@ dependencies = [
  "lazy_static",
  "merklehash",
  "parking_lot 0.11.2",
- "paste",
  "pin-project",
  "thiserror 2.0.11",
  "tokio",
@@ -3919,7 +3866,6 @@ checksum = "1e9df38ee2d2c3c5948ea468a8406ff0db0b29ae1ffde1bcf20ef305bcc95c51"
 name = "xet_threadpool"
 version = "0.1.0"
 dependencies = [
- "lazy_static",
  "thiserror 2.0.11",
  "tokio",
  "tracing",

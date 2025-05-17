@@ -18,7 +18,7 @@ mockall = { workspace = true }
 once_cell = { workspace = true }
 rand = { workspace = true }
 thiserror = { workspace = true }
-tokio = { workspace = true, features = ["sync"] }
+tokio = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]

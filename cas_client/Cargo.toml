@@ -28,14 +28,13 @@ derivative = { workspace = true }
 futures = { workspace = true }
 heed = { workspace = true }
 http = { workspace = true }
-itertools = { workspace = true }
 more-asserts = { workspace = true }
 reqwest = { workspace = true }
 reqwest-middleware = { workspace = true }
 reqwest-retry = { workspace = true }
 tempfile = { workspace = true }
 thiserror = { workspace = true }
-tokio = { workspace = true, features = ["sync"] }
+tokio = { workspace = true }
 tokio-retry = { workspace = true }
 tracing = { workspace = true }
 url = { workspace = true }
