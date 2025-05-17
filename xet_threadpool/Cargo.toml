@@ -4,16 +4,9 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-tokio = { version = "1.44", features = [
-    "sync",
-    "macros",
-    "io-util",
-    "rt",
-    "time",
-] }
-thiserror = "2.0"
-tracing = "0.1.31"
-lazy_static = "1.4"
+thiserror = { workspace = true }
+tokio = { workspace = true, features = ["time", "rt", "macros", "io-util"] }
+tracing = { workspace = true }
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
-tokio = { version = "1.44", features = ["rt-multi-thread"] }
+tokio = { workspace = true, features = ["rt-multi-thread"] }

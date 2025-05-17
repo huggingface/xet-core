@@ -4,7 +4,7 @@ use cas_types::{ChunkRange, Key};
 use merklehash::MerkleHash;
 use rand::rngs::{StdRng, ThreadRng};
 use rand::seq::SliceRandom;
-use rand::{thread_rng, Rng, SeedableRng};
+use rand::{rng, Rng, SeedableRng};
 
 #[cfg(test)]
 pub const RANGE_LEN: u32 = 16 << 10;
@@ -38,18 +38,18 @@ pub fn print_directory_contents(path: &Path) {
 pub fn random_key(rng: &mut impl Rng) -> Key {
     Key {
         prefix: "default".to_string(),
-        hash: MerkleHash::from_slice(&rng.gen::<[u8; 32]>()).unwrap(),
+        hash: MerkleHash::from_slice(&rng.random::<[u8; 32]>()).unwrap(),
     }
 }
 
 pub fn random_range(rng: &mut impl Rng) -> ChunkRange {
-    let start = rng.gen::<u32>() % 1000;
-    let end = start + 1 + rng.gen::<u32>() % (1024 - start);
+    let start = rng.random::<u32>() % 1000;
+    let end = start + 1 + rng.random::<u32>() % (1024 - start);
     ChunkRange::new(start, end)
 }
 
 pub fn random_bytes(rng: &mut impl Rng, range: &ChunkRange, len: u32) -> (Vec<u32>, Vec<u8>) {
-    let random_vec: Vec<u8> = (0..len).map(|_| rng.gen()).collect();
+    let random_vec: Vec<u8> = (0..len).map(|_| rng.random()).collect();
     if range.end - range.start == 0 {
         return (vec![0, len], random_vec);
     }
@@ -114,7 +114,7 @@ impl RandomEntryIterator<StdRng> {
 
 impl Default for RandomEntryIterator<ThreadRng> {
     fn default() -> Self {
-        Self::new(thread_rng())
+        Self::new(rng())
     }
 }
 
@@ -124,7 +124,7 @@ impl<T: Rng> Iterator for RandomEntryIterator<T> {
     fn next(&mut self) -> Option<Self::Item> {
         let key = random_key(&mut self.rng);
         let range = if self.one_chunk_ranges {
-            let start = self.rng.gen();
+            let start = self.rng.random();
             ChunkRange::new(start, start + 1)
         } else {
             random_range(&mut self.rng)
@@ -146,14 +146,16 @@ mod tests {
         for _ in 0..100 {
             let (_key, range, chunk_byte_indices, data) = it.next().unwrap();
             assert!(range.start < range.end, "invalid range: {range:?}");
-            assert!(
-                chunk_byte_indices.len() == (range.end - range.start + 1) as usize,
+            assert_eq!(
+                chunk_byte_indices.len(),
+                (range.end - range.start + 1) as usize,
                 "chunk_byte_indices len mismatch, range: {range:?}, cbi len: {}",
                 chunk_byte_indices.len()
             );
-            assert!(chunk_byte_indices[0] == 0, "chunk_byte_indices[0] != 0, is instead {}", chunk_byte_indices[0]);
-            assert!(
-                *chunk_byte_indices.last().unwrap() as usize == data.len(),
+            assert_eq!(chunk_byte_indices[0], 0, "chunk_byte_indices[0] != 0, is instead {}", chunk_byte_indices[0]);
+            assert_eq!(
+                *chunk_byte_indices.last().unwrap() as usize,
+                data.len(),
                 "chunk_byte_indices last value does not equal data.len() ({}), is instead {}",
                 data.len(),
                 chunk_byte_indices.last().unwrap()

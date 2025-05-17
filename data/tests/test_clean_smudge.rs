@@ -45,7 +45,7 @@ pub fn create_random_files(dir: impl AsRef<Path>, files: &[(impl AsRef<str>, usi
     let mut total_bytes = 0;
     let mut rng = SmallRng::seed_from_u64(seed);
     for (file_name, size) in files {
-        total_bytes += create_random_file(&dir, file_name.as_ref(), *size, rng.gen());
+        total_bytes += create_random_file(&dir, file_name.as_ref(), *size, rng.random());
     }
     total_bytes
 }
@@ -137,7 +137,7 @@ async fn dehydrate_directory(cas_dir: &Path, src_dir: &Path, ptr_dir: &Path) {
 
         upload_tasks.spawn(async move {
             let (xf, metrics) = clean_file(upload_session.clone(), entry.path()).await.unwrap();
-            assert_eq!(metrics.total_bytes as u64, entry.metadata().unwrap().len());
+            assert_eq!({ metrics.total_bytes }, entry.metadata().unwrap().len());
             std::fs::write(out_file, serde_json::to_string(&xf).unwrap()).unwrap();
         });
     }
@@ -206,7 +206,7 @@ impl TestSetup {
 /// gets test coverage.
 async fn dehydrate_directory_sequential(cas_dir: &Path, src_dir: &Path, ptr_dir: &Path) {
     let config = TranslatorConfig::local_config(cas_dir).unwrap();
-    std::fs::create_dir_all(ptr_dir).unwrap();
+    create_dir_all(ptr_dir).unwrap();
 
     let upload_session = FileUploadSession::new(config.clone(), None).await.unwrap();
 
@@ -256,7 +256,7 @@ async fn check_clean_smudge_files_multipart_impl(file_specs: &[(String, Vec<(u64
     for (file_name, segments) in file_specs {
         // We call `segments.clone()` because `create_random_multipart_file`
         // takes ownership of the Vec<(u64,u64)>.
-        create_random_multipart_file(&ts.src_dir, file_name, &segments);
+        create_random_multipart_file(&ts.src_dir, file_name, segments);
     }
     if sequential {
         // Dehydrate (upload) files, but checkpoint after each upload

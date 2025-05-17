@@ -3,53 +3,40 @@
 use std::collections::btree_map::Entry;
 use std::collections::{BTreeMap, HashSet};
 use std::fs::File;
-use std::str::FromStr;
+use std::path::PathBuf;
 
-use clap::{App, Arg};
+use clap::Parser;
 use merkledb::{chunk_target, low_variance_chunk_target};
 use merklehash::*;
 
+const DEFAULT_SIZE: usize = 131072; // 128KiB
+
+/// Example of using fastcdc crate.
+/// Splits a (large) file and computes checksums
+#[derive(Debug, Parser)]
+struct Args {
+    /// The desired average size of the chunks.
+    #[clap(long, short, default_value_t = DEFAULT_SIZE)]
+    size: usize,
+
+    /// If the low variance chunker is used
+    #[clap(long, short)]
+    lowvariance: bool,
+
+    /// Sets the input file to use
+    #[clap()]
+    input: PathBuf,
+}
+
 fn main() {
-    fn is_integer(v: &str) -> Result<(), String> {
-        if u64::from_str(v).is_ok() {
-            return Ok(());
-        }
-        Err(String::from("The size must be a valid unsigned 64-bit integer."))
-    }
-    let matches = App::new("Example of using fastcdc crate.")
-        .about("Splits a (large) file and computes checksums.")
-        .arg(
-            Arg::new("size")
-                .short('s')
-                .long("size")
-                .value_name("SIZE")
-                .help("The desired average size of the chunks.")
-                .takes_value(true)
-                .validator(is_integer),
-        )
-        .arg(
-            Arg::new("lowvariance")
-                .short('l')
-                .long("lowvariance")
-                .help("If the low variance chunker is used"),
-        )
-        .arg(Arg::new("INPUT").help("Sets the input file to use").required(true).index(1))
-        .get_matches();
-    let size = matches.value_of("size").unwrap_or("131072");
-    let lv: bool = if matches.occurrences_of("lowvariance") >= 1 {
+    let args = Args::parse();
+    let mut file = File::open(args.input).expect("cannot open file!");
+    let chunks = if args.lowvariance {
         eprintln!("Using the low variance chunker");
-        true
+        low_variance_chunk_target(&mut file, args.size, 8)
     } else {
         eprintln!("Using the regular chunker");
-        false
-    };
-    let avg_size = u64::from_str(size).unwrap() as usize;
-    let filename = matches.value_of("INPUT").unwrap();
-    let mut file = File::open(filename).expect("cannot open file!");
-    let chunks = if lv {
-        low_variance_chunk_target(&mut file, avg_size, 8)
-    } else {
-        chunk_target(&mut file, avg_size)
+        chunk_target(&mut file, args.size)
     };
     let mut h: HashSet<MerkleHash> = HashSet::new();
     let mut dist: BTreeMap<usize, usize> = BTreeMap::new();
