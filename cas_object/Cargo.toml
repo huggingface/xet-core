@@ -25,7 +25,7 @@ utils = { path = "../utils" }
 anyhow = { workspace = true }
 blake3 = { workspace = true }
 bytes = { workspace = true }
-clap = { version = "4.1", features = ["derive"] }
+clap = { workspace = true }
 countio = { workspace = true }
 csv = { workspace = true }
 futures = { workspace = true }
