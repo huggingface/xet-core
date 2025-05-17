@@ -4,10 +4,11 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-async-trait = { workspace = true }
 merklehash = { path = "../merklehash" }
-tokio = { workspace = true, features = ["sync", "test-util"] }
+
+async-trait = { workspace = true }
 more-asserts = { workspace = true }
+tokio = { workspace = true, features = ["sync", "test-util"] }
 
 [dev-dependencies]
 tokio = { version = "1.44", features = ["full"] }

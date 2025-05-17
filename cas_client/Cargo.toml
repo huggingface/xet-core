@@ -5,42 +5,42 @@ edition = "2021"
 
 [features]
 strict = []
-
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-cas_types = { version = "0.1.0", path = "../cas_types" }
 cas_object = { path = "../cas_object" }
+cas_types = { version = "0.1.0", path = "../cas_types" }
 chunk_cache = { path = "../chunk_cache" }
+deduplication = { path = "../deduplication" }
 error_printer = { path = "../error_printer" }
 file_utils = { path = "../file_utils" }
-utils = { path = "../utils" }
-merkledb = { path = "../merkledb" }
 mdb_shard = { path = "../mdb_shard" }
+merkledb = { path = "../merkledb" }
 merklehash = { path = "../merklehash" }
-xet_threadpool = { path = "../xet_threadpool" }
-deduplication = { path = "../deduplication" }
 progress_tracking = { path = "../progress_tracking" }
-thiserror = { workspace = true }
-tokio = { workspace = true, features = ["sync"] }
-async-trait = { workspace = true }
+utils = { path = "../utils" }
+xet_threadpool = { path = "../xet_threadpool" }
+
 anyhow = { workspace = true }
-http = { workspace = true }
-tempfile = { workspace = true }
-tracing = { workspace = true }
+async-trait = { workspace = true }
 bytes = { workspace = true }
-itertools = { workspace = true } # TODO: 0.10
+derivative = { workspace = true }
+futures = { workspace = true }
+heed = { workspace = true }
+http = { workspace = true }
+itertools = { workspace = true }
+more-asserts = { workspace = true }
 reqwest = { workspace = true }
 reqwest-middleware = { workspace = true }
-url = { workspace = true }
 reqwest-retry = { workspace = true }
-heed = { workspace = true }
-futures = { workspace = true }
-derivative = { workspace = true }
-more-asserts = { workspace = true }
+tempfile = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true, features = ["sync"] }
 tokio-retry = { workspace = true }
+tracing = { workspace = true }
+url = { workspace = true }
 
 [dev-dependencies]
-rand = "0.8.5"
 httpmock = "0.7.0"
+rand = "0.8.5"
 tracing-test = { version = "0.2.5", features = ["no-env-filter"] }

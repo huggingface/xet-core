@@ -18,43 +18,42 @@ path = "src/bin/xtool.rs"
 cas_client = { path = "../cas_client" }
 cas_object = { path = "../cas_object" }
 cas_types = { path = "../cas_types" }
+deduplication = { path = "../deduplication" }
+error_printer = { path = "../error_printer" }
+mdb_shard = { path = "../mdb_shard" }
 merkledb = { path = "../merkledb" }
 merklehash = { path = "../merklehash" }
-mdb_shard = { path = "../mdb_shard" }
-utils = { path = "../utils" }
 parutils = { path = "../parutils" }
-error_printer = { path = "../error_printer" }
-xet_threadpool = { path = "../xet_threadpool" }
-deduplication = { path = "../deduplication" }
 progress_tracking = { path = "../progress_tracking" }
-thiserror = { workspace = true }
-tokio = { workspace = true, features = ["full"] }
-anyhow = { workspace = true }
-tracing = { workspace = true }
-async-trait = { workspace = true }
-clap = { workspace = true, features = ["derive"] }
-tempfile = { workspace = true }
-regex = { workspace = true }
-lazy_static = { workspace = true }
-rand = { workspace = true }
-toml = { workspace = true }
-static_assertions = { workspace = true }
-rand_chacha = { workspace = true }
-dirs = { workspace = true }
-walkdir = { workspace = true }
-more-asserts = { workspace = true }
-serde = { workspace = true }
-ulid = { workspace = true }
+utils = { path = "../utils" }
+xet_threadpool = { path = "../xet_threadpool" }
 
-# metrics
-prometheus = { workspace = true }
+anyhow = { workspace = true }
+async-trait = { workspace = true }
+chrono = { workspace = true }
+clap = { workspace = true, features = ["derive"] }
+dirs = { workspace = true }
 jsonwebtoken = { workspace = true }
-serde_json = { workspace = true }
+lazy_static = { workspace = true }
+more-asserts = { workspace = true }
 
 # Need to specify this as optional to allow the openssl/vendored option below
 openssl = { version = "0.10", features = [], optional = true }
+prometheus = { workspace = true }
+rand = { workspace = true }
+rand_chacha = { workspace = true }
+regex = { workspace = true }
 reqwest-middleware = { workspace = true }
-chrono = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+static_assertions = { workspace = true }
+tempfile = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true, features = ["full"] }
+toml = { workspace = true }
+tracing = { workspace = true }
+ulid = { workspace = true }
+walkdir = { workspace = true }
 
 [target.'cfg(not(windows))'.dependencies]
 openssl = "0.10"

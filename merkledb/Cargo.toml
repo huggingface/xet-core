@@ -11,6 +11,7 @@ doctest = false
 [dependencies]
 merklehash = { path = "../merklehash" }
 utils = { path = "../utils" }
+
 thiserror = { workspace = true }
 rand_chacha = { workspace = true }
 serde = { workspace = true }

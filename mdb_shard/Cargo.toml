@@ -2,28 +2,28 @@
 name = "mdb_shard"
 version = "0.14.5"
 edition = "2021"
-
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
 merklehash = { path = "../merklehash" }
 utils = { path = "../utils" }
-thiserror = { workspace = true }
-tempfile = { workspace = true }
-tokio = { workspace = true, features = ["sync"] }
-lazy_static = { workspace = true }
-regex = { workspace = true }
-tracing = { workspace = true }
-clap = { workspace = true }
+
 anyhow = { workspace = true }
-rand = { workspace = true, features = ["small_rng"] }
 async-trait = { workspace = true }
-static_assertions = { workspace = true }
-itertools = { workspace = true }
+blake3 = { workspace = true }
+clap = { workspace = true }
 futures-io = { workspace = true }
 futures-util = { workspace = true }
+itertools = { workspace = true }
+lazy_static = { workspace = true }
+rand = { workspace = true, features = ["small_rng"] }
+regex = { workspace = true }
 serde = { workspace = true }
-blake3 = { workspace = true }
+static_assertions = { workspace = true }
+tempfile = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true, features = ["sync"] }
+tracing = { workspace = true }
 
 [target.'cfg(target_family = "wasm")'.dependencies]
 uuid = { version = "1", features = ["v4", "js"] }
