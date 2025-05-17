@@ -26,9 +26,9 @@ tokio = { workspace = true, features = ["sync"] }
 tracing = { workspace = true }
 
 [target.'cfg(target_family = "wasm")'.dependencies]
-uuid = { version = "1", features = ["v4", "js"] }
+uuid = { workspace = true, features = ["v4", "js"] }
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
-uuid = { version = "1", features = ["v4"] }
+uuid = { workspace = true, features = ["v4"] }
 
 [[bin]]
 name = "shard_benchmark"

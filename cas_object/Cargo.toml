@@ -39,7 +39,7 @@ tokio = { workspace = true, features = ["sync", "time", "rt", "macros"] }
 tracing = { workspace = true }
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
-tokio-util = { version = "0.7.12", features = ["io"] }
+tokio-util = { workspace = true, features = ["io"] }
 
 [[bin]]
 path = "src/byte_grouping/compression_stats/collect_compression_stats.rs"

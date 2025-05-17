@@ -22,8 +22,8 @@ tokio = { workspace = true, features = ["sync"] }
 tracing = { workspace = true }
 
 [dev-dependencies]
-tempdir = "0.3.7"
-tokio = { version = "1.44", features = ["full"] }
+tempdir = { workspace = true }
+tokio = { workspace = true, features = ["full"] }
 
 [[bin]]
 name = "cache_analysis"

@@ -23,7 +23,7 @@ tokio = { workspace = true, features = ["sync", "time", "rt", "macros"] }
 tracing = { workspace = true }
 
 [target.'cfg(not(target_family = "wasm"))'.dev-dependencies]
-tempfile = "3.14.0"
+tempfile = { workspace = true }
 xet_threadpool = { path = "../xet_threadpool" }
 
 [features]

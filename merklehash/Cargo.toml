@@ -12,10 +12,10 @@ safe-transmute = { workspace = true }
 serde = { workspace = true }
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
-heed = "0.11"
+heed = { workspace = true }
 
 [target.'cfg(target_family = "wasm")'.dependencies]
-getrandom = { version = "0.3.1", features = ["wasm_js"] }
+getrandom = { workspace = true, features = ["wasm_js"] }
 
 [features]
 strict = []

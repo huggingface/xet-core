@@ -12,8 +12,8 @@ len-trait = { workspace = true }
 tokio = { workspace = true, features = ["sync"] }
 
 [dev-dependencies]
-anyhow = "1"
-more-asserts = "0.3.*"
+anyhow = { workspace = true }
+more-asserts = { workspace = true }
 
 [features]
 strict = []

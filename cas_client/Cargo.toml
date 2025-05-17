@@ -9,7 +9,7 @@ strict = []
 
 [dependencies]
 cas_object = { path = "../cas_object" }
-cas_types = { version = "0.1.0", path = "../cas_types" }
+cas_types = { path = "../cas_types" }
 chunk_cache = { path = "../chunk_cache" }
 deduplication = { path = "../deduplication" }
 error_printer = { path = "../error_printer" }
@@ -41,6 +41,6 @@ tracing = { workspace = true }
 url = { workspace = true }
 
 [dev-dependencies]
-httpmock = "0.7.0"
-rand = "0.8.5"
-tracing-test = { version = "0.2.5", features = ["no-env-filter"] }
+httpmock = { workspace = true }
+rand = { workspace = true }
+tracing-test = { workspace = true }

@@ -30,7 +30,7 @@ tracing-subscriber = { version = "0.3", features = [
     "env-filter",
 ] }
 bipbuffer = "0.1"
-reqwest = "0.11.27"
+reqwest = "0.12"
 serde = { version = "1.0.215", features = ["derive"] }
 serde_json = "1.0.133"
 lazy_static = "1.5"

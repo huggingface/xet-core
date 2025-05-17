@@ -11,4 +11,4 @@ more-asserts = { workspace = true }
 tokio = { workspace = true, features = ["sync", "test-util"] }
 
 [dev-dependencies]
-tokio = { version = "1.44", features = ["full"] }
+tokio = { workspace = true, features = ["full"] }
