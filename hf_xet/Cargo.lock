@@ -306,6 +306,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.11",
  "tokio",
+ "tokio-retry",
  "tracing",
  "url",
  "utils",
@@ -1175,7 +1176,7 @@ checksum = "fbf6a919d6cf397374f7dfeeea91d974c7c0a7221d0d0f4f20d859d329e53fcc"
 
 [[package]]
 name = "hf_xet"
-version = "1.1.1"
+version = "1.1.2"
 dependencies = [
  "async-trait",
  "bipbuffer",
@@ -3370,6 +3371,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bbae76ab933c85776efabc971569dd6119c580d8f5d448769dec1764bf796ef2"
 dependencies = [
  "native-tls",
+ "tokio",
+]
+
+[[package]]
+name = "tokio-retry"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7f57eb36ecbe0fc510036adff84824dd3c24bb781e21bfa67b69d556aa85214f"
+dependencies = [
+ "pin-project",
+ "rand 0.8.5",
  "tokio",
 ]
 
