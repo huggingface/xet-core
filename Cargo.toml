@@ -102,4 +102,4 @@ httpmock = "0.7"
 serial_test = "3"
 tempdir = "0.3"
 tracing-test = { version = "0.2", features = ["no-env-filter"] }
-
+wiremock = "0.6"

@@ -42,3 +42,4 @@ url = { workspace = true }
 httpmock = { workspace = true }
 rand = { workspace = true }
 tracing-test = { workspace = true }
+wiremock = { workspace = true }

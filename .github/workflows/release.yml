@@ -69,26 +69,39 @@ jobs:
             fi
       - name: Strip debug symbols into a separate file
         run: |
+          shopt -s expand_aliases 
+          if [[ ${{ matrix.platform.target }} == "aarch64" ]]
+          then
+            sudo apt-get install -y binutils-aarch64-linux-gnu
+            alias objcopy=aarch64-linux-gnu-objcopy
+          fi
+
           mkdir hf_xet/dbg
-          pushd hf_xet/dist
+          mkdir dist
+          pushd dist 
+          cp ../hf_xet/dist/* .
           LATEST_WHEEL=$(ls -tr1 *.whl | tail -n 1)
           WHEEL_VERSION=$(echo $LATEST_WHEEL | cut -d '-' -f 2)
           wheel unpack $LATEST_WHEEL 
           objcopy --only-keep-debug hf_xet-${WHEEL_VERSION}/hf_xet/hf_xet.abi3.so hf_xet-${WHEEL_VERSION}/hf_xet/hf_xet.abi3.so.dbg
           objcopy --strip-debug hf_xet-${WHEEL_VERSION}/hf_xet/hf_xet.abi3.so
           objcopy --add-gnu-debuglink=hf_xet-${WHEEL_VERSION}/hf_xet/hf_xet.abi3.so.dbg hf_xet-${WHEEL_VERSION}/hf_xet/hf_xet.abi3.so
-          mv hf_xet-${WHEEL_VERSION}/hf_xet/hf_xet.abi3.so.dbg ../../dbg/hf_xet.abi3.so.dbg
+          mv hf_xet-${WHEEL_VERSION}/hf_xet/hf_xet.abi3.so.dbg ../hf_xet/dbg/hf_xet.abi3.so.dbg
           wheel pack hf_xet-${WHEEL_VERSION} 
+          rm -rf hf_xet-${WHEEL_VERSION}
+          zip -r hf_xet.abi3.so.dbg.linux-${{ matrix.platform.target }}.zip ../hf_xet/dbg/hf_xet.abi3.so.dbg
+          rm ../hf_xet/dbg/hf_xet.abi3.so.dbg
+          mv hf_xet.abi3.so.dbg.linux-${{ matrix.platform.target }}.zip ../hf_xet/dbg/
       - name: Upload debug symbols
         uses: actions/upload-artifact@v4
         with:
-          name: dbg-manylinux-${{ matrix.platform.target }}
+          name: dbg-linux-${{ matrix.platform.target }}
           path: hf_xet/dbg
       - name: Upload wheels
         uses: actions/upload-artifact@v4
         with:
           name: wheels-linux-${{ matrix.platform.target }}
-          path: hf_xet/dist
+          path: dist
 
   musllinux:
     runs-on: ${{ matrix.platform.runner }}
@@ -128,26 +141,39 @@ jobs:
           working-directory: hf_xet
       - name: Strip debug symbols into a separate file
         run: |
+          shopt -s expand_aliases 
+          if [[ ${{ matrix.platform.target }} == "aarch64" ]]
+          then
+            sudo apt-get install -y binutils-aarch64-linux-gnu
+            alias objcopy=aarch64-linux-gnu-objcopy
+          fi
+        
           mkdir hf_xet/dbg
-          pushd hf_xet/dist
+          mkdir dist
+          pushd dist 
+          cp ../hf_xet/dist/* .
           LATEST_WHEEL=$(ls -tr1 *.whl | tail -n 1)
           WHEEL_VERSION=$(echo $LATEST_WHEEL | cut -d '-' -f 2)
           wheel unpack $LATEST_WHEEL 
           objcopy --only-keep-debug hf_xet-${WHEEL_VERSION}/hf_xet/hf_xet.abi3.so hf_xet-${WHEEL_VERSION}/hf_xet/hf_xet.abi3.so.dbg
           objcopy --strip-debug hf_xet-${WHEEL_VERSION}/hf_xet/hf_xet.abi3.so
           objcopy --add-gnu-debuglink=hf_xet-${WHEEL_VERSION}/hf_xet/hf_xet.abi3.so.dbg hf_xet-${WHEEL_VERSION}/hf_xet/hf_xet.abi3.so
-          mv hf_xet-${WHEEL_VERSION}/hf_xet/hf_xet.abi3.so.dbg ../dbg/hf_xet.abi3.so.dbg
+          mv hf_xet-${WHEEL_VERSION}/hf_xet/hf_xet.abi3.so.dbg ../hf_xet/dbg/hf_xet.abi3.so.dbg
           wheel pack hf_xet-${WHEEL_VERSION} 
+          rm -rf hf_xet-${WHEEL_VERSION}
+          zip -r hf_xet.abi3.so.dbg.musllinux-${{ matrix.platform.target }}.zip ../hf_xet/dbg/hf_xet.abi3.so.dbg
+          rm ../hf_xet/dbg/hf_xet.abi3.so.dbg
+          mv hf_xet.abi3.so.dbg.musllinux-${{ matrix.platform.target }}.zip ../hf_xet/dbg/
       - name: Upload debug symbols
         uses: actions/upload-artifact@v4
         with:
-          path: dbg-musllinux-${{ matrix.platform.target }}
-          name: hf_xet/dbg
+          name: dbg-musllinux-${{ matrix.platform.target }}
+          path: hf_xet/dbg
       - name: Upload wheels
         uses: actions/upload-artifact@v4
         with:
           name: wheels-musllinux-${{ matrix.platform.target }}
-          path: hf_xet/dist
+          path: dist
 
   windows:
     runs-on: ${{ matrix.platform.runner }}
@@ -156,6 +182,7 @@ jobs:
         platform:
           - runner: windows-latest
             target: x64
+            rust_target: x86_64-pc-windows-msvc
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -178,9 +205,10 @@ jobs:
           sccache: 'true'
           working-directory: hf_xet
       - name: Copy debug symbols
+        shell: bash
         run: |
           mkdir hf_xet/dbg
-          cp hf_xet/target/release/hf_xet.pdb hf_xet/dbg/ 
+          cp hf_xet/target/${{ matrix.platform.rust_target }}/release/hf_xet.pdb hf_xet/dbg/
       - name: Upload debug symbols
         uses: actions/upload-artifact@v4
         with:
@@ -199,8 +227,10 @@ jobs:
         platform:
           - runner: macos-13
             target: x86_64
+            rust_target: x86_64-apple-darwin
           - runner: macos-14
             target: aarch64
+            rust_target: aarch64-apple-darwin
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -224,9 +254,10 @@ jobs:
         run: |
           TARGET=${{ matrix.platform.target }}
           mkdir hf_xet/dbg
-          pushd hf_xet/target/release-dbgsymbols/deps
+          pushd hf_xet/target/${{ matrix.platform.rust_target}}/release-dbgsymbols/deps
           sed -i '' "s/binary-path:.*/binary-path: '.\/hf_xet.abi3.so'/" libhf_xet.dylib.dSYM/Contents/Resources/Relocations/${TARGET}/libhf_xet.dylib.yml
-          cp -r libhf_xet.dylib.dSYM ../../../dbg/
+          zip -r libhf_xet.dylib.dSYM.macos-${TARGET}.zip libhf_xet.dylib.dSYM
+          cp libhf_xet.dylib.dSYM.macos-${TARGET}.zip ../../../../dbg/
       - name: Upload debug symbols
         uses: actions/upload-artifact@v4
         with:
@@ -258,7 +289,7 @@ jobs:
       - name: Patch sdist
         run: |
           pushd hf_xet/dist
-          DISTFILE=$(ls -tr1 hf-xet-*.tar.gz | tail -n 1)
+          DISTFILE=$(ls -tr1 hf_xet-*.tar.gz | tail -n 1)
           DISTNAME=${DISTFILE%.tar.gz}
           # maturin sdist will overwrite an edited pyproject.toml in the repo root, so we need to 
           # update the python path in the built pyproject.toml to account for that.
@@ -311,4 +342,9 @@ jobs:
         env: 
           GH_TOKEN: ${{ github.token }}
         run: |
+          ls -l
+          echo "wheels"
+          ls -l wheels-*/*
+          echo "dbg"
+          ls -l dbg-*/*
           gh release create ${{ github.event.inputs.tag}} wheels-*/* dbg-*/* --generate-notes --prerelease --target ${{github.sha}}

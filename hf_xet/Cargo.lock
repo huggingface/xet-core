@@ -617,6 +617,7 @@ dependencies = [
  "cas_types",
  "chrono",
  "clap",
+ "ctor",
  "deduplication",
  "dirs",
  "error_printer",
@@ -1097,7 +1098,7 @@ checksum = "f154ce46856750ed433c8649605bf7ed2de3bc35fd9d2a9f30cddd873c80cb08"
 
 [[package]]
 name = "hf_xet"
-version = "1.1.1"
+version = "1.1.2"
 dependencies = [
  "async-trait",
  "bipbuffer",
