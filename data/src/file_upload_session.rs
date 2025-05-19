@@ -203,7 +203,7 @@ impl FileUploadSession {
         // In some circumstances, we can cut to instances of the same xorb, namely when there are two files
         // with the same starting data that get processed simultaneously.  When this happens, we only upload
         // the first one, returning early here.
-        let xorb_already_completed = self
+        let xorb_is_new = self
             .completion_tracker
             .register_new_xorb(xorb_hash, xorb.num_bytes() as u64)
             .await;
@@ -212,7 +212,7 @@ impl FileUploadSession {
         // we start the upload.
         self.completion_tracker.register_dependencies(file_dependencies).await;
 
-        if xorb_already_completed {
+        if !xorb_is_new {
             return Ok(false);
         }
 

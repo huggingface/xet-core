@@ -17,8 +17,10 @@ struct ItemProgressData {
 #[derive(Debug, Default)]
 pub struct ProgressUpdaterVerificationWrapperImpl {
     items: HashMap<Arc<str>, ItemProgressData>,
+    total_transfer_bytes: u64,
+    total_transfer_bytes_completed: u64,
     total_bytes: u64,
-    total_bytes_completed: u64,
+    total_process_bytes_completed: u64,
 }
 
 /// A wrapper that forwards updates to an inner `TrackingProgressUpdater`
@@ -57,7 +59,7 @@ impl ProgressUpdaterVerificationWrapper {
             );
         }
 
-        assert_eq!(tr.total_bytes_completed, tr.total_bytes);
+        assert_eq!(tr.total_transfer_bytes_completed, tr.total_transfer_bytes);
     }
 }
 
@@ -76,45 +78,77 @@ impl TrackingProgressUpdater for ProgressUpdaterVerificationWrapper {
             // If first time seeing total_count for this item, record it.
             // Otherwise, ensure it stays consistent.
             if entry.total_count == 0 {
-                entry.total_count = up.total_count;
+                entry.total_count = up.total_bytes;
             } else {
                 assert_eq!(
-                    entry.total_count, up.total_count,
+                    entry.total_count, up.total_bytes,
                     "Inconsistent total_count for '{}'; was {}, now {}",
-                    up.item_name, entry.total_count, up.total_count
+                    up.item_name, entry.total_count, up.total_bytes
                 );
             }
 
             // Check increments:
             // 1) `completed_count` should never go down
             assert!(
-                up.completed_count >= entry.last_completed,
+                up.bytes_completed >= entry.last_completed,
                 "Item '{}' completed_count went backwards: old={}, new={}",
                 up.item_name,
                 entry.last_completed,
-                up.completed_count
+                up.bytes_completed
             );
 
             // 2) `completed_count` must not exceed `total_count`
             assert!(
-                up.completed_count <= up.total_count,
+                up.bytes_completed <= up.total_bytes,
                 "Item '{}' completed_count {} exceeds total {}",
                 up.item_name,
-                up.completed_count,
-                up.total_count
+                up.bytes_completed,
+                up.total_bytes
             );
 
             // 3) The increment must match the difference
-            let expected_new = entry.last_completed + up.update_increment;
+            let expected_new = entry.last_completed + up.bytes_completion_increment;
             assert_eq!(
-                up.completed_count, expected_new,
+                up.bytes_completed, expected_new,
                 "Item '{}': mismatch: last_completed={} + update_increment={} != completed_count={}",
-                up.item_name, entry.last_completed, up.update_increment, up.completed_count
+                up.item_name, entry.last_completed, up.bytes_completion_increment, up.bytes_completed
             );
 
             // Update item record
-            entry.last_completed = up.completed_count;
+            entry.last_completed = up.bytes_completed;
         }
+
+        assert_le!(
+            tr.total_transfer_bytes,
+            update.total_transfer_bytes,
+            "New total bytes {} a decrease from previous report of total bytes {}",
+            update.total_transfer_bytes,
+            tr.total_transfer_bytes
+        );
+
+        tr.total_transfer_bytes += update.total_transfer_bytes_increment;
+
+        assert_eq!(
+            tr.total_transfer_bytes, update.total_transfer_bytes,
+            "New increment {} put tracked checked transfer bytes {} out of step from reported total bytes {}",
+            update.total_transfer_bytes_increment, tr.total_transfer_bytes, update.total_transfer_bytes,
+        );
+
+        assert_le!(
+            tr.total_transfer_bytes_completed,
+            update.total_transfer_bytes_completed,
+            "New total bytes completed {} a decrease from previous report of total bytes {}",
+            update.total_transfer_bytes_completed,
+            tr.total_transfer_bytes_completed
+        );
+
+        tr.total_transfer_bytes_completed += update.total_transfer_bytes_completion_increment;
+
+        assert_eq!(
+            tr.total_transfer_bytes_completed, update.total_transfer_bytes_completed,
+            "Total bytes completed {} does not match tracked total bytes {}",
+            update.total_transfer_bytes_completed, tr.total_transfer_bytes_completed
+        );
 
         assert_le!(
             tr.total_bytes,
@@ -124,22 +158,28 @@ impl TrackingProgressUpdater for ProgressUpdaterVerificationWrapper {
             tr.total_bytes
         );
 
-        tr.total_bytes = tr.total_bytes.max(update.total_bytes);
+        tr.total_bytes += update.total_bytes_increment;
+
+        assert_eq!(
+            tr.total_bytes, update.total_bytes,
+            "New increment {} put checked total processing bytes {} out of step from reported total bytes {}",
+            update.total_bytes_increment, tr.total_bytes, update.total_bytes,
+        );
 
         assert_le!(
-            tr.total_bytes_completed,
+            tr.total_process_bytes_completed,
             update.total_bytes_completed,
             "New total bytes completed {} a decrease from previous report of total bytes {}",
             update.total_bytes_completed,
-            tr.total_bytes_completed
+            tr.total_process_bytes_completed
         );
 
-        tr.total_bytes_completed += update.total_bytes_completion_increment;
+        tr.total_process_bytes_completed += update.total_bytes_completion_increment;
 
         assert_eq!(
-            tr.total_bytes_completed, update.total_bytes_completed,
+            tr.total_process_bytes_completed, update.total_bytes_completed,
             "Total bytes completed {} does not match tracked total bytes {}",
-            update.total_bytes_completed, tr.total_bytes_completed
+            update.total_bytes_completed, tr.total_process_bytes_completed
         );
 
         // Now forward them to the inner updater
@@ -181,18 +221,23 @@ mod tests {
                 item_updates: vec![
                     ItemProgressUpdate {
                         item_name: Arc::from("fileA"),
-                        total_count: 100,
-                        completed_count: 50,
-                        update_increment: 50, // from 0->50
+                        total_bytes: 100,
+                        bytes_completed: 50,
+                        bytes_completion_increment: 50,
                     },
                     ItemProgressUpdate {
                         item_name: Arc::from("fileB"),
-                        total_count: 200,
-                        completed_count: 100,
-                        update_increment: 100, // from 0->100
+                        total_bytes: 200,
+                        bytes_completed: 100,
+                        bytes_completion_increment: 100,
                     },
                 ],
+                total_transfer_bytes: 100,
+                total_transfer_bytes_increment: 100,
+                total_transfer_bytes_completed: 50,
+                total_transfer_bytes_completion_increment: 50,
                 total_bytes: 200,
+                total_bytes_increment: 200,
                 total_bytes_completed: 100,
                 total_bytes_completion_increment: 100,
             })
@@ -204,18 +249,23 @@ mod tests {
                 item_updates: vec![
                     ItemProgressUpdate {
                         item_name: Arc::from("fileA"),
-                        total_count: 100,
-                        completed_count: 100,
-                        update_increment: 50, // from 50->100
+                        total_bytes: 100,
+                        bytes_completed: 100,
+                        bytes_completion_increment: 50,
                     },
                     ItemProgressUpdate {
                         item_name: Arc::from("fileB"),
-                        total_count: 200,
-                        completed_count: 200,
-                        update_increment: 100, // from 100->200
+                        total_bytes: 200,
+                        bytes_completed: 200,
+                        bytes_completion_increment: 100,
                     },
                 ],
+                total_transfer_bytes: 150,
+                total_transfer_bytes_increment: 50,
+                total_transfer_bytes_completed: 150,
+                total_transfer_bytes_completion_increment: 100,
                 total_bytes: 200,
+                total_bytes_increment: 0,
                 total_bytes_completed: 200,
                 total_bytes_completion_increment: 100,
             })
