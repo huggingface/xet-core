@@ -110,7 +110,7 @@ where
     Idx: fmt::Debug,
 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("Point")
+        f.debug_struct("Range")
             .field("start", &self.start)
             .field("end", &self.end)
             .finish()
