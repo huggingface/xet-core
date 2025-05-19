@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 
+use cas_object::error::CasObjectError;
 use cas_types::{CASReconstructionFetchInfo, CASReconstructionTerm, ChunkRange, FileRange, HexMerkleHash, Key};
 use chunk_cache::ChunkCache;
 use deduplication::constants::MAX_XORB_BYTES;
@@ -13,11 +14,13 @@ use http::StatusCode;
 use merklehash::MerkleHash;
 use reqwest_middleware::ClientWithMiddleware;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
+use tokio_retry::strategy::ExponentialBackoff;
 use tracing::{debug, error, info, trace};
 use url::Url;
 use utils::singleflight::Group;
 
 use crate::error::{CasClientError, Result};
+use crate::http_client::{Api, BASE_RETRY_DELAY_MS, BASE_RETRY_MAX_DURATION_MS, NUM_RETRIES};
 use crate::remote_client::{get_reconstruction_with_endpoint_and_client, PREFIX_DEFAULT};
 use crate::OutputProvider;
 
@@ -265,12 +268,10 @@ impl DownloadScheduler {
             if *num_range_in_segment > 1 {
                 *num_range_in_segment -= 1;
             }
-            self.n_concurrent_download_task.forget_permits(1);
         } else {
             // TODO: check download speed and consider if we should increase or decrease
             debug!("expanding segment size by one range");
             *self.n_range_in_segment.lock()? += 1;
-            self.n_concurrent_download_task.add_permits(1);
         }
 
         Ok(())
@@ -307,7 +308,7 @@ pub(crate) async fn get_one_term(
             prefix: PREFIX_DEFAULT.to_string(),
             hash: term.hash.into(),
         };
-        if let Ok(Some(cached)) = cache.get(&key, &term.range).log_error("cache error") {
+        if let Ok(Some(cached)) = cache.get(&key, &term.range).await.log_error("cache error") {
             return Ok(cached.data.to_vec());
         }
     }
@@ -328,7 +329,7 @@ pub(crate) async fn get_one_term(
             prefix: PREFIX_DEFAULT.to_string(),
             hash: term.hash.into(),
         };
-        if let Err(e) = cache.put(&key, &fetch_term.range, &chunk_byte_indices, &data) {
+        if let Err(e) = cache.put(&key, &fetch_term.range, &chunk_byte_indices, &data).await {
             info!("Writing to local cache failed, continuing. Error: {}", e);
         }
     }
@@ -361,6 +362,28 @@ pub(crate) async fn get_one_term(
     Ok(data)
 }
 
+struct ChunkRangeDeserializeFromBytesStreamRetryCondition;
+
+impl tokio_retry::Condition<CasClientError> for ChunkRangeDeserializeFromBytesStreamRetryCondition {
+    fn should_retry(&mut self, err: &CasClientError) -> bool {
+        // we only care about retrying some error yielded by trying to deserialize the stream
+        let CasClientError::CasObjectError(CasObjectError::InternalIOError(cas_object_io_err)) = err else {
+            return false;
+        };
+        let Some(inner) = cas_object_io_err.get_ref() else {
+            return false;
+        };
+        let Some(inner_reqwest_err) = inner.downcast_ref::<reqwest::Error>() else {
+            return false;
+        };
+        // errors that indicate reading the body failed
+        inner_reqwest_err.is_body()
+            || inner_reqwest_err.is_decode()
+            || inner_reqwest_err.is_timeout()
+            || inner_reqwest_err.is_request()
+    }
+}
+
 /// use the provided http_client to make requests to S3/blob store using the url and url_range
 /// parts of a CASReconstructionFetchInfo. The url_range part is used directly in a http Range header
 /// value (see fn `range_header`).
@@ -372,41 +395,50 @@ async fn download_range(
     trace!("{hash},{},{}", fetch_term.range.start, fetch_term.range.end);
 
     let url = Url::parse(fetch_term.url.as_str())?;
-    let response = match http_client
-        .get(url)
-        .header(RANGE, fetch_term.url_range.range_header())
-        .send()
-        .await
-        .map_err(CasClientError::from)
-        .log_error("error downloading range")?
-        .error_for_status()
-    {
-        Ok(response) => response,
-        Err(e) => {
-            return match e.status() {
-                Some(StatusCode::FORBIDDEN) => {
-                    info!("error code {} for hash {hash}, will re-fetch reconstruction", StatusCode::FORBIDDEN,);
-                    Ok(DownloadRangeResult::Forbidden)
-                },
-                _ => Err(e.into()),
+
+    tokio_retry::RetryIf::spawn(
+        ExponentialBackoff::from_millis(BASE_RETRY_DELAY_MS)
+            .max_delay(Duration::from_millis(BASE_RETRY_MAX_DURATION_MS))
+            .take(NUM_RETRIES as usize),
+        || async {
+            let response = match http_client
+                .get(url.clone())
+                .header(RANGE, fetch_term.url_range.range_header())
+                .with_extension(Api("s3::get_range"))
+                .send()
+                .await
+                .map_err(CasClientError::from)
+                .log_error("error downloading range")?
+                .error_for_status()
+            {
+                Ok(response) => response,
+                Err(e) => return match e.status() {
+                    Some(StatusCode::FORBIDDEN) => {
+                        info!("error code {} for hash {hash}, will re-fetch reconstruction", StatusCode::FORBIDDEN,);
+                        Ok(DownloadRangeResult::Forbidden)
+                    },
+                    _ => Err(e.into()),
+                }
+                .log_error("error code"),
+            };
+
+            if let Some(content_length) = response.content_length() {
+                let expected_len = fetch_term.url_range.length();
+                if content_length != expected_len {
+                    error!("got back a smaller byte range ({content_length}) than requested ({expected_len}) from s3");
+                    return Err(CasClientError::InvalidRange);
+                }
             }
-            .log_error("error code")
+
+            let (data, chunk_byte_indices) = cas_object::deserialize_async::deserialize_chunks_from_stream(
+                response.bytes_stream().map_err(std::io::Error::other),
+            )
+            .await?;
+            Ok(DownloadRangeResult::Data(data, chunk_byte_indices))
         },
-    };
-
-    if let Some(content_length) = response.content_length() {
-        let expected_len = fetch_term.url_range.length();
-        if content_length != expected_len {
-            error!("got back a smaller byte range ({content_length}) than requested ({expected_len}) from s3");
-            return Err(CasClientError::InvalidRange);
-        }
-    }
-
-    let (data, chunk_byte_indices) = cas_object::deserialize_async::deserialize_chunks_from_stream(
-        response.bytes_stream().map_err(std::io::Error::other),
+        ChunkRangeDeserializeFromBytesStreamRetryCondition,
     )
-    .await?;
-    Ok(DownloadRangeResult::Data(data, chunk_byte_indices))
+    .await
 }
 
 #[cfg(test)]
@@ -473,7 +505,7 @@ mod tests {
             MerkleHash::default(),
             file_range,
             server.base_url(),
-            Arc::new(build_http_client(RetryConfig::default())?),
+            Arc::new(build_http_client(RetryConfig::default(), "")?),
         );
 
         fetch_info.query().await?;
@@ -520,7 +552,7 @@ mod tests {
             MerkleHash::default(),
             file_range_to_refresh,
             server.base_url(),
-            Arc::new(build_http_client(RetryConfig::default())?),
+            Arc::new(build_http_client(RetryConfig::default(), "")?),
         ));
 
         // Spawn multiple tasks each calling into refresh with a different delay in
@@ -589,7 +621,7 @@ mod tests {
             MerkleHash::default(),
             file_range,
             server.base_url(),
-            Arc::new(build_http_client(RetryConfig::default())?),
+            Arc::new(build_http_client(RetryConfig::default(), "")?),
         );
 
         let (offset_info_first_range, terms) = fetch_info.query().await?.unwrap();
@@ -600,7 +632,7 @@ mod tests {
             take: file_range.length(),
             fetch_info: Arc::new(fetch_info),
             chunk_cache: None,
-            client: Arc::new(build_http_client(RetryConfig::default())?),
+            client: Arc::new(build_http_client(RetryConfig::default(), "")?),
             range_download_single_flight: Arc::new(Group::new()),
         };
 

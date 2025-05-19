@@ -17,6 +17,8 @@ mod xet_file;
 
 pub use cas_client::CacheConfig;
 pub use constants::*;
+// Reexport this one for now
+pub use deduplication::RawXorbData;
 pub use file_downloader::FileDownloader;
 pub use file_upload_session::FileUploadSession;
 pub use xet_file::XetFileInfo;

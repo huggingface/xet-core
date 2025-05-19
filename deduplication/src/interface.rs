@@ -3,6 +3,7 @@ use std::result::Result;
 use async_trait::async_trait;
 use mdb_shard::file_structs::FileDataSequenceEntry;
 use merklehash::MerkleHash;
+use progress_tracking::upload_tracking::FileXorbDependency;
 
 use crate::raw_xorb_data::RawXorbData;
 
@@ -23,7 +24,7 @@ pub trait DeduplicationDataInterface: Send + Sync + 'static {
     async fn chunk_hash_dedup_query(
         &self,
         query_hashes: &[MerkleHash],
-    ) -> std::result::Result<Option<(usize, FileDataSequenceEntry)>, Self::ErrorType>;
+    ) -> std::result::Result<Option<(usize, FileDataSequenceEntry, bool)>, Self::ErrorType>;
 
     /// Registers a new query for more information about the
     /// global deduplication.  This is expected to run in the background.  Simply return Ok(()) to
@@ -36,4 +37,10 @@ pub trait DeduplicationDataInterface: Send + Sync + 'static {
 
     /// Registers a Xorb of new data that has no deduplication references.
     async fn register_new_xorb(&mut self, xorb: RawXorbData) -> Result<(), Self::ErrorType>;
+
+    /// Register a set of xorb dependencies; this is called periodically during the dedup
+    /// process with a list of (xorb hash, n_bytes).  As the final bit may get
+    /// returned as a partial xorb without a hash yet, it is not gauranteed that the
+    /// sum of the n_bytes across all the dependencies will equal the size of the file.
+    async fn register_xorb_dependencies(&mut self, dependencies: &[FileXorbDependency]);
 }

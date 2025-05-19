@@ -111,7 +111,7 @@ pub fn init_threadpool(py: Python) -> PyResult<Arc<ThreadPool>> {
     }
 
     // Create a new Tokio runtime.
-    let runtime = Arc::new(ThreadPool::new().map_err(convert_multithreading_error)?);
+    let runtime = ThreadPool::new().map_err(convert_multithreading_error)?;
 
     // Check the signal handler
     check_sigint_handler()?;
@@ -120,7 +120,7 @@ pub fn init_threadpool(py: Python) -> PyResult<Arc<ThreadPool>> {
     *guard = Some(runtime.clone());
 
     // Spawn a background non-tokio thread to check the sigint flag.
-    std::thread::spawn(move || signal_check_background_loop());
+    std::thread::spawn(signal_check_background_loop);
 
     // Drop the guard and initialize the logging.
     //
@@ -155,10 +155,10 @@ fn get_threadpool(py: Python) -> PyResult<Arc<ThreadPool>> {
 }
 
 fn convert_multithreading_error(e: MultithreadedRuntimeError) -> PyErr {
-    PyRuntimeError::new_err(format!("Xet Runtime Error: {}", e))
+    PyRuntimeError::new_err(format!("Xet Runtime Error: {e}"))
 }
 
-pub fn async_run<Out, F>(py: Python, execution_call: impl FnOnce(Arc<ThreadPool>) -> F + Send) -> PyResult<Out>
+pub fn async_run<Out, F>(py: Python, execution_call: F) -> PyResult<Out>
 where
     F: std::future::Future + Send + 'static,
     F::Output: Into<PyResult<Out>> + Send + Sync,
@@ -170,7 +170,7 @@ where
     // Release the gil
     let runtime_internal = runtime.clone();
     let result: PyResult<Out> = py
-        .allow_threads(move || runtime_internal.external_run_async_task(execution_call(runtime_internal.clone())))
+        .allow_threads(move || runtime_internal.external_run_async_task(execution_call))
         .map_err(convert_multithreading_error)?
         .into();
 

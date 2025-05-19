@@ -10,12 +10,12 @@ use std::sync::Arc;
 
 use data::errors::DataProcessingError;
 use data::{data_client, XetFileInfo};
+use progress_tracking::TrackingProgressUpdater;
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
 use pyo3::pyfunction;
 use runtime::async_run;
 use token_refresh::WrappedTokenRefresher;
-use utils::progress::ProgressUpdater;
 
 use crate::progress_update::WrappedProgressUpdater;
 
@@ -44,14 +44,10 @@ pub fn upload_bytes(
     _repo_type: Option<String>,
 ) -> PyResult<Vec<PyXetUploadInfo>> {
     let refresher = token_refresher.map(WrappedTokenRefresher::from_func).transpose()?.map(Arc::new);
-    let updater = progress_updater
-        .map(WrappedProgressUpdater::from_func)
-        .transpose()?
-        .map(Arc::new);
+    let updater = progress_updater.map(WrappedProgressUpdater::new).transpose()?.map(Arc::new);
 
-    async_run(py, move |thread_pool| async move {
+    async_run(py, async move {
         let out: Vec<PyXetUploadInfo> = data_client::upload_bytes_async(
-            thread_pool,
             file_contents,
             endpoint,
             token_info,
@@ -79,14 +75,10 @@ pub fn upload_files(
     _repo_type: Option<String>,
 ) -> PyResult<Vec<PyXetUploadInfo>> {
     let refresher = token_refresher.map(WrappedTokenRefresher::from_func).transpose()?.map(Arc::new);
-    let updater = progress_updater
-        .map(WrappedProgressUpdater::from_func)
-        .transpose()?
-        .map(Arc::new);
+    let updater = progress_updater.map(WrappedProgressUpdater::new).transpose()?.map(Arc::new);
 
-    async_run(py, move |threadpool| async move {
+    async_run(py, async move {
         let out: Vec<PyXetUploadInfo> = data_client::upload_async(
-            threadpool,
             file_paths,
             endpoint,
             token_info,
@@ -116,27 +108,21 @@ pub fn download_files(
     let refresher = token_refresher.map(WrappedTokenRefresher::from_func).transpose()?.map(Arc::new);
     let updaters = progress_updater.map(try_parse_progress_updaters).transpose()?;
 
-    async_run(py, move |threadpool| async move {
-        let out: Vec<String> = data_client::download_async(
-            threadpool,
-            file_infos,
-            endpoint,
-            token_info,
-            refresher.map(|v| v as Arc<_>),
-            updaters,
-        )
-        .await
-        .map_err(convert_data_processing_error)?;
+    async_run(py, async move {
+        let out: Vec<String> =
+            data_client::download_async(file_infos, endpoint, token_info, refresher.map(|v| v as Arc<_>), updaters)
+                .await
+                .map_err(convert_data_processing_error)?;
 
         Ok(out)
     })
 }
 
-fn try_parse_progress_updaters(funcs: Vec<Py<PyAny>>) -> PyResult<Vec<Arc<dyn ProgressUpdater>>> {
+fn try_parse_progress_updaters(funcs: Vec<Py<PyAny>>) -> PyResult<Vec<Arc<dyn TrackingProgressUpdater>>> {
     let mut updaters = Vec::with_capacity(funcs.len());
     for updater_func in funcs {
-        let wrapped = Arc::new(WrappedProgressUpdater::from_func(updater_func)?);
-        updaters.push(wrapped as Arc<dyn ProgressUpdater>);
+        let wrapped = Arc::new(WrappedProgressUpdater::new(updater_func)?);
+        updaters.push(wrapped as Arc<dyn TrackingProgressUpdater>);
     }
     Ok(updaters)
 }
@@ -253,14 +239,14 @@ impl From<XetFileInfo> for PyXetUploadInfo {
     fn from(xf: XetFileInfo) -> Self {
         Self {
             hash: xf.hash().to_owned(),
-            file_size: xf.file_size() as u64,
+            file_size: xf.file_size(),
         }
     }
 }
 
 impl From<PyXetDownloadInfo> for (XetFileInfo, DestinationPath) {
     fn from(pf: PyXetDownloadInfo) -> Self {
-        (XetFileInfo::new(pf.hash, pf.file_size as usize), pf.destination_path)
+        (XetFileInfo::new(pf.hash, pf.file_size), pf.destination_path)
     }
 }
 

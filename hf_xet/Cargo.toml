@@ -1,6 +1,6 @@
 [package]
 name = "hf_xet"
-version = "1.1.0"
+version = "1.1.2"
 edition = "2021"
 license = "Apache-2.0"
 
@@ -17,6 +17,7 @@ pyo3 = { version = "0.23.3", features = [
     "experimental-async",
 ] }
 
+progress_tracking = { path = "../progress_tracking" }
 error_printer = { path = "../error_printer" }
 data = { path = "../data" }
 utils = { path = "../utils" }
@@ -43,6 +44,7 @@ pprof = { version = "0.14", features = [
 async-trait = "0.1.87"
 async-once-cell = "0.5.4"
 base64 = "0.22.1"
+itertools = "0.14.0"
 
 # Unix-specific dependencies
 [target.'cfg(unix)'.dependencies]
@@ -57,5 +59,21 @@ openssl_vendored = ["data/openssl_vendored"]
 profiling = ["pprof"]
 
 [profile.release]
+split-debuginfo = "packed"
+opt-level = "s"
+lto = true
+codegen-units = 1
+
+# on manylinux and macos maturin + split-debuginfo doesn't output debug symbols for .so objects, 
+# so we need a different profile to build. For mac, the below settings will output a .dSYM
+# file. For Linux, we are stripping them manually using binutils.
+[profile.release-dbgsymbols]
+inherits = "release"
+debug = true
+split-debuginfo = "none"
+
+
+[profile.opt-test]
+inherits = "dev"
 debug = true
 opt-level = 3

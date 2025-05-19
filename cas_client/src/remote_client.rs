@@ -1,4 +1,4 @@
-use std::io::{Cursor, Write};
+use std::io::Write;
 use std::mem::take;
 use std::path::PathBuf;
 use std::result::Result as stdResult;
@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use anyhow::anyhow;
 use async_trait::async_trait;
-use cas_object::{CasObject, CompressionScheme};
+use cas_object::SerializedCasObject;
 use cas_types::{
     BatchQueryReconstructionResponse, FileRange, HttpRange, Key, QueryReconstructionResponse, UploadShardResponse,
     UploadShardResponseType, UploadXorbResponse,
@@ -14,25 +14,27 @@ use cas_types::{
 use chunk_cache::{CacheConfig, ChunkCache};
 use error_printer::ErrorPrinter;
 use file_utils::SafeFileCreator;
-use http::header::RANGE;
+use http::header::{CONTENT_LENGTH, RANGE};
+use http::HeaderValue;
 use mdb_shard::file_structs::{FileDataSequenceEntry, FileDataSequenceHeader, MDBFileInfo};
 use mdb_shard::shard_file_reconstructor::FileReconstructor;
 use mdb_shard::utils::shard_file_name;
 use merklehash::{HashedWrite, MerkleHash};
-use reqwest::{StatusCode, Url};
+use progress_tracking::item_tracking::SingleItemProgressUpdater;
+use progress_tracking::upload_tracking::CompletionTracker;
+use reqwest::{Body, StatusCode, Url};
 use reqwest_middleware::ClientWithMiddleware;
 use tokio::sync::{mpsc, OwnedSemaphorePermit};
 use tokio::task::{JoinError, JoinHandle, JoinSet};
-use tracing::{debug, info};
+use tracing::{debug, info, instrument};
 use utils::auth::AuthConfig;
-use utils::progress::ProgressUpdater;
 use utils::singleflight::Group;
-use xet_threadpool::ThreadPool;
 
 use crate::download_utils::*;
 use crate::error::{CasClientError, Result};
-use crate::http_client::{ResponseErrorLogger, RetryConfig};
+use crate::http_client::{Api, ResponseErrorLogger, RetryConfig};
 use crate::interface::{ShardDedupProber, *};
+use crate::retry_utils::retry_wrapper;
 use crate::{http_client, Client, RegistrationClient, ShardClientInterface};
 
 const FORCE_SYNC_METHOD: reqwest::Method = reqwest::Method::PUT;
@@ -46,6 +48,9 @@ utils::configurable_constants! {
         standard: 16,
         high_performance: 100,
     };
+
+    // Send a report of successful partial upload every 512kb.
+    ref UPLOAD_REPORTING_BLOCK_SIZE : usize = 512 * 1024;
 }
 
 utils::configurable_bool_constants! {
@@ -59,25 +64,24 @@ utils::configurable_bool_constants! {
 
 pub struct RemoteClient {
     endpoint: String,
-    compression: Option<CompressionScheme>,
     dry_run: bool,
     http_client: Arc<ClientWithMiddleware>,
     authenticated_http_client: Arc<ClientWithMiddleware>,
+    authenticated_http_client_no_retry: Arc<ClientWithMiddleware>,
     conservative_authenticated_http_client: Arc<ClientWithMiddleware>,
     chunk_cache: Option<Arc<dyn ChunkCache>>,
-    threadpool: Arc<ThreadPool>,
     range_download_single_flight: RangeDownloadSingleFlight,
     shard_cache_directory: PathBuf,
 }
 
 impl RemoteClient {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
-        threadpool: Arc<ThreadPool>,
         endpoint: &str,
-        compression: Option<CompressionScheme>,
         auth: &Option<AuthConfig>,
         cache_config: &Option<CacheConfig>,
         shard_cache_directory: PathBuf,
+        session_id: &str,
         dry_run: bool,
     ) -> Self {
         // use disk cache if cache_config provided.
@@ -101,17 +105,18 @@ impl RemoteClient {
 
         Self {
             endpoint: endpoint.to_string(),
-            compression,
             dry_run,
             authenticated_http_client: Arc::new(
-                http_client::build_auth_http_client(auth, RetryConfig::default()).unwrap(),
+                http_client::build_auth_http_client(auth, RetryConfig::default(), session_id).unwrap(),
+            ),
+            authenticated_http_client_no_retry: Arc::new(
+                http_client::build_auth_http_client_no_retry(auth, session_id).unwrap(),
             ),
             conservative_authenticated_http_client: Arc::new(
-                http_client::build_auth_http_client(auth, RetryConfig::no429retry()).unwrap(),
+                http_client::build_auth_http_client(auth, RetryConfig::no429retry(), session_id).unwrap(),
             ),
-            http_client: Arc::new(http_client::build_http_client(RetryConfig::default()).unwrap()),
+            http_client: Arc::new(http_client::build_http_client(RetryConfig::default(), session_id).unwrap()),
             chunk_cache,
-            threadpool,
             range_download_single_flight,
             shard_cache_directory,
         }
@@ -120,27 +125,79 @@ impl RemoteClient {
 
 #[async_trait]
 impl UploadClient for RemoteClient {
-    async fn put(
+    #[instrument(skip_all, name="RemoteClient::upload_xorb", fields(key = Key{prefix : prefix.to_string(), hash : serialized_cas_object.hash}.to_string(), 
+                 xorb.len = serialized_cas_object.serialized_data.len(), xorb.num_chunks = serialized_cas_object.num_chunks))]
+    async fn upload_xorb(
         &self,
         prefix: &str,
-        hash: &MerkleHash,
-        data: Vec<u8>,
-        chunk_and_boundaries: Vec<(MerkleHash, u32)>,
-    ) -> Result<usize> {
+        serialized_cas_object: SerializedCasObject,
+        upload_tracker: Option<Arc<CompletionTracker>>,
+    ) -> Result<u64> {
         let key = Key {
             prefix: prefix.to_string(),
-            hash: *hash,
+            hash: serialized_cas_object.hash,
         };
 
-        let (was_uploaded, nbytes_trans) = self.upload(&key, data, chunk_and_boundaries).await?;
+        let url = Url::parse(&format!("{}/xorb/{key}", self.endpoint))?;
 
-        if !was_uploaded {
+        let n_upload_bytes = serialized_cas_object.serialized_data.len() as u64;
+
+        // Backing out the incremental progress reporting for now until we figure out the middleware issue.
+        use crate::upload_progress_stream::UploadProgressStream;
+
+        let n_raw_bytes = serialized_cas_object.raw_num_bytes;
+        let xorb_hash = serialized_cas_object.hash;
+
+        let progress_callback = move |bytes_sent: u64| {
+            if let Some(utr) = upload_tracker.as_ref() {
+                // First, recallibrate the sending, as the compressed size is different than the actual data size.
+                let adjusted_update = (bytes_sent * n_raw_bytes) / n_upload_bytes;
+
+                utr.clone().register_xorb_upload_progress_background(xorb_hash, adjusted_update);
+            }
+        };
+
+        let upload_stream = UploadProgressStream::new(
+            serialized_cas_object.serialized_data,
+            *UPLOAD_REPORTING_BLOCK_SIZE,
+            progress_callback,
+        );
+
+        let xorb_uploaded = {
+            if !self.dry_run {
+                let client = self.authenticated_http_client_no_retry.clone();
+
+                let response = retry_wrapper(
+                    move || {
+                        let upload_stream = upload_stream.clone_with_reset();
+                        let url = url.clone();
+
+                        client
+                            .post(url)
+                            .with_extension(Api("cas::upload_xorb"))
+                            .header(CONTENT_LENGTH, HeaderValue::from(n_upload_bytes)) // must be set because of streaming
+                            .body(Body::wrap_stream(upload_stream))
+                            .send()
+                    },
+                    RetryConfig::default(),
+                )
+                .await?;
+
+                let response_parsed: UploadXorbResponse = response.json().await?;
+
+                response_parsed.was_inserted
+            } else {
+                true
+            }
+        };
+
+        if !xorb_uploaded {
             debug!("{key:?} not inserted into CAS.");
         } else {
             debug!("{key:?} inserted into CAS.");
         }
 
-        Ok(nbytes_trans)
+        Ok(n_upload_bytes)
     }
 
     async fn exists(&self, prefix: &str, hash: &MerkleHash) -> Result<bool> {
@@ -166,7 +223,7 @@ impl ReconstructionClient for RemoteClient {
         hash: &MerkleHash,
         byte_range: Option<FileRange>,
         output_provider: &OutputProvider,
-        progress_updater: Option<Arc<dyn ProgressUpdater>>,
+        progress_updater: Option<Arc<SingleItemProgressUpdater>>,
     ) -> Result<u64> {
         // If the user has set the `HF_XET_RECONSTRUCT_WRITE_SEQUENTIALLY=true` env variable, then we
         // should write the file to the output sequentially instead of in parallel.
@@ -212,7 +269,7 @@ pub(crate) async fn get_reconstruction_with_endpoint_and_client(
 ) -> Result<Option<QueryReconstructionResponse>> {
     let url = Url::parse(&format!("{}/reconstruction/{}", endpoint, file_id.hex()))?;
 
-    let mut request = client.get(url);
+    let mut request = client.get(url).with_extension(Api("cas::get_reconstruction"));
     if let Some(range) = bytes_range {
         // convert exclusive-end to inclusive-end range
         request = request.header(RANGE, HttpRange::from(range).range_header())
@@ -245,6 +302,7 @@ pub(crate) async fn get_reconstruction_with_endpoint_and_client(
 impl Client for RemoteClient {}
 
 impl RemoteClient {
+    #[instrument(skip_all, name = "RemoteClient::batch_get_reconstruction")]
     async fn batch_get_reconstruction(
         &self,
         file_ids: impl Iterator<Item = &MerkleHash>,
@@ -265,6 +323,7 @@ impl RemoteClient {
         let response = self
             .authenticated_http_client
             .get(url)
+            .with_extension(Api("cas::batch_get_reconstruction"))
             .send()
             .await
             .process_error("batch_get_reconstruction")?;
@@ -276,51 +335,17 @@ impl RemoteClient {
         Ok(query_reconstruction_response)
     }
 
-    pub async fn upload(
-        &self,
-        key: &Key,
-        contents: Vec<u8>,
-        chunk_and_boundaries: Vec<(MerkleHash, u32)>,
-    ) -> Result<(bool, usize)> {
-        let url = Url::parse(&format!("{}/xorb/{key}", self.endpoint))?;
-
-        let mut writer = Cursor::new(Vec::new());
-
-        let (_, nbytes_trans) =
-            CasObject::serialize(&mut writer, &key.hash, &contents, &chunk_and_boundaries, self.compression)?;
-        // free memory before the "slow" network transfer below
-        drop(contents);
-
-        debug!("Upload: POST to {url:?} for {key:?}");
-        writer.set_position(0);
-        let data = writer.into_inner();
-
-        if !self.dry_run {
-            let response = self
-                .authenticated_http_client
-                .post(url)
-                .body(data)
-                .send()
-                .await
-                .process_error("upload_xorb")?;
-            let response_parsed: UploadXorbResponse = response.json().await?;
-
-            Ok((response_parsed.was_inserted, nbytes_trans))
-        } else {
-            Ok((true, nbytes_trans))
-        }
-    }
-
     // Segmented download such that the file reconstruction and fetch info is not queried in its entirety
     // at the beginning of the download, but queried in segments. Range downloads are executed with
     // a certain degree of parallelism, but writing out to storage is sequential. Ideal when the external
     // storage uses HDDs.
+    #[instrument(skip_all, name="RemoteClient::reconstruct_file_segmented", fields(file.hash = file_hash.hex()))]
     async fn reconstruct_file_to_writer_segmented(
         &self,
         file_hash: &MerkleHash,
         byte_range: Option<FileRange>,
         writer: &OutputProvider,
-        progress_updater: Option<Arc<dyn ProgressUpdater>>,
+        progress_updater: Option<Arc<SingleItemProgressUpdater>>,
     ) -> Result<u64> {
         // queue size is inherently bounded by degree of concurrency.
         let (task_tx, mut task_rx) = mpsc::unbounded_channel::<DownloadQueueItem<TermDownload>>();
@@ -346,14 +371,13 @@ impl RemoteClient {
         // download tasks are enqueued and spawned with the degree of concurrency equal to `num_concurrent_range_gets`.
         // After the above, a task that defines fetching the remainder of the file reconstruction info is enqueued,
         // which will execute after the first of the above term download tasks finishes.
-        let threadpool = self.threadpool.clone();
         let chunk_cache = self.chunk_cache.clone();
         let term_download_client = self.http_client.clone();
         let range_download_single_flight = self.range_download_single_flight.clone();
         let download_scheduler = DownloadScheduler::new(*NUM_CONCURRENT_RANGE_GETS);
         let download_scheduler_clone = download_scheduler.clone();
 
-        let queue_dispatcher: JoinHandle<Result<()>> = self.threadpool.spawn(async move {
+        let queue_dispatcher: JoinHandle<Result<()>> = tokio::spawn(async move {
             let mut remaining_total_len = total_len;
             while let Some(item) = task_rx.recv().await {
                 match item {
@@ -369,7 +393,7 @@ impl RemoteClient {
                         let permit = download_scheduler_clone.download_permit().await?;
                         debug!("spawning 1 download task");
                         let future: JoinHandle<Result<(TermDownloadResult<Vec<u8>>, OwnedSemaphorePermit)>> =
-                            threadpool.spawn(async move {
+                            tokio::spawn(async move {
                                 let data = term_download.run().await?;
                                 Ok((data, permit))
                             });
@@ -436,7 +460,10 @@ impl RemoteClient {
                     // drop permit after data written out so they don't accumulate in memory unbounded
                     drop(permit);
 
-                    progress_updater.as_ref().inspect(|updater| updater.update(data.len() as u64));
+                    if let Some(updater) = progress_updater.as_ref() {
+                        updater.update(data.len() as u64).await;
+                    }
+
                     total_written += data.len() as u64;
 
                     // Now inspect the download metrics and tune the download degree of concurrency
@@ -457,12 +484,13 @@ impl RemoteClient {
     // at the beginning of the download, but queried in segments. Range downloads are executed with
     // a certain degree of parallelism, and so does writing out to storage. Ideal when the external
     // storage is fast at seeks, e.g. RAM or SSDs.
+    #[instrument(skip_all, name="RemoteClient::reconstruct_file_segmented_parallel", fields(file.hash = file_hash.hex()))]
     async fn reconstruct_file_to_writer_segmented_parallel_write(
         &self,
         file_hash: &MerkleHash,
         byte_range: Option<FileRange>,
         writer: &OutputProvider,
-        progress_updater: Option<Arc<dyn ProgressUpdater>>,
+        progress_updater: Option<Arc<SingleItemProgressUpdater>>,
     ) -> Result<u64> {
         // queue size is inherently bounded by degree of concurrency.
         let (task_tx, mut task_rx) = mpsc::unbounded_channel::<DownloadQueueItem<TermDownloadAndWrite>>();
@@ -494,16 +522,15 @@ impl RemoteClient {
             move |result: stdResult<stdResult<TermDownloadResult<usize>, CasClientError>, JoinError>,
                   total_written: &mut u64,
                   download_scheduler: &DownloadScheduler|
-                  -> Result<()> {
+                  -> Result<u64> {
                 match result {
                     Ok(Ok(download_result)) => {
-                        let write_len = download_result.data;
-                        *total_written += write_len as u64;
-                        progress_updater.as_ref().inspect(|updater| updater.update(write_len as u64));
+                        let write_len = download_result.data as u64;
+                        *total_written += write_len;
 
                         // Now inspect the download metrics and tune the download degree of concurrency
                         download_scheduler.tune_on(download_result)?;
-                        Ok(())
+                        Ok(write_len)
                     },
                     Ok(Err(e)) => Err(e)?,
                     Err(e) => Err(anyhow!("{e:?}"))?,
@@ -515,7 +542,10 @@ impl RemoteClient {
         while let Some(item) = task_rx.recv().await {
             // first try to join some tasks
             while let Some(result) = running_downloads.try_join_next() {
-                process_result(result, &mut total_written, &download_scheduler)?;
+                let write_len = process_result(result, &mut total_written, &download_scheduler)?;
+                if let Some(updater) = progress_updater.as_ref() {
+                    updater.update(write_len).await;
+                }
             }
 
             match item {
@@ -588,7 +618,10 @@ impl RemoteClient {
         }
 
         while let Some(result) = running_downloads.join_next().await {
-            process_result(result, &mut total_written, &download_scheduler)?;
+            let write_len = process_result(result, &mut total_written, &download_scheduler)?;
+            if let Some(updater) = progress_updater.as_ref() {
+                updater.update(write_len).await;
+            }
         }
 
         Ok(total_written)
@@ -597,6 +630,7 @@ impl RemoteClient {
 
 #[async_trait]
 impl RegistrationClient for RemoteClient {
+    #[instrument(skip_all, name="RemoteClient::upload_shard", fields(shard.hash = hash.hex(), shard.len = shard_data.len()))]
     async fn upload_shard(
         &self,
         prefix: &str,
@@ -624,6 +658,7 @@ impl RegistrationClient for RemoteClient {
         let response = self
             .authenticated_http_client
             .request(method, url)
+            .with_extension(Api("cas::upload_shard"))
             .body(shard_data.to_vec())
             .send()
             .await
@@ -641,6 +676,7 @@ impl RegistrationClient for RemoteClient {
 
 #[async_trait]
 impl FileReconstructor<CasClientError> for RemoteClient {
+    #[instrument(skip_all, name="RemoteClient::get_file_reconstruction", fields(file.hash = file_hash.hex()))]
     async fn get_file_reconstruction_info(
         &self,
         file_hash: &MerkleHash,
@@ -650,6 +686,7 @@ impl FileReconstructor<CasClientError> for RemoteClient {
         let response = self
             .authenticated_http_client
             .get(url)
+            .with_extension(Api("cas::get_reconstruction_info"))
             .send()
             .await
             .process_error("get_reconstruction_info")?;
@@ -675,6 +712,7 @@ impl FileReconstructor<CasClientError> for RemoteClient {
 
 #[async_trait]
 impl ShardDedupProber for RemoteClient {
+    #[instrument(skip_all, name = "RemoteClient::query_global_dedup")]
     async fn query_for_global_dedup_shard(
         &self,
         prefix: &str,
@@ -699,6 +737,7 @@ impl ShardDedupProber for RemoteClient {
         let mut response = self
             .conservative_authenticated_http_client
             .get(url)
+            .with_extension(Api("cas::query_dedup"))
             .send()
             .await
             .map_err(|e| CasClientError::Other(format!("request failed with error {e}")))?;
@@ -734,13 +773,15 @@ mod tests {
     use std::collections::HashMap;
 
     use anyhow::Result;
-    use cas_object::test_utils::{build_cas_object, ChunkSize};
+    use cas_object::test_utils::*;
+    use cas_object::CompressionScheme;
     use cas_types::{CASReconstructionFetchInfo, CASReconstructionTerm, ChunkRange};
     use deduplication::constants::MAX_XORB_BYTES;
     use httpmock::Method::GET;
     use httpmock::MockServer;
     use merkledb::constants::TARGET_CDC_CHUNK_SIZE;
     use tracing_test::traced_test;
+    use xet_threadpool::ThreadPool;
 
     use super::*;
     use crate::interface::buffer::BufferProvider;
@@ -751,21 +792,16 @@ mod tests {
     fn test_basic_put() {
         // Arrange
         let prefix = PREFIX_DEFAULT;
-        let (c, _, data, chunk_boundaries) = build_cas_object(3, ChunkSize::Random(512, 10248), CompressionScheme::LZ4);
+        let raw_xorb = build_raw_xorb(3, ChunkSize::Random(512, 10248));
 
-        let threadpool = Arc::new(ThreadPool::new().unwrap());
-        let client = RemoteClient::new(
-            threadpool.clone(),
-            CAS_ENDPOINT,
-            Some(CompressionScheme::LZ4),
-            &None,
-            &None,
-            "".into(),
-            false,
-        );
+        let threadpool = ThreadPool::new().unwrap();
+        let client = RemoteClient::new(CAS_ENDPOINT, &None, &None, "".into(), "", false);
+
+        let cas_object = build_and_verify_cas_object(raw_xorb, Some(CompressionScheme::LZ4));
+
         // Act
         let result = threadpool
-            .external_run_async_task(async move { client.put(prefix, &c.info.cashash, data, chunk_boundaries).await })
+            .external_run_async_task(async move { client.upload_xorb(prefix, cas_object, None).await })
             .unwrap();
 
         // Assert
@@ -1093,7 +1129,7 @@ mod tests {
             file_range: FileRange::new(SKIP_BYTES, FILE_SIZE - SKIP_BYTES),
             expected_data: [
                 &raw_data[SKIP_BYTES as usize..(5 * CHUNK_SIZE) as usize],
-                &raw_data[(6 * CHUNK_SIZE) as usize as usize..(NUM_CHUNKS * CHUNK_SIZE) as usize - SKIP_BYTES as usize],
+                &raw_data[(6 * CHUNK_SIZE) as usize..(NUM_CHUNKS * CHUNK_SIZE) as usize - SKIP_BYTES as usize],
             ]
             .concat(),
             expect_error: false,
@@ -1128,11 +1164,11 @@ mod tests {
     }
 
     fn test_reconstruct_file(test_case: TestCase, endpoint: &str) -> Result<()> {
-        let threadpool = Arc::new(ThreadPool::new()?);
+        let threadpool = ThreadPool::new()?;
 
         // test reconstruct and sequential write
         let test = test_case.clone();
-        let client = RemoteClient::new(threadpool.clone(), endpoint, None, &None, &None, "".into(), false);
+        let client = RemoteClient::new(endpoint, &None, &None, "".into(), "", false);
         let provider = BufferProvider::default();
         let buf = provider.buf.clone();
         let writer = OutputProvider::Buffer(provider);
@@ -1150,7 +1186,7 @@ mod tests {
 
         // test reconstruct and parallel write
         let test = test_case;
-        let client = RemoteClient::new(threadpool.clone(), endpoint, None, &None, &None, "".into(), false);
+        let client = RemoteClient::new(endpoint, &None, &None, "".into(), "", false);
         let provider = BufferProvider::default();
         let buf = provider.buf.clone();
         let writer = OutputProvider::Buffer(provider);

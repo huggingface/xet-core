@@ -1,4 +1,4 @@
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -12,7 +12,7 @@ use mdb_shard::ShardFileManager;
 use merklehash::MerkleHash;
 use tempfile::TempDir;
 use tokio::task::JoinSet;
-use tracing::{debug, info};
+use tracing::{debug, info, info_span, Instrument};
 
 use crate::configurations::TranslatorConfig;
 use crate::constants::MDB_SHARD_LOCAL_CACHE_EXPIRATION_SECS;
@@ -79,19 +79,24 @@ impl SessionShardInterface {
         Ok(true)
     }
 
+    /// Returns the number of chunks and xorb to dedup against, as well as whether it's already known to be uploaded.
     pub async fn chunk_hash_dedup_query(
         &self,
         query_hashes: &[MerkleHash],
-    ) -> Result<Option<(usize, FileDataSequenceEntry)>> {
+    ) -> Result<Option<(usize, FileDataSequenceEntry, bool)>> {
         // First check for a deduplication hit in the session directory, then in the common cache directory.
         let res = self.session_shard_manager.chunk_hash_dedup_query(query_hashes).await?;
 
-        if res.is_some() {
-            return Ok(res);
+        if let Some((n_entries, fse)) = res {
+            return Ok(Some((n_entries, fse, false)));
         }
 
-        // Now query in the cache shard manager.
-        Ok(self.cache_shard_manager.chunk_hash_dedup_query(query_hashes).await?)
+        // Now query in the cache shard manager; these shards have already been uploaded.
+        if let Some((n_entries, fse)) = self.cache_shard_manager.chunk_hash_dedup_query(query_hashes).await? {
+            Ok(Some((n_entries, fse, true)))
+        } else {
+            Ok(None)
+        }
     }
 
     // Add the cas information to the session shard manager
@@ -114,7 +119,7 @@ impl SessionShardInterface {
 
     /// Uploads everything in the current session directory.  This must be called after all xorbs
     /// have completed their upload.
-    pub async fn upload_and_register_session_shards(&self) -> Result<usize> {
+    pub async fn upload_and_register_session_shards(&self) -> Result<u64> {
         // First, flush everything to disk.
         self.session_shard_manager.flush().await?;
 
@@ -125,7 +130,7 @@ impl SessionShardInterface {
         // Upload all the shards and move each to the common directory.
         let mut shard_uploads = JoinSet::<Result<()>>::new();
 
-        let shard_bytes_uploaded = Arc::new(AtomicUsize::new(0));
+        let shard_bytes_uploaded = Arc::new(AtomicU64::new(0));
 
         for si in shard_list {
             let salt = self.config.shard_config.repo_salt;
@@ -143,38 +148,42 @@ impl SessionShardInterface {
             // block here while the upload is happening.
             let upload_permit = acquire_upload_permit().await?;
 
-            shard_uploads.spawn(async move {
-                debug!("Uploading shard {shard_prefix}/{:?} from staging area to CAS.", &si.shard_hash);
-                let data = std::fs::read(&si.path)?;
+            shard_uploads.spawn(
+                async move {
+                    debug!("Uploading shard {shard_prefix}/{:?} from staging area to CAS.", &si.shard_hash);
+                    let data = std::fs::read(&si.path)?;
 
-                shard_bytes_uploaded.fetch_add(data.len(), Ordering::Relaxed);
+                    shard_bytes_uploaded.fetch_add(data.len() as u64, Ordering::Relaxed);
 
-                if dry_run {
-                    // In dry run mode, don't upload the shards or move them to the cache.
-                    return Ok(());
+                    if dry_run {
+                        // In dry run mode, don't upload the shards or move them to the cache.
+                        return Ok(());
+                    }
+
+                    // Upload the shard.
+                    shard_client
+                        .upload_shard(&shard_prefix, &si.shard_hash, false, &data, &salt)
+                        .await?;
+
+                    // Done with the upload, drop the permit.
+                    drop(upload_permit);
+
+                    info!("Shard {shard_prefix}/{:?} upload + sync completed successfully.", &si.shard_hash);
+
+                    // Now that the upload succeeded, move that shard to the cache directory, adding in an expiration
+                    // time.
+                    let new_shard_path = si.export_with_expiration(
+                        cache_shard_manager.shard_directory(),
+                        Duration::from_secs(*MDB_SHARD_LOCAL_CACHE_EXPIRATION_SECS),
+                    )?;
+
+                    // Register that new shard in the cache shard manager
+                    cache_shard_manager.register_shards(&[new_shard_path]).await?;
+
+                    Ok(())
                 }
-
-                // Upload the shard.
-                shard_client
-                    .upload_shard(&shard_prefix, &si.shard_hash, false, &data, &salt)
-                    .await?;
-
-                // Done with the upload, drop the permit.
-                drop(upload_permit);
-
-                info!("Shard {shard_prefix}/{:?} upload + sync completed successfully.", &si.shard_hash);
-
-                // Now that the upload succeeded, move that shard to the cache directory, adding in an expiration time.
-                let new_shard_path = si.export_with_expiration(
-                    cache_shard_manager.shard_directory(),
-                    Duration::from_secs(*MDB_SHARD_LOCAL_CACHE_EXPIRATION_SECS),
-                )?;
-
-                // Register that new shard in the cache shard manager
-                cache_shard_manager.register_shards(&[new_shard_path]).await?;
-
-                Ok(())
-            });
+                .instrument(info_span!("shard_session::upload_shard_task")),
+            );
         }
 
         // Now, let them all complete in parallel
