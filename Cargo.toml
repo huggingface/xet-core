@@ -15,7 +15,8 @@ members = [
     "parutils",
     "progress_tracking",
     "utils",
-    "xet_threadpool"]
+    "xet_threadpool"
+]
 
 exclude = ["chunk_cache_bench", "hf_xet", "wasm_xet"]
 
