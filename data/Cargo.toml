@@ -31,6 +31,7 @@ xet_threadpool = { path = "../xet_threadpool" }
 anyhow = { workspace = true }
 async-trait = { workspace = true }
 chrono = { workspace = true }
+ctor = { workspace = true }
 clap = { workspace = true }
 dirs = { workspace = true }
 jsonwebtoken = { workspace = true }

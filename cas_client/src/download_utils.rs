@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::fmt;
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 
@@ -6,7 +7,6 @@ use cas_object::error::CasObjectError;
 use cas_types::{CASReconstructionFetchInfo, CASReconstructionTerm, ChunkRange, FileRange, HexMerkleHash, Key};
 use chunk_cache::ChunkCache;
 use deduplication::constants::MAX_XORB_BYTES;
-use derivative::Derivative;
 use error_printer::ErrorPrinter;
 use futures::TryStreamExt;
 use http::header::RANGE;
@@ -137,8 +137,6 @@ impl FetchInfo {
 
 /// Helper object containing the structs needed when downloading a term in parallel
 /// during reconstruction.
-#[derive(Derivative)]
-#[derivative(Debug)]
 pub(crate) struct TermDownload {
     pub term: CASReconstructionTerm,
     pub skip_bytes: u64, // number of bytes to skip at the front
@@ -146,10 +144,23 @@ pub(crate) struct TermDownload {
     // effectively taking [skip_bytes..skip_bytes+take]
     // out of the downloaded range
     pub fetch_info: Arc<FetchInfo>, // utility to get URL to download this term
-    #[derivative(Debug = "ignore")]
     pub chunk_cache: Option<Arc<dyn ChunkCache>>,
     pub client: Arc<ClientWithMiddleware>, // only used for downloading range
     pub range_download_single_flight: RangeDownloadSingleFlight,
+}
+
+impl fmt::Debug for TermDownload {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // print out everything except the chunk cache
+        f.debug_struct("TermDownload")
+            .field("term", &self.term)
+            .field("skip_bytes", &self.skip_bytes)
+            .field("take", &self.take)
+            .field("fetch_info", &self.fetch_info)
+            .field("client", &self.client)
+            .field("range_download_single_flight", &self.range_download_single_flight)
+            .finish()
+    }
 }
 
 #[derive(Debug)]

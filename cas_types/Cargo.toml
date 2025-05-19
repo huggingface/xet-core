@@ -6,7 +6,6 @@ edition = "2021"
 [dependencies]
 merklehash = { path = "../merklehash" }
 
-derivative = { workspace = true }
 serde = { workspace = true }
 serde_repr = { workspace = true }
 thiserror = { workspace = true }

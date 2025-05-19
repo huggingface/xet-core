@@ -31,7 +31,7 @@ bitflags! {
      * Either from a FILE, CAS or both. DataTypeBitfield provides
      * a bitfield type for use internally.
      */
-    #[derive(Serialize, Deserialize, Default)]
+    #[derive(Serialize, Deserialize, Copy, Clone, Default, Debug, PartialEq)]
     struct DataTypeBitfield: u8 {
         /// This node contains a Cas entry
         const CAS = 0x1_u8;
