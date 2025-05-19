@@ -101,7 +101,7 @@ fn signal_check_background_loop() {
     }
 }
 
-pub fn init_threadpool(py: Python) -> PyResult<Arc<ThreadPool>> {
+pub(crate) fn init_threadpool(py: Python) -> PyResult<Arc<ThreadPool>> {
     // Need to initialize. Upgrade to write lock.
     let mut guard = MULTITHREADED_RUNTIME.write().unwrap();
 

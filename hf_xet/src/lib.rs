@@ -127,9 +127,9 @@ fn try_parse_progress_updaters(funcs: Vec<Py<PyAny>>) -> PyResult<Vec<Arc<dyn Tr
     Ok(updaters)
 }
 
-fn try_parse_progress_updater(func: Py<PyAny>) -> PyResult<Arc<dyn ProgressUpdater>> {
-    let wrapped = Arc::new(WrappedProgressUpdater::from_func(func)?);
-    Ok(wrapped as Arc<dyn ProgressUpdater>)
+fn try_parse_progress_updater(func: Py<PyAny>) -> PyResult<Arc<dyn TrackingProgressUpdater>> {
+    let wrapped = Arc::new(WrappedProgressUpdater::new(func)?);
+    Ok(wrapped as Arc<dyn TrackingProgressUpdater>)
 }
 
 // TODO: we won't need to subclass this in the next major version update.

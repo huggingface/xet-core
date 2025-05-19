@@ -3,44 +3,38 @@ use std::fs::File;
 use std::io::Read;
 use std::sync::Arc;
 
-use base64::{engine::general_purpose::STANDARD, engine::GeneralPurpose, Engine};
 use data::configurations::TranslatorConfig;
 use data::data_client::default_config;
 use data::{FileDownloader, FileUploadSession, XetFileInfo, INGESTION_BLOCK_SIZE};
 use error_printer::ErrorPrinter;
-use pyo3::{pyclass, pymethods, Py, PyAny, PyResult, Python};
+use pyo3::{pyclass, pymethods, Py, PyAny, PyResult};
 use utils::auth::TokenRefresher;
 
 use crate::log_buffer::HF_DEFAULT_ENDPOINT;
-use crate::runtime::init_threadpool;
 use crate::token_refresh::WrappedTokenRefresher;
 use crate::{
     convert_data_processing_error, try_parse_progress_updater, DestinationPath, PyXetDownloadInfo, PyXetUploadInfo,
 };
 
-const TRACKER_ID_ENCODER_DECODER: GeneralPurpose = STANDARD;
-
 /// XetSession is per-repo specific
 #[pyclass]
 pub struct XetSession {
-    repo_id: String,
+    _repo_id: String,
     file_upload_session: async_once_cell::OnceCell<Arc<FileUploadSession>>,
     file_downloader: async_once_cell::OnceCell<Arc<FileDownloader>>,
     config: Arc<TranslatorConfig>,
-    threadpool: Arc<xet_threadpool::ThreadPool>,
 }
 
 #[pymethods]
 impl XetSession {
     #[new]
+    #[pyo3(signature = (_repo_id, endpoint=None, token_info=None, token_refresher=None))]
     pub fn new(
-        py: Python,
-        repo_id: String,
+        _repo_id: String,
         endpoint: Option<String>,
         token_info: Option<(String, u64)>,
         token_refresher: Option<Py<PyAny>>,
     ) -> PyResult<Self> {
-        let threadpool = init_threadpool(py)?;
         let token_refresher: Option<Arc<dyn TokenRefresher>> = token_refresher
             .map(WrappedTokenRefresher::from_func)
             .transpose()?
@@ -49,30 +43,24 @@ impl XetSession {
             default_config(endpoint.unwrap_or(HF_DEFAULT_ENDPOINT.to_string()), None, token_info, token_refresher)
                 .map_err(convert_data_processing_error)?;
         Ok(Self {
-            repo_id,
+            _repo_id,
             config,
             file_upload_session: async_once_cell::OnceCell::new(),
             file_downloader: async_once_cell::OnceCell::new(),
-            threadpool,
         })
     }
 
-    #[pyo3(signature = (tracker_id, file_path, progress_updater=None))]
-    pub async fn upload_file(
-        &self,
-        tracker_id: String,
-        file_path: String,
-        progress_updater: Option<Py<PyAny>>,
-    ) -> PyResult<()> {
+    #[pyo3(signature = (sha256, file_path))]
+    pub async fn upload_file(&self, sha256: String, file_path: String) -> PyResult<()> {
         let file_upload_session = self.file_upload_session().await;
 
         let mut reader = File::open(&file_path)?;
+        let file_size = reader.metadata()?.len();
 
         let n = reader.metadata()?.len() as usize;
         let mut buffer = vec![0u8; usize::min(n, *INGESTION_BLOCK_SIZE)];
 
-        let mut handle =
-            file_upload_session.start_clean(Some(TRACKER_ID_ENCODER_DECODER.encode(tracker_id.as_bytes())));
+        let mut handle = file_upload_session.start_clean(Some(sha256.into()), file_size).await;
 
         loop {
             let bytes = reader.read(&mut buffer)?;
@@ -89,16 +77,13 @@ impl XetSession {
         Ok(())
     }
 
-    #[pyo3(signature = (tracker_id, file_bytes, progress_updater=None))]
-    pub async fn upload_bytes(
-        &self,
-        tracker_id: String,
-        file_bytes: Vec<u8>,
-        progress_updater: Option<Py<PyAny>>,
-    ) -> PyResult<()> {
+    #[pyo3(signature = (sha256, file_bytes))]
+    pub async fn upload_bytes(&self, sha256: String, file_bytes: Vec<u8>) -> PyResult<()> {
         let file_upload_session = self.file_upload_session().await;
 
-        let mut handle = file_upload_session.start_clean(Some(STANDARD.encode(tracker_id.as_bytes())));
+        let mut handle = file_upload_session
+            .start_clean(Some(sha256.into()), file_bytes.len() as u64)
+            .await;
         handle.add_data(&file_bytes).await.map_err(convert_data_processing_error)?;
 
         Ok(())
@@ -114,6 +99,7 @@ impl XetSession {
         Ok(HashMap::new())
     }
 
+    #[pyo3(signature = (download_info, progress_updater=None))]
     pub async fn download_file(
         &self,
         download_info: PyXetDownloadInfo,
@@ -136,20 +122,14 @@ impl XetSession {
 impl XetSession {
     async fn file_downloader(&self) -> Arc<FileDownloader> {
         self.file_downloader
-            .get_or_init(async {
-                Arc::new(FileDownloader::new(self.config.clone(), self.threadpool.clone()).await.unwrap())
-            })
+            .get_or_init(async { Arc::new(FileDownloader::new(self.config.clone()).await.unwrap()) })
             .await
             .clone()
     }
 
     async fn file_upload_session(&self) -> Arc<FileUploadSession> {
         self.file_upload_session
-            .get_or_init(async {
-                FileUploadSession::new(self.config.clone(), self.threadpool.clone(), None)
-                    .await
-                    .unwrap()
-            })
+            .get_or_init(async { FileUploadSession::new(self.config.clone(), None).await.unwrap() })
             .await
             .clone()
     }
