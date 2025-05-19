@@ -485,7 +485,6 @@ dependencies = [
  "cas_types",
  "chunk_cache",
  "deduplication",
- "derivative",
  "error_printer",
  "file_utils",
  "futures",
@@ -543,7 +542,6 @@ dependencies = [
 name = "cas_types"
 version = "0.1.0"
 dependencies = [
- "derivative",
  "merklehash",
  "serde",
  "serde_repr",
@@ -949,17 +947,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9c9e6a11ca8224451684bc0d7d5a7adbf8f2fd6887261a1cfc3c0432f9d4068e"
 dependencies = [
  "powerfmt",
-]
-
-[[package]]
-name = "derivative"
-version = "2.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fcc3dd5e9e9c0b295d6e1e4d811fb6f157d5ffd784b8d202fc62eac8035a770b"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn 1.0.109",
 ]
 
 [[package]]

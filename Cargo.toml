@@ -45,7 +45,6 @@ countio = { version = "0.2", features = ["futures"] }
 crc32fast = "1.4"
 csv = "1"
 ctor = "0.4"
-derivative = "2.2"
 dirs = "5.0"
 futures = "0.3"
 futures-io = "0.3"
