@@ -41,15 +41,15 @@ impl RetryableStrategy for No429RetryStratey {
 
 pub struct RetryConfig<R: RetryableStrategy> {
     /// Number of retries for transient errors.
-    num_retries: u32,
+    pub num_retries: u32,
 
     /// Base delay before retrying, default to 3s.
-    min_retry_interval_ms: u64,
+    pub min_retry_interval_ms: u64,
 
     /// Base max duration for retry attempts, default to 6m.
-    max_retry_interval_ms: u64,
+    pub max_retry_interval_ms: u64,
 
-    strategy: R,
+    pub strategy: R,
 }
 
 impl Default for RetryConfig<DefaultRetryableStrategy> {
