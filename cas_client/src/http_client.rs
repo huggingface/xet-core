@@ -41,15 +41,15 @@ impl RetryableStrategy for No429RetryStratey {
 
 pub struct RetryConfig<R: RetryableStrategy> {
     /// Number of retries for transient errors.
-    num_retries: u32,
+    pub num_retries: u32,
 
     /// Base delay before retrying, default to 3s.
-    min_retry_interval_ms: u64,
+    pub min_retry_interval_ms: u64,
 
     /// Base max duration for retry attempts, default to 6m.
-    max_retry_interval_ms: u64,
+    pub max_retry_interval_ms: u64,
 
-    strategy: R,
+    pub strategy: R,
 }
 
 impl Default for RetryConfig<DefaultRetryableStrategy> {
@@ -96,6 +96,22 @@ pub fn build_auth_http_client<R: RetryableStrategy + Send + Sync + 'static>(
         .build())
 }
 
+/// Builds authenticated HTTP Client to talk to CAS.
+pub fn build_auth_http_client_no_retry(
+    auth_config: &Option<AuthConfig>,
+    session_id: &str,
+) -> Result<ClientWithMiddleware, CasClientError> {
+    let auth_middleware = auth_config.as_ref().map(AuthMiddleware::from).info_none("CAS auth disabled");
+    let logging_middleware = Some(LoggingMiddleware);
+    let session_middleware = (!session_id.is_empty()).then(|| SessionMiddleware(session_id.to_owned()));
+    let reqwest_client = reqwest::Client::builder().build()?;
+    Ok(ClientBuilder::new(reqwest_client)
+        .maybe_with(auth_middleware)
+        .maybe_with(logging_middleware)
+        .maybe_with(session_middleware)
+        .build())
+}
+
 /// Builds HTTP Client to talk to CAS.
 /// Includes retry middleware with exponential backoff.
 pub fn build_http_client<R: RetryableStrategy + Send + Sync + 'static>(
@@ -113,18 +129,27 @@ pub fn build_http_client<R: RetryableStrategy + Send + Sync + 'static>(
         .build())
 }
 
+/// RetryStrategy
+pub fn get_retry_policy_and_strategy<R: RetryableStrategy + Send + Sync>(
+    config: RetryConfig<R>,
+) -> (ExponentialBackoff, R) {
+    (
+        ExponentialBackoff::builder()
+            .retry_bounds(
+                Duration::from_millis(config.min_retry_interval_ms),
+                Duration::from_millis(config.max_retry_interval_ms),
+            )
+            .build_with_max_retries(config.num_retries),
+        config.strategy,
+    )
+}
+
 /// Configurable Retry middleware with exponential backoff and configurable number of retries using reqwest-retry
 fn get_retry_middleware<R: RetryableStrategy + Send + Sync>(
     config: RetryConfig<R>,
 ) -> RetryTransientMiddleware<ExponentialBackoff, R> {
-    let retry_policy = ExponentialBackoff::builder()
-        .retry_bounds(
-            Duration::from_millis(config.min_retry_interval_ms),
-            Duration::from_millis(config.max_retry_interval_ms),
-        )
-        .build_with_max_retries(config.num_retries);
-
-    RetryTransientMiddleware::new_with_policy_and_strategy(retry_policy, config.strategy)
+    let (policy, strategy) = get_retry_policy_and_strategy(config);
+    RetryTransientMiddleware::new_with_policy_and_strategy(policy, strategy)
 }
 
 /// Helper trait to allow the reqwest_middleware client to optionally add a middleware.
