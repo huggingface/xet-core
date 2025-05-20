@@ -4,24 +4,18 @@ version = "0.14.2"
 edition = "2021"
 
 [dependencies]
-tracing = "0.1.*"
-libc = "0.2"
-lazy_static = "1.4.0"
-rand = "0.8.5"
+lazy_static = { workspace = true }
+libc = { workspace = true }
+rand = { workspace = true }
+tracing = { workspace = true }
 
 [target.'cfg(windows)'.dependencies]
-winapi = { version = "0.3", features = [
-    "winerror",
-    "winnt",
-    "handleapi",
-    "processthreadsapi",
-    "securitybaseapi",
-] }
+winapi = { workspace = true }
 
 [target.'cfg(unix)'.dependencies]
-whoami = "1.4.1"
-colored = "2.0.0"
+whoami = { workspace = true }
+colored = { workspace = true }
 
 [dev-dependencies]
-anyhow = "1"
-tempfile = "3.2.0"
+anyhow = { workspace = true }
+tempfile = { workspace = true }

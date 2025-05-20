@@ -21,62 +21,58 @@ cas_types = { path = "../cas_types" }
 merkledb = { path = "../merkledb" }
 merklehash = { path = "../merklehash" }
 mdb_shard = { path = "../mdb_shard" }
-utils = { path = "../utils" }
 parutils = { path = "../parutils" }
 error_printer = { path = "../error_printer" }
-xet_threadpool = { path = "../xet_threadpool" }
 deduplication = { path = "../deduplication" }
 progress_tracking = { path = "../progress_tracking" }
-thiserror = "2.0"
-tokio = { version = "1.44", features = ["full"] }
-anyhow = "1"
-tracing = "0.1.*"
-async-trait = "0.1.53"
-clap = { version = "3.1.6", features = ["derive"] }
-tempfile = "3.2.0"
-regex = "1.5.6"
-lazy_static = "1.4.0"
-rand = "0.8.5"
-toml = "0.5"
-static_assertions = "1.1.0"
-rand_chacha = "0.3.1"
-dirs = "5.0.1"
-walkdir = "2.5.0"
-more-asserts = "0.3.1"
-serde = { version = "1.0.215", features = ["derive"] }
-ulid = "1.2.1"
+utils = { path = "../utils" }
+xet_threadpool = { path = "../xet_threadpool" }
 
-# metrics
-prometheus = "0.13.0"
-jsonwebtoken = "9.3.0"
-serde_json = "1.0.133"
-
+anyhow = { workspace = true }
+async-trait = { workspace = true }
+chrono = { workspace = true }
+clap = { workspace = true }
+dirs = { workspace = true }
+jsonwebtoken = { workspace = true }
+lazy_static = { workspace = true }
+more-asserts = { workspace = true }
 # Need to specify this as optional to allow the openssl/vendored option below
-openssl = { version = "0.10", features = [], optional = true }
-reqwest-middleware = "0.3.3"
-chrono = "0.4.39"
+openssl = { workspace = true, features = [], optional = true }
+prometheus = { workspace = true }
+rand = { workspace = true }
+rand_chacha = { workspace = true }
+regex = { workspace = true }
+reqwest-middleware = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tempfile = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true, features = ["full"] }
+tracing = { workspace = true }
+ulid = { workspace = true }
+walkdir = { workspace = true }
 
 [target.'cfg(not(windows))'.dependencies]
-openssl = "0.10"
+openssl = { workspace = true }
 
 # use embedded webpki root certs for MacOS as native certs take a very long time
 # to load, which affects startup time significantly
 [target.'cfg(macos)'.dependencies]
-reqwest = { version = "0.12.15", features = ["json", "rustls-tls-webpki-roots"] }
+reqwest = { workspace = true, features = ["json", "rustls-tls-webpki-roots"] }
 
 [target.'cfg(not(macos))'.dependencies]
-reqwest = { version = "0.12.15", features = ["json"] }
+reqwest = { workspace = true, features = ["json"] }
 
 # Windows doesn't support assembly for compilation
 [target.'cfg(not(target_os = "windows"))'.dependencies]
-sha2 = { version = "0.10.8", features = ["asm"] }
+sha2 = { workspace = true, features = ["asm"] }
 
 [target.'cfg(target_os = "windows")'.dependencies]
-sha2 = { version = "0.10.8" }
+sha2 = { workspace = true }
 
 [dev-dependencies]
-serial_test = "3.2.0"
-tracing-test = "0.2.5"
+serial_test = { workspace = true }
+tracing-test = { workspace = true }
 
 [features]
 strict = []

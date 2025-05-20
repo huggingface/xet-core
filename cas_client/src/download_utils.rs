@@ -143,10 +143,13 @@ impl FetchInfo {
 pub(crate) struct FetchTermDownload {
     pub hash: MerkleHash,
     pub range: ChunkRange,
+    #[derivative(Debug = "ignore")]
     pub fetch_info: Arc<FetchInfo>, // utility to get URL to download this term
     #[derivative(Debug = "ignore")]
     pub chunk_cache: Option<Arc<dyn ChunkCache>>,
+    #[derivative(Debug = "ignore")]
     pub client: Arc<ClientWithMiddleware>, // only used for downloading range
+    #[derivative(Debug = "ignore")]
     pub range_download_single_flight: RangeDownloadSingleFlight,
 }
 

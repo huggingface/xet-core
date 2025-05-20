@@ -251,6 +251,9 @@ pub fn hf_xet(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(download_files, m)?)?;
     m.add_class::<PyXetUploadInfo>()?;
     m.add_class::<PyXetDownloadInfo>()?;
+    m.add_class::<PyXetUploadInfo>()?;
+    m.add_class::<progress_update::PyItemProgressUpdate>()?;
+    m.add_class::<progress_update::PyTotalProgressUpdate>()?;
     // TODO: remove this during the next major version update.
     // This supports backward compatibility for PyPointerFile with old versions
     // huggingface_hub.

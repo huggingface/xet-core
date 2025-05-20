@@ -68,4 +68,19 @@ impl ProgressUpdate {
             && self.total_transfer_bytes_increment == 0
             && self.total_transfer_bytes_completion_increment == 0
     }
+
+    pub fn merge_in(&mut self, other: ProgressUpdate) {
+        self.item_updates.extend(other.item_updates);
+
+        self.total_bytes = self.total_bytes.max(other.total_bytes);
+        self.total_bytes_increment += other.total_bytes_increment;
+        self.total_bytes_completed = self.total_bytes_completed.max(other.total_bytes_completed);
+        self.total_bytes_completion_increment += other.total_bytes_completion_increment;
+
+        self.total_transfer_bytes = self.total_transfer_bytes.max(other.total_transfer_bytes);
+        self.total_transfer_bytes_increment += other.total_transfer_bytes_increment;
+        self.total_transfer_bytes_completed =
+            self.total_transfer_bytes_completed.max(other.total_transfer_bytes_completed);
+        self.total_transfer_bytes_completion_increment += other.total_transfer_bytes_completion_increment;
+    }
 }

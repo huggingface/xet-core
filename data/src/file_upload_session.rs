@@ -1,6 +1,7 @@
 use std::borrow::Cow;
 use std::mem::{swap, take};
 use std::sync::Arc;
+use std::time::Duration;
 
 use cas_client::Client;
 use cas_object::{CompressionScheme, SerializedCasObject, NUM_COMPRESSION_SCHEMES};
@@ -9,6 +10,7 @@ use deduplication::{DataAggregator, DeduplicationMetrics, RawXorbData};
 use jsonwebtoken::{decode, DecodingKey, Validation};
 use mdb_shard::file_structs::MDBFileInfo;
 use more_asserts::*;
+use progress_tracking::aggregator::AggregatingProgressUpdater;
 use progress_tracking::upload_tracking::{CompletionTracker, FileXorbDependency};
 #[cfg(debug_assertions)] // Used here to verify the update accuracy
 use progress_tracking::verification_wrapper::ProgressUpdaterVerificationWrapper;
@@ -19,7 +21,7 @@ use tracing::{info_span, instrument, Instrument};
 use ulid::Ulid;
 
 use crate::configurations::*;
-use crate::constants::MAX_CONCURRENT_UPLOADS;
+use crate::constants::{MAX_CONCURRENT_UPLOADS, PROGRESS_UPDATE_INTERVAL_MS};
 use crate::errors::*;
 use crate::file_cleaner::SingleFileCleaner;
 use crate::prometheus_metrics;
@@ -113,7 +115,15 @@ impl FileUploadSession {
             .map(Cow::Borrowed)
             .unwrap_or_else(|| Cow::Owned(Ulid::new().to_string()));
 
-        let progress_updater = upload_progress_updater.unwrap_or_else(|| Arc::new(NoOpProgressUpdater));
+        let progress_updater: Arc<dyn TrackingProgressUpdater> = {
+            match upload_progress_updater {
+                Some(updater) => {
+                    let update_interval = Duration::from_millis(*PROGRESS_UPDATE_INTERVAL_MS);
+                    AggregatingProgressUpdater::new(updater, update_interval)
+                },
+                None => Arc::new(NoOpProgressUpdater),
+            }
+        };
 
         // When debug assertions are enabled, track all the progress updates for consistency
         // and correctness.  This is checked at the end.
@@ -408,6 +418,9 @@ impl FileUploadSession {
             self.progress_verification_tracker.assert_complete().await;
         }
 
+        // Make sure all the updates have been flushed through.
+        self.completion_tracker.flush().await;
+
         Ok((metrics, all_file_info))
     }
 
@@ -428,6 +441,8 @@ impl FileUploadSession {
                 result??;
             }
         }
+
+        self.completion_tracker.flush().await;
 
         Ok(())
     }
