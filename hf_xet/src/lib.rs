@@ -22,6 +22,7 @@ use crate::progress_update::WrappedProgressUpdater;
 // For profiling
 #[cfg(feature = "profiling")]
 pub(crate) mod profiling;
+pub mod session;
 
 fn convert_data_processing_error(e: DataProcessingError) -> PyErr {
     if cfg!(debug_assertions) {
@@ -58,7 +59,7 @@ pub fn upload_bytes(
         .into_iter()
         .map(PyXetUploadInfo::from)
         .collect();
-        PyResult::Ok(out)
+        Ok(out)
     })
 }
 
@@ -89,7 +90,7 @@ pub fn upload_files(
         .into_iter()
         .map(PyXetUploadInfo::from)
         .collect();
-        PyResult::Ok(out)
+        Ok(out)
     })
 }
 
@@ -113,7 +114,7 @@ pub fn download_files(
                 .await
                 .map_err(convert_data_processing_error)?;
 
-        PyResult::Ok(out)
+        Ok(out)
     })
 }
 
@@ -124,6 +125,11 @@ fn try_parse_progress_updaters(funcs: Vec<Py<PyAny>>) -> PyResult<Vec<Arc<dyn Tr
         updaters.push(wrapped as Arc<dyn TrackingProgressUpdater>);
     }
     Ok(updaters)
+}
+
+fn try_parse_progress_updater(func: Py<PyAny>) -> PyResult<Arc<dyn TrackingProgressUpdater>> {
+    let wrapped = Arc::new(WrappedProgressUpdater::new(func)?);
+    Ok(wrapped as Arc<dyn TrackingProgressUpdater>)
 }
 
 // TODO: we won't need to subclass this in the next major version update.
