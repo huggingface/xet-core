@@ -36,4 +36,7 @@ utils::configurable_constants! {
     /// The maximum block size from a file to process at once.
     ref INGESTION_BLOCK_SIZE : usize = 8 * 1024 * 1024;
 
+    /// How often to send updates on file progress, in milliseconds
+    ref PROGRESS_UPDATE_INTERVAL_MS : u64 = 500;
+
 }

@@ -5,6 +5,7 @@ edition = "2021"
 
 [dependencies]
 merklehash = { path = "../merklehash" }
+utils = { path = "../utils" }
 
 async-trait = { workspace = true }
 more-asserts = { workspace = true }
