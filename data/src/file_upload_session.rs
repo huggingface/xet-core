@@ -19,6 +19,7 @@ use tokio::sync::{Mutex, OwnedSemaphorePermit, Semaphore};
 use tokio::task::JoinSet;
 use tracing::{info_span, instrument, Instrument};
 use ulid::Ulid;
+use utils::constant_declarations::GlobalConfigMode::HighPerformanceOption;
 
 use crate::configurations::*;
 use crate::constants::{MAX_CONCURRENT_UPLOADS, PROGRESS_UPDATE_INTERVAL_MS};
@@ -30,6 +31,13 @@ use crate::shard_interface::SessionShardInterface;
 
 lazy_static::lazy_static! {
      static ref UPLOAD_CONCURRENCY_LIMITER: Arc<Semaphore> = Arc::new(Semaphore::new(*MAX_CONCURRENT_UPLOADS));
+}
+
+utils::configurable_bool_constants! {
+    ref PREUPLOAD_CHECK_XORB_EXISTS = HighPerformanceOption {
+        standard: true,
+        high_performance: false,
+    };
 }
 
 /// Acquire a permit for uploading xorbs and shards to ensure that we don't overwhelm the server
@@ -192,7 +200,8 @@ impl FileUploadSession {
 
     /// Registers a new xorb for upload, returning true if the xorb was added to the upload queue and false
     /// if it was already in the queue and didn't need to be uploaded again.
-    #[instrument(skip_all, name="FileUploadSession::register_new_xorb_for_upload", fields(xorb_len = xorb.num_bytes()))]
+    #[instrument(skip_all, name = "FileUploadSession::register_new_xorb_for_upload", fields(xorb_len = xorb.num_bytes()
+    ))]
     pub(crate) async fn register_new_xorb(
         self: &Arc<Self>,
         xorb: RawXorbData,
@@ -264,10 +273,18 @@ impl FileUploadSession {
             tokio::task::spawn_blocking(move || SerializedCasObject::from_xorb(xorb, compression_scheme)).await??;
 
         let session = self.clone();
-        let upload_permit = acquire_upload_permit().await?;
         let cas_prefix = session.config.data_config.prefix.clone();
         let completion_tracker = self.completion_tracker.clone();
 
+        // Check if the xorb already exists in the CAS.  If it does, we don't need to upload it again.
+        // only check if configured to check
+        if *PREUPLOAD_CHECK_XORB_EXISTS && session.client.exists(&cas_prefix, &xorb_hash).await? {
+            // update tracker and return early
+            session.completion_tracker.register_xorb_upload_completion(xorb_hash).await;
+            return Ok(true);
+        }
+
+        let upload_permit = acquire_upload_permit().await?;
         self.xorb_upload_tasks.lock().await.spawn(
             async move {
                 let n_bytes_transmitted = session
@@ -291,7 +308,7 @@ impl FileUploadSession {
     }
 
     /// Meant to be called by the finalize() method of the SingleFileCleaner
-    #[instrument(skip_all, name="FileUploadSession::register_single_file_clean_completion", fields(num_bytes = file_data.num_bytes(), num_chunks = file_data.num_chunks()))]
+    #[instrument(skip_all, name = "FileUploadSession::register_single_file_clean_completion", fields(num_bytes = file_data.num_bytes(), num_chunks = file_data.num_chunks()))]
     pub(crate) async fn register_single_file_clean_completion(
         self: &Arc<Self>,
         mut file_data: DataAggregator,
@@ -373,7 +390,7 @@ impl FileUploadSession {
     }
 
     /// Finalize everything.
-    #[instrument(skip_all, name="FileUploadSession::finalize", fields(session.id))]
+    #[instrument(skip_all, name = "FileUploadSession::finalize", fields(session.id))]
     async fn finalize_impl(self: Arc<Self>, return_files: bool) -> Result<(DeduplicationMetrics, Vec<MDBFileInfo>)> {
         // Register the remaining xorbs for upload.
         let data_agg = take(&mut *self.current_session_data.lock().await);
