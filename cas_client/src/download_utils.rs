@@ -166,15 +166,15 @@ pub(crate) struct SequentialTermDownload {
 impl SequentialTermDownload {
     pub async fn run(self) -> Result<TermDownloadResult<Vec<u8>>> {
         let TermDownloadResult {
-            payload: data,
+            payload:
+                TermDownloadOutput {
+                    data,
+                    chunk_byte_indices,
+                    chunk_range,
+                },
             duration,
             n_retries_on_403,
         } = self.download.run().await?;
-        let TermDownloadOutput {
-            data,
-            chunk_byte_indices,
-            chunk_range,
-        } = data;
 
         // if the requested range is smaller than the fetched range, trim it down to the right data
         // the requested range cannot be larger than the fetched range.
@@ -190,9 +190,9 @@ impl SequentialTermDownload {
         let data_slice = &data[start_byte_index..end_byte_index];
 
         // extract just the actual range data out of the term download output
-        let skip_bytes: usize = self.skip_bytes.try_into().log_error("incorrect offset into range")?;
-        let take: usize = self.take.try_into().log_error("incorrect take bytes")?;
-        let final_term_data = &data_slice[skip_bytes..skip_bytes + take];
+        let start = self.skip_bytes as usize;
+        let end = start + self.take as usize;
+        let final_term_data = &data_slice[start..end];
 
         Ok(TermDownloadResult {
             payload: final_term_data.to_vec(),
