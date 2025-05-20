@@ -73,6 +73,7 @@ sha2 = { workspace = true }
 [dev-dependencies]
 serial_test = { workspace = true }
 tracing-test = { workspace = true }
+ctor = { workspace = true }
 
 [features]
 strict = []
