@@ -2,8 +2,8 @@ use std::fs::{self, File, Metadata};
 use std::io::{self, BufWriter, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
-use rand::distributions::Alphanumeric;
-use rand::{thread_rng, Rng};
+use rand::distr::Alphanumeric;
+use rand::{rng, Rng};
 
 use crate::create_file;
 use crate::file_metadata::set_file_metadata;
@@ -73,7 +73,7 @@ impl SafeFileCreator {
 
     /// Generates a temporary file path in the same directory as the destination file
     fn temp_file_path(dest_dir: impl AsRef<Path>, file: Option<&str>) -> PathBuf {
-        let mut rng = thread_rng();
+        let mut rng = rng();
         let random_hash: String = (0..10).map(|_| rng.sample(Alphanumeric)).map(char::from).collect();
         let temp_file_name = if let Some(filename) = file {
             format!(".{filename}.{random_hash}.tmp")
