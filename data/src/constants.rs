@@ -37,7 +37,6 @@ utils::configurable_constants! {
     ref INGESTION_BLOCK_SIZE : usize = 8 * 1024 * 1024;
 
     /// How often to send updates on file progress, in milliseconds
-    ref PROGRESS_UPDATE_INTERVAL_MS : u64 = 200;
-
+    ref PROGRESS_UPDATE_INTERVAL_MS : u64 = 500;
 
 }
