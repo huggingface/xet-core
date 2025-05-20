@@ -17,7 +17,7 @@ use progress_tracking::verification_wrapper::ProgressUpdaterVerificationWrapper;
 use progress_tracking::{NoOpProgressUpdater, TrackingProgressUpdater};
 use tokio::sync::{Mutex, OwnedSemaphorePermit, Semaphore};
 use tokio::task::JoinSet;
-use tracing::{info_span, instrument, Instrument};
+use tracing::{debug, info_span, instrument, Instrument};
 use ulid::Ulid;
 use utils::constant_declarations::GlobalConfigMode::HighPerformanceOption;
 
@@ -280,6 +280,7 @@ impl FileUploadSession {
         // only check if configured to check
         if *PREUPLOAD_CHECK_XORB_EXISTS && session.client.exists(&cas_prefix, &xorb_hash).await? {
             // update tracker and return early
+            debug!("Xorb {cas_prefix}/{xorb_hash} already exists in CAS, skipping upload");
             session.completion_tracker.register_xorb_upload_completion(xorb_hash).await;
             return Ok(true);
         }
