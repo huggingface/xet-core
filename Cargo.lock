@@ -2754,6 +2754,7 @@ dependencies = [
  "merklehash",
  "more-asserts",
  "tokio",
+ "utils",
 ]
 
 [[package]]

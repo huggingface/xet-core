@@ -185,6 +185,9 @@ impl TrackingProgressUpdater for ProgressUpdaterVerificationWrapper {
         // Now forward them to the inner updater
         self.inner.register_updates(update).await;
     }
+    async fn flush(&self) {
+        self.inner.flush().await;
+    }
 }
 
 #[cfg(test)]

@@ -154,7 +154,7 @@ fn get_threadpool(py: Python) -> PyResult<Arc<ThreadPool>> {
     init_threadpool(py)
 }
 
-fn convert_multithreading_error(e: MultithreadedRuntimeError) -> PyErr {
+pub fn convert_multithreading_error(e: impl Into<MultithreadedRuntimeError> + std::fmt::Display) -> PyErr {
     PyRuntimeError::new_err(format!("Xet Runtime Error: {e}"))
 }
 
