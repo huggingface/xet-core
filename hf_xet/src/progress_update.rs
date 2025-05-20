@@ -15,7 +15,7 @@ use crate::runtime::convert_multithreading_error;
 /// Python-exposed versions of the per-item and total progress update classes.
 ///
 /// Both `PyTotalProgressUpdate` and `PyItemProgressUpdate` are passed
-/// into a Python callback given to the wrapper class below.  For example: 
+/// into a Python callback given to the wrapper class below.  For example:
 ///
 /// ```python
 /// def update_progress(self, total_update, item_updates):
@@ -35,7 +35,7 @@ use crate::runtime::convert_multithreading_error;
 ///         total = total_update.total_transfer_bytes
 ///     )
 ///
-///     # Update each item: 
+///     # Update each item:
 ///     for item in item_updates:
 ///         name = item.item_name
 ///         if name not in self.item_tasks:
@@ -49,23 +49,22 @@ use crate::runtime::convert_multithreading_error;
 /// ```
 ///
 /// In addition, the other possible bookkeeping values for everything are contained in this
-/// as needed. 
+/// as needed.
 #[pyclass]
 pub struct PyItemProgressUpdate {
-    
-    /// The name of the item, or a tag that is translated later. 
+    /// The name of the item, or a tag that is translated later.
     #[pyo3(get)]
     pub item_name: Py<PyString>,
-    
+
     /// The total bytes contained in this item.   
     #[pyo3(get)]
     pub total_bytes: u64,
-    
-    /// The number of bytes completed so far, either by deduplication or transfer. 
+
+    /// The number of bytes completed so far, either by deduplication or transfer.
     #[pyo3(get)]
     pub bytes_completed: u64,
-    
-    /// The change in bytes completed since the last update. 
+
+    /// The change in bytes completed since the last update.
     #[pyo3(get)]
     pub bytes_completion_increment: u64,
 }
@@ -73,15 +72,15 @@ pub struct PyItemProgressUpdate {
 /// Update class for total updates
 #[pyclass]
 pub struct PyTotalProgressUpdate {
-    /// The total bytes known for processing and possibly uploaded or downloaded. 
+    /// The total bytes known for processing and possibly uploaded or downloaded.
     #[pyo3(get)]
-    pub total_bytes: u64,  
+    pub total_bytes: u64,
 
-    /// How much total_bytes has changed from the last update.. 
+    /// How much total_bytes has changed from the last update..
     #[pyo3(get)]
-    pub total_bytes_increment: u64,  
-    
-    /// How many of the bytes queued for processing have been examined 
+    pub total_bytes_increment: u64,
+
+    /// How many of the bytes queued for processing have been examined
     /// and either deduped or queued for upload or download.  
     #[pyo3(get)]
     pub total_bytes_completed: u64,
@@ -98,7 +97,7 @@ pub struct PyTotalProgressUpdate {
     #[pyo3(get)]
     pub total_transfer_bytes_increment: u64,
 
-    /// The cumulative bytes uploaded or downloaded so far.  Also contained in total_bytes_completed. 
+    /// The cumulative bytes uploaded or downloaded so far.  Also contained in total_bytes_completed.
     #[pyo3(get)]
     pub total_transfer_bytes_completed: u64,
 
