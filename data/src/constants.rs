@@ -39,4 +39,11 @@ utils::configurable_constants! {
     /// How often to send updates on file progress, in milliseconds
     ref PROGRESS_UPDATE_INTERVAL_MS : u64 = 500;
 
+    /// How often do we flush new xorb data to disk on a long running upload session?
+    ref SESSION_XORB_METADATA_FLUSH_INTERVAL_SECS : u64 = 20;
+
+    /// Force a flush of the xorb metadata every this many xorbs, if more are created
+    /// in this time window.
+    ref SESSION_XORB_METADATA_FLUSH_MAX_COUNT : usize = 64;
+
 }

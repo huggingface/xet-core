@@ -236,7 +236,8 @@ impl FileUploadSession {
         // This xorb is in the session upload queue, so other threads can go ahead and dedup against it.
         // No session shard data gets uploaded until all the xorbs have been successfully uploaded, so
         // this is safe.
-        self.shard_interface.add_cas_block(xorb.cas_info.clone()).await?;
+        let xorb_cas_info = Arc::new(xorb.cas_info.clone());
+        self.shard_interface.add_cas_block(xorb_cas_info.clone()).await?;
 
         let mut compression_scheme = *self.compression_scheme.lock().await;
         // if compression scheme is None, we use the first Xorb to determine
@@ -282,6 +283,10 @@ impl FileUploadSession {
 
                 // Record the number of bytes uploaded.
                 session.deduplication_metrics.lock().await.xorb_bytes_uploaded += n_bytes_transmitted as u64;
+
+                // Add this as a completed cas block so that future sessions can resume quickly.
+                session.shard_interface.add_uploaded_cas_block(xorb_cas_info).await?;
+
                 Ok(())
             }
             .instrument(info_span!("FileUploadSession::upload_xorb_task", xorb.hash = xorb_hash.hex())),

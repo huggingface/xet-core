@@ -643,7 +643,7 @@ mod tests {
         )
         .unwrap();
 
-        let new_shard_path = shard_in.write_to_directory(&shard_dir_1).unwrap();
+        let new_shard_path = shard_in.write_to_directory(&shard_dir_1, None).unwrap();
 
         let shard_hash = parse_shard_filename(&new_shard_path).unwrap();
 

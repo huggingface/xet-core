@@ -1,21 +1,27 @@
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 use cas_client::Client;
 use error_printer::ErrorPrinter;
 use mdb_shard::cas_structs::MDBCASInfo;
 use mdb_shard::constants::MDB_SHARD_MIN_TARGET_SIZE;
 use mdb_shard::file_structs::{FileDataSequenceEntry, MDBFileInfo};
-use mdb_shard::session_directory::consolidate_shards_in_directory;
+use mdb_shard::session_directory::{consolidate_shards_in_directory, merge_shards_background};
+use mdb_shard::shard_in_memory::MDBInMemoryShard;
 use mdb_shard::ShardFileManager;
 use merklehash::MerkleHash;
 use tempfile::TempDir;
+use tokio::sync::Mutex;
 use tokio::task::JoinSet;
 use tracing::{debug, info, info_span, Instrument};
 
 use crate::configurations::TranslatorConfig;
-use crate::constants::MDB_SHARD_LOCAL_CACHE_EXPIRATION_SECS;
+use crate::constants::{
+    MDB_SHARD_LOCAL_CACHE_EXPIRATION_SECS, SESSION_XORB_METADATA_FLUSH_INTERVAL_SECS,
+    SESSION_XORB_METADATA_FLUSH_MAX_COUNT,
+};
 use crate::errors::Result;
 use crate::file_upload_session::acquire_upload_permit;
 use crate::repo_salt::RepoSalt;
@@ -29,6 +35,15 @@ pub struct SessionShardInterface {
 
     dry_run: bool,
 
+    // A place to write out shards that can help a future session resume.
+    xorb_metadata_staging_dir: PathBuf,
+
+    // We can remove thes shards on final upload success.
+    staged_shards_to_remove_on_success: Vec<PathBuf>,
+
+    // The last time we flushed xorb metadata to disk, and the current state.
+    xorb_metadata_staging: Mutex<(SystemTime, MDBInMemoryShard)>,
+
     _shard_session_dir: TempDir,
 }
 
@@ -41,23 +56,53 @@ impl SessionShardInterface {
         // Create a temporary session directory where we hold all the shards before upload.
         std::fs::create_dir_all(&config.shard_config.session_directory)?;
         let shard_session_tempdir = TempDir::new_in(&config.shard_config.session_directory)?;
+        let session_dir = shard_session_tempdir.path().to_owned();
 
-        // Create the shard session manager.
-        let session_dir = shard_session_tempdir.path();
-        let session_shard_manager = ShardFileManager::new_in_session_directory(session_dir).await?;
-
-        // Make the cache directory.
+        // Set up the cache dir.
         let cache_dir = &config.shard_config.cache_directory;
         std::fs::create_dir_all(cache_dir)?;
+
+        // Set up the shard session directory.
+        let xorb_metadata_staging_dir = config.shard_config.session_directory.join("xorb_metadata");
+        std::fs::create_dir_all(&xorb_metadata_staging_dir)?;
+
+        // To allow resume from previous session attempts, merge and copy all the valid shards in the xorb metadata
+        // directory into the current session directory. The originals will remain until all the current senssion xorbs
+        // have been uploaded successfully.  (Also, don't do this on a dry run, as it could screw up non-dry runs).
+        let shard_merge_jh = {
+            if !dry_run {
+                Some(merge_shards_background(&xorb_metadata_staging_dir, &session_dir, *MDB_SHARD_MIN_TARGET_SIZE))
+            } else {
+                None
+            }
+        };
+
+        // Load the cache and session shard managers.
         let cache_shard_manager = ShardFileManager::new_in_cache_directory(cache_dir).await?;
+        let session_shard_manager = ShardFileManager::new_in_session_directory(session_dir).await?;
+
+        // Get the new merged shard handles here.
+        let (new_session_shards, obsolete_shards) = {
+            if let Some(jh) = shard_merge_jh {
+                jh.await??
+            } else {
+                (vec![], vec![])
+            }
+        };
+
+        session_shard_manager.register_shards(&new_session_shards).await?;
+        let staged_shards_to_remove_on_success = obsolete_shards.iter().map(|sfi| sfi.path.clone()).collect();
 
         Ok(Self {
             session_shard_manager,
             cache_shard_manager,
-            client,
+            xorb_metadata_staging_dir,
+            staged_shards_to_remove_on_success,
+            xorb_metadata_staging: Mutex::new((SystemTime::now(), MDBInMemoryShard::default())),
             config,
             dry_run,
             _shard_session_dir: shard_session_tempdir,
+            client,
         })
     }
 
@@ -99,9 +144,42 @@ impl SessionShardInterface {
         }
     }
 
-    // Add the cas information to the session shard manager
-    pub async fn add_cas_block(&self, cas_block_contents: MDBCASInfo) -> Result<()> {
-        Ok(self.session_shard_manager.add_cas_block(cas_block_contents).await?)
+    // Add the cas information to the session shard manager and the shard manager for the staged xorbs.
+    pub async fn add_cas_block(&self, cas_block_contents: Arc<MDBCASInfo>) -> Result<()> {
+        self.session_shard_manager.add_cas_block(cas_block_contents).await?;
+
+        Ok(())
+    }
+
+    // Add in uploaded cas information that has been known to be uploaded successfully.
+    pub async fn add_uploaded_cas_block(&self, cas_block_contents: Arc<MDBCASInfo>) -> Result<()> {
+        // Ignore this part of a dry run
+        if self.dry_run {
+            return Ok(());
+        }
+
+        let mut lg = self.xorb_metadata_staging.lock().await;
+        let (ref mut last_flush, ref mut xorb_shard) = *lg;
+
+        xorb_shard.add_cas_block(cas_block_contents)?;
+
+        let time_now = SystemTime::now();
+        let flush_interval = Duration::from_secs(*SESSION_XORB_METADATA_FLUSH_INTERVAL_SECS);
+
+        // Flush if it's time or we've hit enough new shards that we should do the flush
+        if *last_flush + flush_interval < time_now
+            || xorb_shard.num_cas_entries() >= *SESSION_XORB_METADATA_FLUSH_MAX_COUNT
+        {
+            xorb_shard.write_to_directory(
+                &self.xorb_metadata_staging_dir,
+                Some(Duration::from_secs(*MDB_SHARD_LOCAL_CACHE_EXPIRATION_SECS)),
+            )?;
+        }
+
+        *last_flush = time_now + flush_interval;
+        *xorb_shard = MDBInMemoryShard::default();
+
+        Ok(())
     }
 
     // Add the file reconstruction information to the session shard manager
@@ -189,6 +267,13 @@ impl SessionShardInterface {
         // Now, let them all complete in parallel
         while let Some(jh) = shard_uploads.join_next().await {
             jh??;
+        }
+
+        // Now that everything is complete, attempt to remove all the files in the staging
+        // directory that are now correctly uploaded.
+        for obsolete_shard in self.staged_shards_to_remove_on_success.iter() {
+            // This is a best effort; no real harm in keeping these, so ignore errors.
+            let _ = std::fs::remove_file(obsolete_shard);
         }
 
         Ok(shard_bytes_uploaded.load(Ordering::Relaxed))

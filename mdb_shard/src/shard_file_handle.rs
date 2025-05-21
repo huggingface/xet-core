@@ -26,6 +26,8 @@ pub struct MDBShardFile {
     pub last_modified_time: SystemTime,
 }
 
+pub type MDBShardFileVec = Vec<Arc<MDBShardFile>>;
+
 impl Default for MDBShardFile {
     fn default() -> Self {
         Self {
@@ -48,6 +50,10 @@ impl MDBShardFile {
 
         s.verify_shard_integrity_debug_only();
         Ok(s)
+    }
+
+    pub fn copy_into_target_directory(&self, target_directory: impl AsRef<Path>) -> Result<Arc<Self>> {
+        Self::write_out_from_reader(target_directory, &mut self.get_reader()?)
     }
 
     pub fn write_out_from_reader<R: Read>(target_directory: impl AsRef<Path>, reader: &mut R) -> Result<Arc<Self>> {

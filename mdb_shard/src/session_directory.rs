@@ -1,33 +1,58 @@
 use std::collections::HashSet;
 use std::io::{Cursor, Read};
 use std::mem::swap;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::Arc;
 
 use merklehash::MerkleHash;
+use tokio::task::JoinHandle;
 use tracing::debug;
 
 use crate::error::Result;
 use crate::set_operations::shard_set_union;
-use crate::shard_file_handle::MDBShardFile;
+use crate::shard_file_handle::{MDBShardFile, MDBShardFileVec};
 
-// Merge a collection of shards.
-// After calling this, the passed in shards may be invalid -- i.e. may refer to a shard that doesn't exist.
-// All shards are either merged into shards in the result directory or moved to that directory (if not there already).
-//
-// Ordering of staged shards is preserved.
-
-#[allow(clippy::needless_range_loop)] // The alternative is less readable IMO
+/// Merge a collection of shards, deleting the old ones.
+/// After calling this, the passed in shards may be invalid -- i.e. may refer to a shard that doesn't exist.
+/// All shards are either kept as is or merged into shards in the session directory.
+///
+/// Ordering of staged shards is preserved.
 pub fn consolidate_shards_in_directory(
-    session_directory: &Path,
+    session_directory: impl AsRef<Path>,
     target_max_size: u64,
-) -> Result<Vec<Arc<MDBShardFile>>> {
-    let mut shards = MDBShardFile::load_all_valid(session_directory)?;
+) -> Result<MDBShardFileVec> {
+    let session_directory = session_directory.as_ref();
+    // Get the new shards and the shards in the original list to remove.
+    let (new_shards, shards_to_remove) = merge_shards(session_directory, session_directory, target_max_size)?;
+
+    // Now, go through and remove all the shards in the delete list.
+    for sfi in shards_to_remove {
+        std::fs::remove_file(&sfi.path)?;
+    }
+
+    Ok(new_shards)
+}
+
+/// Merge a collection of shards, returning the new ones and the ones that can be deleted.
+///
+/// After calling this, the passed in shards may be invalid -- i.e. may refer to a shard that doesn't exist.
+/// All shards are either merged into shards in the result directory or moved to that directory (if not there already).
+///
+/// Ordering of staged shards is preserved.
+#[allow(clippy::needless_range_loop)] // The alternative is less readable IMO
+pub fn merge_shards(
+    source_directory: impl AsRef<Path>,
+    target_directory: impl AsRef<Path>,
+    target_max_size: u64,
+) -> Result<(MDBShardFileVec, MDBShardFileVec)> {
+    let mut shards: Vec<_> = MDBShardFile::load_all_valid(source_directory.as_ref())?;
 
     shards.sort_unstable_by_key(|si| si.last_modified_time);
 
     // Make not mutable
     let shards = shards;
+
+    let copy_preserved_source_shards = source_directory.as_ref() != target_directory.as_ref();
 
     let mut finished_shards = Vec::<Arc<MDBShardFile>>::with_capacity(shards.len());
     let mut finished_shard_hashes = HashSet::<MerkleHash>::with_capacity(shards.len());
@@ -35,6 +60,8 @@ pub fn consolidate_shards_in_directory(
     let mut cur_data = Vec::<u8>::with_capacity(target_max_size as usize);
     let mut alt_data = Vec::<u8>::with_capacity(target_max_size as usize);
     let mut out_data = Vec::<u8>::with_capacity(target_max_size as usize);
+
+    let mut shards_to_remove: Vec<Arc<MDBShardFile>> = Vec::with_capacity(shards.len());
 
     let mut cur_idx = 0;
 
@@ -46,9 +73,6 @@ pub fn consolidate_shards_in_directory(
             let mut ub_idx = cur_idx + 1;
             let mut current_size = cur_sfi.shard.num_bytes();
 
-            // Do we have to remove any shards along the way?
-            let mut shards_to_remove = Vec::<(MerkleHash, PathBuf)>::new();
-
             for idx in (cur_idx + 1).. {
                 if idx == shards.len() || shards[idx].shard.num_bytes() + current_size >= target_max_size {
                     ub_idx = idx;
@@ -59,9 +83,13 @@ pub fn consolidate_shards_in_directory(
 
             if ub_idx == cur_idx + 1 {
                 // We can't consolidate any here.
-
                 finished_shard_hashes.insert(cur_sfi.shard_hash);
                 finished_shards.push(cur_sfi.clone());
+
+                if copy_preserved_source_shards {
+                    cur_sfi.copy_into_target_directory(&target_directory)?;
+                    shards_to_remove.push(cur_sfi.clone());
+                }
             } else {
                 // We have one or more shards to merge, so do this all in memory.
 
@@ -94,7 +122,7 @@ pub fn consolidate_shards_in_directory(
                 }
 
                 // Write out the shard.
-                let new_sfi = { MDBShardFile::write_out_from_reader(session_directory, &mut Cursor::new(&cur_data))? };
+                let new_sfi = { MDBShardFile::write_out_from_reader(&target_directory, &mut Cursor::new(&cur_data))? };
 
                 debug!(
                     "Created merged shard {:?} from shards {:?}",
@@ -105,31 +133,33 @@ pub fn consolidate_shards_in_directory(
                 finished_shard_hashes.insert(new_sfi.shard_hash);
                 finished_shards.push(new_sfi);
 
-                // Delete the old ones.
                 for sfi in shards[cur_idx..ub_idx].iter() {
-                    shards_to_remove.push((sfi.shard_hash, sfi.path.to_path_buf()));
+                    shards_to_remove.push(sfi.clone());
                 }
-            }
-
-            for (shard_hash, path) in shards_to_remove.iter() {
-                if finished_shard_hashes.contains(shard_hash) {
-                    // In rare cases, there could be empty shards or shards with
-                    // duplicate entries and we don't want to delete any shards
-                    // we've already finished
-                    continue;
-                }
-                debug!(
-                    "consolidate_shards: Removing {:?}; info merged to {:?}",
-                    &path,
-                    &finished_shards.last().unwrap().shard_hash
-                );
-
-                std::fs::remove_file(path)?;
             }
 
             cur_idx = ub_idx;
         }
     }
 
-    Ok(finished_shards)
+    if !copy_preserved_source_shards {
+        // In rare cases, there could be empty shards or shards with
+        // duplicate entries and we don't want to delete any shards
+        // we've already finished
+        shards_to_remove.retain(|sfi| !finished_shard_hashes.contains(&sfi.shard_hash));
+    }
+
+    Ok((finished_shards, shards_to_remove))
+}
+
+/// Same as above, but performs it in the background and on a io focused thread.
+pub fn merge_shards_background(
+    source_directory: impl AsRef<Path>,
+    target_directory: impl AsRef<Path>,
+    target_max_size: u64,
+) -> JoinHandle<Result<(MDBShardFileVec, MDBShardFileVec)>> {
+    let source_directory = source_directory.as_ref().to_owned();
+    let target_directory = target_directory.as_ref().to_owned();
+
+    tokio::task::spawn_blocking(move || merge_shards(source_directory, target_directory, target_max_size))
 }
