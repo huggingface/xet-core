@@ -38,10 +38,10 @@ pub struct SessionShardInterface {
     // A place to write out shards that can help a future session resume.
     xorb_metadata_staging_dir: PathBuf,
 
-    // We can remove thes shards on final upload success.
+    // We can remove these shards on final upload success.
     staged_shards_to_remove_on_success: Vec<PathBuf>,
 
-    // The last time we flushed xorb metadata to disk, and the current state.
+    // The last time we flushed xorb metadata to disk and the current state of xorb metadata.
     xorb_metadata_staging: Mutex<(SystemTime, MDBInMemoryShard)>,
 
     _shard_session_dir: TempDir,
