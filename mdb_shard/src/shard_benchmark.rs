@@ -62,7 +62,7 @@ async fn run_shard_benchmark(
     for (n_shards, target_size) in shard_sizes {
         for i in 0..n_shards {
             let shard = make_shard(target_size, &mut seed);
-            let path = shard.write_to_directory(dir)?;
+            let path = shard.write_to_directory(dir, None)?;
 
             eprintln!(
                 "-> Target size {target_size:?}: Created shard {:?} / {n_shards:?} with {} CAS blocks and {} chunks",

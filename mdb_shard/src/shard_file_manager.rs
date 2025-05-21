@@ -394,7 +394,7 @@ impl ShardFileManager {
     }
 
     /// Add CAS info to the in-memory state.
-    pub async fn add_cas_block(&self, cas_block_contents: MDBCASInfo) -> Result<()> {
+    pub async fn add_cas_block(&self, cas_block_contents: impl Into<Arc<MDBCASInfo>>) -> Result<()> {
         let mut lg = self.current_state.write().await;
 
         lg.add_cas_block(cas_block_contents)?;
@@ -439,7 +439,7 @@ impl ShardFileManager {
                 return Ok(None);
             }
 
-            new_shard_path = lg.write_to_directory(&self.shard_directory)?;
+            new_shard_path = lg.write_to_directory(&self.shard_directory, None)?;
             *lg = MDBInMemoryShard::default();
 
             info!("Shard manager flushed new shard to {new_shard_path:?}.");
@@ -501,7 +501,7 @@ mod tests {
     use crate::cas_structs::{CASChunkSequenceEntry, CASChunkSequenceHeader};
     use crate::error::Result;
     use crate::file_structs::FileDataSequenceHeader;
-    use crate::session_directory::consolidate_shards_in_directory;
+    use crate::session_directory::{consolidate_shards_in_directory, merge_shards};
     use crate::shard_format::test_routines::{gen_random_file_info, rng_hash, simple_hash};
 
     #[allow(clippy::type_complexity)]
@@ -856,13 +856,35 @@ mod tests {
 
         // Merge through the session directory.
         {
-            let rv = consolidate_shards_in_directory(tmp_dir.path(), 8 * T)?;
+            let tmp_merge_dir = TempDir::new()?;
+
+            let (mut merged_shards, m_del_shards) = merge_shards(tmp_dir.path(), tmp_merge_dir.path(), 8 * T)?;
+
+            for sfi in merged_shards.iter() {
+                sfi.verify_shard_integrity();
+            }
 
             let paths = std::fs::read_dir(tmp_dir.path()).unwrap();
-            assert_eq!(paths.count(), rv.len());
+            assert_eq!(paths.count(), m_del_shards.len());
 
-            for sfi in rv {
+            // This call should be the same, but
+            let mut rv = consolidate_shards_in_directory(tmp_dir.path(), 8 * T)?;
+
+            let paths = std::fs::read_dir(tmp_dir.path()).unwrap();
+            let n_paths = paths.count();
+            assert_eq!(n_paths, rv.len());
+            assert_eq!(n_paths, merged_shards.len());
+
+            for sfi in rv.iter() {
                 sfi.verify_shard_integrity();
+            }
+
+            // Now, make sure they have the same hashes in the two calls
+            merged_shards.sort_by_key(|v| v.shard_hash);
+            rv.sort_by_key(|v| v.shard_hash);
+
+            for (ms, rs) in merged_shards.iter().zip(rv.iter()) {
+                assert_eq!(ms.shard_hash, rs.shard_hash);
             }
         }
 
