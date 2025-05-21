@@ -3,7 +3,6 @@ mod disk;
 pub mod error;
 
 use std::path::PathBuf;
-use std::sync::Arc;
 
 use async_trait::async_trait;
 pub use cache_manager::get_cache;
@@ -25,10 +24,10 @@ utils::configurable_constants! {
 /// [0, 2000, 4000, 6000] where chunk 2 is made of bytes [0, 2000)
 /// chunk 3 [2000, 4000) and chunk 4 is [4000, 6000).
 /// It is guaranteed that the first number in offsets is 0 and the last number is data.len()
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct CacheRange {
-    pub offsets: Arc<[u32]>,
-    pub data: Arc<[u8]>,
+    pub offsets: Vec<u32>,
+    pub data: Vec<u8>,
     pub range: ChunkRange,
 }
 

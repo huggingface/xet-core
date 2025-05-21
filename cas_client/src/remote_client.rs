@@ -1,15 +1,15 @@
+use std::collections::HashMap;
 use std::io::Write;
 use std::mem::take;
 use std::path::PathBuf;
-use std::result::Result as stdResult;
 use std::sync::Arc;
 
 use anyhow::anyhow;
 use async_trait::async_trait;
 use cas_object::SerializedCasObject;
 use cas_types::{
-    BatchQueryReconstructionResponse, FileRange, HttpRange, Key, QueryReconstructionResponse, UploadShardResponse,
-    UploadShardResponseType, UploadXorbResponse,
+    BatchQueryReconstructionResponse, CASReconstructionTerm, ChunkRange, FileRange, HttpRange, Key,
+    QueryReconstructionResponse, UploadShardResponse, UploadShardResponseType, UploadXorbResponse,
 };
 use chunk_cache::{CacheConfig, ChunkCache};
 use error_printer::ErrorPrinter;
@@ -25,7 +25,7 @@ use progress_tracking::upload_tracking::CompletionTracker;
 use reqwest::{Body, StatusCode, Url};
 use reqwest_middleware::ClientWithMiddleware;
 use tokio::sync::{mpsc, OwnedSemaphorePermit};
-use tokio::task::{JoinError, JoinHandle, JoinSet};
+use tokio::task::{JoinHandle, JoinSet};
 use tracing::{debug, info, instrument};
 use utils::auth::AuthConfig;
 use utils::singleflight::Group;
@@ -125,8 +125,9 @@ impl RemoteClient {
 
 #[async_trait]
 impl UploadClient for RemoteClient {
-    #[instrument(skip_all, name="RemoteClient::upload_xorb", fields(key = Key{prefix : prefix.to_string(), hash : serialized_cas_object.hash}.to_string(), 
-                 xorb.len = serialized_cas_object.serialized_data.len(), xorb.num_chunks = serialized_cas_object.num_chunks))]
+    #[instrument(skip_all, name = "RemoteClient::upload_xorb", fields(key = Key{prefix : prefix.to_string(), hash : serialized_cas_object.hash}.to_string(),
+                 xorb.len = serialized_cas_object.serialized_data.len(), xorb.num_chunks = serialized_cas_object.num_chunks
+    ))]
     async fn upload_xorb(
         &self,
         prefix: &str,
@@ -339,7 +340,8 @@ impl RemoteClient {
     // at the beginning of the download, but queried in segments. Range downloads are executed with
     // a certain degree of parallelism, but writing out to storage is sequential. Ideal when the external
     // storage uses HDDs.
-    #[instrument(skip_all, name="RemoteClient::reconstruct_file_segmented", fields(file.hash = file_hash.hex()))]
+    #[instrument(skip_all, name = "RemoteClient::reconstruct_file_segmented", fields(file.hash = file_hash.hex()
+    ))]
     async fn reconstruct_file_to_writer_segmented(
         &self,
         file_hash: &MerkleHash,
@@ -348,7 +350,7 @@ impl RemoteClient {
         progress_updater: Option<Arc<SingleItemProgressUpdater>>,
     ) -> Result<u64> {
         // queue size is inherently bounded by degree of concurrency.
-        let (task_tx, mut task_rx) = mpsc::unbounded_channel::<DownloadQueueItem<TermDownload>>();
+        let (task_tx, mut task_rx) = mpsc::unbounded_channel::<DownloadQueueItem<SequentialTermDownload>>();
         let (running_downloads_tx, mut running_downloads_rx) =
             mpsc::unbounded_channel::<JoinHandle<Result<(TermDownloadResult<Vec<u8>>, OwnedSemaphorePermit)>>>();
 
@@ -387,7 +389,7 @@ impl RemoteClient {
                         drop(running_downloads_tx);
                         break;
                     },
-                    DownloadQueueItem::Term(term_download) => {
+                    DownloadQueueItem::DownloadTask(term_download) => {
                         // acquire the permit before spawning the task, so that there's limited
                         // number of active downloads.
                         let permit = download_scheduler_clone.download_permit().await?;
@@ -420,21 +422,26 @@ impl RemoteClient {
                             let take = remaining_total_len
                                 .min(remaining_segment_len)
                                 .min(term.unpacked_length as u64 - skip_bytes);
+                            let (individual_fetch_info, _) = segment.find((term.hash, term.range)).await?;
 
-                            let download_task = TermDownload {
+                            let download_task = SequentialTermDownload {
+                                download: FetchTermDownload {
+                                    hash: term.hash.into(),
+                                    range: individual_fetch_info.range,
+                                    fetch_info: segment.clone(),
+                                    chunk_cache: chunk_cache.clone(),
+                                    client: term_download_client.clone(),
+                                    range_download_single_flight: range_download_single_flight.clone(),
+                                },
                                 term,
                                 skip_bytes,
                                 take,
-                                fetch_info: segment.clone(),
-                                chunk_cache: chunk_cache.clone(),
-                                client: term_download_client.clone(),
-                                range_download_single_flight: range_download_single_flight.clone(),
                             };
 
                             remaining_total_len -= take;
                             remaining_segment_len -= take;
                             debug!("enqueueing {download_task:?}");
-                            task_tx.send(DownloadQueueItem::Term(download_task))?;
+                            task_tx.send(DownloadQueueItem::DownloadTask(download_task))?;
                         }
 
                         // enqueue the remainder of file info fetch task
@@ -455,7 +462,7 @@ impl RemoteClient {
         while let Some(result) = running_downloads_rx.recv().await {
             match result.await {
                 Ok(Ok((mut download_result, permit))) => {
-                    let data = take(&mut download_result.data);
+                    let data = take(&mut download_result.payload);
                     writer.write_all(&data)?;
                     // drop permit after data written out so they don't accumulate in memory unbounded
                     drop(permit);
@@ -484,7 +491,8 @@ impl RemoteClient {
     // at the beginning of the download, but queried in segments. Range downloads are executed with
     // a certain degree of parallelism, and so does writing out to storage. Ideal when the external
     // storage is fast at seeks, e.g. RAM or SSDs.
-    #[instrument(skip_all, name="RemoteClient::reconstruct_file_segmented_parallel", fields(file.hash = file_hash.hex()))]
+    #[instrument(skip_all, name = "RemoteClient::reconstruct_file_segmented_parallel", fields(file.hash = file_hash.hex()
+    ))]
     async fn reconstruct_file_to_writer_segmented_parallel_write(
         &self,
         file_hash: &MerkleHash,
@@ -493,14 +501,15 @@ impl RemoteClient {
         progress_updater: Option<Arc<SingleItemProgressUpdater>>,
     ) -> Result<u64> {
         // queue size is inherently bounded by degree of concurrency.
-        let (task_tx, mut task_rx) = mpsc::unbounded_channel::<DownloadQueueItem<TermDownloadAndWrite>>();
-        let mut running_downloads = JoinSet::<Result<TermDownloadResult<usize>>>::new();
+        let (task_tx, mut task_rx) =
+            mpsc::unbounded_channel::<DownloadQueueItem<FetchTermDownloadOnceAndWriteEverywhereUsed>>();
+        let mut running_downloads = JoinSet::<Result<TermDownloadResult<u64>>>::new();
 
         // derive the actual range to reconstruct
         let file_reconstruct_range = byte_range.unwrap_or_else(FileRange::full);
-        let total_len = file_reconstruct_range.length();
+        let base_write_negative_offset = file_reconstruct_range.start;
 
-        // kick start the download by enqueue the fetch info task.
+        // kick-start the download by enqueue the fetch info task.
         task_tx.send(DownloadQueueItem::Metadata(FetchInfo::new(
             *file_hash,
             file_reconstruct_range,
@@ -518,31 +527,23 @@ impl RemoteClient {
         let term_download_client = self.http_client.clone();
         let download_scheduler = DownloadScheduler::new(*NUM_CONCURRENT_RANGE_GETS);
 
-        let process_result =
-            move |result: stdResult<stdResult<TermDownloadResult<usize>, CasClientError>, JoinError>,
-                  total_written: &mut u64,
-                  download_scheduler: &DownloadScheduler|
-                  -> Result<u64> {
-                match result {
-                    Ok(Ok(download_result)) => {
-                        let write_len = download_result.data as u64;
-                        *total_written += write_len;
+        let process_result = move |result: TermDownloadResult<u64>,
+                                   total_written: &mut u64,
+                                   download_scheduler: &DownloadScheduler|
+              -> Result<u64> {
+            let write_len = result.payload;
+            *total_written += write_len;
 
-                        // Now inspect the download metrics and tune the download degree of concurrency
-                        download_scheduler.tune_on(download_result)?;
-                        Ok(write_len)
-                    },
-                    Ok(Err(e)) => Err(e)?,
-                    Err(e) => Err(anyhow!("{e:?}"))?,
-                }
-            };
+            // Now inspect the download metrics and tune the download degree of concurrency
+            download_scheduler.tune_on(result)?;
+            Ok(write_len)
+        };
 
         let mut total_written = 0;
-        let mut remaining_total_len = total_len;
         while let Some(item) = task_rx.recv().await {
             // first try to join some tasks
             while let Some(result) = running_downloads.try_join_next() {
-                let write_len = process_result(result, &mut total_written, &download_scheduler)?;
+                let write_len = process_result(result??, &mut total_written, &download_scheduler)?;
                 if let Some(updater) = progress_updater.as_ref() {
                     updater.update(write_len).await;
                 }
@@ -551,10 +552,10 @@ impl RemoteClient {
             match item {
                 DownloadQueueItem::End => {
                     // everything processed
-                    debug!("download queue emptyed");
+                    debug!("download queue emptied");
                     break;
                 },
-                DownloadQueueItem::Term(term_download) => {
+                DownloadQueueItem::DownloadTask(term_download) => {
                     // acquire the permit before spawning the task, so that there's limited
                     // number of active downloads.
                     let permit = download_scheduler.download_permit().await?;
@@ -578,33 +579,23 @@ impl RemoteClient {
                     };
 
                     let segment = Arc::new(segment);
+
                     // define the term download tasks
-                    let mut remaining_segment_len = segment_size;
-                    debug!("enqueueing {} download tasks", terms.len());
-                    for (i, term) in terms.into_iter().enumerate() {
-                        let skip_bytes = if i == 0 { offset_into_first_range } else { 0 };
-                        let take = remaining_total_len
-                            .min(remaining_segment_len)
-                            .min(term.unpacked_length as u64 - skip_bytes);
+                    let tasks = map_fetch_info_into_download_tasks(
+                        segment.clone(),
+                        terms,
+                        offset_into_first_range,
+                        base_write_negative_offset,
+                        self.chunk_cache.clone(),
+                        term_download_client.clone(),
+                        self.range_download_single_flight.clone(),
+                        writer,
+                    )
+                    .await?;
 
-                        let download_and_write_task = TermDownloadAndWrite {
-                            download: TermDownload {
-                                term,
-                                skip_bytes,
-                                take,
-                                fetch_info: segment.clone(),
-                                chunk_cache: self.chunk_cache.clone(),
-                                client: term_download_client.clone(),
-                                range_download_single_flight: self.range_download_single_flight.clone(),
-                            },
-                            write_offset: total_len - remaining_total_len,
-                            output: writer.clone(),
-                        };
-
-                        remaining_total_len -= take;
-                        remaining_segment_len -= take;
-                        debug!("enqueueing {download_and_write_task:?}");
-                        task_tx.send(DownloadQueueItem::Term(download_and_write_task))?;
+                    debug!("enqueueing {} download tasks", tasks.len());
+                    for task_def in tasks {
+                        task_tx.send(DownloadQueueItem::DownloadTask(task_def))?;
                     }
 
                     // enqueue the remainder of file info fetch task
@@ -618,7 +609,7 @@ impl RemoteClient {
         }
 
         while let Some(result) = running_downloads.join_next().await {
-            let write_len = process_result(result, &mut total_written, &download_scheduler)?;
+            let write_len = process_result(result??, &mut total_written, &download_scheduler)?;
             if let Some(updater) = progress_updater.as_ref() {
                 updater.update(write_len).await;
             }
@@ -628,9 +619,76 @@ impl RemoteClient {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
+async fn map_fetch_info_into_download_tasks(
+    segment: Arc<FetchInfo>,
+    terms: Vec<CASReconstructionTerm>,
+    offset_into_first_range: u64,
+    base_write_negative_offset: u64,
+    chunk_cache: Option<Arc<dyn ChunkCache>>,
+    client: Arc<ClientWithMiddleware>,
+    range_download_single_flight: Arc<Group<DownloadRangeResult, CasClientError>>,
+    output_provider: &OutputProvider,
+) -> Result<Vec<FetchTermDownloadOnceAndWriteEverywhereUsed>> {
+    // the actual segment length.
+    // the file_range end may actually exceed the file total length for the last segment.
+    // in that case, the maximum length of this segment will be the total of all terms given
+    //  minus the start offset
+    let seg_len = segment
+        .file_range
+        .length()
+        .min(terms.iter().fold(0, |acc, term| acc + term.unpacked_length as u64) - offset_into_first_range);
+
+    let initial_writer_offset = segment.file_range.start - base_write_negative_offset;
+    let mut total_taken = 0;
+
+    let mut fetch_info_term_map: HashMap<(MerkleHash, ChunkRange), FetchTermDownloadOnceAndWriteEverywhereUsed> =
+        HashMap::new();
+    for (i, term) in terms.into_iter().enumerate() {
+        let (individual_fetch_info, _) = segment.find((term.hash, term.range)).await?;
+
+        let skip_bytes = if i == 0 { offset_into_first_range } else { 0 };
+        // amount to take is min of the whole term after skipped bytes or the remainder of the segment
+        let take = (term.unpacked_length as u64 - skip_bytes).min(seg_len - total_taken);
+        let write_term = ChunkRangeWrite {
+            // term details
+            chunk_range: term.range,
+            unpacked_length: term.unpacked_length,
+
+            // write details
+            skip_bytes,
+            take,
+            writer_offset: initial_writer_offset + total_taken,
+        };
+
+        let task = fetch_info_term_map
+            .entry((term.hash.into(), individual_fetch_info.range))
+            .or_insert_with(|| FetchTermDownloadOnceAndWriteEverywhereUsed {
+                download: FetchTermDownload {
+                    hash: term.hash.into(),
+                    range: individual_fetch_info.range,
+                    fetch_info: segment.clone(),
+                    chunk_cache: chunk_cache.clone(),
+                    client: client.clone(),
+                    range_download_single_flight: range_download_single_flight.clone(),
+                },
+                writes: vec![],
+                output: output_provider.clone(),
+            });
+        task.writes.push(write_term);
+
+        total_taken += take;
+    }
+
+    let tasks = fetch_info_term_map.into_values().collect();
+
+    Ok(tasks)
+}
+
 #[async_trait]
 impl RegistrationClient for RemoteClient {
-    #[instrument(skip_all, name="RemoteClient::upload_shard", fields(shard.hash = hash.hex(), shard.len = shard_data.len()))]
+    #[instrument(skip_all, name = "RemoteClient::upload_shard", fields(shard.hash = hash.hex(), shard.len = shard_data.len()
+    ))]
     async fn upload_shard(
         &self,
         prefix: &str,
@@ -676,7 +734,8 @@ impl RegistrationClient for RemoteClient {
 
 #[async_trait]
 impl FileReconstructor<CasClientError> for RemoteClient {
-    #[instrument(skip_all, name="RemoteClient::get_file_reconstruction", fields(file.hash = file_hash.hex()))]
+    #[instrument(skip_all, name = "RemoteClient::get_file_reconstruction", fields(file.hash = file_hash.hex()
+    ))]
     async fn get_file_reconstruction_info(
         &self,
         file_hash: &MerkleHash,
@@ -1204,7 +1263,11 @@ mod tests {
         assert_eq!(test.expect_error, resp.is_err());
         if !test.expect_error {
             assert_eq!(test.expected_data.len() as u64, resp.unwrap());
-            assert_eq!(test.expected_data, buf.value());
+            let value = buf.value();
+            assert_eq!(&test.expected_data[..100], &value[..100]);
+            let idx = test.expected_data.len() - 100;
+            assert_eq!(&test.expected_data[idx..], &value[idx..]);
+            assert_eq!(test.expected_data, value);
         }
 
         Ok(())

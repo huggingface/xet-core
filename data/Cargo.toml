@@ -18,12 +18,12 @@ path = "src/bin/xtool.rs"
 cas_client = { path = "../cas_client" }
 cas_object = { path = "../cas_object" }
 cas_types = { path = "../cas_types" }
-deduplication = { path = "../deduplication" }
-error_printer = { path = "../error_printer" }
-mdb_shard = { path = "../mdb_shard" }
 merkledb = { path = "../merkledb" }
 merklehash = { path = "../merklehash" }
+mdb_shard = { path = "../mdb_shard" }
 parutils = { path = "../parutils" }
+error_printer = { path = "../error_printer" }
+deduplication = { path = "../deduplication" }
 progress_tracking = { path = "../progress_tracking" }
 utils = { path = "../utils" }
 xet_threadpool = { path = "../xet_threadpool" }
@@ -31,7 +31,6 @@ xet_threadpool = { path = "../xet_threadpool" }
 anyhow = { workspace = true }
 async-trait = { workspace = true }
 chrono = { workspace = true }
-ctor = { workspace = true }
 clap = { workspace = true }
 dirs = { workspace = true }
 jsonwebtoken = { workspace = true }
@@ -74,6 +73,7 @@ sha2 = { workspace = true }
 [dev-dependencies]
 serial_test = { workspace = true }
 tracing-test = { workspace = true }
+ctor = { workspace = true }
 
 [features]
 strict = []

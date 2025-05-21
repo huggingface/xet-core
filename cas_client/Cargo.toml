@@ -24,6 +24,7 @@ xet_threadpool = { path = "../xet_threadpool" }
 anyhow = { workspace = true }
 async-trait = { workspace = true }
 bytes = { workspace = true }
+derivative = { workspace = true }
 futures = { workspace = true }
 heed = { workspace = true }
 http = { workspace = true }
