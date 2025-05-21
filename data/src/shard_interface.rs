@@ -159,7 +159,7 @@ impl SessionShardInterface {
         }
 
         let mut lg = self.xorb_metadata_staging.lock().await;
-        let (ref mut last_flush, ref mut xorb_shard) = *lg;
+        let (last_flush, xorb_shard) = &mut *lg;
 
         xorb_shard.add_cas_block(cas_block_contents)?;
 
@@ -174,10 +174,10 @@ impl SessionShardInterface {
                 &self.xorb_metadata_staging_dir,
                 Some(Duration::from_secs(*MDB_SHARD_LOCAL_CACHE_EXPIRATION_SECS)),
             )?;
-        }
 
-        *last_flush = time_now + flush_interval;
-        *xorb_shard = MDBInMemoryShard::default();
+            *last_flush = time_now + flush_interval;
+            *xorb_shard = MDBInMemoryShard::default();
+        }
 
         Ok(())
     }
