@@ -1,93 +1,134 @@
 use std::pin::Pin;
-use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::task::{Context, Poll};
 
 use bytes::Bytes;
 use futures::Stream;
 use more_asserts::*;
+use tokio::time::Instant;
+use utils::configurable_constants;
 
-struct ProgressCallbackWrapper<F>
-where
-    F: Fn(u64) + Send + Unpin + 'static,
-{
-    progress_callback: F,
-    bytes_sent_already_reported: AtomicUsize,
+configurable_constants! {
+    /// The min and max block sizes to send for the upload.  This is set dynamically
+    /// to maximize bandwidth in large blocks while still having accurate reporting.
+    ref UPLOAD_STREAM_MIN_BLOCK_SIZE : u64 = 512 * 1024;
+    ref UPLOAD_STREAM_MAX_BLOCK_SIZE : u64 = 16 * 1024 * 1024;
+
+    // Send a block that targets taking this long to send.  We want to maximize throughput on
+    // fast connections, which means a bigger block size, while still allowing for fast
+    // reporting on slow connections.
+    ref UPLOAD_STREAM_ROUND_TRIP_TARGET_MS: u64 = 250;
 }
 
-impl<F> ProgressCallbackWrapper<F>
+struct ProgressCallbackWrapper<UpdateFunction>
 where
-    F: Fn(u64) + Send + Unpin + 'static,
+    UpdateFunction: Fn(u64) + Send + Unpin + 'static,
 {
-    fn update(&self, new_completed: usize) {
+    progress_callback: UpdateFunction,
+    bytes_sent_already_reported: AtomicU64,
+}
+
+impl<UpdateFunction> ProgressCallbackWrapper<UpdateFunction>
+where
+    UpdateFunction: Fn(u64) + Send + Sync + Unpin + 'static,
+{
+    fn update(&self, new_completed: u64) {
         // We strictly increment here; that way, if there's been a clone and a restart of the stream, we only
         // report new bytes sent as progress.
-        let old_completed = self
-            .bytes_sent_already_reported
-            .fetch_max(new_completed, std::sync::atomic::Ordering::Relaxed);
+        let old_completed = self.bytes_sent_already_reported.fetch_max(new_completed, Ordering::Relaxed);
 
         if old_completed < new_completed {
-            (self.progress_callback)((new_completed - old_completed) as u64)
+            (self.progress_callback)((new_completed - old_completed) as u64);
         }
     }
 }
 
-pub struct UploadProgressStream<F>
+pub struct UploadProgressStream<UpdateFunction>
 where
-    F: Fn(u64) + Send + Unpin + 'static,
+    UpdateFunction: Fn(u64) + Send + Sync + Unpin + 'static,
 {
     data: Bytes,
-    progress_callback: Arc<ProgressCallbackWrapper<F>>,
-    block_size: usize,
+    progress_callback_wrapper: Arc<ProgressCallbackWrapper<UpdateFunction>>,
 
     /// Number of bytes that have been sent already
-    bytes_sent: usize,
+    bytes_sent: u64,
+
+    /// The start time for the stream.  This is used to set the next block size dynamically.
+    start_time: tokio::time::Instant,
+
+    /// If there is a fixed block size set, use this.
+    fixed_block_size: Option<u64>,
 }
 
-impl<F> Stream for UploadProgressStream<F>
+impl<UpdateFunction> Stream for UploadProgressStream<UpdateFunction>
 where
-    F: Fn(u64) + Send + Unpin + 'static,
+    UpdateFunction: Fn(u64) + Send + Sync + Unpin + 'static,
 {
     type Item = std::result::Result<Bytes, std::io::Error>;
 
     // Send the next block of data; also update the
     fn poll_next(mut self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        debug_assert_le!(self.bytes_sent, self.data.len());
+        debug_assert_le!(self.bytes_sent, self.data.len() as u64);
 
-        if self.bytes_sent == self.data.len() {
+        if self.bytes_sent == self.data.len() as u64 {
             return Poll::Ready(None);
         }
 
-        // First, see if we need to send off a progress report -- we assume that when this method is called,
-        // the previous data has
-        // successfully completed uploading.
+        // Set the block size dynamically.
+        let block_size = {
+            // Prefer the fixed block size if given (for testing).
+            if let Some(block_size) = self.fixed_block_size {
+                block_size
+            } else {
+                // Set dynamically, keeping it between bounds.
+                {
+                    if self.bytes_sent == 0 {
+                        *UPLOAD_STREAM_MIN_BLOCK_SIZE
+                    } else {
+                        // Adjust the block size so that the next
+                        let rt_time = self.start_time.elapsed().as_millis() as u64;
+                        let current_bytes_per_ms = self.bytes_sent / rt_time.max(1);
 
-        if self.bytes_sent != 0 {
-            self.progress_callback.update(self.bytes_sent);
-        }
+                        // Set block size so that the next block should take around UPLOAD_STREAM_ROUND_TRIP_TARGET_MS
+                        // before we get called again.
+                        current_bytes_per_ms.saturating_mul(*UPLOAD_STREAM_ROUND_TRIP_TARGET_MS)
+                    }
+                }
+                .clamp(*UPLOAD_STREAM_MIN_BLOCK_SIZE, *UPLOAD_STREAM_MAX_BLOCK_SIZE)
+            }
+        };
 
-        let slice_start = self.bytes_sent;
-        let slice_end = (self.bytes_sent + self.block_size).min(self.data.len());
+        let slice_start = self.bytes_sent as u64;
+        let slice_end = (self.bytes_sent + block_size).min(self.data.len() as u64);
+
+        // Report the previous progress before updating this value.
+        self.progress_callback_wrapper.update(self.bytes_sent);
 
         self.bytes_sent = slice_end;
 
-        Poll::Ready(Some(Ok(self.data.slice(slice_start..slice_end))))
+        Poll::Ready(Some(Ok(self.data.slice((slice_start as usize)..(slice_end as usize)))))
     }
 }
 
-impl<F> UploadProgressStream<F>
+impl<UpdateFunction> UploadProgressStream<UpdateFunction>
 where
-    F: Fn(u64) + Send + Unpin + 'static,
+    UpdateFunction: Fn(u64) + Send + Sync + Unpin + 'static,
 {
-    pub fn new(data: impl Into<Bytes>, block_size: usize, progress_callback: F) -> Self {
+    pub fn new(data: impl Into<Bytes>, progress_callback: UpdateFunction, fixed_block_size: Option<u64>) -> Self {
+        let data = data.into();
+
+        let progress_callback_wrapper = Arc::new(ProgressCallbackWrapper {
+            progress_callback,
+            bytes_sent_already_reported: 0.into(),
+        });
+
         Self {
-            data: data.into(),
-            progress_callback: Arc::new(ProgressCallbackWrapper {
-                progress_callback,
-                bytes_sent_already_reported: 0.into(),
-            }),
-            block_size,
             bytes_sent: 0,
+            data,
+            progress_callback_wrapper,
+            start_time: Instant::now(),
+            fixed_block_size,
         }
     }
 
@@ -96,12 +137,13 @@ where
     pub fn clone_with_reset(&self) -> Self {
         Self {
             data: self.data.clone(),
-            block_size: self.block_size,
-            progress_callback: self.progress_callback.clone(),
+            progress_callback_wrapper: self.progress_callback_wrapper.clone(),
 
             // This resets the position of the stream on clone as this is just used
             // for retries within reqwest.
             bytes_sent: 0,
+            start_time: Instant::now(),
+            fixed_block_size: self.fixed_block_size,
         }
     }
 }
@@ -123,10 +165,10 @@ mod tests {
         let progress_reported = Arc::new(Mutex::new(Vec::new()));
         let callback = {
             let progress_reported = progress_reported.clone();
-            move |v| progress_reported.lock().unwrap().push(v)
+            move |v| progress_reported.clone().lock().unwrap().push(v)
         };
 
-        let mut stream = UploadProgressStream::new(data.clone(), block_size, callback);
+        let mut stream = UploadProgressStream::new(data.clone(), callback, Some(block_size));
 
         let mut result = Vec::new();
         block_on(async {
@@ -158,10 +200,12 @@ mod tests {
         let progress_reported = Arc::new(Mutex::new(Vec::new()));
         let callback = {
             let progress_reported = progress_reported.clone();
-            move |v| progress_reported.lock().unwrap().push(v)
+            move |v| {
+                progress_reported.lock().unwrap().push(v);
+            }
         };
 
-        let mut stream = UploadProgressStream::new(data.clone(), block_size, callback);
+        let mut stream = UploadProgressStream::new(data.clone(), callback, Some(block_size));
         block_on(async {
             assert_eq!(stream.next().await.unwrap().unwrap(), Bytes::from("abc"));
             assert_eq!(stream.next().await.unwrap().unwrap(), Bytes::from("def"));
@@ -189,10 +233,12 @@ mod tests {
         let progress_reported = Arc::new(Mutex::new(Vec::new()));
         let callback = {
             let progress_reported = progress_reported.clone();
-            move |v| progress_reported.lock().unwrap().push(v)
+            move |v| {
+                progress_reported.lock().unwrap().push(v);
+            }
         };
 
-        let mut stream = UploadProgressStream::new(data.clone(), block_size, callback);
+        let mut stream = UploadProgressStream::new(data.clone(), callback, Some(block_size));
 
         block_on(async {
             assert_eq!(stream.next().await.unwrap().unwrap(), Bytes::from("ab")); // nothing reported yet

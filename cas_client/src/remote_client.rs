@@ -48,9 +48,6 @@ utils::configurable_constants! {
         standard: 16,
         high_performance: 100,
     };
-
-    // Send a report of successful partial upload every 512kb.
-    ref UPLOAD_REPORTING_BLOCK_SIZE : usize = 512 * 1024;
 }
 
 utils::configurable_bool_constants! {
@@ -150,6 +147,7 @@ impl UploadClient for RemoteClient {
         let xorb_hash = serialized_cas_object.hash;
 
         let progress_callback = move |bytes_sent: u64| {
+            let upload_tracker = upload_tracker.clone();
             if let Some(utr) = upload_tracker.as_ref() {
                 // First, recallibrate the sending, as the compressed size is different than the actual data size.
                 let adjusted_update = (bytes_sent * n_raw_bytes) / n_upload_bytes;
@@ -158,11 +156,7 @@ impl UploadClient for RemoteClient {
             }
         };
 
-        let upload_stream = UploadProgressStream::new(
-            serialized_cas_object.serialized_data,
-            *UPLOAD_REPORTING_BLOCK_SIZE,
-            progress_callback,
-        );
+        let upload_stream = UploadProgressStream::new(serialized_cas_object.serialized_data, progress_callback, None);
 
         let xorb_uploaded = {
             if !self.dry_run {
