@@ -149,6 +149,7 @@ impl UploadClient for RemoteClient {
         let n_raw_bytes = serialized_cas_object.raw_num_bytes;
         let xorb_hash = serialized_cas_object.hash;
 
+        /*
         let progress_callback = move |bytes_sent: u64| {
             if let Some(utr) = upload_tracker.as_ref() {
                 // First, recallibrate the sending, as the compressed size is different than the actual data size.
@@ -163,6 +164,9 @@ impl UploadClient for RemoteClient {
             *UPLOAD_REPORTING_BLOCK_SIZE,
             progress_callback,
         );
+        */
+
+        let data = bytes::Bytes::from(serialized_cas_object.serialized_data);
 
         let xorb_uploaded = {
             if !self.dry_run {
@@ -170,14 +174,15 @@ impl UploadClient for RemoteClient {
 
                 let response = retry_wrapper(
                     move || {
-                        let upload_stream = upload_stream.clone_with_reset();
+                        // let upload_stream = upload_stream.clone_with_reset();
+                        let data = data.clone();
                         let url = url.clone();
 
                         client
                             .post(url)
                             .with_extension(Api("cas::upload_xorb"))
                             .header(CONTENT_LENGTH, HeaderValue::from(n_upload_bytes)) // must be set because of streaming
-                            .body(Body::wrap_stream(upload_stream))
+                            .body(data) // Body::wrap_stream(upload_stream))
                             .send()
                     },
                     RetryConfig::default(),
