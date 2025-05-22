@@ -409,9 +409,8 @@ impl MDBShardFile {
 mod test {
     use std::path::Path;
 
-    use crate::MDBShardInfo;
-
     use super::MDBShardFile;
+    use crate::MDBShardInfo;
 
     #[test]
     fn testst() -> anyhow::Result<()> {
