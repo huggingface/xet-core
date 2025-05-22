@@ -5,7 +5,6 @@ use cas_client::{build_http_client, Client, RemoteClient, RetryConfig};
 use cas_object::test_utils::build_cas_object;
 use cas_object::CompressionScheme;
 use futures::AsyncReadExt;
-use hf_wasm_xet::blob_reader::BlobReader;
 use hf_xet_wasm::blob_reader::BlobReader;
 use hf_xet_wasm::configurations::{DataConfig, RepoSalt, ShardConfig, TranslatorConfig};
 use hf_xet_wasm::wasm_file_upload_session::FileUploadSession;
