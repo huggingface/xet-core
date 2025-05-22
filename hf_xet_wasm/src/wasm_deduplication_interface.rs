@@ -1,24 +1,37 @@
+use std::collections::HashMap;
+use std::io::Cursor;
+use std::result::Result as stdResult;
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use cas_client::CasClientError;
 use deduplication::{DeduplicationDataInterface, RawXorbData};
 use mdb_shard::file_structs::FileDataSequenceEntry;
-use merklehash::MerkleHash;
+use mdb_shard::shard_in_memory::MDBInMemoryShard;
+use mdb_shard::MDBShardInfo;
+use merklehash::{HMACKey, MerkleHash};
 
 use super::errors::*;
 use super::wasm_file_upload_session::FileUploadSession;
 
 pub struct UploadSessionDataManager {
     session: Arc<FileUploadSession>,
+    shard: HashMap<HMACKey, MDBInMemoryShard>,
+    query_results: Vec<stdResult<Option<Vec<u8>>, CasClientError>>,
 }
 
 impl UploadSessionDataManager {
     pub fn new(session: Arc<FileUploadSession>) -> Self {
-        Self { session }
+        Self {
+            session,
+            shard: HashMap::default(),
+            query_results: vec![],
+        }
     }
 }
 
-#[async_trait]
+#[cfg_attr(not(target_family = "wasm"), async_trait)]
+#[cfg_attr(target_family = "wasm", async_trait(?Send))]
 impl DeduplicationDataInterface for UploadSessionDataManager {
     type ErrorType = DataProcessingError;
 
@@ -27,23 +40,69 @@ impl DeduplicationDataInterface for UploadSessionDataManager {
         &self,
         query_hashes: &[MerkleHash],
     ) -> Result<Option<(usize, FileDataSequenceEntry)>> {
-        todo!()
+        for (hmac_key, shard) in self.shard.iter() {
+            let keyed_query_hashes: Vec<_> = query_hashes.iter().map(|h| h.hmac(*hmac_key)).collect();
+            if let Some((count, fdse)) = shard.chunk_hash_dedup_query(&keyed_query_hashes) {
+                return Ok(Some((count, fdse)));
+            }
+        }
+
+        Ok(None)
     }
 
     /// Registers a new query for more information about the
     /// global deduplication.  This is expected to run in the background.
     async fn register_global_dedup_query(&mut self, chunk_hash: MerkleHash) -> Result<()> {
-        todo!()
+        let ret = self
+            .session
+            .client
+            .query_for_global_dedup_shard_in_memory(
+                &self.session.config.shard_config.prefix,
+                &chunk_hash,
+                &self.session.config.shard_config.repo_salt,
+            )
+            .await;
+
+        self.query_results.push(ret);
+
+        Ok(())
     }
 
     /// Waits for all the current queries to complete, then returns true if there is
     /// new deduplication information available.
     async fn complete_global_dedup_queries(&mut self) -> Result<bool> {
-        todo!()
+        let mut any_result = false;
+        for ret in std::mem::take(&mut self.query_results) {
+            if let Some(serialized_shard) = ret? {
+                let mut reader = Cursor::new(serialized_shard);
+                let shard_info = MDBShardInfo::load_from_reader(&mut reader)?;
+
+                let hmac_key = shard_info.metadata.chunk_hash_hmac_key;
+
+                let cas_info = shard_info.read_all_cas_blocks_full(&mut reader)?;
+
+                let keyed_shard = self.shard.entry(hmac_key).or_insert(MDBInMemoryShard::default());
+
+                for ci in cas_info {
+                    keyed_shard.add_cas_block(ci);
+                }
+
+                any_result = true;
+            }
+        }
+
+        Ok(any_result)
     }
 
     /// Registers a Xorb of new data that has no deduplication references.
     async fn register_new_xorb(&mut self, xorb: RawXorbData) -> Result<()> {
-        todo!()
+        // Add the xorb info to the current shard.  Note that we need to ensure all the xorb
+        // uploads complete correctly before any shards get uploaded.
+        self.session.session_shard.lock().await.add_cas_block(xorb.cas_info.clone())?;
+
+        // Begin the process for upload.
+        self.session.register_new_xorb_for_upload(xorb).await?;
+
+        Ok(())
     }
 }

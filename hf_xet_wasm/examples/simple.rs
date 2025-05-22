@@ -1,7 +1,21 @@
+use std::sync::Arc;
+
+use anyhow::anyhow;
+use cas_client::{build_http_client, Client, RemoteClient, RetryConfig};
+use cas_object::test_utils::build_cas_object;
+use cas_object::CompressionScheme;
 use futures::AsyncReadExt;
-use wasm_bindgen::prelude::*;
-use wasm_thread as thread;
 use hf_wasm_xet::blob_reader::BlobReader;
+use hf_xet_wasm::blob_reader::BlobReader;
+use hf_xet_wasm::configurations::{DataConfig, RepoSalt, ShardConfig, TranslatorConfig};
+use hf_xet_wasm::wasm_file_upload_session::FileUploadSession;
+use merklehash::MerkleHash;
+use reqwest::header;
+use tokio::sync::mpsc;
+use utils::auth::{self, AuthConfig};
+use wasm_bindgen::prelude::*;
+use wasm_bindgen_futures::JsFuture;
+use wasm_thread as thread;
 
 fn main() {
     #[cfg(target_arch = "wasm32")]
@@ -13,9 +27,35 @@ fn main() {
     #[cfg(not(target_arch = "wasm32"))]
     env_logger::init_from_env(env_logger::Env::default().filter_or(env_logger::DEFAULT_FILTER_ENV, "info"));
 
-    log::info!("Starting init wasm_xet...");
+    log::info!("Starting init hf_xet_wasm...");
 
     log::info!("Done");
+}
+
+#[wasm_bindgen]
+pub async fn thread_async_channel() -> String {
+    // Exchange a series of messages over async channel.
+    let (thread_tx, mut main_rx) = mpsc::channel::<String>(2);
+    let (main_tx, mut thread_rx) = mpsc::channel::<String>(2);
+
+    thread::spawn(|| {
+        futures::executor::block_on(async move {
+            thread::sleep(std::time::Duration::from_millis(100));
+            thread_tx.send("Hello".to_string()).await.unwrap();
+            let mut msg = thread_rx.recv().await.unwrap();
+            msg.push_str("!");
+            thread_tx.send(msg).await.unwrap();
+        })
+    });
+
+    let mut msg = main_rx.recv().await.unwrap();
+    msg.push_str(" world");
+    main_tx.send(msg).await.unwrap();
+
+    let result = main_rx.recv().await.unwrap();
+    assert_eq!(result, "Hello world!");
+
+    result
 }
 
 #[wasm_bindgen]
@@ -57,27 +97,122 @@ pub async fn test_async_blob_reader(file: web_sys::File) -> String {
     log::info!("file total size: {}", total_bytes.len());
 
     let nbyte = total_bytes.len();
-    let mut threads: Vec<thread::JoinHandle<u32>> = vec![];
+    let mut threads = vec![];
+    let mut inputs = vec![];
+    let mut outputs = vec![];
     for t in 0..5 {
         let split = nbyte / 5;
         let data_local = total_bytes[split * t..split * (t + 1)].to_vec();
+        let (tx, mut rx) = mpsc::channel::<Vec<u8>>(2);
+        let (o_tx, o_rx) = mpsc::channel::<u32>(2);
+        outputs.push(o_rx);
         threads.push(thread::spawn(move || {
-            let sum = data_local.iter().map(|&x| x as u32).sum();
-            sum
+            wasm_bindgen_futures::spawn_local(async move {
+                let mut sum = 0;
+                while let Some(data_local) = rx.recv().await {
+                    let s: u32 = data_local.iter().map(|&x| x as u32).sum();
+                    sum += s;
+                }
+                o_tx.send(sum).await;
+            })
         }));
+        let Ok(()) = tx.send(data_local).await else {
+            log::info!("failed to send to thread {t}");
+            return "".to_owned();
+        };
+        inputs.push(tx);
+        log::info!("data sent");
     }
 
-    let mut ret = 0;
+    let mut id = inputs.len() - 1;
+    for (id, input) in inputs.into_iter().enumerate() {
+        log::info!("closing input {id}");
+        drop(input);
+    }
+
     for (id, handle) in threads.into_iter().enumerate() {
-        let Ok(s) = handle.join_async().await else {
+        let Ok(()) = handle.join_async().await else {
             log::info!("thread {id} joined with error");
             return "".to_owned();
         };
-        ret += s;
+    }
+
+    for (id, mut output) in outputs.into_iter().enumerate() {
+        let s = output.recv().await.expect("failed to recv from thread {id}");
+        total_ret += s;
         log::info!("thread {id} joined with {s}");
     }
 
-    total_ret += ret;
-
     total_ret.to_string()
+}
+
+#[wasm_bindgen]
+pub async fn clean_file(file: web_sys::File, endpoint: String, jwt_token: String, expiration: u64) -> String {
+    log::debug!("clean_file called with {file:?}, {endpoint}, {jwt_token}, {expiration}");
+
+    let filename = file.name();
+
+    let Ok(blob) = file.slice() else {
+        log::error!("failed to convert a file to blob");
+        return "".to_owned();
+    };
+
+    let Ok(mut reader) = BlobReader::new(blob) else {
+        log::error!("failed to get a reader for blob");
+        return "".to_owned();
+    };
+
+    let config = TranslatorConfig {
+        data_config: DataConfig {
+            endpoint,
+            compression: Some(CompressionScheme::LZ4),
+            auth: AuthConfig::maybe_new(Some(jwt_token), Some(expiration), None),
+            prefix: "default".to_owned(),
+        },
+        shard_config: ShardConfig {
+            prefix: "default-merkledb".to_owned(),
+            repo_salt: RepoSalt::default(),
+        },
+    };
+
+    let upload_session = Arc::new(FileUploadSession::new(Arc::new(config)));
+
+    let mut handle = upload_session.start_clean();
+
+    const READ_BUF_SIZE: usize = 8 * 1024 * 1024;
+    let mut buf = vec![0u8; READ_BUF_SIZE];
+    let mut total_read = 0;
+    loop {
+        let Ok(bytes) = reader.read(&mut buf).await else {
+            log::error!("failed to read from reader");
+            return "".to_owned();
+        };
+        if bytes == 0 {
+            break;
+        }
+
+        total_read += bytes;
+
+        log::debug!("adding {bytes} bytes to cleaner");
+
+        let Ok(()) = handle.add_data(&buf[0..bytes]).await else {
+            log::error!("failed to add data into cleaner");
+            return "".to_owned();
+        };
+
+        log::debug!("processed {total_read} bytes");
+    }
+    let Ok((file_hash, sha256, metrics)) = handle.finish().await else {
+        log::error!("failed to finish cleaner");
+        return "".to_owned();
+    };
+
+    log::debug!("cleaner finished with xet hash {file_hash}, sha256 {sha256}");
+
+    let Ok(()) = upload_session.finalize().await else {
+        log::error!("failed to finalize upload session");
+        return "".to_owned();
+    };
+
+    sha256.to_string()
 }

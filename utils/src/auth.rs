@@ -90,6 +90,7 @@ impl TokenProvider {
     }
 
     pub async fn get_valid_token(&mut self) -> Result<String, AuthError> {
+        #[cfg(not(target_family = "wasm"))]
         if self.is_expired() {
             let (new_token, new_expiry) = self.refresher.refresh().await?;
             self.token = new_token;
@@ -98,6 +99,7 @@ impl TokenProvider {
         Ok(self.token.clone())
     }
 
+    #[cfg(not(target_family = "wasm"))]
     fn is_expired(&self) -> bool {
         let cur_time = SystemTime::now()
             .duration_since(UNIX_EPOCH)
