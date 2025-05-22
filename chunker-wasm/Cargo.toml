@@ -8,6 +8,9 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 wasm-bindgen = "0.2.100"
-deduplication = {path = "../deduplication"}
 serde = { version = "1.0.219", features = ["derive"] }
 serde-wasm-bindgen = "0.6.5"
+
+deduplication = { path = "../deduplication" }
+merkledb = { path = "../merkledb" }
+merklehash = { path = "../merklehash" }

@@ -213,6 +213,8 @@ name = "chunker-wasm"
 version = "0.1.0"
 dependencies = [
  "deduplication",
+ "merkledb",
+ "merklehash",
  "serde",
  "serde-wasm-bindgen",
  "wasm-bindgen",
