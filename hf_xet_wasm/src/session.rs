@@ -89,10 +89,7 @@ impl XetSession {
     #[wasm_bindgen]
     pub async fn finalize(self) -> Result<(), JsValue> {
         // flush the session
-        self.upload
-            .finalize()
-            .await
-            .map_err(|e| JsValue::from_str(&format!("{:?}", e)))?;
+        self.upload.finalize().await.map_err(|e| JsValue::from_str(&format!("{e:?}")))?;
         Ok(())
     }
 }

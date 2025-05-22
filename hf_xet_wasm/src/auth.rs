@@ -1,9 +1,9 @@
-
 use std::fmt::{Debug, Formatter};
 use std::sync::Arc;
+
 use tokio::sync::Mutex;
-use wasm_bindgen::JsValue;
 use wasm_bindgen::prelude::*;
+use wasm_bindgen::JsValue;
 
 #[wasm_bindgen]
 extern "C" {
@@ -14,13 +14,13 @@ extern "C" {
     pub fn expiration(this: &TokenInfo) -> u64;
 
     pub type TokenRefresher;
-    #[wasm_bindgen(method, catch, js_name="refreshToken")]
+    #[wasm_bindgen(method, catch, js_name = "refreshToken")]
     pub async fn refresh_token(this: &TokenRefresher) -> Result<TokenInfo, JsValue>;
 }
 
-/// interface TokenRefresher {
-///    refresh_token(): Promise<TokenInfo>;
-/// }
+// interface TokenRefresher {
+//    refresh_token(): Promise<TokenInfo>;
+// }
 
 impl From<TokenInfo> for utils::auth::TokenInfo {
     fn from(value: TokenInfo) -> Self {
@@ -42,6 +42,7 @@ unsafe impl Sync for WrappedTokenRefresher {}
 
 impl From<TokenRefresher> for WrappedTokenRefresher {
     fn from(value: TokenRefresher) -> Self {
+        #[allow(clippy::arc_with_non_send_sync)]
         WrappedTokenRefresher(Arc::new(Mutex::new(value)))
     }
 }
