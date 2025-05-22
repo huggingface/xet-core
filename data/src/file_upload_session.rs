@@ -278,7 +278,9 @@ impl FileUploadSession {
 
         // Check if the xorb already exists in the CAS.  If it does, we don't need to upload it again.
         // only check if configured to check
-        if *PREUPLOAD_CHECK_XORB_EXISTS && session.client.exists(&cas_prefix, &xorb_hash).await? {
+        if *PREUPLOAD_CHECK_XORB_EXISTS
+            && session.client.exists(&cas_prefix, &xorb_hash).await.is_ok_and(|exists| exists)
+        {
             // update tracker and return early
             debug!("Xorb {cas_prefix}/{xorb_hash} already exists in CAS, skipping upload");
             session.completion_tracker.register_xorb_upload_completion(xorb_hash).await;
