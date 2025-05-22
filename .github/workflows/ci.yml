@@ -55,3 +55,22 @@ jobs:
       - name: Build and Test
         run: |
           cargo test --verbose --no-fail-fast --features "strict"
+  build_and_test-wasm:
+    name: Build and Test WASM
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      - name: Install Rust 1.86
+        uses: dtolnay/rust-toolchain@1.86.0
+        with:
+          targets: wasm32-unknown-unknown
+          components: clippy
+      - name: install wasm-pack
+        run: |
+          curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
+      - name: Build hf_xet_wasm
+        working-directory: hf_xet_wasm
+        run: |
+          wasm-pack build
+          wasm-pack test --node --firefox --chrome --headless
