@@ -1,7 +1,17 @@
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use wasm_bindgen::prelude::*;
 
-#[derive(Clone, Debug, Serialize)]
+macro_rules! console_log {
+    ($($t:tt)*) => (log(&format_args!($($t)*).to_string()))
+}
+
+#[wasm_bindgen]
+extern "C" {
+    #[wasm_bindgen(js_namespace = console)]
+    fn log(s: &str);
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct JsChunk {
     pub hash: String,
     pub length: u32,
@@ -49,5 +59,7 @@ impl JsChunker {
 
 #[inline]
 fn serialize_result<T: Serialize>(result: &T) -> Result<JsValue, JsValue> {
-    serde_wasm_bindgen::to_value(result).map_err(|e| e.into())
+    let res = serde_wasm_bindgen::to_value(result).map_err(|e| e.into());
+    console_log!("{res:?}");
+    res
 }
