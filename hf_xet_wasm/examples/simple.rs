@@ -6,7 +6,9 @@ use cas_object::test_utils::build_cas_object;
 use cas_object::CompressionScheme;
 use futures::AsyncReadExt;
 use hf_xet_wasm::blob_reader::BlobReader;
-use hf_xet_wasm::configurations::{DataConfig, RepoSalt, ShardConfig, TranslatorConfig};
+use hf_xet_wasm::configurations::{
+    DataConfig, RepoSalt, RepoSalt, ShardConfig, ShardConfig, TranslatorConfig, TranslatorConfig,
+};
 use hf_xet_wasm::wasm_file_upload_session::FileUploadSession;
 use merklehash::MerkleHash;
 use reqwest::header;
@@ -112,7 +114,7 @@ pub async fn test_async_blob_reader(file: web_sys::File) -> String {
                     let s: u32 = data_local.iter().map(|&x| x as u32).sum();
                     sum += s;
                 }
-                o_tx.send(sum).await;
+                let _ = o_tx.send(sum).await;
             })
         }));
         let Ok(()) = tx.send(data_local).await else {
@@ -123,7 +125,6 @@ pub async fn test_async_blob_reader(file: web_sys::File) -> String {
         log::info!("data sent");
     }
 
-    let mut id = inputs.len() - 1;
     for (id, input) in inputs.into_iter().enumerate() {
         log::info!("closing input {id}");
         drop(input);
@@ -176,7 +177,7 @@ pub async fn clean_file(file: web_sys::File, endpoint: String, jwt_token: String
 
     let upload_session = Arc::new(FileUploadSession::new(Arc::new(config)));
 
-    let mut handle = upload_session.start_clean();
+    let mut handle = upload_session.start_clean("".to_string());
 
     const READ_BUF_SIZE: usize = 8 * 1024 * 1024;
     let mut buf = vec![0u8; READ_BUF_SIZE];
