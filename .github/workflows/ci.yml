@@ -68,7 +68,8 @@ jobs:
           components: clippy
       - name: install wasm-pack
         run: |
-          cargo install wasm-pack
+          curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
+          #          cargo install wasm-pack
           # should attempt to consider using jetli/wasm-pack-action@v0.4.0 to speed this up
       - name: Build hf_xet_wasm
         working-directory: hf_xet_wasm
