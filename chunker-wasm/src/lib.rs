@@ -1,3 +1,6 @@
+use merkledb::MerkleMemDB;
+use merkledb::prelude::MerkleDBHighLevelMethodsV1;
+use merklehash::{DataHashHexParseError, MerkleHash};
 use serde::{Deserialize, Serialize};
 use wasm_bindgen::prelude::*;
 
@@ -17,6 +20,26 @@ pub struct JsChunk {
     pub length: u32,
 }
 
+impl From<merkledb::Chunk> for JsChunk {
+    fn from(value: merkledb::Chunk) -> Self {
+        JsChunk {
+            hash: value.hash.hex(),
+            length: value.length as u32,
+        }
+    }
+}
+
+impl TryFrom<JsChunk> for merkledb::Chunk {
+    type Error = DataHashHexParseError;
+
+    fn try_from(value: JsChunk) -> Result<Self, Self::Error> {
+        Ok(Self {
+            hash: MerkleHash::from_hex(&value.hash)?,
+            length: value.length as usize,
+        })
+    }
+}
+
 impl From<deduplication::Chunk> for JsChunk {
     fn from(value: deduplication::Chunk) -> Self {
         JsChunk {
@@ -33,7 +56,7 @@ pub struct JsChunker {
 
 // Default target chunk size is 64 * 1024
 
-#[wasm_bindgen(js_class="Chunker")]
+#[wasm_bindgen(js_class = "Chunker")]
 impl JsChunker {
     #[wasm_bindgen(constructor)]
     pub fn new(target_chunk_size: usize) -> JsChunker {
@@ -44,7 +67,7 @@ impl JsChunker {
 
     pub fn add_data(&mut self, data: Vec<u8>) -> Result<JsValue, JsValue> {
         let result = self.inner.next_block(&data, false);
-        let serializable_result: Vec<JsChunk> = result.into_iter().map(|c| JsChunk::from(c)).collect();
+        let serializable_result: Vec<JsChunk> = result.into_iter().map(JsChunk::from).collect();
         serde_wasm_bindgen::to_value(&serializable_result).map_err(|e| e.into())
     }
 
@@ -62,4 +85,20 @@ fn serialize_result<T: Serialize>(result: &T) -> Result<JsValue, JsValue> {
     let res = serde_wasm_bindgen::to_value(result).map_err(|e| e.into());
     console_log!("{res:?}");
     res
+}
+
+#[wasm_bindgen]
+pub fn compute_xorb_hash(chunks_array: JsValue) -> Result<String, JsValue> {
+    let js_chunks =
+        serde_wasm_bindgen::from_value::<Vec<JsChunk>>(chunks_array).map_err(|e| JsValue::from(e.to_string()))?;
+    let mut db = MerkleMemDB::default();
+    let mut staging = db.start_insertion_staging();
+    let chunks = js_chunks
+        .into_iter()
+        .map(merkledb::Chunk::try_from)
+        .collect::<Result<Vec<merkledb::Chunk>, DataHashHexParseError>>()
+        .map_err(|e| JsValue::from(e.to_string()))?;
+    db.add_file(&mut staging, &chunks);
+    let ret = db.finalize(staging);
+    Ok(ret.hash().hex())
 }
