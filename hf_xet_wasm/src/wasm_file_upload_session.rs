@@ -12,7 +12,7 @@ use tokio::sync::Mutex;
 use super::configurations::TranslatorConfig;
 use super::errors::*;
 use crate::wasm_file_cleaner::SingleFileCleaner;
-use crate::xorb_uploader::{XorbUploader, XorbUploaderLocalSequential, XorbUploaderSpawnParallel};
+use crate::xorb_uploader::{XorbUploader, XorbUploaderSpawnParallel};
 
 static UPLOAD_CONCURRENCY: usize = 1;
 
@@ -45,9 +45,6 @@ impl FileUploadSession {
             false,
         ));
 
-        // let xorb_uploader =
-        //     Box::new(XorbUploaderLocalSequential::new(client.clone(), &config.data_config.prefix,
-        // UPLOAD_CONCURRENCY));
         let xorb_uploader =
             Box::new(XorbUploaderSpawnParallel::new(client.clone(), &config.data_config.prefix, UPLOAD_CONCURRENCY));
 
@@ -67,8 +64,8 @@ impl FileUploadSession {
     pub(crate) async fn register_single_file_clean_completion(
         self: &Arc<Self>,
         mut file_data: DataAggregator,
-        dedup_metrics: &DeduplicationMetrics,
-        xorbs_dependencies: Vec<MerkleHash>,
+        _dedup_metrics: &DeduplicationMetrics,
+        _xorbs_dependencies: Vec<MerkleHash>,
     ) -> Result<()> {
         // Merge in the remaining file data; uploading a new xorb if need be.
         {

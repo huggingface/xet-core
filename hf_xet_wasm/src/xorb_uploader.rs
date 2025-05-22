@@ -26,6 +26,7 @@ pub struct XorbUploaderLocalSequential {
 }
 
 impl XorbUploaderLocalSequential {
+    #[allow(dead_code)]
     pub fn new(client: Arc<dyn Client + Send + Sync>, cas_prefix: &str, _upload_concurrency: usize) -> Self {
         Self {
             client,

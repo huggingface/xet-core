@@ -15,7 +15,6 @@ use utils::auth::{self, AuthConfig};
 use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::JsFuture;
 use wasm_thread as thread;
-use web_sys::{DedicatedWorkerGlobalScope, Headers, Request, RequestInit, RequestMode, Response};
 
 fn main() {
     #[cfg(target_arch = "wasm32")]

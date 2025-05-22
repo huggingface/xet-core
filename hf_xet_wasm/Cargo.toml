@@ -3,9 +3,8 @@ name = "hf_xet_wasm"
 version = "0.0.1"
 edition = "2021"
 
-#[features]
-#default = ["es_modules"]
-#es_modules = []
+[lib]
+crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 wasm-bindgen = "0.2.95"
@@ -61,6 +60,8 @@ cas_client = { path = "../cas_client" }
 utils = { path = "../utils" }
 
 
-
 [package.metadata.docs.rs]
 targets = ["wasm32-unknown-unknown"]
+
+[dev-dependencies]
+wasm-bindgen-test = "0.3.50"
