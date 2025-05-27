@@ -137,13 +137,19 @@ impl Default for LocalHydrateDehydrateTest {
         let _temp_dir = TempDir::new().unwrap();
         let temp_path = _temp_dir.path();
 
-        Self {
+        let s = Self {
             cas_dir: temp_path.join("cas"),
             src_dir: temp_path.join("src"),
             ptr_dir: temp_path.join("pointers"),
             dest_dir: temp_path.join("dest"),
             _temp_dir,
-        }
+        };
+        std::fs::create_dir_all(&s.cas_dir).unwrap();
+        std::fs::create_dir_all(&s.src_dir).unwrap();
+        std::fs::create_dir_all(&s.ptr_dir).unwrap();
+        std::fs::create_dir_all(&s.dest_dir).unwrap();
+
+        s
     }
 }
 

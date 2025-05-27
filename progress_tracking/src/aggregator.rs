@@ -78,7 +78,8 @@ impl AggregatingProgressUpdater {
         })
     }
 
-    ///
+    /// Creates a class that only aggregates the stats to be used to hold and track the total stats during and after a
+    /// session.
     pub fn new_aggregation_only() -> Arc<Self> {
         Arc::new(Self {
             inner: None,
@@ -123,7 +124,7 @@ impl TrackingProgressUpdater for AggregatingProgressUpdater {
     }
     async fn flush(&self) {
         if let Some(inner) = &self.inner {
-            Self::flush_impl(&inner, &self.state).await;
+            Self::flush_impl(inner, &self.state).await;
         }
     }
 }
