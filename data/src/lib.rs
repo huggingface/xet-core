@@ -1,6 +1,6 @@
 #![allow(dead_code)]
 pub mod configurations;
-mod constants;
+pub mod constants;
 pub mod data_client;
 mod deduplication_interface;
 pub mod errors;
@@ -21,3 +21,6 @@ pub use deduplication::RawXorbData;
 pub use file_downloader::FileDownloader;
 pub use file_upload_session::FileUploadSession;
 pub use xet_file::XetFileInfo;
+
+#[cfg(debug_assertions)]
+pub mod test_utils;

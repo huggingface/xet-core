@@ -68,6 +68,7 @@ impl SingleFileCleaner {
         let mut deduper = std::mem::replace(&mut self.dedup_manager_fut, Box::pin(future::pending())).await?;
 
         let num_chunks = chunks.len();
+
         let dedup_background = tokio::spawn(
             async move {
                 deduper.process_chunks(&chunks).await?;
@@ -113,6 +114,12 @@ impl SingleFileCleaner {
         self.deduper_process_chunks(chunks).await?;
 
         Ok(())
+    }
+
+    /// Ensures all current background work is completed.  
+    pub async fn checkpoint(&mut self) -> Result<()> {
+        // Flush the background process by sending it a dummy bit of data.
+        self.deduper_process_chunks(Arc::new([])).await
     }
 
     /// Return the representation of the file after clean as a pointer file instance.

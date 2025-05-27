@@ -85,7 +85,7 @@ pub struct FileUploadSession {
     compression_scheme: Mutex<Option<CompressionScheme>>,
 
     #[cfg(debug_assertions)]
-    progress_verification_tracker: Arc<ProgressUpdaterVerificationWrapper>,
+    progress_verifier: Arc<ProgressUpdaterVerificationWrapper>,
 }
 
 // Constructors
@@ -118,8 +118,12 @@ impl FileUploadSession {
         let progress_updater: Arc<dyn TrackingProgressUpdater> = {
             match upload_progress_updater {
                 Some(updater) => {
-                    let update_interval = Duration::from_millis(*PROGRESS_UPDATE_INTERVAL_MS);
-                    AggregatingProgressUpdater::new(updater, update_interval)
+                    if *PROGRESS_UPDATE_INTERVAL_MS > 0 {
+                        let update_interval = Duration::from_millis(*PROGRESS_UPDATE_INTERVAL_MS);
+                        AggregatingProgressUpdater::new(updater, update_interval)
+                    } else {
+                        updater
+                    }
                 },
                 None => Arc::new(NoOpProgressUpdater),
             }
@@ -170,7 +174,7 @@ impl FileUploadSession {
             compression_scheme,
 
             #[cfg(debug_assertions)]
-            progress_verification_tracker,
+            progress_verifier: progress_verification_tracker,
         }))
     }
 
@@ -420,7 +424,7 @@ impl FileUploadSession {
             self.completion_tracker.assert_complete().await;
 
             // Checks that all the progress updates were received correctly.
-            self.progress_verification_tracker.assert_complete().await;
+            self.progress_verifier.assert_complete().await;
         }
 
         // Make sure all the updates have been flushed through.

@@ -96,16 +96,25 @@ pub struct ShardFileManager {
 ///
 /// // new_shards is the list of new shards for this session.
 impl ShardFileManager {
-    pub async fn new_in_session_directory(session_directory: impl AsRef<Path>) -> Result<Arc<Self>> {
-        Self::new_impl(session_directory, false, *MDB_SHARD_MIN_TARGET_SIZE).await
+    // Construct in a session directory.
+    pub async fn new_in_session_directory(
+        session_directory: impl AsRef<Path>,
+        scan_directory: bool,
+    ) -> Result<Arc<Self>> {
+        Self::new_impl(session_directory, false, *MDB_SHARD_MIN_TARGET_SIZE, scan_directory).await
     }
 
     // Construction functions
     pub async fn new_in_cache_directory(cache_directory: impl AsRef<Path>) -> Result<Arc<Self>> {
-        Self::new_impl(cache_directory, true, *MDB_SHARD_MIN_TARGET_SIZE).await
+        Self::new_impl(cache_directory, true, *MDB_SHARD_MIN_TARGET_SIZE, true).await
     }
 
-    async fn new_impl(directory: impl AsRef<Path>, is_cachable: bool, target_shard_min_size: u64) -> Result<Arc<Self>> {
+    async fn new_impl(
+        directory: impl AsRef<Path>,
+        is_cachable: bool,
+        target_shard_min_size: u64,
+        scan_directory: bool,
+    ) -> Result<Arc<Self>> {
         let shard_directory = std::path::absolute(directory)?;
 
         // Make sure the shard directory exists; create it if not.
@@ -152,7 +161,9 @@ impl ShardFileManager {
             }
         };
 
-        sfm.refresh_shard_dir().await?;
+        if scan_directory {
+            sfm.refresh_shard_dir().await?;
+        }
 
         Ok(sfm)
     }
@@ -561,7 +572,7 @@ mod tests {
         let mut rng = StdRng::seed_from_u64(seed);
 
         let shard_dir = shard_dir.as_ref();
-        let sfm = ShardFileManager::new_in_session_directory(shard_dir).await?;
+        let sfm = ShardFileManager::new_in_session_directory(shard_dir, false).await?;
         let mut reference_shard = MDBInMemoryShard::default();
 
         for _ in 0..n_shards {
@@ -692,7 +703,7 @@ mod tests {
     }
 
     async fn sfm_with_target_shard_size(path: impl AsRef<Path>, target_size: u64) -> Result<Arc<ShardFileManager>> {
-        ShardFileManager::new_impl(path, false, target_size).await
+        ShardFileManager::new_impl(path, false, target_size, true).await
     }
 
     #[tokio::test]
@@ -701,7 +712,7 @@ mod tests {
         let mut mdb_in_mem = MDBInMemoryShard::default();
 
         {
-            let mdb = ShardFileManager::new_in_session_directory(tmp_dir.path()).await?;
+            let mdb = ShardFileManager::new_in_session_directory(tmp_dir.path(), true).await?;
 
             fill_with_specific_shard(&mdb, &mut mdb_in_mem, &[(0, &[(11, 5)])], &[(100, &[(200, (0, 5))])]).await?;
 
@@ -717,7 +728,7 @@ mod tests {
         }
         {
             // Now, make sure that this happens if this directory is opened up
-            let mdb2 = ShardFileManager::new_in_session_directory(tmp_dir.path()).await?;
+            let mdb2 = ShardFileManager::new_in_session_directory(tmp_dir.path(), true).await?;
 
             // Make sure it's all in there this round.
             verify_mdb_shards_match(&mdb2, &mdb_in_mem, true).await?;
@@ -746,7 +757,7 @@ mod tests {
     async fn test_larger_simulated() -> Result<()> {
         let tmp_dir = TempDir::with_prefix("gitxet_shard_test_2")?;
         let mut mdb_in_mem = MDBInMemoryShard::default();
-        let mdb = ShardFileManager::new_in_session_directory(tmp_dir.path()).await?;
+        let mdb = ShardFileManager::new_in_session_directory(tmp_dir.path(), true).await?;
 
         for i in 0..10 {
             fill_with_random_shard(&mdb, &mut mdb_in_mem, i, &[1, 5, 10, 8], &[4, 3, 5, 9, 4, 6]).await?;
@@ -765,7 +776,7 @@ mod tests {
             mdb.flush().await?;
 
             // Now, make sure that this happens if this directory is opened up
-            let mdb2 = ShardFileManager::new_in_session_directory(tmp_dir.path()).await?;
+            let mdb2 = ShardFileManager::new_in_session_directory(tmp_dir.path(), true).await?;
 
             // Make sure it's all in there this round.
             verify_mdb_shards_match(&mdb2, &mdb_in_mem, true).await?;
@@ -781,7 +792,7 @@ mod tests {
         for sesh in 0..3 {
             for i in 0..10 {
                 {
-                    let mdb = ShardFileManager::new_in_session_directory(tmp_dir.path()).await?;
+                    let mdb = ShardFileManager::new_in_session_directory(tmp_dir.path(), true).await?;
                     fill_with_random_shard(&mdb, &mut mdb_in_mem, 100 * sesh + i, &[1, 5, 10, 8], &[4, 3, 5, 9, 4, 6])
                         .await
                         .unwrap();
@@ -816,7 +827,7 @@ mod tests {
 
             {
                 // Now, make sure that this happens if this directory is opened up
-                let mdb2 = ShardFileManager::new_in_session_directory(tmp_dir.path()).await?;
+                let mdb2 = ShardFileManager::new_in_session_directory(tmp_dir.path(), true).await?;
 
                 verify_mdb_shards_match(&mdb2, &mdb_in_mem, true).await.unwrap();
             }
@@ -850,7 +861,7 @@ mod tests {
 
         // Reload and verify
         {
-            let mdb = ShardFileManager::new_in_session_directory(tmp_dir.path()).await?;
+            let mdb = ShardFileManager::new_in_session_directory(tmp_dir.path(), true).await?;
             verify_mdb_shards_match(&mdb, &mdb_in_mem, true).await?;
         }
 
@@ -890,7 +901,7 @@ mod tests {
 
         // Reload and verify
         {
-            let mdb = ShardFileManager::new_in_session_directory(tmp_dir.path()).await?;
+            let mdb = ShardFileManager::new_in_session_directory(tmp_dir.path(), true).await?;
             verify_mdb_shards_match(&mdb, &mdb_in_mem, true).await?;
         }
 
@@ -965,7 +976,7 @@ mod tests {
 
         // First, load all of these with a shard file manager and check them.
         {
-            let shard_file_manager = ShardFileManager::new_in_session_directory(tmp_dir_path).await?;
+            let shard_file_manager = ShardFileManager::new_in_session_directory(tmp_dir_path, true).await?;
             verify_mdb_shards_match(&shard_file_manager, &ref_shard, true).await?;
         }
 
@@ -1015,7 +1026,7 @@ mod tests {
             }
 
             // Now, verify that everything still works great.
-            let shard_file_manager = ShardFileManager::new_in_session_directory(tmp_dir_path_keyed).await?;
+            let shard_file_manager = ShardFileManager::new_in_session_directory(tmp_dir_path_keyed, true).await?;
 
             verify_mdb_shards_match(&shard_file_manager, &ref_shard, include_info).await?;
         }
@@ -1024,7 +1035,7 @@ mod tests {
     }
 
     async fn shard_list_with_timestamp_filtering(path: &Path) -> Result<Vec<Arc<MDBShardFile>>> {
-        Ok(ShardFileManager::new_impl(path, false, *MDB_SHARD_MIN_TARGET_SIZE)
+        Ok(ShardFileManager::new_impl(path, false, *MDB_SHARD_MIN_TARGET_SIZE, true)
             .await?
             .registered_shard_list()
             .await?)
