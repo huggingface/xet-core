@@ -48,10 +48,10 @@ jobs:
           export RUST_LIB_BACKTRACE=1
           export PYTHONFAULTHANDLER=1
 
-          gdb -batch -ex "run" -ex "bt" --args $(which python) -m pytest huggingface_hub/tests/test_xet_*.py
-          gdb -batch -ex "run" -ex "bt" --args $(which python) -m pytest huggingface_hub/tests/test_xet_*.py
-          gdb -batch -ex "run" -ex "bt" --args $(which python) -m pytest huggingface_hub/tests/test_xet_*.py
-          gdb -batch -ex "run" -ex "bt" --args $(which python) -m pytest huggingface_hub/tests/test_xet_*.py
-          gdb -batch -ex "run" -ex "bt" --args $(which python) -m pytest huggingface_hub/tests/test_xet_*.py
-          gdb -batch -ex "run" -ex "bt" --args $(which python) -m pytest huggingface_hub/tests/test_xet_*.py
-          gdb -batch -ex "run" -ex "bt" --args $(which python) -m pytest huggingface_hub/tests/test_xet_*.py
+          gdb -batch -ex "set follow-fork-mode child" -ex "run" -ex "bt" --args $(which python) -m pytest huggingface_hub/tests/test_xet_*.py
+          gdb -batch -ex "set follow-fork-mode child" -ex "run" -ex "bt" --args $(which python) -m pytest huggingface_hub/tests/test_xet_*.py
+          gdb -batch -ex "set follow-fork-mode child" -ex "run" -ex "bt" --args $(which python) -m pytest huggingface_hub/tests/test_xet_*.py
+          gdb -batch -ex "set follow-fork-mode child" -ex "run" -ex "bt" --args $(which python) -m pytest huggingface_hub/tests/test_xet_*.py
+          gdb -batch -ex "set follow-fork-mode child" -ex "run" -ex "bt" --args $(which python) -m pytest huggingface_hub/tests/test_xet_*.py
+          gdb -batch -ex "set follow-fork-mode child" -ex "run" -ex "bt" --args $(which python) -m pytest huggingface_hub/tests/test_xet_*.py
+          gdb -batch -ex "set follow-fork-mode child" -ex "run" -ex "bt" --args $(which python) -m pytest huggingface_hub/tests/test_xet_*.py
