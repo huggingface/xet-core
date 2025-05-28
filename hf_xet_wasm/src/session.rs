@@ -1,9 +1,6 @@
-#![allow(dead_code)]
-
 use std::sync::Arc;
 
 use cas_object::CompressionScheme;
-use cas_types::HexMerkleHash;
 use futures::AsyncReadExt;
 use serde::{Deserialize, Serialize};
 use utils::auth::AuthConfig;
@@ -20,9 +17,10 @@ fn convert_error(e: impl std::error::Error) -> JsValue {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-struct PointerFile {
-    pub file_size: u64,
-    pub file_hash: HexMerkleHash,
+struct JsPointerFile {
+    pub file_size: f64,
+    pub file_hash: String,
+    pub sha256: String,
 }
 
 #[wasm_bindgen(js_name = "XetSession")]
@@ -61,13 +59,13 @@ impl XetSession {
     }
 
     #[wasm_bindgen(js_name = "uploadFileFromRawData")]
-    pub async fn upload_file_from_raw(&self, tracker_id: String, file: Vec<u8>) -> Result<(), JsValue> {
+    pub async fn upload_file_from_raw(&mut self, tracker_id: String, file: Vec<u8>) -> Result<JsValue, JsValue> {
         let blob = Blob::new_with_u8_array_sequence(&js_sys::Uint8Array::from(file.as_slice()))?;
         self.upload_file_from_blob(tracker_id, blob).await
     }
 
     #[wasm_bindgen(js_name = "uploadFileFromBlob")]
-    pub async fn upload_file_from_blob(&self, tracker_id: String, blob: Blob) -> Result<(), JsValue> {
+    pub async fn upload_file_from_blob(&mut self, tracker_id: String, blob: Blob) -> Result<JsValue, JsValue> {
         // read from blob async
         let mut cleaner = self.upload.start_clean(tracker_id);
 
@@ -75,15 +73,25 @@ impl XetSession {
 
         let mut buf = vec![0u8; 1024 * 10]; // 10KB buffer
 
+        let mut file_size = 0;
         loop {
             let num_read = reader.read(&mut buf).await.map_err(convert_error)?;
             if num_read == 0 {
                 break;
             }
+            file_size += num_read as u64;
             cleaner.add_data(&buf[0..num_read]).await.map_err(convert_error)?;
         }
 
-        Ok(())
+        let (file_hash, sha256, _metrics) = cleaner.finish().await.map_err(convert_error)?;
+
+        let file_size = file_size as f64;
+        let pf = JsPointerFile {
+            file_size,
+            file_hash: file_hash.hex(),
+            sha256: sha256.hex(),
+        };
+        serde_wasm_bindgen::to_value(&pf).map_err(|e| JsValue::from_str(&format!("{e:?}")))
     }
 
     #[wasm_bindgen]

@@ -1,21 +1,13 @@
 use std::sync::Arc;
 
-use anyhow::anyhow;
-use cas_client::{build_http_client, Client, RemoteClient, RetryConfig};
-use cas_object::test_utils::build_cas_object;
 use cas_object::CompressionScheme;
 use futures::AsyncReadExt;
 use hf_xet_wasm::blob_reader::BlobReader;
-use hf_xet_wasm::configurations::{
-    DataConfig, RepoSalt, RepoSalt, ShardConfig, ShardConfig, TranslatorConfig, TranslatorConfig,
-};
+use hf_xet_wasm::configurations::{DataConfig, RepoSalt, ShardConfig, TranslatorConfig};
 use hf_xet_wasm::wasm_file_upload_session::FileUploadSession;
-use merklehash::MerkleHash;
-use reqwest::header;
 use tokio::sync::mpsc;
-use utils::auth::{self, AuthConfig};
+use utils::auth::AuthConfig;
 use wasm_bindgen::prelude::*;
-use wasm_bindgen_futures::JsFuture;
 use wasm_thread as thread;
 
 fn main() {
@@ -177,7 +169,7 @@ pub async fn clean_file(file: web_sys::File, endpoint: String, jwt_token: String
 
     let upload_session = Arc::new(FileUploadSession::new(Arc::new(config)));
 
-    let mut handle = upload_session.start_clean("".to_string());
+    let mut handle = upload_session.start_clean(filename);
 
     const READ_BUF_SIZE: usize = 8 * 1024 * 1024;
     let mut buf = vec![0u8; READ_BUF_SIZE];
@@ -202,7 +194,7 @@ pub async fn clean_file(file: web_sys::File, endpoint: String, jwt_token: String
 
         log::debug!("processed {total_read} bytes");
     }
-    let Ok((file_hash, sha256, metrics)) = handle.finish().await else {
+    let Ok((file_hash, sha256, _metrics)) = handle.finish().await else {
         log::error!("failed to finish cleaner");
         return "".to_owned();
     };

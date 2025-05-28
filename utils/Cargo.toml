@@ -30,6 +30,8 @@ pin-project = "1.0.12"
 tempfile = "3.14.0"
 xet_threadpool = { path = "../xet_threadpool" }
 
+[target.'cfg(target_family = "wasm")'.dependencies]
+web-time = "1.1.0"
 
 [features]
 strict = []

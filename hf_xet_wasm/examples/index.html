@@ -13,24 +13,23 @@
     </p>
     <div id="result"></div>
     <script type="module">
-        import init, { thread_async_channel, test_async_blob_reader, clean_file } from "./target/simple.js";
+        import init, { XetSession } from "./target/simple.js";
         await init();
-
-        // var ret = await thread_async_channel();
-        // console.log("thread_async_channel says: " + ret);
 
         document.getElementById("file_picker").addEventListener(
             "change",
             async function () {
-                const repo_type = "[FILL_ME]";
-                const repo_id = "[FILL_ME]";
-                const hf_token = "[FILL_ME]";
+                const endpoint = "http://localhost:5564"
+                const repo_type = "<your repo type>";
+                const repo_id = "<your repo>";
+                const hf_token = "<your token>";
 
                 const file = this.files[0];
 
                 console.log("getting auth info...");
 
                 const xetmetadata = await fetchXetMetadataFromRepoInfo({
+                    endpoint,
                     tokenType: "write",
                     repoId: repo_id,
                     repoType: repo_type,
@@ -39,15 +38,59 @@
                         "User-Agent": "xet-wasm"
                     },
                 });
+                console.log("xetmetadata:", xetmetadata);
+
+                class TokenInfo {
+                    token;
+                    exp;
+                    constructor(token, exp) {
+                        this.token = token;
+                        this.exp = exp;
+                    }
+                    token() {
+                        console.log("called token", this.token, this.token.length);
+                        return this.token;
+                    }
+                    exp() {
+                        return this.exp;
+                    }
+                }
+
+                class TokenRefresher {
+                    constructor() {
+                    }
+                    async refreshToken() {
+                        const xetmetadata = await fetchXetMetadataFromRepoInfo({
+                            endpoint,
+                            tokenType: "write",
+                            repoId: repo_id,
+                            repoType: repo_type,
+                            headers: {
+                                "Authorization": `Bearer ${hf_token}`,
+                                "User-Agent": "xet-wasm"
+                            },
+                        });
+                        return new TokenInfo(xetmetadata.accessToken, xetmetadata.expirationUnixEpoch);
+                    }
+                }
+
+                const casEndpoint = xetmetadata.endpoint;
+                console.log("casEndpoint:", casEndpoint);
+								const tokenRefresher = new TokenRefresher();
+								const tokenInfo = new TokenInfo(xetmetadata.accessToken, xetmetadata.expirationUnixEpoch);
+								const xetSession = new XetSession(casEndpoint, tokenInfo, tokenRefresher);
+
+								const pf = await xetSession.uploadFileFromBlob("file_being_tracked", file);
+								console.log("file cleaned to Xet session", pf);
+								await xetSession.finalize();
 
                 const file_name = file.name;
                 const file_size = file.size;
 
-                // let ret = await test_async_blob_reader(file);
-                let sha256 = await clean_file(file, xetmetadata.endpoint, xetmetadata.accessToken, BigInt(xetmetadata.expirationUnixEpoch));
+                const sha256 = pf.sha256;
                 console.log("result: " + sha256);
 
-                let response = await commit(file_name, sha256, file_size, repo_type, repo_id, "main", hf_token);
+                let response = await commit(endpoint, file_name, sha256, file_size, repo_type, repo_id, "main", hf_token);
                 document.getElementById('result').textContent = response;
             },
             false

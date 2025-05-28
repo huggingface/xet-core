@@ -27,6 +27,7 @@ function xetMetadataOrNone(jsonData) {
 }
 
 async function fetchXetMetadataFromRepoInfo({
+																							endpoint,
 																							tokenType,
 																							repoId,
 																							repoType,
@@ -45,7 +46,7 @@ async function fetchXetMetadataFromRepoInfo({
 	 * @throws {Error} If the Hub API returned an error or the response is improperly formatted.
 	 */
 
-	const url = `http://localhost:5564/api/${repoType}s/${repoId}/xet-${tokenType}-token/main`;
+	const url = `${endpoint}/api/${repoType}s/${repoId}/xet-${tokenType}-token/main`;
 	console.log(`${url}`);
 
 	return fetchXetMetadataWithUrl(url, headers, params);

@@ -11,7 +11,7 @@ extern "C" {
     #[wasm_bindgen(method, getter)]
     pub fn token(this: &TokenInfo) -> String;
     #[wasm_bindgen(method, getter)]
-    pub fn expiration(this: &TokenInfo) -> u64;
+    pub fn exp(this: &TokenInfo) -> f64;
 
     pub type TokenRefresher;
     #[wasm_bindgen(method, catch, js_name = "refreshToken")]
@@ -24,7 +24,7 @@ extern "C" {
 
 impl From<TokenInfo> for utils::auth::TokenInfo {
     fn from(value: TokenInfo) -> Self {
-        (value.token(), value.expiration())
+        (value.token(), value.exp() as u64)
     }
 }
 
