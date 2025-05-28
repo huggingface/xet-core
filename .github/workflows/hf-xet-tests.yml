@@ -38,7 +38,18 @@ jobs:
         run: |
           source .venv/bin/activate
           python3 -m pip install -e 'huggingface_hub[testing]'
+      - name: Install gdb
+        run: sudo apt-get update && sudo apt-get install -y gdb
       - name: Run huggingface_hub xet tests
         run: |
           source .venv/bin/activate
-          pytest huggingface_hub/tests/test_xet_*.py
+          set -eux
+          export RUST_BACKTRACE=1
+          export RUST_LIB_BACKTRACE=1
+          export PYTHONFAULTHANDLER=1
+
+          gdb -batch -ex "run" -ex "bt" --args pytest huggingface_hub/tests/test_xet_*.py
+          gdb -batch -ex "run" -ex "bt" --args pytest huggingface_hub/tests/test_xet_*.py
+          gdb -batch -ex "run" -ex "bt" --args pytest huggingface_hub/tests/test_xet_*.py
+          gdb -batch -ex "run" -ex "bt" --args pytest huggingface_hub/tests/test_xet_*.py
+          gdb -batch -ex "run" -ex "bt" --args pytest huggingface_hub/tests/test_xet_*.py
