@@ -74,3 +74,6 @@ split-debuginfo = "none"
 inherits = "dev"
 debug = true
 opt-level = 3
+
+[profile.dev]
+panic = "abort"
