@@ -118,9 +118,9 @@ impl FileUploadSession {
         let progress_updater: Arc<dyn TrackingProgressUpdater> = {
             match upload_progress_updater {
                 Some(updater) => {
-                    if *PROGRESS_UPDATE_INTERVAL_MS > 0 {
-                        let update_interval = Duration::from_millis(*PROGRESS_UPDATE_INTERVAL_MS);
-                        AggregatingProgressUpdater::new(updater, update_interval)
+                    let update_seconds = *PROGRESS_UPDATE_INTERVAL_MS;
+                    if update_seconds != 0 {
+                        AggregatingProgressUpdater::new(updater, Duration::from_millis(update_seconds))
                     } else {
                         updater
                     }
