@@ -24,6 +24,7 @@ tempfile = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
+heapify = { workspace = true }
 
 [target.'cfg(target_family = "wasm")'.dependencies]
 uuid = { workspace = true, features = ["v4", "js"] }
