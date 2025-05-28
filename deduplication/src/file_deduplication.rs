@@ -306,7 +306,7 @@ impl<DataInterfaceType: DeduplicationDataInterface> FileDeduper<DataInterfaceTyp
     /// Cut a new xorb from the existing data.  
     fn cut_new_xorb(&mut self) -> RawXorbData {
         // Cut the new xorb.
-        let new_xorb = RawXorbData::from_chunks(&self.new_data[..]);
+        let new_xorb = RawXorbData::from_chunks(&self.new_data[..], vec![0]);
 
         let xorb_hash = new_xorb.hash();
 
