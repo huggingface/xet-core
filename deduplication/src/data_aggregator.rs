@@ -1,3 +1,5 @@
+use std::mem::take;
+
 use mdb_shard::file_structs::MDBFileInfo;
 use merklehash::MerkleHash;
 use more_asserts::*;
@@ -24,6 +26,10 @@ pub struct DataAggregator {
     // This tuple contains the file info (which may be modified) and the divisions in the chunks corresponding
     // to this file.  It also includes an optional file ID
     pub pending_file_info: Vec<(MDBFileInfo, Vec<usize>, u64)>,
+
+    // The specific chunk indices at which a new file starts.  This is used for the compression
+    // heuristic; which compression method to use is calculated once per file section for each xorb.
+    pub file_boundaries: Vec<usize>,
 }
 
 impl DataAggregator {
@@ -34,10 +40,15 @@ impl DataAggregator {
         file_id: u64,
     ) -> Self {
         let num_bytes = chunks.iter().map(|c| c.data.len()).sum();
+
+        // This is just one file here, so start it off like this.
+        let file_boundaries = if chunks.is_empty() { vec![] } else { vec![0] };
+
         Self {
             chunks,
             num_bytes,
             pending_file_info: vec![(pending_file_info, internally_referencing_entries, file_id)],
+            file_boundaries,
         }
     }
 
@@ -59,7 +70,7 @@ impl DataAggregator {
     /// with the number of bytes in each file that is part of this xorb.
     pub fn finalize(mut self) -> (RawXorbData, Vec<(u64, MDBFileInfo, u64)>) {
         // First, cut the xorb for this one.
-        let xorb_data = RawXorbData::from_chunks(&self.chunks);
+        let xorb_data = RawXorbData::from_chunks(&self.chunks, take(&mut self.file_boundaries));
         let xorb_hash = xorb_data.hash();
 
         debug_assert_le!(self.num_bytes(), *MAX_XORB_BYTES);
@@ -120,5 +131,9 @@ impl DataAggregator {
         }
 
         self.pending_file_info.append(&mut other.pending_file_info);
+
+        // Append the file boundaries from the other aggregator, tracking the shifts.
+        self.file_boundaries
+            .extend(other.file_boundaries.into_iter().map(|idx| idx + (shift as usize)));
     }
 }

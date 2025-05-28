@@ -279,7 +279,7 @@ async fn check_clean_smudge_files_multipart(file_specs: &[(String, Vec<(u64, u64
 }
 
 #[cfg(test)]
-mod tests {
+mod testing_clean_smudge {
     use super::*;
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

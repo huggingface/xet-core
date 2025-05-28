@@ -12,6 +12,7 @@ use merkledb::constants::{IDEAL_CAS_BLOCK_SIZE, TARGET_CDC_CHUNK_SIZE};
 use merkledb::prelude::MerkleDBHighLevelMethodsV1;
 use merkledb::{Chunk, MerkleMemDB};
 use merklehash::{DataHash, MerkleHash};
+use more_asserts::*;
 use serde::Serialize;
 use tracing::warn;
 use utils::serialization_utils::*;
@@ -1303,10 +1304,35 @@ impl SerializedCasObject {
         {
             let mut writer = Cursor::new(&mut serialized_data);
 
-            for chunk in xorb.data {
-                // now serialize chunk directly to writer (since chunks come first!)
-                serialize_chunk(&chunk, &mut writer, compression_scheme)?;
-                cas.info.chunk_boundary_offsets.push(writer.stream_position()? as u32);
+            if compression_scheme.is_none() && !xorb.data.is_empty() {
+                debug_assert!(xorb.file_boundaries.is_sorted());
+                debug_assert_ge!(xorb.file_boundaries.len(), 0);
+                debug_assert_lt!(*xorb.file_boundaries.last().unwrap(), xorb.data.len());
+
+                for (f_idx, &start_idx) in xorb.file_boundaries.iter().enumerate() {
+                    let next_idx = {
+                        if (f_idx + 1) < xorb.file_boundaries.len() {
+                            xorb.file_boundaries[f_idx + 1]
+                        } else {
+                            xorb.data.len()
+                        }
+                    };
+
+                    // Choose the compression scheme on this boundary.
+                    let compression_scheme = CompressionScheme::choose_from_data(&xorb.data[start_idx]);
+
+                    for chunk in &xorb.data[start_idx..next_idx] {
+                        // now serialize chunk directly to writer (since chunks come first!)
+                        serialize_chunk(chunk, &mut writer, Some(compression_scheme))?;
+                        cas.info.chunk_boundary_offsets.push(writer.stream_position()? as u32);
+                    }
+                }
+            } else {
+                for chunk in xorb.data {
+                    // now serialize chunk directly to writer (since chunks come first!)
+                    serialize_chunk(&chunk, &mut writer, compression_scheme)?;
+                    cas.info.chunk_boundary_offsets.push(writer.stream_position()? as u32);
+                }
             }
 
             // Fill in the boundary offsets
@@ -1484,7 +1510,7 @@ pub mod test_utils {
             });
         }
 
-        RawXorbData::from_chunks(&chunks)
+        RawXorbData::from_chunks(&chunks, vec![0])
 
         // Now, validate that this is actually the same
     }
