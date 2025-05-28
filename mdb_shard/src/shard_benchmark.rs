@@ -77,7 +77,7 @@ async fn run_shard_benchmark(
 
     // Now, spawn tasks to
     let counter = Arc::new(AtomicUsize::new(0));
-    let mdb = ShardFileManager::new_in_session_directory(dir).await?;
+    let mdb = ShardFileManager::new_in_session_directory(dir, false).await?;
 
     let start_time = Instant::now();
 

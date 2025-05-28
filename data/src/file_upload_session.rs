@@ -85,7 +85,7 @@ pub struct FileUploadSession {
     compression_scheme: Mutex<Option<CompressionScheme>>,
 
     #[cfg(debug_assertions)]
-    progress_verification_tracker: Arc<ProgressUpdaterVerificationWrapper>,
+    progress_verifier: Arc<ProgressUpdaterVerificationWrapper>,
 }
 
 // Constructors
@@ -174,7 +174,7 @@ impl FileUploadSession {
             compression_scheme,
 
             #[cfg(debug_assertions)]
-            progress_verification_tracker,
+            progress_verifier: progress_verification_tracker,
         }))
     }
 
@@ -424,7 +424,7 @@ impl FileUploadSession {
             self.completion_tracker.assert_complete().await;
 
             // Checks that all the progress updates were received correctly.
-            self.progress_verification_tracker.assert_complete().await;
+            self.progress_verifier.assert_complete().await;
         }
 
         // Make sure all the updates have been flushed through.

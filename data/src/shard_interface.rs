@@ -38,6 +38,11 @@ pub struct SessionShardInterface {
     // A place to write out shards that can help a future session resume.
     xorb_metadata_staging_dir: PathBuf,
 
+    // If a previous session has been resumed, then we can query against that.  However, this has to
+    // be handled differently than the regular session as these xorbs have already been uploaded and are thus
+    // tracked differently by the cempletion tracking.
+    resumed_session_shard_manager: Option<Arc<ShardFileManager>>,
+
     // We can remove these shards on final upload success.
     staged_shards_to_remove_on_success: Vec<PathBuf>,
 
@@ -56,6 +61,7 @@ impl SessionShardInterface {
         // Create a temporary session directory where we hold all the shards before upload.
         std::fs::create_dir_all(&config.shard_config.session_directory)?;
         let shard_session_tempdir = TempDir::new_in(&config.shard_config.session_directory)?;
+
         let session_dir = shard_session_tempdir.path().to_owned();
 
         // Set up the cache dir.
@@ -79,7 +85,7 @@ impl SessionShardInterface {
 
         // Load the cache and session shard managers.
         let cache_shard_manager = ShardFileManager::new_in_cache_directory(cache_dir).await?;
-        let session_shard_manager = ShardFileManager::new_in_session_directory(session_dir).await?;
+        let session_shard_manager = ShardFileManager::new_in_session_directory(&session_dir, false).await?;
 
         // Get the new merged shard handles here.
         let (new_session_shards, obsolete_shards) = {
@@ -90,7 +96,19 @@ impl SessionShardInterface {
             }
         };
 
-        session_shard_manager.register_shards(&new_session_shards).await?;
+        // If there are shards from a resumed session, load them.
+        let resumed_session_shard_manager = {
+            if !new_session_shards.is_empty() {
+                // Create a new shard manager to just hold the resumed session shards
+                let resumed_session_shard_manager =
+                    ShardFileManager::new_in_session_directory(&session_dir, false).await?;
+                resumed_session_shard_manager.register_shards(&new_session_shards).await?;
+                Some(resumed_session_shard_manager)
+            } else {
+                None
+            }
+        };
+
         let staged_shards_to_remove_on_success = obsolete_shards.iter().map(|sfi| sfi.path.clone()).collect();
 
         Ok(Self {
@@ -99,6 +117,7 @@ impl SessionShardInterface {
             xorb_metadata_staging_dir,
             staged_shards_to_remove_on_success,
             xorb_metadata_staging: Mutex::new((SystemTime::now(), MDBInMemoryShard::default())),
+            resumed_session_shard_manager,
             config,
             dry_run,
             _shard_session_dir: shard_session_tempdir,
@@ -106,7 +125,7 @@ impl SessionShardInterface {
         })
     }
 
-    /// Queries the client for global deduplication metrics
+    /// Queries the client for global deduplication metrics.
     pub async fn query_dedup_shard_by_chunk(&self, chunk_hash: &MerkleHash, repo_salt: &RepoSalt) -> Result<bool> {
         let Ok(Some(new_shard_file)) = self
             .client
@@ -129,14 +148,23 @@ impl SessionShardInterface {
         &self,
         query_hashes: &[MerkleHash],
     ) -> Result<Option<(usize, FileDataSequenceEntry, bool)>> {
-        // First check for a deduplication hit in the session directory, then in the common cache directory.
+        // First, see if there's something in the resumed session.
+        if let Some(resumed_session_sfm) = &self.resumed_session_shard_manager {
+            if let Some((n_entries, fse)) = resumed_session_sfm.chunk_hash_dedup_query(query_hashes).await? {
+                // Return true, as the data here is already known to have been uploaded.
+                return Ok(Some((n_entries, fse, true)));
+            }
+        }
+
+        // Now, check the local session directory.
         let res = self.session_shard_manager.chunk_hash_dedup_query(query_hashes).await?;
 
         if let Some((n_entries, fse)) = res {
+            // These reference xorbs known only to this session.
             return Ok(Some((n_entries, fse, false)));
         }
 
-        // Now query in the cache shard manager; these shards have already been uploaded.
+        // Finally, query in the cache shard manager.
         if let Some((n_entries, fse)) = self.cache_shard_manager.chunk_hash_dedup_query(query_hashes).await? {
             Ok(Some((n_entries, fse, true)))
         } else {
