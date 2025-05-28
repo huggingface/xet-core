@@ -10,7 +10,7 @@ use tracing::{debug, info, instrument, trace};
 
 use crate::cas_structs::*;
 use crate::constants::{
-    CHUNK_INDEX_TABLE_MAX_SIZE, MDB_SHARD_CACHE_SIZE_LIMIT, MDB_SHARD_EXPIRATION_BUFFER_SECS, MDB_SHARD_MIN_TARGET_SIZE,
+    CHUNK_INDEX_TABLE_MAX_SIZE, MDB_SHARD_EXPIRATION_BUFFER_SECS, MDB_SHARD_MIN_TARGET_SIZE, SHARD_CACHE_SIZE_LIMIT,
 };
 use crate::error::{MDBShardError, Result};
 use crate::file_structs::*;
@@ -108,7 +108,7 @@ impl ShardFileManager {
 
     // Construction functions
     pub async fn new_in_cache_directory(cache_directory: impl AsRef<Path>) -> Result<Arc<Self>> {
-        Self::new_impl(cache_directory, true, *MDB_SHARD_MIN_TARGET_SIZE, true, *MDB_SHARD_CACHE_SIZE_LIMIT).await
+        Self::new_impl(cache_directory, true, *MDB_SHARD_MIN_TARGET_SIZE, true, *SHARD_CACHE_SIZE_LIMIT).await
     }
 
     async fn new_impl(
