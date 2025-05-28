@@ -50,11 +50,14 @@ jobs:
           if [ -n "$VERSION" ]; then
             sed -i '/^version /s/=.*$/= "'"$VERSION"'"/' hf_xet/Cargo.toml
           fi
+      - uses: ./.github/actions/set-build-profile
+        with:
+          tag: ${{ github.event.inputs.tag }}
       - name: Build wheels
         uses: PyO3/maturin-action@v1
         with:
           target: ${{ matrix.platform.target }}
-          args: --profile release-dbgsymbols ${{ matrix.platform.features }} --out dist
+          args: --profile ${{ env.BUILD_PROFILE }}  ${{ matrix.platform.features }} --out dist
           sccache: 'true'
           manylinux: ${{ matrix.platform.manylinux }}
           working-directory: hf_xet
@@ -68,6 +71,7 @@ jobs:
                 exit 1
             fi
       - name: Strip debug symbols into a separate file
+        if: env.IS_RELEASE == 'true'
         run: |
           shopt -s expand_aliases 
           if [[ ${{ matrix.platform.target }} == "aarch64" ]]
@@ -93,6 +97,7 @@ jobs:
           rm ../hf_xet/dbg/hf_xet.abi3.so.dbg
           mv hf_xet.abi3.so.dbg.linux-${{ matrix.platform.target }}.zip ../hf_xet/dbg/
       - name: Upload debug symbols
+        if: env.IS_RELEASE == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: dbg-linux-${{ matrix.platform.target }}
@@ -131,15 +136,19 @@ jobs:
           if [ -n "$VERSION" ]; then
             sed -i '/^version /s/=.*$/= "'"$VERSION"'"/' hf_xet/Cargo.toml
           fi
+      - uses: ./.github/actions/set-build-profile
+        with:
+          tag: ${{ github.event.inputs.tag }}
       - name: Build wheels
         uses: PyO3/maturin-action@v1
         with:
           target: ${{ matrix.platform.target }}
-          args: --profile release-dbgsymbols ${{ matrix.platform.features }} --out dist
+          args: --profile ${{ env.BUILD_PROFILE }} ${{ matrix.platform.features }} --out dist
           sccache: 'true'
           manylinux: musllinux_1_2
           working-directory: hf_xet
       - name: Strip debug symbols into a separate file
+        if: env.IS_RELEASE == 'true'
         run: |
           shopt -s expand_aliases 
           if [[ ${{ matrix.platform.target }} == "aarch64" ]]
@@ -165,6 +174,7 @@ jobs:
           rm ../hf_xet/dbg/hf_xet.abi3.so.dbg
           mv hf_xet.abi3.so.dbg.musllinux-${{ matrix.platform.target }}.zip ../hf_xet/dbg/
       - name: Upload debug symbols
+        if: env.IS_RELEASE == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: dbg-musllinux-${{ matrix.platform.target }}
@@ -197,11 +207,14 @@ jobs:
           if [ -n "$VERSION" ]; then
             sed -i '/^version /s/=.*$/= "'"$VERSION"'"/' hf_xet/Cargo.toml
           fi
+      - uses: ./.github/actions/set-build-profile
+        with:
+          tag: ${{ github.event.inputs.tag }}
       - name: Build wheels
         uses: PyO3/maturin-action@v1
         with:
           target: ${{ matrix.platform.target }}
-          args: --release --out dist
+          args: --profile ${{ env.BUILD_PROFILE }} --out dist
           sccache: 'true'
           working-directory: hf_xet
       - name: Copy debug symbols
@@ -243,14 +256,18 @@ jobs:
           if [ -n "$VERSION" ]; then
             sed -i '' '/^version /s/=.*$/= "'"$VERSION"'"/' hf_xet/Cargo.toml
           fi
+      - uses: ./.github/actions/set-build-profile
+        with:
+          tag: ${{ github.event.inputs.tag }}
       - name: Build wheels
         uses: PyO3/maturin-action@v1
         with:
           target: ${{ matrix.platform.target }}
-          args: --profile release-dbgsymbols --strip --out dist
+          args: --profile ${{ env.BUILD_PROFILE }} --strip --out dist
           sccache: 'true'
           working-directory: hf_xet
       - name: Retarget and copy debug symbols
+        if: env.IS_RELEASE == 'true'
         run: |
           TARGET=${{ matrix.platform.target }}
           mkdir hf_xet/dbg
@@ -259,6 +276,7 @@ jobs:
           zip -r libhf_xet.dylib.dSYM.macos-${TARGET}.zip libhf_xet.dylib.dSYM
           cp libhf_xet.dylib.dSYM.macos-${TARGET}.zip ../../../../dbg/
       - name: Upload debug symbols
+        if: env.IS_RELEASE == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: dbg-macos-${{ matrix.platform.target }}

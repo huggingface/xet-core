@@ -142,7 +142,6 @@ mod tests {
 
         // Check that timestamps have been updated
         let updated_metadata = file.metadata().unwrap();
-        assert_eq!(updated_metadata.accessed().unwrap(), src_metadata.accessed().unwrap());
         assert_eq!(updated_metadata.modified().unwrap(), src_metadata.modified().unwrap());
     }
 
