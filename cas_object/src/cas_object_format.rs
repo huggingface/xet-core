@@ -18,6 +18,7 @@ use tracing::warn;
 use utils::serialization_utils::*;
 
 use crate::cas_chunk_format::{deserialize_chunk, serialize_chunk};
+use crate::constants::CAS_OBJECT_COMPRESSION_SCHEME_RETEST_INTERVAL;
 use crate::error::{CasObjectError, Validate};
 use crate::{CASChunkHeader, CompressionScheme};
 
@@ -1304,27 +1305,34 @@ impl SerializedCasObject {
         {
             let mut writer = Cursor::new(&mut serialized_data);
 
-            if compression_scheme.is_none() && !xorb.data.is_empty() {
+            // Set the periodic retesting interval
+            let retest_interval = if *CAS_OBJECT_COMPRESSION_SCHEME_RETEST_INTERVAL > 0 {
+                *CAS_OBJECT_COMPRESSION_SCHEME_RETEST_INTERVAL
+            } else {
+                num_chunks
+            };
+
+            if compression_scheme.is_none() && num_chunks != 0 {
                 debug_assert!(xorb.file_boundaries.is_sorted());
                 debug_assert_ge!(xorb.file_boundaries.len(), 0);
                 debug_assert_lt!(*xorb.file_boundaries.last().unwrap(), xorb.data.len());
 
                 for (f_idx, &start_idx) in xorb.file_boundaries.iter().enumerate() {
-                    let next_idx = {
-                        if (f_idx + 1) < xorb.file_boundaries.len() {
-                            xorb.file_boundaries[f_idx + 1]
-                        } else {
-                            xorb.data.len()
+                    let end_idx = *xorb.file_boundaries.get(f_idx + 1).unwrap_or(&num_chunks);
+
+                    let mut s_idx = start_idx;
+                    while s_idx < end_idx {
+                        let n_idx = (s_idx + retest_interval).min(end_idx);
+
+                        // Choose the compression scheme for this block.
+                        let compression_scheme = CompressionScheme::choose_from_data(&xorb.data[s_idx]);
+
+                        for chunk in &xorb.data[s_idx..n_idx] {
+                            // now serialize chunk directly to writer (since chunks come first!)
+                            serialize_chunk(chunk, &mut writer, Some(compression_scheme))?;
+                            cas.info.chunk_boundary_offsets.push(writer.stream_position()? as u32);
                         }
-                    };
-
-                    // Choose the compression scheme on this boundary.
-                    let compression_scheme = CompressionScheme::choose_from_data(&xorb.data[start_idx]);
-
-                    for chunk in &xorb.data[start_idx..next_idx] {
-                        // now serialize chunk directly to writer (since chunks come first!)
-                        serialize_chunk(chunk, &mut writer, Some(compression_scheme))?;
-                        cas.info.chunk_boundary_offsets.push(writer.stream_position()? as u32);
+                        s_idx = n_idx;
                     }
                 }
             } else {
