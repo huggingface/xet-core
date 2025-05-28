@@ -18,4 +18,5 @@ RUSTFLAGS='-C target-feature=+atomics,+bulk-memory,+mutable-globals --cfg getran
 RUSTFLAGS='--cfg getrandom_backend="wasm_js"' wasm-bindgen \
     target/wasm32-unknown-unknown/release/examples/simple.wasm \
     --out-dir ./examples/target/ \
+    --typescript \
     --target web

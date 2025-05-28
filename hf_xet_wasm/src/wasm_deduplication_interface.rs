@@ -87,7 +87,7 @@ impl DeduplicationDataInterface for UploadSessionDataManager {
                     let _ = keyed_shard.add_cas_block(ci);
                 }
 
-                any_result = true;
+                any_result = true
             }
         }
 

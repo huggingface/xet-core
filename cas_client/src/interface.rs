@@ -1,5 +1,7 @@
+#[cfg(not(target_family = "wasm"))]
 use mdb_shard::shard_file_reconstructor::FileReconstructor;
 
+#[cfg(not(target_family = "wasm"))]
 use crate::CasClientError;
 
 /// A Client to the Shard service. The shard service

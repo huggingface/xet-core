@@ -1,5 +1,3 @@
-// #![cfg(target_arch = "wasm32")]
-
 use std::result::Result as stdResult;
 use std::sync::Arc;
 

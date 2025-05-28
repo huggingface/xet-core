@@ -57,8 +57,8 @@ impl FileUploadSession {
         }
     }
 
-    pub fn start_clean(self: &Arc<Self>) -> SingleFileCleaner {
-        SingleFileCleaner::new(self.clone())
+    pub fn start_clean(self: &Arc<Self>, tracker: String) -> SingleFileCleaner {
+        SingleFileCleaner::new(self.clone(), tracker)
     }
 
     pub(crate) async fn register_single_file_clean_completion(

@@ -1,8 +1,7 @@
 use std::fmt::Debug;
 use std::sync::Arc;
+#[cfg(not(target_family = "wasm"))]
 use std::time::{SystemTime, UNIX_EPOCH};
-
-use async_trait::async_trait;
 
 use crate::errors::AuthError;
 
@@ -11,7 +10,8 @@ use crate::errors::AuthError;
 pub type TokenInfo = (String, u64);
 
 /// Helper to provide auth tokens to CAS.
-#[async_trait]
+#[cfg_attr(not(target_family = "wasm"), async_trait::async_trait)]
+#[cfg_attr(target_family = "wasm", async_trait::async_trait(?Send))]
 pub trait TokenRefresher: Debug + Send + Sync {
     /// Get a new auth token for CAS and the unixtime (in seconds) for expiration
     async fn refresh(&self) -> Result<TokenInfo, AuthError>;
@@ -20,7 +20,8 @@ pub trait TokenRefresher: Debug + Send + Sync {
 #[derive(Debug)]
 pub struct NoOpTokenRefresher;
 
-#[async_trait]
+#[cfg_attr(not(target_family = "wasm"), async_trait::async_trait)]
+#[cfg_attr(target_family = "wasm", async_trait::async_trait(?Send))]
 impl TokenRefresher for NoOpTokenRefresher {
     async fn refresh(&self) -> Result<TokenInfo, AuthError> {
         Ok(("token".to_string(), 0))
@@ -30,7 +31,8 @@ impl TokenRefresher for NoOpTokenRefresher {
 #[derive(Debug)]
 pub struct ErrTokenRefresher;
 
-#[async_trait]
+#[cfg_attr(not(target_family = "wasm"), async_trait::async_trait)]
+#[cfg_attr(target_family = "wasm", async_trait::async_trait(?Send))]
 impl TokenRefresher for ErrTokenRefresher {
     async fn refresh(&self) -> Result<TokenInfo, AuthError> {
         Err(AuthError::RefreshFunctionNotCallable("Token refresh not expected".to_string()))
@@ -90,7 +92,6 @@ impl TokenProvider {
     }
 
     pub async fn get_valid_token(&mut self) -> Result<String, AuthError> {
-        #[cfg(not(target_family = "wasm"))]
         if self.is_expired() {
             let (new_token, new_expiry) = self.refresher.refresh().await?;
             self.token = new_token;
@@ -99,10 +100,15 @@ impl TokenProvider {
         Ok(self.token.clone())
     }
 
-    #[cfg(not(target_family = "wasm"))]
     fn is_expired(&self) -> bool {
+        #[cfg(not(target_family = "wasm"))]
         let cur_time = SystemTime::now()
             .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(u64::MAX);
+        #[cfg(target_family = "wasm")]
+        let cur_time = web_time::SystemTime::now()
+            .duration_since(web_time::UNIX_EPOCH)
             .map(|d| d.as_secs())
             .unwrap_or(u64::MAX);
         self.expiration <= cur_time

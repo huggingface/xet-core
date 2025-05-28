@@ -10,7 +10,7 @@
  * @param {string} hf_token The HF token for auth
  * @returns {Promise<string>} A promise that resolves if the commit is successful, or rejects if an error occurs.
  */
-async function commit(file_name, sha256, file_size, repo_type, repo_id, revision, hf_token) {
+async function commit(endpoint, file_name, sha256, file_size, repo_type, repo_id, revision, hf_token) {
     const obj1 = {
         key: "header",
         value: {
@@ -32,7 +32,7 @@ async function commit(file_name, sha256, file_size, repo_type, repo_id, revision
     // Serialize to JSON string and concatenate with a newline.
     const body = `${JSON.stringify(obj1)}\n${JSON.stringify(obj2)}`;
 
-    const url = `https://huggingface.co/api/${repo_type}s/${repo_id}/commit/${revision}`;
+    const url = `${endpoint}/api/${repo_type}s/${repo_id}/commit/${revision}`;
 
     try {
         const response = await fetch(url, {
