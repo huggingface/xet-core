@@ -413,7 +413,6 @@ impl FileUploadSession {
         // Clear this out so the background aggregation session fully finishes.
         if let Some(pa) = &self.progress_aggregator {
             pa.finalize().await;
-
             debug_assert!(pa.is_finished().await);
         }
 

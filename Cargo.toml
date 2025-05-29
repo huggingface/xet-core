@@ -15,7 +15,7 @@ members = [
     "parutils",
     "progress_tracking",
     "utils",
-    "xet_threadpool"
+    "xet_threadpool",
 ]
 
 exclude = ["chunk_cache_bench", "hf_xet", "wasm_xet"]
@@ -93,9 +93,16 @@ uuid = "1"
 url = "2.5"
 walkdir = "2"
 whoami = "1"
+heapify = "0.2"
 
 # windows
-winapi = { version = "0.3", features = ["winerror", "winnt", "handleapi", "processthreadsapi", "securitybaseapi"] }
+winapi = { version = "0.3", features = [
+    "winerror",
+    "winnt",
+    "handleapi",
+    "processthreadsapi",
+    "securitybaseapi",
+] }
 
 # dev-deps
 criterion = { version = "0.5", features = ["html_reports"] }
