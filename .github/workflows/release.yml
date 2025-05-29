@@ -207,14 +207,11 @@ jobs:
           if [ -n "$VERSION" ]; then
             sed -i '/^version /s/=.*$/= "'"$VERSION"'"/' hf_xet/Cargo.toml
           fi
-      - uses: ./.github/actions/set-build-profile
-        with:
-          tag: ${{ github.event.inputs.tag }}
       - name: Build wheels
         uses: PyO3/maturin-action@v1
         with:
           target: ${{ matrix.platform.target }}
-          args: --profile ${{ env.BUILD_PROFILE }} --out dist
+          args: --release --out dist
           sccache: 'true'
           working-directory: hf_xet
       - name: Copy debug symbols
