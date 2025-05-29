@@ -24,7 +24,7 @@ use progress_tracking::item_tracking::SingleItemProgressUpdater;
 use progress_tracking::upload_tracking::CompletionTracker;
 use reqwest::{Body, StatusCode, Url};
 use reqwest_middleware::ClientWithMiddleware;
-use tokio::sync::{mpsc, OwnedSemaphorePermit};
+use tokio::sync::{mpsc, OwnedSemaphorePermit, Semaphore};
 use tokio::task::{JoinHandle, JoinSet};
 use tracing::{debug, info, instrument};
 use utils::auth::AuthConfig;
@@ -44,10 +44,13 @@ pub const CAS_ENDPOINT: &str = "http://localhost:8080";
 pub const PREFIX_DEFAULT: &str = "default";
 
 utils::configurable_constants! {
+// Env (HF_XET_NUM_CONCURRENT_RANGE_GETS) to set the number of concurrent range gets.
+// setting this value to 0 disables the limit, this is not recommended as it may lead to errors
     ref NUM_CONCURRENT_RANGE_GETS: usize = GlobalConfigMode::HighPerformanceOption {
         standard: 16,
         high_performance: 100,
     };
+
 
     // Send a report of successful partial upload every 512kb.
     ref UPLOAD_REPORTING_BLOCK_SIZE : usize = 512 * 1024;
@@ -71,6 +74,7 @@ pub struct RemoteClient {
     conservative_authenticated_http_client: Arc<ClientWithMiddleware>,
     chunk_cache: Option<Arc<dyn ChunkCache>>,
     range_download_single_flight: RangeDownloadSingleFlight,
+    concurrent_gets_semaphore: Arc<Semaphore>,
     shard_cache_directory: PathBuf,
 }
 
@@ -102,6 +106,12 @@ impl RemoteClient {
             None
         };
         let range_download_single_flight = Arc::new(Group::new());
+        let num_range_gets = if *NUM_CONCURRENT_RANGE_GETS == 0 {
+            Semaphore::MAX_PERMITS // virtually no limit
+        } else {
+            *NUM_CONCURRENT_RANGE_GETS
+        };
+        let concurrent_gets_semaphore = Arc::new(Semaphore::new(num_range_gets));
 
         Self {
             endpoint: endpoint.to_string(),
@@ -118,6 +128,7 @@ impl RemoteClient {
             http_client: Arc::new(http_client::build_http_client(RetryConfig::default(), session_id).unwrap()),
             chunk_cache,
             range_download_single_flight,
+            concurrent_gets_semaphore,
             shard_cache_directory,
         }
     }
@@ -376,8 +387,10 @@ impl RemoteClient {
         let chunk_cache = self.chunk_cache.clone();
         let term_download_client = self.http_client.clone();
         let range_download_single_flight = self.range_download_single_flight.clone();
-        let download_scheduler = DownloadScheduler::new(*NUM_CONCURRENT_RANGE_GETS);
+        // min 1
+        let download_scheduler = DownloadSegmentLengthTuner::from_configurable_constants();
         let download_scheduler_clone = download_scheduler.clone();
+        let concurrent_gets_semaphore = self.concurrent_gets_semaphore.clone();
 
         let queue_dispatcher: JoinHandle<Result<()>> = tokio::spawn(async move {
             let mut remaining_total_len = total_len;
@@ -392,7 +405,7 @@ impl RemoteClient {
                     DownloadQueueItem::DownloadTask(term_download) => {
                         // acquire the permit before spawning the task, so that there's limited
                         // number of active downloads.
-                        let permit = download_scheduler_clone.download_permit().await?;
+                        let permit = concurrent_gets_semaphore.clone().acquire_owned().await?;
                         debug!("spawning 1 download task");
                         let future: JoinHandle<Result<(TermDownloadResult<Vec<u8>>, OwnedSemaphorePermit)>> =
                             tokio::spawn(async move {
@@ -525,11 +538,12 @@ impl RemoteClient {
         // After the above, a task that defines fetching the remainder of the file reconstruction info is enqueued,
         // which will execute after the first of the above term download tasks finishes.
         let term_download_client = self.http_client.clone();
-        let download_scheduler = DownloadScheduler::new(*NUM_CONCURRENT_RANGE_GETS);
+        let download_scheduler = DownloadSegmentLengthTuner::from_configurable_constants();
+        let concurrent_gets_semaphore = self.concurrent_gets_semaphore.clone();
 
         let process_result = move |result: TermDownloadResult<u64>,
                                    total_written: &mut u64,
-                                   download_scheduler: &DownloadScheduler|
+                                   download_scheduler: &DownloadSegmentLengthTuner|
               -> Result<u64> {
             let write_len = result.payload;
             *total_written += write_len;
@@ -558,7 +572,7 @@ impl RemoteClient {
                 DownloadQueueItem::DownloadTask(term_download) => {
                     // acquire the permit before spawning the task, so that there's limited
                     // number of active downloads.
-                    let permit = download_scheduler.download_permit().await?;
+                    let permit = concurrent_gets_semaphore.clone().acquire_owned().await?;
                     debug!("spawning 1 download task");
                     running_downloads.spawn(async move {
                         let data = term_download.run().await?;
