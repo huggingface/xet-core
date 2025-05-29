@@ -125,7 +125,6 @@ impl AggregatingProgressUpdater {
     }
 
     // Ensure everything is completed.
-    #[cfg(debug_assertions)]
     pub async fn is_finished(&self) -> bool {
         self.state.lock().await.finished && self.bg_update_loop_handle.lock().await.is_none()
     }
