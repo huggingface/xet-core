@@ -5,6 +5,8 @@ use futures::AsyncReadExt;
 use hf_xet_wasm::blob_reader::BlobReader;
 use hf_xet_wasm::configurations::{DataConfig, RepoSalt, ShardConfig, TranslatorConfig};
 use hf_xet_wasm::wasm_file_upload_session::FileUploadSession;
+use hf_xet_wasm::wasm_timer::Timer;
+use log::Level;
 use tokio::sync::mpsc;
 use utils::auth::AuthConfig;
 use wasm_bindgen::prelude::*;
@@ -13,7 +15,7 @@ use wasm_thread as thread;
 fn main() {
     #[cfg(target_arch = "wasm32")]
     {
-        console_log::init().unwrap();
+        console_log::init_with_level(Level::Info).unwrap();
         console_error_panic_hook::set_once();
     }
 
@@ -142,7 +144,10 @@ pub async fn test_async_blob_reader(file: web_sys::File) -> String {
 pub async fn clean_file(file: web_sys::File, endpoint: String, jwt_token: String, expiration: u64) -> String {
     log::debug!("clean_file called with {file:?}, {endpoint}, {jwt_token}, {expiration}");
 
+    let _timer = Timer::new_enforce_report("clean file main");
+
     let filename = file.name();
+    let filesize = file.size();
 
     let Ok(blob) = file.slice() else {
         log::error!("failed to convert a file to blob");
@@ -169,16 +174,19 @@ pub async fn clean_file(file: web_sys::File, endpoint: String, jwt_token: String
 
     let upload_session = Arc::new(FileUploadSession::new(Arc::new(config)));
 
-    let mut handle = upload_session.start_clean(filename);
+    let mut handle = upload_session.start_clean(filename, None);
 
     const READ_BUF_SIZE: usize = 8 * 1024 * 1024;
     let mut buf = vec![0u8; READ_BUF_SIZE];
     let mut total_read = 0;
+    let mut last_report = 0.;
     loop {
+        let _timer = Timer::new(format!("read file at {total_read}"));
         let Ok(bytes) = reader.read(&mut buf).await else {
             log::error!("failed to read from reader");
             return "".to_owned();
         };
+        drop(_timer);
         if bytes == 0 {
             break;
         }
@@ -192,7 +200,13 @@ pub async fn clean_file(file: web_sys::File, endpoint: String, jwt_token: String
             return "".to_owned();
         };
 
-        log::debug!("processed {total_read} bytes");
+        log::debug!("read {total_read} bytes");
+
+        let percentage = total_read as f64 / filesize * 100.;
+        if (percentage - last_report) > 10. {
+            log::info!("processing {percentage:.2}% of file");
+            last_report = percentage;
+        }
     }
     let Ok((file_hash, sha256, _metrics)) = handle.finish().await else {
         log::error!("failed to finish cleaner");

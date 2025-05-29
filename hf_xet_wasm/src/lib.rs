@@ -10,7 +10,7 @@ mod sha256;
 mod wasm_deduplication_interface;
 mod wasm_file_cleaner;
 pub mod wasm_file_upload_session;
-
+pub mod wasm_timer;
 mod xorb_uploader;
 
 pub use session::XetSession;

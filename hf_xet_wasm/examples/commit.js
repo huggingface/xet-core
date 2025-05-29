@@ -1,6 +1,7 @@
 /**
  * Commits a file to a Hugging Face dataset.
  *
+ * @param {string} hf_endpoint - The HF Hub endpoint.
  * @param {string} file_name The name of the file to commit.
  * @param {string} sha256 The SHA256 hash of the file (as a string).
  * @param {number} file_size The size of the file in bytes.
@@ -10,7 +11,7 @@
  * @param {string} hf_token The HF token for auth
  * @returns {Promise<string>} A promise that resolves if the commit is successful, or rejects if an error occurs.
  */
-async function commit(endpoint, file_name, sha256, file_size, repo_type, repo_id, revision, hf_token) {
+async function commit(hf_endpoint, file_name, sha256, file_size, repo_type, repo_id, revision, hf_token) {
     const obj1 = {
         key: "header",
         value: {
@@ -32,7 +33,7 @@ async function commit(endpoint, file_name, sha256, file_size, repo_type, repo_id
     // Serialize to JSON string and concatenate with a newline.
     const body = `${JSON.stringify(obj1)}\n${JSON.stringify(obj2)}`;
 
-    const url = `${endpoint}/api/${repo_type}s/${repo_id}/commit/${revision}`;
+    const url = `${hf_endpoint}/api/${repo_type}s/${repo_id}/commit/${revision}`;
 
     try {
         const response = await fetch(url, {

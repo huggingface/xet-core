@@ -13,8 +13,9 @@ use super::configurations::TranslatorConfig;
 use super::errors::*;
 use crate::wasm_file_cleaner::SingleFileCleaner;
 use crate::xorb_uploader::{XorbUploader, XorbUploaderSpawnParallel};
+use crate::wasm_timer::Timer;
 
-static UPLOAD_CONCURRENCY: usize = 1;
+static UPLOAD_CONCURRENCY: usize = 5;
 
 /// Manages the translation of files between the
 /// MerkleDB / pointer file format and the materialized version.
@@ -57,8 +58,8 @@ impl FileUploadSession {
         }
     }
 
-    pub fn start_clean(self: &Arc<Self>, tracker: String) -> SingleFileCleaner {
-        SingleFileCleaner::new(self.clone(), tracker)
+    pub fn start_clean(self: &Arc<Self>, tracker: String, sha256: Option<MerkleHash>) -> SingleFileCleaner {
+        SingleFileCleaner::new(self.clone(), tracker, sha256, true)
     }
 
     pub(crate) async fn register_single_file_clean_completion(
@@ -164,6 +165,7 @@ impl FileUploadSession {
 
         log::info!("shard hash: {shard_hash}, {} bytes", shard_data.len());
 
+        let _timer = Timer::new("upload shard");
         self.client
             .upload_shard(
                 &self.config.shard_config.prefix,

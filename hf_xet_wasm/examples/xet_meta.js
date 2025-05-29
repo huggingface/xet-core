@@ -27,16 +27,17 @@ function xetMetadataOrNone(jsonData) {
 }
 
 async function fetchXetMetadataFromRepoInfo({
-																							endpoint,
-																							tokenType,
-																							repoId,
-																							repoType,
-																							headers,
-																							params = null,
-																						}) {
+	hfEndpoint,
+	tokenType,
+	repoId,
+	repoType,
+	headers,
+	params = null
+}) {
 	/**
 	 * Uses the repo info to request a XET access token from Hub.
 	 *
+	 * @param {string} hfEndpoint - The HF Hub endpoint.
 	 * @param {string} tokenType - Type of the token to request: "read" or "write".
 	 * @param {string} repoId - A namespace (user or an organization) and a repo name separated by a `/`.
 	 * @param {string} repoType - Type of the repo to upload to: "model", "dataset", or "space".
@@ -46,7 +47,7 @@ async function fetchXetMetadataFromRepoInfo({
 	 * @throws {Error} If the Hub API returned an error or the response is improperly formatted.
 	 */
 
-	const url = `${endpoint}/api/${repoType}s/${repoId}/xet-${tokenType}-token/main`;
+	const url = `${hfEndpoint}/api/${repoType}s/${repoId}/xet-${tokenType}-token/main`;
 	console.log(`${url}`);
 
 	return fetchXetMetadataWithUrl(url, headers, params);

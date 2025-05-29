@@ -10,6 +10,7 @@ use mdb_shard::file_structs::FileDataSequenceEntry;
 use mdb_shard::shard_in_memory::MDBInMemoryShard;
 use mdb_shard::MDBShardInfo;
 use merklehash::{HMACKey, MerkleHash};
+use tokio_with_wasm::alias as wasmtokio;
 
 use super::errors::*;
 use super::wasm_file_upload_session::FileUploadSession;
@@ -17,7 +18,7 @@ use super::wasm_file_upload_session::FileUploadSession;
 pub struct UploadSessionDataManager {
     session: Arc<FileUploadSession>,
     shard: HashMap<HMACKey, MDBInMemoryShard>,
-    query_results: Vec<stdResult<Option<Vec<u8>>, CasClientError>>,
+    query_tasks: wasmtokio::task::JoinSet<stdResult<Option<Vec<u8>>, CasClientError>>,
 }
 
 impl UploadSessionDataManager {
@@ -25,7 +26,7 @@ impl UploadSessionDataManager {
         Self {
             session,
             shard: HashMap::default(),
-            query_results: vec![],
+            query_tasks: wasmtokio::task::JoinSet::new(),
         }
     }
 }
@@ -53,17 +54,14 @@ impl DeduplicationDataInterface for UploadSessionDataManager {
     /// Registers a new query for more information about the
     /// global deduplication.  This is expected to run in the background.
     async fn register_global_dedup_query(&mut self, chunk_hash: MerkleHash) -> Result<()> {
-        let ret = self
-            .session
-            .client
-            .query_for_global_dedup_shard_in_memory(
-                &self.session.config.shard_config.prefix,
-                &chunk_hash,
-                &self.session.config.shard_config.repo_salt,
-            )
-            .await;
-
-        self.query_results.push(ret);
+        let client = self.session.client.clone();
+        let prefix = self.session.config.shard_config.prefix.clone();
+        let repo_salt = self.session.config.shard_config.repo_salt.clone();
+        self.query_tasks.spawn(async move {
+            client
+                .query_for_global_dedup_shard_in_memory(&prefix, &chunk_hash, &repo_salt)
+                .await
+        });
 
         Ok(())
     }
@@ -72,8 +70,8 @@ impl DeduplicationDataInterface for UploadSessionDataManager {
     /// new deduplication information available.
     async fn complete_global_dedup_queries(&mut self) -> Result<bool> {
         let mut any_result = false;
-        for ret in std::mem::take(&mut self.query_results) {
-            if let Some(serialized_shard) = ret? {
+        for ret in self.query_tasks.join_next().await {
+            if let Some(serialized_shard) = ret.map_err(DataProcessingError::internal)?? {
                 let mut reader = Cursor::new(serialized_shard);
                 let shard_info = MDBShardInfo::load_from_reader(&mut reader)?;
 

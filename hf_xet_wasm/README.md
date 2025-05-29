@@ -9,7 +9,9 @@ cargo install wasm-bindgen-cli
 - Build with `./build_wasm.sh` (bash) 
 
 #### Run Instructions
-Serve the web directory using a local http server, for example, https://crates.io/crates/sfz.
+First fill up the four `[FILL_ME]` fields in examples/index.html with a desired testing target.
+
+Then serve the web directory using a local http server, for example, https://crates.io/crates/sfz.
 
 - Install sfz:
 ```bash

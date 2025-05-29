@@ -8,6 +8,7 @@ use tokio::sync::Semaphore;
 use tokio_with_wasm::alias as wasmtokio;
 
 use crate::errors::*;
+use crate::wasm_timer::Timer;
 
 type XorbUploadType = (MerkleHash, Vec<u8>, Vec<(MerkleHash, u32)>);
 
@@ -74,8 +75,14 @@ impl XorbUploader for XorbUploaderSpawnParallel {
 
         let client = self.client.clone();
         let cas_prefix = self.cas_prefix.clone();
-        let permit = self.semaphore.clone().acquire_owned();
+        let permit = self
+            .semaphore
+            .clone()
+            .acquire_owned()
+            .await
+            .map_err(DataProcessingError::internal)?;
         self.tasks.spawn(async move {
+            let _timer = Timer::new(format!("upload xorb {}", input.0));
             let ret = client.put(&cas_prefix, &input.0, input.1, input.2).await;
             drop(permit);
             ret

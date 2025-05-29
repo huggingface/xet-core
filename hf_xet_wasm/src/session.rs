@@ -67,7 +67,7 @@ impl XetSession {
     #[wasm_bindgen(js_name = "uploadFileFromBlob")]
     pub async fn upload_file_from_blob(&mut self, tracker_id: String, blob: Blob) -> Result<JsValue, JsValue> {
         // read from blob async
-        let mut cleaner = self.upload.start_clean(tracker_id);
+        let mut cleaner = self.upload.start_clean(tracker_id, None);
 
         let mut reader = BlobReader::new(blob)?;
 
