@@ -7,7 +7,6 @@ use crate::progress_info::{ItemProgressUpdate, ProgressUpdate};
 use crate::TrackingProgressUpdater;
 
 /// This wraps a TrackingProgressUpdater, translating per-item updates to a full progress report.
-#[derive(Debug)]
 pub struct ItemProgressUpdater {
     total_bytes: AtomicU64,
     total_bytes_completed: AtomicU64,
@@ -64,6 +63,7 @@ impl ItemProgressUpdater {
                 total_transfer_bytes_increment: 0,
                 total_transfer_bytes_completed: total_bytes_completed,
                 total_transfer_bytes_completion_increment: update_increment,
+                ..Default::default()
             })
             .await;
     }
@@ -85,6 +85,7 @@ impl ItemProgressUpdater {
                 total_transfer_bytes_increment: increase_byte_total,
                 total_transfer_bytes_completed: total_bytes_completed,
                 total_transfer_bytes_completion_increment: 0,
+                ..Default::default()
             })
             .await;
     }
@@ -92,7 +93,6 @@ impl ItemProgressUpdater {
 
 /// This struct allows us to wrap the larger progress updater in a simple form for
 /// specific items.
-#[derive(Debug)]
 pub struct SingleItemProgressUpdater {
     item_name: Arc<str>,
     n_bytes: AtomicU64,

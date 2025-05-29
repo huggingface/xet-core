@@ -89,6 +89,10 @@ pub struct PyTotalProgressUpdate {
     #[pyo3(get)]
     pub total_bytes_completion_increment: u64,
 
+    /// If known, the current completion speed.
+    #[pyo3(get)]
+    pub total_bytes_completion_rate: Option<f64>,
+
     /// The total bytes scheduled for transfer; also contained in total_bytes.
     #[pyo3(get)]
     pub total_transfer_bytes: u64,
@@ -104,6 +108,10 @@ pub struct PyTotalProgressUpdate {
     /// The change in total_transfer_bytes_completed since the last update.
     #[pyo3(get)]
     pub total_transfer_bytes_completion_increment: u64,
+
+    /// If known, the current completion speed for bytes transferred.
+    #[pyo3(get)]
+    pub total_transfer_bytes_completion_rate: Option<f64>,
 }
 
 /// A wrapper over a passed-in python function to update
@@ -225,11 +233,13 @@ impl WrappedProgressUpdaterImpl {
                             total_bytes_increment: updates.total_bytes_increment,
                             total_bytes_completed: updates.total_bytes_completed,
                             total_bytes_completion_increment: updates.total_bytes_completion_increment,
+                            total_bytes_completion_rate: updates.total_bytes_completion_rate,
                             total_transfer_bytes: updates.total_transfer_bytes,
                             total_transfer_bytes_increment: updates.total_transfer_bytes_increment,
                             total_transfer_bytes_completed: updates.total_transfer_bytes_completed,
                             total_transfer_bytes_completion_increment: updates
                                 .total_transfer_bytes_completion_increment,
+                            total_transfer_bytes_completion_rate: updates.total_transfer_bytes_completion_rate,
                         },
                     )?
                     .into_py_any(py)?;
