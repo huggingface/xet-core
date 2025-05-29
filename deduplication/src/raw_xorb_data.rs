@@ -16,11 +16,14 @@ pub struct RawXorbData {
 
     /// The cas info associated with the current xorb.
     pub cas_info: MDBCASInfo,
+
+    /// The indices where a new file starts, to be used for the compression heuristic.
+    pub file_boundaries: Vec<usize>,
 }
 
 impl RawXorbData {
     // Construct from raw chunks.  chunk data from raw chunks.
-    pub fn from_chunks(chunks: &[Chunk]) -> Self {
+    pub fn from_chunks(chunks: &[Chunk], file_boundaries: Vec<usize>) -> Self {
         debug_assert_le!(chunks.len(), *MAX_XORB_CHUNKS);
 
         let mut data = Vec::with_capacity(chunks.len());
@@ -48,7 +51,11 @@ impl RawXorbData {
             chunks: chunk_seq_entries,
         };
 
-        RawXorbData { data, cas_info }
+        RawXorbData {
+            data,
+            cas_info,
+            file_boundaries,
+        }
     }
 
     pub fn hash(&self) -> MerkleHash {

@@ -21,6 +21,7 @@ merkledb = { path = "../merkledb" }
 merklehash = { path = "../merklehash" }
 utils = { path = "../utils" }
 
+more-asserts = { workspace = true }
 anyhow = { workspace = true }
 blake3 = { workspace = true }
 bytes = { workspace = true }
