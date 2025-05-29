@@ -6,10 +6,12 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, SystemTime};
 
+use heapify::{make_heap_with, pop_heap_with};
 use merklehash::{compute_data_hash, HMACKey, HashedWrite, MerkleHash};
 use tracing::{debug, error, info, warn};
 
 use crate::cas_structs::CASChunkSequenceHeader;
+use crate::constants::MDB_SHARD_EXPIRATION_BUFFER_SECS;
 use crate::error::{MDBShardError, Result};
 use crate::file_structs::{FileDataSequenceEntry, MDBFileInfo};
 use crate::shard_file::current_timestamp;
@@ -37,6 +39,10 @@ impl Default for MDBShardFile {
             last_modified_time: SystemTime::UNIX_EPOCH,
         }
     }
+}
+
+lazy_static::lazy_static! {
+    static ref MDB_SHARD_FILE_CACHE: RwLock<HashMap<PathBuf, Arc<MDBShardFile>>> = RwLock::new(HashMap::default());
 }
 
 impl MDBShardFile {
@@ -93,11 +99,21 @@ impl MDBShardFile {
         target_directory: impl AsRef<Path>,
         shard_valid_for: Duration,
     ) -> Result<Arc<Self>> {
+        let now = SystemTime::now();
+        self.export_with_specific_expiration(target_directory, now.add(shard_valid_for), now)
+    }
+
+    pub fn export_with_specific_expiration(
+        &self,
+        target_directory: impl AsRef<Path>,
+        expiration: SystemTime,
+        creation_time: SystemTime,
+    ) -> Result<Arc<Self>> {
         // New footer with the proper expiration added.
         let mut out_footer = self.shard.metadata.clone();
 
-        out_footer.shard_key_expiry = SystemTime::now()
-            .add(shard_valid_for)
+        out_footer.shard_key_expiry = expiration.duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs();
+        out_footer.shard_creation_timestamp = creation_time
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs();
@@ -114,10 +130,6 @@ impl MDBShardFile {
     }
 
     fn load_from_hash_and_path(shard_hash: MerkleHash, path: &Path) -> Result<Arc<Self>> {
-        lazy_static::lazy_static! {
-            static ref MDB_SHARD_FILE_CACHE: RwLock<HashMap<PathBuf, Arc<MDBShardFile>>> = RwLock::new(HashMap::default());
-        }
-
         let path = std::path::absolute(path)?;
 
         // First see if it's in the shard file cache.
@@ -142,6 +154,10 @@ impl MDBShardFile {
         Ok(sf)
     }
 
+    fn drop_from_cache(sf: Arc<Self>) {
+        MDB_SHARD_FILE_CACHE.write().unwrap().remove_entry(&sf.path);
+    }
+
     /// Loads the MDBShardFile struct from a file path
     pub fn load_from_file(path: &Path) -> Result<Arc<Self>> {
         if let Some(shard_hash) = parse_shard_filename(path.to_str().unwrap()) {
@@ -152,26 +168,69 @@ impl MDBShardFile {
     }
 
     pub fn load_all_valid(path: impl AsRef<Path>) -> Result<Vec<Arc<Self>>> {
-        Self::load_all(path, false)
+        Self::load_managed_directory(path, false, false, 0)
     }
 
-    fn load_all(path: impl AsRef<Path>, load_expired: bool) -> Result<Vec<Arc<Self>>> {
+    pub fn load_managed_directory(
+        path: impl AsRef<Path>,
+        load_expired: bool,
+        prune_expired: bool,
+        prune_dir_storage_to_size: u64,
+    ) -> Result<Vec<Arc<Self>>> {
         let current_time = current_timestamp();
+        let expiration_buffer = *MDB_SHARD_EXPIRATION_BUFFER_SECS;
 
-        let mut ret = Vec::new();
+        let mut ret: Vec<Arc<MDBShardFile>> = Vec::new();
+
+        let mut total_size = 0;
 
         Self::scan_impl(path, |s| {
             if load_expired || current_time <= s.shard.metadata.shard_key_expiry {
+                total_size += s.shard.num_bytes();
                 ret.push(s);
+            } else if prune_expired
+                && s.shard.metadata.shard_key_expiry.saturating_add(expiration_buffer) <= current_time
+            {
+                info!("Deleting expired shard {:?}", &s.path);
+                let _ = std::fs::remove_file(&s.path);
+                Self::drop_from_cache(s);
             }
 
             Ok(())
         })?;
 
+        // Do we need to prune the directory to keep things down to size?
+        if prune_dir_storage_to_size != 0 && total_size > prune_dir_storage_to_size {
+            // Flush out the oldest ones first using a heap.
+
+            let heap_predicate = |s1: &Arc<MDBShardFile>, s2: &Arc<MDBShardFile>| {
+                // Compare in reverse so pop is done from earliest shard
+                s2.shard
+                    .metadata
+                    .shard_creation_timestamp
+                    .partial_cmp(&s1.shard.metadata.shard_creation_timestamp)
+            };
+
+            // Turn the return shards into a heap around the shard creation timestamp
+            make_heap_with(&mut ret, heap_predicate);
+
+            while total_size > prune_dir_storage_to_size {
+                pop_heap_with(&mut ret, heap_predicate);
+                let Some(s) = ret.pop() else {
+                    break;
+                };
+
+                info!("Pruning shard to maintain cache size: {:?}", &s.path);
+                total_size -= s.shard.num_bytes();
+                let _ = std::fs::remove_file(&s.path);
+                Self::drop_from_cache(s);
+            }
+        }
+
         Ok(ret)
     }
 
-    pub fn clean_expired_shards(path: impl AsRef<Path>, expiration_buffer_secs: u64) -> Result<()> {
+    pub fn clean_shard_cache(path: impl AsRef<Path>, expiration_buffer_secs: u64) -> Result<()> {
         let current_time = current_timestamp();
 
         Self::scan_impl(path, |s| {
