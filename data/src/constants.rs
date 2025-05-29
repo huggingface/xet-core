@@ -36,9 +36,9 @@ utils::configurable_constants! {
     /// The maximum block size from a file to process at once.
     ref INGESTION_BLOCK_SIZE : usize = 8 * 1024 * 1024;
 
-    /// How often to send updates on file progress, in milliseconds.  If zero, then
-    /// disable aggregation.
-    ref PROGRESS_UPDATE_INTERVAL_MS : u64 = 500;
+    /// How often to send updates on file progress, in milliseconds.  Disables batching
+    /// if set to 0.
+    ref PROGRESS_UPDATE_INTERVAL_MS : u64 = 200;
 
     /// How often do we flush new xorb data to disk on a long running upload session?
     ref SESSION_XORB_METADATA_FLUSH_INTERVAL_SECS : u64 = 20;

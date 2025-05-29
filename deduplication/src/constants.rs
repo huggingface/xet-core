@@ -20,3 +20,8 @@ utils::configurable_constants! {
     /// can be much higher when there are a lot of small files.
     ref MAX_XORB_CHUNKS: usize = 8 * 1024;
 }
+
+lazy_static! {
+    /// The maximum chunk size, calculated from the configurable constants above
+    pub static ref MAX_CHUNK_SIZE: usize = (*TARGET_CHUNK_SIZE) * *(MAXIMUM_CHUNK_MULTIPLIER);
+}

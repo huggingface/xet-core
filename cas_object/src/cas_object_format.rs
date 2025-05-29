@@ -12,11 +12,13 @@ use merkledb::constants::{IDEAL_CAS_BLOCK_SIZE, TARGET_CDC_CHUNK_SIZE};
 use merkledb::prelude::MerkleDBHighLevelMethodsV1;
 use merkledb::{Chunk, MerkleMemDB};
 use merklehash::{DataHash, MerkleHash};
+use more_asserts::*;
 use serde::Serialize;
 use tracing::warn;
 use utils::serialization_utils::*;
 
 use crate::cas_chunk_format::{deserialize_chunk, serialize_chunk};
+use crate::constants::CAS_OBJECT_COMPRESSION_SCHEME_RETEST_INTERVAL;
 use crate::error::{CasObjectError, Validate};
 use crate::{CASChunkHeader, CompressionScheme};
 
@@ -1303,10 +1305,42 @@ impl SerializedCasObject {
         {
             let mut writer = Cursor::new(&mut serialized_data);
 
-            for chunk in xorb.data {
-                // now serialize chunk directly to writer (since chunks come first!)
-                serialize_chunk(&chunk, &mut writer, compression_scheme)?;
-                cas.info.chunk_boundary_offsets.push(writer.stream_position()? as u32);
+            // Set the periodic retesting interval
+            let retest_interval = if *CAS_OBJECT_COMPRESSION_SCHEME_RETEST_INTERVAL > 0 {
+                *CAS_OBJECT_COMPRESSION_SCHEME_RETEST_INTERVAL
+            } else {
+                num_chunks
+            };
+
+            if compression_scheme.is_none() && num_chunks != 0 {
+                debug_assert!(xorb.file_boundaries.is_sorted());
+                debug_assert_ge!(xorb.file_boundaries.len(), 0);
+                debug_assert_lt!(*xorb.file_boundaries.last().unwrap(), xorb.data.len());
+
+                for (f_idx, &start_idx) in xorb.file_boundaries.iter().enumerate() {
+                    let end_idx = *xorb.file_boundaries.get(f_idx + 1).unwrap_or(&num_chunks);
+
+                    let mut s_idx = start_idx;
+                    while s_idx < end_idx {
+                        let n_idx = (s_idx + retest_interval).min(end_idx);
+
+                        // Choose the compression scheme for this block.
+                        let compression_scheme = CompressionScheme::choose_from_data(&xorb.data[s_idx]);
+
+                        for chunk in &xorb.data[s_idx..n_idx] {
+                            // now serialize chunk directly to writer (since chunks come first!)
+                            serialize_chunk(chunk, &mut writer, Some(compression_scheme))?;
+                            cas.info.chunk_boundary_offsets.push(writer.stream_position()? as u32);
+                        }
+                        s_idx = n_idx;
+                    }
+                }
+            } else {
+                for chunk in xorb.data {
+                    // now serialize chunk directly to writer (since chunks come first!)
+                    serialize_chunk(&chunk, &mut writer, compression_scheme)?;
+                    cas.info.chunk_boundary_offsets.push(writer.stream_position()? as u32);
+                }
             }
 
             // Fill in the boundary offsets
@@ -1484,7 +1518,7 @@ pub mod test_utils {
             });
         }
 
-        RawXorbData::from_chunks(&chunks)
+        RawXorbData::from_chunks(&chunks, vec![0])
 
         // Now, validate that this is actually the same
     }

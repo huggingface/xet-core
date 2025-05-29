@@ -4,7 +4,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use cas_client::Client;
-use cas_object::{CompressionScheme, SerializedCasObject, NUM_COMPRESSION_SCHEMES};
+use cas_object::SerializedCasObject;
 use deduplication::constants::{MAX_XORB_BYTES, MAX_XORB_CHUNKS};
 use deduplication::{DataAggregator, DeduplicationMetrics, RawXorbData};
 use jsonwebtoken::{decode, DecodingKey, Validation};
@@ -69,6 +69,9 @@ pub struct FileUploadSession {
     /// Tracking upload completion between xorbs and files.
     pub(crate) completion_tracker: Arc<CompletionTracker>,
 
+    /// Session aggregation
+    progress_aggregator: Option<Arc<AggregatingProgressUpdater>>,
+
     /// Deduplicated data shared across files.
     current_session_data: Mutex<DataAggregator>,
 
@@ -78,14 +81,8 @@ pub struct FileUploadSession {
     /// Internal worker
     xorb_upload_tasks: Mutex<JoinSet<Result<()>>>,
 
-    /// The current compression scheme in use. If initialized to None,
-    /// This may change as upload progresses and statistics about the
-    /// preferred scheme is collected. Currently we use the 1st Xorb
-    /// to determine the compression scheme. Then lock it from then on.
-    compression_scheme: Mutex<Option<CompressionScheme>>,
-
     #[cfg(debug_assertions)]
-    progress_verification_tracker: Arc<ProgressUpdaterVerificationWrapper>,
+    progress_verifier: Arc<ProgressUpdaterVerificationWrapper>,
 }
 
 // Constructors
@@ -115,17 +112,19 @@ impl FileUploadSession {
             .map(Cow::Borrowed)
             .unwrap_or_else(|| Cow::Owned(Ulid::new().to_string()));
 
-        let progress_updater: Arc<dyn TrackingProgressUpdater> = {
+        let (progress_updater, progress_aggregator): (Arc<dyn TrackingProgressUpdater>, Option<_>) = {
             match upload_progress_updater {
                 Some(updater) => {
                     let update_seconds = *PROGRESS_UPDATE_INTERVAL_MS;
                     if update_seconds != 0 {
-                        AggregatingProgressUpdater::new(updater, Duration::from_millis(update_seconds))
+                        let aggregator =
+                            AggregatingProgressUpdater::new(updater, Duration::from_millis(update_seconds));
+                        (aggregator.clone(), Some(aggregator))
                     } else {
-                        updater
+                        (updater, None)
                     }
                 },
-                None => Arc::new(NoOpProgressUpdater),
+                None => (Arc::new(NoOpProgressUpdater), None),
             }
         };
 
@@ -160,7 +159,6 @@ impl FileUploadSession {
                 decoded.claims.get("repoId").and_then(|value| value.as_str().map(String::from))
             })
         });
-        let compression_scheme = Mutex::new(config.data_config.compression);
 
         Ok(Arc::new(Self {
             shard_interface,
@@ -168,13 +166,13 @@ impl FileUploadSession {
             repo_id,
             config,
             completion_tracker,
+            progress_aggregator,
             current_session_data: Mutex::new(DataAggregator::default()),
             deduplication_metrics: Mutex::new(DeduplicationMetrics::default()),
             xorb_upload_tasks: Mutex::new(JoinSet::new()),
-            compression_scheme,
 
             #[cfg(debug_assertions)]
-            progress_verification_tracker,
+            progress_verifier: progress_verification_tracker,
         }))
     }
 
@@ -243,28 +241,10 @@ impl FileUploadSession {
         let xorb_cas_info = Arc::new(xorb.cas_info.clone());
         self.shard_interface.add_cas_block(xorb_cas_info.clone()).await?;
 
-        let mut compression_scheme = *self.compression_scheme.lock().await;
-        // if compression scheme is None, we use the first Xorb to determine
-        // the appropriate scheme and lock it for all remaining xorbs.
-        if compression_scheme.is_none() {
-            let mut compression_scheme_vote = [0_usize; NUM_COMPRESSION_SCHEMES];
-            for i in xorb.data.iter() {
-                let scheme = CompressionScheme::choose_from_data(i);
-                compression_scheme_vote[scheme as usize] += 1;
-            }
-            let mut prefered_scheme = 0;
-            for i in 1..NUM_COMPRESSION_SCHEMES {
-                if compression_scheme_vote[i] > compression_scheme_vote[prefered_scheme] {
-                    prefered_scheme = i;
-                }
-            }
-            compression_scheme = Some(CompressionScheme::try_from(prefered_scheme as u8).unwrap());
-            *self.compression_scheme.lock().await = compression_scheme;
-        }
-
         let xorb_hash = xorb.hash();
 
         // Serialize the object; this can be relatively expensive, so run it on a compute thread.
+        let compression_scheme = self.config.data_config.compression;
         let cas_object =
             tokio::task::spawn_blocking(move || SerializedCasObject::from_xorb(xorb, compression_scheme)).await??;
 
@@ -424,11 +404,17 @@ impl FileUploadSession {
             self.completion_tracker.assert_complete().await;
 
             // Checks that all the progress updates were received correctly.
-            self.progress_verification_tracker.assert_complete().await;
+            self.progress_verifier.assert_complete().await;
         }
 
         // Make sure all the updates have been flushed through.
         self.completion_tracker.flush().await;
+
+        // Clear this out so the background aggregation session fully finishes.
+        if let Some(pa) = &self.progress_aggregator {
+            pa.finalize().await;
+            debug_assert!(pa.is_finished().await);
+        }
 
         Ok((metrics, all_file_info))
     }

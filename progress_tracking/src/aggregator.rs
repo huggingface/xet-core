@@ -26,19 +26,22 @@ use crate::{ProgressUpdate, TrackingProgressUpdater};
 /// aggregator.register_updates(my_update).await;
 #[derive(Debug)]
 pub struct AggregatingProgressUpdater {
-    inner: Arc<dyn TrackingProgressUpdater>,
+    inner: Option<Arc<dyn TrackingProgressUpdater>>,
     state: Arc<Mutex<AggregationState>>,
-    _bg_update_loop: JoinHandle<()>,
+    bg_update_loop_handle: Mutex<Option<JoinHandle<()>>>,
 }
 
 #[derive(Debug, Default)]
 struct AggregationState {
     pending: ProgressUpdate,
     item_lookup: HashMap<Arc<str>, usize>,
+    finished: bool,
 }
 
 impl AggregationState {
     fn merge_in(&mut self, mut other: ProgressUpdate) {
+        debug_assert!(!self.finished);
+
         for item in other.item_updates.drain(..) {
             match self.item_lookup.entry(item.item_name.clone()) {
                 HashMapEntry::Occupied(entry) => {
@@ -56,32 +59,48 @@ impl AggregationState {
 }
 
 impl AggregatingProgressUpdater {
-    pub fn new(inner: Arc<dyn TrackingProgressUpdater>, update_interval: Duration) -> Arc<Self> {
+    /// Start a new aggregating progress updater that flushes the updates to  
+    pub fn new(inner: Arc<dyn TrackingProgressUpdater>, flush_interval: Duration) -> Arc<Self> {
         let state = Arc::new(Mutex::new(AggregationState::default()));
         let state_clone = Arc::clone(&state);
         let inner_clone = Arc::clone(&inner);
 
         let bg_update_loop = tokio::spawn(async move {
-            let mut interval = tokio::time::interval_at(Instant::now() + update_interval, update_interval);
+            // Wake up every 100ms to check to see if we're complete.
+            let mut interval = tokio::time::interval_at(Instant::now() + flush_interval, flush_interval);
 
             loop {
                 interval.tick().await;
-                Self::flush_inner(&inner_clone, &state_clone).await;
+                let is_complete = Self::flush_impl(&inner_clone, &state_clone).await;
+
+                if is_complete {
+                    break;
+                }
             }
         });
 
         Arc::new(Self {
-            inner,
+            inner: Some(inner),
             state,
-            _bg_update_loop: bg_update_loop,
+            bg_update_loop_handle: Mutex::new(Some(bg_update_loop)),
         })
     }
 
-    async fn flush_inner(inner: &Arc<dyn TrackingProgressUpdater>, state: &Arc<Mutex<AggregationState>>) {
+    /// Creates a class that only aggregates the stats to be used to hold and track the total stats during and after a
+    /// session.
+    pub fn new_aggregation_only() -> Arc<Self> {
+        Arc::new(Self {
+            inner: None,
+            state: Arc::new(Mutex::new(AggregationState::default())),
+            bg_update_loop_handle: Mutex::new(None),
+        })
+    }
+
+    async fn get_aggregated_state_impl(state: &Arc<Mutex<AggregationState>>) -> (ProgressUpdate, bool) {
         let mut state_guard = state.lock().await;
 
         if state_guard.pending.is_empty() {
-            return;
+            return (ProgressUpdate::default(), state_guard.finished);
         }
 
         let flushed = std::mem::take(&mut state_guard.pending);
@@ -92,9 +111,31 @@ impl AggregatingProgressUpdater {
         // Clear out the lookup table.
         state_guard.item_lookup.clear();
 
-        drop(state_guard); // Release lock before await
+        (flushed, state_guard.finished)
+    }
 
+    async fn flush_impl(inner: &Arc<dyn TrackingProgressUpdater>, state: &Arc<Mutex<AggregationState>>) -> bool {
+        let (flushed, is_complete) = Self::get_aggregated_state_impl(state).await;
         inner.register_updates(flushed).await;
+        is_complete
+    }
+
+    pub async fn get_aggregated_state(&self) -> ProgressUpdate {
+        Self::get_aggregated_state_impl(&self.state).await.0
+    }
+
+    // Ensure everything is completed.
+    #[cfg(debug_assertions)]
+    pub async fn is_finished(&self) -> bool {
+        self.state.lock().await.finished && self.bg_update_loop_handle.lock().await.is_none()
+    }
+
+    pub async fn finalize(&self) {
+        self.state.lock().await.finished = true;
+
+        if let Some(bg_jh) = self.bg_update_loop_handle.lock().await.take() {
+            let _ = bg_jh.await;
+        }
     }
 }
 
@@ -105,7 +146,9 @@ impl TrackingProgressUpdater for AggregatingProgressUpdater {
         state.merge_in(updates);
     }
     async fn flush(&self) {
-        Self::flush_inner(&self.inner, &self.state).await;
+        if let Some(inner) = &self.inner {
+            Self::flush_impl(inner, &self.state).await;
+        }
     }
 }
 
