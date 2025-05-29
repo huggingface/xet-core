@@ -45,7 +45,7 @@ pub const PREFIX_DEFAULT: &str = "default";
 
 utils::configurable_constants! {
 // Env (HF_XET_NUM_CONCURRENT_RANGE_GETS) to set the number of concurrent range gets.
-// setting this value to 0 disables the limit, this is not recommended as it may lead to errors
+// setting this value to 0 disables the limit, sets it to the max, this is not recommended as it may lead to errors
     ref NUM_CONCURRENT_RANGE_GETS: usize = GlobalConfigMode::HighPerformanceOption {
         standard: 16,
         high_performance: 100,
@@ -109,7 +109,7 @@ impl RemoteClient {
         let num_range_gets = if *NUM_CONCURRENT_RANGE_GETS == 0 {
             Semaphore::MAX_PERMITS // virtually no limit
         } else {
-            *NUM_CONCURRENT_RANGE_GETS
+            NUM_CONCURRENT_RANGE_GETS.max(Semaphore::MAX_PERMITS)
         };
         let concurrent_gets_semaphore = Arc::new(Semaphore::new(num_range_gets));
 

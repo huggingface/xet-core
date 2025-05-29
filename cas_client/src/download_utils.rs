@@ -407,7 +407,6 @@ impl DownloadSegmentLengthTuner {
     }
 
     pub fn tune_on<T>(&self, metrics: TermDownloadResult<T>) -> Result<()> {
-
         let mut num_range_in_segment = self.n_range_in_segment.lock()?;
         debug_assert!(*num_range_in_segment <= self.max_segments);
         if metrics.n_retries_on_403 > 0 {
