@@ -35,11 +35,13 @@ pub struct AggregatingProgressUpdater {
 struct AggregationState {
     pending: ProgressUpdate,
     item_lookup: HashMap<Arc<str>, usize>,
-    finish_on_next_flush: bool,
+    finished: bool,
 }
 
 impl AggregationState {
     fn merge_in(&mut self, mut other: ProgressUpdate) {
+        debug_assert!(!self.finished);
+
         for item in other.item_updates.drain(..) {
             match self.item_lookup.entry(item.item_name.clone()) {
                 HashMapEntry::Occupied(entry) => {
@@ -98,7 +100,7 @@ impl AggregatingProgressUpdater {
         let mut state_guard = state.lock().await;
 
         if state_guard.pending.is_empty() {
-            return (ProgressUpdate::default(), state_guard.finish_on_next_flush);
+            return (ProgressUpdate::default(), state_guard.finished);
         }
 
         let flushed = std::mem::take(&mut state_guard.pending);
@@ -109,7 +111,7 @@ impl AggregatingProgressUpdater {
         // Clear out the lookup table.
         state_guard.item_lookup.clear();
 
-        (flushed, state_guard.finish_on_next_flush)
+        (flushed, state_guard.finished)
     }
 
     async fn flush_impl(inner: &Arc<dyn TrackingProgressUpdater>, state: &Arc<Mutex<AggregationState>>) -> bool {
@@ -122,8 +124,14 @@ impl AggregatingProgressUpdater {
         Self::get_aggregated_state_impl(&self.state).await.0
     }
 
+    // Ensure everything is completed.
+    #[cfg(debug_assertions)]
+    pub async fn is_finished(&self) -> bool {
+        self.state.lock().await.finished && self.bg_update_loop_handle.lock().await.is_none()
+    }
+
     pub async fn finalize(&self) {
-        self.state.lock().await.finish_on_next_flush = true;
+        self.state.lock().await.finished = true;
 
         if let Some(bg_jh) = self.bg_update_loop_handle.lock().await.take() {
             let _ = bg_jh.await;
