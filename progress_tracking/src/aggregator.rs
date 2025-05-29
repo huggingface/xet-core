@@ -28,13 +28,14 @@ use crate::{ProgressUpdate, TrackingProgressUpdater};
 pub struct AggregatingProgressUpdater {
     inner: Option<Arc<dyn TrackingProgressUpdater>>,
     state: Arc<Mutex<AggregationState>>,
-    _bg_update_loop: Option<JoinHandle<()>>,
+    bg_update_loop_handle: Mutex<Option<JoinHandle<()>>>,
 }
 
 #[derive(Debug, Default)]
 struct AggregationState {
     pending: ProgressUpdate,
     item_lookup: HashMap<Arc<str>, usize>,
+    finish_on_next_flush: bool,
 }
 
 impl AggregationState {
@@ -63,18 +64,23 @@ impl AggregatingProgressUpdater {
         let inner_clone = Arc::clone(&inner);
 
         let bg_update_loop = tokio::spawn(async move {
+            // Wake up every 100ms to check to see if we're complete.
             let mut interval = tokio::time::interval_at(Instant::now() + flush_interval, flush_interval);
 
             loop {
                 interval.tick().await;
-                Self::flush_impl(&inner_clone, &state_clone).await;
+                let is_complete = Self::flush_impl(&inner_clone, &state_clone).await;
+
+                if is_complete {
+                    break;
+                }
             }
         });
 
         Arc::new(Self {
             inner: Some(inner),
             state,
-            _bg_update_loop: Some(bg_update_loop),
+            bg_update_loop_handle: Mutex::new(Some(bg_update_loop)),
         })
     }
 
@@ -84,15 +90,15 @@ impl AggregatingProgressUpdater {
         Arc::new(Self {
             inner: None,
             state: Arc::new(Mutex::new(AggregationState::default())),
-            _bg_update_loop: None,
+            bg_update_loop_handle: Mutex::new(None),
         })
     }
 
-    async fn get_aggregated_state_impl(state: &Arc<Mutex<AggregationState>>) -> ProgressUpdate {
+    async fn get_aggregated_state_impl(state: &Arc<Mutex<AggregationState>>) -> (ProgressUpdate, bool) {
         let mut state_guard = state.lock().await;
 
         if state_guard.pending.is_empty() {
-            return ProgressUpdate::default();
+            return (ProgressUpdate::default(), state_guard.finish_on_next_flush);
         }
 
         let flushed = std::mem::take(&mut state_guard.pending);
@@ -103,16 +109,25 @@ impl AggregatingProgressUpdater {
         // Clear out the lookup table.
         state_guard.item_lookup.clear();
 
-        flushed
+        (flushed, state_guard.finish_on_next_flush)
     }
 
-    async fn flush_impl(inner: &Arc<dyn TrackingProgressUpdater>, state: &Arc<Mutex<AggregationState>>) {
-        let flushed = Self::get_aggregated_state_impl(state).await;
+    async fn flush_impl(inner: &Arc<dyn TrackingProgressUpdater>, state: &Arc<Mutex<AggregationState>>) -> bool {
+        let (flushed, is_complete) = Self::get_aggregated_state_impl(state).await;
         inner.register_updates(flushed).await;
+        is_complete
     }
 
     pub async fn get_aggregated_state(&self) -> ProgressUpdate {
-        Self::get_aggregated_state_impl(&self.state).await
+        Self::get_aggregated_state_impl(&self.state).await.0
+    }
+
+    pub async fn finalize(&self) {
+        self.state.lock().await.finish_on_next_flush = true;
+
+        if let Some(bg_jh) = self.bg_update_loop_handle.lock().await.take() {
+            let _ = bg_jh.await;
+        }
     }
 }
 
