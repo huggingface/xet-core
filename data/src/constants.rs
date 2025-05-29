@@ -38,7 +38,7 @@ utils::configurable_constants! {
 
     /// How often to send updates on file progress, in milliseconds.  Disables batching
     /// if set to 0.
-    ref PROGRESS_UPDATE_INTERVAL_MS : u64 = 500;
+    ref PROGRESS_UPDATE_INTERVAL_MS : u64 = 200;
 
     /// How often do we flush new xorb data to disk on a long running upload session?
     ref SESSION_XORB_METADATA_FLUSH_INTERVAL_SECS : u64 = 20;

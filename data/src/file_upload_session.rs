@@ -69,6 +69,9 @@ pub struct FileUploadSession {
     /// Tracking upload completion between xorbs and files.
     pub(crate) completion_tracker: Arc<CompletionTracker>,
 
+    /// Session aggregation
+    progress_aggregator: Option<Arc<AggregatingProgressUpdater>>,
+
     /// Deduplicated data shared across files.
     current_session_data: Mutex<DataAggregator>,
 
@@ -109,17 +112,19 @@ impl FileUploadSession {
             .map(Cow::Borrowed)
             .unwrap_or_else(|| Cow::Owned(Ulid::new().to_string()));
 
-        let progress_updater: Arc<dyn TrackingProgressUpdater> = {
+        let (progress_updater, progress_aggregator): (Arc<dyn TrackingProgressUpdater>, Option<_>) = {
             match upload_progress_updater {
                 Some(updater) => {
                     let update_seconds = *PROGRESS_UPDATE_INTERVAL_MS;
                     if update_seconds != 0 {
-                        AggregatingProgressUpdater::new(updater, Duration::from_millis(update_seconds))
+                        let aggregator =
+                            AggregatingProgressUpdater::new(updater, Duration::from_millis(update_seconds));
+                        (aggregator.clone(), Some(aggregator))
                     } else {
-                        updater
+                        (updater, None)
                     }
                 },
-                None => Arc::new(NoOpProgressUpdater),
+                None => (Arc::new(NoOpProgressUpdater), None),
             }
         };
 
@@ -161,6 +166,7 @@ impl FileUploadSession {
             repo_id,
             config,
             completion_tracker,
+            progress_aggregator,
             current_session_data: Mutex::new(DataAggregator::default()),
             deduplication_metrics: Mutex::new(DeduplicationMetrics::default()),
             xorb_upload_tasks: Mutex::new(JoinSet::new()),
@@ -403,6 +409,12 @@ impl FileUploadSession {
 
         // Make sure all the updates have been flushed through.
         self.completion_tracker.flush().await;
+
+        // Clear this out so the background aggregation session fully finishes.
+        if let Some(pa) = &self.progress_aggregator {
+            pa.finalize().await;
+            debug_assert!(pa.is_finished().await);
+        }
 
         Ok((metrics, all_file_info))
     }
