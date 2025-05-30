@@ -29,6 +29,19 @@ pub enum CasObjectError {
 
     #[error("Internal Hash Parsing Error")]
     HashParsingError(#[from] Infallible),
+
+    #[error("ChunkHeaderParseErrorMagicWord")]
+    ChunkHeaderParseErrorFooterIdent,
+}
+
+impl CasObjectError {
+    pub fn is_eof(&self) -> bool {
+        if let CasObjectError::InternalIOError(e) = self {
+            e.kind() == std::io::ErrorKind::UnexpectedEof
+        } else {
+            false
+        }
+    }
 }
 
 // Define our own result type here (this seems to be the standard).
