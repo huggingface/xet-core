@@ -9,16 +9,12 @@ use tokio::io::{AsyncRead, AsyncReadExt};
 use tokio_util::io::StreamReader;
 
 use crate::error::CasObjectError;
-use crate::{CASChunkHeader, CAS_CHUNK_HEADER_LENGTH};
+use crate::{parse_chunk_header, CASChunkHeader, CAS_CHUNK_HEADER_LENGTH};
 
 pub async fn deserialize_chunk_header<R: AsyncRead + Unpin>(reader: &mut R) -> Result<CASChunkHeader, CasObjectError> {
-    let mut result = CASChunkHeader::default();
-    unsafe {
-        let buf = slice::from_raw_parts_mut(&mut result as *mut _ as *mut u8, size_of::<CASChunkHeader>());
-        reader.read_exact(buf).await?;
-    }
-    result.validate()?;
-    Ok(result)
+    let mut buf = [0u8; size_of::<CASChunkHeader>()];
+    reader.read_exact(&mut buf).await?;
+    parse_chunk_header(buf)
 }
 
 /// Returns the compressed chunk size along with the uncompressed chunk size as a tuple, (compressed, uncompressed)
