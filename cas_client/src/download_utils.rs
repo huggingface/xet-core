@@ -373,12 +373,6 @@ pub struct DownloadSegmentLengthTuner {
 
 impl DownloadSegmentLengthTuner {
     pub fn new(n_range_in_segment_base: usize, max_segments: usize, delta: usize) -> Arc<Self> {
-        if *NUM_RANGE_IN_SEGMENT_BASE == 0 {
-            warn!(
-                "NUM_RANGE_IN_SEGMENT_BASE is set to 0, which means no segments will be downloaded.
-                   This is likely a misconfiguration. Please check your environment variables."
-            );
-        }
         Arc::new(Self {
             n_range_in_segment: Mutex::new(n_range_in_segment_base),
             max_segments,
