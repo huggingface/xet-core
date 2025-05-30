@@ -6,6 +6,7 @@ use cas_object::error::CasObjectError;
 use mdb_shard::error::MDBShardError;
 use merkledb::error::MerkleDBError;
 use thiserror::Error;
+use tokio::sync::AcquireError;
 use tracing::error;
 use utils::errors::{AuthError, SingleflightError};
 
@@ -76,6 +77,9 @@ pub enum DataProcessingError {
 
     #[error("AuthError: {0}")]
     AuthError(#[from] AuthError),
+
+    #[error("Permit Acquisition Error: {0}")]
+    PermitAcquisitionError(#[from] AcquireError),
 }
 
 pub type Result<T> = std::result::Result<T, DataProcessingError>;
