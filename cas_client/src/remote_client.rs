@@ -51,7 +51,6 @@ utils::configurable_constants! {
         high_performance: 512,
     };
 
-
     // Send a report of successful partial upload every 512kb.
     ref UPLOAD_REPORTING_BLOCK_SIZE : usize = 512 * 1024;
 }
