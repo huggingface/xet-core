@@ -30,23 +30,17 @@ utils::configurable_constants! {
     // setting this value to 0 causes no segments to be downloaded, this will cause downloads to fail/hang
     ref NUM_RANGE_IN_SEGMENT_BASE: usize = GlobalConfigMode::HighPerformanceOption {
         standard: 16, // 16 * ~64MB -> ~1GB initial segment size
-        high_performance: 256, // 128 * ~64MB -> ~16GB initial segment size
+        high_performance: 128, // 128 * ~64MB -> ~8GB initial segment size
     };
 
     // Env (HF_XET_NUM_RANGE_IN_SEGMENT_DELTA) delta value for the approx number of ranges in a segment size
     // used to increase/decrease the segment size by this many approximate ranges
     // setting this value to 0 causes no segment size change, i.e. will remain constant
-    ref NUM_RANGE_IN_SEGMENT_DELTA: usize = GlobalConfigMode::HighPerformanceOption {
-        standard: 8, // increase/decrease segment size by 8 range ~512MB
-        high_performance: 64, // increase/decrease segment size by 8 ranges ~4GB
-    };
+    ref NUM_RANGE_IN_SEGMENT_DELTA: usize = 1; // increase/decrease segment size by 1 approx range ~64MB
 
     // Env (HF_XET_NUM_RANGE_IN_SEGMENT_MAX) max value for the approx number of ranges in a segment size
     // setting this value to 0 will be ignored and the max size will be set to usize::MAX
-    ref NUM_RANGE_IN_SEGMENT_MAX: usize = GlobalConfigMode::HighPerformanceOption {
-        standard: 1024 * 2, // * ~64MB -> max at 128GB segment
-        high_performance: 1024 * 16, // * ~64MB -> max at 1TB segment
-    };
+    ref NUM_RANGE_IN_SEGMENT_MAX: usize = 400; // * ~64MB -> max at 25GB segment
 }
 
 #[derive(Clone, Debug)]
