@@ -14,9 +14,8 @@ use http::header::RANGE;
 use http::StatusCode;
 use merklehash::MerkleHash;
 use reqwest_middleware::ClientWithMiddleware;
-use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tokio_retry::strategy::ExponentialBackoff;
-use tracing::{debug, error, info, trace};
+use tracing::{debug, error, info, trace, warn};
 use url::Url;
 use utils::singleflight::Group;
 
@@ -24,6 +23,25 @@ use crate::error::{CasClientError, Result};
 use crate::http_client::{Api, BASE_RETRY_DELAY_MS, BASE_RETRY_MAX_DURATION_MS, NUM_RETRIES};
 use crate::remote_client::{get_reconstruction_with_endpoint_and_client, PREFIX_DEFAULT};
 use crate::OutputProvider;
+
+utils::configurable_constants! {
+    // Env (HF_XET_NUM_RANGE_IN_SEGMENT_BASE) base value for the approx number of ranges in the initial
+    // segment size used to download, where a segment is a range of a file that is downloaded
+    // setting this value to 0 causes no segments to be downloaded, this will cause downloads to fail/hang
+    ref NUM_RANGE_IN_SEGMENT_BASE: usize = GlobalConfigMode::HighPerformanceOption {
+        standard: 16, // 16 * ~64MB -> ~1GB initial segment size
+        high_performance: 128, // 128 * ~64MB -> ~8GB initial segment size
+    };
+
+    // Env (HF_XET_NUM_RANGE_IN_SEGMENT_DELTA) delta value for the approx number of ranges in a segment size
+    // used to increase/decrease the segment size by this many approximate ranges
+    // setting this value to 0 causes no segment size change, i.e. will remain constant
+    ref NUM_RANGE_IN_SEGMENT_DELTA: usize = 1; // increase/decrease segment size by 1 approx range ~64MB
+
+    // Env (HF_XET_NUM_RANGE_IN_SEGMENT_MAX) max value for the approx number of ranges in a segment size
+    // setting this value to 0 will be ignored and the max size will be set to usize::MAX
+    ref NUM_RANGE_IN_SEGMENT_MAX: usize = 400; // * ~64MB -> max at 25GB segment
+}
 
 #[derive(Clone, Debug)]
 pub(crate) enum DownloadRangeResult {
@@ -339,25 +357,37 @@ pub(crate) enum DownloadQueueItem<T> {
     Metadata(FetchInfo),
 }
 
-pub struct DownloadScheduler {
+/// A utility to tune the segment size for downloading terms in a reconstruction.
+/// Yields a segment size based on an approximate number of ranges in a segment,
+pub struct DownloadSegmentLengthTuner {
     n_range_in_segment: Mutex<usize>, // number of range in a segment to fetch file reconstruction info
-    n_concurrent_download_task: Arc<Semaphore>,
+    max_segments: usize,
+    delta: usize,
 }
 
-impl DownloadScheduler {
-    pub fn new(n_concurrent_range_get: usize) -> Arc<Self> {
+impl DownloadSegmentLengthTuner {
+    pub fn new(n_range_in_segment_base: usize, max_segments: usize, delta: usize) -> Arc<Self> {
         Arc::new(Self {
-            n_range_in_segment: Mutex::new(n_concurrent_range_get),
-            n_concurrent_download_task: Arc::new(Semaphore::new(n_concurrent_range_get)),
+            n_range_in_segment: Mutex::new(n_range_in_segment_base),
+            max_segments,
+            delta,
         })
     }
 
-    pub async fn download_permit(&self) -> Result<OwnedSemaphorePermit> {
-        self.n_concurrent_download_task
-            .clone()
-            .acquire_owned()
-            .await
-            .map_err(CasClientError::from)
+    pub fn from_configurable_constants() -> Arc<Self> {
+        if *NUM_RANGE_IN_SEGMENT_BASE == 0 {
+            warn!(
+                "NUM_RANGE_IN_SEGMENT_BASE is set to 0, which means no segments will be downloaded.
+                   This is likely a misconfiguration. Please check your environment variables."
+            );
+        }
+        let max_num_segments = if *NUM_RANGE_IN_SEGMENT_MAX == 0 {
+            usize::MAX
+        } else {
+            *NUM_RANGE_IN_SEGMENT_MAX
+        };
+
+        Self::new(*NUM_RANGE_IN_SEGMENT_BASE, max_num_segments, *NUM_RANGE_IN_SEGMENT_DELTA)
     }
 
     pub fn next_segment_size(&self) -> Result<u64> {
@@ -365,16 +395,23 @@ impl DownloadScheduler {
     }
 
     pub fn tune_on<T>(&self, metrics: TermDownloadResult<T>) -> Result<()> {
+        let mut num_range_in_segment = self.n_range_in_segment.lock()?;
+        debug_assert!(*num_range_in_segment <= self.max_segments);
         if metrics.n_retries_on_403 > 0 {
-            info!("detected retries on 403, shrinking segment size by one range");
-            let mut num_range_in_segment = self.n_range_in_segment.lock()?;
             if *num_range_in_segment > 1 {
-                *num_range_in_segment -= 1;
+                let delta = NUM_RANGE_IN_SEGMENT_DELTA.min(*num_range_in_segment - 1);
+                info!("detected retries on 403, shrinking segment size by {delta} ranges");
+                *num_range_in_segment -= delta;
+            } else {
+                info!(
+                    "detected retries on 403, but segment size is already at minimum (1 range), not shrinking further"
+                );
             }
-        } else {
+        } else if *num_range_in_segment != self.max_segments {
             // TODO: check download speed and consider if we should increase or decrease
-            debug!("expanding segment size by one range");
-            *self.n_range_in_segment.lock()? += 1;
+            let delta = NUM_RANGE_IN_SEGMENT_DELTA.min(self.max_segments - *num_range_in_segment);
+            debug!("expanding segment size by {delta} approx ranges");
+            *num_range_in_segment += delta;
         }
 
         Ok(())

@@ -47,6 +47,9 @@ pub struct ProgressUpdate {
     /// How much this update adjusts the total bytes..
     pub total_bytes_completion_increment: u64,
 
+    /// The total bytes that have been processed
+    pub total_bytes_completion_rate: Option<f64>,
+
     /// Total bytes known that need to be uploaded or downloaded.   
     pub total_transfer_bytes: u64,
 
@@ -58,6 +61,9 @@ pub struct ProgressUpdate {
 
     /// How much this update adjusts the total transfer bytes.
     pub total_transfer_bytes_completion_increment: u64,
+
+    /// The total bytes that have been processed
+    pub total_transfer_bytes_completion_rate: Option<f64>,
 }
 
 impl ProgressUpdate {

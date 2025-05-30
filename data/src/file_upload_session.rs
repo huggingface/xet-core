@@ -26,6 +26,7 @@ use ulid::Ulid;
 use crate::configurations::*;
 use crate::constants::{
     INGESTION_BLOCK_SIZE, MAX_CONCURRENT_FILE_INGESTION, MAX_CONCURRENT_UPLOADS, PROGRESS_UPDATE_INTERVAL_MS,
+    PROGRESS_UPDATE_SPEED_SAMPLING_WINDOW_MS,
 };
 use crate::errors::*;
 use crate::file_cleaner::SingleFileCleaner;
@@ -120,10 +121,13 @@ impl FileUploadSession {
         let (progress_updater, progress_aggregator): (Arc<dyn TrackingProgressUpdater>, Option<_>) = {
             match upload_progress_updater {
                 Some(updater) => {
-                    let update_seconds = *PROGRESS_UPDATE_INTERVAL_MS;
-                    if update_seconds != 0 {
-                        let aggregator =
-                            AggregatingProgressUpdater::new(updater, Duration::from_millis(update_seconds));
+                    let update_ms = *PROGRESS_UPDATE_INTERVAL_MS;
+                    if update_ms != 0 {
+                        let aggregator = AggregatingProgressUpdater::new(
+                            updater,
+                            Duration::from_millis(update_ms),
+                            Duration::from_millis(*PROGRESS_UPDATE_SPEED_SAMPLING_WINDOW_MS),
+                        );
                         (aggregator.clone(), Some(aggregator))
                     } else {
                         (updater, None)
