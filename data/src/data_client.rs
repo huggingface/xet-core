@@ -132,7 +132,16 @@ pub async fn upload_bytes_async(
     Ok(files)
 }
 
-#[instrument(skip_all, name = "data_client::upload_files", fields(session_id = tracing::field::Empty, num_files=file_paths.len()))]
+#[instrument(skip_all, name = "data_client::upload_files", 
+    fields(session_id = tracing::field::Empty,
+    num_files=file_paths.len(),
+    new_bytes = tracing::field::Empty,
+    deduped_bytes = tracing::field::Empty,
+    defrag_prevented_dedup_bytes = tracing::field::Empty,
+    new_chunks = tracing::field::Empty,
+    deduped_chunks = tracing::field::Empty,
+    defrag_prevented_dedup_chunks = tracing::field::Empty
+))]
 pub async fn upload_async(
     file_paths: Vec<String>,
     endpoint: Option<String>,
@@ -160,9 +169,9 @@ pub async fn upload_async(
     // Record dedup metrics.
     span.record("new_bytes", metrics.new_bytes);
     span.record("deduped_bytes ", metrics.deduped_bytes);
-    span.record("deduped_chunks", metrics.deduped_chunks);
-    span.record("new_chunks", metrics.new_chunks);
     span.record("defrag_prevented_dedup_bytes", metrics.defrag_prevented_dedup_bytes);
+    span.record("new_chunks", metrics.new_chunks);
+    span.record("deduped_chunks", metrics.deduped_chunks);
     span.record("defrag_prevented_dedup_chunks", metrics.defrag_prevented_dedup_chunks);
 
     Ok(ret)

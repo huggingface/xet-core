@@ -203,18 +203,23 @@ impl FileUploadSession {
             let ingestion_concurrancy_limiter = file_parallel_limiter.clone();
             let session = self.clone();
 
-            let span = info_span!("clean_file_task");
+            cleaning_tasks.push(tokio::spawn(async move {
+                // Enable tracing to record this file's ingestion speed.
+                let span = info_span!(
+                    "clean_file_task",
+                    "file.name" = file_name.to_string(),
+                    "file.len" = file_size,
+                    "file.new_bytes" = tracing::field::Empty,
+                    "file.deduped_bytes" = tracing::field::Empty,
+                    "file.defrag_prevented_dedup_bytes" = tracing::field::Empty,
+                    "file.new_chunks" = tracing::field::Empty,
+                    "file.deduped_chunks" = tracing::field::Empty,
+                    "file.defrag_prevented_dedup_chunks" = tracing::field::Empty,
+                );
+                // First, get a permit to process this file.
+                let _processing_permit = ingestion_concurrancy_limiter.acquire().await?;
 
-            cleaning_tasks.push(tokio::spawn(
                 async move {
-                    // First, get a permit to process this file.
-                    let _processing_permit = ingestion_concurrancy_limiter.acquire().await?;
-
-                    // Enable tracing to record this file's ingestion speed.
-                    let span = Span::current();
-                    span.record("file.name", file_name.to_string());
-                    span.record("file.len", file_size);
-
                     let mut buffer = vec![0u8; u64::min(file_size, *INGESTION_BLOCK_SIZE as u64) as usize];
                     let mut reader = File::open(&file_path)?;
 
@@ -234,17 +239,19 @@ impl FileUploadSession {
                     let (xfi, metrics) = cleaner.finish().await?;
 
                     // Record dedup information.
+                    let span = Span::current();
                     span.record("file.new_bytes", metrics.new_bytes);
                     span.record("file.deduped_bytes ", metrics.deduped_bytes);
-                    span.record("file.deduped_chunks", metrics.deduped_chunks);
-                    span.record("file.new_chunks", metrics.new_chunks);
                     span.record("file.defrag_prevented_dedup_bytes", metrics.defrag_prevented_dedup_bytes);
+                    span.record("file.new_chunks", metrics.new_chunks);
+                    span.record("file.deduped_chunks", metrics.deduped_chunks);
                     span.record("file.defrag_prevented_dedup_chunks", metrics.defrag_prevented_dedup_chunks);
 
                     Result::Ok(xfi)
                 }
-                .instrument(span),
-            ));
+                .instrument(span)
+                .await
+            }));
         }
 
         // Join all the cleaning tasks.
