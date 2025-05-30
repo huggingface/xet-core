@@ -316,6 +316,7 @@ dependencies = [
  "mdb_shard",
  "merkledb",
  "merklehash",
+ "more-asserts",
  "rand 0.9.1",
  "serde",
  "thiserror 2.0.12",
@@ -1057,6 +1058,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "84b26c544d002229e640969970a2e74021aadf6e2f96372b9c58eff97de08eb3"
 
 [[package]]
+name = "heapify"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0049b265b7f201ca9ab25475b22b47fe444060126a51abe00f77d986fc5cc52e"
+
+[[package]]
 name = "heck"
 version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1591,6 +1598,7 @@ dependencies = [
  "clap",
  "futures-io",
  "futures-util",
+ "heapify",
  "itertools 0.14.0",
  "lazy_static",
  "merklehash",
