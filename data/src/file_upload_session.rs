@@ -1,5 +1,8 @@
 use std::borrow::Cow;
+use std::fs::File;
+use std::io::Read;
 use std::mem::{swap, take};
+use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -16,17 +19,20 @@ use progress_tracking::upload_tracking::{CompletionTracker, FileXorbDependency};
 use progress_tracking::verification_wrapper::ProgressUpdaterVerificationWrapper;
 use progress_tracking::{NoOpProgressUpdater, TrackingProgressUpdater};
 use tokio::sync::{Mutex, OwnedSemaphorePermit, Semaphore};
-use tokio::task::JoinSet;
-use tracing::{info_span, instrument, Instrument};
+use tokio::task::{JoinHandle, JoinSet};
+use tracing::{info_span, instrument, Instrument, Span};
 use ulid::Ulid;
 
 use crate::configurations::*;
-use crate::constants::{MAX_CONCURRENT_UPLOADS, PROGRESS_UPDATE_INTERVAL_MS, PROGRESS_UPDATE_SPEED_SAMPLING_WINDOW_MS};
+use crate::constants::{
+    INGESTION_BLOCK_SIZE, MAX_CONCURRENT_FILE_INGESTION, MAX_CONCURRENT_UPLOADS, PROGRESS_UPDATE_INTERVAL_MS,
+    PROGRESS_UPDATE_SPEED_SAMPLING_WINDOW_MS,
+};
 use crate::errors::*;
 use crate::file_cleaner::SingleFileCleaner;
-use crate::prometheus_metrics;
 use crate::remote_client_interface::create_remote_client;
 use crate::shard_interface::SessionShardInterface;
+use crate::{prometheus_metrics, XetFileInfo};
 
 lazy_static::lazy_static! {
      static ref UPLOAD_CONCURRENCY_LIMITER: Arc<Semaphore> = Arc::new(Semaphore::new(*MAX_CONCURRENT_UPLOADS));
@@ -177,6 +183,89 @@ impl FileUploadSession {
             #[cfg(debug_assertions)]
             progress_verifier: progress_verification_tracker,
         }))
+    }
+
+    pub async fn upload_files(self: &Arc<Self>, files: &[impl AsRef<Path>]) -> Result<Vec<XetFileInfo>> {
+        let mut cleaning_tasks: Vec<JoinHandle<_>> = Vec::with_capacity(files.len());
+
+        // Use a semaphore to limit the number of files being processed in parallel.
+        let file_parallel_limiter = Arc::new(Semaphore::new(*MAX_CONCURRENT_FILE_INGESTION));
+
+        for f in files {
+            let file_path = f.as_ref().to_owned();
+            let file_name: Arc<str> = Arc::from(file_path.to_string_lossy());
+
+            // Get the file size, and go ahead and register it in the completion tracker so that we know the whole
+            // repo size at the beginning.
+            let file_size = std::fs::metadata(&file_path)?.len();
+
+            // Get a new file id for the completion tracking.  This also registers the size against the total bytes
+            // of the file.
+            let file_id = self.completion_tracker.register_new_file(file_name.clone(), file_size).await;
+
+            // Now, spawn a task
+            let ingestion_concurrancy_limiter = file_parallel_limiter.clone();
+            let session = self.clone();
+
+            cleaning_tasks.push(tokio::spawn(async move {
+                // Enable tracing to record this file's ingestion speed.
+                let span = info_span!(
+                    "clean_file_task",
+                    "file.name" = file_name.to_string(),
+                    "file.len" = file_size,
+                    "file.new_bytes" = tracing::field::Empty,
+                    "file.deduped_bytes" = tracing::field::Empty,
+                    "file.defrag_prevented_dedup_bytes" = tracing::field::Empty,
+                    "file.new_chunks" = tracing::field::Empty,
+                    "file.deduped_chunks" = tracing::field::Empty,
+                    "file.defrag_prevented_dedup_chunks" = tracing::field::Empty,
+                );
+                // First, get a permit to process this file.
+                let _processing_permit = ingestion_concurrancy_limiter.acquire().await?;
+
+                async move {
+                    let mut buffer = vec![0u8; u64::min(file_size, *INGESTION_BLOCK_SIZE as u64) as usize];
+                    let mut reader = File::open(&file_path)?;
+
+                    // Start the clean process for each file
+                    let mut cleaner = SingleFileCleaner::new(Some(file_name), file_id, session);
+
+                    loop {
+                        let bytes = reader.read(&mut buffer)?;
+                        if bytes == 0 {
+                            break;
+                        }
+
+                        cleaner.add_data(&buffer[0..bytes]).await?;
+                    }
+
+                    // Finish and return the result.
+                    let (xfi, metrics) = cleaner.finish().await?;
+
+                    // Record dedup information.
+                    let span = Span::current();
+                    span.record("file.new_bytes", metrics.new_bytes);
+                    span.record("file.deduped_bytes ", metrics.deduped_bytes);
+                    span.record("file.defrag_prevented_dedup_bytes", metrics.defrag_prevented_dedup_bytes);
+                    span.record("file.new_chunks", metrics.new_chunks);
+                    span.record("file.deduped_chunks", metrics.deduped_chunks);
+                    span.record("file.defrag_prevented_dedup_chunks", metrics.defrag_prevented_dedup_chunks);
+
+                    Result::Ok(xfi)
+                }
+                .instrument(span)
+                .await
+            }));
+        }
+
+        // Join all the cleaning tasks.
+        let mut ret = Vec::with_capacity(files.len());
+
+        for task in cleaning_tasks {
+            ret.push(task.await??);
+        }
+
+        Ok(ret)
     }
 
     /// Start to clean one file. When cleaning multiple files, each file should
