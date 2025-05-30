@@ -109,7 +109,7 @@ impl RemoteClient {
         let num_range_gets = if *NUM_CONCURRENT_RANGE_GETS == 0 {
             Semaphore::MAX_PERMITS // virtually no limit
         } else {
-            NUM_CONCURRENT_RANGE_GETS.max(Semaphore::MAX_PERMITS)
+            NUM_CONCURRENT_RANGE_GETS.min(Semaphore::MAX_PERMITS)
         };
         let concurrent_gets_semaphore = Arc::new(Semaphore::new(num_range_gets));
 
@@ -387,7 +387,6 @@ impl RemoteClient {
         let chunk_cache = self.chunk_cache.clone();
         let term_download_client = self.http_client.clone();
         let range_download_single_flight = self.range_download_single_flight.clone();
-        // min 1
         let download_scheduler = DownloadSegmentLengthTuner::from_configurable_constants();
         let download_scheduler_clone = download_scheduler.clone();
         let concurrent_gets_semaphore = self.concurrent_gets_semaphore.clone();
