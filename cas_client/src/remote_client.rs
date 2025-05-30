@@ -924,7 +924,7 @@ mod tests {
         // Workaround to make this variable const. Change this accordingly if
         // real value of the two static variables below change.
         const FIRST_SEGMENT_SIZE: u64 = 16 * 64 * 1024 * 1024;
-        assert_eq!(FIRST_SEGMENT_SIZE, *NUM_CONCURRENT_RANGE_GETS as u64 * *MAX_XORB_BYTES as u64);
+        assert_eq!(FIRST_SEGMENT_SIZE, *NUM_RANGE_IN_SEGMENT_BASE as u64 * *MAX_XORB_BYTES as u64);
 
         // Test case: full file reconstruction
         const FIRST_SEGMENT_FILE_RANGE: FileRange = FileRange {
@@ -999,7 +999,7 @@ mod tests {
         // Workaround to make this variable const. Change this accordingly if
         // real value of the two static variables below change.
         const FIRST_SEGMENT_SIZE: u64 = 16 * 64 * 1024 * 1024;
-        assert_eq!(FIRST_SEGMENT_SIZE, *NUM_CONCURRENT_RANGE_GETS as u64 * *MAX_XORB_BYTES as u64);
+        assert_eq!(FIRST_SEGMENT_SIZE, *NUM_RANGE_IN_SEGMENT_BASE as u64 * *MAX_XORB_BYTES as u64);
 
         // Test case: skip first 100 bytes
         const SKIP_BYTES: u64 = 100;
