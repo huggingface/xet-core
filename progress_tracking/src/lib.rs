@@ -11,7 +11,7 @@ pub use progress_info::{ItemProgressUpdate, ProgressUpdate};
 
 /// The trait that a progress updater that reports per-item progress completion.
 #[async_trait]
-pub trait TrackingProgressUpdater: std::fmt::Debug + Send + Sync {
+pub trait TrackingProgressUpdater: Send + Sync {
     /// Register a set of updates as a list of ProgressUpdate instances, which
     /// contain the name and progress information.    
     async fn register_updates(&self, updates: ProgressUpdate);
