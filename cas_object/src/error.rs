@@ -34,6 +34,16 @@ pub enum CasObjectError {
     ChunkHeaderParseErrorFooterIdent,
 }
 
+impl CasObjectError {
+    pub fn is_eof(&self) -> bool {
+        if let CasObjectError::InternalIOError(e) = self {
+            e.kind() == std::io::ErrorKind::UnexpectedEof
+        } else {
+            false
+        }
+    }
+}
+
 // Define our own result type here (this seems to be the standard).
 pub type Result<T> = std::result::Result<T, CasObjectError>;
 
