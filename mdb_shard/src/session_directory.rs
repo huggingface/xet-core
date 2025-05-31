@@ -84,11 +84,13 @@ pub fn merge_shards(
             if ub_idx == cur_idx + 1 {
                 // We can't consolidate any here.
                 finished_shard_hashes.insert(cur_sfi.shard_hash);
-                finished_shards.push(cur_sfi.clone());
 
                 if copy_preserved_source_shards {
-                    cur_sfi.copy_into_target_directory(&target_directory)?;
+                    let copied_sfi = cur_sfi.copy_into_target_directory(&target_directory)?;
+                    finished_shards.push(copied_sfi);
                     shards_to_remove.push(cur_sfi.clone());
+                } else {
+                    finished_shards.push(cur_sfi.clone());
                 }
             } else {
                 // We have one or more shards to merge, so do this all in memory.

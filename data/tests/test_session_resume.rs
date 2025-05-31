@@ -27,14 +27,13 @@ test_set_globals! {
 // Test the deduplication framework.
 #[cfg(test)]
 mod tests {
-    use data::test_utils::{create_random_files, LocalHydrateDehydrateTest};
+    use data::test_utils::{create_random_file, create_random_files, LocalHydrateDehydrateTest};
     use deduplication::constants::MAX_CHUNK_SIZE;
     use more_asserts::*;
     use progress_tracking::aggregator::AggregatingProgressUpdater;
     use rand::prelude::*;
 
     use super::*;
-
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_simple_resume() {
         // Ensure the deduplication numbers are approximately accurate.
@@ -252,6 +251,61 @@ mod tests {
             // Here, all the previous files would have been deduped against, so only the new content would be uploaded.
             assert_eq!(progress.total_transfer_bytes, 64 * 1024);
             assert_eq!(progress.total_transfer_bytes_completed, 64 * 1024);
+        }
+
+        // Finally, verify that hydration works successfully.
+        ts.hydrate().await;
+        ts.verify_src_dest_match();
+    }
+
+    /// 4) A single tiny file
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_tiny_file_resume() {
+        let ts = LocalHydrateDehydrateTest::default();
+
+        create_random_file(&ts.src_dir.join("f1"), 128, 0);
+
+        // Clean the files present, but drop the upload session.
+        {
+            let progress_tracker = AggregatingProgressUpdater::new_aggregation_only();
+            let upload_session = ts.new_upload_session(Some(progress_tracker.clone())).await;
+            ts.clean_all_files(&upload_session, false).await;
+
+            upload_session.checkpoint().await.unwrap();
+
+            let progress = progress_tracker.get_aggregated_state().await;
+
+            // Check things. The checkpoint above pushes everything through, even though we don't finalize.
+            assert_eq!(progress.total_bytes, 128);
+            assert_eq!(progress.total_bytes_completed, 128);
+
+            // Here, all the files would have completed, meaning that all their bytes and xorbs are transfered.
+            assert_eq!(progress.total_transfer_bytes, 128);
+            assert_eq!(progress.total_transfer_bytes_completed, 128);
+
+            // Now interrupt the session and don't call finalize
+        }
+
+        create_random_file(&ts.src_dir.join("f2"), 128, 1);
+
+        // Test these files and actually call finalize.
+        {
+            let progress_tracker = AggregatingProgressUpdater::new_aggregation_only();
+            let upload_session = ts.new_upload_session(Some(progress_tracker.clone())).await;
+            ts.clean_all_files(&upload_session, false).await;
+
+            // Finalize things this time.
+            upload_session.finalize().await.unwrap();
+
+            let progress = progress_tracker.get_aggregated_state().await;
+
+            // Check things. The checkpoint above pushes everything through, even though we don't finalize.
+            assert_eq!(progress.total_bytes, 256);
+            assert_eq!(progress.total_bytes_completed, 256);
+
+            // Here, all the previous files would have been deduped against, so only the new content would be uploaded.
+            assert_eq!(progress.total_transfer_bytes, 128);
+            assert_eq!(progress.total_transfer_bytes_completed, 128);
         }
 
         // Finally, verify that hydration works successfully.
