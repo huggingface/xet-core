@@ -9,7 +9,7 @@ use tracing::{error, info};
 
 use crate::error::Result;
 use crate::set_operations::shard_set_union;
-use crate::shard_file_handle::{MDBShardFile, MDBShardFileVec};
+use crate::shard_file_handle::MDBShardFile;
 use crate::{MDBShardFileFooter, MDBShardFileHeader, MDBShardInfo};
 
 /// Merge a collection of shards, deleting the old ones.
@@ -21,7 +21,7 @@ pub fn consolidate_shards_in_directory(
     session_directory: impl AsRef<Path>,
     target_max_size: u64,
     skip_on_error: bool,
-) -> Result<MDBShardFileVec> {
+) -> Result<Vec<Arc<MDBShardFile>>> {
     let session_directory = session_directory.as_ref();
     // Get the new shards and the shards in the original list to remove.
     let shard_merge_result = merge_shards(session_directory, session_directory, target_max_size, skip_on_error)?;
@@ -40,9 +40,9 @@ pub fn consolidate_shards_in_directory(
 
 #[derive(Default)]
 pub struct ShardMergeResult {
-    pub merged_shards: MDBShardFileVec,
-    pub obsolete_shards: MDBShardFileVec,
-    pub skipped_shards: MDBShardFileVec,
+    pub merged_shards: Vec<Arc<MDBShardFile>>,
+    pub obsolete_shards: Vec<Arc<MDBShardFile>>,
+    pub skipped_shards: Vec<Arc<MDBShardFile>>,
 }
 
 /// Merge a collection of shards, returning the new ones and the ones that can be deleted.

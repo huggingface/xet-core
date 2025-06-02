@@ -32,8 +32,6 @@ pub struct MDBShardFile {
     pub disable_verifications: std::sync::atomic::AtomicBool,
 }
 
-pub type MDBShardFileVec = Vec<Arc<MDBShardFile>>;
-
 impl Default for MDBShardFile {
     fn default() -> Self {
         Self {
