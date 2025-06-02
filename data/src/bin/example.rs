@@ -1,5 +1,5 @@
 use std::fs::File;
-use std::io::{BufReader, Read, Write};
+use std::io::{Read, Write};
 use std::path::PathBuf;
 use std::sync::{Arc, OnceLock};
 
@@ -7,7 +7,7 @@ use anyhow::Result;
 use cas_client::{FileProvider, OutputProvider};
 use clap::{Args, Parser, Subcommand};
 use data::configurations::*;
-use data::{FileDownloader, FileUploadSession, PointerFile};
+use data::{FileDownloader, FileUploadSession, XetFileInfo};
 use xet_threadpool::ThreadPool;
 
 #[derive(Parser)]
@@ -60,7 +60,7 @@ impl Command {
 fn get_threadpool() -> Arc<ThreadPool> {
     static THREADPOOL: OnceLock<Arc<ThreadPool>> = OnceLock::new();
     THREADPOOL
-        .get_or_init(|| Arc::new(ThreadPool::new().expect("Error starting multithreaded runtime.")))
+        .get_or_init(|| ThreadPool::new().expect("Error starting multithreaded runtime."))
         .clone()
 }
 
@@ -72,25 +72,26 @@ fn main() {
 }
 
 async fn clean_file(arg: &CleanArg) -> Result<()> {
-    let reader = BufReader::new(File::open(&arg.file)?);
+    let file_reader = File::open(&arg.file)?;
+    let file_size = file_reader.metadata()?.len();
+
     let writer: Box<dyn Write + Send> = match &arg.dest {
         Some(path) => Box::new(File::options().create(true).write(true).truncate(true).open(path)?),
         None => Box::new(std::io::stdout()),
     };
 
-    clean(reader, writer).await
+    clean(file_reader, writer, file_size).await
 }
 
-async fn clean(mut reader: impl Read, mut writer: impl Write) -> Result<()> {
+async fn clean(mut reader: impl Read, mut writer: impl Write, size: u64) -> Result<()> {
     const READ_BLOCK_SIZE: usize = 1024 * 1024;
 
     let mut read_buf = vec![0u8; READ_BLOCK_SIZE];
 
-    let translator =
-        FileUploadSession::new(TranslatorConfig::local_config(std::env::current_dir()?)?, get_threadpool(), None)
-            .await?;
+    let translator = FileUploadSession::new(TranslatorConfig::local_config(std::env::current_dir()?)?, None).await?;
 
-    let mut handle = translator.start_clean("".to_owned());
+    let mut size_read = 0;
+    let mut handle = translator.start_clean(None, size).await;
 
     loop {
         let bytes = reader.read(&mut read_buf)?;
@@ -99,13 +100,16 @@ async fn clean(mut reader: impl Read, mut writer: impl Write) -> Result<()> {
         }
 
         handle.add_data(&read_buf[0..bytes]).await?;
+        size_read += bytes as u64;
     }
 
-    let (pointer_file, _) = handle.finish().await?;
+    debug_assert_eq!(size_read, size);
+
+    let (file_info, _) = handle.finish().await?;
 
     translator.finalize().await?;
 
-    writer.write_all(pointer_file.to_string().as_bytes())?;
+    writer.write_all(file_info.as_pointer_file()?.as_bytes())?;
 
     Ok(())
 }
@@ -117,26 +121,29 @@ async fn smudge_file(arg: &SmudgeArg) -> Result<()> {
     };
 
     let writer = OutputProvider::File(FileProvider::new(arg.dest.clone()));
-    smudge(reader, &writer).await?;
+    smudge(arg.dest.to_string_lossy().into(), reader, &writer).await?;
 
     Ok(())
 }
 
-async fn smudge(mut reader: impl Read, writer: &OutputProvider) -> Result<()> {
+async fn smudge(name: Arc<str>, mut reader: impl Read, writer: &OutputProvider) -> Result<()> {
     let mut input = String::new();
     reader.read_to_string(&mut input)?;
 
-    let pointer_file = PointerFile::init_from_string(&input, "");
+    let xet_file: XetFileInfo = serde_json::from_str(&input)
+        .map_err(|_| anyhow::anyhow!("Failed to parse xet file info. Please check the format."))?;
 
-    // not a pointer file, leave it as it is.
-    if !pointer_file.is_valid() {
-        return Ok(());
-    }
+    let downloader = FileDownloader::new(TranslatorConfig::local_config(std::env::current_dir()?)?).await?;
 
-    let downloader =
-        FileDownloader::new(TranslatorConfig::local_config(std::env::current_dir()?)?, get_threadpool()).await?;
-
-    downloader.smudge_file_from_pointer(&pointer_file, writer, None, None).await?;
+    downloader
+        .smudge_file_from_hash(
+            &xet_file.merkle_hash().map_err(|_| anyhow::anyhow!("Xet hash is corrupted"))?,
+            name,
+            writer,
+            None,
+            None,
+        )
+        .await?;
 
     Ok(())
 }

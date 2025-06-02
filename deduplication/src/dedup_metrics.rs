@@ -1,20 +1,20 @@
 #[derive(Default, Debug, Clone, Copy)]
 pub struct DeduplicationMetrics {
-    pub total_bytes: usize,
-    pub deduped_bytes: usize,
-    pub new_bytes: usize,
-    pub deduped_bytes_by_global_dedup: usize,
-    pub defrag_prevented_dedup_bytes: usize,
+    pub total_bytes: u64,
+    pub deduped_bytes: u64,
+    pub new_bytes: u64,
+    pub deduped_bytes_by_global_dedup: u64,
+    pub defrag_prevented_dedup_bytes: u64,
 
-    pub total_chunks: usize,
-    pub deduped_chunks: usize,
-    pub new_chunks: usize,
-    pub deduped_chunks_by_global_dedup: usize,
-    pub defrag_prevented_dedup_chunks: usize,
+    pub total_chunks: u64,
+    pub deduped_chunks: u64,
+    pub new_chunks: u64,
+    pub deduped_chunks_by_global_dedup: u64,
+    pub defrag_prevented_dedup_chunks: u64,
 
-    pub xorb_bytes_uploaded: usize,
-    pub shard_bytes_uploaded: usize,
-    pub total_bytes_uploaded: usize,
+    pub xorb_bytes_uploaded: u64,
+    pub shard_bytes_uploaded: u64,
+    pub total_bytes_uploaded: u64,
 }
 
 /// Implement + for the metrics above, so they can be added

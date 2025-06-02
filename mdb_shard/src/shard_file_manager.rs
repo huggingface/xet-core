@@ -5,10 +5,12 @@ use std::sync::Arc;
 
 use merklehash::{HMACKey, MerkleHash};
 use tokio::sync::RwLock;
-use tracing::{debug, info, trace};
+use tracing::{debug, info, instrument, trace};
 
 use crate::cas_structs::*;
-use crate::constants::{CHUNK_INDEX_TABLE_MAX_SIZE, MDB_SHARD_EXPIRATION_BUFFER_SECS, MDB_SHARD_MIN_TARGET_SIZE};
+use crate::constants::{
+    CHUNK_INDEX_TABLE_MAX_SIZE, MDB_SHARD_EXPIRATION_BUFFER_SECS, MDB_SHARD_MIN_TARGET_SIZE, SHARD_CACHE_SIZE_LIMIT,
+};
 use crate::error::{MDBShardError, Result};
 use crate::file_structs::*;
 use crate::shard_file_handle::MDBShardFile;
@@ -95,16 +97,26 @@ pub struct ShardFileManager {
 ///
 /// // new_shards is the list of new shards for this session.
 impl ShardFileManager {
-    pub async fn new_in_session_directory(session_directory: impl AsRef<Path>) -> Result<Arc<Self>> {
-        Self::new_impl(session_directory, false, *MDB_SHARD_MIN_TARGET_SIZE).await
+    // Construct in a session directory.
+    pub async fn new_in_session_directory(
+        session_directory: impl AsRef<Path>,
+        scan_directory: bool,
+    ) -> Result<Arc<Self>> {
+        Self::new_impl(session_directory, false, *MDB_SHARD_MIN_TARGET_SIZE, scan_directory, 0).await
     }
 
     // Construction functions
     pub async fn new_in_cache_directory(cache_directory: impl AsRef<Path>) -> Result<Arc<Self>> {
-        Self::new_impl(cache_directory, true, *MDB_SHARD_MIN_TARGET_SIZE).await
+        Self::new_impl(cache_directory, true, *MDB_SHARD_MIN_TARGET_SIZE, true, *SHARD_CACHE_SIZE_LIMIT).await
     }
 
-    async fn new_impl(directory: impl AsRef<Path>, is_cachable: bool, target_shard_min_size: u64) -> Result<Arc<Self>> {
+    async fn new_impl(
+        directory: impl AsRef<Path>,
+        is_cachable: bool,
+        target_shard_min_size: u64,
+        scan_directory: bool,
+        prune_cache_to_size: u64, // Set to 0 to disable pruning
+    ) -> Result<Arc<Self>> {
         let shard_directory = std::path::absolute(directory)?;
 
         // Make sure the shard directory exists; create it if not.
@@ -131,7 +143,7 @@ impl ShardFileManager {
                 let ro_lg = MDB_SHARD_FILE_MANAGER_CACHE.read().await;
 
                 if let Some(sfm) = ro_lg.get(&shard_directory) {
-                    sfm.refresh_shard_dir().await?;
+                    sfm.refresh_shard_dir(false, 0).await?;
                     break 'load_sfm sfm.clone();
                 }
             }
@@ -151,13 +163,16 @@ impl ShardFileManager {
             }
         };
 
-        sfm.refresh_shard_dir().await?;
+        if scan_directory {
+            sfm.refresh_shard_dir(true, prune_cache_to_size).await?;
+        }
 
         Ok(sfm)
     }
 
-    pub async fn refresh_shard_dir(&self) -> Result<()> {
-        let mut shard_files = MDBShardFile::load_all_valid(&self.shard_directory)?;
+    pub async fn refresh_shard_dir(&self, prune_expired: bool, prune_cache_to_size: u64) -> Result<()> {
+        let mut shard_files =
+            MDBShardFile::load_managed_directory(&self.shard_directory, false, prune_expired, prune_cache_to_size)?;
 
         {
             let shard_read_guard = self.shard_bookkeeper.read().await;
@@ -178,7 +193,7 @@ impl ShardFileManager {
         let needs_clean = self.shard_directory_cleaned.swap(true, std::sync::atomic::Ordering::Relaxed);
 
         if needs_clean {
-            MDBShardFile::clean_expired_shards(&self.shard_directory, *MDB_SHARD_EXPIRATION_BUFFER_SECS)?;
+            MDBShardFile::clean_shard_cache(&self.shard_directory, *MDB_SHARD_EXPIRATION_BUFFER_SECS)?;
         }
 
         Ok(())
@@ -273,7 +288,7 @@ impl ShardFileManager {
         }
 
         if num_shards != 0 {
-            info!("Registered {num_shards} new shards.");
+            debug!("Registered {num_shards} new shards.");
         }
 
         Ok(())
@@ -394,7 +409,7 @@ impl ShardFileManager {
     }
 
     /// Add CAS info to the in-memory state.
-    pub async fn add_cas_block(&self, cas_block_contents: MDBCASInfo) -> Result<()> {
+    pub async fn add_cas_block(&self, cas_block_contents: impl Into<Arc<MDBCASInfo>>) -> Result<()> {
         let mut lg = self.current_state.write().await;
 
         lg.add_cas_block(cas_block_contents)?;
@@ -427,6 +442,7 @@ impl ShardFileManager {
 
     /// Flush the current state of the in-memory lookups to a shard in the session directory,
     /// returning the hash of the shard and the file written, or None if no file was written.
+    #[instrument(skip_all, name = "ShardFileManager::flush")]
     pub async fn flush(&self) -> Result<Option<PathBuf>> {
         let new_shard_path;
 
@@ -438,7 +454,7 @@ impl ShardFileManager {
                 return Ok(None);
             }
 
-            new_shard_path = lg.write_to_directory(&self.shard_directory)?;
+            new_shard_path = lg.write_to_directory(&self.shard_directory, None)?;
             *lg = MDBInMemoryShard::default();
 
             info!("Shard manager flushed new shard to {new_shard_path:?}.");
@@ -491,7 +507,8 @@ impl ShardFileManager {
 #[cfg(test)]
 mod tests {
     use std::cmp::min;
-    use std::time::Duration;
+    use std::collections::HashSet;
+    use std::time::{Duration, SystemTime};
 
     use rand::prelude::*;
     use tempfile::TempDir;
@@ -500,7 +517,7 @@ mod tests {
     use crate::cas_structs::{CASChunkSequenceEntry, CASChunkSequenceHeader};
     use crate::error::Result;
     use crate::file_structs::FileDataSequenceHeader;
-    use crate::session_directory::consolidate_shards_in_directory;
+    use crate::session_directory::{consolidate_shards_in_directory, merge_shards};
     use crate::shard_format::test_routines::{gen_random_file_info, rng_hash, simple_hash};
 
     #[allow(clippy::type_complexity)]
@@ -560,7 +577,7 @@ mod tests {
         let mut rng = StdRng::seed_from_u64(seed);
 
         let shard_dir = shard_dir.as_ref();
-        let sfm = ShardFileManager::new_in_session_directory(shard_dir).await?;
+        let sfm = ShardFileManager::new_in_session_directory(shard_dir, false).await?;
         let mut reference_shard = MDBInMemoryShard::default();
 
         for _ in 0..n_shards {
@@ -691,7 +708,7 @@ mod tests {
     }
 
     async fn sfm_with_target_shard_size(path: impl AsRef<Path>, target_size: u64) -> Result<Arc<ShardFileManager>> {
-        ShardFileManager::new_impl(path, false, target_size).await
+        ShardFileManager::new_impl(path, false, target_size, true, 0).await
     }
 
     #[tokio::test]
@@ -700,7 +717,7 @@ mod tests {
         let mut mdb_in_mem = MDBInMemoryShard::default();
 
         {
-            let mdb = ShardFileManager::new_in_session_directory(tmp_dir.path()).await?;
+            let mdb = ShardFileManager::new_in_session_directory(tmp_dir.path(), true).await?;
 
             fill_with_specific_shard(&mdb, &mut mdb_in_mem, &[(0, &[(11, 5)])], &[(100, &[(200, (0, 5))])]).await?;
 
@@ -716,7 +733,7 @@ mod tests {
         }
         {
             // Now, make sure that this happens if this directory is opened up
-            let mdb2 = ShardFileManager::new_in_session_directory(tmp_dir.path()).await?;
+            let mdb2 = ShardFileManager::new_in_session_directory(tmp_dir.path(), true).await?;
 
             // Make sure it's all in there this round.
             verify_mdb_shards_match(&mdb2, &mdb_in_mem, true).await?;
@@ -745,7 +762,7 @@ mod tests {
     async fn test_larger_simulated() -> Result<()> {
         let tmp_dir = TempDir::with_prefix("gitxet_shard_test_2")?;
         let mut mdb_in_mem = MDBInMemoryShard::default();
-        let mdb = ShardFileManager::new_in_session_directory(tmp_dir.path()).await?;
+        let mdb = ShardFileManager::new_in_session_directory(tmp_dir.path(), true).await?;
 
         for i in 0..10 {
             fill_with_random_shard(&mdb, &mut mdb_in_mem, i, &[1, 5, 10, 8], &[4, 3, 5, 9, 4, 6]).await?;
@@ -764,7 +781,7 @@ mod tests {
             mdb.flush().await?;
 
             // Now, make sure that this happens if this directory is opened up
-            let mdb2 = ShardFileManager::new_in_session_directory(tmp_dir.path()).await?;
+            let mdb2 = ShardFileManager::new_in_session_directory(tmp_dir.path(), true).await?;
 
             // Make sure it's all in there this round.
             verify_mdb_shards_match(&mdb2, &mdb_in_mem, true).await?;
@@ -780,7 +797,7 @@ mod tests {
         for sesh in 0..3 {
             for i in 0..10 {
                 {
-                    let mdb = ShardFileManager::new_in_session_directory(tmp_dir.path()).await?;
+                    let mdb = ShardFileManager::new_in_session_directory(tmp_dir.path(), true).await?;
                     fill_with_random_shard(&mdb, &mut mdb_in_mem, 100 * sesh + i, &[1, 5, 10, 8], &[4, 3, 5, 9, 4, 6])
                         .await
                         .unwrap();
@@ -815,7 +832,7 @@ mod tests {
 
             {
                 // Now, make sure that this happens if this directory is opened up
-                let mdb2 = ShardFileManager::new_in_session_directory(tmp_dir.path()).await?;
+                let mdb2 = ShardFileManager::new_in_session_directory(tmp_dir.path(), true).await?;
 
                 verify_mdb_shards_match(&mdb2, &mdb_in_mem, true).await.unwrap();
             }
@@ -849,25 +866,47 @@ mod tests {
 
         // Reload and verify
         {
-            let mdb = ShardFileManager::new_in_session_directory(tmp_dir.path()).await?;
+            let mdb = ShardFileManager::new_in_session_directory(tmp_dir.path(), true).await?;
             verify_mdb_shards_match(&mdb, &mdb_in_mem, true).await?;
         }
 
         // Merge through the session directory.
         {
-            let rv = consolidate_shards_in_directory(tmp_dir.path(), 8 * T)?;
+            let tmp_merge_dir = TempDir::new()?;
+
+            let (mut merged_shards, m_del_shards) = merge_shards(tmp_dir.path(), tmp_merge_dir.path(), 8 * T)?;
+
+            for sfi in merged_shards.iter() {
+                sfi.verify_shard_integrity();
+            }
 
             let paths = std::fs::read_dir(tmp_dir.path()).unwrap();
-            assert_eq!(paths.count(), rv.len());
+            assert_eq!(paths.count(), m_del_shards.len());
 
-            for sfi in rv {
+            // This call should be the same, but
+            let mut rv = consolidate_shards_in_directory(tmp_dir.path(), 8 * T)?;
+
+            let paths = std::fs::read_dir(tmp_dir.path()).unwrap();
+            let n_paths = paths.count();
+            assert_eq!(n_paths, rv.len());
+            assert_eq!(n_paths, merged_shards.len());
+
+            for sfi in rv.iter() {
                 sfi.verify_shard_integrity();
+            }
+
+            // Now, make sure they have the same hashes in the two calls
+            merged_shards.sort_by_key(|v| v.shard_hash);
+            rv.sort_by_key(|v| v.shard_hash);
+
+            for (ms, rs) in merged_shards.iter().zip(rv.iter()) {
+                assert_eq!(ms.shard_hash, rs.shard_hash);
             }
         }
 
         // Reload and verify
         {
-            let mdb = ShardFileManager::new_in_session_directory(tmp_dir.path()).await?;
+            let mdb = ShardFileManager::new_in_session_directory(tmp_dir.path(), true).await?;
             verify_mdb_shards_match(&mdb, &mdb_in_mem, true).await?;
         }
 
@@ -942,7 +981,7 @@ mod tests {
 
         // First, load all of these with a shard file manager and check them.
         {
-            let shard_file_manager = ShardFileManager::new_in_session_directory(tmp_dir_path).await?;
+            let shard_file_manager = ShardFileManager::new_in_session_directory(tmp_dir_path, true).await?;
             verify_mdb_shards_match(&shard_file_manager, &ref_shard, true).await?;
         }
 
@@ -992,7 +1031,7 @@ mod tests {
             }
 
             // Now, verify that everything still works great.
-            let shard_file_manager = ShardFileManager::new_in_session_directory(tmp_dir_path_keyed).await?;
+            let shard_file_manager = ShardFileManager::new_in_session_directory(tmp_dir_path_keyed, true).await?;
 
             verify_mdb_shards_match(&shard_file_manager, &ref_shard, include_info).await?;
         }
@@ -1001,7 +1040,7 @@ mod tests {
     }
 
     async fn shard_list_with_timestamp_filtering(path: &Path) -> Result<Vec<Arc<MDBShardFile>>> {
-        Ok(ShardFileManager::new_impl(path, false, *MDB_SHARD_MIN_TARGET_SIZE)
+        Ok(ShardFileManager::new_impl(path, false, *MDB_SHARD_MIN_TARGET_SIZE, true, 0)
             .await?
             .registered_shard_list()
             .await?)
@@ -1052,14 +1091,14 @@ mod tests {
             assert_eq!(n_files, 1);
 
             // Now try deletion with a large window; shouldn't touch the shard.
-            MDBShardFile::clean_expired_shards(tmp_dir_path_keyed, 100)?;
+            MDBShardFile::clean_shard_cache(tmp_dir_path_keyed, 100)?;
 
             // shard file still there.
             let n_files = std::fs::read_dir(tmp_dir_path_keyed)?.map(|p| p.unwrap().path()).count();
             assert_eq!(n_files, 1);
 
             // Now try deletion with 0 expiration
-            MDBShardFile::clean_expired_shards(tmp_dir_path_keyed, 0)?;
+            MDBShardFile::clean_shard_cache(tmp_dir_path_keyed, 0)?;
 
             // File should be gone.
             let n_files = std::fs::read_dir(tmp_dir_path_keyed)?.map(|p| p.unwrap().path()).count();
@@ -1108,14 +1147,14 @@ mod tests {
             assert_eq!(n_files, 1);
 
             // Now try deletion with a large window; shouldn't touch the shard.
-            MDBShardFile::clean_expired_shards(tmp_dir_path_expiry, 100)?;
+            MDBShardFile::clean_shard_cache(tmp_dir_path_expiry, 100)?;
 
             // shard file still there.
             let n_files = std::fs::read_dir(tmp_dir_path_expiry)?.map(|p| p.unwrap().path()).count();
             assert_eq!(n_files, 1);
 
             // Now try deletion with 0 expiration
-            MDBShardFile::clean_expired_shards(tmp_dir_path_expiry, 0)?;
+            MDBShardFile::clean_shard_cache(tmp_dir_path_expiry, 0)?;
 
             // File should be gone.
             let n_files = std::fs::read_dir(tmp_dir_path_expiry)?.map(|p| p.unwrap().path()).count();
@@ -1123,5 +1162,73 @@ mod tests {
         }
 
         Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_cache_size_pruning() {
+        let tmp_dir = TempDir::with_prefix("shard_test_cache_size_pruning").unwrap();
+
+        let tmp_dir_1 = tmp_dir.path().join("src");
+
+        let n_shards = 4;
+
+        create_random_shard_collection(0, &tmp_dir_1, n_shards, &[16; 16], &[16; 16])
+            .await
+            .unwrap();
+
+        // Export each of the shards in tmp_dir_1
+        let tmp_dir_2_ = tmp_dir.path().join("timestamped");
+        let tmp_dir_2 = &tmp_dir_2_;
+        std::fs::create_dir_all(tmp_dir_2).unwrap();
+
+        let mut shard_list = Vec::new();
+
+        let base_time = SystemTime::now() - Duration::from_secs(256);
+        let expiration = SystemTime::now() + Duration::from_secs(256);
+
+        for (i, p) in std::fs::read_dir(&tmp_dir_1).unwrap().enumerate() {
+            let p = p.unwrap();
+            let shard = MDBShardFile::load_from_file(&p.path()).unwrap();
+
+            let s = shard
+                .export_with_specific_expiration(tmp_dir_2, expiration, base_time + Duration::from_secs(i as u64))
+                .unwrap();
+
+            shard_list.push(s);
+        }
+
+        let get_shards = |cache_size: u64| async move {
+            let sfm = ShardFileManager::new_impl(tmp_dir_2, false, 64 * 1024, true, cache_size)
+                .await
+                .unwrap();
+            sfm.registered_shard_list().await.unwrap()
+        };
+
+        for i in 0..n_shards {
+            let current_size_limit = shard_list.iter().skip(i).map(|s| s.shard.num_bytes()).sum();
+
+            let loaded_shards = get_shards(current_size_limit).await;
+
+            // Make sure this is the same set of shard hashes as in the shard list by comparing sets of the shard hashes
+            let loaded_hashes: HashSet<_> = loaded_shards.iter().map(|s| s.shard_hash).collect();
+            let reference_hashes: HashSet<_> = shard_list.iter().skip(i).map(|s| s.shard_hash).collect();
+
+            assert_eq!(loaded_hashes, reference_hashes);
+
+            let existing_files: HashSet<_> = std::fs::read_dir(tmp_dir_2)
+                .unwrap()
+                .map(|p| MDBShardFile::load_from_file(&p.unwrap().path()).unwrap().shard_hash)
+                .collect();
+
+            assert_eq!(existing_files, reference_hashes);
+
+            let directory_size: u64 = std::fs::read_dir(tmp_dir_2)
+                .unwrap()
+                .map(|p| p.unwrap().metadata().unwrap().len())
+                .sum();
+
+            // We set this one to be exact, so we can compare these as equal
+            assert_eq!(directory_size, current_size_limit);
+        }
     }
 }

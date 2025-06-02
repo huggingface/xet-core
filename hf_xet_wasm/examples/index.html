@@ -80,7 +80,7 @@
                 const tokenInfo = new TokenInfo(xetmetadata.accessToken, xetmetadata.expirationUnixEpoch);
                 const xetSession = new XetSession(casEndpoint, tokenInfo, tokenRefresher);
 
-                const pf = await xetSession.uploadFileFromBlob("file_being_tracked", file);
+                const pf = await xetSession.uploadFileFromBlob(BigInt(0), file);
                 console.log("file cleaned to Xet session", pf);
                 await xetSession.finalize();
 

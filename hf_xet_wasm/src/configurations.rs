@@ -24,4 +24,5 @@ pub struct ShardConfig {
 pub struct TranslatorConfig {
     pub data_config: DataConfig,
     pub shard_config: ShardConfig,
+    pub session_id: String,
 }

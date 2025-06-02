@@ -4,10 +4,15 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use anyhow::Result;
+use cas_client::{Reconstruct, RemoteClient};
 use cas_object::CompressionScheme;
+use cas_types::{FileRange, QueryReconstructionResponse};
 use clap::{Args, Parser, Subcommand};
-use data::migration_tool::hub_client::HubClient;
+use data::data_client::default_config;
+use data::migration_tool::hub_client::{HubClient, HubClientTokenRefresher};
 use data::migration_tool::migrate::migrate_files_impl;
+use merklehash::MerkleHash;
+use utils::auth::TokenRefresher;
 use walkdir::WalkDir;
 use xet_threadpool::ThreadPool;
 
@@ -39,7 +44,7 @@ struct CliOverrides {
 }
 
 impl XCommand {
-    async fn run(self, threadpool: Arc<ThreadPool>) -> Result<()> {
+    async fn run(self) -> Result<()> {
         let endpoint = self
             .overrides
             .endpoint
@@ -50,7 +55,7 @@ impl XCommand {
             .unwrap_or_else(|| std::env::var("HF_TOKEN").unwrap_or_default());
         let hub_client = HubClient::new(&endpoint, &token, &self.overrides.repo_type, &self.overrides.repo_id)?;
 
-        self.command.run(hub_client, threadpool).await
+        self.command.run(hub_client).await
     }
 }
 
@@ -93,12 +98,15 @@ struct DedupArg {
 
 #[derive(Args)]
 struct QueryArg {
-    /// Xet-hash of a file
+    /// Xet-hash of a file.
     hash: String,
+    /// Query regarding a certain range in bytes: [start, end), specified
+    /// in the format of "start-end".
+    bytes_range: Option<FileRange>,
 }
 
 impl Command {
-    async fn run(self, hub_client: HubClient, threadpool: Arc<ThreadPool>) -> Result<()> {
+    async fn run(self, hub_client: HubClient) -> Result<()> {
         match self {
             Command::Dedup(arg) => {
                 let file_paths = walk_files(arg.files, arg.recursive);
@@ -109,7 +117,6 @@ impl Command {
                     arg.sequential,
                     hub_client,
                     None,
-                    threadpool,
                     arg.compression.and_then(|c| CompressionScheme::try_from(c).ok()),
                     !arg.migrate,
                 )
@@ -127,15 +134,22 @@ impl Command {
                 }
 
                 eprintln!("\n\nClean results:");
-                for (pf, new_bytes) in clean_ret {
-                    println!("{}: {} bytes -> {} bytes", pf.hash_string(), pf.filesize(), new_bytes);
+                for (xf, new_bytes) in clean_ret {
+                    println!("{}: {} bytes -> {} bytes", xf.hash(), xf.file_size(), new_bytes);
                 }
 
                 eprintln!("Transmitted {total_bytes_trans} bytes in total.");
 
                 Ok(())
             },
-            Command::Query(_arg) => unimplemented!(),
+            Command::Query(arg) => {
+                let file_hash = MerkleHash::from_hex(&arg.hash)?;
+                let ret = query_reconstruction(file_hash, arg.bytes_range, hub_client).await?;
+
+                eprintln!("{ret:?}");
+
+                Ok(())
+            },
         }
     }
 }
@@ -170,11 +184,39 @@ fn is_git_special_files(path: &str) -> bool {
     matches!(path, ".git" | ".gitignore" | ".gitattributes")
 }
 
+async fn query_reconstruction(
+    file_hash: MerkleHash,
+    bytes_range: Option<FileRange>,
+    hub_client: HubClient,
+) -> Result<Option<QueryReconstructionResponse>> {
+    let token_type = "read";
+    let (endpoint, jwt_token, jwt_token_expiry) = hub_client.get_jwt_token(token_type).await?;
+    let token_refresher = Arc::new(HubClientTokenRefresher {
+        token_type: token_type.to_owned(),
+        client: Arc::new(hub_client),
+    }) as Arc<dyn TokenRefresher>;
+
+    let config = default_config(endpoint.clone(), None, Some((jwt_token, jwt_token_expiry)), Some(token_refresher))?;
+    let cas_storage_config = &config.data_config;
+    let remote_client = RemoteClient::new(
+        &endpoint,
+        &cas_storage_config.auth,
+        &Some(cas_storage_config.cache_config.clone()),
+        Some(config.shard_config.cache_directory.clone()),
+        "",
+        true,
+    );
+
+    remote_client
+        .get_reconstruction(&file_hash, bytes_range)
+        .await
+        .map_err(anyhow::Error::from)
+}
+
 fn main() -> Result<()> {
     let cli = XCommand::parse();
-    let threadpool = Arc::new(ThreadPool::new()?);
-    let threadpool_internal = threadpool.clone();
-    threadpool.external_run_async_task(async move { cli.run(threadpool_internal).await })??;
+    let threadpool = ThreadPool::new()?;
+    threadpool.external_run_async_task(async move { cli.run().await })??;
 
     Ok(())
 }

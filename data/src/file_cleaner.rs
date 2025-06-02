@@ -1,22 +1,28 @@
+use std::future::{self, Future};
+use std::pin::Pin;
 use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
 use deduplication::{Chunk, Chunker, DeduplicationMetrics, FileDeduper};
 use mdb_shard::file_structs::FileMetadataExt;
 use merklehash::MerkleHash;
-use tracing::info;
+use progress_tracking::upload_tracking::CompletionTrackerFileId;
+use tracing::{debug_span, info, instrument, Instrument};
 
 use crate::constants::INGESTION_BLOCK_SIZE;
 use crate::deduplication_interface::UploadSessionDataManager;
 use crate::errors::Result;
 use crate::file_upload_session::FileUploadSession;
 use crate::sha256::ShaGenerator;
-use crate::PointerFile;
+use crate::XetFileInfo;
 
 /// A class that encapsulates the clean and data task around a single file.
 pub struct SingleFileCleaner {
-    // Auxiliary info
-    file_name: String,
+    // The id for completion tracking
+    file_id: CompletionTrackerFileId,
+
+    // File name, if known.
+    file_name: Option<Arc<str>>,
 
     // Common state
     session: Arc<FileUploadSession>,
@@ -24,8 +30,9 @@ pub struct SingleFileCleaner {
     // The chunker
     chunker: Chunker,
 
-    // The deduplication interface.
-    dedup_manager: FileDeduper<UploadSessionDataManager>,
+    // The deduplication interface.  Use a future that always returns the dedup manager
+    // on await so that we can background this part.
+    dedup_manager_fut: Pin<Box<dyn Future<Output = Result<FileDeduper<UploadSessionDataManager>>> + Send + 'static>>,
 
     // Generating the sha256 hash
     sha_generator: ShaGenerator,
@@ -35,10 +42,17 @@ pub struct SingleFileCleaner {
 }
 
 impl SingleFileCleaner {
-    pub(crate) fn new(file_name: String, session: Arc<FileUploadSession>) -> Self {
+    pub(crate) fn new(
+        file_name: Option<Arc<str>>,
+        file_id: CompletionTrackerFileId,
+        session: Arc<FileUploadSession>,
+    ) -> Self {
+        let deduper = FileDeduper::new(UploadSessionDataManager::new(session.clone(), file_id), file_id);
+
         Self {
             file_name,
-            dedup_manager: FileDeduper::new(UploadSessionDataManager::new(session.clone())),
+            file_id,
+            dedup_manager_fut: Box::pin(async move { Ok(deduper) }),
             session,
             chunker: deduplication::Chunker::default(),
             sha_generator: ShaGenerator::new(),
@@ -46,6 +60,29 @@ impl SingleFileCleaner {
         }
     }
 
+    /// Gets the dedupe manager to process new chunks, by first
+    /// waiting for background operations to complete, then triggering a
+    /// new background task.
+    async fn deduper_process_chunks(&mut self, chunks: Arc<[Chunk]>) -> Result<()> {
+        // Handle the move out by replacing it with a dummy future discarded below.
+        let mut deduper = std::mem::replace(&mut self.dedup_manager_fut, Box::pin(future::pending())).await?;
+
+        let num_chunks = chunks.len();
+
+        let dedup_background = tokio::spawn(
+            async move {
+                deduper.process_chunks(&chunks).await?;
+                Ok(deduper)
+            }
+            .instrument(debug_span!("deduper::process_chunks_task", num_chunks).or_current()),
+        );
+
+        self.dedup_manager_fut = Box::pin(async move { dedup_background.await? });
+
+        Ok(())
+    }
+
+    #[instrument(skip_all, level="debug", name = "FileCleaner::add_data", fields(file_name=self.file_name.as_ref().map(|s|s.to_string()), len=data.len()))]
     pub async fn add_data(&mut self, data: &[u8]) -> Result<()> {
         if data.len() > *INGESTION_BLOCK_SIZE {
             let mut pos = 0;
@@ -74,22 +111,25 @@ impl SingleFileCleaner {
         self.sha_generator.update(chunks.clone()).await?;
 
         // Run the deduplication interface here.
-        let block_metrics = self.dedup_manager.process_chunks(&chunks).await?;
-
-        // Update the progress bar with the deduped bytes
-        if let Some(updater) = self.session.upload_progress_updater.as_ref() {
-            updater.update(block_metrics.deduped_bytes as u64);
-        }
+        self.deduper_process_chunks(chunks).await?;
 
         Ok(())
     }
 
+    /// Ensures all current background work is completed.  
+    pub async fn checkpoint(&mut self) -> Result<()> {
+        // Flush the background process by sending it a dummy bit of data.
+        self.deduper_process_chunks(Arc::new([])).await
+    }
+
     /// Return the representation of the file after clean as a pointer file instance.
-    pub async fn finish(mut self) -> Result<(PointerFile, DeduplicationMetrics)> {
+    #[instrument(skip_all, name = "FileCleaner::finish", fields(file_name=self.file_name.as_ref().map(|s|s.to_string())))]
+    pub async fn finish(mut self) -> Result<(XetFileInfo, DeduplicationMetrics)> {
         // Chunk the rest of the data.
         if let Some(chunk) = self.chunker.finish() {
-            self.sha_generator.update(Arc::new([chunk.clone()])).await?;
-            self.dedup_manager.process_chunks(&[chunk]).await?;
+            let data = Arc::new([chunk]);
+            self.sha_generator.update(data.clone()).await?;
+            self.deduper_process_chunks(data).await?;
         }
 
         // Finalize the sha256 hashing and create the metadata extension
@@ -98,30 +138,25 @@ impl SingleFileCleaner {
 
         // Now finish the deduplication process.
         let repo_salt = self.session.config.shard_config.repo_salt;
-        let (file_hash, remaining_file_data, deduplication_metrics, new_xorbs) =
-            self.dedup_manager.finalize(repo_salt, Some(metadata_ext));
 
-        let pointer_file =
-            PointerFile::init_from_info(&self.file_name, &file_hash.hex(), deduplication_metrics.total_bytes as u64);
+        let (file_hash, remaining_file_data, deduplication_metrics) =
+            self.dedup_manager_fut.await?.finalize(repo_salt, Some(metadata_ext));
 
-        // Let's check some things that should be invarients
+        let file_info = XetFileInfo::new(file_hash.hex(), deduplication_metrics.total_bytes);
+
+        // Let's check some things that should be invariants
         #[cfg(debug_assertions)]
         {
             // There should be exactly one file referenced in the remaining file data.
             debug_assert_eq!(remaining_file_data.pending_file_info.len(), 1);
 
             // The size should be total bytes
-            debug_assert_eq!(remaining_file_data.pending_file_info[0].0.file_size(), pointer_file.filesize() as usize)
+            debug_assert_eq!(remaining_file_data.pending_file_info[0].0.file_size(), deduplication_metrics.total_bytes)
         }
 
         // Now, return all this information to the
         self.session
-            .register_single_file_clean_completion(
-                self.file_name.clone(),
-                remaining_file_data,
-                &deduplication_metrics,
-                new_xorbs,
-            )
+            .register_single_file_clean_completion(remaining_file_data, &deduplication_metrics)
             .await?;
 
         // NB: xorb upload is happening in the background, this number is optimistic since it does
@@ -130,13 +165,13 @@ impl SingleFileCleaner {
         info!(
             target: "client_telemetry",
             action = "clean",
-            file_name = &self.file_name,
+            file_name = self.file_name.unwrap_or_default().to_string(),
             file_size_count = deduplication_metrics.total_bytes,
             new_bytes_count = deduplication_metrics.new_bytes,
             start_ts = self.start_time.to_rfc3339(),
             end_processing_ts = Utc::now().to_rfc3339(),
         );
 
-        Ok((pointer_file, deduplication_metrics))
+        Ok((file_info, deduplication_metrics))
     }
 }

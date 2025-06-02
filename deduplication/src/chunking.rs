@@ -1,4 +1,5 @@
 use std::cmp::min;
+use std::io::{Read, Seek, SeekFrom};
 use std::sync::Arc;
 
 use merklehash::{compute_data_hash, MerkleHash};
@@ -65,6 +66,14 @@ impl Chunker {
             chunkbuf: Vec::with_capacity(maximum_chunk),
             cur_chunk_len: 0,
         }
+    }
+
+    /// Create a chunker with custom min chunk sizes.
+    /// Only used by the partitioner which has special requirements.
+    fn new_with_min(target_chunk_size: usize, min_chunk_size: usize) -> Self {
+        let mut chunker = Self::new(target_chunk_size);
+        chunker.minimum_chunk = min_chunk_size;
+        chunker
     }
 
     /// Process more data; this is a continuation of any data from before when calls were
@@ -167,13 +176,96 @@ impl Chunker {
     }
 
     // Finishes, returning the final chunk if it exists
-    pub fn finish(mut self) -> Option<Chunk> {
+    pub fn finish(&mut self) -> Option<Chunk> {
         self.next(&[], true).0
     }
 }
 
+/// Find valid partition points in a file where we can
+/// chunk in parallel. Returns the start points of each partition
+/// (i.e. file offset 0 is always the first entry, and `file_size`
+/// is never in the result).
+/// Note that reader position is modified and not restored.
+///
+/// partition_scan_bytes is the number of bytes to scan at each
+/// proposed partition boundary in search of a valid chunk.
+///
+/// Due to a known issue in how we do chunking, note that these
+/// partitions are not 100% guaranteed to align. See the
+/// parallel_chunking.pdf for details.
+pub fn find_partitions<R: Read + Seek>(
+    reader: &mut R,
+    file_size: usize,
+    target_chunk_size: usize,
+    min_partition_size: usize,
+    partition_scan_bytes: usize,
+) -> std::io::Result<Vec<usize>> {
+    assert!(min_partition_size > 0);
+    let mut partitions: Vec<usize> = Vec::new();
+    partitions.push(0);
+    // minumum chunk must be at least the hash window size.
+    // the way the chunker works, the minimum may be up to
+    // target_min_chunk_size - 64
+    let minimum_chunk = target_chunk_size / *MINIMUM_CHUNK_DIVISOR;
+    let maximum_chunk = target_chunk_size * *MAXIMUM_CHUNK_MULTIPLIER;
+
+    assert!(minimum_chunk > 64);
+
+    if maximum_chunk >= min_partition_size {
+        return Ok(partitions);
+    }
+    let mut buf = vec![0u8; partition_scan_bytes];
+    let mut curpos: usize = 0;
+    // we jump curpos forward by min_partition_size
+    // and read *PARALLEL_CHUNKING_PARTITION_SCAN_BYTES bytes
+    // and try to find a partition boundary condition.
+    //
+    // We should also make sure There should also be at least
+    // min_partition_size bytes remaining at curpos so that
+    // we do not make a teeny tiny partition.
+    while curpos < file_size {
+        curpos += min_partition_size;
+        // there are not enough bytes to make a full partition
+        // or not enough bytes to scan for a partition
+        if curpos + min_partition_size >= file_size || curpos + partition_scan_bytes >= file_size {
+            break;
+        }
+        // read and chunk the scan bytes
+        reader.seek(SeekFrom::Start(curpos as u64))?;
+        reader.read_exact(&mut buf)?;
+        let mut chunker = Chunker::new_with_min(target_chunk_size, 0);
+        // TODO: there is a definite optimization here
+        // as we really only need the chunk lengths and not the data
+        let chunks = chunker.next_block(&buf, false);
+        if chunks.is_empty() {
+            continue;
+        }
+        // skip the first chunk
+        let mut offset = chunks[0].data.len();
+        offset += chunks[1].data.len();
+        for i in 2..chunks.len() {
+            let cprev = chunks[i - 1].data.len();
+            let c = chunks[i].data.len();
+            offset += chunks[i].data.len();
+            if cprev > minimum_chunk
+                && cprev < maximum_chunk - minimum_chunk
+                && c > minimum_chunk
+                && c < maximum_chunk - minimum_chunk
+            {
+                // we have a valid partition at this position
+                partitions.push(curpos + offset);
+                break;
+            }
+        }
+    }
+    Ok(partitions)
+}
+
 #[cfg(test)]
 mod tests {
+    use std::collections::HashSet;
+    use std::io::Cursor;
+
     use rand::rngs::StdRng;
     use rand::{Rng, SeedableRng};
 
@@ -293,6 +385,29 @@ mod tests {
 
         for c in chunks.iter() {
             assert_eq!(c.data.len(), *MAXIMUM_CHUNK_MULTIPLIER * 512);
+        }
+    }
+
+    #[test]
+    fn test_partition() {
+        for _i in 1..5 {
+            let data = make_test_data(42, 1000000);
+            let mut chunker = Chunker::new(1024);
+            let chunks = chunker.next_block(&data, true);
+            let mut chunk_offsets = HashSet::new();
+            let mut offset = 0;
+            eprintln!("{:?}", chunker.minimum_chunk);
+            for i in 0..chunks.len() {
+                chunk_offsets.insert(offset);
+                offset += chunks[i].data.len();
+            }
+
+            let partitions =
+                find_partitions(&mut Cursor::new(&mut data.as_slice()), data.len(), 1024, 100000, 10000).unwrap();
+            assert!(partitions.len() > 1);
+            for i in 0..partitions.len() {
+                assert!(chunk_offsets.contains(&partitions[i]));
+            }
         }
     }
 }

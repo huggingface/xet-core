@@ -31,8 +31,13 @@ impl ChunkCacheExt for SCCache {
     }
 }
 
+#[async_trait::async_trait]
 impl ChunkCache for SCCache {
-    fn get(&self, key: &cas_types::Key, range: &cas_types::ChunkRange) -> Result<Option<CacheRange>, ChunkCacheError> {
+    async fn get(
+        &self,
+        key: &cas_types::Key,
+        range: &cas_types::ChunkRange,
+    ) -> Result<Option<CacheRange>, ChunkCacheError> {
         let cache_key = CacheKey::new(key, range)?;
         let mut file = if let Ok(file) = self.cache.lock()?.get(&cache_key) {
             file
@@ -49,7 +54,7 @@ impl ChunkCache for SCCache {
         }))
     }
 
-    fn put(
+    async fn put(
         &self,
         key: &cas_types::Key,
         range: &cas_types::ChunkRange,

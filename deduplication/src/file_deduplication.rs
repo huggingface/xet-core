@@ -8,6 +8,7 @@ use mdb_shard::hash_is_global_dedup_eligible;
 use merkledb::aggregate_hashes::file_node_hash;
 use merklehash::MerkleHash;
 use more_asserts::{debug_assert_le, debug_assert_lt};
+use progress_tracking::upload_tracking::FileXorbDependency;
 
 use crate::constants::{MAX_XORB_BYTES, MAX_XORB_CHUNKS};
 use crate::data_aggregator::DataAggregator;
@@ -19,6 +20,9 @@ use crate::Chunk;
 
 pub struct FileDeduper<DataInterfaceType: DeduplicationDataInterface> {
     data_mng: DataInterfaceType,
+
+    /// A tag for tracking the file externally
+    file_id: u64,
 
     /// The new data here that hasn't yet been deduplicated.
     new_data: Vec<Chunk>,
@@ -48,17 +52,15 @@ pub struct FileDeduper<DataInterfaceType: DeduplicationDataInterface> {
     /// The next chunk index that is eligible for global dedup queries
     next_chunk_index_elegible_for_global_dedup_query: usize,
 
-    /// A list of the new xorbs produced by this file, by hash
-    new_xorbs: Vec<MerkleHash>,
-
     /// The tracked deduplication metrics for this file.
     deduplication_metrics: DeduplicationMetrics,
 }
 
 impl<DataInterfaceType: DeduplicationDataInterface> FileDeduper<DataInterfaceType> {
-    pub fn new(data_manager: DataInterfaceType) -> Self {
+    pub fn new(data_manager: DataInterfaceType, file_id: u64) -> Self {
         Self {
             data_mng: data_manager,
+            file_id,
             new_data: Vec::new(),
             new_data_size: 0,
             new_data_hash_lookup: HashMap::new(),
@@ -68,7 +70,6 @@ impl<DataInterfaceType: DeduplicationDataInterface> FileDeduper<DataInterfaceTyp
             defrag_tracker: DefragPrevention::default(),
             min_spacing_between_global_dedup_queries: 0,
             next_chunk_index_elegible_for_global_dedup_query: 0,
-            new_xorbs: Vec::new(),
             deduplication_metrics: DeduplicationMetrics::default(),
         }
     }
@@ -79,6 +80,9 @@ impl<DataInterfaceType: DeduplicationDataInterface> FileDeduper<DataInterfaceTyp
     ) -> Result<DeduplicationMetrics, DataInterfaceType::ErrorType> {
         // track the different deduplication statistics.
         let mut dedup_metrics = DeduplicationMetrics::default();
+
+        // Track new xorb dependencies
+        let mut xorb_dependencies = Vec::new();
 
         // All the previous chunk are stored here, use it as the global chunk index start.
         let global_chunk_index_start = self.chunk_hashes.len();
@@ -103,19 +107,19 @@ impl<DataInterfaceType: DeduplicationDataInterface> FileDeduper<DataInterfaceTyp
                 let global_chunk_index = global_chunk_index_start + local_chunk_index;
 
                 // First check to see if we don't already know what these blocks are from a previous pass.
-                if let Some((n_deduped, _)) = &deduped_blocks[local_chunk_index] {
+                if let Some((n_deduped, _, _)) = &deduped_blocks[local_chunk_index] {
                     local_chunk_index += n_deduped;
-                } else if let Some((n_deduped, fse)) =
+                } else if let Some((n_deduped, fse, is_uploaded_shard)) =
                     self.data_mng.chunk_hash_dedup_query(&chunk_hashes[local_chunk_index..]).await?
                 {
                     if !first_pass {
                         // This means new shards were discovered; so these are global dedup elegible.  We'll record
                         // the rest later on
-                        dedup_metrics.deduped_chunks_by_global_dedup += n_deduped;
-                        dedup_metrics.deduped_bytes_by_global_dedup += fse.unpacked_segment_bytes as usize;
+                        dedup_metrics.deduped_chunks_by_global_dedup += n_deduped as u64;
+                        dedup_metrics.deduped_bytes_by_global_dedup += fse.unpacked_segment_bytes as u64;
                     }
 
-                    deduped_blocks[local_chunk_index] = Some((n_deduped, fse));
+                    deduped_blocks[local_chunk_index] = Some((n_deduped, fse, is_uploaded_shard));
                     local_chunk_index += n_deduped;
 
                     // Now see if we can issue a background query against the global dedup server to see if
@@ -168,25 +172,37 @@ impl<DataInterfaceType: DeduplicationDataInterface> FileDeduper<DataInterfaceTyp
                 dedupe_query = self.dedup_query_against_local_data(&chunk_hashes[cur_idx..]);
             }
 
-            if let Some((n_deduped, fse)) = dedupe_query {
-                dedup_metrics.deduped_chunks += n_deduped;
-                dedup_metrics.deduped_bytes += fse.unpacked_segment_bytes as usize;
-                dedup_metrics.total_chunks += n_deduped;
-                dedup_metrics.total_bytes += fse.unpacked_segment_bytes as usize;
+            if let Some((n_deduped, fse, is_external)) = dedupe_query {
+                dedup_metrics.deduped_chunks += n_deduped as u64;
+                dedup_metrics.deduped_bytes += fse.unpacked_segment_bytes as u64;
+                dedup_metrics.total_chunks += n_deduped as u64;
+                dedup_metrics.total_bytes += fse.unpacked_segment_bytes as u64;
 
                 // check the fragmentation state and if it is pretty fragmented,
                 // we skip dedupe.  However, continuing the previous is always fine.
                 if self.file_data_sequence_continues_current(&fse)
                     || self.defrag_tracker.allow_dedup_on_next_range(n_deduped)
                 {
+                    // Report this as a dependency
+                    // The case where it's dededuped against the present xorb is handled
+                    // when the xorb gets cut and we know the hash.
+                    if fse.cas_hash != MerkleHash::marker() {
+                        xorb_dependencies.push(FileXorbDependency {
+                            file_id: self.file_id,
+                            xorb_hash: fse.cas_hash,
+                            n_bytes: fse.unpacked_segment_bytes as u64,
+                            is_external,
+                        });
+                    }
+
                     // We found one or more chunk hashes present
                     self.add_file_data_sequence_entry(fse, n_deduped);
 
                     cur_idx += n_deduped;
                     continue;
                 } else {
-                    dedup_metrics.defrag_prevented_dedup_chunks += n_deduped;
-                    dedup_metrics.defrag_prevented_dedup_bytes += fse.unpacked_segment_bytes as usize;
+                    dedup_metrics.defrag_prevented_dedup_chunks += n_deduped as u64;
+                    dedup_metrics.defrag_prevented_dedup_bytes += fse.unpacked_segment_bytes as u64;
                 }
             }
 
@@ -194,19 +210,24 @@ impl<DataInterfaceType: DeduplicationDataInterface> FileDeduper<DataInterfaceTyp
             let n_bytes = chunks[cur_idx].data.len();
 
             dedup_metrics.total_chunks += 1;
-            dedup_metrics.total_bytes += n_bytes;
-            dedup_metrics.new_bytes += n_bytes;
+            dedup_metrics.total_bytes += n_bytes as u64;
+            dedup_metrics.new_bytes += n_bytes as u64;
             dedup_metrics.new_chunks += 1;
 
             // Do we need to cut a new xorb first?
             if self.new_data_size + n_bytes > *MAX_XORB_BYTES || self.new_data.len() + 1 > *MAX_XORB_CHUNKS {
                 let new_xorb = self.cut_new_xorb();
-                self.new_xorbs.push(new_xorb.hash());
+                xorb_dependencies.push(FileXorbDependency {
+                    file_id: self.file_id,
+                    xorb_hash: new_xorb.hash(),
+                    n_bytes: new_xorb.num_bytes() as u64,
+                    is_external: false,
+                });
                 self.data_mng.register_new_xorb(new_xorb).await?;
             }
 
             if !self.file_info.is_empty()
-                && self.file_info.last().unwrap().cas_hash == MerkleHash::default()
+                && self.file_info.last().unwrap().cas_hash == MerkleHash::marker()
                 && self.file_info.last().unwrap().chunk_index_end as usize == self.new_data.len()
             {
                 // This is the next chunk in the CAS block we're building,
@@ -224,7 +245,7 @@ impl<DataInterfaceType: DeduplicationDataInterface> FileDeduper<DataInterfaceTyp
                 let chunk_idx = self.new_data.len();
 
                 self.file_info.push(FileDataSequenceEntry::new(
-                    MerkleHash::default(),
+                    MerkleHash::marker(),
                     n_bytes,
                     chunk_idx,
                     chunk_idx + 1,
@@ -243,6 +264,11 @@ impl<DataInterfaceType: DeduplicationDataInterface> FileDeduper<DataInterfaceTyp
 
         self.deduplication_metrics.merge_in(&dedup_metrics);
         self.chunk_hashes.extend(chunks.iter().map(|c| (c.hash, c.data.len())));
+
+        // Register the xorb dependencies as needed.
+        if !xorb_dependencies.is_empty() {
+            self.data_mng.register_xorb_dependencies(&xorb_dependencies).await;
+        }
 
         Ok(dedup_metrics)
     }
@@ -268,7 +294,7 @@ impl<DataInterfaceType: DeduplicationDataInterface> FileDeduper<DataInterfaceTyp
             self.defrag_tracker.increment_last_range_in_fragmentation_estimate(n_deduped);
         } else {
             // Make sure we're tracking any that we need to fill in later.
-            if fse.cas_hash == MerkleHash::default() {
+            if fse.cas_hash == MerkleHash::marker() {
                 self.internally_referencing_entries.push(self.file_info.len());
             }
             // This block is new
@@ -277,10 +303,10 @@ impl<DataInterfaceType: DeduplicationDataInterface> FileDeduper<DataInterfaceTyp
         }
     }
 
-    /// Cut a new xorb from the existing data.  This may need to be called repeatedly if there are
+    /// Cut a new xorb from the existing data.  
     fn cut_new_xorb(&mut self) -> RawXorbData {
         // Cut the new xorb.
-        let new_xorb = RawXorbData::from_chunks(&self.new_data[..]);
+        let new_xorb = RawXorbData::from_chunks(&self.new_data[..], vec![0]);
 
         let xorb_hash = new_xorb.hash();
 
@@ -288,7 +314,7 @@ impl<DataInterfaceType: DeduplicationDataInterface> FileDeduper<DataInterfaceTyp
         // the new xorb if referenced.
         for &idx in self.internally_referencing_entries.iter() {
             let fse = &mut self.file_info[idx];
-            debug_assert_eq!(fse.cas_hash, MerkleHash::default());
+            debug_assert_eq!(fse.cas_hash, MerkleHash::marker());
             debug_assert_lt!(fse.chunk_index_start as usize, self.new_data.len());
             debug_assert_le!(fse.chunk_index_end as usize, self.new_data.len());
 
@@ -299,7 +325,7 @@ impl<DataInterfaceType: DeduplicationDataInterface> FileDeduper<DataInterfaceTyp
         {
             // For bookkeeping checks, make sure we have everything.
             for fse in self.file_info.iter() {
-                debug_assert_ne!(fse.cas_hash, MerkleHash::default());
+                debug_assert_ne!(fse.cas_hash, MerkleHash::marker());
             }
         }
 
@@ -312,9 +338,12 @@ impl<DataInterfaceType: DeduplicationDataInterface> FileDeduper<DataInterfaceTyp
         new_xorb
     }
 
-    /// Do a query against the local data; this would return an entry with MerkleHash::default(), which
+    /// Do a query against the local data; this would return an entry with MerkleHash::marker(), which
     /// would need to get filled in.
-    fn dedup_query_against_local_data(&mut self, chunks: &[MerkleHash]) -> Option<(usize, FileDataSequenceEntry)> {
+    fn dedup_query_against_local_data(
+        &mut self,
+        chunks: &[MerkleHash],
+    ) -> Option<(usize, FileDataSequenceEntry, bool)> {
         // It's important for the defrag prevention to have a good estimate of the number of chunks in
         // a row that can be deduplicated, so this pulls through the
         if let Some(&base_idx) = self.new_data_hash_lookup.get(&chunks[0]) {
@@ -332,7 +361,11 @@ impl<DataInterfaceType: DeduplicationDataInterface> FileDeduper<DataInterfaceTyp
                 break;
             }
 
-            Some((end_idx - base_idx, FileDataSequenceEntry::new(MerkleHash::default(), n_bytes, base_idx, end_idx)))
+            Some((
+                end_idx - base_idx,
+                FileDataSequenceEntry::new(MerkleHash::marker(), n_bytes, base_idx, end_idx),
+                false,
+            ))
         } else {
             None
         }
@@ -342,12 +375,12 @@ impl<DataInterfaceType: DeduplicationDataInterface> FileDeduper<DataInterfaceTyp
     /// and remaining data.  Also returns the aggregated deduplication metrics and the list of xorb hashes that were
     /// registered as part of this run.
     ///
-    /// Returns (file hash, data aggregation, deduplication metrics, new xorb list)
+    /// Returns (file hash, data aggregation, deduplication metrics)
     pub fn finalize(
         self,
         file_hash_salt: [u8; 32],
         metadata_ext: Option<FileMetadataExt>,
-    ) -> (MerkleHash, DataAggregator, DeduplicationMetrics, Vec<MerkleHash>) {
+    ) -> (MerkleHash, DataAggregator, DeduplicationMetrics) {
         let file_hash = file_node_hash(&self.chunk_hashes, &file_hash_salt).unwrap();
 
         let metadata = FileDataSequenceHeader::new(file_hash, self.file_info.len(), true, metadata_ext.is_some());
@@ -378,8 +411,8 @@ impl<DataInterfaceType: DeduplicationDataInterface> FileDeduper<DataInterfaceTyp
             metadata_ext,
         };
 
-        let remaining_data = DataAggregator::new(self.new_data, fi, self.internally_referencing_entries);
+        let remaining_data = DataAggregator::new(self.new_data, fi, self.internally_referencing_entries, self.file_id);
 
-        (file_hash, remaining_data, self.deduplication_metrics, self.new_xorbs)
+        (file_hash, remaining_data, self.deduplication_metrics)
     }
 }

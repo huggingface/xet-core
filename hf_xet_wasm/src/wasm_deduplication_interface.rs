@@ -10,6 +10,7 @@ use mdb_shard::file_structs::FileDataSequenceEntry;
 use mdb_shard::shard_in_memory::MDBInMemoryShard;
 use mdb_shard::MDBShardInfo;
 use merklehash::{HMACKey, MerkleHash};
+use progress_tracking::upload_tracking::FileXorbDependency;
 use tokio_with_wasm::alias as wasmtokio;
 
 use super::errors::*;
@@ -40,11 +41,11 @@ impl DeduplicationDataInterface for UploadSessionDataManager {
     async fn chunk_hash_dedup_query(
         &self,
         query_hashes: &[MerkleHash],
-    ) -> Result<Option<(usize, FileDataSequenceEntry)>> {
+    ) -> Result<Option<(usize, FileDataSequenceEntry, bool)>> {
         for (hmac_key, shard) in self.shard.iter() {
             let keyed_query_hashes: Vec<_> = query_hashes.iter().map(|h| h.hmac(*hmac_key)).collect();
             if let Some((count, fdse)) = shard.chunk_hash_dedup_query(&keyed_query_hashes) {
-                return Ok(Some((count, fdse)));
+                return Ok(Some((count, fdse, true)));
             }
         }
 
@@ -102,5 +103,9 @@ impl DeduplicationDataInterface for UploadSessionDataManager {
         self.session.register_new_xorb_for_upload(xorb).await?;
 
         Ok(())
+    }
+
+    async fn register_xorb_dependencies(&mut self, dependencies: &[FileXorbDependency]) {
+        // Noop
     }
 }

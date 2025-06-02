@@ -1,0 +1,22 @@
+name: Set Build Profile
+description: Set build profile to include debug checks for dev, alpha, and beta tags.
+runs:
+  using: "composite"
+  steps:
+    - shell: bash
+      run: |
+        TAG=${{ inputs.tag }}
+        LOWERTAG=$(echo "$TAG" | tr '[:upper:]' '[:lower:]')
+        if [[ "$LOWERTAG" == *dev* || "$LOWERTAG" == *alpha* || "$LOWERTAG" == *beta* ]]; then
+          BUILD_PROFILE=opt-test
+          IS_RELEASE=false
+        else
+          BUILD_PROFILE=release-dbgsymbols
+          IS_RELEASE=true
+        fi
+        echo "BUILD_PROFILE=$BUILD_PROFILE" >> $GITHUB_ENV
+        echo "IS_RELEASE=$IS_RELEASE" >> $GITHUB_ENV
+inputs:
+  tag:
+    required: true
+    type: string

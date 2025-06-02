@@ -1,0 +1,31 @@
+[build-system]
+requires = ["maturin>=1.7,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "hf-xet"
+requires-python = ">=3.8"
+description = "Fast transfer of large files with the Hugging Face Hub."
+license = { file = "LICENSE" }
+classifiers = [
+    "Programming Language :: Rust",
+    "Programming Language :: Python :: Implementation :: CPython",
+    "Programming Language :: Python :: Implementation :: PyPy",
+]
+dynamic = ["version"]
+
+[project.optional-dependencies]
+tests = [
+    "pytest",
+]
+
+[project.urls]
+Homepage = "https://github.com/huggingface/xet-core"
+Documentation = "https://huggingface.co/docs/hub/en/storage-backends#using-xet-storage"
+Issues = "https://github.com/huggingface/xet-core/issues"
+Repository = "https://github.com/huggingface/xet-core.git"
+
+[tool.maturin]
+python-source = "hf_xet/python"
+features = ["pyo3/extension-module"]
+manifest-path = "hf_xet/Cargo.toml"

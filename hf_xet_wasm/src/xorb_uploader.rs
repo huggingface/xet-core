@@ -3,6 +3,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use cas_client::{CasClientError, Client};
+use cas_object::SerializedCasObject;
 use merklehash::MerkleHash;
 use tokio::sync::Semaphore;
 use tokio_with_wasm::alias as wasmtokio;
@@ -10,12 +11,10 @@ use tokio_with_wasm::alias as wasmtokio;
 use crate::errors::*;
 use crate::wasm_timer::Timer;
 
-type XorbUploadType = (MerkleHash, Vec<u8>, Vec<(MerkleHash, u32)>);
-
 #[cfg_attr(not(target_family = "wasm"), async_trait)]
 #[cfg_attr(target_family = "wasm", async_trait(?Send))]
 pub trait XorbUploader {
-    async fn upload_xorb(&mut self, input: XorbUploadType) -> Result<()>;
+    async fn upload_xorb(&mut self, input: SerializedCasObject) -> Result<()>;
     async fn finalize(&mut self) -> Result<()>;
 }
 
@@ -37,8 +36,8 @@ impl XorbUploaderLocalSequential {
 #[cfg_attr(not(target_family = "wasm"), async_trait)]
 #[cfg_attr(target_family = "wasm", async_trait(?Send))]
 impl XorbUploader for XorbUploaderLocalSequential {
-    async fn upload_xorb(&mut self, input: XorbUploadType) -> Result<()> {
-        let _ = self.client.put(&self.cas_prefix, &input.0, input.1, input.2).await?;
+    async fn upload_xorb(&mut self, input: SerializedCasObject) -> Result<()> {
+        let _ = self.client.upload_xorb(&self.cas_prefix, input, None).await?;
         Ok(())
     }
 
@@ -51,7 +50,7 @@ pub struct XorbUploaderSpawnParallel {
     client: Arc<dyn Client + Send + Sync>,
     cas_prefix: String,
     semaphore: Arc<Semaphore>,
-    tasks: wasmtokio::task::JoinSet<stdResult<usize, CasClientError>>,
+    tasks: wasmtokio::task::JoinSet<stdResult<u64, CasClientError>>,
 }
 
 impl XorbUploaderSpawnParallel {
@@ -68,7 +67,7 @@ impl XorbUploaderSpawnParallel {
 #[cfg_attr(not(target_family = "wasm"), async_trait)]
 #[cfg_attr(target_family = "wasm", async_trait(?Send))]
 impl XorbUploader for XorbUploaderSpawnParallel {
-    async fn upload_xorb(&mut self, input: XorbUploadType) -> Result<()> {
+    async fn upload_xorb(&mut self, input: SerializedCasObject) -> Result<()> {
         while let Some(ret) = self.tasks.try_join_next() {
             ret.map_err(DataProcessingError::internal)??;
         }
@@ -82,8 +81,8 @@ impl XorbUploader for XorbUploaderSpawnParallel {
             .await
             .map_err(DataProcessingError::internal)?;
         self.tasks.spawn(async move {
-            let _timer = Timer::new(format!("upload xorb {}", input.0));
-            let ret = client.put(&cas_prefix, &input.0, input.1, input.2).await;
+            let _timer = Timer::new(format!("upload xorb {}", input.hash));
+            let ret = client.upload_xorb(&cas_prefix, input, None).await;
             drop(permit);
             ret
         });

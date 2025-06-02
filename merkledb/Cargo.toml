@@ -10,28 +10,29 @@ doctest = false
 
 [dependencies]
 merklehash = { path = "../merklehash" }
-thiserror = "2.0"
 utils = { path = "../utils" }
-rand_chacha = "0.9"
-serde = { version = "1.0.129", features = ["derive"] }
-gearhash = "0.1.3"
-walkdir = "2.3.2"
-rayon = "1.5.1"
-bincode = "1.3.3"
-rustc-hash = "1.1.0"
-tempfile = "3.2.0"
-bitflags = "1.3.2"
-tracing = "0.1.31"
-async-trait = "0.1.9"
-lazy_static = "1.4.0"
-clap = { version = "3.1.6", features = ["derive"] }
-blake3 = "1.5.1"
+
+async-trait = { workspace = true }
+bincode = { workspace = true }
+bitflags = { workspace = true }
+blake3 = { workspace = true }
+clap = { workspace = true }
+gearhash = { workspace = true }
+lazy_static = { workspace = true }
+rand_chacha = { workspace = true }
+rayon = { workspace = true }
+rustc-hash = { workspace = true }
+serde = { workspace = true }
+tempfile = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+walkdir = { workspace = true }
 
 [dev-dependencies]
-criterion = { version = "0.3.5", features = ["html_reports"] }
-lazy_static = "1.4.0"
-tokio = { version = "1.44", features = ["full"] }
-rand = "0.9"
+criterion = { workspace = true }
+lazy_static = { workspace = true }
+tokio = { workspace = true, features = ["full"] }
+rand = { workspace = true }
 
 [[bench]]
 name = "rolling_hash_benchmark"

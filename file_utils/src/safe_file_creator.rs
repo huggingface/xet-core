@@ -2,8 +2,8 @@ use std::fs::{self, File, Metadata};
 use std::io::{self, BufWriter, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
-use rand::distributions::Alphanumeric;
-use rand::{thread_rng, Rng};
+use rand::distr::Alphanumeric;
+use rand::{rng, Rng};
 
 use crate::create_file;
 use crate::file_metadata::set_file_metadata;
@@ -73,7 +73,7 @@ impl SafeFileCreator {
 
     /// Generates a temporary file path in the same directory as the destination file
     fn temp_file_path(dest_dir: impl AsRef<Path>, file: Option<&str>) -> PathBuf {
-        let mut rng = thread_rng();
+        let mut rng = rng();
         let random_hash: String = (0..10).map(|_| rng.sample(Alphanumeric)).map(char::from).collect();
         let temp_file_name = if let Some(filename) = file {
             format!(".{filename}.{random_hash}.tmp")
@@ -86,6 +86,18 @@ impl SafeFileCreator {
     pub fn set_dest_path<P: AsRef<Path>>(&mut self, dest_path: P) {
         let dest_path = dest_path.as_ref().to_path_buf();
         self.dest_path = Some(dest_path);
+    }
+
+    // abort the writing process and delete the temporary file
+    pub fn abort(&mut self) -> io::Result<()> {
+        if self.writer.is_none() {
+            return Ok(());
+        }
+        self.writer = None;
+        if self.temp_path.exists() {
+            fs::remove_file(&self.temp_path)?;
+        }
+        Ok(())
     }
 
     /// Closes the writer and replaces the original file with the temporary file

@@ -2,6 +2,7 @@ use std::mem::{swap, take};
 use std::sync::Arc;
 
 use cas_client::{Client, RemoteClient};
+use cas_object::SerializedCasObject;
 use deduplication::constants::{MAX_XORB_BYTES, MAX_XORB_CHUNKS};
 use deduplication::{DataAggregator, DeduplicationMetrics, RawXorbData};
 use mdb_shard::shard_in_memory::MDBInMemoryShard;
@@ -12,8 +13,8 @@ use tokio::sync::Mutex;
 use super::configurations::TranslatorConfig;
 use super::errors::*;
 use crate::wasm_file_cleaner::SingleFileCleaner;
-use crate::xorb_uploader::{XorbUploader, XorbUploaderSpawnParallel};
 use crate::wasm_timer::Timer;
+use crate::xorb_uploader::{XorbUploader, XorbUploaderSpawnParallel};
 
 static UPLOAD_CONCURRENCY: usize = 5;
 
@@ -39,10 +40,10 @@ impl FileUploadSession {
     pub fn new(config: Arc<TranslatorConfig>) -> Self {
         let client = Arc::new(RemoteClient::new(
             &config.data_config.endpoint,
-            config.data_config.compression,
             &config.data_config.auth,
             &None,
             None,
+            &config.session_id,
             false,
         ));
 
@@ -58,15 +59,14 @@ impl FileUploadSession {
         }
     }
 
-    pub fn start_clean(self: &Arc<Self>, tracker: String, sha256: Option<MerkleHash>) -> SingleFileCleaner {
-        SingleFileCleaner::new(self.clone(), tracker, sha256, true)
+    pub fn start_clean(self: &Arc<Self>, file_id: u64, sha256: Option<MerkleHash>) -> SingleFileCleaner {
+        SingleFileCleaner::new(self.clone(), file_id, sha256, true)
     }
 
     pub(crate) async fn register_single_file_clean_completion(
         self: &Arc<Self>,
         mut file_data: DataAggregator,
         _dedup_metrics: &DeduplicationMetrics,
-        _xorbs_dependencies: Vec<MerkleHash>,
     ) -> Result<()> {
         // Merge in the remaining file data; uploading a new xorb if need be.
         {
@@ -103,7 +103,7 @@ impl FileUploadSession {
         }
         self.register_new_xorb_for_upload(xorb).await?;
 
-        for fi in new_files {
+        for (_, fi, _) in new_files {
             self.session_shard.lock().await.add_file_reconstruction_info(fi)?;
         }
 
@@ -116,16 +116,13 @@ impl FileUploadSession {
             return Ok(());
         }
 
-        let xorb_hash = xorb.hash();
-        let xorb_data = xorb.to_vec();
-        let chunks_and_boundaries = xorb.cas_info.chunks_and_boundaries();
-
-        drop(xorb);
+        let compression_scheme = self.config.data_config.compression;
+        let cas_object = SerializedCasObject::from_xorb(xorb, compression_scheme)?;
 
         let Some(ref mut xorb_uploader) = *self.xorb_uploader.lock().await else {
             return Err(DataProcessingError::internal("register xorb after drop"));
         };
-        xorb_uploader.upload_xorb((xorb_hash, xorb_data, chunks_and_boundaries)).await?;
+        xorb_uploader.upload_xorb(cas_object).await?;
 
         Ok(())
     }
@@ -158,7 +155,7 @@ impl FileUploadSession {
         let serialized_shard = Vec::with_capacity(shard.shard_file_size() as usize);
         let mut hashed_write = HashedWrite::new(serialized_shard);
 
-        MDBShardInfo::serialize_from(&mut hashed_write, &shard)?;
+        MDBShardInfo::serialize_from(&mut hashed_write, &shard, None)?;
 
         let shard_hash = hashed_write.hash();
         let shard_data = hashed_write.into_inner();

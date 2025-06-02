@@ -170,11 +170,12 @@ pub async fn clean_file(file: web_sys::File, endpoint: String, jwt_token: String
             prefix: "default-merkledb".to_owned(),
             repo_salt: RepoSalt::default(),
         },
+        session_id: uuid::Uuid::new_v4().to_string(),
     };
 
     let upload_session = Arc::new(FileUploadSession::new(Arc::new(config)));
 
-    let mut handle = upload_session.start_clean(filename, None);
+    let mut handle = upload_session.start_clean(0, None);
 
     const READ_BUF_SIZE: usize = 8 * 1024 * 1024;
     let mut buf = vec![0u8; READ_BUF_SIZE];

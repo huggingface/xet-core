@@ -9,29 +9,24 @@ path = "src/lib.rs"
 
 [dependencies]
 merklehash = { path = "../merklehash" }
-thiserror = "2.0"
-futures = "0.3.28"
-lazy_static = "1.4.0"
-paste = "0.1"
-ctor = "0.1"
-log = "0.4.22"
 
-# consistenthash
-tracing = "0.1.31"
-bytes = "1.8.0"
-async-trait = "0.1.87"
-
-# singleflight & threadpool
-tokio = { version = "1.44", features = ["sync", "time", "rt", "macros"] }
-parking_lot = "0.11"
-pin-project = "1.0.12"
+async-trait = { workspace = true }
+bytes = { workspace = true }
+ctor = { workspace = true }
+futures = { workspace = true }
+lazy_static = { workspace = true }
+parking_lot = { workspace = true }
+pin-project = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true, features = ["time", "rt", "macros"] }
+tracing = { workspace = true }
 
 [target.'cfg(not(target_family = "wasm"))'.dev-dependencies]
-tempfile = "3.14.0"
+tempfile = { workspace = true }
 xet_threadpool = { path = "../xet_threadpool" }
 
 [target.'cfg(target_family = "wasm")'.dependencies]
-web-time = "1.1.0"
+web-time = { workspace = true }
 
 [features]
 strict = []

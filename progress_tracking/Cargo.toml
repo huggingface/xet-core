@@ -1,0 +1,15 @@
+[package]
+name = "progress_tracking"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+merklehash = { path = "../merklehash" }
+utils = { path = "../utils" }
+
+async-trait = { workspace = true }
+more-asserts = { workspace = true }
+tokio = { workspace = true, features = ["test-util"] }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["full"] }

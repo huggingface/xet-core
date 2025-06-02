@@ -11,12 +11,12 @@ use crate::CasClientError;
 /// 3. querying of chunk->shard information
 #[cfg(not(target_family = "wasm"))]
 pub trait ShardClientInterface:
-    RegistrationClient + FileReconstructor<CasClientError> + ShardDedupProbe + Send + Sync
+    RegistrationClient + FileReconstructor<CasClientError> + ShardDedupProber + Send + Sync
 {
 }
 
 #[cfg(target_family = "wasm")]
-pub trait ShardClientInterface: RegistrationClient + ShardDedupProbe {}
+pub trait ShardClientInterface: RegistrationClient + ShardDedupProber {}
 
 #[cfg(not(target_family = "wasm"))]
 pub trait Client: UploadClient + ReconstructionClient + ShardClientInterface {}
@@ -30,7 +30,7 @@ mod download {
 
     use cas_types::{FileRange, QueryReconstructionResponse};
     use merklehash::MerkleHash;
-    use utils::progress::ProgressUpdater;
+    use progress_tracking::item_tracking::SingleItemProgressUpdater;
 
     use crate::error::Result;
     use crate::output_provider::OutputProvider;
@@ -54,7 +54,7 @@ mod download {
             hash: &MerkleHash,
             byte_range: Option<FileRange>,
             output_provider: &OutputProvider,
-            progress_updater: Option<Arc<dyn ProgressUpdater>>,
+            progress_updater: Option<Arc<SingleItemProgressUpdater>>,
         ) -> Result<u64>;
 
         async fn batch_get_file(&self, files: HashMap<MerkleHash, &OutputProvider>) -> Result<u64> {
@@ -84,7 +84,11 @@ mod download {
 }
 
 mod upload {
+    use std::sync::Arc;
+
+    use cas_object::SerializedCasObject;
     use merklehash::MerkleHash;
+    use progress_tracking::upload_tracking::CompletionTracker;
 
     use crate::error::Result;
 
@@ -105,7 +109,7 @@ mod upload {
     /// any are found, writes them to disk and returns the path.
     #[cfg_attr(not(target_family = "wasm"), async_trait::async_trait)]
     #[cfg_attr(target_family = "wasm", async_trait::async_trait(?Send))]
-    pub trait ShardDedupProbe {
+    pub trait ShardDedupProber {
         #[cfg(not(target_family = "wasm"))]
         async fn query_for_global_dedup_shard(
             &self,
@@ -113,7 +117,7 @@ mod upload {
             chunk_hash: &MerkleHash,
             salt: &[u8; 32],
         ) -> Result<Option<std::path::PathBuf>>;
-        // #[cfg(target_family = "wasm")]
+
         async fn query_for_global_dedup_shard_in_memory(
             &self,
             prefix: &str,
@@ -130,22 +134,13 @@ mod upload {
     #[cfg_attr(not(target_family = "wasm"), async_trait::async_trait)]
     #[cfg_attr(target_family = "wasm", async_trait::async_trait(?Send))]
     pub trait UploadClient {
-        /// Insert the provided data into the CAS as a XORB indicated by the prefix and hash.
-        /// The hash will be verified on the SERVER-side according to the chunk boundaries.
-        /// Chunk Boundaries must be complete; i.e. the last entry in chunk boundary
-        /// must be the length of data. For instance, if data="helloworld" with 2 chunks
-        /// ["hello" "world"], chunk_boundaries should be [5, 10].
-        /// Empty data and empty chunk boundaries are not accepted.
-        ///
-        /// Note that put may background in some implementations and a flush()
-        /// will be needed.
-        async fn put(
+        /// Insert a serialized XORB into the CAS, returning the number of bytes read.
+        async fn upload_xorb(
             &self,
             prefix: &str,
-            hash: &MerkleHash,
-            data: Vec<u8>,
-            chunk_and_boundaries: Vec<(MerkleHash, u32)>,
-        ) -> Result<usize>;
+            serialized_cas_object: SerializedCasObject,
+            upload_tracker: Option<Arc<CompletionTracker>>,
+        ) -> Result<u64>;
 
         /// Check if a XORB already exists.
         async fn exists(&self, prefix: &str, hash: &MerkleHash) -> Result<bool>;

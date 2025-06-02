@@ -1,6 +1,7 @@
 use std::fmt::Debug;
 
 use cas_client::CasClientError;
+use cas_object::error::CasObjectError;
 use mdb_shard::error::MDBShardError;
 use merklehash::DataHashHexParseError;
 use thiserror::Error;
@@ -16,6 +17,9 @@ pub enum DataProcessingError {
 
     #[error("CAS service error : {0}")]
     CasClientError(#[from] CasClientError),
+
+    #[error("Xorb Serialization error : {0}")]
+    XorbSerializationError(#[from] CasObjectError),
 
     #[error("MerkleDB Shard error: {0}")]
     MDBShardError(#[from] MDBShardError),

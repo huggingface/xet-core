@@ -11,15 +11,17 @@ use cas_object::CompressionScheme;
 use deduplication::DeduplicationMetrics;
 use dirs::home_dir;
 use parutils::{tokio_par_for_each, ParallelError};
+use progress_tracking::item_tracking::ItemProgressUpdater;
+use progress_tracking::TrackingProgressUpdater;
+use tracing::{info_span, instrument, Instrument, Span};
+use ulid::Ulid;
 use utils::auth::{AuthConfig, TokenRefresher};
-use utils::progress::ProgressUpdater;
-use xet_threadpool::ThreadPool;
 
 use crate::configurations::*;
 use crate::constants::{INGESTION_BLOCK_SIZE, MAX_CONCURRENT_DOWNLOADS, MAX_CONCURRENT_FILE_INGESTION};
 use crate::errors::DataProcessingError;
 use crate::repo_salt::RepoSalt;
-use crate::{errors, FileDownloader, FileUploadSession, PointerFile};
+use crate::{errors, FileDownloader, FileUploadSession, XetFileInfo};
 
 utils::configurable_constants! {
     ref DEFAULT_CAS_ENDPOINT: String = "http://localhost:8080".to_string();
@@ -89,32 +91,72 @@ pub fn default_config(
         repo_info: Some(RepoInfo {
             repo_paths: vec!["".into()],
         }),
+        session_id: Some(Ulid::new().to_string()),
     };
 
     // Return the temp dir so that it's not dropped and thus the directory deleted.
     Ok(Arc::new(translator_config))
 }
 
+#[instrument(skip_all, name = "data_client::upload_bytes", fields(session_id = tracing::field::Empty, num_files=file_contents.len()))]
+pub async fn upload_bytes_async(
+    file_contents: Vec<Vec<u8>>,
+    endpoint: Option<String>,
+    token_info: Option<(String, u64)>,
+    token_refresher: Option<Arc<dyn TokenRefresher>>,
+    progress_updater: Option<Arc<dyn TrackingProgressUpdater>>,
+) -> errors::Result<Vec<XetFileInfo>> {
+    let config = default_config(endpoint.unwrap_or(DEFAULT_CAS_ENDPOINT.clone()), None, token_info, token_refresher)?;
+    Span::current().record("session_id", &config.session_id);
+
+    let upload_session = FileUploadSession::new(config, progress_updater).await?;
+    let blobs_with_spans = add_spans(file_contents, || info_span!("clean_task"));
+
+    // clean the bytes
+    let files = tokio_par_for_each(blobs_with_spans, *MAX_CONCURRENT_FILE_INGESTION, |(blob, span), _| {
+        async {
+            let (xf, _metrics) = clean_bytes(upload_session.clone(), blob).await?;
+            Ok(xf)
+        }
+        .instrument(span.unwrap_or_else(|| info_span!("unexpected_span")))
+    })
+    .await
+    .map_err(|e| match e {
+        ParallelError::JoinError => DataProcessingError::InternalError("Join error".to_string()),
+        ParallelError::TaskError(e) => e,
+    })?;
+
+    // Push the CAS blocks and flush the mdb to disk
+    let _metrics = upload_session.finalize().await?;
+
+    Ok(files)
+}
+
+#[instrument(skip_all, name = "data_client::upload_files", fields(session_id = tracing::field::Empty, num_files=file_paths.len()))]
 pub async fn upload_async(
-    threadpool: Arc<ThreadPool>,
     file_paths: Vec<String>,
     endpoint: Option<String>,
     token_info: Option<(String, u64)>,
     token_refresher: Option<Arc<dyn TokenRefresher>>,
-    progress_updater: Option<Arc<dyn ProgressUpdater>>,
-) -> errors::Result<Vec<PointerFile>> {
+    progress_updater: Option<Arc<dyn TrackingProgressUpdater>>,
+) -> errors::Result<Vec<XetFileInfo>> {
     // chunk files
     // produce Xorbs + Shards
     // upload shards and xorbs
     // for each file, return the filehash
     let config = default_config(endpoint.unwrap_or(DEFAULT_CAS_ENDPOINT.clone()), None, token_info, token_refresher)?;
+    Span::current().record("session_id", &config.session_id);
 
-    let upload_session = FileUploadSession::new(config, threadpool, progress_updater).await?;
+    let upload_session = FileUploadSession::new(config, progress_updater).await?;
+    let files_with_spans = add_spans(file_paths, || info_span!("clean_file_task"));
 
     // for all files, clean them, producing pointer files.
-    let pointers = tokio_par_for_each(file_paths, *MAX_CONCURRENT_FILE_INGESTION, |f, _| async {
-        let (pf, _metrics) = clean_file(upload_session.clone(), f).await?;
-        Ok(pf)
+    let files = tokio_par_for_each(files_with_spans, *MAX_CONCURRENT_FILE_INGESTION, |(f, span), _| {
+        async {
+            let (xf, _metrics) = clean_file(upload_session.clone(), f).await?;
+            Ok(xf)
+        }
+        .instrument(span.unwrap_or_else(|| info_span!("unexpected_span")))
     })
     .await
     .map_err(|e| match e {
@@ -127,19 +169,19 @@ pub async fn upload_async(
 
     // TODO: Report on metrics
 
-    Ok(pointers)
+    Ok(files)
 }
 
+#[instrument(skip_all, name = "data_client::download", fields(session_id = tracing::field::Empty, num_files=file_infos.len()))]
 pub async fn download_async(
-    threadpool: Arc<ThreadPool>,
-    pointer_files: Vec<PointerFile>,
+    file_infos: Vec<(XetFileInfo, String)>,
     endpoint: Option<String>,
     token_info: Option<(String, u64)>,
     token_refresher: Option<Arc<dyn TokenRefresher>>,
-    progress_updaters: Option<Vec<Arc<dyn ProgressUpdater>>>,
+    progress_updaters: Option<Vec<Arc<dyn TrackingProgressUpdater>>>,
 ) -> errors::Result<Vec<String>> {
     if let Some(updaters) = &progress_updaters {
-        if updaters.len() != pointer_files.len() {
+        if updaters.len() != file_infos.len() {
             return Err(DataProcessingError::ParameterError(
                 "updaters are not same length as pointer_files".to_string(),
             ));
@@ -147,38 +189,60 @@ pub async fn download_async(
     }
     let config =
         default_config(endpoint.unwrap_or(DEFAULT_CAS_ENDPOINT.to_string()), None, token_info, token_refresher)?;
+    Span::current().record("session_id", &config.session_id);
 
     let updaters = match progress_updaters {
-        None => vec![None; pointer_files.len()],
+        None => vec![None; file_infos.len()],
         Some(updaters) => updaters.into_iter().map(Some).collect(),
     };
-    let pointer_files_plus = pointer_files.into_iter().zip(updaters).collect::<Vec<_>>();
+    let file_with_progress = file_infos.into_iter().zip(updaters).collect::<Vec<_>>();
+    let extended_file_info_list = add_spans(file_with_progress, || info_span!("download_file"));
 
-    let processor = &Arc::new(FileDownloader::new(config, threadpool).await?);
-    let paths =
-        tokio_par_for_each(pointer_files_plus, *MAX_CONCURRENT_DOWNLOADS, |(pointer_file, updater), _| async move {
-            let proc = processor.clone();
-            smudge_file(&proc, &pointer_file, updater).await
-        })
-        .await
-        .map_err(|e| match e {
-            ParallelError::JoinError => DataProcessingError::InternalError("Join error".to_string()),
-            ParallelError::TaskError(e) => e,
-        })?;
+    let processor = &Arc::new(FileDownloader::new(config).await?);
+    let paths = tokio_par_for_each(
+        extended_file_info_list,
+        *MAX_CONCURRENT_DOWNLOADS,
+        |(((file_info, file_path), updater), span), _| {
+            async move {
+                let proc = processor.clone();
+                smudge_file(&proc, &file_info, &file_path, updater).await
+            }
+            .instrument(span.unwrap_or_else(|| info_span!("unexpected_span")))
+        },
+    )
+    .await
+    .map_err(|e| match e {
+        ParallelError::JoinError => DataProcessingError::InternalError("Join error".to_string()),
+        ParallelError::TaskError(e) => e,
+    })?;
 
     Ok(paths)
 }
 
+#[instrument(skip_all, name = "clean_bytes", fields(bytes.len = bytes.len()))]
+pub async fn clean_bytes(
+    processor: Arc<FileUploadSession>,
+    bytes: Vec<u8>,
+) -> errors::Result<(XetFileInfo, DeduplicationMetrics)> {
+    let mut handle = processor.start_clean(None, bytes.len() as u64).await;
+    handle.add_data(&bytes).await?;
+    handle.finish().await
+}
+
+#[instrument(skip_all, name = "clean_file", fields(file.name = tracing::field::Empty, file.len = tracing::field::Empty))]
 pub async fn clean_file(
     processor: Arc<FileUploadSession>,
     filename: impl AsRef<Path>,
-) -> errors::Result<(PointerFile, DeduplicationMetrics)> {
+) -> errors::Result<(XetFileInfo, DeduplicationMetrics)> {
     let mut reader = File::open(&filename)?;
 
-    let n = reader.metadata()?.len() as usize;
-    let mut buffer = vec![0u8; usize::min(n, *INGESTION_BLOCK_SIZE)];
+    let n = reader.metadata()?.len();
+    let span = Span::current();
+    span.record("file.name", filename.as_ref().to_str());
+    span.record("file.len", n);
+    let mut buffer = vec![0u8; u64::min(n, *INGESTION_BLOCK_SIZE as u64) as usize];
 
-    let mut handle = processor.start_clean(filename.as_ref().to_string_lossy().into());
+    let mut handle = processor.start_clean(Some(filename.as_ref().to_string_lossy().into()), n).await;
 
     loop {
         let bytes = reader.read(&mut buffer)?;
@@ -194,18 +258,32 @@ pub async fn clean_file(
 
 async fn smudge_file(
     downloader: &FileDownloader,
-    pointer_file: &PointerFile,
-    progress_updater: Option<Arc<dyn ProgressUpdater>>,
+    file_info: &XetFileInfo,
+    file_path: &str,
+    progress_updater: Option<Arc<dyn TrackingProgressUpdater>>,
 ) -> errors::Result<String> {
-    let path = PathBuf::from(pointer_file.path());
+    let path = PathBuf::from(file_path);
     if let Some(parent_dir) = path.parent() {
         std::fs::create_dir_all(parent_dir)?;
     }
     let output = OutputProvider::File(FileProvider::new(path));
+
+    // Wrap the progress updater in the proper tracking struct.
+    let progress_updater = progress_updater.map(ItemProgressUpdater::new);
+
     downloader
-        .smudge_file_from_pointer(pointer_file, &output, None, progress_updater)
+        .smudge_file_from_hash(&file_info.merkle_hash()?, file_path.into(), &output, None, progress_updater)
         .await?;
-    Ok(pointer_file.path().to_string())
+    Ok(file_path.to_string())
+}
+
+/// Adds spans to the indicated list for each element.
+///
+/// Although a span will be added for each element, we need an Option<Span> since
+/// tokio_par_for_each requires the input list be Default, which Span isn't.
+pub fn add_spans<I, F: Fn() -> Span>(v: Vec<I>, create_span: F) -> Vec<(I, Option<Span>)> {
+    let spans: Vec<Option<Span>> = v.iter().map(|_| Some(create_span())).collect();
+    v.into_iter().zip(spans).collect()
 }
 
 #[cfg(test)]
@@ -214,6 +292,8 @@ mod tests {
 
     use serial_test::serial;
     use tempfile::tempdir;
+    use tracing::info;
+    use tracing_test::traced_test;
 
     use super::*;
 
@@ -291,7 +371,7 @@ mod tests {
         let result = default_config(endpoint, None, None, None);
 
         let expected = home_dir()
-            .unwrap_or(std::env::current_dir().unwrap())
+            .unwrap_or(current_dir().unwrap())
             .join(".cache")
             .join("huggingface")
             .join("xet");
@@ -299,5 +379,42 @@ mod tests {
         assert!(result.is_ok());
         let config = result.unwrap();
         assert!(config.data_config.cache_config.cache_directory.starts_with(&expected));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    #[traced_test]
+    async fn test_add_spans() {
+        let outer_span = info_span!("outer_span");
+        async {
+            let v = vec!["a", "b", "c"];
+            let expected_len = v.len();
+            let v_plus = add_spans(v, || info_span!("task_span"));
+            assert_eq!(v_plus.len(), expected_len);
+            tokio_par_for_each(v_plus, expected_len, |(s, span), i| {
+                async move {
+                    info!("inside: {s},{i}");
+                    Ok::<(), ()>(())
+                }
+                .instrument(span.unwrap())
+            })
+            .await
+            .unwrap();
+        }
+        .instrument(outer_span)
+        .await;
+
+        assert!(logs_contain("inside: a,0"));
+        assert!(logs_contain("inside: b,1"));
+        assert!(logs_contain("inside: c,2"));
+        logs_assert(|lines: &[&str]| {
+            match lines
+                .iter()
+                .filter(|line| line.contains("task_span") && line.contains("outer_span"))
+                .count()
+            {
+                3 => Ok(()),
+                n => Err(format!("Expected 3 lines, got {n}")),
+            }
+        });
     }
 }

@@ -3,7 +3,7 @@ use std::io::{copy, Read, Seek, SeekFrom, Write};
 use std::mem::size_of;
 use std::ops::Add;
 use std::sync::Arc;
-use std::time::UNIX_EPOCH;
+use std::time::{Duration, UNIX_EPOCH};
 
 use anyhow::anyhow;
 use merklehash::{HMACKey, MerkleHash};
@@ -17,7 +17,7 @@ use crate::error::{MDBShardError, Result};
 use crate::file_structs::*;
 use crate::interpolation_search::search_on_sorted_u64s;
 use crate::shard_in_memory::MDBInMemoryShard;
-use crate::utils::truncate_hash;
+use crate::utils::{shard_expiry_time, truncate_hash};
 
 // Same size for FileDataSequenceHeader and FileDataSequenceEntry
 pub const MDB_FILE_INFO_ENTRY_SIZE: usize = size_of::<[u64; 4]>() + 4 * size_of::<u32>();
@@ -295,7 +295,7 @@ impl MDBShardInfo {
         Ok(obj)
     }
 
-    pub fn serialize_from<W: Write>(writer: &mut W, mdb: &MDBInMemoryShard) -> Result<Self> {
+    pub fn serialize_from<W: Write>(writer: &mut W, mdb: &MDBInMemoryShard, expiry: Option<Duration>) -> Result<Self> {
         let mut shard = MDBShardInfo::default();
 
         let mut bytes_pos: usize = 0;
@@ -354,6 +354,11 @@ impl MDBShardInfo {
 
         // Update footer offset.
         shard.metadata.footer_offset = bytes_pos as u64;
+
+        if let Some(shard_valid_for) = expiry {
+            // Use this to cause things to not be valid after a certain while.
+            shard.metadata.shard_key_expiry = shard_expiry_time(shard_valid_for);
+        }
 
         // Write shard footer.
         shard.metadata.serialize(writer)?;
@@ -1255,7 +1260,7 @@ pub mod test_routines {
     pub fn convert_to_file(shard: &MDBInMemoryShard) -> Result<Vec<u8>> {
         let mut buffer = Vec::<u8>::new();
 
-        MDBShardInfo::serialize_from(&mut buffer, shard)?;
+        MDBShardInfo::serialize_from(&mut buffer, shard, None)?;
 
         Ok(buffer)
     }

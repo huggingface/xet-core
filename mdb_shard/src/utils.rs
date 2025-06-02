@@ -1,6 +1,7 @@
 use std::ffi::OsStr;
 use std::ops::Deref;
 use std::path::Path;
+use std::time::Duration;
 
 use lazy_static::lazy_static;
 use merklehash::MerkleHash;
@@ -46,6 +47,16 @@ pub fn is_temp_shard_file(p: &Path) -> bool {
         .to_str()
         .unwrap_or("")
         .ends_with("mdb_temp")
+}
+
+pub fn shard_expiry_time(shard_valid_for: Duration) -> u64 {
+    use std::ops::Add;
+
+    std::time::SystemTime::now()
+        .add(shard_valid_for)
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
 }
 
 #[cfg(test)]

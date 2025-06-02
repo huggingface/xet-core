@@ -50,8 +50,8 @@ pub enum CasClientError {
     #[error("ReqwestMiddleware Error: {0}")]
     ReqwestMiddlewareError(#[from] reqwest_middleware::Error),
 
-    #[error("Reqwest Error: {0}")]
-    ReqwestError(#[from] reqwest::Error),
+    #[error("Reqwest Error: {0}, domain: {1}")]
+    ReqwestError(reqwest::Error, String),
 
     #[error("LMDB Error: {0}")]
     ShardDedupDBError(String),
@@ -61,6 +61,20 @@ pub enum CasClientError {
 
     #[error("Presigned S3 URL Expired on fetching range")]
     PresignedUrlExpirationError,
+}
+
+impl From<reqwest::Error> for CasClientError {
+    fn from(mut value: reqwest::Error) -> Self {
+        // strip query params from url
+        let url = if let Some(url) = value.url_mut() {
+            url.set_query(None);
+            url.to_string()
+        } else {
+            "no-url".to_string()
+        };
+        let value = value.without_url();
+        CasClientError::ReqwestError(value, url)
+    }
 }
 
 impl CasClientError {

@@ -50,6 +50,7 @@ impl XetSession {
                 prefix: "default-merkledb".to_owned(),
                 repo_salt: RepoSalt::default(),
             },
+            session_id: uuid::Uuid::new_v4().to_string(),
         };
         let upload = FileUploadSession::new(Arc::new(config));
 
@@ -59,15 +60,15 @@ impl XetSession {
     }
 
     #[wasm_bindgen(js_name = "uploadFileFromRawData")]
-    pub async fn upload_file_from_raw(&mut self, tracker_id: String, file: Vec<u8>) -> Result<JsValue, JsValue> {
+    pub async fn upload_file_from_raw(&mut self, file_id: u64, file: Vec<u8>) -> Result<JsValue, JsValue> {
         let blob = Blob::new_with_u8_array_sequence(&js_sys::Uint8Array::from(file.as_slice()))?;
-        self.upload_file_from_blob(tracker_id, blob).await
+        self.upload_file_from_blob(file_id, blob).await
     }
 
     #[wasm_bindgen(js_name = "uploadFileFromBlob")]
-    pub async fn upload_file_from_blob(&mut self, tracker_id: String, blob: Blob) -> Result<JsValue, JsValue> {
+    pub async fn upload_file_from_blob(&mut self, file_id: u64, blob: Blob) -> Result<JsValue, JsValue> {
         // read from blob async
-        let mut cleaner = self.upload.start_clean(tracker_id, None);
+        let mut cleaner = self.upload.start_clean(file_id, None);
 
         let mut reader = BlobReader::new(blob)?;
 

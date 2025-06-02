@@ -9,7 +9,6 @@ pub mod errors;
 #[cfg(not(target_family = "wasm"))]
 pub mod limited_joinset;
 mod output_bytes;
-pub mod progress;
 pub mod serialization_utils;
 #[cfg(not(target_family = "wasm"))]
 pub mod singleflight;

@@ -26,7 +26,7 @@ enum CPUTask {
 
 /// A class that encapsulates the clean and data task around a single file for wasm runtime.
 pub struct SingleFileCleaner {
-    _tracker: String,
+    file_id: u64,
 
     // Common state
     session: Arc<FileUploadSession>,
@@ -41,33 +41,33 @@ pub struct SingleFileCleaner {
 impl SingleFileCleaner {
     pub fn new(
         session: Arc<FileUploadSession>,
-        _tracker: String,
+        file_id: u64,
         sha256: Option<MerkleHash>,
         single_threaded: bool,
     ) -> Self {
         if single_threaded {
-            Self::new_with_cpu_task_in_current_thread(session, _tracker, sha256)
+            Self::new_with_cpu_task_in_current_thread(session, file_id, sha256)
         } else {
-            Self::new_with_cpu_task_in_worker_thread(session, _tracker, sha256)
+            Self::new_with_cpu_task_in_worker_thread(session, file_id, sha256)
         }
     }
 
     fn new_with_cpu_task_in_current_thread(
         session: Arc<FileUploadSession>,
-        _tracker: String,
+        file_id: u64,
         sha256: Option<MerkleHash>,
     ) -> Self {
         Self {
-            _tracker,
+            file_id,
             session: session.clone(),
             cpu_task: CPUTask::CurrentThread((Chunker::default(), ShaGeneration::new(sha256))),
-            dedup_manager: FileDeduper::new(UploadSessionDataManager::new(session)),
+            dedup_manager: FileDeduper::new(UploadSessionDataManager::new(session), file_id),
         }
     }
 
     fn new_with_cpu_task_in_worker_thread(
         session: Arc<FileUploadSession>,
-        _tracker: String,
+        file_id: u64,
         sha256: Option<MerkleHash>,
     ) -> Self {
         let (input_tx, mut input_rx) = mpsc::unbounded_channel::<Vec<u8>>();
@@ -96,10 +96,10 @@ impl SingleFileCleaner {
         let cpu_task = CPUTask::WorkerThread((cpu_worker, input_tx, chunks_rx, 0));
 
         Self {
-            _tracker,
+            file_id,
             session: session.clone(),
             cpu_task,
-            dedup_manager: FileDeduper::new(UploadSessionDataManager::new(session)),
+            dedup_manager: FileDeduper::new(UploadSessionDataManager::new(session), file_id),
         }
     }
 
@@ -166,7 +166,7 @@ impl SingleFileCleaner {
 
         // Now finish the deduplication process.
         let repo_salt = self.session.config.shard_config.repo_salt;
-        let (file_hash, remaining_file_data, deduplication_metrics, new_xorbs) =
+        let (file_hash, remaining_file_data, deduplication_metrics) =
             self.dedup_manager.finalize(repo_salt, Some(metadata_ext));
 
         // Let's check some things that should be invarients
@@ -184,14 +184,14 @@ impl SingleFileCleaner {
 
         // Now, return all this information to the
         self.session
-            .register_single_file_clean_completion(remaining_file_data, &deduplication_metrics, new_xorbs)
+            .register_single_file_clean_completion(remaining_file_data, &deduplication_metrics)
             .await?;
 
         Ok((file_hash, sha256, deduplication_metrics))
     }
 
     async fn finish_cpu_task_in_current_thread(
-        chunker: Chunker,
+        mut chunker: Chunker,
         mut sha_generation: ShaGeneration,
     ) -> Result<(Option<Chunk>, MerkleHash)> {
         // Chunk the rest of the data.

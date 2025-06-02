@@ -1,7 +1,7 @@
 #![allow(dead_code)]
 
 pub use chunk_cache::{CacheConfig, CHUNK_CACHE_SIZE_BYTES};
-pub use http_client::{build_auth_http_client, build_http_client, RetryConfig};
+pub use http_client::{build_auth_http_client, build_http_client, Api, RetryConfig};
 use interface::RegistrationClient;
 pub use interface::{Client, UploadClient};
 #[cfg(not(target_family = "wasm"))]
@@ -25,3 +25,5 @@ mod local_client;
 #[cfg(not(target_family = "wasm"))]
 mod output_provider;
 pub mod remote_client;
+mod retry_utils;
+mod upload_progress_stream;

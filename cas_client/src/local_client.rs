@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use anyhow::anyhow;
 use async_trait::async_trait;
-use cas_object::CasObject;
+use cas_object::{CasObject, SerializedCasObject};
 use cas_types::{FileRange, Key};
 use file_utils::SafeFileCreator;
 use heed::types::*;
@@ -15,13 +15,14 @@ use mdb_shard::utils::shard_file_name;
 use mdb_shard::{MDBShardFile, MDBShardInfo, ShardFileManager};
 use merkledb::aggregate_hashes::with_salt;
 use merklehash::MerkleHash;
+use progress_tracking::item_tracking::SingleItemProgressUpdater;
+use progress_tracking::upload_tracking::CompletionTracker;
 use tempfile::TempDir;
 use tokio::runtime::Handle;
 use tracing::{debug, error, info, warn};
-use utils::progress::ProgressUpdater;
 
 use crate::error::{CasClientError, Result};
-use crate::interface::{ShardDedupProbe, UploadClient};
+use crate::interface::{ShardDedupProber, UploadClient};
 use crate::output_provider::OutputProvider;
 use crate::{Client, ReconstructionClient, RegistrationClient, ShardClientInterface};
 
@@ -92,7 +93,7 @@ impl LocalClient {
         let shard_directory_ = shard_dir.clone();
         let shard_manager = tokio::task::block_in_place(|| {
             Handle::current()
-                .block_on(async move { ShardFileManager::new_in_session_directory(shard_directory_).await })
+                .block_on(async move { ShardFileManager::new_in_session_directory(shard_directory_, true).await })
         })?;
 
         Ok(Self {
@@ -225,25 +226,14 @@ impl LocalClient {
 /// LocalClient is responsible for writing/reading Xorbs on local disk.
 #[async_trait]
 impl UploadClient for LocalClient {
-    async fn put(
+    async fn upload_xorb(
         &self,
         _prefix: &str,
-        hash: &MerkleHash,
-        data: Vec<u8>,
-        chunk_and_boundaries: Vec<(MerkleHash, u32)>,
-    ) -> Result<usize> {
-        // no empty writes
-        if chunk_and_boundaries.is_empty() || data.is_empty() {
-            return Err(CasClientError::InvalidArguments);
-        }
-
-        // last boundary must be end of data
-        if chunk_and_boundaries.last().unwrap().1 as usize != data.len() {
-            return Err(CasClientError::InvalidArguments);
-        }
-
+        serialized_cas_object: SerializedCasObject,
+        upload_tracker: Option<Arc<CompletionTracker>>,
+    ) -> Result<u64> {
         // moved hash validation into [CasObject::serialize], so removed from here.
-
+        let hash = &serialized_cas_object.hash;
         if self.exists("", hash).await? {
             info!("object {hash:?} already exists in Local CAS; returning.");
             return Ok(0);
@@ -253,13 +243,30 @@ impl UploadClient for LocalClient {
         info!("Writing XORB {hash:?} to local path {file_path:?}");
 
         let mut file = SafeFileCreator::new(&file_path)?;
-        let (_, bytes_written) = CasObject::serialize(
-            &mut file,
-            hash,
-            &data,
-            &chunk_and_boundaries,
-            Some(cas_object::CompressionScheme::None),
-        )?;
+
+        // Do a partial work of this to test the upload_tracker.
+
+        for i in 0..10 {
+            let start = (i * serialized_cas_object.serialized_data.len()) / 10;
+            let end = ((i + 1) * serialized_cas_object.serialized_data.len()) / 10;
+
+            file.write_all(&serialized_cas_object.serialized_data[start..end])?;
+
+            if let Some(upload_tracker) = &upload_tracker {
+                // Do this carefully so that we don't perpetually underflow
+                let adjusted_byte_start = (i * serialized_cas_object.raw_num_bytes as usize) / 10;
+                let adjusted_byte_end = ((i + 1) * serialized_cas_object.raw_num_bytes as usize) / 10;
+
+                let adjusted_progress = adjusted_byte_end - adjusted_byte_start;
+
+                // Now report the progress.
+                upload_tracker
+                    .register_xorb_upload_progress(*hash, adjusted_progress as u64)
+                    .await;
+            }
+        }
+
+        let bytes_written = serialized_cas_object.serialized_data.len();
         file.close()?;
 
         // attempt to set to readonly on unix.
@@ -275,7 +282,7 @@ impl UploadClient for LocalClient {
 
         info!("{file_path:?} successfully written with {bytes_written} bytes.");
 
-        Ok(bytes_written)
+        Ok(bytes_written as u64)
     }
 
     async fn exists(&self, _prefix: &str, hash: &MerkleHash) -> Result<bool> {
@@ -289,8 +296,7 @@ impl UploadClient for LocalClient {
 
         if !res.unwrap().is_file() {
             return Err(CasClientError::internal(format!(
-                "Attempting to write to {:?}, but it is not a file",
-                file_path
+                "Attempting to write to {file_path:?}, but it is not a file"
             )));
         };
 
@@ -355,7 +361,7 @@ impl FileReconstructor<CasClientError> for LocalClient {
 }
 
 #[async_trait]
-impl ShardDedupProbe for LocalClient {
+impl ShardDedupProber for LocalClient {
     async fn query_for_global_dedup_shard(
         &self,
         _prefix: &str,
@@ -404,7 +410,7 @@ impl ReconstructionClient for LocalClient {
         hash: &MerkleHash,
         byte_range: Option<FileRange>,
         output_provider: &OutputProvider,
-        _progress_updater: Option<Arc<dyn ProgressUpdater>>,
+        _progress_updater: Option<Arc<SingleItemProgressUpdater>>,
     ) -> Result<u64> {
         let Some((file_info, _)) = self
             .shard_manager
@@ -451,58 +457,60 @@ fn map_heed_db_error(e: heed::Error) -> CasClientError {
 mod tests {
     use cas_object::test_utils::*;
     use cas_object::CompressionScheme::LZ4;
+    use deduplication::test_utils::raw_xorb_to_vec;
     use mdb_shard::utils::parse_shard_filename;
-    use merklehash::compute_data_hash;
 
     use super::*;
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_basic_put_get() {
-        // Arrange
-        let data = gen_random_bytes(2048);
-        let hash = compute_data_hash(&data[..]);
-        let chunk_boundaries = data.len() as u32;
+        let xorb = build_raw_xorb(1, ChunkSize::Fixed(2048));
+        let data = raw_xorb_to_vec(&xorb);
 
-        let data_again = data.clone();
+        let cas_object = build_and_verify_cas_object(xorb, None);
+        let hash = cas_object.hash;
 
         // Act & Assert
         let client = LocalClient::temporary().unwrap();
-        assert!(client.put("key", &hash, data, vec![(hash, chunk_boundaries)]).await.is_ok());
+        assert!(client.upload_xorb("key", cas_object, None).await.is_ok());
 
         let returned_data = client.get(&hash).unwrap();
-        assert_eq!(data_again, returned_data);
+        assert_eq!(data, returned_data);
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_basic_put_get_random_medium() {
-        // Arrange
-        let (c, _, data, chunk_boundaries) = build_cas_object(44, ChunkSize::Random(512, 15633), LZ4);
-        let data_again = data.clone();
+        let xorb = build_raw_xorb(44, ChunkSize::Random(512, 15633));
+        let data = raw_xorb_to_vec(&xorb);
+
+        let cas_object = build_and_verify_cas_object(xorb, Some(LZ4));
+        let hash = cas_object.hash;
 
         // Act & Assert
         let client = LocalClient::temporary().unwrap();
-        assert!(client.put("", &c.info.cashash, data, chunk_boundaries).await.is_ok());
+        assert!(client.upload_xorb("", cas_object, None).await.is_ok());
 
-        let returned_data = client.get(&c.info.cashash).unwrap();
-        assert_eq!(data_again, returned_data);
+        let returned_data = client.get(&hash).unwrap();
+        assert_eq!(data, returned_data);
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_basic_put_get_range_random_small() {
-        // Arrange
-        let (c, _, data, chunk_and_boundaries) = build_cas_object(3, ChunkSize::Random(512, 2048), LZ4);
+        let xorb = build_raw_xorb(3, ChunkSize::Random(512, 15633));
+        let data = raw_xorb_to_vec(&xorb);
+        let chunk_and_boundaries = xorb.cas_info.chunks_and_boundaries();
+
+        let cas_object = build_and_verify_cas_object(xorb, Some(LZ4));
+        let hash = cas_object.hash;
 
         // Act & Assert
         let client = LocalClient::temporary().unwrap();
-        assert!(client
-            .put("", &c.info.cashash, data.clone(), chunk_and_boundaries.clone())
-            .await
-            .is_ok());
+        assert!(client.upload_xorb("", cas_object, None).await.is_ok());
 
         let ranges: Vec<(u32, u32)> = vec![(0, 1), (2, 3)];
-        let returned_ranges = client.get_object_range(&c.info.cashash, ranges).unwrap();
+        let returned_ranges = client.get_object_range(&hash, ranges).unwrap();
 
-        let expected = vec![
+        let expected = [
             data[0..chunk_and_boundaries[0].1 as usize].to_vec(),
             data[chunk_and_boundaries[1].1 as usize..chunk_and_boundaries[2].1 as usize].to_vec(),
         ];
@@ -514,14 +522,18 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_basic_length() {
-        // Arrange
-        let (c, _, data, chunk_boundaries) = build_cas_object(1, ChunkSize::Fixed(2048), LZ4);
+        let xorb = build_raw_xorb(1, ChunkSize::Fixed(2048));
+        let data = raw_xorb_to_vec(&xorb);
+
+        let cas_object = build_and_verify_cas_object(xorb, Some(LZ4));
+        let hash = cas_object.hash;
+
         let gen_length = data.len();
 
         // Act
         let client = LocalClient::temporary().unwrap();
-        assert!(client.put("", &c.info.cashash, data, chunk_boundaries).await.is_ok());
-        let len = client.get_length(&c.info.cashash).unwrap();
+        assert!(client.upload_xorb("", cas_object, None).await.is_ok());
+        let len = client.get_length(&hash).unwrap();
 
         // Assert
         assert_eq!(len as usize, gen_length);
@@ -543,18 +555,29 @@ mod tests {
         let hello = "hello world".as_bytes().to_vec();
 
         let hello_hash = merklehash::compute_data_hash(&hello[..]);
+
+        let cas_object = serialized_cas_object_from_components(
+            &hello_hash,
+            hello.clone(),
+            vec![(hello_hash, hello.len() as u32)],
+            None,
+        )
+        .unwrap();
+
         // write "hello world"
         let client = LocalClient::temporary().unwrap();
-        client
-            .put("default", &hello_hash, hello.clone(), vec![(hello_hash, hello.len() as u32)])
-            .await
-            .unwrap();
+        client.upload_xorb("default", cas_object, None).await.unwrap();
+
+        let cas_object = serialized_cas_object_from_components(
+            &hello_hash,
+            hello.clone(),
+            vec![(hello_hash, hello.len() as u32)],
+            None,
+        )
+        .unwrap();
 
         // put the same value a second time. This should be ok.
-        client
-            .put("default", &hello_hash, hello.clone(), vec![(hello_hash, hello.len() as u32)])
-            .await
-            .unwrap();
+        client.upload_xorb("default", cas_object, None).await.unwrap();
 
         // we can list all entries
         let r = client.get_all_entries().unwrap();
@@ -565,35 +588,6 @@ mod tests {
                 prefix: "default".into(),
                 hash: hello_hash
             }]
-        );
-
-        // content shorter than the chunk boundaries should fail
-        assert_eq!(
-            CasClientError::InvalidArguments,
-            client
-                .put("hellp2", &hello_hash, "hellp wod".as_bytes().to_vec(), vec![(hello_hash, hello.len() as u32)],)
-                .await
-                .unwrap_err()
-        );
-
-        // content longer than the chunk boundaries should fail
-        assert_eq!(
-            CasClientError::InvalidArguments,
-            client
-                .put(
-                    "again",
-                    &hello_hash,
-                    "hello world again".as_bytes().to_vec(),
-                    vec![(hello_hash, hello.len() as u32)],
-                )
-                .await
-                .unwrap_err()
-        );
-
-        // empty writes should fail
-        assert_eq!(
-            CasClientError::InvalidArguments,
-            client.put("key", &hello_hash, vec![], vec![],).await.unwrap_err()
         );
 
         // compute a hash of something we do not have in the store
@@ -637,7 +631,17 @@ mod tests {
         // insert should succeed
         let client = LocalClient::temporary().unwrap();
         client
-            .put("key", &final_hash, "helloworld".as_bytes().to_vec(), vec![(hello_hash, 5), (world_hash, 10)])
+            .upload_xorb(
+                "key",
+                serialized_cas_object_from_components(
+                    &final_hash,
+                    "helloworld".as_bytes().to_vec(),
+                    vec![(hello_hash, 5), (world_hash, 10)],
+                    None,
+                )
+                .unwrap(),
+                None,
+            )
             .await
             .unwrap();
     }
@@ -655,7 +659,7 @@ mod tests {
         )
         .unwrap();
 
-        let new_shard_path = shard_in.write_to_directory(&shard_dir_1).unwrap();
+        let new_shard_path = shard_in.write_to_directory(&shard_dir_1, None).unwrap();
 
         let shard_hash = parse_shard_filename(&new_shard_path).unwrap();
 

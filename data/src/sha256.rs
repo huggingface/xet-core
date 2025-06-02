@@ -62,7 +62,7 @@ impl ShaGenerator {
 
 #[cfg(test)]
 mod sha_tests {
-    use rand::{thread_rng, Rng};
+    use rand::{rng, Rng};
 
     use super::*;
 
@@ -97,14 +97,14 @@ mod sha_tests {
 
         // Generate 4096 bytes of random data
         let mut rand_data = [0u8; 4096];
-        thread_rng().fill(&mut rand_data[..]);
+        rng().fill(&mut rand_data[..]);
 
         let mut sha_generator = ShaGenerator::new();
 
         // Add in random chunks.
         let mut pos = 0;
         while pos < rand_data.len() {
-            let l = thread_rng().gen_range(0..32);
+            let l = rng().random_range(0..32);
             let next_pos = (pos + l).min(rand_data.len());
             sha_generator.update_with_bytes(&rand_data[pos..next_pos]).await.unwrap();
             pos = next_pos;
@@ -112,7 +112,7 @@ mod sha_tests {
 
         let out_hash = sha_generator.finalize().await.unwrap();
 
-        let ref_hash = format!("{:x}", Sha256::digest(&rand_data));
+        let ref_hash = format!("{:x}", Sha256::digest(rand_data));
 
         assert_eq!(out_hash.hex(), ref_hash);
     }
