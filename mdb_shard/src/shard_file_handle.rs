@@ -264,21 +264,10 @@ impl MDBShardFile {
 
     // Attempts to read the entire thing into memory.
     pub fn read_into_buffer(&self, buffer: &mut Vec<u8>) -> Result<()> {
-        let mut call = || -> Result<()> {
-            let n = self.shard.num_bytes();
-            buffer.resize(n as usize, 0);
+        buffer.resize(self.shard.num_bytes() as usize, 0);
 
-            std::fs::File::open(&self.path)?.read_exact(buffer)?;
-            Ok(())
-        };
-
-        let res = call();
-
-        if res.is_err() {
-            buffer.clear();
-        }
-
-        res
+        std::fs::File::open(&self.path)?.read_exact(buffer)?;
+        Ok(())
     }
 
     #[inline]
