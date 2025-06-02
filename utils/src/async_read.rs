@@ -2,7 +2,7 @@ use std::io::Write;
 use std::pin::Pin;
 use std::task::{ready, Context, Poll};
 
-use futures::AsyncRead;
+use futures::{AsyncRead, AsyncReadExt};
 
 // (AsyncRead) adaptor
 // wraps over an AsyncRead, copying all the contents read from the inner reader
@@ -29,6 +29,26 @@ impl<'r, 'w, R: AsyncRead + Unpin, W: Write> CopyReader<'r, 'w, R, W> {
         Self { src, writer }
     }
 }
+
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+pub trait AsyncReadCustomExt: AsyncReadExt + Unpin {
+    async fn drain<'a>(&'a mut self) -> std::io::Result<()> {
+        const BUFFER_SIZE: usize = 8192;
+        let mut buf = [0u8; BUFFER_SIZE];
+        loop {
+            let n = self.read(&mut buf).await?;
+            if n == 0 {
+                break; // EOF
+            }
+        }
+        Ok(())
+    }
+}
+
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+impl<T: AsyncReadExt + Unpin> AsyncReadCustomExt for T {}
 
 #[cfg(test)]
 mod tests {
