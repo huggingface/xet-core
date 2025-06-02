@@ -30,7 +30,6 @@ pub struct ProgressUpdaterVerificationWrapperImpl {
 /// - `completed_count` must match `last_completed + update_increment`.
 /// - `total_count` must remain consistent (if it changes across updates for the same item, that's an error).
 /// - Final verification (`assert_complete()`) ensures all items reached `completed_count == total_count`.
-#[derive(Debug)]
 pub struct ProgressUpdaterVerificationWrapper {
     inner: Arc<dyn TrackingProgressUpdater>,
     tr: Mutex<ProgressUpdaterVerificationWrapperImpl>,
@@ -243,6 +242,7 @@ mod tests {
                 total_bytes_increment: 200,
                 total_bytes_completed: 100,
                 total_bytes_completion_increment: 100,
+                ..Default::default()
             })
             .await;
 
@@ -271,6 +271,7 @@ mod tests {
                 total_bytes_increment: 0,
                 total_bytes_completed: 200,
                 total_bytes_completion_increment: 100,
+                ..Default::default()
             })
             .await;
 

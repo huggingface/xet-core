@@ -132,7 +132,16 @@ pub async fn upload_bytes_async(
     Ok(files)
 }
 
-#[instrument(skip_all, name = "data_client::upload_files", fields(session_id = tracing::field::Empty, num_files=file_paths.len()))]
+#[instrument(skip_all, name = "data_client::upload_files", 
+    fields(session_id = tracing::field::Empty,
+    num_files=file_paths.len(),
+    new_bytes = tracing::field::Empty,
+    deduped_bytes = tracing::field::Empty,
+    defrag_prevented_dedup_bytes = tracing::field::Empty,
+    new_chunks = tracing::field::Empty,
+    deduped_chunks = tracing::field::Empty,
+    defrag_prevented_dedup_chunks = tracing::field::Empty
+))]
 pub async fn upload_async(
     file_paths: Vec<String>,
     endpoint: Option<String>,
@@ -145,31 +154,27 @@ pub async fn upload_async(
     // upload shards and xorbs
     // for each file, return the filehash
     let config = default_config(endpoint.unwrap_or(DEFAULT_CAS_ENDPOINT.clone()), None, token_info, token_refresher)?;
-    Span::current().record("session_id", &config.session_id);
+
+    let span = Span::current();
+
+    span.record("session_id", &config.session_id);
 
     let upload_session = FileUploadSession::new(config, progress_updater).await?;
-    let files_with_spans = add_spans(file_paths, || info_span!("clean_file_task"));
 
-    // for all files, clean them, producing pointer files.
-    let files = tokio_par_for_each(files_with_spans, *MAX_CONCURRENT_FILE_INGESTION, |(f, span), _| {
-        async {
-            let (xf, _metrics) = clean_file(upload_session.clone(), f).await?;
-            Ok(xf)
-        }
-        .instrument(span.unwrap_or_else(|| info_span!("unexpected_span")))
-    })
-    .await
-    .map_err(|e| match e {
-        ParallelError::JoinError => DataProcessingError::InternalError("Join error".to_string()),
-        ParallelError::TaskError(e) => e,
-    })?;
+    let ret = upload_session.upload_files(&file_paths).await?;
 
     // Push the CAS blocks and flush the mdb to disk
-    let _metrics = upload_session.finalize().await?;
+    let metrics = upload_session.finalize().await?;
 
-    // TODO: Report on metrics
+    // Record dedup metrics.
+    span.record("new_bytes", metrics.new_bytes);
+    span.record("deduped_bytes ", metrics.deduped_bytes);
+    span.record("defrag_prevented_dedup_bytes", metrics.defrag_prevented_dedup_bytes);
+    span.record("new_chunks", metrics.new_chunks);
+    span.record("deduped_chunks", metrics.deduped_chunks);
+    span.record("defrag_prevented_dedup_chunks", metrics.defrag_prevented_dedup_chunks);
 
-    Ok(files)
+    Ok(ret)
 }
 
 #[instrument(skip_all, name = "data_client::download", fields(session_id = tracing::field::Empty, num_files=file_infos.len()))]

@@ -121,6 +121,7 @@ impl CompletionTrackerImpl {
                 total_transfer_bytes_increment: 0,
                 total_transfer_bytes_completed: self.total_upload_bytes_completed,
                 total_transfer_bytes_completion_increment: 0,
+                ..Default::default()
             },
             file_id,
         )
@@ -198,6 +199,7 @@ impl CompletionTrackerImpl {
             total_transfer_bytes_increment: 0,
             total_transfer_bytes_completed: self.total_upload_bytes_completed,
             total_transfer_bytes_completion_increment: 0,
+            ..Default::default()
         }
     }
 
@@ -230,6 +232,7 @@ impl CompletionTrackerImpl {
                         total_transfer_bytes_increment: xorb_size,
                         total_transfer_bytes_completed: self.total_upload_bytes_completed,
                         total_transfer_bytes_completion_increment: 0,
+                        ..Default::default()
                     },
                     true,
                 )
@@ -309,6 +312,7 @@ impl CompletionTrackerImpl {
             total_transfer_bytes_completed: self.total_upload_bytes_completed,
             total_transfer_bytes_completion_increment: byte_completion_increment,
             total_transfer_bytes_increment: 0,
+            ..Default::default()
         }
     }
 
@@ -342,6 +346,7 @@ impl CompletionTrackerImpl {
                 total_transfer_bytes_increment: 0,
                 total_transfer_bytes_completed: self.total_upload_bytes_completed,
                 total_transfer_bytes_completion_increment: 0,
+                ..Default::default()
             };
         }
 
@@ -411,14 +416,15 @@ impl CompletionTrackerImpl {
 
         ProgressUpdate {
             item_updates,
-            total_transfer_bytes: self.total_upload_bytes,
-            total_transfer_bytes_increment: 0,
-            total_transfer_bytes_completed: self.total_upload_bytes_completed,
-            total_transfer_bytes_completion_increment: new_byte_progress,
             total_bytes: self.total_bytes,
             total_bytes_increment: 0,
             total_bytes_completed: self.total_bytes_completed,
             total_bytes_completion_increment: file_bytes_processed,
+            total_transfer_bytes: self.total_upload_bytes,
+            total_transfer_bytes_increment: 0,
+            total_transfer_bytes_completed: self.total_upload_bytes_completed,
+            total_transfer_bytes_completion_increment: new_byte_progress,
+            ..Default::default()
         }
     }
 

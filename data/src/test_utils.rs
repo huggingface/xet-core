@@ -7,7 +7,6 @@ use cas_client::{FileProvider, OutputProvider};
 use progress_tracking::TrackingProgressUpdater;
 use rand::prelude::*;
 use tempfile::TempDir;
-use tokio::task::JoinSet;
 
 use crate::configurations::TranslatorConfig;
 use crate::data_client::clean_file;
@@ -165,29 +164,34 @@ impl LocalHydrateDehydrateTest {
     pub async fn clean_all_files(&self, upload_session: &Arc<FileUploadSession>, sequential: bool) {
         create_dir_all(&self.ptr_dir).unwrap();
 
-        let mut upload_tasks = JoinSet::new();
+        if sequential {
+            for entry in read_dir(&self.src_dir).unwrap() {
+                let entry = entry.unwrap();
+                let out_file = self.ptr_dir.join(entry.file_name());
+                let upload_session = upload_session.clone();
 
-        for entry in read_dir(&self.src_dir).unwrap() {
-            let entry = entry.unwrap();
-            let out_file = self.ptr_dir.join(entry.file_name());
-            let upload_session = upload_session.clone();
-
-            if sequential {
-                let (pf, _metrics) = clean_file(upload_session.clone(), entry.path()).await.unwrap();
-                std::fs::write(out_file, pf.as_pointer_file().unwrap().as_bytes()).unwrap();
-
-                // Force a checkpoint after every file.
-                upload_session.checkpoint().await.unwrap();
-            } else {
-                upload_tasks.spawn(async move {
-                    let (xf, metrics) = clean_file(upload_session.clone(), entry.path()).await.unwrap();
+                if sequential {
+                    let (pf, metrics) = clean_file(upload_session.clone(), entry.path()).await.unwrap();
                     assert_eq!({ metrics.total_bytes }, entry.metadata().unwrap().len());
-                    std::fs::write(out_file, serde_json::to_string(&xf).unwrap()).unwrap();
-                });
+                    std::fs::write(out_file, pf.as_pointer_file().unwrap().as_bytes()).unwrap();
+
+                    // Force a checkpoint after every file.
+                    upload_session.checkpoint().await.unwrap();
+                }
+            }
+        } else {
+            let files: Vec<PathBuf> = read_dir(&self.src_dir)
+                .unwrap()
+                .map(|entry| self.src_dir.join(entry.unwrap().file_name()))
+                .collect();
+
+            let clean_results = upload_session.upload_files(&files).await.unwrap();
+
+            for (i, xf) in clean_results.into_iter().enumerate() {
+                std::fs::write(self.ptr_dir.join(files[i].file_name().unwrap()), serde_json::to_string(&xf).unwrap())
+                    .unwrap();
             }
         }
-
-        upload_tasks.join_all().await;
     }
 
     pub async fn dehydrate(&self, sequential: bool) {
