@@ -292,7 +292,7 @@ impl MDBShardFile {
         let path = path.as_ref();
 
         let mut load_file = |h: MerkleHash, file_name: &Path| -> Result<()> {
-            let s_res = Self::load_from_hash_and_path(h, &file_name);
+            let s_res = Self::load_from_hash_and_path(h, file_name);
 
             let s = match s_res {
                 Ok(s) => s,
@@ -325,12 +325,10 @@ impl MDBShardFile {
                     load_file(h, &path.join(entry.file_name()))?;
                 }
             }
+        } else if let Some(h) = path.file_name().and_then(parse_shard_filename) {
+            load_file(h, path)?;
         } else {
-            if let Some(h) = path.file_name().and_then(parse_shard_filename) {
-                load_file(h, path)?;
-            } else {
-                return Err(MDBShardError::BadFilename(format!("Filename {path:?} not valid shard file name.")));
-            }
+            return Err(MDBShardError::BadFilename(format!("Filename {path:?} not valid shard file name.")));
         }
 
         Ok(())
