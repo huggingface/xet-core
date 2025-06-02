@@ -88,7 +88,7 @@ impl CASChunkHeader {
     }
 }
 
-fn write_chunk_header<W: Write>(w: &mut W, chunk_header: &CASChunkHeader) -> std::io::Result<()> {
+pub fn write_chunk_header<W: Write>(w: &mut W, chunk_header: &CASChunkHeader) -> std::io::Result<()> {
     w.write_all(&[chunk_header.version])?;
     w.write_all(&chunk_header.compressed_length)?;
     w.write_all(&[chunk_header.compression_scheme])?;
