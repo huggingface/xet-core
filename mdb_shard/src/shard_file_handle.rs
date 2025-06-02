@@ -20,12 +20,16 @@ use crate::utils::{parse_shard_filename, shard_file_name, temp_shard_file_name, 
 use crate::MDBShardFileFooter;
 
 /// When a specific implementation of the  
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct MDBShardFile {
     pub shard_hash: MerkleHash,
     pub path: PathBuf,
     pub shard: MDBShardInfo,
     pub last_modified_time: SystemTime,
+
+    // On occation, to test a corrupt shard, we need to disable the verification process.
+    #[cfg(debug_assertions)]
+    pub disable_verifications: std::sync::atomic::AtomicBool,
 }
 
 pub type MDBShardFileVec = Vec<Arc<MDBShardFile>>;
@@ -37,6 +41,8 @@ impl Default for MDBShardFile {
             path: PathBuf::default(),
             shard: MDBShardInfo::default(),
             last_modified_time: SystemTime::UNIX_EPOCH,
+            #[cfg(debug_assertions)]
+            disable_verifications: false.into(),
         }
     }
 }
@@ -52,6 +58,8 @@ impl MDBShardFile {
             shard_hash,
             path,
             shard,
+            #[cfg(debug_assertions)]
+            disable_verifications: false.into(),
         });
 
         s.verify_shard_integrity_debug_only();
@@ -147,6 +155,8 @@ impl MDBShardFile {
             path: path.clone(),
             last_modified_time: f.metadata()?.modified()?,
             shard: MDBShardInfo::load_from_reader(&mut f)?,
+            #[cfg(debug_assertions)]
+            disable_verifications: false.into(),
         });
 
         MDB_SHARD_FILE_CACHE.write().unwrap().insert(path, sf.clone());
@@ -154,8 +164,16 @@ impl MDBShardFile {
         Ok(sf)
     }
 
-    fn drop_from_cache(sf: Arc<Self>) {
-        MDB_SHARD_FILE_CACHE.write().unwrap().remove_entry(&sf.path);
+    fn drop_from_cache(self: Arc<Self>) {
+        MDB_SHARD_FILE_CACHE.write().unwrap().remove_entry(&self.path);
+    }
+
+    pub fn purge_if_needed(self: Arc<Self>) {
+        // If the file no longer exists or isn't the correct length, then purge it from the cache.
+        if !self.path.exists() || self.shard.num_bytes() != self.path.metadata().map(|m| m.len()).unwrap_or(0) {
+            info!("Purging shard file from cache: {:?}", self.path);
+            self.drop_from_cache();
+        }
     }
 
     /// Loads the MDBShardFile struct from a file path
@@ -168,11 +186,12 @@ impl MDBShardFile {
     }
 
     pub fn load_all_valid(path: impl AsRef<Path>) -> Result<Vec<Arc<Self>>> {
-        Self::load_managed_directory(path, false, false, 0)
+        Self::load_managed_directory(path, true, false, false, 0)
     }
 
     pub fn load_managed_directory(
         path: impl AsRef<Path>,
+        skip_on_error: bool,
         load_expired: bool,
         prune_expired: bool,
         prune_dir_storage_to_size: u64,
@@ -184,7 +203,7 @@ impl MDBShardFile {
 
         let mut total_size = 0;
 
-        Self::scan_impl(path, |s| {
+        Self::scan_impl(path, skip_on_error, |s| {
             if load_expired || current_time <= s.shard.metadata.shard_key_expiry {
                 total_size += s.shard.num_bytes();
                 ret.push(s);
@@ -233,7 +252,7 @@ impl MDBShardFile {
     pub fn clean_shard_cache(path: impl AsRef<Path>, expiration_buffer_secs: u64) -> Result<()> {
         let current_time = current_timestamp();
 
-        Self::scan_impl(path, |s| {
+        Self::scan_impl(path, true, |s| {
             if s.shard.metadata.shard_key_expiry.saturating_add(expiration_buffer_secs) <= current_time {
                 info!("Deleting expired shard {:?}", &s.path);
                 let _ = std::fs::remove_file(&s.path);
@@ -245,30 +264,72 @@ impl MDBShardFile {
         Ok(())
     }
 
+    // Attempts to read the entire thing into memory.
+    pub fn read_into_buffer(&self, buffer: &mut Vec<u8>) -> Result<()> {
+        let mut call = || -> Result<()> {
+            let n = self.shard.num_bytes();
+            buffer.resize(n as usize, 0);
+
+            std::fs::File::open(&self.path)?.read_exact(buffer)?;
+            Ok(())
+        };
+
+        let res = call();
+
+        if res.is_err() {
+            buffer.clear();
+        }
+
+        res
+    }
+
     #[inline]
-    fn scan_impl(path: impl AsRef<Path>, mut callback: impl FnMut(Arc<Self>) -> Result<()>) -> Result<()> {
+    fn scan_impl(
+        path: impl AsRef<Path>,
+        skip_on_error: bool,
+        mut callback: impl FnMut(Arc<Self>) -> Result<()>,
+    ) -> Result<()> {
         let path = path.as_ref();
+
+        let mut load_file = |h: MerkleHash, file_name: &Path| -> Result<()> {
+            let s_res = Self::load_from_hash_and_path(h, &file_name);
+
+            let s = match s_res {
+                Ok(s) => s,
+                Err(e) => {
+                    if skip_on_error {
+                        info!("Error loading shard {file_name:?}; skipping.");
+                        return Ok(());
+                    } else {
+                        error!("Error reading shard {file_name:?}; skipping.");
+                        return Err(e);
+                    }
+                },
+            };
+
+            s.verify_shard_integrity_debug_only();
+            callback(s)?;
+            debug!("Registerd shard file '{file_name:?}'.");
+            Ok(())
+        };
 
         if path.is_dir() {
             for entry in std::fs::read_dir(path)? {
+                if entry.is_err() && skip_on_error {
+                    continue;
+                }
+
                 let entry = entry?;
-                if let Some(file_name) = entry.file_name().to_str() {
-                    if let Some(h) = parse_shard_filename(file_name) {
-                        let s = Self::load_from_hash_and_path(h, &path.join(file_name))?;
-                        s.verify_shard_integrity_debug_only();
-                        callback(s)?;
-                        debug!("Registerd shard file '{file_name:?}'.");
-                    }
+
+                if let Some(h) = entry.file_name().to_str().and_then(parse_shard_filename) {
+                    load_file(h, &path.join(entry.file_name()))?;
                 }
             }
-        } else if let Some(file_name) = path.to_str() {
-            if let Some(h) = parse_shard_filename(file_name) {
-                let s = Self::load_from_hash_and_path(h, &path.join(file_name))?;
-                s.verify_shard_integrity_debug_only();
-                callback(s)?;
-                debug!("Registerd shard file '{file_name:?}'.");
+        } else {
+            if let Some(h) = path.file_name().and_then(parse_shard_filename) {
+                load_file(h, path)?;
             } else {
-                return Err(MDBShardError::BadFilename(format!("Filename {file_name} not valid shard file name.")));
+                return Err(MDBShardError::BadFilename(format!("Filename {path:?} not valid shard file name.")));
             }
         }
 
@@ -390,7 +451,9 @@ impl MDBShardFile {
     pub fn verify_shard_integrity_debug_only(&self) {
         #[cfg(debug_assertions)]
         {
-            self.verify_shard_integrity();
+            if !self.disable_verifications.load(std::sync::atomic::Ordering::Relaxed) {
+                self.verify_shard_integrity();
+            }
         }
     }
 
