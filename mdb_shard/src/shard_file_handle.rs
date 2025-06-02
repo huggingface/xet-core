@@ -285,10 +285,10 @@ impl MDBShardFile {
                 Ok(s) => s,
                 Err(e) => {
                     if skip_on_error {
-                        info!("Error loading shard {file_name:?}; skipping.");
+                        info!("Error loading shard {file_name:?}: {e}; skipping.");
                         return Ok(());
                     } else {
-                        error!("Error reading shard {file_name:?}; skipping.");
+                        error!("Error reading shard {file_name:?}: {e}; skipping.");
                         return Err(e);
                     }
                 },
