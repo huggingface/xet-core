@@ -33,7 +33,6 @@ use utils::singleflight::Group;
 #[cfg(not(target_family = "wasm"))]
 use crate::download_utils::*;
 use crate::error::{CasClientError, Result};
-
 use crate::http_client::{Api, ResponseErrorLogger, RetryConfig};
 use crate::interface::*;
 #[cfg(not(target_family = "wasm"))]
