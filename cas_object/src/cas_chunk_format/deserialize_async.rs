@@ -2,10 +2,8 @@ use std::io::Write;
 use std::mem::size_of;
 
 use anyhow::anyhow;
-use bytes::Buf;
-use futures::Stream;
-use tokio::io::{AsyncRead, AsyncReadExt};
-use tokio_util::io::StreamReader;
+use futures::{Stream, TryStreamExt};
+use futures::io::{AsyncRead, AsyncReadExt};
 
 use crate::error::CasObjectError;
 use crate::{parse_chunk_header, CASChunkHeader, CAS_CHUNK_HEADER_LENGTH};
@@ -91,18 +89,18 @@ pub async fn deserialize_chunks_to_writer_from_stream<B, E, S, W>(
     writer: &mut W,
 ) -> Result<(usize, Vec<u32>), CasObjectError>
 where
-    B: Buf,
+    B: AsRef<[u8]>,
     E: Into<std::io::Error>,
     S: Stream<Item = Result<B, E>> + Unpin,
     W: Write,
 {
-    let mut stream_reader = StreamReader::new(stream);
+    let mut stream_reader = stream.map_err(|e| e.into()).into_async_read();
     deserialize_chunks_to_writer_from_async_read(&mut stream_reader, writer).await
 }
 
 pub async fn deserialize_chunks_from_stream<B, E, S>(stream: S) -> Result<(Vec<u8>, Vec<u32>), CasObjectError>
 where
-    B: Buf,
+    B: AsRef<[u8]>,
     E: Into<std::io::Error>,
     S: Stream<Item = Result<B, E>> + Unpin,
 {
