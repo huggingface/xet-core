@@ -30,7 +30,7 @@ pub enum CasObjectError {
     #[error("Internal Hash Parsing Error")]
     HashParsingError(#[from] Infallible),
 
-    #[error("ChunkHeaderParseErrorMagicWord")]
+    #[error("ChunkHeaderParseErrorFooterIdent")]
     ChunkHeaderParseErrorFooterIdent,
 }
 
