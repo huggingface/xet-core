@@ -1273,86 +1273,59 @@ pub struct SerializedCasObject {
 impl SerializedCasObject {
     /// Builds the xorb from raw xorb data.
     pub fn from_xorb(xorb: RawXorbData, compression_scheme: Option<CompressionScheme>) -> Result<Self, CasObjectError> {
-        let mut cas = CasObject::default();
-        cas.info.cashash = xorb.hash();
-
-        let xorb_hash = cas.info.cashash;
+        let hash = xorb.hash();
         let raw_num_bytes = xorb.num_bytes() as u64;
         let num_chunks = xorb.data.len();
 
-        let chunks_and_boundaries = xorb.cas_info.chunks_and_boundaries();
-
-        cas.info.num_chunks = chunks_and_boundaries.len() as u32;
-        cas.info.chunk_boundary_offsets = Vec::with_capacity(cas.info.num_chunks as usize);
-        cas.info.chunk_hashes = chunks_and_boundaries.iter().map(|(hash, _)| *hash).collect();
-        cas.info.unpacked_chunk_offsets = chunks_and_boundaries
-            .iter()
-            .map(|(_, unpacked_chunk_boundary)| *unpacked_chunk_boundary)
-            .collect();
-
         // Make an upper estimate of the size to account for to avoid copies and allocations. We assume compression
         // doesn't help at all, and add just a bit of buffer on it (lz4 with no compression adds just a few
-        // bytes).
-        let size_upper_bound = xorb.num_bytes()
-            + size_of::<CasObjectInfoV1>()
-            + (32 + 2 * size_of::<u32>() + size_of::<MerkleHash>() + size_of::<CASChunkHeader>()) * xorb.data.len();
+        // bytes, 32 bytes for LZ4 single frame metadata per chunk).
+        let size_upper_bound = xorb.num_bytes() + (32 + size_of::<CASChunkHeader>()) * xorb.data.len();
 
         let mut serialized_data = Vec::with_capacity(size_upper_bound);
 
-        {
-            let mut writer = Cursor::new(&mut serialized_data);
+        // Set the periodic retesting interval
+        let retest_interval = if *CAS_OBJECT_COMPRESSION_SCHEME_RETEST_INTERVAL > 0 {
+            *CAS_OBJECT_COMPRESSION_SCHEME_RETEST_INTERVAL
+        } else {
+            num_chunks
+        };
 
-            // Set the periodic retesting interval
-            let retest_interval = if *CAS_OBJECT_COMPRESSION_SCHEME_RETEST_INTERVAL > 0 {
-                *CAS_OBJECT_COMPRESSION_SCHEME_RETEST_INTERVAL
-            } else {
-                num_chunks
-            };
+        if compression_scheme.is_none() && num_chunks != 0 {
+            debug_assert!(xorb.file_boundaries.is_sorted());
+            debug_assert_ge!(xorb.file_boundaries.len(), 0);
+            debug_assert_lt!(*xorb.file_boundaries.last().unwrap(), xorb.data.len());
 
-            if compression_scheme.is_none() && num_chunks != 0 {
-                debug_assert!(xorb.file_boundaries.is_sorted());
-                debug_assert_ge!(xorb.file_boundaries.len(), 0);
-                debug_assert_lt!(*xorb.file_boundaries.last().unwrap(), xorb.data.len());
+            // If no compression scheme is specified, we will determine the compression scheme from
+            // the first chunk of the xorb or determine a scheme again for any first chunk in the
+            // beginning of a file.
+            for (f_idx, &start_idx) in xorb.file_boundaries.iter().enumerate() {
+                let end_idx = *xorb.file_boundaries.get(f_idx + 1).unwrap_or(&num_chunks);
 
-                for (f_idx, &start_idx) in xorb.file_boundaries.iter().enumerate() {
-                    let end_idx = *xorb.file_boundaries.get(f_idx + 1).unwrap_or(&num_chunks);
+                let mut s_idx = start_idx;
+                while s_idx < end_idx {
+                    let n_idx = (s_idx + retest_interval).min(end_idx);
 
-                    let mut s_idx = start_idx;
-                    while s_idx < end_idx {
-                        let n_idx = (s_idx + retest_interval).min(end_idx);
+                    // Choose the compression scheme for this block.
+                    let compression_scheme = CompressionScheme::choose_from_data(&xorb.data[s_idx]);
 
-                        // Choose the compression scheme for this block.
-                        let compression_scheme = CompressionScheme::choose_from_data(&xorb.data[s_idx]);
-
-                        for chunk in &xorb.data[s_idx..n_idx] {
-                            // now serialize chunk directly to writer (since chunks come first!)
-                            serialize_chunk(chunk, &mut writer, Some(compression_scheme))?;
-                            cas.info.chunk_boundary_offsets.push(writer.stream_position()? as u32);
-                        }
-                        s_idx = n_idx;
+                    for chunk in &xorb.data[s_idx..n_idx] {
+                        // now serialize chunk directly to writer (since chunks come first!)
+                        serialize_chunk(chunk, &mut serialized_data, Some(compression_scheme))?;
                     }
-                }
-            } else {
-                for chunk in xorb.data {
-                    // now serialize chunk directly to writer (since chunks come first!)
-                    serialize_chunk(&chunk, &mut writer, compression_scheme)?;
-                    cas.info.chunk_boundary_offsets.push(writer.stream_position()? as u32);
+                    s_idx = n_idx;
                 }
             }
-
-            // Fill in the boundary offsets
-            cas.info.fill_in_boundary_offsets();
-
-            // now that footer is ready, write out to writer.
-            let info_length = cas.info.serialize(&mut writer)?;
-            cas.info_length = info_length as u32;
-
-            writer.write_all(&cas.info_length.to_le_bytes())?;
+        } else {
+            for chunk in &xorb.data {
+                // now serialize chunk directly to writer (since chunks come first!)
+                serialize_chunk(chunk, &mut serialized_data, compression_scheme)?;
+            }
         }
 
         Ok(Self {
             serialized_data,
-            hash: xorb_hash,
+            hash,
             raw_num_bytes,
             num_chunks,
         })
