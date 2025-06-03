@@ -435,7 +435,7 @@ mod tests {
     fn create_random_data(n: usize, seed: u64) -> Vec<u8> {
         // This test will actually need to be run in different environments, so to generate
         // the table below, create random data using a simple SplitMix rng that can be ported here
-        // as is without dependening on other po
+        // as is without dependening on other packages.
         let mut ret = Vec::with_capacity(n + 7);
 
         let mut state = seed;
