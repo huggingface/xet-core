@@ -961,10 +961,7 @@ impl CasObject {
         Ok(Self { info, info_length })
     }
 
-    pub fn serialize_given_info<W: Write + Seek>(
-        w: &mut W,
-        info: CasObjectInfoV1,
-    ) -> Result<(Self, usize), CasObjectError> {
+    pub fn serialize_given_info<W: Write>(w: &mut W, info: CasObjectInfoV1) -> Result<(Self, usize), CasObjectError> {
         let mut total_written_bytes: usize = 0;
         let info_length = info.serialize(w)? as u32;
         total_written_bytes += info_length as usize;
