@@ -29,6 +29,9 @@ pub enum CasObjectError {
 
     #[error("Internal Hash Parsing Error")]
     HashParsingError(#[from] Infallible),
+
+    #[error("ChunkHeaderParseErrorFooterIdent")]
+    ChunkHeaderParseErrorFooterIdent,
 }
 
 // Define our own result type here (this seems to be the standard).
