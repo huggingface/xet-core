@@ -2,8 +2,8 @@ use std::io::Write;
 use std::mem::size_of;
 
 use anyhow::anyhow;
-use futures::{Stream, TryStreamExt};
 use futures::io::{AsyncRead, AsyncReadExt};
+use futures::{Stream, TryStreamExt};
 
 use crate::error::CasObjectError;
 use crate::{parse_chunk_header, CASChunkHeader, CAS_CHUNK_HEADER_LENGTH};
