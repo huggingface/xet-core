@@ -9,7 +9,7 @@ use rand_chacha::ChaChaRng;
 use super::constants::*;
 
 #[derive(Debug, Clone)]
-pub struct Chunk {
+pub struct ChunkInfo {
     pub hash: DataHash,
     pub length: usize,
 }
@@ -30,8 +30,8 @@ fn fill_buf(reader: &mut impl Read, buf: &mut [u8]) -> io::Result<usize> {
 }
 
 impl<T: Read> Chunker<'_, T> {
-    fn gen(&mut self) -> Vec<Chunk> {
-        let mut ret: Vec<Chunk> = Vec::with_capacity(1024);
+    fn gen(&mut self) -> Vec<ChunkInfo> {
+        let mut ret: Vec<ChunkInfo> = Vec::with_capacity(1024);
         let mut chunkbuf: Vec<u8> = Vec::with_capacity(self.maximum_chunk);
         let mut cur_chunk_len: usize = 0;
         let mut readbuf: [u8; READ_BUF_SIZE] = [0; READ_BUF_SIZE];
@@ -75,7 +75,7 @@ impl<T: Read> Chunker<'_, T> {
                 cur_pos += consume_len;
                 chunkbuf.extend_from_slice(&readbuf[chunk_buf_copy_start..cur_pos]);
                 if create_chunk {
-                    ret.push(Chunk {
+                    ret.push(ChunkInfo {
                         length: chunkbuf.len(),
                         hash: compute_data_hash(&chunkbuf[..]),
                     });
@@ -88,7 +88,7 @@ impl<T: Read> Chunker<'_, T> {
             }
         }
         if !chunkbuf.is_empty() {
-            ret.push(Chunk {
+            ret.push(ChunkInfo {
                 length: chunkbuf.len(),
                 hash: compute_data_hash(&chunkbuf[..]),
             });
@@ -101,7 +101,7 @@ impl<T: Read> Chunker<'_, T> {
 // automatically determined given a target chunk size in bytes.
 // target_chunk_size should be a power of 2, and no larger than 2^31
 // Gearhash is the default since it has good perf tradeoffs
-pub fn chunk_target<T: Read>(iter: &mut T, target_chunk_size: usize) -> Vec<Chunk> {
+pub fn chunk_target<T: Read>(iter: &mut T, target_chunk_size: usize) -> Vec<ChunkInfo> {
     assert_eq!(target_chunk_size.count_ones(), 1);
     assert!(target_chunk_size > 1);
     // note the strict lesser than. Combined with count_ones() == 1,
@@ -137,8 +137,8 @@ pub struct LowVarianceChunker<'a, T: Read> {
 }
 
 impl<T: Read> LowVarianceChunker<'_, T> {
-    fn gen(&mut self) -> Vec<Chunk> {
-        let mut ret: Vec<Chunk> = Vec::with_capacity(1024);
+    fn gen(&mut self) -> Vec<ChunkInfo> {
+        let mut ret: Vec<ChunkInfo> = Vec::with_capacity(1024);
         let mut chunkbuf: Vec<u8> = Vec::with_capacity(self.maximum_chunk);
         let mut cur_chunk_len: usize = 0;
         let mut readbuf: [u8; READ_BUF_SIZE] = [0; READ_BUF_SIZE];
@@ -192,7 +192,7 @@ impl<T: Read> LowVarianceChunker<'_, T> {
                         cur_hasher = self.hash.as_mut_ptr().add(cur_hash_index);
                     }
                     if cur_hash_index >= self.hash.len() {
-                        ret.push(Chunk {
+                        ret.push(ChunkInfo {
                             length: chunkbuf.len(),
                             hash: compute_data_hash(&chunkbuf[..]),
                         });
@@ -207,7 +207,7 @@ impl<T: Read> LowVarianceChunker<'_, T> {
             }
         }
         if !chunkbuf.is_empty() {
-            ret.push(Chunk {
+            ret.push(ChunkInfo {
                 hash: compute_data_hash(&chunkbuf[..]),
                 length: chunkbuf.len(),
             });
@@ -226,7 +226,7 @@ pub fn low_variance_chunk_target<'a, T: Read>(
     iter: &'a mut T,
     target_chunk_size: usize,
     num_hashers: usize,
-) -> Vec<Chunk> {
+) -> Vec<ChunkInfo> {
     assert_eq!(target_chunk_size.count_ones(), 1);
     assert_eq!(num_hashers.count_ones(), 1);
     assert!(target_chunk_size > 1);
@@ -275,6 +275,6 @@ pub fn low_variance_chunk_target<'a, T: Read>(
     chunker.gen()
 }
 
-pub fn chunk_target_default<T: Read>(iter: &mut T) -> Vec<Chunk> {
+pub fn chunk_target_default<T: Read>(iter: &mut T) -> Vec<ChunkInfo> {
     low_variance_chunk_target(iter, TARGET_CDC_CHUNK_SIZE, N_LOW_VARIANCE_CDC_CHUNKERS)
 }
