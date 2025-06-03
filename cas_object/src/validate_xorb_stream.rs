@@ -4,7 +4,7 @@ use anyhow::anyhow;
 use error_printer::ErrorPrinter;
 use futures::{AsyncRead, AsyncReadExt};
 use merkledb::prelude::MerkleDBHighLevelMethodsV1;
-use merkledb::{Chunk, MerkleMemDB};
+use merkledb::{ChunkInfo, MerkleMemDB};
 use merklehash::MerkleHash;
 
 use crate::cas_object_format::CAS_OBJECT_FORMAT_IDENT;
@@ -43,7 +43,7 @@ async fn _validate_cas_object_from_async_read<R: AsyncRead + Unpin>(
     hash: &MerkleHash,
 ) -> Result<(CasObject, Option<usize>)> {
     let mut compressed_chunk_boundary_offsets: Vec<u32> = Vec::new();
-    let mut chunk_hash_and_size: Vec<Chunk> = Vec::new();
+    let mut chunk_hash_and_size: Vec<ChunkInfo> = Vec::new();
     let (maybe_cas_object, go_back_bytes): (Option<CasObject>, Option<usize>) = loop {
         let mut buf8 = [0u8; 8];
         let mut bytes_read = 0;
@@ -115,7 +115,7 @@ async fn _validate_cas_object_from_async_read<R: AsyncRead + Unpin>(
         }
 
         let chunk_hash = merklehash::compute_data_hash(&uncompressed_chunk_data);
-        chunk_hash_and_size.push(Chunk {
+        chunk_hash_and_size.push(ChunkInfo {
             hash: chunk_hash,
             length: uncompressed_chunk_data.len(),
         });
@@ -191,7 +191,7 @@ async fn _validate_cas_object_from_async_read<R: AsyncRead + Unpin>(
 fn create_cas_object_from_parts(
     hash: &MerkleHash,
     compressed_chunk_boundary_offsets: Vec<u32>,
-    chunk_hash_and_size: Vec<Chunk>,
+    chunk_hash_and_size: Vec<ChunkInfo>,
 ) -> CasObject {
     let mut unpacked_offset = 0;
 

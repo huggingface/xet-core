@@ -10,7 +10,7 @@ use futures::AsyncReadExt;
 use mdb_shard::chunk_verification::range_hash_from_chunks;
 use merkledb::constants::{IDEAL_CAS_BLOCK_SIZE, TARGET_CDC_CHUNK_SIZE};
 use merkledb::prelude::MerkleDBHighLevelMethodsV1;
-use merkledb::{Chunk, MerkleMemDB};
+use merkledb::{ChunkInfo, MerkleMemDB};
 use merklehash::{DataHash, MerkleHash};
 use more_asserts::*;
 use serde::Serialize;
@@ -995,7 +995,7 @@ impl CasObject {
         };
 
         // 2. walk chunks from Info
-        let mut hash_chunks: Vec<Chunk> = Vec::new();
+        let mut hash_chunks: Vec<ChunkInfo> = Vec::new();
         let mut cumulative_compressed_length: u32 = 0;
         let mut unpacked_chunk_offset = 0;
 
@@ -1013,7 +1013,7 @@ impl CasObject {
             };
 
             let chunk_hash = merklehash::compute_data_hash(&data);
-            hash_chunks.push(Chunk {
+            hash_chunks.push(ChunkInfo {
                 hash: chunk_hash,
                 length: chunk_uncompressed_length as usize,
             });
@@ -1364,7 +1364,7 @@ impl SerializedCasObject {
 
 pub mod test_utils {
     use merkledb::prelude::MerkleDBHighLevelMethodsV1;
-    use merkledb::{Chunk, MerkleMemDB};
+    use merkledb::{ChunkInfo, MerkleMemDB};
     use rand::Rng;
 
     use super::*;
@@ -1565,7 +1565,7 @@ pub mod test_utils {
             let bytes = gen_random_bytes(chunk_size);
 
             let chunk_hash = merklehash::compute_data_hash(&bytes);
-            chunks.push(Chunk {
+            chunks.push(ChunkInfo {
                 hash: chunk_hash,
                 length: bytes.len(),
             });

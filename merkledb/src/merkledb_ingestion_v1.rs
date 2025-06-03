@@ -47,7 +47,7 @@ pub trait MerkleDBIngestionMethodsV1: MerkleDBHighLevelMethodsV1 {
         let mut staging = self.start_insertion_staging();
         // Walkdir usage copied from https://docs.rs/walkdir/2.3.2/walkdir/
         // TODO: magic constant here. Probably change to something like k * nCPUs
-        let (tx, rx) = sync_channel::<(Vec<Chunk>, PathBuf)>(64);
+        let (tx, rx) = sync_channel::<(Vec<ChunkInfo>, PathBuf)>(64);
         thread::spawn(move || {
             WalkDir::new(&input)
                 .follow_links(false) // do not follow symlinks
