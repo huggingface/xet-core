@@ -451,6 +451,47 @@ mod tests {
         ret
     }
 
+    fn get_chunk_boundaries(chunks: &[Chunk]) -> Vec<usize> {
+        chunks
+            .iter()
+            .scan(0, |state, chunk| {
+                *state += chunk.data.len();
+                Some(*state)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn test_chunk_boundaries() {
+        let data = create_random_data(256000, 1);
+
+        // Now, run the chunks through the default chunker.
+        let chunks = Chunker::default().next_block(&data, true);
+
+        // Get the boundaries indices as determined by the size of the chunks above.
+        let ref_chunk_boundaries: Vec<usize> = get_chunk_boundaries(&chunks);
+
+        // Test that it's correct across different chunk varieties.
+        for add_size in [1, 37, 255] {
+            let mut chunker = Chunker::default();
+
+            // Add repeatedly in blocks of add_size, appending to alt_chunks
+            let mut alt_chunks = Vec::with_capacity(chunks.len());
+
+            let mut pos = 0;
+            while pos < data.len() {
+                let next_pos = (pos + add_size).min(data.len());
+                let next_chunk = chunker.next_block(&data[pos..next_pos], next_pos == data.len());
+                alt_chunks.extend(next_chunk);
+                pos = next_pos;
+            }
+
+            let alt_boundaries = get_chunk_boundaries(&alt_chunks);
+
+            assert_eq!(alt_boundaries, ref_chunk_boundaries);
+        }
+    }
+
     #[test]
     fn test_correctness_1mb_random_data() {
         // Test this data.
@@ -469,13 +510,7 @@ mod tests {
         let chunks = Chunker::default().next_block(&data, true);
 
         // Get the boundaries indices as determined by the size of the chunks above.
-        let chunk_boundaries: Vec<usize> = chunks
-            .iter()
-            .scan(0, |state, chunk| {
-                *state += chunk.data.len();
-                Some(*state)
-            })
-            .collect();
+        let chunk_boundaries: Vec<usize> = get_chunk_boundaries(&chunks);
 
         // Uncomment this to create the line below.
         // eprintln!("assert_eq!(chunk_boundaries, vec!{chunk_boundaries:?})");
@@ -486,9 +521,6 @@ mod tests {
                 724510, 815591, 827760, 958832, 991092, 1000000
             ]
         );
-
-        let c = chunk_boundaries[0];
-        eprintln!("data = {:?}", &data[(c - 64)..(c + 64)]);
     }
 
     #[test]
@@ -500,13 +532,7 @@ mod tests {
         let chunks = Chunker::default().next_block(&data, true);
 
         // Get the boundaries indices as determined by the size of the chunks above.
-        let chunk_boundaries: Vec<usize> = chunks
-            .iter()
-            .scan(0, |state, chunk| {
-                *state += chunk.data.len();
-                Some(*state)
-            })
-            .collect();
+        let chunk_boundaries: Vec<usize> = get_chunk_boundaries(&chunks);
 
         // Uncomment this to create the line below.
         // eprintln!("assert_eq!(chunk_boundaries, vec!{chunk_boundaries:?})");
@@ -819,13 +845,7 @@ mod tests {
             let chunks = Chunker::default().next_block(&data, true);
 
             // Get the boundaries indices as determined by the size of the chunks above.
-            let chunk_boundaries: Vec<usize> = chunks
-                .iter()
-                .scan(0, |state, chunk| {
-                    *state += chunk.data.len();
-                    Some(*state)
-                })
-                .collect();
+            let chunk_boundaries: Vec<usize> = get_chunk_boundaries(&chunks);
 
             // Uncomment this to generate the table above.
             // eprintln!("ref_cb[{i}]=vec!{chunk_boundaries:?};");
