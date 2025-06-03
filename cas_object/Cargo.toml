@@ -34,11 +34,12 @@ lz4_flex = { workspace = true }
 rand = { workspace = true }
 serde = { workspace = true }
 thiserror = { workspace = true }
-tokio = { workspace = true, features = ["time", "rt", "macros"] }
+tokio = { workspace = true, features = ["time", "rt", "macros", "io-util"] }
 tracing = { workspace = true }
+tokio-util = { workspace = true, features = ["io"] }
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
-tokio-util = { workspace = true }
+tokio = { workspace = true, features = ["time", "rt", "macros", "io-util", "rt-multi-thread"] }
 
 [[bin]]
 path = "src/byte_grouping/compression_stats/collect_compression_stats.rs"
