@@ -23,6 +23,7 @@ pub struct Chunker {
 
     // generator state
     chunkbuf: Vec<u8>,
+    cur_chunk_len: usize,
 }
 
 impl Default for Chunker {
@@ -63,6 +64,7 @@ impl Chunker {
             mask,
             // generator state init
             chunkbuf: Vec::with_capacity(maximum_chunk),
+            cur_chunk_len: 0,
         }
     }
 
@@ -74,58 +76,6 @@ impl Chunker {
         chunker
     }
 
-    /// Looks for the next chunk boundary in the data.  Assumes that whatever is in the current
-    /// state has been prepended to the current data.  If a boundary cannot be found based on the
-    /// current amount of data, then None is returned.
-    pub fn next_boundary(&mut self, data: &[u8]) -> Option<usize> {
-        const HASH_WINDOW_SIZE: usize = 64;
-        let n_bytes = data.len();
-
-        if n_bytes == 0 {
-            return None;
-        }
-
-        let mut cur_chunk_len = self.chunkbuf.len();
-        let mut consume_len = 0;
-        let mut create_chunk = false;
-
-        // skip the minimum chunk size
-        // and noting that the hash has a window size of 64
-        // so we should be careful to skip only minimum_chunk - 64 - 1
-        if cur_chunk_len + HASH_WINDOW_SIZE < self.minimum_chunk {
-            let max_advance = min(self.minimum_chunk - cur_chunk_len - HASH_WINDOW_SIZE - 1, n_bytes);
-            consume_len += max_advance;
-            cur_chunk_len += max_advance;
-        }
-
-        // If we have a lot of data, don't read all the way to the end when we'll stop reading
-        // at the maximum chunk boundary.
-        let read_end = n_bytes.min(consume_len + self.maximum_chunk - cur_chunk_len);
-
-        let mut bytes_to_next_boundary;
-        if let Some(boundary) = self.hash.next_match(&data[consume_len..read_end], self.mask) {
-            // If we trigger a boundary before the end, create a chunk.
-            bytes_to_next_boundary = boundary;
-            create_chunk = true;
-        } else {
-            bytes_to_next_boundary = read_end - consume_len;
-        }
-
-        // if we hit maximum chunk we must create a chunk
-        if bytes_to_next_boundary + cur_chunk_len >= self.maximum_chunk {
-            bytes_to_next_boundary = self.maximum_chunk - cur_chunk_len;
-            create_chunk = true;
-        }
-
-        consume_len += bytes_to_next_boundary;
-
-        if create_chunk {
-            Some(consume_len)
-        } else {
-            None
-        }
-    }
-
     /// Process more data; this is a continuation of any data from before when calls were
     ///
     /// Returns the next chunk, if available, and the amount of data that was digested.
@@ -133,36 +83,75 @@ impl Chunker {
     /// If is_final is true, then it is assumed that no more data after this block will come,
     /// and any data currently present and at the end will be put into a final chunk.
     pub fn next(&mut self, data: &[u8], is_final: bool) -> (Option<Chunk>, usize) {
-        let (data, consume): (Arc<[u8]>, usize) = {
-            if let Some(next_boundary) = self.next_boundary(data) {
-                if self.chunkbuf.is_empty() {
-                    (data[..next_boundary].into(), next_boundary)
-                } else {
-                    self.chunkbuf.extend_from_slice(&data[..next_boundary]);
-                    (std::mem::take(&mut self.chunkbuf).into(), next_boundary)
-                }
+        const HASH_WINDOW_SIZE: usize = 64;
+        let n_bytes = data.len();
+
+        let mut create_chunk = false;
+        let mut consume_len = 0;
+
+        // find a chunk boundary after minimum chunk
+        if n_bytes != 0 {
+            // skip the minimum chunk size
+            // and noting that the hash has a window size of 64
+            // so we should be careful to skip only minimum_chunk - 64 - 1
+            if self.cur_chunk_len + HASH_WINDOW_SIZE < self.minimum_chunk {
+                let max_advance =
+                    min(self.minimum_chunk - self.cur_chunk_len - HASH_WINDOW_SIZE - 1, n_bytes - consume_len);
+                consume_len += max_advance;
+                self.cur_chunk_len += max_advance;
+            }
+
+            // If we have a lot of data, don't read all the way to the end when we'll stop reading
+            // at the maximum chunk boundary.
+            let read_end = n_bytes.min(consume_len + self.maximum_chunk - self.cur_chunk_len);
+
+            let mut bytes_to_next_boundary;
+            if let Some(boundary) = self.hash.next_match(&data[consume_len..read_end], self.mask) {
+                bytes_to_next_boundary = boundary;
+                create_chunk = true;
             } else {
-                if is_final {
-                    // Put the rest of the data in the chunkbuf.
-                    if self.chunkbuf.is_empty() {
-                        (data.into(), data.len())
-                    } else {
-                        self.chunkbuf.extend_from_slice(&data);
-                        (std::mem::take(&mut self.chunkbuf).into(), data.len())
-                    }
-                } else {
-                    self.chunkbuf.extend_from_slice(&data);
-                    return (None, data.len());
-                }
+                bytes_to_next_boundary = read_end - consume_len;
+            }
+
+            // if we hit maximum chunk we must create a chunk
+            if bytes_to_next_boundary + self.cur_chunk_len >= self.maximum_chunk {
+                bytes_to_next_boundary = self.maximum_chunk - self.cur_chunk_len;
+                create_chunk = true;
+            }
+            self.cur_chunk_len += bytes_to_next_boundary;
+            consume_len += bytes_to_next_boundary;
+            self.chunkbuf.extend_from_slice(&data[0..consume_len]);
+        }
+
+        let ret = {
+            if create_chunk || (is_final && !self.chunkbuf.is_empty()) {
+                let chunk = Chunk {
+                    hash: compute_data_hash(&self.chunkbuf[..]),
+                    data: std::mem::take(&mut self.chunkbuf).into(),
+                };
+
+                self.cur_chunk_len = 0;
+
+                self.hash.set_hash(0);
+
+                (Some(chunk), consume_len)
+            } else {
+                (None, consume_len)
             }
         };
 
-        let chunk = Chunk {
-            hash: compute_data_hash(&data),
-            data,
-        };
+        // The amount of data consumed should never be more than the amount of data given.
+        #[cfg(debug_assertions)]
+        {
+            debug_assert!(ret.1 <= data.len());
 
-        (Some(chunk), consume)
+            // If no chunk is returned, then make sure all the data is consumed.
+            if ret.0.is_none() {
+                debug_assert_eq!(ret.1, data.len());
+            }
+        }
+
+        ret
     }
 
     /// Processes several blocks at once, returning
