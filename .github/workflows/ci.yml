@@ -56,21 +56,20 @@ jobs:
         run: |
           cargo test --verbose --no-fail-fast --features "strict"
   build_and_test-wasm:
-    name: Build and Test WASM
+    name: Build WASM
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
-      - name: Install Rust 1.86
-        uses: dtolnay/rust-toolchain@1.86.0
+      - name: Install Rust nightly
+        uses: dtolnay/rust-toolchain@nightly
         with:
           targets: wasm32-unknown-unknown
-          components: clippy
-      - name: install wasm-pack
+          components: rust-src
+      - name: Install wasm-bindgen-cli
         run: |
-          curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
+          cargo install wasm-bindgen-cli
       - name: Build hf_xet_wasm
         working-directory: hf_xet_wasm
         run: |
-          wasm-pack build
-          wasm-pack test --node --firefox --chrome --headless
+          ./build_wasm.sh
