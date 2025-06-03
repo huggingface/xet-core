@@ -141,19 +141,17 @@ impl Chunker {
                     self.chunkbuf.extend_from_slice(&data[..next_boundary]);
                     (std::mem::take(&mut self.chunkbuf).into(), next_boundary)
                 }
-            } else {
-                if is_final {
-                    // Put the rest of the data in the chunkbuf.
-                    if self.chunkbuf.is_empty() {
-                        (data.into(), data.len())
-                    } else {
-                        self.chunkbuf.extend_from_slice(&data);
-                        (std::mem::take(&mut self.chunkbuf).into(), data.len())
-                    }
+            } else if is_final {
+                // Put the rest of the data in the chunkbuf.
+                if self.chunkbuf.is_empty() {
+                    (data.into(), data.len())
                 } else {
-                    self.chunkbuf.extend_from_slice(&data);
-                    return (None, data.len());
+                    self.chunkbuf.extend_from_slice(data);
+                    (std::mem::take(&mut self.chunkbuf).into(), data.len())
                 }
+            } else {
+                self.chunkbuf.extend_from_slice(data);
+                return (None, data.len());
             }
         };
 
