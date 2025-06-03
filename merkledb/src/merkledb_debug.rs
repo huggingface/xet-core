@@ -1,6 +1,6 @@
 use std::collections::HashSet;
 
-use crate::chunk_iterator::Chunk;
+use crate::chunk_iterator::ChunkInfo;
 use crate::internal_methods::*;
 use crate::merkledb_highlevel_v1::*;
 use crate::merkledb_reconstruction::MerkleDBReconstruction;
@@ -235,7 +235,7 @@ pub trait MerkleDBDebugMethods: MerkleDBBase + MerkleDBReconstruction {
 
     /// compare the given hash with what I get with a fresh insertion
     /// of hunks into a MerkleDB
-    fn fresh_hash_of_chunks(&self, chunks: &[Chunk]) -> MerkleHash {
+    fn fresh_hash_of_chunks(&self, chunks: &[ChunkInfo]) -> MerkleHash {
         let mut db = MerkleMemDB::default();
         let mut staging = db.start_insertion_staging();
         db.add_file(&mut staging, chunks);
@@ -250,7 +250,7 @@ pub trait MerkleDBDebugMethods: MerkleDBBase + MerkleDBReconstruction {
         let cas_leaves = self.find_all_leaves(&cas_node).unwrap();
         let chunks = cas_leaves
             .iter()
-            .map(|x| Chunk {
+            .map(|x| ChunkInfo {
                 hash: *x.hash(),
                 length: x.len(),
             })

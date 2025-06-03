@@ -12,9 +12,9 @@ use utils::async_iterator::AsyncIterator;
 
 use super::constants::*;
 use crate::chunk_iterator::HASH_SEED;
-use crate::Chunk;
+use crate::ChunkInfo;
 
-type ChunkYieldType = (Chunk, Vec<u8>);
+type ChunkYieldType = (ChunkInfo, Vec<u8>);
 
 /// Chunk Generator given an input stream. Do not use directly.
 /// Use `async_chunk_target`.
@@ -40,7 +40,7 @@ impl<T: AsyncIterator<E>, E: Send + Sync + 'static> AsyncIterator<E> for AsyncCh
 where
     T::Item: AsRef<[u8]>,
 {
-    type Item = (Chunk, Vec<u8>);
+    type Item = (ChunkInfo, Vec<u8>);
 
     /// Returns GenType::Yielded((Chunk, Vec<u8>)) when there is a chunk.
     /// call again for the next chunk.
@@ -119,7 +119,7 @@ where
                             self.chunkbuf.extend_from_slice(&readbuf[chunk_buf_copy_start..cur_pos]);
                             if create_chunk {
                                 let res = (
-                                    Chunk {
+                                    ChunkInfo {
                                         length: self.chunkbuf.len(),
                                         hash: compute_data_hash(&self.chunkbuf[..]),
                                     },
@@ -147,7 +147,7 @@ where
         self.complete_after_queue = true;
         if !self.chunkbuf.is_empty() {
             let res = (
-                Chunk {
+                ChunkInfo {
                     length: self.chunkbuf.len(),
                     hash: compute_data_hash(&self.chunkbuf[..]),
                 },
@@ -336,7 +336,7 @@ where
                                 }
                                 if self.cur_hash_index >= self.hash.len() {
                                     let res = (
-                                        Chunk {
+                                        ChunkInfo {
                                             length: self.chunkbuf.len(),
                                             hash: compute_data_hash(&self.chunkbuf[..]),
                                         },
@@ -365,7 +365,7 @@ where
         // main loop complete
         if !self.chunkbuf.is_empty() {
             let res = (
-                Chunk {
+                ChunkInfo {
                     length: self.chunkbuf.len(),
                     hash: compute_data_hash(&self.chunkbuf[..]),
                 },

@@ -19,7 +19,7 @@ mod merklememdb;
 mod merklenode;
 mod tests;
 
-pub use chunk_iterator::{chunk_target, low_variance_chunk_target, Chunk};
+pub use chunk_iterator::{chunk_target, low_variance_chunk_target, ChunkInfo};
 pub use merkledbv1::MerkleDBV1;
 pub use merkledbv2::MerkleDBV2;
 pub use merklememdb::MerkleMemDB;
