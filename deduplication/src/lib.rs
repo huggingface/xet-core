@@ -1,4 +1,5 @@
 mod chunking;
+mod chunking_new;
 pub mod constants;
 mod data_aggregator;
 mod dedup_metrics;
