@@ -7,7 +7,7 @@ pub trait MerkleDBHighLevelMethodsV2: MerkleDBBase {
     /// Adds a chunk to the database
     /// Returns (node, new_node)
     /// new_node = true if this is a new chunk that has never been seen
-    fn add_chunk(&mut self, chunk: &Chunk) -> (MerkleNode, bool) {
+    fn add_chunk(&mut self, chunk: &ChunkInfo) -> (MerkleNode, bool) {
         self.maybe_add_node(&chunk.hash, chunk.length, Vec::new())
     }
 

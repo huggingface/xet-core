@@ -8,7 +8,7 @@ use error_printer::ErrorPrinter;
 use mdb_shard::cas_structs::MDBCASInfo;
 use mdb_shard::constants::MDB_SHARD_MIN_TARGET_SIZE;
 use mdb_shard::file_structs::{FileDataSequenceEntry, MDBFileInfo};
-use mdb_shard::session_directory::{consolidate_shards_in_directory, merge_shards_background};
+use mdb_shard::session_directory::{consolidate_shards_in_directory, merge_shards_background, ShardMergeResult};
 use mdb_shard::shard_in_memory::MDBInMemoryShard;
 use mdb_shard::ShardFileManager;
 use merklehash::MerkleHash;
@@ -77,7 +77,12 @@ impl SessionShardInterface {
         // have been uploaded successfully.  (Also, don't do this on a dry run, as it could screw up non-dry runs).
         let shard_merge_jh = {
             if !dry_run {
-                Some(merge_shards_background(&xorb_metadata_staging_dir, &session_dir, *MDB_SHARD_MIN_TARGET_SIZE))
+                Some(merge_shards_background(
+                    &xorb_metadata_staging_dir,
+                    &session_dir,
+                    *MDB_SHARD_MIN_TARGET_SIZE,
+                    true,
+                ))
             } else {
                 None
             }
@@ -88,28 +93,33 @@ impl SessionShardInterface {
         let session_shard_manager = ShardFileManager::new_in_session_directory(&session_dir, false).await?;
 
         // Get the new merged shard handles here.
-        let (new_session_shards, obsolete_shards) = {
+        let shard_merge_result = {
             if let Some(jh) = shard_merge_jh {
                 jh.await??
             } else {
-                (vec![], vec![])
+                ShardMergeResult::default()
             }
         };
 
         // If there are shards from a resumed session, load them.
         let resumed_session_shard_manager = {
-            if !new_session_shards.is_empty() {
+            if !shard_merge_result.merged_shards.is_empty() {
                 // Create a new shard manager to just hold the resumed session shards
                 let resumed_session_shard_manager =
                     ShardFileManager::new_in_session_directory(&session_dir, false).await?;
-                resumed_session_shard_manager.register_shards(&new_session_shards).await?;
+
+                resumed_session_shard_manager
+                    .register_shards(&shard_merge_result.merged_shards)
+                    .await?;
+
                 Some(resumed_session_shard_manager)
             } else {
                 None
             }
         };
 
-        let staged_shards_to_remove_on_success = obsolete_shards.iter().map(|sfi| sfi.path.clone()).collect();
+        let staged_shards_to_remove_on_success =
+            shard_merge_result.obsolete_shards.iter().map(|sfi| sfi.path.clone()).collect();
 
         Ok(Self {
             session_shard_manager,
@@ -230,8 +240,13 @@ impl SessionShardInterface {
         self.session_shard_manager.flush().await?;
 
         // First, scan, merge, and fill out any shards in the session directory
-        let shard_list =
-            consolidate_shards_in_directory(self.session_shard_manager.shard_directory(), *MDB_SHARD_MIN_TARGET_SIZE)?;
+        let shard_list = consolidate_shards_in_directory(
+            self.session_shard_manager.shard_directory(),
+            *MDB_SHARD_MIN_TARGET_SIZE,
+            // Here, we want to error out if some of the information isn't present or corrupt, so set skip_on_error to
+            // false.
+            false,
+        )?;
 
         // Upload all the shards and move each to the common directory.
         let mut shard_uploads = JoinSet::<Result<()>>::new();

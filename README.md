@@ -122,6 +122,21 @@ Unit-tests are run with `cargo test`, benchmarks are run with `cargo bench`. Som
 
 Please join us in making xet-core better. We value everyone's contributions. Code is not the only way to help. Answering questions, helping each other, improving documentation, filing issues all help immensely. If you are interested in contributing (please do!), check out the [contribution guide](https://github.com/huggingface/xet-core/blob/main/CONTRIBUTING.md) for this repository.
 
+## Debugging
+
+To limit the size our our built binaries, we are releasing python wheels with binaries that are stripped of debugging symbols. If you encounter a panic while running hf-xet, you can use the debug symbols to help identify the part of the library that failed. 
+
+Here are the recommended steps:
+
+1. Download and unzip our [debug symbols package](https://github.com/huggingface/xet-core/releases/download/latest/dbg-symbols.zip).
+2. Determine the location of the hf-xet package using `pip show hf-xet`. The `Location` field will show the location of all the site packages. The `hf_xet` package will be within that directory.
+3. Determine the symbols to copy based on the system you are running:
+   * Windows: use `hf_xet.pdb`
+   * Mac: use `libhf_xet-macosx-x86_64.dylib.dSYM` for Intel based Macs and `libhf_xet-macosx-aarch64.dylib.dSYM` for Apple Silicon.
+   * Linux: the choice will depend on the architecture and wheel distribution used. To get this information, `cat` the `WHEEL` file name within the `hf_xet.dist-info` directory in your site packages. The wheel file will have the linux build and architecture in the file name. Eg: `cat /home/ubuntu/.venv/lib/python3.12/site-packages/hf_xet-*.dist-info/WHEEL`. You will use the file named `hf_xet-<manylinux | musllinux>-<x86_64 | arm64>.abi3.so.dbg` choosing the distribution and platform that matches your wheel. Eg: `hf_xet-manylinux-x86_64.abi3.so.dbg`.
+4. Copy the symbols to the site package path from step 2 above + `hf_xet`. Eg: `cp -r hf_xet-1.1.2-manylinux-x86_64.abi3.so.dbg /home/ubuntu/.venv/lib/python3.12/site-packages/hf_xet`
+5. Run your python binary with `RUST_BACKTRACE=full` and recreate your failure.
+
 ## References & History
 
 * [Technical Blog posts](https://xethub.com/)

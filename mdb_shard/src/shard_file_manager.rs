@@ -171,8 +171,13 @@ impl ShardFileManager {
     }
 
     pub async fn refresh_shard_dir(&self, prune_expired: bool, prune_cache_to_size: u64) -> Result<()> {
-        let mut shard_files =
-            MDBShardFile::load_managed_directory(&self.shard_directory, false, prune_expired, prune_cache_to_size)?;
+        let mut shard_files = MDBShardFile::load_managed_directory(
+            &self.shard_directory,
+            true,
+            false,
+            prune_expired,
+            prune_cache_to_size,
+        )?;
 
         {
             let shard_read_guard = self.shard_bookkeeper.read().await;
@@ -524,6 +529,7 @@ mod tests {
     use crate::file_structs::FileDataSequenceHeader;
     use crate::session_directory::{consolidate_shards_in_directory, merge_shards};
     use crate::shard_format::test_routines::{gen_random_file_info, rng_hash, simple_hash};
+    use crate::utils::parse_shard_filename;
 
     #[allow(clippy::type_complexity)]
     pub async fn fill_with_specific_shard(
@@ -749,7 +755,7 @@ mod tests {
             verify_mdb_shards_match(&mdb2, &mdb_in_mem, true).await?;
 
             // Now, merge shards in the background.
-            let merged_shards = consolidate_shards_in_directory(tmp_dir.path(), *MDB_SHARD_MIN_TARGET_SIZE)?;
+            let merged_shards = consolidate_shards_in_directory(tmp_dir.path(), *MDB_SHARD_MIN_TARGET_SIZE, false)?;
 
             assert_eq!(merged_shards.len(), 1);
             for si in merged_shards {
@@ -825,7 +831,7 @@ mod tests {
 
             {
                 let merged_shards =
-                    consolidate_shards_in_directory(tmp_dir.path(), *MDB_SHARD_MIN_TARGET_SIZE).unwrap();
+                    consolidate_shards_in_directory(tmp_dir.path(), *MDB_SHARD_MIN_TARGET_SIZE, false).unwrap();
 
                 assert_eq!(merged_shards.len(), 1);
 
@@ -879,7 +885,9 @@ mod tests {
         {
             let tmp_merge_dir = TempDir::new()?;
 
-            let (mut merged_shards, m_del_shards) = merge_shards(tmp_dir.path(), tmp_merge_dir.path(), 8 * T)?;
+            let shard_merge_result = merge_shards(tmp_dir.path(), tmp_merge_dir.path(), 8 * T, false)?;
+            let mut merged_shards = shard_merge_result.merged_shards;
+            let m_del_shards = shard_merge_result.obsolete_shards;
 
             for sfi in merged_shards.iter() {
                 sfi.verify_shard_integrity();
@@ -889,7 +897,7 @@ mod tests {
             assert_eq!(paths.count(), m_del_shards.len());
 
             // This call should be the same, but
-            let mut rv = consolidate_shards_in_directory(tmp_dir.path(), 8 * T)?;
+            let mut rv = consolidate_shards_in_directory(tmp_dir.path(), 8 * T, false)?;
 
             let paths = std::fs::read_dir(tmp_dir.path()).unwrap();
             let n_paths = paths.count();
@@ -952,7 +960,7 @@ mod tests {
             // Make sure it's all in there this round.
             verify_mdb_shards_match(&mdb2, &mdb_in_mem, true).await?;
 
-            let merged_shards = consolidate_shards_in_directory(tmp_dir.path(), target_size)?;
+            let merged_shards = consolidate_shards_in_directory(tmp_dir.path(), target_size, false)?;
 
             for si in merged_shards.iter() {
                 assert!(si.path.exists());
@@ -1234,6 +1242,77 @@ mod tests {
 
             // We set this one to be exact, so we can compare these as equal
             assert_eq!(directory_size, current_size_limit);
+        }
+    }
+
+    #[tokio::test]
+    async fn test_shard_deletion_ok() {
+        let tmp_dir = TempDir::with_prefix("shard_test_deletion").unwrap();
+
+        let tmp_dir_1 = tmp_dir.path().join("src");
+
+        create_random_shard_collection(0, &tmp_dir_1, 4, &[4; 4], &[4; 4])
+            .await
+            .unwrap();
+
+        // Get the size of one of these shards to use as
+        let base_size = 1 + tmp_dir_1.read_dir().unwrap().next().unwrap().unwrap().metadata().unwrap().len();
+
+        for (merge_size, n_merged) in [(1, 3), (2, 2), (4, 1)] {
+            for corrupt_file_index in 0..4 {
+                let work_dir = tmp_dir.path().join(format!("tmp_{merge_size}_{corrupt_file_index}"));
+                let tmp_src_dir = work_dir.join("src");
+                std::fs::create_dir_all(&tmp_src_dir).unwrap();
+
+                let mut bad_shard_hash = Default::default();
+
+                // copy all the shard files in tmp_dir_1 to dir, but delet
+                std::fs::create_dir_all(&tmp_src_dir).unwrap();
+                for (i, p) in std::fs::read_dir(&tmp_dir_1).unwrap().enumerate() {
+                    let p = p.unwrap();
+                    let dest_file_name = tmp_src_dir.join(p.file_name());
+                    std::fs::copy(p.path(), &dest_file_name).unwrap();
+
+                    if i == corrupt_file_index {
+                        // Load this so the metadata gets cached; that will get loaded from cache.
+                        let sfi = MDBShardFile::load_from_file(&dest_file_name).unwrap();
+
+                        // Turn off the typical verification checks on this shard, so it isn't verified
+                        // on loading from the cache.
+                        sfi.disable_verifications.store(true, std::sync::atomic::Ordering::Relaxed);
+
+                        // Replace the file with an empty file.  On read, this will error, and should skip.
+                        std::fs::File::create(&dest_file_name).unwrap();
+
+                        bad_shard_hash = sfi.shard_hash;
+                    }
+                }
+
+                // Now attempt a merge; this should cause an error.
+                let out_dir_1 = work_dir.join("out_err");
+                std::fs::create_dir_all(&out_dir_1).unwrap();
+                let res = merge_shards(&tmp_src_dir, &out_dir_1, base_size * merge_size, false);
+                assert!(res.is_err());
+
+                // Now attempt a merge with error skipping; which should not cause an error.
+                let out_dir_2 = work_dir.join("out_skips");
+                std::fs::create_dir_all(&out_dir_2).unwrap();
+                let res = merge_shards(&tmp_src_dir, &out_dir_2, base_size * merge_size, true).unwrap();
+
+                assert_eq!(res.merged_shards.len(), n_merged);
+
+                assert_eq!(res.obsolete_shards.len(), 3);
+
+                assert_eq!(res.skipped_shards.len(), 1);
+                assert_eq!(
+                    res.skipped_shards
+                        .first()
+                        .map(|s| &s.path)
+                        .and_then(parse_shard_filename)
+                        .unwrap(),
+                    bad_shard_hash
+                );
+            }
         }
     }
 }

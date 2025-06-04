@@ -1,8 +1,7 @@
 #![cfg_attr(feature = "strict", deny(warnings))]
 
 pub mod async_iterator;
-#[cfg(not(target_family = "wasm"))]
-mod async_read;
+pub mod async_read;
 pub mod auth;
 pub mod constant_declarations;
 pub mod errors;
@@ -13,6 +12,4 @@ pub mod serialization_utils;
 #[cfg(not(target_family = "wasm"))]
 pub mod singleflight;
 
-#[cfg(not(target_family = "wasm"))]
-pub use async_read::CopyReader;
 pub use output_bytes::output_bytes;

@@ -4,6 +4,7 @@ use std::mem::size_of;
 use anyhow::anyhow;
 use merkledb::constants::MAXIMUM_CHUNK_SIZE;
 
+use crate::cas_object_format::CAS_OBJECT_FORMAT_IDENT;
 use crate::error::CasObjectError;
 use crate::CompressionScheme;
 
@@ -88,7 +89,7 @@ impl CASChunkHeader {
     }
 }
 
-fn write_chunk_header<W: Write>(w: &mut W, chunk_header: &CASChunkHeader) -> std::io::Result<()> {
+pub fn write_chunk_header<W: Write>(w: &mut W, chunk_header: &CASChunkHeader) -> std::io::Result<()> {
     w.write_all(&[chunk_header.version])?;
     w.write_all(&chunk_header.compressed_length)?;
     w.write_all(&[chunk_header.compression_scheme])?;
@@ -133,6 +134,9 @@ pub fn serialize_chunk<W: Write>(
 }
 
 pub fn parse_chunk_header(chunk_header_bytes: [u8; CAS_CHUNK_HEADER_LENGTH]) -> Result<CASChunkHeader, CasObjectError> {
+    if chunk_header_bytes[..CAS_OBJECT_FORMAT_IDENT.len()] == CAS_OBJECT_FORMAT_IDENT {
+        return Err(CasObjectError::ChunkHeaderParseErrorFooterIdent);
+    }
     let result: CASChunkHeader = unsafe { std::mem::transmute_copy(&chunk_header_bytes) };
     result.validate()?;
     Ok(result)
