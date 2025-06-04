@@ -1,5 +1,3 @@
-use std::sync::Arc;
-
 use mdb_shard::cas_structs::{CASChunkSequenceEntry, CASChunkSequenceHeader, MDBCASInfo};
 use merkledb::aggregate_hashes::cas_node_hash;
 use merklehash::MerkleHash;
@@ -12,7 +10,7 @@ use crate::Chunk;
 #[derive(Default, Debug, Clone)]
 pub struct RawXorbData {
     /// The data for the xorb info.
-    pub data: Vec<Arc<[u8]>>,
+    pub data: Vec<bytes::Bytes>,
 
     /// The cas info associated with the current xorb.
     pub cas_info: MDBCASInfo,

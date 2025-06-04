@@ -1,16 +1,10 @@
 use std::cmp::min;
 use std::io::{Read, Seek, SeekFrom};
-use std::sync::Arc;
 
-use merklehash::{compute_data_hash, MerkleHash};
+use bytes::Bytes;
 
 use crate::constants::{MAXIMUM_CHUNK_MULTIPLIER, MINIMUM_CHUNK_DIVISOR, TARGET_CHUNK_SIZE};
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct Chunk {
-    pub hash: MerkleHash,
-    pub data: Arc<[u8]>,
-}
+use crate::Chunk;
 
 /// Chunk Generator given an input stream. Do not use directly.
 /// Use `chunk_target_default`.
@@ -77,6 +71,7 @@ impl Chunker {
     /// Looks for the next chunk boundary in the data.  Assumes that whatever is in the current
     /// state has been prepended to the current data.  If a boundary cannot be found based on the
     /// current amount of data, then None is returned.
+    #[inline]
     pub fn next_boundary(&mut self, data: &[u8]) -> Option<usize> {
         const HASH_WINDOW_SIZE: usize = 64;
         let n_bytes = data.len();
@@ -120,6 +115,7 @@ impl Chunker {
         consume_len += bytes_to_next_boundary;
 
         if create_chunk {
+            self.hash.set_hash(0); // Reset for the next time.
             Some(consume_len)
         } else {
             None
@@ -133,10 +129,10 @@ impl Chunker {
     /// If is_final is true, then it is assumed that no more data after this block will come,
     /// and any data currently present and at the end will be put into a final chunk.
     pub fn next(&mut self, data: &[u8], is_final: bool) -> (Option<Chunk>, usize) {
-        let (data, consume): (Arc<[u8]>, usize) = {
+        let (data, consume): (Bytes, usize) = {
             if let Some(next_boundary) = self.next_boundary(data) {
                 if self.chunkbuf.is_empty() {
-                    (data[..next_boundary].into(), next_boundary)
+                    (Bytes::copy_from_slice(&data[..next_boundary]), next_boundary)
                 } else {
                     self.chunkbuf.extend_from_slice(&data[..next_boundary]);
                     (std::mem::take(&mut self.chunkbuf).into(), next_boundary)
@@ -144,7 +140,7 @@ impl Chunker {
             } else if is_final {
                 // Put the rest of the data in the chunkbuf.
                 if self.chunkbuf.is_empty() {
-                    (data.into(), data.len())
+                    (Bytes::copy_from_slice(data), data.len())
                 } else {
                     self.chunkbuf.extend_from_slice(data);
                     (std::mem::take(&mut self.chunkbuf).into(), data.len())
@@ -155,23 +151,16 @@ impl Chunker {
             }
         };
 
-        // On cutting a chunk, reset the hash.
-        self.hash.set_hash(0);
-
         // Special case this specific case.
         if data.is_empty() {
             return (None, 0);
         }
 
-        let chunk = Chunk {
-            hash: compute_data_hash(&data),
-            data,
-        };
-
-        (Some(chunk), consume)
+        (Some(Chunk::new(data)), consume)
     }
 
-    /// Processes several blocks at once, returning
+    /// Keeps chunking until no more chunks can be reliably produced, returning a
+    /// vector of the resulting chunks.  
     pub fn next_block(&mut self, data: &[u8], is_final: bool) -> Vec<Chunk> {
         let mut ret = Vec::new();
 
@@ -190,6 +179,49 @@ impl Chunker {
 
             pos += bytes_consumed;
         }
+    }
+
+    /// Keeps chunking until no more chunks can be reliably produced, returning a
+    /// vector of the resulting chunks.
+    ///
+    /// The data is inserted here as a Bytes object, which means that no copying of the data
+    /// is performed except at the boundaries.  The resulting chunks then end up each holding
+    /// a reference to the original data object, which will not be deallocated until all the
+    /// original bytes are gone.
+    pub fn next_block_bytes(&mut self, data: &Bytes, is_final: bool) -> Vec<Chunk> {
+        let mut ret = Vec::new();
+
+        let mut pos = 0;
+
+        // In this case, we have to perform a single cut using the old method,
+        // which would copy the data.
+        if !self.chunkbuf.is_empty() {
+            let (maybe_chunk, skip_idx) = self.next(data, is_final);
+            if let Some(chunk) = maybe_chunk {
+                ret.push(chunk);
+            }
+            pos = skip_idx;
+        }
+
+        while pos < data.len() {
+            let maybe_next_boundary = self.next_boundary(&data[pos..]);
+
+            if let Some(chunk_size) = maybe_next_boundary {
+                let next_pos = pos + chunk_size;
+                ret.push(Chunk::new(data.slice(pos..next_pos)));
+                pos = next_pos;
+            } else {
+                // No more chunks in this block.
+                if is_final {
+                    ret.push(Chunk::new(data.slice(pos..)));
+                } else {
+                    self.chunkbuf.extend_from_slice(&data[pos..]);
+                }
+                break;
+            }
+        }
+
+        ret
     }
 
     // Finishes, returning the final chunk if it exists
@@ -307,36 +339,81 @@ mod tests {
         assert!(new_vec == data);
     }
 
+    // A chunker that wraps two versions of the Chunker class,
+    // exposing next_block but then internally testing next_bytes_block and next_block and
+    // verifying the output is identical.
+    #[derive(Default)]
+    struct ChunkerTestWrapper {
+        chunker_chunks: Chunker,
+        chunker_bytes: Chunker,
+    }
+
+    impl ChunkerTestWrapper {
+        fn new(target_chunk_size: usize) -> Self {
+            ChunkerTestWrapper {
+                chunker_chunks: Chunker::new(target_chunk_size),
+                chunker_bytes: Chunker::new(target_chunk_size),
+            }
+        }
+
+        fn next_block(&mut self, data: &[u8], is_final: bool) -> Vec<Chunk> {
+            let chunks = self.chunker_chunks.next_block(data, is_final);
+            let bytes_chunks = self.chunker_bytes.next_block_bytes(&Bytes::copy_from_slice(data), is_final);
+
+            // Check that the two match.
+            assert_eq!(chunks.len(), bytes_chunks.len());
+            for (c1, c2) in chunks.iter().zip(bytes_chunks.iter()) {
+                assert_eq!(c1.data, c2.data);
+            }
+
+            chunks
+        }
+
+        fn next_chunk(&mut self, data: &[u8], is_final: bool) -> (Option<Chunk>, usize) {
+            let (chunk, consumed) = self.chunker_chunks.next(data, is_final);
+            let (bytes_chunk, bytes_consumed) = self.chunker_bytes.next(&Bytes::copy_from_slice(data), is_final);
+
+            // Check that the two match.
+            if let Some(c) = &chunk {
+                assert_eq!(c.data, bytes_chunk.unwrap().data);
+            } else {
+                assert!(bytes_chunk.is_none());
+            }
+
+            (chunk, consumed.max(bytes_consumed))
+        }
+    }
+
     #[test]
     fn test_empty_data_no_chunk_until_final() {
-        let mut chunker = Chunker::new(128);
+        let mut chunker = ChunkerTestWrapper::new(128);
 
         // Passing empty slice without final => no chunk
-        let (chunk, consumed) = chunker.next(&[], false);
+        let (chunk, consumed) = chunker.next_chunk(&[], false);
         assert!(chunk.is_none());
         assert_eq!(consumed, 0);
 
         // Passing empty slice again with is_final = true => no leftover data, so no chunk
-        let (chunk, consumed) = chunker.next(&[], true);
+        let (chunk, consumed) = chunker.next_chunk(&[], true);
         assert!(chunk.is_none());
         assert_eq!(consumed, 0);
     }
 
     #[test]
     fn test_data_smaller_than_minimum_no_boundary() {
-        let mut chunker = Chunker::new(128);
+        let mut chunker = ChunkerTestWrapper::new(128);
 
         // Create a small random data buffer. For example, length=3.
         let data = make_test_data(0, 63);
 
         // We expect no chunk until we finalize, because there's not enough data
         // to trigger a boundary, nor to reach the maximum chunk size.
-        let (chunk, consumed) = chunker.next(&data, false);
+        let (chunk, consumed) = chunker.next_chunk(&data, false);
         assert!(chunk.is_none());
         assert_eq!(consumed, data.len());
 
         // Now finalize: we expect a chunk with the leftover data
-        let (chunk, consumed) = chunker.next(&[], true);
+        let (chunk, consumed) = chunker.next_chunk(&[], true);
         assert!(chunk.is_some());
         assert_eq!(consumed, 0);
 
@@ -347,7 +424,7 @@ mod tests {
 
     #[test]
     fn test_multiple_chunks_produced() {
-        let mut chunker = Chunker::new(128);
+        let mut chunker = ChunkerTestWrapper::new(128);
 
         // Produce 100 bytes of random data
         let data = make_test_data(42, 10000);
@@ -368,7 +445,7 @@ mod tests {
         let mut chunks_1 = Vec::new();
 
         let mut pos = 0;
-        let mut chunker = Chunker::new(128);
+        let mut chunker = ChunkerTestWrapper::new(128);
 
         while pos < data.len() {
             for i in 0..16 {
@@ -381,7 +458,7 @@ mod tests {
         check_chunks_equal(&chunks_1, &data);
 
         // Now, rechunk with all at once and make sure it's equal.
-        let chunks_2 = Chunker::new(128).next_block(&data, true);
+        let chunks_2 = ChunkerTestWrapper::new(128).next_block(&data, true);
 
         assert_eq!(chunks_1, chunks_2);
     }
@@ -391,7 +468,7 @@ mod tests {
         // If the data hits the maximum chunk size exactly, we should force a boundary.
         // For target_chunk_size = 128, if MAXIMUM_CHUNK_MULTIPLIER = 2, then max = 256.
         // Adjust if your constants differ.
-        let mut chunker = Chunker::new(512);
+        let mut chunker = ChunkerTestWrapper::new(512);
 
         // Use constant data
         let data = vec![0; 8 * *MAXIMUM_CHUNK_MULTIPLIER * 512];
@@ -441,7 +518,7 @@ mod tests {
     fn create_random_data(n: usize, seed: u64) -> Vec<u8> {
         // This test will actually need to be run in different environments, so to generate
         // the table below, create random data using a simple SplitMix rng that can be ported here
-        // as is without dependening on other packages.
+        // as is without dependening on other po
         let mut ret = Vec::with_capacity(n + 7);
 
         let mut state = seed;
@@ -472,7 +549,7 @@ mod tests {
         let data = create_random_data(256000, 1);
 
         // Now, run the chunks through the default chunker.
-        let chunks = Chunker::default().next_block(&data, true);
+        let chunks = ChunkerTestWrapper::default().next_block(&data, true);
 
         // Get the boundaries indices as determined by the size of the chunks above.
         let ref_chunk_boundaries: Vec<usize> = get_chunk_boundaries(&chunks);
@@ -513,7 +590,7 @@ mod tests {
         assert_eq!(data[111111], 118);
 
         // Now, run the chunks through the default chunker.
-        let chunks = Chunker::default().next_block(&data, true);
+        let chunks = ChunkerTestWrapper::default().next_block(&data, true);
 
         // Get the boundaries indices as determined by the size of the chunks above.
         let chunk_boundaries: Vec<usize> = get_chunk_boundaries(&chunks);
@@ -535,7 +612,7 @@ mod tests {
         let data = vec![59u8; 1000000];
 
         // Now, run the chunks through the default chunker.
-        let chunks = Chunker::default().next_block(&data, true);
+        let chunks = ChunkerTestWrapper::default().next_block(&data, true);
 
         // Get the boundaries indices as determined by the size of the chunks above.
         let chunk_boundaries: Vec<usize> = get_chunk_boundaries(&chunks);
@@ -848,7 +925,7 @@ mod tests {
             // eprintln!("data_sample_at_11111[{i}]={};", data[11111]);
 
             // Now, run the chunks through the default chunker.
-            let chunks = Chunker::default().next_block(&data, true);
+            let chunks = ChunkerTestWrapper::default().next_block(&data, true);
 
             // Get the boundaries indices as determined by the size of the chunks above.
             let chunk_boundaries: Vec<usize> = get_chunk_boundaries(&chunks);
