@@ -25,10 +25,10 @@ pub struct SingleFileCleaner {
     // File name, if known.
     file_name: Option<Arc<str>>,
 
-    // Common state
+    // Common state.
     session: Arc<FileUploadSession>,
 
-    // The chunker.  If None, then the chunking is being done on a background compute thread.
+    // The chunker.
     chunker: Chunker,
 
     // The deduplication interface.  Use a future that always returns the dedup manager
