@@ -32,6 +32,10 @@ pub trait UploadClient {
 
     /// Check if a XORB already exists.
     async fn exists(&self, prefix: &str, hash: &MerkleHash) -> Result<bool>;
+
+    /// Indicates if the serialized cas object should have a written footer.
+    /// This should only be true for testing with LocalClient.
+    fn use_xorb_footer(&self) -> bool;
 }
 
 /// A Client to the CAS (Content Addressed Storage) service to allow reconstructing a

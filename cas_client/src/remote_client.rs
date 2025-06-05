@@ -225,6 +225,10 @@ impl UploadClient for RemoteClient {
             e => Err(CasClientError::internal(format!("unrecognized status code {e}"))),
         }
     }
+
+    fn use_xorb_footer(&self) -> bool {
+        false
+    }
 }
 
 #[async_trait]

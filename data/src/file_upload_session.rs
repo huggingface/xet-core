@@ -337,8 +337,10 @@ impl FileUploadSession {
 
         // Serialize the object; this can be relatively expensive, so run it on a compute thread.
         let compression_scheme = self.config.data_config.compression;
+        let with_footer = self.client.use_xorb_footer();
         let cas_object =
-            tokio::task::spawn_blocking(move || SerializedCasObject::from_xorb(xorb, compression_scheme)).await??;
+            tokio::task::spawn_blocking(move || SerializedCasObject::from_xorb(xorb, compression_scheme, with_footer))
+                .await??;
 
         let session = self.clone();
         let upload_permit = acquire_upload_permit().await?;

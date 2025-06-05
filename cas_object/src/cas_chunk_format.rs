@@ -190,7 +190,7 @@ pub fn deserialize_chunks_to_writer<R: Read, W: Write>(
     // chunk indices are expected to record the byte indices of uncompressed chunks
     // as they are read from the reader, so start with [0, len(uncompressed chunk 0..n), total length]
     let mut chunk_byte_indices = Vec::<u32>::new();
-    chunk_byte_indices.push(num_compressed_written as u32);
+    chunk_byte_indices.push(num_uncompressed_written);
 
     loop {
         match deserialize_chunk_to_writer(reader, writer) {
@@ -216,12 +216,11 @@ pub fn deserialize_chunks_to_writer<R: Read, W: Write>(
 mod tests {
     use std::io::Cursor;
 
-    use rand::Rng;
-
     use super::*;
+    use crate::test_utils::{build_cas_object, ChunkSize};
 
-    const COMP_LEN: u32 = 66051;
-    const UNCOMP_LEN: u32 = 131072;
+    const COMPRESSED_LEN: u32 = 66051;
+    const UNCOMPRESSED_LEN: u32 = 131072;
 
     fn assert_chunk_header_deserialize_match(header: &CASChunkHeader, buf: &[u8]) {
         assert_eq!(buf[0], header.version);
@@ -234,13 +233,13 @@ mod tests {
 
     #[test]
     fn test_basic_header_serialization() {
-        let header = CASChunkHeader::new(CompressionScheme::None, COMP_LEN, UNCOMP_LEN);
+        let header = CASChunkHeader::new(CompressionScheme::None, COMPRESSED_LEN, UNCOMPRESSED_LEN);
 
         let mut buf = Vec::with_capacity(size_of::<CASChunkHeader>());
         write_chunk_header(&mut buf, &header).unwrap();
         assert_chunk_header_deserialize_match(&header, &buf);
 
-        let header = CASChunkHeader::new(CompressionScheme::LZ4, COMP_LEN, UNCOMP_LEN);
+        let header = CASChunkHeader::new(CompressionScheme::LZ4, COMPRESSED_LEN, UNCOMPRESSED_LEN);
 
         let mut buf = Vec::with_capacity(size_of::<CASChunkHeader>());
         write_chunk_header(&mut buf, &header).unwrap();
@@ -249,7 +248,7 @@ mod tests {
 
     #[test]
     fn test_basic_header_deserialization() {
-        let header = CASChunkHeader::new(CompressionScheme::None, COMP_LEN, UNCOMP_LEN);
+        let header = CASChunkHeader::new(CompressionScheme::None, COMPRESSED_LEN, UNCOMPRESSED_LEN);
 
         let mut buf = Vec::with_capacity(size_of::<CASChunkHeader>());
         write_chunk_header(&mut buf, &header).unwrap();
@@ -269,46 +268,52 @@ mod tests {
         assert_eq!(data_copy.as_slice(), data);
     }
 
-    fn gen_random_bytes(uncompressed_chunk_size: u32) -> Vec<u8> {
-        let mut rng = rand::rng();
-        let mut data = vec![0u8; uncompressed_chunk_size as usize];
-        rng.fill(&mut data[..]);
-        data
-    }
-
-    const CHUNK_SIZE: usize = 1000;
-
-    fn get_chunks(num_chunks: u32, compression_scheme: CompressionScheme) -> Vec<u8> {
-        let mut out = Vec::new();
-        for _ in 0..num_chunks {
-            let data = gen_random_bytes(CHUNK_SIZE as u32);
-            serialize_chunk(&data, &mut out, Some(compression_scheme)).unwrap();
-        }
-        out
-    }
+    const CASES: &[(u32, ChunkSize, CompressionScheme)] = &[
+        (2, ChunkSize::Fixed(16), CompressionScheme::None),
+        (10, ChunkSize::Fixed(16), CompressionScheme::None),
+        (100, ChunkSize::Fixed(16), CompressionScheme::None),
+        (1000, ChunkSize::Fixed(16), CompressionScheme::None),
+        (2, ChunkSize::Fixed(16 << 10), CompressionScheme::None),
+        (10, ChunkSize::Fixed(16 << 10), CompressionScheme::None),
+        (100, ChunkSize::Fixed(16 << 10), CompressionScheme::LZ4),
+        (1000, ChunkSize::Fixed(16 << 10), CompressionScheme::LZ4),
+        (2, ChunkSize::Random(1024, 16 << 10), CompressionScheme::LZ4),
+        (10, ChunkSize::Random(1024, 16 << 10), CompressionScheme::LZ4),
+        (100, ChunkSize::Random(1024, 16 << 10), CompressionScheme::LZ4),
+        (1000, ChunkSize::Random(1024, 16 << 10), CompressionScheme::LZ4),
+        (1000, ChunkSize::Random(1024, 16 << 10), CompressionScheme::ByteGrouping4LZ4),
+    ];
 
     #[test]
     fn test_deserialize_multiple_chunks() {
-        let cases = [
-            (1, CompressionScheme::None),
-            (3, CompressionScheme::None),
-            (5, CompressionScheme::LZ4),
-            (100, CompressionScheme::None),
-            (100, CompressionScheme::LZ4),
-        ];
-        for (num_chunks, compression_scheme) in cases {
-            let chunks = get_chunks(num_chunks, compression_scheme);
-            let mut buf = Vec::new();
-            let res = deserialize_chunks_to_writer(&mut Cursor::new(chunks), &mut buf);
+        for (num_chunks, chunk_size, compression_scheme) in CASES {
+            let (c, cas_data, raw_data, raw_chunk_boundaries) =
+                build_cas_object(*num_chunks, *chunk_size, *compression_scheme);
+            let mut deserialized = Vec::new();
+            let res = deserialize_chunks_to_writer(&mut Cursor::new(&cas_data), &mut deserialized);
             assert!(res.is_ok());
-            assert_eq!(buf.len(), num_chunks as usize * CHUNK_SIZE);
+            assert_eq!(deserialized.len(), raw_data.len());
+            assert_eq!(deserialized, raw_data);
 
+            let (num_read, chunk_byte_indices) = res.unwrap();
+            assert_eq!(num_read, cas_data.len());
+            assert_eq!(chunk_byte_indices[0], 0);
+            assert_eq!(
+                chunk_byte_indices.iter().skip(1).map(|v| *v).collect::<Vec<_>>(),
+                raw_chunk_boundaries.iter().map(|v| v.1).collect::<Vec<_>>()
+            );
+            assert_eq!(
+                chunk_byte_indices.iter().skip(1).map(|v| *v).collect::<Vec<_>>(),
+                c.info.unpacked_chunk_offsets,
+            );
+
+            let ChunkSize::Fixed(chunk_size) = chunk_size else {
+                // not testing chunk length for random chunk sizes
+                return;
+            };
             // verify that chunk boundaries are correct
-            let (data, chunk_byte_indices) = res.unwrap();
-            assert!(data > 0);
-            assert_eq!(chunk_byte_indices.len(), num_chunks as usize + 1);
             for i in 0..chunk_byte_indices.len() - 1 {
-                assert_eq!(chunk_byte_indices[i + 1] - chunk_byte_indices[i], CHUNK_SIZE as u32);
+                assert_eq!(chunk_byte_indices[i + 1] - chunk_byte_indices[i], *chunk_size);
             }
         }
     }
