@@ -6,6 +6,7 @@ use anyhow::anyhow;
 use bytes::Buf;
 use deduplication::test_utils::raw_xorb_to_vec;
 use deduplication::RawXorbData;
+#[cfg(not(target_family = "wasm"))]
 use futures::AsyncReadExt;
 use mdb_shard::chunk_verification::range_hash_from_chunks;
 use merkledb::constants::{IDEAL_CAS_BLOCK_SIZE, TARGET_CDC_CHUNK_SIZE};
@@ -17,6 +18,7 @@ use serde::Serialize;
 use tracing::warn;
 use utils::serialization_utils::*;
 
+// #[cfg(not(target_family = "wasm"))]
 use crate::cas_chunk_format::{deserialize_chunk, serialize_chunk};
 use crate::constants::CAS_OBJECT_COMPRESSION_SCHEME_RETEST_INTERVAL;
 use crate::error::{CasObjectError, Validate};
@@ -216,6 +218,7 @@ impl CasObjectInfoV0 {
     /// assumes that the ident and version have already been read and verified.
     ///
     /// verifies that the length of the footer data matches the length field at the very end of the buffer
+    #[cfg(not(target_family = "wasm"))]
     pub async fn deserialize_async<R: futures::io::AsyncRead + Unpin>(
         reader: &mut R,
         version: u8,
@@ -659,6 +662,7 @@ impl CasObjectInfoV1 {
         Ok((s, r.reader_bytes() as u32))
     }
 
+    #[cfg(not(target_family = "wasm"))]
     pub async fn deserialize_async_v1<R: futures::io::AsyncRead + Unpin>(
         reader: &mut R,
     ) -> Result<(Self, u32), CasObjectError> {
@@ -771,6 +775,7 @@ impl CasObjectInfoV1 {
     /// assumes that the ident and version have already been read and verified.
     ///
     /// verifies that the length of the footer data matches the length field at the very end of the buffer
+    #[cfg(not(target_family = "wasm"))]
     pub async fn deserialize_async<R: futures::io::AsyncRead + Unpin>(
         reader: &mut R,
         version: u8,
@@ -935,6 +940,7 @@ impl CasObject {
 
     /// Construct CasObject object from AsyncRead.
     /// assumes that the ident and version have already been read and verified.
+    #[cfg(not(target_family = "wasm"))]
     pub async fn deserialize_async<R: futures::io::AsyncRead + Unpin>(
         reader: &mut R,
         version: u8,
