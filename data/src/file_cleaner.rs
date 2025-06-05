@@ -88,18 +88,18 @@ impl SingleFileCleaner {
             let mut pos = 0;
             while pos < data.len() {
                 let next_pos = usize::min(pos + *INGESTION_BLOCK_SIZE, data.len());
-                self.add_data_detail(Bytes::copy_from_slice(&data[pos..next_pos])).await?;
+                self.add_data_impl(Bytes::copy_from_slice(&data[pos..next_pos])).await?;
                 pos = next_pos;
             }
         } else {
-            self.add_data_detail(Bytes::copy_from_slice(data)).await?;
+            self.add_data_impl(Bytes::copy_from_slice(data)).await?;
         }
 
         Ok(())
     }
 
     #[instrument(skip_all, level="debug", name = "FileCleaner::add_data", fields(file_name=self.file_name.as_ref().map(|s|s.to_string()), len=data.len()))]
-    pub(crate) async fn add_data_detail(&mut self, data: Bytes) -> Result<()> {
+    pub(crate) async fn add_data_impl(&mut self, data: Bytes) -> Result<()> {
         // Put the chunking on a compute thread so it doesn't tie up the async schedulers
         let chunk_data_jh = {
             let mut chunker = std::mem::take(&mut self.chunker);

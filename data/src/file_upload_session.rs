@@ -255,7 +255,7 @@ impl FileUploadSession {
 
                         bytes_read += buffer.len() as u64;
 
-                        cleaner.add_data_detail(Bytes::from(buffer)).await?;
+                        cleaner.add_data_impl(Bytes::from(buffer)).await?;
                     }
 
                     // Finish and return the result.
