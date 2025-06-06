@@ -2,6 +2,7 @@ use std::future::{self, Future};
 use std::pin::Pin;
 use std::sync::Arc;
 
+use bytes::Bytes;
 use chrono::{DateTime, Utc};
 use deduplication::{Chunk, Chunker, DeduplicationMetrics, FileDeduper};
 use mdb_shard::file_structs::FileMetadataExt;
@@ -24,10 +25,10 @@ pub struct SingleFileCleaner {
     // File name, if known.
     file_name: Option<Arc<str>>,
 
-    // Common state
+    // Common state.
     session: Arc<FileUploadSession>,
 
-    // The chunker
+    // The chunker.
     chunker: Chunker,
 
     // The deduplication interface.  Use a future that always returns the dedup manager
@@ -82,33 +83,47 @@ impl SingleFileCleaner {
         Ok(())
     }
 
-    #[instrument(skip_all, level="debug", name = "FileCleaner::add_data", fields(file_name=self.file_name.as_ref().map(|s|s.to_string()), len=data.len()))]
     pub async fn add_data(&mut self, data: &[u8]) -> Result<()> {
         if data.len() > *INGESTION_BLOCK_SIZE {
             let mut pos = 0;
             while pos < data.len() {
                 let next_pos = usize::min(pos + *INGESTION_BLOCK_SIZE, data.len());
-                self.add_data_impl(&data[pos..next_pos]).await?;
+                self.add_data_impl(Bytes::copy_from_slice(&data[pos..next_pos])).await?;
                 pos = next_pos;
             }
         } else {
-            self.add_data_impl(data).await?;
+            self.add_data_impl(Bytes::copy_from_slice(data)).await?;
         }
 
         Ok(())
     }
 
-    async fn add_data_impl(&mut self, data: &[u8]) -> Result<()> {
-        // Chunk the data.
-        let chunks: Arc<[Chunk]> = Arc::from(self.chunker.next_block(data, false));
+    #[instrument(skip_all, level="debug", name = "FileCleaner::add_data", fields(file_name=self.file_name.as_ref().map(|s|s.to_string()), len=data.len()))]
+    pub(crate) async fn add_data_impl(&mut self, data: Bytes) -> Result<()> {
+        // Put the chunking on a compute thread so it doesn't tie up the async schedulers
+        let chunk_data_jh = {
+            let mut chunker = std::mem::take(&mut self.chunker);
+            let data = data.clone();
+
+            tokio::task::spawn_blocking(move || {
+                let chunks: Arc<[Chunk]> = Arc::from(chunker.next_block_bytes(&data, false));
+                (chunks, chunker)
+            })
+        };
+
+        // Update the sha256 hasher, which hands this off to be done in the background.
+        self.sha_generator.update(data.clone()).await?;
+
+        // Get the chunk data and start processing it.
+        let (chunks, chunker) = chunk_data_jh.await?;
+
+        // Restore the chunker state.
+        self.chunker = chunker;
 
         // It's possible this didn't actually add any data in.
         if chunks.is_empty() {
             return Ok(());
         }
-
-        // Update the sha256 generator
-        self.sha_generator.update(chunks.clone()).await?;
 
         // Run the deduplication interface here.
         self.deduper_process_chunks(chunks).await?;
@@ -128,7 +143,6 @@ impl SingleFileCleaner {
         // Chunk the rest of the data.
         if let Some(chunk) = self.chunker.finish() {
             let data = Arc::new([chunk]);
-            self.sha_generator.update(data.clone()).await?;
             self.deduper_process_chunks(data).await?;
         }
 

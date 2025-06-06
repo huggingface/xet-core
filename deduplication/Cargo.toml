@@ -13,6 +13,7 @@ utils = { path = "../utils" }
 async-trait = { workspace = true }
 gearhash = { workspace = true }
 more-asserts = { workspace = true }
+bytes = { workspace = true }
 
 [dev-dependencies]
 rand = { workspace = true }
