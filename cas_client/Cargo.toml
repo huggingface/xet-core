@@ -53,10 +53,19 @@ reqwest = { version = "0.12", features = ["json", "trust-dns", "stream"] }
 strict = []
 default = ["native-ssl"]
 
-# Three options for compliation here; 
-embedded-ssl = ["reqwest/rustls-tls"]
-native-ssl = ["reqwest/native-tls"]
-native-ssl-vendored = ["reqwest/native-tls-vendored"]
+# Three options for compliation here. 
+
+# embedded-ssl embeds all ssl stuff in a rust package.  This is the most portable option, but also may not respect local 
+# network configurations.  Use this if the native-ssl options don't work.  
+embedded-tls = ["reqwest/rustls-tls"]
+
+# Uses native tls in the request package; this uses the native-tls package to wrap openssl, which is a more robust and portable
+# way of ensuring that tls just works. 
+native-tls = ["reqwest/native-tls"]
+
+# This uses the above, but statically compiles in openssl, which makes the result more portable at the expense of 
+# library size. 
+native-tls-vendored = ["reqwest/native-tls-vendored"]
 
 
 [dev-dependencies]
