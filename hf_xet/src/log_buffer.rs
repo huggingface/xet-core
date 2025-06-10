@@ -5,9 +5,9 @@ use std::sync::{Arc, Mutex};
 
 use bipbuffer::BipBuffer;
 use pyo3::prelude::*;
-use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
+use cas_client::reqwest_header::{HeaderMap, HeaderName, HeaderValue};
 use serde::{Deserialize, Serialize};
-use tracing::{debug, Subscriber};
+use utils::exports::tracing::{debug, Subscriber};
 use tracing_subscriber::Layer;
 
 pub const TELEMETRY_PRE_ALLOC_BYTES: usize = 2 * 1024 * 1024;

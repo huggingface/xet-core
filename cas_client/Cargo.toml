@@ -3,9 +3,6 @@ name = "cas_client"
 version = "0.14.5"
 edition = "2021"
 
-[features]
-strict = []
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
 cas_object = { path = "../cas_object" }
@@ -29,15 +26,38 @@ futures = { workspace = true }
 heed = { workspace = true }
 http = { workspace = true }
 more-asserts = { workspace = true }
-reqwest = { workspace = true }
-reqwest-middleware = { workspace = true }
-reqwest-retry = { workspace = true }
 tempfile = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 tokio-retry = { workspace = true }
 tracing = { workspace = true }
 url = { workspace = true }
+reqwest-middleware = "0.4"
+reqwest-retry = "0.7"
+
+
+# use embedded webpki root certs for MacOS as native certs take a very long time
+# to load, which affects startup time significantly
+[target.'cfg(macos)'.dependencies]
+reqwest = { version = "0.12", features = [
+    "json",
+    "stream",
+    "rustls-tls-webpki-roots",
+] }
+
+[target.'cfg(not(macos))'.dependencies]
+reqwest = { version = "0.12", features = ["json", "trust-dns", "stream"] }
+
+# Reqwest -- uses different flags with different features.
+[features]
+strict = []
+default = ["rust-ssl"]
+
+# Three options for compliation here; 
+rust-ssl = ["reqwest/rustls-tls"]
+native-ssl = ["reqwest/native-tls"]
+native-ssl-vendored = ["reqwest/native-tls-vendored"]
+
 
 [dev-dependencies]
 httpmock = { workspace = true }

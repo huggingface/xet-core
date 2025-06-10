@@ -2,8 +2,7 @@ use std::sync::Arc;
 
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
-use cas_client::{build_http_client, Api, RetryConfig};
-use reqwest_middleware::ClientWithMiddleware;
+use cas_client::{build_http_client, Api, ClientWithMiddleware, RetryConfig};
 use utils::auth::{TokenInfo, TokenRefresher};
 use utils::errors::AuthError;
 

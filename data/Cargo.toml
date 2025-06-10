@@ -43,7 +43,6 @@ prometheus = { workspace = true }
 rand = { workspace = true }
 rand_chacha = { workspace = true }
 regex = { workspace = true }
-reqwest-middleware = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tempfile = { workspace = true }
@@ -55,14 +54,6 @@ walkdir = { workspace = true }
 
 [target.'cfg(not(windows))'.dependencies]
 openssl = { workspace = true }
-
-# use embedded webpki root certs for MacOS as native certs take a very long time
-# to load, which affects startup time significantly
-[target.'cfg(macos)'.dependencies]
-reqwest = { workspace = true, features = ["json", "rustls-tls-webpki-roots"] }
-
-[target.'cfg(not(macos))'.dependencies]
-reqwest = { workspace = true, features = ["json"] }
 
 # Windows doesn't support assembly for compilation
 [target.'cfg(not(target_os = "windows"))'.dependencies]
@@ -79,4 +70,4 @@ ctor = { workspace = true }
 [features]
 strict = []
 expensive_tests = []
-openssl_vendored = ["openssl/vendored"]
+openssl_vendored = ["cas_client/native-ssl-vendored"]
