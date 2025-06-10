@@ -96,6 +96,11 @@ jobs:
           mv hf_xet-${WHEEL_VERSION}/hf_xet/${SYMBOL_FILE} ../hf_xet/dbg/${SYMBOL_FILE}
           wheel pack hf_xet-${WHEEL_VERSION} 
           rm -rf hf_xet-${WHEEL_VERSION}
+      - name: Copy unstripped wheels to upload directory 
+        if: env.IS_RELEASE != 'true'
+        run: |
+          mkdir dist
+          cp ../hf_xet/dist/* dist/
       - name: Upload debug symbols
         if: env.IS_RELEASE == 'true'
         uses: actions/upload-artifact@v4
@@ -173,13 +178,18 @@ jobs:
           mv hf_xet-${WHEEL_VERSION}/hf_xet/${SYMBOL_FILE} ../hf_xet/dbg/${SYMBOL_FILE}
           wheel pack hf_xet-${WHEEL_VERSION} 
           rm -rf hf_xet-${WHEEL_VERSION}
+      - name: Copy unstripped wheels to upload directory 
+        if: env.IS_RELEASE != 'true'
+        run: |
+          mkdir dist
+          cp ../hf_xet/dist/* dist/
       - name: Upload debug symbols
         if: env.IS_RELEASE == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: dbg-musllinux-${{ matrix.platform.target }}
           path: hf_xet/dbg
-      - name: Upload wheels
+      - name: Upload wheels with seperated debug symbols
         uses: actions/upload-artifact@v4
         with:
           name: wheels-musllinux-${{ matrix.platform.target }}
