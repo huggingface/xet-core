@@ -18,7 +18,6 @@ use serde::Serialize;
 use tracing::warn;
 use utils::serialization_utils::*;
 
-// #[cfg(not(target_family = "wasm"))]
 use crate::cas_chunk_format::{deserialize_chunk, serialize_chunk};
 use crate::constants::CAS_OBJECT_COMPRESSION_SCHEME_RETEST_INTERVAL;
 use crate::error::{CasObjectError, Validate};
