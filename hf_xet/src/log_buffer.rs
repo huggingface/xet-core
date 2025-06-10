@@ -4,9 +4,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use bipbuffer::BipBuffer;
-use pyo3::prelude::*;
+use cas_client::exports::reqwest;
 use cas_client::exports::reqwest::header::{HeaderMap, HeaderName, HeaderValue};
-use cas_client::exports::reqwest; 
+use pyo3::prelude::*;
 use serde::{Deserialize, Serialize};
 use tracing::{debug, Subscriber};
 use tracing_subscriber::Layer;
