@@ -78,6 +78,7 @@ impl RetryConfig<No429RetryStrategy> {
 
 /// Builds authenticated HTTP Client to talk to CAS.
 /// Includes retry middleware with exponential backoff.
+#[allow(unused_variables)]
 pub fn build_auth_http_client<R: RetryableStrategy + Send + Sync + 'static>(
     auth_config: &Option<AuthConfig>,
     retry_config: RetryConfig<R>,
@@ -86,14 +87,26 @@ pub fn build_auth_http_client<R: RetryableStrategy + Send + Sync + 'static>(
     let auth_middleware = auth_config.as_ref().map(AuthMiddleware::from).info_none("CAS auth disabled");
     let logging_middleware = Some(LoggingMiddleware);
     let session_middleware = (!session_id.is_empty()).then(|| SessionMiddleware(session_id.to_owned()));
-    let retry_middleware = get_retry_middleware(retry_config);
+
     let reqwest_client = reqwest::Client::builder().build()?;
-    Ok(ClientBuilder::new(reqwest_client)
-        .maybe_with(auth_middleware)
-        .with(retry_middleware)
-        .maybe_with(logging_middleware)
-        .maybe_with(session_middleware)
-        .build())
+    #[cfg(not(target_family = "wasm"))]
+    {
+        let retry_middleware = get_retry_middleware(retry_config);
+        Ok(ClientBuilder::new(reqwest_client)
+            .maybe_with(auth_middleware)
+            .maybe_with(Some(retry_middleware))
+            .maybe_with(logging_middleware)
+            .maybe_with(session_middleware)
+            .build())
+    }
+    #[cfg(target_family = "wasm")]
+    {
+        Ok(ClientBuilder::new(reqwest_client)
+            .maybe_with(auth_middleware)
+            .maybe_with(logging_middleware)
+            .maybe_with(session_middleware)
+            .build())
+    }
 }
 
 /// Builds authenticated HTTP Client to talk to CAS.
@@ -114,19 +127,31 @@ pub fn build_auth_http_client_no_retry(
 
 /// Builds HTTP Client to talk to CAS.
 /// Includes retry middleware with exponential backoff.
+#[allow(unused_variables)]
 pub fn build_http_client<R: RetryableStrategy + Send + Sync + 'static>(
     retry_config: RetryConfig<R>,
     session_id: &str,
 ) -> Result<ClientWithMiddleware, CasClientError> {
-    let retry_middleware = get_retry_middleware(retry_config);
     let logging_middleware = Some(LoggingMiddleware);
     let session_middleware = (!session_id.is_empty()).then(|| SessionMiddleware(session_id.to_owned()));
+
     let reqwest_client = reqwest::Client::builder().build()?;
-    Ok(ClientBuilder::new(reqwest_client)
-        .with(retry_middleware)
-        .maybe_with(logging_middleware)
-        .maybe_with(session_middleware)
-        .build())
+    #[cfg(not(target_family = "wasm"))]
+    {
+        let retry_middleware = get_retry_middleware(retry_config);
+        Ok(ClientBuilder::new(reqwest_client)
+            .maybe_with(Some(retry_middleware))
+            .maybe_with(logging_middleware)
+            .maybe_with(session_middleware)
+            .build())
+    }
+    #[cfg(target_family = "wasm")]
+    {
+        Ok(ClientBuilder::new(reqwest_client)
+            .maybe_with(logging_middleware)
+            .maybe_with(session_middleware)
+            .build())
+    }
 }
 
 /// RetryStrategy
@@ -172,7 +197,8 @@ pub struct Api(pub &'static str);
 /// Adds logging middleware that will trace::warn! on retryable errors.
 pub struct LoggingMiddleware;
 
-#[async_trait::async_trait]
+#[cfg_attr(not(target_family = "wasm"), async_trait::async_trait)]
+#[cfg_attr(target_family = "wasm", async_trait::async_trait(?Send))]
 impl Middleware for LoggingMiddleware {
     async fn handle(
         &self,
@@ -236,7 +262,8 @@ impl From<&AuthConfig> for AuthMiddleware {
     }
 }
 
-#[async_trait::async_trait]
+#[cfg_attr(not(target_family = "wasm"), async_trait::async_trait)]
+#[cfg_attr(target_family = "wasm", async_trait::async_trait(?Send))]
 impl Middleware for AuthMiddleware {
     async fn handle(
         &self,
@@ -254,7 +281,8 @@ impl Middleware for AuthMiddleware {
 
 pub struct SessionMiddleware(String);
 
-#[async_trait::async_trait]
+#[cfg_attr(not(target_family = "wasm"), async_trait::async_trait)]
+#[cfg_attr(target_family = "wasm", async_trait::async_trait(?Send))]
 impl Middleware for SessionMiddleware {
     async fn handle(
         &self,
