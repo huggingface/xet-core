@@ -12,13 +12,10 @@ pub use crate::interface::ShardClientInterface;
 
 mod download_utils;
 mod error;
+pub mod exports;
 mod http_client;
 mod interface;
 mod local_client;
 pub mod remote_client;
 mod retry_utils;
 mod upload_progress_stream;
-
-// Re-export this with the current configurations.
-pub use reqwest::header as reqwest_header;
-pub use reqwest_middleware::ClientWithMiddleware;

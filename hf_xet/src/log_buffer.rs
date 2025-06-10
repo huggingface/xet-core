@@ -5,10 +5,12 @@ use std::sync::{Arc, Mutex};
 
 use bipbuffer::BipBuffer;
 use pyo3::prelude::*;
-use cas_client::reqwest_header::{HeaderMap, HeaderName, HeaderValue};
+use cas_client::exports::reqwest::header::{HeaderMap, HeaderName, HeaderValue};
+use cas_client::exports::reqwest; 
 use serde::{Deserialize, Serialize};
-use utils::exports::tracing::{debug, Subscriber};
+use tracing::{debug, Subscriber};
 use tracing_subscriber::Layer;
+use xet_threadpool::exports::tokio;
 
 pub const TELEMETRY_PRE_ALLOC_BYTES: usize = 2 * 1024 * 1024;
 pub const TELEMETRY_PERIOD_MS: u64 = 100;
