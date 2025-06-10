@@ -309,6 +309,10 @@ impl UploadClient for LocalClient {
             Err(_) => Err(CasClientError::XORBNotFound(*hash)),
         }
     }
+
+    fn use_xorb_footer(&self) -> bool {
+        true
+    }
 }
 
 #[async_trait]

@@ -6,6 +6,7 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
+use bytes::Bytes;
 use cas_client::Client;
 use cas_object::SerializedCasObject;
 use deduplication::constants::{MAX_XORB_BYTES, MAX_XORB_CHUNKS};
@@ -224,19 +225,37 @@ impl FileUploadSession {
                 let _processing_permit = ingestion_concurrancy_limiter.acquire().await?;
 
                 async move {
-                    let mut buffer = vec![0u8; u64::min(file_size, *INGESTION_BLOCK_SIZE as u64) as usize];
                     let mut reader = File::open(&file_path)?;
 
-                    // Start the clean process for each file
+                    // Start the clean process for each file.
                     let mut cleaner = SingleFileCleaner::new(Some(file_name), file_id, session);
+                    let mut bytes_read = 0;
 
-                    loop {
-                        let bytes = reader.read(&mut buffer)?;
-                        if bytes == 0 {
-                            break;
+                    while bytes_read < file_size {
+                        // Allocate a block of bytes, read into it.
+                        let bytes_left = file_size - bytes_read;
+                        let n_bytes_read = (*INGESTION_BLOCK_SIZE as u64).min(bytes_left) as usize;
+
+                        // Read in the data here; we are assuming the file doesn't change size
+                        // on the disk while we are reading it.
+
+                        // We allocate the buffer anew on each loop as it's converted without copying
+                        // to a Bytes object and thus we avoid all the further copies downstream.  We also
+                        // gaurantee that the buffer is filled completely with the read_exact.  Therefore
+                        // we can use an unsafe trick here to allocate the vector without initializing it
+                        // to a specific value and avoid that clearing.
+                        let mut buffer = Vec::with_capacity(n_bytes_read);
+                        #[allow(clippy::uninit_vec)]
+                        unsafe {
+                            buffer.set_len(n_bytes_read);
                         }
 
-                        cleaner.add_data(&buffer[0..bytes]).await?;
+                        // Read it in.
+                        reader.read_exact(&mut buffer)?;
+
+                        bytes_read += buffer.len() as u64;
+
+                        cleaner.add_data_impl(Bytes::from(buffer)).await?;
                     }
 
                     // Finish and return the result.
@@ -337,8 +356,10 @@ impl FileUploadSession {
 
         // Serialize the object; this can be relatively expensive, so run it on a compute thread.
         let compression_scheme = self.config.data_config.compression;
+        let with_footer = self.client.use_xorb_footer();
         let cas_object =
-            tokio::task::spawn_blocking(move || SerializedCasObject::from_xorb(xorb, compression_scheme)).await??;
+            tokio::task::spawn_blocking(move || SerializedCasObject::from_xorb(xorb, compression_scheme, with_footer))
+                .await??;
 
         let session = self.clone();
         let upload_permit = acquire_upload_permit().await?;
