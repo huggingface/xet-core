@@ -71,23 +71,24 @@ impl DeduplicationDataInterface for UploadSessionDataManager {
     /// new deduplication information available.
     async fn complete_global_dedup_queries(&mut self) -> Result<bool> {
         let mut any_result = false;
-        for ret in self.query_tasks.join_next().await {
-            if let Some(serialized_shard) = ret.map_err(DataProcessingError::internal)?? {
-                let mut reader = Cursor::new(serialized_shard);
-                let shard_info = MDBShardInfo::load_from_reader(&mut reader)?;
+        while let Some(ret) = self.query_tasks.join_next().await {
+            let Some(serialized_shard) = ret.map_err(DataProcessingError::internal)?? else {
+                continue;
+            };
+            let mut reader = Cursor::new(serialized_shard);
+            let shard_info = MDBShardInfo::load_from_reader(&mut reader)?;
 
-                let hmac_key = shard_info.metadata.chunk_hash_hmac_key;
+            let hmac_key = shard_info.metadata.chunk_hash_hmac_key;
 
-                let cas_info = shard_info.read_all_cas_blocks_full(&mut reader)?;
+            let cas_info = shard_info.read_all_cas_blocks_full(&mut reader)?;
 
-                let keyed_shard = self.shard.entry(hmac_key).or_default();
+            let keyed_shard = self.shard.entry(hmac_key).or_default();
 
-                for ci in cas_info {
-                    let _ = keyed_shard.add_cas_block(ci);
-                }
-
-                any_result = true
+            for ci in cas_info {
+                let _ = keyed_shard.add_cas_block(ci);
             }
+
+            any_result = true
         }
 
         Ok(any_result)
@@ -105,7 +106,7 @@ impl DeduplicationDataInterface for UploadSessionDataManager {
         Ok(())
     }
 
-    async fn register_xorb_dependencies(&mut self, dependencies: &[FileXorbDependency]) {
+    async fn register_xorb_dependencies(&mut self, _dependencies: &[FileXorbDependency]) {
         // Noop
     }
 }

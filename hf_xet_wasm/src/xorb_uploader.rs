@@ -4,7 +4,6 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use cas_client::{CasClientError, Client};
 use cas_object::SerializedCasObject;
-use merklehash::MerkleHash;
 use tokio::sync::Semaphore;
 use tokio_with_wasm::alias as wasmtokio;
 

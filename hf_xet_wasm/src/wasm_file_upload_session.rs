@@ -117,7 +117,8 @@ impl FileUploadSession {
         }
 
         let compression_scheme = self.config.data_config.compression;
-        let cas_object = SerializedCasObject::from_xorb(xorb, compression_scheme)?;
+        let use_footer = self.client.use_xorb_footer();
+        let cas_object = SerializedCasObject::from_xorb(xorb, compression_scheme, use_footer)?;
 
         let Some(ref mut xorb_uploader) = *self.xorb_uploader.lock().await else {
             return Err(DataProcessingError::internal("register xorb after drop"));

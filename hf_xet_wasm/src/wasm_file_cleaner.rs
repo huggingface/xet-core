@@ -176,10 +176,7 @@ impl SingleFileCleaner {
             debug_assert_eq!(remaining_file_data.pending_file_info.len(), 1);
 
             // The size should be total bytes
-            debug_assert_eq!(
-                remaining_file_data.pending_file_info[0].0.file_size(),
-                deduplication_metrics.total_bytes as usize
-            )
+            debug_assert_eq!(remaining_file_data.pending_file_info[0].0.file_size(), deduplication_metrics.total_bytes)
         }
 
         // Now, return all this information to the
