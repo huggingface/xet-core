@@ -614,6 +614,7 @@ version = "0.14.5"
 dependencies = [
  "anyhow",
  "async-trait",
+ "bytes",
  "cas_client",
  "cas_object",
  "cas_types",
@@ -664,6 +665,7 @@ name = "deduplication"
 version = "0.14.5"
 dependencies = [
  "async-trait",
+ "bytes",
  "gearhash",
  "mdb_shard",
  "merkledb",
