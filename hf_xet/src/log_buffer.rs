@@ -4,11 +4,13 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use bipbuffer::BipBuffer;
+use cas_client::exports::reqwest;
+use cas_client::exports::reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 use pyo3::prelude::*;
-use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 use serde::{Deserialize, Serialize};
 use tracing::{debug, Subscriber};
 use tracing_subscriber::Layer;
+use xet_threadpool::exports::tokio;
 
 pub const TELEMETRY_PRE_ALLOC_BYTES: usize = 2 * 1024 * 1024;
 pub const TELEMETRY_PERIOD_MS: u64 = 100;

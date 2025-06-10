@@ -12,6 +12,7 @@ pub use crate::interface::ShardClientInterface;
 
 mod download_utils;
 mod error;
+pub mod exports;
 mod http_client;
 mod interface;
 mod local_client;
