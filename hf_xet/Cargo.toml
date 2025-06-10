@@ -53,7 +53,8 @@ signal-hook = "0.3"
 ctrlc = "3.4"
 
 [features]
-openssl_vendored = ["cas_client/native-ssl-vendored"]
+native-tls = ["cas_client/native-tls-vendored"]
+native-tls-vendored = ["cas_client/native-tls-vendored"]
 profiling = ["pprof"]
 
 [profile.release]
