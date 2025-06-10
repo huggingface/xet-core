@@ -51,10 +51,10 @@ reqwest = { version = "0.12", features = ["json", "trust-dns", "stream"] }
 # Reqwest -- uses different flags with different features.
 [features]
 strict = []
-default = ["rust-ssl"]
+default = ["native-ssl"]
 
 # Three options for compliation here; 
-rust-ssl = ["reqwest/rustls-tls"]
+embedded-ssl = ["reqwest/rustls-tls"]
 native-ssl = ["reqwest/native-tls"]
 native-ssl-vendored = ["reqwest/native-tls-vendored"]
 

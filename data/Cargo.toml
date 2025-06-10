@@ -37,8 +37,6 @@ dirs = { workspace = true }
 jsonwebtoken = { workspace = true }
 lazy_static = { workspace = true }
 more-asserts = { workspace = true }
-# Need to specify this as optional to allow the openssl/vendored option below
-openssl = { workspace = true, features = [], optional = true }
 prometheus = { workspace = true }
 rand = { workspace = true }
 rand_chacha = { workspace = true }
@@ -51,9 +49,6 @@ tokio = { workspace = true, features = ["full"] }
 tracing = { workspace = true }
 ulid = { workspace = true }
 walkdir = { workspace = true }
-
-[target.'cfg(not(windows))'.dependencies]
-openssl = { workspace = true }
 
 # Windows doesn't support assembly for compilation
 [target.'cfg(not(target_os = "windows"))'.dependencies]
@@ -70,4 +65,3 @@ ctor = { workspace = true }
 [features]
 strict = []
 expensive_tests = []
-openssl_vendored = ["cas_client/native-ssl-vendored"]
