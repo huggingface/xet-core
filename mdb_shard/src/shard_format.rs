@@ -6,6 +6,7 @@ use std::sync::Arc;
 use std::time::{Duration, UNIX_EPOCH};
 
 use anyhow::anyhow;
+use futures::AsyncReadExt;
 use merklehash::{HMACKey, MerkleHash};
 use static_assertions::const_assert;
 use tracing::debug;
@@ -26,21 +27,21 @@ const_assert!(MDB_FILE_INFO_ENTRY_SIZE == size_of::<FileDataSequenceEntry>());
 const_assert!(MDB_FILE_INFO_ENTRY_SIZE == size_of::<FileVerificationEntry>());
 const_assert!(MDB_FILE_INFO_ENTRY_SIZE == size_of::<FileMetadataExt>());
 // Same size for CASChunkSequenceHeader and CASChunkSequenceEntry
-const MDB_CAS_INFO_ENTRY_SIZE: usize = size_of::<[u64; 4]>() + 4 * size_of::<u32>();
+pub const MDB_CAS_INFO_ENTRY_SIZE: usize = size_of::<[u64; 4]>() + 4 * size_of::<u32>();
 const_assert!(MDB_CAS_INFO_ENTRY_SIZE == size_of::<CASChunkSequenceHeader>());
 const_assert!(MDB_CAS_INFO_ENTRY_SIZE == size_of::<CASChunkSequenceEntry>());
 
-const MDB_SHARD_FOOTER_SIZE: i64 = size_of::<MDBShardFileFooter>() as i64;
+pub const MDB_SHARD_FOOTER_SIZE: i64 = size_of::<MDBShardFileFooter>() as i64;
 
-const MDB_SHARD_HEADER_VERSION: u64 = 2;
+pub const MDB_SHARD_HEADER_VERSION: u64 = 2;
 
-const MDB_SHARD_FOOTER_VERSION: u64 = 1;
+pub const MDB_SHARD_FOOTER_VERSION: u64 = 1;
 
 // At the start of each shard file, insert a tag plus a magic-number sequence of bytes to ensure
 // that we are able to quickly identify a file as a shard file.
 
 // FOR NOW: Change the header tag to include BETA.  When we're ready to
-const MDB_SHARD_HEADER_TAG: [u8; 32] = [
+pub const MDB_SHARD_HEADER_TAG: [u8; 32] = [
     b'H', b'F', b'R', b'e', b'p', b'o', b'M', b'e', b't', b'a', b'D', b'a', b't', b'a', 0, 85, 105, 103, 69, 106, 123,
     129, 87, 131, 165, 189, 217, 92, 205, 209, 74, 169,
 ];
@@ -96,6 +97,13 @@ impl MDBShardFileHeader {
             version: read_u64(reader)?,
             footer_size: read_u64(reader)?,
         })
+    }
+
+    pub async fn deserialize_async<R: futures::io::AsyncRead + Unpin>(reader: &mut R) -> Result<Self> {
+        let mut v = [0u8; size_of::<Self>()];
+        reader.read_exact(&mut v[..]).await?;
+        let mut reader_curs = std::io::Cursor::new(&v);
+        Self::deserialize(&mut reader_curs)
     }
 }
 
@@ -213,6 +221,13 @@ impl MDBShardFileFooter {
         obj.footer_offset = read_u64(reader)?;
 
         Ok(obj)
+    }
+
+    pub async fn deserialize_async<R: futures::io::AsyncRead + Unpin>(reader: &mut R) -> Result<Self> {
+        let mut v = [0u8; size_of::<Self>()];
+        reader.read_exact(&mut v[..]).await?;
+        let mut reader_curs = std::io::Cursor::new(&v);
+        Self::deserialize(&mut reader_curs)
     }
 }
 
