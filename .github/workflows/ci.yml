@@ -40,6 +40,10 @@ jobs:
       - name: Build and Test
         run: |
           cargo test --verbose --no-fail-fast --features "strict"
+      - name: Check Cargo.lock has no uncommitted changes
+        run: |
+          # the build and test steps would update Cargo.lock if it is out of date
+          test -z "$(git status --porcelain Cargo.lock)" || (echo "Cargo.lock has uncommitted changes!" && exit 1)
   build_and_test-win:
     runs-on: windows-latest
     steps:

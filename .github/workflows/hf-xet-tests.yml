@@ -17,7 +17,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       # checkout out xet-core
-      - uses: actions/checkout@v4 
+      - uses: actions/checkout@v4
       # checkout out huggingface_hub
       - uses: actions/checkout@v4
         with:
@@ -42,3 +42,7 @@ jobs:
         run: |
           source .venv/bin/activate
           pytest huggingface_hub/tests/test_xet_*.py
+      - name: Check Cargo.lock has no uncommitted changes
+        run: |
+          # the Build wheel step would update hf_xet/Cargo.lock if it is out of date
+          test -z "$(git status --porcelain hf_xet/Cargo.lock)" || (echo "hf_xet/Cargo.lock has uncommitted changes!" && exit 1)
