@@ -10,10 +10,14 @@ utils::configurable_constants! {
     /// eligible if the hash modulus this value is zero.
     ref MDB_SHARD_GLOBAL_DEDUP_CHUNK_MODULUS: u64 = release_fixed(1024);
 
-    /// The (soft) maximum size in bytes of the shard cache.  Default is 4 GB.
+    /// The (soft) maximum size in bytes of the shard cache.  Default is 16 GB.
+    ///
+    /// As a rough calculation, a cache of size X will allow for dedup against data
+    /// of size 1000 * X.  The default would allow a 16 TB repo to be deduped effectively.
+    ///
     /// Note the cache is pruned to below this value at the beginning of a session,
     /// but during a single session new shards may be added such that this limit is exceeded.
-    ref SHARD_CACHE_SIZE_LIMIT : u64 = 4 * 1024 * 1024 * 1024;
+    ref SHARD_CACHE_SIZE_LIMIT : u64 = 16 * 1024 * 1024 * 1024;
 
     /// The amount of time a shard should be expired by before it's deleted, in seconds.
     /// By default set to 7 days.
