@@ -25,9 +25,9 @@ use utils::auth::{AuthConfig, TokenProvider};
 
 use crate::{error, CasClientError};
 
-const NUM_RETRIES: u32 = 5;
-const BASE_RETRY_DELAY_MS: u64 = 3000; // 3s
-const BASE_RETRY_MAX_DURATION_MS: u64 = 6 * 60 * 1000; // 6m
+pub(crate) const NUM_RETRIES: u32 = 5;
+pub(crate) const BASE_RETRY_DELAY_MS: u64 = 3000; // 3s
+pub(crate) const BASE_RETRY_MAX_DURATION_MS: u64 = 6 * 60 * 1000; // 6m
 
 #[derive(Debug)]
 pub struct GaiResolverWithAbsolute(HyperGaiResolver);
@@ -63,9 +63,9 @@ impl Resolve for GaiResolverWithAbsolute {
 }
 
 /// A strategy that doesn't retry on 429, and defaults to `DefaultRetryableStrategy` otherwise.
-pub struct No429RetryStratey;
+pub struct No429RetryStrategy;
 
-impl RetryableStrategy for No429RetryStratey {
+impl RetryableStrategy for No429RetryStrategy {
     fn handle(&self, res: &Result<reqwest::Response, reqwest_middleware::Error>) -> Option<Retryable> {
         if let Ok(success) = res {
             if success.status() == StatusCode::TOO_MANY_REQUESTS {
@@ -80,15 +80,15 @@ impl RetryableStrategy for No429RetryStratey {
 
 pub struct RetryConfig<R: RetryableStrategy> {
     /// Number of retries for transient errors.
-    num_retries: u32,
+    pub num_retries: u32,
 
     /// Base delay before retrying, default to 3s.
-    min_retry_interval_ms: u64,
+    pub min_retry_interval_ms: u64,
 
     /// Base max duration for retry attempts, default to 6m.
-    max_retry_interval_ms: u64,
+    pub max_retry_interval_ms: u64,
 
-    strategy: R,
+    pub strategy: R,
 }
 
 impl Default for RetryConfig<DefaultRetryableStrategy> {
@@ -104,13 +104,13 @@ impl Default for RetryConfig<DefaultRetryableStrategy> {
     }
 }
 
-impl RetryConfig<No429RetryStratey> {
+impl RetryConfig<No429RetryStrategy> {
     pub fn no429retry() -> Self {
         Self {
             num_retries: NUM_RETRIES,
             min_retry_interval_ms: BASE_RETRY_DELAY_MS,
             max_retry_interval_ms: BASE_RETRY_MAX_DURATION_MS,
-            strategy: No429RetryStratey,
+            strategy: No429RetryStrategy,
         }
     }
 }
@@ -132,7 +132,23 @@ pub fn build_auth_http_client<R: RetryableStrategy + Send + Sync + 'static>(
     println!("Using reqwest client with GaiResolverWithAbsolute for absolute DNS resolution");
     Ok(ClientBuilder::new(reqwest_client)
         .maybe_with(auth_middleware)
-        .maybe_with(Some(retry_middleware))
+        .with(retry_middleware)
+        .maybe_with(logging_middleware)
+        .maybe_with(session_middleware)
+        .build())
+}
+
+/// Builds authenticated HTTP Client to talk to CAS.
+pub fn build_auth_http_client_no_retry(
+    auth_config: &Option<AuthConfig>,
+    session_id: &str,
+) -> Result<ClientWithMiddleware, CasClientError> {
+    let auth_middleware = auth_config.as_ref().map(AuthMiddleware::from).info_none("CAS auth disabled");
+    let logging_middleware = Some(LoggingMiddleware);
+    let session_middleware = (!session_id.is_empty()).then(|| SessionMiddleware(session_id.to_owned()));
+    let reqwest_client = reqwest::Client::builder().build()?;
+    Ok(ClientBuilder::new(reqwest_client)
+        .maybe_with(auth_middleware)
         .maybe_with(logging_middleware)
         .maybe_with(session_middleware)
         .build())
@@ -151,24 +167,33 @@ pub fn build_http_client<R: RetryableStrategy + Send + Sync + 'static>(
         .dns_resolver(Arc::from(GaiResolverWithAbsolute::default()))
         .build()?;
     Ok(ClientBuilder::new(reqwest_client)
-        .maybe_with(Some(retry_middleware))
+        .with(retry_middleware)
         .maybe_with(logging_middleware)
         .maybe_with(session_middleware)
         .build())
+}
+
+/// RetryStrategy
+pub fn get_retry_policy_and_strategy<R: RetryableStrategy + Send + Sync>(
+    config: RetryConfig<R>,
+) -> (ExponentialBackoff, R) {
+    (
+        ExponentialBackoff::builder()
+            .retry_bounds(
+                Duration::from_millis(config.min_retry_interval_ms),
+                Duration::from_millis(config.max_retry_interval_ms),
+            )
+            .build_with_max_retries(config.num_retries),
+        config.strategy,
+    )
 }
 
 /// Configurable Retry middleware with exponential backoff and configurable number of retries using reqwest-retry
 fn get_retry_middleware<R: RetryableStrategy + Send + Sync>(
     config: RetryConfig<R>,
 ) -> RetryTransientMiddleware<ExponentialBackoff, R> {
-    let retry_policy = ExponentialBackoff::builder()
-        .retry_bounds(
-            Duration::from_millis(config.min_retry_interval_ms),
-            Duration::from_millis(config.max_retry_interval_ms),
-        )
-        .build_with_max_retries(config.num_retries);
-
-    RetryTransientMiddleware::new_with_policy_and_strategy(retry_policy, config.strategy)
+    let (policy, strategy) = get_retry_policy_and_strategy(config);
+    RetryTransientMiddleware::new_with_policy_and_strategy(policy, strategy)
 }
 
 /// Helper trait to allow the reqwest_middleware client to optionally add a middleware.
@@ -369,7 +394,7 @@ mod tests {
                 num_retries: 1,
                 min_retry_interval_ms: 0,
                 max_retry_interval_ms: 3000,
-                strategy: No429RetryStratey,
+                strategy: No429RetryStrategy,
             };
             let client = build_auth_http_client(&None, retry_config, "").unwrap();
 
@@ -423,7 +448,7 @@ mod tests {
                 num_retries: 2,
                 min_retry_interval_ms: 0,
                 max_retry_interval_ms: 3000,
-                strategy: No429RetryStratey,
+                strategy: No429RetryStrategy,
             };
             let client = build_auth_http_client(&None, retry_config, "").unwrap();
 
@@ -480,7 +505,7 @@ mod tests {
                 num_retries: 2,
                 min_retry_interval_ms: 1000,
                 max_retry_interval_ms: 6000,
-                strategy: No429RetryStratey,
+                strategy: No429RetryStrategy,
             };
             let client = build_auth_http_client(&None, retry_config, "").unwrap();
 
@@ -509,7 +534,7 @@ mod tests {
             num_retries: 10,
             min_retry_interval_ms: 1000,
             max_retry_interval_ms: 6000,
-            strategy: No429RetryStratey,
+            strategy: No429RetryStrategy,
         };
         let client = build_auth_http_client(&None, retry_config, "").unwrap();
 

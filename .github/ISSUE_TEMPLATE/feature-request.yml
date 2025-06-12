@@ -1,0 +1,32 @@
+name: "\U0001F680 Feature request"
+description: Propose an enhancement.
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for this feature request! We appreciate your input and will review it as soon as possible.
+  - type: textarea
+    id: current-limitation
+    attributes:
+      label: Current Limitation
+      description: A clear and concise description of the current limitation you would like to see addressed.
+      placeholder: Current limitation description
+    validations:
+      required: true
+  - type: textarea
+    id: feature-description
+    attributes:
+      label: Feature Description
+      description: A clear and concise description of the feature you would like to see and how it would address your current issues.
+      placeholder: Feature description
+    validations:
+      required: true
+  - type: textarea
+    id: additional-context
+    attributes:
+      label: Additional Context
+      description: Any additional context or information that may be relevant to the feature request.
+      placeholder: Additional context
+    validations:
+      required: false

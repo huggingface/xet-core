@@ -14,31 +14,37 @@ harness = false
 bench = true
 
 [dependencies]
-thiserror = "2.0"
+deduplication = { path = "../deduplication" }
 error_printer = { path = "../error_printer" }
+mdb_shard = { path = "../mdb_shard" }
 merkledb = { path = "../merkledb" }
 merklehash = { path = "../merklehash" }
-mdb_shard = { path = "../mdb_shard" }
 utils = { path = "../utils" }
-parutils = { path = "../parutils" }
-anyhow = "1.0.88"
-tracing = "0.1.40"
-lz4_flex = "0.11.3"
-bytes = "1.7.2"
-rand = "0.9"
-blake3 = "1.5.4"
-futures = { version = "0.3.31" }
-tokio = { version = "1.44", features = ["sync", "time", "rt", "macros"] }
-half = "2.4.1"
-serde = { version = "1.0.129", features = ["derive"] }
-countio = { version = "0.2.19", features = ["futures"] }
-clap = { version = "4.1", features = ["derive"] }
-csv = "1.1"
-more-asserts = "0.3.1"
+
+more-asserts = { workspace = true }
+anyhow = { workspace = true }
+blake3 = { workspace = true }
+bytes = { workspace = true }
+clap = { workspace = true }
+countio = { workspace = true }
+csv = { workspace = true }
+futures = { workspace = true }
+half = { workspace = true }
+lz4_flex = { workspace = true }
+rand = { workspace = true }
+serde = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true, features = ["time", "rt", "macros", "io-util"] }
+tracing = { workspace = true }
+tokio-util = { workspace = true, features = ["io"] }
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
-tokio-util = { version = "0.7.12", features = ["io"] }
+tokio = { workspace = true, features = ["time", "rt", "macros", "io-util", "rt-multi-thread"] }
 
 [[bin]]
 path = "src/byte_grouping/compression_stats/collect_compression_stats.rs"
 name = "collect_compression_stats"
+
+[[bin]]
+path = "src/byte_grouping/bg4_prediction_benchmark.rs"
+name = "bg4_prediction_benchmark"

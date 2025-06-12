@@ -5,29 +5,30 @@ edition = "2021"
 
 [dependencies]
 cas_types = { path = "../cas_types" }
-merklehash = { path = "../merklehash" }
-thiserror = "2.0"
 error_printer = { path = "../error_printer" }
 file_utils = { path = "../file_utils" }
+merklehash = { path = "../merklehash" }
 utils = { path = "../utils" }
-base64 = "0.22.1"
-tracing = "0.1.40"
-rand = "0.8.5"
-mockall = "0.13.0"
-clap = { version = "4.5.20", optional = true, features = ["derive"] }
-once_cell = "1.20.2"
-crc32fast = "1.4.2"
-log = "0.4.22"
+
+async-trait = { workspace = true }
+base64 = { workspace = true }
+clap = { workspace = true, optional = true }
+crc32fast = { workspace = true }
+mockall = { workspace = true }
+once_cell = { workspace = true }
+rand = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
 
 [dev-dependencies]
-tokio = { version = "1.44", features = ["full"] }
-tempdir = "0.3.7"
+tempdir = { workspace = true }
+tokio = { workspace = true, features = ["full"] }
 
 [[bin]]
 name = "cache_analysis"
 path = "./src/bin/analysis.rs"
 required-features = ["analysis"]
-
 
 [features]
 analysis = ["dep:clap"]

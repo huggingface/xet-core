@@ -5,6 +5,7 @@ use std::io::{BufWriter, Write};
 use std::mem::size_of;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::Duration;
 
 use merklehash::{HashedWrite, MerkleHash};
 use tracing::debug;
@@ -25,8 +26,9 @@ pub struct MDBInMemoryShard {
 }
 
 impl MDBInMemoryShard {
-    pub fn add_cas_block(&mut self, cas_block_contents: MDBCASInfo) -> Result<()> {
-        let dest_content_v = Arc::new(cas_block_contents);
+    pub fn add_cas_block(&mut self, cas_block_contents: impl Into<Arc<MDBCASInfo>>) -> Result<()> {
+        let dest_content_v: Arc<MDBCASInfo> = cas_block_contents.into();
+
         self.cas_content
             .insert(dest_content_v.metadata.cas_hash, dest_content_v.clone());
 
@@ -211,7 +213,7 @@ impl MDBInMemoryShard {
     }
 
     /// Writes the shard out to a file.
-    pub fn write_to_temp_shard_file(&self, temp_file_name: &Path) -> Result<MerkleHash> {
+    pub fn write_to_temp_shard_file(&self, temp_file_name: &Path, expiration: Option<Duration>) -> Result<MerkleHash> {
         let mut hashed_write; // Need to access after file is closed.
 
         {
@@ -228,7 +230,7 @@ impl MDBInMemoryShard {
             let mut buf_write = BufWriter::new(&mut hashed_write);
 
             // Ask for write access, as we'll flush this at the end
-            MDBShardInfo::serialize_from(&mut buf_write, self)?;
+            MDBShardInfo::serialize_from(&mut buf_write, self, expiration)?;
 
             debug!("Writing out in-memory shard to {temp_file_name:?}.");
 
@@ -241,11 +243,11 @@ impl MDBInMemoryShard {
 
         Ok(shard_hash)
     }
-    pub fn write_to_directory(&self, directory: &Path) -> Result<PathBuf> {
+    pub fn write_to_directory(&self, directory: &Path, expiration: Option<Duration>) -> Result<PathBuf> {
         // First, create a temporary shard structure in that directory.
         let temp_file_name = directory.join(temp_shard_file_name());
 
-        let shard_hash = self.write_to_temp_shard_file(&temp_file_name)?;
+        let shard_hash = self.write_to_temp_shard_file(&temp_file_name, expiration)?;
 
         let full_file_name = directory.join(shard_file_name(&shard_hash));
 

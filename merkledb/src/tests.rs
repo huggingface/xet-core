@@ -19,7 +19,7 @@ mod component_tests {
         let mut mdb = MerkleMemDB::default();
         let h1 = compute_data_hash("hello world".as_bytes());
         let h2 = compute_data_hash("pikachu".as_bytes());
-        let chunks = vec![Chunk { hash: h1, length: 11 }, Chunk { hash: h2, length: 7 }];
+        let chunks = vec![ChunkInfo { hash: h1, length: 11 }, ChunkInfo { hash: h2, length: 7 }];
 
         let mut staging = mdb.start_insertion_staging();
         mdb.add_file(&mut staging, &chunks);
@@ -60,7 +60,7 @@ mod component_tests {
         let mut mdb = MerkleMemDB::default();
         let h1 = compute_data_hash("hello world".as_bytes());
         let h2 = compute_data_hash("pikachu".as_bytes());
-        let chunks = vec![Chunk { hash: h1, length: 11 }, Chunk { hash: h2, length: 7 }];
+        let chunks = vec![ChunkInfo { hash: h1, length: 11 }, ChunkInfo { hash: h2, length: 7 }];
 
         let mut staging = mdb.start_insertion_staging();
         mdb.add_file(&mut staging, &chunks);
@@ -88,7 +88,7 @@ mod component_tests {
 
     const PER_SEED_INPUT_SIZE: usize = 128 * 1024;
 
-    fn generate_random_chunks(seed: u64) -> Vec<Chunk> {
+    fn generate_random_chunks(seed: u64) -> Vec<ChunkInfo> {
         let input = generate_random_string(seed, PER_SEED_INPUT_SIZE);
         let mut reader = Cursor::new(&input[..]);
         low_variance_chunk_target(&mut reader, TARGET_CDC_CHUNK_SIZE, N_LOW_VARIANCE_CDC_CHUNKERS)
@@ -102,7 +102,7 @@ mod component_tests {
         // 128k of chunks with seed=2
         // 128k of chunks with seed=3
         // and repeat a bunch of times
-        let mut chunks1234: Vec<Chunk> = Vec::new();
+        let mut chunks1234: Vec<ChunkInfo> = Vec::new();
 
         for seed in 0..16_u64 {
             let mut ch = generate_random_chunks(seed % 4);
@@ -142,7 +142,7 @@ mod component_tests {
         // ok. validate we that the cas node comprises of exactly the chunks for
         // seed=0,1,2,3
         let cas_leaves = mdb.find_all_leaves(&cas_node).unwrap();
-        let mut expected_leaves: Vec<Chunk> = Vec::new();
+        let mut expected_leaves: Vec<ChunkInfo> = Vec::new();
         for seed in 0..4_u64 {
             expected_leaves.append(&mut generate_random_chunks(seed));
         }
@@ -198,7 +198,7 @@ mod component_tests {
         let h1 = compute_data_hash("hello world".as_bytes());
         let h2 = compute_data_hash("pikachu".as_bytes());
         {
-            let chunks = vec![Chunk { hash: h1, length: 11 }, Chunk { hash: h2, length: 7 }];
+            let chunks = vec![ChunkInfo { hash: h1, length: 11 }, ChunkInfo { hash: h2, length: 7 }];
 
             let mut staging = mdb.start_insertion_staging();
             mdb.add_file(&mut staging, &chunks);
@@ -209,7 +209,7 @@ mod component_tests {
         let mut mdb2 = MerkleMemDB::default();
         let f2hash: MerkleHash;
         {
-            let chunks = vec![Chunk { hash: h1, length: 11 }, Chunk { hash: h3, length: 3 }];
+            let chunks = vec![ChunkInfo { hash: h1, length: 11 }, ChunkInfo { hash: h3, length: 3 }];
 
             let mut staging = mdb2.start_insertion_staging();
             mdb2.add_file(&mut staging, &chunks);
@@ -241,7 +241,7 @@ mod component_tests {
         let mut mdb = MerkleMemDB::default();
         let h1 = compute_data_hash("hello world".as_bytes());
         let h2 = compute_data_hash("pikachu".as_bytes());
-        let chunks = [Chunk { hash: h1, length: 11 }, Chunk { hash: h2, length: 7 }];
+        let chunks = [ChunkInfo { hash: h1, length: 11 }, ChunkInfo { hash: h2, length: 7 }];
 
         let nodes: Vec<_> = chunks.iter().map(|x| mdb.add_chunk(x).0).collect();
         let f1hash = *mdb.merge_to_file(&nodes).hash();
@@ -250,11 +250,11 @@ mod component_tests {
         // but "hello world" and "pika" are merged first
         let h3 = compute_data_hash("poo".as_bytes());
         let mut mdb2 = MerkleMemDB::default();
-        let chunks = [Chunk { hash: h1, length: 11 }, Chunk { hash: h2, length: 7 }];
+        let chunks = [ChunkInfo { hash: h1, length: 11 }, ChunkInfo { hash: h2, length: 7 }];
 
         let nodes: Vec<_> = chunks.iter().map(|x| mdb2.add_chunk(x).0).collect();
         let f1node = mdb2.merge_to_file(&nodes);
-        let append_poo: Vec<_> = vec![f1node, mdb2.add_chunk(&Chunk { hash: h3, length: 3 }).0];
+        let append_poo: Vec<_> = vec![f1node, mdb2.add_chunk(&ChunkInfo { hash: h3, length: 3 }).0];
         let f2node = mdb2.merge_to_file(&append_poo);
         let f2hash = *f2node.hash();
         mdb2.only_file_invariant_checks();
@@ -307,19 +307,19 @@ mod component_tests {
             // set of chunks in each.
             // We limit to a set of no more than 1000 unique chunks to get
             // a decent amount of intersection in the tree structures
-            let filechunks: Vec<Chunk> = (0..(1 + (rng.next_u64() % 10)))
+            let filechunks: Vec<ChunkInfo> = (0..(1 + (rng.next_u64() % 10)))
                 .map(|_| {
                     let h = compute_data_hash(&generate_random_string(rng.next_u64() % 1000, 100));
-                    Chunk { hash: h, length: 100 }
+                    ChunkInfo { hash: h, length: 100 }
                 })
                 .collect();
             let filenodes: Vec<_> = filechunks.iter().map(|x| mdb.add_chunk(x).0).collect();
             mdb.merge_to_file(&filenodes);
 
-            let caschunks: Vec<Chunk> = (0..(1 + (rng.next_u64() % 10)))
+            let caschunks: Vec<ChunkInfo> = (0..(1 + (rng.next_u64() % 10)))
                 .map(|_| {
                     let h = compute_data_hash(&generate_random_string(rng.next_u64() % 1000, 100));
-                    Chunk { hash: h, length: 100 }
+                    ChunkInfo { hash: h, length: 100 }
                 })
                 .collect();
             let casnodes: Vec<_> = caschunks.iter().map(|x| mdb.add_chunk(x).0).collect();
@@ -418,7 +418,7 @@ mod component_tests {
         }
         let reader2 = AsyncVec { items: v };
 
-        let mut async_chunks: Vec<Chunk> = Vec::new();
+        let mut async_chunks: Vec<ChunkInfo> = Vec::new();
 
         let mut generator =
             async_low_variance_chunk_target(reader2, TARGET_CDC_CHUNK_SIZE, N_LOW_VARIANCE_CDC_CHUNKERS);
@@ -463,7 +463,7 @@ mod component_tests {
         }
         let reader2 = AsyncVec { items: v };
 
-        let mut async_chunks: Vec<Chunk> = Vec::new();
+        let mut async_chunks: Vec<ChunkInfo> = Vec::new();
 
         let mut generator =
             async_low_variance_chunk_target(reader2, TARGET_CDC_CHUNK_SIZE, N_LOW_VARIANCE_CDC_CHUNKERS);

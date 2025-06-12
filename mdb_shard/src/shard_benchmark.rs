@@ -5,8 +5,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use anyhow::{Ok, Result};
-use clap::{App, Arg};
+use anyhow::{anyhow, Ok, Result};
+use clap::Parser;
 use mdb_shard::cas_structs::{CASChunkSequenceEntry, CASChunkSequenceHeader, MDBCASInfo};
 use mdb_shard::shard_file_manager::ShardFileManager;
 use mdb_shard::shard_format::test_routines::rng_hash;
@@ -62,7 +62,7 @@ async fn run_shard_benchmark(
     for (n_shards, target_size) in shard_sizes {
         for i in 0..n_shards {
             let shard = make_shard(target_size, &mut seed);
-            let path = shard.write_to_directory(dir).unwrap();
+            let path = shard.write_to_directory(dir, None)?;
 
             eprintln!(
                 "-> Target size {target_size:?}: Created shard {:?} / {n_shards:?} with {} CAS blocks and {} chunks",
@@ -77,7 +77,7 @@ async fn run_shard_benchmark(
 
     // Now, spawn tasks to
     let counter = Arc::new(AtomicUsize::new(0));
-    let mdb = ShardFileManager::new_in_session_directory(dir).await?;
+    let mdb = ShardFileManager::new_in_session_directory(dir, false).await?;
 
     let start_time = Instant::now();
 
@@ -138,97 +138,68 @@ async fn run_shard_benchmark(
 
     // Wait for all tasks to complete
     for task in tasks {
-        task.await.unwrap();
+        task.await?;
     }
-    print_task.await.unwrap();
+    print_task.await?;
     Ok(())
 }
 
-fn parse_arg(arg: &str) -> (u64, u64) {
+fn parse_arg(arg: &str) -> Result<(u64, u64)> {
     let parts: Vec<&str> = arg.split(':').collect();
     if parts.len() != 2 {
-        panic!("Failed to parse argument: {arg}");
+        return Err(anyhow!("Failed to parse argument: {arg}"));
     }
 
-    let size1 = u64::from_str(parts[0]).expect("Failed to parse size1");
-    let size2 = u64::from_str(parts[1]).expect("Failed to parse size2");
+    let size1 = u64::from_str(parts[0]).map_err(|e| anyhow!("Failed to parse size1: {e:?}"))?;
+    let size2 = u64::from_str(parts[1]).map_err(|e| anyhow!("Failed to parse size2: {e:?}"))?;
 
-    (size1, size2)
+    Ok((size1, size2))
+}
+
+/// A program to run shard benchmarks
+#[derive(Debug, Parser)]
+struct ShardBenchmarkArgs {
+    /// Sizes to be parsed
+    #[clap(id = "SIZE", value_parser = parse_arg)]
+    shard_sizes: Vec<(u64, u64)>,
+
+    /// Number of contiguous hashes to call dedup with
+    #[clap(long, default_value = "1")]
+    contiguity: usize,
+
+    /// The percentage of queries to hit a known block
+    #[clap(long, default_value = "50")]
+    hit_percent: f64,
+
+    /// How many blocks in a file are contiguous in the same hash
+    #[clap(long, default_value = "16")]
+    file_contiguity: usize,
+
+    /// Directory to use
+    #[clap(long)]
+    dir: Option<PathBuf>,
 }
 
 #[tokio::main]
 async fn main() {
-    let arg_res = App::new("ShardBenchmark")
-        .arg(Arg::new("SIZE").multiple_values(true).required(true).help("Sizes to be parsed"))
-        .arg(
-            Arg::new("contiguity")
-                .long("contiguity")
-                .takes_value(true)
-                .default_value("1")
-                .help("Number of contiguous hashes to call dedup with."),
-        )
-        .arg(
-            Arg::new("hit_percent")
-                .long("hit_percent")
-                .takes_value(true)
-                .default_value("50")
-                .help("The percentage of queries to hit a known block."),
-        )
-        .arg(
-            Arg::new("file_contiguity")
-                .long("file_contiguity")
-                .takes_value(true)
-                .default_value("16")
-                .help("How many blocks in a file are contiguous in the same hash."),
-        )
-        .arg(
-            Arg::new("dir")
-                .long("dir")
-                .takes_value(true)
-                .default_value("")
-                .help("Directory to use"),
-        )
-        .about("A program to run shard benchmarks")
-        .get_matches();
-
-    let shard_sizes: Vec<(u64, u64)> = arg_res.values_of("SIZE").unwrap().map(parse_arg).collect();
-
-    let contiguity: usize = arg_res
-        .value_of("contiguity")
-        .unwrap()
-        .parse()
-        .expect("Failed to parse contiguity");
-
-    let file_contiguity: usize = arg_res
-        .value_of("file_contiguity")
-        .unwrap()
-        .parse()
-        .expect("Failed to parse file_contiguity");
-
-    let hit_percent: f64 = arg_res
-        .value_of("hit_percent")
-        .unwrap()
-        .parse()
-        .expect("Failed to parse hit_percent");
+    let args = ShardBenchmarkArgs::parse();
 
     let temp_dir = TempDir::with_prefix("git-xet-shard").expect("Failed to create temp dir");
-
-    let dir: &str = arg_res.value_of("dir").unwrap();
-
-    let dir = if dir.is_empty() {
-        temp_dir.path().to_path_buf()
-    } else {
-        PathBuf::from_str(dir).unwrap()
-    };
+    let dir = args.dir.unwrap_or_else(|| temp_dir.path().into());
     eprintln!("Using dir {dir:?}");
 
     let dir = std::fs::canonicalize(dir).unwrap();
-
     eprintln!("Using dir {dir:?}");
 
     assert!(dir.exists());
 
-    run_shard_benchmark(shard_sizes, contiguity, file_contiguity, hit_percent.clamp(0.0, 100.0) / 100.0, &dir)
-        .await
-        .unwrap();
+    run_shard_benchmark(
+        args.shard_sizes,
+        args.contiguity,
+        args.file_contiguity,
+        args.hit_percent.clamp(0.0, 100.0) / 100.0,
+        &dir,
+    )
+    .await
+    .unwrap();
 }

@@ -1,5 +1,3 @@
-use std::sync::Arc;
-
 use mdb_shard::cas_structs::{CASChunkSequenceEntry, CASChunkSequenceHeader, MDBCASInfo};
 use merkledb::aggregate_hashes::cas_node_hash;
 use merklehash::MerkleHash;
@@ -9,18 +7,21 @@ use crate::constants::{MAX_XORB_BYTES, MAX_XORB_CHUNKS};
 use crate::Chunk;
 
 /// This struct is the data needed to cut a
-#[derive(Default, Debug)]
+#[derive(Default, Debug, Clone)]
 pub struct RawXorbData {
     /// The data for the xorb info.
-    pub data: Vec<Arc<[u8]>>,
+    pub data: Vec<bytes::Bytes>,
 
     /// The cas info associated with the current xorb.
     pub cas_info: MDBCASInfo,
+
+    /// The indices where a new file starts, to be used for the compression heuristic.
+    pub file_boundaries: Vec<usize>,
 }
 
 impl RawXorbData {
     // Construct from raw chunks.  chunk data from raw chunks.
-    pub fn from_chunks(chunks: &[Chunk]) -> Self {
+    pub fn from_chunks(chunks: &[Chunk], file_boundaries: Vec<usize>) -> Self {
         debug_assert_le!(chunks.len(), *MAX_XORB_CHUNKS);
 
         let mut data = Vec::with_capacity(chunks.len());
@@ -48,7 +49,11 @@ impl RawXorbData {
             chunks: chunk_seq_entries,
         };
 
-        RawXorbData { data, cas_info }
+        RawXorbData {
+            data,
+            cas_info,
+            file_boundaries,
+        }
     }
 
     pub fn hash(&self) -> MerkleHash {
@@ -62,13 +67,15 @@ impl RawXorbData {
 
         n
     }
+}
 
-    // Todo: Push this Xorb data format all the way down to the compression levels to
-    // avoid this copy / memory overhead
-    pub fn to_vec(&self) -> Vec<u8> {
-        let mut new_vec = Vec::with_capacity(self.num_bytes());
+pub mod test_utils {
+    use super::RawXorbData;
 
-        for ch in self.data.iter() {
+    pub fn raw_xorb_to_vec(xorb: &RawXorbData) -> Vec<u8> {
+        let mut new_vec = Vec::with_capacity(xorb.num_bytes());
+
+        for ch in xorb.data.iter() {
             new_vec.extend_from_slice(ch);
         }
 

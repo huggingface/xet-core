@@ -1,30 +1,39 @@
 use std::borrow::Cow;
-use std::collections::HashSet;
+use std::fs::File;
+use std::io::Read;
 use std::mem::{swap, take};
+use std::path::Path;
 use std::sync::Arc;
+use std::time::Duration;
 
+use bytes::Bytes;
 use cas_client::Client;
+use cas_object::SerializedCasObject;
 use deduplication::constants::{MAX_XORB_BYTES, MAX_XORB_CHUNKS};
 use deduplication::{DataAggregator, DeduplicationMetrics, RawXorbData};
 use jsonwebtoken::{decode, DecodingKey, Validation};
 use mdb_shard::file_structs::MDBFileInfo;
-use merklehash::MerkleHash;
 use more_asserts::*;
+use progress_tracking::aggregator::AggregatingProgressUpdater;
+use progress_tracking::upload_tracking::{CompletionTracker, FileXorbDependency};
+#[cfg(debug_assertions)] // Used here to verify the update accuracy
+use progress_tracking::verification_wrapper::ProgressUpdaterVerificationWrapper;
+use progress_tracking::{NoOpProgressUpdater, TrackingProgressUpdater};
 use tokio::sync::{Mutex, OwnedSemaphorePermit, Semaphore};
-use tokio::task::JoinSet;
-use tracing::{info_span, instrument, Instrument};
+use tokio::task::{JoinHandle, JoinSet};
+use tracing::{info_span, instrument, Instrument, Span};
 use ulid::Ulid;
-use utils::progress::{NoOpProgressUpdater, TrackingProgressUpdater};
-use xet_threadpool::ThreadPool;
 
 use crate::configurations::*;
-use crate::constants::MAX_CONCURRENT_UPLOADS;
+use crate::constants::{
+    INGESTION_BLOCK_SIZE, MAX_CONCURRENT_FILE_INGESTION, MAX_CONCURRENT_UPLOADS, PROGRESS_UPDATE_INTERVAL_MS,
+    PROGRESS_UPDATE_SPEED_SAMPLING_WINDOW_MS,
+};
 use crate::errors::*;
 use crate::file_cleaner::SingleFileCleaner;
-use crate::progress_tracking::{CompletionTracker, CompletionTrackerFileId};
-use crate::prometheus_metrics;
 use crate::remote_client_interface::create_remote_client;
 use crate::shard_interface::SessionShardInterface;
+use crate::{prometheus_metrics, XetFileInfo};
 
 lazy_static::lazy_static! {
      static ref UPLOAD_CONCURRENCY_LIMITER: Arc<Semaphore> = Arc::new(Semaphore::new(*MAX_CONCURRENT_UPLOADS));
@@ -58,9 +67,6 @@ pub struct FileUploadSession {
     pub(crate) client: Arc<dyn Client + Send + Sync>,
     pub(crate) shard_interface: SessionShardInterface,
 
-    /// Threadpool to use for the execution.
-    pub(crate) threadpool: Arc<ThreadPool>,
-
     /// The repo id, if present.
     pub(crate) repo_id: Option<String>,
 
@@ -69,6 +75,9 @@ pub struct FileUploadSession {
 
     /// Tracking upload completion between xorbs and files.
     pub(crate) completion_tracker: Arc<CompletionTracker>,
+
+    /// Session aggregation
+    progress_aggregator: Option<Arc<AggregatingProgressUpdater>>,
 
     /// Deduplicated data shared across files.
     current_session_data: Mutex<DataAggregator>,
@@ -79,35 +88,28 @@ pub struct FileUploadSession {
     /// Internal worker
     xorb_upload_tasks: Mutex<JoinSet<Result<()>>>,
 
-    /// Xorbs that have been uploaded as part of this session -- and thus are tracked in the
-    /// completion tracker.
-    session_xorbs: Mutex<HashSet<MerkleHash>>,
-
     #[cfg(debug_assertions)]
-    progress_verification_tracker: Arc<utils::progress::ProgressUpdaterVerificationWrapper>,
+    progress_verifier: Arc<ProgressUpdaterVerificationWrapper>,
 }
 
 // Constructors
 impl FileUploadSession {
     pub async fn new(
         config: Arc<TranslatorConfig>,
-        threadpool: Arc<ThreadPool>,
         upload_progress_updater: Option<Arc<dyn TrackingProgressUpdater>>,
     ) -> Result<Arc<FileUploadSession>> {
-        FileUploadSession::new_impl(config, threadpool, upload_progress_updater, false).await
+        FileUploadSession::new_impl(config, upload_progress_updater, false).await
     }
 
     pub async fn dry_run(
         config: Arc<TranslatorConfig>,
-        threadpool: Arc<ThreadPool>,
         upload_progress_updater: Option<Arc<dyn TrackingProgressUpdater>>,
     ) -> Result<Arc<FileUploadSession>> {
-        FileUploadSession::new_impl(config, threadpool, upload_progress_updater, true).await
+        FileUploadSession::new_impl(config, upload_progress_updater, true).await
     }
 
     async fn new_impl(
         config: Arc<TranslatorConfig>,
-        threadpool: Arc<ThreadPool>,
         upload_progress_updater: Option<Arc<dyn TrackingProgressUpdater>>,
         dry_run: bool,
     ) -> Result<Arc<FileUploadSession>> {
@@ -117,20 +119,37 @@ impl FileUploadSession {
             .map(Cow::Borrowed)
             .unwrap_or_else(|| Cow::Owned(Ulid::new().to_string()));
 
-        let progress_updater = upload_progress_updater.unwrap_or_else(|| Arc::new(NoOpProgressUpdater));
+        let (progress_updater, progress_aggregator): (Arc<dyn TrackingProgressUpdater>, Option<_>) = {
+            match upload_progress_updater {
+                Some(updater) => {
+                    let update_ms = *PROGRESS_UPDATE_INTERVAL_MS;
+                    if update_ms != 0 {
+                        let aggregator = AggregatingProgressUpdater::new(
+                            updater,
+                            Duration::from_millis(update_ms),
+                            Duration::from_millis(*PROGRESS_UPDATE_SPEED_SAMPLING_WINDOW_MS),
+                        );
+                        (aggregator.clone(), Some(aggregator))
+                    } else {
+                        (updater, None)
+                    }
+                },
+                None => (Arc::new(NoOpProgressUpdater), None),
+            }
+        };
 
         // When debug assertions are enabled, track all the progress updates for consistency
         // and correctness.  This is checked at the end.
         #[cfg(debug_assertions)]
         let (progress_updater, progress_verification_tracker) = {
-            let updater = utils::progress::ProgressUpdaterVerificationWrapper::new(progress_updater);
+            let updater = ProgressUpdaterVerificationWrapper::new(progress_updater);
 
             (updater.clone() as Arc<dyn TrackingProgressUpdater>, updater)
         };
 
         let completion_tracker = Arc::new(CompletionTracker::new(progress_updater));
 
-        let client = create_remote_client(&config, threadpool.clone(), &session_id, dry_run)?;
+        let client = create_remote_client(&config, &session_id, dry_run)?;
 
         let shard_interface = SessionShardInterface::new(config.clone(), client.clone(), dry_run).await?;
 
@@ -154,18 +173,118 @@ impl FileUploadSession {
         Ok(Arc::new(Self {
             shard_interface,
             client,
-            threadpool,
             repo_id,
             config,
             completion_tracker,
+            progress_aggregator,
             current_session_data: Mutex::new(DataAggregator::default()),
             deduplication_metrics: Mutex::new(DeduplicationMetrics::default()),
             xorb_upload_tasks: Mutex::new(JoinSet::new()),
-            session_xorbs: Mutex::new(HashSet::new()),
 
             #[cfg(debug_assertions)]
-            progress_verification_tracker,
+            progress_verifier: progress_verification_tracker,
         }))
+    }
+
+    pub async fn upload_files(self: &Arc<Self>, files: &[impl AsRef<Path>]) -> Result<Vec<XetFileInfo>> {
+        let mut cleaning_tasks: Vec<JoinHandle<_>> = Vec::with_capacity(files.len());
+
+        // Use a semaphore to limit the number of files being processed in parallel.
+        let file_parallel_limiter = Arc::new(Semaphore::new(*MAX_CONCURRENT_FILE_INGESTION));
+
+        for f in files {
+            let file_path = f.as_ref().to_owned();
+            let file_name: Arc<str> = Arc::from(file_path.to_string_lossy());
+
+            // Get the file size, and go ahead and register it in the completion tracker so that we know the whole
+            // repo size at the beginning.
+            let file_size = std::fs::metadata(&file_path)?.len();
+
+            // Get a new file id for the completion tracking.  This also registers the size against the total bytes
+            // of the file.
+            let file_id = self.completion_tracker.register_new_file(file_name.clone(), file_size).await;
+
+            // Now, spawn a task
+            let ingestion_concurrancy_limiter = file_parallel_limiter.clone();
+            let session = self.clone();
+
+            cleaning_tasks.push(tokio::spawn(async move {
+                // Enable tracing to record this file's ingestion speed.
+                let span = info_span!(
+                    "clean_file_task",
+                    "file.name" = file_name.to_string(),
+                    "file.len" = file_size,
+                    "file.new_bytes" = tracing::field::Empty,
+                    "file.deduped_bytes" = tracing::field::Empty,
+                    "file.defrag_prevented_dedup_bytes" = tracing::field::Empty,
+                    "file.new_chunks" = tracing::field::Empty,
+                    "file.deduped_chunks" = tracing::field::Empty,
+                    "file.defrag_prevented_dedup_chunks" = tracing::field::Empty,
+                );
+                // First, get a permit to process this file.
+                let _processing_permit = ingestion_concurrancy_limiter.acquire().await?;
+
+                async move {
+                    let mut reader = File::open(&file_path)?;
+
+                    // Start the clean process for each file.
+                    let mut cleaner = SingleFileCleaner::new(Some(file_name), file_id, session);
+                    let mut bytes_read = 0;
+
+                    while bytes_read < file_size {
+                        // Allocate a block of bytes, read into it.
+                        let bytes_left = file_size - bytes_read;
+                        let n_bytes_read = (*INGESTION_BLOCK_SIZE as u64).min(bytes_left) as usize;
+
+                        // Read in the data here; we are assuming the file doesn't change size
+                        // on the disk while we are reading it.
+
+                        // We allocate the buffer anew on each loop as it's converted without copying
+                        // to a Bytes object and thus we avoid all the further copies downstream.  We also
+                        // gaurantee that the buffer is filled completely with the read_exact.  Therefore
+                        // we can use an unsafe trick here to allocate the vector without initializing it
+                        // to a specific value and avoid that clearing.
+                        let mut buffer = Vec::with_capacity(n_bytes_read);
+                        #[allow(clippy::uninit_vec)]
+                        unsafe {
+                            buffer.set_len(n_bytes_read);
+                        }
+
+                        // Read it in.
+                        reader.read_exact(&mut buffer)?;
+
+                        bytes_read += buffer.len() as u64;
+
+                        cleaner.add_data_impl(Bytes::from(buffer)).await?;
+                    }
+
+                    // Finish and return the result.
+                    let (xfi, metrics) = cleaner.finish().await?;
+
+                    // Record dedup information.
+                    let span = Span::current();
+                    span.record("file.new_bytes", metrics.new_bytes);
+                    span.record("file.deduped_bytes ", metrics.deduped_bytes);
+                    span.record("file.defrag_prevented_dedup_bytes", metrics.defrag_prevented_dedup_bytes);
+                    span.record("file.new_chunks", metrics.new_chunks);
+                    span.record("file.deduped_chunks", metrics.deduped_chunks);
+                    span.record("file.defrag_prevented_dedup_chunks", metrics.defrag_prevented_dedup_chunks);
+
+                    Result::Ok(xfi)
+                }
+                .instrument(span)
+                .await
+            }));
+        }
+
+        // Join all the cleaning tasks.
+        let mut ret = Vec::with_capacity(files.len());
+
+        for task in cleaning_tasks {
+            ret.push(task.await??);
+        }
+
+        Ok(ret)
     }
 
     /// Start to clean one file. When cleaning multiple files, each file should
@@ -187,7 +306,11 @@ impl FileUploadSession {
     /// Registers a new xorb for upload, returning true if the xorb was added to the upload queue and false
     /// if it was already in the queue and didn't need to be uploaded again.
     #[instrument(skip_all, name="FileUploadSession::register_new_xorb_for_upload", fields(xorb_len = xorb.num_bytes()))]
-    pub(crate) async fn register_new_xorb_for_upload(self: &Arc<Self>, xorb: RawXorbData) -> Result<bool> {
+    pub(crate) async fn register_new_xorb(
+        self: &Arc<Self>,
+        xorb: RawXorbData,
+        file_dependencies: &[FileXorbDependency],
+    ) -> Result<bool> {
         // First check the current xorb upload tasks to see if any can be cleaned up.
         {
             let mut upload_tasks = self.xorb_upload_tasks.lock().await;
@@ -198,15 +321,21 @@ impl FileUploadSession {
 
         let xorb_hash = xorb.hash();
 
-        // Register that this xorb is part of this session, and thus tracked in the upload completion
-        // part.
+        // Register that this xorb is part of this session and set up completion tracking.
         //
         // In some circumstances, we can cut to instances of the same xorb, namely when there are two files
         // with the same starting data that get processed simultaneously.  When this happens, we only upload
-        // the first one, returning early
-        let new_xorb = self.session_xorbs.lock().await.insert(xorb_hash);
+        // the first one, returning early here.
+        let xorb_is_new = self
+            .completion_tracker
+            .register_new_xorb(xorb_hash, xorb.num_bytes() as u64)
+            .await;
 
-        if !new_xorb {
+        // Make sure we add in all the dependencies.  This should happen after the xorb is registered but before
+        // we start the upload.
+        self.completion_tracker.register_dependencies(file_dependencies).await;
+
+        if !xorb_is_new {
             return Ok(false);
         }
 
@@ -217,20 +346,31 @@ impl FileUploadSession {
             return Ok(true);
         }
 
-        let xorb_data = xorb.to_vec();
-        let chunks_and_boundaries = xorb.cas_info.chunks_and_boundaries();
+        // This xorb is in the session upload queue, so other threads can go ahead and dedup against it.
+        // No session shard data gets uploaded until all the xorbs have been successfully uploaded, so
+        // this is safe.
+        let xorb_cas_info = Arc::new(xorb.cas_info.clone());
+        self.shard_interface.add_cas_block(xorb_cas_info.clone()).await?;
 
-        drop(xorb);
+        let xorb_hash = xorb.hash();
+
+        // Serialize the object; this can be relatively expensive, so run it on a compute thread.
+        let compression_scheme = self.config.data_config.compression;
+        let with_footer = self.client.use_xorb_footer();
+        let cas_object =
+            tokio::task::spawn_blocking(move || SerializedCasObject::from_xorb(xorb, compression_scheme, with_footer))
+                .await??;
 
         let session = self.clone();
         let upload_permit = acquire_upload_permit().await?;
         let cas_prefix = session.config.data_config.prefix.clone();
+        let completion_tracker = self.completion_tracker.clone();
 
         self.xorb_upload_tasks.lock().await.spawn(
             async move {
                 let n_bytes_transmitted = session
                     .client
-                    .put(&cas_prefix, &xorb_hash, xorb_data, chunks_and_boundaries)
+                    .upload_xorb(&cas_prefix, cas_object, Some(completion_tracker))
                     .await?;
 
                 drop(upload_permit);
@@ -239,7 +379,11 @@ impl FileUploadSession {
                 session.completion_tracker.register_xorb_upload_completion(xorb_hash).await;
 
                 // Record the number of bytes uploaded.
-                session.deduplication_metrics.lock().await.xorb_bytes_uploaded += n_bytes_transmitted;
+                session.deduplication_metrics.lock().await.xorb_bytes_uploaded += n_bytes_transmitted as u64;
+
+                // Add this as a completed cas block so that future sessions can resume quickly.
+                session.shard_interface.add_uploaded_cas_block(xorb_cas_info).await?;
+
                 Ok(())
             }
             .instrument(info_span!("FileUploadSession::upload_xorb_task", xorb.hash = xorb_hash.hex())),
@@ -302,44 +446,32 @@ impl FileUploadSession {
         debug_assert_le!(xorb.data.len(), *MAX_XORB_CHUNKS);
 
         // Now, we need to scan all the file dependencies for dependencies on this xorb, as
-        // these would not have been registered yet.
-        self.register_new_xorb_for_upload(xorb).await?;
-
+        // these would not have been registered yet as we just got the xorb hash.
         let mut new_dependencies = Vec::with_capacity(new_files.len());
 
         {
             for (file_id, fi, bytes_in_xorb) in new_files {
-                if xorb_hash == MerkleHash::default() || bytes_in_xorb != 0 {
-                    new_dependencies.push((file_id, xorb_hash, bytes_in_xorb, false));
-                }
+                new_dependencies.push(FileXorbDependency {
+                    file_id,
+                    xorb_hash,
+                    n_bytes: bytes_in_xorb,
+                    is_external: false,
+                });
 
+                // Record the reconstruction.
                 self.shard_interface.add_file_reconstruction_info(fi).await?;
             }
         }
 
-        self.completion_tracker.register_dependencies(&new_dependencies).await;
+        // Register the xorb and start the upload process.
+        self.register_new_xorb(xorb, &new_dependencies).await?;
 
         Ok(())
     }
 
     /// Register a xorb dependencies that is given as part of the dedup process.
-    pub(crate) async fn register_xorb_dependencies(
-        self: &Arc<Self>,
-        file_id: CompletionTrackerFileId,
-        xorb_dependencies: &[(MerkleHash, u64)],
-    ) {
-        // See what dependencies we own:
-        let mut dependencies = Vec::with_capacity(xorb_dependencies.len());
-
-        {
-            let xorb_lookup = self.session_xorbs.lock().await;
-            for &(xorb_hash, n_bytes) in xorb_dependencies {
-                let is_uploaded_out_of_session = !xorb_lookup.contains(&xorb_hash);
-                dependencies.push((file_id, xorb_hash, n_bytes, is_uploaded_out_of_session));
-            }
-        }
-
-        self.completion_tracker.register_dependencies(&dependencies).await;
+    pub(crate) async fn register_xorb_dependencies(self: &Arc<Self>, xorb_dependencies: &[FileXorbDependency]) {
+        self.completion_tracker.register_dependencies(xorb_dependencies).await;
     }
 
     /// Finalize everything.
@@ -376,8 +508,8 @@ impl FileUploadSession {
         metrics.total_bytes_uploaded = metrics.shard_bytes_uploaded + metrics.xorb_bytes_uploaded;
 
         // Update the global counters
-        prometheus_metrics::FILTER_CAS_BYTES_PRODUCED.inc_by(metrics.new_bytes as u64);
-        prometheus_metrics::FILTER_BYTES_CLEANED.inc_by(metrics.total_bytes as u64);
+        prometheus_metrics::FILTER_CAS_BYTES_PRODUCED.inc_by(metrics.new_bytes);
+        prometheus_metrics::FILTER_BYTES_CLEANED.inc_by(metrics.total_bytes);
 
         #[cfg(debug_assertions)]
         {
@@ -385,7 +517,16 @@ impl FileUploadSession {
             self.completion_tracker.assert_complete().await;
 
             // Checks that all the progress updates were received correctly.
-            self.progress_verification_tracker.assert_complete().await;
+            self.progress_verifier.assert_complete().await;
+        }
+
+        // Make sure all the updates have been flushed through.
+        self.completion_tracker.flush().await;
+
+        // Clear this out so the background aggregation session fully finishes.
+        if let Some(pa) = &self.progress_aggregator {
+            pa.finalize().await;
+            debug_assert!(pa.is_finished().await);
         }
 
         Ok((metrics, all_file_info))
@@ -408,6 +549,8 @@ impl FileUploadSession {
                 result??;
             }
         }
+
+        self.completion_tracker.flush().await;
 
         Ok(())
     }
@@ -436,7 +579,7 @@ mod tests {
     fn get_threadpool() -> Arc<ThreadPool> {
         static THREADPOOL: OnceLock<Arc<ThreadPool>> = OnceLock::new();
         THREADPOOL
-            .get_or_init(|| Arc::new(ThreadPool::new().expect("Error starting multithreaded runtime.")))
+            .get_or_init(|| ThreadPool::new().expect("Error starting multithreaded runtime."))
             .clone()
     }
 
@@ -444,7 +587,7 @@ mod tests {
     ///
     /// * `input_path`: path to the original file
     /// * `output_path`: path to write the pointer file
-    async fn test_clean_file(runtime: Arc<ThreadPool>, cas_path: &Path, input_path: &Path, output_path: &Path) {
+    async fn test_clean_file(cas_path: &Path, input_path: &Path, output_path: &Path) {
         let read_data = read(input_path).unwrap().to_vec();
 
         let mut pf_out = Box::new(
@@ -456,7 +599,7 @@ mod tests {
                 .unwrap(),
         );
 
-        let upload_session = FileUploadSession::new(TranslatorConfig::local_config(cas_path).unwrap(), runtime, None)
+        let upload_session = FileUploadSession::new(TranslatorConfig::local_config(cas_path).unwrap(), None)
             .await
             .unwrap();
 
@@ -477,7 +620,7 @@ mod tests {
     ///
     /// * `pointer_path`: path to the pointer file
     /// * `output_path`: path to write the hydrated/original file
-    async fn test_smudge_file(runtime: Arc<ThreadPool>, cas_path: &Path, pointer_path: &Path, output_path: &Path) {
+    async fn test_smudge_file(cas_path: &Path, pointer_path: &Path, output_path: &Path) {
         let mut reader = File::open(pointer_path).unwrap();
         let writer = OutputProvider::File(FileProvider::new(output_path.to_path_buf()));
 
@@ -486,7 +629,7 @@ mod tests {
 
         let xet_file = serde_json::from_str::<XetFileInfo>(&input).unwrap();
 
-        let translator = FileDownloader::new(TranslatorConfig::local_config(cas_path).unwrap(), runtime)
+        let translator = FileDownloader::new(TranslatorConfig::local_config(cas_path).unwrap())
             .await
             .unwrap();
 
@@ -527,11 +670,11 @@ mod tests {
 
                 // 2. Clean it (convert it to a pointer file)
                 let pointer_path = temp.path().join("pointer.txt");
-                test_clean_file(runtime.clone(), &cas_path, &original_path, &pointer_path).await;
+                test_clean_file(&cas_path, &original_path, &pointer_path).await;
 
                 // 3. Smudge it (hydrate the pointer file) to a new file
                 let hydrated_path = temp.path().join("hydrated.txt");
-                test_smudge_file(runtime.clone(), &cas_path, &pointer_path, &hydrated_path).await;
+                test_smudge_file(&cas_path, &pointer_path, &hydrated_path).await;
 
                 // 4. Verify that the round-tripped file matches the original
                 let result_data = read(hydrated_path).unwrap();

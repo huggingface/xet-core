@@ -2,21 +2,20 @@
 name = "merklehash"
 version = "0.14.5"
 edition = "2021"
-
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-rand = { version = "0.8.5", features = ["small_rng"] }
-blake3 = "1.5.1"
-safe-transmute = "0.11.2"
-serde = { version = "1.0.129", features = ["derive"] }
-base64 = "0.22.1"
+base64 = { workspace = true }
+blake3 = { workspace = true }
+rand = { workspace = true, features = ["small_rng"] }
+safe-transmute = { workspace = true }
+serde = { workspace = true }
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
-heed = "0.11"
+heed = { workspace = true }
 
 [target.'cfg(target_family = "wasm")'.dependencies]
-getrandom = { version = "0.3.1", features = ["wasm_js"] }
+getrandom = { workspace = true, features = ["wasm_js"] }
 
 [features]
 strict = []

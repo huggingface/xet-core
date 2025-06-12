@@ -9,7 +9,7 @@ pub struct XetFileInfo {
     hash: String,
 
     /// The size of the file
-    file_size: usize,
+    file_size: u64,
 }
 
 impl XetFileInfo {
@@ -19,7 +19,7 @@ impl XetFileInfo {
     ///
     /// * `hash` - The Xet hash of the file. This is a Merkle hash string.
     /// * `file_size` - The size of the file.
-    pub fn new(hash: String, file_size: usize) -> Self {
+    pub fn new(hash: String, file_size: u64) -> Self {
         Self { hash, file_size }
     }
 
@@ -34,7 +34,7 @@ impl XetFileInfo {
     }
 
     /// Returns the size of the file.
-    pub fn file_size(&self) -> usize {
+    pub fn file_size(&self) -> u64 {
         self.file_size
     }
 

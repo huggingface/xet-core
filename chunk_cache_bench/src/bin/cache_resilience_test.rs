@@ -44,15 +44,16 @@ struct ChildArgs {
     capacity: u64,
 }
 
-fn main() {
+#[tokio::main]
+async fn main() {
     let args = ResilienceTestArgs::parse();
     match args.command {
-        Commands::Parent(parent) => parent_main(parent),
-        Commands::Child(child) => child_main(child),
+        Commands::Parent(parent) => parent_main(parent).await,
+        Commands::Child(child) => child_main(child).await,
     }
 }
 
-fn parent_main(args: ParentArgs) {
+async fn parent_main(args: ParentArgs) {
     let binary = std::env::current_exe().unwrap();
     let binary_str = binary.to_str().unwrap();
     let cache_root = TempDir::new("resilience").unwrap();
@@ -89,7 +90,7 @@ fn parent_main(args: ParentArgs) {
     exit(0);
 }
 
-fn child_main(args: ChildArgs) {
+async fn child_main(args: ChildArgs) {
     let id = std::process::id();
     let end_time = SystemTime::now().checked_add(Duration::from_secs(args.seconds)).unwrap();
 
@@ -99,7 +100,7 @@ fn child_main(args: ChildArgs) {
     };
     let cache = DiskCache::initialize(&config).unwrap();
 
-    eprintln!("initialized id: {id} with {} entries", cache.num_items().unwrap());
+    eprintln!("initialized id: {id} with {} entries", cache.num_items().await);
 
     let mut saved = (0, Key::default(), ChunkRange::default());
 
@@ -109,15 +110,15 @@ fn child_main(args: ChildArgs) {
     let mut it = RandomEntryIterator::default();
     while SystemTime::now() < end_time {
         let (key, range, chunk_byte_indices, data) = it.next().unwrap();
-        cache.put(&key, &range, &chunk_byte_indices, &data).unwrap();
-        cache.get(&key, &range).unwrap();
+        cache.put(&key, &range, &chunk_byte_indices, &data).await.unwrap();
+        cache.get(&key, &range).await.unwrap();
         if i % 1000 == 1 {
             saved = (i, key, range);
         }
         if i != 0 && i % 1000 == 0 {
             let (_old_i, key, range) = &saved;
             attempts += 1f64;
-            match cache.get(key, range).unwrap() {
+            match cache.get(key, range).await.unwrap() {
                 Some(_) => {
                     // eprintln!("id: {id} old test got a hit {old_i} @ {i}");
                     hits += 1f64;

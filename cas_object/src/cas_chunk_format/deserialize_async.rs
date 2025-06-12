@@ -1,24 +1,17 @@
 use std::io::Write;
 use std::mem::size_of;
-use std::slice;
 
 use anyhow::anyhow;
-use bytes::Buf;
-use futures::Stream;
-use tokio::io::{AsyncRead, AsyncReadExt};
-use tokio_util::io::StreamReader;
+use futures::io::{AsyncRead, AsyncReadExt};
+use futures::{Stream, TryStreamExt};
 
 use crate::error::CasObjectError;
-use crate::{CASChunkHeader, CAS_CHUNK_HEADER_LENGTH};
+use crate::{parse_chunk_header, CASChunkHeader, CAS_CHUNK_HEADER_LENGTH};
 
 pub async fn deserialize_chunk_header<R: AsyncRead + Unpin>(reader: &mut R) -> Result<CASChunkHeader, CasObjectError> {
-    let mut result = CASChunkHeader::default();
-    unsafe {
-        let buf = slice::from_raw_parts_mut(&mut result as *mut _ as *mut u8, size_of::<CASChunkHeader>());
-        reader.read_exact(buf).await?;
-    }
-    result.validate()?;
-    Ok(result)
+    let mut buf = [0u8; size_of::<CASChunkHeader>()];
+    reader.read_exact(&mut buf).await?;
+    parse_chunk_header(buf)
 }
 
 /// Returns the compressed chunk size along with the uncompressed chunk size as a tuple, (compressed, uncompressed)
@@ -96,18 +89,18 @@ pub async fn deserialize_chunks_to_writer_from_stream<B, E, S, W>(
     writer: &mut W,
 ) -> Result<(usize, Vec<u32>), CasObjectError>
 where
-    B: Buf,
+    B: AsRef<[u8]>,
     E: Into<std::io::Error>,
     S: Stream<Item = Result<B, E>> + Unpin,
     W: Write,
 {
-    let mut stream_reader = StreamReader::new(stream);
+    let mut stream_reader = stream.map_err(|e| e.into()).into_async_read();
     deserialize_chunks_to_writer_from_async_read(&mut stream_reader, writer).await
 }
 
 pub async fn deserialize_chunks_from_stream<B, E, S>(stream: S) -> Result<(Vec<u8>, Vec<u32>), CasObjectError>
 where
-    B: Buf,
+    B: AsRef<[u8]>,
     E: Into<std::io::Error>,
     S: Stream<Item = Result<B, E>> + Unpin,
 {

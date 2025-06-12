@@ -88,7 +88,7 @@ pub trait MerkleDBHighLevelMethodsV1: MerkleDBBase {
     }
 
     /// Adds a file
-    fn add_file(&mut self, staging: &mut InsertionStaging, chunk: &[Chunk]) -> MerkleHash {
+    fn add_file(&mut self, staging: &mut InsertionStaging, chunk: &[ChunkInfo]) -> MerkleHash {
         if chunk.is_empty() {
             return MerkleHash::default();
         }

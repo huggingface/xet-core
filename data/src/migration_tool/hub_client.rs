@@ -2,11 +2,10 @@ use std::sync::Arc;
 
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
+use cas_client::exports::ClientWithMiddleware;
 use cas_client::{build_http_client, Api, RetryConfig};
-use reqwest_middleware::ClientWithMiddleware;
 use utils::auth::{TokenInfo, TokenRefresher};
 use utils::errors::AuthError;
-use xet_threadpool::ThreadPool;
 
 #[derive(Debug)]
 pub struct HubClient {
@@ -74,7 +73,6 @@ impl HubClient {
 
 #[derive(Debug)]
 pub struct HubClientTokenRefresher {
-    pub threadpool: Arc<ThreadPool>,
     pub token_type: String,
     pub client: Arc<HubClient>,
 }

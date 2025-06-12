@@ -1,0 +1,60 @@
+name: "\U0001F41B Bug Report"
+description: Report a bug on xet-core
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to fill out this bug report!
+  - type: textarea
+    id: bug-description
+    attributes:
+      label: Describe the bug
+      description: A clear and concise description of what the bug is and details about your machine (e.g., network capcity, file system, disk type, etc.).
+      placeholder: Bug description
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Reproduction
+      description: Please provide a minimal reproducible code which we can copy/paste and reproduce the issue.
+      placeholder: Reproduction
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: "Please include any printed warnings or errors if you can."
+      render: shell
+  - type: textarea
+    id: system-info
+    attributes:
+      label: System info
+      description: |
+        Please dump your environment info by running the following commands and copy-paste the results here:
+        ```txt
+        huggingface-cli env
+        env | grep HF_XET
+        ```
+
+        If you are working in a notebook, please run it in a code cell:
+        ```py
+        import os
+        from huggingface_hub import dump_environment_info
+        
+        # Dump environment info to the console
+        dump_environment_info()
+
+        # Dump HF_XET environment variables
+        for key, value in os.environ.items():
+          if key.startswith("HF_XET"):
+            print(f"{key}={value}")
+        ```
+      render: shell
+      placeholder: |
+        - huggingface_hub version: 0.11.0.dev0
+        - Platform: Linux-5.15.0-52-generic-x86_64-with-glibc2.35
+        - Python version: 3.10.6
+        ...
+    validations:
+      required: true

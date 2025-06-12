@@ -5,6 +5,7 @@ edition = "2021"
 
 [dependencies]
 merklehash = { path = "../merklehash" }
-thiserror = "2.0"
-serde = { version = "1.0.208", features = ["derive"] }
-serde_repr = "0.1.19"
+
+serde = { workspace = true }
+serde_repr = { workspace = true }
+thiserror = { workspace = true }
