@@ -47,7 +47,8 @@ impl Default for GaiResolverWithAbsolute {
 impl Resolve for GaiResolverWithAbsolute {
     fn resolve(&self, name: Name) -> Resolving {
         let this = &mut self.0.clone();
-        // if the name does not end with a dot, we append it to make it absolute
+        // if the name does not end with a dot, we append it to make it absolute to avoid issues with relative names.
+        // see https://github.com/huggingface/huggingface_hub/issues/3155
         let mut absolute_name = name.as_str().to_string();
         if !absolute_name.ends_with('.') {
             absolute_name = format!("{}.{}", name.as_str(), ""); // Append a dot to make it absolute
