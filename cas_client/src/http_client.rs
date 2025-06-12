@@ -51,7 +51,7 @@ impl Resolve for GaiResolverWithAbsolute {
         // see https://github.com/huggingface/huggingface_hub/issues/3155
         let mut absolute_name = name.as_str().to_string();
         if !absolute_name.ends_with('.') {
-            absolute_name = format!("{}.{}", name.as_str(), ""); // Append a dot to make it absolute
+            absolute_name = format!("{}.", name.as_str()); // Append a dot to make it absolute
         }
         let hyper_name: HyperName = HyperName::from_str(&absolute_name).unwrap();
         println!("Resolving absolute name: {}", absolute_name);
