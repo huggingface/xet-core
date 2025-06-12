@@ -129,7 +129,6 @@ pub fn build_auth_http_client<R: RetryableStrategy + Send + Sync + 'static>(
     let reqwest_client = reqwest::Client::builder()
         .dns_resolver(Arc::from(GaiResolverWithAbsolute::default()))
         .build()?;
-    println!("Using reqwest client with GaiResolverWithAbsolute for absolute DNS resolution");
     Ok(ClientBuilder::new(reqwest_client)
         .maybe_with(auth_middleware)
         .with(retry_middleware)
