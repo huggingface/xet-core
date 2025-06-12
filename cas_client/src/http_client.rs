@@ -54,7 +54,6 @@ impl Resolve for GaiResolverWithAbsolute {
             absolute_name = format!("{}.", name.as_str()); // Append a dot to make it absolute
         }
         let hyper_name: HyperName = HyperName::from_str(&absolute_name).unwrap();
-        println!("Resolving absolute name: {}", absolute_name);
         Box::pin(this.call(hyper_name).map(|result| {
             result
                 .map(|addrs| -> Addrs { Box::new(addrs) })
