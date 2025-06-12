@@ -1,10 +1,14 @@
+use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::anyhow;
 use cas_types::{REQUEST_ID_HEADER, SESSION_ID_HEADER};
 use error_printer::{ErrorPrinter, OptionPrinter};
+use futures::FutureExt;
 use http::{Extensions, StatusCode};
+use hyper_util::client::legacy::connect::dns::{GaiResolver as HyperGaiResolver, Name as HyperName};
+use reqwest::dns::{Addrs, Name, Resolve, Resolving};
 use reqwest::header::{HeaderValue, AUTHORIZATION};
 use reqwest::{Request, Response};
 use reqwest_middleware::{ClientBuilder, ClientWithMiddleware, Middleware, Next};
@@ -14,6 +18,7 @@ use reqwest_retry::{
     Retryable, RetryableStrategy,
 };
 use tokio::sync::Mutex;
+use tower_service::Service;
 use tracing::{debug, info_span, warn, Instrument};
 use utils::auth::{AuthConfig, TokenProvider};
 
@@ -22,6 +27,39 @@ use crate::{error, CasClientError};
 pub(crate) const NUM_RETRIES: u32 = 5;
 pub(crate) const BASE_RETRY_DELAY_MS: u64 = 3000; // 3s
 pub(crate) const BASE_RETRY_MAX_DURATION_MS: u64 = 6 * 60 * 1000; // 6m
+
+#[derive(Debug)]
+pub struct GaiResolverWithAbsolute(HyperGaiResolver);
+
+impl GaiResolverWithAbsolute {
+    pub fn new() -> Self {
+        Self(HyperGaiResolver::new())
+    }
+}
+
+impl Default for GaiResolverWithAbsolute {
+    fn default() -> Self {
+        GaiResolverWithAbsolute::new()
+    }
+}
+
+impl Resolve for GaiResolverWithAbsolute {
+    fn resolve(&self, name: Name) -> Resolving {
+        let this = &mut self.0.clone();
+        // if the name does not end with a dot, we append it to make it absolute to avoid issues with relative names.
+        // see https://github.com/huggingface/huggingface_hub/issues/3155
+        let mut name_str = name.as_str().to_owned();
+        if !name_str.ends_with('.') {
+            name_str.push('.');
+        }
+        let hyper_name: HyperName = HyperName::from_str(&name_str).expect("Failed to parse DNS name");
+        Box::pin(this.call(hyper_name).map(|result| {
+            result
+                .map(|addrs| -> Addrs { Box::new(addrs) })
+                .map_err(|err| -> Box<dyn std::error::Error + Send + Sync> { Box::new(err) })
+        }))
+    }
+}
 
 /// A strategy that doesn't retry on 429, and defaults to `DefaultRetryableStrategy` otherwise.
 pub struct No429RetryStrategy;
@@ -87,7 +125,9 @@ pub fn build_auth_http_client<R: RetryableStrategy + Send + Sync + 'static>(
     let logging_middleware = Some(LoggingMiddleware);
     let session_middleware = (!session_id.is_empty()).then(|| SessionMiddleware(session_id.to_owned()));
     let retry_middleware = get_retry_middleware(retry_config);
-    let reqwest_client = reqwest::Client::builder().build()?;
+    let reqwest_client = reqwest::Client::builder()
+        .dns_resolver(Arc::from(GaiResolverWithAbsolute::default()))
+        .build()?;
     Ok(ClientBuilder::new(reqwest_client)
         .maybe_with(auth_middleware)
         .with(retry_middleware)
@@ -121,7 +161,9 @@ pub fn build_http_client<R: RetryableStrategy + Send + Sync + 'static>(
     let retry_middleware = get_retry_middleware(retry_config);
     let logging_middleware = Some(LoggingMiddleware);
     let session_middleware = (!session_id.is_empty()).then(|| SessionMiddleware(session_id.to_owned()));
-    let reqwest_client = reqwest::Client::builder().build()?;
+    let reqwest_client = reqwest::Client::builder()
+        .dns_resolver(Arc::from(GaiResolverWithAbsolute::default()))
+        .build()?;
     Ok(ClientBuilder::new(reqwest_client)
         .with(retry_middleware)
         .maybe_with(logging_middleware)
