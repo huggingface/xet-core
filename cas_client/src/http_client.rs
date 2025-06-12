@@ -53,7 +53,7 @@ impl Resolve for GaiResolverWithAbsolute {
         if !absolute_name.ends_with('.') {
             absolute_name = format!("{}.", name.as_str()); // Append a dot to make it absolute
         }
-        let hyper_name: HyperName = HyperName::from_str(&absolute_name).unwrap();
+        let hyper_name: HyperName = HyperName::from_str(&absolute_name).expect("Failed to parse DNS name");
         Box::pin(this.call(hyper_name).map(|result| {
             result
                 .map(|addrs| -> Addrs { Box::new(addrs) })
