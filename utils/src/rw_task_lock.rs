@@ -27,7 +27,7 @@ pub struct RwTaskLockReadGuard<'a, T, E> {
     guard: RwLockReadGuard<'a, RwTaskLockState<T, E>>,
 }
 
-impl<'a, T, E> Deref for RwTaskLockReadGuard<'a, T, E> {
+impl<T, E> Deref for RwTaskLockReadGuard<'_, T, E> {
     type Target = T;
     fn deref(&self) -> &T {
         match &*self.guard {
