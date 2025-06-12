@@ -49,11 +49,11 @@ impl Resolve for GaiResolverWithAbsolute {
         let this = &mut self.0.clone();
         // if the name does not end with a dot, we append it to make it absolute to avoid issues with relative names.
         // see https://github.com/huggingface/huggingface_hub/issues/3155
-        let mut absolute_name = name.as_str().to_string();
-        if !absolute_name.ends_with('.') {
-            absolute_name = format!("{}.", name.as_str()); // Append a dot to make it absolute
+        let mut name_str = name.as_str().to_owned();
+        if !name_str.ends_with('.') {
+            name_str.push('.');
         }
-        let hyper_name: HyperName = HyperName::from_str(&absolute_name).expect("Failed to parse DNS name");
+        let hyper_name: HyperName = HyperName::from_str(&name_str).expect("Failed to parse DNS name");
         Box::pin(this.call(hyper_name).map(|result| {
             result
                 .map(|addrs| -> Addrs { Box::new(addrs) })
