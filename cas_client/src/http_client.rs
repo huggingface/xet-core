@@ -1,4 +1,3 @@
-use futures::FutureExt;
 use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
@@ -6,9 +5,9 @@ use std::time::Duration;
 use anyhow::anyhow;
 use cas_types::{REQUEST_ID_HEADER, SESSION_ID_HEADER};
 use error_printer::{ErrorPrinter, OptionPrinter};
+use futures::FutureExt;
 use http::{Extensions, StatusCode};
-use hyper_util::client::legacy::connect::dns::GaiResolver as HyperGaiResolver;
-use hyper_util::client::legacy::connect::dns::Name as HyperName;
+use hyper_util::client::legacy::connect::dns::{GaiResolver as HyperGaiResolver, Name as HyperName};
 use reqwest::dns::{Addrs, Name, Resolve, Resolving};
 use reqwest::header::{HeaderValue, AUTHORIZATION};
 use reqwest::{Request, Response};
