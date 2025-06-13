@@ -275,6 +275,7 @@ dependencies = [
  "heed",
  "http",
  "hyper-util",
+ "lazy_static",
  "mdb_shard",
  "merkledb",
  "merklehash",

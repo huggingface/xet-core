@@ -55,6 +55,10 @@ utils::configurable_constants! {
     ref UPLOAD_REPORTING_BLOCK_SIZE : usize = 512 * 1024;
 }
 
+lazy_static::lazy_static! {
+     pub static ref DOWNLOAD_CONNECTION_CONCURRENCY_LIMITER: Arc<Semaphore> = Arc::new(Semaphore::new(*NUM_CONCURRENT_RANGE_GETS));
+}
+
 utils::configurable_bool_constants! {
 // Env (HF_XET_RECONSTRUCT_WRITE_SEQUENTIALLY) to switch to writing terms sequentially to disk.
 // Benchmarks have shown that on SSD machines, writing in parallel seems to far outperform
@@ -73,7 +77,6 @@ pub struct RemoteClient {
     conservative_authenticated_http_client: Arc<ClientWithMiddleware>,
     chunk_cache: Option<Arc<dyn ChunkCache>>,
     range_download_single_flight: RangeDownloadSingleFlight,
-    concurrent_gets_semaphore: Arc<Semaphore>,
     shard_cache_directory: PathBuf,
 }
 
@@ -105,12 +108,6 @@ impl RemoteClient {
             None
         };
         let range_download_single_flight = Arc::new(Group::new());
-        let num_range_gets = if *NUM_CONCURRENT_RANGE_GETS == 0 {
-            Semaphore::MAX_PERMITS // virtually no limit
-        } else {
-            NUM_CONCURRENT_RANGE_GETS.min(Semaphore::MAX_PERMITS)
-        };
-        let concurrent_gets_semaphore = Arc::new(Semaphore::new(num_range_gets));
 
         Self {
             endpoint: endpoint.to_string(),
@@ -127,7 +124,6 @@ impl RemoteClient {
             http_client: Arc::new(http_client::build_http_client(RetryConfig::default(), session_id).unwrap()),
             chunk_cache,
             range_download_single_flight,
-            concurrent_gets_semaphore,
             shard_cache_directory,
         }
     }
@@ -392,7 +388,6 @@ impl RemoteClient {
         let range_download_single_flight = self.range_download_single_flight.clone();
         let download_scheduler = DownloadSegmentLengthTuner::from_configurable_constants();
         let download_scheduler_clone = download_scheduler.clone();
-        let concurrent_gets_semaphore = self.concurrent_gets_semaphore.clone();
 
         let queue_dispatcher: JoinHandle<Result<()>> = tokio::spawn(async move {
             let mut remaining_total_len = total_len;
@@ -407,7 +402,7 @@ impl RemoteClient {
                     DownloadQueueItem::DownloadTask(term_download) => {
                         // acquire the permit before spawning the task, so that there's limited
                         // number of active downloads.
-                        let permit = concurrent_gets_semaphore.clone().acquire_owned().await?;
+                        let permit = DOWNLOAD_CONNECTION_CONCURRENCY_LIMITER.clone().acquire_owned().await?;
                         debug!("spawning 1 download task");
                         let future: JoinHandle<Result<(TermDownloadResult<Vec<u8>>, OwnedSemaphorePermit)>> =
                             tokio::spawn(async move {
@@ -541,7 +536,6 @@ impl RemoteClient {
         // which will execute after the first of the above term download tasks finishes.
         let term_download_client = self.http_client.clone();
         let download_scheduler = DownloadSegmentLengthTuner::from_configurable_constants();
-        let concurrent_gets_semaphore = self.concurrent_gets_semaphore.clone();
 
         let process_result = move |result: TermDownloadResult<u64>,
                                    total_written: &mut u64,
@@ -574,7 +568,7 @@ impl RemoteClient {
                 DownloadQueueItem::DownloadTask(term_download) => {
                     // acquire the permit before spawning the task, so that there's limited
                     // number of active downloads.
-                    let permit = concurrent_gets_semaphore.clone().acquire_owned().await?;
+                    let permit = DOWNLOAD_CONNECTION_CONCURRENCY_LIMITER.clone().acquire_owned().await?;
                     debug!("spawning 1 download task");
                     running_downloads.spawn(async move {
                         let data = term_download.run().await?;
