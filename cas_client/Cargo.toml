@@ -3,9 +3,6 @@ name = "cas_client"
 version = "0.14.5"
 edition = "2021"
 
-[features]
-strict = []
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
 cas_object = { path = "../cas_object" }
@@ -28,15 +25,42 @@ derivative = { workspace = true }
 futures = { workspace = true }
 http = { workspace = true }
 more-asserts = { workspace = true }
-reqwest = { workspace = true }
-reqwest-middleware = { workspace = true }
-reqwest-retry = { workspace = true }
 tempfile = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 tokio-retry = { workspace = true }
 tracing = { workspace = true }
 url = { workspace = true }
+lazy_static = { workspace = true }
+
+reqwest-middleware = "0.4"
+reqwest-retry = "0.7"
+reqwest = { version = "0.12", features = [
+    "json",
+    "stream",
+], default-features = false }
+hyper-util = "0.1.10"
+tower-service = "0.3.3"
+
+# Reqwest -- uses different flags with different features.
+[features]
+strict = []
+default = ["rustls-tls"]
+
+# Three options for compliation here.
+
+# rustls-tls uses the rustls package, which embeds all of the ssl stuff in a rust package.  This is the
+# most portable option, but also may not respect local network configurations.  Use this if the native-ssl options don't work.
+rustls-tls = ["reqwest/rustls-tls"]
+
+# Uses native tls in the request package; this uses the native-tls package to wrap openssl, which is a more robust and portable
+# way of ensuring that tls just works.
+native-tls = ["reqwest/native-tls"]
+
+# This uses the above, but statically compiles in openssl, which makes the result more portable at the expense of
+# library size.
+native-tls-vendored = ["reqwest/native-tls-vendored"]
+
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
 heed = { workspace = true }

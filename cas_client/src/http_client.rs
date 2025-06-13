@@ -1,3 +1,6 @@
+#[cfg(not(target_family = "wasm"))]
+mod dns_utils;
+
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -27,7 +30,7 @@ pub(crate) const BASE_RETRY_MAX_DURATION_MS: u64 = 6 * 60 * 1000; // 6m
 pub struct No429RetryStrategy;
 
 impl RetryableStrategy for No429RetryStrategy {
-    fn handle(&self, res: &Result<reqwest::Response, reqwest_middleware::Error>) -> Option<Retryable> {
+    fn handle(&self, res: &Result<Response, reqwest_middleware::Error>) -> Option<Retryable> {
         if let Ok(success) = res {
             if success.status() == StatusCode::TOO_MANY_REQUESTS {
                 return Some(Retryable::Fatal);
@@ -88,19 +91,22 @@ pub fn build_auth_http_client<R: RetryableStrategy + Send + Sync + 'static>(
     let logging_middleware = Some(LoggingMiddleware);
     let session_middleware = (!session_id.is_empty()).then(|| SessionMiddleware(session_id.to_owned()));
 
-    let reqwest_client = reqwest::Client::builder().build()?;
     #[cfg(not(target_family = "wasm"))]
     {
         let retry_middleware = get_retry_middleware(retry_config);
+        let reqwest_client = reqwest::Client::builder()
+            .dns_resolver(Arc::from(dns_utils::GaiResolverWithAbsolute::default()))
+            .build()?;
         Ok(ClientBuilder::new(reqwest_client)
             .maybe_with(auth_middleware)
-            .maybe_with(Some(retry_middleware))
+            .with(retry_middleware)
             .maybe_with(logging_middleware)
             .maybe_with(session_middleware)
             .build())
     }
     #[cfg(target_family = "wasm")]
     {
+        let reqwest_client = reqwest::Client::builder().build()?;
         Ok(ClientBuilder::new(reqwest_client)
             .maybe_with(auth_middleware)
             .maybe_with(logging_middleware)
@@ -135,10 +141,12 @@ pub fn build_http_client<R: RetryableStrategy + Send + Sync + 'static>(
     let logging_middleware = Some(LoggingMiddleware);
     let session_middleware = (!session_id.is_empty()).then(|| SessionMiddleware(session_id.to_owned()));
 
-    let reqwest_client = reqwest::Client::builder().build()?;
     #[cfg(not(target_family = "wasm"))]
     {
         let retry_middleware = get_retry_middleware(retry_config);
+        let reqwest_client = reqwest::Client::builder()
+            .dns_resolver(Arc::from(dns_utils::GaiResolverWithAbsolute::default()))
+            .build()?;
         Ok(ClientBuilder::new(reqwest_client)
             .maybe_with(Some(retry_middleware))
             .maybe_with(logging_middleware)
@@ -147,6 +155,7 @@ pub fn build_http_client<R: RetryableStrategy + Send + Sync + 'static>(
     }
     #[cfg(target_family = "wasm")]
     {
+        let reqwest_client = reqwest::Client::builder().build()?;
         Ok(ClientBuilder::new(reqwest_client)
             .maybe_with(logging_middleware)
             .maybe_with(session_middleware)

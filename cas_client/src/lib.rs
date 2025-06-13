@@ -18,6 +18,7 @@ pub use crate::interface::ShardClientInterface;
 #[cfg(not(target_family = "wasm"))]
 mod download_utils;
 mod error;
+pub mod exports;
 mod http_client;
 mod interface;
 #[cfg(not(target_family = "wasm"))]

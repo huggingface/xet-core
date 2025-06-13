@@ -9,6 +9,7 @@ use pyo3::prelude::PyAnyMethods;
 use pyo3::types::{IntoPyDict, PyList, PyString};
 use pyo3::{pyclass, IntoPyObjectExt, Py, PyAny, PyResult, Python};
 use tracing::error;
+use xet_threadpool::exports::tokio;
 
 use crate::runtime::convert_multithreading_error;
 
