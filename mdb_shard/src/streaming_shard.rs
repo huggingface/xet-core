@@ -2,7 +2,7 @@ use std::io::{copy, Cursor, Read, Write};
 use std::mem::size_of;
 use std::sync::Arc;
 
-use futures_io::AsyncRead;
+use futures::AsyncRead;
 use futures_util::io::AsyncReadExt;
 
 use crate::cas_structs::{CASChunkSequenceEntry, CASChunkSequenceHeader, MDBCASInfoView};

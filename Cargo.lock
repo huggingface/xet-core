@@ -2052,7 +2052,7 @@ dependencies = [
  "async-trait",
  "blake3",
  "clap",
- "futures-io",
+ "futures",
  "futures-util",
  "heapify",
  "itertools 0.14.0",
