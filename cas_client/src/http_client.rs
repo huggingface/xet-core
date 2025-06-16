@@ -91,6 +91,7 @@ pub fn build_auth_http_client<R: RetryableStrategy + Send + Sync + 'static>(
     let logging_middleware = Some(LoggingMiddleware);
     let session_middleware = (!session_id.is_empty()).then(|| SessionMiddleware(session_id.to_owned()));
 
+    // retry middleware and custom dns resolver cannot be used in wasm environment
     #[cfg(not(target_family = "wasm"))]
     {
         let retry_middleware = get_retry_middleware(retry_config);
@@ -141,6 +142,7 @@ pub fn build_http_client<R: RetryableStrategy + Send + Sync + 'static>(
     let logging_middleware = Some(LoggingMiddleware);
     let session_middleware = (!session_id.is_empty()).then(|| SessionMiddleware(session_id.to_owned()));
 
+    // retry middleware and custom dns resolver cannot be used in wasm environment
     #[cfg(not(target_family = "wasm"))]
     {
         let retry_middleware = get_retry_middleware(retry_config);

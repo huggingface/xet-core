@@ -69,14 +69,7 @@ async function fetchXetMetadataWithUrl(url, headers, params = null) {
 		headers: headers,
 	});
 
-	// Get headers
-	// const hedrs = response.headers;
-	// hedrs.forEach((value, key) => {
-	//     console.log(`${key}: ${value}`);
-	// });
-
 	const jsonData = await response.json();
-	// console.log("Response Body :", jsonData);
 
 	if (!response.ok) {
 		console.log("response not ok");

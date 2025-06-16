@@ -14,15 +14,21 @@ pub trait ShardClientInterface:
     RegistrationClient + FileReconstructor<CasClientError> + ShardDedupProber + Send + Sync
 {
 }
-
+// In webassembly environment ShardClientInterface does not include FileReconstructor
+// and does not require Send/Sync'ness
 #[cfg(target_family = "wasm")]
 pub trait ShardClientInterface: RegistrationClient + ShardDedupProber {}
 
 #[cfg(not(target_family = "wasm"))]
 pub trait Client: UploadClient + ReconstructionClient + ShardClientInterface {}
+// in webassembly environment the general "Client" interface does not support the
+// ReconstructionClient download interface.
 #[cfg(target_family = "wasm")]
 pub trait Client: UploadClient + ShardClientInterface {}
 
+// interfaces used on the download path, primarily relating to fetching and using file reconstructions
+// to download file data.
+// not enabled in webassembly
 #[cfg(not(target_family = "wasm"))]
 mod download {
     use std::collections::HashMap;
@@ -83,6 +89,9 @@ mod download {
     }
 }
 
+// upload interfaces for operations required for the upload path
+// including global deduplication
+// enabled in standard build environments and web assembly
 mod upload {
     use std::sync::Arc;
 
@@ -151,6 +160,8 @@ mod upload {
     }
 }
 
+// export out interfaces to be referred to directly out of the interface sub-crate
+// users of cas_client interface are unaware of the module level separation between download/upload.
 #[cfg(not(target_family = "wasm"))]
 pub use download::*;
 pub use upload::*;
