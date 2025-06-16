@@ -152,20 +152,6 @@ impl CASChunkSequenceEntry {
             _unused: read_u64(reader)?,
         })
     }
-
-    pub async fn deserialize_async<R: AsyncRead + Unpin>(reader: &mut R) -> Result<Self, std::io::Error> {
-        let mut v = [0u8; size_of::<Self>()];
-        reader.read_exact(&mut v[..]).await?;
-        let mut reader_curs = Cursor::new(&v);
-        let reader = &mut reader_curs;
-
-        Ok(Self {
-            chunk_hash: read_hash(reader)?,
-            chunk_byte_range_start: read_u32(reader)?,
-            unpacked_segment_bytes: read_u32(reader)?,
-            _unused: read_u64(reader)?,
-        })
-    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -194,9 +180,7 @@ impl MDBCASInfo {
 
         Ok(Some(Self { metadata, chunks }))
     }
-    pub async fn deserialize_async<R: futures::io::AsyncRead + Unpin>(
-        reader: &mut R,
-    ) -> Result<Option<Self>, std::io::Error> {
+    pub async fn deserialize_async<R: AsyncRead + Unpin>(reader: &mut R) -> Result<Option<Self>, std::io::Error> {
         let metadata = CASChunkSequenceHeader::deserialize_async(reader).await?;
 
         // This is the single bookend entry as a guard for sequential reading.
@@ -204,10 +188,15 @@ impl MDBCASInfo {
             return Ok(None);
         }
 
+        let buf_len = size_of::<CASChunkSequenceEntry>() * metadata.num_entries as usize;
+        let mut buf = vec![0u8; buf_len];
+        reader.read_exact(&mut buf[..]).await?;
         let mut chunks = Vec::with_capacity(metadata.num_entries as usize);
+        let mut entry_reader = Cursor::new(&buf);
         for _ in 0..metadata.num_entries {
-            chunks.push(CASChunkSequenceEntry::deserialize_async(reader).await?);
+            chunks.push(CASChunkSequenceEntry::deserialize(&mut entry_reader)?);
         }
+        debug_assert_eq!(entry_reader.position() as usize, buf_len);
 
         Ok(Some(Self { metadata, chunks }))
     }

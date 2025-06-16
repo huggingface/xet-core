@@ -262,13 +262,6 @@ impl FileDataSequenceEntry {
             chunk_index_end: read_u32(reader)?,
         })
     }
-
-    pub async fn deserialize_async<R: AsyncRead + Unpin>(reader: &mut R) -> Result<Self, std::io::Error> {
-        let mut v = [0u8; size_of::<Self>()];
-        reader.read_exact(&mut v[..]).await?;
-        let mut reader_curs = Cursor::new(&v);
-        Self::deserialize(&mut reader_curs)
-    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
@@ -311,13 +304,6 @@ impl FileVerificationEntry {
             range_hash: read_hash(reader)?,
             _unused: Default::default(),
         })
-    }
-
-    pub async fn deserialize_async<R: AsyncRead + Unpin>(reader: &mut R) -> Result<Self, std::io::Error> {
-        let mut v = [0u8; size_of::<Self>()];
-        reader.read_exact(&mut v[..]).await?;
-        let mut reader_curs = Cursor::new(&v);
-        Self::deserialize(&mut reader_curs)
     }
 }
 
@@ -460,17 +446,30 @@ impl MDBFileInfo {
 
         let num_entries = metadata.num_entries as usize;
 
+        // for both the series of FileDataSequenceEntry and FileVerificationEntry,
+        // read them all into memory and then deserialize from memory.
+        let entries_buf_len = size_of::<FileDataSequenceEntry>() * num_entries;
+        let mut entries_buf = vec![0u8; entries_buf_len];
+        reader.read_exact(&mut entries_buf[..]).await?;
+        let mut entries_reader = Cursor::new(&mut entries_buf[..]);
         let mut segments = Vec::with_capacity(num_entries);
         for _ in 0..num_entries {
-            segments.push(FileDataSequenceEntry::deserialize_async(reader).await?);
+            segments.push(FileDataSequenceEntry::deserialize(&mut entries_reader)?);
         }
+        debug_assert_eq!(entries_buf_len, entries_reader.position() as usize);
 
+        let verification_entries_buf_len = size_of::<FileVerificationEntry>() * num_entries;
+        let mut verification_entries_buf = vec![0u8; verification_entries_buf_len];
+        reader.read_exact(&mut verification_entries_buf[..]).await?;
+        let mut verification_entries_reader = Cursor::new(&mut verification_entries_buf[..]);
         let mut verification = Vec::with_capacity(num_entries);
         if metadata.contains_verification() {
             for _ in 0..num_entries {
-                verification.push(FileVerificationEntry::deserialize_async(reader).await?);
+                verification.push(FileVerificationEntry::deserialize(&mut verification_entries_reader)?);
             }
         }
+        debug_assert_eq!(verification_entries_buf_len, verification_entries_reader.position() as usize);
+
         let metadata_ext = if metadata.contains_metadata_ext() {
             FileMetadataExt::deserialize_async(reader).await.ok()
         } else {
