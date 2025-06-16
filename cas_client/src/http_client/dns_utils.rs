@@ -1,4 +1,5 @@
 use std::str::FromStr;
+
 use futures::FutureExt;
 use hyper_util::client::legacy::connect::dns::{GaiResolver as HyperGaiResolver, Name as HyperName};
 use reqwest::dns::{Addrs, Name, Resolve, Resolving};
