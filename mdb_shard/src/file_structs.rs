@@ -458,17 +458,20 @@ impl MDBFileInfo {
         }
         debug_assert_eq!(entries_buf_len, entries_reader.position() as usize);
 
-        let verification_entries_buf_len = size_of::<FileVerificationEntry>() * num_entries;
-        let mut verification_entries_buf = vec![0u8; verification_entries_buf_len];
-        reader.read_exact(&mut verification_entries_buf[..]).await?;
-        let mut verification_entries_reader = Cursor::new(&mut verification_entries_buf[..]);
-        let mut verification = Vec::with_capacity(num_entries);
-        if metadata.contains_verification() {
+        let verification = if metadata.contains_verification() {
+            let verification_entries_buf_len = size_of::<FileVerificationEntry>() * num_entries;
+            let mut verification_entries_buf = vec![0u8; verification_entries_buf_len];
+            reader.read_exact(&mut verification_entries_buf[..]).await?;
+            let mut verification_entries_reader = Cursor::new(&mut verification_entries_buf[..]);
+            let mut verification = Vec::with_capacity(num_entries);
             for _ in 0..num_entries {
                 verification.push(FileVerificationEntry::deserialize(&mut verification_entries_reader)?);
             }
-        }
-        debug_assert_eq!(verification_entries_buf_len, verification_entries_reader.position() as usize);
+            debug_assert_eq!(verification_entries_buf_len, verification_entries_reader.position() as usize);
+            verification
+        } else {
+            vec![]
+        };
 
         let metadata_ext = if metadata.contains_metadata_ext() {
             FileMetadataExt::deserialize_async(reader).await.ok()
