@@ -1,8 +1,9 @@
 use std::fmt::Debug;
-use std::io::{self, Cursor, Read, Write};
+use std::io::{Cursor, Read, Write};
 use std::mem::size_of;
 use std::sync::Arc;
 
+use futures::{AsyncRead, AsyncReadExt};
 use merklehash::data_hash::hex;
 use merklehash::MerkleHash;
 use serde::Serialize;
@@ -42,7 +43,7 @@ impl FileDataSequenceHeader {
         contains_metadata_ext: bool,
     ) -> Self
     where
-        <I as TryInto<u32>>::Error: std::fmt::Debug,
+        <I as TryInto<u32>>::Error: Debug,
     {
         let verification_flag = if contains_verification {
             MDB_FILE_FLAG_WITH_VERIFICATION
@@ -81,7 +82,7 @@ impl FileDataSequenceHeader {
     pub fn serialize<W: Write>(&self, writer: &mut W) -> Result<usize, std::io::Error> {
         let mut buf = [0u8; size_of::<Self>()];
         {
-            let mut writer_cur = std::io::Cursor::new(&mut buf[..]);
+            let mut writer_cur = Cursor::new(&mut buf[..]);
             let writer = &mut writer_cur;
 
             write_hash(writer, &self.file_hash)?;
@@ -98,7 +99,7 @@ impl FileDataSequenceHeader {
     pub fn deserialize<R: Read>(reader: &mut R) -> Result<Self, std::io::Error> {
         let mut v = [0u8; size_of::<Self>()];
         reader.read_exact(&mut v[..])?;
-        let mut reader_curs = std::io::Cursor::new(&v);
+        let mut reader_curs = Cursor::new(&v);
         let reader = &mut reader_curs;
 
         Ok(Self {
@@ -107,6 +108,13 @@ impl FileDataSequenceHeader {
             num_entries: read_u32(reader)?,
             _unused: read_u64(reader)?,
         })
+    }
+
+    pub async fn deserialize_async<R: AsyncRead + Unpin>(reader: &mut R) -> Result<Self, std::io::Error> {
+        let mut v = [0u8; size_of::<Self>()];
+        reader.read_exact(&mut v[..]).await?;
+        let mut reader_curs = Cursor::new(&v);
+        Self::deserialize(&mut reader_curs)
     }
 
     pub fn contains_metadata_ext(&self) -> bool {
@@ -188,7 +196,7 @@ impl FileDataSequenceEntry {
         chunk_index_end: I1,
     ) -> Self
     where
-        <I1 as TryInto<u32>>::Error: std::fmt::Debug,
+        <I1 as TryInto<u32>>::Error: Debug,
     {
         Self {
             cas_hash,
@@ -206,7 +214,7 @@ impl FileDataSequenceEntry {
         chunk_index_end: I1,
     ) -> Self
     where
-        <I1 as TryInto<u32>>::Error: std::fmt::Debug,
+        <I1 as TryInto<u32>>::Error: Debug,
     {
         if chunks.is_empty() {
             return Self::default();
@@ -224,7 +232,7 @@ impl FileDataSequenceEntry {
     pub fn serialize<W: Write>(&self, writer: &mut W) -> Result<usize, std::io::Error> {
         let mut buf = [0u8; size_of::<Self>()];
         {
-            let mut writer_cur = std::io::Cursor::new(&mut buf[..]);
+            let mut writer_cur = Cursor::new(&mut buf[..]);
             let writer = &mut writer_cur;
 
             write_hash(writer, &self.cas_hash)?;
@@ -341,6 +349,13 @@ impl FileMetadataExt {
             _unused: Default::default(),
         })
     }
+
+    pub async fn deserialize_async<R: AsyncRead + Unpin>(reader: &mut R) -> Result<Self, std::io::Error> {
+        let mut v = [0u8; size_of::<Self>()];
+        reader.read_exact(&mut v[..]).await?;
+        let mut reader_curs = Cursor::new(&v);
+        Self::deserialize(&mut reader_curs)
+    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
@@ -421,6 +436,54 @@ impl MDBFileInfo {
         }))
     }
 
+    pub async fn deserialize_async<R: AsyncRead + Unpin>(reader: &mut R) -> Result<Option<Self>, std::io::Error> {
+        let metadata = FileDataSequenceHeader::deserialize_async(reader).await?;
+
+        // This is the single bookend entry as a guard for sequential reading.
+        if metadata.is_bookend() {
+            return Ok(None);
+        }
+
+        let num_entries = metadata.num_entries as usize;
+
+        // for both the series of FileDataSequenceEntry and FileVerificationEntry,
+        // read them all into memory and then deserialize from memory.
+        let entries_buf_len = size_of::<FileDataSequenceEntry>() * num_entries;
+        let mut entries_buf = vec![0u8; entries_buf_len];
+        reader.read_exact(&mut entries_buf[..]).await?;
+        let mut entries_reader = Cursor::new(&mut entries_buf[..]);
+        let mut segments = Vec::with_capacity(num_entries);
+        for _ in 0..num_entries {
+            segments.push(FileDataSequenceEntry::deserialize(&mut entries_reader)?);
+        }
+        debug_assert_eq!(entries_buf_len, entries_reader.position() as usize);
+
+        let verification_entries_buf_len = size_of::<FileVerificationEntry>() * num_entries;
+        let mut verification_entries_buf = vec![0u8; verification_entries_buf_len];
+        reader.read_exact(&mut verification_entries_buf[..]).await?;
+        let mut verification_entries_reader = Cursor::new(&mut verification_entries_buf[..]);
+        let mut verification = Vec::with_capacity(num_entries);
+        if metadata.contains_verification() {
+            for _ in 0..num_entries {
+                verification.push(FileVerificationEntry::deserialize(&mut verification_entries_reader)?);
+            }
+        }
+        debug_assert_eq!(verification_entries_buf_len, verification_entries_reader.position() as usize);
+
+        let metadata_ext = if metadata.contains_metadata_ext() {
+            FileMetadataExt::deserialize_async(reader).await.ok()
+        } else {
+            None
+        };
+
+        Ok(Some(Self {
+            metadata,
+            segments,
+            verification,
+            metadata_ext,
+        }))
+    }
+
     pub fn contains_verification(&self) -> bool {
         self.metadata.contains_verification()
     }
@@ -477,8 +540,8 @@ impl MDBFileInfoView {
             + (if contains_metadata_ext { 1 } else { 0 });
 
         if data.len() < offset + n_structs * MDB_FILE_INFO_ENTRY_SIZE {
-            return Err(io::Error::new(
-                io::ErrorKind::UnexpectedEof,
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::UnexpectedEof,
                 "Provided slice too small to read MDBFileInfoView",
             ));
         }
@@ -545,7 +608,7 @@ impl MDBFileInfoView {
     }
 
     #[inline]
-    pub fn serialize<W: Write>(&self, writer: &mut W) -> io::Result<usize> {
+    pub fn serialize<W: Write>(&self, writer: &mut W) -> std::io::Result<usize> {
         let n_bytes = self.byte_size();
         writer.write_all(&self.data[self.offset..(self.offset + n_bytes)])?;
         Ok(n_bytes)

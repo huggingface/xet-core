@@ -1,6 +1,7 @@
 use std::io::{Read, Write};
 use std::mem::{size_of, transmute};
 
+use futures::io::AsyncRead;
 use futures::AsyncReadExt;
 use merklehash::MerkleHash;
 
@@ -101,7 +102,7 @@ pub fn read_u64s<R: Read>(reader: &mut R, vs: &mut [u64]) -> Result<(), std::io:
 
 // Async version of the above.
 #[inline]
-pub async fn read_hash_async<R: futures::io::AsyncRead + Unpin>(reader: &mut R) -> Result<MerkleHash, std::io::Error> {
+pub async fn read_hash_async<R: AsyncRead + Unpin>(reader: &mut R) -> Result<MerkleHash, std::io::Error> {
     let mut m = [0u8; 32];
     reader.read_exact(&mut m).await?; // Not endian safe.
 
@@ -109,24 +110,21 @@ pub async fn read_hash_async<R: futures::io::AsyncRead + Unpin>(reader: &mut R) 
 }
 
 #[inline]
-pub async fn read_u8_async<R: futures::io::AsyncRead + Unpin>(reader: &mut R) -> Result<u8, std::io::Error> {
+pub async fn read_u8_async<R: AsyncRead + Unpin>(reader: &mut R) -> Result<u8, std::io::Error> {
     let mut buf = [0u8; size_of::<u8>()];
     reader.read_exact(&mut buf[..]).await?;
     Ok(u8::from_le_bytes(buf))
 }
 
 #[inline]
-pub async fn read_u32_async<R: futures::io::AsyncRead + Unpin>(reader: &mut R) -> Result<u32, std::io::Error> {
+pub async fn read_u32_async<R: AsyncRead + Unpin>(reader: &mut R) -> Result<u32, std::io::Error> {
     let mut buf = [0u8; size_of::<u32>()];
     reader.read_exact(&mut buf[..]).await?;
     Ok(u32::from_le_bytes(buf))
 }
 
 #[inline]
-pub async fn read_u32s_async<R: futures::io::AsyncRead + Unpin>(
-    reader: &mut R,
-    vs: &mut [u32],
-) -> Result<(), std::io::Error> {
+pub async fn read_u32s_async<R: AsyncRead + Unpin>(reader: &mut R, vs: &mut [u32]) -> Result<(), std::io::Error> {
     for v in vs.iter_mut() {
         *v = read_u32_async(reader).await?;
     }
@@ -134,16 +132,21 @@ pub async fn read_u32s_async<R: futures::io::AsyncRead + Unpin>(
 }
 
 #[inline]
-pub async fn read_u64_async<R: futures::io::AsyncRead + Unpin>(reader: &mut R) -> Result<u64, std::io::Error> {
+pub async fn read_u64_async<R: AsyncRead + Unpin>(reader: &mut R) -> Result<u64, std::io::Error> {
     let mut buf = [0u8; size_of::<u64>()];
     reader.read_exact(&mut buf[..]).await?;
     Ok(u64::from_le_bytes(buf))
 }
 
 #[inline]
-pub async fn read_bytes_async<R: futures::io::AsyncRead + Unpin>(
-    reader: &mut R,
-    val: &mut [u8],
-) -> Result<(), std::io::Error> {
+pub async fn read_u64s_async<R: AsyncRead + Unpin>(reader: &mut R, vs: &mut [u64]) -> Result<(), std::io::Error> {
+    for v in vs.iter_mut() {
+        *v = read_u64_async(reader).await?;
+    }
+    Ok(())
+}
+
+#[inline]
+pub async fn read_bytes_async<R: AsyncRead + Unpin>(reader: &mut R, val: &mut [u8]) -> Result<(), std::io::Error> {
     reader.read_exact(val).await
 }
