@@ -81,7 +81,6 @@ impl RetryConfig<No429RetryStrategy> {
 
 /// Builds authenticated HTTP Client to talk to CAS.
 /// Includes retry middleware with exponential backoff.
-#[allow(unused_variables)]
 pub fn build_auth_http_client<R: RetryableStrategy + Send + Sync + 'static>(
     auth_config: &Option<AuthConfig>,
     retry_config: RetryConfig<R>,
@@ -91,29 +90,26 @@ pub fn build_auth_http_client<R: RetryableStrategy + Send + Sync + 'static>(
     let logging_middleware = Some(LoggingMiddleware);
     let session_middleware = (!session_id.is_empty()).then(|| SessionMiddleware(session_id.to_owned()));
 
-    // retry middleware and custom dns resolver cannot be used in wasm environment
+    let mut reqwest_client_builder = reqwest::Client::builder();
     #[cfg(not(target_family = "wasm"))]
     {
-        let retry_middleware = get_retry_middleware(retry_config);
-        let reqwest_client = reqwest::Client::builder()
-            .dns_resolver(Arc::from(dns_utils::GaiResolverWithAbsolute::default()))
-            .build()?;
-        Ok(ClientBuilder::new(reqwest_client)
-            .maybe_with(auth_middleware)
-            .with(retry_middleware)
-            .maybe_with(logging_middleware)
-            .maybe_with(session_middleware)
-            .build())
+        reqwest_client_builder =
+            reqwest_client_builder.dns_resolver(Arc::from(dns_utils::GaiResolverWithAbsolute::default()));
     }
-    #[cfg(target_family = "wasm")]
+    let reqwest_client = reqwest_client_builder.build()?;
+
+    // when all middlewares are used they are set in the following order:
+    // auth, retry, logging, session
+    let mut client_builder = ClientBuilder::new(reqwest_client).maybe_with(auth_middleware);
+    #[cfg(not(target_family = "wasm"))]
     {
-        let reqwest_client = reqwest::Client::builder().build()?;
-        Ok(ClientBuilder::new(reqwest_client)
-            .maybe_with(auth_middleware)
-            .maybe_with(logging_middleware)
-            .maybe_with(session_middleware)
-            .build())
+        client_builder = client_builder.with(get_retry_middleware(retry_config));
     }
+    let client = client_builder
+        .maybe_with(logging_middleware)
+        .maybe_with(session_middleware)
+        .build();
+    Ok(client)
 }
 
 /// Builds authenticated HTTP Client to talk to CAS.
@@ -134,35 +130,11 @@ pub fn build_auth_http_client_no_retry(
 
 /// Builds HTTP Client to talk to CAS.
 /// Includes retry middleware with exponential backoff.
-#[allow(unused_variables)]
 pub fn build_http_client<R: RetryableStrategy + Send + Sync + 'static>(
     retry_config: RetryConfig<R>,
     session_id: &str,
 ) -> Result<ClientWithMiddleware, CasClientError> {
-    let logging_middleware = Some(LoggingMiddleware);
-    let session_middleware = (!session_id.is_empty()).then(|| SessionMiddleware(session_id.to_owned()));
-
-    // retry middleware and custom dns resolver cannot be used in wasm environment
-    #[cfg(not(target_family = "wasm"))]
-    {
-        let retry_middleware = get_retry_middleware(retry_config);
-        let reqwest_client = reqwest::Client::builder()
-            .dns_resolver(Arc::from(dns_utils::GaiResolverWithAbsolute::default()))
-            .build()?;
-        Ok(ClientBuilder::new(reqwest_client)
-            .maybe_with(Some(retry_middleware))
-            .maybe_with(logging_middleware)
-            .maybe_with(session_middleware)
-            .build())
-    }
-    #[cfg(target_family = "wasm")]
-    {
-        let reqwest_client = reqwest::Client::builder().build()?;
-        Ok(ClientBuilder::new(reqwest_client)
-            .maybe_with(logging_middleware)
-            .maybe_with(session_middleware)
-            .build())
-    }
+    build_auth_http_client(&None, retry_config, session_id)
 }
 
 /// RetryStrategy
