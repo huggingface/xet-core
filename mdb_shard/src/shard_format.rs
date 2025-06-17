@@ -850,8 +850,8 @@ impl MDBShardInfo {
     /// returns the number of bytes that is fixed and not part of any content; i.e. would be part of an empty shard.
     pub fn non_content_byte_size() -> u64 {
         (size_of::<MDBShardFileFooter>() + size_of::<MDBShardFileHeader>()) as u64 // Header and footer
-        + size_of::<FileDataSequenceHeader>() as u64 // Guard block for scanning.
-        + size_of::<CASChunkSequenceHeader>() as u64 // Guard block for scanning.
+            + size_of::<FileDataSequenceHeader>() as u64 // Guard block for scanning.
+            + size_of::<CASChunkSequenceHeader>() as u64 // Guard block for scanning.
     }
 
     pub fn print_report(&self) {
@@ -1731,8 +1731,16 @@ pub mod test_routines {
 
 #[cfg(test)]
 mod tests {
+    use futures::AsyncReadExt;
+    use utils::async_read::AsyncReadCustomExt;
+
     use super::test_routines::*;
+    use crate::cas_structs::MDBCASInfo;
     use crate::error::Result;
+    use crate::file_structs::MDBFileInfo;
+    use crate::shard_format::MDB_SHARD_FOOTER_SIZE;
+    use crate::shard_in_memory::MDBInMemoryShard;
+    use crate::{MDBShardFileFooter, MDBShardFileHeader};
 
     #[test]
     fn test_simple() -> Result<()> {
@@ -1821,5 +1829,97 @@ mod tests {
         verify_mdb_shard(&shard)?;
 
         Ok(())
+    }
+
+    async fn deserialize_shard_file_async(mem_shard: &MDBInMemoryShard, shard: Vec<u8>) -> Result<()> {
+        let len = shard.len();
+        let mut reader = futures::io::Cursor::new(shard);
+        let header = MDBShardFileHeader::deserialize_async(&mut reader).await?;
+
+        let file_info_offset = reader.position();
+        let mut file_infos = vec![];
+        while let Some(file_info) = MDBFileInfo::deserialize_async(&mut reader).await? {
+            file_infos.push(file_info);
+        }
+        let cas_info_offset = reader.position();
+        let mut cas_infos = vec![];
+        while let Some(cas_info) = MDBCASInfo::deserialize_async(&mut reader).await? {
+            cas_infos.push(cas_info);
+        }
+
+        // the set of tests using these utilities do not deserialize or verify the lookup sections
+        let lookup_sections_skip_bytes = (len as i64 - MDB_SHARD_FOOTER_SIZE) - reader.position() as i64;
+        assert!(lookup_sections_skip_bytes >= 0);
+        if lookup_sections_skip_bytes > 0 {
+            (&mut reader).take(lookup_sections_skip_bytes as u64).drain().await?;
+        }
+        let footer_offset = reader.position();
+        let footer = MDBShardFileFooter::deserialize_async(&mut reader).await?;
+        assert_eq!(reader.position(), len as u64);
+        assert_eq!(file_info_offset, footer.file_info_offset);
+        assert_eq!(cas_info_offset, footer.cas_info_offset);
+        assert_eq!(footer_offset, footer.footer_offset);
+        assert_eq!(len as u64 - footer_offset, header.footer_size);
+
+        // validate file_infos
+        assert_eq!(file_infos.len(), mem_shard.file_content.len());
+        for (file_hash, mem_file_info) in mem_shard.file_content.iter() {
+            let file_info_result = file_infos.iter().find(|f| f.metadata.file_hash == *file_hash);
+            assert!(file_info_result.is_some());
+            let file_info = file_info_result.unwrap();
+            assert_eq!(file_info, mem_file_info)
+        }
+
+        // validate cas_infos
+        assert_eq!(cas_infos.len(), mem_shard.cas_content.len());
+        for (cas_hash, mem_cas_info) in mem_shard.cas_content.iter() {
+            let cas_info_result = cas_infos.iter().find(|c| c.metadata.cas_hash == *cas_hash);
+            assert!(cas_info_result.is_some());
+            let cas_info = cas_info_result.unwrap();
+            assert_eq!(cas_info, mem_cas_info.as_ref());
+        }
+
+        Ok(())
+    }
+
+    async fn validate_shard_async(mem_shard: &MDBInMemoryShard) -> Result<()> {
+        let file = convert_to_file(mem_shard)?;
+        deserialize_shard_file_async(mem_shard, file).await
+    }
+
+    #[tokio::test]
+    async fn deserialize_async() {
+        let shard = gen_random_shard(0, &[], &[], false, false).unwrap();
+        assert!(validate_shard_async(&shard).await.is_ok());
+
+        let shard = gen_random_shard(0, &[1, 5, 10, 8], &[4, 3, 5, 9, 4, 6], false, false).unwrap();
+        assert!(validate_shard_async(&shard).await.is_ok());
+
+        let shard = gen_random_shard(0, &[1, 5, 10, 8], &[4, 3, 5, 9, 4, 6], true, false).unwrap();
+        assert!(validate_shard_async(&shard).await.is_ok());
+
+        let shard = gen_random_shard(0, &[1, 5, 10, 8], &[4, 3, 5, 9, 4, 6], false, true).unwrap();
+        assert!(validate_shard_async(&shard).await.is_ok());
+
+        let shard = gen_random_shard(0, &[1, 5, 10, 8], &[4, 3, 5, 9, 4, 6], true, true).unwrap();
+        assert!(validate_shard_async(&shard).await.is_ok());
+
+        let shard = gen_random_shard(0, &[1], &[1], true, true).unwrap();
+        assert!(validate_shard_async(&shard).await.is_ok());
+
+        let shard = gen_random_shard(0, &[], &[3, 10, 2], false, false).unwrap();
+        assert!(validate_shard_async(&shard).await.is_ok());
+
+        let shard = gen_random_shard(0, &[], &[3, 10, 2], true, false).unwrap();
+        assert!(validate_shard_async(&shard).await.is_ok());
+
+        let shard = gen_random_shard(0, &[], &[3, 10, 2], false, true).unwrap();
+        assert!(validate_shard_async(&shard).await.is_ok());
+
+        let shard = gen_random_shard(0, &[], &[3, 10, 2], true, true).unwrap();
+        assert!(validate_shard_async(&shard).await.is_ok());
+
+        let shard = gen_random_shard(0, &[5, 9, 8], &[], true, true).unwrap();
+        assert!(validate_shard_async(&shard).await.is_ok());
     }
 }
