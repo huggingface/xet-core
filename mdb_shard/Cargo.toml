@@ -31,6 +31,10 @@ uuid = { workspace = true, features = ["v4", "js"] }
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
 uuid = { workspace = true, features = ["v4"] }
 
+[target.'cfg(not(target_family = "wasm"))'.dev-dependencies]
+# for tokio::test
+tokio = { workspace = true}
+
 [[bin]]
 name = "shard_benchmark"
 path = "src/shard_benchmark.rs"
