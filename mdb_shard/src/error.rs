@@ -2,6 +2,7 @@ use std::io;
 
 use merklehash::MerkleHash;
 use thiserror::Error;
+use utils::RwTaskLockError;
 
 #[non_exhaustive]
 #[derive(Error, Debug)]
@@ -32,6 +33,12 @@ pub enum MDBShardError {
 
     #[error("Smudge query policy Error: {0}")]
     SmudgeQueryPolicyError(String),
+
+    #[error("Runtime Error (task scheduler): {0}")]
+    TaskRuntimeError(#[from] RwTaskLockError),
+
+    #[error("Runtime Error (task scheduler): {0}")]
+    TaskJoinError(#[from] tokio::task::JoinError),
 
     #[error("Error: {0}")]
     Other(String),
