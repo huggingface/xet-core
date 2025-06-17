@@ -98,14 +98,9 @@ pub fn build_auth_http_client<R: RetryableStrategy + Send + Sync + 'static>(
     }
     let reqwest_client = reqwest_client_builder.build()?;
 
-    // when all middlewares are used they are set in the following order:
-    // auth, retry, logging, session
-    let mut client_builder = ClientBuilder::new(reqwest_client).maybe_with(auth_middleware);
-    #[cfg(not(target_family = "wasm"))]
-    {
-        client_builder = client_builder.with(get_retry_middleware(retry_config));
-    }
-    let client = client_builder
+    let client = ClientBuilder::new(reqwest_client)
+        .maybe_with(auth_middleware)
+        .with(get_retry_middleware(retry_config))
         .maybe_with(logging_middleware)
         .maybe_with(session_middleware)
         .build();

@@ -24,12 +24,11 @@ In order to compile xet-core to wasm there are numerous changes:
   - (pattern adopted from from reqwest_middleware)
 - Moves any operations that utilise or rely on the file system to in memory, primarily shard formation and storage
   - We choose not to use on the file system interface provided to browser based applications
-- Remove retry middleware and custom dns resolver to HTTP requests
+- Remove custom dns resolver to HTTP requests
   - HTTP requests in the browser are limited fetch calls made by reqwest.
   - custom dns is not allowed, only HTTP
-  - the retry middleware dependency does not compile to WebAssembly as it requires `Send`'ness in places where WASM objects from wasm_bindgen cannot be `Send`
 
-#### Build Instructions
+## Build Instructions
 
 - Install nightly toolchain and dependencies:
 ```bash
@@ -39,7 +38,7 @@ cargo install wasm-bindgen-cli
 ```
 - Build with `./build_wasm.sh` (bash) 
 
-#### Run Instructions
+## Run Instructions
 First fill up the four `[FILL_ME]` fields in examples/index.html with a desired testing target.
 
 Then serve the web directory using a local http server, for example, https://crates.io/crates/sfz.
@@ -57,3 +56,27 @@ sfz --coi -r examples
 - Observe in browser
 In browser, go to URL http://127.0.0.1:5000, hit F12 and check the output
 under the "Console" tab.
+
+## Authentication in hf_xet_wasm
+
+Like hf_xet it is the caller's responsibility to set up authentication with the CAS server by getting a token from the huggingface hub.
+The caller is also required to provide a method to get a fresh/refreshed token from the hub in the event of token expiration.
+
+In hf_xet_wasm it must be supplied to the XetSession using a user-defined set of interfaces.
+
+```typescript
+    class TokenInfo {
+        token(): string {
+        }
+        exp(): bigint {
+            return this.exp;
+        }
+    }
+
+    class TokenRefresher {
+        async refreshToken(): TokenInfo {
+        }
+    }
+
+    const xetSession = new XetSession(<cas-enpdoint>, tokenInfo, tokenRefresher);
+```
