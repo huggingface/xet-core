@@ -8,34 +8,8 @@ use futures_util::io::AsyncReadExt;
 use crate::cas_structs::{CASChunkSequenceEntry, CASChunkSequenceHeader, MDBCASInfoView};
 use crate::error::Result;
 use crate::file_structs::{FileDataSequenceHeader, MDBFileInfoView};
-use crate::shard_file::{MDB_FILE_INFO_ENTRY_SIZE, MDB_SHARD_FOOTER_VERSION};
+use crate::shard_file::MDB_FILE_INFO_ENTRY_SIZE;
 use crate::{MDBShardFileFooter, MDBShardFileHeader};
-
-/// Iterate through a shard in a streaming manner, calling a callback on each file object and each cas object.
-pub fn process_shard_stream<R: Read, FileFunc, CasFunc>(
-    reader: &mut R,
-    file_callback: Option<FileFunc>,
-    cas_callback: Option<CasFunc>,
-) -> Result<()>
-where
-    FileFunc: FnMut(MDBFileInfoView) -> Result<()>,
-    CasFunc: FnMut(MDBCASInfoView) -> Result<()>,
-{
-    // Check the header; not needed except for version verification.
-    let _ = MDBShardFileHeader::deserialize(reader)?;
-
-    if let Some(callback) = file_callback {
-        process_shard_file_info_section(reader, callback)?;
-    } else {
-        process_shard_file_info_section(reader, |_| Ok(()))?;
-    }
-
-    // Now process through all the cas objects if needed.
-    if let Some(callback) = cas_callback {
-        process_shard_cas_info_section(reader, callback)?;
-    }
-    Ok(())
-}
 
 /// Runs through a shard file info section, calling the specified callback function for each entry.
 ///
@@ -107,34 +81,6 @@ where
 }
 
 // Async versions of the above
-
-/// Iterate through a shard in a streaming manner, calling a callback on each file object and each cas object.
-pub async fn process_shard_stream_async<R: AsyncRead + Unpin, FileFunc, CasFunc>(
-    reader: &mut R,
-    file_callback: Option<FileFunc>,
-    cas_callback: Option<CasFunc>,
-) -> Result<()>
-where
-    FileFunc: FnMut(MDBFileInfoView) -> Result<()>,
-    CasFunc: FnMut(MDBCASInfoView) -> Result<()>,
-{
-    // Check the header; not needed except for version verification.
-    let mut buf = [0u8; size_of::<MDBShardFileHeader>()];
-    reader.read_exact(&mut buf[..]).await?;
-    let _ = MDBShardFileHeader::deserialize(&mut Cursor::new(&buf))?;
-
-    if let Some(callback) = file_callback {
-        process_shard_file_info_section_async(reader, callback).await?;
-    } else {
-        process_shard_file_info_section_async(reader, |_| Ok(())).await?;
-    }
-
-    // Now process through all the cas objects if needed.
-    if let Some(callback) = cas_callback {
-        process_shard_cas_info_section_async(reader, callback).await?;
-    }
-    Ok(())
-}
 
 pub async fn process_shard_file_info_section_async<R: AsyncRead + Unpin, FileFunc>(
     reader: &mut R,
@@ -224,8 +170,6 @@ pub struct MDBMinimalShard {
     file_info_views: Vec<MDBFileInfoView>,
     cas_info_views: Vec<MDBCASInfoView>,
 }
-
-// TODO: Add callbacks to add verifications
 
 impl MDBMinimalShard {
     pub fn from_reader<R: Read>(reader: &mut R, include_files: bool, include_cas: bool) -> Result<Self> {
