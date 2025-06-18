@@ -553,7 +553,7 @@ impl MDBFileInfoView {
             let mut num_written = MDB_FILE_INFO_ENTRY_SIZE;
 
             writer.write_all(
-                &self.data[(1 * MDB_FILE_INFO_ENTRY_SIZE)..((1 + self.num_entries()) * MDB_FILE_INFO_ENTRY_SIZE)],
+                &self.data[(MDB_FILE_INFO_ENTRY_SIZE)..((1 + self.num_entries()) * MDB_FILE_INFO_ENTRY_SIZE)],
             )?;
             num_written += self.num_entries() * MDB_FILE_INFO_ENTRY_SIZE;
             if self.contains_metadata_ext() {
