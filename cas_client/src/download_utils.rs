@@ -54,7 +54,7 @@ pub(crate) enum DownloadRangeResult {
     // making it impossible to be examined programmatically.
     Forbidden,
 }
-pub(crate) type RangeDownloadSingleFlight = Arc<Group<DownloadRangeResult, CasClientError>>;
+pub type RangeDownloadSingleFlight = Arc<Group<DownloadRangeResult, CasClientError>>;
 
 #[derive(Debug)]
 pub struct FetchInfo {
@@ -221,7 +221,7 @@ impl SequentialTermDownload {
 }
 
 #[derive(Debug)]
-pub(crate) struct TermDownloadResult<T> {
+pub struct TermDownloadResult<T> {
     pub payload: T,         // download result
     pub duration: Duration, // duration to download
     pub n_retries_on_403: u32,
@@ -351,7 +351,7 @@ impl FetchTermDownloadOnceAndWriteEverywhereUsed {
     }
 }
 
-pub(crate) enum DownloadQueueItem<T> {
+pub enum DownloadQueueItem<T> {
     End,
     DownloadTask(T),
     Metadata(FetchInfo),
