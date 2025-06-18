@@ -350,25 +350,37 @@ mod tests {
     use crate::MDBShardInfo;
 
     fn verify_serialization(min_shard: &MDBMinimalShard, mem_shard: &MDBInMemoryShard) -> Result<()> {
-        // Now verify that the serialized version is the same too.
-        let mut reloaded_shard = Vec::new();
-        min_shard
-            .serialize(&mut reloaded_shard, min_shard.has_file_verification())
-            .unwrap();
+        for verification in [true, false] {
+            // Now verify that the serialized version is the same too.
+            let mut reloaded_shard = Vec::new();
+            let serialize_result = min_shard.serialize(&mut reloaded_shard, verification);
+            if !min_shard.has_file_verification() && verification && min_shard.num_files() > 0 {
+                assert!(serialize_result.is_err());
+                continue;
+            }
+            assert!(serialize_result.is_ok());
 
-        let si = MDBShardInfo::load_from_reader(&mut Cursor::new(&reloaded_shard)).unwrap();
+            let si = MDBShardInfo::load_from_reader(&mut Cursor::new(&reloaded_shard)).unwrap();
 
-        let file_info: Vec<MDBFileInfo> = si.read_all_file_info_sections(&mut Cursor::new(&reloaded_shard)).unwrap();
-        let mem_file_info: Vec<_> = mem_shard.file_content.clone().into_values().collect();
-        assert_eq!(file_info, mem_file_info);
+            let file_info: Vec<MDBFileInfo> =
+                si.read_all_file_info_sections(&mut Cursor::new(&reloaded_shard)).unwrap();
+            let mem_file_info: Vec<_> = mem_shard.file_content.clone().into_values().collect();
 
-        let cas_info: Vec<MDBCASInfo> = si.read_all_cas_blocks_full(&mut Cursor::new(&reloaded_shard)).unwrap();
-        let mem_cas_info: Vec<_> = mem_shard.cas_content.clone().into_values().collect();
+            for (i, (read, mem)) in file_info.iter().zip(mem_file_info.iter()).enumerate() {
+                assert!(
+                    read.equal_accepting_no_verification(mem),
+                    "i: {i} verification = {verification}"
+                );
+            }
 
-        assert_eq!(cas_info.len(), mem_cas_info.len());
+            let cas_info: Vec<MDBCASInfo> = si.read_all_cas_blocks_full(&mut Cursor::new(&reloaded_shard)).unwrap();
+            let mem_cas_info: Vec<_> = mem_shard.cas_content.clone().into_values().collect();
 
-        for i in 0..cas_info.len() {
-            assert_eq!(&cas_info[i], mem_cas_info[i].as_ref());
+            assert_eq!(cas_info.len(), mem_cas_info.len(), "verification = {verification}");
+
+            for i in 0..cas_info.len() {
+                assert_eq!(&cas_info[i], mem_cas_info[i].as_ref(), "verification = {verification}");
+            }
         }
 
         Ok(())
