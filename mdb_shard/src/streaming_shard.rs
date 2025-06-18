@@ -356,7 +356,6 @@ impl MDBMinimalShard {
 
         // Now fill out the footer and write it out.
         MDBShardFileFooter {
-            version: MDB_SHARD_FOOTER_VERSION,
             file_info_offset: fs_start,
             cas_info_offset: cs_start,
             file_lookup_offset: footer_start,
@@ -365,14 +364,13 @@ impl MDBMinimalShard {
             cas_lookup_num_entry: 0,
             chunk_lookup_offset: footer_start,
             chunk_lookup_num_entry: 0,
-            chunk_hash_hmac_key: Default::default(),
             shard_creation_timestamp: 0,
             shard_key_expiry: 0,
-            _buffer: Default::default(),
             stored_bytes_on_disk,
             materialized_bytes,
             stored_bytes,
             footer_offset: footer_start,
+            ..Default::default()
         }
         .serialize(writer)?;
 
