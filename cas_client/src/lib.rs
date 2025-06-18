@@ -13,7 +13,7 @@ pub use crate::interface::ShardClientInterface;
 mod download_utils;
 mod error;
 pub mod exports;
-mod http_client;
+pub mod http_client;
 mod interface;
 mod local_client;
 pub mod remote_client;
