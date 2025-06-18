@@ -44,7 +44,7 @@ utils::configurable_constants! {
 }
 
 #[derive(Clone, Debug)]
-pub(crate) enum DownloadRangeResult {
+pub enum DownloadRangeResult {
     Data(TermDownloadOutput),
     // This is a workaround to propagate the underlying request error as
     // the underlying reqwest_middleware::Error doesn't impl Clone.
