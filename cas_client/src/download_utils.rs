@@ -172,7 +172,7 @@ pub(crate) struct FetchTermDownload {
 }
 
 #[derive(Debug)]
-pub(crate) struct SequentialTermDownload {
+pub struct SequentialTermDownload {
     pub term: CASReconstructionTerm,
     pub download: FetchTermDownload,
     pub skip_bytes: u64, // number of bytes to skip at the front
