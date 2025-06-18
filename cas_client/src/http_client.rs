@@ -294,7 +294,7 @@ impl Middleware for AuthMiddleware {
     }
 }
 
-pub struct SessionMiddleware(String);
+pub struct SessionMiddleware(pub String);
 
 #[async_trait::async_trait]
 impl Middleware for SessionMiddleware {
