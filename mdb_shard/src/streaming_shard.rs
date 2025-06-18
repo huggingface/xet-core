@@ -8,7 +8,7 @@ use futures_util::io::AsyncReadExt;
 use crate::cas_structs::{CASChunkSequenceEntry, CASChunkSequenceHeader, MDBCASInfoView};
 use crate::error::Result;
 use crate::file_structs::{FileDataSequenceHeader, MDBFileInfoView};
-use crate::shard_file::MDB_FILE_INFO_ENTRY_SIZE;
+use crate::shard_file::{current_timestamp, MDB_FILE_INFO_ENTRY_SIZE};
 use crate::{MDBShardFileFooter, MDBShardFileHeader};
 
 /// Runs through a shard file info section, calling the specified callback function for each entry.
@@ -308,7 +308,7 @@ impl MDBMinimalShard {
             cas_lookup_num_entry: 0,
             chunk_lookup_offset: footer_start,
             chunk_lookup_num_entry: 0,
-            shard_creation_timestamp: 0,
+            shard_creation_timestamp: current_timestamp(),
             shard_key_expiry: 0,
             stored_bytes_on_disk,
             materialized_bytes,
