@@ -49,11 +49,10 @@ strict = []
 default = ["rustls-tls"]
 
 # Three options for compliation here.
+rustls-tls = ["reqwest/rustls-tls", "reqwest/rustls-tls-native-roots"]
 
 # rustls-tls uses the rustls package, which embeds all of the ssl stuff in a rust package.  This is the
 # most portable option, but also may not respect local network configurations.  Use this if the native-ssl options don't work.
-rustls-tls = ["reqwest/rustls-tls"]
-
 # Uses native tls in the request package; this uses the native-tls package to wrap openssl, which is a more robust and portable
 # way of ensuring that tls just works.
 native-tls = ["reqwest/native-tls"]
