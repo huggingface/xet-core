@@ -1,15 +1,15 @@
 use std::io::{copy, Cursor, Read, Write};
 use std::mem::size_of;
 
-use bytes::Bytes;
-use futures::AsyncRead;
-use futures_util::io::AsyncReadExt;
-
 use crate::cas_structs::{CASChunkSequenceEntry, CASChunkSequenceHeader, MDBCASInfoView};
-use crate::error::Result;
+use crate::error::{MDBShardError, Result};
 use crate::file_structs::{FileDataSequenceHeader, MDBFileInfoView};
 use crate::shard_file::{current_timestamp, MDB_FILE_INFO_ENTRY_SIZE};
 use crate::{MDBShardFileFooter, MDBShardFileHeader};
+use bytes::Bytes;
+use futures::AsyncRead;
+use futures_util::io::AsyncReadExt;
+use itertools::Itertools;
 
 /// Runs through a shard file info section, calling the specified callback function for each entry.
 ///
@@ -233,6 +233,11 @@ impl MDBMinimalShard {
             Ok(())
         })
         .await?;
+        // if only some files have verification, then we consider this shard invalid
+        // either all files have verification or no files have verification
+        if !file_info_views.is_empty() && !file_info_views.iter().map(|fiv| fiv.contains_verification()).all_equal() {
+            return Err(MDBShardError::invalid_shard("only some files contain verification"));
+        }
 
         // CAS stuff
         let mut cas_info_views = Vec::<MDBCASInfoView>::new();
@@ -250,6 +255,14 @@ impl MDBMinimalShard {
             cas_info_views,
         })
     }
+
+    pub fn has_file_verification(&self) -> bool {
+        let Some(file_info_view) = self.file_info_views.first() else {
+            return false;
+        };
+        file_info_view.contains_verification()
+    }
+
     pub fn num_files(&self) -> usize {
         self.file_info_views.len()
     }
@@ -266,7 +279,7 @@ impl MDBMinimalShard {
         self.cas_info_views.get(index)
     }
 
-    pub fn serialize<W: Write>(&self, writer: &mut W) -> Result<usize> {
+    pub fn serialize<W: Write>(&self, writer: &mut W, with_verification: bool) -> Result<usize> {
         let mut bytes = 0;
 
         bytes += MDBShardFileHeader::default().serialize(writer)?;
@@ -283,7 +296,7 @@ impl MDBMinimalShard {
                 let segment_info = file_info.entry(j);
                 materialized_bytes += segment_info.unpacked_segment_bytes as u64;
             }
-            bytes += file_info.serialize(writer)?;
+            bytes += file_info.serialize(writer, with_verification)?;
         }
         bytes += FileDataSequenceHeader::bookend().serialize(writer)?;
 
@@ -338,7 +351,9 @@ mod tests {
     fn verify_serialization(min_shard: &MDBMinimalShard, mem_shard: &MDBInMemoryShard) -> Result<()> {
         // Now verify that the serialized version is the same too.
         let mut reloaded_shard = Vec::new();
-        min_shard.serialize(&mut reloaded_shard).unwrap();
+        min_shard
+            .serialize(&mut reloaded_shard, min_shard.has_file_verification())
+            .unwrap();
 
         let si = MDBShardInfo::load_from_reader(&mut Cursor::new(&reloaded_shard)).unwrap();
 

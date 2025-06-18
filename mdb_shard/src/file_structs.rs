@@ -481,6 +481,7 @@ impl MDBFileInfoView {
 
         Ok(Self { header, data })
     }
+
     pub fn header(&self) -> &FileDataSequenceHeader {
         &self.header
     }
@@ -539,9 +540,34 @@ impl MDBFileInfoView {
     }
 
     #[inline]
-    pub fn serialize<W: Write>(&self, writer: &mut W) -> std::io::Result<usize> {
-        let n_bytes = self.byte_size();
-        writer.write_all(&self.data)?;
+    pub fn serialize<W: Write>(&self, writer: &mut W, with_verification: bool) -> std::io::Result<usize> {
+        let have_verification = self.contains_verification();
+        if with_verification && !have_verification {
+            return Err(std::io::Error::other("missing requested verification info"));
+        }
+        let n_bytes = if !with_verification && have_verification {
+            // surgically stitch file info section sans verification
+            let header =
+                FileDataSequenceHeader::new(self.file_hash(), self.num_entries(), false, self.contains_metadata_ext());
+            header.serialize(writer)?;
+            let mut num_written = MDB_FILE_INFO_ENTRY_SIZE;
+
+            writer.write_all(
+                &self.data[(1 * MDB_FILE_INFO_ENTRY_SIZE)..((1 + self.num_entries()) * MDB_FILE_INFO_ENTRY_SIZE)],
+            )?;
+            num_written += self.num_entries() * MDB_FILE_INFO_ENTRY_SIZE;
+            if self.contains_metadata_ext() {
+                writer.write_all(&self.data[(self.data.len() - MDB_FILE_INFO_ENTRY_SIZE)..])?;
+                num_written += MDB_FILE_INFO_ENTRY_SIZE;
+            }
+            // amount written
+            num_written
+        } else {
+            // copy as is
+            writer.write_all(&self.data)?;
+            self.data.len()
+        };
+
         Ok(n_bytes)
     }
 
