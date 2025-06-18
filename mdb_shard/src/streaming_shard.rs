@@ -135,6 +135,7 @@ where
     }
     Ok(())
 }
+
 pub async fn process_shard_file_info_section_async<R: AsyncRead + Unpin, FileFunc>(
     reader: &mut R,
     mut file_callback: FileFunc,
@@ -259,6 +260,20 @@ impl MDBMinimalShard {
         include_files: bool,
         include_cas: bool,
     ) -> Result<Self> {
+        Self::from_reader_async_with_custom_callbacks(reader, include_files, include_cas, |_| Ok(()), |_| Ok(())).await
+    }
+
+    pub async fn from_reader_async_with_custom_callbacks<R: AsyncRead + Unpin, FileFunc, CasFunc>(
+        reader: &mut R,
+        include_files: bool,
+        include_cas: bool,
+        mut file_callback: FileFunc,
+        mut cas_callback: CasFunc,
+    ) -> Result<Self>
+    where
+        FileFunc: FnMut(&MDBFileInfoView) -> Result<()>,
+        CasFunc: FnMut(&MDBCASInfoView) -> Result<()>,
+    {
         // Check the header; not needed except for version verification.
         let mut buf = [0u8; size_of::<MDBShardFileHeader>()];
         reader.read_exact(&mut buf[..]).await?;
@@ -268,6 +283,7 @@ impl MDBMinimalShard {
         process_shard_file_info_section_async(reader, |fiv: MDBFileInfoView| {
             // register the offset here to the file entries
             if include_files {
+                file_callback(&fiv)?;
                 file_info_views.push(fiv);
             }
             Ok(())
@@ -278,6 +294,7 @@ impl MDBMinimalShard {
         let mut cas_info_views = Vec::<MDBCASInfoView>::new();
         if include_cas {
             process_shard_cas_info_section_async(reader, |civ: MDBCASInfoView| {
+                cas_callback(&civ)?;
                 cas_info_views.push(civ);
                 Ok(())
             })
@@ -436,6 +453,38 @@ mod tests {
             cas_only_memshard.file_content.clear();
 
             verify_serialization(&min_shard, &cas_only_memshard).unwrap();
+        }
+
+        // Test custom callbacks
+        {
+            let mut file_info_views = vec![];
+            let mut cas_info_views = vec![];
+
+            let min_shard = MDBMinimalShard::from_reader(&mut Cursor::new(&buffer), true, true).unwrap();
+            let min_shard_async = MDBMinimalShard::from_reader_async_with_custom_callbacks(
+                &mut &buffer[..],
+                true,
+                true,
+                |f| {
+                    file_info_views.push(f.clone());
+                    Ok(())
+                },
+                |c| {
+                    cas_info_views.push(c.clone());
+                    Ok(())
+                },
+            )
+            .await
+            .unwrap();
+
+            assert_eq!(min_shard, min_shard_async);
+            assert_eq!(file_info_views, min_shard.file_info_views);
+            assert_eq!(cas_info_views, min_shard.cas_info_views);
+
+            let mut cas_only_memshard = mem_shard.clone();
+            cas_only_memshard.file_content.clear();
+
+            verify_serialization(&min_shard, mem_shard).unwrap();
         }
 
         Ok(())
