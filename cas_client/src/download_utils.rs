@@ -158,7 +158,7 @@ impl FetchInfo {
 /// during reconstruction.
 #[derive(Derivative)]
 #[derivative(Debug)]
-pub(crate) struct FetchTermDownload {
+pub struct FetchTermDownload {
     pub hash: MerkleHash,
     pub range: ChunkRange,
     #[derivative(Debug = "ignore")]
