@@ -189,9 +189,11 @@ impl SequentialTermDownload {
                     data,
                     chunk_byte_indices,
                     chunk_range,
+                    cached: _,
                 },
             duration,
             n_retries_on_403,
+            cached,
         } = self.download.run().await?;
 
         // if the requested range is smaller than the fetched range, trim it down to the right data
@@ -216,6 +218,7 @@ impl SequentialTermDownload {
             payload: final_term_data.to_vec(),
             duration,
             n_retries_on_403,
+            cached,
         })
     }
 }
@@ -225,6 +228,7 @@ pub struct TermDownloadResult<T> {
     pub payload: T,         // download result
     pub duration: Duration, // duration to download
     pub n_retries_on_403: u32,
+    pub cached: bool, // whether the data was fetched from cache
 }
 
 #[derive(Debug, Clone)]
@@ -232,6 +236,7 @@ pub(crate) struct TermDownloadOutput {
     pub data: Vec<u8>,
     pub chunk_byte_indices: Vec<u32>,
     pub chunk_range: ChunkRange,
+    pub cached: bool, // whether the data was fetched from cache
 }
 
 impl From<CacheRange> for TermDownloadOutput {
@@ -240,6 +245,7 @@ impl From<CacheRange> for TermDownloadOutput {
             data,
             chunk_byte_indices: offsets,
             chunk_range: range,
+            cached: true, // data is from cache
         }
     }
 }
@@ -251,6 +257,7 @@ impl FetchTermDownload {
         let mut n_retries_on_403 = 0;
 
         let key = (self.hash.into(), self.range);
+        let mut cached = true;
         let data = loop {
             let (fetch_info, v) = self.fetch_info.find(key).await?;
 
@@ -269,13 +276,18 @@ impl FetchTermDownload {
                 continue;
             }
 
-            break range_data?;
+            let range_data = range_data?;
+            if !range_data.cached {
+                cached = false;
+            }
+            break range_data;
         };
 
         Ok(TermDownloadResult {
             payload: data,
             duration: instant.elapsed(),
             n_retries_on_403,
+            cached,
         })
     }
 }
@@ -307,6 +319,7 @@ impl FetchTermDownloadOnceAndWriteEverywhereUsed {
             data,
             chunk_byte_indices,
             chunk_range,
+            cached,
         } = download_result.payload;
         debug_assert_eq!(chunk_byte_indices.len(), (chunk_range.end - chunk_range.start + 1) as usize);
         debug_assert_eq!(*chunk_byte_indices.last().expect("checked len is something") as usize, data.len());
@@ -347,6 +360,7 @@ impl FetchTermDownloadOnceAndWriteEverywhereUsed {
             payload: total_written,
             duration: download_result.duration,
             n_retries_on_403: download_result.n_retries_on_403,
+            cached,
         })
     }
 }
@@ -547,6 +561,9 @@ async fn download_fetch_term_data(
                 }
             }
 
+            // check X-Cache-Status header to see if the data was cached
+            let cached = response.headers().get("X-Cache-Status").map_or(false, |v| v == "Hit");
+
             let (data, chunk_byte_indices) = cas_object::deserialize_async::deserialize_chunks_from_stream(
                 response.bytes_stream().map_err(std::io::Error::other),
             )
@@ -555,6 +572,7 @@ async fn download_fetch_term_data(
                 data,
                 chunk_byte_indices,
                 chunk_range: fetch_term.range,
+                cached,
             }))
         },
         ChunkRangeDeserializeFromBytesStreamRetryCondition,
