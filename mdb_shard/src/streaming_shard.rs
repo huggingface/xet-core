@@ -367,10 +367,7 @@ mod tests {
             let mem_file_info: Vec<_> = mem_shard.file_content.clone().into_values().collect();
 
             for (i, (read, mem)) in file_info.iter().zip(mem_file_info.iter()).enumerate() {
-                assert!(
-                    read.equal_accepting_no_verification(mem),
-                    "i: {i} verification = {verification}"
-                );
+                assert!(read.equal_accepting_no_verification(mem), "i: {i} verification = {verification}");
             }
 
             let cas_info: Vec<MDBCASInfo> = si.read_all_cas_blocks_full(&mut Cursor::new(&reloaded_shard)).unwrap();
