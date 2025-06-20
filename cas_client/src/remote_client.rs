@@ -5,7 +5,6 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use anyhow::anyhow;
-use async_trait::async_trait;
 use cas_object::SerializedCasObject;
 use cas_types::{
     BatchQueryReconstructionResponse, CASReconstructionTerm, ChunkRange, FileRange, HttpRange, Key,
@@ -22,18 +21,22 @@ use mdb_shard::utils::shard_file_name;
 use merklehash::{HashedWrite, MerkleHash};
 use progress_tracking::item_tracking::SingleItemProgressUpdater;
 use progress_tracking::upload_tracking::CompletionTracker;
-use reqwest::{Body, StatusCode, Url};
+use reqwest::{Body, Response, StatusCode, Url};
 use reqwest_middleware::ClientWithMiddleware;
 use tokio::sync::{mpsc, OwnedSemaphorePermit, Semaphore};
 use tokio::task::{JoinHandle, JoinSet};
 use tracing::{debug, info, instrument};
 use utils::auth::AuthConfig;
+#[cfg(not(target_family = "wasm"))]
 use utils::singleflight::Group;
 
+#[cfg(not(target_family = "wasm"))]
 use crate::download_utils::*;
 use crate::error::{CasClientError, Result};
 use crate::http_client::{Api, ResponseErrorLogger, RetryConfig};
-use crate::interface::{ShardDedupProber, *};
+use crate::interface::*;
+#[cfg(not(target_family = "wasm"))]
+use crate::output_provider::OutputProvider;
 use crate::retry_utils::retry_wrapper;
 use crate::{http_client, Client, RegistrationClient, ShardClientInterface};
 
@@ -76,8 +79,9 @@ pub struct RemoteClient {
     authenticated_http_client_no_retry: Arc<ClientWithMiddleware>,
     conservative_authenticated_http_client: Arc<ClientWithMiddleware>,
     chunk_cache: Option<Arc<dyn ChunkCache>>,
+    #[cfg(not(target_family = "wasm"))]
     range_download_single_flight: RangeDownloadSingleFlight,
-    shard_cache_directory: PathBuf,
+    shard_cache_directory: Option<PathBuf>,
 }
 
 impl RemoteClient {
@@ -86,7 +90,7 @@ impl RemoteClient {
         endpoint: &str,
         auth: &Option<AuthConfig>,
         cache_config: &Option<CacheConfig>,
-        shard_cache_directory: PathBuf,
+        shard_cache_directory: Option<PathBuf>,
         session_id: &str,
         dry_run: bool,
     ) -> Self {
@@ -107,7 +111,6 @@ impl RemoteClient {
         } else {
             None
         };
-        let range_download_single_flight = Arc::new(Group::new());
 
         Self {
             endpoint: endpoint.to_string(),
@@ -123,14 +126,41 @@ impl RemoteClient {
             ),
             http_client: Arc::new(http_client::build_http_client(RetryConfig::default(), session_id).unwrap()),
             chunk_cache,
-            range_download_single_flight,
+            #[cfg(not(target_family = "wasm"))]
+            range_download_single_flight: Arc::new(Group::new()),
             shard_cache_directory,
         }
     }
+
+    async fn query_dedup_api(&self, prefix: &str, chunk_hash: &MerkleHash) -> Result<Option<Response>> {
+        // The API endpoint now only supports non-batched dedup request and
+        // ignores salt.
+        let key = Key {
+            prefix: prefix.into(),
+            hash: *chunk_hash,
+        };
+
+        let url = Url::parse(&format!("{0}/chunk/{key}", self.endpoint))?;
+
+        let response = self
+            .conservative_authenticated_http_client
+            .get(url)
+            .send()
+            .await
+            .map_err(|e| CasClientError::Other(format!("request failed with error {e}")))?;
+
+        // Dedup shard not found, return empty result
+        if !response.status().is_success() {
+            return Ok(None);
+        }
+        Ok(Some(response))
+    }
 }
 
-#[async_trait]
+#[cfg_attr(not(target_family = "wasm"), async_trait::async_trait)]
+#[cfg_attr(target_family = "wasm", async_trait::async_trait(?Send))]
 impl UploadClient for RemoteClient {
+    #[cfg(not(target_family = "wasm"))]
     #[instrument(skip_all, name = "RemoteClient::upload_xorb", fields(key = Key{prefix : prefix.to_string(), hash : serialized_cas_object.hash}.to_string(),
                  xorb.len = serialized_cas_object.serialized_data.len(), xorb.num_chunks = serialized_cas_object.num_chunks
     ))]
@@ -207,6 +237,33 @@ impl UploadClient for RemoteClient {
         Ok(n_upload_bytes)
     }
 
+    #[cfg(target_family = "wasm")]
+    async fn upload_xorb(
+        &self,
+        prefix: &str,
+        serialized_cas_object: SerializedCasObject,
+        upload_tracker: Option<Arc<CompletionTracker>>,
+    ) -> Result<u64> {
+        let key = Key {
+            prefix: prefix.to_string(),
+            hash: serialized_cas_object.hash,
+        };
+
+        let url = Url::parse(&format!("{}/xorb/{key}", self.endpoint))?;
+
+        let n_upload_bytes = serialized_cas_object.serialized_data.len() as u64;
+
+        let xorb_uploaded = self
+            .authenticated_http_client
+            .post(url)
+            .with_extension(Api("cas::upload_xorb"))
+            .body(serialized_cas_object.serialized_data)
+            .send()
+            .await?;
+
+        Ok(n_upload_bytes)
+    }
+
     async fn exists(&self, prefix: &str, hash: &MerkleHash) -> Result<bool> {
         let key = Key {
             prefix: prefix.to_string(),
@@ -227,7 +284,8 @@ impl UploadClient for RemoteClient {
     }
 }
 
-#[async_trait]
+#[cfg(not(target_family = "wasm"))]
+#[async_trait::async_trait]
 impl ReconstructionClient for RemoteClient {
     async fn get_file(
         &self,
@@ -255,8 +313,9 @@ impl ReconstructionClient for RemoteClient {
     }
 }
 
-#[async_trait]
-impl Reconstructable for RemoteClient {
+#[cfg(not(target_family = "wasm"))]
+#[async_trait::async_trait]
+impl Reconstruct for RemoteClient {
     async fn get_reconstruction(
         &self,
         file_id: &MerkleHash,
@@ -312,6 +371,7 @@ pub(crate) async fn get_reconstruction_with_endpoint_and_client(
 
 impl Client for RemoteClient {}
 
+#[cfg(not(target_family = "wasm"))]
 impl RemoteClient {
     #[instrument(skip_all, name = "RemoteClient::batch_get_reconstruction")]
     async fn batch_get_reconstruction(
@@ -629,6 +689,7 @@ impl RemoteClient {
     }
 }
 
+#[cfg(not(target_family = "wasm"))]
 #[allow(clippy::too_many_arguments)]
 async fn map_fetch_info_into_download_tasks(
     segment: Arc<FetchInfo>,
@@ -695,7 +756,8 @@ async fn map_fetch_info_into_download_tasks(
     Ok(tasks)
 }
 
-#[async_trait]
+#[cfg_attr(not(target_family = "wasm"), async_trait::async_trait)]
+#[cfg_attr(target_family = "wasm", async_trait::async_trait(?Send))]
 impl RegistrationClient for RemoteClient {
     #[instrument(skip_all, name = "RemoteClient::upload_shard", fields(shard.hash = hash.hex(), shard.len = shard_data.len()
     ))]
@@ -742,7 +804,8 @@ impl RegistrationClient for RemoteClient {
     }
 }
 
-#[async_trait]
+#[cfg_attr(not(target_family = "wasm"), async_trait::async_trait)]
+#[cfg_attr(target_family = "wasm", async_trait::async_trait(?Send))]
 impl FileReconstructor<CasClientError> for RemoteClient {
     #[instrument(skip_all, name = "RemoteClient::get_file_reconstruction", fields(file.hash = file_hash.hex()
     ))]
@@ -779,44 +842,28 @@ impl FileReconstructor<CasClientError> for RemoteClient {
     }
 }
 
-#[async_trait]
+#[cfg_attr(not(target_family = "wasm"), async_trait::async_trait)]
+#[cfg_attr(target_family = "wasm", async_trait::async_trait(?Send))]
 impl ShardDedupProber for RemoteClient {
     #[instrument(skip_all, name = "RemoteClient::query_global_dedup")]
+    #[cfg(not(target_family = "wasm"))]
     async fn query_for_global_dedup_shard(
         &self,
         prefix: &str,
         chunk_hash: &MerkleHash,
         _salt: &[u8; 32],
     ) -> Result<Option<PathBuf>> {
-        if self.shard_cache_directory == PathBuf::default() {
+        let Some(ref shard_cache_directory) = self.shard_cache_directory else {
             return Err(CasClientError::ConfigurationError(
                 "Shard Write Directory not set; cannot download.".to_string(),
             ));
-        }
-
-        // The API endpoint now only supports non-batched dedup request and
-        // ignores salt.
-        let key = Key {
-            prefix: prefix.into(),
-            hash: *chunk_hash,
         };
 
-        let url = Url::parse(&format!("{0}/chunk/{key}", self.endpoint))?;
-
-        let mut response = self
-            .conservative_authenticated_http_client
-            .get(url)
-            .with_extension(Api("cas::query_dedup"))
-            .send()
-            .await
-            .map_err(|e| CasClientError::Other(format!("request failed with error {e}")))?;
-
-        // Dedup shard not found, return empty result
-        if !response.status().is_success() {
+        let Some(mut response) = self.query_dedup_api(prefix, chunk_hash).await? else {
             return Ok(None);
-        }
+        };
 
-        let writer = SafeFileCreator::new_unnamed(&self.shard_cache_directory)?;
+        let writer = SafeFileCreator::new_unnamed(shard_cache_directory)?;
         // Compute the actual hash to use as the shard file name
         let mut hashed_writer = HashedWrite::new(writer);
 
@@ -826,18 +873,32 @@ impl ShardDedupProber for RemoteClient {
         hashed_writer.flush()?;
 
         let shard_hash = hashed_writer.hash();
-        let file_path = self.shard_cache_directory.join(shard_file_name(&shard_hash));
+        let file_path = shard_cache_directory.join(shard_file_name(&shard_hash));
         let mut writer = hashed_writer.into_inner();
         writer.set_dest_path(&file_path);
         writer.close()?;
 
         Ok(Some(file_path))
     }
+
+    async fn query_for_global_dedup_shard_in_memory(
+        &self,
+        prefix: &str,
+        chunk_hash: &MerkleHash,
+        _salt: &[u8; 32],
+    ) -> Result<Option<Vec<u8>>> {
+        let Some(response) = self.query_dedup_api(prefix, chunk_hash).await? else {
+            return Ok(None);
+        };
+
+        Ok(Some(response.bytes().await?.to_vec()))
+    }
 }
 
 impl ShardClientInterface for RemoteClient {}
 
 #[cfg(test)]
+#[cfg(not(target_family = "wasm"))]
 mod tests {
     use std::collections::HashMap;
 
@@ -853,7 +914,7 @@ mod tests {
     use xet_threadpool::ThreadPool;
 
     use super::*;
-    use crate::interface::buffer::BufferProvider;
+    use crate::output_provider::BufferProvider;
 
     #[ignore = "requires a running CAS server"]
     #[traced_test]
@@ -864,7 +925,7 @@ mod tests {
         let raw_xorb = build_raw_xorb(3, ChunkSize::Random(512, 10248));
 
         let threadpool = ThreadPool::new().unwrap();
-        let client = RemoteClient::new(CAS_ENDPOINT, &None, &None, "".into(), "", false);
+        let client = RemoteClient::new(CAS_ENDPOINT, &None, &None, None, "", false);
 
         let cas_object = build_and_verify_cas_object(raw_xorb, Some(CompressionScheme::LZ4));
 
@@ -1237,7 +1298,7 @@ mod tests {
 
         // test reconstruct and sequential write
         let test = test_case.clone();
-        let client = RemoteClient::new(endpoint, &None, &None, "".into(), "", false);
+        let client = RemoteClient::new(endpoint, &None, &None, None, "", false);
         let provider = BufferProvider::default();
         let buf = provider.buf.clone();
         let writer = OutputProvider::Buffer(provider);
@@ -1255,7 +1316,7 @@ mod tests {
 
         // test reconstruct and parallel write
         let test = test_case;
-        let client = RemoteClient::new(endpoint, &None, &None, "".into(), "", false);
+        let client = RemoteClient::new(endpoint, &None, &None, None, "", false);
         let provider = BufferProvider::default();
         let buf = provider.buf.clone();
         let writer = OutputProvider::Buffer(provider);

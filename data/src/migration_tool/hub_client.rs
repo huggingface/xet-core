@@ -1,7 +1,6 @@
 use std::sync::Arc;
 
 use anyhow::{anyhow, Result};
-use async_trait::async_trait;
 use cas_client::exports::ClientWithMiddleware;
 use cas_client::{build_http_client, Api, RetryConfig};
 use utils::auth::{TokenInfo, TokenRefresher};
@@ -77,7 +76,8 @@ pub struct HubClientTokenRefresher {
     pub client: Arc<HubClient>,
 }
 
-#[async_trait]
+#[cfg_attr(not(target_family = "wasm"), async_trait::async_trait)]
+#[cfg_attr(target_family = "wasm", async_trait::async_trait(?Send))]
 impl TokenRefresher for HubClientTokenRefresher {
     async fn refresh(&self) -> std::result::Result<TokenInfo, AuthError> {
         let client = self.client.clone();

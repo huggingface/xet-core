@@ -59,3 +59,21 @@ jobs:
       - name: Build and Test
         run: |
           cargo test --verbose --no-fail-fast --features "strict"
+  build_and_test-wasm:
+    name: Build WASM
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      - name: Install Rust nightly
+        uses: dtolnay/rust-toolchain@nightly
+        with:
+          targets: wasm32-unknown-unknown
+          components: rust-src
+      - name: Install wasm-bindgen-cli
+        run: |
+          cargo install wasm-bindgen-cli
+      - name: Build hf_xet_wasm
+        working-directory: hf_xet_wasm
+        run: |
+          ./build_wasm.sh

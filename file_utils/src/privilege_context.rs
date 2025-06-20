@@ -52,6 +52,12 @@ fn is_elevated_impl() -> bool {
             elevation.TokenIsElevated != 0
         }
     }
+
+    #[cfg(not(any(unix, windows)))]
+    {
+        // For other platforms, we assume not elevated
+        false
+    }
 }
 
 lazy_static! {
