@@ -27,21 +27,21 @@ const_assert!(MDB_FILE_INFO_ENTRY_SIZE == size_of::<FileDataSequenceEntry>());
 const_assert!(MDB_FILE_INFO_ENTRY_SIZE == size_of::<FileVerificationEntry>());
 const_assert!(MDB_FILE_INFO_ENTRY_SIZE == size_of::<FileMetadataExt>());
 // Same size for CASChunkSequenceHeader and CASChunkSequenceEntry
-pub const MDB_CAS_INFO_ENTRY_SIZE: usize = size_of::<[u64; 4]>() + 4 * size_of::<u32>();
+const MDB_CAS_INFO_ENTRY_SIZE: usize = size_of::<[u64; 4]>() + 4 * size_of::<u32>();
 const_assert!(MDB_CAS_INFO_ENTRY_SIZE == size_of::<CASChunkSequenceHeader>());
 const_assert!(MDB_CAS_INFO_ENTRY_SIZE == size_of::<CASChunkSequenceEntry>());
 
-pub const MDB_SHARD_FOOTER_SIZE: i64 = size_of::<MDBShardFileFooter>() as i64;
+const MDB_SHARD_FOOTER_SIZE: i64 = size_of::<MDBShardFileFooter>() as i64;
 
-pub const MDB_SHARD_HEADER_VERSION: u64 = 2;
+const MDB_SHARD_HEADER_VERSION: u64 = 2;
 
-pub const MDB_SHARD_FOOTER_VERSION: u64 = 1;
+const MDB_SHARD_FOOTER_VERSION: u64 = 1;
 
 // At the start of each shard file, insert a tag plus a magic-number sequence of bytes to ensure
 // that we are able to quickly identify a file as a shard file.
 
 // FOR NOW: Change the header tag to include BETA.  When we're ready to
-pub const MDB_SHARD_HEADER_TAG: [u8; 32] = [
+const MDB_SHARD_HEADER_TAG: [u8; 32] = [
     b'H', b'F', b'R', b'e', b'p', b'o', b'M', b'e', b't', b'a', b'D', b'a', b't', b'a', 0, 85, 105, 103, 69, 106, 123,
     129, 87, 131, 165, 189, 217, 92, 205, 209, 74, 169,
 ];
@@ -50,7 +50,7 @@ pub const MDB_SHARD_HEADER_TAG: [u8; 32] = [
 pub fn current_timestamp() -> u64 {
     // Get the seconds since the epoc as u64
     std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
+        .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs()
 }
@@ -97,13 +97,6 @@ impl MDBShardFileHeader {
             version: read_u64(reader)?,
             footer_size: read_u64(reader)?,
         })
-    }
-
-    pub async fn deserialize_async<R: futures::io::AsyncRead + Unpin>(reader: &mut R) -> Result<Self> {
-        let mut v = [0u8; size_of::<Self>()];
-        reader.read_exact(&mut v[..]).await?;
-        let mut reader_curs = std::io::Cursor::new(&v);
-        Self::deserialize(&mut reader_curs)
     }
 }
 
@@ -539,7 +532,7 @@ impl MDBShardInfo {
             self.metadata.chunk_lookup_offset,
             self.metadata.chunk_lookup_num_entry,
             truncate_hash(&self.keyed_chunk_hash(unkeyed_chunk_hash)),
-            |reader| (Ok((read_u32(reader)?, read_u32(reader)?))),
+            |reader| Ok((read_u32(reader)?, read_u32(reader)?)),
             dest_indices,
         )?;
 
@@ -985,7 +978,7 @@ impl MDBShardInfo {
         reader: &mut R,
         writer: &mut W,
         hmac_key: HMACKey,
-        key_valid_for: std::time::Duration,
+        key_valid_for: Duration,
         include_file_info: bool,
         include_cas_lookup_table: bool,
         include_chunk_lookup_table: bool,
@@ -1008,7 +1001,7 @@ impl MDBShardInfo {
         reader: &mut R,
         writer: &mut W,
         hmac_key: HMACKey,
-        key_valid_for: std::time::Duration,
+        key_valid_for: Duration,
         include_file_info: bool,
         include_cas_lookup_table: bool,
         include_chunk_lookup_table: bool,
@@ -1030,7 +1023,7 @@ impl MDBShardInfo {
         reader: &mut R,
         writer: &mut W,
         hmac_key: HMACKey,
-        key_valid_for: std::time::Duration,
+        key_valid_for: Duration,
         include_file_info: bool,
         include_cas_lookup_table: bool,
         include_chunk_lookup_table: bool,
@@ -1506,7 +1499,7 @@ pub mod test_routines {
                 let cas_idx = rng.random_range(0..cas_nodes.len());
                 let cas_block = &cas_nodes[cas_idx];
                 let start_idx = rng.random_range(0..cas_block.chunks.len());
-                let end_idx = rng.random_range((start_idx + 1)..=(cas_nodes[cas_idx].chunks.len()));
+                let end_idx = rng.random_range((start_idx + 1)..=cas_nodes[cas_idx].chunks.len());
 
                 FileDataSequenceEntry::new(
                     cas_block.metadata.cas_hash,
@@ -1652,7 +1645,7 @@ pub mod test_routines {
             assert_eq!(&read_cas, cas.as_ref());
             assert_eq!(&cas_blocks_full[i], cas.as_ref());
 
-            let m_cas_chunk = min_shard.cas(i);
+            let m_cas_chunk = min_shard.cas(i).unwrap();
             assert_eq!(m_cas_chunk.header(), &cas_blocks_full[i].metadata);
             assert_eq!(m_cas_chunk.num_entries(), cas_blocks_full[i].chunks.len());
             for j in 0..m_cas_chunk.num_entries() {
@@ -1680,12 +1673,12 @@ pub mod test_routines {
                 let num_entries = (byte_end - byte_start) / (size_of::<FileDataSequenceEntry>() as u64);
 
                 // No leftovers
-                assert_eq!(num_entries * (size_of::<FileDataSequenceEntry>() as u64), (byte_end - byte_start));
+                assert_eq!(num_entries * (size_of::<FileDataSequenceEntry>() as u64), byte_end - byte_start);
 
                 assert_eq!(num_entries, true_fi.segments.len() as u64);
 
                 // Minimal view is good
-                let m_file_info = min_shard.file(i);
+                let m_file_info = min_shard.file(i).unwrap();
                 assert_eq!(m_file_info.header(), &true_fi.metadata);
                 assert_eq!(m_file_info.num_entries(), true_fi.segments.len());
 
@@ -1707,7 +1700,7 @@ pub mod test_routines {
                     let num_entries = (byte_end - byte_start) / (size_of::<FileVerificationEntry>() as u64);
 
                     // No leftovers
-                    assert_eq!(num_entries * (size_of::<FileVerificationEntry>() as u64), (byte_end - byte_start));
+                    assert_eq!(num_entries * (size_of::<FileVerificationEntry>() as u64), byte_end - byte_start);
 
                     assert_eq!(num_entries, true_fi.verification.len() as u64);
 
@@ -1731,16 +1724,9 @@ pub mod test_routines {
 
 #[cfg(test)]
 mod tests {
-    use futures::AsyncReadExt;
-    use utils::async_read::AsyncReadCustomExt;
 
     use super::test_routines::*;
-    use crate::cas_structs::MDBCASInfo;
     use crate::error::Result;
-    use crate::file_structs::MDBFileInfo;
-    use crate::shard_format::MDB_SHARD_FOOTER_SIZE;
-    use crate::shard_in_memory::MDBInMemoryShard;
-    use crate::{MDBShardFileFooter, MDBShardFileHeader};
 
     #[test]
     fn test_simple() -> Result<()> {
@@ -1829,97 +1815,5 @@ mod tests {
         verify_mdb_shard(&shard)?;
 
         Ok(())
-    }
-
-    async fn deserialize_shard_file_async(mem_shard: &MDBInMemoryShard, shard: Vec<u8>) -> Result<()> {
-        let len = shard.len();
-        let mut reader = futures::io::Cursor::new(shard);
-        let header = MDBShardFileHeader::deserialize_async(&mut reader).await?;
-
-        let file_info_offset = reader.position();
-        let mut file_infos = vec![];
-        while let Some(file_info) = MDBFileInfo::deserialize_async(&mut reader).await? {
-            file_infos.push(file_info);
-        }
-        let cas_info_offset = reader.position();
-        let mut cas_infos = vec![];
-        while let Some(cas_info) = MDBCASInfo::deserialize_async(&mut reader).await? {
-            cas_infos.push(cas_info);
-        }
-
-        // the set of tests using these utilities do not deserialize or verify the lookup sections
-        let lookup_sections_skip_bytes = (len as i64 - MDB_SHARD_FOOTER_SIZE) - reader.position() as i64;
-        assert!(lookup_sections_skip_bytes >= 0);
-        if lookup_sections_skip_bytes > 0 {
-            (&mut reader).take(lookup_sections_skip_bytes as u64).drain().await?;
-        }
-        let footer_offset = reader.position();
-        let footer = MDBShardFileFooter::deserialize_async(&mut reader).await?;
-        assert_eq!(reader.position(), len as u64);
-        assert_eq!(file_info_offset, footer.file_info_offset);
-        assert_eq!(cas_info_offset, footer.cas_info_offset);
-        assert_eq!(footer_offset, footer.footer_offset);
-        assert_eq!(len as u64 - footer_offset, header.footer_size);
-
-        // validate file_infos
-        assert_eq!(file_infos.len(), mem_shard.file_content.len());
-        for (file_hash, mem_file_info) in mem_shard.file_content.iter() {
-            let file_info_result = file_infos.iter().find(|f| f.metadata.file_hash == *file_hash);
-            assert!(file_info_result.is_some());
-            let file_info = file_info_result.unwrap();
-            assert_eq!(file_info, mem_file_info)
-        }
-
-        // validate cas_infos
-        assert_eq!(cas_infos.len(), mem_shard.cas_content.len());
-        for (cas_hash, mem_cas_info) in mem_shard.cas_content.iter() {
-            let cas_info_result = cas_infos.iter().find(|c| c.metadata.cas_hash == *cas_hash);
-            assert!(cas_info_result.is_some());
-            let cas_info = cas_info_result.unwrap();
-            assert_eq!(cas_info, mem_cas_info.as_ref());
-        }
-
-        Ok(())
-    }
-
-    async fn validate_shard_async(mem_shard: &MDBInMemoryShard) -> Result<()> {
-        let file = convert_to_file(mem_shard)?;
-        deserialize_shard_file_async(mem_shard, file).await
-    }
-
-    #[tokio::test]
-    async fn deserialize_async() {
-        let shard = gen_random_shard(0, &[], &[], false, false).unwrap();
-        assert!(validate_shard_async(&shard).await.is_ok());
-
-        let shard = gen_random_shard(0, &[1, 5, 10, 8], &[4, 3, 5, 9, 4, 6], false, false).unwrap();
-        assert!(validate_shard_async(&shard).await.is_ok());
-
-        let shard = gen_random_shard(0, &[1, 5, 10, 8], &[4, 3, 5, 9, 4, 6], true, false).unwrap();
-        assert!(validate_shard_async(&shard).await.is_ok());
-
-        let shard = gen_random_shard(0, &[1, 5, 10, 8], &[4, 3, 5, 9, 4, 6], false, true).unwrap();
-        assert!(validate_shard_async(&shard).await.is_ok());
-
-        let shard = gen_random_shard(0, &[1, 5, 10, 8], &[4, 3, 5, 9, 4, 6], true, true).unwrap();
-        assert!(validate_shard_async(&shard).await.is_ok());
-
-        let shard = gen_random_shard(0, &[1], &[1], true, true).unwrap();
-        assert!(validate_shard_async(&shard).await.is_ok());
-
-        let shard = gen_random_shard(0, &[], &[3, 10, 2], false, false).unwrap();
-        assert!(validate_shard_async(&shard).await.is_ok());
-
-        let shard = gen_random_shard(0, &[], &[3, 10, 2], true, false).unwrap();
-        assert!(validate_shard_async(&shard).await.is_ok());
-
-        let shard = gen_random_shard(0, &[], &[3, 10, 2], false, true).unwrap();
-        assert!(validate_shard_async(&shard).await.is_ok());
-
-        let shard = gen_random_shard(0, &[], &[3, 10, 2], true, true).unwrap();
-        assert!(validate_shard_async(&shard).await.is_ok());
-
-        let shard = gen_random_shard(0, &[5, 9, 8], &[], true, true).unwrap();
-        assert!(validate_shard_async(&shard).await.is_ok());
     }
 }

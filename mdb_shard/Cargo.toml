@@ -11,6 +11,7 @@ utils = { path = "../utils" }
 anyhow = { workspace = true }
 async-trait = { workspace = true }
 blake3 = { workspace = true }
+bytes = { workspace = true }
 clap = { workspace = true }
 futures = { workspace = true }
 futures-util = { workspace = true }
@@ -30,10 +31,7 @@ heapify = { workspace = true }
 uuid = { workspace = true, features = ["v4", "js"] }
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
 uuid = { workspace = true, features = ["v4"] }
-
-[target.'cfg(not(target_family = "wasm"))'.dev-dependencies]
-# for tokio::test
-tokio = { workspace = true}
+tokio = { workspace = true, features = ["rt-multi-thread"] }
 
 [[bin]]
 name = "shard_benchmark"
