@@ -263,7 +263,7 @@ impl Middleware for AuthMiddleware {
 pub struct SessionMiddleware(String);
 
 // WASM compatibility; note the use of the pattern:
-// 
+//
 // #[cfg_attr(not(target_family = "wasm"), async_trait::async_trait)]
 // #[cfg_attr(target_family = "wasm", async_trait::async_trait(?Send))]
 // instead of just #[async_trait::async_trait]
