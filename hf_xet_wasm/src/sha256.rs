@@ -4,6 +4,9 @@ use sha2::{Digest, Sha256};
 
 use super::errors::*;
 
+// utilities to generate sha256 in webassembly in rust.
+// The `Value` variant hides an already provided result hash as if it were an operation to maintain
+// the same interface but do no work.
 pub enum ShaGeneration {
     Value(MerkleHash),
     Action(ShaGenerator),
@@ -39,6 +42,8 @@ impl ShaGeneration {
     }
 }
 
+// struct to generate a sha256 progressively by calling `update` or the `with_bytes` variation
+// yielding the final hash when calling `finalize()`
 pub struct ShaGenerator {
     hasher: Sha256,
 }

@@ -10,11 +10,19 @@ use super::errors::*;
 use super::wasm_deduplication_interface::UploadSessionDataManager;
 use super::wasm_file_upload_session::FileUploadSession;
 use crate::sha256::ShaGeneration;
-use crate::wasm_timer::Timer;
+use crate::wasm_timer::ConsoleTimer;
 
+// CPUTask represents a large CPU intensive task that we want to decide if it should run on its own thread
+// With the only currently supported variant CurrentThread, on the current thread we update the internal state
+// (chunker and hasher) on the current thread.
+//
+// the goal for this enum is to also enable a worker thread to run the CPU intensive task and use channels
+// to send new data to the other worker threads.
 enum CPUTask {
     CurrentThread((Chunker, ShaGeneration)),
     WorkerThread(
+        // WorkerThread tasks not yet supported; removing lint warning on scaffolding.
+        #[allow(dead_code)]
         (
             wasmtokio::task::JoinHandle<Result<MerkleHash>>,
             mpsc::UnboundedSender<Vec<u8>>,
@@ -26,7 +34,7 @@ enum CPUTask {
 
 /// A class that encapsulates the clean and data task around a single file for wasm runtime.
 pub struct SingleFileCleaner {
-    file_id: u64,
+    _file_id: u64,
 
     // Common state
     session: Arc<FileUploadSession>,
@@ -45,6 +53,8 @@ impl SingleFileCleaner {
         sha256: Option<MerkleHash>,
         single_threaded: bool,
     ) -> Self {
+        // we don't yet actually support multithreaded
+        debug_assert!(single_threaded);
         if single_threaded {
             Self::new_with_cpu_task_in_current_thread(session, file_id, sha256)
         } else {
@@ -58,7 +68,7 @@ impl SingleFileCleaner {
         sha256: Option<MerkleHash>,
     ) -> Self {
         Self {
-            file_id,
+            _file_id: file_id,
             session: session.clone(),
             cpu_task: CPUTask::CurrentThread((Chunker::default(), ShaGeneration::new(sha256))),
             dedup_manager: FileDeduper::new(UploadSessionDataManager::new(session), file_id),
@@ -96,7 +106,7 @@ impl SingleFileCleaner {
         let cpu_task = CPUTask::WorkerThread((cpu_worker, input_tx, chunks_rx, 0));
 
         Self {
-            file_id,
+            _file_id: file_id,
             session: session.clone(),
             cpu_task,
             dedup_manager: FileDeduper::new(UploadSessionDataManager::new(session), file_id),
@@ -108,12 +118,12 @@ impl SingleFileCleaner {
             CPUTask::CurrentThread((ref mut chunker, ref mut sha_generation)) => {
                 Self::add_data_to_cpu_task_in_current_thread(chunker, sha_generation, data).await
             },
-            CPUTask::WorkerThread(_) => todo!(),
+            CPUTask::WorkerThread(_) => todo!("worker thread not yet supported"),
         }?;
 
         // Run the deduplication interface here.
-        let msg = format!("dedupping {} chunks", chunks.len());
-        let _timer = Timer::new(&msg);
+        let msg = format!("deduping {} chunks", chunks.len());
+        let _timer = ConsoleTimer::new(&msg);
         let dedup_metrics = self.dedup_manager.process_chunks(&chunks).await?;
         drop(_timer);
 
@@ -128,7 +138,7 @@ impl SingleFileCleaner {
         data: &[u8],
     ) -> Result<Vec<Chunk>> {
         // Chunk the data.
-        let _timer = Timer::new(format!("chunking {} bytes", data.len()));
+        let _timer = ConsoleTimer::new(format!("chunking {} bytes", data.len()));
         let chunks = chunker.next_block(data, false);
         drop(_timer);
         log::debug!("chunked into {} chunks", chunks.len());
@@ -139,15 +149,11 @@ impl SingleFileCleaner {
         }
 
         // Update the sha256 generator
-        let _timer = Timer::new(format!("computing sha256 over {} chunks", chunks.len()));
+        let _timer = ConsoleTimer::new(format!("computing sha256 over {} chunks", chunks.len()));
         sha_generation.update(&chunks);
         drop(_timer);
 
         Ok(chunks)
-    }
-
-    async fn add_data_to_cpu_task_in_worker_thread() -> Result<Vec<Chunk>> {
-        todo!()
     }
 
     /// Return the representation of the file after clean as a pointer file instance.
@@ -156,7 +162,8 @@ impl SingleFileCleaner {
             CPUTask::CurrentThread((chunker, sha_generation)) => {
                 Self::finish_cpu_task_in_current_thread(chunker, sha_generation).await
             },
-            CPUTask::WorkerThread(_) => todo!(),
+            // there is no worker thread
+            CPUTask::WorkerThread(_) => todo!("worker thread not yet supported"),
         }?;
         if let Some(chunk) = maybe_last_chunk {
             self.dedup_manager.process_chunks(&[chunk]).await?;
@@ -169,8 +176,7 @@ impl SingleFileCleaner {
         let (file_hash, remaining_file_data, deduplication_metrics) =
             self.dedup_manager.finalize(repo_salt, Some(metadata_ext));
 
-        // Let's check some things that should be invarients
-        #[cfg(debug_assertions)]
+        // Let's check some things that should be invariants
         {
             // There should be exactly one file referenced in the remaining file data.
             debug_assert_eq!(remaining_file_data.pending_file_info.len(), 1);
@@ -207,7 +213,14 @@ impl SingleFileCleaner {
         }
     }
 
-    async fn finish_cpu_task_in_worker_thread() -> Result<(Option<Chunk>, MerkleHash)> {
-        todo!()
-    }
+    // TODO: add functionality to spawn worker threads for tasks here.
+    // currently CPUTask::WorkerThread variants are not supported, these functions should help
+    // support them
+    // async fn add_data_to_cpu_task_in_worker_thread() -> Result<Vec<Chunk>> {
+    //     todo!()
+    // }
+    //
+    // async fn finish_cpu_task_in_worker_thread() -> Result<(Option<Chunk>, MerkleHash)> {
+    //     todo!()
+    // }
 }

@@ -5,7 +5,7 @@ use futures::AsyncReadExt;
 use hf_xet_wasm::blob_reader::BlobReader;
 use hf_xet_wasm::configurations::{DataConfig, RepoSalt, ShardConfig, TranslatorConfig};
 use hf_xet_wasm::wasm_file_upload_session::FileUploadSession;
-use hf_xet_wasm::wasm_timer::Timer;
+use hf_xet_wasm::wasm_timer::ConsoleTimer;
 use log::Level;
 use tokio::sync::mpsc;
 use utils::auth::AuthConfig;
@@ -144,13 +144,13 @@ pub async fn test_async_blob_reader(file: web_sys::File) -> String {
 pub async fn clean_file(file: web_sys::File, endpoint: String, jwt_token: String, expiration: u64) -> String {
     log::debug!("clean_file called with {file:?}, {endpoint}, {jwt_token}, {expiration}");
 
-    let _timer = Timer::new_enforce_report("clean file main");
+    let _timer = ConsoleTimer::new_enforce_report("clean file main");
 
     let filename = file.name();
     let filesize = file.size();
 
     let Ok(blob) = file.slice() else {
-        log::error!("failed to convert a file to blob");
+        log::error!("failed to convert a file to blob for file: {filename}");
         return "".to_owned();
     };
 
@@ -182,7 +182,7 @@ pub async fn clean_file(file: web_sys::File, endpoint: String, jwt_token: String
     let mut total_read = 0;
     let mut last_report = 0.;
     loop {
-        let _timer = Timer::new(format!("read file at {total_read}"));
+        let _timer = ConsoleTimer::new(format!("read file at {total_read}"));
         let Ok(bytes) = reader.read(&mut buf).await else {
             log::error!("failed to read from reader");
             return "".to_owned();

@@ -5,6 +5,22 @@ use tokio::sync::Mutex;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsValue;
 
+/// The internal token refreshing mechanism expects to be passed in a TokenInfo and TokenRefresher
+/// javascript interface objects that implement the following interface.
+///
+/// To pass these constructs into the wasm program, use the XetSession export.
+/// 
+///```typescript
+/// interface TokenInfo {
+///   token(): string {}
+///   exp(): number {}
+/// }
+///
+/// interface TokenRefresher {
+///   async refreshToken(): TokenInfo {}
+/// }
+///```
+
 #[wasm_bindgen]
 extern "C" {
     pub type TokenInfo;
@@ -17,10 +33,6 @@ extern "C" {
     #[wasm_bindgen(method, catch, js_name = "refreshToken")]
     pub async fn refresh_token(this: &TokenRefresher) -> Result<TokenInfo, JsValue>;
 }
-
-// interface TokenRefresher {
-//    refresh_token(): Promise<TokenInfo>;
-// }
 
 impl From<TokenInfo> for utils::auth::TokenInfo {
     fn from(value: TokenInfo) -> Self {
@@ -37,6 +49,7 @@ impl Debug for TokenRefresher {
 #[derive(Debug, Clone)]
 pub(crate) struct WrappedTokenRefresher(Arc<Mutex<TokenRefresher>>);
 
+// TODO: revise the safety of this!
 unsafe impl Send for WrappedTokenRefresher {}
 unsafe impl Sync for WrappedTokenRefresher {}
 

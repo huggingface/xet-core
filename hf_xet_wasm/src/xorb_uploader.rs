@@ -8,7 +8,7 @@ use tokio::sync::Semaphore;
 use tokio_with_wasm::alias as wasmtokio;
 
 use crate::errors::*;
-use crate::wasm_timer::Timer;
+use crate::wasm_timer::ConsoleTimer;
 
 #[cfg_attr(not(target_family = "wasm"), async_trait)]
 #[cfg_attr(target_family = "wasm", async_trait(?Send))]
@@ -23,7 +23,6 @@ pub struct XorbUploaderLocalSequential {
 }
 
 impl XorbUploaderLocalSequential {
-    #[allow(dead_code)]
     pub fn new(client: Arc<dyn Client + Send + Sync>, cas_prefix: &str, _upload_concurrency: usize) -> Self {
         Self {
             client,
@@ -80,7 +79,7 @@ impl XorbUploader for XorbUploaderSpawnParallel {
             .await
             .map_err(DataProcessingError::internal)?;
         self.tasks.spawn(async move {
-            let _timer = Timer::new(format!("upload xorb {}", input.hash));
+            let _timer = ConsoleTimer::new(format!("upload xorb {}", input.hash));
             let ret = client.upload_xorb(&cas_prefix, input, None).await;
             drop(permit);
             ret

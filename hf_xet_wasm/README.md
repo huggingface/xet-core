@@ -5,6 +5,10 @@ Functionality included but not limited to chunking, global deduplication, xorb f
 
 Download functionality is not currently supported.
 
+hf_xet_wasm has: chunking, global deduplication, xorb formation, xorb upload, shard formation, shard upload
+
+hf_xet_wasm is missing: complete download support (xorbs, shards, chunk caching)
+
 ## Critical Differences and Changes
 
 In order to compile xet-core to wasm there are numerous changes:
@@ -18,7 +22,7 @@ In order to compile xet-core to wasm there are numerous changes:
   - ```rust
     #[cfg_attr(not(target_family = "wasm"), async_trait::async_trait)]
     #[cfg_attr(target_family = "wasm", async_trait::async_trait(?Send))]
-    pub trait BlahBlah {}
+    pub trait Blah {}
     ```
   - this is required as the output from the `async_trait` macro is not compatible to be `Send` when compiled to WASM
   - (pattern adopted from from reqwest_middleware)
@@ -39,6 +43,9 @@ cargo install wasm-bindgen-cli
 - Build with `./build_wasm.sh` (bash) 
 
 ## Run Instructions
+
+The runnable example is composed of a set of files in the examples directory.
+
 First fill up the four `[FILL_ME]` fields in examples/index.html with a desired testing target.
 
 Then serve the web directory using a local http server, for example, https://crates.io/crates/sfz.

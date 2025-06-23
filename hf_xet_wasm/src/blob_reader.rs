@@ -17,7 +17,10 @@ enum BlobReaderState {
     AwaitBuf(Pin<Box<JsFuture>>),
 }
 
+/// BlobReader provides a wrapper over a web_sys::Blob to make it futures::AsyncRead
+/// when reading Files/Blobs this provides a more rusty interface.
 pub struct BlobReader {
+    // https://developer.mozilla.org/en-US/docs/Web/API/ReadableStreamDefaultReader
     reader: ReadableStreamDefaultReader,
     state: RefCell<Option<BlobReaderState>>,
 }
@@ -62,6 +65,7 @@ impl futures::AsyncRead for BlobReader {
                 (Poll::Ready(Ok(bytes_to_copy)), next_state)
             },
             BlobReaderState::AwaitBuf(mut promise) => {
+                // result from: https://developer.mozilla.org/en-US/docs/Web/API/ReadableStreamDefaultReader/read
                 let Poll::Ready(res) = promise.as_mut().poll(cx) else {
                     self.state.replace(Some(BlobReaderState::AwaitBuf(promise)));
                     return Poll::Pending;

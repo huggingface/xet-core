@@ -13,7 +13,7 @@ use tokio::sync::Mutex;
 use super::configurations::TranslatorConfig;
 use super::errors::*;
 use crate::wasm_file_cleaner::SingleFileCleaner;
-use crate::wasm_timer::Timer;
+use crate::wasm_timer::ConsoleTimer;
 use crate::xorb_uploader::{XorbUploader, XorbUploaderSpawnParallel};
 
 static UPLOAD_CONCURRENCY: usize = 5;
@@ -163,7 +163,7 @@ impl FileUploadSession {
 
         log::info!("shard hash: {shard_hash}, {} bytes", shard_data.len());
 
-        let _timer = Timer::new("upload shard");
+        let _timer = ConsoleTimer::new("upload shard");
         self.client
             .upload_shard(
                 &self.config.shard_config.prefix,

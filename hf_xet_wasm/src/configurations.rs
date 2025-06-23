@@ -1,6 +1,8 @@
 use cas_object::CompressionScheme;
 use utils::auth::AuthConfig;
 
+// configurations for hf_xet_wasm components, generally less complicated than hf_xet/data crate configurations
+
 #[derive(Debug)]
 pub struct DataConfig {
     pub endpoint: String,

@@ -23,6 +23,17 @@ struct JsPointerFile {
     pub sha256: String,
 }
 
+/// XetSession is the exported public interface to upload files in WebAssembly
+///
+/// To instantiate a XetSession a caller needs to pass in the endpoint to CAS as well as the auth
+/// information to authenticate against cas. see auth.rs or README.md to explain what constructs to pass in.
+///
+/// After instantiating a XetSession, to upload a file, use the `upload_file_from_{raw/blob}` functions
+/// to start an upload. After the `upload*` functions return, the return value is a JS object representing
+/// a pointer file (see JsPointerFile). However, the file is only fully uploaded after finalize() is called
+/// and returns an ok result.
+///
+/// the file_id option in upload* functions is for file tracking only.
 #[wasm_bindgen(js_name = "XetSession")]
 pub struct XetSession {
     upload: Arc<FileUploadSession>,
@@ -59,12 +70,15 @@ impl XetSession {
         }
     }
 
+    // allows uploading a file from raw data if the data/file is not in a blob
+    // internally converts the data to a blob.
     #[wasm_bindgen(js_name = "uploadFileFromRawData")]
     pub async fn upload_file_from_raw(&mut self, file_id: u64, file: Vec<u8>) -> Result<JsValue, JsValue> {
         let blob = Blob::new_with_u8_array_sequence(&js_sys::Uint8Array::from(file.as_slice()))?;
         self.upload_file_from_blob(file_id, blob).await
     }
 
+    // uploads a file from a blob. reading from it, and updating the cleaner in 1MB increments
     #[wasm_bindgen(js_name = "uploadFileFromBlob")]
     pub async fn upload_file_from_blob(&mut self, file_id: u64, blob: Blob) -> Result<JsValue, JsValue> {
         // read from blob async
@@ -72,7 +86,7 @@ impl XetSession {
 
         let mut reader = BlobReader::new(blob)?;
 
-        let mut buf = vec![0u8; 1024 * 10]; // 10KB buffer
+        let mut buf = vec![0u8; 1024 * 1024]; // 1MB buffer
 
         let mut file_size = 0;
         loop {
