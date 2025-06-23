@@ -549,10 +549,10 @@ impl MDBFileInfoView {
         .expect("bookkeeping error on data bounds for verification")
     }
 
-    pub fn byte_size(&self) -> usize {
+    pub fn byte_size(&self, with_verification: bool) -> usize {
         let n = self.num_entries();
         let n_structs = 1 + n // The header and the followup entries 
-            + (if self.contains_verification() { n } else { 0 }) // verification entries 
+            + (if with_verification && self.contains_verification() { n } else { 0 }) // verification entries 
             + (if self.contains_metadata_ext() { 1 } else { 0 });
 
         n_structs * MDB_FILE_INFO_ENTRY_SIZE

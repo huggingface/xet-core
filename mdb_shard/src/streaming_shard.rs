@@ -280,6 +280,22 @@ impl MDBMinimalShard {
         self.cas_info_views.get(index)
     }
 
+    // returns 0 if with_verification is true but the shard has no verification information.
+    pub fn serialized_size(&self, with_verification: bool) -> usize {
+        if with_verification && !self.has_file_verification() {
+            return 0;
+        }
+        size_of::<MDBShardFileHeader>()
+            + self
+                .file_info_views
+                .iter()
+                .fold(0, |acc, fiv| acc + fiv.byte_size(with_verification))
+            + size_of::<FileDataSequenceHeader>() // bookend of file section
+            + self.cas_info_views.iter().fold(0, |acc, civ| acc + civ.byte_size())
+            + size_of::<CASChunkSequenceHeader>() // bookend for cas info section
+            + size_of::<MDBShardFileFooter>()
+    }
+
     pub fn serialize<W: Write>(&self, writer: &mut W, with_verification: bool) -> Result<usize> {
         let mut bytes = 0;
 
@@ -313,7 +329,7 @@ impl MDBMinimalShard {
         let footer_start = bytes as u64;
 
         // Now fill out the footer and write it out.
-        MDBShardFileFooter {
+        bytes += MDBShardFileFooter {
             file_info_offset: fs_start,
             cas_info_offset: cs_start,
             file_lookup_offset: footer_start,
@@ -351,6 +367,15 @@ mod tests {
 
     fn verify_serialization(min_shard: &MDBMinimalShard, mem_shard: &MDBInMemoryShard) -> Result<()> {
         for verification in [true, false] {
+            // compute size, with verification if possible only
+            let size = min_shard.serialized_size(min_shard.has_file_verification() && verification);
+            assert_ne!(0, size);
+
+            // if lacking verification, assert that getting the size with verification returns 0
+            if !min_shard.has_file_verification() {
+                assert_eq!(0, min_shard.serialized_size(true))
+            }
+
             // Now verify that the serialized version is the same too.
             let mut reloaded_shard = Vec::new();
             let serialize_result = min_shard.serialize(&mut reloaded_shard, verification);
@@ -359,6 +384,9 @@ mod tests {
                 continue;
             }
             assert!(serialize_result.is_ok());
+            let serialized_len = serialize_result?;
+            assert_eq!(reloaded_shard.len(), serialized_len);
+            assert_eq!(size, serialized_len);
 
             let si = MDBShardInfo::load_from_reader(&mut Cursor::new(&reloaded_shard)).unwrap();
 
