@@ -448,16 +448,19 @@ impl MDBFileInfo {
     }
 
     // returns true if both self and other are exactly equal or:
-    // if self ^ other (exclusive-or) have verification entries, then returns true if all
-    // fields other than verifications are equal
+    // if self ^ other (exclusive-or, only 1 of the two) have verification entries, then returns
+    // true if all components other than verifications are equal
+    //
+    // used in testing to confirm that 2 MDBFileInfo's refer to the same file information
+    // but where 1 does not have verification entries
     #[cfg(test)]
     pub fn equal_accepting_no_verification(&self, other: &Self) -> bool {
         if self.contains_verification() ^ other.contains_verification() {
-            self.segments == other.segments
-                && self.metadata_ext == other.metadata_ext
-                && self.metadata.num_entries == other.metadata.num_entries
+            self.metadata.num_entries == other.metadata.num_entries
                 && self.metadata.file_hash == other.metadata.file_hash
                 && self.metadata.contains_metadata_ext() == other.metadata.contains_metadata_ext()
+                && self.metadata_ext == other.metadata_ext
+                && self.segments == other.segments
         } else {
             self == other
         }
