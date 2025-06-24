@@ -2062,6 +2062,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "blake3",
+ "bytes",
  "clap",
  "futures",
  "futures-util",

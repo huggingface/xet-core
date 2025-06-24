@@ -40,6 +40,9 @@ pub enum MDBShardError {
     #[error("Runtime Error (task scheduler): {0}")]
     TaskJoinError(#[from] tokio::task::JoinError),
 
+    #[error("InvalidShard {0}")]
+    InvalidShard(String),
+
     #[error("Error: {0}")]
     Other(String),
 }
@@ -54,5 +57,15 @@ impl PartialEq for MDBShardError {
             (MDBShardError::IOError(ref e1), MDBShardError::IOError(ref e2)) => e1.kind() == e2.kind(),
             _ => false,
         }
+    }
+}
+
+impl MDBShardError {
+    pub fn other(inner: impl ToString) -> Self {
+        Self::Other(inner.to_string())
+    }
+
+    pub fn invalid_shard(inner: impl ToString) -> Self {
+        Self::InvalidShard(inner.to_string())
     }
 }

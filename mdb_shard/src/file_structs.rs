@@ -1,9 +1,8 @@
 use std::fmt::Debug;
 use std::io::{Cursor, Read, Write};
 use std::mem::size_of;
-use std::sync::Arc;
 
-use futures::{AsyncRead, AsyncReadExt};
+use bytes::Bytes;
 use merklehash::data_hash::hex;
 use merklehash::MerkleHash;
 use serde::Serialize;
@@ -108,13 +107,6 @@ impl FileDataSequenceHeader {
             num_entries: read_u32(reader)?,
             _unused: read_u64(reader)?,
         })
-    }
-
-    pub async fn deserialize_async<R: AsyncRead + Unpin>(reader: &mut R) -> Result<Self, std::io::Error> {
-        let mut v = [0u8; size_of::<Self>()];
-        reader.read_exact(&mut v[..]).await?;
-        let mut reader_curs = Cursor::new(&v);
-        Self::deserialize(&mut reader_curs)
     }
 
     pub fn contains_metadata_ext(&self) -> bool {
@@ -349,13 +341,6 @@ impl FileMetadataExt {
             _unused: Default::default(),
         })
     }
-
-    pub async fn deserialize_async<R: AsyncRead + Unpin>(reader: &mut R) -> Result<Self, std::io::Error> {
-        let mut v = [0u8; size_of::<Self>()];
-        reader.read_exact(&mut v[..]).await?;
-        let mut reader_curs = Cursor::new(&v);
-        Self::deserialize(&mut reader_curs)
-    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
@@ -436,57 +421,6 @@ impl MDBFileInfo {
         }))
     }
 
-    pub async fn deserialize_async<R: AsyncRead + Unpin>(reader: &mut R) -> Result<Option<Self>, std::io::Error> {
-        let metadata = FileDataSequenceHeader::deserialize_async(reader).await?;
-
-        // This is the single bookend entry as a guard for sequential reading.
-        if metadata.is_bookend() {
-            return Ok(None);
-        }
-
-        let num_entries = metadata.num_entries as usize;
-
-        // for both the series of FileDataSequenceEntry and FileVerificationEntry,
-        // read them all into memory and then deserialize from memory.
-        let entries_buf_len = size_of::<FileDataSequenceEntry>() * num_entries;
-        let mut entries_buf = vec![0u8; entries_buf_len];
-        reader.read_exact(&mut entries_buf[..]).await?;
-        let mut entries_reader = Cursor::new(&mut entries_buf[..]);
-        let mut segments = Vec::with_capacity(num_entries);
-        for _ in 0..num_entries {
-            segments.push(FileDataSequenceEntry::deserialize(&mut entries_reader)?);
-        }
-        debug_assert_eq!(entries_buf_len, entries_reader.position() as usize);
-
-        let verification = if metadata.contains_verification() {
-            let verification_entries_buf_len = size_of::<FileVerificationEntry>() * num_entries;
-            let mut verification_entries_buf = vec![0u8; verification_entries_buf_len];
-            reader.read_exact(&mut verification_entries_buf[..]).await?;
-            let mut verification_entries_reader = Cursor::new(&mut verification_entries_buf[..]);
-            let mut verification = Vec::with_capacity(num_entries);
-            for _ in 0..num_entries {
-                verification.push(FileVerificationEntry::deserialize(&mut verification_entries_reader)?);
-            }
-            debug_assert_eq!(verification_entries_buf_len, verification_entries_reader.position() as usize);
-            verification
-        } else {
-            vec![]
-        };
-
-        let metadata_ext = if metadata.contains_metadata_ext() {
-            FileMetadataExt::deserialize_async(reader).await.ok()
-        } else {
-            None
-        };
-
-        Ok(Some(Self {
-            metadata,
-            segments,
-            verification,
-            metadata_ext,
-        }))
-    }
-
     pub fn contains_verification(&self) -> bool {
         self.metadata.contains_verification()
     }
@@ -512,27 +446,42 @@ impl MDBFileInfo {
         }
         Ok(())
     }
+
+    // returns true if both self and other are exactly equal or:
+    // if self ^ other (exclusive-or, only 1 of the two) have verification entries, then returns
+    // true if all components other than verifications are equal
+    //
+    // used in testing to confirm that 2 MDBFileInfo's refer to the same file information
+    // but where 1 does not have verification entries
+    #[cfg(test)]
+    pub fn equal_accepting_no_verification(&self, other: &Self) -> bool {
+        if self.contains_verification() ^ other.contains_verification() {
+            self.metadata.num_entries == other.metadata.num_entries
+                && self.metadata.file_hash == other.metadata.file_hash
+                && self.metadata.contains_metadata_ext() == other.metadata.contains_metadata_ext()
+                && self.metadata_ext == other.metadata_ext
+                && self.segments == other.segments
+        } else {
+            self == other
+        }
+    }
 }
 
+#[derive(Debug, Clone, PartialEq)]
 pub struct MDBFileInfoView {
     header: FileDataSequenceHeader,
-    data: Arc<[u8]>, // reference counted read-only vector
-    offset: usize,
+    data: Bytes, // reference counted read-only vector
 }
 
 impl MDBFileInfoView {
     /// Creates a new view of an MDBFileInfo object from a slice, checking it
     /// for the correct bounds.  Copies should be optimized out.
-    pub fn new(data: Arc<[u8]>, offset: usize) -> std::io::Result<Self> {
-        let header = FileDataSequenceHeader::deserialize(&mut Cursor::new(&data[offset..]))?;
-        Self::from_data_and_header(header, data, offset)
+    pub fn new(data: Bytes) -> std::io::Result<Self> {
+        let header = FileDataSequenceHeader::deserialize(&mut Cursor::new(&data))?;
+        Self::from_data_and_header(header, data)
     }
 
-    pub fn from_data_and_header(
-        header: FileDataSequenceHeader,
-        data: Arc<[u8]>,
-        offset: usize,
-    ) -> std::io::Result<Self> {
+    pub fn from_data_and_header(header: FileDataSequenceHeader, data: Bytes) -> std::io::Result<Self> {
         // Verify the correct number of entries
         let n = header.num_entries as usize;
         let contains_verification = header.contains_verification();
@@ -542,15 +491,16 @@ impl MDBFileInfoView {
             + (if contains_verification { n } else { 0 }) // verification entries 
             + (if contains_metadata_ext { 1 } else { 0 });
 
-        if data.len() < offset + n_structs * MDB_FILE_INFO_ENTRY_SIZE {
+        if data.len() < n_structs * MDB_FILE_INFO_ENTRY_SIZE {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::UnexpectedEof,
                 "Provided slice too small to read MDBFileInfoView",
             ));
         }
 
-        Ok(Self { header, data, offset })
+        Ok(Self { header, data })
     }
+
     pub fn header(&self) -> &FileDataSequenceHeader {
         &self.header
     }
@@ -584,10 +534,8 @@ impl MDBFileInfoView {
     pub fn entry(&self, idx: usize) -> FileDataSequenceEntry {
         debug_assert!(idx < self.num_entries());
 
-        FileDataSequenceEntry::deserialize(&mut Cursor::new(
-            &self.data[(self.offset + (1 + idx) * MDB_FILE_INFO_ENTRY_SIZE)..],
-        ))
-        .expect("bookkeeping error on data bounds for entry")
+        FileDataSequenceEntry::deserialize(&mut Cursor::new(&self.data[((1 + idx) * MDB_FILE_INFO_ENTRY_SIZE)..]))
+            .expect("bookkeeping error on data bounds for entry")
     }
 
     #[inline]
@@ -596,25 +544,55 @@ impl MDBFileInfoView {
         debug_assert!(idx < self.num_entries());
 
         FileVerificationEntry::deserialize(&mut Cursor::new(
-            &self.data[(self.offset + (1 + self.num_entries() + idx) * MDB_FILE_INFO_ENTRY_SIZE)..],
+            &self.data[((1 + self.num_entries() + idx) * MDB_FILE_INFO_ENTRY_SIZE)..],
         ))
         .expect("bookkeeping error on data bounds for verification")
     }
 
-    pub fn byte_size(&self) -> usize {
+    pub fn byte_size(&self, with_verification: bool) -> usize {
         let n = self.num_entries();
         let n_structs = 1 + n // The header and the followup entries 
-            + (if self.contains_verification() { n } else { 0 }) // verification entries 
+            + (if with_verification && self.contains_verification() { n } else { 0 }) // verification entries 
             + (if self.contains_metadata_ext() { 1 } else { 0 });
 
         n_structs * MDB_FILE_INFO_ENTRY_SIZE
     }
 
     #[inline]
-    pub fn serialize<W: Write>(&self, writer: &mut W) -> std::io::Result<usize> {
-        let n_bytes = self.byte_size();
-        writer.write_all(&self.data[self.offset..(self.offset + n_bytes)])?;
+    pub fn serialize<W: Write>(&self, writer: &mut W, with_verification: bool) -> std::io::Result<usize> {
+        let have_verification = self.contains_verification();
+        if with_verification && !have_verification {
+            return Err(std::io::Error::other("missing requested verification info"));
+        }
+        let n_bytes = if !with_verification && have_verification {
+            // surgically stitch file info section sans verification
+            let header =
+                FileDataSequenceHeader::new(self.file_hash(), self.num_entries(), false, self.contains_metadata_ext());
+            header.serialize(writer)?;
+            let mut num_written = MDB_FILE_INFO_ENTRY_SIZE;
+
+            writer.write_all(
+                &self.data[(MDB_FILE_INFO_ENTRY_SIZE)..((1 + self.num_entries()) * MDB_FILE_INFO_ENTRY_SIZE)],
+            )?;
+            num_written += self.num_entries() * MDB_FILE_INFO_ENTRY_SIZE;
+            if self.contains_metadata_ext() {
+                writer.write_all(&self.data[(self.data.len() - MDB_FILE_INFO_ENTRY_SIZE)..])?;
+                num_written += MDB_FILE_INFO_ENTRY_SIZE;
+            }
+            // amount written
+            num_written
+        } else {
+            // copy as is
+            writer.write_all(&self.data)?;
+            self.data.len()
+        };
+
         Ok(n_bytes)
+    }
+
+    #[inline]
+    pub fn bytes(&self) -> Bytes {
+        self.data.clone()
     }
 }
 
