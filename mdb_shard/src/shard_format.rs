@@ -6,6 +6,7 @@ use std::sync::Arc;
 use std::time::{Duration, UNIX_EPOCH};
 
 use anyhow::anyhow;
+use futures::AsyncReadExt;
 use merklehash::{HMACKey, MerkleHash};
 use static_assertions::const_assert;
 use tracing::debug;
@@ -49,7 +50,7 @@ const MDB_SHARD_HEADER_TAG: [u8; 32] = [
 pub fn current_timestamp() -> u64 {
     // Get the seconds since the epoc as u64
     std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
+        .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs()
 }
@@ -213,6 +214,13 @@ impl MDBShardFileFooter {
         obj.footer_offset = read_u64(reader)?;
 
         Ok(obj)
+    }
+
+    pub async fn deserialize_async<R: futures::io::AsyncRead + Unpin>(reader: &mut R) -> Result<Self> {
+        let mut v = [0u8; size_of::<Self>()];
+        reader.read_exact(&mut v[..]).await?;
+        let mut reader_curs = std::io::Cursor::new(&v);
+        Self::deserialize(&mut reader_curs)
     }
 }
 
@@ -524,7 +532,7 @@ impl MDBShardInfo {
             self.metadata.chunk_lookup_offset,
             self.metadata.chunk_lookup_num_entry,
             truncate_hash(&self.keyed_chunk_hash(unkeyed_chunk_hash)),
-            |reader| (Ok((read_u32(reader)?, read_u32(reader)?))),
+            |reader| Ok((read_u32(reader)?, read_u32(reader)?)),
             dest_indices,
         )?;
 
@@ -835,8 +843,8 @@ impl MDBShardInfo {
     /// returns the number of bytes that is fixed and not part of any content; i.e. would be part of an empty shard.
     pub fn non_content_byte_size() -> u64 {
         (size_of::<MDBShardFileFooter>() + size_of::<MDBShardFileHeader>()) as u64 // Header and footer
-        + size_of::<FileDataSequenceHeader>() as u64 // Guard block for scanning.
-        + size_of::<CASChunkSequenceHeader>() as u64 // Guard block for scanning.
+            + size_of::<FileDataSequenceHeader>() as u64 // Guard block for scanning.
+            + size_of::<CASChunkSequenceHeader>() as u64 // Guard block for scanning.
     }
 
     pub fn print_report(&self) {
@@ -970,7 +978,7 @@ impl MDBShardInfo {
         reader: &mut R,
         writer: &mut W,
         hmac_key: HMACKey,
-        key_valid_for: std::time::Duration,
+        key_valid_for: Duration,
         include_file_info: bool,
         include_cas_lookup_table: bool,
         include_chunk_lookup_table: bool,
@@ -993,7 +1001,7 @@ impl MDBShardInfo {
         reader: &mut R,
         writer: &mut W,
         hmac_key: HMACKey,
-        key_valid_for: std::time::Duration,
+        key_valid_for: Duration,
         include_file_info: bool,
         include_cas_lookup_table: bool,
         include_chunk_lookup_table: bool,
@@ -1015,7 +1023,7 @@ impl MDBShardInfo {
         reader: &mut R,
         writer: &mut W,
         hmac_key: HMACKey,
-        key_valid_for: std::time::Duration,
+        key_valid_for: Duration,
         include_file_info: bool,
         include_cas_lookup_table: bool,
         include_chunk_lookup_table: bool,
@@ -1491,7 +1499,7 @@ pub mod test_routines {
                 let cas_idx = rng.random_range(0..cas_nodes.len());
                 let cas_block = &cas_nodes[cas_idx];
                 let start_idx = rng.random_range(0..cas_block.chunks.len());
-                let end_idx = rng.random_range((start_idx + 1)..=(cas_nodes[cas_idx].chunks.len()));
+                let end_idx = rng.random_range((start_idx + 1)..=cas_nodes[cas_idx].chunks.len());
 
                 FileDataSequenceEntry::new(
                     cas_block.metadata.cas_hash,
@@ -1637,7 +1645,7 @@ pub mod test_routines {
             assert_eq!(&read_cas, cas.as_ref());
             assert_eq!(&cas_blocks_full[i], cas.as_ref());
 
-            let m_cas_chunk = min_shard.cas(i);
+            let m_cas_chunk = min_shard.cas(i).unwrap();
             assert_eq!(m_cas_chunk.header(), &cas_blocks_full[i].metadata);
             assert_eq!(m_cas_chunk.num_entries(), cas_blocks_full[i].chunks.len());
             for j in 0..m_cas_chunk.num_entries() {
@@ -1665,12 +1673,12 @@ pub mod test_routines {
                 let num_entries = (byte_end - byte_start) / (size_of::<FileDataSequenceEntry>() as u64);
 
                 // No leftovers
-                assert_eq!(num_entries * (size_of::<FileDataSequenceEntry>() as u64), (byte_end - byte_start));
+                assert_eq!(num_entries * (size_of::<FileDataSequenceEntry>() as u64), byte_end - byte_start);
 
                 assert_eq!(num_entries, true_fi.segments.len() as u64);
 
                 // Minimal view is good
-                let m_file_info = min_shard.file(i);
+                let m_file_info = min_shard.file(i).unwrap();
                 assert_eq!(m_file_info.header(), &true_fi.metadata);
                 assert_eq!(m_file_info.num_entries(), true_fi.segments.len());
 
@@ -1692,7 +1700,7 @@ pub mod test_routines {
                     let num_entries = (byte_end - byte_start) / (size_of::<FileVerificationEntry>() as u64);
 
                     // No leftovers
-                    assert_eq!(num_entries * (size_of::<FileVerificationEntry>() as u64), (byte_end - byte_start));
+                    assert_eq!(num_entries * (size_of::<FileVerificationEntry>() as u64), byte_end - byte_start);
 
                     assert_eq!(num_entries, true_fi.verification.len() as u64);
 
@@ -1716,6 +1724,7 @@ pub mod test_routines {
 
 #[cfg(test)]
 mod tests {
+
     use super::test_routines::*;
     use crate::error::Result;
 
