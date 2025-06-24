@@ -6,6 +6,16 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
+use crate::configurations::*;
+use crate::constants::{
+    INGESTION_BLOCK_SIZE, MAX_CONCURRENT_FILE_INGESTION, MAX_CONCURRENT_UPLOADS, PROGRESS_UPDATE_INTERVAL_MS,
+    PROGRESS_UPDATE_SPEED_SAMPLING_WINDOW_MS,
+};
+use crate::errors::*;
+use crate::file_cleaner::SingleFileCleaner;
+use crate::remote_client_interface::create_remote_client;
+use crate::shard_interface::SessionShardInterface;
+use crate::{prometheus_metrics, XetFileInfo};
 use bytes::Bytes;
 use cas_client::Client;
 use cas_object::SerializedCasObject;
@@ -23,17 +33,7 @@ use tokio::sync::{Mutex, OwnedSemaphorePermit, Semaphore};
 use tokio::task::{JoinHandle, JoinSet};
 use tracing::{info_span, instrument, Instrument, Span};
 use ulid::Ulid;
-
-use crate::configurations::*;
-use crate::constants::{
-    INGESTION_BLOCK_SIZE, MAX_CONCURRENT_FILE_INGESTION, MAX_CONCURRENT_UPLOADS, PROGRESS_UPDATE_INTERVAL_MS,
-    PROGRESS_UPDATE_SPEED_SAMPLING_WINDOW_MS,
-};
-use crate::errors::*;
-use crate::file_cleaner::SingleFileCleaner;
-use crate::remote_client_interface::create_remote_client;
-use crate::shard_interface::SessionShardInterface;
-use crate::{prometheus_metrics, XetFileInfo};
+use utils::auth::TokenProvider;
 
 lazy_static::lazy_static! {
      static ref UPLOAD_CONCURRENCY_LIMITER: Arc<Semaphore> = Arc::new(Semaphore::new(*MAX_CONCURRENT_UPLOADS));
@@ -186,7 +186,11 @@ impl FileUploadSession {
         }))
     }
 
-    pub async fn upload_files(self: &Arc<Self>, files: &[impl AsRef<Path>]) -> Result<Vec<XetFileInfo>> {
+    pub async fn upload_files(
+        self: &Arc<Self>,
+        files: &[impl AsRef<Path>],
+        auth: Option<Arc<Mutex<TokenProvider>>>,
+    ) -> Result<Vec<XetFileInfo>> {
         let mut cleaning_tasks: Vec<JoinHandle<_>> = Vec::with_capacity(files.len());
 
         // Use a semaphore to limit the number of files being processed in parallel.
@@ -208,6 +212,11 @@ impl FileUploadSession {
             let ingestion_concurrancy_limiter = file_parallel_limiter.clone();
             let session = self.clone();
 
+            let auth_clone = if let Some(auth) = &auth {
+                Some(auth.clone())
+            } else {
+                None
+            };
             cleaning_tasks.push(tokio::spawn(async move {
                 // Enable tracing to record this file's ingestion speed.
                 let span = info_span!(
@@ -255,11 +264,11 @@ impl FileUploadSession {
 
                         bytes_read += buffer.len() as u64;
 
-                        cleaner.add_data_impl(Bytes::from(buffer)).await?;
+                        cleaner.add_data_impl(Bytes::from(buffer), auth_clone.clone()).await?;
                     }
 
                     // Finish and return the result.
-                    let (xfi, metrics) = cleaner.finish().await?;
+                    let (xfi, metrics) = cleaner.finish(auth_clone).await?;
 
                     // Record dedup information.
                     let span = Span::current();
@@ -310,6 +319,7 @@ impl FileUploadSession {
         self: &Arc<Self>,
         xorb: RawXorbData,
         file_dependencies: &[FileXorbDependency],
+        auth: Option<Arc<Mutex<TokenProvider>>>,
     ) -> Result<bool> {
         // First check the current xorb upload tasks to see if any can be cleaned up.
         {
@@ -370,7 +380,7 @@ impl FileUploadSession {
             async move {
                 let n_bytes_transmitted = session
                     .client
-                    .upload_xorb(&cas_prefix, cas_object, Some(completion_tracker))
+                    .upload_xorb(&cas_prefix, cas_object, Some(completion_tracker), auth)
                     .await?;
 
                 drop(upload_permit);
@@ -398,6 +408,7 @@ impl FileUploadSession {
         self: &Arc<Self>,
         mut file_data: DataAggregator,
         dedup_metrics: &DeduplicationMetrics,
+        auth: Option<Arc<Mutex<TokenProvider>>>,
     ) -> Result<()> {
         // Merge in the remaining file data; uploading a new xorb if need be.
         {
@@ -418,7 +429,7 @@ impl FileUploadSession {
                 // Actually upload this outside the lock
                 drop(current_session_data);
 
-                self.process_aggregated_data_as_xorb(file_data).await?;
+                self.process_aggregated_data_as_xorb(file_data, auth).await?;
             } else {
                 current_session_data.merge_in(file_data);
             }
@@ -438,7 +449,11 @@ impl FileUploadSession {
     }
 
     /// Process the aggregated data, uploading the data as a xorb and registering the files
-    async fn process_aggregated_data_as_xorb(self: &Arc<Self>, data_agg: DataAggregator) -> Result<()> {
+    async fn process_aggregated_data_as_xorb(
+        self: &Arc<Self>,
+        data_agg: DataAggregator,
+        auth: Option<Arc<Mutex<TokenProvider>>>,
+    ) -> Result<()> {
         let (xorb, new_files) = data_agg.finalize();
         let xorb_hash = xorb.hash();
 
@@ -464,7 +479,7 @@ impl FileUploadSession {
         }
 
         // Register the xorb and start the upload process.
-        self.register_new_xorb(xorb, &new_dependencies).await?;
+        self.register_new_xorb(xorb, &new_dependencies, auth).await?;
 
         Ok(())
     }
@@ -476,10 +491,14 @@ impl FileUploadSession {
 
     /// Finalize everything.
     #[instrument(skip_all, name="FileUploadSession::finalize", fields(session.id))]
-    async fn finalize_impl(self: Arc<Self>, return_files: bool) -> Result<(DeduplicationMetrics, Vec<MDBFileInfo>)> {
+    async fn finalize_impl(
+        self: Arc<Self>,
+        return_files: bool,
+        auth: Option<Arc<Mutex<TokenProvider>>>,
+    ) -> Result<(DeduplicationMetrics, Vec<MDBFileInfo>)> {
         // Register the remaining xorbs for upload.
         let data_agg = take(&mut *self.current_session_data.lock().await);
-        self.process_aggregated_data_as_xorb(data_agg).await?;
+        self.process_aggregated_data_as_xorb(data_agg, auth.clone()).await?;
 
         // Now, make sure all the remaining xorbs are uploaded.
         let mut metrics = take(&mut *self.deduplication_metrics.lock().await);
@@ -504,7 +523,7 @@ impl FileUploadSession {
 
         // Upload and register the current shards in the session, moving them
         // to the cache.
-        metrics.shard_bytes_uploaded = self.shard_interface.upload_and_register_session_shards().await?;
+        metrics.shard_bytes_uploaded = self.shard_interface.upload_and_register_session_shards(auth).await?;
         metrics.total_bytes_uploaded = metrics.shard_bytes_uploaded + metrics.xorb_bytes_uploaded;
 
         // Update the global counters
@@ -536,10 +555,10 @@ impl FileUploadSession {
     // However, does not clean up the session so add_data can be called again.  Finalize must be called later.
     //
     // Used for testing.  Should be called only after all add_data calls have completed.
-    pub async fn checkpoint(self: &Arc<Self>) -> Result<()> {
+    pub async fn checkpoint(self: &Arc<Self>, auth: Option<Arc<Mutex<TokenProvider>>>) -> Result<()> {
         // Cut the current data present as a xorb, upload it.
         let data_agg = take(&mut *self.current_session_data.lock().await);
-        self.process_aggregated_data_as_xorb(data_agg).await?;
+        self.process_aggregated_data_as_xorb(data_agg, auth).await?;
 
         // Wait for all inflight xorb uploads to complete.
         {
@@ -555,12 +574,15 @@ impl FileUploadSession {
         Ok(())
     }
 
-    pub async fn finalize(self: Arc<Self>) -> Result<DeduplicationMetrics> {
-        Ok(self.finalize_impl(false).await?.0)
+    pub async fn finalize(self: Arc<Self>, auth: Option<Arc<Mutex<TokenProvider>>>) -> Result<DeduplicationMetrics> {
+        Ok(self.finalize_impl(false, auth).await?.0)
     }
 
-    pub async fn finalize_with_file_info(self: Arc<Self>) -> Result<(DeduplicationMetrics, Vec<MDBFileInfo>)> {
-        self.finalize_impl(true).await
+    pub async fn finalize_with_file_info(
+        self: Arc<Self>,
+        auth: Option<Arc<Mutex<TokenProvider>>>,
+    ) -> Result<(DeduplicationMetrics, Vec<MDBFileInfo>)> {
+        self.finalize_impl(true, auth).await
     }
 }
 
@@ -606,10 +628,10 @@ mod tests {
         let mut cleaner = upload_session.start_clean(Some("test".into()), read_data.len() as u64).await;
 
         // Read blocks from the source file and hand them to the cleaning handle
-        cleaner.add_data(&read_data[..]).await.unwrap();
+        cleaner.add_data(&read_data[..], None).await.unwrap();
 
-        let (xet_file_info, _metrics) = cleaner.finish().await.unwrap();
-        upload_session.finalize().await.unwrap();
+        let (xet_file_info, _metrics) = cleaner.finish(None).await.unwrap();
+        upload_session.finalize(None).await.unwrap();
 
         pf_out
             .write_all(serde_json::to_string(&xet_file_info).unwrap().as_bytes())
@@ -638,6 +660,7 @@ mod tests {
                 &xet_file.merkle_hash().expect("File hash is not a valid file hash"),
                 output_path.to_string_lossy().into(),
                 &writer,
+                None,
                 None,
                 None,
             )

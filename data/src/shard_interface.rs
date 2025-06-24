@@ -16,7 +16,7 @@ use tempfile::TempDir;
 use tokio::sync::Mutex;
 use tokio::task::JoinSet;
 use tracing::{debug, info, info_span, Instrument};
-
+use utils::auth::TokenProvider;
 use crate::configurations::TranslatorConfig;
 use crate::constants::{
     MDB_SHARD_LOCAL_CACHE_EXPIRATION_SECS, SESSION_XORB_METADATA_FLUSH_INTERVAL_SECS,
@@ -235,7 +235,7 @@ impl SessionShardInterface {
 
     /// Uploads everything in the current session directory.  This must be called after all xorbs
     /// have completed their upload.
-    pub async fn upload_and_register_session_shards(&self) -> Result<u64> {
+    pub async fn upload_and_register_session_shards(&self, auth: Option<Arc<Mutex<TokenProvider>>>) -> Result<u64> {
         // First, flush everything to disk.
         self.session_shard_manager.flush().await?;
 
@@ -269,6 +269,7 @@ impl SessionShardInterface {
             // block here while the upload is happening.
             let upload_permit = acquire_upload_permit().await?;
 
+            let auth_clone = auth.clone();
             shard_uploads.spawn(
                 async move {
                     debug!("Uploading shard {shard_prefix}/{:?} from staging area to CAS.", &si.shard_hash);
@@ -283,7 +284,7 @@ impl SessionShardInterface {
 
                     // Upload the shard.
                     shard_client
-                        .upload_shard(&shard_prefix, &si.shard_hash, false, &data, &salt)
+                        .upload_shard(&shard_prefix, &si.shard_hash, false, &data, &salt, auth_clone)
                         .await?;
 
                     // Done with the upload, drop the permit.

@@ -1,10 +1,10 @@
 use std::result::Result;
-
+use std::sync::Arc;
 use async_trait::async_trait;
 use mdb_shard::file_structs::FileDataSequenceEntry;
 use merklehash::MerkleHash;
 use progress_tracking::upload_tracking::FileXorbDependency;
-
+use utils::auth::TokenProvider;
 use crate::raw_xorb_data::RawXorbData;
 
 /// The interface needed for the deduplication routines to run.  To use the deduplication code,
@@ -36,7 +36,7 @@ pub trait DeduplicationDataInterface: Send + Sync + 'static {
     async fn complete_global_dedup_queries(&mut self) -> Result<bool, Self::ErrorType>;
 
     /// Registers a Xorb of new data that has no deduplication references.
-    async fn register_new_xorb(&mut self, xorb: RawXorbData) -> Result<(), Self::ErrorType>;
+    async fn register_new_xorb(&mut self, xorb: RawXorbData,auth: Option<Arc<tokio::sync::Mutex<TokenProvider>>>) -> Result<(), Self::ErrorType>;
 
     /// Register a set of xorb dependencies; this is called periodically during the dedup
     /// process with a list of (xorb hash, n_bytes).  As the final bit may get

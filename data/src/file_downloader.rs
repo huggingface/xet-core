@@ -7,7 +7,7 @@ use merklehash::MerkleHash;
 use progress_tracking::item_tracking::ItemProgressUpdater;
 use tracing::instrument;
 use ulid::Ulid;
-
+use utils::auth::TokenProvider;
 use crate::configurations::TranslatorConfig;
 use crate::errors::*;
 use crate::prometheus_metrics;
@@ -44,12 +44,13 @@ impl FileDownloader {
         file_name: Arc<str>,
         output: &OutputProvider,
         range: Option<FileRange>,
+        auth: Option<Arc<tokio::sync::Mutex<TokenProvider>>>,
         progress_updater: Option<Arc<ItemProgressUpdater>>,
     ) -> Result<u64> {
         let file_progress_tracker = progress_updater.map(|p| ItemProgressUpdater::item_tracker(&p, file_name, None));
 
         // Currently, this works by always directly querying the remote server.
-        let n_bytes = self.client.get_file(file_id, range, output, file_progress_tracker).await?;
+        let n_bytes = self.client.get_file(file_id, range, output, auth, file_progress_tracker).await?;
 
         prometheus_metrics::FILTER_BYTES_SMUDGED.inc_by(n_bytes);
 

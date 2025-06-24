@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::result::Result;
-
+use std::sync::Arc;
 use mdb_shard::file_structs::{
     FileDataSequenceEntry, FileDataSequenceHeader, FileMetadataExt, FileVerificationEntry, MDBFileInfo,
 };
@@ -8,8 +8,9 @@ use mdb_shard::hash_is_global_dedup_eligible;
 use merkledb::aggregate_hashes::file_node_hash;
 use merklehash::MerkleHash;
 use more_asserts::{debug_assert_le, debug_assert_lt};
+use tokio::sync::Mutex;
 use progress_tracking::upload_tracking::FileXorbDependency;
-
+use utils::auth::TokenProvider;
 use crate::constants::{MAX_XORB_BYTES, MAX_XORB_CHUNKS};
 use crate::data_aggregator::DataAggregator;
 use crate::dedup_metrics::DeduplicationMetrics;
@@ -77,6 +78,7 @@ impl<DataInterfaceType: DeduplicationDataInterface> FileDeduper<DataInterfaceTyp
     pub async fn process_chunks(
         &mut self,
         chunks: &[Chunk],
+        auth: Option<Arc<Mutex<TokenProvider>>>,
     ) -> Result<DeduplicationMetrics, DataInterfaceType::ErrorType> {
         // track the different deduplication statistics.
         let mut dedup_metrics = DeduplicationMetrics::default();
@@ -223,7 +225,7 @@ impl<DataInterfaceType: DeduplicationDataInterface> FileDeduper<DataInterfaceTyp
                     n_bytes: new_xorb.num_bytes() as u64,
                     is_external: false,
                 });
-                self.data_mng.register_new_xorb(new_xorb).await?;
+                self.data_mng.register_new_xorb(new_xorb, auth.clone()).await?;
             }
 
             if !self.file_info.is_empty()

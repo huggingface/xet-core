@@ -171,12 +171,12 @@ impl LocalHydrateDehydrateTest {
                 let upload_session = upload_session.clone();
 
                 if sequential {
-                    let (pf, metrics) = clean_file(upload_session.clone(), entry.path()).await.unwrap();
+                    let (pf, metrics) = clean_file(upload_session.clone(), entry.path(), None).await.unwrap();
                     assert_eq!({ metrics.total_bytes }, entry.metadata().unwrap().len());
                     std::fs::write(out_file, pf.as_pointer_file().unwrap().as_bytes()).unwrap();
 
                     // Force a checkpoint after every file.
-                    upload_session.checkpoint().await.unwrap();
+                    upload_session.checkpoint(None).await.unwrap();
                 }
             }
         } else {
@@ -185,7 +185,7 @@ impl LocalHydrateDehydrateTest {
                 .map(|entry| self.src_dir.join(entry.unwrap().file_name()))
                 .collect();
 
-            let clean_results = upload_session.upload_files(&files).await.unwrap();
+            let clean_results = upload_session.upload_files(&files, None).await.unwrap();
 
             for (i, xf) in clean_results.into_iter().enumerate() {
                 std::fs::write(self.ptr_dir.join(files[i].file_name().unwrap()), serde_json::to_string(&xf).unwrap())
@@ -198,7 +198,7 @@ impl LocalHydrateDehydrateTest {
         let upload_session = self.new_upload_session(None).await;
         self.clean_all_files(&upload_session, sequential).await;
 
-        upload_session.finalize().await.unwrap();
+        upload_session.finalize(None).await.unwrap();
     }
 
     pub async fn hydrate(&self) {
@@ -224,6 +224,7 @@ impl LocalHydrateDehydrateTest {
                     &xf.merkle_hash().unwrap(),
                     out_filename.to_string_lossy().into(),
                     &file_out,
+                    None,
                     None,
                     None,
                 )

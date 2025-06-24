@@ -106,3 +106,12 @@ impl TokenProvider {
         self.expiration <= cur_time
     }
 }
+
+impl Debug for TokenProvider {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TokenProvider")
+            .field("token", &"******") // Do not expose the token in debug output
+            .field("expiration", &self.expiration)
+            .finish()
+    }
+}

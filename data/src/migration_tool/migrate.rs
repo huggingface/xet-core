@@ -1,11 +1,12 @@
 use std::sync::Arc;
 
 use anyhow::Result;
+use tokio::sync::Mutex;
 use cas_object::CompressionScheme;
 use mdb_shard::file_structs::MDBFileInfo;
 use parutils::{tokio_par_for_each, ParallelError};
 use tracing::{info_span, instrument, Instrument, Span};
-use utils::auth::TokenRefresher;
+use utils::auth::{TokenProvider, TokenRefresher};
 use xet_threadpool::ThreadPool;
 
 use super::hub_client::{HubClient, HubClientTokenRefresher};
@@ -21,6 +22,7 @@ use crate::{FileUploadSession, XetFileInfo};
 /// let hub_token = "your_token";
 /// let repo_type = "model";
 /// let repo_id = "your_repo_id";
+/// let auth = None; // Optionally provide an auth token provider
 /// migrate_with_external_runtime(file_paths, hub_endpoint, hub_token, repo_type, repo_id).await?;
 /// ```
 pub async fn migrate_with_external_runtime(
@@ -30,10 +32,11 @@ pub async fn migrate_with_external_runtime(
     hub_token: &str,
     repo_type: &str,
     repo_id: &str,
+    auth: Option<Arc<Mutex<TokenProvider>>>
 ) -> Result<()> {
     let hub_client = HubClient::new(hub_endpoint, hub_token, repo_type, repo_id)?;
 
-    migrate_files_impl(file_paths, false, hub_client, cas_endpoint, None, false).await?;
+    migrate_files_impl(file_paths, false, hub_client, cas_endpoint, None, auth, false).await?;
 
     Ok(())
 }
@@ -48,6 +51,7 @@ pub async fn migrate_files_impl(
     hub_client: HubClient,
     cas_endpoint: Option<String>,
     compression: Option<CompressionScheme>,
+    auth: Option<Arc<Mutex<TokenProvider>>>,
     dry_run: bool,
 ) -> Result<MigrationInfo> {
     let token_type = "write";
@@ -77,7 +81,7 @@ pub async fn migrate_files_impl(
     let clean_ret = tokio_par_for_each(file_paths_with_spans, num_workers, |(f, span), _| {
         async {
             let proc = processor.clone();
-            let (pf, metrics) = clean_file(proc, f).await?;
+            let (pf, metrics) = clean_file(proc, f, auth.clone()).await?;
             Ok((pf, metrics.new_bytes))
         }
         .instrument(span.unwrap_or_else(|| info_span!("unexpected_span")))
@@ -89,10 +93,10 @@ pub async fn migrate_files_impl(
     })?;
 
     if dry_run {
-        let (metrics, all_file_info) = processor.finalize_with_file_info().await?;
+        let (metrics, all_file_info) = processor.finalize_with_file_info(auth).await?;
         Ok((all_file_info, clean_ret, metrics.total_bytes_uploaded))
     } else {
-        let metrics = processor.finalize().await?;
+        let metrics = processor.finalize(auth).await?;
         Ok((vec![], clean_ret, metrics.total_bytes_uploaded as u64))
     }
 }

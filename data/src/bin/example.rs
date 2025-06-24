@@ -99,15 +99,15 @@ async fn clean(mut reader: impl Read, mut writer: impl Write, size: u64) -> Resu
             break;
         }
 
-        handle.add_data(&read_buf[0..bytes]).await?;
+        handle.add_data(&read_buf[0..bytes], None).await?;
         size_read += bytes as u64;
     }
 
     debug_assert_eq!(size_read, size);
 
-    let (file_info, _) = handle.finish().await?;
+    let (file_info, _) = handle.finish(None).await?;
 
-    translator.finalize().await?;
+    translator.finalize(None).await?;
 
     writer.write_all(file_info.as_pointer_file()?.as_bytes())?;
 
@@ -140,6 +140,7 @@ async fn smudge(name: Arc<str>, mut reader: impl Read, writer: &OutputProvider) 
             &xet_file.merkle_hash().map_err(|_| anyhow::anyhow!("Xet hash is corrupted"))?,
             name,
             writer,
+            None,
             None,
             None,
         )

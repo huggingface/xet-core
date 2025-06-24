@@ -4,6 +4,8 @@ use std::io::{Seek, SeekFrom, Write};
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use crate::error::Result;
+use crate::CasClientError;
 use async_trait::async_trait;
 use cas_object::SerializedCasObject;
 use cas_types::{FileRange, QueryReconstructionResponse};
@@ -11,9 +13,7 @@ use mdb_shard::shard_file_reconstructor::FileReconstructor;
 use merklehash::MerkleHash;
 use progress_tracking::item_tracking::SingleItemProgressUpdater;
 use progress_tracking::upload_tracking::CompletionTracker;
-
-use crate::error::Result;
-use crate::CasClientError;
+use utils::auth::TokenProvider;
 
 /// A Client to the CAS (Content Addressed Storage) service to allow storage and
 /// management of XORBs (Xet Object Remote Block). A XORB represents a collection
@@ -28,6 +28,7 @@ pub trait UploadClient {
         prefix: &str,
         serialized_cas_object: SerializedCasObject,
         upload_tracker: Option<Arc<CompletionTracker>>,
+        auth: Option<Arc<tokio::sync::Mutex<TokenProvider>>>,
     ) -> Result<u64>;
 
     /// Check if a XORB already exists.
@@ -56,14 +57,19 @@ pub trait ReconstructionClient {
         hash: &MerkleHash,
         byte_range: Option<FileRange>,
         output_provider: &OutputProvider,
+        auth: Option<Arc<tokio::sync::Mutex<TokenProvider>>>,
         progress_updater: Option<Arc<SingleItemProgressUpdater>>,
     ) -> Result<u64>;
 
-    async fn batch_get_file(&self, files: HashMap<MerkleHash, &OutputProvider>) -> Result<u64> {
+    async fn batch_get_file(
+        &self,
+        files: HashMap<MerkleHash, &OutputProvider>,
+        auth: Option<Arc<tokio::sync::Mutex<TokenProvider>>>,
+    ) -> Result<u64> {
         let mut n_bytes = 0;
         // Provide the basic naive implementation as a default.
         for (h, w) in files {
-            n_bytes += self.get_file(&h, None, w, None).await?;
+            n_bytes += self.get_file(&h, None, w, auth.clone(), None).await?;
         }
         Ok(n_bytes)
     }
@@ -121,6 +127,7 @@ pub trait Reconstructable {
         &self,
         hash: &MerkleHash,
         byte_range: Option<FileRange>,
+        auth: Option<Arc<tokio::sync::Mutex<TokenProvider>>>,
     ) -> Result<Option<QueryReconstructionResponse>>;
 }
 
@@ -145,6 +152,7 @@ pub trait RegistrationClient {
         force_sync: bool,
         shard_data: &[u8],
         salt: &[u8; 32],
+        auth: Option<Arc<tokio::sync::Mutex<TokenProvider>>>,
     ) -> Result<bool>;
 }
 

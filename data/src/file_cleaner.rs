@@ -4,12 +4,13 @@ use std::sync::Arc;
 
 use bytes::Bytes;
 use chrono::{DateTime, Utc};
+use tokio::sync::Mutex;
 use deduplication::{Chunk, Chunker, DeduplicationMetrics, FileDeduper};
 use mdb_shard::file_structs::FileMetadataExt;
 use merklehash::MerkleHash;
 use progress_tracking::upload_tracking::CompletionTrackerFileId;
 use tracing::{debug_span, info, instrument, Instrument};
-
+use utils::auth::TokenProvider;
 use crate::constants::INGESTION_BLOCK_SIZE;
 use crate::deduplication_interface::UploadSessionDataManager;
 use crate::errors::Result;
@@ -64,7 +65,7 @@ impl SingleFileCleaner {
     /// Gets the dedupe manager to process new chunks, by first
     /// waiting for background operations to complete, then triggering a
     /// new background task.
-    async fn deduper_process_chunks(&mut self, chunks: Arc<[Chunk]>) -> Result<()> {
+    async fn deduper_process_chunks(&mut self, chunks: Arc<[Chunk]>,auth: Option<Arc<Mutex<TokenProvider>>>) -> Result<()> {
         // Handle the move out by replacing it with a dummy future discarded below.
         let mut deduper = std::mem::replace(&mut self.dedup_manager_fut, Box::pin(future::pending())).await?;
 
@@ -72,7 +73,7 @@ impl SingleFileCleaner {
 
         let dedup_background = tokio::spawn(
             async move {
-                deduper.process_chunks(&chunks).await?;
+                deduper.process_chunks(&chunks, auth).await?;
                 Ok(deduper)
             }
             .instrument(debug_span!("deduper::process_chunks_task", num_chunks).or_current()),
@@ -83,23 +84,23 @@ impl SingleFileCleaner {
         Ok(())
     }
 
-    pub async fn add_data(&mut self, data: &[u8]) -> Result<()> {
+    pub async fn add_data(&mut self, data: &[u8],auth: Option<Arc<Mutex<TokenProvider>>>) -> Result<()> {
         if data.len() > *INGESTION_BLOCK_SIZE {
             let mut pos = 0;
             while pos < data.len() {
                 let next_pos = usize::min(pos + *INGESTION_BLOCK_SIZE, data.len());
-                self.add_data_impl(Bytes::copy_from_slice(&data[pos..next_pos])).await?;
+                self.add_data_impl(Bytes::copy_from_slice(&data[pos..next_pos]),auth.clone()).await?;
                 pos = next_pos;
             }
         } else {
-            self.add_data_impl(Bytes::copy_from_slice(data)).await?;
+            self.add_data_impl(Bytes::copy_from_slice(data), auth).await?;
         }
 
         Ok(())
     }
 
     #[instrument(skip_all, level="debug", name = "FileCleaner::add_data", fields(file_name=self.file_name.as_ref().map(|s|s.to_string()), len=data.len()))]
-    pub(crate) async fn add_data_impl(&mut self, data: Bytes) -> Result<()> {
+    pub(crate) async fn add_data_impl(&mut self, data: Bytes,auth: Option<Arc<Mutex<TokenProvider>>>) -> Result<()> {
         // Put the chunking on a compute thread so it doesn't tie up the async schedulers
         let chunk_data_jh = {
             let mut chunker = std::mem::take(&mut self.chunker);
@@ -126,24 +127,24 @@ impl SingleFileCleaner {
         }
 
         // Run the deduplication interface here.
-        self.deduper_process_chunks(chunks).await?;
+        self.deduper_process_chunks(chunks,auth).await?;
 
         Ok(())
     }
 
     /// Ensures all current background work is completed.  
-    pub async fn checkpoint(&mut self) -> Result<()> {
+    pub async fn checkpoint(&mut self,auth: Option<Arc<Mutex<TokenProvider>>>) -> Result<()> {
         // Flush the background process by sending it a dummy bit of data.
-        self.deduper_process_chunks(Arc::new([])).await
+        self.deduper_process_chunks(Arc::new([]), auth).await
     }
 
     /// Return the representation of the file after clean as a pointer file instance.
     #[instrument(skip_all, name = "FileCleaner::finish", fields(file_name=self.file_name.as_ref().map(|s|s.to_string())))]
-    pub async fn finish(mut self) -> Result<(XetFileInfo, DeduplicationMetrics)> {
+    pub async fn finish(mut self,auth: Option<Arc<Mutex<TokenProvider>>>) -> Result<(XetFileInfo, DeduplicationMetrics)> {
         // Chunk the rest of the data.
         if let Some(chunk) = self.chunker.finish() {
             let data = Arc::new([chunk]);
-            self.deduper_process_chunks(data).await?;
+            self.deduper_process_chunks(data, auth.clone()).await?;
         }
 
         // Finalize the sha256 hashing and create the metadata extension
@@ -170,7 +171,7 @@ impl SingleFileCleaner {
 
         // Now, return all this information to the
         self.session
-            .register_single_file_clean_completion(remaining_file_data, &deduplication_metrics)
+            .register_single_file_clean_completion(remaining_file_data, &deduplication_metrics, auth)
             .await?;
 
         // NB: xorb upload is happening in the background, this number is optimistic since it does

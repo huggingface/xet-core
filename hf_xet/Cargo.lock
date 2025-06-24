@@ -666,6 +666,7 @@ dependencies = [
  "merklehash",
  "more-asserts",
  "progress_tracking",
+ "tokio",
  "utils",
 ]
 

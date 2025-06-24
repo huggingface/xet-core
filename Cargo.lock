@@ -964,6 +964,7 @@ dependencies = [
  "more-asserts",
  "progress_tracking",
  "rand 0.9.1",
+ "tokio",
  "utils",
 ]
 

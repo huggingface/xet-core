@@ -3,6 +3,9 @@ use std::io::{BufReader, Cursor, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use crate::error::{CasClientError, Result};
+use crate::interface::{OutputProvider, ShardDedupProber, UploadClient};
+use crate::{Client, ReconstructionClient, RegistrationClient, ShardClientInterface};
 use anyhow::anyhow;
 use async_trait::async_trait;
 use cas_object::{CasObject, SerializedCasObject};
@@ -20,10 +23,7 @@ use progress_tracking::upload_tracking::CompletionTracker;
 use tempfile::TempDir;
 use tokio::runtime::Handle;
 use tracing::{debug, error, info, warn};
-
-use crate::error::{CasClientError, Result};
-use crate::interface::{OutputProvider, ShardDedupProber, UploadClient};
-use crate::{Client, ReconstructionClient, RegistrationClient, ShardClientInterface};
+use utils::auth::TokenProvider;
 
 pub struct LocalClient {
     tmp_dir: Option<TempDir>, // To hold directory to use for local testing
@@ -230,6 +230,7 @@ impl UploadClient for LocalClient {
         _prefix: &str,
         serialized_cas_object: SerializedCasObject,
         upload_tracker: Option<Arc<CompletionTracker>>,
+        _auth: Option<Arc<tokio::sync::Mutex<TokenProvider>>>,
     ) -> Result<u64> {
         // moved hash validation into [CasObject::serialize], so removed from here.
         let hash = &serialized_cas_object.hash;
@@ -323,6 +324,7 @@ impl RegistrationClient for LocalClient {
         _force_sync: bool,
         shard_data: &[u8],
         salt: &[u8; 32],
+        _auth: Option<Arc<tokio::sync::Mutex<TokenProvider>>>,
     ) -> Result<bool> {
         // Write out the shard to the shard directory.
         let shard = MDBShardFile::write_out_from_reader(&self.shard_dir, &mut Cursor::new(shard_data))?;
@@ -398,6 +400,7 @@ impl ReconstructionClient for LocalClient {
         hash: &MerkleHash,
         byte_range: Option<FileRange>,
         output_provider: &OutputProvider,
+        _auth: Option<Arc<tokio::sync::Mutex<TokenProvider>>>,
         _progress_updater: Option<Arc<SingleItemProgressUpdater>>,
     ) -> Result<u64> {
         let Some((file_info, _)) = self
@@ -460,7 +463,7 @@ mod tests {
 
         // Act & Assert
         let client = LocalClient::temporary().unwrap();
-        assert!(client.upload_xorb("key", cas_object, None).await.is_ok());
+        assert!(client.upload_xorb("key", cas_object, None, None).await.is_ok());
 
         let returned_data = client.get(&hash).unwrap();
         assert_eq!(data, returned_data);
@@ -476,7 +479,7 @@ mod tests {
 
         // Act & Assert
         let client = LocalClient::temporary().unwrap();
-        assert!(client.upload_xorb("", cas_object, None).await.is_ok());
+        assert!(client.upload_xorb("", cas_object, None, None).await.is_ok());
 
         let returned_data = client.get(&hash).unwrap();
         assert_eq!(data, returned_data);
@@ -493,7 +496,7 @@ mod tests {
 
         // Act & Assert
         let client = LocalClient::temporary().unwrap();
-        assert!(client.upload_xorb("", cas_object, None).await.is_ok());
+        assert!(client.upload_xorb("", cas_object, None, None).await.is_ok());
 
         let ranges: Vec<(u32, u32)> = vec![(0, 1), (2, 3)];
         let returned_ranges = client.get_object_range(&hash, ranges).unwrap();
@@ -520,7 +523,7 @@ mod tests {
 
         // Act
         let client = LocalClient::temporary().unwrap();
-        assert!(client.upload_xorb("", cas_object, None).await.is_ok());
+        assert!(client.upload_xorb("", cas_object, None, None).await.is_ok());
         let len = client.get_length(&hash).unwrap();
 
         // Assert
@@ -554,7 +557,7 @@ mod tests {
 
         // write "hello world"
         let client = LocalClient::temporary().unwrap();
-        client.upload_xorb("default", cas_object, None).await.unwrap();
+        client.upload_xorb("default", cas_object, None, None).await.unwrap();
 
         let cas_object = serialized_cas_object_from_components(
             &hello_hash,
@@ -565,7 +568,7 @@ mod tests {
         .unwrap();
 
         // put the same value a second time. This should be ok.
-        client.upload_xorb("default", cas_object, None).await.unwrap();
+        client.upload_xorb("default", cas_object, None, None).await.unwrap();
 
         // we can list all entries
         let r = client.get_all_entries().unwrap();
@@ -629,6 +632,7 @@ mod tests {
                 )
                 .unwrap(),
                 None,
+                None,
             )
             .await
             .unwrap();
@@ -654,7 +658,7 @@ mod tests {
         let client = LocalClient::temporary_with_global_dedup(shard_dir_2.clone()).unwrap();
 
         client
-            .upload_shard("default", &shard_hash, true, &std::fs::read(&new_shard_path).unwrap(), &[1; 32])
+            .upload_shard("default", &shard_hash, true, &std::fs::read(&new_shard_path).unwrap(), &[1; 32], None)
             .await
             .unwrap();
 

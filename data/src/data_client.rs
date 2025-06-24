@@ -10,12 +10,13 @@ use cas_client::{CacheConfig, FileProvider, OutputProvider, CHUNK_CACHE_SIZE_BYT
 use cas_object::CompressionScheme;
 use deduplication::DeduplicationMetrics;
 use dirs::home_dir;
+use tokio::sync::Mutex;
 use parutils::{tokio_par_for_each, ParallelError};
 use progress_tracking::item_tracking::ItemProgressUpdater;
 use progress_tracking::TrackingProgressUpdater;
 use tracing::{info_span, instrument, Instrument, Span};
 use ulid::Ulid;
-use utils::auth::{AuthConfig, TokenRefresher};
+use utils::auth::{AuthConfig, TokenProvider, TokenRefresher};
 
 use crate::configurations::*;
 use crate::constants::{INGESTION_BLOCK_SIZE, MAX_CONCURRENT_DOWNLOADS, MAX_CONCURRENT_FILE_INGESTION};
@@ -111,11 +112,15 @@ pub async fn upload_bytes_async(
 
     let upload_session = FileUploadSession::new(config, progress_updater).await?;
     let blobs_with_spans = add_spans(file_contents, || info_span!("clean_task"));
+    
+    let auth = upload_session.config.data_config.auth.as_ref().map(|auth| {
+        Arc::new(Mutex::new(TokenProvider::new(auth)))
+    });
 
     // clean the bytes
     let files = tokio_par_for_each(blobs_with_spans, *MAX_CONCURRENT_FILE_INGESTION, |(blob, span), _| {
         async {
-            let (xf, _metrics) = clean_bytes(upload_session.clone(), blob).await?;
+            let (xf, _metrics) = clean_bytes(upload_session.clone(), blob, auth.clone()).await?;
             Ok(xf)
         }
         .instrument(span.unwrap_or_else(|| info_span!("unexpected_span")))
@@ -127,7 +132,7 @@ pub async fn upload_bytes_async(
     })?;
 
     // Push the CAS blocks and flush the mdb to disk
-    let _metrics = upload_session.finalize().await?;
+    let _metrics = upload_session.finalize(auth).await?;
 
     Ok(files)
 }
@@ -154,6 +159,10 @@ pub async fn upload_async(
     // upload shards and xorbs
     // for each file, return the filehash
     let config = default_config(endpoint.unwrap_or(DEFAULT_CAS_ENDPOINT.clone()), None, token_info, token_refresher)?;
+    
+    let auth = config.data_config.auth.as_ref().map(|auth| {
+        Arc::new(Mutex::new(TokenProvider::new(auth)))
+    });
 
     let span = Span::current();
 
@@ -161,10 +170,10 @@ pub async fn upload_async(
 
     let upload_session = FileUploadSession::new(config, progress_updater).await?;
 
-    let ret = upload_session.upload_files(&file_paths).await?;
+    let ret = upload_session.upload_files(&file_paths, auth.clone()).await?;
 
     // Push the CAS blocks and flush the mdb to disk
-    let metrics = upload_session.finalize().await?;
+    let metrics = upload_session.finalize(auth).await?;
 
     // Record dedup metrics.
     span.record("new_bytes", metrics.new_bytes);
@@ -195,6 +204,10 @@ pub async fn download_async(
     let config =
         default_config(endpoint.unwrap_or(DEFAULT_CAS_ENDPOINT.to_string()), None, token_info, token_refresher)?;
     Span::current().record("session_id", &config.session_id);
+    
+    let auth = config.data_config.auth.as_ref().map(|auth| {
+        Arc::new(tokio::sync::Mutex::new(TokenProvider::new(auth)))
+    });
 
     let updaters = match progress_updaters {
         None => vec![None; file_infos.len()],
@@ -208,9 +221,10 @@ pub async fn download_async(
         extended_file_info_list,
         *MAX_CONCURRENT_DOWNLOADS,
         |(((file_info, file_path), updater), span), _| {
+            let auth = auth.clone();
             async move {
                 let proc = processor.clone();
-                smudge_file(&proc, &file_info, &file_path, updater).await
+                smudge_file(&proc, &file_info, &file_path,auth, updater).await
             }
             .instrument(span.unwrap_or_else(|| info_span!("unexpected_span")))
         },
@@ -228,16 +242,18 @@ pub async fn download_async(
 pub async fn clean_bytes(
     processor: Arc<FileUploadSession>,
     bytes: Vec<u8>,
+    auth: Option<Arc<Mutex<TokenProvider>>>,
 ) -> errors::Result<(XetFileInfo, DeduplicationMetrics)> {
     let mut handle = processor.start_clean(None, bytes.len() as u64).await;
-    handle.add_data(&bytes).await?;
-    handle.finish().await
+    handle.add_data(&bytes, auth.clone()).await?;
+    handle.finish(auth).await
 }
 
 #[instrument(skip_all, name = "clean_file", fields(file.name = tracing::field::Empty, file.len = tracing::field::Empty))]
 pub async fn clean_file(
     processor: Arc<FileUploadSession>,
     filename: impl AsRef<Path>,
+    auth: Option<Arc<Mutex<TokenProvider>>>
 ) -> errors::Result<(XetFileInfo, DeduplicationMetrics)> {
     let mut reader = File::open(&filename)?;
 
@@ -255,16 +271,17 @@ pub async fn clean_file(
             break;
         }
 
-        handle.add_data(&buffer[0..bytes]).await?;
+        handle.add_data(&buffer[0..bytes],auth.clone()).await?;
     }
 
-    handle.finish().await
+    handle.finish(auth).await
 }
 
 async fn smudge_file(
     downloader: &FileDownloader,
     file_info: &XetFileInfo,
     file_path: &str,
+    auth: Option<Arc<tokio::sync::Mutex<TokenProvider>>>,
     progress_updater: Option<Arc<dyn TrackingProgressUpdater>>,
 ) -> errors::Result<String> {
     let path = PathBuf::from(file_path);
@@ -277,7 +294,7 @@ async fn smudge_file(
     let progress_updater = progress_updater.map(ItemProgressUpdater::new);
 
     downloader
-        .smudge_file_from_hash(&file_info.merkle_hash()?, file_path.into(), &output, None, progress_updater)
+        .smudge_file_from_hash(&file_info.merkle_hash()?, file_path.into(), &output, None, auth, progress_updater)
         .await?;
     Ok(file_path.to_string())
 }

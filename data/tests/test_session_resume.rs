@@ -61,11 +61,11 @@ mod tests {
 
             // Feed it half the data, and checkpoint.
             let mut cleaner = file_upload_session.start_clean(Some("data".into()), data.len() as u64).await;
-            cleaner.add_data(&data[..half_n]).await.unwrap();
-            cleaner.checkpoint().await.unwrap();
+            cleaner.add_data(&data[..half_n], None).await.unwrap();
+            cleaner.checkpoint(None).await.unwrap();
 
             // Checkpoint to ensure all xorbs get uploaded.
-            file_upload_session.checkpoint().await.unwrap();
+            file_upload_session.checkpoint(None).await.unwrap();
 
             // Break without closing down the file session; we should resume partway through.
         }
@@ -79,11 +79,11 @@ mod tests {
             let mut cleaner = file_upload_session.start_clean(Some("data".into()), data.len() as u64).await;
 
             // Add all the data.  Roughly the first half should dedup.
-            cleaner.add_data(&data).await.unwrap();
-            cleaner.finish().await.unwrap();
+            cleaner.add_data(&data,None).await.unwrap();
+            cleaner.finish(None).await.unwrap();
 
             // Finalize everything
-            file_upload_session.finalize().await.unwrap();
+            file_upload_session.finalize(None).await.unwrap();
 
             let progress = progress_tracker.get_aggregated_state().await;
 
@@ -131,11 +131,11 @@ mod tests {
 
             // Feed it half the data, and checkpoint.
             let mut cleaner = file_upload_session.start_clean(Some("data".into()), data.len() as u64).await;
-            cleaner.add_data(&data[..rn]).await.unwrap();
-            cleaner.checkpoint().await.unwrap();
+            cleaner.add_data(&data[..rn],None).await.unwrap();
+            cleaner.checkpoint(None).await.unwrap();
 
             // Checkpoint to ensure all xorbs get uploaded.
-            file_upload_session.checkpoint().await.unwrap();
+            file_upload_session.checkpoint(None).await.unwrap();
 
             if prev_rn > 0 {
                 let progress = progress_tracker.get_aggregated_state().await;
@@ -163,11 +163,11 @@ mod tests {
             let mut cleaner = file_upload_session.start_clean(Some("data".into()), data.len() as u64).await;
 
             // Add all the data.  Roughly the first half should dedup.
-            cleaner.add_data(&data).await.unwrap();
-            cleaner.finish().await.unwrap();
+            cleaner.add_data(&data,None).await.unwrap();
+            cleaner.finish(None).await.unwrap();
 
             // Finalize everything
-            file_upload_session.finalize().await.unwrap();
+            file_upload_session.finalize(None).await.unwrap();
 
             let progress = progress_tracker.get_aggregated_state().await;
 
@@ -206,7 +206,7 @@ mod tests {
             let upload_session = ts.new_upload_session(Some(progress_tracker.clone())).await;
             ts.clean_all_files(&upload_session, false).await;
 
-            upload_session.checkpoint().await.unwrap();
+            upload_session.checkpoint(None).await.unwrap();
 
             let progress = progress_tracker.get_aggregated_state().await;
 
@@ -240,7 +240,7 @@ mod tests {
             ts.clean_all_files(&upload_session, false).await;
 
             // Finalize things this time.
-            upload_session.finalize().await.unwrap();
+            upload_session.finalize(None).await.unwrap();
 
             let progress = progress_tracker.get_aggregated_state().await;
 
@@ -271,7 +271,7 @@ mod tests {
             let upload_session = ts.new_upload_session(Some(progress_tracker.clone())).await;
             ts.clean_all_files(&upload_session, false).await;
 
-            upload_session.checkpoint().await.unwrap();
+            upload_session.checkpoint(None).await.unwrap();
 
             let progress = progress_tracker.get_aggregated_state().await;
 
@@ -295,7 +295,7 @@ mod tests {
             ts.clean_all_files(&upload_session, false).await;
 
             // Finalize things this time.
-            upload_session.finalize().await.unwrap();
+            upload_session.finalize(None).await.unwrap();
 
             let progress = progress_tracker.get_aggregated_state().await;
 

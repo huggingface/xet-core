@@ -27,7 +27,7 @@ use reqwest_middleware::ClientWithMiddleware;
 use tokio::sync::{mpsc, OwnedSemaphorePermit, Semaphore};
 use tokio::task::{JoinHandle, JoinSet};
 use tracing::{debug, info, instrument};
-use utils::auth::AuthConfig;
+use utils::auth::TokenProvider;
 use utils::singleflight::Group;
 
 use crate::download_utils::*;
@@ -84,7 +84,6 @@ impl RemoteClient {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         endpoint: &str,
-        auth: &Option<AuthConfig>,
         cache_config: &Option<CacheConfig>,
         shard_cache_directory: PathBuf,
         session_id: &str,
@@ -113,13 +112,13 @@ impl RemoteClient {
             endpoint: endpoint.to_string(),
             dry_run,
             authenticated_http_client: Arc::new(
-                http_client::build_auth_http_client(auth, RetryConfig::default(), session_id).unwrap(),
+                http_client::build_auth_http_client(RetryConfig::default(), session_id).unwrap(),
             ),
             authenticated_http_client_no_retry: Arc::new(
-                http_client::build_auth_http_client_no_retry(auth, session_id).unwrap(),
+                http_client::build_auth_http_client_no_retry(session_id).unwrap(),
             ),
             conservative_authenticated_http_client: Arc::new(
-                http_client::build_auth_http_client(auth, RetryConfig::no429retry(), session_id).unwrap(),
+                http_client::build_auth_http_client(RetryConfig::no429retry(), session_id).unwrap(),
             ),
             http_client: Arc::new(http_client::build_http_client(RetryConfig::default(), session_id).unwrap()),
             chunk_cache,
@@ -139,6 +138,7 @@ impl UploadClient for RemoteClient {
         prefix: &str,
         serialized_cas_object: SerializedCasObject,
         upload_tracker: Option<Arc<CompletionTracker>>,
+        auth: Option<Arc<tokio::sync::Mutex<TokenProvider>>>,
     ) -> Result<u64> {
         let key = Key {
             prefix: prefix.to_string(),
@@ -175,16 +175,25 @@ impl UploadClient for RemoteClient {
                 let client = self.authenticated_http_client_no_retry.clone();
 
                 let response = retry_wrapper(
-                    move || {
+                    || async {
                         let upload_stream = upload_stream.clone_with_reset();
                         let url = url.clone();
+                        let mut post = client.post(url);
+                        if let Some(auth_ref) = &auth {
+                            let token = auth_ref
+                                .lock()
+                                .await
+                                .get_valid_token()
+                                .await
+                                .map_err(|e| reqwest_middleware::Error::Middleware(e.into()))?;
+                            post = post.bearer_auth(token);
+                        }
 
-                        client
-                            .post(url)
-                            .with_extension(Api("cas::upload_xorb"))
+                        post.with_extension(Api("cas::upload_xorb"))
                             .header(CONTENT_LENGTH, HeaderValue::from(n_upload_bytes)) // must be set because of streaming
                             .body(Body::wrap_stream(upload_stream))
                             .send()
+                            .await
                     },
                     RetryConfig::default(),
                 )
@@ -234,13 +243,14 @@ impl ReconstructionClient for RemoteClient {
         hash: &MerkleHash,
         byte_range: Option<FileRange>,
         output_provider: &OutputProvider,
+        auth: Option<Arc<tokio::sync::Mutex<TokenProvider>>>,
         progress_updater: Option<Arc<SingleItemProgressUpdater>>,
     ) -> Result<u64> {
         // If the user has set the `HF_XET_RECONSTRUCT_WRITE_SEQUENTIALLY=true` env variable, then we
         // should write the file to the output sequentially instead of in parallel.
         if *RECONSTRUCT_WRITE_SEQUENTIALLY {
             info!("reconstruct terms sequentially");
-            self.reconstruct_file_to_writer_segmented(hash, byte_range, output_provider, progress_updater)
+            self.reconstruct_file_to_writer_segmented(hash, byte_range, output_provider, auth, progress_updater)
                 .await
         } else {
             info!("reconstruct terms in parallel");
@@ -248,6 +258,7 @@ impl ReconstructionClient for RemoteClient {
                 hash,
                 byte_range,
                 output_provider,
+                auth,
                 progress_updater,
             )
             .await
@@ -261,10 +272,12 @@ impl Reconstructable for RemoteClient {
         &self,
         file_id: &MerkleHash,
         bytes_range: Option<FileRange>,
+        auth: Option<Arc<tokio::sync::Mutex<TokenProvider>>>,
     ) -> Result<Option<QueryReconstructionResponse>> {
         get_reconstruction_with_endpoint_and_client(
             &self.endpoint,
             &self.authenticated_http_client,
+            &auth,
             file_id,
             bytes_range,
         )
@@ -275,12 +288,23 @@ impl Reconstructable for RemoteClient {
 pub(crate) async fn get_reconstruction_with_endpoint_and_client(
     endpoint: &str,
     client: &ClientWithMiddleware,
+    auth: &Option<Arc<tokio::sync::Mutex<TokenProvider>>>,
     file_id: &MerkleHash,
     bytes_range: Option<FileRange>,
 ) -> Result<Option<QueryReconstructionResponse>> {
     let url = Url::parse(&format!("{}/reconstruction/{}", endpoint, file_id.hex()))?;
-
-    let mut request = client.get(url).with_extension(Api("cas::get_reconstruction"));
+    let mut request = if let Some(auth) = auth {
+        let mut auth = auth.lock().await;
+        let token = auth.get_valid_token().await.map_err(|e| {
+            CasClientError::internal(format!("failed to get valid token: {e:?} for endpoint {endpoint:?}"))
+        })?;
+        client
+            .get(url)
+            .bearer_auth(token)
+            .with_extension(Api("cas::get_reconstruction"))
+    } else {
+        client.get(url).with_extension(Api("cas::get_reconstruction"))
+    };
     if let Some(range) = bytes_range {
         // convert exclusive-end to inclusive-end range
         request = request.header(RANGE, HttpRange::from(range).range_header())
@@ -357,6 +381,7 @@ impl RemoteClient {
         file_hash: &MerkleHash,
         byte_range: Option<FileRange>,
         writer: &OutputProvider,
+        auth: Option<Arc<tokio::sync::Mutex<TokenProvider>>>,
         progress_updater: Option<Arc<SingleItemProgressUpdater>>,
     ) -> Result<u64> {
         // queue size is inherently bounded by degree of concurrency.
@@ -374,6 +399,7 @@ impl RemoteClient {
             file_reconstruct_range,
             self.endpoint.clone(),
             self.authenticated_http_client.clone(),
+            auth,
         )))?;
 
         // Start the queue processing logic
@@ -508,6 +534,7 @@ impl RemoteClient {
         file_hash: &MerkleHash,
         byte_range: Option<FileRange>,
         writer: &OutputProvider,
+        auth: Option<Arc<tokio::sync::Mutex<TokenProvider>>>,
         progress_updater: Option<Arc<SingleItemProgressUpdater>>,
     ) -> Result<u64> {
         // queue size is inherently bounded by degree of concurrency.
@@ -525,6 +552,7 @@ impl RemoteClient {
             file_reconstruct_range,
             self.endpoint.clone(),
             self.authenticated_http_client.clone(),
+            auth,
         )))?;
 
         // Start the queue processing logic
@@ -706,6 +734,7 @@ impl RegistrationClient for RemoteClient {
         force_sync: bool,
         shard_data: &[u8],
         _salt: &[u8; 32],
+        auth: Option<Arc<tokio::sync::Mutex<TokenProvider>>>,
     ) -> Result<bool> {
         if self.dry_run {
             return Ok(true);
@@ -723,9 +752,18 @@ impl RegistrationClient for RemoteClient {
             false => NON_FORCE_SYNC_METHOD,
         };
 
-        let response = self
-            .authenticated_http_client
-            .request(method, url)
+        let mut response_builder = self.authenticated_http_client.request(method, url);
+        if let Some(auth_ref) = &auth {
+            let token = auth_ref
+                .lock()
+                .await
+                .get_valid_token()
+                .await
+                .map_err(|e| reqwest_middleware::Error::Middleware(e.into()))?;
+            response_builder = response_builder.bearer_auth(token);
+        }
+
+        let response = response_builder
             .with_extension(Api("cas::upload_shard"))
             .body(shard_data.to_vec())
             .send()
@@ -864,13 +902,13 @@ mod tests {
         let raw_xorb = build_raw_xorb(3, ChunkSize::Random(512, 10248));
 
         let threadpool = ThreadPool::new().unwrap();
-        let client = RemoteClient::new(CAS_ENDPOINT, &None, &None, "".into(), "", false);
+        let client = RemoteClient::new(CAS_ENDPOINT, &None, "".into(), "", false);
 
         let cas_object = build_and_verify_cas_object(raw_xorb, Some(CompressionScheme::LZ4));
 
         // Act
         let result = threadpool
-            .external_run_async_task(async move { client.upload_xorb(prefix, cas_object, None).await })
+            .external_run_async_task(async move { client.upload_xorb(prefix, cas_object, None, None).await })
             .unwrap();
 
         // Assert
@@ -1237,13 +1275,13 @@ mod tests {
 
         // test reconstruct and sequential write
         let test = test_case.clone();
-        let client = RemoteClient::new(endpoint, &None, &None, "".into(), "", false);
+        let client = RemoteClient::new(endpoint, &None, "".into(), "", false);
         let provider = BufferProvider::default();
         let buf = provider.buf.clone();
         let writer = OutputProvider::Buffer(provider);
         let resp = threadpool.external_run_async_task(async move {
             client
-                .reconstruct_file_to_writer_segmented(&test.file_hash, Some(test.file_range), &writer, None)
+                .reconstruct_file_to_writer_segmented(&test.file_hash, Some(test.file_range), &writer, None, None)
                 .await
         })?;
 
@@ -1255,7 +1293,7 @@ mod tests {
 
         // test reconstruct and parallel write
         let test = test_case;
-        let client = RemoteClient::new(endpoint, &None, &None, "".into(), "", false);
+        let client = RemoteClient::new(endpoint, &None, "".into(), "", false);
         let provider = BufferProvider::default();
         let buf = provider.buf.clone();
         let writer = OutputProvider::Buffer(provider);
@@ -1265,6 +1303,7 @@ mod tests {
                     &test.file_hash,
                     Some(test.file_range),
                     &writer,
+                    None,
                     None,
                 )
                 .await

@@ -17,6 +17,7 @@ use reqwest_middleware::ClientWithMiddleware;
 use tokio_retry::strategy::ExponentialBackoff;
 use tracing::{debug, error, info, trace, warn};
 use url::Url;
+use utils::auth::{TokenProvider};
 use utils::singleflight::Group;
 
 use crate::error::{CasClientError, Result};
@@ -64,6 +65,7 @@ pub struct FetchInfo {
     client: Arc<ClientWithMiddleware>, // only used for fetching file info
     inner: RwLock<HashMap<HexMerkleHash, Vec<CASReconstructionFetchInfo>>>,
     version: tokio::sync::Mutex<u32>,
+    auth: Option<Arc<tokio::sync::Mutex<TokenProvider>>>, // optional auth config for requests
 }
 
 impl FetchInfo {
@@ -72,12 +74,14 @@ impl FetchInfo {
         file_range: FileRange,
         endpoint: String,
         client: Arc<ClientWithMiddleware>,
+        auth: Option<Arc<tokio::sync::Mutex<TokenProvider>>>,
     ) -> Self {
         Self {
             file_hash,
             file_range,
             endpoint,
             client,
+            auth,
             inner: Default::default(),
             version: tokio::sync::Mutex::new(0),
         }
@@ -89,8 +93,8 @@ impl FetchInfo {
         let (first_segment, remainder) = self.file_range.take_segment(segment_size);
 
         (
-            FetchInfo::new(self.file_hash, first_segment, self.endpoint.clone(), self.client.clone()),
-            remainder.map(|r| FetchInfo::new(self.file_hash, r, self.endpoint, self.client)),
+            FetchInfo::new(self.file_hash, first_segment, self.endpoint.clone(), self.client.clone(), self.auth.clone()),
+            remainder.map(|r| FetchInfo::new(self.file_hash, r, self.endpoint, self.client, self.auth.clone())),
         )
     }
 
@@ -117,6 +121,7 @@ impl FetchInfo {
         let Some(manifest) = get_reconstruction_with_endpoint_and_client(
             &self.endpoint,
             &self.client,
+            &self.auth,
             &self.file_hash,
             Some(self.file_range),
         )
@@ -232,7 +237,7 @@ pub struct TermDownloadResult<T> {
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct TermDownloadOutput {
+pub struct TermDownloadOutput {
     pub data: Vec<u8>,
     pub chunk_byte_indices: Vec<u32>,
     pub chunk_range: ChunkRange,
@@ -645,6 +650,7 @@ mod tests {
             file_range,
             server.base_url(),
             Arc::new(build_http_client(RetryConfig::default(), "")?),
+            None
         );
 
         fetch_info.query().await?;
@@ -692,6 +698,7 @@ mod tests {
             file_range_to_refresh,
             server.base_url(),
             Arc::new(build_http_client(RetryConfig::default(), "")?),
+            None,
         ));
 
         // Spawn multiple tasks each calling into refresh with a different delay in
@@ -761,6 +768,7 @@ mod tests {
             file_range,
             server.base_url(),
             Arc::new(build_http_client(RetryConfig::default(), "")?),
+            None,
         );
 
         let (offset_info_first_range, terms) = fetch_info.query().await?.unwrap();

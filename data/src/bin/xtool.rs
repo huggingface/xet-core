@@ -8,11 +8,12 @@ use cas_client::{Reconstructable, RemoteClient};
 use cas_object::CompressionScheme;
 use cas_types::{FileRange, QueryReconstructionResponse};
 use clap::{Args, Parser, Subcommand};
+use tokio::sync::Mutex;
 use data::data_client::default_config;
 use data::migration_tool::hub_client::{HubClient, HubClientTokenRefresher};
 use data::migration_tool::migrate::migrate_files_impl;
 use merklehash::MerkleHash;
-use utils::auth::TokenRefresher;
+use utils::auth::{AuthConfig, NoOpTokenRefresher, TokenProvider, TokenRefresher};
 use walkdir::WalkDir;
 use xet_threadpool::ThreadPool;
 
@@ -54,8 +55,13 @@ impl XCommand {
             .token
             .unwrap_or_else(|| std::env::var("HF_TOKEN").unwrap_or_default());
         let hub_client = HubClient::new(&endpoint, &token, &self.overrides.repo_type, &self.overrides.repo_id)?;
-
-        self.command.run(hub_client).await
+        let auth_config = AuthConfig{
+            token,
+            token_expiration: u64::MAX, // Use a large value to avoid expiration issues
+            token_refresher: Arc::from(NoOpTokenRefresher),
+        };
+        let token_provider = Arc::new(tokio::sync::Mutex::new(TokenProvider::new(&auth_config)));
+        self.command.run(hub_client, Some(token_provider)).await
     }
 }
 
@@ -106,7 +112,7 @@ struct QueryArg {
 }
 
 impl Command {
-    async fn run(self, hub_client: HubClient) -> Result<()> {
+    async fn run(self, hub_client: HubClient, auth: Option<Arc<Mutex<TokenProvider>>>) -> Result<()> {
         match self {
             Command::Dedup(arg) => {
                 let file_paths = walk_files(arg.files, arg.recursive);
@@ -118,6 +124,7 @@ impl Command {
                     hub_client,
                     None,
                     arg.compression.and_then(|c| CompressionScheme::try_from(c).ok()),
+                    auth,
                     !arg.migrate,
                 )
                 .await?;
@@ -198,9 +205,11 @@ async fn query_reconstruction(
 
     let config = default_config(endpoint.clone(), None, Some((jwt_token, jwt_token_expiry)), Some(token_refresher))?;
     let cas_storage_config = &config.data_config;
+    let auth = config.data_config.auth.as_ref().map(|auth| {
+        Arc::new(Mutex::new(TokenProvider::new(auth)))
+    });
     let remote_client = RemoteClient::new(
         &endpoint,
-        &cas_storage_config.auth,
         &Some(cas_storage_config.cache_config.clone()),
         config.shard_config.cache_directory.clone(),
         "",
@@ -208,7 +217,7 @@ async fn query_reconstruction(
     );
 
     remote_client
-        .get_reconstruction(&file_hash, bytes_range)
+        .get_reconstruction(&file_hash, bytes_range, auth)
         .await
         .map_err(anyhow::Error::from)
 }
