@@ -1,0 +1,9 @@
+{
+  "moz:firefoxOptions": {
+    "args": []
+  },
+  "goog:chromeOptions": {
+    "args": [
+    ]
+  }
+}

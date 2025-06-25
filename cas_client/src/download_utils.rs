@@ -21,8 +21,8 @@ use utils::singleflight::Group;
 
 use crate::error::{CasClientError, Result};
 use crate::http_client::{Api, BASE_RETRY_DELAY_MS, BASE_RETRY_MAX_DURATION_MS, NUM_RETRIES};
+use crate::output_provider::OutputProvider;
 use crate::remote_client::{get_reconstruction_with_endpoint_and_client, PREFIX_DEFAULT};
-use crate::OutputProvider;
 
 utils::configurable_constants! {
     // Env (HF_XET_NUM_RANGE_IN_SEGMENT_BASE) base value for the approx number of ranges in the initial

@@ -23,7 +23,6 @@ async-trait = { workspace = true }
 bytes = { workspace = true }
 derivative = { workspace = true }
 futures = { workspace = true }
-heed = { workspace = true }
 http = { workspace = true }
 more-asserts = { workspace = true }
 tempfile = { workspace = true }
@@ -65,6 +64,9 @@ native-tls = ["reqwest/native-tls"]
 # library size.
 native-tls-vendored = ["reqwest/native-tls-vendored"]
 
+
+[target.'cfg(not(target_family = "wasm"))'.dependencies]
+heed = { workspace = true }
 
 [dev-dependencies]
 httpmock = { workspace = true }

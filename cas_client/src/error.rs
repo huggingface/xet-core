@@ -95,6 +95,7 @@ impl PartialEq for CasClientError {
     }
 }
 
+#[cfg(not(target_family = "wasm"))]
 impl From<utils::errors::SingleflightError<CasClientError>> for CasClientError {
     fn from(value: utils::singleflight::SingleflightError<CasClientError>) -> Self {
         match value {

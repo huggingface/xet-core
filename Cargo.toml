@@ -18,7 +18,7 @@ members = [
     "xet_threadpool",
 ]
 
-exclude = ["chunk_cache_bench", "hf_xet", "wasm_xet"]
+exclude = ["chunk_cache_bench", "hf_xet", "hf_xet_wasm"]
 
 [profile.release]
 opt-level = 3
@@ -87,6 +87,7 @@ ulid = "1.2"
 uuid = "1"
 url = "2.5"
 walkdir = "2"
+web-time = "1.1.0"
 whoami = "1"
 heapify = "0.2"
 

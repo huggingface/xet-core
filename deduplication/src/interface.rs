@@ -15,7 +15,8 @@ use crate::raw_xorb_data::RawXorbData;
 /// and register_new_xorb, which is called intermittently when a new block of data is available for upload.
 ///
 /// The global dedup query functions are optional but needed if global dedup is to be enabled.
-#[async_trait]
+#[cfg_attr(not(target_family = "wasm"), async_trait)]
+#[cfg_attr(target_family = "wasm", async_trait(?Send))]
 pub trait DeduplicationDataInterface: Send + Sync + 'static {
     /// The error type used for the interface
     type ErrorType;
