@@ -268,12 +268,7 @@ pub struct VerifiableFile {
     pub segments: Vec<VerifiableFileSegment>,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct UploadShardPayload {
-    pub files: Vec<VerifiableFile>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub hmac_key: Option<HexMerkleHash>,
-}
+pub type UploadFilesPayload = Vec<VerifiableFile>;
 
 #[cfg(test)]
 mod tests {
