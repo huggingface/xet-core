@@ -252,6 +252,29 @@ pub struct QueryChunkResponse {
     pub shard: MerkleHash,
 }
 
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct VerifiableFileSegment {
+    pub cas_hash: HexMerkleHash,
+    pub range: ChunkRange,
+    pub unpacked_length: u32,
+    pub verification_range_hash: HexMerkleHash,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct VerifiableFile {
+    pub file_hash: HexMerkleHash,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sha256: Option<HexMerkleHash>,
+    pub segments: Vec<VerifiableFileSegment>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct UploadShardPayload {
+    pub files: Vec<VerifiableFile>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hmac_key: Option<HexMerkleHash>,
+}
+
 #[cfg(test)]
 mod tests {
     use crate::*;
