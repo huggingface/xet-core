@@ -496,6 +496,7 @@ dependencies = [
  "http 1.3.1",
  "httpmock",
  "hyper-util",
+ "lazy_static",
  "mdb_shard",
  "merkledb",
  "merklehash",
@@ -2063,8 +2064,9 @@ dependencies = [
  "anyhow",
  "async-trait",
  "blake3",
+ "bytes",
  "clap",
- "futures-io",
+ "futures",
  "futures-util",
  "heapify",
  "itertools 0.14.0",
@@ -3945,6 +3947,7 @@ dependencies = [
  "thiserror 2.0.12",
  "tokio",
  "tracing",
+ "web-time",
  "xet_threadpool",
 ]
 

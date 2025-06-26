@@ -25,5 +25,8 @@ tracing = { workspace = true }
 tempfile = { workspace = true }
 xet_threadpool = { path = "../xet_threadpool" }
 
+[target.'cfg(target_family = "wasm")'.dependencies]
+web-time = { workspace = true }
+
 [features]
 strict = []

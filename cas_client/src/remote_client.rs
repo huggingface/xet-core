@@ -5,7 +5,6 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use anyhow::anyhow;
-use async_trait::async_trait;
 use cas_object::SerializedCasObject;
 use cas_types::{
     BatchQueryReconstructionResponse, CASReconstructionTerm, ChunkRange, FileRange, HttpRange, Key,
@@ -22,20 +21,24 @@ use mdb_shard::utils::shard_file_name;
 use merklehash::{HashedWrite, MerkleHash};
 use progress_tracking::item_tracking::SingleItemProgressUpdater;
 use progress_tracking::upload_tracking::CompletionTracker;
-use reqwest::{Body, StatusCode, Url};
+use reqwest::{Body, Response, StatusCode, Url};
 use reqwest_middleware::ClientWithMiddleware;
 use tokio::sync::{mpsc, OwnedSemaphorePermit, Semaphore};
 use tokio::task::{JoinHandle, JoinSet};
 use tracing::{debug, info, instrument};
 use utils::auth::AuthConfig;
+#[cfg(not(target_family = "wasm"))]
 use utils::singleflight::Group;
 
+#[cfg(not(target_family = "wasm"))]
 use crate::download_utils::*;
 use crate::error::{CasClientError, Result};
-use crate::http_client::{Api, ResponseErrorLogger};
+use crate::http_client::{Api, ResponseErrorLogger, RetryConfig};
 use crate::interface::{ShardDedupProber, *};
+#[cfg(not(target_family = "wasm"))]
+use crate::output_provider::OutputProvider;
 use crate::retry_wrapper::RetryWrapper;
-use crate::{http_client, Client, RegistrationClient, RetryConfig, ShardClientInterface};
+use crate::{http_client, Client, RegistrationClient, ShardClientInterface};
 
 const FORCE_SYNC_METHOD: reqwest::Method = reqwest::Method::PUT;
 const NON_FORCE_SYNC_METHOD: reqwest::Method = reqwest::Method::POST;
@@ -55,6 +58,10 @@ utils::configurable_constants! {
     ref UPLOAD_REPORTING_BLOCK_SIZE : usize = 512 * 1024;
 }
 
+lazy_static::lazy_static! {
+     pub static ref DOWNLOAD_CONNECTION_CONCURRENCY_LIMITER: Arc<Semaphore> = Arc::new(Semaphore::new(*NUM_CONCURRENT_RANGE_GETS));
+}
+
 utils::configurable_bool_constants! {
 // Env (HF_XET_RECONSTRUCT_WRITE_SEQUENTIALLY) to switch to writing terms sequentially to disk.
 // Benchmarks have shown that on SSD machines, writing in parallel seems to far outperform
@@ -72,9 +79,9 @@ pub struct RemoteClient {
     http_client: Arc<ClientWithMiddleware>,
     authenticated_http_client: Arc<ClientWithMiddleware>,
     chunk_cache: Option<Arc<dyn ChunkCache>>,
+    #[cfg(not(target_family = "wasm"))]
     range_download_single_flight: RangeDownloadSingleFlight,
-    concurrent_gets_semaphore: Arc<Semaphore>,
-    shard_cache_directory: PathBuf,
+    shard_cache_directory: Option<PathBuf>,
 }
 
 impl RemoteClient {
@@ -83,7 +90,7 @@ impl RemoteClient {
         endpoint: &str,
         auth: &Option<AuthConfig>,
         cache_config: &Option<CacheConfig>,
-        shard_cache_directory: PathBuf,
+        shard_cache_directory: Option<PathBuf>,
         session_id: &str,
         dry_run: bool,
     ) -> Self {
@@ -104,13 +111,6 @@ impl RemoteClient {
         } else {
             None
         };
-        let range_download_single_flight = Arc::new(Group::new());
-        let num_range_gets = if *NUM_CONCURRENT_RANGE_GETS == 0 {
-            Semaphore::MAX_PERMITS // virtually no limit
-        } else {
-            NUM_CONCURRENT_RANGE_GETS.min(Semaphore::MAX_PERMITS)
-        };
-        let concurrent_gets_semaphore = Arc::new(Semaphore::new(num_range_gets));
 
         Self {
             endpoint: endpoint.to_string(),
@@ -126,15 +126,42 @@ impl RemoteClient {
             ),
             http_client: Arc::new(http_client::build_http_client_no_retry(session_id).unwrap()),
             chunk_cache,
-            range_download_single_flight,
-            concurrent_gets_semaphore,
+            #[cfg(not(target_family = "wasm"))]
+            range_download_single_flight: Arc::new(Group::new()),
             shard_cache_directory,
         }
     }
+
+    async fn query_dedup_api(&self, prefix: &str, chunk_hash: &MerkleHash) -> Result<Option<Response>> {
+        // The API endpoint now only supports non-batched dedup request and
+        // ignores salt.
+        let key = Key {
+            prefix: prefix.into(),
+            hash: *chunk_hash,
+        };
+
+        let url = Url::parse(&format!("{0}/chunk/{key}", self.endpoint))?;
+
+        let client = self.authenticated_http_client_with_retry.clone();
+        let api_tag = "cas::query_dedup";
+
+        let response = RetryWrapper::new(api_tag)
+            .with_429_no_retry()
+            .log_errors_as_info()
+            .run(move || client.get(url.clone()).with_extension(Api(api_tag)).send())
+            .await;
+
+        if matches!(response, Err(CasClientError::ServerConnectionError(_))) {
+            return Ok(None);
+        }
+        Ok(Some(response?))
+    }
 }
 
-#[async_trait]
+#[cfg_attr(not(target_family = "wasm"), async_trait::async_trait)]
+#[cfg_attr(target_family = "wasm", async_trait::async_trait(?Send))]
 impl UploadClient for RemoteClient {
+    #[cfg(not(target_family = "wasm"))]
     #[instrument(skip_all, name = "RemoteClient::upload_xorb", fields(key = Key{prefix : prefix.to_string(), hash : serialized_cas_object.hash}.to_string(),
                  xorb.len = serialized_cas_object.serialized_data.len(), xorb.num_chunks = serialized_cas_object.num_chunks
     ))]
@@ -209,6 +236,33 @@ impl UploadClient for RemoteClient {
         Ok(n_upload_bytes)
     }
 
+    #[cfg(target_family = "wasm")]
+    async fn upload_xorb(
+        &self,
+        prefix: &str,
+        serialized_cas_object: SerializedCasObject,
+        upload_tracker: Option<Arc<CompletionTracker>>,
+    ) -> Result<u64> {
+        let key = Key {
+            prefix: prefix.to_string(),
+            hash: serialized_cas_object.hash,
+        };
+
+        let url = Url::parse(&format!("{}/xorb/{key}", self.endpoint))?;
+
+        let n_upload_bytes = serialized_cas_object.serialized_data.len() as u64;
+
+        let xorb_uploaded = self
+            .authenticated_http_client
+            .post(url)
+            .with_extension(Api("cas::upload_xorb"))
+            .body(serialized_cas_object.serialized_data)
+            .send()
+            .await?;
+
+        Ok(n_upload_bytes)
+    }
+
     async fn exists(&self, prefix: &str, hash: &MerkleHash) -> Result<bool> {
         let key = Key {
             prefix: prefix.to_string(),
@@ -229,7 +283,8 @@ impl UploadClient for RemoteClient {
     }
 }
 
-#[async_trait]
+#[cfg(not(target_family = "wasm"))]
+#[async_trait::async_trait]
 impl ReconstructionClient for RemoteClient {
     async fn get_file(
         &self,
@@ -257,8 +312,9 @@ impl ReconstructionClient for RemoteClient {
     }
 }
 
-#[async_trait]
-impl Reconstructable for RemoteClient {
+#[cfg(not(target_family = "wasm"))]
+#[async_trait::async_trait]
+impl Reconstruct for RemoteClient {
     async fn get_reconstruction(
         &self,
         file_id: &MerkleHash,
@@ -314,6 +370,7 @@ pub(crate) async fn get_reconstruction_with_endpoint_and_client(
 
 impl Client for RemoteClient {}
 
+#[cfg(not(target_family = "wasm"))]
 impl RemoteClient {
     #[instrument(skip_all, name = "RemoteClient::batch_get_reconstruction")]
     async fn batch_get_reconstruction(
@@ -385,7 +442,6 @@ impl RemoteClient {
         let range_download_single_flight = self.range_download_single_flight.clone();
         let download_scheduler = DownloadSegmentLengthTuner::from_configurable_constants();
         let download_scheduler_clone = download_scheduler.clone();
-        let concurrent_gets_semaphore = self.concurrent_gets_semaphore.clone();
 
         let queue_dispatcher: JoinHandle<Result<()>> = tokio::spawn(async move {
             let mut remaining_total_len = total_len;
@@ -400,7 +456,7 @@ impl RemoteClient {
                     DownloadQueueItem::DownloadTask(term_download) => {
                         // acquire the permit before spawning the task, so that there's limited
                         // number of active downloads.
-                        let permit = concurrent_gets_semaphore.clone().acquire_owned().await?;
+                        let permit = DOWNLOAD_CONNECTION_CONCURRENCY_LIMITER.clone().acquire_owned().await?;
                         debug!("spawning 1 download task");
                         let future: JoinHandle<Result<(TermDownloadResult<Vec<u8>>, OwnedSemaphorePermit)>> =
                             tokio::spawn(async move {
@@ -534,7 +590,6 @@ impl RemoteClient {
         // which will execute after the first of the above term download tasks finishes.
         let term_download_client = self.http_client.clone();
         let download_scheduler = DownloadSegmentLengthTuner::from_configurable_constants();
-        let concurrent_gets_semaphore = self.concurrent_gets_semaphore.clone();
 
         let process_result = move |result: TermDownloadResult<u64>,
                                    total_written: &mut u64,
@@ -567,7 +622,7 @@ impl RemoteClient {
                 DownloadQueueItem::DownloadTask(term_download) => {
                     // acquire the permit before spawning the task, so that there's limited
                     // number of active downloads.
-                    let permit = concurrent_gets_semaphore.clone().acquire_owned().await?;
+                    let permit = DOWNLOAD_CONNECTION_CONCURRENCY_LIMITER.clone().acquire_owned().await?;
                     debug!("spawning 1 download task");
                     running_downloads.spawn(async move {
                         let data = term_download.run().await?;
@@ -628,6 +683,7 @@ impl RemoteClient {
     }
 }
 
+#[cfg(not(target_family = "wasm"))]
 #[allow(clippy::too_many_arguments)]
 async fn map_fetch_info_into_download_tasks(
     segment: Arc<FetchInfo>,
@@ -694,7 +750,8 @@ async fn map_fetch_info_into_download_tasks(
     Ok(tasks)
 }
 
-#[async_trait]
+#[cfg_attr(not(target_family = "wasm"), async_trait::async_trait)]
+#[cfg_attr(target_family = "wasm", async_trait::async_trait(?Send))]
 impl RegistrationClient for RemoteClient {
     #[instrument(skip_all, name = "RemoteClient::upload_shard", fields(shard.hash = hash.hex(), shard.len = shard_data.len()
     ))]
@@ -742,7 +799,8 @@ impl RegistrationClient for RemoteClient {
     }
 }
 
-#[async_trait]
+#[cfg_attr(not(target_family = "wasm"), async_trait::async_trait)]
+#[cfg_attr(target_family = "wasm", async_trait::async_trait(?Send))]
 impl FileReconstructor<CasClientError> for RemoteClient {
     #[instrument(skip_all, name = "RemoteClient::get_file_reconstruction", fields(file.hash = file_hash.hex()
     ))]
@@ -777,48 +835,28 @@ impl FileReconstructor<CasClientError> for RemoteClient {
     }
 }
 
-#[async_trait]
+#[cfg_attr(not(target_family = "wasm"), async_trait::async_trait)]
+#[cfg_attr(target_family = "wasm", async_trait::async_trait(?Send))]
 impl ShardDedupProber for RemoteClient {
     #[instrument(skip_all, name = "RemoteClient::query_global_dedup")]
+    #[cfg(not(target_family = "wasm"))]
     async fn query_for_global_dedup_shard(
         &self,
         prefix: &str,
         chunk_hash: &MerkleHash,
         _salt: &[u8; 32],
     ) -> Result<Option<PathBuf>> {
-        if self.shard_cache_directory == PathBuf::default() {
+        let Some(ref shard_cache_directory) = self.shard_cache_directory else {
             return Err(CasClientError::ConfigurationError(
                 "Shard Write Directory not set; cannot download.".to_string(),
             ));
-        }
-
-        // The API endpoint now only supports non-batched dedup request and
-        // ignores salt.
-        let key = Key {
-            prefix: prefix.into(),
-            hash: *chunk_hash,
         };
 
-        let url = Url::parse(&format!("{0}/chunk/{key}", self.endpoint))?;
-
-        let client = self.authenticated_http_client_with_retry.clone();
-        let api_tag = "cas::query_dedup";
-
-        let response = RetryWrapper::new(api_tag)
-            .with_429_no_retry()
-            .log_errors_as_info()
-            .run(move || client.get(url.clone()).with_extension(Api(api_tag)).send())
-            .await;
-
-        if matches!(response, Err(CasClientError::ServerConnectionError(_))) {
-            // If the error is on the server, let's hold back here.
+        let Some(mut shard_info) = self.query_dedup_api(prefix, chunk_hash).await? else {
             return Ok(None);
-        }
+        };
 
-        let mut shard_info = response?;
-
-        let writer = SafeFileCreator::new_unnamed(&self.shard_cache_directory)?;
-
+        let writer = SafeFileCreator::new_unnamed(shard_cache_directory)?;
         // Compute the actual hash to use as the shard file name
         let mut hashed_writer = HashedWrite::new(writer);
 
@@ -828,18 +866,32 @@ impl ShardDedupProber for RemoteClient {
         hashed_writer.flush()?;
 
         let shard_hash = hashed_writer.hash();
-        let file_path = self.shard_cache_directory.join(shard_file_name(&shard_hash));
+        let file_path = shard_cache_directory.join(shard_file_name(&shard_hash));
         let mut writer = hashed_writer.into_inner();
         writer.set_dest_path(&file_path);
         writer.close()?;
 
         Ok(Some(file_path))
     }
+
+    async fn query_for_global_dedup_shard_in_memory(
+        &self,
+        prefix: &str,
+        chunk_hash: &MerkleHash,
+        _salt: &[u8; 32],
+    ) -> Result<Option<Vec<u8>>> {
+        let Some(response) = self.query_dedup_api(prefix, chunk_hash).await? else {
+            return Ok(None);
+        };
+
+        Ok(Some(response.bytes().await?.to_vec()))
+    }
 }
 
 impl ShardClientInterface for RemoteClient {}
 
 #[cfg(test)]
+#[cfg(not(target_family = "wasm"))]
 mod tests {
     use std::collections::HashMap;
 
@@ -855,7 +907,7 @@ mod tests {
     use xet_threadpool::ThreadPool;
 
     use super::*;
-    use crate::interface::buffer::BufferProvider;
+    use crate::output_provider::BufferProvider;
 
     #[ignore = "requires a running CAS server"]
     #[traced_test]
@@ -866,7 +918,7 @@ mod tests {
         let raw_xorb = build_raw_xorb(3, ChunkSize::Random(512, 10248));
 
         let threadpool = ThreadPool::new().unwrap();
-        let client = RemoteClient::new(CAS_ENDPOINT, &None, &None, "".into(), "", false);
+        let client = RemoteClient::new(CAS_ENDPOINT, &None, &None, None, "", false);
 
         let cas_object = build_and_verify_cas_object(raw_xorb, Some(CompressionScheme::LZ4));
 
@@ -1239,7 +1291,7 @@ mod tests {
 
         // test reconstruct and sequential write
         let test = test_case.clone();
-        let client = RemoteClient::new(endpoint, &None, &None, "".into(), "", false);
+        let client = RemoteClient::new(endpoint, &None, &None, None, "", false);
         let provider = BufferProvider::default();
         let buf = provider.buf.clone();
         let writer = OutputProvider::Buffer(provider);
@@ -1257,7 +1309,7 @@ mod tests {
 
         // test reconstruct and parallel write
         let test = test_case;
-        let client = RemoteClient::new(endpoint, &None, &None, "".into(), "", false);
+        let client = RemoteClient::new(endpoint, &None, &None, None, "", false);
         let provider = BufferProvider::default();
         let buf = provider.buf.clone();
         let writer = OutputProvider::Buffer(provider);

@@ -12,21 +12,21 @@ doctest = false
 merklehash = { path = "../merklehash" }
 utils = { path = "../utils" }
 
-thiserror = { workspace = true }
-rand_chacha = { workspace = true }
-serde = { workspace = true }
-gearhash = { workspace = true }
-walkdir = { workspace = true }
-rayon = { workspace = true }
-bincode = { workspace = true }
-rustc-hash = { workspace = true }
-tempfile = { workspace = true }
-bitflags = { workspace = true }
-tracing = { workspace = true }
 async-trait = { workspace = true }
-lazy_static = { workspace = true }
-clap = { workspace = true }
+bincode = { workspace = true }
+bitflags = { workspace = true }
 blake3 = { workspace = true }
+clap = { workspace = true }
+gearhash = { workspace = true }
+lazy_static = { workspace = true }
+rand_chacha = { workspace = true }
+rayon = { workspace = true }
+rustc-hash = { workspace = true }
+serde = { workspace = true }
+tempfile = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+walkdir = { workspace = true }
 
 [dev-dependencies]
 criterion = { workspace = true }

@@ -1,8 +1,7 @@
-use std::fmt::Debug;
-use std::io::{self, Cursor, Read, Write};
+use std::io::{Cursor, Read, Write};
 use std::mem::size_of;
-use std::sync::Arc;
 
+use bytes::Bytes;
 use merklehash::MerkleHash;
 use utils::serialization_utils::*;
 
@@ -54,7 +53,7 @@ impl CASChunkSequenceHeader {
     pub fn serialize<W: Write>(&self, writer: &mut W) -> Result<usize, std::io::Error> {
         let mut buf = [0u8; size_of::<Self>()];
         {
-            let mut writer_cur = std::io::Cursor::new(&mut buf[..]);
+            let mut writer_cur = Cursor::new(&mut buf[..]);
             let writer = &mut writer_cur;
 
             write_hash(writer, &self.cas_hash)?;
@@ -72,7 +71,7 @@ impl CASChunkSequenceHeader {
     pub fn deserialize<R: Read>(reader: &mut R) -> Result<Self, std::io::Error> {
         let mut v = [0u8; size_of::<Self>()];
         reader.read_exact(&mut v[..])?;
-        let mut reader_curs = std::io::Cursor::new(&v);
+        let mut reader_curs = Cursor::new(&v);
         let reader = &mut reader_curs;
 
         Ok(Self {
@@ -117,7 +116,7 @@ impl CASChunkSequenceEntry {
     pub fn serialize<W: Write>(&self, writer: &mut W) -> Result<usize, std::io::Error> {
         let mut buf = [0u8; size_of::<Self>()];
         {
-            let mut writer_cur = std::io::Cursor::new(&mut buf[..]);
+            let mut writer_cur = Cursor::new(&mut buf[..]);
             let writer = &mut writer_cur;
 
             write_hash(writer, &self.chunk_hash)?;
@@ -134,7 +133,7 @@ impl CASChunkSequenceEntry {
     pub fn deserialize<R: Read>(reader: &mut R) -> Result<Self, std::io::Error> {
         let mut v = [0u8; size_of::<Self>()];
         reader.read_exact(&mut v[..])?;
-        let mut reader_curs = std::io::Cursor::new(&v);
+        let mut reader_curs = Cursor::new(&v);
         let reader = &mut reader_curs;
 
         Ok(Self {
@@ -192,30 +191,33 @@ impl MDBCASInfo {
     }
 }
 
+#[derive(Clone, Debug, PartialEq)]
 pub struct MDBCASInfoView {
     header: CASChunkSequenceHeader,
-    data: Arc<[u8]>, // reference counted read-only vector
-    offset: usize,
+    data: Bytes, // reference counted read-only vector
 }
 
 impl MDBCASInfoView {
-    pub fn new(data: Arc<[u8]>, offset: usize) -> io::Result<Self> {
-        let mut reader = std::io::Cursor::new(&data[offset..]);
+    pub fn new(data: Bytes) -> std::io::Result<Self> {
+        let mut reader = Cursor::new(&data);
         let header = CASChunkSequenceHeader::deserialize(&mut reader)?;
 
-        Self::from_data_and_header(header, data, offset)
+        Self::from_data_and_header(header, data)
     }
 
-    pub fn from_data_and_header(header: CASChunkSequenceHeader, data: Arc<[u8]>, offset: usize) -> io::Result<Self> {
+    pub fn from_data_and_header(header: CASChunkSequenceHeader, data: Bytes) -> std::io::Result<Self> {
         let n = header.num_entries as usize;
 
         let n_bytes = size_of::<CASChunkSequenceHeader>() + n * size_of::<CASChunkSequenceEntry>();
 
-        if data.len() < offset + n_bytes {
-            return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "Provided slice too small to read Cas Info"));
+        if data.len() < n_bytes {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::UnexpectedEof,
+                "Provided slice too small to read Cas Info",
+            ));
         }
 
-        Ok(Self { header, data, offset })
+        Ok(Self { header, data })
     }
 
     pub fn header(&self) -> &CASChunkSequenceHeader {
@@ -234,8 +236,7 @@ impl MDBCASInfoView {
         debug_assert!(idx < self.num_entries());
 
         CASChunkSequenceEntry::deserialize(&mut Cursor::new(
-            &self.data
-                [(self.offset + size_of::<CASChunkSequenceHeader>() + idx * size_of::<CASChunkSequenceEntry>())..],
+            &self.data[(size_of::<CASChunkSequenceHeader>() + idx * size_of::<CASChunkSequenceEntry>())..],
         ))
         .expect("bookkeeping error on data bounds")
     }
@@ -247,9 +248,9 @@ impl MDBCASInfoView {
     }
 
     #[inline]
-    pub fn serialize<W: Write>(&self, writer: &mut W) -> io::Result<usize> {
+    pub fn serialize<W: Write>(&self, writer: &mut W) -> std::io::Result<usize> {
         let n_bytes = self.byte_size();
-        writer.write_all(&self.data[self.offset..(self.offset + n_bytes)])?;
+        writer.write_all(&self.data[..n_bytes])?;
         Ok(n_bytes)
     }
 }

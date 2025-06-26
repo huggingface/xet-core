@@ -23,7 +23,6 @@ async-trait = { workspace = true }
 bytes = { workspace = true }
 derivative = { workspace = true }
 futures = { workspace = true }
-heed = { workspace = true }
 http = { workspace = true }
 more-asserts = { workspace = true }
 tempfile = { workspace = true }
@@ -32,6 +31,7 @@ tokio = { workspace = true }
 tokio-retry = { workspace = true }
 tracing = { workspace = true }
 url = { workspace = true }
+lazy_static = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 
@@ -50,11 +50,14 @@ strict = []
 default = ["rustls-tls"]
 
 # Three options for compliation here.
+rustls-tls = [
+    "reqwest/rustls-tls",
+    "reqwest/rustls-tls-webpki-roots",
+    "reqwest/rustls-tls-native-roots",
+]
 
 # rustls-tls uses the rustls package, which embeds all of the ssl stuff in a rust package.  This is the
 # most portable option, but also may not respect local network configurations.  Use this if the native-ssl options don't work.
-rustls-tls = ["reqwest/rustls-tls", "reqwest/rustls-tls-native-roots"]
-
 # Uses native tls in the request package; this uses the native-tls package to wrap openssl, which is a more robust and portable
 # way of ensuring that tls just works.
 native-tls = ["reqwest/native-tls"]
@@ -63,6 +66,9 @@ native-tls = ["reqwest/native-tls"]
 # library size.
 native-tls-vendored = ["reqwest/native-tls-vendored"]
 
+
+[target.'cfg(not(target_family = "wasm"))'.dependencies]
+heed = { workspace = true }
 
 [dev-dependencies]
 httpmock = { workspace = true }
