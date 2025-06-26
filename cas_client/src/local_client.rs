@@ -322,11 +322,11 @@ impl RegistrationClient for LocalClient {
         _prefix: &str, // Prefix not used in current implementation
         shard_hash: &MerkleHash,
         _force_sync: bool,
-        shard_data: &[u8],
+        shard_data: bytes::Bytes,
         salt: &[u8; 32],
     ) -> Result<bool> {
         // Write out the shard to the shard directory.
-        let shard = MDBShardFile::write_out_from_reader(&self.shard_dir, &mut Cursor::new(shard_data))?;
+        let shard = MDBShardFile::write_out_from_reader(&self.shard_dir, &mut Cursor::new(&shard_data))?;
 
         self.shard_manager.register_shards(&[shard]).await?;
 
@@ -670,7 +670,7 @@ mod tests {
         let client = LocalClient::temporary_with_global_dedup(shard_dir_2.clone()).unwrap();
 
         client
-            .upload_shard("default", &shard_hash, true, &std::fs::read(&new_shard_path).unwrap(), &[1; 32])
+            .upload_shard("default", &shard_hash, true, std::fs::read(&new_shard_path).unwrap().into(), &[1; 32])
             .await
             .unwrap();
 

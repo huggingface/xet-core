@@ -15,6 +15,7 @@ pub use remote_client::RemoteClient;
 pub use crate::error::CasClientError;
 pub use crate::interface::ShardClientInterface;
 
+mod constants;
 #[cfg(not(target_family = "wasm"))]
 mod download_utils;
 mod error;
@@ -26,5 +27,5 @@ mod local_client;
 #[cfg(not(target_family = "wasm"))]
 mod output_provider;
 pub mod remote_client;
-mod retry_utils;
+mod retry_wrapper;
 mod upload_progress_stream;
