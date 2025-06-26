@@ -6,9 +6,9 @@ use futures::AsyncRead;
 use futures_util::io::AsyncReadExt;
 use itertools::Itertools;
 
-use crate::cas_structs::{CASChunkSequenceEntry, CASChunkSequenceHeader, MDBCASInfoView};
+use crate::cas_structs::{CASChunkSequenceEntry, CASChunkSequenceHeader, MDBCASInfo, MDBCASInfoView};
 use crate::error::{MDBShardError, Result};
-use crate::file_structs::{FileDataSequenceHeader, MDBFileInfoView};
+use crate::file_structs::{FileDataSequenceHeader, MDBFileInfo, MDBFileInfoView};
 use crate::shard_file::{current_timestamp, MDB_FILE_INFO_ENTRY_SIZE};
 use crate::{MDBShardFileFooter, MDBShardFileHeader};
 
@@ -162,6 +162,56 @@ where
     }
 
     Ok(())
+}
+
+#[derive(Clone, Debug)]
+pub struct MDBMinimalShardBuilder {
+    inner: MDBMinimalShard,
+}
+
+impl Default for MDBMinimalShardBuilder {
+    fn default() -> Self {
+        Self {
+            inner: MDBMinimalShard {
+                file_info_views: vec![],
+                cas_info_views: vec![],
+            },
+        }
+    }
+}
+
+impl MDBMinimalShardBuilder {
+    pub fn new() -> Self {
+        Default::default()
+    }
+
+    pub fn add_file_info_view(&mut self, file_info: MDBFileInfoView) {
+        self.inner.file_info_views.push(file_info);
+    }
+
+    pub fn add_file_info(&mut self, file_info: &MDBFileInfo) -> std::io::Result<()> {
+        let mut buf = Vec::with_capacity(file_info.num_bytes() as usize);
+        file_info.serialize(&mut buf)?;
+        let view = MDBFileInfoView::from_data_and_header(file_info.metadata.clone(), Bytes::from(buf))?;
+        self.add_file_info_view(view);
+        Ok(())
+    }
+
+    pub fn add_cas_info_view(&mut self, cas_info: MDBCASInfoView) {
+        self.inner.cas_info_views.push(cas_info);
+    }
+
+    pub fn add_cas_info(&mut self, cas_info: &MDBCASInfo) -> std::io::Result<()> {
+        let mut buf = Vec::with_capacity(cas_info.num_bytes() as usize);
+        cas_info.serialize(&mut buf)?;
+        let view = MDBCASInfoView::from_data_and_header(cas_info.metadata.clone(), Bytes::from(buf))?;
+        self.add_cas_info_view(view);
+        Ok(())
+    }
+
+    pub fn build(self) -> MDBMinimalShard {
+        self.inner
+    }
 }
 
 // A minimal shard loaded in memory that could be useful by themselves.  In addition, this provides a testing surface
