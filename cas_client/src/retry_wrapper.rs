@@ -17,7 +17,7 @@ pub enum RetryableReqwestError {
     RetryableError(CasClientError),
 }
 
-pub struct ConnectionWrapper {
+pub struct RetryWrapper {
     max_attempts: usize,
     base_delay_ms: u64,
     no_retry_on_429: bool,
@@ -25,7 +25,7 @@ pub struct ConnectionWrapper {
     api_tag: &'static str,
 }
 
-impl ConnectionWrapper {
+impl RetryWrapper {
     pub fn new(api_tag: &'static str) -> Self {
         Self {
             max_attempts: *CLIENT_RETRY_MAX_ATTEMPTS,
@@ -276,8 +276,8 @@ mod tests {
 
     use super::*;
 
-    fn connection_wrapper(api: &'static str) -> ConnectionWrapper {
-        ConnectionWrapper::new(api).with_base_delay_ms(5).with_max_attempts(3)
+    fn connection_wrapper(api: &'static str) -> RetryWrapper {
+        RetryWrapper::new(api).with_base_delay_ms(5).with_max_attempts(3)
     }
 
     fn make_client() -> ClientWithMiddleware {

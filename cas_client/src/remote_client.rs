@@ -34,7 +34,7 @@ use crate::download_utils::*;
 use crate::error::{CasClientError, Result};
 use crate::http_client::{Api, ResponseErrorLogger};
 use crate::interface::{ShardDedupProber, *};
-use crate::retry_wrapper::ConnectionWrapper;
+use crate::retry_wrapper::RetryWrapper;
 use crate::{http_client, Client, RegistrationClient, RetryConfig, ShardClientInterface};
 
 const FORCE_SYNC_METHOD: reqwest::Method = reqwest::Method::PUT;
@@ -180,7 +180,7 @@ impl UploadClient for RemoteClient {
 
                 let api_tag = "cas::upload_xorb";
 
-                let response: UploadXorbResponse = ConnectionWrapper::new(api_tag)
+                let response: UploadXorbResponse = RetryWrapper::new(api_tag)
                     .run_and_extract_json(move || {
                         let upload_stream = upload_stream.clone_with_reset();
                         let url = url.clone();
@@ -336,7 +336,7 @@ impl RemoteClient {
         let api_tag = "cas::batch_get_reconstruction";
         let client = self.authenticated_http_client_with_retry.clone();
 
-        let response: BatchQueryReconstructionResponse = ConnectionWrapper::new(api_tag)
+        let response: BatchQueryReconstructionResponse = RetryWrapper::new(api_tag)
             .run_and_extract_json(move || client.get(url.clone()).with_extension(Api(api_tag)).send())
             .await?;
 
@@ -725,7 +725,7 @@ impl RegistrationClient for RemoteClient {
 
         let url = Url::parse(&format!("{}/shard/{key}", self.endpoint))?;
 
-        let response: UploadShardResponse = ConnectionWrapper::new(api_tag)
+        let response: UploadShardResponse = RetryWrapper::new(api_tag)
             .run_and_extract_json(move || {
                 client
                     .request(method.clone(), url.clone())
@@ -755,7 +755,7 @@ impl FileReconstructor<CasClientError> for RemoteClient {
         let api_tag = "cas::get_reconstruction_info";
         let client = self.authenticated_http_client_with_retry.clone();
 
-        let response: QueryReconstructionResponse = ConnectionWrapper::new(api_tag)
+        let response: QueryReconstructionResponse = RetryWrapper::new(api_tag)
             .run_and_extract_json(move || client.get(url.clone()).with_extension(Api(api_tag)).send())
             .await?;
 
@@ -804,7 +804,7 @@ impl ShardDedupProber for RemoteClient {
         let client = self.authenticated_http_client_with_retry.clone();
         let api_tag = "cas::query_dedup";
 
-        let response = ConnectionWrapper::new(api_tag)
+        let response = RetryWrapper::new(api_tag)
             .with_429_no_retry()
             .log_errors_as_info()
             .run(move || client.get(url.clone()).with_extension(Api(api_tag)).send())
