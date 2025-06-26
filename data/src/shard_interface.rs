@@ -272,7 +272,7 @@ impl SessionShardInterface {
             shard_uploads.spawn(
                 async move {
                     debug!("Uploading shard {shard_prefix}/{:?} from staging area to CAS.", &si.shard_hash);
-                    let data = std::fs::read(&si.path)?;
+                    let data: bytes::Bytes = std::fs::read(&si.path)?.into();
 
                     shard_bytes_uploaded.fetch_add(data.len() as u64, Ordering::Relaxed);
 
@@ -283,7 +283,7 @@ impl SessionShardInterface {
 
                     // Upload the shard.
                     shard_client
-                        .upload_shard(&shard_prefix, &si.shard_hash, false, &data, &salt)
+                        .upload_shard(&shard_prefix, &si.shard_hash, false, data, &salt)
                         .await?;
 
                     // Done with the upload, drop the permit.

@@ -32,10 +32,10 @@ use utils::singleflight::Group;
 
 use crate::download_utils::*;
 use crate::error::{CasClientError, Result};
-use crate::http_client::{Api, ResponseErrorLogger, RetryConfig};
+use crate::http_client::{Api, ResponseErrorLogger};
 use crate::interface::{ShardDedupProber, *};
-use crate::retry_utils::retry_wrapper;
-use crate::{http_client, Client, RegistrationClient, ShardClientInterface};
+use crate::retry_wrapper::ConnectionWrapper;
+use crate::{http_client, Client, RegistrationClient, RetryConfig, ShardClientInterface};
 
 const FORCE_SYNC_METHOD: reqwest::Method = reqwest::Method::PUT;
 const NON_FORCE_SYNC_METHOD: reqwest::Method = reqwest::Method::POST;
@@ -67,10 +67,10 @@ utils::configurable_bool_constants! {
 pub struct RemoteClient {
     endpoint: String,
     dry_run: bool,
+    http_client_with_retry: Arc<ClientWithMiddleware>,
+    authenticated_http_client_with_retry: Arc<ClientWithMiddleware>,
     http_client: Arc<ClientWithMiddleware>,
     authenticated_http_client: Arc<ClientWithMiddleware>,
-    authenticated_http_client_no_retry: Arc<ClientWithMiddleware>,
-    conservative_authenticated_http_client: Arc<ClientWithMiddleware>,
     chunk_cache: Option<Arc<dyn ChunkCache>>,
     range_download_single_flight: RangeDownloadSingleFlight,
     concurrent_gets_semaphore: Arc<Semaphore>,
@@ -115,16 +115,16 @@ impl RemoteClient {
         Self {
             endpoint: endpoint.to_string(),
             dry_run,
-            authenticated_http_client: Arc::new(
+            authenticated_http_client_with_retry: Arc::new(
                 http_client::build_auth_http_client(auth, RetryConfig::default(), session_id).unwrap(),
             ),
-            authenticated_http_client_no_retry: Arc::new(
+            authenticated_http_client: Arc::new(
                 http_client::build_auth_http_client_no_retry(auth, session_id).unwrap(),
             ),
-            conservative_authenticated_http_client: Arc::new(
-                http_client::build_auth_http_client(auth, RetryConfig::no429retry(), session_id).unwrap(),
+            http_client_with_retry: Arc::new(
+                http_client::build_http_client(RetryConfig::default(), session_id).unwrap(),
             ),
-            http_client: Arc::new(http_client::build_http_client(RetryConfig::default(), session_id).unwrap()),
+            http_client: Arc::new(http_client::build_http_client_no_retry(session_id).unwrap()),
             chunk_cache,
             range_download_single_flight,
             concurrent_gets_semaphore,
@@ -176,27 +176,25 @@ impl UploadClient for RemoteClient {
 
         let xorb_uploaded = {
             if !self.dry_run {
-                let client = self.authenticated_http_client_no_retry.clone();
+                let client = self.authenticated_http_client_with_retry.clone();
 
-                let response = retry_wrapper(
-                    move || {
+                let api_tag = "cas::upload_xorb";
+
+                let response: UploadXorbResponse = ConnectionWrapper::new(api_tag)
+                    .run_and_extract_json(move || {
                         let upload_stream = upload_stream.clone_with_reset();
                         let url = url.clone();
 
                         client
                             .post(url)
-                            .with_extension(Api("cas::upload_xorb"))
+                            .with_extension(Api(api_tag))
                             .header(CONTENT_LENGTH, HeaderValue::from(n_upload_bytes)) // must be set because of streaming
                             .body(Body::wrap_stream(upload_stream))
                             .send()
-                    },
-                    RetryConfig::default(),
-                )
-                .await?;
+                    })
+                    .await?;
 
-                let response_parsed: UploadXorbResponse = response.json().await?;
-
-                response_parsed.was_inserted
+                response.was_inserted
             } else {
                 true
             }
@@ -218,7 +216,7 @@ impl UploadClient for RemoteClient {
         };
 
         let url = Url::parse(&format!("{}/xorb/{key}", self.endpoint))?;
-        let response = self.authenticated_http_client.head(url).send().await?;
+        let response = self.authenticated_http_client_with_retry.head(url).send().await?;
         match response.status() {
             StatusCode::OK => Ok(true),
             StatusCode::NOT_FOUND => Ok(false),
@@ -268,7 +266,7 @@ impl Reconstructable for RemoteClient {
     ) -> Result<Option<QueryReconstructionResponse>> {
         get_reconstruction_with_endpoint_and_client(
             &self.endpoint,
-            &self.authenticated_http_client,
+            &self.authenticated_http_client_with_retry,
             file_id,
             bytes_range,
         )
@@ -335,19 +333,14 @@ impl RemoteClient {
         }
         let url: Url = url_str.parse()?;
 
-        let response = self
-            .authenticated_http_client
-            .get(url)
-            .with_extension(Api("cas::batch_get_reconstruction"))
-            .send()
-            .await
-            .process_error("batch_get_reconstruction")?;
+        let api_tag = "cas::batch_get_reconstruction";
+        let client = self.authenticated_http_client_with_retry.clone();
 
-        let query_reconstruction_response: BatchQueryReconstructionResponse = response
-            .json()
-            .await
-            .log_error("error json parsing BatchQueryReconstructionResponse")?;
-        Ok(query_reconstruction_response)
+        let response: BatchQueryReconstructionResponse = ConnectionWrapper::new(api_tag)
+            .run_and_extract_json(move || client.get(url.clone()).with_extension(Api(api_tag)).send())
+            .await?;
+
+        Ok(response)
     }
 
     // Segmented download such that the file reconstruction and fetch info is not queried in its entirety
@@ -377,7 +370,7 @@ impl RemoteClient {
             *file_hash,
             file_reconstruct_range,
             self.endpoint.clone(),
-            self.authenticated_http_client.clone(),
+            self.authenticated_http_client_with_retry.clone(),
         )))?;
 
         // Start the queue processing logic
@@ -529,7 +522,7 @@ impl RemoteClient {
             *file_hash,
             file_reconstruct_range,
             self.endpoint.clone(),
-            self.authenticated_http_client.clone(),
+            self.authenticated_http_client_with_retry.clone(),
         )))?;
 
         // Start the queue processing logic
@@ -710,7 +703,7 @@ impl RegistrationClient for RemoteClient {
         prefix: &str,
         hash: &MerkleHash,
         force_sync: bool,
-        shard_data: &[u8],
+        shard_data: bytes::Bytes,
         _salt: &[u8; 32],
     ) -> Result<bool> {
         if self.dry_run {
@@ -722,26 +715,27 @@ impl RegistrationClient for RemoteClient {
             hash: *hash,
         };
 
-        let url = Url::parse(&format!("{}/shard/{key}", self.endpoint))?;
+        let api_tag = "cas::upload_shard";
+        let client = self.authenticated_http_client_with_retry.clone();
 
         let method = match force_sync {
             true => FORCE_SYNC_METHOD,
             false => NON_FORCE_SYNC_METHOD,
         };
 
-        let response = self
-            .authenticated_http_client
-            .request(method, url)
-            .with_extension(Api("cas::upload_shard"))
-            .body(shard_data.to_vec())
-            .send()
-            .await
-            .process_error("upload_shard")?;
+        let url = Url::parse(&format!("{}/shard/{key}", self.endpoint))?;
 
-        let response_parsed: UploadShardResponse =
-            response.json().await.log_error("error json decoding upload_shard response")?;
+        let response: UploadShardResponse = ConnectionWrapper::new(api_tag)
+            .run_and_extract_json(move || {
+                client
+                    .request(method.clone(), url.clone())
+                    .with_extension(Api(api_tag))
+                    .body(shard_data.clone())
+                    .send()
+            })
+            .await?;
 
-        match response_parsed.result {
+        match response.result {
             UploadShardResponseType::Exists => Ok(false),
             UploadShardResponseType::SyncPerformed => Ok(true),
         }
@@ -758,19 +752,17 @@ impl FileReconstructor<CasClientError> for RemoteClient {
     ) -> Result<Option<(MDBFileInfo, Option<MerkleHash>)>> {
         let url = Url::parse(&format!("{}/reconstruction/{}", self.endpoint, file_hash.hex()))?;
 
-        let response = self
-            .authenticated_http_client
-            .get(url)
-            .with_extension(Api("cas::get_reconstruction_info"))
-            .send()
-            .await
-            .process_error("get_reconstruction_info")?;
-        let response_info: QueryReconstructionResponse = response.json().await?;
+        let api_tag = "cas::get_reconstruction_info";
+        let client = self.authenticated_http_client_with_retry.clone();
+
+        let response: QueryReconstructionResponse = ConnectionWrapper::new(api_tag)
+            .run_and_extract_json(move || client.get(url.clone()).with_extension(Api(api_tag)).send())
+            .await?;
 
         Ok(Some((
             MDBFileInfo {
-                metadata: FileDataSequenceHeader::new(*file_hash, response_info.terms.len(), false, false),
-                segments: response_info
+                metadata: FileDataSequenceHeader::new(*file_hash, response.terms.len(), false, false),
+                segments: response
                     .terms
                     .into_iter()
                     .map(|ce| {
@@ -809,24 +801,28 @@ impl ShardDedupProber for RemoteClient {
 
         let url = Url::parse(&format!("{0}/chunk/{key}", self.endpoint))?;
 
-        let mut response = self
-            .conservative_authenticated_http_client
-            .get(url)
-            .with_extension(Api("cas::query_dedup"))
-            .send()
-            .await
-            .map_err(|e| CasClientError::Other(format!("request failed with error {e}")))?;
+        let client = self.authenticated_http_client_with_retry.clone();
+        let api_tag = "cas::query_dedup";
 
-        // Dedup shard not found, return empty result
-        if !response.status().is_success() {
+        let response = ConnectionWrapper::new(api_tag)
+            .with_429_no_retry()
+            .log_errors_as_info()
+            .run(move || client.get(url.clone()).with_extension(Api(api_tag)).send())
+            .await;
+
+        if matches!(response, Err(CasClientError::ServerConnectionError(_))) {
+            // If the error is on the server, let's hold back here.
             return Ok(None);
         }
 
+        let mut shard_info = response?;
+
         let writer = SafeFileCreator::new_unnamed(&self.shard_cache_directory)?;
+
         // Compute the actual hash to use as the shard file name
         let mut hashed_writer = HashedWrite::new(writer);
 
-        while let Some(chunk) = response.chunk().await? {
+        while let Some(chunk) = shard_info.chunk().await? {
             hashed_writer.write_all(&chunk)?;
         }
         hashed_writer.flush()?;

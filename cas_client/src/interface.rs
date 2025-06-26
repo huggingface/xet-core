@@ -143,7 +143,7 @@ pub trait RegistrationClient {
         prefix: &str,
         hash: &MerkleHash,
         force_sync: bool,
-        shard_data: &[u8],
+        shard_data: bytes::Bytes,
         salt: &[u8; 32],
     ) -> Result<bool>;
 }

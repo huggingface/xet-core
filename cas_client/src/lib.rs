@@ -10,6 +10,7 @@ pub use remote_client::RemoteClient;
 pub use crate::error::CasClientError;
 pub use crate::interface::ShardClientInterface;
 
+mod constants;
 mod download_utils;
 mod error;
 pub mod exports;
@@ -17,5 +18,5 @@ mod http_client;
 mod interface;
 mod local_client;
 pub mod remote_client;
-mod retry_utils;
+mod retry_wrapper;
 mod upload_progress_stream;

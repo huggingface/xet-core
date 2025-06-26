@@ -171,6 +171,20 @@ pub fn build_http_client<R: RetryableStrategy + Send + Sync + 'static>(
         .build())
 }
 
+/// Builds HTTP Client to talk to CAS.
+/// Includes retry middleware with exponential backoff.
+pub fn build_http_client_no_retry(session_id: &str) -> Result<ClientWithMiddleware, CasClientError> {
+    let logging_middleware = Some(LoggingMiddleware);
+    let session_middleware = (!session_id.is_empty()).then(|| SessionMiddleware(session_id.to_owned()));
+    let reqwest_client = reqwest::Client::builder()
+        .dns_resolver(Arc::from(GaiResolverWithAbsolute::default()))
+        .build()?;
+    Ok(ClientBuilder::new(reqwest_client)
+        .maybe_with(logging_middleware)
+        .maybe_with(session_middleware)
+        .build())
+}
+
 /// RetryStrategy
 pub fn get_retry_policy_and_strategy<R: RetryableStrategy + Send + Sync>(
     config: RetryConfig<R>,
