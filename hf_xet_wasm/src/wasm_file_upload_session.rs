@@ -169,7 +169,7 @@ impl FileUploadSession {
                 &self.config.shard_config.prefix,
                 &shard_hash,
                 false,
-                &shard_data,
+                shard_data.into(),
                 &self.config.shard_config.repo_salt,
             )
             .await?;
