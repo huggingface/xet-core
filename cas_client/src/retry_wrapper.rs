@@ -152,8 +152,20 @@ impl RetryWrapper {
         }
     }
 
-    /// Run a connection and process the result, retrying on fatal errors or if the process_fn returns a retryable
+    /// Run a connection and process the result, retrying on transient errors or if the process_fn returns a retryable
     /// error.
+    ///
+    /// The `make_request` function returns a future that resolves to a Result<Response> object as is returned by the
+    /// client middleware.  For example, `|| client.clone().get(url).send()` returns a future (as `send()` is async)
+    /// that will then be evaluatated to get the response.
+    ///
+    /// The process_fn takes a successful response and returns a future that evaluates that response.  A successful
+    /// response is defined as the make_request future evaluating to an Ok() result and the enclosed Response having
+    /// OK status. Given such a response, the process_fn returns a future that processes the response into an object
+    /// of type `Result<T, RetryableRequestError>`
+    ///
+    /// RetryableRequestError is an enum containing either a FatalError, in which case it cannot be retried and is
+    /// passed on, or a RetryableError, in which case the entire request is retried from the start.
     pub async fn run_and_process<T, ReqFut, ReqFn, ProcFut, ProcFn>(
         self,
         make_request: ReqFn,
@@ -223,6 +235,15 @@ impl RetryWrapper {
         }
     }
 
+    /// Run a connection and process the result as a json blob, retrying on transient errors or on issues parsing the
+    /// json blob.
+    ///
+    /// The `make_request` function returns a future that resolves to a Result<Response> object as is returned by the
+    /// client middleware.  For example, `|| client.clone().get(url).send()` returns a future (as `send()` is async)
+    /// that will then be evaluatated to get the response.
+    ///
+    /// This functions acts just like the json() function on a client response, but retries the entire connection on
+    /// transient errors.  
     pub async fn run_and_extract_json<ReqFut, ReqFn, JsonDest>(
         self,
         make_request: ReqFn,
@@ -240,9 +261,9 @@ impl RetryWrapper {
                 match r {
                     Ok(v) => Ok(v),
                     Err(e) => {
-                        if e.is_decode() {
-                            // We got an incomplete or corrupted response from the server; presumably
-                            // this error is transient.
+                        if e.is_decode() || e.is_body() || e.is_connect() || e.is_timeout() {
+                            // We got an incomplete or corrupted response from the server, possibly due to a dropped
+                            // connection.  Presumably this error is transient.
                             Err(RetryableReqwestError::RetryableError(e.into()))
                         } else {
                             Err(RetryableReqwestError::FatalError(e.into()))
@@ -254,6 +275,11 @@ impl RetryWrapper {
         .await
     }
 
+    /// Run a connection and process the result object, retrying on transient errors.
+    ///
+    /// The `make_request` function returns a future that resolves to a Result<Response> object as is returned by the
+    /// client middleware.  For example, `|| client.clone().get(url).send()` returns a future (as `send()` is async)
+    /// that will then be evaluatated to get the response.
     pub async fn run<ReqFut, ReqFn>(self, make_request: ReqFn) -> Result<Response, CasClientError>
     where
         ReqFn: Fn() -> ReqFut + Send + 'static,
