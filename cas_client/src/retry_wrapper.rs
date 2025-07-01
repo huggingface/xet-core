@@ -118,30 +118,28 @@ impl RetryWrapper {
             CasClientError::ServerConnectionError(msg)
         };
 
-        use RetryableReqwestError::{FatalError, RetryableError};
-
         let retriability = default_on_request_success(&resp);
 
         match (resp.error_for_status(), retriability) {
             (Err(e), Some(Retryable::Fatal)) => {
                 let cas_err = process_error("Fatal Server Error", e, false);
-                Err(FatalError(cas_err))
+                Err(RetryableReqwestError::FatalError(cas_err))
             },
             (Err(e), Some(Retryable::Transient)) => {
                 // Intercept the too many requests condition in the case of no retrying on 429.
                 if e.status() == Some(StatusCode::TOO_MANY_REQUESTS) && self.no_retry_on_429 {
                     let cas_err = process_error("Too Many Requests (retry on 429 disabled)", e, false);
-                    Err(FatalError(cas_err))
+                    Err(RetryableReqwestError::FatalError(cas_err))
                 } else {
                     let cas_err = process_error("Retryable Server Error", e, true);
-                    Err(RetryableError(cas_err))
+                    Err(RetryableReqwestError::RetryableError(cas_err))
                 }
             },
             (Err(e), None) => {
                 // I don't believe this case should ever happen, but it's an external library
                 // so let's handle it semigracefully.
                 let cas_err = process_error("Unknown Server Error", e, false);
-                Err(FatalError(cas_err))
+                Err(RetryableReqwestError::FatalError(cas_err))
             },
 
             (Ok(result), _) => {
