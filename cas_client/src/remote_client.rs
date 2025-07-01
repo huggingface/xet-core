@@ -142,7 +142,7 @@ impl RemoteClient {
 
         let url = Url::parse(&format!("{0}/chunk/{key}", self.endpoint))?;
 
-        let client = self.authenticated_http_client_with_retry.clone();
+        let client = self.authenticated_http_client.clone();
         let api_tag = "cas::query_dedup";
 
         let response = RetryWrapper::new(api_tag)
@@ -203,7 +203,7 @@ impl UploadClient for RemoteClient {
 
         let xorb_uploaded = {
             if !self.dry_run {
-                let client = self.authenticated_http_client_with_retry.clone();
+                let client = self.authenticated_http_client.clone();
 
                 let api_tag = "cas::upload_xorb";
 
@@ -270,7 +270,7 @@ impl UploadClient for RemoteClient {
         };
 
         let url = Url::parse(&format!("{}/xorb/{key}", self.endpoint))?;
-        let response = self.authenticated_http_client_with_retry.head(url).send().await?;
+        let response = self.authenticated_http_client.head(url).send().await?;
         match response.status() {
             StatusCode::OK => Ok(true),
             StatusCode::NOT_FOUND => Ok(false),
@@ -391,7 +391,7 @@ impl RemoteClient {
         let url: Url = url_str.parse()?;
 
         let api_tag = "cas::batch_get_reconstruction";
-        let client = self.authenticated_http_client_with_retry.clone();
+        let client = self.authenticated_http_client.clone();
 
         let response: BatchQueryReconstructionResponse = RetryWrapper::new(api_tag)
             .run_and_extract_json(move || client.get(url.clone()).with_extension(Api(api_tag)).send())
@@ -773,7 +773,7 @@ impl RegistrationClient for RemoteClient {
         };
 
         let api_tag = "cas::upload_shard";
-        let client = self.authenticated_http_client_with_retry.clone();
+        let client = self.authenticated_http_client.clone();
 
         let method = match force_sync {
             true => FORCE_SYNC_METHOD,
@@ -811,7 +811,7 @@ impl FileReconstructor<CasClientError> for RemoteClient {
         let url = Url::parse(&format!("{}/reconstruction/{}", self.endpoint, file_hash.hex()))?;
 
         let api_tag = "cas::get_reconstruction_info";
-        let client = self.authenticated_http_client_with_retry.clone();
+        let client = self.authenticated_http_client.clone();
 
         let response: QueryReconstructionResponse = RetryWrapper::new(api_tag)
             .run_and_extract_json(move || client.get(url.clone()).with_extension(Api(api_tag)).send())
