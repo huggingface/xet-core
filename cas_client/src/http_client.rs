@@ -135,6 +135,12 @@ pub fn build_http_client<R: RetryableStrategy + Send + Sync + 'static>(
     build_auth_http_client(&None, retry_config, session_id)
 }
 
+/// Builds HTTP Client to talk to CAS.
+/// Includes retry middleware with exponential backoff.
+pub fn build_http_client_no_retry(session_id: &str) -> Result<ClientWithMiddleware, CasClientError> {
+    build_auth_http_client_no_retry(&None, session_id)
+}
+
 /// RetryStrategy
 pub fn get_retry_policy_and_strategy<R: RetryableStrategy + Send + Sync>(
     config: RetryConfig<R>,
