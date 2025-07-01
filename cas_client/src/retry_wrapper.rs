@@ -261,7 +261,12 @@ impl RetryWrapper {
                 match r {
                     Ok(v) => Ok(v),
                     Err(e) => {
-                        if e.is_decode() || e.is_body() || e.is_connect() || e.is_timeout() {
+                        #[cfg(not(target_arch = "wasm32"))]
+                        let is_connect = e.is_connect();
+                        #[cfg(target_arch = "wasm32")]
+                        let is_connect = false;
+
+                        if is_connect || e.is_decode() || e.is_body() || e.is_timeout() {
                             // We got an incomplete or corrupted response from the server, possibly due to a dropped
                             // connection.  Presumably this error is transient.
                             Err(RetryableReqwestError::RetryableError(e.into()))
