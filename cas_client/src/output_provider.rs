@@ -13,6 +13,15 @@ pub enum OutputProvider {
 }
 
 impl OutputProvider {
+    pub fn new_file_provider<T: Into<PathBuf>>(path: T) -> OutputProvider {
+        OutputProvider::File(FileProvider::new(path.into()))
+    }
+    
+    #[cfg(test)]
+    pub fn new_buffer_provider() -> OutputProvider {
+        OutputProvider::Buffer(BufferProvider::default())
+    }
+    
     /// Create a new writer to start writing at the indicated start location.
     pub(crate) fn get_writer_at(&self, start: u64) -> Result<Box<dyn Write + Send>> {
         match self {
