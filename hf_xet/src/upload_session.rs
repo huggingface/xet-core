@@ -2,11 +2,6 @@ use std::fs::File;
 use std::io::{Cursor, Read};
 use std::sync::Arc;
 
-use crate::log_buffer::HF_DEFAULT_ENDPOINT;
-use crate::progress_update::WrappedProgressUpdater;
-use crate::runtime::async_run;
-use crate::token_refresh::WrappedTokenRefresher;
-use crate::{convert_data_processing_error, PyXetUploadInfo};
 use data::constants::{INGESTION_BLOCK_SIZE, MAX_CONCURRENT_FILE_INGESTION};
 use data::data_client::default_config;
 use data::errors::DataProcessingError;
@@ -14,6 +9,12 @@ use data::{FileUploadSession, XetFileInfo};
 use pyo3::{pyclass, pymethods, Py, PyAny, PyResult, Python};
 use utils::auth::TokenRefresher;
 use xet_threadpool::exports::tokio::sync::Semaphore;
+
+use crate::log_buffer::HF_DEFAULT_ENDPOINT;
+use crate::progress_update::WrappedProgressUpdater;
+use crate::runtime::async_run;
+use crate::token_refresh::WrappedTokenRefresher;
+use crate::{convert_data_processing_error, PyXetUploadInfo};
 
 /// A Python-accessible session for managing file uploads in the XET system.
 ///
