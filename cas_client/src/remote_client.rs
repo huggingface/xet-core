@@ -13,7 +13,7 @@ use cas_types::{
 use chunk_cache::{CacheConfig, ChunkCache};
 use error_printer::ErrorPrinter;
 use file_utils::SafeFileCreator;
-use http::header::{CONTENT_LENGTH, RANGE};
+use http::header::{AUTHORIZATION, CONTENT_LENGTH, RANGE};
 use http::HeaderValue;
 use mdb_shard::file_structs::{FileDataSequenceEntry, FileDataSequenceHeader, MDBFileInfo};
 use mdb_shard::shard_file_reconstructor::FileReconstructor;
@@ -26,7 +26,7 @@ use reqwest_middleware::ClientWithMiddleware;
 use tokio::sync::{mpsc, OwnedSemaphorePermit, Semaphore};
 use tokio::task::{JoinHandle, JoinSet};
 use tracing::{debug, info, instrument};
-use utils::auth::AuthConfig;
+use utils::auth::{AuthConfig, TokenProvider};
 #[cfg(not(target_family = "wasm"))]
 use utils::singleflight::Group;
 
@@ -326,6 +326,7 @@ impl Reconstruct for RemoteClient {
             &self.authenticated_http_client,
             file_id,
             bytes_range,
+            None,
         )
         .await
     }
@@ -336,6 +337,7 @@ pub(crate) async fn get_reconstruction_with_endpoint_and_client(
     client: &ClientWithMiddleware,
     file_id: &MerkleHash,
     bytes_range: Option<FileRange>,
+    auth: Option<Arc<tokio::sync::Mutex<TokenProvider>>>,
 ) -> Result<Option<QueryReconstructionResponse>> {
     let url = Url::parse(&format!("{}/reconstruction/{}", endpoint, file_id.hex()))?;
 
@@ -344,6 +346,12 @@ pub(crate) async fn get_reconstruction_with_endpoint_and_client(
         // convert exclusive-end to inclusive-end range
         request = request.header(RANGE, HttpRange::from(range).range_header())
     }
+    if let Some(auth_provider) = auth {
+        let mut provider = auth_provider.lock().await;
+        let token = provider.get_valid_token().await.map_err(CasClientError::internal)?;
+        request = request.header(AUTHORIZATION, HeaderValue::from_str(&format!("Bearer {token}")).unwrap());
+    }
+
     let response = request.send().await.process_error("get_reconstruction");
 
     let Ok(response) = response else {

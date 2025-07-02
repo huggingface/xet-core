@@ -17,6 +17,7 @@ use reqwest_middleware::ClientWithMiddleware;
 use tokio_retry::strategy::ExponentialBackoff;
 use tracing::{debug, error, info, trace, warn};
 use url::Url;
+use utils::auth::TokenProvider;
 use utils::singleflight::Group;
 
 use crate::error::{CasClientError, Result};
@@ -44,7 +45,7 @@ utils::configurable_constants! {
 }
 
 #[derive(Clone, Debug)]
-pub(crate) enum DownloadRangeResult {
+pub enum DownloadRangeResult {
     Data(TermDownloadOutput),
     // This is a workaround to propagate the underlying request error as
     // the underlying reqwest_middleware::Error doesn't impl Clone.
@@ -54,16 +55,17 @@ pub(crate) enum DownloadRangeResult {
     // making it impossible to be examined programmatically.
     Forbidden,
 }
-pub(crate) type RangeDownloadSingleFlight = Arc<Group<DownloadRangeResult, CasClientError>>;
+pub type RangeDownloadSingleFlight = Arc<Group<DownloadRangeResult, CasClientError>>;
 
 #[derive(Debug)]
-pub(crate) struct FetchInfo {
+pub struct FetchInfo {
     file_hash: MerkleHash,
     pub(crate) file_range: FileRange,
     endpoint: String,
     client: Arc<ClientWithMiddleware>, // only used for fetching file info
     inner: RwLock<HashMap<HexMerkleHash, Vec<CASReconstructionFetchInfo>>>,
     version: tokio::sync::Mutex<u32>,
+    auth: Option<Arc<tokio::sync::Mutex<TokenProvider>>>,
 }
 
 impl FetchInfo {
@@ -80,6 +82,25 @@ impl FetchInfo {
             client,
             inner: Default::default(),
             version: tokio::sync::Mutex::new(0),
+            auth: None,
+        }
+    }
+
+    pub fn new_with_auth(
+        file_hash: MerkleHash,
+        file_range: FileRange,
+        endpoint: String,
+        client: Arc<ClientWithMiddleware>,
+        auth: Option<Arc<tokio::sync::Mutex<TokenProvider>>>,
+    ) -> Self {
+        Self {
+            file_hash,
+            file_range,
+            endpoint,
+            client,
+            inner: Default::default(),
+            version: tokio::sync::Mutex::new(0),
+            auth,
         }
     }
 
@@ -119,6 +140,7 @@ impl FetchInfo {
             &self.client,
             &self.file_hash,
             Some(self.file_range),
+            self.auth.clone(),
         )
         .await?
         else {
@@ -158,7 +180,7 @@ impl FetchInfo {
 /// during reconstruction.
 #[derive(Derivative)]
 #[derivative(Debug)]
-pub(crate) struct FetchTermDownload {
+pub struct FetchTermDownload {
     pub hash: MerkleHash,
     pub range: ChunkRange,
     #[derivative(Debug = "ignore")]
@@ -172,7 +194,7 @@ pub(crate) struct FetchTermDownload {
 }
 
 #[derive(Debug)]
-pub(crate) struct SequentialTermDownload {
+pub struct SequentialTermDownload {
     pub term: CASReconstructionTerm,
     pub download: FetchTermDownload,
     pub skip_bytes: u64, // number of bytes to skip at the front
@@ -189,9 +211,11 @@ impl SequentialTermDownload {
                     data,
                     chunk_byte_indices,
                     chunk_range,
+                    cached: _cached,
                 },
             duration,
             n_retries_on_403,
+            cached,
         } = self.download.run().await?;
 
         // if the requested range is smaller than the fetched range, trim it down to the right data
@@ -216,22 +240,25 @@ impl SequentialTermDownload {
             payload: final_term_data.to_vec(),
             duration,
             n_retries_on_403,
+            cached,
         })
     }
 }
 
 #[derive(Debug)]
-pub(crate) struct TermDownloadResult<T> {
+pub struct TermDownloadResult<T> {
     pub payload: T,         // download result
     pub duration: Duration, // duration to download
     pub n_retries_on_403: u32,
+    pub cached: bool,
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct TermDownloadOutput {
+pub struct TermDownloadOutput {
     pub data: Vec<u8>,
     pub chunk_byte_indices: Vec<u32>,
     pub chunk_range: ChunkRange,
+    pub cached: bool,
 }
 
 impl From<CacheRange> for TermDownloadOutput {
@@ -240,6 +267,7 @@ impl From<CacheRange> for TermDownloadOutput {
             data,
             chunk_byte_indices: offsets,
             chunk_range: range,
+            cached: true,
         }
     }
 }
@@ -271,11 +299,13 @@ impl FetchTermDownload {
 
             break range_data?;
         };
+        let cached = data.cached;
 
         Ok(TermDownloadResult {
             payload: data,
             duration: instant.elapsed(),
             n_retries_on_403,
+            cached,
         })
     }
 }
@@ -307,6 +337,7 @@ impl FetchTermDownloadOnceAndWriteEverywhereUsed {
             data,
             chunk_byte_indices,
             chunk_range,
+            cached,
         } = download_result.payload;
         debug_assert_eq!(chunk_byte_indices.len(), (chunk_range.end - chunk_range.start + 1) as usize);
         debug_assert_eq!(*chunk_byte_indices.last().expect("checked len is something") as usize, data.len());
@@ -347,11 +378,12 @@ impl FetchTermDownloadOnceAndWriteEverywhereUsed {
             payload: total_written,
             duration: download_result.duration,
             n_retries_on_403: download_result.n_retries_on_403,
+            cached,
         })
     }
 }
 
-pub(crate) enum DownloadQueueItem<T> {
+pub enum DownloadQueueItem<T> {
     End,
     DownloadTask(T),
     Metadata(FetchInfo),
@@ -555,6 +587,7 @@ async fn download_fetch_term_data(
                 data,
                 chunk_byte_indices,
                 chunk_range: fetch_term.range,
+                cached: false,
             }))
         },
         ChunkRangeDeserializeFromBytesStreamRetryCondition,

@@ -16,10 +16,10 @@ pub use crate::error::CasClientError;
 pub use crate::interface::ShardClientInterface;
 
 #[cfg(not(target_family = "wasm"))]
-mod download_utils;
+pub mod download_utils;
 mod error;
 pub mod exports;
-mod http_client;
+pub mod http_client;
 mod interface;
 #[cfg(not(target_family = "wasm"))]
 mod local_client;

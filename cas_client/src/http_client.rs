@@ -159,7 +159,7 @@ fn get_retry_middleware<R: RetryableStrategy + Send + Sync>(
 }
 
 /// Helper trait to allow the reqwest_middleware client to optionally add a middleware.
-trait OptionalMiddleware {
+pub trait OptionalMiddleware {
     fn maybe_with<M: Middleware>(self, middleware: Option<M>) -> Self;
 }
 
@@ -260,7 +260,7 @@ impl Middleware for AuthMiddleware {
     }
 }
 
-pub struct SessionMiddleware(String);
+pub struct SessionMiddleware(pub String);
 
 // WASM compatibility; note the use of the pattern:
 //

@@ -1,4 +1,4 @@
-use std::fmt::Debug;
+use std::fmt::{Debug, Formatter};
 use std::sync::Arc;
 #[cfg(not(target_family = "wasm"))]
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -65,7 +65,7 @@ impl AuthConfig {
                 token_refresher: refresher,
             }),
             // Since no refreshing, we instead use the token with some expiration (no expiration means we expect this
-            // token to live forever.
+            // token to live forever).
             (Some(token), expiry, None) => Some(Self {
                 token,
                 token_expiration: expiry.unwrap_or(u64::MAX),
@@ -80,6 +80,12 @@ pub struct TokenProvider {
     token: String,
     expiration: u64,
     refresher: Arc<dyn TokenRefresher>,
+}
+
+impl Debug for TokenProvider {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TokenProvider").finish()
+    }
 }
 
 impl TokenProvider {
