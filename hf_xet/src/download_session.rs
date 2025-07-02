@@ -1,9 +1,5 @@
 use std::sync::Arc;
 
-use crate::log_buffer::HF_DEFAULT_ENDPOINT;
-use crate::runtime::async_run;
-use crate::token_refresh::WrappedTokenRefresher;
-use crate::{convert_data_processing_error, try_parse_progress_updater, DestinationPath, PyXetDownloadInfo};
 use data::constants::MAX_CONCURRENT_DOWNLOADS;
 use data::data_client::default_config;
 use data::{FileDownloader, XetFileInfo};
@@ -12,6 +8,11 @@ use progress_tracking::item_tracking::ItemProgressUpdater;
 use pyo3::{pyclass, pymethods, Py, PyAny, PyResult, Python};
 use utils::auth::TokenRefresher;
 use xet_threadpool::exports::tokio::sync::Semaphore;
+
+use crate::log_buffer::HF_DEFAULT_ENDPOINT;
+use crate::runtime::async_run;
+use crate::token_refresh::WrappedTokenRefresher;
+use crate::{convert_data_processing_error, try_parse_progress_updater, DestinationPath, PyXetDownloadInfo};
 
 /// A Python-accessible session for managing file downloads in the XET system.
 ///
