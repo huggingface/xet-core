@@ -23,11 +23,14 @@ use crate::progress_update::WrappedProgressUpdater;
 #[cfg(feature = "profiling")]
 pub(crate) mod profiling;
 
-fn convert_data_processing_error(e: DataProcessingError) -> PyErr {
+mod session;
+pub use session::XetSession;
+
+fn convert_data_processing_error(e: impl AsRef<DataProcessingError>) -> PyErr {
     if cfg!(debug_assertions) {
-        PyRuntimeError::new_err(format!("Data processing error: {e:?}"))
+        PyRuntimeError::new_err(format!("Data processing error: {:?}", e.as_ref()))
     } else {
-        PyRuntimeError::new_err(format!("Data processing error: {e}"))
+        PyRuntimeError::new_err(format!("Data processing error: {}", e.as_ref()))
     }
 }
 
@@ -115,6 +118,10 @@ pub fn download_files(
 
         PyResult::Ok(out)
     })
+}
+
+fn try_parse_progress_updater(func: Py<PyAny>) -> PyResult<Arc<dyn TrackingProgressUpdater>> {
+    Ok(Arc::new(WrappedProgressUpdater::new(func)?))
 }
 
 fn try_parse_progress_updaters(funcs: Vec<Py<PyAny>>) -> PyResult<Vec<Arc<dyn TrackingProgressUpdater>>> {

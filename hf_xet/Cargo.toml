@@ -16,6 +16,7 @@ progress_tracking = { path = "../progress_tracking" }
 utils = { path = "../utils" }
 xet_threadpool = { path = "../xet_threadpool" }
 cas_client = { path = "../cas_client" }
+merklehash = { path = "../merklehash" }
 
 async-trait = "0.1"
 bipbuffer = "0.1"
@@ -29,10 +30,11 @@ pprof = { version = "0.14", features = [
     "protobuf-codec",
 ], optional = true }
 
-pyo3 = { version = "0.23", features = [
+pyo3 = { version = "0.25", features = [
     "extension-module",
     "abi3-py37",
     "auto-initialize",
+    "experimental-async",
 ] }
 
 serde = { version = "1", features = ["derive"] }
@@ -43,6 +45,7 @@ tracing-subscriber = { version = "0.3", features = [
     "tracing-log",
     "env-filter",
 ] }
+async-once-cell = "0.5.4"
 
 # Unix-specific dependencies
 [target.'cfg(unix)'.dependencies]
