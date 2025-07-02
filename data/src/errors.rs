@@ -95,9 +95,3 @@ impl From<SingleflightError<DataProcessingError>> for DataProcessingError {
         }
     }
 }
-
-impl AsRef<DataProcessingError> for DataProcessingError {
-    fn as_ref(&self) -> &DataProcessingError {
-        self
-    }
-}

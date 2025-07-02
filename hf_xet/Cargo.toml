@@ -45,7 +45,6 @@ tracing-subscriber = { version = "0.3", features = [
     "tracing-log",
     "env-filter",
 ] }
-async-once-cell = "0.5.4"
 
 # Unix-specific dependencies
 [target.'cfg(unix)'.dependencies]
