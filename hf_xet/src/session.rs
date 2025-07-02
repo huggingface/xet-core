@@ -56,7 +56,7 @@ impl XetSession {
         let file_size = reader.metadata()?.len();
         let handle = file_upload_session.start_clean(Some(file_path.into()), file_size).await;
 
-        consume_reader_to_cleaner(&mut reader, Some(file_size as usize), handle).await
+        consume_reader_to_cleaner(&mut reader, file_size.min(*INGESTION_BLOCK_SIZE), handle).await
     }
 
     #[pyo3(signature = (file_contents))]
@@ -67,7 +67,7 @@ impl XetSession {
         let handle = file_upload_session.start_clean(None, contents_size as u64).await;
         let mut reader = Cursor::new(file_contents);
 
-        consume_reader_to_cleaner(&mut reader, Some(contents_size), handle).await
+        consume_reader_to_cleaner(&mut reader, contents_size.min(*INGESTION_BLOCK_SIZE), handle).await
     }
 
     #[pyo3(signature = (file, progress_updater = None))]
@@ -99,11 +99,10 @@ impl XetSession {
 
 async fn consume_reader_to_cleaner(
     reader: &mut impl Read,
-    max_size_hint: Option<usize>,
+    ingestion_block_size: usize,
     mut handle: SingleFileCleaner,
 ) -> PyResult<PyXetUploadInfo> {
-    let buffer_len = max_size_hint.unwrap_or(usize::MAX).min(*INGESTION_BLOCK_SIZE);
-    let mut buffer = vec![0u8; buffer_len];
+    let mut buffer = vec![0u8; ingestion_block_size];
 
     loop {
         let bytes = reader.read(&mut buffer)?;
