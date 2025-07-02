@@ -23,14 +23,16 @@ use crate::progress_update::WrappedProgressUpdater;
 #[cfg(feature = "profiling")]
 pub(crate) mod profiling;
 
-mod session;
-pub use session::XetSession;
+mod download_session;
+mod upload_session;
+pub use download_session::XetDownloadSession;
+pub use upload_session::XetUploadSession;
 
-fn convert_data_processing_error(e: impl AsRef<DataProcessingError>) -> PyErr {
+fn convert_data_processing_error(e: DataProcessingError) -> PyErr {
     if cfg!(debug_assertions) {
-        PyRuntimeError::new_err(format!("Data processing error: {:?}", e.as_ref()))
+        PyRuntimeError::new_err(format!("Data processing error: {e:?}"))
     } else {
-        PyRuntimeError::new_err(format!("Data processing error: {}", e.as_ref()))
+        PyRuntimeError::new_err(format!("Data processing error: {e}"))
     }
 }
 
@@ -76,22 +78,22 @@ pub fn upload_files(
     progress_updater: Option<Py<PyAny>>,
     _repo_type: Option<String>,
 ) -> PyResult<Vec<PyXetUploadInfo>> {
-    let refresher = token_refresher.map(WrappedTokenRefresher::from_func).transpose()?.map(Arc::new);
-    let updater = progress_updater.map(WrappedProgressUpdater::new).transpose()?.map(Arc::new);
+    let refresher = token_refresher
+        .map(WrappedTokenRefresher::from_func)
+        .transpose()?
+        .map(|v| Arc::new(v) as Arc<_>);
+    let updater = progress_updater
+        .map(WrappedProgressUpdater::new)
+        .transpose()?
+        .map(|v| Arc::new(v) as Arc<_>);
 
     async_run(py, async move {
-        let out: Vec<PyXetUploadInfo> = data_client::upload_async(
-            file_paths,
-            endpoint,
-            token_info,
-            refresher.map(|v| v as Arc<_>),
-            updater.map(|v| v as Arc<_>),
-        )
-        .await
-        .map_err(convert_data_processing_error)?
-        .into_iter()
-        .map(PyXetUploadInfo::from)
-        .collect();
+        let out: Vec<PyXetUploadInfo> = data_client::upload_async(file_paths, endpoint, token_info, refresher, updater)
+            .await
+            .map_err(convert_data_processing_error)?
+            .into_iter()
+            .map(PyXetUploadInfo::from)
+            .collect();
         PyResult::Ok(out)
     })
 }
@@ -107,14 +109,16 @@ pub fn download_files(
     progress_updater: Option<Vec<Py<PyAny>>>,
 ) -> PyResult<Vec<String>> {
     let file_infos = files.into_iter().map(<(XetFileInfo, DestinationPath)>::from).collect();
-    let refresher = token_refresher.map(WrappedTokenRefresher::from_func).transpose()?.map(Arc::new);
+    let refresher = token_refresher
+        .map(WrappedTokenRefresher::from_func)
+        .transpose()?
+        .map(|v| Arc::new(v) as Arc<_>);
     let updaters = progress_updater.map(try_parse_progress_updaters).transpose()?;
 
     async_run(py, async move {
-        let out: Vec<String> =
-            data_client::download_async(file_infos, endpoint, token_info, refresher.map(|v| v as Arc<_>), updaters)
-                .await
-                .map_err(convert_data_processing_error)?;
+        let out: Vec<String> = data_client::download_async(file_infos, endpoint, token_info, refresher, updaters)
+            .await
+            .map_err(convert_data_processing_error)?;
 
         PyResult::Ok(out)
     })
@@ -125,12 +129,7 @@ fn try_parse_progress_updater(func: Py<PyAny>) -> PyResult<Arc<dyn TrackingProgr
 }
 
 fn try_parse_progress_updaters(funcs: Vec<Py<PyAny>>) -> PyResult<Vec<Arc<dyn TrackingProgressUpdater>>> {
-    let mut updaters = Vec::with_capacity(funcs.len());
-    for updater_func in funcs {
-        let wrapped = Arc::new(WrappedProgressUpdater::new(updater_func)?);
-        updaters.push(wrapped as Arc<dyn TrackingProgressUpdater>);
-    }
-    Ok(updaters)
+    funcs.into_iter().map(try_parse_progress_updater).collect()
 }
 
 // TODO: we won't need to subclass this in the next major version update.
@@ -261,6 +260,8 @@ pub fn hf_xet(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyXetUploadInfo>()?;
     m.add_class::<progress_update::PyItemProgressUpdate>()?;
     m.add_class::<progress_update::PyTotalProgressUpdate>()?;
+    m.add_class::<XetUploadSession>()?;
+    m.add_class::<XetDownloadSession>()?;
     // TODO: remove this during the next major version update.
     // This supports backward compatibility for PyPointerFile with old versions
     // huggingface_hub.
