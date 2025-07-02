@@ -114,6 +114,6 @@ impl TokenProvider {
             .duration_since(web_time::UNIX_EPOCH)
             .map(|d| d.as_secs())
             .unwrap_or(u64::MAX);
-        self.expiration <= cur_time - REFRESH_BUFFER_SEC
+        self.expiration <= cur_time + REFRESH_BUFFER_SEC
     }
 }
