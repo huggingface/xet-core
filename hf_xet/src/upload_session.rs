@@ -50,6 +50,8 @@ impl XetUploadSession {
     ///   a string of the token, expiry_timestamp is a unix timestamp of when the token expires)
     /// * `token_refresher` - Optional Python callable that can refresh tokens when they expire. (function that returns
     ///   a tuple of (token_string, expiry_timestamp))
+    /// * `progress_updater` - Optional Python callable to update progress of uploads, see spec for this function in
+    ///   hf_xet/src/progress_update.rs
     ///
     /// The endpoint and token information should be provided by a xet-token api from the huggingface hub.
     ///

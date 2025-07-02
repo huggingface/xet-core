@@ -113,6 +113,8 @@ impl XetDownloadSession {
     /// * `file` - `PyXetDownloadInfo` containing the file hash and destination path information.
     /// * `progress_updater` - Optional Python callable for receiving download progress updates. The callback will be
     ///   called with progress information during the download.
+    /// * `progress_updater` - Optional Python callable to update progress of a download, takes 1 parameter, an
+    ///   increment number of bytes downloaded
     ///
     /// # Returns
     /// A string containing the path where the file was downloaded.
