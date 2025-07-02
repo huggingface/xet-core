@@ -5,6 +5,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::errors::AuthError;
 
+/// Seconds before the token expires to refresh
+const REFRESH_BUFFER_SEC: u64 = 30;
+
 /// Helper type for information about an auth token.
 /// Namely, the token itself and expiration time
 pub type TokenInfo = (String, u64);
@@ -111,6 +114,6 @@ impl TokenProvider {
             .duration_since(web_time::UNIX_EPOCH)
             .map(|d| d.as_secs())
             .unwrap_or(u64::MAX);
-        self.expiration <= cur_time
+        self.expiration <= cur_time - REFRESH_BUFFER_SEC
     }
 }
