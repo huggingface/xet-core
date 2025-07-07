@@ -17,7 +17,7 @@ utils::configurable_constants! {
     ///
     /// Note the cache is pruned to below this value at the beginning of a session,
     /// but during a single session new shards may be added such that this limit is exceeded.
-    ref SHARD_CACHE_SIZE_LIMIT : u64 = 16 * 1024 * 1024 * 1024;
+    ref SHARD_CACHE_SIZE_LIMIT : u64 = 16_000_000_000;
 
     /// The amount of time a shard should be expired by before it's deleted, in seconds.
     /// By default set to 7 days.
