@@ -34,7 +34,6 @@ pyo3 = { version = "0.25", features = [
     "extension-module",
     "abi3-py37",
     "auto-initialize",
-    "experimental-async",
 ] }
 
 serde = { version = "1", features = ["derive"] }
