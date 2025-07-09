@@ -277,7 +277,6 @@ impl XetUploadSession {
         let file_upload_session = self.file_upload_session.clone();
         async_run(py, async move {
             file_upload_session
-                .clone()
                 .finalize()
                 .await
                 .map_err(convert_data_processing_error)
