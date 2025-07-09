@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use anyhow::Result;
-use cas_client::{Reconstruct, RemoteClient};
+use cas_client::RemoteClient;
 use cas_object::CompressionScheme;
 use cas_types::{FileRange, QueryReconstructionResponse};
 use clap::{Args, Parser, Subcommand};

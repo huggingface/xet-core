@@ -25,7 +25,7 @@ pub(crate) fn create_remote_client(
         Endpoint::FileSystem(ref path) => {
             #[cfg(not(target_family = "wasm"))]
             {
-                Ok(Arc::new(cas_client::LocalClient::new(path, None)?))
+                Ok(Arc::new(cas_client::LocalClient::new(path)?))
             }
             #[cfg(target_family = "wasm")]
             unimplemented!("Local file system access is not supported in WASM builds")

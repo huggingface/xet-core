@@ -2,10 +2,7 @@
 
 pub use chunk_cache::{CacheConfig, CHUNK_CACHE_SIZE_BYTES};
 pub use http_client::{build_auth_http_client, build_http_client, Api, RetryConfig};
-use interface::RegistrationClient;
-pub use interface::{Client, UploadClient};
-#[cfg(not(target_family = "wasm"))]
-pub use interface::{Reconstruct, ReconstructionClient};
+pub use interface::Client;
 #[cfg(not(target_family = "wasm"))]
 pub use local_client::LocalClient;
 #[cfg(not(target_family = "wasm"))]
@@ -13,7 +10,6 @@ pub use output_provider::{FileProvider, OutputProvider};
 pub use remote_client::RemoteClient;
 
 pub use crate::error::CasClientError;
-pub use crate::interface::ShardClientInterface;
 
 mod constants;
 #[cfg(not(target_family = "wasm"))]
