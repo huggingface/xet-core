@@ -1105,6 +1105,7 @@ dependencies = [
  "ctrlc",
  "data",
  "error_printer",
+ "futures",
  "itertools 0.14.0",
  "lazy_static",
  "merklehash",

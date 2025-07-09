@@ -21,6 +21,7 @@ merklehash = { path = "../merklehash" }
 async-trait = "0.1"
 bipbuffer = "0.1"
 chrono = "0.4"
+futures = "0.3.31"
 itertools = "0.14"
 lazy_static = "1.5"
 

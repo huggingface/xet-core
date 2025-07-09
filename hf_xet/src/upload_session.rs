@@ -6,17 +6,18 @@ use data::constants::{INGESTION_BLOCK_SIZE, MAX_CONCURRENT_FILE_INGESTION};
 use data::data_client::default_config;
 use data::errors::DataProcessingError;
 use data::{FileUploadSession, XetFileInfo};
+use futures::stream::FuturesOrdered;
+use futures::{StreamExt, TryStreamExt};
 use pyo3::exceptions::PyValueError;
 use pyo3::{pyclass, pymethods, Py, PyAny, PyResult, Python};
 use utils::auth::TokenRefresher;
-use xet_threadpool::exports::tokio::sync::{Mutex, Semaphore};
-use xet_threadpool::exports::tokio::task::JoinSet;
+use xet_threadpool::exports::tokio::sync::Semaphore;
 
-use crate::convert_data_processing_error;
 use crate::log_buffer::HF_DEFAULT_ENDPOINT;
 use crate::progress_update::WrappedProgressUpdater;
 use crate::runtime::async_run;
 use crate::token_refresh::WrappedTokenRefresher;
+use crate::{convert_data_processing_error, PyXetUploadInfo};
 
 /// A Python-accessible session for managing file uploads in the XET system.
 ///
@@ -33,14 +34,13 @@ use crate::token_refresh::WrappedTokenRefresher;
 /// # Example Usage (from Python)
 /// ```python
 /// session = XetUploadSession(endpoint="https://example.com", token_info=("token", expiry))
-/// upload_info = await session.upload_file("/path/to/file.txt")
-/// await session.complete_upload_files()
+/// upload_info = session.upload_files(["/path/to/file.txt"])
+/// session.complete_upload_files()
 /// ```
 #[pyclass]
 pub struct XetUploadSession {
     semaphore: Arc<Semaphore>,
     file_upload_session: Arc<FileUploadSession>,
-    cleaning_handles: Arc<Mutex<JoinSet<Result<XetFileInfo, DataProcessingError>>>>,
 }
 
 #[pymethods]
@@ -114,7 +114,6 @@ impl XetUploadSession {
         Ok(Self {
             semaphore: Arc::new(Semaphore::new(*MAX_CONCURRENT_FILE_INGESTION)),
             file_upload_session,
-            cleaning_handles: Arc::new(Mutex::new(JoinSet::new())),
         })
     }
 
@@ -141,30 +140,34 @@ impl XetUploadSession {
     ///
     /// # Example
     /// ```python
-    /// session.upload_file(["/path/to/document.pdf"])
+    /// session.upload_files(["/path/to/document.pdf"])
     ///
     /// # to ensure the upload is complete, call `complete_upload_files`
     /// ```
     #[pyo3(signature = (file_paths))]
-    pub fn upload_files(&self, py: Python, file_paths: Vec<String>) -> PyResult<()> {
-        let cleaning_handles = self.cleaning_handles.clone();
+    pub fn upload_files(&self, py: Python, file_paths: Vec<String>) -> PyResult<Vec<PyXetUploadInfo>> {
         let file_upload_session = self.file_upload_session.clone();
         let semaphore = self.semaphore.clone();
-        async_run(py, async move {
-            let mut guard = cleaning_handles.lock().await;
-            for file_path in file_paths {
-                let reader = File::open(&file_path)?;
-                let file_size = reader.metadata()?.len();
+        let mut cleaning_tasks = FuturesOrdered::new();
 
-                guard.spawn(clean_reader(
-                    file_upload_session.clone(),
-                    semaphore.clone(),
-                    reader,
-                    Some(file_path.into()),
-                    file_size as usize,
-                ));
-            }
-            Ok(())
+        for file_path in file_paths {
+            let reader = File::open(&file_path)?;
+            let file_size = reader.metadata()?.len();
+
+            cleaning_tasks.push_back(clean_reader(
+                file_upload_session.clone(),
+                semaphore.clone(),
+                reader,
+                Some(file_path.into()),
+                file_size as usize,
+            ));
+        }
+        async_run(py, async move {
+            cleaning_tasks
+                .map(|result| result.map(PyXetUploadInfo::from))
+                .try_collect::<Vec<_>>()
+                .await
+                .map_err(convert_data_processing_error)
         })
     }
 
@@ -193,7 +196,7 @@ impl XetUploadSession {
     /// # Example
     /// ```python
     /// data = b"Hello, XET storage!"
-    /// session.upload_bytes([data])
+    /// upload_info = session.upload_bytes([data])
     ///
     /// # to ensure the upload is complete, call `complete_upload_files`
     /// ```
@@ -203,31 +206,36 @@ impl XetUploadSession {
         py: Python,
         file_contents: Vec<Vec<u8>>,
         file_paths: Option<Vec<String>>,
-    ) -> PyResult<()> {
+    ) -> PyResult<Vec<PyXetUploadInfo>> {
         if file_paths.as_ref().is_some_and(|fp| fp.len() != file_contents.len()) {
             return Err(PyValueError::new_err(
                 "file paths supplied but number of file paths does not match number of byte slices",
             ));
         }
-        let cleaning_handles = self.cleaning_handles.clone();
+
         let file_upload_session = self.file_upload_session.clone();
         let semaphore = self.semaphore.clone();
-        async_run(py, async move {
-            let mut guard = cleaning_handles.lock().await;
-            for (i, contents) in file_contents.into_iter().enumerate() {
-                let file_path = file_paths.as_ref().map(|file_paths| file_paths[i].clone().into());
+        let mut cleaning_tasks = FuturesOrdered::new();
 
-                let contents_size = contents.len();
-                let reader = Cursor::new(contents);
-                guard.spawn(clean_reader(
-                    file_upload_session.clone(),
-                    semaphore.clone(),
-                    reader,
-                    file_path,
-                    contents_size,
-                ));
-            }
-            Ok(())
+        for (i, contents) in file_contents.into_iter().enumerate() {
+            let file_path = file_paths.as_ref().map(|file_paths| file_paths[i].clone().into());
+
+            let contents_size = contents.len();
+            let reader = Cursor::new(contents);
+            cleaning_tasks.push_back(clean_reader(
+                file_upload_session.clone(),
+                semaphore.clone(),
+                reader,
+                file_path,
+                contents_size,
+            ));
+        }
+        async_run(py, async move {
+            cleaning_tasks
+                .map(|result| result.map(PyXetUploadInfo::from))
+                .try_collect::<Vec<_>>()
+                .await
+                .map_err(convert_data_processing_error)
         })
     }
 
@@ -267,14 +275,7 @@ impl XetUploadSession {
     #[pyo3(signature = ())]
     pub fn complete_upload_files(&self, py: Python) -> PyResult<()> {
         let file_upload_session = self.file_upload_session.clone();
-        let cleaning_handles = self.cleaning_handles.clone();
         async_run(py, async move {
-            let mut joinset_guard = cleaning_handles.lock().await;
-            while let Some(result) = joinset_guard.join_next().await {
-                result
-                    .map_err(|e| convert_data_processing_error(DataProcessingError::from(e)))?
-                    .map_err(convert_data_processing_error)?;
-            }
             file_upload_session
                 .clone()
                 .finalize()
