@@ -10,6 +10,7 @@ use progress_tracking::item_tracking::SingleItemProgressUpdater;
 use progress_tracking::upload_tracking::CompletionTracker;
 
 use crate::error::Result;
+#[cfg(not(target_family = "wasm"))]
 use crate::OutputProvider;
 
 /// A Client to the Shard service. The shard service
@@ -24,6 +25,7 @@ pub trait Client {
     ///
     /// The http_client passed in is a non-authenticated client. This is used to directly communicate
     /// with the backing store (S3) to retrieve xorbs.
+    #[cfg(not(target_family = "wasm"))]
     async fn get_file(
         &self,
         hash: &MerkleHash,
@@ -32,6 +34,7 @@ pub trait Client {
         progress_updater: Option<Arc<SingleItemProgressUpdater>>,
     ) -> Result<u64>;
 
+    #[cfg(not(target_family = "wasm"))]
     async fn batch_get_file(&self, files: HashMap<MerkleHash, &OutputProvider>) -> Result<u64> {
         let mut n_bytes = 0;
         // Provide the basic naive implementation as a default.

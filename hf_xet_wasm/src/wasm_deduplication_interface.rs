@@ -19,7 +19,7 @@ use super::wasm_file_upload_session::FileUploadSession;
 pub struct UploadSessionDataManager {
     session: Arc<FileUploadSession>,
     shard: HashMap<HMACKey, MDBInMemoryShard>,
-    query_tasks: wasmtokio::task::JoinSet<stdResult<Option<Vec<u8>>, CasClientError>>,
+    query_tasks: wasmtokio::task::JoinSet<stdResult<Option<bytes::Bytes>, CasClientError>>,
 }
 
 impl UploadSessionDataManager {
@@ -60,7 +60,7 @@ impl DeduplicationDataInterface for UploadSessionDataManager {
         let repo_salt = self.session.config.shard_config.repo_salt.clone();
         self.query_tasks.spawn(async move {
             client
-                .query_for_global_dedup_shard_in_memory(&prefix, &chunk_hash, &repo_salt)
+                .query_for_global_dedup_shard(&prefix, &chunk_hash, &repo_salt)
                 .await
         });
 
