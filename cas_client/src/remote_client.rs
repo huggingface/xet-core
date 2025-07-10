@@ -28,6 +28,7 @@ use utils::auth::AuthConfig;
 #[cfg(not(target_family = "wasm"))]
 use utils::singleflight::Group;
 
+use crate::adaptive_concurrency_control::ConnectionPermit;
 #[cfg(not(target_family = "wasm"))]
 use crate::download_utils::*;
 use crate::error::{CasClientError, Result};
@@ -596,11 +597,12 @@ impl Client for RemoteClient {
     #[instrument(skip_all, name = "RemoteClient::upload_xorb", fields(key = Key{prefix : prefix.to_string(), hash : serialized_cas_object.hash}.to_string(),
                  xorb.len = serialized_cas_object.serialized_data.len(), xorb.num_chunks = serialized_cas_object.num_chunks
     ))]
-    async fn upload_xorb(
+    async fn upload_xorb_with_permit(
         &self,
         prefix: &str,
         serialized_cas_object: SerializedCasObject,
         upload_tracker: Option<Arc<CompletionTracker>>,
+        upload_permit: ConnectionPermit,
     ) -> Result<u64> {
         let key = Key {
             prefix: prefix.to_string(),
@@ -639,6 +641,7 @@ impl Client for RemoteClient {
                 let api_tag = "cas::upload_xorb";
 
                 let response: UploadXorbResponse = RetryWrapper::new(api_tag)
+                    .with_connection_permit(upload_permit)
                     .run_and_extract_json(move || {
                         let upload_stream = upload_stream.clone_with_reset();
                         let url = url.clone();
@@ -773,13 +776,14 @@ impl Client for RemoteClient {
 
     #[instrument(skip_all, name = "RemoteClient::upload_shard", fields(shard.hash = hash.hex(), shard.len = shard_data.len()
     ))]
-    async fn upload_shard(
+    async fn upload_shard_with_permit(
         &self,
         prefix: &str,
         hash: &MerkleHash,
         force_sync: bool,
         shard_data: bytes::Bytes,
         _salt: &[u8; 32],
+        upload_permit: ConnectionPermit,
     ) -> Result<bool> {
         if self.dry_run {
             return Ok(true);
@@ -801,6 +805,7 @@ impl Client for RemoteClient {
         let url = Url::parse(&format!("{}/shard/{key}", self.endpoint))?;
 
         let response: UploadShardResponse = RetryWrapper::new(api_tag)
+            .with_connection_permit(upload_permit)
             .run_and_extract_json(move || {
                 client
                     .request(method.clone(), url.clone())

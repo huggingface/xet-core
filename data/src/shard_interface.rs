@@ -23,7 +23,6 @@ use crate::constants::{
     SESSION_XORB_METADATA_FLUSH_MAX_COUNT,
 };
 use crate::errors::Result;
-use crate::file_upload_session::acquire_upload_permit;
 use crate::repo_salt::RepoSalt;
 
 pub struct SessionShardInterface {
@@ -255,7 +254,7 @@ impl SessionShardInterface {
 
         for si in shard_list {
             let salt = self.config.shard_config.repo_salt;
-            let shard_client = self.client.clone();
+            let client = self.client.clone();
             let shard_prefix = self.config.shard_config.prefix.clone();
             let cache_shard_manager = self.cache_shard_manager.clone();
             let shard_bytes_uploaded = shard_bytes_uploaded.clone();
@@ -267,7 +266,7 @@ impl SessionShardInterface {
             // It's also important to acquire the permit before the task is launched; otherwise, we may spawn an
             // unlimited number of tasks that end up using up a ton of memory; this forces the pipeline to
             // block here while the upload is happening.
-            let upload_permit = acquire_upload_permit().await?;
+            let upload_permit = client.acquire_upload_permit().await?;
 
             shard_uploads.spawn(
                 async move {
@@ -282,12 +281,9 @@ impl SessionShardInterface {
                     }
 
                     // Upload the shard.
-                    shard_client
-                        .upload_shard(&shard_prefix, &si.shard_hash, false, data, &salt)
+                    client
+                        .upload_shard_with_permit(&shard_prefix, &si.shard_hash, false, data, &salt, upload_permit)
                         .await?;
-
-                    // Done with the upload, drop the permit.
-                    drop(upload_permit);
 
                     info!("Shard {shard_prefix}/{:?} upload + sync completed successfully.", &si.shard_hash);
 

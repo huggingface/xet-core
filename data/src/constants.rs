@@ -13,14 +13,6 @@ utils::configurable_constants! {
     /// set to 3 weeks.
     ref MDB_SHARD_LOCAL_CACHE_EXPIRATION_SECS: u64 = 3 * 7 * 24 * 3600;
 
-    /// The maximum number of simultaneous xorb upload streams.
-    /// can be overwritten by environment variable "HF_XET_MAX_CONCURRENT_UPLOADS".
-    /// The default value changes from 8 to 100 when "High Performance Mode" is enabled
-    ref MAX_CONCURRENT_UPLOADS: usize = GlobalConfigMode::HighPerformanceOption {
-        standard: 8,
-        high_performance: 100,
-    };
-
     /// The maximum number of files to ingest at once on the upload path
     ref MAX_CONCURRENT_FILE_INGESTION: usize =  GlobalConfigMode::HighPerformanceOption {
         standard: 8,
