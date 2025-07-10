@@ -39,7 +39,7 @@ impl AdjustableSemaphore {
         debug_assert!(initial_permits <= permit_range.1);
 
         Arc::new(Self {
-            semaphore: Arc::new(Semaphore::new(initial_permits as usize)),
+            semaphore: Arc::new(Semaphore::new(initial_permits)),
             total_permits: initial_permits.into(),
             enqueued_permit_decreases: 0.into(),
             min_permits: permit_range.0,
@@ -52,7 +52,7 @@ impl AdjustableSemaphore {
     }
 
     pub fn available_permits(&self) -> usize {
-        self.semaphore.available_permits() as usize
+        self.semaphore.available_permits()
     }
 
     pub async fn acquire(self: &Arc<Self>) -> Result<AdjustableSemaphorePermit, AcquireError> {
@@ -85,7 +85,7 @@ impl AdjustableSemaphore {
             self.enqueued_permit_decreases.fetch_add(1, Ordering::Relaxed);
         }
 
-        return true;
+        true
     }
 
     /// Increment the total number of available permits up to the maximum bound.
@@ -116,7 +116,7 @@ impl AdjustableSemaphore {
 fn attempt_decrement(v: &AtomicUsize, min_value: usize) -> bool {
     v.fetch_update(SeqCst, SeqCst, |x| {
         debug_assert!(x >= min_value);
-        if x >= min_value + 1 {
+        if x > min_value {
             Some(x - 1)
         } else {
             None
@@ -131,7 +131,7 @@ fn attempt_increment(v: &AtomicUsize, max_value: usize) -> bool {
     v.fetch_update(SeqCst, SeqCst, |x| {
         debug_assert!(x <= max_value);
 
-        if x + 1 <= max_value {
+        if x < max_value {
             Some(x + 1)
         } else {
             None

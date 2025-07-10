@@ -671,11 +671,12 @@ impl Client for RemoteClient {
     }
 
     #[cfg(target_family = "wasm")]
-    async fn upload_xorb(
+    async fn upload_xorb_with_permit(
         &self,
         prefix: &str,
         serialized_cas_object: SerializedCasObject,
         upload_tracker: Option<Arc<CompletionTracker>>,
+        _upload_permit: ConnectionPermit,
     ) -> Result<u64> {
         let key = Key {
             prefix: prefix.to_string(),
