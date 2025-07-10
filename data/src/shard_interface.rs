@@ -137,7 +137,7 @@ impl SessionShardInterface {
 
     /// Queries the client for global deduplication metrics.
     pub async fn query_dedup_shard_by_chunk(&self, chunk_hash: &MerkleHash, repo_salt: &RepoSalt) -> Result<bool> {
-        let Ok(Some(new_shard_file)) = self
+        let Ok(Some(new_shard)) = self
             .client
             .query_for_global_dedup_shard(&self.config.shard_config.prefix, chunk_hash, repo_salt)
             .await
@@ -148,7 +148,7 @@ impl SessionShardInterface {
 
         // The above process found something and downloaded it; it should now be in the cache directory and valid
         // for deduplication.  Register it and restart the dedup process at the start of this chunk.
-        self.cache_shard_manager.register_shards_by_path(&[new_shard_file]).await?;
+        self.cache_shard_manager.import_shard_from_bytes(&new_shard).await?;
 
         Ok(true)
     }

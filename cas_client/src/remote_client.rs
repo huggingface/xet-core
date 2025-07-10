@@ -5,6 +5,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use anyhow::anyhow;
+use bytes::Bytes;
 use cas_object::SerializedCasObject;
 use cas_types::{
     BatchQueryReconstructionResponse, CASReconstructionTerm, ChunkRange, FileRange, HttpRange, Key,
@@ -12,13 +13,10 @@ use cas_types::{
 };
 use chunk_cache::{CacheConfig, ChunkCache};
 use error_printer::ErrorPrinter;
-use file_utils::SafeFileCreator;
 use http::header::{CONTENT_LENGTH, RANGE};
 use http::HeaderValue;
 use mdb_shard::file_structs::{FileDataSequenceEntry, FileDataSequenceHeader, MDBFileInfo};
-use mdb_shard::shard_file_reconstructor::FileReconstructor;
-use mdb_shard::utils::shard_file_name;
-use merklehash::{HashedWrite, MerkleHash};
+use merklehash::MerkleHash;
 use progress_tracking::item_tracking::SingleItemProgressUpdater;
 use progress_tracking::upload_tracking::CompletionTracker;
 use reqwest::{Body, Response, StatusCode, Url};
@@ -34,11 +32,10 @@ use utils::singleflight::Group;
 use crate::download_utils::*;
 use crate::error::{CasClientError, Result};
 use crate::http_client::{Api, ResponseErrorLogger, RetryConfig};
-use crate::interface::*;
 #[cfg(not(target_family = "wasm"))]
 use crate::output_provider::OutputProvider;
 use crate::retry_wrapper::RetryWrapper;
-use crate::{http_client, Client, RegistrationClient, ShardClientInterface};
+use crate::{http_client, Client};
 
 const FORCE_SYNC_METHOD: reqwest::Method = reqwest::Method::PUT;
 const NON_FORCE_SYNC_METHOD: reqwest::Method = reqwest::Method::POST;
@@ -82,6 +79,111 @@ pub struct RemoteClient {
     #[cfg(not(target_family = "wasm"))]
     range_download_single_flight: RangeDownloadSingleFlight,
     shard_cache_directory: Option<PathBuf>,
+}
+
+pub(crate) async fn get_reconstruction_with_endpoint_and_client(
+    endpoint: &str,
+    client: &ClientWithMiddleware,
+    file_id: &MerkleHash,
+    bytes_range: Option<FileRange>,
+) -> Result<Option<QueryReconstructionResponse>> {
+    let url = Url::parse(&format!("{}/reconstruction/{}", endpoint, file_id.hex()))?;
+
+    let mut request = client.get(url).with_extension(Api("cas::get_reconstruction"));
+    if let Some(range) = bytes_range {
+        // convert exclusive-end to inclusive-end range
+        request = request.header(RANGE, HttpRange::from(range).range_header())
+    }
+    let response = request.send().await.process_error("get_reconstruction");
+
+    let Ok(response) = response else {
+        let e = response.unwrap_err();
+
+        // bytes_range not satisfiable
+        if let CasClientError::ReqwestError(e, _) = &e {
+            if let Some(StatusCode::RANGE_NOT_SATISFIABLE) = e.status() {
+                return Ok(None);
+            }
+        }
+
+        return Err(e);
+    };
+
+    let len = response.content_length();
+    debug!("file_id: {file_id} query_reconstruction len {len:?}");
+
+    let query_reconstruction_response: QueryReconstructionResponse = response
+        .json()
+        .await
+        .log_error("error json parsing QueryReconstructionResponse")?;
+    Ok(Some(query_reconstruction_response))
+}
+
+#[cfg(not(target_family = "wasm"))]
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn map_fetch_info_into_download_tasks(
+    segment: Arc<FetchInfo>,
+    terms: Vec<CASReconstructionTerm>,
+    offset_into_first_range: u64,
+    base_write_negative_offset: u64,
+    chunk_cache: Option<Arc<dyn ChunkCache>>,
+    client: Arc<ClientWithMiddleware>,
+    range_download_single_flight: Arc<Group<DownloadRangeResult, CasClientError>>,
+    output_provider: &OutputProvider,
+) -> Result<Vec<FetchTermDownloadOnceAndWriteEverywhereUsed>> {
+    // the actual segment length.
+    // the file_range end may actually exceed the file total length for the last segment.
+    // in that case, the maximum length of this segment will be the total of all terms given
+    //  minus the start offset
+    let seg_len = segment
+        .file_range
+        .length()
+        .min(terms.iter().fold(0, |acc, term| acc + term.unpacked_length as u64) - offset_into_first_range);
+
+    let initial_writer_offset = segment.file_range.start - base_write_negative_offset;
+    let mut total_taken = 0;
+
+    let mut fetch_info_term_map: HashMap<(MerkleHash, ChunkRange), FetchTermDownloadOnceAndWriteEverywhereUsed> =
+        HashMap::new();
+    for (i, term) in terms.into_iter().enumerate() {
+        let (individual_fetch_info, _) = segment.find((term.hash, term.range)).await?;
+
+        let skip_bytes = if i == 0 { offset_into_first_range } else { 0 };
+        // amount to take is min of the whole term after skipped bytes or the remainder of the segment
+        let take = (term.unpacked_length as u64 - skip_bytes).min(seg_len - total_taken);
+        let write_term = ChunkRangeWrite {
+            // term details
+            chunk_range: term.range,
+            unpacked_length: term.unpacked_length,
+
+            // write details
+            skip_bytes,
+            take,
+            writer_offset: initial_writer_offset + total_taken,
+        };
+
+        let task = fetch_info_term_map
+            .entry((term.hash.into(), individual_fetch_info.range))
+            .or_insert_with(|| FetchTermDownloadOnceAndWriteEverywhereUsed {
+                download: FetchTermDownload {
+                    hash: term.hash.into(),
+                    range: individual_fetch_info.range,
+                    fetch_info: segment.clone(),
+                    chunk_cache: chunk_cache.clone(),
+                    client: client.clone(),
+                    range_download_single_flight: range_download_single_flight.clone(),
+                },
+                writes: vec![],
+                output: output_provider.clone(),
+            });
+        task.writes.push(write_term);
+
+        total_taken += take;
+    }
+
+    let tasks = fetch_info_term_map.into_values().collect();
+
+    Ok(tasks)
 }
 
 impl RemoteClient {
@@ -157,218 +259,6 @@ impl RemoteClient {
         Ok(Some(response?))
     }
 }
-
-#[cfg_attr(not(target_family = "wasm"), async_trait::async_trait)]
-#[cfg_attr(target_family = "wasm", async_trait::async_trait(?Send))]
-impl UploadClient for RemoteClient {
-    #[cfg(not(target_family = "wasm"))]
-    #[instrument(skip_all, name = "RemoteClient::upload_xorb", fields(key = Key{prefix : prefix.to_string(), hash : serialized_cas_object.hash}.to_string(),
-                 xorb.len = serialized_cas_object.serialized_data.len(), xorb.num_chunks = serialized_cas_object.num_chunks
-    ))]
-    async fn upload_xorb(
-        &self,
-        prefix: &str,
-        serialized_cas_object: SerializedCasObject,
-        upload_tracker: Option<Arc<CompletionTracker>>,
-    ) -> Result<u64> {
-        let key = Key {
-            prefix: prefix.to_string(),
-            hash: serialized_cas_object.hash,
-        };
-
-        let url = Url::parse(&format!("{}/xorb/{key}", self.endpoint))?;
-
-        let n_upload_bytes = serialized_cas_object.serialized_data.len() as u64;
-
-        // Backing out the incremental progress reporting for now until we figure out the middleware issue.
-        use crate::upload_progress_stream::UploadProgressStream;
-
-        let n_raw_bytes = serialized_cas_object.raw_num_bytes;
-        let xorb_hash = serialized_cas_object.hash;
-
-        let progress_callback = move |bytes_sent: u64| {
-            if let Some(utr) = upload_tracker.as_ref() {
-                // First, recallibrate the sending, as the compressed size is different than the actual data size.
-                let adjusted_update = (bytes_sent * n_raw_bytes) / n_upload_bytes;
-
-                utr.clone().register_xorb_upload_progress_background(xorb_hash, adjusted_update);
-            }
-        };
-
-        let upload_stream = UploadProgressStream::new(
-            serialized_cas_object.serialized_data,
-            *UPLOAD_REPORTING_BLOCK_SIZE,
-            progress_callback,
-        );
-
-        let xorb_uploaded = {
-            if !self.dry_run {
-                let client = self.authenticated_http_client.clone();
-
-                let api_tag = "cas::upload_xorb";
-
-                let response: UploadXorbResponse = RetryWrapper::new(api_tag)
-                    .run_and_extract_json(move || {
-                        let upload_stream = upload_stream.clone_with_reset();
-                        let url = url.clone();
-
-                        client
-                            .post(url)
-                            .with_extension(Api(api_tag))
-                            .header(CONTENT_LENGTH, HeaderValue::from(n_upload_bytes)) // must be set because of streaming
-                            .body(Body::wrap_stream(upload_stream))
-                            .send()
-                    })
-                    .await?;
-
-                response.was_inserted
-            } else {
-                true
-            }
-        };
-
-        if !xorb_uploaded {
-            debug!("{key:?} not inserted into CAS.");
-        } else {
-            debug!("{key:?} inserted into CAS.");
-        }
-
-        Ok(n_upload_bytes)
-    }
-
-    #[cfg(target_family = "wasm")]
-    async fn upload_xorb(
-        &self,
-        prefix: &str,
-        serialized_cas_object: SerializedCasObject,
-        upload_tracker: Option<Arc<CompletionTracker>>,
-    ) -> Result<u64> {
-        let key = Key {
-            prefix: prefix.to_string(),
-            hash: serialized_cas_object.hash,
-        };
-
-        let url = Url::parse(&format!("{}/xorb/{key}", self.endpoint))?;
-
-        let n_upload_bytes = serialized_cas_object.serialized_data.len() as u64;
-
-        let xorb_uploaded = self
-            .authenticated_http_client
-            .post(url)
-            .with_extension(Api("cas::upload_xorb"))
-            .body(serialized_cas_object.serialized_data)
-            .send()
-            .await?;
-
-        Ok(n_upload_bytes)
-    }
-
-    async fn exists(&self, prefix: &str, hash: &MerkleHash) -> Result<bool> {
-        let key = Key {
-            prefix: prefix.to_string(),
-            hash: *hash,
-        };
-
-        let url = Url::parse(&format!("{}/xorb/{key}", self.endpoint))?;
-        let response = self.authenticated_http_client.head(url).send().await?;
-        match response.status() {
-            StatusCode::OK => Ok(true),
-            StatusCode::NOT_FOUND => Ok(false),
-            e => Err(CasClientError::internal(format!("unrecognized status code {e}"))),
-        }
-    }
-
-    fn use_xorb_footer(&self) -> bool {
-        false
-    }
-}
-
-#[cfg(not(target_family = "wasm"))]
-#[async_trait::async_trait]
-impl ReconstructionClient for RemoteClient {
-    async fn get_file(
-        &self,
-        hash: &MerkleHash,
-        byte_range: Option<FileRange>,
-        output_provider: &OutputProvider,
-        progress_updater: Option<Arc<SingleItemProgressUpdater>>,
-    ) -> Result<u64> {
-        // If the user has set the `HF_XET_RECONSTRUCT_WRITE_SEQUENTIALLY=true` env variable, then we
-        // should write the file to the output sequentially instead of in parallel.
-        if *RECONSTRUCT_WRITE_SEQUENTIALLY {
-            info!("reconstruct terms sequentially");
-            self.reconstruct_file_to_writer_segmented(hash, byte_range, output_provider, progress_updater)
-                .await
-        } else {
-            info!("reconstruct terms in parallel");
-            self.reconstruct_file_to_writer_segmented_parallel_write(
-                hash,
-                byte_range,
-                output_provider,
-                progress_updater,
-            )
-            .await
-        }
-    }
-}
-
-#[cfg(not(target_family = "wasm"))]
-#[async_trait::async_trait]
-impl Reconstruct for RemoteClient {
-    async fn get_reconstruction(
-        &self,
-        file_id: &MerkleHash,
-        bytes_range: Option<FileRange>,
-    ) -> Result<Option<QueryReconstructionResponse>> {
-        get_reconstruction_with_endpoint_and_client(
-            &self.endpoint,
-            &self.authenticated_http_client_with_retry,
-            file_id,
-            bytes_range,
-        )
-        .await
-    }
-}
-
-pub(crate) async fn get_reconstruction_with_endpoint_and_client(
-    endpoint: &str,
-    client: &ClientWithMiddleware,
-    file_id: &MerkleHash,
-    bytes_range: Option<FileRange>,
-) -> Result<Option<QueryReconstructionResponse>> {
-    let url = Url::parse(&format!("{}/reconstruction/{}", endpoint, file_id.hex()))?;
-
-    let mut request = client.get(url).with_extension(Api("cas::get_reconstruction"));
-    if let Some(range) = bytes_range {
-        // convert exclusive-end to inclusive-end range
-        request = request.header(RANGE, HttpRange::from(range).range_header())
-    }
-    let response = request.send().await.process_error("get_reconstruction");
-
-    let Ok(response) = response else {
-        let e = response.unwrap_err();
-
-        // bytes_range not satisfiable
-        if let CasClientError::ReqwestError(e, _) = &e {
-            if let Some(StatusCode::RANGE_NOT_SATISFIABLE) = e.status() {
-                return Ok(None);
-            }
-        }
-
-        return Err(e);
-    };
-
-    let len = response.content_length();
-    debug!("file_id: {file_id} query_reconstruction len {len:?}");
-
-    let query_reconstruction_response: QueryReconstructionResponse = response
-        .json()
-        .await
-        .log_error("error json parsing QueryReconstructionResponse")?;
-    Ok(Some(query_reconstruction_response))
-}
-
-impl Client for RemoteClient {}
 
 #[cfg(not(target_family = "wasm"))]
 impl RemoteClient {
@@ -632,6 +522,7 @@ impl RemoteClient {
                 },
                 DownloadQueueItem::Metadata(fetch_info) => {
                     // query for the file info of the first segment
+
                     let segment_size = download_scheduler.next_segment_size()?;
                     debug!("querying file info of size {segment_size}");
                     let (segment, maybe_remainder) = fetch_info.take_segment(segment_size);
@@ -681,78 +572,205 @@ impl RemoteClient {
 
         Ok(total_written)
     }
-}
 
-#[cfg(not(target_family = "wasm"))]
-#[allow(clippy::too_many_arguments)]
-async fn map_fetch_info_into_download_tasks(
-    segment: Arc<FetchInfo>,
-    terms: Vec<CASReconstructionTerm>,
-    offset_into_first_range: u64,
-    base_write_negative_offset: u64,
-    chunk_cache: Option<Arc<dyn ChunkCache>>,
-    client: Arc<ClientWithMiddleware>,
-    range_download_single_flight: Arc<Group<DownloadRangeResult, CasClientError>>,
-    output_provider: &OutputProvider,
-) -> Result<Vec<FetchTermDownloadOnceAndWriteEverywhereUsed>> {
-    // the actual segment length.
-    // the file_range end may actually exceed the file total length for the last segment.
-    // in that case, the maximum length of this segment will be the total of all terms given
-    //  minus the start offset
-    let seg_len = segment
-        .file_range
-        .length()
-        .min(terms.iter().fold(0, |acc, term| acc + term.unpacked_length as u64) - offset_into_first_range);
-
-    let initial_writer_offset = segment.file_range.start - base_write_negative_offset;
-    let mut total_taken = 0;
-
-    let mut fetch_info_term_map: HashMap<(MerkleHash, ChunkRange), FetchTermDownloadOnceAndWriteEverywhereUsed> =
-        HashMap::new();
-    for (i, term) in terms.into_iter().enumerate() {
-        let (individual_fetch_info, _) = segment.find((term.hash, term.range)).await?;
-
-        let skip_bytes = if i == 0 { offset_into_first_range } else { 0 };
-        // amount to take is min of the whole term after skipped bytes or the remainder of the segment
-        let take = (term.unpacked_length as u64 - skip_bytes).min(seg_len - total_taken);
-        let write_term = ChunkRangeWrite {
-            // term details
-            chunk_range: term.range,
-            unpacked_length: term.unpacked_length,
-
-            // write details
-            skip_bytes,
-            take,
-            writer_offset: initial_writer_offset + total_taken,
-        };
-
-        let task = fetch_info_term_map
-            .entry((term.hash.into(), individual_fetch_info.range))
-            .or_insert_with(|| FetchTermDownloadOnceAndWriteEverywhereUsed {
-                download: FetchTermDownload {
-                    hash: term.hash.into(),
-                    range: individual_fetch_info.range,
-                    fetch_info: segment.clone(),
-                    chunk_cache: chunk_cache.clone(),
-                    client: client.clone(),
-                    range_download_single_flight: range_download_single_flight.clone(),
-                },
-                writes: vec![],
-                output: output_provider.clone(),
-            });
-        task.writes.push(write_term);
-
-        total_taken += take;
+    #[cfg(not(target_family = "wasm"))]
+    pub async fn get_reconstruction(
+        &self,
+        file_id: &MerkleHash,
+        bytes_range: Option<FileRange>,
+    ) -> Result<Option<QueryReconstructionResponse>> {
+        get_reconstruction_with_endpoint_and_client(
+            &self.endpoint,
+            &self.authenticated_http_client_with_retry,
+            file_id,
+            bytes_range,
+        )
+        .await
     }
-
-    let tasks = fetch_info_term_map.into_values().collect();
-
-    Ok(tasks)
 }
 
 #[cfg_attr(not(target_family = "wasm"), async_trait::async_trait)]
 #[cfg_attr(target_family = "wasm", async_trait::async_trait(?Send))]
-impl RegistrationClient for RemoteClient {
+impl Client for RemoteClient {
+    #[cfg(not(target_family = "wasm"))]
+    #[instrument(skip_all, name = "RemoteClient::upload_xorb", fields(key = Key{prefix : prefix.to_string(), hash : serialized_cas_object.hash}.to_string(),
+                 xorb.len = serialized_cas_object.serialized_data.len(), xorb.num_chunks = serialized_cas_object.num_chunks
+    ))]
+    async fn upload_xorb(
+        &self,
+        prefix: &str,
+        serialized_cas_object: SerializedCasObject,
+        upload_tracker: Option<Arc<CompletionTracker>>,
+    ) -> Result<u64> {
+        let key = Key {
+            prefix: prefix.to_string(),
+            hash: serialized_cas_object.hash,
+        };
+
+        let url = Url::parse(&format!("{}/xorb/{key}", self.endpoint))?;
+
+        let n_upload_bytes = serialized_cas_object.serialized_data.len() as u64;
+
+        // Backing out the incremental progress reporting for now until we figure out the middleware issue.
+        use crate::upload_progress_stream::UploadProgressStream;
+
+        let n_raw_bytes = serialized_cas_object.raw_num_bytes;
+        let xorb_hash = serialized_cas_object.hash;
+
+        let progress_callback = move |bytes_sent: u64| {
+            if let Some(utr) = upload_tracker.as_ref() {
+                // First, recallibrate the sending, as the compressed size is different than the actual data size.
+                let adjusted_update = (bytes_sent * n_raw_bytes) / n_upload_bytes;
+
+                utr.clone().register_xorb_upload_progress_background(xorb_hash, adjusted_update);
+            }
+        };
+
+        let upload_stream = UploadProgressStream::new(
+            serialized_cas_object.serialized_data,
+            *UPLOAD_REPORTING_BLOCK_SIZE,
+            progress_callback,
+        );
+
+        let xorb_uploaded = {
+            if !self.dry_run {
+                let client = self.authenticated_http_client.clone();
+
+                let api_tag = "cas::upload_xorb";
+
+                let response: UploadXorbResponse = RetryWrapper::new(api_tag)
+                    .run_and_extract_json(move || {
+                        let upload_stream = upload_stream.clone_with_reset();
+                        let url = url.clone();
+
+                        client
+                            .post(url)
+                            .with_extension(Api(api_tag))
+                            .header(CONTENT_LENGTH, HeaderValue::from(n_upload_bytes)) // must be set because of streaming
+                            .body(Body::wrap_stream(upload_stream))
+                            .send()
+                    })
+                    .await?;
+
+                response.was_inserted
+            } else {
+                true
+            }
+        };
+
+        if !xorb_uploaded {
+            debug!("{key:?} not inserted into CAS.");
+        } else {
+            debug!("{key:?} inserted into CAS.");
+        }
+
+        Ok(n_upload_bytes)
+    }
+
+    #[cfg(target_family = "wasm")]
+    async fn upload_xorb(
+        &self,
+        prefix: &str,
+        serialized_cas_object: SerializedCasObject,
+        upload_tracker: Option<Arc<CompletionTracker>>,
+    ) -> Result<u64> {
+        let key = Key {
+            prefix: prefix.to_string(),
+            hash: serialized_cas_object.hash,
+        };
+
+        let url = Url::parse(&format!("{}/xorb/{key}", self.endpoint))?;
+
+        let n_upload_bytes = serialized_cas_object.serialized_data.len() as u64;
+
+        let xorb_uploaded = self
+            .authenticated_http_client
+            .post(url)
+            .with_extension(Api("cas::upload_xorb"))
+            .body(serialized_cas_object.serialized_data)
+            .send()
+            .await?;
+
+        Ok(n_upload_bytes)
+    }
+
+    async fn exists(&self, prefix: &str, hash: &MerkleHash) -> Result<bool> {
+        let key = Key {
+            prefix: prefix.to_string(),
+            hash: *hash,
+        };
+
+        let url = Url::parse(&format!("{}/xorb/{key}", self.endpoint))?;
+        let response = self.authenticated_http_client.head(url).send().await?;
+        match response.status() {
+            StatusCode::OK => Ok(true),
+            StatusCode::NOT_FOUND => Ok(false),
+            e => Err(CasClientError::internal(format!("unrecognized status code {e}"))),
+        }
+    }
+
+    fn use_xorb_footer(&self) -> bool {
+        false
+    }
+
+    #[cfg(not(target_family = "wasm"))]
+    async fn get_file(
+        &self,
+        hash: &MerkleHash,
+        byte_range: Option<FileRange>,
+        output_provider: &OutputProvider,
+        progress_updater: Option<Arc<SingleItemProgressUpdater>>,
+    ) -> Result<u64> {
+        // If the user has set the `HF_XET_RECONSTRUCT_WRITE_SEQUENTIALLY=true` env variable, then we
+        // should write the file to the output sequentially instead of in parallel.
+        if *RECONSTRUCT_WRITE_SEQUENTIALLY {
+            info!("reconstruct terms sequentially");
+            self.reconstruct_file_to_writer_segmented(hash, byte_range, output_provider, progress_updater)
+                .await
+        } else {
+            info!("reconstruct terms in parallel");
+            self.reconstruct_file_to_writer_segmented_parallel_write(
+                hash,
+                byte_range,
+                output_provider,
+                progress_updater,
+            )
+            .await
+        }
+    }
+
+    #[instrument(skip_all, name = "RemoteClient::get_file_reconstruction", fields(file.hash = file_hash.hex()
+    ))]
+    async fn get_file_reconstruction_info(
+        &self,
+        file_hash: &MerkleHash,
+    ) -> Result<Option<(MDBFileInfo, Option<MerkleHash>)>> {
+        let url = Url::parse(&format!("{}/reconstruction/{}", self.endpoint, file_hash.hex()))?;
+
+        let api_tag = "cas::get_reconstruction_info";
+        let client = self.authenticated_http_client.clone();
+
+        let response: QueryReconstructionResponse = RetryWrapper::new(api_tag)
+            .run_and_extract_json(move || client.get(url.clone()).with_extension(Api(api_tag)).send())
+            .await?;
+
+        Ok(Some((
+            MDBFileInfo {
+                metadata: FileDataSequenceHeader::new(*file_hash, response.terms.len(), false, false),
+                segments: response
+                    .terms
+                    .into_iter()
+                    .map(|ce| {
+                        FileDataSequenceEntry::new(ce.hash.into(), ce.unpacked_length, ce.range.start, ce.range.end)
+                    })
+                    .collect(),
+                verification: vec![],
+                metadata_ext: None,
+            },
+            None,
+        )))
+    }
+
     #[instrument(skip_all, name = "RemoteClient::upload_shard", fields(shard.hash = hash.hex(), shard.len = shard_data.len()
     ))]
     async fn upload_shard(
@@ -797,98 +815,20 @@ impl RegistrationClient for RemoteClient {
             UploadShardResponseType::SyncPerformed => Ok(true),
         }
     }
-}
 
-#[cfg_attr(not(target_family = "wasm"), async_trait::async_trait)]
-#[cfg_attr(target_family = "wasm", async_trait::async_trait(?Send))]
-impl FileReconstructor<CasClientError> for RemoteClient {
-    #[instrument(skip_all, name = "RemoteClient::get_file_reconstruction", fields(file.hash = file_hash.hex()
-    ))]
-    async fn get_file_reconstruction_info(
-        &self,
-        file_hash: &MerkleHash,
-    ) -> Result<Option<(MDBFileInfo, Option<MerkleHash>)>> {
-        let url = Url::parse(&format!("{}/reconstruction/{}", self.endpoint, file_hash.hex()))?;
-
-        let api_tag = "cas::get_reconstruction_info";
-        let client = self.authenticated_http_client.clone();
-
-        let response: QueryReconstructionResponse = RetryWrapper::new(api_tag)
-            .run_and_extract_json(move || client.get(url.clone()).with_extension(Api(api_tag)).send())
-            .await?;
-
-        Ok(Some((
-            MDBFileInfo {
-                metadata: FileDataSequenceHeader::new(*file_hash, response.terms.len(), false, false),
-                segments: response
-                    .terms
-                    .into_iter()
-                    .map(|ce| {
-                        FileDataSequenceEntry::new(ce.hash.into(), ce.unpacked_length, ce.range.start, ce.range.end)
-                    })
-                    .collect(),
-                verification: vec![],
-                metadata_ext: None,
-            },
-            None,
-        )))
-    }
-}
-
-#[cfg_attr(not(target_family = "wasm"), async_trait::async_trait)]
-#[cfg_attr(target_family = "wasm", async_trait::async_trait(?Send))]
-impl ShardDedupProber for RemoteClient {
-    #[instrument(skip_all, name = "RemoteClient::query_global_dedup")]
-    #[cfg(not(target_family = "wasm"))]
     async fn query_for_global_dedup_shard(
         &self,
         prefix: &str,
         chunk_hash: &MerkleHash,
         _salt: &[u8; 32],
-    ) -> Result<Option<PathBuf>> {
-        let Some(ref shard_cache_directory) = self.shard_cache_directory else {
-            return Err(CasClientError::ConfigurationError(
-                "Shard Write Directory not set; cannot download.".to_string(),
-            ));
-        };
-
-        let Some(mut shard_info) = self.query_dedup_api(prefix, chunk_hash).await? else {
-            return Ok(None);
-        };
-
-        let writer = SafeFileCreator::new_unnamed(shard_cache_directory)?;
-        // Compute the actual hash to use as the shard file name
-        let mut hashed_writer = HashedWrite::new(writer);
-
-        while let Some(chunk) = shard_info.chunk().await? {
-            hashed_writer.write_all(&chunk)?;
-        }
-        hashed_writer.flush()?;
-
-        let shard_hash = hashed_writer.hash();
-        let file_path = shard_cache_directory.join(shard_file_name(&shard_hash));
-        let mut writer = hashed_writer.into_inner();
-        writer.set_dest_path(&file_path);
-        writer.close()?;
-
-        Ok(Some(file_path))
-    }
-
-    async fn query_for_global_dedup_shard_in_memory(
-        &self,
-        prefix: &str,
-        chunk_hash: &MerkleHash,
-        _salt: &[u8; 32],
-    ) -> Result<Option<Vec<u8>>> {
+    ) -> Result<Option<Bytes>> {
         let Some(response) = self.query_dedup_api(prefix, chunk_hash).await? else {
             return Ok(None);
         };
 
-        Ok(Some(response.bytes().await?.to_vec()))
+        Ok(Some(response.bytes().await?))
     }
 }
-
-impl ShardClientInterface for RemoteClient {}
 
 #[cfg(test)]
 #[cfg(not(target_family = "wasm"))]

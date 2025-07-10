@@ -946,6 +946,7 @@ dependencies = [
  "async-channel",
  "async-trait",
  "blake3",
+ "bytes",
  "cas_client",
  "cas_object",
  "cas_types",

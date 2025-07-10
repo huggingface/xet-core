@@ -5,6 +5,7 @@ use std::sync::Arc;
 
 use anyhow::anyhow;
 use async_trait::async_trait;
+use bytes::Bytes;
 use cas_object::{CasObject, SerializedCasObject};
 use cas_types::{FileRange, Key};
 use file_utils::SafeFileCreator;
@@ -22,9 +23,8 @@ use tokio::runtime::Handle;
 use tracing::{debug, error, info, warn};
 
 use crate::error::{CasClientError, Result};
-use crate::interface::{ShardDedupProber, UploadClient};
 use crate::output_provider::OutputProvider;
-use crate::{Client, ReconstructionClient, RegistrationClient, ShardClientInterface};
+use crate::Client;
 
 pub struct LocalClient {
     tmp_dir: Option<TempDir>, // To hold directory to use for local testing
@@ -34,30 +34,19 @@ pub struct LocalClient {
     shard_manager: Arc<ShardFileManager>,
     global_dedup_db_env: heed::Env,
     global_dedup_table: heed::Database<OwnedType<MerkleHash>, OwnedType<MerkleHash>>,
-
-    shard_cache_dir: Option<PathBuf>,
 }
 
 impl LocalClient {
     pub fn temporary() -> Result<Self> {
         let tmp_dir = TempDir::new().unwrap();
         let path = tmp_dir.path().to_owned();
-        let mut s = Self::new(path, None)?;
+        let mut s = Self::new(path)?;
 
         s.tmp_dir = Some(tmp_dir);
         Ok(s)
     }
 
-    pub fn temporary_with_global_dedup(shard_cache_dir: PathBuf) -> Result<Self> {
-        let tmp_dir = TempDir::new().unwrap();
-        let path = tmp_dir.path().to_owned();
-        let mut s = Self::new(path, Some(shard_cache_dir))?;
-
-        s.tmp_dir = Some(tmp_dir);
-        Ok(s)
-    }
-
-    pub fn new(path: impl AsRef<Path>, shard_cache_dir: Option<PathBuf>) -> Result<Self> {
+    pub fn new(path: impl AsRef<Path>) -> Result<Self> {
         let base_dir = std::path::absolute(path)?;
         if !base_dir.exists() {
             std::fs::create_dir_all(&base_dir)?;
@@ -104,7 +93,6 @@ impl LocalClient {
             shard_manager,
             global_dedup_db_env,
             global_dedup_table,
-            shard_cache_dir,
         })
     }
 
@@ -225,7 +213,7 @@ impl LocalClient {
 
 /// LocalClient is responsible for writing/reading Xorbs on local disk.
 #[async_trait]
-impl UploadClient for LocalClient {
+impl Client for LocalClient {
     async fn upload_xorb(
         &self,
         _prefix: &str,
@@ -313,10 +301,7 @@ impl UploadClient for LocalClient {
     fn use_xorb_footer(&self) -> bool {
         true
     }
-}
 
-#[async_trait]
-impl RegistrationClient for LocalClient {
     async fn upload_shard(
         &self,
         _prefix: &str, // Prefix not used in current implementation
@@ -349,10 +334,7 @@ impl RegistrationClient for LocalClient {
 
         Ok(true)
     }
-}
 
-#[async_trait]
-impl FileReconstructor<CasClientError> for LocalClient {
     /// Query the shard server for the file reconstruction info.
     /// Returns the FileInfo for reconstructing the file and the shard ID that
     /// defines the file info.
@@ -362,53 +344,24 @@ impl FileReconstructor<CasClientError> for LocalClient {
     ) -> Result<Option<(MDBFileInfo, Option<MerkleHash>)>> {
         Ok(self.shard_manager.get_file_reconstruction_info(file_hash).await?)
     }
-}
 
-#[async_trait]
-impl ShardDedupProber for LocalClient {
     async fn query_for_global_dedup_shard(
         &self,
         _prefix: &str,
         chunk_hash: &MerkleHash,
         salt: &[u8; 32],
-    ) -> Result<Option<PathBuf>> {
+    ) -> Result<Option<Bytes>> {
         let read_txn = self.global_dedup_db_env.read_txn().map_err(map_heed_db_error)?;
-
-        let Some(shard_cache_dir) = self.shard_cache_dir.as_ref() else {
-            return Err(CasClientError::Other("Shard cache directory not set for get_dedup_shards.".to_owned()));
-        };
 
         if let Ok(sh) = with_salt(chunk_hash, salt) {
             if let Some(shard) = self.global_dedup_table.get(&read_txn, &sh).map_err(map_heed_db_error)? {
-                let filename = shard_file_name(&shard);
-                let dest = shard_cache_dir.join(&filename);
-                std::fs::copy(self.shard_dir.join(&filename), &dest)?;
-                return Ok(Some(dest));
+                let filename = self.shard_dir.join(shard_file_name(&shard));
+                return Ok(Some(std::fs::read(filename)?.into()));
             }
         }
         Ok(None)
     }
 
-    async fn query_for_global_dedup_shard_in_memory(
-        &self,
-        prefix: &str,
-        chunk_hash: &MerkleHash,
-        salt: &[u8; 32],
-    ) -> Result<Option<Vec<u8>>> {
-        let ret = self.query_for_global_dedup_shard(prefix, chunk_hash, salt).await?;
-
-        let Some(path) = ret else {
-            return Ok(None);
-        };
-
-        Ok(Some(std::fs::read(path)?))
-    }
-}
-
-impl ShardClientInterface for LocalClient {}
-
-#[async_trait]
-impl ReconstructionClient for LocalClient {
     async fn get_file(
         &self,
         hash: &MerkleHash,
@@ -448,8 +401,6 @@ impl ReconstructionClient for LocalClient {
         Ok((end - start) as u64)
     }
 }
-
-impl Client for LocalClient {}
 
 fn map_heed_db_error(e: heed::Error) -> CasClientError {
     let msg = format!("Global shard dedup database error: {e:?}");
@@ -667,7 +618,7 @@ mod tests {
 
         let shard_hash = parse_shard_filename(&new_shard_path).unwrap();
 
-        let client = LocalClient::temporary_with_global_dedup(shard_dir_2.clone()).unwrap();
+        let client = LocalClient::temporary().unwrap();
 
         client
             .upload_shard("default", &shard_hash, true, std::fs::read(&new_shard_path).unwrap().into(), &[1; 32])
@@ -687,6 +638,8 @@ mod tests {
             .unwrap()
             .unwrap();
 
-        assert_eq!(new_shard, shard_dir_2.join(shard_file_name(&shard_hash)));
+        let sf = MDBShardFile::write_out_from_reader(shard_dir_2.clone(), &mut Cursor::new(new_shard)).unwrap();
+
+        assert_eq!(sf.path, shard_dir_2.join(shard_file_name(&shard_hash)));
     }
 }

@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::io::Cursor;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
@@ -188,6 +189,12 @@ impl ShardFileManager {
         self.register_shards(&shard_files).await?;
 
         Ok(())
+    }
+
+    pub async fn import_shard_from_bytes(&self, shard: &[u8]) -> Result<()> {
+        let new_shard_file = MDBShardFile::write_out_from_reader(&self.shard_directory, &mut Cursor::new(shard))?;
+
+        self.register_shards(&[new_shard_file]).await
     }
 
     pub fn shard_directory(&self) -> &Path {
