@@ -20,13 +20,18 @@ pub enum RetryableReqwestError {
     RetryableError(CasClientError),
 }
 
+struct ConnectionPermitInfo {
+    permit: Option<ConnectionPermit>,
+    transfer_size_if_known: Option<u64>,
+}
+
 pub struct RetryWrapper {
     max_attempts: usize,
     base_delay_ms: u64,
     no_retry_on_429: bool,
     log_errors_as_info: bool,
     api_tag: &'static str,
-    connection_permit: Option<Mutex<Option<(ConnectionPermit, Option<u64>)>>>,
+    connection_permit: Option<Mutex<ConnectionPermitInfo>>,
 }
 
 impl RetryWrapper {
@@ -61,8 +66,11 @@ impl RetryWrapper {
         self
     }
 
-    pub fn with_connection_permit(mut self, permit: ConnectionPermit, n_bytes: Option<u64>) -> Self {
-        self.connection_permit = Some(Mutex::new(Some((permit, n_bytes))));
+    pub fn with_connection_permit(mut self, permit: ConnectionPermit, transfer_size_if_known: Option<u64>) -> Self {
+        self.connection_permit = Some(Mutex::new(ConnectionPermitInfo {
+            permit: Some(permit),
+            transfer_size_if_known,
+        }));
         self
     }
 
@@ -205,8 +213,8 @@ impl RetryWrapper {
                     let (make_request, process_fn, try_count, self_) = retry_info.as_ref();
 
                     if let Some(p) = &self_.connection_permit {
-                        if let Some(p) = p.lock().await.as_mut() {
-                            p.0.transfer_starting()
+                        if let Some(p) = p.lock().await.permit.as_mut() {
+                            p.transfer_starting()
                         }
                     }
 
@@ -227,21 +235,26 @@ impl RetryWrapper {
 
                     // Now, possibly adjust the connection permit.
                     if let Some(permit_holder) = &self_.connection_permit {
-                        let mut maybe_permit = permit_holder.lock().await;
+                        let mut permit_info = permit_holder.lock().await;
 
                         match &processing_result {
                             Ok(_) => {
-                                if let Some((permit, maybe_size)) = maybe_permit.take() {
-                                    permit.report_completion(maybe_size.unwrap_or(reply_bytes), true).await;
+                                if let Some(permit) = permit_info.permit.take() {
+                                    permit
+                                        .report_completion(
+                                            permit_info.transfer_size_if_known.unwrap_or(reply_bytes),
+                                            true,
+                                        )
+                                        .await;
                                 }
                             },
                             Err(RetryableReqwestError::FatalError(_)) => {
-                                if let Some((permit, _)) = maybe_permit.take() {
+                                if let Some(permit) = permit_info.permit.take() {
                                     permit.report_completion(0, false).await;
                                 }
                             },
                             Err(RetryableReqwestError::RetryableError(_)) => {
-                                if let Some((permit, _)) = maybe_permit.as_ref() {
+                                if let Some(permit) = permit_info.permit.as_ref() {
                                     permit.report_retryable_failure().await;
                                 }
                             },
