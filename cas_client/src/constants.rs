@@ -12,7 +12,7 @@ utils::configurable_constants! {
     ref CLIENT_RETRY_MAX_DURATION_MS: u64 = 6 * 60 * 1000; // 6m
 
     /// The target time for a small transfer to complete.
-    ref CONCURRENCY_CONTROL_TARGET_TIME_SMALL_TRANSFER_MS : u64 = 5 * 1000;
+    ref CONCURRENCY_CONTROL_TARGET_TIME_SMALL_TRANSFER_MS : u64 = 10 * 1000;
 
     /// The target time for a large transfer to complete.  Default is 20 seconds.
     ref CONCURRENCY_CONTROL_TARGET_TIME_LARGE_TRANSFER_MS : u64 = 20 * 1000;
@@ -27,7 +27,13 @@ utils::configurable_constants! {
     ref CONCURRENCY_CONTROL_MIN_DECREASE_WINDOW_MS : u64 = 250;
 
     /// The maximum number of connection successes and failures to examine when adjusting the concurrancy.
-    ref CONCURRENCY_CONTROL_TRACKING_SIZE : usize = 32;
+    ref CONCURRENCY_CONTROL_TRACKING_SIZE : usize = 20;
+
+    /// The maximum number of connection successes and failures to examine when adjusting the concurrancy.
+    ref CONCURRENCY_CONTROL_TARGET_SUCCESS_RATIO_LOWER: f64 = 0.7;
+
+    /// The maximum number of connection successes and failures to examine when adjusting the concurrancy.
+    ref CONCURRENCY_CONTROL_TARGET_SUCCESS_RATIO_UPPER: f64 = 0.9;
 
     /// The maximum time window within which to examine successes and failures when adjusting the concurrancy.
     ref CONCURRENCY_CONTROL_TRACKING_WINDOW_MS : u64 = 30 * 1000;

@@ -618,6 +618,7 @@ impl Client for RemoteClient {
 
         let n_raw_bytes = serialized_cas_object.raw_num_bytes;
         let xorb_hash = serialized_cas_object.hash;
+        let n_transfer_bytes = serialized_cas_object.serialized_data.len() as u64;
 
         let progress_callback = move |bytes_sent: u64| {
             if let Some(utr) = upload_tracker.as_ref() {
@@ -641,7 +642,7 @@ impl Client for RemoteClient {
                 let api_tag = "cas::upload_xorb";
 
                 let response: UploadXorbResponse = RetryWrapper::new(api_tag)
-                    .with_connection_permit(upload_permit)
+                    .with_connection_permit(upload_permit, Some(n_transfer_bytes))
                     .run_and_extract_json(move || {
                         let upload_stream = upload_stream.clone_with_reset();
                         let url = url.clone();
@@ -806,7 +807,7 @@ impl Client for RemoteClient {
         let url = Url::parse(&format!("{}/shard/{key}", self.endpoint))?;
 
         let response: UploadShardResponse = RetryWrapper::new(api_tag)
-            .with_connection_permit(upload_permit)
+            .with_connection_permit(upload_permit, Some(shard_data.len() as u64))
             .run_and_extract_json(move || {
                 client
                     .request(method.clone(), url.clone())

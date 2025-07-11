@@ -43,10 +43,10 @@ impl ConcurrencyControllerState {
 
 /// A controller for robustly adjusting the amount of concurrancy on upload and download paths.
 ///
-/// By default, the controller dynamically adjusts the concurrency within bounds so that 80% of the
-/// transfers are completed within 20 seconds; it increases the concurrency as long as this criteria
-/// is met.  When more than 20% of the transfers begin taking longer than that, concurrency is reduced.
-/// Concurrency adjustments are throttled so that increasing the concurrency happens only every
+/// By default, the controller dynamically adjusts the concurrency within bounds so that between 70%
+/// and 90%  of the transfers are completed within 20 seconds; it increases the concurrency as long as
+/// this criteria is met.  When more than 20% of the transfers begin taking longer than that, concurrency
+/// is reduced. Concurrency adjustments are throttled so that increasing the concurrency happens only every
 /// 500ms, and decreasing it happens at most once every 250ms.   (These values are all defaults; see
 /// the constants and their definitions in constants.rs).
 ///  
@@ -169,7 +169,7 @@ impl AdaptiveConcurrencyController {
 
         let success_ratio = state_lg.add_report(success);
 
-        if success && (success_ratio > 0.8) {
+        if success && (success_ratio > *CONCURRENCY_CONTROL_TARGET_SUCCESS_RATIO_UPPER) {
             // Consider adjusting the concurrency
             if state_lg.last_adjustment_time.elapsed() > self.min_concurrency_increase_delay {
                 // Enough time has passed, so add a new permit.
@@ -183,22 +183,14 @@ impl AdaptiveConcurrencyController {
                     );
                 }
             }
-        } else {
+        } else if !success && (success_ratio < *CONCURRENCY_CONTROL_TARGET_SUCCESS_RATIO_LOWER) {
             // Had a failure, so attempt to decrease the number of permits.
             if state_lg.last_adjustment_time.elapsed() > self.min_concurrency_decrease_delay {
-                let decrease_reason = {
-                    if success {
-                        format!("success_ratio = {success_ratio:.2} < 0.8")
-                    } else {
-                        format!("failed transfer with success_ratio = {success_ratio:.2}")
-                    }
-                };
-
                 // Enough time has passed, so add a new permit.
                 if self.concurrency_semaphore.decrement_total_permits() {
                     state_lg.last_adjustment_time = Instant::now();
                     debug!(
-                        "Decreasing concurrency for {} to {} due to {decrease_reason}",
+                        "Decreasing concurrency for {} to {} due to failed transfer with success_ration = {success_ratio:.2}",
                         self.logging_tag,
                         self.concurrency_semaphore.total_permits()
                     );

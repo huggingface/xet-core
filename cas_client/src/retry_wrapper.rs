@@ -26,7 +26,7 @@ pub struct RetryWrapper {
     no_retry_on_429: bool,
     log_errors_as_info: bool,
     api_tag: &'static str,
-    connection_permit: Option<Mutex<Option<ConnectionPermit>>>,
+    connection_permit: Option<Mutex<Option<(ConnectionPermit, Option<u64>)>>>,
 }
 
 impl RetryWrapper {
@@ -61,8 +61,8 @@ impl RetryWrapper {
         self
     }
 
-    pub fn with_connection_permit(mut self, permit: ConnectionPermit) -> Self {
-        self.connection_permit = Some(Mutex::new(Some(permit)));
+    pub fn with_connection_permit(mut self, permit: ConnectionPermit, n_bytes: Option<u64>) -> Self {
+        self.connection_permit = Some(Mutex::new(Some((permit, n_bytes))));
         self
     }
 
@@ -206,7 +206,7 @@ impl RetryWrapper {
 
                     if let Some(p) = &self_.connection_permit {
                         if let Some(p) = p.lock().await.as_mut() {
-                            p.transfer_starting()
+                            p.0.transfer_starting()
                         }
                     }
 
@@ -220,7 +220,7 @@ impl RetryWrapper {
                         Ok(resp) => self_.process_ok_response(try_idx, resp),
                     };
 
-                    let (n_bytes, processing_result) = match checked_result {
+                    let (reply_bytes, processing_result) = match checked_result {
                         Ok(ok_response) => (ok_response.content_length().unwrap_or(0), process_fn(ok_response).await),
                         Err(e) => (0, Err(e)),
                     };
@@ -231,17 +231,17 @@ impl RetryWrapper {
 
                         match &processing_result {
                             Ok(_) => {
-                                if let Some(permit) = maybe_permit.take() {
-                                    permit.report_completion(n_bytes, true).await;
+                                if let Some((permit, maybe_size)) = maybe_permit.take() {
+                                    permit.report_completion(maybe_size.unwrap_or(reply_bytes), true).await;
                                 }
                             },
                             Err(RetryableReqwestError::FatalError(_)) => {
-                                if let Some(permit) = maybe_permit.take() {
+                                if let Some((permit, _)) = maybe_permit.take() {
                                     permit.report_completion(0, false).await;
                                 }
                             },
                             Err(RetryableReqwestError::RetryableError(_)) => {
-                                if let Some(permit) = maybe_permit.as_ref() {
+                                if let Some((permit, _)) = maybe_permit.as_ref() {
                                     permit.report_retryable_failure().await;
                                 }
                             },
