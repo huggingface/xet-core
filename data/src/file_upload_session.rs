@@ -19,14 +19,14 @@ use progress_tracking::upload_tracking::{CompletionTracker, FileXorbDependency};
 #[cfg(debug_assertions)] // Used here to verify the update accuracy
 use progress_tracking::verification_wrapper::ProgressUpdaterVerificationWrapper;
 use progress_tracking::{NoOpProgressUpdater, TrackingProgressUpdater};
-use tokio::sync::{Mutex, OwnedSemaphorePermit, Semaphore};
+use tokio::sync::{Mutex, Semaphore};
 use tokio::task::{JoinHandle, JoinSet};
 use tracing::{info_span, instrument, Instrument, Span};
 use ulid::Ulid;
 
 use crate::configurations::*;
 use crate::constants::{
-    INGESTION_BLOCK_SIZE, MAX_CONCURRENT_FILE_INGESTION, MAX_CONCURRENT_UPLOADS, PROGRESS_UPDATE_INTERVAL_MS,
+    INGESTION_BLOCK_SIZE, MAX_CONCURRENT_FILE_INGESTION, PROGRESS_UPDATE_INTERVAL_MS,
     PROGRESS_UPDATE_SPEED_SAMPLING_WINDOW_MS,
 };
 use crate::errors::*;
@@ -34,27 +34,6 @@ use crate::file_cleaner::SingleFileCleaner;
 use crate::remote_client_interface::create_remote_client;
 use crate::shard_interface::SessionShardInterface;
 use crate::{prometheus_metrics, XetFileInfo};
-
-lazy_static::lazy_static! {
-     static ref UPLOAD_CONCURRENCY_LIMITER: Arc<Semaphore> = Arc::new(Semaphore::new(*MAX_CONCURRENT_UPLOADS));
-}
-
-/// Acquire a permit for uploading xorbs and shards to ensure that we don't overwhelm the server
-/// or fill up the local host with in-memory data waiting to be uploaded.
-///
-/// The chosen Semaphore is fair, meaning xorbs and shards added first will be scheduled to upload first.
-///
-/// It's also important to acquire the permit before the task is launched; otherwise, we may spawn an unlimited
-/// number of tasks that end up using up a ton of memory; this forces the pipeline to block here while the upload
-/// is happening.
-pub(crate) async fn acquire_upload_permit() -> Result<OwnedSemaphorePermit> {
-    let upload_permit = UPLOAD_CONCURRENCY_LIMITER
-        .clone()
-        .acquire_owned()
-        .await
-        .map_err(|e| DataProcessingError::UploadTaskError(e.to_string()))?;
-    Ok(upload_permit)
-}
 
 /// Manages the translation of files between the
 /// MerkleDB / pointer file format and the materialized version.
@@ -362,7 +341,7 @@ impl FileUploadSession {
                 .await??;
 
         let session = self.clone();
-        let upload_permit = acquire_upload_permit().await?;
+        let upload_permit = self.client.acquire_upload_permit().await?;
         let cas_prefix = session.config.data_config.prefix.clone();
         let completion_tracker = self.completion_tracker.clone();
 
@@ -370,10 +349,8 @@ impl FileUploadSession {
             async move {
                 let n_bytes_transmitted = session
                     .client
-                    .upload_xorb(&cas_prefix, cas_object, Some(completion_tracker))
+                    .upload_xorb_with_permit(&cas_prefix, cas_object, Some(completion_tracker), upload_permit)
                     .await?;
-
-                drop(upload_permit);
 
                 // Register that the xorb has been uploaded.
                 session.completion_tracker.register_xorb_upload_completion(xorb_hash).await;

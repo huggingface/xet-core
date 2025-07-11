@@ -16,3 +16,5 @@ pub use output_bytes::output_bytes;
 
 pub mod rw_task_lock;
 pub use rw_task_lock::{RwTaskLock, RwTaskLockError, RwTaskLockReadGuard};
+
+pub mod adjustable_semaphore;
