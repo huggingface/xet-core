@@ -1,0 +1,53 @@
+use serde::Serialize;
+use wasm_bindgen::prelude::*;
+
+#[derive(Clone, Debug, Serialize)]
+pub struct JsChunk {
+    pub hash: String,
+    pub length: u32,
+}
+
+impl From<deduplication::Chunk> for JsChunk {
+    fn from(value: deduplication::Chunk) -> Self {
+        JsChunk {
+            hash: value.hash.hex(),
+            length: value.data.len() as u32,
+        }
+    }
+}
+
+#[wasm_bindgen(js_name = "Chunker")]
+pub struct JsChunker {
+    inner: deduplication::Chunker,
+}
+
+// Default target chunk size is 64 * 1024
+
+#[wasm_bindgen(js_class="Chunker")]
+impl JsChunker {
+    #[wasm_bindgen(constructor)]
+    pub fn new(target_chunk_size: usize) -> JsChunker {
+        JsChunker {
+            inner: deduplication::Chunker::new(target_chunk_size),
+        }
+    }
+
+    pub fn add_data(&mut self, data: Vec<u8>) -> Result<JsValue, JsValue> {
+        let result = self.inner.next_block(&data, false);
+        let serializable_result: Vec<JsChunk> = result.into_iter().map(|c| JsChunk::from(c)).collect();
+        serde_wasm_bindgen::to_value(&serializable_result).map_err(|e| e.into())
+    }
+
+    pub fn finish(&mut self) -> Result<JsValue, JsValue> {
+        let mut result: Vec<JsChunk> = vec![];
+        if let Some(final_chunk) = self.inner.finish() {
+            result.push(JsChunk::from(final_chunk));
+        };
+        serialize_result(&result)
+    }
+}
+
+#[inline]
+fn serialize_result<T: Serialize>(result: &T) -> Result<JsValue, JsValue> {
+    serde_wasm_bindgen::to_value(result).map_err(|e| e.into())
+}
