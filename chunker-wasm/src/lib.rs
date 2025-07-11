@@ -20,8 +20,8 @@ pub struct JsChunk {
     pub length: u32,
 }
 
-impl From<merkledb::Chunk> for JsChunk {
-    fn from(value: merkledb::Chunk) -> Self {
+impl From<merkledb::ChunkInfo> for JsChunk {
+    fn from(value: merkledb::ChunkInfo) -> Self {
         JsChunk {
             hash: value.hash.hex(),
             length: value.length as u32,
@@ -29,7 +29,7 @@ impl From<merkledb::Chunk> for JsChunk {
     }
 }
 
-impl TryFrom<JsChunk> for merkledb::Chunk {
+impl TryFrom<JsChunk> for merkledb::ChunkInfo {
     type Error = DataHashHexParseError;
 
     fn try_from(value: JsChunk) -> Result<Self, Self::Error> {
@@ -95,8 +95,8 @@ pub fn compute_xorb_hash(chunks_array: JsValue) -> Result<String, JsValue> {
     let mut staging = db.start_insertion_staging();
     let chunks = js_chunks
         .into_iter()
-        .map(merkledb::Chunk::try_from)
-        .collect::<Result<Vec<merkledb::Chunk>, DataHashHexParseError>>()
+        .map(merkledb::ChunkInfo::try_from)
+        .collect::<Result<Vec<_>, _>>()
         .map_err(|e| JsValue::from(e.to_string()))?;
     db.add_file(&mut staging, &chunks);
     let ret = db.finalize(staging);

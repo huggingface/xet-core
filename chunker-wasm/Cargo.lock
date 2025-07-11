@@ -327,6 +327,7 @@ name = "deduplication"
 version = "0.14.5"
 dependencies = [
  "async-trait",
+ "bytes",
  "gearhash",
  "mdb_shard",
  "merkledb",
@@ -510,6 +511,12 @@ name = "gimli"
 version = "0.31.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "07e28edb80900c19c28f1072f2e8aeca7fa06b23cd4169cefe1af5aa3260783f"
+
+[[package]]
+name = "heapify"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0049b265b7f201ca9ab25475b22b47fe444060126a51abe00f77d986fc5cc52e"
 
 [[package]]
 name = "heck"
@@ -752,9 +759,11 @@ dependencies = [
  "anyhow",
  "async-trait",
  "blake3",
+ "bytes",
  "clap",
- "futures-io",
+ "futures",
  "futures-util",
+ "heapify",
  "itertools",
  "lazy_static",
  "merklehash",
@@ -1376,6 +1385,7 @@ dependencies = [
  "thiserror",
  "tokio",
  "tracing",
+ "web-time",
 ]
 
 [[package]]
@@ -1464,6 +1474,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1a05d73b933a847d6cccdda8f838a22ff101ad9bf93e33684f39c1f5f0eece3d"
 dependencies = [
  "unicode-ident",
+]
+
+[[package]]
+name = "web-time"
+version = "1.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5a6580f308b1fad9207618087a65c04e7a10bc77e02c8e84e9b00dd4b12fa0bb"
+dependencies = [
+ "js-sys",
+ "wasm-bindgen",
 ]
 
 [[package]]
