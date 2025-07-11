@@ -1,5 +1,5 @@
 [package]
-name = "chunker-wasm"
+name = "hf_xet_thin_wasm"
 version = "0.1.0"
 edition = "2024"
 
