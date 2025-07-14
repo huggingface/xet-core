@@ -5,7 +5,7 @@ use mdb_shard::file_structs::{
     FileDataSequenceEntry, FileDataSequenceHeader, FileMetadataExt, FileVerificationEntry, MDBFileInfo,
 };
 use mdb_shard::hash_is_global_dedup_eligible;
-use merklehash::{file_node_hash_with_salt, MerkleHash};
+use merklehash::{file_hash_with_salt, MerkleHash};
 use more_asserts::{debug_assert_le, debug_assert_lt};
 use progress_tracking::upload_tracking::FileXorbDependency;
 
@@ -380,7 +380,7 @@ impl<DataInterfaceType: DeduplicationDataInterface> FileDeduper<DataInterfaceTyp
         file_hash_salt: [u8; 32],
         metadata_ext: Option<FileMetadataExt>,
     ) -> (MerkleHash, DataAggregator, DeduplicationMetrics) {
-        let file_hash = file_node_hash_with_salt(&self.chunk_hashes, &file_hash_salt);
+        let file_hash = file_hash_with_salt(&self.chunk_hashes, &file_hash_salt);
 
         let metadata = FileDataSequenceHeader::new(file_hash, self.file_info.len(), true, metadata_ext.is_some());
 

@@ -1395,7 +1395,7 @@ impl SerializedCasObject {
 }
 
 pub mod test_utils {
-    use merklehash::cas_node_hash;
+    use merklehash::xorb_hash;
     use rand::Rng;
 
     use super::*;
@@ -1631,7 +1631,7 @@ pub mod test_utils {
             .collect();
         c.info.chunk_hashes = chunk_hashes;
 
-        c.info.cashash = cas_node_hash(&chunks);
+        c.info.cashash = xorb_hash(&chunks);
 
         c.info.fill_in_boundary_offsets();
 

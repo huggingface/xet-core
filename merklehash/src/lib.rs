@@ -50,4 +50,4 @@ pub type MerkleHash = DataHash;
 
 mod aggregated_hashes;
 
-pub use aggregated_hashes::{cas_node_hash, file_node_hash, file_node_hash_with_salt};
+pub use aggregated_hashes::{file_hash, file_hash_with_salt, xorb_hash};
