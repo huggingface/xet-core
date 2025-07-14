@@ -61,7 +61,7 @@ mod tests {
 
     // A function to print out the correct values for a variety of hash values.
     // Uncomment this and copy-paste the printed reference code into the correctness test.
-    #[test]
+    // #[test]
     fn _print_reference_hashes() {
         fn rh(h: u64) -> MerkleHash {
             if h == 0 {
