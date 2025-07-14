@@ -18,9 +18,8 @@ pub const AGGREGATED_HASHES_MEAN_TREE_BRANCHING_FACTOR: u64 = 4;
 ///             idx
 ///
 /// When the current node at idx satisfies the cut condition:
-///  - the hash % MEAN_TREE_BRANCHING_FACTOR == 0: assuming a random
-///  hash distribution, this implies on average, the number of children
-///  is AGGREGATED_HASHES_MEAN_TREE_BRANCHING_FACTOR,
+///  - the hash % MEAN_TREE_BRANCHING_FACTOR == 0: assuming a random hash distribution, this implies on average, the
+///    number of children is AGGREGATED_HASHES_MEAN_TREE_BRANCHING_FACTOR,
 ///  - OR this is the last node in the list.
 ///  - subject to each parent must have at least 2 children, and at most AGGREGATED_MEAN_TREE_BRANCHING_FACTOR * 2
 ///    children: This ensures that the graph always has at most 1/2 the number of parents as children. and we don't have
