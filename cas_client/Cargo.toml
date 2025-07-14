@@ -12,7 +12,6 @@ deduplication = { path = "../deduplication" }
 error_printer = { path = "../error_printer" }
 file_utils = { path = "../file_utils" }
 mdb_shard = { path = "../mdb_shard" }
-merkledb = { path = "../merkledb" }
 merklehash = { path = "../merklehash" }
 progress_tracking = { path = "../progress_tracking" }
 utils = { path = "../utils" }
@@ -76,3 +75,4 @@ httpmock = { workspace = true }
 rand = { workspace = true }
 tracing-test = { workspace = true }
 wiremock = { workspace = true }
+merkledb = { path = "../merkledb_test_reference" }

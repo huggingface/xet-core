@@ -47,3 +47,7 @@
 pub mod data_hash;
 pub use data_hash::*;
 pub type MerkleHash = DataHash;
+
+mod aggregated_hashes;
+
+pub use aggregated_hashes::{cas_node_hash, file_node_hash, file_node_hash_with_salt};

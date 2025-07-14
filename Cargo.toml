@@ -11,6 +11,7 @@ members = [
     "error_printer",
     "file_utils",
     "mdb_shard",
+    "merkledb_test_reference",
     "merklehash",
     "parutils",
     "progress_tracking",

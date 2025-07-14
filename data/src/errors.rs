@@ -4,7 +4,6 @@ use std::sync::mpsc::RecvError;
 use cas_client::CasClientError;
 use cas_object::error::CasObjectError;
 use mdb_shard::error::MDBShardError;
-use merkledb::error::MerkleDBError;
 use thiserror::Error;
 use tokio::sync::AcquireError;
 use tracing::error;
@@ -41,9 +40,6 @@ pub enum DataProcessingError {
 
     #[error("Channel error: {0}")]
     ChannelRecvError(#[from] RecvError),
-
-    #[error("MerkleDB error: {0}")]
-    MerkleDBError(#[from] MerkleDBError),
 
     #[error("MerkleDB Shard error: {0}")]
     MDBShardError(#[from] MDBShardError),

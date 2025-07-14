@@ -1,6 +1,5 @@
 use mdb_shard::cas_structs::{CASChunkSequenceEntry, CASChunkSequenceHeader, MDBCASInfo};
-use merkledb::aggregate_hashes::cas_node_hash;
-use merklehash::MerkleHash;
+use merklehash::{cas_node_hash, MerkleHash};
 use more_asserts::*;
 
 use crate::constants::{MAX_XORB_BYTES, MAX_XORB_CHUNKS};
