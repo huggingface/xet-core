@@ -39,7 +39,7 @@ reqwest-retry = "0.7"
 reqwest = { version = "0.12.22", features = [
     "json",
     "stream",
-    "system-proxy"
+    "system-proxy",
 ], default-features = false }
 hyper-util = "0.1.10"
 tower-service = "0.3.3"
@@ -75,4 +75,3 @@ httpmock = { workspace = true }
 rand = { workspace = true }
 tracing-test = { workspace = true }
 wiremock = { workspace = true }
-merkledb = { path = "../merkledb_test_reference" }

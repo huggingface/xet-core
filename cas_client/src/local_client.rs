@@ -575,10 +575,7 @@ mod tests {
         let hello_hash = merklehash::compute_data_hash(&hello[..]);
         let world_hash = merklehash::compute_data_hash(&world[..]);
 
-        let hellonode = merkledb::MerkleNode::new(0, hello_hash, 5, vec![]);
-        let worldnode = merkledb::MerkleNode::new(1, world_hash, 5, vec![]);
-
-        let final_hash = merkledb::detail::hash_node_sequence(&[hellonode, worldnode]);
+        let final_hash = merklehash::xorb_hash(&[(hello_hash, 5), (world_hash, 5)]);
 
         // insert should succeed
         let client = LocalClient::temporary().unwrap();

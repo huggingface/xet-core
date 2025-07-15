@@ -1001,7 +1001,6 @@ impl CasObject {
     /// recomputing the hash and validating it matches CasObjectInfo.
     ///
     /// Returns Ok(Some(cas object)) if recomputed hash matches what is passed in.
-    #[cfg(test)]
     pub fn validate_cas_object<R: Read + Seek>(
         reader: &mut R,
         hash: &MerkleHash,
@@ -1013,9 +1012,6 @@ impl CasObject {
         // - the object info format is incorrect (e.g. ident mismatch);
         // and we should reject instead of propagating the error.
 
-        use merkledb::prelude::MerkleDBHighLevelMethodsV1;
-        use merkledb::{ChunkInfo, MerkleMemDB};
-
         use crate::error::Validate;
 
         let Some(cas) = CasObject::deserialize(reader).ok_for_format_error()? else {
@@ -1023,7 +1019,7 @@ impl CasObject {
         };
 
         // 2. walk chunks from Info
-        let mut hash_chunks: Vec<ChunkInfo> = Vec::new();
+        let mut hash_chunks = Vec::new();
         let mut cumulative_compressed_length: u32 = 0;
         let mut unpacked_chunk_offset = 0;
 
@@ -1041,10 +1037,7 @@ impl CasObject {
             };
 
             let chunk_hash = merklehash::compute_data_hash(&data);
-            hash_chunks.push(ChunkInfo {
-                hash: chunk_hash,
-                length: chunk_uncompressed_length as usize,
-            });
+            hash_chunks.push((chunk_hash, chunk_uncompressed_length as usize));
 
             cumulative_compressed_length += compressed_chunk_length as u32;
             unpacked_chunk_offset += chunk_uncompressed_length;
@@ -1087,12 +1080,9 @@ impl CasObject {
         }
 
         // 4. combine hashes to get full xorb hash, compare to provided
-        let mut db = MerkleMemDB::default();
-        let mut staging = db.start_insertion_staging();
-        db.add_file(&mut staging, &hash_chunks);
-        let ret = db.finalize(staging);
+        let xorb_hash = merklehash::xorb_hash(&hash_chunks);
 
-        if *ret.hash() != *hash || *ret.hash() != cas.info.cashash {
+        if xorb_hash != *hash || xorb_hash != cas.info.cashash {
             warn!("XORB Validation: Computed hash does not match provided hash or Info hash.");
             return Ok(None);
         }

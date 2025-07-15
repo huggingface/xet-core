@@ -47,7 +47,7 @@ tokio = { workspace = true, features = [
 ] }
 
 [dev-dependencies]
-merkledb = { path = "../merkledb_test_reference" }
+# merkledb = { path = "../merkledb_test_reference" }
 
 [[bin]]
 path = "src/byte_grouping/compression_stats/collect_compression_stats.rs"

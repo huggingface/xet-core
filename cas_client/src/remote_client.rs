@@ -842,7 +842,6 @@ mod tests {
     use deduplication::constants::MAX_XORB_BYTES;
     use httpmock::Method::GET;
     use httpmock::MockServer;
-    use merkledb::constants::TARGET_CDC_CHUNK_SIZE;
     use tracing_test::traced_test;
     use xet_threadpool::ThreadPool;
 
@@ -881,7 +880,8 @@ mod tests {
     }
 
     const NUM_CHUNKS: u32 = 128;
-    const CHUNK_SIZE: u32 = TARGET_CDC_CHUNK_SIZE as u32;
+
+    const CHUNK_SIZE: u32 = 64 * 1024;
 
     macro_rules! mock_no_match_range_header {
         ($range_to_compare:expr) => {
