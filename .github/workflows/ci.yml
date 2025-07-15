@@ -70,10 +70,15 @@ jobs:
         with:
           targets: wasm32-unknown-unknown
           components: rust-src
-      - name: Install wasm-bindgen-cli
+      - name: Install wasm-bindgen-cli and wasm-pack
         run: |
-          cargo install wasm-bindgen-cli
+          cargo install wasm-bindgen-cli wasm-pack
+      - name: Build hf_xet_thin_wasm
+        working-directory: hf_xet_thin_wasm
+        run: |
+          ./build_wasm.sh
       - name: Build hf_xet_wasm
         working-directory: hf_xet_wasm
         run: |
           ./build_wasm.sh
+
