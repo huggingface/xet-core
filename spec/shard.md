@@ -26,6 +26,53 @@ A shard file consists of the following sections in order:
 └─────────────────────┘
 ```
 
+## Overall File Layout with Byte Offsets
+
+```txt
+Offset 0:
+┌───────────────────────────────────────────────────────┐
+│                 Header (48 bytes)                    │ ← Fixed size
+└───────────────────────────────────────────────────────┘
+
+Offset footer.file_info_offset:
+┌───────────────────────────────────────────────────────┐
+│                                                       │
+│              File Info Section                        │ ← Variable size
+│            (Multiple file blocks +                    │
+│             bookend entry)                            │
+│                                                       │
+└───────────────────────────────────────────────────────┘
+
+Offset footer.cas_info_offset:
+┌───────────────────────────────────────────────────────┐
+│                                                       │
+│               CAS Info Section                        │ ← Variable size
+│            (Multiple CAS blocks +                     │
+│             bookend entry)                            │
+│                                                       │
+└───────────────────────────────────────────────────────┘
+
+Offset footer.file_lookup_offset:
+┌───────────────────────────────────────────────────────┐
+│        File Lookup Table (12 × N entries)            │ ← Optional
+└───────────────────────────────────────────────────────┘
+
+Offset footer.cas_lookup_offset:
+┌───────────────────────────────────────────────────────┐
+│         CAS Lookup Table (12 × N entries)            │ ← Optional
+└───────────────────────────────────────────────────────┘
+
+Offset footer.chunk_lookup_offset:
+┌───────────────────────────────────────────────────────┐
+│        Chunk Lookup Table (16 × N entries)           │ ← Optional
+└───────────────────────────────────────────────────────┘
+
+Offset footer.footer_offset:
+┌───────────────────────────────────────────────────────┐
+│                Footer (192 bytes)                    │ ← Fixed size
+└───────────────────────────────────────────────────────┘
+```
+
 ## Constants
 
 - `MDB_SHARD_HEADER_VERSION`: 2
@@ -41,8 +88,8 @@ All multi-byte integers are stored in little-endian format.
 - `u8`: 8-bit unsigned integer
 - `u32`: 32-bit unsigned integer  
 - `u64`: 64-bit unsigned integer
-- `MerkleHash`: 32-byte hash value
-- `HMACKey`: 32-byte HMAC key
+- Hash: 32-byte hash value
+- Byte Array types are denoted like in rust as [u8; N] where N is the number of bytes.
 
 ## Deserialization Guide
 
@@ -57,6 +104,16 @@ struct MDBShardFileHeader {
     version: u64,            // Header version (must be 2)
     footer_size: u64,        // Size of footer in bytes
 }
+```
+
+**Memory Layout**:
+
+```txt
+┌────────────────────────────────────────────────────────────────┬──────────┬──────────┐
+│                          tag (32 bytes)                       │ version  │footer_sz │
+│                    Magic Number Identifier                    │ (8 bytes)│(8 bytes) │
+└────────────────────────────────────────────────────────────────┴──────────┴──────────┘
+0                                                              32         40         48
 ```
 
 **Deserialization steps**:
@@ -83,15 +140,41 @@ struct MDBShardFileFooter {
     cas_lookup_num_entry: u64,       // Number of CAS lookup entries
     chunk_lookup_offset: u64,        // Offset to chunk lookup table
     chunk_lookup_num_entry: u64,     // Number of chunk lookup entries
-    chunk_hash_hmac_key: [u64; 4],   // HMAC key for chunk hashes (32 bytes)
+    chunk_hash_hmac_key: Hash,       // HMAC key for chunk hashes (32 bytes)
     shard_creation_timestamp: u64,   // Creation time (seconds since epoch)
     shard_key_expiry: u64,           // Expiry time (seconds since epoch)
-    _buffer: [u64; 6],               // Reserved space (48 bytes)
+    _buffer: [u8; 48],               // Reserved space (48 bytes)
     stored_bytes_on_disk: u64,       // Total bytes stored on disk
     materialized_bytes: u64,         // Total materialized bytes
     stored_bytes: u64,               // Total stored bytes
     footer_offset: u64,              // Offset where footer starts
 }
+```
+
+**Memory Layout**:
+
+```txt
+┌─────────┬─────────┬─────────┬─────────┬─────────┬─────────┬─────────┬─────────┬─────────┐
+│ version │file_info│cas_info │file_lkp │file_lkp │cas_lkp  │cas_lkp  │chunk_lkp│chunk_lkp│
+│(8 bytes)│offset   │offset   │offset   │num_entry│offset   │num_entry│offset   │num_entry│
+│         │(8 bytes)│(8 bytes)│(8 bytes)│(8 bytes)│(8 bytes)│(8 bytes)│(8 bytes)│(8 bytes)│
+└─────────┴─────────┴─────────┴─────────┴─────────┴─────────┴─────────┴─────────┴─────────┘
+0         8        16        24        32        40        48        56        64        72
+
+┌─────────────────────────────────────┬─────────┬─────────┬─────────────────────────────────────┐
+│        chunk_hash_hmac_key          │creation │key_expiry│           _buffer (reserved)        │
+│             (32 bytes)              │timestamp│(8 bytes)│             (48 bytes)              │
+│                                     │(8 bytes)│         │                                     │
+└─────────────────────────────────────┴─────────┴─────────┴─────────────────────────────────────┘
+72                                  104       112       120                                   168
+
+┌─────────┬─────────┬─────────┬─────────┐
+│stored_  │material │stored_  │footer_  │
+│bytes_on │ized_    │bytes    │offset   │
+│disk     │bytes    │(8 bytes)│(8 bytes)│
+│(8 bytes)│(8 bytes)│         │         │
+└─────────┴─────────┴─────────┴─────────┘
+168      176       184       192
 ```
 
 **Deserialization steps**:
@@ -110,17 +193,29 @@ This section contains a sequence of 0 or more file information blocks, each cons
 
 ```rust
 struct FileDataSequenceHeader {
-    file_hash: [u64; 4],     // 32-byte file hash
-    file_flags: u32,         // Flags indicating what follows
-    num_entries: u32,        // Number of FileDataSequenceEntry structures
-    _unused: u64,            // Reserved
+    file_hash: [u64; 4],  // 32-byte file hash
+    file_flags: u32,      // Flags indicating conditional sections that follow
+    num_entries: u32,     // Number of FileDataSequenceEntry structures
+    _unused: [u8; 8],     // Reserved space 8 bytes
 }
+```
+
+**Memory Layout**:
+
+```txt
+┌────────────────────────────────────────────────────────────────┬──────────┬──────────┬──────────┐
+│                       file_hash (32 bytes)                    │file_flags│num_entries│ _unused  │
+│                        File Hash Value                        │(4 bytes) │(4 bytes) │(8 bytes) │
+└────────────────────────────────────────────────────────────────┴──────────┴──────────┴──────────┘
+0                                                              32         36         40         48
 ```
 
 **File Flags**:
 
-- `MDB_FILE_FLAG_WITH_VERIFICATION` (0x80000000): Has verification entries
-- `MDB_FILE_FLAG_WITH_METADATA_EXT` (0x40000000): Has metadata extension
+- `MDB_FILE_FLAG_WITH_VERIFICATION` (0x80000000 or 1 << 31): Has verification entries
+- `MDB_FILE_FLAG_WITH_METADATA_EXT` (0x40000000 or 1 << 30): Has metadata extension
+
+Given the `file_data_sequence_header.file_flags & MASK` (bitwise AND) operations, if the result != 0 then the effect is true.
 
 #### FileDataSequenceEntry
 
@@ -134,22 +229,105 @@ struct FileDataSequenceEntry {
 }
 ```
 
+**Memory Layout**:
+
+```txt
+┌────────────────────────────────────────────────────────────────┬─────────┬─────────┬─────────┬─────────┐
+│                       cas_hash (32 bytes)                     │cas_flags│unpacked │chunk_idx│chunk_idx│
+│                      CAS Block Hash                           │(4 bytes)│seg_bytes│start    │end      │
+│                                                               │         │(4 bytes)│(4 bytes)│(4 bytes)│
+└────────────────────────────────────────────────────────────────┴─────────┴─────────┴─────────┴─────────┘
+0                                                              32        36        40        44        48
+```
+
 #### FileVerificationEntry (optional)
 
 ```rust
 struct FileVerificationEntry {
-    range_hash: [u64; 4],    // 32-byte verification hash
-    _unused: [u64; 2],       // Reserved (16 bytes)
+    range_hash: Hash,   // 32-byte verification hash
+    _unused: [u8; 16],  // Reserved (16 bytes)
 }
+```
+
+**Memory Layout**:
+
+```txt
+┌────────────────────────────────────────────────────────────────┬────────────────────────────────┐
+│                    range_hash (32 bytes)                      │       _unused (16 bytes)      │
+│                   Verification Hash                           │         Reserved Space         │
+└────────────────────────────────────────────────────────────────┴────────────────────────────────┘
+0                                                              32                               48
 ```
 
 #### FileMetadataExt (optional)
 
 ```rust
 struct FileMetadataExt {
-    sha256: [u64; 4],        // 32-byte SHA256 hash
-    _unused: [u64; 2],       // Reserved (16 bytes)
+    sha256: Hash,      // 32-byte SHA256 hash
+    _unused: [u8; 16], // Reserved (16 bytes)
 }
+```
+
+**Memory Layout**:
+
+```txt
+┌────────────────────────────────────────────────────────────────┬────────────────────────────────┐
+│                      sha256 (32 bytes)                        │       _unused (16 bytes)      │
+│                     SHA256 Hash                               │         Reserved Space         │
+└────────────────────────────────────────────────────────────────┴────────────────────────────────┘
+0                                                              32                               48
+```
+
+#### File Info Section Layout
+
+**Without Optional Components**:
+
+```txt
+┌─────────────────────┐
+│ FileDataSeqHeader   │ ← File 1
+├─────────────────────┤
+│ FileDataSeqEntry    │
+├─────────────────────┤
+│ FileDataSeqEntry    │
+├─────────────────────┤
+│        ...          │
+├─────────────────────┤
+│ FileDataSeqHeader   │ ← File 2
+├─────────────────────┤
+│ FileDataSeqEntry    │
+├─────────────────────┤
+│        ...          │
+├─────────────────────┤
+│   Bookend Entry     │ ← All 0xFF hash + zeros
+└─────────────────────┘
+```
+
+**With All Optional Components**:
+
+```txt
+┌─────────────────────┐
+│ FileDataSeqHeader   │ ← File 1 (flags indicate verification + metadata)
+├─────────────────────┤
+│ FileDataSeqEntry    │
+├─────────────────────┤
+│ FileDataSeqEntry    │
+├─────────────────────┤
+│        ...          │
+├─────────────────────┤
+│ FileVerifyEntry     │ ← One per FileDataSeqEntry
+├─────────────────────┤
+│ FileVerifyEntry     │
+├─────────────────────┤
+│        ...          │
+├─────────────────────┤
+│ FileMetadataExt     │ ← One per file (if flag set)
+├─────────────────────┤
+│ FileDataSeqHeader   │ ← File 2
+├─────────────────────┤
+│        ...          │
+├─────────────────────┤
+│   Bookend Entry     │ ← All 0xFF hash + zeros
+└─────────────────────┘
 ```
 
 #### File Info Bookend
@@ -182,7 +360,7 @@ This section contains CAS (Content Addressable Storage) block information:
 
 ```rust
 struct CASChunkSequenceHeader {
-    cas_hash: [u64; 4],       // 32-byte CAS block hash
+    cas_hash: Hash,           // 32-byte CAS block hash
     cas_flags: u32,           // CAS flags
     num_entries: u32,         // Number of chunks in this CAS block
     num_bytes_in_cas: u32,    // Total bytes in CAS block
@@ -190,15 +368,61 @@ struct CASChunkSequenceHeader {
 }
 ```
 
+**Memory Layout**:
+
+```txt
+┌────────────────────────────────────────────────────────────────┬─────────┬─────────┬─────────┬─────────┐
+│                       cas_hash (32 bytes)                     │cas_flags│num_     │num_bytes│num_bytes│
+│                      CAS Block Hash                           │(4 bytes)│entries  │in_cas   │on_disk  │
+│                                                               │         │(4 bytes)│(4 bytes)│(4 bytes)│
+└────────────────────────────────────────────────────────────────┴─────────┴─────────┴─────────┴─────────┘
+0                                                              32        36        40        44        48
+```
+
 #### CASChunkSequenceEntry
 
 ```rust
 struct CASChunkSequenceEntry {
-    chunk_hash: [u64; 4],           // 32-byte chunk hash
-    unpacked_segment_bytes: u32,    // Size when unpacked
-    chunk_byte_range_start: u32,    // Start position in CAS block
-    _unused: u64,                   // Reserved
+    chunk_hash: Hash,             // 32-byte chunk hash
+    unpacked_segment_bytes: u32,  // Size when unpacked
+    chunk_byte_range_start: u32,  // Start position in CAS block
+    _unused: [u8; 8],             // Reserved space 8 bytes
 }
+```
+
+**Memory Layout**:
+
+```txt
+┌────────────────────────────────────────────────────────────────┬─────────┬─────────┬─────────────────┐
+│                     chunk_hash (32 bytes)                     │chunk_   │unpacked │    _unused      │
+│                        Chunk Hash                             │byte_    │segment_ │   (8 bytes)     │
+│                                                               │range_   │bytes    │                 │
+│                                                               │start    │(4 bytes)│                 │
+│                                                               │(4 bytes)│         │                 │
+└────────────────────────────────────────────────────────────────┴─────────┴─────────┴─────────────────┘
+0                                                              32        36        40               48
+```
+
+#### CAS Info Section Layout
+
+```txt
+┌─────────────────────┐
+│ CASChunkSeqHeader   │ ← CAS Block 1
+├─────────────────────┤
+│ CASChunkSeqEntry    │
+├─────────────────────┤
+│ CASChunkSeqEntry    │
+├─────────────────────┤
+│        ...          │
+├─────────────────────┤
+│ CASChunkSeqHeader   │ ← CAS Block 2
+├─────────────────────┤
+│ CASChunkSeqEntry    │
+├─────────────────────┤
+│        ...          │
+├─────────────────────┤
+│   Bookend Entry     │ ← All 0xFF hash + zeros
+└─────────────────────┘
 ```
 
 **Deserialization steps**:
@@ -237,6 +461,16 @@ struct FileLookupEntry {
 }
 ```
 
+**Memory Layout**:
+
+```txt
+┌─────────────────────────────────────────┬─────────────────┐
+│         truncated_hash (8 bytes)       │   file_index    │
+│        First 8 bytes of file hash      │    (4 bytes)    │
+└─────────────────────────────────────────┴─────────────────┘
+0                                       8                12
+```
+
 #### CAS Lookup Table
 
 **Location**: `footer.cas_lookup_offset`
@@ -251,6 +485,16 @@ struct CASLookupEntry {
     truncated_hash: u64,     // First 8 bytes of CAS hash
     cas_index: u32,          // Index into CAS info section
 }
+```
+
+**Memory Layout**:
+
+```txt
+┌─────────────────────────────────────────┬─────────────────┐
+│         truncated_hash (8 bytes)       │   cas_index     │
+│        First 8 bytes of CAS hash       │    (4 bytes)    │
+└─────────────────────────────────────────┴─────────────────┘
+0                                       8                12
 ```
 
 #### Chunk Lookup Table
@@ -268,6 +512,16 @@ struct ChunkLookupEntry {
     cas_index: u32,          // Index into CAS info section
     chunk_index: u32,        // Index within CAS block
 }
+```
+
+**Memory Layout**:
+
+```txt
+┌─────────────────────────────────────────┬─────────────────┬─────────────────┐
+│         truncated_hash (8 bytes)       │   cas_index     │  chunk_index    │
+│       First 8 bytes of chunk hash      │    (4 bytes)    │    (4 bytes)    │
+└─────────────────────────────────────────┴─────────────────┴─────────────────┘
+0                                       8                12               16
 ```
 
 ## HMAC Key Protection
