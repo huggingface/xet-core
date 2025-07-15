@@ -46,9 +46,6 @@ tokio = { workspace = true, features = [
     "rt-multi-thread",
 ] }
 
-[dev-dependencies]
-# merkledb = { path = "../merkledb_test_reference" }
-
 [[bin]]
 path = "src/byte_grouping/compression_stats/collect_compression_stats.rs"
 name = "collect_compression_stats"
