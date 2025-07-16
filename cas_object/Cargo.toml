@@ -17,7 +17,6 @@ bench = true
 deduplication = { path = "../deduplication" }
 error_printer = { path = "../error_printer" }
 mdb_shard = { path = "../mdb_shard" }
-merkledb = { path = "../merkledb" }
 merklehash = { path = "../merklehash" }
 utils = { path = "../utils" }
 
@@ -39,7 +38,13 @@ tracing = { workspace = true }
 tokio-util = { workspace = true, features = ["io"] }
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
-tokio = { workspace = true, features = ["time", "rt", "macros", "io-util", "rt-multi-thread"] }
+tokio = { workspace = true, features = [
+    "time",
+    "rt",
+    "macros",
+    "io-util",
+    "rt-multi-thread",
+] }
 
 [[bin]]
 path = "src/byte_grouping/compression_stats/collect_compression_stats.rs"

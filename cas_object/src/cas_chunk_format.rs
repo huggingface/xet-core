@@ -2,7 +2,7 @@ use std::io::{Read, Write};
 use std::mem::size_of;
 
 use anyhow::anyhow;
-use merkledb::constants::MAXIMUM_CHUNK_SIZE;
+use deduplication::constants::MAX_CHUNK_SIZE;
 
 use crate::cas_object_format::CAS_OBJECT_FORMAT_IDENT;
 use crate::error::CasObjectError;
@@ -72,17 +72,19 @@ impl CASChunkHeader {
                 CURRENT_VERSION
             )));
         }
-        if self.get_compressed_length() as usize > MAXIMUM_CHUNK_SIZE * 2 {
+        if self.get_compressed_length() as usize > *MAX_CHUNK_SIZE * 2 {
             return Err(CasObjectError::FormatError(anyhow!(
-                "chunk header compressed length too large at {}, maximum: {MAXIMUM_CHUNK_SIZE}",
-                self.get_compressed_length()
+                "chunk header compressed length too large at {}, maximum: {}",
+                self.get_compressed_length(),
+                *MAX_CHUNK_SIZE
             )));
         }
         // the max chunk size is strictly enforced
-        if self.get_uncompressed_length() as usize > MAXIMUM_CHUNK_SIZE {
+        if self.get_uncompressed_length() as usize > *MAX_CHUNK_SIZE {
             return Err(CasObjectError::FormatError(anyhow!(
-                "chunk header uncompressed length too large at {}, maximum: {MAXIMUM_CHUNK_SIZE}",
-                self.get_uncompressed_length()
+                "chunk header uncompressed length too large at {}, maximum: {}",
+                self.get_uncompressed_length(),
+                *MAX_CHUNK_SIZE
             )));
         }
         Ok(())

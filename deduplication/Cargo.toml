@@ -5,7 +5,6 @@ edition = "2021"
 
 [dependencies]
 mdb_shard = { path = "../mdb_shard" }
-merkledb = { path = "../merkledb" }
 merklehash = { path = "../merklehash" }
 progress_tracking = { path = "../progress_tracking" }
 utils = { path = "../utils" }

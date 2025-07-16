@@ -1,61 +1,131 @@
-use blake3;
-use merklehash::MerkleHash;
+use std::cell::RefCell;
+use std::fmt::Write;
 
-use crate::error::{MerkleDBError, Result};
-use crate::merkledb_highlevel_v2::MerkleDBHighLevelMethodsV2;
-use crate::merkledbbase::MerkleDBBase;
-use crate::{MerkleMemDB, MerkleNode};
+use crate::{compute_internal_node_hash, MerkleHash};
 
-// Given a list of hashes and sizes, compute the aggregate hash for a cas node.
-pub fn cas_node_hash(chunks: &[(MerkleHash, usize)]) -> MerkleHash {
-    // Create an ephemeral MDB.
+pub const AGGREGATED_HASHES_MEAN_TREE_BRANCHING_FACTOR: u64 = 4;
+
+/// Find the next cut point in a sequence of hashes at which to break.
+///
+///   
+/// We basically loop through the set of nodes tracking a window between
+/// cur_children_start_idx and idx (current index).
+/// [. . . . . . . . . . . ]
+///          ^   ^
+///          |   |
+///  start_idx   |
+///              |
+///             idx
+///
+/// When the current node at idx satisfies the cut condition:
+///  - the hash % MEAN_TREE_BRANCHING_FACTOR == 0: assuming a random hash distribution, this implies on average, the
+///    number of children is AGGREGATED_HASHES_MEAN_TREE_BRANCHING_FACTOR,
+///  - OR this is the last node in the list.
+///  - subject to each parent must have at least 2 children, and at most AGGREGATED_MEAN_TREE_BRANCHING_FACTOR * 2
+///    children: This ensures that the graph always has at most 1/2 the number of parents as children. and we don't have
+///    too wide branches.
+#[inline]
+fn next_merge_cut(hashes: &[(MerkleHash, usize)]) -> usize {
+    if hashes.len() <= 2 {
+        return hashes.len();
+    }
+
+    let end = (2 * AGGREGATED_HASHES_MEAN_TREE_BRANCHING_FACTOR as usize + 1).min(hashes.len());
+
+    for i in 2..end {
+        let h = unsafe { hashes.get_unchecked(i).0 };
+
+        if h % AGGREGATED_HASHES_MEAN_TREE_BRANCHING_FACTOR == 0 {
+            return i + 1;
+        }
+    }
+
+    end
+}
+
+/// Merge the hashes together, including the size information and returning the new (hash, size) pair.
+#[inline]
+fn merged_hash_of_sequence(hash: &[(MerkleHash, usize)]) -> (MerkleHash, usize) {
+    // Use a threadlocal buffer to avoid the overhead of reallocations.
+    thread_local! {
+        static BUFFER: RefCell<String> =
+        RefCell::new(String::with_capacity(1024));
+    }
+
+    BUFFER.with(|buffer| {
+        let mut buf = buffer.borrow_mut();
+        buf.clear();
+        let mut total_len = 0;
+
+        for (h, s) in hash.iter() {
+            writeln!(buf, "{h:x} : {s}").unwrap();
+            total_len += *s;
+        }
+        (compute_internal_node_hash(buf.as_bytes()), total_len)
+    })
+}
+
+/// The base calculation for the aggregated node hash.
+///
+/// Iteratively collapse the list of hashes using the criteria in next_merge_cut
+/// until only one hash remains; this is the aggregated hash.
+#[inline]
+fn aggregated_node_hash(chunks: &[(MerkleHash, usize)]) -> MerkleHash {
     if chunks.is_empty() {
         return MerkleHash::default();
     }
 
-    let mut mdb = MerkleMemDB::default();
+    let mut hv = chunks.to_vec();
 
-    let nodes: Vec<MerkleNode> = chunks
-        .iter()
-        .map(|(h, len)| mdb.maybe_add_node(h, *len, Vec::default()).0)
-        .collect();
+    while hv.len() > 1 {
+        let mut write_idx = 0;
+        let mut read_idx = 0;
 
-    let m = mdb.merge_to_cas(&nodes[..]);
+        while read_idx != hv.len() {
+            // Find the next cut point of hashes at which to merge.
+            let next_cut = read_idx + next_merge_cut(&hv[read_idx..]);
 
-    *m.hash()
-}
+            // Get the merged hash of this block.
+            hv[write_idx] = merged_hash_of_sequence(&hv[read_idx..next_cut]);
+            write_idx += 1;
 
-// Given a list of hashes and sizes, compute the aggregate hash for a file node.
-pub fn file_node_hash(chunks: &[(MerkleHash, usize)], salt: &[u8; 32]) -> Result<MerkleHash> {
-    // Create an ephemeral MDB.
-    if chunks.is_empty() {
-        return Ok(MerkleHash::default());
+            read_idx = next_cut;
+        }
+
+        hv.resize(write_idx, Default::default());
     }
 
-    let mut mdb = MerkleMemDB::default();
-
-    let nodes: Vec<MerkleNode> = chunks
-        .iter()
-        .map(|(h, size)| mdb.maybe_add_node(h, *size, Vec::default()).0)
-        .collect();
-
-    let m = mdb.merge_to_file(&nodes[..]);
-
-    with_salt(m.hash(), salt)
+    hv[0].0
 }
 
-pub fn with_salt(hash: &MerkleHash, salt: &[u8; 32]) -> Result<MerkleHash> {
-    let salted_hash = blake3::keyed_hash(salt, hash.as_bytes());
+/// The xorb hash
+#[inline]
+pub fn xorb_hash(chunks: &[(MerkleHash, usize)]) -> MerkleHash {
+    if chunks.is_empty() {
+        return MerkleHash::default();
+    }
 
-    let salted_hash = MerkleHash::try_from(salted_hash.as_bytes().as_slice())
-        .map_err(|_| MerkleDBError::Other("fail to salt a MerkleHash".to_owned()))?;
+    aggregated_node_hash(chunks)
+}
 
-    Ok(salted_hash)
+/// The file hash when a salt is needed.
+#[inline]
+pub fn file_hash_with_salt(chunks: &[(MerkleHash, usize)], salt: &[u8; 32]) -> MerkleHash {
+    if chunks.is_empty() {
+        return MerkleHash::default();
+    }
+
+    aggregated_node_hash(chunks).hmac(salt.into())
+}
+
+/// The file hash calculation from a series of chunks; to be used when there isn't a salt.
+#[inline]
+pub fn file_hash(chunks: &[(MerkleHash, usize)]) -> MerkleHash {
+    file_hash_with_salt(chunks, &[0; 32])
 }
 
 #[cfg(test)]
 mod tests {
-    use merklehash::MerkleHash;
 
     use super::*;
 
@@ -103,16 +173,16 @@ mod tests {
             println!("],");
 
             let hash_list: Vec<_> = v.iter().map(|&hi| (rh(hi), (hi * 100) as usize)).collect();
-            print!("\"{:?}\",", cas_node_hash(&hash_list));
+            print!("\"{:?}\",", xorb_hash(&hash_list));
 
             // Now do a few salts along with the 0 salt to ensure we get good coverage there.
             print!("[");
 
             let salt = [rh(0), rh(1234 + 2 * i as u64), rh(12345 + 2 * i as u64)];
 
-            print!("(\"{:?}\", \"{:?}\"),", salt[0], file_node_hash(&hash_list, &salt[0].into()).unwrap());
-            print!("(\"{:?}\", \"{:?}\"),", salt[1], file_node_hash(&hash_list, &salt[1].into()).unwrap());
-            print!("(\"{:?}\", \"{:?}\"),", salt[2], file_node_hash(&hash_list, &salt[2].into()).unwrap());
+            print!("(\"{:?}\", \"{:?}\"),", salt[0], file_hash_with_salt(&hash_list, &salt[0].into()));
+            print!("(\"{:?}\", \"{:?}\"),", salt[1], file_hash_with_salt(&hash_list, &salt[1].into()));
+            print!("(\"{:?}\", \"{:?}\"),", salt[2], file_hash_with_salt(&hash_list, &salt[2].into()));
             print!("]),");
         }
 
@@ -744,10 +814,11 @@ mod tests {
         // Go through and verify that the above values are correct.
         for (v, h_cas, file_hash_list) in reference.into_iter() {
             let v2: Vec<_> = v.into_iter().map(|(h, s)| (MerkleHash::from_hex(h).unwrap(), s)).collect();
-            assert_eq!(cas_node_hash(&v2).hex(), h_cas);
+
+            assert_eq!(xorb_hash(&v2).hex(), h_cas);
 
             for (salt, h) in file_hash_list {
-                assert_eq!(file_node_hash(&v2, &MerkleHash::from_hex(salt).unwrap().into()).unwrap().hex(), h);
+                assert_eq!(file_hash_with_salt(&v2, &MerkleHash::from_hex(salt).unwrap().into()).hex(), h);
             }
         }
     }

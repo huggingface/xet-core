@@ -18,7 +18,6 @@ path = "src/bin/xtool.rs"
 cas_client = { path = "../cas_client" }
 cas_object = { path = "../cas_object" }
 cas_types = { path = "../cas_types" }
-merkledb = { path = "../merkledb" }
 merklehash = { path = "../merklehash" }
 mdb_shard = { path = "../mdb_shard" }
 parutils = { path = "../parutils" }

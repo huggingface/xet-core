@@ -14,7 +14,6 @@ use mdb_shard::file_structs::MDBFileInfo;
 use mdb_shard::shard_file_reconstructor::FileReconstructor;
 use mdb_shard::utils::shard_file_name;
 use mdb_shard::{MDBShardFile, MDBShardInfo, ShardFileManager};
-use merkledb::aggregate_hashes::with_salt;
 use merklehash::MerkleHash;
 use progress_tracking::item_tracking::SingleItemProgressUpdater;
 use progress_tracking::upload_tracking::CompletionTracker;
@@ -323,11 +322,10 @@ impl Client for LocalClient {
         let mut write_txn = self.global_dedup_db_env.write_txn().map_err(map_heed_db_error)?;
 
         for chunk in chunk_hashes {
-            if let Ok(salted_chunk_hash) = with_salt(&chunk, salt) {
-                self.global_dedup_table
-                    .put(&mut write_txn, &salted_chunk_hash, shard_hash)
-                    .map_err(map_heed_db_error)?;
-            }
+            let salted_chunk_hash = chunk.hmac(salt.into());
+            self.global_dedup_table
+                .put(&mut write_txn, &salted_chunk_hash, shard_hash)
+                .map_err(map_heed_db_error)?;
         }
 
         write_txn.commit().map_err(map_heed_db_error)?;
@@ -353,11 +351,10 @@ impl Client for LocalClient {
     ) -> Result<Option<Bytes>> {
         let read_txn = self.global_dedup_db_env.read_txn().map_err(map_heed_db_error)?;
 
-        if let Ok(sh) = with_salt(chunk_hash, salt) {
-            if let Some(shard) = self.global_dedup_table.get(&read_txn, &sh).map_err(map_heed_db_error)? {
-                let filename = self.shard_dir.join(shard_file_name(&shard));
-                return Ok(Some(std::fs::read(filename)?.into()));
-            }
+        let sh = chunk_hash.hmac(salt.into());
+        if let Some(shard) = self.global_dedup_table.get(&read_txn, &sh).map_err(map_heed_db_error)? {
+            let filename = self.shard_dir.join(shard_file_name(&shard));
+            return Ok(Some(std::fs::read(filename)?.into()));
         }
         Ok(None)
     }
@@ -578,10 +575,7 @@ mod tests {
         let hello_hash = merklehash::compute_data_hash(&hello[..]);
         let world_hash = merklehash::compute_data_hash(&world[..]);
 
-        let hellonode = merkledb::MerkleNode::new(0, hello_hash, 5, vec![]);
-        let worldnode = merkledb::MerkleNode::new(1, world_hash, 5, vec![]);
-
-        let final_hash = merkledb::detail::hash_node_sequence(&[hellonode, worldnode]);
+        let final_hash = merklehash::xorb_hash(&[(hello_hash, 5), (world_hash, 5)]);
 
         // insert should succeed
         let client = LocalClient::temporary().unwrap();

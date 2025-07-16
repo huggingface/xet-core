@@ -12,7 +12,6 @@ deduplication = { path = "../deduplication" }
 error_printer = { path = "../error_printer" }
 file_utils = { path = "../file_utils" }
 mdb_shard = { path = "../mdb_shard" }
-merkledb = { path = "../merkledb" }
 merklehash = { path = "../merklehash" }
 progress_tracking = { path = "../progress_tracking" }
 utils = { path = "../utils" }
@@ -40,7 +39,7 @@ reqwest-retry = "0.7"
 reqwest = { version = "0.12.22", features = [
     "json",
     "stream",
-    "system-proxy"
+    "system-proxy",
 ], default-features = false }
 hyper-util = "0.1.10"
 tower-service = "0.3.3"

@@ -4,14 +4,11 @@ use std::mem::{size_of, size_of_val};
 
 use anyhow::anyhow;
 use bytes::Buf;
-use deduplication::test_utils::raw_xorb_to_vec;
+use deduplication::constants::TARGET_CHUNK_SIZE;
 use deduplication::RawXorbData;
 #[cfg(not(target_family = "wasm"))]
 use futures::AsyncReadExt;
 use mdb_shard::chunk_verification::range_hash_from_chunks;
-use merkledb::constants::{IDEAL_CAS_BLOCK_SIZE, TARGET_CDC_CHUNK_SIZE};
-use merkledb::prelude::MerkleDBHighLevelMethodsV1;
-use merkledb::{ChunkInfo, MerkleMemDB};
 use merklehash::{DataHash, MerkleHash};
 use more_asserts::*;
 use serde::Serialize;
@@ -19,8 +16,8 @@ use tracing::warn;
 use utils::serialization_utils::*;
 
 use crate::cas_chunk_format::{deserialize_chunk, serialize_chunk};
-use crate::constants::CAS_OBJECT_COMPRESSION_SCHEME_RETEST_INTERVAL;
-use crate::error::{CasObjectError, Validate};
+use crate::constants::{CAS_OBJECT_COMPRESSION_SCHEME_RETEST_INTERVAL, IDEAL_CAS_BLOCK_SIZE};
+use crate::error::CasObjectError;
 use crate::{CASChunkHeader, CompressionScheme};
 
 pub type CasObjectIdent = [u8; 7];
@@ -37,14 +34,15 @@ pub(crate) const CAS_OBJECT_FORMAT_BOUNDARIES_VERSION: u8 = 1;
 const _CAS_OBJECT_INFO_DEFAULT_LENGTH_V0: u32 = 60;
 const CAS_OBJECT_INFO_DEFAULT_LENGTH: u32 = 92;
 
-const AVERAGE_NUM_CHUNKS_PER_XORB: usize = IDEAL_CAS_BLOCK_SIZE / TARGET_CDC_CHUNK_SIZE;
 // Decide array preallocation size based on the declared size, to prevent an adversarial
 // giant size that leads to OOM on allocation.
 #[inline]
 fn prealloc_num_chunks(declared_size: usize) -> usize {
+    let average_num_chunks_per_xorb: usize = *IDEAL_CAS_BLOCK_SIZE / *TARGET_CHUNK_SIZE;
+
     // We add a bit buffer to the average size, hoping to reduce reallocation if
     // the actual number of chunks exceeds AVERAGE_NUM_CHUNKS_PER_XORB.
-    declared_size.min(AVERAGE_NUM_CHUNKS_PER_XORB * 9 / 8)
+    declared_size.min(average_num_chunks_per_xorb * 9 / 8)
 }
 
 #[derive(Clone, PartialEq, Eq, Debug, Serialize)]
@@ -1013,12 +1011,15 @@ impl CasObject {
         // - the object doesn't have enough bytes as claimed by "info_length";
         // - the object info format is incorrect (e.g. ident mismatch);
         // and we should reject instead of propagating the error.
+
+        use crate::error::Validate;
+
         let Some(cas) = CasObject::deserialize(reader).ok_for_format_error()? else {
             return Ok(None);
         };
 
         // 2. walk chunks from Info
-        let mut hash_chunks: Vec<ChunkInfo> = Vec::new();
+        let mut hash_chunks = Vec::new();
         let mut cumulative_compressed_length: u32 = 0;
         let mut unpacked_chunk_offset = 0;
 
@@ -1036,10 +1037,7 @@ impl CasObject {
             };
 
             let chunk_hash = merklehash::compute_data_hash(&data);
-            hash_chunks.push(ChunkInfo {
-                hash: chunk_hash,
-                length: chunk_uncompressed_length as usize,
-            });
+            hash_chunks.push((chunk_hash, chunk_uncompressed_length as usize));
 
             cumulative_compressed_length += compressed_chunk_length as u32;
             unpacked_chunk_offset += chunk_uncompressed_length;
@@ -1082,12 +1080,9 @@ impl CasObject {
         }
 
         // 4. combine hashes to get full xorb hash, compare to provided
-        let mut db = MerkleMemDB::default();
-        let mut staging = db.start_insertion_staging();
-        db.add_file(&mut staging, &hash_chunks);
-        let ret = db.finalize(staging);
+        let xorb_hash = merklehash::xorb_hash(&hash_chunks);
 
-        if *ret.hash() != *hash || *ret.hash() != cas.info.cashash {
+        if xorb_hash != *hash || xorb_hash != cas.info.cashash {
             warn!("XORB Validation: Computed hash does not match provided hash or Info hash.");
             return Ok(None);
         }
@@ -1390,8 +1385,7 @@ impl SerializedCasObject {
 }
 
 pub mod test_utils {
-    use merkledb::prelude::MerkleDBHighLevelMethodsV1;
-    use merkledb::{ChunkInfo, MerkleMemDB};
+    use merklehash::xorb_hash;
     use rand::Rng;
 
     use super::*;
@@ -1476,6 +1470,8 @@ pub mod test_utils {
         compression_scheme: Option<CompressionScheme>,
         cas_object: &SerializedCasObject,
     ) {
+        use deduplication::test_utils::raw_xorb_to_vec;
+
         let xorb_hash = xorb.hash();
         let num_chunks = xorb.data.len();
 
@@ -1602,10 +1598,7 @@ pub mod test_utils {
             let bytes = gen_random_bytes(chunk_size);
 
             let chunk_hash = merklehash::compute_data_hash(&bytes);
-            chunks.push(ChunkInfo {
-                hash: chunk_hash,
-                length: bytes.len(),
-            });
+            chunks.push((chunk_hash, bytes.len()));
 
             data_contents_raw.extend_from_slice(&bytes);
 
@@ -1628,12 +1621,7 @@ pub mod test_utils {
             .collect();
         c.info.chunk_hashes = chunk_hashes;
 
-        let mut db = MerkleMemDB::default();
-        let mut staging = db.start_insertion_staging();
-        db.add_file(&mut staging, &chunks);
-        let ret = db.finalize(staging);
-
-        c.info.cashash = *ret.hash();
+        c.info.cashash = xorb_hash(&chunks);
 
         c.info.fill_in_boundary_offsets();
 
