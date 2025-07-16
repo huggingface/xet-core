@@ -1,0 +1,155 @@
+openapi: 3.0.3
+info:
+  title: CAS Reconstruction Types
+  description: OpenAPI specification for CAS (Content Addressable Storage) reconstruction response types
+  version: 1.0.0
+
+components:
+  schemas:
+    QueryReconstructionResponse:
+      type: object
+      description: Response containing file reconstruction metadata including terms and fetch information
+      required:
+        - offset_into_first_range
+        - terms
+        - fetch_info
+      properties:
+        offset_into_first_range:
+          type: integer
+          format: int64
+          minimum: 0
+          description: For range query [a, b) into a file content, the location of "a" into the first range
+          example: 0
+        terms:
+          type: array
+          description: Series of terms describing a xorb hash and chunk range to be retrieved to reconstruct the file
+          items:
+            $ref: "#/components/schemas/CASReconstructionTerm"
+        fetch_info:
+          type: object
+          description: Information to fetch xorb ranges to reconstruct the file. Each key is a hash that is present in the terms field reconstruction terms, the values are information needed to fetch ranges from each xorb needed to reconstruct the file
+          additionalProperties:
+            type: array
+            items:
+              $ref: "#/components/schemas/CASReconstructionFetchInfo"
+          example:
+            "a1b2c3d4e5f6789012345678901234567890abcdef1234567890abcdef123456":
+              - range:
+                  start: 0
+                  end: 4
+                url: "https://transfer.xethub.hf.co/xorb/default/a1b2c3d4e5f6789012345678901234567890abcdef1234567890abcdef123456"
+                url_range:
+                  start: 0
+                  end: 131071
+
+    BatchQueryReconstructionResponse:
+      type: object
+      description: Response type for querying reconstruction for a batch of files
+      required:
+        - files
+        - fetch_info
+      properties:
+        files:
+          type: object
+          description: Map of FileID to series of terms describing a xorb hash and chunk range to be retrieved to reconstruct the file
+          additionalProperties:
+            type: array
+            items:
+              $ref: "#/components/schemas/CASReconstructionTerm"
+          example:
+            "file1hash64chars0123456789abcdef0123456789abcdef0123456789abcdef":
+              - hash: "a1b2c3d4e5f6789012345678901234567890abcdef1234567890abcdef123456"
+                unpacked_length: 263873
+                range:
+                  start: 0
+                  end: 4
+        fetch_info:
+          type: object
+          description: Information to fetch xorb ranges to reconstruct the file. Each key is a hash that is present in the terms field reconstruction terms, the values are information needed to fetch ranges from each xorb needed to reconstruct the file
+          additionalProperties:
+            type: array
+            items:
+              $ref: "#/components/schemas/CASReconstructionFetchInfo"
+
+    CASReconstructionTerm:
+      type: object
+      description: Describes a portion of a reconstructed file, namely the xorb and a range of chunks within that xorb that are needed
+      required:
+        - hash
+        - unpacked_length
+        - range
+      properties:
+        hash:
+          $ref: "#/components/schemas/HexMerkleHash"
+        unpacked_length:
+          type: integer
+          format: int32
+          minimum: 0
+          description: The resulting data from deserializing the range in this term should have a length equal to this value (used for validation)
+          example: 263873
+        range:
+          $ref: "#/components/schemas/ChunkRange"
+
+    CASReconstructionFetchInfo:
+      type: object
+      description: Information needed to fetch xorb ranges via HTTP GET request. The range key describes the chunk range within the xorb that the url is used to fetch
+      required:
+        - range
+        - url
+        - url_range
+      properties:
+        range:
+          $ref: "#/components/schemas/ChunkRange"
+        url:
+          type: string
+          format: uri
+          description: URL to use for HTTP GET request to fetch the xorb range
+          example: "https://transfer.xethub.hf.co/xorb/default/a1b2c3d4e5f6789012345678901234567890abcdef1234567890abcdef123456"
+        url_range:
+          $ref: "#/components/schemas/HttpRange"
+
+    ChunkRange:
+      type: object
+      description: Start and exclusive-end range for chunk content (chunk index range within a xorb)
+      required:
+        - start
+        - end
+      properties:
+        start:
+          type: integer
+          format: int32
+          minimum: 0
+          description: Start chunk index (inclusive)
+          example: 0
+        end:
+          type: integer
+          format: int32
+          minimum: 0
+          description: End chunk index (exclusive)
+          example: 4
+
+    HttpRange:
+      type: object
+      description: Start and inclusive-end range for HTTP range content (byte index range used exclusively for Range header)
+      required:
+        - start
+        - end
+      properties:
+        start:
+          type: integer
+          format: int64
+          minimum: 0
+          description: Start byte index (inclusive)
+          example: 0
+        end:
+          type: integer
+          format: int64
+          minimum: 0
+          description: End byte index (inclusive)
+          example: 131071
+
+    HexMerkleHash:
+      type: string
+      pattern: "^[a-f0-9]{64}$"
+      description: MerkleHash represented as 64-character hex string
+      example: "a1b2c3d4e5f6789012345678901234567890abcdef1234567890abcdef123456"
