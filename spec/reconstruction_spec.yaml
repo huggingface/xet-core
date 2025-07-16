@@ -1,10 +1,128 @@
 openapi: 3.0.3
 info:
-  title: CAS Reconstruction Types
-  description: OpenAPI specification for CAS (Content Addressable Storage) reconstruction response types
+  title: CAS Reconstruction API
+  description: OpenAPI specification for CAS (Content Addressable Storage) reconstruction endpoints
   version: 1.0.0
 
+servers:
+  - url: http://cas-server.xethub.hf.co:8080
+    description: Default CAS server endpoint
+
+paths:
+  /reconstruction/{file_id}:
+    get:
+      summary: Get File Reconstruction
+      description: Retrieves reconstruction information for a specific file, optionally with byte range support
+      operationId: getFileReconstruction
+      parameters:
+        - name: file_id
+          in: path
+          required: true
+          description: MerkleHash in hex format (64-character hex string)
+          schema:
+            $ref: "#/components/schemas/HexMerkleHash"
+          example: "a1b2c3d4e5f6789012345678901234567890abcdef1234567890abcdef123456"
+        - name: Range
+          in: header
+          required: false
+          description: Optional byte range header. Format bytes={start}-{end} (inclusive end)
+          schema:
+            type: string
+            pattern: '^bytes=\d+-\d+$'
+          example: "bytes=0-1023"
+      responses:
+        "200":
+          description: Successful response with reconstruction information
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/QueryReconstructionResponse"
+        "400":
+          description: Bad request - invalid file_id format or malformed range header
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                error: "Invalid file_id format"
+                code: 400
+        "404":
+          description: File not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                error: "File not found"
+                code: 404
+        "416":
+          description: Range Not Satisfiable - requested byte range start exceeds the end of the file
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                error: "Range not satisfiable"
+                code: 416
+      security:
+        - BearerAuth: []
+
+  /reconstructions:
+    get:
+      summary: Batch Get Reconstruction
+      description: Retrieves reconstruction information for multiple files in a single request
+      operationId: batchGetReconstruction
+      parameters:
+        - name: file_id
+          in: query
+          required: true
+          description: MerkleHash(es) in hex format (can be repeated for multiple files)
+          schema:
+            type: array
+            items:
+              $ref: "#/components/schemas/HexMerkleHash"
+            minItems: 1
+          style: form
+          explode: true
+          example:
+            [
+              "a1b2c3d4e5f6789012345678901234567890abcdef1234567890abcdef123456",
+              "fedcba0987654321098765432109876543210fedcba098765432109876543",
+            ]
+      responses:
+        "200":
+          description: Successful response with reconstruction information for requested files
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BatchQueryReconstructionResponse"
+        "400":
+          description: Bad request - invalid file_id format or missing file_id parameter
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                error: "Invalid file_id format"
+                code: 400
+        "404":
+          description: File not found - if any of the requested files is not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                error: "One or more files not found"
+                code: 404
+      security:
+        - BearerAuth: []
+
 components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      description: Authentication through headers added by the authenticated HTTP client
   schemas:
     QueryReconstructionResponse:
       type: object
@@ -153,3 +271,19 @@ components:
       pattern: "^[a-f0-9]{64}$"
       description: MerkleHash represented as 64-character hex string
       example: "a1b2c3d4e5f6789012345678901234567890abcdef1234567890abcdef123456"
+
+    ErrorResponse:
+      type: object
+      description: Standard error response format
+      required:
+        - error
+        - code
+      properties:
+        error:
+          type: string
+          description: Human-readable error message
+          example: "File not found"
+        code:
+          type: integer
+          description: HTTP status code
+          example: 404

@@ -35,7 +35,9 @@ Most endpoints require authentication through headers added by the authenticated
   ```
 
 - **Error Responses**:
-  - `416 Range Not Satisfiable`: When requested byte range is invalid
+  - 400 bad request
+  - 404 File not found
+  - 416 Range Not Satisfiable: When requested byte range start exceeds the end of a file
 
 ### 2. Batch Get Reconstruction
 
@@ -49,6 +51,10 @@ Most endpoints require authentication through headers added by the authenticated
 - **Headers**: None (beyond authentication)
 - **Body**: None
 - **Response**: JSON (`BatchQueryReconstructionResponse`)
+
+- **Error Responses**:
+  - 400 bad request
+  - 404 File not found if any file is not found
 
 ### 3. Query Chunk Deduplication (Global Deduplication)
 
