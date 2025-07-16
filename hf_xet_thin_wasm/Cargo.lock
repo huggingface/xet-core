@@ -533,6 +533,7 @@ name = "hf_xet_thin_wasm"
 version = "0.1.0"
 dependencies = [
  "deduplication",
+ "mdb_shard",
  "merklehash",
  "serde",
  "serde-wasm-bindgen",
