@@ -1,12 +1,15 @@
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
+use bytes::Bytes;
 use reqwest::{Response, StatusCode};
 use reqwest_retry::{default_on_request_failure, default_on_request_success, Retryable};
+use tokio::sync::Mutex;
 use tokio_retry::strategy::{jitter, ExponentialBackoff};
 use tokio_retry::RetryIf;
 use tracing::{error, info};
 
+use crate::adaptive_concurrency_control::ConnectionPermit;
 use crate::constants::{CLIENT_RETRY_BASE_DELAY_MS, CLIENT_RETRY_MAX_ATTEMPTS};
 use crate::error::CasClientError;
 use crate::http_client::request_id_from_response;
@@ -17,12 +20,18 @@ pub enum RetryableReqwestError {
     RetryableError(CasClientError),
 }
 
+struct ConnectionPermitInfo {
+    permit: Option<ConnectionPermit>,
+    transfer_size_if_known: Option<u64>,
+}
+
 pub struct RetryWrapper {
     max_attempts: usize,
     base_delay_ms: u64,
     no_retry_on_429: bool,
     log_errors_as_info: bool,
     api_tag: &'static str,
+    connection_permit: Option<Mutex<ConnectionPermitInfo>>,
 }
 
 impl RetryWrapper {
@@ -33,6 +42,7 @@ impl RetryWrapper {
             no_retry_on_429: false,
             log_errors_as_info: false,
             api_tag,
+            connection_permit: None,
         }
     }
 
@@ -53,6 +63,14 @@ impl RetryWrapper {
 
     pub fn log_errors_as_info(mut self) -> Self {
         self.log_errors_as_info = true;
+        self
+    }
+
+    pub fn with_connection_permit(mut self, permit: ConnectionPermit, transfer_size_if_known: Option<u64>) -> Self {
+        self.connection_permit = Some(Mutex::new(ConnectionPermitInfo {
+            permit: Some(permit),
+            transfer_size_if_known,
+        }));
         self
     }
 
@@ -194,6 +212,12 @@ impl RetryWrapper {
                 async move {
                     let (make_request, process_fn, try_count, self_) = retry_info.as_ref();
 
+                    if let Some(p) = &self_.connection_permit {
+                        if let Some(p) = p.lock().await.permit.as_mut() {
+                            p.transfer_starting()
+                        }
+                    }
+
                     let resp_result = make_request().await;
                     let try_idx = try_count.fetch_add(1, Ordering::Relaxed);
 
@@ -204,10 +228,40 @@ impl RetryWrapper {
                         Ok(resp) => self_.process_ok_response(try_idx, resp),
                     };
 
-                    match checked_result {
-                        Ok(ok_response) => process_fn(ok_response).await,
-                        Err(e) => Err(e),
+                    let (reply_bytes, processing_result) = match checked_result {
+                        Ok(ok_response) => (ok_response.content_length().unwrap_or(0), process_fn(ok_response).await),
+                        Err(e) => (0, Err(e)),
+                    };
+
+                    // Now, possibly adjust the connection permit.
+                    if let Some(permit_holder) = &self_.connection_permit {
+                        let mut permit_info = permit_holder.lock().await;
+
+                        match &processing_result {
+                            Ok(_) => {
+                                if let Some(permit) = permit_info.permit.take() {
+                                    permit
+                                        .report_completion(
+                                            permit_info.transfer_size_if_known.unwrap_or(reply_bytes),
+                                            true,
+                                        )
+                                        .await;
+                                }
+                            },
+                            Err(RetryableReqwestError::FatalError(_)) => {
+                                if let Some(permit) = permit_info.permit.take() {
+                                    permit.report_completion(0, false).await;
+                                }
+                            },
+                            Err(RetryableReqwestError::RetryableError(_)) => {
+                                if let Some(permit) = permit_info.permit.as_ref() {
+                                    permit.report_retryable_failure().await;
+                                }
+                            },
+                        }
                     }
+
+                    processing_result
                 }
             },
             |err: &RetryableReqwestError| matches!(err, RetryableReqwestError::RetryableError(_)),
@@ -255,6 +309,47 @@ impl RetryWrapper {
             async move {
                 // Extract the json from the final result.
                 let r: Result<JsonDest, reqwest::Error> = resp.json().await;
+
+                match r {
+                    Ok(v) => Ok(v),
+                    Err(e) => {
+                        #[cfg(not(target_arch = "wasm32"))]
+                        let is_connect = e.is_connect();
+                        #[cfg(target_arch = "wasm32")]
+                        let is_connect = false;
+
+                        if is_connect || e.is_decode() || e.is_body() || e.is_timeout() {
+                            // We got an incomplete or corrupted response from the server, possibly due to a dropped
+                            // connection.  Presumably this error is transient.
+                            Err(RetryableReqwestError::RetryableError(e.into()))
+                        } else {
+                            Err(RetryableReqwestError::FatalError(e.into()))
+                        }
+                    },
+                }
+            }
+        })
+        .await
+    }
+
+    /// Run a connection and process the result as bytes, retrying on transient errors or on issues not getting the
+    /// full object.
+    ///
+    /// The `make_request` function returns a future that resolves to a Result<Response> object as is returned by the
+    /// client middleware.  For example, `|| client.clone().get(url).send()` returns a future (as `send()` is async)
+    /// that will then be evaluatated to get the response.
+    ///
+    /// This functions acts just like the json() function on a client response, but retries the entire connection on
+    /// transient errors.  
+    pub async fn run_and_extract_bytes<ReqFut, ReqFn>(self, make_request: ReqFn) -> Result<Bytes, CasClientError>
+    where
+        ReqFn: Fn() -> ReqFut + Send + 'static,
+        ReqFut: std::future::Future<Output = Result<Response, reqwest_middleware::Error>> + 'static,
+    {
+        self.run_and_process(make_request, |resp: Response| {
+            async move {
+                // Extract the bytes from the final result.
+                let r: Result<Bytes, reqwest::Error> = resp.bytes().await;
 
                 match r {
                     Ok(v) => Ok(v),
