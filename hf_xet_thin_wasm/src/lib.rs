@@ -1,4 +1,4 @@
-use merklehash::{MerkleHash, xorb_hash};
+use merklehash::{DataHashHexParseError, MerkleHash, xorb_hash};
 use serde::{Deserialize, Serialize};
 use wasm_bindgen::prelude::*;
 
@@ -65,6 +65,8 @@ fn serialize_result<T: Serialize>(result: &T) -> Result<JsValue, JsValue> {
     res
 }
 
+/// takes an Array of Objects of the form { "hash": string, "length": number }
+/// and returns a string of a hash
 #[wasm_bindgen]
 pub fn compute_xorb_hash(chunks_array: JsValue) -> Result<String, JsValue> {
     let js_chunks: Vec<JsChunk> =
@@ -72,13 +74,36 @@ pub fn compute_xorb_hash(chunks_array: JsValue) -> Result<String, JsValue> {
 
     let chunks: Vec<(MerkleHash, usize)> = js_chunks
         .into_iter()
-        .map(|jsc| {
-            Ok::<_, JsValue>((
-                MerkleHash::from_hex(&jsc.hash).map_err(|e| JsValue::from(e.to_string()))?,
-                jsc.length as usize,
-            ))
-        })
-        .collect::<Result<Vec<_>, _>>()?;
+        .map(|jsc| Ok((MerkleHash::from_hex(&jsc.hash)?, jsc.length as usize)))
+        .collect::<Result<_, DataHashHexParseError>>()
+        .map_err(|e| JsValue::from(e.to_string()))?;
 
     Ok(xorb_hash(&chunks).hex())
+}
+
+/// takes an Array of Objects of the form { "hash": string, "length": number }
+/// and returns a string of a hash
+#[wasm_bindgen]
+pub fn compute_file_hash(chunks_array: JsValue) -> Result<String, JsValue> {
+    let js_chunks =
+        serde_wasm_bindgen::from_value::<Vec<JsChunk>>(chunks_array).map_err(|e| JsValue::from(e.to_string()))?;
+
+    let chunk_list: Vec<(MerkleHash, usize)> = js_chunks
+        .into_iter()
+        .map(|jsc| Ok((MerkleHash::from_hex(&jsc.hash)?, jsc.length as usize)))
+        .collect::<Result<_, DataHashHexParseError>>()
+        .map_err(|e| JsValue::from(e.to_string()))?;
+
+    Ok(merklehash::file_hash(&chunk_list).hex())
+}
+
+/// takes an Array of hashes as strings and returns the verification hash for that range of chunk hashes
+#[wasm_bindgen]
+pub fn compute_verification_hash(chunk_hashes: Vec<String>) -> Result<String, JsValue> {
+    let chunk_hashes: Vec<MerkleHash> = chunk_hashes
+        .into_iter()
+        .map(|hash| MerkleHash::from_hex(&hash))
+        .collect::<Result<_, DataHashHexParseError>>()
+        .map_err(|e| JsValue::from(e.to_string()))?;
+    Ok(mdb_shard::chunk_verification::range_hash_from_chunks(&chunk_hashes).hex())
 }
