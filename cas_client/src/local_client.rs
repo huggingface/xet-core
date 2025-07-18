@@ -301,6 +301,10 @@ impl Client for LocalClient {
         true
     }
 
+    fn use_shard_footer(&self) -> bool {
+        true
+    }
+
     async fn upload_shard(
         &self,
         _prefix: &str, // Prefix not used in current implementation
