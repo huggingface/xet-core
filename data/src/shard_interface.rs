@@ -275,7 +275,9 @@ impl SessionShardInterface {
                     let mut data: bytes::Bytes = std::fs::read(&si.path)?.into();
 
                     if !shard_client.use_shard_footer() {
-                        let header = MDBShardFileHeader::deserialize(&mut std::io::Cursor::new(&data[..size_of::<MDBShardFileHeader>()]))?;
+                        let header = MDBShardFileHeader::deserialize(&mut std::io::Cursor::new(
+                            &data[..size_of::<MDBShardFileHeader>()],
+                        ))?;
                         let footer_start = data.len() - header.footer_size as usize;
 
                         // truncate the shard footer from the payload
