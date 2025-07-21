@@ -10,7 +10,7 @@ use mdb_shard::constants::MDB_SHARD_MIN_TARGET_SIZE;
 use mdb_shard::file_structs::{FileDataSequenceEntry, MDBFileInfo};
 use mdb_shard::session_directory::{consolidate_shards_in_directory, merge_shards_background, ShardMergeResult};
 use mdb_shard::shard_in_memory::MDBInMemoryShard;
-use mdb_shard::{MDBShardFileHeader, ShardFileManager};
+use mdb_shard::{MDBShardInfo, ShardFileManager};
 use merklehash::MerkleHash;
 use tempfile::TempDir;
 use tokio::sync::Mutex;
@@ -275,13 +275,12 @@ impl SessionShardInterface {
                     let mut data: bytes::Bytes = std::fs::read(&si.path)?.into();
 
                     if !shard_client.use_shard_footer() {
-                        let header = MDBShardFileHeader::deserialize(&mut std::io::Cursor::new(
-                            &data[..size_of::<MDBShardFileHeader>()],
-                        ))?;
-                        let footer_start = data.len() - header.footer_size as usize;
+                        let shard_info = MDBShardInfo::load_from_reader(&mut std::io::Cursor::new(&data))?;
 
-                        // truncate the shard footer from the payload
-                        let _footer = data.split_off(footer_start);
+                        let split_off_index = shard_info.metadata.file_lookup_offset as usize;
+
+                        // truncate the shard footer and lookup sections from the payload
+                        let _footer = data.split_off(split_off_index);
                     }
 
                     shard_bytes_uploaded.fetch_add(data.len() as u64, Ordering::Relaxed);
