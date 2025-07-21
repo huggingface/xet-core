@@ -280,7 +280,7 @@ impl SessionShardInterface {
                         let split_off_index = shard_info.metadata.file_lookup_offset as usize;
 
                         // truncate the shard footer and lookup sections from the payload
-                        let _footer = data.split_off(split_off_index);
+                        let _ = data.split_off(split_off_index);
                     }
 
                     shard_bytes_uploaded.fetch_add(data.len() as u64, Ordering::Relaxed);
