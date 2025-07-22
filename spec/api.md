@@ -2,14 +2,9 @@
 
 This document describes the HTTP API endpoints used by the CAS (Content Addressable Storage) client to interact with the remote CAS server.
 
-## Base Configuration
-
-- **Default Endpoint**: `http://localhost:8080`
-- **Default Prefix**: `default`
-
 ## Authentication
 
-Most endpoints require authentication through headers added by the authenticated HTTP client.
+- TODO
 
 ## Endpoints
 
@@ -60,24 +55,24 @@ Most endpoints require authentication through headers added by the authenticated
 
 **Description**: Checks if a chunk exists in the CAS for deduplication purposes.
 
-- **Path**: `/v1/chunk/{key}`
+- **Path**: `/v1/chunk/default-merkledb/{hash}`
 - **Method**: `GET`
 - **Parameters**:
-  - `key`: Formatted as `{prefix}:{hash}` where hash is MerkleHash in hex
+  - `hash`: Chunk hash in hex format. Review [how to compute chunk hash](spec/hashing.md#Chunk%20Hashes) to compute chunk hashes
 - **Headers**: None (beyond authentication)
 - **Body**: None
-- **Response**: Raw bytes (chunk data if exists)
+- **Response**: Raw bytes in shard format (chunk data if exists)
 - **Error Responses**:
   - 404 - Chunk not already tracked by global deduplication
 
 ### 4. Upload XORB
 
-**Description**: Uploads a serialized CAS object (XORB) to the server with progress tracking.
+**Description**: Uploads a serialized CAS object (XORB) to the server with progress tracking. Review [how to compute xorb hash](spec/hashing.md#Xorb%20Hashes) to compute xorb hashes.
 
-- **Path**: `/v1/xorb/{key}`
+- **Path**: `/v1/xorb/default/{hash}`
 - **Method**: `POST`
 - **Parameters**:
-  - `key`: Formatted as `{prefix}/{hash}` where hash is MerkleHash in hex
+  - `hash`: MerkleHash in hex format. Review [how to compute xorb hash](spec/hashing.md#Xorb%20Hashes) to compute xorb hashes.
 - **Headers**:
   - `Content-Length`: Size of upload data (required for streaming)
 - **Body**: Serialized Xorb
@@ -93,12 +88,12 @@ Most endpoints require authentication through headers added by the authenticated
 
 ### 5. Check XORB Existence
 
-**Description**: Checks if an XORB exists in the CAS without downloading it.
+**Description**: Checks if an XORB exists in the Content Address Store (CAS).
 
-- **Path**: `/v1/xorb/{key}`
+- **Path**: `/v1/xorb/default/{hash}`
 - **Method**: `HEAD`
 - **Parameters**:
-  - `key`: Formatted as `{prefix}/{hash}` where hash is MerkleHash in hex
+  - `hash`: MerkleHash in hex format. Review [how to compute xorb hash](spec/hashing.md#Xorb%20Hashes) to compute xorb hashes.
 - **Headers**: None (beyond authentication)
 - **Body**: None
 - **Response**: Status codex only
@@ -123,21 +118,13 @@ Most endpoints require authentication through headers added by the authenticated
 
   Where 0 indicates the shard already exists and 1 indicates "SyncPerformed" meaning that the shard was registered (UploadShardResponseType).
 
-## Data Types
-
-### Key Format
-
-Keys are formatted as `{prefix}/{hash}` where:
-
-- `prefix`: String identifier (default: "default")
-- `hash`: MerkleHash represented as 64-character hex string
-
 ### Common Response Types
+
+- TODO: explain these where they are used.
 
 - **QueryReconstructionResponse**: Contains file reconstruction metadata including terms and fetch information
 - **BatchQueryReconstructionResponse**: Contains multiple reconstruction responses
-- **UploadXorbResponse**: Indicates whether the upload resulted in a new insertion
-- **UploadShardResponse**: Indicates the result of shard upload operation
+- Shard format [spec/shard.md]
 
 ## Error Handling
 
