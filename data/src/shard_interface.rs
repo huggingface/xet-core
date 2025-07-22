@@ -6,7 +6,7 @@ use std::time::{Duration, SystemTime};
 use cas_client::Client;
 use error_printer::ErrorPrinter;
 use mdb_shard::cas_structs::MDBCASInfo;
-use mdb_shard::constants::MDB_SHARD_MIN_TARGET_SIZE;
+use mdb_shard::constants::MDB_SHARD_MAX_TARGET_SIZE;
 use mdb_shard::file_structs::{FileDataSequenceEntry, MDBFileInfo};
 use mdb_shard::session_directory::{consolidate_shards_in_directory, merge_shards_background, ShardMergeResult};
 use mdb_shard::shard_in_memory::MDBInMemoryShard;
@@ -73,14 +73,14 @@ impl SessionShardInterface {
         std::fs::create_dir_all(&xorb_metadata_staging_dir)?;
 
         // To allow resume from previous session attempts, merge and copy all the valid shards in the xorb metadata
-        // directory into the current session directory. The originals will remain until all the current senssion xorbs
+        // directory into the current session directory. The originals will remain until all the current session xorbs
         // have been uploaded successfully.  (Also, don't do this on a dry run, as it could screw up non-dry runs).
         let shard_merge_jh = {
             if !dry_run {
                 Some(merge_shards_background(
                     &xorb_metadata_staging_dir,
                     &session_dir,
-                    *MDB_SHARD_MIN_TARGET_SIZE,
+                    *MDB_SHARD_MAX_TARGET_SIZE,
                     true,
                 ))
             } else {
@@ -242,7 +242,7 @@ impl SessionShardInterface {
         // First, scan, merge, and fill out any shards in the session directory
         let shard_list = consolidate_shards_in_directory(
             self.session_shard_manager.shard_directory(),
-            *MDB_SHARD_MIN_TARGET_SIZE,
+            *MDB_SHARD_MAX_TARGET_SIZE,
             // Here, we want to error out if some of the information isn't present or corrupt, so set skip_on_error to
             // false.
             false,

@@ -11,7 +11,7 @@ use utils::RwTaskLock;
 
 use crate::cas_structs::*;
 use crate::constants::{
-    CHUNK_INDEX_TABLE_MAX_SIZE, MDB_SHARD_EXPIRATION_BUFFER_SECS, MDB_SHARD_MIN_TARGET_SIZE, SHARD_CACHE_SIZE_LIMIT,
+    CHUNK_INDEX_TABLE_MAX_SIZE, MDB_SHARD_EXPIRATION_BUFFER_SECS, MDB_SHARD_MAX_TARGET_SIZE, SHARD_CACHE_SIZE_LIMIT,
 };
 use crate::error::{MDBShardError, Result};
 use crate::file_structs::*;
@@ -104,12 +104,12 @@ impl ShardFileManager {
         session_directory: impl AsRef<Path>,
         scan_directory: bool,
     ) -> Result<Arc<Self>> {
-        Self::new_impl(session_directory, false, *MDB_SHARD_MIN_TARGET_SIZE, scan_directory, 0).await
+        Self::new_impl(session_directory, false, *MDB_SHARD_MAX_TARGET_SIZE, scan_directory, 0).await
     }
 
     // Construction functions
     pub async fn new_in_cache_directory(cache_directory: impl AsRef<Path>) -> Result<Arc<Self>> {
-        Self::new_impl(cache_directory, true, *MDB_SHARD_MIN_TARGET_SIZE, true, *SHARD_CACHE_SIZE_LIMIT).await
+        Self::new_impl(cache_directory, true, *MDB_SHARD_MAX_TARGET_SIZE, true, *SHARD_CACHE_SIZE_LIMIT).await
     }
 
     async fn new_impl(
@@ -784,7 +784,7 @@ mod tests {
             verify_mdb_shards_match(&mdb2, &mdb_in_mem, true).await?;
 
             // Now, merge shards in the background.
-            let merged_shards = consolidate_shards_in_directory(tmp_dir.path(), *MDB_SHARD_MIN_TARGET_SIZE, false)?;
+            let merged_shards = consolidate_shards_in_directory(tmp_dir.path(), *MDB_SHARD_MAX_TARGET_SIZE, false)?;
 
             assert_eq!(merged_shards.len(), 1);
             for si in merged_shards {
@@ -860,7 +860,7 @@ mod tests {
 
             {
                 let merged_shards =
-                    consolidate_shards_in_directory(tmp_dir.path(), *MDB_SHARD_MIN_TARGET_SIZE, false).unwrap();
+                    consolidate_shards_in_directory(tmp_dir.path(), *MDB_SHARD_MAX_TARGET_SIZE, false).unwrap();
 
                 assert_eq!(merged_shards.len(), 1);
 
@@ -1082,7 +1082,7 @@ mod tests {
     }
 
     async fn shard_list_with_timestamp_filtering(path: &Path) -> Result<Vec<Arc<MDBShardFile>>> {
-        Ok(ShardFileManager::new_impl(path, false, *MDB_SHARD_MIN_TARGET_SIZE, true, 0)
+        Ok(ShardFileManager::new_impl(path, false, *MDB_SHARD_MAX_TARGET_SIZE, true, 0)
             .await?
             .registered_shard_list()
             .await?)
