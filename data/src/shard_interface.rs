@@ -10,7 +10,7 @@ use mdb_shard::constants::MDB_SHARD_MIN_TARGET_SIZE;
 use mdb_shard::file_structs::{FileDataSequenceEntry, MDBFileInfo};
 use mdb_shard::session_directory::{consolidate_shards_in_directory, merge_shards_background, ShardMergeResult};
 use mdb_shard::shard_in_memory::MDBInMemoryShard;
-use mdb_shard::{MDBShardInfo, ShardFileManager};
+use mdb_shard::ShardFileManager;
 use merklehash::MerkleHash;
 use tempfile::TempDir;
 use tokio::sync::Mutex;
@@ -275,9 +275,7 @@ impl SessionShardInterface {
                     let mut data: bytes::Bytes = std::fs::read(&si.path)?.into();
 
                     if !shard_client.use_shard_footer() {
-                        let shard_info = MDBShardInfo::load_from_reader(&mut std::io::Cursor::new(&data))?;
-
-                        let split_off_index = shard_info.metadata.file_lookup_offset as usize;
+                        let split_off_index = si.shard.metadata.file_lookup_offset as usize;
 
                         // truncate the shard footer and lookup sections from the payload
                         let _ = data.split_off(split_off_index);
