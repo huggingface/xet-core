@@ -9,7 +9,7 @@ servers:
     description: Default CAS server endpoint
 
 paths:
-  /reconstruction/{file_id}:
+  /v1/reconstruction/{file_id}:
     get:
       summary: Get File Reconstruction
       description: Retrieves reconstruction information for a specific file, optionally with byte range support
@@ -25,10 +25,10 @@ paths:
         - name: Range
           in: header
           required: false
-          description: Optional byte range header. Format bytes={start}-{end} (inclusive end)
+          description: Optional byte range header. Format bytes={start}-{end} (inclusive end). Either start or end may be omitted; if start is omitted will response as if start was 0. If end is omitted will response as if end was the length of the file. start must be less than end if both are provided. Specifying start beyond the end of the file will result in a 416 error.
           schema:
             type: string
-            pattern: '^bytes=\d+-\d+$'
+            pattern: '^bytes=(\d+-\d+|\d+-|-\d+)$'
           example: "bytes=0-1023"
       responses:
         "200":
@@ -67,7 +67,7 @@ paths:
       security:
         - BearerAuth: []
 
-  /reconstructions:
+  /v1/reconstructions:
     get:
       summary: Batch Get Reconstruction
       description: Retrieves reconstruction information for multiple files in a single request

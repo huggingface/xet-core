@@ -17,7 +17,7 @@ Most endpoints require authentication through headers added by the authenticated
 
 **Description**: Retrieves reconstruction information for a specific file, optionally with byte range support.
 
-- **Path**: `/reconstruction/{file_id}`
+- **Path**: `/v1/reconstruction/{file_id}`
 - **Method**: `GET`
 - **Parameters**:
   - `file_id`: MerkleHash in hex format
@@ -43,11 +43,11 @@ Most endpoints require authentication through headers added by the authenticated
 
 **Description**: Retrieves reconstruction information for multiple files in a single request.
 
-- **Path**: `/reconstructions`
+- **Path**: `/v1/reconstructions`
 - **Method**: `GET`
 - **Query Parameters**:
   - `file_id`: MerkleHash(es) in hex format (can be repeated)
-  - Example: `/reconstructions?file_id=abc123&file_id=def456`
+  - Example: `/v1/reconstructions?file_id=abc123&file_id=def456`
 - **Headers**: None (beyond authentication)
 - **Body**: None
 - **Response**: JSON (`BatchQueryReconstructionResponse`)
@@ -60,7 +60,7 @@ Most endpoints require authentication through headers added by the authenticated
 
 **Description**: Checks if a chunk exists in the CAS for deduplication purposes.
 
-- **Path**: `/chunk/{key}`
+- **Path**: `/v1/chunk/{key}`
 - **Method**: `GET`
 - **Parameters**:
   - `key`: Formatted as `{prefix}:{hash}` where hash is MerkleHash in hex
@@ -74,7 +74,7 @@ Most endpoints require authentication through headers added by the authenticated
 
 **Description**: Uploads a serialized CAS object (XORB) to the server with progress tracking.
 
-- **Path**: `/xorb/{key}`
+- **Path**: `/v1/xorb/{key}`
 - **Method**: `POST`
 - **Parameters**:
   - `key`: Formatted as `{prefix}/{hash}` where hash is MerkleHash in hex
@@ -91,17 +91,17 @@ Most endpoints require authentication through headers added by the authenticated
 
   was_inserted is false if the xorb already exists, this is not an error
 
-### 6. Check XORB Existence
+### 5. Check XORB Existence
 
 **Description**: Checks if an XORB exists in the CAS without downloading it.
 
-- **Path**: `/xorb/{key}`
+- **Path**: `/v1/xorb/{key}`
 - **Method**: `HEAD`
 - **Parameters**:
   - `key`: Formatted as `{prefix}/{hash}` where hash is MerkleHash in hex
 - **Headers**: None (beyond authentication)
 - **Body**: None
-- **Response**: Status code only
+- **Response**: Status codex only
   - `200 OK`: XORB exists
   - `404 Not Found`: XORB does not exist
 
@@ -109,19 +109,19 @@ Most endpoints require authentication through headers added by the authenticated
 
 **Description**: Uploads a shard to the CAS with optional forced synchronization.
 
-- **Path**: `/shard/{key}`
-- **Method**: `POST`/`PUT`
-- **Parameters**:
-  - `key`: Formatted as `{prefix}/{hash}` where hash is MerkleHash in hex
+- **Path**: `/v1/shard`
+- **Method**: `POST`
 - **Headers**: None (beyond authentication)
 - **Body**: Raw bytes (shard data)
 - **Response**: JSON (`UploadShardResponse`)
 
   ```json
   {
-    "result": "Exists" | "SyncPerformed"
+    "result": 0 | 1
   }
   ```
+
+  Where 0 indicates the shard already exists and 1 indicates "SyncPerformed" meaning that the shard was registered (UploadShardResponseType).
 
 ## Data Types
 
