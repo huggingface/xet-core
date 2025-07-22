@@ -21,6 +21,7 @@ use tempfile::TempDir;
 use tokio::runtime::Handle;
 use tracing::{debug, error, info, warn};
 
+use crate::adaptive_concurrency::ConnectionPermit;
 use crate::error::{CasClientError, Result};
 use crate::output_provider::OutputProvider;
 use crate::Client;
@@ -213,11 +214,12 @@ impl LocalClient {
 /// LocalClient is responsible for writing/reading Xorbs on local disk.
 #[async_trait]
 impl Client for LocalClient {
-    async fn upload_xorb(
+    async fn upload_xorb_with_permit(
         &self,
         _prefix: &str,
         serialized_cas_object: SerializedCasObject,
         upload_tracker: Option<Arc<CompletionTracker>>,
+        _upload_permit: ConnectionPermit,
     ) -> Result<u64> {
         // moved hash validation into [CasObject::serialize], so removed from here.
         let hash = &serialized_cas_object.hash;
@@ -301,13 +303,14 @@ impl Client for LocalClient {
         true
     }
 
-    async fn upload_shard(
+    async fn upload_shard_with_permit(
         &self,
         _prefix: &str, // Prefix not used in current implementation
         shard_hash: &MerkleHash,
         _force_sync: bool,
         shard_data: bytes::Bytes,
         salt: &[u8; 32],
+        _upload_permit: ConnectionPermit,
     ) -> Result<bool> {
         // Write out the shard to the shard directory.
         let shard = MDBShardFile::write_out_from_reader(&self.shard_dir, &mut Cursor::new(&shard_data))?;
