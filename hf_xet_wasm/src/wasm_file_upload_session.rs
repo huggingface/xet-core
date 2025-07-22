@@ -166,10 +166,8 @@ impl FileUploadSession {
         let _timer = ConsoleTimer::new("upload shard");
         self.client
             .upload_shard(
-                &self.config.shard_config.prefix,
-                &shard_hash,
-                false,
                 shard_data.into(),
+                false,
                 &self.config.shard_config.repo_salt,
             )
             .await?;

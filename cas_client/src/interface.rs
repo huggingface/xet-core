@@ -57,14 +57,7 @@ pub trait Client {
     ) -> Result<Option<Bytes>>;
 
     /// Upload a new shard.
-    async fn upload_shard(
-        &self,
-        prefix: &str,
-        hash: &MerkleHash,
-        force_sync: bool,
-        shard_data: bytes::Bytes,
-        salt: &[u8; 32],
-    ) -> Result<bool>;
+    async fn upload_shard(&self, shard_data: Bytes, force_sync: bool, salt: &[u8; 32]) -> Result<bool>;
 
     /// Upload a new xorb.
     async fn upload_xorb(

@@ -40,7 +40,7 @@ pub struct SessionShardInterface {
 
     // If a previous session has been resumed, then we can query against that.  However, this has to
     // be handled differently than the regular session as these xorbs have already been uploaded and are thus
-    // tracked differently by the cempletion tracking.
+    // tracked differently by the completion tracking.
     resumed_session_shard_manager: Option<Arc<ShardFileManager>>,
 
     // We can remove these shards on final upload success.
@@ -282,9 +282,7 @@ impl SessionShardInterface {
                     }
 
                     // Upload the shard.
-                    shard_client
-                        .upload_shard(&shard_prefix, &si.shard_hash, false, data, &salt)
-                        .await?;
+                    shard_client.upload_shard(data, false, &salt).await?;
 
                     // Done with the upload, drop the permit.
                     drop(upload_permit);

@@ -301,16 +301,10 @@ impl Client for LocalClient {
         true
     }
 
-    async fn upload_shard(
-        &self,
-        _prefix: &str, // Prefix not used in current implementation
-        shard_hash: &MerkleHash,
-        _force_sync: bool,
-        shard_data: bytes::Bytes,
-        salt: &[u8; 32],
-    ) -> Result<bool> {
+    async fn upload_shard(&self, shard_data: Bytes, _force_sync: bool, salt: &[u8; 32]) -> Result<bool> {
         // Write out the shard to the shard directory.
         let shard = MDBShardFile::write_out_from_reader(&self.shard_dir, &mut Cursor::new(&shard_data))?;
+        let shard_hash = shard.shard_hash;
 
         self.shard_manager.register_shards(&[shard]).await?;
 
@@ -324,7 +318,7 @@ impl Client for LocalClient {
         for chunk in chunk_hashes {
             let salted_chunk_hash = chunk.hmac(salt.into());
             self.global_dedup_table
-                .put(&mut write_txn, &salted_chunk_hash, shard_hash)
+                .put(&mut write_txn, &salted_chunk_hash, &shard_hash)
                 .map_err(map_heed_db_error)?;
         }
 
@@ -615,7 +609,7 @@ mod tests {
         let client = LocalClient::temporary().unwrap();
 
         client
-            .upload_shard("default", &shard_hash, true, std::fs::read(&new_shard_path).unwrap().into(), &[1; 32])
+            .upload_shard(std::fs::read(&new_shard_path).unwrap().into(), true, &[1; 32])
             .await
             .unwrap();
 
