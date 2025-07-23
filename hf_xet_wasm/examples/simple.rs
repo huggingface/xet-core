@@ -3,7 +3,7 @@ use std::sync::Arc;
 use cas_object::CompressionScheme;
 use futures::AsyncReadExt;
 use hf_xet_wasm::blob_reader::BlobReader;
-use hf_xet_wasm::configurations::{DataConfig, RepoSalt, ShardConfig, TranslatorConfig};
+use hf_xet_wasm::configurations::{DataConfig, ShardConfig, TranslatorConfig};
 use hf_xet_wasm::wasm_file_upload_session::FileUploadSession;
 use hf_xet_wasm::wasm_timer::ConsoleTimer;
 use log::Level;
