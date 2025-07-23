@@ -59,7 +59,6 @@ impl XetSession {
             },
             shard_config: ShardConfig {
                 prefix: "default-merkledb".to_owned(),
-                repo_salt: RepoSalt::default(),
             },
             session_id: uuid::Uuid::new_v4().to_string(),
         };

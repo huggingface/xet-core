@@ -20,7 +20,6 @@ use utils::auth::{AuthConfig, TokenRefresher};
 use crate::configurations::*;
 use crate::constants::{INGESTION_BLOCK_SIZE, MAX_CONCURRENT_DOWNLOADS, MAX_CONCURRENT_FILE_INGESTION};
 use crate::errors::DataProcessingError;
-use crate::repo_salt::RepoSalt;
 use crate::{errors, FileDownloader, FileUploadSession, XetFileInfo};
 
 utils::configurable_constants! {
@@ -86,7 +85,6 @@ pub fn default_config(
             cache_directory: cache_path.join("shard-cache"),
             session_directory: staging_root.join("shard-session"),
             global_dedup_policy: Default::default(),
-            repo_salt: RepoSalt::default(),
         },
         repo_info: Some(RepoInfo {
             repo_paths: vec!["".into()],

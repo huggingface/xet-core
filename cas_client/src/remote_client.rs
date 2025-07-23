@@ -234,7 +234,6 @@ impl RemoteClient {
 
     async fn query_dedup_api(&self, prefix: &str, chunk_hash: &MerkleHash) -> Result<Option<Response>> {
         // The API endpoint now only supports non-batched dedup request and
-        // ignores salt.
         let key = Key {
             prefix: prefix.into(),
             hash: *chunk_hash,
@@ -310,7 +309,7 @@ impl RemoteClient {
         let file_reconstruct_range = byte_range.unwrap_or_else(FileRange::full);
         let total_len = file_reconstruct_range.length();
 
-        // kick start the download by enqueue the fetch info task.
+        // kick-start the download by enqueue the fetch info task.
         task_tx.send(DownloadQueueItem::Metadata(FetchInfo::new(
             *file_hash,
             file_reconstruct_range,
@@ -337,7 +336,7 @@ impl RemoteClient {
                 match item {
                     DownloadQueueItem::End => {
                         // everything processed
-                        debug!("download queue emptyed");
+                        debug!("download queue emptied");
                         drop(running_downloads_tx);
                         break;
                     },
@@ -617,7 +616,7 @@ impl Client for RemoteClient {
 
         let progress_callback = move |bytes_sent: u64| {
             if let Some(utr) = upload_tracker.as_ref() {
-                // First, recallibrate the sending, as the compressed size is different than the actual data size.
+                // First, recalibrate the sending, as the compressed size is different from the actual data size.
                 let adjusted_update = (bytes_sent * n_raw_bytes) / n_upload_bytes;
 
                 utr.clone().register_xorb_upload_progress_background(xorb_hash, adjusted_update);
@@ -770,7 +769,7 @@ impl Client for RemoteClient {
     }
 
     #[instrument(skip_all, name = "RemoteClient::upload_shard", fields(shard.len = shard_data.len()))]
-    async fn upload_shard(&self, shard_data: Bytes, _salt: &[u8; 32]) -> Result<bool> {
+    async fn upload_shard(&self, shard_data: Bytes) -> Result<bool> {
         if self.dry_run {
             return Ok(true);
         }
@@ -796,12 +795,7 @@ impl Client for RemoteClient {
         }
     }
 
-    async fn query_for_global_dedup_shard(
-        &self,
-        prefix: &str,
-        chunk_hash: &MerkleHash,
-        _salt: &[u8; 32],
-    ) -> Result<Option<Bytes>> {
+    async fn query_for_global_dedup_shard(&self, prefix: &str, chunk_hash: &MerkleHash) -> Result<Option<Bytes>> {
         let Some(response) = self.query_dedup_api(prefix, chunk_hash).await? else {
             return Ok(None);
         };

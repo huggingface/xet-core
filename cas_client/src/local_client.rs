@@ -262,23 +262,17 @@ impl Client for LocalClient {
         Ok(self.shard_manager.get_file_reconstruction_info(file_hash).await?)
     }
 
-    async fn query_for_global_dedup_shard(
-        &self,
-        _prefix: &str,
-        chunk_hash: &MerkleHash,
-        salt: &[u8; 32],
-    ) -> Result<Option<Bytes>> {
+    async fn query_for_global_dedup_shard(&self, _prefix: &str, chunk_hash: &MerkleHash) -> Result<Option<Bytes>> {
         let read_txn = self.global_dedup_db_env.read_txn().map_err(map_heed_db_error)?;
 
-        let sh = chunk_hash.hmac(salt.into());
-        if let Some(shard) = self.global_dedup_table.get(&read_txn, &sh).map_err(map_heed_db_error)? {
+        if let Some(shard) = self.global_dedup_table.get(&read_txn, chunk_hash).map_err(map_heed_db_error)? {
             let filename = self.shard_dir.join(shard_file_name(&shard));
             return Ok(Some(std::fs::read(filename)?.into()));
         }
         Ok(None)
     }
 
-    async fn upload_shard(&self, shard_data: Bytes, salt: &[u8; 32]) -> Result<bool> {
+    async fn upload_shard(&self, shard_data: Bytes) -> Result<bool> {
         // Write out the shard to the shard directory.
         let shard = MDBShardFile::write_out_from_reader(&self.shard_dir, &mut Cursor::new(&shard_data))?;
         let shard_hash = shard.shard_hash;
@@ -293,9 +287,8 @@ impl Client for LocalClient {
         let mut write_txn = self.global_dedup_db_env.write_txn().map_err(map_heed_db_error)?;
 
         for chunk in chunk_hashes {
-            let salted_chunk_hash = chunk.hmac(salt.into());
             self.global_dedup_table
-                .put(&mut write_txn, &salted_chunk_hash, &shard_hash)
+                .put(&mut write_txn, &chunk, &shard_hash)
                 .map_err(map_heed_db_error)?;
         }
 
@@ -606,7 +599,7 @@ mod tests {
         let client = LocalClient::temporary().unwrap();
 
         client
-            .upload_shard(std::fs::read(&new_shard_path).unwrap().into(), &[1; 32])
+            .upload_shard(std::fs::read(&new_shard_path).unwrap().into())
             .await
             .unwrap();
 
@@ -617,7 +610,7 @@ mod tests {
 
         // Now do the query...
         let new_shard = client
-            .query_for_global_dedup_shard("default", &dedup_hashes[0], &[1; 32])
+            .query_for_global_dedup_shard("default", &dedup_hashes[0])
             .await
             .unwrap()
             .unwrap();

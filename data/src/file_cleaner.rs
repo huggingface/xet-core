@@ -150,11 +150,8 @@ impl SingleFileCleaner {
         let sha256: MerkleHash = self.sha_generator.finalize().await?;
         let metadata_ext = FileMetadataExt::new(sha256);
 
-        // Now finish the deduplication process.
-        let repo_salt = self.session.config.shard_config.repo_salt;
-
         let (file_hash, remaining_file_data, deduplication_metrics) =
-            self.dedup_manager_fut.await?.finalize(repo_salt, Some(metadata_ext));
+            self.dedup_manager_fut.await?.finalize(Some(metadata_ext));
 
         let file_info = XetFileInfo::new(file_hash.hex(), deduplication_metrics.total_bytes);
 
