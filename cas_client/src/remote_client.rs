@@ -37,9 +37,6 @@ use crate::output_provider::OutputProvider;
 use crate::retry_wrapper::RetryWrapper;
 use crate::{http_client, Client};
 
-const FORCE_SYNC_METHOD: reqwest::Method = reqwest::Method::PUT;
-const NON_FORCE_SYNC_METHOD: reqwest::Method = reqwest::Method::POST;
-
 pub const CAS_ENDPOINT: &str = "http://localhost:8080";
 pub const PREFIX_DEFAULT: &str = "default";
 pub const API_VERSION: &str = "v1";
@@ -773,7 +770,7 @@ impl Client for RemoteClient {
     }
 
     #[instrument(skip_all, name = "RemoteClient::upload_shard", fields(shard.len = shard_data.len()))]
-    async fn upload_shard(&self, shard_data: Bytes, force_sync: bool, _salt: &[u8; 32]) -> Result<bool> {
+    async fn upload_shard(&self, shard_data: Bytes, salt: &[u8; 32]) -> Result<bool> {
         if self.dry_run {
             return Ok(true);
         }
@@ -781,17 +778,12 @@ impl Client for RemoteClient {
         let api_tag = "cas::upload_shard";
         let client = self.authenticated_http_client.clone();
 
-        let method = match force_sync {
-            true => FORCE_SYNC_METHOD,
-            false => NON_FORCE_SYNC_METHOD,
-        };
-
         let url = Url::parse(&format!("{}/{API_VERSION}/shard", self.endpoint))?;
 
         let response: UploadShardResponse = RetryWrapper::new(api_tag)
             .run_and_extract_json(move || {
                 client
-                    .request(method.clone(), url.clone())
+                    .post(url.clone())
                     .with_extension(Api(api_tag))
                     .body(shard_data.clone())
                     .send()

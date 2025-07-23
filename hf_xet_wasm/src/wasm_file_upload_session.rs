@@ -167,7 +167,6 @@ impl FileUploadSession {
         self.client
             .upload_shard(
                 shard_data.into(),
-                false,
                 &self.config.shard_config.repo_salt,
             )
             .await?;

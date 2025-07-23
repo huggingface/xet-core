@@ -282,7 +282,7 @@ impl SessionShardInterface {
                     }
 
                     // Upload the shard.
-                    shard_client.upload_shard(data, false, &salt).await?;
+                    shard_client.upload_shard(data, &salt).await?;
 
                     // Done with the upload, drop the permit.
                     drop(upload_permit);
