@@ -10,7 +10,6 @@ mod file_upload_session;
 pub mod migration_tool;
 mod prometheus_metrics;
 mod remote_client_interface;
-mod repo_salt;
 mod sha256;
 mod shard_interface;
 mod xet_file;

@@ -11,15 +11,9 @@ pub struct DataConfig {
     pub prefix: String,
 }
 
-// Salt is 256-bit in length.
-pub const REPO_SALT_LEN: usize = 32;
-
-pub type RepoSalt = [u8; REPO_SALT_LEN];
-
 #[derive(Debug)]
 pub struct ShardConfig {
     pub prefix: String,
-    pub repo_salt: RepoSalt,
 }
 
 #[derive(Debug)]

@@ -24,7 +24,6 @@ use crate::constants::{
 };
 use crate::errors::Result;
 use crate::file_upload_session::acquire_upload_permit;
-use crate::repo_salt::RepoSalt;
 
 pub struct SessionShardInterface {
     session_shard_manager: Arc<ShardFileManager>,
@@ -40,7 +39,7 @@ pub struct SessionShardInterface {
 
     // If a previous session has been resumed, then we can query against that.  However, this has to
     // be handled differently than the regular session as these xorbs have already been uploaded and are thus
-    // tracked differently by the cempletion tracking.
+    // tracked differently by the completion tracking.
     resumed_session_shard_manager: Option<Arc<ShardFileManager>>,
 
     // We can remove these shards on final upload success.
@@ -136,10 +135,10 @@ impl SessionShardInterface {
     }
 
     /// Queries the client for global deduplication metrics.
-    pub async fn query_dedup_shard_by_chunk(&self, chunk_hash: &MerkleHash, repo_salt: &RepoSalt) -> Result<bool> {
+    pub async fn query_dedup_shard_by_chunk(&self, chunk_hash: &MerkleHash) -> Result<bool> {
         let Ok(Some(new_shard)) = self
             .client
-            .query_for_global_dedup_shard(&self.config.shard_config.prefix, chunk_hash, repo_salt)
+            .query_for_global_dedup_shard(&self.config.shard_config.prefix, chunk_hash)
             .await
             .info_error("Error attempting to query global dedup lookup.")
         else {
@@ -254,7 +253,6 @@ impl SessionShardInterface {
         let shard_bytes_uploaded = Arc::new(AtomicU64::new(0));
 
         for si in shard_list {
-            let salt = self.config.shard_config.repo_salt;
             let shard_client = self.client.clone();
             let shard_prefix = self.config.shard_config.prefix.clone();
             let cache_shard_manager = self.cache_shard_manager.clone();
@@ -282,9 +280,7 @@ impl SessionShardInterface {
                     }
 
                     // Upload the shard.
-                    shard_client
-                        .upload_shard(&shard_prefix, &si.shard_hash, false, data, &salt)
-                        .await?;
+                    shard_client.upload_shard(data).await?;
 
                     // Done with the upload, drop the permit.
                     drop(upload_permit);

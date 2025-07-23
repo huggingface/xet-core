@@ -8,7 +8,6 @@ use cas_object::CompressionScheme;
 use utils::auth::AuthConfig;
 
 use crate::errors::Result;
-use crate::repo_salt::RepoSalt;
 
 #[derive(Debug)]
 pub enum Endpoint {
@@ -67,7 +66,6 @@ pub struct ShardConfig {
     pub session_directory: PathBuf,
     pub cache_directory: PathBuf,
     pub global_dedup_policy: GlobalDedupPolicy,
-    pub repo_salt: RepoSalt,
 }
 
 #[derive(Debug)]
@@ -100,7 +98,6 @@ impl TranslatorConfig {
                 cache_directory: path.join("shard-cache"),
                 session_directory: path.join("shard-session"),
                 global_dedup_policy: Default::default(),
-                repo_salt: RepoSalt::default(),
             },
             repo_info: Some(RepoInfo {
                 repo_paths: vec!["".into()],
