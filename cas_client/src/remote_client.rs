@@ -770,7 +770,7 @@ impl Client for RemoteClient {
     }
 
     #[instrument(skip_all, name = "RemoteClient::upload_shard", fields(shard.len = shard_data.len()))]
-    async fn upload_shard(&self, shard_data: Bytes, salt: &[u8; 32]) -> Result<bool> {
+    async fn upload_shard(&self, shard_data: Bytes, _salt: &[u8; 32]) -> Result<bool> {
         if self.dry_run {
             return Ok(true);
         }

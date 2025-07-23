@@ -38,7 +38,7 @@ pub struct CacheRange {
 ///
 /// implementors are allowed to evict data, a get after a put is not required to
 /// be a cache hit.
-// #[automock]
+#[automock]
 #[async_trait]
 pub trait ChunkCache: Sync + Send {
     /// get should return an Ok() variant if significant error occurred, check the error
