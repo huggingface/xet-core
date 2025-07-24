@@ -1,7 +1,5 @@
-use std::sync::Arc;
-
+use data::FileUploadSession;
 use data::data_client::{clean_file, default_config};
-use data::{FileDownloader, FileUploadSession};
 
 use crate::errors::{GitXetError, Result, bad_protocol, internal};
 use crate::lfs_agent_protocol::*;
@@ -10,10 +8,7 @@ const XET_ACCESS_TOKEN_HEADER: &str = "X-Xet-Access-Token";
 const XET_TOKEN_EXPIRATION_HEADER: &str = "X-Xet-Token-Expiration";
 
 #[derive(Default)]
-pub struct XetAgent {
-    upload_session: Option<Arc<FileUploadSession>>,
-    download_session: Option<FileDownloader>,
-}
+pub struct XetAgent {}
 
 impl TransferAgent for XetAgent {
     async fn init_upload(&mut self, req: &definitions::InitRequestInner) -> Result<()> {
@@ -32,10 +27,10 @@ impl TransferAgent for XetAgent {
         Ok(())
     }
 
-    async fn upload_one<'a, W: std::io::Write>(
+    async fn upload_one<W: std::io::Write>(
         &mut self,
         req: &definitions::TransferRequest,
-        progress_updater: ProgressUpdater<'a, W>,
+        _progress_updater: ProgressUpdater<'_, W>,
     ) -> Result<()> {
         let cas_url = req.action.href.clone();
         let token = req.action.header[XET_ACCESS_TOKEN_HEADER].clone();
@@ -56,10 +51,10 @@ impl TransferAgent for XetAgent {
         Ok(())
     }
 
-    async fn download_one<'a, W: std::io::Write>(
+    async fn download_one<W: std::io::Write>(
         &mut self,
-        req: &definitions::TransferRequest,
-        progress_updater: ProgressUpdater<'a, W>,
+        _req: &definitions::TransferRequest,
+        _progress_updater: ProgressUpdater<'_, W>,
     ) -> Result<std::path::PathBuf> {
         todo!()
     }

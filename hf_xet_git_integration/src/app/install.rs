@@ -31,7 +31,7 @@ fn install_impl(location: ConfigLocation) -> Result<()> {
     let (wd, loc_profile) = match location {
         ConfigLocation::System => (cwd, "--system"),
         ConfigLocation::Global => (cwd, "--global"),
-        ConfigLocation::Local(maybe_loc) => (maybe_loc.unwrap_or_else(|| cwd), "--local"),
+        ConfigLocation::Local(maybe_loc) => (maybe_loc.unwrap_or(cwd), "--local"),
     };
 
     run_git(

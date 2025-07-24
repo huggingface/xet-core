@@ -6,6 +6,7 @@ use crate::lfs_agent_protocol::definitions::*;
 
 pub mod definitions;
 
+#[allow(dead_code)]
 pub struct ProgressUpdater<'a, W: Write> {
     update_channel: &'a W,
 
@@ -14,6 +15,7 @@ pub struct ProgressUpdater<'a, W: Write> {
     bytes_total: u64,
 }
 
+#[allow(dead_code)]
 impl<'a, W: Write> ProgressUpdater<'a, W> {
     fn new(update_channel: &'a W, bytes_total: u64) -> Self {
         Self {

@@ -8,10 +8,11 @@ use serde_json::json;
 
 use crate::errors::{GitXetError, Result, bad_protocol};
 
-/// This file defines the protocol that Git LFS uses to talk to
-/// custom transfer agents. This implementation follows the protocol specification
-/// at https://github.com/git-lfs/git-lfs/blob/main/docs/custom-transfers.md.
+// This file defines the protocol that Git LFS uses to talk to
+// custom transfer agents. This implementation follows the protocol specification
+// at https://github.com/git-lfs/git-lfs/blob/main/docs/custom-transfers.md.
 
+// LFS object oid string length
 const OID_LEN: usize = 64;
 
 #[derive(Debug, Deserialize, PartialEq)]
@@ -27,6 +28,7 @@ pub enum LFSProtocolRequestEvent {
     Terminate,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Serialize)]
 #[serde(tag = "event")]
 pub enum LFSProtocolResponseEvent {
@@ -145,7 +147,7 @@ impl FromStr for LFSProtocolRequestEvent {
     type Err = GitXetError;
 
     fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
-        let req: LFSProtocolRequestEvent = serde_json::from_str(s).map_err(|e| bad_protocol(e))?;
+        let req: LFSProtocolRequestEvent = serde_json::from_str(s).map_err(bad_protocol)?;
         req.validate()?;
         Ok(req)
     }

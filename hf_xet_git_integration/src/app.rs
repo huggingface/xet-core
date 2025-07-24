@@ -1,4 +1,3 @@
-use std::io::{self, BufRead, stdin};
 use std::path::PathBuf;
 
 use clap::{ArgAction, Args, Parser, Subcommand};
@@ -6,7 +5,7 @@ use xet_agent::XetAgent;
 
 use crate::constants::{CURRENT_VERSION, GIT_LFS_CUSTOM_TRANSFER_AGENT_PROGRAM};
 use crate::errors::Result;
-use crate::lfs_agent_protocol::{self, lfs_protocol_loop};
+use crate::lfs_agent_protocol::lfs_protocol_loop;
 
 mod install;
 mod xet_agent;
