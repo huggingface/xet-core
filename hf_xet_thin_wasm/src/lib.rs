@@ -52,7 +52,7 @@ impl JsChunker {
 
     pub fn add_data(&mut self, data: Vec<u8>) -> Result<JsValue, JsValue> {
         let result = self.inner.next_block(&data, false);
-        let mut serializable_result: Vec<JsChunk> = vec![];
+        let mut serializable_result: Vec<JsChunk> = Vec::with_capacity(result.len());
         
         for chunk in result {
             let is_first = !self.first_chunk_outputted;
