@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use merklehash::{HMACKey, MerkleHash};
 use tokio::sync::RwLock;
-use tracing::{debug, info, instrument, trace};
+use tracing::{debug, info, instrument, trace, warn};
 use utils::RwTaskLock;
 
 use crate::cas_structs::*;
@@ -276,7 +276,19 @@ impl ShardFileManager {
 
                         let old_chunk_lookup_size = shard_col.chunk_lookup.len();
 
-                        let insert_hashes = s_truncated_hashes_jh.await??;
+                        let Ok(insert_hashes_task_result) = s_truncated_hashes_jh.await else {
+                            warn!(
+                                "Join error on task reading hashes from {:?}; skipping dedup lookup insert.",
+                                &s.path
+                            );
+                            return Ok(sbkp_lg);
+                        };
+
+                        let Ok(insert_hashes) = insert_hashes_task_result.map_err(|e| {
+                            warn!("Error reading hashes from {:?}: {e:?}. Skipping dedup lookup insert.", &s.path);
+                        }) else {
+                            return Ok(sbkp_lg);
+                        };
 
                         if update_chunk_lookup {
                             shard_col.chunk_lookup.reserve(insert_hashes.len());
