@@ -56,9 +56,10 @@ pub struct InitRequestInner {
 
 #[derive(Debug, Deserialize, PartialEq)]
 pub struct TransferRequest {
-    pub oid: String,                       // oid of the LFS object
-    pub size: u64,                         // size of the LFS object
-    pub path: Option<PathBuf>, // only for "upload" event, the file which this agent should read the data from
+    pub oid: String, // oid of the LFS object
+    pub size: u64,   // size of the LFS object
+    pub path: Option<PathBuf>, /* only for "upload" event, the file which this agent should read the
+                      * data from */
     pub action: GitBatchApiResponseAction, // the action copied from the response from the batch API
 }
 
