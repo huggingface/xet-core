@@ -172,9 +172,8 @@ impl SingleFileCleaner {
         let metadata_ext = FileMetadataExt::new(sha256);
 
         // Now finish the deduplication process.
-        let repo_salt = self.session.config.shard_config.repo_salt;
         let (file_hash, remaining_file_data, deduplication_metrics) =
-            self.dedup_manager.finalize(repo_salt, Some(metadata_ext));
+            self.dedup_manager.finalize(Some(metadata_ext));
 
         // Let's check some things that should be invariants
         {

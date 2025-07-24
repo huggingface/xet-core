@@ -57,10 +57,9 @@ impl DeduplicationDataInterface for UploadSessionDataManager {
     async fn register_global_dedup_query(&mut self, chunk_hash: MerkleHash) -> Result<()> {
         let client = self.session.client.clone();
         let prefix = self.session.config.shard_config.prefix.clone();
-        let repo_salt = self.session.config.shard_config.repo_salt.clone();
         self.query_tasks.spawn(async move {
             client
-                .query_for_global_dedup_shard(&prefix, &chunk_hash, &repo_salt)
+                .query_for_global_dedup_shard(&prefix, &chunk_hash)
                 .await
         });
 

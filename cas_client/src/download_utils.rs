@@ -571,6 +571,7 @@ mod tests {
     use tokio::time::sleep;
 
     use super::*;
+    use crate::remote_client::API_VERSION;
     use crate::{build_http_client, RetryConfig};
 
     #[tokio::test]
@@ -612,7 +613,7 @@ mod tests {
         let server = MockServer::start();
         server.mock(|when, then| {
             when.method(GET)
-                .path(format!("/reconstruction/{}", MerkleHash::default()))
+                .path(format!("/{API_VERSION}/reconstruction/{}", MerkleHash::default()))
                 .header(RANGE.as_str(), HttpRange::from(file_range).range_header());
             let response = QueryReconstructionResponse {
                 offset_into_first_range: 0,
@@ -659,7 +660,7 @@ mod tests {
         let server = MockServer::start();
         let mock = server.mock(|when, then| {
             when.method(GET)
-                .path(format!("/reconstruction/{}", MerkleHash::default()))
+                .path(format!("/{API_VERSION}/reconstruction/{}", MerkleHash::default()))
                 .header(RANGE.as_str(), HttpRange::from(file_range_to_refresh).range_header());
             let response = QueryReconstructionResponse {
                 offset_into_first_range: 0,
@@ -716,7 +717,7 @@ mod tests {
         // Arrange server
         let mock_fi = server.mock(|when, then| {
             when.method(GET)
-                .path(format!("/reconstruction/{}", MerkleHash::default()))
+                .path(format!("/{API_VERSION}/reconstruction/{}", MerkleHash::default()))
                 .header(RANGE.as_str(), HttpRange::from(file_range).range_header());
             let response = QueryReconstructionResponse {
                 offset_into_first_range: 0,

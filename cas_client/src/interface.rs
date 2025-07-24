@@ -49,22 +49,10 @@ pub trait Client {
         file_hash: &MerkleHash,
     ) -> Result<Option<(MDBFileInfo, Option<MerkleHash>)>>;
 
-    async fn query_for_global_dedup_shard(
-        &self,
-        prefix: &str,
-        chunk_hash: &MerkleHash,
-        salt: &[u8; 32],
-    ) -> Result<Option<Bytes>>;
+    async fn query_for_global_dedup_shard(&self, prefix: &str, chunk_hash: &MerkleHash) -> Result<Option<Bytes>>;
 
     /// Upload a new shard.
-    async fn upload_shard(
-        &self,
-        prefix: &str,
-        hash: &MerkleHash,
-        force_sync: bool,
-        shard_data: bytes::Bytes,
-        salt: &[u8; 32],
-    ) -> Result<bool>;
+    async fn upload_shard(&self, shard_data: Bytes) -> Result<bool>;
 
     /// Upload a new xorb.
     async fn upload_xorb(
