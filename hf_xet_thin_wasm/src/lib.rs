@@ -16,13 +16,18 @@ extern "C" {
 pub struct JsChunk {
     pub hash: String,
     pub length: u32,
+    pub dedup: bool,
 }
 
-impl From<deduplication::Chunk> for JsChunk {
-    fn from(value: deduplication::Chunk) -> Self {
+
+
+impl JsChunk {
+    fn new_with_dedup(chunk: deduplication::Chunk, is_first_chunk: bool) -> Self {
+        let hash_eligible = mdb_shard::constants::hash_is_global_dedup_eligible(&chunk.hash);
         JsChunk {
-            hash: value.hash.hex(),
-            length: value.data.len() as u32,
+            hash: chunk.hash.hex(),
+            length: chunk.data.len() as u32,
+            dedup: is_first_chunk || hash_eligible,
         }
     }
 }
@@ -30,6 +35,7 @@ impl From<deduplication::Chunk> for JsChunk {
 #[wasm_bindgen(js_name = "Chunker")]
 pub struct JsChunker {
     inner: deduplication::Chunker,
+    first_chunk_outputted: bool,
 }
 
 // Default target chunk size is 64 * 1024
@@ -40,19 +46,29 @@ impl JsChunker {
     pub fn new(target_chunk_size: usize) -> JsChunker {
         JsChunker {
             inner: deduplication::Chunker::new(target_chunk_size),
+            first_chunk_outputted: false,
         }
     }
 
     pub fn add_data(&mut self, data: Vec<u8>) -> Result<JsValue, JsValue> {
         let result = self.inner.next_block(&data, false);
-        let serializable_result: Vec<JsChunk> = result.into_iter().map(JsChunk::from).collect();
+        let mut serializable_result: Vec<JsChunk> = vec![];
+        
+        for chunk in result {
+            let is_first = !self.first_chunk_outputted;
+            serializable_result.push(JsChunk::new_with_dedup(chunk, is_first));
+            self.first_chunk_outputted = true;
+        }
+        
         serde_wasm_bindgen::to_value(&serializable_result).map_err(|e| e.into())
     }
 
     pub fn finish(&mut self) -> Result<JsValue, JsValue> {
         let mut result: Vec<JsChunk> = vec![];
         if let Some(final_chunk) = self.inner.finish() {
-            result.push(JsChunk::from(final_chunk));
+            let is_first = !self.first_chunk_outputted;
+            result.push(JsChunk::new_with_dedup(final_chunk, is_first));
+            self.first_chunk_outputted = true;
         };
         serialize_result(&result)
     }
