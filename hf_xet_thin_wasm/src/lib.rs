@@ -16,6 +16,7 @@ extern "C" {
 pub struct JsChunk {
     pub hash: String,
     pub length: u32,
+    #[serde(skip_deserializing)]
     pub dedup: bool,
 }
 
