@@ -68,4 +68,8 @@ pub trait Client {
     /// Indicates if the serialized cas object should have a written footer.
     /// This should only be true for testing with LocalClient.
     fn use_xorb_footer(&self) -> bool;
+
+    /// Indicates if the serialized cas object should have a written footer.
+    /// This should only be true for testing with LocalClient.
+    fn use_shard_footer(&self) -> bool;
 }

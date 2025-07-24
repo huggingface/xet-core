@@ -710,6 +710,10 @@ impl Client for RemoteClient {
         false
     }
 
+    fn use_shard_footer(&self) -> bool {
+        false
+    }
+
     #[cfg(not(target_family = "wasm"))]
     async fn get_file(
         &self,

@@ -381,6 +381,10 @@ impl Client for LocalClient {
     fn use_xorb_footer(&self) -> bool {
         true
     }
+
+    fn use_shard_footer(&self) -> bool {
+        true
+    }
 }
 
 fn map_heed_db_error(e: heed::Error) -> CasClientError {

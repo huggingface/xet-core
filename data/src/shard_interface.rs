@@ -1,8 +1,11 @@
+use std::fs::File;
+use std::io::Read;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
+use bytes::Bytes;
 use cas_client::Client;
 use error_printer::ErrorPrinter;
 use mdb_shard::cas_structs::MDBCASInfo;
@@ -270,7 +273,18 @@ impl SessionShardInterface {
             shard_uploads.spawn(
                 async move {
                     debug!("Uploading shard {shard_prefix}/{:?} from staging area to CAS.", &si.shard_hash);
-                    let data: bytes::Bytes = std::fs::read(&si.path)?.into();
+
+                    let data: Bytes = if !shard_client.use_shard_footer() {
+                        let split_off_index = si.shard.metadata.file_lookup_offset as usize;
+                        // Read only the portion of the shard file up to the file_lookup_offset,
+                        // which excludes the footer and lookup sections.
+                        let mut file = File::open(&si.path)?;
+                        let mut buf = vec![0u8; split_off_index];
+                        file.read_exact(&mut buf)?;
+                        Bytes::from(buf)
+                    } else {
+                        std::fs::read(&si.path)?.into()
+                    };
 
                     shard_bytes_uploaded.fetch_add(data.len() as u64, Ordering::Relaxed);
 
