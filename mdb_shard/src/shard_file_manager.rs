@@ -11,7 +11,7 @@ use utils::RwTaskLock;
 
 use crate::cas_structs::*;
 use crate::constants::{
-    CHUNK_INDEX_TABLE_MAX_SIZE, MDB_SHARD_EXPIRATION_BUFFER_SECS, MDB_SHARD_MIN_TARGET_SIZE, SHARD_CACHE_SIZE_LIMIT,
+    CHUNK_INDEX_TABLE_MAX_SIZE, MDB_SHARD_EXPIRATION_BUFFER_SECS, MDB_SHARD_MAX_TARGET_SIZE, SHARD_CACHE_SIZE_LIMIT,
 };
 use crate::error::{MDBShardError, Result};
 use crate::file_structs::*;
@@ -77,7 +77,7 @@ pub struct ShardFileManager {
     shard_bookkeeper: RwTaskLock<ShardBookkeeper, MDBShardError>,
     current_state: RwLock<MDBInMemoryShard>,
     shard_directory: PathBuf,
-    target_shard_min_size: u64,
+    target_shard_max_size: u64,
     shard_directory_cleaned: AtomicBool,
 }
 
@@ -104,18 +104,18 @@ impl ShardFileManager {
         session_directory: impl AsRef<Path>,
         scan_directory: bool,
     ) -> Result<Arc<Self>> {
-        Self::new_impl(session_directory, false, *MDB_SHARD_MIN_TARGET_SIZE, scan_directory, 0).await
+        Self::new_impl(session_directory, false, *MDB_SHARD_MAX_TARGET_SIZE, scan_directory, 0).await
     }
 
     // Construction functions
     pub async fn new_in_cache_directory(cache_directory: impl AsRef<Path>) -> Result<Arc<Self>> {
-        Self::new_impl(cache_directory, true, *MDB_SHARD_MIN_TARGET_SIZE, true, *SHARD_CACHE_SIZE_LIMIT).await
+        Self::new_impl(cache_directory, true, *MDB_SHARD_MAX_TARGET_SIZE, true, *SHARD_CACHE_SIZE_LIMIT).await
     }
 
     async fn new_impl(
         directory: impl AsRef<Path>,
         is_cachable: bool,
-        target_shard_min_size: u64,
+        target_shard_max_size: u64,
         scan_directory: bool,
         prune_cache_to_size: u64, // Set to 0 to disable pruning
     ) -> Result<Arc<Self>> {
@@ -131,7 +131,7 @@ impl ShardFileManager {
                 shard_bookkeeper: RwTaskLock::from_value(ShardBookkeeper::new()),
                 current_state: RwLock::new(MDBInMemoryShard::default()),
                 shard_directory: shard_directory.clone(),
-                target_shard_min_size,
+                target_shard_max_size,
                 shard_directory_cleaned: AtomicBool::new(false),
             })
         };
@@ -152,17 +152,7 @@ impl ShardFileManager {
 
             // Now, create and insert it.
             let mut rw_lg = MDB_SHARD_FILE_MANAGER_CACHE.write().await;
-            let sfm_entry = rw_lg.entry(shard_directory.clone());
-
-            // See if it's in there; insert otherwise
-            match sfm_entry {
-                std::collections::hash_map::Entry::Vacant(sfm_slot) => {
-                    let sfm = create_new_sfm();
-                    sfm_slot.insert(sfm.clone());
-                    sfm
-                },
-                std::collections::hash_map::Entry::Occupied(sfm) => sfm.get().clone(),
-            }
+            rw_lg.entry(shard_directory.clone()).or_insert_with(create_new_sfm).clone()
         };
 
         if scan_directory {
@@ -438,15 +428,23 @@ impl ShardFileManager {
 
     /// Add CAS info to the in-memory state.
     pub async fn add_cas_block(&self, cas_block_contents: impl Into<Arc<MDBCASInfo>>) -> Result<()> {
+        let cas_block_contents = cas_block_contents.into();
         let mut lg = self.current_state.write().await;
 
-        lg.add_cas_block(cas_block_contents)?;
+        // cut a new shard if adding this cas block will take us over the max shard file size
+        let new_shard_path = if lg.shard_file_size() + cas_block_contents.num_bytes() > self.target_shard_max_size {
+            let path = Self::cut_shard(&mut lg, &self.shard_directory)?;
+            Some(path)
+        } else {
+            None
+        };
 
-        // See if this put it over the target minimum size, allowing us to cut a new shard
-        if lg.shard_file_size() >= self.target_shard_min_size {
-            // Drop the lock guard before doing the flush.
-            drop(lg);
-            self.flush().await?;
+        lg.add_cas_block(cas_block_contents)?;
+        drop(lg);
+
+        // if we cut a new shard, register it after dropping the lock guard
+        if let Some(new_shard_path) = new_shard_path {
+            self.register_shards(&[MDBShardFile::load_from_file(&new_shard_path)?]).await?;
         }
 
         Ok(())
@@ -456,16 +454,29 @@ impl ShardFileManager {
     pub async fn add_file_reconstruction_info(&self, file_info: MDBFileInfo) -> Result<()> {
         let mut lg = self.current_state.write().await;
 
-        lg.add_file_reconstruction_info(file_info)?;
+        // cut a new shard if adding this file will take us over the max shard file size
+        let new_shard_path = if lg.shard_file_size() + file_info.num_bytes() > self.target_shard_max_size {
+            let path = Self::cut_shard(&mut lg, &self.shard_directory)?;
+            Some(path)
+        } else {
+            None
+        };
 
-        // See if this put it over the target minimum size, allowing us to cut a new shard
-        if lg.shard_file_size() >= self.target_shard_min_size {
-            // Drop the lock guard before doing the flush.
-            drop(lg);
-            self.flush().await?;
+        lg.add_file_reconstruction_info(file_info)?;
+        drop(lg);
+
+        // if we cut a new shard, register it after dropping the lock guard
+        if let Some(new_shard_path) = new_shard_path {
+            self.register_shards(&[MDBShardFile::load_from_file(&new_shard_path)?]).await?;
         }
 
         Ok(())
+    }
+
+    fn cut_shard(lg: &mut MDBInMemoryShard, shard_directory: &Path) -> Result<PathBuf> {
+        let new_shard_path = lg.write_to_directory(shard_directory, None)?;
+        *lg = MDBInMemoryShard::default();
+        Ok(new_shard_path)
     }
 
     /// Flush the current state of the in-memory lookups to a shard in the session directory,
@@ -773,7 +784,7 @@ mod tests {
             verify_mdb_shards_match(&mdb2, &mdb_in_mem, true).await?;
 
             // Now, merge shards in the background.
-            let merged_shards = consolidate_shards_in_directory(tmp_dir.path(), *MDB_SHARD_MIN_TARGET_SIZE, false)?;
+            let merged_shards = consolidate_shards_in_directory(tmp_dir.path(), *MDB_SHARD_MAX_TARGET_SIZE, false)?;
 
             assert_eq!(merged_shards.len(), 1);
             for si in merged_shards {
@@ -849,7 +860,7 @@ mod tests {
 
             {
                 let merged_shards =
-                    consolidate_shards_in_directory(tmp_dir.path(), *MDB_SHARD_MIN_TARGET_SIZE, false).unwrap();
+                    consolidate_shards_in_directory(tmp_dir.path(), *MDB_SHARD_MAX_TARGET_SIZE, false).unwrap();
 
                 assert_eq!(merged_shards.len(), 1);
 
@@ -1071,7 +1082,7 @@ mod tests {
     }
 
     async fn shard_list_with_timestamp_filtering(path: &Path) -> Result<Vec<Arc<MDBShardFile>>> {
-        Ok(ShardFileManager::new_impl(path, false, *MDB_SHARD_MIN_TARGET_SIZE, true, 0)
+        Ok(ShardFileManager::new_impl(path, false, *MDB_SHARD_MAX_TARGET_SIZE, true, 0)
             .await?
             .registered_shard_list()
             .await?)
