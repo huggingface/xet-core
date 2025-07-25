@@ -232,9 +232,9 @@ mod test {
         // init event with download operation
         let message2 = r#"
             { "event": "init", "operation": "download", "remote": "deploy", "concurrent": true, "concurrenttransfers": 1 }"#;
-        let expected2 = LFSProtocolRequestEvent::Init(InitRequest::Upload(InitRequestInner {
-            remote: "origin".to_owned(),
-            concurrent: false,
+        let expected2 = LFSProtocolRequestEvent::Init(InitRequest::Download(InitRequestInner {
+            remote: "deploy".to_owned(),
+            concurrent: true,
             concurrenttransfers: Some(1),
         }));
         let parsed2: LFSProtocolRequestEvent = message2.parse()?;
