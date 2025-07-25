@@ -9,7 +9,7 @@ use cas_client::remote_client::PREFIX_DEFAULT;
 use cas_client::{CacheConfig, FileProvider, OutputProvider, CHUNK_CACHE_SIZE_BYTES};
 use cas_object::CompressionScheme;
 use deduplication::DeduplicationMetrics;
-use dirs::home_dir;
+use dirs::cache_dir;
 use parutils::{tokio_par_for_each, ParallelError};
 use progress_tracking::item_tracking::ItemProgressUpdater;
 use progress_tracking::TrackingProgressUpdater;
@@ -41,8 +41,8 @@ pub fn default_config(
         let home = env::var("HF_HOME").unwrap();
         PathBuf::from(home).join("xet")
     } else {
-        let home = home_dir().unwrap_or(current_dir()?);
-        home.join(".cache").join("huggingface").join("xet")
+        let cache = cache_dir().unwrap_or(current_dir()?.join(".cache"));
+        cache.join("huggingface").join("xet")
     };
 
     let (token, token_expiration) = token_info.unzip();
@@ -373,11 +373,7 @@ mod tests {
         let endpoint = "http://localhost:8080".to_string();
         let result = default_config(endpoint, None, None, None);
 
-        let expected = home_dir()
-            .unwrap_or(current_dir().unwrap())
-            .join(".cache")
-            .join("huggingface")
-            .join("xet");
+        let expected = cache_dir().unwrap().join("huggingface").join("xet");
 
         assert!(result.is_ok());
         let config = result.unwrap();
