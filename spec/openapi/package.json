@@ -1,0 +1,29 @@
+{
+  "name": "cas-reconstruction-spec",
+  "version": "1.0.0",
+  "description": "OpenAPI specification and client generation for CAS Reconstruction API",
+  "private": true,
+  "scripts": {
+    "generate": "./generate-client.sh",
+    "generate-to": "./generate-client.sh",
+    "lint-spec": "npx @apidevtools/swagger-parser validate reconstruction_spec.yaml",
+    "preview-docs": "npx @redocly/cli preview-docs reconstruction_spec.yaml",
+    "bundle": "npx @redocly/cli bundle reconstruction_spec.yaml --output bundled-spec.yaml",
+    "serve-docs": "npx @redocly/cli preview-docs reconstruction_spec.yaml --port 8081"
+  },
+  "keywords": [
+    "openapi",
+    "cas",
+    "reconstruction",
+    "api",
+    "specification"
+  ],
+  "devDependencies": {
+    "@apidevtools/swagger-parser": "^10.1.0",
+    "@openapitools/openapi-generator-cli": "^2.7.0",
+    "@redocly/cli": "^1.0.0"
+  },
+  "engines": {
+    "node": ">=16.0.0"
+  }
+}
