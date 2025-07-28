@@ -76,7 +76,7 @@ fn init_logging_to_file(path: impl AsRef<Path>) {
 }
 
 fn init_global_logging(py: Python) -> Option<TelemetryTaskInfo> {
-    if let Ok(path) = env::var("HF_XET_LOG_FILE_PATH") {
+    if let Ok(path) = env::var("HF_XET_LOG_FILE") {
         init_logging_to_file(path);
         return None;
     }
