@@ -73,6 +73,14 @@ fn init_logging_to_file(path: impl AsRef<Path>) {
             .with(filter_layer)
             .init();
     }
+
+    let root_span = tracing::info_span!("process_root", pid = std::process::id());
+
+    // `enter()` returns an `EnteredSpan` guard whose Drop impl would exit
+    // the span.  Instead of storing it (needs `Sync`) we just *forget* it,
+    // which keeps the span entered for the lifetime of the program.
+    let guard = root_span.enter();
+    std::mem::forget(guard);
 }
 
 fn init_global_logging(py: Python) -> Option<TelemetryTaskInfo> {
