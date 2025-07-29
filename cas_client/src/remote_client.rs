@@ -336,7 +336,7 @@ impl RemoteClient {
                 match item {
                     DownloadQueueItem::End => {
                         // everything processed
-                        debug!("download queue emptied");
+                        eprintln!("download queue emptied");
                         drop(running_downloads_tx);
                         break;
                     },
@@ -346,9 +346,9 @@ impl RemoteClient {
 
                         use rand::Rng;
                         let x: u64 = rand::rng().random();
-                        debug!("{x:x}: Acquiring download permit.");
+                        eprintln!("{x:x}: Acquiring download permit.");
                         let permit = DOWNLOAD_CONNECTION_CONCURRENCY_LIMITER.clone().acquire_owned().await?;
-                        debug!("{x:x}: Permit acquried: spawning 1 download task");
+                        eprintln!("{x:x}: Permit acquried: spawning 1 download task");
                         let future: JoinHandle<Result<(TermDownloadResult<Vec<u8>>, OwnedSemaphorePermit)>> =
                             tokio::spawn(async move {
                                 let data = term_download.run().await?;
@@ -360,7 +360,7 @@ impl RemoteClient {
                     DownloadQueueItem::Metadata(fetch_info) => {
                         // query for the file info of the first segment
                         let segment_size = download_scheduler_clone.next_segment_size()?;
-                        debug!("querying file info of size {segment_size}");
+                        eprintln!("querying file info of size {segment_size}");
                         let (segment, maybe_remainder) = fetch_info.take_segment(segment_size);
 
                         let Some((offset_into_first_range, terms)) = segment.query().await? else {
@@ -372,7 +372,7 @@ impl RemoteClient {
                         let segment = Arc::new(segment);
                         // define the term download tasks
                         let mut remaining_segment_len = segment_size;
-                        debug!("enqueueing {} download tasks", terms.len());
+                        eprintln!("enqueueing {} download tasks", terms.len());
                         for (i, term) in terms.into_iter().enumerate() {
                             let skip_bytes = if i == 0 { offset_into_first_range } else { 0 };
                             let take = remaining_total_len
@@ -396,7 +396,7 @@ impl RemoteClient {
 
                             remaining_total_len -= take;
                             remaining_segment_len -= take;
-                            debug!("enqueueing {download_task:?}");
+                            eprintln!("enqueueing {download_task:?}");
                             task_tx.send(DownloadQueueItem::DownloadTask(download_task))?;
                         }
 
@@ -418,7 +418,10 @@ impl RemoteClient {
         while let Some(result) = running_downloads_rx.recv().await {
             match result.await {
                 Ok(Ok((mut download_result, permit))) => {
-                    debug!("Task receive loop: Received ok result with data of size {}", download_result.payload.len());
+                    eprintln!(
+                        "Task receive loop: Received ok result with data of size {}",
+                        download_result.payload.len()
+                    );
                     let data = take(&mut download_result.payload);
                     writer.write_all(&data)?;
                     // drop permit after data written out so they don't accumulate in memory unbounded
@@ -434,16 +437,16 @@ impl RemoteClient {
                     download_scheduler.tune_on(download_result)?;
                 },
                 Ok(Err(e)) => {
-                    debug!("Task receive loop: Received error result: {e:?}");
+                    eprintln!("Task receive loop: Received error result: {e:?}");
                     Err(e)?
                 },
                 Err(e) => Err(anyhow!("{e:?}"))?,
             }
         }
-        debug!("Task receive loop exited.");
+        eprintln!("Task receive loop exited.");
         writer.flush()?;
 
-        debug!("Awaiting on the dispatcher.");
+        eprintln!("Awaiting on the dispatcher.");
         queue_dispatcher.await??;
 
         Ok(total_written)
