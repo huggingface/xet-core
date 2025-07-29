@@ -292,8 +292,6 @@ pub fn hf_xet(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     // huggingface_hub.
     m.add_class::<PyPointerFile>()?;
 
-    eprintln!("Initializing hf_xet, PID = {}", std::process::id());
-
     // Init the threadpool
     runtime::init_threadpool(py)?;
 
