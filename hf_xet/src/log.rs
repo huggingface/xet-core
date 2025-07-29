@@ -1,4 +1,5 @@
 use std::env;
+use std::path::Path;
 use std::sync::{Arc, OnceLock};
 
 use pyo3::Python;
@@ -17,12 +18,75 @@ const DEFAULT_LOG_LEVEL: &str = "warn";
 #[cfg(debug_assertions)]
 const DEFAULT_LOG_LEVEL: &str = "warn";
 
-fn init_global_logging(py: Python) -> Option<TelemetryTaskInfo> {
-    let fmt_layer = tracing_subscriber::fmt::layer()
+fn use_json() -> bool {
+    env::var("HF_XET_LOG_FORMAT")
+        .unwrap_or_else(|_| "json".to_string())
+        .to_ascii_lowercase()
+        == "json"
+}
+
+fn init_logging_to_file(path: impl AsRef<Path>) {
+    // Set up logging to a file.
+    use std::ffi::OsStr;
+
+    use tracing_appender::{non_blocking, rolling};
+
+    // Make sure the directory for the log exists.
+    let path = path.as_ref();
+    if let Some(parent) = path.parent() {
+        if let Err(e) = std::fs::create_dir_all(parent) {
+            eprintln!("failed to create log directory {parent:?}: {e}");
+        }
+    }
+
+    // Build a non‑blocking file appender. • `rolling::never` = one static file, no rotation. • Keep the
+    // `WorkerGuard` alive so the background thread doesn’t shut down and drop messages.
+    let file_appender = rolling::never(
+        path.parent().unwrap_or_else(|| Path::new(".")),
+        path.file_name().unwrap_or_else(|| OsStr::new("xet.log")),
+    );
+    let (writer, guard) = non_blocking(file_appender);
+
+    // Store the guard globally so it isn’t dropped.
+    static FILE_GUARD: OnceLock<tracing_appender::non_blocking::WorkerGuard> = OnceLock::new();
+    let _ = FILE_GUARD.set(guard); // ignore error if already initialised
+
+    // Build the fmt layer.
+    let fmt_layer_base = tracing_subscriber::fmt::layer()
         .with_line_number(true)
         .with_file(true)
         .with_target(false)
-        .json();
+        .with_writer(writer);
+
+    // Standard filter layer: RUST_LOG env var or DEFAULT_LOG_LEVEL fallback.
+    let filter_layer = EnvFilter::try_from_default_env()
+        .or_else(|_| EnvFilter::try_new(DEFAULT_LOG_LEVEL))
+        .unwrap_or_default();
+
+    // Initialise the subscriber.
+    if use_json() {
+        tracing_subscriber::registry()
+            .with(fmt_layer_base.json())
+            .with(filter_layer)
+            .init();
+    } else {
+        tracing_subscriber::registry()
+            .with(fmt_layer_base.pretty())
+            .with(filter_layer)
+            .init();
+    }
+}
+
+fn init_global_logging(py: Python) -> Option<TelemetryTaskInfo> {
+    if let Ok(path) = env::var("HF_XET_LOG_FILE") {
+        init_logging_to_file(path);
+        return None;
+    }
+
+    let fmt_layer_base = tracing_subscriber::fmt::layer()
+        .with_line_number(true)
+        .with_file(true)
+        .with_target(false);
 
     let filter_layer = EnvFilter::try_from_default_env()
         .or_else(|_| EnvFilter::try_new(DEFAULT_LOG_LEVEL))
@@ -31,7 +95,14 @@ fn init_global_logging(py: Python) -> Option<TelemetryTaskInfo> {
     // Client-side telemetry, default is OFF
     // To enable telemetry set env var HF_HUB_ENABLE_TELEMETRY
     if env::var("HF_HUB_ENABLE_TELEMETRY").is_err_and(|e| e == env::VarError::NotPresent) {
-        tracing_subscriber::registry().with(fmt_layer).with(filter_layer).init();
+        let tr_sub = tracing_subscriber::registry().with(filter_layer);
+
+        if use_json() {
+            tr_sub.with(fmt_layer_base.json()).init();
+        } else {
+            tr_sub.with(fmt_layer_base.pretty()).init();
+        }
+
         None
     } else {
         let telemetry_buffer_layer = LogBufferLayer::new(py, TELEMETRY_PRE_ALLOC_BYTES);
@@ -42,8 +113,8 @@ fn init_global_logging(py: Python) -> Option<TelemetryTaskInfo> {
             telemetry_buffer_layer.with_filter(FilterFn::new(|meta| meta.target() == "client_telemetry"));
 
         tracing_subscriber::registry()
-            .with(fmt_layer)
             .with(filter_layer)
+            .with(fmt_layer_base.json())
             .with(telemetry_filter_layer)
             .init();
 
