@@ -110,7 +110,7 @@ pub fn download_files(
     use rand::Rng;
 
     let x: u64 = rand::rng().random();
-    eprintln!("{x:x}: Downloading files {file_infos:?}");
+    eprintln!("{x:x}: (PID = {}) Downloading files {file_infos:?}", std::process::id());
 
     let res = async_run(py, async move {
         let out: Vec<String> =
@@ -267,6 +267,8 @@ pub fn hf_xet(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     // This supports backward compatibility for PyPointerFile with old versions
     // huggingface_hub.
     m.add_class::<PyPointerFile>()?;
+
+    eprintln!("Initializing hf_xet, PID = {}", std::process::id());
 
     // Init the threadpool
     runtime::init_threadpool(py)?;
