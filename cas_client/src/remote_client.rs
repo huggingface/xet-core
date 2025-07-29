@@ -423,7 +423,7 @@ impl RemoteClient {
                     total_written += data.len() as u64;
 
                     // Now inspect the download metrics and tune the download degree of concurrency
-                    download_scheduler.tune_on(download_result)?;
+                    // download_scheduler.tune_on(download_result)?;
                 },
                 Ok(Err(e)) => Err(e)?,
                 Err(e) => Err(anyhow!("{e:?}"))?,
