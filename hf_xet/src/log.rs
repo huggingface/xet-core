@@ -18,14 +18,11 @@ const DEFAULT_LOG_LEVEL: &str = "warn";
 #[cfg(debug_assertions)]
 const DEFAULT_LOG_LEVEL: &str = "warn";
 
-fn use_json() -> bool {
-    env::var("HF_XET_LOG_FORMAT")
-        .unwrap_or_else(|_| "json".to_string())
-        .to_ascii_lowercase()
-        == "json"
+fn use_json() -> Option<bool> {
+    env::var("HF_XET_LOG_FORMAT").ok().map(|s| s.to_ascii_lowercase() == "json")
 }
 
-fn init_logging_to_file(path: impl AsRef<Path>) {
+fn init_logging_to_file(path: impl AsRef<Path>) -> Result<(), std::io::Error> {
     // Set up logging to a file.
     use std::ffi::OsStr;
 
@@ -33,10 +30,10 @@ fn init_logging_to_file(path: impl AsRef<Path>) {
 
     // Make sure the directory for the log exists.
     let path = path.as_ref();
+    let path = std::path::absolute(path)?;
+
     if let Some(parent) = path.parent() {
-        if let Err(e) = std::fs::create_dir_all(parent) {
-            eprintln!("failed to create log directory {parent:?}: {e}");
-        }
+        std::fs::create_dir_all(parent)?;
     }
 
     // Build a non‑blocking file appender. • `rolling::never` = one static file, no rotation. • Keep the
@@ -64,7 +61,7 @@ fn init_logging_to_file(path: impl AsRef<Path>) {
         .unwrap_or_default();
 
     // Initialise the subscriber.
-    if use_json() {
+    if use_json().unwrap_or(true) {
         tracing_subscriber::registry()
             .with(fmt_layer_base.json())
             .with(filter_layer)
@@ -75,12 +72,18 @@ fn init_logging_to_file(path: impl AsRef<Path>) {
             .with(filter_layer)
             .init();
     }
+
+    Ok(())
 }
 
 fn init_global_logging(py: Python) -> Option<TelemetryTaskInfo> {
     if let Ok(path) = env::var("HF_XET_LOG_FILE") {
-        init_logging_to_file(path);
-        return None;
+        match init_logging_to_file(&path) {
+            Ok(_) => return None,
+            Err(e) => {
+                eprintln!("Error opening log file {path:?} for writing: {e:?}.  Reverting to logging to console.");
+            },
+        }
     }
 
     let fmt_layer_base = tracing_subscriber::fmt::layer()
@@ -97,7 +100,7 @@ fn init_global_logging(py: Python) -> Option<TelemetryTaskInfo> {
     if env::var("HF_HUB_ENABLE_TELEMETRY").is_err_and(|e| e == env::VarError::NotPresent) {
         let tr_sub = tracing_subscriber::registry().with(filter_layer);
 
-        if use_json() {
+        if use_json().unwrap_or(false) {
             tr_sub.with(fmt_layer_base.json()).init();
         } else {
             tr_sub.with(fmt_layer_base.pretty()).init();
