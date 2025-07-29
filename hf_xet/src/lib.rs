@@ -107,7 +107,9 @@ pub fn download_files(
     let refresher = token_refresher.map(WrappedTokenRefresher::from_func).transpose()?.map(Arc::new);
     let updaters = progress_updater.map(try_parse_progress_updaters).transpose()?;
 
-    let x : u64 = rand::rng().gen();
+    use rand::Rng;
+
+    let x: u64 = rand::rng().random();
     eprintln!("{x:x}: Downloading files {file_infos:?}");
 
     let res = async_run(py, async move {
@@ -119,7 +121,7 @@ pub fn download_files(
         PyResult::Ok(out)
     });
 
-    eprintln!("{x:x}: Completed."); 
+    eprintln!("{x:x}: Completed.");
 
     res
 }
