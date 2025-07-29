@@ -1,12 +1,15 @@
+use std::fs::File;
+use std::io::Read;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
+use bytes::Bytes;
 use cas_client::Client;
 use error_printer::ErrorPrinter;
 use mdb_shard::cas_structs::MDBCASInfo;
-use mdb_shard::constants::MDB_SHARD_MIN_TARGET_SIZE;
+use mdb_shard::constants::MDB_SHARD_MAX_TARGET_SIZE;
 use mdb_shard::file_structs::{FileDataSequenceEntry, MDBFileInfo};
 use mdb_shard::session_directory::{consolidate_shards_in_directory, merge_shards_background, ShardMergeResult};
 use mdb_shard::shard_in_memory::MDBInMemoryShard;
@@ -24,7 +27,6 @@ use crate::constants::{
 };
 use crate::errors::Result;
 use crate::file_upload_session::acquire_upload_permit;
-use crate::repo_salt::RepoSalt;
 
 pub struct SessionShardInterface {
     session_shard_manager: Arc<ShardFileManager>,
@@ -40,7 +42,7 @@ pub struct SessionShardInterface {
 
     // If a previous session has been resumed, then we can query against that.  However, this has to
     // be handled differently than the regular session as these xorbs have already been uploaded and are thus
-    // tracked differently by the cempletion tracking.
+    // tracked differently by the completion tracking.
     resumed_session_shard_manager: Option<Arc<ShardFileManager>>,
 
     // We can remove these shards on final upload success.
@@ -73,14 +75,14 @@ impl SessionShardInterface {
         std::fs::create_dir_all(&xorb_metadata_staging_dir)?;
 
         // To allow resume from previous session attempts, merge and copy all the valid shards in the xorb metadata
-        // directory into the current session directory. The originals will remain until all the current senssion xorbs
+        // directory into the current session directory. The originals will remain until all the current session xorbs
         // have been uploaded successfully.  (Also, don't do this on a dry run, as it could screw up non-dry runs).
         let shard_merge_jh = {
             if !dry_run {
                 Some(merge_shards_background(
                     &xorb_metadata_staging_dir,
                     &session_dir,
-                    *MDB_SHARD_MIN_TARGET_SIZE,
+                    *MDB_SHARD_MAX_TARGET_SIZE,
                     true,
                 ))
             } else {
@@ -136,10 +138,10 @@ impl SessionShardInterface {
     }
 
     /// Queries the client for global deduplication metrics.
-    pub async fn query_dedup_shard_by_chunk(&self, chunk_hash: &MerkleHash, repo_salt: &RepoSalt) -> Result<bool> {
-        let Ok(Some(new_shard_file)) = self
+    pub async fn query_dedup_shard_by_chunk(&self, chunk_hash: &MerkleHash) -> Result<bool> {
+        let Ok(Some(new_shard)) = self
             .client
-            .query_for_global_dedup_shard(&self.config.shard_config.prefix, chunk_hash, repo_salt)
+            .query_for_global_dedup_shard(&self.config.shard_config.prefix, chunk_hash)
             .await
             .info_error("Error attempting to query global dedup lookup.")
         else {
@@ -148,7 +150,7 @@ impl SessionShardInterface {
 
         // The above process found something and downloaded it; it should now be in the cache directory and valid
         // for deduplication.  Register it and restart the dedup process at the start of this chunk.
-        self.cache_shard_manager.register_shards_by_path(&[new_shard_file]).await?;
+        self.cache_shard_manager.import_shard_from_bytes(&new_shard).await?;
 
         Ok(true)
     }
@@ -242,7 +244,7 @@ impl SessionShardInterface {
         // First, scan, merge, and fill out any shards in the session directory
         let shard_list = consolidate_shards_in_directory(
             self.session_shard_manager.shard_directory(),
-            *MDB_SHARD_MIN_TARGET_SIZE,
+            *MDB_SHARD_MAX_TARGET_SIZE,
             // Here, we want to error out if some of the information isn't present or corrupt, so set skip_on_error to
             // false.
             false,
@@ -254,7 +256,6 @@ impl SessionShardInterface {
         let shard_bytes_uploaded = Arc::new(AtomicU64::new(0));
 
         for si in shard_list {
-            let salt = self.config.shard_config.repo_salt;
             let shard_client = self.client.clone();
             let shard_prefix = self.config.shard_config.prefix.clone();
             let cache_shard_manager = self.cache_shard_manager.clone();
@@ -272,7 +273,18 @@ impl SessionShardInterface {
             shard_uploads.spawn(
                 async move {
                     debug!("Uploading shard {shard_prefix}/{:?} from staging area to CAS.", &si.shard_hash);
-                    let data = std::fs::read(&si.path)?;
+
+                    let data: Bytes = if !shard_client.use_shard_footer() {
+                        let split_off_index = si.shard.metadata.file_lookup_offset as usize;
+                        // Read only the portion of the shard file up to the file_lookup_offset,
+                        // which excludes the footer and lookup sections.
+                        let mut file = File::open(&si.path)?;
+                        let mut buf = vec![0u8; split_off_index];
+                        file.read_exact(&mut buf)?;
+                        Bytes::from(buf)
+                    } else {
+                        std::fs::read(&si.path)?.into()
+                    };
 
                     shard_bytes_uploaded.fetch_add(data.len() as u64, Ordering::Relaxed);
 
@@ -282,9 +294,7 @@ impl SessionShardInterface {
                     }
 
                     // Upload the shard.
-                    shard_client
-                        .upload_shard(&shard_prefix, &si.shard_hash, false, &data, &salt)
-                        .await?;
+                    shard_client.upload_shard(data).await?;
 
                     // Done with the upload, drop the permit.
                     drop(upload_permit);

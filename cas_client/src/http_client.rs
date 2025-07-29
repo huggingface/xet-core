@@ -1,3 +1,6 @@
+#[cfg(not(target_family = "wasm"))]
+mod dns_utils;
+
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -27,7 +30,7 @@ pub(crate) const BASE_RETRY_MAX_DURATION_MS: u64 = 6 * 60 * 1000; // 6m
 pub struct No429RetryStrategy;
 
 impl RetryableStrategy for No429RetryStrategy {
-    fn handle(&self, res: &Result<reqwest::Response, reqwest_middleware::Error>) -> Option<Retryable> {
+    fn handle(&self, res: &Result<Response, reqwest_middleware::Error>) -> Option<Retryable> {
         if let Ok(success) = res {
             if success.status() == StatusCode::TOO_MANY_REQUESTS {
                 return Some(Retryable::Fatal);
@@ -76,6 +79,18 @@ impl RetryConfig<No429RetryStrategy> {
     }
 }
 
+fn reqwest_client() -> Result<reqwest::Client, CasClientError> {
+    let mut reqwest_client_builder = reqwest::Client::builder();
+    // custom dns resolver not supported in WASM. no access to getaddrinfo/any other dns interface.
+    #[cfg(not(target_family = "wasm"))]
+    {
+        reqwest_client_builder =
+            reqwest_client_builder.dns_resolver(Arc::from(dns_utils::GaiResolverWithAbsolute::default()));
+    }
+    let reqwest_client = reqwest_client_builder.build()?;
+    Ok(reqwest_client)
+}
+
 /// Builds authenticated HTTP Client to talk to CAS.
 /// Includes retry middleware with exponential backoff.
 pub fn build_auth_http_client<R: RetryableStrategy + Send + Sync + 'static>(
@@ -86,14 +101,14 @@ pub fn build_auth_http_client<R: RetryableStrategy + Send + Sync + 'static>(
     let auth_middleware = auth_config.as_ref().map(AuthMiddleware::from).info_none("CAS auth disabled");
     let logging_middleware = Some(LoggingMiddleware);
     let session_middleware = (!session_id.is_empty()).then(|| SessionMiddleware(session_id.to_owned()));
-    let retry_middleware = get_retry_middleware(retry_config);
-    let reqwest_client = reqwest::Client::builder().build()?;
-    Ok(ClientBuilder::new(reqwest_client)
+
+    let client = ClientBuilder::new(reqwest_client()?)
         .maybe_with(auth_middleware)
-        .with(retry_middleware)
+        .with(get_retry_middleware(retry_config))
         .maybe_with(logging_middleware)
         .maybe_with(session_middleware)
-        .build())
+        .build();
+    Ok(client)
 }
 
 /// Builds authenticated HTTP Client to talk to CAS.
@@ -104,8 +119,7 @@ pub fn build_auth_http_client_no_retry(
     let auth_middleware = auth_config.as_ref().map(AuthMiddleware::from).info_none("CAS auth disabled");
     let logging_middleware = Some(LoggingMiddleware);
     let session_middleware = (!session_id.is_empty()).then(|| SessionMiddleware(session_id.to_owned()));
-    let reqwest_client = reqwest::Client::builder().build()?;
-    Ok(ClientBuilder::new(reqwest_client)
+    Ok(ClientBuilder::new(reqwest_client()?)
         .maybe_with(auth_middleware)
         .maybe_with(logging_middleware)
         .maybe_with(session_middleware)
@@ -118,15 +132,13 @@ pub fn build_http_client<R: RetryableStrategy + Send + Sync + 'static>(
     retry_config: RetryConfig<R>,
     session_id: &str,
 ) -> Result<ClientWithMiddleware, CasClientError> {
-    let retry_middleware = get_retry_middleware(retry_config);
-    let logging_middleware = Some(LoggingMiddleware);
-    let session_middleware = (!session_id.is_empty()).then(|| SessionMiddleware(session_id.to_owned()));
-    let reqwest_client = reqwest::Client::builder().build()?;
-    Ok(ClientBuilder::new(reqwest_client)
-        .with(retry_middleware)
-        .maybe_with(logging_middleware)
-        .maybe_with(session_middleware)
-        .build())
+    build_auth_http_client(&None, retry_config, session_id)
+}
+
+/// Builds HTTP Client to talk to CAS.
+/// Includes retry middleware with exponential backoff.
+pub fn build_http_client_no_retry(session_id: &str) -> Result<ClientWithMiddleware, CasClientError> {
+    build_auth_http_client_no_retry(&None, session_id)
 }
 
 /// RetryStrategy
@@ -172,7 +184,8 @@ pub struct Api(pub &'static str);
 /// Adds logging middleware that will trace::warn! on retryable errors.
 pub struct LoggingMiddleware;
 
-#[async_trait::async_trait]
+#[cfg_attr(not(target_family = "wasm"), async_trait::async_trait)]
+#[cfg_attr(target_family = "wasm", async_trait::async_trait(?Send))]
 impl Middleware for LoggingMiddleware {
     async fn handle(
         &self,
@@ -236,7 +249,8 @@ impl From<&AuthConfig> for AuthMiddleware {
     }
 }
 
-#[async_trait::async_trait]
+#[cfg_attr(not(target_family = "wasm"), async_trait::async_trait)]
+#[cfg_attr(target_family = "wasm", async_trait::async_trait(?Send))]
 impl Middleware for AuthMiddleware {
     async fn handle(
         &self,
@@ -254,7 +268,16 @@ impl Middleware for AuthMiddleware {
 
 pub struct SessionMiddleware(String);
 
-#[async_trait::async_trait]
+// WASM compatibility; note the use of the pattern:
+//
+// #[cfg_attr(not(target_family = "wasm"), async_trait::async_trait)]
+// #[cfg_attr(target_family = "wasm", async_trait::async_trait(?Send))]
+// instead of just #[async_trait::async_trait]
+// this makes the use of the async_trait wasm compatible to not enforce `Send` bounds when
+// compiling for wasm, while those Send bounds are useful in non-wasm mode.
+
+#[cfg_attr(not(target_family = "wasm"), async_trait::async_trait)]
+#[cfg_attr(target_family = "wasm", async_trait::async_trait(?Send))]
 impl Middleware for SessionMiddleware {
     async fn handle(
         &self,

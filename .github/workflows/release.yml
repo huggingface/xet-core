@@ -29,12 +29,10 @@ jobs:
             target: x86_64
             python-target: x86_64
             manylinux: auto
-            features: "--features openssl_vendored"
           - runner: ubuntu-22.04
             target: aarch64
             python-target: arm64
             manylinux: manylinux_2_28
-            features: "--features openssl_vendored"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -65,9 +63,9 @@ jobs:
           working-directory: hf_xet
           before-script-linux: |
             if command -v apt-get &> /dev/null; then
-                apt-get update && apt-get install libssl-dev libatomic-ops-dev -y
+                apt-get update && apt-get install libatomic-ops-dev -y
             elif command -v yum &> /dev/null; then
-                yum install openssl-devel devtoolset-10-libatomic-devel perl-IPC-Cmd -y
+                yum install devtoolset-10-libatomic-devel perl-IPC-Cmd -y
             else
                 echo "Neither apt-get nor yum is installed. Please install a package manager."
                 exit 1
@@ -121,11 +119,9 @@ jobs:
           - runner: ubuntu-22.04
             target: x86_64
             python-target: x86_64
-            features: "--features openssl_vendored"
           - runner: ubuntu-22.04
             target: aarch64
             python-target: arm64 
-            features: "--features openssl_vendored"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

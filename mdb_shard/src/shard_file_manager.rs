@@ -1,16 +1,17 @@
 use std::collections::HashMap;
+use std::io::Cursor;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
-use async_trait::async_trait;
 use merklehash::{HMACKey, MerkleHash};
 use tokio::sync::RwLock;
-use tracing::{debug, info, instrument, trace};
+use tracing::{debug, info, instrument, trace, warn};
+use utils::RwTaskLock;
 
 use crate::cas_structs::*;
 use crate::constants::{
-    CHUNK_INDEX_TABLE_MAX_SIZE, MDB_SHARD_EXPIRATION_BUFFER_SECS, MDB_SHARD_MIN_TARGET_SIZE, SHARD_CACHE_SIZE_LIMIT,
+    CHUNK_INDEX_TABLE_MAX_SIZE, MDB_SHARD_EXPIRATION_BUFFER_SECS, MDB_SHARD_MAX_TARGET_SIZE, SHARD_CACHE_SIZE_LIMIT,
 };
 use crate::error::{MDBShardError, Result};
 use crate::file_structs::*;
@@ -73,10 +74,10 @@ impl ShardBookkeeper {
 }
 
 pub struct ShardFileManager {
-    shard_bookkeeper: RwLock<ShardBookkeeper>,
+    shard_bookkeeper: RwTaskLock<ShardBookkeeper, MDBShardError>,
     current_state: RwLock<MDBInMemoryShard>,
     shard_directory: PathBuf,
-    target_shard_min_size: u64,
+    target_shard_max_size: u64,
     shard_directory_cleaned: AtomicBool,
 }
 
@@ -103,18 +104,18 @@ impl ShardFileManager {
         session_directory: impl AsRef<Path>,
         scan_directory: bool,
     ) -> Result<Arc<Self>> {
-        Self::new_impl(session_directory, false, *MDB_SHARD_MIN_TARGET_SIZE, scan_directory, 0).await
+        Self::new_impl(session_directory, false, *MDB_SHARD_MAX_TARGET_SIZE, scan_directory, 0).await
     }
 
     // Construction functions
     pub async fn new_in_cache_directory(cache_directory: impl AsRef<Path>) -> Result<Arc<Self>> {
-        Self::new_impl(cache_directory, true, *MDB_SHARD_MIN_TARGET_SIZE, true, *SHARD_CACHE_SIZE_LIMIT).await
+        Self::new_impl(cache_directory, true, *MDB_SHARD_MAX_TARGET_SIZE, true, *SHARD_CACHE_SIZE_LIMIT).await
     }
 
     async fn new_impl(
         directory: impl AsRef<Path>,
         is_cachable: bool,
-        target_shard_min_size: u64,
+        target_shard_max_size: u64,
         scan_directory: bool,
         prune_cache_to_size: u64, // Set to 0 to disable pruning
     ) -> Result<Arc<Self>> {
@@ -127,10 +128,10 @@ impl ShardFileManager {
 
         let create_new_sfm = || {
             Arc::new(Self {
-                shard_bookkeeper: RwLock::new(ShardBookkeeper::new()),
+                shard_bookkeeper: RwTaskLock::from_value(ShardBookkeeper::new()),
                 current_state: RwLock::new(MDBInMemoryShard::default()),
                 shard_directory: shard_directory.clone(),
-                target_shard_min_size,
+                target_shard_max_size,
                 shard_directory_cleaned: AtomicBool::new(false),
             })
         };
@@ -151,17 +152,7 @@ impl ShardFileManager {
 
             // Now, create and insert it.
             let mut rw_lg = MDB_SHARD_FILE_MANAGER_CACHE.write().await;
-            let sfm_entry = rw_lg.entry(shard_directory.clone());
-
-            // See if it's in there; insert otherwise
-            match sfm_entry {
-                std::collections::hash_map::Entry::Vacant(sfm_slot) => {
-                    let sfm = create_new_sfm();
-                    sfm_slot.insert(sfm.clone());
-                    sfm
-                },
-                std::collections::hash_map::Entry::Occupied(sfm) => sfm.get().clone(),
-            }
+            rw_lg.entry(shard_directory.clone()).or_insert_with(create_new_sfm).clone()
         };
 
         if scan_directory {
@@ -181,13 +172,19 @@ impl ShardFileManager {
         )?;
 
         {
-            let shard_read_guard = self.shard_bookkeeper.read().await;
+            let shard_read_guard = self.shard_bookkeeper.read().await?;
             shard_files.retain(|s| !shard_read_guard.shard_lookup_by_shard_hash.contains_key(&s.shard_hash));
         }
 
         self.register_shards(&shard_files).await?;
 
         Ok(())
+    }
+
+    pub async fn import_shard_from_bytes(&self, shard: &[u8]) -> Result<()> {
+        let new_shard_file = MDBShardFile::write_out_from_reader(&self.shard_directory, &mut Cursor::new(shard))?;
+
+        self.register_shards(&[new_shard_file]).await
     }
 
     pub fn shard_directory(&self) -> &Path {
@@ -216,8 +213,6 @@ impl ShardFileManager {
     }
 
     pub async fn register_shards(&self, new_shards: &[Arc<MDBShardFile>]) -> Result<()> {
-        let mut sbkp_lg = self.shard_bookkeeper.write().await;
-
         // Go through and register the shards in order of newest to oldest
         let mut new_shards = Vec::from(new_shards);
 
@@ -236,66 +231,98 @@ impl ShardFileManager {
                 &self.shard_directory
             );
 
-            if sbkp_lg.shard_lookup_by_shard_hash.contains_key(&s.shard_hash) {
+            if self
+                .shard_bookkeeper
+                .read()
+                .await?
+                .shard_lookup_by_shard_hash
+                .contains_key(&s.shard_hash)
+            {
                 continue;
             }
 
-            debug!("register_shards: Registering shard {:?} at {:?}.", s.shard_hash, s.path);
+            // Begin loading the truncated hashes in the background for this shard so they're ready
+            // when we have to insert them.
+            let s_rth = s.clone();
+            let s_truncated_hashes_jh = tokio::task::spawn_blocking(move || s_rth.read_all_truncated_hashes());
 
-            let shard_hmac_key = s.shard.metadata.chunk_hash_hmac_key;
+            // Update the bookkeeper with the task of
+            self.shard_bookkeeper
+                .update(move |mut sbkp_lg| async move {
+                    debug!("register_shards: Registering shard {:?} at {:?}.", s.shard_hash, s.path);
 
-            let n_current_collections = sbkp_lg.shard_collections.len();
-            let shard_col_index: usize =
-                *sbkp_lg.collection_by_key.entry(shard_hmac_key).or_insert(n_current_collections);
+                    let shard_hmac_key = s.shard.metadata.chunk_hash_hmac_key;
 
-            // do we actually need to insert it?
-            if shard_col_index == n_current_collections {
-                sbkp_lg.shard_collections.push(KeyedShardCollection::new(shard_hmac_key));
-            }
+                    let n_current_collections = sbkp_lg.shard_collections.len();
+                    let shard_col_index: usize =
+                        *sbkp_lg.collection_by_key.entry(shard_hmac_key).or_insert(n_current_collections);
 
-            let update_chunk_lookup = sbkp_lg.total_indexed_chunks < *CHUNK_INDEX_TABLE_MAX_SIZE;
+                    // do we actually need to insert it?
+                    if shard_col_index == n_current_collections {
+                        sbkp_lg.shard_collections.push(KeyedShardCollection::new(shard_hmac_key));
+                    }
 
-            // Now add in the chunk indices.
-            let shard_index;
-            let num_inserted_chunks;
-            {
-                let shard_col = &mut sbkp_lg.shard_collections[shard_col_index];
-                shard_index = shard_col.shard_list.len();
-                shard_col.shard_list.push(s.clone());
+                    let update_chunk_lookup = sbkp_lg.total_indexed_chunks < *CHUNK_INDEX_TABLE_MAX_SIZE;
 
-                let old_chunk_lookup_size = shard_col.chunk_lookup.len();
+                    let shard_hash = s.shard_hash;
 
-                if update_chunk_lookup {
-                    let insert_hashes = s.read_all_truncated_hashes()?;
+                    // Now add in the chunk indices.
+                    let shard_index;
+                    let num_inserted_chunks;
+                    {
+                        let shard_col = &mut sbkp_lg.shard_collections[shard_col_index];
+                        shard_index = shard_col.shard_list.len();
+                        shard_col.shard_list.push(s.clone());
 
-                    shard_col.chunk_lookup.reserve(insert_hashes.len());
+                        let old_chunk_lookup_size = shard_col.chunk_lookup.len();
 
-                    for (h, (cas_start_index, cas_chunk_offset)) in insert_hashes {
-                        if cas_chunk_offset > u16::MAX as u32 {
-                            continue;
+                        let Ok(insert_hashes_task_result) = s_truncated_hashes_jh.await else {
+                            warn!(
+                                "Join error on task reading hashes from {:?}; skipping dedup lookup insert.",
+                                &s.path
+                            );
+                            return Ok(sbkp_lg);
+                        };
+
+                        let Ok(insert_hashes) = insert_hashes_task_result.map_err(|e| {
+                            warn!("Error reading hashes from {:?}: {e:?}. Skipping dedup lookup insert.", &s.path);
+                        }) else {
+                            return Ok(sbkp_lg);
+                        };
+
+                        if update_chunk_lookup {
+                            shard_col.chunk_lookup.reserve(insert_hashes.len());
+
+                            for (h, (cas_start_index, cas_chunk_offset)) in insert_hashes {
+                                if cas_chunk_offset > u16::MAX as u32 {
+                                    continue;
+                                }
+
+                                let cas_chunk_offset = cas_chunk_offset as u16;
+
+                                shard_col.chunk_lookup.insert(
+                                    h,
+                                    ChunkCacheElement {
+                                        cas_start_index,
+                                        cas_chunk_offset,
+                                        shard_index: shard_index as u16,
+                                    },
+                                );
+                            }
                         }
 
-                        let cas_chunk_offset = cas_chunk_offset as u16;
-
-                        shard_col.chunk_lookup.insert(
-                            h,
-                            ChunkCacheElement {
-                                cas_start_index,
-                                cas_chunk_offset,
-                                shard_index: shard_index as u16,
-                            },
-                        );
+                        num_inserted_chunks = shard_col.chunk_lookup.len() - old_chunk_lookup_size;
                     }
-                }
 
-                num_inserted_chunks = shard_col.chunk_lookup.len() - old_chunk_lookup_size;
-            }
+                    sbkp_lg
+                        .shard_lookup_by_shard_hash
+                        .insert(shard_hash, (shard_col_index, shard_index));
 
-            sbkp_lg
-                .shard_lookup_by_shard_hash
-                .insert(s.shard_hash, (shard_col_index, shard_index));
+                    sbkp_lg.total_indexed_chunks += num_inserted_chunks;
 
-            sbkp_lg.total_indexed_chunks += num_inserted_chunks;
+                    Ok(sbkp_lg)
+                })
+                .await?;
         }
 
         if num_shards != 0 {
@@ -303,14 +330,6 @@ impl ShardFileManager {
         }
 
         Ok(())
-    }
-
-    pub async fn shard_is_registered(&self, shard_hash: &MerkleHash) -> bool {
-        self.shard_bookkeeper
-            .read()
-            .await
-            .shard_lookup_by_shard_hash
-            .contains_key(shard_hash)
     }
 
     pub async fn all_file_info(&self) -> Result<Vec<MDBFileInfo>> {
@@ -328,7 +347,7 @@ impl ShardFileManager {
     }
 
     pub async fn registered_shard_list(&self) -> Result<Vec<Arc<MDBShardFile>>> {
-        let shards = self.shard_bookkeeper.read().await;
+        let shards = self.shard_bookkeeper.read().await?;
 
         Ok(shards
             .shard_lookup_by_shard_hash
@@ -338,7 +357,8 @@ impl ShardFileManager {
     }
 }
 
-#[async_trait]
+#[cfg_attr(not(target_family = "wasm"), async_trait::async_trait)]
+#[cfg_attr(target_family = "wasm", async_trait::async_trait(?Send))]
 impl FileReconstructor<MDBShardError> for ShardFileManager {
     // Given a file pointer, returns the information needed to reconstruct the file.
     // The information is stored in the destination vector dest_results.  The function
@@ -360,7 +380,7 @@ impl FileReconstructor<MDBShardError> for ShardFileManager {
             }
         }
 
-        let current_shards = self.shard_bookkeeper.read().await;
+        let current_shards = self.shard_bookkeeper.read().await?;
 
         for sc in current_shards.shard_collections.iter() {
             for si in sc.shard_list.iter() {
@@ -393,7 +413,7 @@ impl ShardFileManager {
             }
         }
 
-        let shard_lg = self.shard_bookkeeper.read().await;
+        let shard_lg = self.shard_bookkeeper.read().await?;
 
         for shard_col in shard_lg.shard_collections.iter() {
             let query_hash = {
@@ -420,15 +440,23 @@ impl ShardFileManager {
 
     /// Add CAS info to the in-memory state.
     pub async fn add_cas_block(&self, cas_block_contents: impl Into<Arc<MDBCASInfo>>) -> Result<()> {
+        let cas_block_contents = cas_block_contents.into();
         let mut lg = self.current_state.write().await;
 
-        lg.add_cas_block(cas_block_contents)?;
+        // cut a new shard if adding this cas block will take us over the max shard file size
+        let new_shard_path = if lg.shard_file_size() + cas_block_contents.num_bytes() > self.target_shard_max_size {
+            let path = Self::cut_shard(&mut lg, &self.shard_directory)?;
+            Some(path)
+        } else {
+            None
+        };
 
-        // See if this put it over the target minimum size, allowing us to cut a new shard
-        if lg.shard_file_size() >= self.target_shard_min_size {
-            // Drop the lock guard before doing the flush.
-            drop(lg);
-            self.flush().await?;
+        lg.add_cas_block(cas_block_contents)?;
+        drop(lg);
+
+        // if we cut a new shard, register it after dropping the lock guard
+        if let Some(new_shard_path) = new_shard_path {
+            self.register_shards(&[MDBShardFile::load_from_file(&new_shard_path)?]).await?;
         }
 
         Ok(())
@@ -438,16 +466,29 @@ impl ShardFileManager {
     pub async fn add_file_reconstruction_info(&self, file_info: MDBFileInfo) -> Result<()> {
         let mut lg = self.current_state.write().await;
 
-        lg.add_file_reconstruction_info(file_info)?;
+        // cut a new shard if adding this file will take us over the max shard file size
+        let new_shard_path = if lg.shard_file_size() + file_info.num_bytes() > self.target_shard_max_size {
+            let path = Self::cut_shard(&mut lg, &self.shard_directory)?;
+            Some(path)
+        } else {
+            None
+        };
 
-        // See if this put it over the target minimum size, allowing us to cut a new shard
-        if lg.shard_file_size() >= self.target_shard_min_size {
-            // Drop the lock guard before doing the flush.
-            drop(lg);
-            self.flush().await?;
+        lg.add_file_reconstruction_info(file_info)?;
+        drop(lg);
+
+        // if we cut a new shard, register it after dropping the lock guard
+        if let Some(new_shard_path) = new_shard_path {
+            self.register_shards(&[MDBShardFile::load_from_file(&new_shard_path)?]).await?;
         }
 
         Ok(())
+    }
+
+    fn cut_shard(lg: &mut MDBInMemoryShard, shard_directory: &Path) -> Result<PathBuf> {
+        let new_shard_path = lg.write_to_directory(shard_directory, None)?;
+        *lg = MDBInMemoryShard::default();
+        Ok(new_shard_path)
     }
 
     /// Flush the current state of the in-memory lookups to a shard in the session directory,
@@ -487,7 +528,7 @@ impl ShardFileManager {
             bytes += lg.materialized_bytes();
         }
 
-        for ksc in self.shard_bookkeeper.read().await.shard_collections.iter() {
+        for ksc in self.shard_bookkeeper.read().await?.shard_collections.iter() {
             for si in ksc.shard_list.iter() {
                 bytes += si.shard.materialized_bytes();
             }
@@ -504,7 +545,7 @@ impl ShardFileManager {
             bytes += lg.stored_bytes();
         }
 
-        for ksc in self.shard_bookkeeper.read().await.shard_collections.iter() {
+        for ksc in self.shard_bookkeeper.read().await?.shard_collections.iter() {
             for si in ksc.shard_list.iter() {
                 bytes += si.shard.stored_bytes();
             }
@@ -755,7 +796,7 @@ mod tests {
             verify_mdb_shards_match(&mdb2, &mdb_in_mem, true).await?;
 
             // Now, merge shards in the background.
-            let merged_shards = consolidate_shards_in_directory(tmp_dir.path(), *MDB_SHARD_MIN_TARGET_SIZE, false)?;
+            let merged_shards = consolidate_shards_in_directory(tmp_dir.path(), *MDB_SHARD_MAX_TARGET_SIZE, false)?;
 
             assert_eq!(merged_shards.len(), 1);
             for si in merged_shards {
@@ -831,7 +872,7 @@ mod tests {
 
             {
                 let merged_shards =
-                    consolidate_shards_in_directory(tmp_dir.path(), *MDB_SHARD_MIN_TARGET_SIZE, false).unwrap();
+                    consolidate_shards_in_directory(tmp_dir.path(), *MDB_SHARD_MAX_TARGET_SIZE, false).unwrap();
 
                 assert_eq!(merged_shards.len(), 1);
 
@@ -1053,7 +1094,7 @@ mod tests {
     }
 
     async fn shard_list_with_timestamp_filtering(path: &Path) -> Result<Vec<Arc<MDBShardFile>>> {
-        Ok(ShardFileManager::new_impl(path, false, *MDB_SHARD_MIN_TARGET_SIZE, true, 0)
+        Ok(ShardFileManager::new_impl(path, false, *MDB_SHARD_MAX_TARGET_SIZE, true, 0)
             .await?
             .registered_shard_list()
             .await?)

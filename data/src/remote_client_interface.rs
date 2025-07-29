@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 pub use cas_client::Client;
-use cas_client::{LocalClient, RemoteClient};
+use cas_client::RemoteClient;
 
 use crate::configurations::*;
 use crate::errors::Result;
@@ -18,10 +18,17 @@ pub(crate) fn create_remote_client(
             endpoint,
             &cas_storage_config.auth,
             &Some(cas_storage_config.cache_config.clone()),
-            config.shard_config.cache_directory.clone(),
+            Some(config.shard_config.cache_directory.clone()),
             session_id,
             dry_run,
         ))),
-        Endpoint::FileSystem(ref path) => Ok(Arc::new(LocalClient::new(path, None)?)),
+        Endpoint::FileSystem(ref path) => {
+            #[cfg(not(target_family = "wasm"))]
+            {
+                Ok(Arc::new(cas_client::LocalClient::new(path)?))
+            }
+            #[cfg(target_family = "wasm")]
+            unimplemented!("Local file system access is not supported in WASM builds")
+        },
     }
 }

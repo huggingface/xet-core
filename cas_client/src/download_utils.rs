@@ -21,8 +21,8 @@ use utils::singleflight::Group;
 
 use crate::error::{CasClientError, Result};
 use crate::http_client::{Api, BASE_RETRY_DELAY_MS, BASE_RETRY_MAX_DURATION_MS, NUM_RETRIES};
+use crate::output_provider::OutputProvider;
 use crate::remote_client::{get_reconstruction_with_endpoint_and_client, PREFIX_DEFAULT};
-use crate::OutputProvider;
 
 utils::configurable_constants! {
     // Env (HF_XET_NUM_RANGE_IN_SEGMENT_BASE) base value for the approx number of ranges in the initial
@@ -571,6 +571,7 @@ mod tests {
     use tokio::time::sleep;
 
     use super::*;
+    use crate::remote_client::API_VERSION;
     use crate::{build_http_client, RetryConfig};
 
     #[tokio::test]
@@ -612,7 +613,7 @@ mod tests {
         let server = MockServer::start();
         server.mock(|when, then| {
             when.method(GET)
-                .path(format!("/reconstruction/{}", MerkleHash::default()))
+                .path(format!("/{API_VERSION}/reconstruction/{}", MerkleHash::default()))
                 .header(RANGE.as_str(), HttpRange::from(file_range).range_header());
             let response = QueryReconstructionResponse {
                 offset_into_first_range: 0,
@@ -659,7 +660,7 @@ mod tests {
         let server = MockServer::start();
         let mock = server.mock(|when, then| {
             when.method(GET)
-                .path(format!("/reconstruction/{}", MerkleHash::default()))
+                .path(format!("/{API_VERSION}/reconstruction/{}", MerkleHash::default()))
                 .header(RANGE.as_str(), HttpRange::from(file_range_to_refresh).range_header());
             let response = QueryReconstructionResponse {
                 offset_into_first_range: 0,
@@ -716,7 +717,7 @@ mod tests {
         // Arrange server
         let mock_fi = server.mock(|when, then| {
             when.method(GET)
-                .path(format!("/reconstruction/{}", MerkleHash::default()))
+                .path(format!("/{API_VERSION}/reconstruction/{}", MerkleHash::default()))
                 .header(RANGE.as_str(), HttpRange::from(file_range).range_header());
             let response = QueryReconstructionResponse {
                 offset_into_first_range: 0,

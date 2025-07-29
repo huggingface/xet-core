@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use anyhow::Result;
-use cas_client::{Reconstructable, RemoteClient};
+use cas_client::RemoteClient;
 use cas_object::CompressionScheme;
 use cas_types::{FileRange, QueryReconstructionResponse};
 use clap::{Args, Parser, Subcommand};
@@ -202,7 +202,7 @@ async fn query_reconstruction(
         &endpoint,
         &cas_storage_config.auth,
         &Some(cas_storage_config.cache_config.clone()),
-        config.shard_config.cache_directory.clone(),
+        Some(config.shard_config.cache_directory.clone()),
         "",
         true,
     );

@@ -5,6 +5,7 @@ use std::sync::Arc;
 
 use anyhow::anyhow;
 use async_trait::async_trait;
+use bytes::Bytes;
 use cas_object::{CasObject, SerializedCasObject};
 use cas_types::{FileRange, Key};
 use file_utils::SafeFileCreator;
@@ -13,7 +14,6 @@ use mdb_shard::file_structs::MDBFileInfo;
 use mdb_shard::shard_file_reconstructor::FileReconstructor;
 use mdb_shard::utils::shard_file_name;
 use mdb_shard::{MDBShardFile, MDBShardInfo, ShardFileManager};
-use merkledb::aggregate_hashes::with_salt;
 use merklehash::MerkleHash;
 use progress_tracking::item_tracking::SingleItemProgressUpdater;
 use progress_tracking::upload_tracking::CompletionTracker;
@@ -22,8 +22,8 @@ use tokio::runtime::Handle;
 use tracing::{debug, error, info, warn};
 
 use crate::error::{CasClientError, Result};
-use crate::interface::{OutputProvider, ShardDedupProber, UploadClient};
-use crate::{Client, ReconstructionClient, RegistrationClient, ShardClientInterface};
+use crate::output_provider::OutputProvider;
+use crate::Client;
 
 pub struct LocalClient {
     tmp_dir: Option<TempDir>, // To hold directory to use for local testing
@@ -33,30 +33,19 @@ pub struct LocalClient {
     shard_manager: Arc<ShardFileManager>,
     global_dedup_db_env: heed::Env,
     global_dedup_table: heed::Database<OwnedType<MerkleHash>, OwnedType<MerkleHash>>,
-
-    shard_cache_dir: Option<PathBuf>,
 }
 
 impl LocalClient {
     pub fn temporary() -> Result<Self> {
         let tmp_dir = TempDir::new().unwrap();
         let path = tmp_dir.path().to_owned();
-        let mut s = Self::new(path, None)?;
+        let mut s = Self::new(path)?;
 
         s.tmp_dir = Some(tmp_dir);
         Ok(s)
     }
 
-    pub fn temporary_with_global_dedup(shard_cache_dir: PathBuf) -> Result<Self> {
-        let tmp_dir = TempDir::new().unwrap();
-        let path = tmp_dir.path().to_owned();
-        let mut s = Self::new(path, Some(shard_cache_dir))?;
-
-        s.tmp_dir = Some(tmp_dir);
-        Ok(s)
-    }
-
-    pub fn new(path: impl AsRef<Path>, shard_cache_dir: Option<PathBuf>) -> Result<Self> {
+    pub fn new(path: impl AsRef<Path>) -> Result<Self> {
         let base_dir = std::path::absolute(path)?;
         if !base_dir.exists() {
             std::fs::create_dir_all(&base_dir)?;
@@ -77,7 +66,7 @@ impl LocalClient {
             std::fs::create_dir_all(&global_dedup_dir)?;
         }
 
-        // Open / setup the global dedup lookup
+        // Open / set up the global dedup lookup
         let global_dedup_db_env = heed::EnvOpenOptions::new()
             .max_dbs(32)
             .max_readers(32)
@@ -88,7 +77,7 @@ impl LocalClient {
             .create_database(None)
             .map_err(|e| CasClientError::Other(format!("Error opening heed table: {e}")))?;
 
-        // Open / setup the shard lookup
+        // Open / set up the shard lookup
         let shard_directory_ = shard_dir.clone();
         let shard_manager = tokio::task::block_in_place(|| {
             Handle::current()
@@ -103,7 +92,6 @@ impl LocalClient {
             shard_manager,
             global_dedup_db_env,
             global_dedup_table,
-            shard_cache_dir,
         })
     }
 
@@ -224,7 +212,91 @@ impl LocalClient {
 
 /// LocalClient is responsible for writing/reading Xorbs on local disk.
 #[async_trait]
-impl UploadClient for LocalClient {
+impl Client for LocalClient {
+    async fn get_file(
+        &self,
+        hash: &MerkleHash,
+        byte_range: Option<FileRange>,
+        output_provider: &OutputProvider,
+        _progress_updater: Option<Arc<SingleItemProgressUpdater>>,
+    ) -> Result<u64> {
+        let Some((file_info, _)) = self
+            .shard_manager
+            .get_file_reconstruction_info(hash)
+            .await
+            .map_err(|e| anyhow!("{e}"))?
+        else {
+            return Err(CasClientError::FileNotFound(*hash));
+        };
+        let mut writer = output_provider.get_writer_at(0)?;
+
+        // This is just used for testing, so inefficient is fine.
+        let mut file_vec = Vec::new();
+        for entry in &file_info.segments {
+            let mut entry_bytes = self
+                .get_object_range(&entry.cas_hash, vec![(entry.chunk_index_start, entry.chunk_index_end)])?
+                .pop()
+                .unwrap();
+            file_vec.append(&mut entry_bytes);
+        }
+
+        let start = byte_range.as_ref().map(|range| range.start as usize).unwrap_or(0);
+        let end = byte_range
+            .as_ref()
+            .map(|range| range.end as usize)
+            .unwrap_or(file_vec.len())
+            .min(file_vec.len());
+
+        writer.write_all(&file_vec[start..end])?;
+
+        Ok((end - start) as u64)
+    }
+
+    /// Query the shard server for the file reconstruction info.
+    /// Returns the FileInfo for reconstructing the file and the shard ID that
+    /// defines the file info.
+    async fn get_file_reconstruction_info(
+        &self,
+        file_hash: &MerkleHash,
+    ) -> Result<Option<(MDBFileInfo, Option<MerkleHash>)>> {
+        Ok(self.shard_manager.get_file_reconstruction_info(file_hash).await?)
+    }
+
+    async fn query_for_global_dedup_shard(&self, _prefix: &str, chunk_hash: &MerkleHash) -> Result<Option<Bytes>> {
+        let read_txn = self.global_dedup_db_env.read_txn().map_err(map_heed_db_error)?;
+
+        if let Some(shard) = self.global_dedup_table.get(&read_txn, chunk_hash).map_err(map_heed_db_error)? {
+            let filename = self.shard_dir.join(shard_file_name(&shard));
+            return Ok(Some(std::fs::read(filename)?.into()));
+        }
+        Ok(None)
+    }
+
+    async fn upload_shard(&self, shard_data: Bytes) -> Result<bool> {
+        // Write out the shard to the shard directory.
+        let shard = MDBShardFile::write_out_from_reader(&self.shard_dir, &mut Cursor::new(&shard_data))?;
+        let shard_hash = shard.shard_hash;
+
+        self.shard_manager.register_shards(&[shard]).await?;
+
+        // Add dedup info to the global dedup table.
+        let mut shard_reader = Cursor::new(shard_data);
+
+        let chunk_hashes = MDBShardInfo::filter_cas_chunks_for_global_dedup(&mut shard_reader)?;
+
+        let mut write_txn = self.global_dedup_db_env.write_txn().map_err(map_heed_db_error)?;
+
+        for chunk in chunk_hashes {
+            self.global_dedup_table
+                .put(&mut write_txn, &chunk, &shard_hash)
+                .map_err(map_heed_db_error)?;
+        }
+
+        write_txn.commit().map_err(map_heed_db_error)?;
+
+        Ok(true)
+    }
+
     async fn upload_xorb(
         &self,
         _prefix: &str,
@@ -287,153 +359,33 @@ impl UploadClient for LocalClient {
     async fn exists(&self, _prefix: &str, hash: &MerkleHash) -> Result<bool> {
         let file_path = self.get_path_for_entry(hash);
 
-        let res = metadata(&file_path);
-
-        if res.is_err() {
+        let Ok(md) = metadata(&file_path) else {
             return Ok(false);
-        }
+        };
 
-        if !res.unwrap().is_file() {
+        if !md.is_file() {
             return Err(CasClientError::internal(format!(
                 "Attempting to write to {file_path:?}, but it is not a file"
             )));
+        }
+
+        let Ok(file) = File::open(file_path) else {
+            return Err(CasClientError::XORBNotFound(*hash));
         };
 
-        match File::open(file_path) {
-            Ok(file) => {
-                let mut reader = BufReader::new(file);
-                CasObject::deserialize(&mut reader)?;
-                Ok(true)
-            },
-            Err(_) => Err(CasClientError::XORBNotFound(*hash)),
-        }
+        let mut reader = BufReader::new(file);
+        CasObject::deserialize(&mut reader)?;
+        Ok(true)
     }
 
     fn use_xorb_footer(&self) -> bool {
         true
     }
-}
 
-#[async_trait]
-impl RegistrationClient for LocalClient {
-    async fn upload_shard(
-        &self,
-        _prefix: &str, // Prefix not used in current implementation
-        shard_hash: &MerkleHash,
-        _force_sync: bool,
-        shard_data: &[u8],
-        salt: &[u8; 32],
-    ) -> Result<bool> {
-        // Write out the shard to the shard directory.
-        let shard = MDBShardFile::write_out_from_reader(&self.shard_dir, &mut Cursor::new(shard_data))?;
-
-        self.shard_manager.register_shards(&[shard]).await?;
-
-        // Add dedup info to the global dedup table.
-        let mut shard_reader = Cursor::new(shard_data);
-
-        let chunk_hashes = MDBShardInfo::filter_cas_chunks_for_global_dedup(&mut shard_reader)?;
-
-        let mut write_txn = self.global_dedup_db_env.write_txn().map_err(map_heed_db_error)?;
-
-        for chunk in chunk_hashes {
-            if let Ok(salted_chunk_hash) = with_salt(&chunk, salt) {
-                self.global_dedup_table
-                    .put(&mut write_txn, &salted_chunk_hash, shard_hash)
-                    .map_err(map_heed_db_error)?;
-            }
-        }
-
-        write_txn.commit().map_err(map_heed_db_error)?;
-
-        Ok(true)
+    fn use_shard_footer(&self) -> bool {
+        true
     }
 }
-
-#[async_trait]
-impl FileReconstructor<CasClientError> for LocalClient {
-    /// Query the shard server for the file reconstruction info.
-    /// Returns the FileInfo for reconstructing the file and the shard ID that
-    /// defines the file info.
-    async fn get_file_reconstruction_info(
-        &self,
-        file_hash: &MerkleHash,
-    ) -> Result<Option<(MDBFileInfo, Option<MerkleHash>)>> {
-        Ok(self.shard_manager.get_file_reconstruction_info(file_hash).await?)
-    }
-}
-
-#[async_trait]
-impl ShardDedupProber for LocalClient {
-    async fn query_for_global_dedup_shard(
-        &self,
-        _prefix: &str,
-        chunk_hash: &MerkleHash,
-        salt: &[u8; 32],
-    ) -> Result<Option<PathBuf>> {
-        let read_txn = self.global_dedup_db_env.read_txn().map_err(map_heed_db_error)?;
-
-        let Some(shard_cache_dir) = self.shard_cache_dir.as_ref() else {
-            return Err(CasClientError::Other("Shard cache directory not set for get_dedup_shards.".to_owned()));
-        };
-
-        if let Ok(sh) = with_salt(chunk_hash, salt) {
-            if let Some(shard) = self.global_dedup_table.get(&read_txn, &sh).map_err(map_heed_db_error)? {
-                let filename = shard_file_name(&shard);
-                let dest = shard_cache_dir.join(&filename);
-                std::fs::copy(self.shard_dir.join(&filename), &dest)?;
-                return Ok(Some(dest));
-            }
-        }
-        Ok(None)
-    }
-}
-
-impl ShardClientInterface for LocalClient {}
-
-#[async_trait]
-impl ReconstructionClient for LocalClient {
-    async fn get_file(
-        &self,
-        hash: &MerkleHash,
-        byte_range: Option<FileRange>,
-        output_provider: &OutputProvider,
-        _progress_updater: Option<Arc<SingleItemProgressUpdater>>,
-    ) -> Result<u64> {
-        let Some((file_info, _)) = self
-            .shard_manager
-            .get_file_reconstruction_info(hash)
-            .await
-            .map_err(|e| anyhow!("{e}"))?
-        else {
-            return Err(CasClientError::FileNotFound(*hash));
-        };
-        let mut writer = output_provider.get_writer_at(0)?;
-
-        // This is just used for testing, so inefficient is fine.
-        let mut file_vec = Vec::new();
-        for entry in &file_info.segments {
-            let mut entry_bytes = self
-                .get_object_range(&entry.cas_hash, vec![(entry.chunk_index_start, entry.chunk_index_end)])?
-                .pop()
-                .unwrap();
-            file_vec.append(&mut entry_bytes);
-        }
-
-        let start = byte_range.as_ref().map(|range| range.start as usize).unwrap_or(0);
-        let end = byte_range
-            .as_ref()
-            .map(|range| range.end as usize)
-            .unwrap_or(file_vec.len())
-            .min(file_vec.len());
-
-        writer.write_all(&file_vec[start..end])?;
-
-        Ok((end - start) as u64)
-    }
-}
-
-impl Client for LocalClient {}
 
 fn map_heed_db_error(e: heed::Error) -> CasClientError {
     let msg = format!("Global shard dedup database error: {e:?}");
@@ -582,15 +534,15 @@ mod tests {
         let world = "world".as_bytes().to_vec();
         let world_hash = merklehash::compute_data_hash(&world[..]);
 
-        // get length of non-existant object should fail with XORBNotFound
+        // get length of non-existent object should fail with XORBNotFound
         assert_eq!(CasClientError::XORBNotFound(world_hash), client.get_length(&world_hash).unwrap_err());
 
-        // read of non-existant object should fail with XORBNotFound
+        // read of non-existent object should fail with XORBNotFound
         assert!(client.get(&world_hash).is_err());
-        // read range of non-existant object should fail with XORBNotFound
+        // read range of non-existent object should fail with XORBNotFound
         assert!(client.get_object_range(&world_hash, vec![(0, 5)]).is_err());
 
-        // we can delete non-existant things
+        // we can delete non-existent things
         client.delete(&world_hash);
 
         // delete the entry we inserted
@@ -611,10 +563,7 @@ mod tests {
         let hello_hash = merklehash::compute_data_hash(&hello[..]);
         let world_hash = merklehash::compute_data_hash(&world[..]);
 
-        let hellonode = merkledb::MerkleNode::new(0, hello_hash, 5, vec![]);
-        let worldnode = merkledb::MerkleNode::new(1, world_hash, 5, vec![]);
-
-        let final_hash = merkledb::detail::hash_node_sequence(&[hellonode, worldnode]);
+        let final_hash = merklehash::xorb_hash(&[(hello_hash, 5), (world_hash, 5)]);
 
         // insert should succeed
         let client = LocalClient::temporary().unwrap();
@@ -651,26 +600,27 @@ mod tests {
 
         let shard_hash = parse_shard_filename(&new_shard_path).unwrap();
 
-        let client = LocalClient::temporary_with_global_dedup(shard_dir_2.clone()).unwrap();
+        let client = LocalClient::temporary().unwrap();
 
         client
-            .upload_shard("default", &shard_hash, true, &std::fs::read(&new_shard_path).unwrap(), &[1; 32])
+            .upload_shard(std::fs::read(&new_shard_path).unwrap().into())
             .await
             .unwrap();
 
         let dedup_hashes =
-            MDBShardInfo::filter_cas_chunks_for_global_dedup(&mut std::fs::File::open(&new_shard_path).unwrap())
-                .unwrap();
+            MDBShardInfo::filter_cas_chunks_for_global_dedup(&mut File::open(&new_shard_path).unwrap()).unwrap();
 
         assert_ne!(dedup_hashes.len(), 0);
 
         // Now do the query...
         let new_shard = client
-            .query_for_global_dedup_shard("default", &dedup_hashes[0], &[1; 32])
+            .query_for_global_dedup_shard("default", &dedup_hashes[0])
             .await
             .unwrap()
             .unwrap();
 
-        assert_eq!(new_shard, shard_dir_2.join(shard_file_name(&shard_hash)));
+        let sf = MDBShardFile::write_out_from_reader(shard_dir_2.clone(), &mut Cursor::new(new_shard)).unwrap();
+
+        assert_eq!(sf.path, shard_dir_2.join(shard_file_name(&shard_hash)));
     }
 }

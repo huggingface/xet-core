@@ -40,6 +40,10 @@ jobs:
       - name: Build and Test
         run: |
           cargo test --verbose --no-fail-fast --features "strict"
+      - name: Check Cargo.lock has no uncommitted changes
+        run: |
+          # the build and test steps would update Cargo.lock if it is out of date
+          test -z "$(git status --porcelain Cargo.lock)" || (echo "Cargo.lock has uncommitted changes!" && exit 1)
   build_and_test-win:
     runs-on: windows-latest
     steps:
@@ -55,3 +59,26 @@ jobs:
       - name: Build and Test
         run: |
           cargo test --verbose --no-fail-fast --features "strict"
+  build_and_test-wasm:
+    name: Build WASM
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      - name: Install Rust nightly
+        uses: dtolnay/rust-toolchain@nightly
+        with:
+          targets: wasm32-unknown-unknown
+          components: rust-src
+      - name: Install wasm-bindgen-cli and wasm-pack
+        run: |
+          cargo install wasm-bindgen-cli wasm-pack
+      - name: Build hf_xet_thin_wasm
+        working-directory: hf_xet_thin_wasm
+        run: |
+          ./build_wasm.sh
+      - name: Build hf_xet_wasm
+        working-directory: hf_xet_wasm
+        run: |
+          ./build_wasm.sh
+
