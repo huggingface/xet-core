@@ -301,21 +301,23 @@ impl RemoteClient {
         progress_updater: Option<Arc<SingleItemProgressUpdater>>,
     ) -> Result<u64> {
         // queue size is inherently bounded by degree of concurrency.
-        let (task_tx, mut task_rx) = mpsc::unbounded_channel::<DownloadQueueItem<SequentialTermDownload>>();
+        let (task_tx, mut task_rx) = mpsc::channel::<DownloadQueueItem<SequentialTermDownload>>(64);
         let (running_downloads_tx, mut running_downloads_rx) =
-            mpsc::unbounded_channel::<JoinHandle<Result<(TermDownloadResult<Vec<u8>>, OwnedSemaphorePermit)>>>();
+            mpsc::channel::<JoinHandle<Result<TermDownloadResult<Vec<u8>>>>>(64);
 
         // derive the actual range to reconstruct
         let file_reconstruct_range = byte_range.unwrap_or_else(FileRange::full);
         let total_len = file_reconstruct_range.length();
 
         // kick-start the download by enqueue the fetch info task.
-        task_tx.send(DownloadQueueItem::Metadata(FetchInfo::new(
-            *file_hash,
-            file_reconstruct_range,
-            self.endpoint.clone(),
-            self.authenticated_http_client_with_retry.clone(),
-        )))?;
+        task_tx
+            .send(DownloadQueueItem::Metadata(FetchInfo::new(
+                *file_hash,
+                file_reconstruct_range,
+                self.endpoint.clone(),
+                self.authenticated_http_client_with_retry.clone(),
+            )))
+            .await?;
 
         // Start the queue processing logic
         //
@@ -343,14 +345,12 @@ impl RemoteClient {
                     DownloadQueueItem::DownloadTask(term_download) => {
                         // acquire the permit before spawning the task, so that there's limited
                         // number of active downloads.
-                        let permit = DOWNLOAD_CONNECTION_CONCURRENCY_LIMITER.clone().acquire_owned().await?;
                         debug!("spawning 1 download task");
-                        let future: JoinHandle<Result<(TermDownloadResult<Vec<u8>>, OwnedSemaphorePermit)>> =
-                            tokio::spawn(async move {
-                                let data = term_download.run().await?;
-                                Ok((data, permit))
-                            });
-                        running_downloads_tx.send(future)?;
+                        let future: JoinHandle<Result<(TermDownloadResult<Vec<u8>>)>> = tokio::spawn(async move {
+                            let data = term_download.run().await?;
+                            Ok(data)
+                        });
+                        running_downloads_tx.send(future).await?;
                     },
                     DownloadQueueItem::Metadata(fetch_info) => {
                         // query for the file info of the first segment
@@ -360,7 +360,7 @@ impl RemoteClient {
 
                         let Some((offset_into_first_range, terms)) = segment.query().await? else {
                             // signal termination
-                            task_tx.send(DownloadQueueItem::End)?;
+                            task_tx.send(DownloadQueueItem::End).await?;
                             continue;
                         };
 
@@ -392,14 +392,14 @@ impl RemoteClient {
                             remaining_total_len -= take;
                             remaining_segment_len -= take;
                             debug!("enqueueing {download_task:?}");
-                            task_tx.send(DownloadQueueItem::DownloadTask(download_task))?;
+                            task_tx.send(DownloadQueueItem::DownloadTask(download_task)).await?;
                         }
 
                         // enqueue the remainder of file info fetch task
                         if let Some(remainder) = maybe_remainder {
-                            task_tx.send(DownloadQueueItem::Metadata(remainder))?;
+                            task_tx.send(DownloadQueueItem::Metadata(remainder)).await?;
                         } else {
-                            task_tx.send(DownloadQueueItem::End)?;
+                            task_tx.send(DownloadQueueItem::End).await?;
                         }
                     },
                 }
@@ -412,11 +412,9 @@ impl RemoteClient {
         let mut total_written = 0;
         while let Some(result) = running_downloads_rx.recv().await {
             match result.await {
-                Ok(Ok((mut download_result, permit))) => {
+                Ok(Ok(mut download_result)) => {
                     let data = take(&mut download_result.payload);
                     writer.write_all(&data)?;
-                    // drop permit after data written out so they don't accumulate in memory unbounded
-                    drop(permit);
 
                     if let Some(updater) = progress_updater.as_ref() {
                         updater.update(data.len() as u64).await;
