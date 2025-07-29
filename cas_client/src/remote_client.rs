@@ -291,7 +291,7 @@ impl RemoteClient {
     // at the beginning of the download, but queried in segments. Range downloads are executed with
     // a certain degree of parallelism, but writing out to storage is sequential. Ideal when the external
     // storage uses HDDs.
-    #[instrument(skip_all, name = "RemoteClient::reconstruct_file_segmented", fields(file.hash = file_hash.hex()
+    #[instrument(skip_all, name = "RemoteClient::reconstruct_file_segmented", fields(file.hash = file_hash.hex(), file.range = format!("{byte_range:?}")
     ))]
     async fn reconstruct_file_to_writer_segmented(
         &self,
@@ -418,6 +418,7 @@ impl RemoteClient {
         while let Some(result) = running_downloads_rx.recv().await {
             match result.await {
                 Ok(Ok((mut download_result, permit))) => {
+                    debug!("Task receive loop: Received ok result with data of size {}", download_result.payload.len());
                     let data = take(&mut download_result.payload);
                     writer.write_all(&data)?;
                     // drop permit after data written out so they don't accumulate in memory unbounded
@@ -432,12 +433,17 @@ impl RemoteClient {
                     // Now inspect the download metrics and tune the download degree of concurrency
                     download_scheduler.tune_on(download_result)?;
                 },
-                Ok(Err(e)) => Err(e)?,
+                Ok(Err(e)) => {
+                    debug!("Task receive loop: Received error result: {e:?}");
+                    Err(e)?
+                },
                 Err(e) => Err(anyhow!("{e:?}"))?,
             }
         }
+        debug!("Task receive loop exited.");
         writer.flush()?;
 
+        debug!("Awaiting on the dispatcher.");
         queue_dispatcher.await??;
 
         Ok(total_written)
@@ -729,7 +735,7 @@ impl Client for RemoteClient {
     ) -> Result<u64> {
         // If the user has set the `HF_XET_RECONSTRUCT_WRITE_SEQUENTIALLY=true` env variable, then we
         // should write the file to the output sequentially instead of in parallel.
-        if *RECONSTRUCT_WRITE_SEQUENTIALLY {
+        if true || *RECONSTRUCT_WRITE_SEQUENTIALLY {
             info!("reconstruct terms sequentially");
             self.reconstruct_file_to_writer_segmented(hash, byte_range, output_provider, progress_updater)
                 .await

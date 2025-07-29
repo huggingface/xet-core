@@ -37,7 +37,7 @@ impl FileDownloader {
         Ok(Self { config, client })
     }
 
-    #[instrument(skip_all, name = "FileDownloader::smudge_file_from_hash", fields(hash=file_id.hex()))]
+    #[instrument(skip_all, name = "FileDownloader::smudge_file_from_hash", fields(hash=file_id.hex(), file_name = file_name.to_string(), range = format!("{:?}", range)))]
     pub async fn smudge_file_from_hash(
         &self,
         file_id: &MerkleHash,
