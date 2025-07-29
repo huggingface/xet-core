@@ -98,7 +98,7 @@ jobs:
         if: env.IS_RELEASE != 'true'
         run: |
           mkdir dist
-          cp ../hf_xet/dist/* dist/
+          cp hf_xet/dist/* dist/
       - name: Upload debug symbols
         if: env.IS_RELEASE == 'true'
         uses: actions/upload-artifact@v4
@@ -178,7 +178,7 @@ jobs:
         if: env.IS_RELEASE != 'true'
         run: |
           mkdir dist
-          cp ../hf_xet/dist/* dist/
+          cp hf_xet/dist/* dist/
       - name: Upload debug symbols
         if: env.IS_RELEASE == 'true'
         uses: actions/upload-artifact@v4
