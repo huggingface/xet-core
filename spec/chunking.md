@@ -94,4 +94,4 @@ When a boundary is found:
 
 ## Parallel Chunking (Advanced)
 
-[Proof for explanation of parallel chunking](deduplication/src/parallel%20chunking.pdf).
+[Proof for explanation of parallel chunking](../deduplication/src/parallel%20chunking.pdf).

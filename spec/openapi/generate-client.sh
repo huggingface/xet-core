@@ -189,27 +189,10 @@ async function getFileReconstruction(fileId: string) {
   }
 }
 
-// Get batch file reconstruction
-async function getBatchReconstruction(fileIds: string[]) {
-  try {
-    const response = await api.batchGetReconstruction({
-      fileId: fileIds
-    });
-    console.log('Batch reconstruction data:', response);
-    return response;
-  } catch (error) {
-    console.error('Error getting batch reconstruction:', error);
-    throw error;
-  }
-}
 
 // Example usage
 getFileReconstruction('a1b2c3d4e5f6789012345678901234567890abcdef1234567890abcdef123456');
 
-getBatchReconstruction([
-  'a1b2c3d4e5f6789012345678901234567890abcdef1234567890abcdef123456',
-  'fedcba0987654321098765432109876543210fedcba098765432109876543'
-]);
 \`\`\`
 
 ## API Reference
@@ -225,19 +208,10 @@ Retrieves reconstruction information for a specific file.
 
 **Returns:** \`Promise<QueryReconstructionResponse>\`
 
-#### \`batchGetReconstruction(params)\`
-Retrieves reconstruction information for multiple files.
-
-**Parameters:**
-- \`fileId\`: string[] - Array of MerkleHashes in hex format
-
-**Returns:** \`Promise<BatchQueryReconstructionResponse>\`
-
 ## Types
 
 The client includes full TypeScript type definitions for:
 - \`QueryReconstructionResponse\`
-- \`BatchQueryReconstructionResponse\`
 - \`CASReconstructionTerm\`
 - \`CASReconstructionFetchInfo\`
 - \`ChunkRange\`
@@ -301,21 +275,6 @@ async function main() {
     
     console.log('✅ Range reconstruction:');
     console.log('  Offset into first range:', rangeResult.offsetIntoFirstRange);
-
-    // Example 3: Get batch file reconstruction
-    console.log('\\n📦 Getting batch file reconstruction...');
-    const fileIds = [
-      'a1b2c3d4e5f6789012345678901234567890abcdef1234567890abcdef123456',
-      'fedcba0987654321098765432109876543210fedcba098765432109876543'
-    ];
-    
-    const batchResult = await api.batchGetReconstruction({
-      fileId: fileIds
-    });
-    
-    console.log('✅ Batch reconstruction:');
-    console.log('  Number of files:', Object.keys(batchResult.files || {}).length);
-    console.log('  Fetch info keys:', Object.keys(batchResult.fetchInfo || {}));
 
   } catch (error: any) {
     console.error('❌ Error:', error.message);

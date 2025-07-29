@@ -150,19 +150,6 @@ const response = await api.getFileReconstruction({
 });
 ```
 
-### Batch Request
-
-```typescript
-const response = await api.batchGetReconstruction({
-  fileId: [
-    'a1b2c3d4e5f6789012345678901234567890abcdef1234567890abcdef123456',
-    'fedcba0987654321098765432109876543210fedcba098765432109876543'
-  ]
-});
-
-console.log('Files:', Object.keys(response.files || {}));
-```
-
 ## Customization
 
 ### Different Client Generators

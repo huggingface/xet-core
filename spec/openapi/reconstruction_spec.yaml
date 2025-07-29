@@ -67,56 +67,6 @@ paths:
       security:
         - BearerAuth: []
 
-  /v1/reconstructions:
-    get:
-      summary: Batch Get Reconstruction
-      description: Retrieves reconstruction information for multiple files in a single request
-      operationId: batchGetReconstruction
-      parameters:
-        - name: file_id
-          in: query
-          required: true
-          description: MerkleHash(es) in hex format (can be repeated for multiple files)
-          schema:
-            type: array
-            items:
-              $ref: "#/components/schemas/HexMerkleHash"
-            minItems: 1
-          style: form
-          explode: true
-          example:
-            [
-              "a1b2c3d4e5f6789012345678901234567890abcdef1234567890abcdef123456",
-              "fedcba0987654321098765432109876543210fedcba098765432109876543",
-            ]
-      responses:
-        "200":
-          description: Successful response with reconstruction information for requested files
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/BatchQueryReconstructionResponse"
-        "400":
-          description: Bad request - invalid file_id format or missing file_id parameter
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
-              example:
-                error: "Invalid file_id format"
-                code: 400
-        "404":
-          description: File not found - if any of the requested files is not found
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
-              example:
-                error: "One or more files not found"
-                code: 404
-      security:
-        - BearerAuth: []
-
 components:
   securitySchemes:
     BearerAuth:
@@ -159,35 +109,6 @@ components:
                 url_range:
                   start: 0
                   end: 131071
-
-    BatchQueryReconstructionResponse:
-      type: object
-      description: Response type for querying reconstruction for a batch of files
-      required:
-        - files
-        - fetch_info
-      properties:
-        files:
-          type: object
-          description: Map of FileID to series of terms describing a xorb hash and chunk range to be retrieved to reconstruct the file
-          additionalProperties:
-            type: array
-            items:
-              $ref: "#/components/schemas/CASReconstructionTerm"
-          example:
-            "file1hash64chars0123456789abcdef0123456789abcdef0123456789abcdef":
-              - hash: "a1b2c3d4e5f6789012345678901234567890abcdef1234567890abcdef123456"
-                unpacked_length: 263873
-                range:
-                  start: 0
-                  end: 4
-        fetch_info:
-          type: object
-          description: Information to fetch xorb ranges to reconstruct the file. Each key is a hash that is present in the terms field reconstruction terms, the values are information needed to fetch ranges from each xorb needed to reconstruct the file
-          additionalProperties:
-            type: array
-            items:
-              $ref: "#/components/schemas/CASReconstructionFetchInfo"
 
     CASReconstructionTerm:
       type: object

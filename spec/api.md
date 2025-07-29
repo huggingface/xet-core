@@ -15,7 +15,7 @@ In order to be authenticated and authorized to invoke any of the following API's
 - **Path**: `/v1/reconstruction/{file_id}`
 - **Method**: `GET`
 - **Parameters**:
-  - `file_id`: MerkleHash in hex format
+  - `file_id`: MerkleHash in hex format (64 hexadecimal character string)
 - **Headers**:
   - `Range`: Optional. Format: `bytes={start}-{end}` (inclusive end)
 - **Minimum Token Scope**: `read`
@@ -31,44 +31,26 @@ In order to be authenticated and authorized to invoke any of the following API's
   ```
 
 - **Error Responses**:
-  - 400 bad request
+  - 400 bad request (such as the file_id not being )
   - 404 File not found
   - 416 Range Not Satisfiable: When requested byte range start exceeds the end of a file
 
-### 2. Batch Get Reconstruction
-
-**Description**: Retrieves reconstruction information for multiple files in a single request.
-
-- **Path**: `/v1/reconstructions`
-- **Method**: `GET`
-- **Query Parameters**:
-  - `file_id`: MerkleHash(es) in hex format (can be repeated)
-  - Example: `/v1/reconstructions?file_id=abc123&file_id=def456`
-- **Headers**: None (beyond authentication)
-- **Minimum Token Scope**: `read`
-- **Body**: None
-- **Response**: JSON (`BatchQueryReconstructionResponse`)
-
-- **Error Responses**:
-  - 400 bad request
-  - 404 File not found if any file is not found
-
-### 3. Query Chunk Deduplication (Global Deduplication)
+### 2. Query Chunk Deduplication (Global Deduplication)
 
 **Description**: Checks if a chunk exists in the CAS for deduplication purposes.
 
 - **Path**: `/v1/chunk/default-merkledb/{hash}`
 - **Method**: `GET`
 - **Parameters**:
-  - `hash`: Chunk hash in hex format. Review [how to compute chunk hash](../hashing.md#Chunk%20Hashes) to compute chunk hashes
-- **Headers**: None (beyond authentication)
+  - `hash`: Chunk hash in hex format (64 hexadecimal character string). Review [how to compute chunk hash](../hashing.md#Chunk%20Hashes) to compute chunk hashes
 - **Minimum Token Scope**: `read`
 - **Body**: None
 - **Response**: Raw bytes in shard format (chunk data if exists)
 - **Error Responses**:
-  - 404 - Chunk not already tracked by global deduplication
+  - `400 Bad request`: malformed hash in path
+  - `404 Not Found`: Chunk not already tracked by global deduplication
 
-### 4. Upload XORB
+### 3. Upload XORB
 
 **Description**: Uploads a serialized CAS object (XORB) to the server with progress tracking. Review [how to compute xorb hash](../hashing.md#Xorb%20Hashes) to compute xorb hashes.
 
@@ -76,8 +58,6 @@ In order to be authenticated and authorized to invoke any of the following API's
 - **Method**: `POST`
 - **Parameters**:
   - `hash`: MerkleHash in hex format. Review [how to compute xorb hash](../hashing.md#Xorb%20Hashes) to compute xorb hashes.
-- **Headers**:
-  - `Content-Length`: Size of upload data
 - **Minimum Token Scope**: `write`
 - **Body**: Serialized Xorb
 - **Response**: JSON (`UploadXorbResponse`)
@@ -90,7 +70,11 @@ In order to be authenticated and authorized to invoke any of the following API's
 
   was_inserted is false if the xorb already exists, this is not an error
 
-### 5. Check XORB Existence
+- **Error Responses**:
+  - `400 Bad Request`: malformed hash in path, xorb hash is incorrect for body, body is incorrectly serialized
+  - `403 Forbidden`: authentication token missing `write` scope.
+
+### 4. Check XORB Existence
 
 **Description**: Checks if an XORB exists in the Content Address Store (CAS). Use of this API is optional but can save the process of uploading all of the xorb data.
 
@@ -98,21 +82,20 @@ In order to be authenticated and authorized to invoke any of the following API's
 - **Method**: `HEAD`
 - **Parameters**:
   - `hash`: MerkleHash in hex format. Review [how to compute xorb hash](../hashing.md#Xorb%20Hashes) to compute xorb hashes.
-- **Headers**: None (beyond authentication)
 - **Minimum Token Scope**: `read`
 - **Body**: None
 - **Response**: Status code only
-  - `200 OK`: XORB exists
-  - `404 Not Found`: XORB does not exist
+  - `200 OK`: Xorb exists
+  - `404 Not Found`: Xorb does not exist
+- **Error Responses**:
+  - `400 Bad Request`: Xorb hash path component is incorrectly formatted.
 
-### 6. Upload Shard
+### 5. Upload Shard
 
 **Description**: Uploads a shard to the CAS with optional forced synchronization.
 
 - **Path**: `/v1/shard`
 - **Method**: `POST`
-- **Headers**:
-  - `Content-Length`: Size of upload data
 - **Minimum Token Scope**: `write`
 - **Body**: Raw bytes (shard data). See [how to serialize a shard](../shard.md).
 - **Response**: JSON (`UploadShardResponse`)
@@ -124,6 +107,10 @@ In order to be authenticated and authorized to invoke any of the following API's
   ```
 
   Where 0 indicates the shard already exists and 1 indicates "SyncPerformed" meaning that the shard was registered (UploadShardResponseType).
+
+- **Error Responses**:
+  - `400 Bad Request`: shard is incorrectly serialized, shard contents failed verification
+  - `403 Forbidden`: authentication token missing `write` scope.
 
 ## Common Error Cases/Codes
 
