@@ -154,6 +154,8 @@ impl ThreadPool {
         *rt.runtime.write().unwrap() = Some(tokio_rt); // Only fails if other thread destroyed mutex; unwrap ok.
         rt.handle_ref.set(handle).unwrap(); // Only fails if set called twice; unwrap ok.
 
+        eprintln!("<THREADPOOL PID={}>", std::process::id());
+
         Ok(rt)
     }
 

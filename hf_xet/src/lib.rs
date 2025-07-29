@@ -108,6 +108,9 @@ pub fn download_files(
     let updaters = progress_updater.map(try_parse_progress_updaters).transpose()?;
 
     async_run(py, async move {
+        
+        eprintln!("<PID={}>", std::process::id()); 
+
         let out: Vec<String> =
             data_client::download_async(file_infos, endpoint, token_info, refresher.map(|v| v as Arc<_>), updaters)
                 .await
