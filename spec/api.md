@@ -18,6 +18,7 @@ This document describes the HTTP API endpoints used by the CAS (Content Addressa
   - `file_id`: MerkleHash in hex format
 - **Headers**:
   - `Range`: Optional. Format: `bytes={start}-{end}` (inclusive end)
+- **Minimum Token Scope**: `read`
 - **Body**: None
 - **Response**: JSON (`QueryReconstructionResponse`)
 
@@ -44,6 +45,7 @@ This document describes the HTTP API endpoints used by the CAS (Content Addressa
   - `file_id`: MerkleHash(es) in hex format (can be repeated)
   - Example: `/v1/reconstructions?file_id=abc123&file_id=def456`
 - **Headers**: None (beyond authentication)
+- **Minimum Token Scope**: `read`
 - **Body**: None
 - **Response**: JSON (`BatchQueryReconstructionResponse`)
 
@@ -60,6 +62,7 @@ This document describes the HTTP API endpoints used by the CAS (Content Addressa
 - **Parameters**:
   - `hash`: Chunk hash in hex format. Review [how to compute chunk hash](spec/hashing.md#Chunk%20Hashes) to compute chunk hashes
 - **Headers**: None (beyond authentication)
+- **Minimum Token Scope**: `read`
 - **Body**: None
 - **Response**: Raw bytes in shard format (chunk data if exists)
 - **Error Responses**:
@@ -75,6 +78,7 @@ This document describes the HTTP API endpoints used by the CAS (Content Addressa
   - `hash`: MerkleHash in hex format. Review [how to compute xorb hash](spec/hashing.md#Xorb%20Hashes) to compute xorb hashes.
 - **Headers**:
   - `Content-Length`: Size of upload data
+- **Minimum Token Scope**: `write`
 - **Body**: Serialized Xorb
 - **Response**: JSON (`UploadXorbResponse`)
 
@@ -95,6 +99,7 @@ This document describes the HTTP API endpoints used by the CAS (Content Addressa
 - **Parameters**:
   - `hash`: MerkleHash in hex format. Review [how to compute xorb hash](spec/hashing.md#Xorb%20Hashes) to compute xorb hashes.
 - **Headers**: None (beyond authentication)
+- **Minimum Token Scope**: `read`
 - **Body**: None
 - **Response**: Status code only
   - `200 OK`: XORB exists
@@ -108,6 +113,7 @@ This document describes the HTTP API endpoints used by the CAS (Content Addressa
 - **Method**: `POST`
 - **Headers**:
   - `Content-Length`: Size of upload data
+- **Minimum Token Scope**: `write`
 - **Body**: Raw bytes (shard data). See [how to serialize a shard](spec/shard.md).
 - **Response**: JSON (`UploadShardResponse`)
 
