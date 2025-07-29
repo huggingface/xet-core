@@ -46,6 +46,7 @@ impl FileDownloader {
         range: Option<FileRange>,
         progress_updater: Option<Arc<ItemProgressUpdater>>,
     ) -> Result<u64> {
+        eprintln!("Attempting to download {file_name:?}, range={range:?},file_id={file_id:?}");
         let file_progress_tracker = progress_updater.map(|p| ItemProgressUpdater::item_tracker(&p, file_name, None));
 
         // Currently, this works by always directly querying the remote server.

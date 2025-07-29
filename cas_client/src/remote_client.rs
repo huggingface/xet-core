@@ -300,6 +300,7 @@ impl RemoteClient {
         writer: &OutputProvider,
         progress_updater: Option<Arc<SingleItemProgressUpdater>>,
     ) -> Result<u64> {
+        eprintln!("Attempting to download file={file_hash:?} with range {byte_range:?}.");
         // queue size is inherently bounded by degree of concurrency.
         let (task_tx, mut task_rx) = mpsc::unbounded_channel::<DownloadQueueItem<SequentialTermDownload>>();
         let (running_downloads_tx, mut running_downloads_rx) =
@@ -352,7 +353,7 @@ impl RemoteClient {
                         let future: JoinHandle<Result<(TermDownloadResult<Vec<u8>>, OwnedSemaphorePermit)>> =
                             tokio::spawn(async move {
                                 let data = term_download.run().await?;
-                                debug!("{x:x}: Download task completed.");
+                                eprintln!("{x:x}: Download task completed.");
                                 Ok((data, permit))
                             });
                         running_downloads_tx.send(future)?;
@@ -414,40 +415,49 @@ impl RemoteClient {
         });
 
         let mut writer = writer.get_writer_at(0)?;
-        let mut total_written = 0;
-        while let Some(result) = running_downloads_rx.recv().await {
-            match result.await {
-                Ok(Ok((mut download_result, permit))) => {
-                    eprintln!(
-                        "Task receive loop: Received ok result with data of size {}",
-                        download_result.payload.len()
-                    );
-                    let data = take(&mut download_result.payload);
-                    writer.write_all(&data)?;
-                    // drop permit after data written out so they don't accumulate in memory unbounded
-                    drop(permit);
 
-                    if let Some(updater) = progress_updater.as_ref() {
-                        updater.update(data.len() as u64).await;
-                    }
+        let write_task = tokio::spawn(async move {
+            let mut total_written = 0;
+            while let Some(result) = running_downloads_rx.recv().await {
+                match result.await {
+                    Ok(Ok((mut download_result, permit))) => {
+                        eprintln!(
+                            "Task receive loop: Received ok result with data of size {}",
+                            download_result.payload.len()
+                        );
+                        let data = take(&mut download_result.payload);
+                        writer.write_all(&data)?;
+                        // drop permit after data written out so they don't accumulate in memory unbounded
+                        drop(permit);
 
-                    total_written += data.len() as u64;
+                        if let Some(updater) = progress_updater.as_ref() {
+                            updater.update(data.len() as u64).await;
+                        }
 
-                    // Now inspect the download metrics and tune the download degree of concurrency
-                    download_scheduler.tune_on(download_result)?;
-                },
-                Ok(Err(e)) => {
-                    eprintln!("Task receive loop: Received error result: {e:?}");
-                    Err(e)?
-                },
-                Err(e) => Err(anyhow!("{e:?}"))?,
+                        total_written += data.len() as u64;
+
+                        // Now inspect the download metrics and tune the download degree of concurrency
+                        download_scheduler.tune_on(download_result)?;
+                    },
+                    Ok(Err(e)) => {
+                        eprintln!("Task receive loop: Received error result: {e:?}");
+                        Err(e)?
+                    },
+                    Err(e) => Err(anyhow!("{e:?}"))?,
+                }
             }
-        }
-        eprintln!("Task receive loop exited.");
-        writer.flush()?;
+            eprintln!("Task receive loop exited.");
+            writer.flush()?;
 
-        eprintln!("Awaiting on the dispatcher.");
-        queue_dispatcher.await??;
+            Result::Ok(total_written)
+        });
+
+        eprintln!("Both tasks spawned; waiting.");
+        let (write_res, queue_res) = tokio::join! {write_task, queue_dispatcher};
+
+        queue_res??;
+        let total_written = write_res??;
+        eprintln!("Finished; total_written=total_written.");
 
         Ok(total_written)
     }
