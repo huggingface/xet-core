@@ -44,6 +44,7 @@ tracing-subscriber = { version = "0.3", features = [
     "env-filter",
 ] }
 tracing-appender = "0.2"
+rand = "0.9.2"
 
 # Unix-specific dependencies
 [target.'cfg(unix)'.dependencies]
