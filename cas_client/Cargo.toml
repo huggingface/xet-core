@@ -33,6 +33,7 @@ url = { workspace = true }
 lazy_static = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+rand = { workspace = true }
 
 reqwest-middleware = "0.4"
 reqwest-retry = "0.7"

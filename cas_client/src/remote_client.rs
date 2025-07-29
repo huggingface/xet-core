@@ -343,11 +343,16 @@ impl RemoteClient {
                     DownloadQueueItem::DownloadTask(term_download) => {
                         // acquire the permit before spawning the task, so that there's limited
                         // number of active downloads.
+
+                        use rand::Rng;
+                        let x: u64 = rand::rng().random();
+                        debug!("{x:x}: Acquiring download permit.");
                         let permit = DOWNLOAD_CONNECTION_CONCURRENCY_LIMITER.clone().acquire_owned().await?;
-                        debug!("spawning 1 download task");
+                        debug!("{x:x}: Permit acquried: spawning 1 download task");
                         let future: JoinHandle<Result<(TermDownloadResult<Vec<u8>>, OwnedSemaphorePermit)>> =
                             tokio::spawn(async move {
                                 let data = term_download.run().await?;
+                                debug!("{x:x}: Download task completed.");
                                 Ok((data, permit))
                             });
                         running_downloads_tx.send(future)?;
