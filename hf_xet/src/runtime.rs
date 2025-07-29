@@ -6,6 +6,7 @@ use lazy_static::lazy_static;
 use pyo3::exceptions::{PyKeyboardInterrupt, PyRuntimeError};
 use pyo3::prelude::*;
 use xet_threadpool::errors::MultithreadedRuntimeError;
+use xet_threadpool::exports::tokio::runtime::Runtime;
 use xet_threadpool::ThreadPool;
 
 use crate::log;
@@ -13,7 +14,7 @@ use crate::log;
 lazy_static! {
     static ref SIGINT_DETECTED: Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
     static ref SIGINT_HANDLER_INSTALLED: (AtomicBool, Mutex<()>) = (AtomicBool::new(false), Mutex::new(()));
-    static ref MULTITHREADED_RUNTIME: RwLock<Option<Arc<ThreadPool>>> = RwLock::new(None);
+    static ref MULTITHREADED_RUNTIME: RwLock<Option<(u64, Arc<ThreadPool>)>> = RwLock::new(None);
 }
 
 #[cfg(unix)]
@@ -106,8 +107,10 @@ pub fn init_threadpool(py: Python) -> PyResult<Arc<ThreadPool>> {
     let mut guard = MULTITHREADED_RUNTIME.write().unwrap();
 
     // Has another thread done this already?
-    if let Some(ref existing) = *guard {
-        return Ok(existing.clone());
+    if let Some((pid, ref existing)) = *guard {
+        if pid == std::process::id() as u64 {
+            return Ok(existing.clone());
+        }
     }
 
     // Create a new Tokio runtime.
