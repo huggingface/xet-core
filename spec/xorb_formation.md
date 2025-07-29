@@ -33,7 +33,7 @@ The chunk header is serialized as follows:
 - **Compression Type** (1 byte): Algorithm used for compression (See mapping below)
 - **Uncompressed Size** (3 bytes): Size of raw chunk data (before compression) as a 3 byte little-endian unsigned integer.
 
-Both Compressed and Uncompressed Size can fit in a 3 byte integer, given that 
+Both Compressed and Uncompressed Size can fit in a 3 byte integer, given that
 
 #### Chunk Compression Schemes
 
@@ -47,9 +47,15 @@ Both Compressed and Uncompressed Size can fit in a 3 byte integer, given that
 
 Byte grouping LZ4 compression is an optimization technique that improves compression ratios for structured data like floating-point numbers, integers, and other data types where values have similar byte patterns at specific positions.
 
-1. **Byte Grouping Phase**: The input data is reorganized by grouping bytes by their position within each data element. For example, with 4-byte groups:
+1. **Byte Grouping Phase**: The input data is reorganized by grouping bytes by their position within each 4-byte groups:
+   Create 4 buffers, for each 4 bytes of the chunk data (B1, B2, B3, B4) append each byte to their respective group i.e. in order from 1 to 4. Then concatenate the groups in order (1, 2, 3, 4).
+
+   Example:
+
    - Original data: `[A1, A2, A3, A4, B1, B2, B3, B4, C1, C2, C3, C4, ...]`
    - Grouped data: `[A1, B1, C1, ..., A2, B2, C2, ..., A3, B3, C3, ..., A4, B4, C4, ...]`
+
+   If the total number of bytes in the chunk is not a multiple of 4, append the remaining bytes following the pattern (1 byte to each group) to the first 1-3 groups until there are no more bytes left in the chunk.
 
 2. **LZ4 Compression**: The grouped data is then compressed using standard LZ4 compression.
 
@@ -59,6 +65,7 @@ Following the header is the compressed data block, exactly `compressed_size` byt
 
 ### Example Chunk Serialization
 
+```python
 VERSION = 0
 buffer = bytes()
 
@@ -68,3 +75,4 @@ for chunk in xorb.chunks:
     header = Header(VERSION, len(compressed), compression_scheme, uncompressed_length)
     buffer.write(header)
     buffer.write(compressed)
+```

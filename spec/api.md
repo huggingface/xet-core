@@ -74,7 +74,7 @@ This document describes the HTTP API endpoints used by the CAS (Content Addressa
 - **Parameters**:
   - `hash`: MerkleHash in hex format. Review [how to compute xorb hash](spec/hashing.md#Xorb%20Hashes) to compute xorb hashes.
 - **Headers**:
-  - `Content-Length`: Size of upload data (required for streaming)
+  - `Content-Length`: Size of upload data
 - **Body**: Serialized Xorb
 - **Response**: JSON (`UploadXorbResponse`)
 
@@ -88,7 +88,7 @@ This document describes the HTTP API endpoints used by the CAS (Content Addressa
 
 ### 5. Check XORB Existence
 
-**Description**: Checks if an XORB exists in the Content Address Store (CAS).
+**Description**: Checks if an XORB exists in the Content Address Store (CAS). Use of this API is optional but can save the process of uploading all of the xorb data.
 
 - **Path**: `/v1/xorb/default/{hash}`
 - **Method**: `HEAD`
@@ -96,18 +96,19 @@ This document describes the HTTP API endpoints used by the CAS (Content Addressa
   - `hash`: MerkleHash in hex format. Review [how to compute xorb hash](spec/hashing.md#Xorb%20Hashes) to compute xorb hashes.
 - **Headers**: None (beyond authentication)
 - **Body**: None
-- **Response**: Status codex only
+- **Response**: Status code only
   - `200 OK`: XORB exists
   - `404 Not Found`: XORB does not exist
 
-### 7. Upload Shard
+### 6. Upload Shard
 
 **Description**: Uploads a shard to the CAS with optional forced synchronization.
 
 - **Path**: `/v1/shard`
 - **Method**: `POST`
-- **Headers**: None (beyond authentication)
-- **Body**: Raw bytes (shard data)
+- **Headers**:
+  - `Content-Length`: Size of upload data
+- **Body**: Raw bytes (shard data). See [how to serialize a shard](spec/shard.md).
 - **Response**: JSON (`UploadShardResponse`)
 
   ```json
@@ -118,19 +119,11 @@ This document describes the HTTP API endpoints used by the CAS (Content Addressa
 
   Where 0 indicates the shard already exists and 1 indicates "SyncPerformed" meaning that the shard was registered (UploadShardResponseType).
 
-### Common Response Types
+## Common Error Cases/Codes
 
-- TODO: explain these where they are used.
-
-- **QueryReconstructionResponse**: Contains file reconstruction metadata including terms and fetch information
-- **BatchQueryReconstructionResponse**: Contains multiple reconstruction responses
-- Shard format [spec/shard.md]
-
-## Error Handling
-
-The client implements retry logic for most endpoints with configurable retry policies. Common error scenarios:
-
-- **Connection Errors**: Handled gracefully, often returning `None` or empty results
-- **416 Range Not Satisfiable**: Returned when byte range requests are invalid
-- **Authentication Errors**: Handled by the authenticated HTTP client middleware
-- **Rate Limiting (429)**: Some endpoints have specific no-retry policies for 429 responses
+- **Connection Errors**: Often caused by network issues.
+- **400 Bad Request**: Returned when the request parameters are invalid, e.g. invalid xorb/shard on upload API's.
+- **401 Unauthorized**: Need to get a refreshed token to continue making requests.
+- **404 Not Found**: Occurs on GET/HEAD api's where the resource (xorb, file) do not exist.
+- **416 Range Not Satisfiable**: Returned when byte range requests are invalid; specifically the requested start range is greater than or equal to the length of the file.
+- **429 Rate Limiting**: Assume there is rate limiting on all API's and lower your request rate using a backoff delay strategy
