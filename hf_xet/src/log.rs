@@ -18,6 +18,13 @@ const DEFAULT_LOG_LEVEL: &str = "warn";
 #[cfg(debug_assertions)]
 const DEFAULT_LOG_LEVEL: &str = "warn";
 
+fn use_json() -> bool {
+    env::var("HF_XET_LOG_FORMAT")
+        .unwrap_or_else(|_| "json".to_string())
+        .to_ascii_lowercase()
+        == "json"
+}
+
 fn init_logging_to_file(path: impl AsRef<Path>) {
     // Set up logging to a file.
     use std::ffi::OsStr;
@@ -51,18 +58,13 @@ fn init_logging_to_file(path: impl AsRef<Path>) {
         .with_target(false)
         .with_writer(writer);
 
-    let use_json = env::var("HF_XET_LOG_FORMAT")
-        .unwrap_or_else(|_| "json".to_string())
-        .to_ascii_lowercase()
-        == "json";
-
     // Standard filter layer: RUST_LOG env var or DEFAULT_LOG_LEVEL fallback.
     let filter_layer = EnvFilter::try_from_default_env()
         .or_else(|_| EnvFilter::try_new(DEFAULT_LOG_LEVEL))
         .unwrap_or_default();
 
     // Initialise the subscriber.
-    if use_json {
+    if use_json() {
         tracing_subscriber::registry()
             .with(fmt_layer_base.json())
             .with(filter_layer)
@@ -81,11 +83,10 @@ fn init_global_logging(py: Python) -> Option<TelemetryTaskInfo> {
         return None;
     }
 
-    let fmt_layer = tracing_subscriber::fmt::layer()
+    let fmt_layer_base = tracing_subscriber::fmt::layer()
         .with_line_number(true)
         .with_file(true)
-        .with_target(false)
-        .json();
+        .with_target(false);
 
     let filter_layer = EnvFilter::try_from_default_env()
         .or_else(|_| EnvFilter::try_new(DEFAULT_LOG_LEVEL))
@@ -94,7 +95,14 @@ fn init_global_logging(py: Python) -> Option<TelemetryTaskInfo> {
     // Client-side telemetry, default is OFF
     // To enable telemetry set env var HF_HUB_ENABLE_TELEMETRY
     if env::var("HF_HUB_ENABLE_TELEMETRY").is_err_and(|e| e == env::VarError::NotPresent) {
-        tracing_subscriber::registry().with(fmt_layer).with(filter_layer).init();
+        let tr_sub = tracing_subscriber::registry().with(filter_layer);
+
+        if use_json() {
+            tr_sub.with(fmt_layer_base.json()).init();
+        } else {
+            tr_sub.with(fmt_layer_base.pretty()).init();
+        }
+
         None
     } else {
         let telemetry_buffer_layer = LogBufferLayer::new(py, TELEMETRY_PRE_ALLOC_BYTES);
@@ -105,8 +113,8 @@ fn init_global_logging(py: Python) -> Option<TelemetryTaskInfo> {
             telemetry_buffer_layer.with_filter(FilterFn::new(|meta| meta.target() == "client_telemetry"));
 
         tracing_subscriber::registry()
-            .with(fmt_layer)
             .with(filter_layer)
+            .with(fmt_layer_base.json())
             .with(telemetry_filter_layer)
             .init();
 
