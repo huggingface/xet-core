@@ -107,6 +107,9 @@ pub fn download_files(
     let refresher = token_refresher.map(WrappedTokenRefresher::from_func).transpose()?.map(Arc::new);
     let updaters = progress_updater.map(try_parse_progress_updaters).transpose()?;
 
+    let x : u64 = rand::rng().gen();
+    eprintln!("{x:x}: Downloading files {file_infos:?}");
+
     async_run(py, async move {
         let out: Vec<String> =
             data_client::download_async(file_infos, endpoint, token_info, refresher.map(|v| v as Arc<_>), updaters)
@@ -115,6 +118,8 @@ pub fn download_files(
 
         PyResult::Ok(out)
     })
+
+    eprintln!("{x:x}: Completed."); 
 }
 
 fn try_parse_progress_updaters(funcs: Vec<Py<PyAny>>) -> PyResult<Vec<Arc<dyn TrackingProgressUpdater>>> {
