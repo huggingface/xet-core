@@ -147,11 +147,11 @@ While deduplication is valuable for saving space, doing it too aggressively can 
 
 ### Chunk Hash Computation
 
-Each chunk has its content hashed using a cryptographic hash function (Blake3-based MerkleHash) to create a unique identifier for content addressing. [See section about hashing](spec/hashing.md).
+Each chunk has its content hashed using a cryptographic hash function (Blake3-based MerkleHash) to create a unique identifier for content addressing. [See section about hashing](../hashing.md).
 
 ### Xorb Formation
 
-When new chunks need to be stored, they are aggregated into xorbs based on size and count limits. If adding a new chunk would exceed the maximum xorb size or chunk count, the current xorb is finalized and uploaded. [See section about xorb formation](spec/xorb_formation.md)
+When new chunks need to be stored, they are aggregated into xorbs based on size and count limits. If adding a new chunk would exceed the maximum xorb size or chunk count, the current xorb is finalized and uploaded. [See section about xorb formation](../xorb_formation.md)
 
 ### File Reconstruction Information
 
@@ -168,7 +168,7 @@ This information allows the system to reconstruct files by:
 2. Extracting the specific chunk ranges from each xorb
 3. Concatenating chunks in the correct order
 
-[See section about file reconstruction](spec/file_reconstruction.md).
+[See section about file reconstruction](../file_reconstruction.md).
 
 ## Conclusion
 

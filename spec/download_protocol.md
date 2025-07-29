@@ -155,7 +155,7 @@ The downloaded data is in xorb (serialized CAS object) format and must be deseri
 3. **Extract byte indices**: Track byte boundaries between chunks for range extraction
 4. **Validate length**: Ensure decompressed length matches `unpacked_length` from the term
 
-**Note**: The specific deserialization process depends on the CAS object format. Refer to the [xorb format documentation](spec/xorb_formation.md) for implementation details.
+**Note**: The specific deserialization process depends on the CAS object format. Refer to the [xorb format documentation](../xorb_formation.md) for implementation details.
 
 #### Step 4: Extract Term Data
 

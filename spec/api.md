@@ -4,7 +4,7 @@ This document describes the HTTP API endpoints used by the CAS (Content Addressa
 
 ## Authentication
 
-- TODO
+In order to be authenticated and authorized to invoke any of the following API's as well as determine the API endpoint url, follow the instructions in [../auth.md]
 
 ## Endpoints
 
@@ -60,7 +60,7 @@ This document describes the HTTP API endpoints used by the CAS (Content Addressa
 - **Path**: `/v1/chunk/default-merkledb/{hash}`
 - **Method**: `GET`
 - **Parameters**:
-  - `hash`: Chunk hash in hex format. Review [how to compute chunk hash](spec/hashing.md#Chunk%20Hashes) to compute chunk hashes
+  - `hash`: Chunk hash in hex format. Review [how to compute chunk hash](../hashing.md#Chunk%20Hashes) to compute chunk hashes
 - **Headers**: None (beyond authentication)
 - **Minimum Token Scope**: `read`
 - **Body**: None
@@ -70,12 +70,12 @@ This document describes the HTTP API endpoints used by the CAS (Content Addressa
 
 ### 4. Upload XORB
 
-**Description**: Uploads a serialized CAS object (XORB) to the server with progress tracking. Review [how to compute xorb hash](spec/hashing.md#Xorb%20Hashes) to compute xorb hashes.
+**Description**: Uploads a serialized CAS object (XORB) to the server with progress tracking. Review [how to compute xorb hash](../hashing.md#Xorb%20Hashes) to compute xorb hashes.
 
 - **Path**: `/v1/xorb/default/{hash}`
 - **Method**: `POST`
 - **Parameters**:
-  - `hash`: MerkleHash in hex format. Review [how to compute xorb hash](spec/hashing.md#Xorb%20Hashes) to compute xorb hashes.
+  - `hash`: MerkleHash in hex format. Review [how to compute xorb hash](../hashing.md#Xorb%20Hashes) to compute xorb hashes.
 - **Headers**:
   - `Content-Length`: Size of upload data
 - **Minimum Token Scope**: `write`
@@ -97,7 +97,7 @@ This document describes the HTTP API endpoints used by the CAS (Content Addressa
 - **Path**: `/v1/xorb/default/{hash}`
 - **Method**: `HEAD`
 - **Parameters**:
-  - `hash`: MerkleHash in hex format. Review [how to compute xorb hash](spec/hashing.md#Xorb%20Hashes) to compute xorb hashes.
+  - `hash`: MerkleHash in hex format. Review [how to compute xorb hash](../hashing.md#Xorb%20Hashes) to compute xorb hashes.
 - **Headers**: None (beyond authentication)
 - **Minimum Token Scope**: `read`
 - **Body**: None
@@ -114,7 +114,7 @@ This document describes the HTTP API endpoints used by the CAS (Content Addressa
 - **Headers**:
   - `Content-Length`: Size of upload data
 - **Minimum Token Scope**: `write`
-- **Body**: Raw bytes (shard data). See [how to serialize a shard](spec/shard.md).
+- **Body**: Raw bytes (shard data). See [how to serialize a shard](../shard.md).
 - **Response**: JSON (`UploadShardResponse`)
 
   ```json
