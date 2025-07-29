@@ -724,10 +724,13 @@ impl Client for RemoteClient {
     ) -> Result<u64> {
         // If the user has set the `HF_XET_RECONSTRUCT_WRITE_SEQUENTIALLY=true` env variable, then we
         // should write the file to the output sequentially instead of in parallel.
-        if *RECONSTRUCT_WRITE_SEQUENTIALLY {
-            info!("reconstruct terms sequentially");
-            self.reconstruct_file_to_writer_segmented(hash, byte_range, output_provider, progress_updater)
-                .await
+        // if *RECONSTRUCT_WRITE_SEQUENTIALLY {
+
+        info!("reconstruct terms sequentially");
+        self.reconstruct_file_to_writer_segmented(hash, byte_range, output_provider, progress_updater)
+            .await
+
+        /*
         } else {
             info!("reconstruct terms in parallel");
             self.reconstruct_file_to_writer_segmented_parallel_write(
@@ -738,6 +741,7 @@ impl Client for RemoteClient {
             )
             .await
         }
+        */
     }
 
     #[instrument(skip_all, name = "RemoteClient::get_file_reconstruction", fields(file.hash = file_hash.hex()
