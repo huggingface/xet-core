@@ -29,5 +29,8 @@ xet_threadpool = { path = "../xet_threadpool" }
 [target.'cfg(target_family = "wasm")'.dependencies]
 web-time = { workspace = true }
 
+[dev-dependencies]
+serial_test = { workspace = true }
+
 [features]
 strict = []

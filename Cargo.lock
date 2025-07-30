@@ -3857,6 +3857,7 @@ dependencies = [
  "merklehash",
  "parking_lot 0.12.3",
  "pin-project",
+ "serial_test",
  "tempfile",
  "thiserror 2.0.12",
  "tokio",

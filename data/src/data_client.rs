@@ -337,6 +337,7 @@ mod tests {
     fn test_default_config_with_hf_xet_cache_and_hf_home() {
         let temp_dir_xet_cache = tempdir().unwrap();
         let temp_dir_hf_home = tempdir().unwrap();
+
         env::set_var("HF_XET_CACHE", temp_dir_xet_cache.path().to_str().unwrap());
         env::set_var("HF_HOME", temp_dir_hf_home.path().to_str().unwrap());
 
