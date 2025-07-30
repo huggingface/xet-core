@@ -14,7 +14,5 @@ pub mod singleflight;
 
 pub use output_bytes::output_bytes;
 
-pub mod spawn_safety;
-
 pub mod rw_task_lock;
 pub use rw_task_lock::{RwTaskLock, RwTaskLockError, RwTaskLockReadGuard};

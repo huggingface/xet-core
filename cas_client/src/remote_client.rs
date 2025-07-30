@@ -27,7 +27,7 @@ use tracing::{debug, info, instrument};
 use utils::auth::AuthConfig;
 #[cfg(not(target_family = "wasm"))]
 use utils::singleflight::Group;
-use utils::spawn_safety::SpawnSafeStaticSemaphore;
+use xet_threadpool::ThreadPool;
 
 #[cfg(not(target_family = "wasm"))]
 use crate::download_utils::*;
@@ -54,8 +54,8 @@ utils::configurable_constants! {
     ref UPLOAD_REPORTING_BLOCK_SIZE : usize = 512 * 1024;
 }
 
-lazy_static::lazy_static! {
-     pub static ref DOWNLOAD_CONNECTION_CONCURRENCY_LIMITER: SpawnSafeStaticSemaphore = SpawnSafeStaticSemaphore::new(*NUM_CONCURRENT_RANGE_GETS);
+fn download_concurrency_limit() -> usize {
+    *NUM_CONCURRENT_RANGE_GETS
 }
 
 utils::configurable_bool_constants! {
@@ -302,6 +302,7 @@ impl RemoteClient {
         progress_updater: Option<Arc<SingleItemProgressUpdater>>,
     ) -> Result<u64> {
         // queue size is inherently bounded by degree of concurrency.
+
         let (task_tx, mut task_rx) = mpsc::unbounded_channel::<DownloadQueueItem<SequentialTermDownload>>();
         let (running_downloads_tx, mut running_downloads_rx) =
             mpsc::unbounded_channel::<JoinHandle<Result<(TermDownloadResult<Vec<u8>>, OwnedSemaphorePermit)>>>();
@@ -331,7 +332,7 @@ impl RemoteClient {
         let download_scheduler = DownloadSegmentLengthTuner::from_configurable_constants();
         let download_scheduler_clone = download_scheduler.clone();
 
-        let download_concurrency_limiter = DOWNLOAD_CONNECTION_CONCURRENCY_LIMITER.get().await;
+        let download_concurrency_limiter = ThreadPool::current().global_semaphore(download_concurrency_limit);
 
         let queue_dispatcher: JoinHandle<Result<()>> = tokio::spawn(async move {
             let mut remaining_total_len = total_len;
@@ -455,6 +456,7 @@ impl RemoteClient {
         progress_updater: Option<Arc<SingleItemProgressUpdater>>,
     ) -> Result<u64> {
         // queue size is inherently bounded by degree of concurrency.
+
         let (task_tx, mut task_rx) =
             mpsc::unbounded_channel::<DownloadQueueItem<FetchTermDownloadOnceAndWriteEverywhereUsed>>();
         let mut running_downloads = JoinSet::<Result<TermDownloadResult<u64>>>::new();
@@ -481,7 +483,7 @@ impl RemoteClient {
         let term_download_client = self.http_client.clone();
         let download_scheduler = DownloadSegmentLengthTuner::from_configurable_constants();
 
-        let download_concurrency_limiter = DOWNLOAD_CONNECTION_CONCURRENCY_LIMITER.get().await;
+        let download_concurrency_limiter = ThreadPool::current().global_semaphore(download_concurrency_limit);
 
         let process_result = move |result: TermDownloadResult<u64>,
                                    total_written: &mut u64,

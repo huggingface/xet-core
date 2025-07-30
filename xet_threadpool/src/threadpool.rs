@@ -1,10 +1,12 @@
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::fmt::Display;
 use std::future::Future;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, OnceLock};
 
 use tokio::runtime::{Builder as TokioRuntimeBuilder, Handle as TokioRuntimeHandle, Runtime as TokioRuntime};
+use tokio::sync::Semaphore;
 use tokio::task::JoinHandle;
 use tracing::debug;
 
@@ -71,6 +73,9 @@ pub struct ThreadPool {
 
     // Are we in the middle of a sigint shutdown?
     sigint_shutdown: AtomicBool,
+
+    // Semaphores
+    global_semaphore_table: std::sync::Mutex<HashMap<fn() -> usize, Arc<Semaphore>>>,
 }
 
 // Use thread-local references to the runtime that are set on initilization among all
@@ -115,6 +120,7 @@ impl ThreadPool {
             handle_ref: OnceLock::new(),
             external_executor_count: 0.into(),
             sigint_shutdown: false.into(),
+            global_semaphore_table: std::sync::Mutex::new(HashMap::new()),
         });
 
         // Each thread in each of the tokio worker threads holds a reference to the runtime handling
@@ -163,6 +169,7 @@ impl ThreadPool {
             handle_ref: rt_handle.into(),
             external_executor_count: 0.into(),
             sigint_shutdown: false.into(),
+            global_semaphore_table: std::sync::Mutex::new(HashMap::new()),
         })
     }
 
@@ -261,6 +268,18 @@ impl ThreadPool {
         // If the runtime has been shut down, this will immediately abort.
         debug!("threadpool: spawn called, {}", self);
         self.handle().spawn(future)
+    }
+
+    /// Allows a user to access a global semaphore that is associated with the runtime.
+    ///
+    /// The key here is a function handle that, when called, returns the number of permits
+    /// to use in the semaphore.  It's reset on new runtimes.
+    pub fn global_semaphore(&self, starting_value_function: fn() -> usize) -> Arc<Semaphore> {
+        let mut sl = self.global_semaphore_table.lock().expect("Recursive lock; bug");
+
+        sl.entry(starting_value_function)
+            .or_insert_with(|| Arc::new(Semaphore::new(starting_value_function())))
+            .clone()
     }
 }
 
