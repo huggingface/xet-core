@@ -89,20 +89,6 @@ Retrieves reconstruction information for a specific file.
 - `404`: File not found
 - `416`: Range not satisfiable
 
-### GET `/reconstructions`
-
-Retrieves reconstruction information for multiple files.
-
-**Parameters:**
-
-- `file_id` (query, repeatable): Array of MerkleHashes
-
-**Responses:**
-
-- `200`: `BatchQueryReconstructionResponse`
-- `400`: Bad request
-- `404`: One or more files not found
-
 ## Generated Client Features
 
 The generated TypeScript client includes:

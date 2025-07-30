@@ -35,12 +35,6 @@ Range: bytes=0-1023
 
 **Response**: JSON object conforming to `QueryReconstructionResponse` schema
 
-### Batch File Reconstruction
-
-For multiple files, use the batch endpoint:
-
-**Endpoint**: `GET /v1/reconstructions?file_id={hash1}&file_id={hash2}...`
-
 ## Stage 2: Understanding the Reconstruction Response
 
 The reconstruction API returns a `QueryReconstructionResponse` object with three key components:
