@@ -129,3 +129,16 @@ pub fn compute_verification_hash(chunk_hashes: Vec<String>) -> Result<String, Js
         .map_err(|e| JsValue::from(e.to_string()))?;
     Ok(mdb_shard::chunk_verification::range_hash_from_chunks(&chunk_hashes).hex())
 }
+
+/// takes a hash and HMAC key (both as hex strings) and returns the HMAC result as a hex string
+#[wasm_bindgen]
+pub fn compute_hmac(hash_hex: &str, hmac_key_hex: &str) -> Result<String, JsValue> {
+    let hash = MerkleHash::from_hex(hash_hex)
+        .map_err(|e| JsValue::from(format!("Invalid hash hex: {}", e)))?;
+    
+    let hmac_key = MerkleHash::from_hex(hmac_key_hex)
+        .map_err(|e| JsValue::from(format!("Invalid HMAC key hex: {}", e)))?;
+    
+    let hmac_result = hash.hmac(hmac_key.into());
+    Ok(hmac_result.hex())
+}
