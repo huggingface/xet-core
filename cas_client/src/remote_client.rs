@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::Write;
 use std::mem::take;
 use std::path::PathBuf;
@@ -8,7 +8,7 @@ use anyhow::anyhow;
 use bytes::Bytes;
 use cas_object::SerializedCasObject;
 use cas_types::{
-    BatchQueryReconstructionResponse, CASReconstructionTerm, ChunkRange, FileRange, HttpRange, Key,
+    BatchQueryReconstructionResponse, CASReconstructionTerm, ChunkRange, FileRange, HexMerkleHash, HttpRange, Key,
     QueryReconstructionResponse, UploadShardResponse, UploadShardResponseType, UploadXorbResponse,
 };
 use chunk_cache::{CacheConfig, ChunkCache};
@@ -85,7 +85,7 @@ pub(crate) async fn get_reconstruction_with_endpoint_and_client(
     file_id: &MerkleHash,
     bytes_range: Option<FileRange>,
 ) -> Result<Option<QueryReconstructionResponse>> {
-    let url = Url::parse(&format!("{endpoint}/{API_VERSION}/reconstruction/{}", file_id.hex()))?;
+    let url = Url::parse(&format!("{endpoint}/{API_VERSION}/reconstructions/{}", file_id.hex()))?;
 
     let mut request = client.get(url).with_extension(Api("cas::get_reconstruction"));
     if let Some(range) = bytes_range {
@@ -239,7 +239,7 @@ impl RemoteClient {
             hash: *chunk_hash,
         };
 
-        let url = Url::parse(&format!("{}/{API_VERSION}/chunk/{key}", self.endpoint))?;
+        let url = Url::parse(&format!("{}/{API_VERSION}/chunks/{key}", self.endpoint))?;
 
         let client = self.authenticated_http_client.clone();
         let api_tag = "cas::query_dedup";
@@ -264,24 +264,18 @@ impl RemoteClient {
         &self,
         file_ids: impl Iterator<Item = &MerkleHash>,
     ) -> Result<BatchQueryReconstructionResponse> {
-        let mut url_str = format!("{}/{API_VERSION}/reconstructions?", self.endpoint);
-        let mut is_first = true;
-        for hash in file_ids {
-            if is_first {
-                is_first = false;
-            } else {
-                url_str.push('&');
-            }
-            url_str.push_str("file_id=");
-            url_str.push_str(hash.hex().as_str());
-        }
+        let url_str = format!("{}/{API_VERSION}/reconstructions", self.endpoint);
         let url: Url = url_str.parse()?;
 
         let api_tag = "cas::batch_get_reconstruction";
         let client = self.authenticated_http_client.clone();
 
+        let body_format: HashSet<HexMerkleHash> = file_ids.map(HexMerkleHash::from).collect();
+
         let response: BatchQueryReconstructionResponse = RetryWrapper::new(api_tag)
-            .run_and_extract_json(move || client.get(url.clone()).with_extension(Api(api_tag)).send())
+            .run_and_extract_json(move || {
+                client.post(url.clone()).json(&body_format).with_extension(Api(api_tag)).send()
+            })
             .await?;
 
         Ok(response)
@@ -604,7 +598,7 @@ impl Client for RemoteClient {
             hash: serialized_cas_object.hash,
         };
 
-        let url = Url::parse(&format!("{}/{API_VERSION}/xorb/{key}", self.endpoint))?;
+        let url = Url::parse(&format!("{}/{API_VERSION}/xorbs/{key}", self.endpoint))?;
 
         let n_upload_bytes = serialized_cas_object.serialized_data.len() as u64;
 
@@ -676,7 +670,7 @@ impl Client for RemoteClient {
             hash: serialized_cas_object.hash,
         };
 
-        let url = Url::parse(&format!("{}/{API_VERSION}/xorb/{key}", self.endpoint))?;
+        let url = Url::parse(&format!("{}/{API_VERSION}/xorbs/{key}", self.endpoint))?;
 
         let n_upload_bytes = serialized_cas_object.serialized_data.len() as u64;
 
@@ -697,7 +691,7 @@ impl Client for RemoteClient {
             hash: *hash,
         };
 
-        let url = Url::parse(&format!("{}/{API_VERSION}/xorb/{key}", self.endpoint))?;
+        let url = Url::parse(&format!("{}/{API_VERSION}/xorbs/{key}", self.endpoint))?;
         let response = self.authenticated_http_client.head(url).send().await?;
         match response.status() {
             StatusCode::OK => Ok(true),
@@ -746,7 +740,7 @@ impl Client for RemoteClient {
         &self,
         file_hash: &MerkleHash,
     ) -> Result<Option<(MDBFileInfo, Option<MerkleHash>)>> {
-        let url = Url::parse(&format!("{}/{API_VERSION}/reconstruction/{}", self.endpoint, file_hash.hex()))?;
+        let url = Url::parse(&format!("{}/{API_VERSION}/reconstructions/{}", self.endpoint, file_hash.hex()))?;
 
         let api_tag = "cas::get_reconstruction_info";
         let client = self.authenticated_http_client.clone();
@@ -781,7 +775,7 @@ impl Client for RemoteClient {
         let api_tag = "cas::upload_shard";
         let client = self.authenticated_http_client.clone();
 
-        let url = Url::parse(&format!("{}/{API_VERSION}/shard", self.endpoint))?;
+        let url = Url::parse(&format!("{}/{API_VERSION}/shards", self.endpoint))?;
 
         let response: UploadShardResponse = RetryWrapper::new(api_tag)
             .run_and_extract_json(move || {
@@ -932,14 +926,14 @@ mod tests {
         // Arrange server mocks
         let _mock_fi_416 = server.mock(|when, then| {
             when.method(GET)
-                .path(format!("/{API_VERSION}/reconstruction/{}", test_case.file_hash))
+                .path(format!("/{API_VERSION}/reconstructions/{}", test_case.file_hash))
                 .matches(mock_no_match_range_header!(HttpRange::from(FIRST_SEGMENT_FILE_RANGE)));
             then.status(416);
         });
         let _mock_fi_200 = server.mock(|when, then| {
             let w = when
                 .method(GET)
-                .path(format!("/{API_VERSION}/reconstruction/{}", test_case.file_hash));
+                .path(format!("/{API_VERSION}/reconstructions/{}", test_case.file_hash));
             w.header(RANGE.as_str(), HttpRange::from(FIRST_SEGMENT_FILE_RANGE).range_header());
             then.status(200).json_body_obj(&test_case.reconstruction_response);
         });
@@ -1010,14 +1004,14 @@ mod tests {
         // Arrange server mocks
         let _mock_fi_416 = server.mock(|when, then| {
             when.method(GET)
-                .path(format!("/{API_VERSION}/reconstruction/{}", test_case.file_hash))
+                .path(format!("/{API_VERSION}/reconstructions/{}", test_case.file_hash))
                 .matches(mock_no_match_range_header!(HttpRange::from(FIRST_SEGMENT_FILE_RANGE)));
             then.status(416);
         });
         let _mock_fi_200 = server.mock(|when, then| {
             let w = when
                 .method(GET)
-                .path(format!("/{API_VERSION}/reconstruction/{}", test_case.file_hash));
+                .path(format!("/{API_VERSION}/reconstructions/{}", test_case.file_hash));
             w.header(RANGE.as_str(), HttpRange::from(FIRST_SEGMENT_FILE_RANGE).range_header());
             then.status(200).json_body_obj(&test_case.reconstruction_response);
         });
@@ -1084,14 +1078,14 @@ mod tests {
         // Arrange server mocks
         let _mock_fi_416 = server.mock(|when, then| {
             when.method(GET)
-                .path(format!("/{API_VERSION}/reconstruction/{}", test_case.file_hash))
+                .path(format!("/{API_VERSION}/reconstructions/{}", test_case.file_hash))
                 .matches(mock_no_match_range_header!(HttpRange::from(FIRST_SEGMENT_FILE_RANGE)));
             then.status(416);
         });
         let _mock_fi_200 = server.mock(|when, then| {
             let w = when
                 .method(GET)
-                .path(format!("/{API_VERSION}/reconstruction/{}", test_case.file_hash));
+                .path(format!("/{API_VERSION}/reconstructions/{}", test_case.file_hash));
             w.header(RANGE.as_str(), HttpRange::from(FIRST_SEGMENT_FILE_RANGE).range_header());
             then.status(200).json_body_obj(&test_case.reconstruction_response);
         });
@@ -1185,14 +1179,14 @@ mod tests {
         // Arrange server mocks
         let _mock_fi_416 = server.mock(|when, then| {
             when.method(GET)
-                .path(format!("/{API_VERSION}/reconstruction/{}", test_case.file_hash))
+                .path(format!("/{API_VERSION}/reconstructions/{}", test_case.file_hash))
                 .matches(mock_no_match_range_header!(HttpRange::from(FIRST_SEGMENT_FILE_RANGE)));
             then.status(416);
         });
         let _mock_fi_200 = server.mock(|when, then| {
             let w = when
                 .method(GET)
-                .path(format!("/{API_VERSION}/reconstruction/{}", test_case.file_hash));
+                .path(format!("/{API_VERSION}/reconstructions/{}", test_case.file_hash));
             w.header(RANGE.as_str(), HttpRange::from(FIRST_SEGMENT_FILE_RANGE).range_header());
             then.status(200).json_body_obj(&test_case.reconstruction_response);
         });
