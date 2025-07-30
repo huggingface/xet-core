@@ -10,12 +10,15 @@ use std::sync::Arc;
 
 use data::errors::DataProcessingError;
 use data::{data_client, XetFileInfo};
+use itertools::Itertools;
 use progress_tracking::TrackingProgressUpdater;
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
 use pyo3::pyfunction;
+use rand::Rng;
 use runtime::async_run;
 use token_refresh::WrappedTokenRefresher;
+use tracing::debug;
 
 use crate::progress_update::WrappedProgressUpdater;
 
@@ -76,7 +79,18 @@ pub fn upload_files(
     let refresher = token_refresher.map(WrappedTokenRefresher::from_func).transpose()?.map(Arc::new);
     let updater = progress_updater.map(WrappedProgressUpdater::new).transpose()?.map(Arc::new);
 
-    async_run(py, async move {
+    let x: u64 = rand::rng().random();
+
+    let file_names = file_paths.iter().take(3).join(", ");
+
+    debug!(
+        "Upload call {x:x}: (PID = {}) Uploading {} files {file_names}{}",
+        std::process::id(),
+        file_paths.len(),
+        if file_paths.len() > 3 { "..." } else { "." }
+    );
+
+    let ret = async_run(py, async move {
         let out: Vec<PyXetUploadInfo> = data_client::upload_async(
             file_paths,
             endpoint,
@@ -90,7 +104,11 @@ pub fn upload_files(
         .map(PyXetUploadInfo::from)
         .collect();
         PyResult::Ok(out)
-    })
+    });
+
+    debug!("Upload call {x:x} finished.");
+
+    ret
 }
 
 #[pyfunction]
@@ -103,18 +121,33 @@ pub fn download_files(
     token_refresher: Option<Py<PyAny>>,
     progress_updater: Option<Vec<Py<PyAny>>>,
 ) -> PyResult<Vec<String>> {
-    let file_infos = files.into_iter().map(<(XetFileInfo, DestinationPath)>::from).collect();
+    let file_infos: Vec<_> = files.into_iter().map(<(XetFileInfo, DestinationPath)>::from).collect();
     let refresher = token_refresher.map(WrappedTokenRefresher::from_func).transpose()?.map(Arc::new);
     let updaters = progress_updater.map(try_parse_progress_updaters).transpose()?;
 
-    async_run(py, async move {
+    let x: u64 = rand::rng().random();
+
+    let file_names = file_infos.iter().take(3).map(|(_, p)| p).join(", ");
+
+    debug!(
+        "Download call {x:x}: (PID = {}) Downloading {} files {file_names}{}",
+        std::process::id(),
+        file_infos.len(),
+        if file_infos.len() > 3 { "..." } else { "." }
+    );
+
+    let res = async_run(py, async move {
         let out: Vec<String> =
             data_client::download_async(file_infos, endpoint, token_info, refresher.map(|v| v as Arc<_>), updaters)
                 .await
                 .map_err(convert_data_processing_error)?;
 
         PyResult::Ok(out)
-    })
+    });
+
+    debug!("Download call {x:x}: Completed.");
+
+    res
 }
 
 fn try_parse_progress_updaters(funcs: Vec<Py<PyAny>>) -> PyResult<Vec<Arc<dyn TrackingProgressUpdater>>> {
