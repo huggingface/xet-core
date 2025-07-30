@@ -772,15 +772,20 @@ impl Client for RemoteClient {
     }
 
     #[instrument(skip_all, name = "RemoteClient::upload_shard", fields(shard.len = shard_data.len()))]
-    async fn upload_shard(&self, shard_data: Bytes) -> Result<bool> {
+    async fn upload_shard(&self, prefix: &str, hash: &MerkleHash, shard_data: Bytes) -> Result<bool> {
         if self.dry_run {
             return Ok(true);
         }
 
+        let key = Key {
+            prefix: prefix.into(),
+            hash: *hash,
+        };
+
         let api_tag = "cas::upload_shard";
         let client = self.authenticated_http_client.clone();
 
-        let url = Url::parse(&format!("{}/shard", self.endpoint))?;
+        let url = Url::parse(&format!("{}/shard/{key}", self.endpoint))?;
 
         let response: UploadShardResponse = RetryWrapper::new(api_tag)
             .run_and_extract_json(move || {
