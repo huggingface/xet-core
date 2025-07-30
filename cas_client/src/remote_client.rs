@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::Write;
 use std::mem::take;
 use std::path::PathBuf;
@@ -8,7 +8,7 @@ use anyhow::anyhow;
 use bytes::Bytes;
 use cas_object::SerializedCasObject;
 use cas_types::{
-    BatchQueryReconstructionResponse, CASReconstructionTerm, ChunkRange, FileRange, HttpRange, Key,
+    BatchQueryReconstructionResponse, CASReconstructionTerm, ChunkRange, FileRange, HexMerkleHash, HttpRange, Key,
     QueryReconstructionResponse, UploadShardResponse, UploadShardResponseType, UploadXorbResponse,
 };
 use chunk_cache::{CacheConfig, ChunkCache};
@@ -264,24 +264,18 @@ impl RemoteClient {
         &self,
         file_ids: impl Iterator<Item = &MerkleHash>,
     ) -> Result<BatchQueryReconstructionResponse> {
-        let mut url_str = format!("{}/{API_VERSION}/reconstructions?", self.endpoint);
-        let mut is_first = true;
-        for hash in file_ids {
-            if is_first {
-                is_first = false;
-            } else {
-                url_str.push('&');
-            }
-            url_str.push_str("file_id=");
-            url_str.push_str(hash.hex().as_str());
-        }
+        let url_str = format!("{}/{API_VERSION}/reconstructions", self.endpoint);
         let url: Url = url_str.parse()?;
 
         let api_tag = "cas::batch_get_reconstruction";
         let client = self.authenticated_http_client.clone();
 
+        let body_format: HashSet<HexMerkleHash> = file_ids.map(|file_id| HexMerkleHash::from(file_id)).collect();
+
         let response: BatchQueryReconstructionResponse = RetryWrapper::new(api_tag)
-            .run_and_extract_json(move || client.get(url.clone()).with_extension(Api(api_tag)).send())
+            .run_and_extract_json(move || {
+                client.post(url.clone()).json(&body_format).with_extension(Api(api_tag)).send()
+            })
             .await?;
 
         Ok(response)
