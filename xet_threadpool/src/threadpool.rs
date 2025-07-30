@@ -74,7 +74,8 @@ pub struct ThreadPool {
     // Are we in the middle of a sigint shutdown?
     sigint_shutdown: AtomicBool,
 
-    // Semaphores
+    // Semaphores.  We use an initialization function as the handle here.
+    #[allow(clippy::type_complexity)]
     global_semaphore_table: std::sync::Mutex<HashMap<fn() -> usize, Arc<Semaphore>>>,
 }
 
