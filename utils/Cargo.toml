@@ -20,6 +20,8 @@ pin-project = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["time", "rt", "macros"] }
 tracing = { workspace = true }
+
+[target.'cfg(not(target_family = "wasm"))'.dependencies]
 expanduser = { workspace = true }
 
 [target.'cfg(not(target_family = "wasm"))'.dev-dependencies]
