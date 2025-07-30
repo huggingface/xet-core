@@ -84,9 +84,16 @@ impl Drop for CwdGuard {
 pub fn normalized_path_from_user_string(path: impl AsRef<str>) -> PathBuf {
     let path = path.as_ref();
 
-    let user_expanded_path = expanduser(path).unwrap_or_else(|_| PathBuf::from(path));
+    #[cfg(target_family = "unix")]
+    {
+        let user_expanded_path = expanduser(path).unwrap_or_else(|_| PathBuf::from(path));
+        std::path::absolute(&user_expanded_path).unwrap_or(user_expanded_path)
+    }
 
-    std::path::absolute(&user_expanded_path).unwrap_or(user_expanded_path)
+    #[cfg(not(target_family = "unix"))]
+    {
+        std::path::absolute(path).unwrap_or(path.to_path_buf())
+    }
 }
 
 #[cfg(test)]
