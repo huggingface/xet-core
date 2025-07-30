@@ -23,6 +23,7 @@ use tokio::sync::{Mutex, OwnedSemaphorePermit, Semaphore};
 use tokio::task::{JoinHandle, JoinSet};
 use tracing::{info_span, instrument, Instrument, Span};
 use ulid::Ulid;
+use utils::spawn_safety::SpawnSafeStaticSemaphore;
 
 use crate::configurations::*;
 use crate::constants::{
@@ -36,7 +37,7 @@ use crate::shard_interface::SessionShardInterface;
 use crate::{prometheus_metrics, XetFileInfo};
 
 lazy_static::lazy_static! {
-     static ref UPLOAD_CONCURRENCY_LIMITER: Arc<Semaphore> = Arc::new(Semaphore::new(*MAX_CONCURRENT_UPLOADS));
+     static ref UPLOAD_CONCURRENCY_LIMITER: SpawnSafeStaticSemaphore = SpawnSafeStaticSemaphore::new(*MAX_CONCURRENT_UPLOADS);
 }
 
 /// Acquire a permit for uploading xorbs and shards to ensure that we don't overwhelm the server
@@ -49,7 +50,8 @@ lazy_static::lazy_static! {
 /// is happening.
 pub(crate) async fn acquire_upload_permit() -> Result<OwnedSemaphorePermit> {
     let upload_permit = UPLOAD_CONCURRENCY_LIMITER
-        .clone()
+        .get()
+        .await
         .acquire_owned()
         .await
         .map_err(|e| DataProcessingError::UploadTaskError(e.to_string()))?;

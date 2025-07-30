@@ -21,12 +21,13 @@ use progress_tracking::item_tracking::SingleItemProgressUpdater;
 use progress_tracking::upload_tracking::CompletionTracker;
 use reqwest::{Body, Response, StatusCode, Url};
 use reqwest_middleware::ClientWithMiddleware;
-use tokio::sync::{mpsc, OwnedSemaphorePermit, Semaphore};
+use tokio::sync::{mpsc, OwnedSemaphorePermit};
 use tokio::task::{JoinHandle, JoinSet};
 use tracing::{debug, info, instrument};
 use utils::auth::AuthConfig;
 #[cfg(not(target_family = "wasm"))]
 use utils::singleflight::Group;
+use utils::spawn_safety::SpawnSafeStaticSemaphore;
 
 #[cfg(not(target_family = "wasm"))]
 use crate::download_utils::*;
@@ -54,7 +55,7 @@ utils::configurable_constants! {
 }
 
 lazy_static::lazy_static! {
-     pub static ref DOWNLOAD_CONNECTION_CONCURRENCY_LIMITER: Arc<Semaphore> = Arc::new(Semaphore::new(*NUM_CONCURRENT_RANGE_GETS));
+     pub static ref DOWNLOAD_CONNECTION_CONCURRENCY_LIMITER: SpawnSafeStaticSemaphore = SpawnSafeStaticSemaphore::new(*NUM_CONCURRENT_RANGE_GETS);
 }
 
 utils::configurable_bool_constants! {
@@ -330,6 +331,8 @@ impl RemoteClient {
         let download_scheduler = DownloadSegmentLengthTuner::from_configurable_constants();
         let download_scheduler_clone = download_scheduler.clone();
 
+        let download_concurrency_limiter = DOWNLOAD_CONNECTION_CONCURRENCY_LIMITER.get().await;
+
         let queue_dispatcher: JoinHandle<Result<()>> = tokio::spawn(async move {
             let mut remaining_total_len = total_len;
             while let Some(item) = task_rx.recv().await {
@@ -343,7 +346,7 @@ impl RemoteClient {
                     DownloadQueueItem::DownloadTask(term_download) => {
                         // acquire the permit before spawning the task, so that there's limited
                         // number of active downloads.
-                        let permit = DOWNLOAD_CONNECTION_CONCURRENCY_LIMITER.clone().acquire_owned().await?;
+                        let permit = download_concurrency_limiter.clone().acquire_owned().await?;
                         debug!("spawning 1 download task");
                         let future: JoinHandle<Result<(TermDownloadResult<Vec<u8>>, OwnedSemaphorePermit)>> =
                             tokio::spawn(async move {
@@ -478,6 +481,8 @@ impl RemoteClient {
         let term_download_client = self.http_client.clone();
         let download_scheduler = DownloadSegmentLengthTuner::from_configurable_constants();
 
+        let download_concurrency_limiter = DOWNLOAD_CONNECTION_CONCURRENCY_LIMITER.get().await;
+
         let process_result = move |result: TermDownloadResult<u64>,
                                    total_written: &mut u64,
                                    download_scheduler: &DownloadSegmentLengthTuner|
@@ -509,7 +514,7 @@ impl RemoteClient {
                 DownloadQueueItem::DownloadTask(term_download) => {
                     // acquire the permit before spawning the task, so that there's limited
                     // number of active downloads.
-                    let permit = DOWNLOAD_CONNECTION_CONCURRENCY_LIMITER.clone().acquire_owned().await?;
+                    let permit = download_concurrency_limiter.clone().acquire_owned().await?;
                     debug!("spawning 1 download task");
                     running_downloads.spawn(async move {
                         let data = term_download.run().await?;
