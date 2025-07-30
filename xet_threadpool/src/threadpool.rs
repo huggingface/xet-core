@@ -204,6 +204,29 @@ impl ThreadPool {
         drop(runtime);
     }
 
+    /// Discards the runtime without shutdown; to be used after fork-exec or spawn.
+    pub fn discard_runtime(&self) {
+        // This function makes a best effort attempt to clean everything up.
+
+        // When a task is shut down, it will stop running at whichever .await it has yielded at.  All local
+        // variables are destroyed by running their destructor.
+        //
+        // If this call fails, then it means that there is a recursive call to this runtime, or that
+        // this process is in the middle of a shutdown, so we can ignore it silently.
+        let Ok(mut rt_lock) = self.runtime.write() else {
+            return;
+        };
+
+        let Some(runtime) = rt_lock.take() else {
+            return;
+        };
+
+        // In this context, we actually want to simply leak the runtime, as doing anything with it will
+        // likely cause a deadlock.  The memory will be reaped when the child process returns, and it's
+        // likely in the copy-on-write state anyway.
+        std::mem::forget(runtime);
+    }
+
     /// Returns true if we're in the middle of a sigint shutdown,
     /// and false otherwise.
     pub fn in_sigint_shutdown(&self) -> bool {

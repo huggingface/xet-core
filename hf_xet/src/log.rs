@@ -19,7 +19,7 @@ const DEFAULT_LOG_LEVEL: &str = "warn";
 const DEFAULT_LOG_LEVEL: &str = "warn";
 
 fn use_json() -> Option<bool> {
-    env::var("HF_XET_LOG_FORMAT").ok().map(|s| s.to_ascii_lowercase() == "json")
+    env::var("HF_XET_LOG_FORMAT").ok().map(|s| s.eq_ignore_ascii_case("json"))
 }
 
 fn init_logging_to_file(path: impl AsRef<Path>) -> Result<(), std::io::Error> {
