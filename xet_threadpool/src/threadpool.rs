@@ -216,7 +216,7 @@ impl ThreadPool {
         let Ok(mut rt_lock) = self.runtime.write() else {
             return;
         };
-        
+
         let Some(runtime) = rt_lock.take() else {
             return;
         };
