@@ -270,7 +270,7 @@ impl RemoteClient {
         let api_tag = "cas::batch_get_reconstruction";
         let client = self.authenticated_http_client.clone();
 
-        let body_format: HashSet<HexMerkleHash> = file_ids.map(|file_id| HexMerkleHash::from(file_id)).collect();
+        let body_format: HashSet<HexMerkleHash> = file_ids.map(HexMerkleHash::from).collect();
 
         let response: BatchQueryReconstructionResponse = RetryWrapper::new(api_tag)
             .run_and_extract_json(move || {
