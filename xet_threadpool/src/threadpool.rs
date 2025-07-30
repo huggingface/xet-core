@@ -13,7 +13,7 @@ use crate::errors::MultithreadedRuntimeError;
 const THREADPOOL_THREAD_ID_PREFIX: &str = "hf-xet"; // thread names will be hf-xet-0, hf-xet-1, etc.
 const THREADPOOL_STACK_SIZE: usize = 8_000_000; // 8MB stack size
 
-/// Cap the number of tokio threads to 16 to avoid massive expansion on huge CPUs; can be overridden with
+/// Cap the number of tokio threads to 32 to avoid massive expansion on huge CPUs; can be overridden with
 /// TOKIO_WORKER_THREADS.
 ///
 /// Note that the compute intensive parts of the code get offloaded to blocking threads, which don't count against this
