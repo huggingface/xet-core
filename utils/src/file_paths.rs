@@ -2,8 +2,6 @@ use std::env;
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 
-use expanduser::expanduser;
-
 /// Guard that sets an env var and restores the previous value on drop.
 pub struct EnvVarGuard {
     key: &'static str,
@@ -86,13 +84,14 @@ pub fn normalized_path_from_user_string(path: impl AsRef<str>) -> PathBuf {
 
     #[cfg(target_family = "unix")]
     {
+        use expanduser::expanduser;
         let user_expanded_path = expanduser(path).unwrap_or_else(|_| PathBuf::from(path));
         std::path::absolute(&user_expanded_path).unwrap_or(user_expanded_path)
     }
 
     #[cfg(not(target_family = "unix"))]
     {
-        std::path::absolute(path).unwrap_or(path.to_path_buf())
+        std::path::absolute(path).unwrap_or(PathBuf::from(path))
     }
 }
 
