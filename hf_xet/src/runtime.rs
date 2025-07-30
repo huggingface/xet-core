@@ -13,7 +13,7 @@ use crate::log;
 
 lazy_static! {
     static ref SIGINT_DETECTED: Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
-    static ref SIGINT_HANDLER_INSTALLED: (AtomicU32, Mutex<()>) = (AtomicU32::new(0), Mutex::new(()));
+    static ref SIGINT_HANDLER_INSTALL_PID: (AtomicU32, Mutex<()>) = (AtomicU32::new(0), Mutex::new(()));
     static ref MULTITHREADED_RUNTIME: RwLock<Option<(u32, Arc<ThreadPool>)>> = RwLock::new(None);
 }
 
@@ -49,7 +49,7 @@ fn check_sigint_handler() -> PyResult<()> {
     // will have to press it again.
     SIGINT_DETECTED.store(false, Ordering::SeqCst);
 
-    let stored_pid = SIGINT_HANDLER_INSTALLED.0.load(Ordering::SeqCst);
+    let stored_pid = SIGINT_HANDLER_INSTALL_PID.0.load(Ordering::SeqCst);
     let pid = std::process::id();
 
     if stored_pid == pid {
@@ -57,10 +57,10 @@ fn check_sigint_handler() -> PyResult<()> {
     }
 
     // Need to install it; acquire a lock to do so.
-    let _install_lg = SIGINT_HANDLER_INSTALLED.1.lock().unwrap();
+    let _install_lg = SIGINT_HANDLER_INSTALL_PID.1.lock().unwrap();
 
     // If another thread beat us to it while we're waiting for the lock.
-    let stored_pid = SIGINT_HANDLER_INSTALLED.0.load(Ordering::SeqCst);
+    let stored_pid = SIGINT_HANDLER_INSTALL_PID.0.load(Ordering::SeqCst);
     if stored_pid == pid {
         return Ok(());
     }
@@ -68,12 +68,12 @@ fn check_sigint_handler() -> PyResult<()> {
     install_sigint_handler()?;
 
     // Finally, store that we have installed it successfully.
-    SIGINT_HANDLER_INSTALLED.0.store(pid, Ordering::SeqCst);
+    SIGINT_HANDLER_INSTALL_PID.0.store(pid, Ordering::SeqCst);
 
     Ok(())
 }
 
-pub(crate) fn perferm_sigint_shutdown() {
+pub(crate) fn perform_sigint_shutdown() {
     // Acquire exclusive access to the runtime.  This will only be released once the runtime is shut down,
     // meaning that all the tasks have completed or been cancelled.
     let maybe_runtime = MULTITHREADED_RUNTIME.write().unwrap().take();
@@ -101,7 +101,7 @@ fn signal_check_background_loop() {
         // to the uninitialized state.
         if shutdown_runtime {
             // Shut this down.
-            perferm_sigint_shutdown();
+            perform_sigint_shutdown();
 
             // Clear the flag; we're good to go now.
             SIGINT_DETECTED.store(false, Ordering::SeqCst);

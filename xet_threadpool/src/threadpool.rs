@@ -210,13 +210,14 @@ impl ThreadPool {
 
         // When a task is shut down, it will stop running at whichever .await it has yielded at.  All local
         // variables are destroyed by running their destructor.
+        //
+        // If this call fails, then it means that there is a recursive call to this runtime, or that
+        // this process is in the middle of a shutdown, so we can ignore it silently.
         let Ok(mut rt_lock) = self.runtime.write() else {
             return;
         };
-
-        let maybe_runtime = rt_lock.take();
-
-        let Some(runtime) = maybe_runtime else {
+        
+        let Some(runtime) = rt_lock.take() else {
             return;
         };
 

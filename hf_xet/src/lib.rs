@@ -162,7 +162,7 @@ pub fn download_files(
 #[pyfunction]
 pub fn force_sigint_shutdown() -> PyResult<()> {
     // Force a signint shutdown in the case where it gets intercepted by another process.
-    crate::runtime::perferm_sigint_shutdown();
+    crate::runtime::perform_sigint_shutdown();
     Err(PyKeyboardInterrupt::new_err(()))
 }
 
@@ -298,7 +298,7 @@ pub fn hf_xet(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(upload_files, m)?)?;
     m.add_function(wrap_pyfunction!(upload_bytes, m)?)?;
     m.add_function(wrap_pyfunction!(download_files, m)?)?;
-    m.add_function(wrap_pyfunction!(perform_sigint_shutdown, m)?)?;
+    m.add_function(wrap_pyfunction!(force_sigint_shutdown, m)?)?;
     m.add_class::<PyXetUploadInfo>()?;
     m.add_class::<PyXetDownloadInfo>()?;
     m.add_class::<PyXetUploadInfo>()?;
