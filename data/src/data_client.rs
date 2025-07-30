@@ -9,13 +9,14 @@ use cas_client::remote_client::PREFIX_DEFAULT;
 use cas_client::{CacheConfig, FileProvider, OutputProvider, CHUNK_CACHE_SIZE_BYTES};
 use cas_object::CompressionScheme;
 use deduplication::DeduplicationMetrics;
-use dirs::cache_dir;
+use dirs::home_dir;
 use parutils::{tokio_par_for_each, ParallelError};
 use progress_tracking::item_tracking::ItemProgressUpdater;
 use progress_tracking::TrackingProgressUpdater;
-use tracing::{info_span, instrument, Instrument, Span};
+use tracing::{info, info_span, instrument, Instrument, Span};
 use ulid::Ulid;
 use utils::auth::{AuthConfig, TokenRefresher};
+use utils::normalized_path_from_user_string;
 
 use crate::configurations::*;
 use crate::constants::{INGESTION_BLOCK_SIZE, MAX_CONCURRENT_DOWNLOADS, MAX_CONCURRENT_FILE_INGESTION};
@@ -35,15 +36,30 @@ pub fn default_config(
     // if HF_HOME is set use that instead of ~/.cache/huggingface
     // if HF_XET_CACHE is set use that instead of ~/.cache/huggingface/xet
     // HF_XET_CACHE takes precedence over HF_HOME
-    let cache_root_path = if env::var("HF_XET_CACHE").is_ok() {
-        PathBuf::from(env::var("HF_XET_CACHE").unwrap())
-    } else if env::var("HF_HOME").is_ok() {
-        let home = env::var("HF_HOME").unwrap();
-        PathBuf::from(home).join("xet")
-    } else {
-        let cache = cache_dir().unwrap_or(current_dir()?.join(".cache"));
-        cache.join("huggingface").join("xet")
+    let cache_root_path = {
+        // If HF_XET_CACHE is set, use that directly.
+        if let Ok(cache) = env::var("HF_XET_CACHE") {
+            normalized_path_from_user_string(cache)
+
+        // If HF_HOME is set, use the $HF_HOME/xet
+        } else if let Ok(hf_home) = env::var("HF_HOME") {
+            normalized_path_from_user_string(hf_home).join("xet")
+        } else {
+            // If XDG_CACHE_HOME is set, use the $XDG_CACHE_HOME/huggingface/xet, otherwise
+            // use $HOME/.cache/huggingface/xet
+            let cache_home = match env::var("XDG_CACHE_HOME") {
+                Ok(d) => normalized_path_from_user_string(d),
+
+                // Use the same defaults as huggingface_hub (slightly nonstandard, but won't
+                // mess with it).
+                Err(_) => home_dir().unwrap_or(current_dir()?).join(".cache"),
+            };
+
+            cache_home.join("huggingface").join("xet")
+        }
     };
+
+    info!("Using cache path {cache_root_path:?}.");
 
     let (token, token_expiration) = token_info.unzip();
     let auth_cfg = AuthConfig::maybe_new(token, token_expiration, token_refresher);
@@ -373,11 +389,15 @@ mod tests {
         let endpoint = "http://localhost:8080".to_string();
         let result = default_config(endpoint, None, None, None);
 
-        let expected = cache_dir().unwrap().join("huggingface").join("xet");
+        let expected = home_dir().unwrap().join(".cache").join("huggingface").join("xet");
 
         assert!(result.is_ok());
         let config = result.unwrap();
-        assert!(config.data_config.cache_config.cache_directory.starts_with(&expected));
+        let test_cache_dir = &config.data_config.cache_config.cache_directory;
+        assert!(
+            test_cache_dir.starts_with(&expected),
+            "cache dir = {test_cache_dir:?}; does not start with {expected:?}",
+        );
     }
 
     #[tokio::test(flavor = "multi_thread")]
