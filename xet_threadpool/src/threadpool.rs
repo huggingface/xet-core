@@ -6,13 +6,54 @@ use std::sync::{Arc, OnceLock};
 
 use tokio::runtime::{Builder as TokioRuntimeBuilder, Handle as TokioRuntimeHandle, Runtime as TokioRuntime};
 use tokio::task::JoinHandle;
-use tracing::debug;
+use tracing::{debug, info};
 
 use crate::errors::MultithreadedRuntimeError;
 
 const THREADPOOL_THREAD_ID_PREFIX: &str = "hf-xet"; // thread names will be hf-xet-0, hf-xet-1, etc.
 const THREADPOOL_STACK_SIZE: usize = 8_000_000; // 8MB stack size
-const THREADPOOL_MAX_BLOCKING_THREADS: usize = 100; // max 100 threads can block IO
+
+/// Cap the number of tokio threads to 16 to avoid massive expansion on huge CPUs; can be overridden with
+/// TOKIO_WORKER_THREADS.
+///
+/// Note that the compute intensive parts of the code get offloaded to blocking threads, which don't count against this
+/// limit.
+const THREADPOOL_MAX_ASYNC_THREADS: usize = 32;
+
+/// Returns the number of Tokio worker threads to use:
+/// 1) If `TOKIO_WORKER_THREADS` is set to a positive integer, use that.
+/// 2) Otherwise, use `min(available_parallelism, THREADPOOL_MAX_ASYNC_THREADS)`, with a floor of 2.
+#[cfg(not(target_family = "wasm"))]
+fn get_num_tokio_worker_threads() -> usize {
+    use std::num::NonZeroUsize;
+
+    // Allow TOKIO_WORKER_THREADS to override this value.
+    if let Ok(val) = std::env::var("TOKIO_WORKER_THREADS") {
+        match val.parse::<usize>() {
+            Ok(n) if n > 0 => {
+                use tracing::info;
+
+                info!("Using {n} async threads from TOKIO_WORKER_THREADS");
+                return n;
+            },
+            _ => {
+                use tracing::warn;
+
+                warn!(
+                    value = %val,
+                    "Invalid TOKIO_WORKER_THREADS; must be a positive integer. Falling back to auto."
+                );
+            },
+        }
+    }
+
+    let cores = std::thread::available_parallelism().map(NonZeroUsize::get).unwrap_or(1);
+
+    // Minimum 2 threads needed to run everything
+    let n = cores.clamp(2, THREADPOOL_MAX_ASYNC_THREADS);
+    info!("Using {n} async threads for tokio runtime");
+    n
+}
 
 /// This module provides a simple wrapper around Tokio's runtime to create a thread pool
 /// with some default settings. It is intended to be used as a singleton thread pool for
@@ -135,19 +176,24 @@ impl ThreadPool {
             format!("{THREADPOOL_THREAD_ID_PREFIX}-{id}")
         };
 
-        #[cfg(not(target_family = "wasm"))]
-        let mut builder = TokioRuntimeBuilder::new_multi_thread();
-        #[cfg(target_family = "wasm")]
-        let mut builder = TokioRuntimeBuilder::new_current_thread();
+        let tokio_rt = {
+            #[cfg(not(target_family = "wasm"))]
+            {
+                // A new multithreaded runtime with a capped number of threads
+                TokioRuntimeBuilder::new_multi_thread().worker_threads(get_num_tokio_worker_threads())
+            }
 
-        let tokio_rt = builder
-            .thread_name_fn(get_thread_name) // thread names will be hf-xet-0, hf-xet-1, etc.
-            .on_thread_start(set_threadlocal_reference) // Set the local runtime reference.
-            .thread_stack_size(THREADPOOL_STACK_SIZE) // 8MB stack size, default is 2MB
-            .max_blocking_threads(THREADPOOL_MAX_BLOCKING_THREADS) // max 100 threads can block IO
-            .enable_all() // enable all features, including IO/Timer/Signal/Reactor
-            .build()
-            .map_err(MultithreadedRuntimeError::RuntimeInitializationError)?;
+            #[cfg(target_family = "wasm")]
+            {
+                TokioRuntimeBuilder::new_current_thread()
+            }
+        }
+        .thread_name_fn(get_thread_name) // thread names will be hf-xet-0, hf-xet-1, etc.
+        .on_thread_start(set_threadlocal_reference) // Set the local runtime reference.
+        .thread_stack_size(THREADPOOL_STACK_SIZE) // 8MB stack size, default is 2MB
+        .enable_all() // enable all features, including IO/Timer/Signal/Reactor
+        .build()
+        .map_err(MultithreadedRuntimeError::RuntimeInitializationError)?;
 
         // Now that the runtime is created, fill out the original struct.
         let handle = tokio_rt.handle().clone();
