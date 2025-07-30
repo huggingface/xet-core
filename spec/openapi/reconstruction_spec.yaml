@@ -9,7 +9,7 @@ servers:
     description: Default CAS server endpoint
 
 paths:
-  /v1/reconstruction/{file_id}:
+  /v1/reconstructions/{file_id}:
     get:
       summary: Get File Reconstruction
       description: Retrieves reconstruction information for a specific file, optionally with byte range support

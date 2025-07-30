@@ -15,7 +15,7 @@ File download in the Xet protocol is a two-stage process:
 
 To download a file, first call the reconstruction API to get the metadata needed for reconstruction:
 
-**Endpoint**: `GET /v1/reconstruction/{file_id}`
+**Endpoint**: `GET /v1/reconstructions/{file_id}`
 
 **Parameters**:
 
@@ -27,7 +27,7 @@ To download a file, first call the reconstruction API to get the metadata needed
 **Example Request**:
 
 ```http
-GET /v1/reconstruction/a1b2c3d4e5f6789012345678901234567890abcdef1234567890abcdef123456 HTTP/1.1
+GET /v1/reconstructions/a1b2c3d4e5f6789012345678901234567890abcdef1234567890abcdef123456 HTTP/1.1
 Host: cas-server.xethub.hf.co:8080
 Authorization: Bearer YOUR_TOKEN_HERE
 Range: bytes=0-1023
@@ -183,7 +183,7 @@ From the deserialized xorb data:
 ## Example Implementation Flow
 
 ```txt
-1. GET /v1/reconstruction/{file_hash}
+1. GET /v1/reconstructions/{file_hash}
 2. Parse QueryReconstructionResponse
 3. For each term in terms[]:
    a. Find matching fetch_info entry
@@ -209,7 +209,7 @@ This allows efficient streaming and partial downloads without fetching the entir
 ## Pseudo-code of Simple Download Protocol
 
 ```python
-reconstruction = get("https://cas-server.xethub.hf.co/v1/reconstruction/ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff")
+reconstruction = get("https://cas-server.xethub.hf.co/v1/reconstructions/ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff")
 terms = reconstruction["terms"]
 fetch_info = reconstruction["fetch_info"]
 fetch_info_item = None

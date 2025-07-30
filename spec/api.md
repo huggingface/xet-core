@@ -12,7 +12,7 @@ In order to be authenticated and authorized to invoke any of the following API's
 
 **Description**: Retrieves reconstruction information for a specific file, optionally with byte range support.
 
-- **Path**: `/v1/reconstruction/{file_id}`
+- **Path**: `/v1/reconstructions/{file_id}`
 - **Method**: `GET`
 - **Parameters**:
   - `file_id`: MerkleHash in hex format (64 hexadecimal character string)
@@ -39,9 +39,10 @@ In order to be authenticated and authorized to invoke any of the following API's
 
 **Description**: Checks if a chunk exists in the CAS for deduplication purposes.
 
-- **Path**: `/v1/chunk/default-merkledb/{hash}`
+- **Path**: `/v1/chunks/{prefix}/{hash}`
 - **Method**: `GET`
 - **Parameters**:
+  - `prefix`: Currently only acceptable prefix for the Global Deduplication API is `default-merkledb`
   - `hash`: Chunk hash in hex format (64 hexadecimal character string). Review [how to compute chunk hash](../hashing.md#Chunk%20Hashes) to compute chunk hashes
 - **Minimum Token Scope**: `read`
 - **Body**: None
@@ -54,9 +55,10 @@ In order to be authenticated and authorized to invoke any of the following API's
 
 **Description**: Uploads a serialized CAS object (XORB) to the server with progress tracking. Review [how to compute xorb hash](../hashing.md#Xorb%20Hashes) to compute xorb hashes.
 
-- **Path**: `/v1/xorb/default/{hash}`
+- **Path**: `/v1/xorbs/{prefix}/{hash}`
 - **Method**: `POST`
 - **Parameters**:
+  - `prefix`: Currently the only acceptable prefix for the Xorb upload API is `default`
   - `hash`: MerkleHash in hex format. Review [how to compute xorb hash](../hashing.md#Xorb%20Hashes) to compute xorb hashes.
 - **Minimum Token Scope**: `write`
 - **Body**: Serialized Xorb
@@ -78,9 +80,10 @@ In order to be authenticated and authorized to invoke any of the following API's
 
 **Description**: Checks if an XORB exists in the Content Address Store (CAS). Use of this API is optional but can save the process of uploading all of the xorb data.
 
-- **Path**: `/v1/xorb/default/{hash}`
+- **Path**: `/v1/xorbs/{prefix}/{hash}`
 - **Method**: `HEAD`
 - **Parameters**:
+  - `prefix`: Currently the only acceptable prefix for the Xorb existence API is `default`
   - `hash`: MerkleHash in hex format. Review [how to compute xorb hash](../hashing.md#Xorb%20Hashes) to compute xorb hashes.
 - **Minimum Token Scope**: `read`
 - **Body**: None
@@ -94,7 +97,7 @@ In order to be authenticated and authorized to invoke any of the following API's
 
 **Description**: Uploads a shard to the CAS with optional forced synchronization.
 
-- **Path**: `/v1/shard`
+- **Path**: `/v1/shards`
 - **Method**: `POST`
 - **Minimum Token Scope**: `write`
 - **Body**: Raw bytes (shard data). See [how to serialize a shard](../shard.md).
