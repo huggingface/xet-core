@@ -5,6 +5,7 @@ use std::time::Duration;
 use lazy_static::lazy_static;
 use pyo3::exceptions::{PyKeyboardInterrupt, PyRuntimeError};
 use pyo3::prelude::*;
+use tracing::info;
 use xet_threadpool::errors::MultithreadedRuntimeError;
 use xet_threadpool::ThreadPool;
 
@@ -72,6 +73,22 @@ fn check_sigint_handler() -> PyResult<()> {
     Ok(())
 }
 
+pub(crate) fn perferm_sigint_shutdown() {
+    // Acquire exclusive access to the runtime.  This will only be released once the runtime is shut down,
+    // meaning that all the tasks have completed or been cancelled.
+    let maybe_runtime = MULTITHREADED_RUNTIME.write().unwrap().take();
+
+    // Shut it down gracefully if we own it in this process.
+    if let Some((runtime_pid, ref runtime)) = maybe_runtime {
+        // Only do anything with the runtime if we're on the right process.
+        // Otherwise, it's none of our business.
+        if runtime_pid == std::process::id() && runtime.external_executor_count() != 0 {
+            eprintln!("Cancellation requested; stopping current tasks.");
+            runtime.perform_sigint_shutdown();
+        }
+    }
+}
+
 fn signal_check_background_loop() {
     const SIGNAL_CHECK_INTERVAL: Duration = Duration::from_millis(250);
 
@@ -83,19 +100,8 @@ fn signal_check_background_loop() {
         // The keyboard interrupt was raised, so shut down things in a reasonable amount of time and return the runtime
         // to the uninitialized state.
         if shutdown_runtime {
-            // Acquire exclusive access to the runtime.  This will only be released once the runtime is shut down,
-            // meaining that all the tasks have completed or been cancelled.
-            let maybe_runtime = MULTITHREADED_RUNTIME.write().unwrap().take();
-
-            // Shut it down regardless of pid bit.
-            if let Some((runtime_pid, ref runtime)) = maybe_runtime {
-                // Only do anything with the runtime if we're on the right process.
-                // Otherwise, it's none of our business.
-                if runtime_pid == std::process::id() && runtime.external_executor_count() != 0 {
-                    eprintln!("Cancellation requested; stopping current tasks.");
-                    runtime.perform_sigint_shutdown();
-                }
-            }
+            // Shut this down.
+            perferm_sigint_shutdown();
 
             // Clear the flag; we're good to go now.
             SIGINT_DETECTED.store(false, Ordering::SeqCst);
@@ -122,7 +128,7 @@ pub fn init_threadpool(py: Python) -> PyResult<Arc<ThreadPool>> {
             return Ok(existing);
         } else {
             // Ok, discard the previous runtime, as it's effectively poisoned by the
-            // fork-exec, and we simply need to leak it and reinstall things.  The memory and
+            // fork-exec, and we simply need to leak it and restart from scratch.  The memory and
             // resources will be freed up when the child exits.
             existing.discard_runtime();
 
@@ -157,6 +163,8 @@ pub fn init_threadpool(py: Python) -> PyResult<Arc<ThreadPool>> {
     // Initialize the logging.
     if !swapping_after_fork {
         log::initialize_runtime_logging(py, runtime.clone());
+    } else {
+        info!("Runtime restarted due to detected process ID change, likely due to fork-exec call.");
     }
 
     // Return the runtime
