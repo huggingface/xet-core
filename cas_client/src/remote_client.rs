@@ -27,7 +27,7 @@ use tracing::{debug, info, instrument};
 use utils::auth::AuthConfig;
 #[cfg(not(target_family = "wasm"))]
 use utils::singleflight::Group;
-use xet_threadpool::ThreadPool;
+use xet_threadpool::{global_semaphore_handle, GlobalSemaphoreHandle, ThreadPool};
 
 #[cfg(not(target_family = "wasm"))]
 use crate::download_utils::*;
@@ -54,8 +54,9 @@ utils::configurable_constants! {
     ref UPLOAD_REPORTING_BLOCK_SIZE : usize = 512 * 1024;
 }
 
-fn download_concurrency_limit() -> usize {
-    *NUM_CONCURRENT_RANGE_GETS
+lazy_static! {
+    static ref DOWNLOAD_CONCURRENCY_LIMITER: GlobalSemaphoreHandle =
+        global_semaphore_handle!(*NUM_CONCURRENT_RANGE_GETS);
 }
 
 utils::configurable_bool_constants! {
@@ -332,7 +333,7 @@ impl RemoteClient {
         let download_scheduler = DownloadSegmentLengthTuner::from_configurable_constants();
         let download_scheduler_clone = download_scheduler.clone();
 
-        let download_concurrency_limiter = ThreadPool::current().global_semaphore(download_concurrency_limit);
+        let download_concurrency_limiter = ThreadPool::current().global_semaphore(*DOWNLOAD_CONCURRENCY_LIMITER);
 
         let queue_dispatcher: JoinHandle<Result<()>> = tokio::spawn(async move {
             let mut remaining_total_len = total_len;
@@ -483,7 +484,7 @@ impl RemoteClient {
         let term_download_client = self.http_client.clone();
         let download_scheduler = DownloadSegmentLengthTuner::from_configurable_constants();
 
-        let download_concurrency_limiter = ThreadPool::current().global_semaphore(download_concurrency_limit);
+        let download_concurrency_limiter = ThreadPool::current().global_semaphore(*DOWNLOAD_CONCURRENCY_LIMITER);
 
         let process_result = move |result: TermDownloadResult<u64>,
                                    total_written: &mut u64,

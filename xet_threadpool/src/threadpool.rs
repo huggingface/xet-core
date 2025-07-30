@@ -1,5 +1,4 @@
 use std::cell::RefCell;
-use std::collections::HashMap;
 use std::fmt::Display;
 use std::future::Future;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -11,6 +10,7 @@ use tokio::task::JoinHandle;
 use tracing::debug;
 
 use crate::errors::MultithreadedRuntimeError;
+use crate::global_semaphores::{GlobalSemaphoreHandle, GlobalSemaphoreLookup};
 
 const THREADPOOL_THREAD_ID_PREFIX: &str = "hf-xet"; // thread names will be hf-xet-0, hf-xet-1, etc.
 const THREADPOOL_STACK_SIZE: usize = 8_000_000; // 8MB stack size
@@ -75,8 +75,7 @@ pub struct ThreadPool {
     sigint_shutdown: AtomicBool,
 
     // Semaphores.  We use an initialization function as the handle here.
-    #[allow(clippy::type_complexity)]
-    global_semaphore_table: std::sync::Mutex<HashMap<fn() -> usize, Arc<Semaphore>>>,
+    global_semaphore_table: GlobalSemaphoreLookup,
 }
 
 // Use thread-local references to the runtime that are set on initilization among all
@@ -121,7 +120,7 @@ impl ThreadPool {
             handle_ref: OnceLock::new(),
             external_executor_count: 0.into(),
             sigint_shutdown: false.into(),
-            global_semaphore_table: std::sync::Mutex::new(HashMap::new()),
+            global_semaphore_table: GlobalSemaphoreLookup::default(),
         });
 
         // Each thread in each of the tokio worker threads holds a reference to the runtime handling
@@ -170,7 +169,7 @@ impl ThreadPool {
             handle_ref: rt_handle.into(),
             external_executor_count: 0.into(),
             sigint_shutdown: false.into(),
-            global_semaphore_table: std::sync::Mutex::new(HashMap::new()),
+            global_semaphore_table: GlobalSemaphoreLookup::default(),
         })
     }
 
@@ -275,12 +274,8 @@ impl ThreadPool {
     ///
     /// The key here is a function handle that, when called, returns the number of permits
     /// to use in the semaphore.  It's reset on new runtimes.
-    pub fn global_semaphore(&self, starting_value_function: fn() -> usize) -> Arc<Semaphore> {
-        let mut sl = self.global_semaphore_table.lock().expect("Recursive lock; bug");
-
-        sl.entry(starting_value_function)
-            .or_insert_with(|| Arc::new(Semaphore::new(starting_value_function())))
-            .clone()
+    pub fn global_semaphore(&self, handle: impl Into<GlobalSemaphoreHandle>) -> Arc<Semaphore> {
+        self.global_semaphore_table.get(handle)
     }
 }
 

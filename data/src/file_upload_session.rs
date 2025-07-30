@@ -23,7 +23,7 @@ use tokio::sync::{Mutex, OwnedSemaphorePermit, Semaphore};
 use tokio::task::{JoinHandle, JoinSet};
 use tracing::{info_span, instrument, Instrument, Span};
 use ulid::Ulid;
-use xet_threadpool::ThreadPool;
+use xet_threadpool::{global_semaphore_handle, GlobalSemaphoreHandle, ThreadPool};
 
 use crate::configurations::*;
 use crate::constants::{
@@ -45,12 +45,12 @@ use crate::{prometheus_metrics, XetFileInfo};
 /// number of tasks that end up using up a ton of memory; this forces the pipeline to block here while the upload
 /// is happening.
 pub(crate) async fn acquire_upload_permit() -> Result<OwnedSemaphorePermit> {
-    fn upload_concurrency_limit() -> usize {
-        *MAX_CONCURRENT_UPLOADS
+    lazy_static::lazy_static! {
+        static ref UPLOAD_CONCURRENCY_LIMITER : GlobalSemaphoreHandle = global_semaphore_handle!(*MAX_CONCURRENT_UPLOADS);
     }
 
     let upload_permit = ThreadPool::current()
-        .global_semaphore(upload_concurrency_limit)
+        .global_semaphore(*UPLOAD_CONCURRENCY_LIMITER)
         .acquire_owned()
         .await
         .map_err(|e| DataProcessingError::UploadTaskError(e.to_string()))?;
