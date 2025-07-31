@@ -82,3 +82,13 @@ jobs:
         run: |
           ./build_wasm.sh
 
+  lint_markdown:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      - name: Install markdownlint-cli
+        run: |
+          npm install -g markdownlint-cli
+      - name: Lint markdown
+        run: markdownlint spec/**/*.md

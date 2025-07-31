@@ -8,7 +8,8 @@ It is advantageous to collect series of chunks in xorbs such that they can be re
 
 Suppose a file is chunked into chunks A, B, C, D in the order ABCD. Then create a xorb X1 with chunks A, B, C, D in this order (starting at chunk index 0), let's say this xorb's hash is X1. Then to reconstruct the file we ask for xorb X1 chunk range `[0, 4)`.
 
-While there's no explicit limit on the number of chunks in a xorb, there is a limit of 64MiB on the total size of the xorb as serialized. Since some chunks will get compressed, it is generally advised to collect chunks until their total uncompressed length is near 64 MiB then serialize the struct. Namely, xorbs point to roughly 64 MiB worth of data. (Recall that the target chunk size is 64 KiB so expect roughly ~1024 chunks per xorb).
+While there's no explicit limit on the number of chunks in a xorb, there is a limit of 64MiB on the total size of the xorb as serialized. Since some chunks will get compressed, it is generally advised to collect chunks until their total uncompressed length is near 64 MiB then serialize the struct.
+Namely, xorbs point to roughly 64 MiB worth of data. (Recall that the target chunk size is 64 KiB so expect roughly ~1024 chunks per xorb).
 
 The CAS server will reject xorb uploads that exceed the 64 MiB serialized size limit.
 

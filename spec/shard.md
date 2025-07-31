@@ -10,13 +10,17 @@ The shard format is used in the shard upload API as the request payload and in t
 
 ### Shard Upload
 
-The shard in this case is a serialization format that allows clients to denote all of the files that they are uploading via the mapping of a file reconstruction to an item in the File Info section AND also list all new xorbs that the client's have created so that they may be deduplicated against in the future (in the CAS Info section).
+The shard in this case is a serialization format that allows clients to denote the files that they are uploading.
+Each file reconstruction maps to an item in the File Info section.
+Additionally the listing of all new xorbs that the client created are mapped to items in the CAS Info section so that they may be deduplicated against in the future.
 
 When uploading a shard the footer section may be omitted.
 
 ### Global Deduplication
 
-Shards returned by the Global Deduplication API have an empty File Info Section, and only contain relevant information in the CAS Info section. The CAS Info section returned by this API contains xorbs, where some xorb contains the chunk that was queried. Clients can deduplicate their content against the other xorbs in the CAS Info section of the returned shard. Other xorbs returned in a shard are possibly more likely to reference content that the client has.
+Shards returned by the Global Deduplication API have an empty File Info Section, and only contain relevant information in the CAS Info section.
+The CAS Info section returned by this API contains xorbs, where some xorb contains the chunk that was queried.
+Clients can deduplicate their content against the other xorbs in the CAS Info section of the returned shard. Other xorbs returned in a shard are possibly more likely to reference content that the client has.
 
 ## File Structure
 
@@ -433,7 +437,8 @@ These offsets allow you to seek into the shard data buffer to reach these sectio
 If `footer.chunk_hash_hmac_key` is non-zero (as a response shard from the global dedupe API), chunk hashes in the CAS Info section are protected with [HMAC](https://en.wikipedia.org/wiki/HMAC):
 
 - The stored chunk hashes are `HMAC(original_hash, footer.chunk_hash_hmac_key)`
-- To check if a chunk of data that you have matches a chunk listed in the shard, compute `HMAC(chunk_hash, footer.chunk_hash_hmac_key)` for your chunk hash and search through the shard results. If you find a match (matched_chunk) then you know the original chunk hash of your chunk and the matched_chunk is the same and you can deduplicate your chunk by referencing the xorb that matched_chunk belongs to.
+- To check if a chunk of data that you have matches a chunk listed in the shard, compute `HMAC(chunk_hash, footer.chunk_hash_hmac_key)` for your chunk hash and search through the shard results.
+If you find a match (matched_chunk) then you know the original chunk hash of your chunk and the matched_chunk is the same and you can deduplicate your chunk by referencing the xorb that matched_chunk belongs to.
 
 #### Shard Key Expiry
 

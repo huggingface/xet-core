@@ -19,13 +19,7 @@ Xorb X1 chunks `[0, 8)`. (need chunk A at chunk index 0, through chunk G at chun
 Xorb X2 chunks `[0, 4)`. (need chunk H at chunk index 0, through chunk J at chunk index 3)
 Xorb X3 chunks `[645, 662)`. (need chunk K at chunk index 645, through chunk Z at chunk index 661)
 
-
-
-
-
-
-
-
+TODO: write here
 
 ## Download Protocol
 
@@ -92,4 +86,6 @@ This example shows reconstruction of a file that requires:
 - Chunks `[0, 3)` from the first xorb (~264KB of unpacked data)
 - Chunks `[0, 1)` from the second xorb (~144KB of unpacked data)
 
-The `fetch_info` provides the HTTP URLs and byte ranges needed to download the required chunk data from each xorb. The ranges provided within fetch_info and term sections are always end-exclusive i.e. `{ "start": 0, "end": 4 }` is a range of 4 chunks at indices 0, 1, 2, and 3. The ranges provided under a fetch_info items' url_range key are to be used to form the `Range` header when downloading the chunk range. A "url_range" value of `{ "start": X, "end": Y }` creates a `Range` header value of `bytes=X-Y`.
+The `fetch_info` provides the HTTP URLs and byte ranges needed to download the required chunk data from each xorb. The ranges provided within fetch_info and term sections are always end-exclusive i.e.
+`{ "start": 0, "end": 4 }` is a range of 4 chunks at indices 0, 1, 2, and 3. The ranges provided under a fetch_info items' url_range key are to be used to form the `Range` header when downloading the chunk range.
+A "url_range" value of `{ "start": X, "end": Y }` creates a `Range` header value of `bytes=X-Y`.

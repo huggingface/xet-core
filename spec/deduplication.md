@@ -2,9 +2,11 @@
 
 ## Overview
 
-Chunk-level deduplication is a fundamental optimization technique in the Xet system that eliminates redundant data by identifying and sharing identical content blocks (chunks) across files and repositories. This specification details the procedures, algorithms, and security mechanisms that enable efficient storage and transfer while maintaining data integrity and access control.
+Chunk-level deduplication is a fundamental optimization technique in the Xet system that eliminates redundant data by identifying and sharing identical content blocks (chunks) across files and repositories.
+This specification details the procedures, algorithms, and security mechanisms that enable efficient storage and transfer while maintaining data integrity and access control.
 
-Deduplication in Xet operates at the chunk level rather than the file level, providing fine-grained deduplication capabilities that can identify shared content even when files differ significantly. This approach is particularly effective for scenarios common in machine learning and data science workflows, such as:
+Deduplication in Xet operates at the chunk level rather than the file level, providing fine-grained deduplication capabilities that can identify shared content even when files differ significantly.
+This approach is particularly effective for scenarios common in machine learning and data science workflows, such as:
 
 - Multiple versions of datasets with incremental changes
 - Model checkpoints that share common layers or parameters
@@ -125,7 +127,8 @@ Global deduplication uses HMAC (Hash-based Message Authentication Code) to prote
 
 **Security Properties**:
 
-Raw chunk hashes are never transmitted; a client has to encrypt their raw chunk hash and find a match to know a raw chunk hash exists in the system. They may know this chunk hash because they own this data, the match has made them privy to know which xorb has this chunk hash and the position in the xorb, but has not revealed any other raw chunk hashes in that xorb or other xorbs.
+Raw chunk hashes are never transmitted; a client has to encrypt their raw chunk hash and find a match to know a raw chunk hash exists in the system.
+They may know this chunk hash because they own this data, the match has made them privy to know which xorb has this chunk hash and the position in the xorb, but has not revealed any other raw chunk hashes in that xorb or other xorbs.
 
 ## Deduplication Effectiveness and Metrics
 
@@ -141,7 +144,9 @@ The system tracks comprehensive deduplication statistics including:
 
 ### Fragmentation Prevention
 
-While deduplication is valuable for saving space, doing it too aggressively can cause file fragmentation—meaning a file’s chunks end up scattered across many different xorbs. This can make reading files slower and less efficient. To avoid this, Xet aims to keep long, continuous runs of chunks together in the same xorb whenever possible. Instead of always deduplicating every possible chunk, the system sometimes chooses to reference a straight run of chunks in a single xorb, even if it means skipping deduplication for a few chunks. This approach balances the benefits of deduplication with the need to keep files easy and fast to read.
+While deduplication is valuable for saving space, doing it too aggressively can cause file fragmentation—meaning a file’s chunks end up scattered across many different xorbs. This can make reading files slower and less efficient.
+To avoid this, Xet aims to keep long, continuous runs of chunks together in the same xorb whenever possible. Instead of always deduplicating every possible chunk, the system sometimes chooses to reference a straight run of chunks in a single xorb, even if it means skipping deduplication for a few chunks.
+This approach balances the benefits of deduplication with the need to keep files easy and fast to read.
 
 ## Technical Implementation Details
 
@@ -172,7 +177,9 @@ This information allows the system to reconstruct files by:
 
 ## Conclusion
 
-Xet's chunk-level deduplication system provides a comprehensive solution for efficient data storage and transfer in large-scale data workflows. By combining local, cached, and global deduplication strategies with robust security mechanisms and fragmentation prevention, the system achieves significant storage savings while maintaining performance and data integrity.
+Xet's chunk-level deduplication system provides a comprehensive solution for efficient data storage and transfer in large-scale data workflows.
+By combining local, cached, and global deduplication strategies with robust security mechanisms and fragmentation prevention,
+the system achieves significant storage savings while maintaining performance and data integrity.
 
 The multi-tiered approach ensures that deduplication is both effective and efficient:
 

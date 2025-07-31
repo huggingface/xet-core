@@ -18,7 +18,8 @@ After cutting a chunk of data, the chunk hash is computed via a blake3 keyed has
 
 ## Xorb Hashes
 
-Xorbs are composed of a series of chunks; given the series of chunks that make up a xorb, to compute the hash or xorb hash we will compute a MerkleHash using a [Merkle Tree](https://en.wikipedia.org/wiki/Merkle_tree) data structure with custom hashing functions. **The xorb hash will be the root node hash of the MerkleTree.**
+Xorbs are composed of a series of chunks; given the series of chunks that make up a xorb, to compute the hash or xorb hash we will compute a MerkleHash using a [Merkle Tree](https://en.wikipedia.org/wiki/Merkle_tree) data structure with custom hashing functions.
+**The xorb hash will be the root node hash of the MerkleTree.**
 
 The leaf node hashes are the chunk hashes as described in the previous section.
 
