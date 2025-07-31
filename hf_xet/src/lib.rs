@@ -32,14 +32,14 @@ macro_rules! kvlog {
         let mut __s = ::std::string::String::new();
         use ::std::fmt::Write as _;
 
-        let _ = write!(&mut __s, "KVLOG: {}:{}:", file!(), line!());
+        let _ = write!(&mut __s, "KVLOG: PID={}:{}:{}:", std::process::id(), file!(), line!());
         $(
             let _ = write!(&mut __s, " {}={:?}", stringify!($val), &$val);
         )+
         eprintln!("{}", __s);
     }};
     () => {
-        eprintln!(concat!(file!(), ":", line!(), ":"));
+        eprintln!(concat!("KVLOG: PID={}", file!(), ":", line!(), ":"), std::process::id());
     };
 }
 

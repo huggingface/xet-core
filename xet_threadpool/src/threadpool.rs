@@ -145,13 +145,6 @@ impl ThreadPool {
     }
 
     pub fn new() -> Result<Arc<Self>, MultithreadedRuntimeError> {
-        // First, make sure that this is not being run from a currently active tokio runtime.
-        if TokioRuntimeHandle::try_current().is_ok() {
-            return Err(MultithreadedRuntimeError::Other(
-                "Tokio runtime already started; use from_external instead.".to_owned(),
-            ));
-        }
-
         // First, get an Arc value holding the runtime that we can initialize the
         // thread-local THREAD_RUNTIME_REF with
         let rt = Arc::new(Self {
