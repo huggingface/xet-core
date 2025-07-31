@@ -11,6 +11,7 @@ use tracing::{debug, info};
 
 use crate::errors::MultithreadedRuntimeError;
 use crate::global_semaphores::{GlobalSemaphoreHandle, GlobalSemaphoreLookup};
+use crate::kvlog;
 
 const THREADPOOL_THREAD_ID_PREFIX: &str = "hf-xet"; // thread names will be hf-xet-0, hf-xet-1, etc.
 const THREADPOOL_STACK_SIZE: usize = 8_000_000; // 8MB stack size
@@ -121,7 +122,7 @@ pub struct ThreadPool {
 // the worker threads in the runtime.  This way, XetRuntime::current() will always refer to
 // the runtime active with that worker thread.
 thread_local! {
-    static THREAD_RUNTIME_REF: RefCell<Option<Arc<ThreadPool>>> = const { RefCell::new(None) };
+    static THREAD_RUNTIME_REF: RefCell<Option<(u32, Arc<ThreadPool>)>> = const { RefCell::new(None) };
 }
 
 impl ThreadPool {
@@ -131,17 +132,21 @@ impl ThreadPool {
     pub fn current() -> Arc<Self> {
         let maybe_rt = THREAD_RUNTIME_REF.with_borrow(|rt| rt.clone());
 
-        if let Some(rt) = maybe_rt {
-            rt
-        } else {
-            let Ok(tokio_rt) = TokioRuntimeHandle::try_current() else {
-                panic!(
-                    "ThreadPool::current() called before ThreadPool::new() or on thread outside of current runtime."
-                );
-            };
-
-            Self::from_external(tokio_rt)
+        if let Some((pid, rt)) = maybe_rt {
+            if pid == std::process::id() {
+                kvlog!();
+                return rt;
+            }
+            kvlog!();
         }
+
+        let Ok(tokio_rt) = TokioRuntimeHandle::try_current() else {
+            kvlog!();
+            panic!("ThreadPool::current() called before ThreadPool::new() or on thread outside of current runtime.");
+        };
+
+        kvlog!();
+        Self::from_external(tokio_rt)
     }
 
     pub fn new() -> Result<Arc<Self>, MultithreadedRuntimeError> {
@@ -160,8 +165,9 @@ impl ThreadPool {
         // calls into xet immediately afterwards -- the references are still correct due to using
         // thread-local storage.
         let rt_c = rt.clone();
+        let pid = std::process::id();
         let set_threadlocal_reference = move || {
-            THREAD_RUNTIME_REF.set(Some(rt_c.clone()));
+            THREAD_RUNTIME_REF.set(Some((pid, rt_c.clone())));
         };
 
         // Set the name of a new thread for the threadpool. Names are prefixed with
@@ -284,13 +290,20 @@ impl ThreadPool {
         F: Future + Send + 'static,
         F::Output: Send + Sync,
     {
+        kvlog!();
         self.external_executor_count.fetch_add(1, Ordering::SeqCst);
 
+        kvlog!();
+
         let ret = self.handle().block_on(async move {
+            kvlog!();
+
             // Run the actual task on a task worker thread so we can get back information
             // on issues, including reporting panics as runtime errors.
             self.handle().spawn(future).await.map_err(MultithreadedRuntimeError::from)
         });
+
+        kvlog!();
 
         self.external_executor_count.fetch_sub(1, Ordering::SeqCst);
         ret

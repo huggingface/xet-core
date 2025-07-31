@@ -19,29 +19,9 @@ use rand::Rng;
 use runtime::async_run;
 use token_refresh::WrappedTokenRefresher;
 use tracing::debug;
+pub use xet_threadpool::kvlog;
 
 use crate::progress_update::WrappedProgressUpdater;
-
-/// Log name=value pairs to stderr, prefixed by file:line.
-/// Each argument is evaluated once; names come from `stringify!(arg)`.
-/// Values are formatted with `Debug` (use `{:?}`).
-#[macro_export]
-macro_rules! kvlog {
-    ($($val:expr),+ $(,)?) => {{
-        // Build a single string to reduce interleaving on multi-threaded stderr.
-        let mut __s = ::std::string::String::new();
-        use ::std::fmt::Write as _;
-
-        let _ = write!(&mut __s, "KVLOG: PID={}:{}:{}:", std::process::id(), file!(), line!());
-        $(
-            let _ = write!(&mut __s, " {}={:?}", stringify!($val), &$val);
-        )+
-        eprintln!("{}", __s);
-    }};
-    () => {
-        eprintln!(concat!("KVLOG: PID={}", file!(), ":", line!(), ":"), std::process::id());
-    };
-}
 
 // For profiling
 #[cfg(feature = "profiling")]

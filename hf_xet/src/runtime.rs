@@ -224,6 +224,8 @@ where
 
     // Release the gil
     let runtime_internal = runtime.clone();
+
+    kvlog!();
     let result: PyResult<Out> = py
         .allow_threads(move || runtime_internal.external_run_async_task(execution_call))
         .map_err(convert_multithreading_error)?
