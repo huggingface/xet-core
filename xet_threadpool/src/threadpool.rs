@@ -31,8 +31,6 @@ fn get_num_tokio_worker_threads() -> usize {
     if let Ok(val) = std::env::var("TOKIO_WORKER_THREADS") {
         match val.parse::<usize>() {
             Ok(n) if n > 0 => {
-                use tracing::info;
-
                 info!("Using {n} async threads from TOKIO_WORKER_THREADS");
                 return n;
             },
