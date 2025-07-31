@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+utils = { path = "../utils" }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["time", "rt", "macros", "io-util"] }
 tracing = { workspace = true }
