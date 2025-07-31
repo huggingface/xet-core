@@ -35,7 +35,7 @@ pub struct GlobalSemaphoreHandle {
 
 impl AsRef<GlobalSemaphoreHandle> for GlobalSemaphoreHandle {
     fn as_ref(&self) -> &GlobalSemaphoreHandle {
-        &self
+        self
     }
 }
 
