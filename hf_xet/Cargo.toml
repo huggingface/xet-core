@@ -65,7 +65,7 @@ opt-level = "s"
 lto = true
 codegen-units = 1
 
-[profile.debug]
+[profile.dev]
 panic = "abort"
 
 # on manylinux and macos maturin + split-debuginfo doesn't output debug symbols for .so objects,
