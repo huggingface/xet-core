@@ -131,6 +131,7 @@ mod tests {
         assert_eq!(got, expected);
     }
 
+    #[cfg(unix)] // Windows doesn't work with HOME_VAR
     #[test]
     #[serial(default_config_env)]
     fn expands_tilde_prefix_using_env_home() {
