@@ -42,7 +42,7 @@ In order to be authenticated and authorized to invoke any of the following API's
 - **Path**: `/v1/chunks/{prefix}/{hash}`
 - **Method**: `GET`
 - **Parameters**:
-  - `prefix`: Currently only acceptable prefix for the Global Deduplication API is `default-merkledb`
+  - `prefix`: Currently only acceptable prefix for the Global Deduplication API is `default-merkledb`.
   - `hash`: Chunk hash in hex format (64 hexadecimal character string). Review [how to compute chunk hash](../hashing.md#Chunk%20Hashes) to compute chunk hashes
 - **Minimum Token Scope**: `read`
 - **Body**: None
@@ -58,7 +58,7 @@ In order to be authenticated and authorized to invoke any of the following API's
 - **Path**: `/v1/xorbs/{prefix}/{hash}`
 - **Method**: `POST`
 - **Parameters**:
-  - `prefix`: Currently the only acceptable prefix for the Xorb upload API is `default`
+  - `prefix`: Currently the only acceptable prefix for the Xorb upload API is `default`.
   - `hash`: MerkleHash in hex format. Review [how to compute xorb hash](../hashing.md#Xorb%20Hashes) to compute xorb hashes.
 - **Minimum Token Scope**: `write`
 - **Body**: Serialized Xorb
@@ -83,7 +83,7 @@ In order to be authenticated and authorized to invoke any of the following API's
 - **Path**: `/v1/xorbs/{prefix}/{hash}`
 - **Method**: `HEAD`
 - **Parameters**:
-  - `prefix`: Currently the only acceptable prefix for the Xorb existence API is `default`
+  - `prefix`: Currently the only acceptable prefix for the Xorb existence API is `default`.
   - `hash`: MerkleHash in hex format. Review [how to compute xorb hash](../hashing.md#Xorb%20Hashes) to compute xorb hashes.
 - **Minimum Token Scope**: `read`
 - **Body**: None

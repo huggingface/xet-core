@@ -4,6 +4,20 @@
 
 The MDB (Merkle Database) shard file format is a binary format used to store file metadata and content-addressable storage (CAS) information for efficient deduplication and retrieval. This document describes the binary layout and deserialization process for the shard format.
 
+## Use As API Request and Response Bodies
+
+The shard format is used in the shard upload API as the request payload and in the global deduplication/chunk query API as the response payload.
+
+### Shard Upload
+
+The shard in this case is a serialization format that allows clients to denote all of the files that they are uploading via the mapping of a file reconstruction to an item in the File Info section AND also list all new xorbs that the client's have created so that they may be deduplicated against in the future (in the CAS Info section).
+
+When uploading a shard the footer section may be omitted.
+
+### Global Deduplication
+
+Shards returned by the Global Deduplication API have an empty File Info Section, and only contain relevant information in the CAS Info section. The CAS Info section returned by this API contains xorbs, where some xorb contains the chunk that was queried. Clients can deduplicate their content against the other xorbs in the CAS Info section of the returned shard. Other xorbs returned in a shard are possibly more likely to reference content that the client has.
+
 ## File Structure
 
 A shard file consists of the following sections in order:
@@ -16,12 +30,6 @@ A shard file consists of the following sections in order:
 ├─────────────────────┤
 │ CAS Info Section    │
 ├─────────────────────┤
-│ File Lookup Table   │
-├─────────────────────┤
-│ CAS Lookup Table    │
-├─────────────────────┤
-│ Chunk Lookup Table  │
-├─────────────────────┤
 │ Footer              │
 └─────────────────────┘
 ```
@@ -31,7 +39,7 @@ A shard file consists of the following sections in order:
 ```txt
 Offset 0:
 ┌───────────────────────────────────────────────────────┐
-│                 Header (48 bytes)                    │ ← Fixed size
+│                 Header (48 bytes)                     │ ← Fixed size
 └───────────────────────────────────────────────────────┘
 
 Offset footer.file_info_offset:
@@ -52,24 +60,9 @@ Offset footer.cas_info_offset:
 │                                                       │
 └───────────────────────────────────────────────────────┘
 
-Offset footer.file_lookup_offset:
-┌───────────────────────────────────────────────────────┐
-│        File Lookup Table (12 × N entries)            │ ← Optional
-└───────────────────────────────────────────────────────┘
-
-Offset footer.cas_lookup_offset:
-┌───────────────────────────────────────────────────────┐
-│         CAS Lookup Table (12 × N entries)            │ ← Optional
-└───────────────────────────────────────────────────────┘
-
-Offset footer.chunk_lookup_offset:
-┌───────────────────────────────────────────────────────┐
-│        Chunk Lookup Table (16 × N entries)           │ ← Optional
-└───────────────────────────────────────────────────────┘
-
 Offset footer.footer_offset:
 ┌───────────────────────────────────────────────────────┐
-│                Footer (192 bytes)                    │ ← Fixed size
+│                Footer (200 bytes)                     │ ← Fixed size
 └───────────────────────────────────────────────────────┘
 ```
 
@@ -91,9 +84,7 @@ All multi-byte integers are stored in little-endian format.
 - Hash: 32-byte hash value
 - Byte Array types are denoted like in rust as [u8; N] where N is the number of bytes.
 
-## Deserialization Guide
-
-### 1. Header (MDBShardFileHeader)
+## 1. Header (MDBShardFileHeader)
 
 **Location**: Start of file (offset 0)
 **Size**: 48 bytes
@@ -109,11 +100,11 @@ struct MDBShardFileHeader {
 **Memory Layout**:
 
 ```txt
-┌────────────────────────────────────────────────────────────────┬──────────┬──────────┐
-│                          tag (32 bytes)                       │ version  │footer_sz │
-│                    Magic Number Identifier                    │ (8 bytes)│(8 bytes) │
-└────────────────────────────────────────────────────────────────┴──────────┴──────────┘
-0                                                              32         40         48
+┌────────────────────────────────────────────────────────────────┬───────────┬───────────┐
+│                          tag (32 bytes)                        │  version  │ footer_sz │
+│                    Magic Number Identifier                     │ (8 bytes) │ (8 bytes) │
+└────────────────────────────────────────────────────────────────┴───────────┴───────────┘
+0                                                               32          40         48
 ```
 
 **Deserialization steps**:
@@ -124,72 +115,13 @@ struct MDBShardFileHeader {
 4. Verify version equals 2
 5. Read 8 bytes for footer_size (u64)
 
-### 2. Footer (MDBShardFileFooter)
-
-**Location**: End of file minus footer_size
-**Size**: 192 bytes
-
-```rust
-struct MDBShardFileFooter {
-    version: u64,                    // Footer version (must be 1)
-    file_info_offset: u64,           // Offset to file info section
-    cas_info_offset: u64,            // Offset to CAS info section
-    file_lookup_offset: u64,         // Offset to file lookup table
-    file_lookup_num_entry: u64,      // Number of file lookup entries
-    cas_lookup_offset: u64,          // Offset to CAS lookup table
-    cas_lookup_num_entry: u64,       // Number of CAS lookup entries
-    chunk_lookup_offset: u64,        // Offset to chunk lookup table
-    chunk_lookup_num_entry: u64,     // Number of chunk lookup entries
-    chunk_hash_hmac_key: Hash,       // HMAC key for chunk hashes (32 bytes)
-    shard_creation_timestamp: u64,   // Creation time (seconds since epoch)
-    shard_key_expiry: u64,           // Expiry time (seconds since epoch)
-    _buffer: [u8; 48],               // Reserved space (48 bytes)
-    stored_bytes_on_disk: u64,       // Total bytes stored on disk
-    materialized_bytes: u64,         // Total materialized bytes
-    stored_bytes: u64,               // Total stored bytes
-    footer_offset: u64,              // Offset where footer starts
-}
-```
-
-**Memory Layout**:
-
-```txt
-┌─────────┬─────────┬─────────┬─────────┬─────────┬─────────┬─────────┬─────────┬─────────┐
-│ version │file_info│cas_info │file_lkp │file_lkp │cas_lkp  │cas_lkp  │chunk_lkp│chunk_lkp│
-│(8 bytes)│offset   │offset   │offset   │num_entry│offset   │num_entry│offset   │num_entry│
-│         │(8 bytes)│(8 bytes)│(8 bytes)│(8 bytes)│(8 bytes)│(8 bytes)│(8 bytes)│(8 bytes)│
-└─────────┴─────────┴─────────┴─────────┴─────────┴─────────┴─────────┴─────────┴─────────┘
-0         8        16        24        32        40        48        56        64        72
-
-┌─────────────────────────────────────┬─────────┬─────────┬─────────────────────────────────────┐
-│        chunk_hash_hmac_key          │creation │key_expiry│           _buffer (reserved)        │
-│             (32 bytes)              │timestamp│(8 bytes)│             (48 bytes)              │
-│                                     │(8 bytes)│         │                                     │
-└─────────────────────────────────────┴─────────┴─────────┴─────────────────────────────────────┘
-72                                  104       112       120                                   168
-
-┌─────────┬─────────┬─────────┬─────────┐
-│stored_  │material │stored_  │footer_  │
-│bytes_on │ized_    │bytes    │offset   │
-│disk     │bytes    │(8 bytes)│(8 bytes)│
-│(8 bytes)│(8 bytes)│         │         │
-└─────────┴─────────┴─────────┴─────────┘
-168      176       184       192
-```
-
-**Deserialization steps**:
-
-1. Seek to `file_size - footer_size`
-2. Read all fields sequentially as u64 values
-3. Verify version equals 1
-
-### 3. File Info Section
+## 2. File Info Section
 
 **Location**: `footer.file_info_offset` to `footer.cas_info_offset`
 
 This section contains a sequence of 0 or more file information blocks, each consisting of:
 
-#### FileDataSequenceHeader
+### FileDataSequenceHeader
 
 ```rust
 struct FileDataSequenceHeader {
@@ -203,11 +135,11 @@ struct FileDataSequenceHeader {
 **Memory Layout**:
 
 ```txt
-┌────────────────────────────────────────────────────────────────┬──────────┬──────────┬──────────┐
-│                       file_hash (32 bytes)                    │file_flags│num_entries│ _unused  │
-│                        File Hash Value                        │(4 bytes) │(4 bytes) │(8 bytes) │
-└────────────────────────────────────────────────────────────────┴──────────┴──────────┴──────────┘
-0                                                              32         36         40         48
+┌────────────────────────────────────────────────────────────────┬──────────┬───────────┬────────────┐
+│                       file_hash (32 bytes)                     │file_flags│num_entries│   _unused  │
+│                        File Hash Value                         │(4 bytes) │(4 bytes)  │  (8 bytes) │
+└────────────────────────────────────────────────────────────────┴──────────┴───────────┴────────────┘
+0                                                                32         36         40           48
 ```
 
 **File Flags**:
@@ -217,7 +149,7 @@ struct FileDataSequenceHeader {
 
 Given the `file_data_sequence_header.file_flags & MASK` (bitwise AND) operations, if the result != 0 then the effect is true.
 
-#### FileDataSequenceEntry
+### FileDataSequenceEntry
 
 ```rust
 struct FileDataSequenceEntry {
@@ -233,14 +165,16 @@ struct FileDataSequenceEntry {
 
 ```txt
 ┌────────────────────────────────────────────────────────────────┬─────────┬─────────┬─────────┬─────────┐
-│                       cas_hash (32 bytes)                     │cas_flags│unpacked │chunk_idx│chunk_idx│
-│                      CAS Block Hash                           │(4 bytes)│seg_bytes│start    │end      │
-│                                                               │         │(4 bytes)│(4 bytes)│(4 bytes)│
+│                       cas_hash (32 bytes)                      │cas_flags│unpacked │chunk_idx│chunk_idx│
+│                      CAS Block Hash                            │(4 bytes)│seg_bytes│start    │end      │
+│                                                                │         │(4 bytes)│(4 bytes)│(4 bytes)│
 └────────────────────────────────────────────────────────────────┴─────────┴─────────┴─────────┴─────────┘
-0                                                              32        36        40        44        48
+0                                                               32        36        40        44        48
 ```
 
-#### FileVerificationEntry (optional)
+### FileVerificationEntry (optional)
+
+Verification Entries must be set for shard uploads. To generate verification hashes for shard upload read [hashing.md](../hashing.md#Term%20Verification%20Hashes).
 
 ```rust
 struct FileVerificationEntry {
@@ -253,13 +187,13 @@ struct FileVerificationEntry {
 
 ```txt
 ┌────────────────────────────────────────────────────────────────┬────────────────────────────────┐
-│                    range_hash (32 bytes)                      │       _unused (16 bytes)      │
-│                   Verification Hash                           │         Reserved Space         │
+│                    range_hash (32 bytes)                       │       _unused (16 bytes)       │
+│                   Verification Hash                            │         Reserved Space         │
 └────────────────────────────────────────────────────────────────┴────────────────────────────────┘
 0                                                              32                               48
 ```
 
-#### FileMetadataExt (optional)
+### FileMetadataExt (optional)
 
 ```rust
 struct FileMetadataExt {
@@ -272,13 +206,13 @@ struct FileMetadataExt {
 
 ```txt
 ┌────────────────────────────────────────────────────────────────┬────────────────────────────────┐
-│                      sha256 (32 bytes)                        │       _unused (16 bytes)      │
-│                     SHA256 Hash                               │         Reserved Space         │
+│                      sha256 (32 bytes)                         │       _unused (16 bytes)       │
+│                     SHA256 Hash                                │         Reserved Space         │
 └────────────────────────────────────────────────────────────────┴────────────────────────────────┘
-0                                                              32                               48
+0                                                               32                               48
 ```
 
-#### File Info Section Layout
+### File Info Section Layout
 
 **Without Optional Components**:
 
@@ -330,7 +264,7 @@ struct FileMetadataExt {
 └─────────────────────┘
 ```
 
-#### File Info Bookend
+### File Info Bookend
 
 The end of the file infos section is marked by a bookend entry.
 
@@ -345,18 +279,18 @@ Since the file info section immediately follows the header, a client does not ne
 1. Seek to `footer.file_info_offset`
 2. Read `FileDataSequenceHeader`
 3. Check if `file_hash` is all 0xFF (bookend marker) - if so, stop
-4. Read `num_entries` × `FileDataSequenceEntry` structures
-5. If `file_flags & MDB_FILE_FLAG_WITH_VERIFICATION != 0`: read `num_entries` × `FileVerificationEntry`
+4. Read `file_data_sequence_header.num_entries` × `FileDataSequenceEntry` structures
+5. If `file_flags & MDB_FILE_FLAG_WITH_VERIFICATION != 0`: read `file_data_sequence_header.num_entries` × `FileVerificationEntry`
 6. If `file_flags & MDB_FILE_FLAG_WITH_METADATA_EXT != 0`: read 1 × `FileMetadataExt`
 7. Repeat from step 2 until bookend found
 
-### 4. CAS Info Section
+## 3. CAS Info Section
 
-**Location**: `footer.cas_info_offset` to `footer.file_lookup_offset`
+**Location**: `footer.cas_info_offset` to `footer.footer_offset`
 
-This section contains CAS (Content Addressable Storage) block information:
+This section contains CAS (Content Addressable Storage) block information. Each CAS Info block represents a xorb by first having a CASChunkSequenceHeader which contains the number of CASChunkSequenceEntries to follow that make up this block.
 
-#### CASChunkSequenceHeader
+### CASChunkSequenceHeader
 
 ```rust
 struct CASChunkSequenceHeader {
@@ -372,14 +306,16 @@ struct CASChunkSequenceHeader {
 
 ```txt
 ┌────────────────────────────────────────────────────────────────┬─────────┬─────────┬─────────┬─────────┐
-│                       cas_hash (32 bytes)                     │cas_flags│num_     │num_bytes│num_bytes│
-│                      CAS Block Hash                           │(4 bytes)│entries  │in_cas   │on_disk  │
-│                                                               │         │(4 bytes)│(4 bytes)│(4 bytes)│
+│                       cas_hash (32 bytes)                      │cas_flags│num_     │num_bytes│num_bytes│
+│                      CAS Block Hash                            │(4 bytes)│entries  │in_cas   │on_disk  │
+│                                                                │         │(4 bytes)│(4 bytes)│(4 bytes)│
 └────────────────────────────────────────────────────────────────┴─────────┴─────────┴─────────┴─────────┘
-0                                                              32        36        40        44        48
+0                                                               32        36        40        44        48
 ```
 
-#### CASChunkSequenceEntry
+### CASChunkSequenceEntry
+
+Every CASChunkSequenceHeader will have a num_entries number field. This number is the number of CASChunkSequenceEntry items that should be deserialized that are associated with the xorb described by this CAS Info block.
 
 ```rust
 struct CASChunkSequenceEntry {
@@ -394,16 +330,16 @@ struct CASChunkSequenceEntry {
 
 ```txt
 ┌────────────────────────────────────────────────────────────────┬─────────┬─────────┬─────────────────┐
-│                     chunk_hash (32 bytes)                     │chunk_   │unpacked │    _unused      │
-│                        Chunk Hash                             │byte_    │segment_ │   (8 bytes)     │
-│                                                               │range_   │bytes    │                 │
-│                                                               │start    │(4 bytes)│                 │
-│                                                               │(4 bytes)│         │                 │
+│                     chunk_hash (32 bytes)                      │chunk_   │unpacked │    _unused      │
+│                        Chunk Hash                              │byte_    │segment_ │   (8 bytes)     │
+│                                                                │range_   │bytes    │                 │
+│                                                                │start    │(4 bytes)│                 │
+│                                                                │(4 bytes)│         │                 │
 └────────────────────────────────────────────────────────────────┴─────────┴─────────┴─────────────────┘
-0                                                              32        36        40               48
+0                                                               32        36        40               48
 ```
 
-#### CAS Info Section Layout
+### CAS Info Section Layout
 
 ```txt
 ┌─────────────────────┐
@@ -430,10 +366,10 @@ struct CASChunkSequenceEntry {
 1. Seek to `footer.cas_info_offset`
 2. Read `CASChunkSequenceHeader`
 3. Check if `cas_hash` is all 0xFF (bookend marker) - if so, stop
-4. Read `num_entries` × `CASChunkSequenceEntry` structures
+4. Read `cas_chunk_sequence_header.num_entries` × `CASChunkSequenceEntry` structures
 5. Repeat from step 2 until bookend found
 
-#### CAS Info Bookend
+### CAS Info Bookend
 
 The end of the cas infos section is marked by a bookend entry.
 
@@ -441,165 +377,117 @@ The bookend entry is 48 bytes long where the first 32 bytes are all 0xFF, follow
 
 Suppose you were attempting to deserialize a CASChunkSequenceHeader and it's hash was all 1 bits then this entry is a bookend entry and the next bytes start the next section.
 
-Since the file info section immediately follows the file info section, a client does not need to deserialize the footer to know where it starts deserialize this section, it begins right after the file info section bookend and ends when the cas info bookend is reached.
+## 4. Footer (MDBShardFileFooter)
 
-### 5. Lookup Tables
-
-#### File Lookup Table
-
-**Location**: `footer.file_lookup_offset`
-**Size**: `footer.file_lookup_num_entry` entries
-
-> Note that this section is optional, if this section is not present, then `footer.file_lookup_num_entry` is 0.
-
-Each entry is 12 bytes:
+**Location**: End of file minus footer_size
+**Size**: 200 bytes
 
 ```rust
-struct FileLookupEntry {
-    truncated_hash: u64,     // First 8 bytes of file hash
-    file_index: u32,         // Index into file info section
+struct MDBShardFileFooter {
+    version: u64,                    // Footer version (must be 1)
+    file_info_offset: u64,           // Offset to file info section
+    cas_info_offset: u64,            // Offset to CAS info section
+    _buffer: [u8; 48],               // Reserved space (48 bytes)
+    chunk_hash_hmac_key: Hash,       // HMAC key for chunk hashes (32 bytes)
+    shard_creation_timestamp: u64,   // Creation time (seconds since epoch)
+    shard_key_expiry: u64,           // Expiry time (seconds since epoch)
+    _buffer: [u8; 72],               // Reserved space (72 bytes)
+    footer_offset: u64,              // Offset where footer starts
 }
 ```
 
 **Memory Layout**:
 
-```txt
-┌─────────────────────────────────────────┬─────────────────┐
-│         truncated_hash (8 bytes)       │   file_index    │
-│        First 8 bytes of file hash      │    (4 bytes)    │
-└─────────────────────────────────────────┴─────────────────┘
-0                                       8                12
-```
-
-#### CAS Lookup Table
-
-**Location**: `footer.cas_lookup_offset`
-**Size**: `footer.cas_lookup_num_entry` entries
-
-> Note that this section is optional, if this section is not present, then `footer.cas_lookup_num_entry` is 0.
-
-Each entry is 12 bytes:
-
-```rust
-struct CASLookupEntry {
-    truncated_hash: u64,     // First 8 bytes of CAS hash
-    cas_index: u32,          // Index into CAS info section
-}
-```
-
-**Memory Layout**:
+> Fields are not exactly to scale
 
 ```txt
-┌─────────────────────────────────────────┬─────────────────┐
-│         truncated_hash (8 bytes)       │   cas_index     │
-│        First 8 bytes of CAS hash       │    (4 bytes)    │
-└─────────────────────────────────────────┴─────────────────┘
-0                                       8                12
+┌─────────┬─────────┬─────────┬─────────────────────────────────────────────────────────────┬─────────────────────────────────────┐
+│ version │file_info│cas_info │                    _buffer (reserved)                       │        chunk_hash_hmac_key          │
+│(8 bytes)│offset   │offset   │                      (48 bytes)                             │             (32 bytes)              │
+│         │(8 bytes)│(8 bytes)│                                                             │                                     │
+└─────────┴─────────┴─────────┴─────────────────────────────────────────────────────────────┴─────────────────────────────────────┘
+0         8        16        24                                                           72                                    104
+
+┌─────────┬──────────┬─────────────────────────────────────────────────────────────────────────────┬─────────┐
+│creation │shard_    │                           _buffer (reserved)                                │footer_  │
+│timestamp│key_expiry│                             (72 bytes)                                      │offset   │
+│(8 bytes)│ (8 bytes)│                                                                             │(8 bytes)│
+└─────────┴──────────┴─────────────────────────────────────────────────────────────────────────────┴─────────┘
+104       112       120                                                                          192       200
 ```
 
-#### Chunk Lookup Table
+**Deserialization steps**:
 
-**Location**: `footer.chunk_lookup_offset`
-**Size**: `footer.chunk_lookup_num_entry` entries
+1. Seek to `file_size - footer_size`
+2. Read all fields sequentially as u64 values
+3. Verify version equals 1
 
-> Note that this section is optional, if this section is not present, then `footer.chunk_lookup_num_entry` is 0.
+### Use of Footer Fields
 
-Each entry is 16 bytes:
+#### file_info_offset and cas_info_offset
 
-```rust
-struct ChunkLookupEntry {
-    truncated_hash: u64,     // First 8 bytes of chunk hash
-    cas_index: u32,          // Index into CAS info section
-    chunk_index: u32,        // Index within CAS block
-}
-```
+These offsets allow you to seek into the shard data buffer to reach these sections without deserializing linearly.
 
-**Memory Layout**:
+#### HMAC Key Protection
 
-```txt
-┌─────────────────────────────────────────┬─────────────────┬─────────────────┐
-│         truncated_hash (8 bytes)       │   cas_index     │  chunk_index    │
-│       First 8 bytes of chunk hash      │    (4 bytes)    │    (4 bytes)    │
-└─────────────────────────────────────────┴─────────────────┴─────────────────┘
-0                                       8                12               16
-```
+If `footer.chunk_hash_hmac_key` is non-zero (as a response shard from the global dedupe API), chunk hashes in the CAS Info section are protected with [HMAC](https://en.wikipedia.org/wiki/HMAC):
 
-## HMAC Key Protection
+- The stored chunk hashes are `HMAC(original_hash, footer.chunk_hash_hmac_key)`
+- To check if a chunk of data that you have matches a chunk listed in the shard, compute `HMAC(chunk_hash, footer.chunk_hash_hmac_key)` for your chunk hash and search through the shard results. If you find a match (matched_chunk) then you know the original chunk hash of your chunk and the matched_chunk is the same and you can deduplicate your chunk by referencing the xorb that matched_chunk belongs to.
 
-If `footer.chunk_hash_hmac_key` is non-zero, chunk hashes are protected with HMAC:
+#### Shard Key Expiry
 
-- The stored chunk hashes are HMAC(original_hash, hmac_key)
-- To verify chunks, compute HMAC of the original hash and compare
+The shard key expiry is a 64 bit unix timestamp of when the shard received is to be considered expired (usually in the order of days or weeks after the shard was sent back).
+
+After this expiry time has passed clients should consider this shard expired and not use it to deduplicate data. Uploads that reference xorbs that were referenced by this shard may be rejected at the server's discretion.
 
 ## Complete Deserialization Algorithm
 
-```rust
-fn deserialize_shard(file: &mut File) -> Result<ShardData> {
-    // 1. Read and validate header
-    file.seek(SeekFrom::Start(0))?;
-    let header = read_header(file)?;
-    
-    // 2. Read and validate footer
-    file.seek(SeekFrom::End(-(header.footer_size as i64)))?;
-    let footer = read_footer(file)?;
-    
-    // 3. Read file info section
-    file.seek(SeekFrom::Start(footer.file_info_offset))?;
-    let file_info = read_file_info_section(file, footer.cas_info_offset)?;
-    
-    // 4. Read CAS info section
-    file.seek(SeekFrom::Start(footer.cas_info_offset))?;
-    let cas_info = read_cas_info_section(file, footer.file_lookup_offset)?;
-    
-    // 5. Read lookup tables
-    let file_lookup = read_file_lookup(file, &footer)?;
-    let cas_lookup = read_cas_lookup(file, &footer)?;
-    let chunk_lookup = read_chunk_lookup(file, &footer)?;
-    
-    Ok(ShardData {
-        header,
-        footer,
-        file_info,
-        cas_info,
-        file_lookup,
-        cas_lookup,
-        chunk_lookup,
-    })
-}
+```text
+// ** option 1, read linearly, streaming **
+// assume shard is a read-able file-like object and the reader position is at start of shard
+// 1. Read and validate header
+header = read_header(shard)
+
+// 2. Read file info section  
+file_info = read_file_info_section(shard) // read through file info bookend
+
+// 3. Read CAS info section
+cas_info = read_cas_info_section(shard) // read through cas info bookend
+
+// 4. Read footer
+footer = read_footer(shard)
+
+// shard reader should now be at EOF
+
+
+// ** option 2, read footer and seek **
+// assume shard is a read-able seek-able file-like object
+// 1. Read and validate header
+seek(start of shard)
+header = read_header(shard)
+
+// 2. Read and validate footer (needed for offsets)
+seek(end of shard minus header.footer_size)
+footer = read_footer(shard)
+
+// 3. Read file info section  
+seek(footer.file_info_offset)
+file_info = read_file_info_section(shard) // until footer.cas_info_offset
+
+// 4. Read CAS info section
+seek(footer.cas_info_offset)
+cas_info = read_cas_info_section(shard) // until footer.footer_offset
 ```
-
-## Usage Patterns
-
-### Finding a File by Hash
-
-1. Truncate file hash to first 8 bytes
-2. Binary search in file lookup table
-3. For each matching entry, read the full file info and verify complete hash
-4. Return file reconstruction information
-
-### Finding Chunks for Deduplication
-
-1. Truncate chunk hash to first 8 bytes (apply HMAC if needed)
-2. Binary search in chunk lookup table
-3. For each match, read CAS block and verify full chunk hash
-4. Return matching chunk information
-
-### Reconstructing a File
-
-1. Look up file hash in file lookup table
-2. Read file info to get list of CAS blocks and chunk ranges
-3. For each CAS reference, read the corresponding chunks
-4. Concatenate chunk data in order to reconstruct file
 
 ## Version Compatibility
 
 - Header version 2: Current format
 - Footer version 1: Current format
-- Files with different versions should be rejected during deserialization
+- Shards with different versions should be rejected
 
 ## Error Handling
 
 - Always verify magic numbers and versions
 - Check that offsets are within file bounds  
 - Verify that bookend markers are present where expected
-- Validate that lookup tables are sorted by truncated hash

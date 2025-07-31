@@ -77,7 +77,7 @@ def internal_hash_function(node):
     chunk_hash = compute_chunk_hash(chunk)
     buffer += f"{chunk_hash:x} : {size}\n"
 
-  blake3(bytes(buffer), key=INTERNAL_NODE_HASH)
+  blake3(bytes(buffer), key=INTERNAL_NODE_KEY)
 ```
 
 ## File Hashes
@@ -85,3 +85,34 @@ def internal_hash_function(node):
 After chunking a whole file, to compute the file hash, follow the same procedure used to compute the xorb hash and then take that final hash as data to compute a blake3 keyed hash with a key that is all 0's.
 
 This means create a MerkleTree using the same hashing functions described in the previous section. Then take the root node's hash and compute a blake3 keyed hash with the key being 32 0-value bytes.
+
+## Term Verification Hashes
+
+When uploading a shard, each term in each file info in the shard must have a matching FileVerificationEntry section that contains a hash.
+
+To generate this hash, take the chunk hashes for the specific range of chunks that make up the term and:
+
+1. **Concatenate the raw hash bytes**: Take all the chunk hashes in the range (from `chunk_index_start` to `chunk_index_end` in the xorb specified in the term) and concatenate their raw 32-byte representations together in order.
+
+2. **Apply keyed hash**: Compute a blake3 keyed hash of the concatenated bytes using the following verification key (VERIFICATION_KEY):
+
+### VERIFICATION_KEY
+
+```json
+[
+  127, 24, 87, 214, 206, 86, 237, 102, 18, 127, 249, 19, 231, 165, 195, 243, 164, 205, 38, 213, 181, 219, 73, 230, 65, 36, 152, 127, 40, 251, 148, 195
+]
+```
+
+The result of the blake3 keyed hash is the verification hash that should be used in the FileVerificationEntry for the term.
+
+### Example Python code for the verification hash
+
+```python
+def verification_hash_function(term):
+    buffer = bytes()
+    # note chunk ranges are end exclusive
+    for chunk_hash in term.xorb.chunk_hashes[term.chunk_index_start : term.chunk_index_end]:
+        buffer.extend(bytes(chunk_hash))
+    return blake3(buffer, key=VERIFICATION_KEY)
+```
