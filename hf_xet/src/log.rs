@@ -7,6 +7,7 @@ use tracing_subscriber::filter::FilterFn;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::{EnvFilter, Layer};
+use utils::normalized_path_from_user_string;
 use xet_threadpool::ThreadPool;
 
 use crate::log_buffer::{get_telemetry_task, LogBufferLayer, TelemetryTaskInfo, TELEMETRY_PRE_ALLOC_BYTES};
@@ -22,26 +23,32 @@ fn use_json() -> Option<bool> {
     env::var("HF_XET_LOG_FORMAT").ok().map(|s| s.eq_ignore_ascii_case("json"))
 }
 
-fn init_logging_to_file(path: impl AsRef<Path>) -> Result<(), std::io::Error> {
+fn init_logging_to_file(path: &Path) -> Result<(), std::io::Error> {
     // Set up logging to a file.
     use std::ffi::OsStr;
 
     use tracing_appender::{non_blocking, rolling};
 
-    // Make sure the directory for the log exists.
-    let path = path.as_ref();
-    let path = std::path::absolute(path)?;
+    let (path, file_name) = match path.file_name() {
+        Some(name) => (path.to_path_buf(), name),
+        None => (path.join("xet.log"), OsStr::new("xet.log")),
+    };
 
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
+    let log_directory = match path.parent() {
+        Some(parent) => {
+            std::fs::create_dir_all(parent)?;
+            parent
+        },
+        None => Path::new("."),
+    };
+
+    // Make sure the log location is writeable so we error early here and dump to stderr on failure.
+    std::fs::write(&path, &[])?;
 
     // Build a non‑blocking file appender. • `rolling::never` = one static file, no rotation. • Keep the
     // `WorkerGuard` alive so the background thread doesn’t shut down and drop messages.
-    let file_appender = rolling::never(
-        path.parent().unwrap_or_else(|| Path::new(".")),
-        path.file_name().unwrap_or_else(|| OsStr::new("xet.log")),
-    );
+    let file_appender = rolling::never(log_directory, file_name);
+
     let (writer, guard) = non_blocking(file_appender);
 
     // Store the guard globally so it isn’t dropped.
@@ -77,11 +84,12 @@ fn init_logging_to_file(path: impl AsRef<Path>) -> Result<(), std::io::Error> {
 }
 
 fn init_global_logging(py: Python) -> Option<TelemetryTaskInfo> {
-    if let Ok(path) = env::var("HF_XET_LOG_FILE") {
-        match init_logging_to_file(&path) {
+    if let Ok(log_path_s) = env::var("HF_XET_LOG_FILE") {
+        let log_path = normalized_path_from_user_string(log_path_s);
+        match init_logging_to_file(&log_path) {
             Ok(_) => return None,
             Err(e) => {
-                eprintln!("Error opening log file {path:?} for writing: {e:?}.  Reverting to logging to console.");
+                eprintln!("Error opening log file {log_path:?} for writing: {e:?}.  Reverting to logging to console.");
             },
         }
     }
