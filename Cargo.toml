@@ -90,7 +90,7 @@ walkdir = "2"
 web-time = "1.1.0"
 whoami = "1"
 heapify = "0.2"
-expanduser = "1.2.2"
+shellexpand = "3.1.1"
 
 # windows
 winapi = { version = "0.3", features = [
