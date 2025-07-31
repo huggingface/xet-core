@@ -44,18 +44,20 @@ pub fn default_config(
         // If HF_HOME is set, use the $HF_HOME/xet
         } else if let Ok(hf_home) = env::var("HF_HOME") {
             normalized_path_from_user_string(hf_home).join("xet")
+
+        // If XDG_CACHE_HOME is set, use the $XDG_CACHE_HOME/huggingface/xet, otherwise
+        // use $HOME/.cache/huggingface/xet
+        } else if let Ok(xdg_cache_home) = env::var("XDG_CACHE_HOME") {
+            normalized_path_from_user_string(xdg_cache_home).join("huggingface").join("xet")
+
+        // Use the same default as huggingface_hub, ~/.cache/huggingface/xet (slightly nonstandard, but won't
+        // mess with it).
         } else {
-            // If XDG_CACHE_HOME is set, use the $XDG_CACHE_HOME/huggingface/xet, otherwise
-            // use $HOME/.cache/huggingface/xet
-            let cache_home = match env::var("XDG_CACHE_HOME") {
-                Ok(d) => normalized_path_from_user_string(d),
-
-                // Use the same defaults as huggingface_hub (slightly nonstandard, but won't
-                // mess with it).
-                Err(_) => home_dir().unwrap_or(current_dir()?).join(".cache"),
-            };
-
-            cache_home.join("huggingface").join("xet")
+            home_dir()
+                .unwrap_or(current_dir()?)
+                .join(".cache")
+                .join("huggingface")
+                .join("xet")
         }
     };
 
