@@ -9,7 +9,7 @@ use tracing::info;
 use xet_threadpool::errors::MultithreadedRuntimeError;
 use xet_threadpool::ThreadPool;
 
-use crate::log;
+use crate::{kvlog, log};
 
 lazy_static! {
     static ref SIGINT_DETECTED: Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
@@ -113,20 +113,24 @@ fn signal_check_background_loop() {
 }
 
 pub fn init_threadpool(py: Python) -> PyResult<Arc<ThreadPool>> {
+    kvlog!();
     // Need to initialize. Upgrade to write lock.
     let mut guard = MULTITHREADED_RUNTIME.write().unwrap();
 
     // Has another thread done this already?
     let pid = std::process::id();
+    kvlog!(pid);
 
     let mut swapping_after_fork = false;
 
     if let Some((runtime_pid, existing)) = guard.take() {
         if runtime_pid == pid {
+            kvlog!(runtime_pid, pid);
             // We're OK, so reset it here.
             *guard = Some((pid, existing.clone()));
             return Ok(existing);
         } else {
+            kvlog!();
             // Ok, discard the previous runtime, as it's effectively poisoned by the
             // fork-exec, and we simply need to leak it and restart from scratch.  The memory and
             // resources will be freed up when the child exits.
@@ -136,17 +140,24 @@ pub fn init_threadpool(py: Python) -> PyResult<Arc<ThreadPool>> {
         }
     }
 
+    kvlog!();
+
     // Create a new Tokio runtime.
     let runtime = ThreadPool::new().map_err(convert_multithreading_error)?;
 
+    kvlog!();
+
     // Check the signal handler.  This must be reinstalled on new or after a spawn
     check_sigint_handler()?;
+    kvlog!();
 
     // Set the runtime in the global tracker.
     *guard = Some((pid, runtime.clone()));
+    kvlog!();
 
     // Spawn a background non-tokio thread to check the sigint flag.
     std::thread::spawn(signal_check_background_loop);
+    kvlog!();
 
     // Drop the guard and initialize the logging.
     //
@@ -159,6 +170,7 @@ pub fn init_threadpool(py: Python) -> PyResult<Arc<ThreadPool>> {
     // error statements may not be sent to python if the other thread continues ahead of the logging
     // being initialized.)
     drop(guard);
+    kvlog!();
 
     // Initialize the logging.
     if !swapping_after_fork {
@@ -175,17 +187,21 @@ pub fn init_threadpool(py: Python) -> PyResult<Arc<ThreadPool>> {
 fn get_threadpool(py: Python) -> PyResult<Arc<ThreadPool>> {
     // First try a read lock to see if it's already initialized.
     {
+        kvlog!();
         let guard = MULTITHREADED_RUNTIME.read().unwrap();
         if let Some((runtime_pid, ref existing)) = *guard {
             let pid = std::process::id();
+            kvlog!();
 
             if runtime_pid == pid {
+                kvlog!();
                 return Ok(existing.clone());
             }
         }
     }
 
     // Init and return
+    kvlog!();
     init_threadpool(py)
 }
 
@@ -199,8 +215,12 @@ where
     F::Output: Into<PyResult<Out>> + Send + Sync,
     Out: Send + Sync,
 {
+    kvlog!();
+
     // Get a handle to the current runtime.
     let runtime = get_threadpool(py)?;
+
+    kvlog!();
 
     // Release the gil
     let runtime_internal = runtime.clone();

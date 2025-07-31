@@ -22,6 +22,27 @@ use tracing::debug;
 
 use crate::progress_update::WrappedProgressUpdater;
 
+/// Log name=value pairs to stderr, prefixed by file:line.
+/// Each argument is evaluated once; names come from `stringify!(arg)`.
+/// Values are formatted with `Debug` (use `{:?}`).
+#[macro_export]
+macro_rules! kvlog {
+    ($($val:expr),+ $(,)?) => {{
+        // Build a single string to reduce interleaving on multi-threaded stderr.
+        let mut __s = ::std::string::String::new();
+        use ::std::fmt::Write as _;
+
+        let _ = write!(&mut __s, "KVLOG: {}:{}:", file!(), line!());
+        $(
+            let _ = write!(&mut __s, " {}={:?}", stringify!($val), &$val);
+        )+
+        eprintln!("{}", __s);
+    }};
+    () => {
+        eprintln!(concat!(file!(), ":", line!(), ":"));
+    };
+}
+
 // For profiling
 #[cfg(feature = "profiling")]
 pub(crate) mod profiling;
@@ -137,6 +158,8 @@ pub fn download_files(
     let x: u64 = rand::rng().random();
 
     let file_names = file_infos.iter().take(3).map(|(_, p)| p).join(", ");
+
+    kvlog!(std::process::id(), file_names);
 
     let res = async_run(py, async move {
         debug!(
