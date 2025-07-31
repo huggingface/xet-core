@@ -302,8 +302,7 @@ impl RemoteClient {
         writer: &OutputProvider,
         progress_updater: Option<Arc<SingleItemProgressUpdater>>,
     ) -> Result<u64> {
-        // queue size is inherently bounded by degree of concurrency.
-
+        // Use an unlimited queue size, as queue size is inherently bounded by degree of concurrency.
         let (task_tx, mut task_rx) = mpsc::unbounded_channel::<DownloadQueueItem<SequentialTermDownload>>();
         let (running_downloads_tx, mut running_downloads_rx) =
             mpsc::unbounded_channel::<JoinHandle<Result<(TermDownloadResult<Vec<u8>>, OwnedSemaphorePermit)>>>();
@@ -456,8 +455,7 @@ impl RemoteClient {
         writer: &OutputProvider,
         progress_updater: Option<Arc<SingleItemProgressUpdater>>,
     ) -> Result<u64> {
-        // queue size is inherently bounded by degree of concurrency.
-
+        // Use the unlimited queue, as queue size is inherently bounded by degree of concurrency.
         let (task_tx, mut task_rx) =
             mpsc::unbounded_channel::<DownloadQueueItem<FetchTermDownloadOnceAndWriteEverywhereUsed>>();
         let mut running_downloads = JoinSet::<Result<TermDownloadResult<u64>>>::new();
