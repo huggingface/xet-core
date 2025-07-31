@@ -98,8 +98,6 @@ mod tests {
 
     #[cfg(unix)]
     const HOME_VAR: &str = "HOME";
-    #[cfg(windows)]
-    const HOME_VAR: &str = "USERPROFILE";
 
     #[test]
     #[serial(default_config_env)]
