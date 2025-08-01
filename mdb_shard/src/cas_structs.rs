@@ -87,8 +87,8 @@ impl CASChunkSequenceHeader {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct CASChunkSequenceEntry {
     pub chunk_hash: MerkleHash,
-    pub unpacked_segment_bytes: u32,
     pub chunk_byte_range_start: u32,
+    pub unpacked_segment_bytes: u32,
     pub _unused: u64,
 }
 
