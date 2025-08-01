@@ -76,24 +76,7 @@ In order to be authenticated and authorized to invoke any of the following API's
   - `400 Bad Request`: malformed hash in path, xorb hash is incorrect for body, body is incorrectly serialized
   - `403 Forbidden`: authentication token missing `write` scope.
 
-### 4. Check XORB Existence
-
-**Description**: Checks if an XORB exists in the Content Address Store (CAS). Use of this API is optional but can save the process of uploading all of the xorb data.
-
-- **Path**: `/v1/xorbs/{prefix}/{hash}`
-- **Method**: `HEAD`
-- **Parameters**:
-  - `prefix`: Currently the only acceptable prefix for the Xorb existence API is `default`.
-  - `hash`: MerkleHash in hex format. Review [how to compute xorb hash](../hashing.md#Xorb%20Hashes) to compute xorb hashes.
-- **Minimum Token Scope**: `read`
-- **Body**: None
-- **Response**: Status code only
-  - `200 OK`: Xorb exists
-  - `404 Not Found`: Xorb does not exist
-- **Error Responses**:
-  - `400 Bad Request`: Xorb hash path component is incorrectly formatted.
-
-### 5. Upload Shard
+### 4. Upload Shard
 
 **Description**: Uploads a shard to the CAS with optional forced synchronization.
 
@@ -120,6 +103,6 @@ In order to be authenticated and authorized to invoke any of the following API's
 - **Connection Errors**: Often caused by network issues.
 - **400 Bad Request**: Returned when the request parameters are invalid, e.g. invalid xorb/shard on upload API's.
 - **401 Unauthorized**: Need to get a refreshed token to continue making requests.
-- **404 Not Found**: Occurs on GET/HEAD api's where the resource (xorb, file) do not exist.
+- **404 Not Found**: Occurs on GET api's where the resource (xorb, file) do not exist.
 - **416 Range Not Satisfiable**: Returned when byte range requests are invalid; specifically the requested start range is greater than or equal to the length of the file.
 - **429 Rate Limiting**: Assume there is rate limiting on all API's and lower your request rate using a backoff delay strategy

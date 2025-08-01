@@ -356,28 +356,6 @@ impl Client for LocalClient {
         Ok(bytes_written as u64)
     }
 
-    async fn exists(&self, _prefix: &str, hash: &MerkleHash) -> Result<bool> {
-        let file_path = self.get_path_for_entry(hash);
-
-        let Ok(md) = metadata(&file_path) else {
-            return Ok(false);
-        };
-
-        if !md.is_file() {
-            return Err(CasClientError::internal(format!(
-                "Attempting to write to {file_path:?}, but it is not a file"
-            )));
-        }
-
-        let Ok(file) = File::open(file_path) else {
-            return Err(CasClientError::XORBNotFound(*hash));
-        };
-
-        let mut reader = BufReader::new(file);
-        CasObject::deserialize(&mut reader)?;
-        Ok(true)
-    }
-
     fn use_xorb_footer(&self) -> bool {
         true
     }

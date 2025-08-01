@@ -165,6 +165,8 @@ struct FileDataSequenceEntry {
 }
 ```
 
+> Note that when describing a chunk range in a FileDataSequenceEntry use ranges that are start-inclusive but end-exclusive i.e. `[chunk_index_start, chunk_index_end)`
+
 **Memory Layout**:
 
 ```txt

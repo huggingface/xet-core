@@ -691,21 +691,6 @@ impl Client for RemoteClient {
         Ok(n_upload_bytes)
     }
 
-    async fn exists(&self, prefix: &str, hash: &MerkleHash) -> Result<bool> {
-        let key = Key {
-            prefix: prefix.to_string(),
-            hash: *hash,
-        };
-
-        let url = Url::parse(&format!("{}/{API_VERSION}/xorb/{key}", self.endpoint))?;
-        let response = self.authenticated_http_client.head(url).send().await?;
-        match response.status() {
-            StatusCode::OK => Ok(true),
-            StatusCode::NOT_FOUND => Ok(false),
-            e => Err(CasClientError::internal(format!("unrecognized status code {e}"))),
-        }
-    }
-
     fn use_xorb_footer(&self) -> bool {
         false
     }
