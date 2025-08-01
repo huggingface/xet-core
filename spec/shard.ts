@@ -486,8 +486,8 @@ class CASChunkSequenceHeader {
  */
 class CASChunkSequenceEntry {
   public chunkHash: MerkleHash = new MerkleHash();
-  public unpackedSegmentBytes: number = 0;
   public chunkByteRangeStart: number = 0;
+  public unpackedSegmentBytes: number = 0;
   public unused: number = 0;
 
   serialize(): Uint8Array {

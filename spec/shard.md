@@ -324,8 +324,8 @@ Every CASChunkSequenceHeader will have a num_entries number field. This number i
 ```rust
 struct CASChunkSequenceEntry {
     chunk_hash: Hash,             // 32-byte chunk hash
-    unpacked_segment_bytes: u32,  // Size when unpacked
     chunk_byte_range_start: u32,  // Start position in CAS block
+    unpacked_segment_bytes: u32,  // Size when unpacked
     _unused: [u8; 8],             // Reserved space 8 bytes
 }
 ```

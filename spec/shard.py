@@ -327,8 +327,8 @@ class CASChunkSequenceHeader:
 class CASChunkSequenceEntry:
     """CAS chunk sequence entry"""
     chunk_hash: MerkleHash = field(default_factory=MerkleHash)
-    unpacked_segment_bytes: int = 0
     chunk_byte_range_start: int = 0
+    unpacked_segment_bytes: int = 0
     _unused: int = 0
     
     def serialize(self) -> bytes:
@@ -343,7 +343,7 @@ class CASChunkSequenceEntry:
         chunk_hash = MerkleHash(data[:32])
         chunk_byte_range_start, unpacked_segment_bytes, unused = struct.unpack('<2LQ', data[32:48])
         
-        return cls(chunk_hash, unpacked_segment_bytes, chunk_byte_range_start, unused)
+        return cls(chunk_hash, chunk_byte_range_start, unpacked_segment_bytes, unused)
 
 
 @dataclass
