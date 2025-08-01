@@ -2,9 +2,9 @@ use merklehash::{DataHashHexParseError, MerkleHash, xorb_hash};
 use serde::{Deserialize, Serialize};
 use wasm_bindgen::prelude::*;
 
-macro_rules! console_log {
-    ($($t:tt)*) => (log(&format_args!($($t)*).to_string()))
-}
+// macro_rules! console_log {
+//     ($($t:tt)*) => (log(&format_args!($($t)*).to_string()))
+// }
 
 #[wasm_bindgen]
 extern "C" {
@@ -77,7 +77,7 @@ impl JsChunker {
             self.first_chunk_outputted = true;
         };
 
-        serde_wasm_bindgen::to_value(result).map_err(|e| e.into())
+        serde_wasm_bindgen::to_value(&result).map_err(|e| e.into())
     }
 }
 
