@@ -38,6 +38,13 @@ pub struct JsShardData {
     pub all_chunk_hashes: Vec<String>,
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct JsChunkSearchResult {
+    pub found: bool,
+    pub xorb_index: Option<usize>,
+    pub chunk_index: Option<usize>,
+}
+
 impl JsChunkOut {
     fn new_with_dedup(chunk: deduplication::Chunk, is_first_chunk: bool) -> Self {
         let hash_eligible = mdb_shard::constants::hash_is_global_dedup_eligible(&chunk.hash);
@@ -203,4 +210,53 @@ pub fn deserialize_shard(shard_data: Vec<u8>) -> Result<JsValue, JsValue> {
     };
     
     serde_wasm_bindgen::to_value(&result).map_err(|e| e.into())
+}
+
+/// takes a shard as Vec<u8> and a chunk hash as hex string, and checks if the shard contains 
+/// the HMAC'd version of that chunk hash (using the shard's HMAC key)
+/// returns an object with found (bool), xorb_index (number or null), and chunk_index (number or null)
+#[wasm_bindgen]
+pub fn shard_contains_chunk(shard_data: Vec<u8>, chunk_hash_hex: &str) -> Result<JsValue, JsValue> {
+    use std::io::Cursor;
+    use mdb_shard::shard_format::MDBShardInfo;
+    
+    let mut cursor = Cursor::new(shard_data);
+    
+    // Load the shard info (header and footer)
+    let shard_info = MDBShardInfo::load_from_reader(&mut cursor)
+        .map_err(|e| JsValue::from(format!("Failed to load shard info: {}", e)))?;
+    
+    // Extract HMAC key
+    let hmac_key = shard_info.metadata.chunk_hash_hmac_key;
+    
+    // Parse the input chunk hash
+    let chunk_hash = MerkleHash::from_hex(chunk_hash_hex)
+        .map_err(|e| JsValue::from(format!("Invalid chunk hash hex: {}", e)))?;
+    
+    // Compute HMAC of the chunk hash with the shard's HMAC key
+    let hmac_result = chunk_hash.hmac(hmac_key.into());
+    
+    // Read all CAS blocks and check if any chunk matches the HMAC'd hash
+    let cas_blocks = shard_info.read_all_cas_blocks_full(&mut cursor)
+        .map_err(|e| JsValue::from(format!("Failed to read CAS blocks: {}", e)))?;
+    
+    for (i, cas_block) in cas_blocks.iter().enumerate() {
+        for (j, chunk) in cas_block.chunks.iter().enumerate() {
+            if chunk.chunk_hash == hmac_result {
+                                 let result = JsChunkSearchResult {
+                     found: true,
+                     xorb_index: Some(i),
+                     chunk_index: Some(j),
+                 };
+                 return serde_wasm_bindgen::to_value(&result).map_err(|e| e.into());
+            }
+        }
+    }
+    
+         let result = JsChunkSearchResult {
+         found: false,
+         xorb_index: None,
+         chunk_index: None,
+     };
+     serde_wasm_bindgen::to_value(&result).map_err(|e| e.into())
 }
