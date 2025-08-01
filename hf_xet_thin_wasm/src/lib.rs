@@ -25,7 +25,18 @@ pub struct JsChunkOut {
     pub dedup: bool,
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct JsXorb {
+    pub hash: String,
+    pub chunk_hashes: Vec<String>,
+}
 
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct JsShardData {
+    pub hmac_key: String,
+    pub xorbs: Vec<JsXorb>,
+    pub all_chunk_hashes: Vec<String>,
+}
 
 impl JsChunkOut {
     fn new_with_dedup(chunk: deduplication::Chunk, is_first_chunk: bool) -> Self {
@@ -141,4 +152,55 @@ pub fn compute_hmac(hash_hex: &str, hmac_key_hex: &str) -> Result<String, JsValu
     
     let hmac_result = hash.hmac(hmac_key.into());
     Ok(hmac_result.hex())
+}
+
+
+/// takes a shard as Vec<u8> and returns the HMAC key, xorbs with their hashes, and all chunk hashes
+#[wasm_bindgen]
+pub fn deserialize_shard(shard_data: Vec<u8>) -> Result<JsValue, JsValue> {
+    use std::io::Cursor;
+    use mdb_shard::shard_format::MDBShardInfo;
+    
+    let mut cursor = Cursor::new(shard_data);
+    
+    // Load the shard info (header and footer)
+    let shard_info = MDBShardInfo::load_from_reader(&mut cursor)
+        .map_err(|e| JsValue::from(format!("Failed to load shard info: {}", e)))?;
+    
+    // Extract HMAC key
+    let hmac_key = shard_info.metadata.chunk_hash_hmac_key.hex();
+    
+    // Read all CAS blocks (xorbs and their chunks)
+    let cas_blocks = shard_info.read_all_cas_blocks_full(&mut cursor)
+        .map_err(|e| JsValue::from(format!("Failed to read CAS blocks: {}", e)))?;
+    
+    let mut xorbs = Vec::new();
+    let mut all_chunk_hashes = Vec::new();
+    
+    for cas_block in cas_blocks {
+        // Extract xorb hash from the metadata
+        let xorb_hash = cas_block.metadata.cas_hash.hex();
+        
+        // Extract chunk hashes from the chunks
+        let chunk_hashes: Vec<String> = cas_block.chunks
+            .iter()
+            .map(|chunk| chunk.chunk_hash.hex())
+            .collect();
+        
+        // Add chunk hashes to the flat list
+        all_chunk_hashes.extend(chunk_hashes.clone());
+        
+        xorbs.push(JsXorb {
+            hash: xorb_hash,
+            chunk_hashes,
+        });
+    }
+    
+    let result = JsShardData {
+        hmac_key,
+        xorbs,
+        all_chunk_hashes,
+    };
+    
+    serde_wasm_bindgen::to_value(&result).map_err(|e| e.into())
 }
