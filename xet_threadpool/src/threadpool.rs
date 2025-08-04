@@ -11,6 +11,7 @@ use tracing::{debug, info};
 
 use crate::errors::MultithreadedRuntimeError;
 use crate::global_semaphores::{GlobalSemaphoreHandle, GlobalSemaphoreLookup};
+use crate::kvlog;
 
 const THREADPOOL_THREAD_ID_PREFIX: &str = "hf-xet"; // thread names will be hf-xet-0, hf-xet-1, etc.
 const THREADPOOL_STACK_SIZE: usize = 8_000_000; // 8MB stack size
