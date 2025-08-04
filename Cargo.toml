@@ -91,6 +91,7 @@ web-time = "1.1.0"
 whoami = "1"
 heapify = "0.2"
 shellexpand = "3.1.1"
+oneshot = "0.1.8"
 
 # windows
 winapi = { version = "0.3", features = [

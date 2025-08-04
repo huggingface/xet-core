@@ -4,6 +4,7 @@ pub mod exports;
 pub mod threadpool;
 
 pub use threadpool::ThreadPool;
+pub mod sync_primatives;
 
 #[macro_use]
 mod global_semaphores;
