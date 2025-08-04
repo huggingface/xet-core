@@ -73,6 +73,7 @@ inherits = "release"
 debug = true
 split-debuginfo = "none"
 
+
 [profile.opt-test]
 inherits = "dev"
 debug = true

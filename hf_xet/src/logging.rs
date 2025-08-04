@@ -1,16 +1,18 @@
 use std::env;
 use std::path::Path;
-use std::sync::{Arc, OnceLock};
+use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::OnceLock;
 
+use pyo3::types::PyAnyMethods;
 use pyo3::Python;
+use tracing::error;
 use tracing_subscriber::filter::FilterFn;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::{EnvFilter, Layer};
 use utils::normalized_path_from_user_string;
-use xet_threadpool::ThreadPool;
 
-use crate::log_buffer::{get_telemetry_task, LogBufferLayer, TelemetryTaskInfo, TELEMETRY_PRE_ALLOC_BYTES};
+use crate::telemetry::{init_telemetry_logging, restart_telemetry_task_after_spawn};
 
 /// Default log level for the library to use. Override using `RUST_LOG` env variable.
 #[cfg(not(debug_assertions))]
@@ -43,7 +45,7 @@ fn init_logging_to_file(path: &Path) -> Result<(), std::io::Error> {
     };
 
     // Make sure the log location is writeable so we error early here and dump to stderr on failure.
-    std::fs::write(&path, &[])?;
+    std::fs::write(&path, [])?;
 
     // Build a non‑blocking file appender. • `rolling::never` = one static file, no rotation. • Keep the
     // `WorkerGuard` alive so the background thread doesn’t shut down and drop messages.
@@ -83,11 +85,41 @@ fn init_logging_to_file(path: &Path) -> Result<(), std::io::Error> {
     Ok(())
 }
 
-fn init_global_logging(py: Python) -> Option<TelemetryTaskInfo> {
+fn get_version_info_string(py: Python<'_>) -> String {
+    // populate remote telemetry calls with versions for python and hf_hub if possible
+    let mut version_info = String::new();
+
+    // Get Python version
+    if let Ok(sys) = py.import("sys") {
+        if let Ok(version) = sys.getattr("version").and_then(|v| v.extract::<String>()) {
+            if let Some(python_version_number) = version.split_whitespace().next() {
+                version_info.push_str(&format!("python/{python_version_number}; "));
+            }
+        }
+    }
+
+    // Get huggingface_hub+hf_xet versions
+    let package_names = ["huggingface_hub", "hfxet"];
+    if let Ok(importlib_metadata) = py.import("importlib.metadata") {
+        for package_name in package_names.iter() {
+            if let Ok(version) = importlib_metadata
+                .call_method1("version", (package_name,))
+                .and_then(|v| v.extract::<String>())
+            {
+                version_info.push_str(&format!("{package_name}/{version}; "));
+            }
+        }
+    }
+    version_info
+}
+
+fn init_global_logging(py: Python) {
+    let version_info = get_version_info_string(py);
+
     if let Ok(log_path_s) = env::var("HF_XET_LOG_FILE") {
         let log_path = normalized_path_from_user_string(log_path_s);
         match init_logging_to_file(&log_path) {
-            Ok(_) => return None,
+            Ok(_) => return,
             Err(e) => {
                 eprintln!("Error opening log file {log_path:?} for writing: {e:?}.  Reverting to logging to console.");
             },
@@ -103,45 +135,50 @@ fn init_global_logging(py: Python) -> Option<TelemetryTaskInfo> {
         .or_else(|_| EnvFilter::try_new(DEFAULT_LOG_LEVEL))
         .unwrap_or_default();
 
-    // Client-side telemetry, default is OFF
-    // To enable telemetry set env var HF_HUB_ENABLE_TELEMETRY
-    if env::var("HF_HUB_ENABLE_TELEMETRY").is_err_and(|e| e == env::VarError::NotPresent) {
-        let tr_sub = tracing_subscriber::registry().with(filter_layer);
+    // Do we use telemetry?
+    if env::var("HF_HUB_ENABLE_TELEMETRY").is_ok() {
+        match init_telemetry_logging(version_info) {
+            Ok(tl) => {
+                let telemetry_filter_layer = tl.with_filter(FilterFn::new(|meta| meta.target() == "client_telemetry"));
 
-        if use_json().unwrap_or(false) {
-            tr_sub.with(fmt_layer_base.json()).init();
-        } else {
-            tr_sub.with(fmt_layer_base.pretty()).init();
+                tracing_subscriber::registry()
+                    .with(filter_layer)
+                    .with(fmt_layer_base.json())
+                    .with(telemetry_filter_layer)
+                    .init();
+
+                return;
+            },
+
+            Err(e) => {
+                eprintln!("Error initializing telemetry process : {e:?}. Reverting to logging to console.");
+            },
         }
+    }
 
-        None
+    // Now, just use basic console logging.
+    let tr_sub = tracing_subscriber::registry().with(filter_layer);
+
+    if use_json().unwrap_or(false) {
+        tr_sub.with(fmt_layer_base.json()).init();
     } else {
-        let telemetry_buffer_layer = LogBufferLayer::new(py, TELEMETRY_PRE_ALLOC_BYTES);
-        let telemetry_task_info: TelemetryTaskInfo =
-            (telemetry_buffer_layer.buffer.clone(), telemetry_buffer_layer.stats.clone());
-
-        let telemetry_filter_layer =
-            telemetry_buffer_layer.with_filter(FilterFn::new(|meta| meta.target() == "client_telemetry"));
-
-        tracing_subscriber::registry()
-            .with(filter_layer)
-            .with(fmt_layer_base.json())
-            .with(telemetry_filter_layer)
-            .init();
-
-        Some(telemetry_task_info)
+        tr_sub.with(fmt_layer_base.pretty()).init();
     }
 }
 
-pub fn initialize_runtime_logging(py: Python, runtime: Arc<ThreadPool>) {
-    static GLOBAL_TELEMETRY_TASK_INFO: OnceLock<Option<TelemetryTaskInfo>> = OnceLock::new();
+static INITIALIZED_LOGGING_ID: AtomicU32 = AtomicU32::new(0);
 
-    // First get or init the global logging componenents.
-    let telemetry_task_info = GLOBAL_TELEMETRY_TASK_INFO.get_or_init(move || init_global_logging(py));
+pub fn check_logging_state(py: Python<'_>) {
+    let logger_pid = INITIALIZED_LOGGING_ID.load(Ordering::SeqCst);
 
-    // Spawn the telemetry logging.
-    if let Some(ref tti) = telemetry_task_info {
-        let telemetry_task = get_telemetry_task(tti.clone());
-        let _telemetry_task = runtime.spawn(telemetry_task);
+    let pid = std::process::id();
+
+    if logger_pid == 0 {
+        init_global_logging(py);
+        INITIALIZED_LOGGING_ID.store(pid, Ordering::SeqCst);
+    } else if logger_pid != pid {
+        if let Err(e) = restart_telemetry_task_after_spawn() {
+            error!("Error restarting telemetry task in subprocess; telemtry may not work: {e:?}");
+        }
     }
 }
