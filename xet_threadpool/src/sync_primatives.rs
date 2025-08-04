@@ -3,21 +3,6 @@ use error_printer::ErrorPrinter;
 use crate::errors::{MultithreadedRuntimeError, Result};
 
 /// Join handle for a task on the compute runtime.  
-///
-/// This struct should only be instantiated through xet_runtime().spawn_compute_task(...).
-///
-/// # Example:
-///
-/// ```
-/// use xet_runtime::{xet_runtime, ComputeJoinHandle};
-/// let handle: ComputeJoinHandle<_> = xet_runtime().spawn_compute_task(|| 99).unwrap();
-///
-/// // From synchronous code:
-/// assert_eq!(handle.join().unwrap(), 99);
-///
-/// // From async code:
-/// // assert_eq!(handle.await?, 99);
-/// ```
 pub struct SyncJoinHandle<T: Send + Sync + 'static> {
     task_result: oneshot::Receiver<Result<T>>, /* Use the other join handle to figure out when the previous job is
                                                 * done. */
@@ -66,15 +51,14 @@ impl<T: Send + Sync + 'static> SyncJoinHandle<T> {
     ///
     /// ```
     /// use xet_threadpool::spawn_os_thread;
-    /// let handle = spawn_os_thread(|| 42).unwrap();
+    /// let handle = spawn_os_thread(|| 42);
     /// let result = handle.join().unwrap();
     /// assert_eq!(result, 42);
     /// ```
     pub fn join(self) -> Result<T> {
-        Ok(self
-            .task_result
+        self.task_result
             .recv()
-            .map_err(|e| MultithreadedRuntimeError::Other(format!("SyncJoinHandle: {e:?}")))??)
+            .map_err(|e| MultithreadedRuntimeError::Other(format!("SyncJoinHandle: {e:?}")))?
     }
 
     /// Attempts to retrieve the result without blocking.  
@@ -86,8 +70,8 @@ impl<T: Send + Sync + 'static> SyncJoinHandle<T> {
     /// # Examples
     ///
     /// ```
-    /// use xet_threadpool::spawn_os_thread;
-    /// let handle: SpawnJoinHandle<_> = spawn_os_thread(|| 42).unwrap();
+    /// use xet_threadpool::{spawn_os_thread, SyncJoinHandle};
+    /// let handle: SyncJoinHandle<_> = spawn_os_thread(|| 42);
     ///
     /// // Possibly do some work here...
     /// match handle.try_join() {

@@ -106,7 +106,7 @@ pub struct TelemetryLogger {
 pub struct TelemetryLoggerPtr(Arc<TelemetryLogger>);
 
 impl TelemetryLogger {
-    pub(crate) fn new(version_info: String) -> Result<TelemetryLoggerPtr, MultithreadedRuntimeError> {
+    pub(crate) fn init(version_info: String) -> Result<TelemetryLoggerPtr, MultithreadedRuntimeError> {
         let log_buffer = Mutex::new(BipBuffer::new(TELEMETRY_PRE_ALLOC_BYTES));
         let stats = LoggingStats::default();
 
@@ -197,7 +197,7 @@ impl TelemetryLogger {
             match tokio::runtime::Builder::new_current_thread().enable_all().build() {
                 Ok(rt) => {
                     // Okay, runtime started successfully, start the telemetry send task.
-                    if let Err(_) = rt_status_sender.send(Ok(())) {
+                    if rt_status_sender.send(Ok(())).is_err() {
                         eprintln!("Error in reporting ok logging status; pipe closed");
                     }
 
@@ -293,7 +293,7 @@ pub fn restart_telemetry_task_after_spawn() -> Result<(), MultithreadedRuntimeEr
 pub fn init_telemetry_logging(version_info: String) -> Result<TelemetryLoggerPtr, MultithreadedRuntimeError> {
     let mut maybe_error = None;
 
-    let tl = global_telemetry_logger_info.get_or_init(|| match TelemetryLogger::new(version_info) {
+    let tl = global_telemetry_logger_info.get_or_init(|| match TelemetryLogger::init(version_info) {
         Err(e) => {
             maybe_error = Some(e);
             None
@@ -302,7 +302,7 @@ pub fn init_telemetry_logging(version_info: String) -> Result<TelemetryLoggerPtr
     });
 
     if let Some(e) = maybe_error {
-        return Err(e);
+        Err(e)
     } else {
         Ok(tl.clone().expect("Only None if no error."))
     }

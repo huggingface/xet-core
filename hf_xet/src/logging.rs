@@ -45,7 +45,7 @@ fn init_logging_to_file(path: &Path) -> Result<(), std::io::Error> {
     };
 
     // Make sure the log location is writeable so we error early here and dump to stderr on failure.
-    std::fs::write(&path, &[])?;
+    std::fs::write(&path, [])?;
 
     // Build a non‑blocking file appender. • `rolling::never` = one static file, no rotation. • Keep the
     // `WorkerGuard` alive so the background thread doesn’t shut down and drop messages.
