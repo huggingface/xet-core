@@ -42,7 +42,7 @@ fn install_sigint_handler() -> Result<(), MultithreadedRuntimeError> {
         sigint_detected_flag.store(true, Ordering::SeqCst);
     })
     .map_err(|e| {
-        MultithreadedRuntimeError::other(format!("Initialization Error: Unable to register SIGINT handler {e:?}"))
+        MultithreadedRuntimeError::Other(format!("Initialization Error: Unable to register SIGINT handler {e:?}"))
     })?;
     Ok(())
 }
@@ -122,7 +122,10 @@ fn signal_check_background_loop() {
 
 // This should be called once on library load.
 pub fn init_threadpool() -> Result<Arc<ThreadPool>, MultithreadedRuntimeError> {
+<<<<<<< HEAD
     kvlog!();
+=======
+>>>>>>> hoytak/250730-investigation
     // Need to initialize. Upgrade to write lock.
     let mut guard = MULTITHREADED_RUNTIME.write().unwrap();
 
@@ -153,8 +156,11 @@ pub fn init_threadpool() -> Result<Arc<ThreadPool>, MultithreadedRuntimeError> {
 
     // Create a new Tokio runtime.
     let runtime = ThreadPool::new()?;
+<<<<<<< HEAD
 
     kvlog!();
+=======
+>>>>>>> hoytak/250730-investigation
 
     // Check the signal handler.  This must be reinstalled on new or after a spawn
     check_sigint_handler()?;
@@ -208,7 +214,10 @@ fn get_threadpool() -> Result<Arc<ThreadPool>, MultithreadedRuntimeError> {
     }
 
     // Init and return
+<<<<<<< HEAD
     kvlog!();
+=======
+>>>>>>> hoytak/250730-investigation
 
     init_threadpool()
 }
@@ -223,11 +232,17 @@ where
     F::Output: Into<PyResult<Out>> + Send + Sync,
     Out: Send + Sync + 'static,
 {
+<<<<<<< HEAD
     kvlog!();
     // Make sure the logger is set up.
     check_logging_state(py);
 
     kvlog!();
+=======
+    // Make sure the logger is set up.
+    check_logging_state(py);
+
+>>>>>>> hoytak/250730-investigation
     let result: PyResult<Out> = py.allow_threads(move || {
         // Now, without the GIL, spawn the task on a new OS thread.  This avoids having tokio cache stuff in
         // thread-local storage that is invalidated after a fork-exec.
