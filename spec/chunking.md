@@ -14,7 +14,8 @@ The byte position when the rolling hash `& MASK == 0` (bitwise AND is equal to 0
 
 ### Boundary Probability
 
-The mask is designed so that approximately 1 in every `target_chunk_size` positions will trigger a boundary, making the average chunk size equal to the target.
+`target_chunk_size` is the target size of a chunk, set to be 64 KiB.
+The mask is designed so that approximately 1 in every `target_chunk_size` bytes will trigger a boundary, making the average chunk size equal to the target.
 
 ## Algorithm Flow
 
@@ -55,40 +56,26 @@ When a boundary is found:
 ### Minimum Chunk Size
 
 - Prevents tiny chunks that hurt compression efficiency
-- `target_size / 8` (8KiB)
+- `target_chunk_size / 8` (8KiB)
 - Algorithm skips boundary detection until this size is reached
 
 ### Maximum Chunk Size  
 
 - Prevents unbounded chunk growth
-- `target_size × 2` (128KiB)
+- `target_chunk_size × 2` (128KiB)
 - Forces boundary creation regardless of hash value
 
 ## Key Properties
 
-### Determinism
-
 - Same content always produces same chunk boundaries
-- No randomization or external dependencies
-- Boundaries depend only on the 64-byte content window
-
-### Content Sensitivity
-
-- Small changes affect only nearby boundaries
-- Most chunk boundaries remain stable when content changes
-- Maximizes deduplication effectiveness
-
-### Efficiency
-
+- Small changes within a `target_chunk_size` window affect only a few next boundaries
 - Linear time complexity: O(n) for data size n
 - Constant space: only needs 64-byte window and counters
 - Fast rolling hash updates
 
-## Algorithm Benefits
+## For Deduplication
 
-### For Deduplication
-
-- Identical content produces identical chunks regardless of file position
+- Identical content produces identical chunks
 - Small edits don't shift all subsequent chunk boundaries
 - Optimal granularity for detecting duplicate content blocks
 

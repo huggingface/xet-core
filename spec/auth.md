@@ -35,7 +35,7 @@ https://huggingface.co/api/spaces/jsulz/ready-xet-go/xet-read-token/main
 
 **Required Headers:**
 
-- `Authorization`: Bearer token for Huggingface Hub authentication
+- `Authorization`: Bearer token for Hugging Face Hub authentication
 
 ### Response Format
 
@@ -99,22 +99,22 @@ Here's a basic implementation flow:
 
 ## Token Scope
 
-Xet tokens can have either a `read` or a `write` scope. The type of token issues is determined on the `token_type` URI path component when requesting the token from the HuggingFace Hub (see above).
+Xet tokens can have either a `read` or a `write` scope. The type of token issues is determined on the `token_type` URI path component when requesting the token from the Hugging Face Hub (see above).
 
 Revise API specification for what scope level is required to invoke each API (briefly, only `POST /shard` and `POST /xorb/*` API's require `write` scope).
 Note that all `read` scope API's can be invoked when using a `write` scope token.
 
 The scope of the xet tokens is limited to the repository and ref for which they were issued. To upload or download from different repositories or refs (different branches) clients will need to be issued different tokens.
 
-## Token Scope Relative to HuggingFace Hub Authentication Token
+## Token Scope Relative to Hugging Face Hub Authentication Token
 
-When requesting a Xet token from the HuggingFace hub, you will only receive a xet token matching the requested parameters if you actually have access to them, based on the access afforded to your hub authentication token.
+When requesting a Xet token from the Hugging Face Hub, you will only receive a xet token matching the requested parameters if you actually have access to them, based on the access afforded to your Hub authentication token.
 
-If you require a `write` scope xet token, then you must request it using a HuggingFace Hub token that has write access to the particular repository and ref that you want to access.
+If you require a `write` scope xet token, then you must request it using a Hugging Face Hub token that has write access to the particular repository and ref that you want to access.
 
-If you request a `read` scope xet token, then you must request it using a HuggingFace Hub token that has at least read access to the particular repository and ref you want to access.
+If you request a `read` scope xet token, then you must request it using a Hugging Face Hub token that has at least read access to the particular repository and ref you want to access.
 
-If you are using Fine-grained HuggingFace Hub Access Tokens, your tokens must have read or write access to the contents of repositories to be issues read or write xet tokens respectively.
+If you are using Fine-grained Hugging Face Hub Access Tokens, your tokens must have read or write access to the contents of repositories to be issues read or write xet tokens respectively.
 
 ## Security Considerations
 

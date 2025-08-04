@@ -17,12 +17,13 @@ This approach is particularly effective for scenarios common in machine learning
 
 ### Chunks
 
+[chunking.md](../spec/chunking.md)
+
 A **chunk** is a variable-sized content block derived from files using Content-Defined Chunking (CDC) with a rolling hash function. Chunks are the fundamental unit of deduplication in Xet.
 
 - **Target size**: 64KB (configurable)
 - **Size range**: 8KB to 128KB (minimum and maximum constraints)
 - **Identification**: Each chunk is uniquely identified by its cryptographic hash (MerkleHash)
-- **Content addressing**: Chunks are stored and retrieved using their hash as the key
 
 ### Xorbs (Extended Object Blocks)
 
@@ -55,10 +56,9 @@ graph TD
     D --> E[Deduplication Query]
 ```
 
-1. **File Reading**: Files are read in blocks (default 8MB) to manage memory usage
-2. **Chunking**: Content-defined chunking using GearHash algorithm creates variable-sized chunks
-3. **Hash Computation**: Each chunk's content is hashed using a cryptographic hash function (Blake3-based MerkleHash)
-4. **Chunk Object Creation**: Chunks are wrapped with metadata including hash, size, and data
+1. **Chunking**: Content-defined chunking using GearHash algorithm creates variable-sized chunks of file data
+2. **Hash Computation**: Each chunk's content is hashed using a cryptographic hash function (Blake3-based MerkleHash)
+3. **Chunk Object Creation**: Chunks are wrapped with metadata including hash, size, and data
 
 ### 2. Multi-Level Deduplication Strategy
 
@@ -109,10 +109,10 @@ Not all chunks are eligible for global deduplication queries to manage system lo
 #### Query Process
 
 1. **Background Query**: Global deduplication queries run asynchronously to avoid blocking upload
-2. **HMAC Protection**: Chunk hashes are protected using repository-specific HMAC keys
+2. **HMAC Protection**: Chunk hashes are protected using HMAC keys
 3. **Shard Response**: When a match is found, the API returns a shard containing:
    - **CAS Info Section**: Contains metadata about many xorbs that store chunks
-   - **HMAC Key**: Included in the shard metadata header for decryption purposes
+   - **HMAC Key**: Included in the shard metadata header used to encrypt chunk hashes
 4. **Encrypted Chunk Matching**: All chunk hashes in the returned shard have been encrypted with the HMAC key
 5. **Match Discovery Process**: To find matches, clients must:
    - Encrypt their chunk hash using the provided HMAC key
@@ -127,7 +127,7 @@ Global deduplication uses HMAC (Hash-based Message Authentication Code) to prote
 
 **Security Properties**:
 
-Raw chunk hashes are never transmitted; a client has to encrypt their raw chunk hash and find a match to know a raw chunk hash exists in the system.
+Raw chunk hashes are never transmitted from servers to clients; a client has to encrypt their raw chunk hash and find a match to know a raw chunk hash exists in the system.
 They may know this chunk hash because they own this data, the match has made them privy to know which xorb has this chunk hash and the position in the xorb, but has not revealed any other raw chunk hashes in that xorb or other xorbs.
 
 ## Deduplication Effectiveness and Metrics
@@ -165,7 +165,7 @@ When chunks are deduplicated, the system creates file reconstruction information
 - Hash of the xorb containing the chunks
 - Flags for the CAS block
 - Total bytes in the segment
-- Start and end indices within the xorb
+- Start and end indices within the xorb (start inclusive, end exclusive)
 
 This information allows the system to reconstruct files by:
 

@@ -15,7 +15,7 @@ In order to be authenticated and authorized to invoke any of the following API's
 - **Path**: `/v1/reconstructions/{file_id}`
 - **Method**: `GET`
 - **Parameters**:
-  - `file_id`: MerkleHash in hex format (64 hexadecimal character string)
+  - `file_id`: MerkleHash in hex format (64 lowercase hexadecimal character string)
 - **Headers**:
   - `Range`: Optional. Format: `bytes={start}-{end}` (inclusive end)
 - **Minimum Token Scope**: `read`
@@ -31,7 +31,7 @@ In order to be authenticated and authorized to invoke any of the following API's
   ```
 
 - **Error Responses**:
-  - 400 bad request (such as the file_id not being )
+  - 400 bad request (such as the file_id not being matching an existing file)
   - 404 File not found
   - 416 Range Not Satisfiable: When requested byte range start exceeds the end of a file
 
@@ -43,7 +43,7 @@ In order to be authenticated and authorized to invoke any of the following API's
 - **Method**: `GET`
 - **Parameters**:
   - `prefix`: Currently only acceptable prefix for the Global Deduplication API is `default-merkledb`.
-  - `hash`: Chunk hash in hex format (64 hexadecimal character string). Review [how to compute chunk hash](../hashing.md#Chunk%20Hashes) to compute chunk hashes
+  - `hash`: Chunk hash in hex format (64 lowercase hexadecimal character string). Review [how to compute chunk hash](../hashing.md#Chunk%20Hashes) to compute chunk hashes
 - **Minimum Token Scope**: `read`
 - **Body**: None
 - **Response**: Raw bytes in shard format (chunk data if exists)

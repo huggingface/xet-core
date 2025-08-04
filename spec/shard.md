@@ -121,102 +121,9 @@ struct MDBShardFileHeader {
 
 ## 2. File Info Section
 
-**Location**: `footer.file_info_offset` to `footer.cas_info_offset`
+**Location**: `footer.file_info_offset` to `footer.cas_info_offset` or directly after the header
 
-This section contains a sequence of 0 or more file information blocks, each consisting of:
-
-### FileDataSequenceHeader
-
-```rust
-struct FileDataSequenceHeader {
-    file_hash: [u64; 4],  // 32-byte file hash
-    file_flags: u32,      // Flags indicating conditional sections that follow
-    num_entries: u32,     // Number of FileDataSequenceEntry structures
-    _unused: [u8; 8],     // Reserved space 8 bytes
-}
-```
-
-**Memory Layout**:
-
-```txt
-┌────────────────────────────────────────────────────────────────┬──────────┬───────────┬────────────┐
-│                       file_hash (32 bytes)                     │file_flags│num_entries│   _unused  │
-│                        File Hash Value                         │(4 bytes) │(4 bytes)  │  (8 bytes) │
-└────────────────────────────────────────────────────────────────┴──────────┴───────────┴────────────┘
-0                                                                32         36         40           48
-```
-
-**File Flags**:
-
-- `MDB_FILE_FLAG_WITH_VERIFICATION` (0x80000000 or 1 << 31): Has verification entries
-- `MDB_FILE_FLAG_WITH_METADATA_EXT` (0x40000000 or 1 << 30): Has metadata extension
-
-Given the `file_data_sequence_header.file_flags & MASK` (bitwise AND) operations, if the result != 0 then the effect is true.
-
-### FileDataSequenceEntry
-
-```rust
-struct FileDataSequenceEntry {
-    cas_hash: [u64; 4],           // 32-byte CAS block hash
-    cas_flags: u32,               // CAS flags
-    unpacked_segment_bytes: u32,  // Size when unpacked
-    chunk_index_start: u32,       // Start index in CAS block
-    chunk_index_end: u32,         // End index in CAS block
-}
-```
-
-> Note that when describing a chunk range in a FileDataSequenceEntry use ranges that are start-inclusive but end-exclusive i.e. `[chunk_index_start, chunk_index_end)`
-
-**Memory Layout**:
-
-```txt
-┌────────────────────────────────────────────────────────────────┬─────────┬─────────┬─────────┬─────────┐
-│                       cas_hash (32 bytes)                      │cas_flags│unpacked │chunk_idx│chunk_idx│
-│                      CAS Block Hash                            │(4 bytes)│seg_bytes│start    │end      │
-│                                                                │         │(4 bytes)│(4 bytes)│(4 bytes)│
-└────────────────────────────────────────────────────────────────┴─────────┴─────────┴─────────┴─────────┘
-0                                                               32        36        40        44        48
-```
-
-### FileVerificationEntry (optional)
-
-Verification Entries must be set for shard uploads. To generate verification hashes for shard upload read [hashing.md](../hashing.md#Term%20Verification%20Hashes).
-
-```rust
-struct FileVerificationEntry {
-    range_hash: Hash,   // 32-byte verification hash
-    _unused: [u8; 16],  // Reserved (16 bytes)
-}
-```
-
-**Memory Layout**:
-
-```txt
-┌────────────────────────────────────────────────────────────────┬────────────────────────────────┐
-│                    range_hash (32 bytes)                       │       _unused (16 bytes)       │
-│                   Verification Hash                            │         Reserved Space         │
-└────────────────────────────────────────────────────────────────┴────────────────────────────────┘
-0                                                              32                               48
-```
-
-### FileMetadataExt (optional)
-
-```rust
-struct FileMetadataExt {
-    sha256: Hash,      // 32-byte SHA256 hash
-    _unused: [u8; 16], // Reserved (16 bytes)
-}
-```
-
-**Memory Layout**:
-
-```txt
-┌────────────────────────────────────────────────────────────────┬────────────────────────────────┐
-│                      sha256 (32 bytes)                         │       _unused (16 bytes)       │
-│                     SHA256 Hash                                │         Reserved Space         │
-└────────────────────────────────────────────────────────────────┴────────────────────────────────┘
-0                                                               32                               48
-```
+This section contains a sequence of 0 or more file information blocks, each consisting at least a header and data sequence entries, and optionally verification and additional metadata. The file info section ends when reaching the bookend entry.
 
 ### File Info Section Layout
 
@@ -270,15 +177,115 @@ struct FileMetadataExt {
 └─────────────────────┘
 ```
 
+### FileDataSequenceHeader
+
+```rust
+struct FileDataSequenceHeader {
+    file_hash: [u64; 4],  // 32-byte file hash
+    file_flags: u32,      // Flags indicating conditional sections that follow
+    num_entries: u32,     // Number of FileDataSequenceEntry structures
+    _unused: [u8; 8],     // Reserved space 8 bytes
+}
+```
+
+**File Flags**:
+
+- `MDB_FILE_FLAG_WITH_VERIFICATION` (0x80000000 or 1 << 31): Has verification entries
+- `MDB_FILE_FLAG_WITH_METADATA_EXT` (0x40000000 or 1 << 30): Has metadata extension
+
+Given the `file_data_sequence_header.file_flags & MASK` (bitwise AND) operations, if the result != 0 then the effect is true.
+
+**Memory Layout**:
+
+```txt
+┌────────────────────────────────────────────────────────────────┬──────────┬───────────┬────────────┐
+│                       file_hash (32 bytes)                     │file_flags│num_entries│   _unused  │
+│                        File Hash Value                         │(4 bytes) │(4 bytes)  │  (8 bytes) │
+└────────────────────────────────────────────────────────────────┴──────────┴───────────┴────────────┘
+0                                                                32         36         40           48
+```
+
+### FileDataSequenceEntry
+
+```rust
+struct FileDataSequenceEntry {
+    cas_hash: [u64; 4],           // 32-byte CAS block hash
+    cas_flags: u32,               // CAS flags (reserved for future, set to 0)
+    unpacked_segment_bytes: u32,  // Size when unpacked
+    chunk_index_start: u32,       // Start index in CAS block
+    chunk_index_end: u32,         // End index in CAS block
+}
+```
+
+> Note that when describing a chunk range in a FileDataSequenceEntry use ranges that are start-inclusive but end-exclusive i.e. `[chunk_index_start, chunk_index_end)`
+
+**Memory Layout**:
+
+```txt
+┌────────────────────────────────────────────────────────────────┬─────────┬─────────┬─────────┬─────────┐
+│                       cas_hash (32 bytes)                      │cas_flags│unpacked │chunk_idx│chunk_idx│
+│                      CAS Block Hash                            │(4 bytes)│seg_bytes│start    │end      │
+│                                                                │         │(4 bytes)│(4 bytes)│(4 bytes)│
+└────────────────────────────────────────────────────────────────┴─────────┴─────────┴─────────┴─────────┘
+0                                                               32        36        40        44        48
+```
+
+### FileVerificationEntry (optional)
+
+Verification Entries must be set for shard uploads. To generate verification hashes for shard upload read [hashing.md](../hashing.md#Term%20Verification%20Hashes).
+
+```rust
+struct FileVerificationEntry {
+    range_hash: Hash,   // 32-byte verification hash
+    _unused: [u8; 16],  // Reserved (16 bytes)
+}
+```
+
+**Memory Layout**:
+
+```txt
+┌────────────────────────────────────────────────────────────────┬────────────────────────────────┐
+│                    range_hash (32 bytes)                       │       _unused (16 bytes)       │
+│                   Verification Hash                            │         Reserved Space         │
+└────────────────────────────────────────────────────────────────┴────────────────────────────────┘
+0                                                              32                               48
+```
+
+When a shard has verification entries, all file info sections must have verification entries.
+Every FileDataSequenceEntry will have a matching FileVerificationEntry in this case where the range_hash is computed with the chunk hashes for that range of chunks.
+For any file the nth FileVerificationEntry relates to the nth FileDataSequenceEntry, and like FileDataSequenceEntries if there are verification entries there will be file_data_sequence_header.num_entries verification entries (following the num_entries data sequence entries).
+
+### FileMetadataExt (optional)
+
+This section is required per file for shards uploaded through the shard upload API. There is only 1 MetadataExt instance per file and it is the last component of that file info when present.
+
+```rust
+struct FileMetadataExt {
+    sha256: Hash,      // 32-byte SHA256 hash
+    _unused: [u8; 16], // Reserved (16 bytes)
+}
+```
+
+**Memory Layout**:
+
+```txt
+┌────────────────────────────────────────────────────────────────┬────────────────────────────────┐
+│                      sha256 (32 bytes)                         │       _unused (16 bytes)       │
+│                     SHA256 Hash                                │         Reserved Space         │
+└────────────────────────────────────────────────────────────────┴────────────────────────────────┘
+0                                                               32                               48
+```
+
 ### File Info Bookend
 
-The end of the file infos section is marked by a bookend entry.
+The end of the file info sections is marked by a bookend entry.
 
 The bookend entry is 48 bytes long where the first 32 bytes are all 0xFF, followed by 16 bytes of all 0x00.
 
 Suppose you were attempting to deserialize a FileDataSequenceHeader and it's file hash was all 1 bits then this entry is a bookend entry and the next bytes start the next section.
 
-Since the file info section immediately follows the header, a client does not need to deserialize the footer to know where it starts deserialize this section, it begins right after the header and ends when the bookend is reached.
+Since the file info section immediately follows the header, a client does not need to deserialize the footer to know where it starts deserializing this section.
+The file info section begins right after the header and ends when the bookend is reached.
 
 **Deserialization steps**:
 
@@ -292,16 +299,46 @@ Since the file info section immediately follows the header, a client does not ne
 
 ## 3. CAS Info Section
 
-**Location**: `footer.cas_info_offset` to `footer.footer_offset`
+**Location**: `footer.cas_info_offset` to `footer.footer_offset` or directly after the file info section bookend
 
-This section contains CAS (Content Addressable Storage) block information. Each CAS Info block represents a xorb by first having a CASChunkSequenceHeader which contains the number of CASChunkSequenceEntries to follow that make up this block.
+This section contains CAS (Content Addressable Storage) block information. Each CAS Info block represents a xorb by first having a CASChunkSequenceHeader which contains the number of CASChunkSequenceEntries to follow that make up this block. The CAS Info section ends when reaching the bookend entry.
+
+### CAS Info Section Layout
+
+```txt
+┌─────────────────────┐
+│ CASChunkSeqHeader   │ ← CAS Block 1
+├─────────────────────┤
+│ CASChunkSeqEntry    │
+├─────────────────────┤
+│ CASChunkSeqEntry    │
+├─────────────────────┤
+│        ...          │
+├─────────────────────┤
+│ CASChunkSeqHeader   │ ← CAS Block 2
+├─────────────────────┤
+│ CASChunkSeqEntry    │
+├─────────────────────┤
+│        ...          │
+├─────────────────────┤
+│   Bookend Entry     │ ← All 0xFF hash + zeros
+└─────────────────────┘
+```
+
+**Deserialization steps**:
+
+1. Seek to `footer.cas_info_offset`
+2. Read `CASChunkSequenceHeader`
+3. Check if `cas_hash` is all 0xFF (bookend marker) - if so, stop
+4. Read `cas_chunk_sequence_header.num_entries` × `CASChunkSequenceEntry` structures
+5. Repeat from step 2 until bookend found
 
 ### CASChunkSequenceHeader
 
 ```rust
 struct CASChunkSequenceHeader {
     cas_hash: Hash,           // 32-byte CAS block hash
-    cas_flags: u32,           // CAS flags
+    cas_flags: u32,           // CAS flags (reserved for later, set to 0)
     num_entries: u32,         // Number of chunks in this CAS block
     num_bytes_in_cas: u32,    // Total bytes in CAS block
     num_bytes_on_disk: u32,   // Bytes stored on disk
@@ -345,43 +382,15 @@ struct CASChunkSequenceEntry {
 0                                                               32        36        40               48
 ```
 
-### CAS Info Section Layout
-
-```txt
-┌─────────────────────┐
-│ CASChunkSeqHeader   │ ← CAS Block 1
-├─────────────────────┤
-│ CASChunkSeqEntry    │
-├─────────────────────┤
-│ CASChunkSeqEntry    │
-├─────────────────────┤
-│        ...          │
-├─────────────────────┤
-│ CASChunkSeqHeader   │ ← CAS Block 2
-├─────────────────────┤
-│ CASChunkSeqEntry    │
-├─────────────────────┤
-│        ...          │
-├─────────────────────┤
-│   Bookend Entry     │ ← All 0xFF hash + zeros
-└─────────────────────┘
-```
-
-**Deserialization steps**:
-
-1. Seek to `footer.cas_info_offset`
-2. Read `CASChunkSequenceHeader`
-3. Check if `cas_hash` is all 0xFF (bookend marker) - if so, stop
-4. Read `cas_chunk_sequence_header.num_entries` × `CASChunkSequenceEntry` structures
-5. Repeat from step 2 until bookend found
-
 ### CAS Info Bookend
 
-The end of the cas infos section is marked by a bookend entry.
+The end of the cas info sections is marked by a bookend entry.
 
 The bookend entry is 48 bytes long where the first 32 bytes are all 0xFF, followed by 16 bytes of all 0x00.
 
 Suppose you were attempting to deserialize a CASChunkSequenceHeader and it's hash was all 1 bits then this entry is a bookend entry and the next bytes start the next section.
+
+Since the cas info section immediately follows the file info section bookend, a client does not need to deserialize the footer to know where the cas info section starts starts deserialize this section, it begins right after the file info section bookend and ends when the next bookend is reached.
 
 ## 4. Footer (MDBShardFileFooter)
 
