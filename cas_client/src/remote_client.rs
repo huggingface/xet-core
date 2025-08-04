@@ -21,12 +21,13 @@ use progress_tracking::item_tracking::SingleItemProgressUpdater;
 use progress_tracking::upload_tracking::CompletionTracker;
 use reqwest::{Body, Response, StatusCode, Url};
 use reqwest_middleware::ClientWithMiddleware;
-use tokio::sync::{mpsc, OwnedSemaphorePermit, Semaphore};
+use tokio::sync::{mpsc, OwnedSemaphorePermit};
 use tokio::task::{JoinHandle, JoinSet};
 use tracing::{debug, info, instrument};
 use utils::auth::AuthConfig;
 #[cfg(not(target_family = "wasm"))]
 use utils::singleflight::Group;
+use xet_threadpool::{global_semaphore_handle, GlobalSemaphoreHandle, ThreadPool};
 
 #[cfg(not(target_family = "wasm"))]
 use crate::download_utils::*;
@@ -39,7 +40,6 @@ use crate::{http_client, Client};
 
 pub const CAS_ENDPOINT: &str = "http://localhost:8080";
 pub const PREFIX_DEFAULT: &str = "default";
-pub const API_VERSION: &str = "v1";
 
 utils::configurable_constants! {
 // Env (HF_XET_NUM_CONCURRENT_RANGE_GETS) to set the number of concurrent range gets.
@@ -53,8 +53,9 @@ utils::configurable_constants! {
     ref UPLOAD_REPORTING_BLOCK_SIZE : usize = 512 * 1024;
 }
 
-lazy_static::lazy_static! {
-     pub static ref DOWNLOAD_CONNECTION_CONCURRENCY_LIMITER: Arc<Semaphore> = Arc::new(Semaphore::new(*NUM_CONCURRENT_RANGE_GETS));
+lazy_static! {
+    static ref DOWNLOAD_CONCURRENCY_LIMITER: GlobalSemaphoreHandle =
+        global_semaphore_handle!(*NUM_CONCURRENT_RANGE_GETS);
 }
 
 utils::configurable_bool_constants! {
@@ -85,7 +86,7 @@ pub(crate) async fn get_reconstruction_with_endpoint_and_client(
     file_id: &MerkleHash,
     bytes_range: Option<FileRange>,
 ) -> Result<Option<QueryReconstructionResponse>> {
-    let url = Url::parse(&format!("{endpoint}/{API_VERSION}/reconstruction/{}", file_id.hex()))?;
+    let url = Url::parse(&format!("{endpoint}/reconstruction/{}", file_id.hex()))?;
 
     let mut request = client.get(url).with_extension(Api("cas::get_reconstruction"));
     if let Some(range) = bytes_range {
@@ -239,7 +240,7 @@ impl RemoteClient {
             hash: *chunk_hash,
         };
 
-        let url = Url::parse(&format!("{}/{API_VERSION}/chunk/{key}", self.endpoint))?;
+        let url = Url::parse(&format!("{}/chunk/{key}", self.endpoint))?;
 
         let client = self.authenticated_http_client.clone();
         let api_tag = "cas::query_dedup";
@@ -264,7 +265,7 @@ impl RemoteClient {
         &self,
         file_ids: impl Iterator<Item = &MerkleHash>,
     ) -> Result<BatchQueryReconstructionResponse> {
-        let mut url_str = format!("{}/{API_VERSION}/reconstructions?", self.endpoint);
+        let mut url_str = format!("{}/reconstructions?", self.endpoint);
         let mut is_first = true;
         for hash in file_ids {
             if is_first {
@@ -300,7 +301,7 @@ impl RemoteClient {
         writer: &OutputProvider,
         progress_updater: Option<Arc<SingleItemProgressUpdater>>,
     ) -> Result<u64> {
-        // queue size is inherently bounded by degree of concurrency.
+        // Use an unlimited queue size, as queue size is inherently bounded by degree of concurrency.
         let (task_tx, mut task_rx) = mpsc::unbounded_channel::<DownloadQueueItem<SequentialTermDownload>>();
         let (running_downloads_tx, mut running_downloads_rx) =
             mpsc::unbounded_channel::<JoinHandle<Result<(TermDownloadResult<Vec<u8>>, OwnedSemaphorePermit)>>>();
@@ -330,6 +331,8 @@ impl RemoteClient {
         let download_scheduler = DownloadSegmentLengthTuner::from_configurable_constants();
         let download_scheduler_clone = download_scheduler.clone();
 
+        let download_concurrency_limiter = ThreadPool::current().global_semaphore(*DOWNLOAD_CONCURRENCY_LIMITER);
+
         let queue_dispatcher: JoinHandle<Result<()>> = tokio::spawn(async move {
             let mut remaining_total_len = total_len;
             while let Some(item) = task_rx.recv().await {
@@ -343,7 +346,7 @@ impl RemoteClient {
                     DownloadQueueItem::DownloadTask(term_download) => {
                         // acquire the permit before spawning the task, so that there's limited
                         // number of active downloads.
-                        let permit = DOWNLOAD_CONNECTION_CONCURRENCY_LIMITER.clone().acquire_owned().await?;
+                        let permit = download_concurrency_limiter.clone().acquire_owned().await?;
                         debug!("spawning 1 download task");
                         let future: JoinHandle<Result<(TermDownloadResult<Vec<u8>>, OwnedSemaphorePermit)>> =
                             tokio::spawn(async move {
@@ -451,7 +454,7 @@ impl RemoteClient {
         writer: &OutputProvider,
         progress_updater: Option<Arc<SingleItemProgressUpdater>>,
     ) -> Result<u64> {
-        // queue size is inherently bounded by degree of concurrency.
+        // Use the unlimited queue, as queue size is inherently bounded by degree of concurrency.
         let (task_tx, mut task_rx) =
             mpsc::unbounded_channel::<DownloadQueueItem<FetchTermDownloadOnceAndWriteEverywhereUsed>>();
         let mut running_downloads = JoinSet::<Result<TermDownloadResult<u64>>>::new();
@@ -477,6 +480,8 @@ impl RemoteClient {
         // which will execute after the first of the above term download tasks finishes.
         let term_download_client = self.http_client.clone();
         let download_scheduler = DownloadSegmentLengthTuner::from_configurable_constants();
+
+        let download_concurrency_limiter = ThreadPool::current().global_semaphore(*DOWNLOAD_CONCURRENCY_LIMITER);
 
         let process_result = move |result: TermDownloadResult<u64>,
                                    total_written: &mut u64,
@@ -509,7 +514,7 @@ impl RemoteClient {
                 DownloadQueueItem::DownloadTask(term_download) => {
                     // acquire the permit before spawning the task, so that there's limited
                     // number of active downloads.
-                    let permit = DOWNLOAD_CONNECTION_CONCURRENCY_LIMITER.clone().acquire_owned().await?;
+                    let permit = download_concurrency_limiter.clone().acquire_owned().await?;
                     debug!("spawning 1 download task");
                     running_downloads.spawn(async move {
                         let data = term_download.run().await?;
@@ -604,7 +609,7 @@ impl Client for RemoteClient {
             hash: serialized_cas_object.hash,
         };
 
-        let url = Url::parse(&format!("{}/{API_VERSION}/xorb/{key}", self.endpoint))?;
+        let url = Url::parse(&format!("{}/xorb/{key}", self.endpoint))?;
 
         let n_upload_bytes = serialized_cas_object.serialized_data.len() as u64;
 
@@ -676,7 +681,7 @@ impl Client for RemoteClient {
             hash: serialized_cas_object.hash,
         };
 
-        let url = Url::parse(&format!("{}/{API_VERSION}/xorb/{key}", self.endpoint))?;
+        let url = Url::parse(&format!("{}/xorb/{key}", self.endpoint))?;
 
         let n_upload_bytes = serialized_cas_object.serialized_data.len() as u64;
 
@@ -731,7 +736,7 @@ impl Client for RemoteClient {
         &self,
         file_hash: &MerkleHash,
     ) -> Result<Option<(MDBFileInfo, Option<MerkleHash>)>> {
-        let url = Url::parse(&format!("{}/{API_VERSION}/reconstruction/{}", self.endpoint, file_hash.hex()))?;
+        let url = Url::parse(&format!("{}/reconstruction/{}", self.endpoint, file_hash.hex()))?;
 
         let api_tag = "cas::get_reconstruction_info";
         let client = self.authenticated_http_client.clone();
@@ -758,15 +763,20 @@ impl Client for RemoteClient {
     }
 
     #[instrument(skip_all, name = "RemoteClient::upload_shard", fields(shard.len = shard_data.len()))]
-    async fn upload_shard(&self, shard_data: Bytes) -> Result<bool> {
+    async fn upload_shard(&self, prefix: &str, hash: &MerkleHash, shard_data: Bytes) -> Result<bool> {
         if self.dry_run {
             return Ok(true);
         }
 
+        let key = Key {
+            prefix: prefix.into(),
+            hash: *hash,
+        };
+
         let api_tag = "cas::upload_shard";
         let client = self.authenticated_http_client.clone();
 
-        let url = Url::parse(&format!("{}/{API_VERSION}/shard", self.endpoint))?;
+        let url = Url::parse(&format!("{}/shard/{key}", self.endpoint))?;
 
         let response: UploadShardResponse = RetryWrapper::new(api_tag)
             .run_and_extract_json(move || {
@@ -917,14 +927,12 @@ mod tests {
         // Arrange server mocks
         let _mock_fi_416 = server.mock(|when, then| {
             when.method(GET)
-                .path(format!("/{API_VERSION}/reconstruction/{}", test_case.file_hash))
+                .path(format!("/reconstruction/{}", test_case.file_hash))
                 .matches(mock_no_match_range_header!(HttpRange::from(FIRST_SEGMENT_FILE_RANGE)));
             then.status(416);
         });
         let _mock_fi_200 = server.mock(|when, then| {
-            let w = when
-                .method(GET)
-                .path(format!("/{API_VERSION}/reconstruction/{}", test_case.file_hash));
+            let w = when.method(GET).path(format!("/reconstruction/{}", test_case.file_hash));
             w.header(RANGE.as_str(), HttpRange::from(FIRST_SEGMENT_FILE_RANGE).range_header());
             then.status(200).json_body_obj(&test_case.reconstruction_response);
         });
@@ -995,14 +1003,12 @@ mod tests {
         // Arrange server mocks
         let _mock_fi_416 = server.mock(|when, then| {
             when.method(GET)
-                .path(format!("/{API_VERSION}/reconstruction/{}", test_case.file_hash))
+                .path(format!("/reconstruction/{}", test_case.file_hash))
                 .matches(mock_no_match_range_header!(HttpRange::from(FIRST_SEGMENT_FILE_RANGE)));
             then.status(416);
         });
         let _mock_fi_200 = server.mock(|when, then| {
-            let w = when
-                .method(GET)
-                .path(format!("/{API_VERSION}/reconstruction/{}", test_case.file_hash));
+            let w = when.method(GET).path(format!("/reconstruction/{}", test_case.file_hash));
             w.header(RANGE.as_str(), HttpRange::from(FIRST_SEGMENT_FILE_RANGE).range_header());
             then.status(200).json_body_obj(&test_case.reconstruction_response);
         });
@@ -1069,14 +1075,12 @@ mod tests {
         // Arrange server mocks
         let _mock_fi_416 = server.mock(|when, then| {
             when.method(GET)
-                .path(format!("/{API_VERSION}/reconstruction/{}", test_case.file_hash))
+                .path(format!("/reconstruction/{}", test_case.file_hash))
                 .matches(mock_no_match_range_header!(HttpRange::from(FIRST_SEGMENT_FILE_RANGE)));
             then.status(416);
         });
         let _mock_fi_200 = server.mock(|when, then| {
-            let w = when
-                .method(GET)
-                .path(format!("/{API_VERSION}/reconstruction/{}", test_case.file_hash));
+            let w = when.method(GET).path(format!("/reconstruction/{}", test_case.file_hash));
             w.header(RANGE.as_str(), HttpRange::from(FIRST_SEGMENT_FILE_RANGE).range_header());
             then.status(200).json_body_obj(&test_case.reconstruction_response);
         });
@@ -1170,14 +1174,12 @@ mod tests {
         // Arrange server mocks
         let _mock_fi_416 = server.mock(|when, then| {
             when.method(GET)
-                .path(format!("/{API_VERSION}/reconstruction/{}", test_case.file_hash))
+                .path(format!("/reconstruction/{}", test_case.file_hash))
                 .matches(mock_no_match_range_header!(HttpRange::from(FIRST_SEGMENT_FILE_RANGE)));
             then.status(416);
         });
         let _mock_fi_200 = server.mock(|when, then| {
-            let w = when
-                .method(GET)
-                .path(format!("/{API_VERSION}/reconstruction/{}", test_case.file_hash));
+            let w = when.method(GET).path(format!("/reconstruction/{}", test_case.file_hash));
             w.header(RANGE.as_str(), HttpRange::from(FIRST_SEGMENT_FILE_RANGE).range_header());
             then.status(200).json_body_obj(&test_case.reconstruction_response);
         });

@@ -20,6 +20,7 @@ pin-project = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["time", "rt", "macros"] }
 tracing = { workspace = true }
+shellexpand = { workspace = true }
 
 [target.'cfg(not(target_family = "wasm"))'.dev-dependencies]
 tempfile = { workspace = true }
@@ -27,6 +28,9 @@ xet_threadpool = { path = "../xet_threadpool" }
 
 [target.'cfg(target_family = "wasm")'.dependencies]
 web-time = { workspace = true }
+
+[dev-dependencies]
+serial_test = { workspace = true }
 
 [features]
 strict = []

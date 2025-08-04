@@ -12,7 +12,7 @@ pub enum RwTaskLockError {
     #[error(transparent)]
     JoinError(#[from] JoinError),
 
-    #[error("BUG: repeated retrieval attempts after error.")]
+    #[error("Attempting to access value not available due to a previously reported error.")]
     CalledAfterError,
 }
 
@@ -133,6 +133,7 @@ where
             guard: state.downgrade(),
         })
     }
+
     /// Update the current value by applying an async function to it, storing the result as the new value.
     ///
     /// - If the current value is in the `Ready` state, the function is immediately scheduled as a background task with
