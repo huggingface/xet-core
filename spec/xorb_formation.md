@@ -2,7 +2,7 @@
 
 ## Collecting Chunks
 
-Using the chunking algorithm a file is mapped to a series of chunks, once those chunks are found, they need to be collected into collections of chunks called each called a "Xorb" (Xet Orb, pronounced like "zorb").
+Using the chunking algorithm a file is mapped to a series of chunks, once those chunks are found, they need to be collected into collections of chunks each called a "Xorb" (Xet Orb, pronounced like "zorb").
 
 It is advantageous to collect series of chunks in xorbs such that they can be referred to as a whole range of chunks.
 
@@ -21,11 +21,11 @@ A xorb is a series of "Chunks" that is serialized according to a specific format
 
 Each chunk has an index within the xorb it is in, starting at 0. Chunks can be addressed individually by their index but are usually addressed or fetched in range. Chunk ranges are always specified start inclusive and end exclusive i.e. `[start, end)`.
 
-### Chunk Format
+## Chunk Format
 
 A chunk consists of a header followed by compressed data. The header contains metadata about the chunk, particularly the compression scheme required to know how to deserialize the chunk.
 
-#### Chunk Header Structure
+### Chunk Header Structure
 
 The chunk header is serialized as follows:
 
@@ -34,9 +34,12 @@ The chunk header is serialized as follows:
 - **Compression Type** (1 byte): Algorithm used for compression (See mapping below)
 - **Uncompressed Size** (3 bytes): Size of raw chunk data (before compression) as a 3 byte little-endian unsigned integer.
 
-Both Compressed and Uncompressed Size can fit in a 3 byte integer, given that
+Both Compressed and Uncompressed Size can fit in a 3 byte integer, given that that a raw uncompressed chunk can be 128KiB at most,
+requiring 18 binary digits to represent.
+If utilizing the intended compression scheme results in a larger compressed chunk then the chunk should be stored uncompressed with then
+the uncompressed size also being at a maximum of 128KiB.
 
-#### Chunk Compression Schemes
+### Chunk Compression Schemes
 
 | Value | Name | Description |
 |-------|------|-------------|
@@ -44,7 +47,7 @@ Both Compressed and Uncompressed Size can fit in a 3 byte integer, given that
 | `1` | `LZ4` | Standard LZ4 compression |
 | `2` | `ByteGrouping4LZ4` | Byte grouping with 4-byte groups followed by LZ4 compression. Optimized for floating-point and other structured data where grouping bytes by position improves compression ratios |
 
-##### Byte Grouping LZ4 Compression
+#### Byte Grouping LZ4 Compression
 
 Byte grouping LZ4 compression is an optimization technique that improves compression ratios for structured data like floating-point numbers, integers, and other data types where values have similar byte patterns at specific positions.
 
@@ -77,3 +80,21 @@ for chunk in xorb.chunks:
     buffer.write(header)
     buffer.write(compressed)
 ```
+
+#### Picking a Compression Scheme
+
+Picking the chunk compression scheme for the xorb is a task left to the client when uploading the xorb.
+The goal is to minimize the overall size of the xorb for faster transmission at the cost of resources to decompress a chunk on the receiving end.
+
+When picking a compression scheme for the chunk there are a number of strategies and implementors may make their decisions as to how to pick a compression scheme. Note that a xorb may contain chunks that utilize different compression schemes.
+
+1. **Brute Force**
+
+    Try all possible compression schemes, pick the best one. The best one may be the one producing the smallest compressed chunk or the fastest to decompress.
+
+2. **Best Effort Prediction**
+
+    In xet-core, to predict if BG4 will be useful we maximum KL divergence between the distribution of per-byte pop-counts on a sample of each of the 4 groups that would be formed.
+    You can read more about it in [bg4_prediction.rs](../cas_object/src/byte_grouping/bg4_prediction.rs) and accompanying scripts.
+
+    If the predictor does not show that BG4 will be better, we use Lz4 and in either case we will store the chunk as the uncompressed version if the compression scheme used does not show any benefit.

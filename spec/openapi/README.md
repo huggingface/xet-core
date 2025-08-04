@@ -73,7 +73,7 @@ npm run bundle
 
 ## API Endpoints
 
-### GET `/reconstruction/{file_id}`
+### GET `/reconstructions/{file_id}`
 
 Retrieves reconstruction information for a specific file.
 
@@ -106,7 +106,6 @@ The generated TypeScript client includes:
 The specification defines these main types:
 
 - `QueryReconstructionResponse` - Single file reconstruction info
-- `BatchQueryReconstructionResponse` - Multiple files reconstruction info
 - `CASReconstructionTerm` - Individual reconstruction term
 - `CASReconstructionFetchInfo` - URL and range information for fetching
 - `ChunkRange` - Chunk index range (exclusive end)
