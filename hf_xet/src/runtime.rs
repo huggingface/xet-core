@@ -138,7 +138,7 @@ pub fn init_threadpool() -> Result<Arc<ThreadPool>, MultithreadedRuntimeError> {
             // resources will be freed up when the child exits.
             existing.discard_runtime();
 
-            info!("Runtime restarted due to detected process ID change, likely due to fork-exec call.");
+            info!("Runtime restarted due to detected process ID change, likely due to running inside a fork call.");
         }
     }
 
