@@ -17,6 +17,15 @@ The CAS server will reject xorb uploads that exceed the 64 MiB serialized size l
 
 A xorb is a series of "Chunks" that is serialized according to a specific format that enables accessing chunks of ranges and builds in chunk level compression.
 
+```txt
+┌─────────┬─────────────────────────────────┬─────────┬─────────────────────────────────┬─────────┬─────────────────────────────────┬──────────
+│  Chunk  │                                 │  Chunk  │                                 │  Chunk  │                                 │
+│  Header │      Compressed Chunk Data      │  Header │      Compressed Chunk Data      │  Header │      Compressed Chunk Data      │   ...
+│         │                                 │         │                                 │         │                                 │
+└─────────┴─────────────────────────────────┴─────────┴─────────────────────────────────┴─────────┴─────────────────────────────────┴───────────
+│                 Chunk 0                   │                 Chunk 1                   │                 Chunk 2                   │   ...
+```
+
 ### Chunk Addressing
 
 Each chunk has an index within the xorb it is in, starting at 0. Chunks can be addressed individually by their index but are usually addressed or fetched in range. Chunk ranges are always specified start inclusive and end exclusive i.e. `[start, end)`.
@@ -38,6 +47,17 @@ Both Compressed and Uncompressed Size can fit in a 3 byte integer, given that th
 requiring 18 binary digits to represent.
 If utilizing the intended compression scheme results in a larger compressed chunk then the chunk should be stored uncompressed with then
 the uncompressed size also being at a maximum of 128KiB.
+
+#### Chunk Header Layout
+
+```txt
+┌─────────┬─────────────────────────────────┬──────────────┬─────────────────────────────────┐
+│ Version │        Compressed Size          │ Compression  │       Uncompressed Size         │
+│ 1 byte  │           3 bytes               │    Type      │           3 bytes               │
+│         │      (little-endian)            │   1 byte     │      (little-endian)            │
+└─────────┴─────────────────────────────────┴──────────────┴─────────────────────────────────┘
+0         1                                 4              5                                 8
+```
 
 ### Chunk Compression Schemes
 
@@ -67,21 +87,7 @@ Byte grouping LZ4 compression is an optimization technique that improves compres
 
 Following the header is the compressed data block, exactly `compressed_size` bytes long.
 
-### Example Chunk Serialization
-
-```python
-VERSION = 0
-buffer = bytes()
-
-for chunk in xorb.chunks:
-    uncompressed_length = len(chunk)
-    compressed, compression_scheme = pick_compression_scheme_and_compress(chunk)
-    header = Header(VERSION, len(compressed), compression_scheme, uncompressed_length)
-    buffer.write(header)
-    buffer.write(compressed)
-```
-
-#### Picking a Compression Scheme
+### Picking a Compression Scheme
 
 Picking the chunk compression scheme for the xorb is a task left to the client when uploading the xorb.
 The goal is to minimize the overall size of the xorb for faster transmission at the cost of resources to decompress a chunk on the receiving end.
@@ -98,3 +104,17 @@ When picking a compression scheme for the chunk there are a number of strategies
     You can read more about it in [bg4_prediction.rs](../cas_object/src/byte_grouping/bg4_prediction.rs) and accompanying scripts.
 
     If the predictor does not show that BG4 will be better, we use Lz4 and in either case we will store the chunk as the uncompressed version if the compression scheme used does not show any benefit.
+
+#### Example Chunk Serialization
+
+```python
+VERSION = 0
+buffer = bytes()
+
+for chunk in xorb.chunks:
+    uncompressed_length = len(chunk)
+    compressed, compression_scheme = pick_compression_scheme_and_compress(chunk)
+    header = Header(VERSION, len(compressed), compression_scheme, uncompressed_length)
+    buffer.write(header)
+    buffer.write(compressed)
+```
