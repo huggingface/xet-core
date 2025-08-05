@@ -23,7 +23,7 @@ tracing = { workspace = true }
 
 [dev-dependencies]
 tempdir = { workspace = true }
-tokio = { workspace = true, features = ["full"] }
+tokio = { workspace = true, features = ["rt-multi-thread"] }
 
 [[bin]]
 name = "cache_analysis"
