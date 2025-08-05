@@ -309,8 +309,13 @@ impl ResponseErrorLogger<error::Result<Response>> for reqwest_middleware::Result
             .log_error(format!("error invoking {api} api"))?;
         let request_id = request_id_from_response(&res);
         let error_message = format!("{api} api failed: request id: {request_id}");
-        // not all status codes mean fatal error
-        res.error_for_status().map_err(CasClientError::from).info_error(error_message)
+        let status = res.status();
+        let res = res.error_for_status().map_err(CasClientError::from);
+        match (api, status) {
+            ("get_reconstruction", StatusCode::RANGE_NOT_SATISFIABLE) => res.debug_error(&error_message),
+            // not all status codes mean fatal error
+            _ => res.info_error(&error_message),
+        }
     }
 }
 
