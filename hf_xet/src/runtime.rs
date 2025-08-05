@@ -10,8 +10,6 @@ use xet_threadpool::errors::MultithreadedRuntimeError;
 use xet_threadpool::sync_primatives::spawn_os_thread;
 use xet_threadpool::ThreadPool;
 
-use crate::logging::check_logging_state;
-
 lazy_static! {
     static ref SIGINT_DETECTED: Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
     static ref SIGINT_HANDLER_INSTALL_PID: (AtomicU32, Mutex<()>) = (AtomicU32::new(0), Mutex::new(()));
@@ -199,9 +197,6 @@ where
     F::Output: Into<PyResult<Out>> + Send + Sync,
     Out: Send + Sync + 'static,
 {
-    // Make sure the logger is set up.
-    check_logging_state(py);
-
     let result: PyResult<Out> = py.allow_threads(move || {
         // Now, without the GIL, spawn the task on a new OS thread.  This avoids having tokio cache stuff in
         // thread-local storage that is invalidated after a fork-exec.
