@@ -45,8 +45,8 @@ utils::configurable_constants! {
 // Env (HF_XET_NUM_CONCURRENT_RANGE_GETS) to set the number of concurrent range gets.
 // setting this value to 0 disables the limit, sets it to the max, this is not recommended as it may lead to errors
     ref NUM_CONCURRENT_RANGE_GETS: usize = GlobalConfigMode::HighPerformanceOption {
-        standard: 128,
-        high_performance: 512,
+        standard: 64,
+        high_performance: 256,
     };
 
     // Send a report of successful partial upload every 512kb.
