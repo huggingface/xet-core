@@ -1,7 +1,6 @@
 mod logging;
 mod progress_update;
 mod runtime;
-mod telemetry;
 mod token_refresh;
 
 use std::fmt::Debug;
@@ -20,6 +19,7 @@ use runtime::async_run;
 use token_refresh::WrappedTokenRefresher;
 use tracing::debug;
 
+use crate::logging::init_logging;
 use crate::progress_update::WrappedProgressUpdater;
 
 // For profiling
@@ -310,6 +310,9 @@ pub fn hf_xet(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     // This supports backward compatibility for PyPointerFile with old versions
     // huggingface_hub.
     m.add_class::<PyPointerFile>()?;
+
+    // Make sure the logger is set up.
+    init_logging(py);
 
     #[cfg(feature = "profiling")]
     {

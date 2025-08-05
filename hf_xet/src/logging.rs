@@ -1,17 +1,14 @@
 use std::env;
 use std::path::Path;
-use std::sync::{Mutex, OnceLock};
+use std::sync::OnceLock;
 
 use pyo3::types::PyAnyMethods;
 use pyo3::Python;
-use tracing::{error, info};
-use tracing_subscriber::filter::FilterFn;
+use tracing::info;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
-use tracing_subscriber::{EnvFilter, Layer};
+use tracing_subscriber::EnvFilter;
 use utils::normalized_path_from_user_string;
-
-use crate::telemetry::{init_telemetry_logging, restart_telemetry_task_after_spawn};
 
 /// Default log level for the library to use. Override using `RUST_LOG` env variable.
 #[cfg(not(debug_assertions))]
@@ -112,7 +109,7 @@ fn get_version_info_string(py: Python<'_>) -> String {
     version_info
 }
 
-fn init_global_logging(py: Python) {
+pub fn init_logging(py: Python) {
     let version_info = get_version_info_string(py);
 
     if let Ok(log_path_s) = env::var("HF_XET_LOG_FILE") {
@@ -137,27 +134,6 @@ fn init_global_logging(py: Python) {
         .or_else(|_| EnvFilter::try_new(DEFAULT_LOG_LEVEL))
         .unwrap_or_default();
 
-    // Do we use telemetry?
-    if env::var("HF_HUB_ENABLE_TELEMETRY").is_ok() {
-        match init_telemetry_logging(version_info.clone()) {
-            Ok(tl) => {
-                let telemetry_filter_layer = tl.with_filter(FilterFn::new(|meta| meta.target() == "client_telemetry"));
-
-                tracing_subscriber::registry()
-                    .with(filter_layer)
-                    .with(fmt_layer_base.json())
-                    .with(telemetry_filter_layer)
-                    .init();
-
-                return;
-            },
-
-            Err(e) => {
-                eprintln!("Error initializing telemetry process : {e:?}. Reverting to logging to console.");
-            },
-        }
-    }
-
     // Now, just use basic console logging.
     let tr_sub = tracing_subscriber::registry().with(filter_layer);
 
@@ -168,24 +144,4 @@ fn init_global_logging(py: Python) {
     }
 
     info!("hf_xet version info: {version_info}");
-}
-
-static INITIALIZED_LOGGING_ID: Mutex<u32> = Mutex::new(0);
-
-pub fn check_logging_state(py: Python<'_>) {
-    let Ok(mut logger_pid) = INITIALIZED_LOGGING_ID.lock() else {
-        return;
-    };
-
-    let pid = std::process::id();
-
-    if *logger_pid == 0 {
-        init_global_logging(py);
-    } else if *logger_pid != pid {
-        if let Err(e) = restart_telemetry_task_after_spawn() {
-            error!("Error restarting telemetry task in subprocess; telemetry may not work: {e:?}");
-        }
-    }
-
-    *logger_pid = pid;
 }
