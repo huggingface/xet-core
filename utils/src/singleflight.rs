@@ -42,11 +42,10 @@ use std::future::Future;
 use std::marker::PhantomData;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, AtomicU16, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 use std::task::{ready, Context, Poll};
 
 use futures::future::Either;
-use parking_lot::RwLock;
 use pin_project::{pin_project, pinned_drop};
 use tokio::runtime::Handle;
 use tokio::sync::{Mutex, Notify};
@@ -130,7 +129,7 @@ where
     /// and notifying all waiters that there is a value.
     fn complete(&self, res: SingleflightResult<T, E>) {
         // write-lock
-        let mut val = self.res.write();
+        let mut val = self.res.write().unwrap();
         *val = Some(res);
         self.nt.notify_waiters();
         let num_waiters = self.num_waiters.load(Ordering::SeqCst);
@@ -141,7 +140,7 @@ where
     /// might occur.
     fn get_future(&self) -> impl Future<Output = SingleflightResult<T, E>> + '_ {
         // read-lock
-        let res = self.res.read();
+        let res = self.res.read().unwrap();
         if let Some(result) = res.clone() {
             // we already have the result, provide it back to the caller.
             debug!("Call already completed");
@@ -165,7 +164,7 @@ where
     /// Gets the result for the Call if set.
     /// If not set, then [SingleflightError::NoResult] is returned
     fn get(&self) -> SingleflightResult<T, E> {
-        let res = self.res.read();
+        let res = self.res.read().unwrap();
         res.clone().unwrap_or(Err(SingleflightError::NoResult))
     }
 }
@@ -354,7 +353,7 @@ where
         let this = self.project();
         if !this.got_response.load(Ordering::SeqCst) {
             let call = this.call;
-            call.complete(Err(SingleflightError::OwnerPanicked))
+            call.complete(Err(SingleflightError::OwnerPanicked));
         }
     }
 }

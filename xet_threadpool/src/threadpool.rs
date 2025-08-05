@@ -121,7 +121,7 @@ pub struct ThreadPool {
 // the worker threads in the runtime.  This way, XetRuntime::current() will always refer to
 // the runtime active with that worker thread.
 thread_local! {
-    static THREAD_RUNTIME_REF: RefCell<Option<Arc<ThreadPool>>> = const { RefCell::new(None) };
+    static THREAD_RUNTIME_REF: RefCell<Option<(u32, Arc<ThreadPool>)>> = const { RefCell::new(None) };
 }
 
 impl ThreadPool {
@@ -131,27 +131,20 @@ impl ThreadPool {
     pub fn current() -> Arc<Self> {
         let maybe_rt = THREAD_RUNTIME_REF.with_borrow(|rt| rt.clone());
 
-        if let Some(rt) = maybe_rt {
-            rt
-        } else {
-            let Ok(tokio_rt) = TokioRuntimeHandle::try_current() else {
-                panic!(
-                    "ThreadPool::current() called before ThreadPool::new() or on thread outside of current runtime."
-                );
-            };
-
-            Self::from_external(tokio_rt)
+        if let Some((pid, rt)) = maybe_rt {
+            if pid == std::process::id() {
+                return rt;
+            }
         }
+
+        let Ok(tokio_rt) = TokioRuntimeHandle::try_current() else {
+            panic!("ThreadPool::current() called before ThreadPool::new() or on thread outside of current runtime.");
+        };
+
+        Self::from_external(tokio_rt)
     }
 
     pub fn new() -> Result<Arc<Self>, MultithreadedRuntimeError> {
-        // First, make sure that this is not being run from a currently active tokio runtime.
-        if TokioRuntimeHandle::try_current().is_ok() {
-            return Err(MultithreadedRuntimeError::Other(
-                "Tokio runtime already started; use from_external instead.".to_owned(),
-            ));
-        }
-
         // First, get an Arc value holding the runtime that we can initialize the
         // thread-local THREAD_RUNTIME_REF with
         let rt = Arc::new(Self {
@@ -167,8 +160,9 @@ impl ThreadPool {
         // calls into xet immediately afterwards -- the references are still correct due to using
         // thread-local storage.
         let rt_c = rt.clone();
+        let pid = std::process::id();
         let set_threadlocal_reference = move || {
-            THREAD_RUNTIME_REF.set(Some(rt_c.clone()));
+            THREAD_RUNTIME_REF.set(Some((pid, rt_c.clone())));
         };
 
         // Set the name of a new thread for the threadpool. Names are prefixed with

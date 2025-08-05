@@ -44,7 +44,7 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 tempfile = { workspace = true }
 thiserror = { workspace = true }
-tokio = { workspace = true, features = ["full"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "rt"] }
 tracing = { workspace = true }
 ulid = { workspace = true }
 walkdir = { workspace = true }
