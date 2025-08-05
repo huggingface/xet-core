@@ -6,7 +6,7 @@ mod token_refresh;
 
 use std::fmt::Debug;
 use std::iter::IntoIterator;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use data::errors::DataProcessingError;
 use data::{data_client, XetFileInfo};
@@ -291,10 +291,6 @@ impl From<PyXetDownloadInfo> for (XetFileInfo, DestinationPath) {
     fn from(pf: PyXetDownloadInfo) -> Self {
         (XetFileInfo::new(pf.hash, pf.file_size), pf.destination_path)
     }
-}
-
-lazy_static::lazy_static! {
-    static ref current_process : Mutex<u32> = Mutex::new(0);
 }
 
 #[pymodule]

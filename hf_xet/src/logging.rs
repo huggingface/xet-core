@@ -1,11 +1,10 @@
 use std::env;
 use std::path::Path;
-use std::sync::atomic::{AtomicU32, Ordering};
-use std::sync::OnceLock;
+use std::sync::{Mutex, OnceLock};
 
 use pyo3::types::PyAnyMethods;
 use pyo3::Python;
-use tracing::error;
+use tracing::{error, info};
 use tracing_subscriber::filter::FilterFn;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
@@ -119,7 +118,10 @@ fn init_global_logging(py: Python) {
     if let Ok(log_path_s) = env::var("HF_XET_LOG_FILE") {
         let log_path = normalized_path_from_user_string(log_path_s);
         match init_logging_to_file(&log_path) {
-            Ok(_) => return,
+            Ok(_) => {
+                info!("hf_xet version info: {version_info}");
+                return;
+            },
             Err(e) => {
                 eprintln!("Error opening log file {log_path:?} for writing: {e:?}.  Reverting to logging to console.");
             },
@@ -137,7 +139,7 @@ fn init_global_logging(py: Python) {
 
     // Do we use telemetry?
     if env::var("HF_HUB_ENABLE_TELEMETRY").is_ok() {
-        match init_telemetry_logging(version_info) {
+        match init_telemetry_logging(version_info.clone()) {
             Ok(tl) => {
                 let telemetry_filter_layer = tl.with_filter(FilterFn::new(|meta| meta.target() == "client_telemetry"));
 
@@ -164,21 +166,26 @@ fn init_global_logging(py: Python) {
     } else {
         tr_sub.with(fmt_layer_base.pretty()).init();
     }
+
+    info!("hf_xet version info: {version_info}");
 }
 
-static INITIALIZED_LOGGING_ID: AtomicU32 = AtomicU32::new(0);
+static INITIALIZED_LOGGING_ID: Mutex<u32> = Mutex::new(0);
 
 pub fn check_logging_state(py: Python<'_>) {
-    let logger_pid = INITIALIZED_LOGGING_ID.load(Ordering::SeqCst);
+    let Ok(mut logger_pid) = INITIALIZED_LOGGING_ID.lock() else {
+        return;
+    };
 
     let pid = std::process::id();
 
-    if logger_pid == 0 {
+    if *logger_pid == 0 {
         init_global_logging(py);
-        INITIALIZED_LOGGING_ID.store(pid, Ordering::SeqCst);
-    } else if logger_pid != pid {
+    } else if *logger_pid != pid {
         if let Err(e) = restart_telemetry_task_after_spawn() {
-            error!("Error restarting telemetry task in subprocess; telemtry may not work: {e:?}");
+            error!("Error restarting telemetry task in subprocess; telemetry may not work: {e:?}");
         }
     }
+
+    *logger_pid = pid;
 }

@@ -127,8 +127,6 @@ pub fn init_threadpool() -> Result<Arc<ThreadPool>, MultithreadedRuntimeError> {
     // Has another thread done this already?
     let pid = std::process::id();
 
-    let mut swapping_after_fork = false;
-
     if let Some((runtime_pid, existing)) = guard.take() {
         if runtime_pid == pid {
             // We're OK, so reset it here.
@@ -140,7 +138,7 @@ pub fn init_threadpool() -> Result<Arc<ThreadPool>, MultithreadedRuntimeError> {
             // resources will be freed up when the child exits.
             existing.discard_runtime();
 
-            swapping_after_fork = true;
+            info!("Runtime restarted due to detected process ID change, likely due to fork-exec call.");
         }
     }
 
@@ -167,11 +165,6 @@ pub fn init_threadpool() -> Result<Arc<ThreadPool>, MultithreadedRuntimeError> {
     // error statements may not be sent to python if the other thread continues ahead of the logging
     // being initialized.)
     drop(guard);
-
-    // Initialize the logging.
-    if swapping_after_fork {
-        info!("Runtime restarted due to detected process ID change, likely due to fork-exec call.");
-    }
 
     // Return the runtime
     Ok(runtime)
