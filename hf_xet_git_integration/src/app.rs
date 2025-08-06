@@ -13,10 +13,10 @@ mod xet_agent;
 #[derive(Subcommand, Debug)]
 #[non_exhaustive]
 enum Command {
-    /// Install as a custom transfer agent.
+    /// Install this as a LFS custom transfer agent.
     Install(InstallArg),
-    /// Run this custom transfer agent.
-    Action,
+    /// Run this as a LFS custom transfer agent.
+    Transfer,
 }
 
 #[derive(Args, Debug)]
@@ -65,14 +65,14 @@ impl Command {
     pub async fn run(self) -> Result<()> {
         match self {
             Command::Install(args) => install_command(args),
-            Command::Action => action_command().await,
+            Command::Transfer => transfer_command().await,
         }
     }
 
     pub fn name(self) -> &'static str {
         match self {
             Command::Install(_) => "install",
-            Command::Action => "action",
+            Command::Transfer => "transfer",
         }
     }
 }
@@ -92,7 +92,7 @@ fn install_command(args: InstallArg) -> Result<()> {
     }
 }
 
-async fn action_command() -> Result<()> {
+async fn transfer_command() -> Result<()> {
     let mut agent = XetAgent::default();
 
     let input = std::io::stdin();

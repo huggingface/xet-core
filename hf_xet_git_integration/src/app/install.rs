@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use crate::app::Command::Action;
+use crate::app::Command::Transfer;
 use crate::constants::{GIT_EXECUTABLE, GIT_LFS_CUSTOM_TRANSFER_AGENT_NAME, GIT_LFS_CUSTOM_TRANSFER_AGENT_PROGRAM};
 use crate::errors::{GitXetError, Result};
 
@@ -50,7 +50,7 @@ fn install_impl(location: ConfigLocation) -> Result<()> {
         &[
             loc_profile,
             &format!("lfs.customtransfer.{}.args", GIT_LFS_CUSTOM_TRANSFER_AGENT_NAME),
-            Action.name(),
+            Transfer.name(),
         ],
     )?;
 
@@ -60,7 +60,7 @@ fn install_impl(location: ConfigLocation) -> Result<()> {
         &[
             loc_profile,
             &format!("lfs.customtransfer.{}.concurrent", GIT_LFS_CUSTOM_TRANSFER_AGENT_NAME),
-            "false",
+            "true",
         ],
     )?;
 

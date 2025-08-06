@@ -12,18 +12,10 @@ pub struct XetAgent {}
 
 impl TransferAgent for XetAgent {
     async fn init_upload(&mut self, req: &definitions::InitRequestInner) -> Result<()> {
-        if req.concurrent {
-            return Err(GitXetError::NotSupported("concurrent transfer not supported".to_owned()));
-        }
-
         Ok(())
     }
 
     async fn init_download(&mut self, req: &definitions::InitRequestInner) -> Result<()> {
-        if req.concurrent {
-            return Err(GitXetError::NotSupported("concurrent transfer not supported".to_owned()));
-        }
-
         Ok(())
     }
 
@@ -44,8 +36,9 @@ impl TransferAgent for XetAgent {
 
         clean_file(session.clone(), file_path).await?;
 
-        // It seems git-lfs doesn't wait for the agent to finish after sending a termination event,
+        // It seems git-lfs only waits 30s for the agent to finish after sending a termination event,
         // so we need to actually upload the shard after each file upload to have the files registered.
+        // See https://github.com/git-lfs/git-lfs/blob/2c7de1f90cbe13bf9c1ed43b84dda88bb32f2ba4/tq/custom.go#L233
         session.finalize().await?;
 
         Ok(())

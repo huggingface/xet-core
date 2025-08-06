@@ -1,5 +1,6 @@
-use std::io::{BufRead, Read, Write};
+use std::io::{BufRead, Write};
 use std::path::PathBuf;
+use std::time::Duration;
 
 use crate::errors::{Result, bad_protocol};
 use crate::lfs_agent_protocol::definitions::*;
@@ -34,6 +35,7 @@ impl<'a, W: Write> ProgressUpdater<'a, W> {
 // This defines the state of a transfer agent to make sure that request events are initiated
 // in the correct order. Unlike a traditional state machines, we don't define a "terminated"
 // state as the agent will quit on a termination event and thus not move forward from there.
+#[derive(Debug)]
 enum LFSAgentState {
     PendingInit,
     InitedForUpload,
@@ -94,13 +96,21 @@ pub trait TransferAgent {
 /// by reading the response before sending the next request.
 pub async fn lfs_protocol_loop<R, W, A>(input_channel: R, output_channel: W, agent: &mut A) -> Result<()>
 where
-    R: Read + BufRead,
+    R: BufRead,
     W: Write,
     A: TransferAgent,
 {
     let mut stdin = input_channel;
     let mut stdout = output_channel;
     let mut state = LFSAgentState::PendingInit;
+
+    let pid = std::process::id();
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(true)
+        .write(true)
+        .open(format!("log.{}.txt", pid))
+        .unwrap();
 
     // Each request and response is serialized as a JSON structure, to be sent and received on a
     // single line as per Line Delimited JSON.
@@ -110,6 +120,11 @@ where
 
         // Upon receiving a request event, parse makes sure its syntax and logic is correct.
         let event: LFSProtocolRequestEvent = event_json.parse()?;
+
+        file.write_all(
+            format!("[{}:{}] [{:?}] recv: {event:?}\n", pid, chrono::Local::now().to_rfc3339(), state).as_bytes(),
+        )
+        .unwrap();
 
         // Then we validate the state transition before processing the request.
         let response = match event {
@@ -151,10 +166,29 @@ where
                     Err(e)?
                 }
 
+                file.write_all(
+                    format!("[{}:{}]\t + sleeping...\n", std::process::id(), chrono::Local::now().to_rfc3339())
+                        .as_bytes(),
+                )
+                .unwrap();
+                // std::thread::sleep(Duration::from_secs(60));
+                tokio::time::sleep(Duration::from_secs(60)).await;
+                file.write_all(
+                    format!("[{}:{}]\t + wake up\n", std::process::id(), chrono::Local::now().to_rfc3339()).as_bytes(),
+                )
+                .unwrap();
+
                 // successful termination, no response is expected
                 break;
             },
         };
+
+        file.write_all(
+            format!("[{}:{}] [{:?}] resp: {response}\n", std::process::id(), chrono::Local::now().to_rfc3339(), state)
+                .as_bytes(),
+        )
+        .unwrap();
+        file.flush().unwrap();
 
         stdout.write_all(response.as_bytes())?;
         // add the line delimiter
