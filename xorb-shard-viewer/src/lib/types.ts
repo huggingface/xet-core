@@ -1,11 +1,7 @@
 // Type definitions for xorb and shard file formats
 
 export interface MerkleHash {
-  data: Uint8Array; // 32 bytes
-}
-
-export interface HMACKey {
-  data: Uint8Array; // 32 bytes
+  data: [bigint, bigint, bigint, bigint]; // 4 x 64-bit unsigned integers (32 bytes total)
 }
 
 // === XORB Types ===
@@ -34,7 +30,7 @@ export interface MDBShardFileFooter {
   version: number;
   file_info_offset: number;
   cas_info_offset: number;
-  chunk_hash_hmac_key: HMACKey;
+  chunk_hash_hmac_key: MerkleHash;
   shard_creation_timestamp: number;
   shard_key_expiry: number;
   footer_offset: number;

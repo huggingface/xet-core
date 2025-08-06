@@ -6,7 +6,6 @@ import type {
   ChunkHeader,
   ShardData,
   MerkleHash,
-  HMACKey,
   MDBShardFileHeader,
   MDBShardFileFooter,
   FileDataSequenceHeader,
@@ -70,11 +69,11 @@ export class BinaryReader {
   }
 
   readHash(): MerkleHash {
-    return { data: this.readBytes(32) };
-  }
-
-  readHMACKey(): HMACKey {
-    return { data: this.readBytes(32) };
+    const u64_0 = this.readUint64LE();
+    const u64_1 = this.readUint64LE();
+    const u64_2 = this.readUint64LE();
+    const u64_3 = this.readUint64LE();
+    return { data: [u64_0, u64_1, u64_2, u64_3] };
   }
 
   readString(length: number): string {
@@ -108,25 +107,23 @@ function arraysEqual(a: Uint8Array, b: Uint8Array): boolean {
 }
 
 function isBookendHash(hash: MerkleHash): boolean {
-  // Bookend hash is all 0xFF bytes
-  return hash.data.every((byte) => byte === 0xff);
+  // Bookend hash is all 0xFF bytes (all 64-bit values should be 0xFFFFFFFFFFFFFFFF)
+  return hash.data.every((value) => value === 0xffffffffffffffffn);
 }
 
-function reorderHash(hash: MerkleHash): Array<number> {
-  const data = new Array(32);
-  let start = 0;
-  for (let i = 0; i < 32; i++) {
-    if (i % 8 === 0) {
-      start += 8;
-    }
-    data.push(hash.data[start - (i % 8) - 1]);
-  }
-  return data;
-}
-
-function formatHash(hash: MerkleHash): string {
-  return reorderHash(hash)
-    .map((b) => b.toString(16).padStart(2, "0"))
+export function formatHash(hash: MerkleHash): string {
+  // Convert each 64-bit integer to little-endian byte representation
+  return hash.data
+    .map((value) => {
+      // Convert bigint to 8 bytes in little-endian order
+      const bytes = [];
+      let temp = value;
+      for (let i = 0; i < 8; i++) {
+        bytes.push(Number(temp & 0xffn));
+        temp = temp >> 8n;
+      }
+      return bytes.map((b) => b.toString(16).padStart(2, "0")).join("");
+    })
     .join("");
 }
 
@@ -214,7 +211,7 @@ function parseShardFile(data: Uint8Array): ShardData {
   // Skip first buffer (48 bytes)
   reader.readBytes(48);
 
-  const chunk_hash_hmac_key = reader.readHMACKey();
+  const chunk_hash_hmac_key = reader.readHash();
   const shard_creation_timestamp = Number(reader.readUint64LE());
   const shard_key_expiry = Number(reader.readUint64LE());
 
@@ -408,5 +405,3 @@ export function formatHashShort(hash: MerkleHash): string {
   const fullHash = formatHash(hash);
   return fullHash.substring(0, 16) + "...";
 }
-
-export { formatHash };
