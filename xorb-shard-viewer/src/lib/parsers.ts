@@ -112,8 +112,20 @@ function isBookendHash(hash: MerkleHash): boolean {
   return hash.data.every((byte) => byte === 0xff);
 }
 
+function reorderHash(hash: MerkleHash): Array<number> {
+  const data = new Array(32);
+  let start = 0;
+  for (let i = 0; i < 32; i++) {
+    if (i % 8 === 0) {
+      start += 8;
+    }
+    data.push(hash.data[start - (i % 8) - 1]);
+  }
+  return data;
+}
+
 function formatHash(hash: MerkleHash): string {
-  return Array.from(hash.data)
+  return reorderHash(hash)
     .map((b) => b.toString(16).padStart(2, "0"))
     .join("");
 }
@@ -253,18 +265,17 @@ function parseShardFile(data: Uint8Array): ShardData {
     // Read entries
     const entries: FileDataSequenceEntry[] = [];
     for (let i = 0; i < num_entries; i++) {
-      const pos = reader.position;
       const cas_hash = reader.readHash();
-      const chunk_range_start = reader.readUint32LE();
-      const chunk_range_end = reader.readUint32LE();
-      const byte_range_start = reader.readUint32LE();
-      const byte_range_end = reader.readUint32LE();
+      const cas_flags = reader.readUint32LE();
+      const unpacked_segment_bytes = reader.readUint32LE();
+      const chunk_index_start = reader.readUint32LE();
+      const chunk_index_end = reader.readUint32LE();
       entries.push({
         cas_hash,
-        chunk_range_start,
-        chunk_range_end,
-        byte_range_start,
-        byte_range_end,
+        cas_flags,
+        unpacked_segment_bytes,
+        chunk_index_start,
+        chunk_index_end,
       });
     }
 
@@ -382,9 +393,9 @@ export async function parseFile(
 
 // Helper functions for displaying data
 export function formatBytes(bytes: number): string {
-  if (bytes === 0) return "0 Bytes";
-  const k = 1024;
-  const sizes = ["Bytes", "KB", "MB", "GB"];
+  if (bytes === 0) return "0 B";
+  const k = 1000;
+  const sizes = ["B", "KB", "MB", "GB"];
   const i = Math.floor(Math.log(bytes) / Math.log(k));
   return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + " " + sizes[i];
 }

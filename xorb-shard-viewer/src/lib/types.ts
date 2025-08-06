@@ -49,10 +49,10 @@ export interface FileDataSequenceHeader {
 
 export interface FileDataSequenceEntry {
   cas_hash: MerkleHash;
-  chunk_range_start: number;
-  chunk_range_end: number;
-  byte_range_start: number;
-  byte_range_end: number;
+  cas_flags: number;
+  unpacked_segment_bytes: number;
+  chunk_index_start: number;
+  chunk_index_end: number;
 }
 
 export interface FileVerificationEntry {
