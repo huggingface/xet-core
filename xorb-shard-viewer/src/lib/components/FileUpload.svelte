@@ -1,12 +1,8 @@
 <script lang="ts">
-  import { createEventDispatcher } from "svelte";
+  const { fileSelected } = $props();
 
-  const dispatch = createEventDispatcher<{
-    fileSelected: { file: File; type: "xorb" | "shard" };
-  }>();
-
-  let xorbDragActive = false;
-  let shardDragActive = false;
+  let xorbDragActive = $state(false);
+  let shardDragActive = $state(false);
   let xorbFileInput: HTMLInputElement;
   let shardFileInput: HTMLInputElement;
 
@@ -49,7 +45,7 @@
   }
 
   function handleFile(file: File, type: "xorb" | "shard") {
-    dispatch("fileSelected", { file, type });
+    fileSelected({ file, type });
   }
 
   function openFileDialog(type: "xorb" | "shard") {
@@ -69,11 +65,11 @@
       <div
         class="upload-area xorb-area"
         class:drag-active={xorbDragActive}
-        on:dragover={(e) => handleDragOver(e, "xorb")}
-        on:dragleave={() => handleDragLeave("xorb")}
-        on:drop={(e) => handleDrop(e, "xorb")}
-        on:click={() => openFileDialog("xorb")}
-        on:keydown={(e) => e.key === "Enter" && openFileDialog("xorb")}
+        ondragover={(e) => handleDragOver(e, "xorb")}
+        ondragleave={() => handleDragLeave("xorb")}
+        ondrop={(e) => handleDrop(e, "xorb")}
+        onclick={() => openFileDialog("xorb")}
+        onkeydown={(e) => e.key === "Enter" && openFileDialog("xorb")}
         role="button"
         tabindex="0"
       >
@@ -92,11 +88,11 @@
       <div
         class="upload-area shard-area"
         class:drag-active={shardDragActive}
-        on:dragover={(e) => handleDragOver(e, "shard")}
-        on:dragleave={() => handleDragLeave("shard")}
-        on:drop={(e) => handleDrop(e, "shard")}
-        on:click={() => openFileDialog("shard")}
-        on:keydown={(e) => e.key === "Enter" && openFileDialog("shard")}
+        ondragover={(e) => handleDragOver(e, "shard")}
+        ondragleave={() => handleDragLeave("shard")}
+        ondrop={(e) => handleDrop(e, "shard")}
+        onclick={() => openFileDialog("shard")}
+        onkeydown={(e) => e.key === "Enter" && openFileDialog("shard")}
         role="button"
         tabindex="0"
       >
@@ -113,14 +109,14 @@
   <input
     bind:this={xorbFileInput}
     type="file"
-    on:change={(e) => handleFileInput(e, "xorb")}
+    onchange={(e) => handleFileInput(e, "xorb")}
     style="display: none;"
   />
 
   <input
     bind:this={shardFileInput}
     type="file"
-    on:change={(e) => handleFileInput(e, "shard")}
+    onchange={(e) => handleFileInput(e, "shard")}
     style="display: none;"
   />
 </div>

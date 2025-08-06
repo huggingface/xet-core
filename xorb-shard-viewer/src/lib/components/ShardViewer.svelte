@@ -143,10 +143,10 @@
               <tr
                 class="file-row"
                 class:expanded={expandedFiles.has(fileIndex)}
-                on:click={() => toggleFileExpansion(fileIndex)}
+                onclick={() => toggleFileExpansion(fileIndex)}
                 role="button"
                 tabindex="0"
-                on:keydown={(e) =>
+                onkeydown={(e) =>
                   e.key === "Enter" && toggleFileExpansion(fileIndex)}
               >
                 <td class="hash" title={formatHash(fileInfo.header.file_hash)}>

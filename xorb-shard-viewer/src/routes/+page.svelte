@@ -9,21 +9,21 @@
   let parsedData: ParsedFileMetadata | null = null;
   let loading = false;
 
-  async function handleFileSelected(
-    event: CustomEvent<{ file: File; type: "xorb" | "shard" }>
-  ) {
+  async function handleFileSelected(event: {
+    file: File;
+    type: "xorb" | "shard";
+  }) {
     loading = true;
     parsedData = null;
 
     try {
-      const { file, type } = event.detail;
-      const result = await parseFile(file, type);
-      parsedData = result;
+      const { file, type } = event;
+      parsedData = await parseFile(file, type);
     } catch (error) {
       parsedData = {
-        type: event.detail.type,
-        filename: event.detail.file.name,
-        fileSize: event.detail.file.size,
+        type: event.type,
+        filename: event.file.name,
+        fileSize: event.file.size,
         data: {} as any,
         error:
           error instanceof Error ? error.message : "Unknown error occurred",
@@ -56,7 +56,7 @@
         structure
       </p>
       {#if parsedData}
-        <button class="reset-btn" on:click={resetView}>
+        <button class="reset-btn" onclick={resetView}>
           ← Upload New File
         </button>
       {/if}
@@ -84,7 +84,7 @@
         />
       {/if}
     {:else}
-      <FileUpload on:fileSelected={handleFileSelected} />
+      <FileUpload fileSelected={handleFileSelected} />
 
       <div class="info-section">
         <h2>Supported File Types</h2>
