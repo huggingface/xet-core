@@ -1,10 +1,16 @@
 # File Reconstruction
 
+> For definitions of chunks refer to the [chunk spec](../spec/chunking.md) and for reference of how to build xorbs refer to the [xorb formation spec](../spec/xorb_formation.md).
+
 After a file is mapped into a series of chunks, and those chunks are tracked by xorbs, we can define the file reconstruction or the recipe to re-materialize the file.
 
-For every chunk of the file we need to know which xorb this chunk is in and its index (starting at 0) in that xorb and list out all the chunks in this way to re-create the file.
+For every chunk in the file we need to know which xorb this chunk is in and its index (starting at 0) in that xorb and list out all the chunks in this way to re-create the file.
 
-Now since xorbs contain multiple chunks, we can condense the listing of each range of chunks that are contiguous in the same xorb together and this map the listing of chunks that form the file to a series of sub-ranges of chunks within xorbs.
+Since xorbs contain multiple chunks, we can condense the listing of each range of chunks that are contiguous in the same xorb together and this map the listing of chunks that form the file to a series of sub-ranges of chunks within xorbs.
+We call each item which is a xorb hash and chunk range a "reconstruction term" or just "term".
+Terms will always have a xorb hash, a start-inclusive but end exclusive range of chunks (specified by a start index and end index) and the total "unpacked_length" of the term, i.e. the number of bytes contained in the chunks described.
+
+Briefly stated a file reconstruction is terms, where a term is ranges of chunks within xorbs.
 
 ## Example 1
 
@@ -19,13 +25,11 @@ Xorb X1 chunks `[0, 8)`. (need chunk A at chunk index 0, through chunk G at chun
 Xorb X2 chunks `[0, 4)`. (need chunk H at chunk index 0, through chunk J at chunk index 3)
 Xorb X3 chunks `[645, 662)`. (need chunk K at chunk index 645, through chunk Z at chunk index 661)
 
-TODO: write here
+## TODO: title
 
-## Download Protocol
+TODO: write this section
 
 ## Example QueryReconstructionResponse JSON
-
-TODO: explain the download endpoint
 
 Here's an example of a serialized `QueryReconstructionResponse` struct that shows how file reconstruction would work across multiple xorbs:
 

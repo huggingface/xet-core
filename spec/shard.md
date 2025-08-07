@@ -85,8 +85,22 @@ All multi-byte integers are stored in little-endian format.
 - `u8`: 8-bit unsigned integer
 - `u32`: 32-bit unsigned integer  
 - `u64`: 64-bit unsigned integer
-- Hash: 32-byte hash value
 - Byte Array types are denoted like in rust as [u8; N] where N is the number of bytes.
+- Hash: 32-byte hash value
+
+### Hash Serialization
+
+Hashes are represented as 4 unsigned 64 bit integers with little-endian orientation.
+
+Suppose a hash value is:
+[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31]
+Then it will be serialized as:
+[7, 6, 5, 4, 3, 2, 1, 0, 15, 14, 13, 12, 11, 10, 9, 8, 23, 22, 21, 20, 19, 18, 17, 16, 31, 30, 29, 28, 27, 26, 25, 24]
+
+> Note the reversed order of bytes every 8 bytes due to the little endian orientation.
+
+In xet-core we store all hashes in memory as 4, 64 bit unsigned integers and make an assumption that the system is little endian, hence we serialize hashes directly from their in-memory representations.
+This strategy is reasonable for other implementors as well.
 
 ## 1. Header (MDBShardFileHeader)
 

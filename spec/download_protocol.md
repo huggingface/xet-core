@@ -13,27 +13,11 @@ File download in the Xet protocol is a two-stage process:
 
 ### Single File Reconstruction
 
-To download a file, first call the reconstruction API to get the metadata needed for reconstruction:
+To download a file given a file hash, first call the reconstruction API to get the file reconstruction. Follow the steps in [api.md](../spec/api.md#1-get-file-reconstruction).
 
-**Endpoint**: `GET /v1/reconstructions/{file_id}`
+Note that you will need at least a `read` scope auth token, [reference](../spec/auth.md).
 
-**Parameters**:
-
-- `file_id`: The file's MerkleHash in hex format (64-character hex string)
-- `Range` (header, optional): Byte range in format `bytes={start}-{end}` (inclusive end)
-
-**Authentication**: Bearer token required via `Authorization` header
-
-**Example Request**:
-
-```http
-GET /v1/reconstructions/a1b2c3d4e5f6789012345678901234567890abcdef1234567890abcdef123456 HTTP/1.1
-Host: cas-server.xethub.hf.co:8080
-Authorization: Bearer YOUR_TOKEN_HERE
-Range: bytes=0-1023
-```
-
-**Response**: JSON object conforming to `QueryReconstructionResponse` schema
+> For large files is may be recommended to download the request the reconstruction in batches i.e. the first 10GB, download all the data, then the next 10GB and so on. Use the `Range` header to specify a range of file data.
 
 ## Stage 2: Understanding the Reconstruction Response
 
@@ -52,7 +36,8 @@ The reconstruction API returns a `QueryReconstructionResponse` object with three
         "start": 0,
         "end": 4
       }
-    }
+    },
+    ...
   ],
   "fetch_info": {
     "a1b2c3d4e5f6789012345678901234567890abcdef1234567890abcdef123456": [
@@ -66,35 +51,38 @@ The reconstruction API returns a `QueryReconstructionResponse` object with three
           "start": 0,
           "end": 131071
         }
-      }
-    ]
+      },
+      ...
+    ],
+    ...
   }
 }
 ```
 
-### Key Fields
+### Fields
 
 #### offset_into_first_range
 
-- Type: `u64/number`
+- Type: `number`
 - For a full file or when the specified range start is 0, then this is guaranteed to be `0`
-- For range queries this is the byte offset into the first term (deserialized/chunks decompressed) to keep data from.
+- For range queries this is the byte offset into the first term (deserialized/chunks decompressed) to start to keep data from.
   - since the requested range may start in the middle of a chunk, and data must be downloaded in full chunks (since they may need to be deserialized) then this offset tells a client how many bytes to skip in the first chunk (or possibly multiple chunks within the first term).
 
 #### terms
 
 - Type: `Array<CASReconstructionTerm>`
 - Ordered list of reconstruction terms describing what chunks to download from which xorb
-- Each term contains:
-  - `hash`: The xorb hash (64-character hex string)
+- Each CASReconstructionTerm contains:
+  - `hash`: The xorb hash (64-character lowercase hex string)
   - `range`: Chunk index range`{ start: number, end: number }` within the xorb; end-exclusive `[start, end)`
   - `unpacked_length`: Expected length after decompression (for validation)
 
 #### fetch_info
 
-- Type: `Map<Xorb Hash (64 character hex string), Array<CASReconstructionFetchInfo>>`
-- Maps xorb hashes to download information
-- Each fetch info entry contains:
+- Type: `Map<Xorb Hash (64 character lowercase hex string), Array<CASReconstructionFetchInfo>>`
+- Maps xorb hashes to required information to download some of their chunks.
+  - The mapping is to an array of 1 or more `CASReconstructionFetchInfo`
+- Each `CASReconstructionFetchInfo` contains:
   - `url`: HTTP URL for downloading the xorb data, presigned url containing authorization information
   - `url_range`: Byte range `{ start: number, end: number }` for the Range header; end-inclusive `[start, end]`
     - The range header must be set as `Range: bytes=<start>-<end>` when downloading this chunk range
@@ -105,42 +93,72 @@ The reconstruction API returns a `QueryReconstructionResponse` object with three
 
 ### Process Overview
 
-1. Process each term in order from the `terms` array
-2. For each term, find matching fetch info using the term's hash
-  i. get the list of fetch_info items under the xorb hash from the reconstruction term. The xorb hash is guaranteed to exist as a key in the fetch_info map.
-  ii. linearly iterate through the fetch_info items and find one which refers to a chunk range that is equal or encompassing the term's chunk range. Such a fetch_info item is guaranteed to exist.
+1. Process each `CASReconstructionTerm` in order from the `terms` array
+2. For each `CASReconstructionTerm`, find matching fetch info using the term's hash
+  i. get the list of fetch_info items under the xorb hash from the `CASReconstructionTerm`. The xorb hash is guaranteed to exist as a key in the fetch_info map.
+  ii. linearly iterate through the list of `CASReconstructionFetchInfo` and find one which refers to a chunk range that is equal or encompassing the term's chunk range.
+    - Such a fetch_info item is guaranteed to exist. If none exist the server is at fault.
 3. Download the required data using HTTP `GET` request with the `Range` header set
 4. Deserialize the downloaded xorb data to extract chunks
-  i. This series of chunks contains chunks at indices specified by the fetch_info item's `range` field. Trim chunks at the beginning or end to match the chunks specified by the reconstruction term's `range` field.
+  i. This series of chunks contains chunks at indices specified by the `CASReconstructionFetchInfo`'s `range` field. Trim chunks at the beginning or end to match the chunks specified by the reconstruction term's `range` field.
+  ii. (for the first term only) skip `offset_into_first_range` bytes
 5. Concatenate the results in term order to reconstruct the file
 
 ### Detailed Download Process
 
-#### Step 1: Match Terms to Fetch Info
+#### Download Reconstruction
+
+- use the reconstruction api to download the reconstruction object for a given file
+
+```python
+file_id = "0123...abcdef"
+api_endpoint, token = get_token() # follow auth.md instructions
+url = api_endpoint + "/reconstructions/" + file_id
+reconstruction = get(url, headers={"Authorization": "Bearer: " + token})
+
+# break the reconstruction into components
+terms = reconstruction["terms"]
+fetch_info = reconstruction["fetch_info"]
+offset_into_first_range = reconstruction["offset_into_first_range"]
+```
+
+#### Match Terms to Fetch Info
 
 For each `CASReconstructionTerm` in the `terms` array:
 
-1. Look up the term's `hash` in the `fetch_info` map
-2. Find a `CASReconstructionFetchInfo` entry where the fetch info's `range` contains the term's `range`
-3. Use this fetch info for downloading
+- Look up the term's `hash` in the `fetch_info` map to get a list of `CASReconstructionFetchInfo`
+- Find a `CASReconstructionFetchInfo` entry where the fetch info's `range` contains the term's `range`
+  - linearly search through the array of CASReconstructionFetchInfo and find the element where the range block ({ "start": number, "end": number }) of the `CASReconstructionFetchInfo` has start <= term's range start AND end >= term's range end.
+
+```python
+for term in terms:
+  xorb_hash = term["hash"]
+  fetch_info_entries = fetch_info[xorb_hash]
+  fetch_info_entry = None
+  for entry in fetch_info_entries:
+    if entry["range"][start] <= term["range"]["start"] and entry["range"]["end"] >= term["range"]["end"]:
+      fetch_info_entry = entry
+      break
+  if fetch_info_entry is None:
+    # Error!
+```
 
 #### Step 2: Download Xorb Data
 
 For each matched fetch info:
 
-1. Make an HTTP GET request to the `url`
-2. Include a `Range` header: `bytes={url_range.start}-{url_range.end}`
-3. The response contains compressed xorb data for the specified byte range
+1. Make an HTTP GET request to the `url` in the fetch info entry
+  ii. Include a `Range` header: `bytes={url_range.start}-{url_range.end}`
 
-**Example HTTP Request**:
-
-```http
-GET /xorb/default/a1b2c3d4e5f6789012345678901234567890abcdef1234567890abcdef123456 HTTP/1.1
-Host: transfer.xethub.hf.co
-Range: bytes=0-131071
+```python
+for term in terms:
+  ...
+  data_url = fetch_info_entry["url"]
+  range_header = "bytes=" + fetch_info_entry["url_range"]["start"] + "-" + fetch_info_entry["url_range"]["end"]
+  data = get(data_url, headers={"Range": range_header})
 ```
 
-#### Step 3: Deserialize Downloaded Data
+#### Deserialize Downloaded Data
 
 The downloaded data is in xorb (serialized CAS object) format and must be deserialized:
 
@@ -151,6 +169,16 @@ The downloaded data is in xorb (serialized CAS object) format and must be deseri
 
 **Note**: The specific deserialization process depends on the CAS object format. Refer to the [xorb format documentation](../xorb_formation.md) for implementation details.
 
+```python
+for term in terms:
+  ...
+  chunks = {}
+  for i in range(fetch_info_entry["range"]["start"], fetch_info_entry["range"]["end"]):
+    chunk = deserialize_chunk(data) # assume data is a reader that advances forwards
+    chunks[i] = chunk
+  # at this point data should be fully consumed
+```
+
 #### Step 4: Extract Term Data
 
 From the deserialized xorb data:
@@ -159,40 +187,35 @@ From the deserialized xorb data:
 2. Extract only the chunks specified by `range.start` to `range.end-1` (end-exclusive)
 3. Apply any range offsets if processing a partial file download
 
+```python
+file_chunks = []
+for term in terms:
+  ...
+  for i in range(term["range"]["start"], term["range"]["end"]):
+    chunk = chunks[i]
+    # it is possible that the offset captures multiple chunks, so we may need to skip whole chunks
+    if offset_into_first_range > len(chunk):
+      offset_into_first_range -= len(chunk)
+      continue
+    if offset_info_first_range > 0:
+      chunk = chunk[offset_into_first_range:]
+      offset_info_first_range = 0
+    
+    file_chunks.push(chunk)
+```
+
 #### Step 5: Stitch Results Together
 
-1. **Preserve order**: Process terms in the exact order they appear in the `terms` array
-2. **Handle range offsets**: For the first term, skip `offset_into_first_range` bytes
-3. **Concatenate**: Append each term's data to build the final file content
-4. **Validate**: Ensure the final file size matches expectations
+Write all of the chunks to the output file or buffer.
 
-### Error Handling
+If a range was specified then the total data will need to be truncated to the amount of bytes requested.
+When a range is specified but the range does not end on a chunk boundary the last byte of the requested range will be in the middle of the last chunk.
+A client knows the start of the data from `offset_into_first_range` and can then use the length of the specified range to know end end offset.
 
-- **403 Forbidden**: Presigned URLs may expire; re-fetch reconstruction info and retry
-- **416 Range Not Satisfiable**: Requested range exceeds file size
-- **404 Not Found**: File or xorb not found in CAS
-- **Validation errors**: Decompressed data length doesn't match `unpacked_length`
-
-### Performance Considerations
-
-- **Parallel downloads**: Terms can be downloaded in parallel, but must be assembled in order
-- **Caching**: Consider caching downloaded xorb ranges to avoid redundant requests
-- **Range coalescing**: Multiple terms may share the same fetch info for efficiency
-- **Retry logic**: Implement exponential backoff for transient failures
-
-## Example Implementation Flow
-
-```txt
-1. GET /v1/reconstructions/{file_hash}
-2. Parse QueryReconstructionResponse
-3. For each term in terms[]:
-   a. Find matching fetch_info entry
-   b. HTTP GET with Range header
-   c. Deserialize xorb data
-   d. Extract chunks for term.range
-4. Concatenate term results in order
-5. Apply offset_into_first_range to first term
-6. Return reconstructed file data
+```python
+with open(file_path) as f:
+  for chunk in file_chunks:
+    f.write(chunk)
 ```
 
 ## Range Downloads
@@ -201,42 +224,26 @@ For partial file downloads, the reconstruction API supports range queries:
 
 - Include `Range: bytes=start-end` header in reconstruction request
 - The `offset_into_first_range` field indicates where your range starts within the first term
-- Only download and process the terms needed for your range
-- Extract the exact byte range from the reassembled terms
+- The end of the content will need to be truncated to fit the requested range.
+  - Except if the requested range exceeds the total file length, then the returned content will be shorter and no truncation is necessary.
 
-This allows efficient streaming and partial downloads without fetching the entire file reconstruction metadata.
+When downloading individual term data:
 
-## Pseudo-code of Simple Download Protocol
+A client must include the range header formed with the values from the url_range field to specify the exact range of data of a xorb that they are accessing. Not specifying this header will cause result in an authorization failure.
 
-```python
-reconstruction = get("https://cas-server.xethub.hf.co/v1/reconstructions/ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff")
-terms = reconstruction["terms"]
-fetch_info = reconstruction["fetch_info"]
-fetch_info_item = None
-file = open(file_path)
-for term in terms:
-  fetch_info_items = fetch_info[term["hash"]]
-  for item in fetch_info_items:
-    if item["range"]["start"] <= term["range"]["start"] and item["range"]["end"] >= term["range"]["end"]:
-      fetch_info_item = item
-      break
-  if fetch_info_item is None:
-    # server returned bad reconstruction information
-    raise Error()
-  serialized_chunks_data = get(fetch_info_item["url"], headers={"Range": f"{fetch_info_item["url_range"]["start"]}-{fetch_info_item["url_range"]["end"]}"})
-  deserialized_chunks = deserialize_chunks(serialized_chunks_data) # as List of chunks each chunk is decompressed bytes object
-  # only use those chunks that are actually in the term; the fetch_info_item may refer to a larger range for other chunks within used by this file reconstruction
-  for chunk in deserialized_chunks[term["range"]["start"] - fetch_info_item["range"]["start"] : term["range"]["start"] - fetch_info_item["range"]["end"]]
-    file.write(chunk)
+## Performance Considerations
 
-file.close()
-```
+- **Range coalescing**: Multiple terms may share the same fetch info for efficiency, check where else you may need to use a term
+- **Parallel downloads**: Terms can be downloaded in parallel, but must be assembled in order
+  - On file systems with fast seeking, it may be advantageous to open the output file in different threads and writing contents at different offsets
+- **Caching**: Consider caching downloaded xorb ranges to avoid redundant requests
+- **Retry logic**: Implement exponential backoff for transient failures
 
-## Extensions/optimizations
+### Caching recommendations
 
-When downloading large files it is more efficient to request reconstructions of smaller runs of data rather than fetch the whole reconstruction at the beginning.
-
-Parallelize the term download. We have also found it to be more efficient on SSD's to parallelize the term download and write each term independently by seeking to the correct position in the file and writing the data at that position rather than doing so linearly.
-
-Cache chunk ranges locally:
-TODO: explain some caching paradigms
+1. It can be ineffective to cache the reconstruction object
+  i. The fetch_info section provides short-expiration pre-signed url's hence you cannot cache them for much time at all
+  ii. To get those url's to access the data you will need to call the reconstruction API again anyway
+2. Cache chunks by range not just individually
+  i. If you need a chunk from a xorb it is very likely that you will need another, so cache them close
+3. Caching helps when downloading similar contents. May not be worth to cache data if you are always downloading different things
