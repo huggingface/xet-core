@@ -42,30 +42,31 @@ use std::future::Future;
 use std::marker::PhantomData;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, AtomicU16, Ordering};
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, Mutex, RwLock};
 use std::task::{ready, Context, Poll};
 
 use futures::future::Either;
 use pin_project::{pin_project, pinned_drop};
 use tokio::runtime::Handle;
-use tokio::sync::{Mutex, Notify};
-use tracing::debug;
+use tokio::sync::Notify;
+use tracing::{debug, error};
 
 pub use crate::errors::SingleflightError;
 
 type SingleflightResult<T, E> = Result<T, SingleflightError<E>>;
 type CallMap<T, E> = HashMap<String, Arc<Call<T, E>>>;
+type CallCreate<'a, T, E> = (Arc<Call<T, E>>, CreateGuard<'a, T, E>);
 
 // Marker Traits to help make the code a bit cleaner.
 
-/// ResultType indicates the success type of a singleflight [Group].
+/// ResultType indicates the success type for a singleflight [Group].
 /// Since the actual processing might occur on a separate thread,
 /// we need to type to be [Send] + [Sync]. It also needs to be [Clone]
 /// so that we can clone the response across many tasks
 pub trait ResultType: Send + Clone + Sync + Debug {}
 impl<T: Send + Clone + Sync + Debug> ResultType for T {}
 
-/// Indicates the Error type of a singleflight [Group].
+/// Indicates the Error type for a singleflight [Group].
 /// The response might have been generated on a separate
 /// thread, thus, we need this type to be [Send] + [Sync].
 pub trait ResultError: Send + Debug + Sync {}
@@ -150,7 +151,7 @@ where
             self.num_waiters.fetch_add(1, Ordering::SeqCst);
             debug!("Adding to Call's Notify");
 
-            // Note that the `notified()` needs to be performed outside of the async
+            // Note that the `notified()` needs to be performed outside the async
             // block since we need to register our waiting within this read-lock
             // or else, we might miss the owner task's notification.
             let notified = self.nt.notified();
@@ -213,34 +214,34 @@ where
     /// as a SingleflightError::InternalError, all waiters will receive a copy of the
     /// error message wrapped in a SingleflightError::WaiterInternalError.
     /// This is due to the fact that most error types don't implement Clone (e.g. anyhow::Error)
-    /// and thus we can't clone the original error for all of the waiters.
+    /// and thus we can't clone the original error for all the waiters.
     pub async fn work(
         &self,
         key: &str,
         fut: impl TaskFuture<T, E> + 'static,
     ) -> (Result<T, SingleflightError<E>>, bool) {
         // Get the call to use and a handle for retrieving the results
-        let (call, created) = self.get_call_or_create(key).await;
+        let (call, create_guard) = match self.get_call_or_create(key) {
+            Ok((call, create_guard)) => (call, create_guard),
+            Err(err) => return (Err(err), false),
+        };
         let results_future = call.get_future();
 
-        if created {
-            // spawn the owner task and wait
-            let owner_task = OwnerTask::new(fut, call.clone());
-            let owner_handle = Handle::current().spawn(owner_task);
+        // Use reference for created since we don't want it to drop until after this is done.
+        match &create_guard {
+            CreateGuard::Owned(_, _) => {
+                // spawn the owner task and wait
+                let owner_task = OwnerTask::new(fut, call.clone());
+                let owner_handle = Handle::current().spawn(owner_task);
 
-            // wait for the owner task and results to come back
-            let (handle_result, future_result) = tokio::join!(owner_handle, results_future);
-            let result = handle_result
-                .map_err(|e| SingleflightError::JoinError(e.to_string()))
-                .and(future_result);
-
-            // since we created the call, remove it from the map
-            if let Err(e) = self.remove_call(key).await {
-                return (Err(e), true);
-            }
-            (result, true)
-        } else {
-            (results_future.await, false)
+                // wait for the owner task and results to come back
+                let (handle_result, future_result) = tokio::join!(owner_handle, results_future);
+                let result = handle_result
+                    .map_err(|e| SingleflightError::JoinError(e.to_string()))
+                    .and(future_result);
+                (result, true)
+            },
+            CreateGuard::Waiter => (results_future.await, false),
         }
     }
 
@@ -258,31 +259,69 @@ where
     /// into the map.  
     ///
     /// Returns the [Call] that should be used and whether it was created or
-    /// not.   
-    async fn get_call_or_create(&self, key: &str) -> (Arc<Call<T, E>>, bool) {
-        let mut m = self.call_map.lock().await;
+    /// not.
+    ///
+    /// Returns an error if the underlying `call_map` Mutex is poisoned.
+    fn get_call_or_create<'a>(&'a self, key: &'a str) -> Result<CallCreate<'a, T, E>, SingleflightError<E>> {
+        let mut m = self
+            .call_map
+            .lock()
+            .inspect_err(|err| error!(?err, "Failed to lock call map"))
+            .map_err(|_| SingleflightError::GroupLockPoisoned)?;
         if let Some(c) = m.get(key).cloned() {
-            (c, false)
+            Ok((c, CreateGuard::Waiter))
         } else {
             let c = Arc::new(Call::new());
             let our_call = c.clone();
             m.insert(key.to_owned(), c);
-            (our_call, true)
+            Ok((our_call, CreateGuard::Owned(self, key)))
         }
     }
 
     /// Removes the [Call] associated with the Key. If there is no such [Call],
-    /// then an error is returned.
-    async fn remove_call(&self, key: &str) -> SingleflightResult<(), E> {
-        let mut m = self.call_map.lock().await;
+    /// or the Group's `call_map` Mutex is poisoned, then an error is returned.
+    fn remove_call(&self, key: &str) -> SingleflightResult<(), E> {
+        let mut m = self
+            .call_map
+            .lock()
+            .inspect_err(|err| error!(?err, "Failed to lock call map"))
+            .map_err(|_| SingleflightError::GroupLockPoisoned)?;
         m.remove(key).ok_or(SingleflightError::CallMissing)?;
         Ok(())
     }
 }
 
-/// Defines a task to own the poll'ing of the Future and ensure that the
-/// call is updated (i.e. result stored and waiters notified) when the
-/// Future completes (even if the future panics).
+/// RAII for creating a Call in a Group. The guard indicates whether the Call is:
+/// - Owned - the current task owns the Call and will remove it from the Group's CallMap on [Self::drop]
+/// - Waiter - the current task is a waiter
+enum CreateGuard<'a, T, E>
+where
+    T: ResultType + 'static,
+    E: ResultError + 'static,
+{
+    Owned(&'a Group<T, E>, &'a str),
+    Waiter,
+}
+
+impl<'a, T, E> Drop for CreateGuard<'a, T, E>
+where
+    T: ResultType + 'static,
+    E: ResultError + 'static,
+{
+    fn drop(&mut self) {
+        match self {
+            CreateGuard::Owned(group, key) => group
+                .remove_call(key)
+                .inspect_err(|err| error!(?err, "Couldn't remove call from map"))
+                .unwrap(),
+            CreateGuard::Waiter => {},
+        }
+    }
+}
+
+/// Defines a task to own the polling the Future and ensure the call is
+/// updated (i.e. result stored and waiters notified) when the Future
+/// completes (even if the future panics).
 ///
 /// We can guarantee that the [Call] gets notified even during a Panic
 /// since tokio tasks will catch panics and call the `drop()` function.
@@ -359,19 +398,13 @@ where
 }
 
 #[cfg(test)]
-mod tests {
-    use std::collections::HashMap;
+pub(crate) mod tests {
     use std::sync::atomic::{AtomicU32, Ordering};
     use std::sync::Arc;
     use std::time::Duration;
 
     use futures::future::join_all;
-    use futures::stream::iter;
-    use futures::StreamExt;
     use tokio::runtime::Handle;
-    use tokio::sync::mpsc::error::SendError;
-    use tokio::sync::mpsc::{channel, Sender};
-    use tokio::sync::{Mutex, Notify};
     use tokio::task::JoinHandle;
     use tokio::time::timeout;
     use xet_threadpool::ThreadPool;
@@ -384,7 +417,7 @@ mod tests {
     /// task. This is expected to be sufficient time for the test futures to
     /// complete. Thus, if we hit this timeout, then likely, there is something
     /// wrong with the [Call] notifications.
-    const WAITER_TIMEOUT: Duration = Duration::from_millis(100);
+    pub(crate) const WAITER_TIMEOUT: Duration = Duration::from_millis(100);
 
     const RES: usize = 7;
 
@@ -449,7 +482,7 @@ mod tests {
             assert_eq!(1, num_callers);
             assert_eq!(1, times_called.load(Ordering::SeqCst));
         };
-        let _ = threadpool.external_run_async_task(tasks).unwrap();
+        threadpool.external_run_async_task(tasks).unwrap();
     }
 
     #[tokio::test]
@@ -609,6 +642,23 @@ mod tests {
         timeout(WAITER_TIMEOUT, waiter_handle).await.unwrap().unwrap();
         assert_eq!(1, call.num_waiters.load(Ordering::SeqCst)) // we should have had 1 waiter
     }
+}
+
+#[cfg(test)]
+mod test_deadlock {
+    use std::collections::HashMap;
+    use std::sync::Arc;
+
+    use futures::stream::iter;
+    use futures::StreamExt;
+    use tests::WAITER_TIMEOUT;
+    use tokio::runtime::Handle;
+    use tokio::sync::mpsc::error::SendError;
+    use tokio::sync::mpsc::{channel, Sender};
+    use tokio::sync::{Mutex, Notify};
+    use tokio::time::timeout;
+
+    use super::{tests, Group};
 
     #[tokio::test]
     async fn test_deadlock() {
@@ -617,7 +667,7 @@ mod tests {
         The ints are fetched using a futures::Buffered stream over some future. These futures will
         call into singleflight to fetch an int.
 
-        To setup the deadlock, we have 3 tasks: main, t1, and t2 with the following dependency:
+        To set up the deadlock, we have 3 tasks: main, t1, and t2 with the following dependency:
         main is waiting to read from t1, t1 is a waiter on some element that t2 is working on,
         t2 is blocked writing to the buffer (i.e. waiting for main to read).
 
@@ -736,5 +786,107 @@ mod tests {
             println!("val: {}, woke up from signal", v);
         }
         Ok(v)
+    }
+}
+
+#[cfg(test)]
+mod test_futures_unordered {
+    use std::future::Future;
+    use std::pin::Pin;
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    use futures_util::stream::FuturesUnordered;
+    use futures_util::TryStreamExt;
+    use tokio::sync::mpsc;
+    use tokio::time::sleep;
+
+    use crate::errors::SingleflightError;
+    use crate::singleflight::Group;
+
+    type FutType = Pin<Box<dyn Future<Output = Result<(i32, bool), SingleflightError<String>>> + Send>>;
+
+    #[tokio::test]
+    async fn test_dropped_owner() {
+        /*
+         We test out a situation where the owner of a task is dropped before the task can complete.
+         This is done by having the owner task be part of a FuturesUnordered execution where a
+         separate task errors-out, cancelling the others.
+
+         We expect that when an owning task is dropped, that the spawned owning task is still able
+         to complete in the background, that the Call state is properly cleaned up, and that a
+         new `work()` invocation for the key runs as an owner.
+
+             main       fut_error     fut_owner     owner_task    fut_waiter
+         try_collect()====>|------------->|              |
+              |        start(k2)      start(k1)------>start()
+              |<----------err             |              |         start(k1)
+             err----------------------->drop()           |             |
+              |                                        Ok(1)-------->Ok(1)
+        */
+        let group = Arc::new(Group::new());
+
+        // ready channels help the owner task tell the waiter task to start
+        let (ready_tx, mut ready_rx) = mpsc::channel(1);
+        // done channels help the owner task signal to main that the operation completed,
+        // even though fut_owner was dropped.
+        let (done_tx, mut done_rx) = mpsc::channel(1);
+
+        // Owner task for "key1" that will delay then return a `1`.
+        let fut_owner = get_fut(group.clone(), "key1", async move {
+            ready_tx.send(true).await.unwrap();
+            sleep(Duration::from_millis(100)).await;
+            done_tx.send(true).await.unwrap();
+            Ok(1)
+        });
+        // Waiter task for "key1" that should not get called (uses the results of owner task)
+        let fut_waiter =
+            get_fut(group.clone(), "key1", async { Err("Test BUG: waiter should not be called".to_string()) });
+
+        // Task for "key2" that will fail and cause fut_owner to be dropped.
+        let fut_err = get_fut(group.clone(), "key2", async { Err("failed".to_string()) });
+
+        // spawn a task to wait for fut_owner to be ready then run fut_waiter
+        let handle = tokio::spawn(async move {
+            assert!(ready_rx.recv().await.unwrap());
+            let (i, is_owner) = fut_waiter.await.unwrap();
+            assert!(!is_owner);
+            assert_eq!(i, 1);
+        });
+
+        // Use FuturesUnordered to run `fut_owner` and `fut_error`. Since `fut_error` immediately fails,
+        // it will complete first, causing the try_collect to short-circuit and drop `fut_owner`
+        //
+        // Implementation note: the order of the vec matters since FuturesUnordered will try to
+        // run the futures in-order (until it hits an await). If `fut_err` is first, since it has
+        // no awaits, it will immediately finish (i.e. err), causing fut_owner to never get run.
+        let futures: Result<Vec<(i32, bool)>, SingleflightError<String>> =
+            FuturesUnordered::from_iter(vec![fut_owner, fut_err]).try_collect().await;
+
+        assert!(futures.is_err());
+        // "key1" should be deleted from the call_map even though fut_owner was dropped before finishing
+        assert!(!group.call_map.lock().unwrap().contains_key("key1"));
+        assert!(done_rx.recv().await.unwrap());
+        handle.await.unwrap();
+
+        // Ensure that subsequent calls to the same key are able to go through as there are
+        // no currently running tasks.
+        let fut_after = get_fut(group, "key1", async { Ok(5) });
+        let (i, is_owner) = fut_after.await.unwrap();
+        assert!(is_owner);
+        assert_eq!(i, 5);
+    }
+
+    fn get_fut(
+        g: Arc<Group<i32, String>>,
+        key: &str,
+        f: impl Future<Output = Result<i32, String>> + Send + 'static,
+    ) -> FutType {
+        let key = key.to_string();
+        Box::pin(async move {
+            let (res, is_owner) = g.work(&key, f).await;
+            let i = res?;
+            Ok((i, is_owner))
+        })
     }
 }

@@ -33,6 +33,9 @@ where
 
     #[error("Owner task panicked")]
     OwnerPanicked,
+
+    #[error("Poisoned Group lock")]
+    GroupLockPoisoned,
 }
 
 #[derive(Debug, Error)]
@@ -61,6 +64,7 @@ impl<E: Send + std::fmt::Debug + Sync> Clone for SingleflightError<E> {
             SingleflightError::WaiterInternalError(s) => SingleflightError::WaiterInternalError(s.clone()),
             SingleflightError::JoinError(e) => SingleflightError::JoinError(e.clone()),
             SingleflightError::OwnerPanicked => SingleflightError::OwnerPanicked,
+            SingleflightError::GroupLockPoisoned => SingleflightError::GroupLockPoisoned,
         }
     }
 }
