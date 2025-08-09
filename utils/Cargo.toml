@@ -17,7 +17,7 @@ futures = { workspace = true }
 lazy_static = { workspace = true }
 pin-project = { workspace = true }
 thiserror = { workspace = true }
-tokio = { workspace = true, features = ["time", "rt", "macros"] }
+tokio = { workspace = true, features = ["time", "rt", "macros", "sync"] }
 tracing = { workspace = true }
 shellexpand = { workspace = true }
 
@@ -30,6 +30,7 @@ web-time = { workspace = true }
 
 [dev-dependencies]
 serial_test = { workspace = true }
+futures-util = { workspace = true }
 
 [features]
 strict = []

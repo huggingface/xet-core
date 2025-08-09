@@ -3788,6 +3788,7 @@ dependencies = [
  "bytes",
  "ctor",
  "futures",
+ "futures-util",
  "lazy_static",
  "merklehash",
  "pin-project",
