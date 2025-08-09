@@ -303,7 +303,7 @@ where
     Waiter,
 }
 
-impl<'a, T, E> Drop for CreateGuard<'a, T, E>
+impl<T, E> Drop for CreateGuard<'_, T, E>
 where
     T: ResultType + 'static,
     E: ResultError + 'static,
