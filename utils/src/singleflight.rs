@@ -225,8 +225,6 @@ where
             Ok((call, create_guard)) => (call, create_guard),
             Err(err) => return (Err(err), false),
         };
-        let results_future = call.get_future();
-
         // Use reference for created since we don't want it to drop until after this is done.
         match &create_guard {
             CreateGuard::Owned(_, _) => {
@@ -234,14 +232,13 @@ where
                 let owner_task = OwnerTask::new(fut, call.clone());
                 let owner_handle = Handle::current().spawn(owner_task);
 
-                // wait for the owner task and results to come back
-                let (handle_result, future_result) = tokio::join!(owner_handle, results_future);
-                let result = handle_result
-                    .map_err(|e| SingleflightError::JoinError(e.to_string()))
-                    .and(future_result);
-                (result, true)
+                // wait for the owner task to come back with results
+                match owner_handle.await {
+                    Ok(res) => (res, true),
+                    Err(e) => (Err(SingleflightError::JoinError(e.to_string())), true),
+                }
             },
-            CreateGuard::Waiter => (results_future.await, false),
+            CreateGuard::Waiter => (call.get_future().await, false),
         }
     }
 
