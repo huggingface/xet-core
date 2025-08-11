@@ -25,6 +25,8 @@ The reconstruction API returns a `QueryReconstructionResponse` object with three
 
 ### QueryReconstructionResponse Structure
 
+Scroll
+
 ```json
 {
   "offset_into_first_range": 0,
@@ -247,3 +249,81 @@ A client must include the range header formed with the values from the url_range
 2. Cache chunks by range not just individually
   i. If you need a chunk from a xorb it is very likely that you will need another, so cache them close
 3. Caching helps when downloading similar contents. May not be worth to cache data if you are always downloading different things
+
+## More complex QueryReconstruction Example
+
+Here's an example of a serialized `QueryReconstructionResponse` struct that shows how file reconstruction would work across multiple xorbs:
+
+```json
+{
+  "offset_into_first_range": 0,
+  "terms": [
+    {
+      "hash": "a1b2c3d4e5f6789012345678901234567890abcdef1234567890abcdef123456",
+      "unpacked_length": 263873,
+      "range": {
+        "start": 1,
+        "end": 4
+      }
+    },
+    {
+      "hash": "fedcba0987654321098765432109876543210fedcba098765432109876543",
+      "unpacked_length": 143890,
+      "range": {
+        "start": 0,
+        "end": 3
+      }
+    },
+    {
+      "hash": "a1b2c3d4e5f6789012345678901234567890abcdef1234567890abcdef123456",
+      "unpacked_length": 3063572,
+      "range": {
+        "start": 3,
+        "end": 43
+      }
+    },
+  ],
+  "fetch_info": {
+    "a1b2c3d4e5f6789012345678901234567890abcdef1234567890abcdef123456": [
+      {
+        "range": {
+          "start": 1,
+          "end": 43
+        },
+        "url": "https://transfer.xethub.hf.co/xorb/default/a1b2c3d4e5f6789012345678901234567890abcdef1234567890abcdef123456?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=AKIAIOSFODNN7EXAMPLE%2F20130721%2Fus-east-1%2Fs3%2Faws4_request&X-Amz-Date=20130721T201207Z&X-Amz-Expires=3600&X-Amz-SignedHeaders=host&X-Amz-Signature=d6796aa6097c82ba7e33b4725e8396f8a9638f7c3d4b5a6b7c8d9e0f1a2b3c4d",
+        "url_range": {
+          "start": 57980,
+          "end": 1433008
+        }
+      }
+    ],
+    "fedcba0987654321098765432109876543210fedcba098765432109876543": [
+      {
+        "range": {
+          "start": 0,
+          "end": 3
+        },
+        "url": "https://transfer.xethub.hf.co/xorb/default/fedcba0987654321098765432109876543210fedcba098765432109876543?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=AKIAIOSFODNN7EXAMPLE%2F20130721%2Fus-east-1%2Fs3%2Faws4_request&X-Amz-Date=20130721T201207Z&X-Amz-Expires=3600&X-Amz-SignedHeaders=host&X-Amz-Signature=d6796aa6097c82ba7e33b4725e8396f8a9638f7c3d4b5a6b7c8d9e0f1a2b3c4d",
+        "url_range": {
+          "start": 0,
+          "end": 65670
+        }
+      }
+    ]
+  }
+}
+```
+
+This example shows reconstruction of a file that requires:
+
+- Chunks `[1, 4)` from the first xorb (~264KB of unpacked data)
+- Chunks `[0, 2)` from the second xorb (~144KB of unpacked data)
+- Chunks `[3, 43)` from the same xorb from the first term (~3MB of unpacked data)
+
+The `fetch_info` provides the HTTP URLs and byte ranges needed to download the required chunk data from each xorb. The ranges provided within fetch_info and term sections are always end-exclusive i.e. `{ "start": 0, "end": 3 }` is a range of 3 chunks at indices 0, 1 and 2.
+The ranges provided under a fetch_info items' url_range key are to be used to form the `Range` header when downloading the chunk range.
+A `"url_range"` value of `{ "start": X, "end": Y }` creates a `Range` header value of `bytes=X-Y`.
+
+When downloading and deserializing the chunks from xorb `a1b2c3d4e5f6789012345678901234567890abcdef1234567890abcdef123456` we will have the chunks at indices `[1, 43)`.
+We will need to only use the chunks at `[1, 4)` to fulfill the first term and then chunks `[3, 43)` to fulfill the third term.
+Note that in this example the chunk at index 3 is used twice! This is the benefit of deduplication; we only need to download the chunk content once.
