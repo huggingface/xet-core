@@ -3430,6 +3430,7 @@ dependencies = [
  "async-trait",
  "bytes",
  "ctor",
+ "error_printer",
  "futures",
  "lazy_static",
  "merklehash",

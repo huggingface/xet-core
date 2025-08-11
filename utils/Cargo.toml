@@ -8,6 +8,7 @@ name = "utils"
 path = "src/lib.rs"
 
 [dependencies]
+error_printer = { path = "../error_printer" }
 merklehash = { path = "../merklehash" }
 
 async-trait = { workspace = true }

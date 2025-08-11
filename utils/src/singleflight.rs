@@ -45,6 +45,7 @@ use std::sync::atomic::{AtomicBool, AtomicU16, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::task::{ready, Context, Poll};
 
+use error_printer::ErrorPrinter;
 use futures::future::Either;
 use pin_project::{pin_project, pinned_drop};
 use tokio::runtime::Handle;
@@ -263,7 +264,7 @@ where
         let mut m = self
             .call_map
             .lock()
-            .inspect_err(|err| error!(?err, "Failed to lock call map"))
+            .log_error("Failed to lock call map")
             .map_err(|_| SingleflightError::GroupLockPoisoned)?;
         if let Some(c) = m.get(key).cloned() {
             Ok((c, CreateGuard::Waiter))
@@ -281,7 +282,7 @@ where
         let mut m = self
             .call_map
             .lock()
-            .inspect_err(|err| error!(?err, "Failed to lock call map"))
+            .log_error("Failed to lock call map")
             .map_err(|_| SingleflightError::GroupLockPoisoned)?;
         m.remove(key).ok_or(SingleflightError::CallMissing)?;
         Ok(())
