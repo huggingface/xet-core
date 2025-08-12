@@ -29,7 +29,7 @@ To authenticate, authorize, and obtain the API base URL, follow the instructions
   }
   ```
 
-- **Error Responses**:
+- **Error Responses**: See [Error Cases](../spec/api.md#error-cases)
   - `400 Bad Request`: Malformed `file_id` in the path. Fix the path before retrying.
   - `401 Unauthorized`: Refresh the token to continue making requests, or provide a token in the `Authorization` header.
   - `404 Not Found`: The file does not exist. Not retryable.
@@ -46,7 +46,7 @@ To authenticate, authorize, and obtain the API base URL, follow the instructions
 - **Minimum Token Scope**: `read`
 - **Body**: None.
 - **Response**: Raw bytes in Shard format (chunk data, if it exists).
-- **Error Responses**:
+- **Error Responses**: See [Error Cases](../spec/api.md#error-cases)
   - `400 Bad Request`: Malformed hash in the path. Fix the path before retrying.
   - `401 Unauthorized`: Refresh the token to continue making requests, or provide a token in the `Authorization` header.
   - `404 Not Found`: Chunk not already tracked by global deduplication. Not retryable.
@@ -71,7 +71,7 @@ To authenticate, authorize, and obtain the API base URL, follow the instructions
 
 - Note: `was_inserted` is `false` if the Xorb already exists; this is not an error.
 
-- **Error Responses**:
+- **Error Responses**: See [Error Cases](../spec/api.md#error-cases)
   - `400 Bad Request`: Malformed hash in the path, Xorb hash does not match the body, or body is incorrectly serialized.
   - `401 Unauthorized`: Refresh the token to continue making requests, or provide a token in the `Authorization` header.
   - `403 Forbidden`: Token provided but does not have a wide enough scope (for example, a `read` token was provided). Retry with a `write` scope token.
@@ -95,12 +95,12 @@ To authenticate, authorize, and obtain the API base URL, follow the instructions
   - `0`: The Shard already exists.
   - `1`: `SyncPerformed` — the Shard was registered. See `UploadShardResponseType`.
 
-- **Error Responses**:
+- **Error Responses**: See [Error Cases](../spec/api.md#error-cases)
   - `400 Bad Request`: Shard is incorrectly serialized or Shard contents failed verification.
   - `401 Unauthorized`: Refresh the token to continue making requests, or provide a token in the `Authorization` header.
   - `403 Forbidden`: Token provided but does not have a wide enough scope (for example, a `read` token was provided).
 
-## Error Cases/Codes
+## Error Cases
 
 ### Non-Retryable Errors
 

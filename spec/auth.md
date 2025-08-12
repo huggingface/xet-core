@@ -95,7 +95,9 @@ Here's a basic implementation flow:
    Use Bearer authentication with the `access_token` to authenticate with the Xet service at `endpoint` until `expiration` time.
 
 4. **Token refresh (when needed):**
-   Use the same API to generate a new token
+   Use the same API to generate a new token.
+  
+   > In xet-core we use and recommend to add in 30 seconds of buffer time before the provided `expiration` time to refresh the token.
 
 ## Token Scope
 
