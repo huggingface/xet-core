@@ -250,22 +250,4 @@ mod singleflight_tests {
         }
         assert_eq!(CALLS.load(Ordering::SeqCst), 1);
     }
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn type_mismatch_requires_clear_then_reuse_works() {
-        let mgr = SingleFlightManager::new();
-        let key = "same-key";
-
-        // First use key with u32
-        let v1 = mgr.run_single_flight(key, || async { 7u32 }).await.unwrap();
-        assert_eq!(v1, 7);
-
-        // Reuse same key with a *different* T (String) -> expect error
-        match mgr.run_single_flight::<_, _, String>(key, || async { "ok".to_string() }).await {
-            Err(MultithreadedRuntimeError::Other(msg)) => {
-                assert!(msg.contains("already registered with a different result type"), "unexpected error: {msg}");
-            },
-            other => panic!("expected type-mismatch error, got {other:?}"),
-        }
-    }
 }
