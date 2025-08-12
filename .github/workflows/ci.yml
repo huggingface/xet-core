@@ -91,4 +91,4 @@ jobs:
         run: |
           npm install -g markdownlint-cli
       - name: Lint markdown
-        run: markdownlint spec/**/*.md
+        run: markdownlint spec/**/*.md --config markdownlint.toml
