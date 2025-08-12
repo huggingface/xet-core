@@ -4,18 +4,22 @@
 
 Using the chunking algorithm a file is mapped to a series of chunks, once those chunks are found, they need to be collected into collections of chunks each called a "Xorb" (Xet Orb, pronounced like "zorb").
 
-It is advantageous to collect series of chunks in xorbs such that they can be referred to as a whole range of chunks.
+It is advantageous to collect series of chunks in Xorbs such that they can be referred to as a whole range of chunks.
 
-Suppose a file is chunked into chunks A, B, C, D in the order ABCD. Then create a xorb X1 with chunks A, B, C, D in this order (starting at chunk index 0), let's say this xorb's hash is X1. Then to reconstruct the file we ask for xorb X1 chunk range `[0, 4)`.
+Suppose a file is chunked into chunks A, B, C, D in the order ABCD. Then create a Xorb X1 with chunks A, B, C, D in this order (starting at chunk index 0), let's say this Xorb's hash is X1. Then to reconstruct the file we ask for Xorb X1 chunk range `[0, 4)`.
 
-While there's no explicit limit on the number of chunks in a xorb, there is a limit of 64MiB on the total size of the xorb as serialized. Since some chunks will get compressed, it is generally advised to collect chunks until their total uncompressed length is near 64 MiB then serialize the struct.
-Namely, xorbs point to roughly 64 MiB worth of data. (Recall that the target chunk size is 64 KiB so expect roughly ~1024 chunks per xorb).
+While there's no explicit limit on the number of chunks in a Xorb, there is a limit of 64MiB on the total size of the Xorb as serialized.
+Since some chunks will get compressed, it is generally advised to collect chunks until their total uncompressed length is near 64 MiB then serialize the struct.
+Namely, Xorbs point to roughly 64 MiB worth of data.
+(Recall that the target chunk size is 64 KiB so expect roughly ~1024 chunks per Xorb).
 
-The CAS server will reject xorb uploads that exceed the 64 MiB serialized size limit.
+The CAS server will reject Xorb uploads that exceed the 64 MiB serialized size limit.
+
+It is recommended to pack chunks from multiple files into a Xorb if the size requirements allow, i.e. file X and Y both produced 10 new chunks each totalling a total of ~128000 bytes, then all those chunks can fit in a new Xorb.
 
 ## Xorb Format
 
-A xorb is a series of "Chunks" that is serialized according to a specific format that enables accessing chunks of ranges and builds in chunk level compression.
+A Xorb is a series of "Chunks" that is serialized according to a specific format that enables accessing chunks of ranges and builds in chunk level compression.
 
 ```txt
 ┌─────────┬─────────────────────────────────┬─────────┬─────────────────────────────────┬─────────┬─────────────────────────────────┬──────────
@@ -28,7 +32,9 @@ A xorb is a series of "Chunks" that is serialized according to a specific format
 
 ### Chunk Addressing
 
-Each chunk has an index within the xorb it is in, starting at 0. Chunks can be addressed individually by their index but are usually addressed or fetched in range. Chunk ranges are always specified start inclusive and end exclusive i.e. `[start, end)`.
+Each chunk has an index within the Xorb it is in, starting at 0.
+Chunks can be addressed individually by their index but are usually addressed or fetched in range.
+Chunk ranges are always specified start inclusive and end exclusive i.e. `[start, end)`.
 
 ## Chunk Format
 
@@ -89,10 +95,10 @@ Following the header is the compressed data block, exactly `compressed_size` byt
 
 ### Picking a Compression Scheme
 
-Picking the chunk compression scheme for the xorb is a task left to the client when uploading the xorb.
-The goal is to minimize the overall size of the xorb for faster transmission at the cost of resources to decompress a chunk on the receiving end.
+Picking the chunk compression scheme for the Xorb is a task left to the client when uploading the Xorb.
+The goal is to minimize the overall size of the Xorb for faster transmission at the cost of resources to decompress a chunk on the receiving end.
 
-When picking a compression scheme for the chunk there are a number of strategies and implementors may make their decisions as to how to pick a compression scheme. Note that a xorb may contain chunks that utilize different compression schemes.
+When picking a compression scheme for the chunk there are a number of strategies and implementors may make their decisions as to how to pick a compression scheme. Note that a Xorb may contain chunks that utilize different compression schemes.
 
 1. **Brute Force**
 
