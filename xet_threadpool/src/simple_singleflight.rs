@@ -101,7 +101,11 @@ impl SingleFlightManager {
     /// Coalesces concurrent calls by `key`. A key must always be used with the same `T`
     /// unless you `clear(key)` first. If a different `T` is used for an existing key,
     /// this returns an error prompting a clear.
-    pub async fn run<F, Fut, T>(&self, key: &str, retrieval_function: F) -> Result<T, MultithreadedRuntimeError>
+    pub async fn run_single_flight<F, Fut, T>(
+        &self,
+        key: &str,
+        retrieval_function: F,
+    ) -> Result<T, MultithreadedRuntimeError>
     where
         T: Clone + Send + Sync + 'static,
         F: FnOnce() -> Fut + Send,
@@ -126,14 +130,14 @@ impl SingleFlightManager {
                 g
             }
         };
-        // lock released; delegate
-        group.run(retrieval_function).await
-    }
 
-    /// Remove any group stored under `key`. Returns true if something was removed.
-    pub async fn clear(&self, key: &str) -> bool {
-        let mut map = self.groups.lock().await;
-        map.remove(key).is_some()
+        // lock released; delegate
+        let res = group.run(retrieval_function).await;
+
+        // Now, clear out our key here; no need to keep a completed group around.
+        let _ = self.groups.lock().await.remove(key);
+
+        res
     }
 }
 
@@ -231,7 +235,7 @@ mod singleflight_tests {
         for _ in 0..24 {
             let mgr = mgr.clone();
             handles.push(tokio::spawn(async move {
-                mgr.run(key, || async {
+                mgr.run_single_flight(key, || async {
                     if CALLS.fetch_add(1, Ordering::SeqCst) == 0 {
                         sleep(Duration::from_millis(40)).await;
                     }
@@ -253,34 +257,15 @@ mod singleflight_tests {
         let key = "same-key";
 
         // First use key with u32
-        let v1 = mgr.run(key, || async { 7u32 }).await.unwrap();
+        let v1 = mgr.run_single_flight(key, || async { 7u32 }).await.unwrap();
         assert_eq!(v1, 7);
 
         // Reuse same key with a *different* T (String) -> expect error
-        match mgr.run::<_, _, String>(key, || async { "ok".to_string() }).await {
+        match mgr.run_single_flight::<_, _, String>(key, || async { "ok".to_string() }).await {
             Err(MultithreadedRuntimeError::Other(msg)) => {
                 assert!(msg.contains("already registered with a different result type"), "unexpected error: {msg}");
             },
             other => panic!("expected type-mismatch error, got {other:?}"),
         }
-
-        // Clear and reuse the key with the new type
-        assert!(mgr.clear(key).await, "clear should remove the entry");
-        let s = mgr.run(key, || async { "ok".to_string() }).await.unwrap();
-        assert_eq!(s, "ok".to_string());
-    }
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn clear_is_idempotent() {
-        let mgr = SingleFlightManager::new();
-        let key = "idempotent";
-
-        // Clear when absent -> false
-        assert!(!mgr.clear(key).await);
-
-        // Populate, then clear -> true, then false again
-        assert_eq!(mgr.run(key, || async { 1u64 }).await.unwrap(), 1u64);
-        assert!(mgr.clear(key).await);
-        assert!(!mgr.clear(key).await);
     }
 }
