@@ -4,22 +4,21 @@ This document describes the HTTP API endpoints used by the CAS (Content Addressa
 
 ## Authentication
 
-In order to be authenticated and authorized to invoke any of the following API's as well as determine the API endpoint url, follow the instructions in [../auth.md]
+To authenticate, authorize, and obtain the API base URL, follow the instructions in [Authentication](./auth.md).
 
 ## Endpoints
 
 ### 1. Get File Reconstruction
 
-**Description**: Retrieves reconstruction information for a specific file, optionally with byte range support.
-
+- **Description**: Retrieves reconstruction information for a specific file, optionally with byte range support.
 - **Path**: `/v1/reconstructions/{file_id}`
 - **Method**: `GET`
 - **Parameters**:
-  - `file_id`: MerkleHash in hex format (64 lowercase hexadecimal character string)
+  - `file_id`: MerkleHash in hex format (64 lowercase hexadecimal characters).
 - **Headers**:
-  - `Range`: Optional. Format: `bytes={start}-{end}` (inclusive end)
+  - `Range`: Optional. Format: `bytes={start}-{end}` (end is inclusive).
 - **Minimum Token Scope**: `read`
-- **Body**: None
+- **Body**: None.
 - **Response**: JSON (`QueryReconstructionResponse`)
 
   ```json
@@ -31,37 +30,37 @@ In order to be authenticated and authorized to invoke any of the following API's
   ```
 
 - **Error Responses**:
-  - 400 bad request (such as the file_id not being matching an existing file)
-  - 404 File not found
-  - 416 Range Not Satisfiable: When requested byte range start exceeds the end of a file
+  - `400 Bad Request`: Malformed `file_id` in the path. Fix the path before retrying.
+  - `401 Unauthorized`: Refresh the token to continue making requests, or provide a token in the `Authorization` header.
+  - `404 Not Found`: The file does not exist. Not retryable.
+  - `416 Range Not Satisfiable`: The requested byte range start exceeds the end of the file. Not retryable.
 
 ### 2. Query Chunk Deduplication (Global Deduplication)
 
-**Description**: Checks if a chunk exists in the CAS for deduplication purposes.
-
+- **Description**: Checks if a chunk exists in the CAS for deduplication purposes.
 - **Path**: `/v1/chunks/{prefix}/{hash}`
 - **Method**: `GET`
 - **Parameters**:
-  - `prefix`: Currently only acceptable prefix for the Global Deduplication API is `default-merkledb`.
-  - `hash`: Chunk hash in hex format (64 lowercase hexadecimal character string). Review [how to compute chunk hash](../hashing.md#Chunk%20Hashes) to compute chunk hashes
+  - `prefix`: The only acceptable prefix for the Global Deduplication API is `default-merkledb`.
+  - `hash`: Chunk hash in hex format (64 lowercase hexadecimal characters). See [Chunk Hashes](./hashing.md#chunk-hashes).
 - **Minimum Token Scope**: `read`
-- **Body**: None
-- **Response**: Raw bytes in shard format (chunk data if exists)
+- **Body**: None.
+- **Response**: Raw bytes in Shard format (chunk data, if it exists).
 - **Error Responses**:
-  - `400 Bad request`: malformed hash in path
-  - `404 Not Found`: Chunk not already tracked by global deduplication
+  - `400 Bad Request`: Malformed hash in the path. Fix the path before retrying.
+  - `401 Unauthorized`: Refresh the token to continue making requests, or provide a token in the `Authorization` header.
+  - `404 Not Found`: Chunk not already tracked by global deduplication. Not retryable.
 
-### 3. Upload XORB
+### 3. Upload Xorb
 
-**Description**: Uploads a serialized CAS object (XORB) to the server with progress tracking. Review [how to compute xorb hash](../hashing.md#Xorb%20Hashes) to compute xorb hashes.
-
+- **Description**: Uploads a serialized Xorb to the server with progress tracking. See [Xorb Hashes](./hashing.md#xorb-hashes).
 - **Path**: `/v1/xorbs/{prefix}/{hash}`
 - **Method**: `POST`
 - **Parameters**:
-  - `prefix`: Currently the only acceptable prefix for the Xorb upload API is `default`.
-  - `hash`: MerkleHash in hex format. Review [how to compute xorb hash](../hashing.md#Xorb%20Hashes) to compute xorb hashes.
+  - `prefix`: The only acceptable prefix for the Xorb upload API is `default`.
+  - `hash`: MerkleHash in hex format. See [Xorb Hashes](./hashing.md#xorb-hashes).
 - **Minimum Token Scope**: `write`
-- **Body**: Serialized Xorb
+- **Body**: Serialized Xorb bytes.
 - **Response**: JSON (`UploadXorbResponse`)
 
 ```json
@@ -70,39 +69,51 @@ In order to be authenticated and authorized to invoke any of the following API's
 }
 ```
 
-  was_inserted is false if the xorb already exists, this is not an error
+- Note: `was_inserted` is `false` if the Xorb already exists; this is not an error.
 
 - **Error Responses**:
-  - `400 Bad Request`: malformed hash in path, xorb hash is incorrect for body, body is incorrectly serialized
-  - `403 Forbidden`: authentication token missing `write` scope.
+  - `400 Bad Request`: Malformed hash in the path, Xorb hash does not match the body, or body is incorrectly serialized.
+  - `401 Unauthorized`: Refresh the token to continue making requests, or provide a token in the `Authorization` header.
+  - `403 Forbidden`: Token provided but does not have a wide enough scope (for example, a `read` token was provided). Retry with a `write` scope token.
 
 ### 4. Upload Shard
 
-**Description**: Uploads a shard to the CAS with optional forced synchronization.
-
+- **Description**: Uploads a Shard to the CAS with optional forced synchronization.
 - **Path**: `/v1/shards`
 - **Method**: `POST`
 - **Minimum Token Scope**: `write`
-- **Body**: Raw bytes (shard data). See [how to serialize a shard](../shard.md).
+- **Body**: Raw bytes (Shard data). See [Shard](./shard.md).
 - **Response**: JSON (`UploadShardResponse`)
 
-  ```json
-  {
-    "result": 0 | 1
-  }
-  ```
+```json
+{
+  "result": 0
+}
+```
 
-  Where 0 indicates the shard already exists and 1 indicates "SyncPerformed" meaning that the shard was registered (UploadShardResponseType).
+- Where `result` is:
+  - `0`: The Shard already exists.
+  - `1`: `SyncPerformed` — the Shard was registered. See `UploadShardResponseType`.
 
 - **Error Responses**:
-  - `400 Bad Request`: shard is incorrectly serialized, shard contents failed verification
-  - `403 Forbidden`: authentication token missing `write` scope.
+  - `400 Bad Request`: Shard is incorrectly serialized or Shard contents failed verification.
+  - `401 Unauthorized`: Refresh the token to continue making requests, or provide a token in the `Authorization` header.
+  - `403 Forbidden`: Token provided but does not have a wide enough scope (for example, a `read` token was provided).
 
-## Common Error Cases/Codes
+## Error Cases/Codes
 
-- **Connection Errors**: Often caused by network issues.
-- **400 Bad Request**: Returned when the request parameters are invalid, e.g. invalid xorb/shard on upload API's.
-- **401 Unauthorized**: Need to get a refreshed token to continue making requests.
-- **404 Not Found**: Occurs on GET api's where the resource (xorb, file) do not exist.
-- **416 Range Not Satisfiable**: Returned when byte range requests are invalid; specifically the requested start range is greater than or equal to the length of the file.
-- **429 Rate Limiting**: Assume there is rate limiting on all API's and lower your request rate using a backoff delay strategy
+### Non-Retryable Errors
+
+- **400 Bad Request**: Returned when the request parameters are invalid (for example, invalid Xorb/Shard on upload APIs).
+- **401 Unauthorized**: Refresh the token to continue making requests, or provide a token in the `Authorization` header.
+- **403 Forbidden**: Token provided but does not have a wide enough scope (for example, a `read` token was provided for an API requiring `write` scope).
+- **404 Not Found**: Occurs on `GET` APIs where the resource (Xorb, file) does not exist.
+- **416 Range Not Satisfiable**: Reconstruction API only; returned when byte range requests are invalid. Specifically, the requested start range is greater than or equal to the length of the file.
+
+### Retryable Errors
+
+- **Connection Errors**: Often caused by network issues. Retry if intermittent. Ensure you do not have a firewall blocking requests or DNS overrides.
+- **429 Rate Limiting**: Lower your request rate using a backoff strategy, then wait and retry. Assume all APIs are rate limited.
+- **500 Internal Server Error**: The server experienced an intermittent issue; clients should retry their requests.
+- **503 Service Unavailable**: Service is temporarily unable to process requests; wait and retry.
+- **504 Gateway Timeout**: Service took too long to respond; wait and retry.
