@@ -99,7 +99,7 @@ Then it will be serialized as:
 
 > Note the reversed order of bytes every 8 bytes due to the little endian orientation.
 
-In xet-core we store all hashes in memory as 4, 64 bit unsigned integers and make an assumption that the system is little endian, hence we serialize hashes directly from their in-memory representations.
+In `xet-core` we store all hashes in memory as 4, 64 bit unsigned integers and make an assumption that the system is little endian, hence we serialize hashes directly from their in-memory representations.
 This strategy is reasonable for other implementors as well.
 
 ## 1. Header (MDBShardFileHeader)

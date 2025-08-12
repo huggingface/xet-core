@@ -31,7 +31,7 @@ A **chunk** is a variable-sized content block derived from files using Content-D
 
 - **Maximum size**: 64MB
 - **Maximum chunks**: 8,192 chunks per xorb
-- **Purpose**: Batch multiple chunks together to reduce metadata overhead and improve compression efficiency
+- **Purpose**: Batch multiple chunks together to reduce metadata and network overhead when uploading and downloading groups of chunks
 - **Storage**: Xorbs are stored in the Content Addressable Storage (CAS) system
 
 ### CAS (Content Addressable Storage)
@@ -96,7 +96,7 @@ Xet employs a three-tiered deduplication strategy to maximize efficiency while m
 
 ### 3. Global Deduplication Process
 
-The global deduplication system provides deduplication capabilities across all data that is managed by the xet system:
+The global deduplication system provides deduplication capabilities across all data that is managed by the Xet system:
 
 #### Eligibility Criteria
 
@@ -104,7 +104,9 @@ Not all chunks are eligible for global deduplication queries to manage system lo
 
 1. **First chunk**: The first chunk of every file is always eligible.
 2. **Hash pattern matching**: Chunks are eligible if: the last 8 bytes of the hash interpreted as a little-endian 64 bit integer % 1024 == 0.
-3. **Spacing constraints**: There must be a minimum of 4MB between global deduplication queries within a file.
+
+**Recommendations:**
+**Spacing constraints**: The global dedupe API is optimized to return information about nearby chunks when there is a match. Consider only issueing a request to an eligible chunk every ~4MB of data.
 
 #### Query Process
 
@@ -129,24 +131,6 @@ Global deduplication uses HMAC (Hash-based Message Authentication Code) to prote
 
 Raw chunk hashes are never transmitted from servers to clients; a client has to encrypt their raw chunk hash and find a match to know a raw chunk hash exists in the system.
 They may know this chunk hash because they own this data, the match has made them privy to know which xorb has this chunk hash and the position in the xorb, but has not revealed any other raw chunk hashes in that xorb or other xorbs.
-
-## Deduplication Effectiveness and Metrics
-
-### Tracking Metrics
-
-The system tracks comprehensive deduplication statistics including:
-
-- Total bytes and chunks processed
-- Bytes and chunks saved through deduplication
-- New bytes and chunks that couldn't be deduplicated
-- Savings achieved specifically through global deduplication
-- Instances where deduplication was skipped to prevent fragmentation
-
-### Fragmentation Prevention
-
-While deduplication is valuable for saving space, doing it too aggressively can cause file fragmentation—meaning a file’s chunks end up scattered across many different xorbs. This can make reading files slower and less efficient.
-To avoid this, Xet aims to keep long, continuous runs of chunks together in the same xorb whenever possible. Instead of always deduplicating every possible chunk, the system sometimes chooses to reference a straight run of chunks in a single xorb, even if it means skipping deduplication for a few chunks.
-This approach balances the benefits of deduplication with the need to keep files easy and fast to read.
 
 ## Technical Implementation Details
 
@@ -174,6 +158,12 @@ This information allows the system to reconstruct files by:
 3. Concatenating chunks in the correct order
 
 [See section about file reconstruction](../file_reconstruction.md).
+
+## Fragmentation Prevention
+
+While deduplication is valuable for saving space, doing it too aggressively can cause file fragmentation—meaning a file’s chunks end up scattered across many different xorbs. This can make reading files slower and less efficient.
+To avoid this, Xet aims to keep long, continuous runs of chunks together in the same xorb whenever possible. Instead of always deduplicating every possible chunk, the system sometimes chooses to reference a straight run of chunks in a single xorb, even if it means skipping deduplication for a few chunks.
+This approach balances the benefits of deduplication with the need to keep files easy and fast to read.
 
 ## Conclusion
 

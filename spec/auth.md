@@ -97,7 +97,7 @@ Here's a basic implementation flow:
 4. **Token refresh (when needed):**
    Use the same API to generate a new token.
   
-   > In xet-core we use and recommend to add in 30 seconds of buffer time before the provided `expiration` time to refresh the token.
+   > In `xet-core` we use and recommend to add in 30 seconds of buffer time before the provided `expiration` time to refresh the token.
 
 ## Token Scope
 
@@ -106,20 +106,20 @@ Xet tokens can have either a `read` or a `write` scope. The type of token issues
 Revise API specification for what scope level is required to invoke each API (briefly, only `POST /shard` and `POST /xorb/*` API's require `write` scope).
 Note that all `read` scope API's can be invoked when using a `write` scope token.
 
-The scope of the xet tokens is limited to the repository and ref for which they were issued. To upload or download from different repositories or refs (different branches) clients will need to be issued different tokens.
+The scope of the Xet tokens is limited to the repository and ref for which they were issued. To upload or download from different repositories or refs (different branches) clients will need to be issued different tokens.
 
 ## Token Scope Relative to Hugging Face Hub Authentication Token
 
-When requesting a Xet token from the Hugging Face Hub, you will only receive a xet token matching the requested parameters if you actually have access to them, based on the access afforded to your Hub authentication token.
+When requesting a Xet token from the Hugging Face Hub, you will only receive a Xet token matching the requested parameters if you actually have access to them, based on the access afforded to your Hub authentication token.
 
-If you require a `write` scope xet token, then you must request it using a Hugging Face Hub token that has write access to the particular repository and ref that you want to access.
+If you require a `write` scope Xet token, then you must request it using a Hugging Face Hub token that has write access to the particular repository and ref that you want to access.
 
-If you request a `read` scope xet token, then you must request it using a Hugging Face Hub token that has at least read access to the particular repository and ref you want to access.
+If you request a `read` scope Xet token, then you must request it using a Hugging Face Hub token that has at least read access to the particular repository and ref you want to access.
 
-If you are using Fine-grained Hugging Face Hub Access Tokens, your tokens must have read or write access to the contents of repositories to be issues read or write xet tokens respectively.
+If you are using Fine-grained Hugging Face Hub Access Tokens, your tokens must have read or write access to the contents of repositories to be issues read or write Xet tokens respectively.
 
 ## Security Considerations
 
 - Xet tokens are time-limited and should be refreshed/swapped before expiration
-- Store tokens securely and avoid logging them (both Hub authentication tokens and xet tokens)
+- Store tokens securely and avoid logging them (both Hub authentication tokens and Xet tokens)
 - Use read tokens when possible; only request write tokens when necessary

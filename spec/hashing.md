@@ -1,6 +1,6 @@
 # Hashing
 
-The xet protocol utilizes a few different hashing types.
+The Xet protocol utilizes a few different hashing types.
 
 All hashes referenced are 32 bytes (256 bits) long.
 
