@@ -217,15 +217,20 @@ impl RemoteClient {
             endpoint: endpoint.to_string(),
             dry_run,
             authenticated_http_client_with_retry: Arc::new(
-                http_client::build_auth_http_client(auth, RetryConfig::default(), session_id)
-                    .await
-                    .unwrap(),
+                http_client::build_auth_http_client(
+                    auth,
+                    RetryConfig::default(),
+                    session_id,
+                    Some("authenticated_http_client_with_retry"),
+                )
+                .await
+                .unwrap(),
             ),
             authenticated_http_client: Arc::new(
                 http_client::build_auth_http_client_no_retry(auth, session_id).await.unwrap(),
             ),
             http_client_with_retry: Arc::new(
-                http_client::build_http_client(RetryConfig::default(), session_id)
+                http_client::build_http_client(RetryConfig::default(), session_id, Some("http_client_with_retry"))
                     .await
                     .unwrap(),
             ),
