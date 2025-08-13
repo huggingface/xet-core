@@ -45,7 +45,7 @@ impl RetryableStrategy for No429RetryStrategy {
 }
 
 #[derive(Debug)]
-pub struct RetryConfig<R: RetryableStrategy> {
+pub struct RetryConfig<R: RetryableStrategy + Debug> {
     /// Number of retries for transient errors.
     pub num_retries: u32,
 
@@ -172,7 +172,7 @@ pub fn get_retry_policy_and_strategy<R: RetryableStrategy + Send + Sync>(
 }
 
 /// Configurable Retry middleware with exponential backoff and configurable number of retries using reqwest-retry
-fn get_retry_middleware<R: RetryableStrategy + Send + Sync>(
+fn get_retry_middleware<R: RetryableStrategy + Debug + Send + Sync>(
     config: RetryConfig<R>,
 ) -> RetryTransientMiddleware<ExponentialBackoff, R> {
     let (policy, strategy) = get_retry_policy_and_strategy(config);
