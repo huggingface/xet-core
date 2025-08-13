@@ -1,11 +1,11 @@
 use std::fmt::{Debug, Formatter};
 use std::time::Instant;
 
+use error_printer::ErrorPrinter;
 use pyo3::exceptions::PyTypeError;
 use pyo3::prelude::PyAnyMethods;
 use pyo3::{Py, PyAny, PyErr, PyResult, Python};
-use tracing::{info, error};
-use error_printer::ErrorPrinter;
+use tracing::{error, info};
 use utils::auth::{TokenInfo, TokenRefresher};
 use utils::errors::AuthError;
 
@@ -59,12 +59,12 @@ impl WrappedTokenRefresher {
 impl TokenRefresher for WrappedTokenRefresher {
     async fn refresh(&self) -> Result<TokenInfo, AuthError> {
         if *LOG_TOKEN_REFRESH {
-            tracing::info!("Token refresh acquiring GIL");
+            info!("Token refresh acquiring GIL");
         }
 
         Python::with_gil(|py| {
             if *LOG_TOKEN_REFRESH {
-                tracing::info!("Token refresh acquired GIL");
+                info!("Token refresh acquired GIL");
             }
 
             let start = Instant::now();
@@ -77,13 +77,16 @@ impl TokenRefresher for WrappedTokenRefresher {
                 .call0()
                 .map_err(|e| AuthError::TokenRefreshFailure(format!("Error refreshing token: {e:?}")))
                 .log_error(format!("Error refreshing token, after {:?}", start.elapsed()))?;
-            info!("token refreshed in {:?}", start.elapsed());
+            if *LOG_TOKEN_REFRESH {
+                info!("token refreshed in {:?}", start.elapsed());
+            }
             result.extract::<(String, u64)>().map_err(|e| {
                 AuthError::TokenRefreshFailure(format!("refresh function didn't return a (String, u64) tuple: {e:?}"))
-            }).log_error(format!("refresh function didn't return a (String, u64) tuple"))
-        }).inspect(|_| {
+            })
+        })
+        .inspect(|_| {
             if *LOG_TOKEN_REFRESH {
-                tracing::info!("Token refresh released GIL");
+                info!("Token refresh released GIL");
             }
         })
     }
