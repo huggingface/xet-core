@@ -96,7 +96,7 @@ fn reqwest_client() -> Result<reqwest::Client, CasClientError> {
 
 /// Builds authenticated HTTP Client to talk to CAS.
 /// Includes retry middleware with exponential backoff.
-pub async fn build_auth_http_client<R: RetryableStrategy + Send + Sync + 'static>(
+pub async fn build_auth_http_client<R: RetryableStrategy + Debug + Send + Sync + 'static>(
     auth_config: &Option<AuthConfig>,
     retry_config: RetryConfig<R>,
     session_id: &str,
