@@ -626,7 +626,7 @@ mod tests {
             MerkleHash::default(),
             file_range,
             server.base_url(),
-            Arc::new(build_http_client(RetryConfig::default(), "")?),
+            Arc::new(build_http_client(RetryConfig::default(), "").await?),
         );
 
         fetch_info.query().await?;
@@ -673,7 +673,7 @@ mod tests {
             MerkleHash::default(),
             file_range_to_refresh,
             server.base_url(),
-            Arc::new(build_http_client(RetryConfig::default(), "")?),
+            Arc::new(build_http_client(RetryConfig::default(), "").await?),
         ));
 
         // Spawn multiple tasks each calling into refresh with a different delay in
@@ -742,7 +742,7 @@ mod tests {
             MerkleHash::default(),
             file_range,
             server.base_url(),
-            Arc::new(build_http_client(RetryConfig::default(), "")?),
+            Arc::new(build_http_client(RetryConfig::default(), "").await?),
         );
 
         let (offset_info_first_range, terms) = fetch_info.query().await?.unwrap();
@@ -753,7 +753,7 @@ mod tests {
                 range: x1range[0].range,
                 fetch_info: Arc::new(fetch_info),
                 chunk_cache: None,
-                client: Arc::new(build_http_client(RetryConfig::default(), "")?),
+                client: Arc::new(build_http_client(RetryConfig::default(), "").await?),
                 range_download_single_flight: Arc::new(Group::new()),
             },
             term: terms[0].clone(),

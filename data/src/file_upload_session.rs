@@ -150,7 +150,7 @@ impl FileUploadSession {
 
         let completion_tracker = Arc::new(CompletionTracker::new(progress_updater));
 
-        let client = create_remote_client(&config, &session_id, dry_run)?;
+        let client = create_remote_client(&config, &session_id, dry_run).await?;
 
         let shard_interface = SessionShardInterface::new(config.clone(), client.clone(), dry_run).await?;
 

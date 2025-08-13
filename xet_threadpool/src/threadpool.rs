@@ -9,6 +9,7 @@ use tokio::sync::Semaphore;
 use tokio::task::JoinHandle;
 use tracing::{debug, info};
 
+use crate::anycache::AnyCache;
 use crate::errors::MultithreadedRuntimeError;
 use crate::global_semaphores::{GlobalSemaphoreHandle, GlobalSemaphoreLookup};
 
@@ -115,6 +116,9 @@ pub struct ThreadPool {
 
     // Semaphores.  We use an initialization function as the handle here.
     global_semaphore_table: GlobalSemaphoreLookup,
+
+    // Cached values.
+    cached_values: AnyCache,
 }
 
 // Use thread-local references to the runtime that are set on initilization among all
@@ -153,6 +157,7 @@ impl ThreadPool {
             external_executor_count: 0.into(),
             sigint_shutdown: false.into(),
             global_semaphore_table: GlobalSemaphoreLookup::default(),
+            cached_values: AnyCache::new(),
         });
 
         // Each thread in each of the tokio worker threads holds a reference to the runtime handling
@@ -208,6 +213,7 @@ impl ThreadPool {
             external_executor_count: 0.into(),
             sigint_shutdown: false.into(),
             global_semaphore_table: GlobalSemaphoreLookup::default(),
+            cached_values: AnyCache::new(),
         })
     }
 
@@ -314,6 +320,17 @@ impl ThreadPool {
     /// to use in the semaphore.  It's reset on new runtimes.
     pub fn global_semaphore(&self, handle: impl Into<GlobalSemaphoreHandle>) -> Arc<Semaphore> {
         self.global_semaphore_table.get(handle)
+    }
+
+    /// Get or create a cached value for `key` and type `T`; if the value doesn't exist, then call
+    /// the creation_function to get a future that evaluates to the stored value.
+    pub async fn get_cached_value<T, E, F, Fut>(&self, key: &str, creation_function: F) -> Result<T, E>
+    where
+        T: Clone + Send + Sync + 'static,
+        F: FnOnce() -> Fut + Send,
+        Fut: Future<Output = Result<T, E>> + Send,
+    {
+        self.cached_values.get_cached_value(key, creation_function).await
     }
 }
 

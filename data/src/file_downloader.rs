@@ -32,7 +32,7 @@ impl FileDownloader {
             .as_ref()
             .map(Cow::Borrowed)
             .unwrap_or_else(|| Cow::Owned(Ulid::new().to_string()));
-        let client = create_remote_client(&config, &session_id, false)?;
+        let client = create_remote_client(&config, &session_id, false).await?;
 
         Ok(Self { config, client })
     }

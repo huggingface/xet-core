@@ -16,13 +16,13 @@ pub struct HubClient {
 }
 
 impl HubClient {
-    pub fn new(endpoint: &str, token: &str, repo_type: &str, repo_id: &str) -> Result<Self> {
+    pub async fn new(endpoint: &str, token: &str, repo_type: &str, repo_id: &str) -> Result<Self> {
         Ok(HubClient {
             endpoint: endpoint.to_owned(),
             token: token.to_owned(),
             repo_type: repo_type.to_owned(),
             repo_id: repo_id.to_owned(),
-            client: build_http_client(RetryConfig::default(), "")?,
+            client: build_http_client(RetryConfig::default(), "").await?,
         })
     }
 
@@ -104,7 +104,7 @@ mod tests {
             token: "[MASKED]".to_owned(),
             repo_type: "dataset".to_owned(),
             repo_id: "test/t2".to_owned(),
-            client: build_http_client(RetryConfig::default(), "")?,
+            client: build_http_client(RetryConfig::default(), "").await?,
         };
 
         let (cas_endpoint, jwt_token, jwt_token_expiry) = hub_client.get_jwt_token("read").await?;

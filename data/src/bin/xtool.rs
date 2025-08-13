@@ -53,7 +53,7 @@ impl XCommand {
             .overrides
             .token
             .unwrap_or_else(|| std::env::var("HF_TOKEN").unwrap_or_default());
-        let hub_client = HubClient::new(&endpoint, &token, &self.overrides.repo_type, &self.overrides.repo_id)?;
+        let hub_client = HubClient::new(&endpoint, &token, &self.overrides.repo_type, &self.overrides.repo_id).await?;
 
         self.command.run(hub_client).await
     }
@@ -205,7 +205,8 @@ async fn query_reconstruction(
         Some(config.shard_config.cache_directory.clone()),
         "",
         true,
-    );
+    )
+    .await;
 
     remote_client
         .get_reconstruction(&file_hash, bytes_range)

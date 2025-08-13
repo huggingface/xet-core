@@ -31,7 +31,7 @@ pub async fn migrate_with_external_runtime(
     repo_type: &str,
     repo_id: &str,
 ) -> Result<()> {
-    let hub_client = HubClient::new(hub_endpoint, hub_token, repo_type, repo_id)?;
+    let hub_client = HubClient::new(hub_endpoint, hub_token, repo_type, repo_id).await?;
 
     migrate_files_impl(file_paths, false, hub_client, cas_endpoint, None, false).await?;
 

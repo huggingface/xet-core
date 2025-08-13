@@ -187,7 +187,7 @@ pub(crate) async fn map_fetch_info_into_download_tasks(
 
 impl RemoteClient {
     #[allow(clippy::too_many_arguments)]
-    pub fn new(
+    pub async fn new(
         endpoint: &str,
         auth: &Option<AuthConfig>,
         cache_config: &Option<CacheConfig>,
@@ -217,15 +217,19 @@ impl RemoteClient {
             endpoint: endpoint.to_string(),
             dry_run,
             authenticated_http_client_with_retry: Arc::new(
-                http_client::build_auth_http_client(auth, RetryConfig::default(), session_id).unwrap(),
+                http_client::build_auth_http_client(auth, RetryConfig::default(), session_id)
+                    .await
+                    .unwrap(),
             ),
             authenticated_http_client: Arc::new(
-                http_client::build_auth_http_client_no_retry(auth, session_id).unwrap(),
+                http_client::build_auth_http_client_no_retry(auth, session_id).await.unwrap(),
             ),
             http_client_with_retry: Arc::new(
-                http_client::build_http_client(RetryConfig::default(), session_id).unwrap(),
+                http_client::build_http_client(RetryConfig::default(), session_id)
+                    .await
+                    .unwrap(),
             ),
-            http_client: Arc::new(http_client::build_http_client_no_retry(session_id).unwrap()),
+            http_client: Arc::new(http_client::build_http_client_no_retry(session_id).await.unwrap()),
             chunk_cache,
             #[cfg(not(target_family = "wasm"))]
             range_download_single_flight: Arc::new(Group::new()),
@@ -838,14 +842,14 @@ mod tests {
 
     #[ignore = "requires a running CAS server"]
     #[traced_test]
-    #[test]
-    fn test_basic_put() {
+    #[tokio::test]
+    async fn test_basic_put() {
         // Arrange
         let prefix = PREFIX_DEFAULT;
         let raw_xorb = build_raw_xorb(3, ChunkSize::Random(512, 10248));
 
         let threadpool = ThreadPool::new().unwrap();
-        let client = RemoteClient::new(CAS_ENDPOINT, &None, &None, None, "", false);
+        let client = RemoteClient::new(CAS_ENDPOINT, &None, &None, None, "", false).await;
 
         let cas_object = build_and_verify_cas_object(raw_xorb, Some(CompressionScheme::LZ4));
 
@@ -892,8 +896,8 @@ mod tests {
         };
     }
 
-    #[test]
-    fn test_reconstruct_file_full_file() -> Result<()> {
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_reconstruct_file_full_file() -> Result<()> {
         // Arrange server
         let server = MockServer::start();
 
@@ -964,11 +968,11 @@ mod tests {
             }
         }
 
-        test_reconstruct_file(test_case, &server.base_url())
+        test_reconstruct_file(test_case, &server.base_url()).await
     }
 
-    #[test]
-    fn test_reconstruct_file_skip_front_bytes() -> Result<()> {
+    #[tokio::test]
+    async fn test_reconstruct_file_skip_front_bytes() -> Result<()> {
         // Arrange server
         let server = MockServer::start();
 
@@ -1040,11 +1044,11 @@ mod tests {
             }
         }
 
-        test_reconstruct_file(test_case, &server.base_url())
+        test_reconstruct_file(test_case, &server.base_url()).await
     }
 
-    #[test]
-    fn test_reconstruct_file_skip_back_bytes() -> Result<()> {
+    #[tokio::test]
+    async fn test_reconstruct_file_skip_back_bytes() -> Result<()> {
         // Arrange server
         let server = MockServer::start();
 
@@ -1112,11 +1116,11 @@ mod tests {
             }
         }
 
-        test_reconstruct_file(test_case, &server.base_url())
+        test_reconstruct_file(test_case, &server.base_url()).await
     }
 
-    #[test]
-    fn test_reconstruct_file_two_terms() -> Result<()> {
+    #[tokio::test]
+    async fn test_reconstruct_file_two_terms() -> Result<()> {
         // Arrange server
         let server = MockServer::start();
 
@@ -1211,23 +1215,19 @@ mod tests {
             }
         }
 
-        test_reconstruct_file(test_case, &server.base_url())
+        test_reconstruct_file(test_case, &server.base_url()).await
     }
 
-    fn test_reconstruct_file(test_case: TestCase, endpoint: &str) -> Result<()> {
-        let threadpool = ThreadPool::new()?;
-
+    async fn test_reconstruct_file(test_case: TestCase, endpoint: &str) -> Result<()> {
         // test reconstruct and sequential write
         let test = test_case.clone();
-        let client = RemoteClient::new(endpoint, &None, &None, None, "", false);
+        let client = RemoteClient::new(endpoint, &None, &None, None, "", false).await;
         let provider = BufferProvider::default();
         let buf = provider.buf.clone();
         let writer = OutputProvider::Buffer(provider);
-        let resp = threadpool.external_run_async_task(async move {
-            client
-                .reconstruct_file_to_writer_segmented(&test.file_hash, Some(test.file_range), &writer, None)
-                .await
-        })?;
+        let resp = client
+            .reconstruct_file_to_writer_segmented(&test.file_hash, Some(test.file_range), &writer, None)
+            .await;
 
         assert_eq!(test.expect_error, resp.is_err(), "{:?}", resp.err());
         if !test.expect_error {
@@ -1237,20 +1237,13 @@ mod tests {
 
         // test reconstruct and parallel write
         let test = test_case;
-        let client = RemoteClient::new(endpoint, &None, &None, None, "", false);
+        let client = RemoteClient::new(endpoint, &None, &None, None, "", false).await;
         let provider = BufferProvider::default();
         let buf = provider.buf.clone();
         let writer = OutputProvider::Buffer(provider);
-        let resp = threadpool.external_run_async_task(async move {
-            client
-                .reconstruct_file_to_writer_segmented_parallel_write(
-                    &test.file_hash,
-                    Some(test.file_range),
-                    &writer,
-                    None,
-                )
-                .await
-        })?;
+        let resp = client
+            .reconstruct_file_to_writer_segmented_parallel_write(&test.file_hash, Some(test.file_range), &writer, None)
+            .await;
 
         assert_eq!(test.expect_error, resp.is_err());
         if !test.expect_error {
