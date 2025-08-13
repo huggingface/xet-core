@@ -1272,6 +1272,26 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "07e28edb80900c19c28f1072f2e8aeca7fa06b23cd4169cefe1af5aa3260783f"
 
 [[package]]
+name = "git_xet"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "chrono",
+ "clap",
+ "data",
+ "futures",
+ "progress_tracking",
+ "serde",
+ "serde_json",
+ "signal-hook",
+ "signal-hook-tokio",
+ "thiserror 2.0.12",
+ "tokio",
+ "utils",
+]
+
+[[package]]
 name = "gloo-timers"
 version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1380,23 +1400,6 @@ name = "hermit-abi"
 version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fbf6a919d6cf397374f7dfeeea91d974c7c0a7221d0d0f4f20d859d329e53fcc"
-
-[[package]]
-name = "hf_xet_git_integration"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "chrono",
- "clap",
- "data",
- "futures",
- "serde",
- "serde_json",
- "signal-hook",
- "signal-hook-tokio",
- "thiserror 2.0.12",
- "tokio",
-]
 
 [[package]]
 name = "http"

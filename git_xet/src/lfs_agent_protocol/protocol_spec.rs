@@ -6,7 +6,7 @@ use std::str::FromStr;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
-use crate::errors::{GitXetError, Result, bad_protocol};
+use super::errors::*;
 
 // This file defines the protocol that Git LFS uses to talk to
 // custom transfer agents. This implementation follows the protocol specification
@@ -104,37 +104,37 @@ impl LFSProtocolRequestEvent {
                     InitRequest::Download(inner) => inner,
                 };
                 if inner.remote.is_empty() {
-                    return Err(bad_protocol("invalid remote"));
+                    return Err(bad_argument("invalid remote"));
                 }
 
                 Ok(())
             },
             LFSProtocolRequestEvent::Upload(req) => {
                 if req.oid.len() != OID_LEN {
-                    return Err(bad_protocol("invalid oid"));
+                    return Err(bad_argument("invalid oid"));
                 }
 
                 if req.size == 0 {
-                    return Err(bad_protocol("invalid size"));
+                    return Err(bad_argument("invalid size"));
                 }
 
                 if req.path.is_none() {
-                    return Err(bad_protocol("file path not provided for upload request"));
+                    return Err(bad_syntax("file path not provided for upload request"));
                 }
 
                 Ok(())
             },
             LFSProtocolRequestEvent::Download(req) => {
                 if req.oid.len() != OID_LEN {
-                    return Err(bad_protocol("invalid oid"));
+                    return Err(bad_argument("invalid oid"));
                 }
 
                 if req.size == 0 {
-                    return Err(bad_protocol("invalid size"));
+                    return Err(bad_argument("invalid size"));
                 }
 
                 if req.path.is_some() {
-                    return Err(bad_protocol("file path provided for download request"));
+                    return Err(bad_syntax("file path provided for download request"));
                 }
 
                 Ok(())
@@ -145,10 +145,10 @@ impl LFSProtocolRequestEvent {
 }
 
 impl FromStr for LFSProtocolRequestEvent {
-    type Err = GitXetError;
+    type Err = GitLFSProtocolError;
 
     fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
-        let req: LFSProtocolRequestEvent = serde_json::from_str(s).map_err(bad_protocol)?;
+        let req: LFSProtocolRequestEvent = serde_json::from_str(s).map_err(bad_syntax)?;
         req.validate()?;
         Ok(req)
     }
@@ -165,6 +165,14 @@ impl InitRequest {
 }
 
 impl TransferRequest {
+    pub fn progress(&self, bytes_so_far: u64, bytes_since_last: u64) -> impl Serialize {
+        LFSProtocolResponseEvent::Progress(ProgressResponse {
+            oid: self.oid.clone(),
+            bytes_so_far,
+            bytes_since_last,
+        })
+    }
+
     pub fn success(self, response_file_path: Option<PathBuf>) -> impl Serialize {
         LFSProtocolResponseEvent::Complete(CompleteResponse {
             oid: self.oid,
@@ -192,12 +200,12 @@ impl ProtocolError {
     }
 }
 
-pub fn to_json_string(value: impl Serialize) -> Result<String> {
-    serde_json::to_string(&value).map_err(GitXetError::from)
+pub fn to_line_delimited_json_string(value: impl Serialize) -> Result<String> {
+    Ok(format!("{}\n", serde_json::to_string(&value)?))
 }
 
 #[cfg(test)]
-mod test {
+mod tests {
     use std::path::Path;
 
     use anyhow::Result;
@@ -208,9 +216,9 @@ mod test {
     fn test_protocol_serde_unknown_event() -> Result<()> {
         let message = r#"
             { "event": "other", "operation": "upload", "remote": "origin", "concurrent": false }"#;
-        let parsed: Result<LFSProtocolRequestEvent, GitXetError> = message.parse();
+        let parsed: Result<LFSProtocolRequestEvent, GitLFSProtocolError> = message.parse();
 
-        assert!(matches!(parsed, Err(GitXetError::GitLFSProtocolError(_))));
+        assert!(matches!(parsed, Err(GitLFSProtocolError::SyntaxError(_))));
 
         Ok(())
     }
@@ -249,23 +257,23 @@ mod test {
         // init event with invalid operation
         let message1 = r#"
             { "event": "init", "operation": "other", "remote": "origin", "concurrent": false }"#;
-        let parsed1: Result<LFSProtocolRequestEvent, GitXetError> = message1.parse();
+        let parsed1: Result<LFSProtocolRequestEvent, GitLFSProtocolError> = message1.parse();
 
-        assert!(matches!(parsed1, Err(GitXetError::GitLFSProtocolError(_))));
+        assert!(matches!(parsed1, Err(GitLFSProtocolError::SyntaxError(_))));
 
         // init event missing required field
         let message2 = r#"
             { "event": "init", "operation": "upload", "remote": "origin" }"#;
-        let parsed2: Result<LFSProtocolRequestEvent, GitXetError> = message2.parse();
+        let parsed2: Result<LFSProtocolRequestEvent, GitLFSProtocolError> = message2.parse();
 
-        assert!(matches!(parsed2, Err(GitXetError::GitLFSProtocolError(_))));
+        assert!(matches!(parsed2, Err(GitLFSProtocolError::SyntaxError(_))));
 
         // init event with invalid remote
         let message2 = r#"
             { "event": "init", "operation": "upload", "remote": "", "concurrent": false }"#;
-        let parsed2: Result<LFSProtocolRequestEvent, GitXetError> = message2.parse();
+        let parsed2: Result<LFSProtocolRequestEvent, GitLFSProtocolError> = message2.parse();
 
-        assert!(matches!(parsed2, Err(GitXetError::GitLFSProtocolError(_))));
+        assert!(matches!(parsed2, Err(GitLFSProtocolError::ArgumentError(_))));
 
         Ok(())
     }
@@ -278,7 +286,7 @@ mod test {
             concurrent: false,
             concurrenttransfers: None,
         });
-        let mut error = to_json_string(init_req.error("agent failed initialization"))?;
+        let mut error = to_line_delimited_json_string(init_req.error("agent failed initialization"))?;
         let mut expected = r#"{ "error": { "code": 32, "message": "agent failed initialization" } }"#.to_owned();
 
         error.retain(|c| !c.is_whitespace());
@@ -334,41 +342,41 @@ mod test {
         let message1 = r#"
             { "event": "upload", "oid": "bf3e3e2af9366a3b704ae0c31de5afa64193ebabffde2091936ad2e7510bc03a", "size": 346232,
             "path": "/path/to/file.png" }"#;
-        let parsed1: Result<LFSProtocolRequestEvent, GitXetError> = message1.parse();
+        let parsed1: Result<LFSProtocolRequestEvent, GitLFSProtocolError> = message1.parse();
 
-        assert!(matches!(parsed1, Err(GitXetError::GitLFSProtocolError(_))));
+        assert!(matches!(parsed1, Err(GitLFSProtocolError::SyntaxError(_))));
 
         // transfer event with invalid oid
         let message2 = r#"
             { "event": "upload", "oid": "bf3e3e2af9366abc03a", "size": 346232,
             "path": "/path/to/file.png", "action": { "href": "nfs://server/path", "header": { "key": "value" } } }"#;
-        let parsed2: Result<LFSProtocolRequestEvent, GitXetError> = message2.parse();
+        let parsed2: Result<LFSProtocolRequestEvent, GitLFSProtocolError> = message2.parse();
 
-        assert!(matches!(parsed2, Err(GitXetError::GitLFSProtocolError(_))));
+        assert!(matches!(parsed2, Err(GitLFSProtocolError::ArgumentError(_))));
 
         // transfer event with invalid size
         let message3 = r#"
             { "event": "upload", "oid": "bf3e3e2af9366a3b704ae0c31de5afa64193ebabffde2091936ad2e7510bc03a", "size": 0,
             "path": "/path/to/file.png", "action": { "href": "nfs://server/path", "header": { "key": "value" } } }"#;
-        let parsed3: Result<LFSProtocolRequestEvent, GitXetError> = message3.parse();
+        let parsed3: Result<LFSProtocolRequestEvent, GitLFSProtocolError> = message3.parse();
 
-        assert!(matches!(parsed3, Err(GitXetError::GitLFSProtocolError(_))));
+        assert!(matches!(parsed3, Err(GitLFSProtocolError::ArgumentError(_))));
 
         // upload transfer event missing path
         let message4 = r#"
             { "event": "upload", "oid": "bf3e3e2af9366a3b704ae0c31de5afa64193ebabffde2091936ad2e7510bc03a", "size": 346232,
             "action": { "href": "nfs://server/path", "header": { "key": "value" } } }"#;
-        let parsed4: Result<LFSProtocolRequestEvent, GitXetError> = message4.parse();
+        let parsed4: Result<LFSProtocolRequestEvent, GitLFSProtocolError> = message4.parse();
 
-        assert!(matches!(parsed4, Err(GitXetError::GitLFSProtocolError(_))));
+        assert!(matches!(parsed4, Err(GitLFSProtocolError::SyntaxError(_))));
 
         // download transfer event with path
         let message5 = r#"
             { "event": "download", "oid": "bf3e3e2af9366a3b704ae0c31de5afa64193ebabffde2091936ad2e7510bc03a", "size": 12514,
             "path": "/path/to/file.png", "action": { "href": "https://server/path", "header": { "k1": "v1", "k2": "v2" } } }"#;
-        let parsed5: Result<LFSProtocolRequestEvent, GitXetError> = message5.parse();
+        let parsed5: Result<LFSProtocolRequestEvent, GitLFSProtocolError> = message5.parse();
 
-        assert!(matches!(parsed5, Err(GitXetError::GitLFSProtocolError(_))));
+        assert!(matches!(parsed5, Err(GitLFSProtocolError::SyntaxError(_))));
 
         Ok(())
     }
@@ -386,7 +394,7 @@ mod test {
                 header: HashMap::from([("key".to_owned(), "value".to_owned())]),
             },
         };
-        let mut error = to_json_string(transfer_req.error("agent failed upload"))?;
+        let mut error = to_line_delimited_json_string(transfer_req.error("agent failed upload"))?;
         let mut expected = r#"
             { "event": "complete", "oid": "bf3e3e2af9366a3b704ae0c31de5afa64193ebabffde2091936ad2e7510bc03a",
             "error": { "code": 2, "message": "agent failed upload" } }"#
@@ -418,7 +426,7 @@ mod test {
             bytes_so_far: 1234,
             bytes_since_last: 64,
         });
-        let mut response = to_json_string(progress_res)?;
+        let mut response = to_line_delimited_json_string(progress_res)?;
         let mut expected = r#"
             { "event": "progress", "oid": "22ab5f63670800cc7be06dbed816012b0dc411e774754c7579467d2536a9cf3e",
             "bytesSoFar": 1234, "bytesSinceLast": 64 }"#
@@ -444,7 +452,7 @@ mod test {
                 header: HashMap::from([("key".to_owned(), "value".to_owned())]),
             },
         };
-        let mut response = to_json_string(upload_req.success(None))?;
+        let mut response = to_line_delimited_json_string(upload_req.success(None))?;
         let mut expected =
             r#"{ "event": "complete", "oid": "bf3e3e2af9366a3b704ae0c31de5afa64193ebabffde2091936ad2e7510bc03a" }"#
                 .to_owned();
@@ -464,7 +472,8 @@ mod test {
                 header: HashMap::from([("k1".to_owned(), "v1".to_owned()), ("k2".to_owned(), "v2".to_owned())]),
             },
         };
-        let mut response = to_json_string(download_req.success(Some(Path::new("/path/to/file.png").to_path_buf())))?;
+        let mut response =
+            to_line_delimited_json_string(download_req.success(Some(Path::new("/path/to/file.png").to_path_buf())))?;
         let mut expected = r#"
             { "event": "complete", "oid": "22ab5f63670800cc7be06dbed816012b0dc411e774754c7579467d2536a9cf3e", "path": "/path/to/file.png" }"#.to_owned();
 

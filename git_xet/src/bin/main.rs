@@ -28,7 +28,7 @@ use std::io::Write;
 use anyhow::Result;
 use clap::Parser;
 use futures::stream::StreamExt;
-use hf_xet_git_integration::app::XetApp;
+use git_xet::app::XetApp;
 use signal_hook::consts::signal::*;
 use signal_hook_tokio::Signals;
 

@@ -1,5 +1,5 @@
 [package]
-name = "hf_xet_git_integration"
+name = "git_xet"
 version = "0.1.0"
 edition = "2024"
 
@@ -8,9 +8,12 @@ name = "git-xet"
 path = "src/bin/main.rs"
 
 [dependencies]
-data = {path = "../data"}
+data = { path = "../data" }
+progress_tracking = { path = "../progress_tracking" }
+utils = { path = "../utils" }
 
 anyhow = { workspace = true }
+async-trait = { workspace = true }
 clap = { workspace = true }
 chrono = { workspace = true }
 futures = { workspace = true }

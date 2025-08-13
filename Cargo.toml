@@ -10,7 +10,7 @@ members = [
     "deduplication",
     "error_printer",
     "file_utils",
-    "hf_xet_git_integration",
+    "git_xet",
     "mdb_shard",
     "merklehash",
     "parutils",
