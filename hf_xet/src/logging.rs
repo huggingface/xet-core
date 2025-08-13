@@ -113,6 +113,7 @@ pub fn init_logging(py: Python) {
     let version_info = get_version_info_string(py);
 
     if let Ok(log_path_s) = env::var("HF_XET_LOG_FILE") {
+        eprintln!("HF_XET_LOG_FILE: {}", log_path_s);
         let log_path = normalized_path_from_user_string(log_path_s);
         match init_logging_to_file(&log_path) {
             Ok(_) => {
@@ -128,7 +129,8 @@ pub fn init_logging(py: Python) {
     let fmt_layer_base = tracing_subscriber::fmt::layer()
         .with_line_number(true)
         .with_file(true)
-        .with_target(false);
+        .with_target(false)
+        .with_thread_ids(true);
 
     let filter_layer = EnvFilter::try_from_default_env()
         .or_else(|_| EnvFilter::try_new(DEFAULT_LOG_LEVEL))

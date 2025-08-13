@@ -202,6 +202,9 @@ where
         // thread-local storage that is invalidated after a fork-exec.
         spawn_os_thread(move || {
             let runtime = get_threadpool().map_err(convert_multithreading_error)?;
+            let num_threads = runtime.num_worker_threads();
+            let external_executor_count = runtime.external_executor_count();
+            info!("runtime info in call to async_run worker threads: {num_threads} external_executor_count: {external_executor_count}");
 
             runtime
                 .external_run_async_task(execution_call)

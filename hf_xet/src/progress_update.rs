@@ -13,6 +13,10 @@ use xet_threadpool::exports::tokio;
 
 use crate::runtime::convert_multithreading_error;
 
+utils::configurable_bool_constants! {
+    ref LOG_PROGRESS_UPDATES = false;
+}
+
 /// Python-exposed versions of the per-item and total progress update classes.
 ///
 /// Both `PyTotalProgressUpdate` and `PyItemProgressUpdate` are passed
@@ -223,7 +227,15 @@ impl WrappedProgressUpdaterImpl {
     async fn register_updates_impl(self: Arc<Self>, updates: ProgressUpdate) -> PyResult<()> {
         // Run on compute thread that doesn't block async workers
         tokio::task::spawn_blocking(move || {
+            if *LOG_PROGRESS_UPDATES {
+                tracing::info!("Progress update acquiring GIL");
+            }
+
             Python::with_gil(|py| {
+                if *LOG_PROGRESS_UPDATES {
+                    tracing::info!("Progress update GIL acquired");
+                }
+
                 let f = self.py_func.bind(py);
 
                 if self.update_with_detailed_progress {
@@ -285,6 +297,11 @@ impl WrappedProgressUpdaterImpl {
         })
         .await
         .map_err(convert_multithreading_error)?
+        .inspect(|_| {
+            if *LOG_PROGRESS_UPDATES {
+                tracing::info!("Progress update released GIL");
+            }
+        })
     }
 }
 

@@ -4,6 +4,7 @@ use std::sync::Arc;
 
 use futures::prelude::stream::*;
 use tokio::sync::Mutex;
+use tracing::info;
 
 #[derive(Debug)]
 pub enum ParallelError<E> {
@@ -101,13 +102,17 @@ where
     let proc_queue = Arc::new(Mutex::<(usize, Vec<I>)>::new((0usize, input)));
     let proc_result = Arc::new(Mutex::new(_output));
 
+    info!("tokio_par_for_each starting tokio scope and block with {n_tasks} tasks and max conc: {max_concurrent}");
     let (_, outputs) = async_scoped::TokioScope::scope_and_block(|scope| {
-        for _ in 0..max_concurrent {
+        let scope_id: u16 = rand::random();
+
+        for _ in 0..(max_concurrent.min(n_tasks)) {
             let proc_queue = proc_queue.clone();
             let proc_result = proc_result.clone();
             let f = &f;
 
             scope.spawn(async move {
+                let scope_task_id: u16 = rand::random();
                 loop {
                     let idx;
                     let task: I;
@@ -117,6 +122,7 @@ where
                         let stats = &mut obj;
                         idx = stats.0;
                         if idx >= n_tasks {
+                            info!("tokio_par_for_each {scope_id}.{scope_task_id} inside tokio scope and exiting, idx >= n_tasks: {n_tasks}");
                             return Result::<(), E>::Ok(());
                         } else {
                             task = take(&mut stats.1[idx]);
@@ -124,7 +130,9 @@ where
                         }
                     }
 
+                    info!("tokio_par_for_each {scope_id}.{scope_task_id} begin task: {} / {n_tasks}", idx + 1);
                     let result = f(task, idx).await?;
+                    info!("tokio_par_for_each {scope_id}.{scope_task_id} end processing task: {} / {n_tasks}", idx + 1);
 
                     {
                         let mut obj = proc_result.lock().await;

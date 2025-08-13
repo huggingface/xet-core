@@ -2290,7 +2290,9 @@ dependencies = [
  "async-scoped",
  "futures",
  "more-asserts",
+ "rand 0.9.1",
  "tokio",
+ "tracing",
 ]
 
 [[package]]

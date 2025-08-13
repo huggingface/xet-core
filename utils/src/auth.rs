@@ -1,7 +1,15 @@
 use std::fmt::Debug;
 use std::sync::Arc;
-#[cfg(not(target_family = "wasm"))]
-use std::time::{SystemTime, UNIX_EPOCH};
+
+mod time {
+    #[cfg(not(target_family = "wasm"))]
+    pub use std::time::*;
+
+    #[cfg(target_family = "wasm")]
+    pub use web_time::*;
+}
+
+use time::{SystemTime, UNIX_EPOCH};
 
 use crate::errors::AuthError;
 
@@ -104,14 +112,8 @@ impl TokenProvider {
     }
 
     fn is_expired(&self) -> bool {
-        #[cfg(not(target_family = "wasm"))]
         let cur_time = SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(u64::MAX);
-        #[cfg(target_family = "wasm")]
-        let cur_time = web_time::SystemTime::now()
-            .duration_since(web_time::UNIX_EPOCH)
             .map(|d| d.as_secs())
             .unwrap_or(u64::MAX);
         self.expiration <= cur_time + REFRESH_BUFFER_SEC

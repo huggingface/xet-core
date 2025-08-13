@@ -14,6 +14,7 @@ use http::header::RANGE;
 use http::StatusCode;
 use merklehash::MerkleHash;
 use reqwest_middleware::ClientWithMiddleware;
+use reqwest_retry::{default_on_request_failure, Retryable};
 use tokio_retry::strategy::ExponentialBackoff;
 use tracing::{debug, error, info, trace, warn};
 use url::Url;
@@ -483,6 +484,35 @@ struct ChunkRangeDeserializeFromBytesStreamRetryCondition;
 
 impl tokio_retry::Condition<CasClientError> for ChunkRangeDeserializeFromBytesStreamRetryCondition {
     fn should_retry(&mut self, err: &CasClientError) -> bool {
+        if let CasClientError::ReqwestMiddlewareError(reqwest_middleware_error) = err {
+            if default_on_request_failure(reqwest_middleware_error).is_some_and(|s| s == Retryable::Transient) {
+                return true;
+            }
+            let reqwest_middleware::Error::Reqwest(e) = reqwest_middleware_error else {
+                return false;
+            };
+            let Some(status) = e.status() else {
+                return false;
+            };
+            return matches!(status.as_u16(), 408 | 429 | 500..=504);
+        }
+
+        if let CasClientError::ReqwestError(e, _) = err {
+            #[cfg(not(target_arch = "wasm32"))]
+            let is_connect = e.is_connect();
+            #[cfg(target_arch = "wasm32")]
+            let is_connect = false;
+
+            return if is_connect || e.is_decode() || e.is_body() || e.is_timeout() {
+                // We got an incomplete or corrupted response from the server, possibly due to a dropped
+                // connection.  Presumably this error is transient.
+                true
+            } else if let Some(status) = e.status() {
+                matches!(status.as_u16(), 408 | 429 | 500..=504)
+            } else {
+                false
+            };
+        }
         // we only care about retrying some error yielded by trying to deserialize the stream
         let CasClientError::CasObjectError(CasObjectError::InternalIOError(cas_object_io_err)) = err else {
             return false;
@@ -761,7 +791,7 @@ mod tests {
             take: file_range.length(),
         };
 
-        let handle = tokio::spawn(async move { download_task.run().await });
+        let handle = tokio::spawn(download_task.run());
 
         // Wait for the download_task to refresh and retry for a couple of times.
         tokio::time::sleep(Duration::from_secs(1)).await;

@@ -8,6 +8,8 @@ edition = "2021"
 async-scoped = { workspace = true }
 futures = { workspace = true }
 tokio = { workspace = true }
+tracing = { workspace = true }
+rand = { workspace = true }
 
 [dev-dependencies]
 anyhow = { workspace = true }
