@@ -847,17 +847,21 @@ where
     // first tick automatically returns, flushing it here
     ticker.tick().await;
     let mut fut = f.fuse();
+    let mut logged = false;
 
     loop {
         select! {
             result = fut => {
                 let duration = start.elapsed();
-                info!("timing operation duration: {duration:?}, {message}");
+                debug!("timing operation duration: {duration:?}, {message}");
                 return result;
             },
             _ = ticker.tick().fuse() => {
                 let elapsed = start.elapsed();
-                info!("Still running after {elapsed:?}: {message}");
+                if !logged && elapsed > Duration::from_secs(5) {
+                    logged = true;
+                    info!("Still running after {elapsed:?}: {message}");
+                }
             }
         }
     }

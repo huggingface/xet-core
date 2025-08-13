@@ -113,6 +113,7 @@ pub fn init_logging(py: Python) {
     let version_info = get_version_info_string(py);
 
     if let Ok(log_path_s) = env::var("HF_XET_LOG_FILE") {
+        eprintln!("HF_XET_LOG_FILE: {}", log_path_s);
         let log_path = normalized_path_from_user_string(log_path_s);
         match init_logging_to_file(&log_path) {
             Ok(_) => {

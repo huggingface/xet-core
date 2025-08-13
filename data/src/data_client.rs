@@ -201,6 +201,7 @@ pub async fn download_async(
     token_refresher: Option<Arc<dyn TokenRefresher>>,
     progress_updaters: Option<Vec<Arc<dyn TrackingProgressUpdater>>>,
 ) -> errors::Result<Vec<String>> {
+    info!("download_async called");
     if let Some(updaters) = &progress_updaters {
         if updaters.len() != file_infos.len() {
             return Err(DataProcessingError::ParameterError(
