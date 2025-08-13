@@ -834,7 +834,7 @@ impl Client for RemoteClient {
     }
 }
 
-async fn log_duration<T, F: Future<Output = T>>(f: F, message: &str) -> T
+async fn log_duration<T, F>(f: F, message: &str) -> T
 where
     F: Future<Output = T> + Unpin,
 {

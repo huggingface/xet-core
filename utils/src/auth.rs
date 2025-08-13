@@ -116,12 +116,6 @@ impl TokenProvider {
     }
 
     fn is_expired(&self) -> bool {
-        #[cfg(not(target_family = "wasm"))]
-        let cur_time = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(u64::MAX);
-        #[cfg(target_family = "wasm")]
         let cur_time = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map(|d| d.as_secs())
