@@ -98,7 +98,7 @@ pub fn build_auth_http_client<R: RetryableStrategy + Send + Sync + 'static>(
     retry_config: RetryConfig<R>,
     session_id: &str,
 ) -> Result<ClientWithMiddleware, CasClientError> {
-    let auth_middleware = auth_config.as_ref().map(AuthMiddleware::from).info_none("CAS auth disabled");
+    let auth_middleware = auth_config.as_ref().map(AuthMiddleware::from).debug_none("CAS auth disabled");
     let logging_middleware = Some(LoggingMiddleware);
     let session_middleware = (!session_id.is_empty()).then(|| SessionMiddleware(session_id.to_owned()));
 
@@ -116,7 +116,7 @@ pub fn build_auth_http_client_no_retry(
     auth_config: &Option<AuthConfig>,
     session_id: &str,
 ) -> Result<ClientWithMiddleware, CasClientError> {
-    let auth_middleware = auth_config.as_ref().map(AuthMiddleware::from).info_none("CAS auth disabled");
+    let auth_middleware = auth_config.as_ref().map(AuthMiddleware::from).debug_none("CAS auth disabled");
     let logging_middleware = Some(LoggingMiddleware);
     let session_middleware = (!session_id.is_empty()).then(|| SessionMiddleware(session_id.to_owned()));
     Ok(ClientBuilder::new(reqwest_client()?)

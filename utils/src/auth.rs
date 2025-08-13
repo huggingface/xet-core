@@ -1,7 +1,15 @@
 use std::fmt::Debug;
 use std::sync::Arc;
-#[cfg(not(target_family = "wasm"))]
-use std::time::{SystemTime, UNIX_EPOCH};
+
+mod time {
+    #[cfg(not(target_family = "wasm"))]
+    pub use std::time::*;
+
+    #[cfg(target_family = "wasm")]
+    pub use web_time::*;
+}
+
+use time::{Duration, SystemTime, UNIX_EPOCH};
 
 use crate::errors::AuthError;
 
@@ -89,7 +97,11 @@ impl TokenProvider {
     pub fn new(cfg: &AuthConfig) -> Self {
         Self {
             token: cfg.token.clone(),
-            expiration: cfg.token_expiration,
+            // expiration: cfg.token_expiration,
+            expiration: (SystemTime::now() + Duration::from_secs(REFRESH_BUFFER_SEC + 10))
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_secs(),
             refresher: cfg.token_refresher.clone(),
         }
     }
@@ -110,8 +122,8 @@ impl TokenProvider {
             .map(|d| d.as_secs())
             .unwrap_or(u64::MAX);
         #[cfg(target_family = "wasm")]
-        let cur_time = web_time::SystemTime::now()
-            .duration_since(web_time::UNIX_EPOCH)
+        let cur_time = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
             .map(|d| d.as_secs())
             .unwrap_or(u64::MAX);
         self.expiration <= cur_time + REFRESH_BUFFER_SEC

@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::future::Future;
 use std::io::Write;
 use std::mem::take;
 use std::path::PathBuf;
@@ -65,6 +66,9 @@ utils::configurable_bool_constants! {
 // However, this is not likely the case for writing to HDD and may in fact be worse,
 // so for those machines, setting this env may help download perf.
     ref RECONSTRUCT_WRITE_SEQUENTIALLY = false;
+
+    ref LOG_DURATION = false;
+    ref LOG_QUEUE_STATUS = false;
 }
 
 pub struct RemoteClient {
@@ -505,6 +509,10 @@ impl RemoteClient {
                 }
             }
 
+            if *LOG_QUEUE_STATUS {
+                info!("download queue len: {}, running downloads: {}", task_rx.len(), running_downloads.len());
+            }
+
             match item {
                 DownloadQueueItem::End => {
                     // everything processed
@@ -514,7 +522,14 @@ impl RemoteClient {
                 DownloadQueueItem::DownloadTask(term_download) => {
                     // acquire the permit before spawning the task, so that there's limited
                     // number of active downloads.
-                    let permit = download_concurrency_limiter.clone().acquire_owned().await?;
+                    let permit = if *LOG_DURATION {
+                        use futures::pin_mut;
+                        let fut = download_concurrency_limiter.clone().acquire_owned();
+                        pin_mut!(fut);
+                        log_duration(fut, "acquire permit for download task").await?
+                    } else {
+                        download_concurrency_limiter.clone().acquire_owned().await?
+                    };
                     debug!("spawning 1 download task");
                     running_downloads.spawn(async move {
                         let data = term_download.run().await?;
@@ -531,6 +546,7 @@ impl RemoteClient {
 
                     let Some((offset_into_first_range, terms)) = segment.query().await? else {
                         // signal termination
+                        debug!("Completed querying for reconstruction ranges");
                         task_tx.send(DownloadQueueItem::End)?;
                         continue;
                     };
@@ -730,11 +746,11 @@ impl Client for RemoteClient {
         // If the user has set the `HF_XET_RECONSTRUCT_WRITE_SEQUENTIALLY=true` env variable, then we
         // should write the file to the output sequentially instead of in parallel.
         if *RECONSTRUCT_WRITE_SEQUENTIALLY {
-            info!("reconstruct terms sequentially");
+            debug!("reconstruct terms sequentially");
             self.reconstruct_file_to_writer_segmented(hash, byte_range, output_provider, progress_updater)
                 .await
         } else {
-            info!("reconstruct terms in parallel");
+            debug!("reconstruct terms in parallel");
             self.reconstruct_file_to_writer_segmented_parallel_write(
                 hash,
                 byte_range,
@@ -815,6 +831,35 @@ impl Client for RemoteClient {
         };
 
         Ok(Some(response.bytes().await?))
+    }
+}
+
+async fn log_duration<T, F: Future<Output = T>>(f: F, message: &str) -> T
+where
+    F: Future<Output = T> + Unpin,
+{
+    use futures::future::FutureExt;
+    use futures::select;
+    use tokio::time::{interval, Duration, Instant};
+
+    let start = Instant::now();
+    let mut ticker = interval(Duration::from_secs(5));
+    // first tick automatically returns, flushing it here
+    ticker.tick().await;
+    let mut fut = f.fuse();
+
+    loop {
+        select! {
+            result = fut => {
+                let duration = start.elapsed();
+                info!("timing operation duration: {duration:?}, {message}");
+                return result;
+            },
+            _ = ticker.tick().fuse() => {
+                let elapsed = start.elapsed();
+                info!("Still running after {elapsed:?}: {message}");
+            }
+        }
     }
 }
 
