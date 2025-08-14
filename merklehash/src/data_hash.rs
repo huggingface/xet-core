@@ -119,7 +119,7 @@ impl core::ops::Rem<u64> for DataHash {
     type Output = u64;
 
     fn rem(self, rhs: u64) -> Self::Output {
-        self[3] % rhs
+        self[3].to_le() % rhs
     }
 }
 
@@ -153,6 +153,11 @@ impl From<ParseIntError> for DataHashHexParseError {
 
 impl DataHash {
     /// Returns the hexadecimal printout of the hash.
+    /// Different programming languages and platforms may have different byte order layout
+    /// of a u64 in memory, this is not an issue when we typecast a [u8;32] to [u64;4]
+    /// (which is essentially a pointer typecasting and thus doesn't reorder bytes at all),
+    /// until these bytes are actually used as u64s. For such cases we make it explicit to use
+    /// the little-endian order.
     pub fn hex(&self) -> String {
         format!(
             "{:016x}{:016x}{:016x}{:016x}",
