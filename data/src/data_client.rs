@@ -4,7 +4,6 @@ use std::fs::File;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use xet_threadpool::{global_semaphore_handle, GlobalSemaphoreHandle, ThreadPool};
 
 use cas_client::remote_client::PREFIX_DEFAULT;
 use cas_client::{CacheConfig, FileProvider, OutputProvider, CHUNK_CACHE_SIZE_BYTES};
@@ -19,6 +18,7 @@ use tracing::{info, info_span, instrument, Instrument, Span};
 use ulid::Ulid;
 use utils::auth::{AuthConfig, TokenRefresher};
 use utils::normalized_path_from_user_string;
+use xet_threadpool::{global_semaphore_handle, GlobalSemaphoreHandle, ThreadPool};
 
 use crate::configurations::*;
 use crate::constants::{INGESTION_BLOCK_SIZE, MAX_CONCURRENT_DOWNLOADS, MAX_CONCURRENT_FILE_INGESTION};
