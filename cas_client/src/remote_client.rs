@@ -227,14 +227,24 @@ impl RemoteClient {
                 .unwrap(),
             ),
             authenticated_http_client: Arc::new(
-                http_client::build_auth_http_client_no_retry(auth, session_id).await.unwrap(),
+                http_client::build_auth_http_client_no_retry(
+                    auth,
+                    session_id,
+                    Some("remote_client_authenticated_http_client"),
+                )
+                .await
+                .unwrap(),
             ),
             http_client_with_retry: Arc::new(
                 http_client::build_http_client(RetryConfig::default(), session_id, Some("http_client_with_retry"))
                     .await
                     .unwrap(),
             ),
-            http_client: Arc::new(http_client::build_http_client_no_retry(session_id).await.unwrap()),
+            http_client: Arc::new(
+                http_client::build_http_client_no_retry(session_id, Some("remote_client_http_client"))
+                    .await
+                    .unwrap(),
+            ),
             chunk_cache,
             #[cfg(not(target_family = "wasm"))]
             range_download_single_flight: Arc::new(Group::new()),

@@ -128,21 +128,28 @@ pub async fn build_auth_http_client<R: RetryableStrategy + Send + Sync + 'static
 pub async fn build_auth_http_client_no_retry(
     auth_config: &Option<AuthConfig>,
     session_id: &str,
+    cache_tag: Option<&str>,
 ) -> Result<ClientWithMiddleware, CasClientError> {
-    let key = format!("build_auth_http_client[{auth_config:?}, {session_id:?}");
+    let create_func = async move {
+        let auth_middleware = auth_config.as_ref().map(AuthMiddleware::from).info_none("CAS auth disabled");
+        let logging_middleware = Some(LoggingMiddleware);
+        let session_middleware = (!session_id.is_empty()).then(|| SessionMiddleware(session_id.to_owned()));
+        Ok(ClientBuilder::new(reqwest_client()?)
+            .maybe_with(auth_middleware)
+            .maybe_with(logging_middleware)
+            .maybe_with(session_middleware)
+            .build())
+    };
 
-    xet_threadpool::ThreadPool::current()
-        .get_cached_value(&key, || async move {
-            let auth_middleware = auth_config.as_ref().map(AuthMiddleware::from).info_none("CAS auth disabled");
-            let logging_middleware = Some(LoggingMiddleware);
-            let session_middleware = (!session_id.is_empty()).then(|| SessionMiddleware(session_id.to_owned()));
-            Ok(ClientBuilder::new(reqwest_client()?)
-                .maybe_with(auth_middleware)
-                .maybe_with(logging_middleware)
-                .maybe_with(session_middleware)
-                .build())
-        })
-        .await
+    if let Some(tag) = cache_tag {
+        let key = format!("{tag}[{auth_config:?}, {session_id:?}");
+
+        xet_threadpool::ThreadPool::current()
+            .get_cached_value(&key, || create_func)
+            .await
+    } else {
+        create_func.await
+    }
 }
 
 /// Builds HTTP Client to talk to CAS.
@@ -157,8 +164,11 @@ pub async fn build_http_client<R: RetryableStrategy + Send + Sync + 'static>(
 
 /// Builds HTTP Client to talk to CAS.
 /// Includes retry middleware with exponential backoff.
-pub async fn build_http_client_no_retry(session_id: &str) -> Result<ClientWithMiddleware, CasClientError> {
-    build_auth_http_client_no_retry(&None, session_id).await
+pub async fn build_http_client_no_retry(
+    session_id: &str,
+    cache_tag: Option<&str>,
+) -> Result<ClientWithMiddleware, CasClientError> {
+    build_auth_http_client_no_retry(&None, session_id, cache_tag).await
 }
 
 /// RetryStrategy
