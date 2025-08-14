@@ -306,6 +306,7 @@ pub fn hf_xet(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<progress_update::PyItemProgressUpdate>()?;
     m.add_class::<progress_update::PyTotalProgressUpdate>()?;
 
+
     // TODO: remove this during the next major version update.
     // This supports backward compatibility for PyPointerFile with old versions
     // huggingface_hub.
@@ -313,6 +314,9 @@ pub fn hf_xet(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
 
     // Make sure the logger is set up.
     init_logging(py);
+
+    // Raise the soft file handle limits if possible
+    file_handle_limits::raise_nofile_soft_to_hard();
 
     #[cfg(feature = "profiling")]
     {
