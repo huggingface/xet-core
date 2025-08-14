@@ -13,7 +13,6 @@ use dirs::home_dir;
 use parutils::tokio_run_max_concurrency_fold_result_with_semaphore;
 use progress_tracking::item_tracking::ItemProgressUpdater;
 use progress_tracking::TrackingProgressUpdater;
-use tokio::sync::Semaphore;
 use tracing::{info, info_span, instrument, Instrument, Span};
 use ulid::Ulid;
 use utils::auth::{AuthConfig, TokenRefresher};
@@ -21,8 +20,9 @@ use utils::normalized_path_from_user_string;
 use xet_threadpool::{global_semaphore_handle, GlobalSemaphoreHandle, ThreadPool};
 
 use crate::configurations::*;
-use crate::constants::{INGESTION_BLOCK_SIZE, MAX_CONCURRENT_DOWNLOADS, MAX_CONCURRENT_FILE_INGESTION};
+use crate::constants::{INGESTION_BLOCK_SIZE, MAX_CONCURRENT_DOWNLOADS};
 use crate::errors::DataProcessingError;
+use crate::file_upload_session::CONCURRENT_FILE_INGESTION_LIMITER;
 use crate::{errors, FileDownloader, FileUploadSession, XetFileInfo};
 
 utils::configurable_constants! {
@@ -132,9 +132,8 @@ pub async fn upload_bytes_async(
     let config = default_config(endpoint.unwrap_or(DEFAULT_CAS_ENDPOINT.clone()), None, token_info, token_refresher)?;
     Span::current().record("session_id", &config.session_id);
 
-    let semaphore = Arc::new(Semaphore::new(*MAX_CONCURRENT_FILE_INGESTION));
+    let semaphore = ThreadPool::current().global_semaphore(*CONCURRENT_FILE_INGESTION_LIMITER);
     let upload_session = FileUploadSession::new(config, progress_updater).await?;
-    // let blobs_with_spans = add_spans(file_contents, || info_span!("clean_task"));
     let clean_futures = file_contents.into_iter().map(|blob| {
         let upload_session = upload_session.clone();
         async move { clean_bytes(upload_session, blob).await.map(|(xf, _metrics)| xf) }
