@@ -37,15 +37,18 @@ pub struct FileUploadSession {
 }
 
 impl FileUploadSession {
-    pub fn new(config: Arc<TranslatorConfig>) -> Self {
-        let client = Arc::new(RemoteClient::new(
-            &config.data_config.endpoint,
-            &config.data_config.auth,
-            &None,
-            None,
-            &config.session_id,
-            false,
-        ));
+    pub async fn new(config: Arc<TranslatorConfig>) -> Self {
+        let client = Arc::new(
+            RemoteClient::new(
+                &config.data_config.endpoint,
+                &config.data_config.auth,
+                &None,
+                None,
+                &config.session_id,
+                false,
+            )
+            .await,
+        );
 
         let xorb_uploader =
             Box::new(XorbUploaderSpawnParallel::new(client.clone(), &config.data_config.prefix, UPLOAD_CONCURRENCY));

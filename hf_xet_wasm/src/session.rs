@@ -42,7 +42,7 @@ pub struct XetSession {
 #[wasm_bindgen(js_class = "XetSession")]
 impl XetSession {
     #[wasm_bindgen(constructor)]
-    pub fn new(endpoint: String, token_info: TokenInfo, token_refresher: TokenRefresher) -> Self {
+    pub async fn new(endpoint: String, token_info: TokenInfo, token_refresher: TokenRefresher) -> Self {
         let (token, token_expiration): utils::auth::TokenInfo = token_info.into();
         let auth = AuthConfig {
             token,
@@ -62,7 +62,7 @@ impl XetSession {
             },
             session_id: uuid::Uuid::new_v4().to_string(),
         };
-        let upload = FileUploadSession::new(Arc::new(config));
+        let upload = FileUploadSession::new(Arc::new(config)).await;
 
         Self {
             upload: Arc::new(upload),

@@ -172,7 +172,7 @@ pub async fn clean_file(file: web_sys::File, endpoint: String, jwt_token: String
         session_id: uuid::Uuid::new_v4().to_string(),
     };
 
-    let upload_session = Arc::new(FileUploadSession::new(Arc::new(config)));
+    let upload_session = Arc::new(FileUploadSession::new(Arc::new(config)).await);
 
     let mut handle = upload_session.start_clean(0, None);
 
