@@ -4,6 +4,7 @@ use std::fs::File;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use xet_threadpool::{global_semaphore_handle, GlobalSemaphoreHandle, ThreadPool};
 
 use cas_client::remote_client::PREFIX_DEFAULT;
 use cas_client::{CacheConfig, FileProvider, OutputProvider, CHUNK_CACHE_SIZE_BYTES};
@@ -26,6 +27,11 @@ use crate::{errors, FileDownloader, FileUploadSession, XetFileInfo};
 
 utils::configurable_constants! {
     ref DEFAULT_CAS_ENDPOINT: String = "http://localhost:8080".to_string();
+}
+
+lazy_static! {
+    static ref DOWNLOAD_FILE_CONCURRENCY_LIMITER: GlobalSemaphoreHandle =
+        global_semaphore_handle!(*MAX_CONCURRENT_DOWNLOADS);
 }
 
 pub fn default_config(
@@ -216,7 +222,7 @@ pub async fn download_async(
         async move { smudge_file(&proc, &file_info, &file_path, updater).await }.instrument(info_span!("download_file"))
     });
 
-    let semaphore = Arc::new(Semaphore::new(*MAX_CONCURRENT_DOWNLOADS));
+    let semaphore = ThreadPool::current().global_semaphore(*DOWNLOAD_FILE_CONCURRENCY_LIMITER);
 
     let paths = tokio_run_max_concurrency_fold_result_with_semaphore(smudge_file_futures, semaphore).await?;
 

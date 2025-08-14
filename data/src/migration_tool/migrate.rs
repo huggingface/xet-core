@@ -3,8 +3,7 @@ use std::sync::Arc;
 use anyhow::Result;
 use cas_object::CompressionScheme;
 use mdb_shard::file_structs::MDBFileInfo;
-use parutils::tokio_run_max_concurrency_fold_result_with_semaphore;
-use tokio::sync::Semaphore;
+use parutils::tokio_run_max_concurrency_fold_result;
 use tracing::{info_span, instrument, Instrument, Span};
 use utils::auth::TokenRefresher;
 use xet_threadpool::ThreadPool;
@@ -82,8 +81,7 @@ pub async fn migrate_files_impl(
         }
         .instrument(info_span!("clean_file"))
     });
-    let clean_ret =
-        tokio_run_max_concurrency_fold_result_with_semaphore(clean_futs, Arc::new(Semaphore::new(num_workers))).await?;
+    let clean_ret = tokio_run_max_concurrency_fold_result(clean_futs, num_workers).await?;
 
     if dry_run {
         let (metrics, all_file_info) = processor.finalize_with_file_info().await?;
