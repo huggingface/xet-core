@@ -32,7 +32,6 @@ debug = 1
 
 [workspace.dependencies]
 anyhow = "1"
-async-scoped = { version = "0.7", features = ["use-tokio"] }
 async-trait = "0.1"
 base64 = "0.22"
 bincode = "1.3"
