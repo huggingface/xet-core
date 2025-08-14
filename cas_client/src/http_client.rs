@@ -79,16 +79,26 @@ impl RetryConfig<No429RetryStrategy> {
     }
 }
 
-fn reqwest_client() -> Result<reqwest::Client, CasClientError> {
-    let mut reqwest_client_builder = reqwest::Client::builder();
-    // custom dns resolver not supported in WASM. no access to getaddrinfo/any other dns interface.
-    #[cfg(not(target_family = "wasm"))]
-    {
-        reqwest_client_builder =
-            reqwest_client_builder.dns_resolver(Arc::from(dns_utils::GaiResolverWithAbsolute::default()));
+async fn reqwest_client(cache_tag: Option<String>) -> Result<reqwest::Client, CasClientError> {
+    let create_func = async move {
+        let mut reqwest_client_builder = reqwest::Client::builder();
+        // custom dns resolver not supported in WASM. no access to getaddrinfo/any other dns interface.
+        #[cfg(not(target_family = "wasm"))]
+        {
+            reqwest_client_builder =
+                reqwest_client_builder.dns_resolver(Arc::from(dns_utils::GaiResolverWithAbsolute::default()));
+        }
+        let reqwest_client = reqwest_client_builder.build()?;
+        Ok(reqwest_client)
+    };
+
+    if let Some(tag) = cache_tag {
+        xet_threadpool::ThreadPool::current()
+            .get_cached_value(&tag, || create_func)
+            .await
+    } else {
+        create_func.await
     }
-    let reqwest_client = reqwest_client_builder.build()?;
-    Ok(reqwest_client)
 }
 
 /// Builds authenticated HTTP Client to talk to CAS.
@@ -99,29 +109,19 @@ pub async fn build_auth_http_client<R: RetryableStrategy + Send + Sync + 'static
     session_id: &str,
     cache_tag: Option<&str>,
 ) -> Result<ClientWithMiddleware, CasClientError> {
-    let create_func = async move {
-        let auth_middleware = auth_config.as_ref().map(AuthMiddleware::from).info_none("CAS auth disabled");
-        let logging_middleware = Some(LoggingMiddleware);
-        let session_middleware = (!session_id.is_empty()).then(|| SessionMiddleware(session_id.to_owned()));
+    let cache_tag = cache_tag.map(|tag| format!("{tag}::{auth_config:?}"));
 
-        let client = ClientBuilder::new(reqwest_client()?)
-            .maybe_with(auth_middleware)
-            .with(get_retry_middleware(retry_config))
-            .maybe_with(logging_middleware)
-            .maybe_with(session_middleware)
-            .build();
-        Ok(client)
-    };
+    let auth_middleware = auth_config.as_ref().map(AuthMiddleware::from).info_none("CAS auth disabled");
+    let logging_middleware = Some(LoggingMiddleware);
+    let session_middleware = (!session_id.is_empty()).then(|| SessionMiddleware(session_id.to_owned()));
 
-    if let Some(tag) = cache_tag {
-        let key = format!("{tag}[{auth_config:?}, {session_id:?}]");
-
-        xet_threadpool::ThreadPool::current()
-            .get_cached_value(&key, || create_func)
-            .await
-    } else {
-        create_func.await
-    }
+    let client = ClientBuilder::new(reqwest_client(cache_tag).await?)
+        .maybe_with(auth_middleware)
+        .with(get_retry_middleware(retry_config))
+        .maybe_with(logging_middleware)
+        .maybe_with(session_middleware)
+        .build();
+    Ok(client)
 }
 
 /// Builds authenticated HTTP Client to talk to CAS.
@@ -130,26 +130,16 @@ pub async fn build_auth_http_client_no_retry(
     session_id: &str,
     cache_tag: Option<&str>,
 ) -> Result<ClientWithMiddleware, CasClientError> {
-    let create_func = async move {
-        let auth_middleware = auth_config.as_ref().map(AuthMiddleware::from).info_none("CAS auth disabled");
-        let logging_middleware = Some(LoggingMiddleware);
-        let session_middleware = (!session_id.is_empty()).then(|| SessionMiddleware(session_id.to_owned()));
-        Ok(ClientBuilder::new(reqwest_client()?)
-            .maybe_with(auth_middleware)
-            .maybe_with(logging_middleware)
-            .maybe_with(session_middleware)
-            .build())
-    };
+    let cache_tag = cache_tag.map(|tag| format!("{tag}::{auth_config:?}"));
 
-    if let Some(tag) = cache_tag {
-        let key = format!("{tag}[{auth_config:?}, {session_id:?}");
-
-        xet_threadpool::ThreadPool::current()
-            .get_cached_value(&key, || create_func)
-            .await
-    } else {
-        create_func.await
-    }
+    let auth_middleware = auth_config.as_ref().map(AuthMiddleware::from).info_none("CAS auth disabled");
+    let logging_middleware = Some(LoggingMiddleware);
+    let session_middleware = (!session_id.is_empty()).then(|| SessionMiddleware(session_id.to_owned()));
+    Ok(ClientBuilder::new(reqwest_client(cache_tag).await?)
+        .maybe_with(auth_middleware)
+        .maybe_with(logging_middleware)
+        .maybe_with(session_middleware)
+        .build())
 }
 
 /// Builds HTTP Client to talk to CAS.
