@@ -122,7 +122,7 @@ pub struct ThreadPool {
     global_reqwest_client: OnceLock<Client>,
 }
 
-// Use thread-local references to the runtime that are set on initilization among all
+// Use thread-local references to the runtime that are set on initialization among all
 // the worker threads in the runtime.  This way, XetRuntime::current() will always refer to
 // the runtime active with that worker thread.
 thread_local! {
@@ -171,7 +171,7 @@ impl ThreadPool {
 
         // Each thread in each of the tokio worker threads holds a reference to the runtime handling
         // that thread.  If there are multiple runtimes -- as could exist if CTRL-C is hit, then a process
-        // calls into xet immediately afterwards -- the references are still correct due to using
+        // calls into xet immediately afterward -- the references are still correct due to using
         // thread-local storage.
         let rt_c = rt.clone();
         let pid = std::process::id();
@@ -290,7 +290,7 @@ impl ThreadPool {
         };
 
         // Dropping the runtime will cancel all the tasks; shutdown occurs when the next async call
-        // is encountered.  Ideally, all async code should be cancelation safe.
+        // is encountered.  Ideally, all async code should be cancellation safe.
         drop(runtime);
     }
 

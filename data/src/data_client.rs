@@ -10,9 +10,10 @@ use cas_client::{CacheConfig, FileProvider, OutputProvider, CHUNK_CACHE_SIZE_BYT
 use cas_object::CompressionScheme;
 use deduplication::DeduplicationMetrics;
 use dirs::home_dir;
-use parutils::{tokio_par_for_each, ParallelError};
+use parutils::tokio_run_max_concurrency_fold_result_with_semaphore;
 use progress_tracking::item_tracking::ItemProgressUpdater;
 use progress_tracking::TrackingProgressUpdater;
+use tokio::sync::Semaphore;
 use tracing::{info, info_span, instrument, Instrument, Span};
 use ulid::Ulid;
 use utils::auth::{AuthConfig, TokenRefresher};
@@ -125,22 +126,15 @@ pub async fn upload_bytes_async(
     let config = default_config(endpoint.unwrap_or(DEFAULT_CAS_ENDPOINT.clone()), None, token_info, token_refresher)?;
     Span::current().record("session_id", &config.session_id);
 
+    let semaphore = Arc::new(Semaphore::new(*MAX_CONCURRENT_FILE_INGESTION));
     let upload_session = FileUploadSession::new(config, progress_updater).await?;
-    let blobs_with_spans = add_spans(file_contents, || info_span!("clean_task"));
-
-    // clean the bytes
-    let files = tokio_par_for_each(blobs_with_spans, *MAX_CONCURRENT_FILE_INGESTION, |(blob, span), _| {
-        async {
-            let (xf, _metrics) = clean_bytes(upload_session.clone(), blob).await?;
-            Ok(xf)
-        }
-        .instrument(span.unwrap_or_else(|| info_span!("unexpected_span")))
-    })
-    .await
-    .map_err(|e| match e {
-        ParallelError::JoinError => DataProcessingError::InternalError("Join error".to_string()),
-        ParallelError::TaskError(e) => e,
-    })?;
+    // let blobs_with_spans = add_spans(file_contents, || info_span!("clean_task"));
+    let clean_futures = file_contents.into_iter().map(|blob| {
+        let upload_session = upload_session.clone();
+        async move { clean_bytes(upload_session, blob).await.map(|(xf, _metrics)| xf) }
+            .instrument(info_span!("clean_task"))
+    });
+    let files = tokio_run_max_concurrency_fold_result_with_semaphore(clean_futures, semaphore).await?;
 
     // Push the CAS blocks and flush the mdb to disk
     let _metrics = upload_session.finalize().await?;
@@ -148,7 +142,7 @@ pub async fn upload_bytes_async(
     Ok(files)
 }
 
-#[instrument(skip_all, name = "data_client::upload_files", 
+#[instrument(skip_all, name = "data_client::upload_files",
     fields(session_id = tracing::field::Empty,
     num_files=file_paths.len(),
     new_bytes = tracing::field::Empty,
@@ -157,7 +151,7 @@ pub async fn upload_bytes_async(
     new_chunks = tracing::field::Empty,
     deduped_chunks = tracing::field::Empty,
     defrag_prevented_dedup_chunks = tracing::field::Empty
-))]
+    ))]
 pub async fn upload_async(
     file_paths: Vec<String>,
     endpoint: Option<String>,
@@ -212,30 +206,19 @@ pub async fn download_async(
         default_config(endpoint.unwrap_or(DEFAULT_CAS_ENDPOINT.to_string()), None, token_info, token_refresher)?;
     Span::current().record("session_id", &config.session_id);
 
+    let processor = Arc::new(FileDownloader::new(config).await?);
     let updaters = match progress_updaters {
         None => vec![None; file_infos.len()],
         Some(updaters) => updaters.into_iter().map(Some).collect(),
     };
-    let file_with_progress = file_infos.into_iter().zip(updaters).collect::<Vec<_>>();
-    let extended_file_info_list = add_spans(file_with_progress, || info_span!("download_file"));
+    let smudge_file_futures = file_infos.into_iter().zip(updaters).map(|((file_info, file_path), updater)| {
+        let proc = processor.clone();
+        async move { smudge_file(&proc, &file_info, &file_path, updater).await }.instrument(info_span!("download_file"))
+    });
 
-    let processor = &Arc::new(FileDownloader::new(config).await?);
-    let paths = tokio_par_for_each(
-        extended_file_info_list,
-        *MAX_CONCURRENT_DOWNLOADS,
-        |(((file_info, file_path), updater), span), _| {
-            async move {
-                let proc = processor.clone();
-                smudge_file(&proc, &file_info, &file_path, updater).await
-            }
-            .instrument(span.unwrap_or_else(|| info_span!("unexpected_span")))
-        },
-    )
-    .await
-    .map_err(|e| match e {
-        ParallelError::JoinError => DataProcessingError::InternalError("Join error".to_string()),
-        ParallelError::TaskError(e) => e,
-    })?;
+    let semaphore = Arc::new(Semaphore::new(*MAX_CONCURRENT_DOWNLOADS));
+
+    let paths = tokio_run_max_concurrency_fold_result_with_semaphore(smudge_file_futures, semaphore).await?;
 
     Ok(paths)
 }
@@ -298,23 +281,12 @@ async fn smudge_file(
     Ok(file_path.to_string())
 }
 
-/// Adds spans to the indicated list for each element.
-///
-/// Although a span will be added for each element, we need an Option<Span> since
-/// tokio_par_for_each requires the input list be Default, which Span isn't.
-pub fn add_spans<I, F: Fn() -> Span>(v: Vec<I>, create_span: F) -> Vec<(I, Option<Span>)> {
-    let spans: Vec<Option<Span>> = v.iter().map(|_| Some(create_span())).collect();
-    v.into_iter().zip(spans).collect()
-}
-
 #[cfg(test)]
 mod tests {
     use std::env;
 
     use serial_test::serial;
     use tempfile::tempdir;
-    use tracing::info;
-    use tracing_test::traced_test;
 
     use super::*;
 
@@ -401,42 +373,5 @@ mod tests {
             test_cache_dir.starts_with(&expected),
             "cache dir = {test_cache_dir:?}; does not start with {expected:?}",
         );
-    }
-
-    #[tokio::test(flavor = "multi_thread")]
-    #[traced_test]
-    async fn test_add_spans() {
-        let outer_span = info_span!("outer_span");
-        async {
-            let v = vec!["a", "b", "c"];
-            let expected_len = v.len();
-            let v_plus = add_spans(v, || info_span!("task_span"));
-            assert_eq!(v_plus.len(), expected_len);
-            tokio_par_for_each(v_plus, expected_len, |(s, span), i| {
-                async move {
-                    info!("inside: {s},{i}");
-                    Ok::<(), ()>(())
-                }
-                .instrument(span.unwrap())
-            })
-            .await
-            .unwrap();
-        }
-        .instrument(outer_span)
-        .await;
-
-        assert!(logs_contain("inside: a,0"));
-        assert!(logs_contain("inside: b,1"));
-        assert!(logs_contain("inside: c,2"));
-        logs_assert(|lines: &[&str]| {
-            match lines
-                .iter()
-                .filter(|line| line.contains("task_span") && line.contains("outer_span"))
-                .count()
-            {
-                3 => Ok(()),
-                n => Err(format!("Expected 3 lines, got {n}")),
-            }
-        });
     }
 }
