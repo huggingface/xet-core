@@ -100,7 +100,8 @@ fn get_num_tokio_worker_threads() -> usize {
 /// - `ThreadPool`: The main struct that encapsulates the Tokio runtime.
 #[derive(Debug)]
 pub struct ThreadPool {
-    // The runtime used when
+    // The runtime used when it's created by this struct,
+    // None if this struct uses an external runtime.
     runtime: std::sync::RwLock<Option<TokioRuntime>>,
 
     // We use this handle when we actually enter the runtime to avoid the lock.  It is
@@ -108,7 +109,7 @@ pub struct ThreadPool {
     // while holding a reference to the runtime does.
     handle_ref: OnceLock<TokioRuntimeHandle>,
 
-    // The number of external threads calling into this threadpool
+    // The number of external threads calling into this threadpool.
     external_executor_count: AtomicUsize,
 
     // Are we in the middle of a sigint shutdown?
@@ -117,6 +118,7 @@ pub struct ThreadPool {
     // Semaphores.  We use an initialization function as the handle here.
     global_semaphore_table: GlobalSemaphoreLookup,
 
+    // A cached reqwest Client to be shared by all high-level clients.
     global_reqwest_client: OnceLock<Client>,
 }
 
@@ -248,6 +250,9 @@ impl ThreadPool {
     where
         F: FnOnce() -> std::result::Result<Client, reqwest::Error>,
     {
+        // Cache the reqwest Client if we are running inside a runtime, otherwise
+        // create a new one. This allows creating high-level clients outside a
+        // runtime, like in tests.
         if let Some(rt) = Self::current_if_exists() {
             rt.get_or_create_reqwest_client_in_runtime(f)
         } else {
