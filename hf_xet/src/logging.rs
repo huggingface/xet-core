@@ -7,7 +7,7 @@ use pyo3::Python;
 use tracing::info;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
-use tracing_subscriber::EnvFilter;
+use tracing_subscriber::{EnvFilter, Layer};
 use utils::normalized_path_from_user_string;
 
 /// Default log level for the library to use. Override using `RUST_LOG` env variable.
@@ -53,6 +53,11 @@ fn init_logging_to_file(path: &Path) -> Result<(), std::io::Error> {
     static FILE_GUARD: OnceLock<tracing_appender::non_blocking::WorkerGuard> = OnceLock::new();
     let _ = FILE_GUARD.set(guard); // ignore error if already initialised
 
+    // Standard filter layer: RUST_LOG env var or DEFAULT_LOG_LEVEL fallback.
+    let fmt_filter = EnvFilter::try_from_default_env()
+        .or_else(|_| EnvFilter::try_new(DEFAULT_LOG_LEVEL))
+        .unwrap_or_default();
+
     // Build the fmt layer.
     let fmt_layer_base = tracing_subscriber::fmt::layer()
         .with_line_number(true)
@@ -60,23 +65,21 @@ fn init_logging_to_file(path: &Path) -> Result<(), std::io::Error> {
         .with_target(false)
         .with_writer(writer);
 
-    // Standard filter layer: RUST_LOG env var or DEFAULT_LOG_LEVEL fallback.
-    let filter_layer = EnvFilter::try_from_default_env()
-        .or_else(|_| EnvFilter::try_new(DEFAULT_LOG_LEVEL))
-        .unwrap_or_default();
+    let registry = tracing_subscriber::registry();
 
-    // Initialise the subscriber.
+    #[cfg(feature = "tokio-console")]
+    let registry = {
+        // Console subscriber layer for tokio-console
+        let console_layer = console_subscriber::spawn().with_filter(EnvFilter::new("tokio=trace,runtime=trace"));
+
+        registry.with(console_layer)
+    };
+
     if use_json().unwrap_or(true) {
-        tracing_subscriber::registry()
-            .with(fmt_layer_base.json())
-            .with(filter_layer)
-            .init();
+        registry.with(fmt_layer_base.json().with_filter(fmt_filter)).init();
     } else {
-        tracing_subscriber::registry()
-            .with(fmt_layer_base.pretty())
-            .with(filter_layer)
-            .init();
-    }
+        registry.with(fmt_layer_base.pretty().with_filter(fmt_filter)).init();
+    };
 
     Ok(())
 }
@@ -130,17 +133,24 @@ pub fn init_logging(py: Python) {
         .with_file(true)
         .with_target(false);
 
-    let filter_layer = EnvFilter::try_from_default_env()
+    let fmt_filter_layer = EnvFilter::try_from_default_env()
         .or_else(|_| EnvFilter::try_new(DEFAULT_LOG_LEVEL))
         .unwrap_or_default();
 
     // Now, just use basic console logging.
-    let tr_sub = tracing_subscriber::registry().with(filter_layer);
+    let registry = tracing_subscriber::registry();
+    #[cfg(feature = "tokio-console")]
+    let registry = {
+        // Console subscriber layer for tokio-console
+        let console_layer = console_subscriber::spawn().with_filter(EnvFilter::new("tokio=trace,runtime=trace"));
+
+        registry.with(console_layer)
+    };
 
     if use_json().unwrap_or(false) {
-        tr_sub.with(fmt_layer_base.json()).init();
+        registry.with(fmt_layer_base.json().with_filter(fmt_filter_layer)).init();
     } else {
-        tr_sub.with(fmt_layer_base.pretty()).init();
+        registry.with(fmt_layer_base.pretty().with_filter(fmt_filter_layer)).init();
     }
 
     info!("hf_xet version info: {version_info}");
