@@ -17,7 +17,7 @@ use ulid::Ulid;
 use utils::auth::{AuthConfig, TokenRefresher};
 use utils::normalized_path_from_user_string;
 use xet_threadpool::utils::run_constrained_with_semaphore;
-use xet_threadpool::{global_semaphore_handle, ThreadPool};
+use xet_threadpool::{global_semaphore_handle, GlobalSemaphoreHandle, ThreadPool};
 
 use crate::configurations::*;
 use crate::constants::{INGESTION_BLOCK_SIZE, MAX_CONCURRENT_DOWNLOADS};
@@ -195,6 +195,11 @@ pub async fn download_async(
     token_refresher: Option<Arc<dyn TokenRefresher>>,
     progress_updaters: Option<Vec<Arc<dyn TrackingProgressUpdater>>>,
 ) -> errors::Result<Vec<String>> {
+    lazy_static! {
+        static ref CONCURRENT_FILE_DOWNLOAD_LIMITER: GlobalSemaphoreHandle =
+            global_semaphore_handle!(*MAX_CONCURRENT_DOWNLOADS);
+    }
+
     if let Some(updaters) = &progress_updaters {
         if updaters.len() != file_infos.len() {
             return Err(DataProcessingError::ParameterError(
@@ -216,7 +221,7 @@ pub async fn download_async(
         async move { smudge_file(&proc, &file_info, &file_path, updater).await }.instrument(info_span!("download_file"))
     });
 
-    let semaphore = ThreadPool::current().global_semaphore(global_semaphore_handle!(*MAX_CONCURRENT_DOWNLOADS));
+    let semaphore = ThreadPool::current().global_semaphore(*CONCURRENT_FILE_DOWNLOAD_LIMITER);
 
     let paths = run_constrained_with_semaphore(smudge_file_futures, semaphore).await?;
 
