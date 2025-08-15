@@ -4,6 +4,7 @@ use std::future::Future;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, OnceLock};
 
+use reqwest::Client;
 use tokio::runtime::{Builder as TokioRuntimeBuilder, Handle as TokioRuntimeHandle, Runtime as TokioRuntime};
 use tokio::sync::Semaphore;
 use tokio::task::JoinHandle;
@@ -115,6 +116,8 @@ pub struct ThreadPool {
 
     // Semaphores.  We use an initialization function as the handle here.
     global_semaphore_table: GlobalSemaphoreLookup,
+
+    global_reqwest_client: OnceLock<Client>,
 }
 
 // Use thread-local references to the runtime that are set on initilization among all
@@ -153,6 +156,7 @@ impl ThreadPool {
             external_executor_count: 0.into(),
             sigint_shutdown: false.into(),
             global_semaphore_table: GlobalSemaphoreLookup::default(),
+            global_reqwest_client: OnceLock::new(),
         });
 
         // Each thread in each of the tokio worker threads holds a reference to the runtime handling
@@ -208,6 +212,7 @@ impl ThreadPool {
             external_executor_count: 0.into(),
             sigint_shutdown: false.into(),
             global_semaphore_table: GlobalSemaphoreLookup::default(),
+            global_reqwest_client: OnceLock::new(),
         })
     }
 
@@ -216,6 +221,24 @@ impl ThreadPool {
         self.handle_ref.get().expect("Not initialized with handle set.").clone()
     }
 
+    #[inline]
+    pub fn get_or_create_reqwest_client<F>(&self, f: F) -> std::result::Result<Client, reqwest::Error>
+    where
+        F: FnOnce() -> std::result::Result<Client, reqwest::Error>,
+    {
+        let client = match self.global_reqwest_client.get() {
+            Some(client_ref) => client_ref.clone(),
+            None => {
+                let new_client = f()?;
+                self.global_reqwest_client.set(new_client.clone()).unwrap(); // Only fails if set called twice; unwrap ok.
+                new_client
+            },
+        };
+
+        Ok(client)
+    }
+
+    #[inline]
     pub fn num_worker_threads(&self) -> usize {
         self.handle().metrics().num_workers()
     }

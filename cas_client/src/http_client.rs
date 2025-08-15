@@ -80,15 +80,35 @@ impl RetryConfig<No429RetryStrategy> {
 }
 
 fn reqwest_client() -> Result<reqwest::Client, CasClientError> {
-    let mut reqwest_client_builder = reqwest::Client::builder();
     // custom dns resolver not supported in WASM. no access to getaddrinfo/any other dns interface.
+    #[cfg(target_family = "wasm")]
+    {
+        static CLIENT: std::sync::LazyLock<reqwest::Client> = std::sync::LazyLock::new(|| reqwest::Client::new());
+        Ok((&*CLIENT).clone())
+    }
+
     #[cfg(not(target_family = "wasm"))]
     {
-        reqwest_client_builder =
-            reqwest_client_builder.dns_resolver(Arc::from(dns_utils::GaiResolverWithAbsolute::default()));
+        use xet_threadpool::ThreadPool;
+
+        let client = ThreadPool::current().get_or_create_reqwest_client(|| {
+            reqwest::Client::builder()
+                .dns_resolver(Arc::from(dns_utils::GaiResolverWithAbsolute::default()))
+                .build()
+        })?;
+
+        Ok(client)
     }
-    let reqwest_client = reqwest_client_builder.build()?;
-    Ok(reqwest_client)
+
+    // let mut reqwest_client_builder = reqwest::Client::builder();
+    // // custom dns resolver not supported in WASM. no access to getaddrinfo/any other dns interface.
+    // #[cfg(not(target_family = "wasm"))]
+    // {
+    //     reqwest_client_builder =
+    //         reqwest_client_builder.dns_resolver(Arc::from(dns_utils::GaiResolverWithAbsolute::default()));
+    // }
+    // let reqwest_client = reqwest_client_builder.build()?;
+    // Ok(reqwest_client)
 }
 
 /// Builds authenticated HTTP Client to talk to CAS.

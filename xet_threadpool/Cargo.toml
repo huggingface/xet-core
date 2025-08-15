@@ -8,6 +8,7 @@ utils = { path = "../utils" }
 error_printer = { path = "../error_printer" }
 
 oneshot = { workspace = true }
+reqwest = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["time", "rt", "macros", "io-util"] }
 tracing = { workspace = true }
