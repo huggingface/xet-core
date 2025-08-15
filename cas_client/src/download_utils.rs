@@ -15,9 +15,10 @@ use http::StatusCode;
 use merklehash::MerkleHash;
 use reqwest_middleware::ClientWithMiddleware;
 use tokio_retry::strategy::ExponentialBackoff;
-use tracing::{debug, error, info, trace, warn};
+use tracing::{debug, error, info, info_span, trace, warn, Instrument};
 use url::Url;
 use utils::singleflight::Group;
+use xet_threadpool::threadpool::next_task_id;
 
 use crate::error::{CasClientError, Result};
 use crate::http_client::{Api, BASE_RETRY_DELAY_MS, BASE_RETRY_MAX_DURATION_MS, NUM_RETRIES};
@@ -454,8 +455,18 @@ pub(crate) async fn get_one_fetch_term_data(
 
     // fetch the range from blob store and deserialize the chunks
     // then put into the cache if used
+    let task_span = info_span!(
+        "download_fetch_term_task",
+        task_id = next_task_id(),
+        hash = hash.hex(),
+        range_start = fetch_term.range.start,
+        range_end = fetch_term.range.end
+    );
     let download_range_result = range_download_single_flight
-        .work_dump_caller_info(&fetch_term.url, download_fetch_term_data(hash.into(), fetch_term.clone(), http_client))
+        .work_dump_caller_info(
+            &fetch_term.url,
+            download_fetch_term_data(hash.into(), fetch_term.clone(), http_client).instrument(task_span),
+        )
         .await?;
 
     let DownloadRangeResult::Data(term_download_output) = download_range_result else {

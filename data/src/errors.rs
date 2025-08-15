@@ -4,11 +4,11 @@ use std::sync::mpsc::RecvError;
 use cas_client::CasClientError;
 use cas_object::error::CasObjectError;
 use mdb_shard::error::MDBShardError;
-use parutils::ParutilsError;
 use thiserror::Error;
 use tokio::sync::AcquireError;
 use tracing::error;
 use utils::errors::{AuthError, SingleflightError};
+use xet_threadpool::runner::ParutilsError;
 
 #[derive(Error, Debug)]
 pub enum DataProcessingError {

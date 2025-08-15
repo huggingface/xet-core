@@ -1,9 +1,0 @@
-[package]
-name = "parutils"
-version = "0.15.0"
-edition = "2021"
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
-
-[dependencies]
-tokio = { workspace = true, features = ["sync", "rt", "rt-multi-thread", "macros"] }
-thiserror = { workspace = true }

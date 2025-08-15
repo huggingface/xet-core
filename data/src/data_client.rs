@@ -10,13 +10,13 @@ use cas_client::{CacheConfig, FileProvider, OutputProvider, CHUNK_CACHE_SIZE_BYT
 use cas_object::CompressionScheme;
 use deduplication::DeduplicationMetrics;
 use dirs::home_dir;
-use parutils::tokio_run_max_concurrency_fold_result_with_semaphore;
 use progress_tracking::item_tracking::ItemProgressUpdater;
 use progress_tracking::TrackingProgressUpdater;
 use tracing::{info, info_span, instrument, Instrument, Span};
 use ulid::Ulid;
 use utils::auth::{AuthConfig, TokenRefresher};
 use utils::normalized_path_from_user_string;
+use xet_threadpool::runner::run_limited_fold_result_with_semaphore;
 use xet_threadpool::{global_semaphore_handle, GlobalSemaphoreHandle, ThreadPool};
 
 use crate::configurations::*;
@@ -139,7 +139,7 @@ pub async fn upload_bytes_async(
         async move { clean_bytes(upload_session, blob).await.map(|(xf, _metrics)| xf) }
             .instrument(info_span!("clean_task"))
     });
-    let files = tokio_run_max_concurrency_fold_result_with_semaphore(clean_futures, semaphore).await?;
+    let files = run_limited_fold_result_with_semaphore(clean_futures, semaphore).await?;
 
     // Push the CAS blocks and flush the mdb to disk
     let _metrics = upload_session.finalize().await?;
@@ -223,7 +223,7 @@ pub async fn download_async(
 
     let semaphore = ThreadPool::current().global_semaphore(*DOWNLOAD_FILE_CONCURRENCY_LIMITER);
 
-    let paths = tokio_run_max_concurrency_fold_result_with_semaphore(smudge_file_futures, semaphore).await?;
+    let paths = run_limited_fold_result_with_semaphore(smudge_file_futures, semaphore).await?;
 
     Ok(paths)
 }

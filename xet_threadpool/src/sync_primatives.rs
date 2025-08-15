@@ -1,4 +1,7 @@
+use std::thread;
+
 use error_printer::ErrorPrinter;
+use tracing::{error, info, info_span};
 
 use crate::errors::{MultithreadedRuntimeError, Result};
 
@@ -11,8 +14,13 @@ pub struct SyncJoinHandle<T: Send + Sync + 'static> {
 pub fn spawn_os_thread<T: Send + Sync + 'static>(task: impl FnOnce() -> T + Send + 'static) -> SyncJoinHandle<T> {
     let (jh, tx) = SyncJoinHandle::create();
 
-    std::thread::spawn(move || {
+    thread::spawn(move || {
+        let cur_thread = thread::current();
+        let thread_name = cur_thread.name().unwrap_or("unnamed");
+        let tid = cur_thread.id();
+        info!(?tid, thread_name, "spawned os_thread");
         // Catch panics and convert to an error we can send over the channel.
+        let _span = info_span!("os_thread_task", ?tid, thread_name).entered();
         let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(task)).map_err(|payload| {
             // Try to extract a useful panic message.
             let msg = if let Some(s) = payload.downcast_ref::<&str>() {
@@ -22,6 +30,7 @@ pub fn spawn_os_thread<T: Send + Sync + 'static>(task: impl FnOnce() -> T + Send
             } else {
                 "panic with non-string payload".to_string()
             };
+            error!(msg, "os_thread task panicked");
             MultithreadedRuntimeError::TaskPanic(msg)
         });
 

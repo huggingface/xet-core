@@ -9,6 +9,7 @@ use mdb_shard::file_structs::FileMetadataExt;
 use merklehash::MerkleHash;
 use progress_tracking::upload_tracking::CompletionTrackerFileId;
 use tracing::{debug_span, info, instrument, Instrument};
+use xet_threadpool::threadpool::next_task_id;
 
 use crate::constants::INGESTION_BLOCK_SIZE;
 use crate::deduplication_interface::UploadSessionDataManager;
@@ -75,7 +76,7 @@ impl SingleFileCleaner {
                 deduper.process_chunks(&chunks).await?;
                 Ok(deduper)
             }
-            .instrument(debug_span!("deduper::process_chunks_task", num_chunks).or_current()),
+            .instrument(debug_span!("deduper::process_chunks_task", num_chunks, task_id = next_task_id()).or_current()),
         );
 
         self.dedup_manager_fut = Box::pin(async move { dedup_background.await? });

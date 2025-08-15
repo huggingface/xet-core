@@ -214,7 +214,7 @@ impl FileUploadSession {
                 ThreadPool::current().global_semaphore(*CONCURRENT_FILE_INGESTION_LIMITER);
             let session = self.clone();
 
-            cleaning_tasks.push(tokio::spawn(async move {
+            cleaning_tasks.push(ThreadPool::current().spawn(async move {
                 // Enable tracing to record this file's ingestion speed.
                 let span = info_span!(
                     "clean_file_task",

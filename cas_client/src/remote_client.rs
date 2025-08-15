@@ -332,7 +332,8 @@ impl RemoteClient {
         let download_concurrency_limiter =
             ThreadPool::current().global_semaphore(*DOWNLOAD_CHUNK_RANGE_CONCURRENCY_LIMITER);
 
-        let queue_dispatcher: JoinHandle<Result<()>> = tokio::spawn(async move {
+        let queue_dispatcher: JoinHandle<Result<()>> = ThreadPool::current().spawn(async move {
+            info!("start reconstruction");
             let mut remaining_total_len = total_len;
             while let Some(item) = task_rx.recv().await {
                 match item {
@@ -348,7 +349,8 @@ impl RemoteClient {
                         let permit = download_concurrency_limiter.clone().acquire_owned().await?;
                         debug!("spawning 1 download task");
                         let future: JoinHandle<Result<(TermDownloadResult<Vec<u8>>, OwnedSemaphorePermit)>> =
-                            tokio::spawn(async move {
+                            ThreadPool::current().spawn(async move {
+                                info!("download task started");
                                 let data = term_download.run().await?;
                                 Ok((data, permit))
                             });

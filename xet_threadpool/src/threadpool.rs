@@ -1,13 +1,15 @@
 use std::cell::RefCell;
 use std::fmt::Display;
 use std::future::Future;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, OnceLock};
+use std::thread;
 
-use tokio::runtime::{Builder as TokioRuntimeBuilder, Handle as TokioRuntimeHandle, Runtime as TokioRuntime};
+use tokio::runtime::{Builder as TokioRuntimeBuilder, Handle as TokioRuntimeHandle, Runtime as TokioRuntime, TaskMeta};
 use tokio::sync::Semaphore;
 use tokio::task::JoinHandle;
-use tracing::{debug, info};
+use tracing::{debug, info, info_span, Instrument};
+use utils::constant_declarations::lazy_static;
 
 use crate::errors::MultithreadedRuntimeError;
 use crate::global_semaphores::{GlobalSemaphoreHandle, GlobalSemaphoreLookup};
@@ -21,6 +23,14 @@ const THREADPOOL_STACK_SIZE: usize = 8_000_000; // 8MB stack size
 /// Note that the compute intensive parts of the code get offloaded to blocking threads, which don't count against this
 /// limit.
 const THREADPOOL_MAX_ASYNC_THREADS: usize = 32;
+
+lazy_static! {
+    static ref TASK_ID: AtomicU64 = AtomicU64::new(1);
+}
+
+pub fn next_task_id() -> u64 {
+    TASK_ID.fetch_add(1, Ordering::SeqCst)
+}
 
 /// Returns the number of Tokio worker threads to use:
 /// 1) If `TOKIO_WORKER_THREADS` is set to a positive integer, use that.
@@ -162,6 +172,10 @@ impl ThreadPool {
         let rt_c = rt.clone();
         let pid = std::process::id();
         let set_threadlocal_reference = move || {
+            let cur_thread = thread::current();
+            let thread_name = cur_thread.name();
+            let tid = cur_thread.id();
+            info!(pid, thread_name, ?tid, runtime = %rt_c, "New thread for tokio runtime created");
             THREAD_RUNTIME_REF.set(Some((pid, rt_c.clone())));
         };
 
@@ -172,6 +186,16 @@ impl ThreadPool {
         let get_thread_name = move || {
             let id = thread_id.fetch_add(1, Ordering::Relaxed);
             format!("{THREADPOOL_THREAD_ID_PREFIX}-{id}")
+        };
+
+        let start_task = |m: &TaskMeta| {
+            let tokio_task_id = m.id();
+            let spawn_location = m.spawned_at();
+            info!(%tokio_task_id, file = spawn_location.file(), line = spawn_location.line(), "Start task");
+        };
+        let end_task = |m: &TaskMeta| {
+            let tokio_task_id = m.id();
+            info!(%tokio_task_id, "End task");
         };
 
         let tokio_rt = {
@@ -190,6 +214,8 @@ impl ThreadPool {
         .on_thread_start(set_threadlocal_reference) // Set the local runtime reference.
         .thread_stack_size(THREADPOOL_STACK_SIZE) // 8MB stack size, default is 2MB
         .enable_all() // enable all features, including IO/Timer/Signal/Reactor
+        .on_task_spawn(start_task)
+        .on_task_terminate(end_task)
         .build()
         .map_err(MultithreadedRuntimeError::RuntimeInitializationError)?;
 
@@ -280,24 +306,33 @@ impl ThreadPool {
 
     /// This function should ONLY be used by threads outside of tokio; it should not be called
     /// from within a task running on the runtime worker pool.  Doing so can lead to deadlocking.
+    #[track_caller]
     pub fn external_run_async_task<F>(&self, future: F) -> Result<F::Output, MultithreadedRuntimeError>
     where
         F: Future + Send + 'static,
         F::Output: Send + Sync,
     {
         self.external_executor_count.fetch_add(1, Ordering::SeqCst);
-
-        let ret = self.handle().block_on(async move {
-            // Run the actual task on a task worker thread so we can get back information
-            // on issues, including reporting panics as runtime errors.
-            self.handle().spawn(future).await.map_err(MultithreadedRuntimeError::from)
-        });
+        let block_span = info_span!("external_task_block_on", block_on_id = next_task_id());
+        let ret = self.handle().block_on(
+            async move {
+                // Run the actual task on a task worker thread so we can get back information
+                // on issues, including reporting panics as runtime errors.
+                let task_span = info_span!("external_task", task_id = next_task_id());
+                self.handle()
+                    .spawn(future.instrument(task_span))
+                    .await
+                    .map_err(MultithreadedRuntimeError::from)
+            }
+            .instrument(block_span),
+        );
 
         self.external_executor_count.fetch_sub(1, Ordering::SeqCst);
         ret
     }
 
     /// Spawn an async task to run in the background on the current pool of worker threads.
+    #[track_caller]
     pub fn spawn<F>(&self, future: F) -> JoinHandle<F::Output>
     where
         F: Future + Send + 'static,
@@ -305,7 +340,8 @@ impl ThreadPool {
     {
         // If the runtime has been shut down, this will immediately abort.
         debug!("threadpool: spawn called, {}", self);
-        self.handle().spawn(future)
+        let span = info_span!("spawned_task", task_id = next_task_id());
+        self.handle().spawn(future.instrument(span))
     }
 
     /// Allows a user to access a global semaphore that is associated with the runtime.
