@@ -132,12 +132,8 @@ impl ThreadPool {
     /// called from a thread that is not spawned from the current runtime.  
     #[inline]
     pub fn current() -> Arc<Self> {
-        let maybe_rt = THREAD_RUNTIME_REF.with_borrow(|rt| rt.clone());
-
-        if let Some((pid, rt)) = maybe_rt {
-            if pid == std::process::id() {
-                return rt;
-            }
+        if let Some(rt) = Self::current_if_exists() {
+            return rt;
         }
 
         let Ok(tokio_rt) = TokioRuntimeHandle::try_current() else {
@@ -145,6 +141,18 @@ impl ThreadPool {
         };
 
         Self::from_external(tokio_rt)
+    }
+
+    fn current_if_exists() -> Option<Arc<Self>> {
+        let maybe_rt = THREAD_RUNTIME_REF.with_borrow(|rt| rt.clone());
+
+        if let Some((pid, rt)) = maybe_rt {
+            if pid == std::process::id() {
+                return Some(rt);
+            }
+        }
+
+        None
     }
 
     pub fn new() -> Result<Arc<Self>, MultithreadedRuntimeError> {
@@ -221,8 +229,7 @@ impl ThreadPool {
         self.handle_ref.get().expect("Not initialized with handle set.").clone()
     }
 
-    #[inline]
-    pub fn get_or_create_reqwest_client<F>(&self, f: F) -> std::result::Result<Client, reqwest::Error>
+    pub fn get_or_create_reqwest_client_in_runtime<F>(&self, f: F) -> std::result::Result<Client, reqwest::Error>
     where
         F: FnOnce() -> std::result::Result<Client, reqwest::Error>,
     {
@@ -236,6 +243,17 @@ impl ThreadPool {
         };
 
         Ok(client)
+    }
+
+    pub fn get_or_create_reqwest_client<F>(f: F) -> std::result::Result<Client, reqwest::Error>
+    where
+        F: FnOnce() -> std::result::Result<Client, reqwest::Error>,
+    {
+        if let Some(rt) = Self::current_if_exists() {
+            rt.get_or_create_reqwest_client_in_runtime(f)
+        } else {
+            f()
+        }
     }
 
     #[inline]

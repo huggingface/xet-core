@@ -91,7 +91,7 @@ fn reqwest_client() -> Result<reqwest::Client, CasClientError> {
     {
         use xet_threadpool::ThreadPool;
 
-        let client = ThreadPool::current().get_or_create_reqwest_client(|| {
+        let client = ThreadPool::get_or_create_reqwest_client(|| {
             reqwest::Client::builder()
                 .dns_resolver(Arc::from(dns_utils::GaiResolverWithAbsolute::default()))
                 .build()
