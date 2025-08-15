@@ -233,16 +233,15 @@ impl ThreadPool {
     where
         F: FnOnce() -> std::result::Result<Client, reqwest::Error>,
     {
-        let client = match self.global_reqwest_client.get() {
-            Some(client_ref) => client_ref.clone(),
-            None => {
-                let new_client = f()?;
-                self.global_reqwest_client.set(new_client.clone()).unwrap(); // Only fails if set called twice; unwrap ok.
-                new_client
-            },
-        };
+        // atomic get or set
+        let client_ref = self.global_reqwest_client.get_or_init(
+            // We unwrap the result of `f()` because we can't recover from this error anyway.
+            // There exists a function `get_or_try_init` which let the error propagate,
+            // but unfortunately it's marked as unstable.
+            || f().expect("failed to create reqwest client"),
+        );
 
-        Ok(client)
+        Ok(client_ref.clone())
     }
 
     pub fn get_or_create_reqwest_client<F>(f: F) -> std::result::Result<Client, reqwest::Error>
