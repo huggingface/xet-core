@@ -40,8 +40,11 @@ tracing-subscriber = { version = "0.3", features = [
     "json",
     "tracing-log",
     "env-filter",
+    "registry",
 ] }
 tracing-appender = "0.2"
+
+console-subscriber = { version = "0.4.1", optional = true }
 
 # Unix-specific dependencies
 [target.'cfg(unix)'.dependencies]
@@ -55,6 +58,7 @@ ctrlc = "3.4"
 native-tls = ["cas_client/native-tls-vendored"]
 native-tls-vendored = ["cas_client/native-tls-vendored"]
 profiling = ["pprof"]
+tokio-console = ["dep:console-subscriber"]
 
 [profile.release]
 split-debuginfo = "packed"
