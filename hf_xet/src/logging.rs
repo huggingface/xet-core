@@ -53,10 +53,13 @@ fn init_logging_to_file(path: &Path) -> Result<(), std::io::Error> {
     static FILE_GUARD: OnceLock<tracing_appender::non_blocking::WorkerGuard> = OnceLock::new();
     let _ = FILE_GUARD.set(guard); // ignore error if already initialised
 
-    // Standard filter layer: RUST_LOG env var or DEFAULT_LOG_LEVEL fallback.
-    let fmt_filter = EnvFilter::try_from_default_env()
-        .or_else(|_| EnvFilter::try_new(DEFAULT_LOG_LEVEL))
-        .unwrap_or_default();
+    let registry = tracing_subscriber::registry();
+    #[cfg(feature = "tokio-console")]
+    let registry = {
+        // Console subscriber layer for tokio-console, custom filter for tokio trace level events
+        let console_layer = console_subscriber::spawn().with_filter(EnvFilter::new("tokio=trace,runtime=trace"));
+        registry.with(console_layer)
+    };
 
     // Build the fmt layer.
     let fmt_layer_base = tracing_subscriber::fmt::layer()
@@ -64,16 +67,10 @@ fn init_logging_to_file(path: &Path) -> Result<(), std::io::Error> {
         .with_file(true)
         .with_target(false)
         .with_writer(writer);
-
-    let registry = tracing_subscriber::registry();
-
-    #[cfg(feature = "tokio-console")]
-    let registry = {
-        // Console subscriber layer for tokio-console
-        let console_layer = console_subscriber::spawn().with_filter(EnvFilter::new("tokio=trace,runtime=trace"));
-
-        registry.with(console_layer)
-    };
+    // Standard filter layer: RUST_LOG env var or DEFAULT_LOG_LEVEL fallback.
+    let fmt_filter = EnvFilter::try_from_default_env()
+        .or_else(|_| EnvFilter::try_new(DEFAULT_LOG_LEVEL))
+        .unwrap_or_default();
 
     if use_json().unwrap_or(true) {
         registry.with(fmt_layer_base.json().with_filter(fmt_filter)).init();
@@ -128,29 +125,29 @@ pub fn init_logging(py: Python) {
         }
     }
 
-    let fmt_layer_base = tracing_subscriber::fmt::layer()
-        .with_line_number(true)
-        .with_file(true)
-        .with_target(false);
-
-    let fmt_filter_layer = EnvFilter::try_from_default_env()
-        .or_else(|_| EnvFilter::try_new(DEFAULT_LOG_LEVEL))
-        .unwrap_or_default();
-
     // Now, just use basic console logging.
     let registry = tracing_subscriber::registry();
     #[cfg(feature = "tokio-console")]
     let registry = {
-        // Console subscriber layer for tokio-console
+        // Console subscriber layer for tokio-console, custom filter for tokio trace level events
         let console_layer = console_subscriber::spawn().with_filter(EnvFilter::new("tokio=trace,runtime=trace"));
-
         registry.with(console_layer)
     };
 
+    let fmt_layer_base = tracing_subscriber::fmt::layer()
+        .with_line_number(true)
+        .with_file(true)
+        .with_target(false);
+    let fmt_filter = EnvFilter::try_from_default_env()
+        .or_else(|_| EnvFilter::try_new(DEFAULT_LOG_LEVEL))
+        .unwrap_or_default();
+
     if use_json().unwrap_or(false) {
-        registry.with(fmt_layer_base.json().with_filter(fmt_filter_layer)).init();
+        let filtered_fmt_layer = fmt_layer_base.json().with_filter(fmt_filter);
+        registry.with(filtered_fmt_layer).init();
     } else {
-        registry.with(fmt_layer_base.pretty().with_filter(fmt_filter_layer)).init();
+        let filtered_fmt_layer = fmt_layer_base.pretty().with_filter(fmt_filter);
+        registry.with(filtered_fmt_layer).init();
     }
 
     info!("hf_xet version info: {version_info}");
