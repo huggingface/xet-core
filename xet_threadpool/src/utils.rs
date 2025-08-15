@@ -130,6 +130,8 @@ where
 
 #[cfg(test)]
 mod parallel_tests {
+    use std::sync::atomic::{AtomicU32, Ordering};
+
     use super::*;
 
     #[tokio::test(flavor = "multi_thread")]
@@ -150,6 +152,118 @@ mod parallel_tests {
         assert_eq!(data_ref.len(), r.len());
         for i in 0..data_ref.len() {
             assert_eq!(data_ref[i], r[i]);
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_parallel_with_sleeps() {
+        let data: Vec<String> = (0..400).map(|i| format!("Number = {}", &i)).collect();
+
+        let data_ref: Vec<String> = data.iter().enumerate().map(|(i, s)| format!("{}{}{}", &s, ":", &i)).collect();
+
+        let r = run_constrained(
+            data.into_iter().enumerate().map(|(i, s)| async move {
+                tokio::time::sleep(std::time::Duration::from_millis(401 - i as u64)).await;
+                Result::<_, ()>::Ok(format!("{}{}{}", &s, ":", &i))
+            }),
+            100,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(data_ref.len(), r.len());
+        for i in 0..data_ref.len() {
+            assert_eq!(data_ref[i], r[i]);
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_max_concurrent_constraint() {
+        const NUM_TASKS: u64 = 100;
+        const TASK_DURATION_BASE_MS: u64 = 100;
+        const MAX_CONCURRENT: usize = 5;
+
+        // Counters to track concurrent task execution
+        let current_running = Arc::new(AtomicU32::new(0));
+        let max_concurrent_observed = Arc::new(AtomicU32::new(0));
+
+        let futures = (0..NUM_TASKS).map(|i| {
+            let current_running = current_running.clone();
+            let max_concurrent_observed = max_concurrent_observed.clone();
+
+            async move {
+                // Increment running counter
+                let running = current_running.fetch_add(1, Ordering::SeqCst) + 1;
+
+                // Update max observed if necessary
+                max_concurrent_observed.fetch_max(running, Ordering::SeqCst);
+
+                // Simulate work
+                tokio::time::sleep(std::time::Duration::from_millis(TASK_DURATION_BASE_MS - i)).await;
+
+                // Decrement running counter
+                current_running.fetch_sub(1, Ordering::SeqCst);
+
+                Result::<_, ()>::Ok(i)
+            }
+        });
+
+        let results = run_constrained(futures, MAX_CONCURRENT).await.unwrap();
+
+        // Verify all tasks completed successfully
+        assert_eq!(results.len(), NUM_TASKS as usize);
+        for i in 0..NUM_TASKS {
+            assert_eq!(results[i as usize], i);
+        }
+
+        // Verify that we never exceeded the concurrency limit
+        let max_observed = max_concurrent_observed.load(Ordering::SeqCst);
+        assert!(
+            max_observed <= MAX_CONCURRENT as u32,
+            "Max concurrent tasks observed: {}, but limit was: {}",
+            max_observed,
+            MAX_CONCURRENT
+        );
+
+        assert_eq!(
+            max_observed, MAX_CONCURRENT as u32,
+            "Expected to see exactly {} concurrent tasks, but saw {}",
+            MAX_CONCURRENT, max_observed
+        );
+
+        // Ensure no tasks are still running
+        assert_eq!(current_running.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_returns_error() {
+        let futures = (0..10).map(|i| async move {
+            if i == 5 {
+                Result::<_, i32>::Err(5)
+            } else {
+                Result::<_, i32>::Ok(i)
+            }
+        });
+
+        let result = run_constrained(futures, 2).await;
+        assert!(matches!(result, Err(ParutilsError::Task(5))));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_returns_join_error_on_panic() {
+        let futures = (0..10).map(|i| async move {
+            if i == 5 {
+                panic!("5")
+            } else {
+                Result::<_, i32>::Ok(i)
+            }
+        });
+
+        let result = run_constrained(futures, 2).await;
+        if let Err(ParutilsError::Join(e)) = result {
+            assert!(e.is_panic());
+        } else {
+            assert!(false, "Expected to panic, but got {:?}", result);
         }
     }
 }
