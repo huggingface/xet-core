@@ -11,3 +11,4 @@ pub use sync_primatives::{spawn_os_thread, SyncJoinHandle};
 mod global_semaphores;
 
 pub use global_semaphores::GlobalSemaphoreHandle;
+mod simple_singleflight;
