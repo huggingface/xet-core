@@ -12,7 +12,6 @@ members = [
     "file_utils",
     "mdb_shard",
     "merklehash",
-    "parutils",
     "progress_tracking",
     "utils",
     "xet_threadpool",

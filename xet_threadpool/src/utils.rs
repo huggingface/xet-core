@@ -1,4 +1,3 @@
-use std::convert::Infallible;
 use std::future::Future;
 use std::sync::Arc;
 
@@ -14,11 +13,13 @@ pub enum ParutilsError<E: Send + Sync + 'static> {
     Acquire(#[from] AcquireError),
     #[error(transparent)]
     Task(E),
+    #[error("Infallible, this should not be possible: {0}")]
+    Infallible(String),
 }
 
 /// Runs all the futures in the provided iterator with a maximum concurrency limit.
 ///
-/// This function requires that a permit is acquired from the provided semaphore before any work
+/// This function ensures that a permit is acquired from the provided semaphore before any work
 /// is done for a future, thus limiting concurrency based on the number of permits in the semaphore.
 ///
 /// Each future in the iterator must return a `Result<T, E>`. If any future returns an error,
@@ -58,21 +59,19 @@ pub enum ParutilsError<E: Send + Sync + 'static> {
 /// ```rust
 /// use std::sync::Arc;
 ///
-/// use parutils::tokio_run_max_concurrency_fold_result_with_semaphore;
 /// use tokio::sync::Semaphore;
+/// use xet_threadpool::utils::run_constrained_with_semaphore;
 ///
 /// #[tokio::main]
 /// async fn main() {
 ///     let semaphore = Arc::new(Semaphore::new(2)); // Limit concurrency to 2 tasks.
 ///     let futures = (1..=3).map(|n| async move { Ok::<_, ()>(n) });
 ///
-///     let results =
-///         tokio_run_max_concurrency_fold_result_with_semaphore(futures.into_iter(), semaphore)
-///             .await;
+///     let results = run_constrained_with_semaphore(futures.into_iter(), semaphore).await;
 ///     assert_eq!(results.unwrap(), vec![1, 2, 3]);
 /// }
 /// ```
-pub async fn tokio_run_max_concurrency_fold_result_with_semaphore<Fut, T, E>(
+pub async fn run_constrained_with_semaphore<Fut, T, E>(
     futures_it: impl Iterator<Item = Fut>,
     max_concurrent: Arc<Semaphore>,
 ) -> Result<Vec<T>, ParutilsError<E>>
@@ -105,12 +104,18 @@ where
     debug_assert!(js.is_empty());
     debug_assert!(results.iter().all(|r| r.is_some()));
 
-    Ok(results.into_iter().map(|r| r.unwrap()).collect())
+    // Convert from Vec<Option<T>> to Option<Vec<T>>
+    // Should be impossible to get back a None, that would indicate the js.join_next() should have
+    // more tasks
+    let Some(result) = results.into_iter().collect() else {
+        return Err(ParutilsError::Infallible("A task was unaccounted for when collecting result".to_string()));
+    };
+    Ok(result)
 }
 
 /// Like tokio_run_max_concurrency_fold_result_with_semaphore but callers can pass in the number
 /// of concurrent tasks they wish to allow and the semaphore is created inside this function scope
-pub async fn tokio_run_max_concurrency_fold_result<Fut, T, E>(
+pub async fn run_constrained<Fut, T, E>(
     futures_it: impl Iterator<Item = Fut>,
     max_concurrent: usize,
 ) -> Result<Vec<T>, ParutilsError<E>>
@@ -120,42 +125,7 @@ where
     E: Send + Sync + 'static,
 {
     let semaphore = Arc::new(Semaphore::new(max_concurrent));
-    tokio_run_max_concurrency_fold_result_with_semaphore(futures_it, semaphore).await
-}
-
-/// Like tokio_run_max_concurrency_fold_result_with_semaphore but does not require
-/// that the futures in the iterator parameter produce a Result. The futures may produce any type
-/// that will be returned.
-///
-/// tokio_run_max_concurrency_fold_result_with_semaphore returns an error as soon as any task returns
-/// an error.
-///
-/// This function can be used to ensure that all tasks are finished and returns Vec<Result<>>
-/// if the futures passed in still return results.
-pub async fn tokio_run_max_concurrency_with_semaphore<Fut, T>(
-    futures_it: impl Iterator<Item = Fut>,
-    max_concurrent: Arc<Semaphore>,
-) -> Result<Vec<T>, ParutilsError<Infallible>>
-where
-    Fut: Future<Output = T> + Send + Sync + 'static,
-    T: Send + Sync + 'static,
-{
-    let it = futures_it.map(|fut| async move { Ok(fut.await) });
-    tokio_run_max_concurrency_fold_result_with_semaphore(it, max_concurrent).await
-}
-
-/// Like tokio_run_max_concurrency_with_semaphore but callers can pass in the number
-/// of concurrent tasks they wish to allow and the semaphore is created inside this function scope
-pub async fn tokio_run_max_concurrency<Fut, T>(
-    futures_it: impl Iterator<Item = Fut>,
-    max_concurrent: usize,
-) -> Result<Vec<T>, ParutilsError<Infallible>>
-where
-    Fut: Future<Output = T> + Send + Sync + 'static,
-    T: Send + Sync + 'static,
-{
-    let semaphore = Arc::new(Semaphore::new(max_concurrent));
-    tokio_run_max_concurrency_with_semaphore(futures_it, semaphore).await
+    run_constrained_with_semaphore(futures_it, semaphore).await
 }
 
 #[cfg(test)]
@@ -168,7 +138,7 @@ mod parallel_tests {
 
         let data_ref: Vec<String> = data.iter().enumerate().map(|(i, s)| format!("{}{}{}", &s, ":", &i)).collect();
 
-        let r = tokio_run_max_concurrency_fold_result(
+        let r = run_constrained(
             data.into_iter()
                 .enumerate()
                 .map(|(i, s)| async move { Result::<_, ()>::Ok(format!("{}{}{}", &s, ":", &i)) }),

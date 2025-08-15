@@ -812,7 +812,6 @@ dependencies = [
  "mdb_shard",
  "merklehash",
  "more-asserts",
- "parutils",
  "progress_tracking",
  "prometheus",
  "rand 0.9.1",
@@ -2268,14 +2267,6 @@ dependencies = [
  "redox_syscall 0.5.12",
  "smallvec",
  "windows-targets 0.52.6",
-]
-
-[[package]]
-name = "parutils"
-version = "0.15.0"
-dependencies = [
- "thiserror 2.0.12",
- "tokio",
 ]
 
 [[package]]
