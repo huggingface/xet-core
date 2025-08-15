@@ -1,5 +1,5 @@
 <!---
-Copyright 2024 The HuggingFace Team. All rights reserved.
+Copyright 2024 The HuggingFace Team. All rights reserved. 
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -25,17 +25,22 @@ limitations under the License.
 
 ## Welcome
 
-xet-core enables huggingface_hub to utilize xet storage for uploading and downloading to HF Hub. Xet storage provides chunk-based deduplication, efficient storage/retrieval with local disk caching, and backwards compatibility with Git LFS. This library is not meant to be used directly, and is instead intended to be used from [huggingface_hub](https://pypi.org/project/huggingface-hub).
+xet-core enables huggingface_hub to utilize xet storage for uploading and downloading to HF Hub. Xet storage provides
+chunk-based deduplication, efficient storage/retrieval with local disk caching, and backwards compatibility with Git
+LFS. This library is not meant to be used directly, and is instead intended to be used
+from [huggingface_hub](https://pypi.org/project/huggingface-hub).
 
 ## Key features
 
-♻ **chunk-based deduplication implementation**: avoid transferring and storing chunks that are shared across binary files (models, datasets, etc).
+♻ **chunk-based deduplication implementation**: avoid transferring and storing chunks that are shared across binary
+files (models, datasets, etc).
 
 🤗 **Python bindings**: bindings for [huggingface_hub](https://github.com/huggingface/huggingface_hub/) package.
 
 ↔ **network communications**: concurrent communication to HF Hub Xet backend services (CAS).
 
-🔖 **local disk caching**: chunk-based cache that sits alongside the existing [huggingface_hub disk cache](https://huggingface.co/docs/huggingface_hub/guides/manage-cache).
+🔖 **local disk caching**: chunk-based cache that sits alongside the
+existing [huggingface_hub disk cache](https://huggingface.co/docs/huggingface_hub/guides/manage-cache).
 
 ## Local Development
 
@@ -46,10 +51,12 @@ xet-core enables huggingface_hub to utilize xet storage for uploading and downlo
 * [cas_types](./cas_types): common types shared across crates in xet-core and xetcas.
 * [chunk_cache](./chunk_cache): local disk cache of Xorb chunks.
 * [chunk_cache_bench](./chunk_cache_bench): benchmarking crate for chunk_cache.
-* [data](./data): main driver for client operations - FilePointerTranslator drives hydrating or shrinking files, chunking + deduplication here.
+* [data](./data): main driver for client operations - FilePointerTranslator drives hydrating or shrinking files,
+  chunking + deduplication here.
 * [error_printer](./error_printer): utility for printing errors conveniently.
 * [file_utils](./file_utils): SafeFileCreator utility, used by chunk_cache.
-* [hf_xet](./hf_xet): Python integration with Rust code, uses maturin to build hfxet Python package. Main integration with HF Hub Python package.
+* [hf_xet](./hf_xet): Python integration with Rust code, uses maturin to build hfxet Python package. Main integration
+  with HF Hub Python package.
 * [mdb_shard](./mdb_shard): Shard operations, including Shard format, dedupe probing, benchmarks, and utilities.
 * [merklehash](./merklehash): MerkleHash type, 256-bit hash, widely used across many crates.
 * [parutils](./parutils): Provides parallel execution utilities relying on Tokio (ex. parallel foreach).
@@ -58,9 +65,12 @@ xet-core enables huggingface_hub to utilize xet storage for uploading and downlo
 
 ### Build, Test & Benchmark
 
-To build xet-core, look at requirements in [GitHub Actions CI Workflow](.github/workflows/ci.yml) for the Rust toolchain to install. Follow Rust documentation for installing rustup and that version of the toolchain. Use the following steps for building, testing, benchmarking.
+To build xet-core, look at requirements in [GitHub Actions CI Workflow](.github/workflows/ci.yml) for the Rust toolchain
+to install. Follow Rust documentation for installing rustup and that version of the toolchain. Use the following steps
+for building, testing, benchmarking.
 
-Many of us on the team use [VSCode](https://code.visualstudio.com/), so we have checked in some settings in the .vscode directory. Install the rust-analyzer extension.
+Many of us on the team use [VSCode](https://code.visualstudio.com/), so we have checked in some settings in the .vscode
+directory. Install the rust-analyzer extension.
 
 Build:
 
@@ -75,16 +85,19 @@ cargo test
 ```
 
 Benchmark:
+
 ```
 cargo bench
 ```
 
 Linting:
+
 ```
 cargo clippy -r --verbose -- -D warnings
 ```
 
 Formatting (requires nightly toolchain):
+
 ```
 cargo +nightly fmt --manifest-path ./Cargo.toml --all
 ```
@@ -96,7 +109,8 @@ cargo +nightly fmt --manifest-path ./Cargo.toml --all
 3. Install maturin: `pip3 install maturin ipython`
 4. Go to hf_xet crate: `cd hf_xet`
 5. Build: `maturin develop`
-6. Test: 
+6. Test:
+
 ```
 ipython
 import hfxet 
@@ -107,6 +121,7 @@ hfxet.download_files()
 #### Building universal whl for MacOS:
 
 From hf_xet directory:
+
 ```
 MACOSX_DEPLOYMENT_TARGET=10.9 maturin build --release --target universal2-apple-darwin --features openssl_vendored
 ```
@@ -115,11 +130,15 @@ Note: You may need to install x86_64: `rustup target add x86_64-apple-darwin`
 
 ### Testing
 
-Unit-tests are run with `cargo test`, benchmarks are run with `cargo bench`. Some crates have a main.rs that can be run for manual testing.
+Unit-tests are run with `cargo test`, benchmarks are run with `cargo bench`. Some crates have a main.rs that can be run
+for manual testing.
 
 ## Contributions (feature requests, bugs, etc.) are encouraged & appreciated 💙💚💛💜🧡❤️
 
-Please join us in making xet-core better. We value everyone's contributions. Code is not the only way to help. Answering questions, helping each other, improving documentation, filing issues all help immensely. If you are interested in contributing (please do!), check out the [contribution guide](https://github.com/huggingface/xet-core/blob/main/CONTRIBUTING.md) for this repository.
+Please join us in making xet-core better. We value everyone's contributions. Code is not the only way to help. Answering
+questions, helping each other, improving documentation, filing issues all help immensely. If you are interested in
+contributing (please do!), check out
+the [contribution guide](https://github.com/huggingface/xet-core/blob/main/CONTRIBUTING.md) for this repository.
 
 ## Debugging
 
@@ -140,4 +159,5 @@ Here are the recommended steps:
 
 * [Technical Blog posts](https://xethub.com/)
 * [Git is for Data 'CIDR paper](https://xethub.com/blog/git-is-for-data-published-in-cidr-2023)
-* History: xet-core is adapted from [xet-core](https://github.com/xetdata/xet-core), which contains deep git integration, along with very different backend services implementation.
+* History: xet-core is adapted from [xet-core](https://github.com/xetdata/xet-core), which contains deep git
+  integration, along with very different backend services implementation.
