@@ -99,16 +99,6 @@ fn reqwest_client() -> Result<reqwest::Client, CasClientError> {
 
         Ok(client)
     }
-
-    // let mut reqwest_client_builder = reqwest::Client::builder();
-    // // custom dns resolver not supported in WASM. no access to getaddrinfo/any other dns interface.
-    // #[cfg(not(target_family = "wasm"))]
-    // {
-    //     reqwest_client_builder =
-    //         reqwest_client_builder.dns_resolver(Arc::from(dns_utils::GaiResolverWithAbsolute::default()));
-    // }
-    // let reqwest_client = reqwest_client_builder.build()?;
-    // Ok(reqwest_client)
 }
 
 /// Builds authenticated HTTP Client to talk to CAS.
