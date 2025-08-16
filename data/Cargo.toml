@@ -22,7 +22,6 @@ deduplication = { path = "../deduplication" }
 error_printer = { path = "../error_printer" }
 mdb_shard = { path = "../mdb_shard" }
 merklehash = { path = "../merklehash" }
-parutils = { path = "../parutils" }
 progress_tracking = { path = "../progress_tracking" }
 utils = { path = "../utils" }
 xet_threadpool = { path = "../xet_threadpool" }

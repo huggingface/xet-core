@@ -52,7 +52,6 @@ xet-core enables huggingface_hub to utilize xet storage for uploading and downlo
 * [hf_xet](./hf_xet): Python integration with Rust code, uses maturin to build hfxet Python package. Main integration with HF Hub Python package.
 * [mdb_shard](./mdb_shard): Shard operations, including Shard format, dedupe probing, benchmarks, and utilities.
 * [merklehash](./merklehash): MerkleHash type, 256-bit hash, widely used across many crates.
-* [parutils](./parutils): Provides parallel execution utilities relying on Tokio (ex. parallel foreach).
 * [progress_reporting](./progress_reporting): offers ReportedWriter so progress for Writer operations can be displayed.
 * [utils](./utils): general utilities, including singleflight, progress, serialization_utils and threadpool.
 

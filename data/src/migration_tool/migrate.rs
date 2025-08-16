@@ -3,13 +3,13 @@ use std::sync::Arc;
 use anyhow::Result;
 use cas_object::CompressionScheme;
 use mdb_shard::file_structs::MDBFileInfo;
-use parutils::{tokio_par_for_each, ParallelError};
 use tracing::{info_span, instrument, Instrument, Span};
 use utils::auth::TokenRefresher;
+use xet_threadpool::utils::run_constrained;
 use xet_threadpool::ThreadPool;
 
 use super::hub_client::{HubClient, HubClientTokenRefresher};
-use crate::data_client::{add_spans, clean_file, default_config};
+use crate::data_client::{clean_file, default_config};
 use crate::errors::DataProcessingError;
 use crate::{FileUploadSession, XetFileInfo};
 
@@ -72,21 +72,16 @@ pub async fn migrate_files_impl(
         FileUploadSession::new(config, None).await?
     };
 
-    let file_paths_with_spans = add_spans(file_paths, || info_span!("migration::clean_file"));
-
-    let clean_ret = tokio_par_for_each(file_paths_with_spans, num_workers, |(f, span), _| {
-        async {
-            let proc = processor.clone();
-            let (pf, metrics) = clean_file(proc, f).await?;
-            Ok((pf, metrics.new_bytes))
+    // let file_paths_with_spans = add_spans(file_paths, || info_span!("migration::clean_file"));
+    let clean_futs = file_paths.into_iter().map(|file_path| {
+        let proc = processor.clone();
+        async move {
+            let (pf, metrics) = clean_file(proc, file_path).await?;
+            Ok::<(XetFileInfo, u64), DataProcessingError>((pf, metrics.new_bytes))
         }
-        .instrument(span.unwrap_or_else(|| info_span!("unexpected_span")))
-    })
-    .await
-    .map_err(|e| match e {
-        ParallelError::JoinError => DataProcessingError::InternalError("Join error".to_string()),
-        ParallelError::TaskError(e) => e,
-    })?;
+        .instrument(info_span!("clean_file"))
+    });
+    let clean_ret = run_constrained(clean_futs, num_workers).await?;
 
     if dry_run {
         let (metrics, all_file_info) = processor.finalize_with_file_info().await?;
