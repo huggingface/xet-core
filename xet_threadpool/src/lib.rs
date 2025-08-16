@@ -11,3 +11,5 @@ pub use sync_primatives::{spawn_os_thread, SyncJoinHandle};
 mod global_semaphores;
 
 pub use global_semaphores::GlobalSemaphoreHandle;
+
+pub mod file_handle_limits;

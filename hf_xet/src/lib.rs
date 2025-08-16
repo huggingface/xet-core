@@ -314,6 +314,9 @@ pub fn hf_xet(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     // Make sure the logger is set up.
     init_logging(py);
 
+    // Raise the soft file handle limits if possible
+    file_handle_limits::raise_nofile_soft_to_hard();
+
     #[cfg(feature = "profiling")]
     {
         profiling::start_profiler();
