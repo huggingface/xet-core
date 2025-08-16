@@ -93,6 +93,7 @@ fn reqwest_client() -> Result<reqwest::Client, CasClientError> {
 
         let client = ThreadPool::get_or_create_reqwest_client(|| {
             reqwest::Client::builder()
+                .pool_max_idle_per_host(32)
                 .dns_resolver(Arc::from(dns_utils::GaiResolverWithAbsolute::default()))
                 .build()
         })?;
