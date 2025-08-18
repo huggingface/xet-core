@@ -1,4 +1,10 @@
 pub mod app;
 mod constants;
 mod errors;
+mod git_lfs_auth;
+mod git_process_wrapping;
+mod git_repo;
+mod git_url;
+mod hub_client;
 mod lfs_agent_protocol;
+mod test_utils;

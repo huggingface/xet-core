@@ -6,13 +6,10 @@ use data::FileUploadSession;
 use data::data_client::{clean_file, default_config};
 use progress_tracking::{ProgressUpdate, TrackingProgressUpdater};
 
-use crate::constants::GIT_LFS_CUSTOM_TRANSFER_AGENT_PROGRAM;
+use crate::constants::{GIT_LFS_CUSTOM_TRANSFER_AGENT_PROGRAM, XET_ACCESS_TOKEN_HEADER, XET_TOKEN_EXPIRATION_HEADER};
 use crate::errors::{GitXetError, Result, internal};
 use crate::lfs_agent_protocol::errors::bad_syntax;
 use crate::lfs_agent_protocol::*;
-
-const XET_ACCESS_TOKEN_HEADER: &str = "X-Xet-Access-Token";
-const XET_TOKEN_EXPIRATION_HEADER: &str = "X-Xet-Token-Expiration";
 
 struct XetProgressUpdaterWrapper<W: Write + Send + Sync + 'static> {
     updater: ProgressUpdater<W>,

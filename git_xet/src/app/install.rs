@@ -1,9 +1,9 @@
-use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::path::PathBuf;
 
 use crate::app::Command::Transfer;
-use crate::constants::{GIT_EXECUTABLE, GIT_LFS_CUSTOM_TRANSFER_AGENT_NAME, GIT_LFS_CUSTOM_TRANSFER_AGENT_PROGRAM};
-use crate::errors::{GitXetError, Result};
+use crate::constants::{GIT_LFS_CUSTOM_TRANSFER_AGENT_NAME, GIT_LFS_CUSTOM_TRANSFER_AGENT_PROGRAM};
+use crate::errors::Result;
+use crate::git_process_wrapping::run_git_captured;
 
 #[derive(Default)]
 enum ConfigLocation {
@@ -34,7 +34,7 @@ fn install_impl(location: ConfigLocation) -> Result<()> {
         ConfigLocation::Local(maybe_loc) => (maybe_loc.unwrap_or(cwd), "--local"),
     };
 
-    run_git(
+    run_git_captured(
         &wd,
         "config",
         &[
@@ -44,7 +44,7 @@ fn install_impl(location: ConfigLocation) -> Result<()> {
         ],
     )?;
 
-    run_git(
+    run_git_captured(
         &wd,
         "config",
         &[
@@ -54,7 +54,7 @@ fn install_impl(location: ConfigLocation) -> Result<()> {
         ],
     )?;
 
-    run_git(
+    run_git_captured(
         &wd,
         "config",
         &[
@@ -65,24 +65,4 @@ fn install_impl(location: ConfigLocation) -> Result<()> {
     )?;
 
     Ok(())
-}
-
-fn run_git(working_dir: impl AsRef<Path>, git_command: &str, args: &[&str]) -> Result<()> {
-    let mut command = Command::new(GIT_EXECUTABLE);
-    command.current_dir(working_dir).arg(git_command).args(args);
-    let ret = command.spawn()?.wait_with_output()?;
-
-    match ret.status.code() {
-        Some(0) => Ok(()),
-        _ => {
-            let stdout = std::str::from_utf8(&ret.stdout).unwrap_or("<Binary Data>").trim();
-            let stderr = std::str::from_utf8(&ret.stderr).unwrap_or("<Binary Data>").trim();
-            Err(GitXetError::GitCommandError(format!(
-                "err_code = {:?}, stdout = \"{}\", stderr = \"{}\"",
-                ret.status.code(),
-                stdout,
-                stderr
-            )))
-        },
-    }
 }
