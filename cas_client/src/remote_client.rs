@@ -243,16 +243,19 @@ impl RemoteClient {
         let client = self.authenticated_http_client.clone();
         let api_tag = "cas::query_dedup";
 
-        let response = RetryWrapper::new(api_tag)
+        let result = RetryWrapper::new(api_tag)
             .with_429_no_retry()
             .log_errors_as_info()
             .run(move || client.get(url.clone()).with_extension(Api(api_tag)).send())
             .await;
 
-        if matches!(response, Err(CasClientError::ServerConnectionError(_))) {
+        if result
+            .as_ref()
+            .is_err_and(|e| e.status().is_some_and(|status| status == StatusCode::NOT_FOUND))
+        {
             return Ok(None);
         }
-        Ok(Some(response?))
+        Ok(Some(result?))
     }
 }
 

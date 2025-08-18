@@ -1,7 +1,7 @@
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
-use reqwest::{Response, StatusCode};
+use reqwest::{Error as ReqwestError, Response, StatusCode};
 use reqwest_retry::{default_on_request_failure, default_on_request_success, Retryable};
 use tokio_retry::strategy::{jitter, ExponentialBackoff};
 use tokio_retry::RetryIf;
@@ -107,22 +107,20 @@ impl RetryWrapper {
         let api = &self.api_tag;
 
         // Log the errors and create a message string with the information in it to expose to users.
-        let process_error = |context, err, log_as_info| {
-            let msg = format!("{context}: {api:?} api call failed (request id {request_id}{retry_str}): {err}");
-
+        let process_error = |context, err: ReqwestError, log_as_info| {
             if self.log_errors_as_info || log_as_info {
-                info!("{msg}");
+                info!("{context}: {api:?} api call failed (request id {request_id}{retry_str}): {err}");
             } else {
-                error!("{msg}");
+                error!("{context}: {api:?} api call failed (request id {request_id}{retry_str}): {err}");
             }
-            CasClientError::ServerConnectionError(msg)
+            CasClientError::from(err)
         };
 
         let retriability = default_on_request_success(&resp);
 
         match (resp.error_for_status(), retriability) {
             (Err(e), Some(Retryable::Fatal)) => {
-                let cas_err = process_error("Fatal Server Error", e, false);
+                let cas_err = process_error("Fatal Error", e, false);
                 Err(RetryableReqwestError::FatalError(cas_err))
             },
             (Err(e), Some(Retryable::Transient)) => {
@@ -131,7 +129,7 @@ impl RetryWrapper {
                     let cas_err = process_error("Too Many Requests (retry on 429 disabled)", e, false);
                     Err(RetryableReqwestError::FatalError(cas_err))
                 } else {
-                    let cas_err = process_error("Retryable Server Error", e, true);
+                    let cas_err = process_error("Retryable Error", e, true);
                     Err(RetryableReqwestError::RetryableError(cas_err))
                 }
             },

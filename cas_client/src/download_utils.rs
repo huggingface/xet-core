@@ -11,6 +11,7 @@ use derivative::Derivative;
 use error_printer::ErrorPrinter;
 use futures::TryStreamExt;
 use http::header::RANGE;
+use http::StatusCode;
 use merklehash::MerkleHash;
 use reqwest::Response;
 use reqwest_middleware::ClientWithMiddleware;
@@ -538,7 +539,7 @@ async fn download_fetch_term_data(
         }))
     };
 
-    RetryWrapper::new(api_tag)
+    let result = RetryWrapper::new(api_tag)
         .run_and_extract_custom(
             move || {
                 http_client
@@ -549,7 +550,16 @@ async fn download_fetch_term_data(
             },
             parse,
         )
-        .await
+        .await;
+    // in case the error was a 403 Forbidden status code, we raise it up as the special DownloadRangeResult::Forbidden
+    // variant so the fetch info is refetched
+    if result
+        .as_ref()
+        .is_err_and(|e| e.status().is_some_and(|status| status == StatusCode::FORBIDDEN))
+    {
+        return Ok(DownloadRangeResult::Forbidden);
+    }
+    result
 }
 
 #[cfg(test)]
@@ -760,8 +770,8 @@ mod tests {
         // download task will not return if keep hitting 403
         handle.abort();
 
-        assert!(mock_fi.hits() >= 2);
-        assert!(mock_data.hits() >= 2);
+        assert!(mock_fi.hits() >= 2, "assertion failed: mock_fi.hits() {} >= 2", mock_fi.hits());
+        assert!(mock_data.hits() >= 2, "assertion failed: mock_data.hits() {} >= 2", mock_data.hits());
 
         Ok(())
     }
