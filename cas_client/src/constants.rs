@@ -12,7 +12,7 @@ utils::configurable_constants! {
     ref CLIENT_RETRY_MAX_DURATION_MS: u64 = 6 * 60 * 1000; // 6m
 
     /// Cleanup idle connections that are unused for this amount of time.
-    ref CLIENT_IDLE_CONNECTION_TIMEOUT_SECS: u64 = 60; // 6m
+    ref CLIENT_IDLE_CONNECTION_TIMEOUT_SECS: u64 = 60; // 1m
 
     /// Only no more than this number of idle connections in the connection pool.
     ref CLIENT_MAX_IDLE_CONNECTIONS: usize = 16;
