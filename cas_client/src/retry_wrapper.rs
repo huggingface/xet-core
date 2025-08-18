@@ -137,7 +137,7 @@ impl RetryWrapper {
             },
             (Err(e), None) => {
                 // I don't believe this case should ever happen, but it's an external library
-                // so let's handle it semigracefully.
+                // so let's handle it semi-gracefully.
                 let cas_err = process_error("Unknown Server Error", e, false);
                 Err(RetryableReqwestError::FatalError(cas_err))
             },
@@ -155,7 +155,7 @@ impl RetryWrapper {
     ///
     /// The `make_request` function returns a future that resolves to a Result<Response> object as is returned by the
     /// client middleware.  For example, `|| client.clone().get(url).send()` returns a future (as `send()` is async)
-    /// that will then be evaluatated to get the response.
+    /// that will then be evaluated to get the response.
     ///
     /// The process_fn takes a successful response and returns a future that evaluates that response.  A successful
     /// response is defined as the make_request future evaluating to an Ok() result and the enclosed Response having
@@ -238,11 +238,11 @@ impl RetryWrapper {
     ///
     /// The `make_request` function returns a future that resolves to a Result<Response> object as is returned by the
     /// client middleware.  For example, `|| client.clone().get(url).send()` returns a future (as `send()` is async)
-    /// that will then be evaluatated to get the response.
+    /// that will then be evaluated to get the response.
     ///
     /// This functions acts just like the json() function on a client response, but retries the entire connection on
-    /// transient errors.  
-    pub async fn run_and_extract_json<ReqFut, ReqFn, JsonDest>(
+    /// transient errors.
+    pub async fn run_and_extract_json<ReqFn, ReqFut, JsonDest>(
         self,
         make_request: ReqFn,
     ) -> Result<JsonDest, CasClientError>
@@ -278,11 +278,38 @@ impl RetryWrapper {
         .await
     }
 
+    /// Run a connection and process the result as a using the specified function parameter blob,
+    /// retrying on transient errors or on issues parsing the blob with the custom function.
+    ///
+    /// The `make_request` function returns a future that resolves to a Result<Response> object as is returned by the
+    /// client middleware.  For example, `|| client.clone().get(url).send()` returns a future (as `send()` is async)
+    /// that will then be evaluated to get the response.
+    ///
+    /// The `parse` function is a custom parser that takes a Response and returns a future that resolves to
+    /// Result<Dest (your desired output type), ParseErr>. This allows for custom parsing logic beyond simple JSON
+    /// deserialization.
+    ///
+    /// The `map_parse_err` function maps parsing errors to RetryableReqwestError, determining whether parsing
+    /// failures should be treated as fatal or retryable error
+    pub async fn run_and_extract_custom<ReqFn, ReqFut, Parse, ParseFut, Dest>(
+        self,
+        make_request: ReqFn,
+        parse: Parse,
+    ) -> Result<Dest, CasClientError>
+    where
+        ReqFn: Fn() -> ReqFut + Send + 'static,
+        ReqFut: std::future::Future<Output = Result<Response, reqwest_middleware::Error>> + 'static,
+        Parse: Fn(Response) -> ParseFut + Send + Sync + 'static,
+        ParseFut: std::future::Future<Output = Result<Dest, RetryableReqwestError>> + 'static,
+    {
+        self.run_and_process(make_request, parse).await
+    }
+
     /// Run a connection and process the result object, retrying on transient errors.
     ///
     /// The `make_request` function returns a future that resolves to a Result<Response> object as is returned by the
     /// client middleware.  For example, `|| client.clone().get(url).send()` returns a future (as `send()` is async)
-    /// that will then be evaluatated to get the response.
+    /// that will then be evaluated to get the response.
     pub async fn run<ReqFut, ReqFn>(self, make_request: ReqFn) -> Result<Response, CasClientError>
     where
         ReqFn: Fn() -> ReqFut + Send + 'static,
