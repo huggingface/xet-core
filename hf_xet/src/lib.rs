@@ -93,7 +93,7 @@ pub fn upload_files(
 
     let x: u64 = rand::rng().random();
 
-    let ret = async_run(py, async move {
+    async_run(py, async move {
         debug!(
             "Upload call {x:x}: (PID = {}) Uploading {} files {file_names}{}",
             std::process::id(),
@@ -115,9 +115,7 @@ pub fn upload_files(
         .collect();
         debug!("Upload call {x:x} finished.");
         PyResult::Ok(out)
-    });
-
-    ret
+    })
 }
 
 #[pyfunction]
@@ -138,7 +136,7 @@ pub fn download_files(
 
     let file_names = file_infos.iter().take(3).map(|(_, p)| p).join(", ");
 
-    let res = async_run(py, async move {
+    async_run(py, async move {
         debug!(
             "Download call {x:x}: (PID = {}) Downloading {} files {file_names}{}",
             std::process::id(),
@@ -154,9 +152,7 @@ pub fn download_files(
         debug!("Download call {x:x}: Completed.");
 
         PyResult::Ok(out)
-    });
-
-    res
+    })
 }
 
 #[pyfunction]
