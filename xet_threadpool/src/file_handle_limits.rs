@@ -1,4 +1,4 @@
-#[cfg(any(target_os = "macos"))]
+#[cfg(target_os = "macos")]
 pub fn raise_nofile_soft_to_hard() {
     use tracing::info;
 
@@ -35,5 +35,5 @@ pub fn raise_nofile_soft_to_hard() {
     }
 }
 
-#[cfg(not(any(target_os = "macos")))]
+#[cfg(not(target_os = "macos"))]
 pub fn raise_nofile_soft_to_hard() {}
