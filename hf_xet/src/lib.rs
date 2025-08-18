@@ -7,6 +7,8 @@ use std::fmt::Debug;
 use std::iter::IntoIterator;
 use std::sync::Arc;
 
+use crate::logging::init_logging;
+use crate::progress_update::WrappedProgressUpdater;
 use data::errors::DataProcessingError;
 use data::{data_client, XetFileInfo};
 use itertools::Itertools;
@@ -18,9 +20,7 @@ use rand::Rng;
 use runtime::async_run;
 use token_refresh::WrappedTokenRefresher;
 use tracing::debug;
-
-use crate::logging::init_logging;
-use crate::progress_update::WrappedProgressUpdater;
+use xet_threadpool::file_handle_limits;
 
 // For profiling
 #[cfg(feature = "profiling")]

@@ -3136,6 +3136,7 @@ name = "xet_threadpool"
 version = "0.1.0"
 dependencies = [
  "error_printer",
+ "libc",
  "oneshot",
  "thiserror 2.0.12",
  "tokio",
