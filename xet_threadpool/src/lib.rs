@@ -9,6 +9,6 @@ pub use sync_primatives::{spawn_os_thread, SyncJoinHandle};
 
 #[macro_use]
 mod global_semaphores;
-pub mod runner;
+pub mod utils;
 
 pub use global_semaphores::GlobalSemaphoreHandle;

@@ -48,7 +48,7 @@ lazy_static! {
 /// The chosen Semaphore is fair, meaning xorbs and shards added first will be scheduled to upload first.
 ///
 /// It's also important to acquire the permit before the task is launched; otherwise, we may spawn an unlimited
-/// number of tasks that end up using up a ton of memory; this forces the pipeline to block here while the upload
+/// number of tasks that end up using a ton of memory; this forces the pipeline to block here while the upload
 /// is happening.
 pub(crate) async fn acquire_upload_permit() -> Result<OwnedSemaphorePermit> {
     lazy_static! {

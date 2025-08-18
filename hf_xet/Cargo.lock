@@ -3898,6 +3898,7 @@ version = "0.1.0"
 dependencies = [
  "error_printer",
  "oneshot",
+ "reqwest",
  "thiserror 2.0.12",
  "tokio",
  "tracing",

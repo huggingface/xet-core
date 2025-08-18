@@ -16,7 +16,7 @@ use tracing::{info, info_span, instrument, Instrument, Span};
 use ulid::Ulid;
 use utils::auth::{AuthConfig, TokenRefresher};
 use utils::normalized_path_from_user_string;
-use xet_threadpool::runner::run_limited_fold_result_with_semaphore;
+use xet_threadpool::utils::run_constrained_with_semaphore;
 use xet_threadpool::{global_semaphore_handle, GlobalSemaphoreHandle, ThreadPool};
 
 use crate::configurations::*;
@@ -139,7 +139,7 @@ pub async fn upload_bytes_async(
         async move { clean_bytes(upload_session, blob).await.map(|(xf, _metrics)| xf) }
             .instrument(info_span!("clean_task"))
     });
-    let files = run_limited_fold_result_with_semaphore(clean_futures, semaphore).await?;
+    let files = run_constrained_with_semaphore(clean_futures, semaphore).await?;
 
     // Push the CAS blocks and flush the mdb to disk
     let _metrics = upload_session.finalize().await?;
@@ -200,6 +200,11 @@ pub async fn download_async(
     token_refresher: Option<Arc<dyn TokenRefresher>>,
     progress_updaters: Option<Vec<Arc<dyn TrackingProgressUpdater>>>,
 ) -> errors::Result<Vec<String>> {
+    lazy_static! {
+        static ref CONCURRENT_FILE_DOWNLOAD_LIMITER: GlobalSemaphoreHandle =
+            global_semaphore_handle!(*MAX_CONCURRENT_DOWNLOADS);
+    }
+
     if let Some(updaters) = &progress_updaters {
         if updaters.len() != file_infos.len() {
             return Err(DataProcessingError::ParameterError(
@@ -221,9 +226,9 @@ pub async fn download_async(
         async move { smudge_file(&proc, &file_info, &file_path, updater).await }.instrument(info_span!("download_file"))
     });
 
-    let semaphore = ThreadPool::current().global_semaphore(*DOWNLOAD_FILE_CONCURRENCY_LIMITER);
+    let semaphore = ThreadPool::current().global_semaphore(*CONCURRENT_FILE_DOWNLOAD_LIMITER);
 
-    let paths = run_limited_fold_result_with_semaphore(smudge_file_futures, semaphore).await?;
+    let paths = run_constrained_with_semaphore(smudge_file_futures, semaphore).await?;
 
     Ok(paths)
 }
