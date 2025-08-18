@@ -7,10 +7,11 @@ edition = "2021"
 utils = { path = "../utils" }
 error_printer = { path = "../error_printer" }
 
+oneshot = { workspace = true }
+reqwest = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["time", "rt", "macros", "io-util"] }
 tracing = { workspace = true }
-oneshot = { workspace = true }
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
 tokio = { workspace = true, features = ["rt-multi-thread"] }

@@ -17,10 +17,10 @@ ctor = { workspace = true }
 futures = { workspace = true }
 lazy_static = { workspace = true }
 pin-project = { workspace = true }
+shellexpand = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["time", "rt", "macros", "sync"] }
 tracing = { workspace = true }
-shellexpand = { workspace = true }
 
 [target.'cfg(not(target_family = "wasm"))'.dev-dependencies]
 tempfile = { workspace = true }

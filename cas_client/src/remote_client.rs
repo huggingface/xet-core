@@ -54,7 +54,7 @@ utils::configurable_constants! {
 }
 
 lazy_static! {
-    static ref DOWNLOAD_CONCURRENCY_LIMITER: GlobalSemaphoreHandle =
+    static ref DOWNLOAD_CHUNK_RANGE_CONCURRENCY_LIMITER: GlobalSemaphoreHandle =
         global_semaphore_handle!(*NUM_CONCURRENT_RANGE_GETS);
 }
 
@@ -72,7 +72,6 @@ pub struct RemoteClient {
     dry_run: bool,
     http_client_with_retry: Arc<ClientWithMiddleware>,
     authenticated_http_client_with_retry: Arc<ClientWithMiddleware>,
-    http_client: Arc<ClientWithMiddleware>,
     authenticated_http_client: Arc<ClientWithMiddleware>,
     chunk_cache: Option<Arc<dyn ChunkCache>>,
     #[cfg(not(target_family = "wasm"))]
@@ -225,7 +224,6 @@ impl RemoteClient {
             http_client_with_retry: Arc::new(
                 http_client::build_http_client(RetryConfig::default(), session_id).unwrap(),
             ),
-            http_client: Arc::new(http_client::build_http_client_no_retry(session_id).unwrap()),
             chunk_cache,
             #[cfg(not(target_family = "wasm"))]
             range_download_single_flight: Arc::new(Group::new()),
@@ -326,12 +324,13 @@ impl RemoteClient {
         // After the above, a task that defines fetching the remainder of the file reconstruction info is enqueued,
         // which will execute after the first of the above term download tasks finishes.
         let chunk_cache = self.chunk_cache.clone();
-        let term_download_client = self.http_client.clone();
+        let term_download_client = self.http_client_with_retry.clone();
         let range_download_single_flight = self.range_download_single_flight.clone();
         let download_scheduler = DownloadSegmentLengthTuner::from_configurable_constants();
         let download_scheduler_clone = download_scheduler.clone();
 
-        let download_concurrency_limiter = ThreadPool::current().global_semaphore(*DOWNLOAD_CONCURRENCY_LIMITER);
+        let download_concurrency_limiter =
+            ThreadPool::current().global_semaphore(*DOWNLOAD_CHUNK_RANGE_CONCURRENCY_LIMITER);
 
         let queue_dispatcher: JoinHandle<Result<()>> = tokio::spawn(async move {
             let mut remaining_total_len = total_len;
@@ -478,10 +477,11 @@ impl RemoteClient {
         // download tasks are enqueued and spawned with the degree of concurrency equal to `num_concurrent_range_gets`.
         // After the above, a task that defines fetching the remainder of the file reconstruction info is enqueued,
         // which will execute after the first of the above term download tasks finishes.
-        let term_download_client = self.http_client.clone();
+        let term_download_client = self.http_client_with_retry.clone();
         let download_scheduler = DownloadSegmentLengthTuner::from_configurable_constants();
 
-        let download_concurrency_limiter = ThreadPool::current().global_semaphore(*DOWNLOAD_CONCURRENCY_LIMITER);
+        let download_concurrency_limiter =
+            ThreadPool::current().global_semaphore(*DOWNLOAD_CHUNK_RANGE_CONCURRENCY_LIMITER);
 
         let process_result = move |result: TermDownloadResult<u64>,
                                    total_written: &mut u64,
