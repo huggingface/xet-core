@@ -1,5 +1,4 @@
-mod log;
-mod log_buffer;
+mod logging;
 mod progress_update;
 mod runtime;
 mod token_refresh;
@@ -20,6 +19,7 @@ use runtime::async_run;
 use token_refresh::WrappedTokenRefresher;
 use tracing::debug;
 
+use crate::logging::init_logging;
 use crate::progress_update::WrappedProgressUpdater;
 
 // For profiling
@@ -294,6 +294,7 @@ impl From<PyXetDownloadInfo> for (XetFileInfo, DestinationPath) {
 }
 
 #[pymodule]
+#[allow(unused_variables)]
 pub fn hf_xet(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(upload_files, m)?)?;
     m.add_function(wrap_pyfunction!(upload_bytes, m)?)?;
@@ -304,13 +305,14 @@ pub fn hf_xet(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyXetUploadInfo>()?;
     m.add_class::<progress_update::PyItemProgressUpdate>()?;
     m.add_class::<progress_update::PyTotalProgressUpdate>()?;
+
     // TODO: remove this during the next major version update.
     // This supports backward compatibility for PyPointerFile with old versions
     // huggingface_hub.
     m.add_class::<PyPointerFile>()?;
 
-    // Init the threadpool
-    runtime::init_threadpool(py)?;
+    // Make sure the logger is set up.
+    init_logging(py);
 
     #[cfg(feature = "profiling")]
     {

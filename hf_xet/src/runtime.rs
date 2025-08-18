@@ -7,9 +7,8 @@ use pyo3::exceptions::{PyKeyboardInterrupt, PyRuntimeError};
 use pyo3::prelude::*;
 use tracing::info;
 use xet_threadpool::errors::MultithreadedRuntimeError;
+use xet_threadpool::sync_primatives::spawn_os_thread;
 use xet_threadpool::ThreadPool;
-
-use crate::log;
 
 lazy_static! {
     static ref SIGINT_DETECTED: Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
@@ -18,32 +17,34 @@ lazy_static! {
 }
 
 #[cfg(unix)]
-fn install_sigint_handler() -> PyResult<()> {
+fn install_sigint_handler() -> Result<(), MultithreadedRuntimeError> {
     use signal_hook::consts::SIGINT;
     use signal_hook::flag;
 
     // Register the SIGINT handler to set our atomic flag.
     // Using `signal_hook::flag::register` allows us to set the atomic flag when SIGINT is received.
     flag::register(SIGINT, SIGINT_DETECTED.clone()).map_err(|e| {
-        PyRuntimeError::new_err(format!("Initialization Error: Unable to register SIGINT handler {e:?}"))
+        MultithreadedRuntimeError::Other(format!("Initialization Error: Unable to register SIGINT handler {e:?}"))
     })?;
 
     Ok(())
 }
 
 #[cfg(windows)]
-fn install_sigint_handler() -> PyResult<()> {
+fn install_sigint_handler() -> Result<(), MultithreadedRuntimeError> {
     // On Windows, use ctrlc crate.
     // This sets a callback to run on Ctrl-C:
     let sigint_detected_flag = SIGINT_DETECTED.clone();
     ctrlc::set_handler(move || {
         sigint_detected_flag.store(true, Ordering::SeqCst);
     })
-    .map_err(|e| PyRuntimeError::new_err(format!("Initialization Error: Unable to register SIGINT handler {e:?}")))?;
+    .map_err(|e| {
+        MultithreadedRuntimeError::Other(format!("Initialization Error: Unable to register SIGINT handler {e:?}"))
+    })?;
     Ok(())
 }
 
-fn check_sigint_handler() -> PyResult<()> {
+fn check_sigint_handler() -> Result<(), MultithreadedRuntimeError> {
     // Clear the sigint flag.  It is possible but unlikely that there will be a race condition here
     // that will cause a CTRL-C to be temporarily ignored by us.  In such a case, the user
     // will have to press it again.
@@ -89,6 +90,10 @@ pub(crate) fn perform_sigint_shutdown() {
     }
 }
 
+fn in_sigint_shutdown() -> bool {
+    SIGINT_DETECTED.load(Ordering::Relaxed)
+}
+
 fn signal_check_background_loop() {
     const SIGNAL_CHECK_INTERVAL: Duration = Duration::from_millis(250);
 
@@ -112,14 +117,13 @@ fn signal_check_background_loop() {
     }
 }
 
-pub fn init_threadpool(py: Python) -> PyResult<Arc<ThreadPool>> {
+// This should be called once on library load.
+pub fn init_threadpool() -> Result<Arc<ThreadPool>, MultithreadedRuntimeError> {
     // Need to initialize. Upgrade to write lock.
     let mut guard = MULTITHREADED_RUNTIME.write().unwrap();
 
     // Has another thread done this already?
     let pid = std::process::id();
-
-    let mut swapping_after_fork = false;
 
     if let Some((runtime_pid, existing)) = guard.take() {
         if runtime_pid == pid {
@@ -132,12 +136,12 @@ pub fn init_threadpool(py: Python) -> PyResult<Arc<ThreadPool>> {
             // resources will be freed up when the child exits.
             existing.discard_runtime();
 
-            swapping_after_fork = true;
+            info!("Runtime restarted due to detected process ID change, likely due to running inside a fork call.");
         }
     }
 
     // Create a new Tokio runtime.
-    let runtime = ThreadPool::new().map_err(convert_multithreading_error)?;
+    let runtime = ThreadPool::new()?;
 
     // Check the signal handler.  This must be reinstalled on new or after a spawn
     check_sigint_handler()?;
@@ -160,19 +164,12 @@ pub fn init_threadpool(py: Python) -> PyResult<Arc<ThreadPool>> {
     // being initialized.)
     drop(guard);
 
-    // Initialize the logging.
-    if !swapping_after_fork {
-        log::initialize_runtime_logging(py, runtime.clone());
-    } else {
-        info!("Runtime restarted due to detected process ID change, likely due to fork-exec call.");
-    }
-
     // Return the runtime
     Ok(runtime)
 }
 
 // This function initializes the runtime if not present, otherwise returns the existing one.
-fn get_threadpool(py: Python) -> PyResult<Arc<ThreadPool>> {
+fn get_threadpool() -> Result<Arc<ThreadPool>, MultithreadedRuntimeError> {
     // First try a read lock to see if it's already initialized.
     {
         let guard = MULTITHREADED_RUNTIME.read().unwrap();
@@ -186,7 +183,8 @@ fn get_threadpool(py: Python) -> PyResult<Arc<ThreadPool>> {
     }
 
     // Init and return
-    init_threadpool(py)
+
+    init_threadpool()
 }
 
 pub fn convert_multithreading_error(e: impl Into<MultithreadedRuntimeError> + std::fmt::Display) -> PyErr {
@@ -197,22 +195,27 @@ pub fn async_run<Out, F>(py: Python, execution_call: F) -> PyResult<Out>
 where
     F: std::future::Future + Send + 'static,
     F::Output: Into<PyResult<Out>> + Send + Sync,
-    Out: Send + Sync,
+    Out: Send + Sync + 'static,
 {
-    // Get a handle to the current runtime.
-    let runtime = get_threadpool(py)?;
+    let result: PyResult<Out> = py.allow_threads(move || {
+        // Now, without the GIL, spawn the task on a new OS thread.  This avoids having tokio cache stuff in
+        // thread-local storage that is invalidated after a fork-exec.
+        spawn_os_thread(move || {
+            let runtime = get_threadpool().map_err(convert_multithreading_error)?;
 
-    // Release the gil
-    let runtime_internal = runtime.clone();
-    let result: PyResult<Out> = py
-        .allow_threads(move || runtime_internal.external_run_async_task(execution_call))
+            runtime
+                .external_run_async_task(execution_call)
+                .map_err(convert_multithreading_error)?
+                .into()
+        })
+        .join()
         .map_err(convert_multithreading_error)?
-        .into();
+    });
 
     // Now, if we're in the middle of a shutdown, and this is an error, then
     // just translate that error to a KeyboardInterrupt (or we get a lot of
     if let Err(ref e) = &result {
-        if runtime.in_sigint_shutdown() {
+        if in_sigint_shutdown() {
             if cfg!(debug_assertions) {
                 eprintln!("[debug] ignored error reported during shutdown: {e:?}");
             }

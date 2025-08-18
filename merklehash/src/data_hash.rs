@@ -119,7 +119,7 @@ impl core::ops::Rem<u64> for DataHash {
     type Output = u64;
 
     fn rem(self, rhs: u64) -> Self::Output {
-        self[3] % rhs
+        self[3].to_le() % rhs
     }
 }
 
@@ -153,8 +153,19 @@ impl From<ParseIntError> for DataHashHexParseError {
 
 impl DataHash {
     /// Returns the hexadecimal printout of the hash.
+    /// Different programming languages and platforms may have different byte order layout
+    /// of a u64 in memory, this is not an issue when we typecast a [u8;32] to [u64;4]
+    /// (which is essentially a pointer typecasting and thus doesn't reorder bytes at all),
+    /// until these bytes are actually used as u64s. For such cases we make it explicit to use
+    /// the little-endian order.
     pub fn hex(&self) -> String {
-        format!("{:016x}{:016x}{:016x}{:016x}", self.0[0], self.0[1], self.0[2], self.0[3])
+        format!(
+            "{:016x}{:016x}{:016x}{:016x}",
+            self.0[0].to_le(),
+            self.0[1].to_le(),
+            self.0[2].to_le(),
+            self.0[3].to_le()
+        )
     }
 
     /// Gives a compact base64 representation of the hash that is more compact than hex and is
@@ -175,10 +186,10 @@ impl DataHash {
         if !good {
             return Err(DataHashHexParseError {});
         }
-        ret.0[0] = u64::from_str_radix(&h[..16], 16)?;
-        ret.0[1] = u64::from_str_radix(&h[16..32], 16)?;
-        ret.0[2] = u64::from_str_radix(&h[32..48], 16)?;
-        ret.0[3] = u64::from_str_radix(&h[48..64], 16)?;
+        ret.0[0] = u64::from_str_radix(&h[..16], 16)?.to_le();
+        ret.0[1] = u64::from_str_radix(&h[16..32], 16)?.to_le();
+        ret.0[2] = u64::from_str_radix(&h[32..48], 16)?.to_le();
+        ret.0[3] = u64::from_str_radix(&h[48..64], 16)?.to_le();
         Ok(ret)
     }
 
@@ -530,5 +541,22 @@ mod tests {
         let b64 = hash.base64();
 
         assert_eq!(hash, DataHash::from_base64(&b64).unwrap());
+    }
+
+    #[test]
+    fn test_hash_hex_string_endianness() {
+        let hash_raw: [u8; 32] = [
+            22, 175, 58, 132, 4, 75, 131, 214, 190, 153, 138, 66, 226, 3, 153, 242, 204, 86, 80, 234, 249, 153, 80, 99,
+            159, 80, 65, 138, 236, 231, 149, 78,
+        ];
+        let expected_hex_string = "d6834b04843aaf16f29903e2428a99be635099f9ea5056cc4e95e7ec8a41509f";
+
+        let data_hash = DataHash::from_slice(&hash_raw).unwrap();
+        let serialized_hex = data_hash.hex();
+
+        assert_eq!(expected_hex_string, serialized_hex.as_str());
+
+        let deserialized_hash = DataHash::from_hex(&serialized_hex).unwrap();
+        assert_eq!(deserialized_hash, data_hash);
     }
 }

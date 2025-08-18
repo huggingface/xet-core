@@ -9,7 +9,7 @@ utils = { path = "../utils" }
 
 async-trait = { workspace = true }
 more-asserts = { workspace = true }
-tokio = { workspace = true, features = ["test-util"] }
+tokio = { workspace = true, features = ["test-util", "time"] }
 
 [dev-dependencies]
-tokio = { workspace = true, features = ["full"] }
+tokio = { workspace = true, features = ["test-util"] }
