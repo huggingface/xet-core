@@ -20,6 +20,7 @@ use tokio::sync::Mutex;
 use tracing::{debug, info_span, warn, Instrument};
 use utils::auth::{AuthConfig, TokenProvider};
 
+use crate::constants::{CLIENT_IDLE_CONNECTION_TIMEOUT_SECS, CLIENT_MAX_IDLE_CONNECTIONS};
 use crate::{error, CasClientError};
 
 pub(crate) const NUM_RETRIES: u32 = 5;
@@ -93,6 +94,8 @@ fn reqwest_client() -> Result<reqwest::Client, CasClientError> {
 
         let client = ThreadPool::get_or_create_reqwest_client(|| {
             reqwest::Client::builder()
+                .pool_idle_timeout(Duration::from_secs(*CLIENT_IDLE_CONNECTION_TIMEOUT_SECS))
+                .pool_max_idle_per_host(*CLIENT_MAX_IDLE_CONNECTIONS)
                 .dns_resolver(Arc::from(dns_utils::GaiResolverWithAbsolute::default()))
                 .build()
         })?;
