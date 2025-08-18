@@ -57,12 +57,7 @@ impl DeduplicationDataInterface for UploadSessionDataManager {
 
         self.active_global_dedup_queries.spawn(
             async move {
-                let repo_salt = &session.config.shard_config.repo_salt;
-
-                session
-                    .shard_interface
-                    .query_dedup_shard_by_chunk(&chunk_hash, repo_salt)
-                    .await?;
+                session.shard_interface.query_dedup_shard_by_chunk(&chunk_hash).await?;
 
                 Ok(true)
             }

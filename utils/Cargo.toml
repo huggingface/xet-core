@@ -8,6 +8,7 @@ name = "utils"
 path = "src/lib.rs"
 
 [dependencies]
+error_printer = { path = "../error_printer" }
 merklehash = { path = "../merklehash" }
 
 async-trait = { workspace = true }
@@ -15,10 +16,10 @@ bytes = { workspace = true }
 ctor = { workspace = true }
 futures = { workspace = true }
 lazy_static = { workspace = true }
-parking_lot = { workspace = true }
 pin-project = { workspace = true }
+shellexpand = { workspace = true }
 thiserror = { workspace = true }
-tokio = { workspace = true, features = ["time", "rt", "macros"] }
+tokio = { workspace = true, features = ["time", "rt", "macros", "sync"] }
 tracing = { workspace = true }
 
 [target.'cfg(not(target_family = "wasm"))'.dev-dependencies]
@@ -27,6 +28,10 @@ xet_threadpool = { path = "../xet_threadpool" }
 
 [target.'cfg(target_family = "wasm")'.dependencies]
 web-time = { workspace = true }
+
+[dev-dependencies]
+serial_test = { workspace = true }
+futures-util = { workspace = true }
 
 [features]
 strict = []

@@ -10,17 +10,19 @@ use cas_client::{CacheConfig, FileProvider, OutputProvider, CHUNK_CACHE_SIZE_BYT
 use cas_object::CompressionScheme;
 use deduplication::DeduplicationMetrics;
 use dirs::home_dir;
-use parutils::{tokio_par_for_each, ParallelError};
 use progress_tracking::item_tracking::ItemProgressUpdater;
 use progress_tracking::TrackingProgressUpdater;
-use tracing::{info_span, instrument, Instrument, Span};
+use tracing::{info, info_span, instrument, Instrument, Span};
 use ulid::Ulid;
 use utils::auth::{AuthConfig, TokenRefresher};
+use utils::normalized_path_from_user_string;
+use xet_threadpool::utils::run_constrained_with_semaphore;
+use xet_threadpool::{global_semaphore_handle, GlobalSemaphoreHandle, ThreadPool};
 
 use crate::configurations::*;
-use crate::constants::{INGESTION_BLOCK_SIZE, MAX_CONCURRENT_DOWNLOADS, MAX_CONCURRENT_FILE_INGESTION};
+use crate::constants::{INGESTION_BLOCK_SIZE, MAX_CONCURRENT_DOWNLOADS};
 use crate::errors::DataProcessingError;
-use crate::repo_salt::RepoSalt;
+use crate::file_upload_session::CONCURRENT_FILE_INGESTION_LIMITER;
 use crate::{errors, FileDownloader, FileUploadSession, XetFileInfo};
 
 utils::configurable_constants! {
@@ -36,15 +38,32 @@ pub fn default_config(
     // if HF_HOME is set use that instead of ~/.cache/huggingface
     // if HF_XET_CACHE is set use that instead of ~/.cache/huggingface/xet
     // HF_XET_CACHE takes precedence over HF_HOME
-    let cache_root_path = if env::var("HF_XET_CACHE").is_ok() {
-        PathBuf::from(env::var("HF_XET_CACHE").unwrap())
-    } else if env::var("HF_HOME").is_ok() {
-        let home = env::var("HF_HOME").unwrap();
-        PathBuf::from(home).join("xet")
-    } else {
-        let home = home_dir().unwrap_or(current_dir()?);
-        home.join(".cache").join("huggingface").join("xet")
+    let cache_root_path = {
+        // If HF_XET_CACHE is set, use that directly.
+        if let Ok(cache) = env::var("HF_XET_CACHE") {
+            normalized_path_from_user_string(cache)
+
+        // If HF_HOME is set, use the $HF_HOME/xet
+        } else if let Ok(hf_home) = env::var("HF_HOME") {
+            normalized_path_from_user_string(hf_home).join("xet")
+
+        // If XDG_CACHE_HOME is set, use the $XDG_CACHE_HOME/huggingface/xet, otherwise
+        // use $HOME/.cache/huggingface/xet
+        } else if let Ok(xdg_cache_home) = env::var("XDG_CACHE_HOME") {
+            normalized_path_from_user_string(xdg_cache_home).join("huggingface").join("xet")
+
+        // Use the same default as huggingface_hub, ~/.cache/huggingface/xet (slightly nonstandard, but won't
+        // mess with it).
+        } else {
+            home_dir()
+                .unwrap_or(current_dir()?)
+                .join(".cache")
+                .join("huggingface")
+                .join("xet")
+        }
     };
+
+    info!("Using cache path {cache_root_path:?}.");
 
     let (token, token_expiration) = token_info.unzip();
     let auth_cfg = AuthConfig::maybe_new(token, token_expiration, token_refresher);
@@ -86,7 +105,6 @@ pub fn default_config(
             cache_directory: cache_path.join("shard-cache"),
             session_directory: staging_root.join("shard-session"),
             global_dedup_policy: Default::default(),
-            repo_salt: RepoSalt::default(),
         },
         repo_info: Some(RepoInfo {
             repo_paths: vec!["".into()],
@@ -109,22 +127,14 @@ pub async fn upload_bytes_async(
     let config = default_config(endpoint.unwrap_or(DEFAULT_CAS_ENDPOINT.clone()), None, token_info, token_refresher)?;
     Span::current().record("session_id", &config.session_id);
 
+    let semaphore = ThreadPool::current().global_semaphore(*CONCURRENT_FILE_INGESTION_LIMITER);
     let upload_session = FileUploadSession::new(config, progress_updater).await?;
-    let blobs_with_spans = add_spans(file_contents, || info_span!("clean_task"));
-
-    // clean the bytes
-    let files = tokio_par_for_each(blobs_with_spans, *MAX_CONCURRENT_FILE_INGESTION, |(blob, span), _| {
-        async {
-            let (xf, _metrics) = clean_bytes(upload_session.clone(), blob).await?;
-            Ok(xf)
-        }
-        .instrument(span.unwrap_or_else(|| info_span!("unexpected_span")))
-    })
-    .await
-    .map_err(|e| match e {
-        ParallelError::JoinError => DataProcessingError::InternalError("Join error".to_string()),
-        ParallelError::TaskError(e) => e,
-    })?;
+    let clean_futures = file_contents.into_iter().map(|blob| {
+        let upload_session = upload_session.clone();
+        async move { clean_bytes(upload_session, blob).await.map(|(xf, _metrics)| xf) }
+            .instrument(info_span!("clean_task"))
+    });
+    let files = run_constrained_with_semaphore(clean_futures, semaphore).await?;
 
     // Push the CAS blocks and flush the mdb to disk
     let _metrics = upload_session.finalize().await?;
@@ -132,7 +142,7 @@ pub async fn upload_bytes_async(
     Ok(files)
 }
 
-#[instrument(skip_all, name = "data_client::upload_files", 
+#[instrument(skip_all, name = "data_client::upload_files",
     fields(session_id = tracing::field::Empty,
     num_files=file_paths.len(),
     new_bytes = tracing::field::Empty,
@@ -141,7 +151,7 @@ pub async fn upload_bytes_async(
     new_chunks = tracing::field::Empty,
     deduped_chunks = tracing::field::Empty,
     defrag_prevented_dedup_chunks = tracing::field::Empty
-))]
+    ))]
 pub async fn upload_async(
     file_paths: Vec<String>,
     endpoint: Option<String>,
@@ -185,6 +195,11 @@ pub async fn download_async(
     token_refresher: Option<Arc<dyn TokenRefresher>>,
     progress_updaters: Option<Vec<Arc<dyn TrackingProgressUpdater>>>,
 ) -> errors::Result<Vec<String>> {
+    lazy_static! {
+        static ref CONCURRENT_FILE_DOWNLOAD_LIMITER: GlobalSemaphoreHandle =
+            global_semaphore_handle!(*MAX_CONCURRENT_DOWNLOADS);
+    }
+
     if let Some(updaters) = &progress_updaters {
         if updaters.len() != file_infos.len() {
             return Err(DataProcessingError::ParameterError(
@@ -196,30 +211,19 @@ pub async fn download_async(
         default_config(endpoint.unwrap_or(DEFAULT_CAS_ENDPOINT.to_string()), None, token_info, token_refresher)?;
     Span::current().record("session_id", &config.session_id);
 
+    let processor = Arc::new(FileDownloader::new(config).await?);
     let updaters = match progress_updaters {
         None => vec![None; file_infos.len()],
         Some(updaters) => updaters.into_iter().map(Some).collect(),
     };
-    let file_with_progress = file_infos.into_iter().zip(updaters).collect::<Vec<_>>();
-    let extended_file_info_list = add_spans(file_with_progress, || info_span!("download_file"));
+    let smudge_file_futures = file_infos.into_iter().zip(updaters).map(|((file_info, file_path), updater)| {
+        let proc = processor.clone();
+        async move { smudge_file(&proc, &file_info, &file_path, updater).await }.instrument(info_span!("download_file"))
+    });
 
-    let processor = &Arc::new(FileDownloader::new(config).await?);
-    let paths = tokio_par_for_each(
-        extended_file_info_list,
-        *MAX_CONCURRENT_DOWNLOADS,
-        |(((file_info, file_path), updater), span), _| {
-            async move {
-                let proc = processor.clone();
-                smudge_file(&proc, &file_info, &file_path, updater).await
-            }
-            .instrument(span.unwrap_or_else(|| info_span!("unexpected_span")))
-        },
-    )
-    .await
-    .map_err(|e| match e {
-        ParallelError::JoinError => DataProcessingError::InternalError("Join error".to_string()),
-        ParallelError::TaskError(e) => e,
-    })?;
+    let semaphore = ThreadPool::current().global_semaphore(*CONCURRENT_FILE_DOWNLOAD_LIMITER);
+
+    let paths = run_constrained_with_semaphore(smudge_file_futures, semaphore).await?;
 
     Ok(paths)
 }
@@ -282,23 +286,12 @@ async fn smudge_file(
     Ok(file_path.to_string())
 }
 
-/// Adds spans to the indicated list for each element.
-///
-/// Although a span will be added for each element, we need an Option<Span> since
-/// tokio_par_for_each requires the input list be Default, which Span isn't.
-pub fn add_spans<I, F: Fn() -> Span>(v: Vec<I>, create_span: F) -> Vec<(I, Option<Span>)> {
-    let spans: Vec<Option<Span>> = v.iter().map(|_| Some(create_span())).collect();
-    v.into_iter().zip(spans).collect()
-}
-
 #[cfg(test)]
 mod tests {
     use std::env;
 
     use serial_test::serial;
     use tempfile::tempdir;
-    use tracing::info;
-    use tracing_test::traced_test;
 
     use super::*;
 
@@ -323,6 +316,7 @@ mod tests {
     fn test_default_config_with_hf_xet_cache_and_hf_home() {
         let temp_dir_xet_cache = tempdir().unwrap();
         let temp_dir_hf_home = tempdir().unwrap();
+
         env::set_var("HF_XET_CACHE", temp_dir_xet_cache.path().to_str().unwrap());
         env::set_var("HF_HOME", temp_dir_hf_home.path().to_str().unwrap());
 
@@ -375,51 +369,14 @@ mod tests {
         let endpoint = "http://localhost:8080".to_string();
         let result = default_config(endpoint, None, None, None);
 
-        let expected = home_dir()
-            .unwrap_or(current_dir().unwrap())
-            .join(".cache")
-            .join("huggingface")
-            .join("xet");
+        let expected = home_dir().unwrap().join(".cache").join("huggingface").join("xet");
 
         assert!(result.is_ok());
         let config = result.unwrap();
-        assert!(config.data_config.cache_config.cache_directory.starts_with(&expected));
-    }
-
-    #[tokio::test(flavor = "multi_thread")]
-    #[traced_test]
-    async fn test_add_spans() {
-        let outer_span = info_span!("outer_span");
-        async {
-            let v = vec!["a", "b", "c"];
-            let expected_len = v.len();
-            let v_plus = add_spans(v, || info_span!("task_span"));
-            assert_eq!(v_plus.len(), expected_len);
-            tokio_par_for_each(v_plus, expected_len, |(s, span), i| {
-                async move {
-                    info!("inside: {s},{i}");
-                    Ok::<(), ()>(())
-                }
-                .instrument(span.unwrap())
-            })
-            .await
-            .unwrap();
-        }
-        .instrument(outer_span)
-        .await;
-
-        assert!(logs_contain("inside: a,0"));
-        assert!(logs_contain("inside: b,1"));
-        assert!(logs_contain("inside: c,2"));
-        logs_assert(|lines: &[&str]| {
-            match lines
-                .iter()
-                .filter(|line| line.contains("task_span") && line.contains("outer_span"))
-                .count()
-            {
-                3 => Ok(()),
-                n => Err(format!("Expected 3 lines, got {n}")),
-            }
-        });
+        let test_cache_dir = &config.data_config.cache_config.cache_directory;
+        assert!(
+            test_cache_dir.starts_with(&expected),
+            "cache dir = {test_cache_dir:?}; does not start with {expected:?}",
+        );
     }
 }

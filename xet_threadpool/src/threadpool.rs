@@ -4,15 +4,57 @@ use std::future::Future;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, OnceLock};
 
+use reqwest::Client;
 use tokio::runtime::{Builder as TokioRuntimeBuilder, Handle as TokioRuntimeHandle, Runtime as TokioRuntime};
+use tokio::sync::Semaphore;
 use tokio::task::JoinHandle;
-use tracing::debug;
+use tracing::{debug, info};
 
 use crate::errors::MultithreadedRuntimeError;
+use crate::global_semaphores::{GlobalSemaphoreHandle, GlobalSemaphoreLookup};
 
 const THREADPOOL_THREAD_ID_PREFIX: &str = "hf-xet"; // thread names will be hf-xet-0, hf-xet-1, etc.
 const THREADPOOL_STACK_SIZE: usize = 8_000_000; // 8MB stack size
-const THREADPOOL_MAX_BLOCKING_THREADS: usize = 100; // max 100 threads can block IO
+
+/// Cap the number of tokio threads to 32 to avoid massive expansion on huge CPUs; can be overridden with
+/// TOKIO_WORKER_THREADS.
+///
+/// Note that the compute intensive parts of the code get offloaded to blocking threads, which don't count against this
+/// limit.
+const THREADPOOL_MAX_ASYNC_THREADS: usize = 32;
+
+/// Returns the number of Tokio worker threads to use:
+/// 1) If `TOKIO_WORKER_THREADS` is set to a positive integer, use that.
+/// 2) Otherwise, use `min(available_parallelism, THREADPOOL_MAX_ASYNC_THREADS)`, with a floor of 2.
+#[cfg(not(target_family = "wasm"))]
+fn get_num_tokio_worker_threads() -> usize {
+    use std::num::NonZeroUsize;
+
+    // Allow TOKIO_WORKER_THREADS to override this value.
+    if let Ok(val) = std::env::var("TOKIO_WORKER_THREADS") {
+        match val.parse::<usize>() {
+            Ok(n) if n > 0 => {
+                info!("Using {n} async threads from TOKIO_WORKER_THREADS");
+                return n;
+            },
+            _ => {
+                use tracing::warn;
+
+                warn!(
+                    value = %val,
+                    "Invalid TOKIO_WORKER_THREADS; must be a positive integer. Falling back to auto."
+                );
+            },
+        }
+    }
+
+    let cores = std::thread::available_parallelism().map(NonZeroUsize::get).unwrap_or(1);
+
+    // Minimum 2 threads needed to run everything
+    let n = cores.clamp(2, THREADPOOL_MAX_ASYNC_THREADS);
+    info!("Using {n} async threads for tokio runtime");
+    n
+}
 
 /// This module provides a simple wrapper around Tokio's runtime to create a thread pool
 /// with some default settings. It is intended to be used as a singleton thread pool for
@@ -58,7 +100,8 @@ const THREADPOOL_MAX_BLOCKING_THREADS: usize = 100; // max 100 threads can block
 /// - `ThreadPool`: The main struct that encapsulates the Tokio runtime.
 #[derive(Debug)]
 pub struct ThreadPool {
-    // The runtime used when
+    // The runtime used when it's created by this struct,
+    // None if this struct uses an external runtime.
     runtime: std::sync::RwLock<Option<TokioRuntime>>,
 
     // We use this handle when we actually enter the runtime to avoid the lock.  It is
@@ -66,18 +109,24 @@ pub struct ThreadPool {
     // while holding a reference to the runtime does.
     handle_ref: OnceLock<TokioRuntimeHandle>,
 
-    // The number of external threads calling into this threadpool
+    // The number of external threads calling into this threadpool.
     external_executor_count: AtomicUsize,
 
     // Are we in the middle of a sigint shutdown?
     sigint_shutdown: AtomicBool,
+
+    // Semaphores.  We use an initialization function as the handle here.
+    global_semaphore_table: GlobalSemaphoreLookup,
+
+    // A cached reqwest Client to be shared by all high-level clients.
+    global_reqwest_client: OnceLock<Client>,
 }
 
-// Use thread-local references to the runtime that are set on initilization among all
+// Use thread-local references to the runtime that are set on initialization among all
 // the worker threads in the runtime.  This way, XetRuntime::current() will always refer to
 // the runtime active with that worker thread.
 thread_local! {
-    static THREAD_RUNTIME_REF: RefCell<Option<Arc<ThreadPool>>> = const { RefCell::new(None) };
+    static THREAD_RUNTIME_REF: RefCell<Option<(u32, Arc<ThreadPool>)>> = const { RefCell::new(None) };
 }
 
 impl ThreadPool {
@@ -85,29 +134,30 @@ impl ThreadPool {
     /// called from a thread that is not spawned from the current runtime.  
     #[inline]
     pub fn current() -> Arc<Self> {
+        if let Some(rt) = Self::current_if_exists() {
+            return rt;
+        }
+
+        let Ok(tokio_rt) = TokioRuntimeHandle::try_current() else {
+            panic!("ThreadPool::current() called before ThreadPool::new() or on thread outside of current runtime.");
+        };
+
+        Self::from_external(tokio_rt)
+    }
+
+    fn current_if_exists() -> Option<Arc<Self>> {
         let maybe_rt = THREAD_RUNTIME_REF.with_borrow(|rt| rt.clone());
 
-        if let Some(rt) = maybe_rt {
-            rt
-        } else {
-            let Ok(tokio_rt) = TokioRuntimeHandle::try_current() else {
-                panic!(
-                    "ThreadPool::current() called before ThreadPool::new() or on thread outside of current runtime."
-                );
-            };
-
-            Self::from_external(tokio_rt)
+        if let Some((pid, rt)) = maybe_rt {
+            if pid == std::process::id() {
+                return Some(rt);
+            }
         }
+
+        None
     }
 
     pub fn new() -> Result<Arc<Self>, MultithreadedRuntimeError> {
-        // First, make sure that this is not being run from a currently active tokio runtime.
-        if TokioRuntimeHandle::try_current().is_ok() {
-            return Err(MultithreadedRuntimeError::Other(
-                "Tokio runtime already started; use from_external instead.".to_owned(),
-            ));
-        }
-
         // First, get an Arc value holding the runtime that we can initialize the
         // thread-local THREAD_RUNTIME_REF with
         let rt = Arc::new(Self {
@@ -115,15 +165,18 @@ impl ThreadPool {
             handle_ref: OnceLock::new(),
             external_executor_count: 0.into(),
             sigint_shutdown: false.into(),
+            global_semaphore_table: GlobalSemaphoreLookup::default(),
+            global_reqwest_client: OnceLock::new(),
         });
 
         // Each thread in each of the tokio worker threads holds a reference to the runtime handling
         // that thread.  If there are multiple runtimes -- as could exist if CTRL-C is hit, then a process
-        // calls into xet immediately afterwards -- the references are still correct due to using
+        // calls into xet immediately afterward -- the references are still correct due to using
         // thread-local storage.
         let rt_c = rt.clone();
+        let pid = std::process::id();
         let set_threadlocal_reference = move || {
-            THREAD_RUNTIME_REF.set(Some(rt_c.clone()));
+            THREAD_RUNTIME_REF.set(Some((pid, rt_c.clone())));
         };
 
         // Set the name of a new thread for the threadpool. Names are prefixed with
@@ -135,19 +188,24 @@ impl ThreadPool {
             format!("{THREADPOOL_THREAD_ID_PREFIX}-{id}")
         };
 
-        #[cfg(not(target_family = "wasm"))]
-        let mut builder = TokioRuntimeBuilder::new_multi_thread();
-        #[cfg(target_family = "wasm")]
-        let mut builder = TokioRuntimeBuilder::new_current_thread();
+        let tokio_rt = {
+            #[cfg(not(target_family = "wasm"))]
+            {
+                // A new multithreaded runtime with a capped number of threads
+                TokioRuntimeBuilder::new_multi_thread().worker_threads(get_num_tokio_worker_threads())
+            }
 
-        let tokio_rt = builder
-            .thread_name_fn(get_thread_name) // thread names will be hf-xet-0, hf-xet-1, etc.
-            .on_thread_start(set_threadlocal_reference) // Set the local runtime reference.
-            .thread_stack_size(THREADPOOL_STACK_SIZE) // 8MB stack size, default is 2MB
-            .max_blocking_threads(THREADPOOL_MAX_BLOCKING_THREADS) // max 100 threads can block IO
-            .enable_all() // enable all features, including IO/Timer/Signal/Reactor
-            .build()
-            .map_err(MultithreadedRuntimeError::RuntimeInitializationError)?;
+            #[cfg(target_family = "wasm")]
+            {
+                TokioRuntimeBuilder::new_current_thread()
+            }
+        }
+        .thread_name_fn(get_thread_name) // thread names will be hf-xet-0, hf-xet-1, etc.
+        .on_thread_start(set_threadlocal_reference) // Set the local runtime reference.
+        .thread_stack_size(THREADPOOL_STACK_SIZE) // 8MB stack size, default is 2MB
+        .enable_all() // enable all features, including IO/Timer/Signal/Reactor
+        .build()
+        .map_err(MultithreadedRuntimeError::RuntimeInitializationError)?;
 
         // Now that the runtime is created, fill out the original struct.
         let handle = tokio_rt.handle().clone();
@@ -163,6 +221,8 @@ impl ThreadPool {
             handle_ref: rt_handle.into(),
             external_executor_count: 0.into(),
             sigint_shutdown: false.into(),
+            global_semaphore_table: GlobalSemaphoreLookup::default(),
+            global_reqwest_client: OnceLock::new(),
         })
     }
 
@@ -171,6 +231,36 @@ impl ThreadPool {
         self.handle_ref.get().expect("Not initialized with handle set.").clone()
     }
 
+    pub fn get_or_create_reqwest_client_in_runtime<F>(&self, f: F) -> std::result::Result<Client, reqwest::Error>
+    where
+        F: FnOnce() -> std::result::Result<Client, reqwest::Error>,
+    {
+        // atomic get or set
+        let client_ref = self.global_reqwest_client.get_or_init(
+            // We unwrap the result of `f()` because we can't recover from this error anyway.
+            // There exists a function `get_or_try_init` which let the error propagate,
+            // but unfortunately it's marked as unstable.
+            || f().expect("failed to create reqwest client"),
+        );
+
+        Ok(client_ref.clone())
+    }
+
+    pub fn get_or_create_reqwest_client<F>(f: F) -> std::result::Result<Client, reqwest::Error>
+    where
+        F: FnOnce() -> std::result::Result<Client, reqwest::Error>,
+    {
+        // Cache the reqwest Client if we are running inside a runtime, otherwise
+        // create a new one. This allows creating high-level clients outside a
+        // runtime, like in tests.
+        if let Some(rt) = Self::current_if_exists() {
+            rt.get_or_create_reqwest_client_in_runtime(f)
+        } else {
+            f()
+        }
+    }
+
+    #[inline]
     pub fn num_worker_threads(&self) -> usize {
         self.handle().metrics().num_workers()
     }
@@ -200,8 +290,31 @@ impl ThreadPool {
         };
 
         // Dropping the runtime will cancel all the tasks; shutdown occurs when the next async call
-        // is encountered.  Ideally, all async code should be cancelation safe.
+        // is encountered.  Ideally, all async code should be cancellation safe.
         drop(runtime);
+    }
+
+    /// Discards the runtime without shutdown; to be used after fork-exec or spawn.
+    pub fn discard_runtime(&self) {
+        // This function makes a best effort attempt to clean everything up.
+
+        // When a task is shut down, it will stop running at whichever .await it has yielded at.  All local
+        // variables are destroyed by running their destructor.
+        //
+        // If this call fails, then it means that there is a recursive call to this runtime, or that
+        // this process is in the middle of a shutdown, so we can ignore it silently.
+        let Ok(mut rt_lock) = self.runtime.write() else {
+            return;
+        };
+
+        let Some(runtime) = rt_lock.take() else {
+            return;
+        };
+
+        // In this context, we actually want to simply leak the runtime, as doing anything with it will
+        // likely cause a deadlock.  The memory will be reaped when the child process returns, and it's
+        // likely in the copy-on-write state anyway.
+        std::mem::forget(runtime);
     }
 
     /// Returns true if we're in the middle of a sigint shutdown,
@@ -238,6 +351,14 @@ impl ThreadPool {
         // If the runtime has been shut down, this will immediately abort.
         debug!("threadpool: spawn called, {}", self);
         self.handle().spawn(future)
+    }
+
+    /// Allows a user to access a global semaphore that is associated with the runtime.
+    ///
+    /// The key here is a function handle that, when called, returns the number of permits
+    /// to use in the semaphore.  It's reset on new runtimes.
+    pub fn global_semaphore(&self, handle: impl Into<GlobalSemaphoreHandle>) -> Arc<Semaphore> {
+        self.global_semaphore_table.get(handle)
     }
 }
 

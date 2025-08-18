@@ -132,7 +132,7 @@ pub fn merge_shards(
         dest_shards.push(out_sfi);
     }
 
-    // Now the obselete shards are all the source shards that do not refer to the same shard file
+    // Now the obsolete shards are all the source shards that do not refer to the same shard file
     // as one of the dest shards.
     if source_directory.as_ref() == target_directory.as_ref() {
         let dest_shard_hashes: HashSet<_> = dest_shards.iter().map(|s| s.shard_hash).collect();

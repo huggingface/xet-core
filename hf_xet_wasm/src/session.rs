@@ -9,7 +9,7 @@ use web_sys::Blob;
 
 use crate::auth::{TokenInfo, TokenRefresher, WrappedTokenRefresher};
 use crate::blob_reader::BlobReader;
-use crate::configurations::{DataConfig, RepoSalt, ShardConfig, TranslatorConfig};
+use crate::configurations::{DataConfig, ShardConfig, TranslatorConfig};
 use crate::wasm_file_upload_session::FileUploadSession;
 
 fn convert_error(e: impl std::error::Error) -> JsValue {
@@ -59,7 +59,6 @@ impl XetSession {
             },
             shard_config: ShardConfig {
                 prefix: "default-merkledb".to_owned(),
-                repo_salt: RepoSalt::default(),
             },
             session_id: uuid::Uuid::new_v4().to_string(),
         };

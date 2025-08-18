@@ -12,6 +12,7 @@ use cas_object::SerializedCasObject;
 use deduplication::constants::{MAX_XORB_BYTES, MAX_XORB_CHUNKS};
 use deduplication::{DataAggregator, DeduplicationMetrics, RawXorbData};
 use jsonwebtoken::{decode, DecodingKey, Validation};
+use lazy_static::lazy_static;
 use mdb_shard::file_structs::MDBFileInfo;
 use more_asserts::*;
 use progress_tracking::aggregator::AggregatingProgressUpdater;
@@ -19,10 +20,11 @@ use progress_tracking::upload_tracking::{CompletionTracker, FileXorbDependency};
 #[cfg(debug_assertions)] // Used here to verify the update accuracy
 use progress_tracking::verification_wrapper::ProgressUpdaterVerificationWrapper;
 use progress_tracking::{NoOpProgressUpdater, TrackingProgressUpdater};
-use tokio::sync::{Mutex, OwnedSemaphorePermit, Semaphore};
+use tokio::sync::{Mutex, OwnedSemaphorePermit};
 use tokio::task::{JoinHandle, JoinSet};
 use tracing::{info_span, instrument, Instrument, Span};
 use ulid::Ulid;
+use xet_threadpool::{global_semaphore_handle, GlobalSemaphoreHandle, ThreadPool};
 
 use crate::configurations::*;
 use crate::constants::{
@@ -35,8 +37,9 @@ use crate::remote_client_interface::create_remote_client;
 use crate::shard_interface::SessionShardInterface;
 use crate::{prometheus_metrics, XetFileInfo};
 
-lazy_static::lazy_static! {
-     static ref UPLOAD_CONCURRENCY_LIMITER: Arc<Semaphore> = Arc::new(Semaphore::new(*MAX_CONCURRENT_UPLOADS));
+lazy_static! {
+    pub static ref CONCURRENT_FILE_INGESTION_LIMITER: GlobalSemaphoreHandle =
+        global_semaphore_handle!(*MAX_CONCURRENT_FILE_INGESTION);
 }
 
 /// Acquire a permit for uploading xorbs and shards to ensure that we don't overwhelm the server
@@ -45,11 +48,16 @@ lazy_static::lazy_static! {
 /// The chosen Semaphore is fair, meaning xorbs and shards added first will be scheduled to upload first.
 ///
 /// It's also important to acquire the permit before the task is launched; otherwise, we may spawn an unlimited
-/// number of tasks that end up using up a ton of memory; this forces the pipeline to block here while the upload
+/// number of tasks that end up using a ton of memory; this forces the pipeline to block here while the upload
 /// is happening.
 pub(crate) async fn acquire_upload_permit() -> Result<OwnedSemaphorePermit> {
-    let upload_permit = UPLOAD_CONCURRENCY_LIMITER
-        .clone()
+    lazy_static! {
+        static ref UPLOAD_CONCURRENCY_LIMITER: GlobalSemaphoreHandle =
+            global_semaphore_handle!(*MAX_CONCURRENT_UPLOADS);
+    }
+
+    let upload_permit = ThreadPool::current()
+        .global_semaphore(*UPLOAD_CONCURRENCY_LIMITER)
         .acquire_owned()
         .await
         .map_err(|e| DataProcessingError::UploadTaskError(e.to_string()))?;
@@ -189,9 +197,6 @@ impl FileUploadSession {
     pub async fn upload_files(self: &Arc<Self>, files: &[impl AsRef<Path>]) -> Result<Vec<XetFileInfo>> {
         let mut cleaning_tasks: Vec<JoinHandle<_>> = Vec::with_capacity(files.len());
 
-        // Use a semaphore to limit the number of files being processed in parallel.
-        let file_parallel_limiter = Arc::new(Semaphore::new(*MAX_CONCURRENT_FILE_INGESTION));
-
         for f in files {
             let file_path = f.as_ref().to_owned();
             let file_name: Arc<str> = Arc::from(file_path.to_string_lossy());
@@ -205,7 +210,8 @@ impl FileUploadSession {
             let file_id = self.completion_tracker.register_new_file(file_name.clone(), file_size).await;
 
             // Now, spawn a task
-            let ingestion_concurrancy_limiter = file_parallel_limiter.clone();
+            let ingestion_concurrency_limiter =
+                ThreadPool::current().global_semaphore(*CONCURRENT_FILE_INGESTION_LIMITER);
             let session = self.clone();
 
             cleaning_tasks.push(tokio::spawn(async move {
@@ -222,7 +228,7 @@ impl FileUploadSession {
                     "file.defrag_prevented_dedup_chunks" = tracing::field::Empty,
                 );
                 // First, get a permit to process this file.
-                let _processing_permit = ingestion_concurrancy_limiter.acquire().await?;
+                let _processing_permit = ingestion_concurrency_limiter.acquire().await?;
 
                 async move {
                     let mut reader = File::open(&file_path)?;
@@ -240,8 +246,8 @@ impl FileUploadSession {
                         // on the disk while we are reading it.
 
                         // We allocate the buffer anew on each loop as it's converted without copying
-                        // to a Bytes object and thus we avoid all the further copies downstream.  We also
-                        // gaurantee that the buffer is filled completely with the read_exact.  Therefore
+                        // to a Bytes object, and thus we avoid further copies downstream.  We also
+                        // guarantee that the buffer is filled completely with the read_exact. Therefore,
                         // we can use an unsafe trick here to allocate the vector without initializing it
                         // to a specific value and avoid that clearing.
                         let mut buffer = Vec::with_capacity(n_bytes_read);

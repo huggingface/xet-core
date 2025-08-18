@@ -20,6 +20,7 @@ use tokio::sync::Mutex;
 use tracing::{debug, info_span, warn, Instrument};
 use utils::auth::{AuthConfig, TokenProvider};
 
+use crate::constants::{CLIENT_IDLE_CONNECTION_TIMEOUT_SECS, CLIENT_MAX_IDLE_CONNECTIONS};
 use crate::{error, CasClientError};
 
 pub(crate) const NUM_RETRIES: u32 = 5;
@@ -80,15 +81,27 @@ impl RetryConfig<No429RetryStrategy> {
 }
 
 fn reqwest_client() -> Result<reqwest::Client, CasClientError> {
-    let mut reqwest_client_builder = reqwest::Client::builder();
     // custom dns resolver not supported in WASM. no access to getaddrinfo/any other dns interface.
+    #[cfg(target_family = "wasm")]
+    {
+        static CLIENT: std::sync::LazyLock<reqwest::Client> = std::sync::LazyLock::new(|| reqwest::Client::new());
+        Ok((&*CLIENT).clone())
+    }
+
     #[cfg(not(target_family = "wasm"))]
     {
-        reqwest_client_builder =
-            reqwest_client_builder.dns_resolver(Arc::from(dns_utils::GaiResolverWithAbsolute::default()));
+        use xet_threadpool::ThreadPool;
+
+        let client = ThreadPool::get_or_create_reqwest_client(|| {
+            reqwest::Client::builder()
+                .pool_idle_timeout(Duration::from_secs(*CLIENT_IDLE_CONNECTION_TIMEOUT_SECS))
+                .pool_max_idle_per_host(*CLIENT_MAX_IDLE_CONNECTIONS)
+                .dns_resolver(Arc::from(dns_utils::GaiResolverWithAbsolute::default()))
+                .build()
+        })?;
+
+        Ok(client)
     }
-    let reqwest_client = reqwest_client_builder.build()?;
-    Ok(reqwest_client)
 }
 
 /// Builds authenticated HTTP Client to talk to CAS.
@@ -98,7 +111,7 @@ pub fn build_auth_http_client<R: RetryableStrategy + Send + Sync + 'static>(
     retry_config: RetryConfig<R>,
     session_id: &str,
 ) -> Result<ClientWithMiddleware, CasClientError> {
-    let auth_middleware = auth_config.as_ref().map(AuthMiddleware::from).info_none("CAS auth disabled");
+    let auth_middleware = auth_config.as_ref().map(AuthMiddleware::from);
     let logging_middleware = Some(LoggingMiddleware);
     let session_middleware = (!session_id.is_empty()).then(|| SessionMiddleware(session_id.to_owned()));
 
@@ -309,8 +322,13 @@ impl ResponseErrorLogger<error::Result<Response>> for reqwest_middleware::Result
             .log_error(format!("error invoking {api} api"))?;
         let request_id = request_id_from_response(&res);
         let error_message = format!("{api} api failed: request id: {request_id}");
-        // not all status codes mean fatal error
-        res.error_for_status().map_err(CasClientError::from).info_error(error_message)
+        let status = res.status();
+        let res = res.error_for_status().map_err(CasClientError::from);
+        match (api, status) {
+            ("get_reconstruction", StatusCode::RANGE_NOT_SATISFIABLE) => res.debug_error(&error_message),
+            // not all status codes mean fatal error
+            _ => res.info_error(&error_message),
+        }
     }
 }
 

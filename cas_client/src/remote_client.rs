@@ -21,12 +21,13 @@ use progress_tracking::item_tracking::SingleItemProgressUpdater;
 use progress_tracking::upload_tracking::CompletionTracker;
 use reqwest::{Body, Response, StatusCode, Url};
 use reqwest_middleware::ClientWithMiddleware;
-use tokio::sync::{mpsc, OwnedSemaphorePermit, Semaphore};
+use tokio::sync::{mpsc, OwnedSemaphorePermit};
 use tokio::task::{JoinHandle, JoinSet};
 use tracing::{debug, info, instrument};
 use utils::auth::AuthConfig;
 #[cfg(not(target_family = "wasm"))]
 use utils::singleflight::Group;
+use xet_threadpool::{global_semaphore_handle, GlobalSemaphoreHandle, ThreadPool};
 
 #[cfg(not(target_family = "wasm"))]
 use crate::download_utils::*;
@@ -37,9 +38,6 @@ use crate::output_provider::OutputProvider;
 use crate::retry_wrapper::RetryWrapper;
 use crate::{http_client, Client};
 
-const FORCE_SYNC_METHOD: reqwest::Method = reqwest::Method::PUT;
-const NON_FORCE_SYNC_METHOD: reqwest::Method = reqwest::Method::POST;
-
 pub const CAS_ENDPOINT: &str = "http://localhost:8080";
 pub const PREFIX_DEFAULT: &str = "default";
 
@@ -47,16 +45,17 @@ utils::configurable_constants! {
 // Env (HF_XET_NUM_CONCURRENT_RANGE_GETS) to set the number of concurrent range gets.
 // setting this value to 0 disables the limit, sets it to the max, this is not recommended as it may lead to errors
     ref NUM_CONCURRENT_RANGE_GETS: usize = GlobalConfigMode::HighPerformanceOption {
-        standard: 128,
-        high_performance: 512,
+        standard: 48,
+        high_performance: 256,
     };
 
     // Send a report of successful partial upload every 512kb.
     ref UPLOAD_REPORTING_BLOCK_SIZE : usize = 512 * 1024;
 }
 
-lazy_static::lazy_static! {
-     pub static ref DOWNLOAD_CONNECTION_CONCURRENCY_LIMITER: Arc<Semaphore> = Arc::new(Semaphore::new(*NUM_CONCURRENT_RANGE_GETS));
+lazy_static! {
+    static ref DOWNLOAD_CHUNK_RANGE_CONCURRENCY_LIMITER: GlobalSemaphoreHandle =
+        global_semaphore_handle!(*NUM_CONCURRENT_RANGE_GETS);
 }
 
 utils::configurable_bool_constants! {
@@ -73,7 +72,6 @@ pub struct RemoteClient {
     dry_run: bool,
     http_client_with_retry: Arc<ClientWithMiddleware>,
     authenticated_http_client_with_retry: Arc<ClientWithMiddleware>,
-    http_client: Arc<ClientWithMiddleware>,
     authenticated_http_client: Arc<ClientWithMiddleware>,
     chunk_cache: Option<Arc<dyn ChunkCache>>,
     #[cfg(not(target_family = "wasm"))]
@@ -87,7 +85,7 @@ pub(crate) async fn get_reconstruction_with_endpoint_and_client(
     file_id: &MerkleHash,
     bytes_range: Option<FileRange>,
 ) -> Result<Option<QueryReconstructionResponse>> {
-    let url = Url::parse(&format!("{}/reconstruction/{}", endpoint, file_id.hex()))?;
+    let url = Url::parse(&format!("{endpoint}/reconstruction/{}", file_id.hex()))?;
 
     let mut request = client.get(url).with_extension(Api("cas::get_reconstruction"));
     if let Some(range) = bytes_range {
@@ -226,7 +224,6 @@ impl RemoteClient {
             http_client_with_retry: Arc::new(
                 http_client::build_http_client(RetryConfig::default(), session_id).unwrap(),
             ),
-            http_client: Arc::new(http_client::build_http_client_no_retry(session_id).unwrap()),
             chunk_cache,
             #[cfg(not(target_family = "wasm"))]
             range_download_single_flight: Arc::new(Group::new()),
@@ -236,13 +233,12 @@ impl RemoteClient {
 
     async fn query_dedup_api(&self, prefix: &str, chunk_hash: &MerkleHash) -> Result<Option<Response>> {
         // The API endpoint now only supports non-batched dedup request and
-        // ignores salt.
         let key = Key {
             prefix: prefix.into(),
             hash: *chunk_hash,
         };
 
-        let url = Url::parse(&format!("{0}/chunk/{key}", self.endpoint))?;
+        let url = Url::parse(&format!("{}/chunk/{key}", self.endpoint))?;
 
         let client = self.authenticated_http_client.clone();
         let api_tag = "cas::query_dedup";
@@ -303,7 +299,7 @@ impl RemoteClient {
         writer: &OutputProvider,
         progress_updater: Option<Arc<SingleItemProgressUpdater>>,
     ) -> Result<u64> {
-        // queue size is inherently bounded by degree of concurrency.
+        // Use an unlimited queue size, as queue size is inherently bounded by degree of concurrency.
         let (task_tx, mut task_rx) = mpsc::unbounded_channel::<DownloadQueueItem<SequentialTermDownload>>();
         let (running_downloads_tx, mut running_downloads_rx) =
             mpsc::unbounded_channel::<JoinHandle<Result<(TermDownloadResult<Vec<u8>>, OwnedSemaphorePermit)>>>();
@@ -312,7 +308,7 @@ impl RemoteClient {
         let file_reconstruct_range = byte_range.unwrap_or_else(FileRange::full);
         let total_len = file_reconstruct_range.length();
 
-        // kick start the download by enqueue the fetch info task.
+        // kick-start the download by enqueue the fetch info task.
         task_tx.send(DownloadQueueItem::Metadata(FetchInfo::new(
             *file_hash,
             file_reconstruct_range,
@@ -328,10 +324,13 @@ impl RemoteClient {
         // After the above, a task that defines fetching the remainder of the file reconstruction info is enqueued,
         // which will execute after the first of the above term download tasks finishes.
         let chunk_cache = self.chunk_cache.clone();
-        let term_download_client = self.http_client.clone();
+        let term_download_client = self.http_client_with_retry.clone();
         let range_download_single_flight = self.range_download_single_flight.clone();
         let download_scheduler = DownloadSegmentLengthTuner::from_configurable_constants();
         let download_scheduler_clone = download_scheduler.clone();
+
+        let download_concurrency_limiter =
+            ThreadPool::current().global_semaphore(*DOWNLOAD_CHUNK_RANGE_CONCURRENCY_LIMITER);
 
         let queue_dispatcher: JoinHandle<Result<()>> = tokio::spawn(async move {
             let mut remaining_total_len = total_len;
@@ -339,14 +338,14 @@ impl RemoteClient {
                 match item {
                     DownloadQueueItem::End => {
                         // everything processed
-                        debug!("download queue emptyed");
+                        debug!("download queue emptied");
                         drop(running_downloads_tx);
                         break;
                     },
                     DownloadQueueItem::DownloadTask(term_download) => {
                         // acquire the permit before spawning the task, so that there's limited
                         // number of active downloads.
-                        let permit = DOWNLOAD_CONNECTION_CONCURRENCY_LIMITER.clone().acquire_owned().await?;
+                        let permit = download_concurrency_limiter.clone().acquire_owned().await?;
                         debug!("spawning 1 download task");
                         let future: JoinHandle<Result<(TermDownloadResult<Vec<u8>>, OwnedSemaphorePermit)>> =
                             tokio::spawn(async move {
@@ -454,7 +453,7 @@ impl RemoteClient {
         writer: &OutputProvider,
         progress_updater: Option<Arc<SingleItemProgressUpdater>>,
     ) -> Result<u64> {
-        // queue size is inherently bounded by degree of concurrency.
+        // Use the unlimited queue, as queue size is inherently bounded by degree of concurrency.
         let (task_tx, mut task_rx) =
             mpsc::unbounded_channel::<DownloadQueueItem<FetchTermDownloadOnceAndWriteEverywhereUsed>>();
         let mut running_downloads = JoinSet::<Result<TermDownloadResult<u64>>>::new();
@@ -478,8 +477,11 @@ impl RemoteClient {
         // download tasks are enqueued and spawned with the degree of concurrency equal to `num_concurrent_range_gets`.
         // After the above, a task that defines fetching the remainder of the file reconstruction info is enqueued,
         // which will execute after the first of the above term download tasks finishes.
-        let term_download_client = self.http_client.clone();
+        let term_download_client = self.http_client_with_retry.clone();
         let download_scheduler = DownloadSegmentLengthTuner::from_configurable_constants();
+
+        let download_concurrency_limiter =
+            ThreadPool::current().global_semaphore(*DOWNLOAD_CHUNK_RANGE_CONCURRENCY_LIMITER);
 
         let process_result = move |result: TermDownloadResult<u64>,
                                    total_written: &mut u64,
@@ -512,7 +514,7 @@ impl RemoteClient {
                 DownloadQueueItem::DownloadTask(term_download) => {
                     // acquire the permit before spawning the task, so that there's limited
                     // number of active downloads.
-                    let permit = DOWNLOAD_CONNECTION_CONCURRENCY_LIMITER.clone().acquire_owned().await?;
+                    let permit = download_concurrency_limiter.clone().acquire_owned().await?;
                     debug!("spawning 1 download task");
                     running_downloads.spawn(async move {
                         let data = term_download.run().await?;
@@ -619,7 +621,7 @@ impl Client for RemoteClient {
 
         let progress_callback = move |bytes_sent: u64| {
             if let Some(utr) = upload_tracker.as_ref() {
-                // First, recallibrate the sending, as the compressed size is different than the actual data size.
+                // First, recalibrate the sending, as the compressed size is different from the actual data size.
                 let adjusted_update = (bytes_sent * n_raw_bytes) / n_upload_bytes;
 
                 utr.clone().register_xorb_upload_progress_background(xorb_hash, adjusted_update);
@@ -713,6 +715,10 @@ impl Client for RemoteClient {
         false
     }
 
+    fn use_shard_footer(&self) -> bool {
+        false
+    }
+
     #[cfg(not(target_family = "wasm"))]
     async fn get_file(
         &self,
@@ -771,16 +777,8 @@ impl Client for RemoteClient {
         )))
     }
 
-    #[instrument(skip_all, name = "RemoteClient::upload_shard", fields(shard.hash = hash.hex(), shard.len = shard_data.len()
-    ))]
-    async fn upload_shard(
-        &self,
-        prefix: &str,
-        hash: &MerkleHash,
-        force_sync: bool,
-        shard_data: bytes::Bytes,
-        _salt: &[u8; 32],
-    ) -> Result<bool> {
+    #[instrument(skip_all, name = "RemoteClient::upload_shard", fields(shard.len = shard_data.len()))]
+    async fn upload_shard(&self, prefix: &str, hash: &MerkleHash, shard_data: Bytes) -> Result<bool> {
         if self.dry_run {
             return Ok(true);
         }
@@ -793,17 +791,12 @@ impl Client for RemoteClient {
         let api_tag = "cas::upload_shard";
         let client = self.authenticated_http_client.clone();
 
-        let method = match force_sync {
-            true => FORCE_SYNC_METHOD,
-            false => NON_FORCE_SYNC_METHOD,
-        };
-
         let url = Url::parse(&format!("{}/shard/{key}", self.endpoint))?;
 
         let response: UploadShardResponse = RetryWrapper::new(api_tag)
             .run_and_extract_json(move || {
                 client
-                    .request(method.clone(), url.clone())
+                    .post(url.clone())
                     .with_extension(Api(api_tag))
                     .body(shard_data.clone())
                     .send()
@@ -816,12 +809,7 @@ impl Client for RemoteClient {
         }
     }
 
-    async fn query_for_global_dedup_shard(
-        &self,
-        prefix: &str,
-        chunk_hash: &MerkleHash,
-        _salt: &[u8; 32],
-    ) -> Result<Option<Bytes>> {
+    async fn query_for_global_dedup_shard(&self, prefix: &str, chunk_hash: &MerkleHash) -> Result<Option<Bytes>> {
         let Some(response) = self.query_dedup_api(prefix, chunk_hash).await? else {
             return Ok(None);
         };
@@ -1241,7 +1229,7 @@ mod tests {
                 .await
         })?;
 
-        assert_eq!(test.expect_error, resp.is_err());
+        assert_eq!(test.expect_error, resp.is_err(), "{:?}", resp.err());
         if !test.expect_error {
             assert_eq!(test.expected_data.len() as u64, resp.unwrap());
             assert_eq!(test.expected_data, buf.value());
