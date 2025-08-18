@@ -12,3 +12,4 @@ mod global_semaphores;
 pub mod utils;
 
 pub use global_semaphores::GlobalSemaphoreHandle;
+mod simple_singleflight;
