@@ -59,7 +59,7 @@ impl RetryWrapper {
     fn process_error_response(&self, try_idx: usize, err: reqwest_middleware::Error) -> RetryableReqwestError {
         let api = &self.api_tag;
 
-        let process_error = |txt, log_as_info| {
+        let process_error = |txt, log_as_info, err: reqwest_middleware::Error| {
             let msg = {
                 if try_idx > 0 {
                     format!("{txt}: {api} api call failed (retry {try_idx}): {err}")
@@ -74,22 +74,21 @@ impl RetryWrapper {
                 error!("{msg}");
             }
 
-            // Turn this into a client connection error
-            CasClientError::ClientConnectionError(msg)
+            CasClientError::from(err)
         };
 
         // Here's the retry logic.
         match default_on_request_failure(&err) {
             Some(Retryable::Fatal) => {
-                let cas_err = process_error("Fatal Client Error", false);
+                let cas_err = process_error("Fatal Client Error", false, err);
                 RetryableReqwestError::FatalError(cas_err)
             },
             Some(Retryable::Transient) => {
-                let cas_err = process_error("Retryable Client Error", true);
+                let cas_err = process_error("Retryable Client Error", true, err);
                 RetryableReqwestError::RetryableError(cas_err)
             },
             None => {
-                let cas_err = process_error("Unknown Client Error", true);
+                let cas_err = process_error("Unknown Client Error", true, err);
                 RetryableReqwestError::FatalError(cas_err)
             },
         }
