@@ -25,7 +25,7 @@ This document describes how files are uploaded to the Content Addressable Storag
 
 ### 5. Xorb hashing
 
-    - The xorb's content-addressed key is computed using the chunks in the xorb. See: [hashing.md](../spec/hashing.md).
+    - The xorb's content-addressed key is computed using the chunks in the xorb. See: [hashing.md](../spec/hashing.md#xorb-hashes).
 
 ### 6. Xorb serialization
 
@@ -33,7 +33,7 @@ This document describes how files are uploaded to the Content Addressable Storag
 
 ### 7. Xorb upload
 
-    - The client uploads each xorb via a POST endpoint on the CAS server. Refer to API details: [api.md](../spec/api.md).
+    - The client uploads each xorb via a Xorb upload API. Refer to API details: [api.md](../spec/api.md#3-upload-xorb).
 
 ### 8. Shard formation, collect required components
 
@@ -43,6 +43,7 @@ This document describes how files are uploaded to the Content Addressable Storag
 ### 9. Shard serialization
 
     - The shard is serialized to its binary on-disk/over-the-wire representation. See: [shard.md](../spec/shard.md).
+    - When serializing the file info section, each file info entry must have an associated metadata section and each data entry (for each file) must have a verification entry.
 
 ### 10. Shard upload
 
@@ -53,13 +54,15 @@ Files can then be downloaded by any client using the [download protocol](../spec
 
 ## Ordering and concurrency
 
-- Xorbs that do not deduplicate can be uploaded independently and in parallel after they are formed and serialized.
-- Shard upload is strictly ordered after all of its referenced xorbs have been uploaded successfully.
-- Multiple shards (for different groups of files) may be formed and uploaded independently, provided their referenced xorbs are available.
+There are some natural ordering requirements in the upload process, e.g. you must have determined a chunk boundary before computing the chunk hash, and you must have collected a sequence of chunks to create a xorb to compute the xorb hash etc.
+
+However there is one additional enforced requirement about ordering: **all xorbs referenced by a shard must be uploaded before that shard is uploaded**.
+If any xorb referenced by a shard is not already uploaded when the shard upload API is called, the server will reject the request.
+All xorbs whose hash is used as an entry in the cas info section and in data entries of the file info section are considered "referenced" by a shard.
 
 ## Integrity and idempotency
 
 - Hashing of chunks, xorbs, and shards ensures integrity and enables deduplication across local and global scopes. See: [hashing.md](../spec/hashing.md).
-- Upload endpoints should be idempotent with respect to content-addressed keys; re-sending an already-present xorb or shard should be safe. See API expectations: [api.md](../spec/api.md).
-
-TODO: add more notes
+  - the same chunk data produces the same chunk hash
+  - the same set of chunks will produce the same xorb hash
+- Upload endpoints are idempotent with respect to content-addressed keys; re-sending an already-present xorb or shard is safe.
