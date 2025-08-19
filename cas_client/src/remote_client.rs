@@ -249,10 +249,7 @@ impl RemoteClient {
             .run(move || client.get(url.clone()).with_extension(Api(api_tag)).send())
             .await;
 
-        if result
-            .as_ref()
-            .is_err_and(|e| e.status().is_some_and(|status| status == StatusCode::NOT_FOUND))
-        {
+        if result.as_ref().is_err_and(|e| e.status().is_some()) {
             return Ok(None);
         }
         Ok(Some(result?))

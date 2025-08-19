@@ -135,7 +135,7 @@ impl RetryWrapper {
             (Err(e), None) => {
                 // I don't believe this case should ever happen, but it's an external library
                 // so let's handle it semi-gracefully.
-                let cas_err = process_error("Unknown Server Error", e, false);
+                let cas_err = process_error("Unknown Error", e, false);
                 Err(RetryableReqwestError::FatalError(cas_err))
             },
 
