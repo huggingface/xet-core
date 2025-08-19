@@ -18,6 +18,7 @@ use rand::Rng;
 use runtime::async_run;
 use token_refresh::WrappedTokenRefresher;
 use tracing::debug;
+use xet_threadpool::file_handle_limits;
 
 use crate::logging::init_logging;
 use crate::progress_update::WrappedProgressUpdater;
@@ -309,6 +310,9 @@ pub fn hf_xet(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
 
     // Make sure the logger is set up.
     init_logging(py);
+
+    // Raise the soft file handle limits if possible
+    file_handle_limits::raise_nofile_soft_to_hard();
 
     #[cfg(feature = "profiling")]
     {

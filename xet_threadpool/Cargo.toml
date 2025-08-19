@@ -15,3 +15,6 @@ tracing = { workspace = true }
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
 tokio = { workspace = true, features = ["rt-multi-thread"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+libc = { workspace = true}
