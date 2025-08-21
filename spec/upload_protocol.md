@@ -1,6 +1,8 @@
 # Upload protocol
 
-This document describes how files are uploaded to the Content Addressable Storage (CAS) service. The flow converts input files into chunks, applies deduplication, groups chunks into xorbs, uploads xorbs, then forms and uploads shards that reference those xorbs. Content addressing uses hashes as stable keys for deduplication and integrity verification.
+This document describes how files are uploaded to the Content Addressable Storage (CAS) service.
+The flow converts input files into chunks, applies deduplication, groups chunks into xorbs, uploads xorbs, then forms and uploads shards that reference those xorbs.
+Content addressing uses hashes as stable keys for deduplication and integrity verification.
 
 ## Steps
 

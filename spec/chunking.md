@@ -1,84 +1,134 @@
 # Content-Defined Chunking Algorithm
 
-## Overview
+## Step-by-step algorithm (Gearhash-based CDC)
 
-The first step in uploading a file is to convert the file into a series of chunks. In order to "chunk" a file we use a rolling hash using the gearhash algorithm over the contents of the file and then set chunk boundaries through a few conditions.
+The goal is to split input data into chunks with an average size of 64 KiB using a streaming GEAR hash and probability-based boundaries.
 
-## Boundary Detection
+### Constant Parameters
 
-### The Boundary Condition
+- target_chunk_size: `64 KiB`
+- MIN_CHUNK_SIZE: `8 KiB` (minimum chunk size)
+- MAX_CHUNK_SIZE: `128 KiB` (maximum chunk size)
+- MASK: `0xffff000000000000` (16 one-bits → boundary probability 1/2^16 per byte)
+- TABLE[256]: table of 256 64-bit constants ([rust-gearhash-table])
 
-Define MASK as the 64 bit number 0xffff000000000000 (bitwise 16 1's followed by 48 0's; 18446462598732840960)
+### State
 
-The byte position when the rolling hash `& MASK == 0` (bitwise AND is equal to 0) is a chunk boundary.
+- h: 64-bit hash, initialized to 0
+- start_offset: start offset of the current chunk, initialized to 0
 
-### Boundary Probability
+### Per-byte update rule (Gearhash)
 
-`target_chunk_size` is the target size of a chunk, set to be 64 KiB.
-The mask is designed so that approximately 1 in every `target_chunk_size` bytes will trigger a boundary, making the average chunk size equal to the target.
+For each input byte `b`, update the hash with 64-bit wrapping arithmetic:
 
-## Algorithm Flow
+```text
+h = (h << 1) + TABLE[b]
+```
 
-### 1. Initialize
+### Boundary test and size constraints
 
-- Set up gearhash with 64-byte window
-- Calculate boundary mask from target chunk size
-- Determine minimum and maximum chunk size limits
+At each position after updating `h`, let `size = current_offset - start_offset + 1`.
 
-### 2. Process Data
+- If `size < MIN_CHUNK_SIZE`: do not test `MASK`; continue
+- Else if `size >= MAX_CHUNK_SIZE`: force a boundary
+- Else if `(h & MASK) == 0`: boundary at this position
 
-For each byte position in the data:
+When a boundary is taken:
 
-1. **Check Size and End of File Constraints**
-   - If below minimum size (< 8192): skip boundary detection
-   - If at maximum size (131072): force boundary creation
-   - If at end of file: force boundary creation
+- Emit the chunk `[start_offset, current_offset + 1)`
+- Set `start_offset = current_offset + 1`
+- Reset `h = 0`
 
-2. **Update Hash**
-   - Slide the 64-byte window forward
-   - Update gearhash value using rolling property
+At end-of-file, if `start_offset < len(data)`, emit the final chunk `[start_offset, len(data))`.
 
-3. **Test Boundary Condition**
-   - Apply mask to current hash value
-   - If condition met: create chunk boundary
-   - If not: continue to next position
+### Pseudocode
 
-### 3. Create Chunks
+```text
+Inputs:
+  data: byte array
+  MIN_CHUNK_SIZE = 8 * 1024
+  MAX_CHUNK_SIZE = 128 * 1024
+  MASK = 0xffff000000000000
+  TABLE[256]: Array of 256 pseudo-random 64-bit constants
 
-When a boundary is found:
+State:
+  h = 0
+  start_offset = 0 // start of the "current chunk"
 
-- Output current chunk (from last boundary to current position)
-- Reset for next chunk (set rolling hash to 0)
-- Continue processing
+for i in 0..len(data):
+  b = data[i]
+  h = (h << 1) + TABLE[b]      // 64-bit wrapping
+  size = i + 1 - start_offset
 
-## Size Constraints
+  if size < MIN_CHUNK_SIZE:
+    continue
 
-### Minimum Chunk Size
+  if size >= MAX_CHUNK_SIZE or (h & MASK) == 0:
+    emit chunk [start_offset, i + 1)
+    start_offset = i + 1
+    h = 0
 
-- Prevents tiny chunks that hurt compression efficiency
-- `target_chunk_size / 8` (8KiB)
-- Algorithm skips boundary detection until this size is reached
+if start_offset < len(data):
+  emit chunk [start_offset, len(data))
+```
 
-### Maximum Chunk Size  
+### Boundary probability and mask selection
 
-- Prevents unbounded chunk growth
-- `target_chunk_size × 2` (128KiB)
-- Forces boundary creation regardless of hash value
+- With 16 one-bits in `MASK`, the probability a random 64-bit `h` matches is `1 / 2^16`, yielding an average of 64 KiB between matches.
+- Placing the one-bits in MSBs or LSBs (or random) yields the same probability; we use MSB placement (`0xffff000000000000`).
 
-## Key Properties
+### Properties
 
-- Same content always produces same chunk boundaries
-- Small changes within a `target_chunk_size` window affect only a few next boundaries
-- Linear time complexity: O(n) for data size n
-- Constant space: only needs 64-byte window and counters
-- Fast rolling hash updates
+- Deterministic boundaries: same content → same chunks
+- Locality: small edits only affect nearby boundaries
+- Linear time and constant memory: single 64-bit state and counters
 
-## For Deduplication
+### Intuition and rationale
 
-- Identical content produces identical chunks
-- Small edits don't shift all subsequent chunk boundaries
-- Optimal granularity for detecting duplicate content blocks
+- The table `TABLE[256]` injects pseudo-randomness per byte value so that the evolving hash `h` behaves like a random 64-bit value with respect to the mask test. This makes boundaries content-defined yet statistically evenly spaced.
+- The left shift `(h << 1)` amplifies recent bytes, helping small changes affect nearby positions without globally shifting all boundaries.
+- Resetting `h` to 0 at each boundary prevents long-range carryover and keeps boundary decisions for each chunk statistically independent.
 
-## Parallel Chunking (Advanced)
+### Implementation notes
 
-[Proof for explanation of parallel chunking](../deduplication/src/parallel%20chunking.pdf).
+- Only reset `h` when you emit a boundary. This ensures chunking is stable even when streaming input in pieces.
+- Apply the mask test only once `size >= MIN_CHUNK_SIZE`. This reduces the frequency of tiny chunks and stabilizes average chunk sizes.
+- Force a boundary at `size >= MAX_CHUNK_SIZE` even if `(h & MASK) != 0`. This guarantees bounded chunk sizes and prevents pathological long chunks when matches are rare.
+- Use 64-bit wrapping arithmetic for `(h << 1) + TABLE[b]`. This is the behavior in the reference implementation [rust-gearhash].
+
+### Edge cases
+
+- Tiny files: if `len(data) < MIN_CHUNK_SIZE`, the entire `data` is emitted as a single chunk.
+- Long runs without a match: if no position matches `(h & MASK) == 0` before `MAX_CHUNK_SIZE`, a boundary is forced at `MAX_CHUNK_SIZE` to cap chunk size.
+
+### Portability and determinism
+
+- With a fixed `T[256]` table and mask, the algorithm is deterministic across platforms: same input → same chunk boundaries.
+- Endianness does not affect behavior because updates are byte-wise and use scalar 64-bit operations.
+- SIMD-accelerated implementations (when available) are optimizations only; they produce the same boundaries as the scalar path [rust-gearhash].
+
+## Minimum-size skip-ahead (cut-point skipping optimization)
+
+Computing and testing the rolling hash at every byte is expensive for large data, and early tests inside the first few bytes of a chunk are disallowed by the `MIN_CHUNK_SIZE` constraint anyway.
+We are able to intentionally skip testing some data with cut-point skipping to accelerate scanning without affecting correctness.
+
+The hash function by virtue of the use of 64 byte integer length and the bit shift (`(h << 1) + TABLE[b]`) causes the hash at any byte offset to only depend on the last 64 bytes.
+With a Gear rolling hash window of 64 bytes, the first boundary test is deferred until at least `MIN_CHUNK_SIZE - 64 - 1` bytes into the chunk.
+This ensures that, by the time the first boundary can be considered (at offset `MIN_CHUNK_SIZE`), at least one full hash window of bytes from the current chunk has influenced the hash state.
+
+- Effect:
+  - Distribution quality is preserved because the first admissible test uses a well-mixed hash (full window), avoiding bias from the earliest bytes.
+  - Performance improves by avoiding per-byte hashing/judgment in the prefix where boundaries cannot be taken.
+  - Correctness is preserved because boundaries are never allowed before `MIN_CHUNK_SIZE` and the hash produced at a testable offset is the same as the hash computed had we not skipped any bytes.
+- Notes:
+  - This is an optimization of the search procedure only; it does not change the boundary condition, mask, or emitted chunk set compared to a byte-by-byte implementation that simply refrains from taking boundaries before `MIN_CHUNK_SIZE`.
+  - In the reference code, this appears as advancing the scan pointer by up to `MIN_CHUNK_SIZE - 64 - 1` before invoking the mask test loop.
+
+## References
+
+- rust-gearhash: Fast, SIMD-accelerated GEAR hashing for CDC [rust-gearhash]
+- FastCDC paper (background and design rationale of CDC) [fastcdc-paper]
+
+[rust-gearhash]: https://github.com/srijs/rust-gearhash
+[rust-gearhash-table]: https://github.com/srijs/rust-gearhash/blob/adad44e7141cfd29d898cf6e0858f50b995db286/src/table.rs#L5
+[fastcdc-paper]: https://www.usenix.org/conference/atc16/technical-sessions/presentation/xia

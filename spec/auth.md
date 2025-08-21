@@ -53,6 +53,8 @@ A JSON encoded object with the following format:
 - exp is the unix timestamp of when this token expires
 - casUrl is the API service endpoint URL
 
+Users may assume the "accessToken" and "casUrl" fields lengths have an upper limit of 64000 characters.
+
 #### Example Response Object
 
 ```json
@@ -92,7 +94,7 @@ Here's a basic implementation flow:
    ```
 
 3. **Use the token with Xet service:**
-   Use Bearer authentication with the `access_token` to authenticate with the Xet service at `endpoint` until `expiration` time.
+   Use Bearer authentication with the value for the `accessToken` key to authenticate with the Xet service at `endpoint` until `expiration` time.
 
 4. **Token refresh (when needed):**
    Use the same API to generate a new token.
