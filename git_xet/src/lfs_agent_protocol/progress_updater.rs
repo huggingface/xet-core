@@ -91,10 +91,12 @@ impl<W: Write + Send + Sync + 'static> ProgressUpdater<W> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use anyhow::Result;
     use std::io::Write;
     use std::time::{Duration, Instant};
+
+    use anyhow::Result;
+
+    use super::*;
 
     #[derive(Default)]
     struct MockWriter {

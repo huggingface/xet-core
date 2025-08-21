@@ -3,7 +3,8 @@ use std::sync::{Arc, Mutex};
 
 use git2::{Config, Repository};
 
-use crate::{errors::*, git_url::GitUrl};
+use crate::errors::*;
+use crate::git_url::GitUrl;
 
 #[derive(Clone)]
 pub struct GitRepo {
@@ -111,7 +112,8 @@ impl GitRepo {
 mod tests {
     use anyhow::Result;
 
-    use crate::{git_repo::GitRepo, test_utils::test_repo::*};
+    use crate::git_repo::GitRepo;
+    use crate::test_utils::test_repo::*;
 
     #[test]
     fn test_get_remote_from_local_config() -> Result<()> {

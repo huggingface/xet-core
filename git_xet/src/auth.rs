@@ -275,15 +275,12 @@ impl GitCredentialHelper {
 //
 // There are two URLs in play, that make this a little confusing.
 //
-//  1. The LFS API URL, which should be something like "https://git.com/repo.git/info/lfs"
-//     This URL used for the "lfs.URL.access" git config key, which determines
-//     what kind of auth the LFS server expects. Could be BasicAccess,
-//     NegotiateAccess, or NoneAccess, in which the Git Credential
-//     Helper step is skipped. We do not want to prompt the user for a password
-//     to fetch public repository data.
-//  2. The Git Remote URL, which should be something like "https://git.com/repo.git"
-//     This URL is used for the Git Credential Helper. This way existing https
-//     Git remote credentials can be re-used for LFS.
+//  1. The LFS API URL, which should be something like "https://git.com/repo.git/info/lfs" This URL used for the
+//     "lfs.URL.access" git config key, which determines what kind of auth the LFS server expects. Could be BasicAccess,
+//     NegotiateAccess, or NoneAccess, in which the Git Credential Helper step is skipped. We do not want to prompt the
+//     user for a password to fetch public repository data.
+//  2. The Git Remote URL, which should be something like "https://git.com/repo.git" This URL is used for the Git
+//     Credential Helper. This way existing https Git remote credentials can be re-used for LFS.
 pub fn get_creds(repo: &GitRepo, remote_url: &GitUrl, operation: Operation) -> Result<Arc<dyn CredentialHelper>> {
     let access = AccessMode::from_repo_and_remote_url(repo, remote_url)?;
     let derived_host_url = remote_url.to_derived_http_host_url()?;
@@ -331,7 +328,6 @@ mod test_access_mode {
     use anyhow::Result;
 
     use super::*;
-
     use crate::test_utils::test_repo::TestRepo;
 
     #[test]
@@ -362,7 +358,6 @@ mod test_cred_helpers {
     use anyhow::{Ok, Result};
 
     use super::*;
-
     use crate::auth::SSHCredentialHelper;
     use crate::git_url::GitUrl;
     use crate::test_utils::test_repo::TestRepo;

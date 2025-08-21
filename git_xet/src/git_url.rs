@@ -1,4 +1,5 @@
-use std::{fmt::Display, str::FromStr};
+use std::fmt::Display;
+use std::str::FromStr;
 
 use git_url_parse::GitUrl as innerGitUrl;
 pub use git_url_parse::Scheme;
@@ -229,7 +230,6 @@ impl Display for RepoInfo {
 #[cfg(test)]
 mod test_lfs_server_discovery {
     use super::*;
-
     use crate::errors::Result;
 
     #[test]
@@ -462,7 +462,6 @@ mod test_lfs_server_discovery {
 mod test_repo_info_extraction {
     use super::HFRepoType::*;
     use super::*;
-
     use crate::errors::Result;
 
     #[test]
