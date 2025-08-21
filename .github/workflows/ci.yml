@@ -37,6 +37,10 @@ jobs:
       - name: Lint
         run: |
           cargo clippy -r --verbose -- -D warnings # elevates warnings to errors
+      - name: Set up Git environment
+        run: |
+          git config --global user.name XetTeam
+          git config --global user.email "test@hf.co"
       - name: Build and Test
         run: |
           cargo test --verbose --no-fail-fast --features "strict"

@@ -101,7 +101,6 @@ impl TransferAgent for XetAgent {
             None,
             Some((token, token_expiry)),
             Some(Arc::new(token_refresher)),
-            //None,
             false, /* upload one file at a time so no need for the heavy progress aggregator */
         )?;
         let session = FileUploadSession::new(config, Some(Arc::new(xet_updater))).await?;
