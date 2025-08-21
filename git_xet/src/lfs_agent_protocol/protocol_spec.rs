@@ -218,7 +218,7 @@ mod tests {
             { "event": "other", "operation": "upload", "remote": "origin", "concurrent": false }"#;
         let parsed: Result<LFSProtocolRequestEvent, GitLFSProtocolError> = message.parse();
 
-        assert!(matches!(parsed, Err(GitLFSProtocolError::SyntaxError(_))));
+        assert!(matches!(parsed, Err(GitLFSProtocolError::Syntax(_))));
 
         Ok(())
     }
@@ -259,21 +259,21 @@ mod tests {
             { "event": "init", "operation": "other", "remote": "origin", "concurrent": false }"#;
         let parsed1: Result<LFSProtocolRequestEvent, GitLFSProtocolError> = message1.parse();
 
-        assert!(matches!(parsed1, Err(GitLFSProtocolError::SyntaxError(_))));
+        assert!(matches!(parsed1, Err(GitLFSProtocolError::Syntax(_))));
 
         // init event missing required field
         let message2 = r#"
             { "event": "init", "operation": "upload", "remote": "origin" }"#;
         let parsed2: Result<LFSProtocolRequestEvent, GitLFSProtocolError> = message2.parse();
 
-        assert!(matches!(parsed2, Err(GitLFSProtocolError::SyntaxError(_))));
+        assert!(matches!(parsed2, Err(GitLFSProtocolError::Syntax(_))));
 
         // init event with invalid remote
         let message2 = r#"
             { "event": "init", "operation": "upload", "remote": "", "concurrent": false }"#;
         let parsed2: Result<LFSProtocolRequestEvent, GitLFSProtocolError> = message2.parse();
 
-        assert!(matches!(parsed2, Err(GitLFSProtocolError::ArgumentError(_))));
+        assert!(matches!(parsed2, Err(GitLFSProtocolError::Argument(_))));
 
         Ok(())
     }
@@ -344,7 +344,7 @@ mod tests {
             "path": "/path/to/file.png" }"#;
         let parsed1: Result<LFSProtocolRequestEvent, GitLFSProtocolError> = message1.parse();
 
-        assert!(matches!(parsed1, Err(GitLFSProtocolError::SyntaxError(_))));
+        assert!(matches!(parsed1, Err(GitLFSProtocolError::Syntax(_))));
 
         // transfer event with invalid oid
         let message2 = r#"
@@ -352,7 +352,7 @@ mod tests {
             "path": "/path/to/file.png", "action": { "href": "nfs://server/path", "header": { "key": "value" } } }"#;
         let parsed2: Result<LFSProtocolRequestEvent, GitLFSProtocolError> = message2.parse();
 
-        assert!(matches!(parsed2, Err(GitLFSProtocolError::ArgumentError(_))));
+        assert!(matches!(parsed2, Err(GitLFSProtocolError::Argument(_))));
 
         // transfer event with invalid size
         let message3 = r#"
@@ -360,7 +360,7 @@ mod tests {
             "path": "/path/to/file.png", "action": { "href": "nfs://server/path", "header": { "key": "value" } } }"#;
         let parsed3: Result<LFSProtocolRequestEvent, GitLFSProtocolError> = message3.parse();
 
-        assert!(matches!(parsed3, Err(GitLFSProtocolError::ArgumentError(_))));
+        assert!(matches!(parsed3, Err(GitLFSProtocolError::Argument(_))));
 
         // upload transfer event missing path
         let message4 = r#"
@@ -368,7 +368,7 @@ mod tests {
             "action": { "href": "nfs://server/path", "header": { "key": "value" } } }"#;
         let parsed4: Result<LFSProtocolRequestEvent, GitLFSProtocolError> = message4.parse();
 
-        assert!(matches!(parsed4, Err(GitLFSProtocolError::SyntaxError(_))));
+        assert!(matches!(parsed4, Err(GitLFSProtocolError::Syntax(_))));
 
         // download transfer event with path
         let message5 = r#"
@@ -376,7 +376,7 @@ mod tests {
             "path": "/path/to/file.png", "action": { "href": "https://server/path", "header": { "k1": "v1", "k2": "v2" } } }"#;
         let parsed5: Result<LFSProtocolRequestEvent, GitLFSProtocolError> = message5.parse();
 
-        assert!(matches!(parsed5, Err(GitLFSProtocolError::SyntaxError(_))));
+        assert!(matches!(parsed5, Err(GitLFSProtocolError::Syntax(_))));
 
         Ok(())
     }

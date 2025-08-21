@@ -14,6 +14,7 @@ merklehash = { path = "../merklehash" }
 async-trait = { workspace = true }
 bytes = { workspace = true }
 ctor = { workspace = true }
+derivative = { workspace = true }
 futures = { workspace = true }
 lazy_static = { workspace = true }
 pin-project = { workspace = true }

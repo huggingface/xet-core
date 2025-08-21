@@ -58,23 +58,10 @@ where
     let stdout = Arc::new(Mutex::new(output_channel));
     let mut state = LFSAgentState::PendingInit;
 
-    let pid = std::process::id();
-    let mut file = std::fs::OpenOptions::new()
-        .create(true)
-        .truncate(true)
-        .write(true)
-        .open(format!("log.{}.txt", pid))
-        .unwrap();
-
     // Each request and response is serialized as a JSON structure, to be sent and received on a
     // single line as per Line Delimited JSON.
     loop {
         let event = recv_request(&mut stdin)?;
-
-        file.write_all(
-            format!("[{}:{}] [{:?}] recv: {event:?}\n", pid, chrono::Local::now().to_rfc3339(), state).as_bytes(),
-        )
-        .unwrap();
 
         // Then we validate the state transition before processing the request.
         let response = match event {
@@ -116,29 +103,10 @@ where
                     Err(e)?
                 }
 
-                file.write_all(
-                    format!("[{}:{}]\t + sleeping...\n", std::process::id(), chrono::Local::now().to_rfc3339())
-                        .as_bytes(),
-                )
-                .unwrap();
-                // std::thread::sleep(Duration::from_secs(60));
-                tokio::time::sleep(Duration::from_secs(60)).await;
-                file.write_all(
-                    format!("[{}:{}]\t + wake up\n", std::process::id(), chrono::Local::now().to_rfc3339()).as_bytes(),
-                )
-                .unwrap();
-
                 // successful termination, no response is expected
                 break;
             },
         };
-
-        file.write_all(
-            format!("[{}:{}] [{:?}] resp: {response}\n", std::process::id(), chrono::Local::now().to_rfc3339(), state)
-                .as_bytes(),
-        )
-        .unwrap();
-        file.flush().unwrap();
 
         stdout.lock().map_err(internal)?.write_all(response.as_bytes())?;
     }

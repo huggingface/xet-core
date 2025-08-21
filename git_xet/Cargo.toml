@@ -8,8 +8,8 @@ name = "git-xet"
 path = "src/bin/main.rs"
 
 [dependencies]
-data = { path = "../data" }
 cas_client = { path = "../cas_client" }
+data = { path = "../data" }
 progress_tracking = { path = "../progress_tracking" }
 utils = { path = "../utils" }
 
@@ -17,16 +17,15 @@ anyhow = { workspace = true }
 async-trait = { workspace = true }
 chrono = { workspace = true }
 clap = { workspace = true }
-futures = { workspace = true }
+derivative = { workspace = true }
 git-url-parse = { workspace = true }
 git2 = { workspace = true }
+openssh = { workspace = true }
 reqwest = { workspace = true }
+reqwest-middleware = { workspace = true }
+rust-netrc = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tempfile = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
-
-signal-hook = "0.3"
-signal-hook-tokio = { version = "0.3", features = ["futures-v0_3"] }
-

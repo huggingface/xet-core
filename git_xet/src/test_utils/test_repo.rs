@@ -1,3 +1,4 @@
+#![cfg(test)]
 use std::path::{Path, PathBuf};
 
 use anyhow::{Result, anyhow};
@@ -77,7 +78,7 @@ impl TestRepo {
     }
 
     pub fn set_config(&self, key: &str, value: &str) -> Result<()> {
-        run_git_captured(&self.repo_path, "config", &["--local", key, value])?;
+        run_git_captured(&self.repo_path, "config", &["set", key, value])?;
 
         Ok(())
     }

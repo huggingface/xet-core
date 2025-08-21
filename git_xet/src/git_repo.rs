@@ -1,5 +1,5 @@
-use std::path::PathBuf;
-use std::sync::Arc;
+use std::path::Path;
+use std::sync::{Arc, Mutex};
 
 use git2::{Config, Repository};
 
@@ -7,37 +7,39 @@ use crate::{errors::*, git_url::GitUrl};
 
 #[derive(Clone)]
 pub struct GitRepo {
-    repo: Arc<Repository>,
+    // Repository does not impl Sync, so we leverage Mutex
+    // to give it the Sync capability.
+    repo: Arc<Mutex<Repository>>,
 }
 
 impl GitRepo {
     pub fn open_from_cur_dir() -> Result<Self> {
-        Self::open(None)
+        Self::open(std::env::current_dir()?)
     }
 
-    pub fn open(path: Option<PathBuf>) -> Result<Self> {
-        let start_path = match path {
-            Some(p) => p,
-            None => std::env::current_dir()?,
-        };
+    pub fn open(path: impl AsRef<Path>) -> Result<Self> {
+        let start_path = path.as_ref();
 
-        let raw_repo = Repository::discover(&start_path).map_err(|e| GitXetError::NoGitRepo {
-            path: start_path,
+        let raw_repo = Repository::discover(start_path).map_err(|e| GitXetError::NoGitRepo {
+            path: start_path.to_path_buf(),
             source: e,
         })?;
 
         Ok(Self {
-            repo: Arc::new(raw_repo),
+            repo: Arc::new(Mutex::new(raw_repo)),
         })
     }
 
-    // Returns the remote based on:
+    // Returns the remote that a git push/fetch/pull operation
+    // is targeted at, based on:
     // 1. The currently tracked remote branch, if present
     // 2. The value of remote.lfsdefault.
     // 3. Any other SINGLE remote defined in .git/config
     // 4. Use "origin" as a fallback.
     pub fn remote_name(&self) -> Result<String> {
-        let maybe_head_ref = self.repo.head();
+        let repo = self.repo.lock().map_err(internal)?;
+
+        let maybe_head_ref = repo.head();
         let maybe_branch_name = maybe_head_ref.ok().and_then(|head_ref| {
             if head_ref.is_branch() {
                 head_ref
@@ -49,7 +51,7 @@ impl GitRepo {
             }
         });
 
-        let config = self.repo.config()?.snapshot()?;
+        let config = repo.config()?.snapshot()?;
 
         // try tracking remote
         if let Some(branch) = maybe_branch_name {
@@ -64,7 +66,7 @@ impl GitRepo {
         }
 
         // use only remote if there is only 1
-        let remotes = self.repo.remotes()?;
+        let remotes = repo.remotes()?;
         if remotes.len() == 1 {
             if let Some(remote) = remotes.get(0) {
                 return Ok(remote.to_string());
@@ -78,20 +80,30 @@ impl GitRepo {
 
     // Returns the URL for a specific remote name.
     pub fn remote_name_to_url(&self, remote: &str) -> Result<GitUrl> {
-        let url: GitUrl = self
-            .repo
+        let repo = self.repo.lock().map_err(internal)?;
+
+        let url: GitUrl = repo
             .find_remote(remote)?
             .url()
             .map(|s| s.to_string())
-            .ok_or_else(|| GitXetError::GitConfigError(format!("no url for remote \"{remote}\"")))?
+            .ok_or_else(|| config_error(format!("no url for remote \"{remote}\"")))?
             .parse()?;
 
         Ok(url)
     }
 
+    // A convenient function to get the remote URL that a git push/fetch/pull operation
+    // is targeted at. This combines the functionality of `remote_name` and `remote_name_to_url`.
+    pub fn remote_url(&self) -> Result<GitUrl> {
+        let remote = self.remote_name()?;
+        self.remote_name_to_url(&remote)
+    }
+
     // Returns a snapshot of the current Git repo config.
     pub fn config(&self) -> Result<Config> {
-        Ok(self.repo.config()?.snapshot()?)
+        let repo = self.repo.lock().map_err(internal)?;
+
+        Ok(repo.config()?.snapshot()?)
     }
 }
 
@@ -105,7 +117,7 @@ mod tests {
     fn test_get_remote_from_local_config() -> Result<()> {
         let test_repo = TestRepo::new("main")?;
 
-        let repo = GitRepo::open(Some(test_repo.repo_path.clone()))?;
+        let repo = GitRepo::open(&test_repo.repo_path)?;
 
         // test "origin" as fallback
         assert_eq!(repo.remote_name()?, "origin".to_owned());
@@ -133,7 +145,7 @@ mod tests {
         let test_repo = TestRepo::clone_from(&remote_repo_1.repo_path)?;
         test_repo.set_remote("remote2", remote_repo_2.repo_path.as_path().to_str().unwrap())?;
 
-        let repo = GitRepo::open(Some(test_repo.repo_path.clone()))?;
+        let repo = GitRepo::open(&test_repo.repo_path)?;
 
         // test the tracked remote branch
         test_repo.new_branch_tracking_remote("remote2", "main", "featurex")?;
@@ -146,7 +158,7 @@ mod tests {
     fn test_get_remote_url() -> Result<()> {
         let test_repo = TestRepo::new("main")?;
 
-        let repo = GitRepo::open(Some(test_repo.repo_path.clone()))?;
+        let repo = GitRepo::open(&test_repo.repo_path)?;
 
         test_repo.set_remote("upstream", "http://hf.co/foo/bar")?;
 

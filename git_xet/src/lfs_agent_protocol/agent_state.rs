@@ -76,44 +76,44 @@ mod tests {
         let mut state = LFSAgentState::PendingInit;
         let ret = state.transit_to(LFSAgentState::Uploading);
 
-        assert!(matches!(ret, Err(GitLFSProtocolError::StateError(_))));
+        assert!(matches!(ret, Err(GitLFSProtocolError::State(_))));
 
         // double init event
         let mut state = LFSAgentState::PendingInit;
         state.transit_to(LFSAgentState::InitedForUpload)?;
         let ret = state.transit_to(LFSAgentState::InitedForUpload);
 
-        assert!(matches!(ret, Err(GitLFSProtocolError::StateError(_))));
+        assert!(matches!(ret, Err(GitLFSProtocolError::State(_))));
 
         // upload init event followed by download init event
         let mut state = LFSAgentState::InitedForUpload;
         let ret = state.transit_to(LFSAgentState::InitedForDownload);
 
-        assert!(matches!(ret, Err(GitLFSProtocolError::StateError(_))));
+        assert!(matches!(ret, Err(GitLFSProtocolError::State(_))));
 
         // upload init event followed by download transfer event
         let mut state = LFSAgentState::InitedForUpload;
         let ret = state.transit_to(LFSAgentState::Downloading);
 
-        assert!(matches!(ret, Err(GitLFSProtocolError::StateError(_))));
+        assert!(matches!(ret, Err(GitLFSProtocolError::State(_))));
 
         // download init event followed by upload transfer event
         let mut state = LFSAgentState::InitedForDownload;
         let ret = state.transit_to(LFSAgentState::Uploading);
 
-        assert!(matches!(ret, Err(GitLFSProtocolError::StateError(_))));
+        assert!(matches!(ret, Err(GitLFSProtocolError::State(_))));
 
         // upload transfer event followed by download transfer event
         let mut state = LFSAgentState::Uploading;
         let ret = state.transit_to(LFSAgentState::Downloading);
 
-        assert!(matches!(ret, Err(GitLFSProtocolError::StateError(_))));
+        assert!(matches!(ret, Err(GitLFSProtocolError::State(_))));
 
         // download transfer event followed by upload transfer event
         let mut state = LFSAgentState::Downloading;
         let ret = state.transit_to(LFSAgentState::Uploading);
 
-        assert!(matches!(ret, Err(GitLFSProtocolError::StateError(_))));
+        assert!(matches!(ret, Err(GitLFSProtocolError::State(_))));
 
         Ok(())
     }

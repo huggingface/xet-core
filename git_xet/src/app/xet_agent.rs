@@ -1,13 +1,19 @@
 use std::io::Write;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use async_trait::async_trait;
 use data::FileUploadSession;
-use data::data_client::{clean_file, default_config};
+use data::data_client::{advanced_config, clean_file};
 use progress_tracking::{ProgressUpdate, TrackingProgressUpdater};
 
-use crate::constants::{GIT_LFS_CUSTOM_TRANSFER_AGENT_PROGRAM, XET_ACCESS_TOKEN_HEADER, XET_TOKEN_EXPIRATION_HEADER};
-use crate::errors::{GitXetError, Result, internal};
+use crate::auth::Operation;
+use crate::constants::{
+    GIT_LFS_CUSTOM_TRANSFER_AGENT_PROGRAM, HF_ENDPOINT_ENV, XET_ACCESS_TOKEN_HEADER, XET_TOKEN_EXPIRATION_HEADER,
+};
+use crate::errors::{GitXetError, Result, internal, not_supported};
+use crate::git_repo::GitRepo;
+use crate::git_url::Scheme;
+use crate::hub_client::HubClientTokenRefresher;
 use crate::lfs_agent_protocol::errors::bad_syntax;
 use crate::lfs_agent_protocol::*;
 
@@ -23,15 +29,42 @@ impl<W: Write + Send + Sync + 'static> TrackingProgressUpdater for XetProgressUp
 }
 
 #[derive(Default)]
-pub struct XetAgent {}
+pub struct XetAgent {
+    repo: OnceLock<GitRepo>,
+    hf_endpoint: Option<String>,
+}
 
 impl TransferAgent for XetAgent {
     async fn init_upload(&mut self, _: &InitRequestInner) -> Result<()> {
+        let repo = GitRepo::open_from_cur_dir()?;
+        let remote_url = repo.remote_url()?;
+
+        let hf_endpoint = if !matches!(remote_url.scheme(), Scheme::Http | Scheme::Https) && remote_url.port().is_some()
+        {
+            let endpoint = std::env::var(HF_ENDPOINT_ENV);
+            match endpoint {
+                Ok(e) => Some(e),
+                Err(_) => {
+                    return Err(GitXetError::GitConfigError(
+                        "This repository has a non-standard Hugging Face remote URL, please specify the Hugging Face server 
+                        endpoint using environment variable 'HF_ENDPOINT'"
+                            .to_owned(),
+                    ));
+                },
+            }
+        } else {
+            None
+        };
+
+        self.repo.get_or_init(|| repo);
+
+        self.hf_endpoint = hf_endpoint;
+
         Ok(())
     }
 
     async fn init_download(&mut self, _: &InitRequestInner) -> Result<()> {
-        Err(GitXetError::NotSupported(format!(
+        Err(not_supported(format!(
             "custom transfer for download is not available; if you think this is an error, consider 
             upgrade {GIT_LFS_CUSTOM_TRANSFER_AGENT_PROGRAM} or contact Xet Team at Hugging Face."
         )))
@@ -61,7 +94,16 @@ impl TransferAgent for XetAgent {
         let cas_url = req.action.href.clone();
         let token = req.action.header[XET_ACCESS_TOKEN_HEADER].clone();
         let token_expiry: u64 = req.action.header[XET_TOKEN_EXPIRATION_HEADER].parse().map_err(internal)?;
-        let config = default_config(cas_url, None, Some((token, token_expiry)), None)?;
+        let repo = self.repo.get().unwrap(); // protocol state guarantees self.repo is set.
+        let token_refresher = HubClientTokenRefresher::new(repo, self.hf_endpoint.clone(), Operation::Upload, "")?;
+        let config = advanced_config(
+            cas_url,
+            None,
+            Some((token, token_expiry)),
+            Some(Arc::new(token_refresher)),
+            //None,
+            false, /* upload one file at a time so no need for the heavy progress aggregator */
+        )?;
         let session = FileUploadSession::new(config, Some(Arc::new(xet_updater))).await?;
 
         let Some(file_path) = &req.path else {

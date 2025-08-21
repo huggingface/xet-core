@@ -42,6 +42,14 @@ pub enum GitXetError {
 
 pub type Result<T> = std::result::Result<T, GitXetError>;
 
+pub(crate) fn not_supported(e: impl Display) -> GitXetError {
+    GitXetError::NotSupported(e.to_string())
+}
+
+pub(crate) fn config_error(e: impl Display) -> GitXetError {
+    GitXetError::GitConfigError(e.to_string())
+}
+
 pub(crate) fn internal(e: impl Display) -> GitXetError {
     GitXetError::InternalError(e.to_string())
 }

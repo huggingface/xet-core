@@ -1,7 +1,7 @@
 pub mod app;
+mod auth;
 mod constants;
 mod errors;
-mod git_lfs_auth;
 mod git_process_wrapping;
 mod git_repo;
 mod git_url;
