@@ -1,8 +1,9 @@
 # Content-Defined Chunking Algorithm
 
-## Step-by-step algorithm (Gearhash-based CDC)
+The goal in chunking is to convert file data into smaller variable length chunks, approximately 64 KiB in length.
+Chunks boundaries must be computed in a deterministic way such that chunking the same data in 2 different places yields chunks that can be deduplicated.
 
-The goal is to split input data into chunks with an average size of 64 KiB using a streaming GEAR hash and probability-based boundaries.
+## Step-by-step algorithm (Gearhash-based CDC)
 
 ### Constant Parameters
 
