@@ -13,16 +13,17 @@ use futures::TryStreamExt;
 use http::header::RANGE;
 use http::StatusCode;
 use merklehash::MerkleHash;
+use reqwest::Response;
 use reqwest_middleware::ClientWithMiddleware;
-use tokio_retry::strategy::ExponentialBackoff;
 use tracing::{debug, error, info, trace, warn};
 use url::Url;
 use utils::singleflight::Group;
 
 use crate::error::{CasClientError, Result};
-use crate::http_client::{Api, BASE_RETRY_DELAY_MS, BASE_RETRY_MAX_DURATION_MS, NUM_RETRIES};
+use crate::http_client::Api;
 use crate::output_provider::OutputProvider;
 use crate::remote_client::{get_reconstruction_with_endpoint_and_client, PREFIX_DEFAULT};
+use crate::retry_wrapper::{RetryWrapper, RetryableReqwestError};
 
 utils::configurable_constants! {
     // Env (HF_XET_NUM_RANGE_IN_SEGMENT_BASE) base value for the approx number of ranges in the initial
@@ -479,28 +480,6 @@ pub(crate) async fn get_one_fetch_term_data(
     Ok(term_download_output)
 }
 
-struct ChunkRangeDeserializeFromBytesStreamRetryCondition;
-
-impl tokio_retry::Condition<CasClientError> for ChunkRangeDeserializeFromBytesStreamRetryCondition {
-    fn should_retry(&mut self, err: &CasClientError) -> bool {
-        // we only care about retrying some error yielded by trying to deserialize the stream
-        let CasClientError::CasObjectError(CasObjectError::InternalIOError(cas_object_io_err)) = err else {
-            return false;
-        };
-        let Some(inner) = cas_object_io_err.get_ref() else {
-            return false;
-        };
-        let Some(inner_reqwest_err) = inner.downcast_ref::<reqwest::Error>() else {
-            return false;
-        };
-        // errors that indicate reading the body failed
-        inner_reqwest_err.is_body()
-            || inner_reqwest_err.is_decode()
-            || inner_reqwest_err.is_timeout()
-            || inner_reqwest_err.is_request()
-    }
-}
-
 /// use the provided http_client to make requests to S3/blob store using the url and url_range
 /// parts of a CASReconstructionFetchInfo. The url_range part is used directly in a http Range header
 /// value (see fn `range_header`).
@@ -511,61 +490,83 @@ async fn download_fetch_term_data(
 ) -> Result<DownloadRangeResult> {
     trace!("{hash},{},{}", fetch_term.range.start, fetch_term.range.end);
 
+    let api_tag = "s3::get_range";
     let url = Url::parse(fetch_term.url.as_str())?;
 
-    tokio_retry::RetryIf::spawn(
-        ExponentialBackoff::from_millis(BASE_RETRY_DELAY_MS)
-            .max_delay(Duration::from_millis(BASE_RETRY_MAX_DURATION_MS))
-            .take(NUM_RETRIES as usize),
-        || async {
-            let response = match http_client
-                .get(url.clone())
-                .header(RANGE, fetch_term.url_range.range_header())
-                .with_extension(Api("s3::get_range"))
-                .send()
-                .await
-                .map_err(CasClientError::from)
-                .log_error("error downloading range")?
-                .error_for_status()
-            {
-                Ok(response) => response,
-                Err(e) => return match e.status() {
-                    Some(StatusCode::FORBIDDEN) => {
-                        info!("error code {} for hash {hash}, will re-fetch reconstruction", StatusCode::FORBIDDEN,);
-                        Ok(DownloadRangeResult::Forbidden)
-                    },
-                    _ => Err(e.into()),
-                }
-                .log_error("error code"),
-            };
+    // helper to convert a CasObjectError to RetryableReqwestError
+    // only retryable if the error originates from an error from the byte stream from reqwest
+    let parse_map_err = |err: CasObjectError| {
+        let CasObjectError::InternalIOError(cas_object_io_err) = &err else {
+            return RetryableReqwestError::FatalError(CasClientError::CasObjectError(err));
+        };
+        let Some(inner) = cas_object_io_err.get_ref() else {
+            return RetryableReqwestError::FatalError(CasClientError::CasObjectError(err));
+        };
+        // attempt to cast into the reqwest error wrapped by std::io::Error::other
+        let Some(inner_reqwest_err) = inner.downcast_ref::<reqwest::Error>() else {
+            return RetryableReqwestError::FatalError(CasClientError::CasObjectError(err));
+        };
+        // errors that indicate reading the body failed
+        if inner_reqwest_err.is_body()
+            || inner_reqwest_err.is_decode()
+            || inner_reqwest_err.is_timeout()
+            || inner_reqwest_err.is_request()
+        {
+            RetryableReqwestError::RetryableError(CasClientError::CasObjectError(err))
+        } else {
+            RetryableReqwestError::FatalError(CasClientError::CasObjectError(err))
+        }
+    };
 
-            if let Some(content_length) = response.content_length() {
-                let expected_len = fetch_term.url_range.length();
-                if content_length != expected_len {
-                    error!("got back a smaller byte range ({content_length}) than requested ({expected_len}) from s3");
-                    return Err(CasClientError::InvalidRange);
-                }
+    let parse = move |response: Response| async move {
+        if let Some(content_length) = response.content_length() {
+            let expected_len = fetch_term.url_range.length();
+            if content_length != expected_len {
+                error!("got back a smaller byte range ({content_length}) than requested ({expected_len}) from s3");
+                return Err(RetryableReqwestError::FatalError(CasClientError::InvalidRange));
             }
+        }
 
-            let (data, chunk_byte_indices) = cas_object::deserialize_async::deserialize_chunks_from_stream(
-                response.bytes_stream().map_err(std::io::Error::other),
-            )
-            .await?;
-            Ok(DownloadRangeResult::Data(TermDownloadOutput {
-                data,
-                chunk_byte_indices,
-                chunk_range: fetch_term.range,
-            }))
-        },
-        ChunkRangeDeserializeFromBytesStreamRetryCondition,
-    )
-    .await
+        let (data, chunk_byte_indices) = cas_object::deserialize_async::deserialize_chunks_from_stream(
+            response.bytes_stream().map_err(std::io::Error::other),
+        )
+        .await
+        .map_err(parse_map_err)?;
+        Ok(DownloadRangeResult::Data(TermDownloadOutput {
+            data,
+            chunk_byte_indices,
+            chunk_range: fetch_term.range,
+        }))
+    };
+
+    let result = RetryWrapper::new(api_tag)
+        .run_and_extract_custom(
+            move || {
+                http_client
+                    .get(url.clone())
+                    .header(RANGE, fetch_term.url_range.range_header())
+                    .with_extension(Api(api_tag))
+                    .send()
+            },
+            parse,
+        )
+        .await;
+    // in case the error was a 403 Forbidden status code, we raise it up as the special DownloadRangeResult::Forbidden
+    // variant so the fetch info is refetched
+    if result
+        .as_ref()
+        .is_err_and(|e| e.status().is_some_and(|status| status == StatusCode::FORBIDDEN))
+    {
+        return Ok(DownloadRangeResult::Forbidden);
+    }
+    result
 }
 
 #[cfg(test)]
 mod tests {
     use anyhow::Result;
     use cas_types::{HttpRange, QueryReconstructionResponse};
+    use http::header::RANGE;
     use httpmock::prelude::*;
     use tokio::task::JoinSet;
     use tokio::time::sleep;
@@ -769,8 +770,8 @@ mod tests {
         // download task will not return if keep hitting 403
         handle.abort();
 
-        assert!(mock_fi.hits() >= 2);
-        assert!(mock_data.hits() >= 2);
+        assert!(mock_fi.hits() >= 2, "assertion failed: mock_fi.hits() {} >= 2", mock_fi.hits());
+        assert!(mock_data.hits() >= 2, "assertion failed: mock_data.hits() {} >= 2", mock_data.hits());
 
         Ok(())
     }

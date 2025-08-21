@@ -12,3 +12,5 @@ mod global_semaphores;
 pub mod utils;
 
 pub use global_semaphores::GlobalSemaphoreHandle;
+
+pub mod file_handle_limits;

@@ -37,6 +37,7 @@ jobs:
       - name: Lint
         run: |
           cargo clippy -r --verbose -- -D warnings # elevates warnings to errors
+          cargo clippy -r --verbose --manifest-path hf_xet/Cargo.toml -- -D warnings # elevates warnings to errors
       - name: Set up Git environment
         run: |
           git config --global user.name XetTeam

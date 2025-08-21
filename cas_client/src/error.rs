@@ -2,6 +2,7 @@ use std::fmt::Debug;
 use std::num::TryFromIntError;
 
 use anyhow::anyhow;
+use http::StatusCode;
 use merklehash::MerkleHash;
 use thiserror::Error;
 use tokio::sync::mpsc::error::SendError;
@@ -47,12 +48,6 @@ pub enum CasClientError {
     #[error("Parse Error: {0}")]
     ParseError(#[from] url::ParseError),
 
-    #[error("Server Error: {0}")]
-    ServerConnectionError(String),
-
-    #[error("Client Connection Error: {0}")]
-    ClientConnectionError(String),
-
     #[error("ReqwestMiddleware Error: {0}")]
     ReqwestMiddlewareError(#[from] reqwest_middleware::Error),
 
@@ -86,6 +81,16 @@ impl From<reqwest::Error> for CasClientError {
 impl CasClientError {
     pub fn internal<T: Debug>(value: T) -> Self {
         CasClientError::InternalError(anyhow!("{value:?}"))
+    }
+
+    // if this error originates from a received http error code returns Some() with that code
+    // otherwise None
+    pub fn status(&self) -> Option<StatusCode> {
+        match self {
+            CasClientError::ReqwestMiddlewareError(e) => e.status(),
+            CasClientError::ReqwestError(e, _) => e.status(),
+            _ => None,
+        }
     }
 }
 
