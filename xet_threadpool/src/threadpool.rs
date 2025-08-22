@@ -202,6 +202,13 @@ impl ThreadPool {
             format!("{THREADPOOL_THREAD_ID_PREFIX}-{id}")
         };
 
+        let stop_thread = move || {
+            let cur_thread = thread::current();
+            let thread_name = cur_thread.name();
+            let tid = cur_thread.id();
+            info!(pid, thread_name, ?tid, "Stop thread for tokio runtime");
+        };
+
         let start_task = |m: &TaskMeta| {
             let tokio_task_id = m.id();
             let spawn_location = m.spawned_at();
@@ -226,6 +233,7 @@ impl ThreadPool {
         }
         .thread_name_fn(get_thread_name) // thread names will be hf-xet-0, hf-xet-1, etc.
         .on_thread_start(set_threadlocal_reference) // Set the local runtime reference.
+        .on_thread_stop(stop_thread)
         .thread_stack_size(THREADPOOL_STACK_SIZE) // 8MB stack size, default is 2MB
         .enable_all() // enable all features, including IO/Timer/Signal/Reactor
         .on_task_spawn(start_task)

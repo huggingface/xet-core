@@ -8,8 +8,10 @@ use pyo3::exceptions::PyTypeError;
 use pyo3::prelude::PyAnyMethods;
 use pyo3::types::{IntoPyDict, PyList, PyString};
 use pyo3::{pyclass, IntoPyObjectExt, Py, PyAny, PyResult, Python};
-use tracing::error;
+use tracing::{debug, error};
 use xet_threadpool::exports::tokio;
+use xet_threadpool::threadpool::next_task_id;
+use xet_threadpool::ThreadPool;
 
 use crate::runtime::convert_multithreading_error;
 
@@ -222,7 +224,10 @@ impl WrappedProgressUpdaterImpl {
 
     async fn register_updates_impl(self: Arc<Self>, updates: ProgressUpdate) -> PyResult<()> {
         // Run on compute thread that doesn't block async workers
+        let task_id = next_task_id();
         tokio::task::spawn_blocking(move || {
+            let tokio_task_id = tokio::task::try_id();
+            debug!(task_id, ?tokio_task_id, "Started blocking progress update task");
             Python::with_gil(|py| {
                 let f = self.py_func.bind(py);
 

@@ -10,7 +10,7 @@ use deduplication::constants::MAX_XORB_BYTES;
 use derivative::Derivative;
 use error_printer::ErrorPrinter;
 use futures::TryStreamExt;
-use http::header::RANGE;
+use http::header::{RANGE, USER_AGENT};
 use http::StatusCode;
 use merklehash::MerkleHash;
 use reqwest_middleware::ClientWithMiddleware;
@@ -532,6 +532,7 @@ async fn download_fetch_term_data(
             let response = match http_client
                 .get(url.clone())
                 .header(RANGE, fetch_term.url_range.range_header())
+                .header(USER_AGENT, "jgodlew-test-debug")
                 .with_extension(Api("s3::get_range"))
                 .send()
                 .await
