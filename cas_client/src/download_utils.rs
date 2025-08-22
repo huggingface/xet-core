@@ -504,38 +504,14 @@ async fn download_fetch_term_data(
     let api_tag = "s3::get_range";
     let url = Url::parse(fetch_term.url.as_str())?;
 
-    //     tokio_retry::RetryIf::spawn(
-    //         ExponentialBackoff::from_millis(BASE_RETRY_DELAY_MS)
-    //             .max_delay(Duration::from_millis(BASE_RETRY_MAX_DURATION_MS))
-    //             .take(NUM_RETRIES as usize),
-    //         || async {
-    //             let response = match http_client
-    //                 .get(url.clone())
-    //                 .header(RANGE, fetch_term.url_range.range_header())
-    //                 .header(USER_AGENT, "jgodlew-test-debug")
-    //                 .with_extension(Api("s3::get_range"))
-    //                 .send()
-    //                 .await
-    //                 .map_err(CasClientError::from)
-    //                 .log_error("error downloading range")?
-    //                 .error_for_status()
-    //             {
-    //                 Ok(response) => response,
-    //                 Err(e) => return match e.status() {
-    //                     Some(StatusCode::FORBIDDEN) => {
-    //                         info!("error code {} for hash {hash}, will re-fetch reconstruction",
-    // StatusCode::FORBIDDEN,);                         Ok(DownloadRangeResult::Forbidden)
-    //                     },
-    //                     _ => Err(e.into()),
-    //                 }
-    //                 .log_error("error code"),
-    //             };
     // helper to convert a CasObjectError to RetryableReqwestError
     // only retryable if the error originates from an error from the byte stream from reqwest
     let parse_map_err = |err: CasObjectError| {
+        debug!(?err, "got error downloading data");
         let CasObjectError::InternalIOError(cas_object_io_err) = &err else {
             return RetryableReqwestError::FatalError(CasClientError::CasObjectError(err));
         };
+        debug!(?cas_object_io_err, "error is an internal io error");
         let Some(inner) = cas_object_io_err.get_ref() else {
             return RetryableReqwestError::FatalError(CasClientError::CasObjectError(err));
         };
@@ -543,6 +519,7 @@ async fn download_fetch_term_data(
         let Some(inner_reqwest_err) = inner.downcast_ref::<reqwest::Error>() else {
             return RetryableReqwestError::FatalError(CasClientError::CasObjectError(err));
         };
+        debug!(?inner_reqwest_err, "error is reqwest error");
         // errors that indicate reading the body failed
         if inner_reqwest_err.is_body()
             || inner_reqwest_err.is_decode()
