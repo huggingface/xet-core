@@ -78,7 +78,7 @@ impl TestRepo {
     }
 
     pub fn set_config(&self, key: &str, value: &str) -> Result<()> {
-        run_git_captured(&self.repo_path, "config", &["set", key, value])?;
+        run_git_captured(&self.repo_path, "config", &[key, value])?;
 
         Ok(())
     }
