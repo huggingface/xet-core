@@ -44,16 +44,15 @@ jobs:
           git config --global user.email "test@hf.co"
       - name: Test Git credential helper
         run: |
-          env
           git version
           mkdir /tmp/aabbccdd
           cd /tmp/aabbccdd
           git init -b "main"
           git config set credential.helper "store --file ~/.creds"
           cat .git/config
-          echo -n "protocol=http\nhost=localhost:1234\nusername=user\npassword=secr3t\n\n" | git credential approve
+          echo -ne "protocol=http\nhost=localhost:1234\nusername=user\npassword=secr3t\n\n" | git credential approve
           cat ~/.creds
-          echo -n "protocol=http\nhost=localhost:1234\n\n" | git credential fill
+          echo -ne "protocol=http\nhost=localhost:1234\n\n" | git credential fill
       - name: Build and Test
         run: |
           cargo test --verbose --no-fail-fast --features "strict"
