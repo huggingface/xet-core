@@ -45,18 +45,18 @@ At end-of-file, if `start_offset < len(data)`, emit the final chunk `[start_offs
 ### Pseudocode
 
 ```text
-Inputs:
+Inputs: (See above for constant parameters)
   data: byte array
-  MIN_CHUNK_SIZE = 8 * 1024
-  MAX_CHUNK_SIZE = 128 * 1024
-  MASK = 0xffff000000000000
-  TABLE[256]: Array of 256 pseudo-random 64-bit constants
 
 State:
   h = 0
   start_offset = 0 // start of the "current chunk"
 
-for i in 0..len(data):
+if len(data) < MIN_CHUNK_SIZE:
+  emit chunk [0, len(data))
+  done
+
+for i in range(0, len(data)):
   b = data[i]
   h = (h << 1) + TABLE[b]      // 64-bit wrapping
   size = i + 1 - start_offset
