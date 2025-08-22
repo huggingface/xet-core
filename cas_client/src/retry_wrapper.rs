@@ -1,7 +1,7 @@
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
-use reqwest::{Response, StatusCode};
+use reqwest::{Error as ReqwestError, Response, StatusCode};
 use reqwest_retry::{default_on_request_failure, default_on_request_success, Retryable};
 use tokio_retry::strategy::{jitter, ExponentialBackoff};
 use tokio_retry::RetryIf;
@@ -59,7 +59,7 @@ impl RetryWrapper {
     fn process_error_response(&self, try_idx: usize, err: reqwest_middleware::Error) -> RetryableReqwestError {
         let api = &self.api_tag;
 
-        let process_error = |txt, log_as_info| {
+        let process_error = |txt, log_as_info, err: reqwest_middleware::Error| {
             let msg = {
                 if try_idx > 0 {
                     format!("{txt}: {api} api call failed (retry {try_idx}): {err}")
@@ -74,22 +74,21 @@ impl RetryWrapper {
                 error!("{msg}");
             }
 
-            // Turn this into a client connection error
-            CasClientError::ClientConnectionError(msg)
+            CasClientError::from(err)
         };
 
         // Here's the retry logic.
         match default_on_request_failure(&err) {
             Some(Retryable::Fatal) => {
-                let cas_err = process_error("Fatal Client Error", false);
+                let cas_err = process_error("Fatal Client Error", false, err);
                 RetryableReqwestError::FatalError(cas_err)
             },
             Some(Retryable::Transient) => {
-                let cas_err = process_error("Retryable Client Error", true);
+                let cas_err = process_error("Retryable Client Error", true, err);
                 RetryableReqwestError::RetryableError(cas_err)
             },
             None => {
-                let cas_err = process_error("Unknown Client Error", true);
+                let cas_err = process_error("Unknown Client Error", true, err);
                 RetryableReqwestError::FatalError(cas_err)
             },
         }
@@ -107,22 +106,20 @@ impl RetryWrapper {
         let api = &self.api_tag;
 
         // Log the errors and create a message string with the information in it to expose to users.
-        let process_error = |context, err, log_as_info| {
-            let msg = format!("{context}: {api:?} api call failed (request id {request_id}{retry_str}): {err}");
-
+        let process_error = |context, err: ReqwestError, log_as_info| {
             if self.log_errors_as_info || log_as_info {
-                info!("{msg}");
+                info!("{context}: {api:?} api call failed (request id {request_id}{retry_str}): {err}");
             } else {
-                error!("{msg}");
+                error!("{context}: {api:?} api call failed (request id {request_id}{retry_str}): {err}");
             }
-            CasClientError::ServerConnectionError(msg)
+            CasClientError::from(err)
         };
 
         let retriability = default_on_request_success(&resp);
 
         match (resp.error_for_status(), retriability) {
             (Err(e), Some(Retryable::Fatal)) => {
-                let cas_err = process_error("Fatal Server Error", e, false);
+                let cas_err = process_error("Fatal Error", e, false);
                 Err(RetryableReqwestError::FatalError(cas_err))
             },
             (Err(e), Some(Retryable::Transient)) => {
@@ -131,14 +128,14 @@ impl RetryWrapper {
                     let cas_err = process_error("Too Many Requests (retry on 429 disabled)", e, false);
                     Err(RetryableReqwestError::FatalError(cas_err))
                 } else {
-                    let cas_err = process_error("Retryable Server Error", e, true);
+                    let cas_err = process_error("Retryable Error", e, true);
                     Err(RetryableReqwestError::RetryableError(cas_err))
                 }
             },
             (Err(e), None) => {
                 // I don't believe this case should ever happen, but it's an external library
-                // so let's handle it semigracefully.
-                let cas_err = process_error("Unknown Server Error", e, false);
+                // so let's handle it semi-gracefully.
+                let cas_err = process_error("Unknown Error", e, false);
                 Err(RetryableReqwestError::FatalError(cas_err))
             },
 
@@ -155,7 +152,7 @@ impl RetryWrapper {
     ///
     /// The `make_request` function returns a future that resolves to a Result<Response> object as is returned by the
     /// client middleware.  For example, `|| client.clone().get(url).send()` returns a future (as `send()` is async)
-    /// that will then be evaluatated to get the response.
+    /// that will then be evaluated to get the response.
     ///
     /// The process_fn takes a successful response and returns a future that evaluates that response.  A successful
     /// response is defined as the make_request future evaluating to an Ok() result and the enclosed Response having
@@ -238,11 +235,11 @@ impl RetryWrapper {
     ///
     /// The `make_request` function returns a future that resolves to a Result<Response> object as is returned by the
     /// client middleware.  For example, `|| client.clone().get(url).send()` returns a future (as `send()` is async)
-    /// that will then be evaluatated to get the response.
+    /// that will then be evaluated to get the response.
     ///
     /// This functions acts just like the json() function on a client response, but retries the entire connection on
-    /// transient errors.  
-    pub async fn run_and_extract_json<ReqFut, ReqFn, JsonDest>(
+    /// transient errors.
+    pub async fn run_and_extract_json<ReqFn, ReqFut, JsonDest>(
         self,
         make_request: ReqFn,
     ) -> Result<JsonDest, CasClientError>
@@ -278,11 +275,38 @@ impl RetryWrapper {
         .await
     }
 
+    /// Run a connection and process the result as a using the specified function parameter blob,
+    /// retrying on transient errors or on issues parsing the blob with the custom function.
+    ///
+    /// The `make_request` function returns a future that resolves to a Result<Response> object as is returned by the
+    /// client middleware.  For example, `|| client.clone().get(url).send()` returns a future (as `send()` is async)
+    /// that will then be evaluated to get the response.
+    ///
+    /// The `parse` function is a custom parser that takes a Response and returns a future that resolves to
+    /// Result<Dest (your desired output type), ParseErr>. This allows for custom parsing logic beyond simple JSON
+    /// deserialization.
+    ///
+    /// The `map_parse_err` function maps parsing errors to RetryableReqwestError, determining whether parsing
+    /// failures should be treated as fatal or retryable error
+    pub async fn run_and_extract_custom<ReqFn, ReqFut, Parse, ParseFut, Dest>(
+        self,
+        make_request: ReqFn,
+        parse: Parse,
+    ) -> Result<Dest, CasClientError>
+    where
+        ReqFn: Fn() -> ReqFut + Send + 'static,
+        ReqFut: std::future::Future<Output = Result<Response, reqwest_middleware::Error>> + 'static,
+        Parse: Fn(Response) -> ParseFut + Send + Sync + 'static,
+        ParseFut: std::future::Future<Output = Result<Dest, RetryableReqwestError>> + 'static,
+    {
+        self.run_and_process(make_request, parse).await
+    }
+
     /// Run a connection and process the result object, retrying on transient errors.
     ///
     /// The `make_request` function returns a future that resolves to a Result<Response> object as is returned by the
     /// client middleware.  For example, `|| client.clone().get(url).send()` returns a future (as `send()` is async)
-    /// that will then be evaluatated to get the response.
+    /// that will then be evaluated to get the response.
     pub async fn run<ReqFut, ReqFn>(self, make_request: ReqFn) -> Result<Response, CasClientError>
     where
         ReqFn: Fn() -> ReqFut + Send + 'static,
