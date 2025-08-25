@@ -1,4 +1,5 @@
 use std::io::{BufRead, BufReader, Cursor, Write};
+use std::path::Path;
 use std::str::FromStr;
 use std::sync::Arc;
 
@@ -226,21 +227,16 @@ struct GitCredentialHelper {}
 
 impl GitCredentialHelper {
     #[allow(clippy::new_ret_no_self)]
-    pub fn new(host_url: &str) -> Result<Arc<BearerCredentialHelper>> {
-        let hf_token = Self::authenticate(host_url)?;
+    pub fn new(repo_path: impl AsRef<Path>, host_url: &str) -> Result<Arc<BearerCredentialHelper>> {
+        let hf_token = Self::authenticate(repo_path.as_ref(), host_url)?;
 
         Ok(BearerCredentialHelper::new(hf_token, "git"))
     }
 
-    fn authenticate(host_url: &str) -> Result<String> {
-        let mut splits = host_url.split("://");
-        let protocol = splits.next().ok_or_else(|| config_error("remote URL missing scheme"))?;
-        let host = splits.next().ok_or_else(|| config_error("remote URL missing host name"))?;
-
-        let cwd = std::env::current_dir()?;
-        let mut cred_query = run_git_captured_with_input_and_output(&cwd, "credential", &["fill"])?;
+    fn authenticate(repo_path: &Path, host_url: &str) -> Result<String> {
+        let mut cred_query = run_git_captured_with_input_and_output(repo_path, "credential", &["fill"])?;
         let mut writer = cred_query.stdin()?;
-        write!(writer, "protocol={}\nhost={}\n\n", protocol, host)?;
+        write!(writer, "url={host_url}\n\n")?;
         drop(writer);
 
         let (response, _err) = cred_query.wait_with_output()?;
@@ -320,7 +316,7 @@ pub fn get_creds(repo: &GitRepo, remote_url: &GitUrl, operation: Operation) -> R
     }
 
     // 6. check Git credential helper
-    Ok(GitCredentialHelper::new(&derived_host_url)?)
+    Ok(GitCredentialHelper::new(repo.git_path()?, &derived_host_url)?)
 }
 
 #[cfg(test)]
@@ -356,6 +352,7 @@ mod test_access_mode {
 #[cfg(test)]
 mod test_cred_helpers {
     use anyhow::{Ok, Result};
+    use tempfile::NamedTempFile;
 
     use super::*;
     use crate::auth::SSHCredentialHelper;
@@ -397,27 +394,28 @@ mod test_cred_helpers {
     #[test]
     fn test_git_cred_helper() -> Result<()> {
         let test_repo = TestRepo::new("main")?;
-        let scheme = "http";
-        let host = "localhost:1234";
+        let creds_file = NamedTempFile::new()?;
+        let creds_file_path = std::path::absolute(creds_file.path())?;
+        let host_url = "http://localhost:1234";
         let username = "user";
         let password = "secr3t";
 
         // 1. set credential helper to store with a local file
-        test_repo.set_config("credential.helper", "store --file=creds")?;
+        test_repo.set_config("credential.helper", &format!("store --file={}", creds_file_path.to_str().unwrap()))?;
 
         // 2. store a credential
         let mut cred_store = run_git_captured_with_input_and_output(&test_repo.repo_path, "credential", &["approve"])?;
         let mut writer = cred_store.stdin()?;
-        write!(writer, "protocol={scheme}\nhost={host}\nusername={username}\npassword={password}\n\n")?;
+        write!(writer, "url={host_url}\nusername={username}\npassword={password}\n\n")?;
         drop(writer);
         cred_store.wait()?;
 
         // 3. test git credential helper
-        let remote_url = format!("{scheme}://{host}/datasets/test/td");
+        let remote_url = format!("{host_url}/datasets/test/td");
         let parsed_url: GitUrl = remote_url.parse()?;
         let host_url = parsed_url.host_url()?;
 
-        let git_cred_helper = GitCredentialHelper::new(&host_url)?;
+        let git_cred_helper = GitCredentialHelper::new(&test_repo.repo_path, &host_url)?;
         assert_eq!(git_cred_helper.hf_token, password);
 
         Ok(())
@@ -449,19 +447,20 @@ mod test_cred_helpers {
     #[test]
     fn test_cred_helper_selection_git() -> Result<()> {
         // Test get GitCredentialHelper when a credential is cached in git credential helper.
-
         let test_repo = TestRepo::new("main")?;
+        let creds_file = NamedTempFile::new()?;
+        let creds_file_path = std::path::absolute(creds_file.path())?;
 
         // 1. set http remote url
         test_repo.set_remote("origin", &format!("https://huggingface.co/datasets/user/repo"))?;
 
         // 2. set credential helper to store with a local file
-        test_repo.set_config("credential.helper", "store --file=creds")?;
+        test_repo.set_config("credential.helper", &format!("store --file={}", creds_file_path.to_str().unwrap()))?;
 
         // 3. store a credential
         let mut cred_store = run_git_captured_with_input_and_output(&test_repo.repo_path, "credential", &["approve"])?;
         let mut writer = cred_store.stdin()?;
-        write!(writer, "protocol=https\nhost=huggingface.co\nusername=user\npassword=secr3t\n\n")?;
+        write!(writer, "url=https://huggingface.co\nusername=user\npassword=secr3t\n\n")?;
         drop(writer);
         cred_store.wait()?;
 
