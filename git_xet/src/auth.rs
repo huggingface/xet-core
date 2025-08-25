@@ -447,19 +447,20 @@ mod test_cred_helpers {
     #[test]
     fn test_cred_helper_selection_git() -> Result<()> {
         // Test get GitCredentialHelper when a credential is cached in git credential helper.
-
         let test_repo = TestRepo::new("main")?;
+        let creds_file = NamedTempFile::new()?;
+        let creds_file_path = std::path::absolute(creds_file.path())?;
 
         // 1. set http remote url
         test_repo.set_remote("origin", &format!("https://huggingface.co/datasets/user/repo"))?;
 
         // 2. set credential helper to store with a local file
-        test_repo.set_config("credential.helper", "store --file=creds")?;
+        test_repo.set_config("credential.helper", &format!("store --file={}", creds_file_path.to_str().unwrap()))?;
 
         // 3. store a credential
         let mut cred_store = run_git_captured_with_input_and_output(&test_repo.repo_path, "credential", &["approve"])?;
         let mut writer = cred_store.stdin()?;
-        write!(writer, "protocol=https\nhost=huggingface.co\nusername=user\npassword=secr3t\n\n")?;
+        write!(writer, "url=https://huggingface.co\nusername=user\npassword=secr3t\n\n")?;
         drop(writer);
         cred_store.wait()?;
 
