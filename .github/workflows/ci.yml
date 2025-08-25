@@ -60,6 +60,22 @@ jobs:
       - name: Build and Test
         run: |
           cargo test --verbose --no-fail-fast --features "strict"
+  build_and_test-macos:
+    runs-on: macos-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      - name: Install Rust 1.86
+        uses: dtolnay/rust-toolchain@1.86.0
+        with:
+          components: clippy
+      - name: Lint
+        run: |
+          cargo clippy -r --verbose -- -D warnings # elevates warnings to errors
+          cargo clippy -r --verbose --manifest-path hf_xet/Cargo.toml -- -D warnings # elevates warnings to errors
+      - name: Build and Test
+        run: |
+          cargo test --verbose --no-fail-fast --features "strict"
   build_and_test-wasm:
     name: Build WASM
     runs-on: ubuntu-latest
@@ -82,4 +98,3 @@ jobs:
         working-directory: hf_xet_wasm
         run: |
           ./build_wasm.sh
-
