@@ -49,7 +49,7 @@ xet-core enables huggingface_hub to utilize xet storage for uploading and downlo
 * [data](./data): main driver for client operations - FilePointerTranslator drives hydrating or shrinking files, chunking + deduplication here.
 * [error_printer](./error_printer): utility for printing errors conveniently.
 * [file_utils](./file_utils): SafeFileCreator utility, used by chunk_cache.
-* [hf_xet](./hf_xet): Python integration with Rust code, uses maturin to build hfxet Python package. Main integration with HF Hub Python package.
+* [hf_xet](./hf_xet): Python integration with Rust code, uses maturin to build `hf-xet` Python package. Main integration with HF Hub Python package.
 * [mdb_shard](./mdb_shard): Shard operations, including Shard format, dedupe probing, benchmarks, and utilities.
 * [merklehash](./merklehash): MerkleHash type, 256-bit hash, widely used across many crates.
 * [parutils](./parutils): Provides parallel execution utilities relying on Tokio (ex. parallel foreach).
