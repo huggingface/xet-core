@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use git2::{Config, Repository};
@@ -29,6 +29,11 @@ impl GitRepo {
         Ok(Self {
             repo: Arc::new(Mutex::new(raw_repo)),
         })
+    }
+
+    pub fn git_path(&self) -> Result<PathBuf> {
+        let repo = self.repo.lock().map_err(internal)?;
+        Ok(repo.path().to_path_buf())
     }
 
     // Returns the remote that a git push/fetch/pull operation
