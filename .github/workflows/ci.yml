@@ -25,7 +25,7 @@ jobs:
           cargo fmt --manifest-path ./Cargo.toml --all -- --check
           cargo fmt --manifest-path ./hf_xet/Cargo.toml --all -- --check
 
-  build_and_test:
+  build_and_test-linux:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
