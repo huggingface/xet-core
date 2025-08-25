@@ -136,6 +136,18 @@ Here are the recommended steps:
 4. Copy the symbols to the site package path from step 2 above + `hf_xet`. Eg: `cp -r hf_xet-1.1.2-manylinux-x86_64.abi3.so.dbg /home/ubuntu/.venv/lib/python3.12/site-packages/hf_xet`
 5. Run your python binary with `RUST_BACKTRACE=full` and recreate your failure.
 
+### Debugging Environment Variables
+
+To enable logging and see more debugging / diagnostics information, set the following:
+
+```
+RUST_BACKTRACE=full
+RUST_LOG=info
+HF_XET_LOG_FILE=/tmp/xet.log
+```
+
+Note: HF_XET_LOG_FILE expects a full writable path. If one isn't found it will use stdout console for logging.
+
 ## References & History
 
 * [Technical Blog posts](https://xethub.com/)
