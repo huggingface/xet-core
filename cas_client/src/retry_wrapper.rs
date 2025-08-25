@@ -2,7 +2,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use reqwest::{Error as ReqwestError, Response, StatusCode};
-use reqwest_retry::{default_on_request_failure, default_on_request_success, Retryable};
+use reqwest_retry::{default_on_request_success, Retryable};
 use tokio_retry::strategy::{jitter, ExponentialBackoff};
 use tokio_retry::RetryIf;
 use tracing::{error, info};
@@ -78,7 +78,7 @@ impl RetryWrapper {
         };
 
         // Here's the retry logic.
-        match default_on_request_failure(&err) {
+        match on_request_failure(&err) {
             Some(Retryable::Fatal) => {
                 let cas_err = process_error("Fatal Client Error", false, err);
                 RetryableReqwestError::FatalError(cas_err)
@@ -315,6 +315,75 @@ impl RetryWrapper {
         // Just have the process_fn pass through the response.
         self.run_and_process(make_request, |resp| async move { Ok(resp) }).await
     }
+}
+
+/// Like [request_middleware::default_on_request_failure], but retries all IOErrors instead of a
+/// subset. There are a few errors that can occur on certain systems that we will want to retry
+/// (e.g. `No buffer space available: (os error 55)`).
+///
+/// Unfortunately, those errors don't translate to a defined [std::io::ErrorKind], and are thus
+/// not able to be effectively filtered.
+fn on_request_failure(error: &reqwest_middleware::Error) -> Option<Retryable> {
+    match error {
+        // If something fails in the middleware we're screwed.
+        reqwest_middleware::Error::Middleware(_) => Some(Retryable::Fatal),
+        reqwest_middleware::Error::Reqwest(error) => {
+            #[cfg(not(target_arch = "wasm32"))]
+            let is_connect = error.is_connect();
+            #[cfg(target_arch = "wasm32")]
+            let is_connect = false;
+            if error.is_timeout() || is_connect {
+                Some(Retryable::Transient)
+            } else if error.is_body() || error.is_decode() || error.is_builder() || error.is_redirect() {
+                Some(Retryable::Fatal)
+            } else if error.is_request() {
+                // It seems that hyper::Error(IncompleteMessage) is not correctly handled by reqwest.
+                // Here we check if the Reqwest error was originated by hyper and map it consistently.
+                #[cfg(not(target_arch = "wasm32"))]
+                if let Some(hyper_error) = get_source_error_type::<hyper::Error>(&error) {
+                    // The hyper::Error(IncompleteMessage) is raised if the HTTP response is well formatted but does not
+                    // contain all the bytes. This can happen when the server has started sending
+                    // back the response but the connection is cut halfway through. We can safely
+                    // retry the call, hence marking this error as [`Retryable::Transient`]. Instead
+                    // hyper::Error(Canceled) is raised when the connection is gracefully closed on
+                    // the server side.
+                    let is_io_error = get_source_error_type::<std::io::Error>(hyper_error).is_some();
+                    if hyper_error.is_incomplete_message() || hyper_error.is_canceled() || is_io_error {
+                        Some(Retryable::Transient)
+                    } else {
+                        Some(Retryable::Fatal)
+                    }
+                } else {
+                    Some(Retryable::Fatal)
+                }
+                #[cfg(target_arch = "wasm32")]
+                Some(Retryable::Fatal)
+            } else {
+                // We omit checking if error.is_status() since we check that already.
+                // However, if Response::error_for_status is used the status will still
+                // remain in the response object.
+                None
+            }
+        },
+    }
+}
+
+/// Downcasts the given err source into T.
+///
+/// Note: copied from [request_middleware::get_source_error_type] since that is not
+/// publicly exported.
+#[cfg(not(target_arch = "wasm32"))]
+fn get_source_error_type<T: std::error::Error + 'static>(err: &dyn std::error::Error) -> Option<&T> {
+    let mut source = err.source();
+
+    while let Some(err) = source {
+        if let Some(err) = err.downcast_ref::<T>() {
+            return Some(err);
+        }
+
+        source = err.source();
+    }
+    None
 }
 
 #[cfg(test)]
