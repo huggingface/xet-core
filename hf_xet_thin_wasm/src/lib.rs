@@ -136,3 +136,29 @@ pub fn compute_hmac(hash_hex: &str, hmac_key_hex: &str) -> Result<String, JsValu
     let hmac_result = hash.hmac(hmac_key.into());
     Ok(hmac_result.hex())
 }
+
+/// Compresses data using LZ4 compression
+#[wasm_bindgen]
+pub fn lz4_compress(data: Vec<u8>) -> Result<Vec<u8>, JsValue> {
+    use lz4_flex::frame::FrameEncoder;
+    use std::io::Write;
+    
+    let mut enc = FrameEncoder::new(Vec::new());
+    enc.write_all(&data)
+        .map_err(|e| JsValue::from(format!("LZ4 compression write failed: {}", e)))?;
+    enc.finish()
+        .map_err(|e| JsValue::from(format!("LZ4 compression finish failed: {}", e)))
+}
+
+/// Decompresses LZ4 compressed data  
+#[wasm_bindgen]
+pub fn lz4_decompress(compressed_data: Vec<u8>) -> Result<Vec<u8>, JsValue> {
+    use lz4_flex::frame::FrameDecoder;
+    use std::io::{copy, Cursor};
+    
+    let mut dest = Vec::new();
+    let mut dec = FrameDecoder::new(Cursor::new(compressed_data));
+    copy(&mut dec, &mut dest)
+        .map_err(|e| JsValue::from(format!("LZ4 decompression failed: {}", e)))?;
+    Ok(dest)
+}
