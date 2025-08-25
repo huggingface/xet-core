@@ -12,6 +12,7 @@ use crate::constants::{
 };
 use crate::errors::*;
 use crate::git_repo::GitRepo;
+use crate::git_url::GitUrl;
 
 pub struct HubClient {
     endpoint: String,
@@ -81,8 +82,17 @@ pub struct HubClientTokenRefresher {
 }
 
 impl HubClientTokenRefresher {
-    pub fn new(repo: &GitRepo, token_endpoint: Option<String>, operation: Operation, session_id: &str) -> Result<Self> {
-        let remote_url = repo.remote_url()?;
+    pub fn new(
+        repo: &GitRepo,
+        remote_url: Option<GitUrl>,
+        token_endpoint: Option<String>,
+        operation: Operation,
+        session_id: &str,
+    ) -> Result<Self> {
+        let remote_url = match remote_url {
+            Some(r) => r,
+            None => repo.remote_url()?,
+        };
         let repo_info = remote_url.repo_info()?;
 
         let endpoint = match token_endpoint {

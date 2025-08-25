@@ -1,4 +1,5 @@
 use std::io::Write;
+use std::str::FromStr;
 use std::sync::{Arc, OnceLock};
 
 use async_trait::async_trait;
@@ -12,7 +13,7 @@ use crate::constants::{
 };
 use crate::errors::{GitXetError, Result, internal, not_supported};
 use crate::git_repo::GitRepo;
-use crate::git_url::Scheme;
+use crate::git_url::{GitUrl, Scheme};
 use crate::hub_client::HubClientTokenRefresher;
 use crate::lfs_agent_protocol::errors::bad_syntax;
 use crate::lfs_agent_protocol::*;
@@ -31,13 +32,20 @@ impl<W: Write + Send + Sync + 'static> TrackingProgressUpdater for XetProgressUp
 #[derive(Default)]
 pub struct XetAgent {
     repo: OnceLock<GitRepo>,
+    remote_url: Option<GitUrl>,
     hf_endpoint: Option<String>,
 }
 
 impl TransferAgent for XetAgent {
-    async fn init_upload(&mut self, _: &InitRequestInner) -> Result<()> {
+    async fn init_upload(&mut self, req: &InitRequestInner) -> Result<()> {
         let repo = GitRepo::open_from_cur_dir()?;
-        let remote_url = repo.remote_url()?;
+        let remote_url = match repo.remote_name_to_url(&req.remote) {
+            Ok(url) => url, // the provided `remote` is a remote name
+            Err(_) => {
+                // the provided `remote` is likely a remote URL, try parse it
+                GitUrl::from_str(&req.remote)?
+            },
+        };
 
         let hf_endpoint = if !matches!(remote_url.scheme(), Scheme::Http | Scheme::Https) && remote_url.port().is_some()
         {
@@ -57,7 +65,7 @@ impl TransferAgent for XetAgent {
         };
 
         self.repo.get_or_init(|| repo);
-
+        self.remote_url = Some(remote_url);
         self.hf_endpoint = hf_endpoint;
 
         Ok(())
@@ -95,7 +103,13 @@ impl TransferAgent for XetAgent {
         let token = req.action.header[XET_ACCESS_TOKEN_HEADER].clone();
         let token_expiry: u64 = req.action.header[XET_TOKEN_EXPIRATION_HEADER].parse().map_err(internal)?;
         let repo = self.repo.get().unwrap(); // protocol state guarantees self.repo is set.
-        let token_refresher = HubClientTokenRefresher::new(repo, self.hf_endpoint.clone(), Operation::Upload, "")?;
+        let token_refresher = HubClientTokenRefresher::new(
+            repo,
+            self.remote_url.clone(),
+            self.hf_endpoint.clone(),
+            Operation::Upload,
+            "",
+        )?;
         let config = advanced_config(
             cas_url,
             None,
