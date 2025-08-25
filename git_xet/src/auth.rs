@@ -351,8 +351,10 @@ mod test_access_mode {
 
 #[cfg(test)]
 mod test_cred_helpers {
-    use anyhow::{Ok, Result};
+    use anyhow::Result;
+    use serial_test::serial;
     use tempfile::NamedTempFile;
+    use utils::EnvVarGuard;
 
     use super::*;
     use crate::auth::SSHCredentialHelper;
@@ -445,6 +447,7 @@ mod test_cred_helpers {
     }
 
     #[test]
+    #[serial(env_var_write_read)]
     fn test_cred_helper_selection_git() -> Result<()> {
         // Test get GitCredentialHelper when a credential is cached in git credential helper.
         let test_repo = TestRepo::new("main")?;
@@ -452,7 +455,7 @@ mod test_cred_helpers {
         let creds_file_path = std::path::absolute(creds_file.path())?;
 
         // 1. set http remote url
-        test_repo.set_remote("origin", &format!("https://huggingface.co/datasets/user/repo"))?;
+        test_repo.set_remote("origin", "https://huggingface.co/datasets/user/repo")?;
 
         // 2. set credential helper to store with a local file
         test_repo.set_config("credential.helper", &format!("store --file={}", creds_file_path.to_str().unwrap()))?;
@@ -471,6 +474,118 @@ mod test_cred_helpers {
 
         let cred_helper = get_creds(&repo, &remote_url, operation)?;
         assert_eq!(cred_helper.whoami(), "git");
+
+        Ok(())
+    }
+
+    #[test]
+    #[serial(env_var_write_read)]
+    fn test_cred_helper_selection_ssh() -> Result<()> {
+        // Test get SSHCredentialHelper when the Git remote URL has SSH scheme.
+        let test_repo = TestRepo::new("main")?;
+
+        // 1. set ssh remote url
+        test_repo.set_remote("origin", "git@hf.co:user/model-A")?;
+
+        // 2. test
+        let repo = GitRepo::open(&test_repo.repo_path)?;
+        let remote_url = repo.remote_url()?;
+        let operation = Operation::Upload;
+
+        let cred_helper = get_creds(&repo, &remote_url, operation)?;
+        assert_eq!(cred_helper.whoami(), "ssh");
+
+        Ok(())
+    }
+
+    #[test]
+    #[serial(env_var_write_read)]
+    fn test_cred_helper_selection_netrc() -> Result<()> {
+        // Test get credential from a Netrc configuration when there's a host match.
+        let test_repo = TestRepo::new("main")?;
+        let netrc_file = NamedTempFile::new()?;
+        let netrc_file_path = netrc_file.path();
+
+        // 1. set http remote url
+        test_repo.set_remote("origin", "https://huggingface.co/user/repo")?;
+
+        // 2. store a credential in a Netrc file.
+        let _env_guard = EnvVarGuard::set("NETRC", netrc_file_path);
+        std::fs::write(netrc_file_path, "machine huggingface.co login user password secr3t")?;
+
+        // 3. test
+        let repo = GitRepo::open(&test_repo.repo_path)?;
+        let remote_url = repo.remote_url()?;
+        let operation = Operation::Upload;
+
+        let cred_helper = get_creds(&repo, &remote_url, operation)?;
+        assert_eq!(cred_helper.whoami(), "netrc");
+
+        Ok(())
+    }
+
+    #[test]
+    #[serial(env_var_write_read)]
+    fn test_cred_helper_selection_env() -> Result<()> {
+        // Test get credential from env var "HF_TOKEN".
+        let test_repo = TestRepo::new("main")?;
+
+        // 1. set http remote url
+        test_repo.set_remote("origin", "https://huggingface.co/user/repo")?;
+
+        // 2. set env var token
+        let _env_guard = EnvVarGuard::set(HF_TOKEN_ENV, "hf_abcde");
+
+        // 3. test
+        let repo = GitRepo::open(&test_repo.repo_path)?;
+        let remote_url = repo.remote_url()?;
+        let operation = Operation::Upload;
+
+        let cred_helper = get_creds(&repo, &remote_url, operation)?;
+        assert_eq!(cred_helper.whoami(), "env");
+
+        Ok(())
+    }
+
+    #[test]
+    #[serial(env_var_write_read)]
+    fn test_cred_helper_selection_url() -> Result<()> {
+        // Test get embedded credential from Git remote URL.
+        let test_repo = TestRepo::new("main")?;
+
+        // 1. set http remote url
+        test_repo.set_remote("origin", "https://user:hf_token@hf.co/user/repo")?;
+
+        // 2. test
+        let repo = GitRepo::open(&test_repo.repo_path)?;
+        let remote_url = repo.remote_url()?;
+        let operation = Operation::Upload;
+
+        let cred_helper = get_creds(&repo, &remote_url, operation)?;
+        assert_eq!(cred_helper.whoami(), "url");
+
+        Ok(())
+    }
+
+    #[test]
+    #[serial(env_var_write_read)]
+    fn test_cred_helper_selection_noop() -> Result<()> {
+        // Test get NoopCredentialHelper when there's no need for credential.
+        let test_repo = TestRepo::new("main")?;
+
+        // 1. set http remote url
+        test_repo.set_remote("origin", "https://huggingface.co/user/repo")?;
+
+        // 2. set access mode to "none"
+        test_repo.set_config(&format!("lfs.{}.access", "https://huggingface.co/user/repo.git/info/lfs"), "none")?;
+
+        // 3. test
+        let repo = GitRepo::open(&test_repo.repo_path)?;
+        let remote_url = repo.remote_url()?;
+        let operation = Operation::Upload;
+
+        let cred_helper = get_creds(&repo, &remote_url, operation)?;
+        assert_eq!(cred_helper.whoami(), "noop");
 
         Ok(())
     }
