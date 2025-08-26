@@ -252,7 +252,7 @@ pub fn find_partitions<R: Read + Seek>(
     assert!(min_partition_size > 0);
     let mut partitions: Vec<usize> = Vec::new();
     partitions.push(0);
-    // minumum chunk must be at least the hash window size.
+    // minimum chunk must be at least the hash window size.
     // the way the chunker works, the minimum may be up to
     // target_min_chunk_size - 64
     let minimum_chunk = target_chunk_size / *MINIMUM_CHUNK_DIVISOR;
