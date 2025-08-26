@@ -8,7 +8,7 @@ To authenticate, authorize, and obtain the API base URL, follow the instructions
 
 ## Converting Hashes to Strings
 
-Sometimes hashes are used in API paths as hexadecimal strings (xorb upload, global dedupe API).
+Sometimes hashes are used in API paths as hexadecimal strings (reconstruction, xorb upload, global dedupe API).
 
 To convert a 32 hash to a 64 hexadecimal character string to be used as part of an API path there is a specific procedure, do not directly convert each byte.
 
@@ -37,7 +37,7 @@ It is: `07060504030201000f0e0d0c0b0a0908171615141312111f1e1d1c1b1a1918`.
 - **Path**: `/v1/reconstructions/{file_id}`
 - **Method**: `GET`
 - **Parameters**:
-  - `file_id`: MerkleHash in hex format (64 lowercase hexadecimal characters).
+  - `file_id`: MerkleHash in hex format (64 lowercase hexadecimal characters). See [file hashes](../spec/hashing.md#file-hashes) for computing the file hash and [converting hashes to strings](../spec/api.md#converting-hashes-to-strings).
 - **Headers**:
   - `Range`: Optional. Format: `bytes={start}-{end}` (end is inclusive).
 - **Minimum Token Scope**: `read`
@@ -65,7 +65,7 @@ It is: `07060504030201000f0e0d0c0b0a0908171615141312111f1e1d1c1b1a1918`.
 - **Method**: `GET`
 - **Parameters**:
   - `prefix`: The only acceptable prefix for the Global Deduplication API is `default-merkledb`.
-  - `hash`: Chunk hash in hex format (64 lowercase hexadecimal characters). See [Chunk Hashes](./hashing.md#chunk-hashes).
+  - `hash`: Chunk hash in hex format (64 lowercase hexadecimal characters). See [Chunk Hashes](../spec/hashing.md#chunk-hashes) to compute the chunk hash and [converting hashes to strings](../spec/api.md#converting-hashes-to-strings).
 - **Minimum Token Scope**: `read`
 - **Body**: None.
 - **Response**: Shard format bytes (`application/octet-stream`), deserialize as a [shard](../spec/shard.md).
@@ -76,12 +76,12 @@ It is: `07060504030201000f0e0d0c0b0a0908171615141312111f1e1d1c1b1a1918`.
 
 ### 3. Upload Xorb
 
-- **Description**: Uploads a serialized Xorb to the server with progress tracking. See [Xorb Hashes](./hashing.md#xorb-hashes).
+- **Description**: Uploads a serialized Xorb to the server with progress tracking. See [Xorb Hashes](../spec/hashing.md#xorb-hashes).
 - **Path**: `/v1/xorbs/{prefix}/{hash}`
 - **Method**: `POST`
 - **Parameters**:
   - `prefix`: The only acceptable prefix for the Xorb upload API is `default`.
-  - `hash`: MerkleHash in hex format. See [Xorb Hashes](./hashing.md#xorb-hashes).
+  - `hash`: MerkleHash in hex format. See [Xorb Hashes](../spec/hashing.md#xorb-hashes) to compute the hash, and [converting hashes to strings](../spec/api.md#converting-hashes-to-strings).
 - **Minimum Token Scope**: `write`
 - **Body**: Serialized Xorb bytes (`application/octet-stream`). See [xorb format](../spec/xorb.md).
 - **Response**: JSON (`UploadXorbResponse`)

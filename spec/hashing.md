@@ -83,7 +83,8 @@ def internal_hash_function(node):
 
 After chunking a whole file, to compute the file hash, follow the same procedure used to compute the xorb hash and then take that final hash as data to compute a blake3 keyed hash with a key that is all 0's.
 
-This means create a MerkleTree using the same hashing functions described in the previous section. Then take the root node's hash and compute a blake3 keyed hash with the key being 32 0-value bytes.
+This means create a MerkleTree using the same hashing functions described in the previous section.
+Then take the root node's hash and compute a blake3 keyed hash with the key being 32 0-value bytes.
 
 ## Term Verification Hashes
 
