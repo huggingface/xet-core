@@ -1,6 +1,8 @@
 # Xet Protocol Specification
 
-This specification defines the end-to-end Xet protocol for content-addressed data: chunking and hashing rules, deduplication strategy, xorb and shard object formats, file reconstruction semantics, authentication, and the CAS APIs for upload and download. Its goal is interoperability and determinism: independent implementations must produce the same hashes, objects, and API behavior so data written by one client can be read by another with integrity and performance. Implementors can create their own clients, SDKs, and tools that speak the Xet protocol and interface with the CAS service, as long as they adhere to the requirements defined here.
+This specification defines the end-to-end Xet protocol for content-addressed data: chunking and hashing rules, deduplication strategy, xorb and shard object formats, file reconstruction semantics, authentication, and the CAS APIs for upload and download.
+Its goal is interoperability and determinism: independent implementations must produce the same hashes, objects, and API behavior so data written by one client can be read by another with integrity and performance.
+Implementors can create their own clients, SDKs, and tools that speak the Xet protocol and interface with the CAS service, as long as they adhere to the requirements defined here.
 
 ## Protocol Overviews
 
