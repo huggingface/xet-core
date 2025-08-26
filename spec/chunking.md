@@ -75,8 +75,7 @@ if start_offset < len(data):
 
 ### Boundary probability and mask selection
 
-- With 16 one-bits in `MASK`, the probability a random 64-bit `h` matches is `1 / 2^16`, yielding an average of 64 KiB between matches.
-- Placing the one-bits in MSBs or LSBs (or random) yields the same probability; we use MSB placement (`0xffff000000000000`).
+Given that MASK has 16 one-bits, for a random 64-bit hash h, the chance that all those 16 bits are zero is 1 / 2^16. On average, that means you’ll see a match about once every 64 KiB.
 
 ### Properties
 

@@ -1,4 +1,4 @@
-# Xorb Formation
+# Xorb Formation & Serialization Format
 
 ## Collecting Chunks
 

@@ -13,7 +13,7 @@ This document describes how a file can be represented and reconstructed from a c
 ## Core Idea
 
 After following the [chunking procedure](../spec/chunking.md) a file can be represented as an ordering of chunks.
-Those chunks are then packed into [xorbs](../spec/xorb_formation.md) and given the set of xorbs we convert the file representation to "reconstruction" made up of "terms".
+Those chunks are then packed into [xorbs](../spec/xorb.md) and given the set of xorbs we convert the file representation to "reconstruction" made up of "terms".
 When forming xorbs the ordering and grouping of chunks prioritizes contiguous runs of chunks that appear in a file such that when referencing a xorb we maximize the term range length.
 
 Any file’s raw bytes can be described as the concatenation of data produced by a sequence of terms.

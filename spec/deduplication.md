@@ -140,7 +140,7 @@ Each chunk has its content hashed using a cryptographic hash function (Blake3-ba
 
 ### Xorb Formation
 
-When new chunks need to be stored, they are aggregated into xorbs based on size and count limits. If adding a new chunk would exceed the maximum xorb size or chunk count, the current xorb is finalized and uploaded. [See section about xorb formation](../xorb_formation.md)
+When new chunks need to be stored, they are aggregated into xorbs based on size and count limits. If adding a new chunk would exceed the maximum xorb size or chunk count, the current xorb is finalized and uploaded. [See section about xorb formation](../xorb.md)
 
 ### File Reconstruction Information
 

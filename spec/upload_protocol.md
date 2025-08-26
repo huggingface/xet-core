@@ -23,7 +23,7 @@ Content addressing uses hashes as stable keys for deduplication and integrity ve
 
 ### 4. Xorb formation
 
-    - Contiguous runs of chunks are collected into xorbs (roughly 64 MiB total length per xorb), preserving order within each run. See formation rules: [xorb_formation.md](../spec/xorb_formation.md#collecting-chunks).
+    - Contiguous runs of chunks are collected into xorbs (roughly 64 MiB total length per xorb), preserving order within each run. See formation rules: [xorb.md](../spec/xorb.md#collecting-chunks).
 
 ### 5. Xorb hashing
 
@@ -31,7 +31,7 @@ Content addressing uses hashes as stable keys for deduplication and integrity ve
 
 ### 6. Xorb serialization
 
-    - Each xorb is serialized into its binary representation as defined by the xorb format. See: [xorb_formation.md](../spec/xorb_formation.md).
+    - Each xorb is serialized into its binary representation as defined by the xorb format. See: [xorb.md](../spec/xorb.md).
 
 ### 7. Xorb upload
 
