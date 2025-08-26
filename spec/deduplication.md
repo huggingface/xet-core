@@ -162,8 +162,10 @@ This information allows the system to reconstruct files by:
 ## Fragmentation Prevention
 
 While deduplication is valuable for saving space, doing it too aggressively can cause file fragmentation—meaning a file’s chunks end up scattered across many different xorbs. This can make reading files slower and less efficient.
-To avoid this, Xet aims to keep long, continuous runs of chunks together in the same xorb whenever possible. Instead of always deduplicating every possible chunk, the system sometimes chooses to reference a straight run of chunks in a single xorb, even if it means skipping deduplication for a few chunks.
+To avoid this, in xet-core we aim (and encourage implementors) to keep long, continuous runs of chunks together in the same xorb whenever possible.
+Instead of always deduplicating every possible chunk, the system sometimes chooses to reference a straight run of chunks in a single xorb, even if it means skipping deduplication for a few chunks.
 This approach balances the benefits of deduplication with the need to keep files easy and fast to read.
+Consider for example referencing a deduplicated chunks in a minimum run of chunks (e.g. at least 8 chunks) or targeting an average term length >= 1MB.
 
 ## Conclusion
 

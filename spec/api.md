@@ -6,6 +6,29 @@ This document describes the HTTP API endpoints used by the CAS (Content Addressa
 
 To authenticate, authorize, and obtain the API base URL, follow the instructions in [Authentication](./auth.md).
 
+## Converting Hashes to Strings
+
+Sometimes hashes are used in API paths as hexadecimal strings (xorb upload, global dedupe API).
+
+To convert a 32 hash to a 64 hexadecimal character string to be used as part of an API path there is a specific procedure, do not directly convert each byte.
+
+### Procedure
+
+For every 8 bytes in the hash (indices 0-7, 8-15, 16-23, 24-31) reverse the order of each byte in those regions then concatenate the regions back in order.
+
+Otherwise stated, consider each 8 byte part of a hash as a little endian 64 bit unsigned integer, then concatenate the hexadecimal representation of the 4 numbers in order (each padded with 0's to 16 characters).
+
+### Example
+
+Suppose a hash value is:
+`[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31]`
+
+Then before converting to a string it will first have its bytes reordered to:
+`[7, 6, 5, 4, 3, 2, 1, 0, 15, 14, 13, 12, 11, 10, 9, 8, 23, 22, 21, 20, 19, 18, 17, 16, 31, 30, 29, 28, 27, 26, 25, 24]`
+
+So the string value of the the provided hash [0..32] is **NOT** `000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f`.
+It is: `07060504030201000f0e0d0c0b0a0908171615141312111f1e1d1c1b1a1918`.
+
 ## Endpoints
 
 ### 1. Get File Reconstruction
@@ -45,7 +68,7 @@ To authenticate, authorize, and obtain the API base URL, follow the instructions
   - `hash`: Chunk hash in hex format (64 lowercase hexadecimal characters). See [Chunk Hashes](./hashing.md#chunk-hashes).
 - **Minimum Token Scope**: `read`
 - **Body**: None.
-- **Response**: Raw bytes in Shard format (chunk data, if it exists).
+- **Response**: Shard format bytes (`application/octet-stream`), deserialize as a [shard](../spec/shard.md).
 - **Error Responses**: See [Error Cases](../spec/api.md#error-cases)
   - `400 Bad Request`: Malformed hash in the path. Fix the path before retrying.
   - `401 Unauthorized`: Refresh the token to continue making requests, or provide a token in the `Authorization` header.
@@ -60,7 +83,7 @@ To authenticate, authorize, and obtain the API base URL, follow the instructions
   - `prefix`: The only acceptable prefix for the Xorb upload API is `default`.
   - `hash`: MerkleHash in hex format. See [Xorb Hashes](./hashing.md#xorb-hashes).
 - **Minimum Token Scope**: `write`
-- **Body**: Serialized Xorb bytes.
+- **Body**: Serialized Xorb bytes (`application/octet-stream`). See [xorb format](../spec/xorb.md).
 - **Response**: JSON (`UploadXorbResponse`)
 
 ```json
@@ -82,7 +105,7 @@ To authenticate, authorize, and obtain the API base URL, follow the instructions
 - **Path**: `/v1/shards`
 - **Method**: `POST`
 - **Minimum Token Scope**: `write`
-- **Body**: Raw bytes (Shard data). See [Shard](./shard.md).
+- **Body**: Serialized Shard data as bytes (`application/octet-stream`). See [Shard](./shard.md).
 - **Response**: JSON (`UploadShardResponse`)
 
 ```json
