@@ -17,7 +17,7 @@ maintainers = [
 ]
 license = "Apache-2.0"
 license-file = "LICENSE"
-readme = "../README.md"
+readme = "README.md"
 classifiers = [
     "License :: OSI Approved :: Apache Software License",
     "Programming Language :: Rust",

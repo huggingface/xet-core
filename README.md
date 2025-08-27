@@ -16,7 +16,7 @@ limitations under the License.
 <p align="center">
     <a href="https://github.com/huggingface/xet-core/blob/main/LICENSE"><img alt="License" src="https://img.shields.io/github/license/huggingface/xet-core.svg?color=blue"></a>
     <a href="https://github.com/huggingface/xet-core/releases"><img alt="GitHub release" src="https://img.shields.io/github/release/huggingface/xet-core.svg"></a>
-    <a href="https://github.com/huggingface/smolagents/blob/main/CODE_OF_CONDUCT.md"><img alt="Contributor Covenant" src="https://img.shields.io/badge/Contributor%20Covenant-v2.0%20adopted-ff69b4.svg"></a>
+    <a href="https://github.com/huggingface/xet-core/blob/main/CODE_OF_CONDUCT.md"><img alt="Contributor Covenant" src="https://img.shields.io/badge/Contributor%20Covenant-v2.0%20adopted-ff69b4.svg"></a>
 </p>
 
 <h3 align="center">
@@ -98,9 +98,33 @@ cargo +nightly fmt --manifest-path ./Cargo.toml --all
 6. Test: 
 ```
 ipython
-import hfxet 
+import hf_xet as hfxet
 hfxet.upload_files()
 hfxet.download_files()
+```
+
+#### Developing with tokio console
+
+> Prerequisite is installing tokio-console (`cargo install tokio-console`). See [https://github.com/tokio-rs/console](https://github.com/tokio-rs/console)
+
+To use tokio-console with hf-xet there are compile hf_xet with the following command:
+```sh
+RUSTFLAGS="--cfg tokio_unstable" maturin develop -r --features tokio-console
+```
+
+Then while hf_xet is running (via a `hf` cli command or `huggingface_hub` python code), `tokio-console` will be able to connect.
+
+### Ex.
+
+```bash
+# In one terminal:
+pip install huggingface_hub
+RUSTFLAGS="--cfg tokio_unstable" maturin develop -r --features tokio-console
+hf download openai/gpt-oss-20b
+
+# In another terminal
+cargo install tokio-console
+tokio-console
 ```
 
 #### Building universal whl for MacOS:
