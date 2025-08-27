@@ -2,7 +2,10 @@
 
 ## Overview
 
-The MDB (Merkle Database) shard file format is a binary format used to store file metadata and content-addressable storage (CAS) information for efficient deduplication and retrieval. This document describes the binary layout and deserialization process for the shard format.
+The MDB (Merkle Database) shard file format is a binary format used to store file metadata and content-addressable storage (CAS) information for efficient deduplication and retrieval.
+This document describes the binary layout and deserialization process for the shard format.
+Implementors of the xet protocol will need to use the shard format when implementing the [upload protocol](../spec/upload_protocol.md).
+The shard format is used on the shard upload (record files) and global deduplication APIs.
 
 ## Use As API Request and Response Bodies
 
@@ -11,16 +14,17 @@ The shard format is used in the shard upload API as the request payload and in t
 ### Shard Upload
 
 The shard in this case is a serialization format that allows clients to denote the files that they are uploading.
-Each file reconstruction maps to an item in the File Info section.
-Additionally the listing of all new xorbs that the client created are mapped to items in the CAS Info section so that they may be deduplicated against in the future.
+Each file reconstruction maps to an File Info block in the File Info section.
+Additionally the listing of all new xorbs that the client created are mapped to items (CAS Info blocks) in the CAS Info section so that they may be deduplicated against in the future.
 
-When uploading a shard the footer section may be omitted.
+When uploading a shard the footer section should be omitted.
 
 ### Global Deduplication
 
 Shards returned by the Global Deduplication API have an empty File Info Section, and only contain relevant information in the CAS Info section.
-The CAS Info section returned by this API contains xorbs, where some xorb contains the chunk that was queried.
-Clients can deduplicate their content against the other xorbs in the CAS Info section of the returned shard. Other xorbs returned in a shard are possibly more likely to reference content that the client has.
+The CAS Info section returned by this API contains xorbs, where a xorb described in the CAS Info section contains the chunk that was queried.
+Clients can deduplicate their content against any of the other xorbs described in any CAS Info block in the CAS Info section of the returned shard.
+Other xorb descriptions returned in a shard are possibly more likely to reference content that the client has.
 
 ## File Structure
 
@@ -51,7 +55,7 @@ Offset footer.file_info_offset:
 │                                                       │
 │              File Info Section                        │ ← Variable size
 │            (Multiple file blocks +                    │
-│             bookend entry)                            │
+│               bookend entry)                          │
 │                                                       │
 └───────────────────────────────────────────────────────┘
 
@@ -60,13 +64,13 @@ Offset footer.cas_info_offset:
 │                                                       │
 │               CAS Info Section                        │ ← Variable size
 │            (Multiple CAS blocks +                     │
-│             bookend entry)                            │
+│               bookend entry)                          │
 │                                                       │
 └───────────────────────────────────────────────────────┘
 
 Offset footer.footer_offset:
 ┌───────────────────────────────────────────────────────┐
-│                Footer (200 bytes)                     │ ← Fixed size
+│         Footer (200 bytes, sometimes omitted)         │ ← Fixed size
 └───────────────────────────────────────────────────────┘
 ```
 
@@ -83,10 +87,10 @@ Offset footer.footer_offset:
 All multi-byte integers are stored in little-endian format.
 
 - `u8`: 8-bit unsigned integer
-- `u32`: 32-bit unsigned integer  
+- `u32`: 32-bit unsigned integer
 - `u64`: 64-bit unsigned integer
-- Byte Array types are denoted like in rust as [u8; N] where N is the number of bytes.
-- Hash: 32-byte hash value
+- Byte Array types are denoted like in rust as `[u8; N]` where `N` is the number of bytes in the array.
+- Hash: 32-byte hash value, a special `[u8; 32]`
 
 ## 1. Header (MDBShardFileHeader)
 
@@ -97,7 +101,7 @@ All multi-byte integers are stored in little-endian format.
 struct MDBShardFileHeader {
     tag: [u8; 32],           // Magic number identifier
     version: u64,            // Header version (must be 2)
-    footer_size: u64,        // Size of footer in bytes
+    footer_size: u64,        // Size of footer in bytes, set to 0 if footer is omitted
 }
 ```
 
@@ -119,11 +123,20 @@ struct MDBShardFileHeader {
 4. Verify version equals 2
 5. Read 8 bytes for footer_size (u64)
 
+> when serializing, footer_size should be the number of bytes that make up the footer, or 0 if the footer is omitted.
+
 ## 2. File Info Section
 
 **Location**: `footer.file_info_offset` to `footer.cas_info_offset` or directly after the header
 
-This section contains a sequence of 0 or more file information blocks, each consisting at least a header and data sequence entries, and optionally verification and additional metadata. The file info section ends when reaching the bookend entry.
+This section contains a sequence of 0 or more file information (File Info) blocks, each consisting at least a header and at least 1 data sequence entry, and optionally verification entries and metadata extension section.
+The file info section ends when reaching the bookend entry.
+
+Each File Info block within the overall section is a serialization of a [file reconstruction](../spec/file_reconstruction.md) into a binary format.
+For each file, there is a `FileDataSequenceHeader` and for each term a `FileDataSequenceEntry` with optionally a matching `FileVerificationEntry` and also optionally at the end a `FileMetadataExt`.
+
+A shard File Info section can contain more than 1 File Info block in series, after completing reading all the content for 1 file description, the next one immediately begins.
+If when reading the header of the next section a reader encounters the bookend entry that means the file info section is over; you have read the last file description in this shard.
 
 ### File Info Section Layout
 
@@ -181,7 +194,7 @@ This section contains a sequence of 0 or more file information blocks, each cons
 
 ```rust
 struct FileDataSequenceHeader {
-    file_hash: [u64; 4],  // 32-byte file hash
+    file_hash: Hash,      // 32-byte file hash
     file_flags: u32,      // Flags indicating conditional sections that follow
     num_entries: u32,     // Number of FileDataSequenceEntry structures
     _unused: [u8; 8],     // Reserved space 8 bytes
@@ -207,17 +220,19 @@ Given the `file_data_sequence_header.file_flags & MASK` (bitwise AND) operations
 
 ### FileDataSequenceEntry
 
+Each `FileDataSequenceEntry` is 1 term is essentially the binary serialization of a [file reconstruction term](../spec/file_reconstruction.md#term-format).
+
 ```rust
 struct FileDataSequenceEntry {
-    cas_hash: [u64; 4],           // 32-byte CAS block hash
+    cas_hash: Hash,               // 32-byte Xorb hash in the term
     cas_flags: u32,               // CAS flags (reserved for future, set to 0)
-    unpacked_segment_bytes: u32,  // Size when unpacked
-    chunk_index_start: u32,       // Start index in CAS block
-    chunk_index_end: u32,         // End index in CAS block
+    unpacked_segment_bytes: u32,  // Term size when unpacked
+    chunk_index_start: u32,       // Start chunk index within the Xorb for the term
+    chunk_index_end: u32,         // End chunk index (exclusive) within the Xorb for the term
 }
 ```
 
-> Note that when describing a chunk range in a FileDataSequenceEntry use ranges that are start-inclusive but end-exclusive i.e. `[chunk_index_start, chunk_index_end)`
+> Note that when describing a chunk range in a `FileDataSequenceEntry` use ranges that are start-inclusive but end-exclusive i.e. `[chunk_index_start, chunk_index_end)`
 
 **Memory Layout**:
 
@@ -232,7 +247,9 @@ struct FileDataSequenceEntry {
 
 ### FileVerificationEntry (optional)
 
-Verification Entries must be set for shard uploads. To generate verification hashes for shard upload read [hashing.md](../hashing.md#Term%20Verification%20Hashes).
+Verification Entries must be set for shard uploads.
+
+To generate verification hashes for shard upload read the section about [Verification Hashes](../hashing.md#Term%20Verification%20Hashes).
 
 ```rust
 struct FileVerificationEntry {
@@ -246,18 +263,24 @@ struct FileVerificationEntry {
 ```txt
 ┌────────────────────────────────────────────────────────────────┬────────────────────────────────┐
 │                    range_hash (32 bytes)                       │       _unused (16 bytes)       │
-│                   Verification Hash                            │         Reserved Space         │
+│                      Verification Hash                         │         Reserved Space         │
 └────────────────────────────────────────────────────────────────┴────────────────────────────────┘
 0                                                              32                               48
 ```
 
 When a shard has verification entries, all file info sections must have verification entries.
-Every FileDataSequenceEntry will have a matching FileVerificationEntry in this case where the range_hash is computed with the chunk hashes for that range of chunks.
-For any file the nth FileVerificationEntry relates to the nth FileDataSequenceEntry, and like FileDataSequenceEntries if there are verification entries there will be file_data_sequence_header.num_entries verification entries (following the num_entries data sequence entries).
+If only some subset of files in the shard have verification entries, the shard is considered invalid.
+Every `FileDataSequenceEntry` will have a matching `FileVerificationEntry` in this case where the range_hash is computed with the chunk hashes for that range of chunks.
+
+For any file the nth `FileVerificationEntry` correlates to the nth `FileDataSequenceEntry`, and like `FileDataSequenceEntries` if there are verification entries there will be `file_data_sequence_header.num_entries` verification entries (following the num_entries data sequence entries).
 
 ### FileMetadataExt (optional)
 
-This section is required per file for shards uploaded through the shard upload API. There is only 1 MetadataExt instance per file and it is the last component of that file info when present.
+This section is required per file for shards uploaded through the shard upload API.
+
+There is only 1 `FileMetadataExt` instance per file info block and it is the last component of that file info block when present.
+
+The sha256 field is the 32 byte SHA256 of the file contents of the file described.
 
 ```rust
 struct FileMetadataExt {
@@ -280,9 +303,9 @@ struct FileMetadataExt {
 
 The end of the file info sections is marked by a bookend entry.
 
-The bookend entry is 48 bytes long where the first 32 bytes are all 0xFF, followed by 16 bytes of all 0x00.
+The bookend entry is 48 bytes long where the first 32 bytes are all `0xFF`, followed by 16 bytes of all `0x00`.
 
-Suppose you were attempting to deserialize a FileDataSequenceHeader and it's file hash was all 1 bits then this entry is a bookend entry and the next bytes start the next section.
+Suppose you were attempting to deserialize a `FileDataSequenceHeader` and it's file hash was all 1 bits then this entry is a bookend entry and the next bytes start the next section.
 
 Since the file info section immediately follows the header, a client does not need to deserialize the footer to know where it starts deserializing this section.
 The file info section begins right after the header and ends when the bookend is reached.
@@ -291,7 +314,7 @@ The file info section begins right after the header and ends when the bookend is
 
 1. Seek to `footer.file_info_offset`
 2. Read `FileDataSequenceHeader`
-3. Check if `file_hash` is all 0xFF (bookend marker) - if so, stop
+3. Check if `file_hash` is all `0xFF` (bookend marker) - if so, stop
 4. Read `file_data_sequence_header.num_entries` × `FileDataSequenceEntry` structures
 5. If `file_flags & MDB_FILE_FLAG_WITH_VERIFICATION != 0`: read `file_data_sequence_header.num_entries` × `FileVerificationEntry`
 6. If `file_flags & MDB_FILE_FLAG_WITH_METADATA_EXT != 0`: read 1 × `FileMetadataExt`
@@ -301,7 +324,7 @@ The file info section begins right after the header and ends when the bookend is
 
 **Location**: `footer.cas_info_offset` to `footer.footer_offset` or directly after the file info section bookend
 
-This section contains CAS (Content Addressable Storage) block information. Each CAS Info block represents a xorb by first having a CASChunkSequenceHeader which contains the number of CASChunkSequenceEntries to follow that make up this block. The CAS Info section ends when reaching the bookend entry.
+This section contains CAS (Content Addressable Storage) block information. Each CAS Info block represents a xorb by first having a `CASChunkSequenceHeader` which contains the number of `CASChunkSequenceEntries` to follow that make up this block. The CAS Info section ends when reaching the bookend entry.
 
 ### CAS Info Section Layout
 
@@ -337,11 +360,11 @@ This section contains CAS (Content Addressable Storage) block information. Each 
 
 ```rust
 struct CASChunkSequenceHeader {
-    cas_hash: Hash,           // 32-byte CAS block hash
+    cas_hash: Hash,           // 32-byte Xorb hash
     cas_flags: u32,           // CAS flags (reserved for later, set to 0)
-    num_entries: u32,         // Number of chunks in this CAS block
-    num_bytes_in_cas: u32,    // Total bytes in CAS block
-    num_bytes_on_disk: u32,   // Bytes stored on disk
+    num_entries: u32,         // Number of chunks in this Xorb
+    num_bytes_in_cas: u32,    // Total size of all raw chunk bytes in this Xorb
+    num_bytes_on_disk: u32,   // Length of the xorb after serialized when uploaded
 }
 ```
 
@@ -358,7 +381,8 @@ struct CASChunkSequenceHeader {
 
 ### CASChunkSequenceEntry
 
-Every CASChunkSequenceHeader will have a num_entries number field. This number is the number of CASChunkSequenceEntry items that should be deserialized that are associated with the xorb described by this CAS Info block.
+Every `CASChunkSequenceHeader` will have a `num_entries` number field.
+This number is the number of `CASChunkSequenceEntry` items that should be deserialized that are associated with the xorb described by this CAS Info block.
 
 ```rust
 struct CASChunkSequenceEntry {
@@ -386,13 +410,15 @@ struct CASChunkSequenceEntry {
 
 The end of the cas info sections is marked by a bookend entry.
 
-The bookend entry is 48 bytes long where the first 32 bytes are all 0xFF, followed by 16 bytes of all 0x00.
+The bookend entry is 48 bytes long where the first 32 bytes are all `0xFF`, followed by 16 bytes of all `0x00`.
 
-Suppose you were attempting to deserialize a CASChunkSequenceHeader and it's hash was all 1 bits then this entry is a bookend entry and the next bytes start the next section.
+Suppose you were attempting to deserialize a `CASChunkSequenceHeader` and it's hash was all 1 bits then this entry is a bookend entry and the next bytes start the next section.
 
 Since the cas info section immediately follows the file info section bookend, a client does not need to deserialize the footer to know where the cas info section starts starts deserialize this section, it begins right after the file info section bookend and ends when the next bookend is reached.
 
 ## 4. Footer (MDBShardFileFooter)
+
+> Do not include the footer when serializing the shard as the body for the shard upload API.
 
 **Location**: End of file minus footer_size
 **Size**: 200 bytes
@@ -406,7 +432,7 @@ struct MDBShardFileFooter {
     chunk_hash_hmac_key: Hash,       // HMAC key for chunk hashes (32 bytes)
     shard_creation_timestamp: u64,   // Creation time (seconds since epoch)
     shard_key_expiry: u64,           // Expiry time (seconds since epoch)
-    _buffer: [u8; 72],               // Reserved space (72 bytes)
+    _buffer2: [u8; 72],              // Reserved space (72 bytes)
     footer_offset: u64,              // Offset where footer starts
 }
 ```
@@ -455,7 +481,8 @@ If you find a match (matched_chunk) then you know the original chunk hash of you
 
 The shard key expiry is a 64 bit unix timestamp of when the shard received is to be considered expired (usually in the order of days or weeks after the shard was sent back).
 
-After this expiry time has passed clients should consider this shard expired and not use it to deduplicate data. Uploads that reference xorbs that were referenced by this shard may be rejected at the server's discretion.
+After this expiry time has passed clients should consider this shard expired and not use it to deduplicate data.
+Uploads that reference xorbs that were referenced by this shard may be rejected at the server's discretion.
 
 ## Complete Deserialization Algorithm
 
