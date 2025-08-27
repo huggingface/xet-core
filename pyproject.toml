@@ -6,7 +6,7 @@ build-backend = "maturin"
 name = "hf-xet"
 requires-python = ">=3.8"
 description = "Fast transfer of large files with the Hugging Face Hub."
-license = { file = "LICENSE" }
+license = { text = "Apache-2.0", file = "LICENSE" }
 classifiers = [
     "Programming Language :: Rust",
     "Programming Language :: Python :: Implementation :: CPython",
