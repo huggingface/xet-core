@@ -64,6 +64,7 @@ native-tls-vendored = ["reqwest/native-tls-vendored"]
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
 heed = { workspace = true }
+hyper = { workspace = true }
 
 [dev-dependencies]
 httpmock = { workspace = true }
