@@ -34,7 +34,7 @@ At each position after updating `h`, let `size = current_offset - start_offset +
 - Else if `size >= MAX_CHUNK_SIZE`: force a boundary
 - Else if `(h & MASK) == 0`: boundary at this position
 
-When a boundary is taken:
+When a boundary found or taken:
 
 - Emit the chunk `[start_offset, current_offset + 1)`
 - Set `start_offset = current_offset + 1`

@@ -1,4 +1,4 @@
-# (TODO iterate on this, very drafty) Xet Chunk-Level Deduplication Specification
+# Xet Chunk-Level Deduplication Specification
 
 ## Overview
 
@@ -17,13 +17,13 @@ This approach is particularly effective for scenarios common in machine learning
 
 ### Chunks
 
-[chunking.md](../spec/chunking.md)
-
 A **chunk** is a variable-sized content block derived from files using Content-Defined Chunking (CDC) with a rolling hash function. Chunks are the fundamental unit of deduplication in Xet.
 
 - **Target size**: 64KB (configurable)
 - **Size range**: 8KB to 128KB (minimum and maximum constraints)
 - **Identification**: Each chunk is uniquely identified by its cryptographic hash (MerkleHash)
+
+[Detailed chunking description](../spec/chunking.md)
 
 ### Xorbs (Extended Object Blocks)
 
@@ -32,7 +32,13 @@ A **chunk** is a variable-sized content block derived from files using Content-D
 - **Maximum size**: 64MB
 - **Maximum chunks**: 8,192 chunks per xorb
 - **Purpose**: Batch multiple chunks together to reduce metadata and network overhead when uploading and downloading groups of chunks
-- **Storage**: Xorbs are stored in the Content Addressable Storage (CAS) system
+
+### Shards (Xorb Lists)
+
+**Shards** are objects that contain a list of xorbs that may be deduped against (for the context of deduplication, ignore the file info section of the shard format).
+
+- **Maximum size**: 64MB
+- **Purpose**: Provide a format on a positive reply to a global deduplication request with information about xorbs that already exist in the CAS system.
 
 ### CAS (Content Addressable Storage)
 
@@ -165,7 +171,7 @@ While deduplication is valuable for saving space, doing it too aggressively can 
 To avoid this, in xet-core we aim (and encourage implementors) to keep long, continuous runs of chunks together in the same xorb whenever possible.
 Instead of always deduplicating every possible chunk, the system sometimes chooses to reference a straight run of chunks in a single xorb, even if it means skipping deduplication for a few chunks.
 This approach balances the benefits of deduplication with the need to keep files easy and fast to read.
-Consider for example referencing a deduplicated chunks in a minimum run of chunks (e.g. at least 8 chunks) or targeting an average term length >= 1MB.
+Consider for example referencing a deduplicated chunks in a minimum run of chunks (e.g. at least 8 chunks) or targeting an average contiguous run of chunks totalling length >= 1MB.
 
 ## Conclusion
 

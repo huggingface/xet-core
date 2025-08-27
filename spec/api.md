@@ -37,7 +37,7 @@ It is: `07060504030201000f0e0d0c0b0a0908171615141312111f1e1d1c1b1a1918`.
 - **Path**: `/v1/reconstructions/{file_id}`
 - **Method**: `GET`
 - **Parameters**:
-  - `file_id`: MerkleHash in hex format (64 lowercase hexadecimal characters). See [file hashes](../spec/hashing.md#file-hashes) for computing the file hash and [converting hashes to strings](../spec/api.md#converting-hashes-to-strings).
+  - `file_id`: File hash in hex format (64 lowercase hexadecimal characters). See [file hashes](../spec/hashing.md#file-hashes) for computing the file hash and [converting hashes to strings](../spec/api.md#converting-hashes-to-strings).
 - **Headers**:
   - `Range`: Optional. Format: `bytes={start}-{end}` (end is inclusive).
 - **Minimum Token Scope**: `read`
@@ -76,12 +76,12 @@ It is: `07060504030201000f0e0d0c0b0a0908171615141312111f1e1d1c1b1a1918`.
 
 ### 3. Upload Xorb
 
-- **Description**: Uploads a serialized Xorb to the server with progress tracking. See [Xorb Hashes](../spec/hashing.md#xorb-hashes).
+- **Description**: Uploads a serialized Xorb to the server; uploading real data in serialized format.
 - **Path**: `/v1/xorbs/{prefix}/{hash}`
 - **Method**: `POST`
 - **Parameters**:
   - `prefix`: The only acceptable prefix for the Xorb upload API is `default`.
-  - `hash`: MerkleHash in hex format. See [Xorb Hashes](../spec/hashing.md#xorb-hashes) to compute the hash, and [converting hashes to strings](../spec/api.md#converting-hashes-to-strings).
+  - `hash`: Xorb hash in hex format (64 lowercase hexadecimal characters). See [Xorb Hashes](../spec/hashing.md#xorb-hashes) to compute the hash, and [converting hashes to strings](../spec/api.md#converting-hashes-to-strings).
 - **Minimum Token Scope**: `write`
 - **Body**: Serialized Xorb bytes (`application/octet-stream`). See [xorb format](../spec/xorb.md).
 - **Response**: JSON (`UploadXorbResponse`)
@@ -101,7 +101,7 @@ It is: `07060504030201000f0e0d0c0b0a0908171615141312111f1e1d1c1b1a1918`.
 
 ### 4. Upload Shard
 
-- **Description**: Uploads a Shard to the CAS with optional forced synchronization.
+- **Description**: Uploads a Shard to the CAS with optional forced synchronization. Uploads the file reconstructions and new xorb listing.
 - **Path**: `/v1/shards`
 - **Method**: `POST`
 - **Minimum Token Scope**: `write`

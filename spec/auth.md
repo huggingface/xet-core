@@ -103,7 +103,8 @@ Here's a basic implementation flow:
 
 ## Token Scope
 
-Xet tokens can have either a `read` or a `write` scope. The type of token issues is determined on the `token_type` URI path component when requesting the token from the Hugging Face Hub (see above).
+Xet tokens can have either a `read` or a `write` scope.
+The type of token issued is determined on the `token_type` URI path component when requesting the token from the Hugging Face Hub (see above).
 
 Revise API specification for what scope level is required to invoke each API (briefly, only `POST /shard` and `POST /xorb/*` API's require `write` scope).
 Note that all `read` scope API's can be invoked when using a `write` scope token.

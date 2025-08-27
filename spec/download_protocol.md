@@ -15,7 +15,7 @@ File download in the Xet protocol is a two-stage process:
 
 To download a file given a file hash, first call the reconstruction API to get the file reconstruction. Follow the steps in [api.md](../spec/api.md#1-get-file-reconstruction).
 
-Note that you will need at least a `read` scope auth token, [reference](../spec/auth.md).
+Note that you will need at least a `read` scope auth token, [auth reference](../spec/auth.md).
 
 > For large files is may be recommended to download the request the reconstruction in batches i.e. the first 10GB, download all the data, then the next 10GB and so on. Use the `Range` header to specify a range of file data.
 
@@ -86,9 +86,9 @@ Scroll
   - The mapping is to an array of 1 or more `CASReconstructionFetchInfo`
 - Each `CASReconstructionFetchInfo` contains:
   - `url`: HTTP URL for downloading the xorb data, presigned url containing authorization information
-  - `url_range`: Byte range `{ start: number, end: number }` for the Range header; end-inclusive `[start, end]`
+  - `url_range` (bytes_start, bytes_end): Byte range `{ start: number, end: number }` for the Range header; end-inclusive `[start, end]`
     - The range header must be set as `Range: bytes=<start>-<end>` when downloading this chunk range
-  - `range`: Chunk range `{ start: number, end: number }` that this URL provides; end-exclusive `[start, end)`
+  - `range` (index_start, index_end): Chunk index range `{ start: number, end: number }` that this URL provides; end-exclusive `[start, end)`
     - This range indicates which range of chunk indices within this xorb that this fetch info term is describing
 
 ## Stage 3: Downloading and Reconstructing the File
@@ -97,13 +97,15 @@ Scroll
 
 1. Process each `CASReconstructionTerm` in order from the `terms` array
 2. For each `CASReconstructionTerm`, find matching fetch info using the term's hash
-  i. get the list of fetch_info items under the xorb hash from the `CASReconstructionTerm`. The xorb hash is guaranteed to exist as a key in the fetch_info map.
-  ii. linearly iterate through the list of `CASReconstructionFetchInfo` and find one which refers to a chunk range that is equal or encompassing the term's chunk range.
-    - Such a fetch_info item is guaranteed to exist. If none exist the server is at fault.
+
+    1. get the list of fetch_info items under the xorb hash from the `CASReconstructionTerm`. The xorb hash is guaranteed to exist as a key in the fetch_info map.
+    2. linearly iterate through the list of `CASReconstructionFetchInfo` and find one which refers to a chunk range that is equal or encompassing the term's chunk range.
+        - Such a fetch_info item is guaranteed to exist. If none exist the server is at fault.
 3. Download the required data using HTTP `GET` request with the `Range` header set
 4. Deserialize the downloaded xorb data to extract chunks
-  i. This series of chunks contains chunks at indices specified by the `CASReconstructionFetchInfo`'s `range` field. Trim chunks at the beginning or end to match the chunks specified by the reconstruction term's `range` field.
-  ii. (for the first term only) skip `offset_into_first_range` bytes
+
+    1. This series of chunks contains chunks at indices specified by the `CASReconstructionFetchInfo`'s `range` field. Trim chunks at the beginning or end to match the chunks specified by the reconstruction term's `range` field.
+    2. (for the first term only) skip `offset_into_first_range` bytes
 5. Concatenate the results in term order to reconstruct the file
 
 ### Detailed Download Process
@@ -130,7 +132,8 @@ For each `CASReconstructionTerm` in the `terms` array:
 
 - Look up the term's `hash` in the `fetch_info` map to get a list of `CASReconstructionFetchInfo`
 - Find a `CASReconstructionFetchInfo` entry where the fetch info's `range` contains the term's `range`
-  - linearly search through the array of CASReconstructionFetchInfo and find the element where the range block ({ "start": number, "end": number }) of the `CASReconstructionFetchInfo` has start <= term's range start AND end >= term's range end.
+  - linearly search through the array of CASReconstructionFetchInfo and find the element where the range block (`{ "start": number, "end": number }`) of the `CASReconstructionFetchInfo` has start <= term's range start AND end >= term's range end.
+  - The server is meant to guarantee a match, if there isn't a match this download is considered failed and the server made an error.
 
 ```python
 for term in terms:
@@ -150,7 +153,7 @@ for term in terms:
 For each matched fetch info:
 
 1. Make an HTTP GET request to the `url` in the fetch info entry
-  ii. Include a `Range` header: `bytes={url_range.start}-{url_range.end}`
+2. Include a `Range` header: `bytes={url_range.start}-{url_range.end}`
 
 ```python
 for term in terms:
@@ -233,6 +236,9 @@ When downloading individual term data:
 
 A client must include the range header formed with the values from the url_range field to specify the exact range of data of a xorb that they are accessing. Not specifying this header will cause result in an authorization failure.
 
+Xet global deduplication requires that access to xorbs is only granted to authorized ranges.
+Not specifying this header will result in an authorization failure.
+
 ## Performance Considerations
 
 - **Range coalescing**: Multiple terms may share the same fetch info for efficiency, check where else you may need to use a term
@@ -244,10 +250,10 @@ A client must include the range header formed with the values from the url_range
 ### Caching recommendations
 
 1. It can be ineffective to cache the reconstruction object
-  i. The fetch_info section provides short-expiration pre-signed url's hence you cannot cache them for much time at all
-  ii. To get those url's to access the data you will need to call the reconstruction API again anyway
+    1. The fetch_info section provides short-expiration pre-signed url's hence you cannot cache them for much time at all
+    2. To get those url's to access the data you will need to call the reconstruction API again anyway
 2. Cache chunks by range not just individually
-  i. If you need a chunk from a xorb it is very likely that you will need another, so cache them close
+    1. If you need a chunk from a xorb it is very likely that you will need another, so cache them close
 3. Caching helps when downloading similar contents. May not be worth to cache data if you are always downloading different things
 
 ## More complex QueryReconstruction Example
