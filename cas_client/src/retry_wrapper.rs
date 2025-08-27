@@ -5,7 +5,7 @@ use reqwest::{Error as ReqwestError, Response, StatusCode};
 use reqwest_retry::{default_on_request_success, Retryable};
 use tokio_retry::strategy::{jitter, ExponentialBackoff};
 use tokio_retry::RetryIf;
-use tracing::{error, info};
+use tracing::{debug, error, info};
 
 use crate::constants::{CLIENT_RETRY_BASE_DELAY_MS, CLIENT_RETRY_MAX_ATTEMPTS};
 use crate::error::CasClientError;
@@ -326,6 +326,7 @@ impl RetryWrapper {
 fn on_request_failure(error: &reqwest_middleware::Error) -> Option<Retryable> {
     let reqwest_middleware::Error::Reqwest(error) = error else {
         // If something fails in the middleware we're screwed.
+        debug!("non-reqwest error variant encountered. Not retrying: {error:?}");
         return Some(Retryable::Fatal);
     };
     // reqwest error
@@ -336,8 +337,17 @@ fn on_request_failure(error: &reqwest_middleware::Error) -> Option<Retryable> {
     if error.is_timeout() || is_connect {
         Some(Retryable::Transient)
     } else if error.is_body() || error.is_decode() || error.is_builder() || error.is_redirect() {
+        debug!(
+            ?error,
+            "parsed Reqwest error as fatal: is_body ({}), is_decode ({}), is_builder ({}), is_redirect ({})",
+            error.is_body(),
+            error.is_decode(),
+            error.is_builder(),
+            error.is_redirect()
+        );
         Some(Retryable::Fatal)
     } else if error.is_request() {
+        debug!(?error, "parsed Reqwest error as is_request");
         // It seems that hyper::Error(IncompleteMessage) is not correctly handled by reqwest.
         // Here we check if the Reqwest error was originated by hyper and map it consistently.
         #[cfg(not(target_arch = "wasm32"))]
@@ -348,13 +358,21 @@ fn on_request_failure(error: &reqwest_middleware::Error) -> Option<Retryable> {
             // retry the call, hence marking this error as [`Retryable::Transient`]. Instead
             // hyper::Error(Canceled) is raised when the connection is gracefully closed on
             // the server side.
-            let is_io_error = get_source_error_type::<std::io::Error>(hyper_error).is_some();
+            debug!(?error, "error is a hyper::Error");
+            let io_error = get_source_error_type::<std::io::Error>(hyper_error);
+            if let Some(io_error) = io_error {
+                debug!(?io_error, "io_error is a std::io::Error");
+            }
+            let is_io_error = io_error.is_some();
             if hyper_error.is_incomplete_message() || hyper_error.is_canceled() || is_io_error {
+                debug!(?error, "error is transient");
                 Some(Retryable::Transient)
             } else {
+                debug!(?error, "error is fatal");
                 Some(Retryable::Fatal)
             }
         } else {
+            debug!(?error, "error source is not a hyper::Error, marking as Fatal");
             Some(Retryable::Fatal)
         }
         #[cfg(target_arch = "wasm32")]
@@ -363,6 +381,7 @@ fn on_request_failure(error: &reqwest_middleware::Error) -> Option<Retryable> {
         // We omit checking if error.is_status() since we check that already.
         // However, if Response::error_for_status is used the status will still
         // remain in the response object.
+        debug!(?error, "Reqwest error type is_status, so we are skipping (i.e. return None)");
         None
     }
 }
