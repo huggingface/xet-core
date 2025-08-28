@@ -69,3 +69,40 @@ All xorbs whose hash is used as an entry in the cas info section and in data ent
   - the same set of chunks will produce the same xorb hash
 - Consistent chunking algorithm yields that the same data will be split into the same chunks at the same boundaries, allowing those chunks to be matched to other data and deduplicated.
 - Upload endpoints are idempotent with respect to content-addressed keys; re-sending an already-present xorb or shard is safe.
+
+## Diagram (TODO: check)
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant Client
+    participant CAS as CAS Server
+
+    Client->>Client: 1) Chunking: split file into chunks
+    Client->>Client: 2) Compute chunk hashes
+
+    Note right of Client: 2) Local deduplication (optional)
+
+    loop For each chunk
+        opt 3) Global deduplication (optional)
+            Client->>CAS: GET /v1/chunks/default-merkledb/{chunk_hash}
+            CAS-->>Client: 200 reconstructible or 404 not found
+        end
+    end
+
+    Client->>Client: 4) Xorb formation (group chunks ~64 MiB)
+    Client->>Client: 5) Xorb hashing
+    Client->>Client: 6) Xorb serialization
+
+    loop For each new Xorb
+        Client->>CAS: 7) POST /v1/xorbs/default/{xorb_hash}
+        CAS-->>Client: 200 OK
+    end
+
+    Client->>Client: 8) Shard formation (files -> reconstructions)
+    Client->>Client: 9) Shard serialization
+    Client->>CAS: 10) POST /v1/shards
+    CAS-->>Client: 200 OK
+
+    Note over Client,CAS: All referenced Xorbs must be uploaded before Shard upload. Endpoints are idempotent by content-addressed keys.
+```

@@ -1,4 +1,4 @@
-# File Download Protocol
+# Download Protocol
 
 This document describes the complete process of downloading a single file from the Xet protocol using the CAS (Content Addressable Storage) reconstruction API.
 
@@ -74,7 +74,7 @@ Scroll
 
 - Type: `Array<CASReconstructionTerm>`
 - Ordered list of reconstruction terms describing what chunks to download from which xorb
-- Each CASReconstructionTerm contains:
+- Each `CASReconstructionTerm` contains:
   - `hash`: The xorb hash (64-character lowercase hex string)
   - `range`: Chunk index range`{ start: number, end: number }` within the xorb; end-exclusive `[start, end)`
   - `unpacked_length`: Expected length after decompression (for validation)
@@ -132,7 +132,7 @@ For each `CASReconstructionTerm` in the `terms` array:
 
 - Look up the term's `hash` in the `fetch_info` map to get a list of `CASReconstructionFetchInfo`
 - Find a `CASReconstructionFetchInfo` entry where the fetch info's `range` contains the term's `range`
-  - linearly search through the array of CASReconstructionFetchInfo and find the element where the range block (`{ "start": number, "end": number }`) of the `CASReconstructionFetchInfo` has start <= term's range start AND end >= term's range end.
+  - linearly search through the array of `CASReconstructionFetchInfo` and find the element where the range block (`{ "start": number, "end": number }`) of the `CASReconstructionFetchInfo` has start <= term's range start AND end >= term's range end.
   - The server is meant to guarantee a match, if there isn't a match this download is considered failed and the server made an error.
 
 ```python
@@ -165,14 +165,14 @@ for term in terms:
 
 #### Deserialize Downloaded Data
 
-The downloaded data is in xorb (serialized CAS object) format and must be deserialized:
+The downloaded data is in xorb format and must be deserialized:
 
 1. **Parse xorb structure**: The data contains compressed chunks with headers
 2. **Decompress chunks**: Each chunk has a header followed by compressed data
 3. **Extract byte indices**: Track byte boundaries between chunks for range extraction
 4. **Validate length**: Ensure decompressed length matches `unpacked_length` from the term
 
-**Note**: The specific deserialization process depends on the CAS object format. Refer to the [xorb format documentation](../xorb.md) for implementation details.
+**Note**: The specific deserialization process depends on the [Xorb format](../xorb.md).
 
 ```python
 for term in terms:
@@ -333,3 +333,29 @@ A `"url_range"` value of `{ "start": X, "end": Y }` creates a `Range` header val
 When downloading and deserializing the chunks from xorb `a1b2c3d4e5f6789012345678901234567890abcdef1234567890abcdef123456` we will have the chunks at indices `[1, 43)`.
 We will need to only use the chunks at `[1, 4)` to fulfill the first term and then chunks `[3, 43)` to fulfill the third term.
 Note that in this example the chunk at index 3 is used twice! This is the benefit of deduplication; we only need to download the chunk content once.
+
+## Download Protocol Diagram (TODO check)
+
+```mermaid
+sequenceDiagram
+  autonumber
+  actor Client as "Client"
+  participant CAS as "CAS API"
+  participant Transfer as "Transfer Service (Xet storage)"
+
+  Client->>CAS: "GET /reconstructions/{file_id}\nAuthorization: Bearer <token>\nRange: bytes=start-end (optional)"
+  CAS-->>Client: "200 OK\nQueryReconstructionResponse {offset_into_first_range, terms[], fetch_info{}}"
+
+  loop "For each term in terms (ordered)"
+    Client->>Client: "Find fetch_info by xorb hash; entry whose range contains term.range"
+    Client->>Transfer: "GET {url}\nRange: bytes=url_range.start-url_range.end"
+    Transfer-->>Client: "206 Partial Content\nxorb byte range"
+    Client->>Client: "Deserialize xorb → chunks for fetch_info.range"
+    Client->>Client: "Trim to term.range; apply offset for first term"
+    Client->>Client: "Append chunks to output"
+  end
+
+  alt "Range requested"
+    Client->>Client: "Truncate output to requested length"
+  end
+```

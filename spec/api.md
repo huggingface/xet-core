@@ -143,8 +143,10 @@ The value of `result` is does not carry any meaning, if the upload shard API ret
 
 ### Retryable Errors
 
-- **Connection Errors**: Often caused by network issues. Retry if intermittent. Ensure you do not have a firewall blocking requests or DNS overrides.
-- **429 Rate Limiting**: Lower your request rate using a backoff strategy, then wait and retry. Assume all APIs are rate limited.
+- **Connection Errors**: Often caused by network issues. Retry if intermittent.
+Ensure you do not have a firewall blocking requests or DNS overrides.
+- **429 Rate Limiting**: Lower your request rate using a backoff strategy, then wait and retry.
+Assume all APIs are rate limited.
 - **500 Internal Server Error**: The server experienced an intermittent issue; clients should retry their requests.
 - **503 Service Unavailable**: Service is temporarily unable to process requests; wait and retry.
 - **504 Gateway Timeout**: Service took too long to respond; wait and retry.
