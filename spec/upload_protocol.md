@@ -9,7 +9,7 @@ Content addressing uses hashes as stable keys for deduplication and integrity ve
 ### 1. Chunking
 
 - Input file bytes are partitioned into variable-length chunks as defined in the chunking specification. See: [chunking.md](../spec/chunking.md).
-- During this step, the system also computes each chunk's content hash (its key). See hashing details: [hashing.md](../spec/hashing.md).
+- During this step, the system also computes each chunk's content hash (its key). See hashing details: [hashing.md](../spec/hashing.md#chunk-hashes).
 
 ### 2. Local deduplication
 
@@ -67,4 +67,5 @@ All xorbs whose hash is used as an entry in the cas info section and in data ent
 - Hashing of chunks, xorbs, and shards ensures integrity and enables deduplication across local and global scopes. See: [hashing.md](../spec/hashing.md).
   - the same chunk data produces the same chunk hash
   - the same set of chunks will produce the same xorb hash
+- Consistent chunking algorithm yields that the same data will be split into the same chunks at the same boundaries, allowing those chunks to be matched to other data and deduplicated.
 - Upload endpoints are idempotent with respect to content-addressed keys; re-sending an already-present xorb or shard is safe.

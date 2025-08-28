@@ -142,7 +142,8 @@ They may know this chunk hash because they own this data, the match has made the
 
 ### Chunk Hash Computation
 
-Each chunk has its content hashed using a cryptographic hash function (Blake3-based MerkleHash) to create a unique identifier for content addressing. [See section about hashing](../hashing.md).
+Each chunk has its content hashed using a cryptographic hash function (Blake3-based MerkleHash) to create a unique identifier for content addressing.
+[See section about hashing](../spec/hashing.md#chunk-hashes).
 
 ### Xorb Formation
 

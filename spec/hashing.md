@@ -1,5 +1,10 @@
 # Hashing
 
+- [Chunk hashes](#chunk-hashes) - compute for each chunk from chunk data.
+- [Xorb Hashes](#xorb-hashes) - compute for each xorb from its chunk hashes.
+- [File Hashes](#file-hashes) - compute for each file from its chunk hashes.
+- [Term Verification Hashes](#term-verification-hashes) - compute for each term in a reconstruction when serializing a shard from the chunk hashes in the xorb that is used in that term.
+
 The Xet protocol utilizes a few different hashing types.
 
 All hashes referenced are 32 bytes (256 bits) long.
@@ -26,7 +31,7 @@ The leaf node hashes are the chunk hashes as described in the previous section.
 The hash function used to compute internal node hashes is as follows:
 
 - concatenate the hashes together such that for each chunk there is a line in order formatted like `{chunk_hash:x} : {size}\n`
-  - the hash first in lowercase hex format (64 hex characters e.g. a3f91d6e8b47c20ff9d84a1c77dcb8e5a91e6fbf2b2d483af6d3c1e90ac57843)
+  - the hash first in lowercase hex format (64 hex characters e.g. `a3f91d6e8b47c20ff9d84a1c77dcb8e5a91e6fbf2b2d483af6d3c1e90ac57843`)
   - a space, a colon, a space (` : `)
   - the chunk length number e.g. 64000
   - finally a newline `\n` character
