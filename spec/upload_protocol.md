@@ -8,48 +8,48 @@ Content addressing uses hashes as stable keys for deduplication and integrity ve
 
 ### 1. Chunking
 
-    - Input file bytes are partitioned into variable-length chunks as defined in the chunking specification. See: [chunking.md](../spec/chunking.md).
-    - During this step, the system also computes each chunk's content hash (its key). See hashing details: [hashing.md](../spec/hashing.md).
+- Input file bytes are partitioned into variable-length chunks as defined in the chunking specification. See: [chunking.md](../spec/chunking.md).
+- During this step, the system also computes each chunk's content hash (its key). See hashing details: [hashing.md](../spec/hashing.md).
 
 ### 2. Local deduplication
 
-    - For some chunks, the client checks if already has seen the given chunk hash to determine if identical chunks already exist and can be reused. See: [deduplication.md](../spec/deduplication.md#level-1-local-session-deduplication).
-    - Note that Deduplication is considered an optimization and is not a required component of the upload process, however it provides potential resource saving.
+- For some chunks, the client checks if already has seen the given chunk hash to determine if identical chunks already exist and can be reused. See: [deduplication.md](../spec/deduplication.md#level-1-local-session-deduplication).
+- Note that Deduplication is considered an optimization and is not a required component of the upload process, however it provides potential resource saving.
 
 ### 3. Global deduplication
 
-    - For some chunks, the client queries a server API that returns a secure shard sketch/summary to determine if duplicates exist remotely. Matching chunks may be skipped for upload. See: [deduplication.md](../spec/deduplication.md) and the API overview: [api.md](../spec/api.md#2-query-chunk-deduplication-global-deduplication).
-    - Note that Deduplication is considered an optimization and is not a required component of the upload process, however it provides potential resource saving.
+- For some chunks, the client queries a server API that returns a secure shard sketch/summary to determine if duplicates exist remotely. Matching chunks may be skipped for upload. See: [deduplication.md](../spec/deduplication.md) and the API overview: [api.md](../spec/api.md#2-query-chunk-deduplication-global-deduplication).
+- Note that Deduplication is considered an optimization and is not a required component of the upload process, however it provides potential resource saving.
 
 ### 4. Xorb formation
 
-    - Contiguous runs of chunks are collected into xorbs (roughly 64 MiB total length per xorb), preserving order within each run. See formation rules: [xorb.md](../spec/xorb.md#collecting-chunks).
+- Contiguous runs of chunks are collected into xorbs (roughly 64 MiB total length per xorb), preserving order within each run. See formation rules: [xorb.md](../spec/xorb.md#collecting-chunks).
 
 ### 5. Xorb hashing
 
-    - The xorb's content-addressed key is computed using the chunks in the xorb. See: [hashing.md](../spec/hashing.md#xorb-hashes).
+- The xorb's content-addressed key is computed using the chunks in the xorb. See: [hashing.md](../spec/hashing.md#xorb-hashes).
 
 ### 6. Xorb serialization
 
-    - Each xorb is serialized into its binary representation as defined by the xorb format. See: [xorb.md](../spec/xorb.md).
+- Each xorb is serialized into its binary representation as defined by the xorb format. See: [xorb.md](../spec/xorb.md).
 
 ### 7. Xorb upload
 
-    - The client uploads each xorb via a Xorb upload API. Refer to API details: [api.md](../spec/api.md#3-upload-xorb).
+- The client uploads each xorb via a Xorb upload API. Refer to API details: [api.md](../spec/api.md#3-upload-xorb).
 
 ### 8. Shard formation, collect required components
 
-    - Map each file to a reconstruction using available xorbs; compute file hashes.
-    - Collect only new xorbs (omit those already present on the server via global dedupe).
+- Map each file to a reconstruction using available xorbs; compute file hashes.
+- Collect only new xorbs (omit those already present on the server via global dedupe).
 
 ### 9. Shard serialization
 
-    - The shard is serialized to its binary on-disk/over-the-wire representation. See: [shard.md](../spec/shard.md).
-    - When serializing the file info section, each file info entry must have an associated metadata section and each data entry (for each file) must have a verification entry.
+- The shard is serialized to its binary on-disk/over-the-wire representation. See: [shard.md](../spec/shard.md).
+- When serializing the file info section, each file info entry must have an associated metadata section and each data entry (for each file) must have a verification entry.
 
 ### 10. Shard upload
 
-    - The client uploads the shard via a POST endpoint on the CAS server. For this to succeed, all xorbs referenced by the shard must have already completed uploading. This API records files as uploaded. See: [api.md](../spec/api.md#4-upload-shard).
+- The client uploads the shard via a POST endpoint on the CAS server. For this to succeed, all xorbs referenced by the shard must have already completed uploading. This API records files as uploaded. See: [api.md](../spec/api.md#4-upload-shard).
 
 After all xorbs and all shards are successfully uploaded, the full upload is considered complete.
 Files can then be downloaded by any client using the [download protocol](../spec/download_protocol.md).

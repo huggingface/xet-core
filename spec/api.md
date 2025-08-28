@@ -37,7 +37,8 @@ It is: `07060504030201000f0e0d0c0b0a0908171615141312111f1e1d1c1b1a1918`.
 - **Path**: `/v1/reconstructions/{file_id}`
 - **Method**: `GET`
 - **Parameters**:
-  - `file_id`: File hash in hex format (64 lowercase hexadecimal characters). See [file hashes](../spec/hashing.md#file-hashes) for computing the file hash and [converting hashes to strings](../spec/api.md#converting-hashes-to-strings).
+  - `file_id`: File hash in hex format (64 lowercase hexadecimal characters).
+See [file hashes](../spec/hashing.md#file-hashes) for computing the file hash and [converting hashes to strings](../spec/api.md#converting-hashes-to-strings).
 - **Headers**:
   - `Range`: Optional. Format: `bytes={start}-{end}` (end is inclusive).
 - **Minimum Token Scope**: `read`
@@ -65,10 +66,11 @@ It is: `07060504030201000f0e0d0c0b0a0908171615141312111f1e1d1c1b1a1918`.
 - **Method**: `GET`
 - **Parameters**:
   - `prefix`: The only acceptable prefix for the Global Deduplication API is `default-merkledb`.
-  - `hash`: Chunk hash in hex format (64 lowercase hexadecimal characters). See [Chunk Hashes](../spec/hashing.md#chunk-hashes) to compute the chunk hash and [converting hashes to strings](../spec/api.md#converting-hashes-to-strings).
+  - `hash`: Chunk hash in hex format (64 lowercase hexadecimal characters).
+See [Chunk Hashes](../spec/hashing.md#chunk-hashes) to compute the chunk hash and [converting hashes to strings](../spec/api.md#converting-hashes-to-strings).
 - **Minimum Token Scope**: `read`
 - **Body**: None.
-- **Response**: Shard format bytes (`application/octet-stream`), deserialize as a [shard](../spec/shard.md).
+- **Response**: Shard format bytes (`application/octet-stream`), deserialize as a [shard](../spec/shard.md#global-deduplication).
 - **Error Responses**: See [Error Cases](../spec/api.md#error-cases)
   - `400 Bad Request`: Malformed hash in the path. Fix the path before retrying.
   - `401 Unauthorized`: Refresh the token to continue making requests, or provide a token in the `Authorization` header.
@@ -81,9 +83,11 @@ It is: `07060504030201000f0e0d0c0b0a0908171615141312111f1e1d1c1b1a1918`.
 - **Method**: `POST`
 - **Parameters**:
   - `prefix`: The only acceptable prefix for the Xorb upload API is `default`.
-  - `hash`: Xorb hash in hex format (64 lowercase hexadecimal characters). See [Xorb Hashes](../spec/hashing.md#xorb-hashes) to compute the hash, and [converting hashes to strings](../spec/api.md#converting-hashes-to-strings).
+  - `hash`: Xorb hash in hex format (64 lowercase hexadecimal characters).
+See [Xorb Hashes](../spec/hashing.md#xorb-hashes) to compute the hash, and [converting hashes to strings](../spec/api.md#converting-hashes-to-strings).
 - **Minimum Token Scope**: `write`
-- **Body**: Serialized Xorb bytes (`application/octet-stream`). See [xorb format](../spec/xorb.md).
+- **Body**: Serialized Xorb bytes (`application/octet-stream`).
+See [xorb format serialization](../spec/xorb.md).
 - **Response**: JSON (`UploadXorbResponse`)
 
 ```json
@@ -101,11 +105,13 @@ It is: `07060504030201000f0e0d0c0b0a0908171615141312111f1e1d1c1b1a1918`.
 
 ### 4. Upload Shard
 
-- **Description**: Uploads a Shard to the CAS with optional forced synchronization. Uploads the file reconstructions and new xorb listing.
+- **Description**: Uploads a Shard to the CAS with optional forced synchronization.
+Uploads file reconstructions and new xorb listing, serialized into the shard format; marks the files as uploaded.
 - **Path**: `/v1/shards`
 - **Method**: `POST`
 - **Minimum Token Scope**: `write`
-- **Body**: Serialized Shard data as bytes (`application/octet-stream`). See [Shard](./shard.md).
+- **Body**: Serialized Shard data as bytes (`application/octet-stream`).
+See [Shard format guide](../spec/shard.md#shard-upload).
 - **Response**: JSON (`UploadShardResponse`)
 
 ```json
@@ -116,7 +122,9 @@ It is: `07060504030201000f0e0d0c0b0a0908171615141312111f1e1d1c1b1a1918`.
 
 - Where `result` is:
   - `0`: The Shard already exists.
-  - `1`: `SyncPerformed` — the Shard was registered. See `UploadShardResponseType`.
+  - `1`: `SyncPerformed` — the Shard was registered.
+
+The value of `result` is does not carry any meaning, if the upload shard API returns a `200 OK` status code, the upload was successful and the files listed are considered uploaded.
 
 - **Error Responses**: See [Error Cases](../spec/api.md#error-cases)
   - `400 Bad Request`: Shard is incorrectly serialized or Shard contents failed verification.
