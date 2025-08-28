@@ -4,6 +4,7 @@
 #    maturin generate-ci github
 #
 name: Release
+run-name: hf-xet release, tag ${{ inputs.tag || 'main' }}
 
 on:
   push:
