@@ -1,5 +1,9 @@
 # MDB Shard File Format Specification
 
+A Shard is a serialized object containing file reconstruction information and xorb metadata for deduplication purposes.
+
+The Shard format is the vehicle for uploading the file reconstruction upload and communicating information about xorbs and chunks that clients can deduplicate their data against.
+
 ## Overview
 
 The MDB (Merkle Database) shard file format is a binary format used to store file metadata and content-addressable storage (CAS) information for efficient deduplication and retrieval.

@@ -1,8 +1,10 @@
 # Xorb Formation & Serialization Format
 
+A "Xorb" (Xet Orb, pronounced like "zorb") is a sequence of chunks and a serialization format for a series of chunks.
+
 ## Collecting Chunks
 
-Using the chunking algorithm a file is mapped to a series of chunks, once those chunks are found, they need to be collected into collections of chunks each called a "Xorb" (Xet Orb, pronounced like "zorb").
+Using the chunking algorithm a file is mapped to a series of chunks, once those chunks are found, they need to be collected into collections of Xorbs
 
 It is advantageous to collect series of chunks in Xorbs such that they can be referred to as a whole range of chunks.
 
