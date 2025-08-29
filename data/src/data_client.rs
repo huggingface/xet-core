@@ -35,6 +35,16 @@ pub fn default_config(
     token_info: Option<(String, u64)>,
     token_refresher: Option<Arc<dyn TokenRefresher>>,
 ) -> errors::Result<Arc<TranslatorConfig>> {
+    advanced_config(endpoint, xorb_compression, token_info, token_refresher, true)
+}
+
+pub fn advanced_config(
+    endpoint: String,
+    xorb_compression: Option<CompressionScheme>,
+    token_info: Option<(String, u64)>,
+    token_refresher: Option<Arc<dyn TokenRefresher>>,
+    aggregate_progress: bool,
+) -> errors::Result<Arc<TranslatorConfig>> {
     // if HF_HOME is set use that instead of ~/.cache/huggingface
     // if HF_XET_CACHE is set use that instead of ~/.cache/huggingface/xet
     // HF_XET_CACHE takes precedence over HF_HOME
@@ -110,6 +120,9 @@ pub fn default_config(
             repo_paths: vec!["".into()],
         }),
         session_id: Some(Ulid::new().to_string()),
+        progress_config: ProgressConfig {
+            aggregate: aggregate_progress,
+        },
     };
 
     // Return the temp dir so that it's not dropped and thus the directory deleted.

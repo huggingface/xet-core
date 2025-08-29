@@ -1,0 +1,34 @@
+[package]
+name = "git_xet"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+name = "git-xet"
+path = "src/bin/main.rs"
+
+[dependencies]
+cas_client = { path = "../cas_client" }
+data = { path = "../data" }
+progress_tracking = { path = "../progress_tracking" }
+utils = { path = "../utils" }
+
+anyhow = { workspace = true }
+async-trait = { workspace = true }
+chrono = { workspace = true }
+clap = { workspace = true }
+derivative = { workspace = true }
+git-url-parse = { workspace = true }
+git2 = { workspace = true }
+openssh = { workspace = true }
+reqwest = { workspace = true }
+reqwest-middleware = { workspace = true }
+rust-netrc = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tempfile = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+
+[dev-dependencies]
+serial_test = { workspace = true }
