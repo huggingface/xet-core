@@ -26,3 +26,5 @@ Then make a `GET` request to the resolve url using your standard Hugging Face Hu
 If the file is stored on the xet system then a successful response will have a `X-Xet-Hash` header.
 
 The string value of this header is the Xet file ID and should be used in the path of the reconstruction API URL.
+
+> The resolve URL will return a 302 redirect http status code, following the redirect will download the content via the old LFS compatible route rather than through the Xet protocol. In order to use the Xet protocol make sure to NOT follow this redirect.

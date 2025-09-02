@@ -10,6 +10,7 @@ Implementors can create their own clients, SDKs, and tools that speak the Xet pr
 - [Download Protocol](../spec/download_protocol.md): Instructions for the download procedure.
 - [CAS API](../spec/api.md): HTTP endpoints for reconstruction, global chunk dedupe, xorb upload, and shard upload, including error semantics.
 - [Authentication and Authorization](../spec/auth.md): How to obtain Xet tokens from the Hugging Face Hub, token scopes, and security considerations.
+- [Hugging Face Hub Files Conversion to Xet File ID's](../spec/file_id.md): How to obtain a Xet file id from the Hugging Face Hub for a particular file in a model or dataset repository.
 
 ## Overall Xet architecture
 

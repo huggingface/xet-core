@@ -334,7 +334,7 @@ When downloading and deserializing the chunks from xorb `a1b2c3d4e5f678901234567
 We will need to only use the chunks at `[1, 4)` to fulfill the first term and then chunks `[3, 43)` to fulfill the third term.
 Note that in this example the chunk at index 3 is used twice! This is the benefit of deduplication; we only need to download the chunk content once.
 
-## Download Protocol Diagram (TODO check)
+## Diagram
 
 ```mermaid
 sequenceDiagram
@@ -343,19 +343,19 @@ sequenceDiagram
   participant CAS as "CAS API"
   participant Transfer as "Transfer Service (Xet storage)"
 
-  Client->>CAS: "GET /reconstructions/{file_id}\nAuthorization: Bearer <token>\nRange: bytes=start-end (optional)"
-  CAS-->>Client: "200 OK\nQueryReconstructionResponse {offset_into_first_range, terms[], fetch_info{}}"
+  Client->>CAS: GET /reconstructions/{file_id}<br/>Authorization: Bearer <token><br/>Range: bytes=start-end (optional)
+  CAS-->>Client: 200 OK<br/>QueryReconstructionResponse {offset_into_first_range, terms[], fetch_info{}}
 
-  loop "For each term in terms (ordered)"
-    Client->>Client: "Find fetch_info by xorb hash; entry whose range contains term.range"
-    Client->>Transfer: "GET {url}\nRange: bytes=url_range.start-url_range.end"
-    Transfer-->>Client: "206 Partial Content\nxorb byte range"
-    Client->>Client: "Deserialize xorb → chunks for fetch_info.range"
-    Client->>Client: "Trim to term.range; apply offset for first term"
-    Client->>Client: "Append chunks to output"
+  loop For each term in terms (ordered)
+    Client->>Client: Find fetch_info by xorb hash, entry whose range contains term.range
+    Client->>Transfer: GET {url}<br/>Range: bytes=url_range.start-url_range.end
+    Transfer-->>Client: 206 Partial Content<br/>xorb byte range
+    Client->>Client: Deserialize xorb → chunks for fetch_info.range
+    Client->>Client: Trim to term.range, apply offset for first term
+    Client->>Client: Append chunks to output
   end
 
-  alt "Range requested"
-    Client->>Client: "Truncate output to requested length"
+  alt Range requested
+    Client->>Client: Truncate output to requested length
   end
 ```

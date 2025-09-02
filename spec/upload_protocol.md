@@ -148,10 +148,10 @@ sequenceDiagram
 
     Note right of Client: 2) Local deduplication (optional)
 
-    loop For each chunk if chunk % 1024 == 0 (global dedupe eligible)
+    loop For each chunk if chunk % 1024 == 0<br/>(global dedupe eligible)
         opt Global deduplication (optional)
             Client->>CAS: GET /v1/chunks/default-merkledb/{chunk_hash}
-            CAS-->>Client: 200 reconstructible or 404 not found
+            CAS-->>Client: 200 dedupe information or 404 not found
         end
     end
 
@@ -166,5 +166,5 @@ sequenceDiagram
     Client->>CAS: POST /v1/shards
     CAS-->>Client: 200 OK
 
-    Note over Client,CAS: All referenced Xorbs must be uploaded before Shard upload. Endpoints are idempotent by content-addressed keys.
+    Note over Client,CAS: All referenced Xorbs must be uploaded before Shard upload.<br/>Endpoints are idempotent by content-addressed keys.
 ```
