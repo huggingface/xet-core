@@ -12,6 +12,7 @@ cas_client = { path = "../cas_client" }
 data = { path = "../data" }
 progress_tracking = { path = "../progress_tracking" }
 utils = { path = "../utils" }
+hub_client = { path = "../hub_client" }
 
 anyhow = { workspace = true }
 async-trait = { workspace = true }

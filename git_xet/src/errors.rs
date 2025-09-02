@@ -10,34 +10,37 @@ use crate::lfs_agent_protocol::GitLFSProtocolError;
 #[derive(Error, Debug)]
 pub enum GitXetError {
     #[error("Git command failed: {0}")]
-    GitCommandError(String),
+    GitCommandFailed(String),
 
-    #[error("No Git repo exists at: {path}, internal error {source}")]
+    #[error("Failed to find Git repo at {path}, internal error {source}")]
     NoGitRepo { path: PathBuf, source: git2::Error },
 
     #[error("Internal Git error: {0}")]
     GitError(#[from] git2::Error),
 
     #[error("Invalid Git config: {0}")]
-    GitConfigError(String),
+    InvalidGitConfig(String),
 
     #[error("Invalid Git URL: {0}")]
-    GitUrlError(#[from] git_url_parse::GitUrlParseError),
+    InvalidGitUrl(#[from] git_url_parse::GitUrlParseError),
 
-    #[error("Incorrect LFS protocol: {0}")]
-    GitLFSProtocolError(#[from] GitLFSProtocolError),
+    #[error("Invalid LFS protocol: {0}")]
+    InvalidGitLFSProtocol(#[from] GitLFSProtocolError),
 
     #[error("Operation not supported: {0}")]
     NotSupported(String),
 
     #[error("I/O error: {0}")]
-    IOError(#[from] std::io::Error),
+    IO(#[from] std::io::Error),
 
     #[error("Internal error: {0}")]
-    InternalError(String),
+    Internal(String),
 
     #[error("Transfer agent error: {0}")]
-    TransferAgentError(#[from] DataProcessingError),
+    TransferAgent(#[from] DataProcessingError),
+
+    #[error("Hub client error: {0}")]
+    HubClient(#[from] hub_client::HubClientError),
 }
 
 pub type Result<T> = std::result::Result<T, GitXetError>;
@@ -47,11 +50,11 @@ pub(crate) fn not_supported(e: impl Display) -> GitXetError {
 }
 
 pub(crate) fn config_error(e: impl Display) -> GitXetError {
-    GitXetError::GitConfigError(e.to_string())
+    GitXetError::InvalidGitConfig(e.to_string())
 }
 
 pub(crate) fn internal(e: impl Display) -> GitXetError {
-    GitXetError::InternalError(e.to_string())
+    GitXetError::Internal(e.to_string())
 }
 
 impl From<CasClientError> for GitXetError {

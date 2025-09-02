@@ -5,6 +5,6 @@ mod errors;
 mod git_process_wrapping;
 mod git_repo;
 mod git_url;
-mod hub_client;
+mod hub_client_token_refresher;
 mod lfs_agent_protocol;
 mod test_utils;

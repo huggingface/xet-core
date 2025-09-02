@@ -4,17 +4,17 @@ use std::sync::{Arc, OnceLock};
 
 use async_trait::async_trait;
 use data::FileUploadSession;
-use data::data_client::{advanced_config, clean_file};
+use data::data_client::{clean_file, default_config};
+use hub_client::Operation;
 use progress_tracking::{ProgressUpdate, TrackingProgressUpdater};
 
-use crate::auth::Operation;
 use crate::constants::{
     GIT_LFS_CUSTOM_TRANSFER_AGENT_PROGRAM, HF_ENDPOINT_ENV, XET_ACCESS_TOKEN_HEADER, XET_TOKEN_EXPIRATION_HEADER,
 };
 use crate::errors::{GitXetError, Result, internal, not_supported};
 use crate::git_repo::GitRepo;
 use crate::git_url::{GitUrl, Scheme};
-use crate::hub_client::HubClientTokenRefresher;
+use crate::hub_client_token_refresher::HubClientTokenRefresher;
 use crate::lfs_agent_protocol::errors::bad_syntax;
 use crate::lfs_agent_protocol::*;
 
@@ -53,7 +53,7 @@ impl TransferAgent for XetAgent {
             match endpoint {
                 Ok(e) => Some(e),
                 Err(_) => {
-                    return Err(GitXetError::GitConfigError(
+                    return Err(GitXetError::InvalidGitConfig(
                         "This repository has a non-standard Hugging Face remote URL, please specify the Hugging Face server 
                         endpoint using environment variable 'HF_ENDPOINT'"
                             .to_owned(),
@@ -110,17 +110,12 @@ impl TransferAgent for XetAgent {
             Operation::Upload,
             "",
         )?;
-        let config = advanced_config(
-            cas_url,
-            None,
-            Some((token, token_expiry)),
-            Some(Arc::new(token_refresher)),
-            false, /* upload one file at a time so no need for the heavy progress aggregator */
-        )?;
-        let session = FileUploadSession::new(config, Some(Arc::new(xet_updater))).await?;
+        let config = default_config(cas_url, None, Some((token, token_expiry)), Some(Arc::new(token_refresher)))?
+            .disable_progress_aggregation(); // upload one file at a time so no need for the heavy progress aggregator
+        let session = FileUploadSession::new(config.into(), Some(Arc::new(xet_updater))).await?;
 
         let Some(file_path) = &req.path else {
-            return Err(GitXetError::GitLFSProtocolError(bad_syntax("file path not provided for upload request")));
+            return Err(GitXetError::InvalidGitLFSProtocol(bad_syntax("file path not provided for upload request")));
         };
 
         clean_file(session.clone(), file_path).await?;

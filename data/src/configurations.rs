@@ -114,4 +114,11 @@ impl TranslatorConfig {
 
         Ok(Arc::new(translator_config))
     }
+
+    pub fn disable_progress_aggregation(self) -> Self {
+        Self {
+            progress_config: ProgressConfig { aggregate: false },
+            ..self
+        }
+    }
 }

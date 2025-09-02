@@ -820,6 +820,7 @@ dependencies = [
  "deduplication",
  "dirs",
  "error_printer",
+ "hub_client",
  "jsonwebtoken",
  "lazy_static",
  "mdb_shard",
@@ -1310,6 +1311,7 @@ dependencies = [
  "derivative",
  "git-url-parse",
  "git2",
+ "hub_client",
  "openssh",
  "progress_tracking",
  "reqwest",
@@ -1528,6 +1530,22 @@ dependencies = [
  "similar",
  "tokio",
  "url",
+]
+
+[[package]]
+name = "hub_client"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "cas_client",
+ "http 1.3.1",
+ "reqwest",
+ "reqwest-middleware",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.12",
+ "tokio",
 ]
 
 [[package]]

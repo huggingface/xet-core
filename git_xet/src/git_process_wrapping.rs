@@ -57,7 +57,7 @@ impl CapturedCommand {
             _ => {
                 let stdout = std::str::from_utf8(&ret.stdout).unwrap_or("<Binary Data>").trim();
                 let stderr = std::str::from_utf8(&ret.stderr).unwrap_or("<Binary Data>").trim();
-                Err(GitXetError::GitCommandError(format!(
+                Err(GitXetError::GitCommandFailed(format!(
                     "err_code = {:?}, stdout = \"{}\", stderr = \"{}\"",
                     ret.status.code(),
                     stdout,

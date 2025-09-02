@@ -32,8 +32,7 @@ impl GitUrl {
     // Determine the LFS server endpoint from Git remote URL according to
     // https://github.com/git-lfs/git-lfs/blob/main/docs/api/server-discovery.md#server-discovery
     // Returns:
-    // Ok(Some(url)) if a valid LFS server endpoint can be determined,
-    // Ok(None) if fails to determine an endpoint,
+    // Ok(url) if a valid LFS server endpoint can be determined,
     // Err(e) if an error occurred.
     pub fn to_default_lfs_endpoint(&self) -> Result<String> {
         let canonical_http_format = self.to_derived_http_format_url()?;
@@ -61,7 +60,7 @@ impl GitUrl {
 
         let port = self.inner.port;
         let port_str = if translated || port.is_none() {
-            // if translated then there's a port change that we can't guess
+            // if translated then there may be a port change that we can't guess
             "".to_owned()
         } else {
             format!(":{}", port.unwrap())
