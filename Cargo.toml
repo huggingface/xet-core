@@ -9,6 +9,7 @@ members = [
     "data",
     "deduplication",
     "error_printer",
+    "file_hash_tool",
     "file_utils",
     "mdb_shard",
     "merklehash",

@@ -1,0 +1,12 @@
+[package]
+name = "file_hash_tool"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+deduplication = {path = "../deduplication"}
+merklehash = { path = "../merklehash"}
+cas_types = {path = "../cas_types"}
+clap = { workspace = true, features = ["derive"]}
+serde_json = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
