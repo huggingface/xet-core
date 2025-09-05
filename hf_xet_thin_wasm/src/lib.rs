@@ -1,10 +1,12 @@
+use base64::alphabet::STANDARD;
+use base64::engine::GeneralPurpose;
 use merklehash::{DataHashHexParseError, MerkleHash, xorb_hash};
 use serde::{Deserialize, Serialize};
 use wasm_bindgen::prelude::*;
 
-// macro_rules! console_log {
-//     ($($t:tt)*) => (log(&format_args!($($t)*).to_string()))
-// }
+macro_rules! console_log {
+    ($($t:tt)*) => (log(&format_args!($($t)*).to_string()))
+}
 
 #[wasm_bindgen]
 extern "C" {
@@ -110,7 +112,29 @@ pub fn compute_file_hash(chunks_array: JsValue) -> Result<String, JsValue> {
         .collect::<Result<_, DataHashHexParseError>>()
         .map_err(|e| JsValue::from(e.to_string()))?;
 
-    Ok(merklehash::file_hash(&chunk_list).hex())
+    let file_hash = merklehash::file_hash(&chunk_list).hex();
+
+    #[derive(Debug, Serialize, Clone)]
+    #[serde(rename_all = "camelCase")]
+    pub struct FileFormat {
+        file_hash: String,
+        file_chunks: Vec<JsChunkIn>,
+    }
+
+    let file_format = FileFormat {
+        file_hash: file_hash.clone(),
+        file_chunks: chunk_list.into_iter().map(|c| JsChunkIn {
+            hash: c.0.hex(),
+            length: c.1 as u32,
+        } ).collect(),
+    };
+    use base64::prelude::*;
+    let serialized = serde_json::to_string(&file_format)
+        .map_err(|e| JsValue::from(e.to_string()))?;
+    let encoded = base64::engine::general_purpose::STANDARD.encode(serialized.as_bytes());
+    console_log!("{}", &encoded);
+
+    Ok(file_hash)
 }
 
 /// takes an Array of hashes as strings and returns the verification hash for that range of chunk hashes
