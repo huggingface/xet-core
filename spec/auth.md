@@ -126,3 +126,23 @@ If you are using Fine-grained Hugging Face Hub Access Tokens, your tokens must h
 - Xet tokens are time-limited and should be refreshed/swapped before expiration
 - Store tokens securely and avoid logging them (both Hub authentication tokens and Xet tokens)
 - Use read tokens when possible; only request write tokens when necessary
+
+## Diagram
+
+```mermaid
+sequenceDiagram
+   autonumber
+   actor C as Client
+   participant H as Hugging Face Hub (https://huggingface.co)
+   participant CAS as CAS API
+
+   loop Repeat after token expiration
+      C->>H: https://huggingface.co/api/{repo_type}s/{repo_id}/xet-{token_type}-token/{revision}
+      H->>C: { casUrl, accessToken, exp }
+
+      loop Client invoking CAS API's
+         C->>CAS: CAS API's using accessToken and casUrl<br/>(Reconstruction, Xorb & Shard upload, Global Dedupe)
+         CAS->>C: API Responses, returns code 401 Unauthorized if token expired
+      end
+   end
+```
