@@ -38,10 +38,11 @@ jobs:
         run: |
           cargo clippy -r --verbose -- -D warnings # elevates warnings to errors
           cargo clippy -r --verbose --manifest-path hf_xet/Cargo.toml -- -D warnings # elevates warnings to errors
-      - name: Set up Git environment
+      - name: Set up Git LFS
         run: |
-          git config --global user.name XetTeam
-          git config --global user.email "test@hf.co"
+          curl -s https://packagecloud.io/install/repositories/github/git-lfs/script.deb.sh | sudo bash
+          apt-get install git-lfs
+          git lfs install
       - name: Build and Test
         run: |
           cargo test --verbose --no-fail-fast --features "strict"
@@ -61,6 +62,11 @@ jobs:
       - name: Lint
         run: |
           cargo clippy -r --verbose -- -D warnings # elevates warnings to errors
+      - name: Set up Git LFS
+        shell: pwsh
+        run: |
+          winget install -e --id GitHub.GitLFS
+          git lfs install
       - name: Build and Test
         run: |
           cargo test --verbose --no-fail-fast --features "strict"
@@ -73,6 +79,10 @@ jobs:
         uses: dtolnay/rust-toolchain@1.86.0
         with:
           components: clippy
+      - name: Set up Git LFS
+        run: |
+          brew install git-lfs
+          git lfs install
       - name: Build and Test
         run: |
           cargo test --verbose --no-fail-fast --features "strict"
