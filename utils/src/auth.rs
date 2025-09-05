@@ -3,6 +3,8 @@ use std::sync::Arc;
 #[cfg(not(target_family = "wasm"))]
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use derivative::Derivative;
+
 use crate::errors::AuthError;
 
 /// Seconds before the token expires to refresh
@@ -15,7 +17,7 @@ pub type TokenInfo = (String, u64);
 /// Helper to provide auth tokens to CAS.
 #[cfg_attr(not(target_family = "wasm"), async_trait::async_trait)]
 #[cfg_attr(target_family = "wasm", async_trait::async_trait(?Send))]
-pub trait TokenRefresher: Debug + Send + Sync {
+pub trait TokenRefresher: Send + Sync {
     /// Get a new auth token for CAS and the unixtime (in seconds) for expiration
     async fn refresh(&self) -> Result<TokenInfo, AuthError>;
 }
@@ -43,13 +45,15 @@ impl TokenRefresher for ErrTokenRefresher {
 }
 
 /// Shared configuration for token-based auth
-#[derive(Debug, Clone)]
+#[derive(Clone, Derivative)]
+#[derivative(Debug)]
 pub struct AuthConfig {
     /// Initial token to use
     pub token: String,
     /// Initial token expiration time in epoch seconds
     pub token_expiration: u64,
     /// A function to refresh tokens.
+    #[derivative(Debug = "ignore")]
     pub token_refresher: Arc<dyn TokenRefresher>,
 }
 

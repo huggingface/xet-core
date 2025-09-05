@@ -9,8 +9,9 @@ use cas_object::CompressionScheme;
 use cas_types::{FileRange, QueryReconstructionResponse};
 use clap::{Args, Parser, Subcommand};
 use data::data_client::default_config;
-use data::migration_tool::hub_client::{HubClient, HubClientTokenRefresher};
+use data::migration_tool::hub_client_token_refresher::HubClientTokenRefresher;
 use data::migration_tool::migrate::migrate_files_impl;
+use hub_client::{BearerCredentialHelper, HubClient, Operation};
 use merklehash::MerkleHash;
 use utils::auth::TokenRefresher;
 use walkdir::WalkDir;
@@ -53,7 +54,10 @@ impl XCommand {
             .overrides
             .token
             .unwrap_or_else(|| std::env::var("HF_TOKEN").unwrap_or_default());
-        let hub_client = HubClient::new(&endpoint, &token, &self.overrides.repo_type, &self.overrides.repo_id)?;
+
+        let cred_helper = BearerCredentialHelper::new(token, "");
+        let hub_client =
+            HubClient::new(&endpoint, &self.overrides.repo_type, &self.overrides.repo_id, "xtool", "", cred_helper)?;
 
         self.command.run(hub_client).await
     }
@@ -189,17 +193,22 @@ async fn query_reconstruction(
     bytes_range: Option<FileRange>,
     hub_client: HubClient,
 ) -> Result<Option<QueryReconstructionResponse>> {
-    let token_type = "read";
-    let (endpoint, jwt_token, jwt_token_expiry) = hub_client.get_jwt_token(token_type).await?;
+    let operation = Operation::Download;
+    let jwt_info = hub_client.get_cas_jwt(operation).await?;
     let token_refresher = Arc::new(HubClientTokenRefresher {
-        token_type: token_type.to_owned(),
+        operation,
         client: Arc::new(hub_client),
     }) as Arc<dyn TokenRefresher>;
 
-    let config = default_config(endpoint.clone(), None, Some((jwt_token, jwt_token_expiry)), Some(token_refresher))?;
+    let config = default_config(
+        jwt_info.cas_url.clone(),
+        None,
+        Some((jwt_info.access_token, jwt_info.exp)),
+        Some(token_refresher),
+    )?;
     let cas_storage_config = &config.data_config;
     let remote_client = RemoteClient::new(
-        &endpoint,
+        &jwt_info.cas_url,
         &cas_storage_config.auth,
         &Some(cas_storage_config.cache_config.clone()),
         Some(config.shard_config.cache_directory.clone()),
