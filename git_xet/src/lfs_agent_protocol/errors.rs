@@ -18,9 +18,6 @@ pub enum GitLFSProtocolError {
 
     #[error("I/O error: {0}")]
     IO(#[from] std::io::Error),
-
-    #[error("Internal error: {0}")]
-    Internal(String),
 }
 
 pub(super) type Result<T> = std::result::Result<T, GitLFSProtocolError>;
@@ -35,8 +32,4 @@ pub(crate) fn bad_argument(e: impl Display) -> GitLFSProtocolError {
 
 pub(crate) fn bad_state(e: impl Display) -> GitLFSProtocolError {
     GitLFSProtocolError::State(e.to_string())
-}
-
-pub(super) fn internal(e: impl Display) -> GitLFSProtocolError {
-    GitLFSProtocolError::Internal(e.to_string())
 }

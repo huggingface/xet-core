@@ -21,7 +21,6 @@ clap = { workspace = true }
 derivative = { workspace = true }
 git-url-parse = { workspace = true }
 git2 = { workspace = true }
-openssh = { workspace = true }
 reqwest = { workspace = true }
 reqwest-middleware = { workspace = true }
 rust-netrc = { workspace = true }
@@ -30,6 +29,9 @@ serde_json = { workspace = true }
 tempfile = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
+
+[target.'cfg(unix)'.dependencies]
+openssh = { workspace = true }
 
 [dev-dependencies]
 serial_test = { workspace = true }

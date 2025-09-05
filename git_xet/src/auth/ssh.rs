@@ -11,21 +11,25 @@ use serde::Deserialize;
 use crate::git_url::GitUrl;
 
 #[derive(Deserialize)]
-struct GLFSARHeader {
+struct GitLFSAuthentationResponseHeader {
     #[serde(rename = "Authorization")]
     authorization: String,
 }
 
+// This struct represents the JSON format of the `git-lfs-authenticate` command response over an
+// SSH channel to the remote Git server. For details see `crate::auth.rs`.
 #[derive(Deserialize)]
 #[allow(unused)]
 struct GitLFSAuthenticateResponse {
-    header: GLFSARHeader,
+    header: GitLFSAuthentationResponseHeader,
     href: String,
     expires_in: u32,
 }
 
+// This credential helper calls a remote command `git-lfs-authenticate` over an SSH channel
+// to the remote Git server.
 // We can't cache the authorization token from ssh authentication because
-// it has a shorter TTL than that of a CAS JWT.
+// it has a shorter TTL than that of a Xet CAS JWT.
 pub struct SSHCredentialHelper {
     remote_url: GitUrl,
     operation: Operation,

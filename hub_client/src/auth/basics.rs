@@ -26,35 +26,6 @@ impl CredentialHelper for NoopCredentialHelper {
     }
 }
 
-pub struct BasicJWTCredentialHelper {
-    pub user: String,
-    pub token: String,
-
-    _whoami: &'static str,
-}
-
-impl BasicJWTCredentialHelper {
-    #[allow(clippy::new_ret_no_self)]
-    pub fn new(user: String, token: String, whoami: &'static str) -> Arc<Self> {
-        Arc::new(Self {
-            user,
-            token,
-            _whoami: whoami,
-        })
-    }
-}
-
-#[async_trait]
-impl CredentialHelper for BasicJWTCredentialHelper {
-    async fn fill_credential(&self, req: RequestBuilder) -> Result<RequestBuilder> {
-        Ok(req.basic_auth(self.user.clone(), Some(self.token.clone())))
-    }
-
-    fn whoami(&self) -> &str {
-        self._whoami
-    }
-}
-
 pub struct BearerCredentialHelper {
     pub hf_token: String,
 

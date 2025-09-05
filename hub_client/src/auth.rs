@@ -1,5 +1,5 @@
-mod basic;
+mod basics;
 mod interface;
 
-pub use basic::{BasicJWTCredentialHelper, BearerCredentialHelper, NoopCredentialHelper};
+pub use basics::{BearerCredentialHelper, NoopCredentialHelper};
 pub use interface::CredentialHelper;

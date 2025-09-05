@@ -3,7 +3,7 @@ use std::sync::{Arc, Mutex};
 
 use git2::{Config, Repository};
 
-use crate::errors::*;
+use crate::errors::{GitXetError, Result, config_error, internal};
 use crate::git_url::GitUrl;
 
 #[derive(Clone)]
@@ -117,15 +117,17 @@ impl GitRepo {
 #[cfg(test)]
 mod tests {
     use anyhow::Result;
+    use serial_test::serial;
 
     use crate::git_repo::GitRepo;
-    use crate::test_utils::test_repo::*;
+    use crate::test_utils::TestRepo;
 
     #[test]
+    #[serial(env_var_write_read)]
     fn test_get_remote_from_local_config() -> Result<()> {
         let test_repo = TestRepo::new("main")?;
 
-        let repo = GitRepo::open(&test_repo.repo_path)?;
+        let repo = GitRepo::open(test_repo.path())?;
 
         // test "origin" as fallback
         assert_eq!(repo.remote_name()?, "origin".to_owned());
@@ -142,6 +144,7 @@ mod tests {
     }
 
     #[test]
+    #[serial(env_var_write_read)]
     fn test_get_remote_from_repo_tracking() -> Result<()> {
         // set two remote repos
         let remote_repo_1 = TestRepo::new("main")?;
@@ -150,10 +153,10 @@ mod tests {
         remote_repo_2.new_commit("data", "world".as_bytes(), "add new file")?;
 
         // set local repo tracking two remotes
-        let test_repo = TestRepo::clone_from(&remote_repo_1.repo_path)?;
-        test_repo.set_remote("remote2", remote_repo_2.repo_path.as_path().to_str().unwrap())?;
+        let test_repo = TestRepo::clone_from(&remote_repo_1)?;
+        test_repo.set_remote("remote2", remote_repo_2.path().to_str().unwrap())?;
 
-        let repo = GitRepo::open(&test_repo.repo_path)?;
+        let repo = GitRepo::open(test_repo.path())?;
 
         // test the tracked remote branch
         test_repo.new_branch_tracking_remote("remote2", "main", "featurex")?;
@@ -163,10 +166,11 @@ mod tests {
     }
 
     #[test]
+    #[serial(env_var_write_read)]
     fn test_get_remote_url() -> Result<()> {
         let test_repo = TestRepo::new("main")?;
 
-        let repo = GitRepo::open(&test_repo.repo_path)?;
+        let repo = GitRepo::open(test_repo.path())?;
 
         test_repo.set_remote("upstream", "http://hf.co/foo/bar")?;
 

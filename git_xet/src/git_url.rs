@@ -4,8 +4,14 @@ use std::str::FromStr;
 use git_url_parse::GitUrl as innerGitUrl;
 pub use git_url_parse::Scheme;
 
-use crate::errors::*;
+use crate::errors::{GitXetError, Result, config_error, not_supported};
 
+// This mod implements funtionalities to handle Git remote URLs, especially tailored for
+// Git LFS and Hugging Face repo needs, including deriving Git LFS server endpoint from
+// Git remote URL and handling HF specific repo types.
+
+// `GitUrl` wraps inside a parsed Git remote URL and extends its capability for Git LFS
+// and HF repo specific needs.
 #[derive(Debug, Clone)]
 pub struct GitUrl {
     _raw: String,
@@ -175,6 +181,7 @@ impl GitUrl {
     }
 }
 
+// This defines the exact three types of repos served on HF Hub.
 #[derive(Debug, PartialEq)]
 pub enum HFRepoType {
     Model,
@@ -186,7 +193,7 @@ impl FromStr for HFRepoType {
     type Err = GitXetError;
 
     fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
-        match s {
+        match s.to_lowercase().as_str() {
             "" => Ok(HFRepoType::Model), // when repo type is omitted from the URL the default type is "model"
             "model" | "models" => Ok(HFRepoType::Model),
             "dataset" | "datasets" => Ok(HFRepoType::Dataset),
@@ -228,8 +235,8 @@ impl Display for RepoInfo {
 
 #[cfg(test)]
 mod test_lfs_server_discovery {
-    use super::*;
-    use crate::errors::Result;
+    use super::GitUrl;
+    use crate::errors::{GitXetError, Result};
 
     #[test]
     fn test_canonicalize_to_https() -> Result<()> {
@@ -459,8 +466,11 @@ mod test_lfs_server_discovery {
 
 #[cfg(test)]
 mod test_repo_info_extraction {
+    use git_url_parse::Scheme;
+
+    use super::GitUrl;
     use super::HFRepoType::*;
-    use super::*;
+    use super::RepoInfo;
     use crate::errors::Result;
 
     #[test]

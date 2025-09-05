@@ -8,27 +8,15 @@ use data::data_client::{clean_file, default_config};
 use hub_client::Operation;
 use progress_tracking::{ProgressUpdate, TrackingProgressUpdater};
 
-use crate::constants::{
-    GIT_LFS_CUSTOM_TRANSFER_AGENT_PROGRAM, HF_ENDPOINT_ENV, XET_ACCESS_TOKEN_HEADER, XET_TOKEN_EXPIRATION_HEADER,
-};
-use crate::errors::{GitXetError, Result, internal, not_supported};
+use crate::constants::{HF_ENDPOINT_ENV, XET_ACCESS_TOKEN_HEADER, XET_TOKEN_EXPIRATION_HEADER};
+use crate::errors::{Result, config_error, internal, not_supported};
 use crate::git_repo::GitRepo;
 use crate::git_url::{GitUrl, Scheme};
 use crate::hub_client_token_refresher::HubClientTokenRefresher;
 use crate::lfs_agent_protocol::errors::bad_syntax;
-use crate::lfs_agent_protocol::*;
+use crate::lfs_agent_protocol::{InitRequestInner, ProgressUpdater, TransferAgent, TransferRequest};
 
-struct XetProgressUpdaterWrapper<W: Write + Send + Sync + 'static> {
-    updater: ProgressUpdater<W>,
-}
-
-#[async_trait]
-impl<W: Write + Send + Sync + 'static> TrackingProgressUpdater for XetProgressUpdaterWrapper<W> {
-    async fn register_updates(&self, updates: ProgressUpdate) {
-        let _ = self.updater.update_bytes_so_far(updates.total_bytes_completed);
-    }
-}
-
+// This implements a Git LFS custom transfer agent that uploads and downloads files using the Xet protocol.
 #[derive(Default)]
 pub struct XetAgent {
     repo: OnceLock<GitRepo>,
@@ -49,17 +37,12 @@ impl TransferAgent for XetAgent {
 
         let hf_endpoint = if !matches!(remote_url.scheme(), Scheme::Http | Scheme::Https) && remote_url.port().is_some()
         {
-            let endpoint = std::env::var(HF_ENDPOINT_ENV);
-            match endpoint {
-                Ok(e) => Some(e),
-                Err(_) => {
-                    return Err(GitXetError::InvalidGitConfig(
-                        "This repository has a non-standard Hugging Face remote URL, please specify the Hugging Face server 
-                        endpoint using environment variable 'HF_ENDPOINT'"
-                            .to_owned(),
-                    ));
-                },
-            }
+            Some(std::env::var(HF_ENDPOINT_ENV).map_err(|_| {
+                config_error(
+                    r#"This repository has a non-standard Hugging Face remote URL, 
+                please specify the Hugging Face server endpointusing environment variable "HF_ENDPOINT""#,
+                )
+            })?)
         } else {
             None
         };
@@ -72,10 +55,10 @@ impl TransferAgent for XetAgent {
     }
 
     async fn init_download(&mut self, _: &InitRequestInner) -> Result<()> {
-        Err(not_supported(format!(
-            "custom transfer for download is not available; if you think this is an error, consider 
-            upgrade {GIT_LFS_CUSTOM_TRANSFER_AGENT_PROGRAM} or contact Xet Team at Hugging Face."
-        )))
+        Err(not_supported(
+            "custom transfer for download is not implemented yet. Downloads should operate through standard git-lfs download protocol.
+            If you encounter errors downloading, contact Xet Team at Hugging Face.",
+        ))
     }
 
     async fn upload_one<W: Write + Send + Sync + 'static>(
@@ -83,6 +66,18 @@ impl TransferAgent for XetAgent {
         req: &TransferRequest,
         progress_updater: ProgressUpdater<W>,
     ) -> Result<()> {
+        // Get the token refresher set up before the dummy progress update below,
+        // so that if the internal git credential helper needs to prompt the user for credential,
+        // only one prompt is presented.
+        let repo = self.repo.get().unwrap(); // protocol state guarantees self.repo is set.
+        let token_refresher = HubClientTokenRefresher::new(
+            repo,
+            self.remote_url.clone(),
+            self.hf_endpoint.clone(),
+            Operation::Upload,
+            "",
+        )?;
+
         // From git-lfs:
         // > First worker is the only one allowed to start immediately.
         // > The rest wait until successful response from 1st worker to
@@ -102,26 +97,24 @@ impl TransferAgent for XetAgent {
         let cas_url = req.action.href.clone();
         let token = req.action.header[XET_ACCESS_TOKEN_HEADER].clone();
         let token_expiry: u64 = req.action.header[XET_TOKEN_EXPIRATION_HEADER].parse().map_err(internal)?;
-        let repo = self.repo.get().unwrap(); // protocol state guarantees self.repo is set.
-        let token_refresher = HubClientTokenRefresher::new(
-            repo,
-            self.remote_url.clone(),
-            self.hf_endpoint.clone(),
-            Operation::Upload,
-            "",
-        )?;
+
         let config = default_config(cas_url, None, Some((token, token_expiry)), Some(Arc::new(token_refresher)))?
             .disable_progress_aggregation(); // upload one file at a time so no need for the heavy progress aggregator
         let session = FileUploadSession::new(config.into(), Some(Arc::new(xet_updater))).await?;
 
         let Some(file_path) = &req.path else {
-            return Err(GitXetError::InvalidGitLFSProtocol(bad_syntax("file path not provided for upload request")));
+            return Err(bad_syntax("file path not provided for upload request").into());
         };
 
         clean_file(session.clone(), file_path).await?;
 
-        // git-lfs only waits 30s for the agent to finish after sending a termination event,
-        // so we need to actually upload the shard after each file upload to have the files registered.
+        // We need to actually upload the shard after each file upload to have the files registered, because
+        //
+        // 1. LFS custom transfer protocol is sequential: git-lfs waits for the upload/download result of the one file before sending the request to process the next one;
+        // 2. git-lfs doesn't tell agents how many files to upload/download at the initialization phase;
+        // 3. After sending a termination signal, git-lfs waits for 30s and sends SIGKILL to the agent. SIGKILL is not like SIGINT, it can't be intercepted or ignored by a process.
+        // 4. Xet system is not a real-time system that guarantees response within any duration. Batching and thus effectively delaying shard upload means we risk data loss.
+        //
         // See https://github.com/git-lfs/git-lfs/blob/2c7de1f90cbe13bf9c1ed43b84dda88bb32f2ba4/tq/custom.go#L233
         session.finalize().await?;
 
@@ -133,10 +126,21 @@ impl TransferAgent for XetAgent {
         _req: &TransferRequest,
         _progress_updater: ProgressUpdater<W>,
     ) -> Result<std::path::PathBuf> {
-        todo!()
+        unimplemented!()
     }
 
     async fn terminate(&mut self) -> Result<()> {
         Ok(())
+    }
+}
+
+struct XetProgressUpdaterWrapper<W: Write + Send + Sync + 'static> {
+    updater: ProgressUpdater<W>,
+}
+
+#[async_trait]
+impl<W: Write + Send + Sync + 'static> TrackingProgressUpdater for XetProgressUpdaterWrapper<W> {
+    async fn register_updates(&self, updates: ProgressUpdate) {
+        let _ = self.updater.update_bytes_so_far(updates.total_bytes_completed);
     }
 }

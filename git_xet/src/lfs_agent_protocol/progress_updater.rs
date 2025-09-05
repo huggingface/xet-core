@@ -1,9 +1,8 @@
 use std::io::Write;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
 
-use super::errors::*;
+use super::errors::Result;
 use super::{LFSProtocolResponseEvent, ProgressResponse, to_line_delimited_json_string};
 
 /// A progress updater that send custom transfer agent progress messages to git-lfs.
@@ -57,7 +56,14 @@ impl<W: Write + Send + Sync + 'static> ProgressUpdater<W> {
             }
         }
 
-        // now this is a valid update, check if the channel is available for sending
+        // now this is a valid update, try send only if channel not busy
+        self.try_send_update_message()?;
+
+        Ok(())
+    }
+
+    fn try_send_update_message(&self) -> Result<()> {
+        // check if the channel is available for sending
         let maybe_channel = self.update_channel.try_lock();
 
         let Ok(mut channel) = maybe_channel else {
@@ -65,25 +71,19 @@ impl<W: Write + Send + Sync + 'static> ProgressUpdater<W> {
             return Ok(());
         };
 
-        // critical section begins
-
         // get the latest bytes_so_far in case other threads updated it before this
         // thread acquires the lock
-        let number = self.bytes_so_far.load(Ordering::Relaxed);
-        let current = self.bytes_last_sent.load(Ordering::Relaxed);
+        let current = self.bytes_so_far.load(Ordering::Relaxed);
+        let last = self.bytes_last_sent.load(Ordering::Relaxed);
 
-        let bytes_since_last = number - current;
+        let bytes_since_last = current - last;
         let message = to_line_delimited_json_string(LFSProtocolResponseEvent::Progress(ProgressResponse {
             oid: self.request_oid.clone(),
-            bytes_so_far: number,
+            bytes_so_far: current,
             bytes_since_last,
         }))?;
         channel.write_all(message.as_bytes())?;
-        self.bytes_last_sent.store(number, Ordering::Relaxed);
-
-        drop(channel);
-
-        // critical section ends
+        self.bytes_last_sent.store(current, Ordering::Relaxed);
 
         Ok(())
     }
@@ -92,11 +92,12 @@ impl<W: Write + Send + Sync + 'static> ProgressUpdater<W> {
 #[cfg(test)]
 mod tests {
     use std::io::Write;
+    use std::sync::{Arc, Mutex};
     use std::time::{Duration, Instant};
 
     use anyhow::Result;
 
-    use super::*;
+    use super::ProgressUpdater;
 
     #[derive(Default)]
     struct MockWriter {
@@ -165,7 +166,7 @@ mod tests {
         updater.update_bytes_so_far(50)?;
         drop(updater);
 
-        let msgs = Arc::into_inner(writer).unwrap().into_inner().map_err(internal)?.into_inner();
+        let msgs = Arc::into_inner(writer).unwrap().into_inner()?.into_inner();
         assert_eq!(msgs.len(), 1, "Should send exactly one message");
 
         let mut received = String::from_utf8_lossy(&msgs[0]).to_string();
@@ -199,7 +200,7 @@ mod tests {
         });
         let h2 = tokio::spawn(async move { u2.update_bytes_so_far(40) });
         let h3 = tokio::spawn(async move {
-            tokio::time::sleep(Duration::from_millis(100));
+            tokio::time::sleep(Duration::from_millis(100)).await;
             u3.update_bytes_so_far(40) // duplicate, should skip
         });
 
@@ -210,7 +211,7 @@ mod tests {
 
         drop(updater);
 
-        let msgs = Arc::into_inner(writer).unwrap().into_inner().map_err(internal)?.into_inner();
+        let msgs = Arc::into_inner(writer).unwrap().into_inner()?.into_inner();
         assert_eq!(msgs.len(), 1, "Only the second update should send");
 
         let mut received = String::from_utf8_lossy(&msgs[0]).to_string();
@@ -253,7 +254,7 @@ mod tests {
 
         drop(updater);
 
-        let msgs = Arc::into_inner(writer).unwrap().into_inner().map_err(internal)?.into_inner();
+        let msgs = Arc::into_inner(writer).unwrap().into_inner()?.into_inner();
         assert_eq!(msgs.len(), 1);
 
         assert!(duration.ge(&Duration::from_secs(1)));
@@ -274,7 +275,7 @@ mod tests {
         updater.update_bytes_so_far(50)?;
         drop(updater);
 
-        let msgs = Arc::into_inner(writer).unwrap().into_inner().map_err(internal)?.into_inner();
+        let msgs = Arc::into_inner(writer).unwrap().into_inner()?.into_inner();
         assert_eq!(msgs.len(), 3, "Should send all values when lock is free");
         assert!(msgs.iter().any(|m| String::from_utf8_lossy(m).contains(r#""bytesSoFar":50"#)));
 

@@ -1,10 +1,10 @@
 use anyhow::Result;
 use clap::Parser;
-use git_xet::app::XetApp;
+use git_xet::app::XetAgentApp;
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let app = XetApp::parse();
+    let app = XetAgentApp::parse();
 
     app.run().await?;
 

@@ -1,8 +1,9 @@
-use super::errors::*;
+use super::errors::{Result, bad_state};
 
 // This defines the state of a transfer agent to make sure that request events are initiated
 // in the correct order. Unlike a traditional state machines, we don't define a "terminated"
 // state as the agent will quit on a termination event and thus not move forward from there.
+// For more information on the state transfer, see `crate::lfs_agent_protocol.rs`.
 #[derive(Debug)]
 pub enum LFSAgentState {
     PendingInit,
@@ -14,34 +15,34 @@ pub enum LFSAgentState {
 
 impl LFSAgentState {
     pub fn transit_to(&mut self, to: Self) -> Result<()> {
-        let new_state = match self {
+        match self {
             Self::PendingInit => match to {
-                Self::InitedForUpload | Self::InitedForDownload => Ok(to),
-                _ => Err(bad_state("init event not yet received")),
+                Self::InitedForUpload | Self::InitedForDownload => (),
+                _ => return Err(bad_state("init event not yet received")),
             },
             Self::InitedForUpload => match to {
-                Self::Uploading => Ok(to),
-                Self::Downloading => Err(bad_state("agent initialized for upload")),
-                _ => Err(bad_state("init event already received")),
+                Self::Uploading => (),
+                Self::Downloading => return Err(bad_state("agent initialized for upload")),
+                _ => return Err(bad_state("init event already received")),
             },
             Self::InitedForDownload => match to {
-                Self::Downloading => Ok(to),
-                Self::Uploading => Err(bad_state("agent initialized for download")),
-                _ => Err(bad_state("init event already received")),
+                Self::Downloading => (),
+                Self::Uploading => return Err(bad_state("agent initialized for download")),
+                _ => return Err(bad_state("init event already received")),
             },
             Self::Uploading => match to {
-                Self::Uploading => Ok(to),
-                Self::Downloading => Err(bad_state("agent initialized for upload")),
-                _ => Err(bad_state("data transfer already in progress")),
+                Self::Uploading => (),
+                Self::Downloading => return Err(bad_state("agent initialized for upload")),
+                _ => return Err(bad_state("data transfer already in progress")),
             },
             Self::Downloading => match to {
-                Self::Downloading => Ok(to),
-                Self::Uploading => Err(bad_state("agent initialized for download")),
-                _ => Err(bad_state("data transfer already in progress")),
+                Self::Downloading => (),
+                Self::Uploading => return Err(bad_state("agent initialized for download")),
+                _ => return Err(bad_state("data transfer already in progress")),
             },
         };
 
-        *self = new_state?;
+        *self = to;
 
         Ok(())
     }
@@ -51,7 +52,8 @@ impl LFSAgentState {
 mod tests {
     use anyhow::Result;
 
-    use super::*;
+    use super::LFSAgentState;
+    use crate::lfs_agent_protocol::errors::GitLFSProtocolError;
 
     #[test]
     fn test_state_transit_good() -> Result<()> {

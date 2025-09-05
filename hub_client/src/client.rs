@@ -67,6 +67,7 @@ impl HubClient {
         let repo_id = self.repo_id.as_str();
         let token_type = operation.token_type();
 
+        // note that this API doesn't take a Basic auth
         let url = format!("{endpoint}/api/{repo_type}s/{repo_id}/xet-{token_type}-token/main");
 
         let req = self

@@ -6,7 +6,7 @@ use std::str::FromStr;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
-use super::errors::*;
+use super::errors::{GitLFSProtocolError, Result, bad_argument, bad_syntax};
 
 // This file defines the protocol that Git LFS uses to talk to
 // custom transfer agents. This implementation follows the protocol specification
@@ -16,42 +16,43 @@ use super::errors::*;
 const OID_LEN: usize = 64;
 
 #[derive(Debug, Deserialize, PartialEq)]
-#[serde(tag = "event")]
+#[serde(tag = "event", rename_all = "lowercase")]
 pub enum LFSProtocolRequestEvent {
-    #[serde(rename = "init")]
     Init(InitRequest),
-    #[serde(rename = "upload")]
     Upload(TransferRequest),
-    #[serde(rename = "download")]
     Download(TransferRequest),
-    #[serde(rename = "terminate")]
     Terminate,
 }
 
 #[allow(dead_code)]
 #[derive(Debug, Serialize)]
-#[serde(tag = "event")]
+#[serde(tag = "event", rename_all = "lowercase")]
 pub enum LFSProtocolResponseEvent {
-    #[serde(rename = "progress")]
     Progress(ProgressResponse),
-    #[serde(rename = "complete")]
     Complete(CompleteResponse),
 }
 
 #[derive(Debug, Deserialize, PartialEq)]
-#[serde(tag = "operation")]
+#[serde(tag = "operation", rename_all = "lowercase")]
 pub enum InitRequest {
-    #[serde(rename = "upload")]
     Upload(InitRequestInner),
-    #[serde(rename = "download")]
     Download(InitRequestInner),
 }
 
 #[derive(Debug, Deserialize, PartialEq)]
 pub struct InitRequestInner {
-    pub remote: String,                   // the Git remote
-    pub concurrent: bool,                 // if git-lfs will split the transfer workload per file
-    pub concurrenttransfers: Option<u32>, // the number of splits that git-lfs will create
+    pub remote: String,   // the Git remote, this can either be a remote name like "origin" or a remote URL
+    pub concurrent: bool, // if git-lfs will split the transfer workload
+    pub concurrenttransfers: Option<u32>, /* the number of custom tranfer agent processes that git-lfs will spawn
+                           * Note that this reflects the value of "lfs.concurrenttransfers" in Git config,
+                           * and is just an "FYI" to each agent process. git-lfs splits the transfer workload evenly
+                           * between the agent processes.
+                           * git-lfs doesn't implement any logic to configure this using a env var, but git does expose
+                           * a mechanism to temporarily set any git config using the -c option. So in summary, users can do
+                           * ```
+                           * git -c lfs.concurrenttransfers=<n> push/pull/fetch
+                           * ```
+                           */
 }
 
 #[derive(Debug, Deserialize, PartialEq)]
@@ -64,11 +65,10 @@ pub struct TransferRequest {
 }
 
 #[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ProgressResponse {
-    pub oid: String, // oid of the LFS object
-    #[serde(rename = "bytesSoFar")]
-    pub bytes_so_far: u64, // the total number of bytes transferred so far
-    #[serde(rename = "bytesSinceLast")]
+    pub oid: String,           // oid of the LFS object
+    pub bytes_so_far: u64,     // the total number of bytes transferred so far
     pub bytes_since_last: u64, // the number of bytes transferred since the last progress message
 }
 
@@ -165,6 +165,7 @@ impl InitRequest {
 }
 
 impl TransferRequest {
+    #[allow(unused)]
     pub fn progress(&self, bytes_so_far: u64, bytes_since_last: u64) -> impl Serialize {
         LFSProtocolResponseEvent::Progress(ProgressResponse {
             oid: self.oid.clone(),
@@ -190,6 +191,8 @@ impl TransferRequest {
     }
 }
 
+// The below error codes are expected by git-lfs.
+// See https://github.com/git-lfs/git-lfs/blob/main/docs/custom-transfers.md
 impl ProtocolError {
     fn init_error(message: String) -> Self {
         Self { code: 32, message }
