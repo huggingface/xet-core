@@ -28,12 +28,12 @@ pub struct JsChunkOut {
 
 
 impl JsChunkOut {
-    fn new_with_dedup(chunk: deduplication::Chunk, is_first_chunk: bool) -> Self {
+    fn new_with_dedup(chunk: deduplication::Chunk) -> Self {
         let hash_eligible = mdb_shard::constants::hash_is_global_dedup_eligible(&chunk.hash);
         JsChunkOut {
             hash: chunk.hash.hex(),
             length: chunk.data.len() as u32,
-            dedup: is_first_chunk || hash_eligible,
+            dedup:  hash_eligible,
         }
     }
 }
@@ -61,8 +61,7 @@ impl JsChunker {
         let mut serializable_result: Vec<JsChunkOut> = Vec::with_capacity(result.len());
         
         for chunk in result {
-            let is_first = !self.first_chunk_outputted;
-            serializable_result.push(JsChunkOut::new_with_dedup(chunk, is_first));
+            serializable_result.push(JsChunkOut::new_with_dedup(chunk));
             self.first_chunk_outputted = true;
         }
         
@@ -72,8 +71,7 @@ impl JsChunker {
     pub fn finish(&mut self) -> Result<JsValue, JsValue> {
         let mut result: Vec<JsChunkOut> = vec![];
         if let Some(final_chunk) = self.inner.finish() {
-            let is_first = !self.first_chunk_outputted;
-            result.push(JsChunkOut::new_with_dedup(final_chunk, is_first));
+            result.push(JsChunkOut::new_with_dedup(final_chunk));
             self.first_chunk_outputted = true;
         };
 
