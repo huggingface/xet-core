@@ -58,7 +58,7 @@ struct InstallArg {
 
     /// The number of concurrent LFS uploads/downloads. Default 8.
     #[clap(long)]
-    concurrency: Option<i32>,
+    concurrency: Option<u32>,
 }
 
 #[derive(Args, Debug)]

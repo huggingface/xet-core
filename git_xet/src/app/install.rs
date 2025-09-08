@@ -14,18 +14,18 @@ pub(crate) enum ConfigLocation {
 }
 
 // Install git-xet in the system Git config.
-pub fn system(concurrency: Option<i32>) -> Result<()> {
+pub fn system(concurrency: Option<u32>) -> Result<()> {
     install_impl(ConfigLocation::System, concurrency)
 }
 
 // Install git-xet in the global Git config.
-pub fn global(concurrency: Option<i32>) -> Result<()> {
+pub fn global(concurrency: Option<u32>) -> Result<()> {
     install_impl(ConfigLocation::Global, concurrency)
 }
 
 // Install git-xet in the local repo's Git config at `repo_path` if valid or
 // at the current working directory.
-pub fn local(repo_path: Option<PathBuf>, concurrency: Option<i32>) -> Result<()> {
+pub fn local(repo_path: Option<PathBuf>, concurrency: Option<u32>) -> Result<()> {
     install_impl(ConfigLocation::Local(repo_path), concurrency)
 }
 
@@ -37,7 +37,7 @@ pub fn local(repo_path: Option<PathBuf>, concurrency: Option<i32>) -> Result<()>
 //
 // If `concurrency` is specified with a value greater than 1, set "lfs.concurrenttransfers" in the same
 // Git config as above to this number.
-fn install_impl(location: ConfigLocation, concurrency: Option<i32>) -> Result<()> {
+fn install_impl(location: ConfigLocation, concurrency: Option<u32>) -> Result<()> {
     let cwd = std::env::current_dir()?;
 
     let (wd, loc_profile) = match location {
@@ -123,7 +123,7 @@ pub mod tests {
 
     fn test_install_with_default_concurrency<F>(install_fn: F) -> Result<()>
     where
-        F: FnOnce(Option<PathBuf>, Option<i32>) -> crate::errors::Result<()>,
+        F: FnOnce(Option<PathBuf>, Option<u32>) -> crate::errors::Result<()>,
     {
         // set up repo
         let test_repo = TestRepo::new("main")?;
@@ -148,7 +148,7 @@ pub mod tests {
 
     fn test_install_with_no_concurrency<F>(install_fn: F) -> Result<()>
     where
-        F: FnOnce(Option<PathBuf>, Option<i32>) -> crate::errors::Result<()>,
+        F: FnOnce(Option<PathBuf>, Option<u32>) -> crate::errors::Result<()>,
     {
         // set up repo
         let test_repo = TestRepo::new("main")?;
@@ -172,7 +172,7 @@ pub mod tests {
 
     fn test_install_with_custom_concurrency<F>(install_fn: F) -> Result<()>
     where
-        F: FnOnce(Option<PathBuf>, Option<i32>) -> crate::errors::Result<()>,
+        F: FnOnce(Option<PathBuf>, Option<u32>) -> crate::errors::Result<()>,
     {
         // set up repo
         let test_repo = TestRepo::new("main")?;
@@ -197,7 +197,7 @@ pub mod tests {
 
     fn test_install_with_bad_concurrency<F>(install_fn: F) -> Result<()>
     where
-        F: FnOnce(Option<PathBuf>, Option<i32>) -> crate::errors::Result<()>,
+        F: FnOnce(Option<PathBuf>, Option<u32>) -> crate::errors::Result<()>,
     {
         let test_repo = TestRepo::new("main")?;
 
