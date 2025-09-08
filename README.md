@@ -16,7 +16,7 @@ limitations under the License.
 <p align="center">
     <a href="https://github.com/huggingface/xet-core/blob/main/LICENSE"><img alt="License" src="https://img.shields.io/github/license/huggingface/xet-core.svg?color=blue"></a>
     <a href="https://github.com/huggingface/xet-core/releases"><img alt="GitHub release" src="https://img.shields.io/github/release/huggingface/xet-core.svg"></a>
-    <a href="https://github.com/huggingface/smolagents/blob/main/CODE_OF_CONDUCT.md"><img alt="Contributor Covenant" src="https://img.shields.io/badge/Contributor%20Covenant-v2.0%20adopted-ff69b4.svg"></a>
+    <a href="https://github.com/huggingface/xet-core/blob/main/CODE_OF_CONDUCT.md"><img alt="Contributor Covenant" src="https://img.shields.io/badge/Contributor%20Covenant-v2.0%20adopted-ff69b4.svg"></a>
 </p>
 
 <h3 align="center">
@@ -49,7 +49,7 @@ xet-core enables huggingface_hub to utilize xet storage for uploading and downlo
 * [data](./data): main driver for client operations - FilePointerTranslator drives hydrating or shrinking files, chunking + deduplication here.
 * [error_printer](./error_printer): utility for printing errors conveniently.
 * [file_utils](./file_utils): SafeFileCreator utility, used by chunk_cache.
-* [hf_xet](./hf_xet): Python integration with Rust code, uses maturin to build hfxet Python package. Main integration with HF Hub Python package.
+* [hf_xet](./hf_xet): Python integration with Rust code, uses maturin to build `hf-xet` Python package. Main integration with HF Hub Python package.
 * [mdb_shard](./mdb_shard): Shard operations, including Shard format, dedupe probing, benchmarks, and utilities.
 * [merklehash](./merklehash): MerkleHash type, 256-bit hash, widely used across many crates.
 * [progress_reporting](./progress_reporting): offers ReportedWriter so progress for Writer operations can be displayed.
@@ -98,9 +98,33 @@ cargo +nightly fmt --manifest-path ./Cargo.toml --all
 6. Test: 
 ```
 ipython
-import hfxet 
+import hf_xet as hfxet
 hfxet.upload_files()
 hfxet.download_files()
+```
+
+#### Developing with tokio console
+
+> Prerequisite is installing tokio-console (`cargo install tokio-console`). See [https://github.com/tokio-rs/console](https://github.com/tokio-rs/console)
+
+To use tokio-console with hf-xet there are compile hf_xet with the following command:
+```sh
+RUSTFLAGS="--cfg tokio_unstable" maturin develop -r --features tokio-console
+```
+
+Then while hf_xet is running (via a `hf` cli command or `huggingface_hub` python code), `tokio-console` will be able to connect.
+
+### Ex.
+
+```bash
+# In one terminal:
+pip install huggingface_hub
+RUSTFLAGS="--cfg tokio_unstable" maturin develop -r --features tokio-console
+hf download openai/gpt-oss-20b
+
+# In another terminal
+cargo install tokio-console
+tokio-console
 ```
 
 #### Building universal whl for MacOS:
@@ -134,6 +158,18 @@ Here are the recommended steps:
    * Linux: the choice will depend on the architecture and wheel distribution used. To get this information, `cat` the `WHEEL` file name within the `hf_xet.dist-info` directory in your site packages. The wheel file will have the linux build and architecture in the file name. Eg: `cat /home/ubuntu/.venv/lib/python3.12/site-packages/hf_xet-*.dist-info/WHEEL`. You will use the file named `hf_xet-<manylinux | musllinux>-<x86_64 | arm64>.abi3.so.dbg` choosing the distribution and platform that matches your wheel. Eg: `hf_xet-manylinux-x86_64.abi3.so.dbg`.
 4. Copy the symbols to the site package path from step 2 above + `hf_xet`. Eg: `cp -r hf_xet-1.1.2-manylinux-x86_64.abi3.so.dbg /home/ubuntu/.venv/lib/python3.12/site-packages/hf_xet`
 5. Run your python binary with `RUST_BACKTRACE=full` and recreate your failure.
+
+### Debugging Environment Variables
+
+To enable logging and see more debugging / diagnostics information, set the following:
+
+```
+RUST_BACKTRACE=full
+RUST_LOG=info
+HF_XET_LOG_FILE=/tmp/xet.log
+```
+
+Note: HF_XET_LOG_FILE expects a full writable path. If one isn't found it will use stdout console for logging.
 
 ## References & History
 
