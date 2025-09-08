@@ -1,5 +1,3 @@
-use base64::alphabet::STANDARD;
-use base64::engine::GeneralPurpose;
 use merklehash::{DataHashHexParseError, MerkleHash, xorb_hash};
 use serde::{Deserialize, Serialize};
 use wasm_bindgen::prelude::*;
@@ -105,6 +103,7 @@ pub fn compute_xorb_hash(chunks_array: JsValue) -> Result<String, JsValue> {
 pub fn compute_file_hash(chunks_array: JsValue) -> Result<String, JsValue> {
     let js_chunks =
         serde_wasm_bindgen::from_value::<Vec<JsChunkIn>>(chunks_array).map_err(|e| JsValue::from(e.to_string()))?;
+    console_log!("computing file hash with {} chunks, file_len: {}", js_chunks.len(), js_chunks.iter().fold(0, |acc, jsc| acc + jsc.length as usize));
 
     let chunk_list: Vec<(MerkleHash, usize)> = js_chunks
         .into_iter()
