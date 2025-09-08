@@ -10,7 +10,6 @@ mod progress_updater;
 mod protocol_spec;
 
 use agent_state::LFSAgentState;
-
 pub use errors::GitLFSProtocolError;
 pub use progress_updater::ProgressUpdater;
 pub use protocol_spec::*;
@@ -42,20 +41,21 @@ pub trait TransferAgent {
     async fn terminate(&mut self) -> Result<()>;
 }
 
-/// The git-lfs client communicates with the custom transfer process via the stdin and stdout streams. No file content is communicated
-/// on these streams, only request / response metadata. The metadata exchanged is always in Line Delimited JSON format. External files
-/// will be referenced when actual content is exchanged.
+/// The git-lfs client communicates with the custom transfer process via the stdin and stdout streams. No file content
+/// is communicated on these streams, only request / response metadata. The metadata exchanged is always in Line
+/// Delimited JSON format. External files will be referenced when actual content is exchanged.
 ///
 /// The protocol consists of 3 stages:
 /// Stage 1: Initiation
 ///     Immediately after invoking a custom transfer process, git-lfs sends initiation data to the process over stdin.
 ///     This tells the process useful information about the configuration.
 /// Stage 2: 0..N Transfers
-///     After the initiation exchange, git-lfs will send any number of transfer requests to the stdin of the transfer process,
-///     in a serial sequence. Once a transfer request is sent to the process, it awaits a completion response before sending the next request.
+///     After the initiation exchange, git-lfs will send any number of transfer requests to the stdin of the transfer
+///     process, in a serial sequence. Once a transfer request is sent to the process, it awaits a completion response
+///     before sending the next request.
 /// Stage 3: Finish & Cleanup
-///     When all transfers have been processed, git-lfs will send a "terminate" event. On receiving this message the transfer process should
-///     clean up and terminate. No response is expected.
+///     When all transfers have been processed, git-lfs will send a "terminate" event. On receiving this message the
+///     transfer process should clean up and terminate. No response is expected.
 ///
 /// See https://github.com/git-lfs/git-lfs/blob/main/docs/custom-transfers.md for details.
 pub async fn lfs_protocol_loop<R, W, A>(input_channel: R, output_channel: W, agent: &mut A) -> Result<()>

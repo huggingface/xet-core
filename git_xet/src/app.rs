@@ -98,10 +98,10 @@ struct CliOverrides {
 /// To start, run "git-xet install".
 ///
 /// Git-Xet works by registering itself as a custom transfer agent to Git LFS by name "xet". On "git push", "git fetch"
-/// or "git pull", git-lfs negotiates with the remote server to determine the transfer agent to use. During this process,
-/// git-lfs sends to the server all locally registered agent names in the Batch API request, and the server replies with
-/// exactly one agent name in the response. Should "xet" be picked, git-lfs delegates the uploading or downloading operation
-/// to Git-Xet through a sequential protocol.
+/// or "git pull", git-lfs negotiates with the remote server to determine the transfer agent to use. During this
+/// process, git-lfs sends to the server all locally registered agent names in the Batch API request, and the server
+/// replies with exactly one agent name in the response. Should "xet" be picked, git-lfs delegates the uploading or
+/// downloading operation to Git-Xet through a sequential protocol.
 ///
 /// For more details, see https://github.com/git-lfs/git-lfs/blob/main/docs/api/batch.md and
 /// https://github.com/git-lfs/git-lfs/blob/main/docs/custom-transfers.md.

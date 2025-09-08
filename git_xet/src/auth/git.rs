@@ -34,14 +34,14 @@ use crate::git_process_wrapping::run_git_captured_with_input_and_output;
 //
 // If no saved credential is found for the queried host, this command will ask the user for credentials following the
 // below strategies (https://git-scm.com/docs/gitcredentials)
-// > 1. If the `GIT_ASKPASS` environment variable is set, the program specified by the variable is invoked. A suitable prompt
-// >    is provided to the program on the command line, and the user’s input is read from its standard output.
+// > 1. If the `GIT_ASKPASS` environment variable is set, the program specified by the variable is invoked. A suitable
+// > prompt is provided to the program on the command line, and the user’s input is read from its standard output.
 // > 2. Otherwise, if the `core.askPass` configuration variable is set, its value is used as above.
 // > 3. Otherwise, if the `SSH_ASKPASS` environment variable is set, its value is used as above.
 // > 4. Otherwise, the user is prompted on the terminal.
-// In case 4, dedicated channels (file descriptors) are opened from "/dev/tty" (unix-like systems) or "CONIN$ and "CONOUT$" (Windows)
-// so the process can still communicate with the parent process, i.e. git-xet over stdin (fd 0) and stdout (fd 1).
-// See https://github.com/git/git/blob/2462961280690837670d997bde64bd4ebf8ae66d/compat/terminal.c#L427 for details.
+// In case 4, dedicated channels (file descriptors) are opened from "/dev/tty" (unix-like systems) or "CONIN$ and
+// "CONOUT$" (Windows) so the process can still communicate with the parent process, i.e. git-xet over stdin (fd 0) and
+// stdout (fd 1). See https://github.com/git/git/blob/2462961280690837670d997bde64bd4ebf8ae66d/compat/terminal.c#L427 for details.
 pub struct GitCredentialHelper {}
 
 impl GitCredentialHelper {

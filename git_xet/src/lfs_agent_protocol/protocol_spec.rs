@@ -47,8 +47,9 @@ pub struct InitRequestInner {
                            * Note that this reflects the value of "lfs.concurrenttransfers" in Git config,
                            * and is just an "FYI" to each agent process. git-lfs splits the transfer workload evenly
                            * between the agent processes.
-                           * git-lfs doesn't implement any logic to configure this using a env var, but git does expose
-                           * a mechanism to temporarily set any git config using the -c option. So in summary, users can do
+                           * git-lfs doesn't implement any logic to configure this using a env var, but git does
+                           * expose a mechanism to temporarily set any git config using the -c option.
+                           * So in summary, users can do
                            * ```
                            * git -c lfs.concurrenttransfers=<n> push/pull/fetch
                            * ```

@@ -68,7 +68,8 @@ impl TestRepo {
         Ok(())
     }
 
-    // Create a new local branch `local_branch_name` off HEAD in this repo that tracks a remote branch `remote`:`remote_branch_name`.
+    // Create a new local branch `local_branch_name` off HEAD in this repo that tracks a remote branch
+    // `remote`:`remote_branch_name`.
     pub fn new_branch_tracking_remote(
         &self,
         remote: &str,

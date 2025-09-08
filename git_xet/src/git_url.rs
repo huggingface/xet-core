@@ -468,9 +468,8 @@ mod test_lfs_server_discovery {
 mod test_repo_info_extraction {
     use git_url_parse::Scheme;
 
-    use super::GitUrl;
     use super::HFRepoType::*;
-    use super::RepoInfo;
+    use super::{GitUrl, RepoInfo};
     use crate::errors::Result;
 
     #[test]

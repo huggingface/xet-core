@@ -91,9 +91,8 @@ impl HubClient {
 #[cfg(test)]
 mod tests {
     use super::HubClient;
-    use crate::BearerCredentialHelper;
-    use crate::Operation;
     use crate::errors::Result;
+    use crate::{BearerCredentialHelper, Operation};
 
     #[tokio::test]
     #[ignore = "need valid token"]
