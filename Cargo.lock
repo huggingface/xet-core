@@ -496,7 +496,7 @@ dependencies = [
  "url",
  "utils",
  "wiremock",
- "xet_threadpool",
+ "xet_runtime",
 ]
 
 [[package]]
@@ -829,7 +829,7 @@ dependencies = [
  "ulid",
  "utils",
  "walkdir",
- "xet_threadpool",
+ "xet_runtime",
 ]
 
 [[package]]
@@ -3776,7 +3776,7 @@ dependencies = [
  "tokio",
  "tracing",
  "web-time",
- "xet_threadpool",
+ "xet_runtime",
 ]
 
 [[package]]
@@ -4364,7 +4364,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ea2f10b9bb0928dfb1b42b65e1f9e36f7f54dbdf08457afefb38afcdec4fa2bb"
 
 [[package]]
-name = "xet_threadpool"
+name = "xet_runtime"
 version = "0.1.0"
 dependencies = [
  "error_printer",

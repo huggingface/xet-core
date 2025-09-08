@@ -27,7 +27,7 @@ use tracing::{debug, info, instrument};
 use utils::auth::AuthConfig;
 #[cfg(not(target_family = "wasm"))]
 use utils::singleflight::Group;
-use xet_threadpool::{global_semaphore_handle, GlobalSemaphoreHandle, ThreadPool};
+use xet_runtime::{global_semaphore_handle, GlobalSemaphoreHandle, ThreadPool};
 
 #[cfg(not(target_family = "wasm"))]
 use crate::download_utils::*;
@@ -826,7 +826,7 @@ mod tests {
     use httpmock::Method::GET;
     use httpmock::MockServer;
     use tracing_test::traced_test;
-    use xet_threadpool::ThreadPool;
+    use xet_runtime::ThreadPool;
 
     use super::*;
     use crate::output_provider::BufferProvider;

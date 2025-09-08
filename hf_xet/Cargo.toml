@@ -15,7 +15,7 @@ data = { path = "../data" }
 error_printer = { path = "../error_printer" }
 progress_tracking = { path = "../progress_tracking" }
 utils = { path = "../utils" }
-xet_threadpool = { path = "../xet_threadpool" }
+xet_runtime = { path = "../xet_runtime" }
 
 async-trait = "0.1"
 bipbuffer = "0.1"
