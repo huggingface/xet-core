@@ -1,6 +1,3 @@
-#[cfg(not(target_family = "wasm"))]
-mod dns_utils;
-
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -96,7 +93,6 @@ fn reqwest_client() -> Result<reqwest::Client, CasClientError> {
             reqwest::Client::builder()
                 .pool_idle_timeout(Duration::from_secs(*CLIENT_IDLE_CONNECTION_TIMEOUT_SECS))
                 .pool_max_idle_per_host(*CLIENT_MAX_IDLE_CONNECTIONS)
-                .dns_resolver(Arc::from(dns_utils::GaiResolverWithAbsolute::default()))
                 .build()
         })?;
 
