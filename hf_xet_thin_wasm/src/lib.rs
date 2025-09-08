@@ -50,6 +50,7 @@ pub struct JsChunker {
 impl JsChunker {
     #[wasm_bindgen(constructor)]
     pub fn new(target_chunk_size: usize) -> JsChunker {
+        console_log!("new chunker");
         JsChunker {
             inner: deduplication::Chunker::new(target_chunk_size),
             first_chunk_outputted: false,
@@ -76,6 +77,8 @@ impl JsChunker {
             result.push(JsChunkOut::new_with_dedup(final_chunk, is_first));
             self.first_chunk_outputted = true;
         };
+
+        console_log!("chunking finished");
 
         serde_wasm_bindgen::to_value(&result).map_err(|e| e.into())
     }
