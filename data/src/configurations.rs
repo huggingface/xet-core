@@ -69,11 +69,17 @@ pub struct ShardConfig {
 }
 
 #[derive(Debug)]
+pub struct ProgressConfig {
+    pub aggregate: bool,
+}
+
+#[derive(Debug)]
 pub struct TranslatorConfig {
     pub data_config: DataConfig,
     pub shard_config: ShardConfig,
     pub repo_info: Option<RepoInfo>,
     pub session_id: Option<String>,
+    pub progress_config: ProgressConfig,
 }
 
 impl TranslatorConfig {
@@ -103,8 +109,16 @@ impl TranslatorConfig {
                 repo_paths: vec!["".into()],
             }),
             session_id: None,
+            progress_config: ProgressConfig { aggregate: true },
         };
 
         Ok(Arc::new(translator_config))
+    }
+
+    pub fn disable_progress_aggregation(self) -> Self {
+        Self {
+            progress_config: ProgressConfig { aggregate: false },
+            ..self
+        }
     }
 }
