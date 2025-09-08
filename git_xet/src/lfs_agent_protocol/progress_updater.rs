@@ -32,32 +32,12 @@ impl<W: Write + Send + Sync + 'static> ProgressUpdater<W> {
     }
 
     pub fn update_bytes_so_far(&self, number: u64) -> Result<()> {
-        // load and check instead of swap to ensure monotonic updates
-        let mut current = self.bytes_so_far.load(Ordering::Relaxed);
+        let current: u64 = self.bytes_so_far.fetch_max(number, Ordering::Relaxed);
 
-        loop {
-            // this update is already late, skip this message
-            if current >= number {
-                return Ok(());
-            }
-
-            match self
-                .bytes_so_far
-                .compare_exchange(current, number, Ordering::Relaxed, Ordering::Relaxed)
-            {
-                // no new update was received, record this
-                Ok(_) => {
-                    break;
-                },
-                // another update was received and recorded, check again
-                Err(v) => {
-                    current = v;
-                },
-            }
+        if current < number {
+            // now this is a valid update, try send only if channel not busy
+            self.try_send_update_message()?;
         }
-
-        // now this is a valid update, try send only if channel not busy
-        self.try_send_update_message()?;
 
         Ok(())
     }

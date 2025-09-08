@@ -26,7 +26,7 @@ use ssh::SSHCredentialHelper;
 // 2. If the remote URL is an HTTP URL, Git-Xet will leverage the same credentials used to authorize the Git LFS batch
 //  API request, which is also served on a HTTP service.
 // 3. If the remote URL is an SSH URL, Git-Xet will leverage the same mechanism as how Git LFS acquires the credentials
-//  to authorize the batch API request. Git LFS does this by calling the `git-lfs-authenticate` command over the SSH channel
+//  to authorize the batch API request. Git LFS does this by calling the `git-lfs-authenticate` command over an SSH channel
 //  to the endpoint as in the Git remote URL. See https://github.com/git-lfs/git-lfs/blob/main/docs/api/authentication.md
 //  and https://github.com/git-lfs/git-lfs/blob/463ed9727d21155585721489fdb8cc81030f979b/lfshttp/ssh.go#L76 for details of this
 //  command. The HF Xet CAS token API on HF Hub has been updated to accept this type of authorization.

@@ -289,8 +289,8 @@ mod tests {
             concurrent: false,
             concurrenttransfers: None,
         });
-        let mut error = to_line_delimited_json_string(init_req.error("agent failed initialization"))?;
-        let mut expected = r#"{ "error": { "code": 32, "message": "agent failed initialization" } }"#.to_owned();
+        let mut error = to_line_delimited_json_string(init_req.error("agent failed initiation"))?;
+        let mut expected = r#"{ "error": { "code": 32, "message": "agent failed initiation" } }"#.to_owned();
 
         error.retain(|c| !c.is_whitespace());
         expected.retain(|c| !c.is_whitespace());

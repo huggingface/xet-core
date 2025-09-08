@@ -40,7 +40,7 @@ impl TransferAgent for XetAgent {
             Some(std::env::var(HF_ENDPOINT_ENV).map_err(|_| {
                 config_error(
                     r#"This repository has a non-standard Hugging Face remote URL, 
-                please specify the Hugging Face server endpointusing environment variable "HF_ENDPOINT""#,
+                please specify the Hugging Face server endpoint using environment variable "HF_ENDPOINT""#,
                 )
             })?)
         } else {
@@ -111,7 +111,7 @@ impl TransferAgent for XetAgent {
         // We need to actually upload the shard after each file upload to have the files registered, because
         //
         // 1. LFS custom transfer protocol is sequential: git-lfs waits for the upload/download result of the one file before sending the request to process the next one;
-        // 2. git-lfs doesn't tell agents how many files to upload/download at the initialization phase;
+        // 2. git-lfs doesn't tell agents how many files to upload/download at the initiation phase;
         // 3. After sending a termination signal, git-lfs waits for 30s and sends SIGKILL to the agent. SIGKILL is not like SIGINT, it can't be intercepted or ignored by a process.
         // 4. Xet system is not a real-time system that guarantees response within any duration. Batching and thus effectively delaying shard upload means we risk data loss.
         //

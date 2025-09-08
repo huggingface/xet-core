@@ -22,22 +22,22 @@ impl LFSAgentState {
             },
             Self::InitedForUpload => match to {
                 Self::Uploading => (),
-                Self::Downloading => return Err(bad_state("agent initialized for upload")),
+                Self::Downloading => return Err(bad_state("agent initiated for upload")),
                 _ => return Err(bad_state("init event already received")),
             },
             Self::InitedForDownload => match to {
                 Self::Downloading => (),
-                Self::Uploading => return Err(bad_state("agent initialized for download")),
+                Self::Uploading => return Err(bad_state("agent initiated for download")),
                 _ => return Err(bad_state("init event already received")),
             },
             Self::Uploading => match to {
                 Self::Uploading => (),
-                Self::Downloading => return Err(bad_state("agent initialized for upload")),
+                Self::Downloading => return Err(bad_state("agent initiated for upload")),
                 _ => return Err(bad_state("data transfer already in progress")),
             },
             Self::Downloading => match to {
                 Self::Downloading => (),
-                Self::Uploading => return Err(bad_state("agent initialized for download")),
+                Self::Uploading => return Err(bad_state("agent initiated for download")),
                 _ => return Err(bad_state("data transfer already in progress")),
             },
         };

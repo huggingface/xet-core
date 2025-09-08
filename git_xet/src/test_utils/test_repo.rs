@@ -12,44 +12,36 @@ use crate::test_utils::TempHome;
 pub struct TestRepo {
     home: TempHome,
     repo_path: PathBuf,
-    _tempdir: TempDir,
 }
 
 impl TestRepo {
     // Create a repo under a temporary directory with the default branch name set to `default_branch`.
     pub fn new(default_branch: &str) -> Result<Self> {
         let home = TempHome::new()?.with_default_git_config()?;
-        let mut tempdir = TempDir::new_in(home.path())?;
-        tempdir.disable_cleanup(true); // drop of temp home will clean this up
+        let tempdir = TempDir::new_in(home.path())?.keep(); // drop of temp home will clean this up
 
         let repo_name = "repo";
-        let repo_path = std::path::absolute(tempdir.path().join(repo_name))?;
+        let repo_path = std::path::absolute(tempdir.join(repo_name))?;
         std::fs::create_dir_all(&repo_path)?;
 
         run_git_captured(&repo_path, "init", &["-b", default_branch])?;
 
-        Ok(Self {
-            home,
-            repo_path,
-            _tempdir: tempdir,
-        })
+        Ok(Self { home, repo_path })
     }
 
-    // Create a repo under a temporary directory by cloning from a repo at path `remote`.
+    // Create a repo under a temporary directory by cloning from a `remote` repo.
     pub fn clone_from(remote: &TestRepo) -> Result<Self> {
         let home = remote.home.clone();
-        let mut tempdir = TempDir::new_in(home.path())?;
-        tempdir.disable_cleanup(true); // drop of temp home will clean this up
+        let tempdir = TempDir::new_in(home.path())?.keep(); // drop of temp home will clean this up
 
         let repo_name = "repo";
-        let repo_path = std::path::absolute(tempdir.path().join(repo_name))?;
+        let repo_path = std::path::absolute(tempdir.join(repo_name))?;
 
-        run_git_captured(tempdir.path(), "clone", &[remote.path().as_os_str(), repo_name.as_ref()])?;
+        run_git_captured(tempdir, "clone", &[remote.path().as_os_str(), repo_name.as_ref()])?;
 
         Ok(Self {
             home: remote.home.clone(),
             repo_path,
-            _tempdir: tempdir,
         })
     }
 
