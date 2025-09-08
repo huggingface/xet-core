@@ -38,7 +38,7 @@ In order to compile xet-core to wasm there are numerous changes:
 ```bash
 rustup toolchain install nightly
 rustup component add rust-src --toolchain nightly
-cargo install wasm-bindgen-cli
+cargo install --version 0.2.100 wasm-bindgen-cli
 ```
 - Build with `./build_wasm.sh` (bash) 
 

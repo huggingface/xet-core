@@ -85,7 +85,8 @@ jobs:
           components: rust-src
       - name: Install wasm-bindgen-cli and wasm-pack
         run: |
-          cargo install wasm-bindgen-cli wasm-pack
+          cargo install --version 0.2.100 wasm-bindgen-cli
+          cargo install --version 0.13.1 wasm-pack
       - name: Build hf_xet_thin_wasm
         working-directory: hf_xet_thin_wasm
         run: |
