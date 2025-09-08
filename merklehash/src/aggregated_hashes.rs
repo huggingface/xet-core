@@ -25,7 +25,7 @@ pub const AGGREGATED_HASHES_MEAN_TREE_BRANCHING_FACTOR: u64 = 4;
 ///    children: This ensures that the graph always has at most 1/2 the number of parents as children. and we don't have
 ///    too wide branches.
 #[inline]
-fn next_merge_cut(hashes: &[(MerkleHash, usize)]) -> usize {
+fn next_merge_cut(hashes: &[(MerkleHash, u64)]) -> usize {
     if hashes.len() <= 2 {
         return hashes.len();
     }
@@ -45,7 +45,7 @@ fn next_merge_cut(hashes: &[(MerkleHash, usize)]) -> usize {
 
 /// Merge the hashes together, including the size information and returning the new (hash, size) pair.
 #[inline]
-fn merged_hash_of_sequence(hash: &[(MerkleHash, usize)]) -> (MerkleHash, usize) {
+fn merged_hash_of_sequence(hash: &[(MerkleHash, u64)]) -> (MerkleHash, u64) {
     // Use a threadlocal buffer to avoid the overhead of reallocations.
     thread_local! {
         static BUFFER: RefCell<String> =
@@ -70,7 +70,7 @@ fn merged_hash_of_sequence(hash: &[(MerkleHash, usize)]) -> (MerkleHash, usize) 
 /// Iteratively collapse the list of hashes using the criteria in next_merge_cut
 /// until only one hash remains; this is the aggregated hash.
 #[inline]
-fn aggregated_node_hash(chunks: &[(MerkleHash, usize)]) -> MerkleHash {
+fn aggregated_node_hash(chunks: &[(MerkleHash, u64)]) -> MerkleHash {
     if chunks.is_empty() {
         return MerkleHash::default();
     }
@@ -100,7 +100,7 @@ fn aggregated_node_hash(chunks: &[(MerkleHash, usize)]) -> MerkleHash {
 
 /// The xorb hash
 #[inline]
-pub fn xorb_hash(chunks: &[(MerkleHash, usize)]) -> MerkleHash {
+pub fn xorb_hash(chunks: &[(MerkleHash, u64)]) -> MerkleHash {
     if chunks.is_empty() {
         return MerkleHash::default();
     }
@@ -110,7 +110,7 @@ pub fn xorb_hash(chunks: &[(MerkleHash, usize)]) -> MerkleHash {
 
 /// The file hash when a salt is needed.
 #[inline]
-pub fn file_hash_with_salt(chunks: &[(MerkleHash, usize)], salt: &[u8; 32]) -> MerkleHash {
+pub fn file_hash_with_salt(chunks: &[(MerkleHash, u64)], salt: &[u8; 32]) -> MerkleHash {
     if chunks.is_empty() {
         return MerkleHash::default();
     }
@@ -120,7 +120,7 @@ pub fn file_hash_with_salt(chunks: &[(MerkleHash, usize)], salt: &[u8; 32]) -> M
 
 /// The file hash calculation from a series of chunks; to be used when there isn't a salt.
 #[inline]
-pub fn file_hash(chunks: &[(MerkleHash, usize)]) -> MerkleHash {
+pub fn file_hash(chunks: &[(MerkleHash, u64)]) -> MerkleHash {
     file_hash_with_salt(chunks, &[0; 32])
 }
 
@@ -172,7 +172,7 @@ mod tests {
             }
             println!("],");
 
-            let hash_list: Vec<_> = v.iter().map(|&hi| (rh(hi), (hi * 100) as usize)).collect();
+            let hash_list: Vec<_> = v.iter().map(|&hi| (rh(hi), (hi * 100))).collect();
             print!("\"{:?}\",", xorb_hash(&hash_list));
 
             // Now do a few salts along with the 0 salt to ensure we get good coverage there.

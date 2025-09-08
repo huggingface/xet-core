@@ -37,7 +37,7 @@ impl RawXorbData {
 
         debug_assert_le!(num_bytes, *MAX_XORB_BYTES);
 
-        let hash_and_len: Vec<_> = chunks.iter().map(|c| (c.hash, c.data.len())).collect();
+        let hash_and_len: Vec<_> = chunks.iter().map(|c| (c.hash, c.data.len() as u64)).collect();
         let cas_hash = xorb_hash(&hash_and_len);
 
         // Build the MDBCASInfo struct.
