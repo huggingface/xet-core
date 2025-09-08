@@ -1,7 +1,7 @@
-use merklehash::{DataHashHexParseError, MerkleHash, compute_internal_node_hash};
+use merklehash::{DataHashHexParseError, MerkleHash};
 use serde::{Deserialize, Serialize};
-use std::cell::RefCell;
-use std::fmt::Write;
+// use std::cell::RefCell;
+// use std::fmt::Write;
 use wasm_bindgen::prelude::*;
 
 macro_rules! console_log {
@@ -95,7 +95,7 @@ fn parse_chunks(chunks_in: Vec<JsChunkIn>) -> Result<Vec<(MerkleHash, u64)>, Dat
 pub fn compute_xorb_hash(chunks_array: JsValue) -> Result<String, JsValue> {
     let js_chunks: Vec<JsChunkIn> =
         serde_wasm_bindgen::from_value::<Vec<JsChunkIn>>(chunks_array).map_err(|e| JsValue::from(e.to_string()))?;
-    let chunks = parse_chunks.map_err(|e| JsValue::from(e.to_string()))?;
+    let chunks = parse_chunks(js_chunks).map_err(|e| JsValue::from(e.to_string()))?;
     let xorb_hash = merklehash::xorb_hash(&chunks).hex();
 
     // console_log!("computed xorb hash with {} chunks, file_len: {} {}", num_chunks, total_len, xorb_hash);
@@ -115,7 +115,7 @@ pub fn compute_file_hash(chunks_array: JsValue) -> Result<String, JsValue> {
     let file_hash = merklehash::file_hash(&chunk_list).hex();
     // let file_hash = file_hash_with_salt(&chunk_list).hex();
 
-    console_log!("computed file hash with {} chunks, file_len: {} {}", file_hash);
+    console_log!("computed file hash: {}", file_hash);
 
     Ok(file_hash)
 }
