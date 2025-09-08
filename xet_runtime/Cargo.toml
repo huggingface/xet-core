@@ -1,5 +1,5 @@
 [package]
-name = "xet_threadpool"
+name = "xet_runtime"
 version = "0.1.0"
 edition = "2021"
 

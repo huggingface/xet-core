@@ -90,7 +90,7 @@ fn reqwest_client() -> Result<reqwest::Client, CasClientError> {
 
     #[cfg(not(target_family = "wasm"))]
     {
-        use xet_threadpool::ThreadPool;
+        use xet_runtime::ThreadPool;
 
         let client = ThreadPool::get_or_create_reqwest_client(|| {
             reqwest::Client::builder()

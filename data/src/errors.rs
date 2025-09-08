@@ -8,7 +8,7 @@ use thiserror::Error;
 use tokio::sync::AcquireError;
 use tracing::error;
 use utils::errors::{AuthError, SingleflightError};
-use xet_threadpool::utils::ParutilsError;
+use xet_runtime::utils::ParutilsError;
 
 #[derive(Error, Debug)]
 pub enum DataProcessingError {

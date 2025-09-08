@@ -8,7 +8,7 @@ use cas_client::{FileProvider, OutputProvider};
 use clap::{Args, Parser, Subcommand};
 use data::configurations::*;
 use data::{FileDownloader, FileUploadSession, XetFileInfo};
-use xet_threadpool::ThreadPool;
+use xet_runtime::ThreadPool;
 
 #[derive(Parser)]
 struct XCommand {

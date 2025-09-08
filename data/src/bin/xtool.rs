@@ -14,7 +14,7 @@ use data::migration_tool::migrate::migrate_files_impl;
 use merklehash::MerkleHash;
 use utils::auth::TokenRefresher;
 use walkdir::WalkDir;
-use xet_threadpool::ThreadPool;
+use xet_runtime::ThreadPool;
 
 const DEFAULT_HF_ENDPOINT: &str = "https://huggingface.co";
 
