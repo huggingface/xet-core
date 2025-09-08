@@ -10,7 +10,7 @@
 //!
 //! use futures::future::join_all;
 //! use utils::singleflight::Group;
-//! use xet_threadpool;
+//! use xet_runtime;
 //!
 //! const RES: usize = 7;
 //!
@@ -405,7 +405,7 @@ pub(crate) mod tests {
     use tokio::runtime::Handle;
     use tokio::task::JoinHandle;
     use tokio::time::timeout;
-    use xet_threadpool::ThreadPool;
+    use xet_runtime::ThreadPool;
 
     use super::Group;
     use crate::errors::SingleflightError;

@@ -24,7 +24,7 @@ mdb_shard = { path = "../mdb_shard" }
 merklehash = { path = "../merklehash" }
 progress_tracking = { path = "../progress_tracking" }
 utils = { path = "../utils" }
-xet_threadpool = { path = "../xet_threadpool" }
+xet_runtime = { path = "../xet_runtime" }
 
 anyhow = { workspace = true }
 async-trait = { workspace = true }

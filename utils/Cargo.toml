@@ -24,7 +24,7 @@ tracing = { workspace = true }
 
 [target.'cfg(not(target_family = "wasm"))'.dev-dependencies]
 tempfile = { workspace = true }
-xet_threadpool = { path = "../xet_threadpool" }
+xet_runtime = { path = "../xet_runtime" }
 
 [target.'cfg(target_family = "wasm")'.dependencies]
 web-time = { workspace = true }

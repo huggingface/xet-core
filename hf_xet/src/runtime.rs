@@ -6,9 +6,9 @@ use lazy_static::lazy_static;
 use pyo3::exceptions::{PyKeyboardInterrupt, PyRuntimeError};
 use pyo3::prelude::*;
 use tracing::info;
-use xet_threadpool::errors::MultithreadedRuntimeError;
-use xet_threadpool::sync_primatives::spawn_os_thread;
-use xet_threadpool::ThreadPool;
+use xet_runtime::errors::MultithreadedRuntimeError;
+use xet_runtime::sync_primatives::spawn_os_thread;
+use xet_runtime::ThreadPool;
 
 lazy_static! {
     static ref SIGINT_DETECTED: Arc<AtomicBool> = Arc::new(AtomicBool::new(false));

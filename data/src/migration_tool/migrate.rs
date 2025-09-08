@@ -5,8 +5,8 @@ use cas_object::CompressionScheme;
 use mdb_shard::file_structs::MDBFileInfo;
 use tracing::{info_span, instrument, Instrument, Span};
 use utils::auth::TokenRefresher;
-use xet_threadpool::utils::run_constrained;
-use xet_threadpool::ThreadPool;
+use xet_runtime::utils::run_constrained;
+use xet_runtime::ThreadPool;
 
 use super::hub_client::{HubClient, HubClientTokenRefresher};
 use crate::data_client::{clean_file, default_config};

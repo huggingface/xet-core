@@ -13,4 +13,4 @@ merklehash = { path = "../merklehash" }
 
 serde = { version = "1.0.219", features = ["derive"] }
 serde-wasm-bindgen = "0.6.5"
-wasm-bindgen = "0.2.100"
+wasm-bindgen = "=0.2.100"

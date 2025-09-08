@@ -24,7 +24,7 @@ use tokio::sync::{Mutex, OwnedSemaphorePermit};
 use tokio::task::{JoinHandle, JoinSet};
 use tracing::{info_span, instrument, Instrument, Span};
 use ulid::Ulid;
-use xet_threadpool::{global_semaphore_handle, GlobalSemaphoreHandle, ThreadPool};
+use xet_runtime::{global_semaphore_handle, GlobalSemaphoreHandle, ThreadPool};
 
 use crate::configurations::*;
 use crate::constants::{
@@ -577,7 +577,7 @@ mod tests {
     use std::path::Path;
     use std::sync::{Arc, OnceLock};
 
-    use xet_threadpool::ThreadPool;
+    use xet_runtime::ThreadPool;
 
     use crate::{FileDownloader, FileUploadSession, XetFileInfo};
 

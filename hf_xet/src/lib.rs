@@ -18,7 +18,7 @@ use rand::Rng;
 use runtime::async_run;
 use token_refresh::WrappedTokenRefresher;
 use tracing::debug;
-use xet_threadpool::file_handle_limits;
+use xet_runtime::file_handle_limits;
 
 use crate::logging::init_logging;
 use crate::progress_update::WrappedProgressUpdater;
