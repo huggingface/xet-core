@@ -1,4 +1,6 @@
-use merklehash::{DataHashHexParseError, MerkleHash};
+use std::fmt::Write;
+use std::cell::RefCell;
+use merklehash::{compute_internal_node_hash, DataHashHexParseError, MerkleHash};
 use serde::{Deserialize, Serialize};
 use wasm_bindgen::prelude::*;
 
@@ -48,7 +50,6 @@ pub struct JsChunker {
 impl JsChunker {
     #[wasm_bindgen(constructor)]
     pub fn new(target_chunk_size: usize) -> JsChunker {
-        console_log!("new chunker");
         JsChunker {
             inner: deduplication::Chunker::new(target_chunk_size),
             first_chunk_outputted: false,
@@ -76,8 +77,6 @@ impl JsChunker {
             self.first_chunk_outputted = true;
         };
 
-        console_log!("chunking finished");
-
         serde_wasm_bindgen::to_value(&result).map_err(|e| e.into())
     }
 }
@@ -97,7 +96,7 @@ pub fn compute_xorb_hash(chunks_array: JsValue) -> Result<String, JsValue> {
         .map_err(|e| JsValue::from(e.to_string()))?;
     let xorb_hash = merklehash::xorb_hash(&chunks).hex();
 
-    console_log!("computed xorb hash with {} chunks, file_len: {} {}", num_chunks, total_len, xorb_hash);
+    // console_log!("computed xorb hash with {} chunks, file_len: {} {}", num_chunks, total_len, xorb_hash);
 
     Ok(xorb_hash)
 }
@@ -117,7 +116,8 @@ pub fn compute_file_hash(chunks_array: JsValue) -> Result<String, JsValue> {
         .collect::<Result<_, DataHashHexParseError>>()
         .map_err(|e| JsValue::from(e.to_string()))?;
 
-    let file_hash = merklehash::file_hash(&chunk_list).hex();
+    // let file_hash = merklehash::file_hash(&chunk_list).hex();
+    let file_hash = file_hash_with_salt(&chunk_list).hex();
 
     console_log!("computed file hash with {} chunks, file_len: {} {}", num_chunks, total_len, file_hash);
 
@@ -145,4 +145,116 @@ pub fn compute_hmac(hash_hex: &str, hmac_key_hex: &str) -> Result<String, JsValu
 
     let hmac_result = hash.hmac(hmac_key.into());
     Ok(hmac_result.hex())
+}
+
+pub const AGGREGATED_HASHES_MEAN_TREE_BRANCHING_FACTOR: u64 = 4;
+
+/// Find the next cut point in a sequence of hashes at which to break.
+///
+///
+/// We basically loop through the set of nodes tracking a window between
+/// cur_children_start_idx and idx (current index).
+/// [. . . . . . . . . . . ]
+///          ^   ^
+///          |   |
+///  start_idx   |
+///              |
+///             idx
+///
+/// When the current node at idx satisfies the cut condition:
+///  - the hash % MEAN_TREE_BRANCHING_FACTOR == 0: assuming a random hash distribution, this implies on average, the
+///    number of children is AGGREGATED_HASHES_MEAN_TREE_BRANCHING_FACTOR,
+///  - OR this is the last node in the list.
+///  - subject to each parent must have at least 2 children, and at most AGGREGATED_MEAN_TREE_BRANCHING_FACTOR * 2
+///    children: This ensures that the graph always has at most 1/2 the number of parents as children. and we don't have
+///    too wide branches.
+#[inline]
+fn next_merge_cut(hashes: &[(MerkleHash, usize)]) -> usize {
+    if hashes.len() <= 2 {
+        return hashes.len();
+    }
+
+    let end = (2 * AGGREGATED_HASHES_MEAN_TREE_BRANCHING_FACTOR as usize + 1).min(hashes.len());
+
+    for i in 2..end {
+        let h = unsafe { hashes.get_unchecked(i).0 };
+
+        if h % AGGREGATED_HASHES_MEAN_TREE_BRANCHING_FACTOR == 0 {
+            return i + 1;
+        }
+    }
+
+    end
+}
+
+/// Merge the hashes together, including the size information and returning the new (hash, size) pair.
+#[inline]
+fn merged_hash_of_sequence(hash: &[(MerkleHash, usize)]) -> (MerkleHash, usize) {
+    // Use a threadlocal buffer to avoid the overhead of reallocations.
+    thread_local! {
+        static BUFFER: RefCell<String> =
+        RefCell::new(String::with_capacity(1024));
+    }
+
+    BUFFER.with(|buffer| {
+        let mut buf = buffer.borrow_mut();
+        buf.clear();
+        let mut total_len = 0;
+
+        for (h, s) in hash.iter() {
+            writeln!(buf, "{h:x} : {s}").unwrap();
+            total_len += *s;
+        }
+        (compute_internal_node_hash(buf.as_bytes()), total_len)
+    })
+}
+
+/// The base calculation for the aggregated node hash.
+///
+/// Iteratively collapse the list of hashes using the criteria in next_merge_cut
+/// until only one hash remains; this is the aggregated hash.
+#[inline]
+fn aggregated_node_hash(chunks: &[(MerkleHash, usize)]) -> MerkleHash {
+    if chunks.is_empty() {
+        return MerkleHash::default();
+    }
+
+    let mut hv = chunks.to_vec();
+
+    let mut round = 0;
+    while hv.len() > 1 {
+        round += 1;
+        let mut write_idx = 0;
+        let mut read_idx = 0;
+
+        while read_idx != hv.len() {
+            // Find the next cut point of hashes at which to merge.
+            let next_cut = read_idx + next_merge_cut(&hv[read_idx..]);
+
+            // Get the merged hash of this block.
+            hv[write_idx] = merged_hash_of_sequence(&hv[read_idx..next_cut]);
+            console_log!("round: {round} cut: {next_cut} merged hash {} {}", hv[write_idx].0, hv[write_idx].1);
+            write_idx += 1;
+
+            read_idx = next_cut;
+        }
+
+        hv.resize(write_idx, Default::default());
+    }
+
+    hv[0].0
+}
+
+/// The file hash when a salt is needed.
+#[inline]
+pub fn file_hash_with_salt(chunks: &[(MerkleHash, usize)]) -> MerkleHash {
+    let salt = &[0; 32];
+    if chunks.is_empty() {
+        return MerkleHash::default();
+    }
+
+
+    let agg = aggregated_node_hash(chunks);
+    console_log!("pre salt: {agg}");
+    agg.hmac(salt.into())
 }
