@@ -1,4 +1,4 @@
-use merklehash::{DataHashHexParseError, MerkleHash, xorb_hash};
+use merklehash::{DataHashHexParseError, MerkleHash};
 use serde::{Deserialize, Serialize};
 use wasm_bindgen::prelude::*;
 
@@ -24,8 +24,6 @@ pub struct JsChunkOut {
     pub length: u32,
     pub dedup: bool,
 }
-
-
 
 impl JsChunkOut {
     fn new_with_dedup(chunk: deduplication::Chunk, is_first_chunk: bool) -> Self {
@@ -60,13 +58,13 @@ impl JsChunker {
     pub fn add_data(&mut self, data: Vec<u8>) -> Result<JsValue, JsValue> {
         let result = self.inner.next_block(&data, false);
         let mut serializable_result: Vec<JsChunkOut> = Vec::with_capacity(result.len());
-        
+
         for chunk in result {
             let is_first = !self.first_chunk_outputted;
             serializable_result.push(JsChunkOut::new_with_dedup(chunk, is_first));
             self.first_chunk_outputted = true;
         }
-        
+
         serde_wasm_bindgen::to_value(&serializable_result).map_err(|e| e.into())
     }
 
@@ -90,14 +88,18 @@ impl JsChunker {
 pub fn compute_xorb_hash(chunks_array: JsValue) -> Result<String, JsValue> {
     let js_chunks: Vec<JsChunkIn> =
         serde_wasm_bindgen::from_value::<Vec<JsChunkIn>>(chunks_array).map_err(|e| JsValue::from(e.to_string()))?;
-
+    let num_chunks = js_chunks.len();
+    let total_len = js_chunks.iter().fold(0, |acc, jsc| acc + jsc.length as usize);
     let chunks: Vec<(MerkleHash, usize)> = js_chunks
         .into_iter()
         .map(|jsc| Ok((MerkleHash::from_hex(&jsc.hash)?, jsc.length as usize)))
         .collect::<Result<_, DataHashHexParseError>>()
         .map_err(|e| JsValue::from(e.to_string()))?;
+    let xorb_hash = merklehash::xorb_hash(&chunks).hex();
 
-    Ok(xorb_hash(&chunks).hex())
+    console_log!("computed xorb hash with {} chunks, file_len: {} {}", num_chunks, total_len, xorb_hash);
+
+    Ok(xorb_hash)
 }
 
 /// takes an Array of Objects of the form { "hash": string, "length": number }
@@ -106,8 +108,9 @@ pub fn compute_xorb_hash(chunks_array: JsValue) -> Result<String, JsValue> {
 pub fn compute_file_hash(chunks_array: JsValue) -> Result<String, JsValue> {
     let js_chunks =
         serde_wasm_bindgen::from_value::<Vec<JsChunkIn>>(chunks_array).map_err(|e| JsValue::from(e.to_string()))?;
-    console_log!("computing file hash with {} chunks, file_len: {}", js_chunks.len(), js_chunks.iter().fold(0, |acc, jsc| acc + jsc.length as usize));
 
+    let num_chunks = js_chunks.len();
+    let total_len = js_chunks.iter().fold(0, |acc, jsc| acc + jsc.length as usize);
     let chunk_list: Vec<(MerkleHash, usize)> = js_chunks
         .into_iter()
         .map(|jsc| Ok((MerkleHash::from_hex(&jsc.hash)?, jsc.length as usize)))
@@ -116,25 +119,7 @@ pub fn compute_file_hash(chunks_array: JsValue) -> Result<String, JsValue> {
 
     let file_hash = merklehash::file_hash(&chunk_list).hex();
 
-    #[derive(Debug, Serialize, Clone)]
-    #[serde(rename_all = "camelCase")]
-    pub struct FileFormat {
-        file_hash: String,
-        file_chunks: Vec<JsChunkIn>,
-    }
-
-    let file_format = FileFormat {
-        file_hash: file_hash.clone(),
-        file_chunks: chunk_list.into_iter().map(|c| JsChunkIn {
-            hash: c.0.hex(),
-            length: c.1 as u32,
-        } ).collect(),
-    };
-    use base64::prelude::*;
-    let serialized = serde_json::to_string(&file_format)
-        .map_err(|e| JsValue::from(e.to_string()))?;
-    let encoded = base64::engine::general_purpose::STANDARD.encode(serialized.as_bytes());
-    console_log!("{}", &encoded);
+    console_log!("computed file hash with {} chunks, file_len: {} {}", num_chunks, total_len, file_hash);
 
     Ok(file_hash)
 }
@@ -153,12 +138,11 @@ pub fn compute_verification_hash(chunk_hashes: Vec<String>) -> Result<String, Js
 /// takes a hash and HMAC key (both as hex strings) and returns the HMAC result as a hex string
 #[wasm_bindgen]
 pub fn compute_hmac(hash_hex: &str, hmac_key_hex: &str) -> Result<String, JsValue> {
-    let hash = MerkleHash::from_hex(hash_hex)
-        .map_err(|e| JsValue::from(format!("Invalid hash hex: {}", e)))?;
-    
-    let hmac_key = MerkleHash::from_hex(hmac_key_hex)
-        .map_err(|e| JsValue::from(format!("Invalid HMAC key hex: {}", e)))?;
-    
+    let hash = MerkleHash::from_hex(hash_hex).map_err(|e| JsValue::from(format!("Invalid hash hex: {}", e)))?;
+
+    let hmac_key =
+        MerkleHash::from_hex(hmac_key_hex).map_err(|e| JsValue::from(format!("Invalid HMAC key hex: {}", e)))?;
+
     let hmac_result = hash.hmac(hmac_key.into());
     Ok(hmac_result.hex())
 }

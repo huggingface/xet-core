@@ -571,13 +571,11 @@ dependencies = [
 name = "hf_xet_thin_wasm"
 version = "0.1.0"
 dependencies = [
- "base64",
  "deduplication",
  "mdb_shard",
  "merklehash",
  "serde",
  "serde-wasm-bindgen",
- "serde_json",
  "wasm-bindgen",
 ]
 
