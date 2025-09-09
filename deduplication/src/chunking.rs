@@ -98,12 +98,26 @@ impl Chunker {
         let read_end = n_bytes.min(consume_len + self.maximum_chunk - cur_chunk_len);
 
         let mut bytes_to_next_boundary;
-        if let Some(boundary) = self.hash.next_match(&data[consume_len..read_end], self.mask) {
-            // If we trigger a boundary before the end, create a chunk.
-            bytes_to_next_boundary = boundary;
-            create_chunk = true;
-        } else {
-            bytes_to_next_boundary = read_end - consume_len;
+        loop {
+            if let Some(boundary) = self.hash.next_match(&data[consume_len..read_end], self.mask) {
+                // If we trigger a boundary before the end, create a chunk.
+                bytes_to_next_boundary = boundary;
+
+                // We must enforce that the next boundary is actually past the minimum chunk size.
+                // Because of how the rolling hash is computed, bytes before HASH_WINDOW_SIZE don't affect the hash,
+                // so with the above skip we depend on it running for at least HASH_WINDOW_SIZE bytes before triggering
+                // a boundary.   However, in rare occurances, there can be a boundary triggered before HASH_WINDOW_SIZE
+                // bytes have been processed, which means the boundary is triggered based on the previous state of the
+                // hasher rather than on the current chunk content.  Thus we ensure this can't happen by ensuring that
+                // we have processed at least HASH_WINDOW_SIZE bytes.
+                if bytes_to_next_boundary + cur_chunk_len >= self.minimum_chunk {
+                    create_chunk = true;
+                    break;
+                }
+            } else {
+                bytes_to_next_boundary = read_end - consume_len;
+                break;
+            }
         }
 
         // if we hit maximum chunk we must create a chunk
