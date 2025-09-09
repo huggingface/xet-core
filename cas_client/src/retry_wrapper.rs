@@ -323,7 +323,7 @@ impl RetryWrapper {
 ///
 /// Unfortunately, those errors don't translate to a defined [std::io::ErrorKind], and are thus
 /// not able to be effectively filtered.
-fn on_request_failure(error: &reqwest_middleware::Error) -> Option<Retryable> {
+pub fn on_request_failure(error: &reqwest_middleware::Error) -> Option<Retryable> {
     let reqwest_middleware::Error::Reqwest(error) = error else {
         // If something fails in the middleware we're screwed.
         debug!("non-reqwest error variant encountered. Not retrying: {error:?}");
