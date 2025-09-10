@@ -138,6 +138,14 @@ impl Chunker {
         }
     }
 
+    fn reset_state(&mut self) {
+        // Strictly speaking, this is unneccesary, as we should always hash 64 bytes out making the previous state
+        // of the hasher irrelevant.  However, this explicitly declares we're resetting things to the
+        // initial state.
+        self.hash.set_hash(0);
+        debug_assert!(self.chunkbuf.is_empty());
+    }
+
     /// Process more data; this is a continuation of any data from before when calls were
     ///
     /// Returns the next chunk, if available, and the amount of data that was digested.
@@ -145,7 +153,7 @@ impl Chunker {
     /// If is_final is true, then it is assumed that no more data after this block will come,
     /// and any data currently present and at the end will be put into a final chunk.
     pub fn next(&mut self, data: &[u8], is_final: bool) -> (Option<Chunk>, usize) {
-        let (data, consume): (Bytes, usize) = {
+        let (chunk_data, consume): (Bytes, usize) = {
             if let Some(next_boundary) = self.next_boundary(data) {
                 if self.chunkbuf.is_empty() {
                     (Bytes::copy_from_slice(&data[..next_boundary]), next_boundary)
@@ -155,12 +163,18 @@ impl Chunker {
                 }
             } else if is_final {
                 // Put the rest of the data in the chunkbuf.
-                if self.chunkbuf.is_empty() {
+                let r = if self.chunkbuf.is_empty() {
                     (Bytes::copy_from_slice(data), data.len())
                 } else {
                     self.chunkbuf.extend_from_slice(data);
                     (std::mem::take(&mut self.chunkbuf).into(), data.len())
+                };
+
+                if is_final {
+                    self.reset_state();
                 }
+
+                r
             } else {
                 self.chunkbuf.extend_from_slice(data);
                 return (None, data.len());
@@ -168,11 +182,11 @@ impl Chunker {
         };
 
         // Special case this specific case.
-        if data.is_empty() {
+        if chunk_data.is_empty() {
             return (None, 0);
         }
 
-        (Some(Chunk::new(data)), consume)
+        (Some(Chunk::new(chunk_data)), consume)
     }
 
     /// Keeps chunking until no more chunks can be reliably produced, returning a
@@ -184,6 +198,10 @@ impl Chunker {
         loop {
             debug_assert!(pos <= data.len());
             if pos == data.len() {
+                if is_final {
+                    self.reset_state();
+                }
+
                 return ret;
             }
 
@@ -237,10 +255,14 @@ impl Chunker {
             }
         }
 
+        if is_final {
+            self.reset_state();
+        }
+
         ret
     }
 
-    // Finishes, returning the final chunk if it exists
+    // Finishes, returning the final chunk if one exists, and resets the hasher to
     pub fn finish(&mut self) -> Option<Chunk> {
         self.next(&[], true).0
     }
