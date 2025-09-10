@@ -294,7 +294,7 @@ impl SessionShardInterface {
                     }
 
                     // Upload the shard.
-                    shard_client.upload_shard(&shard_prefix, &si.shard_hash, data).await?;
+                    shard_client.upload_shard(data).await?;
 
                     // Done with the upload, drop the permit.
                     drop(upload_permit);

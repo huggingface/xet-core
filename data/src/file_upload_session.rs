@@ -24,7 +24,7 @@ use tokio::sync::{Mutex, OwnedSemaphorePermit};
 use tokio::task::{JoinHandle, JoinSet};
 use tracing::{info_span, instrument, Instrument, Span};
 use ulid::Ulid;
-use xet_threadpool::{global_semaphore_handle, GlobalSemaphoreHandle, ThreadPool};
+use xet_runtime::{global_semaphore_handle, GlobalSemaphoreHandle, ThreadPool};
 
 use crate::configurations::*;
 use crate::constants::{
@@ -131,7 +131,7 @@ impl FileUploadSession {
             match upload_progress_updater {
                 Some(updater) => {
                     let update_ms = *PROGRESS_UPDATE_INTERVAL_MS;
-                    if update_ms != 0 {
+                    if update_ms != 0 && config.progress_config.aggregate {
                         let aggregator = AggregatingProgressUpdater::new(
                             updater,
                             Duration::from_millis(update_ms),
@@ -498,7 +498,7 @@ impl FileUploadSession {
         }
 
         // Now that all the tasks there are completed, there shouldn't be any other references to this session
-        // hanging around; i.e. the self in this shession should be used as if it's consuming the class, as it
+        // hanging around; i.e. the self in this session should be used as if it's consuming the class, as it
         // effectively empties all the states.
         debug_assert_eq!(Arc::strong_count(&self), 1);
 
@@ -577,7 +577,7 @@ mod tests {
     use std::path::Path;
     use std::sync::{Arc, OnceLock};
 
-    use xet_threadpool::ThreadPool;
+    use xet_runtime::ThreadPool;
 
     use crate::{FileDownloader, FileUploadSession, XetFileInfo};
 

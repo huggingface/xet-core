@@ -1,5 +1,5 @@
 [package]
-name = "xet_threadpool"
+name = "xet_runtime"
 version = "0.1.0"
 edition = "2021"
 
@@ -15,3 +15,6 @@ tracing = { workspace = true }
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
 tokio = { workspace = true, features = ["rt-multi-thread"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+libc = { workspace = true}

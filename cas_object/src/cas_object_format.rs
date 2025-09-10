@@ -1037,7 +1037,7 @@ impl CasObject {
             };
 
             let chunk_hash = merklehash::compute_data_hash(&data);
-            hash_chunks.push((chunk_hash, chunk_uncompressed_length as usize));
+            hash_chunks.push((chunk_hash, chunk_uncompressed_length as u64));
 
             cumulative_compressed_length += compressed_chunk_length as u32;
             unpacked_chunk_offset += chunk_uncompressed_length;
@@ -1598,7 +1598,7 @@ pub mod test_utils {
             let bytes = gen_random_bytes(chunk_size);
 
             let chunk_hash = merklehash::compute_data_hash(&bytes);
-            chunks.push((chunk_hash, bytes.len()));
+            chunks.push((chunk_hash, bytes.len() as u64));
 
             data_contents_raw.extend_from_slice(&bytes);
 

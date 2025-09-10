@@ -33,7 +33,7 @@ pub struct FileDeduper<DataInterfaceType: DeduplicationDataInterface> {
     new_data_hash_lookup: HashMap<MerkleHash, usize>,
 
     /// The current chunk hashes for this file.
-    chunk_hashes: Vec<(MerkleHash, usize)>,
+    chunk_hashes: Vec<(MerkleHash, u64)>,
 
     /// The current file data entries.
     file_info: Vec<FileDataSequenceEntry>,
@@ -262,7 +262,7 @@ impl<DataInterfaceType: DeduplicationDataInterface> FileDeduper<DataInterfaceTyp
         }
 
         self.deduplication_metrics.merge_in(&dedup_metrics);
-        self.chunk_hashes.extend(chunks.iter().map(|c| (c.hash, c.data.len())));
+        self.chunk_hashes.extend(chunks.iter().map(|c| (c.hash, c.data.len() as u64)));
 
         // Register the xorb dependencies as needed.
         if !xorb_dependencies.is_empty() {

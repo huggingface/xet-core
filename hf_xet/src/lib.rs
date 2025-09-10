@@ -18,6 +18,7 @@ use rand::Rng;
 use runtime::async_run;
 use token_refresh::WrappedTokenRefresher;
 use tracing::debug;
+use xet_runtime::file_handle_limits;
 
 use crate::logging::init_logging;
 use crate::progress_update::WrappedProgressUpdater;
@@ -93,7 +94,7 @@ pub fn upload_files(
 
     let x: u64 = rand::rng().random();
 
-    let ret = async_run(py, async move {
+    async_run(py, async move {
         debug!(
             "Upload call {x:x}: (PID = {}) Uploading {} files {file_names}{}",
             std::process::id(),
@@ -115,9 +116,7 @@ pub fn upload_files(
         .collect();
         debug!("Upload call {x:x} finished.");
         PyResult::Ok(out)
-    });
-
-    ret
+    })
 }
 
 #[pyfunction]
@@ -138,7 +137,7 @@ pub fn download_files(
 
     let file_names = file_infos.iter().take(3).map(|(_, p)| p).join(", ");
 
-    let res = async_run(py, async move {
+    async_run(py, async move {
         debug!(
             "Download call {x:x}: (PID = {}) Downloading {} files {file_names}{}",
             std::process::id(),
@@ -154,9 +153,7 @@ pub fn download_files(
         debug!("Download call {x:x}: Completed.");
 
         PyResult::Ok(out)
-    });
-
-    res
+    })
 }
 
 #[pyfunction]
@@ -313,6 +310,9 @@ pub fn hf_xet(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
 
     // Make sure the logger is set up.
     init_logging(py);
+
+    // Raise the soft file handle limits if possible
+    file_handle_limits::raise_nofile_soft_to_hard();
 
     #[cfg(feature = "profiling")]
     {

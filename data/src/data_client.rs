@@ -16,8 +16,8 @@ use tracing::{info, info_span, instrument, Instrument, Span};
 use ulid::Ulid;
 use utils::auth::{AuthConfig, TokenRefresher};
 use utils::normalized_path_from_user_string;
-use xet_threadpool::utils::run_constrained_with_semaphore;
-use xet_threadpool::{global_semaphore_handle, GlobalSemaphoreHandle, ThreadPool};
+use xet_runtime::utils::run_constrained_with_semaphore;
+use xet_runtime::{global_semaphore_handle, GlobalSemaphoreHandle, ThreadPool};
 
 use crate::configurations::*;
 use crate::constants::{INGESTION_BLOCK_SIZE, MAX_CONCURRENT_DOWNLOADS};
@@ -34,7 +34,7 @@ pub fn default_config(
     xorb_compression: Option<CompressionScheme>,
     token_info: Option<(String, u64)>,
     token_refresher: Option<Arc<dyn TokenRefresher>>,
-) -> errors::Result<Arc<TranslatorConfig>> {
+) -> errors::Result<TranslatorConfig> {
     // if HF_HOME is set use that instead of ~/.cache/huggingface
     // if HF_XET_CACHE is set use that instead of ~/.cache/huggingface/xet
     // HF_XET_CACHE takes precedence over HF_HOME
@@ -110,10 +110,11 @@ pub fn default_config(
             repo_paths: vec!["".into()],
         }),
         session_id: Some(Ulid::new().to_string()),
+        progress_config: ProgressConfig { aggregate: true },
     };
 
     // Return the temp dir so that it's not dropped and thus the directory deleted.
-    Ok(Arc::new(translator_config))
+    Ok(translator_config)
 }
 
 #[instrument(skip_all, name = "data_client::upload_bytes", fields(session_id = tracing::field::Empty, num_files=file_contents.len()))]
@@ -128,7 +129,7 @@ pub async fn upload_bytes_async(
     Span::current().record("session_id", &config.session_id);
 
     let semaphore = ThreadPool::current().global_semaphore(*CONCURRENT_FILE_INGESTION_LIMITER);
-    let upload_session = FileUploadSession::new(config, progress_updater).await?;
+    let upload_session = FileUploadSession::new(config.into(), progress_updater).await?;
     let clean_futures = file_contents.into_iter().map(|blob| {
         let upload_session = upload_session.clone();
         async move { clean_bytes(upload_session, blob).await.map(|(xf, _metrics)| xf) }
@@ -169,7 +170,7 @@ pub async fn upload_async(
 
     span.record("session_id", &config.session_id);
 
-    let upload_session = FileUploadSession::new(config, progress_updater).await?;
+    let upload_session = FileUploadSession::new(config.into(), progress_updater).await?;
 
     let ret = upload_session.upload_files(&file_paths).await?;
 
@@ -211,7 +212,7 @@ pub async fn download_async(
         default_config(endpoint.unwrap_or(DEFAULT_CAS_ENDPOINT.to_string()), None, token_info, token_refresher)?;
     Span::current().record("session_id", &config.session_id);
 
-    let processor = Arc::new(FileDownloader::new(config).await?);
+    let processor = Arc::new(FileDownloader::new(config.into()).await?);
     let updaters = match progress_updaters {
         None => vec![None; file_infos.len()],
         Some(updaters) => updaters.into_iter().map(Some).collect(),

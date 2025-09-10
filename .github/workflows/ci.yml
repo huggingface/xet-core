@@ -25,7 +25,7 @@ jobs:
           cargo fmt --manifest-path ./Cargo.toml --all -- --check
           cargo fmt --manifest-path ./hf_xet/Cargo.toml --all -- --check
 
-  build_and_test:
+  build_and_test-linux:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
@@ -37,6 +37,12 @@ jobs:
       - name: Lint
         run: |
           cargo clippy -r --verbose -- -D warnings # elevates warnings to errors
+          cargo clippy -r --verbose --manifest-path hf_xet/Cargo.toml -- -D warnings # elevates warnings to errors
+      - name: Set up Git LFS
+        run: |
+          curl -s https://packagecloud.io/install/repositories/github/git-lfs/script.deb.sh | sudo bash
+          sudo apt-get install git-lfs
+          git lfs install
       - name: Build and Test
         run: |
           cargo test --verbose --no-fail-fast --features "strict"
@@ -53,9 +59,22 @@ jobs:
         uses: dtolnay/rust-toolchain@1.86.0
         with:
           components: clippy
-      - name: Lint
+      - name: Build and Test
         run: |
-          cargo clippy -r --verbose -- -D warnings # elevates warnings to errors
+          cargo test --verbose --no-fail-fast --features "strict"
+  build_and_test-macos:
+    runs-on: macos-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      - name: Install Rust 1.86
+        uses: dtolnay/rust-toolchain@1.86.0
+        with:
+          components: clippy
+      - name: Set up Git LFS
+        run: |
+          brew install git-lfs
+          git lfs install
       - name: Build and Test
         run: |
           cargo test --verbose --no-fail-fast --features "strict"
@@ -72,7 +91,8 @@ jobs:
           components: rust-src
       - name: Install wasm-bindgen-cli and wasm-pack
         run: |
-          cargo install wasm-bindgen-cli wasm-pack
+          cargo install --version 0.2.100 wasm-bindgen-cli
+          cargo install --version 0.13.1 wasm-pack
       - name: Build hf_xet_thin_wasm
         working-directory: hf_xet_thin_wasm
         run: |
