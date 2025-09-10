@@ -18,6 +18,7 @@ use tracing::{debug, info_span, warn, Instrument};
 use utils::auth::{AuthConfig, TokenProvider};
 
 use crate::constants::{CLIENT_IDLE_CONNECTION_TIMEOUT_SECS, CLIENT_MAX_IDLE_CONNECTIONS};
+use crate::retry_wrapper::on_request_failure;
 use crate::{error, CasClientError};
 
 pub(crate) const NUM_RETRIES: u32 = 5;
@@ -40,6 +41,18 @@ impl RetryableStrategy for No429RetryStrategy {
     }
 }
 
+/// A strategy that retries on 5xx/400/429 status codes, and retries on transient errors.
+pub struct XetRetryStrategy;
+
+impl RetryableStrategy for XetRetryStrategy {
+    fn handle(&self, res: &Result<Response, reqwest_middleware::Error>) -> Option<Retryable> {
+        match res {
+            Ok(success) => default_on_request_success(success),
+            Err(error) => on_request_failure(error),
+        }
+    }
+}
+
 pub struct RetryConfig<R: RetryableStrategy> {
     /// Number of retries for transient errors.
     pub num_retries: u32,
@@ -53,15 +66,13 @@ pub struct RetryConfig<R: RetryableStrategy> {
     pub strategy: R,
 }
 
-impl Default for RetryConfig<DefaultRetryableStrategy> {
-    // Use `DefaultRetryableStrategy` which retries on 5xx/400/429 status codes, and retries on transient errors.
-    // See reqwest-retry/src/retryable_strategy.rs
+impl Default for RetryConfig<XetRetryStrategy> {
     fn default() -> Self {
         Self {
             num_retries: NUM_RETRIES,
             min_retry_interval_ms: BASE_RETRY_DELAY_MS,
             max_retry_interval_ms: BASE_RETRY_MAX_DURATION_MS,
-            strategy: DefaultRetryableStrategy,
+            strategy: XetRetryStrategy,
         }
     }
 }
