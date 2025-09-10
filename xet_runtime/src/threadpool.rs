@@ -66,7 +66,7 @@ fn get_num_tokio_worker_threads() -> usize {
 /// # Example
 ///
 /// ```rust
-/// use xet_threadpool::ThreadPool;
+/// use xet_runtime::ThreadPool;
 ///
 /// let pool = ThreadPool::new().expect("Error initializing runtime.");
 ///

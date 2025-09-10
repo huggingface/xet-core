@@ -272,7 +272,7 @@ impl Client for LocalClient {
         Ok(None)
     }
 
-    async fn upload_shard(&self, _prefix: &str, _hash: &MerkleHash, shard_data: Bytes) -> Result<bool> {
+    async fn upload_shard(&self, shard_data: Bytes) -> Result<bool> {
         // Write out the shard to the shard directory.
         let shard = MDBShardFile::write_out_from_reader(&self.shard_dir, &mut Cursor::new(&shard_data))?;
         let shard_hash = shard.shard_hash;
@@ -603,7 +603,7 @@ mod tests {
         let client = LocalClient::temporary().unwrap();
 
         client
-            .upload_shard("default-merkledb", &shard_hash, std::fs::read(&new_shard_path).unwrap().into())
+            .upload_shard(std::fs::read(&new_shard_path).unwrap().into())
             .await
             .unwrap();
 

@@ -2,13 +2,14 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use cas_object::CompressionScheme;
+use hub_client::{BearerCredentialHelper, HubClient, Operation};
 use mdb_shard::file_structs::MDBFileInfo;
 use tracing::{info_span, instrument, Instrument, Span};
 use utils::auth::TokenRefresher;
-use xet_threadpool::utils::run_constrained;
-use xet_threadpool::ThreadPool;
+use xet_runtime::utils::run_constrained;
+use xet_runtime::ThreadPool;
 
-use super::hub_client::{HubClient, HubClientTokenRefresher};
+use super::hub_client_token_refresher::HubClientTokenRefresher;
 use crate::data_client::{clean_file, default_config};
 use crate::errors::DataProcessingError;
 use crate::{FileUploadSession, XetFileInfo};
@@ -31,7 +32,8 @@ pub async fn migrate_with_external_runtime(
     repo_type: &str,
     repo_id: &str,
 ) -> Result<()> {
-    let hub_client = HubClient::new(hub_endpoint, hub_token, repo_type, repo_id)?;
+    let cred_helper = BearerCredentialHelper::new(hub_token.to_owned(), "");
+    let hub_client = HubClient::new(hub_endpoint, repo_type, repo_id, "xtool", "", cred_helper)?;
 
     migrate_files_impl(file_paths, false, hub_client, cas_endpoint, None, false).await?;
 
@@ -50,15 +52,15 @@ pub async fn migrate_files_impl(
     compression: Option<CompressionScheme>,
     dry_run: bool,
 ) -> Result<MigrationInfo> {
-    let token_type = "write";
-    let (endpoint, jwt_token, jwt_token_expiry) = hub_client.get_jwt_token(token_type).await?;
+    let operation = Operation::Upload;
+    let jwt_info = hub_client.get_cas_jwt(operation).await?;
     let token_refresher = Arc::new(HubClientTokenRefresher {
-        token_type: token_type.to_owned(),
+        operation,
         client: Arc::new(hub_client),
     }) as Arc<dyn TokenRefresher>;
-    let cas = cas_endpoint.unwrap_or(endpoint);
+    let cas = cas_endpoint.unwrap_or(jwt_info.cas_url);
 
-    let config = default_config(cas, compression, Some((jwt_token, jwt_token_expiry)), Some(token_refresher))?;
+    let config = default_config(cas, compression, Some((jwt_info.access_token, jwt_info.exp)), Some(token_refresher))?;
     Span::current().record("session_id", &config.session_id);
 
     let num_workers = if sequential {
@@ -67,9 +69,9 @@ pub async fn migrate_files_impl(
         ThreadPool::current().num_worker_threads()
     };
     let processor = if dry_run {
-        FileUploadSession::dry_run(config, None).await?
+        FileUploadSession::dry_run(config.into(), None).await?
     } else {
-        FileUploadSession::new(config, None).await?
+        FileUploadSession::new(config.into(), None).await?
     };
 
     // let file_paths_with_spans = add_spans(file_paths, || info_span!("migration::clean_file"));

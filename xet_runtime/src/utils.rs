@@ -60,7 +60,7 @@ pub enum ParutilsError<E: Send + Sync + 'static> {
 /// use std::sync::Arc;
 ///
 /// use tokio::sync::Semaphore;
-/// use xet_threadpool::utils::run_constrained_with_semaphore;
+/// use xet_runtime::utils::run_constrained_with_semaphore;
 ///
 /// #[tokio::main]
 /// async fn main() {

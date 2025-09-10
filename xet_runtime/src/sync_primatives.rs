@@ -50,7 +50,7 @@ impl<T: Send + Sync + 'static> SyncJoinHandle<T> {
     /// # Examples
     ///
     /// ```
-    /// use xet_threadpool::spawn_os_thread;
+    /// use xet_runtime::spawn_os_thread;
     /// let handle = spawn_os_thread(|| 42);
     /// let result = handle.join().unwrap();
     /// assert_eq!(result, 42);
@@ -70,7 +70,7 @@ impl<T: Send + Sync + 'static> SyncJoinHandle<T> {
     /// # Examples
     ///
     /// ```
-    /// use xet_threadpool::{spawn_os_thread, SyncJoinHandle};
+    /// use xet_runtime::{spawn_os_thread, SyncJoinHandle};
     /// let handle: SyncJoinHandle<_> = spawn_os_thread(|| 42);
     ///
     /// // Possibly do some work here...
