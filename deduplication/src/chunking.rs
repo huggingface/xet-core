@@ -2,6 +2,7 @@ use std::cmp::min;
 use std::io::{Read, Seek, SeekFrom};
 
 use bytes::Bytes;
+use more_asserts::{debug_assert_ge, debug_assert_le};
 
 use crate::constants::{MAXIMUM_CHUNK_MULTIPLIER, MINIMUM_CHUNK_DIVISOR, TARGET_CHUNK_SIZE};
 use crate::Chunk;
@@ -80,46 +81,69 @@ impl Chunker {
             return None;
         }
 
-        let mut cur_chunk_len = self.chunkbuf.len();
-        let mut consume_len = 0;
+        let previous_len = self.chunkbuf.len();
+        let mut cur_index = 0;
         let mut create_chunk = false;
 
         // skip the minimum chunk size
         // and noting that the hash has a window size of 64
         // so we should be careful to skip only minimum_chunk - 64 - 1
-        if cur_chunk_len + HASH_WINDOW_SIZE < self.minimum_chunk {
-            let max_advance = min(self.minimum_chunk - cur_chunk_len - HASH_WINDOW_SIZE - 1, n_bytes);
-            consume_len += max_advance;
-            cur_chunk_len += max_advance;
+        if previous_len + HASH_WINDOW_SIZE < self.minimum_chunk {
+            let skip = min(self.minimum_chunk - previous_len - HASH_WINDOW_SIZE - 1, n_bytes);
+            cur_index += skip;
         }
 
         // If we have a lot of data, don't read all the way to the end when we'll stop reading
         // at the maximum chunk boundary.
-        let read_end = n_bytes.min(consume_len + self.maximum_chunk - cur_chunk_len);
+        let read_end = n_bytes.min(cur_index + self.maximum_chunk - previous_len);
 
-        let mut bytes_to_next_boundary;
-        if let Some(boundary) = self.hash.next_match(&data[consume_len..read_end], self.mask) {
-            // If we trigger a boundary before the end, create a chunk.
-            bytes_to_next_boundary = boundary;
-            create_chunk = true;
-        } else {
-            bytes_to_next_boundary = read_end - consume_len;
+        loop {
+            if let Some(next_match) = self.hash.next_match(&data[cur_index..read_end], self.mask) {
+                cur_index += next_match;
+
+                // If we trigger a boundary before the end, create a chunk.
+
+                // We must enforce that the next boundary is actually past the minimum chunk size.
+                // Because of how the rolling hash is computed, bytes before HASH_WINDOW_SIZE don't affect the hash,
+                // so with the above skip we depend on it running for at least HASH_WINDOW_SIZE bytes before triggering
+                // a boundary.   However, in rare occurances, there can be a boundary triggered before HASH_WINDOW_SIZE
+                // bytes have been processed, which means the boundary is triggered based on the previous state of the
+                // hasher rather than on the current chunk content.  Thus we ensure this can't happen by ensuring that
+                // we have processed at least HASH_WINDOW_SIZE bytes.
+                if cur_index + previous_len < self.minimum_chunk {
+                    continue;
+                }
+
+                create_chunk = true;
+            } else {
+                cur_index = read_end;
+            }
+
+            break;
         }
 
         // if we hit maximum chunk we must create a chunk
-        if bytes_to_next_boundary + cur_chunk_len >= self.maximum_chunk {
-            bytes_to_next_boundary = self.maximum_chunk - cur_chunk_len;
+        if cur_index + previous_len >= self.maximum_chunk {
+            cur_index = self.maximum_chunk - previous_len;
             create_chunk = true;
         }
 
-        consume_len += bytes_to_next_boundary;
-
         if create_chunk {
             self.hash.set_hash(0); // Reset for the next time.
-            Some(consume_len)
+            debug_assert_ge!(cur_index + previous_len, self.minimum_chunk);
+            debug_assert_le!(cur_index + previous_len, self.maximum_chunk);
+            Some(cur_index)
         } else {
             None
         }
+    }
+
+    fn reset_state(&mut self) {
+        // Strictly speaking, this is unneccesary, as we should always hash 64 bytes out making the previous state
+        // of the hasher irrelevant.  However, this explicitly declares we're resetting things to the
+        // initial state.
+        self.hash.set_hash(0);
+        debug_assert!(self.chunkbuf.is_empty());
     }
 
     /// Process more data; this is a continuation of any data from before when calls were
@@ -129,7 +153,7 @@ impl Chunker {
     /// If is_final is true, then it is assumed that no more data after this block will come,
     /// and any data currently present and at the end will be put into a final chunk.
     pub fn next(&mut self, data: &[u8], is_final: bool) -> (Option<Chunk>, usize) {
-        let (data, consume): (Bytes, usize) = {
+        let (chunk_data, consume): (Bytes, usize) = {
             if let Some(next_boundary) = self.next_boundary(data) {
                 if self.chunkbuf.is_empty() {
                     (Bytes::copy_from_slice(&data[..next_boundary]), next_boundary)
@@ -139,12 +163,18 @@ impl Chunker {
                 }
             } else if is_final {
                 // Put the rest of the data in the chunkbuf.
-                if self.chunkbuf.is_empty() {
+                let r = if self.chunkbuf.is_empty() {
                     (Bytes::copy_from_slice(data), data.len())
                 } else {
                     self.chunkbuf.extend_from_slice(data);
                     (std::mem::take(&mut self.chunkbuf).into(), data.len())
+                };
+
+                if is_final {
+                    self.reset_state();
                 }
+
+                r
             } else {
                 self.chunkbuf.extend_from_slice(data);
                 return (None, data.len());
@@ -152,11 +182,11 @@ impl Chunker {
         };
 
         // Special case this specific case.
-        if data.is_empty() {
+        if chunk_data.is_empty() {
             return (None, 0);
         }
 
-        (Some(Chunk::new(data)), consume)
+        (Some(Chunk::new(chunk_data)), consume)
     }
 
     /// Keeps chunking until no more chunks can be reliably produced, returning a
@@ -168,6 +198,10 @@ impl Chunker {
         loop {
             debug_assert!(pos <= data.len());
             if pos == data.len() {
+                if is_final {
+                    self.reset_state();
+                }
+
                 return ret;
             }
 
@@ -221,10 +255,14 @@ impl Chunker {
             }
         }
 
+        if is_final {
+            self.reset_state();
+        }
+
         ret
     }
 
-    // Finishes, returning the final chunk if it exists
+    // Finishes, returning the final chunk if one exists, and resets the hasher to
     pub fn finish(&mut self) -> Option<Chunk> {
         self.next(&[], true).0
     }
@@ -659,7 +697,7 @@ mod tests {
         data_sample_at_11111[0] = 236;
         ref_cb[0] = vec![8256, 16448, 24640, 32832, 41024, 49216, 57408, 65536];
         data_sample_at_11111[1] = 50;
-        ref_cb[1] = vec![8191, 16447, 24703, 32959, 41215, 49471, 57727, 65536];
+        ref_cb[1] = vec![8320, 16576, 24832, 33088, 41344, 49600, 57856, 65536];
         data_sample_at_11111[2] = 36;
         ref_cb[2] = vec![8254, 16574, 24894, 33214, 41534, 49854, 58174, 65536];
         data_sample_at_11111[3] = 116;
@@ -681,7 +719,7 @@ mod tests {
         data_sample_at_11111[11] = 0;
         ref_cb[11] = vec![8265, 16466, 24667, 32868, 41069, 49270, 57471, 65536];
         data_sample_at_11111[12] = 252;
-        ref_cb[12] = vec![8324, 16452, 24704, 32832, 41084, 49212, 57464, 65536];
+        ref_cb[12] = vec![8324, 16584, 24844, 33104, 41364, 49624, 57884, 65536];
         data_sample_at_11111[13] = 159;
         ref_cb[13] = vec![8242, 16561, 24880, 33199, 41518, 49837, 58156, 65536];
         data_sample_at_11111[14] = 69;
@@ -691,7 +729,7 @@ mod tests {
         data_sample_at_11111[16] = 126;
         ref_cb[16] = vec![8272, 16480, 24688, 32896, 41104, 49312, 57520, 65536];
         data_sample_at_11111[17] = 10;
-        ref_cb[17] = vec![8329, 16457, 24714, 32842, 41099, 49227, 57484, 65536];
+        ref_cb[17] = vec![8329, 16594, 24859, 33124, 41389, 49654, 57919, 65536];
         data_sample_at_11111[18] = 124;
         ref_cb[18] = vec![8240, 16562, 24884, 33206, 41528, 49850, 58172, 65536];
         data_sample_at_11111[19] = 24;
@@ -705,7 +743,7 @@ mod tests {
         data_sample_at_11111[23] = 183;
         ref_cb[23] = vec![8218, 16523, 24828, 33133, 41438, 49743, 58048, 65536];
         data_sample_at_11111[24] = 124;
-        ref_cb[24] = vec![8128, 16328, 24536, 32744, 40952, 49160, 57368, 65536];
+        ref_cb[24] = vec![8272, 16480, 24688, 32896, 41104, 49312, 57520, 65536];
         data_sample_at_11111[25] = 70;
         ref_cb[25] = vec![8326, 16588, 24850, 33112, 41374, 49636, 57898, 65536];
         data_sample_at_11111[26] = 126;
@@ -715,7 +753,7 @@ mod tests {
         data_sample_at_11111[28] = 69;
         ref_cb[28] = vec![8332, 16600, 24868, 33136, 41404, 49672, 57940, 65536];
         data_sample_at_11111[29] = 163;
-        ref_cb[29] = vec![8128, 16392, 24713, 33034, 41355, 49676, 57997, 65536];
+        ref_cb[29] = vec![8228, 16549, 24870, 33191, 41512, 49833, 58154, 65536];
         data_sample_at_11111[30] = 252;
         ref_cb[30] = vec![8280, 16496, 24712, 32928, 41144, 49360, 57576, 65536];
         data_sample_at_11111[31] = 0;
@@ -763,7 +801,7 @@ mod tests {
         data_sample_at_11111[52] = 0;
         ref_cb[52] = vec![8344, 16624, 24904, 33184, 41464, 49744, 58024, 65536];
         data_sample_at_11111[53] = 12;
-        ref_cb[53] = vec![8209, 16337, 24680, 32808, 41151, 49279, 57622, 65536];
+        ref_cb[53] = vec![8209, 16535, 24861, 33187, 41513, 49839, 58165, 65536];
         data_sample_at_11111[54] = 236;
         ref_cb[54] = vec![8254, 16626, 24998, 33370, 41742, 50114, 58486, 65536];
         data_sample_at_11111[55] = 0;
@@ -779,7 +817,7 @@ mod tests {
         data_sample_at_11111[60] = 178;
         ref_cb[60] = vec![8336, 16608, 24880, 33152, 41424, 49696, 57968, 65536];
         data_sample_at_11111[61] = 0;
-        ref_cb[61] = vec![8191, 16507, 24823, 33139, 41455, 49771, 58087, 65536];
+        ref_cb[61] = vec![8380, 16696, 25012, 33328, 41644, 49960, 58276, 65536];
         data_sample_at_11111[62] = 10;
         ref_cb[62] = vec![8234, 16594, 24954, 33314, 41674, 50034, 58394, 65536];
         data_sample_at_11111[63] = 101;
@@ -807,13 +845,13 @@ mod tests {
         data_sample_at_11111[74] = 52;
         ref_cb[74] = vec![8346, 16628, 24910, 33192, 41474, 49756, 58038, 65536];
         data_sample_at_11111[75] = 0;
-        ref_cb[75] = vec![8387, 16515, 24830, 32958, 41273, 49401, 57716, 65536];
+        ref_cb[75] = vec![8387, 16710, 25033, 33356, 41679, 50002, 58325, 65536];
         data_sample_at_11111[76] = 70;
         ref_cb[76] = vec![8224, 16588, 24952, 33316, 41680, 50044, 58408, 65536];
         data_sample_at_11111[77] = 228;
         ref_cb[77] = vec![8264, 16464, 24664, 32864, 41064, 49264, 57464, 65536];
         data_sample_at_11111[78] = 0;
-        ref_cb[78] = vec![8128, 16338, 24578, 32818, 41058, 49298, 57538, 65536];
+        ref_cb[78] = vec![8304, 16544, 24784, 33024, 41264, 49504, 57744, 65536];
         data_sample_at_11111[79] = 0;
         ref_cb[79] = vec![8344, 16624, 24904, 33184, 41464, 49744, 58024, 65536];
         data_sample_at_11111[80] = 50;
@@ -825,17 +863,17 @@ mod tests {
         data_sample_at_11111[83] = 0;
         ref_cb[83] = vec![8293, 16522, 24751, 32980, 41209, 49438, 57667, 65536];
         data_sample_at_11111[84] = 50;
-        ref_cb[84] = vec![8128, 16388, 24656, 32924, 41192, 49460, 57728, 65536];
+        ref_cb[84] = vec![8332, 16600, 24868, 33136, 41404, 49672, 57940, 65536];
         data_sample_at_11111[85] = 69;
         ref_cb[85] = vec![8371, 16678, 24985, 33292, 41599, 49906, 58213, 65536];
         data_sample_at_11111[86] = 0;
-        ref_cb[86] = vec![8196, 16324, 24674, 32802, 41152, 49280, 57630, 65536];
+        ref_cb[86] = vec![8196, 16542, 24888, 33234, 41580, 49926, 58272, 65536];
         data_sample_at_11111[87] = 0;
         ref_cb[87] = vec![8234, 16619, 25004, 33389, 41774, 50159, 58544, 65536];
         data_sample_at_11111[88] = 70;
         ref_cb[88] = vec![8272, 16480, 24688, 32896, 41104, 49312, 57520, 65536];
         data_sample_at_11111[89] = 136;
-        ref_cb[89] = vec![8128, 16339, 24585, 32831, 41077, 49323, 57569, 65536];
+        ref_cb[89] = vec![8310, 16556, 24802, 33048, 41294, 49540, 57786, 65536];
         data_sample_at_11111[90] = 0;
         ref_cb[90] = vec![8348, 16632, 24916, 33200, 41484, 49768, 58052, 65536];
         data_sample_at_11111[91] = 0;
@@ -865,7 +903,7 @@ mod tests {
         data_sample_at_11111[103] = 126;
         ref_cb[103] = vec![8380, 16696, 25012, 33328, 41644, 49960, 58276, 65536];
         data_sample_at_11111[104] = 0;
-        ref_cb[104] = vec![8416, 16544, 24888, 33016, 41360, 49488, 57832, 65536];
+        ref_cb[104] = vec![8416, 16768, 25120, 33472, 41824, 50176, 58528, 65536];
         data_sample_at_11111[105] = 0;
         ref_cb[105] = vec![8219, 16607, 24995, 33383, 41771, 50159, 58547, 65536];
         data_sample_at_11111[106] = 159;

@@ -2657,6 +2657,7 @@ dependencies = [
  "async-trait",
  "bytes",
  "ctor",
+ "derivative",
  "error_printer",
  "futures",
  "lazy_static",
