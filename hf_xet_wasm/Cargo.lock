@@ -234,6 +234,7 @@ dependencies = [
  "futures",
  "heed",
  "http",
+ "hyper",
  "hyper-util",
  "lazy_static",
  "mdb_shard",
