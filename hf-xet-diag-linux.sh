@@ -251,11 +251,14 @@ check_hang() {
   diff12=$(diff <(echo "$norm1") <(echo "$norm2") || true)
   diff23=$(diff <(echo "$norm2") <(echo "$norm3") || true)
 
-  if [[ -n "$diff12" && -n "$diff23" ]]; then
-    echo "⚠️ Hang heuristic triggered at $(date -Is)" | tee -a "$CONSOLE_LOG"
-    take_core_dump
-    LAST_STACKS=()
+  # if no diff between stacks 1-2 and 2-3, we have a hang
+  if [[ -n "$diff12" || -n "$diff23" ]]; then 
+    return
   fi
+
+  echo "⚠️ Hang heuristic triggered at $(date -Is)" | tee -a "$CONSOLE_LOG"
+  take_core_dump
+  LAST_STACKS=()
 }
 
 take_core_dump() {
