@@ -41,12 +41,12 @@ Given an ordered list of terms describing a file:
 ### Ordering and Coverage
 
 - Terms are ordered according to the file’s byte order. Concatenating their decoded outputs yields the requested file region.
-- Gaps are not allowed. If gaps exist, the reconstruction would not produce a contiguous byte stream.
+- Gaps MUST NOT be present. If gaps exist, the reconstruction would not produce a contiguous byte stream.
 
 ### Multiple Terms per Xorb and Coalescing
 
 - A file may contain multiple terms that reference the same xorb, potentially with disjoint chunk ranges. This enables deduplication across distant parts of the file.
-- When multiple terms target overlapping or adjacent chunk ranges within the same xorb, implementations may coalesce these into a single retrieval to reduce I/O and request overhead, while preserving the term-level reconstruction semantics.
+- When multiple terms target overlapping or adjacent chunk ranges within the same xorb, implementations SHOULD coalesce these into a single retrieval to reduce I/O and request overhead, while preserving the term-level reconstruction semantics.
 
 ### Chunk and Byte Boundaries
 

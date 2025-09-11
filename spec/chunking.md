@@ -1,7 +1,7 @@
 # Content-Defined Chunking Algorithm
 
 The goal in chunking is to convert file data into smaller variable length chunks, approximately 64 KiB in length.
-Chunks boundaries must be computed in a deterministic way such that chunking the same data in 2 different places yields chunks that can be deduplicated.
+Chunks boundaries MUST be computed in a deterministic way such that chunking the same data in 2 different places yields chunks that can be deduplicated.
 
 ## Step-by-step algorithm (Gearhash-based CDC)
 
@@ -10,7 +10,7 @@ Chunks boundaries must be computed in a deterministic way such that chunking the
 - target_chunk_size: `64 KiB`
 - MIN_CHUNK_SIZE: `8 KiB` (minimum chunk size)
 - MAX_CHUNK_SIZE: `128 KiB` (maximum chunk size)
-- MASK: `0xffff000000000000` (16 one-bits → boundary probability 1/2^16 per byte)
+- MASK: `0xFFFF000000000000` (16 one-bits → boundary probability 1/2^16 per byte)
 - TABLE[256]: table of 256 64-bit constants ([rust-gearhash-table])
 
 ### State
@@ -93,7 +93,7 @@ Given that MASK has 16 one-bits, for a random 64-bit hash h, the chance that all
 
 - Only reset `h` when you emit a boundary. This ensures chunking is stable even when streaming input in pieces.
 - Apply the mask test only once `size >= MIN_CHUNK_SIZE`. This reduces the frequency of tiny chunks and stabilizes average chunk sizes.
-- Force a boundary at `size >= MAX_CHUNK_SIZE` even if `(h & MASK) != 0`. This guarantees bounded chunk sizes and prevents pathological long chunks when matches are rare.
+- MUST force a boundary at `MAX_CHUNK_SIZE` even if `(h & MASK) != 0`. This guarantees bounded chunk sizes and prevents pathological long chunks when matches are rare.
 - Use 64-bit wrapping arithmetic for `(h << 1) + TABLE[b]`. This is the behavior in the reference implementation [rust-gearhash].
 
 ### Edge cases
@@ -119,7 +119,7 @@ This ensures that, by the time the first boundary can be considered (at offset `
 - Effect:
   - Distribution quality is preserved because the first admissible test uses a well-mixed hash (full window), avoiding bias from the earliest bytes.
   - Performance improves by avoiding per-byte hashing/judgment in the prefix where boundaries cannot be taken.
-  - Correctness is preserved because boundaries are never allowed before `MIN_CHUNK_SIZE` and the hash produced at a testable offset is the same as the hash computed had we not skipped any bytes.
+  - Correctness is preserved because boundaries MUST NOT be set before `MIN_CHUNK_SIZE` and the hash produced at a testable offset is the same as the hash computed had we not skipped any bytes.
 - Notes:
   - This is an optimization of the search procedure only; it does not change the boundary condition, mask, or emitted chunk set compared to a byte-by-byte implementation that simply refrains from taking boundaries before `MIN_CHUNK_SIZE`.
   - In the reference code, this appears as advancing the scan pointer by up to `MIN_CHUNK_SIZE - 64 - 1` before invoking the mask test loop.

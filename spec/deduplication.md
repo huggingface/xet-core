@@ -35,7 +35,7 @@ A **chunk** is a variable-sized content block derived from files using Content-D
 
 ### Shards (Xorb Lists)
 
-**Shards** are objects that contain a list of xorbs that may be deduped against (for the context of deduplication, ignore the file info section of the shard format).
+**Shards** are objects that contain a list of xorbs that can be deduped against (for the context of deduplication, ignore the file info section of the shard format).
 
 - **Maximum size**: 64MB
 - **Purpose**: Provide a format on a positive reply to a global deduplication request with information about xorbs that already exist in the CAS system.
@@ -116,13 +116,13 @@ Not all chunks are eligible for global deduplication queries to manage system lo
 
 #### Query Process
 
-1. **Background Query**: Global deduplication queries run asynchronously to avoid blocking upload
+1. **Background Query**: Global deduplication queries SHOULD run asynchronously to avoid blocking upload
 2. **HMAC Protection**: Chunk hashes are protected using HMAC keys
 3. **Shard Response**: When a match is found, the API returns a shard containing:
    - **CAS Info Section**: Contains metadata about many xorbs that store chunks
    - **HMAC Key**: Included in the shard metadata header used to encrypt chunk hashes
 4. **Encrypted Chunk Matching**: All chunk hashes in the returned shard have been encrypted with the HMAC key
-5. **Match Discovery Process**: To find matches, clients must:
+5. **Match Discovery Process**: To find matches, clients MUST:
    - Encrypt their chunk hash using the provided HMAC key
    - Search for the encrypted hash within the shard's chunk listings
    - For subsequent chunks, repeat the encryption and search process
@@ -136,7 +136,7 @@ Global deduplication uses HMAC (Hash-based Message Authentication Code) to prote
 **Security Properties**:
 
 Raw chunk hashes are never transmitted from servers to clients; a client has to encrypt their raw chunk hash and find a match to know a raw chunk hash exists in the system.
-They may know this chunk hash because they own this data, the match has made them privy to know which xorb has this chunk hash and the position in the xorb, but has not revealed any other raw chunk hashes in that xorb or other xorbs.
+They MAY know this chunk hash because they own this data, the match has made them privy to know which xorb has this chunk hash and the position in the xorb, but has not revealed any other raw chunk hashes in that xorb or other xorbs.
 
 ## Technical Implementation Details
 
@@ -169,7 +169,7 @@ This information allows the system to reconstruct files by:
 ## Fragmentation Prevention
 
 While deduplication is valuable for saving space, doing it too aggressively can cause file fragmentation—meaning a file’s chunks end up scattered across many different xorbs. This can make reading files slower and less efficient.
-To avoid this, in xet-core we aim (and encourage implementors) to keep long, continuous runs of chunks together in the same xorb whenever possible.
+To avoid this, in xet-core we aim (and encourage implementors) to keep long, continuous runs of chunks together in the same xorb whenever possible. Implementations SHOULD keep long, continuous runs together when feasible.
 Instead of always deduplicating every possible chunk, the system sometimes chooses to reference a straight run of chunks in a single xorb, even if it means skipping deduplication for a few chunks.
 This approach balances the benefits of deduplication with the need to keep files easy and fast to read.
 Consider for example referencing a deduplicated chunks in a minimum run of chunks (e.g. at least 8 chunks) or targeting an average contiguous run of chunks totalling length >= 1MB.

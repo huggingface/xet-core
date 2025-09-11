@@ -8,7 +8,7 @@ The Shard format is the vehicle for uploading the file reconstruction upload and
 
 The MDB (Merkle Database) shard file format is a binary format used to store file metadata and content-addressable storage (CAS) information for efficient deduplication and retrieval.
 This document describes the binary layout and deserialization process for the shard format.
-Implementors of the xet protocol will need to use the shard format when implementing the [upload protocol](../spec/upload_protocol.md).
+Implementors of the xet protocol MUST use the shard format when implementing the [upload protocol](../spec/upload_protocol.md).
 The shard format is used on the shard upload (record files) and global deduplication APIs.
 
 ## Use As API Request and Response Bodies
@@ -21,7 +21,7 @@ The shard in this case is a serialization format that allows clients to denote t
 Each file reconstruction maps to an File Info block in the File Info section.
 Additionally the listing of all new xorbs that the client created are mapped to items (CAS Info blocks) in the CAS Info section so that they may be deduplicated against in the future.
 
-When uploading a shard the footer section should be omitted.
+When uploading a shard the footer section MUST be omitted.
 
 ### Global Deduplication
 
@@ -127,17 +127,17 @@ struct MDBShardFileHeader {
 4. Verify version equals 2
 5. Read 8 bytes for footer_size (u64)
 
-> when serializing, footer_size should be the number of bytes that make up the footer, or 0 if the footer is omitted.
+> when serializing, footer_size MUST be the number of bytes that make up the footer, or 0 if the footer is omitted.
 
 ## 2. File Info Section
 
 **Location**: `footer.file_info_offset` to `footer.cas_info_offset` or directly after the header
 
-This section contains a sequence of 0 or more file information (File Info) blocks, each consisting at least a header and at least 1 data sequence entry, and optionally verification entries and metadata extension section.
+This section contains a sequence of 0 or more file information (File Info) blocks, each consisting at least a header and at least 1 data sequence entry, and OPTIONAL verification entries and metadata extension section.
 The file info section ends when reaching the bookend entry.
 
 Each File Info block within the overall section is a serialization of a [file reconstruction](../spec/file_reconstruction.md) into a binary format.
-For each file, there is a `FileDataSequenceHeader` and for each term a `FileDataSequenceEntry` with optionally a matching `FileVerificationEntry` and also optionally at the end a `FileMetadataExt`.
+For each file, there is a `FileDataSequenceHeader` and for each term a `FileDataSequenceEntry` with OPTIONAL a matching `FileVerificationEntry` and also OPTIONAL at the end a `FileMetadataExt`.
 
 A shard File Info section can contain more than 1 File Info block in series, after completing reading all the content for 1 file description, the next one immediately begins.
 If when reading the header of the next section a reader encounters the bookend entry that means the file info section is over; you have read the last file description in this shard.
@@ -249,9 +249,9 @@ struct FileDataSequenceEntry {
 0                                                               32        36        40        44        48
 ```
 
-### FileVerificationEntry (optional)
+### FileVerificationEntry (OPTIONAL)
 
-Verification Entries must be set for shard uploads.
+Verification Entries MUST be set for shard uploads.
 
 To generate verification hashes for shard upload read the section about [Verification Hashes](../hashing.md#Term%20Verification%20Hashes).
 
@@ -272,15 +272,15 @@ struct FileVerificationEntry {
 0                                                              32                               48
 ```
 
-When a shard has verification entries, all file info sections must have verification entries.
+When a shard has verification entries, all file info sections MUST have verification entries.
 If only some subset of files in the shard have verification entries, the shard is considered invalid.
 Every `FileDataSequenceEntry` will have a matching `FileVerificationEntry` in this case where the range_hash is computed with the chunk hashes for that range of chunks.
 
 For any file the nth `FileVerificationEntry` correlates to the nth `FileDataSequenceEntry`, and like `FileDataSequenceEntries` if there are verification entries there will be `file_data_sequence_header.num_entries` verification entries (following the num_entries data sequence entries).
 
-### FileMetadataExt (optional)
+### FileMetadataExt (OPTIONAL)
 
-This section is required per file for shards uploaded through the shard upload API.
+This section is REQUIRED per file for shards uploaded through the shard upload API.
 
 There is only 1 `FileMetadataExt` instance per file info block and it is the last component of that file info block when present.
 
@@ -311,7 +311,7 @@ The bookend entry is 48 bytes long where the first 32 bytes are all `0xFF`, foll
 
 Suppose you were attempting to deserialize a `FileDataSequenceHeader` and it's file hash was all 1 bits then this entry is a bookend entry and the next bytes start the next section.
 
-Since the file info section immediately follows the header, a client does not need to deserialize the footer to know where it starts deserializing this section.
+Since the file info section immediately follows the header, a client MAY skip deserializing the footer to know where it starts deserializing this section.
 The file info section begins right after the header and ends when the bookend is reached.
 
 **Deserialization steps**:
@@ -418,11 +418,11 @@ The bookend entry is 48 bytes long where the first 32 bytes are all `0xFF`, foll
 
 Suppose you were attempting to deserialize a `CASChunkSequenceHeader` and it's hash was all 1 bits then this entry is a bookend entry and the next bytes start the next section.
 
-Since the cas info section immediately follows the file info section bookend, a client does not need to deserialize the footer to know where the cas info section starts starts deserialize this section, it begins right after the file info section bookend and ends when the next bookend is reached.
+Since the cas info section immediately follows the file info section bookend, a client MAY skip deserializing the footer to know where the cas info section starts starts deserialize this section, it begins right after the file info section bookend and ends when the next bookend is reached.
 
 ## 4. Footer (MDBShardFileFooter)
 
-> Do not include the footer when serializing the shard as the body for the shard upload API.
+> MUST NOT include the footer when serializing the shard as the body for the shard upload API.
 
 **Location**: End of file minus footer_size
 **Size**: 200 bytes
@@ -485,7 +485,7 @@ If you find a match (matched_chunk) then you know the original chunk hash of you
 
 The shard key expiry is a 64 bit unix timestamp of when the shard received is to be considered expired (usually in the order of days or weeks after the shard was sent back).
 
-After this expiry time has passed clients should consider this shard expired and not use it to deduplicate data.
+After this expiry time has passed clients SHOULD consider this shard expired and SHOULD NOT use it to deduplicate data.
 Uploads that reference xorbs that were referenced by this shard can be rejected at the server's discretion.
 
 ## Complete Deserialization Algorithm

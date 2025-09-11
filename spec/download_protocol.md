@@ -17,7 +17,7 @@ To download a file given a file hash, first call the reconstruction API to get t
 
 Note that you will need at least a `read` scope auth token, [auth reference](../spec/auth.md).
 
-> For large files is may be recommended to download the request the reconstruction in batches i.e. the first 10GB, download all the data, then the next 10GB and so on. Use the `Range` header to specify a range of file data.
+> For large files it is RECOMMENDED to request the reconstruction in batches i.e. the first 10GB, download all the data, then the next 10GB and so on. Clients can use the `Range` header to specify a range of file data.
 
 ## Stage 2: Understanding the Reconstruction Response
 
@@ -68,7 +68,7 @@ Scroll
 - Type: `number`
 - For a full file or when the specified range start is 0, then this is guaranteed to be `0`
 - For range queries this is the byte offset into the first term (deserialized/chunks decompressed) to start to keep data from.
-  - since the requested range may start in the middle of a chunk, and data must be downloaded in full chunks (since they may need to be deserialized) then this offset tells a client how many bytes to skip in the first chunk (or possibly multiple chunks within the first term).
+  - since the requested range may start in the middle of a chunk, and data MUST be downloaded in full chunks (since they may need to be deserialized) then this offset tells a client how many bytes to skip in the first chunk (or possibly multiple chunks within the first term).
 
 #### terms
 
@@ -87,7 +87,7 @@ Scroll
 - Each `CASReconstructionFetchInfo` contains:
   - `url`: HTTP URL for downloading the xorb data, presigned url containing authorization information
   - `url_range` (bytes_start, bytes_end): Byte range `{ start: number, end: number }` for the Range header; end-inclusive `[start, end]`
-    - The range header must be set as `Range: bytes=<start>-<end>` when downloading this chunk range
+    - The `Range` header MUST be set as `Range: bytes=<start>-<end>` when downloading this chunk range
   - `range` (index_start, index_end): Chunk index range `{ start: number, end: number }` that this URL provides; end-exclusive `[start, end)`
     - This range indicates which range of chunk indices within this xorb that this fetch info term is describing
 
@@ -101,7 +101,7 @@ Scroll
     1. get the list of fetch_info items under the xorb hash from the `CASReconstructionTerm`. The xorb hash is guaranteed to exist as a key in the fetch_info map.
     2. linearly iterate through the list of `CASReconstructionFetchInfo` and find one which refers to a chunk range that is equal or encompassing the term's chunk range.
         - Such a fetch_info item is guaranteed to exist. If none exist the server is at fault.
-3. Download the required data using HTTP `GET` request with the `Range` header set
+3. Download the required data using HTTP `GET` request and MUST set the `Range` header
 4. Deserialize the downloaded xorb data to extract chunks
 
     1. This series of chunks contains chunks at indices specified by the `CASReconstructionFetchInfo`'s `range` field. Trim chunks at the beginning or end to match the chunks specified by the reconstruction term's `range` field.
@@ -165,12 +165,12 @@ for term in terms:
 
 #### Deserialize Downloaded Data
 
-The downloaded data is in xorb format and must be deserialized:
+The downloaded data is in xorb format and MUST be deserialized:
 
 1. **Parse xorb structure**: The data contains compressed chunks with headers
 2. **Decompress chunks**: Each chunk has a header followed by compressed data
 3. **Extract byte indices**: Track byte boundaries between chunks for range extraction
-4. **Validate length**: Ensure decompressed length matches `unpacked_length` from the term
+4. **Validate length**: Decompressed length MUST match `unpacked_length` from the term
 
 **Note**: The specific deserialization process depends on the [Xorb format](../xorb.md).
 
@@ -234,23 +234,24 @@ For partial file downloads, the reconstruction API supports range queries:
 
 When downloading individual term data:
 
-A client must include the range header formed with the values from the url_range field to specify the exact range of data of a xorb that they are accessing. Not specifying this header will cause result in an authorization failure.
+A client MUST include the `Range` header formed with the values from the url_range field to specify the exact range of data of a xorb that they are accessing. Not specifying this header will cause result in an authorization failure.
 
 Xet global deduplication requires that access to xorbs is only granted to authorized ranges.
 Not specifying this header will result in an authorization failure.
 
 ## Performance Considerations
 
-- **Range coalescing**: Multiple terms may share the same fetch info for efficiency, check where else you may need to use reuse a fetch info url across multiple terms
-- **Parallel downloads**: Terms can be downloaded in parallel, but must be assembled in order
-  - On file systems with fast seeking, it may be advantageous to open the output file in different threads and writing contents at different offsets
-- **Caching**: Consider caching downloaded xorb ranges to avoid redundant requests
+- **Range coalescing**: Multiple terms may share the same fetch info for efficiency, so a single fetch info may be larger than any 1 term and could be used to fulfil multiple terms.
+Consider downloading such content only once and reusing the data.
+- **Parallel downloads**: Terms can be downloaded in parallel, but MUST be assembled in order
+  - On file systems with fast seeking, it MAY be advantageous to open the output file in different threads and writing contents at different offsets
+- **Caching**: Clients SHOULD consider caching downloaded xorb ranges to avoid redundant requests
 - **Retry logic**: Implement exponential backoff for transient failures
 
 ### Caching recommendations
 
 1. It can be ineffective to cache the reconstruction object
-    1. The fetch_info section provides short-expiration pre-signed url's hence you cannot cache the urls for much time at all
+    1. The fetch_info section provides short-expiration pre-signed url's hence Clients SHOULD NOT cache the urls beyond their short expiration
     2. To get those url's to access the data you will need to call the reconstruction API again anyway
 2. Cache chunks by range not just individually
     1. If you need a chunk from a xorb it is very likely that you will need another, so cache them close

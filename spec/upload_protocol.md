@@ -56,7 +56,7 @@ The shard format is specified in [shard.md](../spec/shard.md).
 ### 1. Chunking
 
 Using the chunking algorithm described in [chunking.md](../spec/chunking.md) first split the file into variable sized chunks.
-Each unique chunk should have a unique hash computed as described in the [Chunk Hashing section](../spec/hashing.md#chunk-hashes).
+Each unique chunk MUST have a unique hash computed as described in the [Chunk Hashing section](../spec/hashing.md#chunk-hashes).
 This chunk hash will be used to attempt to deduplicate any chunk against other known chunks.
 
 ### 2. Deduplication
@@ -65,9 +65,9 @@ Given a chunk hash, attempt to find if the chunk already exists in the Xet syste
 
 To deduplicate a chunk is to find if the current chunk hash already exists, either in the current upload process, in a local cache of known chunks or using the [Global Deduplication API](../spec/api.md#2-query-chunk-deduplication-global-deduplication).
 
-When a chunk is deduplicated it does not need to be re-uploaded to the CAS (by being included in a xorb in the next step), but when rebuilding the file, the chunk needs to be included by referencing the xorb that includes it and the specific chunk index.
+When a chunk is deduplicated it SHOULD NOT be re-uploaded to the CAS (by being included in a xorb in the next step), but when rebuilding the file, the chunk needs to be included by referencing the xorb that includes it and the specific chunk index.
 
-> Note that Deduplication is considered an optimization and is not a required component of the upload process, however it provides potential resource saving.
+> Note that Deduplication is considered an optimization and is an OPTIONAL component of the upload process, however it provides potential resource saving.
 
 For more detail visit the [deduplication document](../spec/deduplication.md)
 
@@ -84,11 +84,11 @@ Each xorb is serialized into its binary representation as defined by the xorb fo
 The client uploads each new xorb via the [Xorb upload API](../spec/api.md#3-upload-xorb).
 
 The serialization and upload steps are separated from collecting chunks and hashing as these steps can be done independently while still referencing the xorb in creating file reconstructions.
-However a xorb must be uploaded before a file reconstruction that references it is uploaded in a shard.
+However a xorb MUST be uploaded before a file reconstruction that references it is uploaded in a shard.
 
 ### 5. Shard formation, collect required components
 
-Map each file to a reconstruction using available xorbs, the file reconstruction will point to ranges of chunks within xorbs that refer to each chunk in the file.
+Map each file to a reconstruction using available xorbs, the file reconstruction MUST point to ranges of chunks within xorbs that refer to each chunk in the file.
 Terms for chunks that are deduplicated using results from the Global Dedupe API will use xorb hashes that already exist in CAS.
 
 Then for each file:
@@ -109,11 +109,11 @@ With these components it is now possible to serialize for each xorb a [CAS Info 
 Given the information collected in the previous section, serialize a shard for a batch of files following the format specified in the [shard spec](../spec/shard.md).
 
 The client uploads the shard via the [shard upload](../spec/api.md#4-upload-shard) endpoint on the CAS server.
-For this to succeed, all xorbs referenced by the shard must have already completed uploading.
+For this to succeed, all xorbs referenced by the shard MUST have already completed uploading.
 
 This API registers files as uploaded.
 
-> For a large batch of files or a batch of large files if the serialized shard will be greater than 64 MiB you will have to break up the content into multiple shards.
+> For a large batch of files or a batch of large files if the serialized shard will be greater than 64 MiB you MUST break up the content into multiple shards.
 
 ### Done
 
@@ -122,9 +122,9 @@ Files can then be downloaded by any client using the [download protocol](../spec
 
 ## Ordering and concurrency
 
-There are some natural ordering requirements in the upload process, e.g. you must have determined a chunk boundary before computing the chunk hash, and you must have collected a sequence of chunks to create a xorb to compute the xorb hash etc.
+There are some natural ordering requirements in the upload process, e.g. you MUST have determined a chunk boundary before computing the chunk hash, and you MUST have collected a sequence of chunks to create a xorb to compute the xorb hash etc.
 
-However there is one additional enforced requirement about ordering: **all xorbs referenced by a shard must be uploaded before that shard is uploaded**.
+However there is one additional enforced requirement about ordering: **all xorbs referenced by a shard MUST be uploaded before that shard is uploaded**.
 If any xorb referenced by a shard is not already uploaded when the shard upload API is called, the server will reject the request.
 All xorbs whose hash is used as an entry in the cas info section and in data entries of the file info section are considered "referenced" by a shard.
 
@@ -146,10 +146,10 @@ sequenceDiagram
 
     Client->>Client: Chunking: split file into chunks and compute chunk hashes
 
-    Note right of Client: 2) Local deduplication (optional)
+    Note right of Client: 2) Local deduplication (OPTIONAL)
 
     loop For each chunk if chunk % 1024 == 0<br/>(global dedupe eligible)
-        opt Global deduplication (optional)
+        opt Global deduplication (OPTIONAL)
             Client->>CAS: GET /v1/chunks/default-merkledb/{chunk_hash}
             CAS-->>Client: 200 dedupe information or 404 not found
         end
@@ -166,5 +166,5 @@ sequenceDiagram
     Client->>CAS: POST /v1/shards
     CAS-->>Client: 200 OK
 
-    Note over Client,CAS: All referenced Xorbs must be uploaded before Shard upload.<br/>Endpoints are idempotent by content-addressed keys.
+    Note over Client,CAS: All referenced Xorbs MUST be uploaded before Shard upload.<br/>Endpoints are idempotent by content-addressed keys.
 ```

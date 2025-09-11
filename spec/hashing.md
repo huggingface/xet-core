@@ -93,7 +93,7 @@ Then take the root node's hash and compute a blake3 keyed hash with the key bein
 
 ## Term Verification Hashes
 
-When uploading a shard, each term in each file info in the shard must have a matching FileVerificationEntry section that contains a hash.
+When uploading a shard, each term in each file info in the shard MUST have a matching FileVerificationEntry section that contains a hash.
 
 To generate this hash, take the chunk hashes for the specific range of chunks that make up the term and:
 

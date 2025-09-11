@@ -17,7 +17,7 @@ Namely, Xorbs point to roughly 64 MiB worth of data.
 
 The CAS server will reject Xorb uploads that exceed the 64 MiB serialized size limit.
 
-It is recommended to pack chunks from multiple files into a Xorb if the size requirements allow, i.e. file X and Y both produced 10 new chunks each totalling a total of ~128000 bytes, then all those chunks can fit in a new Xorb.
+It is RECOMMENDED to pack chunks from multiple files into a Xorb if the size requirements allow, i.e. file X and Y both produced 10 new chunks each totalling a total of ~128000 bytes, then all those chunks can fit in a new Xorb.
 
 ## Xorb Format
 
@@ -53,7 +53,7 @@ The chunk header is serialized as follows:
 
 Both Compressed and Uncompressed Size can fit in a 3 byte integer, given that that a raw uncompressed chunk can be 128KiB at most,
 requiring 18 binary digits to represent.
-If utilizing the intended compression scheme results in a larger compressed chunk then the chunk should be stored uncompressed with then
+If utilizing the intended compression scheme results in a larger compressed chunk then the chunk SHOULD be stored uncompressed with then
 the uncompressed size also being at a maximum of 128KiB.
 
 #### Chunk Header Layout
@@ -100,13 +100,13 @@ Following the header is the compressed data block, exactly `compressed_size` byt
 Picking the chunk compression scheme for the Xorb is a task left to the client when uploading the Xorb.
 The goal is to minimize the overall size of the Xorb for faster transmission at the cost of resources to decompress a chunk on the receiving end.
 
-When picking a compression scheme for the chunk there are a number of strategies and implementors may make their decisions as to how to pick a compression scheme.
-Note that a Xorb may contain chunks that utilize different compression schemes.
+When picking a compression scheme for the chunk there are a number of strategies and implementors MAY make their decisions as to how to pick a compression scheme.
+Note that a Xorb MAY contain chunks that utilize different compression schemes.
 
 1. **Brute Force**
 
     Try all possible compression schemes, pick the best one.
-    The best one may be the one producing the smallest compressed chunk or the fastest to decompress.
+    The best one MAY be the one producing the smallest compressed chunk or the fastest to decompress.
 
 2. **Best Effort Prediction**
 

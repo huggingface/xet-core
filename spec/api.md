@@ -10,7 +10,7 @@ To authenticate, authorize, and obtain the API base URL, follow the instructions
 
 Sometimes hashes are used in API paths as hexadecimal strings (reconstruction, xorb upload, global dedupe API).
 
-To convert a 32 hash to a 64 hexadecimal character string to be used as part of an API path there is a specific procedure, do not directly convert each byte.
+To convert a 32 hash to a 64 hexadecimal character string to be used as part of an API path there is a specific procedure, MUST NOT directly convert each byte.
 
 ### Procedure
 
@@ -33,14 +33,14 @@ It is: `07060504030201000f0e0d0c0b0a0908171615141312111f1e1d1c1b1a1918`.
 
 ### 1. Get File Reconstruction
 
-- **Description**: Retrieves reconstruction information for a specific file, optionally with byte range support.
+- **Description**: Retrieves reconstruction information for a specific file, includes byte range support when `Range` header is set.
 - **Path**: `/v1/reconstructions/{file_id}`
 - **Method**: `GET`
 - **Parameters**:
   - `file_id`: File hash in hex format (64 lowercase hexadecimal characters).
 See [file hashes](../spec/hashing.md#file-hashes) for computing the file hash and [converting hashes to strings](../spec/api.md#converting-hashes-to-strings).
 - **Headers**:
-  - `Range`: Optional. Format: `bytes={start}-{end}` (end is inclusive).
+  - `Range`: OPTIONAL. Format: `bytes={start}-{end}` (end is inclusive).
 - **Minimum Token Scope**: `read`
 - **Body**: None.
 - **Response**: JSON (`QueryReconstructionResponse`)
@@ -101,11 +101,11 @@ See [xorb format serialization](../spec/xorb.md).
 - **Error Responses**: See [Error Cases](../spec/api.md#error-cases)
   - `400 Bad Request`: Malformed hash in the path, Xorb hash does not match the body, or body is incorrectly serialized.
   - `401 Unauthorized`: Refresh the token to continue making requests, or provide a token in the `Authorization` header.
-  - `403 Forbidden`: Token provided but does not have a wide enough scope (for example, a `read` token was provided). Retry with a `write` scope token.
+  - `403 Forbidden`: Token provided but does not have a wide enough scope (for example, a `read` token was provided). Clients MUST retry with a `write` scope token.
 
 ### 4. Upload Shard
 
-- **Description**: Uploads a Shard to the CAS with optional forced synchronization.
+- **Description**: Uploads a Shard to the CAS.
 Uploads file reconstructions and new xorb listing, serialized into the shard format; marks the files as uploaded.
 - **Path**: `/v1/shards`
 - **Method**: `POST`
@@ -124,7 +124,7 @@ See [Shard format guide](../spec/shard.md#shard-upload).
   - `0`: The Shard already exists.
   - `1`: `SyncPerformed` — the Shard was registered.
 
-The value of `result` is does not carry any meaning, if the upload shard API returns a `200 OK` status code, the upload was successful and the files listed are considered uploaded.
+The value of `result` does not carry any meaning, if the upload shard API returns a `200 OK` status code, the upload was successful and the files listed are considered uploaded.
 
 - **Error Responses**: See [Error Cases](../spec/api.md#error-cases)
   - `400 Bad Request`: Shard is incorrectly serialized or Shard contents failed verification.
@@ -144,9 +144,9 @@ The value of `result` is does not carry any meaning, if the upload shard API ret
 ### Retryable Errors
 
 - **Connection Errors**: Often caused by network issues. Retry if intermittent.
-Ensure you do not have a firewall blocking requests or DNS overrides.
+Clients SHOULD ensure no firewall blocks requests and SHOULD NOT use DNS overrides.
 - **429 Rate Limiting**: Lower your request rate using a backoff strategy, then wait and retry.
 Assume all APIs are rate limited.
-- **500 Internal Server Error**: The server experienced an intermittent issue; clients should retry their requests.
+- **500 Internal Server Error**: The server experienced an intermittent issue; clients SHOULD retry their requests.
 - **503 Service Unavailable**: Service is temporarily unable to process requests; wait and retry.
 - **504 Gateway Timeout**: Service took too long to respond; wait and retry.

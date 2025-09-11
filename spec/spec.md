@@ -4,8 +4,8 @@
 > The key words "MUST", "MUST NOT", "REQUIRED", "SHALL", "SHALL NOT", "SHOULD", "SHOULD NOT", "RECOMMENDED", "NOT RECOMMENDED", "MAY", and "OPTIONAL" in this document are to be interpreted as described in BCP 14 [RFC2119](https://www.ietf.org/rfc/rfc2119.txt) [RFC8174](https://www.ietf.org/rfc/rfc8174.txt) when, and only when, they appear in all capitals, as shown here.
 
 This specification defines the end-to-end Xet protocol for content-addressed data: chunking and hashing rules, deduplication strategy, xorb and shard object formats, file reconstruction semantics, authentication, and the CAS APIs for upload and download.
-Its goal is interoperability and determinism: independent implementations must produce the same hashes, objects, and API behavior so data written by one client can be read by another with integrity and performance.
-Implementors can create their own clients, SDKs, and tools that speak the Xet protocol and interface with the CAS service, as long as they adhere to the requirements defined here.
+Its goal is interoperability and determinism: independent implementations MUST produce the same hashes, objects, and API behavior so data written by one client can be read by another with integrity and performance.
+Implementors can create their own clients, SDKs, and tools that speak the Xet protocol and interface with the CAS service, as long as they MUST adhere to the requirements defined here.
 
 ## Reference implementation
 
