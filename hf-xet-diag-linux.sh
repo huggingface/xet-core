@@ -129,6 +129,10 @@ maybe_build_ptrace_helper
 
 # --- download hf-xet dbg symbols ---
 WHEEL_VERSION=$(pip show hf-xet | grep Version | cut -d ' ' -f2)
+if [ -z "$WHEEL_VERSION" ]; then
+  echo "Error: hf-xet package is not installed. Please install it before running this script." >&2
+  exit 1
+fi
 echo "hf-xet wheel version: $WHEEL_VERSION"
 SYMBOL_DIR="symbols-$WHEEL_VERSION"
 
