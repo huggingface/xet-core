@@ -94,7 +94,11 @@ if [[ -n "$WHEEL_VERSION" ]]; then
     curl -L "$DOWNLOAD_URL" -o dbg-symbols.zip || {
       echo "Warning: failed to download debug symbols." | tee -a "$CONSOLE_LOG"
     }
-    unzip -o dbg-symbols.zip -d "$SYMBOL_DIR"
+    if [[ -f dbg-symbols.zip ]]; then
+      unzip -o dbg-symbols.zip -d "$SYMBOL_DIR"
+    else
+      echo "Warning: dbg-symbols.zip not found, skipping unzip." | tee -a "$CONSOLE_LOG"
+    fi
     if [[ -f "$SYMBOL_DIR/dbg-symbols/$SYMBOL_FILENAME" ]]; then
       cp "$SYMBOL_DIR/dbg-symbols/$SYMBOL_FILENAME" "$LABEL/" || true
       echo "Installed dbg symbol $SYMBOL_FILENAME to $LABEL"
