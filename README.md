@@ -37,6 +37,154 @@ xet-core enables huggingface_hub to utilize xet storage for uploading and downlo
 
 🔖 **local disk caching**: chunk-based cache that sits alongside the existing [huggingface_hub disk cache](https://huggingface.co/docs/huggingface_hub/guides/manage-cache).
 
+## Contributions (feature requests, bugs, etc.) are encouraged & appreciated 💙💚💛💜🧡❤️
+
+Please join us in making xet-core better. We value everyone's contributions. Code is not the only way to help. Answering questions, helping each other, improving documentation, filing issues all help immensely. If you are interested in contributing (please do!), check out the [contribution guide](https://github.com/huggingface/xet-core/blob/main/CONTRIBUTING.md) for this repository.
+
+## Issues, Diagnostics & Debugging
+
+If you encounter an issue when using `hf-xet` please help us fix the issue by collecting diagnostic information and attaching that when creating a [new Issue](https://github.com/huggingface/xet-core/issues/new/choose).
+
+We provide platform-specific diagnostic runners to help investigate hangs, crashes, or performance issues when using **hf-xet**. These diagnostics scripts download and install debug symbols, set up logging, and take periodic stack traces throughout process execution.
+
+### Diagnostics - Linux (`hf-xet-diag-linux.sh`)
+
+* Uses `gdb` + `gcore` to periodically snapshot stacks and produce core dumps.
+* Supports optional ptrace preload helper for debugging.
+* Downloads and installs the appropriate `hf_xet-*.dbg` symbol file automatically.
+
+**Requirements:**
+
+```bash
+sudo apt-get install gdb build-essential
+```
+
+**Example usage:**
+
+```bash
+./hf-xet-diag-linux.sh -- python hf-download.py "Qwen/Qwen2.5-VL-3B-Instruct"
+```
+
+### Windows (Git-Bash) (`hf-xet-diag-windows.sh`)
+
+* Runs in **Git-Bash**, keeping usage consistent with Linux.
+* Uses **Sysinternals ProcDump** for periodic mini dumps (`-mp`).
+* Auto-downloads `procdump.exe` if not found.
+* Downloads and installs the matching `hf_xet.pdb` debug symbol into the package directory.
+
+**Requirements:**
+
+* Git-Bash (from [Git for Windows](https://gitforwindows.org/))
+* Python installed
+* Internet access (first run downloads ProcDump and debug symbols)
+
+**Example usage:**
+
+```bash
+./hf-xet-diag-windows.sh -- python hf-download.py "Qwen/Qwen2.5-VL-3B-Instruct"
+```
+
+---
+
+### Output Layout
+
+Both scripts produce a diagnostics directory named:
+
+```
+diag_<command>_<timestamp>/
+  ├── console.log   # Combined stdout/stderr of the process
+  ├── env.log       # System/environment info
+  ├── pid           # Child PID file
+  ├── stacks/       # Periodic stack traces / dumps
+  └── dumps/        # (Linux only) full gcore dumps
+```
+
+This unified layout makes it easier to compare diagnostics across platforms.
+
+---
+
+### Analyzing Dumps
+
+### Usage
+
+From your repo root:
+
+```bash
+./analyze-latest.sh
+```
+
+* Finds the most recent `diag_*` directory.
+* Opens the latest dump inside:
+
+  * **Linux:** opens `dumps/core_*` in `gdb`.
+  * **Windows (Git-Bash):** opens `stacks/*.dmp` in **WinDbg** (`windbg` must be on PATH).
+* You can also pass a base directory if your diagnostics are stored elsewhere:
+
+  ```bash
+  ./analyze-latest.sh /path/to/diagnostics
+  ```
+
+**Linux**
+
+* Stack traces are saved under `stacks/` as plain text.
+* Core dumps (`dumps/core_*`) can be analyzed with gdb:
+
+  ```bash
+  gdb python dumps/core_<pid>
+  (gdb) bt        # backtrace
+  (gdb) thread apply all bt
+  ```
+* Ensure the matching debug symbols (`hf_xet-*.dbg`) are in the `hf_xet` package directory.
+
+**Windows**
+
+* Dumps are saved under `stacks/` as `.dmp` files.
+* Open `.dmp` files in **WinDbg** (install via [Windows SDK](https://developer.microsoft.com/en-us/windows/downloads/windows-10-sdk/)):
+
+  ```cmd
+  windbg -z dump_20250101_120000.dmp
+  ```
+* Common WinDbg commands:
+
+  ```
+  !analyze -v         # Automatic analysis
+  ~* kb               # Show stack traces for all threads
+  lm                  # List loaded modules (verify hf_xet.pdb loaded)
+  ```
+* Ensure `hf_xet.pdb` is installed in the `hf_xet` package directory so symbols load correctly.
+
+---
+
+⚠️ **Tip:** Share the full `diag_<command>_<timestamp>/` directory when reporting issues — it contains logs, environment info, and dumps needed to reproduce and diagnose problems.
+
+
+### Debugging
+
+To limit the size our our built binaries, we are releasing python wheels with binaries that are stripped of debugging symbols. If you encounter a panic while running hf-xet, you can use the debug symbols to help identify the part of the library that failed. 
+
+Here are the recommended steps:
+
+1. Download and unzip our [debug symbols package](https://github.com/huggingface/xet-core/releases/download/latest/dbg-symbols.zip).
+2. Determine the location of the hf-xet package using `pip show hf-xet`. The `Location` field will show the location of all the site packages. The `hf_xet` package will be within that directory.
+3. Determine the symbols to copy based on the system you are running:
+   * Windows: use `hf_xet.pdb`
+   * Mac: use `libhf_xet-macosx-x86_64.dylib.dSYM` for Intel based Macs and `libhf_xet-macosx-aarch64.dylib.dSYM` for Apple Silicon.
+   * Linux: the choice will depend on the architecture and wheel distribution used. To get this information, `cat` the `WHEEL` file name within the `hf_xet.dist-info` directory in your site packages. The wheel file will have the linux build and architecture in the file name. Eg: `cat /home/ubuntu/.venv/lib/python3.12/site-packages/hf_xet-*.dist-info/WHEEL`. You will use the file named `hf_xet-<manylinux | musllinux>-<x86_64 | arm64>.abi3.so.dbg` choosing the distribution and platform that matches your wheel. Eg: `hf_xet-manylinux-x86_64.abi3.so.dbg`.
+4. Copy the symbols to the site package path from step 2 above + `hf_xet`. Eg: `cp -r hf_xet-1.1.2-manylinux-x86_64.abi3.so.dbg /home/ubuntu/.venv/lib/python3.12/site-packages/hf_xet`
+5. Run your python binary with `RUST_BACKTRACE=full` and recreate your failure.
+
+#### Debugging Environment Variables
+
+To enable logging and see more debugging / diagnostics information, set the following:
+
+```
+RUST_BACKTRACE=full
+RUST_LOG=info
+HF_XET_LOG_FILE=/tmp/xet.log
+```
+
+Note: HF_XET_LOG_FILE expects a full writable path. If one isn't found it will use stdout console for logging.
+
 ## Local Development
 
 ### Repo Organization - Rust Crates
@@ -139,37 +287,6 @@ Note: You may need to install x86_64: `rustup target add x86_64-apple-darwin`
 ### Testing
 
 Unit-tests are run with `cargo test`, benchmarks are run with `cargo bench`. Some crates have a main.rs that can be run for manual testing.
-
-## Contributions (feature requests, bugs, etc.) are encouraged & appreciated 💙💚💛💜🧡❤️
-
-Please join us in making xet-core better. We value everyone's contributions. Code is not the only way to help. Answering questions, helping each other, improving documentation, filing issues all help immensely. If you are interested in contributing (please do!), check out the [contribution guide](https://github.com/huggingface/xet-core/blob/main/CONTRIBUTING.md) for this repository.
-
-## Debugging
-
-To limit the size our our built binaries, we are releasing python wheels with binaries that are stripped of debugging symbols. If you encounter a panic while running hf-xet, you can use the debug symbols to help identify the part of the library that failed. 
-
-Here are the recommended steps:
-
-1. Download and unzip our [debug symbols package](https://github.com/huggingface/xet-core/releases/download/latest/dbg-symbols.zip).
-2. Determine the location of the hf-xet package using `pip show hf-xet`. The `Location` field will show the location of all the site packages. The `hf_xet` package will be within that directory.
-3. Determine the symbols to copy based on the system you are running:
-   * Windows: use `hf_xet.pdb`
-   * Mac: use `libhf_xet-macosx-x86_64.dylib.dSYM` for Intel based Macs and `libhf_xet-macosx-aarch64.dylib.dSYM` for Apple Silicon.
-   * Linux: the choice will depend on the architecture and wheel distribution used. To get this information, `cat` the `WHEEL` file name within the `hf_xet.dist-info` directory in your site packages. The wheel file will have the linux build and architecture in the file name. Eg: `cat /home/ubuntu/.venv/lib/python3.12/site-packages/hf_xet-*.dist-info/WHEEL`. You will use the file named `hf_xet-<manylinux | musllinux>-<x86_64 | arm64>.abi3.so.dbg` choosing the distribution and platform that matches your wheel. Eg: `hf_xet-manylinux-x86_64.abi3.so.dbg`.
-4. Copy the symbols to the site package path from step 2 above + `hf_xet`. Eg: `cp -r hf_xet-1.1.2-manylinux-x86_64.abi3.so.dbg /home/ubuntu/.venv/lib/python3.12/site-packages/hf_xet`
-5. Run your python binary with `RUST_BACKTRACE=full` and recreate your failure.
-
-### Debugging Environment Variables
-
-To enable logging and see more debugging / diagnostics information, set the following:
-
-```
-RUST_BACKTRACE=full
-RUST_LOG=info
-HF_XET_LOG_FILE=/tmp/xet.log
-```
-
-Note: HF_XET_LOG_FILE expects a full writable path. If one isn't found it will use stdout console for logging.
 
 ## References & History
 
