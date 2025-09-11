@@ -45,7 +45,7 @@ A **chunk** is a variable-sized content block derived from files using Content-D
 The **CAS** system provides the underlying storage infrastructure:
 
 - **Content addressing**: All objects are stored and retrieved by their cryptographic hash
-- **Immutability**: Once stored, content cannot be modified
+- **Immutability**: Once stored, file content cannot be modified
 - **Deduplication**: Identical content is automatically deduplicated at the storage level
 
 ## Deduplication Procedure

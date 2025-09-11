@@ -4,7 +4,7 @@ A "Xorb" (Xet Orb, pronounced like "zorb") is a sequence of chunks and a seriali
 
 ## Collecting Chunks
 
-Using the chunking algorithm a file is mapped to a series of chunks, once those chunks are found, they need to be collected into collections of Xorbs
+Using the chunking algorithm a file is mapped to a series of chunks, once those chunks are found, they need to be collected into collections of Xorbs.
 
 It is advantageous to collect series of chunks in Xorbs such that they can be referred to as a whole range of chunks.
 
@@ -100,11 +100,13 @@ Following the header is the compressed data block, exactly `compressed_size` byt
 Picking the chunk compression scheme for the Xorb is a task left to the client when uploading the Xorb.
 The goal is to minimize the overall size of the Xorb for faster transmission at the cost of resources to decompress a chunk on the receiving end.
 
-When picking a compression scheme for the chunk there are a number of strategies and implementors may make their decisions as to how to pick a compression scheme. Note that a Xorb may contain chunks that utilize different compression schemes.
+When picking a compression scheme for the chunk there are a number of strategies and implementors may make their decisions as to how to pick a compression scheme.
+Note that a Xorb may contain chunks that utilize different compression schemes.
 
 1. **Brute Force**
 
-    Try all possible compression schemes, pick the best one. The best one may be the one producing the smallest compressed chunk or the fastest to decompress.
+    Try all possible compression schemes, pick the best one.
+    The best one may be the one producing the smallest compressed chunk or the fastest to decompress.
 
 2. **Best Effort Prediction**
 

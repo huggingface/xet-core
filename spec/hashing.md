@@ -109,7 +109,7 @@ To generate this hash, take the chunk hashes for the specific range of chunks th
 ]
 ```
 
-The result of the blake3 keyed hash is the verification hash that should be used in the FileVerificationEntry for the term.
+The result of the blake3 keyed hash is the verification hash that MUST be used in the FileVerificationEntry for the term.
 
 ### Example Python code for the verification hash
 

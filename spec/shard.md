@@ -486,7 +486,7 @@ If you find a match (matched_chunk) then you know the original chunk hash of you
 The shard key expiry is a 64 bit unix timestamp of when the shard received is to be considered expired (usually in the order of days or weeks after the shard was sent back).
 
 After this expiry time has passed clients should consider this shard expired and not use it to deduplicate data.
-Uploads that reference xorbs that were referenced by this shard may be rejected at the server's discretion.
+Uploads that reference xorbs that were referenced by this shard can be rejected at the server's discretion.
 
 ## Complete Deserialization Algorithm
 
@@ -531,7 +531,7 @@ cas_info = read_cas_info_section(shard) // until footer.footer_offset
 
 - Header version 2: Current format
 - Footer version 1: Current format
-- Shards with different versions should be rejected
+- Shards with different versions will be rejected
 
 ## Error Handling
 

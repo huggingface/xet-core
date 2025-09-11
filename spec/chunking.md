@@ -30,7 +30,7 @@ h = (h << 1) + TABLE[b]
 
 At each position after updating `h`, let `size = current_offset - start_offset + 1`.
 
-- If `size < MIN_CHUNK_SIZE`: do not test `MASK`; continue
+- If `size < MIN_CHUNK_SIZE`: skip testing `MASK`; continue
 - Else if `size >= MAX_CHUNK_SIZE`: force a boundary
 - Else if `(h & MASK) == 0`: boundary at this position
 

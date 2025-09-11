@@ -241,7 +241,7 @@ Not specifying this header will result in an authorization failure.
 
 ## Performance Considerations
 
-- **Range coalescing**: Multiple terms may share the same fetch info for efficiency, check where else you may need to use a term
+- **Range coalescing**: Multiple terms may share the same fetch info for efficiency, check where else you may need to use reuse a fetch info url across multiple terms
 - **Parallel downloads**: Terms can be downloaded in parallel, but must be assembled in order
   - On file systems with fast seeking, it may be advantageous to open the output file in different threads and writing contents at different offsets
 - **Caching**: Consider caching downloaded xorb ranges to avoid redundant requests
@@ -250,7 +250,7 @@ Not specifying this header will result in an authorization failure.
 ### Caching recommendations
 
 1. It can be ineffective to cache the reconstruction object
-    1. The fetch_info section provides short-expiration pre-signed url's hence you cannot cache them for much time at all
+    1. The fetch_info section provides short-expiration pre-signed url's hence you cannot cache the urls for much time at all
     2. To get those url's to access the data you will need to call the reconstruction API again anyway
 2. Cache chunks by range not just individually
     1. If you need a chunk from a xorb it is very likely that you will need another, so cache them close

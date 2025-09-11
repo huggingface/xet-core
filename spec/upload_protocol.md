@@ -56,7 +56,7 @@ The shard format is specified in [shard.md](../spec/shard.md).
 ### 1. Chunking
 
 Using the chunking algorithm described in [chunking.md](../spec/chunking.md) first split the file into variable sized chunks.
-Each chunk should have a unique hash computed as described in the [Chunk Hashing section](../spec/hashing.md#chunk-hashes).
+Each unique chunk should have a unique hash computed as described in the [Chunk Hashing section](../spec/hashing.md#chunk-hashes).
 This chunk hash will be used to attempt to deduplicate any chunk against other known chunks.
 
 ### 2. Deduplication
@@ -88,7 +88,7 @@ However a xorb must be uploaded before a file reconstruction that references it 
 
 ### 5. Shard formation, collect required components
 
-Map each file to a reconstruction using available xorbs, the file reconstruction should point to ranges of chunks within xorbs that refer to each chunk in the file.
+Map each file to a reconstruction using available xorbs, the file reconstruction will point to ranges of chunks within xorbs that refer to each chunk in the file.
 Terms for chunks that are deduplicated using results from the Global Dedupe API will use xorb hashes that already exist in CAS.
 
 Then for each file:
