@@ -172,7 +172,7 @@ else
   fi
 
   # Extract just the needed symbol file
-  unzip dbg-symbols.zip -d $SYMBOL_DIR
+  unzip dbg-symbols.zip -d "$SYMBOL_DIR"
 
   # Copy to package directory
   cp -r $SYMBOL_DIR/dbg-symbols/"$SYMBOL_FILENAME" "$LABEL/"
