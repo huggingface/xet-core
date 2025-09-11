@@ -43,9 +43,7 @@ Please join us in making xet-core better. We value everyone's contributions. Cod
 
 ## Issues, Diagnostics & Debugging
 
-If you encounter an issue when using `hf-xet` please help us fix the issue by collecting diagnostic information and attaching that when creating a [new Issue](https://github.com/huggingface/xet-core/issues/new/choose).
-
-We provide platform-specific diagnostic runners to help investigate hangs, crashes, or performance issues when using **hf-xet**. These diagnostics scripts download and install debug symbols, set up logging, and take periodic stack traces throughout process execution.
+If you encounter an issue when using `hf-xet` please help us fix the issue by collecting diagnostic information and attaching that when creating a [new Issue](https://github.com/huggingface/xet-core/issues/new/choose). Download the [hf-xet-diag-linux.sh](hf-xet-diag-linux.sh) or [hf-xet-diag-windows.sh](hf-xet-diag-windows.sh) script based on your operating system and then re-run the python command that resulted in the issue. The diagnostic scripts will download and install debug symbols, setup up logging, and take periodic stack traces throughout process execution in a diagnostics directory that is easy to analyze, package, and upload.
 
 ### Diagnostics - Linux (`hf-xet-diag-linux.sh`)
 
