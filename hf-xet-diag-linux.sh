@@ -166,6 +166,10 @@ else
       DOWNLOAD_URL="https://github.com/huggingface/xet-core/releases/latest/download/dbg-symbols.zip"
   fi
   curl -L "$DOWNLOAD_URL" -o dbg-symbols.zip
+  if [ $? -ne 0 ]; then
+      echo "Error: Failed to download debug symbols from $DOWNLOAD_URL" >&2
+      exit 1
+  fi
 
   # Extract just the needed symbol file
   unzip dbg-symbols.zip -d $SYMBOL_DIR
