@@ -120,6 +120,8 @@ This API registers files as uploaded.
 After all xorbs and all shards are successfully uploaded, the full upload is considered complete.
 Files can then be downloaded by any client using the [download protocol](../spec/download_protocol.md).
 
+> If this file is being uploaded to the Hugging Face Hub, users will need to commit a git lfs pointer file using the sha256 of the file contents.
+
 ## Ordering and concurrency
 
 There are some natural ordering requirements in the upload process, e.g. you MUST have determined a chunk boundary before computing the chunk hash, and you MUST have collected a sequence of chunks to create a xorb to compute the xorb hash etc.

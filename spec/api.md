@@ -59,6 +59,12 @@ See [file hashes](../spec/hashing.md#file-hashes) for computing the file hash an
   - `404 Not Found`: The file does not exist. Not retryable.
   - `416 Range Not Satisfiable`: The requested byte range start exceeds the end of the file. Not retryable.
 
+```txt
+GET /v1/reconstructions/0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+-H "Authorization: Bearer <token>"
+OPTIONAL: -H Range: "bytes=0-100000"
+```
+
 ### 2. Query Chunk Deduplication (Global Deduplication)
 
 - **Description**: Checks if a chunk exists in the CAS for deduplication purposes.
@@ -75,6 +81,11 @@ See [Chunk Hashes](../spec/hashing.md#chunk-hashes) to compute the chunk hash an
   - `400 Bad Request`: Malformed hash in the path. Fix the path before retrying.
   - `401 Unauthorized`: Refresh the token to continue making requests, or provide a token in the `Authorization` header.
   - `404 Not Found`: Chunk not already tracked by global deduplication. Not retryable.
+
+```txt
+GET /v1/chunks/default-merkledb/0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+-H "Authorization: Bearer <token>"
+```
 
 ### 3. Upload Xorb
 
@@ -103,6 +114,11 @@ See [xorb format serialization](../spec/xorb.md).
   - `401 Unauthorized`: Refresh the token to continue making requests, or provide a token in the `Authorization` header.
   - `403 Forbidden`: Token provided but does not have a wide enough scope (for example, a `read` token was provided). Clients MUST retry with a `write` scope token.
 
+```txt
+POST /v1/xorbs/default/0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+-H "Authorization: Bearer <token>"
+```
+
 ### 4. Upload Shard
 
 - **Description**: Uploads a Shard to the CAS.
@@ -130,6 +146,11 @@ The value of `result` does not carry any meaning, if the upload shard API return
   - `400 Bad Request`: Shard is incorrectly serialized or Shard contents failed verification.
   - `401 Unauthorized`: Refresh the token to continue making requests, or provide a token in the `Authorization` header.
   - `403 Forbidden`: Token provided but does not have a wide enough scope (for example, a `read` token was provided).
+
+```txt
+POST /v1/shards
+-H "Authorization: Bearer <token>"
+```
 
 ## Error Cases
 

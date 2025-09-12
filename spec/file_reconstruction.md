@@ -20,6 +20,30 @@ Any file’s raw bytes can be described as the concatenation of data produced by
 Each term references a contiguous range of chunks within a particular xorb.
 The file is reconstructed by retrieving those chunk ranges, decoding them to raw bytes, and concatenating in order.
 
+### Diagram
+
+> A file with 4 terms. Each term is a pointer to chunk range within a xorb.
+
+```txt
+File Reconstruction
+
+  ┌----------------------------┬┬--------------------------┬┬---------------------------┬┬-------------------------┐
+  ¦ X0                         ¦¦ X1                       ¦¦ X2                        ¦¦ X3                      ¦
+  ¦ start: 0                   ¦¦ start: 0                 ¦¦ start: 300                ¦¦ start: 300              ¦
+  ¦ end: 1024                  ¦¦ end: 700                 ¦¦ end: 1024                 ¦¦ end: 700                ¦
+  ├----------------------------++--------------------------++---------------------------++-------------------------┤
+  ¦                            /¦                          /\                           /\                         /
+  ¦                           / ¦                         /  \                          ¦ \                       /
+  ¦                          /  ¦                    /---/    \----\                    ¦  \----\                /
+  ¦                         ¦   ¦                   /               \                   ¦        \              /
+  ¦                         ¦   ¦                  /                 \                  ¦         \            /
+  ┌-------------------------┐   ┌-------------------------┐   ┌-------------------------┐   ┌-------------------------┐
+  ¦ X0                      ¦   ¦ X1                      ¦   ¦ X2                      ¦   ¦ X3                      ¦
+  ¦                         ¦   ¦                         ¦   ¦                         ¦   ¦                         ¦
+  ¦0                    1024¦   ¦0                    1000¦   ¦0                    1090¦   ¦0                    870 ¦
+  └-------------------------┘   └-------------------------┘   └-------------------------┘   └-------------------------┘
+```
+
 ## Term Format
 
 Each term consists of:

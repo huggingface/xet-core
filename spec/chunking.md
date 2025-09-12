@@ -3,6 +3,12 @@
 The goal in chunking is to convert file data into smaller variable length chunks, approximately 64 KiB in length.
 Chunks boundaries MUST be computed in a deterministic way such that chunking the same data in 2 different places yields chunks that can be deduplicated.
 
+```txt
+        +---------+---------+---------+---------+---------+---------+---------+--------------
+File -> | chunk 0 | chunk 1 | chunk 2 | chunk 3 | chunk 4 | chunk 5 | chunk 6 | chunk 7 | ...
+        +---------+---------+---------+---------+---------+---------+---------+--------------
+```
+
 ## Step-by-step algorithm (Gearhash-based CDC)
 
 ### Constant Parameters
