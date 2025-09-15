@@ -16,10 +16,12 @@ https://huggingface.co/api/{repo_type}s/{repo_id}/xet-{token_type}-token/{revisi
 
 **Parameters:**
 
+All parameters are required to form the url.
+
 - `repo_type`: Type of repository - `model`, `dataset`, or `space`
 - `repo_id`: Repository identifier in format `namespace/repo-name`
 - `token_type`: Either `read` or `write`.
-- `revision`: Git revision (branch, tag, or commit hash; default to using `main`)
+- `revision`: Git revision (branch, tag, or commit hash; default to using `main` if no specific ref is required)
 
 To understand the distinction for between `token_type` values read onwards in this document to [Token Scope](../spec/auth.md#token-scope).
 

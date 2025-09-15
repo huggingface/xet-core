@@ -144,6 +144,7 @@ The value of `result` does not carry any meaning, if the upload shard API return
 
 - **Error Responses**: See [Error Cases](../spec/api.md#error-cases)
   - `400 Bad Request`: Shard is incorrectly serialized or Shard contents failed verification.
+    - Can mean that a referenced Xorb doesn't exist or the shard is too large
   - `401 Unauthorized`: Refresh the token to continue making requests, or provide a token in the `Authorization` header.
   - `403 Forbidden`: Token provided but does not have a wide enough scope (for example, a `read` token was provided).
 
