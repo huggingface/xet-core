@@ -21,6 +21,8 @@ After cutting a chunk of data, the chunk hash is computed via a blake3 keyed has
 ]
 ```
 
+[reference implementation](https://github.com/huggingface/xet-core/blob/main/merklehash/src/data_hash.rs#L308-L311)
+
 ## Xorb Hashes
 
 Xorbs are composed of a series of chunks; given the series of chunks that make up a xorb, to compute the hash or xorb hash we will compute a MerkleHash using a [Merkle Tree](https://en.wikipedia.org/wiki/Merkle_tree) data structure with custom hashing functions.
@@ -36,6 +38,8 @@ The hash function used to compute internal node hashes is as follows:
   - the chunk length number e.g. 64000
   - finally a newline `\n` character
 - Then take the bytes from this string and compute a blake3 keyed hash with the following key (INTERNAL_NODE_KEY)
+
+[reference implementation](https://github.com/huggingface/xet-core/blob/main/merklehash/src/aggregated_hashes.rs#L103-L109)
 
 ### INTERNAL_NODE_KEY
 
@@ -91,6 +95,8 @@ After chunking a whole file, to compute the file hash, follow the same procedure
 This means create a MerkleTree using the same hashing functions described in the previous section.
 Then take the root node's hash and compute a blake3 keyed hash with the key being 32 0-value bytes.
 
+[reference implementation](https://github.com/huggingface/xet-core/blob/main/merklehash/src/aggregated_hashes.rs#L123-L125)
+
 ## Term Verification Hashes
 
 When uploading a shard, each term in each file info in the shard MUST have a matching FileVerificationEntry section that contains a hash.
@@ -110,6 +116,8 @@ To generate this hash, take the chunk hashes for the specific range of chunks th
 ```
 
 The result of the blake3 keyed hash is the verification hash that MUST be used in the FileVerificationEntry for the term.
+
+[reference implementation](https://github.com/huggingface/xet-core/blob/main/mdb_shard/src/chunk_verification.rs#L4-L16)
 
 ### Example Python code for the verification hash
 
