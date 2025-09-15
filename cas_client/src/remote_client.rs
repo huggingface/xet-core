@@ -42,29 +42,28 @@ pub const CAS_ENDPOINT: &str = "http://localhost:8080";
 pub const PREFIX_DEFAULT: &str = "default";
 
 utils::configurable_constants! {
-// Env (HF_XET_NUM_CONCURRENT_RANGE_GETS) to set the number of concurrent range gets.
-// setting this value to 0 disables the limit, sets it to the max, this is not recommended as it may lead to errors
+    /// Env (HF_XET_NUM_CONCURRENT_RANGE_GETS) to set the number of concurrent range gets.
+    /// setting this value to 0 disables the limit, sets it to the max, this is not recommended as it may lead to errors
     ref NUM_CONCURRENT_RANGE_GETS: usize = GlobalConfigMode::HighPerformanceOption {
         standard: 48,
         high_performance: 256,
     };
 
-    // Send a report of successful partial upload every 512kb.
+    /// Send a report of successful partial upload every 512kb.
     ref UPLOAD_REPORTING_BLOCK_SIZE : usize = 512 * 1024;
+
+    /// Env (HF_XET_RECONSTRUCT_WRITE_SEQUENTIALLY) to switch to writing terms sequentially to disk.
+    /// Benchmarks have shown that on SSD machines, writing in parallel seems to far outperform
+    /// sequential term writes.
+    /// However, this is not likely the case for writing to HDD and may in fact be worse,
+    /// so for those machines, setting this env may help download perf.
+    ref RECONSTRUCT_WRITE_SEQUENTIALLY : bool = false;
+
 }
 
 lazy_static! {
     static ref DOWNLOAD_CHUNK_RANGE_CONCURRENCY_LIMITER: GlobalSemaphoreHandle =
         global_semaphore_handle!(*NUM_CONCURRENT_RANGE_GETS);
-}
-
-utils::configurable_bool_constants! {
-// Env (HF_XET_RECONSTRUCT_WRITE_SEQUENTIALLY) to switch to writing terms sequentially to disk.
-// Benchmarks have shown that on SSD machines, writing in parallel seems to far outperform
-// sequential term writes.
-// However, this is not likely the case for writing to HDD and may in fact be worse,
-// so for those machines, setting this env may help download perf.
-    ref RECONSTRUCT_WRITE_SEQUENTIALLY = false;
 }
 
 pub struct RemoteClient {
