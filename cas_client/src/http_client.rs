@@ -98,9 +98,9 @@ fn reqwest_client() -> Result<reqwest::Client, CasClientError> {
 
     #[cfg(not(target_family = "wasm"))]
     {
-        use xet_runtime::ThreadPool;
+        use xet_runtime::XetRuntime;
 
-        let client = ThreadPool::get_or_create_reqwest_client(|| {
+        let client = XetRuntime::get_or_create_reqwest_client(|| {
             reqwest::Client::builder()
                 .pool_idle_timeout(Duration::from_secs(*CLIENT_IDLE_CONNECTION_TIMEOUT_SECS))
                 .pool_max_idle_per_host(*CLIENT_MAX_IDLE_CONNECTIONS)

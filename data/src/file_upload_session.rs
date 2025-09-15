@@ -24,7 +24,7 @@ use tokio::sync::{Mutex, OwnedSemaphorePermit};
 use tokio::task::{JoinHandle, JoinSet};
 use tracing::{info_span, instrument, Instrument, Span};
 use ulid::Ulid;
-use xet_runtime::{global_semaphore_handle, GlobalSemaphoreHandle, ThreadPool};
+use xet_runtime::{global_semaphore_handle, GlobalSemaphoreHandle, XetRuntime};
 
 use crate::configurations::*;
 use crate::constants::{
@@ -56,7 +56,7 @@ pub(crate) async fn acquire_upload_permit() -> Result<OwnedSemaphorePermit> {
             global_semaphore_handle!(*MAX_CONCURRENT_UPLOADS);
     }
 
-    let upload_permit = ThreadPool::current()
+    let upload_permit = XetRuntime::current()
         .global_semaphore(*UPLOAD_CONCURRENCY_LIMITER)
         .acquire_owned()
         .await
@@ -211,7 +211,7 @@ impl FileUploadSession {
 
             // Now, spawn a task
             let ingestion_concurrency_limiter =
-                ThreadPool::current().global_semaphore(*CONCURRENT_FILE_INGESTION_LIMITER);
+                XetRuntime::current().global_semaphore(*CONCURRENT_FILE_INGESTION_LIMITER);
             let session = self.clone();
 
             cleaning_tasks.push(tokio::spawn(async move {
@@ -577,15 +577,15 @@ mod tests {
     use std::path::Path;
     use std::sync::{Arc, OnceLock};
 
-    use xet_runtime::ThreadPool;
+    use xet_runtime::XetRuntime;
 
     use crate::{FileDownloader, FileUploadSession, XetFileInfo};
 
     /// Return a shared threadpool to be reused as needed.
-    fn get_threadpool() -> Arc<ThreadPool> {
-        static THREADPOOL: OnceLock<Arc<ThreadPool>> = OnceLock::new();
+    fn get_threadpool() -> Arc<XetRuntime> {
+        static THREADPOOL: OnceLock<Arc<XetRuntime>> = OnceLock::new();
         THREADPOOL
-            .get_or_init(|| ThreadPool::new().expect("Error starting multithreaded runtime."))
+            .get_or_init(|| XetRuntime::new().expect("Error starting multithreaded runtime."))
             .clone()
     }
 
