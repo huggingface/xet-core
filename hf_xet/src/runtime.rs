@@ -214,13 +214,13 @@ where
 
     // Now, if we're in the middle of a shutdown, and this is an error, then
     // just translate that error to a KeyboardInterrupt (or we get a lot of
-    if let Err(e) = &result {
-        if in_sigint_shutdown() {
-            if cfg!(debug_assertions) {
-                eprintln!("[debug] ignored error reported during shutdown: {e:?}");
-            }
-            return Err(PyKeyboardInterrupt::new_err(()));
+    if let Err(e) = &result
+        && in_sigint_shutdown()
+    {
+        if cfg!(debug_assertions) {
+            eprintln!("[debug] ignored error reported during shutdown: {e:?}");
         }
+        return Err(PyKeyboardInterrupt::new_err(()));
     }
 
     // Now return the result.
