@@ -1,8 +1,8 @@
-use std::fmt::Display;
 use std::str::FromStr;
 
 use git_url_parse::GitUrl as innerGitUrl;
 pub use git_url_parse::Scheme;
+use hub_client::{HFRepoType, RepoInfo};
 
 use crate::errors::{GitXetError, Result, config_error, not_supported};
 
@@ -178,58 +178,6 @@ impl GitUrl {
         let repo_type = HFRepoType::from_str(path.trim_end_matches(&full_name).trim_end_matches('/'))?;
 
         Ok(RepoInfo { repo_type, full_name })
-    }
-}
-
-// This defines the exact three types of repos served on HF Hub.
-#[derive(Debug, PartialEq)]
-pub enum HFRepoType {
-    Model,
-    Dataset,
-    Space,
-}
-
-impl FromStr for HFRepoType {
-    type Err = GitXetError;
-
-    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
-        match s.to_lowercase().as_str() {
-            "" => Ok(HFRepoType::Model), // when repo type is omitted from the URL the default type is "model"
-            "model" | "models" => Ok(HFRepoType::Model),
-            "dataset" | "datasets" => Ok(HFRepoType::Dataset),
-            "space" | "spaces" => Ok(HFRepoType::Space),
-            t => Err(config_error(format!("invalid repo type {t}"))),
-        }
-    }
-}
-
-impl HFRepoType {
-    pub fn as_str(&self) -> &str {
-        match self {
-            HFRepoType::Model => "model",
-            HFRepoType::Dataset => "dataset",
-            HFRepoType::Space => "space",
-        }
-    }
-}
-
-impl Display for HFRepoType {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(self.as_str())
-    }
-}
-
-#[derive(Debug, PartialEq)]
-pub struct RepoInfo {
-    // The type of a repo, one of "model | dataset | space"
-    pub repo_type: HFRepoType,
-    // The full name of a repo, formatted as "owner/name"
-    pub full_name: String,
-}
-
-impl Display for RepoInfo {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}/{}", self.repo_type, self.full_name)
     }
 }
 

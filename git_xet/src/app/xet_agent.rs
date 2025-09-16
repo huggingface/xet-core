@@ -7,14 +7,15 @@ use data::FileUploadSession;
 use data::data_client::{clean_file, default_config};
 use hub_client::Operation;
 use progress_tracking::{ProgressUpdate, TrackingProgressUpdater};
+use utils::auth::TokenRefresher;
 
-use crate::constants::{HF_ENDPOINT_ENV, XET_ACCESS_TOKEN_HEADER, XET_TOKEN_EXPIRATION_HEADER};
+use crate::constants::{HF_ENDPOINT_ENV, XET_ACCESS_TOKEN_HEADER, XET_REFRESH_ROUTE, XET_TOKEN_EXPIRATION_HEADER};
 use crate::errors::{Result, config_error, internal, not_supported};
 use crate::git_repo::GitRepo;
 use crate::git_url::{GitUrl, Scheme};
-use crate::hub_client_token_refresher::HubClientTokenRefresher;
 use crate::lfs_agent_protocol::errors::bad_syntax;
 use crate::lfs_agent_protocol::{InitRequestInner, ProgressUpdater, TransferAgent, TransferRequest};
+use crate::token_refresher::{DirectRefreshRouteTokenRefresher, HubClientTokenRefresher};
 
 // This implements a Git LFS custom transfer agent that uploads and downloads files using the Xet protocol.
 #[derive(Default)]
@@ -70,13 +71,25 @@ impl TransferAgent for XetAgent {
         // so that if the internal git credential helper needs to prompt the user for credential,
         // only one prompt is presented.
         let repo = self.repo.get().unwrap(); // protocol state guarantees self.repo is set.
-        let token_refresher = HubClientTokenRefresher::new(
-            repo,
-            self.remote_url.clone(),
-            self.hf_endpoint.clone(),
-            Operation::Upload,
-            "",
-        )?;
+
+        let token_refresher: Arc<dyn TokenRefresher> =
+            if let Some(refresh_route) = req.action.header.get(XET_REFRESH_ROUTE) {
+                Arc::new(DirectRefreshRouteTokenRefresher::new(
+                    repo,
+                    self.remote_url.clone(),
+                    refresh_route,
+                    Operation::Upload,
+                    "",
+                )?)
+            } else {
+                Arc::new(HubClientTokenRefresher::new(
+                    repo,
+                    self.remote_url.clone(),
+                    self.hf_endpoint.clone(),
+                    Operation::Upload,
+                    "",
+                )?)
+            };
 
         // From git-lfs:
         // > First worker is the only one allowed to start immediately.
@@ -95,10 +108,21 @@ impl TransferAgent for XetAgent {
         };
 
         let cas_url = req.action.href.clone();
-        let token = req.action.header[XET_ACCESS_TOKEN_HEADER].clone();
-        let token_expiry: u64 = req.action.header[XET_TOKEN_EXPIRATION_HEADER].parse().map_err(internal)?;
+        let token = req
+            .action
+            .header
+            .get(XET_ACCESS_TOKEN_HEADER)
+            .ok_or_else(|| internal("Hugging Face Hub didn't provide a CAS access token"))?
+            .clone();
+        let token_expiry: u64 = req
+            .action
+            .header
+            .get(XET_TOKEN_EXPIRATION_HEADER)
+            .ok_or_else(|| internal("Hugging Face Hub didn't provide a CAS access token expiration"))?
+            .parse()
+            .map_err(internal)?;
 
-        let config = default_config(cas_url, None, Some((token, token_expiry)), Some(Arc::new(token_refresher)))?
+        let config = default_config(cas_url, None, Some((token, token_expiry)), Some(token_refresher))?
             .disable_progress_aggregation(); // upload one file at a time so no need for the heavy progress aggregator
         let session = FileUploadSession::new(config.into(), Some(Arc::new(xet_updater))).await?;
 

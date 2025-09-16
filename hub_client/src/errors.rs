@@ -13,6 +13,9 @@ pub enum HubClientError {
 
     #[error("Credential helper error: {0}")]
     CredentialHelper(anyhow::Error),
+
+    #[error("Invalid repo type: {0}")]
+    InvalidRepoType(String),
 }
 
 pub type Result<T> = std::result::Result<T, HubClientError>;
