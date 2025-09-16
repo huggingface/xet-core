@@ -2,6 +2,7 @@
 
 This document describes how files are uploaded in the Xet protocol to the Content Addressable Storage (CAS) service.
 The flow converts input files into chunks, applies deduplication, groups chunks into xorbs, uploads xorbs, then forms and uploads shards that reference those xorbs.
+The steps can be done all be done concurrently except that all xorbs MUST be uploaded before a shard referencing them is uploaded.
 Content addressing uses hashes as stable keys for deduplication and integrity verification.
 
 ## Xet Object Types

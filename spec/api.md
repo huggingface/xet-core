@@ -4,7 +4,7 @@ This document describes the HTTP API endpoints used by the CAS (Content Addressa
 
 ## Authentication
 
-To authenticate, authorize, and obtain the API base URL, follow the instructions in [Authentication](./auth.md).
+To authenticate, authorize, and obtain the API base URL, follow the instructions in [Authentication](../spec/auth.md).
 
 ## Converting Hashes to Strings
 
