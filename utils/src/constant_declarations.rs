@@ -1,5 +1,6 @@
 use std::fmt::Debug;
 use std::str::FromStr;
+use std::time::Duration;
 
 use tracing::{info, warn};
 
@@ -58,6 +59,7 @@ impl FromStrParseable for i64 {}
 impl FromStrParseable for f32 {}
 impl FromStrParseable for f64 {}
 impl FromStrParseable for String {}
+impl FromStrParseable for ByteSize {}
 
 /// Special handling for bool:
 /// - true: "1","true","yes","y","on"  -> true
@@ -83,6 +85,16 @@ impl ParsableConfigValue for bool {
 impl<T: ParsableConfigValue> ParsableConfigValue for Option<T> {
     fn parse_user_value(value: &str) -> Option<Self> {
         T::parse_user_value(value).map(Some)
+    }
+}
+
+/// Implement proper parsing for Duration types as well.
+///
+/// Now the following suffixes are supported [y, mon, d, h, m, s, ms];
+/// see the duration_str crate for the full list.
+impl ParsableConfigValue for Duration {
+    fn parse_user_value(value: &str) -> Option<Self> {
+        duration_str::parse(value).ok()
     }
 }
 
@@ -140,6 +152,8 @@ macro_rules! configurable_constants {
 }
 
 pub use ctor as ctor_reexport;
+
+use crate::ByteSize;
 
 #[cfg(not(doctest))]
 /// A macro for **tests** that sets `HF_XET_<GLOBAL_NAME>` to `$value` **before**

@@ -11,7 +11,7 @@ use utils::RwTaskLock;
 
 use crate::cas_structs::*;
 use crate::constants::{
-    CHUNK_INDEX_TABLE_MAX_SIZE, MDB_SHARD_EXPIRATION_BUFFER_SECS, MDB_SHARD_MAX_TARGET_SIZE, SHARD_CACHE_SIZE_LIMIT,
+    CHUNK_INDEX_TABLE_MAX_SIZE, MDB_SHARD_EXPIRATION_BUFFER, MDB_SHARD_MAX_TARGET_SIZE, SHARD_CACHE_SIZE_LIMIT,
 };
 use crate::error::{MDBShardError, Result};
 use crate::file_structs::*;
@@ -109,7 +109,7 @@ impl ShardFileManager {
 
     // Construction functions
     pub async fn new_in_cache_directory(cache_directory: impl AsRef<Path>) -> Result<Arc<Self>> {
-        Self::new_impl(cache_directory, true, *MDB_SHARD_MAX_TARGET_SIZE, true, *SHARD_CACHE_SIZE_LIMIT).await
+        Self::new_impl(cache_directory, true, *MDB_SHARD_MAX_TARGET_SIZE, true, SHARD_CACHE_SIZE_LIMIT.as_u64()).await
     }
 
     async fn new_impl(
@@ -196,7 +196,7 @@ impl ShardFileManager {
         let needs_clean = self.shard_directory_cleaned.swap(true, std::sync::atomic::Ordering::Relaxed);
 
         if needs_clean {
-            MDBShardFile::clean_shard_cache(&self.shard_directory, *MDB_SHARD_EXPIRATION_BUFFER_SECS)?;
+            MDBShardFile::clean_shard_cache(&self.shard_directory, MDB_SHARD_EXPIRATION_BUFFER.as_secs())?;
         }
 
         Ok(())

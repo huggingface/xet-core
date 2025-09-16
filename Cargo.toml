@@ -48,6 +48,7 @@ csv = "1"
 ctor = "0.4"
 derivative = "2.2"
 dirs = "5.0"
+duration-str = "0.17.0"
 futures = "0.3"
 futures-util = "0.3"
 gearhash = "0.1"
@@ -76,7 +77,11 @@ rand = "0.9"
 rand_chacha = "0.9"
 rayon = "1.5"
 regex = "1"
-reqwest = { version = "0.12", features = ["json","stream","system-proxy"], default-features = false }
+reqwest = { version = "0.12", features = [
+    "json",
+    "stream",
+    "system-proxy",
+], default-features = false }
 reqwest-middleware = "0.4"
 reqwest-retry = "0.7"
 rust-netrc = "0.1"
