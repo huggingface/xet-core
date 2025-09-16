@@ -214,7 +214,7 @@ where
 
     // Now, if we're in the middle of a shutdown, and this is an error, then
     // just translate that error to a KeyboardInterrupt (or we get a lot of
-    if let Err(ref e) = &result {
+    if let Err(e) = &result {
         if in_sigint_shutdown() {
             if cfg!(debug_assertions) {
                 eprintln!("[debug] ignored error reported during shutdown: {e:?}");

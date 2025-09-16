@@ -135,7 +135,9 @@ macro_rules! test_set_globals {
                 // Construct the environment variable name, e.g. "HF_XET_MAX_NUM_CHUNKS"
                 let env_name = concat!("HF_XET_", stringify!($var_name));
                 // Convert the $val to a string and set it
-                std::env::set_var(env_name, val.to_string());
+                unsafe {
+                    std::env::set_var(env_name, val.to_string());
+                }
 
                 // Force lazy_static to be read now:
                 let actual_value = *$var_name;

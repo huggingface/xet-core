@@ -57,9 +57,11 @@ impl BG4Predictor {
 
         for i in byte_range.0..byte_range.1 {
             let idx = i + offset;
-            let n_ones = *per_byte_popcnt.get_unchecked(i) as usize;
-            let loc = (idx % 4) * 9 + n_ones;
-            *dest_ptr.add(loc) += 1;
+            unsafe {
+                let n_ones = *per_byte_popcnt.get_unchecked(i) as usize;
+                let loc = (idx % 4) * 9 + n_ones;
+                *dest_ptr.add(loc) += 1;
+            }
         }
     }
 

@@ -13,21 +13,21 @@ use cas_types::{
 };
 use chunk_cache::{CacheConfig, ChunkCache};
 use error_printer::ErrorPrinter;
-use http::header::{CONTENT_LENGTH, RANGE};
 use http::HeaderValue;
+use http::header::{CONTENT_LENGTH, RANGE};
 use mdb_shard::file_structs::{FileDataSequenceEntry, FileDataSequenceHeader, MDBFileInfo};
 use merklehash::MerkleHash;
 use progress_tracking::item_tracking::SingleItemProgressUpdater;
 use progress_tracking::upload_tracking::CompletionTracker;
 use reqwest::{Body, Response, StatusCode, Url};
 use reqwest_middleware::ClientWithMiddleware;
-use tokio::sync::{mpsc, OwnedSemaphorePermit};
+use tokio::sync::{OwnedSemaphorePermit, mpsc};
 use tokio::task::{JoinHandle, JoinSet};
 use tracing::{debug, info, instrument};
 use utils::auth::AuthConfig;
 #[cfg(not(target_family = "wasm"))]
 use utils::singleflight::Group;
-use xet_runtime::{global_semaphore_handle, GlobalSemaphoreHandle, ThreadPool};
+use xet_runtime::{GlobalSemaphoreHandle, ThreadPool, global_semaphore_handle};
 
 #[cfg(not(target_family = "wasm"))]
 use crate::download_utils::*;
@@ -36,7 +36,7 @@ use crate::http_client::{Api, ResponseErrorLogger, RetryConfig};
 #[cfg(not(target_family = "wasm"))]
 use crate::output_provider::OutputProvider;
 use crate::retry_wrapper::RetryWrapper;
-use crate::{http_client, Client};
+use crate::{Client, http_client};
 
 pub const CAS_ENDPOINT: &str = "http://localhost:8080";
 pub const PREFIX_DEFAULT: &str = "default";
@@ -98,10 +98,10 @@ pub(crate) async fn get_reconstruction_with_endpoint_and_client(
         let e = response.unwrap_err();
 
         // bytes_range not satisfiable
-        if let CasClientError::ReqwestError(e, _) = &e {
-            if let Some(StatusCode::RANGE_NOT_SATISFIABLE) = e.status() {
-                return Ok(None);
-            }
+        if let CasClientError::ReqwestError(e, _) = &e
+            && let Some(StatusCode::RANGE_NOT_SATISFIABLE) = e.status()
+        {
+            return Ok(None);
         }
 
         return Err(e);
@@ -819,8 +819,8 @@ mod tests {
     use std::collections::HashMap;
 
     use anyhow::Result;
-    use cas_object::test_utils::*;
     use cas_object::CompressionScheme;
+    use cas_object::test_utils::*;
     use cas_types::{CASReconstructionFetchInfo, CASReconstructionTerm, ChunkRange};
     use deduplication::constants::MAX_XORB_BYTES;
     use httpmock::Method::GET;

@@ -5,7 +5,7 @@ pub mod threadpool;
 
 pub use threadpool::ThreadPool;
 pub mod sync_primatives;
-pub use sync_primatives::{spawn_os_thread, SyncJoinHandle};
+pub use sync_primatives::{SyncJoinHandle, spawn_os_thread};
 
 #[macro_use]
 mod global_semaphores;

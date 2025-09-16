@@ -1,5 +1,5 @@
 use bytes::Bytes;
-use merklehash::{compute_data_hash, MerkleHash};
+use merklehash::{MerkleHash, compute_data_hash};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Chunk {

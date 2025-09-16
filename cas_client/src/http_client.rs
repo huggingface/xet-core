@@ -5,20 +5,20 @@ use anyhow::anyhow;
 use cas_types::{REQUEST_ID_HEADER, SESSION_ID_HEADER};
 use error_printer::{ErrorPrinter, OptionPrinter};
 use http::{Extensions, StatusCode};
-use reqwest::header::{HeaderValue, AUTHORIZATION};
+use reqwest::header::{AUTHORIZATION, HeaderValue};
 use reqwest::{Request, Response};
 use reqwest_middleware::{ClientBuilder, ClientWithMiddleware, Middleware, Next};
 use reqwest_retry::policies::ExponentialBackoff;
 use reqwest_retry::{
-    default_on_request_failure, default_on_request_success, DefaultRetryableStrategy, RetryTransientMiddleware,
-    Retryable, RetryableStrategy,
+    DefaultRetryableStrategy, RetryTransientMiddleware, Retryable, RetryableStrategy, default_on_request_failure,
+    default_on_request_success,
 };
 use tokio::sync::Mutex;
-use tracing::{debug, info_span, warn, Instrument};
+use tracing::{Instrument, debug, info_span, warn};
 use utils::auth::{AuthConfig, TokenProvider};
 
 use crate::constants::{CLIENT_IDLE_CONNECTION_TIMEOUT_SECS, CLIENT_MAX_IDLE_CONNECTIONS};
-use crate::{error, CasClientError};
+use crate::{CasClientError, error};
 
 pub(crate) const NUM_RETRIES: u32 = 5;
 pub(crate) const BASE_RETRY_DELAY_MS: u64 = 3000; // 3s
@@ -29,10 +29,10 @@ pub struct No429RetryStrategy;
 
 impl RetryableStrategy for No429RetryStrategy {
     fn handle(&self, res: &Result<Response, reqwest_middleware::Error>) -> Option<Retryable> {
-        if let Ok(success) = res {
-            if success.status() == StatusCode::TOO_MANY_REQUESTS {
-                return Some(Retryable::Fatal);
-            }
+        if let Ok(success) = res
+            && success.status() == StatusCode::TOO_MANY_REQUESTS
+        {
+            return Some(Retryable::Fatal);
         }
 
         const DEFAULT_STRATEGY: DefaultRetryableStrategy = DefaultRetryableStrategy;
@@ -329,12 +329,10 @@ impl ResponseErrorLogger<error::Result<Response>> for reqwest_middleware::Result
 }
 
 pub fn request_id_from_response(res: &Response) -> &str {
-    let request_id = res
-        .headers()
+    res.headers()
         .get(REQUEST_ID_HEADER)
         .and_then(|h| h.to_str().ok())
-        .unwrap_or_default();
-    request_id
+        .unwrap_or_default()
 }
 
 #[cfg(test)]

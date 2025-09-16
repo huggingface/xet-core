@@ -4,7 +4,7 @@ use cas_types::{ChunkRange, Key};
 use merklehash::MerkleHash;
 use rand::rngs::{StdRng, ThreadRng};
 use rand::seq::SliceRandom;
-use rand::{rng, Rng, SeedableRng};
+use rand::{Rng, SeedableRng, rng};
 
 #[cfg(test)]
 pub const RANGE_LEN: u32 = 16 << 10;

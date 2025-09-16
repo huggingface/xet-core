@@ -9,9 +9,9 @@ mod interface;
 mod raw_xorb_data;
 
 pub use chunk::Chunk;
-pub use chunking::{find_partitions, Chunker};
+pub use chunking::{Chunker, find_partitions};
 pub use data_aggregator::DataAggregator;
 pub use dedup_metrics::DeduplicationMetrics;
 pub use file_deduplication::FileDeduper;
 pub use interface::DeduplicationDataInterface;
-pub use raw_xorb_data::{test_utils, RawXorbData};
+pub use raw_xorb_data::{RawXorbData, test_utils};

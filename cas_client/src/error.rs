@@ -5,8 +5,8 @@ use anyhow::anyhow;
 use http::StatusCode;
 use merklehash::MerkleHash;
 use thiserror::Error;
-use tokio::sync::mpsc::error::SendError;
 use tokio::sync::AcquireError;
+use tokio::sync::mpsc::error::SendError;
 use tokio::task::JoinError;
 
 #[non_exhaustive]

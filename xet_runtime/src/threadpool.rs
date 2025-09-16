@@ -148,10 +148,10 @@ impl ThreadPool {
     fn current_if_exists() -> Option<Arc<Self>> {
         let maybe_rt = THREAD_RUNTIME_REF.with_borrow(|rt| rt.clone());
 
-        if let Some((pid, rt)) = maybe_rt {
-            if pid == std::process::id() {
-                return Some(rt);
-            }
+        if let Some((pid, rt)) = maybe_rt
+            && pid == std::process::id()
+        {
+            return Some(rt);
         }
 
         None
@@ -188,24 +188,30 @@ impl ThreadPool {
             format!("{THREADPOOL_THREAD_ID_PREFIX}-{id}")
         };
 
-        let tokio_rt = {
+        let mut tokio_rt_builder = {
             #[cfg(not(target_family = "wasm"))]
             {
                 // A new multithreaded runtime with a capped number of threads
-                TokioRuntimeBuilder::new_multi_thread().worker_threads(get_num_tokio_worker_threads())
+                TokioRuntimeBuilder::new_multi_thread()
             }
 
             #[cfg(target_family = "wasm")]
             {
                 TokioRuntimeBuilder::new_current_thread()
             }
+        };
+        #[cfg(not(target_family = "wasm"))]
+        {
+            tokio_rt_builder.worker_threads(get_num_tokio_worker_threads());
         }
-        .thread_name_fn(get_thread_name) // thread names will be hf-xet-0, hf-xet-1, etc.
-        .on_thread_start(set_threadlocal_reference) // Set the local runtime reference.
-        .thread_stack_size(THREADPOOL_STACK_SIZE) // 8MB stack size, default is 2MB
-        .enable_all() // enable all features, including IO/Timer/Signal/Reactor
-        .build()
-        .map_err(MultithreadedRuntimeError::RuntimeInitializationError)?;
+
+        let tokio_rt = tokio_rt_builder
+            .thread_name_fn(get_thread_name) // thread names will be hf-xet-0, hf-xet-1, etc.
+            .on_thread_start(set_threadlocal_reference) // Set the local runtime reference.
+            .thread_stack_size(THREADPOOL_STACK_SIZE) // 8MB stack size, default is 2MB
+            .enable_all() // enable all features, including IO/Timer/Signal/Reactor
+            .build()
+            .map_err(MultithreadedRuntimeError::RuntimeInitializationError)?;
 
         // Now that the runtime is created, fill out the original struct.
         let handle = tokio_rt.handle().clone();

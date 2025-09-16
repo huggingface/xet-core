@@ -145,11 +145,11 @@ fn install_command(args: InstallArg) -> Result<()> {
         return Ok(());
     }
 
-    if let Some(c) = args.concurrency {
-        if c == 0 {
-            eprintln!(r#"Error: "--concurrency" should be a number greater than 0."#);
-            return Ok(());
-        }
+    if let Some(c) = args.concurrency
+        && c == 0
+    {
+        eprintln!(r#"Error: "--concurrency" should be a number greater than 0."#);
+        return Ok(());
     }
 
     if args.system {

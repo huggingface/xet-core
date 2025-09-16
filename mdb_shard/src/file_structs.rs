@@ -3,8 +3,8 @@ use std::io::{Cursor, Read, Write};
 use std::mem::size_of;
 
 use bytes::Bytes;
-use merklehash::data_hash::hex;
 use merklehash::MerkleHash;
+use merklehash::data_hash::hex;
 use serde::Serialize;
 use utils::serialization_utils::*;
 
@@ -598,9 +598,9 @@ impl MDBFileInfoView {
 
 #[cfg(test)]
 mod tests {
-    use itertools::{iproduct, Itertools};
-    use rand::prelude::StdRng;
+    use itertools::{Itertools, iproduct};
     use rand::SeedableRng;
+    use rand::prelude::StdRng;
 
     use super::*;
     use crate::shard_file::test_routines::simple_hash;
