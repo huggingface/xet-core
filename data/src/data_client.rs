@@ -17,7 +17,7 @@ use ulid::Ulid;
 use utils::auth::{AuthConfig, TokenRefresher};
 use utils::normalized_path_from_user_string;
 use xet_runtime::utils::run_constrained_with_semaphore;
-use xet_runtime::{GlobalSemaphoreHandle, ThreadPool, global_semaphore_handle};
+use xet_runtime::{GlobalSemaphoreHandle, XetRuntime, global_semaphore_handle};
 
 use crate::configurations::*;
 use crate::constants::{INGESTION_BLOCK_SIZE, MAX_CONCURRENT_DOWNLOADS};
@@ -128,7 +128,7 @@ pub async fn upload_bytes_async(
     let config = default_config(endpoint.unwrap_or(DEFAULT_CAS_ENDPOINT.clone()), None, token_info, token_refresher)?;
     Span::current().record("session_id", &config.session_id);
 
-    let semaphore = ThreadPool::current().global_semaphore(*CONCURRENT_FILE_INGESTION_LIMITER);
+    let semaphore = XetRuntime::current().global_semaphore(*CONCURRENT_FILE_INGESTION_LIMITER);
     let upload_session = FileUploadSession::new(config.into(), progress_updater).await?;
     let clean_futures = file_contents.into_iter().map(|blob| {
         let upload_session = upload_session.clone();
@@ -220,7 +220,7 @@ pub async fn download_async(
         async move { smudge_file(&proc, &file_info, &file_path, updater).await }.instrument(info_span!("download_file"))
     });
 
-    let semaphore = ThreadPool::current().global_semaphore(*CONCURRENT_FILE_DOWNLOAD_LIMITER);
+    let semaphore = XetRuntime::current().global_semaphore(*CONCURRENT_FILE_DOWNLOAD_LIMITER);
 
     let paths = run_constrained_with_semaphore(smudge_file_futures, semaphore).await?;
 

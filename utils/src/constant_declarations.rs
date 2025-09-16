@@ -1,3 +1,93 @@
+use std::fmt::Debug;
+use std::str::FromStr;
+
+use tracing::{info, warn};
+
+/// A trait to control how a value is parsed from an environment string or other config source
+/// if it's present.
+///
+/// The main reason to do things like this is to
+pub trait ParsableConfigValue: Debug + Sized {
+    fn parse_user_value(value: &str) -> Option<Self>;
+
+    /// Parse the value, returning the default if it can't be parsed or the string is empty.  
+    /// Issue a warning if it can't be parsed.
+    fn parse(variable_name: &str, value: Option<String>, default: Self) -> Self {
+        match value {
+            Some(v) => match Self::parse_user_value(&v) {
+                Some(v) => {
+                    info!("Config: {variable_name} = {v:?} (user set)");
+                    v
+                },
+                None => {
+                    warn!(
+                        "Configuration value {v} for {variable_name} cannot be parsed into correct type; reverting to default."
+                    );
+                    info!("Config: {variable_name} = {default:?} (default due to parse error)");
+                    default
+                },
+            },
+            None => {
+                info!("Config: {variable_name} = {default:?} (default)");
+                default
+            },
+        }
+    }
+}
+
+/// Most values work with the FromStr implementation, but we want to override the behavior for some types
+/// (e.g. Option<T> and bool) to have custom parsing behavior.
+pub trait FromStrParseable: FromStr + Debug {}
+
+impl<T: FromStrParseable> ParsableConfigValue for T {
+    fn parse_user_value(value: &str) -> Option<Self> {
+        // Just wrap the base FromStr parser.
+        value.parse::<T>().ok()
+    }
+}
+
+// Implement FromStrParseable for all the base types where the FromStr parsing method just works.
+impl FromStrParseable for usize {}
+impl FromStrParseable for u8 {}
+impl FromStrParseable for u16 {}
+impl FromStrParseable for u32 {}
+impl FromStrParseable for u64 {}
+impl FromStrParseable for isize {}
+impl FromStrParseable for i8 {}
+impl FromStrParseable for i16 {}
+impl FromStrParseable for i32 {}
+impl FromStrParseable for i64 {}
+impl FromStrParseable for f32 {}
+impl FromStrParseable for f64 {}
+impl FromStrParseable for String {}
+
+/// Special handling for bool:
+/// - true: "1","true","yes","y","on"  -> true
+/// - false: "0","false","no","n","off","" -> false
+fn parse_bool_value(value: &str) -> Option<bool> {
+    let t = value.trim().to_ascii_lowercase();
+
+    match t.as_str() {
+        "0" | "false" | "no" | "n" | "off" => Some(false),
+        "1" | "true" | "yes" | "y" | "on" => Some(true),
+        _ => None,
+    }
+}
+
+impl ParsableConfigValue for bool {
+    fn parse_user_value(value: &str) -> Option<Self> {
+        parse_bool_value(value)
+    }
+}
+
+/// Enable Option<T> to allow the default value to be None if nothing is set and appear as
+/// Some(Value) if the user specifies the value.
+impl<T: ParsableConfigValue> ParsableConfigValue for Option<T> {
+    fn parse_user_value(value: &str) -> Option<Self> {
+        T::parse_user_value(value).map(Some)
+    }
+}
+
 /// A small marker struct so you can write `release_fixed(1234)`.
 /// In debug builds, we allow env override; in release, we ignore env.
 pub enum GlobalConfigMode<T> {
@@ -21,10 +111,6 @@ impl<T> From<T> for GlobalConfigMode<T> {
 // Reexport this so that dependencies don't have weird other dependencies
 pub use lazy_static::lazy_static;
 
-pub fn convert_value_to_bool(s: String) -> bool {
-    matches!(s.to_uppercase().as_str(), "1" | "ON" | "YES" | "TRUE")
-}
-
 #[macro_export]
 macro_rules! configurable_constants {
     ($(
@@ -39,45 +125,8 @@ macro_rules! configurable_constants {
                 pub static ref $name: $type = {
                     let v : GlobalConfigMode<$type> = ($value).into();
                     let try_load_from_env = |v_| {
-                        std::env::var(concat!("HF_XET_",stringify!($name)))
-                            .ok()
-                            .and_then(|s| s.parse::<$type>().ok())
-                            .unwrap_or(v_)
-                    };
-
-                    match (v, cfg!(debug_assertions)) {
-                        (GlobalConfigMode::ReleaseFixed(v), false) => v,
-                        (GlobalConfigMode::ReleaseFixed(v), true) => try_load_from_env(v),
-                        (GlobalConfigMode::EnvConfigurable(v), _) => try_load_from_env(v),
-                        (GlobalConfigMode::HighPerformanceOption { standard, high_performance }, _) => try_load_from_env(if is_high_performance() { high_performance } else { standard }),
-                    }
-                };
-            }
-        )+
-    };
-}
-
-/// using configurable_bool_constants will set the variable to true if the environment variable is found
-/// and is set to a "truthy" value defined as one of `{"1", "ON", "YES", "TRUE"}` (case-insensitive).
-/// Any other value (or undefined) will be considered as `False`.
-#[macro_export]
-macro_rules! configurable_bool_constants {
-    ($(
-        $(#[$meta:meta])*
-        ref $name:ident = $value:expr;
-    )+) => {
-        $(
-            #[allow(unused_imports)]
-            use utils::constant_declarations::*;
-            lazy_static! {
-                $(#[$meta])*
-                pub static ref $name: bool = {
-                    let v : GlobalConfigMode<bool> = ($value).into();
-                    let try_load_from_env = |v_| {
-                        std::env::var(concat!("HF_XET_",stringify!($name)))
-                            .ok()
-                            .map(convert_value_to_bool)
-                            .unwrap_or(v_)
+                        let maybe_env_value = std::env::var(concat!("HF_XET_",stringify!($name))).ok();
+                        <$type>::parse(stringify!($name), maybe_env_value, v_)
                     };
 
                     match (v, cfg!(debug_assertions)) {
@@ -159,10 +208,10 @@ macro_rules! test_set_globals {
 }
 
 fn get_high_performance_flag() -> bool {
-    if let Ok(val) = std::env::var(concat!("HF_XET_", "HIGH_PERFORMANCE")) {
-        convert_value_to_bool(val)
-    } else if let Ok(val) = std::env::var(concat!("HF_XET_", "HP")) {
-        convert_value_to_bool(val)
+    if let Ok(val) = std::env::var("HF_XET_HIGH_PERFORMANCE") {
+        parse_bool_value(&val).unwrap_or(false)
+    } else if let Ok(val) = std::env::var("HF_XET_HP") {
+        parse_bool_value(&val).unwrap_or(false)
     } else {
         false
     }

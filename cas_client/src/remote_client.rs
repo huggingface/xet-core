@@ -27,7 +27,7 @@ use tracing::{debug, info, instrument};
 use utils::auth::AuthConfig;
 #[cfg(not(target_family = "wasm"))]
 use utils::singleflight::Group;
-use xet_runtime::{GlobalSemaphoreHandle, ThreadPool, global_semaphore_handle};
+use xet_runtime::{GlobalSemaphoreHandle, XetRuntime, global_semaphore_handle};
 
 #[cfg(not(target_family = "wasm"))]
 use crate::download_utils::*;
@@ -42,29 +42,28 @@ pub const CAS_ENDPOINT: &str = "http://localhost:8080";
 pub const PREFIX_DEFAULT: &str = "default";
 
 utils::configurable_constants! {
-// Env (HF_XET_NUM_CONCURRENT_RANGE_GETS) to set the number of concurrent range gets.
-// setting this value to 0 disables the limit, sets it to the max, this is not recommended as it may lead to errors
+    /// Env (HF_XET_NUM_CONCURRENT_RANGE_GETS) to set the number of concurrent range gets.
+    /// setting this value to 0 disables the limit, sets it to the max, this is not recommended as it may lead to errors
     ref NUM_CONCURRENT_RANGE_GETS: usize = GlobalConfigMode::HighPerformanceOption {
         standard: 48,
         high_performance: 256,
     };
 
-    // Send a report of successful partial upload every 512kb.
+    /// Send a report of successful partial upload every 512kb.
     ref UPLOAD_REPORTING_BLOCK_SIZE : usize = 512 * 1024;
+
+    /// Env (HF_XET_RECONSTRUCT_WRITE_SEQUENTIALLY) to switch to writing terms sequentially to disk.
+    /// Benchmarks have shown that on SSD machines, writing in parallel seems to far outperform
+    /// sequential term writes.
+    /// However, this is not likely the case for writing to HDD and may in fact be worse,
+    /// so for those machines, setting this env may help download perf.
+    ref RECONSTRUCT_WRITE_SEQUENTIALLY : bool = false;
+
 }
 
 lazy_static! {
     static ref DOWNLOAD_CHUNK_RANGE_CONCURRENCY_LIMITER: GlobalSemaphoreHandle =
         global_semaphore_handle!(*NUM_CONCURRENT_RANGE_GETS);
-}
-
-utils::configurable_bool_constants! {
-// Env (HF_XET_RECONSTRUCT_WRITE_SEQUENTIALLY) to switch to writing terms sequentially to disk.
-// Benchmarks have shown that on SSD machines, writing in parallel seems to far outperform
-// sequential term writes.
-// However, this is not likely the case for writing to HDD and may in fact be worse,
-// so for those machines, setting this env may help download perf.
-    ref RECONSTRUCT_WRITE_SEQUENTIALLY = false;
 }
 
 pub struct RemoteClient {
@@ -330,7 +329,7 @@ impl RemoteClient {
         let download_scheduler_clone = download_scheduler.clone();
 
         let download_concurrency_limiter =
-            ThreadPool::current().global_semaphore(*DOWNLOAD_CHUNK_RANGE_CONCURRENCY_LIMITER);
+            XetRuntime::current().global_semaphore(*DOWNLOAD_CHUNK_RANGE_CONCURRENCY_LIMITER);
 
         let queue_dispatcher: JoinHandle<Result<()>> = tokio::spawn(async move {
             let mut remaining_total_len = total_len;
@@ -481,7 +480,7 @@ impl RemoteClient {
         let download_scheduler = DownloadSegmentLengthTuner::from_configurable_constants();
 
         let download_concurrency_limiter =
-            ThreadPool::current().global_semaphore(*DOWNLOAD_CHUNK_RANGE_CONCURRENCY_LIMITER);
+            XetRuntime::current().global_semaphore(*DOWNLOAD_CHUNK_RANGE_CONCURRENCY_LIMITER);
 
         let process_result = move |result: TermDownloadResult<u64>,
                                    total_written: &mut u64,
@@ -826,7 +825,7 @@ mod tests {
     use httpmock::Method::GET;
     use httpmock::MockServer;
     use tracing_test::traced_test;
-    use xet_runtime::ThreadPool;
+    use xet_runtime::XetRuntime;
 
     use super::*;
     use crate::output_provider::BufferProvider;
@@ -839,7 +838,7 @@ mod tests {
         let prefix = PREFIX_DEFAULT;
         let raw_xorb = build_raw_xorb(3, ChunkSize::Random(512, 10248));
 
-        let threadpool = ThreadPool::new().unwrap();
+        let threadpool = XetRuntime::new().unwrap();
         let client = RemoteClient::new(CAS_ENDPOINT, &None, &None, None, "", false);
 
         let cas_object = build_and_verify_cas_object(raw_xorb, Some(CompressionScheme::LZ4));
@@ -1210,7 +1209,7 @@ mod tests {
     }
 
     fn test_reconstruct_file(test_case: TestCase, endpoint: &str) -> Result<()> {
-        let threadpool = ThreadPool::new()?;
+        let threadpool = XetRuntime::new()?;
 
         // test reconstruct and sequential write
         let test = test_case.clone();

@@ -405,7 +405,7 @@ pub(crate) mod tests {
     use tokio::runtime::Handle;
     use tokio::task::JoinHandle;
     use tokio::time::timeout;
-    use xet_runtime::ThreadPool;
+    use xet_runtime::XetRuntime;
 
     use super::Group;
     use crate::errors::SingleflightError;
@@ -431,7 +431,7 @@ pub(crate) mod tests {
 
     #[test]
     fn test_simple_with_threadpool() {
-        let threadpool = Arc::new(ThreadPool::new().unwrap());
+        let threadpool = Arc::new(XetRuntime::new().unwrap());
         let g = Group::new();
         let res = threadpool
             .external_run_async_task(async move { g.work("key", return_res()).await })
@@ -452,7 +452,7 @@ pub(crate) mod tests {
     #[test]
     fn test_multiple_threads_with_threadpool() {
         let times_called = Arc::new(AtomicU32::new(0));
-        let threadpool = Arc::new(ThreadPool::new().unwrap());
+        let threadpool = Arc::new(XetRuntime::new().unwrap());
         let g: Arc<Group<usize, ()>> = Arc::new(Group::new());
         let mut handlers: Vec<JoinHandle<(usize, bool)>> = Vec::new();
         let threadpool_ = threadpool.clone();

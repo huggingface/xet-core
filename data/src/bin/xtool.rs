@@ -15,7 +15,7 @@ use hub_client::{BearerCredentialHelper, HubClient, Operation};
 use merklehash::MerkleHash;
 use utils::auth::TokenRefresher;
 use walkdir::WalkDir;
-use xet_runtime::ThreadPool;
+use xet_runtime::XetRuntime;
 
 const DEFAULT_HF_ENDPOINT: &str = "https://huggingface.co";
 
@@ -222,7 +222,7 @@ async fn query_reconstruction(
 
 fn main() -> Result<()> {
     let cli = XCommand::parse();
-    let threadpool = ThreadPool::new()?;
+    let threadpool = XetRuntime::new()?;
     threadpool.external_run_async_task(async move { cli.run().await })??;
 
     Ok(())

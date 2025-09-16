@@ -66,9 +66,9 @@ fn get_num_tokio_worker_threads() -> usize {
 /// # Example
 ///
 /// ```rust
-/// use xet_runtime::ThreadPool;
+/// use xet_runtime::XetRuntime;
 ///
-/// let pool = ThreadPool::new().expect("Error initializing runtime.");
+/// let pool = XetRuntime::new().expect("Error initializing runtime.");
 ///
 /// let result = pool
 ///     .external_run_async_task(async {
@@ -99,7 +99,7 @@ fn get_num_tokio_worker_threads() -> usize {
 ///
 /// - `ThreadPool`: The main struct that encapsulates the Tokio runtime.
 #[derive(Debug)]
-pub struct ThreadPool {
+pub struct XetRuntime {
     // The runtime used when it's created by this struct,
     // None if this struct uses an external runtime.
     runtime: std::sync::RwLock<Option<TokioRuntime>>,
@@ -126,10 +126,10 @@ pub struct ThreadPool {
 // the worker threads in the runtime.  This way, XetRuntime::current() will always refer to
 // the runtime active with that worker thread.
 thread_local! {
-    static THREAD_RUNTIME_REF: RefCell<Option<(u32, Arc<ThreadPool>)>> = const { RefCell::new(None) };
+    static THREAD_RUNTIME_REF: RefCell<Option<(u32, Arc<XetRuntime>)>> = const { RefCell::new(None) };
 }
 
-impl ThreadPool {
+impl XetRuntime {
     /// Return the current threadpool that the current worker thread uses.  Will fail if  
     /// called from a thread that is not spawned from the current runtime.  
     #[inline]
@@ -368,7 +368,7 @@ impl ThreadPool {
     }
 }
 
-impl Display for ThreadPool {
+impl Display for XetRuntime {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         // Need to be careful that this doesn't acquire locks eagerly, as this function can be called
         // from some weird places like displaying the backtrace of a panic or exception.

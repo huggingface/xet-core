@@ -1,9 +1,9 @@
 pub mod errors;
 pub mod exports;
 
-pub mod threadpool;
+pub mod runtime;
 
-pub use threadpool::ThreadPool;
+pub use runtime::XetRuntime;
 pub mod sync_primatives;
 pub use sync_primatives::{SyncJoinHandle, spawn_os_thread};
 
