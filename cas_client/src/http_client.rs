@@ -17,7 +17,7 @@ use tokio::sync::Mutex;
 use tracing::{debug, info_span, warn, Instrument};
 use utils::auth::{AuthConfig, TokenProvider};
 
-use crate::constants::{CLIENT_IDLE_CONNECTION_TIMEOUT_SECS, CLIENT_MAX_IDLE_CONNECTIONS};
+use crate::constants::{CLIENT_IDLE_CONNECTION_TIMEOUT, CLIENT_MAX_IDLE_CONNECTIONS};
 use crate::retry_wrapper::on_request_failure;
 use crate::{error, CasClientError};
 
@@ -102,7 +102,7 @@ fn reqwest_client() -> Result<reqwest::Client, CasClientError> {
 
         let client = XetRuntime::get_or_create_reqwest_client(|| {
             reqwest::Client::builder()
-                .pool_idle_timeout(Duration::from_secs(*CLIENT_IDLE_CONNECTION_TIMEOUT_SECS))
+                .pool_idle_timeout(*CLIENT_IDLE_CONNECTION_TIMEOUT)
                 .pool_max_idle_per_host(*CLIENT_MAX_IDLE_CONNECTIONS)
                 .build()
         })?;

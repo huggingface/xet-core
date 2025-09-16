@@ -22,8 +22,7 @@ use tracing::{debug, info, info_span, Instrument};
 
 use crate::configurations::TranslatorConfig;
 use crate::constants::{
-    MDB_SHARD_LOCAL_CACHE_EXPIRATION_SECS, SESSION_XORB_METADATA_FLUSH_INTERVAL_SECS,
-    SESSION_XORB_METADATA_FLUSH_MAX_COUNT,
+    MDB_SHARD_LOCAL_CACHE_EXPIRATION, SESSION_XORB_METADATA_FLUSH_INTERVAL_SECS, SESSION_XORB_METADATA_FLUSH_MAX_COUNT,
 };
 use crate::errors::Result;
 use crate::file_upload_session::acquire_upload_permit;
@@ -210,10 +209,7 @@ impl SessionShardInterface {
         if *last_flush + flush_interval < time_now
             || xorb_shard.num_cas_entries() >= *SESSION_XORB_METADATA_FLUSH_MAX_COUNT
         {
-            xorb_shard.write_to_directory(
-                &self.xorb_metadata_staging_dir,
-                Some(Duration::from_secs(*MDB_SHARD_LOCAL_CACHE_EXPIRATION_SECS)),
-            )?;
+            xorb_shard.write_to_directory(&self.xorb_metadata_staging_dir, Some(*MDB_SHARD_LOCAL_CACHE_EXPIRATION))?;
 
             *last_flush = time_now + flush_interval;
             *xorb_shard = MDBInMemoryShard::default();
@@ -305,7 +301,7 @@ impl SessionShardInterface {
                     // time.
                     let new_shard_path = si.export_with_expiration(
                         cache_shard_manager.shard_directory(),
-                        Duration::from_secs(*MDB_SHARD_LOCAL_CACHE_EXPIRATION_SECS),
+                        *MDB_SHARD_LOCAL_CACHE_EXPIRATION,
                     )?;
 
                     // Register that new shard in the cache shard manager

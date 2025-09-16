@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 utils::configurable_constants! {
 
     // Approximately 4 MB min spacing between global dedup queries.  Calculated by 4MB / TARGET_CHUNK_SIZE
@@ -11,7 +13,7 @@ utils::configurable_constants! {
 
     /// The expiration time of a local shard when first placed in the local shard cache.  Currently
     /// set to 3 weeks.
-    ref MDB_SHARD_LOCAL_CACHE_EXPIRATION_SECS: u64 = 3 * 7 * 24 * 3600;
+    ref MDB_SHARD_LOCAL_CACHE_EXPIRATION: Duration = Duration::from_secs(3 * 7 * 24 * 3600);
 
     /// The maximum number of simultaneous xorb upload streams.
     /// can be overwritten by environment variable "HF_XET_MAX_CONCURRENT_UPLOADS".
