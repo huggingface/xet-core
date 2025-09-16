@@ -2,8 +2,8 @@ use std::env;
 use std::path::Path;
 use std::sync::OnceLock;
 
-use pyo3::types::PyAnyMethods;
 use pyo3::Python;
+use pyo3::types::PyAnyMethods;
 use tracing::info;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
