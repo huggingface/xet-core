@@ -3,6 +3,7 @@ name = "deduplication"
 version = "0.14.5"
 edition = "2021"
 
+
 [dependencies]
 mdb_shard = { path = "../mdb_shard" }
 merklehash = { path = "../merklehash" }
@@ -16,3 +17,8 @@ more-asserts = { workspace = true }
 
 [dev-dependencies]
 rand = { workspace = true }
+clap = { workspace = true }
+
+[[example]]
+name = "chunk"
+path = "examples/chunk/main.rs"
