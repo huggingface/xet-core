@@ -14,6 +14,14 @@ path = "src/bin/example.rs"
 name = "xtool"
 path = "src/bin/xtool.rs"
 
+[[example]]
+name = "chunk"
+path = "examples/chunk/main.rs"
+
+[[example]]
+name = "hash"
+path = "examples/hash/main.rs"
+
 [dependencies]
 cas_client = { path = "../cas_client" }
 cas_object = { path = "../cas_object" }

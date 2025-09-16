@@ -12,9 +12,9 @@ use std::path::PathBuf;
     long_about = "Example of using the chunker. Splits the input file or stdin into chunks and writes to stdout or the specified file the chunk hash in string format and the chunk size on a new line for each chunk in order in the file"
 )]
 struct ChunkArgs {
-    #[clap(short, long)]
+    #[arg(short, long)]
     file: Option<PathBuf>,
-    #[clap(short, long)]
+    #[arg(short, long)]
     save: Option<PathBuf>,
 }
 

@@ -17,8 +17,3 @@ more-asserts = { workspace = true }
 
 [dev-dependencies]
 rand = { workspace = true }
-clap = { workspace = true }
-
-[[example]]
-name = "chunk"
-path = "examples/chunk/main.rs"
