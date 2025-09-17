@@ -68,9 +68,24 @@ impl HubClient {
         let repo_id = self.repo_info.full_name.as_str();
         let token_type = operation.token_type();
 
-        // note that this API doesn't take a Basic auth
+        // The reference may contain "/" but the "xet-[]-token" API only parses "rev" from a single component,
+        // thus we encode the reference. It defaults to "main" if not specified by caller because the
+        // API route expects a "rev" component.
         let rev = encode(self.reference.as_deref().unwrap_or("main"));
-        let query = if self.reference.is_some() { "" } else { "?create_pr=1" };
+
+        // Clients can get a xet write token, if
+        // - the "rev" is a regular branch, with a HF write token;
+        // - the "rev" is a pr branch, with a HF write or read token;
+        // - it intends to create a pr and repo is enabled for discussion, with a HF write or read token.
+        let query = if let Operation::Upload = operation
+            && self.reference.is_none()
+        {
+            "?create_pr=1"
+        } else {
+            ""
+        };
+
+        // note that this API doesn't take a Basic auth
         let url = format!("{endpoint}/api/{repo_type}s/{repo_id}/xet-{token_type}-token/{rev}{query}");
 
         let req = self
@@ -113,13 +128,11 @@ mod tests {
             cred_helper,
         )?;
 
-        let read_info = hub_client.get_cas_jwt(Operation::Download).await?;
+        let read_info = hub_client.get_cas_jwt(Operation::Upload).await?;
 
         assert!(read_info.access_token.len() > 0);
         assert!(read_info.cas_url.len() > 0);
         assert!(read_info.exp > 0);
-
-        println!("{:?}", read_info);
 
         Ok(())
     }
@@ -140,13 +153,11 @@ mod tests {
             cred_helper,
         )?;
 
-        let read_info = hub_client.get_cas_jwt(Operation::Download).await?;
+        let read_info = hub_client.get_cas_jwt(Operation::Upload).await?;
 
         assert!(read_info.access_token.len() > 0);
         assert!(read_info.cas_url.len() > 0);
         assert!(read_info.exp > 0);
-
-        println!("{:?}", read_info);
 
         Ok(())
     }
@@ -167,13 +178,11 @@ mod tests {
             cred_helper,
         )?;
 
-        let read_info = hub_client.get_cas_jwt(Operation::Download).await?;
+        let read_info = hub_client.get_cas_jwt(Operation::Upload).await?;
 
         assert!(read_info.access_token.len() > 0);
         assert!(read_info.cas_url.len() > 0);
         assert!(read_info.exp > 0);
-
-        println!("{:?}", read_info);
 
         Ok(())
     }
