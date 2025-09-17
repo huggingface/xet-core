@@ -1,0 +1,87 @@
+name: git-xet Release
+run-name: git-xet release, tag ${{ inputs.tag || 'main' }}
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Semantic version for release (tag will shard the same name)"
+        required: true
+        default: "v0.1.0"
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  linux:
+    runs-on: ${{ matrix.platform.runner }}
+    strategy:
+      matrix:
+        platform:
+          - runner: ubuntu-22.04
+            target: x86_64
+            manylinux: auto
+          - runner: ubuntu-22.04
+            target: aarch64
+            manylinux: manylinux_2_28
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust 1.89
+        uses: dtolnay/rust-toolchain@1.89.0
+      - name: Build
+        run: |
+          cargo build --release
+      - name: Upload wheels
+        uses: actions/upload-artifact@v4
+        with:
+          name: git-xet-${{ matrix.platform.target }}
+          path: target/release/git-xet
+
+  macos:
+    runs-on: ${{ matrix.platform.runner }}
+    strategy:
+      matrix:
+        platform:
+          - runner: macos-13
+            target: x86_64
+            rust_target: x86_64-apple-darwin
+          - runner: macos-14
+            target: aarch64
+            rust_target: aarch64-apple-darwin
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust 1.89
+        uses: dtolnay/rust-toolchain@1.89.0
+      - name: Build
+        run: |
+          cargo build --release
+      - name: Upload wheels
+        uses: actions/upload-artifact@v4
+        with:
+          name: git-xet-${{ matrix.platform.target }}
+          path: target/release/git-xet
+
+  windows:
+    runs-on: ${{ matrix.platform.runner }}
+    strategy:
+      matrix:
+        platform:
+          - runner: windows-latest
+            target: x64
+            rust_target: x86_64-pc-windows-msvc
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust 1.89
+        uses: dtolnay/rust-toolchain@1.89.0
+      - name: Build
+        run: |
+          cargo build --release
+      - name: Upload wheels
+        uses: actions/upload-artifact@v4
+        with:
+          name: git-xet-${{ matrix.platform.target }}
+          path: target/release/git-xet.exe
