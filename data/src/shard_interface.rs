@@ -1,24 +1,24 @@
 use std::fs::File;
 use std::io::Read;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime};
 
 use bytes::Bytes;
 use cas_client::Client;
 use error_printer::ErrorPrinter;
+use mdb_shard::ShardFileManager;
 use mdb_shard::cas_structs::MDBCASInfo;
 use mdb_shard::constants::MDB_SHARD_MAX_TARGET_SIZE;
 use mdb_shard::file_structs::{FileDataSequenceEntry, MDBFileInfo};
-use mdb_shard::session_directory::{consolidate_shards_in_directory, merge_shards_background, ShardMergeResult};
+use mdb_shard::session_directory::{ShardMergeResult, consolidate_shards_in_directory, merge_shards_background};
 use mdb_shard::shard_in_memory::MDBInMemoryShard;
-use mdb_shard::ShardFileManager;
 use merklehash::MerkleHash;
 use tempfile::TempDir;
 use tokio::sync::Mutex;
 use tokio::task::JoinSet;
-use tracing::{debug, info, info_span, Instrument};
+use tracing::{Instrument, debug, info, info_span};
 
 use crate::configurations::TranslatorConfig;
 use crate::constants::{
@@ -161,11 +161,11 @@ impl SessionShardInterface {
         query_hashes: &[MerkleHash],
     ) -> Result<Option<(usize, FileDataSequenceEntry, bool)>> {
         // First, see if there's something in the resumed session.
-        if let Some(resumed_session_sfm) = &self.resumed_session_shard_manager {
-            if let Some((n_entries, fse)) = resumed_session_sfm.chunk_hash_dedup_query(query_hashes).await? {
-                // Return true, as the data here is already known to have been uploaded.
-                return Ok(Some((n_entries, fse, true)));
-            }
+        if let Some(resumed_session_sfm) = &self.resumed_session_shard_manager
+            && let Some((n_entries, fse)) = resumed_session_sfm.chunk_hash_dedup_query(query_hashes).await?
+        {
+            // Return true, as the data here is already known to have been uploaded.
+            return Ok(Some((n_entries, fse, true)));
         }
 
         // Now, check the local session directory.

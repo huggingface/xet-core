@@ -102,9 +102,9 @@ pub fn get_credential(repo: &GitRepo, remote_url: &GitUrl, operation: Operation)
 
     // 2. check embedded authentication
     let credential = remote_url.credential();
-    match credential {
-        (Some(_user), Some(token)) => return Ok(BearerCredentialHelper::new(token, "url")),
-        _ => (), // valid only when both user and token exist
+    // valid only when both user and token exist
+    if let (Some(_user), Some(token)) = credential {
+        return Ok(BearerCredentialHelper::new(token, "url"));
     }
 
     // 3. check credential from environment

@@ -6,9 +6,9 @@ use lazy_static::lazy_static;
 use pyo3::exceptions::{PyKeyboardInterrupt, PyRuntimeError};
 use pyo3::prelude::*;
 use tracing::info;
+use xet_runtime::XetRuntime;
 use xet_runtime::errors::MultithreadedRuntimeError;
 use xet_runtime::sync_primatives::spawn_os_thread;
-use xet_runtime::XetRuntime;
 
 lazy_static! {
     static ref SIGINT_DETECTED: Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
@@ -214,13 +214,13 @@ where
 
     // Now, if we're in the middle of a shutdown, and this is an error, then
     // just translate that error to a KeyboardInterrupt (or we get a lot of
-    if let Err(ref e) = &result {
-        if in_sigint_shutdown() {
-            if cfg!(debug_assertions) {
-                eprintln!("[debug] ignored error reported during shutdown: {e:?}");
-            }
-            return Err(PyKeyboardInterrupt::new_err(()));
+    if let Err(e) = &result
+        && in_sigint_shutdown()
+    {
+        if cfg!(debug_assertions) {
+            eprintln!("[debug] ignored error reported during shutdown: {e:?}");
         }
+        return Err(PyKeyboardInterrupt::new_err(()));
     }
 
     // Now return the result.

@@ -6,9 +6,9 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use base64::engine::general_purpose::URL_SAFE;
-use base64::engine::GeneralPurpose;
 use base64::Engine;
+use base64::engine::GeneralPurpose;
+use base64::engine::general_purpose::URL_SAFE;
 use cas_types::{ChunkRange, Key};
 use error_printer::ErrorPrinter;
 use file_utils::SafeFileCreator;
@@ -725,20 +725,20 @@ fn try_parse_cache_file(file_result: io::Result<DirEntry>, capacity: u64) -> Opt
 
 /// removes a file but disregards a "NotFound" error if the file is already gone
 fn remove_file(path: impl AsRef<Path>) -> Result<(), ChunkCacheError> {
-    if let Err(e) = std::fs::remove_file(path) {
-        if e.kind() != ErrorKind::NotFound {
-            return Err(e.into());
-        }
+    if let Err(e) = std::fs::remove_file(path)
+        && e.kind() != ErrorKind::NotFound
+    {
+        return Err(e.into());
     }
     Ok(())
 }
 
 /// removes a directory but disregards a "NotFound" error if the directory is already gone
 fn remove_dir(path: impl AsRef<Path>) -> Result<(), ChunkCacheError> {
-    if let Err(e) = std::fs::remove_dir(path) {
-        if e.kind() != ErrorKind::NotFound {
-            return Err(e.into());
-        }
+    if let Err(e) = std::fs::remove_dir(path)
+        && e.kind() != ErrorKind::NotFound
+    {
+        return Err(e.into());
     }
     Ok(())
 }
@@ -815,12 +815,12 @@ mod tests {
     use std::collections::BTreeSet;
 
     use cas_types::{ChunkRange, Key};
-    use rand::rngs::StdRng;
     use rand::SeedableRng;
+    use rand::rngs::StdRng;
     use tempdir::TempDir;
     use utils::output_bytes;
 
-    use super::{DiskCache, DEFAULT_CHUNK_CACHE_CAPACITY};
+    use super::{DEFAULT_CHUNK_CACHE_CAPACITY, DiskCache};
     use crate::disk::test_utils::*;
     use crate::disk::try_parse_key;
     use crate::{CacheConfig, ChunkCache};
@@ -837,11 +837,13 @@ mod tests {
             ..Default::default()
         };
         let cache = DiskCache::initialize(&config).unwrap();
-        assert!(cache
-            .get(&random_key(&mut rng), &random_range(&mut rng))
-            .await
-            .unwrap()
-            .is_none());
+        assert!(
+            cache
+                .get(&random_key(&mut rng), &random_range(&mut rng))
+                .await
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[tokio::test]
@@ -1173,10 +1175,12 @@ mod tests {
         let right_chunk_byte_indices: Vec<u32> =
             (&chunk_byte_indices[1..]).iter().map(|v| v - chunk_byte_indices[1]).collect();
         let right_data = &data[chunk_byte_indices[1] as usize..];
-        assert!(cache
-            .put(&key, &right_range, &right_chunk_byte_indices, right_data)
-            .await
-            .is_ok());
+        assert!(
+            cache
+                .put(&key, &right_range, &right_chunk_byte_indices, right_data)
+                .await
+                .is_ok()
+        );
         assert_eq!(total_bytes, cache.total_bytes().await);
 
         // middle range
@@ -1188,10 +1192,12 @@ mod tests {
         let middle_data =
             &data[chunk_byte_indices[1] as usize..chunk_byte_indices[chunk_byte_indices.len() - 2] as usize];
 
-        assert!(cache
-            .put(&key, &middle_range, &middle_chunk_byte_indices, middle_data)
-            .await
-            .is_ok());
+        assert!(
+            cache
+                .put(&key, &middle_range, &middle_chunk_byte_indices, middle_data)
+                .await
+                .is_ok()
+        );
         assert_eq!(total_bytes, cache.total_bytes().await);
     }
 
@@ -1239,11 +1245,13 @@ mod tests {
 
     #[test]
     fn test_initialize_with_cache_size_0() {
-        assert!(DiskCache::initialize(&CacheConfig {
-            cache_directory: "/tmp".into(),
-            cache_size: 0,
-        })
-        .is_err());
+        assert!(
+            DiskCache::initialize(&CacheConfig {
+                cache_directory: "/tmp".into(),
+                cache_size: 0,
+            })
+            .is_err()
+        );
     }
 }
 
@@ -1253,7 +1261,7 @@ mod concurrency_tests {
 
     use super::DiskCache;
     use crate::disk::DEFAULT_CHUNK_CACHE_CAPACITY;
-    use crate::{CacheConfig, ChunkCache, RandomEntryIterator, RANGE_LEN};
+    use crate::{CacheConfig, ChunkCache, RANGE_LEN, RandomEntryIterator};
 
     const NUM_ITEMS_PER_TASK: usize = 20;
     const RANDOM_SEED: u64 = 878987298749287;

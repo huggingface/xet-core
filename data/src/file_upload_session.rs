@@ -11,7 +11,7 @@ use cas_client::Client;
 use cas_object::SerializedCasObject;
 use deduplication::constants::{MAX_XORB_BYTES, MAX_XORB_CHUNKS};
 use deduplication::{DataAggregator, DeduplicationMetrics, RawXorbData};
-use jsonwebtoken::{decode, DecodingKey, Validation};
+use jsonwebtoken::{DecodingKey, Validation, decode};
 use lazy_static::lazy_static;
 use mdb_shard::file_structs::MDBFileInfo;
 use more_asserts::*;
@@ -22,9 +22,9 @@ use progress_tracking::verification_wrapper::ProgressUpdaterVerificationWrapper;
 use progress_tracking::{NoOpProgressUpdater, TrackingProgressUpdater};
 use tokio::sync::{Mutex, OwnedSemaphorePermit};
 use tokio::task::{JoinHandle, JoinSet};
-use tracing::{info_span, instrument, Instrument, Span};
+use tracing::{Instrument, Span, info_span, instrument};
 use ulid::Ulid;
-use xet_runtime::{global_semaphore_handle, GlobalSemaphoreHandle, XetRuntime};
+use xet_runtime::{GlobalSemaphoreHandle, XetRuntime, global_semaphore_handle};
 
 use crate::configurations::*;
 use crate::constants::{
@@ -35,7 +35,7 @@ use crate::errors::*;
 use crate::file_cleaner::SingleFileCleaner;
 use crate::remote_client_interface::create_remote_client;
 use crate::shard_interface::SessionShardInterface;
-use crate::{prometheus_metrics, XetFileInfo};
+use crate::{XetFileInfo, prometheus_metrics};
 
 lazy_static! {
     pub static ref CONCURRENT_FILE_INGESTION_LIMITER: GlobalSemaphoreHandle =

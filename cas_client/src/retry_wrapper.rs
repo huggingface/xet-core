@@ -1,10 +1,10 @@
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use reqwest::{Error as ReqwestError, Response, StatusCode};
-use reqwest_retry::{default_on_request_success, Retryable};
-use tokio_retry::strategy::{jitter, ExponentialBackoff};
+use reqwest_retry::{Retryable, default_on_request_success};
 use tokio_retry::RetryIf;
+use tokio_retry::strategy::{ExponentialBackoff, jitter};
 use tracing::{error, info};
 
 use crate::constants::{CLIENT_RETRY_BASE_DELAY_MS, CLIENT_RETRY_MAX_ATTEMPTS};
@@ -387,8 +387,8 @@ fn get_source_error_type<T: std::error::Error + 'static>(err: &dyn std::error::E
 
 #[cfg(test)]
 mod tests {
-    use std::sync::atomic::{AtomicU32, Ordering};
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicU32, Ordering};
 
     use reqwest_middleware::{ClientBuilder, ClientWithMiddleware};
     use serde::{Deserialize, Serialize};

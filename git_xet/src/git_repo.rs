@@ -61,10 +61,10 @@ impl GitRepo {
         let config = repo.config()?.snapshot()?;
 
         // try tracking remote
-        if let Some(branch) = maybe_branch_name {
-            if let Ok(remote) = config.get_string(&format!("branch.{}.remote", branch)) {
-                return Ok(remote);
-            }
+        if let Some(branch) = maybe_branch_name
+            && let Ok(remote) = config.get_string(&format!("branch.{}.remote", branch))
+        {
+            return Ok(remote);
         }
 
         // try lfsdefault remote
@@ -74,10 +74,10 @@ impl GitRepo {
 
         // use only remote if there is only 1
         let remotes = repo.remotes()?;
-        if remotes.len() == 1 {
-            if let Some(remote) = remotes.get(0) {
-                return Ok(remote.to_string());
-            }
+        if remotes.len() == 1
+            && let Some(remote) = remotes.get(0)
+        {
+            return Ok(remote.to_string());
         }
 
         // fall back to default if all above lookup failed,

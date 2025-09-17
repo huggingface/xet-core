@@ -1,16 +1,16 @@
 use std::fs::File;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
-use anyhow::{anyhow, Ok, Result};
+use anyhow::{Ok, Result, anyhow};
 use clap::Parser;
 use mdb_shard::cas_structs::{CASChunkSequenceEntry, CASChunkSequenceHeader, MDBCASInfo};
 use mdb_shard::shard_file_manager::ShardFileManager;
-use mdb_shard::shard_format::test_routines::rng_hash;
 use mdb_shard::shard_format::MDBShardInfo;
+use mdb_shard::shard_format::test_routines::rng_hash;
 use mdb_shard::shard_in_memory::MDBInMemoryShard;
 use merklehash::MerkleHash;
 use rand::rngs::StdRng;
@@ -137,6 +137,7 @@ async fn run_shard_benchmark(
     });
 
     // Wait for all tasks to complete
+    #[allow(clippy::never_loop)]
     for task in tasks {
         task.await?;
     }
