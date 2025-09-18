@@ -160,7 +160,7 @@ impl Command {
 
 fn walk_files(files: Vec<String>, recursive: bool) -> Vec<String> {
     // Scan all files if under recursive mode
-    let file_paths = if recursive {
+    if recursive {
         files
             .iter()
             .flat_map(|dir| {
@@ -179,9 +179,7 @@ fn walk_files(files: Vec<String>, recursive: bool) -> Vec<String> {
             .collect::<Vec<_>>()
     } else {
         files
-    };
-
-    file_paths
+    }
 }
 
 fn is_git_special_files(path: &str) -> bool {

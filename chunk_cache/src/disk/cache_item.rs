@@ -3,8 +3,8 @@ use std::hash::{Hash, Hasher};
 use std::io::Cursor;
 use std::mem::size_of;
 use std::ops::Deref;
-use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 
 use base64::Engine;
 use cas_types::ChunkRange;
@@ -168,7 +168,7 @@ mod tests {
     use cas_types::ChunkRange;
 
     use crate::disk::cache_item::CACHE_ITEM_FILE_NAME_BUF_SIZE;
-    use crate::disk::{CacheItem, BASE64_ENGINE};
+    use crate::disk::{BASE64_ENGINE, CacheItem};
 
     impl Default for CacheItem {
         fn default() -> Self {

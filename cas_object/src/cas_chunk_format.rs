@@ -4,9 +4,9 @@ use std::mem::size_of;
 use anyhow::anyhow;
 use deduplication::constants::MAX_CHUNK_SIZE;
 
+use crate::CompressionScheme;
 use crate::cas_object_format::CAS_OBJECT_FORMAT_IDENT;
 use crate::error::CasObjectError;
-use crate::CompressionScheme;
 
 #[cfg(not(target_family = "wasm"))]
 pub mod deserialize_async;
@@ -220,7 +220,7 @@ mod tests {
     use std::io::Cursor;
 
     use super::*;
-    use crate::test_utils::{build_cas_object, ChunkSize};
+    use crate::test_utils::{ChunkSize, build_cas_object};
 
     const COMPRESSED_LEN: u32 = 66051;
     const UNCOMPRESSED_LEN: u32 = 131072;

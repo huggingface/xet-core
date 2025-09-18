@@ -7,9 +7,9 @@ use std::num::ParseIntError;
 use std::ops::{Deref, DerefMut};
 use std::{fmt, str};
 
+use base64::Engine as _;
 // URL safe Base 64 encoding with ending characters removed.
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
-use base64::Engine as _;
 use rand::rngs::SmallRng;
 use rand::{RngCore, SeedableRng};
 use safe_transmute::{transmute_to_bytes, transmute_to_bytes_mut};
@@ -464,7 +464,7 @@ mod tests {
 
     use rand::prelude::*;
 
-    use crate::{compute_data_hash, DataHash, HashedWrite};
+    use crate::{DataHash, HashedWrite, compute_data_hash};
 
     #[test]
     fn test_try_from_bytes() {

@@ -6,8 +6,8 @@
 /// Then, use compression_prediction_tests.py to analyze this data.
 use std::fs::OpenOptions;
 use std::io::{Read, Seek, SeekFrom};
-use std::sync::atomic::AtomicUsize;
 use std::sync::Arc;
+use std::sync::atomic::AtomicUsize;
 
 use anyhow::Result;
 use cas_object::serialize_chunk;

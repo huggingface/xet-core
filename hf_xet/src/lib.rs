@@ -8,7 +8,7 @@ use std::iter::IntoIterator;
 use std::sync::Arc;
 
 use data::errors::DataProcessingError;
-use data::{data_client, XetFileInfo};
+use data::{XetFileInfo, data_client};
 use itertools::Itertools;
 use progress_tracking::TrackingProgressUpdater;
 use pyo3::exceptions::{PyKeyboardInterrupt, PyRuntimeError};

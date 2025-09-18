@@ -9,9 +9,9 @@ use merklehash::MerkleHash;
 use progress_tracking::item_tracking::SingleItemProgressUpdater;
 use progress_tracking::upload_tracking::CompletionTracker;
 
-use crate::error::Result;
 #[cfg(not(target_family = "wasm"))]
 use crate::OutputProvider;
+use crate::error::Result;
 
 /// A Client to the Shard service. The shard service
 /// provides for

@@ -1,8 +1,8 @@
 use std::collections::HashMap;
 use std::io::Cursor;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 
 use merklehash::{HMACKey, MerkleHash};
 use tokio::sync::RwLock;

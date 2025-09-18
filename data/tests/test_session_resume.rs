@@ -1,9 +1,9 @@
 use std::time::Duration;
 
 // Run tests that determine deduplication, especially across different test subjects.
+use data::FileUploadSession;
 use data::configurations::TranslatorConfig;
 use data::constants::{PROGRESS_UPDATE_INTERVAL, SESSION_XORB_METADATA_FLUSH_MAX_COUNT};
-use data::FileUploadSession;
 use deduplication::constants::{MAX_XORB_BYTES, MAX_XORB_CHUNKS, TARGET_CHUNK_SIZE};
 use mdb_shard::MDB_SHARD_TARGET_SIZE;
 use tempfile::TempDir;
@@ -29,7 +29,7 @@ test_set_globals! {
 // Test the deduplication framework.
 #[cfg(test)]
 mod tests {
-    use data::test_utils::{create_random_file, create_random_files, LocalHydrateDehydrateTest};
+    use data::test_utils::{LocalHydrateDehydrateTest, create_random_file, create_random_files};
     use deduplication::constants::MAX_CHUNK_SIZE;
     use more_asserts::*;
     use progress_tracking::aggregator::AggregatingProgressUpdater;
