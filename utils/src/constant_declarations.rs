@@ -192,16 +192,18 @@ macro_rules! test_set_globals {
         fn set_globals_on_load() {
             $(
                 let val = $val;
+                let val_str = format!("{val:?}");
 
                 // Construct the environment variable name, e.g. "HF_XET_MAX_NUM_CHUNKS"
                 let env_name = concat!("HF_XET_", stringify!($var_name));
+
                 // Convert the $val to a string and set it
-                std::env::set_var(env_name, val.to_string());
+                std::env::set_var(env_name, &val_str);
 
                 // Force lazy_static to be read now:
                 let actual_value = *$var_name;
 
-                if actual_value != val {
+                if format!("{actual_value:?}") != val_str {
                     panic!(
                         "test_set_global! failed: wanted {} to be {:?}, but got {:?}",
                         stringify!($var_name),

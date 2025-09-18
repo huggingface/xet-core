@@ -3,7 +3,7 @@ use std::io::Read;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::{Duration, SystemTime};
+use std::time::SystemTime;
 
 use bytes::Bytes;
 use cas_client::Client;
@@ -22,7 +22,7 @@ use tracing::{debug, info, info_span, Instrument};
 
 use crate::configurations::TranslatorConfig;
 use crate::constants::{
-    MDB_SHARD_LOCAL_CACHE_EXPIRATION, SESSION_XORB_METADATA_FLUSH_INTERVAL_SECS, SESSION_XORB_METADATA_FLUSH_MAX_COUNT,
+    MDB_SHARD_LOCAL_CACHE_EXPIRATION, SESSION_XORB_METADATA_FLUSH_INTERVAL, SESSION_XORB_METADATA_FLUSH_MAX_COUNT,
 };
 use crate::errors::Result;
 use crate::file_upload_session::acquire_upload_permit;
@@ -203,7 +203,7 @@ impl SessionShardInterface {
         xorb_shard.add_cas_block(cas_block_contents)?;
 
         let time_now = SystemTime::now();
-        let flush_interval = Duration::from_secs(*SESSION_XORB_METADATA_FLUSH_INTERVAL_SECS);
+        let flush_interval = *SESSION_XORB_METADATA_FLUSH_INTERVAL;
 
         // Flush if it's time or we've hit enough new shards that we should do the flush
         if *last_flush + flush_interval < time_now
