@@ -22,6 +22,10 @@ path = "examples/chunk/main.rs"
 name = "hash"
 path = "examples/hash/main.rs"
 
+[[example]]
+name = "xorb-check"
+path = "examples/xorb-check/main.rs"
+
 [dependencies]
 cas_client = { path = "../cas_client" }
 cas_object = { path = "../cas_object" }
