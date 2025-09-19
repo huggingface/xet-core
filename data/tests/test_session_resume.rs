@@ -1,7 +1,9 @@
+use std::time::Duration;
+
 // Run tests that determine deduplication, especially across different test subjects.
 use data::FileUploadSession;
 use data::configurations::TranslatorConfig;
-use data::constants::{PROGRESS_UPDATE_INTERVAL_MS, SESSION_XORB_METADATA_FLUSH_MAX_COUNT};
+use data::constants::{PROGRESS_UPDATE_INTERVAL, SESSION_XORB_METADATA_FLUSH_MAX_COUNT};
 use deduplication::constants::{MAX_XORB_BYTES, MAX_XORB_CHUNKS, TARGET_CHUNK_SIZE};
 use mdb_shard::MDB_SHARD_TARGET_SIZE;
 use tempfile::TempDir;
@@ -14,7 +16,7 @@ test_set_globals! {
     MAX_XORB_CHUNKS = 2;
 
     // Disable the periodic aggregation in the file upload sessions.
-    PROGRESS_UPDATE_INTERVAL_MS = 0;
+    PROGRESS_UPDATE_INTERVAL = Duration::ZERO;
 
     // Set the maximum xorb flush count to 1 so that every xorb gets flushed to the temporary session
     // pool.

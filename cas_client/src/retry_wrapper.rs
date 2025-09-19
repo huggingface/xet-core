@@ -1,5 +1,6 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::Duration;
 
 use reqwest::{Error as ReqwestError, Response, StatusCode};
 use reqwest_retry::{Retryable, default_on_request_success};
@@ -7,7 +8,7 @@ use tokio_retry::RetryIf;
 use tokio_retry::strategy::{ExponentialBackoff, jitter};
 use tracing::{error, info};
 
-use crate::constants::{CLIENT_RETRY_BASE_DELAY_MS, CLIENT_RETRY_MAX_ATTEMPTS};
+use crate::constants::{CLIENT_RETRY_BASE_DELAY, CLIENT_RETRY_MAX_ATTEMPTS};
 use crate::error::CasClientError;
 use crate::http_client::request_id_from_response;
 
@@ -19,7 +20,7 @@ pub enum RetryableReqwestError {
 
 pub struct RetryWrapper {
     max_attempts: usize,
-    base_delay_ms: u64,
+    base_delay: Duration,
     no_retry_on_429: bool,
     log_errors_as_info: bool,
     api_tag: &'static str,
@@ -29,7 +30,7 @@ impl RetryWrapper {
     pub fn new(api_tag: &'static str) -> Self {
         Self {
             max_attempts: *CLIENT_RETRY_MAX_ATTEMPTS,
-            base_delay_ms: *CLIENT_RETRY_BASE_DELAY_MS,
+            base_delay: *CLIENT_RETRY_BASE_DELAY,
             no_retry_on_429: false,
             log_errors_as_info: false,
             api_tag,
@@ -41,8 +42,8 @@ impl RetryWrapper {
         self
     }
 
-    pub fn with_base_delay_ms(mut self, delay: u64) -> Self {
-        self.base_delay_ms = delay;
+    pub fn with_base_delay(mut self, delay: Duration) -> Self {
+        self.base_delay = delay;
         self
     }
 
@@ -172,7 +173,7 @@ impl RetryWrapper {
         ProcFn: Fn(Response) -> ProcFut + Send + 'static,
         ProcFut: std::future::Future<Output = Result<T, RetryableReqwestError>> + 'static,
     {
-        let strategy = ExponentialBackoff::from_millis(self.base_delay_ms)
+        let strategy = ExponentialBackoff::from_millis(self.base_delay.as_millis().min(u64::MAX as u128) as u64)
             .map(jitter)
             .take(self.max_attempts);
 
@@ -398,7 +399,9 @@ mod tests {
     use super::*;
 
     fn connection_wrapper(api: &'static str) -> RetryWrapper {
-        RetryWrapper::new(api).with_base_delay_ms(5).with_max_attempts(3)
+        RetryWrapper::new(api)
+            .with_base_delay(Duration::from_millis(5))
+            .with_max_attempts(3)
     }
 
     fn make_client() -> ClientWithMiddleware {

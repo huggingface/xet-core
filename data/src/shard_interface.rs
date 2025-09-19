@@ -3,7 +3,7 @@ use std::io::Read;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{Duration, SystemTime};
+use std::time::SystemTime;
 
 use bytes::Bytes;
 use cas_client::Client;
@@ -22,8 +22,7 @@ use tracing::{Instrument, debug, info, info_span};
 
 use crate::configurations::TranslatorConfig;
 use crate::constants::{
-    MDB_SHARD_LOCAL_CACHE_EXPIRATION_SECS, SESSION_XORB_METADATA_FLUSH_INTERVAL_SECS,
-    SESSION_XORB_METADATA_FLUSH_MAX_COUNT,
+    MDB_SHARD_LOCAL_CACHE_EXPIRATION, SESSION_XORB_METADATA_FLUSH_INTERVAL, SESSION_XORB_METADATA_FLUSH_MAX_COUNT,
 };
 use crate::errors::Result;
 use crate::file_upload_session::acquire_upload_permit;
@@ -204,16 +203,13 @@ impl SessionShardInterface {
         xorb_shard.add_cas_block(cas_block_contents)?;
 
         let time_now = SystemTime::now();
-        let flush_interval = Duration::from_secs(*SESSION_XORB_METADATA_FLUSH_INTERVAL_SECS);
+        let flush_interval = *SESSION_XORB_METADATA_FLUSH_INTERVAL;
 
         // Flush if it's time or we've hit enough new shards that we should do the flush
         if *last_flush + flush_interval < time_now
             || xorb_shard.num_cas_entries() >= *SESSION_XORB_METADATA_FLUSH_MAX_COUNT
         {
-            xorb_shard.write_to_directory(
-                &self.xorb_metadata_staging_dir,
-                Some(Duration::from_secs(*MDB_SHARD_LOCAL_CACHE_EXPIRATION_SECS)),
-            )?;
+            xorb_shard.write_to_directory(&self.xorb_metadata_staging_dir, Some(*MDB_SHARD_LOCAL_CACHE_EXPIRATION))?;
 
             *last_flush = time_now + flush_interval;
             *xorb_shard = MDBInMemoryShard::default();
@@ -305,7 +301,7 @@ impl SessionShardInterface {
                     // time.
                     let new_shard_path = si.export_with_expiration(
                         cache_shard_manager.shard_directory(),
-                        Duration::from_secs(*MDB_SHARD_LOCAL_CACHE_EXPIRATION_SECS),
+                        *MDB_SHARD_LOCAL_CACHE_EXPIRATION,
                     )?;
 
                     // Register that new shard in the cache shard manager

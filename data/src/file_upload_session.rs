@@ -4,7 +4,6 @@ use std::io::Read;
 use std::mem::{swap, take};
 use std::path::Path;
 use std::sync::Arc;
-use std::time::Duration;
 
 use bytes::Bytes;
 use cas_client::Client;
@@ -28,8 +27,8 @@ use xet_runtime::{GlobalSemaphoreHandle, XetRuntime, global_semaphore_handle};
 
 use crate::configurations::*;
 use crate::constants::{
-    INGESTION_BLOCK_SIZE, MAX_CONCURRENT_FILE_INGESTION, MAX_CONCURRENT_UPLOADS, PROGRESS_UPDATE_INTERVAL_MS,
-    PROGRESS_UPDATE_SPEED_SAMPLING_WINDOW_MS,
+    INGESTION_BLOCK_SIZE, MAX_CONCURRENT_FILE_INGESTION, MAX_CONCURRENT_UPLOADS, PROGRESS_UPDATE_INTERVAL,
+    PROGRESS_UPDATE_SPEED_SAMPLING_WINDOW,
 };
 use crate::errors::*;
 use crate::file_cleaner::SingleFileCleaner;
@@ -130,12 +129,12 @@ impl FileUploadSession {
         let (progress_updater, progress_aggregator): (Arc<dyn TrackingProgressUpdater>, Option<_>) = {
             match upload_progress_updater {
                 Some(updater) => {
-                    let update_ms = *PROGRESS_UPDATE_INTERVAL_MS;
-                    if update_ms != 0 && config.progress_config.aggregate {
+                    let flush_interval = *PROGRESS_UPDATE_INTERVAL;
+                    if !flush_interval.is_zero() && config.progress_config.aggregate {
                         let aggregator = AggregatingProgressUpdater::new(
                             updater,
-                            Duration::from_millis(update_ms),
-                            Duration::from_millis(*PROGRESS_UPDATE_SPEED_SAMPLING_WINDOW_MS),
+                            flush_interval,
+                            *PROGRESS_UPDATE_SPEED_SAMPLING_WINDOW,
                         );
                         (aggregator.clone(), Some(aggregator))
                     } else {
