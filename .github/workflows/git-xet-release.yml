@@ -24,10 +24,8 @@ jobs:
         platform:
           - runner: ubuntu-22.04
             target: x86_64
-            manylinux: auto
-          - runner: ubuntu-22.04
+          - runner: ubuntu-22.04-arm
             target: aarch64
-            manylinux: manylinux_2_28
     steps:
       - uses: actions/checkout@v4
       - name: Install Rust 1.89
@@ -48,10 +46,8 @@ jobs:
         platform:
           - runner: macos-13
             target: x86_64
-            rust_target: x86_64-apple-darwin
-          - runner: macos-14
+          - runner: macos-15
             target: aarch64
-            rust_target: aarch64-apple-darwin
     steps:
       - uses: actions/checkout@v4
       - name: Install Rust 1.89
@@ -71,7 +67,7 @@ jobs:
           certificate-password: ${{ secrets.CLI_MACOS_CERTIFICATE_PWD }}
           apple-notary-user: ${{ secrets.CLI_MACOS_NOTARY_USER }}
           apple-notary-password: ${{ secrets.CLI_MACOS_NOTARY_PWD }}
-          apple-product-id: co.huggingface.git-xet
+          apple-product-id: co.huggingface.gitxet
           options: --options runtime --entitlements dist/entitlements.xml
       - name: Upload binary
         uses: actions/upload-artifact@v4
@@ -86,7 +82,6 @@ jobs:
         platform:
           - runner: windows-latest
             target: x86_64
-            rust_target: x86_64-pc-windows-msvc
     steps:
       - uses: actions/checkout@v4
       - name: Install Rust 1.89
