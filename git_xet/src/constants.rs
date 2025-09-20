@@ -9,6 +9,7 @@ pub const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");
 // Moon-landing Xet service headers
 pub const XET_ACCESS_TOKEN_HEADER: &str = "X-Xet-Access-Token";
 pub const XET_TOKEN_EXPIRATION_HEADER: &str = "X-Xet-Token-Expiration";
+pub const XET_REFRESH_ROUTE: &str = "X-Xet-Refresh-Route";
 
 // Environment variable names
 pub const HF_TOKEN_ENV: &str = "HF_TOKEN";
