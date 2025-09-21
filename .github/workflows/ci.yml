@@ -71,6 +71,11 @@ jobs:
         uses: dtolnay/rust-toolchain@1.89.0
         with:
           components: clippy
+      - name: OpenSSL version
+        run: |
+          which openssl
+          which -a openssl
+          openssl version
       - name: Set up Git LFS
         run: |
           brew install git-lfs
