@@ -10,10 +10,10 @@ use progress_tracking::{ProgressUpdate, TrackingProgressUpdater};
 use utils::auth::TokenRefresher;
 
 use crate::constants::{HF_ENDPOINT_ENV, XET_ACCESS_TOKEN_HEADER, XET_REFRESH_ROUTE, XET_TOKEN_EXPIRATION_HEADER};
-use crate::errors::{Result, config_error, internal, not_supported};
+use crate::errors::{self, Result};
 use crate::git_repo::GitRepo;
 use crate::git_url::{GitUrl, Scheme};
-use crate::lfs_agent_protocol::errors::bad_syntax;
+use crate::lfs_agent_protocol::errors as protocol_errors;
 use crate::lfs_agent_protocol::{InitRequestInner, ProgressUpdater, TransferAgent, TransferRequest};
 use crate::token_refresher::{DirectRefreshRouteTokenRefresher, HubClientTokenRefresher};
 
@@ -39,7 +39,7 @@ impl TransferAgent for XetAgent {
         let hf_endpoint = if !matches!(remote_url.scheme(), Scheme::Http | Scheme::Https) && remote_url.port().is_some()
         {
             Some(std::env::var(HF_ENDPOINT_ENV).map_err(|_| {
-                config_error(
+                errors::config_error(
                     r#"This repository has a non-standard Hugging Face remote URL, 
                 please specify the Hugging Face server endpoint using environment variable "HF_ENDPOINT""#,
                 )
@@ -56,7 +56,7 @@ impl TransferAgent for XetAgent {
     }
 
     async fn init_download(&mut self, _: &InitRequestInner) -> Result<()> {
-        Err(not_supported(
+        Err(errors::not_supported(
             "custom transfer for download is not implemented yet. Downloads should operate through standard git-lfs download protocol.
             If you encounter errors downloading, contact Xet Team at Hugging Face.",
         ))
@@ -112,22 +112,22 @@ impl TransferAgent for XetAgent {
             .action
             .header
             .get(XET_ACCESS_TOKEN_HEADER)
-            .ok_or_else(|| internal("Hugging Face Hub didn't provide a CAS access token"))?
+            .ok_or_else(|| errors::internal("Hugging Face Hub didn't provide a CAS access token"))?
             .clone();
         let token_expiry: u64 = req
             .action
             .header
             .get(XET_TOKEN_EXPIRATION_HEADER)
-            .ok_or_else(|| internal("Hugging Face Hub didn't provide a CAS access token expiration"))?
+            .ok_or_else(|| errors::internal("Hugging Face Hub didn't provide a CAS access token expiration"))?
             .parse()
-            .map_err(internal)?;
+            .map_err(errors::internal)?;
 
         let config = default_config(cas_url, None, Some((token, token_expiry)), Some(token_refresher))?
             .disable_progress_aggregation(); // upload one file at a time so no need for the heavy progress aggregator
         let session = FileUploadSession::new(config.into(), Some(Arc::new(xet_updater))).await?;
 
         let Some(file_path) = &req.path else {
-            return Err(bad_syntax("file path not provided for upload request").into());
+            return Err(protocol_errors::bad_syntax("file path not provided for upload request").into());
         };
 
         clean_file(session.clone(), file_path).await?;

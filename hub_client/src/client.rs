@@ -77,9 +77,7 @@ impl HubClient {
         // - the "rev" is a regular branch, with a HF write token;
         // - the "rev" is a pr branch, with a HF write or read token;
         // - it intends to create a pr and repo is enabled for discussion, with a HF write or read token.
-        let query = if let Operation::Upload = operation
-            && self.reference.is_none()
-        {
+        let query = if matches!(operation, Operation::Upload) && self.reference.is_none() {
             "?create_pr=1"
         } else {
             ""
