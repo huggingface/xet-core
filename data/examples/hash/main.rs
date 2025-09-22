@@ -2,24 +2,38 @@ use std::fs::File;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::path::PathBuf;
 
-use clap::{Parser, Subcommand};
+use clap::Parser;
 use mdb_shard::chunk_verification::range_hash_from_chunks;
-use merklehash::{compute_data_hash, file_hash, xorb_hash, MerkleHash};
+use merklehash::{MerkleHash, compute_data_hash, file_hash, xorb_hash};
 use regex::Regex;
 
-#[derive(Debug, Subcommand)]
-enum HashCommand {
+#[derive(Debug, Copy, Clone)]
+enum HashType {
     Chunk,
     Xorb,
     File,
     Range,
 }
 
+impl std::str::FromStr for HashType {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_lowercase().as_str() {
+            "chunk" => Ok(HashType::Chunk),
+            "xorb" => Ok(HashType::Xorb),
+            "file" => Ok(HashType::File),
+            "range" => Ok(HashType::Range),
+            _ => Err(format!("Invalid hash type: {s}")),
+        }
+    }
+}
+
 #[derive(Debug, Parser)]
 #[command(version, about, long_about = "Example of using different hash functions")]
 struct HashArgs {
-    #[command(subcommand)]
-    command: HashCommand,
+    #[arg(short, long)]
+    hash_type: HashType,
     #[arg(short, long)]
     output: Option<PathBuf>,
     #[arg(short, long)]
@@ -42,7 +56,7 @@ fn main() {
         Box::new(std::io::stdout())
     };
 
-    if matches!(args.command, HashCommand::Chunk) {
+    if matches!(args.hash_type, HashType::Chunk) {
         let mut buf = vec![];
         input.read_to_end(&mut buf).unwrap();
         let hash = compute_data_hash(&buf);
@@ -51,11 +65,11 @@ fn main() {
     }
 
     let chunks_list = read_input_as_chunks_list(&mut input);
-    let hash = match args.command {
-        HashCommand::Chunk => unreachable!("already handled"),
-        HashCommand::Xorb => xorb_hash(&chunks_list),
-        HashCommand::File => file_hash(&chunks_list),
-        HashCommand::Range => {
+    let hash = match args.hash_type {
+        HashType::Chunk => unreachable!("already handled"),
+        HashType::Xorb => xorb_hash(&chunks_list),
+        HashType::File => file_hash(&chunks_list),
+        HashType::Range => {
             let hashes_only = chunks_list.into_iter().map(|(hash, _len)| hash).collect::<Vec<_>>();
             range_hash_from_chunks(&hashes_only)
         },

@@ -3,7 +3,7 @@ use std::io::{BufReader, BufWriter, Read, Write};
 use std::path::PathBuf;
 
 use clap::Parser;
-use merklehash::{compute_data_hash, xorb_hash, MerkleHash};
+use merklehash::{MerkleHash, compute_data_hash, xorb_hash};
 use utils::output_bytes;
 
 #[derive(Debug, Parser)]
