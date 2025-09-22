@@ -13,8 +13,9 @@ use crate::constants::{HF_ENDPOINT_ENV, XET_ACCESS_TOKEN_HEADER, XET_REFRESH_ROU
 use crate::errors::{self, Result};
 use crate::git_repo::GitRepo;
 use crate::git_url::{GitUrl, Scheme};
-use crate::lfs_agent_protocol::errors as protocol_errors;
-use crate::lfs_agent_protocol::{InitRequestInner, ProgressUpdater, TransferAgent, TransferRequest};
+use crate::lfs_agent_protocol::{
+    InitRequestInner, ProgressUpdater, TransferAgent, TransferRequest, errors as protocol_errors,
+};
 use crate::token_refresher::{DirectRefreshRouteTokenRefresher, HubClientTokenRefresher};
 
 // This implements a Git LFS custom transfer agent that uploads and downloads files using the Xet protocol.
