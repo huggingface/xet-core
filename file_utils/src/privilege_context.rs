@@ -12,7 +12,7 @@ use winapi::um::{
     processthreadsapi::GetCurrentProcess,
     processthreadsapi::OpenProcessToken,
     securitybaseapi::GetTokenInformation,
-    winnt::{TokenElevation, HANDLE, TOKEN_ELEVATION, TOKEN_QUERY},
+    winnt::{HANDLE, TOKEN_ELEVATION, TOKEN_QUERY, TokenElevation},
 };
 
 #[cfg(test)]

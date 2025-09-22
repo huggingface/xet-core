@@ -4,10 +4,10 @@ use anyhow::Result;
 use cas_object::CompressionScheme;
 use hub_client::{BearerCredentialHelper, HubClient, Operation};
 use mdb_shard::file_structs::MDBFileInfo;
-use tracing::{info_span, instrument, Instrument, Span};
+use tracing::{Instrument, Span, info_span, instrument};
 use utils::auth::TokenRefresher;
+use xet_runtime::XetRuntime;
 use xet_runtime::utils::run_constrained;
-use xet_runtime::ThreadPool;
 
 use super::hub_client_token_refresher::HubClientTokenRefresher;
 use crate::data_client::{clean_file, default_config};
@@ -66,7 +66,7 @@ pub async fn migrate_files_impl(
     let num_workers = if sequential {
         1
     } else {
-        ThreadPool::current().num_worker_threads()
+        XetRuntime::current().num_worker_threads()
     };
     let processor = if dry_run {
         FileUploadSession::dry_run(config.into(), None).await?

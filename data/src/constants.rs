@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 utils::configurable_constants! {
 
     // Approximately 4 MB min spacing between global dedup queries.  Calculated by 4MB / TARGET_CHUNK_SIZE
@@ -11,7 +13,7 @@ utils::configurable_constants! {
 
     /// The expiration time of a local shard when first placed in the local shard cache.  Currently
     /// set to 3 weeks.
-    ref MDB_SHARD_LOCAL_CACHE_EXPIRATION_SECS: u64 = 3 * 7 * 24 * 3600;
+    ref MDB_SHARD_LOCAL_CACHE_EXPIRATION: Duration = Duration::from_secs(3 * 7 * 24 * 3600);
 
     /// The maximum number of simultaneous xorb upload streams.
     /// can be overwritten by environment variable "HF_XET_MAX_CONCURRENT_UPLOADS".
@@ -38,14 +40,14 @@ utils::configurable_constants! {
 
     /// How often to send updates on file progress, in milliseconds.  Disables batching
     /// if set to 0.
-    ref PROGRESS_UPDATE_INTERVAL_MS : u64 = 200;
+    ref PROGRESS_UPDATE_INTERVAL : Duration = Duration::from_millis(200);
 
     /// How large of a time window to use for aggregating the progress speed results.
-    ref PROGRESS_UPDATE_SPEED_SAMPLING_WINDOW_MS: u64 = 10 * 1000;
+    ref PROGRESS_UPDATE_SPEED_SAMPLING_WINDOW: Duration = Duration::from_millis(10 * 1000);
 
 
     /// How often do we flush new xorb data to disk on a long running upload session?
-    ref SESSION_XORB_METADATA_FLUSH_INTERVAL_SECS : u64 = 20;
+    ref SESSION_XORB_METADATA_FLUSH_INTERVAL : Duration = Duration::from_secs(20);
 
     /// Force a flush of the xorb metadata every this many xorbs, if more are created
     /// in this time window.

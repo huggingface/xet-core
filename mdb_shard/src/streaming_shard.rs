@@ -1,4 +1,4 @@
-use std::io::{copy, Cursor, Read, Write};
+use std::io::{Cursor, Read, Write, copy};
 use std::mem::size_of;
 
 use bytes::Bytes;
@@ -9,7 +9,7 @@ use itertools::Itertools;
 use crate::cas_structs::{CASChunkSequenceEntry, CASChunkSequenceHeader, MDBCASInfoView};
 use crate::error::{MDBShardError, Result};
 use crate::file_structs::{FileDataSequenceHeader, MDBFileInfoView};
-use crate::shard_file::{current_timestamp, MDB_FILE_INFO_ENTRY_SIZE};
+use crate::shard_file::{MDB_FILE_INFO_ENTRY_SIZE, current_timestamp};
 use crate::{MDBShardFileFooter, MDBShardFileHeader};
 
 /// Runs through a shard file info section, calling the specified callback function for each entry.
@@ -359,11 +359,11 @@ mod tests {
     use anyhow::Result;
 
     use super::MDBMinimalShard;
+    use crate::MDBShardInfo;
     use crate::cas_structs::MDBCASInfo;
     use crate::file_structs::MDBFileInfo;
     use crate::shard_file::test_routines::{convert_to_file, gen_random_shard};
     use crate::shard_in_memory::MDBInMemoryShard;
-    use crate::MDBShardInfo;
 
     fn verify_serialization(min_shard: &MDBMinimalShard, mem_shard: &MDBInMemoryShard) -> Result<()> {
         for verification in [true, false] {

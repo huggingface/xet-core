@@ -251,13 +251,7 @@ mod parallel_tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_returns_join_error_on_panic() {
-        let futures = (0..10).map(|i| async move {
-            if i == 5 {
-                panic!("5")
-            } else {
-                Result::<_, i32>::Ok(i)
-            }
-        });
+        let futures = (0..10).map(|i| async move { if i == 5 { panic!("5") } else { Result::<_, i32>::Ok(i) } });
 
         let result = run_constrained(futures, 2).await;
         if let Err(ParutilsError::Join(e)) = result {

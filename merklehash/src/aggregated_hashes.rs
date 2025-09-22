@@ -1,7 +1,7 @@
 use std::cell::RefCell;
 use std::fmt::Write;
 
-use crate::{compute_internal_node_hash, MerkleHash};
+use crate::{MerkleHash, compute_internal_node_hash};
 
 pub const AGGREGATED_HASHES_MEAN_TREE_BRANCHING_FACTOR: u64 = 4;
 

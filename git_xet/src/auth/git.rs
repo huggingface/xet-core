@@ -69,10 +69,10 @@ impl GitCredentialHelper {
             let mut line = line?;
             line.retain(|c| !c.is_whitespace());
 
-            if let Some(hf_token) = line.strip_prefix("password=") {
-                if !hf_token.is_empty() {
-                    return Ok(hf_token.to_owned());
-                }
+            if let Some(hf_token) = line.strip_prefix("password=")
+                && !hf_token.is_empty()
+            {
+                return Ok(hf_token.to_owned());
             }
         }
 

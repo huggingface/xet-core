@@ -3,7 +3,7 @@ use std::str::FromStr;
 use std::sync::Arc;
 
 use cas_client::remote_client::PREFIX_DEFAULT;
-use cas_client::{CacheConfig, CHUNK_CACHE_SIZE_BYTES};
+use cas_client::{CHUNK_CACHE_SIZE_BYTES, CacheConfig};
 use cas_object::CompressionScheme;
 use utils::auth::AuthConfig;
 

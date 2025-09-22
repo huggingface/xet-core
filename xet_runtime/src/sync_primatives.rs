@@ -70,7 +70,7 @@ impl<T: Send + Sync + 'static> SyncJoinHandle<T> {
     /// # Examples
     ///
     /// ```
-    /// use xet_runtime::{spawn_os_thread, SyncJoinHandle};
+    /// use xet_runtime::{SyncJoinHandle, spawn_os_thread};
     /// let handle: SyncJoinHandle<_> = spawn_os_thread(|| 42);
     ///
     /// // Possibly do some work here...

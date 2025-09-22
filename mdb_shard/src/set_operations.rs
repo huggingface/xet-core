@@ -69,32 +69,33 @@ fn get_next_actions_for_file_info(
     op: MDBSetOperation,
 ) -> Option<[NextAction; 2]> {
     // Special case for union operation on file info with same file hash.
-    if let (Some(ft0), Some(ft1)) = (h1, h2) {
-        if std::cmp::Ordering::Equal == ft0.file_hash.cmp(&ft1.file_hash) && op == MDBSetOperation::Union {
-            // Now two parties have the same file hash, and union should produce only one copy.
-            // Which one to use is a bit tricky as we have multiple optional pieces of information.
-            // We can leverage whether one party's flags are a superset of the other to directly
-            // copy over one of the file info. If neither party's flags are a superset, we will
-            // need to merge both infos into a single, complete info with info from both parties.
-            //
-            // Note: we make an assumption that if info exists in both places, it is the same
-            // since we can't make a distinction of what is valid and what isn't.
-            let superset = FileDataSequenceHeader::compare_flag_superset(ft0, ft1);
-            return match superset {
-                SupersetResult::SuperA | SupersetResult::Equal => {
-                    // use ft0 since it has more info
-                    Some([NextAction::CopyToOut, NextAction::SkipOver])
-                },
-                SupersetResult::SuperB => {
-                    // use ft1 since it has more info
-                    Some([NextAction::SkipOver, NextAction::CopyToOut])
-                },
-                SupersetResult::Neither => {
-                    // need to merge as both have some info the other doesn't
-                    Some([NextAction::Merge, NextAction::Nothing]) // Note: merge advances both entries
-                },
-            };
-        }
+    if let (Some(ft0), Some(ft1)) = (h1, h2)
+        && std::cmp::Ordering::Equal == ft0.file_hash.cmp(&ft1.file_hash)
+        && op == MDBSetOperation::Union
+    {
+        // Now two parties have the same file hash, and union should produce only one copy.
+        // Which one to use is a bit tricky as we have multiple optional pieces of information.
+        // We can leverage whether one party's flags are a superset of the other to directly
+        // copy over one of the file info. If neither party's flags are a superset, we will
+        // need to merge both infos into a single, complete info with info from both parties.
+        //
+        // Note: we make an assumption that if info exists in both places, it is the same
+        // since we can't make a distinction of what is valid and what isn't.
+        let superset = FileDataSequenceHeader::compare_flag_superset(ft0, ft1);
+        return match superset {
+            SupersetResult::SuperA | SupersetResult::Equal => {
+                // use ft0 since it has more info
+                Some([NextAction::CopyToOut, NextAction::SkipOver])
+            },
+            SupersetResult::SuperB => {
+                // use ft1 since it has more info
+                Some([NextAction::SkipOver, NextAction::CopyToOut])
+            },
+            SupersetResult::Neither => {
+                // need to merge as both have some info the other doesn't
+                Some([NextAction::Merge, NextAction::Nothing]) // Note: merge advances both entries
+            },
+        };
     }
 
     get_next_actions(h1.map(|f| &f.file_hash), h2.map(|f| &f.file_hash), op)
@@ -131,11 +132,7 @@ fn set_operation<R: Read + Seek, W: Write>(
 
         let load_next = |_r: &mut R, _s: &MDBShardInfo| -> Result<_> {
             let fdsh = FileDataSequenceHeader::deserialize(_r)?;
-            if fdsh.is_bookend() {
-                Ok(None)
-            } else {
-                Ok(Some(fdsh))
-            }
+            if fdsh.is_bookend() { Ok(None) } else { Ok(Some(fdsh)) }
         };
 
         let mut file_data_header = [load_next(r[0], s[0])?, load_next(r[1], s[1])?];
@@ -276,11 +273,7 @@ fn set_operation<R: Read + Seek, W: Write>(
 
         let load_next = |_r: &mut R, _s: &MDBShardInfo| -> Result<_> {
             let ccsh = CASChunkSequenceHeader::deserialize(_r)?;
-            if ccsh.is_bookend() {
-                Ok(None)
-            } else {
-                Ok(Some(ccsh))
-            }
+            if ccsh.is_bookend() { Ok(None) } else { Ok(Some(ccsh)) }
         };
 
         let mut cas_data_header = [load_next(r[0], s[0])?, load_next(r[1], s[1])?];
@@ -418,7 +411,7 @@ fn shard_file_op(f1: &Path, f2: &Path, out: &Path, op: MDBSetOperation) -> Resul
     let temp_file_name = dir.join(format!(".{uuid}.mdb_temp"));
 
     let mut hashed_write; // Need to access after file is closed.
-                          // Scoped so that file is closed and flushed before name is changed.
+    // Scoped so that file is closed and flushed before name is changed.
 
     let shard;
     {

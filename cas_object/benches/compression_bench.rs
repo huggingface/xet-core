@@ -148,7 +148,9 @@ fn main() {
         );
 
         unsafe {
-            println!("{BG4_SPLIT_RUNTIME} s, {BG4_LZ4_COMPRESS_RUNTIME} s , {BG4_LZ4_DECOMPRESS_RUNTIME} s, {BG4_REGROUP_RUNTIME} s");
+            println!(
+                "{BG4_SPLIT_RUNTIME} s, {BG4_LZ4_COMPRESS_RUNTIME} s , {BG4_LZ4_DECOMPRESS_RUNTIME} s, {BG4_REGROUP_RUNTIME} s"
+            );
         }
 
         // For CSV exporting

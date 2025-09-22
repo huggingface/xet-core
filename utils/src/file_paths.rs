@@ -11,7 +11,9 @@ pub struct EnvVarGuard {
 impl EnvVarGuard {
     pub fn set(key: &'static str, value: impl AsRef<OsStr>) -> Self {
         let prev = env::var(key).ok();
-        env::set_var(key, value);
+        unsafe {
+            env::set_var(key, value);
+        }
         Self { key, prev }
     }
 }
@@ -19,9 +21,13 @@ impl EnvVarGuard {
 impl Drop for EnvVarGuard {
     fn drop(&mut self) {
         if let Some(v) = &self.prev {
-            env::set_var(self.key, v);
+            unsafe {
+                env::set_var(self.key, v);
+            }
         } else {
-            env::remove_var(self.key);
+            unsafe {
+                env::remove_var(self.key);
+            }
         }
     }
 }

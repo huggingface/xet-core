@@ -6,7 +6,7 @@ use futures::io::{AsyncRead, AsyncReadExt};
 use futures::{Stream, TryStreamExt};
 
 use crate::error::CasObjectError;
-use crate::{parse_chunk_header, CASChunkHeader, CAS_CHUNK_HEADER_LENGTH};
+use crate::{CAS_CHUNK_HEADER_LENGTH, CASChunkHeader, parse_chunk_header};
 
 pub async fn deserialize_chunk_header<R: AsyncRead + Unpin>(reader: &mut R) -> Result<CASChunkHeader, CasObjectError> {
     let mut buf = [0u8; size_of::<CASChunkHeader>()];
@@ -113,10 +113,10 @@ where
 mod tests {
     use bytes::Bytes;
     use futures::Stream;
-    use rand::{rng, Rng};
+    use rand::{Rng, rng};
 
     use crate::deserialize_async::deserialize_chunks_to_writer_from_stream;
-    use crate::{serialize_chunk, CompressionScheme};
+    use crate::{CompressionScheme, serialize_chunk};
 
     fn gen_random_bytes(rng: &mut impl Rng, uncompressed_chunk_size: u32) -> Vec<u8> {
         let mut data = vec![0u8; uncompressed_chunk_size as usize];

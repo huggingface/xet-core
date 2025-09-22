@@ -1,5 +1,5 @@
 use std::collections::{BTreeMap, HashMap};
-use std::io::{copy, Read, Seek, SeekFrom, Write};
+use std::io::{Read, Seek, SeekFrom, Write, copy};
 use std::mem::size_of;
 use std::ops::Add;
 use std::sync::Arc;

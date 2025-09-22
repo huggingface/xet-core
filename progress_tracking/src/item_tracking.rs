@@ -1,10 +1,10 @@
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use more_asserts::debug_assert_le;
 
-use crate::progress_info::{ItemProgressUpdate, ProgressUpdate};
 use crate::TrackingProgressUpdater;
+use crate::progress_info::{ItemProgressUpdate, ProgressUpdate};
 
 /// This wraps a TrackingProgressUpdater, translating per-item updates to a full progress report.
 pub struct ItemProgressUpdater {

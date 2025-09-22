@@ -4,9 +4,9 @@ use mdb_shard::file_structs::MDBFileInfo;
 use merklehash::MerkleHash;
 use more_asserts::*;
 
+use crate::Chunk;
 use crate::constants::{MAX_XORB_BYTES, MAX_XORB_CHUNKS};
 use crate::raw_xorb_data::RawXorbData;
-use crate::Chunk;
 
 #[derive(Default, Debug)]
 pub struct DataAggregator {

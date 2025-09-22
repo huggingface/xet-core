@@ -4,8 +4,8 @@ use std::io::{Read, Seek, SeekFrom};
 use bytes::Bytes;
 use more_asserts::{debug_assert_ge, debug_assert_le};
 
-use crate::constants::{MAXIMUM_CHUNK_MULTIPLIER, MINIMUM_CHUNK_DIVISOR, TARGET_CHUNK_SIZE};
 use crate::Chunk;
+use crate::constants::{MAXIMUM_CHUNK_MULTIPLIER, MINIMUM_CHUNK_DIVISOR, TARGET_CHUNK_SIZE};
 
 /// Chunk Generator given an input stream. Do not use directly.
 /// Use `chunk_target_default`.

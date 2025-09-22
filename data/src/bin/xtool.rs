@@ -15,7 +15,7 @@ use hub_client::{BearerCredentialHelper, HubClient, Operation};
 use merklehash::MerkleHash;
 use utils::auth::TokenRefresher;
 use walkdir::WalkDir;
-use xet_runtime::ThreadPool;
+use xet_runtime::XetRuntime;
 
 const DEFAULT_HF_ENDPOINT: &str = "https://huggingface.co";
 
@@ -160,7 +160,7 @@ impl Command {
 
 fn walk_files(files: Vec<String>, recursive: bool) -> Vec<String> {
     // Scan all files if under recursive mode
-    let file_paths = if recursive {
+    if recursive {
         files
             .iter()
             .flat_map(|dir| {
@@ -179,9 +179,7 @@ fn walk_files(files: Vec<String>, recursive: bool) -> Vec<String> {
             .collect::<Vec<_>>()
     } else {
         files
-    };
-
-    file_paths
+    }
 }
 
 fn is_git_special_files(path: &str) -> bool {
@@ -224,7 +222,7 @@ async fn query_reconstruction(
 
 fn main() -> Result<()> {
     let cli = XCommand::parse();
-    let threadpool = ThreadPool::new()?;
+    let threadpool = XetRuntime::new()?;
     threadpool.external_run_async_task(async move { cli.run().await })??;
 
     Ok(())

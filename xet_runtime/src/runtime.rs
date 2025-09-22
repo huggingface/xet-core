@@ -66,9 +66,9 @@ fn get_num_tokio_worker_threads() -> usize {
 /// # Example
 ///
 /// ```rust
-/// use xet_runtime::ThreadPool;
+/// use xet_runtime::XetRuntime;
 ///
-/// let pool = ThreadPool::new().expect("Error initializing runtime.");
+/// let pool = XetRuntime::new().expect("Error initializing runtime.");
 ///
 /// let result = pool
 ///     .external_run_async_task(async {
@@ -99,7 +99,7 @@ fn get_num_tokio_worker_threads() -> usize {
 ///
 /// - `ThreadPool`: The main struct that encapsulates the Tokio runtime.
 #[derive(Debug)]
-pub struct ThreadPool {
+pub struct XetRuntime {
     // The runtime used when it's created by this struct,
     // None if this struct uses an external runtime.
     runtime: std::sync::RwLock<Option<TokioRuntime>>,
@@ -126,10 +126,10 @@ pub struct ThreadPool {
 // the worker threads in the runtime.  This way, XetRuntime::current() will always refer to
 // the runtime active with that worker thread.
 thread_local! {
-    static THREAD_RUNTIME_REF: RefCell<Option<(u32, Arc<ThreadPool>)>> = const { RefCell::new(None) };
+    static THREAD_RUNTIME_REF: RefCell<Option<(u32, Arc<XetRuntime>)>> = const { RefCell::new(None) };
 }
 
-impl ThreadPool {
+impl XetRuntime {
     /// Return the current threadpool that the current worker thread uses.  Will fail if  
     /// called from a thread that is not spawned from the current runtime.  
     #[inline]
@@ -148,10 +148,10 @@ impl ThreadPool {
     fn current_if_exists() -> Option<Arc<Self>> {
         let maybe_rt = THREAD_RUNTIME_REF.with_borrow(|rt| rt.clone());
 
-        if let Some((pid, rt)) = maybe_rt {
-            if pid == std::process::id() {
-                return Some(rt);
-            }
+        if let Some((pid, rt)) = maybe_rt
+            && pid == std::process::id()
+        {
+            return Some(rt);
         }
 
         None
@@ -188,24 +188,30 @@ impl ThreadPool {
             format!("{THREADPOOL_THREAD_ID_PREFIX}-{id}")
         };
 
-        let tokio_rt = {
+        let mut tokio_rt_builder = {
             #[cfg(not(target_family = "wasm"))]
             {
                 // A new multithreaded runtime with a capped number of threads
-                TokioRuntimeBuilder::new_multi_thread().worker_threads(get_num_tokio_worker_threads())
+                TokioRuntimeBuilder::new_multi_thread()
             }
 
             #[cfg(target_family = "wasm")]
             {
                 TokioRuntimeBuilder::new_current_thread()
             }
+        };
+        #[cfg(not(target_family = "wasm"))]
+        {
+            tokio_rt_builder.worker_threads(get_num_tokio_worker_threads());
         }
-        .thread_name_fn(get_thread_name) // thread names will be hf-xet-0, hf-xet-1, etc.
-        .on_thread_start(set_threadlocal_reference) // Set the local runtime reference.
-        .thread_stack_size(THREADPOOL_STACK_SIZE) // 8MB stack size, default is 2MB
-        .enable_all() // enable all features, including IO/Timer/Signal/Reactor
-        .build()
-        .map_err(MultithreadedRuntimeError::RuntimeInitializationError)?;
+
+        let tokio_rt = tokio_rt_builder
+            .thread_name_fn(get_thread_name) // thread names will be hf-xet-0, hf-xet-1, etc.
+            .on_thread_start(set_threadlocal_reference) // Set the local runtime reference.
+            .thread_stack_size(THREADPOOL_STACK_SIZE) // 8MB stack size, default is 2MB
+            .enable_all() // enable all features, including IO/Timer/Signal/Reactor
+            .build()
+            .map_err(MultithreadedRuntimeError::RuntimeInitializationError)?;
 
         // Now that the runtime is created, fill out the original struct.
         let handle = tokio_rt.handle().clone();
@@ -362,7 +368,7 @@ impl ThreadPool {
     }
 }
 
-impl Display for ThreadPool {
+impl Display for XetRuntime {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         // Need to be careful that this doesn't acquire locks eagerly, as this function can be called
         // from some weird places like displaying the backtrace of a panic or exception.

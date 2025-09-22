@@ -7,7 +7,7 @@ use progress_tracking::{ProgressUpdate, TrackingProgressUpdater};
 use pyo3::exceptions::PyTypeError;
 use pyo3::prelude::PyAnyMethods;
 use pyo3::types::{IntoPyDict, PyList, PyString};
-use pyo3::{pyclass, IntoPyObjectExt, Py, PyAny, PyResult, Python};
+use pyo3::{IntoPyObjectExt, Py, PyAny, PyResult, Python, pyclass};
 use tracing::error;
 use xet_runtime::exports::tokio;
 
@@ -207,7 +207,7 @@ impl WrappedProgressUpdaterImpl {
                     return Err(PyTypeError::new_err(format!(
                         "Function {name} must take exactly 1 or 2 arguments, but got {}",
                         param_names.len()
-                    )))
+                    )));
                 },
             };
 

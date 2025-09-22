@@ -31,7 +31,7 @@ impl<T, E> Deref for RwTaskLockReadGuard<'_, T, E> {
     type Target = T;
     fn deref(&self) -> &T {
         match &*self.guard {
-            RwTaskLockState::Ready(ref val) => val,
+            RwTaskLockState::Ready(val) => val,
             _ => unreachable!("Read guard is only constructed for Ready state"),
         }
     }

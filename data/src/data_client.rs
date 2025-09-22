@@ -6,24 +6,24 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use cas_client::remote_client::PREFIX_DEFAULT;
-use cas_client::{CacheConfig, FileProvider, OutputProvider, CHUNK_CACHE_SIZE_BYTES};
+use cas_client::{CHUNK_CACHE_SIZE_BYTES, CacheConfig, FileProvider, OutputProvider};
 use cas_object::CompressionScheme;
 use deduplication::DeduplicationMetrics;
 use dirs::home_dir;
-use progress_tracking::item_tracking::ItemProgressUpdater;
 use progress_tracking::TrackingProgressUpdater;
-use tracing::{info, info_span, instrument, Instrument, Span};
+use progress_tracking::item_tracking::ItemProgressUpdater;
+use tracing::{Instrument, Span, info, info_span, instrument};
 use ulid::Ulid;
 use utils::auth::{AuthConfig, TokenRefresher};
 use utils::normalized_path_from_user_string;
 use xet_runtime::utils::run_constrained_with_semaphore;
-use xet_runtime::{global_semaphore_handle, GlobalSemaphoreHandle, ThreadPool};
+use xet_runtime::{GlobalSemaphoreHandle, XetRuntime, global_semaphore_handle};
 
 use crate::configurations::*;
 use crate::constants::{INGESTION_BLOCK_SIZE, MAX_CONCURRENT_DOWNLOADS};
 use crate::errors::DataProcessingError;
 use crate::file_upload_session::CONCURRENT_FILE_INGESTION_LIMITER;
-use crate::{errors, FileDownloader, FileUploadSession, XetFileInfo};
+use crate::{FileDownloader, FileUploadSession, XetFileInfo, errors};
 
 utils::configurable_constants! {
     ref DEFAULT_CAS_ENDPOINT: String = "http://localhost:8080".to_string();
@@ -128,7 +128,7 @@ pub async fn upload_bytes_async(
     let config = default_config(endpoint.unwrap_or(DEFAULT_CAS_ENDPOINT.clone()), None, token_info, token_refresher)?;
     Span::current().record("session_id", &config.session_id);
 
-    let semaphore = ThreadPool::current().global_semaphore(*CONCURRENT_FILE_INGESTION_LIMITER);
+    let semaphore = XetRuntime::current().global_semaphore(*CONCURRENT_FILE_INGESTION_LIMITER);
     let upload_session = FileUploadSession::new(config.into(), progress_updater).await?;
     let clean_futures = file_contents.into_iter().map(|blob| {
         let upload_session = upload_session.clone();
@@ -201,12 +201,10 @@ pub async fn download_async(
             global_semaphore_handle!(*MAX_CONCURRENT_DOWNLOADS);
     }
 
-    if let Some(updaters) = &progress_updaters {
-        if updaters.len() != file_infos.len() {
-            return Err(DataProcessingError::ParameterError(
-                "updaters are not same length as pointer_files".to_string(),
-            ));
-        }
+    if let Some(updaters) = &progress_updaters
+        && updaters.len() != file_infos.len()
+    {
+        return Err(DataProcessingError::ParameterError("updaters are not same length as pointer_files".to_string()));
     }
     let config =
         default_config(endpoint.unwrap_or(DEFAULT_CAS_ENDPOINT.to_string()), None, token_info, token_refresher)?;
@@ -222,7 +220,7 @@ pub async fn download_async(
         async move { smudge_file(&proc, &file_info, &file_path, updater).await }.instrument(info_span!("download_file"))
     });
 
-    let semaphore = ThreadPool::current().global_semaphore(*CONCURRENT_FILE_DOWNLOAD_LIMITER);
+    let semaphore = XetRuntime::current().global_semaphore(*CONCURRENT_FILE_DOWNLOAD_LIMITER);
 
     let paths = run_constrained_with_semaphore(smudge_file_futures, semaphore).await?;
 
@@ -289,10 +287,9 @@ async fn smudge_file(
 
 #[cfg(test)]
 mod tests {
-    use std::env;
-
     use serial_test::serial;
     use tempfile::tempdir;
+    use utils::EnvVarGuard;
 
     use super::*;
 
@@ -300,7 +297,7 @@ mod tests {
     #[serial(default_config_env)]
     fn test_default_config_with_hf_home() {
         let temp_dir = tempdir().unwrap();
-        env::set_var("HF_HOME", temp_dir.path().to_str().unwrap());
+        let _hf_home_guard = EnvVarGuard::set("HF_HOME", temp_dir.path().to_str().unwrap());
 
         let endpoint = "http://localhost:8080".to_string();
         let result = default_config(endpoint, None, None, None);
@@ -308,8 +305,6 @@ mod tests {
         assert!(result.is_ok());
         let config = result.unwrap();
         assert!(config.data_config.cache_config.cache_directory.starts_with(&temp_dir.path()));
-
-        env::remove_var("HF_HOME");
     }
 
     #[test]
@@ -318,25 +313,27 @@ mod tests {
         let temp_dir_xet_cache = tempdir().unwrap();
         let temp_dir_hf_home = tempdir().unwrap();
 
-        env::set_var("HF_XET_CACHE", temp_dir_xet_cache.path().to_str().unwrap());
-        env::set_var("HF_HOME", temp_dir_hf_home.path().to_str().unwrap());
+        let hf_xet_cache_guard = EnvVarGuard::set("HF_XET_CACHE", temp_dir_xet_cache.path().to_str().unwrap());
+        let hf_home_guard = EnvVarGuard::set("HF_HOME", temp_dir_hf_home.path().to_str().unwrap());
 
         let endpoint = "http://localhost:8080".to_string();
         let result = default_config(endpoint, None, None, None);
 
         assert!(result.is_ok());
         let config = result.unwrap();
-        assert!(config
-            .data_config
-            .cache_config
-            .cache_directory
-            .starts_with(&temp_dir_xet_cache.path()));
+        assert!(
+            config
+                .data_config
+                .cache_config
+                .cache_directory
+                .starts_with(&temp_dir_xet_cache.path())
+        );
 
-        env::remove_var("HF_XET_CACHE");
-        env::remove_var("HF_HOME");
+        drop(hf_xet_cache_guard);
+        drop(hf_home_guard);
 
         let temp_dir = tempdir().unwrap();
-        env::set_var("HF_HOME", temp_dir.path().to_str().unwrap());
+        let _hf_home_guard = EnvVarGuard::set("HF_HOME", temp_dir.path().to_str().unwrap());
 
         let endpoint = "http://localhost:8080".to_string();
         let result = default_config(endpoint, None, None, None);
@@ -344,15 +341,13 @@ mod tests {
         assert!(result.is_ok());
         let config = result.unwrap();
         assert!(config.data_config.cache_config.cache_directory.starts_with(&temp_dir.path()));
-
-        env::remove_var("HF_HOME");
     }
 
     #[test]
     #[serial(default_config_env)]
     fn test_default_config_with_hf_xet_cache() {
         let temp_dir = tempdir().unwrap();
-        env::set_var("HF_XET_CACHE", temp_dir.path().to_str().unwrap());
+        let _hf_xet_cache_guard = EnvVarGuard::set("HF_XET_CACHE", temp_dir.path().to_str().unwrap());
 
         let endpoint = "http://localhost:8080".to_string();
         let result = default_config(endpoint, None, None, None);
@@ -360,8 +355,6 @@ mod tests {
         assert!(result.is_ok());
         let config = result.unwrap();
         assert!(config.data_config.cache_config.cache_directory.starts_with(&temp_dir.path()));
-
-        env::remove_var("HF_XET_CACHE");
     }
 
     #[test]
