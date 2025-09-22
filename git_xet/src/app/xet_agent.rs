@@ -80,6 +80,7 @@ impl TransferAgent for XetAgent {
                     self.remote_url.clone(),
                     refresh_route,
                     Operation::Upload,
+                    // TODO: use session id from the action header
                     "",
                 )?)
             } else {
@@ -88,6 +89,7 @@ impl TransferAgent for XetAgent {
                     self.remote_url.clone(),
                     self.hf_endpoint.clone(),
                     Operation::Upload,
+                    // TODO: use session id from the action header
                     "",
                 )?)
             };
@@ -123,6 +125,7 @@ impl TransferAgent for XetAgent {
             .parse()
             .map_err(errors::internal)?;
 
+        // TODO: use session id from the action header
         let config = default_config(cas_url, None, Some((token, token_expiry)), Some(token_refresher))?
             .disable_progress_aggregation(); // upload one file at a time so no need for the heavy progress aggregator
         let session = FileUploadSession::new(config.into(), Some(Arc::new(xet_updater))).await?;
