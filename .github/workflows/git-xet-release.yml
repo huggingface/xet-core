@@ -100,9 +100,9 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+    if: ${{ github.event_name == 'workflow_dispatch' }}
     needs: [linux, windows, macos]
     steps:
-      - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
       - name: Create GitHub Release
         env:
@@ -110,4 +110,4 @@ jobs:
         run: |
           ls -l
           ls -l git-xet*/*
-          gh release create git-xet-v0.0.1 git-xet*/* --generate-notes --prerelease --target ${{github.sha}}
+          gh release create git-xet-${{ github.event.inputs.tag}} git-xet*/* --generate-notes --prerelease --target ${{github.sha}}
