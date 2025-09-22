@@ -41,5 +41,5 @@ lazy_static! {
 }
 
 pub fn xet_cache_root() -> &'static Path {
-    &*CACHE_ROOT_PATH
+    &CACHE_ROOT_PATH
 }

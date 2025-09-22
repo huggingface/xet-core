@@ -115,7 +115,7 @@ pub fn init_logging(cfg: LoggingConfig) {
         match &cfg.logging_mode {
             LoggingMode::Directory(log_dir) => {
                 if cfg.enable_log_dir_cleanup && log_dir.exists() && log_dir.is_dir() {
-                    run_log_directory_cleanup_background(&log_dir);
+                    run_log_directory_cleanup_background(log_dir);
                 }
 
                 Some(log_file_in_dir(log_dir))
@@ -383,7 +383,7 @@ fn run_log_directory_cleanup(log_dir: &Path) -> io::Result<()> {
     candidates.retain(|lf| {
         if lf.age > max_retention {
             let path = &lf.path;
-            match std::fs::remove_file(&path) {
+            match std::fs::remove_file(path) {
                 Ok(_) => {
                     deleted_bytes += lf.size;
                     debug!("Log Directory Cleanup: Removed old log file {path:?})");
