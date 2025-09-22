@@ -43,7 +43,7 @@ use std::marker::PhantomData;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, AtomicU16, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
-use std::task::{ready, Context, Poll};
+use std::task::{Context, Poll, ready};
 
 use error_printer::ErrorPrinter;
 use futures::future::Either;
@@ -397,8 +397,8 @@ where
 
 #[cfg(test)]
 pub(crate) mod tests {
-    use std::sync::atomic::{AtomicU32, Ordering};
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicU32, Ordering};
     use std::time::Duration;
 
     use futures::future::join_all;
@@ -647,16 +647,16 @@ mod test_deadlock {
     use std::collections::HashMap;
     use std::sync::Arc;
 
-    use futures::stream::iter;
     use futures::StreamExt;
+    use futures::stream::iter;
     use tests::WAITER_TIMEOUT;
     use tokio::runtime::Handle;
     use tokio::sync::mpsc::error::SendError;
-    use tokio::sync::mpsc::{channel, Sender};
+    use tokio::sync::mpsc::{Sender, channel};
     use tokio::sync::{Mutex, Notify};
     use tokio::time::timeout;
 
-    use super::{tests, Group};
+    use super::{Group, tests};
 
     #[tokio::test]
     async fn test_deadlock() {
@@ -794,8 +794,8 @@ mod test_futures_unordered {
     use std::sync::Arc;
     use std::time::Duration;
 
-    use futures_util::stream::FuturesUnordered;
     use futures_util::TryStreamExt;
+    use futures_util::stream::FuturesUnordered;
     use tokio::sync::mpsc;
     use tokio::time::sleep;
 

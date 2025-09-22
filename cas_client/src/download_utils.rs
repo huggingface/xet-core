@@ -10,8 +10,8 @@ use deduplication::constants::MAX_XORB_BYTES;
 use derivative::Derivative;
 use error_printer::ErrorPrinter;
 use futures::TryStreamExt;
-use http::header::RANGE;
 use http::StatusCode;
+use http::header::RANGE;
 use merklehash::MerkleHash;
 use reqwest::Response;
 use reqwest_middleware::ClientWithMiddleware;
@@ -22,7 +22,7 @@ use utils::singleflight::Group;
 use crate::error::{CasClientError, Result};
 use crate::http_client::Api;
 use crate::output_provider::OutputProvider;
-use crate::remote_client::{get_reconstruction_with_endpoint_and_client, PREFIX_DEFAULT};
+use crate::remote_client::{PREFIX_DEFAULT, get_reconstruction_with_endpoint_and_client};
 use crate::retry_wrapper::{RetryWrapper, RetryableReqwestError};
 
 utils::configurable_constants! {
@@ -572,7 +572,7 @@ mod tests {
     use tokio::time::sleep;
 
     use super::*;
-    use crate::{build_http_client, RetryConfig};
+    use crate::{RetryConfig, build_http_client};
 
     #[tokio::test]
     async fn test_fetch_info_query_and_find() -> Result<()> {

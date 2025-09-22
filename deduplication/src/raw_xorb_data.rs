@@ -1,9 +1,9 @@
 use mdb_shard::cas_structs::{CASChunkSequenceEntry, CASChunkSequenceHeader, MDBCASInfo};
-use merklehash::{xorb_hash, MerkleHash};
+use merklehash::{MerkleHash, xorb_hash};
 use more_asserts::*;
 
-use crate::constants::{MAX_XORB_BYTES, MAX_XORB_CHUNKS};
 use crate::Chunk;
+use crate::constants::{MAX_XORB_BYTES, MAX_XORB_CHUNKS};
 
 /// This struct is the data needed to cut a
 #[derive(Default, Debug, Clone)]

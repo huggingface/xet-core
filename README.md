@@ -82,6 +82,23 @@ sudo apt-get install gdb build-essential
 ./hf-xet-diag-windows.sh -- python hf-download.py "Qwen/Qwen2.5-VL-3B-Instruct"
 ```
 
+### Diagnostics - MacOS (`hf-xet-diag-macos.sh`)
+
+* Uses `sample` + `lldb` to periodically snapshot stacks and produce core dumps.
+* Downloads and installs the appropriate `hf_xet-*.dbg` symbol file automatically.
+
+**Requirements:**
+
+```bash
+sudo xcode-select --install
+```
+
+**Example usage:**
+
+```bash
+./hf-xet-diag-macos.sh -- python hf-download.py "Qwen/Qwen2.5-VL-3B-Instruct"
+```
+
 ---
 
 ### Output Layout

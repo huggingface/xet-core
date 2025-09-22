@@ -1,6 +1,6 @@
 use std::pin::Pin;
-use std::sync::atomic::AtomicUsize;
 use std::sync::Arc;
+use std::sync::atomic::AtomicUsize;
 use std::task::{Context, Poll};
 
 use bytes::Bytes;

@@ -1,5 +1,5 @@
 use lazy_static::lazy_static;
-use prometheus::{register_int_counter, IntCounter};
+use prometheus::{IntCounter, register_int_counter};
 
 // Some of the common tracking things
 lazy_static! {

@@ -2,8 +2,8 @@ use std::env;
 use std::path::Path;
 use std::sync::OnceLock;
 
-use pyo3::types::PyAnyMethods;
 use pyo3::Python;
+use pyo3::types::PyAnyMethods;
 use tracing::info;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
@@ -86,12 +86,11 @@ fn get_version_info_string(py: Python<'_>) -> String {
     let mut version_info = String::new();
 
     // Get Python version
-    if let Ok(sys) = py.import("sys") {
-        if let Ok(version) = sys.getattr("version").and_then(|v| v.extract::<String>()) {
-            if let Some(python_version_number) = version.split_whitespace().next() {
-                version_info.push_str(&format!("python/{python_version_number}; "));
-            }
-        }
+    if let Ok(sys) = py.import("sys")
+        && let Ok(version) = sys.getattr("version").and_then(|v| v.extract::<String>())
+        && let Some(python_version_number) = version.split_whitespace().next()
+    {
+        version_info.push_str(&format!("python/{python_version_number}; "));
     }
 
     // Get huggingface_hub+hf_xet versions

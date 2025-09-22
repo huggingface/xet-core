@@ -1,5 +1,6 @@
 use std::fmt::Debug;
 use std::str::FromStr;
+use std::time::Duration;
 
 use tracing::{info, warn};
 
@@ -20,7 +21,9 @@ pub trait ParsableConfigValue: Debug + Sized {
                     v
                 },
                 None => {
-                    warn!("Configuration value {v} for {variable_name} cannot be parsed into correct type; reverting to default.");
+                    warn!(
+                        "Configuration value {v} for {variable_name} cannot be parsed into correct type; reverting to default."
+                    );
                     info!("Config: {variable_name} = {default:?} (default due to parse error)");
                     default
                 },
@@ -58,6 +61,7 @@ impl FromStrParseable for i64 {}
 impl FromStrParseable for f32 {}
 impl FromStrParseable for f64 {}
 impl FromStrParseable for String {}
+impl FromStrParseable for ByteSize {}
 
 /// Special handling for bool:
 /// - true: "1","true","yes","y","on"  -> true
@@ -83,6 +87,16 @@ impl ParsableConfigValue for bool {
 impl<T: ParsableConfigValue> ParsableConfigValue for Option<T> {
     fn parse_user_value(value: &str) -> Option<Self> {
         T::parse_user_value(value).map(Some)
+    }
+}
+
+/// Implement proper parsing for Duration types as well.
+///
+/// Now the following suffixes are supported [y, mon, d, h, m, s, ms];
+/// see the duration_str crate for the full list.
+impl ParsableConfigValue for Duration {
+    fn parse_user_value(value: &str) -> Option<Self> {
+        duration_str::parse(value).ok()
     }
 }
 
@@ -141,6 +155,8 @@ macro_rules! configurable_constants {
 
 pub use ctor as ctor_reexport;
 
+use crate::ByteSize;
+
 #[cfg(not(doctest))]
 /// A macro for **tests** that sets `HF_XET_<GLOBAL_NAME>` to `$value` **before**
 /// the global is initialized, and then checks that the global actually picks up
@@ -178,16 +194,20 @@ macro_rules! test_set_globals {
         fn set_globals_on_load() {
             $(
                 let val = $val;
+                let val_str = format!("{val:?}");
 
                 // Construct the environment variable name, e.g. "HF_XET_MAX_NUM_CHUNKS"
                 let env_name = concat!("HF_XET_", stringify!($var_name));
-                // Convert the $val to a string and set it
-                std::env::set_var(env_name, val.to_string());
+
+                // Set the environment
+                unsafe {
+                    std::env::set_var(env_name, &val_str);
+                }
 
                 // Force lazy_static to be read now:
                 let actual_value = *$var_name;
 
-                if actual_value != val {
+                if format!("{actual_value:?}") != val_str {
                     panic!(
                         "test_set_global! failed: wanted {} to be {:?}, but got {:?}",
                         stringify!($var_name),

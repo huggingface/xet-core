@@ -4,14 +4,13 @@ use std::io::Read;
 use std::mem::{swap, take};
 use std::path::Path;
 use std::sync::Arc;
-use std::time::Duration;
 
 use bytes::Bytes;
 use cas_client::Client;
 use cas_object::SerializedCasObject;
 use deduplication::constants::{MAX_XORB_BYTES, MAX_XORB_CHUNKS};
 use deduplication::{DataAggregator, DeduplicationMetrics, RawXorbData};
-use jsonwebtoken::{decode, DecodingKey, Validation};
+use jsonwebtoken::{DecodingKey, Validation, decode};
 use lazy_static::lazy_static;
 use mdb_shard::file_structs::MDBFileInfo;
 use more_asserts::*;
@@ -22,20 +21,20 @@ use progress_tracking::verification_wrapper::ProgressUpdaterVerificationWrapper;
 use progress_tracking::{NoOpProgressUpdater, TrackingProgressUpdater};
 use tokio::sync::{Mutex, OwnedSemaphorePermit};
 use tokio::task::{JoinHandle, JoinSet};
-use tracing::{info_span, instrument, Instrument, Span};
+use tracing::{Instrument, Span, info_span, instrument};
 use ulid::Ulid;
-use xet_runtime::{global_semaphore_handle, GlobalSemaphoreHandle, XetRuntime};
+use xet_runtime::{GlobalSemaphoreHandle, XetRuntime, global_semaphore_handle};
 
 use crate::configurations::*;
 use crate::constants::{
-    INGESTION_BLOCK_SIZE, MAX_CONCURRENT_FILE_INGESTION, MAX_CONCURRENT_UPLOADS, PROGRESS_UPDATE_INTERVAL_MS,
-    PROGRESS_UPDATE_SPEED_SAMPLING_WINDOW_MS,
+    INGESTION_BLOCK_SIZE, MAX_CONCURRENT_FILE_INGESTION, MAX_CONCURRENT_UPLOADS, PROGRESS_UPDATE_INTERVAL,
+    PROGRESS_UPDATE_SPEED_SAMPLING_WINDOW,
 };
 use crate::errors::*;
 use crate::file_cleaner::SingleFileCleaner;
 use crate::remote_client_interface::create_remote_client;
 use crate::shard_interface::SessionShardInterface;
-use crate::{prometheus_metrics, XetFileInfo};
+use crate::{XetFileInfo, prometheus_metrics};
 
 lazy_static! {
     pub static ref CONCURRENT_FILE_INGESTION_LIMITER: GlobalSemaphoreHandle =
@@ -130,12 +129,12 @@ impl FileUploadSession {
         let (progress_updater, progress_aggregator): (Arc<dyn TrackingProgressUpdater>, Option<_>) = {
             match upload_progress_updater {
                 Some(updater) => {
-                    let update_ms = *PROGRESS_UPDATE_INTERVAL_MS;
-                    if update_ms != 0 && config.progress_config.aggregate {
+                    let flush_interval = *PROGRESS_UPDATE_INTERVAL;
+                    if !flush_interval.is_zero() && config.progress_config.aggregate {
                         let aggregator = AggregatingProgressUpdater::new(
                             updater,
-                            Duration::from_millis(update_ms),
-                            Duration::from_millis(*PROGRESS_UPDATE_SPEED_SAMPLING_WINDOW_MS),
+                            flush_interval,
+                            *PROGRESS_UPDATE_SPEED_SAMPLING_WINDOW,
                         );
                         (aggregator.clone(), Some(aggregator))
                     } else {

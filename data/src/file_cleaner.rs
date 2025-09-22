@@ -8,14 +8,14 @@ use deduplication::{Chunk, Chunker, DeduplicationMetrics, FileDeduper};
 use mdb_shard::file_structs::FileMetadataExt;
 use merklehash::MerkleHash;
 use progress_tracking::upload_tracking::CompletionTrackerFileId;
-use tracing::{debug_span, info, instrument, Instrument};
+use tracing::{Instrument, debug_span, info, instrument};
 
+use crate::XetFileInfo;
 use crate::constants::INGESTION_BLOCK_SIZE;
 use crate::deduplication_interface::UploadSessionDataManager;
 use crate::errors::Result;
 use crate::file_upload_session::FileUploadSession;
 use crate::sha256::ShaGenerator;
-use crate::XetFileInfo;
 
 /// A class that encapsulates the clean and data task around a single file.
 pub struct SingleFileCleaner {
