@@ -42,7 +42,8 @@ struct HashArgs {
     /// Output file or uses stdout if not specified, where to write the hash
     #[arg(short, long)]
     output: Option<PathBuf>,
-    /// Input file or uses stdin if not specified. For File, Xorb and Range hash types, expects input format to be a newline-separated list of chunk hashes and lengths in the format of `<hash> <length>`
+    /// Input file or uses stdin if not specified. For File, Xorb and Range hash types, expects input format to be a
+    /// newline-separated list of chunk hashes and lengths in the format of `<hash> <length>`
     #[arg(short, long)]
     input: Option<PathBuf>,
 }

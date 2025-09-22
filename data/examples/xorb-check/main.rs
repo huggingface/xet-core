@@ -11,7 +11,8 @@ struct XorbCheckArgs {
     /// Input file or uses stdin if not specified. Expects xorb format object (with no footer)
     #[arg(short, long)]
     input: Option<PathBuf>,
-    /// Specific hash to check that the xorb equals this hash, optional, can use --hash-from-path to parse a hash from the input file path or ignore the check altogether to just compute the xorb hash
+    /// Specific hash to check that the xorb equals this hash, optional, can use --hash-from-path to parse a hash from
+    /// the input file path or ignore the check altogether to just compute the xorb hash
     #[arg(short, long)]
     hash: Option<String>,
     /// If true, tries to parse a hash the path of the input file, from the first 64 characters of the file name
@@ -20,7 +21,8 @@ struct XorbCheckArgs {
     /// Output file or uses stdout if not specified, where to write the chunk information
     #[arg(short, long)]
     output_chunks: Option<PathBuf>,
-    /// If true, write the chunk information to stdout, if not set and output_chunks is not set, will not output the chunk information
+    /// If true, write the chunk information to stdout, if not set and output_chunks is not set, will not output the
+    /// chunk information
     #[arg(long, conflicts_with = "output_chunks")]
     output_chunks_stdout: bool,
 }
