@@ -1,8 +1,9 @@
-use clap::Parser;
-use merklehash::{compute_data_hash, xorb_hash, MerkleHash};
 use std::fs::File;
 use std::io::{BufReader, BufWriter, Read, Write};
 use std::path::PathBuf;
+
+use clap::Parser;
+use merklehash::{compute_data_hash, xorb_hash, MerkleHash};
 use utils::output_bytes;
 
 #[derive(Debug, Parser)]
