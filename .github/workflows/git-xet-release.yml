@@ -108,4 +108,6 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create ${{ github.event.inputs.tag}} git-xet*/* --generate-notes --prerelease --target ${{github.sha}}
+          ls -l
+          ls -l git-xet*/*
+          gh release create git-xet-v0.0.1 git-xet*/* --generate-notes --prerelease --target ${{github.sha}}
