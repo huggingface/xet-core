@@ -8,14 +8,19 @@ use utils::output_bytes;
 
 #[derive(Debug, Parser)]
 struct XorbCheckArgs {
+    /// Input file or uses stdin if not specified. Expects xorb format object (with no footer)
     #[arg(short, long)]
-    file: Option<PathBuf>,
+    input: Option<PathBuf>,
+    /// Specific hash to check that the xorb equals this hash, optional, can use --hash-from-path to parse a hash from the input file path or ignore the check altogether to just compute the xorb hash
     #[arg(short, long)]
     hash: Option<String>,
+    /// If true, tries to parse a hash the path of the input file, from the first 64 characters of the file name
     #[arg(long, conflicts_with = "hash")]
     hash_from_path: bool,
+    /// Output file or uses stdout if not specified, where to write the chunk information
     #[arg(short, long)]
     output_chunks: Option<PathBuf>,
+    /// If true, write the chunk information to stdout, if not set and output_chunks is not set, will not output the chunk information
     #[arg(long, conflicts_with = "output_chunks")]
     output_chunks_stdout: bool,
 }
@@ -23,7 +28,7 @@ struct XorbCheckArgs {
 fn main() {
     let args = XorbCheckArgs::parse();
 
-    if args.hash_from_path && args.file.is_none() {
+    if args.hash_from_path && args.input.is_none() {
         panic!("--hash-from-path requires --file to be set");
     }
 
@@ -31,12 +36,12 @@ fn main() {
     if let Some(hash_str) = args.hash {
         provided_hash = Some(MerkleHash::from_hex(&hash_str).unwrap())
     } else if args.hash_from_path {
-        let mut path_hash = args.file.clone().unwrap().file_name().unwrap().to_str().unwrap().to_string();
+        let mut path_hash = args.input.clone().unwrap().file_name().unwrap().to_str().unwrap().to_string();
         path_hash.truncate(64);
         provided_hash = Some(MerkleHash::from_hex(&path_hash).unwrap())
     }
 
-    let _input: Box<dyn Read> = match args.file {
+    let _input: Box<dyn Read> = match args.input {
         Some(path) => Box::new(File::open(path).unwrap()),
         None => Box::new(std::io::stdin()),
     };

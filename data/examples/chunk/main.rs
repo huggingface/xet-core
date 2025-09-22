@@ -13,24 +13,26 @@ use deduplication::{Chunk, Chunker};
     long_about = "Example of using the chunker. Splits the input file or stdin into chunks and writes to stdout or the specified file the chunk hash in string format and the chunk size on a new line for each chunk in order in the file"
 )]
 struct ChunkArgs {
+    /// Input file or uses stdin if not specified.
     #[arg(short, long)]
-    file: Option<PathBuf>,
+    input: Option<PathBuf>,
+    /// Output file or uses stdout if not specified, where to write the chunk information
     #[arg(short, long)]
-    save: Option<PathBuf>,
+    output: Option<PathBuf>,
 }
 
 fn main() {
     let args = ChunkArgs::parse();
 
     // setup content reader
-    let mut input: Box<dyn Read> = if let Some(file_path) = args.file {
+    let mut input: Box<dyn Read> = if let Some(file_path) = args.input {
         Box::new(File::open(file_path).unwrap())
     } else {
         Box::new(std::io::stdin())
     };
 
     // set up writer to output chunks information
-    let mut output: Box<dyn Write> = if let Some(save) = args.save {
+    let mut output: Box<dyn Write> = if let Some(save) = args.output {
         Box::new(BufWriter::new(File::create(save).unwrap()))
     } else {
         Box::new(std::io::stdout())

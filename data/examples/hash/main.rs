@@ -30,12 +30,19 @@ impl std::str::FromStr for HashType {
 }
 
 #[derive(Debug, Parser)]
-#[command(version, about, long_about = "Example of using different hash functions")]
+#[command(
+    version,
+    about,
+    long_about = "Example of computing different hash functions for different inputs"
+)]
 struct HashArgs {
+    /// Hash type to compute, choices are: chunk, xorb, file, range
     #[arg(short, long)]
     hash_type: HashType,
+    /// Output file or uses stdout if not specified, where to write the hash
     #[arg(short, long)]
     output: Option<PathBuf>,
+    /// Input file or uses stdin if not specified. For File, Xorb and Range hash types, expects input format to be a newline-separated list of chunk hashes and lengths in the format of `<hash> <length>`
     #[arg(short, long)]
     input: Option<PathBuf>,
 }
