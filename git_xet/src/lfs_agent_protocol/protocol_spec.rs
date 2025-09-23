@@ -124,7 +124,7 @@ impl LFSProtocolRequestEvent {
                 }
 
                 if req.action.href.is_empty() {
-                    return Err(bad_argument("empty action.href in server response"));
+                    return Err(GitLFSProtocolError::bad_argument("empty action.href in server response"));
                 }
 
                 Ok(())
@@ -143,7 +143,7 @@ impl LFSProtocolRequestEvent {
                 }
 
                 if req.action.href.is_empty() {
-                    return Err(bad_argument("empty action.href in server response"));
+                    return Err(GitLFSProtocolError::bad_argument("empty action.href in server response"));
                 }
 
                 Ok(())
