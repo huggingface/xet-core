@@ -8,7 +8,7 @@ use cas_client::{FileProvider, OutputProvider};
 use clap::{Args, Parser, Subcommand};
 use data::configurations::*;
 use data::{FileDownloader, FileUploadSession, XetFileInfo};
-use xet_threadpool::ThreadPool;
+use xet_runtime::XetRuntime;
 
 #[derive(Parser)]
 struct XCommand {
@@ -57,10 +57,10 @@ impl Command {
     }
 }
 
-fn get_threadpool() -> Arc<ThreadPool> {
-    static THREADPOOL: OnceLock<Arc<ThreadPool>> = OnceLock::new();
+fn get_threadpool() -> Arc<XetRuntime> {
+    static THREADPOOL: OnceLock<Arc<XetRuntime>> = OnceLock::new();
     THREADPOOL
-        .get_or_init(|| ThreadPool::new().expect("Error starting multithreaded runtime."))
+        .get_or_init(|| XetRuntime::new().expect("Error starting multithreaded runtime."))
         .clone()
 }
 

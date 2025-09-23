@@ -13,21 +13,21 @@ use cas_types::{
 };
 use chunk_cache::{CacheConfig, ChunkCache};
 use error_printer::ErrorPrinter;
-use http::header::{CONTENT_LENGTH, RANGE};
 use http::HeaderValue;
+use http::header::{CONTENT_LENGTH, RANGE};
 use mdb_shard::file_structs::{FileDataSequenceEntry, FileDataSequenceHeader, MDBFileInfo};
 use merklehash::MerkleHash;
 use progress_tracking::item_tracking::SingleItemProgressUpdater;
 use progress_tracking::upload_tracking::CompletionTracker;
 use reqwest::{Body, Response, StatusCode, Url};
 use reqwest_middleware::ClientWithMiddleware;
-use tokio::sync::{mpsc, OwnedSemaphorePermit};
+use tokio::sync::{OwnedSemaphorePermit, mpsc};
 use tokio::task::{JoinHandle, JoinSet};
 use tracing::{debug, info, instrument};
 use utils::auth::AuthConfig;
 #[cfg(not(target_family = "wasm"))]
 use utils::singleflight::Group;
-use xet_threadpool::{global_semaphore_handle, GlobalSemaphoreHandle, ThreadPool};
+use xet_runtime::{GlobalSemaphoreHandle, XetRuntime, global_semaphore_handle};
 
 #[cfg(not(target_family = "wasm"))]
 use crate::download_utils::*;
@@ -36,35 +36,34 @@ use crate::http_client::{Api, ResponseErrorLogger, RetryConfig};
 #[cfg(not(target_family = "wasm"))]
 use crate::output_provider::OutputProvider;
 use crate::retry_wrapper::RetryWrapper;
-use crate::{http_client, Client};
+use crate::{Client, http_client};
 
 pub const CAS_ENDPOINT: &str = "http://localhost:8080";
 pub const PREFIX_DEFAULT: &str = "default";
 
 utils::configurable_constants! {
-// Env (HF_XET_NUM_CONCURRENT_RANGE_GETS) to set the number of concurrent range gets.
-// setting this value to 0 disables the limit, sets it to the max, this is not recommended as it may lead to errors
+    /// Env (HF_XET_NUM_CONCURRENT_RANGE_GETS) to set the number of concurrent range gets.
+    /// setting this value to 0 disables the limit, sets it to the max, this is not recommended as it may lead to errors
     ref NUM_CONCURRENT_RANGE_GETS: usize = GlobalConfigMode::HighPerformanceOption {
         standard: 48,
         high_performance: 256,
     };
 
-    // Send a report of successful partial upload every 512kb.
+    /// Send a report of successful partial upload every 512kb.
     ref UPLOAD_REPORTING_BLOCK_SIZE : usize = 512 * 1024;
+
+    /// Env (HF_XET_RECONSTRUCT_WRITE_SEQUENTIALLY) to switch to writing terms sequentially to disk.
+    /// Benchmarks have shown that on SSD machines, writing in parallel seems to far outperform
+    /// sequential term writes.
+    /// However, this is not likely the case for writing to HDD and may in fact be worse,
+    /// so for those machines, setting this env may help download perf.
+    ref RECONSTRUCT_WRITE_SEQUENTIALLY : bool = false;
+
 }
 
 lazy_static! {
     static ref DOWNLOAD_CHUNK_RANGE_CONCURRENCY_LIMITER: GlobalSemaphoreHandle =
         global_semaphore_handle!(*NUM_CONCURRENT_RANGE_GETS);
-}
-
-utils::configurable_bool_constants! {
-// Env (HF_XET_RECONSTRUCT_WRITE_SEQUENTIALLY) to switch to writing terms sequentially to disk.
-// Benchmarks have shown that on SSD machines, writing in parallel seems to far outperform
-// sequential term writes.
-// However, this is not likely the case for writing to HDD and may in fact be worse,
-// so for those machines, setting this env may help download perf.
-    ref RECONSTRUCT_WRITE_SEQUENTIALLY = false;
 }
 
 pub struct RemoteClient {
@@ -85,7 +84,7 @@ pub(crate) async fn get_reconstruction_with_endpoint_and_client(
     file_id: &MerkleHash,
     bytes_range: Option<FileRange>,
 ) -> Result<Option<QueryReconstructionResponse>> {
-    let url = Url::parse(&format!("{endpoint}/reconstruction/{}", file_id.hex()))?;
+    let url = Url::parse(&format!("{endpoint}/reconstructions/{}", file_id.hex()))?;
 
     let mut request = client.get(url).with_extension(Api("cas::get_reconstruction"));
     if let Some(range) = bytes_range {
@@ -98,10 +97,10 @@ pub(crate) async fn get_reconstruction_with_endpoint_and_client(
         let e = response.unwrap_err();
 
         // bytes_range not satisfiable
-        if let CasClientError::ReqwestError(e, _) = &e {
-            if let Some(StatusCode::RANGE_NOT_SATISFIABLE) = e.status() {
-                return Ok(None);
-            }
+        if let CasClientError::ReqwestError(e, _) = &e
+            && let Some(StatusCode::RANGE_NOT_SATISFIABLE) = e.status()
+        {
+            return Ok(None);
         }
 
         return Err(e);
@@ -238,7 +237,7 @@ impl RemoteClient {
             hash: *chunk_hash,
         };
 
-        let url = Url::parse(&format!("{}/chunk/{key}", self.endpoint))?;
+        let url = Url::parse(&format!("{}/chunks/{key}", self.endpoint))?;
 
         let client = self.authenticated_http_client.clone();
         let api_tag = "cas::query_dedup";
@@ -330,7 +329,7 @@ impl RemoteClient {
         let download_scheduler_clone = download_scheduler.clone();
 
         let download_concurrency_limiter =
-            ThreadPool::current().global_semaphore(*DOWNLOAD_CHUNK_RANGE_CONCURRENCY_LIMITER);
+            XetRuntime::current().global_semaphore(*DOWNLOAD_CHUNK_RANGE_CONCURRENCY_LIMITER);
 
         let queue_dispatcher: JoinHandle<Result<()>> = tokio::spawn(async move {
             let mut remaining_total_len = total_len;
@@ -481,7 +480,7 @@ impl RemoteClient {
         let download_scheduler = DownloadSegmentLengthTuner::from_configurable_constants();
 
         let download_concurrency_limiter =
-            ThreadPool::current().global_semaphore(*DOWNLOAD_CHUNK_RANGE_CONCURRENCY_LIMITER);
+            XetRuntime::current().global_semaphore(*DOWNLOAD_CHUNK_RANGE_CONCURRENCY_LIMITER);
 
         let process_result = move |result: TermDownloadResult<u64>,
                                    total_written: &mut u64,
@@ -609,7 +608,7 @@ impl Client for RemoteClient {
             hash: serialized_cas_object.hash,
         };
 
-        let url = Url::parse(&format!("{}/xorb/{key}", self.endpoint))?;
+        let url = Url::parse(&format!("{}/xorbs/{key}", self.endpoint))?;
 
         let n_upload_bytes = serialized_cas_object.serialized_data.len() as u64;
 
@@ -681,7 +680,7 @@ impl Client for RemoteClient {
             hash: serialized_cas_object.hash,
         };
 
-        let url = Url::parse(&format!("{}/xorb/{key}", self.endpoint))?;
+        let url = Url::parse(&format!("{}/xorbs/{key}", self.endpoint))?;
 
         let n_upload_bytes = serialized_cas_object.serialized_data.len() as u64;
 
@@ -702,7 +701,7 @@ impl Client for RemoteClient {
             hash: *hash,
         };
 
-        let url = Url::parse(&format!("{}/xorb/{key}", self.endpoint))?;
+        let url = Url::parse(&format!("{}/xorbs/{key}", self.endpoint))?;
         let response = self.authenticated_http_client.head(url).send().await?;
         match response.status() {
             StatusCode::OK => Ok(true),
@@ -751,7 +750,7 @@ impl Client for RemoteClient {
         &self,
         file_hash: &MerkleHash,
     ) -> Result<Option<(MDBFileInfo, Option<MerkleHash>)>> {
-        let url = Url::parse(&format!("{}/reconstruction/{}", self.endpoint, file_hash.hex()))?;
+        let url = Url::parse(&format!("{}/reconstructions/{}", self.endpoint, file_hash.hex()))?;
 
         let api_tag = "cas::get_reconstruction_info";
         let client = self.authenticated_http_client.clone();
@@ -778,20 +777,15 @@ impl Client for RemoteClient {
     }
 
     #[instrument(skip_all, name = "RemoteClient::upload_shard", fields(shard.len = shard_data.len()))]
-    async fn upload_shard(&self, prefix: &str, hash: &MerkleHash, shard_data: Bytes) -> Result<bool> {
+    async fn upload_shard(&self, shard_data: Bytes) -> Result<bool> {
         if self.dry_run {
             return Ok(true);
         }
 
-        let key = Key {
-            prefix: prefix.into(),
-            hash: *hash,
-        };
-
         let api_tag = "cas::upload_shard";
         let client = self.authenticated_http_client.clone();
 
-        let url = Url::parse(&format!("{}/shard/{key}", self.endpoint))?;
+        let url = Url::parse(&format!("{}/shards", self.endpoint))?;
 
         let response: UploadShardResponse = RetryWrapper::new(api_tag)
             .run_and_extract_json(move || {
@@ -824,14 +818,14 @@ mod tests {
     use std::collections::HashMap;
 
     use anyhow::Result;
-    use cas_object::test_utils::*;
     use cas_object::CompressionScheme;
+    use cas_object::test_utils::*;
     use cas_types::{CASReconstructionFetchInfo, CASReconstructionTerm, ChunkRange};
     use deduplication::constants::MAX_XORB_BYTES;
     use httpmock::Method::GET;
     use httpmock::MockServer;
     use tracing_test::traced_test;
-    use xet_threadpool::ThreadPool;
+    use xet_runtime::XetRuntime;
 
     use super::*;
     use crate::output_provider::BufferProvider;
@@ -844,7 +838,7 @@ mod tests {
         let prefix = PREFIX_DEFAULT;
         let raw_xorb = build_raw_xorb(3, ChunkSize::Random(512, 10248));
 
-        let threadpool = ThreadPool::new().unwrap();
+        let threadpool = XetRuntime::new().unwrap();
         let client = RemoteClient::new(CAS_ENDPOINT, &None, &None, None, "", false);
 
         let cas_object = build_and_verify_cas_object(raw_xorb, Some(CompressionScheme::LZ4));
@@ -942,12 +936,12 @@ mod tests {
         // Arrange server mocks
         let _mock_fi_416 = server.mock(|when, then| {
             when.method(GET)
-                .path(format!("/reconstruction/{}", test_case.file_hash))
+                .path(format!("/reconstructions/{}", test_case.file_hash))
                 .matches(mock_no_match_range_header!(HttpRange::from(FIRST_SEGMENT_FILE_RANGE)));
             then.status(416);
         });
         let _mock_fi_200 = server.mock(|when, then| {
-            let w = when.method(GET).path(format!("/reconstruction/{}", test_case.file_hash));
+            let w = when.method(GET).path(format!("/reconstructions/{}", test_case.file_hash));
             w.header(RANGE.as_str(), HttpRange::from(FIRST_SEGMENT_FILE_RANGE).range_header());
             then.status(200).json_body_obj(&test_case.reconstruction_response);
         });
@@ -1018,12 +1012,12 @@ mod tests {
         // Arrange server mocks
         let _mock_fi_416 = server.mock(|when, then| {
             when.method(GET)
-                .path(format!("/reconstruction/{}", test_case.file_hash))
+                .path(format!("/reconstructions/{}", test_case.file_hash))
                 .matches(mock_no_match_range_header!(HttpRange::from(FIRST_SEGMENT_FILE_RANGE)));
             then.status(416);
         });
         let _mock_fi_200 = server.mock(|when, then| {
-            let w = when.method(GET).path(format!("/reconstruction/{}", test_case.file_hash));
+            let w = when.method(GET).path(format!("/reconstructions/{}", test_case.file_hash));
             w.header(RANGE.as_str(), HttpRange::from(FIRST_SEGMENT_FILE_RANGE).range_header());
             then.status(200).json_body_obj(&test_case.reconstruction_response);
         });
@@ -1090,12 +1084,12 @@ mod tests {
         // Arrange server mocks
         let _mock_fi_416 = server.mock(|when, then| {
             when.method(GET)
-                .path(format!("/reconstruction/{}", test_case.file_hash))
+                .path(format!("/reconstructions/{}", test_case.file_hash))
                 .matches(mock_no_match_range_header!(HttpRange::from(FIRST_SEGMENT_FILE_RANGE)));
             then.status(416);
         });
         let _mock_fi_200 = server.mock(|when, then| {
-            let w = when.method(GET).path(format!("/reconstruction/{}", test_case.file_hash));
+            let w = when.method(GET).path(format!("/reconstructions/{}", test_case.file_hash));
             w.header(RANGE.as_str(), HttpRange::from(FIRST_SEGMENT_FILE_RANGE).range_header());
             then.status(200).json_body_obj(&test_case.reconstruction_response);
         });
@@ -1189,12 +1183,12 @@ mod tests {
         // Arrange server mocks
         let _mock_fi_416 = server.mock(|when, then| {
             when.method(GET)
-                .path(format!("/reconstruction/{}", test_case.file_hash))
+                .path(format!("/reconstructions/{}", test_case.file_hash))
                 .matches(mock_no_match_range_header!(HttpRange::from(FIRST_SEGMENT_FILE_RANGE)));
             then.status(416);
         });
         let _mock_fi_200 = server.mock(|when, then| {
-            let w = when.method(GET).path(format!("/reconstruction/{}", test_case.file_hash));
+            let w = when.method(GET).path(format!("/reconstructions/{}", test_case.file_hash));
             w.header(RANGE.as_str(), HttpRange::from(FIRST_SEGMENT_FILE_RANGE).range_header());
             then.status(200).json_body_obj(&test_case.reconstruction_response);
         });
@@ -1215,7 +1209,7 @@ mod tests {
     }
 
     fn test_reconstruct_file(test_case: TestCase, endpoint: &str) -> Result<()> {
-        let threadpool = ThreadPool::new()?;
+        let threadpool = XetRuntime::new()?;
 
         // test reconstruct and sequential write
         let test = test_case.clone();

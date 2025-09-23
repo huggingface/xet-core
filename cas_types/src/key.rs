@@ -1,8 +1,8 @@
 use std::fmt::{Display, Formatter};
 use std::str::FromStr;
 
-use merklehash::data_hash::hex;
 use merklehash::MerkleHash;
+use merklehash::data_hash::hex;
 use serde::{Deserialize, Serialize};
 
 use crate::error::CasTypesError;

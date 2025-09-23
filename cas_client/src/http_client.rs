@@ -1,6 +1,3 @@
-#[cfg(not(target_family = "wasm"))]
-mod dns_utils;
-
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -8,20 +5,21 @@ use anyhow::anyhow;
 use cas_types::{REQUEST_ID_HEADER, SESSION_ID_HEADER};
 use error_printer::{ErrorPrinter, OptionPrinter};
 use http::{Extensions, StatusCode};
-use reqwest::header::{HeaderValue, AUTHORIZATION};
+use reqwest::header::{AUTHORIZATION, HeaderValue};
 use reqwest::{Request, Response};
 use reqwest_middleware::{ClientBuilder, ClientWithMiddleware, Middleware, Next};
 use reqwest_retry::policies::ExponentialBackoff;
 use reqwest_retry::{
-    default_on_request_failure, default_on_request_success, DefaultRetryableStrategy, RetryTransientMiddleware,
-    Retryable, RetryableStrategy,
+    DefaultRetryableStrategy, RetryTransientMiddleware, Retryable, RetryableStrategy, default_on_request_failure,
+    default_on_request_success,
 };
 use tokio::sync::Mutex;
-use tracing::{debug, info_span, warn, Instrument};
+use tracing::{Instrument, debug, info_span, warn};
 use utils::auth::{AuthConfig, TokenProvider};
 
-use crate::constants::{CLIENT_IDLE_CONNECTION_TIMEOUT_SECS, CLIENT_MAX_IDLE_CONNECTIONS};
-use crate::{error, CasClientError};
+use crate::constants::{CLIENT_IDLE_CONNECTION_TIMEOUT, CLIENT_MAX_IDLE_CONNECTIONS};
+use crate::retry_wrapper::on_request_failure;
+use crate::{CasClientError, error};
 
 pub(crate) const NUM_RETRIES: u32 = 5;
 pub(crate) const BASE_RETRY_DELAY_MS: u64 = 3000; // 3s
@@ -32,14 +30,26 @@ pub struct No429RetryStrategy;
 
 impl RetryableStrategy for No429RetryStrategy {
     fn handle(&self, res: &Result<Response, reqwest_middleware::Error>) -> Option<Retryable> {
-        if let Ok(success) = res {
-            if success.status() == StatusCode::TOO_MANY_REQUESTS {
-                return Some(Retryable::Fatal);
-            }
+        if let Ok(success) = res
+            && success.status() == StatusCode::TOO_MANY_REQUESTS
+        {
+            return Some(Retryable::Fatal);
         }
 
         const DEFAULT_STRATEGY: DefaultRetryableStrategy = DefaultRetryableStrategy;
         DEFAULT_STRATEGY.handle(res)
+    }
+}
+
+/// A strategy that retries on 5xx/400/429 status codes, and retries on transient errors.
+pub struct XetRetryStrategy;
+
+impl RetryableStrategy for XetRetryStrategy {
+    fn handle(&self, res: &Result<Response, reqwest_middleware::Error>) -> Option<Retryable> {
+        match res {
+            Ok(success) => default_on_request_success(success),
+            Err(error) => on_request_failure(error),
+        }
     }
 }
 
@@ -56,15 +66,13 @@ pub struct RetryConfig<R: RetryableStrategy> {
     pub strategy: R,
 }
 
-impl Default for RetryConfig<DefaultRetryableStrategy> {
-    // Use `DefaultRetryableStrategy` which retries on 5xx/400/429 status codes, and retries on transient errors.
-    // See reqwest-retry/src/retryable_strategy.rs
+impl Default for RetryConfig<XetRetryStrategy> {
     fn default() -> Self {
         Self {
             num_retries: NUM_RETRIES,
             min_retry_interval_ms: BASE_RETRY_DELAY_MS,
             max_retry_interval_ms: BASE_RETRY_MAX_DURATION_MS,
-            strategy: DefaultRetryableStrategy,
+            strategy: XetRetryStrategy,
         }
     }
 }
@@ -90,13 +98,12 @@ fn reqwest_client() -> Result<reqwest::Client, CasClientError> {
 
     #[cfg(not(target_family = "wasm"))]
     {
-        use xet_threadpool::ThreadPool;
+        use xet_runtime::XetRuntime;
 
-        let client = ThreadPool::get_or_create_reqwest_client(|| {
+        let client = XetRuntime::get_or_create_reqwest_client(|| {
             reqwest::Client::builder()
-                .pool_idle_timeout(Duration::from_secs(*CLIENT_IDLE_CONNECTION_TIMEOUT_SECS))
+                .pool_idle_timeout(*CLIENT_IDLE_CONNECTION_TIMEOUT)
                 .pool_max_idle_per_host(*CLIENT_MAX_IDLE_CONNECTIONS)
-                .dns_resolver(Arc::from(dns_utils::GaiResolverWithAbsolute::default()))
                 .build()
         })?;
 
@@ -333,12 +340,10 @@ impl ResponseErrorLogger<error::Result<Response>> for reqwest_middleware::Result
 }
 
 pub fn request_id_from_response(res: &Response) -> &str {
-    let request_id = res
-        .headers()
+    res.headers()
         .get(REQUEST_ID_HEADER)
         .and_then(|h| h.to_str().ok())
-        .unwrap_or_default();
-    request_id
+        .unwrap_or_default()
 }
 
 #[cfg(test)]

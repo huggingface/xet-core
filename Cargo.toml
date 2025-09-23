@@ -10,11 +10,13 @@ members = [
     "deduplication",
     "error_printer",
     "file_utils",
+    "git_xet",
+    "hub_client",
     "mdb_shard",
     "merklehash",
     "progress_tracking",
     "utils",
-    "xet_threadpool",
+    "xet_runtime",
 ]
 
 exclude = ["chunk_cache_bench", "hf_xet", "hf_xet_wasm", "hf_xet_thin_wasm"]
@@ -46,14 +48,18 @@ csv = "1"
 ctor = "0.4"
 derivative = "2.2"
 dirs = "5.0"
+duration-str = "0.17"
 futures = "0.3"
 futures-util = "0.3"
 gearhash = "0.1"
 getrandom = "0.3"
+git-url-parse = "0.4"
+git2 = "0.20"
 half = "2.4"
 heapify = "0.2"
 heed = "0.11"
 http = "1"
+hyper = "1.7"
 hyper-util = "0.1"
 itertools = "0.14"
 jsonwebtoken = "9.3"
@@ -64,15 +70,22 @@ mockall = "0.13"
 more-asserts = "0.3"
 once_cell = "1.20"
 oneshot = "0.1"
+openssh = "0.11"
 pin-project = "1"
 prometheus = "0.14"
 rand = "0.9"
 rand_chacha = "0.9"
 rayon = "1.5"
 regex = "1"
-reqwest = { version = "0.12", features = ["json","stream","system-proxy","socks"], default-features = false }
+reqwest = { version = "0.12", features = [
+    "json",
+    "stream",
+    "system-proxy",
+    "socks"
+], default-features = false }
 reqwest-middleware = "0.4"
 reqwest-retry = "0.7"
+rust-netrc = "0.1"
 rustc-hash = "1.1"
 safe-transmute = "0.11"
 serde = { version = "1", features = ["derive"] }

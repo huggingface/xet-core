@@ -1,13 +1,13 @@
 use std::borrow::Cow;
 use std::fmt::Display;
-use std::io::{copy, Cursor, Read, Write};
+use std::io::{Cursor, Read, Write, copy};
 use std::time::Instant;
 
 use anyhow::anyhow;
 use lz4_flex::frame::{FrameDecoder, FrameEncoder};
 
-use crate::byte_grouping::bg4::{bg4_regroup, bg4_split};
 use crate::byte_grouping::BG4Predictor;
+use crate::byte_grouping::bg4::{bg4_regroup, bg4_split};
 use crate::error::{CasObjectError, Result};
 
 pub static mut BG4_SPLIT_RUNTIME: f64 = 0.;

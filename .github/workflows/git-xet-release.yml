@@ -1,0 +1,115 @@
+name: git-xet Release
+run-name: git-xet release, tag ${{ inputs.tag || 'main' }}
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Semantic version for release (tag will shard the same name)"
+        required: true
+        default: "v0.1.0"
+
+permissions:
+  contents: read
+
+jobs:
+  linux:
+    runs-on: ${{ matrix.platform.runner }}
+    strategy:
+      matrix:
+        platform:
+          - runner: ubuntu-22.04
+            target: x86_64
+          - runner: ubuntu-22.04-arm
+            target: aarch64
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust 1.89
+        uses: dtolnay/rust-toolchain@1.89.0
+      - name: Build
+        run: |
+          cargo build --release
+      - name: Upload binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: git-xet-linux-${{ matrix.platform.target }}
+          path: target/release/git-xet
+
+  macos:
+    runs-on: ${{ matrix.platform.runner }}
+    strategy:
+      matrix:
+        platform:
+          - runner: macos-13
+            target: x86_64
+          - runner: macos-15
+            target: aarch64
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust 1.89
+        uses: dtolnay/rust-toolchain@1.89.0
+      - name: Build
+        run: |
+          cargo build --release
+          mkdir dist
+          cp target/release/git-xet dist/
+          cp git_xet/entitlements.xml dist/
+      - name: Codesign and Notarization
+        uses: lando/code-sign-action@v3
+        with:
+          file: dist/git-xet
+          certificate-data: ${{ secrets.CLI_MACOS_CERTIFICATE }}
+          certificate-id: ${{ secrets.CLI_MACOS_TEAM_ID }}
+          certificate-password: ${{ secrets.CLI_MACOS_CERTIFICATE_PWD }}
+          apple-notary-user: ${{ secrets.CLI_MACOS_NOTARY_USER }}
+          apple-notary-password: ${{ secrets.CLI_MACOS_NOTARY_PWD }}
+          apple-product-id: co.huggingface.gitxet
+          options: --options runtime --entitlements dist/entitlements.xml
+      - name: Upload binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: git-xet-macos-${{ matrix.platform.target }}
+          path: dist/git-xet
+
+  windows:
+    runs-on: ${{ matrix.platform.runner }}
+    strategy:
+      matrix:
+        platform:
+          - runner: windows-latest
+            target: x86_64
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust 1.89
+        uses: dtolnay/rust-toolchain@1.89.0
+      - name: Build
+        run: |
+          cargo build --release
+      - name: Upload binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: git-xet-windows-${{ matrix.platform.target }}
+          path: target/release/git-xet.exe
+
+  github-release:
+    name: Create GitHub release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    if: ${{ github.event_name == 'workflow_dispatch' }}
+    needs: [linux, windows, macos]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v5
+        with:
+          path: dist
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          ls -l dist
+          ls -l dist/git-xet*/*
+          gh release create git-xet-${{ github.event.inputs.tag}} dist/git-xet*/* --generate-notes --prerelease --target ${{github.sha}}

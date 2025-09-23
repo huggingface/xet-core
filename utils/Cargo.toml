@@ -1,7 +1,7 @@
 [package]
 name = "utils"
 version = "0.14.5"
-edition = "2021"
+edition = "2024"
 
 [lib]
 name = "utils"
@@ -14,6 +14,8 @@ merklehash = { path = "../merklehash" }
 async-trait = { workspace = true }
 bytes = { workspace = true }
 ctor = { workspace = true }
+derivative = { workspace = true }
+duration-str = { workspace = true }
 futures = { workspace = true }
 lazy_static = { workspace = true }
 pin-project = { workspace = true }
@@ -24,7 +26,7 @@ tracing = { workspace = true }
 
 [target.'cfg(not(target_family = "wasm"))'.dev-dependencies]
 tempfile = { workspace = true }
-xet_threadpool = { path = "../xet_threadpool" }
+xet_runtime = { path = "../xet_runtime" }
 
 [target.'cfg(target_family = "wasm")'.dependencies]
 web-time = { workspace = true }

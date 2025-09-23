@@ -6,14 +6,14 @@ use lazy_static::lazy_static;
 use pyo3::exceptions::{PyKeyboardInterrupt, PyRuntimeError};
 use pyo3::prelude::*;
 use tracing::info;
-use xet_threadpool::errors::MultithreadedRuntimeError;
-use xet_threadpool::sync_primatives::spawn_os_thread;
-use xet_threadpool::ThreadPool;
+use xet_runtime::XetRuntime;
+use xet_runtime::errors::MultithreadedRuntimeError;
+use xet_runtime::sync_primatives::spawn_os_thread;
 
 lazy_static! {
     static ref SIGINT_DETECTED: Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
     static ref SIGINT_HANDLER_INSTALL_PID: (AtomicU32, Mutex<()>) = (AtomicU32::new(0), Mutex::new(()));
-    static ref MULTITHREADED_RUNTIME: RwLock<Option<(u32, Arc<ThreadPool>)>> = RwLock::new(None);
+    static ref MULTITHREADED_RUNTIME: RwLock<Option<(u32, Arc<XetRuntime>)>> = RwLock::new(None);
 }
 
 #[cfg(unix)]
@@ -118,7 +118,7 @@ fn signal_check_background_loop() {
 }
 
 // This should be called once on library load.
-pub fn init_threadpool() -> Result<Arc<ThreadPool>, MultithreadedRuntimeError> {
+pub fn init_threadpool() -> Result<Arc<XetRuntime>, MultithreadedRuntimeError> {
     // Need to initialize. Upgrade to write lock.
     let mut guard = MULTITHREADED_RUNTIME.write().unwrap();
 
@@ -141,7 +141,7 @@ pub fn init_threadpool() -> Result<Arc<ThreadPool>, MultithreadedRuntimeError> {
     }
 
     // Create a new Tokio runtime.
-    let runtime = ThreadPool::new()?;
+    let runtime = XetRuntime::new()?;
 
     // Check the signal handler.  This must be reinstalled on new or after a spawn
     check_sigint_handler()?;
@@ -169,7 +169,7 @@ pub fn init_threadpool() -> Result<Arc<ThreadPool>, MultithreadedRuntimeError> {
 }
 
 // This function initializes the runtime if not present, otherwise returns the existing one.
-fn get_threadpool() -> Result<Arc<ThreadPool>, MultithreadedRuntimeError> {
+fn get_threadpool() -> Result<Arc<XetRuntime>, MultithreadedRuntimeError> {
     // First try a read lock to see if it's already initialized.
     {
         let guard = MULTITHREADED_RUNTIME.read().unwrap();
@@ -214,13 +214,13 @@ where
 
     // Now, if we're in the middle of a shutdown, and this is an error, then
     // just translate that error to a KeyboardInterrupt (or we get a lot of
-    if let Err(ref e) = &result {
-        if in_sigint_shutdown() {
-            if cfg!(debug_assertions) {
-                eprintln!("[debug] ignored error reported during shutdown: {e:?}");
-            }
-            return Err(PyKeyboardInterrupt::new_err(()));
+    if let Err(e) = &result
+        && in_sigint_shutdown()
+    {
+        if cfg!(debug_assertions) {
+            eprintln!("[debug] ignored error reported during shutdown: {e:?}");
         }
+        return Err(PyKeyboardInterrupt::new_err(()));
     }
 
     // Now return the result.

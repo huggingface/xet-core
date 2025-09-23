@@ -5,17 +5,17 @@ use mdb_shard::file_structs::{
     FileDataSequenceEntry, FileDataSequenceHeader, FileMetadataExt, FileVerificationEntry, MDBFileInfo,
 };
 use mdb_shard::hash_is_global_dedup_eligible;
-use merklehash::{file_hash, MerkleHash};
+use merklehash::{MerkleHash, file_hash};
 use more_asserts::{debug_assert_le, debug_assert_lt};
 use progress_tracking::upload_tracking::FileXorbDependency;
 
+use crate::Chunk;
 use crate::constants::{MAX_XORB_BYTES, MAX_XORB_CHUNKS};
 use crate::data_aggregator::DataAggregator;
 use crate::dedup_metrics::DeduplicationMetrics;
 use crate::defrag_prevention::DefragPrevention;
 use crate::interface::DeduplicationDataInterface;
 use crate::raw_xorb_data::RawXorbData;
-use crate::Chunk;
 
 pub struct FileDeduper<DataInterfaceType: DeduplicationDataInterface> {
     data_mng: DataInterfaceType,
@@ -33,7 +33,7 @@ pub struct FileDeduper<DataInterfaceType: DeduplicationDataInterface> {
     new_data_hash_lookup: HashMap<MerkleHash, usize>,
 
     /// The current chunk hashes for this file.
-    chunk_hashes: Vec<(MerkleHash, usize)>,
+    chunk_hashes: Vec<(MerkleHash, u64)>,
 
     /// The current file data entries.
     file_info: Vec<FileDataSequenceEntry>,
@@ -262,7 +262,7 @@ impl<DataInterfaceType: DeduplicationDataInterface> FileDeduper<DataInterfaceTyp
         }
 
         self.deduplication_metrics.merge_in(&dedup_metrics);
-        self.chunk_hashes.extend(chunks.iter().map(|c| (c.hash, c.data.len())));
+        self.chunk_hashes.extend(chunks.iter().map(|c| (c.hash, c.data.len() as u64)));
 
         // Register the xorb dependencies as needed.
         if !xorb_dependencies.is_empty() {
@@ -350,12 +350,12 @@ impl<DataInterfaceType: DeduplicationDataInterface> FileDeduper<DataInterfaceTyp
 
             let mut end_idx = base_idx + 1;
             for (i, chunk) in chunks.iter().enumerate().skip(1) {
-                if let Some(&idx) = self.new_data_hash_lookup.get(chunk) {
-                    if idx == base_idx + i {
-                        end_idx = idx + 1;
-                        n_bytes += self.new_data[idx].data.len();
-                        continue;
-                    }
+                if let Some(&idx) = self.new_data_hash_lookup.get(chunk)
+                    && idx == base_idx + i
+                {
+                    end_idx = idx + 1;
+                    n_bytes += self.new_data[idx].data.len();
+                    continue;
                 }
                 break;
             }

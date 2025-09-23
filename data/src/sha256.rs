@@ -48,7 +48,7 @@ impl ShaGenerator {
 
 #[cfg(test)]
 mod sha_tests {
-    use rand::{rng, Rng};
+    use rand::{Rng, rng};
 
     use super::*;
 

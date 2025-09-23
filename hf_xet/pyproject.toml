@@ -6,11 +6,32 @@ build-backend = "maturin"
 name = "hf-xet"
 requires-python = ">=3.8"
 description = "Fast transfer of large files with the Hugging Face Hub."
-license = { file = "LICENSE" }
+author = "Hugging Face, Inc."
+author_email = "julien@huggingface.co"
+maintainers = [
+    { name = "Rajat Arya", email = "rajat@rajatarya.com" },
+    { name = "Jared Sulzdorf", email = "j.sulzdorf@gmail.com" },
+    { name = "Di Xiao", email = "di@huggingface.co" },
+    { name = "Assaf Vayner", email = "assaf@huggingface.co" },
+    { name = "Hoyt Koepke", email = "hoytak@gmail.com" },
+]
+license = "Apache-2.0"
+license-file = "LICENSE"
+readme = "README.md"
 classifiers = [
+    "License :: OSI Approved :: Apache Software License",
     "Programming Language :: Rust",
     "Programming Language :: Python :: Implementation :: CPython",
     "Programming Language :: Python :: Implementation :: PyPy",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
 dynamic = ["version"]
 

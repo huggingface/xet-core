@@ -1,5 +1,5 @@
-use std::collections::hash_map::Entry as HashMapEntry;
 use std::collections::HashMap;
+use std::collections::hash_map::Entry as HashMapEntry;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -231,8 +231,8 @@ impl TrackingProgressUpdater for AggregatingProgressUpdater {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::atomic::{AtomicU64, Ordering};
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::Duration;
 
     use super::*;

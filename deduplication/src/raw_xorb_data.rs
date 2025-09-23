@@ -1,9 +1,9 @@
 use mdb_shard::cas_structs::{CASChunkSequenceEntry, CASChunkSequenceHeader, MDBCASInfo};
-use merklehash::{xorb_hash, MerkleHash};
+use merklehash::{MerkleHash, xorb_hash};
 use more_asserts::*;
 
-use crate::constants::{MAX_XORB_BYTES, MAX_XORB_CHUNKS};
 use crate::Chunk;
+use crate::constants::{MAX_XORB_BYTES, MAX_XORB_CHUNKS};
 
 /// This struct is the data needed to cut a
 #[derive(Default, Debug, Clone)]
@@ -37,7 +37,7 @@ impl RawXorbData {
 
         debug_assert_le!(num_bytes, *MAX_XORB_BYTES);
 
-        let hash_and_len: Vec<_> = chunks.iter().map(|c| (c.hash, c.data.len())).collect();
+        let hash_and_len: Vec<_> = chunks.iter().map(|c| (c.hash, c.data.len() as u64)).collect();
         let cas_hash = xorb_hash(&hash_and_len);
 
         // Build the MDBCASInfo struct.

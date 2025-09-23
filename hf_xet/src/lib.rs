@@ -8,7 +8,7 @@ use std::iter::IntoIterator;
 use std::sync::Arc;
 
 use data::errors::DataProcessingError;
-use data::{data_client, XetFileInfo};
+use data::{XetFileInfo, data_client};
 use itertools::Itertools;
 use progress_tracking::TrackingProgressUpdater;
 use pyo3::exceptions::{PyKeyboardInterrupt, PyRuntimeError};
@@ -18,7 +18,7 @@ use rand::Rng;
 use runtime::async_run;
 use token_refresh::WrappedTokenRefresher;
 use tracing::debug;
-use xet_threadpool::file_handle_limits;
+use xet_runtime::file_handle_limits;
 
 use crate::logging::init_logging;
 use crate::progress_update::WrappedProgressUpdater;

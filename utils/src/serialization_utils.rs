@@ -1,8 +1,8 @@
 use std::io::{Read, Write};
 use std::mem::{size_of, transmute};
 
-use futures::io::AsyncRead;
 use futures::AsyncReadExt;
+use futures::io::AsyncRead;
 use merklehash::MerkleHash;
 
 #[inline]

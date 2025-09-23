@@ -1,13 +1,14 @@
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::Duration;
 
 use reqwest::{Error as ReqwestError, Response, StatusCode};
-use reqwest_retry::{default_on_request_failure, default_on_request_success, Retryable};
-use tokio_retry::strategy::{jitter, ExponentialBackoff};
+use reqwest_retry::{Retryable, default_on_request_success};
 use tokio_retry::RetryIf;
+use tokio_retry::strategy::{ExponentialBackoff, jitter};
 use tracing::{error, info};
 
-use crate::constants::{CLIENT_RETRY_BASE_DELAY_MS, CLIENT_RETRY_MAX_ATTEMPTS};
+use crate::constants::{CLIENT_RETRY_BASE_DELAY, CLIENT_RETRY_MAX_ATTEMPTS};
 use crate::error::CasClientError;
 use crate::http_client::request_id_from_response;
 
@@ -19,7 +20,7 @@ pub enum RetryableReqwestError {
 
 pub struct RetryWrapper {
     max_attempts: usize,
-    base_delay_ms: u64,
+    base_delay: Duration,
     no_retry_on_429: bool,
     log_errors_as_info: bool,
     api_tag: &'static str,
@@ -29,7 +30,7 @@ impl RetryWrapper {
     pub fn new(api_tag: &'static str) -> Self {
         Self {
             max_attempts: *CLIENT_RETRY_MAX_ATTEMPTS,
-            base_delay_ms: *CLIENT_RETRY_BASE_DELAY_MS,
+            base_delay: *CLIENT_RETRY_BASE_DELAY,
             no_retry_on_429: false,
             log_errors_as_info: false,
             api_tag,
@@ -41,8 +42,8 @@ impl RetryWrapper {
         self
     }
 
-    pub fn with_base_delay_ms(mut self, delay: u64) -> Self {
-        self.base_delay_ms = delay;
+    pub fn with_base_delay(mut self, delay: Duration) -> Self {
+        self.base_delay = delay;
         self
     }
 
@@ -78,7 +79,7 @@ impl RetryWrapper {
         };
 
         // Here's the retry logic.
-        match default_on_request_failure(&err) {
+        match on_request_failure(&err) {
             Some(Retryable::Fatal) => {
                 let cas_err = process_error("Fatal Client Error", false, err);
                 RetryableReqwestError::FatalError(cas_err)
@@ -172,7 +173,7 @@ impl RetryWrapper {
         ProcFn: Fn(Response) -> ProcFut + Send + 'static,
         ProcFut: std::future::Future<Output = Result<T, RetryableReqwestError>> + 'static,
     {
-        let strategy = ExponentialBackoff::from_millis(self.base_delay_ms)
+        let strategy = ExponentialBackoff::from_millis(self.base_delay.as_millis().min(u64::MAX as u128) as u64)
             .map(jitter)
             .take(self.max_attempts);
 
@@ -317,10 +318,78 @@ impl RetryWrapper {
     }
 }
 
+/// Like [request_middleware::default_on_request_failure], but retries all IOErrors instead of a
+/// subset. There are a few errors that can occur on certain systems that we will want to retry
+/// (e.g. `No buffer space available: (os error 55)`).
+///
+/// Unfortunately, those errors don't translate to a defined [std::io::ErrorKind], and are thus
+/// not able to be effectively filtered.
+pub fn on_request_failure(error: &reqwest_middleware::Error) -> Option<Retryable> {
+    let reqwest_middleware::Error::Reqwest(error) = error else {
+        // If something fails in the middleware we're screwed.
+        return Some(Retryable::Fatal);
+    };
+    // reqwest error
+    #[cfg(not(target_arch = "wasm32"))]
+    let is_connect = error.is_connect();
+    #[cfg(target_arch = "wasm32")]
+    let is_connect = false;
+    if error.is_timeout() || is_connect {
+        Some(Retryable::Transient)
+    } else if error.is_body() || error.is_decode() || error.is_builder() || error.is_redirect() {
+        Some(Retryable::Fatal)
+    } else if error.is_request() {
+        // It seems that hyper::Error(IncompleteMessage) is not correctly handled by reqwest.
+        // Here we check if the Reqwest error was originated by hyper and map it consistently.
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(hyper_error) = get_source_error_type::<hyper::Error>(&error) {
+            // The hyper::Error(IncompleteMessage) is raised if the HTTP response is well formatted but does not
+            // contain all the bytes. This can happen when the server has started sending
+            // back the response but the connection is cut halfway through. We can safely
+            // retry the call, hence marking this error as [`Retryable::Transient`]. Instead
+            // hyper::Error(Canceled) is raised when the connection is gracefully closed on
+            // the server side.
+            let is_io_error = get_source_error_type::<std::io::Error>(hyper_error).is_some();
+            if hyper_error.is_incomplete_message() || hyper_error.is_canceled() || is_io_error {
+                Some(Retryable::Transient)
+            } else {
+                Some(Retryable::Fatal)
+            }
+        } else {
+            Some(Retryable::Fatal)
+        }
+        #[cfg(target_arch = "wasm32")]
+        Some(Retryable::Fatal)
+    } else {
+        // We omit checking if error.is_status() since we check that already.
+        // However, if Response::error_for_status is used the status will still
+        // remain in the response object.
+        None
+    }
+}
+
+/// Downcasts the given err source into T.
+///
+/// Note: copied from [request_middleware::get_source_error_type] since that is not
+/// publicly exported.
+#[cfg(not(target_arch = "wasm32"))]
+fn get_source_error_type<T: std::error::Error + 'static>(err: &dyn std::error::Error) -> Option<&T> {
+    let mut source = err.source();
+
+    while let Some(err) = source {
+        if let Some(err) = err.downcast_ref::<T>() {
+            return Some(err);
+        }
+
+        source = err.source();
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
-    use std::sync::atomic::{AtomicU32, Ordering};
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicU32, Ordering};
 
     use reqwest_middleware::{ClientBuilder, ClientWithMiddleware};
     use serde::{Deserialize, Serialize};
@@ -330,7 +399,9 @@ mod tests {
     use super::*;
 
     fn connection_wrapper(api: &'static str) -> RetryWrapper {
-        RetryWrapper::new(api).with_base_delay_ms(5).with_max_attempts(3)
+        RetryWrapper::new(api)
+            .with_base_delay(Duration::from_millis(5))
+            .with_max_attempts(3)
     }
 
     fn make_client() -> ClientWithMiddleware {

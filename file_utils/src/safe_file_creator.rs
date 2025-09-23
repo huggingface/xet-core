@@ -3,7 +3,7 @@ use std::io::{self, BufWriter, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
 use rand::distr::Alphanumeric;
-use rand::{rng, Rng};
+use rand::{Rng, rng};
 
 use crate::create_file;
 use crate::file_metadata::set_file_metadata;

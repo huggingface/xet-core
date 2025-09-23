@@ -1,7 +1,7 @@
 [package]
 name = "cas_client"
 version = "0.14.5"
-edition = "2021"
+edition = "2024"
 
 
 [dependencies]
@@ -15,7 +15,7 @@ mdb_shard = { path = "../mdb_shard" }
 merklehash = { path = "../merklehash" }
 progress_tracking = { path = "../progress_tracking" }
 utils = { path = "../utils" }
-xet_threadpool = { path = "../xet_threadpool" }
+xet_runtime = { path = "../xet_runtime" }
 
 anyhow = { workspace = true }
 async-trait = { workspace = true }
@@ -64,6 +64,7 @@ native-tls-vendored = ["reqwest/native-tls-vendored"]
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
 heed = { workspace = true }
+hyper = { workspace = true }
 
 [dev-dependencies]
 httpmock = { workspace = true }

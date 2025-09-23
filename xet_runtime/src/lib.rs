@@ -1,11 +1,11 @@
 pub mod errors;
 pub mod exports;
 
-pub mod threadpool;
+pub mod runtime;
 
-pub use threadpool::ThreadPool;
+pub use runtime::XetRuntime;
 pub mod sync_primatives;
-pub use sync_primatives::{spawn_os_thread, SyncJoinHandle};
+pub use sync_primatives::{SyncJoinHandle, spawn_os_thread};
 
 #[macro_use]
 mod global_semaphores;

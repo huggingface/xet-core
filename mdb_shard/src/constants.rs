@@ -1,3 +1,7 @@
+use std::time::Duration;
+
+use utils::ByteSize;
+
 utils::configurable_constants! {
 
     /// The target shard size; shards.
@@ -17,11 +21,11 @@ utils::configurable_constants! {
     ///
     /// Note the cache is pruned to below this value at the beginning of a session,
     /// but during a single session new shards may be added such that this limit is exceeded.
-    ref SHARD_CACHE_SIZE_LIMIT : u64 = 16_000_000_000;
+    ref SHARD_CACHE_SIZE_LIMIT : ByteSize = ByteSize::from("16gb");
 
     /// The amount of time a shard should be expired by before it's deleted, in seconds.
     /// By default set to 7 days.
-    ref MDB_SHARD_EXPIRATION_BUFFER_SECS: u64 = 7 * 24 * 3600;
+    ref MDB_SHARD_EXPIRATION_BUFFER: Duration = Duration::from_secs(7 * 24 * 3600);
 
     /// The maximum size of the chunk index table that's stored in memory.  After this,
     /// no new chunks are loaded for deduplication.

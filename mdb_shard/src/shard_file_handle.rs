@@ -7,17 +7,17 @@ use std::sync::{Arc, RwLock};
 use std::time::{Duration, SystemTime};
 
 use heapify::{make_heap_with, pop_heap_with};
-use merklehash::{compute_data_hash, HMACKey, HashedWrite, MerkleHash};
+use merklehash::{HMACKey, HashedWrite, MerkleHash, compute_data_hash};
 use tracing::{debug, error, info, warn};
 
+use crate::MDBShardFileFooter;
 use crate::cas_structs::CASChunkSequenceHeader;
-use crate::constants::MDB_SHARD_EXPIRATION_BUFFER_SECS;
+use crate::constants::MDB_SHARD_EXPIRATION_BUFFER;
 use crate::error::{MDBShardError, Result};
 use crate::file_structs::{FileDataSequenceEntry, MDBFileInfo};
 use crate::shard_file::current_timestamp;
 use crate::shard_format::MDBShardInfo;
 use crate::utils::{parse_shard_filename, shard_file_name, temp_shard_file_name, truncate_hash};
-use crate::MDBShardFileFooter;
 
 /// When a specific implementation of the  
 #[derive(Debug)]
@@ -195,7 +195,7 @@ impl MDBShardFile {
         prune_dir_storage_to_size: u64,
     ) -> Result<Vec<Arc<Self>>> {
         let current_time = current_timestamp();
-        let expiration_buffer = *MDB_SHARD_EXPIRATION_BUFFER_SECS;
+        let expiration_buffer = MDB_SHARD_EXPIRATION_BUFFER.as_secs();
 
         let mut ret: Vec<Arc<MDBShardFile>> = Vec::new();
 
@@ -472,7 +472,9 @@ impl MDBShardFile {
         // Check the parsed shard from the filename.
         if let Some(parsed_shard_hash) = parse_shard_filename(&self.path) {
             if hash != parsed_shard_hash {
-                error!("Hash parsed from filename does not match the computed hash; hash from filename={parsed_shard_hash:?}, hash of file={hash:?}");
+                error!(
+                    "Hash parsed from filename does not match the computed hash; hash from filename={parsed_shard_hash:?}, hash of file={hash:?}"
+                );
             }
         } else {
             warn!("Unable to obtain hash from filename.");

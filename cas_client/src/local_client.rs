@@ -1,4 +1,4 @@
-use std::fs::{metadata, File};
+use std::fs::{File, metadata};
 use std::io::{BufReader, Cursor, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -21,9 +21,9 @@ use tempfile::TempDir;
 use tokio::runtime::Handle;
 use tracing::{debug, error, info, warn};
 
+use crate::Client;
 use crate::error::{CasClientError, Result};
 use crate::output_provider::OutputProvider;
-use crate::Client;
 
 pub struct LocalClient {
     tmp_dir: Option<TempDir>, // To hold directory to use for local testing
@@ -272,7 +272,7 @@ impl Client for LocalClient {
         Ok(None)
     }
 
-    async fn upload_shard(&self, _prefix: &str, _hash: &MerkleHash, shard_data: Bytes) -> Result<bool> {
+    async fn upload_shard(&self, shard_data: Bytes) -> Result<bool> {
         // Write out the shard to the shard directory.
         let shard = MDBShardFile::write_out_from_reader(&self.shard_dir, &mut Cursor::new(&shard_data))?;
         let shard_hash = shard.shard_hash;
@@ -395,8 +395,8 @@ fn map_heed_db_error(e: heed::Error) -> CasClientError {
 
 #[cfg(test)]
 mod tests {
-    use cas_object::test_utils::*;
     use cas_object::CompressionScheme::LZ4;
+    use cas_object::test_utils::*;
     use deduplication::test_utils::raw_xorb_to_vec;
     use mdb_shard::utils::parse_shard_filename;
 
@@ -603,7 +603,7 @@ mod tests {
         let client = LocalClient::temporary().unwrap();
 
         client
-            .upload_shard("default-merkledb", &shard_hash, std::fs::read(&new_shard_path).unwrap().into())
+            .upload_shard(std::fs::read(&new_shard_path).unwrap().into())
             .await
             .unwrap();
 
