@@ -3,7 +3,6 @@ name = "deduplication"
 version = "0.14.5"
 edition = "2024"
 
-
 [dependencies]
 mdb_shard = { path = "../mdb_shard" }
 merklehash = { path = "../merklehash" }
