@@ -129,7 +129,7 @@ pub fn get_credential(repo: &GitRepo, remote_url: &GitUrl, operation: Operation)
         #[cfg(unix)]
         return Ok(SSHCredentialHelper::new(remote_url, operation));
         #[cfg(not(unix))]
-        return Err(crate::errors::not_supported(format!(
+        return Err(GitXetError::not_supported(format!(
             "using {} in a repository with SSH Git URL is under development; please check back for 
             upgrades or contact Xet Team at Hugging Face.",
             crate::constants::GIT_LFS_CUSTOM_TRANSFER_AGENT_PROGRAM
