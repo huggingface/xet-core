@@ -123,6 +123,10 @@ impl LFSProtocolRequestEvent {
                     return Err(bad_syntax("file path not provided for upload request"));
                 }
 
+                if req.action.href.is_empty() {
+                    return Err(bad_argument("empty action.href in server response"));
+                }
+
                 Ok(())
             },
             LFSProtocolRequestEvent::Download(req) => {
@@ -136,6 +140,10 @@ impl LFSProtocolRequestEvent {
 
                 if req.path.is_some() {
                     return Err(bad_syntax("file path provided for download request"));
+                }
+
+                if req.action.href.is_empty() {
+                    return Err(bad_argument("empty action.href in server response"));
                 }
 
                 Ok(())
