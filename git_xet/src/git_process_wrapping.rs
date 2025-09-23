@@ -3,7 +3,7 @@ use std::path::Path;
 use std::process::{Child, ChildStdin, Command, Stdio};
 
 use crate::constants::GIT_EXECUTABLE;
-use crate::errors::{Result, git_cmd_failed, internal};
+use crate::errors::{GitXetError, Result};
 
 // This mod implements utilities to invoke Git commands through child processes from the `git` program.
 
@@ -74,8 +74,8 @@ impl CapturedCommand {
                 // From past experience, if the "git" program is not found the underlying error
                 // only says "Not Found" and is not very helpful to identify the cause. We thus
                 // capture this error and make the message more explicit.
-                std::io::ErrorKind::NotFound => git_cmd_failed(r#"program "git" not found"#, Some(e)),
-                _ => git_cmd_failed("internal", Some(e)),
+                std::io::ErrorKind::NotFound => GitXetError::git_cmd_failed(r#"program "git" not found"#, Some(e)),
+                _ => GitXetError::git_cmd_failed("internal", Some(e)),
             })?,
         })
     }
@@ -94,7 +94,7 @@ impl CapturedCommand {
         self.child_process
             .stdin
             .take()
-            .ok_or_else(|| internal("stdin of child process is not captured"))
+            .ok_or_else(|| GitXetError::internal("stdin of child process is not captured"))
     }
 
     /// Synchronously wait for the child to exit completely, returning `Ok(())` if the child exits with status code 0;
@@ -117,7 +117,7 @@ impl CapturedCommand {
             _ => {
                 let stdout = std::str::from_utf8(&ret.stdout).unwrap_or("<Binary Data>").trim();
                 let stderr = std::str::from_utf8(&ret.stderr).unwrap_or("<Binary Data>").trim();
-                Err(git_cmd_failed(
+                Err(GitXetError::git_cmd_failed(
                     format!("err_code = {:?}, stdout = \"{}\", stderr = \"{}\"", ret.status.code(), stdout, stderr),
                     None,
                 ))
