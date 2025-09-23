@@ -96,7 +96,7 @@ echo "Installing binary to ${INSTALL_DIR}..."
 if [ -w "${INSTALL_DIR}" ]; then
     mv "${BINARY_NAME}" "${INSTALL_DIR}/" || handle_error "Failed to move binary."
 else
-    echo "This script requires sudo permissions to install to ${INSTALL_DIR}. Try re-run the command with sudo."
+    echo "This script requires sudo permissions to install to ${INSTALL_DIR}."
     sudo mv "${BINARY_NAME}" "${INSTALL_DIR}/" || handle_error "Failed to move binary with sudo."
 fi
 
