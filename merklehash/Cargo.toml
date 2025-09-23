@@ -10,7 +10,6 @@ blake3 = { workspace = true }
 rand = { workspace = true, features = ["small_rng"] }
 safe-transmute = { workspace = true }
 serde = { workspace = true }
-regex = "1.11.2"
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
 heed = { workspace = true }
