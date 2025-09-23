@@ -22,14 +22,16 @@ pub enum GitLFSProtocolError {
 
 pub(super) type Result<T> = std::result::Result<T, GitLFSProtocolError>;
 
-pub(crate) fn bad_syntax(e: impl Display) -> GitLFSProtocolError {
-    GitLFSProtocolError::Syntax(e.to_string())
-}
+impl GitLFSProtocolError {
+    pub(crate) fn bad_syntax(e: impl Display) -> GitLFSProtocolError {
+        GitLFSProtocolError::Syntax(e.to_string())
+    }
 
-pub(crate) fn bad_argument(e: impl Display) -> GitLFSProtocolError {
-    GitLFSProtocolError::Argument(e.to_string())
-}
+    pub(crate) fn bad_argument(e: impl Display) -> GitLFSProtocolError {
+        GitLFSProtocolError::Argument(e.to_string())
+    }
 
-pub(crate) fn bad_state(e: impl Display) -> GitLFSProtocolError {
-    GitLFSProtocolError::State(e.to_string())
+    pub(crate) fn bad_state(e: impl Display) -> GitLFSProtocolError {
+        GitLFSProtocolError::State(e.to_string())
+    }
 }

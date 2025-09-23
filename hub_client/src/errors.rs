@@ -20,6 +20,8 @@ pub enum HubClientError {
 
 pub type Result<T> = std::result::Result<T, HubClientError>;
 
-pub fn credential_helper_error(e: impl std::error::Error + Send + Sync + 'static) -> HubClientError {
-    HubClientError::CredentialHelper(e.into())
+impl HubClientError {
+    pub fn credential_helper_error(e: impl std::error::Error + Send + Sync + 'static) -> HubClientError {
+        HubClientError::CredentialHelper(e.into())
+    }
 }

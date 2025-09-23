@@ -4,7 +4,7 @@ use git_url_parse::GitUrl as innerGitUrl;
 pub use git_url_parse::Scheme;
 use hub_client::{HFRepoType, RepoInfo};
 
-use crate::errors::{GitXetError, Result, config_error, not_supported};
+use crate::errors::{GitXetError, Result};
 
 // This mod implements funtionalities to handle Git remote URLs, especially tailored for
 // Git LFS and Hugging Face repo needs, including deriving Git LFS server endpoint from
@@ -62,7 +62,7 @@ impl GitUrl {
             .inner
             .host
             .as_ref()
-            .ok_or_else(|| config_error("remote URL missing host name"))?;
+            .ok_or_else(|| GitXetError::config_error("remote URL missing host name"))?;
 
         let port = self.inner.port;
         let port_str = if translated || port.is_none() {
@@ -86,7 +86,7 @@ impl GitUrl {
             .inner
             .host
             .as_ref()
-            .ok_or_else(|| config_error("remote URL missing host name"))?;
+            .ok_or_else(|| GitXetError::config_error("remote URL missing host name"))?;
 
         let port = self.inner.port;
         let port_str = if translated || port.is_none() {
@@ -105,11 +105,14 @@ impl GitUrl {
         match self.inner.scheme {
             Scheme::Http => Ok(("http", false)),
             Scheme::Https => Ok(("https", false)),
-            Scheme::File | Scheme::Ftp | Scheme::Ftps => {
-                Err(not_supported(format!("cannot convert from scheme \"{}://\" to \"http(s)://\"", self.inner.scheme)))
-            },
+            Scheme::File | Scheme::Ftp | Scheme::Ftps => Err(GitXetError::not_supported(format!(
+                "cannot convert from scheme \"{}://\" to \"http(s)://\"",
+                self.inner.scheme
+            ))),
             Scheme::Git | Scheme::GitSsh | Scheme::Ssh => Ok(("https", true)),
-            Scheme::Unspecified => Err(not_supported("cannot convert from unspecified scheme to \"http(s)://\"")),
+            Scheme::Unspecified => {
+                Err(GitXetError::not_supported("cannot convert from unspecified scheme to \"http(s)://\""))
+            },
         }
     }
 
@@ -143,7 +146,7 @@ impl GitUrl {
             .inner
             .host
             .as_ref()
-            .ok_or_else(|| config_error("remote URL missing host name"))?;
+            .ok_or_else(|| GitXetError::config_error("remote URL missing host name"))?;
 
         let port_str = if let Some(p) = self.inner.port {
             format!(":{}", p)
@@ -171,6 +174,7 @@ impl GitUrl {
     }
 
     // Returns the parsed full repo path into `RepoInfo`.
+    #[allow(unused)]
     pub fn repo_info(&self) -> Result<RepoInfo> {
         let path = self.full_repo_path();
         let full_name = self.inner.fullname.clone(); // The full name of the repo, formatted as "owner/name"
