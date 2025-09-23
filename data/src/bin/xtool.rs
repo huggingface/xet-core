@@ -58,7 +58,7 @@ impl XCommand {
         let cred_helper = BearerCredentialHelper::new(token, "");
         let hub_client = HubClient::new(
             &endpoint,
-            RepoInfo::from(&self.overrides.repo_type, &self.overrides.repo_id)?,
+            RepoInfo::try_from(&self.overrides.repo_type, &self.overrides.repo_id)?,
             Some("main".to_owned()),
             "xtool",
             "",

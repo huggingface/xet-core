@@ -61,7 +61,7 @@ pub struct RepoInfo {
 }
 
 impl RepoInfo {
-    pub fn from(repo_type: &str, repo_id: &str) -> Result<Self> {
+    pub fn try_from(repo_type: &str, repo_id: &str) -> Result<Self> {
         Ok(Self {
             repo_type: repo_type.parse()?,
             full_name: repo_id.into(),
