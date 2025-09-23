@@ -38,12 +38,6 @@ fn main() {
         Box::new(std::io::stdout())
     };
 
-    let mut write_chunk = |chunk: Chunk| {
-        output
-            .write_all(format!("{} {}\n", chunk.hash, chunk.data.len()).as_bytes())
-            .unwrap();
-    };
-
     let mut chunker = Chunker::new(*TARGET_CHUNK_SIZE);
 
     // read input in up to 8 MB sections and pass through chunker
@@ -56,10 +50,15 @@ fn main() {
         }
         let chunks = chunker.next_block(&buf[..num_read], false);
         for chunk in chunks {
-            write_chunk(chunk);
+            output
+                .write_all(format!("{} {}\n", chunk.hash, chunk.data.len()).as_bytes())
+                .unwrap();
         }
     }
     if let Some(chunk) = chunker.finish() {
-        write_chunk(chunk);
+        output
+            .write_all(format!("{} {}\n", chunk.hash, chunk.data.len()).as_bytes())
+            .unwrap();
     }
+    output.flush().unwrap();
 }
