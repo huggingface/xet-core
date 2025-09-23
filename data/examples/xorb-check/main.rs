@@ -11,11 +11,11 @@ struct XorbCheckArgs {
     /// Input file or uses stdin if not specified. Expects xorb format object (with no footer)
     #[arg(short, long)]
     input: Option<PathBuf>,
-    /// Specific hash to check that the xorb equals this hash, optional, can use --hash-from-path to parse a hash from
+    /// Specific hash to check that the xorb hash is equal to, optional, can use --hash-from-path to parse a hash from
     /// the input file path or ignore the check altogether to just compute the xorb hash
     #[arg(short, long)]
     hash: Option<String>,
-    /// If true, tries to parse a hash the path of the input file, from the first 64 characters of the file name
+    /// If true, tries to parse a hash from the first 64 characters of the file name in the path of the input file
     #[arg(long, conflicts_with = "hash")]
     hash_from_path: bool,
     /// Output file or uses stdout if not specified, where to write the chunk information
@@ -43,11 +43,10 @@ fn main() {
         provided_hash = Some(MerkleHash::from_hex(&path_hash).unwrap())
     }
 
-    let _input: Box<dyn Read> = match args.input {
-        Some(path) => Box::new(File::open(path).unwrap()),
+    let mut input: Box<dyn Read> = match args.input {
+        Some(path) => Box::new(BufReader::new(File::open(path).unwrap())),
         None => Box::new(std::io::stdin()),
     };
-    let mut input = BufReader::new(_input);
 
     let (data, boundaries) = match cas_object::deserialize_chunks(&mut input) {
         Ok(chunks) => chunks,
