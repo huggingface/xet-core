@@ -1,4 +1,4 @@
-use super::errors::{Result, bad_state};
+use super::errors::{GitLFSProtocolError, Result};
 
 // This defines the state of a transfer agent to make sure that request events are initiated
 // in the correct order. Unlike a traditional state machines, we don't define a "terminated"
@@ -18,27 +18,27 @@ impl LFSAgentState {
         match self {
             Self::PendingInit => match to {
                 Self::InitedForUpload | Self::InitedForDownload => (),
-                _ => return Err(bad_state("init event not yet received")),
+                _ => return Err(GitLFSProtocolError::bad_state("init event not yet received")),
             },
             Self::InitedForUpload => match to {
                 Self::Uploading => (),
-                Self::Downloading => return Err(bad_state("agent initiated for upload")),
-                _ => return Err(bad_state("init event already received")),
+                Self::Downloading => return Err(GitLFSProtocolError::bad_state("agent initiated for upload")),
+                _ => return Err(GitLFSProtocolError::bad_state("init event already received")),
             },
             Self::InitedForDownload => match to {
                 Self::Downloading => (),
-                Self::Uploading => return Err(bad_state("agent initiated for download")),
-                _ => return Err(bad_state("init event already received")),
+                Self::Uploading => return Err(GitLFSProtocolError::bad_state("agent initiated for download")),
+                _ => return Err(GitLFSProtocolError::bad_state("init event already received")),
             },
             Self::Uploading => match to {
                 Self::Uploading => (),
-                Self::Downloading => return Err(bad_state("agent initiated for upload")),
-                _ => return Err(bad_state("data transfer already in progress")),
+                Self::Downloading => return Err(GitLFSProtocolError::bad_state("agent initiated for upload")),
+                _ => return Err(GitLFSProtocolError::bad_state("data transfer already in progress")),
             },
             Self::Downloading => match to {
                 Self::Downloading => (),
-                Self::Uploading => return Err(bad_state("agent initiated for download")),
-                _ => return Err(bad_state("data transfer already in progress")),
+                Self::Uploading => return Err(GitLFSProtocolError::bad_state("agent initiated for download")),
+                _ => return Err(GitLFSProtocolError::bad_state("data transfer already in progress")),
             },
         };
 

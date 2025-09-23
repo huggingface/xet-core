@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use crate::app::Command::Transfer;
 use crate::constants::{GIT_LFS_CUSTOM_TRANSFER_AGENT_NAME, GIT_LFS_CUSTOM_TRANSFER_AGENT_PROGRAM};
-use crate::errors::{Result, config_error};
+use crate::errors::{GitXetError, Result};
 use crate::git_process_wrapping::run_git_captured;
 
 #[derive(Default)]
@@ -48,7 +48,7 @@ fn install_impl(location: ConfigLocation, concurrency: Option<u32>) -> Result<()
 
     let concurrent = if let Some(c) = concurrency {
         if c == 0 {
-            return Err(config_error("concurrency can't be 0"));
+            return Err(GitXetError::config_error("concurrency can't be 0"));
         }
         if c == 1 {
             "false"

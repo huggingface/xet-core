@@ -5,7 +5,7 @@ use hub_client::{BearerCredentialHelper, CredentialHelper, NoopCredentialHelper,
 use netrc::Netrc;
 
 use crate::constants::HF_TOKEN_ENV;
-use crate::errors::{GitXetError, Result, config_error};
+use crate::errors::{GitXetError, Result};
 use crate::git_repo::GitRepo;
 use crate::git_url::{GitUrl, Scheme};
 
@@ -58,7 +58,7 @@ impl FromStr for AccessMode {
             "private" => Ok(AccessMode::Private),
             "negotiate" => Ok(AccessMode::Negotiate),
             "" => Ok(AccessMode::Empty),
-            _ => Err(config_error(format!("invalid \"lfs.<url>.access\" type: {s}"))),
+            _ => Err(GitXetError::config_error(format!("invalid \"lfs.<url>.access\" type: {s}"))),
         }
     }
 }

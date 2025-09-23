@@ -12,11 +12,11 @@ use utils::auth::TokenRefresher;
 use crate::constants::{
     HF_ENDPOINT_ENV, XET_ACCESS_TOKEN_HEADER, XET_CAS_URL, XET_SESSION_ID, XET_TOKEN_EXPIRATION_HEADER,
 };
-use crate::errors::{self, Result};
+use crate::errors::{GitXetError, Result};
 use crate::git_repo::GitRepo;
 use crate::git_url::{GitUrl, Scheme};
 use crate::lfs_agent_protocol::{
-    InitRequestInner, ProgressUpdater, TransferAgent, TransferRequest, errors as protocol_errors,
+    GitLFSProtocolError, InitRequestInner, ProgressUpdater, TransferAgent, TransferRequest,
 };
 use crate::token_refresher::DirectRefreshRouteTokenRefresher;
 
@@ -42,7 +42,7 @@ impl TransferAgent for XetAgent {
         let hf_endpoint = if !matches!(remote_url.scheme(), Scheme::Http | Scheme::Https) && remote_url.port().is_some()
         {
             Some(std::env::var(HF_ENDPOINT_ENV).map_err(|_| {
-                errors::config_error(
+                GitXetError::config_error(
                     r#"This repository has a non-standard Hugging Face remote URL, 
                 please specify the Hugging Face server endpoint using environment variable "HF_ENDPOINT""#,
                 )
@@ -59,7 +59,7 @@ impl TransferAgent for XetAgent {
     }
 
     async fn init_download(&mut self, _: &InitRequestInner) -> Result<()> {
-        Err(errors::not_supported(
+        Err(GitXetError::not_supported(
             "custom transfer for download is not implemented yet. Downloads should operate through standard git-lfs download protocol.
             If you encounter errors downloading, contact Xet Team at Hugging Face.",
         ))
@@ -103,21 +103,21 @@ impl TransferAgent for XetAgent {
             .action
             .header
             .get(XET_CAS_URL)
-            .ok_or_else(|| errors::internal("Hugging Face Hub didn't provide a CAS URL"))?
+            .ok_or_else(|| GitXetError::internal("Hugging Face Hub didn't provide a CAS URL"))?
             .clone();
         let token = req
             .action
             .header
             .get(XET_ACCESS_TOKEN_HEADER)
-            .ok_or_else(|| errors::internal("Hugging Face Hub didn't provide a CAS access token"))?
+            .ok_or_else(|| GitXetError::internal("Hugging Face Hub didn't provide a CAS access token"))?
             .clone();
         let token_expiry: u64 = req
             .action
             .header
             .get(XET_TOKEN_EXPIRATION_HEADER)
-            .ok_or_else(|| errors::internal("Hugging Face Hub didn't provide a CAS access token expiration"))?
+            .ok_or_else(|| GitXetError::internal("Hugging Face Hub didn't provide a CAS access token expiration"))?
             .parse()
-            .map_err(errors::internal)?;
+            .map_err(GitXetError::internal)?;
 
         let config = default_config(cas_url, None, Some((token, token_expiry)), Some(token_refresher))?
             .disable_progress_aggregation()
@@ -125,7 +125,7 @@ impl TransferAgent for XetAgent {
         let session = FileUploadSession::new(config.into(), Some(Arc::new(xet_updater))).await?;
 
         let Some(file_path) = &req.path else {
-            return Err(protocol_errors::bad_syntax("file path not provided for upload request").into());
+            return Err(GitLFSProtocolError::bad_syntax("file path not provided for upload request").into());
         };
 
         clean_file(session.clone(), file_path).await?;
