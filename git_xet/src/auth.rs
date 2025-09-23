@@ -5,7 +5,7 @@ use hub_client::{BearerCredentialHelper, CredentialHelper, NoopCredentialHelper,
 use netrc::Netrc;
 
 use crate::constants::HF_TOKEN_ENV;
-use crate::errors::{GitXetError, Result, config_error};
+use crate::errors::{GitXetError, Result};
 use crate::git_repo::GitRepo;
 use crate::git_url::{GitUrl, Scheme};
 
@@ -58,7 +58,7 @@ impl FromStr for AccessMode {
             "private" => Ok(AccessMode::Private),
             "negotiate" => Ok(AccessMode::Negotiate),
             "" => Ok(AccessMode::Empty),
-            _ => Err(config_error(format!("invalid \"lfs.<url>.access\" type: {s}"))),
+            _ => Err(GitXetError::config_error(format!("invalid \"lfs.<url>.access\" type: {s}"))),
         }
     }
 }
@@ -129,7 +129,7 @@ pub fn get_credential(repo: &GitRepo, remote_url: &GitUrl, operation: Operation)
         #[cfg(unix)]
         return Ok(SSHCredentialHelper::new(remote_url, operation));
         #[cfg(not(unix))]
-        return Err(crate::errors::not_supported(format!(
+        return Err(GitXetError::not_supported(format!(
             "using {} in a repository with SSH Git URL is under development; please check back for 
             upgrades or contact Xet Team at Hugging Face.",
             crate::constants::GIT_LFS_CUSTOM_TRANSFER_AGENT_PROGRAM

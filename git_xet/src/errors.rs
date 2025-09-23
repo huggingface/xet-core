@@ -48,23 +48,25 @@ pub enum GitXetError {
 
 pub type Result<T> = std::result::Result<T, GitXetError>;
 
-pub(crate) fn git_cmd_failed(e: impl Display, source: Option<std::io::Error>) -> GitXetError {
-    GitXetError::GitCommandFailed {
-        reason: e.to_string(),
-        source,
+impl GitXetError {
+    pub(crate) fn git_cmd_failed(e: impl Display, source: Option<std::io::Error>) -> GitXetError {
+        GitXetError::GitCommandFailed {
+            reason: e.to_string(),
+            source,
+        }
     }
-}
 
-pub(crate) fn not_supported(e: impl Display) -> GitXetError {
-    GitXetError::NotSupported(e.to_string())
-}
+    pub(crate) fn not_supported(e: impl Display) -> GitXetError {
+        GitXetError::NotSupported(e.to_string())
+    }
 
-pub(crate) fn config_error(e: impl Display) -> GitXetError {
-    GitXetError::InvalidGitConfig(e.to_string())
-}
+    pub(crate) fn config_error(e: impl Display) -> GitXetError {
+        GitXetError::InvalidGitConfig(e.to_string())
+    }
 
-pub(crate) fn internal(e: impl Display) -> GitXetError {
-    GitXetError::Internal(e.to_string())
+    pub(crate) fn internal(e: impl Display) -> GitXetError {
+        GitXetError::Internal(e.to_string())
+    }
 }
 
 impl From<CasClientError> for GitXetError {

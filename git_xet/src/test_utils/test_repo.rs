@@ -68,6 +68,20 @@ impl TestRepo {
         Ok(())
     }
 
+    // Create a new branch `new_branch_name` off `base`.
+    pub fn new_branch(&self, new_branch_name: &str, base: &str) -> Result<()> {
+        run_git_captured(&self.repo_path, "checkout", &[base, "-b", new_branch_name])?;
+
+        Ok(())
+    }
+
+    // Run the versatile checkout command.
+    pub fn checkout(&self, args: &[&str]) -> Result<()> {
+        run_git_captured(&self.repo_path, "checkout", args)?;
+
+        Ok(())
+    }
+
     // Create a new local branch `local_branch_name` off HEAD in this repo that tracks a remote branch
     // `remote`:`remote_branch_name`.
     pub fn new_branch_tracking_remote(
@@ -76,8 +90,8 @@ impl TestRepo {
         remote_branch_name: &str,
         local_branch_name: &str,
     ) -> Result<()> {
+        self.new_branch(local_branch_name, "HEAD")?;
         run_git_captured(&self.repo_path, "fetch", &[remote, remote_branch_name])?;
-        run_git_captured(&self.repo_path, "checkout", &["-b", local_branch_name])?;
         run_git_captured(
             &self.repo_path,
             "branch",
