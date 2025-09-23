@@ -9,14 +9,16 @@ use hub_client::Operation;
 use progress_tracking::{ProgressUpdate, TrackingProgressUpdater};
 use utils::auth::TokenRefresher;
 
-use crate::constants::{HF_ENDPOINT_ENV, XET_ACCESS_TOKEN_HEADER, XET_REFRESH_ROUTE, XET_TOKEN_EXPIRATION_HEADER};
+use crate::constants::{
+    HF_ENDPOINT_ENV, XET_ACCESS_TOKEN_HEADER, XET_CAS_URL, XET_SESSION_ID, XET_TOKEN_EXPIRATION_HEADER,
+};
 use crate::errors::{self, Result};
 use crate::git_repo::GitRepo;
 use crate::git_url::{GitUrl, Scheme};
 use crate::lfs_agent_protocol::{
     InitRequestInner, ProgressUpdater, TransferAgent, TransferRequest, errors as protocol_errors,
 };
-use crate::token_refresher::{DirectRefreshRouteTokenRefresher, HubClientTokenRefresher};
+use crate::token_refresher::DirectRefreshRouteTokenRefresher;
 
 // This implements a Git LFS custom transfer agent that uploads and downloads files using the Xet protocol.
 #[derive(Default)]
@@ -73,27 +75,14 @@ impl TransferAgent for XetAgent {
         // only one prompt is presented.
         let repo = self.repo.get().unwrap(); // protocol state guarantees self.repo is set.
 
-        let token_refresher: Arc<dyn TokenRefresher> =
-            if let Some(refresh_route) = req.action.header.get(XET_REFRESH_ROUTE) {
-                Arc::new(DirectRefreshRouteTokenRefresher::new(
-                    repo,
-                    self.remote_url.clone(),
-                    refresh_route,
-                    Operation::Upload,
-                    // TODO: use session id from the action header
-                    "",
-                )?)
-            } else {
-                Arc::new(HubClientTokenRefresher::new(
-                    repo,
-                    self.remote_url.clone(),
-                    self.hf_endpoint.clone(),
-                    Operation::Upload,
-                    // TODO: use session id from the action header
-                    "",
-                )?)
-            };
-
+        let session_id = req.action.header.get(XET_SESSION_ID).map(|s| s.as_str()).unwrap_or_default();
+        let token_refresher: Arc<dyn TokenRefresher> = Arc::new(DirectRefreshRouteTokenRefresher::new(
+            repo,
+            self.remote_url.clone(),
+            &req.action.href,
+            Operation::Upload,
+            session_id,
+        )?);
         // From git-lfs:
         // > First worker is the only one allowed to start immediately.
         // > The rest wait until successful response from 1st worker to
@@ -110,7 +99,12 @@ impl TransferAgent for XetAgent {
             updater: progress_updater,
         };
 
-        let cas_url = req.action.href.clone();
+        let cas_url = req
+            .action
+            .header
+            .get(XET_CAS_URL)
+            .ok_or_else(|| errors::internal("Hugging Face Hub didn't provide a CAS URL"))?
+            .clone();
         let token = req
             .action
             .header
@@ -125,9 +119,9 @@ impl TransferAgent for XetAgent {
             .parse()
             .map_err(errors::internal)?;
 
-        // TODO: use session id from the action header
         let config = default_config(cas_url, None, Some((token, token_expiry)), Some(token_refresher))?
-            .disable_progress_aggregation(); // upload one file at a time so no need for the heavy progress aggregator
+            .disable_progress_aggregation()
+            .with_session_id(session_id); // upload one file at a time so no need for the heavy progress aggregator
         let session = FileUploadSession::new(config.into(), Some(Arc::new(xet_updater))).await?;
 
         let Some(file_path) = &req.path else {

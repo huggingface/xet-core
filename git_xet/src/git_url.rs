@@ -171,6 +171,7 @@ impl GitUrl {
     }
 
     // Returns the parsed full repo path into `RepoInfo`.
+    #[allow(unused)]
     pub fn repo_info(&self) -> Result<RepoInfo> {
         let path = self.full_repo_path();
         let full_name = self.inner.fullname.clone(); // The full name of the repo, formatted as "owner/name"
