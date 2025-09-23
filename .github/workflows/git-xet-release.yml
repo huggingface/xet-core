@@ -111,5 +111,5 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           ls -l dist
-          ls -l dist/git-xet*/*
-          gh release create git-xet-${{ github.event.inputs.tag}} dist/git-xet*/* --generate-notes --prerelease --target ${{github.sha}}
+          for dir in dist/*; do (cd "$dir" && zip -r "../$(basename "$dir").zip" .); done
+          gh release create git-xet-${{ github.event.inputs.tag}} dist/*.zip --generate-notes --prerelease --target ${{github.sha}}
