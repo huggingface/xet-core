@@ -51,10 +51,10 @@ struct HashArgs {
 fn main() {
     let args = HashArgs::parse();
 
-    let mut input: Box<dyn Read> = if let Some(path) = args.input {
+    let mut input: Box<dyn BufRead> = if let Some(path) = args.input {
         Box::new(BufReader::new(File::open(path).unwrap()))
     } else {
-        Box::new(std::io::stdin())
+        Box::new(std::io::stdin().lock())
     };
 
     let mut output: Box<dyn Write> = if let Some(path) = args.output {
