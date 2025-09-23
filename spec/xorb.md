@@ -128,3 +128,7 @@ for chunk in xorb.chunks:
     buffer.write(header)
     buffer.write(compressed)
 ```
+
+## Xorb Format Sample
+
+For a sample of a serialized xorb object see [eea25d6ee393ccae385820daed127b96ef0ea034dfb7cf6da3a950ce334b7632.xorb](https://huggingface.co/datasets/xet-team/xet-spec-reference-files/blob/main/eea25d6ee393ccae385820daed127b96ef0ea034dfb7cf6da3a950ce334b7632.xorb).
