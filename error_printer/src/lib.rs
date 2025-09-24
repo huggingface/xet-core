@@ -8,12 +8,17 @@ use tracing::{debug, error, info, warn};
 /// topmost function without #[track_caller] is deemed the callsite.
 pub trait ErrorPrinter {
     fn log_error<M: Display>(self, message: M) -> Self;
+    fn log_error_fn<M: Display, F: FnOnce() -> M>(self, message_fn: F) -> Self;
 
     fn warn_error<M: Display>(self, message: M) -> Self;
 
+    fn warn_error_fn<M: Display, F: FnOnce() -> M>(self, message_fn: F) -> Self;
+
     fn debug_error<M: Display>(self, message: M) -> Self;
+    fn debug_error_fn<M: Display, F: FnOnce() -> M>(self, message_fn: F) -> Self;
 
     fn info_error<M: Display>(self, message: M) -> Self;
+    fn info_error_fn<M: Display, F: FnOnce() -> M>(self, message_fn: F) -> Self;
 }
 
 impl<T, E: Debug> ErrorPrinter for Result<T, E> {
@@ -26,6 +31,20 @@ impl<T, E: Debug> ErrorPrinter for Result<T, E> {
             Err(e) => {
                 let caller = get_caller();
                 error!(caller, "{message}, error: {e:?}")
+            },
+        }
+        self
+    }
+
+    /// If self is an Err(e), calls the function to get a string to log to tracing::error,
+    /// appending "error: {e}" to the end of the message.
+    #[track_caller]
+    fn log_error_fn<M: Display, F: FnOnce() -> M>(self, message_fn: F) -> Self {
+        match &self {
+            Ok(_) => {},
+            Err(e) => {
+                let caller = get_caller();
+                error!(caller, "{}, error: {e:?}", message_fn())
             },
         }
         self
@@ -45,6 +64,20 @@ impl<T, E: Debug> ErrorPrinter for Result<T, E> {
         self
     }
 
+    /// If self is an Err(e), calls the function to get a string to log to tracing::warn,
+    /// appending "error: {e}" to the end of the message.
+    #[track_caller]
+    fn warn_error_fn<M: Display, F: FnOnce() -> M>(self, message_fn: F) -> Self {
+        match &self {
+            Ok(_) => {},
+            Err(e) => {
+                let caller = get_caller();
+                warn!(caller, "{}, error: {e:?}", message_fn())
+            },
+        }
+        self
+    }
+
     /// If self is an Err(e), prints out the given string to tracing::debug,
     /// appending "error: {e}" to the end of the message.
     #[track_caller]
@@ -59,6 +92,20 @@ impl<T, E: Debug> ErrorPrinter for Result<T, E> {
         self
     }
 
+    /// If self is an Err(e), calls the function to get a string to log to tracing::debug,
+    /// appending "error: {e}" to the end of the message.
+    #[track_caller]
+    fn debug_error_fn<M: Display, F: FnOnce() -> M>(self, message_fn: F) -> Self {
+        match &self {
+            Ok(_) => {},
+            Err(e) => {
+                let caller = get_caller();
+                debug!(caller, "{}, error: {e:?}", message_fn())
+            },
+        }
+        self
+    }
+
     /// If self is an Err(e), prints out the given string to tracing::info,
     /// appending "error: {e}" to the end of the message.
     #[track_caller]
@@ -68,6 +115,20 @@ impl<T, E: Debug> ErrorPrinter for Result<T, E> {
             Err(e) => {
                 let caller = get_caller();
                 info!(caller, "{message}, error: {e:?}")
+            },
+        }
+        self
+    }
+
+    /// If self is an Err(e), calls the function to get a string to log to tracing::info,
+    /// appending "error: {e}" to the end of the message.
+    #[track_caller]
+    fn info_error_fn<M: Display, F: FnOnce() -> M>(self, message_fn: F) -> Self {
+        match &self {
+            Ok(_) => {},
+            Err(e) => {
+                let caller = get_caller();
+                info!(caller, "{}, error: {e:?}", message_fn())
             },
         }
         self
