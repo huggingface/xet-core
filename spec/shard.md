@@ -18,10 +18,13 @@ The shard format is used in the shard upload API as the request payload and in t
 ### Shard Upload
 
 The shard in this case is a serialization format that allows clients to denote the files that they are uploading.
-Each file reconstruction maps to an File Info block in the File Info section.
-Additionally the listing of all new xorbs that the client created are mapped to items (CAS Info blocks) in the CAS Info section so that they may be deduplicated against in the future.
+Each file reconstruction maps to a File Info block in the File Info section.
+Additionally, the listing of all new xorbs that the client created are mapped to items (CAS Info blocks) in the CAS Info section so that they may be deduplicated against in the future.
 
 When uploading a shard the footer section MUST be omitted.
+
+An example of a shard that can be used for file upload can be found in [Xet reference files](https://huggingface.co/datasets/xet-team/xet-spec-reference-files/blob/main/Electric_Vehicle_Population_Data_20250917.csv.shard.verification-no-footer).
+A version of this shard that also contains the footer in [Xet reference files](https://huggingface.co/datasets/xet-team/xet-spec-reference-files/blob/main/Electric_Vehicle_Population_Data_20250917.csv.shard.verification) too, see the README for the reference files dataset for more context.
 
 ### Global Deduplication
 
@@ -29,6 +32,8 @@ Shards returned by the Global Deduplication API have an empty File Info Section,
 The CAS Info section returned by this API contains xorbs, where a xorb described in the CAS Info section contains the chunk that was queried.
 Clients can deduplicate their content against any of the other xorbs described in any CAS Info block in the CAS Info section of the returned shard.
 Other xorb descriptions returned in a shard are possibly more likely to reference content that the client has.
+
+An example of a shard that can be returned for a global deduplication query can be found in [Xet reference files](https://huggingface.co/datasets/xet-team/xet-spec-reference-files/blob/main/Electric_Vehicle_Population_Data_20250917.csv.shard.dedupe).
 
 ## File Structure
 

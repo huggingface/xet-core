@@ -37,3 +37,11 @@ The primary reference implementation of the protocol written in rust 🦀 lives 
 - [merklehash](https://github.com/huggingface/xet-core/tree/main/merklehash) - Exports a `MerkleHash` type extensively used to represent hashes. Exports functions to compute the different hashes used to track chunks, xorbs and files.
 - [data](https://github.com/huggingface/xet-core/tree/main/data) - Comprehensive package exposing interfaces to upload and download contents
 - [hf_xet](https://github.com/huggingface/xet-core/tree/main/hf_xet) - Python bindings to use the Xet protocol for uploads and downloads with the Hugging Face Hub.
+
+### Huggingface.js
+
+There is also a second reference implementation in Huggingface.js that can be used when downloading or uploading files with the `@huggingface/hub` library.
+
+- Download uses the `XetBlob` that can be found in [XetBlob.ts](https://github.com/huggingface/huggingface.js/blob/main/packages/hub/src/utils/XetBlob.ts).
+- The upload implementation is more comprehensive but the root of it begins in [uploadShards](https://github.com/huggingface/huggingface.js/blob/main/packages/hub/src/utils/uploadShards.ts).
+  - The upload process uses xet-core constructs compiled from Rust to WebAssembly, particularly all functions exported from the [hf_xet_thin_wasm](https://github.com/huggingface/xet-core/tree/main/hf_xet_thin_wasm) crate.
