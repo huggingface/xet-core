@@ -139,7 +139,8 @@ This ensures that, by the time the first boundary can be considered (at offset `
 
 The [xet-team/xet-spec-reference-files](https://huggingface.co/datasets/xet-team/xet-spec-reference-files) repository contains the original file [Electric_Vehicle_Population_Data_20250917.csv](https://huggingface.co/datasets/xet-team/xet-spec-reference-files/blob/main/Electric_Vehicle_Population_Data_20250917.csv).
 
-In the same repository in file [Electric_Vehicle_Population_Data_20250917.csv.chunks](https://huggingface.co/datasets/xet-team/xet-spec-reference-files/blob/main/Electric_Vehicle_Population_Data_20250917.csv.chunks) the chunks produced out of [Electric_Vehicle_Population_Data_20250917.csv](https://huggingface.co/datasets/xet-team/xet-spec-reference-files/blob/main/Electric_Vehicle_Population_Data_20250917.csv) are listed.
+In the same repository in file [Electric_Vehicle_Population_Data_20250917.csv.chunks](https://huggingface.co/datasets/xet-team/xet-spec-reference-files/blob/main/Electric_Vehicle_Population_Data_20250917.csv.chunks)
+the chunks produced out of [Electric_Vehicle_Population_Data_20250917.csv](https://huggingface.co/datasets/xet-team/xet-spec-reference-files/blob/main/Electric_Vehicle_Population_Data_20250917.csv) are listed.
 Each line in the file is a 64 hexadecimal hash of the chunk, followed by a space and then the number of bytes in that chunk.
 
 Implementors should use the chunk lengths to determine that they are producing the right chunk boundaries for this file with their chunking implementation.

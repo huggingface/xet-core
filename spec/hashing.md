@@ -149,11 +149,14 @@ There are 3 chunks files, for each file name, the first 64 characters are the st
 
 ### File Hash Sample
 
-The [xet-team/xet-spec-reference-files](https://huggingface.co/datasets/xet-team/xet-spec-reference-files) repository contains the original file [Electric_Vehicle_Population_Data_20250917.csv](https://huggingface.co/datasets/xet-team/xet-spec-reference-files/blob/main/Electric_Vehicle_Population_Data_20250917.csv).
+The [xet-team/xet-spec-reference-files](https://huggingface.co/datasets/xet-team/xet-spec-reference-files) repository contains the original file
+[Electric_Vehicle_Population_Data_20250917.csv](https://huggingface.co/datasets/xet-team/xet-spec-reference-files/blob/main/Electric_Vehicle_Population_Data_20250917.csv).
 
-When processed through the Xet upload protocol the chunks that are produced for this file are listed (formatted `<hash> <length>`) in the file [Electric_Vehicle_Population_Data_20250917.csv.chunks](https://huggingface.co/datasets/xet-team/xet-spec-reference-files/blob/main/Electric_Vehicle_Population_Data_20250917.csv.chunks).
+When processed through the Xet upload protocol the chunks that are produced for this file are listed (formatted `<hash> <length>`) in the file
+[Electric_Vehicle_Population_Data_20250917.csv.chunks](https://huggingface.co/datasets/xet-team/xet-spec-reference-files/blob/main/Electric_Vehicle_Population_Data_20250917.csv.chunks).
 
-Using these chunks to compute a file hash of the entire file the result is the hash stored in the file [Electric_Vehicle_Population_Data_20250917.csv.xet-file-hash](https://huggingface.co/datasets/xet-team/xet-spec-reference-files/blob/main/Electric_Vehicle_Population_Data_20250917.csv.xet-file-hash) or the raw value `118a53328412787fee04011dcf82fdc4acf3a4a1eddec341c910d30a306aaf97`.
+Using these chunks to compute a file hash of the entire file the result is the hash stored in the file
+[Electric_Vehicle_Population_Data_20250917.csv.xet-file-hash](https://huggingface.co/datasets/xet-team/xet-spec-reference-files/blob/main/Electric_Vehicle_Population_Data_20250917.csv.xet-file-hash) or the raw value `118a53328412787fee04011dcf82fdc4acf3a4a1eddec341c910d30a306aaf97`.
 
 ### Xorb Hash Sample
 
@@ -163,10 +166,13 @@ The xorb produced with all of the chunks in order for this file can be found ser
 
 The hash of this xorb is `eea25d6ee393ccae385820daed127b96ef0ea034dfb7cf6da3a950ce334b7632`, the value in [Electric_Vehicle_Population_Data_20250917.csv.xet-xorb-hash](https://huggingface.co/datasets/xet-team/xet-spec-reference-files/blob/main/Electric_Vehicle_Population_Data_20250917.csv.xet-xorb-hash).
 
-The chunks that make up this xorb are listed in a file [eea25d6ee393ccae385820daed127b96ef0ea034dfb7cf6da3a950ce334b7632.xorb.chunks](https://huggingface.co/datasets/xet-team/xet-spec-reference-files/blob/main/eea25d6ee393ccae385820daed127b96ef0ea034dfb7cf6da3a950ce334b7632.xorb.chunks); note this file is equivalent to [Electric_Vehicle_Population_Data_20250917.csv.chunks](https://huggingface.co/datasets/xet-team/xet-spec-reference-files/blob/main/Electric_Vehicle_Population_Data_20250917.csv.chunks).
+The chunks that make up this xorb are listed in a file [eea25d6ee393ccae385820daed127b96ef0ea034dfb7cf6da3a950ce334b7632.xorb.chunks](https://huggingface.co/datasets/xet-team/xet-spec-reference-files/blob/main/eea25d6ee393ccae385820daed127b96ef0ea034dfb7cf6da3a950ce334b7632.xorb.chunks);
+note this file is equivalent to [Electric_Vehicle_Population_Data_20250917.csv.chunks](https://huggingface.co/datasets/xet-team/xet-spec-reference-files/blob/main/Electric_Vehicle_Population_Data_20250917.csv.chunks).
 
 ### Range Hash Sample
 
-In the reconstruction of [Electric_Vehicle_Population_Data_20250917.csv](https://huggingface.co/datasets/xet-team/xet-spec-reference-files/blob/main/Electric_Vehicle_Population_Data_20250917.csv) with xorb [eea25d6ee393ccae385820daed127b96ef0ea034dfb7cf6da3a950ce334b7632](https://huggingface.co/datasets/xet-team/xet-spec-reference-files/blob/main/eea25d6ee393ccae385820daed127b96ef0ea034dfb7cf6da3a950ce334b7632.xorb) there is 1 range that contains all 796 chunks.
+In the reconstruction of [Electric_Vehicle_Population_Data_20250917.csv](https://huggingface.co/datasets/xet-team/xet-spec-reference-files/blob/main/Electric_Vehicle_Population_Data_20250917.csv)
+with xorb [eea25d6ee393ccae385820daed127b96ef0ea034dfb7cf6da3a950ce334b7632](https://huggingface.co/datasets/xet-team/xet-spec-reference-files/blob/main/eea25d6ee393ccae385820daed127b96ef0ea034dfb7cf6da3a950ce334b7632.xorb) there is 1 range that contains all 796 chunks.
 
-The verification range hash for this range is the value in [eea25d6ee393ccae385820daed127b96ef0ea034dfb7cf6da3a950ce334b7632.xorb.range-hash](https://huggingface.co/datasets/xet-team/xet-spec-reference-files/blob/main/eea25d6ee393ccae385820daed127b96ef0ea034dfb7cf6da3a950ce334b7632.xorb.range-hash) which is `d81c11b1fc9bc2a25587108c675bbfe65ca2e5d350b0cd92c58329fcc8444178`.
+The verification range hash for this range is the value in [eea25d6ee393ccae385820daed127b96ef0ea034dfb7cf6da3a950ce334b7632.xorb.range-hash](https://huggingface.co/datasets/xet-team/xet-spec-reference-files/blob/main/eea25d6ee393ccae385820daed127b96ef0ea034dfb7cf6da3a950ce334b7632.xorb.range-hash)
+which is `d81c11b1fc9bc2a25587108c675bbfe65ca2e5d350b0cd92c58329fcc8444178`.
