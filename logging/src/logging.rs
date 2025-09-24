@@ -5,122 +5,31 @@ use std::sync::OnceLock;
 use std::time::Duration;
 
 use chrono::{DateTime, FixedOffset, Local, Utc};
+use error_printer::ErrorPrinter;
 use sysinfo::{Pid, ProcessRefreshKind, RefreshKind, System};
 use tracing::{debug, error, info, warn};
 use tracing_appender::{non_blocking, rolling};
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::{EnvFilter, Layer};
-use utils::{ByteSize, normalized_path_from_user_string};
+use utils::ByteSize;
 
-use crate::xet_cache_root;
-
-utils::configurable_constants! {
-
-    /// The log destination.  By default, logs to the logs/ subdirectory in the huggingface cache directory.
-    ///
-    /// If this path exists as a directory or the path ends with a /, then logs will be dumped into to that directory.
-    /// Dy default, logs older than LOG_DIR_MAX_RETENTION_AGE in the directory are deleted, and old logs are deleted to
-    /// keep the total size of files present below LOG_DIR_MAX_SIZE.
-    ///
-    /// If LOG_DEST is given but empty, then logs are dumped to the console.
-    ref LOG_DEST : Option<String> = None;
-
-    /// The format the logs are printed in. If "json", then logs are dumped as json blobs; otherwise they
-    /// are treated as text.  By default logging to files is done in json and console logging is done with text.
-    ref LOG_FORMAT : Option<String> = None;
-
-    /// The base name for a log file when logging to a directory.  The timestamp and pid are appended to this name to form the log
-    /// file.
-    ref LOG_PREFIX : String = "xet";
-
-    /// If given, disable cleaning up old files in the log directory.
-    ref LOG_DIR_DISABLE_CLEANUP : bool = false;
-
-    /// If given, prune old log files in the directory to keep the directory size under this many bytes.
-    ///
-    /// Note that the directory may exceed this size as pruning is done only on files without an associated active process
-    /// and older than LOG_DIR_MIN_DELETION_AGE.
-    ref LOG_DIR_MAX_SIZE: ByteSize = ByteSize::from("1gb");
-
-    /// Do not delete any files younger than this.
-    ref LOG_DIR_MIN_DELETION_AGE: Duration = Duration::from_secs(24 * 3600); // 1 day
-
-    /// Delete all files older than this.
-    ref LOG_DIR_MAX_RETENTION_AGE: Duration = Duration::from_secs(14 * 24 * 3600); // 2 weeks
-
-}
-
-/// Default log level for the library to use. Override using the `RUST_LOG` env variable.
-const DEFAULT_LOG_LEVEL_FILE: &str = "info";
-const DEFAULT_LOG_LEVEL_CONSOLE: &str = "warn";
-
-#[derive(Clone, Debug, PartialEq)]
-pub enum LoggingMode {
-    Directory(PathBuf),
-    File(PathBuf),
-    Console,
-}
-
-#[derive(Clone, Debug, PartialEq)]
-pub struct LoggingConfig {
-    pub logging_mode: LoggingMode,
-    pub use_json: bool,
-    pub enable_log_dir_cleanup: bool,
-    pub version: String,
-}
-
-impl LoggingConfig {
-    pub fn new(version: String) -> LoggingConfig {
-        // Choose the logging mode.
-        let logging_mode = {
-            if let Some(log_dest) = &*LOG_DEST {
-                if log_dest.is_empty() {
-                    LoggingMode::Console
-                } else {
-                    let path = normalized_path_from_user_string(log_dest);
-
-                    if log_dest.ends_with('/') || log_dest.ends_with('\\') || (path.exists() && path.is_dir()) {
-                        LoggingMode::Directory(path)
-                    } else {
-                        LoggingMode::File(path)
-                    }
-                }
-            } else {
-                let default_logging_directory = xet_cache_root().join("logs");
-                LoggingMode::Directory(default_logging_directory)
-            }
-        };
-
-        let use_json = {
-            if let Some(format) = &*LOG_FORMAT {
-                format.to_ascii_lowercase().trim() == "json"
-            } else {
-                logging_mode != LoggingMode::Console
-            }
-        };
-
-        let enable_log_dir_cleanup = matches!(logging_mode, LoggingMode::Directory(_)) && !*LOG_DIR_DISABLE_CLEANUP;
-
-        Self {
-            logging_mode,
-            use_json,
-            enable_log_dir_cleanup,
-            version,
-        }
-    }
-}
+use crate::config::*;
+use crate::constants::{DEFAULT_LOG_LEVEL_CONSOLE, DEFAULT_LOG_LEVEL_FILE};
 
 /// The main entry point to set up logging.  Should only be called once.
 pub fn init_logging(cfg: LoggingConfig) {
+    let mut dir_cleanup_task = None;
+
     let maybe_log_file: Option<PathBuf> = {
         match &cfg.logging_mode {
             LoggingMode::Directory(log_dir) => {
                 if cfg.enable_log_dir_cleanup && log_dir.exists() && log_dir.is_dir() {
-                    run_log_directory_cleanup_background(log_dir);
+                    dir_cleanup_task =
+                        Some(|| run_log_directory_cleanup_background(cfg.log_dir_config.clone(), log_dir));
                 }
 
-                Some(log_file_in_dir(log_dir))
+                Some(log_file_in_dir(&cfg.log_dir_config, log_dir))
             },
             LoggingMode::File(path_buf) => Some(path_buf.clone()),
             LoggingMode::Console => None,
@@ -140,6 +49,10 @@ pub fn init_logging(cfg: LoggingConfig) {
 
     // Log the version information.
     info!("{}, xet-core revision {}", &cfg.version, git_version::git_version!());
+
+    if let Some(dir_cleanup_task_fn) = dir_cleanup_task {
+        dir_cleanup_task_fn();
+    }
 }
 
 fn init_logging_to_console(cfg: &LoggingConfig) {
@@ -228,7 +141,7 @@ fn init_logging_to_file(path: &Path, use_json: bool) -> Result<(), std::io::Erro
 
 /// Build `<prefix>_<YYYYMMDD>T<HHMMSS><mmm><+/-HHMM>_<pid>.log` in `dir`.
 /// Timestamp is in *local time with numeric offset* (e.g., -0700), filename-safe.
-pub fn log_file_in_dir(dir: impl AsRef<Path>) -> PathBuf {
+pub fn log_file_in_dir(cfg: &LogDirConfig, dir: impl AsRef<Path>) -> PathBuf {
     let now_local: DateTime<Local> = Local::now();
     let now_fixed: DateTime<FixedOffset> = now_local.with_timezone(now_local.offset());
 
@@ -236,7 +149,7 @@ pub fn log_file_in_dir(dir: impl AsRef<Path>) -> PathBuf {
     let ts = now_fixed.format("%Y%m%dT%H%M%S%3f%z"); // %z => ±HHMM
 
     let pid = std::process::id();
-    let prefix = LOG_PREFIX.as_str();
+    let prefix = &cfg.filename_prefix;
     let filename = format!("{}_{}_{}.log", prefix, ts, pid);
     dir.as_ref().join(filename)
 }
@@ -273,25 +186,23 @@ struct CandidateLogFile {
     age: Duration,
 }
 
-fn run_log_directory_cleanup_background(log_dir: &Path) {
+fn run_log_directory_cleanup_background(cfg: LogDirConfig, log_dir: &Path) {
     // Spawn run_log_directory_cleanup as background thread, logging any errors as a warn!
     let log_dir = log_dir.to_path_buf();
     std::thread::spawn(move || {
-        if let Err(e) = run_log_directory_cleanup(&log_dir) {
+        if let Err(e) = run_log_directory_cleanup(cfg, &log_dir) {
             warn!("Error during log directory cleanup in {:?}: {}", log_dir, e);
         }
     });
 }
 
-fn run_log_directory_cleanup(log_dir: &Path) -> io::Result<()> {
-    let min_age = *LOG_DIR_MIN_DELETION_AGE;
-    let max_retention = *LOG_DIR_MAX_RETENTION_AGE;
-    let size_limit_bytes = *LOG_DIR_MAX_SIZE;
-    let size_limit = size_limit_bytes.as_u64();
-
+fn run_log_directory_cleanup(cfg: LogDirConfig, log_dir: &Path) -> io::Result<()> {
     info!(
         "starting log cleanup in {:?} (min_age={:?}, max_retention={:?}, max_size={} bytes)",
-        log_dir, min_age, max_retention, size_limit_bytes
+        log_dir,
+        cfg.min_deletion_age,
+        cfg.max_retention_age,
+        ByteSize::new(cfg.size_limit)
     );
 
     // Initialize sysinfo once to get a list of the active process ids.  To ensure we never delete
@@ -308,13 +219,10 @@ fn run_log_directory_cleanup(log_dir: &Path) -> io::Result<()> {
     let mut n_log_files = 0usize;
 
     for entry in std::fs::read_dir(log_dir)? {
-        let entry = match entry {
-            Ok(e) => e,
-            Err(e) => {
-                warn!("read_dir entry error reading {log_dir : {}", e);
-                continue;
-            },
+        let Ok(entry) = entry.warn_error_fn(|| format!("read_dir error while reading {log_dir:?}")) else {
+            continue;
         };
+
         let path = entry.path();
 
         let Ok(ft) = entry.file_type() else { continue };
@@ -327,18 +235,17 @@ fn run_log_directory_cleanup(log_dir: &Path) -> io::Result<()> {
             continue;
         };
 
-        if prefix != *LOG_PREFIX {
-            debug!("ignoring log file {:?} with differing prefix {prefix} (!={})", path, *LOG_PREFIX);
+        if prefix != cfg.filename_prefix {
+            debug!("ignoring log file {:?} with differing prefix {prefix} (!={})", path, &cfg.filename_prefix);
             continue;
         }
 
-        let meta = match entry.metadata() {
-            Ok(m) => m,
-            Err(e) => {
-                warn!("metadata failed for {:?}: {}", path, e);
-
-                continue;
-            },
+        // Only use info here as it could be another process deleted it.
+        let Ok(meta) = entry
+            .metadata()
+            .info_error_fn(|| format!("Reading metadata failed for {:?}", path))
+        else {
+            continue;
         };
 
         let size = meta.len();
@@ -351,7 +258,7 @@ fn run_log_directory_cleanup(log_dir: &Path) -> io::Result<()> {
         };
 
         // Skip if it's too new.
-        if age < min_age {
+        if age < cfg.min_deletion_age {
             debug!("Skipping deletion for new log file {path:?}");
             continue;
         }
@@ -379,7 +286,7 @@ fn run_log_directory_cleanup(log_dir: &Path) -> io::Result<()> {
     // 1) Hard expiration pass: delete anything older than max_retention, unless protected.
     let mut deleted_bytes: u64 = 0;
     candidates.retain(|lf| {
-        if lf.age > max_retention {
+        if lf.age > cfg.max_retention_age {
             let path = &lf.path;
             match std::fs::remove_file(path) {
                 Ok(_) => {
@@ -387,7 +294,14 @@ fn run_log_directory_cleanup(log_dir: &Path) -> io::Result<()> {
                     debug!("Log Directory Cleanup: Removed old log file {path:?})");
                 },
                 Err(e) => {
-                    info!("Log Directory Cleanup: Error removing old log file {path:?}, skipping: {e}");
+                    // If the error is because the file no longer exists, then count it towards the deleted bytes;
+                    // otherwise log and skip.
+                    if e.kind() == io::ErrorKind::NotFound {
+                        deleted_bytes += lf.size;
+                        debug!("Log Directory Cleanup: Old log file {path:?} already deleted.");
+                    } else {
+                        info!("Log Directory Cleanup: Error removing old log file {path:?}, skipping: {e}");
+                    }
                 },
             };
             false
@@ -398,11 +312,11 @@ fn run_log_directory_cleanup(log_dir: &Path) -> io::Result<()> {
 
     // 2) Size trimming: if above the limit, delete oldest eligible (unprotected) first.
     let mut n_pruned = 0;
-    if total_bytes - deleted_bytes > size_limit {
+    if total_bytes - deleted_bytes > cfg.size_limit {
         // Sort by oldest first.
         candidates.sort_by_key(|lf| lf.age);
         for lf in &candidates {
-            if total_bytes - deleted_bytes <= size_limit {
+            if total_bytes - deleted_bytes <= cfg.size_limit {
                 break;
             }
 
@@ -412,7 +326,15 @@ fn run_log_directory_cleanup(log_dir: &Path) -> io::Result<()> {
                     n_pruned += 1;
                     debug!("Log Directory cleanup: Pruned log file {:?}.", lf.path);
                 },
-                Err(e) => info!("Log Directory Cleanup: Error removing size-pruned log file {:?}: {}", lf.path, e),
+                Err(e) => {
+                    if e.kind() == io::ErrorKind::NotFound {
+                        deleted_bytes += lf.size;
+                        n_pruned += 1;
+                        debug!("Log Directory cleanup: Log file {:?} already deleted, ignoring.", lf.path);
+                    } else {
+                        info!("Log Directory Cleanup: Error removing size-pruned log file {:?}: {}", lf.path, e);
+                    }
+                },
             }
         }
     }
@@ -435,9 +357,10 @@ mod tests {
     #[test]
     fn round_trip_make_and_parse() {
         let dir = Path::new("/tmp");
-        let path = log_file_in_dir(dir);
+        let cfg = LogDirConfig::default();
+        let path = log_file_in_dir(&cfg, dir);
         let (base, ts, pid) = parse_log_file_name(&path).expect("parse");
-        assert_eq!(base, *LOG_PREFIX);
+        assert_eq!(base, cfg.filename_prefix);
         assert!(pid > 0);
 
         // Verify that the timestamp string matches what's embedded in the filename

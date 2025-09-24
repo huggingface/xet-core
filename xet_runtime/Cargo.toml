@@ -13,17 +13,7 @@ reqwest = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["time", "rt", "macros", "io-util"] }
 tracing = { workspace = true }
-chrono = { workspace = true }
-sysinfo = { workspace = true }
 
-tracing-subscriber = { version = "0.3", features = [
-    "json",
-    "tracing-log",
-    "env-filter",
-    "registry",
-] }
-tracing-appender = "0.2"
-git-version = "0.3.9"
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
 tokio = { workspace = true, features = ["rt-multi-thread"] }

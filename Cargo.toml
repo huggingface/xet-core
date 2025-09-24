@@ -11,7 +11,7 @@ members = [
     "error_printer",
     "file_utils",
     "git_xet",
-    "hub_client",
+    "hub_client", "logging",
     "mdb_shard",
     "merklehash",
     "progress_tracking",

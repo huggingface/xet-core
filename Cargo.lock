@@ -2101,6 +2101,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "logging"
+version = "0.14.5"
+dependencies = [
+ "chrono",
+ "error_printer",
+ "git-version",
+ "sysinfo",
+ "tracing",
+ "tracing-appender",
+ "tracing-subscriber",
+ "utils",
+]
+
+[[package]]
 name = "lru-slab"
 version = "0.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4757,19 +4771,14 @@ checksum = "ea2f10b9bb0928dfb1b42b65e1f9e36f7f54dbdf08457afefb38afcdec4fa2bb"
 name = "xet_runtime"
 version = "0.1.0"
 dependencies = [
- "chrono",
  "dirs",
  "error_printer",
- "git-version",
  "libc",
  "oneshot",
  "reqwest",
- "sysinfo",
  "thiserror 2.0.12",
  "tokio",
  "tracing",
- "tracing-appender",
- "tracing-subscriber",
  "utils",
 ]
 
