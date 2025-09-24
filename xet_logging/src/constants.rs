@@ -28,7 +28,7 @@ utils::configurable_constants! {
     ///
     /// Note that the directory may exceed this size as pruning is done only on files without an associated active process
     /// and older than LOG_DIR_MIN_DELETION_AGE.
-    ref LOG_DIR_MAX_SIZE: ByteSize = ByteSize::from("1gb");
+    ref LOG_DIR_MAX_SIZE: ByteSize = ByteSize::from("250mb");
 
     /// Do not delete any files younger than this.
     ref LOG_DIR_MIN_DELETION_AGE: Duration = Duration::from_secs(24 * 3600); // 1 day

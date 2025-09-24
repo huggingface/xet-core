@@ -1,7 +1,7 @@
 use pyo3::Python;
 use pyo3::types::PyAnyMethods;
 use tracing::info;
-use xet_runtime::logging::LoggingConfig;
+use xet_logging::LoggingConfig;
 
 fn get_version_info_string(py: Python<'_>) -> String {
     // populate remote telemetry calls with versions for python and hf_hub if possible
@@ -33,10 +33,12 @@ fn get_version_info_string(py: Python<'_>) -> String {
 /// Wrap the core runtime logging functions.
 pub fn init_logging(py: Python) {
     let version_info = get_version_info_string(py);
+    let xet_cache_directory = xet_runtime::xet_cache_root();
+    let log_dir = xet_cache_directory.join("logs");
 
-    let cfg = LoggingConfig::new(version_info);
+    let cfg = LoggingConfig::default_to_directory(version_info, log_dir);
 
-    xet_runtime::logging::init_logging(cfg);
+    xet_logging::init(cfg);
 
     info!("hf_xet logging cofigured.");
 }

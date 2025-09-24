@@ -18,7 +18,7 @@ use crate::config::*;
 use crate::constants::{DEFAULT_LOG_LEVEL_CONSOLE, DEFAULT_LOG_LEVEL_FILE};
 
 /// The main entry point to set up logging.  Should only be called once.
-pub fn init_logging(cfg: LoggingConfig) {
+pub fn init(cfg: LoggingConfig) {
     let mut dir_cleanup_task = None;
 
     let maybe_log_file: Option<PathBuf> = {

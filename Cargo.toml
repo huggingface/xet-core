@@ -11,11 +11,12 @@ members = [
     "error_printer",
     "file_utils",
     "git_xet",
-    "hub_client", "logging",
+    "hub_client",
     "mdb_shard",
     "merklehash",
     "progress_tracking",
     "utils",
+    "xet_logging",
     "xet_runtime",
 ]
 

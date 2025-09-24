@@ -46,7 +46,7 @@ pub struct LoggingConfig {
 
 impl LoggingConfig {
     /// Set up logging to a directory.  Note that this can be overwritten by environmental
-    pub fn log_to_directory(version: String, log_directory: impl AsRef<Path>) -> LoggingConfig {
+    pub fn default_to_directory(version: String, log_directory: impl AsRef<Path>) -> LoggingConfig {
         // Choose the logging mode.
         let logging_mode = {
             if let Some(log_dest) = &*LOG_DEST {
