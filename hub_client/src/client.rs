@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use cas_client::exports::ClientWithMiddleware;
-use cas_client::{Api, RetryConfig, build_http_client};
+use cas_client::{Api, ResponseErrorLogger, RetryConfig, build_http_client};
 use http::header;
 use urlencoding::encode;
 
@@ -96,7 +96,7 @@ impl HubClient {
             .fill_credential(req)
             .await
             .map_err(HubClientError::CredentialHelper)?;
-        let response = req.send().await?;
+        let response = req.send().await.process_error("xet-write-token")?;
 
         let info: CasJWTInfo = response.json().await?;
 
