@@ -65,6 +65,10 @@ GET /v1/reconstructions/0123456789abcdef0123456789abcdef0123456789abcdef01234567
 OPTIONAL: -H Range: "bytes=0-100000"
 ```
 
+### Example Response Body
+
+See [QueryReconstructionResponse](../spec/download_protocol.md#queryreconstructionresponse-structure) for more details in the download protocol specification.
+
 ### 2. Query Chunk Deduplication (Global Deduplication)
 
 - **Description**: Checks if a chunk exists in the CAS for deduplication purposes.
@@ -86,6 +90,10 @@ See [Chunk Hashes](../spec/hashing.md#chunk-hashes) to compute the chunk hash an
 GET /v1/chunks/default-merkledb/0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
 -H "Authorization: Bearer <token>"
 ```
+
+#### Example Response Body
+
+An example shard response body can be found in [Xet reference files](https://huggingface.co/datasets/xet-team/xet-spec-reference-files/blob/main/Electric_Vehicle_Population_Data_20250917.csv.shard.dedupe).
 
 ### 3. Upload Xorb
 
@@ -118,6 +126,10 @@ See [xorb format serialization](../spec/xorb.md).
 POST /v1/xorbs/default/0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
 -H "Authorization: Bearer <token>"
 ```
+
+#### Example Request Body
+
+An example xorb request body can be found in [Xet reference files](https://huggingface.co/datasets/xet-team/xet-spec-reference-files/blob/main/eea25d6ee393ccae385820daed127b96ef0ea034dfb7cf6da3a950ce334b7632.xorb).
 
 ### 4. Upload Shard
 
@@ -152,6 +164,10 @@ The value of `result` does not carry any meaning, if the upload shard API return
 POST /v1/shards
 -H "Authorization: Bearer <token>"
 ```
+
+#### Example Request Body
+
+An example shard request body can be found in [Xet reference files](https://huggingface.co/datasets/xet-team/xet-spec-reference-files/blob/main/Electric_Vehicle_Population_Data_20250917.csv.shard.verification-no-footer).
 
 ## Error Cases
 
