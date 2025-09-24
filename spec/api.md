@@ -65,7 +65,7 @@ GET /v1/reconstructions/0123456789abcdef0123456789abcdef0123456789abcdef01234567
 OPTIONAL: -H Range: "bytes=0-100000"
 ```
 
-### Example Response Body
+### Example File Reconstruction Response Body
 
 See [QueryReconstructionResponse](../spec/download_protocol.md#queryreconstructionresponse-structure) for more details in the download protocol specification.
 
@@ -91,7 +91,7 @@ GET /v1/chunks/default-merkledb/0123456789abcdef0123456789abcdef0123456789abcdef
 -H "Authorization: Bearer <token>"
 ```
 
-#### Example Response Body
+#### Example Shard Response Body
 
 An example shard response body can be found in [Xet reference files](https://huggingface.co/datasets/xet-team/xet-spec-reference-files/blob/main/Electric_Vehicle_Population_Data_20250917.csv.shard.dedupe).
 
@@ -127,7 +127,7 @@ POST /v1/xorbs/default/0123456789abcdef0123456789abcdef0123456789abcdef012345678
 -H "Authorization: Bearer <token>"
 ```
 
-#### Example Request Body
+#### Example Xorb Request Body
 
 An example xorb request body can be found in [Xet reference files](https://huggingface.co/datasets/xet-team/xet-spec-reference-files/blob/main/eea25d6ee393ccae385820daed127b96ef0ea034dfb7cf6da3a950ce334b7632.xorb).
 
@@ -165,7 +165,7 @@ POST /v1/shards
 -H "Authorization: Bearer <token>"
 ```
 
-#### Example Request Body
+#### Example Shard Request Body
 
 An example shard request body can be found in [Xet reference files](https://huggingface.co/datasets/xet-team/xet-spec-reference-files/blob/main/Electric_Vehicle_Population_Data_20250917.csv.shard.verification-no-footer).
 
