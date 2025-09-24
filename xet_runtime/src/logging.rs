@@ -1,3 +1,4 @@
+use std::ffi::OsStr;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
@@ -6,6 +7,7 @@ use std::time::Duration;
 use chrono::{DateTime, FixedOffset, Local, Utc};
 use sysinfo::{Pid, ProcessRefreshKind, RefreshKind, System};
 use tracing::{debug, error, info, warn};
+use tracing_appender::{non_blocking, rolling};
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::{EnvFilter, Layer};
@@ -170,10 +172,6 @@ fn init_logging_to_console(cfg: &LoggingConfig) {
 
 fn init_logging_to_file(path: &Path, use_json: bool) -> Result<(), std::io::Error> {
     // Set up logging to a file.
-    use std::ffi::OsStr;
-
-    use tracing_appender::{non_blocking, rolling};
-
     let (path, file_name) = match path.file_name() {
         Some(name) => (path.to_path_buf(), name),
         None => (path.join("xet.log"), OsStr::new("xet.log")),
@@ -313,7 +311,7 @@ fn run_log_directory_cleanup(log_dir: &Path) -> io::Result<()> {
         let entry = match entry {
             Ok(e) => e,
             Err(e) => {
-                warn!("read_dir entry error: {}", e);
+                warn!("read_dir entry error reading {log_dir : {}", e);
                 continue;
             },
         };
