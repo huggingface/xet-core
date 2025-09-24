@@ -6,7 +6,7 @@ use hub_client::{HFRepoType, RepoInfo};
 
 use crate::errors::{GitXetError, Result};
 
-// This mod implements funtionalities to handle Git remote URLs, especially tailored for
+// This mod implements functionalities to handle Git remote URLs, especially tailored for
 // Git LFS and Hugging Face repo needs, including deriving Git LFS server endpoint from
 // Git remote URL and handling HF specific repo types.
 
