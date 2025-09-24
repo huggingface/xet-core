@@ -11,7 +11,6 @@ pub trait ErrorPrinter {
     fn log_error_fn<M: Display, F: FnOnce() -> M>(self, message_fn: F) -> Self;
 
     fn warn_error<M: Display>(self, message: M) -> Self;
-
     fn warn_error_fn<M: Display, F: FnOnce() -> M>(self, message_fn: F) -> Self;
 
     fn debug_error<M: Display>(self, message: M) -> Self;
