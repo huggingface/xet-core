@@ -3,8 +3,8 @@ use std::io::{BufWriter, Read, Write};
 use std::path::PathBuf;
 
 use clap::Parser;
+use deduplication::Chunker;
 use deduplication::constants::TARGET_CHUNK_SIZE;
-use deduplication::{Chunk, Chunker};
 
 #[derive(Debug, Parser)]
 #[command(
