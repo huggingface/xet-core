@@ -3,7 +3,7 @@ use std::sync::{Arc, Mutex};
 
 use git2::{Config, Repository};
 
-use crate::errors::{GitXetError, Result, config_error, internal};
+use crate::errors::{GitXetError, Result};
 use crate::git_url::GitUrl;
 
 #[derive(Clone)]
@@ -33,8 +33,25 @@ impl GitRepo {
 
     // Returns the path to the .git folder for normal repositories or the repository itself for bare repositories.
     pub fn git_path(&self) -> Result<PathBuf> {
-        let repo = self.repo.lock().map_err(internal)?;
+        let repo = self.repo.lock().map_err(GitXetError::internal)?;
         Ok(repo.path().to_path_buf())
+    }
+
+    // Resolves the reference pointed at by HEAD, returns branch name if it is a branch.
+    pub fn branch_name(&self) -> Result<Option<String>> {
+        let repo = self.repo.lock().map_err(GitXetError::internal)?;
+
+        let maybe_head_ref = repo.head();
+        Ok(maybe_head_ref.ok().and_then(|head_ref| {
+            if head_ref.is_branch() {
+                head_ref
+                    .name()
+                    .and_then(|refs_heads_branch| refs_heads_branch.strip_prefix("refs/heads/"))
+                    .map(|branch| branch.to_owned())
+            } else {
+                None
+            }
+        }))
     }
 
     // Returns the remote that a git push/fetch/pull operation
@@ -44,20 +61,9 @@ impl GitRepo {
     // 3. Any other SINGLE remote defined in .git/config
     // 4. Use "origin" as a fallback.
     pub fn remote_name(&self) -> Result<String> {
-        let repo = self.repo.lock().map_err(internal)?;
+        let maybe_branch_name = self.branch_name()?;
 
-        let maybe_head_ref = repo.head();
-        let maybe_branch_name = maybe_head_ref.ok().and_then(|head_ref| {
-            if head_ref.is_branch() {
-                head_ref
-                    .name()
-                    .and_then(|refs_heads_branch| refs_heads_branch.rsplit('/').next())
-                    .map(|branch| branch.to_owned())
-            } else {
-                None
-            }
-        });
-
+        let repo = self.repo.lock().map_err(GitXetError::internal)?;
         let config = repo.config()?.snapshot()?;
 
         // try tracking remote
@@ -87,13 +93,13 @@ impl GitRepo {
 
     // Returns the URL for a specific remote name.
     pub fn remote_name_to_url(&self, remote: &str) -> Result<GitUrl> {
-        let repo = self.repo.lock().map_err(internal)?;
+        let repo = self.repo.lock().map_err(GitXetError::internal)?;
 
         let url: GitUrl = repo
             .find_remote(remote)?
             .url()
             .map(|s| s.to_string())
-            .ok_or_else(|| config_error(format!("no url for remote \"{remote}\"")))?
+            .ok_or_else(|| GitXetError::config_error(format!("no url for remote \"{remote}\"")))?
             .parse()?;
 
         Ok(url)
@@ -108,7 +114,7 @@ impl GitRepo {
 
     // Returns a snapshot of the current Git repo config.
     pub fn config(&self) -> Result<Config> {
-        let repo = self.repo.lock().map_err(internal)?;
+        let repo = self.repo.lock().map_err(GitXetError::internal)?;
 
         Ok(repo.config()?.snapshot()?)
     }
@@ -121,6 +127,25 @@ mod tests {
 
     use crate::git_repo::GitRepo;
     use crate::test_utils::TestRepo;
+
+    #[test]
+    #[serial(env_var_write_read)]
+    fn test_get_ref_name() -> Result<()> {
+        let test_repo = TestRepo::new("main")?;
+        let repo = GitRepo::open(test_repo.path())?;
+
+        test_repo.new_commit("data", "hello".as_bytes(), "add new file")?;
+        assert_eq!(repo.branch_name()?, Some("main".to_owned()));
+
+        test_repo.new_branch("pr/1", "main")?;
+        test_repo.new_commit("data", "world".as_bytes(), "update file")?;
+        assert_eq!(repo.branch_name()?, Some("pr/1".to_owned()));
+
+        test_repo.checkout(&["HEAD^"])?;
+        assert_eq!(repo.branch_name()?, None);
+
+        Ok(())
+    }
 
     #[test]
     #[serial(env_var_write_read)]

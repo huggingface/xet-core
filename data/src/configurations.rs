@@ -121,4 +121,15 @@ impl TranslatorConfig {
             ..self
         }
     }
+
+    pub fn with_session_id(self, session_id: &str) -> Self {
+        if session_id.is_empty() {
+            return self;
+        }
+
+        Self {
+            session_id: Some(session_id.to_owned()),
+            ..self
+        }
+    }
 }

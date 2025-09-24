@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use hub_client::{CredentialHelper, Operation, Result, credential_helper_error};
+use hub_client::{CredentialHelper, HubClientError, Operation, Result};
 #[cfg(unix)]
 use openssh::{KnownHosts, Session};
 use reqwest::header;
@@ -46,11 +46,11 @@ impl SSHCredentialHelper {
 
     #[cfg(unix)]
     async fn authenticate(&self) -> Result<GitLFSAuthenticateResponse> {
-        let host_url = self.remote_url.host_url().map_err(credential_helper_error)?;
+        let host_url = self.remote_url.host_url().map_err(HubClientError::credential_helper_error)?;
         let full_repo_path = self.remote_url.full_repo_path();
         let session = Session::connect(&host_url, KnownHosts::Add)
             .await
-            .map_err(credential_helper_error)?;
+            .map_err(HubClientError::credential_helper_error)?;
 
         let output = session
             .command("git-lfs-authenticate")
@@ -58,9 +58,9 @@ impl SSHCredentialHelper {
             .arg(self.operation.as_str())
             .output()
             .await
-            .map_err(credential_helper_error)?;
+            .map_err(HubClientError::credential_helper_error)?;
 
-        serde_json::from_slice(&output.stdout).map_err(credential_helper_error)
+        serde_json::from_slice(&output.stdout).map_err(HubClientError::credential_helper_error)
     }
 
     #[cfg(not(unix))]

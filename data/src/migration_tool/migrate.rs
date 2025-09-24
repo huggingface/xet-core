@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use cas_object::CompressionScheme;
-use hub_client::{BearerCredentialHelper, HubClient, Operation};
+use hub_client::{BearerCredentialHelper, HubClient, Operation, RepoInfo};
 use mdb_shard::file_structs::MDBFileInfo;
 use tracing::{Instrument, Span, info_span, instrument};
 use utils::auth::TokenRefresher;
@@ -33,7 +33,8 @@ pub async fn migrate_with_external_runtime(
     repo_id: &str,
 ) -> Result<()> {
     let cred_helper = BearerCredentialHelper::new(hub_token.to_owned(), "");
-    let hub_client = HubClient::new(hub_endpoint, repo_type, repo_id, "xtool", "", cred_helper)?;
+    let hub_client =
+        HubClient::new(hub_endpoint, RepoInfo::try_from(repo_type, repo_id)?, None, "xtool", "", cred_helper)?;
 
     migrate_files_impl(file_paths, false, hub_client, cas_endpoint, None, false).await?;
 

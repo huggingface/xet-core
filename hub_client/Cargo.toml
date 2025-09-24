@@ -13,6 +13,7 @@ reqwest = { workspace = true }
 reqwest-middleware = { workspace = true }
 serde = { workspace = true }
 thiserror = { workspace = true }
+urlencoding = { workspace = true }
 
 [dev-dependencies]
 serde_json = { workspace = true }

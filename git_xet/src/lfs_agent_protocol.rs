@@ -2,7 +2,7 @@ use std::io::{BufRead, Write};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
-use crate::errors::{Result, internal};
+use crate::errors::{GitXetError, Result};
 
 mod agent_state;
 pub mod errors;
@@ -116,7 +116,7 @@ where
             },
         };
 
-        stdout.lock().map_err(internal)?.write_all(response.as_bytes())?;
+        stdout.lock().map_err(GitXetError::internal)?.write_all(response.as_bytes())?;
     }
 
     Ok(())

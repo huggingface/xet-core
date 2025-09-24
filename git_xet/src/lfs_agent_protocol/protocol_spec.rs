@@ -6,7 +6,7 @@ use std::str::FromStr;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
-use super::errors::{GitLFSProtocolError, Result, bad_argument, bad_syntax};
+use super::errors::{GitLFSProtocolError, Result};
 
 // This file defines the protocol that Git LFS uses to talk to
 // custom transfer agents. This implementation follows the protocol specification
@@ -105,37 +105,45 @@ impl LFSProtocolRequestEvent {
                     InitRequest::Download(inner) => inner,
                 };
                 if inner.remote.is_empty() {
-                    return Err(bad_argument("invalid remote"));
+                    return Err(GitLFSProtocolError::bad_argument("invalid remote"));
                 }
 
                 Ok(())
             },
             LFSProtocolRequestEvent::Upload(req) => {
                 if req.oid.len() != OID_LEN {
-                    return Err(bad_argument("invalid oid"));
+                    return Err(GitLFSProtocolError::bad_argument("invalid oid"));
                 }
 
                 if req.size == 0 {
-                    return Err(bad_argument("invalid size"));
+                    return Err(GitLFSProtocolError::bad_argument("invalid size"));
                 }
 
                 if req.path.is_none() {
-                    return Err(bad_syntax("file path not provided for upload request"));
+                    return Err(GitLFSProtocolError::bad_syntax("file path not provided for upload request"));
+                }
+
+                if req.action.href.is_empty() {
+                    return Err(GitLFSProtocolError::bad_argument("empty action.href in server response"));
                 }
 
                 Ok(())
             },
             LFSProtocolRequestEvent::Download(req) => {
                 if req.oid.len() != OID_LEN {
-                    return Err(bad_argument("invalid oid"));
+                    return Err(GitLFSProtocolError::bad_argument("invalid oid"));
                 }
 
                 if req.size == 0 {
-                    return Err(bad_argument("invalid size"));
+                    return Err(GitLFSProtocolError::bad_argument("invalid size"));
                 }
 
                 if req.path.is_some() {
-                    return Err(bad_syntax("file path provided for download request"));
+                    return Err(GitLFSProtocolError::bad_syntax("file path provided for download request"));
+                }
+
+                if req.action.href.is_empty() {
+                    return Err(GitLFSProtocolError::bad_argument("empty action.href in server response"));
                 }
 
                 Ok(())
@@ -149,7 +157,7 @@ impl FromStr for LFSProtocolRequestEvent {
     type Err = GitLFSProtocolError;
 
     fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
-        let req: LFSProtocolRequestEvent = serde_json::from_str(s).map_err(bad_syntax)?;
+        let req: LFSProtocolRequestEvent = serde_json::from_str(s).map_err(GitLFSProtocolError::bad_syntax)?;
         req.validate()?;
         Ok(req)
     }
