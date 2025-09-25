@@ -11,6 +11,7 @@ on:
         description: "Semantic version for release (tag will shard the same name)"
         required: true
         default: "v0.1.0"
+  pull_request:
 
 permissions:
   contents: read
@@ -18,6 +19,7 @@ permissions:
 jobs:
   linux:
     runs-on: ${{ matrix.platform.runner }}
+    if: ${{ github.event_name == 'workflow_dispatch' }}
     strategy:
       matrix:
         platform:
@@ -43,8 +45,6 @@ jobs:
     strategy:
       matrix:
         platform:
-          - runner: macos-13
-            target: x86_64
           - runner: macos-15
             target: aarch64
     steps:
@@ -76,6 +76,7 @@ jobs:
 
   windows:
     runs-on: ${{ matrix.platform.runner }}
+    if: ${{ github.event_name == 'workflow_dispatch' }}
     strategy:
       matrix:
         platform:
