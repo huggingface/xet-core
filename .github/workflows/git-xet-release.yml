@@ -11,6 +11,7 @@ on:
         description: "Semantic version for release (tag will shard the same name)"
         required: true
         default: "v0.1.0"
+  pull_request:
 
 permissions:
   contents: read
