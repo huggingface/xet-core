@@ -10,7 +10,7 @@ on:
       tag:
         description: "Semantic version for release (tag will shard the same name)"
         required: true
-        default: "v0.1.0"
+        default: "v0.1"
   pull_request:
 
 permissions:
