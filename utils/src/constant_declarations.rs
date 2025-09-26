@@ -120,6 +120,13 @@ impl<T> From<T> for GlobalConfigMode<T> {
     }
 }
 
+// This one happens a lot so might as well allow us to set String values with a &str.
+impl From<&str> for GlobalConfigMode<String> {
+    fn from(value: &str) -> Self {
+        GlobalConfigMode::EnvConfigurable(value.to_owned())
+    }
+}
+
 // Reexport this so that dependencies don't have weird other dependencies
 pub use lazy_static::lazy_static;
 

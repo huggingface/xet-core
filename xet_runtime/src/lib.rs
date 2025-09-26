@@ -14,3 +14,7 @@ pub mod utils;
 pub use global_semaphores::GlobalSemaphoreHandle;
 
 pub mod file_handle_limits;
+
+mod cache_dir;
+
+pub use cache_dir::xet_cache_root;

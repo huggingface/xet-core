@@ -44,7 +44,6 @@ async-trait = { workspace = true }
 bytes = { workspace = true }
 chrono = { workspace = true }
 clap = { workspace = true }
-dirs = { workspace = true }
 jsonwebtoken = { workspace = true }
 lazy_static = { workspace = true }
 more-asserts = { workspace = true }
@@ -72,6 +71,7 @@ sha2 = { workspace = true }
 serial_test = { workspace = true }
 tracing-test = { workspace = true }
 ctor = { workspace = true }
+dirs = { workspace = true }
 
 [features]
 strict = []
