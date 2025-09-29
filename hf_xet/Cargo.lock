@@ -1296,7 +1296,6 @@ dependencies = [
  "bipbuffer",
  "cas_client",
  "chrono",
- "console-subscriber",
  "ctrlc",
  "data",
  "error_printer",
@@ -4505,6 +4504,7 @@ name = "xet_logging"
 version = "0.14.5"
 dependencies = [
  "chrono",
+ "console-subscriber",
  "error_printer",
  "git-version",
  "sysinfo",
