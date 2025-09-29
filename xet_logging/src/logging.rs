@@ -314,7 +314,7 @@ fn run_log_directory_cleanup(cfg: LogDirConfig, log_dir: &Path) -> io::Result<()
     let mut n_pruned = 0;
     if total_bytes - deleted_bytes > cfg.size_limit {
         // Sort by oldest first.
-        candidates.sort_by_key(|lf| lf.age);
+        candidates.sort_by(|a, b| b.age.cmp(&a.age));
         for lf in &candidates {
             if total_bytes - deleted_bytes <= cfg.size_limit {
                 break;

@@ -55,7 +55,10 @@ impl LoggingConfig {
                 } else {
                     let path = normalized_path_from_user_string(log_dest);
 
-                    if log_dest.ends_with('/') || log_dest.ends_with('\\') || (path.exists() && path.is_dir()) {
+                    if log_dest.ends_with('/')
+                        || (cfg!(windows) && log_dest.ends_with('\\'))
+                        || (path.exists() && path.is_dir())
+                    {
                         LoggingMode::Directory(path)
                     } else {
                         LoggingMode::File(path)

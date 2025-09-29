@@ -1,13 +1,12 @@
 use std::env;
 use std::env::current_dir;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use dirs::home_dir;
-use utils::constant_declarations::lazy_static;
 use utils::normalized_path_from_user_string;
 
 // Calculates the cache root path once.
-fn get_xet_cache_root_path() -> PathBuf {
+pub fn xet_cache_root() -> PathBuf {
     // if HF_HOME is set use that instead of ~/.cache/huggingface
     // if HF_XET_CACHE is set use that instead of ~/.cache/huggingface/xet
     // HF_XET_CACHE takes precedence over HF_HOME
@@ -34,12 +33,4 @@ fn get_xet_cache_root_path() -> PathBuf {
             .join("huggingface")
             .join("xet")
     }
-}
-
-lazy_static! {
-    static ref CACHE_ROOT_PATH: PathBuf = get_xet_cache_root_path();
-}
-
-pub fn xet_cache_root() -> &'static Path {
-    &CACHE_ROOT_PATH
 }
