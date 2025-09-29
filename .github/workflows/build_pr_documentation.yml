@@ -17,5 +17,4 @@ jobs:
       pr_number: ${{ github.event.number }}
       package: xet-core
       package_name: xet-protocol
-      path_to_docs: xet-core/docs/xet-protocol
       additional_args: --not_python_module
