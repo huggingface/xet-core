@@ -137,7 +137,7 @@ Reference files are provided in Hugging Face Dataset repository [xet-team/xet-sp
 In this repository there are a number of different samples implementors can use to verify hash computations.
 
 > Note that all hashes are represented as strings.
-To get the raw value of these hashes you must invert the endianness of each byte octet in the hash string, reversing the procedure described in [api.md](../spec/api.md#converting-hashes-to-strings).
+To get the raw value of these hashes you must invert the endianness of each byte octet in the hash string, reversing the procedure described in [api](./api#converting-hashes-to-strings).
 
 ### Chunk Hashes Sample
 

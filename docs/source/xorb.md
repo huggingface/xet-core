@@ -111,7 +111,7 @@ Note that a Xorb MAY contain chunks that utilize different compression schemes.
 2. **Best Effort Prediction**
 
     In `xet-core`, to predict if BG4 will be useful we maximum KL divergence between the distribution of per-byte pop-counts on a sample of each of the 4 groups that would be formed.
-    You can read more about it in [bg4_prediction.rs](../cas_object/src/byte_grouping/bg4_prediction.rs) and accompanying scripts.
+    You can read more about it in [bg4_prediction.rs](./cas_object/src/byte_grouping/bg4_prediction.rs) and accompanying scripts.
 
     If the predictor does not show that BG4 will be better, we use Lz4 and in either case we will store the chunk as the uncompressed version if the compression scheme used does not show any benefit.
 

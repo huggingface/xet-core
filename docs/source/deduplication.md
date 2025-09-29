@@ -23,11 +23,11 @@ A **chunk** is a variable-sized content block derived from files using Content-D
 - **Size range**: 8KB to 128KB (minimum and maximum constraints)
 - **Identification**: Each chunk is uniquely identified by its cryptographic hash (MerkleHash)
 
-[Detailed chunking description](../spec/chunking.md)
+[Detailed chunking description](./chunking)
 
-### Xorbs (Extended Object Blocks)
+### Xorbs
 
-**Xorbs** are containers that aggregate multiple chunks for efficient storage and transfer:
+**Xorbs** are objects that aggregate multiple chunks for efficient storage and transfer:
 
 - **Maximum size**: 64MB
 - **Maximum chunks**: 8,192 chunks per xorb
@@ -96,7 +96,7 @@ Xet employs a three-tiered deduplication strategy to maximize efficiency while m
 
 #### Level 3: Global Deduplication API
 
-**Scope**: Entire Xet ecosystem
+**Scope**: Entire Xet system
 **Mechanism**: Global deduplication service with HMAC protection
 **Purpose**: Discover deduplication opportunities across all users and repositories
 
@@ -143,11 +143,11 @@ They MAY know this chunk hash because they own this data, the match has made the
 ### Chunk Hash Computation
 
 Each chunk has its content hashed using a cryptographic hash function (Blake3-based MerkleHash) to create a unique identifier for content addressing.
-[See section about hashing](../spec/hashing.md#chunk-hashes).
+[See section about hashing](./hashing#chunk-hashes).
 
 ### Xorb Formation
 
-When new chunks need to be stored, they are aggregated into xorbs based on size and count limits. If adding a new chunk would exceed the maximum xorb size or chunk count, the current xorb is finalized and uploaded. [See section about xorb formation](../xorb.md)
+When new chunks need to be stored, they are aggregated into xorbs based on size and count limits. If adding a new chunk would exceed the maximum xorb size or chunk count, the current xorb is finalized and uploaded. [See section about xorb formation](./xorb)
 
 ### File Reconstruction Information
 
@@ -164,7 +164,7 @@ This information allows the system to reconstruct files by:
 2. Extracting the specific chunk ranges from each xorb
 3. Concatenating chunks in the correct order
 
-[See section about file reconstruction](../file_reconstruction.md).
+[See section about file reconstruction](./file-reconstruction).
 
 ## Fragmentation Prevention
 

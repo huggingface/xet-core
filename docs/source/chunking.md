@@ -9,7 +9,7 @@ File -> | chunk 0 | chunk 1 | chunk 2 | chunk 3 | chunk 4 | chunk 5 | chunk 6 | 
         +---------+---------+---------+---------+---------+---------+---------+--------------
 ```
 
-## Step-by-step algorithm (Gearhash-based CDC)
+## Step-by-step Algorithm (Gearhash-based CDC)
 
 ### Constant Parameters
 
@@ -24,7 +24,7 @@ File -> | chunk 0 | chunk 1 | chunk 2 | chunk 3 | chunk 4 | chunk 5 | chunk 6 | 
 - h: 64-bit hash, initialized to 0
 - start_offset: start offset of the current chunk, initialized to 0
 
-### Per-byte update rule (Gearhash)
+### Per-byte Update Rule (Gearhash)
 
 For each input byte `b`, update the hash with 64-bit wrapping arithmetic:
 
@@ -32,7 +32,7 @@ For each input byte `b`, update the hash with 64-bit wrapping arithmetic:
 h = (h << 1) + TABLE[b]
 ```
 
-### Boundary test and size constraints
+### Boundary Test and Size Constraints
 
 At each position after updating `h`, let `size = current_offset - start_offset + 1`.
 
@@ -81,7 +81,7 @@ if start_offset < len(data):
 
 ### Boundary probability and mask selection
 
-Given that MASK has 16 one-bits, for a random 64-bit hash h, the chance that all those 16 bits are zero is 1 / 2^16. On average, that means you’ll see a match about once every 64 KiB.
+Given that MASK has 16 one-bits, for a random 64-bit hash `h`, the chance that all those 16 bits are zero is 1 / 2^16. On average, that means you’ll see a match about once every 64 KiB.
 
 ### Properties
 
@@ -89,31 +89,31 @@ Given that MASK has 16 one-bits, for a random 64-bit hash h, the chance that all
 - Locality: small edits only affect nearby boundaries
 - Linear time and constant memory: single 64-bit state and counters
 
-### Intuition and rationale
+### Intuition and Rationale
 
 - The table `TABLE[256]` injects pseudo-randomness per byte value so that the evolving hash `h` behaves like a random 64-bit value with respect to the mask test. This makes boundaries content-defined yet statistically evenly spaced.
 - The left shift `(h << 1)` amplifies recent bytes, helping small changes affect nearby positions without globally shifting all boundaries.
 - Resetting `h` to 0 at each boundary prevents long-range carryover and keeps boundary decisions for each chunk statistically independent.
 
-### Implementation notes
+### Implementation Notes
 
 - Only reset `h` when you emit a boundary. This ensures chunking is stable even when streaming input in pieces.
 - Apply the mask test only once `size >= MIN_CHUNK_SIZE`. This reduces the frequency of tiny chunks and stabilizes average chunk sizes.
 - MUST force a boundary at `MAX_CHUNK_SIZE` even if `(h & MASK) != 0`. This guarantees bounded chunk sizes and prevents pathological long chunks when matches are rare.
 - Use 64-bit wrapping arithmetic for `(h << 1) + TABLE[b]`. This is the behavior in the reference implementation [rust-gearhash].
 
-### Edge cases
+### Edge Cases
 
 - Tiny files: if `len(data) < MIN_CHUNK_SIZE`, the entire `data` is emitted as a single chunk.
 - Long runs without a match: if no position matches `(h & MASK) == 0` before `MAX_CHUNK_SIZE`, a boundary is forced at `MAX_CHUNK_SIZE` to cap chunk size.
 
-### Portability and determinism
+### Portability and Determinism
 
 - With a fixed `T[256]` table and mask, the algorithm is deterministic across platforms: same input → same chunk boundaries.
 - Endianness does not affect behavior because updates are byte-wise and use scalar 64-bit operations.
 - SIMD-accelerated implementations (when available) are optimizations only; they produce the same boundaries as the scalar path [rust-gearhash].
 
-## Minimum-size skip-ahead (cut-point skipping optimization)
+## Minimum-size Skip-ahead (Cut-point Skipping Optimization)
 
 Computing and testing the rolling hash at every byte is expensive for large data, and early tests inside the first few bytes of a chunk are disallowed by the `MIN_CHUNK_SIZE` constraint anyway.
 We are able to intentionally skip testing some data with cut-point skipping to accelerate scanning without affecting correctness.
@@ -141,7 +141,7 @@ The [xet-team/xet-spec-reference-files](https://huggingface.co/datasets/xet-team
 
 In the same repository in file [Electric_Vehicle_Population_Data_20250917.csv.chunks](https://huggingface.co/datasets/xet-team/xet-spec-reference-files/blob/main/Electric_Vehicle_Population_Data_20250917.csv.chunks)
 the chunks produced out of [Electric_Vehicle_Population_Data_20250917.csv](https://huggingface.co/datasets/xet-team/xet-spec-reference-files/blob/main/Electric_Vehicle_Population_Data_20250917.csv) are listed.
-Each line in the file is a 64 hexadecimal hash of the chunk, followed by a space and then the number of bytes in that chunk.
+Each line in the file is a 64 hexadecimal character string version of the hash of the chunk, followed by a space and then the number of bytes in that chunk.
 
 Implementors should use the chunk lengths to determine that they are producing the right chunk boundaries for this file with their chunking implementation.
 
