@@ -15,9 +15,7 @@ jobs:
       commit_sha: ${{ github.sha }}
       repo_owner: huggingface
       package: xet-spec
-      package_name: xet-spec
       version_tag_suffix: ""
       additional_args: --not_python_module
-      path_to_docs: xet-core/docs/xet-spec
     secrets:
-      hf_token: ${{ secrets.HF_DOC_BUILD }}
+      hf_token: ${{ secrets.HF_DOC_BUILD_PUSH }}

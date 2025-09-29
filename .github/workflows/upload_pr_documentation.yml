@@ -12,5 +12,5 @@ jobs:
     with:
       package_name: xet-spec
     secrets:
-      hf_token: ${{ secrets.HF_DOC_BUILD }}
+      hf_token: ${{ secrets.HF_DOC_BUILD_PUSH }}
       comment_bot_token: ${{ secrets.COMMENT_BOT_TOKEN }}

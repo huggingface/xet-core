@@ -3,7 +3,7 @@ name: Build PR Documentation
 on:
   pull_request:
     paths:
-      - 'docs/xet-spec/**'
+      - 'docs/**'
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
@@ -17,7 +17,6 @@ jobs:
       pr_number: ${{ github.event.number }}
       repo_owner: huggingface
       package: xet-spec
-      package_name: xet-spec
       version_tag_suffix: ""
       additional_args: --not_python_module
       path_to_docs: xet-core/docs/xet-spec
