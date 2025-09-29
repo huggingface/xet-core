@@ -14,7 +14,7 @@ jobs:
     with:
       commit_sha: ${{ github.sha }}
       package: xet-core
-      package_name: xet-spec
+      package_name: xet-protocol
       additional_args: --not_python_module
     secrets:
       hf_token: ${{ secrets.HF_DOC_BUILD_PUSH }}
