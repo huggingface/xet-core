@@ -1,4 +1,4 @@
-name: Build Xet Spec PR Documentation
+name: Build PR Documentation
 
 on:
   pull_request:

@@ -1,10 +1,9 @@
-name: Upload Xet Spec PR Documentation
+name: Upload PR Documentation
 
 on:
   workflow_run:
-    workflows: ["Build Xet Spec PR Documentation"]
-    types:
-      - completed
+    workflows: ["Build PR Documentation"]
+    types: [completed]
 
 jobs:
   build:
