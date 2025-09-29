@@ -121,7 +121,7 @@ pub struct MDBShardFileFooter {
     // The creation time of this shard, in seconds since the epoc
     pub shard_creation_timestamp: u64,
 
-    // The time, in seconds since the epoc, after which this shard is no longer assumed to be valid.
+    // The time, in seconds since the epoch, after which this shard is no longer assumed to be valid.
     // Locally created shards do not have an expiry.
     pub shard_key_expiry: u64,
 

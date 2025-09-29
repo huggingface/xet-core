@@ -29,6 +29,7 @@ jobs:
       - uses: actions/checkout@v4
       - name: Install Rust 1.89
         uses: dtolnay/rust-toolchain@1.89.0
+      - uses: ./.github/actions/cache-rust-build
       - name: Build
         run: |
           cargo build --release
@@ -51,6 +52,7 @@ jobs:
       - uses: actions/checkout@v4
       - name: Install Rust 1.89
         uses: dtolnay/rust-toolchain@1.89.0
+      - uses: ./.github/actions/cache-rust-build
       - name: Build
         run: |
           cargo build --release
@@ -85,6 +87,7 @@ jobs:
       - uses: actions/checkout@v4
       - name: Install Rust 1.89
         uses: dtolnay/rust-toolchain@1.89.0
+      - uses: ./.github/actions/cache-rust-build
       - name: Build
         run: |
           cargo build --release

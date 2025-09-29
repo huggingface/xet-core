@@ -1,0 +1,16 @@
+name: 'Cache Rust Build'
+description: 'Cache Rust dependency and build artifact'
+runs:
+  using: "composite"
+  steps:
+    - name: Cache
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+          target
+          hf_xet/target
+          hf_xet_wasm/target
+          hf_xet_thin_wasm/target
+        key: ${{ runner.os }}-${{ runner.arch }}-cargo-${{ hashFiles('**/Cargo.lock') }}
