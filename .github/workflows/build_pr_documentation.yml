@@ -10,17 +10,6 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  debug-workflow-name:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Echo workflow metadata
-        run: |
-          echo "github.workflow = ${{ github.workflow }}"
-          echo "github.workflow_ref = ${{ github.workflow_ref }}"
-          echo "github.workflow_sha = ${{ github.workflow_sha }}"
-          echo "github.run_id = ${{ github.run_id }}"
-          echo "github.event_name = ${{ github.event_name }}"
-          echo "github.event.number = ${{ github.event.number }}"
   build:
     uses: huggingface/doc-builder/.github/workflows/build_pr_documentation.yml@main
     with:
