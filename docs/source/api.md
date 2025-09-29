@@ -1,10 +1,10 @@
 # CAS API Documentation
 
-This document describes the HTTP API endpoints used by the CAS (Content Addressable Storage) client to interact with the remote CAS server.
+This document describes the HTTP API endpoints used by the Content Addressable Storage (CAS) client to interact with the remote CAS server.
 
 ## Authentication
 
-To authenticate, authorize, and obtain the API base URL, follow the instructions in [Authentication](../spec/auth.md).
+To authenticate, authorize, and obtain the API base URL, follow the instructions in [Authentication](./auth).
 
 ## Converting Hashes to Strings
 
@@ -17,6 +17,9 @@ To convert a 32 hash to a 64 hexadecimal character string to be used as part of 
 For every 8 bytes in the hash (indices 0-7, 8-15, 16-23, 24-31) reverse the order of each byte in those regions then concatenate the regions back in order.
 
 Otherwise stated, consider each 8 byte part of a hash as a little endian 64 bit unsigned integer, then concatenate the hexadecimal representation of the 4 numbers in order (each padded with 0's to 16 characters).
+
+> [!NOTE]
+> In all cases that a hash is represented as a string it is converted from a byte array to a string using this procedure.
 
 ### Example
 
@@ -38,7 +41,7 @@ It is: `07060504030201000f0e0d0c0b0a0908171615141312111f1e1d1c1b1a1918`.
 - **Method**: `GET`
 - **Parameters**:
   - `file_id`: File hash in hex format (64 lowercase hexadecimal characters).
-See [file hashes](../spec/hashing.md#file-hashes) for computing the file hash and [converting hashes to strings](../spec/api.md#converting-hashes-to-strings).
+See [file hashes](./hashing#file-hashes) for computing the file hash and [converting hashes to strings](./api#converting-hashes-to-strings).
 - **Headers**:
   - `Range`: OPTIONAL. Format: `bytes={start}-{end}` (end is inclusive).
 - **Minimum Token Scope**: `read`
@@ -53,7 +56,7 @@ See [file hashes](../spec/hashing.md#file-hashes) for computing the file hash an
   }
   ```
 
-- **Error Responses**: See [Error Cases](../spec/api.md#error-cases)
+- **Error Responses**: See [Error Cases](./api#error-cases)
   - `400 Bad Request`: Malformed `file_id` in the path. Fix the path before retrying.
   - `401 Unauthorized`: Refresh the token to continue making requests, or provide a token in the `Authorization` header.
   - `404 Not Found`: The file does not exist. Not retryable.
@@ -67,7 +70,7 @@ OPTIONAL: -H Range: "bytes=0-100000"
 
 ### Example File Reconstruction Response Body
 
-See [QueryReconstructionResponse](../spec/download_protocol.md#queryreconstructionresponse-structure) for more details in the download protocol specification.
+See [QueryReconstructionResponse](./download-protocol#queryreconstructionresponse-structure) for more details in the download protocol specification.
 
 ### 2. Query Chunk Deduplication (Global Deduplication)
 
@@ -77,11 +80,11 @@ See [QueryReconstructionResponse](../spec/download_protocol.md#queryreconstructi
 - **Parameters**:
   - `prefix`: The only acceptable prefix for the Global Deduplication API is `default-merkledb`.
   - `hash`: Chunk hash in hex format (64 lowercase hexadecimal characters).
-See [Chunk Hashes](../spec/hashing.md#chunk-hashes) to compute the chunk hash and [converting hashes to strings](../spec/api.md#converting-hashes-to-strings).
+See [Chunk Hashes](./hashing#chunk-hashes) to compute the chunk hash and [converting hashes to strings](./api#converting-hashes-to-strings).
 - **Minimum Token Scope**: `read`
 - **Body**: None.
-- **Response**: Shard format bytes (`application/octet-stream`), deserialize as a [shard](../spec/shard.md#global-deduplication).
-- **Error Responses**: See [Error Cases](../spec/api.md#error-cases)
+- **Response**: Shard format bytes (`application/octet-stream`), deserialize as a [shard](./shard#global-deduplication).
+- **Error Responses**: See [Error Cases](./api#error-cases)
   - `400 Bad Request`: Malformed hash in the path. Fix the path before retrying.
   - `401 Unauthorized`: Refresh the token to continue making requests, or provide a token in the `Authorization` header.
   - `404 Not Found`: Chunk not already tracked by global deduplication. Not retryable.
@@ -103,10 +106,10 @@ An example shard response body can be found in [Xet reference files](https://hug
 - **Parameters**:
   - `prefix`: The only acceptable prefix for the Xorb upload API is `default`.
   - `hash`: Xorb hash in hex format (64 lowercase hexadecimal characters).
-See [Xorb Hashes](../spec/hashing.md#xorb-hashes) to compute the hash, and [converting hashes to strings](../spec/api.md#converting-hashes-to-strings).
+See [Xorb Hashes](./hashing#xorb-hashes) to compute the hash, and [converting hashes to strings](./api#converting-hashes-to-strings).
 - **Minimum Token Scope**: `write`
 - **Body**: Serialized Xorb bytes (`application/octet-stream`).
-See [xorb format serialization](../spec/xorb.md).
+See [xorb format serialization](./xorb).
 - **Response**: JSON (`UploadXorbResponse`)
 
 ```json
@@ -117,7 +120,7 @@ See [xorb format serialization](../spec/xorb.md).
 
 - Note: `was_inserted` is `false` if the Xorb already exists; this is not an error.
 
-- **Error Responses**: See [Error Cases](../spec/api.md#error-cases)
+- **Error Responses**: See [Error Cases](./api#error-cases)
   - `400 Bad Request`: Malformed hash in the path, Xorb hash does not match the body, or body is incorrectly serialized.
   - `401 Unauthorized`: Refresh the token to continue making requests, or provide a token in the `Authorization` header.
   - `403 Forbidden`: Token provided but does not have a wide enough scope (for example, a `read` token was provided). Clients MUST retry with a `write` scope token.
@@ -139,7 +142,7 @@ Uploads file reconstructions and new xorb listing, serialized into the shard for
 - **Method**: `POST`
 - **Minimum Token Scope**: `write`
 - **Body**: Serialized Shard data as bytes (`application/octet-stream`).
-See [Shard format guide](../spec/shard.md#shard-upload).
+See [Shard format guide](./shard#shard-upload).
 - **Response**: JSON (`UploadShardResponse`)
 
 ```json
@@ -154,7 +157,7 @@ See [Shard format guide](../spec/shard.md#shard-upload).
 
 The value of `result` does not carry any meaning, if the upload shard API returns a `200 OK` status code, the upload was successful and the files listed are considered uploaded.
 
-- **Error Responses**: See [Error Cases](../spec/api.md#error-cases)
+- **Error Responses**: See [Error Cases](./api#error-cases)
   - `400 Bad Request`: Shard is incorrectly serialized or Shard contents failed verification.
     - Can mean that a referenced Xorb doesn't exist or the shard is too large
   - `401 Unauthorized`: Refresh the token to continue making requests, or provide a token in the `Authorization` header.

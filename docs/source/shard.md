@@ -8,7 +8,7 @@ The Shard format is the vehicle for uploading the file reconstruction upload and
 
 The MDB (Merkle Database) shard file format is a binary format used to store file metadata and content-addressable storage (CAS) information for efficient deduplication and retrieval.
 This document describes the binary layout and deserialization process for the shard format.
-Implementors of the xet protocol MUST use the shard format when implementing the [upload protocol](../spec/upload_protocol.md).
+Implementors of the xet protocol MUST use the shard format when implementing the [upload protocol](./upload-protocol).
 The shard format is used on the shard upload (record files) and global deduplication APIs.
 
 ## Use As API Request and Response Bodies
@@ -132,7 +132,8 @@ struct MDBShardFileHeader {
 4. Verify version equals 2
 5. Read 8 bytes for footer_size (u64)
 
-> when serializing, footer_size MUST be the number of bytes that make up the footer, or 0 if the footer is omitted.
+> [!NOTE]
+> When serializing, footer_size MUST be the number of bytes that make up the footer, or 0 if the footer is omitted.
 
 ## 2. File Info Section
 
@@ -141,7 +142,7 @@ struct MDBShardFileHeader {
 This section contains a sequence of 0 or more file information (File Info) blocks, each consisting at least a header and at least 1 data sequence entry, and OPTIONAL verification entries and metadata extension section.
 The file info section ends when reaching the bookend entry.
 
-Each File Info block within the overall section is a serialization of a [file reconstruction](../spec/file_reconstruction.md) into a binary format.
+Each File Info block within the overall section is a serialization of a [file reconstruction](./file-reconstruction) into a binary format.
 For each file, there is a `FileDataSequenceHeader` and for each term a `FileDataSequenceEntry` with OPTIONAL a matching `FileVerificationEntry` and also OPTIONAL at the end a `FileMetadataExt`.
 
 A shard File Info section can contain more than 1 File Info block in series, after completing reading all the content for 1 file description, the next one immediately begins.
@@ -229,7 +230,7 @@ Given the `file_data_sequence_header.file_flags & MASK` (bitwise AND) operations
 
 ### FileDataSequenceEntry
 
-Each `FileDataSequenceEntry` is 1 term is essentially the binary serialization of a [file reconstruction term](../spec/file_reconstruction.md#term-format).
+Each `FileDataSequenceEntry` is 1 term is essentially the binary serialization of a [file reconstruction term](./file-reconstruction#term-format).
 
 ```rust
 struct FileDataSequenceEntry {
@@ -241,6 +242,7 @@ struct FileDataSequenceEntry {
 }
 ```
 
+> [!NOTE]
 > Note that when describing a chunk range in a `FileDataSequenceEntry` use ranges that are start-inclusive but end-exclusive i.e. `[chunk_index_start, chunk_index_end)`
 
 **Memory Layout**:
@@ -258,7 +260,7 @@ struct FileDataSequenceEntry {
 
 Verification Entries MUST be set for shard uploads.
 
-To generate verification hashes for shard upload read the section about [Verification Hashes](../hashing.md#Term%20Verification%20Hashes).
+To generate verification hashes for shard upload read the section about [Verification Hashes](./hashing#Term-Verification-Hashes).
 
 ```rust
 struct FileVerificationEntry {
@@ -427,6 +429,7 @@ Since the cas info section immediately follows the file info section bookend, a 
 
 ## 4. Footer (MDBShardFileFooter)
 
+> [!NOTE]
 > MUST NOT include the footer when serializing the shard as the body for the shard upload API.
 
 **Location**: End of file minus footer_size
@@ -448,6 +451,7 @@ struct MDBShardFileFooter {
 
 **Memory Layout**:
 
+> [!NOTE]
 > Fields are not exactly to scale
 
 ```txt

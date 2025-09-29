@@ -12,8 +12,8 @@ This document describes how a file can be represented and reconstructed from a c
 
 ## Core Idea
 
-After following the [chunking procedure](../spec/chunking.md) a file can be represented as an ordering of chunks.
-Those chunks are then packed into [xorbs](../spec/xorb.md) and given the set of xorbs we convert the file representation to "reconstruction" made up of "terms".
+After following the [chunking procedure](./chunking) a file can be represented as an ordering of chunks.
+Those chunks are then packed into [xorbs](./xorb) and given the set of xorbs we convert the file representation to "reconstruction" made up of "terms".
 When forming xorbs the ordering and grouping of chunks prioritizes contiguous runs of chunks that appear in a file such that when referencing a xorb we maximize the term range length.
 
 Any file’s raw bytes can be described as the concatenation of data produced by a sequence of terms.
@@ -22,7 +22,7 @@ The file is reconstructed by retrieving those chunk ranges, decoding them to raw
 
 ### Diagram
 
-> A file with 4 terms. Each term is a pointer to chunk range within a xorb.
+A file with 4 terms. Each term is a pointer to chunk range within a xorb.
 
 ```txt
 File Reconstruction
@@ -105,7 +105,7 @@ A file’s reconstruction can be serialized into a shard as part of its file inf
 Conceptually, this section encodes the complete set of terms that describe the file.
 When stored this way, the representation is canonical and sufficient to reconstruct the full file solely from its referenced xorb ranges.
 
-Reference: [shard format file info](../spec/shard.md#2-file-info-section)
+Reference: [shard format file info](./shard#2-file-info-section)
 
 ### Deserialization from the reconstruction API (JSON)
 
@@ -114,7 +114,7 @@ This response is represented by a structure named “QueryReconstructionResponse
 The `terms` list contains, for each term, the xorb identifier and the contiguous chunk index range to retrieve.
 Other fields may provide auxiliary details (such as offsets or fetch hints) that optimize retrieval without altering the meaning of the `terms` sequence.
 
-Reference: [api.md](../spec/api.md), [download protocol](../spec/download_protocol.md)
+Reference: [api](./api), [download protocol](./download-protocol)
 
 ## Fragmentation and Why Longer Ranges Matter
 
