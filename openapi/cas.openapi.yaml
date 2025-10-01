@@ -1,0 +1,308 @@
+openapi: 3.1.0
+info:
+  title: Xet CAS API
+  version: 1.0.0
+  description: |
+    OpenAPI specification for the Content Addressable Storage (CAS) service.
+    See the accompanying docs for details on authentication, hashing, and formats.
+    Reference: https://huggingface.co/docs/xet/api
+servers:
+  - url: /
+    description: Base URL; paths include the `/v1` prefix
+security:
+  - bearerAuth: []
+paths:
+  /v1/reconstructions/{file_id}:
+    get:
+      summary: Get File Reconstruction
+      description: |
+        Retrieves reconstruction information for a specific file. Supports byte range via the optional `Range` header.
+        Minimum token scope: `read`.
+        x-required-scope: read
+      operationId: getReconstruction
+      parameters:
+        - $ref: '#/components/parameters/FileIdParam'
+        - $ref: '#/components/parameters/RangeHeader'
+      responses:
+        '200':
+          description: Reconstruction object
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/QueryReconstructionResponse'
+              examples:
+                example:
+                  value:
+                    offset_into_first_range: 0
+                    terms:
+                      - hash: a1b2c3d4e5f6789012345678901234567890abcdef1234567890abcdef123456
+                        unpacked_length: 263873
+                        range:
+                          start: 0
+                          end: 4
+                    fetch_info:
+                      a1b2c3d4e5f6789012345678901234567890abcdef1234567890abcdef123456:
+                        - range:
+                            start: 0
+                            end: 4
+                          url: https://transfer.xethub.hf.co/xorb/default/a1b2c3d4e5f6789012345678901234567890abcdef1234567890abcdef123456
+                          url_range:
+                            start: 0
+                            end: 131071
+        '400':
+          description: Bad Request — Malformed file_id
+        '401':
+          description: Unauthorized — Missing/expired token
+        '404':
+          description: Not Found — File does not exist
+        '416':
+          description: Range Not Satisfiable — Requested byte range start exceeds file length
+  /v1/chunks/{prefix}/{hash}:
+    get:
+      summary: Query Chunk Deduplication (Global Deduplication)
+      description: |
+        Checks if a chunk exists in the CAS for deduplication purposes.
+        Minimum token scope: `read`.
+        x-required-scope: read
+      operationId: getChunkDedupInfo
+      parameters:
+        - $ref: '#/components/parameters/PrefixGlobalDedupeParam'
+        - $ref: '#/components/parameters/HashParam'
+      responses:
+        '200':
+          description: Shard format bytes
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+        '400':
+          description: Bad Request — Malformed hash
+        '401':
+          description: Unauthorized — Missing/expired token
+        '404':
+          description: Not Found — Chunk not tracked by global deduplication
+  /v1/xorbs/{prefix}/{hash}:
+    post:
+      summary: Upload Xorb
+      description: |
+        Uploads a serialized Xorb to the server.
+        Minimum token scope: `write`.
+        x-required-scope: write
+      operationId: uploadXorb
+      parameters:
+        - $ref: '#/components/parameters/PrefixXorbParam'
+        - $ref: '#/components/parameters/HashParam'
+      requestBody:
+        required: true
+        content:
+          application/octet-stream:
+            schema:
+              type: string
+              format: binary
+            examples:
+              xorbBytes:
+                summary: Serialized Xorb bytes
+                value: ''
+      responses:
+        '200':
+          description: Upload result
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UploadXorbResponse'
+              examples:
+                inserted:
+                  value:
+                    was_inserted: true
+        '400':
+          description: Bad Request — Malformed hash, mismatched body hash, or bad serialization
+        '401':
+          description: Unauthorized — Missing/expired token
+        '403':
+          description: Forbidden — Token does not have required scope
+  /v1/shards:
+    post:
+      summary: Upload Shard
+      description: |
+        Uploads a Shard to the CAS (file reconstructions and new xorb listing).
+        Minimum token scope: `write`.
+        x-required-scope: write
+      operationId: uploadShard
+      requestBody:
+        required: true
+        content:
+          application/octet-stream:
+            schema:
+              type: string
+              format: binary
+            examples:
+              shardBytes:
+                summary: Serialized Shard bytes
+                value: ''
+      responses:
+        '200':
+          description: Upload result
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UploadShardResponse'
+              examples:
+                resultRegistered:
+                  value:
+                    result: 1
+        '400':
+          description: Bad Request — Invalid shard serialization or verification failure
+        '401':
+          description: Unauthorized — Missing/expired token
+        '403':
+          description: Forbidden — Token does not have required scope
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: |
+        Use `Authorization: Bearer <token>`. Tokens carry scopes (`read`, `write`).
+  parameters:
+    FileIdParam:
+      name: file_id
+      in: path
+      required: true
+      description: |
+        File hash in hex format (64 lowercase hexadecimal characters). See hashing docs and string conversion procedure.
+      schema:
+        $ref: '#/components/schemas/HexString64Lowercase'
+    HashParam:
+      name: hash
+      in: path
+      required: true
+      description: Chunk/Xorb hash in hex format (64 lowercase hexadecimal characters)
+      schema:
+        $ref: '#/components/schemas/HexString64Lowercase'
+    PrefixGlobalDedupeParam:
+      name: prefix
+      in: path
+      required: true
+      description: The only acceptable prefix for the Global Deduplication API is `default-merkledb`.
+      schema:
+        type: string
+        enum: [default-merkledb]
+    PrefixXorbParam:
+      name: prefix
+      in: path
+      required: true
+      description: The only acceptable prefix for the Xorb upload API is `default`.
+      schema:
+        type: string
+        enum: [default]
+    RangeHeader:
+      name: Range
+      in: header
+      required: false
+      description: |
+        Optional byte range header for reconstruction queries. Format `bytes={start}-{end}` with end inclusive.
+      schema:
+        type: string
+        pattern: ^bytes=\d+-\d+$
+  schemas:
+    HexString64Lowercase:
+      type: string
+      description: 64-character lowercase hexadecimal string
+      pattern: ^[0-9a-f]{64}$
+      examples:
+        - 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+    IndexRange:
+      type: object
+      description: Chunk index range; end-exclusive `[start, end)`
+      properties:
+        start:
+          type: integer
+          minimum: 0
+        end:
+          type: integer
+          minimum: 0
+      required: [start, end]
+      additionalProperties: false
+    ByteRange:
+      type: object
+      description: Byte range; end-inclusive `[start, end]` for use in HTTP Range headers
+      properties:
+        start:
+          type: integer
+          minimum: 0
+        end:
+          type: integer
+          minimum: 0
+      required: [start, end]
+      additionalProperties: false
+    CASReconstructionTerm:
+      type: object
+      description: Ordered term describing which chunks to download from which xorb
+      properties:
+        hash:
+          $ref: '#/components/schemas/HexString64Lowercase'
+        range:
+          $ref: '#/components/schemas/IndexRange'
+        unpacked_length:
+          type: integer
+          minimum: 0
+      required: [hash, range, unpacked_length]
+      additionalProperties: false
+    CASReconstructionFetchInfo:
+      type: object
+      description: Fetch information for a range of chunks within a xorb
+      properties:
+        url:
+          type: string
+          format: uri
+        url_range:
+          $ref: '#/components/schemas/ByteRange'
+        range:
+          $ref: '#/components/schemas/IndexRange'
+      required: [url, url_range, range]
+      additionalProperties: false
+    QueryReconstructionResponse:
+      type: object
+      description: Reconstruction object describing how to download and reconstruct a file
+      properties:
+        offset_into_first_range:
+          type: integer
+          minimum: 0
+          description: Byte offset into the first term to start keeping data from
+        terms:
+          type: array
+          items:
+            $ref: '#/components/schemas/CASReconstructionTerm'
+        fetch_info:
+          type: object
+          description: Map from xorb hash to an array of fetch info entries
+          propertyNames:
+            $ref: '#/components/schemas/HexString64Lowercase'
+          additionalProperties:
+            type: array
+            items:
+              $ref: '#/components/schemas/CASReconstructionFetchInfo'
+      required: [offset_into_first_range, terms, fetch_info]
+      additionalProperties: false
+    UploadXorbResponse:
+      type: object
+      properties:
+        was_inserted:
+          type: boolean
+          description: false if the Xorb already exists
+      required: [was_inserted]
+      additionalProperties: false
+    UploadShardResponse:
+      type: object
+      properties:
+        result:
+          type: integer
+          enum: [0, 1]
+          description: |
+            0 = Shard already exists, 1 = SyncPerformed — the Shard was registered. Any 200 OK means success.
+      required: [result]
+      additionalProperties: false
+
+
