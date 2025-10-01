@@ -91,11 +91,31 @@ jobs:
       - name: Build
         run: |
           cargo build --release
+          mkdir dist
+          cp target/release/git-xet.exe dist/
+      - name: Codesign the executable file
+        uses: ./.github/actions/windows-codesign
+        with:
+          file: dist\git-xet.exe
+      - name: Build installer
+        run: |
+          cp git_xet/windows_installer/Package.wxs dist/
+          cd dist
+          wix build Package.wxs -o bin\git-xet-windows-installer -arch x64
+      - name: Codesign the installer
+        uses: ./.github/actions/windows-codesign
+        with:
+          file: dist\bin\git-xet-windows-installer
       - name: Upload binary
         uses: actions/upload-artifact@v4
         with:
           name: git-xet-windows-${{ matrix.platform.target }}
-          path: target/release/git-xet.exe
+          path: dist/git-xet.exe
+      - name: Upload installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: git-xet-windows-installer-${{ matrix.platform.target }}
+          path: dist/bin/git-xet-windows-installer.msi
 
   github-release:
     name: Create GitHub release

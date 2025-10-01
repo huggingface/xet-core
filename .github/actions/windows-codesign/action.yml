@@ -1,0 +1,31 @@
+name: Codesign with Microsoft Trusted Signing
+description: Sign Windows files with Microsoft Trusted Signing Service
+runs:
+  using: "composite"
+  steps:
+    - uses: azure/trusted-signing-action@v0
+      with:
+        azure-tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+        azure-client-id: ${{ secrets.AZURE_CLIENT_ID }}
+        azure-client-secret: ${{ secrets.AZURE_CLIENT_SECRET }}
+        endpoint: https://eus.codesigning.azure.net/
+        trusted-signing-account-name: tsa-huggingface-apps
+        certificate-profile-name: git-xet-windows
+        files: ${{ inputs.file }}
+        file-digest: SHA256
+        timestamp-rfc3161: http://timestamp.acs.microsoft.com
+        timestamp-digest: SHA256
+        exclude-environment-credential: false
+        exclude-workload-identity-credential: true
+        exclude-managed-identity-credential: true
+        exclude-shared-token-cache-credential: true
+        exclude-visual-studio-credential: true
+        exclude-visual-studio-code-credential: true
+        exclude-azure-cli-credential: true
+        exclude-azure-powershell-credential: true
+        exclude-azure-developer-cli-credential: true
+        exclude-interactive-browser-credential: true
+inputs:
+  file:
+    required: true
+    type: string
