@@ -5,6 +5,9 @@
            Language="1033"
            UpgradeCode="1aedaf4a-9b02-44e5-be42-ef18ce3b5c28">
 
+    <!-- This tag ensures all installation files are compressed into a single .msi file. -->
+    <MediaTemplate EmbedCab="yes" />
+
     <MajorUpgrade DowngradeErrorMessage="A newer version of [ProductName] is already installed." />
 
     <!-- Define the directory structure. -->
