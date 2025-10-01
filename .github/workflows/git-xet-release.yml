@@ -132,7 +132,6 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
-    if: ${{ github.event_name == 'workflow_dispatch' }}
     needs: [linux, windows, macos]
     steps:
       - uses: actions/checkout@v4
@@ -145,4 +144,4 @@ jobs:
         run: |
           ls -l dist
           for dir in dist/*; do (cd "$dir" && zip -r "../$(basename "$dir").zip" .); done
-          gh release create git-xet-${{ github.event.inputs.tag}} dist/*.zip --generate-notes --prerelease --target ${{github.sha}}
+          gh release create git-xet-v0.1.0 dist/*.zip --generate-notes --prerelease --target ${{github.sha}}
