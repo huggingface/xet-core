@@ -89,6 +89,9 @@ jobs:
       - name: Install Rust 1.89
         uses: dtolnay/rust-toolchain@1.89.0
       - uses: ./.github/actions/cache-rust-build
+      - name: Install WiX
+        run: |
+          dotnet tool install --global wix
       - name: Build
         run: |
           cargo build --release
