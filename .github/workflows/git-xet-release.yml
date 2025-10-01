@@ -112,7 +112,7 @@ jobs:
       - name: Codesign the installer
         uses: ./.github/actions/windows-codesign
         with:
-          file: ${{ github.workspace }}\dist\bin\git-xet-windows-installer
+          file: ${{ github.workspace }}\dist\bin\git-xet-windows-installer.msi
           azure_tenant_id: ${{ secrets.AZURE_TENANT_ID }}
           azure_client_id: ${{ secrets.AZURE_CLIENT_ID }}
           azure_client_secret: ${{ secrets.AZURE_CLIENT_SECRET }}
