@@ -97,7 +97,7 @@ jobs:
       - name: Codesign the executable file
         uses: ./.github/actions/windows-codesign
         with:
-          file: dist\git-xet.exe
+          file: ${{ github.workspace }}\dist\git-xet.exe
           azure_tenant_id: ${{ secrets.AZURE_TENANT_ID }}
           azure_client_id: ${{ secrets.AZURE_CLIENT_ID }}
           azure_client_secret: ${{ secrets.AZURE_CLIENT_SECRET }}
@@ -109,7 +109,7 @@ jobs:
       - name: Codesign the installer
         uses: ./.github/actions/windows-codesign
         with:
-          file: dist\bin\git-xet-windows-installer
+          file: ${{ github.workspace }}\dist\bin\git-xet-windows-installer
           azure_tenant_id: ${{ secrets.AZURE_TENANT_ID }}
           azure_client_id: ${{ secrets.AZURE_CLIENT_ID }}
           azure_client_secret: ${{ secrets.AZURE_CLIENT_SECRET }}
