@@ -5,9 +5,9 @@ runs:
   steps:
     - uses: azure/trusted-signing-action@v0
       with:
-        azure-tenant-id: ${{ secrets.AZURE_TENANT_ID }}
-        azure-client-id: ${{ secrets.AZURE_CLIENT_ID }}
-        azure-client-secret: ${{ secrets.AZURE_CLIENT_SECRET }}
+        azure-tenant-id: ${{ inputs.azure_tenant_id }}
+        azure-client-id: ${{ inputs.azure_client_id }}
+        azure-client-secret: ${{ inputs.azure_client_secret }}
         endpoint: https://eus.codesigning.azure.net/
         trusted-signing-account-name: tsa-huggingface-apps
         certificate-profile-name: git-xet-windows
@@ -27,5 +27,14 @@ runs:
         exclude-interactive-browser-credential: true
 inputs:
   file:
+    required: true
+    type: string
+  azure_tenant_id:
+    required: true
+    type: string
+  azure_client_id:
+    required: true
+    type: string
+  azure_client_secret:
     required: true
     type: string
