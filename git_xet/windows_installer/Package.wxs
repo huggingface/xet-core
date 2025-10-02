@@ -88,9 +88,9 @@
       <!-- 
         - Action="RunUninstallCommand": The ID of the Custom Action we defined above.
         - Before="RemoveFiles": Runs the command before the .exe is deleted from the disk.
-        - Condition="REMOVE=&quot;ALL&quot; AND NOT UPGRADINGPRODUCTCODE": Ensures this only runs on a clean uninstall, not during an upgrade.
+        - Condition='REMOVE="ALL" AND NOT UPGRADINGPRODUCTCODE': Ensures this only runs on a clean uninstall, not during an upgrade.
       -->
-      <Custom Action="RunUninstallCommand" Before="RemoveFiles" Condition="REMOVE=&quot;ALL&quot; AND NOT UPGRADINGPRODUCTCODE" />
+      <Custom Action="RunUninstallCommand" Before="RemoveFiles" Condition='REMOVE="ALL" AND NOT UPGRADINGPRODUCTCODE' />
     </InstallExecuteSequence>
 
   </Package>
