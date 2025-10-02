@@ -151,7 +151,7 @@ impl WrappedProgressUpdaterImpl {
         // increment.
         //
         // Run on compute thread that doesn't block async workers
-        Python::with_gil(|py| {
+        Python::attach(|py| {
             let func = py_func.bind(py);
 
             // Test if it's enabled first; if None is passed in, then this is disabled.
@@ -223,7 +223,7 @@ impl WrappedProgressUpdaterImpl {
     async fn register_updates_impl(self: Arc<Self>, updates: ProgressUpdate) -> PyResult<()> {
         // Run on compute thread that doesn't block async workers
         tokio::task::spawn_blocking(move || {
-            Python::with_gil(|py| {
+            Python::attach(|py| {
                 let f = self.py_func.bind(py);
 
                 if self.update_with_detailed_progress {

@@ -197,7 +197,7 @@ where
     F::Output: Into<PyResult<Out>> + Send + Sync,
     Out: Send + Sync + 'static,
 {
-    let result: PyResult<Out> = py.allow_threads(move || {
+    let result: PyResult<Out> = py.detach(move || {
         // Now, without the GIL, spawn the task on a new OS thread.  This avoids having tokio cache stuff in
         // thread-local storage that is invalidated after a fork-exec.
         spawn_os_thread(move || {
