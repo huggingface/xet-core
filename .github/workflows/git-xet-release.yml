@@ -88,14 +88,43 @@ jobs:
       - name: Install Rust 1.89
         uses: dtolnay/rust-toolchain@1.89.0
       - uses: ./.github/actions/cache-rust-build
+      - name: Install WiX
+        run: |
+          dotnet tool install --global wix
       - name: Build
         run: |
           cargo build --release
+          mkdir dist
+          cp target/release/git-xet.exe dist/
+      - name: Codesign the executable file
+        uses: ./.github/actions/windows-codesign
+        with:
+          file: ${{ github.workspace }}\dist\git-xet.exe
+          azure_tenant_id: ${{ secrets.AZURE_TENANT_ID }}
+          azure_client_id: ${{ secrets.AZURE_CLIENT_ID }}
+          azure_client_secret: ${{ secrets.AZURE_CLIENT_SECRET }}
+      - name: Build installer
+        run: |
+          cp git_xet/windows_installer/Package.wxs dist/
+          cd dist
+          wix build Package.wxs -o bin\git-xet-windows-installer -arch x64
+      - name: Codesign the installer
+        uses: ./.github/actions/windows-codesign
+        with:
+          file: ${{ github.workspace }}\dist\bin\git-xet-windows-installer.msi
+          azure_tenant_id: ${{ secrets.AZURE_TENANT_ID }}
+          azure_client_id: ${{ secrets.AZURE_CLIENT_ID }}
+          azure_client_secret: ${{ secrets.AZURE_CLIENT_SECRET }}
       - name: Upload binary
         uses: actions/upload-artifact@v4
         with:
           name: git-xet-windows-${{ matrix.platform.target }}
-          path: target/release/git-xet.exe
+          path: dist/git-xet.exe
+      - name: Upload installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: git-xet-windows-installer-${{ matrix.platform.target }}
+          path: dist/bin/git-xet-windows-installer.msi
 
   github-release:
     name: Create GitHub release
