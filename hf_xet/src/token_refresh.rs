@@ -33,7 +33,7 @@ impl WrappedTokenRefresher {
 
     /// Validate that the inputted python object is callable
     fn validate_callable(py_func: &Py<PyAny>) -> Result<String, PyErr> {
-        Python::with_gil(|py| {
+        Python::attach(|py| {
             let f = py_func.bind(py);
             let name = f
                 .repr()
@@ -52,7 +52,7 @@ impl WrappedTokenRefresher {
 #[cfg_attr(target_family = "wasm", async_trait::async_trait(?Send))]
 impl TokenRefresher for WrappedTokenRefresher {
     async fn refresh(&self) -> Result<TokenInfo, AuthError> {
-        Python::with_gil(|py| {
+        Python::attach(|py| {
             let f = self.py_func.bind(py);
             if !f.is_callable() {
                 return Err(AuthError::RefreshFunctionNotCallable(self.name.clone()));
