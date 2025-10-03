@@ -34,7 +34,7 @@ pub async fn migrate_with_external_runtime(
 ) -> Result<()> {
     let cred_helper = BearerCredentialHelper::new(hub_token.to_owned(), "");
     let hub_client =
-        HubClient::new(hub_endpoint, RepoInfo::try_from(repo_type, repo_id)?, None, "xtool", "", cred_helper)?;
+        HubClient::new(hub_endpoint, RepoInfo::try_from(repo_type, repo_id)?, Some("main".to_owned()), "xtool", "", cred_helper)?;
 
     migrate_files_impl(file_paths, false, hub_client, cas_endpoint, None, false).await?;
 
