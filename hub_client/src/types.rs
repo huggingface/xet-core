@@ -61,6 +61,10 @@ pub struct RepoInfo {
 }
 
 impl RepoInfo {
+    pub fn new(repo_type: HFRepoType, full_name: String) -> Self {
+        Self { repo_type, full_name }
+    }
+
     pub fn try_from(repo_type: &str, repo_id: &str) -> Result<Self> {
         Ok(Self {
             repo_type: repo_type.parse()?,

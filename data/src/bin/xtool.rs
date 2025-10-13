@@ -11,10 +11,11 @@ use clap::{Args, Parser, Subcommand};
 use data::data_client::default_config;
 use data::migration_tool::hub_client_token_refresher::HubClientTokenRefresher;
 use data::migration_tool::migrate::migrate_files_impl;
-use hub_client::{BearerCredentialHelper, HubClient, HubXetTokenTrait, Operation, RepoInfo};
+use hub_client::{BearerCredentialHelper, HubClient, Operation, RepoInfo};
 use merklehash::MerkleHash;
 use utils::auth::TokenRefresher;
 use walkdir::WalkDir;
+use hub_client::client::xet_token::HubXetTokenTrait;
 use xet_runtime::XetRuntime;
 
 const DEFAULT_HF_ENDPOINT: &str = "https://huggingface.co";

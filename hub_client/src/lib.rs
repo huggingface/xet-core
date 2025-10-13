@@ -4,6 +4,8 @@ mod errors;
 mod types;
 
 pub use auth::{BearerCredentialHelper, CredentialHelper, NoopCredentialHelper};
-pub use client::{HubClient, Operation, HubXetTokenTrait};
+pub use client::{HubClient, Operation};
+pub use client::xet_token::HubXetTokenTrait;
+pub use client::repo::HubRepositoryTrait;
 pub use errors::{HubClientError, Result};
 pub use types::{CasJWTInfo, HFRepoType, RepoInfo};

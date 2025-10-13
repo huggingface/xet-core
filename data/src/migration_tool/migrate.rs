@@ -2,9 +2,10 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use cas_object::CompressionScheme;
-use hub_client::{BearerCredentialHelper, HubClient, HubXetTokenTrait, Operation, RepoInfo};
+use hub_client::{BearerCredentialHelper, HubClient, Operation, RepoInfo};
 use mdb_shard::file_structs::MDBFileInfo;
-use tracing::{Instrument, Span, info_span, instrument};
+use tracing::{info_span, instrument, Instrument, Span};
+use hub_client::client::xet_token::HubXetTokenTrait;
 use utils::auth::TokenRefresher;
 use xet_runtime::XetRuntime;
 use xet_runtime::utils::run_constrained;

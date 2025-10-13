@@ -5,10 +5,12 @@ edition = "2024"
 
 [dependencies]
 cas_client = { path = "../cas_client" }
+cas_types = { path = "../cas_types" }
 
 anyhow = { workspace = true }
 async-trait = { workspace = true }
 http = { workspace = true }
+regex = { workspace = true }
 reqwest = { workspace = true }
 reqwest-middleware = { workspace = true }
 serde = { workspace = true }
@@ -18,3 +20,7 @@ urlencoding = { workspace = true }
 [dev-dependencies]
 serde_json = { workspace = true }
 tokio = { workspace = true }
+
+[[example]]
+path = "examples/list_files.rs"
+name = "list-files"
