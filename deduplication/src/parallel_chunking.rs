@@ -4,18 +4,18 @@
 //! content-defined chunk boundaries in large files. It uses memory mapping,
 //! multi-threading, and the gearhash library for boundary detection.
 
-use bytes::Bytes;
 use std::fs::File;
 use std::path::Path;
 
-use crate::Chunk;
-use crate::constants::{MAXIMUM_CHUNK_MULTIPLIER, MINIMUM_CHUNK_DIVISOR, TARGET_CHUNK_SIZE};
-
+use bytes::Bytes;
 #[cfg(feature = "parallel-chunking")]
 use {
     crossbeam::{channel, thread},
     memmap2::MmapOptions,
 };
+
+use crate::Chunk;
+use crate::constants::{MAXIMUM_CHUNK_MULTIPLIER, MINIMUM_CHUNK_DIVISOR, TARGET_CHUNK_SIZE};
 
 #[cfg(feature = "parallel-chunking")]
 mod parallel_impl {
@@ -346,9 +346,11 @@ pub fn chunk_file_parallel<P: AsRef<Path>>(_file_path: P, _thread_count: Option<
 #[cfg(test)]
 #[cfg(feature = "parallel-chunking")]
 mod tests {
-    use super::*;
     use std::io::Write;
+
     use tempfile::NamedTempFile;
+
+    use super::*;
 
     #[test]
     fn test_parallel_chunking_small_file() {

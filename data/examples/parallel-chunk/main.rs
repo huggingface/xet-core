@@ -5,7 +5,6 @@ use std::io::{BufWriter, Write};
 use std::path::PathBuf;
 
 use clap::Parser;
-
 #[cfg(feature = "parallel-chunking")]
 use deduplication::chunk_file_parallel;
 

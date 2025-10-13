@@ -17,7 +17,6 @@ pub use data_aggregator::DataAggregator;
 pub use dedup_metrics::DeduplicationMetrics;
 pub use file_deduplication::FileDeduper;
 pub use interface::DeduplicationDataInterface;
-pub use raw_xorb_data::{RawXorbData, test_utils};
-
 #[cfg(feature = "parallel-chunking")]
 pub use parallel_chunking::chunk_file_parallel;
+pub use raw_xorb_data::{RawXorbData, test_utils};
