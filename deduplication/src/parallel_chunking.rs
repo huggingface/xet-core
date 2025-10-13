@@ -23,10 +23,10 @@ mod parallel_impl {
 
     // Configuration constants for parallel processing
     const FILE_SEGMENT_SIZE: u64 = 2 * 1024 * 1024 * 1024; // 2 GiB file segments for processing
-    const MAX_ANCHORS_PER_SEGMENT: usize = 100_000;         // limit anchors per segment to control memory
-    const MAX_ANCHORS_PER_THREAD: usize = 5_000;            // stack array size for thread-local anchor collection
-    const MAX_FINAL_ANCHORS: usize = 500_000;               // global anchor limit for final boundary calculation
-    const MAX_THREADS: usize = 32;                          // maximum threads to prevent resource exhaustion
+    const MAX_ANCHORS_PER_SEGMENT: usize = 100_000; // limit anchors per segment to control memory
+    const MAX_ANCHORS_PER_THREAD: usize = 5_000; // stack array size for thread-local anchor collection
+    const MAX_FINAL_ANCHORS: usize = 500_000; // global anchor limit for final boundary calculation
+    const MAX_THREADS: usize = 32; // maximum threads to prevent resource exhaustion
 
     #[derive(Clone, Debug)]
     pub struct Range {
