@@ -239,7 +239,7 @@ impl Client for LocalClient {
         &self,
         hash: &MerkleHash,
         byte_range: Option<FileRange>,
-        output_provider: &OutputProvider,
+        output_provider: OutputProvider,
         _progress_updater: Option<Arc<SingleItemProgressUpdater>>,
     ) -> Result<u64> {
         let Some((file_info, _)) = self
@@ -250,7 +250,10 @@ impl Client for LocalClient {
         else {
             return Err(CasClientError::FileNotFound(*hash));
         };
-        let mut writer = output_provider.get_writer_at(0)?;
+        let mut writer = match output_provider {
+            OutputProvider::Seeking(s) => s.get_writer_at(0),
+            OutputProvider::Sequential(s) => s.get_writer(),
+        }?;
 
         // This is just used for testing, so inefficient is fine.
         let mut file_vec = Vec::new();

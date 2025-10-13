@@ -34,9 +34,9 @@ use crate::download_utils::*;
 use crate::error::{CasClientError, Result};
 use crate::http_client::{Api, ResponseErrorLogger, RetryConfig};
 #[cfg(not(target_family = "wasm"))]
-use crate::output_provider::OutputProvider;
+use crate::output_provider::SeekingOutputProvider;
 use crate::retry_wrapper::RetryWrapper;
-use crate::{Client, http_client};
+use crate::{Client, OutputProvider, http_client};
 
 pub const CAS_ENDPOINT: &str = "http://localhost:8080";
 pub const PREFIX_DEFAULT: &str = "default";
@@ -49,7 +49,7 @@ utils::configurable_constants! {
         high_performance: 256,
     };
 
-    /// Send a report of successful partial upload every 512kb.
+    /// Send a report of a successful partial upload every 512kb.
     ref UPLOAD_REPORTING_BLOCK_SIZE : usize = 512 * 1024;
 
     /// Env (HF_XET_RECONSTRUCT_WRITE_SEQUENTIALLY) to switch to writing terms sequentially to disk.
@@ -126,7 +126,7 @@ pub(crate) async fn map_fetch_info_into_download_tasks(
     chunk_cache: Option<Arc<dyn ChunkCache>>,
     client: Arc<ClientWithMiddleware>,
     range_download_single_flight: Arc<Group<DownloadRangeResult, CasClientError>>,
-    output_provider: &OutputProvider,
+    output_provider: &SeekingOutputProvider,
 ) -> Result<Vec<FetchTermDownloadOnceAndWriteEverywhereUsed>> {
     // the actual segment length.
     // the file_range end may actually exceed the file total length for the last segment.
@@ -295,7 +295,7 @@ impl RemoteClient {
         &self,
         file_hash: &MerkleHash,
         byte_range: Option<FileRange>,
-        writer: &OutputProvider,
+        mut writer: Box<dyn Write + Send>,
         progress_updater: Option<Arc<SingleItemProgressUpdater>>,
     ) -> Result<u64> {
         // Use an unlimited queue size, as queue size is inherently bounded by degree of concurrency.
@@ -409,7 +409,6 @@ impl RemoteClient {
             Ok(())
         });
 
-        let mut writer = writer.get_writer_at(0)?;
         let mut total_written = 0;
         while let Some(result) = running_downloads_rx.recv().await {
             match result.await {
@@ -449,7 +448,7 @@ impl RemoteClient {
         &self,
         file_hash: &MerkleHash,
         byte_range: Option<FileRange>,
-        writer: &OutputProvider,
+        writer: &SeekingOutputProvider,
         progress_updater: Option<Arc<SingleItemProgressUpdater>>,
     ) -> Result<u64> {
         // Use the unlimited queue, as queue size is inherently bounded by degree of concurrency.
@@ -708,21 +707,28 @@ impl Client for RemoteClient {
         &self,
         hash: &MerkleHash,
         byte_range: Option<FileRange>,
-        output_provider: &OutputProvider,
+        output_provider: OutputProvider,
         progress_updater: Option<Arc<SingleItemProgressUpdater>>,
     ) -> Result<u64> {
         // If the user has set the `HF_XET_RECONSTRUCT_WRITE_SEQUENTIALLY=true` env variable, then we
         // should write the file to the output sequentially instead of in parallel.
-        if *RECONSTRUCT_WRITE_SEQUENTIALLY {
+        if *RECONSTRUCT_WRITE_SEQUENTIALLY || output_provider.is_sequential() {
             info!("reconstruct terms sequentially");
-            self.reconstruct_file_to_writer_segmented(hash, byte_range, output_provider, progress_updater)
+            let writer = match output_provider {
+                OutputProvider::Seeking(s) => s.get_writer_at(0),
+                OutputProvider::Sequential(s) => s.get_writer(),
+            }?;
+            self.reconstruct_file_to_writer_segmented(hash, byte_range, writer, progress_updater)
                 .await
         } else {
             info!("reconstruct terms in parallel");
+            let seeking_output_provider = output_provider
+                .as_seeking()
+                .expect("output provider is not seeking, checked already");
             self.reconstruct_file_to_writer_segmented_parallel_write(
                 hash,
                 byte_range,
-                output_provider,
+                seeking_output_provider,
                 progress_updater,
             )
             .await
@@ -1201,10 +1207,11 @@ mod tests {
         let client = RemoteClient::new(endpoint, &None, &None, None, "", false);
         let provider = BufferProvider::default();
         let buf = provider.buf.clone();
-        let writer = OutputProvider::Buffer(provider);
+        let writer = SeekingOutputProvider::Buffer(provider);
         let resp = threadpool.external_run_async_task(async move {
+            let writer = writer.get_writer_at(0)?;
             client
-                .reconstruct_file_to_writer_segmented(&test.file_hash, Some(test.file_range), &writer, None)
+                .reconstruct_file_to_writer_segmented(&test.file_hash, Some(test.file_range), writer, None)
                 .await
         })?;
 
@@ -1219,7 +1226,7 @@ mod tests {
         let client = RemoteClient::new(endpoint, &None, &None, None, "", false);
         let provider = BufferProvider::default();
         let buf = provider.buf.clone();
-        let writer = OutputProvider::Buffer(provider);
+        let writer = SeekingOutputProvider::Buffer(provider);
         let resp = threadpool.external_run_async_task(async move {
             client
                 .reconstruct_file_to_writer_segmented_parallel_write(

@@ -42,7 +42,7 @@ impl FileDownloader {
         &self,
         file_id: &MerkleHash,
         file_name: Arc<str>,
-        output: &OutputProvider,
+        output: OutputProvider,
         range: Option<FileRange>,
         progress_updater: Option<Arc<ItemProgressUpdater>>,
     ) -> Result<u64> {

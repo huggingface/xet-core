@@ -30,12 +30,12 @@ pub trait Client {
         &self,
         hash: &MerkleHash,
         byte_range: Option<FileRange>,
-        output_provider: &OutputProvider,
+        output_provider: OutputProvider,
         progress_updater: Option<Arc<SingleItemProgressUpdater>>,
     ) -> Result<u64>;
 
     #[cfg(not(target_family = "wasm"))]
-    async fn batch_get_file(&self, files: HashMap<MerkleHash, &OutputProvider>) -> Result<u64> {
+    async fn batch_get_file(&self, files: HashMap<MerkleHash, OutputProvider>) -> Result<u64> {
         let mut n_bytes = 0;
         // Provide the basic naive implementation as a default.
         for (h, w) in files {
