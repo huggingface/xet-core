@@ -11,7 +11,7 @@ use clap::{Args, Parser, Subcommand};
 use data::data_client::default_config;
 use data::migration_tool::hub_client_token_refresher::HubClientTokenRefresher;
 use data::migration_tool::migrate::migrate_files_impl;
-use hub_client::{BearerCredentialHelper, HubClient, Operation, RepoInfo};
+use hub_client::{BearerCredentialHelper, HubClient, HubXetTokenTrait, Operation, RepoInfo};
 use merklehash::MerkleHash;
 use utils::auth::TokenRefresher;
 use walkdir::WalkDir;
@@ -198,7 +198,7 @@ async fn query_reconstruction(
     hub_client: HubClient,
 ) -> Result<Option<QueryReconstructionResponse>> {
     let operation = Operation::Download;
-    let jwt_info = hub_client.get_cas_jwt(operation).await?;
+    let jwt_info = hub_client.get_xet_token(operation).await?;
     let token_refresher = Arc::new(HubClientTokenRefresher {
         operation,
         client: Arc::new(hub_client),

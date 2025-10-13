@@ -4606,6 +4606,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ea2f10b9bb0928dfb1b42b65e1f9e36f7f54dbdf08457afefb38afcdec4fa2bb"
 
 [[package]]
+name = "xet-mount"
+version = "0.1.0"
+dependencies = [
+ "data",
+ "hub_client",
+ "tokio",
+]
+
+[[package]]
 name = "xet_runtime"
 version = "0.1.0"
 dependencies = [

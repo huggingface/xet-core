@@ -27,8 +27,8 @@ jobs:
             target: aarch64
     steps:
       - uses: actions/checkout@v4
-      - name: Install Rust 1.89
-        uses: dtolnay/rust-toolchain@1.89.0
+      - name: Install Rust 1.90
+        uses: dtolnay/rust-toolchain@1.90.0
       - uses: ./.github/actions/cache-rust-build
       - name: Build
         run: |
@@ -50,8 +50,8 @@ jobs:
             target: aarch64
     steps:
       - uses: actions/checkout@v4
-      - name: Install Rust 1.89
-        uses: dtolnay/rust-toolchain@1.89.0
+      - name: Install Rust 1.90
+        uses: dtolnay/rust-toolchain@1.90.0
       - uses: ./.github/actions/cache-rust-build
       - name: Build
         run: |
@@ -85,8 +85,8 @@ jobs:
             target: x86_64
     steps:
       - uses: actions/checkout@v4
-      - name: Install Rust 1.89
-        uses: dtolnay/rust-toolchain@1.89.0
+      - name: Install Rust 1.90
+        uses: dtolnay/rust-toolchain@1.90.0
       - uses: ./.github/actions/cache-rust-build
       - name: Install WiX
         run: |

@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use hub_client::{HubClient, Operation};
+use hub_client::{HubClient, HubXetTokenTrait, Operation};
 use utils::auth::{TokenInfo, TokenRefresher};
 use utils::errors::AuthError;
 
@@ -15,7 +15,7 @@ impl TokenRefresher for HubClientTokenRefresher {
     async fn refresh(&self) -> std::result::Result<TokenInfo, AuthError> {
         let jwt_info = self
             .client
-            .get_cas_jwt(self.operation)
+            .get_xet_token(self.operation)
             .await
             .map_err(AuthError::token_refresh_failure)?;
 

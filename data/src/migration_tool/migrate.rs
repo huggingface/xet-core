@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use cas_object::CompressionScheme;
-use hub_client::{BearerCredentialHelper, HubClient, Operation, RepoInfo};
+use hub_client::{BearerCredentialHelper, HubClient, HubXetTokenTrait, Operation, RepoInfo};
 use mdb_shard::file_structs::MDBFileInfo;
 use tracing::{Instrument, Span, info_span, instrument};
 use utils::auth::TokenRefresher;
@@ -60,7 +60,7 @@ pub async fn migrate_files_impl(
     dry_run: bool,
 ) -> Result<MigrationInfo> {
     let operation = Operation::Upload;
-    let jwt_info = hub_client.get_cas_jwt(operation).await?;
+    let jwt_info = hub_client.get_xet_token(operation).await?;
     let token_refresher = Arc::new(HubClientTokenRefresher {
         operation,
         client: Arc::new(hub_client),

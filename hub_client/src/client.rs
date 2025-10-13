@@ -42,27 +42,15 @@ pub struct HubClient {
     cred_helper: Arc<dyn CredentialHelper>,
 }
 
-impl HubClient {
-    pub fn new(
-        endpoint: &str,
-        repo_info: RepoInfo,
-        reference: Option<String>,
-        user_agent: &str,
-        session_id: &str,
-        cred_helper: Arc<dyn CredentialHelper>,
-    ) -> Result<Self> {
-        Ok(HubClient {
-            endpoint: endpoint.to_owned(),
-            repo_info,
-            reference,
-            user_agent: user_agent.to_owned(),
-            client: build_http_client(RetryConfig::default(), session_id)?,
-            cred_helper,
-        })
-    }
-
+#[async_trait::async_trait]
+pub trait HubXetTokenTrait {
     // Get CAS access token from Hub access token.
-    pub async fn get_cas_jwt(&self, operation: Operation) -> Result<CasJWTInfo> {
+    async fn get_xet_token(&self, operation: Operation) -> Result<CasJWTInfo>;
+}
+
+#[async_trait::async_trait]
+impl HubXetTokenTrait for HubClient {
+    async fn get_xet_token(&self, operation: Operation) -> Result<CasJWTInfo> {
         let endpoint = self.endpoint.as_str();
         let repo_type = self.repo_info.repo_type.as_str();
         let repo_id = self.repo_info.full_name.as_str();
@@ -104,9 +92,29 @@ impl HubClient {
     }
 }
 
+impl HubClient {
+    pub fn new(
+        endpoint: &str,
+        repo_info: RepoInfo,
+        reference: Option<String>,
+        user_agent: &str,
+        session_id: &str,
+        cred_helper: Arc<dyn CredentialHelper>,
+    ) -> Result<Self> {
+        Ok(HubClient {
+            endpoint: endpoint.to_owned(),
+            repo_info,
+            reference,
+            user_agent: user_agent.to_owned(),
+            client: build_http_client(RetryConfig::default(), session_id)?,
+            cred_helper,
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::HubClient;
+    use super::{HubClient, HubXetTokenTrait};
     use crate::errors::Result;
     use crate::{BearerCredentialHelper, HFRepoType, Operation, RepoInfo};
 
@@ -126,7 +134,7 @@ mod tests {
             cred_helper,
         )?;
 
-        let read_info = hub_client.get_cas_jwt(Operation::Upload).await?;
+        let read_info = hub_client.get_xet_token(Operation::Upload).await?;
 
         assert!(read_info.access_token.len() > 0);
         assert!(read_info.cas_url.len() > 0);
@@ -151,7 +159,7 @@ mod tests {
             cred_helper,
         )?;
 
-        let read_info = hub_client.get_cas_jwt(Operation::Upload).await?;
+        let read_info = hub_client.get_xet_token(Operation::Upload).await?;
 
         assert!(read_info.access_token.len() > 0);
         assert!(read_info.cas_url.len() > 0);
@@ -176,7 +184,7 @@ mod tests {
             cred_helper,
         )?;
 
-        let read_info = hub_client.get_cas_jwt(Operation::Upload).await?;
+        let read_info = hub_client.get_xet_token(Operation::Upload).await?;
 
         assert!(read_info.access_token.len() > 0);
         assert!(read_info.cas_url.len() > 0);

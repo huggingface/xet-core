@@ -1,0 +1,13 @@
+[package]
+name = "xet-mount"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+name = "xet-mount"
+path = "src/main.rs"
+
+[dependencies]
+tokio = { workspace = true }
+data = { path = "../data" }
+hub_client = { path = "../hub_client" }
