@@ -21,9 +21,9 @@ use tempfile::TempDir;
 use tokio::runtime::Handle;
 use tracing::{debug, error, info, warn};
 
-use crate::Client;
 use crate::error::{CasClientError, Result};
 use crate::output_provider::OutputProvider;
+use crate::{Client, SequentialOutput};
 
 pub struct LocalClient {
     tmp_dir: Option<TempDir>, // To hold directory to use for local testing
@@ -250,10 +250,7 @@ impl Client for LocalClient {
         else {
             return Err(CasClientError::FileNotFound(*hash));
         };
-        let mut writer = match output_provider {
-            OutputProvider::Seeking(s) => s.get_writer_at(0),
-            OutputProvider::Sequential(s) => s.get_writer(),
-        }?;
+        let mut writer: SequentialOutput = output_provider.try_into()?;
 
         // This is just used for testing, so inefficient is fine.
         let mut file_vec = Vec::new();

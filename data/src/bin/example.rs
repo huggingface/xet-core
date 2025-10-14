@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, OnceLock};
 
 use anyhow::Result;
-use cas_client::{FileProvider, OutputProvider, SeekingOutputProvider};
+use cas_client::OutputProvider;
 use clap::{Args, Parser, Subcommand};
 use data::configurations::*;
 use data::{FileDownloader, FileUploadSession, XetFileInfo};
@@ -120,7 +120,7 @@ async fn smudge_file(arg: &SmudgeArg) -> Result<()> {
         None => Box::new(std::io::stdin()),
     };
 
-    let writer = SeekingOutputProvider::File(FileProvider::new(arg.dest.clone())).into();
+    let writer = OutputProvider::new_file_seeking(arg.dest.clone());
     smudge(arg.dest.to_string_lossy().into(), reader, writer).await?;
 
     Ok(())

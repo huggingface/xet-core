@@ -36,7 +36,7 @@ use crate::http_client::{Api, ResponseErrorLogger, RetryConfig};
 #[cfg(not(target_family = "wasm"))]
 use crate::output_provider::SeekingOutputProvider;
 use crate::retry_wrapper::RetryWrapper;
-use crate::{Client, OutputProvider, http_client};
+use crate::{Client, OutputProvider, SequentialOutput, http_client};
 
 pub const CAS_ENDPOINT: &str = "http://localhost:8080";
 pub const PREFIX_DEFAULT: &str = "default";
@@ -295,7 +295,7 @@ impl RemoteClient {
         &self,
         file_hash: &MerkleHash,
         byte_range: Option<FileRange>,
-        mut writer: Box<dyn Write + Send>,
+        mut writer: SequentialOutput,
         progress_updater: Option<Arc<SingleItemProgressUpdater>>,
     ) -> Result<u64> {
         // Use an unlimited queue size, as queue size is inherently bounded by degree of concurrency.
@@ -714,10 +714,10 @@ impl Client for RemoteClient {
         // should write the file to the output sequentially instead of in parallel.
         if *RECONSTRUCT_WRITE_SEQUENTIALLY || output_provider.is_sequential() {
             info!("reconstruct terms sequentially");
-            let writer = match output_provider {
-                OutputProvider::Seeking(s) => s.get_writer_at(0),
-                OutputProvider::Sequential(s) => s.get_writer(),
-            }?;
+            let writer: SequentialOutput = match output_provider {
+                OutputProvider::Seeking(s) => s.try_into()?,
+                OutputProvider::Sequential(s) => s,
+            };
             self.reconstruct_file_to_writer_segmented(hash, byte_range, writer, progress_updater)
                 .await
         } else {
@@ -819,7 +819,7 @@ mod tests {
     use xet_runtime::XetRuntime;
 
     use super::*;
-    use crate::output_provider::BufferProvider;
+    use crate::ThreadSafeBuffer;
 
     #[ignore = "requires a running CAS server"]
     #[traced_test]
@@ -1205,11 +1205,10 @@ mod tests {
         // test reconstruct and sequential write
         let test = test_case.clone();
         let client = RemoteClient::new(endpoint, &None, &None, None, "", false);
-        let provider = BufferProvider::default();
-        let buf = provider.buf.clone();
-        let writer = SeekingOutputProvider::Buffer(provider);
+        let buf = ThreadSafeBuffer::default();
+        let provider = OutputProvider::new_buffer_seeking(buf.clone());
         let resp = threadpool.external_run_async_task(async move {
-            let writer = writer.get_writer_at(0)?;
+            let writer = provider.try_into()?;
             client
                 .reconstruct_file_to_writer_segmented(&test.file_hash, Some(test.file_range), writer, None)
                 .await
@@ -1217,17 +1216,17 @@ mod tests {
 
         assert_eq!(test.expect_error, resp.is_err(), "{:?}", resp.err());
         if !test.expect_error {
-            assert_eq!(test.expected_data.len() as u64, resp.unwrap());
+            assert_eq!(test.expected_data.len() as u64, resp?);
             assert_eq!(test.expected_data, buf.value());
         }
 
         // test reconstruct and parallel write
         let test = test_case;
         let client = RemoteClient::new(endpoint, &None, &None, None, "", false);
-        let provider = BufferProvider::default();
-        let buf = provider.buf.clone();
-        let writer = SeekingOutputProvider::Buffer(provider);
+        let buf = ThreadSafeBuffer::default();
+        let provider = OutputProvider::new_buffer_seeking(buf.clone());
         let resp = threadpool.external_run_async_task(async move {
+            let writer = provider.as_seeking().unwrap();
             client
                 .reconstruct_file_to_writer_segmented_parallel_write(
                     &test.file_hash,

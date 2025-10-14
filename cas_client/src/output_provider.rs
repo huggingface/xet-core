@@ -1,24 +1,70 @@
 use std::io::{Cursor, Seek, SeekFrom, Write};
 use std::path::PathBuf;
+use std::pin::Pin;
 use std::sync::{Arc, Mutex};
+use std::task::{Context, Poll};
 
+use futures::AsyncWrite;
+
+use crate::CasClientError;
 use crate::error::Result;
 
-pub enum SequentialOneshotOutputProvider {
-    File(FileProvider),
-    Stdout,
-    #[cfg(test)]
-    Buffer(BufferProvider),
+pub enum SequentialOutput {
+    Sync(Option<Box<dyn Write + Send>>),
+    Async(Box<dyn AsyncWrite + Send + Unpin>),
 }
 
-impl SequentialOneshotOutputProvider {
-    pub fn get_writer(self) -> Result<Box<dyn Write + Send>> {
-        match self {
-            SequentialOneshotOutputProvider::File(fp) => fp.get_writer(),
-            SequentialOneshotOutputProvider::Stdout => Ok(Box::new(std::io::stdout())),
-            #[cfg(test)]
-            SequentialOneshotOutputProvider::Buffer(bp) => bp.get_writer(),
+impl AsyncWrite for SequentialOutput {
+    fn poll_write(self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &[u8]) -> Poll<std::io::Result<usize>> {
+        match self.get_mut() {
+            SequentialOutput::Sync(Some(w)) => Poll::Ready(w.write(buf)),
+            // doneness is signaled by the writer being dropped.
+            SequentialOutput::Sync(None) => Poll::Ready(Ok(0)),
+            SequentialOutput::Async(w) => std::pin::pin!(w).poll_write(cx, buf),
         }
+    }
+
+    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        match self.get_mut() {
+            SequentialOutput::Sync(Some(w)) => Poll::Ready(w.flush()),
+            // doneness is signaled by the writer being dropped.
+            SequentialOutput::Sync(None) => Poll::Ready(Ok(())),
+            SequentialOutput::Async(w) => std::pin::pin!(w).poll_flush(cx),
+        }
+    }
+
+    fn poll_close(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        match self.get_mut() {
+            SequentialOutput::Sync(s) => {
+                let taken = std::mem::take(s);
+                // dropping the sync writer will cause the writer to be closed (at least for files).
+                drop(taken);
+                Poll::Ready(Ok(()))
+            },
+            SequentialOutput::Async(w) => std::pin::pin!(w).poll_close(cx),
+        }
+    }
+}
+
+impl Write for SequentialOutput {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        let SequentialOutput::Sync(w_option) = self else {
+            return Err(std::io::Error::new(std::io::ErrorKind::Unsupported, "writer is async"));
+        };
+        let Some(w) = w_option else {
+            return Err(std::io::Error::new(std::io::ErrorKind::BrokenPipe, "writer is closed"));
+        };
+        w.write(buf)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        let SequentialOutput::Sync(w_option) = self else {
+            return Err(std::io::Error::new(std::io::ErrorKind::Unsupported, "writer is async"));
+        };
+        let Some(w) = w_option else {
+            return Err(std::io::Error::new(std::io::ErrorKind::BrokenPipe, "writer is closed"));
+        };
+        w.flush()
     }
 }
 
@@ -42,21 +88,18 @@ impl SeekingOutputProvider {
     }
 }
 
+impl TryFrom<SeekingOutputProvider> for SequentialOutput {
+    type Error = CasClientError;
+
+    fn try_from(value: SeekingOutputProvider) -> std::result::Result<Self, Self::Error> {
+        let inner = value.get_writer_at(0)?;
+        Ok(SequentialOutput::Sync(Some(inner)))
+    }
+}
+
 pub enum OutputProvider {
     Seeking(SeekingOutputProvider),
-    Sequential(SequentialOneshotOutputProvider),
-}
-
-impl From<SeekingOutputProvider> for OutputProvider {
-    fn from(p: SeekingOutputProvider) -> Self {
-        Self::Seeking(p)
-    }
-}
-
-impl From<SequentialOneshotOutputProvider> for OutputProvider {
-    fn from(p: SequentialOneshotOutputProvider) -> Self {
-        Self::Sequential(p)
-    }
+    Sequential(SequentialOutput),
 }
 
 impl OutputProvider {
@@ -75,10 +118,38 @@ impl OutputProvider {
         }
     }
 
-    pub fn as_sequential(&self) -> Option<&SequentialOneshotOutputProvider> {
+    pub fn as_sequential(&self) -> Option<&SequentialOutput> {
         match self {
             Self::Sequential(p) => Some(p),
             _ => None,
+        }
+    }
+
+    pub fn new_file_seeking(filepath: PathBuf) -> Self {
+        Self::Seeking(SeekingOutputProvider::File(FileProvider::new(filepath)))
+    }
+
+    #[cfg(test)]
+    pub fn new_buffer_seeking(buf: ThreadSafeBuffer) -> Self {
+        Self::Seeking(SeekingOutputProvider::Buffer(BufferProvider { buf }))
+    }
+
+    pub fn from_writer<T: Write + Send + 'static>(writer: T) -> Self {
+        Self::Sequential(SequentialOutput::Sync(Some(Box::new(writer))))
+    }
+
+    pub fn from_async_writer<T: AsyncWrite + Send + Unpin + 'static>(writer: T) -> Self {
+        Self::Sequential(SequentialOutput::Async(Box::new(writer)))
+    }
+}
+
+impl TryFrom<OutputProvider> for SequentialOutput {
+    type Error = CasClientError;
+
+    fn try_from(value: OutputProvider) -> std::result::Result<Self, Self::Error> {
+        match value {
+            OutputProvider::Seeking(s) => s.try_into(),
+            OutputProvider::Sequential(s) => Ok(s),
         }
     }
 }
@@ -104,20 +175,11 @@ impl FileProvider {
         file.seek(SeekFrom::Start(start))?;
         Ok(Box::new(file))
     }
-
-    pub fn get_writer(self: Self) -> Result<Box<dyn Write + Send>> {
-        let file = std::fs::OpenOptions::new()
-            .write(true)
-            .truncate(true)
-            .create(true)
-            .open(self.filename)?;
-        Ok(Box::new(file))
-    }
 }
 
 /// BufferProvider may be Seeking or Sequential
 /// only used in testing
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Clone)]
 pub struct BufferProvider {
     pub buf: ThreadSafeBuffer,
 }
@@ -126,12 +188,6 @@ impl BufferProvider {
     pub fn get_writer_at(&self, start: u64) -> Result<Box<dyn Write + Send>> {
         let mut buffer = self.buf.clone();
         buffer.idx = start;
-        Ok(Box::new(buffer))
-    }
-
-    pub fn get_writer(self: Self) -> Result<Box<dyn Write + Send>> {
-        let mut buffer = self.buf;
-        buffer.idx = 0;
         Ok(Box::new(buffer))
     }
 }
@@ -145,6 +201,7 @@ pub struct ThreadSafeBuffer {
     idx: u64,
     inner: Arc<Mutex<Cursor<Vec<u8>>>>,
 }
+
 impl ThreadSafeBuffer {
     pub fn value(&self) -> Vec<u8> {
         self.inner.lock().unwrap().get_ref().clone()
