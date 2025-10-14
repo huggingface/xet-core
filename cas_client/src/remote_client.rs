@@ -34,9 +34,9 @@ use crate::download_utils::*;
 use crate::error::{CasClientError, Result};
 use crate::http_client::{Api, ResponseErrorLogger, RetryConfig};
 #[cfg(not(target_family = "wasm"))]
-use crate::output_provider::SeekingOutputProvider;
+use crate::output_provider::{OutputProvider, SeekingOutputProvider, SequentialOutput};
 use crate::retry_wrapper::RetryWrapper;
-use crate::{Client, OutputProvider, SequentialOutput, http_client};
+use crate::{Client, http_client};
 
 pub const CAS_ENDPOINT: &str = "http://localhost:8080";
 pub const PREFIX_DEFAULT: &str = "default";
