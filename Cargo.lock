@@ -1086,6 +1086,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "filetime"
+version = "0.2.25"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "35c0522e981e68cbfa8c3f978441a5f34b30b96e146b33cd3359176b50fe8586"
+dependencies = [
+ "cfg-if 1.0.0",
+ "libc",
+ "libredox",
+ "windows-sys 0.59.0",
+]
+
+[[package]]
 name = "fixedbitset"
 version = "0.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1997,6 +2009,7 @@ checksum = "c0ff37bd590ca25063e35af745c343cb7a0271906fb7b37e4813e8f79f00268d"
 dependencies = [
  "bitflags 2.9.1",
  "libc",
+ "redox_syscall 0.5.12",
 ]
 
 [[package]]
@@ -2219,6 +2232,21 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "650eef8c711430f1a879fdd01d4745a7deea475becfb90269c06775983bbf086"
 
 [[package]]
+name = "nfsserve"
+version = "0.10.2"
+source = "git+https://github.com/huggingface/nfsserve.git#9ba758b0490e52c57a4103f82455fc95fac748df"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "byteorder",
+ "filetime",
+ "num-derive",
+ "num-traits",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "nu-ansi-term"
 version = "0.46.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2243,6 +2271,17 @@ name = "num-conv"
 version = "0.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "51d515d32fb182ee37cda2ccdcb92950d6a3c2893aa280e540671c2cd0f3b1d9"
+
+[[package]]
+name = "num-derive"
+version = "0.4.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ed3955f1a9c7c0c15e092f9c887db08b1fc683305fdf6eb6684f22555355e202"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.101",
+]
 
 [[package]]
 name = "num-integer"
@@ -4611,8 +4650,10 @@ checksum = "ea2f10b9bb0928dfb1b42b65e1f9e36f7f54dbdf08457afefb38afcdec4fa2bb"
 name = "xet-mount"
 version = "0.1.0"
 dependencies = [
+ "clap",
  "data",
  "hub_client",
+ "nfsserve",
  "tokio",
 ]
 

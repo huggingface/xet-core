@@ -9,5 +9,9 @@ path = "src/main.rs"
 
 [dependencies]
 tokio = { workspace = true }
+clap = { workspace = true }
+
 data = { path = "../data" }
 hub_client = { path = "../hub_client" }
+
+nfsserve = { git = "https://github.com/huggingface/nfsserve.git" }
