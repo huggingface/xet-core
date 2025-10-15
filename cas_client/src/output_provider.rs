@@ -97,11 +97,12 @@ impl FileProvider {
 
 #[cfg(test)]
 pub(crate) mod buffer_provider {
+    use std::io::{Cursor, Write};
+    use std::sync::{Arc, Mutex};
+
     use crate::error::Result;
     use crate::output_provider::AsyncWriteFromWrite;
     use crate::{SeekingOutputProvider, SequentialOutput};
-    use std::io::{Cursor, Write};
-    use std::sync::{Arc, Mutex};
 
     /// BufferProvider may be Seeking or Sequential
     /// only used in testing
