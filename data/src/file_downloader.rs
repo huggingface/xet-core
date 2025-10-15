@@ -1,11 +1,12 @@
 use std::borrow::Cow;
 use std::sync::Arc;
 
-use cas_client::{Client, OutputProvider};
+use cas_client::remote_client::RECONSTRUCT_WRITE_SEQUENTIALLY;
+use cas_client::{Client, SeekingOutputProvider, SequentialOutput};
 use cas_types::FileRange;
 use merklehash::MerkleHash;
 use progress_tracking::item_tracking::ItemProgressUpdater;
-use tracing::instrument;
+use tracing::{info, instrument};
 use ulid::Ulid;
 
 use crate::configurations::TranslatorConfig;
@@ -16,7 +17,7 @@ use crate::remote_client_interface::create_remote_client;
 /// Manages the download of files based on a hash or pointer file.
 ///
 /// This class handles the clean operations.  It's meant to be a single atomic session
-/// that succeeds or fails as a unit;  i.e. all files get uploaded on finalization, and all shards
+/// that succeeds or fails as a unit; i.e., all files get uploaded on finalization, and all shards
 /// and xorbs needed to reconstruct those files are properly uploaded and registered.
 pub struct FileDownloader {
     /* ----- Configurations ----- */
@@ -37,19 +38,55 @@ impl FileDownloader {
         Ok(Self { config, client })
     }
 
-    #[instrument(skip_all, name = "FileDownloader::smudge_file_from_hash", fields(hash=file_id.hex()))]
+    #[instrument(skip_all, name = "FileDownloader::smudge_file_from_hash", fields(hash=file_id.hex()
+    ))]
     pub async fn smudge_file_from_hash(
         &self,
         file_id: &MerkleHash,
         file_name: Arc<str>,
-        output: &OutputProvider,
+        output: SeekingOutputProvider,
         range: Option<FileRange>,
         progress_updater: Option<Arc<ItemProgressUpdater>>,
     ) -> Result<u64> {
         let file_progress_tracker = progress_updater.map(|p| ItemProgressUpdater::item_tracker(&p, file_name, None));
 
         // Currently, this works by always directly querying the remote server.
-        let n_bytes = self.client.get_file(file_id, range, output, file_progress_tracker).await?;
+        let n_bytes = if *RECONSTRUCT_WRITE_SEQUENTIALLY {
+            info!("Using sequential writer for smudge");
+            let sequential = output.try_into()?;
+            self.client
+                .get_file_with_sequential_writer(file_id, range, sequential, file_progress_tracker)
+                .await?
+        } else {
+            info!("Using parallel writer for smudge");
+            self.client
+                .get_file_with_parallel_writer(file_id, range, output, file_progress_tracker)
+                .await?
+        };
+
+        prometheus_metrics::FILTER_BYTES_SMUDGED.inc_by(n_bytes);
+
+        Ok(n_bytes)
+    }
+
+    #[instrument(skip_all, name = "FileDownloader::smudge_file_from_hash", fields(hash=file_id.hex()
+    ))]
+    pub async fn smudge_file_from_hash_sequential(
+        &self,
+        file_id: &MerkleHash,
+        file_name: Arc<str>,
+        output: SequentialOutput,
+        range: Option<FileRange>,
+        progress_updater: Option<Arc<ItemProgressUpdater>>,
+    ) -> Result<u64> {
+        let file_progress_tracker = progress_updater.map(|p| ItemProgressUpdater::item_tracker(&p, file_name, None));
+
+        // Currently, this works by always directly querying the remote server.
+        info!("Using sequential writer for smudge");
+        let n_bytes = self
+            .client
+            .get_file_with_sequential_writer(file_id, range, output, file_progress_tracker)
+            .await?;
 
         prometheus_metrics::FILTER_BYTES_SMUDGED.inc_by(n_bytes);
 
