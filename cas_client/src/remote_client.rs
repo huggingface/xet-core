@@ -593,6 +593,97 @@ impl RemoteClient {
 #[cfg_attr(target_family = "wasm", async_trait::async_trait(?Send))]
 impl Client for RemoteClient {
     #[cfg(not(target_family = "wasm"))]
+    async fn get_file_with_sequential_writer(
+        &self,
+        hash: &MerkleHash,
+        byte_range: Option<FileRange>,
+        output_provider: SequentialOutput,
+        progress_updater: Option<Arc<SingleItemProgressUpdater>>,
+    ) -> Result<u64> {
+        self.reconstruct_file_to_writer_segmented_sequential_write(hash, byte_range, output_provider, progress_updater)
+            .await
+    }
+
+    #[cfg(not(target_family = "wasm"))]
+    async fn get_file_with_parallel_writer(
+        &self,
+        hash: &MerkleHash,
+        byte_range: Option<FileRange>,
+        output_provider: SeekingOutputProvider,
+        progress_updater: Option<Arc<SingleItemProgressUpdater>>,
+    ) -> Result<u64> {
+        self.reconstruct_file_to_writer_segmented_parallel_write(hash, byte_range, &output_provider, progress_updater)
+            .await
+    }
+
+    #[instrument(skip_all, name = "RemoteClient::get_file_reconstruction", fields(file.hash = file_hash.hex()
+    ))]
+    async fn get_file_reconstruction_info(
+        &self,
+        file_hash: &MerkleHash,
+    ) -> Result<Option<(MDBFileInfo, Option<MerkleHash>)>> {
+        let url = Url::parse(&format!("{}/reconstructions/{}", self.endpoint, file_hash.hex()))?;
+
+        let api_tag = "cas::get_reconstruction_info";
+        let client = self.authenticated_http_client.clone();
+
+        let response: QueryReconstructionResponse = RetryWrapper::new(api_tag)
+            .run_and_extract_json(move || client.get(url.clone()).with_extension(Api(api_tag)).send())
+            .await?;
+
+        Ok(Some((
+            MDBFileInfo {
+                metadata: FileDataSequenceHeader::new(*file_hash, response.terms.len(), false, false),
+                segments: response
+                    .terms
+                    .into_iter()
+                    .map(|ce| {
+                        FileDataSequenceEntry::new(ce.hash.into(), ce.unpacked_length, ce.range.start, ce.range.end)
+                    })
+                    .collect(),
+                verification: vec![],
+                metadata_ext: None,
+            },
+            None,
+        )))
+    }
+
+    async fn query_for_global_dedup_shard(&self, prefix: &str, chunk_hash: &MerkleHash) -> Result<Option<Bytes>> {
+        let Some(response) = self.query_dedup_api(prefix, chunk_hash).await? else {
+            return Ok(None);
+        };
+
+        Ok(Some(response.bytes().await?))
+    }
+
+    #[instrument(skip_all, name = "RemoteClient::upload_shard", fields(shard.len = shard_data.len()))]
+    async fn upload_shard(&self, shard_data: Bytes) -> Result<bool> {
+        if self.dry_run {
+            return Ok(true);
+        }
+
+        let api_tag = "cas::upload_shard";
+        let client = self.authenticated_http_client.clone();
+
+        let url = Url::parse(&format!("{}/shards", self.endpoint))?;
+
+        let response: UploadShardResponse = RetryWrapper::new(api_tag)
+            .run_and_extract_json(move || {
+                client
+                    .post(url.clone())
+                    .with_extension(Api(api_tag))
+                    .body(shard_data.clone())
+                    .send()
+            })
+            .await?;
+
+        match response.result {
+            UploadShardResponseType::Exists => Ok(false),
+            UploadShardResponseType::SyncPerformed => Ok(true),
+        }
+    }
+
+    #[cfg(not(target_family = "wasm"))]
     #[instrument(skip_all, name = "RemoteClient::upload_xorb", fields(key = Key{prefix : prefix.to_string(), hash : serialized_cas_object.hash}.to_string(),
                  xorb.len = serialized_cas_object.serialized_data.len(), xorb.num_chunks = serialized_cas_object.num_chunks
     ))]
@@ -701,97 +792,6 @@ impl Client for RemoteClient {
     fn use_shard_footer(&self) -> bool {
         false
     }
-
-    #[cfg(not(target_family = "wasm"))]
-    async fn get_file_with_sequential_writer(
-        &self,
-        hash: &MerkleHash,
-        byte_range: Option<FileRange>,
-        output_provider: SequentialOutput,
-        progress_updater: Option<Arc<SingleItemProgressUpdater>>,
-    ) -> Result<u64> {
-        self.reconstruct_file_to_writer_segmented_sequential_write(hash, byte_range, output_provider, progress_updater)
-            .await
-    }
-
-    #[cfg(not(target_family = "wasm"))]
-    async fn get_file_with_parallel_writer(
-        &self,
-        hash: &MerkleHash,
-        byte_range: Option<FileRange>,
-        output_provider: SeekingOutputProvider,
-        progress_updater: Option<Arc<SingleItemProgressUpdater>>,
-    ) -> Result<u64> {
-        self.reconstruct_file_to_writer_segmented_parallel_write(hash, byte_range, &output_provider, progress_updater)
-            .await
-    }
-
-    #[instrument(skip_all, name = "RemoteClient::get_file_reconstruction", fields(file.hash = file_hash.hex()
-    ))]
-    async fn get_file_reconstruction_info(
-        &self,
-        file_hash: &MerkleHash,
-    ) -> Result<Option<(MDBFileInfo, Option<MerkleHash>)>> {
-        let url = Url::parse(&format!("{}/reconstructions/{}", self.endpoint, file_hash.hex()))?;
-
-        let api_tag = "cas::get_reconstruction_info";
-        let client = self.authenticated_http_client.clone();
-
-        let response: QueryReconstructionResponse = RetryWrapper::new(api_tag)
-            .run_and_extract_json(move || client.get(url.clone()).with_extension(Api(api_tag)).send())
-            .await?;
-
-        Ok(Some((
-            MDBFileInfo {
-                metadata: FileDataSequenceHeader::new(*file_hash, response.terms.len(), false, false),
-                segments: response
-                    .terms
-                    .into_iter()
-                    .map(|ce| {
-                        FileDataSequenceEntry::new(ce.hash.into(), ce.unpacked_length, ce.range.start, ce.range.end)
-                    })
-                    .collect(),
-                verification: vec![],
-                metadata_ext: None,
-            },
-            None,
-        )))
-    }
-
-    #[instrument(skip_all, name = "RemoteClient::upload_shard", fields(shard.len = shard_data.len()))]
-    async fn upload_shard(&self, shard_data: Bytes) -> Result<bool> {
-        if self.dry_run {
-            return Ok(true);
-        }
-
-        let api_tag = "cas::upload_shard";
-        let client = self.authenticated_http_client.clone();
-
-        let url = Url::parse(&format!("{}/shards", self.endpoint))?;
-
-        let response: UploadShardResponse = RetryWrapper::new(api_tag)
-            .run_and_extract_json(move || {
-                client
-                    .post(url.clone())
-                    .with_extension(Api(api_tag))
-                    .body(shard_data.clone())
-                    .send()
-            })
-            .await?;
-
-        match response.result {
-            UploadShardResponseType::Exists => Ok(false),
-            UploadShardResponseType::SyncPerformed => Ok(true),
-        }
-    }
-
-    async fn query_for_global_dedup_shard(&self, prefix: &str, chunk_hash: &MerkleHash) -> Result<Option<Bytes>> {
-        let Some(response) = self.query_dedup_api(prefix, chunk_hash).await? else {
-            return Ok(None);
-        };
-
-        Ok(Some(response.bytes().await?))
-    }
 }
 
 #[cfg(test)]
@@ -810,7 +810,7 @@ mod tests {
     use xet_runtime::XetRuntime;
 
     use super::*;
-    use crate::ThreadSafeBuffer;
+    use crate::buffer_provider::ThreadSafeBuffer;
 
     #[ignore = "requires a running CAS server"]
     #[traced_test]

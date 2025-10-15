@@ -1,7 +1,6 @@
-use std::io::{Cursor, Seek, SeekFrom, Write};
+use std::io::{Seek, SeekFrom, Write};
 use std::path::PathBuf;
 use std::pin::Pin;
-use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll};
 
 use tokio::io::AsyncWrite;
@@ -9,6 +8,8 @@ use tokio::io::AsyncWrite;
 use crate::CasClientError;
 use crate::error::Result;
 
+/// type that represents all acceptable sequential output mechanisms
+/// To convert something that is Write rather than AsyncWrite uses the AsyncWriteFromWrite adapter
 pub type SequentialOutput = Box<dyn AsyncWrite + Send + Unpin>;
 
 /// Enum of different output formats to write reconstructed files
@@ -17,10 +18,11 @@ pub type SequentialOutput = Box<dyn AsyncWrite + Send + Unpin>;
 pub enum SeekingOutputProvider {
     File(FileProvider),
     #[cfg(test)]
-    Buffer(BufferProvider),
+    Buffer(buffer_provider::BufferProvider),
 }
 
 impl SeekingOutputProvider {
+    // shortcut to create a new FileProvider variant from filename
     pub fn new_file_provider(filename: PathBuf) -> Self {
         Self::File(FileProvider::new(filename))
     }
@@ -35,6 +37,7 @@ impl SeekingOutputProvider {
     }
 }
 
+// Adapter used to create an AsyncWrite from a Writer.
 struct AsyncWriteFromWrite(Option<Box<dyn Write + Send>>);
 
 impl AsyncWrite for AsyncWriteFromWrite {
@@ -76,7 +79,6 @@ pub struct FileProvider {
     filename: PathBuf,
 }
 
-/// FileProvider may be Seeking or Sequential
 impl FileProvider {
     pub fn new(filename: PathBuf) -> Self {
         Self { filename }
@@ -93,60 +95,68 @@ impl FileProvider {
     }
 }
 
-/// BufferProvider may be Seeking or Sequential
-/// only used in testing
-#[derive(Debug, Clone)]
-pub struct BufferProvider {
-    pub buf: ThreadSafeBuffer,
-}
-
-impl BufferProvider {
-    pub fn get_writer_at(&self, start: u64) -> Result<Box<dyn Write + Send>> {
-        let mut buffer = self.buf.clone();
-        buffer.idx = start;
-        Ok(Box::new(buffer))
-    }
-}
-
-#[derive(Debug, Default, Clone)]
-/// Thread-safe in-memory buffer that implements [Write](Write) trait at some position
-/// within an underlying buffer and allows access to the inner buffer.
-/// Thread-safe in-memory buffer that implements [Write](Write) trait and allows
-/// access to the inner buffer
-pub struct ThreadSafeBuffer {
-    idx: u64,
-    inner: Arc<Mutex<Cursor<Vec<u8>>>>,
-}
-
-impl ThreadSafeBuffer {
-    pub fn value(&self) -> Vec<u8> {
-        self.inner.lock().unwrap().get_ref().clone()
-    }
-}
-
-impl Write for ThreadSafeBuffer {
-    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        let mut guard = self.inner.lock().map_err(|e| std::io::Error::other(format!("{e}")))?;
-        guard.set_position(self.idx);
-        let num_written = Write::write(guard.get_mut(), buf)?;
-        self.idx = guard.position();
-        Ok(num_written)
-    }
-
-    fn flush(&mut self) -> std::io::Result<()> {
-        Ok(())
-    }
-}
-
-impl From<ThreadSafeBuffer> for SequentialOutput {
-    fn from(value: ThreadSafeBuffer) -> Self {
-        Box::new(AsyncWriteFromWrite(Some(Box::new(value))))
-    }
-}
-
 #[cfg(test)]
-impl From<ThreadSafeBuffer> for SeekingOutputProvider {
-    fn from(value: ThreadSafeBuffer) -> Self {
-        SeekingOutputProvider::Buffer(BufferProvider { buf: value })
+pub(crate) mod buffer_provider {
+    use crate::error::Result;
+    use crate::output_provider::AsyncWriteFromWrite;
+    use crate::{SeekingOutputProvider, SequentialOutput};
+    use std::io::{Cursor, Write};
+    use std::sync::{Arc, Mutex};
+
+    /// BufferProvider may be Seeking or Sequential
+    /// only used in testing
+    #[derive(Debug, Clone)]
+    pub struct BufferProvider {
+        pub buf: ThreadSafeBuffer,
+    }
+
+    impl BufferProvider {
+        pub fn get_writer_at(&self, start: u64) -> Result<Box<dyn Write + Send>> {
+            let mut buffer = self.buf.clone();
+            buffer.idx = start;
+            Ok(Box::new(buffer))
+        }
+    }
+
+    #[derive(Debug, Default, Clone)]
+    /// Thread-safe in-memory buffer that implements [Write](Write) trait at some position
+    /// within an underlying buffer and allows access to the inner buffer.
+    /// Thread-safe in-memory buffer that implements [Write](Write) trait and allows
+    /// access to the inner buffer
+    pub struct ThreadSafeBuffer {
+        idx: u64,
+        inner: Arc<Mutex<Cursor<Vec<u8>>>>,
+    }
+
+    impl ThreadSafeBuffer {
+        pub fn value(&self) -> Vec<u8> {
+            self.inner.lock().unwrap().get_ref().clone()
+        }
+    }
+
+    impl Write for ThreadSafeBuffer {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            let mut guard = self.inner.lock().map_err(|e| std::io::Error::other(format!("{e}")))?;
+            guard.set_position(self.idx);
+            let num_written = Write::write(guard.get_mut(), buf)?;
+            self.idx = guard.position();
+            Ok(num_written)
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl From<ThreadSafeBuffer> for SequentialOutput {
+        fn from(value: ThreadSafeBuffer) -> Self {
+            Box::new(AsyncWriteFromWrite(Some(Box::new(value))))
+        }
+    }
+
+    impl From<ThreadSafeBuffer> for SeekingOutputProvider {
+        fn from(value: ThreadSafeBuffer) -> Self {
+            SeekingOutputProvider::Buffer(BufferProvider { buf: value })
+        }
     }
 }
