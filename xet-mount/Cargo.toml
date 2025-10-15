@@ -14,8 +14,10 @@ tokio = { workspace = true }
 uuid = { workspace = true }
 
 cas_types = { path = "../cas_types" }
+cas_client = { path = "../cas_client" }
 data = { path = "../data" }
 hub_client = { path = "../hub_client" }
 merklehash = { path = "../merklehash" }
+utils = { path = "../utils" }
 
 nfsserve = { git = "https://github.com/huggingface/nfsserve.git" }

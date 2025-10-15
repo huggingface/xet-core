@@ -4653,6 +4653,7 @@ name = "xet-mount"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "cas_client",
  "cas_types",
  "clap",
  "data",
@@ -4660,6 +4661,7 @@ dependencies = [
  "merklehash",
  "nfsserve",
  "tokio",
+ "utils",
  "uuid",
 ]
 

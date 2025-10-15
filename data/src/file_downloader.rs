@@ -19,6 +19,8 @@ use crate::remote_client_interface::create_remote_client;
 /// This class handles the clean operations.  It's meant to be a single atomic session
 /// that succeeds or fails as a unit; i.e., all files get uploaded on finalization, and all shards
 /// and xorbs needed to reconstruct those files are properly uploaded and registered.
+/// Cheaply cloneable
+#[derive(Clone)]
 pub struct FileDownloader {
     /* ----- Configurations ----- */
     config: Arc<TranslatorConfig>,

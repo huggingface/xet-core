@@ -3,11 +3,14 @@ use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use cas_client::SequentialOutput;
 use cas_types::FileRange;
+use data::FileDownloader;
 use hub_client::{HubClient, HubRepositoryTrait, TreeEntry};
 use merklehash::MerkleHash;
 use nfsserve::nfs::{fattr3, fileid3, filename3, ftype3, nfspath3, nfsstat3, nfstime3, sattr3, specdata3};
 use nfsserve::vfs::{DirEntry, NFSFileSystem, ReadDirResult, VFSCapabilities};
+use tokio::io::AsyncReadExt;
 use tokio::sync::{OnceCell, RwLock};
 
 #[derive(Clone)]
@@ -57,7 +60,7 @@ impl From<RegularFile> for Item {
 struct XetFile {
     fattr3: fattr3,
     path: String,
-    _hash: MerkleHash,
+    hash: MerkleHash,
 }
 
 impl From<XetFile> for Item {
@@ -84,22 +87,23 @@ pub struct XetFS {
 
 struct XetFSInner {
     everything: RwLock<HashMap<fileid3, Item>>,
-    hub_client: HubClient,
+    hub_client: Arc<HubClient>,
     next_id: AtomicU64,
+    xet_downloader: FileDownloader,
 }
 
 const ROOT_DIR_ID: fileid3 = 0;
 
 impl XetFS {
-    pub fn new(hub_client: HubClient) -> Self {
+    pub fn new(hub_client: Arc<HubClient>, xet_downloader: FileDownloader) -> Self {
         Self {
-            inner: Arc::new(XetFSInner::new(hub_client)),
+            inner: Arc::new(XetFSInner::new(hub_client, xet_downloader)),
         }
     }
 }
 
 impl XetFSInner {
-    pub fn new(hub_client: HubClient) -> Self {
+    pub fn new(hub_client: Arc<HubClient>, xet_downloader: FileDownloader) -> Self {
         let mut everything = HashMap::new();
         let root_attr = fattr3 {
             ftype: ftype3::NF3DIR,
@@ -125,6 +129,7 @@ impl XetFSInner {
         Self {
             everything: RwLock::new(everything),
             hub_client,
+            xet_downloader,
             next_id: AtomicU64::new(ROOT_DIR_ID + 1),
         }
     }
@@ -150,7 +155,7 @@ impl XetFSInner {
                         XetFile {
                             fattr3: attr,
                             path: file_entry.path.clone(),
-                            _hash: xet_hash.into(),
+                            hash: xet_hash.into(),
                         }
                         .into()
                     } else {
@@ -208,11 +213,35 @@ impl XetFSInner {
 
     async fn download_xet_file(
         &self,
-        _file: Arc<XetFile>,
-        _offset: u64,
-        _count: u32,
+        file: Arc<XetFile>,
+        offset: u64,
+        count: u32,
     ) -> Result<(Vec<u8>, bool), nfsstat3> {
-        todo!()
+        let file_len = file.fattr3.size;
+        let past_the_end = offset + count as u64 > file_len;
+
+        let (w, s) = utils::pipe::pipe(10);
+        let sequential_output: SequentialOutput = Box::new(w);
+
+        let downloader = self.xet_downloader.clone();
+        let hash = file.hash;
+        let jh = tokio::spawn(async move {
+            downloader
+                .smudge_file_from_hash_sequential(
+                    &hash,
+                    file.path.clone().into(),
+                    sequential_output,
+                    Some(FileRange::new(offset, offset + count as u64)),
+                    None,
+                )
+                .await
+        });
+        let mut res = Vec::with_capacity(1024.min(count as usize));
+        s.reader().read_to_end(&mut res).await.map_err(|_| nfsstat3::NFS3ERR_IO)?;
+        // this should be instantaneous
+        jh.await.map_err(|_| nfsstat3::NFS3ERR_IO)?.map_err(|_| nfsstat3::NFS3ERR_IO)?;
+
+        Ok((res, past_the_end))
     }
 }
 
