@@ -9,6 +9,7 @@ cas_types = { path = "../cas_types" }
 
 anyhow = { workspace = true }
 async-trait = { workspace = true }
+bytes = { workspace = true }
 http = { workspace = true }
 regex = { workspace = true }
 reqwest = { workspace = true }

@@ -13,6 +13,7 @@ clap = { workspace = true }
 tokio = { workspace = true }
 uuid = { workspace = true }
 
+cas_types = { path = "../cas_types" }
 data = { path = "../data" }
 hub_client = { path = "../hub_client" }
 merklehash = { path = "../merklehash" }

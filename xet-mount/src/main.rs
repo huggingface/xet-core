@@ -1,9 +1,11 @@
 mod fs;
 
+use std::path::PathBuf;
+
 use clap::Parser;
 use hub_client::{BearerCredentialHelper, HFRepoType, HubClient, RepoInfo};
-use std::path::PathBuf;
 use uuid::Uuid;
+
 use crate::fs::XetFS;
 
 #[derive(Parser, Debug)]

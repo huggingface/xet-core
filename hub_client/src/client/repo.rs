@@ -1,14 +1,18 @@
-use crate::HubClient;
+use std::sync::LazyLock;
+
+use bytes::Bytes;
 use cas_client::{Api, ResponseErrorLogger};
-use cas_types::HexMerkleHash;
+use cas_types::{FileRange, HexMerkleHash, HttpRange};
 use regex::Regex;
 use reqwest::Response;
 use serde::Deserialize;
-use std::sync::LazyLock;
+
+use crate::HubClient;
 
 #[async_trait::async_trait]
 pub trait HubRepositoryTrait {
     async fn list_files(&self, path: &str) -> crate::Result<Vec<TreeEntry>>;
+    async fn download_resolved_content(&self, path: &str, range: Option<FileRange>) -> crate::Result<Bytes>;
 }
 
 #[derive(Debug, Deserialize)]
@@ -95,13 +99,7 @@ impl HubRepositoryTrait for HubClient {
         let repo_type = self.repo_info.repo_type.as_str();
         let repo_id = self.repo_info.full_name.as_str();
         let rev = self.reference.as_deref().unwrap_or("main");
-        // if a path is empty (root dir), should not have a slash at the beginning of the path component
-        // otherwise ensure there is a slash at the beginning of the path component
-        let path = if path.is_empty() || path.starts_with('/') {
-            path.to_string()
-        } else {
-            format!("/{}", path)
-        };
+        let path = normalize_path(path);
         let url = format!("{endpoint}/api/{repo_type}s/{repo_id}/tree/{rev}{path}?limit=1000");
 
         let response = self
@@ -130,5 +128,31 @@ impl HubRepositoryTrait for HubClient {
         }
 
         Ok(entries)
+    }
+
+    // TODO: have this interface return a Stream/Reader, want #528
+    async fn download_resolved_content(&self, path: &str, range: Option<FileRange>) -> crate::Result<Bytes> {
+        let endpoint = self.endpoint.as_str();
+        let repo_type = self.repo_info.repo_type.as_str();
+        let repo_id = self.repo_info.full_name.as_str();
+        let rev = self.reference.as_deref().unwrap_or("main");
+
+        let path = normalize_path(path);
+        // https://huggingface.co/spaces/google/emoji-gemma/resolve/main/myemoji-gemma-3-270m-it.task?download=true
+        let url = format!("{endpoint}/{repo_type}s/{repo_id}/resolve/{rev}{path}?download=true");
+        let mut request_builder = self.client.get(url);
+        if let Some(range) = range {
+            request_builder = request_builder.header(http::header::RANGE, HttpRange::from(range).range_header());
+        }
+        let result = request_builder.send().await?.error_for_status()?.bytes().await?;
+        Ok(result)
+    }
+}
+
+fn normalize_path(path: &str) -> String {
+    if path.is_empty() || path.starts_with('/') {
+        path.to_string()
+    } else {
+        format!("/{}", path)
     }
 }

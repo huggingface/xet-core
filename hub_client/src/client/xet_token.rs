@@ -1,6 +1,7 @@
-use urlencoding::encode;
 use cas_client::{Api, ResponseErrorLogger};
 use http::header;
+use urlencoding::encode;
+
 use crate::{CasJWTInfo, HubClient, HubClientError, Operation};
 
 #[async_trait::async_trait]

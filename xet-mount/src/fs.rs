@@ -1,11 +1,13 @@
-use hub_client::{HubClient, HubRepositoryTrait, TreeEntry};
-use merklehash::MerkleHash;
-use nfsserve::nfs::{fattr3, fileid3, filename3, ftype3, nfspath3, nfsstat3, nfstime3, sattr3, specdata3};
-use nfsserve::vfs::{DirEntry, NFSFileSystem, ReadDirResult, VFSCapabilities};
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+
+use cas_types::FileRange;
+use hub_client::{HubClient, HubRepositoryTrait, TreeEntry};
+use merklehash::MerkleHash;
+use nfsserve::nfs::{fattr3, fileid3, filename3, ftype3, nfspath3, nfsstat3, nfstime3, sattr3, specdata3};
+use nfsserve::vfs::{DirEntry, NFSFileSystem, ReadDirResult, VFSCapabilities};
 use tokio::sync::{OnceCell, RwLock};
 
 #[derive(Clone)]
@@ -46,21 +48,21 @@ struct RegularFile {
     path: String,
 }
 
-impl Into<Item> for RegularFile {
-    fn into(self) -> Item {
-        Item::RegularFile(Arc::new(self))
+impl From<RegularFile> for Item {
+    fn from(value: RegularFile) -> Self {
+        Self::RegularFile(Arc::new(value))
     }
 }
 
 struct XetFile {
     fattr3: fattr3,
     path: String,
-    hash: MerkleHash,
+    _hash: MerkleHash,
 }
 
-impl Into<Item> for XetFile {
-    fn into(self) -> Item {
-        Item::XetFile(Arc::new(self))
+impl From<XetFile> for Item {
+    fn from(value: XetFile) -> Self {
+        Self::XetFile(Arc::new(value))
     }
 }
 
@@ -70,9 +72,9 @@ struct Directory {
     path: String,
 }
 
-impl Into<Item> for Directory {
-    fn into(self) -> Item {
-        Item::Directory(Arc::new(self))
+impl From<Directory> for Item {
+    fn from(value: Directory) -> Self {
+        Self::Directory(Arc::new(value))
     }
 }
 
@@ -148,7 +150,7 @@ impl XetFSInner {
                         XetFile {
                             fattr3: attr,
                             path: file_entry.path.clone(),
-                            hash: xet_hash.into(),
+                            _hash: xet_hash.into(),
                         }
                         .into()
                     } else {
@@ -183,6 +185,34 @@ impl XetFSInner {
             Some(_) => Err(nfsstat3::NFS3ERR_NOTDIR),
             None => Err(nfsstat3::NFS3ERR_NOENT),
         }
+    }
+
+    async fn download_regular_file(
+        &self,
+        file: Arc<RegularFile>,
+        offset: u64,
+        count: u32,
+    ) -> Result<(Vec<u8>, bool), nfsstat3> {
+        let file_len = file.fattr3.size;
+        let past_the_end = offset + count as u64 > file_len;
+
+        let data = self
+            .hub_client
+            .download_resolved_content(&file.path, Some(FileRange::new(offset, offset + count as u64)))
+            .await
+            .map_err(|_| nfsstat3::NFS3ERR_IO)?
+            .to_vec();
+
+        Ok((data, past_the_end))
+    }
+
+    async fn download_xet_file(
+        &self,
+        _file: Arc<XetFile>,
+        _offset: u64,
+        _count: u32,
+    ) -> Result<(Vec<u8>, bool), nfsstat3> {
+        todo!()
     }
 }
 
@@ -221,7 +251,7 @@ impl NFSFileSystem for XetFS {
             .get_or_try_init(|| self.inner.get_children_for_path(dir.path.as_str()))
             .await?;
         for child in children {
-            if child.filename() == &filename.0 {
+            if child.filename() == filename.0 {
                 return Ok(child.fileid());
             }
         }
@@ -230,7 +260,7 @@ impl NFSFileSystem for XetFS {
 
     async fn getattr(&self, id: fileid3) -> Result<fattr3, nfsstat3> {
         match self.inner.everything.read().await.get(&id) {
-            Some(item) => Ok(item.fattr3().clone()),
+            Some(item) => Ok(*item.fattr3()),
             None => Err(nfsstat3::NFS3ERR_NOENT),
         }
     }
@@ -240,7 +270,14 @@ impl NFSFileSystem for XetFS {
     }
 
     async fn read(&self, id: fileid3, offset: u64, count: u32) -> Result<(Vec<u8>, bool), nfsstat3> {
-        todo!()
+        let Some(item) = self.inner.everything.read().await.get(&id).cloned() else {
+            return Err(nfsstat3::NFS3ERR_NOENT);
+        };
+        match item {
+            Item::Directory(_) => Err(nfsstat3::NFS3ERR_ISDIR),
+            Item::RegularFile(file) => self.inner.download_regular_file(file, offset, count).await,
+            Item::XetFile(file) => self.inner.download_xet_file(file, offset, count).await,
+        }
     }
 
     async fn write(&self, _id: fileid3, _offset: u64, _data: &[u8]) -> Result<fattr3, nfsstat3> {
@@ -310,7 +347,7 @@ impl NFSFileSystem for XetFS {
             entries.push(DirEntry {
                 fileid: child.fileid(),
                 name: child.filename().into(),
-                attr: child.fattr3().clone(),
+                attr: *child.fattr3(),
             });
             debug_assert!(entries.len() <= max_entries);
             if entries.len() == max_entries {

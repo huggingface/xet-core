@@ -3,11 +3,12 @@ pub(crate) mod xet_token;
 
 use std::sync::Arc;
 
+use cas_client::exports::ClientWithMiddleware;
+use cas_client::{RetryConfig, build_http_client};
+
 use crate::auth::CredentialHelper;
 use crate::errors::*;
 use crate::types::RepoInfo;
-use cas_client::exports::ClientWithMiddleware;
-use cas_client::{RetryConfig, build_http_client};
 
 /// The type of operation to perform, either to upload files or to download files.
 /// Different operations lead to CAS access token with different authorization levels.

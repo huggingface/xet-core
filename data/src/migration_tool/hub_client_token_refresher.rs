@@ -1,7 +1,6 @@
 use std::sync::Arc;
 
-use hub_client::{HubClient, Operation};
-use hub_client::HubXetTokenTrait;
+use hub_client::{HubClient, HubXetTokenTrait, Operation};
 use utils::auth::{TokenInfo, TokenRefresher};
 use utils::errors::AuthError;
 
