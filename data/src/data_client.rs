@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use cas_client::remote_client::PREFIX_DEFAULT;
-use cas_client::{CHUNK_CACHE_SIZE_BYTES, CacheConfig, OutputProvider};
+use cas_client::{CHUNK_CACHE_SIZE_BYTES, CacheConfig, SeekingOutputProvider};
 use cas_object::CompressionScheme;
 use deduplication::DeduplicationMetrics;
 use dirs::home_dir;
@@ -274,7 +274,7 @@ async fn smudge_file(
     if let Some(parent_dir) = path.parent() {
         std::fs::create_dir_all(parent_dir)?;
     }
-    let output = OutputProvider::new_file_seeking(path);
+    let output = SeekingOutputProvider::new_file_provider(path);
 
     // Wrap the progress updater in the proper tracking struct.
     let progress_updater = progress_updater.map(ItemProgressUpdater::new);

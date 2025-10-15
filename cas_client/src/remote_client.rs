@@ -1,5 +1,4 @@
 use std::collections::HashMap;
-use std::io::Write;
 use std::mem::take;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -21,6 +20,7 @@ use progress_tracking::item_tracking::SingleItemProgressUpdater;
 use progress_tracking::upload_tracking::CompletionTracker;
 use reqwest::{Body, Response, StatusCode, Url};
 use reqwest_middleware::ClientWithMiddleware;
+use tokio::io::AsyncWriteExt;
 use tokio::sync::{OwnedSemaphorePermit, mpsc};
 use tokio::task::{JoinHandle, JoinSet};
 use tracing::{debug, info, instrument};
@@ -34,7 +34,7 @@ use crate::download_utils::*;
 use crate::error::{CasClientError, Result};
 use crate::http_client::{Api, ResponseErrorLogger, RetryConfig};
 #[cfg(not(target_family = "wasm"))]
-use crate::output_provider::{OutputProvider, SeekingOutputProvider, SequentialOutput};
+use crate::output_provider::{SeekingOutputProvider, SequentialOutput};
 use crate::retry_wrapper::RetryWrapper;
 use crate::{Client, http_client};
 
@@ -291,14 +291,14 @@ impl RemoteClient {
     // storage uses HDDs.
     #[instrument(skip_all, name = "RemoteClient::reconstruct_file_segmented", fields(file.hash = file_hash.hex()
     ))]
-    async fn reconstruct_file_to_writer_segmented(
+    async fn reconstruct_file_to_writer_segmented_sequential_write(
         &self,
         file_hash: &MerkleHash,
         byte_range: Option<FileRange>,
         mut writer: SequentialOutput,
         progress_updater: Option<Arc<SingleItemProgressUpdater>>,
     ) -> Result<u64> {
-        // Use an unlimited queue size, as queue size is inherently bounded by degree of concurrency.
+        // Use an unlimited queue size, as queue size is inherently bounded by a degree of concurrency.
         let (task_tx, mut task_rx) = mpsc::unbounded_channel::<DownloadQueueItem<SequentialTermDownload>>();
         let (running_downloads_tx, mut running_downloads_rx) =
             mpsc::unbounded_channel::<JoinHandle<Result<(TermDownloadResult<Vec<u8>>, OwnedSemaphorePermit)>>>();
@@ -414,7 +414,7 @@ impl RemoteClient {
             match result.await {
                 Ok(Ok((mut download_result, permit))) => {
                     let data = take(&mut download_result.payload);
-                    writer.write_all(&data)?;
+                    writer.write_all(&data).await?;
                     // drop permit after data written out so they don't accumulate in memory unbounded
                     drop(permit);
 
@@ -431,7 +431,7 @@ impl RemoteClient {
                 Err(e) => Err(anyhow!("{e:?}"))?,
             }
         }
-        writer.flush()?;
+        writer.flush().await?;
 
         queue_dispatcher.await??;
 
@@ -703,36 +703,27 @@ impl Client for RemoteClient {
     }
 
     #[cfg(not(target_family = "wasm"))]
-    async fn get_file(
+    async fn get_file_with_sequential_writer(
         &self,
         hash: &MerkleHash,
         byte_range: Option<FileRange>,
-        output_provider: OutputProvider,
+        output_provider: SequentialOutput,
         progress_updater: Option<Arc<SingleItemProgressUpdater>>,
     ) -> Result<u64> {
-        // If the user has set the `HF_XET_RECONSTRUCT_WRITE_SEQUENTIALLY=true` env variable, then we
-        // should write the file to the output sequentially instead of in parallel.
-        if *RECONSTRUCT_WRITE_SEQUENTIALLY || output_provider.is_sequential() {
-            info!("reconstruct terms sequentially");
-            let writer: SequentialOutput = match output_provider {
-                OutputProvider::Seeking(s) => s.try_into()?,
-                OutputProvider::Sequential(s) => s,
-            };
-            self.reconstruct_file_to_writer_segmented(hash, byte_range, writer, progress_updater)
-                .await
-        } else {
-            info!("reconstruct terms in parallel");
-            let seeking_output_provider = output_provider
-                .as_seeking()
-                .expect("output provider is not seeking, checked already");
-            self.reconstruct_file_to_writer_segmented_parallel_write(
-                hash,
-                byte_range,
-                seeking_output_provider,
-                progress_updater,
-            )
+        self.reconstruct_file_to_writer_segmented_sequential_write(hash, byte_range, output_provider, progress_updater)
             .await
-        }
+    }
+
+    #[cfg(not(target_family = "wasm"))]
+    async fn get_file_with_parallel_writer(
+        &self,
+        hash: &MerkleHash,
+        byte_range: Option<FileRange>,
+        output_provider: SeekingOutputProvider,
+        progress_updater: Option<Arc<SingleItemProgressUpdater>>,
+    ) -> Result<u64> {
+        self.reconstruct_file_to_writer_segmented_parallel_write(hash, byte_range, &output_provider, progress_updater)
+            .await
     }
 
     #[instrument(skip_all, name = "RemoteClient::get_file_reconstruction", fields(file.hash = file_hash.hex()
@@ -1206,11 +1197,15 @@ mod tests {
         let test = test_case.clone();
         let client = RemoteClient::new(endpoint, &None, &None, None, "", false);
         let buf = ThreadSafeBuffer::default();
-        let provider = OutputProvider::new_buffer_seeking(buf.clone());
+        let provider = SequentialOutput::from(buf.clone());
         let resp = threadpool.external_run_async_task(async move {
-            let writer = provider.try_into()?;
             client
-                .reconstruct_file_to_writer_segmented(&test.file_hash, Some(test.file_range), writer, None)
+                .reconstruct_file_to_writer_segmented_sequential_write(
+                    &test.file_hash,
+                    Some(test.file_range),
+                    provider,
+                    None,
+                )
                 .await
         })?;
 
@@ -1224,14 +1219,13 @@ mod tests {
         let test = test_case;
         let client = RemoteClient::new(endpoint, &None, &None, None, "", false);
         let buf = ThreadSafeBuffer::default();
-        let provider = OutputProvider::new_buffer_seeking(buf.clone());
+        let provider = SeekingOutputProvider::from(buf.clone());
         let resp = threadpool.external_run_async_task(async move {
-            let writer = provider.as_seeking().unwrap();
             client
                 .reconstruct_file_to_writer_segmented_parallel_write(
                     &test.file_hash,
                     Some(test.file_range),
-                    &writer,
+                    &provider,
                     None,
                 )
                 .await

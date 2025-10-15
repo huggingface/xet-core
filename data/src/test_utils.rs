@@ -3,7 +3,7 @@ use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use cas_client::OutputProvider;
+use cas_client::SeekingOutputProvider;
 use progress_tracking::TrackingProgressUpdater;
 use rand::prelude::*;
 use tempfile::TempDir;
@@ -214,7 +214,7 @@ impl LocalHydrateDehydrateTest {
             let out_filename = self.dest_dir.join(entry.file_name());
 
             // Create an output file for writing
-            let file_out = OutputProvider::new_file_seeking(out_filename.clone());
+            let file_out = SeekingOutputProvider::new_file_provider(out_filename.clone());
 
             // Pointer file.
             let xf: XetFileInfo = serde_json::from_reader(File::open(entry.path()).unwrap()).unwrap();

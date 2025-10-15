@@ -627,7 +627,7 @@ mod tests {
     /// * `output_path`: path to write the hydrated/original file
     async fn test_smudge_file(cas_path: &Path, pointer_path: &Path, output_path: &Path) {
         let mut reader = File::open(pointer_path).unwrap();
-        let writer = OutputProvider::new_file_seeking(output_path.to_path_buf());
+        let writer = SeekingOutputProvider::new_file_provider(output_path.to_path_buf());
 
         let mut input = String::new();
         reader.read_to_string(&mut input).unwrap();
@@ -652,7 +652,7 @@ mod tests {
 
     use std::fs::{read, write};
 
-    use cas_client::OutputProvider;
+    use cas_client::SeekingOutputProvider;
     use tempfile::tempdir;
 
     use super::*;
