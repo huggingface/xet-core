@@ -108,12 +108,12 @@ jobs:
         if: env.IS_RELEASE == 'true'
         uses: actions/upload-artifact@v4
         with:
-          name: dbg-linux-${{ matrix.platform.target }}
+          name: dbg-linux-${{ matrix.python-version }}-${{ matrix.platform.target }}
           path: hf_xet/dbg
       - name: Upload wheels
         uses: actions/upload-artifact@v4
         with:
-          name: wheels-linux-${{ matrix.platform.target }}
+          name: wheels-linux-${{ matrix.python-version }}-${{ matrix.platform.target }}
           path: dist
 
   musllinux:
@@ -191,12 +191,12 @@ jobs:
         if: env.IS_RELEASE == 'true'
         uses: actions/upload-artifact@v4
         with:
-          name: dbg-musllinux-${{ matrix.platform.target }}
+          name: dbg-musllinux-${{ matrix.python-version }}-${{ matrix.platform.target }}
           path: hf_xet/dbg
       - name: Upload wheels with seperated debug symbols
         uses: actions/upload-artifact@v4
         with:
-          name: wheels-musllinux-${{ matrix.platform.target }}
+          name: wheels-musllinux-${{ matrix.python-version }}-${{ matrix.platform.target }}
           path: dist
 
   windows:
@@ -239,12 +239,12 @@ jobs:
       - name: Upload debug symbols
         uses: actions/upload-artifact@v4
         with:
-          name: dbg-windows-${{ matrix.platform.target }}
+          name: dbg-windows-${{ matrix.python-version }}-${{ matrix.platform.target }}
           path: hf_xet/dbg
       - name: Upload wheels
         uses: actions/upload-artifact@v4
         with:
-          name: wheels-windows-${{ matrix.platform.target }}
+          name: wheels-windows-${{ matrix.python-version }}-${{ matrix.platform.target }}
           path: hf_xet/dist
 
   macos:
@@ -295,12 +295,12 @@ jobs:
         if: env.IS_RELEASE == 'true'
         uses: actions/upload-artifact@v4
         with:
-          name: dbg-macos-${{ matrix.platform.target }}
+          name: dbg-macos-${{ matrix.python-version }}-${{ matrix.platform.target }}
           path: hf_xet/dbg
       - name: Upload wheels
         uses: actions/upload-artifact@v4
         with:
-          name: wheels-macos-${{ matrix.platform.target }}
+          name: wheels-macos-${{ matrix.python-version }}-${{ matrix.platform.target }}
           path: hf_xet/dist
 
   sdist:
