@@ -1,10 +1,14 @@
-use hub_client::{HubClient, HubRepositoryTrait};
-use nfsserve::nfs::{fattr3, fileid3, filename3, nfspath3, nfsstat3, sattr3};
-use nfsserve::vfs::{NFSFileSystem, ReadDirResult, VFSCapabilities};
-use std::collections::{hash_map, HashMap};
+use hub_client::{HubClient, HubRepositoryTrait, TreeEntry};
+use merklehash::MerkleHash;
+use nfsserve::nfs::{fattr3, fileid3, filename3, ftype3, nfspath3, nfsstat3, nfstime3, sattr3, specdata3};
+use nfsserve::vfs::{DirEntry, NFSFileSystem, ReadDirResult, VFSCapabilities};
+use std::collections::HashMap;
+use std::path::Path;
 use std::sync::Arc;
-use tokio::sync::RwLock;
+use std::sync::atomic::{AtomicU64, Ordering};
+use tokio::sync::{OnceCell, RwLock};
 
+#[derive(Clone)]
 enum Item {
     Directory(Arc<Directory>),
     RegularFile(Arc<RegularFile>),
@@ -20,11 +24,20 @@ impl Item {
         }
     }
 
-    fn as_directory(&self) -> Option<&Directory> {
+    fn fileid(&self) -> fileid3 {
+        self.fattr3().fileid
+    }
+
+    fn path(&self) -> &str {
         match self {
-            Item::Directory(dir) => Some(dir),
-            _ => None,
+            Item::Directory(dir) => dir.path.as_str(),
+            Item::RegularFile(file) => file.path.as_str(),
+            Item::XetFile(file) => file.path.as_str(),
         }
+    }
+
+    fn filename(&self) -> &[u8] {
+        Path::new(self.path()).file_name().map(|s| s.as_encoded_bytes()).unwrap_or(b"/")
     }
 }
 
@@ -33,47 +46,190 @@ struct RegularFile {
     path: String,
 }
 
+impl Into<Item> for RegularFile {
+    fn into(self) -> Item {
+        Item::RegularFile(Arc::new(self))
+    }
+}
+
 struct XetFile {
     fattr3: fattr3,
     path: String,
+    hash: MerkleHash,
+}
+
+impl Into<Item> for XetFile {
+    fn into(self) -> Item {
+        Item::XetFile(Arc::new(self))
+    }
 }
 
 struct Directory {
-    id: fileid3,
     fattr3: fattr3,
-    children: Option<HashMap<fileid3, Item>>,
+    children: OnceCell<Vec<Item>>,
     path: String,
 }
 
-struct XetFS {
+impl Into<Item> for Directory {
+    fn into(self) -> Item {
+        Item::Directory(Arc::new(self))
+    }
+}
+
+pub struct XetFS {
+    inner: Arc<XetFSInner>,
+}
+
+struct XetFSInner {
     everything: RwLock<HashMap<fileid3, Item>>,
     hub_client: HubClient,
+    next_id: AtomicU64,
 }
+
+const ROOT_DIR_ID: fileid3 = 0;
 
 impl XetFS {
     pub fn new(hub_client: HubClient) -> Self {
         Self {
-            everything: Default::default(),
-            hub_client,
+            inner: Arc::new(XetFSInner::new(hub_client)),
         }
     }
 }
 
+impl XetFSInner {
+    pub fn new(hub_client: HubClient) -> Self {
+        let mut everything = HashMap::new();
+        let root_attr = fattr3 {
+            ftype: ftype3::NF3DIR,
+            mode: 0o755,
+            nlink: 1,
+            uid: 0,
+            gid: 0,
+            size: 0,
+            used: 0,
+            rdev: specdata3::default(),
+            fsid: 0,
+            fileid: ROOT_DIR_ID,
+            atime: nfstime3::default(),
+            mtime: nfstime3::default(),
+            ctime: nfstime3::default(),
+        };
+        let root = Directory {
+            fattr3: root_attr,
+            children: OnceCell::new(),
+            path: String::new(),
+        };
+        everything.insert(ROOT_DIR_ID, Item::Directory(Arc::new(root)));
+        Self {
+            everything: RwLock::new(everything),
+            hub_client,
+            next_id: AtomicU64::new(ROOT_DIR_ID + 1),
+        }
+    }
+
+    fn get_next_id(&self) -> fileid3 {
+        self.next_id.fetch_add(1, Ordering::AcqRel)
+    }
+
+    // should be called in try_init for a children field
+    async fn get_children_for_path(&self, path: &str) -> Result<Vec<Item>, nfsstat3> {
+        let entries = self.hub_client.list_files(path).await.map_err(|_| nfsstat3::NFS3ERR_IO)?;
+
+        // Build the children map
+        let mut children: Vec<Item> = Vec::with_capacity(entries.len());
+        let mut everything_guard = self.everything.write().await;
+        for entry in entries {
+            let fileid = self.get_next_id();
+            let item: Item = match entry {
+                TreeEntry::File(file_entry) => {
+                    let attr = get_fattr3(fileid, ftype3::NF3REG);
+                    // Decide RegularFile vs XetFile based on xet_hash presence
+                    if let Some(xet_hash) = file_entry.xet_hash {
+                        XetFile {
+                            fattr3: attr,
+                            path: file_entry.path.clone(),
+                            hash: xet_hash.into(),
+                        }
+                        .into()
+                    } else {
+                        RegularFile {
+                            fattr3: attr,
+                            path: file_entry.path.clone(),
+                        }
+                        .into()
+                    }
+                },
+                TreeEntry::Directory(dirent) => {
+                    let attr = get_fattr3(fileid, ftype3::NF3DIR);
+                    Directory {
+                        fattr3: attr,
+                        children: OnceCell::new(),
+                        path: dirent.path.clone(),
+                    }
+                    .into()
+                },
+            };
+            children.push(item.clone());
+            everything_guard.insert(fileid, item);
+        }
+        Ok(children)
+    }
+
+    async fn get_dir(&self, dirid: fileid3) -> Result<Arc<Directory>, nfsstat3> {
+        // Fetch the directory item
+        let maybe_item = { self.everything.read().await.get(&dirid).cloned() };
+        match maybe_item {
+            Some(Item::Directory(dir)) => Ok(dir),
+            Some(_) => Err(nfsstat3::NFS3ERR_NOTDIR),
+            None => Err(nfsstat3::NFS3ERR_NOENT),
+        }
+    }
+}
+
+fn get_fattr3(fileid: fileid3, ftype: ftype3) -> fattr3 {
+    fattr3 {
+        ftype,
+        mode: 0o444,
+        nlink: 1,
+        uid: 0,
+        gid: 0,
+        size: 0,
+        used: 0,
+        rdev: specdata3::default(),
+        fsid: 0,
+        fileid,
+        atime: nfstime3::default(),
+        mtime: nfstime3::default(),
+        ctime: nfstime3::default(),
+    }
+}
+
+#[async_trait::async_trait]
 impl NFSFileSystem for XetFS {
     fn capabilities(&self) -> VFSCapabilities {
         VFSCapabilities::ReadOnly
     }
 
     fn root_dir(&self) -> fileid3 {
-        0
+        ROOT_DIR_ID
     }
 
-    async fn lookup(&self, _dirid: fileid3, _filename: &filename3) -> Result<fileid3, nfsstat3> {
-        todo!()
+    async fn lookup(&self, dirid: fileid3, filename: &filename3) -> Result<fileid3, nfsstat3> {
+        let dir = self.inner.get_dir(dirid).await?;
+        let children = dir
+            .children
+            .get_or_try_init(|| self.inner.get_children_for_path(dir.path.as_str()))
+            .await?;
+        for child in children {
+            if child.filename() == &filename.0 {
+                return Ok(child.fileid());
+            }
+        }
+        Err(nfsstat3::NFS3ERR_NOENT)
     }
 
     async fn getattr(&self, id: fileid3) -> Result<fattr3, nfsstat3> {
-        match self.everything.read().await.get(&id) {
+        match self.inner.everything.read().await.get(&id) {
             Some(item) => Ok(item.fattr3().clone()),
             None => Err(nfsstat3::NFS3ERR_NOENT),
         }
@@ -128,7 +284,42 @@ impl NFSFileSystem for XetFS {
         start_after: fileid3,
         max_entries: usize,
     ) -> Result<ReadDirResult, nfsstat3> {
-        todo!()
+        // Fetch the directory item
+        let maybe_item = { self.inner.everything.read().await.get(&dirid).cloned() };
+        let dir_item = match maybe_item {
+            Some(Item::Directory(dir)) => dir,
+            Some(_) => return Err(nfsstat3::NFS3ERR_NOTDIR),
+            None => return Err(nfsstat3::NFS3ERR_NOENT),
+        };
+
+        // If children not cached, load from hub and populate
+        let children = dir_item
+            .children
+            .get_or_try_init(|| self.inner.get_children_for_path(dir_item.path.as_str()))
+            .await?;
+
+        let mut entries = vec![];
+        let mut skipped = 0;
+        // since the children list is sorted, we should binary search over this list
+        // to find how many to skip
+        for child in children {
+            if child.fileid() <= start_after {
+                skipped += 1;
+                continue;
+            }
+            entries.push(DirEntry {
+                fileid: child.fileid(),
+                name: child.filename().into(),
+                attr: child.fattr3().clone(),
+            });
+            debug_assert!(entries.len() <= max_entries);
+            if entries.len() == max_entries {
+                break;
+            }
+        }
+        let end = skipped + entries.len() == children.len();
+        let result = ReadDirResult { entries, end };
+        Ok(result)
     }
 
     async fn symlink(

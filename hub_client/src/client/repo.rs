@@ -1,7 +1,7 @@
 use crate::HubClient;
 use cas_client::{Api, ResponseErrorLogger};
 use cas_types::HexMerkleHash;
-use regex::{bytes, Regex};
+use regex::Regex;
 use reqwest::Response;
 use serde::Deserialize;
 use std::sync::LazyLock;

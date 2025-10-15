@@ -8,10 +8,13 @@ name = "xet-mount"
 path = "src/main.rs"
 
 [dependencies]
-tokio = { workspace = true }
+async-trait = { workspace = true }
 clap = { workspace = true }
+tokio = { workspace = true }
+uuid = { workspace = true }
 
 data = { path = "../data" }
 hub_client = { path = "../hub_client" }
+merklehash = { path = "../merklehash" }
 
 nfsserve = { git = "https://github.com/huggingface/nfsserve.git" }

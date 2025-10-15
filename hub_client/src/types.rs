@@ -15,7 +15,7 @@ pub struct CasJWTInfo {
 }
 
 // This defines the exact three types of repos served on HF Hub.
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone, Copy)]
 pub enum HFRepoType {
     Model,
     Dataset,
