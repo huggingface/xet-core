@@ -1,7 +1,6 @@
 use std::borrow::Cow;
 use std::sync::Arc;
 
-use cas_client::remote_client::RECONSTRUCT_WRITE_SEQUENTIALLY;
 use cas_client::{Client, SeekingOutputProvider, SequentialOutput};
 use cas_types::FileRange;
 use merklehash::MerkleHash;
@@ -52,19 +51,10 @@ impl FileDownloader {
     ) -> Result<u64> {
         let file_progress_tracker = progress_updater.map(|p| ItemProgressUpdater::item_tracker(&p, file_name, None));
 
-        // Currently, this works by always directly querying the remote server.
-        let n_bytes = if *RECONSTRUCT_WRITE_SEQUENTIALLY {
-            info!("Using sequential writer for smudge");
-            let sequential = output.try_into()?;
-            self.client
-                .get_file_with_sequential_writer(file_id, range, sequential, file_progress_tracker)
-                .await?
-        } else {
-            info!("Using parallel writer for smudge");
-            self.client
-                .get_file_with_parallel_writer(file_id, range, output, file_progress_tracker)
-                .await?
-        };
+        let n_bytes = self
+            .client
+            .get_file_with_parallel_writer(file_id, range, output, file_progress_tracker)
+            .await?;
 
         prometheus_metrics::FILTER_BYTES_SMUDGED.inc_by(n_bytes);
 
