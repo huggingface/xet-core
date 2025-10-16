@@ -1,5 +1,5 @@
 use std::io::{Seek, SeekFrom, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
@@ -11,6 +11,15 @@ use crate::error::Result;
 /// type that represents all acceptable sequential output mechanisms
 /// To convert something that is Write rather than AsyncWrite uses the AsyncWriteFromWrite adapter
 pub type SequentialOutput = Box<dyn AsyncWrite + Send + Unpin>;
+
+pub fn sequential_output_from_filepath(filename: impl AsRef<Path>) -> Result<SequentialOutput> {
+    let file = std::fs::OpenOptions::new()
+        .write(true)
+        .truncate(false)
+        .create(true)
+        .open(&filename)?;
+    Ok(Box::new(AsyncWriteFromWrite(Some(Box::new(file)))))
+}
 
 /// Enum of different output formats to write reconstructed files
 /// where the result writer can be set at a specific position and new handles can be created
