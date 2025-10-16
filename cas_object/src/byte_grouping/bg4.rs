@@ -228,7 +228,7 @@ pub fn bg4_regroup_together_combined_write_8(g: &[u8]) -> Vec<u8> {
             copy_nonoverlapping(&eightbytes as *const u8, d_ptr.add(8 * i), 8);
         }
 
-        if split % 2 != 0 {
+        if !split.is_multiple_of(2) {
             let i = split - 1;
             let fourbytes = [*g0.add(i), *g1.add(i), *g2.add(i), *g3.add(i)];
             data[4 * i..4 * i + 4].copy_from_slice(&fourbytes[..]);

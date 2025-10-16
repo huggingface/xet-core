@@ -4007,6 +4007,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.12",
  "tokio",
+ "tokio-util",
  "tracing",
  "web-time",
  "xet_runtime",
