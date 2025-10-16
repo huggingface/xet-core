@@ -3,7 +3,7 @@ Git-Xet is a Git LFS custom transfer agent that implements upload and download o
 ## Installation
 ### Prerequisite
 Make sure you have [git](https://git-scm.com/downloads) and [git-lfs](https://git-lfs.com/) installed and configured correctly.
-### macOS (amd64 & aarch64)
+### macOS (amd64 & aarch64) or Linux (amd64 & aarch64)
  To install using Homebrew:
    ```
    brew tap huggingface/tap
@@ -18,11 +18,6 @@ Make sure you have [git](https://git-scm.com/downloads) and [git-lfs](https://gi
    git-xet --version
    ```
 
-### Linux (amd64 & aarch64)
-Run the following in your terminal (requires `curl` and `unzip`):
-```
-curl --proto '=https' --tlsv1.2 -sSf https://raw.githubusercontent.com/huggingface/xet-core/refs/heads/main/git_xet/install.sh | sh
-```
 ### Windows (amd64)
  Using an installer: 
  - Download `git-xet-windows-installer-x86_64.zip` ([available here](https://github.com/huggingface/xet-core/releases/download/git-xet-v0.1.0/git-xet-windows-installer-x86_64.zip)) and unzip. 
@@ -53,7 +48,7 @@ If you used the installation script (for MacOS or Linux), run the following in y
 ### Windows
 If you used the installer:
 -  Navigate to Settings -> Apps -> Installed apps
-- Find "Git Xet".
+- Find "Git-Xet".
 - Select the "Uninstall" option available in the context menu.
 
 If you manually installed:
