@@ -34,7 +34,7 @@ To verity the installation, run:
   ```
 
 ## Uninstall
-### macOS & Linux
+### macOS or Linux
 Using Homebrew:
    ```
    git-xet uninstall
