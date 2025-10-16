@@ -3,7 +3,7 @@ Git-Xet is a Git LFS custom transfer agent that implements upload and download o
 ## Installation
 ### Prerequisite
 Make sure you have [git](https://git-scm.com/downloads) and [git-lfs](https://git-lfs.com/) installed and configured correctly.
-### macOS (amd64 & aarch64) or Linux (amd64 & aarch64)
+### macOS or Linux (amd64 or aarch64)
  To install using Homebrew:
    ```
    brew tap huggingface/tap
