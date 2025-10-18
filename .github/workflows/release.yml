@@ -235,8 +235,14 @@ jobs:
       - name: Copy debug symbols
         shell: bash
         run: |
+          pushd hf_xet/dist
+          LATEST_WHEEL=$(ls -tr1 *.whl | tail -n 1)
+          WHEEL_NAME=$(basename $LATEST_WHEEL .whl)
+          SYMBOL_FILE=${WHEEL_NAME}.pdb
+          popd
+
           mkdir hf_xet/dbg
-          cp hf_xet/target/${{ matrix.platform.rust_target }}/release/hf_xet.pdb hf_xet/dbg/
+          cp hf_xet/target/${{ matrix.platform.rust_target }}/release/hf_xet.pdb hf_xet/dbg/${SYMBOL_FILE}
       - name: Upload debug symbols
         uses: actions/upload-artifact@v4
         with:
@@ -295,17 +301,18 @@ jobs:
         run: |
           pushd hf_xet/dist
           LATEST_WHEEL=$(ls -tr1 *.whl | tail -n 1)
+          WHEEL_NAME=$(basename $LATEST_WHEEL .whl)
           WHEEL_VERSION=$(echo $LATEST_WHEEL | cut -d '-' -f 2)
+          SYMBOL_FILE=${WHEEL_NAME}.dylib.dSYM
           wheel unpack $LATEST_WHEEL
           LIB_NAME=$(basename hf_xet-${WHEEL_VERSION}/hf_xet/*.so)
           rm -rf hf_xet-${WHEEL_VERSION}
           popd
 
-          TARGET=${{ matrix.platform.target }}
           mkdir hf_xet/dbg
           pushd hf_xet/target/${{ matrix.platform.rust_target}}/release-dbgsymbols
-          sed -i '' "s/binary-path:.*/binary-path: '.\/${LIB_NAME}'/" libhf_xet.dylib.dSYM/Contents/Resources/Relocations/${TARGET}/libhf_xet.dylib.yml
-          cp -r libhf_xet.dylib.dSYM ../../../dbg/libhf_xet-macosx-${TARGET}.dylib.dSYM
+          sed -i '' "s/binary-path:.*/binary-path: '.\/${LIB_NAME}'/" libhf_xet.dylib.dSYM/Contents/Resources/Relocations/${{ matrix.platform.target }}/libhf_xet.dylib.yml
+          cp -r libhf_xet.dylib.dSYM ../../../dbg/${SYMBOL_FILE}
       - name: Upload debug symbols
         if: env.IS_RELEASE == 'true'
         uses: actions/upload-artifact@v4
