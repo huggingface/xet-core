@@ -41,6 +41,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
+          python-version: ${{ matrix.python-version }}
           cache: 'pip'
       - name: Install wheel tooling
         run: |
@@ -132,6 +133,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
+          python-version: ${{ matrix.python-version }}
           cache: 'pip'
       - name: Install wheel tooling
         run: |
@@ -265,7 +267,12 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
+          python-version: ${{ matrix.python-version }}
           cache: 'pip'
+      - name: Install wheel tooling
+        run: |
+          python -m pip install --upgrade pip
+          pip install wheel
       - name: Update version in toml
         run: |
           TAG=${{ github.event.inputs.tag }}
