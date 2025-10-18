@@ -290,7 +290,7 @@ impl From<PyXetDownloadInfo> for (XetFileInfo, DestinationPath) {
     }
 }
 
-#[pymodule]
+#[pymodule(gil_used = false)]
 #[allow(unused_variables)]
 pub fn hf_xet(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(upload_files, m)?)?;
