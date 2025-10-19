@@ -406,4 +406,4 @@ jobs:
           cp -r dbg-*/* dbg-symbols/
           echo "zipping debug symbols"
           zip -r dbg-symbols.zip dbg-symbols
-          gh release create release-test wheels-*/* dbg-symbols.zip --generate-notes --prerelease --target ${{github.sha}}
+          gh release create v1.1.11-rc0 wheels-*/* dbg-symbols.zip --generate-notes --prerelease --target ${{github.sha}}
