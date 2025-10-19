@@ -1,6 +1,5 @@
 mod fs;
 
-use std::path::PathBuf;
 use std::sync::Arc;
 
 use clap::Parser;
@@ -8,6 +7,7 @@ use data::FileDownloader;
 use data::data_client::default_config;
 use data::migration_tool::hub_client_token_refresher::HubClientTokenRefresher;
 use hub_client::{BearerCredentialHelper, HFRepoType, HubClient, HubXetTokenTrait, Operation, RepoInfo};
+use nfsserve::tcp::{NFSTcp, NFSTcpListener};
 use uuid::Uuid;
 
 use crate::fs::XetFS;
@@ -21,16 +21,14 @@ use crate::fs::XetFS;
 struct MountArgs {
     #[clap(short, long)]
     repo_id: String,
-    #[clap(long, default_value = "HFRepoType::Model")]
+    #[clap(long, short = 't', default_value = "HFRepoType::Model")]
     repo_type: HFRepoType,
     #[clap(long, visible_alias = "ref")]
     reference: Option<String>,
     #[clap(short, long)]
     token: Option<String>,
-    #[clap(short, long)]
-    path: PathBuf,
-    #[clap(short, long, visible_alias = "username")]
-    namespace: Option<String>,
+    // #[clap(short, long)]
+    // path: PathBuf,
 }
 
 #[tokio::main]
@@ -71,7 +69,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     )?;
     let xet_downloader = FileDownloader::new(Arc::new(config)).await?;
 
-    let _xfs = XetFS::new(hub_client, xet_downloader);
+    let xfs = XetFS::new(hub_client, xet_downloader);
 
+    let x = NFSTcpListener::bind("127.0.0.1:11111", xfs)
+        .await
+        .expect("Failed to bind to port 11111");
+
+    x.handle_forever().await?;
     Ok(())
 }

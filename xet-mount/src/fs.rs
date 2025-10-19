@@ -248,7 +248,7 @@ impl XetFSInner {
 fn get_fattr3(fileid: fileid3, ftype: ftype3) -> fattr3 {
     fattr3 {
         ftype,
-        mode: 0o444,
+        mode: 0o755,
         nlink: 1,
         uid: 0,
         gid: 0,
@@ -299,6 +299,7 @@ impl NFSFileSystem for XetFS {
     }
 
     async fn read(&self, id: fileid3, offset: u64, count: u32) -> Result<(Vec<u8>, bool), nfsstat3> {
+        println!("read: id: {:?}, offset: {:?}, count: {:?}", id, offset, count);
         let Some(item) = self.inner.everything.read().await.get(&id).cloned() else {
             return Err(nfsstat3::NFS3ERR_NOENT);
         };
@@ -350,6 +351,7 @@ impl NFSFileSystem for XetFS {
         start_after: fileid3,
         max_entries: usize,
     ) -> Result<ReadDirResult, nfsstat3> {
+        println!("readdir: dirid: {:?}, start_after: {:?}, max_entries: {:?}", dirid, start_after, max_entries);
         // Fetch the directory item
         let maybe_item = { self.inner.everything.read().await.get(&dirid).cloned() };
         let dir_item = match maybe_item {
