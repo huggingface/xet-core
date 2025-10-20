@@ -1,8 +1,0 @@
-name: 'Disable git user checks'
-description: 'Allow git user and repository owner to differ'
-runs:
-  using: "composite"
-  steps:
-    - shell: bash
-      run: |
-        git config --global --add safe.directory "${{ github.workspace }}"
