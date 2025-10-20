@@ -5,4 +5,4 @@ runs:
   steps:
     - shell: bash
       run: |
-        sudo git config --system --add safe.directory '*'
+        git config --global --add safe.directory "${{ github.workspace }}"
