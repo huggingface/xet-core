@@ -128,7 +128,7 @@ EOF
 maybe_build_ptrace_helper
 
 # --- download hf-xet dbg symbols ---
-WHEEL_VERSION=$(pip show hf-xet | grep Version | cut -d ' ' -f2)
+WHEEL_VERSION=$(pip show hf-xet | awk '/^Version:/{printf $2}')
 if [ -z "$WHEEL_VERSION" ]; then
   echo "Error: hf-xet package is not installed. Please install it before running this script." >&2
   exit 1
@@ -139,16 +139,17 @@ SYMBOL_DIR="symbols-$WHEEL_VERSION"
 if [ -d "$SYMBOL_DIR" ]; then
   echo "Existing symbols dir found, assuming previously installed."
 else
-  SITE_PACKAGES="$(pip show hf-xet | awk -F ': ' '/^Location:/{printf $2}')"
+  SITE_PACKAGES="$(pip show hf-xet | awk '/^Location:/{printf $2}')"
   WHEEL_DIR="$SITE_PACKAGES/hf_xet"
   DIST_INFO="$SITE_PACKAGES/hf_xet-$WHEEL_VERSION.dist-info"
   WHEEL_FILE="$DIST_INFO/WHEEL"
 
   # Reconstruct wheel name from wheel version and wheel tag
-  WHEEL_TAG=$(awk -F ': ' '/^Tag:/{printf $2}' $WHEEL_FILE)
+  WHEEL_TAG=$(awk '/^Tag:/{printf $2}' $WHEEL_FILE)
   SYMBOL_FILENAME="hf_xet-$WHEEL_VERSION-$WHEEL_TAG.so.dbg"
 
   echo "Downloading debug symbols: $SYMBOL_FILENAME"
+  # If the version is of format "1.1.10rc0", change it to our release tag format like "1.1.10-rc0"
   RELEASE_TAG=$(echo -n "$WHEEL_VERSION" | sed 's/\([0-9]\)\(rc.*\)$/\1-\2/')
   DOWNLOAD_URL="https://github.com/huggingface/xet-core/releases/download/v${RELEASE_TAG}/dbg-symbols.zip"
   curl -fL "$DOWNLOAD_URL" -o dbg-symbols.zip

@@ -392,6 +392,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+    if: ${{ github.event_name == 'workflow_dispatch' }}
     needs: [ linux, musllinux, windows, macos, sdist ]
     steps:
       - uses: actions/checkout@v4
@@ -409,4 +410,4 @@ jobs:
           cp -r dbg-*/* dbg-symbols/
           echo "zipping debug symbols"
           zip -r dbg-symbols.zip dbg-symbols
-          gh release create v1.1.11-rc0 wheels-*/* dbg-symbols.zip --generate-notes --prerelease --target ${{github.sha}}
+          gh release create ${{ github.event.inputs.tag}} wheels-*/* dbg-symbols.zip --generate-notes --prerelease --target ${{github.sha}}
