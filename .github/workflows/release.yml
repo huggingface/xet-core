@@ -74,6 +74,7 @@ jobs:
                 echo "Neither apt-get nor yum is installed. Please install a package manager."
                 exit 1
             fi
+            git config --global --add safe.directory "*"
       - name: Strip debug symbols into a separate file
         if: env.IS_RELEASE == 'true'
         run: |
@@ -157,6 +158,8 @@ jobs:
           sccache: 'true'
           manylinux: musllinux_1_2
           working-directory: hf_xet
+          before-script-linux: |
+            git config --global --add safe.directory "*"
       - name: Strip debug symbols into a separate file
         if: env.IS_RELEASE == 'true'
         run: |
