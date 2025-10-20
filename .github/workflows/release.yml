@@ -54,9 +54,6 @@ jobs:
       - uses: ./.github/actions/set-build-profile
         with:
           tag: ${{ github.event.inputs.tag }}
-      - name: Disable git user checks
-        run: |
-          git config --global --add safe.directory "${{ github.workspace }}"
       - name: Build wheels
         uses: PyO3/maturin-action@v1
         with:
@@ -74,6 +71,7 @@ jobs:
                 echo "Neither apt-get nor yum is installed. Please install a package manager."
                 exit 1
             fi
+            git config --global --add safe.directory "*"
       - name: Strip debug symbols into a separate file
         if: env.IS_RELEASE == 'true'
         run: |
@@ -146,9 +144,6 @@ jobs:
       - uses: ./.github/actions/set-build-profile
         with:
           tag: ${{ github.event.inputs.tag }}
-      - name: Disable git user checks
-        run: |
-          git config --global --add safe.directory "${{ github.workspace }}"
       - name: Build wheels
         uses: PyO3/maturin-action@v1
         with:
@@ -220,9 +215,6 @@ jobs:
           if [ -n "$VERSION" ]; then
             sed -i '/^version /s/=.*$/= "'"$VERSION"'"/' hf_xet/Cargo.toml
           fi
-      - name: Disable git user checks
-        run: |
-          git config --global --add safe.directory "${{ github.workspace }}"
       - name: Build wheels
         uses: PyO3/maturin-action@v1
         with:
@@ -272,9 +264,6 @@ jobs:
       - uses: ./.github/actions/set-build-profile
         with:
           tag: ${{ github.event.inputs.tag }}
-      - name: Disable git user checks
-        run: |
-          git config --global --add safe.directory "${{ github.workspace }}"
       - name: Build wheels
         uses: PyO3/maturin-action@v1
         with:
