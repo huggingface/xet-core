@@ -92,7 +92,7 @@ echo "Command: ${CMD[*]}"
   echo
   echo "ulimit -a:"; ulimit -a || true
   echo 
-  echo "python version:"; python --version || true
+  echo "python version:"; python -VV || true
   echo
 } > "$ENV_LOG" 2>&1 || true
 
@@ -149,8 +149,9 @@ else
   SYMBOL_FILENAME="hf_xet-$WHEEL_VERSION-$WHEEL_TAG.so.dbg"
 
   echo "Downloading debug symbols: $SYMBOL_FILENAME"
-  DOWNLOAD_URL="https://github.com/huggingface/xet-core/releases/download/v${WHEEL_VERSION}/dbg-symbols.zip"
-  curl -L "$DOWNLOAD_URL" -o dbg-symbols.zip
+  RELEASE_TAG=$(echo -n "$WHEEL_VERSION" | sed 's/\([0-9]\)\(rc.*\)$/\1-\2/')
+  DOWNLOAD_URL="https://github.com/huggingface/xet-core/releases/download/v${RELEASE_TAG}/dbg-symbols.zip"
+  curl -fL "$DOWNLOAD_URL" -o dbg-symbols.zip
   if [ $? -ne 0 ]; then
       echo "Error: Failed to download debug symbols from $DOWNLOAD_URL" >&2
       exit 1
