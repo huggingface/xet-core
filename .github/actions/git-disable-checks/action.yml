@@ -5,5 +5,4 @@ runs:
   steps:
     - shell: bash
       run: |
-        # Configure git so that all directories are safe to run git commands in for any user.
-        git config --global --add safe.directory '*' 
+        sudo git config --system --add safe.directory '*'
