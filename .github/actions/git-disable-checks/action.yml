@@ -1,0 +1,9 @@
+name: 'Disable git user checks'
+description: 'Allow git user and repository owner to differ'
+runs:
+  using: "composite"
+  steps:
+    - shell: bash
+      run: |
+        # Configure git so that all directories are safe to run git commands in for any user.
+        git config --system --add safe.directory '*' 

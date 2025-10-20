@@ -54,6 +54,7 @@ jobs:
       - uses: ./.github/actions/set-build-profile
         with:
           tag: ${{ github.event.inputs.tag }}
+      - uses: ./.github/actions/git-disable-checks
       - name: Build wheels
         uses: PyO3/maturin-action@v1
         with:
@@ -143,6 +144,7 @@ jobs:
       - uses: ./.github/actions/set-build-profile
         with:
           tag: ${{ github.event.inputs.tag }}
+      - uses: ./.github/actions/git-disable-checks
       - name: Build wheels
         uses: PyO3/maturin-action@v1
         with:
@@ -214,6 +216,7 @@ jobs:
           if [ -n "$VERSION" ]; then
             sed -i '/^version /s/=.*$/= "'"$VERSION"'"/' hf_xet/Cargo.toml
           fi
+      - uses: ./.github/actions/git-disable-checks
       - name: Build wheels
         uses: PyO3/maturin-action@v1
         with:
@@ -263,6 +266,7 @@ jobs:
       - uses: ./.github/actions/set-build-profile
         with:
           tag: ${{ github.event.inputs.tag }}
+      - uses: ./.github/actions/git-disable-checks
       - name: Build wheels
         uses: PyO3/maturin-action@v1
         with:

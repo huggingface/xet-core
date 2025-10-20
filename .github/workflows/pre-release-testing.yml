@@ -45,7 +45,6 @@ jobs:
           cd ${{ matrix.target-repo }}
           git config user.name "Hugging Face Bot (Xet RC Testing)"
           git config user.email "bot+xet@huggingface.co"
-
       - name: Wait for prerelease to be out on PyPI
         run: |
           VERSION=${{ steps.get-version.outputs.VERSION }}
