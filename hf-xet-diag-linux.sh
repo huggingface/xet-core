@@ -92,7 +92,7 @@ echo "Command: ${CMD[*]}"
   echo
   echo "ulimit -a:"; ulimit -a || true
   echo 
-  echo "python version:"; python --version || true
+  echo "python version:"; python -VV || true
   echo
 } > "$ENV_LOG" 2>&1 || true
 
@@ -128,7 +128,7 @@ EOF
 maybe_build_ptrace_helper
 
 # --- download hf-xet dbg symbols ---
-WHEEL_VERSION=$(pip show hf-xet | grep Version | cut -d ' ' -f2)
+WHEEL_VERSION=$(pip show hf-xet | awk '/^Version:/{printf $2}')
 if [ -z "$WHEEL_VERSION" ]; then
   echo "Error: hf-xet package is not installed. Please install it before running this script." >&2
   exit 1
@@ -139,33 +139,20 @@ SYMBOL_DIR="symbols-$WHEEL_VERSION"
 if [ -d "$SYMBOL_DIR" ]; then
   echo "Existing symbols dir found, assuming previously installed."
 else
-  LABEL="$(pip show hf-xet | grep Location | cut -d' ' -f2)/hf_xet"
-  SITE_PACKAGES="$(pip show hf-xet | grep Location | cut -d' ' -f2)"
-  DIST_NAME="$(pip show hf-xet | awk '/^Name:/{print $2}')"
-  DIST_INFO="$(find "$SITE_PACKAGES" -maxdepth 1 -type d -iname "${DIST_NAME//-/_}-*.dist-info" | head -n1)"
-  # Determine wheel type from WHEEL file
+  SITE_PACKAGES="$(pip show hf-xet | awk '/^Location:/{printf $2}')"
+  WHEEL_DIR="$SITE_PACKAGES/hf_xet"
+  DIST_INFO="$SITE_PACKAGES/hf_xet-$WHEEL_VERSION.dist-info"
   WHEEL_FILE="$DIST_INFO/WHEEL"
-  # Extract first platform tag (Tag: cp311-cp311-manylinux_2_28_x86_64)
-  WHEEL_PLATFORM_TAG=$(grep '^Tag:' "$WHEEL_FILE" | head -n1 | awk -F'-' '{print $NF}')
-  echo "Wheel platform tag: $WHEEL_PLATFORM_TAG"
-  # Extract Linux type (musl vs manylinux) and arch
-  LINUX_TYPE="$(echo "$WHEEL_PLATFORM_TAG" | grep -oE '^(musllinux|manylinux)')"
-  ARCH=$(uname -m)
-  # Normalize architecture names to match your debug symbols naming
-  if [[ "$ARCH" == "aarch64" ]]; then
-      ARCH="arm64"
-  fi
-  SYMBOL_FILENAME="hf_xet-${LINUX_TYPE}-${ARCH}.abi3.so.dbg"
+
+  # Reconstruct wheel name from wheel version and wheel tag
+  WHEEL_TAG=$(awk '/^Tag:/{printf $2}' $WHEEL_FILE)
+  SYMBOL_FILENAME="hf_xet-$WHEEL_VERSION-$WHEEL_TAG.so.dbg"
 
   echo "Downloading debug symbols: $SYMBOL_FILENAME"
-  # We assume the debug symbols archive is available at a predictable URL:
-  # e.g. https://github.com/huggingface/xet-core/releases/download/latest/dbg-symbols.zip
-  if [ -n "$WHEEL_VERSION" ]; then
-      DOWNLOAD_URL="https://github.com/huggingface/xet-core/releases/download/v${WHEEL_VERSION}/dbg-symbols.zip"
-  else
-      DOWNLOAD_URL="https://github.com/huggingface/xet-core/releases/latest/download/dbg-symbols.zip"
-  fi
-  curl -L "$DOWNLOAD_URL" -o dbg-symbols.zip
+  # If the version is of format "1.1.10rc0", change it to our release tag format like "1.1.10-rc0"
+  RELEASE_TAG=$(echo -n "$WHEEL_VERSION" | sed 's/\([0-9]\)\(rc.*\)$/\1-\2/')
+  DOWNLOAD_URL="https://github.com/huggingface/xet-core/releases/download/v${RELEASE_TAG}/dbg-symbols.zip"
+  curl -fL "$DOWNLOAD_URL" -o dbg-symbols.zip
   if [ $? -ne 0 ]; then
       echo "Error: Failed to download debug symbols from $DOWNLOAD_URL" >&2
       exit 1
@@ -175,8 +162,8 @@ else
   unzip dbg-symbols.zip -d "$SYMBOL_DIR"
 
   # Copy to package directory
-  cp -r $SYMBOL_DIR/dbg-symbols/"$SYMBOL_FILENAME" "$LABEL/"
-  echo "Installed dbg symbol $SYMBOL_FILENAME to $LABEL"
+  cp -r "$SYMBOL_DIR/dbg-symbols/$SYMBOL_FILENAME" "$WHEEL_DIR/"
+  echo "Installed dbg symbol $SYMBOL_FILENAME to $WHEEL_DIR"
 fi
 
 # --- launch target ---

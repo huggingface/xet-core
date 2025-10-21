@@ -76,38 +76,46 @@ echo "Command: ${CMD[*]}"
   echo
   echo "tasklist snapshot:"; tasklist || true
   echo
-  echo "python version:"; python --version || true
+  echo "python version:"; python -VV || true
 } > "$ENV_LOG" 2>&1 || true
 
 # --- download hf-xet debug symbols (PDB) ---
-WHEEL_VERSION=$(pip show hf-xet 2>/dev/null | awk '/Version:/{print $2}')
-if [[ -n "$WHEEL_VERSION" ]]; then
-  SYMBOL_DIR="symbols-$WHEEL_VERSION"
-  LABEL="$(pip show hf-xet | awk '/Location:/{print $2}')/hf_xet"
-  SYMBOL_FILENAME="hf_xet.pdb"
+WHEEL_VERSION=$(pip show hf-xet | awk '/^Version:/{printf $2}')
+if [ -z "$WHEEL_VERSION" ]; then
+  echo "Error: hf-xet package is not installed. Please install it before running this script." >&2
+  exit 1
+fi
+echo "hf-xet wheel version: $WHEEL_VERSION"
+SYMBOL_DIR="symbols-$WHEEL_VERSION"
 
-  if [[ -d "$SYMBOL_DIR" ]]; then
-    echo "Existing symbols dir found, assuming previously installed."
-  else
-    echo "Downloading debug symbols for hf-xet v$WHEEL_VERSION"
-    DOWNLOAD_URL="https://github.com/huggingface/xet-core/releases/download/v${WHEEL_VERSION}/dbg-symbols.zip"
-    curl -L "$DOWNLOAD_URL" -o dbg-symbols.zip || {
-      echo "Warning: failed to download debug symbols." | tee -a "$CONSOLE_LOG"
-    }
-    if [[ -f dbg-symbols.zip ]]; then
-      unzip -o dbg-symbols.zip -d "$SYMBOL_DIR"
-    else
-      echo "Warning: dbg-symbols.zip not found, skipping unzip." | tee -a "$CONSOLE_LOG"
-    fi
-    if [[ -f "$SYMBOL_DIR/dbg-symbols/$SYMBOL_FILENAME" ]]; then
-      cp "$SYMBOL_DIR/dbg-symbols/$SYMBOL_FILENAME" "$LABEL/" || true
-      echo "Installed dbg symbol $SYMBOL_FILENAME to $LABEL"
-    else
-      echo "Warning: $SYMBOL_FILENAME not found in archive." | tee -a "$CONSOLE_LOG"
-    fi
-  fi
+if [ -d "$SYMBOL_DIR" ]; then
+  echo "Existing symbols dir found, assuming previously installed."
 else
-  echo "hf-xet not installed — skipping debug symbol installation." | tee -a "$CONSOLE_LOG"
+  SITE_PACKAGES="$(pip show hf-xet | awk '/^Location:/{printf $2}')"
+  WHEEL_DIR="$SITE_PACKAGES/hf_xet"
+  DIST_INFO="$SITE_PACKAGES/hf_xet-$WHEEL_VERSION.dist-info"
+  WHEEL_FILE="$DIST_INFO/WHEEL"
+
+  # Reconstruct wheel name from wheel version and wheel tag
+  WHEEL_TAG=$(awk '/^Tag:/{printf $2}' $WHEEL_FILE)
+  SYMBOL_FILENAME="hf_xet-$WHEEL_VERSION-$WHEEL_TAG.pdb"
+
+  echo "Downloading debug symbols: $SYMBOL_FILENAME"
+  # If the version is of format "1.1.10rc0", change it to our release tag format like "1.1.10-rc0"
+  RELEASE_TAG=$(echo -n "$WHEEL_VERSION" | sed 's/\([0-9]\)\(rc.*\)$/\1-\2/')
+  DOWNLOAD_URL="https://github.com/huggingface/xet-core/releases/download/v${RELEASE_TAG}/dbg-symbols.zip"
+  curl -fL "$DOWNLOAD_URL" -o dbg-symbols.zip
+  if [ $? -ne 0 ]; then
+      echo "Error: Failed to download debug symbols from $DOWNLOAD_URL" >&2
+      exit 1
+  fi
+
+  # Extract just the needed symbol file
+  unzip dbg-symbols.zip -d "$SYMBOL_DIR"
+
+  # Copy to package directory
+  cp -r "$SYMBOL_DIR/dbg-symbols/$SYMBOL_FILENAME" "$WHEEL_DIR/hf_xet.pdb"
+  echo "Installed dbg symbol $SYMBOL_FILENAME to $WHEEL_DIR/hf_xet.pdb"
 fi
 
 # --- launch target ---
