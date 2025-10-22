@@ -17,7 +17,7 @@ pub fn output_bytes(v: u64) -> String {
     for (div, s) in map {
         let curr = v as f64 / div as f64;
         if v / div > 0 {
-            return if v % div == 0 {
+            return if v.is_multiple_of(div) {
                 format!("{} {}", v / div, s)
             } else {
                 format!("{curr:.2} {s}")

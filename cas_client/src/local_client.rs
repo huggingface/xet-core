@@ -18,12 +18,12 @@ use merklehash::MerkleHash;
 use progress_tracking::item_tracking::SingleItemProgressUpdater;
 use progress_tracking::upload_tracking::CompletionTracker;
 use tempfile::TempDir;
+use tokio::io::AsyncWriteExt;
 use tokio::runtime::Handle;
 use tracing::{debug, error, info, warn};
 
-use crate::Client;
 use crate::error::{CasClientError, Result};
-use crate::output_provider::OutputProvider;
+use crate::{Client, SeekingOutputProvider, SequentialOutput};
 
 pub struct LocalClient {
     tmp_dir: Option<TempDir>, // To hold directory to use for local testing
@@ -232,14 +232,14 @@ impl LocalClient {
     }
 }
 
-/// LocalClient is responsible for writing/reading Xorbs on local disk.
+/// LocalClient is responsible for writing/reading Xorbs on the local disk.
 #[async_trait]
 impl Client for LocalClient {
-    async fn get_file(
+    async fn get_file_with_sequential_writer(
         &self,
         hash: &MerkleHash,
         byte_range: Option<FileRange>,
-        output_provider: &OutputProvider,
+        mut output_provider: SequentialOutput,
         _progress_updater: Option<Arc<SingleItemProgressUpdater>>,
     ) -> Result<u64> {
         let Some((file_info, _)) = self
@@ -250,7 +250,6 @@ impl Client for LocalClient {
         else {
             return Err(CasClientError::FileNotFound(*hash));
         };
-        let mut writer = output_provider.get_writer_at(0)?;
 
         // This is just used for testing, so inefficient is fine.
         let mut file_vec = Vec::new();
@@ -269,9 +268,21 @@ impl Client for LocalClient {
             .unwrap_or(file_vec.len())
             .min(file_vec.len());
 
-        writer.write_all(&file_vec[start..end])?;
+        output_provider.write_all(&file_vec[start..end]).await?;
 
         Ok((end - start) as u64)
+    }
+
+    async fn get_file_with_parallel_writer(
+        &self,
+        hash: &MerkleHash,
+        byte_range: Option<FileRange>,
+        output_provider: SeekingOutputProvider,
+        progress_updater: Option<Arc<SingleItemProgressUpdater>>,
+    ) -> Result<u64> {
+        let sequential = output_provider.try_into()?;
+        self.get_file_with_sequential_writer(hash, byte_range, sequential, progress_updater)
+            .await
     }
 
     /// Query the shard server for the file reconstruction info.

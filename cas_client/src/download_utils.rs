@@ -21,7 +21,7 @@ use utils::singleflight::Group;
 
 use crate::error::{CasClientError, Result};
 use crate::http_client::Api;
-use crate::output_provider::OutputProvider;
+use crate::output_provider::SeekingOutputProvider;
 use crate::remote_client::{PREFIX_DEFAULT, get_reconstruction_with_endpoint_and_client};
 use crate::retry_wrapper::{RetryWrapper, RetryableReqwestError};
 
@@ -296,7 +296,7 @@ pub(crate) struct ChunkRangeWrite {
 pub(crate) struct FetchTermDownloadOnceAndWriteEverywhereUsed {
     pub download: FetchTermDownload,
     // pub write_offset: u64, // start position of the writer to write to
-    pub output: OutputProvider,
+    pub output: SeekingOutputProvider,
     pub writes: Vec<ChunkRangeWrite>,
 }
 

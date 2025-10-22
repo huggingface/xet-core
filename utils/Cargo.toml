@@ -24,6 +24,9 @@ thiserror = { workspace = true }
 tokio = { workspace = true, features = ["time", "rt", "macros", "sync"] }
 tracing = { workspace = true }
 
+[target.'cfg(not(target_family = "wasm"))'.dependencies]
+tokio-util = { workspace = true, features = ["io"] }
+
 [target.'cfg(not(target_family = "wasm"))'.dev-dependencies]
 tempfile = { workspace = true }
 xet_runtime = { path = "../xet_runtime" }
