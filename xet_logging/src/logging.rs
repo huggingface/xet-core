@@ -48,7 +48,7 @@ pub fn init(cfg: LoggingConfig) {
     }
 
     // Log the version information.
-    info!("{}, xet-core revision {}", &cfg.version, git_version::git_version!());
+    info!("{}, xet-core revision {}", &cfg.version, git_version::git_version!(fallback = "unknown"));
 
     if let Some(dir_cleanup_task_fn) = dir_cleanup_task {
         dir_cleanup_task_fn();
