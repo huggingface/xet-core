@@ -1,4 +1,4 @@
-use std::fs::{File, metadata};
+use std::fs::{metadata, File};
 use std::io::{BufReader, Cursor, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -21,9 +21,10 @@ use tempfile::TempDir;
 use tokio::runtime::Handle;
 use tracing::{debug, error, info, warn};
 
-use crate::Client;
+use crate::adaptive_concurrency::ConnectionPermit;
 use crate::error::{CasClientError, Result};
 use crate::output_provider::OutputProvider;
+use crate::Client;
 
 pub struct LocalClient {
     tmp_dir: Option<TempDir>, // To hold directory to use for local testing
@@ -294,7 +295,7 @@ impl Client for LocalClient {
         Ok(None)
     }
 
-    async fn upload_shard(&self, shard_data: Bytes) -> Result<bool> {
+    async fn upload_shard_with_permit(&self, shard_data: Bytes, _permit: ConnectionPermit) -> Result<bool> {
         // Write out the shard to the shard directory.
         let shard = MDBShardFile::write_out_from_reader(&self.shard_dir, &mut Cursor::new(&shard_data))?;
         let shard_hash = shard.shard_hash;
@@ -319,11 +320,12 @@ impl Client for LocalClient {
         Ok(true)
     }
 
-    async fn upload_xorb(
+    async fn upload_xorb_with_permit(
         &self,
         _prefix: &str,
         serialized_cas_object: SerializedCasObject,
         upload_tracker: Option<Arc<CompletionTracker>>,
+        _permit: ConnectionPermit,
     ) -> Result<u64> {
         // moved hash validation into [CasObject::serialize], so removed from here.
         let hash = &serialized_cas_object.hash;
@@ -395,8 +397,8 @@ fn map_heed_db_error(e: heed::Error) -> CasClientError {
 
 #[cfg(test)]
 mod tests {
-    use cas_object::CompressionScheme::LZ4;
     use cas_object::test_utils::*;
+    use cas_object::CompressionScheme::LZ4;
     use deduplication::test_utils::raw_xorb_to_vec;
     use mdb_shard::utils::parse_shard_filename;
 
