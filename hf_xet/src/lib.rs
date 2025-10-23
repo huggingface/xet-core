@@ -293,6 +293,14 @@ impl From<PyXetDownloadInfo> for (XetFileInfo, DestinationPath) {
 #[pymodule(gil_used = false)]
 #[allow(unused_variables)]
 pub fn hf_xet(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
+    // Configure hf_xet to use MemoryCache by default (not DiskCache)
+    // Set cache_size to 0 before any data_client functions are called
+    if std::env::var("HF_XET_CHUNK_CACHE_SIZE_BYTES").is_err() {
+        unsafe {
+            std::env::set_var("HF_XET_CHUNK_CACHE_SIZE_BYTES", "0");
+        }
+    }
+
     m.add_function(wrap_pyfunction!(upload_files, m)?)?;
     m.add_function(wrap_pyfunction!(upload_bytes, m)?)?;
     m.add_function(wrap_pyfunction!(download_files, m)?)?;
