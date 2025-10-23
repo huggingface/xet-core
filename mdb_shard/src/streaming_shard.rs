@@ -327,7 +327,8 @@ impl MDBMinimalShard {
         file_start_entries
     }
 
-    // Serialize out the implied
+    /// Implementation for the xorb serialization function.  Use one of the methods below
+    /// to directly access this.
     fn serialize_impl<W: Write>(
         &self,
         writer: &mut W,
@@ -428,8 +429,7 @@ impl MDBMinimalShard {
     }
 
     /// Serialize out a xorb without any of the file information and a subset of xorb data that is given
-    /// by the xorb_filter_fn.  When this function returns true, then
-    ///
+    /// by the xorb_filter_fn.  Global deduplication chunk information is preserved.
     pub fn serialize_xorb_subset_only<W: Write>(
         &self,
         writer: &mut W,
@@ -438,11 +438,14 @@ impl MDBMinimalShard {
         self.serialize_impl(writer, false, false, xorb_filter_fn)
     }
 
+    /// Serialize out the given xorb, sanitizing and updating the global dedup chunk flags and optionally
+    /// dropping the file verification section.
     pub fn serialize<W: Write>(&self, writer: &mut W, with_verification: bool) -> Result<usize> {
         self.serialize_impl(writer, true, with_verification, |_| true)
     }
 
-    /// Returns a list of all the global dedup eligible chunks, as given either by
+    /// Returns a list of all the global dedup eligible chunks, as given either by the hash value, file starts, or
+    /// the embedded global dedup flags.
     pub fn global_dedup_eligible_chunks(&self) -> Vec<MerkleHash> {
         // We need to get a list of all the chunk hashes that
         //   - References the first chunk of a file, or
