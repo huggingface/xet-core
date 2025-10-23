@@ -427,7 +427,9 @@ impl MDBMinimalShard {
         Ok(bytes)
     }
 
-    /// Serialize out a xorb without any of the file information,
+    /// Serialize out a xorb without any of the file information and a subset of xorb data that is given
+    /// by the xorb_filter_fn.  When this function returns true, then
+    ///
     pub fn serialize_xorb_subset_only<W: Write>(
         &self,
         writer: &mut W,
@@ -440,6 +442,7 @@ impl MDBMinimalShard {
         self.serialize_impl(writer, true, with_verification, |_| true)
     }
 
+    /// Returns a list of all the global dedup eligible chunks, as given either by
     pub fn global_dedup_eligible_chunks(&self) -> Vec<MerkleHash> {
         // We need to get a list of all the chunk hashes that
         //   - References the first chunk of a file, or
@@ -482,7 +485,7 @@ impl MDBMinimalShard {
             }
         }
 
-        Vec::from_iter(ret.into_iter())
+        Vec::from_iter(ret)
     }
 }
 
