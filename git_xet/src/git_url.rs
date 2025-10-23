@@ -65,11 +65,12 @@ impl GitUrl {
             .ok_or_else(|| GitXetError::config_error("remote URL missing host name"))?;
 
         let port = self.inner.port;
-        let port_str = if translated || port.is_none() {
+
+        let port_str = if let (false, Some(p)) = (translated, port) {
+            format!(":{p}")
+        } else {
             // if translated then there may be a port change that we can't guess
             "".to_owned()
-        } else {
-            format!(":{}", port.unwrap())
         };
 
         let path = self.inner.path.trim_start_matches('/').trim_end_matches(".git");
@@ -89,11 +90,12 @@ impl GitUrl {
             .ok_or_else(|| GitXetError::config_error("remote URL missing host name"))?;
 
         let port = self.inner.port;
-        let port_str = if translated || port.is_none() {
-            // if translated then there's a port change that we can't guess
-            "".to_owned()
+
+        let port_str = if let (false, Some(p)) = (translated, port) {
+            format!(":{p}")
         } else {
-            format!(":{}", port.unwrap())
+            // if translated then there may be a port change that we can't guess
+            "".to_owned()
         };
 
         Ok(format!("{scheme}://{host}{port_str}"))
