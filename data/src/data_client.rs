@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use cas_client::remote_client::PREFIX_DEFAULT;
-use cas_client::{CHUNK_CACHE_SIZE_BYTES, CacheConfig, FileProvider, OutputProvider};
+use cas_client::{CacheConfig, FileProvider, OutputProvider};
 use cas_object::CompressionScheme;
 use deduplication::DeduplicationMetrics;
 use progress_tracking::TrackingProgressUpdater;
@@ -23,6 +23,8 @@ use crate::{FileDownloader, FileUploadSession, XetFileInfo, errors};
 
 utils::configurable_constants! {
     ref DEFAULT_CAS_ENDPOINT: String = "http://localhost:8080".to_string();
+    // Override chunk_cache default to 0 (disabled) for hf_xet
+    ref HF_XET_CHUNK_CACHE_SIZE_BYTES: u64 = 0;
 }
 
 pub fn default_config(
@@ -65,7 +67,7 @@ pub fn default_config(
             prefix: PREFIX_DEFAULT.into(),
             cache_config: CacheConfig {
                 cache_directory: cache_path.join("chunk-cache"),
-                cache_size: *CHUNK_CACHE_SIZE_BYTES,
+                cache_size: *HF_XET_CHUNK_CACHE_SIZE_BYTES,
             },
             staging_directory: None,
         },

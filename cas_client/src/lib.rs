@@ -1,6 +1,9 @@
 #![allow(dead_code)]
 
-pub use chunk_cache::{CHUNK_CACHE_SIZE_BYTES, CacheConfig};
+pub use chunk_cache::{
+    CHUNK_CACHE_SIZE_BYTES, MEMORY_CACHE_PERCENTAGE, CacheConfig, MemoryCache,
+    default_memory_cache_percentage, DEFAULT_MEMORY_CACHE_PERCENTAGE,
+};
 pub use http_client::{Api, ResponseErrorLogger, RetryConfig, build_auth_http_client, build_http_client};
 pub use interface::Client;
 #[cfg(not(target_family = "wasm"))]

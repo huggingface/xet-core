@@ -28,7 +28,8 @@ pub mod test_utils;
 
 // consistently use URL_SAFE (also file path safe) base64 codec
 pub(crate) const BASE64_ENGINE: GeneralPurpose = URL_SAFE;
-pub const DEFAULT_CHUNK_CACHE_CAPACITY: u64 = 0; // disabled by default
+pub const DEFAULT_CHUNK_CACHE_CAPACITY: u64 = 10_000_000_000; // 10 GB
+const MAX_CACHE_FILE_SIZE: u64 = 10_000_000_000; // 10 GB - max size for a single cache file
 const PREFIX_DIR_NAME_LEN: usize = 2;
 
 type OptionResult<T, E> = Result<Option<T>, E>;
@@ -687,10 +688,10 @@ fn try_parse_cache_file(file_result: io::Result<DirEntry>, capacity: u64) -> Opt
     if !md.is_file() {
         return Ok(None);
     }
-    if md.len() > DEFAULT_CHUNK_CACHE_CAPACITY {
+    if md.len() > MAX_CACHE_FILE_SIZE {
         return Err(ChunkCacheError::general(format!(
             "Cache directory contains a file larger than {} GB, cache directory state is invalid",
-            (DEFAULT_CHUNK_CACHE_CAPACITY as f64 / (1 << 30) as f64)
+            (MAX_CACHE_FILE_SIZE as f64 / (1 << 30) as f64)
         )));
     }
 
@@ -813,6 +814,7 @@ impl ChunkCache for DiskCache {
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeSet;
+    use crate::{DEFAULT_CHUNK_CACHE_CAPACITY, DiskCache};
 
     use cas_types::{ChunkRange, Key};
     use rand::SeedableRng;
@@ -820,7 +822,6 @@ mod tests {
     use tempdir::TempDir;
     use utils::output_bytes;
 
-    use super::{DEFAULT_CHUNK_CACHE_CAPACITY, DiskCache};
     use crate::disk::test_utils::*;
     use crate::disk::try_parse_key;
     use crate::{CacheConfig, ChunkCache};
@@ -1259,9 +1260,7 @@ mod tests {
 mod concurrency_tests {
     use tempdir::TempDir;
 
-    use super::DiskCache;
-    use crate::disk::DEFAULT_CHUNK_CACHE_CAPACITY;
-    use crate::{CacheConfig, ChunkCache, RANGE_LEN, RandomEntryIterator};
+    use crate::{DEFAULT_CHUNK_CACHE_CAPACITY, DiskCache, CacheConfig, ChunkCache, RANGE_LEN, RandomEntryIterator};
 
     const NUM_ITEMS_PER_TASK: usize = 20;
     const RANDOM_SEED: u64 = 878987298749287;
