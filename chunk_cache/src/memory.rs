@@ -63,7 +63,9 @@ impl CacheState {
 
     fn find_match(&self, key: &Key, range: &ChunkRange) -> Option<&MemoryCacheItem> {
         let items = self.inner.get(key)?;
-        items.iter().find(|item| item.range.start <= range.start && range.end <= item.range.end)
+        items
+            .iter()
+            .find(|item| item.range.start <= range.start && range.end <= item.range.end)
     }
 
     /// Evict items from the cache until total_bytes <= max_total_bytes
