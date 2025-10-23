@@ -1,6 +1,6 @@
 mod fs;
 
-use std::sync::Arc;
+use std::{path::PathBuf, process::Command, sync::Arc};
 
 use clap::Parser;
 use data::FileDownloader;
@@ -21,20 +21,20 @@ use crate::fs::XetFS;
 struct MountArgs {
     #[clap(short, long)]
     repo_id: String,
-    #[clap(long, short = 't', default_value = "HFRepoType::Model")]
+    #[clap(long, short = 't', default_value = "model")]
     repo_type: HFRepoType,
-    #[clap(long, visible_alias = "ref")]
+    #[clap(long, visible_alias = "ref", default_value = "main")]
     reference: Option<String>,
-    #[clap(short, long)]
+    #[clap(long)]
     token: Option<String>,
-    // #[clap(short, long)]
-    // path: PathBuf,
+    #[clap(long)]
+    path: PathBuf,
 }
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = MountArgs::parse();
-    println!("{:?}", args);
+    eprintln!("{:?}", args);
 
     let session_id = Uuid::new_v4();
     let user_agent = format!("xet-mount/{}", env!("CARGO_PKG_VERSION"));
@@ -71,10 +71,36 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let xfs = XetFS::new(hub_client, xet_downloader);
 
-    let x = NFSTcpListener::bind("127.0.0.1:11111", xfs)
+    let listener = NFSTcpListener::bind("127.0.0.1:11111", xfs)
         .await
         .expect("Failed to bind to port 11111");
 
-    x.handle_forever().await?;
+    let ip = listener.get_listen_ip().to_string();
+    let hostport = listener.get_listen_port();
+
+    let task_handle = tokio::spawn(async move { listener.handle_forever().await });
+
+    let mount_path = utils::normalized_path_from_user_string(args.path.as_os_str().to_str().expect("invalid path"));
+    perform_mount(ip, hostport, mount_path).await?;
+
+    task_handle.await??;
+
+    Ok(())
+}
+
+async fn perform_mount(ip: String, hostport: u16, mount_path: PathBuf) -> Result<(), anyhow::Error> {
+    eprintln!("Performing mount...");
+    std::fs::create_dir_all(&mount_path)?;
+    let mut cmd = Command::new("/sbin/mount");
+    cmd.args(["-t", "nfs"]);
+    cmd.args([
+        "-o",
+        &format!("rdonly,nolocks,vers=3,tcp,rsize=131072,actimeo=120,port={hostport},mountport={hostport}"),
+    ]);
+
+    cmd.arg(format!("{}:/", &ip)).arg(mount_path);
+
+    cmd.status()?;
+
     Ok(())
 }

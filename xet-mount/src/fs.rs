@@ -13,7 +13,7 @@ use nfsserve::vfs::{DirEntry, NFSFileSystem, ReadDirResult, VFSCapabilities};
 use tokio::io::AsyncReadExt;
 use tokio::sync::{OnceCell, RwLock};
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 enum Item {
     Directory(Arc<Directory>),
     RegularFile(Arc<RegularFile>),
@@ -46,6 +46,7 @@ impl Item {
     }
 }
 
+#[derive(Debug)]
 struct RegularFile {
     fattr3: fattr3,
     path: String,
@@ -57,6 +58,7 @@ impl From<RegularFile> for Item {
     }
 }
 
+#[derive(Debug)]
 struct XetFile {
     fattr3: fattr3,
     path: String,
@@ -69,6 +71,7 @@ impl From<XetFile> for Item {
     }
 }
 
+#[derive(Debug)]
 struct Directory {
     fattr3: fattr3,
     children: OnceCell<Vec<Item>>,
@@ -149,7 +152,7 @@ impl XetFSInner {
             let fileid = self.get_next_id();
             let item: Item = match entry {
                 TreeEntry::File(file_entry) => {
-                    let attr = get_fattr3(fileid, ftype3::NF3REG);
+                    let attr = get_fattr3(fileid, file_entry.size, ftype3::NF3REG);
                     // Decide RegularFile vs XetFile based on xet_hash presence
                     if let Some(xet_hash) = file_entry.xet_hash {
                         XetFile {
@@ -167,7 +170,7 @@ impl XetFSInner {
                     }
                 },
                 TreeEntry::Directory(dirent) => {
-                    let attr = get_fattr3(fileid, ftype3::NF3DIR);
+                    let attr = get_fattr3(fileid, dirent.size, ftype3::NF3DIR);
                     Directory {
                         fattr3: attr,
                         children: OnceCell::new(),
@@ -198,6 +201,7 @@ impl XetFSInner {
         offset: u64,
         count: u32,
     ) -> Result<(Vec<u8>, bool), nfsstat3> {
+        eprintln!("Downloading regular file: {file:?}");
         let file_len = file.fattr3.size;
         let past_the_end = offset + count as u64 > file_len;
 
@@ -245,14 +249,14 @@ impl XetFSInner {
     }
 }
 
-fn get_fattr3(fileid: fileid3, ftype: ftype3) -> fattr3 {
+fn get_fattr3(fileid: fileid3, filesize: u64, ftype: ftype3) -> fattr3 {
     fattr3 {
         ftype,
         mode: 0o755,
         nlink: 1,
         uid: 0,
         gid: 0,
-        size: 0,
+        size: filesize,
         used: 0,
         rdev: specdata3::default(),
         fsid: 0,
@@ -351,7 +355,7 @@ impl NFSFileSystem for XetFS {
         start_after: fileid3,
         max_entries: usize,
     ) -> Result<ReadDirResult, nfsstat3> {
-        println!("readdir: dirid: {:?}, start_after: {:?}, max_entries: {:?}", dirid, start_after, max_entries);
+        eprintln!("readdir: dirid: {:?}, start_after: {:?}, max_entries: {:?}", dirid, start_after, max_entries);
         // Fetch the directory item
         let maybe_item = { self.inner.everything.read().await.get(&dirid).cloned() };
         let dir_item = match maybe_item {
@@ -360,6 +364,7 @@ impl NFSFileSystem for XetFS {
             None => return Err(nfsstat3::NFS3ERR_NOENT),
         };
 
+        // eprintln!("readdir: {dir_item:?}");
         // If children not cached, load from hub and populate
         let children = dir_item
             .children

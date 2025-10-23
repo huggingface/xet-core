@@ -8,6 +8,7 @@ name = "xet-mount"
 path = "src/main.rs"
 
 [dependencies]
+anyhow = { workspace = true }
 async-trait = { workspace = true }
 clap = { workspace = true }
 tokio = { workspace = true }

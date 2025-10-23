@@ -3,11 +3,12 @@ use std::sync::LazyLock;
 use bytes::Bytes;
 use cas_client::{Api, ResponseErrorLogger};
 use cas_types::{FileRange, HexMerkleHash, HttpRange};
+use http::header;
 use regex::Regex;
 use reqwest::Response;
 use serde::Deserialize;
 
-use crate::HubClient;
+use crate::{HubClient, HubClientError};
 
 #[async_trait::async_trait]
 pub trait HubRepositoryTrait {
@@ -102,13 +103,18 @@ impl HubRepositoryTrait for HubClient {
         let path = normalize_path(path);
         let url = format!("{endpoint}/api/{repo_type}s/{repo_id}/tree/{rev}{path}?limit=1000");
 
-        let response = self
+        let req = self
             .client
-            .get(url)
+            .get(&url)
             .with_extension(Api("tree"))
-            .send()
+            .header(header::USER_AGENT, &self.user_agent);
+
+        let req = self
+            .cred_helper
+            .fill_credential(req)
             .await
-            .process_error("list-files")?;
+            .map_err(HubClientError::CredentialHelper)?;
+        let response = req.send().await.process_error("list-files")?;
 
         let mut link = parse_link_url(&response);
         let mut entries: Vec<TreeEntry> = response.json().await?;
@@ -133,18 +139,32 @@ impl HubRepositoryTrait for HubClient {
     // TODO: have this interface return a Stream/Reader, want #528
     async fn download_resolved_content(&self, path: &str, range: Option<FileRange>) -> crate::Result<Bytes> {
         let endpoint = self.endpoint.as_str();
-        let repo_type = self.repo_info.repo_type.as_str();
+        let repo_type = self.repo_info.repo_type.as_str_hide_model();
+        let repo_type_str = if repo_type.is_empty() {
+            ""
+        } else {
+            &format!("{}s/", repo_type)
+        };
         let repo_id = self.repo_info.full_name.as_str();
         let rev = self.reference.as_deref().unwrap_or("main");
 
         let path = normalize_path(path);
         // https://huggingface.co/spaces/google/emoji-gemma/resolve/main/myemoji-gemma-3-270m-it.task?download=true
-        let url = format!("{endpoint}/{repo_type}s/{repo_id}/resolve/{rev}{path}?download=true");
-        let mut request_builder = self.client.get(url);
+        let url = format!("{endpoint}/{repo_type_str}{repo_id}/resolve/{rev}{path}?download=true");
+        let mut req = self
+            .client
+            .get(url)
+            .with_extension(Api("resolve"))
+            .header(header::USER_AGENT, &self.user_agent);
         if let Some(range) = range {
-            request_builder = request_builder.header(http::header::RANGE, HttpRange::from(range).range_header());
+            req = req.header(http::header::RANGE, HttpRange::from(range).range_header());
         }
-        let result = request_builder.send().await?.error_for_status()?.bytes().await?;
+        let req = self
+            .cred_helper
+            .fill_credential(req)
+            .await
+            .map_err(HubClientError::CredentialHelper)?;
+        let result = req.send().await?.error_for_status()?.bytes().await?;
         Ok(result)
     }
 }

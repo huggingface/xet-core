@@ -44,6 +44,14 @@ impl HFRepoType {
             HFRepoType::Space => "space",
         }
     }
+
+    pub fn as_str_hide_model(&self) -> &str {
+        match self {
+            HFRepoType::Model => "",
+            HFRepoType::Dataset => "dataset",
+            HFRepoType::Space => "space",
+        }
+    }
 }
 
 impl Display for HFRepoType {
