@@ -195,7 +195,7 @@ jobs:
         with:
           name: dbg-musllinux-${{ matrix.python-version }}-${{ matrix.platform.target }}
           path: hf_xet/dbg
-      - name: Upload wheels with seperated debug symbols
+      - name: Upload wheels with separated debug symbols
         uses: actions/upload-artifact@v4
         with:
           name: wheels-musllinux-${{ matrix.python-version }}-${{ matrix.platform.target }}

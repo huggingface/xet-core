@@ -267,7 +267,7 @@ AddChunk(file[ChunkStart...])
 
 \begin_layout Standard
 (Note that this simplified formulation does not cover more advanced procedures
- like the the low variance chunking method in the Git Is for Data Paper,
+ like the low variance chunking method in the Git Is for Data Paper,
  nor the adaptive chunking method in FastCDC).
 \end_layout
 

@@ -43,7 +43,7 @@ pub enum InitRequest {
 pub struct InitRequestInner {
     pub remote: String,   // the Git remote, this can either be a remote name like "origin" or a remote URL
     pub concurrent: bool, // if git-lfs will split the transfer workload
-    pub concurrenttransfers: Option<u32>, /* the number of custom tranfer agent processes that git-lfs will spawn
+    pub concurrenttransfers: Option<u32>, /* the number of custom transfer agent processes that git-lfs will spawn
                            * Note that this reflects the value of "lfs.concurrenttransfers" in Git config,
                            * and is just an "FYI" to each agent process. git-lfs splits the transfer workload evenly
                            * between the agent processes.
