@@ -63,6 +63,7 @@ pub fn upload_bytes(
             token_info,
             refresher.map(|v| v as Arc<_>),
             updater.map(|v| v as Arc<_>),
+            Some(0), // Disable DiskCache for hf_xet
         )
         .await
         .map_err(convert_data_processing_error)?
@@ -108,6 +109,7 @@ pub fn upload_files(
             token_info,
             refresher.map(|v| v as Arc<_>),
             updater.map(|v| v as Arc<_>),
+            Some(0), // Disable DiskCache for hf_xet
         )
         .await
         .map_err(convert_data_processing_error)?
@@ -145,10 +147,16 @@ pub fn download_files(
             if file_infos.len() > 3 { "..." } else { "." }
         );
 
-        let out: Vec<String> =
-            data_client::download_async(file_infos, endpoint, token_info, refresher.map(|v| v as Arc<_>), updaters)
-                .await
-                .map_err(convert_data_processing_error)?;
+        let out: Vec<String> = data_client::download_async(
+            file_infos,
+            endpoint,
+            token_info,
+            refresher.map(|v| v as Arc<_>),
+            updaters,
+            Some(0), // Disable DiskCache for hf_xet
+        )
+        .await
+        .map_err(convert_data_processing_error)?;
 
         debug!("Download call {x:x}: Completed.");
 

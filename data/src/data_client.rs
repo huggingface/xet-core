@@ -93,8 +93,13 @@ pub async fn upload_bytes_async(
     token_info: Option<(String, u64)>,
     token_refresher: Option<Arc<dyn TokenRefresher>>,
     progress_updater: Option<Arc<dyn TrackingProgressUpdater>>,
+    cache_size: Option<u64>,
 ) -> errors::Result<Vec<XetFileInfo>> {
-    let config = default_config(endpoint.unwrap_or(DEFAULT_CAS_ENDPOINT.clone()), None, token_info, token_refresher)?;
+    let mut config =
+        default_config(endpoint.unwrap_or(DEFAULT_CAS_ENDPOINT.clone()), None, token_info, token_refresher)?;
+    if let Some(size) = cache_size {
+        config = config.with_cache_size(size);
+    }
     Span::current().record("session_id", &config.session_id);
 
     let semaphore = XetRuntime::current().global_semaphore(*CONCURRENT_FILE_INGESTION_LIMITER);
@@ -128,12 +133,17 @@ pub async fn upload_async(
     token_info: Option<(String, u64)>,
     token_refresher: Option<Arc<dyn TokenRefresher>>,
     progress_updater: Option<Arc<dyn TrackingProgressUpdater>>,
+    cache_size: Option<u64>,
 ) -> errors::Result<Vec<XetFileInfo>> {
     // chunk files
     // produce Xorbs + Shards
     // upload shards and xorbs
     // for each file, return the filehash
-    let config = default_config(endpoint.unwrap_or(DEFAULT_CAS_ENDPOINT.clone()), None, token_info, token_refresher)?;
+    let mut config =
+        default_config(endpoint.unwrap_or(DEFAULT_CAS_ENDPOINT.clone()), None, token_info, token_refresher)?;
+    if let Some(size) = cache_size {
+        config = config.with_cache_size(size);
+    }
 
     let span = Span::current();
 
@@ -164,6 +174,7 @@ pub async fn download_async(
     token_info: Option<(String, u64)>,
     token_refresher: Option<Arc<dyn TokenRefresher>>,
     progress_updaters: Option<Vec<Arc<dyn TrackingProgressUpdater>>>,
+    cache_size: Option<u64>,
 ) -> errors::Result<Vec<String>> {
     lazy_static! {
         static ref CONCURRENT_FILE_DOWNLOAD_LIMITER: GlobalSemaphoreHandle =
@@ -175,8 +186,11 @@ pub async fn download_async(
     {
         return Err(DataProcessingError::ParameterError("updaters are not same length as pointer_files".to_string()));
     }
-    let config =
+    let mut config =
         default_config(endpoint.unwrap_or(DEFAULT_CAS_ENDPOINT.to_string()), None, token_info, token_refresher)?;
+    if let Some(size) = cache_size {
+        config = config.with_cache_size(size);
+    }
     Span::current().record("session_id", &config.session_id);
 
     let processor = Arc::new(FileDownloader::new(config.into()).await?);
