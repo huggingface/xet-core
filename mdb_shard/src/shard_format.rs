@@ -1619,8 +1619,8 @@ pub mod test_routines {
             assert_eq!(result_m, result_f);
 
             // Make sure retriving the expected file.
-            if result_m.is_some() {
-                assert_eq!(result_m.unwrap().metadata.file_hash, *k);
+            if let Some(rm) = result_m {
+                assert_eq!(rm.metadata.file_hash, *k);
                 assert_eq!(result_f.unwrap().metadata.file_hash, *k);
             }
         }
