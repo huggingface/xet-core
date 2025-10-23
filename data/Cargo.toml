@@ -30,7 +30,6 @@ path = "examples/xorb-check/main.rs"
 cas_client = { path = "../cas_client" }
 cas_object = { path = "../cas_object" }
 cas_types = { path = "../cas_types" }
-chunk_cache = { path = "../chunk_cache" }
 deduplication = { path = "../deduplication" }
 error_printer = { path = "../error_printer" }
 hub_client = { path = "../hub_client" }

@@ -1,7 +1,6 @@
 mod cache_manager;
 mod disk;
 pub mod error;
-mod memory;
 
 use std::path::PathBuf;
 
@@ -11,15 +10,12 @@ use cas_types::{ChunkRange, Key};
 pub use disk::DiskCache;
 pub use disk::test_utils::*;
 use error::ChunkCacheError;
-pub use memory::MemoryCache;
 use mockall::automock;
 
 pub use crate::disk::DEFAULT_CHUNK_CACHE_CAPACITY;
-pub use crate::memory::{DEFAULT_MEMORY_CACHE_PERCENTAGE, default_memory_cache_percentage};
 
 utils::configurable_constants! {
     ref CHUNK_CACHE_SIZE_BYTES: u64 = DEFAULT_CHUNK_CACHE_CAPACITY;
-    ref MEMORY_CACHE_PERCENTAGE: f64 = default_memory_cache_percentage();
 }
 
 /// Return dto for cache gets
