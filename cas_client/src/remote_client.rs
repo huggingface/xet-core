@@ -230,6 +230,35 @@ impl RemoteClient {
         }
     }
 
+    /// Create RemoteClient with a custom cache (e.g., MemoryCache)
+    #[allow(clippy::too_many_arguments)]
+    pub fn with_cache(
+        endpoint: &str,
+        auth: &Option<AuthConfig>,
+        chunk_cache: Option<Arc<dyn ChunkCache>>,
+        shard_cache_directory: Option<PathBuf>,
+        session_id: &str,
+        dry_run: bool,
+    ) -> Self {
+        Self {
+            endpoint: endpoint.to_string(),
+            dry_run,
+            authenticated_http_client_with_retry: Arc::new(
+                http_client::build_auth_http_client(auth, RetryConfig::default(), session_id).unwrap(),
+            ),
+            authenticated_http_client: Arc::new(
+                http_client::build_auth_http_client_no_retry(auth, session_id).unwrap(),
+            ),
+            http_client_with_retry: Arc::new(
+                http_client::build_http_client(RetryConfig::default(), session_id).unwrap(),
+            ),
+            chunk_cache,
+            #[cfg(not(target_family = "wasm"))]
+            range_download_single_flight: Arc::new(Group::new()),
+            shard_cache_directory,
+        }
+    }
+
     async fn query_dedup_api(&self, prefix: &str, chunk_hash: &MerkleHash) -> Result<Option<Response>> {
         // The API endpoint now only supports non-batched dedup request and
         let key = Key {
