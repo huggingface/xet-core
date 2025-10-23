@@ -37,11 +37,11 @@ pub(crate) fn create_remote_client(
                         Ok(cache) => {
                             info!("Using MemoryCache with {:.1}% of system RAM", *MEMORY_CACHE_PERCENTAGE * 100.0);
                             Some(Arc::new(cache) as Arc<dyn ChunkCache>)
-                        }
+                        },
                         Err(e) => {
                             info!("Failed to initialize MemoryCache: {e}, proceeding without cache");
                             None
-                        }
+                        },
                     }
                 } else {
                     None
@@ -56,7 +56,7 @@ pub(crate) fn create_remote_client(
                     dry_run,
                 )))
             }
-        }
+        },
         Endpoint::FileSystem(ref path) => {
             #[cfg(not(target_family = "wasm"))]
             {

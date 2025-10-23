@@ -814,7 +814,6 @@ impl ChunkCache for DiskCache {
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeSet;
-    use crate::{DEFAULT_CHUNK_CACHE_CAPACITY, DiskCache};
 
     use cas_types::{ChunkRange, Key};
     use rand::SeedableRng;
@@ -824,7 +823,7 @@ mod tests {
 
     use crate::disk::test_utils::*;
     use crate::disk::try_parse_key;
-    use crate::{CacheConfig, ChunkCache};
+    use crate::{CacheConfig, ChunkCache, DEFAULT_CHUNK_CACHE_CAPACITY, DiskCache};
 
     const RANDOM_SEED: u64 = 9089 << 20 | 120043;
 
@@ -1260,7 +1259,7 @@ mod tests {
 mod concurrency_tests {
     use tempdir::TempDir;
 
-    use crate::{DEFAULT_CHUNK_CACHE_CAPACITY, DiskCache, CacheConfig, ChunkCache, RANGE_LEN, RandomEntryIterator};
+    use crate::{CacheConfig, ChunkCache, DEFAULT_CHUNK_CACHE_CAPACITY, DiskCache, RANGE_LEN, RandomEntryIterator};
 
     const NUM_ITEMS_PER_TASK: usize = 20;
     const RANDOM_SEED: u64 = 878987298749287;

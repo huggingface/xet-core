@@ -21,7 +21,7 @@ pub fn default_memory_cache_percentage() -> f64 {
 /// Get total system memory in bytes
 fn get_system_memory_bytes() -> Option<u64> {
     use sysinfo::System;
-    
+
     let mut sys = System::new_all();
     sys.refresh_memory();
     Some(sys.total_memory())
@@ -32,7 +32,7 @@ fn percentage_to_bytes(percentage: f64) -> u64 {
     if percentage <= 0.0 {
         return 0;
     }
-    
+
     get_system_memory_bytes()
         .map(|ram| (ram as f64 * percentage) as u64)
         .unwrap_or(0)
@@ -80,7 +80,7 @@ impl CacheState {
             let Some((key, idx)) = self.random_item() else {
                 break;
             };
-            
+
             let items = self.inner.get_mut(&key).expect("Key should exist");
             let cache_item = items.swap_remove(idx);
             let len = cache_item.data.len() as u64;
@@ -175,14 +175,14 @@ impl ChunkCache for MemoryCache {
         // Extract the requested range from the cached item
         let start_idx = (range.start - cache_item.range.start) as usize;
         let end_idx = (range.end - cache_item.range.start) as usize;
-        
+
         if end_idx >= cache_item.chunk_byte_indices.len() {
             return Err(ChunkCacheError::BadRange);
         }
 
         let start_byte = cache_item.chunk_byte_indices[start_idx] as usize;
         let end_byte = cache_item.chunk_byte_indices[end_idx] as usize;
-        
+
         if end_byte > cache_item.data.len() {
             return Err(ChunkCacheError::BadRange);
         }
@@ -259,11 +259,7 @@ impl ChunkCache for MemoryCache {
         state.total_bytes += data_len;
         state.num_items += 1;
 
-        state
-            .inner
-            .entry(key.clone())
-            .or_insert_with(Vec::new)
-            .push(cache_item);
+        state.inner.entry(key.clone()).or_insert_with(Vec::new).push(cache_item);
 
         Ok(())
     }
@@ -310,10 +306,7 @@ mod tests {
         let data = vec![0u8; 1000];
 
         // Put data in cache
-        cache
-            .put(&key, &range, &chunk_byte_indices, &data)
-            .await
-            .unwrap();
+        cache.put(&key, &range, &chunk_byte_indices, &data).await.unwrap();
 
         // Get data from cache
         let result = cache.get(&key, &range).await.unwrap();
@@ -347,16 +340,10 @@ mod tests {
         let data2 = vec![2u8; 300];
 
         // Put first item
-        cache
-            .put(&key1, &range1, &chunk_byte_indices1, &data1)
-            .await
-            .unwrap();
+        cache.put(&key1, &range1, &chunk_byte_indices1, &data1).await.unwrap();
 
         // Put second item (should trigger eviction)
-        cache
-            .put(&key2, &range2, &chunk_byte_indices2, &data2)
-            .await
-            .unwrap();
+        cache.put(&key2, &range2, &chunk_byte_indices2, &data2).await.unwrap();
 
         // At least one item should be present (random eviction may keep either)
         assert!(cache.num_items().await > 0);
@@ -364,4 +351,3 @@ mod tests {
         assert!(cache.total_bytes().await <= cache.capacity);
     }
 }
-
