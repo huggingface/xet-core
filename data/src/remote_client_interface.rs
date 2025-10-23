@@ -14,16 +14,14 @@ pub(crate) fn create_remote_client(
     let cas_storage_config = &config.data_config;
 
     match cas_storage_config.endpoint {
-        Endpoint::Server(ref endpoint) => {
-            Ok(Arc::new(RemoteClient::new(
-                endpoint,
-                &cas_storage_config.auth,
-                &Some(cas_storage_config.cache_config.clone()),
-                Some(config.shard_config.cache_directory.clone()),
-                session_id,
-                dry_run,
-            )))
-        },
+        Endpoint::Server(ref endpoint) => Ok(Arc::new(RemoteClient::new(
+            endpoint,
+            &cas_storage_config.auth,
+            &Some(cas_storage_config.cache_config.clone()),
+            Some(config.shard_config.cache_directory.clone()),
+            session_id,
+            dry_run,
+        ))),
         Endpoint::FileSystem(ref path) => {
             #[cfg(not(target_family = "wasm"))]
             {
