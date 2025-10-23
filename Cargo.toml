@@ -2,7 +2,7 @@
 resolver = "2"
 
 members = [
-    "cas_client",
+    "cas_client", 
     "cas_object",
     "cas_types",
     "chunk_cache",
