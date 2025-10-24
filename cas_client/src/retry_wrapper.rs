@@ -69,7 +69,7 @@ impl RetryWrapper {
                 }
             };
 
-            info!("Connection attempt {}/{} for {} API", try_idx + 1, self.max_attempts, self.api_tag);
+            info!(api = self.api_tag, "Connection attempt {}/{}", try_idx + 1, self.max_attempts);
 
             if self.log_errors_as_info || log_as_info {
                 info!("{msg}");
@@ -171,17 +171,19 @@ impl RetryWrapper {
     ) -> Result<T, CasClientError>
     where
         ReqFn: Fn() -> ReqFut + Send + 'static,
-        ReqFut: std::future::Future<Output = Result<Response, reqwest_middleware::Error>> + 'static,
+        ReqFut: Future<Output = Result<Response, reqwest_middleware::Error>> + 'static,
         ProcFn: Fn(Response) -> ProcFut + Send + 'static,
-        ProcFut: std::future::Future<Output = Result<T, RetryableReqwestError>> + 'static,
+        ProcFut: Future<Output = Result<T, RetryableReqwestError>> + 'static,
     {
         let strategy = ExponentialBackoff::from_millis(self.base_delay.as_millis().min(u64::MAX as u128) as u64)
             .map(jitter)
             .take(self.max_attempts);
 
         info!(
-            "Retry strategy: max_attempts={}, base_delay={:?}, no_retry_on_429={}",
-            self.max_attempts, self.base_delay, self.no_retry_on_429
+            max_attempts = self.max_attempts,
+            base_delay=?self.base_delay,
+            no_retry_on_429=self.no_retry_on_429,
+            "Retry strategy",
         );
 
         // Move self (which is consumable) into an arc that can be passed into this.
