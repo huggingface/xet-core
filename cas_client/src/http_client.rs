@@ -108,8 +108,9 @@ fn reqwest_client() -> Result<reqwest::Client, CasClientError> {
         })?;
 
         info!(
-            "HTTP client configured with idle_timeout={:?}, max_idle_connections={}",
-            *CLIENT_IDLE_CONNECTION_TIMEOUT, *CLIENT_MAX_IDLE_CONNECTIONS
+            idle_timeout=?*CLIENT_IDLE_CONNECTION_TIMEOUT,
+            max_idle_connections=*CLIENT_MAX_IDLE_CONNECTIONS,
+            "HTTP client configured"
         );
 
         Ok(client)
@@ -229,13 +230,13 @@ impl Middleware for LoggingMiddleware {
                 let request_id = request_id_from_response(res);
                 info!(request_id, status_code, "Received CAS response");
                 if Some(Retryable::Transient) == default_on_request_success(res) {
-                    warn!(request_id, "Status Code: {status_code:?}. Retrying...");
+                    warn!(request_id, status_code, "Retrying...");
                 }
             })
             .inspect_err(|err| {
                 // Error received, check if we are retrying or not.
                 if Some(Retryable::Transient) == default_on_request_failure(err) {
-                    warn!("{err:?}. Retrying...");
+                    warn!(?err, "Retrying...");
                 }
             })
     }
@@ -262,9 +263,9 @@ impl AuthMiddleware {
         provider
             .get_valid_token()
             .await
-            .map_err(|e| {
-                warn!("Token refresh failed: {e:?}");
-                anyhow!("couldn't get token: {e:?}")
+            .map_err(|err| {
+                warn!(?err, "Token refresh failed");
+                anyhow!("couldn't get token: {err:?}")
             })
             .inspect(|_token| {
                 info!("Token refresh successful for CAS authentication");
