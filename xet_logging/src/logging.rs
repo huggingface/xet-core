@@ -1,7 +1,8 @@
 use std::ffi::OsStr;
 use std::io;
 use std::path::{Path, PathBuf};
-use std::sync::OnceLock;
+use std::sync::{Mutex, OnceLock};
+use std::thread::JoinHandle;
 use std::time::Duration;
 
 use chrono::{DateTime, FixedOffset, Local, Utc};
@@ -16,6 +17,19 @@ use utils::ByteSize;
 
 use crate::config::*;
 use crate::constants::{DEFAULT_LOG_LEVEL_CONSOLE, DEFAULT_LOG_LEVEL_FILE};
+
+/// Global variable to hold the JoinHandle for the log cleanup thread
+static LOG_CLEANUP_HANDLE: Mutex<Option<JoinHandle<()>>> = Mutex::new(None);
+
+/// Wait for the log directory cleanup to complete.
+/// This function blocks until the background cleanup thread finishes.
+pub fn wait_for_log_directory_cleanup() {
+    if let Ok(mut handle_opt) = LOG_CLEANUP_HANDLE.lock() {
+        if let Some(handle) = handle_opt.take() {
+            let _ = handle.join();
+        }
+    }
+}
 
 /// The main entry point to set up logging.  Should only be called once.
 pub fn init(cfg: LoggingConfig) {
@@ -112,6 +126,7 @@ fn init_logging_to_file(path: &Path, use_json: bool) -> Result<(), std::io::Erro
     let _ = FILE_GUARD.set(guard); // ignore error if already initialised
 
     let registry = tracing_subscriber::registry();
+
     #[cfg(feature = "tokio-console")]
     let registry = {
         // Console subscriber layer for tokio-console, custom filter for tokio trace level events
@@ -189,11 +204,17 @@ struct CandidateLogFile {
 fn run_log_directory_cleanup_background(cfg: LogDirConfig, log_dir: &Path) {
     // Spawn run_log_directory_cleanup as background thread, logging any errors as a warn!
     let log_dir = log_dir.to_path_buf();
-    std::thread::spawn(move || {
+    let handle = std::thread::spawn(move || {
         if let Err(e) = run_log_directory_cleanup(cfg, &log_dir) {
             warn!("Error during log directory cleanup in {:?}: {}", log_dir, e);
         }
     });
+
+    // Store the JoinHandle in the global variable
+    if let Ok(mut handle_opt) = LOG_CLEANUP_HANDLE.lock() {
+        debug_assert!(handle_opt.is_none(), "Log directory cleanup called multiple times.");
+        *handle_opt = Some(handle);
+    }
 }
 
 fn run_log_directory_cleanup(cfg: LogDirConfig, log_dir: &Path) -> io::Result<()> {

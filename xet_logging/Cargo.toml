@@ -26,3 +26,12 @@ console-subscriber = { version = "0.4.1", optional = true }
 [features]
 default = []
 tokio-console = ["dep:console-subscriber"]
+
+[[bin]]
+name = "log_test_executable"
+path = "tests/bin/log_test_executable.rs"
+
+[dev-dependencies]
+tempfile = "3.0"
+tokio = { version = "1.0", features = ["rt", "time"] }
+rand = { workspace = true }
