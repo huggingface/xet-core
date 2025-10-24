@@ -398,6 +398,9 @@ impl DownloadSegmentLengthTuner {
     pub fn tune_on<T>(&self, metrics: TermDownloadResult<T>) -> Result<()> {
         let mut num_range_in_segment = self.n_range_in_segment.lock()?;
         debug_assert!(*num_range_in_segment <= self.max_segments);
+
+        info!("Download metrics: retries_on_403={}, duration={:?}", metrics.n_retries_on_403, metrics.duration);
+
         if metrics.n_retries_on_403 > 0 {
             if *num_range_in_segment > 1 {
                 let delta = NUM_RANGE_IN_SEGMENT_DELTA.min(*num_range_in_segment - 1);
@@ -449,7 +452,10 @@ pub(crate) async fn get_one_fetch_term_data(
             hash,
         };
         if let Ok(Some(cached)) = cache.get(&key, &fetch_term.range).await.log_error("cache error") {
+            info!("Cache hit for hash {} range {:?}", hash, fetch_term.range);
             return Ok(cached.into());
+        } else {
+            info!("Cache miss for hash {} range {:?}", hash, fetch_term.range);
         }
     }
 
@@ -474,6 +480,8 @@ pub(crate) async fn get_one_fetch_term_data(
             .await
         {
             info!("Writing to local cache failed, continuing. Error: {}", e);
+        } else {
+            info!("Cache write successful for hash {} range {:?}", hash, fetch_term.range);
         }
     }
 

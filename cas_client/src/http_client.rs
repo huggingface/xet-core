@@ -14,7 +14,7 @@ use reqwest_retry::{
     default_on_request_success,
 };
 use tokio::sync::Mutex;
-use tracing::{Instrument, debug, info_span, warn};
+use tracing::{Instrument, info, info_span, warn};
 use utils::auth::{AuthConfig, TokenProvider};
 
 use crate::constants::{CLIENT_IDLE_CONNECTION_TIMEOUT, CLIENT_MAX_IDLE_CONNECTIONS};
@@ -106,6 +106,11 @@ fn reqwest_client() -> Result<reqwest::Client, CasClientError> {
                 .pool_max_idle_per_host(*CLIENT_MAX_IDLE_CONNECTIONS)
                 .build()
         })?;
+
+        info!(
+            "HTTP client configured with idle_timeout={:?}, max_idle_connections={}",
+            *CLIENT_IDLE_CONNECTION_TIMEOUT, *CLIENT_MAX_IDLE_CONNECTIONS
+        );
 
         Ok(client)
     }
@@ -222,7 +227,7 @@ impl Middleware for LoggingMiddleware {
                 // to check if we are retrying or not.
                 let status_code = res.status().as_u16();
                 let request_id = request_id_from_response(res);
-                debug!(request_id, status_code, "Received CAS response");
+                info!(request_id, status_code, "Received CAS response");
                 if Some(Retryable::Transient) == default_on_request_success(res) {
                     warn!(request_id, "Status Code: {status_code:?}. Retrying...");
                 }
@@ -257,7 +262,13 @@ impl AuthMiddleware {
         provider
             .get_valid_token()
             .await
-            .map_err(|e| anyhow!("couldn't get token: {e:?}"))
+            .map_err(|e| {
+                warn!("Token refresh failed: {e:?}");
+                anyhow!("couldn't get token: {e:?}")
+            })
+            .inspect(|_token| {
+                info!("Token refresh successful for CAS authentication");
+            })
     }
 }
 

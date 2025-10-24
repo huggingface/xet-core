@@ -69,6 +69,8 @@ impl RetryWrapper {
                 }
             };
 
+            info!("Connection attempt {}/{} for {} API", try_idx + 1, self.max_attempts, self.api_tag);
+
             if self.log_errors_as_info || log_as_info {
                 info!("{msg}");
             } else {
@@ -176,6 +178,11 @@ impl RetryWrapper {
         let strategy = ExponentialBackoff::from_millis(self.base_delay.as_millis().min(u64::MAX as u128) as u64)
             .map(jitter)
             .take(self.max_attempts);
+
+        info!(
+            "Retry strategy: max_attempts={}, base_delay={:?}, no_retry_on_429={}",
+            self.max_attempts, self.base_delay, self.no_retry_on_429
+        );
 
         // Move self (which is consumable) into an arc that can be passed into this.
         // This allows the code to be a bit better.
