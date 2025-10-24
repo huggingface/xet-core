@@ -25,9 +25,10 @@ static LOG_CLEANUP_HANDLE: Mutex<Option<JoinHandle<()>>> = Mutex::new(None);
 /// This function blocks until the background cleanup thread finishes.
 pub fn wait_for_log_directory_cleanup() {
     if let Ok(mut handle_opt) = LOG_CLEANUP_HANDLE.lock()
-        && let Some(handle) = handle_opt.take() {
-            let _ = handle.join();
-        }
+        && let Some(handle) = handle_opt.take()
+    {
+        let _ = handle.join();
+    }
 }
 
 /// The main entry point to set up logging.  Should only be called once.
