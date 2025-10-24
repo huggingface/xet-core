@@ -5,21 +5,21 @@ use anyhow::anyhow;
 use cas_types::{REQUEST_ID_HEADER, SESSION_ID_HEADER};
 use error_printer::{ErrorPrinter, OptionPrinter};
 use http::{Extensions, StatusCode};
-use reqwest::header::{AUTHORIZATION, HeaderValue};
+use reqwest::header::{HeaderValue, AUTHORIZATION};
 use reqwest::{Request, Response};
 use reqwest_middleware::{ClientBuilder, ClientWithMiddleware, Middleware, Next};
 use reqwest_retry::policies::ExponentialBackoff;
 use reqwest_retry::{
-    DefaultRetryableStrategy, RetryTransientMiddleware, Retryable, RetryableStrategy, default_on_request_failure,
-    default_on_request_success,
+    default_on_request_failure, default_on_request_success, DefaultRetryableStrategy, RetryTransientMiddleware, Retryable,
+    RetryableStrategy,
 };
 use tokio::sync::Mutex;
-use tracing::{Instrument, info, info_span, warn};
+use tracing::{info, info_span, warn, Instrument};
 use utils::auth::{AuthConfig, TokenProvider};
 
 use crate::constants::{CLIENT_IDLE_CONNECTION_TIMEOUT, CLIENT_MAX_IDLE_CONNECTIONS};
 use crate::retry_wrapper::on_request_failure;
-use crate::{CasClientError, error};
+use crate::{error, CasClientError};
 
 pub(crate) const NUM_RETRIES: u32 = 5;
 pub(crate) const BASE_RETRY_DELAY_MS: u64 = 3000; // 3s
@@ -391,7 +391,8 @@ mod tests {
             let response = client.get(server.url("/data")).send().await.unwrap();
 
             // Assert
-            assert!(logs_contain("Status Code: 500. Retrying..."));
+            assert!(logs_contain("status_code=500"));
+            assert!(logs_contain("Retrying..."));
             assert_eq!(2, mock.hits());
             assert_eq!(response.status(), 500);
         }
@@ -416,7 +417,8 @@ mod tests {
             let response = client.get(server.url("/data")).send().await.unwrap();
 
             // Assert
-            assert!(logs_contain("Status Code: 500. Retrying..."));
+            assert!(logs_contain("status_code=500"));
+            assert!(logs_contain("Retrying..."));
             assert_eq!(2, mock.hits());
             assert_eq!(response.status(), 500);
         }
@@ -445,7 +447,8 @@ mod tests {
             let response = client.get(server.url("/data")).send().await.unwrap();
 
             // Assert
-            assert!(logs_contain("Status Code: 408. Retrying..."));
+            assert!(logs_contain("status_code=408"));
+            assert!(logs_contain("Retrying..."));
             assert_eq!(3, mock.hits());
             assert_eq!(response.status(), StatusCode::REQUEST_TIMEOUT);
         }
@@ -470,7 +473,8 @@ mod tests {
             let response = client.get(server.url("/data")).send().await.unwrap();
 
             // Assert
-            assert!(logs_contain("Status Code: 408. Retrying..."));
+            assert!(logs_contain("status_code=408"));
+            assert!(logs_contain("Retrying..."));
             assert_eq!(3, mock.hits());
             assert_eq!(response.status(), StatusCode::REQUEST_TIMEOUT);
         }
@@ -500,7 +504,8 @@ mod tests {
             let response = client.get(server.url("/data")).send().await.unwrap();
 
             // Assert
-            assert!(logs_contain("Status Code: 500. Retrying..."));
+            assert!(logs_contain("status_code=500"));
+            assert!(logs_contain("Retrying..."));
             assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
             assert_eq!(3, mock.hits());
             assert!(start_time.elapsed().unwrap() > Duration::from_secs(0));
@@ -527,7 +532,8 @@ mod tests {
             let response = client.get(server.url("/data")).send().await.unwrap();
 
             // Assert
-            assert!(logs_contain("Status Code: 500. Retrying..."));
+            assert!(logs_contain("status_code=500"));
+            assert!(logs_contain("Retrying..."));
             assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
             assert_eq!(3, mock.hits());
             assert!(start_time.elapsed().unwrap() > Duration::from_secs(0));
