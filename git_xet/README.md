@@ -8,6 +8,7 @@ Make sure you have [git](https://git-scm.com/downloads) and [git-lfs](https://gi
    ```
    brew tap huggingface/tap
    brew install git-xet
+   git-xet install
    ```
  Or, using an installation script, run the following in your terminal (requires `curl` and `unzip`):
    ```
