@@ -8,6 +8,7 @@ use data::data_client::default_config;
 use data::migration_tool::hub_client_token_refresher::HubClientTokenRefresher;
 use hub_client::{BearerCredentialHelper, HFRepoType, HubClient, HubXetTokenTrait, Operation, RepoInfo};
 use nfsserve::tcp::{NFSTcp, NFSTcpListener};
+use tokio::signal::unix::SignalKind;
 use uuid::Uuid;
 
 use crate::fs::XetFS;
@@ -81,16 +82,35 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let task_handle = tokio::spawn(async move { listener.handle_forever().await });
 
     let mount_path = utils::normalized_path_from_user_string(args.path.as_os_str().to_str().expect("invalid path"));
-    perform_mount(ip, hostport, mount_path).await?;
+    let cleanup_dir = !perform_mount(ip, hostport, mount_path.clone()).await?;
 
-    task_handle.await??;
+    // Set up signal handlers
+    let mut sigterm = tokio::signal::unix::signal(SignalKind::terminate())?;
+    let mut sigint = tokio::signal::unix::signal(SignalKind::interrupt())?;
 
+    tokio::select! {
+        result = task_handle => {
+            unmount(mount_path.clone(), cleanup_dir).await?;
+            result??;
+        },
+        _ = sigterm.recv() => {
+            unmount(mount_path.clone(), cleanup_dir).await?;
+        },
+        _ = sigint.recv() => {
+            unmount(mount_path.clone(), cleanup_dir).await?;
+        },
+    }
     Ok(())
 }
 
-async fn perform_mount(ip: String, hostport: u16, mount_path: PathBuf) -> Result<(), anyhow::Error> {
+// on success returns a boolean indicating whether the mount directory existed before being called
+async fn perform_mount(ip: String, hostport: u16, mount_path: PathBuf) -> Result<bool, anyhow::Error> {
     eprintln!("Performing mount...");
-    std::fs::create_dir_all(&mount_path)?;
+
+    let previously_existed = std::fs::exists(&mount_path)?;
+    if !previously_existed {
+        std::fs::create_dir_all(&mount_path)?;
+    }
     let mut cmd = Command::new("/sbin/mount");
     cmd.args(["-t", "nfs"]);
     cmd.args([
@@ -101,6 +121,20 @@ async fn perform_mount(ip: String, hostport: u16, mount_path: PathBuf) -> Result
     cmd.arg(format!("{}:/", &ip)).arg(mount_path);
 
     cmd.status()?;
+
+    Ok(previously_existed)
+}
+
+async fn unmount(mount_path: PathBuf, delete_path: bool) -> Result<(), anyhow::Error> {
+    eprintln!("Unmounting...");
+    let mut cmd = Command::new("/sbin/umount");
+    cmd.arg("-f");
+    cmd.arg(mount_path.clone());
+    cmd.status()?;
+
+    if delete_path {
+        std::fs::remove_dir_all(&mount_path)?;
+    }
 
     Ok(())
 }

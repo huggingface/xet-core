@@ -11,7 +11,7 @@ path = "src/main.rs"
 anyhow = { workspace = true }
 async-trait = { workspace = true }
 clap = { workspace = true }
-tokio = { workspace = true }
+tokio = { workspace = true, features = ["signal"] }
 uuid = { workspace = true }
 
 cas_types = { path = "../cas_types" }
