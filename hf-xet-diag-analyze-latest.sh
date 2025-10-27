@@ -202,7 +202,7 @@ case "$OS_TYPE" in
         "/c/Program Files (x86)/Windows Kits/10/Debuggers/x64/windbg.exe" \
         "/c/Program Files (x86)/Windows Kits/10/Debuggers/x86/windbg.exe" \
         "$PROGRAMFILES/Windows Kits/10/Debuggers/x64/windbg.exe" \
-        "${PROGRAMFILES(X86)}/Windows Kits/10/Debuggers/x64/windbg.exe"
+        "${PROGRAMFILES_X86}/Windows Kits/10/Debuggers/x64/windbg.exe"
       do
         if [[ -f "$dbg_path" ]]; then
           WINDBG_EXE="$dbg_path"

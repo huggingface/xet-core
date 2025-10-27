@@ -135,8 +135,9 @@ fi
 SCRIPT_START_TIME=$(date +%s)
 REF_FILE="$OUTDIR/.ref_timestamp"
 touch "$REF_FILE"  # Reference file for finding logs created after this point
+# Ensure REF_FILE is cleaned up on exit
+trap 'rm -f "$REF_FILE"' EXIT
 echo "Launching target at $(date "+%Y-%m-%dT%H:%M:%S%z") ..." | tee -a "$CONSOLE_LOG"
-
 (
   "${CMD[@]}" & echo $! > "$PID_FILE"
 ) 2>&1 | tee -a "$CONSOLE_LOG" &
