@@ -167,6 +167,7 @@ else
 fi
 
 # --- launch target ---
+SCRIPT_START_TIME=$(date +%s)
 echo "Launching target at $(date -Is) ..." | tee -a "$CONSOLE_LOG"
 
 LAUNCH_ENV=()
@@ -275,5 +276,22 @@ while kill -0 "$TARGET_PID" 2>/dev/null; do
 done
 
 echo "Process $TARGET_PID has exited at $(date -Is)." | tee -a "$CONSOLE_LOG"
+
+# --- collect xet log files from this execution ---
+HF_HOME="${HF_HOME:-$HOME/.cache/huggingface}"
+XET_LOG_DIR="$HF_HOME/xet/logs"
+if [[ -d "$XET_LOG_DIR" ]]; then
+  echo "Collecting xet logs from $XET_LOG_DIR ..." | tee -a "$CONSOLE_LOG"
+  mkdir -p "$OUTDIR/xet_logs"
+  
+  # Find log files created during or after script start time using GNU find
+  find "$XET_LOG_DIR" -name "xet_*.log" -type f -newermt "@$SCRIPT_START_TIME" 2>/dev/null | while read -r logfile; do
+    cp "$logfile" "$OUTDIR/xet_logs/" 2>/dev/null && \
+      echo "  Copied: $(basename "$logfile")" | tee -a "$CONSOLE_LOG"
+  done
+else
+  echo "No xet log directory found at $XET_LOG_DIR" | tee -a "$CONSOLE_LOG"
+fi
+
 echo "Logs and stacks are in: $OUTDIR"
 disown "$LOGGER_BG" 2>/dev/null || true
