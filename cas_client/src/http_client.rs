@@ -104,6 +104,7 @@ fn reqwest_client() -> Result<reqwest::Client, CasClientError> {
             reqwest::Client::builder()
                 .pool_idle_timeout(*CLIENT_IDLE_CONNECTION_TIMEOUT)
                 .pool_max_idle_per_host(*CLIENT_MAX_IDLE_CONNECTIONS)
+                .http1_only() // high throughput parallel I/O has been shown to bottleneck with http2
                 .build()
         })?;
 
