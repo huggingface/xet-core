@@ -303,7 +303,7 @@ impl NFSFileSystem for XetFS {
     }
 
     async fn read(&self, id: fileid3, offset: u64, count: u32) -> Result<(Vec<u8>, bool), nfsstat3> {
-        println!("read: id: {:?}, offset: {:?}, count: {:?}", id, offset, count);
+        eprintln!("read: id: {:?}, offset: {:?}, count: {:?}", id, offset, count);
         let Some(item) = self.inner.everything.read().await.get(&id).cloned() else {
             return Err(nfsstat3::NFS3ERR_NOENT);
         };
@@ -364,7 +364,6 @@ impl NFSFileSystem for XetFS {
             None => return Err(nfsstat3::NFS3ERR_NOENT),
         };
 
-        // eprintln!("readdir: {dir_item:?}");
         // If children not cached, load from hub and populate
         let children = dir_item
             .children

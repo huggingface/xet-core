@@ -88,18 +88,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut sigterm = tokio::signal::unix::signal(SignalKind::terminate())?;
     let mut sigint = tokio::signal::unix::signal(SignalKind::interrupt())?;
 
-    tokio::select! {
-        result = task_handle => {
-            unmount(mount_path.clone(), cleanup_dir).await?;
-            result??;
-        },
-        _ = sigterm.recv() => {
-            unmount(mount_path.clone(), cleanup_dir).await?;
-        },
-        _ = sigint.recv() => {
-            unmount(mount_path.clone(), cleanup_dir).await?;
-        },
-    }
+    let res = tokio::select! {
+        result = task_handle => result,
+        _ = sigterm.recv() => Ok(Ok(())),
+        _ = sigint.recv() => Ok(Ok(())),
+    };
+    unmount(mount_path.clone(), cleanup_dir).await?;
+    res??;
     Ok(())
 }
 
@@ -122,6 +117,8 @@ async fn perform_mount(ip: String, hostport: u16, mount_path: PathBuf) -> Result
 
     cmd.status()?;
 
+    eprintln!("Mounted.");
+
     Ok(previously_existed)
 }
 
@@ -132,6 +129,7 @@ async fn unmount(mount_path: PathBuf, delete_path: bool) -> Result<(), anyhow::E
     cmd.arg(mount_path.clone());
     cmd.status()?;
 
+    eprintln!("Unmounted.");
     if delete_path {
         std::fs::remove_dir_all(&mount_path)?;
     }
