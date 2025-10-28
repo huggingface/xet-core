@@ -278,4 +278,21 @@ impl MDBCASInfoView {
         writer.write_all(&self.data[..n_bytes])?;
         Ok(n_bytes)
     }
+
+    #[inline]
+    pub fn serialize_with_chunk_rewrite<W: Write>(
+        &self,
+        writer: &mut W,
+        chunk_rewrite_fn: impl Fn(usize, CASChunkSequenceEntry) -> CASChunkSequenceEntry,
+    ) -> std::io::Result<usize> {
+        let mut n_out_bytes = 0;
+        n_out_bytes += self.header.serialize(writer)?;
+
+        for idx in 0..self.num_entries() {
+            let rewritten_chunk = chunk_rewrite_fn(idx, self.chunk(idx));
+            n_out_bytes += rewritten_chunk.serialize(writer)?;
+        }
+
+        Ok(n_out_bytes)
+    }
 }

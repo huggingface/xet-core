@@ -350,7 +350,7 @@ impl MDBMinimalShard {
         // a lookup of which chunks occur at the start of a file.  These are the ones for which we set the
         // global dedup eligibility flag.
         //
-        // In addition, we propegate the global dedup eligibility flag if it is already present.
+        // In addition, we propagate the global dedup eligibility flag if it is already present.
         //
         let file_start_chunks = self.file_start_entries();
 
@@ -378,25 +378,14 @@ impl MDBMinimalShard {
             stored_bytes += cas_info.header().num_bytes_in_cas as u64;
 
             if let Some(gde_indices) = file_start_chunks.get(&cas_info.cas_hash()) {
-                bytes += cas_info.header().serialize(writer)?;
-
-                debug_assert!(!gde_indices.is_empty());
                 debug_assert!(gde_indices.is_sorted());
-
-                let mut next_idx = 0;
-                let mut next_c_idx = gde_indices[next_idx];
-
-                // Manually serialize out the cas info in order to set the global dedup flags correctly.
-                for c_idx in 0..cas_info.num_entries() {
-                    let mut chunk = cas_info.chunk(c_idx);
-                    if c_idx == next_c_idx {
-                        chunk = chunk.with_global_dedup_flag(true);
-                        next_idx += 1;
-                        next_c_idx = *gde_indices.get(next_idx).unwrap_or(&usize::MAX);
+                bytes += cas_info.serialize_with_chunk_rewrite(writer, |idx, chunk| {
+                    if gde_indices.binary_search(&idx).is_ok() {
+                        chunk.with_global_dedup_flag(true)
+                    } else {
+                        chunk
                     }
-
-                    bytes += chunk.serialize(writer)?;
-                }
+                })?;
             } else {
                 bytes += cas_info.serialize(writer)?;
             }
@@ -428,7 +417,7 @@ impl MDBMinimalShard {
         Ok(bytes)
     }
 
-    /// Serialize out a xorb without any of the file information and a subset of xorb data that is given
+    /// Serialize out a shard without any of the file information and a subset of xorb data that is given
     /// by the xorb_filter_fn.  Global deduplication chunk information is preserved.
     pub fn serialize_xorb_subset_only<W: Write>(
         &self,
@@ -438,7 +427,7 @@ impl MDBMinimalShard {
         self.serialize_impl(writer, false, false, xorb_filter_fn)
     }
 
-    /// Serialize out the given xorb, sanitizing and updating the global dedup chunk flags and optionally
+    /// Serialize out the given shard, sanitizing and updating the global dedup chunk flags and optionally
     /// dropping the file verification section.
     pub fn serialize<W: Write>(&self, writer: &mut W, with_verification: bool) -> Result<usize> {
         self.serialize_impl(writer, true, with_verification, |_| true)
