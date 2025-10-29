@@ -1,5 +1,4 @@
 use std::collections::HashMap;
-use std::io::Write;
 use std::mem::take;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -22,6 +21,7 @@ use progress_tracking::item_tracking::SingleItemProgressUpdater;
 use progress_tracking::upload_tracking::CompletionTracker;
 use reqwest::{Body, Response, StatusCode, Url};
 use reqwest_middleware::ClientWithMiddleware;
+use tokio::io::AsyncWriteExt;
 use tokio::sync::{OwnedSemaphorePermit, mpsc};
 use tokio::task::{JoinHandle, JoinSet};
 use tracing::{debug, info, instrument};
@@ -35,7 +35,7 @@ use crate::download_utils::*;
 use crate::error::{CasClientError, Result};
 use crate::http_client::{Api, ResponseErrorLogger, RetryConfig};
 #[cfg(not(target_family = "wasm"))]
-use crate::output_provider::OutputProvider;
+use crate::output_provider::{SeekingOutputProvider, SequentialOutput};
 use crate::retry_wrapper::RetryWrapper;
 use crate::{Client, http_client};
 
@@ -50,7 +50,7 @@ utils::configurable_constants! {
         high_performance: 256,
     };
 
-    /// Send a report of successful partial upload every 512kb.
+    /// Send a report of a successful partial upload every 512kb.
     ref UPLOAD_REPORTING_BLOCK_SIZE : usize = 512 * 1024;
 
     /// Env (HF_XET_RECONSTRUCT_WRITE_SEQUENTIALLY) to switch to writing terms sequentially to disk.
@@ -143,7 +143,7 @@ pub(crate) async fn map_fetch_info_into_download_tasks(
     chunk_cache: Option<Arc<dyn ChunkCache>>,
     client: Arc<ClientWithMiddleware>,
     range_download_single_flight: Arc<Group<DownloadRangeResult, CasClientError>>,
-    output_provider: &OutputProvider,
+    output_provider: &SeekingOutputProvider,
 ) -> Result<Vec<FetchTermDownloadOnceAndWriteEverywhereUsed>> {
     // the actual segment length.
     // the file_range end may actually exceed the file total length for the last segment.
@@ -338,11 +338,11 @@ impl RemoteClient {
     // storage uses HDDs.
     #[instrument(skip_all, name = "RemoteClient::reconstruct_file_segmented", fields(file.hash = file_hash.hex()
     ))]
-    async fn reconstruct_file_to_writer_segmented(
+    async fn reconstruct_file_to_writer_segmented_sequential_write(
         &self,
         file_hash: &MerkleHash,
         byte_range: Option<FileRange>,
-        writer: &OutputProvider,
+        mut writer: SequentialOutput,
         progress_updater: Option<Arc<SingleItemProgressUpdater>>,
     ) -> Result<u64> {
         let call_id = FN_CALL_ID.fetch_add(1, Ordering::Relaxed);
@@ -466,13 +466,12 @@ impl RemoteClient {
             Ok(())
         });
 
-        let mut writer = writer.get_writer_at(0)?;
         let mut total_written = 0;
         while let Some(result) = running_downloads_rx.recv().await {
             match result.await {
                 Ok(Ok((mut download_result, permit))) => {
                     let data = take(&mut download_result.payload);
-                    writer.write_all(&data)?;
+                    writer.write_all(&data).await?;
                     // drop permit after data written out so they don't accumulate in memory unbounded
                     drop(permit);
 
@@ -489,7 +488,7 @@ impl RemoteClient {
                 Err(e) => Err(anyhow!("{e:?}"))?,
             }
         }
-        writer.flush()?;
+        writer.flush().await?;
 
         queue_dispatcher.await??;
 
@@ -513,7 +512,7 @@ impl RemoteClient {
         &self,
         file_hash: &MerkleHash,
         byte_range: Option<FileRange>,
-        writer: &OutputProvider,
+        writer: &SeekingOutputProvider,
         progress_updater: Option<Arc<SingleItemProgressUpdater>>,
     ) -> Result<u64> {
         let call_id = FN_CALL_ID.fetch_add(1, Ordering::Relaxed);
@@ -673,6 +672,116 @@ impl RemoteClient {
 #[cfg_attr(target_family = "wasm", async_trait::async_trait(?Send))]
 impl Client for RemoteClient {
     #[cfg(not(target_family = "wasm"))]
+    async fn get_file_with_sequential_writer(
+        &self,
+        hash: &MerkleHash,
+        byte_range: Option<FileRange>,
+        output_provider: SequentialOutput,
+        progress_updater: Option<Arc<SingleItemProgressUpdater>>,
+    ) -> Result<u64> {
+        self.reconstruct_file_to_writer_segmented_sequential_write(hash, byte_range, output_provider, progress_updater)
+            .await
+    }
+
+    #[cfg(not(target_family = "wasm"))]
+    async fn get_file_with_parallel_writer(
+        &self,
+        hash: &MerkleHash,
+        byte_range: Option<FileRange>,
+        output_provider: SeekingOutputProvider,
+        progress_updater: Option<Arc<SingleItemProgressUpdater>>,
+    ) -> Result<u64> {
+        self.reconstruct_file_to_writer_segmented_parallel_write(hash, byte_range, &output_provider, progress_updater)
+            .await
+    }
+
+    #[instrument(skip_all, name = "RemoteClient::get_file_reconstruction", fields(file.hash = file_hash.hex()
+    ))]
+    async fn get_file_reconstruction_info(
+        &self,
+        file_hash: &MerkleHash,
+    ) -> Result<Option<(MDBFileInfo, Option<MerkleHash>)>> {
+        let call_id = FN_CALL_ID.fetch_add(1, Ordering::Relaxed);
+        let url = Url::parse(&format!("{}/reconstructions/{}", self.endpoint, file_hash.hex()))?;
+        info!(call_id, %file_hash, "Starting get_file_reconstruction_info API call");
+
+        let api_tag = "cas::get_reconstruction_info";
+        let client = self.authenticated_http_client.clone();
+
+        let response: QueryReconstructionResponse = RetryWrapper::new(api_tag)
+            .run_and_extract_json(move || client.get(url.clone()).with_extension(Api(api_tag)).send())
+            .await?;
+
+        let terms_count = response.terms.len();
+        let result = Some((
+            MDBFileInfo {
+                metadata: FileDataSequenceHeader::new(*file_hash, terms_count, false, false),
+                segments: response
+                    .terms
+                    .into_iter()
+                    .map(|ce| {
+                        FileDataSequenceEntry::new(ce.hash.into(), ce.unpacked_length, ce.range.start, ce.range.end)
+                    })
+                    .collect(),
+                verification: vec![],
+                metadata_ext: None,
+            },
+            None,
+        ));
+
+        info!(call_id, %file_hash, terms_count, "Completed get_file_reconstruction_info API call");
+
+        Ok(result)
+    }
+
+    async fn query_for_global_dedup_shard(&self, prefix: &str, chunk_hash: &MerkleHash) -> Result<Option<Bytes>> {
+        let Some(response) = self.query_dedup_api(prefix, chunk_hash).await? else {
+            return Ok(None);
+        };
+
+        Ok(Some(response.bytes().await?))
+    }
+
+    #[instrument(skip_all, name = "RemoteClient::upload_shard", fields(shard.len = shard_data.len()))]
+    async fn upload_shard(&self, shard_data: Bytes) -> Result<bool> {
+        if self.dry_run {
+            return Ok(true);
+        }
+
+        let size = shard_data.len();
+        let call_id = FN_CALL_ID.fetch_add(1, Ordering::Relaxed);
+        info!(call_id, size, "Starting upload_shard API");
+
+        let api_tag = "cas::upload_shard";
+        let client = self.authenticated_http_client.clone();
+
+        let url = Url::parse(&format!("{}/shards", self.endpoint))?;
+
+        let response: UploadShardResponse = RetryWrapper::new(api_tag)
+            .run_and_extract_json(move || {
+                client
+                    .post(url.clone())
+                    .with_extension(Api(api_tag))
+                    .body(shard_data.clone())
+                    .send()
+            })
+            .await?;
+
+        let result = match response.result {
+            UploadShardResponseType::Exists => {
+                info!(call_id, size, result = "exists", "Completed upload_shard API call");
+                false
+            },
+            UploadShardResponseType::SyncPerformed => {
+                info!(call_id, size, result = "sync_performed", "Completed upload_shard API call",);
+                true
+            },
+        };
+
+        Ok(result)
+    }
+
+    #[cfg(not(target_family = "wasm"))]
     #[instrument(skip_all, name = "RemoteClient::upload_xorb", fields(key = Key{prefix : prefix.to_string(), hash : serialized_cas_object.hash}.to_string(),
                  xorb.len = serialized_cas_object.serialized_data.len(), xorb.num_chunks = serialized_cas_object.num_chunks
     ))]
@@ -803,118 +912,6 @@ impl Client for RemoteClient {
     fn use_shard_footer(&self) -> bool {
         false
     }
-
-    #[cfg(not(target_family = "wasm"))]
-    async fn get_file(
-        &self,
-        hash: &MerkleHash,
-        byte_range: Option<FileRange>,
-        output_provider: &OutputProvider,
-        progress_updater: Option<Arc<SingleItemProgressUpdater>>,
-    ) -> Result<u64> {
-        // If the user has set the `HF_XET_RECONSTRUCT_WRITE_SEQUENTIALLY=true` env variable, then we
-        // should write the file to the output sequentially instead of in parallel.
-        if *RECONSTRUCT_WRITE_SEQUENTIALLY {
-            info!("reconstruct terms sequentially");
-            self.reconstruct_file_to_writer_segmented(hash, byte_range, output_provider, progress_updater)
-                .await
-        } else {
-            info!("reconstruct terms in parallel");
-            self.reconstruct_file_to_writer_segmented_parallel_write(
-                hash,
-                byte_range,
-                output_provider,
-                progress_updater,
-            )
-            .await
-        }
-    }
-
-    #[instrument(skip_all, name = "RemoteClient::get_file_reconstruction", fields(file.hash = file_hash.hex()
-    ))]
-    async fn get_file_reconstruction_info(
-        &self,
-        file_hash: &MerkleHash,
-    ) -> Result<Option<(MDBFileInfo, Option<MerkleHash>)>> {
-        let call_id = FN_CALL_ID.fetch_add(1, Ordering::Relaxed);
-        let url = Url::parse(&format!("{}/reconstructions/{}", self.endpoint, file_hash.hex()))?;
-        info!(call_id, %file_hash, "Starting get_file_reconstruction_info API call");
-
-        let api_tag = "cas::get_reconstruction_info";
-        let client = self.authenticated_http_client.clone();
-
-        let response: QueryReconstructionResponse = RetryWrapper::new(api_tag)
-            .run_and_extract_json(move || client.get(url.clone()).with_extension(Api(api_tag)).send())
-            .await?;
-
-        let terms_count = response.terms.len();
-        let result = Some((
-            MDBFileInfo {
-                metadata: FileDataSequenceHeader::new(*file_hash, terms_count, false, false),
-                segments: response
-                    .terms
-                    .into_iter()
-                    .map(|ce| {
-                        FileDataSequenceEntry::new(ce.hash.into(), ce.unpacked_length, ce.range.start, ce.range.end)
-                    })
-                    .collect(),
-                verification: vec![],
-                metadata_ext: None,
-            },
-            None,
-        ));
-
-        info!(call_id, %file_hash, terms_count, "Completed get_file_reconstruction_info API call");
-
-        Ok(result)
-    }
-
-    #[instrument(skip_all, name = "RemoteClient::upload_shard", fields(shard.len = shard_data.len()))]
-    async fn upload_shard(&self, shard_data: Bytes) -> Result<bool> {
-        if self.dry_run {
-            return Ok(true);
-        }
-
-        let size = shard_data.len();
-        let call_id = FN_CALL_ID.fetch_add(1, Ordering::Relaxed);
-        info!(call_id, size, "Starting upload_shard API");
-
-        let api_tag = "cas::upload_shard";
-        let client = self.authenticated_http_client.clone();
-
-        let url = Url::parse(&format!("{}/shards", self.endpoint))?;
-
-        let response: UploadShardResponse = RetryWrapper::new(api_tag)
-            .run_and_extract_json(move || {
-                client
-                    .post(url.clone())
-                    .with_extension(Api(api_tag))
-                    .body(shard_data.clone())
-                    .send()
-            })
-            .await?;
-
-        let result = match response.result {
-            UploadShardResponseType::Exists => {
-                info!(call_id, size, result = "exists", "Completed upload_shard API call");
-                false
-            },
-            UploadShardResponseType::SyncPerformed => {
-                info!(call_id, size, result = "sync_performed", "Completed upload_shard API call",);
-                true
-            },
-        };
-
-        Ok(result)
-    }
-
-    async fn query_for_global_dedup_shard(&self, prefix: &str, chunk_hash: &MerkleHash) -> Result<Option<Bytes>> {
-        let Some(response) = self.query_dedup_api(prefix, chunk_hash).await? else {
-            return Ok(None);
-        };
-
-        Ok(Some(response.bytes().await?))
-    }
 }
 
 #[cfg(test)]
@@ -933,7 +930,7 @@ mod tests {
     use xet_runtime::XetRuntime;
 
     use super::*;
-    use crate::output_provider::BufferProvider;
+    use crate::buffer_provider::ThreadSafeBuffer;
 
     #[ignore = "requires a running CAS server"]
     #[traced_test]
@@ -1319,33 +1316,36 @@ mod tests {
         // test reconstruct and sequential write
         let test = test_case.clone();
         let client = RemoteClient::new(endpoint, &None, &None, None, "", false);
-        let provider = BufferProvider::default();
-        let buf = provider.buf.clone();
-        let writer = OutputProvider::Buffer(provider);
+        let buf = ThreadSafeBuffer::default();
+        let provider = SequentialOutput::from(buf.clone());
         let resp = threadpool.external_run_async_task(async move {
             client
-                .reconstruct_file_to_writer_segmented(&test.file_hash, Some(test.file_range), &writer, None)
+                .reconstruct_file_to_writer_segmented_sequential_write(
+                    &test.file_hash,
+                    Some(test.file_range),
+                    provider,
+                    None,
+                )
                 .await
         })?;
 
         assert_eq!(test.expect_error, resp.is_err(), "{:?}", resp.err());
         if !test.expect_error {
-            assert_eq!(test.expected_data.len() as u64, resp.unwrap());
+            assert_eq!(test.expected_data.len() as u64, resp?);
             assert_eq!(test.expected_data, buf.value());
         }
 
         // test reconstruct and parallel write
         let test = test_case;
         let client = RemoteClient::new(endpoint, &None, &None, None, "", false);
-        let provider = BufferProvider::default();
-        let buf = provider.buf.clone();
-        let writer = OutputProvider::Buffer(provider);
+        let buf = ThreadSafeBuffer::default();
+        let provider = SeekingOutputProvider::from(buf.clone());
         let resp = threadpool.external_run_async_task(async move {
             client
                 .reconstruct_file_to_writer_segmented_parallel_write(
                     &test.file_hash,
                     Some(test.file_range),
-                    &writer,
+                    &provider,
                     None,
                 )
                 .await

@@ -3887,6 +3887,7 @@ dependencies = [
  "shellexpand",
  "thiserror 2.0.15",
  "tokio",
+ "tokio-util",
  "tracing",
  "web-time",
 ]
