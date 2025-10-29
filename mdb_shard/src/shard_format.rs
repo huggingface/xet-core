@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
 use std::io::{Read, Seek, SeekFrom, Write, copy};
 use std::mem::size_of;
 use std::ops::Add;
@@ -13,11 +13,11 @@ use tracing::debug;
 use utils::serialization_utils::*;
 
 use crate::cas_structs::*;
-use crate::constants::*;
 use crate::error::{MDBShardError, Result};
 use crate::file_structs::*;
 use crate::interpolation_search::search_on_sorted_u64s;
 use crate::shard_in_memory::MDBInMemoryShard;
+use crate::streaming_shard::MDBMinimalShard;
 use crate::utils::{shard_expiry_time, truncate_hash};
 
 // Same size for FileDataSequenceHeader and FileDataSequenceEntry
@@ -931,44 +931,9 @@ impl MDBShardInfo {
     /// The chunk hashes are either multiple of 'hash_filter_modulues',
     /// or the hash of the first chunk of a file present in the shard.
     pub fn filter_cas_chunks_for_global_dedup<R: Read + Seek>(reader: &mut R) -> Result<Vec<MerkleHash>> {
-        let mut ret = Vec::new();
+        let shard = MDBMinimalShard::from_reader(reader, true, true)?;
 
-        // First, go through and get all of the cas chunks.  This allows us to form the lookup for the CAS block
-        // hashes later.
-        let shard = MDBShardInfo::load_from_reader(reader)?;
-
-        let cas_chunks = shard.read_all_cas_blocks_full(reader)?;
-        let mut cas_block_lookup = HashMap::<MerkleHash, usize>::with_capacity(cas_chunks.len());
-
-        for (i, cas_info) in cas_chunks.iter().enumerate() {
-            cas_block_lookup.insert(cas_info.metadata.cas_hash, i);
-            for chunk in cas_info.chunks.iter() {
-                if hash_is_global_dedup_eligible(&chunk.chunk_hash) {
-                    ret.push(chunk.chunk_hash);
-                }
-            }
-        }
-
-        // Now, go through all the files present, collecting the first chunks of the files.
-        // TODO: break this out into a utility if needed.
-        let files = shard.read_all_file_info_sections(reader)?;
-
-        for fi in files {
-            let Some(entry) = fi.segments.first() else {
-                continue;
-            };
-
-            let Some(cas_block_index) = cas_block_lookup.get(&entry.cas_hash) else {
-                continue;
-            };
-
-            // Scan the cas entries to get the proper index
-            let first_chunk_hash = cas_chunks[*cas_block_index].chunks[entry.chunk_index_start as usize].chunk_hash;
-
-            ret.push(first_chunk_hash);
-        }
-
-        Ok(ret)
+        Ok(shard.global_dedup_eligible_chunks())
     }
 
     /// Export the current shard as an hmac keyed shard, returning the number of bytes written
@@ -1619,8 +1584,8 @@ pub mod test_routines {
             assert_eq!(result_m, result_f);
 
             // Make sure retriving the expected file.
-            if result_m.is_some() {
-                assert_eq!(result_m.unwrap().metadata.file_hash, *k);
+            if let Some(rm) = result_m {
+                assert_eq!(rm.metadata.file_hash, *k);
                 assert_eq!(result_f.unwrap().metadata.file_hash, *k);
             }
         }

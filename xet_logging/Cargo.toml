@@ -1,0 +1,37 @@
+[package]
+name = "xet_logging"
+version = "0.14.5"
+edition = "2024"
+
+[dependencies]
+error_printer = { path = "../error_printer" }
+utils = { path = "../utils" }
+
+chrono = { workspace = true }
+tracing = { workspace = true }
+sysinfo = { workspace = true }
+
+tracing-subscriber = { version = "0.3", features = [
+    "json",
+    "tracing-log",
+    "env-filter",
+    "registry",
+] }
+tracing-appender = "0.2"
+git-version = "0.3.9"
+
+console-subscriber = { version = "0.4.1", optional = true }
+
+
+[features]
+default = []
+tokio-console = ["dep:console-subscriber"]
+
+[[bin]]
+name = "log_test_executable"
+path = "tests/bin/log_test_executable.rs"
+
+[dev-dependencies]
+tempfile = "3.0"
+tokio = { version = "1.0", features = ["rt", "time"] }
+rand = { workspace = true }

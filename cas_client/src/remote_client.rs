@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::mem::take;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use anyhow::anyhow;
 use bytes::Bytes;
@@ -64,6 +65,7 @@ utils::configurable_constants! {
 lazy_static! {
     static ref DOWNLOAD_CHUNK_RANGE_CONCURRENCY_LIMITER: GlobalSemaphoreHandle =
         global_semaphore_handle!(*NUM_CONCURRENT_RANGE_GETS);
+    static ref FN_CALL_ID: AtomicU64 = AtomicU64::new(1);
 }
 
 pub struct RemoteClient {
@@ -81,13 +83,20 @@ pub struct RemoteClient {
 pub(crate) async fn get_reconstruction_with_endpoint_and_client(
     endpoint: &str,
     client: &ClientWithMiddleware,
-    file_id: &MerkleHash,
-    bytes_range: Option<FileRange>,
+    file_hash: &MerkleHash,
+    byte_range: Option<FileRange>,
 ) -> Result<Option<QueryReconstructionResponse>> {
-    let url = Url::parse(&format!("{endpoint}/reconstructions/{}", file_id.hex()))?;
+    let call_id = FN_CALL_ID.fetch_add(1, Ordering::Relaxed);
+    let url = Url::parse(&format!("{endpoint}/reconstructions/{}", file_hash.hex()))?;
+    info!(
+        call_id,
+        %file_hash,
+        ?byte_range,
+        "Starting get_reconstruction API call",
+    );
 
     let mut request = client.get(url).with_extension(Api("cas::get_reconstruction"));
-    if let Some(range) = bytes_range {
+    if let Some(range) = byte_range {
         // convert exclusive-end to inclusive-end range
         request = request.header(RANGE, HttpRange::from(range).range_header())
     }
@@ -107,12 +116,20 @@ pub(crate) async fn get_reconstruction_with_endpoint_and_client(
     };
 
     let len = response.content_length();
-    debug!("file_id: {file_id} query_reconstruction len {len:?}");
+    info!(%file_hash, len, "query_reconstruction");
 
     let query_reconstruction_response: QueryReconstructionResponse = response
         .json()
         .await
-        .log_error("error json parsing QueryReconstructionResponse")?;
+        .info_error_fn(|| format!("JSON parsing failed in get_reconstruction, call_id={}", call_id))?;
+
+    info!(
+        call_id,
+        %file_hash,
+        ?byte_range,
+        "Completed get_reconstruction API call"
+    );
+
     Ok(Some(query_reconstruction_response))
 }
 
@@ -199,10 +216,7 @@ impl RemoteClient {
                 info!("Chunk cache size set to 0, disabling chunk cache");
                 None
             } else {
-                debug!(
-                    "Using disk cache directory: {:?}, size: {}.",
-                    cache_config.cache_directory, cache_config.cache_size
-                );
+                info!(cache.dir=?cache_config.cache_directory, cache.size=cache_config.cache_size,"Using disk cache");
                 chunk_cache::get_cache(cache_config)
                     .log_error("failed to initialize cache, not using cache")
                     .ok()
@@ -237,7 +251,14 @@ impl RemoteClient {
             hash: *chunk_hash,
         };
 
+        let call_id = FN_CALL_ID.fetch_add(1, Ordering::Relaxed);
         let url = Url::parse(&format!("{}/chunks/{key}", self.endpoint))?;
+        info!(
+            call_id,
+            prefix,
+            %chunk_hash,
+            "Starting query_dedup API call",
+        );
 
         let client = self.authenticated_http_client.clone();
         let api_tag = "cas::query_dedup";
@@ -249,8 +270,23 @@ impl RemoteClient {
             .await;
 
         if result.as_ref().is_err_and(|e| e.status().is_some()) {
+            info!(
+                call_id,
+                prefix,
+                %chunk_hash,
+                result="not_found",
+                "Completed query_dedup API call",
+            );
             return Ok(None);
         }
+
+        info!(
+            call_id,
+            prefix,
+            %chunk_hash,
+            result="found",
+            "Completed query_dedup API call",
+        );
         Ok(Some(result?))
     }
 }
@@ -264,7 +300,9 @@ impl RemoteClient {
     ) -> Result<BatchQueryReconstructionResponse> {
         let mut url_str = format!("{}/reconstructions?", self.endpoint);
         let mut is_first = true;
+        let mut file_id_list = Vec::new();
         for hash in file_ids {
+            file_id_list.push(hash.hex());
             if is_first {
                 is_first = false;
             } else {
@@ -275,12 +313,21 @@ impl RemoteClient {
         }
         let url: Url = url_str.parse()?;
 
+        let call_id = FN_CALL_ID.fetch_add(1, Ordering::Relaxed);
+        info!(call_id, file_ids=?file_id_list, "Starting batch_get_reconstruction API call");
+
         let api_tag = "cas::batch_get_reconstruction";
         let client = self.authenticated_http_client.clone();
 
         let response: BatchQueryReconstructionResponse = RetryWrapper::new(api_tag)
             .run_and_extract_json(move || client.get(url.clone()).with_extension(Api(api_tag)).send())
             .await?;
+
+        info!(call_id,
+            file_ids=?file_id_list,
+            response_count=response.files.len(),
+            "Completed batch_get_reconstruction API call",
+        );
 
         Ok(response)
     }
@@ -298,7 +345,15 @@ impl RemoteClient {
         mut writer: SequentialOutput,
         progress_updater: Option<Arc<SingleItemProgressUpdater>>,
     ) -> Result<u64> {
-        // Use an unlimited queue size, as queue size is inherently bounded by a degree of concurrency.
+        let call_id = FN_CALL_ID.fetch_add(1, Ordering::Relaxed);
+        info!(
+            call_id,
+            %file_hash,
+            ?byte_range,
+            "Starting reconstruct_file_to_writer_segmented",
+        );
+
+        // Use an unlimited queue size, as queue size is inherently bounded by degree of concurrency.
         let (task_tx, mut task_rx) = mpsc::unbounded_channel::<DownloadQueueItem<SequentialTermDownload>>();
         let (running_downloads_tx, mut running_downloads_rx) =
             mpsc::unbounded_channel::<JoinHandle<Result<(TermDownloadResult<Vec<u8>>, OwnedSemaphorePermit)>>>();
@@ -331,13 +386,15 @@ impl RemoteClient {
         let download_concurrency_limiter =
             XetRuntime::current().global_semaphore(*DOWNLOAD_CHUNK_RANGE_CONCURRENCY_LIMITER);
 
+        info!(concurrency_limit = *NUM_CONCURRENT_RANGE_GETS, "Starting segmented download");
+
         let queue_dispatcher: JoinHandle<Result<()>> = tokio::spawn(async move {
             let mut remaining_total_len = total_len;
             while let Some(item) = task_rx.recv().await {
                 match item {
                     DownloadQueueItem::End => {
                         // everything processed
-                        debug!("download queue emptied");
+                        debug!(call_id, "download queue emptied");
                         drop(running_downloads_tx);
                         break;
                     },
@@ -345,7 +402,7 @@ impl RemoteClient {
                         // acquire the permit before spawning the task, so that there's limited
                         // number of active downloads.
                         let permit = download_concurrency_limiter.clone().acquire_owned().await?;
-                        debug!("spawning 1 download task");
+                        debug!(call_id, "spawning 1 download task");
                         let future: JoinHandle<Result<(TermDownloadResult<Vec<u8>>, OwnedSemaphorePermit)>> =
                             tokio::spawn(async move {
                                 let data = term_download.run().await?;
@@ -356,7 +413,7 @@ impl RemoteClient {
                     DownloadQueueItem::Metadata(fetch_info) => {
                         // query for the file info of the first segment
                         let segment_size = download_scheduler_clone.next_segment_size()?;
-                        debug!("querying file info of size {segment_size}");
+                        debug!(call_id, segment_size, "querying file info");
                         let (segment, maybe_remainder) = fetch_info.take_segment(segment_size);
 
                         let Some((offset_into_first_range, terms)) = segment.query().await? else {
@@ -368,7 +425,7 @@ impl RemoteClient {
                         let segment = Arc::new(segment);
                         // define the term download tasks
                         let mut remaining_segment_len = segment_size;
-                        debug!("enqueueing {} download tasks", terms.len());
+                        debug!(call_id, num_tasks = terms.len(), "enqueueing download tasks");
                         for (i, term) in terms.into_iter().enumerate() {
                             let skip_bytes = if i == 0 { offset_into_first_range } else { 0 };
                             let take = remaining_total_len
@@ -392,7 +449,7 @@ impl RemoteClient {
 
                             remaining_total_len -= take;
                             remaining_segment_len -= take;
-                            debug!("enqueueing {download_task:?}");
+                            debug!(call_id, ?download_task, "enqueueing task");
                             task_tx.send(DownloadQueueItem::DownloadTask(download_task))?;
                         }
 
@@ -435,6 +492,13 @@ impl RemoteClient {
 
         queue_dispatcher.await??;
 
+        info!(
+            call_id,
+            %file_hash,
+            ?byte_range,
+            "Completed reconstruct_file_to_writer_segmented"
+        );
+
         Ok(total_written)
     }
 
@@ -451,6 +515,14 @@ impl RemoteClient {
         writer: &SeekingOutputProvider,
         progress_updater: Option<Arc<SingleItemProgressUpdater>>,
     ) -> Result<u64> {
+        let call_id = FN_CALL_ID.fetch_add(1, Ordering::Relaxed);
+        info!(
+            call_id,
+            %file_hash,
+            ?byte_range,
+            "Starting reconstruct_file_to_writer_segmented_parallel_write"
+        );
+
         // Use the unlimited queue, as queue size is inherently bounded by degree of concurrency.
         let (task_tx, mut task_rx) =
             mpsc::unbounded_channel::<DownloadQueueItem<FetchTermDownloadOnceAndWriteEverywhereUsed>>();
@@ -506,14 +578,14 @@ impl RemoteClient {
             match item {
                 DownloadQueueItem::End => {
                     // everything processed
-                    debug!("download queue emptied");
+                    debug!(call_id, "download queue emptied");
                     break;
                 },
                 DownloadQueueItem::DownloadTask(term_download) => {
                     // acquire the permit before spawning the task, so that there's limited
                     // number of active downloads.
                     let permit = download_concurrency_limiter.clone().acquire_owned().await?;
-                    debug!("spawning 1 download task");
+                    debug!(call_id, "spawning 1 download task");
                     running_downloads.spawn(async move {
                         let data = term_download.run().await?;
                         drop(permit);
@@ -524,7 +596,7 @@ impl RemoteClient {
                     // query for the file info of the first segment
 
                     let segment_size = download_scheduler.next_segment_size()?;
-                    debug!("querying file info of size {segment_size}");
+                    debug!(call_id, segment_size, "querying file info");
                     let (segment, maybe_remainder) = fetch_info.take_segment(segment_size);
 
                     let Some((offset_into_first_range, terms)) = segment.query().await? else {
@@ -548,7 +620,7 @@ impl RemoteClient {
                     )
                     .await?;
 
-                    debug!("enqueueing {} download tasks", tasks.len());
+                    debug!(call_id, num_tasks = tasks.len(), "enqueueing download tasks");
                     for task_def in tasks {
                         task_tx.send(DownloadQueueItem::DownloadTask(task_def))?;
                     }
@@ -569,6 +641,13 @@ impl RemoteClient {
                 updater.update(write_len).await;
             }
         }
+
+        info!(
+            call_id,
+            %file_hash,
+            ?byte_range,
+            "Completed reconstruct_file_to_writer_segmented_parallel_write"
+        );
 
         Ok(total_written)
     }
@@ -622,7 +701,9 @@ impl Client for RemoteClient {
         &self,
         file_hash: &MerkleHash,
     ) -> Result<Option<(MDBFileInfo, Option<MerkleHash>)>> {
+        let call_id = FN_CALL_ID.fetch_add(1, Ordering::Relaxed);
         let url = Url::parse(&format!("{}/reconstructions/{}", self.endpoint, file_hash.hex()))?;
+        info!(call_id, %file_hash, "Starting get_file_reconstruction_info API call");
 
         let api_tag = "cas::get_reconstruction_info";
         let client = self.authenticated_http_client.clone();
@@ -631,9 +712,10 @@ impl Client for RemoteClient {
             .run_and_extract_json(move || client.get(url.clone()).with_extension(Api(api_tag)).send())
             .await?;
 
-        Ok(Some((
+        let terms_count = response.terms.len();
+        let result = Some((
             MDBFileInfo {
-                metadata: FileDataSequenceHeader::new(*file_hash, response.terms.len(), false, false),
+                metadata: FileDataSequenceHeader::new(*file_hash, terms_count, false, false),
                 segments: response
                     .terms
                     .into_iter()
@@ -645,7 +727,11 @@ impl Client for RemoteClient {
                 metadata_ext: None,
             },
             None,
-        )))
+        ));
+
+        info!(call_id, %file_hash, terms_count, "Completed get_file_reconstruction_info API call");
+
+        Ok(result)
     }
 
     async fn query_for_global_dedup_shard(&self, prefix: &str, chunk_hash: &MerkleHash) -> Result<Option<Bytes>> {
@@ -662,6 +748,10 @@ impl Client for RemoteClient {
             return Ok(true);
         }
 
+        let size = shard_data.len();
+        let call_id = FN_CALL_ID.fetch_add(1, Ordering::Relaxed);
+        info!(call_id, size, "Starting upload_shard API");
+
         let api_tag = "cas::upload_shard";
         let client = self.authenticated_http_client.clone();
 
@@ -677,10 +767,18 @@ impl Client for RemoteClient {
             })
             .await?;
 
-        match response.result {
-            UploadShardResponseType::Exists => Ok(false),
-            UploadShardResponseType::SyncPerformed => Ok(true),
-        }
+        let result = match response.result {
+            UploadShardResponseType::Exists => {
+                info!(call_id, size, result = "exists", "Completed upload_shard API call");
+                false
+            },
+            UploadShardResponseType::SyncPerformed => {
+                info!(call_id, size, result = "sync_performed", "Completed upload_shard API call",);
+                true
+            },
+        };
+
+        Ok(result)
     }
 
     #[cfg(not(target_family = "wasm"))]
@@ -698,9 +796,18 @@ impl Client for RemoteClient {
             hash: serialized_cas_object.hash,
         };
 
+        let call_id = FN_CALL_ID.fetch_add(1, Ordering::Relaxed);
         let url = Url::parse(&format!("{}/xorbs/{key}", self.endpoint))?;
 
         let n_upload_bytes = serialized_cas_object.serialized_data.len() as u64;
+        info!(
+            call_id,
+            prefix,
+            hash=%serialized_cas_object.hash,
+            size=n_upload_bytes,
+            num_chunks=serialized_cas_object.num_chunks,
+            "Starting upload_xorb API call",
+        );
 
         // Backing out the incremental progress reporting for now until we figure out the middleware issue.
         use crate::upload_progress_stream::UploadProgressStream;
@@ -750,9 +857,22 @@ impl Client for RemoteClient {
         };
 
         if !xorb_uploaded {
-            debug!("{key:?} not inserted into CAS.");
+            info!(
+                call_id,
+                prefix,
+                hash=%serialized_cas_object.hash,
+                result="not_inserted",
+                "Completed upload_xorb API call",
+            );
         } else {
-            debug!("{key:?} inserted into CAS.");
+            info!(
+                call_id,
+                prefix,
+                hash=%serialized_cas_object.hash,
+                size=n_upload_bytes,
+                result="inserted",
+                "Completed upload_xorb API call",
+            );
         }
 
         Ok(n_upload_bytes)

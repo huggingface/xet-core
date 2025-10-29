@@ -122,6 +122,19 @@ impl TranslatorConfig {
         }
     }
 
+    pub fn with_cache_size(self, cache_size: u64) -> Self {
+        Self {
+            data_config: DataConfig {
+                cache_config: CacheConfig {
+                    cache_size,
+                    ..self.data_config.cache_config
+                },
+                ..self.data_config
+            },
+            ..self
+        }
+    }
+
     pub fn with_session_id(self, session_id: &str) -> Self {
         if session_id.is_empty() {
             return self;

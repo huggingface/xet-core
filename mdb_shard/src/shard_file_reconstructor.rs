@@ -6,7 +6,7 @@ use crate::file_structs::MDBFileInfo;
 #[cfg_attr(target_family = "wasm", async_trait::async_trait(?Send))]
 pub trait FileReconstructor<E> {
     /// Returns a pair of (file reconstruction information,  maybe shard ID)
-    /// Err(_) if an error occured
+    /// Err(_) if an error occurred
     /// Ok(None) if the file is not found.
     async fn get_file_reconstruction_info(
         &self,

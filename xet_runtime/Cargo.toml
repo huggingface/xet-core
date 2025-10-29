@@ -7,14 +7,16 @@ edition = "2024"
 utils = { path = "../utils" }
 error_printer = { path = "../error_printer" }
 
+dirs = { workspace = true }
 oneshot = { workspace = true }
 reqwest = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["time", "rt", "macros", "io-util"] }
 tracing = { workspace = true }
 
+
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
 tokio = { workspace = true, features = ["rt-multi-thread"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
-libc = { workspace = true}
+libc = { workspace = true }

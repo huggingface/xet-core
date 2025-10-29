@@ -1,5 +1,3 @@
-use std::env;
-use std::env::current_dir;
 use std::fs::File;
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -11,15 +9,13 @@ use cas_client::{
 };
 use cas_object::CompressionScheme;
 use deduplication::DeduplicationMetrics;
-use dirs::home_dir;
 use progress_tracking::TrackingProgressUpdater;
 use progress_tracking::item_tracking::ItemProgressUpdater;
 use tracing::{Instrument, Span, info, info_span, instrument};
 use ulid::Ulid;
 use utils::auth::{AuthConfig, TokenRefresher};
-use utils::normalized_path_from_user_string;
 use xet_runtime::utils::run_constrained_with_semaphore;
-use xet_runtime::{GlobalSemaphoreHandle, XetRuntime, global_semaphore_handle};
+use xet_runtime::{GlobalSemaphoreHandle, XetRuntime, global_semaphore_handle, xet_cache_root};
 
 use crate::configurations::*;
 use crate::constants::{INGESTION_BLOCK_SIZE, MAX_CONCURRENT_DOWNLOADS};
@@ -37,34 +33,7 @@ pub fn default_config(
     token_info: Option<(String, u64)>,
     token_refresher: Option<Arc<dyn TokenRefresher>>,
 ) -> errors::Result<TranslatorConfig> {
-    // if HF_HOME is set use that instead of ~/.cache/huggingface
-    // if HF_XET_CACHE is set use that instead of ~/.cache/huggingface/xet
-    // HF_XET_CACHE takes precedence over HF_HOME
-    let cache_root_path = {
-        // If HF_XET_CACHE is set, use that directly.
-        if let Ok(cache) = env::var("HF_XET_CACHE") {
-            normalized_path_from_user_string(cache)
-
-        // If HF_HOME is set, use the $HF_HOME/xet
-        } else if let Ok(hf_home) = env::var("HF_HOME") {
-            normalized_path_from_user_string(hf_home).join("xet")
-
-        // If XDG_CACHE_HOME is set, use the $XDG_CACHE_HOME/huggingface/xet, otherwise
-        // use $HOME/.cache/huggingface/xet
-        } else if let Ok(xdg_cache_home) = env::var("XDG_CACHE_HOME") {
-            normalized_path_from_user_string(xdg_cache_home).join("huggingface").join("xet")
-
-        // Use the same default as huggingface_hub, ~/.cache/huggingface/xet (slightly nonstandard, but won't
-        // mess with it).
-        } else {
-            home_dir()
-                .unwrap_or(current_dir()?)
-                .join(".cache")
-                .join("huggingface")
-                .join("xet")
-        }
-    };
-
+    let cache_root_path = xet_cache_root();
     info!("Using cache path {cache_root_path:?}.");
 
     let (token, token_expiration) = token_info.unzip();
@@ -126,8 +95,13 @@ pub async fn upload_bytes_async(
     token_info: Option<(String, u64)>,
     token_refresher: Option<Arc<dyn TokenRefresher>>,
     progress_updater: Option<Arc<dyn TrackingProgressUpdater>>,
+    cache_size: Option<u64>,
 ) -> errors::Result<Vec<XetFileInfo>> {
-    let config = default_config(endpoint.unwrap_or(DEFAULT_CAS_ENDPOINT.clone()), None, token_info, token_refresher)?;
+    let mut config =
+        default_config(endpoint.unwrap_or(DEFAULT_CAS_ENDPOINT.clone()), None, token_info, token_refresher)?;
+    if let Some(size) = cache_size {
+        config = config.with_cache_size(size);
+    }
     Span::current().record("session_id", &config.session_id);
 
     let semaphore = XetRuntime::current().global_semaphore(*CONCURRENT_FILE_INGESTION_LIMITER);
@@ -161,12 +135,17 @@ pub async fn upload_async(
     token_info: Option<(String, u64)>,
     token_refresher: Option<Arc<dyn TokenRefresher>>,
     progress_updater: Option<Arc<dyn TrackingProgressUpdater>>,
+    cache_size: Option<u64>,
 ) -> errors::Result<Vec<XetFileInfo>> {
     // chunk files
     // produce Xorbs + Shards
     // upload shards and xorbs
     // for each file, return the filehash
-    let config = default_config(endpoint.unwrap_or(DEFAULT_CAS_ENDPOINT.clone()), None, token_info, token_refresher)?;
+    let mut config =
+        default_config(endpoint.unwrap_or(DEFAULT_CAS_ENDPOINT.clone()), None, token_info, token_refresher)?;
+    if let Some(size) = cache_size {
+        config = config.with_cache_size(size);
+    }
 
     let span = Span::current();
 
@@ -197,6 +176,7 @@ pub async fn download_async(
     token_info: Option<(String, u64)>,
     token_refresher: Option<Arc<dyn TokenRefresher>>,
     progress_updaters: Option<Vec<Arc<dyn TrackingProgressUpdater>>>,
+    cache_size: Option<u64>,
 ) -> errors::Result<Vec<String>> {
     lazy_static! {
         static ref CONCURRENT_FILE_DOWNLOAD_LIMITER: GlobalSemaphoreHandle =
@@ -208,8 +188,11 @@ pub async fn download_async(
     {
         return Err(DataProcessingError::ParameterError("updaters are not same length as pointer_files".to_string()));
     }
-    let config =
+    let mut config =
         default_config(endpoint.unwrap_or(DEFAULT_CAS_ENDPOINT.to_string()), None, token_info, token_refresher)?;
+    if let Some(size) = cache_size {
+        config = config.with_cache_size(size);
+    }
     Span::current().record("session_id", &config.session_id);
 
     let processor = Arc::new(FileDownloader::new(config.into()).await?);
@@ -305,6 +288,7 @@ async fn smudge_file(
 
 #[cfg(test)]
 mod tests {
+    use dirs::home_dir;
     use serial_test::serial;
     use tempfile::tempdir;
     use utils::EnvVarGuard;

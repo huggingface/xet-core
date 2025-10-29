@@ -838,6 +838,7 @@ dependencies = [
  "itertools",
  "lazy_static",
  "merklehash",
+ "more-asserts",
  "rand",
  "regex",
  "serde",
