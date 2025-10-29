@@ -43,7 +43,7 @@ Please join us in making xet-core better. We value everyone's contributions. Cod
 
 ## Issues, Diagnostics & Debugging
 
-If you encounter an issue when using `hf-xet` please help us fix the issue by collecting diagnostic information and attaching that when creating a [new Issue](https://github.com/huggingface/xet-core/issues/new/choose). Download the [hf-xet-diag-linux.sh](hf-xet-diag-linux.sh) or [hf-xet-diag-windows.sh](hf-xet-diag-windows.sh) script based on your operating system and then re-run the python command that resulted in the issue. The diagnostic scripts will download and install debug symbols, setup up logging, and take periodic stack traces throughout process execution in a diagnostics directory that is easy to analyze, package, and upload.
+If you encounter an issue when using `hf-xet` please help us fix the issue by collecting diagnostic information and attaching that when creating a [new Issue](https://github.com/huggingface/xet-core/issues/new/choose). Download the [hf-xet-diag-linux.sh](hf-xet-diag-linux.sh), [hf-xet-diag-macos.sh](hf-xet-diag-macos.sh), or [hf-xet-diag-windows.sh](hf-xet-diag-windows.sh) script based on your operating system and then re-run the python command that resulted in the issue. The diagnostic scripts will download and install debug symbols, setup up logging, and take periodic stack traces throughout process execution in a diagnostics directory that is easy to analyze, package, and upload.
 
 ### Diagnostics - Linux (`hf-xet-diag-linux.sh`)
 
@@ -103,7 +103,7 @@ sudo xcode-select --install
 
 ### Output Layout
 
-Both scripts produce a diagnostics directory named:
+The diagnostic scripts produce a diagnostics directory named:
 
 ```
 diag_<command>_<timestamp>/
@@ -120,53 +120,70 @@ This unified layout makes it easier to compare diagnostics across platforms.
 
 ### Analyzing Dumps
 
-### Usage
+Use the [hf-xet-diag-analyze-latest.sh](hf-xet-diag-analyze-latest.sh) script to automatically find and open the most recent dump in the appropriate debugger for your platform.
 
-From your repo root:
+**Usage:**
 
 ```bash
-./analyze-latest.sh
+./hf-xet-diag-analyze-latest.sh
 ```
 
-* Finds the most recent `diag_*` directory.
-* Opens the latest dump inside:
+* Auto-detects your OS (Linux, macOS, or Windows)
+* Finds the most recent `diag_*` directory
+* Opens the latest dump in the platform-appropriate debugger:
+  * **Linux:** `gdb` with core dumps from `dumps/`
+  * **macOS:** `lldb` with `.core` files from `dumps/`
+  * **Windows (Git-Bash):** `windbg` with `.dmp` files from `stacks/`
 
-  * **Linux:** opens `dumps/core_*` in `gdb`.
-  * **Windows (Git-Bash):** opens `stacks/*.dmp` in **WinDbg** (`windbg` must be on PATH).
-* You can also pass a base directory if your diagnostics are stored elsewhere:
+You can also specify a diagnostics directory:
 
-  ```bash
-  ./analyze-latest.sh /path/to/diagnostics
-  ```
+```bash
+./hf-xet-diag-analyze-latest.sh diag_python_hfxet_test_20250127120000
+```
+
+**Manual Analysis**
+
+If you prefer to analyze dumps manually:
 
 **Linux**
-
-* Stack traces are saved under `stacks/` as plain text.
-* Core dumps (`dumps/core_*`) can be analyzed with gdb:
-
+* Stack traces: `stacks/*.txt` (plain text, captured periodically)
+* Core dumps: `dumps/core_*`
+* Analysis:
   ```bash
-  gdb python dumps/core_<pid>
-  (gdb) bt        # backtrace
-  (gdb) thread apply all bt
+  gdb python dumps/core_<timestamp>.<pid>
+  (gdb) bt                    # backtrace of current thread
+  (gdb) thread apply all bt   # backtrace of all threads
+  (gdb) info threads          # list all threads
   ```
-* Ensure the matching debug symbols (`hf_xet-*.dbg`) are in the `hf_xet` package directory.
+* Ensure debug symbols (`hf_xet-*.so.dbg`) are in the `hf_xet` package directory
+
+**macOS**
+* Stack traces: `stacks/*.txt` (from `sample` command)
+* Core dumps: `dumps/dump_<pid>_<timestamp>.core`
+* Analysis:
+  ```bash
+  lldb -c dumps/dump_<pid>_<timestamp>.core python3
+  (lldb) bt                    # backtrace of current thread
+  (lldb) thread backtrace all  # backtrace of all threads
+  (lldb) thread list           # list all threads
+  ```
+* Ensure debug symbols (`hf_xet-*.dylib.dSYM`) are in the `hf_xet` package directory
 
 **Windows**
-
-* Dumps are saved under `stacks/` as `.dmp` files.
-* Open `.dmp` files in **WinDbg** (install via [Windows SDK](https://developer.microsoft.com/en-us/windows/downloads/windows-10-sdk/)):
-
+* Dumps: `stacks/dump_<timestamp>.dmp`
+* Install [WinDbg via Windows SDK](https://developer.microsoft.com/en-us/windows/downloads/windows-sdk/)
+* Analysis:
   ```cmd
-  windbg -z dump_20250101_120000.dmp
+  windbg -z stacks\dump_<timestamp>.dmp
   ```
 * Common WinDbg commands:
-
   ```
-  !analyze -v         # Automatic analysis
-  ~* kb               # Show stack traces for all threads
-  lm                  # List loaded modules (verify hf_xet.pdb loaded)
+  !analyze -v     # automatic analysis
+  ~* kb           # backtrace of all threads
+  ~               # list all threads
+  lm              # list loaded modules (verify hf_xet.pdb loaded)
   ```
-* Ensure `hf_xet.pdb` is installed in the `hf_xet` package directory so symbols load correctly.
+* Ensure debug symbols (`hf_xet.pdb`) are in the `hf_xet` package directory
 
 ---
 

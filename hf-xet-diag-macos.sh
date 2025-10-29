@@ -132,8 +132,12 @@ else
 fi
 
 # --- launch target ---
+SCRIPT_START_TIME=$(date +%s)
+REF_FILE="$OUTDIR/.ref_timestamp"
+touch "$REF_FILE"  # Reference file for finding logs created after this point
+# Ensure REF_FILE is cleaned up on exit
+trap 'rm -f "$REF_FILE"' EXIT
 echo "Launching target at $(date "+%Y-%m-%dT%H:%M:%S%z") ..." | tee -a "$CONSOLE_LOG"
-
 (
   "${CMD[@]}" & echo $! > "$PID_FILE"
 ) 2>&1 | tee -a "$CONSOLE_LOG" &
@@ -213,6 +217,23 @@ while kill -0 "$TARGET_PID" 2>/dev/null; do
 done
 
 echo "Process $TARGET_PID has exited at $(date "+%Y-%m-%dT%H:%M:%S%z")." | tee -a "$CONSOLE_LOG"
+
+# --- collect xet log files from this execution ---
+HF_HOME="${HF_HOME:-$HOME/.cache/huggingface}"
+XET_LOG_DIR="$HF_HOME/xet/logs"
+if [[ -d "$XET_LOG_DIR" ]]; then
+  echo "Collecting xet logs from $XET_LOG_DIR ..." | tee -a "$CONSOLE_LOG"
+  mkdir -p "$OUTDIR/xet_logs"
+  
+  # Find log files created after script start using reference file
+  find "$XET_LOG_DIR" -name "xet_*.log" -type f -newer "$REF_FILE" 2>/dev/null | while read -r logfile; do
+    cp "$logfile" "$OUTDIR/xet_logs/" 2>/dev/null && \
+      echo "  Copied: $(basename "$logfile")" | tee -a "$CONSOLE_LOG"
+  done
+else
+  echo "No xet log directory found at $XET_LOG_DIR" | tee -a "$CONSOLE_LOG"
+fi
+
 echo "Logs and stacks are in: $OUTDIR"
 disown "$LOGGER_BG" 2>/dev/null || true
 
