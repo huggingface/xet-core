@@ -1,6 +1,6 @@
 #![allow(dead_code)]
 
-pub use chunk_cache::{CHUNK_CACHE_SIZE_BYTES, CacheConfig};
+pub use chunk_cache::{CHUNK_CACHE_SIZE_BYTES, CacheConfig, ENABLE_CHUNK_CACHE_OVERRIDE};
 pub use http_client::{Api, ResponseErrorLogger, RetryConfig, build_auth_http_client, build_http_client};
 pub use interface::Client;
 #[cfg(not(target_family = "wasm"))]

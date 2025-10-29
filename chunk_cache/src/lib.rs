@@ -16,6 +16,8 @@ pub use crate::disk::DEFAULT_CHUNK_CACHE_CAPACITY;
 
 utils::configurable_constants! {
     ref CHUNK_CACHE_SIZE_BYTES: u64 = DEFAULT_CHUNK_CACHE_CAPACITY;
+
+    ref ENABLE_CHUNK_CACHE_OVERRIDE: bool = false;
 }
 
 /// Return dto for cache gets
