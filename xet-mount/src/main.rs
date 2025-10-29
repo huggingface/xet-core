@@ -98,15 +98,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+#[cfg(target_os = "macos")]
+const MOUNT_BIN: &str = "/sbin/mount";
+#[cfg(target_os = "macos")]
+const UMOUNT_BIN: &str = "/sbin/umount";
+
+#[cfg(target_os = "linux")]
+const MOUNT_BIN: &str = "/usr/bin/mount";
+#[cfg(target_os = "linux")]
+const UMOUNT_BIN: &str = "/usr/bin/umount";
+
 // on success returns a boolean indicating whether the mount directory existed before being called
 async fn perform_mount(ip: String, hostport: u16, mount_path: PathBuf) -> Result<bool, anyhow::Error> {
-    eprintln!("Performing mount...");
+    eprintln!("Performing mount... on {mount_path:?}");
 
     let previously_existed = std::fs::exists(&mount_path)?;
     if !previously_existed {
         std::fs::create_dir_all(&mount_path)?;
     }
-    let mut cmd = Command::new("/sbin/mount");
+    let mut cmd = Command::new(MOUNT_BIN);
     cmd.args(["-t", "nfs"]);
     cmd.args([
         "-o",
@@ -124,10 +134,16 @@ async fn perform_mount(ip: String, hostport: u16, mount_path: PathBuf) -> Result
 
 async fn unmount(mount_path: PathBuf, delete_path: bool) -> Result<(), anyhow::Error> {
     eprintln!("Unmounting...");
-    let mut cmd = Command::new("/sbin/umount");
+    let mut cmd = Command::new(UMOUNT_BIN);
     cmd.arg("-f");
     cmd.arg(mount_path.clone());
-    cmd.status()?;
+    if cmd.status().is_err() {
+        let mut cmd = Command::new("sudo");
+        cmd.arg(UMOUNT_BIN);
+        cmd.arg("-f");
+        cmd.arg(mount_path.clone());
+        cmd.status()?;
+    }
 
     eprintln!("Unmounted.");
     if delete_path {
