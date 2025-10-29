@@ -7,6 +7,7 @@ use std::fmt::Debug;
 use std::iter::IntoIterator;
 use std::sync::Arc;
 
+use cas_client::ENABLE_CHUNK_CACHE_OVERRIDE;
 use data::errors::DataProcessingError;
 use data::{XetFileInfo, data_client};
 use itertools::Itertools;
@@ -63,7 +64,7 @@ pub fn upload_bytes(
             token_info,
             refresher.map(|v| v as Arc<_>),
             updater.map(|v| v as Arc<_>),
-            Some(0), // Disable DiskCache for hf_xet
+            Some(0), // Disable DiskCache for uploads
         )
         .await
         .map_err(convert_data_processing_error)?
@@ -109,7 +110,7 @@ pub fn upload_files(
             token_info,
             refresher.map(|v| v as Arc<_>),
             updater.map(|v| v as Arc<_>),
-            Some(0), // Disable DiskCache for hf_xet
+            Some(0), // Disable DiskCache for uploads
         )
         .await
         .map_err(convert_data_processing_error)?
@@ -147,13 +148,18 @@ pub fn download_files(
             if file_infos.len() > 3 { "..." } else { "." }
         );
 
+        // by default, hf-xet disables using the chunk cache.
+        // if HF_XET_ENABLE_CHUNK_CACHE_OVERRIDE is set to a truthy value,
+        // then the chunk cache is enabled.
+        let chunk_cache_size = if *ENABLE_CHUNK_CACHE_OVERRIDE { None } else { Some(0) };
+
         let out: Vec<String> = data_client::download_async(
             file_infos,
             endpoint,
             token_info,
             refresher.map(|v| v as Arc<_>),
             updaters,
-            Some(0), // Disable DiskCache for hf_xet
+            chunk_cache_size,
         )
         .await
         .map_err(convert_data_processing_error)?;
