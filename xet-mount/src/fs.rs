@@ -86,6 +86,7 @@ impl From<Directory> for Item {
 
 pub struct XetFS {
     inner: Arc<XetFSInner>,
+    quiet: bool,
 }
 
 struct XetFSInner {
@@ -98,9 +99,10 @@ struct XetFSInner {
 const ROOT_DIR_ID: fileid3 = 0;
 
 impl XetFS {
-    pub fn new(hub_client: Arc<HubClient>, xet_downloader: FileDownloader) -> Self {
+    pub fn new(hub_client: Arc<HubClient>, xet_downloader: FileDownloader, quiet: bool) -> Self {
         Self {
             inner: Arc::new(XetFSInner::new(hub_client, xet_downloader)),
+            quiet,
         }
     }
 }
@@ -200,8 +202,11 @@ impl XetFSInner {
         file: Arc<RegularFile>,
         offset: u64,
         count: u32,
+        quiet: bool,
     ) -> Result<(Vec<u8>, bool), nfsstat3> {
-        eprintln!("Downloading regular file: {file:?}");
+        if !quiet {
+            eprintln!("Downloading regular file: {file:?}");
+        }
         let file_len = file.fattr3.size;
         let past_the_end = offset + count as u64 > file_len;
 
@@ -303,13 +308,15 @@ impl NFSFileSystem for XetFS {
     }
 
     async fn read(&self, id: fileid3, offset: u64, count: u32) -> Result<(Vec<u8>, bool), nfsstat3> {
-        eprintln!("read: id: {:?}, offset: {:?}, count: {:?}", id, offset, count);
+        if !self.quiet {
+            eprintln!("read: id: {:?}, offset: {:?}, count: {:?}", id, offset, count);
+        }
         let Some(item) = self.inner.everything.read().await.get(&id).cloned() else {
             return Err(nfsstat3::NFS3ERR_NOENT);
         };
         match item {
             Item::Directory(_) => Err(nfsstat3::NFS3ERR_ISDIR),
-            Item::RegularFile(file) => self.inner.download_regular_file(file, offset, count).await,
+            Item::RegularFile(file) => self.inner.download_regular_file(file, offset, count, self.quiet).await,
             Item::XetFile(file) => self.inner.download_xet_file(file, offset, count).await,
         }
     }
@@ -355,7 +362,9 @@ impl NFSFileSystem for XetFS {
         start_after: fileid3,
         max_entries: usize,
     ) -> Result<ReadDirResult, nfsstat3> {
-        eprintln!("readdir: dirid: {:?}, start_after: {:?}, max_entries: {:?}", dirid, start_after, max_entries);
+        if !self.quiet {
+            eprintln!("readdir: dirid: {:?}, start_after: {:?}, max_entries: {:?}", dirid, start_after, max_entries);
+        }
         // Fetch the directory item
         let maybe_item = { self.inner.everything.read().await.get(&dirid).cloned() };
         let dir_item = match maybe_item {

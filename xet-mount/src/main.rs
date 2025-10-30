@@ -1,6 +1,8 @@
 mod fs;
 
-use std::{path::PathBuf, process::Command, sync::Arc};
+use std::path::PathBuf;
+use std::process::Command;
+use std::sync::Arc;
 
 use clap::Parser;
 use data::FileDownloader;
@@ -30,6 +32,8 @@ struct MountArgs {
     token: Option<String>,
     #[clap(long)]
     path: PathBuf,
+    #[clap(short, long)]
+    quiet: bool,
 }
 
 #[tokio::main]
@@ -70,7 +74,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     )?;
     let xet_downloader = FileDownloader::new(Arc::new(config)).await?;
 
-    let xfs = XetFS::new(hub_client, xet_downloader);
+    let xfs = XetFS::new(hub_client, xet_downloader, args.quiet);
 
     let listener = NFSTcpListener::bind("127.0.0.1:11111", xfs)
         .await
@@ -123,9 +127,20 @@ async fn perform_mount(ip: String, hostport: u16, mount_path: PathBuf) -> Result
         &format!("rdonly,nolocks,vers=3,tcp,rsize=131072,actimeo=120,port={hostport},mountport={hostport}"),
     ]);
 
-    cmd.arg(format!("{}:/", &ip)).arg(mount_path);
+    cmd.arg(format!("{}:/", &ip)).arg(mount_path.clone());
 
-    cmd.status()?;
+    if cmd.status().is_err() {
+        let mut cmd = Command::new("sudo");
+        cmd.arg(MOUNT_BIN);
+        cmd.args(["-t", "nfs"]);
+        cmd.args([
+            "-o",
+            &format!("rdonly,nolocks,vers=3,tcp,rsize=131072,actimeo=120,port={hostport},mountport={hostport}"),
+        ]);
+
+        cmd.arg(format!("{}:/", &ip)).arg(mount_path);
+        cmd.status()?;
+    }
 
     eprintln!("Mounted.");
 
