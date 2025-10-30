@@ -342,7 +342,9 @@ impl Middleware for UserAgentMiddleware {
         extensions: &mut Extensions,
         next: Next<'_>,
     ) -> reqwest_middleware::Result<Response> {
-        req.headers_mut().insert(USER_AGENT, HeaderValue::from_str(&self.0).unwrap());
+        let header_value = HeaderValue::from_str(&self.0)
+            .map_err(|e| anyhow!("Invalid user agent string: {}", e))?;
+        req.headers_mut().insert(USER_AGENT, header_value);
         next.run(req, extensions).await
     }
 }
