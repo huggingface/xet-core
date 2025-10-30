@@ -110,11 +110,11 @@ fn reqwest_client(user_agent: &str) -> Result<reqwest::Client, CasClientError> {
                 .pool_idle_timeout(*CLIENT_IDLE_CONNECTION_TIMEOUT)
                 .pool_max_idle_per_host(*CLIENT_MAX_IDLE_CONNECTIONS)
                 .http1_only(); // high throughput parallel I/O has been shown to bottleneck with http2
-            
+
             if !user_agent.is_empty() {
                 builder = builder.user_agent(user_agent);
             }
-            
+
             builder.build()
         })?;
 
