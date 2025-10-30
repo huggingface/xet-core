@@ -209,6 +209,7 @@ impl RemoteClient {
         shard_cache_directory: Option<PathBuf>,
         session_id: &str,
         dry_run: bool,
+        user_agent: &str,
     ) -> Self {
         // use disk cache if cache_config provided.
         let chunk_cache = if let Some(cache_config) = cache_config {
@@ -229,13 +230,13 @@ impl RemoteClient {
             endpoint: endpoint.to_string(),
             dry_run,
             authenticated_http_client_with_retry: Arc::new(
-                http_client::build_auth_http_client(auth, RetryConfig::default(), session_id).unwrap(),
+                http_client::build_auth_http_client(auth, RetryConfig::default(), session_id, user_agent).unwrap(),
             ),
             authenticated_http_client: Arc::new(
-                http_client::build_auth_http_client_no_retry(auth, session_id).unwrap(),
+                http_client::build_auth_http_client_no_retry(auth, session_id, user_agent).unwrap(),
             ),
             http_client_with_retry: Arc::new(
-                http_client::build_http_client(RetryConfig::default(), session_id).unwrap(),
+                http_client::build_http_client(RetryConfig::default(), session_id, user_agent).unwrap(),
             ),
             chunk_cache,
             #[cfg(not(target_family = "wasm"))]
@@ -941,7 +942,7 @@ mod tests {
         let raw_xorb = build_raw_xorb(3, ChunkSize::Random(512, 10248));
 
         let threadpool = XetRuntime::new().unwrap();
-        let client = RemoteClient::new(CAS_ENDPOINT, &None, &None, None, "", false);
+        let client = RemoteClient::new(CAS_ENDPOINT, &None, &None, None, "", false, "");
 
         let cas_object = build_and_verify_cas_object(raw_xorb, Some(CompressionScheme::LZ4));
 
@@ -1315,7 +1316,7 @@ mod tests {
 
         // test reconstruct and sequential write
         let test = test_case.clone();
-        let client = RemoteClient::new(endpoint, &None, &None, None, "", false);
+        let client = RemoteClient::new(endpoint, &None, &None, None, "", false, "");
         let buf = ThreadSafeBuffer::default();
         let provider = SequentialOutput::from(buf.clone());
         let resp = threadpool.external_run_async_task(async move {
@@ -1337,7 +1338,7 @@ mod tests {
 
         // test reconstruct and parallel write
         let test = test_case;
-        let client = RemoteClient::new(endpoint, &None, &None, None, "", false);
+        let client = RemoteClient::new(endpoint, &None, &None, None, "", false, "");
         let buf = ThreadSafeBuffer::default();
         let provider = SeekingOutputProvider::from(buf.clone());
         let resp = threadpool.external_run_async_task(async move {

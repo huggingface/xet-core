@@ -23,6 +23,8 @@ use xet_runtime::file_handle_limits;
 use crate::logging::init_logging;
 use crate::progress_update::WrappedProgressUpdater;
 
+const USER_AGENT: &str = concat!(env!("CARGO_PKG_NAME"), "/", env!("CARGO_PKG_VERSION"));
+
 // For profiling
 #[cfg(feature = "profiling")]
 pub(crate) mod profiling;
@@ -64,6 +66,7 @@ pub fn upload_bytes(
             refresher.map(|v| v as Arc<_>),
             updater.map(|v| v as Arc<_>),
             Some(0), // Disable DiskCache for hf_xet
+            USER_AGENT.to_string(),
         )
         .await
         .map_err(convert_data_processing_error)?
@@ -110,6 +113,7 @@ pub fn upload_files(
             refresher.map(|v| v as Arc<_>),
             updater.map(|v| v as Arc<_>),
             Some(0), // Disable DiskCache for hf_xet
+            USER_AGENT.to_string(),
         )
         .await
         .map_err(convert_data_processing_error)?
@@ -154,6 +158,7 @@ pub fn download_files(
             refresher.map(|v| v as Arc<_>),
             updaters,
             Some(0), // Disable DiskCache for hf_xet
+            USER_AGENT.to_string(),
         )
         .await
         .map_err(convert_data_processing_error)?;

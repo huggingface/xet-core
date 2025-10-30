@@ -56,7 +56,7 @@ impl HubClient {
             repo_info,
             reference,
             user_agent: user_agent.to_owned(),
-            client: build_http_client(RetryConfig::default(), session_id)?,
+            client: build_http_client(RetryConfig::default(), session_id, user_agent)?,
             cred_helper,
         })
     }

@@ -18,6 +18,7 @@ use walkdir::WalkDir;
 use xet_runtime::XetRuntime;
 
 const DEFAULT_HF_ENDPOINT: &str = "https://huggingface.co";
+const USER_AGENT: &str = concat!("xtool", "/", env!("CARGO_PKG_VERSION"));
 
 #[derive(Parser)]
 struct XCommand {
@@ -60,7 +61,7 @@ impl XCommand {
             &endpoint,
             RepoInfo::try_from(&self.overrides.repo_type, &self.overrides.repo_id)?,
             Some("main".to_owned()),
-            "xtool",
+            USER_AGENT,
             "",
             cred_helper,
         )?;
@@ -209,6 +210,7 @@ async fn query_reconstruction(
         None,
         Some((jwt_info.access_token, jwt_info.exp)),
         Some(token_refresher),
+        USER_AGENT.to_string(),
     )?;
     let cas_storage_config = &config.data_config;
     let remote_client = RemoteClient::new(
@@ -218,6 +220,7 @@ async fn query_reconstruction(
         Some(config.shard_config.cache_directory.clone()),
         "",
         true,
+        &cas_storage_config.user_agent,
     );
 
     remote_client

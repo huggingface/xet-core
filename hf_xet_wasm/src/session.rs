@@ -12,6 +12,8 @@ use crate::blob_reader::BlobReader;
 use crate::configurations::{DataConfig, ShardConfig, TranslatorConfig};
 use crate::wasm_file_upload_session::FileUploadSession;
 
+const USER_AGENT: &str = concat!(env!("CARGO_PKG_NAME"), "/", env!("CARGO_PKG_VERSION"));
+
 fn convert_error(e: impl std::error::Error) -> JsValue {
     JsValue::from(format!("{e:?}"))
 }
@@ -56,6 +58,7 @@ impl XetSession {
                 compression: Some(CompressionScheme::LZ4),
                 auth: Some(auth),
                 prefix: "default".to_owned(),
+                user_agent: USER_AGENT.to_string(),
             },
             shard_config: ShardConfig {
                 prefix: "default-merkledb".to_owned(),

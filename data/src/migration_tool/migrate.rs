@@ -14,6 +14,8 @@ use crate::data_client::{clean_file, default_config};
 use crate::errors::DataProcessingError;
 use crate::{FileUploadSession, XetFileInfo};
 
+const USER_AGENT: &str = concat!(env!("CARGO_PKG_NAME"), "/", env!("CARGO_PKG_VERSION"));
+
 /// Migrate files to the Hub with external async runtime.
 /// How to use:
 /// ```no_run
@@ -37,7 +39,7 @@ pub async fn migrate_with_external_runtime(
         hub_endpoint,
         RepoInfo::try_from(repo_type, repo_id)?,
         Some("main".to_owned()),
-        "xtool",
+        USER_AGENT,
         "",
         cred_helper,
     )?;
@@ -67,7 +69,13 @@ pub async fn migrate_files_impl(
     }) as Arc<dyn TokenRefresher>;
     let cas = cas_endpoint.unwrap_or(jwt_info.cas_url);
 
-    let config = default_config(cas, compression, Some((jwt_info.access_token, jwt_info.exp)), Some(token_refresher))?;
+    let config = default_config(
+        cas,
+        compression,
+        Some((jwt_info.access_token, jwt_info.exp)),
+        Some(token_refresher),
+        USER_AGENT.to_string(),
+    )?;
     Span::current().record("session_id", &config.session_id);
 
     let num_workers = if sequential {

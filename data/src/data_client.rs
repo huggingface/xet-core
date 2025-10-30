@@ -32,6 +32,7 @@ pub fn default_config(
     xorb_compression: Option<CompressionScheme>,
     token_info: Option<(String, u64)>,
     token_refresher: Option<Arc<dyn TokenRefresher>>,
+    user_agent: String,
 ) -> errors::Result<TranslatorConfig> {
     let cache_root_path = xet_cache_root();
     info!("Using cache path {cache_root_path:?}.");
@@ -70,6 +71,7 @@ pub fn default_config(
                 cache_size: *CHUNK_CACHE_SIZE_BYTES,
             },
             staging_directory: None,
+            user_agent: user_agent.clone(),
         },
         shard_config: ShardConfig {
             prefix: PREFIX_DEFAULT.into(),
@@ -96,9 +98,15 @@ pub async fn upload_bytes_async(
     token_refresher: Option<Arc<dyn TokenRefresher>>,
     progress_updater: Option<Arc<dyn TrackingProgressUpdater>>,
     cache_size: Option<u64>,
+    user_agent: String,
 ) -> errors::Result<Vec<XetFileInfo>> {
-    let mut config =
-        default_config(endpoint.unwrap_or(DEFAULT_CAS_ENDPOINT.clone()), None, token_info, token_refresher)?;
+    let mut config = default_config(
+        endpoint.unwrap_or(DEFAULT_CAS_ENDPOINT.clone()),
+        None,
+        token_info,
+        token_refresher,
+        user_agent,
+    )?;
     if let Some(size) = cache_size {
         config = config.with_cache_size(size);
     }
@@ -136,13 +144,19 @@ pub async fn upload_async(
     token_refresher: Option<Arc<dyn TokenRefresher>>,
     progress_updater: Option<Arc<dyn TrackingProgressUpdater>>,
     cache_size: Option<u64>,
+    user_agent: String,
 ) -> errors::Result<Vec<XetFileInfo>> {
     // chunk files
     // produce Xorbs + Shards
     // upload shards and xorbs
     // for each file, return the filehash
-    let mut config =
-        default_config(endpoint.unwrap_or(DEFAULT_CAS_ENDPOINT.clone()), None, token_info, token_refresher)?;
+    let mut config = default_config(
+        endpoint.unwrap_or(DEFAULT_CAS_ENDPOINT.clone()),
+        None,
+        token_info,
+        token_refresher,
+        user_agent,
+    )?;
     if let Some(size) = cache_size {
         config = config.with_cache_size(size);
     }
@@ -177,6 +191,7 @@ pub async fn download_async(
     token_refresher: Option<Arc<dyn TokenRefresher>>,
     progress_updaters: Option<Vec<Arc<dyn TrackingProgressUpdater>>>,
     cache_size: Option<u64>,
+    user_agent: String,
 ) -> errors::Result<Vec<String>> {
     lazy_static! {
         static ref CONCURRENT_FILE_DOWNLOAD_LIMITER: GlobalSemaphoreHandle =
@@ -188,8 +203,13 @@ pub async fn download_async(
     {
         return Err(DataProcessingError::ParameterError("updaters are not same length as pointer_files".to_string()));
     }
-    let mut config =
-        default_config(endpoint.unwrap_or(DEFAULT_CAS_ENDPOINT.to_string()), None, token_info, token_refresher)?;
+    let mut config = default_config(
+        endpoint.unwrap_or(DEFAULT_CAS_ENDPOINT.to_string()),
+        None,
+        token_info,
+        token_refresher,
+        user_agent,
+    )?;
     if let Some(size) = cache_size {
         config = config.with_cache_size(size);
     }
@@ -302,7 +322,7 @@ mod tests {
         let _hf_home_guard = EnvVarGuard::set("HF_HOME", temp_dir.path().to_str().unwrap());
 
         let endpoint = "http://localhost:8080".to_string();
-        let result = default_config(endpoint, None, None, None);
+        let result = default_config(endpoint, None, None, None, String::new());
 
         assert!(result.is_ok());
         let config = result.unwrap();
@@ -319,7 +339,7 @@ mod tests {
         let hf_home_guard = EnvVarGuard::set("HF_HOME", temp_dir_hf_home.path().to_str().unwrap());
 
         let endpoint = "http://localhost:8080".to_string();
-        let result = default_config(endpoint, None, None, None);
+        let result = default_config(endpoint, None, None, None, String::new());
 
         assert!(result.is_ok());
         let config = result.unwrap();
@@ -338,7 +358,7 @@ mod tests {
         let _hf_home_guard = EnvVarGuard::set("HF_HOME", temp_dir.path().to_str().unwrap());
 
         let endpoint = "http://localhost:8080".to_string();
-        let result = default_config(endpoint, None, None, None);
+        let result = default_config(endpoint, None, None, None, String::new());
 
         assert!(result.is_ok());
         let config = result.unwrap();
@@ -352,7 +372,7 @@ mod tests {
         let _hf_xet_cache_guard = EnvVarGuard::set("HF_XET_CACHE", temp_dir.path().to_str().unwrap());
 
         let endpoint = "http://localhost:8080".to_string();
-        let result = default_config(endpoint, None, None, None);
+        let result = default_config(endpoint, None, None, None, String::new());
 
         assert!(result.is_ok());
         let config = result.unwrap();
@@ -363,7 +383,7 @@ mod tests {
     #[serial(default_config_env)]
     fn test_default_config_without_env_vars() {
         let endpoint = "http://localhost:8080".to_string();
-        let result = default_config(endpoint, None, None, None);
+        let result = default_config(endpoint, None, None, None, String::new());
 
         let expected = home_dir().unwrap().join(".cache").join("huggingface").join("xet");
 

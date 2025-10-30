@@ -12,6 +12,8 @@ use utils::auth::TokenRefresher;
 use crate::constants::{
     HF_ENDPOINT_ENV, XET_ACCESS_TOKEN_HEADER, XET_CAS_URL, XET_SESSION_ID, XET_TOKEN_EXPIRATION_HEADER,
 };
+
+const USER_AGENT: &str = concat!(env!("CARGO_PKG_NAME"), "/", env!("CARGO_PKG_VERSION"));
 use crate::errors::{GitXetError, Result};
 use crate::git_repo::GitRepo;
 use crate::git_url::{GitUrl, Scheme};
@@ -76,12 +78,14 @@ impl TransferAgent for XetAgent {
         let repo = self.repo.get().unwrap(); // protocol state guarantees self.repo is set.
 
         let session_id = req.action.header.get(XET_SESSION_ID).map(|s| s.as_str()).unwrap_or_default();
+        let user_agent = USER_AGENT;
         let token_refresher: Arc<dyn TokenRefresher> = Arc::new(DirectRefreshRouteTokenRefresher::new(
             repo,
             self.remote_url.clone(),
             &req.action.href,
             Operation::Upload,
             session_id,
+            user_agent,
         )?);
         // From git-lfs:
         // > First worker is the only one allowed to start immediately.
@@ -119,9 +123,10 @@ impl TransferAgent for XetAgent {
             .parse()
             .map_err(GitXetError::internal)?;
 
-        let config = default_config(cas_url, None, Some((token, token_expiry)), Some(token_refresher))?
-            .disable_progress_aggregation()
-            .with_session_id(session_id); // upload one file at a time so no need for the heavy progress aggregator
+        let config =
+            default_config(cas_url, None, Some((token, token_expiry)), Some(token_refresher), user_agent.to_string())?
+                .disable_progress_aggregation()
+                .with_session_id(session_id); // upload one file at a time so no need for the heavy progress aggregator
         let session = FileUploadSession::new(config.into(), Some(Arc::new(xet_updater))).await?;
 
         let Some(file_path) = &req.path else {

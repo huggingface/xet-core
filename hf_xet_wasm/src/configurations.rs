@@ -9,6 +9,7 @@ pub struct DataConfig {
     pub compression: Option<CompressionScheme>,
     pub auth: Option<AuthConfig>,
     pub prefix: String,
+    pub user_agent: String,
 }
 
 #[derive(Debug)]
