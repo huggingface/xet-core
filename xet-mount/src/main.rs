@@ -137,11 +137,7 @@ async fn perform_mount(ip: String, hostport: u16, mount_path: PathBuf) -> Result
 
     cmd.arg(format!("{}:/", &ip)).arg(mount_path.clone());
 
-    eprintln!("{cmd:?}");
-    let status = cmd.status().exit_ok();
-    eprintln!("status: {status:?}");
-
-    if status.is_err() {
+    if !cmd.status().is_ok_and(|e| e.success()) {
         let mut cmd = Command::new("sudo");
         cmd.arg(MOUNT_BIN);
         #[cfg(target_os = "macos")]
@@ -174,7 +170,7 @@ async fn unmount(mount_path: PathBuf, delete_path: bool) -> Result<(), anyhow::E
     let mut cmd = Command::new(UMOUNT_BIN);
     cmd.arg("-f");
     cmd.arg(mount_path.clone());
-    if cmd.status().is_err_or.exit_ok().is_err() {
+    if !cmd.status().is_ok_and(|e| e.success()) {
         let mut cmd = Command::new("sudo");
         cmd.arg(UMOUNT_BIN);
         cmd.arg("-f");
