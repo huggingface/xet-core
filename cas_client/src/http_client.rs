@@ -5,7 +5,7 @@ use anyhow::anyhow;
 use cas_types::{REQUEST_ID_HEADER, SESSION_ID_HEADER};
 use error_printer::{ErrorPrinter, OptionPrinter};
 use http::{Extensions, StatusCode};
-use reqwest::header::{AUTHORIZATION, HeaderValue, USER_AGENT};
+use reqwest::header::{AUTHORIZATION, HeaderValue};
 use reqwest::{Request, Response};
 use reqwest_middleware::{ClientBuilder, ClientWithMiddleware, Middleware, Next};
 use reqwest_retry::policies::ExponentialBackoff;
@@ -88,12 +88,17 @@ impl RetryConfig<No429RetryStrategy> {
     }
 }
 
-fn reqwest_client() -> Result<reqwest::Client, CasClientError> {
+fn reqwest_client(user_agent: &str) -> Result<reqwest::Client, CasClientError> {
     // custom dns resolver not supported in WASM. no access to getaddrinfo/any other dns interface.
     #[cfg(target_family = "wasm")]
     {
-        static CLIENT: std::sync::LazyLock<reqwest::Client> = std::sync::LazyLock::new(|| reqwest::Client::new());
-        Ok((&*CLIENT).clone())
+        // For WASM, create a new client with the specified user_agent
+        // Note: we could cache this, but user_agent can vary, so we create per-call
+        let mut builder = reqwest::Client::builder();
+        if !user_agent.is_empty() {
+            builder = builder.user_agent(user_agent);
+        }
+        Ok(builder.build()?)
     }
 
     #[cfg(not(target_family = "wasm"))]
@@ -101,16 +106,22 @@ fn reqwest_client() -> Result<reqwest::Client, CasClientError> {
         use xet_runtime::XetRuntime;
 
         let client = XetRuntime::get_or_create_reqwest_client(|| {
-            reqwest::Client::builder()
+            let mut builder = reqwest::Client::builder()
                 .pool_idle_timeout(*CLIENT_IDLE_CONNECTION_TIMEOUT)
                 .pool_max_idle_per_host(*CLIENT_MAX_IDLE_CONNECTIONS)
-                .http1_only() // high throughput parallel I/O has been shown to bottleneck with http2
-                .build()
+                .http1_only(); // high throughput parallel I/O has been shown to bottleneck with http2
+            
+            if !user_agent.is_empty() {
+                builder = builder.user_agent(user_agent);
+            }
+            
+            builder.build()
         })?;
 
         info!(
             idle_timeout=?*CLIENT_IDLE_CONNECTION_TIMEOUT,
             max_idle_connections=*CLIENT_MAX_IDLE_CONNECTIONS,
+            user_agent=?if user_agent.is_empty() { None } else { Some(user_agent) },
             "HTTP client configured"
         );
 
@@ -129,14 +140,12 @@ pub fn build_auth_http_client<R: RetryableStrategy + Send + Sync + 'static>(
     let auth_middleware = auth_config.as_ref().map(AuthMiddleware::from);
     let logging_middleware = Some(LoggingMiddleware);
     let session_middleware = (!session_id.is_empty()).then(|| SessionMiddleware(session_id.to_owned()));
-    let user_agent_middleware = (!user_agent.is_empty()).then(|| UserAgentMiddleware(user_agent.to_owned()));
 
-    let client = ClientBuilder::new(reqwest_client()?)
+    let client = ClientBuilder::new(reqwest_client(user_agent)?)
         .maybe_with(auth_middleware)
         .with(get_retry_middleware(retry_config))
         .maybe_with(logging_middleware)
         .maybe_with(session_middleware)
-        .maybe_with(user_agent_middleware)
         .build();
     Ok(client)
 }
@@ -150,12 +159,10 @@ pub fn build_auth_http_client_no_retry(
     let auth_middleware = auth_config.as_ref().map(AuthMiddleware::from).info_none("CAS auth disabled");
     let logging_middleware = Some(LoggingMiddleware);
     let session_middleware = (!session_id.is_empty()).then(|| SessionMiddleware(session_id.to_owned()));
-    let user_agent_middleware = (!user_agent.is_empty()).then(|| UserAgentMiddleware(user_agent.to_owned()));
-    Ok(ClientBuilder::new(reqwest_client()?)
+    Ok(ClientBuilder::new(reqwest_client(user_agent)?)
         .maybe_with(auth_middleware)
         .maybe_with(logging_middleware)
         .maybe_with(session_middleware)
-        .maybe_with(user_agent_middleware)
         .build())
 }
 
@@ -327,24 +334,6 @@ impl Middleware for SessionMiddleware {
     ) -> reqwest_middleware::Result<Response> {
         req.headers_mut()
             .insert(SESSION_ID_HEADER, HeaderValue::from_str(&self.0).unwrap());
-        next.run(req, extensions).await
-    }
-}
-
-pub struct UserAgentMiddleware(String);
-
-#[cfg_attr(not(target_family = "wasm"), async_trait::async_trait)]
-#[cfg_attr(target_family = "wasm", async_trait::async_trait(?Send))]
-impl Middleware for UserAgentMiddleware {
-    async fn handle(
-        &self,
-        mut req: Request,
-        extensions: &mut Extensions,
-        next: Next<'_>,
-    ) -> reqwest_middleware::Result<Response> {
-        let header_value = HeaderValue::from_str(&self.0)
-            .map_err(|e| anyhow!("Invalid user agent string: {}", e))?;
-        req.headers_mut().insert(USER_AGENT, header_value);
         next.run(req, extensions).await
     }
 }
