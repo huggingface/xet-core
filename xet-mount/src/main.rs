@@ -1,15 +1,16 @@
 mod fs;
 
-use std::path::PathBuf;
-use std::process::Command;
-use std::sync::Arc;
-
+use anyhow::anyhow;
 use clap::Parser;
 use data::FileDownloader;
 use data::data_client::default_config;
 use data::migration_tool::hub_client_token_refresher::HubClientTokenRefresher;
 use hub_client::{BearerCredentialHelper, HFRepoType, HubClient, HubXetTokenTrait, Operation, RepoInfo};
 use nfsserve::tcp::{NFSTcp, NFSTcpListener};
+use std::ffi::OsStr;
+use std::path::PathBuf;
+use std::process::Command;
+use std::sync::Arc;
 use tokio::signal::unix::SignalKind;
 use uuid::Uuid;
 
@@ -122,9 +123,15 @@ async fn perform_mount(ip: String, hostport: u16, mount_path: PathBuf) -> Result
     }
     let mut cmd = Command::new(MOUNT_BIN);
     cmd.args(["-t", "nfs"]);
+    #[cfg(target_os = "macos")]
     cmd.args([
         "-o",
         &format!("rdonly,nolocks,vers=3,tcp,rsize=131072,actimeo=120,port={hostport},mountport={hostport}"),
+    ]);
+    #[cfg(target_os = "linux")]
+    cmd.args([
+        "-o",
+        &format!("user,noacl,nolock,vers=3,tcp,rsize=131072,actimeo=120,port={hostport},mountport={hostport}"),
     ]);
 
     cmd.arg(format!("{}:/", &ip)).arg(mount_path.clone());
@@ -133,9 +140,15 @@ async fn perform_mount(ip: String, hostport: u16, mount_path: PathBuf) -> Result
         let mut cmd = Command::new("sudo");
         cmd.arg(MOUNT_BIN);
         cmd.args(["-t", "nfs"]);
+        #[cfg(target_os = "macos")]
         cmd.args([
             "-o",
             &format!("rdonly,nolocks,vers=3,tcp,rsize=131072,actimeo=120,port={hostport},mountport={hostport}"),
+        ]);
+        #[cfg(target_os = "linux")]
+        cmd.args([
+            "-o",
+            &format!("user,noacl,nolock,vers=3,tcp,rsize=131072,actimeo=120,port={hostport},mountport={hostport}"),
         ]);
 
         cmd.arg(format!("{}:/", &ip)).arg(mount_path);
@@ -149,6 +162,7 @@ async fn perform_mount(ip: String, hostport: u16, mount_path: PathBuf) -> Result
 
 async fn unmount(mount_path: PathBuf, delete_path: bool) -> Result<(), anyhow::Error> {
     eprintln!("Unmounting...");
+
     let mut cmd = Command::new(UMOUNT_BIN);
     cmd.arg("-f");
     cmd.arg(mount_path.clone());
@@ -166,4 +180,11 @@ async fn unmount(mount_path: PathBuf, delete_path: bool) -> Result<(), anyhow::E
     }
 
     Ok(())
+}
+
+fn run_command_with_root_backup<T: AsRef<OsStr>>(
+    program: impl AsRef<OsStr>,
+    params: Vec<T>,
+) -> Result<(), anyhow::Error> {
+
 }
