@@ -108,7 +108,7 @@ const MOUNT_BIN: &str = "/sbin/mount";
 const UMOUNT_BIN: &str = "/sbin/umount";
 
 #[cfg(target_os = "linux")]
-const MOUNT_BIN: &str = "/usr/bin/mount";
+const MOUNT_BIN: &str = "/sbin/mount.nfs";
 #[cfg(target_os = "linux")]
 const UMOUNT_BIN: &str = "/usr/bin/umount";
 
@@ -121,36 +121,45 @@ async fn perform_mount(ip: String, hostport: u16, mount_path: PathBuf) -> Result
         std::fs::create_dir_all(&mount_path)?;
     }
     let mut cmd = Command::new(MOUNT_BIN);
-    cmd.args(["-t", "nfs"]);
     #[cfg(target_os = "macos")]
-    cmd.args([
-        "-o",
-        &format!("rdonly,nolocks,vers=3,tcp,rsize=131072,actimeo=120,port={hostport},mountport={hostport}"),
-    ]);
-    #[cfg(target_os = "linux")]
-    cmd.args([
-        "-o",
-        &format!("user,noacl,nolock,vers=3,tcp,rsize=131072,actimeo=120,port={hostport},mountport={hostport}"),
-    ]);
-
-    cmd.arg(format!("{}:/", &ip)).arg(mount_path.clone());
-
-    if cmd.status().is_err() {
-        let mut cmd = Command::new("sudo");
-        cmd.arg(MOUNT_BIN);
+    {
         cmd.args(["-t", "nfs"]);
-        #[cfg(target_os = "macos")]
         cmd.args([
             "-o",
             &format!("rdonly,nolocks,vers=3,tcp,rsize=131072,actimeo=120,port={hostport},mountport={hostport}"),
         ]);
+    }
+    #[cfg(target_os = "linux")]
+    cmd.args([
+        "-o",
+        &format!("ro,vers=3,tcp,mountport={hostport},port={hostport},rsize=131072,actimeo=120,user,noacl,nolock"),
+    ]);
+
+    cmd.arg(format!("{}:/", &ip)).arg(mount_path.clone());
+
+    eprintln!("{cmd:?}");
+    let status = cmd.status().exit_ok();
+    eprintln!("status: {status:?}");
+
+    if status.is_err() {
+        let mut cmd = Command::new("sudo");
+        cmd.arg(MOUNT_BIN);
+        #[cfg(target_os = "macos")]
+        {
+            cmd.args(["-t", "nfs"]);
+            cmd.args([
+                "-o",
+                &format!("rdonly,nolocks,vers=3,tcp,rsize=131072,actimeo=120,port={hostport},mountport={hostport}"),
+            ]);
+        }
         #[cfg(target_os = "linux")]
         cmd.args([
             "-o",
-            &format!("user,noacl,nolock,vers=3,tcp,rsize=131072,actimeo=120,port={hostport},mountport={hostport}"),
+            &format!("ro,vers=3,tcp,mountport={hostport},port={hostport},rsize=131072,actimeo=120,user,noacl,nolock"),
         ]);
 
         cmd.arg(format!("{}:/", &ip)).arg(mount_path);
+        eprintln!("{cmd:?}");
         cmd.status()?;
     }
 
@@ -165,7 +174,7 @@ async fn unmount(mount_path: PathBuf, delete_path: bool) -> Result<(), anyhow::E
     let mut cmd = Command::new(UMOUNT_BIN);
     cmd.arg("-f");
     cmd.arg(mount_path.clone());
-    if cmd.status().is_err() {
+    if cmd.status().is_err_or.exit_ok().is_err() {
         let mut cmd = Command::new("sudo");
         cmd.arg(UMOUNT_BIN);
         cmd.arg("-f");
