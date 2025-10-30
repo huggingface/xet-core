@@ -67,7 +67,13 @@ pub async fn migrate_files_impl(
     }) as Arc<dyn TokenRefresher>;
     let cas = cas_endpoint.unwrap_or(jwt_info.cas_url);
 
-    let config = default_config(cas, compression, Some((jwt_info.access_token, jwt_info.exp)), Some(token_refresher))?;
+    let config = default_config(
+        cas,
+        compression,
+        Some((jwt_info.access_token, jwt_info.exp)),
+        Some(token_refresher),
+        "xtool".to_string(),
+    )?;
     Span::current().record("session_id", &config.session_id);
 
     let num_workers = if sequential {

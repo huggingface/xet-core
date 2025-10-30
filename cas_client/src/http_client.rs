@@ -5,7 +5,7 @@ use anyhow::anyhow;
 use cas_types::{REQUEST_ID_HEADER, SESSION_ID_HEADER};
 use error_printer::{ErrorPrinter, OptionPrinter};
 use http::{Extensions, StatusCode};
-use reqwest::header::{AUTHORIZATION, HeaderValue};
+use reqwest::header::{AUTHORIZATION, HeaderValue, USER_AGENT};
 use reqwest::{Request, Response};
 use reqwest_middleware::{ClientBuilder, ClientWithMiddleware, Middleware, Next};
 use reqwest_retry::policies::ExponentialBackoff;
@@ -124,16 +124,19 @@ pub fn build_auth_http_client<R: RetryableStrategy + Send + Sync + 'static>(
     auth_config: &Option<AuthConfig>,
     retry_config: RetryConfig<R>,
     session_id: &str,
+    user_agent: &str,
 ) -> Result<ClientWithMiddleware, CasClientError> {
     let auth_middleware = auth_config.as_ref().map(AuthMiddleware::from);
     let logging_middleware = Some(LoggingMiddleware);
     let session_middleware = (!session_id.is_empty()).then(|| SessionMiddleware(session_id.to_owned()));
+    let user_agent_middleware = (!user_agent.is_empty()).then(|| UserAgentMiddleware(user_agent.to_owned()));
 
     let client = ClientBuilder::new(reqwest_client()?)
         .maybe_with(auth_middleware)
         .with(get_retry_middleware(retry_config))
         .maybe_with(logging_middleware)
         .maybe_with(session_middleware)
+        .maybe_with(user_agent_middleware)
         .build();
     Ok(client)
 }
@@ -142,14 +145,17 @@ pub fn build_auth_http_client<R: RetryableStrategy + Send + Sync + 'static>(
 pub fn build_auth_http_client_no_retry(
     auth_config: &Option<AuthConfig>,
     session_id: &str,
+    user_agent: &str,
 ) -> Result<ClientWithMiddleware, CasClientError> {
     let auth_middleware = auth_config.as_ref().map(AuthMiddleware::from).info_none("CAS auth disabled");
     let logging_middleware = Some(LoggingMiddleware);
     let session_middleware = (!session_id.is_empty()).then(|| SessionMiddleware(session_id.to_owned()));
+    let user_agent_middleware = (!user_agent.is_empty()).then(|| UserAgentMiddleware(user_agent.to_owned()));
     Ok(ClientBuilder::new(reqwest_client()?)
         .maybe_with(auth_middleware)
         .maybe_with(logging_middleware)
         .maybe_with(session_middleware)
+        .maybe_with(user_agent_middleware)
         .build())
 }
 
@@ -158,14 +164,15 @@ pub fn build_auth_http_client_no_retry(
 pub fn build_http_client<R: RetryableStrategy + Send + Sync + 'static>(
     retry_config: RetryConfig<R>,
     session_id: &str,
+    user_agent: &str,
 ) -> Result<ClientWithMiddleware, CasClientError> {
-    build_auth_http_client(&None, retry_config, session_id)
+    build_auth_http_client(&None, retry_config, session_id, user_agent)
 }
 
 /// Builds HTTP Client to talk to CAS.
 /// Includes retry middleware with exponential backoff.
-pub fn build_http_client_no_retry(session_id: &str) -> Result<ClientWithMiddleware, CasClientError> {
-    build_auth_http_client_no_retry(&None, session_id)
+pub fn build_http_client_no_retry(session_id: &str, user_agent: &str) -> Result<ClientWithMiddleware, CasClientError> {
+    build_auth_http_client_no_retry(&None, session_id, user_agent)
 }
 
 /// RetryStrategy
@@ -324,6 +331,22 @@ impl Middleware for SessionMiddleware {
     }
 }
 
+pub struct UserAgentMiddleware(String);
+
+#[cfg_attr(not(target_family = "wasm"), async_trait::async_trait)]
+#[cfg_attr(target_family = "wasm", async_trait::async_trait(?Send))]
+impl Middleware for UserAgentMiddleware {
+    async fn handle(
+        &self,
+        mut req: Request,
+        extensions: &mut Extensions,
+        next: Next<'_>,
+    ) -> reqwest_middleware::Result<Response> {
+        req.headers_mut().insert(USER_AGENT, HeaderValue::from_str(&self.0).unwrap());
+        next.run(req, extensions).await
+    }
+}
+
 /// Helper trait to log the different types of errors that come back from a request to CAS,
 /// transforming the implementation into some new error type.
 pub trait ResponseErrorLogger<T> {
@@ -386,7 +409,7 @@ mod tests {
                 max_retry_interval_ms: 3000,
                 strategy: DefaultRetryableStrategy,
             };
-            let client = build_auth_http_client(&None, retry_config, "").unwrap();
+            let client = build_auth_http_client(&None, retry_config, "", "").unwrap();
 
             // Act & Assert - should retry and log
             let response = client.get(server.url("/data")).send().await.unwrap();
@@ -412,7 +435,7 @@ mod tests {
                 max_retry_interval_ms: 3000,
                 strategy: No429RetryStrategy,
             };
-            let client = build_auth_http_client(&None, retry_config, "").unwrap();
+            let client = build_auth_http_client(&None, retry_config, "", "").unwrap();
 
             // Act & Assert - should retry and log
             let response = client.get(server.url("/data")).send().await.unwrap();
@@ -442,7 +465,7 @@ mod tests {
                 max_retry_interval_ms: 3000,
                 strategy: DefaultRetryableStrategy,
             };
-            let client = build_auth_http_client(&None, retry_config, "").unwrap();
+            let client = build_auth_http_client(&None, retry_config, "", "").unwrap();
 
             // Act & Assert - should retry and log
             let response = client.get(server.url("/data")).send().await.unwrap();
@@ -468,7 +491,7 @@ mod tests {
                 max_retry_interval_ms: 3000,
                 strategy: No429RetryStrategy,
             };
-            let client = build_auth_http_client(&None, retry_config, "").unwrap();
+            let client = build_auth_http_client(&None, retry_config, "", "").unwrap();
 
             // Act & Assert - should retry and log
             let response = client.get(server.url("/data")).send().await.unwrap();
@@ -499,7 +522,7 @@ mod tests {
                 max_retry_interval_ms: 6000,
                 strategy: DefaultRetryableStrategy,
             };
-            let client = build_auth_http_client(&None, retry_config, "").unwrap();
+            let client = build_auth_http_client(&None, retry_config, "", "").unwrap();
 
             // Act & Assert - should retry and log
             let response = client.get(server.url("/data")).send().await.unwrap();
@@ -527,7 +550,7 @@ mod tests {
                 max_retry_interval_ms: 6000,
                 strategy: No429RetryStrategy,
             };
-            let client = build_auth_http_client(&None, retry_config, "").unwrap();
+            let client = build_auth_http_client(&None, retry_config, "", "").unwrap();
 
             // Act & Assert - should retry and log
             let response = client.get(server.url("/data")).send().await.unwrap();
@@ -557,7 +580,7 @@ mod tests {
             max_retry_interval_ms: 6000,
             strategy: No429RetryStrategy,
         };
-        let client = build_auth_http_client(&None, retry_config, "").unwrap();
+        let client = build_auth_http_client(&None, retry_config, "", "").unwrap();
 
         // Act & Assert - should retry and log
         let response = client.get(server.url("/data")).send().await.unwrap();

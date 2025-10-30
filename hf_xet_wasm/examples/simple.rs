@@ -165,6 +165,7 @@ pub async fn clean_file(file: web_sys::File, endpoint: String, jwt_token: String
             compression: Some(CompressionScheme::LZ4),
             auth: AuthConfig::maybe_new(Some(jwt_token), Some(expiration), None),
             prefix: "default".to_owned(),
+            user_agent: format!("{}/{}", env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION")),
         },
         shard_config: ShardConfig {
             prefix: "default-merkledb".to_owned(),

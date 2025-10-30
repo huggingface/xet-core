@@ -209,6 +209,7 @@ async fn query_reconstruction(
         None,
         Some((jwt_info.access_token, jwt_info.exp)),
         Some(token_refresher),
+        "xtool".to_string(),
     )?;
     let cas_storage_config = &config.data_config;
     let remote_client = RemoteClient::new(
@@ -218,6 +219,7 @@ async fn query_reconstruction(
         Some(config.shard_config.cache_directory.clone()),
         "",
         true,
+        &cas_storage_config.user_agent,
     );
 
     remote_client

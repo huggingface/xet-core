@@ -27,6 +27,7 @@ impl DirectRefreshRouteTokenRefresher {
         refresh_route: &str,
         operation: Operation,
         session_id: &str,
+        user_agent: &str,
     ) -> Result<Self> {
         let remote_url = match remote_url {
             Some(r) => r,
@@ -37,7 +38,7 @@ impl DirectRefreshRouteTokenRefresher {
 
         Ok(Self {
             refresh_route: refresh_route.to_owned(),
-            client: build_http_client(RetryConfig::default(), session_id)?,
+            client: build_http_client(RetryConfig::default(), session_id, user_agent)?,
             cred_helper,
         })
     }
