@@ -228,9 +228,8 @@ impl XetFSInner {
         count: u32,
     ) -> Result<(Vec<u8>, bool), nfsstat3> {
         let file_len = file.fattr3.size;
-
-        let write_len = (count as usize).min(file_len as usize - offset as usize);
-        let past_the_end = write_len < count as usize;
+        let past_the_end = offset + count as u64 > file_len;
+        let write_len = (count as u64).min(file_len - offset);
 
         fn next_multiple(a: u64, b: u64) -> u64 {
             // If `b` is zero, this would be undefined, so handle that as needed.
@@ -238,10 +237,10 @@ impl XetFSInner {
             ((a + b - 1) / b) * b
         }
         const READ_EXTRA_UP_TO: u64 = 1024 * 1024 * 50;
-        let get_end = next_multiple(offset, READ_EXTRA_UP_TO).min(file_len);
+        let get_end = next_multiple(offset + count as u64, READ_EXTRA_UP_TO).min(file_len);
 
         let (w, s) = utils::pipe::pipe(10);
-        let fancy_writer = TBD::new(w, write_len);
+        let fancy_writer = TBD::new(w, write_len as usize);
         let sequential_output: SequentialOutput = Box::new(fancy_writer);
 
         let downloader = self.xet_downloader.clone();
@@ -253,6 +252,7 @@ impl XetFSInner {
                     file.path.clone().into(),
                     sequential_output,
                     Some(FileRange::new(offset, get_end)),
+                    // Some(FileRange::new(offset, offset + count as u64)),
                     None,
                 )
                 .await
