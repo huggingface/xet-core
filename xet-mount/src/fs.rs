@@ -238,8 +238,7 @@ impl XetFSInner {
             ((a + b - 1) / b) * b
         }
         const READ_EXTRA_UP_TO: u64 = 1024 * 1024 * 50;
-        let get_end = next_multiple(offset as u64, READ_EXTRA_UP_TO).min(file_len);
-
+        let get_end = next_multiple(offset, READ_EXTRA_UP_TO).min(file_len);
 
         let (w, s) = utils::pipe::pipe(10);
         let fancy_writer = TBD::new(w, write_len);
@@ -253,7 +252,7 @@ impl XetFSInner {
                     &hash,
                     file.path.clone().into(),
                     sequential_output,
-                    Some(FileRange::new(offset, offset + count as u64)),
+                    Some(FileRange::new(offset, get_end)),
                     None,
                 )
                 .await
