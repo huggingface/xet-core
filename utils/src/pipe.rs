@@ -1,9 +1,10 @@
 use std::io;
-use std::pin::Pin;
+use std::io::Error;
+use std::pin::{pin, Pin};
 use std::task::{Context, Poll};
 
 use bytes::Bytes;
-use futures::Stream;
+use futures::{ready, Stream};
 use tokio::io::AsyncWrite;
 use tokio::sync::mpsc;
 use tokio::sync::mpsc::error::TrySendError;
@@ -71,6 +72,41 @@ impl AsyncWrite for ChannelWriter {
     fn poll_shutdown(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
         // Dropping the sender will close the channel
         Poll::Ready(Ok(()))
+    }
+}
+
+pub struct TBD<T: AsyncWrite + Unpin + 'static + Send> {
+    inner: T,
+    left_to_pass: usize,
+}
+
+impl<T: AsyncWrite + Unpin + 'static + Send> TBD<T> {
+    pub fn new(inner: T, pass: usize) -> Self {
+        Self { inner, left_to_pass: pass }
+    }
+}
+
+impl<T: AsyncWrite + Unpin + 'static + Send> AsyncWrite for TBD<T> {
+    fn poll_write(mut self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &[u8]) -> Poll<Result<usize, Error>> {
+        if self.left_to_pass == 0 {
+            return Poll::Ready(Ok(buf.len()));
+        }
+        let pass = if buf.len() > self.left_to_pass {
+            &buf[..self.left_to_pass]
+        } else {
+            buf
+        };
+        let written = ready!(pin!(&mut self.inner).as_mut().poll_write(cx, pass))?;
+        self.left_to_pass -= written;
+        Poll::Ready(Ok(written))
+    }
+
+    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Error>> {
+        pin!(&mut self.inner).as_mut().poll_flush(cx)
+    }
+
+    fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Error>> {
+        pin!(&mut self.inner).as_mut().poll_shutdown(cx)
     }
 }
 

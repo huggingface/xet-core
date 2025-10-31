@@ -12,6 +12,7 @@ use nfsserve::nfs::{fattr3, fileid3, filename3, ftype3, nfspath3, nfsstat3, nfst
 use nfsserve::vfs::{DirEntry, NFSFileSystem, ReadDirResult, VFSCapabilities};
 use tokio::io::AsyncReadExt;
 use tokio::sync::{OnceCell, RwLock};
+use utils::pipe::TBD;
 
 #[derive(Clone, Debug)]
 enum Item {
@@ -227,10 +228,22 @@ impl XetFSInner {
         count: u32,
     ) -> Result<(Vec<u8>, bool), nfsstat3> {
         let file_len = file.fattr3.size;
-        let past_the_end = offset + count as u64 > file_len;
+
+        let write_len = (count as usize).min(file_len as usize - offset as usize);
+        let past_the_end = write_len < count as usize;
+
+        fn next_multiple(a: u64, b: u64) -> u64 {
+            // If `b` is zero, this would be undefined, so handle that as needed.
+            // Assuming b > 0:
+            ((a + b - 1) / b) * b
+        }
+        const READ_EXTRA_UP_TO: u64 = 1024 * 1024 * 50;
+        let get_end = next_multiple(offset as u64, READ_EXTRA_UP_TO).min(file_len);
+
 
         let (w, s) = utils::pipe::pipe(10);
-        let sequential_output: SequentialOutput = Box::new(w);
+        let fancy_writer = TBD::new(w, write_len);
+        let sequential_output: SequentialOutput = Box::new(fancy_writer);
 
         let downloader = self.xet_downloader.clone();
         let hash = file.hash;
