@@ -1,5 +1,5 @@
 use std::fs::File;
-use std::io::Read;
+use std::io::{Cursor, Read, Seek, SeekFrom};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -8,12 +8,12 @@ use std::time::SystemTime;
 use bytes::Bytes;
 use cas_client::Client;
 use error_printer::ErrorPrinter;
-use mdb_shard::ShardFileManager;
 use mdb_shard::cas_structs::MDBCASInfo;
 use mdb_shard::constants::MDB_SHARD_MAX_TARGET_SIZE;
 use mdb_shard::file_structs::{FileDataSequenceEntry, MDBFileInfo};
 use mdb_shard::session_directory::{ShardMergeResult, consolidate_shards_in_directory, merge_shards_background};
 use mdb_shard::shard_in_memory::MDBInMemoryShard;
+use mdb_shard::{MDBShardFileHeader, ShardFileManager};
 use merklehash::MerkleHash;
 use tempfile::TempDir;
 use tokio::sync::Mutex;
@@ -274,9 +274,19 @@ impl SessionShardInterface {
                         let split_off_index = si.shard.metadata.file_lookup_offset as usize;
                         // Read only the portion of the shard file up to the file_lookup_offset,
                         // which excludes the footer and lookup sections.
-                        let mut file = File::open(&si.path)?;
-                        let mut buf = vec![0u8; split_off_index];
-                        file.read_exact(&mut buf)?;
+                        let mut buf = {
+                            let mut file = File::open(&si.path)?;
+                            let mut buf = vec![0u8; split_off_index];
+                            file.read_exact(&mut buf)?;
+                            buf
+                        };
+                        {
+                            let mut header = MDBShardFileHeader::default();
+                            header.footer_size = 0;
+                            let mut w = Cursor::new(&mut buf);
+                            w.seek(SeekFrom::Start(0))?;
+                            header.serialize(&mut w)?;
+                        }
                         Bytes::from(buf)
                     } else {
                         std::fs::read(&si.path)?.into()
