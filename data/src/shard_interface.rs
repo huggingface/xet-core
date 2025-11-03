@@ -13,7 +13,7 @@ use mdb_shard::constants::MDB_SHARD_MAX_TARGET_SIZE;
 use mdb_shard::file_structs::{FileDataSequenceEntry, MDBFileInfo};
 use mdb_shard::session_directory::{ShardMergeResult, consolidate_shards_in_directory, merge_shards_background};
 use mdb_shard::shard_in_memory::MDBInMemoryShard;
-use mdb_shard::{MDBShardFileHeader, ShardFileManager};
+use mdb_shard::{MDBShardFile, MDBShardFileHeader, ShardFileManager};
 use merklehash::MerkleHash;
 use tempfile::TempDir;
 use tokio::sync::Mutex;
@@ -271,23 +271,7 @@ impl SessionShardInterface {
                     debug!("Uploading shard {shard_prefix}/{:?} from staging area to CAS.", &si.shard_hash);
 
                     let data: Bytes = if !shard_client.use_shard_footer() {
-                        let split_off_index = si.shard.metadata.file_lookup_offset as usize;
-                        // Read only the portion of the shard file up to the file_lookup_offset,
-                        // which excludes the footer and lookup sections.
-                        let mut buf = {
-                            let mut file = File::open(&si.path)?;
-                            let mut buf = vec![0u8; split_off_index];
-                            file.read_exact(&mut buf)?;
-                            buf
-                        };
-                        {
-                            let mut cursor = Cursor::new(&mut buf);
-                            let mut header = MDBShardFileHeader::deserialize(&mut cursor)?;
-                            header.footer_size = 0;
-                            cursor.seek(SeekFrom::Start(0))?;
-                            header.serialize(&mut cursor)?;
-                        }
-                        Bytes::from(buf)
+                        read_shard_to_bytes_remove_footer(&si)?
                     } else {
                         std::fs::read(&si.path)?.into()
                     };
@@ -337,4 +321,24 @@ impl SessionShardInterface {
 
         Ok(shard_bytes_uploaded.load(Ordering::Relaxed))
     }
+}
+
+fn read_shard_to_bytes_remove_footer(si: &Arc<MDBShardFile>) -> Result<Bytes> {
+    let split_off_index = si.shard.metadata.file_lookup_offset as usize;
+    // Read only the portion of the shard file up to the file_lookup_offset,
+    // which excludes the footer and lookup sections.
+    let mut buf = {
+        let mut file = File::open(&si.path)?;
+        let mut buf = vec![0u8; split_off_index];
+        file.read_exact(&mut buf)?;
+        buf
+    };
+    {
+        let mut cursor = Cursor::new(&mut buf);
+        let mut header = MDBShardFileHeader::deserialize(&mut cursor)?;
+        header.footer_size = 0;
+        cursor.seek(SeekFrom::Start(0))?;
+        header.serialize(&mut cursor)?;
+    }
+    Ok(Bytes::from(buf))
 }
