@@ -4,8 +4,8 @@ use std::path::{Path, PathBuf};
 use anyhow::Result;
 use tempfile::TempDir;
 
-use crate::git_process_wrapping::run_git_captured;
 use crate::test_utils::TempHome;
+use crate::utils::process_wrapping::run_git_captured;
 
 // A test utility to create a repo at a temporary directory with a clean global config.
 // It allows performing a varies of git operations in this repo.

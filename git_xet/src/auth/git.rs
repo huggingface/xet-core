@@ -5,7 +5,7 @@ use std::sync::Arc;
 use hub_client::BearerCredentialHelper;
 
 use crate::errors::{GitXetError, Result};
-use crate::git_process_wrapping::run_git_captured_with_input_and_output;
+use crate::utils::process_wrapping::run_git_captured_with_input_and_output;
 
 // This implements the mechanism to get credential stored in configured git credential helpers, including
 // git-credential-cache, git-credential-store, git-credential-libsecret (Linux), git-credential-osxkeychain (macOS),
@@ -88,9 +88,9 @@ mod test_cred_helpers {
     use serial_test::serial;
 
     use super::GitCredentialHelper;
-    use crate::git_process_wrapping::run_git_captured_with_input_and_output;
     use crate::git_url::GitUrl;
     use crate::test_utils::TestRepo;
+    use crate::utils::process_wrapping::run_git_captured_with_input_and_output;
 
     #[test]
     #[serial(env_var_write_read)]
