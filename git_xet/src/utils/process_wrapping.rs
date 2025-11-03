@@ -217,15 +217,18 @@ mod tests {
         }
 
         let (response, _err) = cmd.wait_with_output()?;
+        #[cfg(unix)]
         assert_eq!(response, "hello".as_bytes());
+        #[cfg(windows)]
+        assert_eq!(response, "hello\r\n".as_bytes());
 
         Ok(())
     }
 
     #[test]
     fn test_error_on_get_stdin_without_captured() -> Result<()> {
-        let mut command = Command::new("more");
-        command.current_dir(std::env::current_dir()?);
+        let mut command = Command::new("cmd");
+        command.current_dir(std::env::current_dir()?).args(&["/C", "more"]);
 
         let mut command = CapturedCommand::new(command)?;
         assert!(command.stdin().is_err());
