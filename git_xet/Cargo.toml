@@ -26,6 +26,7 @@ reqwest-middleware = { workspace = true }
 rust-netrc = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+shell-words = { workspace = true }
 tempfile = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
