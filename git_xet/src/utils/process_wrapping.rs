@@ -227,8 +227,7 @@ mod tests {
 
     #[test]
     fn test_error_on_get_stdin_without_captured() -> Result<()> {
-        let mut command = Command::new("cmd");
-        command.current_dir(std::env::current_dir()?).args(&["/C", "more"]);
+        let command = Command::new(if cfg!(windows) { "cmd" } else { "sh" });
 
         let mut command = CapturedCommand::new(command)?;
         assert!(command.stdin().is_err());
