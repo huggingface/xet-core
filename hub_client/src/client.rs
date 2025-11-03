@@ -89,8 +89,7 @@ impl HubClient {
         let req = self
             .client
             .get(url)
-            .with_extension(Api("xet-token"))
-            .header(header::USER_AGENT, &self.user_agent);
+            .with_extension(Api("xet-token"));
         let req = self
             .cred_helper
             .fill_credential(req)

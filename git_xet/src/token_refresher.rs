@@ -50,8 +50,7 @@ impl TokenRefresher for DirectRefreshRouteTokenRefresher {
         let req = self
             .client
             .get(&self.refresh_route)
-            .with_extension(Api("xet-token"))
-            .header(header::USER_AGENT, GIT_LFS_CUSTOM_TRANSFER_AGENT_PROGRAM);
+            .with_extension(Api("xet-token"));
         let req = self
             .cred_helper
             .fill_credential(req)
