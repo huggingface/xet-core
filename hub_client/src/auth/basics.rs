@@ -9,7 +9,6 @@ use super::CredentialHelper;
 pub struct NoopCredentialHelper {}
 
 impl NoopCredentialHelper {
-    #[allow(clippy::new_ret_no_self)]
     pub fn new() -> Arc<Self> {
         Arc::new(Self {})
     }
@@ -33,7 +32,6 @@ pub struct BearerCredentialHelper {
 }
 
 impl BearerCredentialHelper {
-    #[allow(clippy::new_ret_no_self)]
     pub fn new(hf_token: String, whoami: &'static str) -> Arc<Self> {
         Arc::new(Self {
             hf_token,
