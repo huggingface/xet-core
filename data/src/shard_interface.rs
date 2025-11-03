@@ -13,7 +13,7 @@ use mdb_shard::constants::MDB_SHARD_MAX_TARGET_SIZE;
 use mdb_shard::file_structs::{FileDataSequenceEntry, MDBFileInfo};
 use mdb_shard::session_directory::{ShardMergeResult, consolidate_shards_in_directory, merge_shards_background};
 use mdb_shard::shard_in_memory::MDBInMemoryShard;
-use mdb_shard::{MDBShardFile, MDBShardFileHeader, ShardFileManager};
+use mdb_shard::{MDBShardFile, ShardFileManager};
 use merklehash::MerkleHash;
 use tempfile::TempDir;
 use tokio::sync::Mutex;
@@ -335,7 +335,7 @@ fn read_shard_to_bytes_remove_footer(si: &Arc<MDBShardFile>) -> Result<Bytes> {
     };
     {
         let mut cursor = Cursor::new(&mut buf);
-        let mut header = MDBShardFileHeader::deserialize(&mut cursor)?;
+        let mut header = si.shard.header.clone();
         header.footer_size = 0;
         cursor.seek(SeekFrom::Start(0))?;
         header.serialize(&mut cursor)?;
