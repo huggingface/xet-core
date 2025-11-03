@@ -281,11 +281,11 @@ impl SessionShardInterface {
                             buf
                         };
                         {
-                            let mut header = MDBShardFileHeader::default();
+                            let mut cursor = Cursor::new(&mut buf);
+                            let mut header = MDBShardFileHeader::deserialize(&mut cursor)?;
                             header.footer_size = 0;
-                            let mut w = Cursor::new(&mut buf);
-                            w.seek(SeekFrom::Start(0))?;
-                            header.serialize(&mut w)?;
+                            cursor.seek(SeekFrom::Start(0))?;
+                            header.serialize(&mut cursor)?;
                         }
                         Bytes::from(buf)
                     } else {
