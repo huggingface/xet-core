@@ -36,7 +36,6 @@ pub struct SSHCredentialHelper {
 }
 
 impl SSHCredentialHelper {
-    #[allow(clippy::new_ret_no_self)]
     pub fn new(remote_url: &GitUrl, operation: Operation) -> Arc<Self> {
         Arc::new(Self {
             remote_url: remote_url.clone(),
