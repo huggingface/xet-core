@@ -2,7 +2,6 @@ use std::sync::Arc;
 
 use cas_client::exports::ClientWithMiddleware;
 use cas_client::{Api, ResponseErrorLogger, RetryConfig, build_http_client};
-use http::header;
 use urlencoding::encode;
 
 use crate::auth::CredentialHelper;
@@ -37,7 +36,6 @@ pub struct HubClient {
     endpoint: String,
     repo_info: RepoInfo,
     reference: Option<String>,
-    user_agent: String,
     client: ClientWithMiddleware,
     cred_helper: Arc<dyn CredentialHelper>,
 }
@@ -55,7 +53,6 @@ impl HubClient {
             endpoint: endpoint.to_owned(),
             repo_info,
             reference,
-            user_agent: user_agent.to_owned(),
             client: build_http_client(RetryConfig::default(), session_id, user_agent)?,
             cred_helper,
         })
@@ -86,10 +83,7 @@ impl HubClient {
         // note that this API doesn't take a Basic auth
         let url = format!("{endpoint}/api/{repo_type}s/{repo_id}/xet-{token_type}-token/{rev}{query}");
 
-        let req = self
-            .client
-            .get(url)
-            .with_extension(Api("xet-token"));
+        let req = self.client.get(url).with_extension(Api("xet-token"));
         let req = self
             .cred_helper
             .fill_credential(req)

@@ -3,13 +3,11 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use cas_client::{Api, RetryConfig, build_http_client};
 use hub_client::{CasJWTInfo, CredentialHelper, Operation};
-use reqwest::header;
 use reqwest_middleware::ClientWithMiddleware;
 use utils::auth::{TokenInfo, TokenRefresher};
 use utils::errors::AuthError;
 
 use crate::auth::get_credential;
-use crate::constants::GIT_LFS_CUSTOM_TRANSFER_AGENT_PROGRAM;
 use crate::errors::Result;
 use crate::git_repo::GitRepo;
 use crate::git_url::GitUrl;
@@ -47,10 +45,7 @@ impl DirectRefreshRouteTokenRefresher {
 #[async_trait]
 impl TokenRefresher for DirectRefreshRouteTokenRefresher {
     async fn refresh(&self) -> std::result::Result<TokenInfo, AuthError> {
-        let req = self
-            .client
-            .get(&self.refresh_route)
-            .with_extension(Api("xet-token"));
+        let req = self.client.get(&self.refresh_route).with_extension(Api("xet-token"));
         let req = self
             .cred_helper
             .fill_credential(req)
