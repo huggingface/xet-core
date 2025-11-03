@@ -7,7 +7,7 @@ use crate::git_repo::GitRepo;
 // at https://git-scm.com/docs/git-config#Documentation/git-config.txt-sshvariant.
 enum Variant {
     Auto,
-    SSH,
+    Ssh,
     Simple,
     Putty,
     Tortoise,
@@ -20,7 +20,7 @@ impl From<&str> for Variant {
             "simple" => Variant::Simple,
             "putty" | "plink" => Variant::Putty,
             "tortoiseplink" => Variant::Tortoise,
-            _ => Variant::SSH,
+            _ => Variant::Ssh,
         }
     }
 }
@@ -131,7 +131,7 @@ fn parse_shell_command(command: &str, existing: &str) -> (String, String, bool) 
     {
         // We don't need the rest of the parsed result, so do a quick removal
         // that doesn't preserve the elements order.
-        (p.swap_remove(0).into(), command.into(), true)
+        (p.swap_remove(0), command.into(), true)
     } else {
         (existing.into(), "".into(), false)
     }
@@ -154,7 +154,7 @@ fn get_ssh_variant(repo_config: &git2::Config, sshexe: &str) -> Variant {
             _ => (),
         }
 
-        Variant::SSH
+        Variant::Ssh
     } else {
         variant
     }
@@ -205,14 +205,14 @@ mod tests {
             test_repo.set_config("ssh.variant", "ssh")?;
             let repo_config = repo.config()?;
             let variant = get_ssh_variant(&repo_config, "openssh");
-            assert!(matches!(variant, Variant::SSH));
+            assert!(matches!(variant, Variant::Ssh));
         }
 
         {
             test_repo.set_config("ssh.variant", "openssh")?;
             let repo_config = repo.config()?;
             let variant = get_ssh_variant(&repo_config, "Openssh.exe");
-            assert!(matches!(variant, Variant::SSH));
+            assert!(matches!(variant, Variant::Ssh));
         }
 
         Ok(())

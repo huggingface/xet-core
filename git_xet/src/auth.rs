@@ -127,7 +127,7 @@ pub fn get_credential(repo: &GitRepo, remote_url: &GitUrl, operation: Operation)
     // 5. check remote URL scheme
     if matches!(remote_url.scheme(), Scheme::Ssh | Scheme::GitSsh) {
         #[cfg(unix)]
-        return Ok(SSHCredentialHelper::new(remote_url, operation));
+        return Ok(SSHCredentialHelper::new(remote_url, repo, operation));
         #[cfg(not(unix))]
         return Err(GitXetError::not_supported(format!(
             "using {} in a repository with SSH Git URL is under development; please check back for 
