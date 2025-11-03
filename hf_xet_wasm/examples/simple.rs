@@ -159,12 +159,15 @@ pub async fn clean_file(file: web_sys::File, endpoint: String, jwt_token: String
         return "".to_owned();
     };
 
+    const USER_AGENT: &str = concat!(env!("CARGO_PKG_NAME"), "/", env!("CARGO_PKG_VERSION"));
+
     let config = TranslatorConfig {
         data_config: DataConfig {
             endpoint,
             compression: Some(CompressionScheme::LZ4),
             auth: AuthConfig::maybe_new(Some(jwt_token), Some(expiration), None),
             prefix: "default".to_owned(),
+            user_agent: USER_AGENT.to_string(),
         },
         shard_config: ShardConfig {
             prefix: "default-merkledb".to_owned(),

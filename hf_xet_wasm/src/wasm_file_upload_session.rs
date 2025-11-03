@@ -45,6 +45,7 @@ impl FileUploadSession {
             None,
             &config.session_id,
             false,
+            &config.data_config.user_agent,
         ));
 
         let xorb_uploader =

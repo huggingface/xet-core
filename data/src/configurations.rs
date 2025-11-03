@@ -23,6 +23,7 @@ pub struct DataConfig {
     pub prefix: String,
     pub cache_config: CacheConfig,
     pub staging_directory: Option<PathBuf>,
+    pub user_agent: String,
 }
 
 #[derive(Debug)]
@@ -98,6 +99,7 @@ impl TranslatorConfig {
                     cache_size: *CHUNK_CACHE_SIZE_BYTES,
                 },
                 staging_directory: None,
+                user_agent: String::new(),
             },
             shard_config: ShardConfig {
                 prefix: PREFIX_DEFAULT.into(),
