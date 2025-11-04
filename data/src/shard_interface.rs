@@ -349,6 +349,7 @@ mod tests {
 
     use super::*;
 
+    #[test]
     fn test_read_shard_to_bytes_remove_footer() -> Result<()> {
         let tmp_dir = TempDir::with_prefix("test_read_shard_to_bytes_remove_footer")?;
         let tmp_dir_path = tmp_dir.path();
