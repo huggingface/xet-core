@@ -1,5 +1,5 @@
 use std::fs::File;
-use std::io::{Cursor, Read, Seek, SeekFrom};
+use std::io::{Cursor, Read};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -13,7 +13,7 @@ use mdb_shard::constants::MDB_SHARD_MAX_TARGET_SIZE;
 use mdb_shard::file_structs::{FileDataSequenceEntry, MDBFileInfo};
 use mdb_shard::session_directory::{ShardMergeResult, consolidate_shards_in_directory, merge_shards_background};
 use mdb_shard::shard_in_memory::MDBInMemoryShard;
-use mdb_shard::{MDBShardFile, ShardFileManager};
+use mdb_shard::{MDBShardFile, MDBShardFileHeader, ShardFileManager};
 use merklehash::MerkleHash;
 use tempfile::TempDir;
 use tokio::sync::Mutex;
@@ -327,18 +327,12 @@ fn read_shard_to_bytes_remove_footer(si: &Arc<MDBShardFile>) -> Result<Bytes> {
     let split_off_index = si.shard.metadata.file_lookup_offset as usize;
     // Read only the portion of the shard file up to the file_lookup_offset,
     // which excludes the footer and lookup sections.
-    let mut buf = {
-        let mut file = File::open(&si.path)?;
-        let mut buf = vec![0u8; split_off_index];
-        file.read_exact(&mut buf)?;
-        buf
-    };
-    {
-        let mut cursor = Cursor::new(&mut buf);
-        let mut header = si.shard.header.clone();
-        header.footer_size = 0;
-        cursor.seek(SeekFrom::Start(0))?;
-        header.serialize(&mut cursor)?;
-    }
+    let mut file = File::open(&si.path)?;
+    let mut buf = vec![0u8; split_off_index];
+    file.read_exact(&mut buf)?;
+    // re-write the header to set footer_size to 0.
+    let mut header = si.shard.header.clone();
+    header.footer_size = 0;
+    header.serialize(&mut (&mut buf[..]))?;
     Ok(Bytes::from(buf))
 }
