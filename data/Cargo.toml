@@ -42,6 +42,7 @@ xet_runtime = { path = "../xet_runtime" }
 anyhow = { workspace = true }
 async-trait = { workspace = true }
 bytes = { workspace = true }
+humansize = { workspace = true }
 chrono = { workspace = true }
 clap = { workspace = true }
 jsonwebtoken = { workspace = true }
