@@ -189,12 +189,17 @@ impl Command {
                         let total_uncompressed_size: u64 =
                             response.terms.iter().map(|term| term.unpacked_length as u64).sum();
 
+                        // Count unique XORBs
+                        let unique_xorbs: std::collections::HashSet<_> =
+                            response.terms.iter().map(|term| &term.hash).collect();
+
                         println!("Compressed Size:   {}", format_bytes_with_units(total_compressed_size));
                         println!("Uncompressed Size: {}", format_bytes_with_units(total_uncompressed_size));
                         println!(
                             "Compression Ratio:  {:.2}%",
                             (total_compressed_size as f64 / total_uncompressed_size as f64) * 100.0
                         );
+                        println!("XORBs:             {} unique", unique_xorbs.len());
                         Ok(())
                     },
                     None => {
