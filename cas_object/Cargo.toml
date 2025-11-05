@@ -30,6 +30,7 @@ futures = { workspace = true }
 half = { workspace = true }
 lz4_flex = { workspace = true }
 more-asserts = { workspace = true }
+zstd = { workspace = true }
 rand = { workspace = true }
 serde = { workspace = true }
 thiserror = { workspace = true }
