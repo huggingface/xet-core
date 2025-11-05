@@ -34,6 +34,15 @@ pub fn default_config(
     token_refresher: Option<Arc<dyn TokenRefresher>>,
     user_agent: String,
 ) -> errors::Result<TranslatorConfig> {
+    // Intercept local:// to run a simulated CAS server in a specified directory.
+    // This is useful for testing and development.
+    if endpoint.starts_with("local://") {
+        let local_path = endpoint.strip_prefix("local://").unwrap();
+        let local_path = PathBuf::from(local_path);
+        std::fs::create_dir_all(&local_path)?;
+        return TranslatorConfig::local_config(local_path);
+    }
+
     let cache_root_path = xet_cache_root();
     info!("Using cache path {cache_root_path:?}.");
 
@@ -113,7 +122,7 @@ pub async fn upload_bytes_async(
     Span::current().record("session_id", &config.session_id);
 
     let semaphore = XetRuntime::current().global_semaphore(*CONCURRENT_FILE_INGESTION_LIMITER);
-    let upload_session = FileUploadSession::new(config.into(), progress_updater).await?;
+    let upload_session = FileUploadSession::new(config, progress_updater).await?;
     let clean_futures = file_contents.into_iter().map(|blob| {
         let upload_session = upload_session.clone();
         async move { clean_bytes(upload_session, blob).await.map(|(xf, _metrics)| xf) }
@@ -165,7 +174,7 @@ pub async fn upload_async(
 
     span.record("session_id", &config.session_id);
 
-    let upload_session = FileUploadSession::new(config.into(), progress_updater).await?;
+    let upload_session = FileUploadSession::new(config, progress_updater).await?;
 
     let ret = upload_session.upload_files(&file_paths).await?;
 
@@ -215,7 +224,7 @@ pub async fn download_async(
     }
     Span::current().record("session_id", &config.session_id);
 
-    let processor = Arc::new(FileDownloader::new(config.into()).await?);
+    let processor = Arc::new(FileDownloader::new(config).await?);
     let updaters = match progress_updaters {
         None => vec![None; file_infos.len()],
         Some(updaters) => updaters.into_iter().map(Some).collect(),
