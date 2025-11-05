@@ -48,9 +48,9 @@ const DEFAULT_GIT_BASH: &str = "sh";
 //
 // 2. Env var $GIT_SSH_VARIANT takes precedence over git config entry "ssh.variant" and they both define whether
 // $GIT_SSH/$GIT_SSH_COMMAND/core.sshCommand refer to OpenSSH, plink/putty or tortoiseplink, or instruct git to
-// automatically detect the ssh program type. Valid values are "ssh" (to use OpenSSH options), "plink", "putty", "tortoiseplink",
-// "simple" (no options except the host and remote command). The default auto-detection can be explicitly requested using
-// the value "auto". Any other value is treated as "ssh".
+// automatically detect the ssh program type. Valid values are "ssh" (to use OpenSSH options), "plink", "putty",
+// "tortoiseplink", "simple" (no options except the host and remote command). The default auto-detection can be
+// explicitly requested using the value "auto". Any other value is treated as "ssh".
 //
 // This implementation follows how the same functionality is handled in
 // git-lfs (https://github.com/git-lfs/git-lfs/blob/071e19e8ea03b1e40b181706909fb8c18d928e29/ssh/ssh.go#L41).
