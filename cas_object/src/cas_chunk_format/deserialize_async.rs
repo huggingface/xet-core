@@ -154,9 +154,12 @@ mod tests {
             (1, CompressionScheme::None),
             (3, CompressionScheme::None),
             (5, CompressionScheme::LZ4),
+            (5, CompressionScheme::Zstd),
             (100, CompressionScheme::None),
             (100, CompressionScheme::LZ4),
+            (100, CompressionScheme::Zstd),
             (1000, CompressionScheme::LZ4),
+            (1000, CompressionScheme::Zstd),
         ];
         let rng = &mut rng();
         for (num_chunks, compression_scheme) in cases {

@@ -98,7 +98,9 @@ struct DedupArg {
     /// The compression scheme to use on XORB upload. Choices are
     /// 0: no compression;
     /// 1: LZ4 compression;
-    /// 2: 4 byte groups with LZ4 compression.
+    /// 2: 4 byte groups with LZ4 compression;
+    /// 3: Zstd compression;
+    /// 4: 4 byte groups with Zstd compression.
     /// If not specified, this will be determined by the repo type.
     #[clap(short, long)]
     compression: Option<u8>,
