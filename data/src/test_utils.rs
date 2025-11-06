@@ -157,7 +157,7 @@ impl LocalHydrateDehydrateTest {
         &self,
         progress_tracker: Option<Arc<dyn TrackingProgressUpdater>>,
     ) -> Arc<FileUploadSession> {
-        let config = TranslatorConfig::local_config(&self.cas_dir).unwrap();
+        let config = Arc::new(TranslatorConfig::local_config(&self.cas_dir).unwrap());
         FileUploadSession::new(config.clone(), progress_tracker).await.unwrap()
     }
 
@@ -206,7 +206,7 @@ impl LocalHydrateDehydrateTest {
 
         create_dir_all(&self.dest_dir).unwrap();
 
-        let downloader = FileDownloader::new(config).await.unwrap();
+        let downloader = FileDownloader::new(config.into()).await.unwrap();
 
         for entry in read_dir(&self.ptr_dir).unwrap() {
             let entry = entry.unwrap();

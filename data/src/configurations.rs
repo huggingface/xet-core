@@ -1,6 +1,5 @@
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
-use std::sync::Arc;
 
 use cas_client::remote_client::PREFIX_DEFAULT;
 use cas_client::{CHUNK_CACHE_SIZE_BYTES, CacheConfig};
@@ -84,7 +83,7 @@ pub struct TranslatorConfig {
 }
 
 impl TranslatorConfig {
-    pub fn local_config(base_dir: impl AsRef<Path>) -> Result<Arc<Self>> {
+    pub fn local_config(base_dir: impl AsRef<Path>) -> Result<Self> {
         let path = base_dir.as_ref().join("xet");
         std::fs::create_dir_all(&path)?;
 
@@ -114,7 +113,7 @@ impl TranslatorConfig {
             progress_config: ProgressConfig { aggregate: true },
         };
 
-        Ok(Arc::new(translator_config))
+        Ok(translator_config)
     }
 
     pub fn disable_progress_aggregation(self) -> Self {

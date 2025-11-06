@@ -34,6 +34,15 @@ pub fn default_config(
     token_refresher: Option<Arc<dyn TokenRefresher>>,
     user_agent: String,
 ) -> errors::Result<TranslatorConfig> {
+    // Intercept local:// to run a simulated CAS server in a specified directory.
+    // This is useful for testing and development.
+    if endpoint.starts_with("local://") {
+        let local_path = endpoint.strip_prefix("local://").unwrap();
+        let local_path = PathBuf::from(local_path);
+        std::fs::create_dir_all(&local_path)?;
+        return TranslatorConfig::local_config(local_path);
+    }
+
     let cache_root_path = xet_cache_root();
     info!("Using cache path {cache_root_path:?}.");
 
