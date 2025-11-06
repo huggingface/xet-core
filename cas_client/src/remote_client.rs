@@ -413,6 +413,8 @@ impl RemoteClient {
                     },
                     DownloadQueueItem::Metadata(fetch_info) => {
                         // query for the file info of the first segment
+
+                        use chunk_cache::MemoryCache;
                         let segment_size = download_scheduler_clone.next_segment_size()?;
                         debug!(call_id, segment_size, "querying file info");
                         let (segment, maybe_remainder) = fetch_info.take_segment(segment_size);
@@ -427,6 +429,10 @@ impl RemoteClient {
                         // define the term download tasks
                         let mut remaining_segment_len = segment_size;
                         debug!(call_id, num_tasks = terms.len(), "enqueueing download tasks");
+
+                        // in-memory cache for this segment
+                        let coalesced_range_reuse_cache = Arc::new(MemoryCache::default());
+
                         for (i, term) in terms.into_iter().enumerate() {
                             let skip_bytes = if i == 0 { offset_into_first_range } else { 0 };
                             let take = remaining_total_len
@@ -446,6 +452,7 @@ impl RemoteClient {
                                 term,
                                 skip_bytes,
                                 take,
+                                coalesced_range_reuse_cache: coalesced_range_reuse_cache.clone(),
                             };
 
                             remaining_total_len -= take;
