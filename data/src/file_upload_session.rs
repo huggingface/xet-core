@@ -604,7 +604,7 @@ mod tests {
                 .unwrap(),
         );
 
-        let upload_session = FileUploadSession::new(TranslatorConfig::local_config(cas_path).unwrap(), None)
+        let upload_session = FileUploadSession::new(TranslatorConfig::local_config(cas_path).unwrap().into(), None)
             .await
             .unwrap();
 
@@ -634,7 +634,7 @@ mod tests {
 
         let xet_file = serde_json::from_str::<XetFileInfo>(&input).unwrap();
 
-        let translator = FileDownloader::new(TranslatorConfig::local_config(cas_path).unwrap())
+        let translator = FileDownloader::new(TranslatorConfig::local_config(cas_path).unwrap().into())
             .await
             .unwrap();
 

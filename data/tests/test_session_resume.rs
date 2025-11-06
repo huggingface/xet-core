@@ -29,6 +29,8 @@ test_set_globals! {
 // Test the deduplication framework.
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use data::test_utils::{LocalHydrateDehydrateTest, create_random_file, create_random_files};
     use deduplication::constants::MAX_CHUNK_SIZE;
     use more_asserts::*;
@@ -53,7 +55,7 @@ mod tests {
         // Set a temporary directory for the endpoint.
         let cas_dir = TempDir::new().unwrap();
 
-        let config = TranslatorConfig::local_config(cas_dir).unwrap();
+        let config = Arc::new(TranslatorConfig::local_config(cas_dir).unwrap());
 
         {
             let progress_tracker = AggregatingProgressUpdater::new_aggregation_only();
@@ -121,7 +123,7 @@ mod tests {
         // Set a temporary directory for the endpoint.
         let cas_dir = TempDir::new().unwrap();
 
-        let config = TranslatorConfig::local_config(cas_dir).unwrap();
+        let config = Arc::new(TranslatorConfig::local_config(cas_dir).unwrap());
 
         let mut prev_rn = 0;
 
