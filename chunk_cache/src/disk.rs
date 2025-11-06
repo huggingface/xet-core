@@ -28,7 +28,10 @@ pub mod test_utils;
 
 // consistently use URL_SAFE (also file path safe) base64 codec
 pub(crate) const BASE64_ENGINE: GeneralPurpose = URL_SAFE;
+#[cfg(not(feature = "no-default-cache"))]
 pub const DEFAULT_CHUNK_CACHE_CAPACITY: u64 = 10_000_000_000; // 10 GB
+#[cfg(feature = "no-default-cache")]
+pub const DEFAULT_CHUNK_CACHE_CAPACITY: u64 = 0;
 const PREFIX_DIR_NAME_LEN: usize = 2;
 
 type OptionResult<T, E> = Result<Option<T>, E>;

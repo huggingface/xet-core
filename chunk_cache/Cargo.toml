@@ -32,3 +32,4 @@ required-features = ["analysis"]
 
 [features]
 analysis = ["dep:clap"]
+no-default-cache = []
