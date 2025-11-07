@@ -172,7 +172,6 @@ pub(crate) struct FetchTermDownloadInner {
     pub range_download_single_flight: RangeDownloadSingleFlight,
 }
 
-
 #[derive(Debug)]
 pub(crate) struct FetchTermDownload {
     fetch_term_download: FetchTermDownloadInner,
@@ -252,8 +251,8 @@ impl<T: Clone> Clone for TermDownloadResult<T> {
     fn clone(&self) -> Self {
         Self {
             payload: self.payload.clone(),
-            duration: self.duration.clone(),
-            n_retries_on_403: self.n_retries_on_403.clone(),
+            duration: self.duration,
+            n_retries_on_403: self.n_retries_on_403,
         }
     }
 }
@@ -798,7 +797,6 @@ mod tests {
             term: terms[0].clone(),
             skip_bytes: offset_info_first_range,
             take: file_range.length(),
-
         };
 
         let handle = tokio::spawn(async move { download_task.run().await });
