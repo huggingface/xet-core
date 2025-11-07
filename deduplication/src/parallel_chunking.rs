@@ -14,8 +14,8 @@ use {
     memmap2::MmapOptions,
 };
 
-use crate::Chunk;
 use crate::constants::{MAXIMUM_CHUNK_MULTIPLIER, MINIMUM_CHUNK_DIVISOR, TARGET_CHUNK_SIZE};
+use crate::Chunk;
 
 #[cfg(feature = "parallel-chunking")]
 mod parallel_impl {
@@ -400,5 +400,213 @@ mod tests {
 
         let result = chunk_file_parallel(temp_file.path(), Some(2));
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_parallel_matches_reference() {
+        let mut temp_file = NamedTempFile::new().unwrap();
+        let data = vec![99u8; 5 * 1024 * 1024]; // 5MB file
+        temp_file.write_all(&data).unwrap();
+
+        let parallel_chunks = chunk_file_parallel(temp_file.path(), Some(4)).unwrap();
+        let reference_chunks = crate::Chunker::default().next_block(&data, true);
+
+        assert_eq!(parallel_chunks.len(), reference_chunks.len());
+        for (p, r) in parallel_chunks.iter().zip(reference_chunks.iter()) {
+            assert_eq!(p.hash, r.hash);
+            assert_eq!(p.data, r.data);
+        }
+
+        // Also verify that all chunks have the same hash since the data is uniform
+        let expected_hash = reference_chunks[0].hash;
+        for chunk in &parallel_chunks {
+            assert_eq!(chunk.hash, expected_hash);
+        }
+    }
+
+    #[test]
+    fn test_parallel_matches_reference_random() {
+        use rand::{RngCore, SeedableRng};
+        let mut rng = rand::rngs::StdRng::seed_from_u64(42);
+        let mut data = vec![0u8; 10 * 1024 * 1024]; // 10MB
+        rng.fill_bytes(&mut data);
+
+        let mut temp_file = NamedTempFile::new().unwrap();
+        temp_file.write_all(&data).unwrap();
+
+        let parallel_chunks = chunk_file_parallel(temp_file.path(), Some(8)).unwrap();
+        let reference_chunks = crate::Chunker::default().next_block(&data, true);
+
+        assert_eq!(parallel_chunks.len(), reference_chunks.len());
+        for (p, r) in parallel_chunks.iter().zip(reference_chunks.iter()) {
+            assert_eq!(p.hash, r.hash);
+        }
+    }
+
+    #[test]
+    fn test_parallel_matches_reference_repeating_pattern() {
+        let pattern = vec![154, 52, 42, 34, 159, 75, 126, 224, 70, 236, 12, 196, 79, 236, 178, 124];
+        let mut data = Vec::with_capacity(15 * 1024 * 1024);
+        while data.len() < 15 * 1024 * 1024 {
+            data.extend_from_slice(&pattern);
+        }
+        data.truncate(15 * 1024 * 1024);
+
+        let mut temp_file = NamedTempFile::new().unwrap();
+        temp_file.write_all(&data).unwrap();
+
+        let parallel_chunks = chunk_file_parallel(temp_file.path(), Some(16)).unwrap();
+        let reference_chunks = crate::Chunker::default().next_block(&data, true);
+
+        assert_eq!(parallel_chunks.len(), reference_chunks.len());
+        for (p, r) in parallel_chunks.iter().zip(reference_chunks.iter()) {
+            assert_eq!(p.hash, r.hash);
+        }
+    }
+
+    #[test]
+    fn test_parallel_matches_reference_mixed_entropy() {
+        use rand::{RngCore, SeedableRng};
+        let mut rng = rand::rngs::StdRng::seed_from_u64(123);
+        let mut data = Vec::with_capacity(20 * 1024 * 1024);
+
+        // Mix high and low entropy sections
+        for _ in 0..20 {
+            let mut random_section = vec![0u8; 256 * 1024];
+            rng.fill_bytes(&mut random_section);
+            data.extend_from_slice(&random_section);
+
+            let uniform_section = vec![0xAA; 256 * 1024];
+            data.extend_from_slice(&uniform_section);
+        }
+
+        let mut temp_file = NamedTempFile::new().unwrap();
+        temp_file.write_all(&data).unwrap();
+
+        let parallel_chunks = chunk_file_parallel(temp_file.path(), Some(12)).unwrap();
+        let reference_chunks = crate::Chunker::default().next_block(&data, true);
+
+        assert_eq!(parallel_chunks.len(), reference_chunks.len());
+        for (p, r) in parallel_chunks.iter().zip(reference_chunks.iter()) {
+            assert_eq!(p.hash, r.hash);
+        }
+    }
+
+    #[test]
+    fn test_parallel_matches_reference_hash_window_pattern() {
+        use rand::{RngCore, SeedableRng};
+        let mut rng = rand::rngs::StdRng::seed_from_u64(999);
+
+        // Create a 64-byte pattern (hash window size) - highly adversarial
+        let mut pattern = vec![0u8; 64];
+        rng.fill_bytes(&mut pattern);
+
+        // Repeat over 100MB - large enough to stress boundaries
+        let target_size = 100 * 1024 * 1024;
+        let mut data = Vec::with_capacity(target_size);
+        while data.len() < target_size {
+            data.extend_from_slice(&pattern);
+        }
+        data.truncate(target_size);
+
+        let mut temp_file = NamedTempFile::new().unwrap();
+        temp_file.write_all(&data).unwrap();
+
+        let reference_chunks = crate::Chunker::default().next_block(&data, true);
+
+        // Test with different thread counts to vary boundary positions
+        for thread_count in [4, 7, 13] {
+            let parallel_chunks = chunk_file_parallel(temp_file.path(), Some(thread_count)).unwrap();
+
+            assert_eq!(parallel_chunks.len(), reference_chunks.len());
+            for (p, r) in parallel_chunks.iter().zip(reference_chunks.iter()) {
+                assert_eq!(p.hash, r.hash);
+            }
+        }
+    }
+
+    #[test]
+    fn test_parallel_matches_reference_asymmetric_density() {
+        use rand::{RngCore, SeedableRng};
+
+        // Create a file with varying chunk boundary density
+        // Early part has one pattern, late part has another
+        let mut data = Vec::with_capacity(50 * 1024 * 1024);
+
+        // First 25MB: pattern that may trigger frequent boundaries
+        let mut rng1 = rand::rngs::StdRng::seed_from_u64(12345);
+        for _ in 0..(25 * 1024) {
+            let mut chunk = vec![0u8; 1024];
+            rng1.fill_bytes(&mut chunk);
+            data.extend_from_slice(&chunk);
+        }
+
+        // Next 25MB: different pattern that may have different boundary density
+        let mut rng2 = rand::rngs::StdRng::seed_from_u64(54321);
+        for _ in 0..(25 * 1024) {
+            let mut chunk = vec![0u8; 1024];
+            rng2.fill_bytes(&mut chunk);
+            data.extend_from_slice(&chunk);
+        }
+
+        let mut temp_file = NamedTempFile::new().unwrap();
+        temp_file.write_all(&data).unwrap();
+
+        let reference_chunks = crate::Chunker::default().next_block(&data, true);
+        let parallel_chunks = chunk_file_parallel(temp_file.path(), Some(16)).unwrap();
+
+        assert_eq!(
+            parallel_chunks.len(),
+            reference_chunks.len(),
+            "Chunk count mismatch: parallel={}, reference={}",
+            parallel_chunks.len(),
+            reference_chunks.len()
+        );
+
+        for (i, (p, r)) in parallel_chunks.iter().zip(reference_chunks.iter()).enumerate() {
+            assert_eq!(
+                p.hash, r.hash,
+                "Chunk {} hash mismatch at boundary. Parallel may have dropped anchors from later threads.",
+                i
+            );
+        }
+    }
+
+    #[test]
+    fn test_parallel_matches_reference_boundary_sensitivity() {
+        use rand::{RngCore, SeedableRng};
+        let mut rng = rand::rngs::StdRng::seed_from_u64(7777);
+
+        // Test multiple sizes to stress different thread boundary alignments
+        for size_mb in [15, 17, 23, 31] {
+            let mut data = vec![0u8; size_mb * 1024 * 1024];
+            rng.fill_bytes(&mut data);
+
+            let mut temp_file = NamedTempFile::new().unwrap();
+            temp_file.write_all(&data).unwrap();
+
+            let reference_chunks = crate::Chunker::default().next_block(&data, true);
+
+            // Test with prime thread counts to create irregular boundaries
+            for thread_count in [3, 5, 11, 17] {
+                let parallel_chunks = chunk_file_parallel(temp_file.path(), Some(thread_count)).unwrap();
+
+                assert_eq!(
+                    parallel_chunks.len(),
+                    reference_chunks.len(),
+                    "Size {}MB, threads {}: chunk count mismatch",
+                    size_mb,
+                    thread_count
+                );
+
+                for (i, (p, r)) in parallel_chunks.iter().zip(reference_chunks.iter()).enumerate() {
+                    assert_eq!(
+                        p.hash, r.hash,
+                        "Size {}MB, threads {}, chunk {}: hash mismatch",
+                        size_mb, thread_count, i
+                    );
+                }
+            }
+        }
     }
 }
