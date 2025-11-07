@@ -215,40 +215,6 @@ impl Chunker {
         }
     }
 
-    /// Parallel chunking for files
-    ///
-    /// Uses memory mapping and multi-threading for content-defined chunking.
-    /// Requires the parallel-chunking feature to be enabled.
-    ///
-    /// # Arguments
-    /// * `file_path` - Path to the file to chunk
-    /// * `thread_count` - Number of threads (None = auto-detect)
-    ///
-    /// # Returns
-    /// * `Ok(Vec<Chunk>)` - Successfully chunked file
-    /// * `Err` - File too small for parallel processing or feature not enabled
-    #[cfg(feature = "parallel-chunking")]
-    pub fn chunk_file_parallel<P: AsRef<std::path::Path>>(
-        &self,
-        file_path: P,
-        thread_count: Option<usize>,
-    ) -> std::io::Result<Vec<Chunk>> {
-        crate::parallel_chunking::chunk_file_parallel(file_path, thread_count.map(|t| t as u32))
-    }
-
-    /// Fallback method when parallel chunking is not available
-    #[cfg(not(feature = "parallel-chunking"))]
-    pub fn chunk_file_parallel<P: AsRef<std::path::Path>>(
-        &self,
-        _file_path: P,
-        _thread_count: Option<usize>,
-    ) -> std::io::Result<Vec<Chunk>> {
-        Err(std::io::Error::new(
-            std::io::ErrorKind::Unsupported,
-            "Parallel chunking not available. Enable with --features parallel-chunking",
-        ))
-    }
-
     /// Keeps chunking until no more chunks can be reliably produced, returning a
     /// vector of the resulting chunks.
     ///
