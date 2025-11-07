@@ -62,6 +62,18 @@ pub enum CasClientError {
 
     #[error("Presigned S3 URL Expired on fetching range")]
     PresignedUrlExpirationError,
+
+    #[error("Cloned Error: {0}")]
+    Cloned(String),
+}
+
+impl Clone for CasClientError {
+    fn clone(&self) -> Self {
+        match self {
+            CasClientError::Cloned(s) => CasClientError::Cloned(s.clone()),
+            other => CasClientError::Cloned(format!("{other:?}")),
+        }
+    }
 }
 
 impl From<reqwest::Error> for CasClientError {

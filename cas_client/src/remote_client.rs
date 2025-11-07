@@ -179,7 +179,7 @@ pub(crate) async fn map_fetch_info_into_download_tasks(
         let task = fetch_info_term_map
             .entry((term.hash.into(), individual_fetch_info.range))
             .or_insert_with(|| FetchTermDownloadOnceAndWriteEverywhereUsed {
-                download: FetchTermDownload {
+                download: FetchTermDownloadInner {
                     hash: term.hash.into(),
                     range: individual_fetch_info.range,
                     fetch_info: segment.clone(),
@@ -427,22 +427,29 @@ impl RemoteClient {
                         // define the term download tasks
                         let mut remaining_segment_len = segment_size;
                         debug!(call_id, num_tasks = terms.len(), "enqueueing download tasks");
+                        let mut download_task_map = HashMap::new();
                         for (i, term) in terms.into_iter().enumerate() {
                             let skip_bytes = if i == 0 { offset_into_first_range } else { 0 };
                             let take = remaining_total_len
                                 .min(remaining_segment_len)
                                 .min(term.unpacked_length as u64 - skip_bytes);
                             let (individual_fetch_info, _) = segment.find((term.hash, term.range)).await?;
+                            let download = download_task_map
+                                .entry((term.hash, individual_fetch_info.range))
+                                .or_insert_with(|| {
+                                    Arc::new(FetchTermDownload::new(FetchTermDownloadInner {
+                                        hash: term.hash.into(),
+                                        range: individual_fetch_info.range,
+                                        fetch_info: segment.clone(),
+                                        chunk_cache: chunk_cache.clone(),
+                                        client: term_download_client.clone(),
+                                        range_download_single_flight: range_download_single_flight.clone(),
+                                    }))
+                                })
+                                .clone();
 
                             let download_task = SequentialTermDownload {
-                                download: FetchTermDownload {
-                                    hash: term.hash.into(),
-                                    range: individual_fetch_info.range,
-                                    fetch_info: segment.clone(),
-                                    chunk_cache: chunk_cache.clone(),
-                                    client: term_download_client.clone(),
-                                    range_download_single_flight: range_download_single_flight.clone(),
-                                },
+                                download,
                                 term,
                                 skip_bytes,
                                 take,
@@ -743,7 +750,11 @@ impl Client for RemoteClient {
         Ok(Some(response.bytes().await?))
     }
 
-    #[instrument(skip_all, name = "RemoteClient::upload_shard", fields(shard.len = shard_data.len()))]
+    #[instrument(
+        skip_all,
+        name = "RemoteClient::upload_shard",
+        fields(shard.len = shard_data.len())
+    )]
     async fn upload_shard(&self, shard_data: Bytes) -> Result<bool> {
         if self.dry_run {
             return Ok(true);
