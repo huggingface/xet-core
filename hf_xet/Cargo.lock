@@ -1296,6 +1296,7 @@ dependencies = [
  "bipbuffer",
  "cas_client",
  "chrono",
+ "chunk_cache",
  "ctrlc",
  "data",
  "error_printer",
