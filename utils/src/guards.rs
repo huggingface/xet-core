@@ -172,26 +172,27 @@ mod tests {
     #[test]
     #[serial(default_config_env)]
     fn cwd_guard_changes_and_restores() {
+        let cur_dir = || env::current_dir().unwrap().canonicalize().unwrap();
         let tmp1 = tempdir().unwrap();
         let tmp2 = tempdir().unwrap();
 
-        let original_dir = env::current_dir().unwrap();
+        let original_dir = cur_dir();
 
         {
             let _guard = CwdGuard::set(tmp1.path()).unwrap();
-            assert_eq!(env::current_dir().unwrap(), tmp1.path().canonicalize().unwrap());
+            assert_eq!(cur_dir(), tmp1.path().canonicalize().unwrap());
 
             {
                 let _guard2 = CwdGuard::set(tmp2.path()).unwrap();
-                assert_eq!(env::current_dir().unwrap(), tmp2.path().canonicalize().unwrap());
+                assert_eq!(cur_dir(), tmp2.path().canonicalize().unwrap());
             }
 
             // Should restore to tmp1
-            assert_eq!(env::current_dir().unwrap(), tmp1.path().canonicalize().unwrap());
+            assert_eq!(cur_dir(), tmp1.path().canonicalize().unwrap());
         }
 
         // Should restore to original directory
-        assert_eq!(env::current_dir().unwrap(), original_dir);
+        assert_eq!(cur_dir(), original_dir);
     }
 
     #[test]
