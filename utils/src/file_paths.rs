@@ -1,55 +1,4 @@
-use std::env;
-use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
-
-/// Guard that sets an env var and restores the previous value on drop.
-pub struct EnvVarGuard {
-    key: &'static str,
-    prev: Option<String>,
-}
-
-impl EnvVarGuard {
-    pub fn set(key: &'static str, value: impl AsRef<OsStr>) -> Self {
-        let prev = env::var(key).ok();
-        unsafe {
-            env::set_var(key, value);
-        }
-        Self { key, prev }
-    }
-}
-
-impl Drop for EnvVarGuard {
-    fn drop(&mut self) {
-        if let Some(v) = &self.prev {
-            unsafe {
-                env::set_var(self.key, v);
-            }
-        } else {
-            unsafe {
-                env::remove_var(self.key);
-            }
-        }
-    }
-}
-
-/// Guard that sets the current working directory and restores the previous one on drop.
-pub struct CwdGuard {
-    prev: PathBuf,
-}
-
-impl CwdGuard {
-    pub fn set(new_dir: &Path) -> std::io::Result<Self> {
-        let prev = env::current_dir()?;
-        env::set_current_dir(new_dir)?;
-        Ok(Self { prev })
-    }
-}
-
-impl Drop for CwdGuard {
-    fn drop(&mut self) {
-        let _ = env::set_current_dir(&self.prev);
-    }
-}
 
 /// Normalize a user-provided path string by expanding `~` and returning an absolute path.
 ///
@@ -101,6 +50,7 @@ mod tests {
     use tempfile::tempdir;
 
     use super::*;
+    use crate::guards::{CwdGuard, EnvVarGuard};
 
     #[cfg(unix)]
     const HOME_VAR: &str = "HOME";

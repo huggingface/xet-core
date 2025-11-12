@@ -18,10 +18,16 @@ pub mod rw_task_lock;
 pub use rw_task_lock::{RwTaskLock, RwTaskLockError, RwTaskLockReadGuard};
 
 #[cfg(not(target_family = "wasm"))]
+mod guards;
+
+#[cfg(not(target_family = "wasm"))]
+pub use guards::{CwdGuard, EnvVarGuard};
+
+#[cfg(not(target_family = "wasm"))]
 mod file_paths;
 
 #[cfg(not(target_family = "wasm"))]
-pub use file_paths::{CwdGuard, EnvVarGuard, normalized_path_from_user_string};
+pub use file_paths::normalized_path_from_user_string;
 
 pub mod byte_size;
 pub use byte_size::ByteSize;
