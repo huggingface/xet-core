@@ -50,7 +50,9 @@ mod tests {
     use tempfile::tempdir;
 
     use super::*;
-    use crate::guards::{CwdGuard, EnvVarGuard};
+    use crate::guards::CwdGuard;
+    #[cfg(unix)]
+    use crate::guards::EnvVarGuard;
 
     #[cfg(unix)]
     const HOME_VAR: &str = "HOME";
