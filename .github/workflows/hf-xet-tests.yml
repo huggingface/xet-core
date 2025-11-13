@@ -45,4 +45,9 @@ jobs:
       - name: Check Cargo.lock has no uncommitted changes
         run: |
           # the Build wheel step would update hf_xet/Cargo.lock if it is out of date
-          test -z "$(git status --porcelain hf_xet/Cargo.lock)" || (echo "hf_xet/Cargo.lock has uncommitted changes!" && exit 1)
+          if [ -n "$(git status --porcelain hf_xet/Cargo.lock)" ]; then
+            echo "::error::hf_xet/Cargo.lock has uncommitted changes!"
+            echo "Diff:"
+            git diff hf_xet/Cargo.lock
+            exit 1
+          fi

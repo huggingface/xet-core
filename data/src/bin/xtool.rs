@@ -12,6 +12,7 @@ use data::data_client::default_config;
 use data::migration_tool::hub_client_token_refresher::HubClientTokenRefresher;
 use data::migration_tool::migrate::migrate_files_impl;
 use hub_client::{BearerCredentialHelper, HubClient, Operation, RepoInfo};
+use humansize::{BINARY, DECIMAL, format_size};
 use merklehash::MerkleHash;
 use utils::auth::TokenRefresher;
 use walkdir::WalkDir;
@@ -76,6 +77,8 @@ enum Command {
     Dedup(DedupArg),
     /// Queries reconstruction information about a file.
     Query(QueryArg),
+    /// Calculates the compressed size of a xet-file by summing url_range sizes.
+    CompressedSize(CompressedSizeArg),
 }
 
 #[derive(Args)]
@@ -114,6 +117,12 @@ struct QueryArg {
     /// Query regarding a certain range in bytes: [start, end), specified
     /// in the format of "start-end".
     bytes_range: Option<FileRange>,
+}
+
+#[derive(Args)]
+struct CompressedSizeArg {
+    /// Xet-hash of a file.
+    hash: String,
 }
 
 impl Command {
@@ -161,6 +170,44 @@ impl Command {
 
                 Ok(())
             },
+            Command::CompressedSize(arg) => {
+                let file_hash = MerkleHash::from_hex(&arg.hash)?;
+                // Query reconstruction for full file (no Range header)
+                let ret = query_reconstruction(file_hash, None, hub_client).await?;
+
+                match ret {
+                    Some(response) => {
+                        let mut total_compressed_size = 0u64;
+
+                        for fetch_infos in response.fetch_info.values() {
+                            for fetch_info in fetch_infos {
+                                let range_size = fetch_info.url_range.end - fetch_info.url_range.start;
+                                total_compressed_size += range_size;
+                            }
+                        }
+
+                        let total_uncompressed_size: u64 =
+                            response.terms.iter().map(|term| term.unpacked_length as u64).sum();
+
+                        // Count unique XORBs
+                        let unique_xorbs: std::collections::HashSet<_> =
+                            response.terms.iter().map(|term| &term.hash).collect();
+
+                        println!("Compressed Size:   {}", format_bytes_with_units(total_compressed_size));
+                        println!("Uncompressed Size: {}", format_bytes_with_units(total_uncompressed_size));
+                        println!(
+                            "Compression Ratio:  {:.2}%",
+                            (total_compressed_size as f64 / total_uncompressed_size as f64) * 100.0
+                        );
+                        println!("XORBs:             {} unique", unique_xorbs.len());
+                        Ok(())
+                    },
+                    None => {
+                        eprintln!("No reconstruction information found for hash {}", arg.hash);
+                        Ok(())
+                    },
+                }
+            },
         }
     }
 }
@@ -191,6 +238,13 @@ fn walk_files(files: Vec<String>, recursive: bool) -> Vec<String> {
 
 fn is_git_special_files(path: &str) -> bool {
     matches!(path, ".git" | ".gitignore" | ".gitattributes")
+}
+
+/// Format bytes with binary and decimal units on one line
+fn format_bytes_with_units(bytes: u64) -> String {
+    let binary = format_size(bytes, BINARY);
+    let decimal = format_size(bytes, DECIMAL);
+    format!("{} bytes {} {}", bytes, binary, decimal)
 }
 
 async fn query_reconstruction(
