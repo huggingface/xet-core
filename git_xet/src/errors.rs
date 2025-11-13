@@ -9,8 +9,8 @@ use crate::lfs_agent_protocol::GitLFSProtocolError;
 
 #[derive(Error, Debug)]
 pub enum GitXetError {
-    #[error("Git command failed: {reason}, {source:?}")]
-    GitCommandFailed {
+    #[error("Command failed: {reason}, {source:?}")]
+    CommandFailed {
         reason: String,
         source: Option<std::io::Error>,
     },
@@ -49,8 +49,8 @@ pub enum GitXetError {
 pub type Result<T> = std::result::Result<T, GitXetError>;
 
 impl GitXetError {
-    pub(crate) fn git_cmd_failed(e: impl Display, source: Option<std::io::Error>) -> GitXetError {
-        GitXetError::GitCommandFailed {
+    pub(crate) fn cmd_failed(e: impl Display, source: Option<std::io::Error>) -> GitXetError {
+        GitXetError::CommandFailed {
             reason: e.to_string(),
             source,
         }

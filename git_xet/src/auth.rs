@@ -186,9 +186,9 @@ mod test_cred_helpers {
 
     use super::get_credential;
     use crate::constants::HF_TOKEN_ENV;
-    use crate::git_process_wrapping::run_git_captured_with_input_and_output;
     use crate::git_repo::GitRepo;
     use crate::test_utils::TestRepo;
+    use crate::utils::process_wrapping::run_git_captured_with_input_and_output;
 
     #[test]
     #[serial(env_var_write_read)]

@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use super::install::ConfigLocation;
 use crate::constants::GIT_LFS_CUSTOM_TRANSFER_AGENT_NAME;
 use crate::errors::Result;
-use crate::git_process_wrapping::run_git_captured;
+use crate::utils::process_wrapping::run_git_captured;
 
 // Remove git-xet registration from the system Git config.
 pub fn system() -> Result<()> {
@@ -64,8 +64,8 @@ mod tests {
     use super::{all, local};
     use crate::app::install;
     use crate::app::install::tests::get_lfs_env;
-    use crate::git_process_wrapping::run_git_captured_with_input_and_output;
     use crate::test_utils::TestRepo;
+    use crate::utils::process_wrapping::run_git_captured_with_input_and_output;
 
     #[test]
     #[serial(env_var_write_read)]
