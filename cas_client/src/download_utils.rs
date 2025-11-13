@@ -172,7 +172,8 @@ pub(crate) struct FetchTermDownload {
     pub range_download_single_flight: RangeDownloadSingleFlight,
 }
 
-#[derive(Debug)]
+#[derive(Derivative)]
+#[derivative(Debug)]
 pub(crate) struct SequentialTermDownload {
     pub term: CASReconstructionTerm,
     pub download: FetchTermDownload,
@@ -180,10 +181,31 @@ pub(crate) struct SequentialTermDownload {
     pub take: u64,       /* number of bytes to take after skipping bytes,
                           * effectively taking [skip_bytes..skip_bytes+take]
                           * out of the downloaded range */
+    #[derivative(Debug = "ignore")]
+    pub coalesced_range_reuse_cache: Arc<dyn ChunkCache>,
 }
 
 impl SequentialTermDownload {
     pub async fn run(self) -> Result<TermDownloadResult<Vec<u8>>> {
+        // First try from the coalesced_range_reuse_cache
+        let key = Key {
+            prefix: PREFIX_DEFAULT.into(),
+            hash: self.download.hash,
+        };
+
+        if let Ok(Some(cache_item)) = self.coalesced_range_reuse_cache.get(&key, &self.term.range).await {
+            // extract just the actual range data out of the term download output
+            let start = self.skip_bytes as usize;
+            let end = start + self.take as usize;
+            let final_term_data = &cache_item.data[start..end];
+
+            return Ok(TermDownloadResult {
+                payload: final_term_data.to_vec(),
+                duration: Duration::from_secs(0),
+                n_retries_on_403: 0,
+            });
+        }
+
         let TermDownloadResult {
             payload:
                 TermDownloadOutput {
@@ -196,8 +218,15 @@ impl SequentialTermDownload {
         } = self.download.run().await?;
 
         // if the requested range is smaller than the fetched range, trim it down to the right data
-        // the requested range cannot be larger than the fetched range.
+        // the requested range cannot be larger than the fetched range, and cache the fetched range
+        // because it will be reused within the segment.
         // "else" case data matches exact, save some work, return whole data.
+        if self.term.range.start != chunk_range.start || self.term.range.end != chunk_range.end {
+            self.coalesced_range_reuse_cache
+                .put(&key, &chunk_range, &chunk_byte_indices, &data)
+                .await?;
+        }
+
         let start_idx = (self.term.range.start - chunk_range.start) as usize;
         let end_idx = (self.term.range.end - chunk_range.start) as usize;
 
@@ -574,6 +603,7 @@ async fn download_fetch_term_data(
 mod tests {
     use anyhow::Result;
     use cas_types::{HttpRange, QueryReconstructionResponse};
+    use chunk_cache::MemoryCache;
     use http::header::RANGE;
     use httpmock::prelude::*;
     use tokio::task::JoinSet;
@@ -768,6 +798,7 @@ mod tests {
             term: terms[0].clone(),
             skip_bytes: offset_info_first_range,
             take: file_range.length(),
+            coalesced_range_reuse_cache: Arc::new(MemoryCache::default()),
         };
 
         let handle = tokio::spawn(async move { download_task.run().await });
