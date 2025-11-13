@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, OnceLock};
 
 use anyhow::Result;
-use cas_client::{FileProvider, OutputProvider};
+use cas_client::SeekingOutputProvider;
 use clap::{Args, Parser, Subcommand};
 use data::configurations::*;
 use data::{FileDownloader, FileUploadSession, XetFileInfo};
@@ -88,7 +88,8 @@ async fn clean(mut reader: impl Read, mut writer: impl Write, size: u64) -> Resu
 
     let mut read_buf = vec![0u8; READ_BLOCK_SIZE];
 
-    let translator = FileUploadSession::new(TranslatorConfig::local_config(std::env::current_dir()?)?, None).await?;
+    let translator =
+        FileUploadSession::new(TranslatorConfig::local_config(std::env::current_dir()?)?.into(), None).await?;
 
     let mut size_read = 0;
     let mut handle = translator.start_clean(None, size).await;
@@ -120,20 +121,20 @@ async fn smudge_file(arg: &SmudgeArg) -> Result<()> {
         None => Box::new(std::io::stdin()),
     };
 
-    let writer = OutputProvider::File(FileProvider::new(arg.dest.clone()));
-    smudge(arg.dest.to_string_lossy().into(), reader, &writer).await?;
+    let writer = SeekingOutputProvider::new_file_provider(arg.dest.clone());
+    smudge(arg.dest.to_string_lossy().into(), reader, writer).await?;
 
     Ok(())
 }
 
-async fn smudge(name: Arc<str>, mut reader: impl Read, writer: &OutputProvider) -> Result<()> {
+async fn smudge(name: Arc<str>, mut reader: impl Read, writer: SeekingOutputProvider) -> Result<()> {
     let mut input = String::new();
     reader.read_to_string(&mut input)?;
 
     let xet_file: XetFileInfo = serde_json::from_str(&input)
         .map_err(|_| anyhow::anyhow!("Failed to parse xet file info. Please check the format."))?;
 
-    let downloader = FileDownloader::new(TranslatorConfig::local_config(std::env::current_dir()?)?).await?;
+    let downloader = FileDownloader::new(TranslatorConfig::local_config(std::env::current_dir()?)?.into()).await?;
 
     downloader
         .smudge_file_from_hash(

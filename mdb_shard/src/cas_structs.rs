@@ -5,7 +5,11 @@ use bytes::Bytes;
 use merklehash::MerkleHash;
 use utils::serialization_utils::*;
 
+use crate::hash_is_global_dedup_eligible;
+
 pub const MDB_DEFAULT_CAS_FLAG: u32 = 0;
+
+pub const MDB_CHUNK_WITH_GLOBAL_DEDUP_FLAG: u32 = 1 << 31;
 
 /// Each CAS consists of a CASChunkSequenceHeader following
 /// a sequence of CASChunkSequenceEntry.
@@ -89,7 +93,8 @@ pub struct CASChunkSequenceEntry {
     pub chunk_hash: MerkleHash,
     pub chunk_byte_range_start: u32,
     pub unpacked_segment_bytes: u32,
-    pub _unused: u64,
+    pub flags: u32,
+    pub _unused: u32,
 }
 
 impl CASChunkSequenceEntry {
@@ -106,11 +111,29 @@ impl CASChunkSequenceEntry {
             chunk_hash,
             unpacked_segment_bytes: unpacked_segment_bytes.try_into().unwrap(),
             chunk_byte_range_start: chunk_byte_range_start.try_into().unwrap(),
-            #[cfg(test)]
-            _unused: 216944691646848u64,
-            #[cfg(not(test))]
+            flags: 0,
             _unused: 0,
         }
+    }
+
+    /// Mark this chunk as a candidate for population in the global dedup table.
+    pub fn with_global_dedup_flag(self, is_global_dedup_chunk: bool) -> Self {
+        if is_global_dedup_chunk {
+            Self {
+                flags: self.flags | MDB_CHUNK_WITH_GLOBAL_DEDUP_FLAG,
+                ..self
+            }
+        } else {
+            Self {
+                flags: self.flags & !MDB_CHUNK_WITH_GLOBAL_DEDUP_FLAG,
+                ..self
+            }
+        }
+    }
+
+    // Is this chunk elegible for a global dedup query?
+    pub fn is_global_dedup_eligible(&self) -> bool {
+        (self.flags & MDB_CHUNK_WITH_GLOBAL_DEDUP_FLAG) != 0 || hash_is_global_dedup_eligible(&self.chunk_hash)
     }
 
     pub fn serialize<W: Write>(&self, writer: &mut W) -> Result<usize, std::io::Error> {
@@ -122,7 +145,8 @@ impl CASChunkSequenceEntry {
             write_hash(writer, &self.chunk_hash)?;
             write_u32(writer, self.chunk_byte_range_start)?;
             write_u32(writer, self.unpacked_segment_bytes)?;
-            write_u64(writer, self._unused)?;
+            write_u32(writer, self.flags)?;
+            write_u32(writer, self._unused)?;
         }
 
         writer.write_all(&buf[..])?;
@@ -140,7 +164,8 @@ impl CASChunkSequenceEntry {
             chunk_hash: read_hash(reader)?,
             chunk_byte_range_start: read_u32(reader)?,
             unpacked_segment_bytes: read_u32(reader)?,
-            _unused: read_u64(reader)?,
+            flags: read_u32(reader)?,
+            _unused: read_u32(reader)?,
         })
     }
 }
@@ -252,5 +277,22 @@ impl MDBCASInfoView {
         let n_bytes = self.byte_size();
         writer.write_all(&self.data[..n_bytes])?;
         Ok(n_bytes)
+    }
+
+    #[inline]
+    pub fn serialize_with_chunk_rewrite<W: Write>(
+        &self,
+        writer: &mut W,
+        chunk_rewrite_fn: impl Fn(usize, CASChunkSequenceEntry) -> CASChunkSequenceEntry,
+    ) -> std::io::Result<usize> {
+        let mut n_out_bytes = 0;
+        n_out_bytes += self.header.serialize(writer)?;
+
+        for idx in 0..self.num_entries() {
+            let rewritten_chunk = chunk_rewrite_fn(idx, self.chunk(idx));
+            n_out_bytes += rewritten_chunk.serialize(writer)?;
+        }
+
+        Ok(n_out_bytes)
     }
 }

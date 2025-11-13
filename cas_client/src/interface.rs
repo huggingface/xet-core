@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use std::sync::Arc;
 
 use bytes::Bytes;
@@ -9,9 +8,9 @@ use merklehash::MerkleHash;
 use progress_tracking::item_tracking::SingleItemProgressUpdater;
 use progress_tracking::upload_tracking::CompletionTracker;
 
-#[cfg(not(target_family = "wasm"))]
-use crate::OutputProvider;
 use crate::error::Result;
+#[cfg(not(target_family = "wasm"))]
+use crate::{SeekingOutputProvider, SequentialOutput};
 
 /// A Client to the Shard service. The shard service
 /// provides for
@@ -25,24 +24,25 @@ pub trait Client {
     ///
     /// The http_client passed in is a non-authenticated client. This is used to directly communicate
     /// with the backing store (S3) to retrieve xorbs.
+    ///
+    /// Content is written in-order to the provided SequentialOutput
     #[cfg(not(target_family = "wasm"))]
-    async fn get_file(
+    async fn get_file_with_sequential_writer(
         &self,
         hash: &MerkleHash,
         byte_range: Option<FileRange>,
-        output_provider: &OutputProvider,
+        output_provider: SequentialOutput,
         progress_updater: Option<Arc<SingleItemProgressUpdater>>,
     ) -> Result<u64>;
 
     #[cfg(not(target_family = "wasm"))]
-    async fn batch_get_file(&self, files: HashMap<MerkleHash, &OutputProvider>) -> Result<u64> {
-        let mut n_bytes = 0;
-        // Provide the basic naive implementation as a default.
-        for (h, w) in files {
-            n_bytes += self.get_file(&h, None, w, None).await?;
-        }
-        Ok(n_bytes)
-    }
+    async fn get_file_with_parallel_writer(
+        &self,
+        hash: &MerkleHash,
+        byte_range: Option<FileRange>,
+        output_provider: SeekingOutputProvider,
+        progress_updater: Option<Arc<SingleItemProgressUpdater>>,
+    ) -> Result<u64>;
 
     async fn get_file_reconstruction_info(
         &self,

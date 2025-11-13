@@ -21,7 +21,7 @@ use utils::singleflight::Group;
 
 use crate::error::{CasClientError, Result};
 use crate::http_client::Api;
-use crate::output_provider::OutputProvider;
+use crate::output_provider::SeekingOutputProvider;
 use crate::remote_client::{PREFIX_DEFAULT, get_reconstruction_with_endpoint_and_client};
 use crate::retry_wrapper::{RetryWrapper, RetryableReqwestError};
 
@@ -296,7 +296,7 @@ pub(crate) struct ChunkRangeWrite {
 pub(crate) struct FetchTermDownloadOnceAndWriteEverywhereUsed {
     pub download: FetchTermDownload,
     // pub write_offset: u64, // start position of the writer to write to
-    pub output: OutputProvider,
+    pub output: SeekingOutputProvider,
     pub writes: Vec<ChunkRangeWrite>,
 }
 
@@ -635,7 +635,7 @@ mod tests {
             MerkleHash::default(),
             file_range,
             server.base_url(),
-            Arc::new(build_http_client(RetryConfig::default(), "")?),
+            Arc::new(build_http_client(RetryConfig::default(), "", "")?),
         );
 
         fetch_info.query().await?;
@@ -682,7 +682,7 @@ mod tests {
             MerkleHash::default(),
             file_range_to_refresh,
             server.base_url(),
-            Arc::new(build_http_client(RetryConfig::default(), "")?),
+            Arc::new(build_http_client(RetryConfig::default(), "", "")?),
         ));
 
         // Spawn multiple tasks each calling into refresh with a different delay in
@@ -751,7 +751,7 @@ mod tests {
             MerkleHash::default(),
             file_range,
             server.base_url(),
-            Arc::new(build_http_client(RetryConfig::default(), "")?),
+            Arc::new(build_http_client(RetryConfig::default(), "", "")?),
         );
 
         let (offset_info_first_range, terms) = fetch_info.query().await?.unwrap();
@@ -762,7 +762,7 @@ mod tests {
                 range: x1range[0].range,
                 fetch_info: Arc::new(fetch_info),
                 chunk_cache: None,
-                client: Arc::new(build_http_client(RetryConfig::default(), "")?),
+                client: Arc::new(build_http_client(RetryConfig::default(), "", "")?),
                 range_download_single_flight: Arc::new(Group::new()),
             },
             term: terms[0].clone(),

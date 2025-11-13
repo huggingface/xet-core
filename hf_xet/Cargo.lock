@@ -1296,6 +1296,7 @@ dependencies = [
  "bipbuffer",
  "cas_client",
  "chrono",
+ "chunk_cache",
  "ctrlc",
  "data",
  "error_printer",
@@ -1864,6 +1865,7 @@ dependencies = [
  "itertools 0.14.0",
  "lazy_static",
  "merklehash",
+ "more-asserts",
  "rand 0.9.2",
  "regex",
  "serde",
@@ -3886,6 +3888,7 @@ dependencies = [
  "shellexpand",
  "thiserror 2.0.15",
  "tokio",
+ "tokio-util",
  "tracing",
  "web-time",
 ]

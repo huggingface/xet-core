@@ -3,8 +3,10 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use cas_client::remote_client::PREFIX_DEFAULT;
-use cas_client::{CHUNK_CACHE_SIZE_BYTES, CacheConfig, FileProvider, OutputProvider};
+use cas_client::remote_client::{PREFIX_DEFAULT, RECONSTRUCT_WRITE_SEQUENTIALLY};
+use cas_client::{
+    CHUNK_CACHE_SIZE_BYTES, CacheConfig, SeekingOutputProvider, SequentialOutput, sequential_output_from_filepath,
+};
 use cas_object::CompressionScheme;
 use deduplication::DeduplicationMetrics;
 use progress_tracking::TrackingProgressUpdater;
@@ -30,7 +32,17 @@ pub fn default_config(
     xorb_compression: Option<CompressionScheme>,
     token_info: Option<(String, u64)>,
     token_refresher: Option<Arc<dyn TokenRefresher>>,
+    user_agent: String,
 ) -> errors::Result<TranslatorConfig> {
+    // Intercept local:// to run a simulated CAS server in a specified directory.
+    // This is useful for testing and development.
+    if endpoint.starts_with("local://") {
+        let local_path = endpoint.strip_prefix("local://").unwrap();
+        let local_path = PathBuf::from(local_path);
+        std::fs::create_dir_all(&local_path)?;
+        return TranslatorConfig::local_config(local_path);
+    }
+
     let cache_root_path = xet_cache_root();
     info!("Using cache path {cache_root_path:?}.");
 
@@ -68,6 +80,7 @@ pub fn default_config(
                 cache_size: *CHUNK_CACHE_SIZE_BYTES,
             },
             staging_directory: None,
+            user_agent: user_agent.clone(),
         },
         shard_config: ShardConfig {
             prefix: PREFIX_DEFAULT.into(),
@@ -93,13 +106,16 @@ pub async fn upload_bytes_async(
     token_info: Option<(String, u64)>,
     token_refresher: Option<Arc<dyn TokenRefresher>>,
     progress_updater: Option<Arc<dyn TrackingProgressUpdater>>,
-    cache_size: Option<u64>,
+    user_agent: String,
 ) -> errors::Result<Vec<XetFileInfo>> {
-    let mut config =
-        default_config(endpoint.unwrap_or(DEFAULT_CAS_ENDPOINT.clone()), None, token_info, token_refresher)?;
-    if let Some(size) = cache_size {
-        config = config.with_cache_size(size);
-    }
+    let config = default_config(
+        endpoint.unwrap_or(DEFAULT_CAS_ENDPOINT.clone()),
+        None,
+        token_info,
+        token_refresher,
+        user_agent,
+    )?;
+
     Span::current().record("session_id", &config.session_id);
 
     let semaphore = XetRuntime::current().global_semaphore(*CONCURRENT_FILE_INGESTION_LIMITER);
@@ -133,17 +149,19 @@ pub async fn upload_async(
     token_info: Option<(String, u64)>,
     token_refresher: Option<Arc<dyn TokenRefresher>>,
     progress_updater: Option<Arc<dyn TrackingProgressUpdater>>,
-    cache_size: Option<u64>,
+    user_agent: String,
 ) -> errors::Result<Vec<XetFileInfo>> {
     // chunk files
     // produce Xorbs + Shards
     // upload shards and xorbs
     // for each file, return the filehash
-    let mut config =
-        default_config(endpoint.unwrap_or(DEFAULT_CAS_ENDPOINT.clone()), None, token_info, token_refresher)?;
-    if let Some(size) = cache_size {
-        config = config.with_cache_size(size);
-    }
+    let config = default_config(
+        endpoint.unwrap_or(DEFAULT_CAS_ENDPOINT.clone()),
+        None,
+        token_info,
+        token_refresher,
+        user_agent,
+    )?;
 
     let span = Span::current();
 
@@ -174,7 +192,7 @@ pub async fn download_async(
     token_info: Option<(String, u64)>,
     token_refresher: Option<Arc<dyn TokenRefresher>>,
     progress_updaters: Option<Vec<Arc<dyn TrackingProgressUpdater>>>,
-    cache_size: Option<u64>,
+    user_agent: String,
 ) -> errors::Result<Vec<String>> {
     lazy_static! {
         static ref CONCURRENT_FILE_DOWNLOAD_LIMITER: GlobalSemaphoreHandle =
@@ -186,11 +204,13 @@ pub async fn download_async(
     {
         return Err(DataProcessingError::ParameterError("updaters are not same length as pointer_files".to_string()));
     }
-    let mut config =
-        default_config(endpoint.unwrap_or(DEFAULT_CAS_ENDPOINT.to_string()), None, token_info, token_refresher)?;
-    if let Some(size) = cache_size {
-        config = config.with_cache_size(size);
-    }
+    let config = default_config(
+        endpoint.unwrap_or(DEFAULT_CAS_ENDPOINT.to_string()),
+        None,
+        token_info,
+        token_refresher,
+        user_agent,
+    )?;
     Span::current().record("session_id", &config.session_id);
 
     let processor = Arc::new(FileDownloader::new(config.into()).await?);
@@ -257,14 +277,30 @@ async fn smudge_file(
     if let Some(parent_dir) = path.parent() {
         std::fs::create_dir_all(parent_dir)?;
     }
-    let output = OutputProvider::File(FileProvider::new(path));
 
     // Wrap the progress updater in the proper tracking struct.
     let progress_updater = progress_updater.map(ItemProgressUpdater::new);
 
-    downloader
-        .smudge_file_from_hash(&file_info.merkle_hash()?, file_path.into(), &output, None, progress_updater)
-        .await?;
+    if *RECONSTRUCT_WRITE_SEQUENTIALLY {
+        let output: SequentialOutput = sequential_output_from_filepath(file_path)?;
+        info!("Using sequential writer for smudge");
+        downloader
+            .smudge_file_from_hash_sequential(
+                &file_info.merkle_hash()?,
+                file_path.into(),
+                output,
+                None,
+                progress_updater,
+            )
+            .await?;
+    } else {
+        let output = SeekingOutputProvider::new_file_provider(path);
+        info!("Using parallel writer for smudge");
+        downloader
+            .smudge_file_from_hash(&file_info.merkle_hash()?, file_path.into(), output, None, progress_updater)
+            .await?;
+    };
+
     Ok(file_path.to_string())
 }
 
@@ -284,7 +320,7 @@ mod tests {
         let _hf_home_guard = EnvVarGuard::set("HF_HOME", temp_dir.path().to_str().unwrap());
 
         let endpoint = "http://localhost:8080".to_string();
-        let result = default_config(endpoint, None, None, None);
+        let result = default_config(endpoint, None, None, None, String::new());
 
         assert!(result.is_ok());
         let config = result.unwrap();
@@ -301,7 +337,7 @@ mod tests {
         let hf_home_guard = EnvVarGuard::set("HF_HOME", temp_dir_hf_home.path().to_str().unwrap());
 
         let endpoint = "http://localhost:8080".to_string();
-        let result = default_config(endpoint, None, None, None);
+        let result = default_config(endpoint, None, None, None, String::new());
 
         assert!(result.is_ok());
         let config = result.unwrap();
@@ -320,7 +356,7 @@ mod tests {
         let _hf_home_guard = EnvVarGuard::set("HF_HOME", temp_dir.path().to_str().unwrap());
 
         let endpoint = "http://localhost:8080".to_string();
-        let result = default_config(endpoint, None, None, None);
+        let result = default_config(endpoint, None, None, None, String::new());
 
         assert!(result.is_ok());
         let config = result.unwrap();
@@ -334,7 +370,7 @@ mod tests {
         let _hf_xet_cache_guard = EnvVarGuard::set("HF_XET_CACHE", temp_dir.path().to_str().unwrap());
 
         let endpoint = "http://localhost:8080".to_string();
-        let result = default_config(endpoint, None, None, None);
+        let result = default_config(endpoint, None, None, None, String::new());
 
         assert!(result.is_ok());
         let config = result.unwrap();
@@ -345,7 +381,7 @@ mod tests {
     #[serial(default_config_env)]
     fn test_default_config_without_env_vars() {
         let endpoint = "http://localhost:8080".to_string();
-        let result = default_config(endpoint, None, None, None);
+        let result = default_config(endpoint, None, None, None, String::new());
 
         let expected = home_dir().unwrap().join(".cache").join("huggingface").join("xet");
 
