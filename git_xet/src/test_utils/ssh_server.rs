@@ -133,7 +133,7 @@ impl server::Handler for ServerImpl {
     ) -> Result<(), Self::Error> {
         let request = String::from_utf8_lossy(data);
         let request: Vec<_> = request.split_ascii_whitespace().collect();
-        let response = if let Some(command) = request.get(0) {
+        let response = if let Some(command) = request.first() {
             match *command {
                 "git-lfs-authenticate" => self.git_lfs_authenticate(request).unwrap_or_else(|e| e.to_string()),
                 _ => "invalid command".into(),

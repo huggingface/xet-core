@@ -252,17 +252,9 @@ mod test_cred_helpers {
         let remote_url = repo.remote_url()?;
         let operation = Operation::Upload;
 
-        #[cfg(unix)]
-        {
-            let cred_helper = get_credential(&repo, &remote_url, operation)?;
-            assert_eq!(cred_helper.whoami(), "ssh");
-        }
+        let cred_helper = get_credential(&repo, &remote_url, operation)?;
+        assert_eq!(cred_helper.whoami(), "ssh");
 
-        #[cfg(windows)]
-        {
-            let cred_helper = get_credential(&repo, &remote_url, operation);
-            assert!(matches!(cred_helper, Err(crate::errors::GitXetError::NotSupported(_))));
-        }
         Ok(())
     }
 
