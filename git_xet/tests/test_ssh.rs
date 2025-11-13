@@ -5,35 +5,30 @@
 //! process with the directories that contain those utilities.
 //!
 //! Rationale
-//! - When `git` is executed on Windows it adds the MinGW/MSYS directories to the `PATH` so
-//!   child processes can find POSIX tools bundled with Git for Windows. When `git-xet` is
-//!   invoked by the git-lfs filter process (the filter itself is started by `git`), it
-//!   ultimately runs as a descendant of the `git` process and therefore inherits the augmented
-//!   environment. These tests ensure that `git-xet` (launched via the `git` invocation
-//!   chain) can locate and execute those POSIX utilities as expected. This is the same mechaism
-//!   used by git-lfs on Windows to access the "ssh" utility.
+//! - When `git` is executed on Windows it adds the MinGW/MSYS directories to the `PATH` so child processes can find
+//!   POSIX tools bundled with Git for Windows. When `git-xet` is invoked by the git-lfs filter process (the filter
+//!   itself is started by `git`), it ultimately runs as a descendant of the `git` process and therefore inherits the
+//!   augmented environment. These tests ensure that `git-xet` (launched via the `git` invocation chain) can locate and
+//!   execute those POSIX utilities as expected. This is the same mechaism used by git-lfs on Windows to access the
+//!   "ssh" utility.
 //!
 //! What is tested
-//! - test_access_posix_commands: runs a set of simple POSIX commands through `git-xet`
-//!   and asserts that the commands execute successfully (exit code 0) and emit output matching
-//!   expected substrings.
+//! - test_access_posix_commands: runs a set of simple POSIX commands through `git-xet` and asserts that the commands
+//!   execute successfully (exit code 0) and emit output matching expected substrings.
 //!
-//! - test_ssh_connect_through_ssh_cmd and test_ssh_connect_through_sh_cmd:
-//!   These tests start a local SSH server and then attempt to run `ssh` to that server through
-//!   `git-xet`. They validate that invoking `ssh` directly or indirectly via `sh -c "ssh ..."`
-//!   results in the expected JSON response from the server, proving that `ssh` is callable and
-//!   functional when executed from within the `git-xet` invocation context.
+//! - test_ssh_connect_through_ssh_cmd and test_ssh_connect_through_sh_cmd: These tests start a local SSH server and
+//!   then attempt to run `ssh` to that server through `git-xet`. They validate that invoking `ssh` directly or
+//!   indirectly via `sh -c "ssh ..."` results in the expected JSON response from the server, proving that `ssh` is
+//!   callable and functional when executed from within the `git-xet` invocation context.
 //!
 //! Implementation notes
-//! - `git_xet_run` constructs a command that runs `git xet runany -- <command...>` pointing
-//!   at the `git-xet` test binary (resolved through the `CARGO_BIN_EXE_git-xet` env var) called
-//!   by `git`.
-//! - On Windows the test sets the current directory to the `git-xet` build directory so the
-//!   local `git-xet` executable can be found and executed (local directory precedence is
-//!   relied upon on Windows). On Unix the build directory is prepended to `PATH` so the
-//!   correct binary is found.
-//! - The `runany` command of `git-xet` is gated behind the `git-xet-for-integration-test` feature.
-//!   They are ignored by default unless that feature is enabled in the test run.
+//! - `git_xet_run` constructs a command that runs `git xet runany -- <command...>` pointing at the `git-xet` test
+//!   binary (resolved through the `CARGO_BIN_EXE_git-xet` env var) called by `git`.
+//! - On Windows the test sets the current directory to the `git-xet` build directory so the local `git-xet` executable
+//!   can be found and executed (local directory precedence is relied upon on Windows). On Unix the build directory is
+//!   prepended to `PATH` so the correct binary is found.
+//! - The `runany` command of `git-xet` is gated behind the `git-xet-for-integration-test` feature. They are ignored by
+//!   default unless that feature is enabled in the test run.
 //!
 //! These tests provide confidence that environment inheritance from `git` to `git-xet` is
 //! sufficient for locating and invoking the POSIX utilities bundled with Git for Windows,

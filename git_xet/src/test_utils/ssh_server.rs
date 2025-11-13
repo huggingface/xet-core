@@ -16,21 +16,21 @@ pub use crate::auth::{GitLFSAuthentationResponseHeader, GitLFSAuthenticateRespon
 /// The server:
 /// - binds to the given port (use `Some(0)` or `None` to let the OS pick a free port),
 /// - accepts public-key and OpenSSH certificate authentication,
-/// - handles `exec` requests and specifically responds to the `git-lfs-authenticate <repo> <operation>`
-///   command with a small JSON payload and then closes the channel,
-/// - runs on the tokio runtime and returns a JoinHandle for the spawned server task so the caller
-///   can abort or await it when finished.
+/// - handles `exec` requests and specifically responds to the `git-lfs-authenticate <repo> <operation>` command with a
+///   small JSON payload and then closes the channel,
+/// - runs on the tokio runtime and returns a JoinHandle for the spawned server task so the caller can abort or await it
+///   when finished.
 ///
 /// Arguments:
 /// - `port`: Option<u16> — Some(port) to bind to that port, None (or Some(0)) to bind to an OS-assigned port.
 ///
 /// Returns:
-/// - io::Result<(u16, JoinHandle<io::Result<()>>)> where the first element is the actual port the listener
-///   is bound to and the second is a handle to the background task running the server.
+/// - io::Result<(u16, JoinHandle<io::Result<()>>)> where the first element is the actual port the listener is bound to
+///   and the second is a handle to the background task running the server.
 ///
 /// Example (async context):
 /// ```ignore
-///
+/// 
 /// // Start server on any free port
 /// let (port, server_task) = start_local_ssh_server(None).await?;
 /// println!("Test SSH server listening on port {}", port);
