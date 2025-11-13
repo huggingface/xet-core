@@ -13,8 +13,9 @@ mod git;
 mod ssh;
 
 use git::GitCredentialHelper;
-#[cfg(unix)]
 use ssh::SSHCredentialHelper;
+
+pub use ssh::{GitLFSAuthentationResponseHeader, GitLFSAuthenticateResponse};
 
 // This mod derives credentials for the Xet CAS token API on HF Hub from the local repository's credentials.
 // Unlike the authorization model in huggingface_hub which adheres to using a HF token, Git and Git LFS have
@@ -126,14 +127,7 @@ pub fn get_credential(repo: &GitRepo, remote_url: &GitUrl, operation: Operation)
 
     // 5. check remote URL scheme
     if matches!(remote_url.scheme(), Scheme::Ssh | Scheme::GitSsh) {
-        #[cfg(unix)]
         return Ok(SSHCredentialHelper::new(remote_url, repo, operation));
-        #[cfg(not(unix))]
-        return Err(GitXetError::not_supported(format!(
-            "using {} in a repository with SSH Git URL is under development; please check back for 
-            upgrades or contact Xet Team at Hugging Face.",
-            crate::constants::GIT_LFS_CUSTOM_TRANSFER_AGENT_PROGRAM
-        )));
     }
 
     // 6. check Git credential helper

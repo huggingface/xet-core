@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use hub_client::{CredentialHelper, Operation};
 use reqwest::header;
 use reqwest_middleware::RequestBuilder;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::errors::{GitXetError, Result};
 use crate::git_repo::GitRepo;
@@ -12,20 +12,20 @@ use crate::git_url::GitUrl;
 use crate::utils::process_wrapping::run_program_captured_with_input_and_output;
 use crate::utils::ssh_connect::{SSHMetadata, get_sshcmd_and_args};
 
-#[derive(Deserialize)]
-struct GitLFSAuthentationResponseHeader {
+#[derive(Deserialize, Serialize)]
+pub struct GitLFSAuthentationResponseHeader {
     #[serde(rename = "Authorization")]
-    authorization: String,
+    pub authorization: String,
 }
 
 // This struct represents the JSON format of the `git-lfs-authenticate` command response over an
 // SSH channel to the remote Git server. For details see `crate::auth.rs`.
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 #[allow(unused)]
-struct GitLFSAuthenticateResponse {
-    header: GitLFSAuthentationResponseHeader,
-    href: String,
-    expires_in: u32,
+pub struct GitLFSAuthenticateResponse {
+    pub header: GitLFSAuthentationResponseHeader,
+    pub href: String,
+    pub expires_in: u32,
 }
 
 // This credential helper calls a remote command `git-lfs-authenticate` over an SSH channel
@@ -58,6 +58,8 @@ impl SSHCredentialHelper {
             ],
         };
 
+        // Access to "ssh" and "sh" is provided by the `git` -> `git-lfs` -> `git-xet`, see
+        // git_xet/tests/test_ssh.rs for details.
         let (program, args) = get_sshcmd_and_args(&meta, &self.repo)?;
 
         let (output, _err) =

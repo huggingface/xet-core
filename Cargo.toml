@@ -123,6 +123,8 @@ winapi = { version = "0.3", features = [
 # dev-deps
 criterion = { version = "0.5", features = ["html_reports"] }
 httpmock = "0.7"
+rand_core = "0.6"
+russh = "0.54.6"
 serial_test = "3"
 tempdir = "0.3"
 tracing-test = { version = "0.2", features = ["no-env-filter"] }
