@@ -20,6 +20,7 @@ mod http_client;
 mod interface;
 #[cfg(not(target_family = "wasm"))]
 mod local_client;
+mod memory_cache;
 #[cfg(not(target_family = "wasm"))]
 mod output_provider;
 pub mod remote_client;
