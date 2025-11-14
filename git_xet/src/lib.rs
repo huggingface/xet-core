@@ -5,6 +5,6 @@ mod errors;
 mod git_repo;
 mod git_url;
 mod lfs_agent_protocol;
-mod test_utils;
+pub mod test_utils;
 mod token_refresher;
 mod utils;

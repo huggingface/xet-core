@@ -38,6 +38,11 @@ Remove "lfs.concurrenttransfers" from the global Git config."#)]
     /// Run this program as a LFS custom transfer agent. This is not meant
     /// to be used directly by users, but instead to be invoked by git-lfs.
     Transfer,
+
+    /// Run any arguments passed in as a command. This is a feature only for
+    /// integration tests.
+    #[cfg(feature = "git-xet-for-integration-test")]
+    Runany(RunanyArg),
 }
 
 #[derive(Args, Debug)]
@@ -84,6 +89,13 @@ struct UninstallArg {
 }
 
 #[derive(Args, Debug)]
+#[cfg(feature = "git-xet-for-integration-test")]
+struct RunanyArg {
+    program: String,
+    args: Option<Vec<String>>,
+}
+
+#[derive(Args, Debug)]
 struct CliOverrides {
     /// Increase verbosity of output (-v, -vv, etc.)
     #[clap(long, short = 'v', action = ArgAction::Count)]
@@ -127,6 +139,8 @@ impl Command {
             Command::Install(args) => install_command(args),
             Command::Uninstall(args) => uninstall_command(args),
             Command::Transfer => transfer_command().await,
+            #[cfg(feature = "git-xet-for-integration-test")]
+            Command::Runany(args) => run_any_command(args),
         }
     }
 
@@ -135,6 +149,8 @@ impl Command {
             Command::Install(_) => "install",
             Command::Uninstall(_) => "uninstall",
             Command::Transfer => "transfer",
+            #[cfg(feature = "git-xet-for-integration-test")]
+            Command::Runany(_) => "runany",
         }
     }
 }
@@ -196,6 +212,17 @@ async fn transfer_command() -> Result<()> {
     let output = std::io::stdout();
 
     lfs_protocol_loop(input.lock(), output, &mut agent).await?;
+
+    Ok(())
+}
+
+#[cfg(feature = "git-xet-for-integration-test")]
+fn run_any_command(args: RunanyArg) -> Result<()> {
+    let mut cmd = std::process::Command::new(args.program);
+    if let Some(args) = args.args {
+        cmd.args(args);
+    }
+    let _ = cmd.status()?;
 
     Ok(())
 }
