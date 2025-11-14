@@ -58,7 +58,7 @@ impl SSHCredentialHelper {
             ],
         };
 
-        // Access to "ssh" and "sh" is provided by the `git` -> `git-lfs` -> `git-xet`, see
+        // On Windows, access to "ssh" and "sh" is provided by the `git` -> `git-lfs` -> `git-xet` call chain, see
         // git_xet/tests/test_ssh.rs for details.
         let (program, args) = get_sshcmd_and_args(&meta, &self.repo)?;
 

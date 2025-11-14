@@ -113,6 +113,10 @@ impl server::Handler for ServerImpl {
         Ok(())
     }
 
+    async fn auth_none(&mut self, _: &str) -> Result<server::Auth, Self::Error> {
+        Ok(server::Auth::Accept)
+    }
+
     async fn auth_publickey(&mut self, _: &str, _key: &ssh_key::PublicKey) -> Result<server::Auth, Self::Error> {
         Ok(server::Auth::Accept)
     }
