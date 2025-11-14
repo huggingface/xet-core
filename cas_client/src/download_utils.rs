@@ -157,9 +157,9 @@ impl FetchInfo {
 
 /// Helper object containing the structs needed when downloading a term in parallel
 /// during reconstruction.
-#[derive(Derivative)]
+#[derive(Clone, Derivative)]
 #[derivative(Debug)]
-pub(crate) struct FetchTermDownload {
+pub(crate) struct FetchTermDownloadInner {
     pub hash: MerkleHash,
     pub range: ChunkRange,
     #[derivative(Debug = "ignore")]
@@ -173,9 +173,28 @@ pub(crate) struct FetchTermDownload {
 }
 
 #[derive(Debug)]
+pub(crate) struct FetchTermDownload {
+    fetch_term_download: FetchTermDownloadInner,
+    cell: tokio::sync::OnceCell<Result<TermDownloadResult<TermDownloadOutput>>>,
+}
+
+impl FetchTermDownload {
+    pub fn new(fetch_term_download: FetchTermDownloadInner) -> Self {
+        Self {
+            fetch_term_download,
+            cell: tokio::sync::OnceCell::new(),
+        }
+    }
+
+    pub async fn run(&self) -> Result<TermDownloadResult<TermDownloadOutput>> {
+        self.cell.get_or_init(|| self.fetch_term_download.clone().run()).await.clone()
+    }
+}
+
+#[derive(Debug)]
 pub(crate) struct SequentialTermDownload {
     pub term: CASReconstructionTerm,
-    pub download: FetchTermDownload,
+    pub download: Arc<FetchTermDownload>,
     pub skip_bytes: u64, // number of bytes to skip at the front
     pub take: u64,       /* number of bytes to take after skipping bytes,
                           * effectively taking [skip_bytes..skip_bytes+take]
@@ -228,6 +247,16 @@ pub(crate) struct TermDownloadResult<T> {
     pub n_retries_on_403: u32,
 }
 
+impl<T: Clone> Clone for TermDownloadResult<T> {
+    fn clone(&self) -> Self {
+        Self {
+            payload: self.payload.clone(),
+            duration: self.duration,
+            n_retries_on_403: self.n_retries_on_403,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct TermDownloadOutput {
     pub data: Vec<u8>,
@@ -245,7 +274,7 @@ impl From<CacheRange> for TermDownloadOutput {
     }
 }
 
-impl FetchTermDownload {
+impl FetchTermDownloadInner {
     // Download and return results, retry on 403
     pub async fn run(self) -> Result<TermDownloadResult<TermDownloadOutput>> {
         let instant = Instant::now();
@@ -294,7 +323,7 @@ pub(crate) struct ChunkRangeWrite {
 /// during reconstruction.
 #[derive(Debug)]
 pub(crate) struct FetchTermDownloadOnceAndWriteEverywhereUsed {
-    pub download: FetchTermDownload,
+    pub download: FetchTermDownloadInner,
     // pub write_offset: u64, // start position of the writer to write to
     pub output: SeekingOutputProvider,
     pub writes: Vec<ChunkRangeWrite>,
@@ -757,14 +786,14 @@ mod tests {
         let (offset_info_first_range, terms) = fetch_info.query().await?.unwrap();
 
         let download_task = SequentialTermDownload {
-            download: FetchTermDownload {
+            download: Arc::new(FetchTermDownload::new(FetchTermDownloadInner {
                 hash: xorb1.into(),
                 range: x1range[0].range,
                 fetch_info: Arc::new(fetch_info),
                 chunk_cache: None,
                 client: Arc::new(build_http_client(RetryConfig::default(), "", "")?),
                 range_download_single_flight: Arc::new(Group::new()),
-            },
+            })),
             term: terms[0].clone(),
             skip_bytes: offset_info_first_range,
             take: file_range.length(),
