@@ -2,7 +2,7 @@
 
 use std::time::Duration;
 
-use config::config_group;
+use xet_config::config_group;
 use serial_test::serial;
 use utils::{ByteSize, EnvVarGuard};
 

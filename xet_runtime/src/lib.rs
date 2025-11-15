@@ -5,8 +5,8 @@ pub mod runtime;
 
 use std::sync::Arc;
 
-use config::XetConfig;
 pub use runtime::XetRuntime;
+use xet_config::XetConfig;
 pub mod sync_primatives;
 pub use sync_primatives::{SyncJoinHandle, spawn_os_thread};
 

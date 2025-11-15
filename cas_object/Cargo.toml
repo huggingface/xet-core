@@ -14,7 +14,7 @@ harness = false
 bench = true
 
 [dependencies]
-config = { path = "../config" }
+xet_config = { path = "../xet_config" }
 xet_runtime = { path = "../xet_runtime" }
 deduplication = { path = "../deduplication" }
 error_printer = { path = "../error_printer" }

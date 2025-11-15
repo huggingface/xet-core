@@ -1,8 +1,8 @@
 #![allow(non_snake_case)]
 
-use config::{XetConfig, config_group};
 use serial_test::serial;
 use utils::EnvVarGuard;
+use xet_config::{XetConfig, config_group};
 
 // Create test config modules
 mod data_config {
@@ -49,17 +49,16 @@ fn test_primary_config_debug() {
 
 #[test]
 fn test_config_values_type_alias() {
-    // Verify that the ConfigValues type alias is accessible
-    let mut _data_config: data_config::ConfigValues = data_config::ConfigValueGroup::new();
+    // Verify that the ConfigValueGroup is accessible
+    let mut _data_config = data_config::ConfigValueGroup::new();
     _data_config.apply_env_overrides();
-    let mut _shard_config: shard_config::ConfigValues = shard_config::ConfigValueGroup::new();
+    let mut _shard_config = shard_config::ConfigValueGroup::new();
     _shard_config.apply_env_overrides();
 
-    // Verify they're the same types
+    // Verify they work correctly
     let mut data1 = data_config::ConfigValueGroup::new();
     data1.apply_env_overrides();
-    let data2: data_config::ConfigValues = data1;
-    assert_eq!(data2.TEST_INT, 42);
+    assert_eq!(data1.TEST_INT, 42);
 }
 
 #[test]

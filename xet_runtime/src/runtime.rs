@@ -4,12 +4,12 @@ use std::future::Future;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, OnceLock};
 
-use config::XetConfig;
 use reqwest::Client;
 use tokio::runtime::{Builder as TokioRuntimeBuilder, Handle as TokioRuntimeHandle, Runtime as TokioRuntime};
 use tokio::sync::Semaphore;
 use tokio::task::JoinHandle;
 use tracing::{debug, info};
+use xet_config::XetConfig;
 
 use crate::errors::MultithreadedRuntimeError;
 use crate::global_semaphores::{GlobalSemaphoreHandle, GlobalSemaphoreLookup};

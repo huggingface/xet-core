@@ -6,7 +6,7 @@ members = [
     "cas_object",
     "cas_types",
     "chunk_cache",
-    "config",
+    "xet_config",
     "data",
     "deduplication",
     "error_printer",

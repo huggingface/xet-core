@@ -6,7 +6,7 @@ edition = "2024"
 [dependencies]
 utils = { path = "../utils" }
 error_printer = { path = "../error_printer" }
-config = { path = "../config" }
+xet_config = { path = "../xet_config" }
 
 dirs = { workspace = true }
 oneshot = { workspace = true }

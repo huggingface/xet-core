@@ -2,7 +2,7 @@
 ///
 /// Usage:
 /// ```rust
-/// use config::config_group;
+/// use xet_config::config_group;
 ///
 /// config_group!({
 ///     ref TEST_INT: usize = 42;
@@ -59,7 +59,7 @@ macro_rules! config_group {
 
             /// Apply environment variable overrides to this configuration group.
             ///
-            /// The group name is derived from the module path. For example, in module `config::groups::data`,
+            /// The group name is derived from the module path. For example, in module `xet_config::groups::data`,
             /// the env var for TEST_INT would be HF_XET_DATA_TEST_INT.
             pub fn apply_env_overrides(&mut self) {
                 // Get the module name from the module path

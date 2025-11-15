@@ -1,10 +1,10 @@
 [package]
-name = "config"
+name = "xet_config"
 version = "0.14.5"
 edition = "2024"
 
 [lib]
-name = "config"
+name = "xet_config"
 path = "src/lib.rs"
 
 [dependencies]

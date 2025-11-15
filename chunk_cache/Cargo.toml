@@ -5,7 +5,7 @@ edition = "2024"
 
 [dependencies]
 cas_types = { path = "../cas_types" }
-config = { path = "../config" }
+xet_config = { path = "../xet_config" }
 error_printer = { path = "../error_printer" }
 file_utils = { path = "../file_utils" }
 merklehash = { path = "../merklehash" }
