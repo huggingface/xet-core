@@ -4,7 +4,7 @@ use std::path::PathBuf;
 
 use clap::Parser;
 use deduplication::Chunker;
-use deduplication::constants::TARGET_CHUNK_SIZE;
+use deduplication::constants::DEDUP_TARGET_CHUNK_SIZE;
 
 #[derive(Debug, Parser)]
 #[command(
@@ -38,7 +38,7 @@ fn main() {
         Box::new(std::io::stdout())
     };
 
-    let mut chunker = Chunker::new(*TARGET_CHUNK_SIZE);
+    let mut chunker = Chunker::new(*DEDUP_TARGET_CHUNK_SIZE);
 
     // read input in up to 8 MB sections and pass through chunker
     const INGESTION_BLOCK_SIZE: usize = 8 * 1024 * 1024; // 8 MiB

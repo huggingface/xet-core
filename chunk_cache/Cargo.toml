@@ -5,10 +5,12 @@ edition = "2024"
 
 [dependencies]
 cas_types = { path = "../cas_types" }
+config = { path = "../config" }
 error_printer = { path = "../error_printer" }
 file_utils = { path = "../file_utils" }
 merklehash = { path = "../merklehash" }
 utils = { path = "../utils" }
+xet_runtime = { path = "../xet_runtime" }
 
 async-trait = { workspace = true }
 base64 = { workspace = true }

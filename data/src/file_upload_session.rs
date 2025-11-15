@@ -8,7 +8,7 @@ use std::sync::Arc;
 use bytes::Bytes;
 use cas_client::Client;
 use cas_object::SerializedCasObject;
-use deduplication::constants::{MAX_XORB_BYTES, MAX_XORB_CHUNKS};
+use deduplication::constants::DEDUP_MAX_XORB_BYTES;
 use deduplication::{DataAggregator, DeduplicationMetrics, RawXorbData};
 use jsonwebtoken::{DecodingKey, Validation, decode};
 use lazy_static::lazy_static;
@@ -23,13 +23,9 @@ use tokio::sync::{Mutex, OwnedSemaphorePermit};
 use tokio::task::{JoinHandle, JoinSet};
 use tracing::{Instrument, Span, info_span, instrument};
 use ulid::Ulid;
-use xet_runtime::{GlobalSemaphoreHandle, XetRuntime, global_semaphore_handle};
+use xet_runtime::{GlobalSemaphoreHandle, XetRuntime, global_semaphore_handle, xet_config};
 
 use crate::configurations::*;
-use crate::constants::{
-    INGESTION_BLOCK_SIZE, MAX_CONCURRENT_FILE_INGESTION, MAX_CONCURRENT_UPLOADS, PROGRESS_UPDATE_INTERVAL,
-    PROGRESS_UPDATE_SPEED_SAMPLING_WINDOW,
-};
 use crate::errors::*;
 use crate::file_cleaner::SingleFileCleaner;
 use crate::remote_client_interface::create_remote_client;
@@ -38,7 +34,7 @@ use crate::{XetFileInfo, prometheus_metrics};
 
 lazy_static! {
     pub static ref CONCURRENT_FILE_INGESTION_LIMITER: GlobalSemaphoreHandle =
-        global_semaphore_handle!(*MAX_CONCURRENT_FILE_INGESTION);
+        global_semaphore_handle!(xet_config().data.max_concurrent_file_ingestion);
 }
 
 /// Acquire a permit for uploading xorbs and shards to ensure that we don't overwhelm the server
@@ -52,7 +48,7 @@ lazy_static! {
 pub(crate) async fn acquire_upload_permit() -> Result<OwnedSemaphorePermit> {
     lazy_static! {
         static ref UPLOAD_CONCURRENCY_LIMITER: GlobalSemaphoreHandle =
-            global_semaphore_handle!(*MAX_CONCURRENT_UPLOADS);
+            global_semaphore_handle!(xet_config().data.max_concurrent_uploads);
     }
 
     let upload_permit = XetRuntime::current()
@@ -129,12 +125,12 @@ impl FileUploadSession {
         let (progress_updater, progress_aggregator): (Arc<dyn TrackingProgressUpdater>, Option<_>) = {
             match upload_progress_updater {
                 Some(updater) => {
-                    let flush_interval = *PROGRESS_UPDATE_INTERVAL;
+                    let flush_interval = xet_config().data.progress_update_interval;
                     if !flush_interval.is_zero() && config.progress_config.aggregate {
                         let aggregator = AggregatingProgressUpdater::new(
                             updater,
                             flush_interval,
-                            *PROGRESS_UPDATE_SPEED_SAMPLING_WINDOW,
+                            xet_config().data.progress_update_speed_sampling_window,
                         );
                         (aggregator.clone(), Some(aggregator))
                     } else {
@@ -239,7 +235,7 @@ impl FileUploadSession {
                     while bytes_read < file_size {
                         // Allocate a block of bytes, read into it.
                         let bytes_left = file_size - bytes_read;
-                        let n_bytes_read = (*INGESTION_BLOCK_SIZE as u64).min(bytes_left) as usize;
+                        let n_bytes_read = (xet_config().data.ingestion_block_size as u64).min(bytes_left) as usize;
 
                         // Read in the data here; we are assuming the file doesn't change size
                         // on the disk while we are reading it.
@@ -409,8 +405,9 @@ impl FileUploadSession {
             let mut current_session_data = self.current_session_data.lock().await;
 
             // Do we need to cut one of these to a xorb?
-            if current_session_data.num_bytes() + file_data.num_bytes() > *MAX_XORB_BYTES
-                || current_session_data.num_chunks() + file_data.num_chunks() > *MAX_XORB_CHUNKS
+            if current_session_data.num_bytes() + file_data.num_bytes() > *DEDUP_MAX_XORB_BYTES
+                || current_session_data.num_chunks() + file_data.num_chunks()
+                    > xet_config().deduplication.max_xorb_chunks
             {
                 // Cut the larger one as a xorb, uploading it and registering the files.
                 if current_session_data.num_bytes() > file_data.num_bytes() {
@@ -432,8 +429,8 @@ impl FileUploadSession {
         #[cfg(debug_assertions)]
         {
             let current_session_data = self.current_session_data.lock().await;
-            debug_assert_le!(current_session_data.num_bytes(), *MAX_XORB_BYTES);
-            debug_assert_le!(current_session_data.num_chunks(), *MAX_XORB_CHUNKS);
+            debug_assert_le!(current_session_data.num_bytes(), *DEDUP_MAX_XORB_BYTES);
+            debug_assert_le!(current_session_data.num_chunks(), xet_config().deduplication.max_xorb_chunks);
         }
 
         // Now, aggregate the new dedup metrics.
@@ -447,8 +444,8 @@ impl FileUploadSession {
         let (xorb, new_files) = data_agg.finalize();
         let xorb_hash = xorb.hash();
 
-        debug_assert_le!(xorb.num_bytes(), *MAX_XORB_BYTES);
-        debug_assert_le!(xorb.data.len(), *MAX_XORB_CHUNKS);
+        debug_assert_le!(xorb.num_bytes(), *DEDUP_MAX_XORB_BYTES);
+        debug_assert_le!(xorb.data.len(), xet_config().deduplication.max_xorb_chunks);
 
         // Now, we need to scan all the file dependencies for dependencies on this xorb, as
         // these would not have been registered yet as we just got the xorb hash.

@@ -546,6 +546,7 @@ dependencies = [
  "cas_object",
  "cas_types",
  "chunk_cache",
+ "config",
  "deduplication",
  "derivative",
  "error_printer",
@@ -588,6 +589,7 @@ dependencies = [
  "blake3",
  "bytes",
  "clap",
+ "config",
  "countio",
  "csv",
  "deduplication",
@@ -605,6 +607,7 @@ dependencies = [
  "tokio-util",
  "tracing",
  "utils",
+ "xet_runtime",
 ]
 
 [[package]]
@@ -668,6 +671,7 @@ dependencies = [
  "base64 0.22.1",
  "cas_types",
  "clap",
+ "config",
  "crc32fast",
  "error_printer",
  "file_utils",
@@ -680,6 +684,7 @@ dependencies = [
  "tokio",
  "tracing",
  "utils",
+ "xet_runtime",
 ]
 
 [[package]]
@@ -745,6 +750,20 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4ca0197aee26d1ae37445ee532fefce43251d24cc7c166799f4d46817f1d3973"
 dependencies = [
  "crossbeam-utils",
+]
+
+[[package]]
+name = "config"
+version = "0.14.5"
+dependencies = [
+ "ctor",
+ "duration-str",
+ "lazy_static",
+ "merklehash",
+ "paste",
+ "serial_test",
+ "tracing",
+ "utils",
 ]
 
 [[package]]
@@ -934,6 +953,7 @@ dependencies = [
  "cas_types",
  "chrono",
  "clap",
+ "config",
  "ctor",
  "deduplication",
  "dirs",
@@ -988,13 +1008,16 @@ version = "0.14.5"
 dependencies = [
  "async-trait",
  "bytes",
+ "config",
  "gearhash",
+ "lazy_static",
  "mdb_shard",
  "merklehash",
  "more-asserts",
  "progress_tracking",
  "rand 0.9.1",
  "utils",
+ "xet_runtime",
 ]
 
 [[package]]
@@ -2305,6 +2328,7 @@ dependencies = [
  "blake3",
  "bytes",
  "clap",
+ "config",
  "futures",
  "futures-util",
  "heapify",
@@ -2322,6 +2346,7 @@ dependencies = [
  "tracing",
  "utils",
  "uuid",
+ "xet_runtime",
 ]
 
 [[package]]
@@ -2695,6 +2720,12 @@ dependencies = [
  "smallvec",
  "windows-targets 0.52.6",
 ]
+
+[[package]]
+name = "paste"
+version = "1.0.15"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "57c0d7b74b563b49d38dae00a0c37d4d6de9b432382b2892f0574ddcae73fd0a"
 
 [[package]]
 name = "pem"
@@ -5048,6 +5079,7 @@ name = "xet_logging"
 version = "0.14.5"
 dependencies = [
  "chrono",
+ "config",
  "console-subscriber",
  "error_printer",
  "git-version",
@@ -5059,12 +5091,14 @@ dependencies = [
  "tracing-appender",
  "tracing-subscriber",
  "utils",
+ "xet_runtime",
 ]
 
 [[package]]
 name = "xet_runtime"
 version = "0.1.0"
 dependencies = [
+ "config",
  "dirs",
  "error_printer",
  "libc",

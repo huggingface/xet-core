@@ -79,8 +79,8 @@ fn count_log_files(dir: &Path) -> usize {
     }
 }
 
-#[test]
-fn test_maximum_age_cleanup() {
+#[tokio::test]
+async fn test_maximum_age_cleanup() {
     let temp_dir = TempDir::new().expect("Failed to create temp directory");
     let log_dir = temp_dir.path();
 
@@ -110,8 +110,8 @@ fn test_maximum_age_cleanup() {
     assert!(log_files <= 1, "Expected at most 1 log file after age-based cleanup, found {}", log_files);
 }
 
-#[test]
-fn test_maximum_size_cleanup() {
+#[tokio::test]
+async fn test_maximum_size_cleanup() {
     let temp_dir = TempDir::new().expect("Failed to create temp directory");
     let log_dir = temp_dir.path();
 
@@ -143,8 +143,8 @@ fn test_maximum_size_cleanup() {
     assert!(total_size <= 10 * 1024, "Directory size {} exceeds 10kb limit", total_size);
 }
 
-#[test]
-fn test_active_window_protection() {
+#[tokio::test]
+async fn test_active_window_protection() {
     let temp_dir = TempDir::new().expect("Failed to create temp directory");
     let log_dir = temp_dir.path();
 
@@ -188,8 +188,8 @@ fn test_active_window_protection() {
     assert_eq!(log_files, 2);
 }
 
-#[test]
-fn test_cleanup_disabled() {
+#[tokio::test]
+async fn test_cleanup_disabled() {
     let temp_dir = TempDir::new().expect("Failed to create temp directory");
     let log_dir = temp_dir.path();
 
@@ -214,8 +214,8 @@ fn test_cleanup_disabled() {
     assert_eq!(log_files, 3);
 }
 
-#[test]
-fn test_maximum_age_cleanup_parallel() {
+#[tokio::test]
+async fn test_maximum_age_cleanup_parallel() {
     let temp_dir = TempDir::new().expect("Failed to create temp directory");
     let log_dir = temp_dir.path();
     std::fs::create_dir_all(log_dir).expect("Failed to create log directory");
@@ -249,8 +249,8 @@ fn test_maximum_age_cleanup_parallel() {
     assert!(log_files <= 1, "Expected at most 1 log file after age-based cleanup, found {}", log_files);
 }
 
-#[test]
-fn test_maximum_size_cleanup_parallel() {
+#[tokio::test]
+async fn test_maximum_size_cleanup_parallel() {
     let temp_dir = TempDir::new().expect("Failed to create temp directory");
     let log_dir = temp_dir.path();
     std::fs::create_dir_all(log_dir).expect("Failed to create log directory");
@@ -289,8 +289,8 @@ fn test_maximum_size_cleanup_parallel() {
     assert!(total_size <= 10 * 1024, "Directory size {} exceeds 10kb limit", total_size);
 }
 
-#[test]
-fn test_active_window_protection_parallel() {
+#[tokio::test]
+async fn test_active_window_protection_parallel() {
     let temp_dir = TempDir::new().expect("Failed to create temp directory");
     let log_dir = temp_dir.path();
     std::fs::create_dir_all(log_dir).expect("Failed to create log directory");
@@ -326,8 +326,8 @@ fn test_active_window_protection_parallel() {
     );
 }
 
-#[test]
-fn test_cleanup_stress_test() {
+#[tokio::test]
+async fn test_cleanup_stress_test() {
     let temp_dir = TempDir::new().expect("Failed to create temp directory");
     let log_dir = temp_dir.path();
 

@@ -3,27 +3,31 @@ use std::time::Duration;
 // Run tests that determine deduplication, especially across different test subjects.
 use data::FileUploadSession;
 use data::configurations::TranslatorConfig;
-use data::constants::{PROGRESS_UPDATE_INTERVAL, SESSION_XORB_METADATA_FLUSH_MAX_COUNT};
-use deduplication::constants::{MAX_XORB_BYTES, MAX_XORB_CHUNKS, TARGET_CHUNK_SIZE};
-use mdb_shard::MDB_SHARD_TARGET_SIZE;
+use deduplication::constants::{DEDUP_MAX_XORB_BYTES, DEDUP_TARGET_CHUNK_SIZE};
 use tempfile::TempDir;
-use utils::test_set_globals;
+use utils::{test_set_config, test_set_constants};
 
 // Runs this test suite with small chunks and xorbs so that we can make sure that all the different edge
 // cases are hit.
-test_set_globals! {
-    TARGET_CHUNK_SIZE = 1024;
-    MAX_XORB_CHUNKS = 2;
+test_set_constants! {
+    DEDUP_TARGET_CHUNK_SIZE = 1024;
+}
 
-    // Disable the periodic aggregation in the file upload sessions.
-    PROGRESS_UPDATE_INTERVAL = Duration::ZERO;
+test_set_config! {
+    data {
+        // Disable the periodic aggregation in the file upload sessions.
+        progress_update_interval = Duration::ZERO;
 
-    // Set the maximum xorb flush count to 1 so that every xorb gets flushed to the temporary session
-    // pool.
-    SESSION_XORB_METADATA_FLUSH_MAX_COUNT = 1;
-
-    // Set the target shard size to be really small so we test the multiple shards on resume path as well.
-    MDB_SHARD_TARGET_SIZE = 1024;
+        // Set the maximum xorb flush count to 1 so that every xorb gets flushed to the temporary session
+        // pool.
+        session_xorb_metadata_flush_max_count = 1;
+    }
+    deduplication {
+        max_xorb_chunks = 2;
+    }
+    mdb_shard {
+        target_size = 1024u64;
+    }
 }
 
 // Test the deduplication framework.
@@ -91,7 +95,7 @@ mod tests {
 
             let progress = progress_tracker.get_aggregated_state().await;
 
-            let max_deviance = (*MAX_XORB_BYTES + *MAX_CHUNK_SIZE) as u64;
+            let max_deviance = (*DEDUP_MAX_XORB_BYTES + *MAX_CHUNK_SIZE) as u64;
 
             let n = n as u64;
 
@@ -113,7 +117,7 @@ mod tests {
         let n = 256 * 1024;
         let resume_n = [16 * 1024, 16 * 1024, 64 * 1024, 128 * 1024, 240 * 1024];
 
-        let max_deviance = (*MAX_XORB_BYTES + *MAX_CHUNK_SIZE) as u64;
+        let max_deviance = (*DEDUP_MAX_XORB_BYTES + *MAX_CHUNK_SIZE) as u64;
 
         // Get a sizable block of random data
         let mut data = vec![0u8; n];

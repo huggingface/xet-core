@@ -14,6 +14,8 @@ harness = false
 bench = true
 
 [dependencies]
+config = { path = "../config" }
+xet_runtime = { path = "../xet_runtime" }
 deduplication = { path = "../deduplication" }
 error_printer = { path = "../error_printer" }
 mdb_shard = { path = "../mdb_shard" }

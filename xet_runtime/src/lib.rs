@@ -3,6 +3,9 @@ pub mod exports;
 
 pub mod runtime;
 
+use std::sync::Arc;
+
+use config::XetConfig;
 pub use runtime::XetRuntime;
 pub mod sync_primatives;
 pub use sync_primatives::{SyncJoinHandle, spawn_os_thread};
@@ -20,3 +23,7 @@ mod cache_dir;
 
 #[cfg(not(target_family = "wasm"))]
 pub use cache_dir::xet_cache_root;
+
+pub fn xet_config() -> Arc<XetConfig> {
+    XetRuntime::current().config().clone()
+}

@@ -5,7 +5,12 @@ use bytes::Bytes;
 use more_asserts::{debug_assert_ge, debug_assert_le};
 
 use crate::Chunk;
-use crate::constants::{MAXIMUM_CHUNK_MULTIPLIER, MINIMUM_CHUNK_DIVISOR, TARGET_CHUNK_SIZE};
+use crate::constants::{DEDUP_MAXIMUM_CHUNK_MULTIPLIER, DEDUP_MINIMUM_CHUNK_DIVISOR, DEDUP_TARGET_CHUNK_SIZE};
+
+lazy_static::lazy_static! {
+    /// The maximum chunk size, calculated from the configurable constants above
+    pub static ref MAX_CHUNK_SIZE: usize = (*DEDUP_TARGET_CHUNK_SIZE) * (*DEDUP_MAXIMUM_CHUNK_MULTIPLIER);
+}
 
 /// Chunk Generator given an input stream. Do not use directly.
 /// Use `chunk_target_default`.
@@ -22,7 +27,7 @@ pub struct Chunker {
 
 impl Default for Chunker {
     fn default() -> Self {
-        Self::new(*TARGET_CHUNK_SIZE)
+        Self::new(*DEDUP_TARGET_CHUNK_SIZE)
     }
 }
 
@@ -44,8 +49,8 @@ impl Chunker {
         // bits of the gear hash are affected by only a small number of bytes
         // really. we just shift it all the way left.
         let mask = mask << mask.leading_zeros();
-        let minimum_chunk = target_chunk_size / *MINIMUM_CHUNK_DIVISOR;
-        let maximum_chunk = target_chunk_size * *MAXIMUM_CHUNK_MULTIPLIER;
+        let minimum_chunk = target_chunk_size / *DEDUP_MINIMUM_CHUNK_DIVISOR;
+        let maximum_chunk = target_chunk_size * *DEDUP_MAXIMUM_CHUNK_MULTIPLIER;
 
         assert!(maximum_chunk > minimum_chunk);
 
@@ -293,8 +298,8 @@ pub fn find_partitions<R: Read + Seek>(
     // minimum chunk must be at least the hash window size.
     // the way the chunker works, the minimum may be up to
     // target_min_chunk_size - 64
-    let minimum_chunk = target_chunk_size / *MINIMUM_CHUNK_DIVISOR;
-    let maximum_chunk = target_chunk_size * *MAXIMUM_CHUNK_MULTIPLIER;
+    let minimum_chunk = target_chunk_size / *DEDUP_MINIMUM_CHUNK_DIVISOR;
+    let maximum_chunk = target_chunk_size * *DEDUP_MAXIMUM_CHUNK_MULTIPLIER;
 
     assert!(minimum_chunk > 64);
 
@@ -509,14 +514,14 @@ mod tests {
         let mut chunker = ChunkerTestWrapper::new(512);
 
         // Use constant data
-        let data = vec![0; 8 * *MAXIMUM_CHUNK_MULTIPLIER * 512];
+        let data = vec![0; 8 * *DEDUP_MAXIMUM_CHUNK_MULTIPLIER * 512];
 
         let chunks = chunker.next_block(&data, true);
 
         assert_eq!(chunks.len(), 8);
 
         for c in chunks.iter() {
-            assert_eq!(c.data.len(), *MAXIMUM_CHUNK_MULTIPLIER * 512);
+            assert_eq!(c.data.len(), *DEDUP_MAXIMUM_CHUNK_MULTIPLIER * 512);
         }
     }
 

@@ -3,28 +3,27 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use cas_client::remote_client::{PREFIX_DEFAULT, RECONSTRUCT_WRITE_SEQUENTIALLY};
-use cas_client::{
-    CHUNK_CACHE_SIZE_BYTES, CacheConfig, SeekingOutputProvider, SequentialOutput, sequential_output_from_filepath,
-};
+use cas_client::remote_client::PREFIX_DEFAULT;
+use cas_client::{CacheConfig, SeekingOutputProvider, SequentialOutput, sequential_output_from_filepath};
 use cas_object::CompressionScheme;
 use deduplication::DeduplicationMetrics;
+use lazy_static::lazy_static;
 use progress_tracking::TrackingProgressUpdater;
 use progress_tracking::item_tracking::ItemProgressUpdater;
 use tracing::{Instrument, Span, info, info_span, instrument};
 use ulid::Ulid;
 use utils::auth::{AuthConfig, TokenRefresher};
 use xet_runtime::utils::run_constrained_with_semaphore;
-use xet_runtime::{GlobalSemaphoreHandle, XetRuntime, global_semaphore_handle, xet_cache_root};
+use xet_runtime::{GlobalSemaphoreHandle, XetRuntime, global_semaphore_handle, xet_cache_root, xet_config};
 
 use crate::configurations::*;
-use crate::constants::{INGESTION_BLOCK_SIZE, MAX_CONCURRENT_DOWNLOADS};
 use crate::errors::DataProcessingError;
 use crate::file_upload_session::CONCURRENT_FILE_INGESTION_LIMITER;
 use crate::{FileDownloader, FileUploadSession, XetFileInfo, errors};
 
-utils::configurable_constants! {
-    ref DEFAULT_CAS_ENDPOINT: String = "http://localhost:8080".to_string();
+lazy_static! {
+    static ref CONCURRENT_FILE_DOWNLOAD_LIMITER: GlobalSemaphoreHandle =
+        global_semaphore_handle!(xet_config().data.max_concurrent_downloads);
 }
 
 pub fn default_config(
@@ -77,7 +76,7 @@ pub fn default_config(
             prefix: PREFIX_DEFAULT.into(),
             cache_config: CacheConfig {
                 cache_directory: cache_path.join("chunk-cache"),
-                cache_size: *CHUNK_CACHE_SIZE_BYTES,
+                cache_size: xet_config().chunk_cache.size_bytes,
             },
             staging_directory: None,
             user_agent: user_agent.clone(),
@@ -109,7 +108,7 @@ pub async fn upload_bytes_async(
     user_agent: String,
 ) -> errors::Result<Vec<XetFileInfo>> {
     let config = default_config(
-        endpoint.unwrap_or(DEFAULT_CAS_ENDPOINT.clone()),
+        endpoint.unwrap_or_else(|| xet_config().data.default_cas_endpoint.clone()),
         None,
         token_info,
         token_refresher,
@@ -156,7 +155,7 @@ pub async fn upload_async(
     // upload shards and xorbs
     // for each file, return the filehash
     let config = default_config(
-        endpoint.unwrap_or(DEFAULT_CAS_ENDPOINT.clone()),
+        endpoint.unwrap_or_else(|| xet_config().data.default_cas_endpoint.clone()),
         None,
         token_info,
         token_refresher,
@@ -194,18 +193,13 @@ pub async fn download_async(
     progress_updaters: Option<Vec<Arc<dyn TrackingProgressUpdater>>>,
     user_agent: String,
 ) -> errors::Result<Vec<String>> {
-    lazy_static! {
-        static ref CONCURRENT_FILE_DOWNLOAD_LIMITER: GlobalSemaphoreHandle =
-            global_semaphore_handle!(*MAX_CONCURRENT_DOWNLOADS);
-    }
-
     if let Some(updaters) = &progress_updaters
         && updaters.len() != file_infos.len()
     {
         return Err(DataProcessingError::ParameterError("updaters are not same length as pointer_files".to_string()));
     }
     let config = default_config(
-        endpoint.unwrap_or(DEFAULT_CAS_ENDPOINT.to_string()),
+        endpoint.unwrap_or_else(|| xet_config().data.default_cas_endpoint.clone()),
         None,
         token_info,
         token_refresher,
@@ -251,7 +245,7 @@ pub async fn clean_file(
     let span = Span::current();
     span.record("file.name", filename.as_ref().to_str());
     span.record("file.len", n);
-    let mut buffer = vec![0u8; u64::min(n, *INGESTION_BLOCK_SIZE as u64) as usize];
+    let mut buffer = vec![0u8; u64::min(n, xet_config().data.ingestion_block_size as u64) as usize];
 
     let mut handle = processor.start_clean(Some(filename.as_ref().to_string_lossy().into()), n).await;
 
@@ -281,7 +275,7 @@ async fn smudge_file(
     // Wrap the progress updater in the proper tracking struct.
     let progress_updater = progress_updater.map(ItemProgressUpdater::new);
 
-    if *RECONSTRUCT_WRITE_SEQUENTIALLY {
+    if xet_config().client.reconstruct_write_sequentially {
         let output: SequentialOutput = sequential_output_from_filepath(file_path)?;
         info!("Using sequential writer for smudge");
         downloader
@@ -313,9 +307,9 @@ mod tests {
 
     use super::*;
 
-    #[test]
+    #[tokio::test]
     #[serial(default_config_env)]
-    fn test_default_config_with_hf_home() {
+    async fn test_default_config_with_hf_home() {
         let temp_dir = tempdir().unwrap();
         let _hf_home_guard = EnvVarGuard::set("HF_HOME", temp_dir.path().to_str().unwrap());
 
@@ -327,9 +321,9 @@ mod tests {
         assert!(config.data_config.cache_config.cache_directory.starts_with(&temp_dir.path()));
     }
 
-    #[test]
+    #[tokio::test]
     #[serial(default_config_env)]
-    fn test_default_config_with_hf_xet_cache_and_hf_home() {
+    async fn test_default_config_with_hf_xet_cache_and_hf_home() {
         let temp_dir_xet_cache = tempdir().unwrap();
         let temp_dir_hf_home = tempdir().unwrap();
 
@@ -363,9 +357,9 @@ mod tests {
         assert!(config.data_config.cache_config.cache_directory.starts_with(&temp_dir.path()));
     }
 
-    #[test]
+    #[tokio::test]
     #[serial(default_config_env)]
-    fn test_default_config_with_hf_xet_cache() {
+    async fn test_default_config_with_hf_xet_cache() {
         let temp_dir = tempdir().unwrap();
         let _hf_xet_cache_guard = EnvVarGuard::set("HF_XET_CACHE", temp_dir.path().to_str().unwrap());
 
@@ -377,9 +371,9 @@ mod tests {
         assert!(config.data_config.cache_config.cache_directory.starts_with(&temp_dir.path()));
     }
 
-    #[test]
+    #[tokio::test]
     #[serial(default_config_env)]
-    fn test_default_config_without_env_vars() {
+    async fn test_default_config_without_env_vars() {
         let endpoint = "http://localhost:8080".to_string();
         let result = default_config(endpoint, None, None, None, String::new());
 

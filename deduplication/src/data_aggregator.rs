@@ -3,9 +3,10 @@ use std::mem::take;
 use mdb_shard::file_structs::MDBFileInfo;
 use merklehash::MerkleHash;
 use more_asserts::*;
+use xet_runtime::xet_config;
 
 use crate::Chunk;
-use crate::constants::{MAX_XORB_BYTES, MAX_XORB_CHUNKS};
+use crate::constants::DEDUP_MAX_XORB_BYTES;
 use crate::raw_xorb_data::RawXorbData;
 
 #[derive(Default, Debug)]
@@ -73,8 +74,8 @@ impl DataAggregator {
         let xorb_data = RawXorbData::from_chunks(&self.chunks, take(&mut self.file_boundaries));
         let xorb_hash = xorb_data.hash();
 
-        debug_assert_le!(self.num_bytes(), *MAX_XORB_BYTES);
-        debug_assert_le!(self.num_chunks(), *MAX_XORB_CHUNKS);
+        debug_assert_le!(self.num_bytes(), *DEDUP_MAX_XORB_BYTES);
+        debug_assert_le!(self.num_chunks(), xet_config().deduplication.max_xorb_chunks);
 
         let mut ret = vec![0u64; self.pending_file_info.len()];
 
@@ -110,8 +111,8 @@ impl DataAggregator {
     }
 
     pub fn merge_in(&mut self, mut other: DataAggregator) {
-        debug_assert_le!(self.num_bytes() + other.num_bytes(), *MAX_XORB_BYTES);
-        debug_assert_le!(self.num_chunks() + other.num_chunks(), *MAX_XORB_BYTES);
+        debug_assert_le!(self.num_bytes() + other.num_bytes(), *DEDUP_MAX_XORB_BYTES);
+        debug_assert_le!(self.num_chunks() + other.num_chunks(), *DEDUP_MAX_XORB_BYTES);
 
         let shift = self.chunks.len() as u32;
         self.chunks.append(&mut other.chunks);

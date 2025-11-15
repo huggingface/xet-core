@@ -4,6 +4,7 @@ use std::future::Future;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, OnceLock};
 
+use config::XetConfig;
 use reqwest::Client;
 use tokio::runtime::{Builder as TokioRuntimeBuilder, Handle as TokioRuntimeHandle, Runtime as TokioRuntime};
 use tokio::sync::Semaphore;
@@ -120,6 +121,9 @@ pub struct XetRuntime {
 
     // A cached reqwest Client to be shared by all high-level clients.
     global_reqwest_client: OnceLock<Client>,
+
+    // Primary configuration struct
+    config: Arc<XetConfig>,
 }
 
 // Use thread-local references to the runtime that are set on initialization among all
@@ -157,7 +161,13 @@ impl XetRuntime {
         None
     }
 
+    /// Creates a new runtime with the default configuration.
     pub fn new() -> Result<Arc<Self>, MultithreadedRuntimeError> {
+        Self::new_with_config(XetConfig::new())
+    }
+
+    /// Creates a new runtime with the given configuration.
+    pub fn new_with_config(config: XetConfig) -> Result<Arc<Self>, MultithreadedRuntimeError> {
         // First, get an Arc value holding the runtime that we can initialize the
         // thread-local THREAD_RUNTIME_REF with
         let rt = Arc::new(Self {
@@ -167,6 +177,7 @@ impl XetRuntime {
             sigint_shutdown: false.into(),
             global_semaphore_table: GlobalSemaphoreLookup::default(),
             global_reqwest_client: OnceLock::new(),
+            config: Arc::new(config),
         });
 
         // Each thread in each of the tokio worker threads holds a reference to the runtime handling
@@ -229,6 +240,7 @@ impl XetRuntime {
             sigint_shutdown: false.into(),
             global_semaphore_table: GlobalSemaphoreLookup::default(),
             global_reqwest_client: OnceLock::new(),
+            config: Arc::new(XetConfig::new()),
         })
     }
 
@@ -365,6 +377,12 @@ impl XetRuntime {
     /// to use in the semaphore.  It's reset on new runtimes.
     pub fn global_semaphore(&self, handle: impl Into<GlobalSemaphoreHandle>) -> Arc<Semaphore> {
         self.global_semaphore_table.get(handle)
+    }
+
+    /// Returns a reference to the primary configuration struct.
+    #[inline]
+    pub fn config(&self) -> &Arc<XetConfig> {
+        &self.config
     }
 }
 
