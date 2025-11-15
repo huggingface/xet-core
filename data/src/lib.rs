@@ -1,6 +1,5 @@
 #![allow(dead_code)]
 pub mod configurations;
-pub mod constants;
 pub mod data_client;
 mod deduplication_interface;
 pub mod errors;

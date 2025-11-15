@@ -1,10 +1,10 @@
 use data::test_utils::*;
 use deduplication::constants::{MAX_XORB_BYTES, MAX_XORB_CHUNKS, TARGET_CHUNK_SIZE};
-use utils::test_set_globals;
+use utils::test_set_constants;
 
 // Runs this test suite with small chunks and xorbs so that we can make sure that all the different edge
 // cases are hit.
-test_set_globals! {
+test_set_constants! {
     TARGET_CHUNK_SIZE = 1024;
     MAX_XORB_BYTES = 5 * (*TARGET_CHUNK_SIZE);
     MAX_XORB_CHUNKS = 8;

@@ -7,8 +7,8 @@ use reqwest_retry::{Retryable, default_on_request_success};
 use tokio_retry::RetryIf;
 use tokio_retry::strategy::{ExponentialBackoff, jitter};
 use tracing::{error, info};
+use xet_runtime::xet_config;
 
-use crate::constants::{CLIENT_RETRY_BASE_DELAY, CLIENT_RETRY_MAX_ATTEMPTS};
 use crate::error::CasClientError;
 use crate::http_client::request_id_from_response;
 
@@ -29,8 +29,8 @@ pub struct RetryWrapper {
 impl RetryWrapper {
     pub fn new(api_tag: &'static str) -> Self {
         Self {
-            max_attempts: *CLIENT_RETRY_MAX_ATTEMPTS,
-            base_delay: *CLIENT_RETRY_BASE_DELAY,
+            max_attempts: xet_config().client.retry_max_attempts,
+            base_delay: xet_config().client.retry_base_delay,
             no_retry_on_429: false,
             log_errors_as_info: false,
             api_tag,

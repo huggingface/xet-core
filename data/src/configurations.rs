@@ -1,10 +1,11 @@
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
+use cas_client::CacheConfig;
 use cas_client::remote_client::PREFIX_DEFAULT;
-use cas_client::{CHUNK_CACHE_SIZE_BYTES, CacheConfig};
 use cas_object::CompressionScheme;
 use utils::auth::AuthConfig;
+use xet_runtime::xet_config;
 
 use crate::errors::Result;
 
@@ -95,7 +96,7 @@ impl TranslatorConfig {
                 prefix: PREFIX_DEFAULT.into(),
                 cache_config: CacheConfig {
                     cache_directory: path.join("cache"),
-                    cache_size: *CHUNK_CACHE_SIZE_BYTES,
+                    cache_size: xet_config().chunk_cache.size_bytes,
                 },
                 staging_directory: None,
                 user_agent: String::new(),

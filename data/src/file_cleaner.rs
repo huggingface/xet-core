@@ -9,9 +9,9 @@ use mdb_shard::file_structs::FileMetadataExt;
 use merklehash::MerkleHash;
 use progress_tracking::upload_tracking::CompletionTrackerFileId;
 use tracing::{Instrument, debug_span, info, instrument};
+use xet_runtime::xet_config;
 
 use crate::XetFileInfo;
-use crate::constants::INGESTION_BLOCK_SIZE;
 use crate::deduplication_interface::UploadSessionDataManager;
 use crate::errors::Result;
 use crate::file_upload_session::FileUploadSession;
@@ -84,10 +84,10 @@ impl SingleFileCleaner {
     }
 
     pub async fn add_data(&mut self, data: &[u8]) -> Result<()> {
-        if data.len() > *INGESTION_BLOCK_SIZE {
+        if data.len() > xet_config().data.ingestion_block_size {
             let mut pos = 0;
             while pos < data.len() {
-                let next_pos = usize::min(pos + *INGESTION_BLOCK_SIZE, data.len());
+                let next_pos = usize::min(pos + xet_config().data.ingestion_block_size, data.len());
                 self.add_data_impl(Bytes::copy_from_slice(&data[pos..next_pos])).await?;
                 pos = next_pos;
             }

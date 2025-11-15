@@ -8,11 +8,9 @@ use merklehash::{HMACKey, MerkleHash};
 use tokio::sync::RwLock;
 use tracing::{debug, info, instrument, trace, warn};
 use utils::RwTaskLock;
+use xet_runtime::xet_config;
 
 use crate::cas_structs::*;
-use crate::constants::{
-    CHUNK_INDEX_TABLE_MAX_SIZE, MDB_SHARD_EXPIRATION_BUFFER, MDB_SHARD_MAX_TARGET_SIZE, SHARD_CACHE_SIZE_LIMIT,
-};
 use crate::error::{MDBShardError, Result};
 use crate::file_structs::*;
 use crate::shard_file_handle::MDBShardFile;
@@ -104,12 +102,19 @@ impl ShardFileManager {
         session_directory: impl AsRef<Path>,
         scan_directory: bool,
     ) -> Result<Arc<Self>> {
-        Self::new_impl(session_directory, false, *MDB_SHARD_MAX_TARGET_SIZE, scan_directory, 0).await
+        Self::new_impl(session_directory, false, xet_config().mdb_shard.max_target_size, scan_directory, 0).await
     }
 
     // Construction functions
     pub async fn new_in_cache_directory(cache_directory: impl AsRef<Path>) -> Result<Arc<Self>> {
-        Self::new_impl(cache_directory, true, *MDB_SHARD_MAX_TARGET_SIZE, true, SHARD_CACHE_SIZE_LIMIT.as_u64()).await
+        Self::new_impl(
+            cache_directory,
+            true,
+            xet_config().mdb_shard.max_target_size,
+            true,
+            xet_config().mdb_shard.cache_size_limit.as_u64(),
+        )
+        .await
     }
 
     async fn new_impl(
@@ -196,7 +201,7 @@ impl ShardFileManager {
         let needs_clean = self.shard_directory_cleaned.swap(true, std::sync::atomic::Ordering::Relaxed);
 
         if needs_clean {
-            MDBShardFile::clean_shard_cache(&self.shard_directory, MDB_SHARD_EXPIRATION_BUFFER.as_secs())?;
+            MDBShardFile::clean_shard_cache(&self.shard_directory, xet_config().mdb_shard.expiration_buffer.as_secs())?;
         }
 
         Ok(())
@@ -262,7 +267,8 @@ impl ShardFileManager {
                         sbkp_lg.shard_collections.push(KeyedShardCollection::new(shard_hmac_key));
                     }
 
-                    let update_chunk_lookup = sbkp_lg.total_indexed_chunks < *CHUNK_INDEX_TABLE_MAX_SIZE;
+                    let update_chunk_lookup =
+                        sbkp_lg.total_indexed_chunks < xet_config().mdb_shard.chunk_index_table_max_size;
 
                     let shard_hash = s.shard_hash;
 
@@ -796,7 +802,8 @@ mod tests {
             verify_mdb_shards_match(&mdb2, &mdb_in_mem, true).await?;
 
             // Now, merge shards in the background.
-            let merged_shards = consolidate_shards_in_directory(tmp_dir.path(), *MDB_SHARD_MAX_TARGET_SIZE, false)?;
+            let merged_shards =
+                consolidate_shards_in_directory(tmp_dir.path(), xet_config().mdb_shard.max_target_size, false)?;
 
             assert_eq!(merged_shards.len(), 1);
             for si in merged_shards {
@@ -872,7 +879,8 @@ mod tests {
 
             {
                 let merged_shards =
-                    consolidate_shards_in_directory(tmp_dir.path(), *MDB_SHARD_MAX_TARGET_SIZE, false).unwrap();
+                    consolidate_shards_in_directory(tmp_dir.path(), xet_config().mdb_shard.max_target_size, false)
+                        .unwrap();
 
                 assert_eq!(merged_shards.len(), 1);
 
@@ -1094,7 +1102,7 @@ mod tests {
     }
 
     async fn shard_list_with_timestamp_filtering(path: &Path) -> Result<Vec<Arc<MDBShardFile>>> {
-        Ok(ShardFileManager::new_impl(path, false, *MDB_SHARD_MAX_TARGET_SIZE, true, 0)
+        Ok(ShardFileManager::new_impl(path, false, xet_config().mdb_shard.max_target_size, true, 0)
             .await?
             .registered_shard_list()
             .await?)

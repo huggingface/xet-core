@@ -14,9 +14,10 @@ use more_asserts::*;
 use serde::Serialize;
 use tracing::warn;
 use utils::serialization_utils::*;
+use xet_runtime::xet_config;
 
 use crate::cas_chunk_format::{deserialize_chunk, serialize_chunk};
-use crate::constants::{CAS_OBJECT_COMPRESSION_SCHEME_RETEST_INTERVAL, IDEAL_CAS_BLOCK_SIZE};
+use crate::constants::XORB_BLOCK_SIZE;
 use crate::error::CasObjectError;
 use crate::{CASChunkHeader, CompressionScheme};
 
@@ -38,7 +39,7 @@ const CAS_OBJECT_INFO_DEFAULT_LENGTH: u32 = 92;
 // giant size that leads to OOM on allocation.
 #[inline]
 fn prealloc_num_chunks(declared_size: usize) -> usize {
-    let average_num_chunks_per_xorb: usize = *IDEAL_CAS_BLOCK_SIZE / *TARGET_CHUNK_SIZE;
+    let average_num_chunks_per_xorb: usize = *XORB_BLOCK_SIZE / *TARGET_CHUNK_SIZE;
 
     // We add a bit buffer to the average size, hoping to reduce reallocation if
     // the actual number of chunks exceeds AVERAGE_NUM_CHUNKS_PER_XORB.
@@ -1327,8 +1328,8 @@ impl SerializedCasObject {
         let mut serialized_data = Vec::with_capacity(size_upper_bound);
 
         // Set the periodic retesting interval
-        let retest_interval = if *CAS_OBJECT_COMPRESSION_SCHEME_RETEST_INTERVAL > 0 {
-            *CAS_OBJECT_COMPRESSION_SCHEME_RETEST_INTERVAL
+        let retest_interval = if xet_config().xorb.compression_scheme_retest_interval > 0 {
+            xet_config().xorb.compression_scheme_retest_interval
         } else {
             num_chunks
         };

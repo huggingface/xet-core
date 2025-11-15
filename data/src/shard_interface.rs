@@ -9,7 +9,6 @@ use bytes::Bytes;
 use cas_client::Client;
 use error_printer::ErrorPrinter;
 use mdb_shard::cas_structs::MDBCASInfo;
-use mdb_shard::constants::MDB_SHARD_MAX_TARGET_SIZE;
 use mdb_shard::file_structs::{FileDataSequenceEntry, MDBFileInfo};
 use mdb_shard::session_directory::{ShardMergeResult, consolidate_shards_in_directory, merge_shards_background};
 use mdb_shard::shard_in_memory::MDBInMemoryShard;
@@ -19,11 +18,9 @@ use tempfile::TempDir;
 use tokio::sync::Mutex;
 use tokio::task::JoinSet;
 use tracing::{Instrument, debug, info, info_span};
+use xet_runtime::xet_config;
 
 use crate::configurations::TranslatorConfig;
-use crate::constants::{
-    MDB_SHARD_LOCAL_CACHE_EXPIRATION, SESSION_XORB_METADATA_FLUSH_INTERVAL, SESSION_XORB_METADATA_FLUSH_MAX_COUNT,
-};
 use crate::errors::Result;
 use crate::file_upload_session::acquire_upload_permit;
 
@@ -81,7 +78,7 @@ impl SessionShardInterface {
                 Some(merge_shards_background(
                     &xorb_metadata_staging_dir,
                     &session_dir,
-                    *MDB_SHARD_MAX_TARGET_SIZE,
+                    xet_config().mdb_shard.max_target_size,
                     true,
                 ))
             } else {
@@ -203,13 +200,16 @@ impl SessionShardInterface {
         xorb_shard.add_cas_block(cas_block_contents)?;
 
         let time_now = SystemTime::now();
-        let flush_interval = *SESSION_XORB_METADATA_FLUSH_INTERVAL;
+        let flush_interval = xet_config().data.session_xorb_metadata_flush_interval;
 
         // Flush if it's time or we've hit enough new shards that we should do the flush
         if *last_flush + flush_interval < time_now
-            || xorb_shard.num_cas_entries() >= *SESSION_XORB_METADATA_FLUSH_MAX_COUNT
+            || xorb_shard.num_cas_entries() >= xet_config().data.session_xorb_metadata_flush_max_count
         {
-            xorb_shard.write_to_directory(&self.xorb_metadata_staging_dir, Some(*MDB_SHARD_LOCAL_CACHE_EXPIRATION))?;
+            xorb_shard.write_to_directory(
+                &self.xorb_metadata_staging_dir,
+                Some(xet_config().mdb_shard.local_cache_expiration),
+            )?;
 
             *last_flush = time_now + flush_interval;
             *xorb_shard = MDBInMemoryShard::default();
@@ -240,7 +240,7 @@ impl SessionShardInterface {
         // First, scan, merge, and fill out any shards in the session directory
         let shard_list = consolidate_shards_in_directory(
             self.session_shard_manager.shard_directory(),
-            *MDB_SHARD_MAX_TARGET_SIZE,
+            xet_config().mdb_shard.max_target_size,
             // Here, we want to error out if some of the information isn't present or corrupt, so set skip_on_error to
             // false.
             false,
@@ -295,7 +295,7 @@ impl SessionShardInterface {
                     // time.
                     let new_shard_path = si.export_with_expiration(
                         cache_shard_manager.shard_directory(),
-                        *MDB_SHARD_LOCAL_CACHE_EXPIRATION,
+                        xet_config().mdb_shard.local_cache_expiration,
                     )?;
 
                     // Register that new shard in the cache shard manager
