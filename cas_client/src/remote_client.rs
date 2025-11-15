@@ -992,8 +992,7 @@ mod tests {
         const FIRST_SEGMENT_SIZE: u64 = 16 * 64 * 1024 * 1024;
         assert_eq!(
             FIRST_SEGMENT_SIZE,
-            xet_config().client.num_range_in_segment_base as u64
-                * *deduplication::constants::DEDUP_MAX_XORB_BYTES as u64
+            xet_config().client.num_range_in_segment_base as u64 * *deduplication::constants::MAX_XORB_BYTES as u64
         );
 
         // Test case: full file reconstruction
@@ -1071,8 +1070,7 @@ mod tests {
         const FIRST_SEGMENT_SIZE: u64 = 16 * 64 * 1024 * 1024;
         assert_eq!(
             FIRST_SEGMENT_SIZE,
-            xet_config().client.num_range_in_segment_base as u64
-                * *deduplication::constants::DEDUP_MAX_XORB_BYTES as u64
+            xet_config().client.num_range_in_segment_base as u64 * *deduplication::constants::MAX_XORB_BYTES as u64
         );
 
         // Test case: skip first 100 bytes

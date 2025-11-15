@@ -1,9 +1,4 @@
 crate::config_group!({
-    /// The maximum number of chunks to go in a single xorb.
-    /// Chunks are targeted at 64K, for ~1024 chunks per xorb, but
-    /// can be much higher when there are a lot of small files.
-    ref max_xorb_chunks: usize = 8 * 1024;
-
     /// Number of ranges to use when estimating fragmentation
     ref nranges_in_streaming_fragmentation_estimator: usize = 128;
 

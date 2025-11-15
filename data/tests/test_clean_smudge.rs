@@ -1,18 +1,13 @@
 use data::test_utils::*;
-use deduplication::constants::{DEDUP_MAX_XORB_BYTES, DEDUP_TARGET_CHUNK_SIZE};
-use utils::{test_set_config, test_set_constants};
+use deduplication::constants::{MAX_XORB_BYTES, MAX_XORB_CHUNKS, TARGET_CHUNK_SIZE};
+use utils::test_set_constants;
 
 // Runs this test suite with small chunks and xorbs so that we can make sure that all the different edge
 // cases are hit.
 test_set_constants! {
-    DEDUP_TARGET_CHUNK_SIZE = 1024;
-    DEDUP_MAX_XORB_BYTES = 5 * (*DEDUP_TARGET_CHUNK_SIZE);
-}
-
-test_set_config! {
-    deduplication {
-        max_xorb_chunks = 8;
-    }
+    TARGET_CHUNK_SIZE = 1024;
+    MAX_XORB_BYTES = 5 * (*TARGET_CHUNK_SIZE);
+    MAX_XORB_CHUNKS = 8;
 }
 
 pub async fn check_clean_smudge_files_impl(file_list: &[(impl AsRef<str>, usize)], sequential: bool) {
@@ -87,27 +82,23 @@ mod testing_clean_smudge {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_single_large() {
-        check_clean_smudge_files(&[("a", *DEDUP_MAX_XORB_BYTES + 1)]).await;
+        check_clean_smudge_files(&[("a", *MAX_XORB_BYTES + 1)]).await;
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_two_small_multiple_xorbs() {
-        check_clean_smudge_files(&[
-            ("a", *DEDUP_MAX_XORB_BYTES / 2 + 1),
-            ("b", *DEDUP_MAX_XORB_BYTES / 2 + 1),
-        ])
-        .await;
+        check_clean_smudge_files(&[("a", *MAX_XORB_BYTES / 2 + 1), ("b", *MAX_XORB_BYTES / 2 + 1)]).await;
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_multiple_large() {
-        check_clean_smudge_files(&[("a", *DEDUP_MAX_XORB_BYTES + 1), ("b", *DEDUP_MAX_XORB_BYTES + 2)]).await;
+        check_clean_smudge_files(&[("a", *MAX_XORB_BYTES + 1), ("b", *MAX_XORB_BYTES + 2)]).await;
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_many_small_multiple_xorbs() {
         let n = 16;
-        let size = *DEDUP_MAX_XORB_BYTES / 8 + 1; // Will need 3 xorbs.
+        let size = *MAX_XORB_BYTES / 8 + 1; // Will need 3 xorbs.
 
         let files: Vec<_> = (0..n).map(|idx| (format!("f_{idx}"), size)).collect();
         check_clean_smudge_files(&files).await;
@@ -115,11 +106,7 @@ mod testing_clean_smudge {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_multiple_file_with_common_xorbs() {
-        check_clean_smudge_files(&[
-            ("a", *DEDUP_MAX_XORB_BYTES / 2 + 1),
-            ("b", *DEDUP_MAX_XORB_BYTES / 2 + 1),
-        ])
-        .await;
+        check_clean_smudge_files(&[("a", *MAX_XORB_BYTES / 2 + 1), ("b", *MAX_XORB_BYTES / 2 + 1)]).await;
     }
 
     /// 1) Several identical files, each smaller than MAX_XORB_BYTES.
@@ -127,7 +114,7 @@ mod testing_clean_smudge {
     async fn test_several_identical_multipart() {
         // Let's make 16 files, each identical and smaller than a xorb
         let file_specs: Vec<(String, Vec<(usize, u64)>)> = (0..16)
-            .map(|i| (format!("identical_{i}"), vec![(*DEDUP_MAX_XORB_BYTES / 2, 123)]))
+            .map(|i| (format!("identical_{i}"), vec![(*MAX_XORB_BYTES / 2, 123)]))
             .collect();
 
         check_clean_smudge_files_multipart(&file_specs).await;
@@ -137,7 +124,7 @@ mod testing_clean_smudge {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_identical_files_slightly_larger_than_max_xorb() {
         // single segment that exceeds MAX_XORB_BYTES
-        let big_size = *DEDUP_MAX_XORB_BYTES + 1;
+        let big_size = *MAX_XORB_BYTES + 1;
         let segments = vec![(big_size, 9999)];
 
         let file_specs: Vec<(String, Vec<(usize, u64)>)> =
@@ -149,7 +136,7 @@ mod testing_clean_smudge {
     /// 3) many files, each with a unique portion plus a large common portion bigger than MAX_XORB_BYTES/2.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_many_files_unique_plus_small_common() {
-        let block_size = *DEDUP_MAX_XORB_BYTES / 2;
+        let block_size = *MAX_XORB_BYTES / 2;
         // Each file has two segments: (i, 2048) -> unique seed, (999, half) -> common chunk
         let file_specs: Vec<(String, Vec<(usize, u64)>)> = (0..32)
             .map(|i| (format!("file_{i}"), vec![(block_size, i), (block_size, 999)]))
@@ -161,7 +148,7 @@ mod testing_clean_smudge {
     /// 3) many files, each with a unique portion plus a large common portion bigger than MAX_XORB_BYTES/2.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_many_files_unique_plus_large_common() {
-        let block_size = *DEDUP_MAX_XORB_BYTES + 10;
+        let block_size = *MAX_XORB_BYTES + 10;
         // Each file has two segments: (i, 2048) -> unique seed, (999, half) -> common chunk
         let file_specs: Vec<(String, Vec<(usize, u64)>)> = (0..32)
             .map(|i| (format!("file_{i}"), vec![(block_size, i), (block_size, 999)]))

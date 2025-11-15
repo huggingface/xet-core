@@ -1,10 +1,9 @@
 use mdb_shard::cas_structs::{CASChunkSequenceEntry, CASChunkSequenceHeader, MDBCASInfo};
 use merklehash::{MerkleHash, xorb_hash};
 use more_asserts::*;
-use xet_runtime::xet_config;
 
 use crate::Chunk;
-use crate::constants::DEDUP_MAX_XORB_BYTES;
+use crate::constants::{MAX_XORB_BYTES, MAX_XORB_CHUNKS};
 
 /// This struct is the data needed to cut a
 #[derive(Default, Debug, Clone)]
@@ -22,7 +21,7 @@ pub struct RawXorbData {
 impl RawXorbData {
     // Construct from raw chunks.  chunk data from raw chunks.
     pub fn from_chunks(chunks: &[Chunk], file_boundaries: Vec<usize>) -> Self {
-        debug_assert_le!(chunks.len(), xet_config().deduplication.max_xorb_chunks);
+        debug_assert_le!(chunks.len(), *MAX_XORB_CHUNKS);
 
         let mut data = Vec::with_capacity(chunks.len());
         let mut chunk_seq_entries = Vec::with_capacity(chunks.len());
@@ -36,7 +35,7 @@ impl RawXorbData {
         }
         let num_bytes = pos;
 
-        debug_assert_le!(num_bytes, *DEDUP_MAX_XORB_BYTES);
+        debug_assert_le!(num_bytes, *MAX_XORB_BYTES);
 
         let hash_and_len: Vec<_> = chunks.iter().map(|c| (c.hash, c.data.len() as u64)).collect();
         let cas_hash = xorb_hash(&hash_and_len);

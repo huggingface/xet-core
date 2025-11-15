@@ -5,7 +5,7 @@ use std::mem::{size_of, size_of_val};
 use anyhow::anyhow;
 use bytes::Buf;
 use deduplication::RawXorbData;
-use deduplication::constants::DEDUP_TARGET_CHUNK_SIZE;
+use deduplication::constants::TARGET_CHUNK_SIZE;
 #[cfg(not(target_family = "wasm"))]
 use futures::AsyncReadExt;
 use mdb_shard::chunk_verification::range_hash_from_chunks;
@@ -39,7 +39,7 @@ const CAS_OBJECT_INFO_DEFAULT_LENGTH: u32 = 92;
 // giant size that leads to OOM on allocation.
 #[inline]
 fn prealloc_num_chunks(declared_size: usize) -> usize {
-    let average_num_chunks_per_xorb: usize = *XORB_BLOCK_SIZE / *DEDUP_TARGET_CHUNK_SIZE;
+    let average_num_chunks_per_xorb: usize = *XORB_BLOCK_SIZE / *TARGET_CHUNK_SIZE;
 
     // We add a bit buffer to the average size, hoping to reduce reallocation if
     // the actual number of chunks exceeds AVERAGE_NUM_CHUNKS_PER_XORB.

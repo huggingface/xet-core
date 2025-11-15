@@ -8,7 +8,7 @@ use std::sync::Arc;
 use bytes::Bytes;
 use cas_client::Client;
 use cas_object::SerializedCasObject;
-use deduplication::constants::DEDUP_MAX_XORB_BYTES;
+use deduplication::constants::{MAX_XORB_BYTES, MAX_XORB_CHUNKS};
 use deduplication::{DataAggregator, DeduplicationMetrics, RawXorbData};
 use jsonwebtoken::{DecodingKey, Validation, decode};
 use lazy_static::lazy_static;
@@ -405,9 +405,8 @@ impl FileUploadSession {
             let mut current_session_data = self.current_session_data.lock().await;
 
             // Do we need to cut one of these to a xorb?
-            if current_session_data.num_bytes() + file_data.num_bytes() > *DEDUP_MAX_XORB_BYTES
-                || current_session_data.num_chunks() + file_data.num_chunks()
-                    > xet_config().deduplication.max_xorb_chunks
+            if current_session_data.num_bytes() + file_data.num_bytes() > *MAX_XORB_BYTES
+                || current_session_data.num_chunks() + file_data.num_chunks() > *MAX_XORB_CHUNKS
             {
                 // Cut the larger one as a xorb, uploading it and registering the files.
                 if current_session_data.num_bytes() > file_data.num_bytes() {
@@ -429,8 +428,8 @@ impl FileUploadSession {
         #[cfg(debug_assertions)]
         {
             let current_session_data = self.current_session_data.lock().await;
-            debug_assert_le!(current_session_data.num_bytes(), *DEDUP_MAX_XORB_BYTES);
-            debug_assert_le!(current_session_data.num_chunks(), xet_config().deduplication.max_xorb_chunks);
+            debug_assert_le!(current_session_data.num_bytes(), *MAX_XORB_BYTES);
+            debug_assert_le!(current_session_data.num_chunks(), *MAX_XORB_CHUNKS);
         }
 
         // Now, aggregate the new dedup metrics.
@@ -444,8 +443,8 @@ impl FileUploadSession {
         let (xorb, new_files) = data_agg.finalize();
         let xorb_hash = xorb.hash();
 
-        debug_assert_le!(xorb.num_bytes(), *DEDUP_MAX_XORB_BYTES);
-        debug_assert_le!(xorb.data.len(), xet_config().deduplication.max_xorb_chunks);
+        debug_assert_le!(xorb.num_bytes(), *MAX_XORB_BYTES);
+        debug_assert_le!(xorb.data.len(), *MAX_XORB_CHUNKS);
 
         // Now, we need to scan all the file dependencies for dependencies on this xorb, as
         // these would not have been registered yet as we just got the xorb hash.

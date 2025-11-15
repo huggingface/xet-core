@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 use cas_object::error::CasObjectError;
 use cas_types::{CASReconstructionFetchInfo, CASReconstructionTerm, ChunkRange, FileRange, HexMerkleHash, Key};
 use chunk_cache::{CacheRange, ChunkCache};
-use deduplication::constants::DEDUP_MAX_XORB_BYTES;
+use deduplication::constants::MAX_XORB_BYTES;
 use derivative::Derivative;
 use error_printer::ErrorPrinter;
 use futures::TryStreamExt;
@@ -407,7 +407,7 @@ impl DownloadSegmentLengthTuner {
     }
 
     pub fn next_segment_size(&self) -> Result<u64> {
-        Ok(*self.n_range_in_segment.lock()? as u64 * *DEDUP_MAX_XORB_BYTES as u64)
+        Ok(*self.n_range_in_segment.lock()? as u64 * *MAX_XORB_BYTES as u64)
     }
 
     pub fn tune_on<T>(&self, metrics: TermDownloadResult<T>) -> Result<()> {

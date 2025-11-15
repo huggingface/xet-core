@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use cas_client::{Client, RemoteClient};
 use cas_object::SerializedCasObject;
-use deduplication::constants::DEDUP_MAX_XORB_BYTES;
+use deduplication::constants::{MAX_XORB_BYTES, MAX_XORB_CHUNKS};
 use deduplication::{DataAggregator, DeduplicationMetrics, RawXorbData};
 use mdb_shard::shard_in_memory::MDBInMemoryShard;
 use mdb_shard::MDBShardInfo;
@@ -74,10 +74,8 @@ impl FileUploadSession {
             let mut current_session_data = self.current_session_data.lock().await;
 
             // Do we need to cut one of these to a xorb?
-            // Use default max_xorb_chunks value (8 * 1024) since WASM doesn't have access to xet_config
-            const MAX_XORB_CHUNKS: usize = 8 * 1024;
-            if current_session_data.num_bytes() + file_data.num_bytes() > *DEDUP_MAX_XORB_BYTES
-                || current_session_data.num_chunks() + file_data.num_chunks() > MAX_XORB_CHUNKS
+            if current_session_data.num_bytes() + file_data.num_bytes() > *MAX_XORB_BYTES
+                || current_session_data.num_chunks() + file_data.num_chunks() > *MAX_XORB_CHUNKS
             {
                 // Cut the larger one as a xorb, uploading it and registering the files.
                 if current_session_data.num_bytes() > file_data.num_bytes() {

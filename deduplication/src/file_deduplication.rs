@@ -8,10 +8,9 @@ use mdb_shard::hash_is_global_dedup_eligible;
 use merklehash::{MerkleHash, file_hash};
 use more_asserts::{debug_assert_le, debug_assert_lt};
 use progress_tracking::upload_tracking::FileXorbDependency;
-use xet_runtime::xet_config;
 
 use crate::Chunk;
-use crate::constants::DEDUP_MAX_XORB_BYTES;
+use crate::constants::{MAX_XORB_BYTES, MAX_XORB_CHUNKS};
 use crate::data_aggregator::DataAggregator;
 use crate::dedup_metrics::DeduplicationMetrics;
 use crate::defrag_prevention::DefragPrevention;
@@ -215,9 +214,7 @@ impl<DataInterfaceType: DeduplicationDataInterface> FileDeduper<DataInterfaceTyp
             dedup_metrics.new_chunks += 1;
 
             // Do we need to cut a new xorb first?
-            if self.new_data_size + n_bytes > *DEDUP_MAX_XORB_BYTES
-                || self.new_data.len() + 1 > xet_config().deduplication.max_xorb_chunks
-            {
+            if self.new_data_size + n_bytes > *MAX_XORB_BYTES || self.new_data.len() + 1 > *MAX_XORB_CHUNKS {
                 let new_xorb = self.cut_new_xorb();
                 xorb_dependencies.push(FileXorbDependency {
                     file_id: self.file_id,
