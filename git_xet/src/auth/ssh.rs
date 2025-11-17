@@ -6,24 +6,24 @@ use hub_client::{CredentialHelper, HubClientError, Operation, Result};
 use openssh::{KnownHosts, Session};
 use reqwest::header;
 use reqwest_middleware::RequestBuilder;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::git_url::GitUrl;
 
-#[derive(Deserialize)]
-struct GitLFSAuthentationResponseHeader {
+#[derive(Deserialize, Serialize)]
+pub struct GitLFSAuthentationResponseHeader {
     #[serde(rename = "Authorization")]
-    authorization: String,
+    pub authorization: String,
 }
 
 // This struct represents the JSON format of the `git-lfs-authenticate` command response over an
 // SSH channel to the remote Git server. For details see `crate::auth.rs`.
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 #[allow(unused)]
-struct GitLFSAuthenticateResponse {
-    header: GitLFSAuthentationResponseHeader,
-    href: String,
-    expires_in: u32,
+pub struct GitLFSAuthenticateResponse {
+    pub header: GitLFSAuthentationResponseHeader,
+    pub href: String,
+    pub expires_in: u32,
 }
 
 // This credential helper calls a remote command `git-lfs-authenticate` over an SSH channel

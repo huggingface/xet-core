@@ -21,8 +21,10 @@ clap = { workspace = true }
 derivative = { workspace = true }
 git-url-parse = { workspace = true }
 git2 = { workspace = true }
+rand_core = { workspace = true }
 reqwest = { workspace = true }
 reqwest-middleware = { workspace = true }
+russh = { workspace = true }
 rust-netrc = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -36,3 +38,6 @@ openssh = { workspace = true }
 
 [dev-dependencies]
 serial_test = { workspace = true }
+
+[features]
+git-xet-for-integration-test = []
