@@ -2,9 +2,9 @@
 
 use std::time::Duration;
 
-use xet_config::config_group;
 use serial_test::serial;
 use utils::{ByteSize, EnvVarGuard};
+use xet_config::config_group;
 
 mod example {
     use super::*;
