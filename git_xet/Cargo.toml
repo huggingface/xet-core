@@ -35,7 +35,6 @@ tokio = { workspace = true }
 
 [dev-dependencies]
 serial_test = { workspace = true }
-lazy_static = { workspace = true }
 
 [features]
 git-xet-for-integration-test = []

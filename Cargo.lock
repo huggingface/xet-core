@@ -1888,7 +1888,6 @@ dependencies = [
  "git-url-parse",
  "git2",
  "hub_client",
- "lazy_static",
  "progress_tracking",
  "rand_core 0.6.4",
  "reqwest",
