@@ -978,8 +978,8 @@ mod tests {
         };
     }
 
-    #[tokio::test]
-    async fn test_reconstruct_file_full_file() -> Result<()> {
+    #[test]
+    fn test_reconstruct_file_full_file() -> Result<()> {
         // Arrange server
         let server = MockServer::start();
 
@@ -1053,11 +1053,11 @@ mod tests {
             }
         }
 
-        test_reconstruct_file(test_case, &server.base_url()).await
+        test_reconstruct_file(test_case, &server.base_url())
     }
 
-    #[tokio::test]
-    async fn test_reconstruct_file_skip_front_bytes() -> Result<()> {
+    #[test]
+    fn test_reconstruct_file_skip_front_bytes() -> Result<()> {
         // Arrange server
         let server = MockServer::start();
 
@@ -1132,11 +1132,11 @@ mod tests {
             }
         }
 
-        test_reconstruct_file(test_case, &server.base_url()).await
+        test_reconstruct_file(test_case, &server.base_url())
     }
 
-    #[tokio::test]
-    async fn test_reconstruct_file_skip_back_bytes() -> Result<()> {
+    #[test]
+    fn test_reconstruct_file_skip_back_bytes() -> Result<()> {
         // Arrange server
         let server = MockServer::start();
 
@@ -1204,11 +1204,11 @@ mod tests {
             }
         }
 
-        test_reconstruct_file(test_case, &server.base_url()).await
+        test_reconstruct_file(test_case, &server.base_url())
     }
 
-    #[tokio::test]
-    async fn test_reconstruct_file_two_terms() -> Result<()> {
+    #[test]
+    fn test_reconstruct_file_two_terms() -> Result<()> {
         // Arrange server
         let server = MockServer::start();
 
@@ -1303,23 +1303,27 @@ mod tests {
             }
         }
 
-        test_reconstruct_file(test_case, &server.base_url()).await
+        test_reconstruct_file(test_case, &server.base_url())
     }
 
-    async fn test_reconstruct_file(test_case: TestCase, endpoint: &str) -> Result<()> {
+    fn test_reconstruct_file(test_case: TestCase, endpoint: &str) -> Result<()> {
+        let threadpool = XetRuntime::new()?;
+
         // test reconstruct and sequential write
         let test = test_case.clone();
         let client = RemoteClient::new(endpoint, &None, &None, None, "", false, "");
         let buf = ThreadSafeBuffer::default();
         let provider = SequentialOutput::from(buf.clone());
-        let resp = client
-            .reconstruct_file_to_writer_segmented_sequential_write(
-                &test.file_hash,
-                Some(test.file_range),
-                provider,
-                None,
-            )
-            .await;
+        let resp = threadpool.external_run_async_task(async move {
+            client
+                .reconstruct_file_to_writer_segmented_sequential_write(
+                    &test.file_hash,
+                    Some(test.file_range),
+                    provider,
+                    None,
+                )
+                .await
+        })?;
 
         assert_eq!(test.expect_error, resp.is_err(), "{:?}", resp.err());
         if !test.expect_error {
@@ -1332,14 +1336,16 @@ mod tests {
         let client = RemoteClient::new(endpoint, &None, &None, None, "", false, "");
         let buf = ThreadSafeBuffer::default();
         let provider = SeekingOutputProvider::from(buf.clone());
-        let resp = client
-            .reconstruct_file_to_writer_segmented_parallel_write(
-                &test.file_hash,
-                Some(test.file_range),
-                &provider,
-                None,
-            )
-            .await;
+        let resp = threadpool.external_run_async_task(async move {
+            client
+                .reconstruct_file_to_writer_segmented_parallel_write(
+                    &test.file_hash,
+                    Some(test.file_range),
+                    &provider,
+                    None,
+                )
+                .await
+        })?;
 
         assert_eq!(test.expect_error, resp.is_err());
         if !test.expect_error {

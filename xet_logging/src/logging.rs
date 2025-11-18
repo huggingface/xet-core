@@ -375,8 +375,8 @@ mod tests {
 
     use super::*;
 
-    #[tokio::test]
-    async fn round_trip_make_and_parse() {
+    #[test]
+    fn round_trip_make_and_parse() {
         let dir = Path::new("/tmp");
         let cfg = LogDirConfig::default();
         let path = log_file_in_dir(&cfg, dir);

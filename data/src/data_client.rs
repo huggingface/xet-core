@@ -307,9 +307,9 @@ mod tests {
 
     use super::*;
 
-    #[tokio::test]
+    #[test]
     #[serial(default_config_env)]
-    async fn test_default_config_with_hf_home() {
+    fn test_default_config_with_hf_home() {
         let temp_dir = tempdir().unwrap();
         let _hf_home_guard = EnvVarGuard::set("HF_HOME", temp_dir.path().to_str().unwrap());
 
@@ -321,9 +321,9 @@ mod tests {
         assert!(config.data_config.cache_config.cache_directory.starts_with(&temp_dir.path()));
     }
 
-    #[tokio::test]
+    #[test]
     #[serial(default_config_env)]
-    async fn test_default_config_with_hf_xet_cache_and_hf_home() {
+    fn test_default_config_with_hf_xet_cache_and_hf_home() {
         let temp_dir_xet_cache = tempdir().unwrap();
         let temp_dir_hf_home = tempdir().unwrap();
 
@@ -357,9 +357,9 @@ mod tests {
         assert!(config.data_config.cache_config.cache_directory.starts_with(&temp_dir.path()));
     }
 
-    #[tokio::test]
+    #[test]
     #[serial(default_config_env)]
-    async fn test_default_config_with_hf_xet_cache() {
+    fn test_default_config_with_hf_xet_cache() {
         let temp_dir = tempdir().unwrap();
         let _hf_xet_cache_guard = EnvVarGuard::set("HF_XET_CACHE", temp_dir.path().to_str().unwrap());
 
@@ -371,9 +371,9 @@ mod tests {
         assert!(config.data_config.cache_config.cache_directory.starts_with(&temp_dir.path()));
     }
 
-    #[tokio::test]
+    #[test]
     #[serial(default_config_env)]
-    async fn test_default_config_without_env_vars() {
+    fn test_default_config_without_env_vars() {
         let endpoint = "http://localhost:8080".to_string();
         let result = default_config(endpoint, None, None, None, String::new());
 

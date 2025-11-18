@@ -149,7 +149,8 @@ impl XetRuntime {
         Self::from_external(tokio_rt)
     }
 
-    fn current_if_exists() -> Option<Arc<Self>> {
+    #[inline]
+    pub fn current_if_exists() -> Option<Arc<Self>> {
         let maybe_rt = THREAD_RUNTIME_REF.with_borrow(|rt| rt.clone());
 
         if let Some((pid, rt)) = maybe_rt
@@ -158,7 +159,11 @@ impl XetRuntime {
             return Some(rt);
         }
 
-        None
+        if let Ok(tokio_rt) = TokioRuntimeHandle::try_current() {
+            Some(Self::from_external(tokio_rt))
+        } else {
+            None
+        }
     }
 
     /// Creates a new runtime with the default configuration.

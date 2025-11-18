@@ -4,8 +4,7 @@ use std::time::Duration;
 use tracing::info;
 use xet_logging::{LoggingConfig, LoggingMode};
 
-#[tokio::main]
-async fn main() {
+fn main() {
     let args: Vec<String> = env::args().collect();
     if args.len() != 3 {
         eprintln!("Usage: {} <log_directory> <num_lines>", args[0]);
