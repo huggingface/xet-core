@@ -110,6 +110,7 @@ uuid = "1"
 walkdir = "2"
 web-time = "1.1"
 whoami = "1"
+zstd = "0.13"
 
 # windows
 winapi = { version = "0.3", features = [
