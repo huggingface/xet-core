@@ -4,7 +4,6 @@ use std::time::{Duration, Instant};
 
 use clap::Parser;
 use rand::Rng;
-use serde_json;
 use warp::Filter;
 
 mod common;

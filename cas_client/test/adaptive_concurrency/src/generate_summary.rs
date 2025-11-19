@@ -197,14 +197,12 @@ fn process_timeline_csv(
             let mut row_client_concurrency_sum = 0.0;
             let mut row_client_count = 0;
             for &idx in &client_concurrency_indices {
-                if idx < cols.len() {
-                    if let Ok(cc) = cols[idx].parse::<f64>() {
-                        if cc > 0.0 {
+                if idx < cols.len()
+                    && let Ok(cc) = cols[idx].parse::<f64>()
+                        && cc > 0.0 {
                             row_client_concurrency_sum += cc;
                             row_client_count += 1;
                         }
-                    }
-                }
             }
             if row_client_count > 0 {
                 client_concurrency_sum += row_client_concurrency_sum / row_client_count as f64;
@@ -280,17 +278,15 @@ fn calculate_average_rtt(scenario_dir: &Path) -> Result<f64, Box<dyn std::error:
         let entry = entry?;
         let path = entry.path();
 
-        if let Some(file_name) = path.file_name().and_then(|n| n.to_str()) {
-            if file_name.starts_with("client_stats_") && file_name.ends_with(".json") {
-                if let Ok(stats) = load_json_lines::<ClientMetrics>(&path) {
+        if let Some(file_name) = path.file_name().and_then(|n| n.to_str())
+            && file_name.starts_with("client_stats_") && file_name.ends_with(".json")
+                && let Ok(stats) = load_json_lines::<ClientMetrics>(&path) {
                     for stat in stats {
                         if stat.average_round_trip_time_ms > 0.0 {
                             all_rtts.push(stat.average_round_trip_time_ms);
                         }
                     }
                 }
-            }
-        }
     }
 
     if all_rtts.is_empty() {
