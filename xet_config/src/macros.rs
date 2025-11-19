@@ -62,20 +62,33 @@ macro_rules! config_group {
             /// The group name is derived from the module path. For example, in module `xet_config::groups::data`,
             /// the env var for TEST_INT would be HF_XET_DATA_TEST_INT.
             pub fn apply_env_overrides(&mut self) {
-                // Get the module name from the module path
-                // This works by getting the last segment of the module path
-                let module_path = module_path!();
-                let group_name = module_path
-                    .split("::")
-                    .last()
-                    .unwrap_or("unknown");
 
                 $(
-                    let field_name_upper = stringify!($name).to_uppercase();
-                    let env_var_name = format!("HF_XET_{}_{}", group_name.to_uppercase(), field_name_upper);
-                    let maybe_env_value = std::env::var(&env_var_name).ok();
+
+                    {
+                    // Get module name at compile time using konst and build env var name in one line
+                    const ENV_VAR_NAME: &str = const_str::concat!("HF_XET_", const_str::convert_ascii_case!(upper, konst::string::rsplit_once(module_path!(), "::").unwrap().1), "_", const_str::convert_ascii_case!(upper, stringify!($name)));
+
+                    // Check the primary environment variable first
+                    let mut maybe_env_value = std::env::var(ENV_VAR_NAME).ok();
+
+                    // If not found, check aliases
+                    // The compiler should optimize this loop since ENVIRONMENT_NAME_ALIASES is a const
+                    if maybe_env_value.is_none() {
+                            for &(primary_name, alias_name) in $crate::xet_config::ENVIRONMENT_NAME_ALIASES {
+                                if primary_name == ENV_VAR_NAME {
+                                    let alt_env_value = std::env::var(alias_name).ok();
+                                    if alt_env_value.is_some() {
+                                        maybe_env_value = alt_env_value;
+                                        break;
+                                    }
+                                }
+                            }
+                    }
+
                     let default_value: $type = $value;
                     self.$name = <$type>::parse(stringify!($name), maybe_env_value, default_value);
+                }
                 )+
             }
         }

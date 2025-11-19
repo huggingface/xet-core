@@ -235,7 +235,7 @@ impl FileUploadSession {
                     while bytes_read < file_size {
                         // Allocate a block of bytes, read into it.
                         let bytes_left = file_size - bytes_read;
-                        let n_bytes_read = (xet_config().data.ingestion_block_size as u64).min(bytes_left) as usize;
+                        let n_bytes_read = (*xet_config().data.ingestion_block_size).min(bytes_left) as usize;
 
                         // Read in the data here; we are assuming the file doesn't change size
                         // on the disk while we are reading it.

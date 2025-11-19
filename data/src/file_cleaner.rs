@@ -84,10 +84,11 @@ impl SingleFileCleaner {
     }
 
     pub async fn add_data(&mut self, data: &[u8]) -> Result<()> {
-        if data.len() > xet_config().data.ingestion_block_size {
+        let block_size = *xet_config().data.ingestion_block_size as usize;
+        if data.len() > block_size {
             let mut pos = 0;
             while pos < data.len() {
-                let next_pos = usize::min(pos + xet_config().data.ingestion_block_size, data.len());
+                let next_pos = usize::min(pos + block_size, data.len());
                 self.add_data_impl(Bytes::copy_from_slice(&data[pos..next_pos])).await?;
                 pos = next_pos;
             }

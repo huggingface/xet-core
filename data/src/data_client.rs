@@ -245,7 +245,7 @@ pub async fn clean_file(
     let span = Span::current();
     span.record("file.name", filename.as_ref().to_str());
     span.record("file.len", n);
-    let mut buffer = vec![0u8; u64::min(n, xet_config().data.ingestion_block_size as u64) as usize];
+    let mut buffer = vec![0u8; u64::min(n, *xet_config().data.ingestion_block_size) as usize];
 
     let mut handle = processor.start_clean(Some(filename.as_ref().to_string_lossy().into()), n).await;
 

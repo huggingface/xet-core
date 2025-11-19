@@ -1,5 +1,13 @@
 use crate::groups;
 
+/// Environment variable name aliases.
+/// Format: ("<Current Env Name>", "<Alternate name to check>")
+pub const ENVIRONMENT_NAME_ALIASES: &[(&str, &str)] = &[
+    ("HF_XET_DATA_MAX_CONCURRENT_UPLOADS", "HF_XET_MAX_CONCURRENT_UPLOADS"),
+    ("HF_XET_DATA_MAX_CONCURRENT_DOWNLOADS", "HF_XET_MAX_CONCURRENT_DOWNLOADS"),
+    ("HF_XET_DATA_MAX_CONCURRENT_FILE_INGESTION", "HF_XET_MAX_CONCURRENT_FILE_INGESTION"),
+];
+
 /// Primary configuration struct containing all config sections
 #[derive(Debug, Clone, Default)]
 pub struct XetConfig {
