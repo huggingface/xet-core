@@ -22,12 +22,12 @@
 //!   callable and functional when executed from within the `git-xet` invocation context.
 //!
 //! Implementation notes
-//! - `git_xet_run` constructs a command that runs `git xet runany -- <command...>` pointing at the `git-xet` test
+//! - `git_xet_run` constructs a command that runs `git xet run-any -- <command...>` pointing at the `git-xet` test
 //!   binary (resolved through the `CARGO_BIN_EXE_git-xet` env var) called by `git`.
 //! - On Windows the test sets the current directory to the `git-xet` build directory so the local `git-xet` executable
 //!   can be found and executed (local directory precedence is relied upon on Windows). On Unix the build directory is
 //!   prepended to `PATH` so the correct binary is found.
-//! - The `runany` command of `git-xet` is gated behind the `git-xet-for-integration-test` feature. They are ignored by
+//! - The `run-any` command of `git-xet` is gated behind the `git-xet-for-integration-test` feature. They are ignored by
 //!   default unless that feature is enabled in the test run.
 //!
 //! These tests provide confidence that environment inheritance from `git` to `git-xet` is
@@ -48,7 +48,7 @@ where
     let test_bin_path = env!("CARGO_BIN_EXE_git-xet");
     let buildpath = Path::new(&test_bin_path).parent().unwrap();
     let mut cmd = Command::new("git");
-    cmd.args(["xet", "runany", "--"]); // Add "--" to escape options ("-[]" or "--[]") in the actual command
+    cmd.args(["xet", "run-any", "--"]); // Add "--" to escape options ("-[]" or "--[]") in the actual command
     cmd.args(command);
     cmd.current_dir(buildpath); // on Windows local directory takes the precedence to find an executable
     #[cfg(unix)]

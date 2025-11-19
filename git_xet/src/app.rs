@@ -46,7 +46,7 @@ Remove "lfs.concurrenttransfers" from the global Git config."#)]
     /// Run any arguments passed in as a command. This is a feature only for
     /// integration tests.
     #[cfg(feature = "git-xet-for-integration-test")]
-    Runany(RunanyArg),
+    RunAny(RunAnyArg),
 }
 
 #[derive(Args, Debug)]
@@ -92,6 +92,7 @@ struct UninstallArg {
     path: Option<PathBuf>,
 }
 
+#[derive(Args, Debug)]
 struct TrackArg {
     // The below arg attributes instruct git-xet to bypass parsing any options (arg with prefix "-") and
     // passing them directly to "git lfs track".
@@ -101,7 +102,7 @@ struct TrackArg {
 
 #[derive(Args, Debug)]
 #[cfg(feature = "git-xet-for-integration-test")]
-struct RunanyArg {
+struct RunAnyArg {
     program: String,
     args: Option<Vec<String>>,
 }
@@ -152,7 +153,7 @@ impl Command {
             Command::Transfer => transfer_command().await,
             Command::Track(args) => track_command(args),
             #[cfg(feature = "git-xet-for-integration-test")]
-            Command::Runany(args) => run_any_command(args),
+            Command::RunAny(args) => run_any_command(args),
         }
     }
 
@@ -163,7 +164,7 @@ impl Command {
             Command::Transfer => "transfer",
             Command::Track(_) => "track",
             #[cfg(feature = "git-xet-for-integration-test")]
-            Command::Runany(_) => "runany",
+            Command::RunAny(_) => "runany",
         }
     }
 }
@@ -238,10 +239,11 @@ fn track_command(args: TrackArg) -> Result<()> {
 }
 
 #[cfg(feature = "git-xet-for-integration-test")]
-fn run_any_command(args: RunanyArg) -> Result<()> {
+fn run_any_command(args: RunAnyArg) -> Result<()> {
     let mut cmd = std::process::Command::new(args.program);
     if let Some(args) = args.args {
         cmd.args(args);
     }
     let _ = cmd.status()?;
+    Ok(())
 }
