@@ -11,6 +11,7 @@ use utils::RwTaskLock;
 use xet_runtime::xet_config;
 
 use crate::cas_structs::*;
+use crate::constants::MDB_SHARD_EXPIRATION_BUFFER;
 use crate::error::{MDBShardError, Result};
 use crate::file_structs::*;
 use crate::shard_file_handle::MDBShardFile;
@@ -201,7 +202,7 @@ impl ShardFileManager {
         let needs_clean = self.shard_directory_cleaned.swap(true, std::sync::atomic::Ordering::Relaxed);
 
         if needs_clean {
-            MDBShardFile::clean_shard_cache(&self.shard_directory, xet_config().mdb_shard.expiration_buffer.as_secs())?;
+            MDBShardFile::clean_shard_cache(&self.shard_directory, MDB_SHARD_EXPIRATION_BUFFER.as_secs())?;
         }
 
         Ok(())

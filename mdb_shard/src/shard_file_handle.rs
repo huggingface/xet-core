@@ -13,6 +13,7 @@ use xet_runtime::xet_config;
 
 use crate::MDBShardFileFooter;
 use crate::cas_structs::CASChunkSequenceHeader;
+use crate::constants::MDB_SHARD_EXPIRATION_BUFFER;
 use crate::error::{MDBShardError, Result};
 use crate::file_structs::{FileDataSequenceEntry, MDBFileInfo};
 use crate::shard_file::current_timestamp;
@@ -195,7 +196,7 @@ impl MDBShardFile {
         prune_dir_storage_to_size: u64,
     ) -> Result<Vec<Arc<Self>>> {
         let current_time = current_timestamp();
-        let expiration_buffer = xet_config().mdb_shard.expiration_buffer.as_secs();
+        let expiration_buffer = MDB_SHARD_EXPIRATION_BUFFER.as_secs();
 
         let mut ret: Vec<Arc<MDBShardFile>> = Vec::new();
 

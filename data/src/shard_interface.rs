@@ -12,7 +12,7 @@ use mdb_shard::cas_structs::MDBCASInfo;
 use mdb_shard::file_structs::{FileDataSequenceEntry, MDBFileInfo};
 use mdb_shard::session_directory::{ShardMergeResult, consolidate_shards_in_directory, merge_shards_background};
 use mdb_shard::shard_in_memory::MDBInMemoryShard;
-use mdb_shard::{MDBShardFile, MDBShardFileHeader, ShardFileManager};
+use mdb_shard::{MDBShardFile, MDBShardFileHeader, MDB_SHARD_LOCAL_CACHE_EXPIRATION, ShardFileManager};
 use merklehash::MerkleHash;
 use tempfile::TempDir;
 use tokio::sync::Mutex;
@@ -208,7 +208,7 @@ impl SessionShardInterface {
         {
             xorb_shard.write_to_directory(
                 &self.xorb_metadata_staging_dir,
-                Some(xet_config().mdb_shard.local_cache_expiration),
+                Some(*MDB_SHARD_LOCAL_CACHE_EXPIRATION),
             )?;
 
             *last_flush = time_now + flush_interval;
@@ -295,7 +295,7 @@ impl SessionShardInterface {
                     // time.
                     let new_shard_path = si.export_with_expiration(
                         cache_shard_manager.shard_directory(),
-                        xet_config().mdb_shard.local_cache_expiration,
+                        *MDB_SHARD_LOCAL_CACHE_EXPIRATION,
                     )?;
 
                     // Register that new shard in the cache shard manager
