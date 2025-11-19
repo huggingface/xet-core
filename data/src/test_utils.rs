@@ -171,7 +171,7 @@ impl LocalHydrateDehydrateTest {
                 let upload_session = upload_session.clone();
 
                 if sequential {
-                    let (pf, metrics) = clean_file(upload_session.clone(), entry.path()).await.unwrap();
+                    let (pf, metrics) = clean_file(upload_session.clone(), entry.path(), "").await.unwrap();
                     assert_eq!({ metrics.total_bytes }, entry.metadata().unwrap().len());
                     std::fs::write(out_file, pf.as_pointer_file().unwrap().as_bytes()).unwrap();
 
@@ -185,7 +185,7 @@ impl LocalHydrateDehydrateTest {
                 .map(|entry| self.src_dir.join(entry.unwrap().file_name()))
                 .collect();
 
-            let clean_results = upload_session.upload_files(&files).await.unwrap();
+            let clean_results = upload_session.upload_files(&files, std::iter::repeat(None)).await.unwrap();
 
             for (i, xf) in clean_results.into_iter().enumerate() {
                 std::fs::write(self.ptr_dir.join(files[i].file_name().unwrap()), serde_json::to_string(&xf).unwrap())

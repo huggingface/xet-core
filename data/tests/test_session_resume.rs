@@ -64,7 +64,9 @@ mod tests {
                 .unwrap();
 
             // Feed it half the data, and checkpoint.
-            let mut cleaner = file_upload_session.start_clean(Some("data".into()), data.len() as u64).await;
+            let mut cleaner = file_upload_session
+                .start_clean(Some("data".into()), data.len() as u64, None)
+                .await;
             cleaner.add_data(&data[..half_n]).await.unwrap();
             cleaner.checkpoint().await.unwrap();
 
@@ -80,7 +82,9 @@ mod tests {
             let file_upload_session = FileUploadSession::new(config, Some(progress_tracker.clone())).await.unwrap();
 
             // Feed it half the data, and checkpoint.
-            let mut cleaner = file_upload_session.start_clean(Some("data".into()), data.len() as u64).await;
+            let mut cleaner = file_upload_session
+                .start_clean(Some("data".into()), data.len() as u64, None)
+                .await;
 
             // Add all the data.  Roughly the first half should dedup.
             cleaner.add_data(&data).await.unwrap();
@@ -134,7 +138,9 @@ mod tests {
                 .unwrap();
 
             // Feed it half the data, and checkpoint.
-            let mut cleaner = file_upload_session.start_clean(Some("data".into()), data.len() as u64).await;
+            let mut cleaner = file_upload_session
+                .start_clean(Some("data".into()), data.len() as u64, None)
+                .await;
             cleaner.add_data(&data[..rn]).await.unwrap();
             cleaner.checkpoint().await.unwrap();
 
@@ -164,7 +170,9 @@ mod tests {
             let file_upload_session = FileUploadSession::new(config, Some(progress_tracker.clone())).await.unwrap();
 
             // Feed it half the data, and checkpoint.
-            let mut cleaner = file_upload_session.start_clean(Some("data".into()), data.len() as u64).await;
+            let mut cleaner = file_upload_session
+                .start_clean(Some("data".into()), data.len() as u64, None)
+                .await;
 
             // Add all the data.  Roughly the first half should dedup.
             cleaner.add_data(&data).await.unwrap();
