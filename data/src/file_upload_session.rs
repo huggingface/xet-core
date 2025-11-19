@@ -197,7 +197,7 @@ impl FileUploadSession {
     pub async fn upload_files(
         self: &Arc<Self>,
         files: &[impl AsRef<Path>],
-        sha256s: impl IntoIterator<Item = Option<MerkleHash>>,
+        sha256s: impl IntoIterator<Item = Option<MerkleHash>> + Send,
     ) -> Result<Vec<XetFileInfo>> {
         let mut cleaning_tasks: Vec<JoinHandle<_>> = Vec::with_capacity(files.len());
 

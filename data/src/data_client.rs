@@ -174,7 +174,7 @@ pub async fn upload_async(
 
     // Parse sha256 hex string and ignore invalid ones, or if no sha256 is provided,
     // create an iterator of infinite number of "None"s.
-    let sha256s: Box<dyn Iterator<Item = Option<MerkleHash>>> = match &sha256s {
+    let sha256s: Box<dyn Iterator<Item = Option<MerkleHash>> + Send> = match &sha256s {
         Some(v) => {
             if v.len() != file_paths.len() {
                 return Err(DataProcessingError::ParameterError(
