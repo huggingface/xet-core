@@ -42,29 +42,12 @@ use crate::{Client, http_client};
 pub const CAS_ENDPOINT: &str = "http://localhost:8080";
 pub const PREFIX_DEFAULT: &str = "default";
 
-utils::configurable_constants! {
-    /// Env (HF_XET_NUM_CONCURRENT_RANGE_GETS) to set the number of concurrent range gets.
-    /// setting this value to 0 disables the limit, sets it to the max, this is not recommended as it may lead to errors
-    ref NUM_CONCURRENT_RANGE_GETS: usize = GlobalConfigMode::HighPerformanceOption {
-        standard: 48,
-        high_performance: 256,
-    };
-
-    /// Send a report of a successful partial upload every 512kb.
-    ref UPLOAD_REPORTING_BLOCK_SIZE : usize = 512 * 1024;
-
-    /// Env (HF_XET_RECONSTRUCT_WRITE_SEQUENTIALLY) to switch to writing terms sequentially to disk.
-    /// Benchmarks have shown that on SSD machines, writing in parallel seems to far outperform
-    /// sequential term writes.
-    /// However, this is not likely the case for writing to HDD and may in fact be worse,
-    /// so for those machines, setting this env may help download perf.
-    ref RECONSTRUCT_WRITE_SEQUENTIALLY : bool = false;
-
-}
+use lazy_static::lazy_static;
+use xet_runtime::xet_config;
 
 lazy_static! {
     static ref DOWNLOAD_CHUNK_RANGE_CONCURRENCY_LIMITER: GlobalSemaphoreHandle =
-        global_semaphore_handle!(*NUM_CONCURRENT_RANGE_GETS);
+        global_semaphore_handle!(xet_config().client.num_concurrent_range_gets);
     static ref FN_CALL_ID: AtomicU64 = AtomicU64::new(1);
 }
 
@@ -387,7 +370,7 @@ impl RemoteClient {
         let download_concurrency_limiter =
             XetRuntime::current().global_semaphore(*DOWNLOAD_CHUNK_RANGE_CONCURRENCY_LIMITER);
 
-        info!(concurrency_limit = *NUM_CONCURRENT_RANGE_GETS, "Starting segmented download");
+        info!(concurrency_limit = xet_config().client.num_concurrent_range_gets, "Starting segmented download");
 
         let queue_dispatcher: JoinHandle<Result<()>> = tokio::spawn(async move {
             let mut remaining_total_len = total_len;
@@ -834,7 +817,7 @@ impl Client for RemoteClient {
 
         let upload_stream = UploadProgressStream::new(
             serialized_cas_object.serialized_data,
-            *UPLOAD_REPORTING_BLOCK_SIZE,
+            xet_config().client.upload_reporting_block_size,
             progress_callback,
         );
 
@@ -931,11 +914,10 @@ mod tests {
     use cas_object::CompressionScheme;
     use cas_object::test_utils::*;
     use cas_types::{CASReconstructionFetchInfo, CASReconstructionTerm, ChunkRange};
-    use deduplication::constants::MAX_XORB_BYTES;
     use httpmock::Method::GET;
     use httpmock::MockServer;
     use tracing_test::traced_test;
-    use xet_runtime::XetRuntime;
+    use xet_runtime::{XetRuntime, xet_config};
 
     use super::*;
     use crate::buffer_provider::ThreadSafeBuffer;
@@ -1008,7 +990,10 @@ mod tests {
         // Workaround to make this variable const. Change this accordingly if
         // real value of the two static variables below change.
         const FIRST_SEGMENT_SIZE: u64 = 16 * 64 * 1024 * 1024;
-        assert_eq!(FIRST_SEGMENT_SIZE, *NUM_RANGE_IN_SEGMENT_BASE as u64 * *MAX_XORB_BYTES as u64);
+        assert_eq!(
+            FIRST_SEGMENT_SIZE,
+            xet_config().client.num_range_in_segment_base as u64 * *deduplication::constants::MAX_XORB_BYTES as u64
+        );
 
         // Test case: full file reconstruction
         const FIRST_SEGMENT_FILE_RANGE: FileRange = FileRange {
@@ -1083,7 +1068,10 @@ mod tests {
         // Workaround to make this variable const. Change this accordingly if
         // real value of the two static variables below change.
         const FIRST_SEGMENT_SIZE: u64 = 16 * 64 * 1024 * 1024;
-        assert_eq!(FIRST_SEGMENT_SIZE, *NUM_RANGE_IN_SEGMENT_BASE as u64 * *MAX_XORB_BYTES as u64);
+        assert_eq!(
+            FIRST_SEGMENT_SIZE,
+            xet_config().client.num_range_in_segment_base as u64 * *deduplication::constants::MAX_XORB_BYTES as u64
+        );
 
         // Test case: skip first 100 bytes
         const SKIP_BYTES: u64 = 100;
