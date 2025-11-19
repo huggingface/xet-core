@@ -162,7 +162,7 @@ fn test_active_window_protection() {
     }
 
     // Wait for disk to be synchronized.
-    std::thread::sleep(Duration::from_millis(100));
+    std::thread::sleep(Duration::from_millis(200));
 
     // Immediately check that the current log file still exists
     // (it should not be deleted because it's associated with an active process)
@@ -174,14 +174,14 @@ fn test_active_window_protection() {
     assert!(log_dir_size > 1 * 1024);
 
     // Wait a bit longer than the minimum deletion age and run again to create another log -- and clean the rest up.
-    std::thread::sleep(Duration::from_secs(2));
+    std::thread::sleep(Duration::from_secs(3));
 
     for _ in 0..2 {
         run_test_executable(log_dir, 100, &env_vars);
     }
 
     // Wait for disk to be synchronized.
-    std::thread::sleep(Duration::from_millis(100));
+    std::thread::sleep(Duration::from_millis(200));
 
     // All the previous ones should now have been cleaned up.
     let log_files = count_log_files(log_dir);
