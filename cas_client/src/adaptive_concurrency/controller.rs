@@ -284,8 +284,8 @@ impl AdaptiveConcurrencyController {
 
         // If the success ratio is healthy and the predicted RTT is below the target RTT,
         // then adjust the concurrency upwards.
-        if model_state.recommended_adjustment == 1 {
-            if state_lg.last_adjustment_time.elapsed() > self.min_concurrency_increase_delay {
+        if model_state.recommended_adjustment == 1
+            && state_lg.last_adjustment_time.elapsed() > self.min_concurrency_increase_delay {
                 let old_concurrency = self.concurrency_semaphore.total_permits();
                 let new_concurrency = 1. + old_concurrency as f64;
 
@@ -313,7 +313,6 @@ impl AdaptiveConcurrencyController {
                     );
                 }
             }
-        }
 
         if !transmission_successful
             || !completed_in_time
@@ -398,7 +397,7 @@ impl ConnectionPermit {
 
             // Throttle reports to at most once every MIN_PARTIAL_REPORT_INTERVAL_MS
             static REFERENCE_INSTANT: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
-            let now_ms = REFERENCE_INSTANT.get_or_init(|| Instant::now()).elapsed().as_millis() as u64;
+            let now_ms = REFERENCE_INSTANT.get_or_init(Instant::now).elapsed().as_millis() as u64;
 
             // Return if we've already recently reported a partial completion.
             if info

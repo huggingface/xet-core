@@ -13,7 +13,6 @@ use http::header::CONTENT_LENGTH;
 use rand::Rng;
 use reqwest::Body;
 use reqwest_middleware::ClientWithMiddleware;
-use serde_json;
 use tokio::task::JoinSet;
 use xet_runtime::xet_config;
 
@@ -321,12 +320,11 @@ async fn run_client(min_data_kb: u64, max_data_kb: u64, repeat_duration_seconds:
 
                             let progress_callback = move |_delta: u64, total_bytes: u64| {
                                 // Report partial progress to concurrency controller
-                                if let Some(ref partial_report_fn) = partial_report_fn {
-                                    if total_size > 0 {
+                                if let Some(ref partial_report_fn) = partial_report_fn
+                                    && total_size > 0 {
                                         let portion = (total_bytes as f64 / total_size as f64).min(1.0);
                                         partial_report_fn(portion, total_bytes);
                                     }
-                                }
                             };
 
                             let upload_stream = UploadProgressStream::new(

@@ -235,11 +235,10 @@ impl RetryWrapper {
                 async move {
                     let (make_request, process_fn, try_count, self_, partial_report_fn) = retry_info.as_ref();
 
-                    if let Some(p) = &self_.connection_permit {
-                        if let Some(p) = p.lock().await.permit.as_ref() {
+                    if let Some(p) = &self_.connection_permit
+                        && let Some(p) = p.lock().await.permit.as_ref() {
                             p.transfer_starting().await;
                         }
-                    }
 
                     let resp_result = make_request(partial_report_fn.clone()).await;
                     let try_idx = try_count.fetch_add(1, Ordering::Relaxed);
