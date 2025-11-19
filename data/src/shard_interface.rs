@@ -12,7 +12,7 @@ use mdb_shard::cas_structs::MDBCASInfo;
 use mdb_shard::file_structs::{FileDataSequenceEntry, MDBFileInfo};
 use mdb_shard::session_directory::{ShardMergeResult, consolidate_shards_in_directory, merge_shards_background};
 use mdb_shard::shard_in_memory::MDBInMemoryShard;
-use mdb_shard::{MDBShardFile, MDBShardFileHeader, MDB_SHARD_LOCAL_CACHE_EXPIRATION, ShardFileManager};
+use mdb_shard::{MDB_SHARD_LOCAL_CACHE_EXPIRATION, MDBShardFile, MDBShardFileHeader, ShardFileManager};
 use merklehash::MerkleHash;
 use tempfile::TempDir;
 use tokio::sync::Mutex;
@@ -206,10 +206,7 @@ impl SessionShardInterface {
         if *last_flush + flush_interval < time_now
             || xorb_shard.num_cas_entries() >= xet_config().data.session_xorb_metadata_flush_max_count
         {
-            xorb_shard.write_to_directory(
-                &self.xorb_metadata_staging_dir,
-                Some(*MDB_SHARD_LOCAL_CACHE_EXPIRATION),
-            )?;
+            xorb_shard.write_to_directory(&self.xorb_metadata_staging_dir, Some(*MDB_SHARD_LOCAL_CACHE_EXPIRATION))?;
 
             *last_flush = time_now + flush_interval;
             *xorb_shard = MDBInMemoryShard::default();

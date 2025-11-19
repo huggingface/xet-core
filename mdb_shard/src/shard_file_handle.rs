@@ -9,7 +9,6 @@ use std::time::{Duration, SystemTime};
 use heapify::{make_heap_with, pop_heap_with};
 use merklehash::{HMACKey, HashedWrite, MerkleHash, compute_data_hash};
 use tracing::{debug, error, info, warn};
-use xet_runtime::xet_config;
 
 use crate::MDBShardFileFooter;
 use crate::cas_structs::CASChunkSequenceHeader;
