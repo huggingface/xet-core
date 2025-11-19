@@ -18,31 +18,13 @@ use reqwest_middleware::ClientWithMiddleware;
 use tracing::{debug, error, info, trace, warn};
 use url::Url;
 use utils::singleflight::Group;
+use xet_runtime::xet_config;
 
 use crate::error::{CasClientError, Result};
 use crate::http_client::Api;
 use crate::output_provider::SeekingOutputProvider;
 use crate::remote_client::{PREFIX_DEFAULT, get_reconstruction_with_endpoint_and_client};
 use crate::retry_wrapper::{RetryWrapper, RetryableReqwestError};
-
-utils::configurable_constants! {
-    // Env (HF_XET_NUM_RANGE_IN_SEGMENT_BASE) base value for the approx number of ranges in the initial
-    // segment size used to download, where a segment is a range of a file that is downloaded
-    // setting this value to 0 causes no segments to be downloaded, this will cause downloads to fail/hang
-    ref NUM_RANGE_IN_SEGMENT_BASE: usize = GlobalConfigMode::HighPerformanceOption {
-        standard: 16, // 16 * ~64MB -> ~1GB initial segment size
-        high_performance: 128, // 128 * ~64MB -> ~8GB initial segment size
-    };
-
-    // Env (HF_XET_NUM_RANGE_IN_SEGMENT_DELTA) delta value for the approx number of ranges in a segment size
-    // used to increase/decrease the segment size by this many approximate ranges
-    // setting this value to 0 causes no segment size change, i.e. will remain constant
-    ref NUM_RANGE_IN_SEGMENT_DELTA: usize = 1; // increase/decrease segment size by 1 approx range ~64MB
-
-    // Env (HF_XET_NUM_RANGE_IN_SEGMENT_MAX) max value for the approx number of ranges in a segment size
-    // setting this value to 0 will be ignored and the max size will be set to usize::MAX
-    ref NUM_RANGE_IN_SEGMENT_MAX: usize = 400; // * ~64MB -> max at 25GB segment
-}
 
 #[derive(Clone, Debug)]
 pub(crate) enum DownloadRangeResult {
@@ -405,19 +387,23 @@ impl DownloadSegmentLengthTuner {
     }
 
     pub fn from_configurable_constants() -> Arc<Self> {
-        if *NUM_RANGE_IN_SEGMENT_BASE == 0 {
+        if xet_config().client.num_range_in_segment_base == 0 {
             warn!(
                 "NUM_RANGE_IN_SEGMENT_BASE is set to 0, which means no segments will be downloaded.
                    This is likely a misconfiguration. Please check your environment variables."
             );
         }
-        let max_num_segments = if *NUM_RANGE_IN_SEGMENT_MAX == 0 {
+        let max_num_segments = if xet_config().client.num_range_in_segment_max == 0 {
             usize::MAX
         } else {
-            *NUM_RANGE_IN_SEGMENT_MAX
+            xet_config().client.num_range_in_segment_max
         };
 
-        Self::new(*NUM_RANGE_IN_SEGMENT_BASE, max_num_segments, *NUM_RANGE_IN_SEGMENT_DELTA)
+        Self::new(
+            xet_config().client.num_range_in_segment_base,
+            max_num_segments,
+            xet_config().client.num_range_in_segment_delta,
+        )
     }
 
     pub fn next_segment_size(&self) -> Result<u64> {
@@ -432,7 +418,7 @@ impl DownloadSegmentLengthTuner {
 
         if metrics.n_retries_on_403 > 0 {
             if *num_range_in_segment > 1 {
-                let delta = NUM_RANGE_IN_SEGMENT_DELTA.min(*num_range_in_segment - 1);
+                let delta = xet_config().client.num_range_in_segment_delta.min(*num_range_in_segment - 1);
                 info!("detected retries on 403, shrinking segment size by {delta} ranges");
                 *num_range_in_segment -= delta;
             } else {
@@ -442,7 +428,10 @@ impl DownloadSegmentLengthTuner {
             }
         } else if *num_range_in_segment != self.max_segments {
             // TODO: check download speed and consider if we should increase or decrease
-            let delta = NUM_RANGE_IN_SEGMENT_DELTA.min(self.max_segments - *num_range_in_segment);
+            let delta = xet_config()
+                .client
+                .num_range_in_segment_delta
+                .min(self.max_segments - *num_range_in_segment);
             debug!("expanding segment size by {delta} approx ranges");
             *num_range_in_segment += delta;
         }

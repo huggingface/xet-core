@@ -7,17 +7,23 @@ use mdb_shard::file_structs::MDBFileInfo;
 use merklehash::MerkleHash;
 use progress_tracking::item_tracking::SingleItemProgressUpdater;
 use progress_tracking::upload_tracking::CompletionTracker;
+use xet_runtime::xet_config;
 
 use crate::adaptive_concurrency::{AdaptiveConcurrencyController, ConnectionPermit};
-use crate::constants::{MAX_CONCURRENT_UPLOADS, MIN_CONCURRENT_UPLOADS, NUM_INITIAL_CONCURRENT_UPLOADS};
 use crate::error::Result;
 #[cfg(not(target_family = "wasm"))]
 use crate::{SeekingOutputProvider, SequentialOutput};
 
 // The upload concurrency controller
 lazy_static::lazy_static! {
-    static ref UPLOAD_CONCURRENCY_CONTROLLER : Arc<AdaptiveConcurrencyController>
-        = AdaptiveConcurrencyController::new("uploads", *NUM_INITIAL_CONCURRENT_UPLOADS, (*MIN_CONCURRENT_UPLOADS, *MAX_CONCURRENT_UPLOADS));
+    static ref UPLOAD_CONCURRENCY_CONTROLLER : Arc<AdaptiveConcurrencyController> = {
+        let config = xet_config();
+        AdaptiveConcurrencyController::new(
+            "uploads",
+            config.client.num_initial_concurrent_uploads,
+            (config.client.min_concurrent_uploads, config.client.max_concurrent_uploads)
+        )
+    };
 }
 
 /// A Client to the Shard service. The shard service

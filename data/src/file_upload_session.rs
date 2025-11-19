@@ -23,13 +23,9 @@ use tokio::sync::Mutex;
 use tokio::task::{JoinHandle, JoinSet};
 use tracing::{Instrument, Span, info_span, instrument};
 use ulid::Ulid;
-use xet_runtime::{GlobalSemaphoreHandle, XetRuntime, global_semaphore_handle};
+use xet_runtime::{GlobalSemaphoreHandle, XetRuntime, global_semaphore_handle, xet_config};
 
 use crate::configurations::*;
-use crate::constants::{
-    INGESTION_BLOCK_SIZE, MAX_CONCURRENT_FILE_INGESTION, PROGRESS_UPDATE_INTERVAL,
-    PROGRESS_UPDATE_SPEED_SAMPLING_WINDOW,
-};
 use crate::errors::*;
 use crate::file_cleaner::SingleFileCleaner;
 use crate::remote_client_interface::create_remote_client;
@@ -38,7 +34,7 @@ use crate::{XetFileInfo, prometheus_metrics};
 
 lazy_static! {
     pub static ref CONCURRENT_FILE_INGESTION_LIMITER: GlobalSemaphoreHandle =
-        global_semaphore_handle!(*MAX_CONCURRENT_FILE_INGESTION);
+        global_semaphore_handle!(xet_config().data.max_concurrent_file_ingestion);
 }
 
 /// Manages the translation of files between the
@@ -107,12 +103,12 @@ impl FileUploadSession {
         let (progress_updater, progress_aggregator): (Arc<dyn TrackingProgressUpdater>, Option<_>) = {
             match upload_progress_updater {
                 Some(updater) => {
-                    let flush_interval = *PROGRESS_UPDATE_INTERVAL;
+                    let flush_interval = xet_config().data.progress_update_interval;
                     if !flush_interval.is_zero() && config.progress_config.aggregate {
                         let aggregator = AggregatingProgressUpdater::new(
                             updater,
                             flush_interval,
-                            *PROGRESS_UPDATE_SPEED_SAMPLING_WINDOW,
+                            xet_config().data.progress_update_speed_sampling_window,
                         );
                         (aggregator.clone(), Some(aggregator))
                     } else {
@@ -217,7 +213,7 @@ impl FileUploadSession {
                     while bytes_read < file_size {
                         // Allocate a block of bytes, read into it.
                         let bytes_left = file_size - bytes_read;
-                        let n_bytes_read = (*INGESTION_BLOCK_SIZE as u64).min(bytes_left) as usize;
+                        let n_bytes_read = (*xet_config().data.ingestion_block_size).min(bytes_left) as usize;
 
                         // Read in the data here; we are assuming the file doesn't change size
                         // on the disk while we are reading it.

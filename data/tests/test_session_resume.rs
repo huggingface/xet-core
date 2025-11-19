@@ -3,27 +3,29 @@ use std::time::Duration;
 // Run tests that determine deduplication, especially across different test subjects.
 use data::FileUploadSession;
 use data::configurations::TranslatorConfig;
-use data::constants::{PROGRESS_UPDATE_INTERVAL, SESSION_XORB_METADATA_FLUSH_MAX_COUNT};
 use deduplication::constants::{MAX_XORB_BYTES, MAX_XORB_CHUNKS, TARGET_CHUNK_SIZE};
-use mdb_shard::MDB_SHARD_TARGET_SIZE;
 use tempfile::TempDir;
-use utils::test_set_globals;
+use utils::{test_set_config, test_set_constants};
 
 // Runs this test suite with small chunks and xorbs so that we can make sure that all the different edge
 // cases are hit.
-test_set_globals! {
+test_set_constants! {
     TARGET_CHUNK_SIZE = 1024;
     MAX_XORB_CHUNKS = 2;
+}
 
-    // Disable the periodic aggregation in the file upload sessions.
-    PROGRESS_UPDATE_INTERVAL = Duration::ZERO;
+test_set_config! {
+    data {
+        // Disable the periodic aggregation in the file upload sessions.
+        progress_update_interval = Duration::ZERO;
 
-    // Set the maximum xorb flush count to 1 so that every xorb gets flushed to the temporary session
-    // pool.
-    SESSION_XORB_METADATA_FLUSH_MAX_COUNT = 1;
-
-    // Set the target shard size to be really small so we test the multiple shards on resume path as well.
-    MDB_SHARD_TARGET_SIZE = 1024;
+        // Set the maximum xorb flush count to 1 so that every xorb gets flushed to the temporary session
+        // pool.
+        session_xorb_metadata_flush_max_count = 1;
+    }
+    mdb_shard {
+        target_size = 1024u64;
+    }
 }
 
 // Test the deduplication framework.

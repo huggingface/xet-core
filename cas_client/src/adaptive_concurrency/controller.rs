@@ -9,10 +9,10 @@ use tokio::time::Instant;
 use tracing::info;
 use utils::ExpWeightedMovingAvg;
 use utils::adjustable_semaphore::{AdjustableSemaphore, AdjustableSemaphorePermit};
+use xet_runtime::xet_config;
 
 use crate::CasClientError;
 use crate::adaptive_concurrency::rtt_prediction::RTTPredictor;
-use crate::constants::*;
 
 const MIN_PARTIAL_REPORT_INTERVAL_MS: u64 = 200;
 const PARTIAL_REPORT_WEIGHT_RATIO: f64 = 0.2;
@@ -53,8 +53,9 @@ struct ConcurrencyControllerState {
 
 impl ConcurrencyControllerState {
     fn new() -> Self {
-        let rtt_half_life_count = *CONCURRENCY_CONTROL_LATENCY_RTT_HALF_LIFE_COUNT;
-        let success_half_life_count = *CONCURRENCY_CONTROL_SUCCESS_TRACKING_HALF_LIFE_COUNT;
+        let config = xet_config();
+        let rtt_half_life_count = config.client.concurrency_latency_rtt_half_life_count;
+        let success_half_life_count = config.client.concurrency_success_tracking_half_life_count;
 
         Self {
             rtt_predictor: RTTPredictor::new(rtt_half_life_count),
@@ -65,8 +66,9 @@ impl ConcurrencyControllerState {
     }
 
     fn success_ratio_thresholds(&self) -> (f64, f64) {
-        let increase_threshold = *CONCURRENCY_CONTROL_HEALTHY_SUCCESS_RATIO_THRESHOLD;
-        let decrease_threshold = *CONCURRENCY_CONTROL_UNHEALTHY_SUCCESS_RATIO_THRESHOLD;
+        let config = xet_config();
+        let increase_threshold = config.client.concurrency_healthy_success_ratio_threshold;
+        let decrease_threshold = config.client.concurrency_unhealthy_success_ratio_threshold;
         (increase_threshold, decrease_threshold)
     }
 
@@ -102,9 +104,10 @@ impl ConcurrencyControllerState {
 
     #[inline]
     fn latency_model_state(&self, current_concurrency: f64) -> CCLatencyModelState {
+        let config = xet_config();
         let (predicted_max_rtt, prediction_max_rtt_standard_error) = self
             .rtt_predictor
-            .predict(*CONCURRENCY_CONTROL_MAX_TRANSMISSION_SIZE, current_concurrency);
+            .predict(config.client.concurrency_max_transmission_size, current_concurrency);
 
         let predicted_bandwidth = self.rtt_predictor.predicted_bandwidth();
 
@@ -163,12 +166,13 @@ impl AdaptiveConcurrencyController {
             "Initializing Adaptive Concurrency Controller for {logging_tag} with starting concurrency = {current_concurrency}; min = {min_concurrency}, max = {max_concurrency}"
         );
 
+        let config = xet_config();
         Arc::new(Self {
             state: Mutex::new(ConcurrencyControllerState::new()),
             concurrency_semaphore: AdjustableSemaphore::new(current_concurrency, (min_concurrency, max_concurrency)),
 
-            min_concurrency_increase_delay: Duration::from_millis(*CONCURRENCY_CONTROL_MIN_INCREASE_WINDOW_MS),
-            min_concurrency_decrease_delay: Duration::from_millis(*CONCURRENCY_CONTROL_MIN_DECREASE_WINDOW_MS),
+            min_concurrency_increase_delay: Duration::from_millis(config.client.concurrency_min_increase_window_ms),
+            min_concurrency_decrease_delay: Duration::from_millis(config.client.concurrency_min_decrease_window_ms),
             logging_tag,
         })
     }
@@ -233,7 +237,8 @@ impl AdaptiveConcurrencyController {
         let t_actual = elapsed_time.as_secs_f64().max(1e-4);
 
         // Track if the transfer completed within a healthy time.
-        let completed_in_time = elapsed_time < *CONCURRENCY_CONTROL_MAX_HEALTHY_RTT;
+        let config = xet_config();
+        let completed_in_time = elapsed_time < config.client.concurrency_max_healthy_rtt;
 
         let mut state_lg = self.state.lock().await;
 
@@ -252,7 +257,7 @@ impl AdaptiveConcurrencyController {
                     .map(|lm| lm.rtt_quantile(t_actual, n_bytes, avg_concurrency))
                     .unwrap_or(0.5); // Default to median if no model available
 
-                quantile < *CONCURRENCY_CONTROL_RTT_SUCCESS_MAX_QUANTILE
+                quantile < config.client.concurrency_rtt_success_max_quantile
             } else {
                 false
             }
@@ -274,8 +279,8 @@ impl AdaptiveConcurrencyController {
         }
 
         // Calculate common values once
-        let reference_size = *CONCURRENCY_CONTROL_MAX_TRANSMISSION_SIZE;
-        let target_rtt_secs = CONCURRENCY_CONTROL_TARGET_RTT.as_secs_f64();
+        let reference_size = config.client.concurrency_max_transmission_size;
+        let target_rtt_secs = config.client.concurrency_target_rtt.as_secs_f64();
 
         // If the success ratio is healthy and the predicted RTT is below the target RTT,
         // then adjust the concurrency upwards.
@@ -340,7 +345,7 @@ impl AdaptiveConcurrencyController {
             }
         }
 
-        if state_lg.last_logging_time.elapsed() > Duration::from_millis(*CONCURRENCY_CONTROL_LOGGING_INTERVAL_MS) {
+        if state_lg.last_logging_time.elapsed() > Duration::from_millis(config.client.concurrency_logging_interval_ms) {
             let latency_state = state_lg.latency_model_state(self.concurrency_semaphore.active_permits() as f64);
             info!(
                 "Concurrency control for {}: Current concurrency = {}; predicted bandwidth = {}; success_ratio = {:.3}",

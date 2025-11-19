@@ -7,16 +7,11 @@ use std::path::PathBuf;
 use async_trait::async_trait;
 pub use cache_manager::get_cache;
 use cas_types::{ChunkRange, Key};
-pub use disk::DiskCache;
 pub use disk::test_utils::*;
+pub use disk::{DEFAULT_CHUNK_CACHE_CAPACITY, DiskCache};
 use error::ChunkCacheError;
 use mockall::automock;
-
-pub use crate::disk::DEFAULT_CHUNK_CACHE_CAPACITY;
-
-utils::configurable_constants! {
-    ref CHUNK_CACHE_SIZE_BYTES: u64 = DEFAULT_CHUNK_CACHE_CAPACITY;
-}
+use xet_runtime::xet_config;
 
 /// Return dto for cache gets
 /// offsets has 1 more than then number of chunks in the specified range
@@ -86,7 +81,7 @@ impl Default for CacheConfig {
     fn default() -> Self {
         CacheConfig {
             cache_directory: PathBuf::from("/tmp"),
-            cache_size: *CHUNK_CACHE_SIZE_BYTES,
+            cache_size: xet_config().chunk_cache.size_bytes,
         }
     }
 }

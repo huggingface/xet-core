@@ -4,9 +4,7 @@ use std::time::{Duration, Instant};
 
 use bytes::Bytes;
 use cas_client::adaptive_concurrency::AdaptiveConcurrencyController;
-use cas_client::constants::*;
 use cas_client::http_client::build_http_client_no_retry;
-use cas_client::remote_client::UPLOAD_REPORTING_BLOCK_SIZE;
 use cas_client::retry_wrapper::RetryWrapper;
 use cas_client::upload_progress_stream::UploadProgressStream;
 use clap::Parser;
@@ -17,6 +15,7 @@ use reqwest::Body;
 use reqwest_middleware::ClientWithMiddleware;
 use serde_json;
 use tokio::task::JoinSet;
+use xet_runtime::xet_config;
 
 mod common;
 use common::ClientMetrics;
@@ -130,10 +129,11 @@ async fn run_client(min_data_kb: u64, max_data_kb: u64, repeat_duration_seconds:
     );
 
     // Create the adaptive concurrency controller
+    let config = xet_config();
     let concurrency_controller = AdaptiveConcurrencyController::new(
         "test_uploads",
-        *NUM_INITIAL_CONCURRENT_UPLOADS,
-        (*MIN_CONCURRENT_UPLOADS, *MAX_CONCURRENT_UPLOADS),
+        config.client.num_initial_concurrent_uploads,
+        (config.client.min_concurrent_uploads, config.client.max_concurrent_uploads),
     );
 
     let start_time_loop = Instant::now();
@@ -331,7 +331,7 @@ async fn run_client(min_data_kb: u64, max_data_kb: u64, repeat_duration_seconds:
 
                             let upload_stream = UploadProgressStream::new(
                                 payload_data.clone(),
-                                *UPLOAD_REPORTING_BLOCK_SIZE,
+                                xet_config().client.upload_reporting_block_size,
                                 progress_callback,
                             )
                             .clone_with_reset();

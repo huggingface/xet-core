@@ -1,14 +1,14 @@
-use std::fmt::Debug;
 use std::str::FromStr;
-use std::time::Duration;
 
 use tracing::{info, warn};
+
+use crate::ByteSize;
 
 /// A trait to control how a value is parsed from an environment string or other config source
 /// if it's present.
 ///
 /// The main reason to do things like this is to
-pub trait ParsableConfigValue: Debug + Sized {
+pub trait ParsableConfigValue: std::fmt::Debug + Sized {
     fn parse_user_value(value: &str) -> Option<Self>;
 
     /// Parse the value, returning the default if it can't be parsed or the string is empty.  
@@ -38,7 +38,7 @@ pub trait ParsableConfigValue: Debug + Sized {
 
 /// Most values work with the FromStr implementation, but we want to override the behavior for some types
 /// (e.g. Option<T> and bool) to have custom parsing behavior.
-pub trait FromStrParseable: FromStr + Debug {}
+pub trait FromStrParseable: FromStr + std::fmt::Debug {}
 
 impl<T: FromStrParseable> ParsableConfigValue for T {
     fn parse_user_value(value: &str) -> Option<Self> {
@@ -94,36 +94,9 @@ impl<T: ParsableConfigValue> ParsableConfigValue for Option<T> {
 ///
 /// Now the following suffixes are supported [y, mon, d, h, m, s, ms];
 /// see the duration_str crate for the full list.
-impl ParsableConfigValue for Duration {
+impl ParsableConfigValue for std::time::Duration {
     fn parse_user_value(value: &str) -> Option<Self> {
         duration_str::parse(value).ok()
-    }
-}
-
-/// A small marker struct so you can write `release_fixed(1234)`.
-/// In debug builds, we allow env override; in release, we ignore env.
-pub enum GlobalConfigMode<T> {
-    ReleaseFixed(T),
-    EnvConfigurable(T),
-    HighPerformanceOption { standard: T, high_performance: T },
-}
-
-#[allow(dead_code)]
-pub fn release_fixed<T>(t: T) -> GlobalConfigMode<T> {
-    GlobalConfigMode::ReleaseFixed(t)
-}
-
-// Make env_configurable the default
-impl<T> From<T> for GlobalConfigMode<T> {
-    fn from(value: T) -> Self {
-        GlobalConfigMode::EnvConfigurable(value)
-    }
-}
-
-// This one happens a lot so might as well allow us to set String values with a &str.
-impl From<&str> for GlobalConfigMode<String> {
-    fn from(value: &str) -> Self {
-        GlobalConfigMode::EnvConfigurable(value.to_owned())
     }
 }
 
@@ -131,28 +104,27 @@ impl From<&str> for GlobalConfigMode<String> {
 pub use lazy_static::lazy_static;
 
 #[macro_export]
-macro_rules! configurable_constants {
+macro_rules! test_configurable_constants {
     ($(
         $(#[$meta:meta])*
         ref $name:ident : $type:ty = $value:expr;
     )+) => {
         $(
             #[allow(unused_imports)]
-            use utils::constant_declarations::*;
+            use $crate::configuration_utils::*;
+
             lazy_static! {
                 $(#[$meta])*
                 pub static ref $name: $type = {
-                    let v : GlobalConfigMode<$type> = ($value).into();
-                    let try_load_from_env = |v_| {
+                    #[cfg(debug_assertions)]
+                    {
+                        let default_value = $value;
                         let maybe_env_value = std::env::var(concat!("HF_XET_",stringify!($name))).ok();
-                        <$type>::parse(stringify!($name), maybe_env_value, v_)
-                    };
-
-                    match (v, cfg!(debug_assertions)) {
-                        (GlobalConfigMode::ReleaseFixed(v), false) => v,
-                        (GlobalConfigMode::ReleaseFixed(v), true) => try_load_from_env(v),
-                        (GlobalConfigMode::EnvConfigurable(v), _) => try_load_from_env(v),
-                        (GlobalConfigMode::HighPerformanceOption { standard, high_performance }, _) => try_load_from_env(if is_high_performance() { high_performance } else { standard }),
+                        <$type>::parse(stringify!($name), maybe_env_value, default_value)
+                    }
+                    #[cfg(not(debug_assertions))]
+                    {
+                        $value
                     }
                 };
             }
@@ -162,43 +134,41 @@ macro_rules! configurable_constants {
 
 pub use ctor as ctor_reexport;
 
-use crate::ByteSize;
-
 #[cfg(not(doctest))]
-/// A macro for **tests** that sets `HF_XET_<GLOBAL_NAME>` to `$value` **before**
-/// the global is initialized, and then checks that the global actually picks up
-/// that value. If the global was already accessed (thus initialized), or if it
+/// A macro for **tests** that sets `HF_XET_<CONSTANT_NAME>` to `$value` **before**
+/// the constant is initialized, and then checks that the constant actually picks up
+/// that value. If the constant was already accessed (thus initialized), or if it
 /// doesn't match after being set, this macro panics.
 ///
 /// Typically you would document *the macro itself* here, rather than placing
-/// doc comments above each call to `test_set_global!`, because it doesn't
+/// doc comments above each call to `test_set_constants!`, because it doesn't
 /// define a new item.
 ///
 /// # Example
 /// ```rust
-/// use utils::{configurable_constants, test_set_globals};
-/// configurable_constants! {
+/// use utils::{test_configurable_constants, test_set_constants};
+/// test_configurable_constants! {
 ///    /// Target chunk size
 ///    ref CHUNK_TARGET_SIZE: u64 = 1024;
 ///
 ///    /// Max Chunk size, only adjustable in testing mode.
-///    ref MAX_CHUNK_SIZE: u64 = release_fixed(4096);
+///    ref MAX_CHUNK_SIZE: u64 = 4096;
 /// }
 ///
-/// test_set_globals! {
+/// test_set_constants! {
 ///    CHUNK_TARGET_SIZE = 2048;
 /// }
 /// assert_eq!(*CHUNK_TARGET_SIZE, 2048);
 /// ```
 #[macro_export]
-macro_rules! test_set_globals {
+macro_rules! test_set_constants {
     ($(
         $var_name:ident = $val:expr;
     )+) => {
-        use utils::constant_declarations::ctor_reexport as ctor;
+        use $crate::configuration_utils::ctor_reexport as ctor;
 
         #[ctor::ctor]
-        fn set_globals_on_load() {
+        fn set_constants_on_load() {
             $(
                 let val = $val;
                 let val_str = format!("{val:?}");
@@ -216,7 +186,7 @@ macro_rules! test_set_globals {
 
                 if format!("{actual_value:?}") != val_str {
                     panic!(
-                        "test_set_global! failed: wanted {} to be {:?}, but got {:?}",
+                        "test_set_constants! failed: wanted {} to be {:?}, but got {:?}",
                         stringify!($var_name),
                         val,
                         actual_value
@@ -225,6 +195,72 @@ macro_rules! test_set_globals {
                 eprintln!("> Set {} to {:?}",
                         stringify!($var_name),
                         val);
+            )+
+        }
+    }
+}
+
+#[cfg(not(doctest))]
+/// A macro for **tests** that sets config group environment variables **before**
+/// XetRuntime is initialized. The environment variables follow the pattern
+/// `HF_XET_{GROUP_NAME}_{FIELD_NAME}`.
+///
+/// This macro uses `ctor` to run on module load, ensuring environment variables
+/// are set before any config values are read.
+///
+/// # Example
+/// ```rust
+/// use config::XetConfig;
+/// use utils::test_set_config;
+///
+/// test_set_config! {
+///     data {
+///         max_concurrent_uploads = 16;
+///         max_concurrent_downloads = 20;
+///     }
+///     cas_client {
+///         num_concurrent_range_gets = 64;
+///     }
+/// }
+///
+/// // Now XetConfig::new() will pick up these values
+/// let config = XetConfig::new();
+/// assert_eq!(config.data.max_concurrent_uploads, 16);
+/// ```
+#[macro_export]
+macro_rules! test_set_config {
+    ($(
+        $group_name:ident {
+            $(
+                $field_name:ident = $val:expr;
+            )+
+        }
+    )+) => {
+        use $crate::configuration_utils::ctor_reexport as config_ctor;
+
+        #[config_ctor::ctor]
+        fn set_config_on_load() {
+            $(
+                let group_name_upper = stringify!($group_name).to_uppercase();
+                $(
+                    let val = $val;
+                    let val_str = format!("{val:?}");
+                    let field_name_upper = stringify!($field_name).to_uppercase();
+
+                    // Construct the environment variable name: HF_XET_{GROUP_NAME}_{FIELD_NAME}
+                    let env_name = format!("HF_XET_{}_{}", group_name_upper, field_name_upper);
+
+                    // Set the environment
+                    unsafe {
+                        std::env::set_var(&env_name, &val_str);
+                    }
+
+                    eprintln!("> Set config {}.{} to {:?} (env: {})",
+                            stringify!($group_name),
+                            stringify!($field_name),
+                            val,
+                            env_name);
+                )+
             )+
         }
     }
