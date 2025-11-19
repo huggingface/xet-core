@@ -1,0 +1,12 @@
+#!/bin/bash
+
+# Single client server load scenario.  Simplest test.
+# Start the server
+simulation_server --min-reply-delay-ms=400 --max-reply-delay-ms=1200 --test-duration-seconds=600 &
+
+echo "Testing basic 48MB to 64MB payload uploads for 10 minutes..."
+simulation_client --min-data-kb=49152 --max-data-kb=65536 --repeat-duration-seconds=600 &
+
+sleep 600
+
+echo "Single client check scenario completed"

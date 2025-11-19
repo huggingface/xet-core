@@ -8,9 +8,17 @@ use merklehash::MerkleHash;
 use progress_tracking::item_tracking::SingleItemProgressUpdater;
 use progress_tracking::upload_tracking::CompletionTracker;
 
+use crate::adaptive_concurrency::{AdaptiveConcurrencyController, ConnectionPermit};
+use crate::constants::{MAX_CONCURRENT_UPLOADS, MIN_CONCURRENT_UPLOADS, NUM_INITIAL_CONCURRENT_UPLOADS};
 use crate::error::Result;
 #[cfg(not(target_family = "wasm"))]
 use crate::{SeekingOutputProvider, SequentialOutput};
+
+// The upload concurrency controller
+lazy_static::lazy_static! {
+    static ref UPLOAD_CONCURRENCY_CONTROLLER : Arc<AdaptiveConcurrencyController>
+        = AdaptiveConcurrencyController::new("uploads", *NUM_INITIAL_CONCURRENT_UPLOADS, (*MIN_CONCURRENT_UPLOADS, *MAX_CONCURRENT_UPLOADS));
+}
 
 /// A Client to the Shard service. The shard service
 /// provides for
@@ -52,15 +60,40 @@ pub trait Client {
     async fn query_for_global_dedup_shard(&self, prefix: &str, chunk_hash: &MerkleHash) -> Result<Option<Bytes>>;
 
     /// Upload a new shard.
-    async fn upload_shard(&self, shard_data: Bytes) -> Result<bool>;
+    async fn upload_shard_with_permit(&self, shard_data: bytes::Bytes, upload_permit: ConnectionPermit)
+    -> Result<bool>;
 
     /// Upload a new xorb.
+    async fn upload_xorb_with_permit(
+        &self,
+        prefix: &str,
+        serialized_cas_object: SerializedCasObject,
+        upload_tracker: Option<Arc<CompletionTracker>>,
+        upload_permit: ConnectionPermit,
+    ) -> Result<u64>;
+
+    /// Acquire an upload permit.
+    async fn acquire_upload_permit(&self) -> Result<ConnectionPermit> {
+        UPLOAD_CONCURRENCY_CONTROLLER.acquire_connection_permit().await
+    }
+
+    /// Upload a new shard, acquiring the permit.
+    async fn upload_shard(&self, shard_data: bytes::Bytes) -> Result<bool> {
+        let permit = self.acquire_upload_permit().await?;
+        self.upload_shard_with_permit(shard_data, permit).await
+    }
+
+    /// Upload a new xorb, acquiring the permit.
     async fn upload_xorb(
         &self,
         prefix: &str,
         serialized_cas_object: SerializedCasObject,
         upload_tracker: Option<Arc<CompletionTracker>>,
-    ) -> Result<u64>;
+    ) -> Result<u64> {
+        let permit = self.acquire_upload_permit().await?;
+        self.upload_xorb_with_permit(prefix, serialized_cas_object, upload_tracker, permit)
+            .await
+    }
 
     /// Indicates if the serialized cas object should have a written footer.
     /// This should only be true for testing with LocalClient.

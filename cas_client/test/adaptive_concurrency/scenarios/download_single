@@ -1,0 +1,12 @@
+#!/bin/bash
+
+# Simulates a single download client. 
+
+# Start the server
+simulation_server --min-reply-delay-ms=400 --max-reply-delay-ms=1200 --test-duration-seconds=600 &
+
+# Download packets can be between 64MB and 64MB in size.
+simulation_client --min-data-kb=1 --max-data-kb=65536 --repeat-duration-seconds=600 &
+
+sleep 600
+

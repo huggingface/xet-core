@@ -11,17 +11,19 @@ pub use remote_client::RemoteClient;
 
 pub use crate::error::CasClientError;
 
-mod constants;
+pub mod constants;
 #[cfg(not(target_family = "wasm"))]
 mod download_utils;
 mod error;
 pub mod exports;
-mod http_client;
+pub mod http_client;
 mod interface;
 #[cfg(not(target_family = "wasm"))]
 mod local_client;
 #[cfg(not(target_family = "wasm"))]
 mod output_provider;
 pub mod remote_client;
-mod retry_wrapper;
-mod upload_progress_stream;
+pub mod retry_wrapper;
+pub mod upload_progress_stream;
+
+pub mod adaptive_concurrency;

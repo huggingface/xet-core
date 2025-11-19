@@ -17,7 +17,9 @@ use tokio::sync::Mutex;
 use tracing::{Instrument, info, info_span, warn};
 use utils::auth::{AuthConfig, TokenProvider};
 
-use crate::constants::{CLIENT_IDLE_CONNECTION_TIMEOUT, CLIENT_MAX_IDLE_CONNECTIONS};
+use crate::constants::{
+    CLIENT_CONNECT_TIMEOUT, CLIENT_IDLE_CONNECTION_TIMEOUT, CLIENT_MAX_IDLE_CONNECTIONS, CLIENT_READ_TIMEOUT,
+};
 use crate::retry_wrapper::on_request_failure;
 use crate::{CasClientError, error};
 
@@ -109,6 +111,11 @@ fn reqwest_client(user_agent: &str) -> Result<reqwest::Client, CasClientError> {
             let mut builder = reqwest::Client::builder()
                 .pool_idle_timeout(*CLIENT_IDLE_CONNECTION_TIMEOUT)
                 .pool_max_idle_per_host(*CLIENT_MAX_IDLE_CONNECTIONS)
+                .connect_timeout(*CLIENT_CONNECT_TIMEOUT)
+                .read_timeout(*CLIENT_READ_TIMEOUT)
+                // Explicitly NOT setting .timeout() to disable transfer-level timeout.
+                // We rely on packet-level timeouts (read_timeout) which reset when data
+                // is received, allowing slow but progressing transfers to complete.
                 .http1_only(); // high throughput parallel I/O has been shown to bottleneck with http2
 
             if !user_agent.is_empty() {
