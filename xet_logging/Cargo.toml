@@ -4,6 +4,8 @@ version = "0.14.5"
 edition = "2024"
 
 [dependencies]
+xet_config = { path = "../xet_config" }
+xet_runtime = { path = "../xet_runtime" }
 error_printer = { path = "../error_printer" }
 utils = { path = "../utils" }
 
@@ -19,6 +21,7 @@ tracing-subscriber = { version = "0.3", features = [
 ] }
 tracing-appender = "0.2"
 git-version = "0.3.9"
+tokio = { version = "1.0", features = ["rt", "macros"] }
 
 console-subscriber = { version = "0.4.1", optional = true }
 

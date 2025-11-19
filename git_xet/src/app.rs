@@ -39,6 +39,10 @@ Remove "lfs.concurrenttransfers" from the global Git config."#)]
     /// to be used directly by users, but instead to be invoked by git-lfs.
     Transfer,
 
+    /// Start tracking the given patterns(s) through Git LFS. This directly
+    /// calls the "git lfs track" command with the following options and args.
+    Track(TrackArg),
+
     /// Run any arguments passed in as a command. This is a feature only for
     /// integration tests.
     #[cfg(feature = "git-xet-for-integration-test")]
@@ -86,6 +90,13 @@ struct UninstallArg {
     /// The path to the repository. This argument only applies when "--local" is specified.
     #[clap(long)]
     path: Option<PathBuf>,
+}
+
+struct TrackArg {
+    // The below arg attributes instruct git-xet to bypass parsing any options (arg with prefix "-") and
+    // passing them directly to "git lfs track".
+    #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+    args_to_git_lfs_track: Vec<String>,
 }
 
 #[derive(Args, Debug)]
@@ -139,6 +150,7 @@ impl Command {
             Command::Install(args) => install_command(args),
             Command::Uninstall(args) => uninstall_command(args),
             Command::Transfer => transfer_command().await,
+            Command::Track(args) => track_command(args),
             #[cfg(feature = "git-xet-for-integration-test")]
             Command::Runany(args) => run_any_command(args),
         }
@@ -149,6 +161,7 @@ impl Command {
             Command::Install(_) => "install",
             Command::Uninstall(_) => "uninstall",
             Command::Transfer => "transfer",
+            Command::Track(_) => "track",
             #[cfg(feature = "git-xet-for-integration-test")]
             Command::Runany(_) => "runany",
         }
@@ -216,6 +229,14 @@ async fn transfer_command() -> Result<()> {
     Ok(())
 }
 
+fn track_command(args: TrackArg) -> Result<()> {
+    let mut cmd = std::process::Command::new("git-lfs");
+    cmd.arg("track");
+    cmd.args(args.args_to_git_lfs_track);
+    cmd.status()?;
+    Ok(())
+}
+
 #[cfg(feature = "git-xet-for-integration-test")]
 fn run_any_command(args: RunanyArg) -> Result<()> {
     let mut cmd = std::process::Command::new(args.program);
@@ -223,6 +244,4 @@ fn run_any_command(args: RunanyArg) -> Result<()> {
         cmd.args(args);
     }
     let _ = cmd.status()?;
-
-    Ok(())
 }

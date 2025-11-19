@@ -2,8 +2,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use utils::normalized_path_from_user_string;
-
-use crate::constants::*;
+use xet_runtime::xet_config;
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum LoggingMode {
@@ -27,10 +26,10 @@ impl Default for LogDirConfig {
     fn default() -> Self {
         // Load the defaults from the environmental config.
         Self {
-            min_deletion_age: *LOG_DIR_MIN_DELETION_AGE,
-            max_retention_age: *LOG_DIR_MAX_RETENTION_AGE,
-            size_limit: LOG_DIR_MAX_SIZE.as_u64(),
-            filename_prefix: LOG_PREFIX.to_string(),
+            min_deletion_age: xet_config().log.dir_min_deletion_age,
+            max_retention_age: xet_config().log.dir_max_retention_age,
+            size_limit: xet_config().log.dir_max_size.as_u64(),
+            filename_prefix: xet_config().log.prefix.to_string(),
         }
     }
 }
@@ -49,8 +48,8 @@ impl LoggingConfig {
     pub fn default_to_directory(version: String, log_directory: impl AsRef<Path>) -> LoggingConfig {
         // Choose the logging mode.
         let logging_mode = {
-            if let Some(log_dest) = &*LOG_DEST {
-                if log_dest.is_empty() {
+            if let Some(log_dest) = &xet_config().log.dest {
+                if log_dest.as_str().is_empty() {
                     LoggingMode::Console
                 } else {
                     let path = normalized_path_from_user_string(log_dest);
@@ -70,14 +69,15 @@ impl LoggingConfig {
         };
 
         let use_json = {
-            if let Some(format) = &*LOG_FORMAT {
-                format.to_ascii_lowercase().trim() == "json"
+            if let Some(format) = &xet_config().log.format {
+                format.as_str().to_ascii_lowercase().trim() == "json"
             } else {
                 logging_mode != LoggingMode::Console
             }
         };
 
-        let enable_log_dir_cleanup = matches!(logging_mode, LoggingMode::Directory(_)) && !*LOG_DIR_DISABLE_CLEANUP;
+        let enable_log_dir_cleanup =
+            matches!(logging_mode, LoggingMode::Directory(_)) && !xet_config().log.dir_disable_cleanup;
 
         Self {
             logging_mode,

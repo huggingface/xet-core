@@ -4,6 +4,8 @@ version = "0.14.5"
 edition = "2024"
 
 [dependencies]
+xet_config = { path = "../xet_config" }
+xet_runtime = { path = "../xet_runtime" }
 mdb_shard = { path = "../mdb_shard" }
 merklehash = { path = "../merklehash" }
 progress_tracking = { path = "../progress_tracking" }
@@ -13,6 +15,7 @@ async-trait = { workspace = true }
 bytes = { workspace = true }
 gearhash = { workspace = true }
 more-asserts = { workspace = true }
+lazy_static = { workspace = true }
 
 [dev-dependencies]
 rand = { workspace = true }
