@@ -1,3 +1,6 @@
+mod aliases;
+pub use aliases::ENVIRONMENT_NAME_ALIASES;
+
 pub mod macros;
 pub mod xet_config;
 

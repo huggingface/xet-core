@@ -79,7 +79,7 @@ macro_rules! config_group {
                     // If not found, check aliases
                     // The compiler should optimize this loop since ENVIRONMENT_NAME_ALIASES is a const
                     if maybe_env_value.is_none() {
-                            for &(primary_name, alias_name) in $crate::xet_config::ENVIRONMENT_NAME_ALIASES {
+                            for &(primary_name, alias_name) in $crate::ENVIRONMENT_NAME_ALIASES {
                                 if primary_name == ENV_VAR_NAME {
                                     let alt_env_value = std::env::var(alias_name).ok();
                                     if alt_env_value.is_some() {

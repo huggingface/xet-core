@@ -1,16 +1,5 @@
 use crate::groups;
 
-/// Environment variable name aliases.
-/// Format: ("<Current Env Name>", "<Alternate name to check>")
-/// These aliases support backward compatibility with old environment variable names
-/// from before the config refactor (when constants were in data/src/constants.rs and cas_client/src/constants.rs).
-pub const ENVIRONMENT_NAME_ALIASES: &[(&str, &str)] = &[
-    ("HF_XET_DATA_MAX_CONCURRENT_UPLOADS", "HF_XET_MAX_CONCURRENT_UPLOADS"),
-    ("HF_XET_DATA_MAX_CONCURRENT_DOWNLOADS", "HF_XET_MAX_CONCURRENT_DOWNLOADS"),
-    ("HF_XET_DATA_MAX_CONCURRENT_FILE_INGESTION", "HF_XET_MAX_CONCURRENT_FILE_INGESTION"),
-    ("HF_XET_CLIENT_NUM_CONCURRENT_RANGE_GETS", "HF_XET_NUM_CONCURRENT_RANGE_GETS"),
-];
-
 /// Primary configuration struct containing all config sections
 #[derive(Debug, Clone, Default)]
 pub struct XetConfig {
