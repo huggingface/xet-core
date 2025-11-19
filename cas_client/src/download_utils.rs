@@ -639,7 +639,7 @@ mod tests {
         let server = MockServer::start();
         server.mock(|when, then| {
             when.method(GET)
-                .path(format!("/reconstructions/{}", MerkleHash::default()))
+                .path(format!("/v1/reconstructions/{}", MerkleHash::default()))
                 .header(RANGE.as_str(), HttpRange::from(file_range).range_header());
             let response = QueryReconstructionResponse {
                 offset_into_first_range: 0,
@@ -686,7 +686,7 @@ mod tests {
         let server = MockServer::start();
         let mock = server.mock(|when, then| {
             when.method(GET)
-                .path(format!("/reconstructions/{}", MerkleHash::default()))
+                .path(format!("/v1/reconstructions/{}", MerkleHash::default()))
                 .header(RANGE.as_str(), HttpRange::from(file_range_to_refresh).range_header());
             let response = QueryReconstructionResponse {
                 offset_into_first_range: 0,
@@ -743,7 +743,7 @@ mod tests {
         // Arrange server
         let mock_fi = server.mock(|when, then| {
             when.method(GET)
-                .path(format!("/reconstructions/{}", MerkleHash::default()))
+                .path(format!("/v1/reconstructions/{}", MerkleHash::default()))
                 .header(RANGE.as_str(), HttpRange::from(file_range).range_header());
             let response = QueryReconstructionResponse {
                 offset_into_first_range: 0,
