@@ -15,7 +15,7 @@ use crate::constants::INGESTION_BLOCK_SIZE;
 use crate::deduplication_interface::UploadSessionDataManager;
 use crate::errors::Result;
 use crate::file_upload_session::FileUploadSession;
-use crate::sha256::ShaGenerator;
+use crate::sha256::{Sha256Generator, ShaGen};
 
 /// A class that encapsulates the clean and data task around a single file.
 pub struct SingleFileCleaner {
@@ -36,16 +36,18 @@ pub struct SingleFileCleaner {
     dedup_manager_fut: Pin<Box<dyn Future<Output = Result<FileDeduper<UploadSessionDataManager>>> + Send + 'static>>,
 
     // Generating the sha256 hash
-    sha_generator: ShaGenerator,
+    sha_generator: ShaGen,
 
     // Start time
     start_time: DateTime<Utc>,
 }
 
 impl SingleFileCleaner {
+    // If a sha256 value is given in the parameter, the cleaner avoids computing the sha256 again internally.
     pub(crate) fn new(
         file_name: Option<Arc<str>>,
         file_id: CompletionTrackerFileId,
+        sha256: Option<MerkleHash>,
         session: Arc<FileUploadSession>,
     ) -> Self {
         let deduper = FileDeduper::new(UploadSessionDataManager::new(session.clone(), file_id), file_id);
@@ -56,7 +58,9 @@ impl SingleFileCleaner {
             dedup_manager_fut: Box::pin(async move { Ok(deduper) }),
             session,
             chunker: deduplication::Chunker::default(),
-            sha_generator: ShaGenerator::new(),
+            sha_generator: sha256
+                .map(ShaGen::Noop)
+                .unwrap_or_else(|| ShaGen::Sha256(Sha256Generator::default())),
             start_time: Utc::now(),
         }
     }

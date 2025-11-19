@@ -2,17 +2,34 @@ use merklehash::MerkleHash;
 use sha2::{Digest, Sha256};
 use tokio::task::{JoinError, JoinHandle};
 
+pub enum ShaGen {
+    Sha256(Sha256Generator),
+    Noop(MerkleHash),
+}
+
+impl ShaGen {
+    pub async fn update(&mut self, new_data: impl AsRef<[u8]> + Send + Sync + 'static) -> Result<(), JoinError> {
+        match self {
+            Self::Sha256(generator) => generator.update(new_data).await,
+            Self::Noop(_) => Ok(()),
+        }
+    }
+
+    pub async fn finalize(self) -> Result<MerkleHash, JoinError> {
+        match self {
+            Self::Sha256(generator) => generator.finalize().await,
+            Self::Noop(hash) => Ok(hash),
+        }
+    }
+}
+
 /// Helper struct to generate a sha256 hash as a MerkleHash.
-#[derive(Debug)]
-pub struct ShaGenerator {
+#[derive(Debug, Default)]
+pub struct Sha256Generator {
     hasher: Option<JoinHandle<Result<Sha256, JoinError>>>,
 }
 
-impl ShaGenerator {
-    pub fn new() -> Self {
-        Self { hasher: None }
-    }
-
+impl Sha256Generator {
     /// Complete the last block, then hand off the new chunks to the new hasher.
     pub async fn update(&mut self, new_data: impl AsRef<[u8]> + Send + Sync + 'static) -> Result<(), JoinError> {
         let mut hasher = match self.hasher.take() {
@@ -59,7 +76,7 @@ mod sha_tests {
 
     #[tokio::test]
     async fn test_sha_generation_builder() {
-        let mut sha_generator = ShaGenerator::new();
+        let mut sha_generator = Sha256Generator::default();
         sha_generator.update(TEST_DATA.as_bytes()).await.unwrap();
         let hash = sha_generator.finalize().await.unwrap();
 
@@ -68,7 +85,7 @@ mod sha_tests {
 
     #[tokio::test]
     async fn test_sha_generation_build_multiple_chunks() {
-        let mut sha_generator = ShaGenerator::new();
+        let mut sha_generator = Sha256Generator::default();
         let td = TEST_DATA.as_bytes();
         sha_generator.update(&td[0..4]).await.unwrap();
         sha_generator.update(&td[4..td.len()]).await.unwrap();
@@ -85,7 +102,7 @@ mod sha_tests {
         let mut rand_data = [0u8; 4096];
         rng().fill(&mut rand_data[..]);
 
-        let mut sha_generator = ShaGenerator::new();
+        let mut sha_generator = Sha256Generator::default();
 
         // Add in random chunks.
         let mut pos = 0;
