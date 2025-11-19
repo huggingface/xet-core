@@ -67,7 +67,11 @@ macro_rules! config_group {
 
                     {
                     // Get module name at compile time using konst and build env var name in one line
-                    const ENV_VAR_NAME: &str = const_str::concat!("HF_XET_", const_str::convert_ascii_case!(upper, konst::string::rsplit_once(module_path!(), "::").unwrap().1), "_", const_str::convert_ascii_case!(upper, stringify!($name)));
+                    const ENV_VAR_NAME: &str = const_str::concat!(
+                        "HF_XET_",
+                        const_str::convert_ascii_case!(upper, konst::string::rsplit_once(module_path!(), "::").unwrap().1),
+                        "_",
+                        const_str::convert_ascii_case!(upper, stringify!($name)));
 
                     // Check the primary environment variable first
                     let mut maybe_env_value = std::env::var(ENV_VAR_NAME).ok();

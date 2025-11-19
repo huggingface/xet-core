@@ -2,6 +2,8 @@ use crate::groups;
 
 /// Environment variable name aliases.
 /// Format: ("<Current Env Name>", "<Alternate name to check>")
+/// These aliases support backward compatibility with old environment variable names
+/// from before the config refactor (when constants were in data/src/constants.rs and cas_client/src/constants.rs).
 pub const ENVIRONMENT_NAME_ALIASES: &[(&str, &str)] = &[
     ("HF_XET_DATA_MAX_CONCURRENT_UPLOADS", "HF_XET_MAX_CONCURRENT_UPLOADS"),
     ("HF_XET_DATA_MAX_CONCURRENT_DOWNLOADS", "HF_XET_MAX_CONCURRENT_DOWNLOADS"),
