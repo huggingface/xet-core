@@ -124,7 +124,8 @@ impl GitUrl {
     }
 
     // Returns the front part of the Git remote URL removing repo path,
-    // e.g. (scheme://)(auth)[host_name](:port)
+    // e.g. (scheme://)(auth@)[host_name](:port)
+    #[allow(unused)]
     pub fn host_url(&self) -> Result<String> {
         let scheme_str = if self.inner.scheme_prefix {
             format!("{}://", self.inner.scheme)
@@ -157,6 +158,29 @@ impl GitUrl {
         };
 
         Ok(format!("{scheme_str}{auth_str}{host}{port_str}"))
+    }
+
+    // Returns the user and host in the format of (auth@)[host].
+    pub fn user_and_host(&self) -> Result<String> {
+        let auth_str = match self.inner.scheme {
+            Scheme::Http | Scheme::Https | Scheme::Ssh | Scheme::GitSsh => {
+                match (&self.inner.user, &self.inner.token) {
+                    (Some(user), Some(token)) => format!("{}:{}@", user, token),
+                    (Some(user), None) => format!("{}@", user),
+                    (None, Some(token)) => format!("{}@", token),
+                    (None, None) => "".to_owned(),
+                }
+            },
+            _ => "".to_owned(),
+        };
+
+        let host = self
+            .inner
+            .host
+            .as_ref()
+            .ok_or_else(|| GitXetError::config_error("remote URL missing host name"))?;
+
+        Ok(format!("{auth_str}{host}"))
     }
 
     pub fn port(&self) -> Option<u16> {

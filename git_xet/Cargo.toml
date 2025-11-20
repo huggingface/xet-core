@@ -28,13 +28,10 @@ russh = { workspace = true }
 rust-netrc = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+shell-words = { workspace = true }
 tempfile = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
-shell-words = { workspace = true }
-
-[target.'cfg(unix)'.dependencies]
-openssh = { workspace = true }
 
 [dev-dependencies]
 serial_test = { workspace = true }

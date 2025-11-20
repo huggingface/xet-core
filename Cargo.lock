@@ -1926,7 +1926,6 @@ dependencies = [
  "git-url-parse",
  "git2",
  "hub_client",
- "openssh",
  "progress_tracking",
  "rand_core 0.6.4",
  "reqwest",
@@ -3282,20 +3281,6 @@ name = "opaque-debug"
 version = "0.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c08d65885ee38876c4f86fa503fb49d7b507c2b62552df7c70b2fce627e06381"
-
-[[package]]
-name = "openssh"
-version = "0.11.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ea0bb128ba90e86bc55dae66031935f361cda4cbc1f011547c55a7d80079bc3e"
-dependencies = [
- "libc",
- "once_cell",
- "shell-escape",
- "tempfile",
- "thiserror 2.0.12",
- "tokio",
-]
 
 [[package]]
 name = "openssl"
@@ -4733,12 +4718,6 @@ checksum = "f40ca3c46823713e0d4209592e8d6e826aa57e928f09752619fc696c499637f6"
 dependencies = [
  "lazy_static",
 ]
-
-[[package]]
-name = "shell-escape"
-version = "0.1.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "45bb67a18fa91266cc7807181f62f9178a6873bfad7dc788c42e6430db40184f"
 
 [[package]]
 name = "shell-words"
