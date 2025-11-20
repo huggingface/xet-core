@@ -61,24 +61,23 @@ fn generate_timeline_csv(scenario_dir: &Path) -> Result<(), Box<dyn std::error::
         let entry = entry?;
         let path = entry.path();
 
-        if let Some(file_name) = path.file_name().and_then(|n| n.to_str()) {
-            if file_name.starts_with("client_stats_") && file_name.ends_with(".json") {
-                if let Ok(stats) = load_json_lines::<ClientMetrics>(&path) {
-                    for stat in stats {
-                        let timestamp = stat.timestamp.parse::<u64>().unwrap_or(0);
-                        let client_id = stat.client_id;
+        if let Some(file_name) = path.file_name().and_then(|n| n.to_str())
+            && file_name.starts_with("client_stats_") && file_name.ends_with(".json")
+            && let Ok(stats) = load_json_lines::<ClientMetrics>(&path)
+        {
+            for stat in stats {
+                let timestamp = stat.timestamp.parse::<u64>().unwrap_or(0);
+                let client_id = stat.client_id;
 
-                        let timeline = client_timelines.entry(client_id).or_insert_with(|| ClientTimelineData {
-                            first_timestamp: timestamp,
-                            last_timestamp: timestamp,
-                            stats_by_timestamp: BTreeMap::new(),
-                        });
+                let timeline = client_timelines.entry(client_id).or_insert_with(|| ClientTimelineData {
+                    first_timestamp: timestamp,
+                    last_timestamp: timestamp,
+                    stats_by_timestamp: BTreeMap::new(),
+                });
 
-                        timeline.stats_by_timestamp.insert(timestamp, stat.clone());
-                        timeline.first_timestamp = timeline.first_timestamp.min(timestamp);
-                        timeline.last_timestamp = timeline.last_timestamp.max(timestamp);
-                    }
-                }
+                timeline.stats_by_timestamp.insert(timestamp, stat.clone());
+                timeline.first_timestamp = timeline.first_timestamp.min(timestamp);
+                timeline.last_timestamp = timeline.last_timestamp.max(timestamp);
             }
         }
     }

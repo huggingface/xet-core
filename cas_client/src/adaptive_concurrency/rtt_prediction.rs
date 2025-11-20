@@ -195,7 +195,7 @@ mod tests {
         // Use different sizes with proportional durations to learn a throughput model
         // Assume 10 MB/s throughput and 0.1s base time
         let sizes = vec![
-            (1 * 1024 * 1024, 0.2),  // 1 MB in 0.2s (0.1 base + 0.1 transfer)
+            (1024 * 1024, 0.2),      // 1 MB in 0.2s (0.1 base + 0.1 transfer)
             (5 * 1024 * 1024, 0.6),  // 5 MB in 0.6s (0.1 base + 0.5 transfer)
             (10 * 1024 * 1024, 1.1), // 10 MB in 1.1s (0.1 base + 1.0 transfer)
         ];
@@ -206,7 +206,7 @@ mod tests {
         }
 
         // Test that predictions scale with size
-        let predicted_1mb = predictor.predicted_rtt(1 * 1024 * 1024, 1.).unwrap();
+        let predicted_1mb = predictor.predicted_rtt(1024 * 1024, 1.).unwrap();
         let predicted_5mb = predictor.predicted_rtt(5 * 1024 * 1024, 1.).unwrap();
         let predicted_10mb = predictor.predicted_rtt(10 * 1024 * 1024, 1.).unwrap();
 
@@ -227,7 +227,7 @@ mod tests {
         // Use different sizes with proportional durations to learn a throughput model
         // Assume 10 MB/s throughput and 0.1s base time
         let sizes = vec![
-            (1 * 1024 * 1024, 0.2),  // 1 MB in 0.2s (0.1 base + 0.1 transfer)
+            (1024 * 1024, 0.2),      // 1 MB in 0.2s (0.1 base + 0.1 transfer)
             (5 * 1024 * 1024, 0.6),  // 5 MB in 0.6s (0.1 base + 0.5 transfer)
             (10 * 1024 * 1024, 1.1), // 10 MB in 1.1s (0.1 base + 1.0 transfer)
         ];
