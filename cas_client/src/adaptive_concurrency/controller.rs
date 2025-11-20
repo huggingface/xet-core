@@ -119,26 +119,33 @@ impl ConcurrencyControllerState {
     }
 }
 
-/// A controller for dynamically adjusting the amount of concurrency on upload and download paths.
+/// Controls dynamic adjustment of concurrency for upload and download operations.
 ///
-/// This controller uses two statistical models that adapt over time using exponentially weighted
-/// moving averages.  The first is a model that predicts the overall current bandwidth with uncertainty
-/// estimates, and the second tracks the quantile of observed RTTs under the predicted normal distribution.
+/// This controller aims to optimize concurrency by continually adapting to network conditions.
+/// It tracks two key signals using exponentially weighted moving averages:
+///   1. Observed RTT/bandwidth via an online linear regression predictor.
+///   2. Success ratio for recent transfers (using configurable success/failure thresholds).   Transfers are considered
+///      successful if completed within the predicted RTT plus a fixed margin, and below the configured max RTT for
+///      healthy operation.
 ///
-/// The key insight is this:
+/// Concurrency increases if success ratio is high and the RTT prediction stays less than the target
+/// max RTT of 60 seconds.
+///  
+/// It decreases if the success ratio drops below a lower threshold or if transfers exceed
+/// maximum tolerated RTT (currently 90 seconds by default).   
 ///
-/// 1. When a network connection is underutilized, observed RTTs will be below the median of the predicted distribution
-///    (quantile < 0.5), indicating we can safely increase concurrency.
-/// 2. When a network connection is fully utilized, observed RTTs will be around the median (quantile ≈ 0.5), indicating
-///    we're at an appropriate concurrency level.
-/// 3. When a network connection is oversaturated, observed RTTs will be in the upper tail (quantile > 0.8), indicating
-///    we should decrease concurrency.
+/// The key insight for monitoring the success ratio is that:
+///   1. When a network connection is healthy and either underutilized or fully utilized, observed RTTs will be lower
+///      than or around the predicted RTT when accounting for the number of concurrent connections. In this case, we can
+///      increase concurrency as long as the predicted RTT is less than the target RTT.
+///   2. When a network connection is congested, observed RTTs will be higher than the predicted RTT when accounting for
+///      the number of concurrent connections, indicating we should decrease concurrency.  This will show up as a lower
+///      success ratio and a predicted RTT that is higher than the target RTT.
 ///
-/// The quantile-based approach has several advantages:
-/// - Automatically accounts for prediction uncertainty (high uncertainty = wider acceptable range)
-/// - Statistically principled (uses normal CDF to determine quantile)
-/// - More robust to outliers (extreme values map to quantiles near 0 or 1, not unbounded ratios)
-/// - Naturally handles the case when the model has insufficient data (returns 0.5 = median)
+/// To prevent rapid oscillations, the controller will only adjust the concurrency if the time
+/// since the last adjustment is greater than the minimum increase or decrease delay.
+///
+/// All concurrency bounds, time windows, and thresholds are configurable via constants.
 pub struct AdaptiveConcurrencyController {
     // The current state, including tracking information and when previous adjustments were made.
     // Also holds related constants
@@ -223,7 +230,27 @@ impl AdaptiveConcurrencyController {
             .latency_model_state(self.concurrency_semaphore.active_permits() as f64)
     }
 
-    /// Update  
+    /// Update the controller with the results of a transfer.
+    ///
+    /// This function is called by the ConnectionPermit to update the controller with the results of a transfer.
+    /// It is also called by the ConnectionPermit to report partial completion of a transfer.
+    ///
+    /// The function takes the following parameters:
+    /// - permit_info: The permit information for the transfer.
+    /// - n_bytes_if_known: The number of bytes transferred if known.
+    /// - transmission_successful: Whether the transfer was successful.
+    /// - partial_update: Whether this is a partial update.
+    /// - weight: The weight of the update.
+    ///
+    /// The function updates the controller with the results of the transfer, then updates the rtt predictor model with
+    /// the new observation and determines if we should adjust the concurrency.
+    ///
+    /// If the transfer was successful and completed within a healthy time, the actual average success ratio for recent
+    /// transfers is above the healthy success ratio threshold, and we've waited long enough since the last
+    /// adjustment, then the concurrency is increased.
+    ///
+    /// If the transfer was not successful or completed within a healthy time, or the actual average success ratio is
+    /// not good, then the concurrency is decreased.
     async fn report_and_update(
         &self,
         permit_info: &ConnectionPermitInfo,
@@ -284,8 +311,8 @@ impl AdaptiveConcurrencyController {
 
         // If the success ratio is healthy and the predicted RTT is below the target RTT,
         // then adjust the concurrency upwards.
-        if model_state.recommended_adjustment == 1
-            && state_lg.last_adjustment_time.elapsed() > self.min_concurrency_increase_delay {
+        if model_state.recommended_adjustment == 1 {
+            if state_lg.last_adjustment_time.elapsed() > self.min_concurrency_increase_delay {
                 let old_concurrency = self.concurrency_semaphore.total_permits();
                 let new_concurrency = 1. + old_concurrency as f64;
 
@@ -313,6 +340,7 @@ impl AdaptiveConcurrencyController {
                     );
                 }
             }
+        }
 
         if !transmission_successful
             || !completed_in_time
@@ -397,7 +425,7 @@ impl ConnectionPermit {
 
             // Throttle reports to at most once every MIN_PARTIAL_REPORT_INTERVAL_MS
             static REFERENCE_INSTANT: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
-            let now_ms = REFERENCE_INSTANT.get_or_init(Instant::now).elapsed().as_millis() as u64;
+            let now_ms = REFERENCE_INSTANT.get_or_init(|| Instant::now()).elapsed().as_millis() as u64;
 
             // Return if we've already recently reported a partial completion.
             if info
@@ -466,6 +494,7 @@ impl ConnectionPermit {
             .await;
     }
 
+    /// Report a retryable failure to the controller.
     pub(crate) async fn report_retryable_failure(&self) {
         self.info
             .controller
