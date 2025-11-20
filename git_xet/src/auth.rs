@@ -15,6 +15,7 @@ mod ssh;
 use git::GitCredentialHelper;
 #[cfg(unix)]
 use ssh::SSHCredentialHelper;
+pub use ssh::{GitLFSAuthentationResponseHeader, GitLFSAuthenticateResponse};
 
 // This mod derives credentials for the Xet CAS token API on HF Hub from the local repository's credentials.
 // Unlike the authorization model in huggingface_hub which adheres to using a HF token, Git and Git LFS have
