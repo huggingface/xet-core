@@ -228,7 +228,7 @@ crate::config_group!({
     /// The default value is 2.
     ///
     /// Use the environment variable `HF_XET_CLIENT_MIN_CONCURRENT_UPLOADS` to set this value.
-    ref min_concurrent_uploads: usize = 2;
+    ref min_concurrent_uploads: usize = 1;
 
     /// The starting number of concurrent upload streams, which will increase up to max_concurrent_uploads
     /// on successful completions.
@@ -236,5 +236,5 @@ crate::config_group!({
     /// The default value is 2.
     ///
     /// Use the environment variable `HF_XET_CLIENT_NUM_INITIAL_CONCURRENT_UPLOADS` to set this value.
-    ref num_initial_concurrent_uploads: usize = 2;
+    ref num_initial_concurrent_uploads: usize = 1;
 });

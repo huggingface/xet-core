@@ -1,3 +1,5 @@
+#![cfg(not(target_family = "wasm"))]
+
 use std::fs;
 use std::path::Path;
 

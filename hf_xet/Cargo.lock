@@ -377,11 +377,8 @@ dependencies = [
  "tracing-subscriber",
  "url",
  "utils",
-<<<<<<< HEAD
  "warp",
-=======
  "xet_config",
->>>>>>> origin/main
  "xet_runtime",
 ]
 

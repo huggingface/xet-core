@@ -44,7 +44,6 @@ tracing-log = "0.2"
 url = { workspace = true }
 rand = { workspace = true }
 chrono = { workspace = true }
-warp = "0.3"
 clap = { version = "4.0", features = ["derive"] }
 ctor = { workspace = true }
 statrs = { workspace = true }
@@ -75,6 +74,7 @@ native-tls-vendored = ["reqwest/native-tls-vendored"]
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
 heed = { workspace = true }
 hyper = { workspace = true }
+warp = "0.3"
 
 [dev-dependencies]
 approx = "0.5"

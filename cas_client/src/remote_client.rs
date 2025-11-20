@@ -867,10 +867,11 @@ impl Client for RemoteClient {
                             (*base_progress_callback)(bytes_sent_delta, total_bytes);
 
                             if let Some(ref partial_report_fn) = partial_report_fn
-                                && total_size > 0 {
-                                    let portion = (total_bytes as f64 / total_size as f64).min(1.0);
-                                    partial_report_fn(portion, total_bytes);
-                                }
+                                && total_size > 0
+                            {
+                                let portion = (total_bytes as f64 / total_size as f64).min(1.0);
+                                partial_report_fn(portion, total_bytes);
+                            }
                         };
 
                         // TODO: doesn't handle resets.

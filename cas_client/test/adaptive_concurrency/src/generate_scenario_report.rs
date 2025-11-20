@@ -1,3 +1,5 @@
+#![cfg(not(target_family = "wasm"))]
+
 use std::collections::{BTreeMap, HashMap};
 use std::fs;
 use std::path::Path;
@@ -62,7 +64,8 @@ fn generate_timeline_csv(scenario_dir: &Path) -> Result<(), Box<dyn std::error::
         let path = entry.path();
 
         if let Some(file_name) = path.file_name().and_then(|n| n.to_str())
-            && file_name.starts_with("client_stats_") && file_name.ends_with(".json")
+            && file_name.starts_with("client_stats_")
+            && file_name.ends_with(".json")
             && let Ok(stats) = load_json_lines::<ClientMetrics>(&path)
         {
             for stat in stats {
