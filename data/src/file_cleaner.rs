@@ -5,8 +5,8 @@ use std::sync::Arc;
 use bytes::Bytes;
 use chrono::{DateTime, Utc};
 use deduplication::{Chunk, Chunker, DeduplicationMetrics, FileDeduper};
+use mdb_shard::Sha256;
 use mdb_shard::file_structs::FileMetadataExt;
-use merklehash::MerkleHash;
 use progress_tracking::upload_tracking::CompletionTrackerFileId;
 use tracing::{Instrument, debug_span, info, instrument};
 use xet_runtime::xet_config;
@@ -43,9 +43,11 @@ pub struct SingleFileCleaner {
 }
 
 impl SingleFileCleaner {
+    // If a sha256 value is given in the parameter, the cleaner avoids computing the sha256 again internally.
     pub(crate) fn new(
         file_name: Option<Arc<str>>,
         file_id: CompletionTrackerFileId,
+        sha256: Option<Sha256>,
         session: Arc<FileUploadSession>,
     ) -> Self {
         let deduper = FileDeduper::new(UploadSessionDataManager::new(session.clone(), file_id), file_id);
@@ -56,7 +58,7 @@ impl SingleFileCleaner {
             dedup_manager_fut: Box::pin(async move { Ok(deduper) }),
             session,
             chunker: deduplication::Chunker::default(),
-            sha_generator: ShaGenerator::new(),
+            sha_generator: sha256.map(ShaGenerator::ProvidedValue).unwrap_or_else(ShaGenerator::generate),
             start_time: Utc::now(),
         }
     }
@@ -148,7 +150,7 @@ impl SingleFileCleaner {
         }
 
         // Finalize the sha256 hashing and create the metadata extension
-        let sha256: MerkleHash = self.sha_generator.finalize().await?;
+        let sha256: Sha256 = self.sha_generator.finalize().await?;
         let metadata_ext = FileMetadataExt::new(sha256);
 
         let (file_hash, remaining_file_data, deduplication_metrics) =

@@ -107,6 +107,7 @@ pub fn upload_files(
 
         let out: Vec<PyXetUploadInfo> = data_client::upload_async(
             file_paths,
+            None,
             endpoint,
             token_info,
             refresher.map(|v| v as Arc<_>),

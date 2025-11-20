@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use anyhow::Result;
+use anyhow::{Result, anyhow};
 use cas_object::CompressionScheme;
 use hub_client::{BearerCredentialHelper, HubClient, Operation, RepoInfo};
 use mdb_shard::file_structs::MDBFileInfo;
@@ -28,6 +28,7 @@ const USER_AGENT: &str = concat!(env!("CARGO_PKG_NAME"), "/", env!("CARGO_PKG_VE
 /// ```
 pub async fn migrate_with_external_runtime(
     file_paths: Vec<String>,
+    sha256s: Option<Vec<String>>,
     hub_endpoint: &str,
     cas_endpoint: Option<String>,
     hub_token: &str,
@@ -44,7 +45,7 @@ pub async fn migrate_with_external_runtime(
         cred_helper,
     )?;
 
-    migrate_files_impl(file_paths, false, hub_client, cas_endpoint, None, false).await?;
+    migrate_files_impl(file_paths, sha256s, false, hub_client, cas_endpoint, None, false).await?;
 
     Ok(())
 }
@@ -55,6 +56,7 @@ pub type MigrationInfo = (Vec<MDBFileInfo>, Vec<(XetFileInfo, u64)>, u64);
 #[instrument(skip_all, name = "migrate_files", fields(session_id = tracing::field::Empty, num_files = file_paths.len()))]
 pub async fn migrate_files_impl(
     file_paths: Vec<String>,
+    sha256s: Option<Vec<String>>,
     sequential: bool,
     hub_client: HubClient,
     cas_endpoint: Option<String>,
@@ -89,11 +91,20 @@ pub async fn migrate_files_impl(
         FileUploadSession::new(config.into(), None).await?
     };
 
-    // let file_paths_with_spans = add_spans(file_paths, || info_span!("migration::clean_file"));
-    let clean_futs = file_paths.into_iter().map(|file_path| {
+    let sha256s: Box<dyn Iterator<Item = String> + Send> = match sha256s {
+        Some(v) => {
+            if v.len() != file_paths.len() {
+                return Err(anyhow!("mistached length of the file list and the sha256 list"));
+            }
+            Box::new(v.into_iter())
+        },
+        None => Box::new(std::iter::repeat(String::new())),
+    };
+
+    let clean_futs = file_paths.into_iter().zip(sha256s).map(|(file_path, sha256)| {
         let proc = processor.clone();
         async move {
-            let (pf, metrics) = clean_file(proc, file_path).await?;
+            let (pf, metrics) = clean_file(proc, file_path, sha256).await?;
             Ok::<(XetFileInfo, u64), DataProcessingError>((pf, metrics.new_bytes))
         }
         .instrument(info_span!("clean_file"))
