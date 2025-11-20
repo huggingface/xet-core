@@ -58,9 +58,7 @@ impl SingleFileCleaner {
             dedup_manager_fut: Box::pin(async move { Ok(deduper) }),
             session,
             chunker: deduplication::Chunker::default(),
-            sha_generator: sha256
-                .map(ShaGenerator::ProvidedValue)
-                .unwrap_or_else(|| ShaGenerator::generate()),
+            sha_generator: sha256.map(ShaGenerator::ProvidedValue).unwrap_or_else(ShaGenerator::generate),
             start_time: Utc::now(),
         }
     }
