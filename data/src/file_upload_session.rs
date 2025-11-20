@@ -14,7 +14,6 @@ use jsonwebtoken::{DecodingKey, Validation, decode};
 use lazy_static::lazy_static;
 use mdb_shard::Sha256;
 use mdb_shard::file_structs::MDBFileInfo;
-use merklehash::MerkleHash;
 use more_asserts::*;
 use progress_tracking::aggregator::AggregatingProgressUpdater;
 use progress_tracking::upload_tracking::{CompletionTracker, FileXorbDependency};
@@ -306,7 +305,7 @@ impl FileUploadSession {
         self: &Arc<Self>,
         file_name: Option<Arc<str>>,
         size: u64,
-        sha256: Option<MerkleHash>,
+        sha256: Option<Sha256>,
     ) -> SingleFileCleaner {
         // Get a new file id for the completion tracking
         let file_id = self
