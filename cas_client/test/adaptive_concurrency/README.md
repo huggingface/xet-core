@@ -1,121 +1,51 @@
-# Adaptive Concurrency Test Suite
+# Adaptive Concurrency Simulations
 
-This test suite provides comprehensive testing for the adaptive concurrency controller using Docker containers and network simulation. It tests the adaptive concurrency system under various network conditions and server configurations.
+This testing suite simulates different network conditions and client behavior patterns to test 
+how the adaptive concurrency controller behavies.  It uses Docker containers with configurable 
+network parameters (bandwidth, latency, congestion) and a mock server and clients to test how 
+things behave.  The output for each test is a csv table showing a timeline of the controller 
+behavior across a number of tests and a summary csv table showing basic test statistics.
 
-## Overview
+## Basic Usage
 
-The test suite consists of:
-
-- **Simulation Server**: An HTTP server that accepts data uploads and simulates network/server conditions
-- **Simulation Client**: A client that sends data uploads using the adaptive concurrency controller
-- **Docker Environment**: Containerized test environment with network simulation capabilities using `tc` (traffic control)
-- **Scenario Scripts**: Predefined test scenarios with different network conditions and server parameters
-- **Run Script**: Orchestrates the entire test process, running multiple scenarios in parallel
-- **Report Generator**: Creates summary reports and CSV files with aggregated statistics
-
-## Components
-
-### Simulation Server (`simulation_server.rs`)
-
-An HTTP server that accepts POST requests to `/data` and simulates various server behaviors.
-
-**Parameters:**
-- `--min-reply-delay-ms=<ms>`: Minimum delay before responding (default: 0)
-- `--max-reply-delay-ms=<ms>`: Maximum delay before responding (default: 0)
-- `--test-duration-seconds=<seconds>`: Test duration in seconds. Server returns 503 after this time (default: 0, no limit)
-- `--congested-bytes-per-second=<bytes>`: Congestion threshold in bytes per second (default: 0, disabled)
-- `--min-congested-penalty-ms=<ms>`: Minimum delay penalty when congested (default: 0)
-- `--max-congested-penalty-ms=<ms>`: Maximum delay penalty when congested (default: 0)
-- `--congested-error-rate=<rate>`: Probability (0.0-1.0) of returning 504 error when congested (default: 0.0)
-
-**Congestion Simulation:**
-- Tracks bytes per second using a sliding window counter
-- Decreases counter by 1/10th of capacity every 100ms (minimum 0)
-- When counter exceeds threshold:
-  - Returns 504 Gateway Timeout with probability `congested_error_rate`
-  - Otherwise applies random delay penalty between `min-congested-penalty-ms` and `max-congested-penalty-ms`
-
-**Output:**
-- `server_parameters.json`: Server configuration parameters
-- `server_stats.json`: JSON lines with server metrics every 200ms
-
-### Simulation Client (`simulation_client.rs`)
-
-A client that sends data uploads using the adaptive concurrency controller.
-
-**Parameters:**
-- `--min-data-kb=<kb>`: Minimum payload size in KB (default: 65536, which is 64MB)
-- `--max-data-kb=<kb>`: Maximum payload size in KB (default: 65536, which is 64MB)
-- `--repeat-duration-seconds=<seconds>`: How long to run the client (default: 120)
-- `--server-addr=<addr>`: Server address (default: 127.0.0.1:8080)
-
-**Behavior:**
-- Randomly chooses payload size between `min-data-kb` and `max-data-kb` (in KB) for each upload
-- Internally converts KB to bytes (multiplies by 1024) for the actual payload
-- Uses adaptive concurrency controller to manage concurrent uploads
-- Reports metrics every 200ms
-
-**Output:**
-- `client_parameters_<id>.json`: Client configuration parameters
-- `client_stats_<id>.json`: JSON lines with client metrics every 200ms
-
-### Run Scenarios Script (`run_scenarios.sh`)
-
-Orchestrates running multiple scenarios with different network conditions in parallel.
-
-**Parameters:**
-- `--out-dir=<dir>`: Output directory for results (default: `results/`)
-- `--no-build`: Skip Docker image build
-- `--max-parallel=<n>`: Maximum number of parallel scenarios (default: 16)
-- `--bandwidth=<list>`: Comma-separated list of bandwidths (e.g., `"10kbps,100kbps,1mbps"`)
-- `--latency=<list>`: Comma-separated list of latencies (e.g., `"10ms,50ms,100ms"`)
-- `--congestion=<list>`: Comma-separated list of congestion modes (e.g., `"none,realistic,heavy"`)
-
-**Usage:**
-```bash
-./run_scenarios.sh [options] <scenario1> [scenario2] ...
-```
-
-**Examples:**
 ```bash
 # Run a single scenario with default network conditions
-./run_scenarios.sh scenarios/sanity_check
+./run_scenarios.sh test_scenarios/sanity_check
 
 # Run with specific network conditions
-./run_scenarios.sh --bandwidth="100kbps,10mbps" --latency="1ms,10ms" --congestion="none" scenarios/sanity_check
+./run_scenarios.sh --bandwidth="10mbps,100mbps" --latency="10ms,50ms" --congestion=none test_scenarios/sanity_check
 
 # Run multiple scenarios
-./run_scenarios.sh --out-dir=results/my_test scenarios/*
+./run_scenarios.sh scenarios/*
 
-# Run with custom output directory
-./run_scenarios.sh --out-dir=results/sim_run_01 scenarios/sanity_check scenarios/gitxet_upload_burst
+# Test across multiple bandwidths and latencies
+./run_scenarios.sh \
+  --bandwidth="10mbps,100mbps,1gbps" \
+  --latency="10ms,50ms,100ms" \
+  --congestion=none \
+  test_scenarios/sanity_check
+
+# Run with custom output directory and parallelism
+./run_scenarios.sh \
+  --out-dir=results/my_test \
+  --max-parallel=8 \
+  --bandwidth="10mbps,100mbps" \
+  --latency="50ms" \
+  scenarios/single_upload scenarios/gitxet_upload_burst
+
+# Skip Docker build (faster if image already exists)
+./run_scenarios.sh --no-build test_scenarios/sanity_check
+
+# Run comprehensive simulation suite for xet stuff (all scenarios with full network matrix)
+./run_full_xet_simulation.sh
+
+# Run simplified simulation suite (all scenarios with reduced network matrix)
+./run_simple_xet_simulation.sh
 ```
-
-**Progress Tracking:**
-- Displays progress counter: "Running scenario X/Y: ..."
-- Shows completion status: "Completed X/Y: ..." or "Failed X/Y: ..."
-
-### Report Generator (`generate_report.rs`)
-
-Generates summary reports from simulation results.
-
-**Usage:**
-```bash
-# Generate report for a single scenario
-generate_report <scenario_directory>
-
-# Generate CSV summary for all scenarios in a timestamp directory
-generate_report --summary-mode <timestamp_directory>
-```
-
-**Output:**
-- `summary.json`: Summary statistics in JSON format
-- `report.txt`: Human-readable text report
-- `summary.csv`: CSV file with all scenarios (when using `--summary-mode`)
 
 ## Scenario Scripts
 
-Scenario scripts are bash scripts located in the `scenarios/` directory. Each scenario:
+Scenario scripts are bash scripts located in the `scenarios/` or `test_scenarios/` directories. Each scenario:
 
 1. Starts the simulation server with specific parameters
 2. Runs one or more simulation clients with specific parameters
@@ -137,21 +67,117 @@ echo "Scenario completed"
 ```
 
 **Available Scenarios:**
-- `sanity_check`: Basic functionality test
-- `single_upload`: Single client upload test
-- `gitxet_upload_burst`: Multiple simultaneous uploads
-- `added_uploads`: Staggered client starts
-- `download_single`: Single client download test
-- `download_multiple`: Multiple client download test
-- `flakey_server`: Server with congestion simulation
+- `test_scenarios/sanity_check`: Basic functionality test (short duration)
+- `scenarios/single_upload`: Single client upload test
+- `scenarios/gitxet_upload_burst`: Multiple simultaneous uploads
+- `scenarios/added_uploads`: Staggered client starts
+- `scenarios/download_single`: Single client download test
+- `scenarios/download_multiple`: Multiple client download test
+- `scenarios/flakey_server`: Server with congestion simulation
 
+### Simulation Server (`simulation_server`)
+
+An HTTP server that accepts POST requests to `/data` and simulates various server behaviors.
+
+**Parameters:**
+- `--min-reply-delay-ms=<ms>`: Minimum delay before responding (default: 0)
+- `--max-reply-delay-ms=<ms>`: Maximum delay before responding (default: 0)
+- `--test-duration-seconds=<seconds>`: Test duration in seconds. Server returns 503 after this time (default: 0, no limit)
+- `--congested-bytes-per-second=<bytes>`: Congestion threshold in bytes per second (default: 0, disabled)
+- `--min-congested-penalty-ms=<ms>`: Minimum delay penalty when congested (default: 0)
+- `--max-congested-penalty-ms=<ms>`: Maximum delay penalty when congested (default: 0)
+- `--congested-error-rate=<rate>`: Probability (0.0-1.0) of returning 504 error when congested (default: 0.0)
+
+### Simulation Client (`simulation_client`)
+
+A client that sends data uploads using the adaptive concurrency controller.
+
+**Parameters:**
+- `--min-data-kb=<kb>`: Minimum payload size in KB (default: 65536, which is 64MB)
+- `--max-data-kb=<kb>`: Maximum payload size in KB (default: 65536, which is 64MB)
+- `--repeat-duration-seconds=<seconds>`: How long to run the client (default: 120)
+- `--server-addr=<addr>`: Server address (default: 127.0.0.1:8080)
+
+**Behavior:**
+- Randomly chooses payload size between `min-data-kb` and `max-data-kb` (in KB) for each upload
+- Uses adaptive concurrency controller to manage concurrent uploads
+- Reports metrics every 200ms including:
+  - Bytes transmitted
+  - Concurrency levels
+  - Retry counts
+  - Success ratios
+  - Predicted bandwidth and RTT
+
+**Output:**
+- `client_parameters_<id>.json`: Client configuration parameters
+- `client_stats_<id>.json`: JSON lines with client metrics every 200ms
+
+## Run Scenarios Script (`run_scenarios.sh`)
+
+Orchestrates running multiple scenarios with different network conditions in parallel.
+
+**Parameters:**
+- `--out-dir=<dir>`: Output directory for results (default: `results/`)
+- `--no-build`: Skip Docker image build
+- `--max-parallel=<n>`: Maximum number of parallel scenarios (default: 16)
+- `--bandwidth=<list>`: Comma-separated list of bandwidths (e.g., `"10kbps,100kbps,1mbps,10mbps,100mbps,1gbps,10gbps"`)
+- `--latency=<list>`: Comma-separated list of latencies (e.g., `"1ms,10ms,50ms,100ms,250ms"`)
+- `--congestion=<list>`: Comma-separated list of congestion modes (e.g., `"none,realistic,heavy"`)
+
+**Network Parameter Matrix:**
+The script generates a matrix of all combinations of bandwidth, latency, and congestion parameters. For example:
+- `--bandwidth="10mbps,100mbps" --latency="10ms,50ms" --congestion=none` creates 4 combinations
+- Each scenario is run with each network combination
+- Scenario names include network parameters: `scenario_name-bandwidth-latency-congestion`
+
+**Usage:**
+```bash
+./run_scenarios.sh [options] <scenario1> [scenario2] ...
+```
+
+**Summary Output:**
+- `summary.csv`: CSV file with one row per scenario, including:
+  - `scenario_name`: Name with network parameters
+  - `network_utilization_percent`: Average network utilization
+  - `total_retries`: Total retries across all clients
+  - `average_per_client_concurrency`: Average concurrency per client
+  - `total_concurrency`: Total concurrency across all clients
+  - `total_data_transmitted_bytes`: Total bytes successfully transmitted
+  - `average_round_trip_time_ms`: Average RTT across all transmissions
+
+**Per-Scenario Output Files:**
+
+For each scenario run with a particular network configuration, the following output files are produced in the specified output directory:
+
+- `client_parameters_<id>.json`: The configuration used for each client instance.
+- `client_stats_<id>.json`: Client metrics recorded as JSON lines (one per interval, typically every 200ms).
+- `server_stats_<id>.json`: (If enabled) Server metrics and statistics for monitoring server-side throughput and active connections.
+- `network_trace_<id>.json` or `network_config_<id>.json`: (If enabled) Captures the emulated network parameters in effect for this scenario run.
+- `server_log_<id>.txt` and/or `client_log_<id>.txt`: (If logging is enabled) Raw stdout/stderr logs for debugging (may be large).
+
+Each `<id>` is unique per scenario/client/server instance, enabling correlation between files and parameters.
+
+The output directory is organized as:
+```
+<out-dir>/
+  scenario_name-bandwidth-latency-congestion/
+    client_parameters_<id>.json
+    client_stats_<id>.json
+    server_stats_<id>.json
+    network_trace_<id>.json
+    server_log_<id>.txt
+    client_log_<id>.txt
+    ...
+```
+All files for each scenario run are placed together in a uniquely-named subdirectory for that network condition.
+    
 ## Network Simulation
 
 Network simulation is performed using Linux `tc` (traffic control) within Docker containers.
 
 **Network Parameters:**
-- **Bandwidth**: Rate limiting (e.g., `10kbps`, `100kbps`, `1mbps`, `10mbps`)
-- **Latency**: Added delay (e.g., `1ms`, `10ms`, `50ms`, `100ms`, `200ms`)
+- **Bandwidth**: Rate limiting (e.g., `10kbps`, `100kbps`, `1mbps`, `10mbps`, `100mbps`, `1gbps`, `10gbps`)
+- **Latency**: Added delay (e.g., `1ms`, `10ms`, `50ms`, `100ms`, `250ms`)
 - **Congestion**: Congestion mode (`none`, `realistic`, `heavy`)
 
 **Setup Script:**
@@ -166,161 +192,50 @@ Results are organized in a timestamped directory structure:
 
 ```
 results/
-└── <output_dir>/
-    └── <timestamp>/              # e.g., 20251105_144714
-        ├── summary.csv            # CSV summary of all scenarios
-        └── <scenario_name>/       # e.g., sanity_check-100kbps-1ms-none
-            ├── run.log            # Execution log
+└── <output_dir>/              # e.g., results/ or results/my_test
+    └── <timestamp>/            # e.g., 20251118_144714
+        ├── summary.csv         # CSV summary of all scenarios
+        └── <scenario_name>/     # e.g., sanity_check-100mbps-50ms-none
+            ├── run.log          # Execution log
             ├── server_parameters.json
             ├── server_stats.json
+            ├── network_stats.json
             ├── client_parameters_<id>.json
             ├── client_stats_<id>.json
-            ├── network_stats.json
-            ├── summary.json       # Summary statistics
-            └── report.txt         # Human-readable report
+            ├── timeline.csv     # Detailed timeline (generated by generate_scenario_report)
+            └── summary.json     # Legacy summary (if generated)
 ```
 
 ## Report Format
 
-### CSV Summary (`summary.csv`)
+### Timeline CSV (`timeline.csv`)
 
-Columns (in order):
-1. `scenario_name`: Name of the scenario
-2. `total_duration`: Test duration in seconds
-3. `network_utilization_percent`: Network utilization percentage
-4. `total_retries`: Total retries
-5. `average_max_concurrency`: Average max concurrency (concurrency factor from AdaptiveConcurrencyController)
-6. `total_data_transmitted_bytes`: Total data transmitted
-7. `average_round_trip_time_ms`: Average round trip time
+Generated by `generate_scenario_report` for each scenario. Contains metrics at 250ms intervals:
 
-### Text Report (`report.txt`)
+**Per-Client Columns:**
+- `client_XX_bytes`: Total data transmitted successfully
+- `client_XX_concurrency`: Current concurrency level
+- `client_XX_retries`: Number of retries
+- `client_XX_success_ratio`: Success ratio from concurrency controller
+- `client_XX_predicted_bandwidth`: Predicted bandwidth (bytes/sec)
+- `client_XX_predicted_max_rtt`: Predicted maximum RTT (seconds)
+- `client_XX_predicted_max_rtt_standard_error`: Standard error of RTT prediction
 
-Contains detailed statistics including:
-- Performance summary (data transmitted, server calls, retries, RTT)
-- Network utilization
-- Average concurrent connections
-- Network configuration
-- Server parameters
-- Client parameters
+**Summary Columns:**
+- `total_bytes`: Sum of bytes across all clients
+- `total_retries`: Sum of retries across all clients
+- `total_concurrency`: Sum of concurrency across all clients
+- `average_concurrency`: Average concurrency across active clients
 
-## Running Simulations
+### Summary CSV (`summary.csv`)
 
-### Basic Usage
+Generated by `generate_summary` for all scenarios in a timestamp directory. Contains one row per scenario:
 
-```bash
-# Run a single scenario with default network conditions
-./run_scenarios.sh scenarios/sanity_check
-
-# Run with specific network conditions
-./run_scenarios.sh --bandwidth="100kbps,10mbps" --latency="1ms,10ms" --congestion="none" scenarios/sanity_check
-
-# Run multiple scenarios
-./run_scenarios.sh scenarios/sanity_check scenarios/gitxet_upload_burst
-
-# Run all scenarios in a directory
-./run_scenarios.sh scenarios/*
-
-# Custom output directory
-./run_scenarios.sh --out-dir=results/my_test scenarios/sanity_check
-```
-
-### Advanced Usage
-
-```bash
-# Control parallelism
-./run_scenarios.sh --max-parallel=8 scenarios/*
-
-# Skip Docker build (if already built)
-./run_scenarios.sh --no-build scenarios/sanity_check
-
-# Combine all options
-./run_scenarios.sh \
-  --out-dir=results/comprehensive_test \
-  --max-parallel=16 \
-  --bandwidth="100kbps,1mbps,10mbps" \
-  --latency="1ms,10ms,50ms" \
-  --congestion="none,realistic" \
-  scenarios/*
-```
-
-### Generating Reports
-
-```bash
-# Generate report for a single scenario
-cd results/sim_run_01/20251105_144714/sanity_check-100kbps-1ms-none
-generate_report .
-
-# Generate CSV summary for all scenarios in a timestamp directory
-cd results/sim_run_01/20251105_144714
-generate_report --summary-mode .
-```
-
-## Requirements
-
-- **Docker**: For containerized test environment
-- **Linux host**: For network simulation (Docker must have `--cap-add=NET_ADMIN`)
-- **Rust toolchain**: Installed in Docker container
-- **Bash**: For running scenario scripts
-
-## Building
-
-The Docker image is built automatically when running `run_scenarios.sh`. To build manually:
-
-```bash
-cd scripts
-./build_container.sh
-```
-
-## Troubleshooting
-
-### Server fails to start
-- Check if port 8080 is available
-- Verify Docker container has proper permissions
-- Check server logs in `run.log`
-
-### Network simulation not working
-- Ensure Docker container has `--cap-add=NET_ADMIN`
-- Verify `tc` command is available in container
-- Check if network rules are applied correctly in `network_stats.json`
-
-### Client connection fails
-- Verify server is running (check `run.log`)
-- Check network connectivity
-- Verify server address is correct
-- Check if test duration has expired
-
-### Results not generated
-- Check if `generate_report` binary is available in PATH
-- Verify results directory exists and contains required JSON files
-- Check `run.log` for errors
-
-### High values in reports
-- Average concurrent connections and RTT are calculated using time-window approach (300ms windows)
-- Only active clients within the time window are included in averages
-- Values are averaged across time windows, not just summed
-
-## Configuration
-
-### Default Constants
-
-The simulation uses full realistic constants (no scaling). The adaptive concurrency controller uses:
-- Default retry delays and durations
-- Default concurrency control parameters
-- Default latency tracking and success tracking half-lives
-
-### Test Duration
-
-All scenarios are configured for 10-minute (600 second) test durations by default. Server test duration controls when the server stops accepting requests.
-
-### Server Latencies
-
-Server reply delays are set to realistic values:
-- Minimum: 10ms (multiplied by 10 from original 1ms)
-- Maximum: 100ms (multiplied by 10 from original 10ms)
-
-### Congestion Simulation
-
-When congestion is enabled:
-- Counter tracks bytes per second
-- Decreases by 1/10th of capacity every 100ms
-- Applies penalty or returns error when threshold exceeded
+**Columns:**
+- `scenario_name`: Scenario name with network parameters
+- `network_utilization_percent`: Average network utilization
+- `total_retries`: Total retries across all clients
+- `average_per_client_concurrency`: Average concurrency per client
+- `total_concurrency`: Total concurrency across all clients
+- `total_data_transmitted_bytes`: Total bytes successfully transmitted
+- `average_round_trip_time_ms`: Average round trip time
