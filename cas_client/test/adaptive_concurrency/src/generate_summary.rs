@@ -105,7 +105,7 @@ fn generate_summary_mode(results_dir: &Path) -> Result<(), Box<dyn std::error::E
 struct ScenarioSummary {
     scenario_name: String,
     network_utilization_percent: f64,
-    total_retries: f64,
+    total_retries: u64,
     average_per_client_concurrency: f64,
     total_concurrency: f64,
     total_data_transmitted_bytes: f64,
@@ -159,8 +159,10 @@ fn process_timeline_csv(
         .collect();
 
     // Accumulate values across all rows
-    let mut total_bytes_sum = 0.0;
-    let mut total_retries_sum = 0.0;
+    // For cumulative values (total_bytes, total_retries), track maximum (final value)
+    // For instantaneous values (concurrency), track average
+    let mut max_total_bytes: f64 = 0.0;
+    let mut max_total_retries: u64 = 0;
     let mut total_concurrency_sum = 0.0;
     let mut average_concurrency_sum = 0.0;
     let mut client_concurrency_sum = 0.0;
@@ -184,12 +186,15 @@ fn process_timeline_csv(
         // Parse values
         if let (Ok(bytes), Ok(retries), Ok(concurrency), Ok(avg_concurrency)) = (
             cols[total_bytes_idx].parse::<f64>(),
-            cols[total_retries_idx].parse::<f64>(),
+            cols[total_retries_idx].parse::<u64>(),
             cols[total_concurrency_idx].parse::<f64>(),
             cols[average_concurrency_idx].parse::<f64>(),
         ) {
-            total_bytes_sum += bytes;
-            total_retries_sum += retries;
+            // Track maximum for cumulative values (final totals)
+            max_total_bytes = max_total_bytes.max(bytes);
+            max_total_retries = max_total_retries.max(retries);
+
+            // Sum for averaging instantaneous values
             total_concurrency_sum += concurrency;
             average_concurrency_sum += avg_concurrency;
 
@@ -199,10 +204,11 @@ fn process_timeline_csv(
             for &idx in &client_concurrency_indices {
                 if idx < cols.len()
                     && let Ok(cc) = cols[idx].parse::<f64>()
-                        && cc > 0.0 {
-                            row_client_concurrency_sum += cc;
-                            row_client_count += 1;
-                        }
+                    && cc > 0.0
+                {
+                    row_client_concurrency_sum += cc;
+                    row_client_count += 1;
+                }
             }
             if row_client_count > 0 {
                 client_concurrency_sum += row_client_concurrency_sum / row_client_count as f64;
@@ -216,9 +222,9 @@ fn process_timeline_csv(
         return Err("No valid data rows found in timeline.csv".into());
     }
 
-    // Calculate averages
-    let avg_total_bytes = total_bytes_sum / row_count as f64;
-    let avg_total_retries = total_retries_sum / row_count as f64;
+    // Use maximum values for cumulative totals, averages for instantaneous values
+    let final_total_bytes = max_total_bytes;
+    let final_total_retries = max_total_retries;
     let avg_total_concurrency = total_concurrency_sum / row_count as f64;
     let avg_per_client_concurrency = if !client_concurrency_indices.is_empty() {
         client_concurrency_sum / row_count as f64
@@ -227,7 +233,7 @@ fn process_timeline_csv(
     };
 
     // Calculate network utilization from network_stats.json
-    let network_utilization_percent = calculate_network_utilization(scenario_dir, avg_total_bytes)?;
+    let network_utilization_percent = calculate_network_utilization(scenario_dir, final_total_bytes)?;
 
     // Calculate average RTT from client stats
     let average_round_trip_time_ms = calculate_average_rtt(scenario_dir)?;
@@ -235,10 +241,10 @@ fn process_timeline_csv(
     Ok(ScenarioSummary {
         scenario_name: scenario_name.to_string(),
         network_utilization_percent,
-        total_retries: avg_total_retries,
+        total_retries: final_total_retries,
         average_per_client_concurrency: avg_per_client_concurrency,
         total_concurrency: avg_total_concurrency,
-        total_data_transmitted_bytes: avg_total_bytes,
+        total_data_transmitted_bytes: final_total_bytes,
         average_round_trip_time_ms,
     })
 }
@@ -279,14 +285,16 @@ fn calculate_average_rtt(scenario_dir: &Path) -> Result<f64, Box<dyn std::error:
         let path = entry.path();
 
         if let Some(file_name) = path.file_name().and_then(|n| n.to_str())
-            && file_name.starts_with("client_stats_") && file_name.ends_with(".json")
-                && let Ok(stats) = load_json_lines::<ClientMetrics>(&path) {
-                    for stat in stats {
-                        if stat.average_round_trip_time_ms > 0.0 {
-                            all_rtts.push(stat.average_round_trip_time_ms);
-                        }
-                    }
+            && file_name.starts_with("client_stats_")
+            && file_name.ends_with(".json")
+            && let Ok(stats) = load_json_lines::<ClientMetrics>(&path)
+        {
+            for stat in stats {
+                if stat.average_round_trip_time_ms > 0.0 {
+                    all_rtts.push(stat.average_round_trip_time_ms);
                 }
+            }
+        }
     }
 
     if all_rtts.is_empty() {
@@ -311,7 +319,7 @@ fn generate_summary_csv(
     // Add rows for each scenario
     for data in &sorted_data {
         csv.push_str(&format!(
-            "{},{:.2},{:.2},{:.2},{:.2},{:.0},{:.2}\n",
+            "{},{:.2},{},{:.2},{:.2},{:.0},{:.2}\n",
             data.scenario_name,
             data.network_utilization_percent,
             data.total_retries,
