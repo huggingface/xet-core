@@ -170,6 +170,34 @@ The output directory is organized as:
     ...
 ```
 All files for each scenario run are placed together in a uniquely-named subdirectory for that network condition.
+
+## Regenerating Summaries (`redo_summaries.sh`)
+
+Utility script to regenerate all timeline and summary CSV files for an existing simulation directory. Useful when the reporting code has been updated or when CSV files need to be regenerated.
+
+**Usage:**
+```bash
+./redo_summaries.sh <simulation_directory>
+```
+
+**Example:**
+```bash
+./redo_summaries.sh results/full_xet_simulation/20251118_232850
+```
+
+**Behavior:**
+- Attempts to use binaries from PATH or `target/opt-test` if available
+- Falls back to Docker if binaries are not found on host
+- In Docker mode:
+  - Builds `generate_scenario_report` and `generate_summary` binaries once
+  - Regenerates `timeline.csv` for each scenario directory that contains client stats files
+  - Regenerates `summary.csv` for the entire simulation directory
+- Gracefully skips scenarios without client stats files (with warnings)
+- All operations run in a single Docker container for efficiency
+
+**Output:**
+- Regenerates `timeline.csv` in each scenario subdirectory
+- Regenerates `summary.csv` in the simulation directory
     
 ## Network Simulation
 
