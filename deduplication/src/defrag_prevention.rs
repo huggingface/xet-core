@@ -1,18 +1,6 @@
 use std::collections::VecDeque;
 
-utils::configurable_constants! {
-    /// Number of ranges to use when estimating fragmentation
-    ref NRANGES_IN_STREAMING_FRAGMENTATION_ESTIMATOR: usize = 128;
-
-    /// Minimum number of chunks per range. Used to control fragmentation
-    /// This targets an average of 1MB per range.
-    /// The hysteresis factor multiplied by the target Chunks Per Range (CPR) controls
-    /// the low end of the hysteresis range. Basically, dedupe will stop
-    /// when CPR drops below hysteresis * target_cpr, and will start again when
-    /// CPR increases above target CPR.
-    ref MIN_N_CHUNKS_PER_RANGE_HYSTERESIS_FACTOR: f32 = 0.5;
-    ref MIN_N_CHUNKS_PER_RANGE: f32 = 8.0;
-}
+use xet_runtime::xet_config;
 
 pub(crate) struct DefragPrevention {
     /// This tracks the number of chunks in each of the last N ranges
@@ -43,14 +31,14 @@ impl DefragPrevention {
     pub(crate) fn add_range_to_fragmentation_estimate(&mut self, nchunks: usize) {
         self.rolling_last_nranges.push_back(nchunks);
         self.rolling_nranges_chunks += nchunks;
-        if self.rolling_last_nranges.len() > *NRANGES_IN_STREAMING_FRAGMENTATION_ESTIMATOR {
+        if self.rolling_last_nranges.len() > xet_config().deduplication.nranges_in_streaming_fragmentation_estimator {
             self.rolling_nranges_chunks -= self.rolling_last_nranges.pop_front().unwrap();
         }
     }
     /// Returns the average number of chunks per range
     /// None if there is is not enough data for an estimate
     pub(crate) fn rolling_chunks_per_range(&self) -> Option<f32> {
-        if self.rolling_last_nranges.len() < *NRANGES_IN_STREAMING_FRAGMENTATION_ESTIMATOR {
+        if self.rolling_last_nranges.len() < xet_config().deduplication.nranges_in_streaming_fragmentation_estimator {
             None
         } else {
             Some(self.rolling_nranges_chunks as f32 / self.rolling_last_nranges.len() as f32)
@@ -95,11 +83,13 @@ impl DefragPrevention {
 impl Default for DefragPrevention {
     fn default() -> Self {
         Self {
-            rolling_last_nranges: VecDeque::with_capacity(*NRANGES_IN_STREAMING_FRAGMENTATION_ESTIMATOR),
+            rolling_last_nranges: VecDeque::with_capacity(
+                xet_config().deduplication.nranges_in_streaming_fragmentation_estimator,
+            ),
             rolling_nranges_chunks: 0,
             defrag_at_low_threshold: true,
-            min_chunks_per_range: *MIN_N_CHUNKS_PER_RANGE,
-            min_chunks_per_range_historesis_factor: *MIN_N_CHUNKS_PER_RANGE_HYSTERESIS_FACTOR,
+            min_chunks_per_range: xet_config().deduplication.min_n_chunks_per_range,
+            min_chunks_per_range_historesis_factor: xet_config().deduplication.min_n_chunks_per_range_hysteresis_factor,
         }
     }
 }

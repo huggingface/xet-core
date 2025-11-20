@@ -5,8 +5,10 @@ edition = "2024"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
+xet_config = { path = "../xet_config" }
 merklehash = { path = "../merklehash" }
 utils = { path = "../utils" }
+xet_runtime = { path = "../xet_runtime" }
 
 anyhow = { workspace = true }
 async-trait = { workspace = true }
