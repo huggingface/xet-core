@@ -1,32 +1,36 @@
-use merklehash::MerkleHash;
-use sha2::{Digest, Sha256};
+use mdb_shard::Sha256;
+use sha2::{Digest, Sha256 as sha2Sha256};
 use tokio::task::{JoinError, JoinHandle};
 
-pub enum ShaGen {
-    Sha256(Sha256Generator),
-    Noop(MerkleHash),
+pub enum ShaGenerator {
+    Generate(Sha256Generator),
+    ProvidedValue(Sha256),
 }
 
-impl ShaGen {
+impl ShaGenerator {
     pub async fn update(&mut self, new_data: impl AsRef<[u8]> + Send + Sync + 'static) -> Result<(), JoinError> {
         match self {
-            Self::Sha256(generator) => generator.update(new_data).await,
-            Self::Noop(_) => Ok(()),
+            Self::Generate(generator) => generator.update(new_data).await,
+            Self::ProvidedValue(_) => Ok(()),
         }
     }
 
-    pub async fn finalize(self) -> Result<MerkleHash, JoinError> {
+    pub async fn finalize(self) -> Result<Sha256, JoinError> {
         match self {
-            Self::Sha256(generator) => generator.finalize().await,
-            Self::Noop(hash) => Ok(hash),
+            Self::Generate(generator) => generator.finalize().await,
+            Self::ProvidedValue(hash) => Ok(hash),
         }
+    }
+
+    pub fn generate() -> Self {
+        Self::Generate(Sha256Generator::default())
     }
 }
 
 /// Helper struct to generate a sha256 hash as a MerkleHash.
 #[derive(Debug, Default)]
 pub struct Sha256Generator {
-    hasher: Option<JoinHandle<Result<Sha256, JoinError>>>,
+    hasher: Option<JoinHandle<Result<sha2Sha256, JoinError>>>,
 }
 
 impl Sha256Generator {
@@ -34,7 +38,7 @@ impl Sha256Generator {
     pub async fn update(&mut self, new_data: impl AsRef<[u8]> + Send + Sync + 'static) -> Result<(), JoinError> {
         let mut hasher = match self.hasher.take() {
             Some(jh) => jh.await??,
-            None => Sha256::default(),
+            None => sha2Sha256::default(),
         };
 
         // The previous task returns the hasher; we consume that and pass it on.
@@ -49,17 +53,17 @@ impl Sha256Generator {
     }
 
     /// Generates a sha256 from the current state of the variant.
-    pub async fn finalize(mut self) -> Result<MerkleHash, JoinError> {
+    pub async fn finalize(mut self) -> Result<Sha256, JoinError> {
         let current_state = self.hasher.take();
 
         let hasher = match current_state {
             Some(jh) => jh.await??,
-            None => return Ok(MerkleHash::default()),
+            None => return Ok(Sha256::default()),
         };
 
         let sha256 = hasher.finalize();
         let hex_str = format!("{sha256:x}");
-        Ok(MerkleHash::from_hex(&hex_str).expect("Converting sha256 to merklehash."))
+        Ok(Sha256::from_hex(&hex_str).expect("Converting sha256 to merklehash."))
     }
 }
 
@@ -115,7 +119,7 @@ mod sha_tests {
 
         let out_hash = sha_generator.finalize().await.unwrap();
 
-        let ref_hash = format!("{:x}", Sha256::digest(rand_data));
+        let ref_hash = format!("{:x}", sha2Sha256::digest(rand_data));
 
         assert_eq!(out_hash.hex(), ref_hash);
     }

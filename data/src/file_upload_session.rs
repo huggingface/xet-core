@@ -12,6 +12,7 @@ use deduplication::constants::{MAX_XORB_BYTES, MAX_XORB_CHUNKS};
 use deduplication::{DataAggregator, DeduplicationMetrics, RawXorbData};
 use jsonwebtoken::{DecodingKey, Validation, decode};
 use lazy_static::lazy_static;
+use mdb_shard::Sha256;
 use mdb_shard::file_structs::MDBFileInfo;
 use merklehash::MerkleHash;
 use more_asserts::*;
@@ -192,12 +193,11 @@ impl FileUploadSession {
 
     pub async fn upload_files(
         self: &Arc<Self>,
-        files: &[impl AsRef<Path>],
-        sha256s: impl IntoIterator<Item = Option<MerkleHash>> + Send,
+        files_and_sha256s: impl IntoIterator<Item = (impl AsRef<Path>, Option<Sha256>)> + Send,
     ) -> Result<Vec<XetFileInfo>> {
-        let mut cleaning_tasks: Vec<JoinHandle<_>> = Vec::with_capacity(files.len());
+        let mut cleaning_tasks: Vec<JoinHandle<_>> = vec![];
 
-        for (f, sha256) in files.iter().zip(sha256s) {
+        for (f, sha256) in files_and_sha256s.into_iter() {
             let file_path = f.as_ref().to_owned();
             let file_name: Arc<str> = Arc::from(file_path.to_string_lossy());
 
@@ -284,7 +284,7 @@ impl FileUploadSession {
         }
 
         // Join all the cleaning tasks.
-        let mut ret = Vec::with_capacity(files.len());
+        let mut ret = Vec::with_capacity(cleaning_tasks.len());
 
         for task in cleaning_tasks {
             ret.push(task.await??);

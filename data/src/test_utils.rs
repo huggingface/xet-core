@@ -185,7 +185,10 @@ impl LocalHydrateDehydrateTest {
                 .map(|entry| self.src_dir.join(entry.unwrap().file_name()))
                 .collect();
 
-            let clean_results = upload_session.upload_files(&files, std::iter::repeat(None)).await.unwrap();
+            let clean_results = upload_session
+                .upload_files(files.iter().zip(std::iter::repeat(None)))
+                .await
+                .unwrap();
 
             for (i, xf) in clean_results.into_iter().enumerate() {
                 std::fs::write(self.ptr_dir.join(files[i].file_name().unwrap()), serde_json::to_string(&xf).unwrap())
