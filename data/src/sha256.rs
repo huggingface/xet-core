@@ -27,7 +27,7 @@ impl ShaGenerator {
     }
 }
 
-/// Helper struct to generate a sha256 hash as a MerkleHash.
+/// Helper struct to generate a sha256 hash.
 #[derive(Debug, Default)]
 pub struct Sha256Generator {
     hasher: Option<JoinHandle<Result<sha2Sha256, JoinError>>>,
