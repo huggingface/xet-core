@@ -311,34 +311,34 @@ impl AdaptiveConcurrencyController {
 
         // If the success ratio is healthy and the predicted RTT is below the target RTT,
         // then adjust the concurrency upwards.
-        if model_state.recommended_adjustment == 1 {
-            if state_lg.last_adjustment_time.elapsed() > self.min_concurrency_increase_delay {
-                let old_concurrency = self.concurrency_semaphore.total_permits();
-                let new_concurrency = 1. + old_concurrency as f64;
+        if model_state.recommended_adjustment == 1
+            && state_lg.last_adjustment_time.elapsed() > self.min_concurrency_increase_delay
+        {
+            let old_concurrency = self.concurrency_semaphore.total_permits();
+            let new_concurrency = 1. + old_concurrency as f64;
 
-                // Calculate predicted RTT once for both decision and logging
-                let predicted_rtt = state_lg
-                    .rtt_predictor
-                    .predicted_rtt(reference_size, new_concurrency)
-                    .unwrap_or(f64::INFINITY);
+            // Calculate predicted RTT once for both decision and logging
+            let predicted_rtt = state_lg
+                .rtt_predictor
+                .predicted_rtt(reference_size, new_concurrency)
+                .unwrap_or(f64::INFINITY);
 
-                if predicted_rtt < target_rtt_secs {
-                    self.concurrency_semaphore.increment_total_permits();
-                    let new_concurrency_actual = self.concurrency_semaphore.total_permits();
-                    state_lg.last_adjustment_time = Instant::now();
+            if predicted_rtt < target_rtt_secs {
+                self.concurrency_semaphore.increment_total_permits();
+                let new_concurrency_actual = self.concurrency_semaphore.total_permits();
+                state_lg.last_adjustment_time = Instant::now();
 
-                    info!(
-                        "Concurrency control for {}: Increased concurrency from {} to {}; reason: success ratio {:.3} is above threshold {:.3} and predicted RTT for {}MB at new concurrency is {:.2}s < target {:.1}s",
-                        self.logging_tag,
-                        old_concurrency,
-                        new_concurrency_actual,
-                        model_state.success_ratio,
-                        model_state.success_ratio_thresholds.0,
-                        reference_size / (1024 * 1024),
-                        predicted_rtt,
-                        target_rtt_secs
-                    );
-                }
+                info!(
+                    "Concurrency control for {}: Increased concurrency from {} to {}; reason: success ratio {:.3} is above threshold {:.3} and predicted RTT for {}MB at new concurrency is {:.2}s < target {:.1}s",
+                    self.logging_tag,
+                    old_concurrency,
+                    new_concurrency_actual,
+                    model_state.success_ratio,
+                    model_state.success_ratio_thresholds.0,
+                    reference_size / (1024 * 1024),
+                    predicted_rtt,
+                    target_rtt_secs
+                );
             }
         }
 
@@ -425,7 +425,7 @@ impl ConnectionPermit {
 
             // Throttle reports to at most once every MIN_PARTIAL_REPORT_INTERVAL_MS
             static REFERENCE_INSTANT: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
-            let now_ms = REFERENCE_INSTANT.get_or_init(|| Instant::now()).elapsed().as_millis() as u64;
+            let now_ms = REFERENCE_INSTANT.get_or_init(Instant::now).elapsed().as_millis() as u64;
 
             // Return if we've already recently reported a partial completion.
             if info

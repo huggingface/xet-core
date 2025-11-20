@@ -251,10 +251,6 @@ async fn run_client(min_data_kb: u64, max_data_kb: u64, repeat_duration_seconds:
         let total_http_calls = total_http_calls.clone();
         let total_round_trip_time_ms = total_round_trip_time_ms.clone();
         let total_successful_transmissions = total_successful_transmissions.clone();
-        let start_time_loop = start_time_loop;
-        let end_duration = end_duration;
-        let min_data_size = min_data_size;
-        let max_data_size = max_data_size;
         let base_data = base_data.clone();
 
         join_set.spawn(async move {
