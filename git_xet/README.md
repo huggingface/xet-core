@@ -8,7 +8,7 @@ Make sure you have [git](https://git-scm.com/downloads) and [git-lfs](https://gi
    ```
    brew tap huggingface/tap
    brew install git-xet
-   git-xet install
+   git xet install
    ```
  Or, using an installation script, run the following in your terminal (requires `curl` and `unzip`):
    ```
@@ -16,34 +16,34 @@ Make sure you have [git](https://git-scm.com/downloads) and [git-lfs](https://gi
    ```
   To verify the installation, run:
    ```
-   git-xet --version
+   git xet --version
    ```
 
 ### Windows (amd64)
  Using an installer: 
- - Download `git-xet-windows-installer-x86_64.zip` ([available here](https://github.com/huggingface/xet-core/releases/download/git-xet-v0.1.0/git-xet-windows-installer-x86_64.zip)) and unzip. 
+ - Download `git-xet-windows-installer-x86_64.zip` ([available here](https://github.com/huggingface/xet-core/releases/download/git-xet-v0.2.0/git-xet-windows-installer-x86_64.zip)) and unzip. 
  - Run the `msi` installer file and follow the prompts.
    
  Manual installation:
- - Download `git-xet-windows-x86_64.zip` ([available here](https://github.com/huggingface/xet-core/releases/download/git-xet-v0.1.0/git-xet-windows-x86_64.zip)) and unzip. 
+ - Download `git-xet-windows-x86_64.zip` ([available here](https://github.com/huggingface/xet-core/releases/download/git-xet-v0.2.0/git-xet-windows-x86_64.zip)) and unzip. 
  - Place the extracted `git-xet.exe` under a `PATH` directory.
  - Run `git-xet install` in a terminal.
 
 To verify the installation, run:
   ```
-  git-xet --version
+  git xet --version
   ```
 
 ## Uninstall
 ### macOS or Linux
 Using Homebrew:
    ```
-   git-xet uninstall
+   git xet uninstall
    brew uninstall git-xet
    ```
 If you used the installation script (for MacOS or Linux), run the following in your terminal:
    ```
-   git-xet uninstall
+   git xet uninstall
    sudo rm $(which git-xet)
    ```
 ### Windows
@@ -53,7 +53,7 @@ If you used the installer:
 - Select the "Uninstall" option available in the context menu.
 
 If you manually installed:
-- Run `git-xet uninstall` in a terminal. 
+- Run `git xet uninstall` in a terminal. 
 - Delete the `git-xet.exe` file from the location where it was originally placed.
 
 ## How It Works
