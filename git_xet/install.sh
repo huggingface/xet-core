@@ -4,10 +4,10 @@
 # unzips it, and moves it to the user's local bin directory.
 
 # --- Configuration ---
-URL_LINUX_AMD64="https://github.com/huggingface/xet-core/releases/download/git-xet-v0.1.0/git-xet-linux-x86_64.zip"
-URL_LINUX_ARM64="https://github.com/huggingface/xet-core/releases/download/git-xet-v0.1.0/git-xet-linux-aarch64.zip"
-URL_MACOS_AMD64="https://github.com/huggingface/xet-core/releases/download/git-xet-v0.1.0/git-xet-macos-x86_64.zip"
-URL_MACOS_ARM64="https://github.com/huggingface/xet-core/releases/download/git-xet-v0.1.0/git-xet-macos-aarch64.zip"
+URL_LINUX_AMD64="https://github.com/huggingface/xet-core/releases/download/git-xet-v0.2.0/git-xet-linux-x86_64.zip"
+URL_LINUX_ARM64="https://github.com/huggingface/xet-core/releases/download/git-xet-v0.2.0/git-xet-linux-aarch64.zip"
+URL_MACOS_AMD64="https://github.com/huggingface/xet-core/releases/download/git-xet-v0.2.0/git-xet-macos-x86_64.zip"
+URL_MACOS_ARM64="https://github.com/huggingface/xet-core/releases/download/git-xet-v0.2.0/git-xet-macos-aarch64.zip"
 
 # The name of the binary inside the zip file.
 BINARY_NAME="git-xet"
