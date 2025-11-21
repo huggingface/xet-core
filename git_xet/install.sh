@@ -23,6 +23,14 @@ handle_error() {
     exit 1
 }
 
+# Verify required commands are available
+required_cmds=(uname curl unzip)
+for cmd in "${required_cmds[@]}"; do
+    if ! command -v "$cmd" >/dev/null 2>&1; then
+        handle_error "Required command '$cmd' is not installed. Please install it and rerun this script."
+    fi
+done
+
 # Get OS and architecture
 OS="$(uname -s)"
 ARCH="$(uname -m)"
@@ -101,5 +109,10 @@ else
 fi
 
 git-xet install --concurrency 3
+
+# Verify git-lfs is available
+if ! command -v "git-lfs" >/dev/null 2>&1; then
+    echo "git-lfs is not installed. Please install it for git-xet to work. Visit https://git-lfs.com/ for instructions."
+fi
 
 echo "Installation complete!"
