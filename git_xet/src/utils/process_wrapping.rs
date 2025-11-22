@@ -33,7 +33,7 @@ where
 /// Return `Ok(())` if the command finishes correctly and the child's stdout and stderr are ignored;
 /// Return the underlying I/O error if the child process spawning or waiting fails; otherwise, the captured
 /// stdout and stderr of the child are wrapped in an `Err(GitXetError::CommandFailed(_))` and returned.
-#[allow(dead_code)]
+#[allow(unused)]
 pub fn run_program_captured<S1, P, I, S2>(program: S1, working_dir: P, args: I) -> Result<()>
 where
     S1: AsRef<OsStr>,
@@ -98,7 +98,6 @@ where
 ///
 /// let (response, _err) = cmd.wait_with_output()?;
 /// ```
-#[allow(dead_code)]
 pub fn run_program_captured_with_input_and_output<S1, P, I, S2>(
     program: S1,
     working_dir: P,

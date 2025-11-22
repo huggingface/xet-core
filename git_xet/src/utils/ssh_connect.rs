@@ -1,4 +1,3 @@
-#![allow(unused)]
 // A utility to help establish SSH connection to a remote Git server.
 
 use crate::errors::{GitXetError, Result};

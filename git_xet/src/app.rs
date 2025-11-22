@@ -42,6 +42,11 @@ Remove "lfs.concurrenttransfers" from the global Git config."#)]
     /// Start tracking the given patterns(s) through Git LFS. This directly
     /// calls the "git lfs track" command with the following options and args.
     Track(TrackArg),
+
+    /// Run any arguments passed in as a command. This is a feature only for
+    /// integration tests.
+    #[cfg(feature = "git-xet-for-integration-test")]
+    RunAny(RunAnyArg),
 }
 
 #[derive(Args, Debug)]
@@ -96,6 +101,13 @@ struct TrackArg {
 }
 
 #[derive(Args, Debug)]
+#[cfg(feature = "git-xet-for-integration-test")]
+struct RunAnyArg {
+    program: String,
+    args: Option<Vec<String>>,
+}
+
+#[derive(Args, Debug)]
 struct CliOverrides {
     /// Increase verbosity of output (-v, -vv, etc.)
     #[clap(long, short = 'v', action = ArgAction::Count)]
@@ -140,6 +152,8 @@ impl Command {
             Command::Uninstall(args) => uninstall_command(args),
             Command::Transfer => transfer_command().await,
             Command::Track(args) => track_command(args),
+            #[cfg(feature = "git-xet-for-integration-test")]
+            Command::RunAny(args) => run_any_command(args),
         }
     }
 
@@ -149,6 +163,8 @@ impl Command {
             Command::Uninstall(_) => "uninstall",
             Command::Transfer => "transfer",
             Command::Track(_) => "track",
+            #[cfg(feature = "git-xet-for-integration-test")]
+            Command::RunAny(_) => "runany",
         }
     }
 }
@@ -219,5 +235,15 @@ fn track_command(args: TrackArg) -> Result<()> {
     cmd.arg("track");
     cmd.args(args.args_to_git_lfs_track);
     cmd.status()?;
+    Ok(())
+}
+
+#[cfg(feature = "git-xet-for-integration-test")]
+fn run_any_command(args: RunAnyArg) -> Result<()> {
+    let mut cmd = std::process::Command::new(args.program);
+    if let Some(args) = args.args {
+        cmd.args(args);
+    }
+    let _ = cmd.status()?;
     Ok(())
 }
