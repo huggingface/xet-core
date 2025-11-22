@@ -1334,7 +1334,6 @@ dependencies = [
  "bipbuffer",
  "cas_client",
  "chrono",
- "chunk_cache",
  "ctrlc",
  "data",
  "error_printer",
@@ -1349,6 +1348,7 @@ dependencies = [
  "signal-hook",
  "tracing",
  "utils",
+ "xet_config",
  "xet_logging",
  "xet_runtime",
 ]
