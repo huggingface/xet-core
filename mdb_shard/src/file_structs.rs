@@ -3,8 +3,8 @@ use std::io::{Cursor, Read, Write};
 use std::mem::size_of;
 
 use bytes::Bytes;
-use merklehash::MerkleHash;
 use merklehash::data_hash::hex;
+use merklehash::{DataHash, MerkleHash};
 use serde::Serialize;
 use utils::serialization_utils::*;
 
@@ -17,6 +17,8 @@ pub const MDB_FILE_FLAG_WITH_VERIFICATION: u32 = 1 << 31;
 pub const MDB_FILE_FLAG_VERIFICATION_MASK: u32 = 1 << 31;
 pub const MDB_FILE_FLAG_WITH_METADATA_EXT: u32 = 1 << 30;
 pub const MDB_FILE_FLAG_METADATA_EXT_MASK: u32 = 1 << 30;
+
+pub type Sha256 = DataHash;
 
 /// Each file consists of a FileDataSequenceHeader following
 /// a sequence of FileDataSequenceEntry, maybe a sequence
@@ -303,12 +305,12 @@ impl FileVerificationEntry {
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
 pub struct FileMetadataExt {
     #[serde(with = "hex::serde")]
-    pub sha256: MerkleHash,
+    pub sha256: Sha256,
     pub _unused: [u64; 2],
 }
 
 impl FileMetadataExt {
-    pub fn new(sha256: MerkleHash) -> Self {
+    pub fn new(sha256: Sha256) -> Self {
         Self {
             sha256,
             _unused: Default::default(),

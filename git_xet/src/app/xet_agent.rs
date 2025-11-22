@@ -133,7 +133,7 @@ impl TransferAgent for XetAgent {
             return Err(GitLFSProtocolError::bad_syntax("file path not provided for upload request").into());
         };
 
-        clean_file(session.clone(), file_path).await?;
+        clean_file(session.clone(), file_path, &req.oid).await?;
 
         // We need to actually upload the shard after each file upload to have the files registered, because
         //

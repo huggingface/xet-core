@@ -125,6 +125,7 @@ impl Command {
 
                 let (all_file_info, clean_ret, total_bytes_trans) = migrate_files_impl(
                     file_paths,
+                    None,
                     arg.sequential,
                     hub_client,
                     None,

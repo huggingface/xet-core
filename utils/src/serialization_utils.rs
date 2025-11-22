@@ -3,10 +3,10 @@ use std::mem::{size_of, transmute};
 
 use futures::AsyncReadExt;
 use futures::io::AsyncRead;
-use merklehash::MerkleHash;
+use merklehash::DataHash;
 
 #[inline]
-pub fn write_hash<W: Write>(writer: &mut W, m: &MerkleHash) -> Result<(), std::io::Error> {
+pub fn write_hash<W: Write>(writer: &mut W, m: &DataHash) -> Result<(), std::io::Error> {
     writer.write_all(m.as_bytes())
 }
 
@@ -49,11 +49,11 @@ pub fn write_u64s<W: Write>(writer: &mut W, vs: &[u64]) -> Result<(), std::io::E
 }
 
 #[inline]
-pub fn read_hash<R: Read>(reader: &mut R) -> Result<MerkleHash, std::io::Error> {
+pub fn read_hash<R: Read>(reader: &mut R) -> Result<DataHash, std::io::Error> {
     let mut m = [0u8; 32];
     reader.read_exact(&mut m)?; // Not endian safe.
 
-    Ok(MerkleHash::from(unsafe { transmute::<[u8; 32], [u64; 4]>(m) }))
+    Ok(DataHash::from(unsafe { transmute::<[u8; 32], [u64; 4]>(m) }))
 }
 
 #[inline]
@@ -102,11 +102,11 @@ pub fn read_u64s<R: Read>(reader: &mut R, vs: &mut [u64]) -> Result<(), std::io:
 
 // Async version of the above.
 #[inline]
-pub async fn read_hash_async<R: AsyncRead + Unpin>(reader: &mut R) -> Result<MerkleHash, std::io::Error> {
+pub async fn read_hash_async<R: AsyncRead + Unpin>(reader: &mut R) -> Result<DataHash, std::io::Error> {
     let mut m = [0u8; 32];
     reader.read_exact(&mut m).await?; // Not endian safe.
 
-    Ok(MerkleHash::from(unsafe { transmute::<[u8; 32], [u64; 4]>(m) }))
+    Ok(DataHash::from(unsafe { transmute::<[u8; 32], [u64; 4]>(m) }))
 }
 
 #[inline]
