@@ -11,13 +11,13 @@ crate-type = ["cdylib"]
 
 [dependencies]
 cas_client = { path = "../cas_client" }
-chunk_cache = { path = "../chunk_cache" }
 data = { path = "../data" }
 error_printer = { path = "../error_printer" }
 progress_tracking = { path = "../progress_tracking" }
 utils = { path = "../utils" }
-xet_runtime = { path = "../xet_runtime" }
+xet_config = { path = "../xet_config" }
 xet_logging = { path = "../xet_logging" }
+xet_runtime = { path = "../xet_runtime" }
 
 async-trait = "0.1"
 bipbuffer = "0.1"
@@ -51,7 +51,7 @@ ctrlc = "3.4"
 default = ["no-default-cache"]                           # By default, hf_xet disables the disk cache. 
 native-tls = ["cas_client/native-tls-vendored"]
 native-tls-vendored = ["cas_client/native-tls-vendored"]
-no-default-cache = ["chunk_cache/no-default-cache"]
+no-default-cache = ["xet_config/no-default-cache"]
 profiling = ["pprof"]
 tokio-console = ["xet_logging/tokio-console"]
 
