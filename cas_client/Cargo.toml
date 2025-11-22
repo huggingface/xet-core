@@ -19,6 +19,7 @@ utils = { path = "../utils" }
 xet_runtime = { path = "../xet_runtime" }
 
 anyhow = { workspace = true }
+approx = "0.5"
 async-trait = { workspace = true }
 bytes = { workspace = true }
 derivative = { workspace = true }
@@ -38,7 +39,14 @@ tokio = { workspace = true }
 tokio-retry = { workspace = true }
 tower-service = { workspace = true }
 tracing = { workspace = true }
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+tracing-log = "0.2"
 url = { workspace = true }
+rand = { workspace = true }
+chrono = { workspace = true }
+clap = { version = "4.0", features = ["derive"] }
+ctor = { workspace = true }
+statrs = { workspace = true }
 
 # Reqwest -- uses different flags with different features.
 [features]
@@ -66,9 +74,31 @@ native-tls-vendored = ["reqwest/native-tls-vendored"]
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
 heed = { workspace = true }
 hyper = { workspace = true }
+warp = "0.3"
 
 [dev-dependencies]
+approx = "0.5"
 httpmock = { workspace = true }
-rand = { workspace = true }
+rand_distr = "0.5"
 tracing-test = { workspace = true }
 wiremock = { workspace = true }
+
+# Test binaries for adaptive concurrency testing
+[[bin]]
+name = "simulation_server"
+path = "test/adaptive_concurrency/src/simulation_server.rs"
+
+[[bin]]
+name = "simulation_client"
+path = "test/adaptive_concurrency/src/simulation_client.rs"
+test = true
+
+[[bin]]
+name = "generate_summary"
+path = "test/adaptive_concurrency/src/generate_summary.rs"
+test = true
+
+[[bin]]
+name = "generate_scenario_report"
+path = "test/adaptive_concurrency/src/generate_scenario_report.rs"
+test = true

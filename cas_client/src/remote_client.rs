@@ -30,6 +30,7 @@ use utils::auth::AuthConfig;
 use utils::singleflight::Group;
 use xet_runtime::{GlobalSemaphoreHandle, XetRuntime, global_semaphore_handle};
 
+use crate::adaptive_concurrency::ConnectionPermit;
 #[cfg(not(target_family = "wasm"))]
 use crate::download_utils::*;
 use crate::error::{CasClientError, Result};
@@ -250,7 +251,7 @@ impl RemoteClient {
         let result = RetryWrapper::new(api_tag)
             .with_429_no_retry()
             .log_errors_as_info()
-            .run(move || client.get(url.clone()).with_extension(Api(api_tag)).send())
+            .run(move |_partial_report_fn| client.get(url.clone()).with_extension(Api(api_tag)).send())
             .await;
 
         if result.as_ref().is_err_and(|e| e.status().is_some()) {
@@ -304,7 +305,7 @@ impl RemoteClient {
         let client = self.authenticated_http_client.clone();
 
         let response: BatchQueryReconstructionResponse = RetryWrapper::new(api_tag)
-            .run_and_extract_json(move || client.get(url.clone()).with_extension(Api(api_tag)).send())
+            .run_and_extract_json(move |_partial_report_fn| client.get(url.clone()).with_extension(Api(api_tag)).send())
             .await?;
 
         info!(call_id,
@@ -700,7 +701,7 @@ impl Client for RemoteClient {
         let client = self.authenticated_http_client.clone();
 
         let response: QueryReconstructionResponse = RetryWrapper::new(api_tag)
-            .run_and_extract_json(move || client.get(url.clone()).with_extension(Api(api_tag)).send())
+            .run_and_extract_json(move |_partial_report_fn| client.get(url.clone()).with_extension(Api(api_tag)).send())
             .await?;
 
         let terms_count = response.terms.len();
@@ -734,6 +735,34 @@ impl Client for RemoteClient {
     }
 
     #[instrument(skip_all, name = "RemoteClient::upload_shard", fields(shard.len = shard_data.len()))]
+    async fn upload_shard_with_permit(&self, shard_data: Bytes, upload_permit: ConnectionPermit) -> Result<bool> {
+        if self.dry_run {
+            return Ok(true);
+        }
+
+        let api_tag = "cas::upload_shard";
+        let client = self.authenticated_http_client.clone();
+
+        let url = Url::parse(&format!("{}/shards", self.endpoint))?;
+
+        let response: UploadShardResponse = RetryWrapper::new(api_tag)
+            .with_connection_permit(upload_permit, Some(shard_data.len() as u64))
+            .run_and_extract_json(move |_partial_report_fn| {
+                client
+                    .post(url.clone())
+                    .with_extension(Api(api_tag))
+                    .body(shard_data.clone())
+                    .send()
+            })
+            .await?;
+
+        match response.result {
+            UploadShardResponseType::Exists => Ok(false),
+            UploadShardResponseType::SyncPerformed => Ok(true),
+        }
+    }
+
+    #[instrument(skip_all, name = "RemoteClient::upload_shard", fields(shard.len = shard_data.len()))]
     async fn upload_shard(&self, shard_data: Bytes) -> Result<bool> {
         if self.dry_run {
             return Ok(true);
@@ -749,7 +778,7 @@ impl Client for RemoteClient {
         let url = Url::parse(&format!("{}/v1/shards", self.endpoint))?;
 
         let response: UploadShardResponse = RetryWrapper::new(api_tag)
-            .run_and_extract_json(move || {
+            .run_and_extract_json(move |_partial_report_fn| {
                 client
                     .post(url.clone())
                     .with_extension(Api(api_tag))
@@ -776,11 +805,12 @@ impl Client for RemoteClient {
     #[instrument(skip_all, name = "RemoteClient::upload_xorb", fields(key = Key{prefix : prefix.to_string(), hash : serialized_cas_object.hash}.to_string(),
                  xorb.len = serialized_cas_object.serialized_data.len(), xorb.num_chunks = serialized_cas_object.num_chunks
     ))]
-    async fn upload_xorb(
+    async fn upload_xorb_with_permit(
         &self,
         prefix: &str,
         serialized_cas_object: SerializedCasObject,
         upload_tracker: Option<Arc<CompletionTracker>>,
+        upload_permit: ConnectionPermit,
     ) -> Result<u64> {
         let key = Key {
             prefix: prefix.to_string(),
@@ -805,21 +835,20 @@ impl Client for RemoteClient {
 
         let n_raw_bytes = serialized_cas_object.raw_num_bytes;
         let xorb_hash = serialized_cas_object.hash;
+        let n_transfer_bytes = serialized_cas_object.serialized_data.len() as u64;
 
-        let progress_callback = move |bytes_sent: u64| {
-            if let Some(utr) = upload_tracker.as_ref() {
-                // First, recalibrate the sending, as the compressed size is different from the actual data size.
-                let adjusted_update = (bytes_sent * n_raw_bytes) / n_upload_bytes;
+        let serialized_data = serialized_cas_object.serialized_data.clone();
+        let base_progress_callback: Arc<dyn Fn(u64, u64) + Send + Sync> = {
+            let upload_tracker = upload_tracker.clone();
+            Arc::new(move |bytes_sent_delta: u64, _total_bytes: u64| {
+                if let Some(utr) = upload_tracker.as_ref() {
+                    // First, recalibrate the sending, as the compressed size is different from the actual data size.
+                    let adjusted_update = (bytes_sent_delta * n_raw_bytes) / n_upload_bytes;
 
-                utr.clone().register_xorb_upload_progress_background(xorb_hash, adjusted_update);
-            }
+                    utr.clone().register_xorb_upload_progress_background(xorb_hash, adjusted_update);
+                }
+            })
         };
-
-        let upload_stream = UploadProgressStream::new(
-            serialized_cas_object.serialized_data,
-            xet_config().client.upload_reporting_block_size,
-            progress_callback,
-        );
 
         let xorb_uploaded = {
             if !self.dry_run {
@@ -828,8 +857,30 @@ impl Client for RemoteClient {
                 let api_tag = "cas::upload_xorb";
 
                 let response: UploadXorbResponse = RetryWrapper::new(api_tag)
-                    .run_and_extract_json(move || {
-                        let upload_stream = upload_stream.clone_with_reset();
+                    .with_connection_permit(upload_permit, Some(n_transfer_bytes))
+                    .run_and_extract_json(move |partial_report_fn| {
+                        let base_progress_callback = base_progress_callback.clone();
+                        let partial_report_fn = partial_report_fn.clone();
+                        let total_size = n_transfer_bytes;
+
+                        let combined_callback = move |bytes_sent_delta: u64, total_bytes: u64| {
+                            (*base_progress_callback)(bytes_sent_delta, total_bytes);
+
+                            if let Some(ref partial_report_fn) = partial_report_fn
+                                && total_size > 0
+                            {
+                                let portion = (total_bytes as f64 / total_size as f64).min(1.0);
+                                partial_report_fn(portion, total_bytes);
+                            }
+                        };
+
+                        // TODO: doesn't handle resets.
+                        let upload_stream = UploadProgressStream::new(
+                            serialized_data.clone(),
+                            xet_config().client.upload_reporting_block_size,
+                            combined_callback,
+                        )
+                        .clone_with_reset();
                         let url = url.clone();
 
                         client
@@ -870,11 +921,12 @@ impl Client for RemoteClient {
     }
 
     #[cfg(target_family = "wasm")]
-    async fn upload_xorb(
+    async fn upload_xorb_with_permit(
         &self,
         prefix: &str,
         serialized_cas_object: SerializedCasObject,
         upload_tracker: Option<Arc<CompletionTracker>>,
+        _upload_permit: ConnectionPermit,
     ) -> Result<u64> {
         let key = Key {
             prefix: prefix.to_string(),

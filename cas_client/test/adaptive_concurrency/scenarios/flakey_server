@@ -1,0 +1,11 @@
+#!/bin/bash
+
+# Start the server
+simulation_server --min-reply-delay-ms=300 --max-reply-delay-ms=1200 --congested-bytes-per-second=1000000 --min-congested-penalty-ms=1000 --max-congested-penalty-ms=30000 --congested-error-rate=0.1 --test-duration-seconds=600 &
+
+echo "Testing a download of mixed sizes."
+simulation_client --min-data-kb=1 --max-data-kb=65536 --repeat-duration-seconds=600 &
+
+sleep 600
+
+echo "Single client check scenario completed"

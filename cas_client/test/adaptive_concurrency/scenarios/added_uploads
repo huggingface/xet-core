@@ -1,0 +1,29 @@
+#!/bin/bash
+
+# Add in additional uploads to the server in a staggered manner, testing how the client adapts
+# to changing conditions.
+
+# Start the server
+simulation_server --min-reply-delay-ms=300 --max-reply-delay-ms=1200 --test-duration-seconds=600 &
+
+simulation_client --min-data-kb=49152 --max-data-kb=65536 --repeat-duration-seconds=600 &
+sleep 100
+simulation_client --min-data-kb=49152 --max-data-kb=65536 --repeat-duration-seconds=500 &
+simulation_client --min-data-kb=49152 --max-data-kb=65536 --repeat-duration-seconds=150 &
+simulation_client --min-data-kb=49152 --max-data-kb=65536 --repeat-duration-seconds=100 &
+sleep 100
+simulation_client --min-data-kb=49152 --max-data-kb=65536 --repeat-duration-seconds=200 &
+simulation_client --min-data-kb=49152 --max-data-kb=65536 --repeat-duration-seconds=200 &
+sleep 100
+simulation_client --min-data-kb=49152 --max-data-kb=65536 --repeat-duration-seconds=30 &
+simulation_client --min-data-kb=49152 --max-data-kb=65536 --repeat-duration-seconds=30 &
+simulation_client --min-data-kb=49152 --max-data-kb=65536 --repeat-duration-seconds=30 &
+simulation_client --min-data-kb=49152 --max-data-kb=65536 --repeat-duration-seconds=30 &
+simulation_client --min-data-kb=49152 --max-data-kb=65536 --repeat-duration-seconds=30 &
+simulation_client --min-data-kb=49152 --max-data-kb=65536 --repeat-duration-seconds=30 &
+simulation_client --min-data-kb=49152 --max-data-kb=65536 --repeat-duration-seconds=30 &
+sleep 100
+simulation_client --min-data-kb=49152 --max-data-kb=65536 --repeat-duration-seconds=200 &
+sleep 100
+simulation_client --min-data-kb=49152 --max-data-kb=65536 --repeat-duration-seconds=100 &
+sleep 100

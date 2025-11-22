@@ -20,7 +20,7 @@ use progress_tracking::upload_tracking::{CompletionTracker, FileXorbDependency};
 #[cfg(debug_assertions)] // Used here to verify the update accuracy
 use progress_tracking::verification_wrapper::ProgressUpdaterVerificationWrapper;
 use progress_tracking::{NoOpProgressUpdater, TrackingProgressUpdater};
-use tokio::sync::{Mutex, OwnedSemaphorePermit};
+use tokio::sync::Mutex;
 use tokio::task::{JoinHandle, JoinSet};
 use tracing::{Instrument, Span, info_span, instrument};
 use ulid::Ulid;
@@ -36,28 +36,6 @@ use crate::{XetFileInfo, prometheus_metrics};
 lazy_static! {
     pub static ref CONCURRENT_FILE_INGESTION_LIMITER: GlobalSemaphoreHandle =
         global_semaphore_handle!(xet_config().data.max_concurrent_file_ingestion);
-}
-
-/// Acquire a permit for uploading xorbs and shards to ensure that we don't overwhelm the server
-/// or fill up the local host with in-memory data waiting to be uploaded.
-///
-/// The chosen Semaphore is fair, meaning xorbs and shards added first will be scheduled to upload first.
-///
-/// It's also important to acquire the permit before the task is launched; otherwise, we may spawn an unlimited
-/// number of tasks that end up using a ton of memory; this forces the pipeline to block here while the upload
-/// is happening.
-pub(crate) async fn acquire_upload_permit() -> Result<OwnedSemaphorePermit> {
-    lazy_static! {
-        static ref UPLOAD_CONCURRENCY_LIMITER: GlobalSemaphoreHandle =
-            global_semaphore_handle!(xet_config().data.max_concurrent_uploads);
-    }
-
-    let upload_permit = XetRuntime::current()
-        .global_semaphore(*UPLOAD_CONCURRENCY_LIMITER)
-        .acquire_owned()
-        .await
-        .map_err(|e| DataProcessingError::UploadTaskError(e.to_string()))?;
-    Ok(upload_permit)
 }
 
 /// Manages the translation of files between the
@@ -375,7 +353,7 @@ impl FileUploadSession {
                 .await??;
 
         let session = self.clone();
-        let upload_permit = acquire_upload_permit().await?;
+        let upload_permit = self.client.acquire_upload_permit().await?;
         let cas_prefix = session.config.data_config.prefix.clone();
         let completion_tracker = self.completion_tracker.clone();
 
@@ -383,10 +361,8 @@ impl FileUploadSession {
             async move {
                 let n_bytes_transmitted = session
                     .client
-                    .upload_xorb(&cas_prefix, cas_object, Some(completion_tracker))
+                    .upload_xorb_with_permit(&cas_prefix, cas_object, Some(completion_tracker), upload_permit)
                     .await?;
-
-                drop(upload_permit);
 
                 // Register that the xorb has been uploaded.
                 session.completion_tracker.register_xorb_upload_completion(xorb_hash).await;
