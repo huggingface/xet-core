@@ -16,6 +16,7 @@ use merklehash::MerkleHash;
 use tokio::sync::RwLock;
 use tracing::{debug, error};
 use utils::output_bytes;
+use xet_runtime::xet_config;
 
 use crate::disk::cache_file_header::CacheFileHeader;
 use crate::disk::cache_item::{CacheItem, VerificationCell};
@@ -28,10 +29,6 @@ pub mod test_utils;
 
 // consistently use URL_SAFE (also file path safe) base64 codec
 pub(crate) const BASE64_ENGINE: GeneralPurpose = URL_SAFE;
-#[cfg(not(feature = "no-default-cache"))]
-pub const DEFAULT_CHUNK_CACHE_CAPACITY: u64 = 10_000_000_000; // 10 GB
-#[cfg(feature = "no-default-cache")]
-pub const DEFAULT_CHUNK_CACHE_CAPACITY: u64 = 0;
 const PREFIX_DIR_NAME_LEN: usize = 2;
 
 type OptionResult<T, E> = Result<Option<T>, E>;
@@ -690,10 +687,10 @@ fn try_parse_cache_file(file_result: io::Result<DirEntry>, capacity: u64) -> Opt
     if !md.is_file() {
         return Ok(None);
     }
-    if md.len() > DEFAULT_CHUNK_CACHE_CAPACITY {
+    if md.len() > xet_config().chunk_cache.size_bytes {
         return Err(ChunkCacheError::general(format!(
             "Cache directory contains a file larger than {} GB, cache directory state is invalid",
-            (DEFAULT_CHUNK_CACHE_CAPACITY as f64 / (1 << 30) as f64)
+            (xet_config().chunk_cache.size_bytes as f64 / (1 << 30) as f64)
         )));
     }
 
@@ -823,12 +820,14 @@ mod tests {
     use tempdir::TempDir;
     use utils::output_bytes;
 
-    use super::{DEFAULT_CHUNK_CACHE_CAPACITY, DiskCache};
+    use super::DiskCache;
     use crate::disk::test_utils::*;
     use crate::disk::try_parse_key;
     use crate::{CacheConfig, ChunkCache};
 
     const RANDOM_SEED: u64 = 9089 << 20 | 120043;
+
+    const DEFAULT_CHUNK_CACHE_CAPACITY: u64 = 10_000_000_000;
 
     #[tokio::test]
     async fn test_get_cache_empty() {
@@ -1263,11 +1262,12 @@ mod concurrency_tests {
     use tempdir::TempDir;
 
     use super::DiskCache;
-    use crate::disk::DEFAULT_CHUNK_CACHE_CAPACITY;
     use crate::{CacheConfig, ChunkCache, RANGE_LEN, RandomEntryIterator};
 
     const NUM_ITEMS_PER_TASK: usize = 20;
     const RANDOM_SEED: u64 = 878987298749287;
+
+    const DEFAULT_CHUNK_CACHE_CAPACITY: u64 = 10_000_000_000;
 
     #[tokio::test]
     async fn test_run_concurrently() {

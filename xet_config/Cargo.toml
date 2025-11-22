@@ -20,3 +20,6 @@ const-str = "0.3"
 
 [dev-dependencies]
 serial_test = { workspace = true }
+
+[features]
+no-default-cache = []
