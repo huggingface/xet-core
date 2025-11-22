@@ -1262,11 +1262,12 @@ mod concurrency_tests {
     use tempdir::TempDir;
 
     use super::DiskCache;
-    use crate::disk::DEFAULT_CHUNK_CACHE_CAPACITY;
     use crate::{CacheConfig, ChunkCache, RANGE_LEN, RandomEntryIterator};
 
     const NUM_ITEMS_PER_TASK: usize = 20;
     const RANDOM_SEED: u64 = 878987298749287;
+
+    const DEFAULT_CHUNK_CACHE_CAPACITY: u64 = 10_000_000_000;
 
     #[tokio::test]
     async fn test_run_concurrently() {
