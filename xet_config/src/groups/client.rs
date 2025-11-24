@@ -1,5 +1,7 @@
 use std::time::Duration;
 
+use utils::ByteSize;
+
 crate::config_group!({
 
     /// Retry at most this many times before permanently failing.
@@ -127,6 +129,15 @@ crate::config_group!({
     /// Use the environment variable `HF_XET_CLIENT_CONCURRENCY_MIN_DECREASE_WINDOW_MS` to set this value.
     ref concurrency_min_decrease_window_ms: u64 = 250;
 
+    /// The minimum number of bytes that must be observed before we start adjusting the concurrency.  This is to account for
+    /// filling up the network stack buffers at different levels, which can cause the RTT prediction to be artificially low
+    /// when the buffers are just being filled up.
+    ///
+    /// The default value is 4mb.
+    ///
+    /// Use the environment variable `HF_XET_CLIENT_CONCURRENCY_BYTES_REQUIRED_FOR_ADJUSTMENT` to set this value.
+    ref concurrency_bytes_required_for_adjustment: ByteSize = ByteSize::from("4mb");
+
     /// Observations of observed transfer time and deviances are tracked using exponentially
     /// weighted decay. This is parameterized by the half life in number of samples.
     /// Thus if this value is 100, it means that observations count for 50% weight after 100 samples, 25% weight
@@ -237,4 +248,28 @@ crate::config_group!({
     ///
     /// Use the environment variable `HF_XET_CLIENT_NUM_INITIAL_CONCURRENT_UPLOADS` to set this value.
     ref num_initial_concurrent_uploads: usize = 1;
+
+    /// The maximum number of simultaneous download streams permitted by
+    /// the adaptive concurrency control.
+    ///
+    /// The default value is 64.
+    ///
+    /// Use the environment variable `HF_XET_CLIENT_MAX_CONCURRENT_DOWNLOADS` to set this value.
+    ref max_concurrent_downloads: usize = 64;
+
+    /// The minimum number of simultaneous download streams that the
+    /// adaptive concurrency control may reduce the concurrency down to on slower connections.
+    ///
+    /// The default value is 1.
+    ///
+    /// Use the environment variable `HF_XET_CLIENT_MIN_CONCURRENT_DOWNLOADS` to set this value.
+    ref min_concurrent_downloads: usize = 1;
+
+    /// The starting number of concurrent download streams, which will increase up to max_concurrent_downloads
+    /// on successful completions.
+    ///
+    /// The default value is 1.
+    ///
+    /// Use the environment variable `HF_XET_CLIENT_NUM_INITIAL_CONCURRENT_DOWNLOADS` to set this value.
+    ref num_initial_concurrent_downloads: usize = 1;
 });

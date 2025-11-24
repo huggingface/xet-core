@@ -130,12 +130,7 @@ async fn run_client(min_data_kb: u64, max_data_kb: u64, repeat_duration_seconds:
     );
 
     // Create the adaptive concurrency controller
-    let config = xet_config();
-    let concurrency_controller = AdaptiveConcurrencyController::new(
-        "test_uploads",
-        config.client.num_initial_concurrent_uploads,
-        (config.client.min_concurrent_uploads, config.client.max_concurrent_uploads),
-    );
+    let concurrency_controller = AdaptiveConcurrencyController::new_upload("test_uploads");
 
     let start_time_loop = Instant::now();
     let end_duration = Duration::from_secs(repeat_duration_seconds);

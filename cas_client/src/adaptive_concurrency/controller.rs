@@ -49,6 +49,9 @@ struct ConcurrencyControllerState {
 
     // The last time we reported the concurrency in the log; just log this once every 10 seconds.
     last_logging_time: Instant,
+
+    // The number of bytes sent so far.
+    bytes_sent_so_far: u64,
 }
 
 impl ConcurrencyControllerState {
@@ -62,6 +65,7 @@ impl ConcurrencyControllerState {
             success_ratio_tracking: ExpWeightedMovingAvg::new_count_decay(success_half_life_count),
             last_adjustment_time: Instant::now(),
             last_logging_time: Instant::now(),
+            bytes_sent_so_far: 0,
         }
     }
 
@@ -160,17 +164,25 @@ pub struct AdaptiveConcurrencyController {
 
     // A logging tag for logging adjustments.
     logging_tag: &'static str,
+
+    // minimum number of bytes that must be sent before we start adjusting the concurrency.
+    min_bytes_required_for_adjustment: u64,
 }
 
 impl AdaptiveConcurrencyController {
-    pub fn new(logging_tag: &'static str, concurrency: usize, concurrency_bounds: (usize, usize)) -> Arc<Self> {
+    pub fn new(
+        logging_tag: &'static str,
+        concurrency: usize,
+        concurrency_bounds: (usize, usize),
+        min_bytes_required_for_adjustment: u64,
+    ) -> Arc<Self> {
         // Make sure these values are sane, as they can be loaded from environment variables.
         let min_concurrency = concurrency_bounds.0.max(1);
         let max_concurrency = concurrency_bounds.1.max(min_concurrency);
         let current_concurrency = concurrency.clamp(min_concurrency, max_concurrency);
 
         info!(
-            "Initializing Adaptive Concurrency Controller for {logging_tag} with starting concurrency = {current_concurrency}; min = {min_concurrency}, max = {max_concurrency}"
+            "Initializing Adaptive Concurrency Controller for {logging_tag} with starting concurrency = {current_concurrency}; min = {min_concurrency}, max = {max_concurrency}, min_bytes_for_adjustment = {min_bytes_required_for_adjustment}"
         );
 
         let config = xet_config();
@@ -181,7 +193,30 @@ impl AdaptiveConcurrencyController {
             min_concurrency_increase_delay: Duration::from_millis(config.client.concurrency_min_increase_window_ms),
             min_concurrency_decrease_delay: Duration::from_millis(config.client.concurrency_min_decrease_window_ms),
             logging_tag,
+            min_bytes_required_for_adjustment,
         })
+    }
+
+    /// Create a new adaptive concurrency controller for uploads using configuration values.
+    pub fn new_upload(logging_tag: &'static str) -> Arc<Self> {
+        let config = xet_config();
+        Self::new(
+            logging_tag,
+            config.client.num_initial_concurrent_uploads,
+            (config.client.min_concurrent_uploads, config.client.max_concurrent_uploads),
+            config.client.concurrency_bytes_required_for_adjustment.into(),
+        )
+    }
+
+    /// Create a new adaptive concurrency controller for downloads using configuration values.
+    pub fn new_download(logging_tag: &'static str) -> Arc<Self> {
+        let config = xet_config();
+        Self::new(
+            logging_tag,
+            config.client.num_initial_concurrent_downloads,
+            (config.client.min_concurrent_downloads, config.client.max_concurrent_downloads),
+            config.client.concurrency_bytes_required_for_adjustment.into(),
+        )
     }
 
     /// Acquire a connection permit based on the current concurrency.
@@ -269,6 +304,9 @@ impl AdaptiveConcurrencyController {
 
         let mut state_lg = self.state.lock().await;
 
+        // Update the bytes sent so far.
+        state_lg.bytes_sent_so_far += n_bytes_if_known.unwrap_or(0);
+
         // Get the effective concurrency for this transfer.
         let cur_concurrency = self.concurrency_semaphore.active_permits() as f64;
         let avg_concurrency = (cur_concurrency + permit_info.starting_concurrency as f64) / 2.;
@@ -312,6 +350,7 @@ impl AdaptiveConcurrencyController {
         // If the success ratio is healthy and the predicted RTT is below the target RTT,
         // then adjust the concurrency upwards.
         if model_state.recommended_adjustment == 1
+            && state_lg.bytes_sent_so_far >= self.min_bytes_required_for_adjustment
             && state_lg.last_adjustment_time.elapsed() > self.min_concurrency_increase_delay
         {
             let old_concurrency = self.concurrency_semaphore.total_permits();
@@ -342,9 +381,10 @@ impl AdaptiveConcurrencyController {
             }
         }
 
-        if !transmission_successful
-            || !completed_in_time
-            || (!partial_update && model_state.recommended_adjustment == -1)
+        if state_lg.bytes_sent_so_far >= self.min_bytes_required_for_adjustment
+            && (!transmission_successful
+                || !completed_in_time
+                || (!partial_update && model_state.recommended_adjustment == -1))
         {
             // Now, only adjust it down if it's a fully completed transfer.  Otherwise we may run things out of
             // permits too quickly.
@@ -375,11 +415,12 @@ impl AdaptiveConcurrencyController {
         if state_lg.last_logging_time.elapsed() > Duration::from_millis(config.client.concurrency_logging_interval_ms) {
             let latency_state = state_lg.latency_model_state(self.concurrency_semaphore.active_permits() as f64);
             info!(
-                "Concurrency control for {}: Current concurrency = {}; predicted bandwidth = {}; success_ratio = {:.3}",
+                "Concurrency control for {}: Current concurrency = {}; predicted bandwidth = {}; success_ratio = {:.3}; observed bytes sent so far = {}",
                 self.logging_tag,
                 self.concurrency_semaphore.total_permits(),
                 latency_state.predicted_bandwidth,
-                model_state.success_ratio
+                model_state.success_ratio,
+                state_lg.bytes_sent_so_far
             );
         }
     }
@@ -529,6 +570,7 @@ impl ConcurrencyControllerState {
             success_ratio_tracking: ExpWeightedMovingAvg::new_count_decay(TR_HALF_LIFE_COUNT),
             last_adjustment_time: Instant::now(),
             last_logging_time: Instant::now(),
+            bytes_sent_so_far: 0,
         }
     }
 }
@@ -543,6 +585,7 @@ impl AdaptiveConcurrencyController {
             min_concurrency_increase_delay: Duration::from_millis(test_constants::INCR_SPACING_MS),
             min_concurrency_decrease_delay: Duration::from_millis(test_constants::DECR_SPACING_MS),
             logging_tag: "testing",
+            min_bytes_required_for_adjustment: 0,
         })
     }
 }
