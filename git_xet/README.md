@@ -19,6 +19,11 @@ Make sure you have [git](https://git-scm.com/downloads) and [git-lfs](https://gi
    ```
 
 ### Windows (amd64)
+ Using `winget`:
+ ```
+ winget install git-xet
+ ```
+
  Using an installer: 
  - Download `git-xet-windows-installer-x86_64.zip` ([available here](https://github.com/huggingface/xet-core/releases/download/git-xet-v0.2.0/git-xet-windows-installer-x86_64.zip)) and unzip. 
  - Run the `msi` installer file and follow the prompts.
@@ -46,8 +51,13 @@ If you used the installation script (for MacOS or Linux), run the following in y
    sudo rm $(which git-xet)
    ```
 ### Windows
+If you used `winget`:
+```
+winget uninstall git-xet
+```
+
 If you used the installer:
--  Navigate to Settings -> Apps -> Installed apps
+- Navigate to Settings -> Apps -> Installed apps
 - Find "Git-Xet".
 - Select the "Uninstall" option available in the context menu.
 
