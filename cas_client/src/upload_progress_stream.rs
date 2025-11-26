@@ -9,7 +9,7 @@ use more_asserts::*;
 
 struct ProgressCallbackWrapper<F>
 where
-    F: Fn(u64) + Send + Unpin + 'static,
+    F: Fn(u64, u64) + Send + Unpin + 'static,
 {
     progress_callback: F,
     bytes_sent_already_reported: AtomicUsize,
@@ -17,7 +17,7 @@ where
 
 impl<F> ProgressCallbackWrapper<F>
 where
-    F: Fn(u64) + Send + Unpin + 'static,
+    F: Fn(u64, u64) + Send + Unpin + 'static,
 {
     fn update(&self, new_completed: usize) {
         // We strictly increment here; that way, if there's been a clone and a restart of the stream, we only
@@ -27,14 +27,16 @@ where
             .fetch_max(new_completed, std::sync::atomic::Ordering::Relaxed);
 
         if old_completed < new_completed {
-            (self.progress_callback)((new_completed - old_completed) as u64)
+            let delta = (new_completed - old_completed) as u64;
+            let total = new_completed as u64;
+            (self.progress_callback)(delta, total)
         }
     }
 }
 
 pub struct UploadProgressStream<F>
 where
-    F: Fn(u64) + Send + Unpin + 'static,
+    F: Fn(u64, u64) + Send + Unpin + 'static,
 {
     data: Bytes,
     progress_callback: Arc<ProgressCallbackWrapper<F>>,
@@ -46,7 +48,7 @@ where
 
 impl<F> Stream for UploadProgressStream<F>
 where
-    F: Fn(u64) + Send + Unpin + 'static,
+    F: Fn(u64, u64) + Send + Unpin + 'static,
 {
     type Item = std::result::Result<Bytes, std::io::Error>;
 
@@ -77,7 +79,7 @@ where
 
 impl<F> UploadProgressStream<F>
 where
-    F: Fn(u64) + Send + Unpin + 'static,
+    F: Fn(u64, u64) + Send + Unpin + 'static,
 {
     pub fn new(data: impl Into<Bytes>, block_size: usize, progress_callback: F) -> Self {
         Self {
@@ -123,7 +125,7 @@ mod tests {
         let progress_reported = Arc::new(Mutex::new(Vec::new()));
         let callback = {
             let progress_reported = progress_reported.clone();
-            move |v| progress_reported.lock().unwrap().push(v)
+            move |delta: u64, _total: u64| progress_reported.lock().unwrap().push(delta)
         };
 
         let mut stream = UploadProgressStream::new(data.clone(), block_size, callback);
@@ -158,7 +160,7 @@ mod tests {
         let progress_reported = Arc::new(Mutex::new(Vec::new()));
         let callback = {
             let progress_reported = progress_reported.clone();
-            move |v| progress_reported.lock().unwrap().push(v)
+            move |delta: u64, _total: u64| progress_reported.lock().unwrap().push(delta)
         };
 
         let mut stream = UploadProgressStream::new(data.clone(), block_size, callback);
@@ -189,7 +191,7 @@ mod tests {
         let progress_reported = Arc::new(Mutex::new(Vec::new()));
         let callback = {
             let progress_reported = progress_reported.clone();
-            move |v| progress_reported.lock().unwrap().push(v)
+            move |delta: u64, _total: u64| progress_reported.lock().unwrap().push(delta)
         };
 
         let mut stream = UploadProgressStream::new(data.clone(), block_size, callback);

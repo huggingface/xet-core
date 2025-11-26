@@ -22,7 +22,6 @@ use xet_runtime::xet_config;
 
 use crate::configurations::TranslatorConfig;
 use crate::errors::Result;
-use crate::file_upload_session::acquire_upload_permit;
 
 pub struct SessionShardInterface {
     session_shard_manager: Arc<ShardFileManager>,
@@ -250,7 +249,6 @@ impl SessionShardInterface {
 
         for si in shard_list {
             let shard_client = self.client.clone();
-            let shard_prefix = self.config.shard_config.prefix.clone();
             let cache_shard_manager = self.cache_shard_manager.clone();
             let shard_bytes_uploaded = shard_bytes_uploaded.clone();
             let dry_run = self.dry_run;
@@ -261,11 +259,11 @@ impl SessionShardInterface {
             // It's also important to acquire the permit before the task is launched; otherwise, we may spawn an
             // unlimited number of tasks that end up using up a ton of memory; this forces the pipeline to
             // block here while the upload is happening.
-            let upload_permit = acquire_upload_permit().await?;
+            let upload_permit = shard_client.acquire_upload_permit().await?;
 
             shard_uploads.spawn(
                 async move {
-                    debug!("Uploading shard {shard_prefix}/{:?} from staging area to CAS.", &si.shard_hash);
+                    debug!("Uploading shard {:?} from staging area to CAS.", &si.shard_hash);
 
                     let data: Bytes = if !shard_client.use_shard_footer() {
                         read_shard_to_bytes_remove_footer(&si)?
@@ -281,12 +279,9 @@ impl SessionShardInterface {
                     }
 
                     // Upload the shard.
-                    shard_client.upload_shard(data).await?;
+                    shard_client.upload_shard_with_permit(data, upload_permit).await?;
 
-                    // Done with the upload, drop the permit.
-                    drop(upload_permit);
-
-                    info!("Shard {shard_prefix}/{:?} upload + sync completed successfully.", &si.shard_hash);
+                    info!("Shard {:?} upload + sync completed successfully.", &si.shard_hash);
 
                     // Now that the upload succeeded, move that shard to the cache directory, adding in an expiration
                     // time.
