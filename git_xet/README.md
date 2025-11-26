@@ -6,7 +6,6 @@ Make sure you have [git](https://git-scm.com/downloads) and [git-lfs](https://gi
 ### macOS or Linux (amd64 or aarch64)
  To install using Homebrew:
    ```
-   brew tap huggingface/tap
    brew install git-xet
    git xet install
    ```
