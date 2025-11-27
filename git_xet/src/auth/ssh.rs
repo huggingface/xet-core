@@ -1,29 +1,31 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use hub_client::{CredentialHelper, HubClientError, Operation, Result};
-#[cfg(unix)]
-use openssh::{KnownHosts, Session};
+use hub_client::{CredentialHelper, Operation};
 use reqwest::header;
 use reqwest_middleware::RequestBuilder;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
+use crate::errors::{GitXetError, Result};
+use crate::git_repo::GitRepo;
 use crate::git_url::GitUrl;
+use crate::utils::process_wrapping::run_program_captured_with_input_and_output;
+use crate::utils::ssh_connect::{SSHMetadata, get_sshcmd_and_args};
 
-#[derive(Deserialize)]
-struct GitLFSAuthentationResponseHeader {
+#[derive(Deserialize, Serialize)]
+pub struct GitLFSAuthentationResponseHeader {
     #[serde(rename = "Authorization")]
-    authorization: String,
+    pub authorization: String,
 }
 
 // This struct represents the JSON format of the `git-lfs-authenticate` command response over an
 // SSH channel to the remote Git server. For details see `crate::auth.rs`.
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 #[allow(unused)]
-struct GitLFSAuthenticateResponse {
-    header: GitLFSAuthentationResponseHeader,
-    href: String,
-    expires_in: u32,
+pub struct GitLFSAuthenticateResponse {
+    pub header: GitLFSAuthentationResponseHeader,
+    pub href: String,
+    pub expires_in: u32,
 }
 
 // This credential helper calls a remote command `git-lfs-authenticate` over an SSH channel
@@ -32,39 +34,40 @@ struct GitLFSAuthenticateResponse {
 // it has a shorter TTL than that of a Xet CAS JWT.
 pub struct SSHCredentialHelper {
     remote_url: GitUrl,
+    repo: GitRepo,
     operation: Operation,
 }
 
 impl SSHCredentialHelper {
-    pub fn new(remote_url: &GitUrl, operation: Operation) -> Arc<Self> {
+    pub fn new(remote_url: &GitUrl, repo: &GitRepo, operation: Operation) -> Arc<Self> {
         Arc::new(Self {
             remote_url: remote_url.clone(),
+            repo: repo.clone(),
             operation,
         })
     }
 
-    #[cfg(unix)]
     async fn authenticate(&self) -> Result<GitLFSAuthenticateResponse> {
-        let host_url = self.remote_url.host_url().map_err(HubClientError::credential_helper_error)?;
-        let full_repo_path = self.remote_url.full_repo_path();
-        let session = Session::connect(&host_url, KnownHosts::Add)
-            .await
-            .map_err(HubClientError::credential_helper_error)?;
+        let meta = SSHMetadata {
+            user_and_host: self.remote_url.user_and_host()?,
+            port: self.remote_url.port(),
+            arg_list: vec![
+                "git-lfs-authenticate".into(),
+                self.remote_url.full_repo_path(),
+                self.operation.as_str().into(),
+            ],
+        };
 
-        let output = session
-            .command("git-lfs-authenticate")
-            .arg(full_repo_path)
-            .arg(self.operation.as_str())
-            .output()
-            .await
-            .map_err(HubClientError::credential_helper_error)?;
+        // On Windows, access to "ssh" and "sh" is provided by the `git` -> `git-lfs` -> `git-xet` call chain, see
+        // git_xet/tests/test_ssh.rs for details.
+        let (program, args) = get_sshcmd_and_args(&meta, &self.repo)?;
 
-        serde_json::from_slice(&output.stdout).map_err(HubClientError::credential_helper_error)
-    }
+        let (output, _err) =
+            run_program_captured_with_input_and_output(program, self.repo.git_path()?, args)?.wait_with_output()?;
 
-    #[cfg(not(unix))]
-    async fn authenticate(&self) -> Result<GitLFSAuthenticateResponse> {
-        unimplemented!()
+        let response: GitLFSAuthenticateResponse = serde_json::from_slice(&output).map_err(GitXetError::internal)?;
+
+        Ok(response)
     }
 }
 
@@ -86,14 +89,18 @@ mod tests {
     use hub_client::Operation;
 
     use super::SSHCredentialHelper;
+    use crate::git_repo::GitRepo;
     use crate::git_url::GitUrl;
+    use crate::test_utils::TestRepo;
 
     #[tokio::test]
     #[ignore = "need ssh server"]
     async fn test_ssh_cred_helper_local() -> Result<()> {
+        let test_repo = TestRepo::new("main")?;
+        let repo = GitRepo::open(test_repo.path())?;
         let remote_url = "ssh://git@localhost:2222/datasets/test/td";
         let parsed_url: GitUrl = remote_url.parse()?;
-        let ssh_helper = SSHCredentialHelper::new(&parsed_url, Operation::Download);
+        let ssh_helper = SSHCredentialHelper::new(&parsed_url, &repo, Operation::Download);
 
         let response = ssh_helper.authenticate().await?;
 
@@ -107,9 +114,11 @@ mod tests {
     #[tokio::test]
     #[ignore = "need ssh key"]
     async fn test_ssh_cred_helper_remote() -> Result<()> {
+        let test_repo = TestRepo::new("main")?;
+        let repo = GitRepo::open(test_repo.path())?;
         let remote_url = "ssh://git@hf.co/seanses/tm"; // it seems that ssh port is not open on "huggingface.co"
         let parsed_url: GitUrl = remote_url.parse()?;
-        let ssh_helper = SSHCredentialHelper::new(&parsed_url, Operation::Upload);
+        let ssh_helper = SSHCredentialHelper::new(&parsed_url, &repo, Operation::Upload);
 
         let response = ssh_helper.authenticate().await?;
 

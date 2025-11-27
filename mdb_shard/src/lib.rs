@@ -13,7 +13,11 @@ pub mod shard_format;
 pub mod shard_in_memory;
 pub mod utils;
 
-pub use constants::{MDB_SHARD_TARGET_SIZE, hash_is_global_dedup_eligible};
+pub use constants::{
+    MDB_SHARD_EXPIRATION_BUFFER, MDB_SHARD_GLOBAL_DEDUP_CHUNK_MODULUS, MDB_SHARD_LOCAL_CACHE_EXPIRATION,
+    hash_is_global_dedup_eligible,
+};
+pub use file_structs::Sha256;
 pub use shard_file_handle::MDBShardFile;
 pub use shard_file_manager::ShardFileManager;
 pub use shard_format::{MDBShardFileFooter, MDBShardFileHeader, MDBShardInfo};

@@ -6,7 +6,7 @@ use anyhow::Result;
 use tempfile::{TempDir, tempdir};
 use utils::EnvVarGuard;
 
-use crate::git_process_wrapping::run_git_captured;
+use crate::utils::process_wrapping::run_git_captured;
 
 // A test utility to create a temporary HOME environment, this sets up a clean environment for
 // git operations which depend heavily on a global config file.

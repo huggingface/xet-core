@@ -65,7 +65,6 @@ pub fn upload_bytes(
             token_info,
             refresher.map(|v| v as Arc<_>),
             updater.map(|v| v as Arc<_>),
-            Some(0), // Disable DiskCache for hf_xet
             USER_AGENT.to_string(),
         )
         .await
@@ -108,11 +107,11 @@ pub fn upload_files(
 
         let out: Vec<PyXetUploadInfo> = data_client::upload_async(
             file_paths,
+            None,
             endpoint,
             token_info,
             refresher.map(|v| v as Arc<_>),
             updater.map(|v| v as Arc<_>),
-            Some(0), // Disable DiskCache for hf_xet
             USER_AGENT.to_string(),
         )
         .await
@@ -157,7 +156,6 @@ pub fn download_files(
             token_info,
             refresher.map(|v| v as Arc<_>),
             updaters,
-            Some(0), // Disable DiskCache for hf_xet
             USER_AGENT.to_string(),
         )
         .await

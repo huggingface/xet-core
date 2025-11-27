@@ -18,31 +18,13 @@ use reqwest_middleware::ClientWithMiddleware;
 use tracing::{debug, error, info, trace, warn};
 use url::Url;
 use utils::singleflight::Group;
+use xet_runtime::xet_config;
 
 use crate::error::{CasClientError, Result};
 use crate::http_client::Api;
 use crate::output_provider::SeekingOutputProvider;
 use crate::remote_client::{PREFIX_DEFAULT, get_reconstruction_with_endpoint_and_client};
 use crate::retry_wrapper::{RetryWrapper, RetryableReqwestError};
-
-utils::configurable_constants! {
-    // Env (HF_XET_NUM_RANGE_IN_SEGMENT_BASE) base value for the approx number of ranges in the initial
-    // segment size used to download, where a segment is a range of a file that is downloaded
-    // setting this value to 0 causes no segments to be downloaded, this will cause downloads to fail/hang
-    ref NUM_RANGE_IN_SEGMENT_BASE: usize = GlobalConfigMode::HighPerformanceOption {
-        standard: 16, // 16 * ~64MB -> ~1GB initial segment size
-        high_performance: 128, // 128 * ~64MB -> ~8GB initial segment size
-    };
-
-    // Env (HF_XET_NUM_RANGE_IN_SEGMENT_DELTA) delta value for the approx number of ranges in a segment size
-    // used to increase/decrease the segment size by this many approximate ranges
-    // setting this value to 0 causes no segment size change, i.e. will remain constant
-    ref NUM_RANGE_IN_SEGMENT_DELTA: usize = 1; // increase/decrease segment size by 1 approx range ~64MB
-
-    // Env (HF_XET_NUM_RANGE_IN_SEGMENT_MAX) max value for the approx number of ranges in a segment size
-    // setting this value to 0 will be ignored and the max size will be set to usize::MAX
-    ref NUM_RANGE_IN_SEGMENT_MAX: usize = 400; // * ~64MB -> max at 25GB segment
-}
 
 #[derive(Clone, Debug)]
 pub(crate) enum DownloadRangeResult {
@@ -157,9 +139,9 @@ impl FetchInfo {
 
 /// Helper object containing the structs needed when downloading a term in parallel
 /// during reconstruction.
-#[derive(Derivative)]
+#[derive(Clone, Derivative)]
 #[derivative(Debug)]
-pub(crate) struct FetchTermDownload {
+pub(crate) struct FetchTermDownloadInner {
     pub hash: MerkleHash,
     pub range: ChunkRange,
     #[derivative(Debug = "ignore")]
@@ -173,9 +155,28 @@ pub(crate) struct FetchTermDownload {
 }
 
 #[derive(Debug)]
+pub(crate) struct FetchTermDownload {
+    fetch_term_download: FetchTermDownloadInner,
+    cell: tokio::sync::OnceCell<Result<TermDownloadResult<TermDownloadOutput>>>,
+}
+
+impl FetchTermDownload {
+    pub fn new(fetch_term_download: FetchTermDownloadInner) -> Self {
+        Self {
+            fetch_term_download,
+            cell: tokio::sync::OnceCell::new(),
+        }
+    }
+
+    pub async fn run(&self) -> Result<TermDownloadResult<TermDownloadOutput>> {
+        self.cell.get_or_init(|| self.fetch_term_download.clone().run()).await.clone()
+    }
+}
+
+#[derive(Debug)]
 pub(crate) struct SequentialTermDownload {
     pub term: CASReconstructionTerm,
-    pub download: FetchTermDownload,
+    pub download: Arc<FetchTermDownload>,
     pub skip_bytes: u64, // number of bytes to skip at the front
     pub take: u64,       /* number of bytes to take after skipping bytes,
                           * effectively taking [skip_bytes..skip_bytes+take]
@@ -228,6 +229,16 @@ pub(crate) struct TermDownloadResult<T> {
     pub n_retries_on_403: u32,
 }
 
+impl<T: Clone> Clone for TermDownloadResult<T> {
+    fn clone(&self) -> Self {
+        Self {
+            payload: self.payload.clone(),
+            duration: self.duration,
+            n_retries_on_403: self.n_retries_on_403,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct TermDownloadOutput {
     pub data: Vec<u8>,
@@ -245,7 +256,7 @@ impl From<CacheRange> for TermDownloadOutput {
     }
 }
 
-impl FetchTermDownload {
+impl FetchTermDownloadInner {
     // Download and return results, retry on 403
     pub async fn run(self) -> Result<TermDownloadResult<TermDownloadOutput>> {
         let instant = Instant::now();
@@ -294,7 +305,7 @@ pub(crate) struct ChunkRangeWrite {
 /// during reconstruction.
 #[derive(Debug)]
 pub(crate) struct FetchTermDownloadOnceAndWriteEverywhereUsed {
-    pub download: FetchTermDownload,
+    pub download: FetchTermDownloadInner,
     // pub write_offset: u64, // start position of the writer to write to
     pub output: SeekingOutputProvider,
     pub writes: Vec<ChunkRangeWrite>,
@@ -376,19 +387,23 @@ impl DownloadSegmentLengthTuner {
     }
 
     pub fn from_configurable_constants() -> Arc<Self> {
-        if *NUM_RANGE_IN_SEGMENT_BASE == 0 {
+        if xet_config().client.num_range_in_segment_base == 0 {
             warn!(
                 "NUM_RANGE_IN_SEGMENT_BASE is set to 0, which means no segments will be downloaded.
                    This is likely a misconfiguration. Please check your environment variables."
             );
         }
-        let max_num_segments = if *NUM_RANGE_IN_SEGMENT_MAX == 0 {
+        let max_num_segments = if xet_config().client.num_range_in_segment_max == 0 {
             usize::MAX
         } else {
-            *NUM_RANGE_IN_SEGMENT_MAX
+            xet_config().client.num_range_in_segment_max
         };
 
-        Self::new(*NUM_RANGE_IN_SEGMENT_BASE, max_num_segments, *NUM_RANGE_IN_SEGMENT_DELTA)
+        Self::new(
+            xet_config().client.num_range_in_segment_base,
+            max_num_segments,
+            xet_config().client.num_range_in_segment_delta,
+        )
     }
 
     pub fn next_segment_size(&self) -> Result<u64> {
@@ -403,7 +418,7 @@ impl DownloadSegmentLengthTuner {
 
         if metrics.n_retries_on_403 > 0 {
             if *num_range_in_segment > 1 {
-                let delta = NUM_RANGE_IN_SEGMENT_DELTA.min(*num_range_in_segment - 1);
+                let delta = xet_config().client.num_range_in_segment_delta.min(*num_range_in_segment - 1);
                 info!("detected retries on 403, shrinking segment size by {delta} ranges");
                 *num_range_in_segment -= delta;
             } else {
@@ -413,7 +428,10 @@ impl DownloadSegmentLengthTuner {
             }
         } else if *num_range_in_segment != self.max_segments {
             // TODO: check download speed and consider if we should increase or decrease
-            let delta = NUM_RANGE_IN_SEGMENT_DELTA.min(self.max_segments - *num_range_in_segment);
+            let delta = xet_config()
+                .client
+                .num_range_in_segment_delta
+                .min(self.max_segments - *num_range_in_segment);
             debug!("expanding segment size by {delta} approx ranges");
             *num_range_in_segment += delta;
         }
@@ -621,7 +639,7 @@ mod tests {
         let server = MockServer::start();
         server.mock(|when, then| {
             when.method(GET)
-                .path(format!("/reconstructions/{}", MerkleHash::default()))
+                .path(format!("/v1/reconstructions/{}", MerkleHash::default()))
                 .header(RANGE.as_str(), HttpRange::from(file_range).range_header());
             let response = QueryReconstructionResponse {
                 offset_into_first_range: 0,
@@ -668,7 +686,7 @@ mod tests {
         let server = MockServer::start();
         let mock = server.mock(|when, then| {
             when.method(GET)
-                .path(format!("/reconstructions/{}", MerkleHash::default()))
+                .path(format!("/v1/reconstructions/{}", MerkleHash::default()))
                 .header(RANGE.as_str(), HttpRange::from(file_range_to_refresh).range_header());
             let response = QueryReconstructionResponse {
                 offset_into_first_range: 0,
@@ -725,7 +743,7 @@ mod tests {
         // Arrange server
         let mock_fi = server.mock(|when, then| {
             when.method(GET)
-                .path(format!("/reconstructions/{}", MerkleHash::default()))
+                .path(format!("/v1/reconstructions/{}", MerkleHash::default()))
                 .header(RANGE.as_str(), HttpRange::from(file_range).range_header());
             let response = QueryReconstructionResponse {
                 offset_into_first_range: 0,
@@ -757,14 +775,14 @@ mod tests {
         let (offset_info_first_range, terms) = fetch_info.query().await?.unwrap();
 
         let download_task = SequentialTermDownload {
-            download: FetchTermDownload {
+            download: Arc::new(FetchTermDownload::new(FetchTermDownloadInner {
                 hash: xorb1.into(),
                 range: x1range[0].range,
                 fetch_info: Arc::new(fetch_info),
                 chunk_cache: None,
                 client: Arc::new(build_http_client(RetryConfig::default(), "", "")?),
                 range_download_single_flight: Arc::new(Group::new()),
-            },
+            })),
             term: terms[0].clone(),
             skip_bytes: offset_info_first_range,
             take: file_range.length(),

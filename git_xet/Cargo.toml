@@ -1,6 +1,6 @@
 [package]
 name = "git_xet"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 
 [[bin]]
@@ -21,17 +21,20 @@ clap = { workspace = true }
 derivative = { workspace = true }
 git-url-parse = { workspace = true }
 git2 = { workspace = true }
+rand_core = { workspace = true }
 reqwest = { workspace = true }
 reqwest-middleware = { workspace = true }
+russh = { workspace = true }
 rust-netrc = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+shell-words = { workspace = true }
 tempfile = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 
-[target.'cfg(unix)'.dependencies]
-openssh = { workspace = true }
-
 [dev-dependencies]
 serial_test = { workspace = true }
+
+[features]
+git-xet-for-integration-test = []

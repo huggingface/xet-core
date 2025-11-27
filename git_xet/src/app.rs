@@ -38,6 +38,15 @@ Remove "lfs.concurrenttransfers" from the global Git config."#)]
     /// Run this program as a LFS custom transfer agent. This is not meant
     /// to be used directly by users, but instead to be invoked by git-lfs.
     Transfer,
+
+    /// Start tracking the given patterns(s) through Git LFS. This directly
+    /// calls the "git lfs track" command with the following options and args.
+    Track(TrackArg),
+
+    /// Run any arguments passed in as a command. This is a feature only for
+    /// integration tests.
+    #[cfg(feature = "git-xet-for-integration-test")]
+    RunAny(RunAnyArg),
 }
 
 #[derive(Args, Debug)]
@@ -84,6 +93,21 @@ struct UninstallArg {
 }
 
 #[derive(Args, Debug)]
+struct TrackArg {
+    // The below arg attributes instruct git-xet to bypass parsing any options (arg with prefix "-") and
+    // passing them directly to "git lfs track".
+    #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+    args_to_git_lfs_track: Vec<String>,
+}
+
+#[derive(Args, Debug)]
+#[cfg(feature = "git-xet-for-integration-test")]
+struct RunAnyArg {
+    program: String,
+    args: Option<Vec<String>>,
+}
+
+#[derive(Args, Debug)]
 struct CliOverrides {
     /// Increase verbosity of output (-v, -vv, etc.)
     #[clap(long, short = 'v', action = ArgAction::Count)]
@@ -127,6 +151,9 @@ impl Command {
             Command::Install(args) => install_command(args),
             Command::Uninstall(args) => uninstall_command(args),
             Command::Transfer => transfer_command().await,
+            Command::Track(args) => track_command(args),
+            #[cfg(feature = "git-xet-for-integration-test")]
+            Command::RunAny(args) => run_any_command(args),
         }
     }
 
@@ -135,6 +162,9 @@ impl Command {
             Command::Install(_) => "install",
             Command::Uninstall(_) => "uninstall",
             Command::Transfer => "transfer",
+            Command::Track(_) => "track",
+            #[cfg(feature = "git-xet-for-integration-test")]
+            Command::RunAny(_) => "runany",
         }
     }
 }
@@ -197,5 +227,23 @@ async fn transfer_command() -> Result<()> {
 
     lfs_protocol_loop(input.lock(), output, &mut agent).await?;
 
+    Ok(())
+}
+
+fn track_command(args: TrackArg) -> Result<()> {
+    let mut cmd = std::process::Command::new("git-lfs");
+    cmd.arg("track");
+    cmd.args(args.args_to_git_lfs_track);
+    cmd.status()?;
+    Ok(())
+}
+
+#[cfg(feature = "git-xet-for-integration-test")]
+fn run_any_command(args: RunAnyArg) -> Result<()> {
+    let mut cmd = std::process::Command::new(args.program);
+    if let Some(args) = args.args {
+        cmd.args(args);
+    }
+    let _ = cmd.status()?;
     Ok(())
 }

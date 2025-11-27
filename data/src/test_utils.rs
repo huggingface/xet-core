@@ -157,7 +157,7 @@ impl LocalHydrateDehydrateTest {
         &self,
         progress_tracker: Option<Arc<dyn TrackingProgressUpdater>>,
     ) -> Arc<FileUploadSession> {
-        let config = TranslatorConfig::local_config(&self.cas_dir).unwrap();
+        let config = Arc::new(TranslatorConfig::local_config(&self.cas_dir).unwrap());
         FileUploadSession::new(config.clone(), progress_tracker).await.unwrap()
     }
 
@@ -171,7 +171,7 @@ impl LocalHydrateDehydrateTest {
                 let upload_session = upload_session.clone();
 
                 if sequential {
-                    let (pf, metrics) = clean_file(upload_session.clone(), entry.path()).await.unwrap();
+                    let (pf, metrics) = clean_file(upload_session.clone(), entry.path(), "").await.unwrap();
                     assert_eq!({ metrics.total_bytes }, entry.metadata().unwrap().len());
                     std::fs::write(out_file, pf.as_pointer_file().unwrap().as_bytes()).unwrap();
 
@@ -185,7 +185,10 @@ impl LocalHydrateDehydrateTest {
                 .map(|entry| self.src_dir.join(entry.unwrap().file_name()))
                 .collect();
 
-            let clean_results = upload_session.upload_files(&files).await.unwrap();
+            let clean_results = upload_session
+                .upload_files(files.iter().zip(std::iter::repeat(None)))
+                .await
+                .unwrap();
 
             for (i, xf) in clean_results.into_iter().enumerate() {
                 std::fs::write(self.ptr_dir.join(files[i].file_name().unwrap()), serde_json::to_string(&xf).unwrap())
@@ -206,7 +209,7 @@ impl LocalHydrateDehydrateTest {
 
         create_dir_all(&self.dest_dir).unwrap();
 
-        let downloader = FileDownloader::new(config).await.unwrap();
+        let downloader = FileDownloader::new(config.into()).await.unwrap();
 
         for entry in read_dir(&self.ptr_dir).unwrap() {
             let entry = entry.unwrap();

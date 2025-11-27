@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use crate::app::Command::Transfer;
 use crate::constants::{GIT_LFS_CUSTOM_TRANSFER_AGENT_NAME, GIT_LFS_CUSTOM_TRANSFER_AGENT_PROGRAM};
 use crate::errors::{GitXetError, Result};
-use crate::git_process_wrapping::run_git_captured;
+use crate::utils::process_wrapping::run_git_captured;
 
 #[derive(Default)]
 pub(crate) enum ConfigLocation {
@@ -102,9 +102,9 @@ pub mod tests {
     use serial_test::serial;
 
     use super::{global, local};
-    use crate::git_process_wrapping::run_git_captured_with_input_and_output;
     use crate::git_repo::GitRepo;
     use crate::test_utils::TestRepo;
+    use crate::utils::process_wrapping::run_git_captured_with_input_and_output;
 
     pub fn get_lfs_env(env_list: &[u8], key: &str) -> Result<Option<String>> {
         let reader = BufReader::new(Cursor::new(env_list));

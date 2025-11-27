@@ -3,32 +3,36 @@ use std::time::Duration;
 // Run tests that determine deduplication, especially across different test subjects.
 use data::FileUploadSession;
 use data::configurations::TranslatorConfig;
-use data::constants::{PROGRESS_UPDATE_INTERVAL, SESSION_XORB_METADATA_FLUSH_MAX_COUNT};
 use deduplication::constants::{MAX_XORB_BYTES, MAX_XORB_CHUNKS, TARGET_CHUNK_SIZE};
-use mdb_shard::MDB_SHARD_TARGET_SIZE;
 use tempfile::TempDir;
-use utils::test_set_globals;
+use utils::{test_set_config, test_set_constants};
 
 // Runs this test suite with small chunks and xorbs so that we can make sure that all the different edge
 // cases are hit.
-test_set_globals! {
+test_set_constants! {
     TARGET_CHUNK_SIZE = 1024;
     MAX_XORB_CHUNKS = 2;
+}
 
-    // Disable the periodic aggregation in the file upload sessions.
-    PROGRESS_UPDATE_INTERVAL = Duration::ZERO;
+test_set_config! {
+    data {
+        // Disable the periodic aggregation in the file upload sessions.
+        progress_update_interval = Duration::ZERO;
 
-    // Set the maximum xorb flush count to 1 so that every xorb gets flushed to the temporary session
-    // pool.
-    SESSION_XORB_METADATA_FLUSH_MAX_COUNT = 1;
-
-    // Set the target shard size to be really small so we test the multiple shards on resume path as well.
-    MDB_SHARD_TARGET_SIZE = 1024;
+        // Set the maximum xorb flush count to 1 so that every xorb gets flushed to the temporary session
+        // pool.
+        session_xorb_metadata_flush_max_count = 1;
+    }
+    mdb_shard {
+        target_size = 1024u64;
+    }
 }
 
 // Test the deduplication framework.
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use data::test_utils::{LocalHydrateDehydrateTest, create_random_file, create_random_files};
     use deduplication::constants::MAX_CHUNK_SIZE;
     use more_asserts::*;
@@ -53,7 +57,7 @@ mod tests {
         // Set a temporary directory for the endpoint.
         let cas_dir = TempDir::new().unwrap();
 
-        let config = TranslatorConfig::local_config(cas_dir).unwrap();
+        let config = Arc::new(TranslatorConfig::local_config(cas_dir).unwrap());
 
         {
             let progress_tracker = AggregatingProgressUpdater::new_aggregation_only();
@@ -62,7 +66,9 @@ mod tests {
                 .unwrap();
 
             // Feed it half the data, and checkpoint.
-            let mut cleaner = file_upload_session.start_clean(Some("data".into()), data.len() as u64).await;
+            let mut cleaner = file_upload_session
+                .start_clean(Some("data".into()), data.len() as u64, None)
+                .await;
             cleaner.add_data(&data[..half_n]).await.unwrap();
             cleaner.checkpoint().await.unwrap();
 
@@ -78,7 +84,9 @@ mod tests {
             let file_upload_session = FileUploadSession::new(config, Some(progress_tracker.clone())).await.unwrap();
 
             // Feed it half the data, and checkpoint.
-            let mut cleaner = file_upload_session.start_clean(Some("data".into()), data.len() as u64).await;
+            let mut cleaner = file_upload_session
+                .start_clean(Some("data".into()), data.len() as u64, None)
+                .await;
 
             // Add all the data.  Roughly the first half should dedup.
             cleaner.add_data(&data).await.unwrap();
@@ -121,7 +129,7 @@ mod tests {
         // Set a temporary directory for the endpoint.
         let cas_dir = TempDir::new().unwrap();
 
-        let config = TranslatorConfig::local_config(cas_dir).unwrap();
+        let config = Arc::new(TranslatorConfig::local_config(cas_dir).unwrap());
 
         let mut prev_rn = 0;
 
@@ -132,7 +140,9 @@ mod tests {
                 .unwrap();
 
             // Feed it half the data, and checkpoint.
-            let mut cleaner = file_upload_session.start_clean(Some("data".into()), data.len() as u64).await;
+            let mut cleaner = file_upload_session
+                .start_clean(Some("data".into()), data.len() as u64, None)
+                .await;
             cleaner.add_data(&data[..rn]).await.unwrap();
             cleaner.checkpoint().await.unwrap();
 
@@ -162,7 +172,9 @@ mod tests {
             let file_upload_session = FileUploadSession::new(config, Some(progress_tracker.clone())).await.unwrap();
 
             // Feed it half the data, and checkpoint.
-            let mut cleaner = file_upload_session.start_clean(Some("data".into()), data.len() as u64).await;
+            let mut cleaner = file_upload_session
+                .start_clean(Some("data".into()), data.len() as u64, None)
+                .await;
 
             // Add all the data.  Roughly the first half should dedup.
             cleaner.add_data(&data).await.unwrap();

@@ -13,8 +13,8 @@ mod git;
 mod ssh;
 
 use git::GitCredentialHelper;
-#[cfg(unix)]
 use ssh::SSHCredentialHelper;
+pub use ssh::{GitLFSAuthentationResponseHeader, GitLFSAuthenticateResponse};
 
 // This mod derives credentials for the Xet CAS token API on HF Hub from the local repository's credentials.
 // Unlike the authorization model in huggingface_hub which adheres to using a HF token, Git and Git LFS have
@@ -126,14 +126,7 @@ pub fn get_credential(repo: &GitRepo, remote_url: &GitUrl, operation: Operation)
 
     // 5. check remote URL scheme
     if matches!(remote_url.scheme(), Scheme::Ssh | Scheme::GitSsh) {
-        #[cfg(unix)]
-        return Ok(SSHCredentialHelper::new(remote_url, operation));
-        #[cfg(not(unix))]
-        return Err(GitXetError::not_supported(format!(
-            "using {} in a repository with SSH Git URL is under development; please check back for 
-            upgrades or contact Xet Team at Hugging Face.",
-            crate::constants::GIT_LFS_CUSTOM_TRANSFER_AGENT_PROGRAM
-        )));
+        return Ok(SSHCredentialHelper::new(remote_url, repo, operation));
     }
 
     // 6. check Git credential helper
@@ -186,9 +179,9 @@ mod test_cred_helpers {
 
     use super::get_credential;
     use crate::constants::HF_TOKEN_ENV;
-    use crate::git_process_wrapping::run_git_captured_with_input_and_output;
     use crate::git_repo::GitRepo;
     use crate::test_utils::TestRepo;
+    use crate::utils::process_wrapping::run_git_captured_with_input_and_output;
 
     #[test]
     #[serial(env_var_write_read)]
@@ -258,17 +251,9 @@ mod test_cred_helpers {
         let remote_url = repo.remote_url()?;
         let operation = Operation::Upload;
 
-        #[cfg(unix)]
-        {
-            let cred_helper = get_credential(&repo, &remote_url, operation)?;
-            assert_eq!(cred_helper.whoami(), "ssh");
-        }
+        let cred_helper = get_credential(&repo, &remote_url, operation)?;
+        assert_eq!(cred_helper.whoami(), "ssh");
 
-        #[cfg(windows)]
-        {
-            let cred_helper = get_credential(&repo, &remote_url, operation);
-            assert!(matches!(cred_helper, Err(crate::errors::GitXetError::NotSupported(_))));
-        }
         Ok(())
     }
 

@@ -1,11 +1,11 @@
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
-use std::sync::Arc;
 
+use cas_client::CacheConfig;
 use cas_client::remote_client::PREFIX_DEFAULT;
-use cas_client::{CHUNK_CACHE_SIZE_BYTES, CacheConfig};
 use cas_object::CompressionScheme;
 use utils::auth::AuthConfig;
+use xet_runtime::xet_config;
 
 use crate::errors::Result;
 
@@ -84,7 +84,7 @@ pub struct TranslatorConfig {
 }
 
 impl TranslatorConfig {
-    pub fn local_config(base_dir: impl AsRef<Path>) -> Result<Arc<Self>> {
+    pub fn local_config(base_dir: impl AsRef<Path>) -> Result<Self> {
         let path = base_dir.as_ref().join("xet");
         std::fs::create_dir_all(&path)?;
 
@@ -96,7 +96,7 @@ impl TranslatorConfig {
                 prefix: PREFIX_DEFAULT.into(),
                 cache_config: CacheConfig {
                     cache_directory: path.join("cache"),
-                    cache_size: *CHUNK_CACHE_SIZE_BYTES,
+                    cache_size: xet_config().chunk_cache.size_bytes,
                 },
                 staging_directory: None,
                 user_agent: String::new(),
@@ -114,25 +114,12 @@ impl TranslatorConfig {
             progress_config: ProgressConfig { aggregate: true },
         };
 
-        Ok(Arc::new(translator_config))
+        Ok(translator_config)
     }
 
     pub fn disable_progress_aggregation(self) -> Self {
         Self {
             progress_config: ProgressConfig { aggregate: false },
-            ..self
-        }
-    }
-
-    pub fn with_cache_size(self, cache_size: u64) -> Self {
-        Self {
-            data_config: DataConfig {
-                cache_config: CacheConfig {
-                    cache_size,
-                    ..self.data_config.cache_config
-                },
-                ..self.data_config
-            },
             ..self
         }
     }

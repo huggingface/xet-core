@@ -16,8 +16,8 @@ use reqwest_retry::{
 use tokio::sync::Mutex;
 use tracing::{Instrument, info, info_span, warn};
 use utils::auth::{AuthConfig, TokenProvider};
+use xet_runtime::xet_config;
 
-use crate::constants::{CLIENT_IDLE_CONNECTION_TIMEOUT, CLIENT_MAX_IDLE_CONNECTIONS};
 use crate::retry_wrapper::on_request_failure;
 use crate::{CasClientError, error};
 
@@ -107,8 +107,8 @@ fn reqwest_client(user_agent: &str) -> Result<reqwest::Client, CasClientError> {
 
         let client = XetRuntime::get_or_create_reqwest_client(|| {
             let mut builder = reqwest::Client::builder()
-                .pool_idle_timeout(*CLIENT_IDLE_CONNECTION_TIMEOUT)
-                .pool_max_idle_per_host(*CLIENT_MAX_IDLE_CONNECTIONS)
+                .pool_idle_timeout(xet_config().client.idle_connection_timeout)
+                .pool_max_idle_per_host(xet_config().client.max_idle_connections)
                 .http1_only(); // high throughput parallel I/O has been shown to bottleneck with http2
 
             if !user_agent.is_empty() {
@@ -119,8 +119,8 @@ fn reqwest_client(user_agent: &str) -> Result<reqwest::Client, CasClientError> {
         })?;
 
         info!(
-            idle_timeout=?*CLIENT_IDLE_CONNECTION_TIMEOUT,
-            max_idle_connections=*CLIENT_MAX_IDLE_CONNECTIONS,
+            idle_timeout=?xet_config().client.idle_connection_timeout,
+            max_idle_connections=xet_config().client.max_idle_connections,
             user_agent=?if user_agent.is_empty() { None } else { Some(user_agent) },
             "HTTP client configured"
         );

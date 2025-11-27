@@ -1,105 +1,106 @@
-#!/bin/bash
+#!/bin/sh
 
 # This script detects the OS and architecture to download the correct binary,
 # unzips it, and moves it to the user's local bin directory.
 
 # --- Configuration ---
-URL_LINUX_AMD64="https://github.com/huggingface/xet-core/releases/download/git-xet-v0.1.0/git-xet-linux-x86_64.zip"
-URL_LINUX_ARM64="https://github.com/huggingface/xet-core/releases/download/git-xet-v0.1.0/git-xet-linux-aarch64.zip"
-URL_MACOS_AMD64="https://github.com/huggingface/xet-core/releases/download/git-xet-v0.1.0/git-xet-macos-x86_64.zip"
-URL_MACOS_ARM64="https://github.com/huggingface/xet-core/releases/download/git-xet-v0.1.0/git-xet-macos-aarch64.zip"
+URL_LINUX_AMD64="https://github.com/huggingface/xet-core/releases/download/git-xet-v0.2.0/git-xet-linux-x86_64.zip"
+URL_LINUX_ARM64="https://github.com/huggingface/xet-core/releases/download/git-xet-v0.2.0/git-xet-linux-aarch64.zip"
+URL_MACOS_AMD64="https://github.com/huggingface/xet-core/releases/download/git-xet-v0.2.0/git-xet-macos-x86_64.zip"
+URL_MACOS_ARM64="https://github.com/huggingface/xet-core/releases/download/git-xet-v0.2.0/git-xet-macos-aarch64.zip"
 
-# The name of the binary inside the zip file.
 BINARY_NAME="git-xet"
-
-# The destination for the binary.
 INSTALL_DIR="/usr/local/bin"
 
-# --- Main Script ---
+# --- Functions ---
 
-# Function to handle errors and exit
 handle_error() {
     echo "Error: $1" >&2
     exit 1
 }
 
-# Get OS and architecture
+# Cleanup function for temp dir
+cleanup() {
+    echo "Cleaning up..."
+    rm -rf "$TMP_DIR"
+}
+trap cleanup EXIT
+
+# --- Check required commands ---
+for cmd in uname curl unzip; do
+    if ! command -v "$cmd" >/dev/null 2>&1; then
+        handle_error "Required command '$cmd' is not installed. Please install it and rerun this script."
+    fi
+done
+
+# Detect OS and architecture
 OS="$(uname -s)"
 ARCH="$(uname -m)"
 
-echo "Detected OS: ${OS}"
-echo "Detected Architecture: ${ARCH}"
+echo "Detected OS: $OS"
+echo "Detected Architecture: $ARCH"
 
-# Determine which URL to use
 DOWNLOAD_URL=""
-case "${OS}" in
+
+# Select download URL
+case "$OS" in
     Linux)
-        case "${ARCH}" in
-            x86_64)
-                DOWNLOAD_URL="${URL_LINUX_AMD64}"
-                ;;
-            aarch64 | arm64)
-                DOWNLOAD_URL="${URL_LINUX_ARM64}"
-                ;;
+        case "$ARCH" in
+            x86_64) DOWNLOAD_URL="$URL_LINUX_AMD64" ;;
+            aarch64|arm64) DOWNLOAD_URL="$URL_LINUX_ARM64" ;;
         esac
         ;;
-    Darwin) # macOS
-        case "${ARCH}" in
-            x86_64)
-                DOWNLOAD_URL="${URL_MACOS_AMD64}"
-                ;;
-            arm64)
-                DOWNLOAD_URL="${URL_MACOS_ARM64}"
-                ;;
+    Darwin)
+        case "$ARCH" in
+            x86_64) DOWNLOAD_URL="$URL_MACOS_AMD64" ;;
+            arm64) DOWNLOAD_URL="$URL_MACOS_ARM64" ;;
         esac
         ;;
 esac
 
-# Check if a download URL was found
-if [ -z "${DOWNLOAD_URL}" ]; then
-    handle_error "Unsupported OS/Architecture combination: ${OS}/${ARCH}"
+if [ -z "$DOWNLOAD_URL" ]; then
+    handle_error "Unsupported OS/Architecture combination: $OS/$ARCH"
 fi
 
-# Create a temporary directory for the download and extraction
-TMP_DIR=$(mktemp -d)
+# Make temporary directory
+TMP_DIR="$(mktemp -d)"
+[ -z "$TMP_DIR" ] && handle_error "Failed to create temporary directory."
 
-# Function to clean up the temporary directory on exit
-cleanup() {
-    echo "Cleaning up..."
-    rm -rf "${TMP_DIR}"
-}
-trap cleanup EXIT
+cd "$TMP_DIR" || handle_error "Could not cd into temp directory."
 
-# Change to the temporary directory
-cd "${TMP_DIR}" || handle_error "Could not change to temporary directory."
+echo "Downloading from: $DOWNLOAD_URL..."
+if ! curl -sSL -o binary.zip "$DOWNLOAD_URL"; then
+    handle_error "Download failed."
+fi
 
-# Download the file
-echo "Downloading from: ${DOWNLOAD_URL}..."
-curl -sSL -o binary.zip "${DOWNLOAD_URL}" || handle_error "Download failed."
-
-# Unzip the file
 echo "Unzipping..."
-unzip -q binary.zip || handle_error "Unzipping failed. Make sure 'unzip' is installed."
-
-# Check if the binary exists
-if [ ! -f "${BINARY_NAME}" ]; then
-    handle_error "Binary '${BINARY_NAME}' not found in the zip file."
+if ! unzip -q binary.zip; then
+    handle_error "Unzipping failed. Install 'unzip' and try again."
 fi
 
-# Make the binary executable
+if [ ! -f "$BINARY_NAME" ]; then
+    handle_error "Binary '$BINARY_NAME' not found in the archive."
+fi
+
 echo "Setting executable permissions..."
-chmod +x "${BINARY_NAME}"
+chmod +x "$BINARY_NAME"
 
-# Move the binary to the install directory
-echo "Installing binary to ${INSTALL_DIR}..."
-# Use sudo if the user doesn't have write permissions to the directory
-if [ -w "${INSTALL_DIR}" ]; then
-    mv "${BINARY_NAME}" "${INSTALL_DIR}/" || handle_error "Failed to move binary."
+echo "Installing to $INSTALL_DIR..."
+if [ -w "$INSTALL_DIR" ]; then
+    mv "$BINARY_NAME" "$INSTALL_DIR/" || handle_error "Failed to move binary."
 else
-    echo "This script requires sudo permissions to install to ${INSTALL_DIR}."
-    sudo mv "${BINARY_NAME}" "${INSTALL_DIR}/" || handle_error "Failed to move binary with sudo."
+    echo "Need sudo permissions to install to $INSTALL_DIR."
+    if ! sudo mv "$BINARY_NAME" "$INSTALL_DIR/"; then
+        handle_error "Failed to move binary with sudo."
+    fi
 fi
 
+# Post-install
 git-xet install --concurrency 3
+
+# Check git-lfs
+if ! command -v git-lfs >/dev/null 2>&1; then
+    echo "git-lfs is not installed. Please install it for git-xet to work. Install it from https://git-lfs.com/"
+fi
 
 echo "Installation complete!"

@@ -227,6 +227,7 @@ dependencies = [
  "cas_object",
  "cas_types",
  "chunk_cache",
+ "config",
  "deduplication",
  "derivative",
  "error_printer",
@@ -265,6 +266,7 @@ dependencies = [
  "blake3",
  "bytes",
  "clap",
+ "config",
  "countio",
  "csv",
  "deduplication",
@@ -282,6 +284,7 @@ dependencies = [
  "tokio-util",
  "tracing",
  "utils",
+ "xet_runtime",
 ]
 
 [[package]]
@@ -338,6 +341,7 @@ dependencies = [
  "async-trait",
  "base64",
  "cas_types",
+ "config",
  "crc32fast",
  "error_printer",
  "file_utils",
@@ -349,6 +353,7 @@ dependencies = [
  "tokio",
  "tracing",
  "utils",
+ "xet_runtime",
 ]
 
 [[package]]
@@ -414,6 +419,19 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4ca0197aee26d1ae37445ee532fefce43251d24cc7c166799f4d46817f1d3973"
 dependencies = [
  "crossbeam-utils",
+]
+
+[[package]]
+name = "config"
+version = "0.14.5"
+dependencies = [
+ "ctor",
+ "duration-str",
+ "lazy_static",
+ "merklehash",
+ "paste",
+ "tracing",
+ "utils",
 ]
 
 [[package]]
@@ -570,12 +588,15 @@ version = "0.14.5"
 dependencies = [
  "async-trait",
  "bytes",
+ "config",
  "gearhash",
+ "lazy_static",
  "mdb_shard",
  "merklehash",
  "more-asserts",
  "progress_tracking",
  "utils",
+ "xet_runtime",
 ]
 
 [[package]]
@@ -1444,6 +1465,7 @@ dependencies = [
  "blake3",
  "bytes",
  "clap",
+ "config",
  "futures",
  "futures-util",
  "heapify",
@@ -1461,6 +1483,7 @@ dependencies = [
  "tracing",
  "utils",
  "uuid",
+ "xet_runtime",
 ]
 
 [[package]]
@@ -1638,6 +1661,12 @@ dependencies = [
  "smallvec",
  "winapi",
 ]
+
+[[package]]
+name = "paste"
+version = "1.0.15"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "57c0d7b74b563b49d38dae00a0c37d4d6de9b432382b2892f0574ddcae73fd0a"
 
 [[package]]
 name = "percent-encoding"
@@ -3347,6 +3376,7 @@ checksum = "ea2f10b9bb0928dfb1b42b65e1f9e36f7f54dbdf08457afefb38afcdec4fa2bb"
 name = "xet_runtime"
 version = "0.1.0"
 dependencies = [
+ "config",
  "dirs 5.0.1",
  "error_printer",
  "libc",

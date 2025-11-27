@@ -20,3 +20,7 @@ mod cache_dir;
 
 #[cfg(not(target_family = "wasm"))]
 pub use cache_dir::xet_cache_root;
+
+mod config;
+
+pub use config::xet_config;
