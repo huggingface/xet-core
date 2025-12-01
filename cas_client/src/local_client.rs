@@ -341,7 +341,7 @@ impl Client for LocalClient {
         Ok(true)
     }
 
-    async fn upload_xorb_with_permit(
+    async fn upload_xorb(
         &self,
         _prefix: &str,
         serialized_cas_object: SerializedCasObject,
@@ -435,7 +435,8 @@ mod tests {
 
         // Act & Assert
         let client = LocalClient::temporary().unwrap();
-        assert!(client.upload_xorb("key", cas_object, None).await.is_ok());
+        let permit = client.acquire_upload_permit().await.unwrap();
+        assert!(client.upload_xorb("key", cas_object, None, permit).await.is_ok());
 
         let returned_data = client.get(&hash).unwrap();
         assert_eq!(data, returned_data);
@@ -451,7 +452,8 @@ mod tests {
 
         // Act & Assert
         let client = LocalClient::temporary().unwrap();
-        assert!(client.upload_xorb("", cas_object, None).await.is_ok());
+        let permit = client.acquire_upload_permit().await.unwrap();
+        assert!(client.upload_xorb("", cas_object, None, permit).await.is_ok());
 
         let returned_data = client.get(&hash).unwrap();
         assert_eq!(data, returned_data);
@@ -468,7 +470,8 @@ mod tests {
 
         // Act & Assert
         let client = LocalClient::temporary().unwrap();
-        assert!(client.upload_xorb("", cas_object, None).await.is_ok());
+        let permit = client.acquire_upload_permit().await.unwrap();
+        assert!(client.upload_xorb("", cas_object, None, permit).await.is_ok());
 
         let ranges: Vec<(u32, u32)> = vec![(0, 1), (2, 3)];
         let returned_ranges = client.get_object_range(&hash, ranges).unwrap();
@@ -495,7 +498,8 @@ mod tests {
 
         // Act
         let client = LocalClient::temporary().unwrap();
-        assert!(client.upload_xorb("", cas_object, None).await.is_ok());
+        let permit = client.acquire_upload_permit().await.unwrap();
+        assert!(client.upload_xorb("", cas_object, None, permit).await.is_ok());
         let len = client.get_length(&hash).unwrap();
 
         // Assert
@@ -529,7 +533,8 @@ mod tests {
 
         // write "hello world"
         let client = LocalClient::temporary().unwrap();
-        client.upload_xorb("default", cas_object, None).await.unwrap();
+        let permit = client.acquire_upload_permit().await.unwrap();
+        client.upload_xorb("default", cas_object, None, permit).await.unwrap();
 
         let cas_object = serialized_cas_object_from_components(
             &hello_hash,
@@ -540,7 +545,8 @@ mod tests {
         .unwrap();
 
         // put the same value a second time. This should be ok.
-        client.upload_xorb("default", cas_object, None).await.unwrap();
+        let permit2 = client.acquire_upload_permit().await.unwrap();
+        client.upload_xorb("default", cas_object, None, permit2).await.unwrap();
 
         // we can list all entries
         let r = client.get_all_entries().unwrap();
@@ -590,6 +596,7 @@ mod tests {
 
         // insert should succeed
         let client = LocalClient::temporary().unwrap();
+        let permit = client.acquire_upload_permit().await.unwrap();
         client
             .upload_xorb(
                 "key",
@@ -601,6 +608,7 @@ mod tests {
                 )
                 .unwrap(),
                 None,
+                permit,
             )
             .await
             .unwrap();
@@ -625,8 +633,9 @@ mod tests {
 
         let client = LocalClient::temporary().unwrap();
 
+        let permit = client.acquire_upload_permit().await.unwrap();
         client
-            .upload_shard(std::fs::read(&new_shard_path).unwrap().into())
+            .upload_shard_with_permit(std::fs::read(&new_shard_path).unwrap().into(), permit)
             .await
             .unwrap();
 

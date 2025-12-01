@@ -768,50 +768,11 @@ impl Client for RemoteClient {
         }
     }
 
-    #[instrument(skip_all, name = "RemoteClient::upload_shard", fields(shard.len = shard_data.len()))]
-    async fn upload_shard(&self, shard_data: Bytes) -> Result<bool> {
-        if self.dry_run {
-            return Ok(true);
-        }
-
-        let size = shard_data.len();
-        let call_id = FN_CALL_ID.fetch_add(1, Ordering::Relaxed);
-        info!(call_id, size, "Starting upload_shard API");
-
-        let api_tag = "cas::upload_shard";
-        let client = self.authenticated_http_client.clone();
-
-        let url = Url::parse(&format!("{}/v1/shards", self.endpoint))?;
-
-        let response: UploadShardResponse = RetryWrapper::new(api_tag)
-            .run_and_extract_json(move |_partial_report_fn| {
-                client
-                    .post(url.clone())
-                    .with_extension(Api(api_tag))
-                    .body(shard_data.clone())
-                    .send()
-            })
-            .await?;
-
-        let result = match response.result {
-            UploadShardResponseType::Exists => {
-                info!(call_id, size, result = "exists", "Completed upload_shard API call");
-                false
-            },
-            UploadShardResponseType::SyncPerformed => {
-                info!(call_id, size, result = "sync_performed", "Completed upload_shard API call",);
-                true
-            },
-        };
-
-        Ok(result)
-    }
-
     #[cfg(not(target_family = "wasm"))]
     #[instrument(skip_all, name = "RemoteClient::upload_xorb", fields(key = Key{prefix : prefix.to_string(), hash : serialized_cas_object.hash}.to_string(),
                  xorb.len = serialized_cas_object.serialized_data.len(), xorb.num_chunks = serialized_cas_object.num_chunks
     ))]
-    async fn upload_xorb_with_permit(
+    async fn upload_xorb(
         &self,
         prefix: &str,
         serialized_cas_object: SerializedCasObject,
@@ -919,7 +880,7 @@ impl Client for RemoteClient {
     }
 
     #[cfg(target_family = "wasm")]
-    async fn upload_xorb_with_permit(
+    async fn upload_xorb(
         &self,
         prefix: &str,
         serialized_cas_object: SerializedCasObject,
@@ -987,7 +948,10 @@ mod tests {
 
         // Act
         let result = threadpool
-            .external_run_async_task(async move { client.upload_xorb(prefix, cas_object, None).await })
+            .external_run_async_task(async move {
+                let permit = client.acquire_upload_permit().await.unwrap();
+                client.upload_xorb(prefix, cas_object, None, permit).await
+            })
             .unwrap();
 
         // Assert

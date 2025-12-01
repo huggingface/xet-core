@@ -60,31 +60,13 @@ pub trait Client {
     -> Result<bool>;
 
     /// Upload a new xorb.
-    async fn upload_xorb_with_permit(
+    async fn upload_xorb(
         &self,
         prefix: &str,
         serialized_cas_object: SerializedCasObject,
         upload_tracker: Option<Arc<CompletionTracker>>,
         upload_permit: ConnectionPermit,
     ) -> Result<u64>;
-
-    /// Upload a new shard, acquiring the permit.
-    async fn upload_shard(&self, shard_data: bytes::Bytes) -> Result<bool> {
-        let permit = self.acquire_upload_permit().await?;
-        self.upload_shard_with_permit(shard_data, permit).await
-    }
-
-    /// Upload a new xorb, acquiring the permit.
-    async fn upload_xorb(
-        &self,
-        prefix: &str,
-        serialized_cas_object: SerializedCasObject,
-        upload_tracker: Option<Arc<CompletionTracker>>,
-    ) -> Result<u64> {
-        let permit = self.acquire_upload_permit().await?;
-        self.upload_xorb_with_permit(prefix, serialized_cas_object, upload_tracker, permit)
-            .await
-    }
 
     /// Indicates if the serialized cas object should have a written footer.
     /// This should only be true for testing with LocalClient.

@@ -361,7 +361,7 @@ impl FileUploadSession {
             async move {
                 let n_bytes_transmitted = session
                     .client
-                    .upload_xorb_with_permit(&cas_prefix, cas_object, Some(completion_tracker), upload_permit)
+                    .upload_xorb(&cas_prefix, cas_object, Some(completion_tracker), upload_permit)
                     .await?;
 
                 // Register that the xorb has been uploaded.
