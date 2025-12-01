@@ -1,0 +1,282 @@
+#!/bin/bash
+
+# Network simulation setup script
+# Provides realistic network congestion simulation using tc (traffic control)
+
+set -e
+
+# Default values
+LATENCY_MS=1
+BANDWIDTH_MBPS=100
+CONGESTION_MODE="none"
+INTERFACE="lo"
+
+# Function to show usage
+show_usage() {
+    cat << EOF
+Usage: setup_network [OPTIONS]
+
+Network simulation setup script using Linux tc (traffic control)
+
+OPTIONS:
+    --latency=MS           Network latency in milliseconds (default: 1)
+    --mbps=MBPS           Network bandwidth in Mbps (default: 100)
+    --congestion=MODE     Congestion simulation mode (default: none)
+    --interface=IFACE     Network interface to configure (default: lo)
+    --help               Show this help message
+
+CONGESTION MODES:
+    none                 No congestion simulation - just bandwidth limiting
+    light               Light congestion - 0.5% packet loss, minimal delay variation
+    moderate            Moderate congestion - 1% packet loss, 5ms delay variation
+    heavy               Heavy congestion - 2% packet loss, 10ms delay variation, 0.5% duplicates
+    bursty              Bursty congestion - variable loss (0-3%), high delay variation
+    realistic           Realistic congestion - combines multiple effects for real-world simulation
+
+EXAMPLES:
+    setup_network --latency=10 --mbps=1000 --congestion=none
+    setup_network --latency=50 --mbps=100 --congestion=moderate
+    setup_network --latency=100 --mbps=50 --congestion=heavy
+    setup_network --latency=20 --mbps=500 --congestion=realistic
+
+EOF
+}
+
+# Function to log with timestamp
+log() {
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1"
+}
+
+# Function to clear existing network simulation
+clear_network() {
+    log "Clearing existing network simulation on $INTERFACE"
+    local TC_CMD=$(find_tc_cmd)
+    if [ -n "$TC_CMD" ]; then
+        $TC_CMD qdisc del dev $INTERFACE root 2>/dev/null || true
+    fi
+}
+
+# Find tc command (may be in /sbin or /usr/sbin)
+# Use test -x instead of command -v since PATH may not include /sbin
+find_tc_cmd() {
+    for tc_path in /sbin/tc /usr/sbin/tc /usr/bin/tc tc; do
+        if [ -x "$tc_path" ] 2>/dev/null || command -v "$tc_path" >/dev/null 2>&1; then
+            echo "$tc_path"
+            return 0
+        fi
+    done
+    return 1
+}
+
+# Function to apply congestion based on mode
+apply_congestion() {
+    local mode=$1
+    local base_delay=$2
+    local TC_CMD=$(find_tc_cmd)
+    
+    if [ -z "$TC_CMD" ]; then
+        log "ERROR: tc command not found. Please install iproute2 package."
+        exit 1
+    fi
+    
+    case $mode in
+        "none")
+            log "No congestion simulation applied"
+            ;;
+        "light")
+            log "Applying light congestion simulation"
+            $TC_CMD qdisc add dev $INTERFACE parent 1:12 netem delay ${base_delay}ms 2ms loss 0.5%
+            ;;
+        "moderate")
+            log "Applying moderate congestion simulation"
+            $TC_CMD qdisc add dev $INTERFACE parent 1:12 netem delay ${base_delay}ms 5ms loss 1% duplicate 0.2%
+            ;;
+        "heavy")
+            log "Applying heavy congestion simulation"
+            $TC_CMD qdisc add dev $INTERFACE parent 1:12 netem delay ${base_delay}ms 10ms loss 2% duplicate 0.5% reorder 5% 25%
+            ;;
+        "bursty")
+            log "Applying bursty congestion simulation"
+            # Bursty: variable loss and high delay variation
+            $TC_CMD qdisc add dev $INTERFACE parent 1:12 netem delay ${base_delay}ms 20ms loss random 3% duplicate 1% reorder 10% 50%
+            ;;
+        "realistic")
+            log "Applying realistic congestion simulation"
+            # Realistic: combines multiple effects for real-world simulation
+            $TC_CMD qdisc add dev $INTERFACE parent 1:12 netem delay ${base_delay}ms 8ms loss random 1.5% duplicate 0.3% reorder 3% 30% corrupt 0.1%
+            ;;
+        *)
+            log "ERROR: Unknown congestion mode: $mode"
+            log "Valid modes: none, light, moderate, heavy, bursty, realistic"
+            exit 1
+            ;;
+    esac
+}
+
+# Function to setup network simulation
+setup_network() {
+    log "Setting up network simulation on $INTERFACE"
+    log "Configuration: ${LATENCY_MS}ms latency, ${BANDWIDTH_MBPS}Mbps bandwidth, $CONGESTION_MODE congestion"
+    
+    local TC_CMD=$(find_tc_cmd)
+    if [ -z "$TC_CMD" ]; then
+        log "ERROR: tc command not found. Please install iproute2 package."
+        exit 1
+    fi
+    
+    # Clear any existing rules
+    clear_network
+    
+    # Add HTB (Hierarchical Token Bucket) for bandwidth limiting
+    log "Configuring bandwidth limiting to ${BANDWIDTH_MBPS}Mbps"
+    $TC_CMD qdisc add dev $INTERFACE root handle 1: htb default 12
+    $TC_CMD class add dev $INTERFACE parent 1: classid 1:1 htb rate 1000mbit
+    # Convert Mbps to appropriate tc format (use kbit for values < 1 Mbps, mbit otherwise)
+    local tc_bandwidth
+    local is_less_than_one=$(echo "$BANDWIDTH_MBPS" | awk '{if ($1 < 1) print 1; else print 0}')
+    if [ "$is_less_than_one" = "1" ]; then
+        # For values < 1 Mbps, use kbit (multiply by 1000)
+        tc_bandwidth=$(echo "$BANDWIDTH_MBPS" | awk '{printf "%.0f", $1 * 1000}')kbit
+    else
+        # For values >= 1 Mbps, use mbit (can handle decimals)
+        tc_bandwidth=${BANDWIDTH_MBPS}mbit
+    fi
+    $TC_CMD class add dev $INTERFACE parent 1:1 classid 1:12 htb rate ${tc_bandwidth} ceil ${tc_bandwidth}
+    
+    # Apply congestion simulation
+    apply_congestion $CONGESTION_MODE $LATENCY_MS
+    
+    # Store network configuration for reporting
+    cat > /tmp/network_config << EOF
+NETWORK_CONFIG_LATENCY_MS=${LATENCY_MS}
+NETWORK_CONFIG_BANDWIDTH_MBPS=${BANDWIDTH_MBPS}
+NETWORK_CONFIG_CONGESTION_MODE=${CONGESTION_MODE}
+NETWORK_CONFIG_INTERFACE=${INTERFACE}
+EOF
+    
+    # Append network configuration to network_stats.json with timestamp
+    local timestamp_ms=$(date +%s%3N)
+    # Convert Mbps to bytes per second: Mbps * 1,000,000 / 8
+    # Use awk for floating point arithmetic
+    local bandwidth_bytes_per_sec=$(echo "$BANDWIDTH_MBPS" | awk '{printf "%.0f", $1 * 1000000 / 8}')
+    local stats_json="{\"timestamp\":\"${timestamp_ms}\",\"latency_ms\":${LATENCY_MS},\"bandwidth_bytes_per_sec\":${bandwidth_bytes_per_sec},\"congestion_mode\":\"${CONGESTION_MODE}\",\"interface\":\"${INTERFACE}\"}"
+    echo "${stats_json}" >> network_stats.json
+    
+    log "Network simulation configured successfully"
+    log "Current configuration:"
+    $TC_CMD qdisc show dev $INTERFACE
+    $TC_CMD class show dev $INTERFACE
+}
+
+# Function to show current network status
+show_network() {
+    local TC_CMD=$(find_tc_cmd)
+    if [ -z "$TC_CMD" ]; then
+        log "ERROR: tc command not found. Please install iproute2 package."
+        exit 1
+    fi
+    log "Current network configuration on $INTERFACE:"
+    $TC_CMD qdisc show dev $INTERFACE
+    $TC_CMD class show dev $INTERFACE
+    if [ -f /tmp/network_config ]; then
+        log "Stored configuration:"
+        cat /tmp/network_config
+    fi
+}
+
+# Parse command line arguments
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        --latency=*)
+            LATENCY_MS="${1#*=}"
+            shift
+            ;;
+        --mbps=*)
+            BANDWIDTH_MBPS="${1#*=}"
+            shift
+            ;;
+        --congestion=*)
+            CONGESTION_MODE="${1#*=}"
+            shift
+            ;;
+        --interface=*)
+            INTERFACE="${1#*=}"
+            shift
+            ;;
+        --help)
+            show_usage
+            exit 0
+            ;;
+        --show)
+            show_network
+            exit 0
+            ;;
+        --clear)
+            clear_network
+            exit 0
+            ;;
+        *)
+            log "ERROR: Unknown option: $1"
+            show_usage
+            exit 1
+            ;;
+    esac
+done
+
+# Validate parameters
+if ! [[ "$LATENCY_MS" =~ ^[0-9]+(\.[0-9]+)?$ ]]; then
+    log "ERROR: Invalid latency value: $LATENCY_MS (must be a number)"
+    exit 1
+fi
+
+if ! [[ "$BANDWIDTH_MBPS" =~ ^[0-9]+(\.[0-9]+)?$ ]]; then
+    log "ERROR: Invalid bandwidth value: $BANDWIDTH_MBPS (must be a number)"
+    exit 1
+fi
+
+# Find ip command (may be in /sbin or /usr/sbin)
+# Use test -x instead of command -v since PATH may not include /sbin
+IP_CMD=""
+for ip_path in /sbin/ip /usr/sbin/ip /usr/bin/ip ip; do
+    if [ -x "$ip_path" ] 2>/dev/null || command -v "$ip_path" >/dev/null 2>&1; then
+        IP_CMD="$ip_path"
+        break
+    fi
+done
+
+if [ -z "$IP_CMD" ]; then
+    log "ERROR: ip command not found. Please install iproute2 package."
+    log "Searched in: /sbin/ip /usr/sbin/ip /usr/bin/ip"
+    exit 1
+fi
+
+# Auto-detect interface if the default doesn't exist (e.g., in Docker containers)
+if ! $IP_CMD link show "$INTERFACE" >/dev/null 2>&1; then
+    log "Interface $INTERFACE does not exist, attempting to auto-detect default interface..."
+    # Try to find the default route interface
+    DEFAULT_INTERFACE=$($IP_CMD route 2>/dev/null | grep default | awk '{print $5}' | head -n1)
+    if [ -n "$DEFAULT_INTERFACE" ] && $IP_CMD link show "$DEFAULT_INTERFACE" >/dev/null 2>&1; then
+        log "Using auto-detected interface: $DEFAULT_INTERFACE"
+        INTERFACE="$DEFAULT_INTERFACE"
+    else
+        # Fallback: try common Docker interface names
+        for iface in eth0 eth1 docker0; do
+            if $IP_CMD link show "$iface" >/dev/null 2>&1; then
+                log "Using fallback interface: $iface"
+                INTERFACE="$iface"
+                break
+            fi
+        done
+    fi
+    
+    # Final check
+    if ! $IP_CMD link show "$INTERFACE" >/dev/null 2>&1; then
+        log "ERROR: Network interface $INTERFACE does not exist and no suitable interface could be found"
+        log "Available interfaces:"
+        $IP_CMD link show 2>/dev/null | grep -E "^[0-9]+:" | awk '{print $2}' | sed 's/:$//' || true
+        exit 1
+    fi
+fi
+
+# Setup the network simulation
+setup_network

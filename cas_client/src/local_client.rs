@@ -22,6 +22,7 @@ use tokio::io::AsyncWriteExt;
 use tokio::runtime::Handle;
 use tracing::{debug, error, info, warn};
 
+use crate::adaptive_concurrency::AdaptiveConcurrencyController;
 use crate::error::{CasClientError, Result};
 use crate::{Client, SeekingOutputProvider, SequentialOutput};
 
@@ -33,6 +34,7 @@ pub struct LocalClient {
     shard_manager: Arc<ShardFileManager>,
     global_dedup_db_env: heed::Env,
     global_dedup_table: heed::Database<OwnedType<MerkleHash>, OwnedType<MerkleHash>>,
+    upload_concurrency_controller: Arc<AdaptiveConcurrencyController>,
 }
 
 impl LocalClient {
@@ -92,6 +94,7 @@ impl LocalClient {
             shard_manager,
             global_dedup_db_env,
             global_dedup_table,
+            upload_concurrency_controller: AdaptiveConcurrencyController::new_upload("local_uploads"),
         })
     }
 
@@ -235,6 +238,10 @@ impl LocalClient {
 /// LocalClient is responsible for writing/reading Xorbs on the local disk.
 #[async_trait]
 impl Client for LocalClient {
+    async fn acquire_upload_permit(&self) -> Result<crate::adaptive_concurrency::ConnectionPermit> {
+        self.upload_concurrency_controller.acquire_connection_permit().await
+    }
+
     async fn get_file_with_sequential_writer(
         &self,
         hash: &MerkleHash,
@@ -305,7 +312,11 @@ impl Client for LocalClient {
         Ok(None)
     }
 
-    async fn upload_shard(&self, shard_data: Bytes) -> Result<bool> {
+    async fn upload_shard_with_permit(
+        &self,
+        shard_data: Bytes,
+        _permit: crate::adaptive_concurrency::ConnectionPermit,
+    ) -> Result<bool> {
         // Write out the shard to the shard directory.
         let shard = MDBShardFile::write_out_from_reader(&self.shard_dir, &mut Cursor::new(&shard_data))?;
         let shard_hash = shard.shard_hash;
@@ -330,11 +341,12 @@ impl Client for LocalClient {
         Ok(true)
     }
 
-    async fn upload_xorb(
+    async fn upload_xorb_with_permit(
         &self,
         _prefix: &str,
         serialized_cas_object: SerializedCasObject,
         upload_tracker: Option<Arc<CompletionTracker>>,
+        _permit: crate::adaptive_concurrency::ConnectionPermit,
     ) -> Result<u64> {
         // moved hash validation into [CasObject::serialize], so removed from here.
         let hash = &serialized_cas_object.hash;
