@@ -567,7 +567,7 @@ async fn download_fetch_term_data(
 
     let result = RetryWrapper::new(api_tag)
         .run_and_extract_custom(
-            move || {
+            move |_partial_report_fn| {
                 http_client
                     .get(url.clone())
                     .header(RANGE, fetch_term.url_range.range_header())

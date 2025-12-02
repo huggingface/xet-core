@@ -20,15 +20,6 @@ crate::config_group!({
     /// Use the environment variable `HF_XET_DATA_LOCAL_CAS_SCHEME` to set this value.
     ref local_cas_scheme: String = "local://".to_owned();
 
-    /// The maximum number of simultaneous xorb upload streams.
-    /// High performance mode (enabled via HF_XET_HIGH_PERFORMANCE or HF_XET_HP)
-    /// automatically sets this to 100 via XetConfig::with_high_performance().
-    ///
-    /// The default value is 8.
-    ///
-    /// Use the environment variable `HF_XET_DATA_MAX_CONCURRENT_UPLOADS` to set this value.
-    ref max_concurrent_uploads: usize = 8;
-
     /// The maximum number of files to ingest at once on the upload path.
     /// High performance mode (enabled via HF_XET_HIGH_PERFORMANCE or HF_XET_HP)
     /// automatically sets this to 100 via XetConfig::with_high_performance().
@@ -38,14 +29,14 @@ crate::config_group!({
     /// Use the environment variable `HF_XET_DATA_MAX_CONCURRENT_FILE_INGESTION` to set this value.
     ref max_concurrent_file_ingestion: usize = 8;
 
-    /// The maximum number of files to download at one time.
+    /// The maximum number of files to ingest at once on the download path.
     /// High performance mode (enabled via HF_XET_HIGH_PERFORMANCE or HF_XET_HP)
     /// automatically sets this to 100 via XetConfig::with_high_performance().
     ///
     /// The default value is 8.
     ///
-    /// Use the environment variable `HF_XET_DATA_MAX_CONCURRENT_DOWNLOADS` to set this value.
-    ref max_concurrent_downloads : usize = 8;
+    /// Use the environment variable `HF_XET_DATA_MAX_CONCURRENT_FILE_DOWNLOADS` to set this value.
+    ref max_concurrent_file_downloads: usize = 8;
 
     /// The maximum block size from a file to process at once.
     ///

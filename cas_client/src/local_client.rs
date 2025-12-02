@@ -22,6 +22,7 @@ use tokio::io::AsyncWriteExt;
 use tokio::runtime::Handle;
 use tracing::{debug, error, info, warn};
 
+use crate::adaptive_concurrency::AdaptiveConcurrencyController;
 use crate::error::{CasClientError, Result};
 use crate::{Client, SeekingOutputProvider, SequentialOutput};
 
@@ -33,6 +34,7 @@ pub struct LocalClient {
     shard_manager: Arc<ShardFileManager>,
     global_dedup_db_env: heed::Env,
     global_dedup_table: heed::Database<OwnedType<MerkleHash>, OwnedType<MerkleHash>>,
+    upload_concurrency_controller: Arc<AdaptiveConcurrencyController>,
 }
 
 impl LocalClient {
@@ -92,6 +94,7 @@ impl LocalClient {
             shard_manager,
             global_dedup_db_env,
             global_dedup_table,
+            upload_concurrency_controller: AdaptiveConcurrencyController::new_upload("local_uploads"),
         })
     }
 
@@ -235,6 +238,10 @@ impl LocalClient {
 /// LocalClient is responsible for writing/reading Xorbs on the local disk.
 #[async_trait]
 impl Client for LocalClient {
+    async fn acquire_upload_permit(&self) -> Result<crate::adaptive_concurrency::ConnectionPermit> {
+        self.upload_concurrency_controller.acquire_connection_permit().await
+    }
+
     async fn get_file_with_sequential_writer(
         &self,
         hash: &MerkleHash,
@@ -305,7 +312,11 @@ impl Client for LocalClient {
         Ok(None)
     }
 
-    async fn upload_shard(&self, shard_data: Bytes) -> Result<bool> {
+    async fn upload_shard_with_permit(
+        &self,
+        shard_data: Bytes,
+        _permit: crate::adaptive_concurrency::ConnectionPermit,
+    ) -> Result<bool> {
         // Write out the shard to the shard directory.
         let shard = MDBShardFile::write_out_from_reader(&self.shard_dir, &mut Cursor::new(&shard_data))?;
         let shard_hash = shard.shard_hash;
@@ -335,6 +346,7 @@ impl Client for LocalClient {
         _prefix: &str,
         serialized_cas_object: SerializedCasObject,
         upload_tracker: Option<Arc<CompletionTracker>>,
+        _permit: crate::adaptive_concurrency::ConnectionPermit,
     ) -> Result<u64> {
         // moved hash validation into [CasObject::serialize], so removed from here.
         let hash = &serialized_cas_object.hash;
@@ -423,7 +435,8 @@ mod tests {
 
         // Act & Assert
         let client = LocalClient::temporary().unwrap();
-        assert!(client.upload_xorb("key", cas_object, None).await.is_ok());
+        let permit = client.acquire_upload_permit().await.unwrap();
+        assert!(client.upload_xorb("key", cas_object, None, permit).await.is_ok());
 
         let returned_data = client.get(&hash).unwrap();
         assert_eq!(data, returned_data);
@@ -439,7 +452,8 @@ mod tests {
 
         // Act & Assert
         let client = LocalClient::temporary().unwrap();
-        assert!(client.upload_xorb("", cas_object, None).await.is_ok());
+        let permit = client.acquire_upload_permit().await.unwrap();
+        assert!(client.upload_xorb("", cas_object, None, permit).await.is_ok());
 
         let returned_data = client.get(&hash).unwrap();
         assert_eq!(data, returned_data);
@@ -456,7 +470,8 @@ mod tests {
 
         // Act & Assert
         let client = LocalClient::temporary().unwrap();
-        assert!(client.upload_xorb("", cas_object, None).await.is_ok());
+        let permit = client.acquire_upload_permit().await.unwrap();
+        assert!(client.upload_xorb("", cas_object, None, permit).await.is_ok());
 
         let ranges: Vec<(u32, u32)> = vec![(0, 1), (2, 3)];
         let returned_ranges = client.get_object_range(&hash, ranges).unwrap();
@@ -483,7 +498,8 @@ mod tests {
 
         // Act
         let client = LocalClient::temporary().unwrap();
-        assert!(client.upload_xorb("", cas_object, None).await.is_ok());
+        let permit = client.acquire_upload_permit().await.unwrap();
+        assert!(client.upload_xorb("", cas_object, None, permit).await.is_ok());
         let len = client.get_length(&hash).unwrap();
 
         // Assert
@@ -517,7 +533,8 @@ mod tests {
 
         // write "hello world"
         let client = LocalClient::temporary().unwrap();
-        client.upload_xorb("default", cas_object, None).await.unwrap();
+        let permit = client.acquire_upload_permit().await.unwrap();
+        client.upload_xorb("default", cas_object, None, permit).await.unwrap();
 
         let cas_object = serialized_cas_object_from_components(
             &hello_hash,
@@ -528,7 +545,8 @@ mod tests {
         .unwrap();
 
         // put the same value a second time. This should be ok.
-        client.upload_xorb("default", cas_object, None).await.unwrap();
+        let permit2 = client.acquire_upload_permit().await.unwrap();
+        client.upload_xorb("default", cas_object, None, permit2).await.unwrap();
 
         // we can list all entries
         let r = client.get_all_entries().unwrap();
@@ -578,6 +596,7 @@ mod tests {
 
         // insert should succeed
         let client = LocalClient::temporary().unwrap();
+        let permit = client.acquire_upload_permit().await.unwrap();
         client
             .upload_xorb(
                 "key",
@@ -589,6 +608,7 @@ mod tests {
                 )
                 .unwrap(),
                 None,
+                permit,
             )
             .await
             .unwrap();
@@ -613,8 +633,9 @@ mod tests {
 
         let client = LocalClient::temporary().unwrap();
 
+        let permit = client.acquire_upload_permit().await.unwrap();
         client
-            .upload_shard(std::fs::read(&new_shard_path).unwrap().into())
+            .upload_shard_with_permit(std::fs::read(&new_shard_path).unwrap().into(), permit)
             .await
             .unwrap();
 

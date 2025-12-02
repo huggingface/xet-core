@@ -21,7 +21,13 @@ lazy_static = { workspace = true }
 pin-project = { workspace = true }
 shellexpand = { workspace = true }
 thiserror = { workspace = true }
-tokio = { workspace = true, features = ["time", "rt", "macros", "sync"] }
+tokio = { workspace = true, features = [
+    "time",
+    "rt",
+    "macros",
+    "sync",
+    "test-util",
+] }
 tracing = { workspace = true }
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
@@ -35,6 +41,7 @@ xet_runtime = { path = "../xet_runtime" }
 web-time = { workspace = true }
 
 [dev-dependencies]
+rand = { workspace = true }
 serial_test = { workspace = true }
 futures-util = { workspace = true }
 

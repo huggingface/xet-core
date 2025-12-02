@@ -8,6 +8,7 @@ use merklehash::MerkleHash;
 use progress_tracking::item_tracking::SingleItemProgressUpdater;
 use progress_tracking::upload_tracking::CompletionTracker;
 
+use crate::adaptive_concurrency::ConnectionPermit;
 use crate::error::Result;
 #[cfg(not(target_family = "wasm"))]
 use crate::{SeekingOutputProvider, SequentialOutput};
@@ -51,8 +52,12 @@ pub trait Client {
 
     async fn query_for_global_dedup_shard(&self, prefix: &str, chunk_hash: &MerkleHash) -> Result<Option<Bytes>>;
 
+    /// Acquire an upload permit.
+    async fn acquire_upload_permit(&self) -> Result<ConnectionPermit>;
+
     /// Upload a new shard.
-    async fn upload_shard(&self, shard_data: Bytes) -> Result<bool>;
+    async fn upload_shard_with_permit(&self, shard_data: bytes::Bytes, upload_permit: ConnectionPermit)
+    -> Result<bool>;
 
     /// Upload a new xorb.
     async fn upload_xorb(
@@ -60,6 +65,7 @@ pub trait Client {
         prefix: &str,
         serialized_cas_object: SerializedCasObject,
         upload_tracker: Option<Arc<CompletionTracker>>,
+        upload_permit: ConnectionPermit,
     ) -> Result<u64>;
 
     /// Indicates if the serialized cas object should have a written footer.

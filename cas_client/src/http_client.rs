@@ -109,6 +109,11 @@ fn reqwest_client(user_agent: &str) -> Result<reqwest::Client, CasClientError> {
             let mut builder = reqwest::Client::builder()
                 .pool_idle_timeout(xet_config().client.idle_connection_timeout)
                 .pool_max_idle_per_host(xet_config().client.max_idle_connections)
+                .connect_timeout(xet_config().client.connect_timeout)
+                .read_timeout(xet_config().client.read_timeout)
+                // Explicitly NOT setting .timeout() to disable transfer-level timeout.
+                // We rely on packet-level timeouts (read_timeout) which reset when data
+                // is received, allowing slow but progressing transfers to complete.
                 .http1_only(); // high throughput parallel I/O has been shown to bottleneck with http2
 
             if !user_agent.is_empty() {

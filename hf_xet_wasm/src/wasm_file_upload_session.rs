@@ -165,8 +165,9 @@ impl FileUploadSession {
         log::info!("shard hash: {shard_hash}, {} bytes", shard_data.len());
 
         let _timer = ConsoleTimer::new("upload shard");
+        let permit = self.client.acquire_upload_permit().await?;
         self.client
-            .upload_shard(shard_data.into())
+            .upload_shard_with_permit(shard_data.into(), permit)
             .await?;
 
         Ok(())

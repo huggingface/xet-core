@@ -24,7 +24,7 @@ use crate::{FileDownloader, FileUploadSession, XetFileInfo, errors};
 
 lazy_static! {
     static ref CONCURRENT_FILE_DOWNLOAD_LIMITER: GlobalSemaphoreHandle =
-        global_semaphore_handle!(xet_config().data.max_concurrent_downloads);
+        global_semaphore_handle!(xet_config().data.max_concurrent_file_downloads as usize);
 }
 
 pub fn default_config(
