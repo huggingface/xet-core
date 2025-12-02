@@ -46,11 +46,11 @@ fn test_environment_variable_aliases() {
     }
     {
         let _guard = EnvVarGuard::set("HF_XET_MAX_CONCURRENT_UPLOADS", "50");
-        assert_eq!(XetConfig::new().data.max_concurrent_uploads, 50);
+        assert_eq!(XetConfig::new().client.fixed_concurrency_max_uploads, 50);
     }
     {
         let _guard = EnvVarGuard::set("HF_XET_MAX_CONCURRENT_DOWNLOADS", "75");
-        assert_eq!(XetConfig::new().data.max_concurrent_downloads, 75);
+        assert_eq!(XetConfig::new().client.fixed_concurrency_max_downloads, 75);
     }
     {
         let _guard = EnvVarGuard::set("HF_XET_MAX_CONCURRENT_FILE_INGESTION", "25");
@@ -93,9 +93,9 @@ fn test_environment_variable_aliases() {
 #[serial(config_env)]
 fn test_primary_env_var_precedence_over_alias() {
     {
-        let _guard1 = EnvVarGuard::set("HF_XET_DATA_MAX_CONCURRENT_UPLOADS", "200");
+        let _guard1 = EnvVarGuard::set("HF_XET_CLIENT_FIXED_CONCURRENCY_MAX_UPLOADS", "200");
         let _guard2 = EnvVarGuard::set("HF_XET_MAX_CONCURRENT_UPLOADS", "50");
-        assert_eq!(XetConfig::new().data.max_concurrent_uploads, 200);
+        assert_eq!(XetConfig::new().client.fixed_concurrency_max_uploads, 200);
     }
     {
         let _guard1 = EnvVarGuard::set("HF_XET_CLIENT_NUM_CONCURRENT_RANGE_GETS", "300");
@@ -114,8 +114,8 @@ fn test_primary_env_var_precedence_over_alias() {
 #[serial(config_env)]
 fn test_default_values_when_no_env_vars_set() {
     let config = XetConfig::new();
-    assert_eq!(config.data.max_concurrent_uploads, 8);
-    assert_eq!(config.data.max_concurrent_downloads, 8);
+    assert_eq!(config.client.fixed_concurrency_max_uploads, 8);
+    assert_eq!(config.client.fixed_concurrency_max_downloads, 8);
     assert_eq!(config.data.max_concurrent_file_ingestion, 8);
     assert_eq!(config.client.num_concurrent_range_gets, 48);
     assert_eq!(config.client.num_range_in_segment_base, 16);
