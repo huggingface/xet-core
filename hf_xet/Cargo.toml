@@ -46,7 +46,6 @@ signal-hook-registry = "1.4"
 
 # Windows-specific dependencies
 [target.'cfg(windows)'.dependencies]
-ctrlc = "3.4"
 winapi = { version = "0.3", features = ["consoleapi", "wincon", "errhandlingapi"] }
 
 [features]
