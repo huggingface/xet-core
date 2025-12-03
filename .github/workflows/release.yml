@@ -16,6 +16,7 @@ on:
         description: 'Semantic version for PyPI release (tag will share the same name)'
         required: true
         default: 'v0.1.0'
+  pull_request:
 
 permissions:
   contents: read
@@ -80,7 +81,7 @@ jobs:
           shopt -s expand_aliases
           if [[ ${{ matrix.platform.target }} == "aarch64" ]]
           then
-            sudo apt-get install -y binutils-aarch64-linux-gnu
+            sudo apt-get install -y --fix-missing binutils-aarch64-linux-gnu
             alias objcopy=aarch64-linux-gnu-objcopy
           fi
         
@@ -165,7 +166,7 @@ jobs:
           shopt -s expand_aliases
           if [[ ${{ matrix.platform.target }} == "aarch64" ]]
           then
-            sudo apt-get install -y binutils-aarch64-linux-gnu
+            sudo apt-get install -y --fix-missing binutils-aarch64-linux-gnu
             alias objcopy=aarch64-linux-gnu-objcopy
           fi
         
