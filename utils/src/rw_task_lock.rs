@@ -2,10 +2,13 @@ use std::future::Future;
 use std::mem::replace;
 use std::ops::Deref;
 use std::pin::Pin;
+use std::sync::Mutex;
 
 use thiserror::Error;
 use tokio::sync::{RwLock, RwLockReadGuard};
 use tokio::task::{JoinError, JoinHandle};
+
+type BoxedFuture<T, E> = Pin<Box<dyn Future<Output = Result<T, E>> + Send>>;
 
 #[derive(Debug, Error)]
 #[non_exhaustive]
@@ -17,8 +20,21 @@ pub enum RwTaskLockError {
     CalledAfterError,
 }
 
+/// Internal state for `RwTaskLock`.
+///
+/// The `Delayed` variant wraps the future in `std::sync::Mutex` to satisfy `Sync` bounds.
+/// This is necessary because:
+/// - `tokio::sync::RwLock<T>` requires `T: Send + Sync` to be `Sync` (since multiple readers can hold `&T`
+///   simultaneously).
+/// - `BoxedFuture` (`Pin<Box<dyn Future<...> + Send>>`) is `Send` but NOT `Sync`.
+/// - `std::sync::Mutex<T>` is `Sync` when `T: Send` (exclusive access only).
+/// - We're gauranteed that we won't have contention, and move the value out of the Mutex immediately to use, so it's
+///   just a quick trick to satisfy the `Sync` bounds.
+///
+/// We use `RwLock` (not `Mutex`) for the outer lock because once the value is `Ready`,
+/// multiple callers can hold read guards simultaneously to access the cached result.
 enum RwTaskLockState<T, E> {
-    Delayed(Pin<Box<dyn Future<Output = Result<T, E>> + Send>>),
+    Delayed(Mutex<BoxedFuture<T, E>>),
     Pending(JoinHandle<Result<T, E>>),
     Ready(T),
     Error,
@@ -102,7 +118,7 @@ where
         Fut: Future<Output = Result<T, E>> + Send + 'static,
     {
         Self {
-            state: RwLock::new(RwTaskLockState::Delayed(Box::pin(fut))),
+            state: RwLock::new(RwTaskLockState::Delayed(Mutex::new(Box::pin(fut)))),
         }
     }
 
@@ -111,7 +127,8 @@ where
         let state = self.state.try_write();
         if let Ok(mut state_guard) = state {
             match replace(&mut *state_guard, RwTaskLockState::Error) {
-                RwTaskLockState::Delayed(fut) => {
+                RwTaskLockState::Delayed(fut_mutex) => {
+                    let fut = fut_mutex.into_inner().unwrap();
                     let task = tokio::spawn(fut);
                     *state_guard = RwTaskLockState::Pending(task);
                 },
@@ -157,7 +174,8 @@ where
                     },
                 };
             },
-            RwTaskLockState::Delayed(mut fut) => {
+            RwTaskLockState::Delayed(fut_mutex) => {
+                let mut fut = fut_mutex.into_inner().unwrap();
                 match fut.as_mut().await {
                     Ok(v) => {
                         *state = RwTaskLockState::Ready(v);
@@ -247,10 +265,11 @@ where
                 *state_lg = Pending(tokio::spawn(updater(v)));
                 Ok(())
             },
-            Delayed(mut fut) => {
+            Delayed(fut_mutex) => {
                 // Execute the delayed future, then chain the updater.
+                let fut = fut_mutex.into_inner().unwrap();
                 let new_task = tokio::spawn(async move {
-                    let current = fut.as_mut().await?;
+                    let current = fut.await?;
                     updater(current).await
                 });
                 *state_lg = Pending(new_task);
