@@ -1,6 +1,5 @@
 use std::collections::HashMap;
 use std::mem::take;
-use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -61,7 +60,6 @@ pub struct RemoteClient {
     chunk_cache: Option<Arc<dyn ChunkCache>>,
     #[cfg(not(target_family = "wasm"))]
     range_download_single_flight: RangeDownloadSingleFlight,
-    shard_cache_directory: Option<PathBuf>,
     upload_concurrency_controller: Arc<AdaptiveConcurrencyController>,
 }
 
@@ -191,7 +189,6 @@ impl RemoteClient {
         endpoint: &str,
         auth: &Option<AuthConfig>,
         cache_config: &Option<CacheConfig>,
-        shard_cache_directory: Option<PathBuf>,
         session_id: &str,
         dry_run: bool,
         user_agent: &str,
@@ -226,7 +223,6 @@ impl RemoteClient {
             chunk_cache,
             #[cfg(not(target_family = "wasm"))]
             range_download_single_flight: Arc::new(Group::new()),
-            shard_cache_directory,
             upload_concurrency_controller: AdaptiveConcurrencyController::new_upload("upload"),
         }
     }
@@ -281,6 +277,7 @@ impl RemoteClient {
 #[cfg(not(target_family = "wasm"))]
 impl RemoteClient {
     #[instrument(skip_all, name = "RemoteClient::batch_get_reconstruction")]
+    #[allow(dead_code)]
     async fn batch_get_reconstruction(
         &self,
         file_ids: impl Iterator<Item = &MerkleHash>,
@@ -310,7 +307,8 @@ impl RemoteClient {
             .run_and_extract_json(move |_partial_report_fn| client.get(url.clone()).with_extension(Api(api_tag)).send())
             .await?;
 
-        info!(call_id,
+        info!(
+            call_id,
             file_ids=?file_id_list,
             response_count=response.files.len(),
             "Completed batch_get_reconstruction API call",
@@ -942,7 +940,7 @@ mod tests {
         let raw_xorb = build_raw_xorb(3, ChunkSize::Random(512, 10248));
 
         let threadpool = XetRuntime::new().unwrap();
-        let client = RemoteClient::new(CAS_ENDPOINT, &None, &None, None, "", false, "");
+        let client = RemoteClient::new(CAS_ENDPOINT, &None, &None, "", false, "");
 
         let cas_object = build_and_verify_cas_object(raw_xorb, Some(CompressionScheme::LZ4));
 
@@ -1325,7 +1323,7 @@ mod tests {
 
         // test reconstruct and sequential write
         let test = test_case.clone();
-        let client = RemoteClient::new(endpoint, &None, &None, None, "", false, "");
+        let client = RemoteClient::new(endpoint, &None, &None, "", false, "");
         let buf = ThreadSafeBuffer::default();
         let provider = SequentialOutput::from(buf.clone());
         let resp = threadpool.external_run_async_task(async move {
@@ -1347,7 +1345,7 @@ mod tests {
 
         // test reconstruct and parallel write
         let test = test_case;
-        let client = RemoteClient::new(endpoint, &None, &None, None, "", false, "");
+        let client = RemoteClient::new(endpoint, &None, &None, "", false, "");
         let buf = ThreadSafeBuffer::default();
         let provider = SeekingOutputProvider::from(buf.clone());
         let resp = threadpool.external_run_async_task(async move {

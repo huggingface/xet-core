@@ -418,7 +418,7 @@ impl DownloadSegmentLengthTuner {
 
         if metrics.n_retries_on_403 > 0 {
             if *num_range_in_segment > 1 {
-                let delta = xet_config().client.num_range_in_segment_delta.min(*num_range_in_segment - 1);
+                let delta = self.delta.min(*num_range_in_segment - 1);
                 info!("detected retries on 403, shrinking segment size by {delta} ranges");
                 *num_range_in_segment -= delta;
             } else {
