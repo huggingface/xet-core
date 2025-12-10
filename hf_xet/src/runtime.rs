@@ -16,33 +16,23 @@ lazy_static! {
     static ref MULTITHREADED_RUNTIME: RwLock<Option<(u32, Arc<XetRuntime>)>> = RwLock::new(None);
 }
 
-#[cfg(unix)]
-lazy_static! {
-    static ref SIGINT_HANDLER_REGISTRATION: RwLock<Option<signal_hook_registry::SigId>> = RwLock::new(None);
-}
-
 #[cfg(windows)]
 lazy_static! {
     static ref SIGINT_HANDLER_INSTALLED: AtomicBool = AtomicBool::new(false);
 }
 
 #[cfg(unix)]
-fn install_sigint_handler() -> Result<signal_hook_registry::SigId, MultithreadedRuntimeError> {
+fn install_sigint_handler() -> Result<(), MultithreadedRuntimeError> {
     use signal_hook::consts::SIGINT;
+    use signal_hook::flag;
 
     // Register the SIGINT handler to set our atomic flag.
-    // Using signal_hook_registry directly to get a SigId that we can unregister later.
-    let flag = SIGINT_DETECTED.clone();
-    let signal_id = unsafe {
-        signal_hook_registry::register(SIGINT, move || {
-            flag.store(true, Ordering::SeqCst);
-        })
-    }
-    .map_err(|e| {
+    // Using `signal_hook::flag::register` allows us to set the atomic flag when SIGINT is received.
+    flag::register(SIGINT, SIGINT_DETECTED.clone()).map_err(|e| {
         MultithreadedRuntimeError::Other(format!("Initialization Error: Unable to register SIGINT handler {e:?}"))
     })?;
 
-    Ok(signal_id)
+    Ok(())
 }
 
 #[cfg(windows)]
@@ -109,19 +99,15 @@ fn check_sigint_handler() -> Result<(), MultithreadedRuntimeError> {
     let pid = std::process::id();
 
     if stored_pid == pid {
-        // Check if handler is already registered
-        #[cfg(unix)]
-        {
-            let reg = SIGINT_HANDLER_REGISTRATION.read().unwrap();
-            if reg.is_some() {
-                return Ok(());
-            }
-        }
         #[cfg(windows)]
         {
             if SIGINT_HANDLER_INSTALLED.load(Ordering::SeqCst) {
                 return Ok(());
             }
+        }
+        #[cfg(not(windows))]
+        {
+            return Ok(());
         }
     }
 
@@ -131,32 +117,26 @@ fn check_sigint_handler() -> Result<(), MultithreadedRuntimeError> {
     // If another thread beat us to it while we're waiting for the lock.
     let stored_pid = SIGINT_HANDLER_INSTALL_PID.0.load(Ordering::SeqCst);
     if stored_pid == pid {
-        #[cfg(unix)]
-        {
-            let reg = SIGINT_HANDLER_REGISTRATION.read().unwrap();
-            if reg.is_some() {
-                return Ok(());
-            }
-        }
         #[cfg(windows)]
         {
             if SIGINT_HANDLER_INSTALLED.load(Ordering::SeqCst) {
                 return Ok(());
             }
         }
-    }
-
-    #[cfg(unix)]
-    {
-        let signal_id = install_sigint_handler()?;
-        let mut reg = SIGINT_HANDLER_REGISTRATION.write().unwrap();
-        *reg = Some(signal_id);
+        #[cfg(not(windows))]
+        {
+            return Ok(());
+        }
     }
 
     #[cfg(windows)]
     {
         install_sigint_handler()?;
         SIGINT_HANDLER_INSTALLED.store(true, Ordering::SeqCst);
+    }
+    #[cfg(not(windows))]
+    {
+        install_sigint_handler()?;
     }
 
     // Finally, store that we have installed it successfully.
@@ -183,65 +163,6 @@ pub(crate) fn perform_sigint_shutdown() {
 
 fn in_sigint_shutdown() -> bool {
     SIGINT_DETECTED.load(Ordering::Relaxed)
-}
-
-#[cfg(unix)]
-fn restore_sigint_handler() -> Result<(), MultithreadedRuntimeError> {
-    use signal_hook_registry;
-
-    let mut reg = SIGINT_HANDLER_REGISTRATION.write().unwrap();
-    if let Some(signal_id) = reg.take() {
-        signal_hook_registry::unregister(signal_id);
-    }
-    Ok(())
-}
-
-#[cfg(windows)]
-fn restore_sigint_handler() -> Result<(), MultithreadedRuntimeError> {
-    use winapi::um::consoleapi::SetConsoleCtrlHandler;
-
-    // Remove our handler by unregistering it
-    // This allows Python's handler (if any) or the default handler to take over
-    unsafe {
-        if SetConsoleCtrlHandler(Some(console_ctrl_handler), winapi::shared::minwindef::FALSE) == 0 {
-            let error = winapi::um::errhandlingapi::GetLastError();
-            // Log but don't fail - handler removal is best effort
-            if cfg!(debug_assertions) {
-                eprintln!("[debug] Warning: Failed to unregister console control handler. Windows error: {error}");
-            }
-        }
-    }
-    SIGINT_HANDLER_INSTALLED.store(false, Ordering::SeqCst);
-    Ok(())
-}
-
-fn maybe_restore_sigint_handler() -> Result<(), MultithreadedRuntimeError> {
-    // Check if runtime exists and has no active operations
-    let guard = MULTITHREADED_RUNTIME.read().unwrap();
-    if let Some((runtime_pid, ref runtime)) = *guard
-        && runtime_pid == std::process::id()
-        && runtime.external_executor_count() == 0
-    {
-        // Check if handler is installed
-        let should_restore = {
-            #[cfg(unix)]
-            {
-                let reg = SIGINT_HANDLER_REGISTRATION.read().unwrap();
-                reg.is_some()
-            }
-            #[cfg(windows)]
-            {
-                SIGINT_HANDLER_INSTALLED.load(Ordering::SeqCst)
-            }
-        };
-
-        if should_restore {
-            // No active operations, restore handler
-            drop(guard);
-            restore_sigint_handler()?;
-        }
-    }
-    Ok(())
 }
 
 fn signal_check_background_loop() {
@@ -372,10 +293,6 @@ where
         }
         return Err(PyKeyboardInterrupt::new_err(()));
     }
-
-    // After operation completes, check if we should restore the signal handler
-    // This allows Python's original handler to be restored when no operations are active
-    let _ = maybe_restore_sigint_handler();
 
     // Now return the result.
     result
