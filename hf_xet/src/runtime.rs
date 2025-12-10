@@ -16,11 +16,6 @@ lazy_static! {
     static ref MULTITHREADED_RUNTIME: RwLock<Option<(u32, Arc<XetRuntime>)>> = RwLock::new(None);
 }
 
-#[cfg(windows)]
-lazy_static! {
-    static ref SIGINT_HANDLER_INSTALLED: AtomicBool = AtomicBool::new(false);
-}
-
 #[cfg(unix)]
 fn install_sigint_handler() -> Result<(), MultithreadedRuntimeError> {
     use signal_hook::consts::SIGINT;
@@ -99,16 +94,7 @@ fn check_sigint_handler() -> Result<(), MultithreadedRuntimeError> {
     let pid = std::process::id();
 
     if stored_pid == pid {
-        #[cfg(windows)]
-        {
-            if SIGINT_HANDLER_INSTALLED.load(Ordering::SeqCst) {
-                return Ok(());
-            }
-        }
-        #[cfg(not(windows))]
-        {
-            return Ok(());
-        }
+        return Ok(());
     }
 
     // Need to install it; acquire a lock to do so.
@@ -117,27 +103,10 @@ fn check_sigint_handler() -> Result<(), MultithreadedRuntimeError> {
     // If another thread beat us to it while we're waiting for the lock.
     let stored_pid = SIGINT_HANDLER_INSTALL_PID.0.load(Ordering::SeqCst);
     if stored_pid == pid {
-        #[cfg(windows)]
-        {
-            if SIGINT_HANDLER_INSTALLED.load(Ordering::SeqCst) {
-                return Ok(());
-            }
-        }
-        #[cfg(not(windows))]
-        {
-            return Ok(());
-        }
+        return Ok(());
     }
 
-    #[cfg(windows)]
-    {
-        install_sigint_handler()?;
-        SIGINT_HANDLER_INSTALLED.store(true, Ordering::SeqCst);
-    }
-    #[cfg(not(windows))]
-    {
-        install_sigint_handler()?;
-    }
+    install_sigint_handler()?;
 
     // Finally, store that we have installed it successfully.
     SIGINT_HANDLER_INSTALL_PID.0.store(pid, Ordering::SeqCst);
