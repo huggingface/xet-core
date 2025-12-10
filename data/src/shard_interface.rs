@@ -279,7 +279,7 @@ impl SessionShardInterface {
                     }
 
                     // Upload the shard.
-                    shard_client.upload_shard_with_permit(data, upload_permit).await?;
+                    shard_client.upload_shard(data, upload_permit).await?;
 
                     info!("Shard {:?} upload + sync completed successfully.", &si.shard_hash);
 
