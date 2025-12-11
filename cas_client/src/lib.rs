@@ -6,6 +6,7 @@ pub use local_client::LocalClient;
 #[cfg(not(target_family = "wasm"))]
 pub use output_provider::*;
 pub use remote_client::RemoteClient;
+use tracing::Level;
 
 pub use crate::error::CasClientError;
 
@@ -23,3 +24,8 @@ mod output_provider;
 pub mod remote_client;
 pub mod retry_wrapper;
 pub mod upload_progress_stream;
+
+#[cfg(not(feature = "elevated_information_level"))]
+pub const INFORMATION_LOG_LEVEL: Level = Level::DEBUG;
+#[cfg(feature = "elevated_information_level")]
+pub const INFORMATION_LOG_LEVEL: Level = Level::INFO;

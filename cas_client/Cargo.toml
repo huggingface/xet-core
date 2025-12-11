@@ -52,6 +52,7 @@ statrs = { workspace = true }
 [features]
 strict = []
 default = ["rustls-tls"]
+elevated_information_level = []
 
 # Three options for compliation here.
 rustls-tls = [
