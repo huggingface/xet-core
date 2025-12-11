@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use deduplication::{DeduplicationDataInterface, RawXorbData};
 use mdb_shard::file_structs::FileDataSequenceEntry;
 use merklehash::MerkleHash;
-use progress_tracking::upload_tracking::{CompletionTrackerFileId, FileXorbDependency};
+use progress_tracking::upload_tracking::FileXorbDependency;
 use tokio::task::JoinSet;
 use tracing::Instrument;
 
@@ -13,15 +13,13 @@ use crate::errors::Result;
 use crate::file_upload_session::FileUploadSession;
 
 pub struct UploadSessionDataManager {
-    file_id: CompletionTrackerFileId,
     session: Arc<FileUploadSession>,
     active_global_dedup_queries: JoinSet<Result<bool>>,
 }
 
 impl UploadSessionDataManager {
-    pub fn new(session: Arc<FileUploadSession>, file_id: CompletionTrackerFileId) -> Self {
+    pub fn new(session: Arc<FileUploadSession>) -> Self {
         Self {
-            file_id,
             session,
             active_global_dedup_queries: Default::default(),
         }

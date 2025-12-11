@@ -19,9 +19,6 @@ use crate::sha256::ShaGenerator;
 
 /// A class that encapsulates the clean and data task around a single file.
 pub struct SingleFileCleaner {
-    // The id for completion tracking
-    file_id: CompletionTrackerFileId,
-
     // File name, if known.
     file_name: Option<Arc<str>>,
 
@@ -50,11 +47,10 @@ impl SingleFileCleaner {
         sha256: Option<Sha256>,
         session: Arc<FileUploadSession>,
     ) -> Self {
-        let deduper = FileDeduper::new(UploadSessionDataManager::new(session.clone(), file_id), file_id);
+        let deduper = FileDeduper::new(UploadSessionDataManager::new(session.clone()), file_id);
 
         Self {
             file_name,
-            file_id,
             dedup_manager_fut: Box::pin(async move { Ok(deduper) }),
             session,
             chunker: deduplication::Chunker::default(),

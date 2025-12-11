@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 pub use chunk_cache::CacheConfig;
 pub use http_client::{Api, ResponseErrorLogger, RetryConfig, build_auth_http_client, build_http_client};
 pub use interface::Client;
@@ -11,6 +9,7 @@ pub use remote_client::RemoteClient;
 
 pub use crate::error::CasClientError;
 
+pub mod adaptive_concurrency;
 #[cfg(not(target_family = "wasm"))]
 mod download_utils;
 mod error;
@@ -24,5 +23,3 @@ mod output_provider;
 pub mod remote_client;
 pub mod retry_wrapper;
 pub mod upload_progress_stream;
-
-pub mod adaptive_concurrency;
