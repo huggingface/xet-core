@@ -24,7 +24,7 @@ use crate::error::{CasClientError, Result};
 use crate::http_client::Api;
 use crate::interface::Client;
 use crate::output_provider::SeekingOutputProvider;
-use crate::remote_client::{PREFIX_DEFAULT, get_reconstruction_with_endpoint_and_client};
+use crate::remote_client::PREFIX_DEFAULT;
 use crate::retry_wrapper::{RetryWrapper, RetryableReqwestError};
 
 #[derive(Clone, Debug)]
@@ -44,24 +44,15 @@ pub(crate) type RangeDownloadSingleFlight = Arc<Group<DownloadRangeResult, CasCl
 pub(crate) struct FetchInfo {
     file_hash: MerkleHash,
     pub(crate) file_range: FileRange,
-    endpoint: String,
-    client: Arc<ClientWithMiddleware>, // only used for fetching file info
     inner: RwLock<HashMap<HexMerkleHash, Vec<CASReconstructionFetchInfo>>>,
     version: tokio::sync::Mutex<u32>,
 }
 
 impl FetchInfo {
-    pub fn new(
-        file_hash: MerkleHash,
-        file_range: FileRange,
-        endpoint: String,
-        client: Arc<ClientWithMiddleware>,
-    ) -> Self {
+    pub fn new(file_hash: MerkleHash, file_range: FileRange) -> Self {
         Self {
             file_hash,
             file_range,
-            endpoint,
-            client,
             inner: Default::default(),
             version: tokio::sync::Mutex::new(0),
         }
@@ -72,10 +63,7 @@ impl FetchInfo {
     pub fn take_segment(self, segment_size: u64) -> (Self, Option<Self>) {
         let (first_segment, remainder) = self.file_range.take_segment(segment_size);
 
-        (
-            FetchInfo::new(self.file_hash, first_segment, self.endpoint.clone(), self.client.clone()),
-            remainder.map(|r| FetchInfo::new(self.file_hash, r, self.endpoint, self.client)),
-        )
+        (FetchInfo::new(self.file_hash, first_segment), remainder.map(|r| FetchInfo::new(self.file_hash, r)))
     }
 
     pub async fn find(&self, key: (HexMerkleHash, ChunkRange)) -> Result<(CASReconstructionFetchInfo, u32)> {
@@ -97,15 +85,11 @@ impl FetchInfo {
         Ok((fetch_term, v))
     }
 
-    pub async fn query(&self) -> Result<Option<(u64, Vec<CASReconstructionTerm>)>> {
-        let Some(manifest) = get_reconstruction_with_endpoint_and_client(
-            &self.endpoint,
-            &self.client,
-            &self.file_hash,
-            Some(self.file_range),
-        )
-        .await?
-        else {
+    pub async fn query(
+        &self,
+        client: &Arc<dyn Client + Send + Sync>,
+    ) -> Result<Option<(u64, Vec<CASReconstructionTerm>)>> {
+        let Some(manifest) = client.get_reconstruction(&self.file_hash, Some(self.file_range)).await? else {
             return Ok(None);
         };
 
@@ -114,7 +98,7 @@ impl FetchInfo {
         Ok(Some((manifest.offset_into_first_range, manifest.terms)))
     }
 
-    pub async fn refresh(&self, vhint: u32) -> Result<()> {
+    pub async fn refresh(&self, client: &Arc<dyn Client + Send + Sync>, vhint: u32) -> Result<()> {
         // Our term download tasks run in concurrent, so at this point
         // it's possible that
         // 1. some other TermDownload is also calling refersh();
@@ -130,7 +114,7 @@ impl FetchInfo {
             return Ok(());
         }
 
-        self.query().await?;
+        self.query(client).await?;
 
         *v += 1;
 
@@ -273,7 +257,7 @@ impl FetchTermDownloadInner {
             let range_data = client.get_file_term_data(self.hash, fetch_info).await;
 
             if let Err(CasClientError::PresignedUrlExpirationError) = range_data {
-                self.fetch_info.refresh(v).await?;
+                self.fetch_info.refresh(&client, v).await?;
                 n_retries_on_403 += 1;
                 continue;
             }
@@ -647,14 +631,11 @@ mod tests {
             then.status(200).json_body_obj(&response);
         });
 
-        let fetch_info = FetchInfo::new(
-            MerkleHash::default(),
-            file_range,
-            server.base_url(),
-            Arc::new(build_http_client(RetryConfig::default(), "", "")?),
-        );
+        let client: Arc<dyn Client + Send + Sync> =
+            RemoteClient::new(&server.base_url(), &None, &None, None, "", false, "");
+        let fetch_info = FetchInfo::new(MerkleHash::default(), file_range);
 
-        fetch_info.query().await?;
+        fetch_info.query(&client).await?;
 
         // Test find fetch info
         let test_range1 = ChunkRange::new(6, 8);
@@ -694,12 +675,9 @@ mod tests {
             then.status(200).json_body_obj(&response);
         });
 
-        let fetch_info = Arc::new(FetchInfo::new(
-            MerkleHash::default(),
-            file_range_to_refresh,
-            server.base_url(),
-            Arc::new(build_http_client(RetryConfig::default(), "", "")?),
-        ));
+        let client: Arc<dyn Client + Send + Sync> =
+            RemoteClient::new(&server.base_url(), &None, &None, None, "", false, "");
+        let fetch_info = Arc::new(FetchInfo::new(MerkleHash::default(), file_range_to_refresh));
 
         // Spawn multiple tasks each calling into refresh with a different delay in
         // [0, 1000] ms, where the refresh itself takes 100 ms to finish. This means
@@ -708,10 +686,11 @@ mod tests {
         let mut tasks = JoinSet::<Result<()>>::new();
         for i in 0..100 {
             let fi = fetch_info.clone();
+            let c = client.clone();
             tasks.spawn(async move {
                 let v = 0;
                 sleep(Duration::from_millis(i * 10)).await;
-                Ok(fi.refresh(v).await?)
+                Ok(fi.refresh(&c, v).await?)
             });
         }
 
@@ -763,16 +742,13 @@ mod tests {
             then.status(403).delay(Duration::from_millis(100));
         });
 
-        let client = RemoteClient::new(&server.base_url(), &None, &None, None, "", false, "");
+        let client: Arc<dyn Client + Send + Sync> =
+            RemoteClient::new(&server.base_url(), &None, &None, None, "", false, "");
+        let http_client = Arc::new(build_http_client(RetryConfig::default(), "", "")?);
 
-        let fetch_info = FetchInfo::new(
-            MerkleHash::default(),
-            file_range,
-            server.base_url(),
-            Arc::new(build_http_client(RetryConfig::default(), "", "")?),
-        );
+        let fetch_info = FetchInfo::new(MerkleHash::default(), file_range);
 
-        let (offset_info_first_range, terms) = fetch_info.query().await?.unwrap();
+        let (offset_info_first_range, terms) = fetch_info.query(&client).await?.unwrap();
 
         let download_task = SequentialTermDownload {
             download: Arc::new(FetchTermDownload::new(FetchTermDownloadInner {
@@ -780,7 +756,7 @@ mod tests {
                 range: x1range[0].range,
                 fetch_info: Arc::new(fetch_info),
                 chunk_cache: None,
-                client: Arc::new(build_http_client(RetryConfig::default(), "", "")?),
+                client: http_client,
                 range_download_single_flight: Arc::new(Group::new()),
             })),
             term: terms[0].clone(),

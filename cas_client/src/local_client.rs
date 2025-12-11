@@ -49,6 +49,7 @@ pub struct LocalClient {
 }
 
 impl LocalClient {
+    /// Create a local client hosted in a temporary directory for testing.
     pub fn temporary() -> Result<Arc<Self>> {
         let tmp_dir = TempDir::new().unwrap();
         let path = tmp_dir.path().to_owned();
@@ -56,6 +57,8 @@ impl LocalClient {
         Ok(Arc::new(s))
     }
 
+    /// Create a local client hosted in a directory.  Effectively, this directory
+    /// is the CAS endpoint and persists across instances of LocalClient.  
     pub fn new(path: impl AsRef<Path>) -> Result<Arc<Self>> {
         let s = Self::new_internal(path, None)?;
         Ok(Arc::new(s))

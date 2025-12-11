@@ -311,12 +311,7 @@ impl RemoteClient {
         let total_len = file_reconstruct_range.length();
 
         // kick-start the download by enqueue the fetch info task.
-        task_tx.send(DownloadQueueItem::Metadata(FetchInfo::new(
-            *file_hash,
-            file_reconstruct_range,
-            self.endpoint.clone(),
-            self.authenticated_http_client_with_retry.clone(),
-        )))?;
+        task_tx.send(DownloadQueueItem::Metadata(FetchInfo::new(*file_hash, file_reconstruct_range)))?;
 
         // Start the queue processing logic
         //
@@ -366,7 +361,7 @@ impl RemoteClient {
                         debug!(call_id, segment_size, "querying file info");
                         let (segment, maybe_remainder) = fetch_info.take_segment(segment_size);
 
-                        let Some((offset_into_first_range, terms)) = segment.query().await? else {
+                        let Some((offset_into_first_range, terms)) = segment.query(&client_for_dispatch).await? else {
                             // signal termination
                             task_tx.send(DownloadQueueItem::End)?;
                             continue;
@@ -490,12 +485,7 @@ impl RemoteClient {
         let base_write_negative_offset = file_reconstruct_range.start;
 
         // kick-start the download by enqueue the fetch info task.
-        task_tx.send(DownloadQueueItem::Metadata(FetchInfo::new(
-            *file_hash,
-            file_reconstruct_range,
-            self.endpoint.clone(),
-            self.authenticated_http_client_with_retry.clone(),
-        )))?;
+        task_tx.send(DownloadQueueItem::Metadata(FetchInfo::new(*file_hash, file_reconstruct_range)))?;
 
         // Start the queue processing logic
         //
@@ -558,7 +548,7 @@ impl RemoteClient {
                     debug!(call_id, segment_size, "querying file info");
                     let (segment, maybe_remainder) = fetch_info.take_segment(segment_size);
 
-                    let Some((offset_into_first_range, terms)) = segment.query().await? else {
+                    let Some((offset_into_first_range, terms)) = segment.query(&client_for_downloads).await? else {
                         // signal termination
                         task_tx.send(DownloadQueueItem::End)?;
                         continue;
