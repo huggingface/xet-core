@@ -42,7 +42,6 @@ impl FileUploadSession {
             &config.data_config.endpoint,
             &config.data_config.auth,
             &None,
-            None,
             &config.session_id,
             false,
             &config.data_config.user_agent,
