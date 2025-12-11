@@ -313,7 +313,25 @@ impl Client for LocalClient {
         shard_data: Bytes,
         _permit: crate::adaptive_concurrency::ConnectionPermit,
     ) -> Result<bool> {
-        self.insert_shard(shard_data).await
+        let shard = MDBShardFile::write_out_from_reader(&self.shard_dir, &mut Cursor::new(&shard_data))?;
+        let shard_hash = shard.shard_hash;
+
+        self.shard_manager.register_shards(&[shard]).await?;
+
+        let mut shard_reader = Cursor::new(shard_data);
+        let chunk_hashes = MDBShardInfo::filter_cas_chunks_for_global_dedup(&mut shard_reader)?;
+
+        let mut write_txn = self.global_dedup_db_env.write_txn().map_err(map_heed_db_error)?;
+
+        for chunk in chunk_hashes {
+            self.global_dedup_table
+                .put(&mut write_txn, &chunk, &shard_hash)
+                .map_err(map_heed_db_error)?;
+        }
+
+        write_txn.commit().map_err(map_heed_db_error)?;
+
+        Ok(true)
     }
 
     async fn upload_xorb(
@@ -323,7 +341,47 @@ impl Client for LocalClient {
         upload_tracker: Option<Arc<CompletionTracker>>,
         _permit: crate::adaptive_concurrency::ConnectionPermit,
     ) -> Result<u64> {
-        self.insert_xorb(serialized_cas_object, upload_tracker).await
+        let hash = &serialized_cas_object.hash;
+        if self.xorb_exists("", hash).await? {
+            info!("object {hash:?} already exists in Local CAS; returning.");
+            return Ok(0);
+        }
+
+        let file_path = self.get_path_for_entry(hash);
+        info!("Writing XORB {hash:?} to local path {file_path:?}");
+
+        let mut file = SafeFileCreator::new(&file_path)?;
+
+        for i in 0..10 {
+            let start = (i * serialized_cas_object.serialized_data.len()) / 10;
+            let end = ((i + 1) * serialized_cas_object.serialized_data.len()) / 10;
+
+            file.write_all(&serialized_cas_object.serialized_data[start..end])?;
+
+            if let Some(upload_tracker) = &upload_tracker {
+                let adjusted_byte_start = (i * serialized_cas_object.raw_num_bytes as usize) / 10;
+                let adjusted_byte_end = ((i + 1) * serialized_cas_object.raw_num_bytes as usize) / 10;
+                let adjusted_progress = adjusted_byte_end - adjusted_byte_start;
+
+                upload_tracker
+                    .register_xorb_upload_progress(*hash, adjusted_progress as u64)
+                    .await;
+            }
+        }
+
+        let bytes_written = serialized_cas_object.serialized_data.len();
+        file.close()?;
+
+        #[cfg(unix)]
+        if let Ok(metadata) = metadata(&file_path) {
+            let mut permissions = metadata.permissions();
+            permissions.set_readonly(true);
+            let _ = std::fs::set_permissions(&file_path, permissions);
+        }
+
+        info!("{file_path:?} successfully written with {bytes_written} bytes.");
+
+        Ok(bytes_written as u64)
     }
 
     fn use_xorb_footer(&self) -> bool {
@@ -647,196 +705,6 @@ fn map_heed_db_error(e: heed::Error) -> CasClientError {
     warn!("{msg}");
     CasClientError::Other(msg)
 }
-
-impl LocalClient {
-    async fn insert_shard(&self, shard_data: Bytes) -> Result<bool> {
-        let shard = MDBShardFile::write_out_from_reader(&self.shard_dir, &mut Cursor::new(&shard_data))?;
-        let shard_hash = shard.shard_hash;
-
-        self.shard_manager.register_shards(&[shard]).await?;
-
-        let mut shard_reader = Cursor::new(shard_data);
-        let chunk_hashes = MDBShardInfo::filter_cas_chunks_for_global_dedup(&mut shard_reader)?;
-
-        let mut write_txn = self.global_dedup_db_env.write_txn().map_err(map_heed_db_error)?;
-
-        for chunk in chunk_hashes {
-            self.global_dedup_table
-                .put(&mut write_txn, &chunk, &shard_hash)
-                .map_err(map_heed_db_error)?;
-        }
-
-        write_txn.commit().map_err(map_heed_db_error)?;
-
-        Ok(true)
-    }
-
-    async fn insert_xorb(
-        &self,
-        serialized_cas_object: SerializedCasObject,
-        upload_tracker: Option<Arc<CompletionTracker>>,
-    ) -> Result<u64> {
-        let hash = &serialized_cas_object.hash;
-        if self.xorb_exists("", hash).await? {
-            info!("object {hash:?} already exists in Local CAS; returning.");
-            return Ok(0);
-        }
-
-        let file_path = self.get_path_for_entry(hash);
-        info!("Writing XORB {hash:?} to local path {file_path:?}");
-
-        let mut file = SafeFileCreator::new(&file_path)?;
-
-        for i in 0..10 {
-            let start = (i * serialized_cas_object.serialized_data.len()) / 10;
-            let end = ((i + 1) * serialized_cas_object.serialized_data.len()) / 10;
-
-            file.write_all(&serialized_cas_object.serialized_data[start..end])?;
-
-            if let Some(upload_tracker) = &upload_tracker {
-                let adjusted_byte_start = (i * serialized_cas_object.raw_num_bytes as usize) / 10;
-                let adjusted_byte_end = ((i + 1) * serialized_cas_object.raw_num_bytes as usize) / 10;
-                let adjusted_progress = adjusted_byte_end - adjusted_byte_start;
-
-                upload_tracker
-                    .register_xorb_upload_progress(*hash, adjusted_progress as u64)
-                    .await;
-            }
-        }
-
-        let bytes_written = serialized_cas_object.serialized_data.len();
-        file.close()?;
-
-        #[cfg(unix)]
-        if let Ok(metadata) = metadata(&file_path) {
-            let mut permissions = metadata.permissions();
-            permissions.set_readonly(true);
-            let _ = std::fs::set_permissions(&file_path, permissions);
-        }
-
-        info!("{file_path:?} successfully written with {bytes_written} bytes.");
-
-        Ok(bytes_written as u64)
-    }
-
-    /// Insert a random file into the local CAS.
-    ///
-    /// This function is used to test the local CAS client.
-    ///
-    /// It generates a random file with a given number of chunks and chunk size.
-    /// It then creates all the xorbs and shard definitions needed, returning
-    /// the file data and the file hash.
-    async fn insert_random_file(
-        &self,
-        term_spec: &[(u64, (u64, u64))],
-        chunk_size: usize,
-    ) -> Result<(Vec<u8>, MerkleHash)> {
-        use deduplication::{Chunk, RawXorbData};
-        use mdb_shard::file_structs::{FileDataSequenceEntry, FileDataSequenceHeader};
-        use mdb_shard::shard_in_memory::MDBInMemoryShard;
-        use merklehash::{compute_data_hash, file_hash_with_salt};
-
-        let mut xorb_num_chunks = HashMap::<u64, u64>::new();
-
-        for &(xorb_seed, (_chunk_idx_start, chunk_idx_end)) in term_spec {
-            let c: &mut u64 = xorb_num_chunks.entry(xorb_seed).or_default();
-            *c = (*c).max(chunk_idx_end);
-        }
-
-        // Track the data so that we can reconstruct the whole file later.
-        let mut xorb_data = HashMap::<u64, Vec<Chunk>>::new();
-        let mut shard = MDBInMemoryShard::default();
-
-        let mut xorb_hash = HashMap::<u64, MerkleHash>::new();
-
-        for (&xorb_seed, n_chunks) in xorb_num_chunks.iter() {
-            let mut rng = SmallRng::seed_from_u64(xorb_seed);
-
-            let n_chunks = *n_chunks as usize;
-            let mut chunks = Vec::with_capacity(n_chunks);
-
-            for _idx in 0..n_chunks {
-                // duplicate the range so that compression kicks in;
-                // copy the second part of the chunk from the first part.
-
-                let n = rng.random_range((chunk_size / 2 + 1)..chunk_size);
-                let n_left = chunk_size - n;
-
-                let mut rng_data = vec![0u8; n];
-                rng.fill_bytes(&mut rng_data);
-
-                let mut buf = vec![0u8; chunk_size];
-                buf[..n].copy_from_slice(&rng_data[..n]);
-                buf[n..].copy_from_slice(&rng_data[..n_left]);
-
-                let hash = compute_data_hash(&buf);
-                chunks.push(Chunk {
-                    hash,
-                    data: Bytes::from(buf),
-                });
-            }
-
-            // Create RawXorbData from the generated chunks.
-            // file_boundaries indicates where new files start; use [0] for single file.
-            let raw_xorb = RawXorbData::from_chunks(&chunks, vec![0]);
-
-            // Record the xorb data.
-            xorb_data.insert(xorb_seed, chunks);
-
-            // Add it to the shard.
-            shard.add_cas_block(raw_xorb.cas_info.clone())?;
-
-            // Record the hash.
-            xorb_hash.insert(xorb_seed, raw_xorb.hash());
-
-            // Build SerializedCasObject
-            let serialized_xorb = SerializedCasObject::from_xorb(raw_xorb.clone(), None, true)?;
-
-            self.insert_xorb(serialized_xorb, None).await?;
-        }
-
-        // Now, build the file info and file data.
-        let mut file_segments = Vec::new();
-        let mut file_data = Vec::new();
-        let mut chunk_file_hashes = Vec::new();
-
-        for &(xorb_seed, (chunk_idx_start, chunk_idx_end)) in term_spec {
-            let xorb_hash = xorb_hash.get(&xorb_seed).unwrap();
-
-            let (c_lb, c_ub) = (chunk_idx_start as usize, chunk_idx_end as usize);
-            let chunks = &xorb_data.get(&xorb_seed).unwrap()[c_lb..c_ub];
-
-            let mut n_bytes = 0;
-
-            for chunk in chunks {
-                file_data.extend_from_slice(&chunk.data);
-                n_bytes += chunk.data.len();
-                chunk_file_hashes.push((chunk.hash, chunk.data.len() as u64));
-            }
-
-            file_segments.push(FileDataSequenceEntry::new(
-                *xorb_hash,
-                n_bytes,
-                chunk_idx_start as usize,
-                chunk_idx_end as usize,
-            ));
-        }
-
-        let file_hash = file_hash_with_salt(&chunk_file_hashes, &[0; 32]);
-
-        shard.add_file_reconstruction_info(MDBFileInfo {
-            metadata: FileDataSequenceHeader::new(file_hash, file_segments.len(), false, false),
-            segments: file_segments,
-            verification: vec![],
-            metadata_ext: None,
-        })?;
-
-        self.insert_shard(shard.to_bytes()?.into()).await?;
-
-        Ok((file_data, file_hash))
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use cas_object::CompressionScheme::LZ4;
@@ -846,6 +714,7 @@ mod tests {
     use mdb_shard::utils::parse_shard_filename;
 
     use super::*;
+    use crate::client_testing_utils::ClientTestingUtils;
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_basic_put_get() {
@@ -1350,7 +1219,7 @@ mod tests {
 
         // Create segments: xorb 1 chunks 0-2, then chunks 2-4 (adjacent)
         let term_spec = &[(1, (0, 2)), (1, (2, 4))];
-        let (file_data, file_hash) = client.insert_random_file(term_spec, 2048).await.unwrap();
+        let (file_data, file_hash) = client.upload_random_file(term_spec, 2048).await.unwrap();
 
         // Verify reconstruction merges adjacent ranges
         let reconstruction = client.get_reconstruction(&file_hash, None).await.unwrap().unwrap();
@@ -1373,7 +1242,7 @@ mod tests {
 
         // Create file with segments from different xorbs
         let term_spec = &[(1, (0, 3)), (2, (0, 2)), (1, (3, 5))];
-        let (file_data, file_hash) = client.insert_random_file(term_spec, 2048).await.unwrap();
+        let (file_data, file_hash) = client.upload_random_file(term_spec, 2048).await.unwrap();
 
         // Verify reconstruction
         let reconstruction = client.get_reconstruction(&file_hash, None).await.unwrap().unwrap();
@@ -1388,7 +1257,7 @@ mod tests {
     async fn test_range_requests() {
         let client = LocalClient::temporary().unwrap();
         let term_spec = &[(1, (0, 5))];
-        let (file_data, file_hash) = client.insert_random_file(term_spec, 2048).await.unwrap();
+        let (file_data, file_hash) = client.upload_random_file(term_spec, 2048).await.unwrap();
         let total_file_size = file_data.len() as u64;
 
         // Test get_reconstruction range behaviors
@@ -1478,7 +1347,7 @@ mod tests {
 
         let client = LocalClient::temporary().unwrap();
         let term_spec = &[(1, (0, 5))];
-        let (file_data, file_hash) = client.insert_random_file(term_spec, 2048).await.unwrap();
+        let (file_data, file_hash) = client.upload_random_file(term_spec, 2048).await.unwrap();
 
         // Test that sequential writer correctly wraps get_file_data
         let buffer = ThreadSafeBuffer::default();
@@ -1505,19 +1374,19 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn test_insert_random_file_configurations() {
+    async fn test_upload_random_file_configurations() {
         let client = LocalClient::temporary().unwrap();
 
         // Test 1: Single segment with 3 chunks
         {
-            let (file_data, file_hash) = client.insert_random_file(&[(1, (0, 3))], 2048).await.unwrap();
+            let (file_data, file_hash) = client.upload_random_file(&[(1, (0, 3))], 2048).await.unwrap();
             assert_eq!(client.get_file_data(&file_hash, None).await.unwrap(), file_data);
         }
 
         // Test 2: Multiple segments from the same xorb
         {
             let term_spec = &[(1, (0, 2)), (1, (2, 4)), (1, (4, 6))];
-            let (file_data, file_hash) = client.insert_random_file(term_spec, 2048).await.unwrap();
+            let (file_data, file_hash) = client.upload_random_file(term_spec, 2048).await.unwrap();
 
             let reconstruction = client.get_reconstruction(&file_hash, None).await.unwrap().unwrap();
             assert_eq!(reconstruction.terms.len(), 3);
@@ -1529,7 +1398,7 @@ mod tests {
         // Test 3: Segments from different xorbs
         {
             let term_spec = &[(1, (0, 3)), (2, (0, 2)), (3, (0, 4))];
-            let (file_data, file_hash) = client.insert_random_file(term_spec, 2048).await.unwrap();
+            let (file_data, file_hash) = client.upload_random_file(term_spec, 2048).await.unwrap();
 
             let reconstruction = client.get_reconstruction(&file_hash, None).await.unwrap().unwrap();
             assert_eq!(reconstruction.terms.len(), 3);
@@ -1541,7 +1410,7 @@ mod tests {
         // Test 4: Partial range retrieval
         {
             let term_spec = &[(1, (0, 5)), (2, (0, 5))];
-            let (file_data, file_hash) = client.insert_random_file(term_spec, 2048).await.unwrap();
+            let (file_data, file_hash) = client.upload_random_file(term_spec, 2048).await.unwrap();
             let half = file_data.len() as u64 / 2;
 
             // First half
@@ -1559,7 +1428,7 @@ mod tests {
         // Test 5: Overlapping chunk references from same xorb
         {
             let term_spec = &[(1, (0, 3)), (1, (1, 4)), (1, (2, 5))];
-            let (file_data, file_hash) = client.insert_random_file(term_spec, 2048).await.unwrap();
+            let (file_data, file_hash) = client.upload_random_file(term_spec, 2048).await.unwrap();
 
             let reconstruction = client.get_reconstruction(&file_hash, None).await.unwrap().unwrap();
             assert_eq!(reconstruction.terms.len(), 3);

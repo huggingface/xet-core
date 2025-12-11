@@ -26,3 +26,4 @@ pub mod retry_wrapper;
 pub mod upload_progress_stream;
 
 pub mod adaptive_concurrency;
+pub mod client_testing_utils;
