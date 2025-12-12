@@ -5,10 +5,13 @@ use std::time::Duration;
 use more_asserts::debug_assert_le;
 use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
+#[cfg(not(target_family = "wasm"))]
 use tokio::time::Instant;
 use tracing::info;
 use utils::ExpWeightedMovingAvg;
 use utils::adjustable_semaphore::{AdjustableSemaphore, AdjustableSemaphorePermit};
+#[cfg(target_family = "wasm")]
+use web_time::Instant;
 use xet_runtime::xet_config;
 
 use crate::CasClientError;
