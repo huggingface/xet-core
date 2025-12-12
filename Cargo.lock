@@ -700,7 +700,6 @@ dependencies = [
  "chrono",
  "chunk_cache",
  "clap",
- "ctor",
  "deduplication",
  "derivative",
  "error_printer",

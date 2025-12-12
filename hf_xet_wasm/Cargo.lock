@@ -246,7 +246,6 @@ name = "cas_client"
 version = "0.14.5"
 dependencies = [
  "anyhow",
- "approx",
  "async-trait",
  "bytes",
  "cas_object",
@@ -254,7 +253,6 @@ dependencies = [
  "chrono",
  "chunk_cache",
  "clap",
- "ctor",
  "deduplication",
  "derivative",
  "error_printer",
@@ -3230,6 +3228,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "tracing-serde"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "704b1aeb7be0d0a84fc9828cae51dab5970fee5088f83d1dd7ee6f6246fc6ff1"
+dependencies = [
+ "serde",
+ "tracing-core",
+]
+
+[[package]]
 name = "tracing-subscriber"
 version = "0.3.20"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3239,12 +3247,15 @@ dependencies = [
  "nu-ansi-term",
  "once_cell",
  "regex-automata",
+ "serde",
+ "serde_json",
  "sharded-slab",
  "smallvec",
  "thread_local",
  "tracing",
  "tracing-core",
  "tracing-log",
+ "tracing-serde",
 ]
 
 [[package]]
