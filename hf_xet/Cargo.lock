@@ -337,7 +337,6 @@ name = "cas_client"
 version = "0.14.5"
 dependencies = [
  "anyhow",
- "approx",
  "async-trait",
  "bytes",
  "cas_object",
@@ -345,7 +344,6 @@ dependencies = [
  "chrono",
  "chunk_cache",
  "clap",
- "ctor",
  "deduplication",
  "derivative",
  "error_printer",

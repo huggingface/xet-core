@@ -44,6 +44,7 @@ bytes = "1.8"
 chrono = "0.4"
 clap = { version = "4", features = ["derive"] }
 colored = "2"
+console-subscriber = "0.4"
 countio = { version = "0.2", features = ["futures"] }
 crc32fast = "1.4"
 csv = "1"
@@ -56,6 +57,7 @@ futures-util = "0.3"
 gearhash = "0.1"
 getrandom = "0.3"
 git-url-parse = "0.4"
+git-version = "0.3"
 git2 = "0.20"
 half = "2.4"
 heapify = "0.2"
@@ -105,11 +107,18 @@ tokio-retry = "0.3"
 tokio-util = { version = "0.7" }
 tower-service = "0.3"
 tracing = "0.1"
+tracing-appender = "0.2"
+tracing-log = "0.2"
+tracing-subscriber = { version = "0.3", features = [
+    "json",
+    "env-filter",
+] }
 ulid = "1.2"
 url = "2.5"
 urlencoding = "2.1"
 uuid = "1"
 walkdir = "2"
+warp = "0.3"
 web-time = "1.1"
 whoami = "1"
 
@@ -123,9 +132,11 @@ winapi = { version = "0.3", features = [
 ] }
 
 # dev-deps
+approx = "0.5"
 criterion = { version = "0.5", features = ["html_reports"] }
 httpmock = "0.7"
 rand_core = "0.6"
+rand_distr = "0.5"
 russh = "0.54"
 serial_test = "3"
 tempdir = "0.3"
