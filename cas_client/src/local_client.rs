@@ -390,8 +390,6 @@ impl Client for LocalClient {
     fn use_shard_footer(&self) -> bool {
         true
     }
-
-    #[cfg(not(target_family = "wasm"))]
     async fn get_reconstruction(
         &self,
         file_id: &MerkleHash,
@@ -402,7 +400,7 @@ impl Client for LocalClient {
         };
 
         // Calculate total file size from segments
-        let total_file_size: u64 = file_info.segments.iter().map(|s| s.unpacked_segment_bytes as u64).sum();
+        let total_file_size: u64 = file_info.file_size();
 
         // Handle range validation and truncation
         let file_range = if let Some(range) = bytes_range {
@@ -419,7 +417,7 @@ impl Client for LocalClient {
         // First skip file segments until we find the first one that starts before the file range start
         let mut s_idx = 0;
         let mut cumulative_bytes = 0u64;
-        let offset_into_first_range;
+        let mut first_chunk_byte_start;
 
         loop {
             if s_idx >= file_info.segments.len() {
@@ -431,7 +429,7 @@ impl Client for LocalClient {
             let n = file_info.segments[s_idx].unpacked_segment_bytes as u64;
             if cumulative_bytes + n > file_range.start {
                 assert_ge!(file_range.start, cumulative_bytes);
-                offset_into_first_range = file_range.start - cumulative_bytes;
+                first_chunk_byte_start = cumulative_bytes;
                 break;
             } else {
                 cumulative_bytes += n;
@@ -446,67 +444,71 @@ impl Client for LocalClient {
         #[derive(Clone)]
         struct FetchInfoIntemediate {
             xorb_hash: MerkleHash,
-            chunk_range: (u32, u32),
-            byte_range: (u32, u32),
+            chunk_range: ChunkRange,
+            byte_range: FileRange,
         }
 
         let mut fetch_info_map: HashMap<MerkleHash, Vec<FetchInfoIntemediate>> = HashMap::new();
 
         while s_idx < file_info.segments.len() && cumulative_bytes < file_range.end {
             let mut segment = file_info.segments[s_idx].clone();
+            let mut chunk_range = ChunkRange::new(segment.chunk_index_start, segment.chunk_index_end);
 
             // Now get the URL for this segment, which involves reading the actual byte range there.
             let xorb_footer = self.read_xorb_footer(&segment.cas_hash)?;
 
             // Do we need to prune the first segment on chunk boundaries to align with the range given?
             if cumulative_bytes < file_range.start {
-                while segment.chunk_index_start < segment.chunk_index_end {
-                    let next_chunk_size = xorb_footer.uncompressed_chunk_length(segment.chunk_index_start)? as u64;
+                while chunk_range.start < chunk_range.end {
+                    let next_chunk_size = xorb_footer.uncompressed_chunk_length(chunk_range.start)? as u64;
 
-                    if cumulative_bytes + next_chunk_size > file_range.start {
-                        break;
-                    } else {
+                    if cumulative_bytes + next_chunk_size <= file_range.start {
                         cumulative_bytes += next_chunk_size;
-                        segment.chunk_index_start += 1;
+                        first_chunk_byte_start += next_chunk_size;
+                        segment.unpacked_segment_bytes -= next_chunk_size as u32;
+
+                        chunk_range.start += 1;
+
                         // Should find it somewhere in here.
-                        debug_assert_lt!(segment.chunk_index_start, segment.chunk_index_end);
+                        debug_assert_lt!(chunk_range.start, chunk_range.end);
+                    } else {
+                        break;
                     }
                 }
             }
-
-            let (byte_start, mut byte_end) =
-                xorb_footer.get_byte_offset(segment.chunk_index_start, segment.chunk_index_end)?;
 
             // Do we need to prune the last segment on chunk boundaries to align with the range given?
-            if cumulative_bytes + (byte_end - byte_start) as u64 > file_range.end {
-                let mut term_length = (byte_end - byte_start) as u64;
-                while segment.chunk_index_end > segment.chunk_index_start {
-                    let last_chunk_size = xorb_footer.uncompressed_chunk_length(segment.chunk_index_end - 1)?;
+            if cumulative_bytes + segment.unpacked_segment_bytes as u64 > file_range.end {
+                while chunk_range.end > chunk_range.start {
+                    let last_chunk_size = xorb_footer.uncompressed_chunk_length(chunk_range.end - 1)?;
 
-                    if term_length - last_chunk_size as u64 <= file_range.end {
-                        break;
+                    if cumulative_bytes + (segment.unpacked_segment_bytes - last_chunk_size) as u64 >= file_range.end {
+                        // We can cut the last chunk off and still contain the requested range.
+                        chunk_range.end -= 1;
+                        segment.unpacked_segment_bytes -= last_chunk_size;
+                        debug_assert_lt!(chunk_range.start, chunk_range.end);
+                        debug_assert_gt!(segment.unpacked_segment_bytes, 0);
                     } else {
-                        byte_end -= last_chunk_size;
-                        term_length -= last_chunk_size as u64;
-                        segment.chunk_index_end -= 1;
-                        debug_assert_lt!(segment.chunk_index_start, segment.chunk_index_end);
+                        break;
                     }
                 }
-                debug_assert_ge!(term_length, file_range.end - cumulative_bytes);
             }
+
+            let (byte_start, byte_end) = xorb_footer.get_byte_offset(chunk_range.start, chunk_range.end)?;
+            let byte_range = FileRange::new(byte_start as u64, byte_end as u64);
 
             let cas_reconstruction_term = CASReconstructionTerm {
                 hash: segment.cas_hash.into(),
                 unpacked_length: segment.unpacked_segment_bytes,
-                range: ChunkRange::new(segment.chunk_index_start, segment.chunk_index_end),
+                range: chunk_range,
             };
 
             terms.push(cas_reconstruction_term);
 
             let fetch_info_intemediate = FetchInfoIntemediate {
                 xorb_hash: segment.cas_hash,
-                chunk_range: (segment.chunk_index_start, segment.chunk_index_end),
-                byte_range: (byte_start, byte_end),
+                chunk_range,
+                byte_range,
             };
 
             fetch_info_map.entry(segment.cas_hash).or_default().push(fetch_info_intemediate);
@@ -523,7 +525,7 @@ impl Client for LocalClient {
         let mut merged_fetch_info_map: HashMap<HexMerkleHash, Vec<CASReconstructionFetchInfo>> = HashMap::new();
         for (hash, mut fi_vec) in fetch_info_map {
             // Sort by url_range.start
-            fi_vec.sort_by_key(|fi| fi.chunk_range.0);
+            fi_vec.sort_by_key(|fi| fi.chunk_range.start);
             let file_path = self.get_path_for_entry(&hash);
 
             // Merge adjacent or overlapping ranges
@@ -540,9 +542,9 @@ impl Client for LocalClient {
 
                 while idx + 1 < fi_vec.len() {
                     let next_fi = &fi_vec[idx + 1];
-                    if next_fi.chunk_range.0 <= fi.chunk_range.1 {
-                        new_fi.chunk_range.1 = next_fi.chunk_range.1;
-                        new_fi.byte_range.1 = next_fi.byte_range.1;
+                    if next_fi.chunk_range.start <= fi.chunk_range.end {
+                        new_fi.chunk_range.end = next_fi.chunk_range.end;
+                        new_fi.byte_range.start = next_fi.byte_range.end;
                         idx += 1;
                     } else {
                         break;
@@ -550,9 +552,12 @@ impl Client for LocalClient {
                 }
 
                 merged.push(CASReconstructionFetchInfo {
-                    range: ChunkRange::new(new_fi.chunk_range.0, new_fi.chunk_range.1),
-                    url: format!("{:?}:{}:{}:{}", file_path, new_fi.byte_range.0, new_fi.byte_range.1, timestamp_ms),
-                    url_range: HttpRange::new(new_fi.byte_range.0 as u64, new_fi.byte_range.1 as u64),
+                    range: new_fi.chunk_range,
+                    url: format!(
+                        "{:?}:{}:{}:{}",
+                        file_path, new_fi.byte_range.start, new_fi.byte_range.end, timestamp_ms
+                    ),
+                    url_range: HttpRange::from(new_fi.byte_range),
                 });
 
                 idx += 1;
@@ -562,13 +567,12 @@ impl Client for LocalClient {
         }
 
         Ok(Some(QueryReconstructionResponse {
-            offset_into_first_range,
+            offset_into_first_range: file_range.start - first_chunk_byte_start,
             terms,
             fetch_info: merged_fetch_info_map,
         }))
     }
 
-    #[cfg(not(target_family = "wasm"))]
     async fn batch_get_reconstruction(&self, file_ids: &[MerkleHash]) -> Result<BatchQueryReconstructionResponse> {
         let mut files = HashMap::new();
         let mut fetch_info_map: HashMap<HexMerkleHash, Vec<CASReconstructionFetchInfo>> = HashMap::new();
@@ -590,7 +594,6 @@ impl Client for LocalClient {
         })
     }
 
-    #[cfg(not(target_family = "wasm"))]
     async fn get_file_term_data(
         &self,
         hash: MerkleHash,
@@ -663,7 +666,6 @@ impl Client for LocalClient {
         })
     }
 
-    #[cfg(not(target_family = "wasm"))]
     async fn get_file_with_sequential_writer(
         self: Arc<Self>,
         hash: &MerkleHash,
@@ -677,7 +679,6 @@ impl Client for LocalClient {
         Ok(len)
     }
 
-    #[cfg(not(target_family = "wasm"))]
     async fn get_file_with_parallel_writer(
         self: Arc<Self>,
         hash: &MerkleHash,
@@ -692,6 +693,11 @@ impl Client for LocalClient {
 }
 
 impl LocalClient {
+    pub async fn get_file_size(&self, hash: &MerkleHash) -> Result<u64> {
+        let file_info = self.shard_manager.get_file_reconstruction_info(hash).await?;
+        Ok(file_info.unwrap().0.file_size())
+    }
+
     pub async fn get_file_data(&self, hash: &MerkleHash, byte_range: Option<FileRange>) -> Result<Vec<u8>> {
         let Some((file_info, _)) = self
             .shard_manager
@@ -1468,6 +1474,352 @@ mod tests {
             assert_eq!(reconstruction.fetch_info.len(), 1);
 
             assert_eq!(client.get_file_data(&file_hash, None).await.unwrap(), file_data);
+        }
+    }
+
+    /// Tests that get_reconstruction correctly shrinks chunk ranges to only include
+    /// chunks that contain at least part of the requested byte range.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_get_reconstruction_chunk_boundary_shrinking() {
+        let client = LocalClient::temporary().unwrap();
+
+        // Create a file with 5 chunks of 2048 bytes each = 10240 total bytes
+        let chunk_size: usize = 2048;
+        let term_spec = &[(1, (0, 5))];
+        let (file_data, file_hash) = client.upload_random_file(term_spec, chunk_size).await.unwrap();
+
+        let total_file_size = file_data.len() as u64;
+        assert_eq!(total_file_size, (5 * chunk_size) as u64);
+
+        let query_file_size = client.get_file_size(&file_hash).await.unwrap();
+        assert_eq!(query_file_size, total_file_size);
+
+        // Test 1: Range starting in the middle of chunk 1 should skip chunk 0
+        // Range [2048 + 500, end of file] should skip chunk 0
+        {
+            let start = chunk_size as u64 + 500; // Middle of chunk 1
+            let end = total_file_size;
+            let response = client
+                .get_reconstruction(&file_hash, Some(FileRange::new(start, end)))
+                .await
+                .unwrap()
+                .unwrap();
+
+            assert_eq!(response.terms.len(), 1);
+            // chunk 0 should be excluded; starts at chunk 1
+            assert_eq!(response.terms[0].range.start, 1);
+            // Should include all remaining chunks
+            assert_eq!(response.terms[0].range.end, 5);
+            // offset_into_first_range is now the offset into the first returned chunk
+            // After skipping chunk 0 (2048 bytes), offset is 500
+            assert_eq!(response.offset_into_first_range, 500);
+        }
+
+        // Test 2: Range starting exactly at a chunk boundary
+        // Range [2048*2, end] should start at chunk 2
+        {
+            let start = (chunk_size * 2) as u64; // Start of chunk 2
+            let end = total_file_size;
+            let response = client
+                .get_reconstruction(&file_hash, Some(FileRange::new(start, end)))
+                .await
+                .unwrap()
+                .unwrap();
+
+            assert_eq!(response.terms.len(), 1);
+            assert_eq!(response.terms[0].range.start, 2);
+            assert_eq!(response.terms[0].range.end, 5);
+            assert_eq!(response.offset_into_first_range, 0);
+        }
+
+        // Test 3: Range ending in the middle of a chunk should include that chunk and potentially more
+        // Range [0, 2048*2 + 500] should include chunks that cover this range
+        {
+            let start = 0u64;
+            let end = (chunk_size * 2) as u64 + 500; // Middle of chunk 2
+            let response = client
+                .get_reconstruction(&file_hash, Some(FileRange::new(start, end)))
+                .await
+                .unwrap()
+                .unwrap();
+
+            assert_eq!(response.terms.len(), 1);
+            assert_eq!(response.terms[0].range.start, 0);
+            // Should include chunks up through the one containing the end byte
+            // The end-shrinking will shrink things to be three chunks -- the two full ones at indices 0 and 1, and then
+            // chunk 2 which contains the partial info.
+            assert_eq!(response.terms[0].range.end, 3);
+            assert_eq!(response.offset_into_first_range, 0);
+        }
+
+        // Test 4: Range fully within a single chunk
+        // Range [2048*2 + 100, 2048*2 + 500] (inside chunk 2)
+        {
+            let start = (chunk_size * 2) as u64 + 100; // Inside chunk 2
+            let end = (chunk_size * 2) as u64 + 500; // Still inside chunk 2
+            let response = client
+                .get_reconstruction(&file_hash, Some(FileRange::new(start, end)))
+                .await
+                .unwrap()
+                .unwrap();
+
+            assert_eq!(response.terms.len(), 1);
+            // Should start at chunk 2 (chunks 0-1 pruned)
+            assert_eq!(response.terms[0].range.start, 2);
+            // End-shrinking will shrink this range.
+            assert_eq!(response.terms[0].range.end, 3);
+            // After skipping chunks 0-1, offset is 100 into chunk 2
+            assert_eq!(response.offset_into_first_range, 100);
+        }
+
+        // Test 5: Range spanning exactly one chunk boundary
+        // Range [2048 - 100, 2048 + 100] spans end of chunk 0 and start of chunk 1
+        {
+            let start = chunk_size as u64 - 100; // Near end of chunk 0
+            let end = chunk_size as u64 + 100; // Near start of chunk 1
+            let response = client
+                .get_reconstruction(&file_hash, Some(FileRange::new(start, end)))
+                .await
+                .unwrap()
+                .unwrap();
+
+            assert_eq!(response.terms.len(), 1);
+            // Should include both chunks 0 and 1 (and possibly more due to end-shrinking)
+            assert_eq!(response.terms[0].range.start, 0);
+            assert_eq!(response.terms[0].range.end, 2);
+            // No chunks skipped at start, offset is chunk_size - 100 into chunk 0
+            assert_eq!(response.offset_into_first_range, chunk_size as u64 - 100);
+        }
+
+        // Test 6: Range starting exactly at chunk boundary, ending at chunk boundary
+        // Range [2048*2, 2048*4] (chunks 2-3); test off-by-one errors.
+        for delta in [0, 1] {
+            let start = (chunk_size * 2) as u64 + delta; // Start of chunk 2
+            let end = (chunk_size * 4) as u64 - delta; // End of chunk 3
+            let response = client
+                .get_reconstruction(&file_hash, Some(FileRange::new(start, end)))
+                .await
+                .unwrap()
+                .unwrap();
+
+            assert_eq!(response.terms.len(), 1);
+            assert_eq!(response.terms[0].range.start, 2);
+            // End-shrinking may keep additional chunks
+            assert_eq!(response.terms[0].range.end, 4);
+            assert_eq!(response.offset_into_first_range, delta);
+        }
+
+        // Test 7: Range starting at chunk boundary minus 1
+        {
+            let start = (chunk_size * 2) as u64 - 1; // Start of chunk 2
+            let end = (chunk_size * 4) as u64 + 1; // One byte of chunk 4 
+            let response = client
+                .get_reconstruction(&file_hash, Some(FileRange::new(start, end)))
+                .await
+                .unwrap()
+                .unwrap();
+
+            assert_eq!(response.terms.len(), 1);
+            assert_eq!(response.terms[0].range.start, 1);
+            // End-shrinking may keep additional chunks
+            assert_eq!(response.terms[0].range.end, 5);
+            assert_eq!(response.offset_into_first_range, chunk_size as u64 - 1);
+        }
+    }
+
+    /// Tests chunk boundary shrinking with multiple segments across different xorbs.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_get_reconstruction_chunk_boundary_multiple_segments() {
+        let client = LocalClient::temporary().unwrap();
+
+        // Create a file with segments from 2 xorbs:
+        // xorb 1: chunks 0-4 (4 chunks * 2048 = 8192 bytes)
+        // xorb 2: chunks 0-4 (4 chunks * 2048 = 8192 bytes)
+        // Total: 16384 bytes
+        let chunk_size = 2048usize;
+        let term_spec = &[(1, (0, 4)), (2, (0, 4))];
+        let (file_data, file_hash) = client.upload_random_file(term_spec, chunk_size).await.unwrap();
+
+        let total_file_size = file_data.len() as u64;
+        assert_eq!(total_file_size, (8 * chunk_size) as u64);
+
+        // Test 1: Range that skips first chunk of first xorb
+        {
+            let start = chunk_size as u64 + 500; // Middle of chunk 1 in xorb 1
+            let end = total_file_size;
+            let response = client
+                .get_reconstruction(&file_hash, Some(FileRange::new(start, end)))
+                .await
+                .unwrap()
+                .unwrap();
+
+            assert_eq!(response.terms.len(), 2);
+
+            // First term (xorb 1): should skip chunk 0
+            assert_eq!(response.terms[0].range.start, 1);
+            assert_eq!(response.terms[0].range.end, 4);
+
+            // Second term (xorb 2): should include all chunks
+            assert_eq!(response.terms[1].range.start, 0);
+            assert_eq!(response.terms[1].range.end, 4);
+
+            // After skipping chunk 0 (2048 bytes), offset is 500 into chunk 1
+            assert_eq!(response.offset_into_first_range, 500);
+        }
+
+        // Test 2: Range fully within first xorb
+        // Range [2048, 6144) covers exactly chunks 1 and 2
+        {
+            let start = chunk_size as u64; // Start of chunk 1 in xorb 1
+            let end = (chunk_size * 3) as u64; // End of chunk 2 in xorb 1
+            let response = client
+                .get_reconstruction(&file_hash, Some(FileRange::new(start, end)))
+                .await
+                .unwrap()
+                .unwrap();
+
+            assert_eq!(response.terms.len(), 1);
+            // Chunk 0 pruned at start
+            assert_eq!(response.terms[0].range.start, 1);
+            // Chunks 3+ pruned at end (only chunks 1-2 needed for bytes [2048, 6144))
+            assert_eq!(response.terms[0].range.end, 3);
+            // Start is exactly at chunk 1 boundary, so offset is 0
+            assert_eq!(response.offset_into_first_range, 0);
+        }
+
+        // Test 3: Range fully within second xorb
+        // Range [10240, 14336) covers exactly chunks 1 and 2 of xorb 2
+        {
+            let xorb1_size = (chunk_size * 4) as u64;
+            let start = xorb1_size + chunk_size as u64; // Start of chunk 1 in xorb 2
+            let end = xorb1_size + (chunk_size * 3) as u64; // End of chunk 2 in xorb 2
+            let response = client
+                .get_reconstruction(&file_hash, Some(FileRange::new(start, end)))
+                .await
+                .unwrap()
+                .unwrap();
+
+            assert_eq!(response.terms.len(), 1);
+            // Chunk 0 of xorb 2 pruned at start
+            assert_eq!(response.terms[0].range.start, 1);
+            // Chunks 3+ pruned at end
+            assert_eq!(response.terms[0].range.end, 3);
+            // Start is exactly at chunk 1 boundary, so offset is 0
+            assert_eq!(response.offset_into_first_range, 0);
+        }
+
+        // Test 4: Range spanning xorb boundary, ending in middle of second xorb
+        // Range [4096, 12788) spans from chunk 2 of xorb 1 into chunk 2 of xorb 2
+        {
+            let xorb1_size = (chunk_size * 4) as u64;
+            let start = (chunk_size * 2) as u64; // Start of chunk 2 in xorb 1
+            let end = xorb1_size + (chunk_size * 2) as u64 + 500; // Middle of chunk 2 in xorb 2
+            let response = client
+                .get_reconstruction(&file_hash, Some(FileRange::new(start, end)))
+                .await
+                .unwrap()
+                .unwrap();
+
+            assert_eq!(response.terms.len(), 2);
+
+            // First term (xorb 1): chunks 2-3 (chunks 0-1 pruned at start, all remaining needed)
+            assert_eq!(response.terms[0].range.start, 2);
+            assert_eq!(response.terms[0].range.end, 4);
+
+            // Second term (xorb 2): chunks 0-2 (chunk 2 contains the end byte, chunk 3 pruned)
+            assert_eq!(response.terms[1].range.start, 0);
+            assert_eq!(response.terms[1].range.end, 3);
+
+            // Start is exactly at chunk 2 boundary in xorb 1, so offset is 0
+            assert_eq!(response.offset_into_first_range, 0);
+        }
+
+        // Test 5: Off-by-one tests for range within first xorb
+        // Range [2048 +/- delta, 6144 -/+ delta] tests boundary precision
+        for delta in [0, 1] {
+            let start = chunk_size as u64 + delta; // Start of chunk 1 +/- delta
+            let end = (chunk_size * 3) as u64 - delta; // End of chunk 2 -/+ delta
+            let response = client
+                .get_reconstruction(&file_hash, Some(FileRange::new(start, end)))
+                .await
+                .unwrap()
+                .unwrap();
+
+            assert_eq!(response.terms.len(), 1);
+            // Chunk 0 pruned at start
+            assert_eq!(response.terms[0].range.start, 1);
+            // Chunks 1-2 cover the range
+            assert_eq!(response.terms[0].range.end, 3);
+            assert_eq!(response.offset_into_first_range, delta);
+        }
+
+        // Test 6: Range starting 1 byte before chunk boundary (requires including previous chunk)
+        {
+            let start = chunk_size as u64 - 1; // 1 byte before chunk 1
+            let end = (chunk_size * 3) as u64 + 1; // 1 byte into chunk 3
+            let response = client
+                .get_reconstruction(&file_hash, Some(FileRange::new(start, end)))
+                .await
+                .unwrap()
+                .unwrap();
+
+            assert_eq!(response.terms.len(), 1);
+            // Chunk 0 must be included (range starts 1 byte before chunk 1)
+            assert_eq!(response.terms[0].range.start, 0);
+            // Chunk 3 must be included (range ends 1 byte into chunk 3)
+            assert_eq!(response.terms[0].range.end, 4);
+            // Offset is chunk_size - 1 into chunk 0
+            assert_eq!(response.offset_into_first_range, chunk_size as u64 - 1);
+        }
+
+        // Test 7: Off-by-one tests spanning xorb boundary
+        // Range starting at xorb 1 chunk 2 boundary with delta
+        for delta in [0, 1] {
+            let xorb1_size = (chunk_size * 4) as u64;
+            let start = (chunk_size * 2) as u64 + delta; // Chunk 2 in xorb 1
+            let end = xorb1_size + (chunk_size * 2) as u64 - delta; // Chunk 1 end in xorb 2
+            let response = client
+                .get_reconstruction(&file_hash, Some(FileRange::new(start, end)))
+                .await
+                .unwrap()
+                .unwrap();
+
+            assert_eq!(response.terms.len(), 2);
+
+            // First term (xorb 1): chunks 2-3
+            assert_eq!(response.terms[0].range.start, 2);
+            assert_eq!(response.terms[0].range.end, 4);
+
+            // Second term (xorb 2): chunks 0-1
+            assert_eq!(response.terms[1].range.start, 0);
+            assert_eq!(response.terms[1].range.end, 2);
+
+            assert_eq!(response.offset_into_first_range, delta);
+        }
+
+        // Test 8: Range starting 1 byte before xorb boundary (requires including xorb 1 chunk 3)
+        {
+            let xorb1_size = (chunk_size * 4) as u64;
+            let start = xorb1_size - 1; // 1 byte before xorb 2
+            let end = xorb1_size + (chunk_size * 2) as u64 + 1; // 1 byte into chunk 2 of xorb 2
+            let response = client
+                .get_reconstruction(&file_hash, Some(FileRange::new(start, end)))
+                .await
+                .unwrap()
+                .unwrap();
+
+            assert_eq!(response.terms.len(), 2);
+
+            // First term (xorb 1): chunk 3 only (contains the last byte of xorb 1)
+            assert_eq!(response.terms[0].range.start, 3);
+            assert_eq!(response.terms[0].range.end, 4);
+
+            // Second term (xorb 2): chunks 0-2 (chunk 2 contains the end byte)
+            assert_eq!(response.terms[1].range.start, 0);
+            assert_eq!(response.terms[1].range.end, 3);
+
+            // Offset is chunk_size - 1 into chunk 3 of xorb 1
+            assert_eq!(response.offset_into_first_range, chunk_size as u64 - 1);
         }
     }
 }
