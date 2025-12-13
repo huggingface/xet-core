@@ -21,10 +21,9 @@ use mdb_shard::shard_file_reconstructor::FileReconstructor;
 use mdb_shard::utils::shard_file_name;
 use mdb_shard::{MDBShardFile, MDBShardInfo, ShardFileManager};
 use merklehash::MerkleHash;
-use more_asserts::assert_ge;
+use more_asserts::*;
 use progress_tracking::item_tracking::SingleItemProgressUpdater;
 use progress_tracking::upload_tracking::CompletionTracker;
-use rand::prelude::*;
 use tempfile::TempDir;
 use tokio::io::AsyncWriteExt;
 use tokio::runtime::Handle;
@@ -454,7 +453,47 @@ impl Client for LocalClient {
         let mut fetch_info_map: HashMap<MerkleHash, Vec<FetchInfoIntemediate>> = HashMap::new();
 
         while s_idx < file_info.segments.len() && cumulative_bytes < file_range.end {
-            let segment = &file_info.segments[s_idx];
+            let mut segment = file_info.segments[s_idx].clone();
+
+            // Now get the URL for this segment, which involves reading the actual byte range there.
+            let xorb_footer = self.read_xorb_footer(&segment.cas_hash)?;
+
+            // Do we need to prune the first segment on chunk boundaries to align with the range given?
+            if cumulative_bytes < file_range.start {
+                while segment.chunk_index_start < segment.chunk_index_end {
+                    let next_chunk_size = xorb_footer.uncompressed_chunk_length(segment.chunk_index_start)? as u64;
+
+                    if cumulative_bytes + next_chunk_size > file_range.start {
+                        break;
+                    } else {
+                        cumulative_bytes += next_chunk_size;
+                        segment.chunk_index_start += 1;
+                        // Should find it somewhere in here.
+                        debug_assert_lt!(segment.chunk_index_start, segment.chunk_index_end);
+                    }
+                }
+            }
+
+            let (byte_start, mut byte_end) =
+                xorb_footer.get_byte_offset(segment.chunk_index_start, segment.chunk_index_end)?;
+
+            // Do we need to prune the last segment on chunk boundaries to align with the range given?
+            if cumulative_bytes + (byte_end - byte_start) as u64 > file_range.end {
+                let mut term_length = (byte_end - byte_start) as u64;
+                while segment.chunk_index_end > segment.chunk_index_start {
+                    let last_chunk_size = xorb_footer.uncompressed_chunk_length(segment.chunk_index_end - 1)?;
+
+                    if term_length - last_chunk_size as u64 <= file_range.end {
+                        break;
+                    } else {
+                        byte_end -= last_chunk_size;
+                        term_length -= last_chunk_size as u64;
+                        segment.chunk_index_end -= 1;
+                        debug_assert_lt!(segment.chunk_index_start, segment.chunk_index_end);
+                    }
+                }
+                debug_assert_ge!(term_length, file_range.end - cumulative_bytes);
+            }
 
             let cas_reconstruction_term = CASReconstructionTerm {
                 hash: segment.cas_hash.into(),
@@ -463,12 +502,6 @@ impl Client for LocalClient {
             };
 
             terms.push(cas_reconstruction_term);
-
-            // Now get the URL for this segment, which involves reading the actual byte range there.
-            let xorb_footer = self.read_xorb_footer(&segment.cas_hash)?;
-
-            let (byte_start, byte_end) =
-                xorb_footer.get_byte_offset(segment.chunk_index_start, segment.chunk_index_end)?;
 
             let fetch_info_intemediate = FetchInfoIntemediate {
                 xorb_hash: segment.cas_hash,
