@@ -218,7 +218,6 @@ async fn query_reconstruction(
         &jwt_info.cas_url,
         &cas_storage_config.auth,
         &Some(cas_storage_config.cache_config.clone()),
-        Some(config.shard_config.cache_directory.clone()),
         "",
         true,
         &cas_storage_config.user_agent,

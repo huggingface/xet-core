@@ -37,7 +37,6 @@ use crate::{Client, SeekingOutputProvider, SequentialOutput};
 
 pub struct LocalClient {
     tmp_dir: Option<TempDir>, // To hold directory to use for local testing
-    base_dir: PathBuf,
     xorb_dir: PathBuf,
     shard_dir: PathBuf,
     shard_manager: Arc<ShardFileManager>,
@@ -104,7 +103,6 @@ impl LocalClient {
 
         Ok(Self {
             tmp_dir,
-            base_dir,
             shard_dir,
             xorb_dir,
             shard_manager,
@@ -230,6 +228,7 @@ impl LocalClient {
         Ok(ret)
     }
 
+    #[cfg(test)]
     fn get_length(&self, hash: &MerkleHash) -> Result<u32> {
         let file_path = self.get_path_for_entry(hash);
         match File::open(file_path) {

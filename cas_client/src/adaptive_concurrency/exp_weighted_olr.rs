@@ -111,6 +111,7 @@ impl ExpWeightedOnlineLinearRegression {
     }
 
     /// Optionally: expose current coefficients (beta0, beta1) if desired.
+    #[allow(dead_code)]
     pub fn coefficients(&self) -> Option<(f64, f64)> {
         let delta = self.sw * self.sxx - self.sx * self.sx;
         if delta.abs() < 1e-12 {
@@ -125,6 +126,7 @@ impl ExpWeightedOnlineLinearRegression {
     /// Check if two models are approximately equal for testing purposes.
     ///
     /// Compares all internal state (sufficient statistics) with a tolerance.
+    #[cfg(test)]
     pub fn approx_equals(&self, other: &Self, epsilon: f64) -> bool {
         (self.sw - other.sw).abs() < epsilon
             && (self.sx - other.sx).abs() < epsilon

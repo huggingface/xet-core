@@ -1,4 +1,3 @@
-#![allow(dead_code)]
 pub mod configurations;
 pub mod data_client;
 mod deduplication_interface;

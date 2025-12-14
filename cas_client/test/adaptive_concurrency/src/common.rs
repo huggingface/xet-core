@@ -1,4 +1,3 @@
-#![allow(dead_code)]
 // Re-export the NetworkModelState from the adaptive_concurrency module
 pub use cas_client::adaptive_concurrency::{CCLatencyModelState, CCSuccessModelState};
 use serde::{Deserialize, Serialize};

@@ -399,7 +399,7 @@ impl DownloadSegmentLengthTuner {
 
         if metrics.n_retries_on_403 > 0 {
             if *num_range_in_segment > 1 {
-                let delta = xet_config().client.num_range_in_segment_delta.min(*num_range_in_segment - 1);
+                let delta = self.delta.min(*num_range_in_segment - 1);
                 info!("detected retries on 403, shrinking segment size by {delta} ranges");
                 *num_range_in_segment -= delta;
             } else {
@@ -631,8 +631,7 @@ mod tests {
             then.status(200).json_body_obj(&response);
         });
 
-        let client: Arc<dyn Client + Send + Sync> =
-            RemoteClient::new(&server.base_url(), &None, &None, None, "", false, "");
+        let client: Arc<dyn Client + Send + Sync> = RemoteClient::new(&server.base_url(), &None, &None, "", false, "");
         let fetch_info = FetchInfo::new(MerkleHash::default(), file_range);
 
         fetch_info.query(&client).await?;
@@ -675,8 +674,7 @@ mod tests {
             then.status(200).json_body_obj(&response);
         });
 
-        let client: Arc<dyn Client + Send + Sync> =
-            RemoteClient::new(&server.base_url(), &None, &None, None, "", false, "");
+        let client: Arc<dyn Client + Send + Sync> = RemoteClient::new(&server.base_url(), &None, &None, "", false, "");
         let fetch_info = Arc::new(FetchInfo::new(MerkleHash::default(), file_range_to_refresh));
 
         // Spawn multiple tasks each calling into refresh with a different delay in
@@ -742,8 +740,7 @@ mod tests {
             then.status(403).delay(Duration::from_millis(100));
         });
 
-        let client: Arc<dyn Client + Send + Sync> =
-            RemoteClient::new(&server.base_url(), &None, &None, None, "", false, "");
+        let client: Arc<dyn Client + Send + Sync> = RemoteClient::new(&server.base_url(), &None, &None, "", false, "");
         let http_client = Arc::new(build_http_client(RetryConfig::default(), "", "")?);
 
         let fetch_info = FetchInfo::new(MerkleHash::default(), file_range);

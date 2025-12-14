@@ -106,6 +106,7 @@ impl RTTPredictor {
     ///
     /// - `size_bytes`: the size of the transfer.
     /// - `avg_concurrent`: the number of concurrent connections.
+    #[cfg(test)]
     pub fn prediction_standard_error(&self, size_bytes: u64, avg_concurrent: f64) -> Option<f64> {
         self.predict(size_bytes, avg_concurrent).1
     }

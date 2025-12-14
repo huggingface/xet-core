@@ -48,12 +48,13 @@ signal-hook = "0.3"
 ctrlc = "3.4"
 
 [features]
-default = ["no-default-cache"]                           # By default, hf_xet disables the disk cache. 
+default = ["no-default-cache", "elevated_information_level"] # By default, hf_xet disables the disk cache and uses aggressive logging level
 native-tls = ["cas_client/native-tls-vendored"]
 native-tls-vendored = ["cas_client/native-tls-vendored"]
 no-default-cache = ["xet_config/no-default-cache"]
 profiling = ["pprof"]
 tokio-console = ["xet_logging/tokio-console"]
+elevated_information_level = ["cas_client/elevated_information_level", "utils/elevated_information_level"]
 
 [profile.release]
 split-debuginfo = "packed"

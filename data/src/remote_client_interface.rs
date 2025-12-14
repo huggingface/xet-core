@@ -18,7 +18,6 @@ pub(crate) fn create_remote_client(
             endpoint,
             &cas_storage_config.auth,
             &Some(cas_storage_config.cache_config.clone()),
-            Some(config.shard_config.cache_directory.clone()),
             session_id,
             dry_run,
             &cas_storage_config.user_agent,

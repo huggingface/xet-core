@@ -1,6 +1,5 @@
 use std::collections::HashMap;
 use std::mem::take;
-use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -24,7 +23,7 @@ use reqwest_middleware::ClientWithMiddleware;
 use tokio::io::AsyncWriteExt;
 use tokio::sync::{OwnedSemaphorePermit, mpsc};
 use tokio::task::{JoinHandle, JoinSet};
-use tracing::{debug, info, instrument};
+use tracing::{debug, event, info, instrument};
 use utils::auth::AuthConfig;
 #[cfg(not(target_family = "wasm"))]
 use utils::singleflight::Group;
@@ -38,7 +37,7 @@ use crate::http_client::{Api, ResponseErrorLogger, RetryConfig};
 #[cfg(not(target_family = "wasm"))]
 use crate::output_provider::{SeekingOutputProvider, SequentialOutput};
 use crate::retry_wrapper::RetryWrapper;
-use crate::{Client, http_client};
+use crate::{Client, INFORMATION_LOG_LEVEL, http_client};
 
 pub const CAS_ENDPOINT: &str = "http://localhost:8080";
 pub const PREFIX_DEFAULT: &str = "default";
@@ -61,7 +60,6 @@ pub struct RemoteClient {
     chunk_cache: Option<Arc<dyn ChunkCache>>,
     #[cfg(not(target_family = "wasm"))]
     range_download_single_flight: RangeDownloadSingleFlight,
-    shard_cache_directory: Option<PathBuf>,
     upload_concurrency_controller: Arc<AdaptiveConcurrencyController>,
 }
 
@@ -73,7 +71,8 @@ pub(crate) async fn get_reconstruction_with_endpoint_and_client(
 ) -> Result<Option<QueryReconstructionResponse>> {
     let call_id = FN_CALL_ID.fetch_add(1, Ordering::Relaxed);
     let url = Url::parse(&format!("{endpoint}/v1/reconstructions/{}", file_hash.hex()))?;
-    info!(
+    event!(
+        INFORMATION_LOG_LEVEL,
         call_id,
         %file_hash,
         ?byte_range,
@@ -101,14 +100,15 @@ pub(crate) async fn get_reconstruction_with_endpoint_and_client(
     };
 
     let len = response.content_length();
-    info!(%file_hash, len, "query_reconstruction");
+    event!(INFORMATION_LOG_LEVEL, %file_hash, len, "query_reconstruction");
 
     let query_reconstruction_response: QueryReconstructionResponse = response
         .json()
         .await
         .info_error_fn(|| format!("JSON parsing failed in get_reconstruction, call_id={}", call_id))?;
 
-    info!(
+    event!(
+        INFORMATION_LOG_LEVEL,
         call_id,
         %file_hash,
         ?byte_range,
@@ -191,7 +191,6 @@ impl RemoteClient {
         endpoint: &str,
         auth: &Option<AuthConfig>,
         cache_config: &Option<CacheConfig>,
-        shard_cache_directory: Option<PathBuf>,
         session_id: &str,
         dry_run: bool,
         user_agent: &str,
@@ -199,10 +198,10 @@ impl RemoteClient {
         // use disk cache if cache_config provided.
         let chunk_cache = if let Some(cache_config) = cache_config {
             if cache_config.cache_size == 0 {
-                info!("Chunk cache size set to 0, disabling chunk cache");
+                event!(INFORMATION_LOG_LEVEL, "Chunk cache size set to 0, disabling chunk cache");
                 None
             } else {
-                info!(cache.dir=?cache_config.cache_directory, cache.size=cache_config.cache_size,"Using disk cache");
+                event!(INFORMATION_LOG_LEVEL, cache.dir=?cache_config.cache_directory, cache.size=cache_config.cache_size,"Using disk cache");
                 chunk_cache::get_cache(cache_config)
                     .log_error("failed to initialize cache, not using cache")
                     .ok()
@@ -226,7 +225,6 @@ impl RemoteClient {
             chunk_cache,
             #[cfg(not(target_family = "wasm"))]
             range_download_single_flight: Arc::new(Group::new()),
-            shard_cache_directory,
             upload_concurrency_controller: AdaptiveConcurrencyController::new_upload("upload"),
         })
     }
@@ -240,7 +238,8 @@ impl RemoteClient {
 
         let call_id = FN_CALL_ID.fetch_add(1, Ordering::Relaxed);
         let url = Url::parse(&format!("{}/v1/chunks/{key}", self.endpoint))?;
-        info!(
+        event!(
+            INFORMATION_LOG_LEVEL,
             call_id,
             prefix,
             %chunk_hash,
@@ -257,7 +256,8 @@ impl RemoteClient {
             .await;
 
         if result.as_ref().is_err_and(|e| e.status().is_some()) {
-            info!(
+            event!(
+                INFORMATION_LOG_LEVEL,
                 call_id,
                 prefix,
                 %chunk_hash,
@@ -267,7 +267,8 @@ impl RemoteClient {
             return Ok(None);
         }
 
-        info!(
+        event!(
+            INFORMATION_LOG_LEVEL,
             call_id,
             prefix,
             %chunk_hash,
@@ -280,6 +281,48 @@ impl RemoteClient {
 
 #[cfg(not(target_family = "wasm"))]
 impl RemoteClient {
+    #[instrument(skip_all, name = "RemoteClient::batch_get_reconstruction")]
+    #[allow(dead_code)]
+    async fn batch_get_reconstruction(
+        &self,
+        file_ids: impl Iterator<Item = &MerkleHash>,
+    ) -> Result<BatchQueryReconstructionResponse> {
+        let mut url_str = format!("{}/reconstructions?", self.endpoint);
+        let mut is_first = true;
+        let mut file_id_list = Vec::new();
+        for hash in file_ids {
+            file_id_list.push(hash.hex());
+            if is_first {
+                is_first = false;
+            } else {
+                url_str.push('&');
+            }
+            url_str.push_str("file_id=");
+            url_str.push_str(hash.hex().as_str());
+        }
+        let url: Url = url_str.parse()?;
+
+        let call_id = FN_CALL_ID.fetch_add(1, Ordering::Relaxed);
+        event!(INFORMATION_LOG_LEVEL, call_id, file_ids=?file_id_list, "Starting batch_get_reconstruction API call");
+
+        let api_tag = "cas::batch_get_reconstruction";
+        let client = self.authenticated_http_client.clone();
+
+        let response: BatchQueryReconstructionResponse = RetryWrapper::new(api_tag)
+            .run_and_extract_json(move |_partial_report_fn| client.get(url.clone()).with_extension(Api(api_tag)).send())
+            .await?;
+
+        event!(
+            INFORMATION_LOG_LEVEL,
+            call_id,
+            file_ids=?file_id_list,
+            response_count=response.files.len(),
+            "Completed batch_get_reconstruction API call",
+        );
+
+        Ok(response)
+    }
+
     // Segmented download such that the file reconstruction and fetch info is not queried in its entirety
     // at the beginning of the download, but queried in segments. Range downloads are executed with
     // a certain degree of parallelism, but writing out to storage is sequential. Ideal when the external
@@ -294,7 +337,8 @@ impl RemoteClient {
         progress_updater: Option<Arc<SingleItemProgressUpdater>>,
     ) -> Result<u64> {
         let call_id = FN_CALL_ID.fetch_add(1, Ordering::Relaxed);
-        info!(
+        event!(
+            INFORMATION_LOG_LEVEL,
             call_id,
             %file_hash,
             ?byte_range,
@@ -329,7 +373,11 @@ impl RemoteClient {
         let download_concurrency_limiter =
             XetRuntime::current().global_semaphore(*DOWNLOAD_CHUNK_RANGE_CONCURRENCY_LIMITER);
 
-        info!(concurrency_limit = xet_config().client.num_concurrent_range_gets, "Starting segmented download");
+        event!(
+            INFORMATION_LOG_LEVEL,
+            concurrency_limit = xet_config().client.num_concurrent_range_gets,
+            "Starting segmented download"
+        );
 
         let client_for_dispatch: Arc<dyn Client + Send + Sync> = self.clone();
         let queue_dispatcher: JoinHandle<Result<()>> = tokio::spawn(async move {
@@ -444,7 +492,8 @@ impl RemoteClient {
 
         queue_dispatcher.await??;
 
-        info!(
+        event!(
+            INFORMATION_LOG_LEVEL,
             call_id,
             %file_hash,
             ?byte_range,
@@ -468,7 +517,8 @@ impl RemoteClient {
         progress_updater: Option<Arc<SingleItemProgressUpdater>>,
     ) -> Result<u64> {
         let call_id = FN_CALL_ID.fetch_add(1, Ordering::Relaxed);
-        info!(
+        event!(
+            INFORMATION_LOG_LEVEL,
             call_id,
             %file_hash,
             ?byte_range,
@@ -591,7 +641,8 @@ impl RemoteClient {
             }
         }
 
-        info!(
+        event!(
+            INFORMATION_LOG_LEVEL,
             call_id,
             %file_hash,
             ?byte_range,
@@ -704,7 +755,7 @@ impl Client for RemoteClient {
     ) -> Result<Option<(MDBFileInfo, Option<MerkleHash>)>> {
         let call_id = FN_CALL_ID.fetch_add(1, Ordering::Relaxed);
         let url = Url::parse(&format!("{}/v1/reconstructions/{}", self.endpoint, file_hash.hex()))?;
-        info!(call_id, %file_hash, "Starting get_file_reconstruction_info API call");
+        event!(INFORMATION_LOG_LEVEL, call_id, %file_hash, "Starting get_file_reconstruction_info API call");
 
         let api_tag = "cas::get_reconstruction_info";
         let client = self.authenticated_http_client.clone();
@@ -730,7 +781,7 @@ impl Client for RemoteClient {
             None,
         ));
 
-        info!(call_id, %file_hash, terms_count, "Completed get_file_reconstruction_info API call");
+        event!(INFORMATION_LOG_LEVEL, call_id, %file_hash, terms_count, "Completed get_file_reconstruction_info API call");
 
         Ok(result)
     }
@@ -753,6 +804,10 @@ impl Client for RemoteClient {
             return Ok(true);
         }
 
+        let call_id = FN_CALL_ID.fetch_add(1, Ordering::Relaxed);
+        let n_upload_bytes = shard_data.len();
+        event!(INFORMATION_LOG_LEVEL, call_id, size = n_upload_bytes, "Starting upload_shard API call",);
+
         let api_tag = "cas::upload_shard";
         let client = self.authenticated_http_client.clone();
 
@@ -770,8 +825,26 @@ impl Client for RemoteClient {
             .await?;
 
         match response.result {
-            UploadShardResponseType::Exists => Ok(false),
-            UploadShardResponseType::SyncPerformed => Ok(true),
+            UploadShardResponseType::Exists => {
+                event!(
+                    INFORMATION_LOG_LEVEL,
+                    call_id,
+                    size = n_upload_bytes,
+                    result = "exists",
+                    "Completed upload_shard API call",
+                );
+                Ok(false)
+            },
+            UploadShardResponseType::SyncPerformed => {
+                event!(
+                    INFORMATION_LOG_LEVEL,
+                    call_id,
+                    size = n_upload_bytes,
+                    result = "sync performed",
+                    "Completed upload_shard API call",
+                );
+                Ok(true)
+            },
         }
     }
 
@@ -795,7 +868,8 @@ impl Client for RemoteClient {
         let url = Url::parse(&format!("{}/v1/xorbs/{key}", self.endpoint))?;
 
         let n_upload_bytes = serialized_cas_object.serialized_data.len() as u64;
-        info!(
+        event!(
+            INFORMATION_LOG_LEVEL,
             call_id,
             prefix,
             hash=%serialized_cas_object.hash,
@@ -865,7 +939,8 @@ impl Client for RemoteClient {
         };
 
         if !xorb_uploaded {
-            info!(
+            event!(
+                INFORMATION_LOG_LEVEL,
                 call_id,
                 prefix,
                 hash=%serialized_cas_object.hash,
@@ -873,7 +948,8 @@ impl Client for RemoteClient {
                 "Completed upload_xorb API call",
             );
         } else {
-            info!(
+            event!(
+                INFORMATION_LOG_LEVEL,
                 call_id,
                 prefix,
                 hash=%serialized_cas_object.hash,
@@ -949,7 +1025,7 @@ mod tests {
         let raw_xorb = build_raw_xorb(3, ChunkSize::Random(512, 10248));
 
         let threadpool = XetRuntime::new().unwrap();
-        let client = RemoteClient::new(CAS_ENDPOINT, &None, &None, None, "", false, "");
+        let client = RemoteClient::new(CAS_ENDPOINT, &None, &None, "", false, "");
 
         let cas_object = build_and_verify_cas_object(raw_xorb, Some(CompressionScheme::LZ4));
 
@@ -1332,7 +1408,7 @@ mod tests {
 
         // test reconstruct and sequential write
         let test = test_case.clone();
-        let client = RemoteClient::new(endpoint, &None, &None, None, "", false, "");
+        let client = RemoteClient::new(endpoint, &None, &None, "", false, "");
         let buf = ThreadSafeBuffer::default();
         let provider = SequentialOutput::from(buf.clone());
         let resp = threadpool.external_run_async_task(async move {
@@ -1354,7 +1430,7 @@ mod tests {
 
         // test reconstruct and parallel write
         let test = test_case;
-        let client = RemoteClient::new(endpoint, &None, &None, None, "", false, "");
+        let client = RemoteClient::new(endpoint, &None, &None, "", false, "");
         let buf = ThreadSafeBuffer::default();
         let provider = SeekingOutputProvider::from(buf.clone());
         let resp = threadpool.external_run_async_task(async move {
