@@ -670,11 +670,11 @@ impl Client for RemoteClient {
             url_str.push_str("file_id=");
             url_str.push_str(hash.hex().as_str());
         }
-        let url: Url = url_str.parse()?;
 
         let call_id = FN_CALL_ID.fetch_add(1, Ordering::Relaxed);
         info!(call_id, file_ids=?file_id_list, "Starting batch_get_reconstruction API call");
 
+        let url: Url = url_str.parse()?;
         let api_tag = "cas::batch_get_reconstruction";
         let client = self.authenticated_http_client.clone();
 
@@ -738,12 +738,12 @@ impl Client for RemoteClient {
         file_hash: &MerkleHash,
     ) -> Result<Option<(MDBFileInfo, Option<MerkleHash>)>> {
         let call_id = FN_CALL_ID.fetch_add(1, Ordering::Relaxed);
-        let url = Url::parse(&format!("{}/v1/reconstructions/{}", self.endpoint, file_hash.hex()))?;
+        let url_str = format!("{}/v1/reconstructions/{}", self.endpoint, file_hash.hex());
         event!(INFORMATION_LOG_LEVEL, call_id, %file_hash, "Starting get_file_reconstruction_info API call");
 
         let api_tag = "cas::get_reconstruction_info";
         let client = self.authenticated_http_client.clone();
-
+        let url = Url::parse(&url_str)?;
         let response: QueryReconstructionResponse = RetryWrapper::new(api_tag)
             .run_and_extract_json(move |_partial_report_fn| client.get(url.clone()).with_extension(Api(api_tag)).send())
             .await?;
@@ -792,10 +792,11 @@ impl Client for RemoteClient {
         let n_upload_bytes = shard_data.len();
         event!(INFORMATION_LOG_LEVEL, call_id, size = n_upload_bytes, "Starting upload_shard API call",);
 
+        let url_str = format!("{}/shards", self.endpoint);
+
         let api_tag = "cas::upload_shard";
         let client = self.authenticated_http_client.clone();
-
-        let url = Url::parse(&format!("{}/shards", self.endpoint))?;
+        let url = Url::parse(&url_str)?;
 
         let response: UploadShardResponse = RetryWrapper::new(api_tag)
             .with_connection_permit(upload_permit, Some(shard_data.len() as u64))
@@ -849,7 +850,7 @@ impl Client for RemoteClient {
         };
 
         let call_id = FN_CALL_ID.fetch_add(1, Ordering::Relaxed);
-        let url = Url::parse(&format!("{}/v1/xorbs/{key}", self.endpoint))?;
+        let url_str = format!("{}/v1/xorbs/{key}", self.endpoint);
 
         let n_upload_bytes = serialized_cas_object.serialized_data.len() as u64;
         event!(
@@ -861,6 +862,8 @@ impl Client for RemoteClient {
             num_chunks=serialized_cas_object.num_chunks,
             "Starting upload_xorb API call",
         );
+
+        let url = Url::parse(&url_str)?;
 
         // Backing out the incremental progress reporting for now until we figure out the middleware issue.
         use crate::upload_progress_stream::UploadProgressStream;

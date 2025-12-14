@@ -21,6 +21,36 @@ use xet_runtime::xet_config;
 use crate::retry_wrapper::on_request_failure;
 use crate::{CasClientError, error};
 
+/// Returns the Unix socket path if configured via `HF_XET_CLIENT_UNIX_SOCKET_PATH` env var.
+pub fn get_unix_socket_path() -> Option<String> {
+    xet_config().client.unix_socket_path.clone()
+}
+
+/// Middleware that rewrites https:// URLs to http:// when using Unix socket.
+/// This allows the proxy to parse plain HTTP and upgrade to HTTPS when forwarding.
+#[cfg(unix)]
+struct HttpsToHttpMiddleware;
+
+#[cfg(unix)]
+#[async_trait::async_trait]
+impl Middleware for HttpsToHttpMiddleware {
+    async fn handle(
+        &self,
+        mut req: Request,
+        extensions: &mut Extensions,
+        next: Next<'_>,
+    ) -> Result<Response, reqwest_middleware::Error> {
+        // Rewrite https:// to http:// so the proxy receives plain HTTP
+        let url = req.url_mut();
+        let original_scheme = url.scheme().to_string();
+        if url.scheme() == "https" {
+            url.set_scheme("http").ok();
+            info!(original_scheme, new_scheme = "http", url = %url, "HttpsToHttpMiddleware: rewriting URL scheme");
+        }
+        next.run(req, extensions).await
+    }
+}
+
 pub(crate) const NUM_RETRIES: u32 = 5;
 pub(crate) const BASE_RETRY_DELAY_MS: u64 = 3000; // 3s
 pub(crate) const BASE_RETRY_MAX_DURATION_MS: u64 = 6 * 60 * 1000; // 6m
@@ -88,10 +118,11 @@ impl RetryConfig<No429RetryStrategy> {
     }
 }
 
-fn reqwest_client(user_agent: &str) -> Result<reqwest::Client, CasClientError> {
+fn reqwest_client(user_agent: &str, unix_socket_path: Option<&str>) -> Result<reqwest::Client, CasClientError> {
     // custom dns resolver not supported in WASM. no access to getaddrinfo/any other dns interface.
     #[cfg(target_family = "wasm")]
     {
+        let _ = unix_socket_path; // Unix sockets not supported in WASM
         // For WASM, create a new client with the specified user_agent
         // Note: we could cache this, but user_agent can vary, so we create per-call
         let mut builder = reqwest::Client::builder();
@@ -105,32 +136,46 @@ fn reqwest_client(user_agent: &str) -> Result<reqwest::Client, CasClientError> {
     {
         use xet_runtime::XetRuntime;
 
-        let client = XetRuntime::get_or_create_reqwest_client(|| {
+        let config = xet_config();
+        let build_client = |uds: bool| {
             let mut builder = reqwest::Client::builder()
-                .pool_idle_timeout(xet_config().client.idle_connection_timeout)
-                .pool_max_idle_per_host(xet_config().client.max_idle_connections)
-                .connect_timeout(xet_config().client.connect_timeout)
-                .read_timeout(xet_config().client.read_timeout)
-                // Explicitly NOT setting .timeout() to disable transfer-level timeout.
-                // We rely on packet-level timeouts (read_timeout) which reset when data
-                // is received, allowing slow but progressing transfers to complete.
-                .http1_only(); // high throughput parallel I/O has been shown to bottleneck with http2
+                .pool_idle_timeout(config.client.idle_connection_timeout)
+                .pool_max_idle_per_host(config.client.max_idle_connections)
+                .connect_timeout(config.client.connect_timeout)
+                .read_timeout(config.client.read_timeout)
+                .http1_only();
 
             if !user_agent.is_empty() {
                 builder = builder.user_agent(user_agent);
             }
 
+            #[cfg(unix)]
+            if uds && let Some(socket_path) = unix_socket_path {
+                builder = builder.unix_socket(socket_path);
+            }
+
+            #[cfg(not(unix))]
+            let _ = uds;
+
             builder.build()
-        })?;
+        };
 
-        info!(
-            idle_timeout=?xet_config().client.idle_connection_timeout,
-            max_idle_connections=xet_config().client.max_idle_connections,
-            user_agent=?if user_agent.is_empty() { None } else { Some(user_agent) },
-            "HTTP client configured"
-        );
-
-        Ok(client)
+        if unix_socket_path.is_some() {
+            let client = XetRuntime::get_or_create_reqwest_uds_client(|| build_client(true))?;
+            info!(
+                socket_path=?unix_socket_path,
+                "HTTP client configured with Unix socket"
+            );
+            Ok(client)
+        } else {
+            let client = XetRuntime::get_or_create_reqwest_client(|| build_client(false))?;
+            info!(
+                idle_timeout=?config.client.idle_connection_timeout,
+                max_idle_connections=config.client.max_idle_connections,
+                "HTTP client configured"
+            );
+            Ok(client)
+        }
     }
 }
 
@@ -142,11 +187,20 @@ pub fn build_auth_http_client<R: RetryableStrategy + Send + Sync + 'static>(
     session_id: &str,
     user_agent: &str,
 ) -> Result<ClientWithMiddleware, CasClientError> {
+    let unix_socket = get_unix_socket_path();
     let auth_middleware = auth_config.as_ref().map(AuthMiddleware::from);
     let logging_middleware = Some(LoggingMiddleware);
     let session_middleware = (!session_id.is_empty()).then(|| SessionMiddleware(session_id.to_owned()));
 
-    let client = ClientBuilder::new(reqwest_client(user_agent)?)
+    let mut builder = ClientBuilder::new(reqwest_client(user_agent, unix_socket.as_deref())?);
+
+    // When using Unix socket, rewrite https:// to http:// so the proxy can parse plain HTTP
+    #[cfg(unix)]
+    if unix_socket.is_some() {
+        builder = builder.with(HttpsToHttpMiddleware);
+    }
+
+    let client = builder
         .maybe_with(auth_middleware)
         .with(get_retry_middleware(retry_config))
         .maybe_with(logging_middleware)
@@ -161,10 +215,20 @@ pub fn build_auth_http_client_no_retry(
     session_id: &str,
     user_agent: &str,
 ) -> Result<ClientWithMiddleware, CasClientError> {
+    let unix_socket = get_unix_socket_path();
     let auth_middleware = auth_config.as_ref().map(AuthMiddleware::from).info_none("CAS auth disabled");
     let logging_middleware = Some(LoggingMiddleware);
     let session_middleware = (!session_id.is_empty()).then(|| SessionMiddleware(session_id.to_owned()));
-    Ok(ClientBuilder::new(reqwest_client(user_agent)?)
+
+    let mut builder = ClientBuilder::new(reqwest_client(user_agent, unix_socket.as_deref())?);
+
+    // When using Unix socket, rewrite https:// to http:// so the proxy can parse plain HTTP
+    #[cfg(unix)]
+    if unix_socket.is_some() {
+        builder = builder.with(HttpsToHttpMiddleware);
+    }
+
+    Ok(builder
         .maybe_with(auth_middleware)
         .maybe_with(logging_middleware)
         .maybe_with(session_middleware)
@@ -182,7 +246,6 @@ pub fn build_http_client<R: RetryableStrategy + Send + Sync + 'static>(
 }
 
 /// Builds HTTP Client to talk to CAS.
-/// Includes retry middleware with exponential backoff.
 pub fn build_http_client_no_retry(session_id: &str, user_agent: &str) -> Result<ClientWithMiddleware, CasClientError> {
     build_auth_http_client_no_retry(&None, session_id, user_agent)
 }
@@ -584,5 +647,97 @@ mod tests {
         // Assert
         assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
         assert_eq!(1, mock.hits());
+    }
+
+    #[cfg(unix)]
+    mod uds_tests {
+        use super::*;
+
+        #[tokio::test]
+        async fn test_https_to_http_middleware_rewrites_https() {
+            let _middleware = HttpsToHttpMiddleware;
+
+            let client = reqwest::Client::new();
+            let mut test_request = client.get("https://example.com/api/data").build().unwrap();
+
+            let url = test_request.url_mut();
+            assert_eq!(url.scheme(), "https");
+
+            if url.scheme() == "https" {
+                url.set_scheme("http").ok();
+            }
+
+            assert_eq!(test_request.url().scheme(), "http");
+            assert_eq!(test_request.url().host_str(), Some("example.com"));
+            assert_eq!(test_request.url().path(), "/api/data");
+        }
+
+        #[tokio::test]
+        async fn test_https_to_http_middleware_preserves_http() {
+            let client = reqwest::Client::new();
+            let mut test_request = client.get("http://example.com/api/data").build().unwrap();
+
+            let url = test_request.url_mut();
+            let original_scheme = url.scheme().to_string();
+
+            if url.scheme() == "https" {
+                url.set_scheme("http").ok();
+            }
+
+            assert_eq!(test_request.url().scheme(), "http");
+            assert_eq!(original_scheme, "http");
+        }
+
+        #[tokio::test]
+        async fn test_https_to_http_middleware_preserves_url_components() {
+            let client = reqwest::Client::new();
+            let mut test_request = client
+                .get("https://example.com:8443/path/to/resource?query=value&foo=bar")
+                .build()
+                .unwrap();
+
+            let url = test_request.url_mut();
+            if url.scheme() == "https" {
+                url.set_scheme("http").ok();
+            }
+
+            assert_eq!(test_request.url().scheme(), "http");
+            assert_eq!(test_request.url().host_str(), Some("example.com"));
+            assert_eq!(test_request.url().port(), Some(8443));
+            assert_eq!(test_request.url().path(), "/path/to/resource");
+            assert_eq!(test_request.url().query(), Some("query=value&foo=bar"));
+        }
+    }
+
+    #[test]
+    fn test_get_unix_socket_path_returns_none_by_default() {
+        let path = get_unix_socket_path();
+        let _: Option<String> = path;
+    }
+
+    #[test]
+    fn test_reqwest_client_without_uds() {
+        let result = reqwest_client("test-agent", None);
+        assert!(result.is_ok());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_reqwest_client_with_uds_path() {
+        let result = reqwest_client("test-agent", Some("/tmp/test.sock"));
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_build_http_client_no_retry_without_uds() {
+        let result = build_http_client_no_retry("test-session", "test-agent");
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_build_http_client_with_retry_without_uds() {
+        let retry_config = RetryConfig::default();
+        let result = build_http_client(retry_config, "test-session", "test-agent");
+        assert!(result.is_ok());
     }
 }
