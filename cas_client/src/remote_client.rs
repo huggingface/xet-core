@@ -125,9 +125,6 @@ pub(crate) async fn map_fetch_info_into_download_tasks(
     terms: Vec<CASReconstructionTerm>,
     offset_into_first_range: u64,
     base_write_negative_offset: u64,
-    chunk_cache: Option<Arc<dyn ChunkCache>>,
-    client: Arc<ClientWithMiddleware>,
-    range_download_single_flight: Arc<Group<DownloadRangeResult, CasClientError>>,
     output_provider: &SeekingOutputProvider,
 ) -> Result<Vec<FetchTermDownloadOnceAndWriteEverywhereUsed>> {
     // the actual segment length.
@@ -168,9 +165,6 @@ pub(crate) async fn map_fetch_info_into_download_tasks(
                     hash: term.hash.into(),
                     range: individual_fetch_info.range,
                     fetch_info: segment.clone(),
-                    chunk_cache: chunk_cache.clone(),
-                    client: client.clone(),
-                    range_download_single_flight: range_download_single_flight.clone(),
                 },
                 writes: vec![],
                 output: output_provider.clone(),
@@ -364,9 +358,6 @@ impl RemoteClient {
         // download tasks are enqueued and spawned with the degree of concurrency equal to `num_concurrent_range_gets`.
         // After the above, a task that defines fetching the remainder of the file reconstruction info is enqueued,
         // which will execute after the first of the above term download tasks finishes.
-        let chunk_cache = self.chunk_cache.clone();
-        let term_download_client = self.http_client_with_retry.clone();
-        let range_download_single_flight = self.range_download_single_flight.clone();
         let download_scheduler = DownloadSegmentLengthTuner::from_configurable_constants();
         let download_scheduler_clone = download_scheduler.clone();
 
@@ -433,9 +424,6 @@ impl RemoteClient {
                                         hash: term.hash.into(),
                                         range: individual_fetch_info.range,
                                         fetch_info: segment.clone(),
-                                        chunk_cache: chunk_cache.clone(),
-                                        client: term_download_client.clone(),
-                                        range_download_single_flight: range_download_single_flight.clone(),
                                     }))
                                 })
                                 .clone();
@@ -544,7 +532,6 @@ impl RemoteClient {
         // download tasks are enqueued and spawned with the degree of concurrency equal to `num_concurrent_range_gets`.
         // After the above, a task that defines fetching the remainder of the file reconstruction info is enqueued,
         // which will execute after the first of the above term download tasks finishes.
-        let term_download_client = self.http_client_with_retry.clone();
         let download_scheduler = DownloadSegmentLengthTuner::from_configurable_constants();
 
         let download_concurrency_limiter =
@@ -612,9 +599,6 @@ impl RemoteClient {
                         terms,
                         offset_into_first_range,
                         base_write_negative_offset,
-                        self.chunk_cache.clone(),
-                        term_download_client.clone(),
-                        self.range_download_single_flight.clone(),
                         writer,
                     )
                     .await?;

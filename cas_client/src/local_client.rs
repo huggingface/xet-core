@@ -36,7 +36,7 @@ use crate::error::{CasClientError, Result};
 use crate::{Client, SeekingOutputProvider, SequentialOutput};
 
 pub struct LocalClient {
-    tmp_dir: Option<TempDir>, // To hold directory to use for local testing
+    _tmp_dir: Option<TempDir>, // To hold directory to use for local testing
     xorb_dir: PathBuf,
     shard_dir: PathBuf,
     shard_manager: Arc<ShardFileManager>,
@@ -102,7 +102,7 @@ impl LocalClient {
         })?;
 
         Ok(Self {
-            tmp_dir,
+            _tmp_dir: tmp_dir,
             shard_dir,
             xorb_dir,
             shard_manager,

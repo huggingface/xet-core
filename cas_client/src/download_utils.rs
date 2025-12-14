@@ -131,12 +131,6 @@ pub(crate) struct FetchTermDownloadInner {
     pub range: ChunkRange,
     #[derivative(Debug = "ignore")]
     pub fetch_info: Arc<FetchInfo>, // utility to get URL to download this term
-    #[derivative(Debug = "ignore")]
-    pub chunk_cache: Option<Arc<dyn ChunkCache>>,
-    #[derivative(Debug = "ignore")]
-    pub client: Arc<ClientWithMiddleware>, // only used for downloading range
-    #[derivative(Debug = "ignore")]
-    pub range_download_single_flight: RangeDownloadSingleFlight,
 }
 
 #[derive(Debug)]
@@ -741,7 +735,6 @@ mod tests {
         });
 
         let client: Arc<dyn Client + Send + Sync> = RemoteClient::new(&server.base_url(), &None, &None, "", false, "");
-        let http_client = Arc::new(build_http_client(RetryConfig::default(), "", "")?);
 
         let fetch_info = FetchInfo::new(MerkleHash::default(), file_range);
 
@@ -752,9 +745,6 @@ mod tests {
                 hash: xorb1.into(),
                 range: x1range[0].range,
                 fetch_info: Arc::new(fetch_info),
-                chunk_cache: None,
-                client: http_client,
-                range_download_single_flight: Arc::new(Group::new()),
             })),
             term: terms[0].clone(),
             skip_bytes: offset_info_first_range,
