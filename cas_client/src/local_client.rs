@@ -442,7 +442,6 @@ impl Client for LocalClient {
 
         #[derive(Clone)]
         struct FetchInfoIntemediate {
-            xorb_hash: MerkleHash,
             chunk_range: ChunkRange,
             byte_range: FileRange,
         }
@@ -505,7 +504,6 @@ impl Client for LocalClient {
             terms.push(cas_reconstruction_term);
 
             let fetch_info_intemediate = FetchInfoIntemediate {
-                xorb_hash: segment.cas_hash,
                 chunk_range,
                 byte_range,
             };
@@ -532,16 +530,13 @@ impl Client for LocalClient {
             let mut idx = 0;
 
             while idx < fi_vec.len() {
-                let fi = &fi_vec[idx];
-
                 // Go through and merge adjascent or overlapping ranges,
                 // then form the full CASReconstructionFetchInfo structs.
-
-                let mut new_fi = fi.clone();
+                let mut new_fi = fi_vec[idx].clone();
 
                 while idx + 1 < fi_vec.len() {
                     let next_fi = &fi_vec[idx + 1];
-                    if next_fi.chunk_range.start <= fi.chunk_range.end {
+                    if next_fi.chunk_range.start <= new_fi.chunk_range.end {
                         new_fi.chunk_range.end = next_fi.chunk_range.end;
                         new_fi.byte_range.start = next_fi.byte_range.end;
                         idx += 1;
