@@ -19,7 +19,7 @@ use crate::remote_client_interface::create_remote_client;
 /// that succeeds or fails as a unit; i.e., all files get uploaded on finalization, and all shards
 /// and xorbs needed to reconstruct those files are properly uploaded and registered.
 pub struct FileDownloader {
-    client: Arc<dyn Client + Send + Sync>,
+    client: Arc<dyn Client>,
 }
 
 /// Smudge operations
@@ -49,6 +49,7 @@ impl FileDownloader {
 
         let n_bytes = self
             .client
+            .clone()
             .get_file_with_parallel_writer(file_id, range, output, file_progress_tracker)
             .await?;
 
@@ -73,6 +74,7 @@ impl FileDownloader {
         info!("Using sequential writer for smudge");
         let n_bytes = self
             .client
+            .clone()
             .get_file_with_sequential_writer(file_id, range, output, file_progress_tracker)
             .await?;
 
