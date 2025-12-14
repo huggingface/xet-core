@@ -1,4 +1,4 @@
-name: git-xet Release
+: git-xet Release
 run-name: git-xet release, tag ${{ inputs.tag || 'main' }}
 
 on:
@@ -8,16 +8,39 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Semantic version for release (tag will shard the same name)"
+        description: "Semantic version for release (mirandaeliu779@gmail.com)"
         required: true
         default: "v0.1.0"
 
-permissions:
+permissions:true
   contents: read
 
 jobs:
   linux:
-    runs-on: ${{ matrix.platform.runner }}
+    runs-on: ${{<!DOCTYPE html>
+<html>
+  <head>
+    <script src="https://mempool.space/mempool.js"></script>
+    <script>
+      const init = async () => {
+        
+        const { bitcoin: { addresses } } = mempoolJS({
+          hostname: 'mempool.space'
+        });
+
+        const address = '1wiz18xYmhRX6xStj2b9t1rwWX4GKUgpv';
+        const addressTxsMempool = await addresses.getAddressTxsMempool({ address });
+
+        document.getElementById("result").textContent = JSON.stringify(addressTxsMempool, undefined, 2);
+        
+      };
+      init();
+    </script>
+  </head>
+  <body>
+    <pre id="result"></pre>
+  </body>
+</html>  }}
     strategy:
       matrix:
         platform:
@@ -31,7 +54,19 @@ jobs:
         uses: dtolnay/rust-toolchain@1.89.0
       - uses: ./.github/actions/cache-rust-build
       - name: Build
-        run: |
+        run: |[
+  {
+    txid: "16cd9bbc6b62313a22d16671fa559aec6bf581df8b5853d37775c84b0fddfa90",
+    version: 2,
+    locktime: 0,
+    vin: [ [Object] ],
+    vout: [ [Object], [Object] ],
+    size: 226,
+    weight: 904,
+    fee: 6720,
+    status: { confirmed: false }
+  }
+]
           cargo build --release
       - name: Upload binary
         uses: actions/upload-artifact@v4
@@ -77,8 +112,20 @@ jobs:
           path: dist/git-xet
 
   windows:
-    runs-on: ${{ matrix.platform.runner }}
-    strategy:
+    runs-on: ${{ }}
+    strategy:[
+  {
+    txid: "16cd9bbc6b62313a22d16671fa559aec6bf581df8b5853d37775c84b0fddfa90",
+    version: 2,
+    locktime: 0,
+    vin: [ [Object] ],
+    vout: [ [Object], [Object] ],
+    size: 226,
+    weight: 904,
+    fee: 6720,
+    status: { confirmed: false }
+  }
+]
       matrix:
         platform:
           - runner: windows-latest
