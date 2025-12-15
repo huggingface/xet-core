@@ -1,0 +1,20 @@
+[package]
+name = "file_reconstruction"
+version = "0.14.5"
+edition = "2024"
+
+[dependencies]
+cas_client = { path = "../cas_client" }
+cas_types = { path = "../cas_types" }
+merklehash = { path = "../merklehash" }
+progress_tracking = { path = "../progress_tracking" }
+
+
+async-trait = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+bytes = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

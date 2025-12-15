@@ -1643,6 +1643,22 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "28dea519a9695b9977216879a3ebfddf92f1c08c05d984f8996aecd6ecdc811d"
 
 [[package]]
+name = "file_reconstruction"
+version = "0.14.5"
+dependencies = [
+ "async-trait",
+ "bytes",
+ "cas_client",
+ "cas_types",
+ "merklehash",
+ "progress_tracking",
+ "tempfile",
+ "thiserror 2.0.12",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "file_utils"
 version = "0.14.2"
 dependencies = [
