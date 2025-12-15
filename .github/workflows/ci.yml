@@ -24,7 +24,12 @@ jobs:
         run: |
           cargo fmt --manifest-path ./Cargo.toml --all -- --check
           cargo fmt --manifest-path ./hf_xet/Cargo.toml --all -- --check
-
+  detect-unused-dependencies:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Machete
+        uses: bnjbvr/cargo-machete@main
   build_and_test-linux:
     runs-on: ubuntu-latest
     steps:
