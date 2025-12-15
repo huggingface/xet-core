@@ -14,10 +14,8 @@ harness = false
 bench = true
 
 [dependencies]
-xet_config = { path = "../xet_config" }
 xet_runtime = { path = "../xet_runtime" }
 deduplication = { path = "../deduplication" }
-error_printer = { path = "../error_printer" }
 mdb_shard = { path = "../mdb_shard" }
 merklehash = { path = "../merklehash" }
 utils = { path = "../utils" }
@@ -36,7 +34,6 @@ rand = { workspace = true }
 serde = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["time", "rt", "macros", "io-util"] }
-tokio-util = { workspace = true, features = ["io"] }
 tracing = { workspace = true }
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]

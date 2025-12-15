@@ -8,13 +8,7 @@ name = "xet_config"
 path = "src/lib.rs"
 
 [dependencies]
-merklehash = { path = "../merklehash" }
 utils = { path = "../utils" }
-ctor = { workspace = true }
-duration-str = { workspace = true }
-lazy_static = { workspace = true }
-tracing = { workspace = true }
-paste = { workspace = true }
 konst = "0.3"
 const-str = "0.3"
 
