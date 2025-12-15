@@ -4,7 +4,6 @@ use std::io::{BufReader, Cursor, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::anyhow;
 use async_trait::async_trait;
@@ -16,6 +15,7 @@ use cas_types::{
 };
 use file_utils::SafeFileCreator;
 use heed::types::*;
+use lazy_static::lazy_static;
 use mdb_shard::file_structs::MDBFileInfo;
 use mdb_shard::shard_file_reconstructor::FileReconstructor;
 use mdb_shard::utils::shard_file_name;
@@ -27,6 +27,7 @@ use progress_tracking::upload_tracking::CompletionTracker;
 use tempfile::TempDir;
 use tokio::io::AsyncWriteExt;
 use tokio::runtime::Handle;
+use tokio::time::{Duration, Instant};
 use tracing::{debug, error, info, warn};
 use utils::serialization_utils::read_u32;
 
@@ -34,6 +35,16 @@ use crate::adaptive_concurrency::AdaptiveConcurrencyController;
 use crate::download_utils::TermDownloadOutput;
 use crate::error::{CasClientError, Result};
 use crate::{Client, SeekingOutputProvider, SequentialOutput};
+
+lazy_static! {
+    /// Reference instant for URL timestamps. Initialized far in the past to allow
+    /// testing timestamps that are earlier in the current process lifetime.
+    static ref REFERENCE_INSTANT: Instant = {
+        let now = Instant::now();
+        now.checked_sub(Duration::from_secs(365 * 24 * 60 * 60))
+            .unwrap_or(now)
+    };
+}
 
 pub struct LocalClient {
     _tmp_dir: Option<TempDir>, // To hold directory to use for local testing
@@ -122,14 +133,6 @@ impl LocalClient {
     /// URLs generated after this call will expire after the specified duration.
     pub fn set_fetch_term_url_expiration(&self, expiration: Duration) {
         self.url_expiration_ms.store(expiration.as_millis() as u64, Ordering::Relaxed);
-    }
-
-    /// Returns the current timestamp in milliseconds since Unix epoch.
-    fn current_timestamp_ms() -> u64 {
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or(Duration::ZERO)
-            .as_millis() as u64
     }
 
     /// Returns all entries in the local client
@@ -516,7 +519,7 @@ impl Client for LocalClient {
 
         assert!(!terms.is_empty());
 
-        let timestamp_ms = Self::current_timestamp_ms();
+        let timestamp = Instant::now();
 
         // Sort and merge adjacent/overlapping ranges in each fetch_info Vec
         let mut merged_fetch_info_map: HashMap<HexMerkleHash, Vec<CASReconstructionFetchInfo>> = HashMap::new();
@@ -537,8 +540,8 @@ impl Client for LocalClient {
                 while idx + 1 < fi_vec.len() {
                     let next_fi = &fi_vec[idx + 1];
                     if next_fi.chunk_range.start <= new_fi.chunk_range.end {
-                        new_fi.chunk_range.end = next_fi.chunk_range.end;
-                        new_fi.byte_range.start = next_fi.byte_range.end;
+                        new_fi.chunk_range.end = next_fi.chunk_range.end.max(new_fi.chunk_range.end);
+                        new_fi.byte_range.end = next_fi.byte_range.end.max(new_fi.byte_range.end);
                         idx += 1;
                     } else {
                         break;
@@ -547,10 +550,7 @@ impl Client for LocalClient {
 
                 merged.push(CASReconstructionFetchInfo {
                     range: new_fi.chunk_range,
-                    url: format!(
-                        "{:?}:{}:{}:{}",
-                        file_path, new_fi.byte_range.start, new_fi.byte_range.end, timestamp_ms
-                    ),
+                    url: generate_fetch_url(&file_path, &new_fi.byte_range, timestamp),
                     url_range: HttpRange::from(new_fi.byte_range),
                 });
 
@@ -593,40 +593,19 @@ impl Client for LocalClient {
         hash: MerkleHash,
         fetch_term: CASReconstructionFetchInfo,
     ) -> Result<TermDownloadOutput> {
-        // URL format: "{file_path}:{start}:{end}:{timestamp}"
-        // where file_path is the full path in Debug format (with quotes)
-        let url = &fetch_term.url;
-
-        // Split from the end to handle paths that might contain colons
-        let mut parts = url.rsplitn(4, ':').collect::<Vec<_>>();
-        parts.reverse();
-
-        if parts.len() != 4 {
-            return Err(CasClientError::InvalidArguments);
-        }
-
-        let file_path_str = parts[0];
-        let start_pos: u64 = parts[1].parse().map_err(|_| CasClientError::InvalidArguments)?;
-        let end_pos: u64 = parts[2].parse().map_err(|_| CasClientError::InvalidArguments)?;
-        let url_timestamp_ms: u64 = parts[3].parse().map_err(|_| CasClientError::InvalidArguments)?;
+        let (file_path, url_byte_range, url_timestamp) = parse_fetch_url(&fetch_term.url)?;
 
         // Check if URL has expired
-        let current_ms = Self::current_timestamp_ms();
         let expiration_ms = self.url_expiration_ms.load(Ordering::Relaxed);
-        if current_ms.saturating_sub(url_timestamp_ms) > expiration_ms {
+        let elapsed_ms = Instant::now().saturating_duration_since(url_timestamp).as_millis() as u64;
+        if elapsed_ms > expiration_ms {
             return Err(CasClientError::PresignedUrlExpirationError);
         }
 
-        // Validate start_pos and end_pos match url_range
-        if start_pos != fetch_term.url_range.start {
+        // Validate byte range matches url_range
+        if url_byte_range.start != fetch_term.url_range.start || url_byte_range.end != fetch_term.url_range.end {
             return Err(CasClientError::InvalidArguments);
         }
-        if end_pos != fetch_term.url_range.end {
-            return Err(CasClientError::InvalidArguments);
-        }
-
-        // Parse the file path (it's in Debug format with quotes)
-        let file_path: PathBuf = file_path_str.trim_matches('"').into();
         let file = File::open(&file_path).map_err(|_| {
             error!("Unable to find xorb in local CAS {:?}", file_path);
             CasClientError::XORBNotFound(hash)
@@ -737,6 +716,31 @@ fn map_heed_db_error(e: heed::Error) -> CasClientError {
     let msg = format!("Global shard dedup database error: {e:?}");
     warn!("{msg}");
     CasClientError::Other(msg)
+}
+
+fn generate_fetch_url(file_path: &Path, byte_range: &FileRange, timestamp: Instant) -> String {
+    let timestamp_ms = timestamp.saturating_duration_since(*REFERENCE_INSTANT).as_millis() as u64;
+    format!("{:?}:{}:{}:{}", file_path, byte_range.start, byte_range.end, timestamp_ms)
+}
+
+fn parse_fetch_url(url: &str) -> Result<(PathBuf, FileRange, Instant)> {
+    let mut parts = url.rsplitn(4, ':').collect::<Vec<_>>();
+    parts.reverse();
+
+    if parts.len() != 4 {
+        return Err(CasClientError::InvalidArguments);
+    }
+
+    let file_path_str = parts[0];
+    let start_pos: u64 = parts[1].parse().map_err(|_| CasClientError::InvalidArguments)?;
+    let end_pos: u64 = parts[2].parse().map_err(|_| CasClientError::InvalidArguments)?;
+    let timestamp_ms: u64 = parts[3].parse().map_err(|_| CasClientError::InvalidArguments)?;
+
+    let file_path: PathBuf = file_path_str.trim_matches('"').into();
+    let byte_range = FileRange::new(start_pos, end_pos);
+    let timestamp = *REFERENCE_INSTANT + Duration::from_millis(timestamp_ms);
+
+    Ok((file_path, byte_range, timestamp))
 }
 #[cfg(test)]
 mod tests {
@@ -998,9 +1002,9 @@ mod tests {
         let cas = CasObject::deserialize(&mut reader).unwrap();
         let (fetch_byte_start, fetch_byte_end) = cas.get_byte_offset(0, 1).unwrap();
 
-        let timestamp_ms = LocalClient::current_timestamp_ms();
-        // URL format: "{file_path:?}:{start}:{end}:{timestamp}"
-        let valid_url = format!("{:?}:{}:{}:{}", file_path, fetch_byte_start, fetch_byte_end, timestamp_ms);
+        let timestamp = Instant::now();
+        let byte_range = FileRange::new(fetch_byte_start as u64, fetch_byte_end as u64);
+        let valid_url = generate_fetch_url(&file_path, &byte_range, timestamp);
         let valid_url_range = HttpRange::new(fetch_byte_start as u64, fetch_byte_end as u64);
 
         // Test 1: Valid URL and fetch_term should succeed
@@ -1024,7 +1028,8 @@ mod tests {
         assert!(matches!(result.unwrap_err(), CasClientError::InvalidArguments));
 
         // Test 3: Invalid start_pos - doesn't match url_range.start
-        let wrong_start_pos = format!("{:?}:{}:{}:{}", file_path, fetch_byte_start + 1, fetch_byte_end, timestamp_ms);
+        let wrong_byte_range = FileRange::new(fetch_byte_start as u64 + 1, fetch_byte_end as u64);
+        let wrong_start_pos = generate_fetch_url(&file_path, &wrong_byte_range, timestamp);
         let invalid_fetch_term = CASReconstructionFetchInfo {
             range: ChunkRange::new(0, 1),
             url: wrong_start_pos,
@@ -1035,7 +1040,8 @@ mod tests {
         assert!(matches!(result.unwrap_err(), CasClientError::InvalidArguments));
 
         // Test 4: Invalid end_pos - doesn't match url_range.end
-        let wrong_end_pos = format!("{:?}:{}:{}:{}", file_path, fetch_byte_start, fetch_byte_end + 1, timestamp_ms);
+        let wrong_byte_range = FileRange::new(fetch_byte_start as u64, fetch_byte_end as u64 + 1);
+        let wrong_end_pos = generate_fetch_url(&file_path, &wrong_byte_range, timestamp);
         let invalid_fetch_term = CASReconstructionFetchInfo {
             range: ChunkRange::new(0, 1),
             url: wrong_end_pos,
@@ -1046,6 +1052,7 @@ mod tests {
         assert!(matches!(result.unwrap_err(), CasClientError::InvalidArguments));
 
         // Test 5: Invalid start_pos - non-numeric
+        let timestamp_ms = timestamp.saturating_duration_since(*REFERENCE_INSTANT).as_millis() as u64;
         let non_numeric_start = format!("{:?}:not_a_number:{}:{}", file_path, fetch_byte_end, timestamp_ms);
         let invalid_fetch_term = CASReconstructionFetchInfo {
             range: ChunkRange::new(0, 1),
@@ -1090,8 +1097,7 @@ mod tests {
 
         // Test 9: Non-existent file path
         let non_existent_path = PathBuf::from("/nonexistent/path/file.xorb");
-        let non_existent_url =
-            format!("{:?}:{}:{}:{}", non_existent_path, fetch_byte_start, fetch_byte_end, timestamp_ms);
+        let non_existent_url = generate_fetch_url(&non_existent_path, &byte_range, timestamp);
         let invalid_fetch_term = CASReconstructionFetchInfo {
             range: ChunkRange::new(0, 1),
             url: non_existent_url,
@@ -1120,8 +1126,9 @@ mod tests {
         let (fetch_byte_start, fetch_byte_end) = cas.get_byte_offset(0, 1).unwrap();
 
         // Use current timestamp (within the window)
-        let timestamp_ms = LocalClient::current_timestamp_ms();
-        let valid_url = format!("{:?}:{}:{}:{}", file_path, fetch_byte_start, fetch_byte_end, timestamp_ms);
+        let timestamp = Instant::now();
+        let byte_range = FileRange::new(fetch_byte_start as u64, fetch_byte_end as u64);
+        let valid_url = generate_fetch_url(&file_path, &byte_range, timestamp);
         let valid_url_range = HttpRange::new(fetch_byte_start as u64, fetch_byte_end as u64);
 
         let fetch_term = CASReconstructionFetchInfo {
@@ -1152,8 +1159,9 @@ mod tests {
         let (fetch_byte_start, fetch_byte_end) = cas.get_byte_offset(0, 1).unwrap();
 
         // Use a timestamp 61 seconds in the past (past the 60 second window)
-        let timestamp_ms = LocalClient::current_timestamp_ms() - 61_000;
-        let expired_url = format!("{:?}:{}:{}:{}", file_path, fetch_byte_start, fetch_byte_end, timestamp_ms);
+        let timestamp = Instant::now() - Duration::from_secs(61);
+        let byte_range = FileRange::new(fetch_byte_start as u64, fetch_byte_end as u64);
+        let expired_url = generate_fetch_url(&file_path, &byte_range, timestamp);
         let valid_url_range = HttpRange::new(fetch_byte_start as u64, fetch_byte_end as u64);
 
         let fetch_term = CASReconstructionFetchInfo {
@@ -1185,8 +1193,11 @@ mod tests {
         let (fetch_byte_start, fetch_byte_end) = cas.get_byte_offset(0, 1).unwrap();
 
         // Use a very old timestamp (1 year ago) - should still work with infinite expiration
-        let timestamp_ms = LocalClient::current_timestamp_ms().saturating_sub(365 * 24 * 60 * 60 * 1000);
-        let old_url = format!("{:?}:{}:{}:{}", file_path, fetch_byte_start, fetch_byte_end, timestamp_ms);
+        let timestamp = Instant::now()
+            .checked_sub(Duration::from_secs(365 * 24 * 60 * 60))
+            .unwrap_or(*REFERENCE_INSTANT);
+        let byte_range = FileRange::new(fetch_byte_start as u64, fetch_byte_end as u64);
+        let old_url = generate_fetch_url(&file_path, &byte_range, timestamp);
         let valid_url_range = HttpRange::new(fetch_byte_start as u64, fetch_byte_end as u64);
 
         let fetch_term = CASReconstructionFetchInfo {
@@ -1216,12 +1227,12 @@ mod tests {
         let cas = CasObject::deserialize(&mut reader).unwrap();
         let (fetch_byte_start, fetch_byte_end) = cas.get_byte_offset(0, 1).unwrap();
 
+        let byte_range = FileRange::new(fetch_byte_start as u64, fetch_byte_end as u64);
         let valid_url_range = HttpRange::new(fetch_byte_start as u64, fetch_byte_end as u64);
 
         // Test just inside boundary (59 seconds ago) - should be valid
-        let timestamp_at_boundary = LocalClient::current_timestamp_ms() - 59_000;
-        let url_at_boundary =
-            format!("{:?}:{}:{}:{}", file_path, fetch_byte_start, fetch_byte_end, timestamp_at_boundary);
+        let timestamp_at_boundary = Instant::now() - Duration::from_secs(59);
+        let url_at_boundary = generate_fetch_url(&file_path, &byte_range, timestamp_at_boundary);
 
         let fetch_term = CASReconstructionFetchInfo {
             range: ChunkRange::new(0, 1),
@@ -1232,9 +1243,8 @@ mod tests {
         assert!(result.is_ok(), "URL should be valid just inside expiration boundary");
 
         // Test just past boundary (61 seconds ago) - should be expired
-        let timestamp_past_boundary = LocalClient::current_timestamp_ms() - 61_000;
-        let url_past_boundary =
-            format!("{:?}:{}:{}:{}", file_path, fetch_byte_start, fetch_byte_end, timestamp_past_boundary);
+        let timestamp_past_boundary = Instant::now() - Duration::from_secs(61);
+        let url_past_boundary = generate_fetch_url(&file_path, &byte_range, timestamp_past_boundary);
 
         let fetch_term = CASReconstructionFetchInfo {
             range: ChunkRange::new(0, 1),
@@ -1284,6 +1294,199 @@ mod tests {
 
         // Verify file retrieval
         assert_eq!(client.get_file_data(&file_hash, None).await.unwrap(), file_data);
+    }
+
+    /// Tests that overlapping chunk ranges within the same xorb are correctly merged
+    /// into a single fetch_info with the union of the ranges.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_get_reconstruction_overlapping_range_merging() {
+        let client = LocalClient::temporary().unwrap();
+        let chunk_size = 2048usize;
+
+        // Test 1: Simple overlapping ranges [0,3) and [1,4) -> merged to [0,4)
+        {
+            let term_spec = &[(1, (0, 3)), (1, (1, 4))];
+            let (file_data, file_hash) = client.upload_random_file(term_spec, chunk_size).await.unwrap();
+
+            let reconstruction = client.get_reconstruction(&file_hash, None).await.unwrap().unwrap();
+            assert_eq!(reconstruction.terms.len(), 2);
+            assert_eq!(reconstruction.fetch_info.len(), 1);
+
+            let xorb_hash_hex = reconstruction.terms[0].hash;
+            let fetch_infos = reconstruction.fetch_info.get(&xorb_hash_hex).unwrap();
+            assert_eq!(fetch_infos.len(), 1);
+            assert_eq!(fetch_infos[0].range.start, 0);
+            assert_eq!(fetch_infos[0].range.end, 4);
+
+            assert_eq!(client.get_file_data(&file_hash, None).await.unwrap(), file_data);
+        }
+
+        // Test 2: Subset range - second range is fully contained in first [0,5) and [1,3) -> [0,5)
+        {
+            let term_spec = &[(1, (0, 5)), (1, (1, 3))];
+            let (file_data, file_hash) = client.upload_random_file(term_spec, chunk_size).await.unwrap();
+
+            let reconstruction = client.get_reconstruction(&file_hash, None).await.unwrap().unwrap();
+            assert_eq!(reconstruction.terms.len(), 2);
+            assert_eq!(reconstruction.fetch_info.len(), 1);
+
+            let xorb_hash_hex = reconstruction.terms[0].hash;
+            let fetch_infos = reconstruction.fetch_info.get(&xorb_hash_hex).unwrap();
+            assert_eq!(fetch_infos.len(), 1);
+            assert_eq!(fetch_infos[0].range.start, 0);
+            assert_eq!(fetch_infos[0].range.end, 5);
+
+            assert_eq!(client.get_file_data(&file_hash, None).await.unwrap(), file_data);
+        }
+
+        // Test 3: Second range ends before first range end [0,5) and [2,4) -> [0,5)
+        {
+            let term_spec = &[(1, (0, 5)), (1, (2, 4))];
+            let (file_data, file_hash) = client.upload_random_file(term_spec, chunk_size).await.unwrap();
+
+            let reconstruction = client.get_reconstruction(&file_hash, None).await.unwrap().unwrap();
+            assert_eq!(reconstruction.terms.len(), 2);
+            assert_eq!(reconstruction.fetch_info.len(), 1);
+
+            let xorb_hash_hex = reconstruction.terms[0].hash;
+            let fetch_infos = reconstruction.fetch_info.get(&xorb_hash_hex).unwrap();
+            assert_eq!(fetch_infos.len(), 1);
+            assert_eq!(fetch_infos[0].range.start, 0);
+            assert_eq!(fetch_infos[0].range.end, 5);
+
+            assert_eq!(client.get_file_data(&file_hash, None).await.unwrap(), file_data);
+        }
+
+        // Test 4: Multiple overlapping ranges forming a chain [0,2), [1,4), [3,6) -> [0,6)
+        {
+            let term_spec = &[(1, (0, 2)), (1, (1, 4)), (1, (3, 6))];
+            let (file_data, file_hash) = client.upload_random_file(term_spec, chunk_size).await.unwrap();
+
+            let reconstruction = client.get_reconstruction(&file_hash, None).await.unwrap().unwrap();
+            assert_eq!(reconstruction.terms.len(), 3);
+            assert_eq!(reconstruction.fetch_info.len(), 1);
+
+            let xorb_hash_hex = reconstruction.terms[0].hash;
+            let fetch_infos = reconstruction.fetch_info.get(&xorb_hash_hex).unwrap();
+            assert_eq!(fetch_infos.len(), 1);
+            assert_eq!(fetch_infos[0].range.start, 0);
+            assert_eq!(fetch_infos[0].range.end, 6);
+
+            assert_eq!(client.get_file_data(&file_hash, None).await.unwrap(), file_data);
+        }
+
+        // Test 5: Ranges that interleave in a non-monotonic way [0,5), [1,3), [2,4) -> [0,5)
+        {
+            let term_spec = &[(1, (0, 5)), (1, (1, 3)), (1, (2, 4))];
+            let (file_data, file_hash) = client.upload_random_file(term_spec, chunk_size).await.unwrap();
+
+            let reconstruction = client.get_reconstruction(&file_hash, None).await.unwrap().unwrap();
+            assert_eq!(reconstruction.terms.len(), 3);
+            assert_eq!(reconstruction.fetch_info.len(), 1);
+
+            let xorb_hash_hex = reconstruction.terms[0].hash;
+            let fetch_infos = reconstruction.fetch_info.get(&xorb_hash_hex).unwrap();
+            assert_eq!(fetch_infos.len(), 1);
+            assert_eq!(fetch_infos[0].range.start, 0);
+            assert_eq!(fetch_infos[0].range.end, 5);
+
+            assert_eq!(client.get_file_data(&file_hash, None).await.unwrap(), file_data);
+        }
+
+        // Test 6: Non-contiguous ranges should NOT be merged [0,2) and [4,6) -> two separate ranges
+        {
+            let term_spec = &[(1, (0, 2)), (1, (4, 6))];
+            let (file_data, file_hash) = client.upload_random_file(term_spec, chunk_size).await.unwrap();
+
+            let reconstruction = client.get_reconstruction(&file_hash, None).await.unwrap().unwrap();
+            assert_eq!(reconstruction.terms.len(), 2);
+            assert_eq!(reconstruction.fetch_info.len(), 1);
+
+            let xorb_hash_hex = reconstruction.terms[0].hash;
+            let fetch_infos = reconstruction.fetch_info.get(&xorb_hash_hex).unwrap();
+            assert_eq!(fetch_infos.len(), 2);
+            assert_eq!(fetch_infos[0].range.start, 0);
+            assert_eq!(fetch_infos[0].range.end, 2);
+            assert_eq!(fetch_infos[1].range.start, 4);
+            assert_eq!(fetch_infos[1].range.end, 6);
+
+            assert_eq!(client.get_file_data(&file_hash, None).await.unwrap(), file_data);
+        }
+
+        // Test 7: Touch at boundary (adjacent) [0,3) and [3,5) -> [0,5)
+        {
+            let term_spec = &[(1, (0, 3)), (1, (3, 5))];
+            let (file_data, file_hash) = client.upload_random_file(term_spec, chunk_size).await.unwrap();
+
+            let reconstruction = client.get_reconstruction(&file_hash, None).await.unwrap().unwrap();
+            assert_eq!(reconstruction.terms.len(), 2);
+            assert_eq!(reconstruction.fetch_info.len(), 1);
+
+            let xorb_hash_hex = reconstruction.terms[0].hash;
+            let fetch_infos = reconstruction.fetch_info.get(&xorb_hash_hex).unwrap();
+            assert_eq!(fetch_infos.len(), 1);
+            assert_eq!(fetch_infos[0].range.start, 0);
+            assert_eq!(fetch_infos[0].range.end, 5);
+
+            assert_eq!(client.get_file_data(&file_hash, None).await.unwrap(), file_data);
+        }
+
+        // Test 8: Large range followed by small contained range [0,10) and [4,6) -> [0,10)
+        {
+            let term_spec = &[(1, (0, 10)), (1, (4, 6))];
+            let (file_data, file_hash) = client.upload_random_file(term_spec, chunk_size).await.unwrap();
+
+            let reconstruction = client.get_reconstruction(&file_hash, None).await.unwrap().unwrap();
+            assert_eq!(reconstruction.terms.len(), 2);
+            assert_eq!(reconstruction.fetch_info.len(), 1);
+
+            let xorb_hash_hex = reconstruction.terms[0].hash;
+            let fetch_infos = reconstruction.fetch_info.get(&xorb_hash_hex).unwrap();
+            assert_eq!(fetch_infos.len(), 1);
+            assert_eq!(fetch_infos[0].range.start, 0);
+            assert_eq!(fetch_infos[0].range.end, 10);
+
+            assert_eq!(client.get_file_data(&file_hash, None).await.unwrap(), file_data);
+        }
+
+        // Test 9: Same range repeated multiple times [2,5), [2,5), [2,5) -> [2,5)
+        {
+            let term_spec = &[(1, (2, 5)), (1, (2, 5)), (1, (2, 5))];
+            let (file_data, file_hash) = client.upload_random_file(term_spec, chunk_size).await.unwrap();
+
+            let reconstruction = client.get_reconstruction(&file_hash, None).await.unwrap().unwrap();
+            assert_eq!(reconstruction.terms.len(), 3);
+            assert_eq!(reconstruction.fetch_info.len(), 1);
+
+            let xorb_hash_hex = reconstruction.terms[0].hash;
+            let fetch_infos = reconstruction.fetch_info.get(&xorb_hash_hex).unwrap();
+            assert_eq!(fetch_infos.len(), 1);
+            assert_eq!(fetch_infos[0].range.start, 2);
+            assert_eq!(fetch_infos[0].range.end, 5);
+
+            assert_eq!(client.get_file_data(&file_hash, None).await.unwrap(), file_data);
+        }
+
+        // Test 10: Mixed overlapping and non-contiguous in complex pattern
+        // [0,3), [2,4), [6,8), [7,10) -> [0,4) and [6,10)
+        {
+            let term_spec = &[(1, (0, 3)), (1, (2, 4)), (1, (6, 8)), (1, (7, 10))];
+            let (file_data, file_hash) = client.upload_random_file(term_spec, chunk_size).await.unwrap();
+
+            let reconstruction = client.get_reconstruction(&file_hash, None).await.unwrap().unwrap();
+            assert_eq!(reconstruction.terms.len(), 4);
+            assert_eq!(reconstruction.fetch_info.len(), 1);
+
+            let xorb_hash_hex = reconstruction.terms[0].hash;
+            let fetch_infos = reconstruction.fetch_info.get(&xorb_hash_hex).unwrap();
+            assert_eq!(fetch_infos.len(), 2);
+            assert_eq!(fetch_infos[0].range.start, 0);
+            assert_eq!(fetch_infos[0].range.end, 4);
+            assert_eq!(fetch_infos[1].range.start, 6);
+            assert_eq!(fetch_infos[1].range.end, 10);
+
+            assert_eq!(client.get_file_data(&file_hash, None).await.unwrap(), file_data);
+        }
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
