@@ -38,14 +38,14 @@ pub struct FileUploadSession {
 
 impl FileUploadSession {
     pub fn new(config: Arc<TranslatorConfig>) -> Self {
-        let client = Arc::new(RemoteClient::new(
+        let client = RemoteClient::new(
             &config.data_config.endpoint,
             &config.data_config.auth,
             &None,
             &config.session_id,
             false,
             &config.data_config.user_agent,
-        ));
+        );
 
         let xorb_uploader =
             Box::new(XorbUploaderSpawnParallel::new(client.clone(), &config.data_config.prefix, UPLOAD_CONCURRENCY));
@@ -166,7 +166,7 @@ impl FileUploadSession {
         let _timer = ConsoleTimer::new("upload shard");
         let permit = self.client.acquire_upload_permit().await?;
         self.client
-            .upload_shard_with_permit(shard_data.into(), permit)
+            .upload_shard(shard_data.into(), permit)
             .await?;
 
         Ok(())

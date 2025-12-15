@@ -7,8 +7,8 @@ use anyhow::anyhow;
 use bytes::Bytes;
 use cas_object::SerializedCasObject;
 use cas_types::{
-    BatchQueryReconstructionResponse, CASReconstructionTerm, ChunkRange, FileRange, HttpRange, Key,
-    QueryReconstructionResponse, UploadShardResponse, UploadShardResponseType, UploadXorbResponse,
+    BatchQueryReconstructionResponse, CASReconstructionFetchInfo, CASReconstructionTerm, ChunkRange, FileRange,
+    HttpRange, Key, QueryReconstructionResponse, UploadShardResponse, UploadShardResponseType, UploadXorbResponse,
 };
 use chunk_cache::{CacheConfig, ChunkCache};
 use error_printer::ErrorPrinter;
@@ -23,7 +23,7 @@ use reqwest_middleware::ClientWithMiddleware;
 use tokio::io::AsyncWriteExt;
 use tokio::sync::{OwnedSemaphorePermit, mpsc};
 use tokio::task::{JoinHandle, JoinSet};
-use tracing::{debug, event, instrument};
+use tracing::{debug, event, info, instrument};
 use utils::auth::AuthConfig;
 #[cfg(not(target_family = "wasm"))]
 use utils::singleflight::Group;
@@ -125,9 +125,6 @@ pub(crate) async fn map_fetch_info_into_download_tasks(
     terms: Vec<CASReconstructionTerm>,
     offset_into_first_range: u64,
     base_write_negative_offset: u64,
-    chunk_cache: Option<Arc<dyn ChunkCache>>,
-    client: Arc<ClientWithMiddleware>,
-    range_download_single_flight: Arc<Group<DownloadRangeResult, CasClientError>>,
     output_provider: &SeekingOutputProvider,
 ) -> Result<Vec<FetchTermDownloadOnceAndWriteEverywhereUsed>> {
     // the actual segment length.
@@ -168,9 +165,6 @@ pub(crate) async fn map_fetch_info_into_download_tasks(
                     hash: term.hash.into(),
                     range: individual_fetch_info.range,
                     fetch_info: segment.clone(),
-                    chunk_cache: chunk_cache.clone(),
-                    client: client.clone(),
-                    range_download_single_flight: range_download_single_flight.clone(),
                 },
                 writes: vec![],
                 output: output_provider.clone(),
@@ -194,7 +188,7 @@ impl RemoteClient {
         session_id: &str,
         dry_run: bool,
         user_agent: &str,
-    ) -> Self {
+    ) -> Arc<Self> {
         // use disk cache if cache_config provided.
         let chunk_cache = if let Some(cache_config) = cache_config {
             if cache_config.cache_size == 0 {
@@ -210,7 +204,7 @@ impl RemoteClient {
             None
         };
 
-        Self {
+        Arc::new(Self {
             endpoint: endpoint.to_string(),
             dry_run,
             authenticated_http_client_with_retry: Arc::new(
@@ -226,7 +220,7 @@ impl RemoteClient {
             #[cfg(not(target_family = "wasm"))]
             range_download_single_flight: Arc::new(Group::new()),
             upload_concurrency_controller: AdaptiveConcurrencyController::new_upload("upload"),
-        }
+        })
     }
 
     async fn query_dedup_api(&self, prefix: &str, chunk_hash: &MerkleHash) -> Result<Option<Response>> {
@@ -330,7 +324,7 @@ impl RemoteClient {
     #[instrument(skip_all, name = "RemoteClient::reconstruct_file_segmented", fields(file.hash = file_hash.hex()
     ))]
     async fn reconstruct_file_to_writer_segmented_sequential_write(
-        &self,
+        self: &Arc<Self>,
         file_hash: &MerkleHash,
         byte_range: Option<FileRange>,
         mut writer: SequentialOutput,
@@ -355,12 +349,7 @@ impl RemoteClient {
         let total_len = file_reconstruct_range.length();
 
         // kick-start the download by enqueue the fetch info task.
-        task_tx.send(DownloadQueueItem::Metadata(FetchInfo::new(
-            *file_hash,
-            file_reconstruct_range,
-            self.endpoint.clone(),
-            self.authenticated_http_client_with_retry.clone(),
-        )))?;
+        task_tx.send(DownloadQueueItem::Metadata(FetchInfo::new(*file_hash, file_reconstruct_range)))?;
 
         // Start the queue processing logic
         //
@@ -369,9 +358,6 @@ impl RemoteClient {
         // download tasks are enqueued and spawned with the degree of concurrency equal to `num_concurrent_range_gets`.
         // After the above, a task that defines fetching the remainder of the file reconstruction info is enqueued,
         // which will execute after the first of the above term download tasks finishes.
-        let chunk_cache = self.chunk_cache.clone();
-        let term_download_client = self.http_client_with_retry.clone();
-        let range_download_single_flight = self.range_download_single_flight.clone();
         let download_scheduler = DownloadSegmentLengthTuner::from_configurable_constants();
         let download_scheduler_clone = download_scheduler.clone();
 
@@ -384,6 +370,7 @@ impl RemoteClient {
             "Starting segmented download"
         );
 
+        let client_for_dispatch: Arc<dyn Client + Send + Sync> = self.clone();
         let queue_dispatcher: JoinHandle<Result<()>> = tokio::spawn(async move {
             let mut remaining_total_len = total_len;
             while let Some(item) = task_rx.recv().await {
@@ -399,9 +386,10 @@ impl RemoteClient {
                         // number of active downloads.
                         let permit = download_concurrency_limiter.clone().acquire_owned().await?;
                         debug!(call_id, "spawning 1 download task");
+                        let client = client_for_dispatch.clone();
                         let future: JoinHandle<Result<(TermDownloadResult<Vec<u8>>, OwnedSemaphorePermit)>> =
                             tokio::spawn(async move {
-                                let data = term_download.run().await?;
+                                let data = term_download.run(client).await?;
                                 Ok((data, permit))
                             });
                         running_downloads_tx.send(future)?;
@@ -412,7 +400,7 @@ impl RemoteClient {
                         debug!(call_id, segment_size, "querying file info");
                         let (segment, maybe_remainder) = fetch_info.take_segment(segment_size);
 
-                        let Some((offset_into_first_range, terms)) = segment.query().await? else {
+                        let Some((offset_into_first_range, terms)) = segment.query(&client_for_dispatch).await? else {
                             // signal termination
                             task_tx.send(DownloadQueueItem::End)?;
                             continue;
@@ -436,9 +424,6 @@ impl RemoteClient {
                                         hash: term.hash.into(),
                                         range: individual_fetch_info.range,
                                         fetch_info: segment.clone(),
-                                        chunk_cache: chunk_cache.clone(),
-                                        client: term_download_client.clone(),
-                                        range_download_single_flight: range_download_single_flight.clone(),
                                     }))
                                 })
                                 .clone();
@@ -513,7 +498,7 @@ impl RemoteClient {
     #[instrument(skip_all, name = "RemoteClient::reconstruct_file_segmented_parallel", fields(file.hash = file_hash.hex()
     ))]
     async fn reconstruct_file_to_writer_segmented_parallel_write(
-        &self,
+        self: &Arc<Self>,
         file_hash: &MerkleHash,
         byte_range: Option<FileRange>,
         writer: &SeekingOutputProvider,
@@ -538,12 +523,7 @@ impl RemoteClient {
         let base_write_negative_offset = file_reconstruct_range.start;
 
         // kick-start the download by enqueue the fetch info task.
-        task_tx.send(DownloadQueueItem::Metadata(FetchInfo::new(
-            *file_hash,
-            file_reconstruct_range,
-            self.endpoint.clone(),
-            self.authenticated_http_client_with_retry.clone(),
-        )))?;
+        task_tx.send(DownloadQueueItem::Metadata(FetchInfo::new(*file_hash, file_reconstruct_range)))?;
 
         // Start the queue processing logic
         //
@@ -552,7 +532,6 @@ impl RemoteClient {
         // download tasks are enqueued and spawned with the degree of concurrency equal to `num_concurrent_range_gets`.
         // After the above, a task that defines fetching the remainder of the file reconstruction info is enqueued,
         // which will execute after the first of the above term download tasks finishes.
-        let term_download_client = self.http_client_with_retry.clone();
         let download_scheduler = DownloadSegmentLengthTuner::from_configurable_constants();
 
         let download_concurrency_limiter =
@@ -571,6 +550,7 @@ impl RemoteClient {
         };
 
         let mut total_written = 0;
+        let client_for_downloads: Arc<dyn Client + Send + Sync> = self.clone();
         while let Some(item) = task_rx.recv().await {
             // first try to join some tasks
             while let Some(result) = running_downloads.try_join_next() {
@@ -591,8 +571,9 @@ impl RemoteClient {
                     // number of active downloads.
                     let permit = download_concurrency_limiter.clone().acquire_owned().await?;
                     debug!(call_id, "spawning 1 download task");
+                    let client = client_for_downloads.clone();
                     running_downloads.spawn(async move {
-                        let data = term_download.run().await?;
+                        let data = term_download.run(client).await?;
                         drop(permit);
                         Ok(data)
                     });
@@ -604,7 +585,7 @@ impl RemoteClient {
                     debug!(call_id, segment_size, "querying file info");
                     let (segment, maybe_remainder) = fetch_info.take_segment(segment_size);
 
-                    let Some((offset_into_first_range, terms)) = segment.query().await? else {
+                    let Some((offset_into_first_range, terms)) = segment.query(&client_for_downloads).await? else {
                         // signal termination
                         task_tx.send(DownloadQueueItem::End)?;
                         continue;
@@ -618,9 +599,6 @@ impl RemoteClient {
                         terms,
                         offset_into_first_range,
                         base_write_negative_offset,
-                        self.chunk_cache.clone(),
-                        term_download_client.clone(),
-                        self.range_download_single_flight.clone(),
                         writer,
                     )
                     .await?;
@@ -657,9 +635,13 @@ impl RemoteClient {
 
         Ok(total_written)
     }
+}
 
+#[cfg_attr(not(target_family = "wasm"), async_trait::async_trait)]
+#[cfg_attr(target_family = "wasm", async_trait::async_trait(?Send))]
+impl Client for RemoteClient {
     #[cfg(not(target_family = "wasm"))]
-    pub async fn get_reconstruction(
+    async fn get_reconstruction(
         &self,
         file_id: &MerkleHash,
         bytes_range: Option<FileRange>,
@@ -672,14 +654,62 @@ impl RemoteClient {
         )
         .await
     }
-}
 
-#[cfg_attr(not(target_family = "wasm"), async_trait::async_trait)]
-#[cfg_attr(target_family = "wasm", async_trait::async_trait(?Send))]
-impl Client for RemoteClient {
+    #[cfg(not(target_family = "wasm"))]
+    async fn batch_get_reconstruction(&self, file_ids: &[MerkleHash]) -> Result<BatchQueryReconstructionResponse> {
+        let mut url_str = format!("{}/reconstructions?", self.endpoint);
+        let mut is_first = true;
+        let mut file_id_list = Vec::new();
+        for hash in file_ids {
+            file_id_list.push(hash.hex());
+            if is_first {
+                is_first = false;
+            } else {
+                url_str.push('&');
+            }
+            url_str.push_str("file_id=");
+            url_str.push_str(hash.hex().as_str());
+        }
+        let url: Url = url_str.parse()?;
+
+        let call_id = FN_CALL_ID.fetch_add(1, Ordering::Relaxed);
+        info!(call_id, file_ids=?file_id_list, "Starting batch_get_reconstruction API call");
+
+        let api_tag = "cas::batch_get_reconstruction";
+        let client = self.authenticated_http_client.clone();
+
+        let response: BatchQueryReconstructionResponse = RetryWrapper::new(api_tag)
+            .run_and_extract_json(move |_partial_report_fn| client.get(url.clone()).with_extension(Api(api_tag)).send())
+            .await?;
+
+        info!(call_id,
+            file_ids=?file_id_list,
+            response_count=response.files.len(),
+            "Completed batch_get_reconstruction API call",
+        );
+
+        Ok(response)
+    }
+
+    #[cfg(not(target_family = "wasm"))]
+    async fn get_file_term_data(
+        &self,
+        hash: MerkleHash,
+        fetch_term: CASReconstructionFetchInfo,
+    ) -> Result<TermDownloadOutput> {
+        get_file_term_data_impl(
+            hash,
+            fetch_term,
+            self.http_client_with_retry.clone(),
+            self.chunk_cache.clone(),
+            self.range_download_single_flight.clone(),
+        )
+        .await
+    }
+
     #[cfg(not(target_family = "wasm"))]
     async fn get_file_with_sequential_writer(
-        &self,
+        self: Arc<Self>,
         hash: &MerkleHash,
         byte_range: Option<FileRange>,
         output_provider: SequentialOutput,
@@ -691,7 +721,7 @@ impl Client for RemoteClient {
 
     #[cfg(not(target_family = "wasm"))]
     async fn get_file_with_parallel_writer(
-        &self,
+        self: Arc<Self>,
         hash: &MerkleHash,
         byte_range: Option<FileRange>,
         output_provider: SeekingOutputProvider,
@@ -753,7 +783,7 @@ impl Client for RemoteClient {
     }
 
     #[instrument(skip_all, name = "RemoteClient::upload_shard", fields(shard.len = shard_data.len()))]
-    async fn upload_shard_with_permit(&self, shard_data: Bytes, upload_permit: ConnectionPermit) -> Result<bool> {
+    async fn upload_shard(&self, shard_data: Bytes, upload_permit: ConnectionPermit) -> Result<bool> {
         if self.dry_run {
             return Ok(true);
         }

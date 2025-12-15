@@ -25,7 +25,10 @@ pub mod remote_client;
 pub mod retry_wrapper;
 pub mod upload_progress_stream;
 
+pub mod client_testing_utils;
+
 #[cfg(not(feature = "elevated_information_level"))]
 pub const INFORMATION_LOG_LEVEL: Level = Level::DEBUG;
+
 #[cfg(feature = "elevated_information_level")]
 pub const INFORMATION_LOG_LEVEL: Level = Level::INFO;
