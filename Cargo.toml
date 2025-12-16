@@ -44,18 +44,20 @@ bytes = "1.8"
 chrono = "0.4"
 clap = { version = "4", features = ["derive"] }
 colored = "2"
+console-subscriber = "0.5"
 countio = { version = "0.2", features = ["futures"] }
 crc32fast = "1.4"
 csv = "1"
 ctor = "0.4"
 derivative = "2.2"
-dirs = "5.0"
+dirs = "6.0"
 duration-str = "0.17"
 futures = "0.3"
 futures-util = "0.3"
 gearhash = "0.1"
 getrandom = "0.3"
 git-url-parse = "0.4"
+git-version = "0.3"
 git2 = "0.20"
 half = "2.4"
 heapify = "0.2"
@@ -76,7 +78,6 @@ pin-project = "1"
 prometheus = "0.14"
 rand = "0.9"
 rand_chacha = "0.9"
-rayon = "1.5"
 regex = "1"
 reqwest = { version = "0.12", features = [
     "json",
@@ -87,7 +88,6 @@ reqwest = { version = "0.12", features = [
 reqwest-middleware = "0.4"
 reqwest-retry = "0.7"
 rust-netrc = "0.1"
-rustc-hash = "1.1"
 safe-transmute = "0.11"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -105,11 +105,18 @@ tokio-retry = "0.3"
 tokio-util = { version = "0.7" }
 tower-service = "0.3"
 tracing = "0.1"
+tracing-appender = "0.2"
+tracing-log = "0.2"
+tracing-subscriber = { version = "0.3", features = [
+    "json",
+    "env-filter",
+] }
 ulid = "1.2"
 url = "2.5"
 urlencoding = "2.1"
 uuid = "1"
 walkdir = "2"
+warp = "0.3"
 web-time = "1.1"
 whoami = "1"
 
@@ -123,10 +130,11 @@ winapi = { version = "0.3", features = [
 ] }
 
 # dev-deps
-criterion = { version = "0.5", features = ["html_reports"] }
+approx = "0.5"
 httpmock = "0.7"
 rand_core = "0.6"
-russh = "0.54"
+rand_distr = "0.5"
+russh = "0.55"
 serial_test = "3"
 tempdir = "0.3"
 tracing-test = { version = "0.2", features = ["no-env-filter"] }
