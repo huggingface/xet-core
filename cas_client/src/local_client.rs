@@ -1114,7 +1114,8 @@ mod tests {
         let hash = cas_object.hash;
 
         let client = LocalClient::temporary().unwrap();
-        client.set_fetch_term_url_expiration(Duration::from_secs(60));
+        // Use a 100ms expiration window for fast testing
+        client.set_fetch_term_url_expiration(Duration::from_millis(100));
 
         let permit = client.acquire_upload_permit().await.unwrap();
         client.upload_xorb("default", cas_object, None, permit).await.unwrap();
@@ -1125,12 +1126,13 @@ mod tests {
         let cas = CasObject::deserialize(&mut reader).unwrap();
         let (fetch_byte_start, fetch_byte_end) = cas.get_byte_offset(0, 1).unwrap();
 
-        // Use current timestamp (within the window)
+        // Create URL at current time
         let timestamp = Instant::now();
         let byte_range = FileRange::new(fetch_byte_start as u64, fetch_byte_end as u64);
         let valid_url = generate_fetch_url(&file_path, &byte_range, timestamp);
         let valid_url_range = HttpRange::new(fetch_byte_start as u64, fetch_byte_end as u64);
 
+        // Immediately validate - should be within the 100ms window
         let fetch_term = CASReconstructionFetchInfo {
             range: ChunkRange::new(0, 1),
             url: valid_url,
@@ -1147,7 +1149,8 @@ mod tests {
         let hash = cas_object.hash;
 
         let client = LocalClient::temporary().unwrap();
-        client.set_fetch_term_url_expiration(Duration::from_secs(60));
+        // Use a 10ms expiration window for fast testing
+        client.set_fetch_term_url_expiration(Duration::from_millis(10));
 
         let permit = client.acquire_upload_permit().await.unwrap();
         client.upload_xorb("default", cas_object, None, permit).await.unwrap();
@@ -1158,11 +1161,14 @@ mod tests {
         let cas = CasObject::deserialize(&mut reader).unwrap();
         let (fetch_byte_start, fetch_byte_end) = cas.get_byte_offset(0, 1).unwrap();
 
-        // Use a timestamp 61 seconds in the past (past the 60 second window)
-        let timestamp = Instant::now() - Duration::from_secs(61);
+        // Create URL at current time
+        let timestamp = Instant::now();
         let byte_range = FileRange::new(fetch_byte_start as u64, fetch_byte_end as u64);
         let expired_url = generate_fetch_url(&file_path, &byte_range, timestamp);
         let valid_url_range = HttpRange::new(fetch_byte_start as u64, fetch_byte_end as u64);
+
+        // Wait for the URL to expire (20ms to ensure we're past the 10ms window)
+        tokio::time::sleep(Duration::from_millis(20)).await;
 
         let fetch_term = CASReconstructionFetchInfo {
             range: ChunkRange::new(0, 1),
@@ -1180,7 +1186,7 @@ mod tests {
         let cas_object = build_and_verify_cas_object(xorb, None);
         let hash = cas_object.hash;
 
-        // Don't set expiration - default should be effectively infinite
+        // Don't set expiration - default should be effectively infinite (u64::MAX ms)
         let client = LocalClient::temporary().unwrap();
 
         let permit = client.acquire_upload_permit().await.unwrap();
@@ -1192,17 +1198,18 @@ mod tests {
         let cas = CasObject::deserialize(&mut reader).unwrap();
         let (fetch_byte_start, fetch_byte_end) = cas.get_byte_offset(0, 1).unwrap();
 
-        // Use a very old timestamp (1 year ago) - should still work with infinite expiration
-        let timestamp = Instant::now()
-            .checked_sub(Duration::from_secs(365 * 24 * 60 * 60))
-            .unwrap_or(*REFERENCE_INSTANT);
+        // Create URL at current time
+        let timestamp = Instant::now();
         let byte_range = FileRange::new(fetch_byte_start as u64, fetch_byte_end as u64);
-        let old_url = generate_fetch_url(&file_path, &byte_range, timestamp);
+        let url = generate_fetch_url(&file_path, &byte_range, timestamp);
         let valid_url_range = HttpRange::new(fetch_byte_start as u64, fetch_byte_end as u64);
+
+        // Wait some time - should still work with default infinite expiration
+        tokio::time::sleep(Duration::from_millis(50)).await;
 
         let fetch_term = CASReconstructionFetchInfo {
             range: ChunkRange::new(0, 1),
-            url: old_url,
+            url,
             url_range: valid_url_range,
         };
         let result = client.get_file_term_data(hash, fetch_term).await;
@@ -1216,7 +1223,8 @@ mod tests {
         let hash = cas_object.hash;
 
         let client = LocalClient::temporary().unwrap();
-        client.set_fetch_term_url_expiration(Duration::from_secs(60));
+        // Use a 50ms expiration window for boundary testing
+        client.set_fetch_term_url_expiration(Duration::from_millis(50));
 
         let permit = client.acquire_upload_permit().await.unwrap();
         client.upload_xorb("default", cas_object, None, permit).await.unwrap();
@@ -1230,29 +1238,31 @@ mod tests {
         let byte_range = FileRange::new(fetch_byte_start as u64, fetch_byte_end as u64);
         let valid_url_range = HttpRange::new(fetch_byte_start as u64, fetch_byte_end as u64);
 
-        // Test just inside boundary (59 seconds ago) - should be valid
-        let timestamp_at_boundary = Instant::now() - Duration::from_secs(59);
-        let url_at_boundary = generate_fetch_url(&file_path, &byte_range, timestamp_at_boundary);
+        // Create URL at current time
+        let timestamp = Instant::now();
+        let url = generate_fetch_url(&file_path, &byte_range, timestamp);
+
+        // Test inside boundary (20ms elapsed, within 50ms window) - should be valid
+        tokio::time::sleep(Duration::from_millis(20)).await;
 
         let fetch_term = CASReconstructionFetchInfo {
             range: ChunkRange::new(0, 1),
-            url: url_at_boundary,
+            url: url.clone(),
             url_range: valid_url_range,
         };
         let result = client.get_file_term_data(hash, fetch_term).await;
-        assert!(result.is_ok(), "URL should be valid just inside expiration boundary");
+        assert!(result.is_ok(), "URL should be valid inside expiration boundary");
 
-        // Test just past boundary (61 seconds ago) - should be expired
-        let timestamp_past_boundary = Instant::now() - Duration::from_secs(61);
-        let url_past_boundary = generate_fetch_url(&file_path, &byte_range, timestamp_past_boundary);
+        // Wait more to exceed the boundary (total ~70ms, past 50ms window) - should be expired
+        tokio::time::sleep(Duration::from_millis(50)).await;
 
         let fetch_term = CASReconstructionFetchInfo {
             range: ChunkRange::new(0, 1),
-            url: url_past_boundary,
+            url,
             url_range: valid_url_range,
         };
         let result = client.get_file_term_data(hash, fetch_term).await;
-        assert!(result.is_err(), "URL should be expired just past boundary");
+        assert!(result.is_err(), "URL should be expired past boundary");
         assert!(matches!(result.unwrap_err(), CasClientError::PresignedUrlExpirationError));
     }
 
