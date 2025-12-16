@@ -2,16 +2,21 @@ use std::sync::Arc;
 
 use bytes::Bytes;
 use cas_object::SerializedCasObject;
-use cas_types::FileRange;
+use cas_types::QueryReconstructionResponse;
+#[cfg(not(target_family = "wasm"))]
+use cas_types::{BatchQueryReconstructionResponse, CASReconstructionFetchInfo, FileRange};
 use mdb_shard::file_structs::MDBFileInfo;
 use merklehash::MerkleHash;
+#[cfg(not(target_family = "wasm"))]
 use progress_tracking::item_tracking::SingleItemProgressUpdater;
 use progress_tracking::upload_tracking::CompletionTracker;
 
 use crate::adaptive_concurrency::ConnectionPermit;
+#[cfg(not(target_family = "wasm"))]
+use crate::download_utils::TermDownloadOutput;
 use crate::error::Result;
 #[cfg(not(target_family = "wasm"))]
-use crate::{SeekingOutputProvider, SequentialOutput};
+use crate::output_provider::{SeekingOutputProvider, SequentialOutput};
 
 /// A Client to the Shard service. The shard service
 /// provides for
@@ -20,16 +25,32 @@ use crate::{SeekingOutputProvider, SequentialOutput};
 /// 3. querying of chunk->shard information
 #[cfg_attr(not(target_family = "wasm"), async_trait::async_trait)]
 #[cfg_attr(target_family = "wasm", async_trait::async_trait(?Send))]
-pub trait Client {
-    /// Get an entire file by file hash with an optional bytes range.
-    ///
-    /// The http_client passed in is a non-authenticated client. This is used to directly communicate
-    /// with the backing store (S3) to retrieve xorbs.
-    ///
-    /// Content is written in-order to the provided SequentialOutput
+pub trait Client: Send + Sync {
+    async fn get_file_reconstruction_info(
+        &self,
+        file_hash: &MerkleHash,
+    ) -> Result<Option<(MDBFileInfo, Option<MerkleHash>)>>;
+
+    #[cfg(not(target_family = "wasm"))]
+    async fn get_reconstruction(
+        &self,
+        file_id: &MerkleHash,
+        bytes_range: Option<FileRange>,
+    ) -> Result<Option<QueryReconstructionResponse>>;
+
+    #[cfg(not(target_family = "wasm"))]
+    async fn batch_get_reconstruction(&self, file_ids: &[MerkleHash]) -> Result<BatchQueryReconstructionResponse>;
+
+    #[cfg(not(target_family = "wasm"))]
+    async fn get_file_term_data(
+        &self,
+        hash: MerkleHash,
+        fetch_term: CASReconstructionFetchInfo,
+    ) -> Result<TermDownloadOutput>;
+
     #[cfg(not(target_family = "wasm"))]
     async fn get_file_with_sequential_writer(
-        &self,
+        self: Arc<Self>,
         hash: &MerkleHash,
         byte_range: Option<FileRange>,
         output_provider: SequentialOutput,
@@ -38,17 +59,12 @@ pub trait Client {
 
     #[cfg(not(target_family = "wasm"))]
     async fn get_file_with_parallel_writer(
-        &self,
+        self: Arc<Self>,
         hash: &MerkleHash,
         byte_range: Option<FileRange>,
         output_provider: SeekingOutputProvider,
         progress_updater: Option<Arc<SingleItemProgressUpdater>>,
     ) -> Result<u64>;
-
-    async fn get_file_reconstruction_info(
-        &self,
-        file_hash: &MerkleHash,
-    ) -> Result<Option<(MDBFileInfo, Option<MerkleHash>)>>;
 
     async fn query_for_global_dedup_shard(&self, prefix: &str, chunk_hash: &MerkleHash) -> Result<Option<Bytes>>;
 
@@ -56,8 +72,7 @@ pub trait Client {
     async fn acquire_upload_permit(&self) -> Result<ConnectionPermit>;
 
     /// Upload a new shard.
-    async fn upload_shard_with_permit(&self, shard_data: bytes::Bytes, upload_permit: ConnectionPermit)
-    -> Result<bool>;
+    async fn upload_shard(&self, shard_data: bytes::Bytes, upload_permit: ConnectionPermit) -> Result<bool>;
 
     /// Upload a new xorb.
     async fn upload_xorb(

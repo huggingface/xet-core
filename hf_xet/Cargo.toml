@@ -15,12 +15,11 @@ data = { path = "../data" }
 error_printer = { path = "../error_printer" }
 progress_tracking = { path = "../progress_tracking" }
 utils = { path = "../utils" }
-xet_config = { path = "../xet_config" }
+xet_config = { path= "../xet_config" }
 xet_logging = { path = "../xet_logging" }
 xet_runtime = { path = "../xet_runtime" }
 
 async-trait = "0.1"
-bipbuffer = "0.1"
 chrono = "0.4"
 itertools = "0.14"
 lazy_static = "1.5"
@@ -35,8 +34,6 @@ pyo3 = { version = "0.26", features = [
     "auto-initialize",
 ] }
 rand = "0.9.2"
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
 tracing = "0.1"
 
 # Unix-specific dependencies
@@ -49,12 +46,13 @@ signal-hook-registry = "1.4"
 winapi = { version = "0.3", features = ["consoleapi", "wincon", "errhandlingapi"] }
 
 [features]
-default = ["no-default-cache"]                           # By default, hf_xet disables the disk cache. 
+default = ["no-default-cache", "elevated_information_level"] # By default, hf_xet disables the disk cache and uses aggressive logging level
 native-tls = ["cas_client/native-tls-vendored"]
 native-tls-vendored = ["cas_client/native-tls-vendored"]
 no-default-cache = ["xet_config/no-default-cache"]
 profiling = ["pprof"]
 tokio-console = ["xet_logging/tokio-console"]
+elevated_information_level = ["cas_client/elevated_information_level", "utils/elevated_information_level"]
 
 [profile.release]
 split-debuginfo = "packed"
@@ -75,3 +73,7 @@ split-debuginfo = "none"
 inherits = "dev"
 debug = true
 opt-level = 3
+
+# cargo-machete has detected the below unused dependency incorrectly
+[package.metadata.cargo-machete]
+ignored = ["cas_client", "xet_config"]

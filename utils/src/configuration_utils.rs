@@ -1,8 +1,13 @@
 use std::str::FromStr;
 
-use tracing::{info, warn};
+use tracing::{Level, event, info, warn};
 
 use crate::ByteSize;
+
+#[cfg(not(feature = "elevated_information_level"))]
+pub const INFORMATION_LOG_LEVEL: Level = Level::DEBUG;
+#[cfg(feature = "elevated_information_level")]
+pub const INFORMATION_LOG_LEVEL: Level = Level::INFO;
 
 /// A trait to control how a value is parsed from an environment string or other config source
 /// if it's present.
@@ -29,7 +34,7 @@ pub trait ParsableConfigValue: std::fmt::Debug + Sized {
                 },
             },
             None => {
-                info!("Config: {variable_name} = {default:?} (default)");
+                event!(INFORMATION_LOG_LEVEL, "Config: {variable_name} = {default:?} (default)");
                 default
             },
         }

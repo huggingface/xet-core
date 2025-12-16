@@ -1,4 +1,3 @@
-#![allow(dead_code)]
 // Re-export the NetworkModelState from the adaptive_concurrency module
 pub use cas_client::adaptive_concurrency::{CCLatencyModelState, CCSuccessModelState};
 use serde::{Deserialize, Serialize};
@@ -6,6 +5,7 @@ use serde::{Deserialize, Serialize};
 /// Metrics for a single client to report data transfer performance.
 ///
 /// These are dumped to stdout as json every 200ms to track the performance of the client.
+#[allow(unused)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ClientMetrics {
     pub client_id: u64,
@@ -27,6 +27,7 @@ pub struct ClientMetrics {
     pub latency_model_stats: Option<CCLatencyModelState>,
 }
 
+#[allow(unused)]
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ServerSimulationParameters {
     pub min_reply_delay_ms: u64,
@@ -38,6 +39,7 @@ pub struct ServerSimulationParameters {
     pub congested_error_rate: f64,
 }
 
+#[allow(unused)]
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ServerMetrics {
     pub timestamp: String,
@@ -50,6 +52,7 @@ pub struct ServerMetrics {
     pub average_throughput_bps: f64,
 }
 
+#[allow(unused)]
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct NetworkStats {
     pub timestamp: String,

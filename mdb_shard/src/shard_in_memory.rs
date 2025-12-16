@@ -264,4 +264,11 @@ impl MDBInMemoryShard {
 
         Ok(full_file_name)
     }
+
+    /// Serializes the shard to a vector of bytes.
+    pub fn to_bytes(&self) -> Result<Vec<u8>> {
+        let mut buf = Vec::new();
+        MDBShardInfo::serialize_from(&mut buf, self, None)?;
+        Ok(buf)
+    }
 }

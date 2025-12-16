@@ -5,10 +5,13 @@ use std::time::Duration;
 use more_asserts::debug_assert_le;
 use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
+#[cfg(not(target_family = "wasm"))]
 use tokio::time::Instant;
 use tracing::info;
 use utils::ExpWeightedMovingAvg;
 use utils::adjustable_semaphore::{AdjustableSemaphore, AdjustableSemaphorePermit};
+#[cfg(target_family = "wasm")]
+use web_time::Instant;
 use xet_runtime::xet_config;
 
 use crate::CasClientError;
@@ -314,7 +317,7 @@ impl AdaptiveConcurrencyController {
     }
 
     pub async fn acquire_connection_permit(self: &Arc<Self>) -> Result<ConnectionPermit, CasClientError> {
-        let permit = self.concurrency_semaphore.acquire().await?;
+        let _permit = self.concurrency_semaphore.acquire().await?;
 
         let info = Arc::new(ConnectionPermitInfo {
             controller: Arc::clone(self),
@@ -325,7 +328,7 @@ impl AdaptiveConcurrencyController {
             last_partial_report_ms: AtomicU64::new(0),
         });
 
-        Ok(ConnectionPermit { permit, info })
+        Ok(ConnectionPermit { _permit, info })
     }
 
     /// The current concurrency; there may be more permits out there due to the lazy resolution of decrements, but those
@@ -547,7 +550,7 @@ pub struct ConnectionPermitInfo {
 /// A permit for a connection.  This can be used to track the start time of a transfer and report back
 /// to the original controller whether it's needed.
 pub struct ConnectionPermit {
-    permit: AdjustableSemaphorePermit,
+    _permit: AdjustableSemaphorePermit,
     info: Arc<ConnectionPermitInfo>,
 }
 
@@ -661,7 +664,6 @@ mod test_constants {
     pub const INCR_SPACING_MS: u64 = 200;
     pub const DECR_SPACING_MS: u64 = 100;
 
-    pub const TARGET_TIME_MS_S: u64 = 5;
     pub const TARGET_TIME_MS_L: u64 = 20;
 
     pub const LARGE_N_BYTES: u64 = 10000;
@@ -708,7 +710,6 @@ mod tests {
     use super::test_constants::*;
     use super::*;
 
-    pub const B: u64 = 1000;
     // Use a larger transfer size for tests to ensure the RTT predictor has enough data
     pub const TEST_TRANSFER_SIZE: u64 = 10 * 1024 * 1024; // 10MB
 
