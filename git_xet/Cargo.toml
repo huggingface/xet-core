@@ -16,9 +16,7 @@ hub_client = { path = "../hub_client" }
 
 anyhow = { workspace = true }
 async-trait = { workspace = true }
-chrono = { workspace = true }
 clap = { workspace = true }
-derivative = { workspace = true }
 git-url-parse = { workspace = true }
 git2 = { workspace = true }
 rand_core = { workspace = true }
@@ -38,3 +36,7 @@ serial_test = { workspace = true }
 
 [features]
 git-xet-for-integration-test = []
+
+# tell cargo-machete a renamed crate
+[package.metadata.cargo-machete.renamed]
+rust-netrc = "netrc"

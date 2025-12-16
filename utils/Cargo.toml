@@ -47,3 +47,4 @@ futures-util = { workspace = true }
 
 [features]
 strict = []
+elevated_information_level = []

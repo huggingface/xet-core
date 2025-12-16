@@ -10,7 +10,6 @@ use cas_client::Client;
 use cas_object::SerializedCasObject;
 use deduplication::constants::{MAX_XORB_BYTES, MAX_XORB_CHUNKS};
 use deduplication::{DataAggregator, DeduplicationMetrics, RawXorbData};
-use jsonwebtoken::{DecodingKey, Validation, decode};
 use lazy_static::lazy_static;
 use mdb_shard::Sha256;
 use mdb_shard::file_structs::MDBFileInfo;
@@ -48,9 +47,6 @@ pub struct FileUploadSession {
     // The parts of this that manage the
     pub(crate) client: Arc<dyn Client + Send + Sync>,
     pub(crate) shard_interface: SessionShardInterface,
-
-    /// The repo id, if present.
-    pub(crate) repo_id: Option<String>,
 
     /// The configuration settings, if needed.
     pub(crate) config: Arc<TranslatorConfig>,
@@ -135,27 +131,9 @@ impl FileUploadSession {
 
         let shard_interface = SessionShardInterface::new(config.clone(), client.clone(), dry_run).await?;
 
-        let repo_id = config.data_config.auth.clone().and_then(|auth| {
-            let token = auth.token;
-            let mut validation = Validation::default();
-            validation.insecure_disable_signature_validation();
-
-            decode::<serde_json::Map<String, serde_json::Value>>(
-                &token,
-                &DecodingKey::from_secret("".as_ref()), // Secret is not used here
-                &validation,
-            )
-            .ok()
-            .and_then(|decoded| {
-                // Extract `repo_id` from the claims map
-                decoded.claims.get("repoId").and_then(|value| value.as_str().map(String::from))
-            })
-        });
-
         Ok(Arc::new(Self {
             shard_interface,
             client,
-            repo_id,
             config,
             completion_tracker,
             progress_aggregator,

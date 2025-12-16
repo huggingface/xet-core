@@ -4,7 +4,6 @@ version = "0.14.5"
 edition = "2024"
 
 [dependencies]
-xet_config = { path = "../xet_config" }
 xet_runtime = { path = "../xet_runtime" }
 mdb_shard = { path = "../mdb_shard" }
 merklehash = { path = "../merklehash" }
