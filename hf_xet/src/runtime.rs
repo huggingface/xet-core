@@ -38,29 +38,12 @@ extern "system" fn console_ctrl_handler(
 
     // Only handle CTRL_C_EVENT
     if ctrl_type == wincon::CTRL_C_EVENT {
-        // Check if we have active operations
-        let has_active_ops = {
-            let guard = MULTITHREADED_RUNTIME.read().unwrap();
-            if let Some((runtime_pid, ref runtime)) = *guard {
-                runtime_pid == std::process::id() && runtime.external_executor_count() > 0
-            } else {
-                false
-            }
-        };
-
-        if has_active_ops {
-            // We have active operations, handle it ourselves
-            SIGINT_DETECTED.store(true, Ordering::SeqCst);
-            winapi::shared::minwindef::TRUE
-        } else {
-            // No active operations, let Python's handler (or default) handle it
-            // Return FALSE to continue handler chain
-            winapi::shared::minwindef::FALSE
-        }
-    } else {
-        // For other control events, let default handler process them
-        winapi::shared::minwindef::FALSE
+        // No issues storing this multiple times. 
+        SIGINT_DETECTED.store(true, Ordering::SeqCst);
     }
+    
+    // Always return false so the python signal handler still gets the signal.
+    winapi::shared::minwindef::FALSE
 }
 
 #[cfg(windows)]
