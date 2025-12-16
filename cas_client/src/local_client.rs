@@ -444,12 +444,12 @@ impl Client for LocalClient {
         let mut terms = Vec::new();
 
         #[derive(Clone)]
-        struct FetchInfoIntemediate {
+        struct FetchInfoIntermediate {
             chunk_range: ChunkRange,
             byte_range: FileRange,
         }
 
-        let mut fetch_info_map: HashMap<MerkleHash, Vec<FetchInfoIntemediate>> = HashMap::new();
+        let mut fetch_info_map: HashMap<MerkleHash, Vec<FetchInfoIntermediate>> = HashMap::new();
 
         while s_idx < file_info.segments.len() && cumulative_bytes < file_range.end {
             let mut segment = file_info.segments[s_idx].clone();
@@ -506,7 +506,7 @@ impl Client for LocalClient {
 
             terms.push(cas_reconstruction_term);
 
-            let fetch_info_intemediate = FetchInfoIntemediate {
+            let fetch_info_intemediate = FetchInfoIntermediate {
                 chunk_range,
                 byte_range,
             };
