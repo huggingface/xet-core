@@ -574,7 +574,6 @@ mod tests {
 
     use super::*;
     use crate::remote_client::RemoteClient;
-    use crate::{RetryConfig, build_http_client};
 
     #[tokio::test]
     async fn test_fetch_info_query_and_find() -> Result<()> {

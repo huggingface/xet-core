@@ -30,7 +30,6 @@ path = "examples/xorb-check/main.rs"
 cas_client = { path = "../cas_client" }
 cas_object = { path = "../cas_object" }
 cas_types = { path = "../cas_types" }
-xet_config = { path = "../xet_config" }
 deduplication = { path = "../deduplication" }
 error_printer = { path = "../error_printer" }
 hub_client = { path = "../hub_client" }
@@ -49,7 +48,6 @@ lazy_static = { workspace = true }
 more-asserts = { workspace = true }
 prometheus = { workspace = true }
 rand = { workspace = true }
-rand_chacha = { workspace = true }
 regex = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

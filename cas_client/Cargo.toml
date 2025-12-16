@@ -8,7 +8,6 @@ edition = "2024"
 cas_object = { path = "../cas_object" }
 cas_types = { path = "../cas_types" }
 chunk_cache = { path = "../chunk_cache" }
-xet_config = { path = "../xet_config" }
 deduplication = { path = "../deduplication" }
 error_printer = { path = "../error_printer" }
 file_utils = { path = "../file_utils" }
@@ -19,34 +18,30 @@ utils = { path = "../utils" }
 xet_runtime = { path = "../xet_runtime" }
 
 anyhow = { workspace = true }
-approx = "0.5"
 async-trait = { workspace = true }
 bytes = { workspace = true }
+chrono = { workspace = true }
+clap = { workspace = true }
 derivative = { workspace = true }
 futures = { workspace = true }
 http = { workspace = true }
-hyper-util = { workspace = true }
 lazy_static = { workspace = true }
 more-asserts = { workspace = true }
+rand = { workspace = true }
 reqwest = { workspace = true }
 reqwest-middleware = { workspace = true }
 reqwest-retry = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+statrs = { workspace = true }
 tempfile = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 tokio-retry = { workspace = true }
-tower-service = { workspace = true }
 tracing = { workspace = true }
-tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
-tracing-log = "0.2"
+tracing-log = { workspace = true }
+tracing-subscriber = { workspace = true }
 url = { workspace = true }
-rand = { workspace = true }
-chrono = { workspace = true }
-clap = { version = "4.0", features = ["derive"] }
-ctor = { workspace = true }
-statrs = { workspace = true }
 
 # Reqwest -- uses different flags with different features.
 [features]
@@ -75,12 +70,15 @@ native-tls-vendored = ["reqwest/native-tls-vendored"]
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
 heed = { workspace = true }
 hyper = { workspace = true }
-warp = "0.3"
+warp = { workspace = true }
+
+[target.'cfg(target_family = "wasm")'.dependencies]
+web-time = { workspace = true }
 
 [dev-dependencies]
-approx = "0.5"
+approx = { workspace = true }
 httpmock = { workspace = true }
-rand_distr = "0.5"
+rand_distr = { workspace = true }
 tracing-test = { workspace = true }
 wiremock = { workspace = true }
 

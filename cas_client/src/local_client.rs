@@ -4,7 +4,6 @@ use std::io::{BufReader, Cursor, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::anyhow;
 use async_trait::async_trait;
@@ -16,6 +15,7 @@ use cas_types::{
 };
 use file_utils::SafeFileCreator;
 use heed::types::*;
+use lazy_static::lazy_static;
 use mdb_shard::file_structs::MDBFileInfo;
 use mdb_shard::shard_file_reconstructor::FileReconstructor;
 use mdb_shard::utils::shard_file_name;
@@ -27,6 +27,7 @@ use progress_tracking::upload_tracking::CompletionTracker;
 use tempfile::TempDir;
 use tokio::io::AsyncWriteExt;
 use tokio::runtime::Handle;
+use tokio::time::{Duration, Instant};
 use tracing::{debug, error, info, warn};
 use utils::serialization_utils::read_u32;
 
@@ -34,6 +35,16 @@ use crate::adaptive_concurrency::AdaptiveConcurrencyController;
 use crate::download_utils::TermDownloadOutput;
 use crate::error::{CasClientError, Result};
 use crate::{Client, SeekingOutputProvider, SequentialOutput};
+
+lazy_static! {
+    /// Reference instant for URL timestamps. Initialized far in the past to allow
+    /// testing timestamps that are earlier in the current process lifetime.
+    static ref REFERENCE_INSTANT: Instant = {
+        let now = Instant::now();
+        now.checked_sub(Duration::from_secs(365 * 24 * 60 * 60))
+            .unwrap_or(now)
+    };
+}
 
 pub struct LocalClient {
     _tmp_dir: Option<TempDir>, // To hold directory to use for local testing
@@ -48,21 +59,25 @@ pub struct LocalClient {
 
 impl LocalClient {
     /// Create a local client hosted in a temporary directory for testing.
-    pub fn temporary() -> Result<Arc<Self>> {
+    /// This is an async function to allow use with current-thread tokio runtime.
+    pub async fn temporary() -> Result<Arc<Self>> {
         let tmp_dir = TempDir::new().unwrap();
         let path = tmp_dir.path().to_owned();
-        let s = Self::new_internal(path, Some(tmp_dir))?;
+        let s = Self::new_internal(path, Some(tmp_dir)).await?;
         Ok(Arc::new(s))
     }
 
     /// Create a local client hosted in a directory.  Effectively, this directory
     /// is the CAS endpoint and persists across instances of LocalClient.  
     pub fn new(path: impl AsRef<Path>) -> Result<Arc<Self>> {
-        let s = Self::new_internal(path, None)?;
+        let path = path.as_ref().to_owned();
+        let s = tokio::task::block_in_place(|| {
+            Handle::current().block_on(async move { Self::new_internal(path, None).await })
+        })?;
         Ok(Arc::new(s))
     }
 
-    fn new_internal(path: impl AsRef<Path>, tmp_dir: Option<TempDir>) -> Result<Self> {
+    async fn new_internal(path: impl AsRef<Path>, tmp_dir: Option<TempDir>) -> Result<Self> {
         let base_dir = std::path::absolute(path)?;
         if !base_dir.exists() {
             std::fs::create_dir_all(&base_dir)?;
@@ -95,11 +110,7 @@ impl LocalClient {
             .map_err(|e| CasClientError::Other(format!("Error opening heed table: {e}")))?;
 
         // Open / set up the shard lookup
-        let shard_directory_ = shard_dir.clone();
-        let shard_manager = tokio::task::block_in_place(|| {
-            Handle::current()
-                .block_on(async move { ShardFileManager::new_in_session_directory(shard_directory_, true).await })
-        })?;
+        let shard_manager = ShardFileManager::new_in_session_directory(shard_dir.clone(), true).await?;
 
         Ok(Self {
             _tmp_dir: tmp_dir,
@@ -122,14 +133,6 @@ impl LocalClient {
     /// URLs generated after this call will expire after the specified duration.
     pub fn set_fetch_term_url_expiration(&self, expiration: Duration) {
         self.url_expiration_ms.store(expiration.as_millis() as u64, Ordering::Relaxed);
-    }
-
-    /// Returns the current timestamp in milliseconds since Unix epoch.
-    fn current_timestamp_ms() -> u64 {
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or(Duration::ZERO)
-            .as_millis() as u64
     }
 
     /// Returns all entries in the local client
@@ -441,12 +444,12 @@ impl Client for LocalClient {
         let mut terms = Vec::new();
 
         #[derive(Clone)]
-        struct FetchInfoIntemediate {
+        struct FetchInfoIntermediate {
             chunk_range: ChunkRange,
             byte_range: FileRange,
         }
 
-        let mut fetch_info_map: HashMap<MerkleHash, Vec<FetchInfoIntemediate>> = HashMap::new();
+        let mut fetch_info_map: HashMap<MerkleHash, Vec<FetchInfoIntermediate>> = HashMap::new();
 
         while s_idx < file_info.segments.len() && cumulative_bytes < file_range.end {
             let mut segment = file_info.segments[s_idx].clone();
@@ -503,7 +506,7 @@ impl Client for LocalClient {
 
             terms.push(cas_reconstruction_term);
 
-            let fetch_info_intemediate = FetchInfoIntemediate {
+            let fetch_info_intemediate = FetchInfoIntermediate {
                 chunk_range,
                 byte_range,
             };
@@ -516,7 +519,7 @@ impl Client for LocalClient {
 
         assert!(!terms.is_empty());
 
-        let timestamp_ms = Self::current_timestamp_ms();
+        let timestamp = Instant::now();
 
         // Sort and merge adjacent/overlapping ranges in each fetch_info Vec
         let mut merged_fetch_info_map: HashMap<HexMerkleHash, Vec<CASReconstructionFetchInfo>> = HashMap::new();
@@ -537,8 +540,8 @@ impl Client for LocalClient {
                 while idx + 1 < fi_vec.len() {
                     let next_fi = &fi_vec[idx + 1];
                     if next_fi.chunk_range.start <= new_fi.chunk_range.end {
-                        new_fi.chunk_range.end = next_fi.chunk_range.end;
-                        new_fi.byte_range.start = next_fi.byte_range.end;
+                        new_fi.chunk_range.end = next_fi.chunk_range.end.max(new_fi.chunk_range.end);
+                        new_fi.byte_range.end = next_fi.byte_range.end.max(new_fi.byte_range.end);
                         idx += 1;
                     } else {
                         break;
@@ -547,10 +550,7 @@ impl Client for LocalClient {
 
                 merged.push(CASReconstructionFetchInfo {
                     range: new_fi.chunk_range,
-                    url: format!(
-                        "{:?}:{}:{}:{}",
-                        file_path, new_fi.byte_range.start, new_fi.byte_range.end, timestamp_ms
-                    ),
+                    url: generate_fetch_url(&file_path, &new_fi.byte_range, timestamp),
                     url_range: HttpRange::from(new_fi.byte_range),
                 });
 
@@ -593,40 +593,19 @@ impl Client for LocalClient {
         hash: MerkleHash,
         fetch_term: CASReconstructionFetchInfo,
     ) -> Result<TermDownloadOutput> {
-        // URL format: "{file_path}:{start}:{end}:{timestamp}"
-        // where file_path is the full path in Debug format (with quotes)
-        let url = &fetch_term.url;
-
-        // Split from the end to handle paths that might contain colons
-        let mut parts = url.rsplitn(4, ':').collect::<Vec<_>>();
-        parts.reverse();
-
-        if parts.len() != 4 {
-            return Err(CasClientError::InvalidArguments);
-        }
-
-        let file_path_str = parts[0];
-        let start_pos: u64 = parts[1].parse().map_err(|_| CasClientError::InvalidArguments)?;
-        let end_pos: u64 = parts[2].parse().map_err(|_| CasClientError::InvalidArguments)?;
-        let url_timestamp_ms: u64 = parts[3].parse().map_err(|_| CasClientError::InvalidArguments)?;
+        let (file_path, url_byte_range, url_timestamp) = parse_fetch_url(&fetch_term.url)?;
 
         // Check if URL has expired
-        let current_ms = Self::current_timestamp_ms();
         let expiration_ms = self.url_expiration_ms.load(Ordering::Relaxed);
-        if current_ms.saturating_sub(url_timestamp_ms) > expiration_ms {
+        let elapsed_ms = Instant::now().saturating_duration_since(url_timestamp).as_millis() as u64;
+        if elapsed_ms > expiration_ms {
             return Err(CasClientError::PresignedUrlExpirationError);
         }
 
-        // Validate start_pos and end_pos match url_range
-        if start_pos != fetch_term.url_range.start {
+        // Validate byte range matches url_range
+        if url_byte_range.start != fetch_term.url_range.start || url_byte_range.end != fetch_term.url_range.end {
             return Err(CasClientError::InvalidArguments);
         }
-        if end_pos != fetch_term.url_range.end {
-            return Err(CasClientError::InvalidArguments);
-        }
-
-        // Parse the file path (it's in Debug format with quotes)
-        let file_path: PathBuf = file_path_str.trim_matches('"').into();
         let file = File::open(&file_path).map_err(|_| {
             error!("Unable to find xorb in local CAS {:?}", file_path);
             CasClientError::XORBNotFound(hash)
@@ -738,6 +717,31 @@ fn map_heed_db_error(e: heed::Error) -> CasClientError {
     warn!("{msg}");
     CasClientError::Other(msg)
 }
+
+fn generate_fetch_url(file_path: &Path, byte_range: &FileRange, timestamp: Instant) -> String {
+    let timestamp_ms = timestamp.saturating_duration_since(*REFERENCE_INSTANT).as_millis() as u64;
+    format!("{:?}:{}:{}:{}", file_path, byte_range.start, byte_range.end, timestamp_ms)
+}
+
+fn parse_fetch_url(url: &str) -> Result<(PathBuf, FileRange, Instant)> {
+    let mut parts = url.rsplitn(4, ':').collect::<Vec<_>>();
+    parts.reverse();
+
+    if parts.len() != 4 {
+        return Err(CasClientError::InvalidArguments);
+    }
+
+    let file_path_str = parts[0];
+    let start_pos: u64 = parts[1].parse().map_err(|_| CasClientError::InvalidArguments)?;
+    let end_pos: u64 = parts[2].parse().map_err(|_| CasClientError::InvalidArguments)?;
+    let timestamp_ms: u64 = parts[3].parse().map_err(|_| CasClientError::InvalidArguments)?;
+
+    let file_path: PathBuf = file_path_str.trim_matches('"').into();
+    let byte_range = FileRange::new(start_pos, end_pos);
+    let timestamp = *REFERENCE_INSTANT + Duration::from_millis(timestamp_ms);
+
+    Ok((file_path, byte_range, timestamp))
+}
 #[cfg(test)]
 mod tests {
     use cas_object::CompressionScheme::LZ4;
@@ -749,7 +753,7 @@ mod tests {
     use super::*;
     use crate::client_testing_utils::ClientTestingUtils;
 
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[tokio::test]
     async fn test_basic_put_get() {
         let xorb = build_raw_xorb(1, ChunkSize::Fixed(2048));
         let data = raw_xorb_to_vec(&xorb);
@@ -758,7 +762,7 @@ mod tests {
         let hash = cas_object.hash;
 
         // Act & Assert
-        let client = LocalClient::temporary().unwrap();
+        let client = LocalClient::temporary().await.unwrap();
         let permit = client.acquire_upload_permit().await.unwrap();
         assert!(client.upload_xorb("key", cas_object, None, permit).await.is_ok());
 
@@ -766,7 +770,7 @@ mod tests {
         assert_eq!(data, returned_data);
     }
 
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[tokio::test]
     async fn test_basic_put_get_random_medium() {
         let xorb = build_raw_xorb(44, ChunkSize::Random(512, 15633));
         let data = raw_xorb_to_vec(&xorb);
@@ -775,7 +779,7 @@ mod tests {
         let hash = cas_object.hash;
 
         // Act & Assert
-        let client = LocalClient::temporary().unwrap();
+        let client = LocalClient::temporary().await.unwrap();
         let permit = client.acquire_upload_permit().await.unwrap();
         assert!(client.upload_xorb("", cas_object, None, permit).await.is_ok());
 
@@ -783,7 +787,7 @@ mod tests {
         assert_eq!(data, returned_data);
     }
 
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[tokio::test]
     async fn test_basic_put_get_range_random_small() {
         let xorb = build_raw_xorb(3, ChunkSize::Random(512, 15633));
         let data = raw_xorb_to_vec(&xorb);
@@ -793,7 +797,7 @@ mod tests {
         let hash = cas_object.hash;
 
         // Act & Assert
-        let client = LocalClient::temporary().unwrap();
+        let client = LocalClient::temporary().await.unwrap();
         let permit = client.acquire_upload_permit().await.unwrap();
         assert!(client.upload_xorb("", cas_object, None, permit).await.is_ok());
 
@@ -810,7 +814,7 @@ mod tests {
         }
     }
 
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[tokio::test]
     async fn test_basic_length() {
         let xorb = build_raw_xorb(1, ChunkSize::Fixed(2048));
         let data = raw_xorb_to_vec(&xorb);
@@ -821,7 +825,7 @@ mod tests {
         let gen_length = data.len();
 
         // Act
-        let client = LocalClient::temporary().unwrap();
+        let client = LocalClient::temporary().await.unwrap();
         let permit = client.acquire_upload_permit().await.unwrap();
         assert!(client.upload_xorb("", cas_object, None, permit).await.is_ok());
         let len = client.get_length(&hash).unwrap();
@@ -830,18 +834,18 @@ mod tests {
         assert_eq!(len as usize, gen_length);
     }
 
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[tokio::test]
     async fn test_missing_xorb() {
         // Arrange
         let hash = MerkleHash::from_hex("d760aaf4beb07581956e24c847c47f1abd2e419166aa68259035bc412232e9da").unwrap();
 
         // Act & Assert
-        let client = LocalClient::temporary().unwrap();
+        let client = LocalClient::temporary().await.unwrap();
         let result = client.get(&hash);
         assert!(matches!(result, Err(CasClientError::XORBNotFound(_))));
     }
 
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[tokio::test]
     async fn test_failures() {
         let hello = "hello world".as_bytes().to_vec();
 
@@ -856,7 +860,7 @@ mod tests {
         .unwrap();
 
         // write "hello world"
-        let client = LocalClient::temporary().unwrap();
+        let client = LocalClient::temporary().await.unwrap();
         let permit = client.acquire_upload_permit().await.unwrap();
         client.upload_xorb("default", cas_object, None, permit).await.unwrap();
 
@@ -908,7 +912,7 @@ mod tests {
         assert_eq!(CasClientError::XORBNotFound(hello_hash), client.get(&hello_hash).unwrap_err());
     }
 
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[tokio::test]
     async fn test_hashing() {
         // hand construct a tree of 2 chunks
         let hello = "hello".as_bytes().to_vec();
@@ -919,7 +923,7 @@ mod tests {
         let final_hash = merklehash::xorb_hash(&[(hello_hash, 5), (world_hash, 5)]);
 
         // insert should succeed
-        let client = LocalClient::temporary().unwrap();
+        let client = LocalClient::temporary().await.unwrap();
         let permit = client.acquire_upload_permit().await.unwrap();
         client
             .upload_xorb(
@@ -938,7 +942,7 @@ mod tests {
             .unwrap();
     }
 
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[tokio::test]
     async fn test_global_dedup() {
         let tmp_dir = TempDir::new().unwrap();
         let shard_dir_1 = tmp_dir.path().join("shard_1");
@@ -955,7 +959,7 @@ mod tests {
 
         let shard_hash = parse_shard_filename(&new_shard_path).unwrap();
 
-        let client = LocalClient::temporary().unwrap();
+        let client = LocalClient::temporary().await.unwrap();
 
         let permit = client.acquire_upload_permit().await.unwrap();
         client
@@ -980,14 +984,14 @@ mod tests {
         assert_eq!(sf.path, shard_dir_2.join(shard_file_name(&shard_hash)));
     }
 
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[tokio::test]
     async fn test_download_fetch_term_data_validation() {
         // Setup: Create a client and upload a xorb
         let xorb = build_raw_xorb(3, ChunkSize::Fixed(2048));
         let cas_object = build_and_verify_cas_object(xorb, None);
         let hash = cas_object.hash;
 
-        let client = LocalClient::temporary().unwrap();
+        let client = LocalClient::temporary().await.unwrap();
         let permit = client.acquire_upload_permit().await.unwrap();
         client.upload_xorb("default", cas_object, None, permit).await.unwrap();
 
@@ -998,9 +1002,9 @@ mod tests {
         let cas = CasObject::deserialize(&mut reader).unwrap();
         let (fetch_byte_start, fetch_byte_end) = cas.get_byte_offset(0, 1).unwrap();
 
-        let timestamp_ms = LocalClient::current_timestamp_ms();
-        // URL format: "{file_path:?}:{start}:{end}:{timestamp}"
-        let valid_url = format!("{:?}:{}:{}:{}", file_path, fetch_byte_start, fetch_byte_end, timestamp_ms);
+        let timestamp = Instant::now();
+        let byte_range = FileRange::new(fetch_byte_start as u64, fetch_byte_end as u64);
+        let valid_url = generate_fetch_url(&file_path, &byte_range, timestamp);
         let valid_url_range = HttpRange::new(fetch_byte_start as u64, fetch_byte_end as u64);
 
         // Test 1: Valid URL and fetch_term should succeed
@@ -1024,7 +1028,8 @@ mod tests {
         assert!(matches!(result.unwrap_err(), CasClientError::InvalidArguments));
 
         // Test 3: Invalid start_pos - doesn't match url_range.start
-        let wrong_start_pos = format!("{:?}:{}:{}:{}", file_path, fetch_byte_start + 1, fetch_byte_end, timestamp_ms);
+        let wrong_byte_range = FileRange::new(fetch_byte_start as u64 + 1, fetch_byte_end as u64);
+        let wrong_start_pos = generate_fetch_url(&file_path, &wrong_byte_range, timestamp);
         let invalid_fetch_term = CASReconstructionFetchInfo {
             range: ChunkRange::new(0, 1),
             url: wrong_start_pos,
@@ -1035,7 +1040,8 @@ mod tests {
         assert!(matches!(result.unwrap_err(), CasClientError::InvalidArguments));
 
         // Test 4: Invalid end_pos - doesn't match url_range.end
-        let wrong_end_pos = format!("{:?}:{}:{}:{}", file_path, fetch_byte_start, fetch_byte_end + 1, timestamp_ms);
+        let wrong_byte_range = FileRange::new(fetch_byte_start as u64, fetch_byte_end as u64 + 1);
+        let wrong_end_pos = generate_fetch_url(&file_path, &wrong_byte_range, timestamp);
         let invalid_fetch_term = CASReconstructionFetchInfo {
             range: ChunkRange::new(0, 1),
             url: wrong_end_pos,
@@ -1046,6 +1052,7 @@ mod tests {
         assert!(matches!(result.unwrap_err(), CasClientError::InvalidArguments));
 
         // Test 5: Invalid start_pos - non-numeric
+        let timestamp_ms = timestamp.saturating_duration_since(*REFERENCE_INSTANT).as_millis() as u64;
         let non_numeric_start = format!("{:?}:not_a_number:{}:{}", file_path, fetch_byte_end, timestamp_ms);
         let invalid_fetch_term = CASReconstructionFetchInfo {
             range: ChunkRange::new(0, 1),
@@ -1090,8 +1097,7 @@ mod tests {
 
         // Test 9: Non-existent file path
         let non_existent_path = PathBuf::from("/nonexistent/path/file.xorb");
-        let non_existent_url =
-            format!("{:?}:{}:{}:{}", non_existent_path, fetch_byte_start, fetch_byte_end, timestamp_ms);
+        let non_existent_url = generate_fetch_url(&non_existent_path, &byte_range, timestamp);
         let invalid_fetch_term = CASReconstructionFetchInfo {
             range: ChunkRange::new(0, 1),
             url: non_existent_url,
@@ -1101,13 +1107,13 @@ mod tests {
         assert!(result.is_err(), "Non-existent file should fail");
     }
 
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[tokio::test(start_paused = true)]
     async fn test_url_expiration_within_window() {
         let xorb = build_raw_xorb(3, ChunkSize::Fixed(2048));
         let cas_object = build_and_verify_cas_object(xorb, None);
         let hash = cas_object.hash;
 
-        let client = LocalClient::temporary().unwrap();
+        let client = LocalClient::temporary().await.unwrap();
         client.set_fetch_term_url_expiration(Duration::from_secs(60));
 
         let permit = client.acquire_upload_permit().await.unwrap();
@@ -1119,10 +1125,14 @@ mod tests {
         let cas = CasObject::deserialize(&mut reader).unwrap();
         let (fetch_byte_start, fetch_byte_end) = cas.get_byte_offset(0, 1).unwrap();
 
-        // Use current timestamp (within the window)
-        let timestamp_ms = LocalClient::current_timestamp_ms();
-        let valid_url = format!("{:?}:{}:{}:{}", file_path, fetch_byte_start, fetch_byte_end, timestamp_ms);
+        // Create URL at current time
+        let timestamp = Instant::now();
+        let byte_range = FileRange::new(fetch_byte_start as u64, fetch_byte_end as u64);
+        let valid_url = generate_fetch_url(&file_path, &byte_range, timestamp);
         let valid_url_range = HttpRange::new(fetch_byte_start as u64, fetch_byte_end as u64);
+
+        // Advance time by 30 seconds (still within the 60 second window)
+        tokio::time::advance(Duration::from_secs(30)).await;
 
         let fetch_term = CASReconstructionFetchInfo {
             range: ChunkRange::new(0, 1),
@@ -1133,13 +1143,13 @@ mod tests {
         assert!(result.is_ok(), "URL should be valid within expiration window");
     }
 
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[tokio::test(start_paused = true)]
     async fn test_url_expiration_after_window() {
         let xorb = build_raw_xorb(3, ChunkSize::Fixed(2048));
         let cas_object = build_and_verify_cas_object(xorb, None);
         let hash = cas_object.hash;
 
-        let client = LocalClient::temporary().unwrap();
+        let client = LocalClient::temporary().await.unwrap();
         client.set_fetch_term_url_expiration(Duration::from_secs(60));
 
         let permit = client.acquire_upload_permit().await.unwrap();
@@ -1151,10 +1161,14 @@ mod tests {
         let cas = CasObject::deserialize(&mut reader).unwrap();
         let (fetch_byte_start, fetch_byte_end) = cas.get_byte_offset(0, 1).unwrap();
 
-        // Use a timestamp 61 seconds in the past (past the 60 second window)
-        let timestamp_ms = LocalClient::current_timestamp_ms() - 61_000;
-        let expired_url = format!("{:?}:{}:{}:{}", file_path, fetch_byte_start, fetch_byte_end, timestamp_ms);
+        // Create URL at current time
+        let timestamp = Instant::now();
+        let byte_range = FileRange::new(fetch_byte_start as u64, fetch_byte_end as u64);
+        let expired_url = generate_fetch_url(&file_path, &byte_range, timestamp);
         let valid_url_range = HttpRange::new(fetch_byte_start as u64, fetch_byte_end as u64);
+
+        // Advance time by 61 seconds (past the 60 second window)
+        tokio::time::advance(Duration::from_secs(61)).await;
 
         let fetch_term = CASReconstructionFetchInfo {
             range: ChunkRange::new(0, 1),
@@ -1166,14 +1180,14 @@ mod tests {
         assert!(matches!(result.unwrap_err(), CasClientError::PresignedUrlExpirationError));
     }
 
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[tokio::test(start_paused = true)]
     async fn test_url_expiration_default_infinite() {
         let xorb = build_raw_xorb(3, ChunkSize::Fixed(2048));
         let cas_object = build_and_verify_cas_object(xorb, None);
         let hash = cas_object.hash;
 
-        // Don't set expiration - default should be effectively infinite
-        let client = LocalClient::temporary().unwrap();
+        // Don't set expiration - default should be effectively infinite (u64::MAX ms)
+        let client = LocalClient::temporary().await.unwrap();
 
         let permit = client.acquire_upload_permit().await.unwrap();
         client.upload_xorb("default", cas_object, None, permit).await.unwrap();
@@ -1184,27 +1198,31 @@ mod tests {
         let cas = CasObject::deserialize(&mut reader).unwrap();
         let (fetch_byte_start, fetch_byte_end) = cas.get_byte_offset(0, 1).unwrap();
 
-        // Use a very old timestamp (1 year ago) - should still work with infinite expiration
-        let timestamp_ms = LocalClient::current_timestamp_ms().saturating_sub(365 * 24 * 60 * 60 * 1000);
-        let old_url = format!("{:?}:{}:{}:{}", file_path, fetch_byte_start, fetch_byte_end, timestamp_ms);
+        // Create URL at current time
+        let timestamp = Instant::now();
+        let byte_range = FileRange::new(fetch_byte_start as u64, fetch_byte_end as u64);
+        let url = generate_fetch_url(&file_path, &byte_range, timestamp);
         let valid_url_range = HttpRange::new(fetch_byte_start as u64, fetch_byte_end as u64);
+
+        // Advance time by 1 year - should still work with default infinite expiration
+        tokio::time::advance(Duration::from_secs(365 * 24 * 60 * 60)).await;
 
         let fetch_term = CASReconstructionFetchInfo {
             range: ChunkRange::new(0, 1),
-            url: old_url,
+            url,
             url_range: valid_url_range,
         };
         let result = client.get_file_term_data(hash, fetch_term).await;
         assert!(result.is_ok(), "URL should not expire with default infinite expiration");
     }
 
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[tokio::test(start_paused = true)]
     async fn test_url_expiration_exact_boundary() {
         let xorb = build_raw_xorb(3, ChunkSize::Fixed(2048));
         let cas_object = build_and_verify_cas_object(xorb, None);
         let hash = cas_object.hash;
 
-        let client = LocalClient::temporary().unwrap();
+        let client = LocalClient::temporary().await.unwrap();
         client.set_fetch_term_url_expiration(Duration::from_secs(60));
 
         let permit = client.acquire_upload_permit().await.unwrap();
@@ -1216,39 +1234,40 @@ mod tests {
         let cas = CasObject::deserialize(&mut reader).unwrap();
         let (fetch_byte_start, fetch_byte_end) = cas.get_byte_offset(0, 1).unwrap();
 
+        let byte_range = FileRange::new(fetch_byte_start as u64, fetch_byte_end as u64);
         let valid_url_range = HttpRange::new(fetch_byte_start as u64, fetch_byte_end as u64);
 
-        // Test just inside boundary (59 seconds ago) - should be valid
-        let timestamp_at_boundary = LocalClient::current_timestamp_ms() - 59_000;
-        let url_at_boundary =
-            format!("{:?}:{}:{}:{}", file_path, fetch_byte_start, fetch_byte_end, timestamp_at_boundary);
+        // Create URL at current time
+        let timestamp = Instant::now();
+        let url = generate_fetch_url(&file_path, &byte_range, timestamp);
+
+        // Test inside boundary (59 seconds elapsed, within 60 second window) - should be valid
+        tokio::time::advance(Duration::from_secs(59)).await;
 
         let fetch_term = CASReconstructionFetchInfo {
             range: ChunkRange::new(0, 1),
-            url: url_at_boundary,
+            url: url.clone(),
             url_range: valid_url_range,
         };
         let result = client.get_file_term_data(hash, fetch_term).await;
-        assert!(result.is_ok(), "URL should be valid just inside expiration boundary");
+        assert!(result.is_ok(), "URL should be valid inside expiration boundary");
 
-        // Test just past boundary (61 seconds ago) - should be expired
-        let timestamp_past_boundary = LocalClient::current_timestamp_ms() - 61_000;
-        let url_past_boundary =
-            format!("{:?}:{}:{}:{}", file_path, fetch_byte_start, fetch_byte_end, timestamp_past_boundary);
+        // Advance 2 more seconds (now 61 seconds total, past 60 second window) - should be expired
+        tokio::time::advance(Duration::from_secs(2)).await;
 
         let fetch_term = CASReconstructionFetchInfo {
             range: ChunkRange::new(0, 1),
-            url: url_past_boundary,
+            url,
             url_range: valid_url_range,
         };
         let result = client.get_file_term_data(hash, fetch_term).await;
-        assert!(result.is_err(), "URL should be expired just past boundary");
+        assert!(result.is_err(), "URL should be expired past boundary");
         assert!(matches!(result.unwrap_err(), CasClientError::PresignedUrlExpirationError));
     }
 
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[tokio::test]
     async fn test_get_reconstruction_merges_adjacent_ranges() {
-        let client = LocalClient::temporary().unwrap();
+        let client = LocalClient::temporary().await.unwrap();
 
         // Create segments: xorb 1 chunks 0-2, then chunks 2-4 (adjacent)
         let term_spec = &[(1, (0, 2)), (1, (2, 4))];
@@ -1269,9 +1288,9 @@ mod tests {
         assert_eq!(client.get_file_data(&file_hash, None).await.unwrap(), file_data);
     }
 
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[tokio::test]
     async fn test_get_reconstruction_with_multiple_xorbs() {
-        let client = LocalClient::temporary().unwrap();
+        let client = LocalClient::temporary().await.unwrap();
 
         // Create file with segments from different xorbs
         let term_spec = &[(1, (0, 3)), (2, (0, 2)), (1, (3, 5))];
@@ -1286,9 +1305,202 @@ mod tests {
         assert_eq!(client.get_file_data(&file_hash, None).await.unwrap(), file_data);
     }
 
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    /// Tests that overlapping chunk ranges within the same xorb are correctly merged
+    /// into a single fetch_info with the union of the ranges.
+    #[tokio::test]
+    async fn test_get_reconstruction_overlapping_range_merging() {
+        let client = LocalClient::temporary().await.unwrap();
+        let chunk_size = 2048usize;
+
+        // Test 1: Simple overlapping ranges [0,3) and [1,4) -> merged to [0,4)
+        {
+            let term_spec = &[(1, (0, 3)), (1, (1, 4))];
+            let (file_data, file_hash) = client.upload_random_file(term_spec, chunk_size).await.unwrap();
+
+            let reconstruction = client.get_reconstruction(&file_hash, None).await.unwrap().unwrap();
+            assert_eq!(reconstruction.terms.len(), 2);
+            assert_eq!(reconstruction.fetch_info.len(), 1);
+
+            let xorb_hash_hex = reconstruction.terms[0].hash;
+            let fetch_infos = reconstruction.fetch_info.get(&xorb_hash_hex).unwrap();
+            assert_eq!(fetch_infos.len(), 1);
+            assert_eq!(fetch_infos[0].range.start, 0);
+            assert_eq!(fetch_infos[0].range.end, 4);
+
+            assert_eq!(client.get_file_data(&file_hash, None).await.unwrap(), file_data);
+        }
+
+        // Test 2: Subset range - second range is fully contained in first [0,5) and [1,3) -> [0,5)
+        {
+            let term_spec = &[(1, (0, 5)), (1, (1, 3))];
+            let (file_data, file_hash) = client.upload_random_file(term_spec, chunk_size).await.unwrap();
+
+            let reconstruction = client.get_reconstruction(&file_hash, None).await.unwrap().unwrap();
+            assert_eq!(reconstruction.terms.len(), 2);
+            assert_eq!(reconstruction.fetch_info.len(), 1);
+
+            let xorb_hash_hex = reconstruction.terms[0].hash;
+            let fetch_infos = reconstruction.fetch_info.get(&xorb_hash_hex).unwrap();
+            assert_eq!(fetch_infos.len(), 1);
+            assert_eq!(fetch_infos[0].range.start, 0);
+            assert_eq!(fetch_infos[0].range.end, 5);
+
+            assert_eq!(client.get_file_data(&file_hash, None).await.unwrap(), file_data);
+        }
+
+        // Test 3: Second range ends before first range end [0,5) and [2,4) -> [0,5)
+        {
+            let term_spec = &[(1, (0, 5)), (1, (2, 4))];
+            let (file_data, file_hash) = client.upload_random_file(term_spec, chunk_size).await.unwrap();
+
+            let reconstruction = client.get_reconstruction(&file_hash, None).await.unwrap().unwrap();
+            assert_eq!(reconstruction.terms.len(), 2);
+            assert_eq!(reconstruction.fetch_info.len(), 1);
+
+            let xorb_hash_hex = reconstruction.terms[0].hash;
+            let fetch_infos = reconstruction.fetch_info.get(&xorb_hash_hex).unwrap();
+            assert_eq!(fetch_infos.len(), 1);
+            assert_eq!(fetch_infos[0].range.start, 0);
+            assert_eq!(fetch_infos[0].range.end, 5);
+
+            assert_eq!(client.get_file_data(&file_hash, None).await.unwrap(), file_data);
+        }
+
+        // Test 4: Multiple overlapping ranges forming a chain [0,2), [1,4), [3,6) -> [0,6)
+        {
+            let term_spec = &[(1, (0, 2)), (1, (1, 4)), (1, (3, 6))];
+            let (file_data, file_hash) = client.upload_random_file(term_spec, chunk_size).await.unwrap();
+
+            let reconstruction = client.get_reconstruction(&file_hash, None).await.unwrap().unwrap();
+            assert_eq!(reconstruction.terms.len(), 3);
+            assert_eq!(reconstruction.fetch_info.len(), 1);
+
+            let xorb_hash_hex = reconstruction.terms[0].hash;
+            let fetch_infos = reconstruction.fetch_info.get(&xorb_hash_hex).unwrap();
+            assert_eq!(fetch_infos.len(), 1);
+            assert_eq!(fetch_infos[0].range.start, 0);
+            assert_eq!(fetch_infos[0].range.end, 6);
+
+            assert_eq!(client.get_file_data(&file_hash, None).await.unwrap(), file_data);
+        }
+
+        // Test 5: Ranges that interleave in a non-monotonic way [0,5), [1,3), [2,4) -> [0,5)
+        {
+            let term_spec = &[(1, (0, 5)), (1, (1, 3)), (1, (2, 4))];
+            let (file_data, file_hash) = client.upload_random_file(term_spec, chunk_size).await.unwrap();
+
+            let reconstruction = client.get_reconstruction(&file_hash, None).await.unwrap().unwrap();
+            assert_eq!(reconstruction.terms.len(), 3);
+            assert_eq!(reconstruction.fetch_info.len(), 1);
+
+            let xorb_hash_hex = reconstruction.terms[0].hash;
+            let fetch_infos = reconstruction.fetch_info.get(&xorb_hash_hex).unwrap();
+            assert_eq!(fetch_infos.len(), 1);
+            assert_eq!(fetch_infos[0].range.start, 0);
+            assert_eq!(fetch_infos[0].range.end, 5);
+
+            assert_eq!(client.get_file_data(&file_hash, None).await.unwrap(), file_data);
+        }
+
+        // Test 6: Non-contiguous ranges should NOT be merged [0,2) and [4,6) -> two separate ranges
+        {
+            let term_spec = &[(1, (0, 2)), (1, (4, 6))];
+            let (file_data, file_hash) = client.upload_random_file(term_spec, chunk_size).await.unwrap();
+
+            let reconstruction = client.get_reconstruction(&file_hash, None).await.unwrap().unwrap();
+            assert_eq!(reconstruction.terms.len(), 2);
+            assert_eq!(reconstruction.fetch_info.len(), 1);
+
+            let xorb_hash_hex = reconstruction.terms[0].hash;
+            let fetch_infos = reconstruction.fetch_info.get(&xorb_hash_hex).unwrap();
+            assert_eq!(fetch_infos.len(), 2);
+            assert_eq!(fetch_infos[0].range.start, 0);
+            assert_eq!(fetch_infos[0].range.end, 2);
+            assert_eq!(fetch_infos[1].range.start, 4);
+            assert_eq!(fetch_infos[1].range.end, 6);
+
+            assert_eq!(client.get_file_data(&file_hash, None).await.unwrap(), file_data);
+        }
+
+        // Test 7: Touch at boundary (adjacent) [0,3) and [3,5) -> [0,5)
+        {
+            let term_spec = &[(1, (0, 3)), (1, (3, 5))];
+            let (file_data, file_hash) = client.upload_random_file(term_spec, chunk_size).await.unwrap();
+
+            let reconstruction = client.get_reconstruction(&file_hash, None).await.unwrap().unwrap();
+            assert_eq!(reconstruction.terms.len(), 2);
+            assert_eq!(reconstruction.fetch_info.len(), 1);
+
+            let xorb_hash_hex = reconstruction.terms[0].hash;
+            let fetch_infos = reconstruction.fetch_info.get(&xorb_hash_hex).unwrap();
+            assert_eq!(fetch_infos.len(), 1);
+            assert_eq!(fetch_infos[0].range.start, 0);
+            assert_eq!(fetch_infos[0].range.end, 5);
+
+            assert_eq!(client.get_file_data(&file_hash, None).await.unwrap(), file_data);
+        }
+
+        // Test 8: Large range followed by small contained range [0,10) and [4,6) -> [0,10)
+        {
+            let term_spec = &[(1, (0, 10)), (1, (4, 6))];
+            let (file_data, file_hash) = client.upload_random_file(term_spec, chunk_size).await.unwrap();
+
+            let reconstruction = client.get_reconstruction(&file_hash, None).await.unwrap().unwrap();
+            assert_eq!(reconstruction.terms.len(), 2);
+            assert_eq!(reconstruction.fetch_info.len(), 1);
+
+            let xorb_hash_hex = reconstruction.terms[0].hash;
+            let fetch_infos = reconstruction.fetch_info.get(&xorb_hash_hex).unwrap();
+            assert_eq!(fetch_infos.len(), 1);
+            assert_eq!(fetch_infos[0].range.start, 0);
+            assert_eq!(fetch_infos[0].range.end, 10);
+
+            assert_eq!(client.get_file_data(&file_hash, None).await.unwrap(), file_data);
+        }
+
+        // Test 9: Same range repeated multiple times [2,5), [2,5), [2,5) -> [2,5)
+        {
+            let term_spec = &[(1, (2, 5)), (1, (2, 5)), (1, (2, 5))];
+            let (file_data, file_hash) = client.upload_random_file(term_spec, chunk_size).await.unwrap();
+
+            let reconstruction = client.get_reconstruction(&file_hash, None).await.unwrap().unwrap();
+            assert_eq!(reconstruction.terms.len(), 3);
+            assert_eq!(reconstruction.fetch_info.len(), 1);
+
+            let xorb_hash_hex = reconstruction.terms[0].hash;
+            let fetch_infos = reconstruction.fetch_info.get(&xorb_hash_hex).unwrap();
+            assert_eq!(fetch_infos.len(), 1);
+            assert_eq!(fetch_infos[0].range.start, 2);
+            assert_eq!(fetch_infos[0].range.end, 5);
+
+            assert_eq!(client.get_file_data(&file_hash, None).await.unwrap(), file_data);
+        }
+
+        // Test 10: Mixed overlapping and non-contiguous in complex pattern
+        // [0,3), [2,4), [6,8), [7,10) -> [0,4) and [6,10)
+        {
+            let term_spec = &[(1, (0, 3)), (1, (2, 4)), (1, (6, 8)), (1, (7, 10))];
+            let (file_data, file_hash) = client.upload_random_file(term_spec, chunk_size).await.unwrap();
+
+            let reconstruction = client.get_reconstruction(&file_hash, None).await.unwrap().unwrap();
+            assert_eq!(reconstruction.terms.len(), 4);
+            assert_eq!(reconstruction.fetch_info.len(), 1);
+
+            let xorb_hash_hex = reconstruction.terms[0].hash;
+            let fetch_infos = reconstruction.fetch_info.get(&xorb_hash_hex).unwrap();
+            assert_eq!(fetch_infos.len(), 2);
+            assert_eq!(fetch_infos[0].range.start, 0);
+            assert_eq!(fetch_infos[0].range.end, 4);
+            assert_eq!(fetch_infos[1].range.start, 6);
+            assert_eq!(fetch_infos[1].range.end, 10);
+
+            assert_eq!(client.get_file_data(&file_hash, None).await.unwrap(), file_data);
+        }
+    }
+
+    #[tokio::test]
     async fn test_range_requests() {
-        let client = LocalClient::temporary().unwrap();
+        let client = LocalClient::temporary().await.unwrap();
         let term_spec = &[(1, (0, 5))];
         let (file_data, file_hash) = client.upload_random_file(term_spec, 2048).await.unwrap();
         let total_file_size = file_data.len() as u64;
@@ -1374,11 +1586,11 @@ mod tests {
         }
     }
 
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[tokio::test]
     async fn test_get_file_with_sequential_writer() {
         use crate::output_provider::buffer_provider::ThreadSafeBuffer;
 
-        let client = LocalClient::temporary().unwrap();
+        let client = LocalClient::temporary().await.unwrap();
         let term_spec = &[(1, (0, 5))];
         let (file_data, file_hash) = client.upload_random_file(term_spec, 2048).await.unwrap();
 
@@ -1406,9 +1618,9 @@ mod tests {
         assert_eq!(buffer2.value(), &file_data[..half as usize]);
     }
 
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[tokio::test]
     async fn test_upload_random_file_configurations() {
-        let client = LocalClient::temporary().unwrap();
+        let client = LocalClient::temporary().await.unwrap();
 
         // Test 1: Single segment with 3 chunks
         {
@@ -1473,9 +1685,9 @@ mod tests {
 
     /// Tests that get_reconstruction correctly shrinks chunk ranges to only include
     /// chunks that contain at least part of the requested byte range.
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[tokio::test]
     async fn test_get_reconstruction_chunk_boundary_shrinking() {
-        let client = LocalClient::temporary().unwrap();
+        let client = LocalClient::temporary().await.unwrap();
 
         // Create a file with 5 chunks of 2048 bytes each = 10240 total bytes
         let chunk_size: usize = 2048;
@@ -1622,9 +1834,9 @@ mod tests {
     }
 
     /// Tests chunk boundary shrinking with multiple segments across different xorbs.
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[tokio::test]
     async fn test_get_reconstruction_chunk_boundary_multiple_segments() {
-        let client = LocalClient::temporary().unwrap();
+        let client = LocalClient::temporary().await.unwrap();
 
         // Create a file with segments from 2 xorbs:
         // xorb 1: chunks 0-4 (4 chunks * 2048 = 8192 bytes)
