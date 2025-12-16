@@ -59,21 +59,25 @@ pub struct LocalClient {
 
 impl LocalClient {
     /// Create a local client hosted in a temporary directory for testing.
-    pub fn temporary() -> Result<Arc<Self>> {
+    /// This is an async function to allow use with current-thread tokio runtime.
+    pub async fn temporary() -> Result<Arc<Self>> {
         let tmp_dir = TempDir::new().unwrap();
         let path = tmp_dir.path().to_owned();
-        let s = Self::new_internal(path, Some(tmp_dir))?;
+        let s = Self::new_internal(path, Some(tmp_dir)).await?;
         Ok(Arc::new(s))
     }
 
     /// Create a local client hosted in a directory.  Effectively, this directory
     /// is the CAS endpoint and persists across instances of LocalClient.  
     pub fn new(path: impl AsRef<Path>) -> Result<Arc<Self>> {
-        let s = Self::new_internal(path, None)?;
+        let path = path.as_ref().to_owned();
+        let s = tokio::task::block_in_place(|| {
+            Handle::current().block_on(async move { Self::new_internal(path, None).await })
+        })?;
         Ok(Arc::new(s))
     }
 
-    fn new_internal(path: impl AsRef<Path>, tmp_dir: Option<TempDir>) -> Result<Self> {
+    async fn new_internal(path: impl AsRef<Path>, tmp_dir: Option<TempDir>) -> Result<Self> {
         let base_dir = std::path::absolute(path)?;
         if !base_dir.exists() {
             std::fs::create_dir_all(&base_dir)?;
@@ -106,11 +110,7 @@ impl LocalClient {
             .map_err(|e| CasClientError::Other(format!("Error opening heed table: {e}")))?;
 
         // Open / set up the shard lookup
-        let shard_directory_ = shard_dir.clone();
-        let shard_manager = tokio::task::block_in_place(|| {
-            Handle::current()
-                .block_on(async move { ShardFileManager::new_in_session_directory(shard_directory_, true).await })
-        })?;
+        let shard_manager = ShardFileManager::new_in_session_directory(shard_dir.clone(), true).await?;
 
         Ok(Self {
             _tmp_dir: tmp_dir,
@@ -753,7 +753,7 @@ mod tests {
     use super::*;
     use crate::client_testing_utils::ClientTestingUtils;
 
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[tokio::test]
     async fn test_basic_put_get() {
         let xorb = build_raw_xorb(1, ChunkSize::Fixed(2048));
         let data = raw_xorb_to_vec(&xorb);
@@ -762,7 +762,7 @@ mod tests {
         let hash = cas_object.hash;
 
         // Act & Assert
-        let client = LocalClient::temporary().unwrap();
+        let client = LocalClient::temporary().await.unwrap();
         let permit = client.acquire_upload_permit().await.unwrap();
         assert!(client.upload_xorb("key", cas_object, None, permit).await.is_ok());
 
@@ -770,7 +770,7 @@ mod tests {
         assert_eq!(data, returned_data);
     }
 
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[tokio::test]
     async fn test_basic_put_get_random_medium() {
         let xorb = build_raw_xorb(44, ChunkSize::Random(512, 15633));
         let data = raw_xorb_to_vec(&xorb);
@@ -779,7 +779,7 @@ mod tests {
         let hash = cas_object.hash;
 
         // Act & Assert
-        let client = LocalClient::temporary().unwrap();
+        let client = LocalClient::temporary().await.unwrap();
         let permit = client.acquire_upload_permit().await.unwrap();
         assert!(client.upload_xorb("", cas_object, None, permit).await.is_ok());
 
@@ -787,7 +787,7 @@ mod tests {
         assert_eq!(data, returned_data);
     }
 
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[tokio::test]
     async fn test_basic_put_get_range_random_small() {
         let xorb = build_raw_xorb(3, ChunkSize::Random(512, 15633));
         let data = raw_xorb_to_vec(&xorb);
@@ -797,7 +797,7 @@ mod tests {
         let hash = cas_object.hash;
 
         // Act & Assert
-        let client = LocalClient::temporary().unwrap();
+        let client = LocalClient::temporary().await.unwrap();
         let permit = client.acquire_upload_permit().await.unwrap();
         assert!(client.upload_xorb("", cas_object, None, permit).await.is_ok());
 
@@ -814,7 +814,7 @@ mod tests {
         }
     }
 
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[tokio::test]
     async fn test_basic_length() {
         let xorb = build_raw_xorb(1, ChunkSize::Fixed(2048));
         let data = raw_xorb_to_vec(&xorb);
@@ -825,7 +825,7 @@ mod tests {
         let gen_length = data.len();
 
         // Act
-        let client = LocalClient::temporary().unwrap();
+        let client = LocalClient::temporary().await.unwrap();
         let permit = client.acquire_upload_permit().await.unwrap();
         assert!(client.upload_xorb("", cas_object, None, permit).await.is_ok());
         let len = client.get_length(&hash).unwrap();
@@ -834,18 +834,18 @@ mod tests {
         assert_eq!(len as usize, gen_length);
     }
 
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[tokio::test]
     async fn test_missing_xorb() {
         // Arrange
         let hash = MerkleHash::from_hex("d760aaf4beb07581956e24c847c47f1abd2e419166aa68259035bc412232e9da").unwrap();
 
         // Act & Assert
-        let client = LocalClient::temporary().unwrap();
+        let client = LocalClient::temporary().await.unwrap();
         let result = client.get(&hash);
         assert!(matches!(result, Err(CasClientError::XORBNotFound(_))));
     }
 
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[tokio::test]
     async fn test_failures() {
         let hello = "hello world".as_bytes().to_vec();
 
@@ -860,7 +860,7 @@ mod tests {
         .unwrap();
 
         // write "hello world"
-        let client = LocalClient::temporary().unwrap();
+        let client = LocalClient::temporary().await.unwrap();
         let permit = client.acquire_upload_permit().await.unwrap();
         client.upload_xorb("default", cas_object, None, permit).await.unwrap();
 
@@ -912,7 +912,7 @@ mod tests {
         assert_eq!(CasClientError::XORBNotFound(hello_hash), client.get(&hello_hash).unwrap_err());
     }
 
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[tokio::test]
     async fn test_hashing() {
         // hand construct a tree of 2 chunks
         let hello = "hello".as_bytes().to_vec();
@@ -923,7 +923,7 @@ mod tests {
         let final_hash = merklehash::xorb_hash(&[(hello_hash, 5), (world_hash, 5)]);
 
         // insert should succeed
-        let client = LocalClient::temporary().unwrap();
+        let client = LocalClient::temporary().await.unwrap();
         let permit = client.acquire_upload_permit().await.unwrap();
         client
             .upload_xorb(
@@ -942,7 +942,7 @@ mod tests {
             .unwrap();
     }
 
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[tokio::test]
     async fn test_global_dedup() {
         let tmp_dir = TempDir::new().unwrap();
         let shard_dir_1 = tmp_dir.path().join("shard_1");
@@ -959,7 +959,7 @@ mod tests {
 
         let shard_hash = parse_shard_filename(&new_shard_path).unwrap();
 
-        let client = LocalClient::temporary().unwrap();
+        let client = LocalClient::temporary().await.unwrap();
 
         let permit = client.acquire_upload_permit().await.unwrap();
         client
@@ -984,14 +984,14 @@ mod tests {
         assert_eq!(sf.path, shard_dir_2.join(shard_file_name(&shard_hash)));
     }
 
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[tokio::test]
     async fn test_download_fetch_term_data_validation() {
         // Setup: Create a client and upload a xorb
         let xorb = build_raw_xorb(3, ChunkSize::Fixed(2048));
         let cas_object = build_and_verify_cas_object(xorb, None);
         let hash = cas_object.hash;
 
-        let client = LocalClient::temporary().unwrap();
+        let client = LocalClient::temporary().await.unwrap();
         let permit = client.acquire_upload_permit().await.unwrap();
         client.upload_xorb("default", cas_object, None, permit).await.unwrap();
 
@@ -1107,15 +1107,14 @@ mod tests {
         assert!(result.is_err(), "Non-existent file should fail");
     }
 
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[tokio::test(start_paused = true)]
     async fn test_url_expiration_within_window() {
         let xorb = build_raw_xorb(3, ChunkSize::Fixed(2048));
         let cas_object = build_and_verify_cas_object(xorb, None);
         let hash = cas_object.hash;
 
-        let client = LocalClient::temporary().unwrap();
-        // Use a 100ms expiration window for fast testing
-        client.set_fetch_term_url_expiration(Duration::from_millis(100));
+        let client = LocalClient::temporary().await.unwrap();
+        client.set_fetch_term_url_expiration(Duration::from_secs(60));
 
         let permit = client.acquire_upload_permit().await.unwrap();
         client.upload_xorb("default", cas_object, None, permit).await.unwrap();
@@ -1132,7 +1131,9 @@ mod tests {
         let valid_url = generate_fetch_url(&file_path, &byte_range, timestamp);
         let valid_url_range = HttpRange::new(fetch_byte_start as u64, fetch_byte_end as u64);
 
-        // Immediately validate - should be within the 100ms window
+        // Advance time by 30 seconds (still within the 60 second window)
+        tokio::time::advance(Duration::from_secs(30)).await;
+
         let fetch_term = CASReconstructionFetchInfo {
             range: ChunkRange::new(0, 1),
             url: valid_url,
@@ -1142,15 +1143,14 @@ mod tests {
         assert!(result.is_ok(), "URL should be valid within expiration window");
     }
 
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[tokio::test(start_paused = true)]
     async fn test_url_expiration_after_window() {
         let xorb = build_raw_xorb(3, ChunkSize::Fixed(2048));
         let cas_object = build_and_verify_cas_object(xorb, None);
         let hash = cas_object.hash;
 
-        let client = LocalClient::temporary().unwrap();
-        // Use a 10ms expiration window for fast testing
-        client.set_fetch_term_url_expiration(Duration::from_millis(10));
+        let client = LocalClient::temporary().await.unwrap();
+        client.set_fetch_term_url_expiration(Duration::from_secs(60));
 
         let permit = client.acquire_upload_permit().await.unwrap();
         client.upload_xorb("default", cas_object, None, permit).await.unwrap();
@@ -1167,8 +1167,8 @@ mod tests {
         let expired_url = generate_fetch_url(&file_path, &byte_range, timestamp);
         let valid_url_range = HttpRange::new(fetch_byte_start as u64, fetch_byte_end as u64);
 
-        // Wait for the URL to expire (20ms to ensure we're past the 10ms window)
-        tokio::time::sleep(Duration::from_millis(20)).await;
+        // Advance time by 61 seconds (past the 60 second window)
+        tokio::time::advance(Duration::from_secs(61)).await;
 
         let fetch_term = CASReconstructionFetchInfo {
             range: ChunkRange::new(0, 1),
@@ -1180,14 +1180,14 @@ mod tests {
         assert!(matches!(result.unwrap_err(), CasClientError::PresignedUrlExpirationError));
     }
 
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[tokio::test(start_paused = true)]
     async fn test_url_expiration_default_infinite() {
         let xorb = build_raw_xorb(3, ChunkSize::Fixed(2048));
         let cas_object = build_and_verify_cas_object(xorb, None);
         let hash = cas_object.hash;
 
         // Don't set expiration - default should be effectively infinite (u64::MAX ms)
-        let client = LocalClient::temporary().unwrap();
+        let client = LocalClient::temporary().await.unwrap();
 
         let permit = client.acquire_upload_permit().await.unwrap();
         client.upload_xorb("default", cas_object, None, permit).await.unwrap();
@@ -1204,8 +1204,8 @@ mod tests {
         let url = generate_fetch_url(&file_path, &byte_range, timestamp);
         let valid_url_range = HttpRange::new(fetch_byte_start as u64, fetch_byte_end as u64);
 
-        // Wait some time - should still work with default infinite expiration
-        tokio::time::sleep(Duration::from_millis(50)).await;
+        // Advance time by 1 year - should still work with default infinite expiration
+        tokio::time::advance(Duration::from_secs(365 * 24 * 60 * 60)).await;
 
         let fetch_term = CASReconstructionFetchInfo {
             range: ChunkRange::new(0, 1),
@@ -1216,15 +1216,14 @@ mod tests {
         assert!(result.is_ok(), "URL should not expire with default infinite expiration");
     }
 
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[tokio::test(start_paused = true)]
     async fn test_url_expiration_exact_boundary() {
         let xorb = build_raw_xorb(3, ChunkSize::Fixed(2048));
         let cas_object = build_and_verify_cas_object(xorb, None);
         let hash = cas_object.hash;
 
-        let client = LocalClient::temporary().unwrap();
-        // Use a 50ms expiration window for boundary testing
-        client.set_fetch_term_url_expiration(Duration::from_millis(50));
+        let client = LocalClient::temporary().await.unwrap();
+        client.set_fetch_term_url_expiration(Duration::from_secs(60));
 
         let permit = client.acquire_upload_permit().await.unwrap();
         client.upload_xorb("default", cas_object, None, permit).await.unwrap();
@@ -1242,8 +1241,8 @@ mod tests {
         let timestamp = Instant::now();
         let url = generate_fetch_url(&file_path, &byte_range, timestamp);
 
-        // Test inside boundary (20ms elapsed, within 50ms window) - should be valid
-        tokio::time::sleep(Duration::from_millis(20)).await;
+        // Test inside boundary (59 seconds elapsed, within 60 second window) - should be valid
+        tokio::time::advance(Duration::from_secs(59)).await;
 
         let fetch_term = CASReconstructionFetchInfo {
             range: ChunkRange::new(0, 1),
@@ -1253,8 +1252,8 @@ mod tests {
         let result = client.get_file_term_data(hash, fetch_term).await;
         assert!(result.is_ok(), "URL should be valid inside expiration boundary");
 
-        // Wait more to exceed the boundary (total ~70ms, past 50ms window) - should be expired
-        tokio::time::sleep(Duration::from_millis(50)).await;
+        // Advance 2 more seconds (now 61 seconds total, past 60 second window) - should be expired
+        tokio::time::advance(Duration::from_secs(2)).await;
 
         let fetch_term = CASReconstructionFetchInfo {
             range: ChunkRange::new(0, 1),
@@ -1266,9 +1265,9 @@ mod tests {
         assert!(matches!(result.unwrap_err(), CasClientError::PresignedUrlExpirationError));
     }
 
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[tokio::test]
     async fn test_get_reconstruction_merges_adjacent_ranges() {
-        let client = LocalClient::temporary().unwrap();
+        let client = LocalClient::temporary().await.unwrap();
 
         // Create segments: xorb 1 chunks 0-2, then chunks 2-4 (adjacent)
         let term_spec = &[(1, (0, 2)), (1, (2, 4))];
@@ -1289,9 +1288,9 @@ mod tests {
         assert_eq!(client.get_file_data(&file_hash, None).await.unwrap(), file_data);
     }
 
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[tokio::test]
     async fn test_get_reconstruction_with_multiple_xorbs() {
-        let client = LocalClient::temporary().unwrap();
+        let client = LocalClient::temporary().await.unwrap();
 
         // Create file with segments from different xorbs
         let term_spec = &[(1, (0, 3)), (2, (0, 2)), (1, (3, 5))];
@@ -1308,9 +1307,9 @@ mod tests {
 
     /// Tests that overlapping chunk ranges within the same xorb are correctly merged
     /// into a single fetch_info with the union of the ranges.
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[tokio::test]
     async fn test_get_reconstruction_overlapping_range_merging() {
-        let client = LocalClient::temporary().unwrap();
+        let client = LocalClient::temporary().await.unwrap();
         let chunk_size = 2048usize;
 
         // Test 1: Simple overlapping ranges [0,3) and [1,4) -> merged to [0,4)
@@ -1499,9 +1498,9 @@ mod tests {
         }
     }
 
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[tokio::test]
     async fn test_range_requests() {
-        let client = LocalClient::temporary().unwrap();
+        let client = LocalClient::temporary().await.unwrap();
         let term_spec = &[(1, (0, 5))];
         let (file_data, file_hash) = client.upload_random_file(term_spec, 2048).await.unwrap();
         let total_file_size = file_data.len() as u64;
@@ -1587,11 +1586,11 @@ mod tests {
         }
     }
 
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[tokio::test]
     async fn test_get_file_with_sequential_writer() {
         use crate::output_provider::buffer_provider::ThreadSafeBuffer;
 
-        let client = LocalClient::temporary().unwrap();
+        let client = LocalClient::temporary().await.unwrap();
         let term_spec = &[(1, (0, 5))];
         let (file_data, file_hash) = client.upload_random_file(term_spec, 2048).await.unwrap();
 
@@ -1619,9 +1618,9 @@ mod tests {
         assert_eq!(buffer2.value(), &file_data[..half as usize]);
     }
 
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[tokio::test]
     async fn test_upload_random_file_configurations() {
-        let client = LocalClient::temporary().unwrap();
+        let client = LocalClient::temporary().await.unwrap();
 
         // Test 1: Single segment with 3 chunks
         {
@@ -1686,9 +1685,9 @@ mod tests {
 
     /// Tests that get_reconstruction correctly shrinks chunk ranges to only include
     /// chunks that contain at least part of the requested byte range.
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[tokio::test]
     async fn test_get_reconstruction_chunk_boundary_shrinking() {
-        let client = LocalClient::temporary().unwrap();
+        let client = LocalClient::temporary().await.unwrap();
 
         // Create a file with 5 chunks of 2048 bytes each = 10240 total bytes
         let chunk_size: usize = 2048;
@@ -1835,9 +1834,9 @@ mod tests {
     }
 
     /// Tests chunk boundary shrinking with multiple segments across different xorbs.
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[tokio::test]
     async fn test_get_reconstruction_chunk_boundary_multiple_segments() {
-        let client = LocalClient::temporary().unwrap();
+        let client = LocalClient::temporary().await.unwrap();
 
         // Create a file with segments from 2 xorbs:
         // xorb 1: chunks 0-4 (4 chunks * 2048 = 8192 bytes)
