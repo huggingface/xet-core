@@ -8,6 +8,15 @@ pub enum FileReconstructionError {
 
     #[error("IO Error: {0}")]
     IoError(#[from] std::io::Error),
+
+    #[error("Task Runtime Error: {0}")]
+    TaskRuntimeError(#[from] utils::RwTaskLockError),
+
+    #[error("Corrupted Reconstruction: {0}")]
+    CorruptedReconstruction(String),
+
+    #[error("Configuration Error: {0}")]
+    ConfigurationError(String),
 }
 
 pub type Result<T> = std::result::Result<T, FileReconstructionError>;

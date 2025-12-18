@@ -5,52 +5,117 @@ use cas_client::{Client, SequentialOutput, sequential_output_from_filepath};
 use cas_types::FileRange;
 use merklehash::MerkleHash;
 use progress_tracking::item_tracking::SingleItemProgressUpdater;
+use xet_runtime::xet_config;
 
+use crate::FileReconstructionError;
+use crate::data_writer::{DataOutput, DataWriter};
 use crate::error::Result;
+use crate::reconstruction_metadata::ReconstructionTermManager;
 
 pub struct FileReconstructor {
     client: Arc<dyn Client>,
+    file_hash: MerkleHash,
+    byte_range: Option<FileRange>,
+    output_mode: Option<DataOutput>,
+    progress_updater: Option<Arc<SingleItemProgressUpdater>>,
+    config: xet_config::ReconstructionConfig,
 }
 
 impl FileReconstructor {
-    pub fn new(client: Arc<dyn Client>) -> Self {
-        Self { client }
+    pub fn new(client: &Arc<dyn Client>, file_hash: MerkleHash) -> Self {
+        Self {
+            client: client.clone(),
+            file_hash,
+            byte_range: None,
+            output_mode: None,
+            progress_updater: None,
+            config: xet_config().reconstruction.clone(),
+        }
     }
 
-    pub async fn reconstruct_file(
-        &self,
-        hash: &MerkleHash,
-        byte_range: Option<FileRange>,
-        output_provider: SequentialOutput,
-        progress_updater: Option<Arc<SingleItemProgressUpdater>>,
-    ) -> Result<u64> {
-        let bytes_written = self
-            .client
-            .clone()
-            .get_file_with_sequential_writer(hash, byte_range, output_provider, progress_updater)
-            .await?;
-        Ok(bytes_written)
+    pub fn with_byte_range(self, byte_range: FileRange) -> Self {
+        Self {
+            byte_range: Some(byte_range),
+            ..self
+        }
     }
 
-    pub async fn reconstruct_file_to_path(
-        &self,
-        hash: &MerkleHash,
-        byte_range: Option<FileRange>,
-        output_path: impl AsRef<Path>,
-        progress_updater: Option<Arc<SingleItemProgressUpdater>>,
-    ) -> Result<u64> {
-        let output = sequential_output_from_filepath(output_path)?;
-        self.reconstruct_file(hash, byte_range, output, progress_updater).await
+    pub fn with_output_file(self, output_path: impl AsRef<Path>) -> Self {
+        todo!()
+    }
+
+    pub fn with_progress_updater(self, progress_updater: Arc<SingleItemProgressUpdater>) -> Self {
+        Self {
+            progress_updater: Some(progress_updater),
+            ..self
+        }
+    }
+
+    pub async fn run(self) -> Result<()> {
+        let reconstructor = FileReconstructionImpl::from_builder(self)?;
+        reconstructor.run().await
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+/// Now the real process here.
+pub(crate) struct FileReconstructionImpl {
+    client: Arc<dyn Client>,
+    file_hash: MerkleHash,
+    byte_range: FileRange,
+    term_manager: Arc<ReconstructionTermManager>,
+    data_writer: Arc<dyn DataWriter>,
+    progress_updater: Option<Arc<SingleItemProgressUpdater>>,
+    config: xet_config::ReconstructionConfig,
+}
 
-    #[tokio::test(flavor = "multi_thread")]
-    async fn test_file_reconstructor_creation() {
-        let client = cas_client::LocalClient::temporary().unwrap();
-        let _reconstructor = FileReconstructor::new(client);
+impl FileReconstructionImpl {
+    pub(crate) fn from_builder(builder: FileReconstructor) -> Result<Self> {
+        let FileReconstructor {
+            client,
+            file_hash,
+            byte_range,
+            output_mode,
+            progress_updater,
+            config,
+        } = builder;
+
+        let byte_range = byte_range.unwrap_or_else(FileRange::full);
+        let term_manager = ReconstructionTermManager::new(client.clone(), file_hash, byte_range);
+
+        let data_output = output_mode.ok_or_else(|| {
+            FileReconstructionError::ConfigurationError(
+                "Output mode must be specified for FileReconstructor".to_string(),
+            )
+        })?;
+
+        let data_writer = data_output.get_writer(&config);
+
+        Ok(Self {
+            client,
+            file_hash,
+            byte_range,
+            term_manager,
+            data_writer,
+            progress_updater,
+            config,
+        })
+    }
+
+    pub(crate) async fn run(self) -> Result<()> {
+        // First, start fetching the data.
+        // Prefetch the first terms.
+        self.term_manager
+            .prefetch_next_term_data(self.config.initial_reconstruction_fetch_size.as_u64())
+            .await;
+
+        // Initialize the writer
+        self.data_writer.begin().await?;
+
+        // TODO: Implement the actual reconstruction logic here
+
+        // Finish writing
+        self.data_writer.finish().await?;
+
+        Ok(())
     }
 }

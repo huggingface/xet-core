@@ -8,13 +8,17 @@ cas_client = { path = "../cas_client" }
 cas_types = { path = "../cas_types" }
 merklehash = { path = "../merklehash" }
 progress_tracking = { path = "../progress_tracking" }
-
+utils = { path = "../utils" }
+xet_config = { path = "../xet_config" }
+xet_runtime = { path = "../xet_runtime" }
 
 async-trait = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
 bytes = { workspace = true }
+rangemap = { workspace = true }
+more-asserts = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

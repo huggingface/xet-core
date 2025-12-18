@@ -1616,11 +1616,16 @@ dependencies = [
  "cas_client",
  "cas_types",
  "merklehash",
+ "more-asserts",
  "progress_tracking",
+ "rangemap",
  "tempfile",
  "thiserror 2.0.12",
  "tokio",
  "tracing",
+ "utils",
+ "xet_config",
+ "xet_runtime",
 ]
 
 [[package]]
@@ -4162,6 +4167,12 @@ dependencies = [
  "num-traits",
  "rand 0.9.1",
 ]
+
+[[package]]
+name = "rangemap"
+version = "1.7.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "acbbbbea733ec66275512d0b9694f34102e7d5406fdbe2ad8d21b28dce92887c"
 
 [[package]]
 name = "rawpointer"
