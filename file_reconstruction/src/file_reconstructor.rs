@@ -1,14 +1,14 @@
 use std::path::Path;
 use std::sync::Arc;
 
-use cas_client::{Client, SequentialOutput, sequential_output_from_filepath};
+use cas_client::Client;
 use cas_types::FileRange;
 use merklehash::MerkleHash;
 use progress_tracking::item_tracking::SingleItemProgressUpdater;
 use xet_runtime::xet_config;
 
 use crate::FileReconstructionError;
-use crate::data_writer::{DataOutput, DataWriter};
+use crate::data_writer::{DataOutput, DataWriter, new_data_writer};
 use crate::error::Result;
 use crate::reconstruction_metadata::ReconstructionTermManager;
 
@@ -40,7 +40,7 @@ impl FileReconstructor {
         }
     }
 
-    pub fn with_output_file(self, output_path: impl AsRef<Path>) -> Self {
+    pub fn with_output_file(self, _output_path: impl AsRef<Path>) -> Self {
         todo!()
     }
 
@@ -88,7 +88,7 @@ impl FileReconstructionImpl {
             )
         })?;
 
-        let data_writer = data_output.get_writer(&config);
+        let data_writer = new_data_writer(data_output, &config, 0, 0)?;
 
         Ok(Self {
             client,
@@ -107,9 +107,6 @@ impl FileReconstructionImpl {
         self.term_manager
             .prefetch_next_term_data(self.config.initial_reconstruction_fetch_size.as_u64())
             .await;
-
-        // Initialize the writer
-        self.data_writer.begin().await?;
 
         // TODO: Implement the actual reconstruction logic here
 

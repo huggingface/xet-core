@@ -1,21 +1,48 @@
-use std::io::Result;
+use std::sync::Arc;
 
 use bytes::Bytes;
+use cas_types::FileRange;
+
+use crate::Result;
+use crate::data_writer::DataOutput;
+use crate::data_writer::sequential_writer::SequentialWriter;
+
+#[async_trait::async_trait]
+pub trait DataReceptacle: Send + Sync + 'static {
+    async fn write(self: Box<Self>, data: Bytes) -> Result<()>;
+}
 
 #[async_trait::async_trait]
 pub trait DataWriter: Send + Sync + 'static {
-    async fn begin(&self) -> Result<()>;
+    /// Acquires a receptacle for writing data at the given term index.
+    ///
+    /// The term indices must be requested in strictly increasing order.
+    /// The returned `DataReceptacle` can later be filled with data by calling `write(data)`.
+    async fn get_data_receptacle(
+        &self,
+        term_index: usize,
+        term_byte_range: FileRange,
+    ) -> Result<Box<dyn DataReceptacle>>;
 
-    /// Enqueues a write operation to be performed at a given position in the file.
+    /// Waits until all data has been written.
     ///
-    /// Note that this operation may block if the reordering buffer is full of out-of-order
-    /// values.
-    async fn enqueue_write(&self, position: u64, data: Bytes) -> Result<()>;
-
-    /// Waits until all enqueued write operations are completed.  
-    ///
-    /// Errors if there are gaps in the enqueued write operations.  
-    ///
-    /// Once this method is called, further calls to enqueue_write will fail.
+    /// Once this method is called, further calls to get_data_receptacle will fail.
     async fn finish(&self) -> Result<()>;
+}
+
+pub fn new_data_writer(
+    output: DataOutput,
+    _config: &xet_config::ReconstructionConfig,
+    start_term_index: usize,
+    start_file_position: u64,
+) -> Result<Arc<dyn DataWriter>> {
+    match output {
+        DataOutput::SequentialWriter(writer) => {
+            Ok(Arc::new(SequentialWriter::new(writer, start_file_position, start_term_index)))
+        },
+        DataOutput::File(path) => {
+            let file = std::fs::File::create(&path)?;
+            Ok(Arc::new(SequentialWriter::new(Box::new(file), start_file_position, start_term_index)))
+        },
+    }
 }

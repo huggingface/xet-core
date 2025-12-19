@@ -1,7 +1,7 @@
 mod data_output;
-mod reordering_writer;
-mod trait_def;
+mod data_writer;
+mod sequential_writer;
 
 pub use data_output::DataOutput;
-pub use reordering_writer::ReorderingWriter;
-pub use trait_def::DataWriter;
+pub use data_writer::{DataReceptacle, DataWriter, new_data_writer};
+pub use sequential_writer::SequentialWriter;
