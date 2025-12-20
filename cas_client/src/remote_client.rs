@@ -692,7 +692,7 @@ impl Client for RemoteClient {
     }
 
     #[cfg(not(target_family = "wasm"))]
-    async fn get_file_term_data(
+    async fn get_file_term_data_v1(
         &self,
         hash: MerkleHash,
         fetch_term: CASReconstructionFetchInfo,
@@ -705,6 +705,15 @@ impl Client for RemoteClient {
             self.range_download_single_flight.clone(),
         )
         .await
+    }
+
+    #[cfg(not(target_family = "wasm"))]
+    async fn get_file_term_data(
+        &self,
+        url_info: Box<dyn URLRetriever>,
+        download_permit: ConnectionPermit,
+    ) -> Result<TermDownloadOutput> {
+        todo!();
     }
 
     #[cfg(not(target_family = "wasm"))]

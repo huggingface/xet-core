@@ -1,4 +1,4 @@
-impl FileReconstructor {
+impl FileReconstructionBuilder {
     pub fn new(client: Arc<dyn Client>) -> Self {
         Self { client }
     }

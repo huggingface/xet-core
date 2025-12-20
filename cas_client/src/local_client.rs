@@ -588,7 +588,7 @@ impl Client for LocalClient {
         })
     }
 
-    async fn get_file_term_data(
+    async fn get_file_term_data_v1(
         &self,
         hash: MerkleHash,
         fetch_term: CASReconstructionFetchInfo,
@@ -1013,7 +1013,7 @@ mod tests {
             url: valid_url.clone(),
             url_range: valid_url_range,
         };
-        let result = client.get_file_term_data(hash, valid_fetch_term).await;
+        let result = client.get_file_term_data_v1(hash, valid_fetch_term).await;
         assert!(result.is_ok(), "Valid fetch_term should succeed");
 
         // Test 2: Invalid URL format - too few parts (3 instead of 4)
@@ -1023,7 +1023,7 @@ mod tests {
             url: too_few_parts.to_string(),
             url_range: valid_url_range,
         };
-        let result = client.get_file_term_data(hash, invalid_fetch_term).await;
+        let result = client.get_file_term_data_v1(hash, invalid_fetch_term).await;
         assert!(result.is_err(), "URL with too few parts should fail");
         assert!(matches!(result.unwrap_err(), CasClientError::InvalidArguments));
 
@@ -1035,7 +1035,7 @@ mod tests {
             url: wrong_start_pos,
             url_range: valid_url_range,
         };
-        let result = client.get_file_term_data(hash, invalid_fetch_term).await;
+        let result = client.get_file_term_data_v1(hash, invalid_fetch_term).await;
         assert!(result.is_err(), "Wrong start_pos should fail");
         assert!(matches!(result.unwrap_err(), CasClientError::InvalidArguments));
 
@@ -1047,7 +1047,7 @@ mod tests {
             url: wrong_end_pos,
             url_range: valid_url_range,
         };
-        let result = client.get_file_term_data(hash, invalid_fetch_term).await;
+        let result = client.get_file_term_data_v1(hash, invalid_fetch_term).await;
         assert!(result.is_err(), "Wrong end_pos should fail");
         assert!(matches!(result.unwrap_err(), CasClientError::InvalidArguments));
 
@@ -1059,7 +1059,7 @@ mod tests {
             url: non_numeric_start,
             url_range: valid_url_range,
         };
-        let result = client.get_file_term_data(hash, invalid_fetch_term).await;
+        let result = client.get_file_term_data_v1(hash, invalid_fetch_term).await;
         assert!(result.is_err(), "Non-numeric start_pos should fail");
         assert!(matches!(result.unwrap_err(), CasClientError::InvalidArguments));
 
@@ -1070,7 +1070,7 @@ mod tests {
             url: non_numeric_end,
             url_range: valid_url_range,
         };
-        let result = client.get_file_term_data(hash, invalid_fetch_term).await;
+        let result = client.get_file_term_data_v1(hash, invalid_fetch_term).await;
         assert!(result.is_err(), "Non-numeric end_pos should fail");
         assert!(matches!(result.unwrap_err(), CasClientError::InvalidArguments));
 
@@ -1080,7 +1080,7 @@ mod tests {
             url: String::new(),
             url_range: valid_url_range,
         };
-        let result = client.get_file_term_data(hash, invalid_fetch_term).await;
+        let result = client.get_file_term_data_v1(hash, invalid_fetch_term).await;
         assert!(result.is_err(), "Empty URL should fail");
         assert!(matches!(result.unwrap_err(), CasClientError::InvalidArguments));
 
@@ -1091,7 +1091,7 @@ mod tests {
             url: non_numeric_timestamp,
             url_range: valid_url_range,
         };
-        let result = client.get_file_term_data(hash, invalid_fetch_term).await;
+        let result = client.get_file_term_data_v1(hash, invalid_fetch_term).await;
         assert!(result.is_err(), "Non-numeric timestamp should fail");
         assert!(matches!(result.unwrap_err(), CasClientError::InvalidArguments));
 
@@ -1103,7 +1103,7 @@ mod tests {
             url: non_existent_url,
             url_range: valid_url_range,
         };
-        let result = client.get_file_term_data(hash, invalid_fetch_term).await;
+        let result = client.get_file_term_data_v1(hash, invalid_fetch_term).await;
         assert!(result.is_err(), "Non-existent file should fail");
     }
 
@@ -1139,7 +1139,7 @@ mod tests {
             url: valid_url,
             url_range: valid_url_range,
         };
-        let result = client.get_file_term_data(hash, fetch_term).await;
+        let result = client.get_file_term_data_v1(hash, fetch_term).await;
         assert!(result.is_ok(), "URL should be valid within expiration window");
     }
 
@@ -1175,7 +1175,7 @@ mod tests {
             url: expired_url,
             url_range: valid_url_range,
         };
-        let result = client.get_file_term_data(hash, fetch_term).await;
+        let result = client.get_file_term_data_v1(hash, fetch_term).await;
         assert!(result.is_err(), "URL should be expired after expiration window");
         assert!(matches!(result.unwrap_err(), CasClientError::PresignedUrlExpirationError));
     }
@@ -1212,7 +1212,7 @@ mod tests {
             url,
             url_range: valid_url_range,
         };
-        let result = client.get_file_term_data(hash, fetch_term).await;
+        let result = client.get_file_term_data_v1(hash, fetch_term).await;
         assert!(result.is_ok(), "URL should not expire with default infinite expiration");
     }
 
@@ -1249,7 +1249,7 @@ mod tests {
             url: url.clone(),
             url_range: valid_url_range,
         };
-        let result = client.get_file_term_data(hash, fetch_term).await;
+        let result = client.get_file_term_data_v1(hash, fetch_term).await;
         assert!(result.is_ok(), "URL should be valid inside expiration boundary");
 
         // Advance 2 more seconds (now 61 seconds total, past 60 second window) - should be expired
@@ -1260,7 +1260,7 @@ mod tests {
             url,
             url_range: valid_url_range,
         };
-        let result = client.get_file_term_data(hash, fetch_term).await;
+        let result = client.get_file_term_data_v1(hash, fetch_term).await;
         assert!(result.is_err(), "URL should be expired past boundary");
         assert!(matches!(result.unwrap_err(), CasClientError::PresignedUrlExpirationError));
     }

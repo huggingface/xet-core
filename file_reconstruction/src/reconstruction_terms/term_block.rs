@@ -1,163 +1,129 @@
 use std::collections::HashMap;
-use std::collections::hash_map::Entry;
 use std::ops::Range;
 use std::sync::Arc;
 
-use bytes::Bytes;
-use cas_client::Client;
-use cas_types::{ChunkRange, FileRange, HttpRange};
+use cas_types::{ChunkRange, FileRange, FileRange, HttpRange};
 use merklehash::MerkleHash;
 use more_asserts::*;
-use rangemap::RangeMap;
 use tokio::sync::RwLock;
 use utils::RwTaskLock;
 
+use super::single_terms::FileTerm;
+use super::xorb_block::XorbBlock;
 use crate::FileReconstructionError;
-use crate::error::Result;
-use crate::unique_key::{UniqueId, unique_id};
+use crate::reconstruction_terms::term_block::ReconstructionTermBlock;
+use crate::unique_key::UniqueId;
 
-pub struct XorbBlockData {
-    // The offsets into the data for each of the chunk starts, end inclusive.
-    pub chunk_offsets: Vec<usize>,
-
-    // The uncompressed size of the xorb.
-    pub uncompressed_size: u64,
-
-    // The uncompressed data for that xorb.
-    pub data: Bytes,
+// The base info of each file term.  Data is copied from this to
+// fill the FileTerm struct.
+#[derive(PartialEq, Eq)]
+struct FileTermRawInfo {
+    byte_range: FileRange,
+    xorb_chunk_range: ChunkRange,
+    offset_into_first_range: u64,
+    xorb_block_index: usize,
 }
 
-// The states of a xorb term:
-// 1. URL, stored as handle to block of URLs that might have to be refreshed.
-// 2. Loadable from cache.
-// 3.
-pub struct XorbBlock {
-    // Index information.
-    pub xorb_hash: MerkleHash,
-    pub chunk_range: ChunkRange,
-
-    // The data source if it's been downloaded or in the process of being downloaded.
-    pub data: RwTaskLock<Option<XorbBlockData>, FileReconstructionError>,
-}
-// The term information and possibly the pointers to the data that
-pub struct FileTerm {
-    // The index in the list of terms that define this file.
-    pub term_index: usize,
-
-    // The bytes in the file that this term comprises.
-    pub file_byte_range: FileRange,
-
-    // The ID of the reconstruction term block in the term manager that this refers to.
-    pub term_block_id: UniqueId,
-
-    // The index of the referencing xorb within the block.
-    pub xorb_block_index: usize,
-
-    // The chunk range within the xorb that we would pull from.
-    pub xorb_chunk_range: ChunkRange,
-
-    // The offset into the range that's given here.
-    pub offset_into_first_range: u64,
-}
-
-struct ReconstructionTermBlock {
-    term_index_range: Range<usize>,
+pub struct ReconstructionTermBlock {
+    // The file hash.
+    pub file_hash: MerkleHash,
 
     // The bytes in the file that this block covers.
-    file_byte_range: FileRange,
+    pub byte_range: FileRange,
 
-    // The list of file terms here.  Should be length equal to the size of the range of term indices in this block.
-    file_terms: Vec<Arc<FileTerm>>,
+    // The raw file terms.
+    raw_file_terms: Vec<FileTermRawInfo>,
 
-    // The list of xorb blocks here; equal to the number of unique xorb ranges in this block.
-    xorb_blocks: Vec<Arc<XorbBlock>>,
+    // The xorb block info corresponding to each xorb block in this block.
+    xorb_block_info: Vec<Arc<XorbBlock>>,
 
     // The xorb retreival URLs.  These could be refreshed if need be.
     xorb_block_retrieval_urls: RwLock<(UniqueId, Vec<(String, HttpRange)>)>,
+
+    // The start time when we started downloading.  If zero, then unrecorded.
+    start_time_ms: AtomicU64,
+    // The callback function on drop to record the completion time.
 }
 
 impl ReconstructionTermBlock {
-    pub async fn get_file_term(&self, term_index: usize) -> Arc<FileTerm> {
-        debug_assert_ge!(self.term_index_range.start, term_index);
-        debug_assert_lt!(term_index, self.term_index_range.end);
+    pub fn get_file_term(self: &Arc<Self>, within_block_index: usize) -> FileTerm {
+        // Let current
 
-        self.file_terms[term_index - self.term_index_range.start].clone()
+        let file_term_info = &self.raw_file_terms[within_block_index];
+
+        FileTerm {
+            byte_range: file_term_info.byte_range,
+            xorb_chunk_range: file_term_info.xorb_chunk_range,
+            offset_into_first_range: file_term_info.offset_into_first_range,
+            xorb_block: self.xorb_block_info[file_term_info.xorb_block_index].clone(),
+            term_block: self.clone(),
+        }
     }
 
-    pub async fn get_xorb_block_retrieval_url(&self, xorb_block_index: usize) -> (UniqueId, String, HttpRange) {
+    pub fn n_file_terms(&self) -> usize {
+        self.raw_file_terms.len()
+    }
+
+    /// Gets the retrieval URL for a given xorb block.  All URL requests go through
+    /// this method in order to manage url refreshes; this function returns the
+    /// most recent retrieval URL in the case of a refresh.
+    pub async fn get_retrieval_url(&self, xorb_block: &Arc<XorbBlock>) -> XorbBlockRetrievalUrl {
         let xbru = self.xorb_block_retrieval_urls.read().await;
 
         let (url, url_range) = xbru.1[xorb_block_index].clone();
 
-        (xbru.0, url, url_range)
-    }
-}
-
-pub struct ReconstructionTermManager {
-    file_hash: MerkleHash,
-    file_byte_range: FileRange,
-
-    // Is a key to the current active blocks.
-    current_blocks: HashMap<u64, RwTaskLock<Arc<ReconstructionTermBlock>, FileReconstructionError>>,
-
-    // Mapping from a given range to a
-    term_range: RangeMap<u64, u64>,
-}
-
-impl ReconstructionTermManager {
-    pub fn new(client: Arc<dyn Client>, file_hash: MerkleHash, range: FileRange) -> Arc<Self> {
-        todo!()
+        XorbBlockRetrievalUrl {
+            unique_id: xbru.0,
+            url,
+            http_range: url_range,
+        }
     }
 
-    // Gets the file term most quickly associated with this.
-    pub async fn get_file_term(self: &Arc<Self>, term_index: usize) -> Arc<FileTerm> {
-        todo!()
+    pub async fn refresh_retrieval_urls(&self, client: Arc<dyn Client>, acquisition_id: UniqueId) -> Result<()> {
+        if self.xorb_block_retrieval_urls.read().await.0 != acquisition_id {
+            // This means another process has got in here while we're waiting for the lock and
+            // refreshed them.
+            return Ok(());
+        }
+
+        let mut retrieval_urls = self.xorb_block_retrieval_urls.write().await;
+
+        if retrieval_urls.0 != acquisition_id {
+            // It's already been refreshed by another process.
+            return Ok(());
+        }
+
+        // Since this hopefully doesn't happen too often, go through and retrieve an
+        // entire new block, then make sure everything matches up and take in the new stuff.
+        let new_block = Self::retrieve_from_client(client, self.file_byte_range).await?;
+
+        // Check that all the other fields of new_block match identically with the existing block; this
+        // would be a serious bug if it happened but would cause file corruption so check it here.
+        if new_block.file_terms != self.file_terms || new_block.xorb_blocks != self.xorb_blocks {
+            return Err(FileReconstructionError::CorruptedReconstruction(
+                "On URL refresh, the returned reconstruction differs from the previous reconstruction.".to_owned(),
+            ));
+        }
+
+        // It all checked out, so update the retrieval URLs in place.
+        {
+            let mut new_retrieval_urls = new_block.xorb_block_retrieval_urls.write().await;
+            retrieval_urls.0 = new_retrieval_urls.0;
+            retrieval_urls.1 = std::mem::take(&mut new_retrieval_urls.1);
+        }
     }
 
-    pub async fn refresh_file_term_url(self: &Arc<Self>, file_term: Arc<FileTerm>) -> Arc<FileTerm> {
-        // Get the refresh data stored in the block handle.
-        todo!()
-
-        // Call refresh on the inner block handle.
-    }
-
-    pub async fn mark_term_completed(self: &Arc<Self>, term_index: usize) {
-        todo!()
-    }
-
-    /// Returns the amount currently prefetched.
-    pub async fn current_prefetched_amount(&self) -> u64 {
-        todo!();
-    }
-
-    /// Prefetches the next block of terms.  Returns true if all terms are completed.  
-    pub async fn prefetch_next_term_data(self: &Arc<Self>, fetch_size: u64) {
-        todo!();
-    }
-
-    /// Returns true if we've prefetched the full range given here.
-    pub async fn prefetched_full_range(&self) -> bool {
-        todo!();
-    }
-}
-
-// The real guts of it.
-impl ReconstructionTermManager {
-    async fn retrieve_term_block(
-        self: Arc<Self>,
-        client: Arc<dyn Client>,
-        term_start_index: usize,
-        file_byte_range: FileRange,
-        term_block_id: UniqueId,
-    ) -> Result<Option<ReconstructionTermBlock>> {
+    /// The primary way to retrieve a reconstruction term block.
+    pub async fn retrieve_from_client(client: Arc<dyn Client>, file_byte_range: FileRange) -> Result<Option<Self>> {
+        // First, get the raw reconstruction.
         let Some(raw_reconstruction) = client.get_reconstruction(&self.file_hash, Some(file_byte_range)).await? else {
             // None means we've requested a byte range beyond the end of the file.
             return Ok(None);
         };
 
+        // Set a new url acquisition id to ensure that we don't double up the url acquisitions.
         let acquisition_id = unique_id();
 
-        // Now, we need to map all the terms into the ReconstructionTermBlock.
         let mut file_terms = Vec::<FileTerm>::with_capacity(raw_reconstruction.terms.len());
 
         let n_xorb_terms = raw_reconstruction.fetch_info.values().map(|v| v.len()).sum();
@@ -205,7 +171,8 @@ impl ReconstructionTermManager {
                                 xorb_blocks.push(Arc::new(XorbBlock {
                                     xorb_hash,
                                     chunk_range,
-                                    data: RwTaskLock::from_value(None),
+                                    xorb_block_index: new_index,
+                                    data: RwLock::new(None),
                                 }));
 
                                 // Store the retrieval URL and range for this xorb block.
@@ -242,10 +209,8 @@ impl ReconstructionTermManager {
             let term_byte_size = term.unpacked_length as u64 - offset_into_first_range;
 
             // Get the file term here.
-            file_terms.push(FileTerm {
-                term_block_id,
-                term_index: local_term_index + term_start_index,
-                file_byte_range: FileRange::new(cur_file_byte_offset, cur_file_byte_offset + term_byte_size),
+            file_terms.push(FileTermRawInfo {
+                byte_range: FileRange::new(cur_file_byte_offset, cur_file_byte_offset + term_byte_size),
                 xorb_block_index,
                 xorb_chunk_range: term.range,
                 offset_into_first_range,
@@ -267,10 +232,9 @@ impl ReconstructionTermManager {
         }
 
         Ok(Some(ReconstructionTermBlock {
-            term_index_range: term_start_index..(term_start_index + raw_reconstruction.terms.len()),
-            file_byte_range,
-            file_terms: file_terms.into_iter().map(Arc::new).collect(),
-            xorb_blocks,
+            byte_range: file_byte_range,
+            raw_file_terms: file_terms,
+            xorb_block_info: xorb_blocks,
             xorb_block_retrieval_urls: RwLock::new((acquisition_id, xorb_block_retrieval_urls)),
         }))
     }

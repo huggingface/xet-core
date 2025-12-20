@@ -18,6 +18,11 @@ use crate::error::Result;
 #[cfg(not(target_family = "wasm"))]
 use crate::output_provider::{SeekingOutputProvider, SequentialOutput};
 
+#[async_trait::async_trait]
+pub trait URLRetriever: Send + Sync {
+    async fn retrieve_url(&mut self, force_refresh: bool) -> Result<(String, HttpRange)>;
+}
+
 /// A Client to the Shard service. The shard service
 /// provides for
 /// 1. upload shard to the shard service
@@ -42,10 +47,19 @@ pub trait Client: Send + Sync {
     async fn batch_get_reconstruction(&self, file_ids: &[MerkleHash]) -> Result<BatchQueryReconstructionResponse>;
 
     #[cfg(not(target_family = "wasm"))]
-    async fn get_file_term_data(
+    async fn get_file_term_data_v1(
         &self,
         hash: MerkleHash,
         fetch_term: CASReconstructionFetchInfo,
+    ) -> Result<TermDownloadOutput>;
+
+    async fn acquire_download_permit(&self) -> Result<ConnectionPermit>;
+
+    #[cfg(not(target_family = "wasm"))]
+    async fn get_file_term_data(
+        &self,
+        url_info: Box<dyn URLRetriever>,
+        download_permit: ConnectionPermit,
     ) -> Result<TermDownloadOutput>;
 
     #[cfg(not(target_family = "wasm"))]

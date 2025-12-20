@@ -248,7 +248,7 @@ impl FetchTermDownloadInner {
         let data = loop {
             let (fetch_info, v) = self.fetch_info.find(key).await?;
 
-            let range_data = client.get_file_term_data(self.hash, fetch_info).await;
+            let range_data = client.get_file_term_data_v1(self.hash, fetch_info).await;
 
             if let Err(CasClientError::PresignedUrlExpirationError) = range_data {
                 self.fetch_info.refresh(&client, v).await?;
