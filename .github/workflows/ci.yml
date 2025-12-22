@@ -15,7 +15,7 @@ jobs:
     name: Rustfmt
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: nightly
@@ -27,14 +27,14 @@ jobs:
   detect-unused-dependencies:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - name: Machete
         uses: bnjbvr/cargo-machete@main
   build_and_test-linux:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
       - name: Install Rust 1.89
         uses: dtolnay/rust-toolchain@1.89.0
         with:
@@ -60,7 +60,7 @@ jobs:
     runs-on: windows-latest
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
       - name: Install Rust 1.89
         uses: dtolnay/rust-toolchain@1.89.0
         with:
@@ -73,7 +73,7 @@ jobs:
     runs-on: macos-latest
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
       - name: Install Rust 1.89
         uses: dtolnay/rust-toolchain@1.89.0
         with:
@@ -91,7 +91,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
       - name: Install Rust nightly
         uses: dtolnay/rust-toolchain@nightly
         with:

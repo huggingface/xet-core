@@ -17,13 +17,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       # checkout out xet-core
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       # checkout out huggingface_hub
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           repository: huggingface/huggingface_hub
           path: huggingface_hub
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: '3.10'
       - name: Create venv
