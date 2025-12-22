@@ -85,19 +85,19 @@ wiremock = { workspace = true }
 # Test binaries for adaptive concurrency testing
 [[bin]]
 name = "simulation_server"
-path = "test/adaptive_concurrency/src/simulation_server.rs"
+path = "tests/adaptive_concurrency/src/simulation_server.rs"
 
 [[bin]]
 name = "simulation_client"
-path = "test/adaptive_concurrency/src/simulation_client.rs"
+path = "tests/adaptive_concurrency/src/simulation_client.rs"
 test = true
 
 [[bin]]
 name = "generate_summary"
-path = "test/adaptive_concurrency/src/generate_summary.rs"
+path = "tests/adaptive_concurrency/src/generate_summary.rs"
 test = true
 
 [[bin]]
 name = "generate_scenario_report"
-path = "test/adaptive_concurrency/src/generate_scenario_report.rs"
+path = "tests/adaptive_concurrency/src/generate_scenario_report.rs"
 test = true
