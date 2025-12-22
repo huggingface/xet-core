@@ -530,24 +530,22 @@ mod tests {
         ClientBuilder::new(reqwest::Client::new()).build()
     }
 
-    #[tokio::test]
-    async fn test_success_first_try() {
-        let server = MockServer::start().await;
-
-        Mock::given(method("GET"))
+    async fn check_success_first_try(server: &MockServer) {
+        let _guard = Mock::given(method("GET"))
             .and(path("/success"))
             .respond_with(ResponseTemplate::new(200))
             .expect(1)
-            .mount(&server)
+            .mount_as_scoped(server)
             .await;
 
         let client = make_client();
         let counter = Arc::new(AtomicU32::new(0));
         let counter_ = counter.clone();
+        let server_uri = server.uri();
 
-        let result = connection_wrapper("test_success_first_try")
+        let result = connection_wrapper("check_success_first_try")
             .run(move |_partial_report_fn| {
-                let url = format!("{}/success", server.uri());
+                let url = format!("{}/success", server_uri);
                 counter_.fetch_add(1, Ordering::Relaxed);
                 client.clone().get(&url).send()
             })
@@ -557,32 +555,30 @@ mod tests {
         assert_eq!(counter.load(Ordering::SeqCst), 1);
     }
 
-    #[tokio::test]
-    async fn test_retry_then_success() {
-        let server = MockServer::start().await;
-
+    async fn check_retry_then_success(server: &MockServer) {
         // First two return 500
-        Mock::given(method("GET"))
+        let _guard1 = Mock::given(method("GET"))
             .and(path("/flaky"))
             .respond_with(ResponseTemplate::new(500))
             .up_to_n_times(2)
-            .mount(&server)
+            .mount_as_scoped(server)
             .await;
 
         // Third returns 200
-        Mock::given(method("GET"))
+        let _guard2 = Mock::given(method("GET"))
             .and(path("/flaky"))
             .respond_with(ResponseTemplate::new(200).set_body_string("Recovered"))
-            .mount(&server)
+            .mount_as_scoped(server)
             .await;
 
         let client = make_client();
         let counter = Arc::new(AtomicU32::new(0));
         let counter_ = counter.clone();
+        let server_uri = server.uri();
 
-        let result = connection_wrapper("test_retry_then_success")
+        let result = connection_wrapper("check_retry_then_success")
             .run(move |_partial_report_fn| {
-                let url = format!("{}/flaky", server.uri());
+                let url = format!("{}/flaky", server_uri);
                 counter_.fetch_add(1, Ordering::Relaxed);
                 client.clone().get(url).send()
             })
@@ -590,161 +586,144 @@ mod tests {
 
         assert!(result.is_ok());
         assert_eq!(&result.unwrap().bytes().await.unwrap()[..], b"Recovered");
-        assert_eq!(counter.load(Ordering::SeqCst), 3); // handle() only called on retry attempts
+        assert_eq!(counter.load(Ordering::SeqCst), 3);
     }
 
-    #[tokio::test]
-    async fn test_retry_limit_exceeded() {
-        let server = MockServer::start().await;
-
+    async fn check_retry_limit_exceeded(server: &MockServer) {
         // Always return 500
-        Mock::given(method("GET"))
+        let _guard = Mock::given(method("GET"))
             .and(path("/fail"))
             .respond_with(ResponseTemplate::new(500))
             .expect(4) // 1 initial + 3 retries
-            .mount(&server)
+            .mount_as_scoped(server)
             .await;
 
         let client = make_client();
         let counter = Arc::new(AtomicU32::new(0));
         let counter_ = counter.clone();
+        let server_uri = server.uri();
 
-        let result = connection_wrapper("test_retry_limit_exceeded")
+        let result = connection_wrapper("check_retry_limit_exceeded")
             .with_max_attempts(3)
             .run(move |_partial_report_fn| {
-                let url = format!("{}/fail", server.uri());
+                let url = format!("{}/fail", server_uri);
                 counter_.fetch_add(1, Ordering::Relaxed);
                 client.clone().get(&url).send()
             })
             .await;
 
         assert!(result.is_err());
-        assert_eq!(counter.load(Ordering::SeqCst), 4); // 3 retries attempted
+        assert_eq!(counter.load(Ordering::SeqCst), 4);
     }
 
-    #[tokio::test]
-    async fn test_non_retryable_status() {
-        let server = MockServer::start().await;
-
+    async fn check_non_retryable_status(server: &MockServer) {
         // Respond with a 400 Bad Request
-        Mock::given(method("GET"))
-            .and(path("/bad"))
+        let _guard = Mock::given(method("GET"))
+            .and(path("/bad_request"))
             .respond_with(ResponseTemplate::new(400))
             .expect(1)
-            .mount(&server)
+            .mount_as_scoped(server)
             .await;
 
         let client = make_client();
         let counter = Arc::new(AtomicU32::new(0));
         let counter_ = counter.clone();
+        let server_uri = server.uri();
 
-        let result = connection_wrapper("test_non_retryable_status")
+        let result = connection_wrapper("check_non_retryable_status")
             .run(move |_partial_report_fn| {
-                let url = format!("{}/bad", server.uri());
+                let url = format!("{}/bad_request", server_uri);
                 counter_.fetch_add(1, Ordering::Relaxed);
                 client.clone().get(&url).send()
             })
             .await;
 
         assert!(result.is_err());
-        assert_eq!(counter.load(Ordering::SeqCst), 1); // strategy called once
+        assert_eq!(counter.load(Ordering::SeqCst), 1);
     }
 
-    #[tokio::test]
-    async fn test_429_retry_if_specified() {
-        // Ensures that 429 does in fact retry unless told not to.
-
-        let server = MockServer::start().await;
-
+    async fn check_429_retry_if_specified(server: &MockServer) {
         // Respond with a 429 too many requests
-        Mock::given(method("GET"))
-            .and(path("/bad"))
+        let _guard = Mock::given(method("GET"))
+            .and(path("/rate_limit"))
             .respond_with(ResponseTemplate::new(429))
             .expect(4)
-            .mount(&server)
+            .mount_as_scoped(server)
             .await;
 
         let client = make_client();
         let counter = Arc::new(AtomicU32::new(0));
         let counter_ = counter.clone();
+        let server_uri = server.uri();
 
-        let result = connection_wrapper("test_429_retry_if_specified")
+        let result = connection_wrapper("check_429_retry_if_specified")
             .with_max_attempts(3)
             .run(move |_partial_report_fn| {
-                let url = format!("{}/bad", server.uri());
+                let url = format!("{}/rate_limit", server_uri);
                 counter_.fetch_add(1, Ordering::Relaxed);
                 client.clone().get(&url).send()
             })
             .await;
 
         assert!(result.is_err());
-        assert_eq!(counter.load(Ordering::SeqCst), 4); // strategy called once
+        assert_eq!(counter.load(Ordering::SeqCst), 4);
     }
 
-    #[tokio::test]
-    async fn test_429_retry_no_retry() {
-        // Ensures that 429 does in fact retry unless told not to.
-
-        let server = MockServer::start().await;
-
+    async fn check_429_no_retry(server: &MockServer) {
         // Respond with a 429 too many requests
-        Mock::given(method("GET"))
-            .and(path("/bad"))
+        let _guard = Mock::given(method("GET"))
+            .and(path("/rate_limit_no_retry"))
             .respond_with(ResponseTemplate::new(429))
             .expect(1)
-            .mount(&server)
+            .mount_as_scoped(server)
             .await;
 
         let client = make_client();
         let counter = Arc::new(AtomicU32::new(0));
         let counter_ = counter.clone();
+        let server_uri = server.uri();
 
-        let result = connection_wrapper("test_429_no_retry")
+        let result = connection_wrapper("check_429_no_retry")
             .with_max_attempts(3)
             .with_429_no_retry()
             .run(move |_partial_report_fn| {
-                let url = format!("{}/bad", server.uri());
+                let url = format!("{}/rate_limit_no_retry", server_uri);
                 counter_.fetch_add(1, Ordering::Relaxed);
                 client.clone().get(&url).send()
             })
             .await;
 
         assert!(result.is_err());
-        assert_eq!(counter.load(Ordering::SeqCst), 1); // strategy called once
+        assert_eq!(counter.load(Ordering::SeqCst), 1);
     }
 
-    // Testing the JSON parsing
     #[derive(Serialize, Deserialize, PartialEq, Debug)]
     struct JsonData {
         text: String,
         number: u64,
     }
 
-    #[tokio::test]
-    async fn test_json_reserialization() {
-        // Ensures that 429 does in fact retry unless told not to.
+    async fn check_json_reserialization(server: &MockServer) {
         let data = JsonData {
             text: "test".into(),
             number: 42,
         };
 
-        let server = MockServer::start().await;
-
-        // Respond with a 429 too many requests
-        Mock::given(method("GET"))
-            .and(path("/bad"))
+        let _guard = Mock::given(method("GET"))
+            .and(path("/json"))
             .respond_with(ResponseTemplate::new(StatusCode::OK).set_body_json(&data))
             .expect(1)
-            .mount(&server)
+            .mount_as_scoped(server)
             .await;
 
         let client = make_client();
         let counter = Arc::new(AtomicU32::new(0));
         let counter_ = counter.clone();
+        let server_uri = server.uri();
 
-        let ret_data: JsonData = connection_wrapper("test_json")
+        let ret_data: JsonData = connection_wrapper("check_json_reserialization")
             .run_and_extract_json(move |_partial_report_fn| {
-                let url = format!("{}/bad", server.uri());
+                let url = format!("{}/json", server_uri);
                 counter_.fetch_add(1, Ordering::Relaxed);
                 client.clone().get(&url).send()
             })
@@ -752,12 +731,10 @@ mod tests {
             .unwrap();
 
         assert_eq!(ret_data, data);
-        assert_eq!(counter.load(Ordering::SeqCst), 1); // strategy called once
+        assert_eq!(counter.load(Ordering::SeqCst), 1);
     }
 
-    #[tokio::test]
-    async fn test_json_unexpected_eof_retry() {
-        // Ensures that 429 does in fact retry unless told not to.
+    async fn check_json_unexpected_eof_retry(server: &MockServer) {
         let data = JsonData {
             text: "test".into(),
             number: 42,
@@ -765,31 +742,30 @@ mod tests {
 
         let json_data = serde_json::to_string(&data).unwrap();
 
-        let server = MockServer::start().await;
-
-        // Respond with a 429 too many requests
-        Mock::given(method("GET"))
+        // First response truncated to simulate unexpected EOF
+        let _guard1 = Mock::given(method("GET"))
             .and(path("/json_flaky"))
-            .respond_with(ResponseTemplate::new(StatusCode::OK).set_body_string(&json_data[..json_data.len() - 5])) // Truncate to simulate unexpected EOF
+            .respond_with(ResponseTemplate::new(StatusCode::OK).set_body_string(&json_data[..json_data.len() - 5]))
             .up_to_n_times(1)
-            .mount(&server)
+            .mount_as_scoped(server)
             .await;
 
-        // Respond with a 429 too many requests
-        Mock::given(method("GET"))
+        // Second response with full data
+        let _guard2 = Mock::given(method("GET"))
             .and(path("/json_flaky"))
-            .respond_with(ResponseTemplate::new(StatusCode::OK).set_body_string(&json_data)) // Full length
+            .respond_with(ResponseTemplate::new(StatusCode::OK).set_body_string(&json_data))
             .expect(1)
-            .mount(&server)
+            .mount_as_scoped(server)
             .await;
 
         let client = make_client();
         let counter = Arc::new(AtomicU32::new(0));
         let counter_ = counter.clone();
+        let server_uri = server.uri();
 
-        let ret_data: JsonData = connection_wrapper("test_json_unexpected_eof")
+        let ret_data: JsonData = connection_wrapper("check_json_unexpected_eof_retry")
             .run_and_extract_json(move |_partial_report_fn| {
-                let url = format!("{}/json_flaky", server.uri());
+                let url = format!("{}/json_flaky", server_uri);
                 counter_.fetch_add(1, Ordering::Relaxed);
                 client.clone().get(&url).send()
             })
@@ -797,6 +773,26 @@ mod tests {
             .unwrap();
 
         assert_eq!(ret_data, data);
-        assert_eq!(counter.load(Ordering::SeqCst), 2); // strategy called twice
+        assert_eq!(counter.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn test_retry_wrapper() {
+        let server = MockServer::start().await;
+
+        // To avoid "Too many open files" error, we start one server here
+        // and then have each check below use the same server with scoped
+        // mocks.  When running each of these tests on its own, it seemed
+        // we would hit sporadic "Too many open files" errors when the
+        // wiremock server was starting.
+
+        check_success_first_try(&server).await;
+        check_retry_then_success(&server).await;
+        check_retry_limit_exceeded(&server).await;
+        check_non_retryable_status(&server).await;
+        check_429_retry_if_specified(&server).await;
+        check_429_no_retry(&server).await;
+        check_json_reserialization(&server).await;
+        check_json_unexpected_eof_retry(&server).await;
     }
 }
