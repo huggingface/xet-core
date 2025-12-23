@@ -31,16 +31,56 @@ fn install_sigint_handler() -> Result<(), MultithreadedRuntimeError> {
 }
 
 #[cfg(windows)]
+extern "system" fn console_ctrl_handler(
+    ctrl_type: winapi::shared::minwindef::DWORD,
+) -> winapi::shared::minwindef::BOOL {
+    use winapi::um::wincon;
+
+    // Only handle CTRL_C_EVENT
+    if ctrl_type == wincon::CTRL_C_EVENT {
+        // Check if we have active operations
+        let has_active_ops = {
+            let guard = MULTITHREADED_RUNTIME.read().unwrap();
+            if let Some((runtime_pid, ref runtime)) = *guard {
+                runtime_pid == std::process::id() && runtime.external_executor_count() > 0
+            } else {
+                false
+            }
+        };
+
+        if has_active_ops {
+            // We have active operations, handle it ourselves
+            SIGINT_DETECTED.store(true, Ordering::SeqCst);
+            winapi::shared::minwindef::TRUE
+        } else {
+            // No active operations, let Python's handler (or default) handle it
+            // Return FALSE to continue handler chain
+            winapi::shared::minwindef::FALSE
+        }
+    } else {
+        // For other control events, let default handler process them
+        winapi::shared::minwindef::FALSE
+    }
+}
+
+#[cfg(windows)]
 fn install_sigint_handler() -> Result<(), MultithreadedRuntimeError> {
-    // On Windows, use ctrlc crate.
-    // This sets a callback to run on Ctrl-C:
-    let sigint_detected_flag = SIGINT_DETECTED.clone();
-    ctrlc::set_handler(move || {
-        sigint_detected_flag.store(true, Ordering::SeqCst);
-    })
-    .map_err(|e| {
-        MultithreadedRuntimeError::Other(format!("Initialization Error: Unable to register SIGINT handler {e:?}"))
-    })?;
+    use winapi::um::consoleapi::SetConsoleCtrlHandler;
+    use winapi::um::wincon::CTRL_C_EVENT;
+
+    // Install our handler using Windows API directly (instead of ctrlc)
+    // Our handler checks if operations are active:
+    // - If active: handles Ctrl+C and returns TRUE (stops propagation)
+    // - If not active: returns FALSE (allows Python's handler or default to handle it)
+    // This way we don't need to save/restore Python's handler - we just delegate to it
+    unsafe {
+        if SetConsoleCtrlHandler(Some(console_ctrl_handler), winapi::shared::minwindef::TRUE) == 0 {
+            let error = winapi::um::errhandlingapi::GetLastError();
+            return Err(MultithreadedRuntimeError::Other(format!(
+                "Initialization Error: Unable to register SIGINT handler. Windows error: {error}"
+            )));
+        }
+    }
     Ok(())
 }
 
