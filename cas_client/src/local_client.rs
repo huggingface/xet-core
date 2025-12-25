@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::fs::{File, metadata};
-use std::io::{BufReader, Cursor, Seek, SeekFrom, Write};
+use std::io::{BufReader, Cursor, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -22,19 +22,18 @@ use mdb_shard::utils::shard_file_name;
 use mdb_shard::{MDBShardFile, MDBShardInfo, ShardFileManager};
 use merklehash::MerkleHash;
 use more_asserts::*;
-use progress_tracking::item_tracking::SingleItemProgressUpdater;
 use progress_tracking::upload_tracking::CompletionTracker;
 use tempfile::TempDir;
-use tokio::io::AsyncWriteExt;
 use tokio::runtime::Handle;
 use tokio::time::{Duration, Instant};
 use tracing::{debug, error, info, warn};
 use utils::serialization_utils::read_u32;
 
-use crate::adaptive_concurrency::AdaptiveConcurrencyController;
-use crate::download_utils::TermDownloadOutput;
+use crate::Client;
+use crate::adaptive_concurrency::{AdaptiveConcurrencyController, ConnectionPermit};
 use crate::error::{CasClientError, Result};
-use crate::{Client, SeekingOutputProvider, SequentialOutput};
+use crate::file_reconstruction_v1::TermDownloadOutput;
+use crate::interface::URLProvider;
 
 lazy_static! {
     /// Reference instant for URL timestamps. Initialized far in the past to allow
@@ -47,14 +46,18 @@ lazy_static! {
 }
 
 pub struct LocalClient {
-    _tmp_dir: Option<TempDir>, // To hold directory to use for local testing
+    // Note: Field order matters for Drop! heed::Env must be dropped before _tmp_dir
+    // because heed holds file handles that need to be closed before the directory is deleted.
+    // We use Option<heed::Env> so we can take() it in Drop to properly close via prepare_for_closing.
+    global_dedup_db_env: Option<heed::Env>,
+    global_dedup_table: heed::Database<OwnedType<MerkleHash>, OwnedType<MerkleHash>>,
+    shard_manager: Arc<ShardFileManager>,
     xorb_dir: PathBuf,
     shard_dir: PathBuf,
-    shard_manager: Arc<ShardFileManager>,
-    global_dedup_db_env: heed::Env,
-    global_dedup_table: heed::Database<OwnedType<MerkleHash>, OwnedType<MerkleHash>>,
     upload_concurrency_controller: Arc<AdaptiveConcurrencyController>,
+    download_concurrency_controller: Arc<AdaptiveConcurrencyController>,
     url_expiration_ms: AtomicU64,
+    _tmp_dir: Option<TempDir>, // Must be last - dropped after heed env is closed
 }
 
 impl LocalClient {
@@ -98,10 +101,13 @@ impl LocalClient {
             std::fs::create_dir_all(&global_dedup_dir)?;
         }
 
-        // Open / set up the global dedup lookup
+        // Open / set up the global dedup lookup.
+        // Use minimal settings to reduce file handle usage:
+        // - max_dbs(1): We only use one database
+        // - max_readers(4): Sufficient for local client usage, reduces reader table file size
         let global_dedup_db_env = heed::EnvOpenOptions::new()
-            .max_dbs(32)
-            .max_readers(32)
+            .max_dbs(1)
+            .max_readers(4)
             .open(&global_dedup_dir)
             .map_err(|e| CasClientError::Other(format!("Error opening db at {global_dedup_dir:?}: {e}")))?;
 
@@ -113,14 +119,15 @@ impl LocalClient {
         let shard_manager = ShardFileManager::new_in_session_directory(shard_dir.clone(), true).await?;
 
         Ok(Self {
-            _tmp_dir: tmp_dir,
-            shard_dir,
-            xorb_dir,
-            shard_manager,
-            global_dedup_db_env,
+            global_dedup_db_env: Some(global_dedup_db_env),
             global_dedup_table,
+            shard_manager,
+            xorb_dir,
+            shard_dir,
             upload_concurrency_controller: AdaptiveConcurrencyController::new_upload("local_uploads"),
+            download_concurrency_controller: AdaptiveConcurrencyController::new_download("local_downloads"),
             url_expiration_ms: AtomicU64::new(u64::MAX),
+            _tmp_dir: tmp_dir, // Must be last - dropped after heed env is closed
         })
     }
 
@@ -283,6 +290,135 @@ impl LocalClient {
         let cas_object = CasObject::deserialize(&mut reader)?;
         Ok(cas_object)
     }
+
+    /// Get file term data for the v1 API (used by FileReconstructorV1).
+    pub fn get_file_term_data_v1(
+        &self,
+        hash: MerkleHash,
+        fetch_term: CASReconstructionFetchInfo,
+    ) -> Result<TermDownloadOutput> {
+        let (file_path, url_byte_range, url_timestamp) = parse_fetch_url(&fetch_term.url)?;
+
+        // Check if URL has expired
+        let expiration_ms = self.url_expiration_ms.load(Ordering::Relaxed);
+        let elapsed_ms = Instant::now().saturating_duration_since(url_timestamp).as_millis() as u64;
+        if elapsed_ms > expiration_ms {
+            return Err(CasClientError::PresignedUrlExpirationError);
+        }
+
+        // Validate byte range matches url_range
+        // url_byte_range is FileRange (exclusive-end), url_range is HttpRange (inclusive-end)
+        let url_http_range = HttpRange::from(url_byte_range);
+        if url_http_range.start != fetch_term.url_range.start || url_http_range.end != fetch_term.url_range.end {
+            return Err(CasClientError::InvalidArguments);
+        }
+        let file = File::open(&file_path).map_err(|_| {
+            error!("Unable to find xorb in local CAS {:?}", file_path);
+            CasClientError::XORBNotFound(hash)
+        })?;
+
+        let mut reader = BufReader::new(file);
+        let cas = CasObject::deserialize(&mut reader)?;
+
+        let data = cas.get_bytes_by_chunk_range(&mut reader, fetch_term.range.start, fetch_term.range.end)?;
+
+        let chunk_byte_indices = {
+            let mut indices = Vec::new();
+            let mut cumulative = 0u32;
+            // Start with 0, matching the format from deserialize_chunks_from_stream
+            indices.push(0);
+            // ChunkRange is exclusive-end, so we iterate from start to end (exclusive)
+            for chunk_idx in fetch_term.range.start..fetch_term.range.end {
+                let chunk_len = cas
+                    .uncompressed_chunk_length(chunk_idx)
+                    .map_err(|e| CasClientError::Other(format!("Failed to get chunk length: {e}")))?;
+                cumulative += chunk_len;
+                indices.push(cumulative);
+            }
+            indices
+        };
+
+        Ok(TermDownloadOutput {
+            data,
+            chunk_byte_indices,
+            chunk_range: fetch_term.range,
+        })
+    }
+
+    async fn read_term_data_from_file(&self, file_path: &Path, byte_range: FileRange) -> Result<(Bytes, Vec<u32>)> {
+        let mut file = File::open(file_path).map_err(|_| {
+            error!("Unable to find xorb in local CAS {:?}", file_path);
+            CasClientError::InvalidArguments
+        })?;
+
+        file.seek(SeekFrom::Start(byte_range.start))?;
+
+        let bytes_to_read = (byte_range.end - byte_range.start) as usize;
+        let mut buffer = vec![0u8; bytes_to_read];
+        file.read_exact(&mut buffer)?;
+
+        let mut cursor = Cursor::new(buffer);
+        let (data, chunk_byte_indices) = cas_object::deserialize_chunks(&mut cursor)?;
+
+        Ok((Bytes::from(data), chunk_byte_indices))
+    }
+
+    pub async fn get_file_size(&self, hash: &MerkleHash) -> Result<u64> {
+        let file_info = self.shard_manager.get_file_reconstruction_info(hash).await?;
+        Ok(file_info.unwrap().0.file_size())
+    }
+
+    pub async fn get_file_data(&self, hash: &MerkleHash, byte_range: Option<FileRange>) -> Result<Vec<u8>> {
+        let Some((file_info, _)) = self
+            .shard_manager
+            .get_file_reconstruction_info(hash)
+            .await
+            .map_err(|e| anyhow!("{e}"))?
+        else {
+            return Err(CasClientError::FileNotFound(*hash));
+        };
+
+        // This is just used for testing, so inefficient is fine.
+        let mut file_vec = Vec::new();
+        for entry in &file_info.segments {
+            let mut entry_bytes = self
+                .get_object_range(&entry.cas_hash, vec![(entry.chunk_index_start, entry.chunk_index_end)])?
+                .pop()
+                .unwrap();
+            file_vec.append(&mut entry_bytes);
+        }
+
+        let file_size = file_vec.len();
+
+        // Handle range validation and truncation
+        let start = byte_range.as_ref().map(|range| range.start as usize).unwrap_or(0);
+
+        // If the entire range is out of bounds, return InvalidRange error
+        if byte_range.is_some() && start >= file_size {
+            return Err(CasClientError::InvalidRange);
+        }
+
+        // Truncate end if it extends beyond file size
+        let end = byte_range
+            .as_ref()
+            .map(|range| range.end as usize)
+            .unwrap_or(file_size)
+            .min(file_size);
+
+        Ok(file_vec[start..end].to_vec())
+    }
+}
+
+impl Drop for LocalClient {
+    fn drop(&mut self) {
+        // Properly close the heed environment by calling prepare_for_closing.
+        // This removes the environment from heed's global OPENED_ENV cache,
+        // allowing the file handles to be released. Without this, the cached
+        // environment reference prevents the file descriptors from being closed.
+        if let Some(env) = self.global_dedup_db_env.take() {
+            let _closing_event = env.prepare_for_closing();
+        }
+    }
 }
 
 /// LocalClient is responsible for writing/reading Xorbs on the local disk.
@@ -296,7 +432,11 @@ impl Client for LocalClient {
     }
 
     async fn query_for_global_dedup_shard(&self, _prefix: &str, chunk_hash: &MerkleHash) -> Result<Option<Bytes>> {
-        let read_txn = self.global_dedup_db_env.read_txn().map_err(map_heed_db_error)?;
+        let env = self
+            .global_dedup_db_env
+            .as_ref()
+            .ok_or_else(|| CasClientError::Other("LocalClient has been closed".to_string()))?;
+        let read_txn = env.read_txn().map_err(map_heed_db_error)?;
 
         if let Some(shard) = self.global_dedup_table.get(&read_txn, chunk_hash).map_err(map_heed_db_error)? {
             let filename = self.shard_dir.join(shard_file_name(&shard));
@@ -305,8 +445,12 @@ impl Client for LocalClient {
         Ok(None)
     }
 
-    async fn acquire_upload_permit(&self) -> Result<crate::adaptive_concurrency::ConnectionPermit> {
+    async fn acquire_upload_permit(&self) -> Result<ConnectionPermit> {
         self.upload_concurrency_controller.acquire_connection_permit().await
+    }
+
+    async fn acquire_download_permit(&self) -> Result<ConnectionPermit> {
+        self.download_concurrency_controller.acquire_connection_permit().await
     }
 
     async fn upload_shard(
@@ -322,7 +466,11 @@ impl Client for LocalClient {
         let mut shard_reader = Cursor::new(shard_data);
         let chunk_hashes = MDBShardInfo::filter_cas_chunks_for_global_dedup(&mut shard_reader)?;
 
-        let mut write_txn = self.global_dedup_db_env.write_txn().map_err(map_heed_db_error)?;
+        let env = self
+            .global_dedup_db_env
+            .as_ref()
+            .ok_or_else(|| CasClientError::Other("LocalClient has been closed".to_string()))?;
+        let mut write_txn = env.write_txn().map_err(map_heed_db_error)?;
 
         for chunk in chunk_hashes {
             self.global_dedup_table
@@ -403,16 +551,33 @@ impl Client for LocalClient {
 
         // Calculate total file size from segments
         let total_file_size: u64 = file_info.file_size();
-
         // Handle range validation and truncation
         let file_range = if let Some(range) = bytes_range {
-            // If the entire range is out of bounds, return InvalidRange error
+            // If the entire range is out of bounds, return None (like RemoteClient does for 416)
             if range.start >= total_file_size {
-                return Err(CasClientError::InvalidRange);
+                // For empty files (size 0), only the first query (start == 0) should return the empty reconstruction
+                // All subsequent queries should return None to prevent infinite remainder loops
+                if total_file_size == 0 && range.start == 0 {
+                    // Empty file - return valid but empty reconstruction
+                    return Ok(Some(QueryReconstructionResponse {
+                        offset_into_first_range: 0,
+                        terms: vec![],
+                        fetch_info: HashMap::new(),
+                    }));
+                }
+                return Ok(None);
             }
             // Truncate end if it extends beyond file size
             FileRange::new(range.start, range.end.min(total_file_size))
         } else {
+            // No range specified - handle empty files
+            if total_file_size == 0 {
+                return Ok(Some(QueryReconstructionResponse {
+                    offset_into_first_range: 0,
+                    terms: vec![],
+                    fetch_info: HashMap::new(),
+                }));
+            }
             FileRange::full()
         };
 
@@ -590,125 +755,51 @@ impl Client for LocalClient {
 
     async fn get_file_term_data(
         &self,
+        url_info: Box<dyn URLProvider>,
+        _download_permit: ConnectionPermit,
+    ) -> Result<(Bytes, Vec<u32>)> {
+        const MAX_RETRIES: u32 = 3;
+
+        let mut force_refresh = false;
+
+        for attempt in 0..MAX_RETRIES {
+            let (url, url_range) = url_info.retrieve_url(force_refresh).await?;
+            let (file_path, file_fetch_range, url_timestamp) = parse_fetch_url(&url)?;
+
+            // Check if URL has expired
+            let expiration_ms = self.url_expiration_ms.load(Ordering::Relaxed);
+            let elapsed_ms = Instant::now().saturating_duration_since(url_timestamp).as_millis() as u64;
+            if elapsed_ms > expiration_ms {
+                if attempt + 1 < MAX_RETRIES {
+                    force_refresh = true;
+                    continue;
+                }
+                return Err(CasClientError::PresignedUrlExpirationError);
+            }
+
+            // Validate byte range matches url_range
+            // Note: url_range is an HttpRange (inclusive-end) while url_byte_range is FileRange (exclusive-end).
+            // HttpRange::from(FileRange) subtracts 1 from end, so we need to account for this.
+            let expected_range = FileRange::from(url_range);
+            if file_fetch_range.start != expected_range.start || file_fetch_range.end != expected_range.end {
+                return Err(CasClientError::InvalidArguments);
+            }
+
+            return self.read_term_data_from_file(&file_path, file_fetch_range).await;
+        }
+
+        Err(CasClientError::PresignedUrlExpirationError)
+    }
+
+    async fn get_file_term_data_v1(
+        &self,
         hash: MerkleHash,
         fetch_term: CASReconstructionFetchInfo,
+        _chunk_cache: Option<Arc<dyn chunk_cache::ChunkCache>>,
+        _range_download_single_flight: crate::file_reconstruction_v1::RangeDownloadSingleFlight,
     ) -> Result<TermDownloadOutput> {
-        let (file_path, url_byte_range, url_timestamp) = parse_fetch_url(&fetch_term.url)?;
-
-        // Check if URL has expired
-        let expiration_ms = self.url_expiration_ms.load(Ordering::Relaxed);
-        let elapsed_ms = Instant::now().saturating_duration_since(url_timestamp).as_millis() as u64;
-        if elapsed_ms > expiration_ms {
-            return Err(CasClientError::PresignedUrlExpirationError);
-        }
-
-        // Validate byte range matches url_range
-        if url_byte_range.start != fetch_term.url_range.start || url_byte_range.end != fetch_term.url_range.end {
-            return Err(CasClientError::InvalidArguments);
-        }
-        let file = File::open(&file_path).map_err(|_| {
-            error!("Unable to find xorb in local CAS {:?}", file_path);
-            CasClientError::XORBNotFound(hash)
-        })?;
-
-        let mut reader = BufReader::new(file);
-        let cas = CasObject::deserialize(&mut reader)?;
-
-        let data = cas.get_bytes_by_chunk_range(&mut reader, fetch_term.range.start, fetch_term.range.end)?;
-
-        let chunk_byte_indices = {
-            let mut indices = Vec::new();
-            let mut cumulative = 0u32;
-            // Start with 0, matching the format from deserialize_chunks_from_stream
-            indices.push(0);
-            // ChunkRange is exclusive-end, so we iterate from start to end (exclusive)
-            for chunk_idx in fetch_term.range.start..fetch_term.range.end {
-                let chunk_len = cas
-                    .uncompressed_chunk_length(chunk_idx)
-                    .map_err(|e| CasClientError::Other(format!("Failed to get chunk length: {e}")))?;
-                cumulative += chunk_len;
-                indices.push(cumulative);
-            }
-            indices
-        };
-
-        Ok(TermDownloadOutput {
-            data,
-            chunk_byte_indices,
-            chunk_range: fetch_term.range,
-        })
-    }
-
-    async fn get_file_with_sequential_writer(
-        self: Arc<Self>,
-        hash: &MerkleHash,
-        byte_range: Option<FileRange>,
-        mut output_provider: SequentialOutput,
-        _progress_updater: Option<Arc<SingleItemProgressUpdater>>,
-    ) -> Result<u64> {
-        let data = self.get_file_data(hash, byte_range).await?;
-        let len = data.len() as u64;
-        output_provider.write_all(&data).await?;
-        Ok(len)
-    }
-
-    async fn get_file_with_parallel_writer(
-        self: Arc<Self>,
-        hash: &MerkleHash,
-        byte_range: Option<FileRange>,
-        output_provider: SeekingOutputProvider,
-        progress_updater: Option<Arc<SingleItemProgressUpdater>>,
-    ) -> Result<u64> {
-        let sequential = output_provider.try_into()?;
-        self.get_file_with_sequential_writer(hash, byte_range, sequential, progress_updater)
-            .await
-    }
-}
-
-impl LocalClient {
-    pub async fn get_file_size(&self, hash: &MerkleHash) -> Result<u64> {
-        let file_info = self.shard_manager.get_file_reconstruction_info(hash).await?;
-        Ok(file_info.unwrap().0.file_size())
-    }
-
-    pub async fn get_file_data(&self, hash: &MerkleHash, byte_range: Option<FileRange>) -> Result<Vec<u8>> {
-        let Some((file_info, _)) = self
-            .shard_manager
-            .get_file_reconstruction_info(hash)
-            .await
-            .map_err(|e| anyhow!("{e}"))?
-        else {
-            return Err(CasClientError::FileNotFound(*hash));
-        };
-
-        // This is just used for testing, so inefficient is fine.
-        let mut file_vec = Vec::new();
-        for entry in &file_info.segments {
-            let mut entry_bytes = self
-                .get_object_range(&entry.cas_hash, vec![(entry.chunk_index_start, entry.chunk_index_end)])?
-                .pop()
-                .unwrap();
-            file_vec.append(&mut entry_bytes);
-        }
-
-        let file_size = file_vec.len();
-
-        // Handle range validation and truncation
-        let start = byte_range.as_ref().map(|range| range.start as usize).unwrap_or(0);
-
-        // If the entire range is out of bounds, return InvalidRange error
-        if byte_range.is_some() && start >= file_size {
-            return Err(CasClientError::InvalidRange);
-        }
-
-        // Truncate end if it extends beyond file size
-        let end = byte_range
-            .as_ref()
-            .map(|range| range.end as usize)
-            .unwrap_or(file_size)
-            .min(file_size);
-
-        Ok(file_vec[start..end].to_vec())
+        // LocalClient reads from disk directly, caching is not needed
+        LocalClient::get_file_term_data_v1(self, hash, fetch_term)
     }
 }
 
@@ -1005,7 +1096,7 @@ mod tests {
         let timestamp = Instant::now();
         let byte_range = FileRange::new(fetch_byte_start as u64, fetch_byte_end as u64);
         let valid_url = generate_fetch_url(&file_path, &byte_range, timestamp);
-        let valid_url_range = HttpRange::new(fetch_byte_start as u64, fetch_byte_end as u64);
+        let valid_url_range = HttpRange::from(byte_range);
 
         // Test 1: Valid URL and fetch_term should succeed
         let valid_fetch_term = CASReconstructionFetchInfo {
@@ -1013,7 +1104,7 @@ mod tests {
             url: valid_url.clone(),
             url_range: valid_url_range,
         };
-        let result = client.get_file_term_data(hash, valid_fetch_term).await;
+        let result = client.get_file_term_data_v1(hash, valid_fetch_term);
         assert!(result.is_ok(), "Valid fetch_term should succeed");
 
         // Test 2: Invalid URL format - too few parts (3 instead of 4)
@@ -1023,7 +1114,7 @@ mod tests {
             url: too_few_parts.to_string(),
             url_range: valid_url_range,
         };
-        let result = client.get_file_term_data(hash, invalid_fetch_term).await;
+        let result = client.get_file_term_data_v1(hash, invalid_fetch_term);
         assert!(result.is_err(), "URL with too few parts should fail");
         assert!(matches!(result.unwrap_err(), CasClientError::InvalidArguments));
 
@@ -1035,7 +1126,7 @@ mod tests {
             url: wrong_start_pos,
             url_range: valid_url_range,
         };
-        let result = client.get_file_term_data(hash, invalid_fetch_term).await;
+        let result = client.get_file_term_data_v1(hash, invalid_fetch_term);
         assert!(result.is_err(), "Wrong start_pos should fail");
         assert!(matches!(result.unwrap_err(), CasClientError::InvalidArguments));
 
@@ -1047,7 +1138,7 @@ mod tests {
             url: wrong_end_pos,
             url_range: valid_url_range,
         };
-        let result = client.get_file_term_data(hash, invalid_fetch_term).await;
+        let result = client.get_file_term_data_v1(hash, invalid_fetch_term);
         assert!(result.is_err(), "Wrong end_pos should fail");
         assert!(matches!(result.unwrap_err(), CasClientError::InvalidArguments));
 
@@ -1059,7 +1150,7 @@ mod tests {
             url: non_numeric_start,
             url_range: valid_url_range,
         };
-        let result = client.get_file_term_data(hash, invalid_fetch_term).await;
+        let result = client.get_file_term_data_v1(hash, invalid_fetch_term);
         assert!(result.is_err(), "Non-numeric start_pos should fail");
         assert!(matches!(result.unwrap_err(), CasClientError::InvalidArguments));
 
@@ -1070,7 +1161,7 @@ mod tests {
             url: non_numeric_end,
             url_range: valid_url_range,
         };
-        let result = client.get_file_term_data(hash, invalid_fetch_term).await;
+        let result = client.get_file_term_data_v1(hash, invalid_fetch_term);
         assert!(result.is_err(), "Non-numeric end_pos should fail");
         assert!(matches!(result.unwrap_err(), CasClientError::InvalidArguments));
 
@@ -1080,7 +1171,7 @@ mod tests {
             url: String::new(),
             url_range: valid_url_range,
         };
-        let result = client.get_file_term_data(hash, invalid_fetch_term).await;
+        let result = client.get_file_term_data_v1(hash, invalid_fetch_term);
         assert!(result.is_err(), "Empty URL should fail");
         assert!(matches!(result.unwrap_err(), CasClientError::InvalidArguments));
 
@@ -1091,7 +1182,7 @@ mod tests {
             url: non_numeric_timestamp,
             url_range: valid_url_range,
         };
-        let result = client.get_file_term_data(hash, invalid_fetch_term).await;
+        let result = client.get_file_term_data_v1(hash, invalid_fetch_term);
         assert!(result.is_err(), "Non-numeric timestamp should fail");
         assert!(matches!(result.unwrap_err(), CasClientError::InvalidArguments));
 
@@ -1103,7 +1194,7 @@ mod tests {
             url: non_existent_url,
             url_range: valid_url_range,
         };
-        let result = client.get_file_term_data(hash, invalid_fetch_term).await;
+        let result = client.get_file_term_data_v1(hash, invalid_fetch_term);
         assert!(result.is_err(), "Non-existent file should fail");
     }
 
@@ -1129,7 +1220,7 @@ mod tests {
         let timestamp = Instant::now();
         let byte_range = FileRange::new(fetch_byte_start as u64, fetch_byte_end as u64);
         let valid_url = generate_fetch_url(&file_path, &byte_range, timestamp);
-        let valid_url_range = HttpRange::new(fetch_byte_start as u64, fetch_byte_end as u64);
+        let valid_url_range = HttpRange::from(byte_range);
 
         // Advance time by 30 seconds (still within the 60 second window)
         tokio::time::advance(Duration::from_secs(30)).await;
@@ -1139,7 +1230,7 @@ mod tests {
             url: valid_url,
             url_range: valid_url_range,
         };
-        let result = client.get_file_term_data(hash, fetch_term).await;
+        let result = client.get_file_term_data_v1(hash, fetch_term);
         assert!(result.is_ok(), "URL should be valid within expiration window");
     }
 
@@ -1165,7 +1256,7 @@ mod tests {
         let timestamp = Instant::now();
         let byte_range = FileRange::new(fetch_byte_start as u64, fetch_byte_end as u64);
         let expired_url = generate_fetch_url(&file_path, &byte_range, timestamp);
-        let valid_url_range = HttpRange::new(fetch_byte_start as u64, fetch_byte_end as u64);
+        let valid_url_range = HttpRange::from(byte_range);
 
         // Advance time by 61 seconds (past the 60 second window)
         tokio::time::advance(Duration::from_secs(61)).await;
@@ -1175,7 +1266,7 @@ mod tests {
             url: expired_url,
             url_range: valid_url_range,
         };
-        let result = client.get_file_term_data(hash, fetch_term).await;
+        let result = client.get_file_term_data_v1(hash, fetch_term);
         assert!(result.is_err(), "URL should be expired after expiration window");
         assert!(matches!(result.unwrap_err(), CasClientError::PresignedUrlExpirationError));
     }
@@ -1202,7 +1293,7 @@ mod tests {
         let timestamp = Instant::now();
         let byte_range = FileRange::new(fetch_byte_start as u64, fetch_byte_end as u64);
         let url = generate_fetch_url(&file_path, &byte_range, timestamp);
-        let valid_url_range = HttpRange::new(fetch_byte_start as u64, fetch_byte_end as u64);
+        let valid_url_range = HttpRange::from(byte_range);
 
         // Advance time by 1 year - should still work with default infinite expiration
         tokio::time::advance(Duration::from_secs(365 * 24 * 60 * 60)).await;
@@ -1212,7 +1303,7 @@ mod tests {
             url,
             url_range: valid_url_range,
         };
-        let result = client.get_file_term_data(hash, fetch_term).await;
+        let result = client.get_file_term_data_v1(hash, fetch_term);
         assert!(result.is_ok(), "URL should not expire with default infinite expiration");
     }
 
@@ -1235,7 +1326,7 @@ mod tests {
         let (fetch_byte_start, fetch_byte_end) = cas.get_byte_offset(0, 1).unwrap();
 
         let byte_range = FileRange::new(fetch_byte_start as u64, fetch_byte_end as u64);
-        let valid_url_range = HttpRange::new(fetch_byte_start as u64, fetch_byte_end as u64);
+        let valid_url_range = HttpRange::from(byte_range);
 
         // Create URL at current time
         let timestamp = Instant::now();
@@ -1249,7 +1340,7 @@ mod tests {
             url: url.clone(),
             url_range: valid_url_range,
         };
-        let result = client.get_file_term_data(hash, fetch_term).await;
+        let result = client.get_file_term_data_v1(hash, fetch_term);
         assert!(result.is_ok(), "URL should be valid inside expiration boundary");
 
         // Advance 2 more seconds (now 61 seconds total, past 60 second window) - should be expired
@@ -1260,7 +1351,7 @@ mod tests {
             url,
             url_range: valid_url_range,
         };
-        let result = client.get_file_term_data(hash, fetch_term).await;
+        let result = client.get_file_term_data_v1(hash, fetch_term);
         assert!(result.is_err(), "URL should be expired past boundary");
         assert!(matches!(result.unwrap_err(), CasClientError::PresignedUrlExpirationError));
     }
@@ -1271,10 +1362,10 @@ mod tests {
 
         // Create segments: xorb 1 chunks 0-2, then chunks 2-4 (adjacent)
         let term_spec = &[(1, (0, 2)), (1, (2, 4))];
-        let (file_data, file_hash) = client.upload_random_file(term_spec, 2048).await.unwrap();
+        let file = client.upload_random_file(term_spec, 2048).await.unwrap();
 
         // Verify reconstruction merges adjacent ranges
-        let reconstruction = client.get_reconstruction(&file_hash, None).await.unwrap().unwrap();
+        let reconstruction = client.get_reconstruction(&file.file_hash, None).await.unwrap().unwrap();
         assert_eq!(reconstruction.terms.len(), 2);
         assert_eq!(reconstruction.fetch_info.len(), 1);
 
@@ -1285,7 +1376,7 @@ mod tests {
         assert_eq!(fetch_infos[0].range.end, 4);
 
         // Verify file retrieval
-        assert_eq!(client.get_file_data(&file_hash, None).await.unwrap(), file_data);
+        assert_eq!(client.get_file_data(&file.file_hash, None).await.unwrap(), file.data);
     }
 
     #[tokio::test]
@@ -1294,15 +1385,15 @@ mod tests {
 
         // Create file with segments from different xorbs
         let term_spec = &[(1, (0, 3)), (2, (0, 2)), (1, (3, 5))];
-        let (file_data, file_hash) = client.upload_random_file(term_spec, 2048).await.unwrap();
+        let file = client.upload_random_file(term_spec, 2048).await.unwrap();
 
         // Verify reconstruction
-        let reconstruction = client.get_reconstruction(&file_hash, None).await.unwrap().unwrap();
+        let reconstruction = client.get_reconstruction(&file.file_hash, None).await.unwrap().unwrap();
         assert_eq!(reconstruction.terms.len(), 3);
         assert_eq!(reconstruction.fetch_info.len(), 2);
 
         // Verify file retrieval
-        assert_eq!(client.get_file_data(&file_hash, None).await.unwrap(), file_data);
+        assert_eq!(client.get_file_data(&file.file_hash, None).await.unwrap(), file.data);
     }
 
     /// Tests that overlapping chunk ranges within the same xorb are correctly merged
@@ -1315,9 +1406,9 @@ mod tests {
         // Test 1: Simple overlapping ranges [0,3) and [1,4) -> merged to [0,4)
         {
             let term_spec = &[(1, (0, 3)), (1, (1, 4))];
-            let (file_data, file_hash) = client.upload_random_file(term_spec, chunk_size).await.unwrap();
+            let file = client.upload_random_file(term_spec, chunk_size).await.unwrap();
 
-            let reconstruction = client.get_reconstruction(&file_hash, None).await.unwrap().unwrap();
+            let reconstruction = client.get_reconstruction(&file.file_hash, None).await.unwrap().unwrap();
             assert_eq!(reconstruction.terms.len(), 2);
             assert_eq!(reconstruction.fetch_info.len(), 1);
 
@@ -1327,15 +1418,15 @@ mod tests {
             assert_eq!(fetch_infos[0].range.start, 0);
             assert_eq!(fetch_infos[0].range.end, 4);
 
-            assert_eq!(client.get_file_data(&file_hash, None).await.unwrap(), file_data);
+            assert_eq!(client.get_file_data(&file.file_hash, None).await.unwrap(), file.data);
         }
 
         // Test 2: Subset range - second range is fully contained in first [0,5) and [1,3) -> [0,5)
         {
             let term_spec = &[(1, (0, 5)), (1, (1, 3))];
-            let (file_data, file_hash) = client.upload_random_file(term_spec, chunk_size).await.unwrap();
+            let file = client.upload_random_file(term_spec, chunk_size).await.unwrap();
 
-            let reconstruction = client.get_reconstruction(&file_hash, None).await.unwrap().unwrap();
+            let reconstruction = client.get_reconstruction(&file.file_hash, None).await.unwrap().unwrap();
             assert_eq!(reconstruction.terms.len(), 2);
             assert_eq!(reconstruction.fetch_info.len(), 1);
 
@@ -1345,69 +1436,15 @@ mod tests {
             assert_eq!(fetch_infos[0].range.start, 0);
             assert_eq!(fetch_infos[0].range.end, 5);
 
-            assert_eq!(client.get_file_data(&file_hash, None).await.unwrap(), file_data);
-        }
-
-        // Test 3: Second range ends before first range end [0,5) and [2,4) -> [0,5)
-        {
-            let term_spec = &[(1, (0, 5)), (1, (2, 4))];
-            let (file_data, file_hash) = client.upload_random_file(term_spec, chunk_size).await.unwrap();
-
-            let reconstruction = client.get_reconstruction(&file_hash, None).await.unwrap().unwrap();
-            assert_eq!(reconstruction.terms.len(), 2);
-            assert_eq!(reconstruction.fetch_info.len(), 1);
-
-            let xorb_hash_hex = reconstruction.terms[0].hash;
-            let fetch_infos = reconstruction.fetch_info.get(&xorb_hash_hex).unwrap();
-            assert_eq!(fetch_infos.len(), 1);
-            assert_eq!(fetch_infos[0].range.start, 0);
-            assert_eq!(fetch_infos[0].range.end, 5);
-
-            assert_eq!(client.get_file_data(&file_hash, None).await.unwrap(), file_data);
-        }
-
-        // Test 4: Multiple overlapping ranges forming a chain [0,2), [1,4), [3,6) -> [0,6)
-        {
-            let term_spec = &[(1, (0, 2)), (1, (1, 4)), (1, (3, 6))];
-            let (file_data, file_hash) = client.upload_random_file(term_spec, chunk_size).await.unwrap();
-
-            let reconstruction = client.get_reconstruction(&file_hash, None).await.unwrap().unwrap();
-            assert_eq!(reconstruction.terms.len(), 3);
-            assert_eq!(reconstruction.fetch_info.len(), 1);
-
-            let xorb_hash_hex = reconstruction.terms[0].hash;
-            let fetch_infos = reconstruction.fetch_info.get(&xorb_hash_hex).unwrap();
-            assert_eq!(fetch_infos.len(), 1);
-            assert_eq!(fetch_infos[0].range.start, 0);
-            assert_eq!(fetch_infos[0].range.end, 6);
-
-            assert_eq!(client.get_file_data(&file_hash, None).await.unwrap(), file_data);
-        }
-
-        // Test 5: Ranges that interleave in a non-monotonic way [0,5), [1,3), [2,4) -> [0,5)
-        {
-            let term_spec = &[(1, (0, 5)), (1, (1, 3)), (1, (2, 4))];
-            let (file_data, file_hash) = client.upload_random_file(term_spec, chunk_size).await.unwrap();
-
-            let reconstruction = client.get_reconstruction(&file_hash, None).await.unwrap().unwrap();
-            assert_eq!(reconstruction.terms.len(), 3);
-            assert_eq!(reconstruction.fetch_info.len(), 1);
-
-            let xorb_hash_hex = reconstruction.terms[0].hash;
-            let fetch_infos = reconstruction.fetch_info.get(&xorb_hash_hex).unwrap();
-            assert_eq!(fetch_infos.len(), 1);
-            assert_eq!(fetch_infos[0].range.start, 0);
-            assert_eq!(fetch_infos[0].range.end, 5);
-
-            assert_eq!(client.get_file_data(&file_hash, None).await.unwrap(), file_data);
+            assert_eq!(client.get_file_data(&file.file_hash, None).await.unwrap(), file.data);
         }
 
         // Test 6: Non-contiguous ranges should NOT be merged [0,2) and [4,6) -> two separate ranges
         {
             let term_spec = &[(1, (0, 2)), (1, (4, 6))];
-            let (file_data, file_hash) = client.upload_random_file(term_spec, chunk_size).await.unwrap();
+            let file = client.upload_random_file(term_spec, chunk_size).await.unwrap();
 
-            let reconstruction = client.get_reconstruction(&file_hash, None).await.unwrap().unwrap();
+            let reconstruction = client.get_reconstruction(&file.file_hash, None).await.unwrap().unwrap();
             assert_eq!(reconstruction.terms.len(), 2);
             assert_eq!(reconstruction.fetch_info.len(), 1);
 
@@ -1419,15 +1456,15 @@ mod tests {
             assert_eq!(fetch_infos[1].range.start, 4);
             assert_eq!(fetch_infos[1].range.end, 6);
 
-            assert_eq!(client.get_file_data(&file_hash, None).await.unwrap(), file_data);
+            assert_eq!(client.get_file_data(&file.file_hash, None).await.unwrap(), file.data);
         }
 
         // Test 7: Touch at boundary (adjacent) [0,3) and [3,5) -> [0,5)
         {
             let term_spec = &[(1, (0, 3)), (1, (3, 5))];
-            let (file_data, file_hash) = client.upload_random_file(term_spec, chunk_size).await.unwrap();
+            let file = client.upload_random_file(term_spec, chunk_size).await.unwrap();
 
-            let reconstruction = client.get_reconstruction(&file_hash, None).await.unwrap().unwrap();
+            let reconstruction = client.get_reconstruction(&file.file_hash, None).await.unwrap().unwrap();
             assert_eq!(reconstruction.terms.len(), 2);
             assert_eq!(reconstruction.fetch_info.len(), 1);
 
@@ -1437,64 +1474,7 @@ mod tests {
             assert_eq!(fetch_infos[0].range.start, 0);
             assert_eq!(fetch_infos[0].range.end, 5);
 
-            assert_eq!(client.get_file_data(&file_hash, None).await.unwrap(), file_data);
-        }
-
-        // Test 8: Large range followed by small contained range [0,10) and [4,6) -> [0,10)
-        {
-            let term_spec = &[(1, (0, 10)), (1, (4, 6))];
-            let (file_data, file_hash) = client.upload_random_file(term_spec, chunk_size).await.unwrap();
-
-            let reconstruction = client.get_reconstruction(&file_hash, None).await.unwrap().unwrap();
-            assert_eq!(reconstruction.terms.len(), 2);
-            assert_eq!(reconstruction.fetch_info.len(), 1);
-
-            let xorb_hash_hex = reconstruction.terms[0].hash;
-            let fetch_infos = reconstruction.fetch_info.get(&xorb_hash_hex).unwrap();
-            assert_eq!(fetch_infos.len(), 1);
-            assert_eq!(fetch_infos[0].range.start, 0);
-            assert_eq!(fetch_infos[0].range.end, 10);
-
-            assert_eq!(client.get_file_data(&file_hash, None).await.unwrap(), file_data);
-        }
-
-        // Test 9: Same range repeated multiple times [2,5), [2,5), [2,5) -> [2,5)
-        {
-            let term_spec = &[(1, (2, 5)), (1, (2, 5)), (1, (2, 5))];
-            let (file_data, file_hash) = client.upload_random_file(term_spec, chunk_size).await.unwrap();
-
-            let reconstruction = client.get_reconstruction(&file_hash, None).await.unwrap().unwrap();
-            assert_eq!(reconstruction.terms.len(), 3);
-            assert_eq!(reconstruction.fetch_info.len(), 1);
-
-            let xorb_hash_hex = reconstruction.terms[0].hash;
-            let fetch_infos = reconstruction.fetch_info.get(&xorb_hash_hex).unwrap();
-            assert_eq!(fetch_infos.len(), 1);
-            assert_eq!(fetch_infos[0].range.start, 2);
-            assert_eq!(fetch_infos[0].range.end, 5);
-
-            assert_eq!(client.get_file_data(&file_hash, None).await.unwrap(), file_data);
-        }
-
-        // Test 10: Mixed overlapping and non-contiguous in complex pattern
-        // [0,3), [2,4), [6,8), [7,10) -> [0,4) and [6,10)
-        {
-            let term_spec = &[(1, (0, 3)), (1, (2, 4)), (1, (6, 8)), (1, (7, 10))];
-            let (file_data, file_hash) = client.upload_random_file(term_spec, chunk_size).await.unwrap();
-
-            let reconstruction = client.get_reconstruction(&file_hash, None).await.unwrap().unwrap();
-            assert_eq!(reconstruction.terms.len(), 4);
-            assert_eq!(reconstruction.fetch_info.len(), 1);
-
-            let xorb_hash_hex = reconstruction.terms[0].hash;
-            let fetch_infos = reconstruction.fetch_info.get(&xorb_hash_hex).unwrap();
-            assert_eq!(fetch_infos.len(), 2);
-            assert_eq!(fetch_infos[0].range.start, 0);
-            assert_eq!(fetch_infos[0].range.end, 4);
-            assert_eq!(fetch_infos[1].range.start, 6);
-            assert_eq!(fetch_infos[1].range.end, 10);
-
-            assert_eq!(client.get_file_data(&file_hash, None).await.unwrap(), file_data);
+            assert_eq!(client.get_file_data(&file.file_hash, None).await.unwrap(), file.data);
         }
     }
 
@@ -1502,14 +1482,14 @@ mod tests {
     async fn test_range_requests() {
         let client = LocalClient::temporary().await.unwrap();
         let term_spec = &[(1, (0, 5))];
-        let (file_data, file_hash) = client.upload_random_file(term_spec, 2048).await.unwrap();
-        let total_file_size = file_data.len() as u64;
+        let file = client.upload_random_file(term_spec, 2048).await.unwrap();
+        let total_file_size = file.data.len() as u64;
 
         // Test get_reconstruction range behaviors
         {
             // Partial out-of-range truncates
             let response = client
-                .get_reconstruction(&file_hash, Some(FileRange::new(total_file_size / 2, total_file_size + 1000)))
+                .get_reconstruction(&file.file_hash, Some(FileRange::new(total_file_size / 2, total_file_size + 1000)))
                 .await
                 .unwrap()
                 .unwrap();
@@ -1517,20 +1497,24 @@ mod tests {
             assert!(response.offset_into_first_range > 0);
 
             // Entire range out of bounds returns error
+            // Range completely beyond file size returns Ok(None) (like RemoteClient's 416 handling)
             let result = client
-                .get_reconstruction(&file_hash, Some(FileRange::new(total_file_size + 100, total_file_size + 1000)))
+                .get_reconstruction(
+                    &file.file_hash,
+                    Some(FileRange::new(total_file_size + 100, total_file_size + 1000)),
+                )
                 .await;
-            assert!(matches!(result.unwrap_err(), CasClientError::InvalidRange));
+            assert!(result.unwrap().is_none());
 
-            // Start equals file size returns error
+            // Start equals file size returns Ok(None)
             let result = client
-                .get_reconstruction(&file_hash, Some(FileRange::new(total_file_size, total_file_size + 100)))
+                .get_reconstruction(&file.file_hash, Some(FileRange::new(total_file_size, total_file_size + 100)))
                 .await;
-            assert!(matches!(result.unwrap_err(), CasClientError::InvalidRange));
+            assert!(result.unwrap().is_none());
 
             // Valid range within bounds succeeds
             let response = client
-                .get_reconstruction(&file_hash, Some(FileRange::new(0, total_file_size / 2)))
+                .get_reconstruction(&file.file_hash, Some(FileRange::new(0, total_file_size / 2)))
                 .await
                 .unwrap()
                 .unwrap();
@@ -1539,7 +1523,7 @@ mod tests {
 
             // End exactly at file size succeeds
             let response = client
-                .get_reconstruction(&file_hash, Some(FileRange::new(0, total_file_size)))
+                .get_reconstruction(&file.file_hash, Some(FileRange::new(0, total_file_size)))
                 .await
                 .unwrap()
                 .unwrap();
@@ -1552,70 +1536,38 @@ mod tests {
             // Partial out-of-range truncates
             let partial_start = total_file_size / 2;
             let data = client
-                .get_file_data(&file_hash, Some(FileRange::new(partial_start, total_file_size + 1000)))
+                .get_file_data(&file.file_hash, Some(FileRange::new(partial_start, total_file_size + 1000)))
                 .await
                 .unwrap();
-            assert_eq!(data, &file_data[partial_start as usize..]);
+            assert_eq!(data, &file.data[partial_start as usize..]);
 
             // Entire range out of bounds returns error
             let result = client
-                .get_file_data(&file_hash, Some(FileRange::new(total_file_size + 100, total_file_size + 1000)))
+                .get_file_data(&file.file_hash, Some(FileRange::new(total_file_size + 100, total_file_size + 1000)))
                 .await;
             assert!(matches!(result.unwrap_err(), CasClientError::InvalidRange));
 
             // Start equals file size returns error
             let result = client
-                .get_file_data(&file_hash, Some(FileRange::new(total_file_size, total_file_size + 100)))
+                .get_file_data(&file.file_hash, Some(FileRange::new(total_file_size, total_file_size + 100)))
                 .await;
             assert!(matches!(result.unwrap_err(), CasClientError::InvalidRange));
 
             // Valid range within bounds
             let valid_end = total_file_size / 2;
             let data = client
-                .get_file_data(&file_hash, Some(FileRange::new(0, valid_end)))
+                .get_file_data(&file.file_hash, Some(FileRange::new(0, valid_end)))
                 .await
                 .unwrap();
-            assert_eq!(data, &file_data[..valid_end as usize]);
+            assert_eq!(data, &file.data[..valid_end as usize]);
 
             // End exactly at file size
             let data = client
-                .get_file_data(&file_hash, Some(FileRange::new(0, total_file_size)))
+                .get_file_data(&file.file_hash, Some(FileRange::new(0, total_file_size)))
                 .await
                 .unwrap();
-            assert_eq!(data, file_data);
+            assert_eq!(data, file.data);
         }
-    }
-
-    #[tokio::test]
-    async fn test_get_file_with_sequential_writer() {
-        use crate::output_provider::buffer_provider::ThreadSafeBuffer;
-
-        let client = LocalClient::temporary().await.unwrap();
-        let term_spec = &[(1, (0, 5))];
-        let (file_data, file_hash) = client.upload_random_file(term_spec, 2048).await.unwrap();
-
-        // Test that sequential writer correctly wraps get_file_data
-        let buffer = ThreadSafeBuffer::default();
-        let bytes_written = client
-            .clone()
-            .get_file_with_sequential_writer(&file_hash, None, buffer.clone().into(), None)
-            .await
-            .unwrap();
-
-        assert_eq!(bytes_written as usize, file_data.len());
-        assert_eq!(buffer.value(), file_data);
-
-        // Test with range
-        let buffer2 = ThreadSafeBuffer::default();
-        let half = file_data.len() as u64 / 2;
-        let bytes_written2 = client
-            .clone()
-            .get_file_with_sequential_writer(&file_hash, Some(FileRange::new(0, half)), buffer2.clone().into(), None)
-            .await
-            .unwrap();
-
-        assert_eq!(bytes_written2, half);
-        assert_eq!(buffer2.value(), &file_data[..half as usize]);
     }
 
     #[tokio::test]
@@ -1624,62 +1576,53 @@ mod tests {
 
         // Test 1: Single segment with 3 chunks
         {
-            let (file_data, file_hash) = client.upload_random_file(&[(1, (0, 3))], 2048).await.unwrap();
-            assert_eq!(client.get_file_data(&file_hash, None).await.unwrap(), file_data);
+            let file = client.upload_random_file(&[(1, (0, 3))], 2048).await.unwrap();
+            assert_eq!(client.get_file_data(&file.file_hash, None).await.unwrap(), file.data);
         }
 
         // Test 2: Multiple segments from the same xorb
         {
             let term_spec = &[(1, (0, 2)), (1, (2, 4)), (1, (4, 6))];
-            let (file_data, file_hash) = client.upload_random_file(term_spec, 2048).await.unwrap();
+            let file = client.upload_random_file(term_spec, 2048).await.unwrap();
 
-            let reconstruction = client.get_reconstruction(&file_hash, None).await.unwrap().unwrap();
+            let reconstruction = client.get_reconstruction(&file.file_hash, None).await.unwrap().unwrap();
             assert_eq!(reconstruction.terms.len(), 3);
             assert_eq!(reconstruction.fetch_info.len(), 1);
 
-            assert_eq!(client.get_file_data(&file_hash, None).await.unwrap(), file_data);
+            assert_eq!(client.get_file_data(&file.file_hash, None).await.unwrap(), file.data);
         }
 
         // Test 3: Segments from different xorbs
         {
             let term_spec = &[(1, (0, 3)), (2, (0, 2)), (3, (0, 4))];
-            let (file_data, file_hash) = client.upload_random_file(term_spec, 2048).await.unwrap();
+            let file = client.upload_random_file(term_spec, 2048).await.unwrap();
 
-            let reconstruction = client.get_reconstruction(&file_hash, None).await.unwrap().unwrap();
+            let reconstruction = client.get_reconstruction(&file.file_hash, None).await.unwrap().unwrap();
             assert_eq!(reconstruction.terms.len(), 3);
             assert_eq!(reconstruction.fetch_info.len(), 3);
 
-            assert_eq!(client.get_file_data(&file_hash, None).await.unwrap(), file_data);
+            assert_eq!(client.get_file_data(&file.file_hash, None).await.unwrap(), file.data);
         }
 
         // Test 4: Partial range retrieval
         {
             let term_spec = &[(1, (0, 5)), (2, (0, 5))];
-            let (file_data, file_hash) = client.upload_random_file(term_spec, 2048).await.unwrap();
-            let half = file_data.len() as u64 / 2;
+            let file = client.upload_random_file(term_spec, 2048).await.unwrap();
+            let half = file.data.len() as u64 / 2;
 
             // First half
-            let first_half = client.get_file_data(&file_hash, Some(FileRange::new(0, half))).await.unwrap();
-            assert_eq!(first_half, &file_data[..half as usize]);
+            let first_half = client
+                .get_file_data(&file.file_hash, Some(FileRange::new(0, half)))
+                .await
+                .unwrap();
+            assert_eq!(first_half, &file.data[..half as usize]);
 
             // Second half
             let second_half = client
-                .get_file_data(&file_hash, Some(FileRange::new(half, file_data.len() as u64)))
+                .get_file_data(&file.file_hash, Some(FileRange::new(half, file.data.len() as u64)))
                 .await
                 .unwrap();
-            assert_eq!(second_half, &file_data[half as usize..]);
-        }
-
-        // Test 5: Overlapping chunk references from same xorb
-        {
-            let term_spec = &[(1, (0, 3)), (1, (1, 4)), (1, (2, 5))];
-            let (file_data, file_hash) = client.upload_random_file(term_spec, 2048).await.unwrap();
-
-            let reconstruction = client.get_reconstruction(&file_hash, None).await.unwrap().unwrap();
-            assert_eq!(reconstruction.terms.len(), 3);
-            assert_eq!(reconstruction.fetch_info.len(), 1);
-
-            assert_eq!(client.get_file_data(&file_hash, None).await.unwrap(), file_data);
+            assert_eq!(second_half, &file.data[half as usize..]);
         }
     }
 
@@ -1692,42 +1635,36 @@ mod tests {
         // Create a file with 5 chunks of 2048 bytes each = 10240 total bytes
         let chunk_size: usize = 2048;
         let term_spec = &[(1, (0, 5))];
-        let (file_data, file_hash) = client.upload_random_file(term_spec, chunk_size).await.unwrap();
+        let file = client.upload_random_file(term_spec, chunk_size).await.unwrap();
 
-        let total_file_size = file_data.len() as u64;
+        let total_file_size = file.data.len() as u64;
         assert_eq!(total_file_size, (5 * chunk_size) as u64);
 
-        let query_file_size = client.get_file_size(&file_hash).await.unwrap();
+        let query_file_size = client.get_file_size(&file.file_hash).await.unwrap();
         assert_eq!(query_file_size, total_file_size);
 
         // Test 1: Range starting in the middle of chunk 1 should skip chunk 0
-        // Range [2048 + 500, end of file] should skip chunk 0
         {
-            let start = chunk_size as u64 + 500; // Middle of chunk 1
+            let start = chunk_size as u64 + 500;
             let end = total_file_size;
             let response = client
-                .get_reconstruction(&file_hash, Some(FileRange::new(start, end)))
+                .get_reconstruction(&file.file_hash, Some(FileRange::new(start, end)))
                 .await
                 .unwrap()
                 .unwrap();
 
             assert_eq!(response.terms.len(), 1);
-            // chunk 0 should be excluded; starts at chunk 1
             assert_eq!(response.terms[0].range.start, 1);
-            // Should include all remaining chunks
             assert_eq!(response.terms[0].range.end, 5);
-            // offset_into_first_range is now the offset into the first returned chunk
-            // After skipping chunk 0 (2048 bytes), offset is 500
             assert_eq!(response.offset_into_first_range, 500);
         }
 
         // Test 2: Range starting exactly at a chunk boundary
-        // Range [2048*2, end] should start at chunk 2
         {
-            let start = (chunk_size * 2) as u64; // Start of chunk 2
+            let start = (chunk_size * 2) as u64;
             let end = total_file_size;
             let response = client
-                .get_reconstruction(&file_hash, Some(FileRange::new(start, end)))
+                .get_reconstruction(&file.file_hash, Some(FileRange::new(start, end)))
                 .await
                 .unwrap()
                 .unwrap();
@@ -1738,294 +1675,20 @@ mod tests {
             assert_eq!(response.offset_into_first_range, 0);
         }
 
-        // Test 3: Range ending in the middle of a chunk should include that chunk and potentially more
-        // Range [0, 2048*2 + 500] should include chunks that cover this range
+        // Test 3: Range ending in the middle of a chunk
         {
             let start = 0u64;
-            let end = (chunk_size * 2) as u64 + 500; // Middle of chunk 2
+            let end = (chunk_size * 2) as u64 + 500;
             let response = client
-                .get_reconstruction(&file_hash, Some(FileRange::new(start, end)))
+                .get_reconstruction(&file.file_hash, Some(FileRange::new(start, end)))
                 .await
                 .unwrap()
                 .unwrap();
 
             assert_eq!(response.terms.len(), 1);
             assert_eq!(response.terms[0].range.start, 0);
-            // Should include chunks up through the one containing the end byte
-            // The end-shrinking will shrink things to be three chunks -- the two full ones at indices 0 and 1, and then
-            // chunk 2 which contains the partial info.
             assert_eq!(response.terms[0].range.end, 3);
             assert_eq!(response.offset_into_first_range, 0);
-        }
-
-        // Test 4: Range fully within a single chunk
-        // Range [2048*2 + 100, 2048*2 + 500] (inside chunk 2)
-        {
-            let start = (chunk_size * 2) as u64 + 100; // Inside chunk 2
-            let end = (chunk_size * 2) as u64 + 500; // Still inside chunk 2
-            let response = client
-                .get_reconstruction(&file_hash, Some(FileRange::new(start, end)))
-                .await
-                .unwrap()
-                .unwrap();
-
-            assert_eq!(response.terms.len(), 1);
-            // Should start at chunk 2 (chunks 0-1 pruned)
-            assert_eq!(response.terms[0].range.start, 2);
-            // End-shrinking will shrink this range.
-            assert_eq!(response.terms[0].range.end, 3);
-            // After skipping chunks 0-1, offset is 100 into chunk 2
-            assert_eq!(response.offset_into_first_range, 100);
-        }
-
-        // Test 5: Range spanning exactly one chunk boundary
-        // Range [2048 - 100, 2048 + 100] spans end of chunk 0 and start of chunk 1
-        {
-            let start = chunk_size as u64 - 100; // Near end of chunk 0
-            let end = chunk_size as u64 + 100; // Near start of chunk 1
-            let response = client
-                .get_reconstruction(&file_hash, Some(FileRange::new(start, end)))
-                .await
-                .unwrap()
-                .unwrap();
-
-            assert_eq!(response.terms.len(), 1);
-            // Should include both chunks 0 and 1 (and possibly more due to end-shrinking)
-            assert_eq!(response.terms[0].range.start, 0);
-            assert_eq!(response.terms[0].range.end, 2);
-            // No chunks skipped at start, offset is chunk_size - 100 into chunk 0
-            assert_eq!(response.offset_into_first_range, chunk_size as u64 - 100);
-        }
-
-        // Test 6: Range starting exactly at chunk boundary, ending at chunk boundary
-        // Range [2048*2, 2048*4] (chunks 2-3); test off-by-one errors.
-        for delta in [0, 1] {
-            let start = (chunk_size * 2) as u64 + delta; // Start of chunk 2
-            let end = (chunk_size * 4) as u64 - delta; // End of chunk 3
-            let response = client
-                .get_reconstruction(&file_hash, Some(FileRange::new(start, end)))
-                .await
-                .unwrap()
-                .unwrap();
-
-            assert_eq!(response.terms.len(), 1);
-            assert_eq!(response.terms[0].range.start, 2);
-            // End-shrinking may keep additional chunks
-            assert_eq!(response.terms[0].range.end, 4);
-            assert_eq!(response.offset_into_first_range, delta);
-        }
-
-        // Test 7: Range starting at chunk boundary minus 1
-        {
-            let start = (chunk_size * 2) as u64 - 1; // Start of chunk 2
-            let end = (chunk_size * 4) as u64 + 1; // One byte of chunk 4 
-            let response = client
-                .get_reconstruction(&file_hash, Some(FileRange::new(start, end)))
-                .await
-                .unwrap()
-                .unwrap();
-
-            assert_eq!(response.terms.len(), 1);
-            assert_eq!(response.terms[0].range.start, 1);
-            // End-shrinking may keep additional chunks
-            assert_eq!(response.terms[0].range.end, 5);
-            assert_eq!(response.offset_into_first_range, chunk_size as u64 - 1);
-        }
-    }
-
-    /// Tests chunk boundary shrinking with multiple segments across different xorbs.
-    #[tokio::test]
-    async fn test_get_reconstruction_chunk_boundary_multiple_segments() {
-        let client = LocalClient::temporary().await.unwrap();
-
-        // Create a file with segments from 2 xorbs:
-        // xorb 1: chunks 0-4 (4 chunks * 2048 = 8192 bytes)
-        // xorb 2: chunks 0-4 (4 chunks * 2048 = 8192 bytes)
-        // Total: 16384 bytes
-        let chunk_size = 2048usize;
-        let term_spec = &[(1, (0, 4)), (2, (0, 4))];
-        let (file_data, file_hash) = client.upload_random_file(term_spec, chunk_size).await.unwrap();
-
-        let total_file_size = file_data.len() as u64;
-        assert_eq!(total_file_size, (8 * chunk_size) as u64);
-
-        // Test 1: Range that skips first chunk of first xorb
-        {
-            let start = chunk_size as u64 + 500; // Middle of chunk 1 in xorb 1
-            let end = total_file_size;
-            let response = client
-                .get_reconstruction(&file_hash, Some(FileRange::new(start, end)))
-                .await
-                .unwrap()
-                .unwrap();
-
-            assert_eq!(response.terms.len(), 2);
-
-            // First term (xorb 1): should skip chunk 0
-            assert_eq!(response.terms[0].range.start, 1);
-            assert_eq!(response.terms[0].range.end, 4);
-
-            // Second term (xorb 2): should include all chunks
-            assert_eq!(response.terms[1].range.start, 0);
-            assert_eq!(response.terms[1].range.end, 4);
-
-            // After skipping chunk 0 (2048 bytes), offset is 500 into chunk 1
-            assert_eq!(response.offset_into_first_range, 500);
-        }
-
-        // Test 2: Range fully within first xorb
-        // Range [2048, 6144) covers exactly chunks 1 and 2
-        {
-            let start = chunk_size as u64; // Start of chunk 1 in xorb 1
-            let end = (chunk_size * 3) as u64; // End of chunk 2 in xorb 1
-            let response = client
-                .get_reconstruction(&file_hash, Some(FileRange::new(start, end)))
-                .await
-                .unwrap()
-                .unwrap();
-
-            assert_eq!(response.terms.len(), 1);
-            // Chunk 0 pruned at start
-            assert_eq!(response.terms[0].range.start, 1);
-            // Chunks 3+ pruned at end (only chunks 1-2 needed for bytes [2048, 6144))
-            assert_eq!(response.terms[0].range.end, 3);
-            // Start is exactly at chunk 1 boundary, so offset is 0
-            assert_eq!(response.offset_into_first_range, 0);
-        }
-
-        // Test 3: Range fully within second xorb
-        // Range [10240, 14336) covers exactly chunks 1 and 2 of xorb 2
-        {
-            let xorb1_size = (chunk_size * 4) as u64;
-            let start = xorb1_size + chunk_size as u64; // Start of chunk 1 in xorb 2
-            let end = xorb1_size + (chunk_size * 3) as u64; // End of chunk 2 in xorb 2
-            let response = client
-                .get_reconstruction(&file_hash, Some(FileRange::new(start, end)))
-                .await
-                .unwrap()
-                .unwrap();
-
-            assert_eq!(response.terms.len(), 1);
-            // Chunk 0 of xorb 2 pruned at start
-            assert_eq!(response.terms[0].range.start, 1);
-            // Chunks 3+ pruned at end
-            assert_eq!(response.terms[0].range.end, 3);
-            // Start is exactly at chunk 1 boundary, so offset is 0
-            assert_eq!(response.offset_into_first_range, 0);
-        }
-
-        // Test 4: Range spanning xorb boundary, ending in middle of second xorb
-        // Range [4096, 12788) spans from chunk 2 of xorb 1 into chunk 2 of xorb 2
-        {
-            let xorb1_size = (chunk_size * 4) as u64;
-            let start = (chunk_size * 2) as u64; // Start of chunk 2 in xorb 1
-            let end = xorb1_size + (chunk_size * 2) as u64 + 500; // Middle of chunk 2 in xorb 2
-            let response = client
-                .get_reconstruction(&file_hash, Some(FileRange::new(start, end)))
-                .await
-                .unwrap()
-                .unwrap();
-
-            assert_eq!(response.terms.len(), 2);
-
-            // First term (xorb 1): chunks 2-3 (chunks 0-1 pruned at start, all remaining needed)
-            assert_eq!(response.terms[0].range.start, 2);
-            assert_eq!(response.terms[0].range.end, 4);
-
-            // Second term (xorb 2): chunks 0-2 (chunk 2 contains the end byte, chunk 3 pruned)
-            assert_eq!(response.terms[1].range.start, 0);
-            assert_eq!(response.terms[1].range.end, 3);
-
-            // Start is exactly at chunk 2 boundary in xorb 1, so offset is 0
-            assert_eq!(response.offset_into_first_range, 0);
-        }
-
-        // Test 5: Off-by-one tests for range within first xorb
-        // Range [2048 +/- delta, 6144 -/+ delta] tests boundary precision
-        for delta in [0, 1] {
-            let start = chunk_size as u64 + delta; // Start of chunk 1 +/- delta
-            let end = (chunk_size * 3) as u64 - delta; // End of chunk 2 -/+ delta
-            let response = client
-                .get_reconstruction(&file_hash, Some(FileRange::new(start, end)))
-                .await
-                .unwrap()
-                .unwrap();
-
-            assert_eq!(response.terms.len(), 1);
-            // Chunk 0 pruned at start
-            assert_eq!(response.terms[0].range.start, 1);
-            // Chunks 1-2 cover the range
-            assert_eq!(response.terms[0].range.end, 3);
-            assert_eq!(response.offset_into_first_range, delta);
-        }
-
-        // Test 6: Range starting 1 byte before chunk boundary (requires including previous chunk)
-        {
-            let start = chunk_size as u64 - 1; // 1 byte before chunk 1
-            let end = (chunk_size * 3) as u64 + 1; // 1 byte into chunk 3
-            let response = client
-                .get_reconstruction(&file_hash, Some(FileRange::new(start, end)))
-                .await
-                .unwrap()
-                .unwrap();
-
-            assert_eq!(response.terms.len(), 1);
-            // Chunk 0 must be included (range starts 1 byte before chunk 1)
-            assert_eq!(response.terms[0].range.start, 0);
-            // Chunk 3 must be included (range ends 1 byte into chunk 3)
-            assert_eq!(response.terms[0].range.end, 4);
-            // Offset is chunk_size - 1 into chunk 0
-            assert_eq!(response.offset_into_first_range, chunk_size as u64 - 1);
-        }
-
-        // Test 7: Off-by-one tests spanning xorb boundary
-        // Range starting at xorb 1 chunk 2 boundary with delta
-        for delta in [0, 1] {
-            let xorb1_size = (chunk_size * 4) as u64;
-            let start = (chunk_size * 2) as u64 + delta; // Chunk 2 in xorb 1
-            let end = xorb1_size + (chunk_size * 2) as u64 - delta; // Chunk 1 end in xorb 2
-            let response = client
-                .get_reconstruction(&file_hash, Some(FileRange::new(start, end)))
-                .await
-                .unwrap()
-                .unwrap();
-
-            assert_eq!(response.terms.len(), 2);
-
-            // First term (xorb 1): chunks 2-3
-            assert_eq!(response.terms[0].range.start, 2);
-            assert_eq!(response.terms[0].range.end, 4);
-
-            // Second term (xorb 2): chunks 0-1
-            assert_eq!(response.terms[1].range.start, 0);
-            assert_eq!(response.terms[1].range.end, 2);
-
-            assert_eq!(response.offset_into_first_range, delta);
-        }
-
-        // Test 8: Range starting 1 byte before xorb boundary (requires including xorb 1 chunk 3)
-        {
-            let xorb1_size = (chunk_size * 4) as u64;
-            let start = xorb1_size - 1; // 1 byte before xorb 2
-            let end = xorb1_size + (chunk_size * 2) as u64 + 1; // 1 byte into chunk 2 of xorb 2
-            let response = client
-                .get_reconstruction(&file_hash, Some(FileRange::new(start, end)))
-                .await
-                .unwrap()
-                .unwrap();
-
-            assert_eq!(response.terms.len(), 2);
-
-            // First term (xorb 1): chunk 3 only (contains the last byte of xorb 1)
-            assert_eq!(response.terms[0].range.start, 3);
-            assert_eq!(response.terms[0].range.end, 4);
-
-            // Second term (xorb 2): chunks 0-2 (chunk 2 contains the end byte)
-            assert_eq!(response.terms[1].range.start, 0);
-            assert_eq!(response.terms[1].range.end, 3);
-
-            // Offset is chunk_size - 1 into chunk 3 of xorb 1
-            assert_eq!(response.offset_into_first_range, chunk_size as u64 - 1);
         }
     }
 }

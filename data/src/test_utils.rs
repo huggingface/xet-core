@@ -3,14 +3,16 @@ use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use cas_client::SeekingOutputProvider;
+use cas_client::local_server::LocalTestServer;
+use cas_client::{Client, LocalClient};
+use file_reconstruction::{DataOutput, FileReconstructor};
 use progress_tracking::TrackingProgressUpdater;
 use rand::prelude::*;
 use tempfile::TempDir;
 
 use crate::configurations::TranslatorConfig;
 use crate::data_client::clean_file;
-use crate::{FileDownloader, FileUploadSession, XetFileInfo};
+use crate::{FileUploadSession, XetFileInfo};
 
 /// Creates or overwrites a single file in `dir` with `size` bytes of random data.
 /// Panics on any I/O error. Returns the total number of bytes written (=`size`).
@@ -123,36 +125,85 @@ pub fn verify_directories_match(dir1: impl AsRef<Path>, dir2: impl AsRef<Path>) 
     }
 }
 
-pub struct LocalHydrateDehydrateTest {
+/// Holds either a LocalClient directly or a LocalTestServer (which provides a RemoteClient).
+enum TestClient {
+    Local(Arc<LocalClient>),
+    Server(LocalTestServer),
+}
+
+impl TestClient {
+    fn as_client(&self) -> Arc<dyn Client> {
+        match self {
+            TestClient::Local(c) => c.clone(),
+            TestClient::Server(s) => s.remote_client().clone(),
+        }
+    }
+}
+
+pub struct HydrateDehydrateTest {
     _temp_dir: TempDir,
     pub cas_dir: PathBuf,
     pub src_dir: PathBuf,
     pub ptr_dir: PathBuf,
     pub dest_dir: PathBuf,
+    use_v1_reconstructor: bool,
+    use_test_server: bool,
+    client: Option<TestClient>,
 }
 
-impl Default for LocalHydrateDehydrateTest {
+impl Default for HydrateDehydrateTest {
     fn default() -> Self {
-        let _temp_dir = TempDir::new().unwrap();
-        let temp_path = _temp_dir.path();
-
-        let s = Self {
-            cas_dir: temp_path.join("cas"),
-            src_dir: temp_path.join("src"),
-            ptr_dir: temp_path.join("pointers"),
-            dest_dir: temp_path.join("dest"),
-            _temp_dir,
-        };
-        std::fs::create_dir_all(&s.cas_dir).unwrap();
-        std::fs::create_dir_all(&s.src_dir).unwrap();
-        std::fs::create_dir_all(&s.ptr_dir).unwrap();
-        std::fs::create_dir_all(&s.dest_dir).unwrap();
-
-        s
+        Self::new(false, false)
     }
 }
 
-impl LocalHydrateDehydrateTest {
+impl HydrateDehydrateTest {
+    /// Creates a new test harness with the specified options.
+    ///
+    /// # Arguments
+    /// * `use_v1_reconstructor` - If true, uses the V1 reconstruction algorithm; otherwise uses V2.
+    /// * `use_test_server` - If true, uses a LocalTestServer (RemoteClient over HTTP); otherwise uses LocalClient
+    ///   directly.
+    pub fn new(use_v1_reconstructor: bool, use_test_server: bool) -> Self {
+        let _temp_dir = TempDir::new().unwrap();
+        let temp_path = _temp_dir.path();
+
+        let cas_dir = temp_path.join("cas");
+        let src_dir = temp_path.join("src");
+        let ptr_dir = temp_path.join("pointers");
+        let dest_dir = temp_path.join("dest");
+
+        std::fs::create_dir_all(&cas_dir).unwrap();
+        std::fs::create_dir_all(&src_dir).unwrap();
+        std::fs::create_dir_all(&ptr_dir).unwrap();
+        std::fs::create_dir_all(&dest_dir).unwrap();
+
+        Self {
+            cas_dir,
+            src_dir,
+            ptr_dir,
+            dest_dir,
+            _temp_dir,
+            use_v1_reconstructor,
+            use_test_server,
+            client: None, // Client created lazily
+        }
+    }
+
+    /// Lazily initializes and returns the test client.
+    async fn get_or_create_client(&mut self) -> &TestClient {
+        if self.client.is_none() {
+            let client = if self.use_test_server {
+                let local_client = LocalClient::new(self.cas_dir.join("xet/xorbs")).unwrap();
+                TestClient::Server(LocalTestServer::start_with_client(local_client).await)
+            } else {
+                TestClient::Local(LocalClient::new(self.cas_dir.join("xet/xorbs")).unwrap())
+            };
+            self.client = Some(client);
+        }
+        self.client.as_ref().unwrap()
+    }
+
     pub async fn new_upload_session(
         &self,
         progress_tracker: Option<Arc<dyn TrackingProgressUpdater>>,
@@ -197,39 +248,30 @@ impl LocalHydrateDehydrateTest {
         }
     }
 
-    pub async fn dehydrate(&self, sequential: bool) {
+    pub async fn dehydrate(&mut self, sequential: bool) {
         let upload_session = self.new_upload_session(None).await;
         self.clean_all_files(&upload_session, sequential).await;
 
         upload_session.finalize().await.unwrap();
     }
 
-    pub async fn hydrate(&self) {
-        let config = TranslatorConfig::local_config(&self.cas_dir).unwrap();
-
+    pub async fn hydrate(&mut self) {
         create_dir_all(&self.dest_dir).unwrap();
 
-        let downloader = FileDownloader::new(config.into()).await.unwrap();
+        let client = self.get_or_create_client().await.as_client();
+        let use_v1 = self.use_v1_reconstructor;
 
         for entry in read_dir(&self.ptr_dir).unwrap() {
             let entry = entry.unwrap();
-
             let out_filename = self.dest_dir.join(entry.file_name());
-
-            // Create an output file for writing
-            let file_out = SeekingOutputProvider::new_file_provider(out_filename.clone());
 
             // Pointer file.
             let xf: XetFileInfo = serde_json::from_reader(File::open(entry.path()).unwrap()).unwrap();
+            let file_hash = xf.merkle_hash().unwrap();
 
-            downloader
-                .smudge_file_from_hash(
-                    &xf.merkle_hash().unwrap(),
-                    out_filename.to_string_lossy().into(),
-                    file_out,
-                    None,
-                    None,
-                )
+            FileReconstructor::new(&client, file_hash, DataOutput::write_in_file(&out_filename))
+                .use_v1_reconstructor(use_v1)
+                .run()
                 .await
                 .unwrap();
         }

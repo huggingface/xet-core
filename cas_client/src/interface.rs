@@ -2,21 +2,24 @@ use std::sync::Arc;
 
 use bytes::Bytes;
 use cas_object::SerializedCasObject;
-use cas_types::QueryReconstructionResponse;
 #[cfg(not(target_family = "wasm"))]
 use cas_types::{BatchQueryReconstructionResponse, CASReconstructionFetchInfo, FileRange};
+use cas_types::{HttpRange, QueryReconstructionResponse};
+#[cfg(not(target_family = "wasm"))]
+use chunk_cache::ChunkCache;
 use mdb_shard::file_structs::MDBFileInfo;
 use merklehash::MerkleHash;
-#[cfg(not(target_family = "wasm"))]
-use progress_tracking::item_tracking::SingleItemProgressUpdater;
 use progress_tracking::upload_tracking::CompletionTracker;
 
 use crate::adaptive_concurrency::ConnectionPermit;
-#[cfg(not(target_family = "wasm"))]
-use crate::download_utils::TermDownloadOutput;
 use crate::error::Result;
 #[cfg(not(target_family = "wasm"))]
-use crate::output_provider::{SeekingOutputProvider, SequentialOutput};
+use crate::file_reconstruction_v1::{RangeDownloadSingleFlight, TermDownloadOutput};
+
+#[async_trait::async_trait]
+pub trait URLProvider: Send + Sync {
+    async fn retrieve_url(&self, force_refresh: bool) -> Result<(String, HttpRange)>;
+}
 
 /// A Client to the Shard service. The shard service
 /// provides for
@@ -41,30 +44,28 @@ pub trait Client: Send + Sync {
     #[cfg(not(target_family = "wasm"))]
     async fn batch_get_reconstruction(&self, file_ids: &[MerkleHash]) -> Result<BatchQueryReconstructionResponse>;
 
+    async fn acquire_download_permit(&self) -> Result<ConnectionPermit>;
+
     #[cfg(not(target_family = "wasm"))]
     async fn get_file_term_data(
         &self,
+        url_info: Box<dyn URLProvider>,
+        download_permit: ConnectionPermit,
+    ) -> Result<(Bytes, Vec<u32>)>;
+
+    /// Fetch term data using the v1 API with CASReconstructionFetchInfo.
+    ///
+    /// This method fetches the data for a specific term (chunk range) from a xorb.
+    /// If `chunk_cache` is provided, results will be cached and cache hits will be returned directly.
+    /// The `range_download_single_flight` is used to deduplicate concurrent requests for the same data.
+    #[cfg(not(target_family = "wasm"))]
+    async fn get_file_term_data_v1(
+        &self,
         hash: MerkleHash,
         fetch_term: CASReconstructionFetchInfo,
+        chunk_cache: Option<Arc<dyn ChunkCache>>,
+        range_download_single_flight: RangeDownloadSingleFlight,
     ) -> Result<TermDownloadOutput>;
-
-    #[cfg(not(target_family = "wasm"))]
-    async fn get_file_with_sequential_writer(
-        self: Arc<Self>,
-        hash: &MerkleHash,
-        byte_range: Option<FileRange>,
-        output_provider: SequentialOutput,
-        progress_updater: Option<Arc<SingleItemProgressUpdater>>,
-    ) -> Result<u64>;
-
-    #[cfg(not(target_family = "wasm"))]
-    async fn get_file_with_parallel_writer(
-        self: Arc<Self>,
-        hash: &MerkleHash,
-        byte_range: Option<FileRange>,
-        output_provider: SeekingOutputProvider,
-        progress_updater: Option<Arc<SingleItemProgressUpdater>>,
-    ) -> Result<u64>;
 
     async fn query_for_global_dedup_shard(&self, prefix: &str, chunk_hash: &MerkleHash) -> Result<Option<Bytes>>;
 

@@ -20,15 +20,15 @@ use url::Url;
 use utils::singleflight::Group;
 use xet_runtime::xet_config;
 
+use super::output_provider::SeekingOutputProvider;
 use crate::error::{CasClientError, Result};
 use crate::http_client::Api;
 use crate::interface::Client;
-use crate::output_provider::SeekingOutputProvider;
 use crate::remote_client::PREFIX_DEFAULT;
 use crate::retry_wrapper::{RetryWrapper, RetryableReqwestError};
 
 #[derive(Clone, Debug)]
-pub(crate) enum DownloadRangeResult {
+pub enum DownloadRangeResult {
     Data(TermDownloadOutput),
     // This is a workaround to propagate the underlying request error as
     // the underlying reqwest_middleware::Error doesn't impl Clone.
@@ -38,7 +38,7 @@ pub(crate) enum DownloadRangeResult {
     // making it impossible to be examined programmatically.
     Forbidden,
 }
-pub(crate) type RangeDownloadSingleFlight = Arc<Group<DownloadRangeResult, CasClientError>>;
+pub type RangeDownloadSingleFlight = Arc<Group<DownloadRangeResult, CasClientError>>;
 
 #[derive(Debug)]
 pub(crate) struct FetchInfo {
@@ -85,10 +85,7 @@ impl FetchInfo {
         Ok((fetch_term, v))
     }
 
-    pub async fn query(
-        &self,
-        client: &Arc<dyn Client + Send + Sync>,
-    ) -> Result<Option<(u64, Vec<CASReconstructionTerm>)>> {
+    pub async fn query(&self, client: &Arc<dyn Client>) -> Result<Option<(u64, Vec<CASReconstructionTerm>)>> {
         let Some(manifest) = client.get_reconstruction(&self.file_hash, Some(self.file_range)).await? else {
             return Ok(None);
         };
@@ -98,7 +95,7 @@ impl FetchInfo {
         Ok(Some((manifest.offset_into_first_range, manifest.terms)))
     }
 
-    pub async fn refresh(&self, client: &Arc<dyn Client + Send + Sync>, vhint: u32) -> Result<()> {
+    pub async fn refresh(&self, client: &Arc<dyn Client>, vhint: u32) -> Result<()> {
         // Our term download tasks run in concurrent, so at this point
         // it's possible that
         // 1. some other TermDownload is also calling refersh();
@@ -131,6 +128,10 @@ pub(crate) struct FetchTermDownloadInner {
     pub range: ChunkRange,
     #[derivative(Debug = "ignore")]
     pub fetch_info: Arc<FetchInfo>, // utility to get URL to download this term
+    #[derivative(Debug = "ignore")]
+    pub chunk_cache: Option<Arc<dyn ChunkCache>>,
+    #[derivative(Debug = "ignore")]
+    pub range_download_single_flight: RangeDownloadSingleFlight,
 }
 
 #[derive(Debug)]
@@ -147,7 +148,7 @@ impl FetchTermDownload {
         }
     }
 
-    pub async fn run(&self, client: Arc<dyn Client + Send + Sync>) -> Result<TermDownloadResult<TermDownloadOutput>> {
+    pub async fn run(&self, client: Arc<dyn Client>) -> Result<TermDownloadResult<TermDownloadOutput>> {
         self.cell
             .get_or_init(|| self.fetch_term_download.clone().run(client))
             .await
@@ -166,7 +167,7 @@ pub(crate) struct SequentialTermDownload {
 }
 
 impl SequentialTermDownload {
-    pub async fn run(self, client: Arc<dyn Client + Send + Sync>) -> Result<TermDownloadResult<Vec<u8>>> {
+    pub async fn run(self, client: Arc<dyn Client>) -> Result<TermDownloadResult<Vec<u8>>> {
         let TermDownloadResult {
             payload:
                 TermDownloadOutput {
@@ -240,7 +241,7 @@ impl From<CacheRange> for TermDownloadOutput {
 
 impl FetchTermDownloadInner {
     // Download and return results, retry on 403
-    pub async fn run(self, client: Arc<dyn Client + Send + Sync>) -> Result<TermDownloadResult<TermDownloadOutput>> {
+    pub async fn run(self, client: Arc<dyn Client>) -> Result<TermDownloadResult<TermDownloadOutput>> {
         let instant = Instant::now();
         let mut n_retries_on_403 = 0;
 
@@ -248,7 +249,14 @@ impl FetchTermDownloadInner {
         let data = loop {
             let (fetch_info, v) = self.fetch_info.find(key).await?;
 
-            let range_data = client.get_file_term_data(self.hash, fetch_info).await;
+            let range_data = client
+                .get_file_term_data_v1(
+                    self.hash,
+                    fetch_info,
+                    self.chunk_cache.clone(),
+                    self.range_download_single_flight.clone(),
+                )
+                .await;
 
             if let Err(CasClientError::PresignedUrlExpirationError) = range_data {
                 self.fetch_info.refresh(&client, v).await?;
@@ -288,7 +296,7 @@ pub(crate) struct FetchTermDownloadOnceAndWriteEverywhereUsed {
 
 impl FetchTermDownloadOnceAndWriteEverywhereUsed {
     /// Download the term and write it to the underlying storage, retry on 403
-    pub async fn run(self, client: Arc<dyn Client + Send + Sync>) -> Result<TermDownloadResult<u64>> {
+    pub async fn run(self, client: Arc<dyn Client>) -> Result<TermDownloadResult<u64>> {
         let download_result = self.download.run(client).await?;
         let TermDownloadOutput {
             data,
@@ -573,7 +581,7 @@ mod tests {
     use tokio::time::sleep;
 
     use super::*;
-    use crate::remote_client::RemoteClient;
+    use crate::RemoteClient;
 
     #[tokio::test]
     async fn test_fetch_info_query_and_find() -> Result<()> {
@@ -624,7 +632,7 @@ mod tests {
             then.status(200).json_body_obj(&response);
         });
 
-        let client: Arc<dyn Client + Send + Sync> = RemoteClient::new(&server.base_url(), &None, &None, "", false, "");
+        let client: Arc<dyn Client> = RemoteClient::new(&server.base_url(), &None, "", false, "");
         let fetch_info = FetchInfo::new(MerkleHash::default(), file_range);
 
         fetch_info.query(&client).await?;
@@ -667,7 +675,7 @@ mod tests {
             then.status(200).json_body_obj(&response);
         });
 
-        let client: Arc<dyn Client + Send + Sync> = RemoteClient::new(&server.base_url(), &None, &None, "", false, "");
+        let client: Arc<dyn Client> = RemoteClient::new(&server.base_url(), &None, "", false, "");
         let fetch_info = Arc::new(FetchInfo::new(MerkleHash::default(), file_range_to_refresh));
 
         // Spawn multiple tasks each calling into refresh with a different delay in
@@ -733,7 +741,7 @@ mod tests {
             then.status(403).delay(Duration::from_millis(100));
         });
 
-        let client: Arc<dyn Client + Send + Sync> = RemoteClient::new(&server.base_url(), &None, &None, "", false, "");
+        let client: Arc<dyn Client> = RemoteClient::new(&server.base_url(), &None, "", false, "");
 
         let fetch_info = FetchInfo::new(MerkleHash::default(), file_range);
 
@@ -744,6 +752,8 @@ mod tests {
                 hash: xorb1.into(),
                 range: x1range[0].range,
                 fetch_info: Arc::new(fetch_info),
+                chunk_cache: None,
+                range_download_single_flight: Arc::new(utils::singleflight::Group::new()),
             })),
             term: terms[0].clone(),
             skip_bytes: offset_info_first_range,

@@ -10,44 +10,51 @@ test_set_constants! {
     MAX_XORB_CHUNKS = 8;
 }
 
-pub async fn check_clean_smudge_files_impl(file_list: &[(impl AsRef<str>, usize)], sequential: bool) {
-    let ts = LocalHydrateDehydrateTest::default();
+/// Runs clean/smudge test with all combinations of (use_v1_reconstructor, use_test_server, sequential).
+/// Each combination runs sequentially with its own HydrateDehydrateTest instance to avoid
+/// too many open files.
+pub async fn check_clean_smudge_files(file_list: &[(impl AsRef<str> + Clone, usize)]) {
+    for use_v1 in [false, true] {
+        for use_server in [false, true] {
+            for sequential in [true, false] {
+                eprintln!(
+                    "Testing use_v1_reconstructor={use_v1}, use_test_server={use_server}, sequential={sequential}"
+                );
 
-    create_random_files(&ts.src_dir, file_list, 0);
+                let mut ts = HydrateDehydrateTest::new(use_v1, use_server);
+                create_random_files(&ts.src_dir, file_list, 0);
 
-    ts.dehydrate(sequential).await;
-    ts.hydrate().await;
-    ts.verify_src_dest_match();
-}
-
-// Check both sequential and all together
-async fn check_clean_smudge_files(file_list: &[(impl AsRef<str>, usize)]) {
-    check_clean_smudge_files_impl(file_list, true).await;
-    check_clean_smudge_files_impl(file_list, false).await;
+                ts.dehydrate(sequential).await;
+                ts.hydrate().await;
+                ts.verify_src_dest_match();
+            }
+        }
+    }
 }
 
 /// Helper for multipart tests:
 ///  - takes a slice of `(String, Vec<(u64, u64)>)` which fully specifies each file.
 ///  - for each file, calls `create_random_multipart_file` with the given segments.
-async fn check_clean_smudge_files_multipart_impl(file_specs: &[(String, Vec<(usize, u64)>)], sequential: bool) {
-    let ts = LocalHydrateDehydrateTest::default();
-
-    // Create each file from the given vector of segments
-    for (file_name, segments) in file_specs {
-        // We call `segments.clone()` because `create_random_multipart_file`
-        // takes ownership of the Vec<(u64,u64)>.
-        create_random_multipart_file(ts.src_dir.join(file_name), segments);
-    }
-
-    ts.dehydrate(sequential).await;
-    ts.hydrate().await;
-    ts.verify_src_dest_match();
-}
-
 async fn check_clean_smudge_files_multipart(file_specs: &[(String, Vec<(usize, u64)>)]) {
-    check_clean_smudge_files_multipart_impl(file_specs, true).await;
-    eprintln!("Successfully completed sequential upload; trying in parallel.");
-    check_clean_smudge_files_multipart_impl(file_specs, false).await;
+    for use_v1 in [false, true] {
+        for use_server in [false, true] {
+            for sequential in [true, false] {
+                eprintln!(
+                    "Testing use_v1_reconstructor={use_v1}, use_test_server={use_server}, sequential={sequential}"
+                );
+
+                let mut ts = HydrateDehydrateTest::new(use_v1, use_server);
+
+                for (file_name, segments) in file_specs {
+                    create_random_multipart_file(ts.src_dir.join(file_name), segments);
+                }
+
+                ts.dehydrate(sequential).await;
+                ts.hydrate().await;
+                ts.verify_src_dest_match();
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -145,7 +152,7 @@ mod testing_clean_smudge {
         check_clean_smudge_files_multipart(&file_specs).await;
     }
 
-    /// 3) many files, each with a unique portion plus a large common portion bigger than MAX_XORB_BYTES/2.
+    /// 4) many files, each with a unique portion plus a large common portion bigger than MAX_XORB_BYTES/2.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_many_files_unique_plus_large_common() {
         let block_size = *MAX_XORB_BYTES + 10;

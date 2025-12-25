@@ -21,6 +21,11 @@ pub fn sequential_output_from_filepath(filename: impl AsRef<Path>) -> Result<Seq
     Ok(Box::new(AsyncWriteFromWrite(Some(Box::new(file)))))
 }
 
+/// Creates a SequentialOutput from an existing Write implementation.
+pub fn sequential_output_from_writer(writer: Box<dyn Write + Send>) -> SequentialOutput {
+    Box::new(AsyncWriteFromWrite(Some(writer)))
+}
+
 /// Enum of different output formats to write reconstructed files
 /// where the result writer can be set at a specific position and new handles can be created
 #[derive(Debug, Clone)]
@@ -105,13 +110,12 @@ impl FileProvider {
 }
 
 #[cfg(test)]
-pub(crate) mod buffer_provider {
+pub mod buffer_provider {
     use std::io::{Cursor, Write};
     use std::sync::{Arc, Mutex};
 
+    use super::{AsyncWriteFromWrite, SeekingOutputProvider, SequentialOutput};
     use crate::error::Result;
-    use crate::output_provider::AsyncWriteFromWrite;
-    use crate::{SeekingOutputProvider, SequentialOutput};
 
     /// BufferProvider may be Seeking or Sequential
     /// only used in testing
