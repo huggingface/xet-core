@@ -37,8 +37,8 @@ jobs:
           - 3.13t
           - 3.14t
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
         with:
           python-version: ${{ matrix.python-version }}
           cache: 'pip'
@@ -107,12 +107,12 @@ jobs:
           cp hf_xet/dist/* dist/
       - name: Upload debug symbols
         if: env.IS_RELEASE == 'true'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: dbg-linux-${{ matrix.python-version }}-${{ matrix.platform.target }}
           path: hf_xet/dbg
       - name: Upload wheels
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: wheels-linux-${{ matrix.python-version }}-${{ matrix.platform.target }}
           path: dist
@@ -131,8 +131,8 @@ jobs:
           - 3.13t
           - 3.14t
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
         with:
           python-version: ${{ matrix.python-version }}
           cache: 'pip'
@@ -193,12 +193,12 @@ jobs:
           cp hf_xet/dist/* dist/
       - name: Upload debug symbols
         if: env.IS_RELEASE == 'true'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: dbg-musllinux-${{ matrix.python-version }}-${{ matrix.platform.target }}
           path: hf_xet/dbg
       - name: Upload wheels with separated debug symbols
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: wheels-musllinux-${{ matrix.python-version }}-${{ matrix.platform.target }}
           path: dist
@@ -216,8 +216,8 @@ jobs:
           - 3.13t
           - 3.14t
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
         with:
           python-version: ${{ matrix.python-version }}
           cache: 'pip'
@@ -248,12 +248,12 @@ jobs:
           mkdir hf_xet/dbg
           cp hf_xet/target/${{ matrix.platform.rust_target }}/release/hf_xet.pdb hf_xet/dbg/${SYMBOL_FILE}
       - name: Upload debug symbols
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: dbg-windows-${{ matrix.python-version }}-${{ matrix.platform.target }}
           path: hf_xet/dbg
       - name: Upload wheels
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: wheels-windows-${{ matrix.python-version }}-${{ matrix.platform.target }}
           path: hf_xet/dist
@@ -274,8 +274,8 @@ jobs:
           - 3.13t
           - 3.14t
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
         with:
           python-version: ${{ matrix.python-version }}
           cache: 'pip'
@@ -319,12 +319,12 @@ jobs:
           cp -r libhf_xet.dylib.dSYM ../../../dbg/${SYMBOL_FILE}
       - name: Upload debug symbols
         if: env.IS_RELEASE == 'true'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: dbg-macos-${{ matrix.python-version }}-${{ matrix.platform.target }}
           path: hf_xet/dbg
       - name: Upload wheels
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: wheels-macos-${{ matrix.python-version }}-${{ matrix.platform.target }}
           path: hf_xet/dist
@@ -332,7 +332,7 @@ jobs:
   sdist:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - name: Update version in toml
         run: |
           TAG=${{ github.event.inputs.tag }}
@@ -358,7 +358,7 @@ jobs:
           tar -cvzf ${DISTFILE} ${DISTNAME}
           rm -rf ${DISTNAME} 
       - name: Upload sdist
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: wheels-sdist
           path: hf_xet/dist
@@ -377,7 +377,7 @@ jobs:
       attestations: write
     environment: release
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v7
       - name: Generate artifact attestation
         uses: actions/attest-build-provenance@v1
         with:
@@ -396,8 +396,8 @@ jobs:
     if: ${{ github.event_name == 'workflow_dispatch' }}
     needs: [ linux, musllinux, windows, macos, sdist ]
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@v6
+      - uses: actions/download-artifact@v7
       - name: Create GitHub Release
         env: 
           GH_TOKEN: ${{ github.token }}
