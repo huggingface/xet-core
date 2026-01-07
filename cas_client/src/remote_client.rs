@@ -1,5 +1,5 @@
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use bytes::Bytes;
 use cas_object::SerializedCasObject;
@@ -19,6 +19,7 @@ use reqwest::{Body, Response, StatusCode, Url};
 use reqwest_middleware::ClientWithMiddleware;
 use tracing::{event, info, instrument};
 use utils::auth::AuthConfig;
+use xet_runtime::xet_config;
 
 use crate::adaptive_concurrency::{AdaptiveConcurrencyController, ConnectionPermit};
 use crate::error::{CasClientError, Result};
@@ -26,6 +27,7 @@ use crate::http_client::{Api, ResponseErrorLogger, RetryConfig};
 #[cfg(not(target_family = "wasm"))]
 use crate::interface::URLProvider;
 use crate::retry_wrapper::{RetryWrapper, RetryableReqwestError};
+use crate::upload_progress_stream::UploadProgressStream;
 use crate::{Client, INFORMATION_LOG_LEVEL, http_client};
 
 pub const CAS_ENDPOINT: &str = "http://localhost:8080";
@@ -286,8 +288,6 @@ impl Client for RemoteClient {
         url_info: Box<dyn URLProvider>,
         download_permit: ConnectionPermit,
     ) -> Result<(Bytes, Vec<u32>)> {
-        use std::sync::atomic::AtomicBool;
-
         let api_tag = "s3::get_range";
         let http_client = self.http_client_no_retry.clone();
         let url_info = Arc::new(tokio::sync::Mutex::new(url_info));
@@ -466,10 +466,6 @@ impl Client for RemoteClient {
         upload_tracker: Option<Arc<CompletionTracker>>,
         upload_permit: ConnectionPermit,
     ) -> Result<u64> {
-        use xet_runtime::xet_config;
-
-        use crate::upload_progress_stream::UploadProgressStream;
-
         let key = Key {
             prefix: prefix.to_string(),
             hash: serialized_cas_object.hash,
