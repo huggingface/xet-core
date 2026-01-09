@@ -145,7 +145,7 @@ fn get_base_url(headers: &HeaderMap) -> String {
 /// Transforms fetch_info URLs from local file paths to HTTP URLs.
 ///
 /// LocalClient generates URLs in a local format. This function transforms them
-/// into proper HTTP URLs that point to the /fetch_term endpoint.
+/// into proper HTTP URLs that point to the /v1/fetch_term endpoint.
 fn transform_fetch_info_urls(
     fetch_info: &mut std::collections::HashMap<HexMerkleHash, Vec<CASReconstructionFetchInfo>>,
     base_url: &str,
@@ -162,7 +162,7 @@ fn transform_fetch_info_urls(
 
             // Create the HTTP URL with the encoded term
             let encoded_term = encode_term(&file_path);
-            fi.url = format!("{base_url}/fetch_term?term={encoded_term}");
+            fi.url = format!("{base_url}/v1/fetch_term?term={encoded_term}");
         }
     }
 }
@@ -194,7 +194,7 @@ fn extract_file_path_from_local_url(local_url: &str) -> String {
 /// Supports Range header for partial file reconstruction.
 ///
 /// The URLs in fetch_info are transformed from local file paths to HTTP URLs
-/// that point to the /fetch_term endpoint.
+/// that point to the /v1/fetch_term endpoint.
 pub async fn get_reconstruction(
     State(state): State<Arc<LocalClient>>,
     Path(HexMerkleHash(file_id)): Path<HexMerkleHash>,
@@ -280,7 +280,7 @@ pub async fn batch_get_reconstruction(
     }
 }
 
-/// GET /fetch_term?term=<base64_encoded_path>
+/// GET /v1/fetch_term?term=<base64_encoded_path>
 ///
 /// Fetches XORB data based on an encoded term.
 /// The term is a URL-safe base64-encoded file path.
@@ -398,7 +398,7 @@ pub async fn post_xorb(State(state): State<Arc<LocalClient>>, Path(key): Path<He
     }
 }
 
-/// POST /shards
+/// POST /v1/shards
 ///
 /// Upload a shard (deduplication index) to the store.
 /// Request body: Raw shard data
@@ -445,7 +445,7 @@ pub async fn head_file(
     }
 }
 
-/// GET /get_xorb/{prefix}/{hash}/
+/// GET /v1/get_xorb/{prefix}/{hash}/
 ///
 /// Download XORB data directly.
 /// Supports Range header for partial downloads.

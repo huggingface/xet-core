@@ -112,13 +112,12 @@ impl LocalServer {
 
     /// Builds the Axum router with all CAS API routes.
     ///
-    /// Routes are organized in two groups:
-    /// 1. `/v1/` prefixed routes - The canonical API paths
-    /// 2. Root-level routes - Legacy aliases for compatibility
+    /// Routes follow the pattern used by RemoteClient:
+    /// - `/v1/` prefixed routes for chunks, xorbs, reconstructions, and files
+    /// - Root-level `/reconstructions` for batch queries and `/shards` for uploads
     fn create_router(&self) -> Router {
         Router::new()
             .route("/health", get(handlers::health_check))
-            // Canonical v1 API routes
             .nest(
                 "/v1",
                 Router::new()
@@ -126,21 +125,13 @@ impl LocalServer {
                     .route("/reconstructions/{file_id}", get(handlers::get_reconstruction))
                     .route("/chunks/{prefix}/{hash}", get(handlers::get_dedup_info_by_chunk))
                     .route("/xorbs/{prefix}/{hash}", head(handlers::head_xorb).post(handlers::post_xorb))
-                    .route("/files/{file_id}", head(handlers::head_file)),
+                    .route("/files/{file_id}", head(handlers::head_file))
+                    .route("/get_xorb/{prefix}/{hash}/", get(handlers::get_file_term_data))
+                    .route("/fetch_term", get(handlers::fetch_term)),
             )
-            // Legacy route aliases (for compatibility with older clients)
+            // Routes used by RemoteClient without /v1/ prefix
             .route("/reconstructions", get(handlers::batch_get_reconstruction))
-            .route("/reconstructions/{file_id}", get(handlers::get_reconstruction))
-            .route("/chunks/{prefix}/{hash}", get(handlers::get_dedup_info_by_chunk))
-            .route("/chunk/{prefix}/{hash}", get(handlers::get_dedup_info_by_chunk))
-            .route("/xorbs/{prefix}/{hash}", head(handlers::head_xorb).post(handlers::post_xorb))
-            .route("/xorb/{prefix}/{hash}", head(handlers::head_xorb).post(handlers::post_xorb))
             .route("/shards", post(handlers::post_shard))
-            .route("/shard", post(handlers::post_shard))
-            .route("/shard/{prefix}/{hash}", post(handlers::post_shard))
-            .route("/files/{file_id}", head(handlers::head_file))
-            .route("/get_xorb/{prefix}/{hash}/", get(handlers::get_file_term_data))
-            .route("/fetch_term", get(handlers::fetch_term))
             .layer(CorsLayer::very_permissive())
             .with_state(self.client.clone())
     }
@@ -436,12 +427,12 @@ mod tests {
         assert!(file_info.is_err() || file_info.unwrap().is_none());
 
         // Invalid fetch_term (valid base64 but nonexistent path)
-        let invalid_term_url = format!("{}/fetch_term?term=aW52YWxpZF9wYXRo", server.endpoint());
+        let invalid_term_url = format!("{}/v1/fetch_term?term=aW52YWxpZF9wYXRo", server.endpoint());
         let response = http_client.get(&invalid_term_url).send().await.unwrap();
         assert!(response.status().is_client_error() || response.status().is_server_error());
 
         // Malformed base64 in fetch_term
-        let malformed_url = format!("{}/fetch_term?term=not-valid-base64!!!", server.endpoint());
+        let malformed_url = format!("{}/v1/fetch_term?term=not-valid-base64!!!", server.endpoint());
         let response = http_client.get(&malformed_url).send().await.unwrap();
         assert_eq!(response.status(), reqwest::StatusCode::BAD_REQUEST);
     }

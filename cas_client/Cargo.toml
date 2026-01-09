@@ -69,7 +69,7 @@ native-tls-vendored = ["reqwest/native-tls-vendored"]
 
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
-axum = "0.8"
+axum = { workspace = true }
 futures-util = { workspace = true }
 heed = { workspace = true }
 hyper = { workspace = true }
