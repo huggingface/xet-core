@@ -20,6 +20,8 @@ mod interface;
 #[cfg(not(target_family = "wasm"))]
 mod local_client;
 #[cfg(not(target_family = "wasm"))]
+pub mod local_server;
+#[cfg(not(target_family = "wasm"))]
 mod output_provider;
 pub mod remote_client;
 pub mod retry_wrapper;
