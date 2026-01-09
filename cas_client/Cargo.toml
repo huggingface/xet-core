@@ -19,6 +19,7 @@ xet_runtime = { path = "../xet_runtime" }
 
 anyhow = { workspace = true }
 async-trait = { workspace = true }
+base64 = { workspace = true }
 bytes = { workspace = true }
 chrono = { workspace = true }
 clap = { workspace = true }
@@ -68,8 +69,11 @@ native-tls-vendored = ["reqwest/native-tls-vendored"]
 
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
+axum = "0.8"
+futures-util = { workspace = true }
 heed = { workspace = true }
 hyper = { workspace = true }
+tower-http = { version = "0.6", features = ["cors"] }
 warp = { workspace = true }
 
 [target.'cfg(target_family = "wasm")'.dependencies]
@@ -82,7 +86,11 @@ rand_distr = { workspace = true }
 tracing-test = { workspace = true }
 wiremock = { workspace = true }
 
-# Test binaries for adaptive concurrency testing
+# Local CAS server binary - wraps LocalClient with HTTP API for testing
+[[bin]]
+name = "local_cas_server"
+path = "src/local_server/main.rs"
+
 [[bin]]
 name = "simulation_server"
 path = "tests/adaptive_concurrency/src/simulation_server.rs"

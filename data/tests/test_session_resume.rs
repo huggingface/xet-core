@@ -33,7 +33,7 @@ test_set_config! {
 mod tests {
     use std::sync::Arc;
 
-    use data::test_utils::{LocalHydrateDehydrateTest, create_random_file, create_random_files};
+    use data::test_utils::{HydrateDehydrateTest, create_random_file, create_random_files};
     use deduplication::constants::MAX_CHUNK_SIZE;
     use more_asserts::*;
     use progress_tracking::aggregator::AggregatingProgressUpdater;
@@ -201,7 +201,7 @@ mod tests {
     /// 3) many files, each with a unique portion plus a large common portion bigger than MAX_XORB_BYTES/2.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_partial_directory_upload_with_rehydrate() {
-        let ts = LocalHydrateDehydrateTest::default();
+        let mut ts = HydrateDehydrateTest::default();
 
         create_random_files(
             &ts.src_dir,
@@ -275,7 +275,7 @@ mod tests {
     /// 4) A single tiny file
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_tiny_file_resume() {
-        let ts = LocalHydrateDehydrateTest::default();
+        let mut ts = HydrateDehydrateTest::default();
 
         create_random_file(&ts.src_dir.join("f1"), 128, 0);
 

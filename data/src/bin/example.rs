@@ -4,10 +4,9 @@ use std::path::PathBuf;
 use std::sync::{Arc, OnceLock};
 
 use anyhow::Result;
-use cas_client::SeekingOutputProvider;
 use clap::{Args, Parser, Subcommand};
 use data::configurations::*;
-use data::{FileDownloader, FileUploadSession, XetFileInfo};
+use data::{FileUploadSession, XetFileInfo};
 use xet_runtime::XetRuntime;
 
 #[derive(Parser)]
@@ -121,26 +120,33 @@ async fn smudge_file(arg: &SmudgeArg) -> Result<()> {
         None => Box::new(std::io::stdin()),
     };
 
-    let writer = SeekingOutputProvider::new_file_provider(arg.dest.clone());
-    smudge(arg.dest.to_string_lossy().into(), reader, writer).await?;
+    smudge(arg.dest.to_string_lossy().into(), reader, arg.dest.clone()).await?;
 
     Ok(())
 }
 
-async fn smudge(name: Arc<str>, mut reader: impl Read, writer: SeekingOutputProvider) -> Result<()> {
+async fn smudge(name: Arc<str>, mut reader: impl Read, output_path: PathBuf) -> Result<()> {
+    use data::configurations::TranslatorConfig;
+    use file_reconstruction::DataOutput;
+
     let mut input = String::new();
     reader.read_to_string(&mut input)?;
 
     let xet_file: XetFileInfo = serde_json::from_str(&input)
         .map_err(|_| anyhow::anyhow!("Failed to parse xet file info. Please check the format."))?;
 
-    let downloader = FileDownloader::new(TranslatorConfig::local_config(std::env::current_dir()?)?.into()).await?;
+    // Use local config pointing to current directory
+    let cas_path = std::env::current_dir()?;
+    let config = TranslatorConfig::local_config(cas_path)?;
+    let downloader = data::FileDownloader::new(config.into()).await?;
+
+    let output = DataOutput::write_in_file(&output_path);
 
     downloader
         .smudge_file_from_hash(
             &xet_file.merkle_hash().map_err(|_| anyhow::anyhow!("Xet hash is corrupted"))?,
             name,
-            writer,
+            output,
             None,
             None,
         )

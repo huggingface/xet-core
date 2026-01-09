@@ -549,6 +549,9 @@ pub struct ConnectionPermitInfo {
 
 /// A permit for a connection.  This can be used to track the start time of a transfer and report back
 /// to the original controller whether it's needed.
+///
+/// Note that dropping it without reporting completion effectively aborts it without reporting
+/// any statistics.
 pub struct ConnectionPermit {
     _permit: AdjustableSemaphorePermit,
     info: Arc<ConnectionPermitInfo>,

@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use cas_client::exports::ClientWithMiddleware;
-use cas_client::{Api, ResponseErrorLogger, RetryConfig, build_http_client};
+use cas_client::{Api, ResponseErrorLogger, build_http_client_no_retry};
 use urlencoding::encode;
 
 use crate::auth::CredentialHelper;
@@ -53,7 +53,7 @@ impl HubClient {
             endpoint: endpoint.to_owned(),
             repo_info,
             reference,
-            client: build_http_client(RetryConfig::default(), session_id, user_agent)?,
+            client: build_http_client_no_retry(session_id, user_agent)?,
             cred_helper,
         })
     }

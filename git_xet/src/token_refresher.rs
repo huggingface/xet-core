@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use cas_client::{Api, RetryConfig, build_http_client};
+use cas_client::{Api, build_http_client_no_retry};
 use hub_client::{CasJWTInfo, CredentialHelper, Operation};
 use reqwest_middleware::ClientWithMiddleware;
 use utils::auth::{TokenInfo, TokenRefresher};
@@ -36,7 +36,7 @@ impl DirectRefreshRouteTokenRefresher {
 
         Ok(Self {
             refresh_route: refresh_route.to_owned(),
-            client: build_http_client(RetryConfig::default(), session_id, user_agent)?,
+            client: build_http_client_no_retry(session_id, user_agent)?,
             cred_helper,
         })
     }

@@ -10,6 +10,7 @@ members = [
     "data",
     "deduplication",
     "error_printer",
+    "file_reconstruction",
     "file_utils",
     "git_xet",
     "hub_client",
@@ -78,6 +79,7 @@ pin-project = "1"
 prometheus = "0.14"
 rand = "0.9"
 rand_chacha = "0.9"
+rangemap = "1.7"
 regex = "1"
 reqwest = { version = "0.12", features = [
     "json",
@@ -107,10 +109,7 @@ tower-service = "0.3"
 tracing = "0.1"
 tracing-appender = "0.2"
 tracing-log = "0.2"
-tracing-subscriber = { version = "0.3", features = [
-    "json",
-    "env-filter",
-] }
+tracing-subscriber = { version = "0.3", features = ["json", "env-filter"] }
 ulid = "1.2"
 url = "2.5"
 urlencoding = "2.1"
