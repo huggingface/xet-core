@@ -708,7 +708,10 @@ impl Client for LocalClient {
         let mut force_refresh = false;
 
         for attempt in 0..MAX_RETRIES {
-            let (url, url_range) = url_info.retrieve_url(force_refresh).await?;
+            if force_refresh {
+                url_info.refresh_url().await?;
+            }
+            let (url, url_range) = url_info.retrieve_url().await?;
             let (file_path, file_fetch_range, url_timestamp) = parse_fetch_url(&url)?;
 
             // Check if URL has expired

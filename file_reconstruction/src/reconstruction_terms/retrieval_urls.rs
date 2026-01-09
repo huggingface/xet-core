@@ -141,20 +141,17 @@ pub struct XorbURLProvider {
 
 #[async_trait::async_trait]
 impl URLProvider for XorbURLProvider {
-    async fn retrieve_url(
-        &self,
-        force_refresh: bool,
-    ) -> std::result::Result<(String, HttpRange), cas_client::CasClientError> {
-        if force_refresh {
-            self.url_info
-                .refresh_retrieval_urls(self.client.clone(), *self.last_acquisition_id.lock().await)
-                .await
-                .map_err(|e| cas_client::CasClientError::Other(e.to_string()))?;
-        }
-
+    async fn retrieve_url(&self) -> std::result::Result<(String, HttpRange), cas_client::CasClientError> {
         let (unique_id, url, http_range) = self.url_info.get_retrieval_url(self.xorb_block_index).await;
         *self.last_acquisition_id.lock().await = unique_id;
 
         Ok((url, http_range))
+    }
+
+    async fn refresh_url(&self) -> std::result::Result<(), cas_client::CasClientError> {
+        self.url_info
+            .refresh_retrieval_urls(self.client.clone(), *self.last_acquisition_id.lock().await)
+            .await
+            .map_err(|e| cas_client::CasClientError::Other(e.to_string()))
     }
 }

@@ -14,7 +14,11 @@ use crate::error::Result;
 
 #[async_trait::async_trait]
 pub trait URLProvider: Send + Sync {
-    async fn retrieve_url(&self, force_refresh: bool) -> Result<(String, HttpRange)>;
+    // Retrieves the URL.
+    async fn retrieve_url(&self) -> Result<(String, HttpRange)>;
+
+    // Asks for a refresh of the URL; triggered on 403 errors.
+    async fn refresh_url(&self) -> Result<()>;
 }
 
 /// A Client to the Shard service. The shard service

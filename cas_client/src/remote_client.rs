@@ -1,5 +1,5 @@
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use bytes::Bytes;
 use cas_object::SerializedCasObject;
@@ -287,7 +287,6 @@ impl Client for RemoteClient {
         let api_tag = "s3::get_range";
         let http_client = self.http_client_no_retry.clone();
         let url_info = Arc::new(tokio::sync::Mutex::new(url_info));
-        let called_before = Arc::new(AtomicBool::new(false));
 
         RetryWrapper::new(api_tag)
             .with_retry_on_403()
@@ -296,25 +295,31 @@ impl Client for RemoteClient {
                 move |_partial_report_fn| {
                     let http_client = http_client.clone();
                     let url_info = url_info.clone();
-                    let called_before = called_before.clone();
 
                     async move {
-                        let force_refresh = called_before.swap(true, Ordering::Relaxed);
-                        let (url_string, url_range) = url_info
-                            .lock()
-                            .await
-                            .retrieve_url(force_refresh)
+                        let url_guard = url_info.lock().await;
+                        let (url_string, url_range) = url_guard
+                            .retrieve_url()
                             .await
                             .map_err(|e| reqwest_middleware::Error::Middleware(e.into()))?;
                         let url =
                             Url::parse(&url_string).map_err(|e| reqwest_middleware::Error::Middleware(e.into()))?;
 
-                        http_client
+                        let response = http_client
                             .get(url)
                             .header(RANGE, url_range.range_header())
                             .with_extension(Api(api_tag))
                             .send()
-                            .await
+                            .await?;
+
+                        if response.status() == reqwest::StatusCode::FORBIDDEN {
+                            url_guard
+                                .refresh_url()
+                                .await
+                                .map_err(|e| reqwest_middleware::Error::Middleware(e.into()))?;
+                        }
+
+                        Ok(response)
                     }
                 },
                 |resp: Response| async move {
