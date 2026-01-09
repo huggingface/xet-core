@@ -60,11 +60,14 @@ impl FileTerm {
         let url_info = self.url_info.clone();
         let xorb_block = self.xorb_block.clone();
 
-        // Return a future that retrieves the data and extracts the bytes.
-        Ok(Box::pin(async move {
+        // Start a background task to begin the downloading immediately, not on await.
+        let task = tokio::task::spawn(async move {
             let xorb_block_data = xorb_block.retrieve_data(client, permit, url_info).await?;
             Ok(file_term.extract_bytes(&xorb_block_data))
-        }))
+        });
+
+        // Return a future that retrieves the data and extracts the bytes.
+        Ok(Box::pin(async move { task.await? }))
     }
 }
 

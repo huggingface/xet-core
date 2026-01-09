@@ -33,7 +33,6 @@ pub struct FileReconstructor {
     file_hash: MerkleHash,
     byte_range: Option<FileRange>,
     output: DataOutput,
-    #[allow(dead_code)]
     progress_updater: Option<Arc<SingleItemProgressUpdater>>,
     config: Arc<ReconstructionConfig>,
     /// Custom buffer semaphore (semaphore, total_permits) for testing or specialized use cases.

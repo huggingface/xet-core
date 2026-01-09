@@ -27,6 +27,9 @@ pub enum FileReconstructionError {
 
     #[error("Internal Error: {0}")]
     InternalError(String),
+
+    #[error("Task Join Error: {0}")]
+    TaskJoinError(Arc<tokio::task::JoinError>),
 }
 
 pub type Result<T> = std::result::Result<T, FileReconstructionError>;
@@ -49,6 +52,11 @@ impl From<utils::RwTaskLockError> for FileReconstructionError {
     }
 }
 
+impl From<tokio::task::JoinError> for FileReconstructionError {
+    fn from(err: tokio::task::JoinError) -> Self {
+        FileReconstructionError::TaskJoinError(Arc::new(err))
+    }
+}
 /// Thread-safe container for propagating errors from background tasks.
 /// Uses atomic flag for fast checking and mutex for error storage.
 pub struct ErrorState {
