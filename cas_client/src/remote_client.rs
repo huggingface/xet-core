@@ -7,7 +7,6 @@ use cas_types::{
     BatchQueryReconstructionResponse, FileRange, HttpRange, Key, QueryReconstructionResponse, UploadShardResponse,
     UploadShardResponseType, UploadXorbResponse,
 };
-use error_printer::ErrorPrinter;
 #[cfg(not(target_family = "wasm"))]
 use futures::TryStreamExt;
 use http::HeaderValue;
@@ -23,7 +22,7 @@ use xet_runtime::xet_config;
 
 use crate::adaptive_concurrency::{AdaptiveConcurrencyController, ConnectionPermit};
 use crate::error::{CasClientError, Result};
-use crate::http_client::{Api, ResponseErrorLogger, RetryConfig};
+use crate::http_client::Api;
 #[cfg(not(target_family = "wasm"))]
 use crate::interface::URLProvider;
 use crate::retry_wrapper::{RetryWrapper, RetryableReqwestError};
@@ -42,8 +41,7 @@ lazy_static! {
 pub struct RemoteClient {
     endpoint: String,
     dry_run: bool,
-    http_client_no_retry: Arc<ClientWithMiddleware>,
-    authenticated_http_client_with_retry: Arc<ClientWithMiddleware>,
+    http_client: Arc<ClientWithMiddleware>,
     authenticated_http_client: Arc<ClientWithMiddleware>,
     upload_concurrency_controller: Arc<AdaptiveConcurrencyController>,
     download_concurrency_controller: Arc<AdaptiveConcurrencyController>,
@@ -60,13 +58,10 @@ impl RemoteClient {
         Arc::new(Self {
             endpoint: endpoint.to_string(),
             dry_run,
-            authenticated_http_client_with_retry: Arc::new(
-                http_client::build_auth_http_client(auth, RetryConfig::default(), session_id, user_agent).unwrap(),
-            ),
             authenticated_http_client: Arc::new(
                 http_client::build_auth_http_client_no_retry(auth, session_id, user_agent).unwrap(),
             ),
-            http_client_no_retry: Arc::new(http_client::build_http_client_no_retry(session_id, user_agent).unwrap()),
+            http_client: Arc::new(http_client::build_http_client_no_retry(session_id, user_agent).unwrap()),
             upload_concurrency_controller: AdaptiveConcurrencyController::new_upload("upload"),
             download_concurrency_controller: AdaptiveConcurrencyController::new_download("download"),
         })
@@ -75,11 +70,6 @@ impl RemoteClient {
     /// Get the endpoint URL.
     pub fn endpoint(&self) -> &str {
         &self.endpoint
-    }
-
-    /// Get the authenticated HTTP client with retry logic.
-    pub fn authenticated_http_client_with_retry(&self) -> Arc<ClientWithMiddleware> {
-        self.authenticated_http_client_with_retry.clone()
     }
 
     async fn query_dedup_api(&self, prefix: &str, chunk_hash: &MerkleHash) -> Result<Option<Response>> {
@@ -196,46 +186,37 @@ impl Client for RemoteClient {
             "Starting get_reconstruction API call",
         );
 
-        let mut request = self
-            .authenticated_http_client_with_retry
-            .get(url)
-            .with_extension(Api("cas::get_reconstruction"));
-        if let Some(range) = bytes_range {
-            // convert exclusive-end to inclusive-end range
-            request = request.header(RANGE, HttpRange::from(range).range_header())
+        let api_tag = "cas::get_reconstruction";
+        let client = self.authenticated_http_client.clone();
+
+        let result: Result<QueryReconstructionResponse> = RetryWrapper::new(api_tag)
+            .run_and_extract_json(move |_partial_report_fn| {
+                let mut request = client.get(url.clone()).with_extension(Api(api_tag));
+                if let Some(range) = bytes_range {
+                    // convert exclusive-end to inclusive-end range
+                    request = request.header(RANGE, HttpRange::from(range).range_header())
+                }
+                request.send()
+            })
+            .await;
+
+        match result {
+            Ok(query_reconstruction_response) => {
+                event!(
+                    INFORMATION_LOG_LEVEL,
+                    call_id,
+                    %file_id,
+                    ?bytes_range,
+                    "Completed get_reconstruction API call"
+                );
+                Ok(Some(query_reconstruction_response))
+            },
+            Err(CasClientError::ReqwestError(ref e, _)) if e.status() == Some(StatusCode::RANGE_NOT_SATISFIABLE) => {
+                // bytes_range not satisfiable
+                Ok(None)
+            },
+            Err(e) => Err(e),
         }
-        let response = request.send().await.process_error("get_reconstruction");
-
-        let Ok(response) = response else {
-            let e = response.unwrap_err();
-
-            // bytes_range not satisfiable
-            if let CasClientError::ReqwestError(e, _) = &e
-                && let Some(StatusCode::RANGE_NOT_SATISFIABLE) = e.status()
-            {
-                return Ok(None);
-            }
-
-            return Err(e);
-        };
-
-        let len = response.content_length();
-        event!(INFORMATION_LOG_LEVEL, %file_id, len, "query_reconstruction");
-
-        let query_reconstruction_response: QueryReconstructionResponse = response
-            .json()
-            .await
-            .info_error_fn(|| format!("JSON parsing failed in get_reconstruction, call_id={}", call_id))?;
-
-        event!(
-            INFORMATION_LOG_LEVEL,
-            call_id,
-            %file_id,
-            ?bytes_range,
-            "Completed get_reconstruction API call"
-        );
-
-        Ok(Some(query_reconstruction_response))
     }
 
     #[cfg(not(target_family = "wasm"))]
@@ -285,7 +266,7 @@ impl Client for RemoteClient {
         download_permit: ConnectionPermit,
     ) -> Result<(Bytes, Vec<u32>)> {
         let api_tag = "s3::get_range";
-        let http_client = self.http_client_no_retry.clone();
+        let http_client = self.http_client.clone();
         let url_info = Arc::new(tokio::sync::Mutex::new(url_info));
 
         RetryWrapper::new(api_tag)
