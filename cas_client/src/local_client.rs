@@ -774,7 +774,6 @@ fn parse_fetch_url(url: &str) -> Result<(PathBuf, FileRange, Instant)> {
 mod tests {
     use cas_object::CompressionScheme::LZ4;
     use cas_object::test_utils::*;
-    use cas_types::CASReconstructionFetchInfo;
     use deduplication::test_utils::raw_xorb_to_vec;
     use mdb_shard::utils::parse_shard_filename;
 
