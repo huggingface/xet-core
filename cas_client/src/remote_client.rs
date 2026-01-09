@@ -42,7 +42,6 @@ lazy_static! {
 pub struct RemoteClient {
     endpoint: String,
     dry_run: bool,
-    http_client_with_retry: Arc<ClientWithMiddleware>,
     http_client_no_retry: Arc<ClientWithMiddleware>,
     authenticated_http_client_with_retry: Arc<ClientWithMiddleware>,
     authenticated_http_client: Arc<ClientWithMiddleware>,
@@ -66,9 +65,6 @@ impl RemoteClient {
             ),
             authenticated_http_client: Arc::new(
                 http_client::build_auth_http_client_no_retry(auth, session_id, user_agent).unwrap(),
-            ),
-            http_client_with_retry: Arc::new(
-                http_client::build_http_client(RetryConfig::default(), session_id, user_agent).unwrap(),
             ),
             http_client_no_retry: Arc::new(http_client::build_http_client_no_retry(session_id, user_agent).unwrap()),
             upload_concurrency_controller: AdaptiveConcurrencyController::new_upload("upload"),
@@ -334,24 +330,6 @@ impl Client for RemoteClient {
                 },
             )
             .await
-    }
-
-    #[cfg(not(target_family = "wasm"))]
-    async fn get_file_term_data_v1(
-        &self,
-        hash: MerkleHash,
-        fetch_term: cas_types::CASReconstructionFetchInfo,
-        chunk_cache: Option<Arc<dyn chunk_cache::ChunkCache>>,
-        range_download_single_flight: crate::file_reconstruction_v1::RangeDownloadSingleFlight,
-    ) -> Result<crate::file_reconstruction_v1::TermDownloadOutput> {
-        crate::file_reconstruction_v1::get_file_term_data_impl(
-            hash,
-            fetch_term,
-            self.http_client_with_retry.clone(),
-            chunk_cache,
-            range_download_single_flight,
-        )
-        .await
     }
 
     #[instrument(skip_all, name = "RemoteClient::get_file_reconstruction", fields(file.hash = file_hash.hex()

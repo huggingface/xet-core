@@ -53,15 +53,6 @@ crate::config_group!({
     /// Use the environment variable `HF_XET_RECONSTRUCTION_MIN_PREFETCH_BUFFER` to set this value.
     ref min_prefetch_buffer: ByteSize = ByteSize::from("1gb");
 
-    /// Whether to use the V1 reconstruction algorithm.
-    /// When true, the old FileReconstructorV1 is used for file reconstruction.
-    /// When false, the new FileReconstructor (V2) is used.
-    ///
-    /// The default value is false.
-    ///
-    /// Use the environment variable `HF_XET_RECONSTRUCTION_USE_V1` to set this value.
-    ref use_v1: bool = false;
-
     /// Whether to use vectorized writes (write_vectored) during file reconstruction.
     /// When true, multiple pending writes are batched and written using write_vectored.
     /// When false, standard sequential writes are used.

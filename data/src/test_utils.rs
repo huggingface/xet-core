@@ -146,14 +146,13 @@ pub struct HydrateDehydrateTest {
     pub src_dir: PathBuf,
     pub ptr_dir: PathBuf,
     pub dest_dir: PathBuf,
-    use_v1_reconstructor: bool,
     use_test_server: bool,
     client: Option<TestClient>,
 }
 
 impl Default for HydrateDehydrateTest {
     fn default() -> Self {
-        Self::new(false, false)
+        Self::new(false)
     }
 }
 
@@ -161,10 +160,9 @@ impl HydrateDehydrateTest {
     /// Creates a new test harness with the specified options.
     ///
     /// # Arguments
-    /// * `use_v1_reconstructor` - If true, uses the V1 reconstruction algorithm; otherwise uses V2.
     /// * `use_test_server` - If true, uses a LocalTestServer (RemoteClient over HTTP); otherwise uses LocalClient
     ///   directly.
-    pub fn new(use_v1_reconstructor: bool, use_test_server: bool) -> Self {
+    pub fn new(use_test_server: bool) -> Self {
         let _temp_dir = TempDir::new().unwrap();
         let temp_path = _temp_dir.path();
 
@@ -184,7 +182,6 @@ impl HydrateDehydrateTest {
             ptr_dir,
             dest_dir,
             _temp_dir,
-            use_v1_reconstructor,
             use_test_server,
             client: None, // Client created lazily
         }
@@ -259,7 +256,6 @@ impl HydrateDehydrateTest {
         create_dir_all(&self.dest_dir).unwrap();
 
         let client = self.get_or_create_client().await.as_client();
-        let use_v1 = self.use_v1_reconstructor;
 
         for entry in read_dir(&self.ptr_dir).unwrap() {
             let entry = entry.unwrap();
@@ -270,7 +266,6 @@ impl HydrateDehydrateTest {
             let file_hash = xf.merkle_hash().unwrap();
 
             FileReconstructor::new(&client, file_hash, DataOutput::write_in_file(&out_filename))
-                .use_v1_reconstructor(use_v1)
                 .run()
                 .await
                 .unwrap();

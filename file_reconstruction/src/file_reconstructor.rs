@@ -1,9 +1,6 @@
 use std::sync::Arc;
 
-use cas_client::{
-    CacheConfig, Client, FileReconstructorV1, SeekingOutputProvider, sequential_output_from_filepath,
-    sequential_output_from_writer,
-};
+use cas_client::Client;
 use cas_types::FileRange;
 use merklehash::MerkleHash;
 use progress_tracking::item_tracking::SingleItemProgressUpdater;
@@ -33,14 +30,11 @@ pub struct FileReconstructor {
     file_hash: MerkleHash,
     byte_range: Option<FileRange>,
     output: DataOutput,
+    #[allow(dead_code)] // TODO: integrate progress tracking into the new reconstruction logic
     progress_updater: Option<Arc<SingleItemProgressUpdater>>,
     config: Arc<ReconstructionConfig>,
     /// Custom buffer semaphore (semaphore, total_permits) for testing or specialized use cases.
     custom_buffer_semaphore: Option<(Arc<Semaphore>, usize)>,
-    /// Cache configuration for V1 reconstruction.
-    cache_config: Option<CacheConfig>,
-    /// Override for whether to use V1 reconstruction algorithm.
-    use_v1_reconstructor: Option<bool>,
 }
 
 impl FileReconstructor {
@@ -53,8 +47,6 @@ impl FileReconstructor {
             progress_updater: None,
             config: Arc::new(xet_config().reconstruction.clone()),
             custom_buffer_semaphore: None,
-            cache_config: None,
-            use_v1_reconstructor: None,
         }
     }
 
@@ -93,98 +85,15 @@ impl FileReconstructor {
         }
     }
 
-    /// Sets the cache configuration for V1 reconstruction.
-    /// This is used when running with the V1 reconstruction algorithm.
-    pub fn with_cache(self, cache_config: &CacheConfig) -> Self {
-        Self {
-            cache_config: Some(cache_config.clone()),
-            ..self
-        }
-    }
-
-    /// Overrides whether to use the V1 reconstruction algorithm.
-    /// When true, uses the old FileReconstructorV1 algorithm.
-    /// When false, uses the new V2 algorithm.
-    /// If not set, defaults to the config value `reconstruction.use_v1_reconstruction`.
-    pub fn use_v1_reconstructor(self, use_v1: bool) -> Self {
-        Self {
-            use_v1_reconstructor: Some(use_v1),
-            ..self
-        }
-    }
-
-    /// Runs the file reconstruction using the appropriate algorithm.
-    /// Uses V1 or V2 based on the `use_v1_reconstruction` override or config setting.
+    /// Runs the file reconstruction.
     /// Returns the number of bytes written.
     pub async fn run(self) -> Result<u64> {
-        let use_v1 = self.use_v1_reconstructor.unwrap_or(self.config.use_v1);
-
         info!(
             file_hash = %self.file_hash,
             byte_range = ?self.byte_range,
-            algorithm = if use_v1 { "v1" } else { "v2" },
             "Starting file reconstruction"
         );
 
-        let result = if use_v1 {
-            self.run_v1().await
-        } else {
-            self.run_v2().await
-        };
-
-        match &result {
-            Ok(bytes_written) => info!(bytes_written, "File reconstruction completed successfully"),
-            Err(e) => info!(error = %e, "File reconstruction failed"),
-        }
-
-        result
-    }
-
-    /// Runs file reconstruction using the V1 algorithm (FileReconstructorV1).
-    /// Returns the number of bytes written.
-    pub async fn run_v1(self) -> Result<u64> {
-        let Self {
-            client,
-            file_hash,
-            byte_range,
-            output,
-            progress_updater,
-            config: _,
-            custom_buffer_semaphore: _,
-            cache_config,
-            use_v1_reconstructor: _,
-        } = self;
-
-        let v1_reconstructor = FileReconstructorV1::new(client, &cache_config);
-
-        let bytes_written = match output {
-            DataOutput::File { path, offset: _ } => {
-                if xet_config().client.reconstruct_write_sequentially {
-                    let output = sequential_output_from_filepath(&path).map_err(FileReconstructionError::from)?;
-                    v1_reconstructor
-                        .get_file_with_sequential_writer(&file_hash, byte_range, output, progress_updater)
-                        .await?
-                } else {
-                    let writer = SeekingOutputProvider::new_file_provider(path);
-                    v1_reconstructor
-                        .get_file_with_parallel_writer(&file_hash, byte_range, &writer, progress_updater)
-                        .await?
-                }
-            },
-            DataOutput::SequentialWriter(writer) => {
-                let output = sequential_output_from_writer(writer);
-                v1_reconstructor
-                    .get_file_with_sequential_writer(&file_hash, byte_range, output, progress_updater)
-                    .await?
-            },
-        };
-
-        Ok(bytes_written)
-    }
-
-    /// Runs through the file reconstruction process using the new controlled method.
-    /// Returns the number of bytes written.
-    pub async fn run_v2(self) -> Result<u64> {
         let Self {
             client,
             file_hash,
@@ -193,8 +102,6 @@ impl FileReconstructor {
             progress_updater: _,
             config,
             custom_buffer_semaphore,
-            cache_config: _,
-            use_v1_reconstructor: _,
         } = self;
 
         let requested_range = byte_range.unwrap_or_else(FileRange::full);
@@ -296,6 +203,8 @@ impl FileReconstructor {
             bytes_written, total_bytes_scheduled,
             "Bytes written ({bytes_written}) should match total bytes scheduled ({total_bytes_scheduled})"
         );
+
+        info!(bytes_written, "File reconstruction completed successfully");
 
         Ok(bytes_written)
     }

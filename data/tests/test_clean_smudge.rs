@@ -10,24 +10,20 @@ test_set_constants! {
     MAX_XORB_CHUNKS = 8;
 }
 
-/// Runs clean/smudge test with all combinations of (use_v1_reconstructor, use_test_server, sequential).
+/// Runs clean/smudge test with all combinations of (use_test_server, sequential).
 /// Each combination runs sequentially with its own HydrateDehydrateTest instance to avoid
 /// too many open files.
 pub async fn check_clean_smudge_files(file_list: &[(impl AsRef<str> + Clone, usize)]) {
-    for use_v1 in [false, true] {
-        for use_server in [false, true] {
-            for sequential in [true, false] {
-                eprintln!(
-                    "Testing use_v1_reconstructor={use_v1}, use_test_server={use_server}, sequential={sequential}"
-                );
+    for use_server in [false, true] {
+        for sequential in [true, false] {
+            eprintln!("Testing use_test_server={use_server}, sequential={sequential}");
 
-                let mut ts = HydrateDehydrateTest::new(use_v1, use_server);
-                create_random_files(&ts.src_dir, file_list, 0);
+            let mut ts = HydrateDehydrateTest::new(use_server);
+            create_random_files(&ts.src_dir, file_list, 0);
 
-                ts.dehydrate(sequential).await;
-                ts.hydrate().await;
-                ts.verify_src_dest_match();
-            }
+            ts.dehydrate(sequential).await;
+            ts.hydrate().await;
+            ts.verify_src_dest_match();
         }
     }
 }
@@ -36,23 +32,19 @@ pub async fn check_clean_smudge_files(file_list: &[(impl AsRef<str> + Clone, usi
 ///  - takes a slice of `(String, Vec<(u64, u64)>)` which fully specifies each file.
 ///  - for each file, calls `create_random_multipart_file` with the given segments.
 async fn check_clean_smudge_files_multipart(file_specs: &[(String, Vec<(usize, u64)>)]) {
-    for use_v1 in [false, true] {
-        for use_server in [false, true] {
-            for sequential in [true, false] {
-                eprintln!(
-                    "Testing use_v1_reconstructor={use_v1}, use_test_server={use_server}, sequential={sequential}"
-                );
+    for use_server in [false, true] {
+        for sequential in [true, false] {
+            eprintln!("Testing use_test_server={use_server}, sequential={sequential}");
 
-                let mut ts = HydrateDehydrateTest::new(use_v1, use_server);
+            let mut ts = HydrateDehydrateTest::new(use_server);
 
-                for (file_name, segments) in file_specs {
-                    create_random_multipart_file(ts.src_dir.join(file_name), segments);
-                }
-
-                ts.dehydrate(sequential).await;
-                ts.hydrate().await;
-                ts.verify_src_dest_match();
+            for (file_name, segments) in file_specs {
+                create_random_multipart_file(ts.src_dir.join(file_name), segments);
             }
+
+            ts.dehydrate(sequential).await;
+            ts.hydrate().await;
+            ts.verify_src_dest_match();
         }
     }
 }

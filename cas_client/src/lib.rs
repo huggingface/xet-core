@@ -11,8 +11,6 @@ pub use crate::error::CasClientError;
 pub mod adaptive_concurrency;
 mod error;
 pub mod exports;
-#[cfg(not(target_family = "wasm"))]
-pub mod file_reconstruction_v1;
 pub mod http_client;
 mod interface;
 #[cfg(not(target_family = "wasm"))]
@@ -24,13 +22,6 @@ pub mod retry_wrapper;
 pub mod upload_progress_stream;
 
 pub mod client_testing_utils;
-
-// Re-export commonly used types from file_reconstruction_v1
-#[cfg(not(target_family = "wasm"))]
-pub use file_reconstruction_v1::{
-    FileProvider, FileReconstructorV1, SeekingOutputProvider, SequentialOutput, sequential_output_from_filepath,
-    sequential_output_from_writer,
-};
 
 #[cfg(not(feature = "elevated_information_level"))]
 pub const INFORMATION_LOG_LEVEL: Level = Level::DEBUG;

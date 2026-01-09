@@ -16,7 +16,6 @@ use crate::remote_client_interface::create_remote_client;
 
 /// Manages the download of files based on a hash or pointer file.
 pub struct FileDownloader {
-    config: Arc<TranslatorConfig>,
     client: Arc<dyn Client>,
 }
 
@@ -28,7 +27,7 @@ impl FileDownloader {
             .map(Cow::Borrowed)
             .unwrap_or_else(|| Cow::Owned(Ulid::new().to_string()));
         let client = create_remote_client(&config, &session_id, false)?;
-        Ok(Self { config, client })
+        Ok(Self { client })
     }
 
     #[instrument(skip_all, name = "FileDownloader::smudge_file_from_hash", fields(hash=file_id.hex()))]
@@ -42,8 +41,7 @@ impl FileDownloader {
     ) -> Result<u64> {
         let file_progress_tracker = progress_updater.map(|p| ItemProgressUpdater::item_tracker(&p, file_name, None));
 
-        let mut reconstructor =
-            FileReconstructor::new(&self.client, *file_id, output).with_cache(&self.config.data_config.cache_config);
+        let mut reconstructor = FileReconstructor::new(&self.client, *file_id, output);
 
         if let Some(range) = range {
             reconstructor = reconstructor.with_byte_range(range);
