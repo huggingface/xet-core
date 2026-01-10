@@ -19,6 +19,7 @@ mod local_client;
 #[cfg(not(target_family = "wasm"))]
 pub mod local_server;
 mod memory_client;
+mod random_xorb;
 
 pub use client_testing_utils::{ClientTestingUtils, RandomFileContents};
 pub use direct_access_client::DirectAccessClient;
@@ -27,3 +28,4 @@ pub use local_client::LocalClient;
 #[cfg(not(target_family = "wasm"))]
 pub use local_server::{LocalServer, LocalServerConfig, LocalTestServer};
 pub use memory_client::MemoryClient;
+pub use random_xorb::RandomXorb;

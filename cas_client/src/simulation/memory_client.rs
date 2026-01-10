@@ -30,7 +30,9 @@ use tokio::sync::RwLock;
 use tokio::time::{Duration, Instant};
 use tracing::{error, info};
 
+use super::client_testing_utils::{FileTermReference, RandomFileContents};
 use super::direct_access_client::DirectAccessClient;
+use super::random_xorb::RandomXorb;
 use crate::Client;
 use crate::adaptive_concurrency::AdaptiveConcurrencyController;
 #[cfg(not(target_family = "wasm"))]
@@ -50,15 +52,23 @@ lazy_static::lazy_static! {
 }
 
 /// Stored XORB data: the serialized data and the deserialized CasObject (header/footer).
-struct XorbEntry {
+struct MaterializedXorb {
     serialized_data: Bytes,
     cas_object: CasObject,
+}
+
+/// Storage for a XORB - either fully materialized or generated on-the-fly.
+enum XorbStorage {
+    /// Fully materialized XORB data stored in memory.
+    Materialized(MaterializedXorb),
+    /// XORB data generated on-the-fly from random seeds.
+    Random(RandomXorb),
 }
 
 /// In-memory client for testing purposes. Stores all data in memory using hash tables.
 pub struct MemoryClient {
     /// XORBs stored by hash
-    xorbs: RwLock<HashMap<MerkleHash, XorbEntry>>,
+    xorbs: RwLock<HashMap<MerkleHash, XorbStorage>>,
     /// In-memory shard for file reconstruction info
     shard: RwLock<MDBInMemoryShard>,
     /// Global dedup lookup: chunk_hash -> shard bytes
@@ -84,9 +94,131 @@ impl MemoryClient {
         })
     }
 
-    /// Read the footer info from a stored XORB.
-    fn read_xorb_footer_from_entry(entry: &XorbEntry) -> &CasObject {
-        &entry.cas_object
+    /// Inserts a RandomXorb into the client's storage and registers it in the shard
+    /// for CAS block lookups. Returns the xorb hash.
+    ///
+    /// This allows storing XORBs that generate their data on-the-fly,
+    /// enabling testing with massive files without storing all data in memory.
+    pub async fn insert_random_xorb(&self, xorb: RandomXorb) -> Result<MerkleHash> {
+        use mdb_shard::cas_structs::{CASChunkSequenceEntry, CASChunkSequenceHeader, MDBCASInfo};
+
+        let hash = xorb.xorb_hash();
+        let cas = xorb.get_cas_object();
+
+        // Create CAS block entries for each chunk
+        let mut chunk_entries = Vec::with_capacity(xorb.num_chunks() as usize);
+        let mut byte_offset = 0u32;
+
+        for i in 0..xorb.num_chunks() {
+            let chunk_size = xorb.chunk_size(i).unwrap();
+            chunk_entries.push(CASChunkSequenceEntry {
+                chunk_hash: xorb.chunk_hash(i).unwrap(),
+                chunk_byte_range_start: byte_offset,
+                unpacked_segment_bytes: chunk_size,
+                flags: 0,
+                _unused: 0,
+            });
+            byte_offset += chunk_size;
+        }
+
+        let cas_info = MDBCASInfo {
+            metadata: CASChunkSequenceHeader::new(
+                hash,
+                xorb.num_chunks(),
+                cas.info.unpacked_chunk_offsets.last().copied().unwrap_or(0),
+            ),
+            chunks: chunk_entries,
+        };
+
+        {
+            let mut shard = self.shard.write().await;
+            shard.add_cas_block(cas_info)?;
+        }
+
+        self.xorbs.write().await.insert(hash, XorbStorage::Random(xorb));
+        Ok(hash)
+    }
+
+    /// Upload a random file using lazy generation with RandomXorb.
+    ///
+    /// This uses `RandomXorb` to generate XORB data on-the-fly, allowing testing
+    /// with massive files without storing all data in memory.
+    ///
+    /// Each term is defined as `(xorb_seed, (chunk_start, chunk_end))` where:
+    /// - `xorb_seed` determines the random data for that XORB
+    /// - `chunk_start` and `chunk_end` define the range of chunks to include
+    pub async fn insert_random_lazy_file(
+        &self,
+        term_spec: &[(u64, (u64, u64))],
+        chunk_size: usize,
+    ) -> Result<RandomFileContents> {
+        use mdb_shard::file_structs::{FileDataSequenceEntry, FileDataSequenceHeader, MDBFileInfo};
+
+        // Collect max chunk count needed for each xorb seed
+        let mut xorb_num_chunks = std::collections::HashMap::<u64, u64>::new();
+        for &(xorb_seed, (_, chunk_idx_end)) in term_spec {
+            let c = xorb_num_chunks.entry(xorb_seed).or_default();
+            *c = (*c).max(chunk_idx_end);
+        }
+
+        // Create and register RandomXorbs
+        let mut random_xorbs = std::collections::HashMap::<u64, RandomXorb>::new();
+        for (&xorb_seed, &n_chunks) in &xorb_num_chunks {
+            let xorb = RandomXorb::from_seed(xorb_seed, n_chunks as u32, chunk_size as u32);
+            self.insert_random_xorb(xorb.clone()).await?;
+            random_xorbs.insert(xorb_seed, xorb);
+        }
+
+        // Build file info from terms
+        let mut file_segments = Vec::new();
+        let mut chunk_file_hashes = Vec::new();
+        let mut term_infos = Vec::new();
+        let mut file_data = Vec::new();
+
+        for &(xorb_seed, (chunk_start, chunk_end)) in term_spec {
+            let xorb = random_xorbs.get(&xorb_seed).unwrap();
+            let (c_start, c_end) = (chunk_start as u32, chunk_end as u32);
+
+            chunk_file_hashes.extend(xorb.chunk_hash_sizes(c_start, c_end));
+
+            let term_data = xorb.get_chunk_range_data(c_start, c_end).unwrap_or_default();
+            file_data.extend_from_slice(&term_data);
+
+            file_segments.push(FileDataSequenceEntry::new(
+                xorb.xorb_hash(),
+                xorb.chunk_range_size(c_start, c_end) as usize,
+                chunk_start as usize,
+                chunk_end as usize,
+            ));
+
+            term_infos.push(FileTermReference {
+                xorb_hash: xorb.xorb_hash(),
+                chunk_start: c_start,
+                chunk_end: c_end,
+                data: term_data,
+                chunk_hashes: xorb.chunk_hashes_range(c_start, c_end),
+            });
+        }
+
+        let file_hash = merklehash::file_hash_with_salt(&chunk_file_hashes, &[0; 32]);
+
+        // Add file reconstruction info to shard
+        {
+            let mut shard = self.shard.write().await;
+            shard.add_file_reconstruction_info(MDBFileInfo {
+                metadata: FileDataSequenceHeader::new(file_hash, file_segments.len(), false, false),
+                segments: file_segments,
+                verification: vec![],
+                metadata_ext: None,
+            })?;
+        }
+
+        Ok(RandomFileContents {
+            file_hash,
+            data: Bytes::from(file_data),
+            xorbs: std::collections::HashMap::new(),
+            terms: term_infos,
+        })
     }
 
     /// Applies the configured API delay if set.
@@ -155,15 +287,22 @@ impl DirectAccessClient for MemoryClient {
 
     async fn get_full_xorb(&self, hash: &MerkleHash) -> Result<Bytes> {
         let xorbs = self.xorbs.read().await;
-        let entry = xorbs.get(hash).ok_or_else(|| {
+        let storage = xorbs.get(hash).ok_or_else(|| {
             error!("Unable to find xorb in memory CAS {:?}", hash);
             CasClientError::XORBNotFound(*hash)
         })?;
 
-        let mut reader = BufReader::new(Cursor::new(&entry.serialized_data));
-        let cas = CasObject::deserialize(&mut reader)?;
-        let result = cas.get_all_bytes(&mut reader)?;
-        Ok(Bytes::from(result))
+        match storage {
+            XorbStorage::Materialized(entry) => {
+                let mut reader = BufReader::new(Cursor::new(&entry.serialized_data));
+                let cas = CasObject::deserialize(&mut reader)?;
+                let result = cas.get_all_bytes(&mut reader)?;
+                Ok(Bytes::from(result))
+            },
+            XorbStorage::Random(xorb) => xorb
+                .get_chunk_range_data(0, xorb.num_chunks())
+                .ok_or(CasClientError::XORBNotFound(*hash)),
+        }
     }
 
     async fn get_xorb_ranges(&self, hash: &MerkleHash, chunk_ranges: Vec<(u32, u32)>) -> Result<Vec<Bytes>> {
@@ -172,24 +311,40 @@ impl DirectAccessClient for MemoryClient {
         }
 
         let xorbs = self.xorbs.read().await;
-        let entry = xorbs.get(hash).ok_or_else(|| {
+        let storage = xorbs.get(hash).ok_or_else(|| {
             error!("Unable to find xorb in memory CAS {:?}", hash);
             CasClientError::XORBNotFound(*hash)
         })?;
 
-        let mut reader = BufReader::new(Cursor::new(&entry.serialized_data));
-        let cas = CasObject::deserialize(&mut reader)?;
+        match storage {
+            XorbStorage::Materialized(entry) => {
+                let mut reader = BufReader::new(Cursor::new(&entry.serialized_data));
+                let cas = CasObject::deserialize(&mut reader)?;
 
-        let mut ret: Vec<Bytes> = Vec::new();
-        for r in chunk_ranges {
-            if r.0 >= r.1 {
-                ret.push(Bytes::new());
-                continue;
-            }
-            let data = cas.get_bytes_by_chunk_range(&mut reader, r.0, r.1)?;
-            ret.push(Bytes::from(data));
+                let mut ret: Vec<Bytes> = Vec::new();
+                for r in chunk_ranges {
+                    if r.0 >= r.1 {
+                        ret.push(Bytes::new());
+                        continue;
+                    }
+                    let data = cas.get_bytes_by_chunk_range(&mut reader, r.0, r.1)?;
+                    ret.push(Bytes::from(data));
+                }
+                Ok(ret)
+            },
+            XorbStorage::Random(xorb) => {
+                let mut ret: Vec<Bytes> = Vec::new();
+                for r in chunk_ranges {
+                    if r.0 >= r.1 {
+                        ret.push(Bytes::new());
+                        continue;
+                    }
+                    let data = xorb.get_chunk_range_data(r.0, r.1).ok_or(CasClientError::XORBNotFound(*hash))?;
+                    ret.push(data);
+                }
+                Ok(ret)
+            },
         }
-        Ok(ret)
     }
 
     async fn xorb_length(&self, hash: &MerkleHash) -> Result<u32> {
@@ -203,11 +358,15 @@ impl DirectAccessClient for MemoryClient {
 
     async fn xorb_footer(&self, hash: &MerkleHash) -> Result<CasObject> {
         let xorbs = self.xorbs.read().await;
-        let entry = xorbs.get(hash).ok_or_else(|| {
+        let storage = xorbs.get(hash).ok_or_else(|| {
             error!("Unable to find xorb in memory CAS {:?}", hash);
             CasClientError::XORBNotFound(*hash)
         })?;
-        Ok(entry.cas_object.clone())
+
+        match storage {
+            XorbStorage::Materialized(entry) => Ok(entry.cas_object.clone()),
+            XorbStorage::Random(xorb) => Ok(xorb.get_cas_object()),
+        }
     }
 
     async fn get_file_size(&self, hash: &MerkleHash) -> Result<u64> {
@@ -255,27 +414,47 @@ impl DirectAccessClient for MemoryClient {
 
     async fn get_xorb_raw_bytes(&self, hash: &MerkleHash, byte_range: Option<FileRange>) -> Result<Bytes> {
         let xorbs = self.xorbs.read().await;
-        let entry = xorbs.get(hash).ok_or(CasClientError::XORBNotFound(*hash))?;
-        let data = &entry.serialized_data;
+        let storage = xorbs.get(hash).ok_or(CasClientError::XORBNotFound(*hash))?;
 
-        let start = byte_range.as_ref().map(|r| r.start as usize).unwrap_or(0);
-        let end = byte_range
-            .as_ref()
-            .map(|r| r.end as usize)
-            .unwrap_or(data.len())
-            .min(data.len());
+        match storage {
+            XorbStorage::Materialized(entry) => {
+                let data = &entry.serialized_data;
 
-        if start >= data.len() {
-            return Err(CasClientError::InvalidRange);
+                let start = byte_range.as_ref().map(|r| r.start as usize).unwrap_or(0);
+                let end = byte_range
+                    .as_ref()
+                    .map(|r| r.end as usize)
+                    .unwrap_or(data.len())
+                    .min(data.len());
+
+                if start >= data.len() {
+                    return Err(CasClientError::InvalidRange);
+                }
+
+                Ok(data.slice(start..end))
+            },
+            XorbStorage::Random(xorb) => {
+                let total_len = xorb.serialized_length();
+                let start = byte_range.as_ref().map(|r| r.start).unwrap_or(0);
+                let end = byte_range.as_ref().map(|r| r.end).unwrap_or(total_len).min(total_len);
+
+                if start >= total_len {
+                    return Err(CasClientError::InvalidRange);
+                }
+
+                Ok(xorb.get_serialized_range(start, end))
+            },
         }
-
-        Ok(data.slice(start..end))
     }
 
     async fn xorb_raw_length(&self, hash: &MerkleHash) -> Result<u64> {
         let xorbs = self.xorbs.read().await;
-        let entry = xorbs.get(hash).ok_or(CasClientError::XORBNotFound(*hash))?;
-        Ok(entry.serialized_data.len() as u64)
+        let storage = xorbs.get(hash).ok_or(CasClientError::XORBNotFound(*hash))?;
+
+        match storage {
+            XorbStorage::Materialized(entry) => Ok(entry.serialized_data.len() as u64),
+            XorbStorage::Random(xorb) => Ok(xorb.serialized_length()),
+        }
     }
 }
 
@@ -371,10 +550,10 @@ impl Client for MemoryClient {
             let mut xorbs = self.xorbs.write().await;
             xorbs.insert(
                 hash,
-                XorbEntry {
+                XorbStorage::Materialized(MaterializedXorb {
                     serialized_data: Bytes::from(serialized_cas_object.serialized_data),
                     cas_object,
-                },
+                }),
             );
         }
 
@@ -481,11 +660,14 @@ impl Client for MemoryClient {
             let mut segment = file_info.segments[s_idx].clone();
             let mut chunk_range = ChunkRange::new(segment.chunk_index_start, segment.chunk_index_end);
 
-            let entry = xorbs.get(&segment.cas_hash).ok_or_else(|| {
+            let storage = xorbs.get(&segment.cas_hash).ok_or_else(|| {
                 error!("Unable to find xorb in memory CAS {:?}", segment.cas_hash);
                 CasClientError::XORBNotFound(segment.cas_hash)
             })?;
-            let xorb_footer = Self::read_xorb_footer_from_entry(entry);
+            let xorb_footer = match storage {
+                XorbStorage::Materialized(entry) => entry.cas_object.clone(),
+                XorbStorage::Random(xorb) => xorb.get_cas_object(),
+            };
 
             // Prune first segment on chunk boundaries
             if cumulative_bytes < file_range.start {
@@ -638,15 +820,26 @@ impl Client for MemoryClient {
         }
 
         let xorbs = self.xorbs.read().await;
-        let entry = xorbs.get(&xorb_hash).ok_or_else(|| {
+        let storage = xorbs.get(&xorb_hash).ok_or_else(|| {
             error!("Unable to find xorb in memory CAS {:?}", hash);
             CasClientError::XORBNotFound(hash)
         })?;
 
-        let mut reader = BufReader::new(Cursor::new(&entry.serialized_data));
-        let cas = CasObject::deserialize(&mut reader)?;
-
-        let data = cas.get_bytes_by_chunk_range(&mut reader, fetch_term.range.start, fetch_term.range.end)?;
+        let (data, cas) = match storage {
+            XorbStorage::Materialized(entry) => {
+                let mut reader = BufReader::new(Cursor::new(&entry.serialized_data));
+                let cas = CasObject::deserialize(&mut reader)?;
+                let data = cas.get_bytes_by_chunk_range(&mut reader, fetch_term.range.start, fetch_term.range.end)?;
+                (Bytes::from(data), cas)
+            },
+            XorbStorage::Random(xorb) => {
+                let data = xorb
+                    .get_chunk_range_data(fetch_term.range.start, fetch_term.range.end)
+                    .ok_or(CasClientError::XORBNotFound(hash))?;
+                let cas = xorb.get_cas_object();
+                (data, cas)
+            },
+        };
 
         let chunk_byte_indices = {
             let mut indices = Vec::new();
@@ -663,7 +856,7 @@ impl Client for MemoryClient {
         };
 
         Ok(TermDownloadOutput {
-            data: data.into(),
+            data,
             chunk_byte_indices,
             chunk_range: fetch_term.range,
         })
@@ -727,30 +920,155 @@ fn parse_fetch_url(url: &str) -> Result<(MerkleHash, FileRange, Instant)> {
 
 #[cfg(all(test, not(target_family = "wasm")))]
 mod tests {
+    use super::super::client_testing_utils::ClientTestingUtils;
     use super::*;
 
-    /// Runs the common TestingClient trait test suite for MemoryClient.
+    fn new_client() -> Arc<dyn super::super::DirectAccessClient> {
+        MemoryClient::new()
+    }
+
     #[tokio::test]
     async fn test_common_client_suite() {
-        super::super::client_unit_testing::test_client_functionality(|| async {
-            MemoryClient::new() as std::sync::Arc<dyn super::super::DirectAccessClient>
-        })
-        .await;
+        super::super::client_unit_testing::test_client_functionality(|| async { new_client() }).await;
     }
 
     #[tokio::test(start_paused = true)]
     async fn test_url_expiration() {
-        super::super::client_unit_testing::test_url_expiration_functionality(|| async {
-            MemoryClient::new() as std::sync::Arc<dyn super::super::DirectAccessClient>
-        })
-        .await;
+        super::super::client_unit_testing::test_url_expiration_functionality(|| async { new_client() }).await;
     }
 
     #[tokio::test(start_paused = true)]
     async fn test_api_delay() {
-        super::super::client_unit_testing::test_api_delay_functionality(|| async {
-            MemoryClient::new() as std::sync::Arc<dyn super::super::DirectAccessClient>
-        })
-        .await;
+        super::super::client_unit_testing::test_api_delay_functionality(|| async { new_client() }).await;
+    }
+
+    /// Comprehensive test for RandomXorb insertion and data access.
+    #[tokio::test]
+    async fn test_random_xorb() {
+        let client = MemoryClient::new();
+
+        // Basic insertion and existence
+        let xorb = RandomXorb::from_seed(42, 5, 1024);
+        let xorb_hash = xorb.xorb_hash();
+        let returned_hash = client.insert_random_xorb(xorb.clone()).await.unwrap();
+        assert_eq!(xorb_hash, returned_hash);
+        assert!(client.xorb_exists(&xorb_hash).await.unwrap());
+        assert_eq!(client.list_xorbs().await.unwrap(), vec![xorb_hash]);
+
+        // Full and partial data retrieval
+        let full_data = client.get_full_xorb(&xorb_hash).await.unwrap();
+        assert_eq!(full_data, xorb.get_chunk_range_data(0, 5).unwrap());
+
+        let range_data = client.get_xorb_ranges(&xorb_hash, vec![(1, 3)]).await.unwrap();
+        assert_eq!(range_data[0], xorb.get_chunk_range_data(1, 3).unwrap());
+
+        // Footer/CasObject correctness
+        let footer = client.xorb_footer(&xorb_hash).await.unwrap();
+        let expected_footer = xorb.get_cas_object();
+        assert_eq!(footer.info.num_chunks, expected_footer.info.num_chunks);
+        assert_eq!(footer.info.cashash, expected_footer.info.cashash);
+        assert_eq!(footer.info.chunk_hashes, expected_footer.info.chunk_hashes);
+
+        // Raw serialized bytes
+        let raw_len = client.xorb_raw_length(&xorb_hash).await.unwrap();
+        assert_eq!(raw_len, xorb.serialized_length());
+        assert_eq!(client.get_xorb_raw_bytes(&xorb_hash, None).await.unwrap(), xorb.get_full_serialized());
+
+        let partial = client
+            .get_xorb_raw_bytes(&xorb_hash, Some(FileRange::new(10, 50)))
+            .await
+            .unwrap();
+        assert_eq!(partial, xorb.get_serialized_range(10, 50));
+
+        // Deletion
+        client.delete_xorb(&xorb_hash).await;
+        assert!(!client.xorb_exists(&xorb_hash).await.unwrap());
+    }
+
+    /// Test RandomXorb with large chunk count and scattered range access.
+    #[tokio::test]
+    async fn test_random_xorb_large() {
+        let client = MemoryClient::new();
+        let xorb = RandomXorb::from_seed(12345, 100, 4096);
+        let xorb_hash = client.insert_random_xorb(xorb.clone()).await.unwrap();
+
+        let ranges = vec![(0, 10), (50, 60), (90, 100)];
+        let results = client.get_xorb_ranges(&xorb_hash, ranges.clone()).await.unwrap();
+
+        for (i, (start, end)) in ranges.iter().enumerate() {
+            assert_eq!(results[i], xorb.get_chunk_range_data(*start, *end).unwrap());
+        }
+    }
+
+    /// Comprehensive test for lazy file insertion with on-the-fly xorb generation.
+    #[tokio::test]
+    async fn test_lazy_file() {
+        let client = MemoryClient::new();
+
+        // Single-term file
+        let file = client.insert_random_lazy_file(&[(1, (0, 3))], 256).await.unwrap();
+        assert_eq!(client.get_file_size(&file.file_hash).await.unwrap(), file.data.len() as u64);
+        assert_eq!(client.get_file_data(&file.file_hash, None).await.unwrap(), file.data);
+
+        // Multi-term file with reused xorb
+        let file2 = client
+            .insert_random_lazy_file(&[(1, (0, 2)), (2, (0, 3)), (1, (2, 4))], 512)
+            .await
+            .unwrap();
+        assert_eq!(file2.terms.len(), 3);
+        for term in &file2.terms {
+            let xorb_data = client
+                .get_xorb_ranges(&term.xorb_hash, vec![(term.chunk_start, term.chunk_end)])
+                .await
+                .unwrap();
+            assert_eq!(xorb_data[0], term.data);
+        }
+        assert_eq!(client.get_file_data(&file2.file_hash, None).await.unwrap(), file2.data);
+
+        // Range access
+        let (start, end) = (100u64, 500u64);
+        let range_data = client
+            .get_file_data(&file2.file_hash, Some(FileRange::new(start, end)))
+            .await
+            .unwrap();
+        assert_eq!(range_data.as_ref(), &file2.data[start as usize..end as usize]);
+
+        // Reconstruction workflow
+        let recon = client.get_reconstruction(&file2.file_hash, None).await.unwrap().unwrap();
+        for term in &recon.terms {
+            let xorb_hash: MerkleHash = term.hash.into();
+            for fetch_info in recon.fetch_info.get(&term.hash).unwrap() {
+                let term_data = client.get_file_term_data(xorb_hash, fetch_info.clone()).await.unwrap();
+                assert!(!term_data.data.is_empty());
+            }
+        }
+    }
+
+    /// Same term_spec on two clients should produce identical file hashes and data.
+    #[tokio::test]
+    async fn test_lazy_file_deterministic() {
+        let term_spec = &[(999, (0, 4))];
+        let file1 = MemoryClient::new().insert_random_lazy_file(term_spec, 512).await.unwrap();
+        let file2 = MemoryClient::new().insert_random_lazy_file(term_spec, 512).await.unwrap();
+        assert_eq!(file1.file_hash, file2.file_hash);
+        assert_eq!(file1.data, file2.data);
+    }
+
+    /// Verify materialized and random xorbs coexist correctly.
+    #[tokio::test]
+    async fn test_mixed_xorb_types() {
+        let client = MemoryClient::new();
+
+        let random_xorb = RandomXorb::from_seed(111, 3, 256);
+        let random_hash = client.insert_random_xorb(random_xorb).await.unwrap();
+
+        let file = client.upload_random_file(&[(222, (0, 3))], 256).await.unwrap();
+        let materialized_hash = file.terms[0].xorb_hash;
+
+        assert!(client.xorb_exists(&random_hash).await.unwrap());
+        assert!(client.xorb_exists(&materialized_hash).await.unwrap());
+        assert_eq!(client.list_xorbs().await.unwrap().len(), 2);
+        assert!(!client.get_full_xorb(&random_hash).await.unwrap().is_empty());
+        assert!(!client.get_full_xorb(&materialized_hash).await.unwrap().is_empty());
     }
 }
