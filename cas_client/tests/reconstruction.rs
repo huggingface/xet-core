@@ -6,9 +6,10 @@
 
 use std::sync::Arc;
 
-use cas_client::client_testing_utils::{ClientTestingUtils, RandomFileContents};
-use cas_client::local_server::LocalTestServer;
-use cas_client::{Client, SeekingOutputProvider, sequential_output_from_filepath};
+use cas_client::{
+    Client, ClientTestingUtils, LocalTestServer, RandomFileContents, SeekingOutputProvider,
+    sequential_output_from_filepath,
+};
 use cas_types::FileRange;
 use tempfile::NamedTempFile;
 
@@ -53,7 +54,7 @@ async fn reconstruct_parallel(
 
 /// Uploads a file with the given term specification.
 async fn upload_file(server: &LocalTestServer, term_spec: &[(u64, (u64, u64))]) -> RandomFileContents {
-    server.local_client().upload_random_file(term_spec, CHUNK_SIZE).await.unwrap()
+    server.client().upload_random_file(term_spec, CHUNK_SIZE).await.unwrap()
 }
 
 /// Tests both sequential and parallel reconstruction, verifying correctness.
@@ -171,30 +172,34 @@ async fn check_single_byte_range(server: &LocalTestServer) {
     check_reconstruction(server, &file, Some(FileRange::new(50, 51))).await;
 }
 
-/// Main test that runs all reconstruction checks with a single shared server.
-#[tokio::test]
-async fn test_reconstruction_with_local_server() {
-    let server = LocalTestServer::start().await;
-
+/// Runs all reconstruction checks with a given server.
+async fn run_all_reconstruction_checks(server: &LocalTestServer) {
     // Single-term file tests
-    check_single_term_full_file(&server).await;
-    check_single_term_many_chunks(&server).await;
+    check_single_term_full_file(server).await;
+    check_single_term_many_chunks(server).await;
 
     // Multi-term file tests
-    check_multi_term_full_file(&server).await;
-    check_many_terms(&server).await;
+    check_multi_term_full_file(server).await;
+    check_many_terms(server).await;
 
     // XORB reuse tests
-    check_xorb_reuse(&server).await;
+    check_xorb_reuse(server).await;
 
     // Range request tests
-    check_range_from_start(&server).await;
-    check_range_middle(&server).await;
-    check_range_to_end(&server).await;
-    check_range_spanning_terms(&server).await;
-    check_range_multi_term_middle(&server).await;
+    check_range_from_start(server).await;
+    check_range_middle(server).await;
+    check_range_to_end(server).await;
+    check_range_spanning_terms(server).await;
+    check_range_multi_term_middle(server).await;
 
     // Edge cases
-    check_small_range(&server).await;
-    check_single_byte_range(&server).await;
+    check_small_range(server).await;
+    check_single_byte_range(server).await;
+}
+
+/// Main test that runs all reconstruction checks with in-memory storage.
+#[tokio::test]
+async fn test_reconstruction_with_local_server() {
+    let server = LocalTestServer::start(true).await;
+    run_all_reconstruction_checks(&server).await;
 }

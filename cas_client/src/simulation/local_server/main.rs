@@ -43,15 +43,17 @@
 
 use std::path::PathBuf;
 
-use cas_client::local_server::{LocalServer, LocalServerConfig};
+use cas_client::{LocalServer, LocalServerConfig};
 use clap::Parser;
 use tracing_subscriber::EnvFilter;
 
-/// A local HTTP server that wraps LocalClient for testing and development.
+/// A local HTTP server that wraps a DirectAccessClient for testing and development.
 ///
 /// This server exposes the same REST API as the remote CAS server, allowing
 /// RemoteClient to connect and interact with locally stored CAS objects.
 /// Useful for integration testing, development, and offline workflows.
+///
+/// By default uses disk-backed storage; use --in-memory for in-memory storage.
 #[derive(Parser, Debug)]
 #[command(name = "local_cas_server")]
 #[command(version, about, long_about = None)]
@@ -62,6 +64,8 @@ struct Args {
     /// uploaded to this server will be persisted here. Multiple server
     /// instances can share the same directory for read operations, but
     /// concurrent writes should be avoided.
+    ///
+    /// Ignored when --in-memory is specified.
     #[arg(short, long, default_value = "./local_cas_data")]
     data_directory: PathBuf,
 
@@ -78,6 +82,14 @@ struct Args {
     /// Make sure this port is not already in use by another process.
     #[arg(short, long, default_value = "8080")]
     port: u16,
+
+    /// Use in-memory storage instead of disk-backed storage.
+    ///
+    /// When enabled, all data is stored in memory and will be lost when
+    /// the server stops. This is useful for testing or ephemeral workloads.
+    /// The --data-directory option is ignored when this is enabled.
+    #[arg(long, default_value = "false")]
+    in_memory: bool,
 }
 
 #[tokio::main]
@@ -91,13 +103,19 @@ async fn main() -> anyhow::Result<()> {
         data_directory: args.data_directory,
         host: args.host,
         port: args.port,
+        in_memory: args.in_memory,
     };
 
     tracing::info!("Starting local CAS server with config: {:?}", config);
-    tracing::info!("Data directory: {:?}", config.data_directory);
+    if config.in_memory {
+        tracing::info!("Storage mode: in-memory");
+    } else {
+        tracing::info!("Storage mode: disk-backed");
+        tracing::info!("Data directory: {:?}", config.data_directory);
+    }
     tracing::info!("Listening on: {}:{}", config.host, config.port);
 
-    let server = LocalServer::new(config)?;
+    let server = LocalServer::new(config).await?;
     server.run().await?;
 
     Ok(())

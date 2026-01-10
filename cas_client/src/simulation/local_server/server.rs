@@ -12,7 +12,7 @@
 //! # Example
 //!
 //! ```no_run
-//! use cas_client::local_server::{LocalServer, LocalServerConfig};
+//! use cas_client::{LocalServer, LocalServerConfig};
 //!
 //! #[tokio::main]
 //! async fn main() -> anyhow::Result<()> {
@@ -20,8 +20,9 @@
 //!         data_directory: "./data".into(),
 //!         host: "127.0.0.1".to_string(),
 //!         port: 8080,
+//!         in_memory: false,
 //!     };
-//!     let server = LocalServer::new(config)?;
+//!     let server = LocalServer::new(config).await?;
 //!     server.run().await?;
 //!     Ok(())
 //! }
@@ -39,18 +40,22 @@ use tokio::sync::oneshot;
 use tower_http::cors::CorsLayer;
 
 use super::handlers;
+use crate::RemoteClient;
 use crate::error::{CasClientError, Result};
-use crate::{LocalClient, RemoteClient};
+use crate::simulation::{DirectAccessClient, LocalClient, MemoryClient};
 
 /// Configuration for the local CAS server.
 #[derive(Clone, Debug)]
 pub struct LocalServerConfig {
     /// Directory where CAS data (XORBs, shards, indices) will be stored.
+    /// Only used when `in_memory` is false.
     pub data_directory: PathBuf,
     /// Network interface to bind to (e.g., "127.0.0.1" or "0.0.0.0").
     pub host: String,
     /// TCP port number for the HTTP server.
     pub port: u16,
+    /// Whether to use in-memory storage instead of disk-backed storage.
+    pub in_memory: bool,
 }
 
 impl Default for LocalServerConfig {
@@ -59,49 +64,57 @@ impl Default for LocalServerConfig {
             data_directory: PathBuf::from("./local_cas_data"),
             host: "127.0.0.1".to_string(),
             port: 8080,
+            in_memory: false,
         }
     }
 }
 
-/// A local HTTP server that wraps `LocalClient` and exposes CAS operations via REST API.
+/// A local HTTP server that wraps a `DirectAccessClient` and exposes CAS operations via REST API.
 ///
 /// This server implements the same API that `RemoteClient` expects, making it useful for:
 /// - Integration testing without a remote backend
 /// - Local development and debugging
 /// - Offline CAS workflows
+///
+/// The server can use either a disk-backed `LocalClient` or an in-memory `MemoryClient`.
 pub struct LocalServer {
     config: LocalServerConfig,
-    client: Arc<LocalClient>,
+    client: Arc<dyn DirectAccessClient>,
 }
 
 impl LocalServer {
     /// Creates a new server with the given configuration.
     ///
-    /// This will create a new `LocalClient` pointing to the configured data directory.
-    /// The directory will be created if it doesn't exist.
-    pub fn new(config: LocalServerConfig) -> Result<Self> {
-        let client = LocalClient::new(&config.data_directory)?;
+    /// If `in_memory` is false, creates a new `LocalClient` pointing to the configured data directory.
+    /// If `in_memory` is true, creates a new `MemoryClient` (data directory is ignored).
+    pub async fn new(config: LocalServerConfig) -> Result<Self> {
+        let client: Arc<dyn DirectAccessClient> = if config.in_memory {
+            MemoryClient::new()
+        } else {
+            LocalClient::new(&config.data_directory)?
+        };
         Ok(Self { config, client })
     }
 
-    /// Creates a server from an existing `LocalClient`.
+    /// Creates a server from an existing `DirectAccessClient`.
     ///
-    /// Useful when you want to share a `LocalClient` instance between the server
+    /// Useful when you want to share a client instance between the server
     /// and other code (e.g., for testing where you want to verify server behavior
     /// against direct client access).
-    pub fn from_client(client: Arc<LocalClient>, host: String, port: u16) -> Self {
+    pub fn from_client(client: Arc<dyn DirectAccessClient>, host: String, port: u16) -> Self {
         Self {
             config: LocalServerConfig {
                 data_directory: PathBuf::new(),
                 host,
                 port,
+                in_memory: false,
             },
             client,
         }
     }
 
-    /// Returns a clone of the underlying LocalClient.
-    pub fn client(&self) -> Arc<LocalClient> {
+    /// Returns a clone of the underlying client.
+    pub fn client(&self) -> Arc<dyn DirectAccessClient> {
         self.client.clone()
     }
 
@@ -192,7 +205,7 @@ async fn shutdown_signal() {
 }
 
 /// A test server that wraps `LocalServer` and provides easy access to both
-/// `RemoteClient` (for HTTP interactions) and `LocalClient` (for direct state access).
+/// `RemoteClient` (for HTTP interactions) and `DirectAccessClient` (for direct state access).
 ///
 /// This is useful for integration tests where you want to verify that operations
 /// through the HTTP API produce the same results as direct client access.
@@ -203,13 +216,17 @@ async fn shutdown_signal() {
 /// # Example
 ///
 /// ```ignore
-/// let server = LocalTestServer::start().await;
+/// // Start with disk-backed storage
+/// let server = LocalTestServer::start(false).await;
+///
+/// // Start with in-memory storage
+/// let server = LocalTestServer::start(true).await;
 ///
 /// // Upload via RemoteClient
 /// let file = server.remote_client().upload_random_file(&[(1, (0, 5))], 123).await?;
 ///
-/// // Verify via LocalClient
-/// let stored = server.local_client().get_file_data(&file.file_hash, None).await?;
+/// // Verify via DirectAccessClient
+/// let stored = server.client().get_file_data(&file.file_hash, None).await?;
 /// assert_eq!(file.data, stored);
 /// // Server automatically shuts down when dropped
 /// ```
@@ -217,27 +234,34 @@ pub struct LocalTestServer {
     endpoint: String,
     server_shutdown_tx: Option<oneshot::Sender<()>>,
     remote_client: Arc<RemoteClient>,
-    local_client: Arc<LocalClient>,
+    client: Arc<dyn DirectAccessClient>,
 }
 
 impl LocalTestServer {
-    /// Starts a new test server with a fresh temporary data directory.
+    /// Starts a new test server.
+    ///
+    /// # Arguments
+    /// * `in_memory` - If true, uses in-memory storage; if false, uses a temporary directory on disk.
     ///
     /// The server listens on a randomly assigned available port on localhost.
-    pub async fn start() -> Self {
-        let local_client = LocalClient::temporary().await.unwrap();
-        Self::start_with_client(local_client).await
+    pub async fn start(in_memory: bool) -> Self {
+        let client: Arc<dyn DirectAccessClient> = if in_memory {
+            MemoryClient::new()
+        } else {
+            LocalClient::temporary().await.unwrap()
+        };
+        Self::start_with_client(client).await
     }
 
-    /// Starts a new test server using an existing `LocalClient`.
+    /// Starts a new test server using an existing `DirectAccessClient`.
     ///
     /// Useful when you need to pre-populate the client with data before starting the server.
-    pub async fn start_with_client(local_client: Arc<LocalClient>) -> Self {
+    pub async fn start_with_client(client: Arc<dyn DirectAccessClient>) -> Self {
         let port = Self::find_available_port();
         let host = "127.0.0.1".to_string();
         let endpoint = format!("http://{}:{}", host, port);
 
-        let server = LocalServer::from_client(local_client.clone(), host, port);
+        let server = LocalServer::from_client(client.clone(), host, port);
         let (shutdown_tx, shutdown_rx) = oneshot::channel();
 
         tokio::spawn(async move {
@@ -252,7 +276,7 @@ impl LocalTestServer {
             endpoint,
             server_shutdown_tx: Some(shutdown_tx),
             remote_client,
-            local_client,
+            client,
         }
     }
 
@@ -266,9 +290,9 @@ impl LocalTestServer {
         &self.remote_client
     }
 
-    /// Returns the underlying `LocalClient` for direct state access.
-    pub fn local_client(&self) -> &Arc<LocalClient> {
-        &self.local_client
+    /// Returns the underlying `DirectAccessClient` for direct state access.
+    pub fn client(&self) -> &Arc<dyn DirectAccessClient> {
+        &self.client
     }
 
     fn find_available_port() -> u16 {
@@ -288,9 +312,9 @@ impl Drop for LocalTestServer {
 mod tests {
     use cas_types::FileRange;
 
+    use super::super::super::ClientTestingUtils;
     use super::*;
     use crate::Client;
-    use crate::client_testing_utils::ClientTestingUtils;
 
     const CHUNK_SIZE: usize = 123;
 
@@ -303,7 +327,7 @@ mod tests {
             .upload_random_file(&[(1, (0, 5))], CHUNK_SIZE)
             .await
             .unwrap();
-        let local_data = server.local_client().get_file_data(&file.file_hash, None).await.unwrap();
+        let local_data = server.client().get_file_data(&file.file_hash, None).await.unwrap();
         assert_eq!(file.data, local_data);
 
         // Full file reconstruction - compare remote and local
@@ -314,7 +338,7 @@ mod tests {
             .unwrap()
             .unwrap();
         let local_recon = server
-            .local_client()
+            .client()
             .get_reconstruction(&file.file_hash, None)
             .await
             .unwrap()
@@ -338,7 +362,7 @@ mod tests {
 
         // Upload multi-xorb file
         let term_spec = &[(1, (0, 3)), (2, (0, 2)), (1, (3, 5))];
-        let multi_file = server.local_client().upload_random_file(term_spec, CHUNK_SIZE).await.unwrap();
+        let multi_file = server.client().upload_random_file(term_spec, CHUNK_SIZE).await.unwrap();
         let multi_recon = server
             .remote_client()
             .get_reconstruction(&multi_file.file_hash, None)
@@ -360,7 +384,7 @@ mod tests {
             .unwrap()
             .unwrap();
         let (local_mdb, _) = server
-            .local_client()
+            .client()
             .get_file_reconstruction_info(&file.file_hash)
             .await
             .unwrap()
@@ -375,7 +399,7 @@ mod tests {
             .await
             .unwrap();
         let local_shard = server
-            .local_client()
+            .client()
             .query_for_global_dedup_shard("default", &first_chunk_hash)
             .await
             .unwrap();
@@ -442,15 +466,11 @@ mod tests {
         let http_client = reqwest::Client::new();
 
         // Single XORB file
-        let file1 = server
-            .local_client()
-            .upload_random_file(&[(1, (0, 5))], CHUNK_SIZE)
-            .await
-            .unwrap();
+        let file1 = server.client().upload_random_file(&[(1, (0, 5))], CHUNK_SIZE).await.unwrap();
 
         // Multi-XORB file
         let term_spec = &[(1, (0, 3)), (2, (0, 2)), (1, (3, 5))];
-        let multi_file = server.local_client().upload_random_file(term_spec, CHUNK_SIZE).await.unwrap();
+        let multi_file = server.client().upload_random_file(term_spec, CHUNK_SIZE).await.unwrap();
 
         // Verify single XORB URLs are HTTP
         let recon1 = server
@@ -517,7 +537,7 @@ mod tests {
     async fn check_reconstruction_term_hashes_match(server: &LocalTestServer) {
         // Upload a multi-term file
         let term_spec = &[(1, (0, 3)), (2, (0, 2)), (1, (3, 5))];
-        let file = server.local_client().upload_random_file(term_spec, CHUNK_SIZE).await.unwrap();
+        let file = server.client().upload_random_file(term_spec, CHUNK_SIZE).await.unwrap();
 
         // Get reconstruction via remote client
         let recon = server
@@ -541,7 +561,7 @@ mod tests {
     async fn check_downloaded_terms_match_expected_data(server: &LocalTestServer) {
         // Upload a file with known term structure
         let term_spec = &[(1, (0, 4)), (2, (0, 3))];
-        let file = server.local_client().upload_random_file(term_spec, CHUNK_SIZE).await.unwrap();
+        let file = server.client().upload_random_file(term_spec, CHUNK_SIZE).await.unwrap();
 
         // Get reconstruction
         let recon = server
@@ -563,7 +583,7 @@ mod tests {
         }
 
         // Verify the complete file can be retrieved correctly via LocalClient
-        let retrieved_data = server.local_client().get_file_data(&file.file_hash, None).await.unwrap();
+        let retrieved_data = server.client().get_file_data(&file.file_hash, None).await.unwrap();
         assert_eq!(retrieved_data, file.data);
 
         // Verify term_matches works correctly for each term
@@ -576,7 +596,7 @@ mod tests {
     async fn check_complete_file_reconstruction(server: &LocalTestServer) {
         // Upload a multi-term file
         let term_spec = &[(1, (0, 3)), (2, (0, 2)), (1, (3, 5))];
-        let file = server.local_client().upload_random_file(term_spec, CHUNK_SIZE).await.unwrap();
+        let file = server.client().upload_random_file(term_spec, CHUNK_SIZE).await.unwrap();
 
         // Reconstruct file from term data
         let mut reconstructed = Vec::new();
@@ -596,11 +616,7 @@ mod tests {
 
     /// Verifies chunk hashes in RandomFileContents match expected values.
     async fn check_chunk_hashes_correctness(server: &LocalTestServer) {
-        let file = server
-            .local_client()
-            .upload_random_file(&[(1, (0, 3))], CHUNK_SIZE)
-            .await
-            .unwrap();
+        let file = server.client().upload_random_file(&[(1, (0, 3))], CHUNK_SIZE).await.unwrap();
 
         // Verify we have the expected number of chunks
         assert_eq!(file.terms.len(), 1);
@@ -615,23 +631,34 @@ mod tests {
         }
     }
 
-    /// Main test that runs all server checks with a single shared server instance.
+    /// Runs all server checks for a given test server instance.
+    async fn run_all_server_checks(server: &LocalTestServer) {
+        check_basic_correctness(server).await;
+        check_error_handling(server).await;
+        check_url_transformation(server).await;
+        check_reconstruction_term_hashes_match(server).await;
+        check_downloaded_terms_match_expected_data(server).await;
+        check_complete_file_reconstruction(server).await;
+        check_chunk_hashes_correctness(server).await;
+    }
+
+    /// Main test that runs all server checks with both in-memory and disk-backed storage.
     #[tokio::test]
     async fn test_local_server() {
-        // Verify server creation works
-        let temp_client = LocalClient::temporary().await.unwrap();
-        let temp_server = LocalServer::from_client(temp_client.clone(), "127.0.0.1".to_string(), 0);
-        assert!(temp_server.client().get_all_entries().unwrap().is_empty());
+        // Test with in-memory storage
+        {
+            tracing::info!("Testing with in-memory storage");
+            let server = LocalTestServer::start(true).await;
+            assert!(server.client().list_xorbs().await.unwrap().is_empty());
+            run_all_server_checks(&server).await;
+        }
 
-        // Start test server for HTTP operations
-        let server = LocalTestServer::start().await;
-
-        check_basic_correctness(&server).await;
-        check_error_handling(&server).await;
-        check_url_transformation(&server).await;
-        check_reconstruction_term_hashes_match(&server).await;
-        check_downloaded_terms_match_expected_data(&server).await;
-        check_complete_file_reconstruction(&server).await;
-        check_chunk_hashes_correctness(&server).await;
+        // Test with disk-backed storage
+        {
+            tracing::info!("Testing with disk-backed storage");
+            let server = LocalTestServer::start(false).await;
+            assert!(server.client().list_xorbs().await.unwrap().is_empty());
+            run_all_server_checks(&server).await;
+        }
     }
 }

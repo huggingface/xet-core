@@ -89,7 +89,7 @@ wiremock = { workspace = true }
 # Local CAS server binary - wraps LocalClient with HTTP API for testing
 [[bin]]
 name = "local_cas_server"
-path = "src/local_server/main.rs"
+path = "src/simulation/local_server/main.rs"
 
 [[bin]]
 name = "simulation_server"

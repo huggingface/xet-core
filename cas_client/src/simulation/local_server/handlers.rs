@@ -13,7 +13,6 @@
 //!
 //! Errors are mapped to appropriate HTTP status codes via `error_to_response`.
 
-use std::path::PathBuf;
 use std::sync::Arc;
 
 use axum::Json;
@@ -34,7 +33,7 @@ use http::header::RANGE;
 use merklehash::MerkleHash;
 
 use crate::error::CasClientError;
-use crate::{Client, LocalClient};
+use crate::simulation::DirectAccessClient;
 
 /// Represents the different forms a Range header can take.
 pub enum FileRangeVariant {
@@ -122,15 +121,23 @@ fn error_to_response(e: CasClientError) -> Response {
 ///
 /// The term encodes the local file path that the LocalClient uses.
 /// This allows the fetch_term endpoint to retrieve the data.
-fn encode_term(file_path: &str) -> String {
-    URL_SAFE_NO_PAD.encode(file_path.as_bytes())
+/// Encodes a fetch term for HTTP transport.
+///
+/// The encoded term contains:
+/// - xorb_hash: The XORB hash (hex encoded)
+///
+/// The byte range to fetch comes from the HTTP Range header, not encoded in the term.
+fn encode_term(xorb_hash: &MerkleHash) -> String {
+    URL_SAFE_NO_PAD.encode(xorb_hash.hex().as_bytes())
 }
 
-/// Decodes a URL-safe base64 term string back into file path.
-fn decode_term(term: &str) -> Result<PathBuf, String> {
+/// Decodes a fetch term back into its components.
+///
+/// Returns the xorb_hash.
+fn decode_term(term: &str) -> Result<MerkleHash, String> {
     let bytes = URL_SAFE_NO_PAD.decode(term).map_err(|e| format!("Invalid base64: {e}"))?;
-    let file_path = String::from_utf8(bytes).map_err(|e| format!("Invalid UTF-8: {e}"))?;
-    Ok(PathBuf::from(file_path))
+    let hash_hex = String::from_utf8(bytes).map_err(|e| format!("Invalid UTF-8: {e}"))?;
+    MerkleHash::from_hex(&hash_hex).map_err(|e| format!("Invalid hash: {e}"))
 }
 
 /// Extracts the base URL from request headers (Host header).
@@ -142,46 +149,21 @@ fn get_base_url(headers: &HeaderMap) -> String {
         .unwrap_or_else(|| "http://localhost".to_string())
 }
 
-/// Transforms fetch_info URLs from local file paths to HTTP URLs.
+/// Transforms fetch_info URLs from client-internal format to HTTP URLs.
 ///
-/// LocalClient generates URLs in a local format. This function transforms them
-/// into proper HTTP URLs that point to the /v1/fetch_term endpoint.
+/// DirectAccessClient implementations generate URLs in their own internal format.
+/// This function transforms them into HTTP URLs that point to the /v1/fetch_term endpoint.
+/// The byte range to fetch comes from url_range (sent as HTTP Range header by client).
 fn transform_fetch_info_urls(
     fetch_info: &mut std::collections::HashMap<HexMerkleHash, Vec<CASReconstructionFetchInfo>>,
     base_url: &str,
 ) {
-    for fetch_infos in fetch_info.values_mut() {
+    for (xorb_hash, fetch_infos) in fetch_info.iter_mut() {
+        let xorb_hash: MerkleHash = (*xorb_hash).into();
+        let encoded_term = encode_term(&xorb_hash);
         for fi in fetch_infos.iter_mut() {
-            // The original URL from LocalClient is in the format:
-            // "/path/to/file":start:end:timestamp
-            // We extract the file path and encode it for the HTTP URL.
-            // The byte range is already in url_range, so we just need the file path.
-
-            // Parse the local URL format to extract the file path
-            let file_path = extract_file_path_from_local_url(&fi.url);
-
-            // Create the HTTP URL with the encoded term
-            let encoded_term = encode_term(&file_path);
             fi.url = format!("{base_url}/v1/fetch_term?term={encoded_term}");
         }
-    }
-}
-
-/// Extracts the file path from LocalClient's URL format.
-///
-/// LocalClient generates URLs like: "/path/to/file":start:end:timestamp
-/// This extracts just the file path portion.
-fn extract_file_path_from_local_url(local_url: &str) -> String {
-    // The format is: "path":start:end:timestamp
-    // We need to extract the path, which is quoted
-    let mut parts = local_url.rsplitn(4, ':').collect::<Vec<_>>();
-    parts.reverse();
-
-    if !parts.is_empty() {
-        // Remove the quotes from the path
-        parts[0].trim_matches('"').to_string()
-    } else {
-        local_url.to_string()
     }
 }
 
@@ -196,7 +178,7 @@ fn extract_file_path_from_local_url(local_url: &str) -> String {
 /// The URLs in fetch_info are transformed from local file paths to HTTP URLs
 /// that point to the /v1/fetch_term endpoint.
 pub async fn get_reconstruction(
-    State(state): State<Arc<LocalClient>>,
+    State(state): State<Arc<dyn DirectAccessClient>>,
     Path(HexMerkleHash(file_id)): Path<HexMerkleHash>,
     headers: HeaderMap,
 ) -> Response {
@@ -241,7 +223,7 @@ pub async fn get_reconstruction(
 ///
 /// The URLs in fetch_info are transformed from local file paths to HTTP URLs.
 pub async fn batch_get_reconstruction(
-    State(state): State<Arc<LocalClient>>,
+    State(state): State<Arc<dyn DirectAccessClient>>,
     uri: axum::http::Uri,
     headers: HeaderMap,
 ) -> Response {
@@ -280,14 +262,18 @@ pub async fn batch_get_reconstruction(
     }
 }
 
-/// GET /v1/fetch_term?term=<base64_encoded_path>
+/// GET /v1/fetch_term?term=<base64_encoded_term>
 ///
-/// Fetches XORB data based on an encoded term.
-/// The term is a URL-safe base64-encoded file path.
-/// Supports Range header for partial downloads.
+/// Fetches raw XORB data based on an encoded term.
+/// The term contains the xorb hash. The byte range is specified via HTTP Range header.
 ///
 /// This endpoint is called by RemoteClient when fetching reconstruction terms.
-pub async fn fetch_term(State(_state): State<Arc<LocalClient>>, uri: axum::http::Uri, headers: HeaderMap) -> Response {
+/// It returns raw (compressed) bytes that the client will decompress.
+pub async fn fetch_term(
+    State(state): State<Arc<dyn DirectAccessClient>>,
+    uri: axum::http::Uri,
+    headers: HeaderMap,
+) -> Response {
     // Extract 'term' query parameter
     let term = uri.query().unwrap_or("").split('&').find_map(|param| {
         let (key, value) = param.split_once('=')?;
@@ -298,53 +284,43 @@ pub async fn fetch_term(State(_state): State<Arc<LocalClient>>, uri: axum::http:
         return (StatusCode::BAD_REQUEST, "Missing 'term' query parameter").into_response();
     };
 
-    let file_path = match decode_term(&term) {
-        Ok(p) => p,
+    let xorb_hash = match decode_term(&term) {
+        Ok(h) => h,
         Err(e) => return (StatusCode::BAD_REQUEST, format!("Invalid term: {e}")).into_response(),
     };
 
-    // Read the file directly from disk
-    let data = match std::fs::read(&file_path) {
-        Ok(d) => d,
-        Err(e) => {
-            if e.kind() == std::io::ErrorKind::NotFound {
-                return (StatusCode::NOT_FOUND, "Term data not found").into_response();
-            }
-            return (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to read data: {e}")).into_response();
-        },
+    // Get total length of the raw XORB data for Range header handling
+    let total_length = match state.xorb_raw_length(&xorb_hash).await {
+        Ok(len) => len,
+        Err(e) => return error_to_response(e),
     };
 
-    // Apply range if specified
-    let range = match parse_range_header(headers.get(RANGE)) {
+    // Parse HTTP Range header to determine which bytes to fetch
+    let byte_range = match parse_range_header(headers.get(RANGE)) {
         Ok(Some(FileRangeVariant::Normal(range))) => Some(range),
-        Ok(Some(FileRangeVariant::OpenRHS(start))) => Some(FileRange::new(start, data.len() as u64)),
+        Ok(Some(FileRangeVariant::OpenRHS(start))) => Some(FileRange::new(start, total_length)),
         Ok(Some(FileRangeVariant::Suffix(suffix))) => {
-            let len = data.len() as u64;
-            Some(FileRange::new(len.saturating_sub(suffix), len))
+            Some(FileRange::new(total_length.saturating_sub(suffix), total_length))
         },
         Ok(None) => None,
         Err((status, msg)) => return (status, msg).into_response(),
     };
 
-    let response_data = if let Some(range) = range {
-        let start = range.start as usize;
-        let end = (range.end as usize).min(data.len());
-        if start >= data.len() {
-            return (StatusCode::RANGE_NOT_SATISFIABLE, "Range start out of bounds").into_response();
-        }
-        data[start..end].to_vec()
-    } else {
-        data
-    };
-
-    (StatusCode::OK, response_data).into_response()
+    // Fetch raw (serialized/compressed) bytes from the XORB
+    match state.get_xorb_raw_bytes(&xorb_hash, byte_range).await {
+        Ok(data) => (StatusCode::OK, data).into_response(),
+        Err(e) => error_to_response(e),
+    }
 }
 
 /// GET /v1/chunks/{prefix}/{hash}
 ///
 /// Query for a global deduplication shard by chunk hash.
 /// Returns the shard data if found, 404 otherwise.
-pub async fn get_dedup_info_by_chunk(State(state): State<Arc<LocalClient>>, Path(key): Path<HexKey>) -> Response {
+pub async fn get_dedup_info_by_chunk(
+    State(state): State<Arc<dyn DirectAccessClient>>,
+    Path(key): Path<HexKey>,
+) -> Response {
     match state.query_for_global_dedup_shard(&key.prefix, &key.hash).await {
         Ok(Some(data)) => (StatusCode::OK, data).into_response(),
         Ok(None) => (StatusCode::NOT_FOUND, "Shard not found").into_response(),
@@ -356,7 +332,7 @@ pub async fn get_dedup_info_by_chunk(State(state): State<Arc<LocalClient>>, Path
 ///
 /// Check if a XORB exists in the store.
 /// Returns 200 if found, 404 otherwise.
-pub async fn head_xorb(State(state): State<Arc<LocalClient>>, Path(key): Path<HexKey>) -> Response {
+pub async fn head_xorb(State(state): State<Arc<dyn DirectAccessClient>>, Path(key): Path<HexKey>) -> Response {
     match state.get_file_reconstruction_info(&key.hash).await {
         Ok(Some(_)) => {
             let mut headers = HeaderMap::new();
@@ -373,7 +349,11 @@ pub async fn head_xorb(State(state): State<Arc<LocalClient>>, Path(key): Path<He
 /// Upload a XORB (content-addressed block) to the store.
 /// Request body: Serialized CAS object data
 /// Response: JSON indicating if the XORB was newly inserted
-pub async fn post_xorb(State(state): State<Arc<LocalClient>>, Path(key): Path<HexKey>, body: Body) -> Response {
+pub async fn post_xorb(
+    State(state): State<Arc<dyn DirectAccessClient>>,
+    Path(key): Path<HexKey>,
+    body: Body,
+) -> Response {
     let data = match collect_body(body).await {
         Ok(d) => d,
         Err(e) => return (StatusCode::BAD_REQUEST, e).into_response(),
@@ -403,7 +383,7 @@ pub async fn post_xorb(State(state): State<Arc<LocalClient>>, Path(key): Path<He
 /// Upload a shard (deduplication index) to the store.
 /// Request body: Raw shard data
 /// Response: JSON indicating if the shard was newly inserted or already existed
-pub async fn post_shard(State(state): State<Arc<LocalClient>>, body: Body) -> Response {
+pub async fn post_shard(State(state): State<Arc<dyn DirectAccessClient>>, body: Body) -> Response {
     let data = match collect_body(body).await {
         Ok(d) => d,
         Err(e) => return (StatusCode::BAD_REQUEST, e).into_response(),
@@ -432,7 +412,7 @@ pub async fn post_shard(State(state): State<Arc<LocalClient>>, body: Body) -> Re
 /// Get the size of a file.
 /// Returns Content-Length header with file size if found, 404 otherwise.
 pub async fn head_file(
-    State(state): State<Arc<LocalClient>>,
+    State(state): State<Arc<dyn DirectAccessClient>>,
     Path(HexMerkleHash(file_id)): Path<HexMerkleHash>,
 ) -> Response {
     match state.get_file_size(&file_id).await {
@@ -450,7 +430,7 @@ pub async fn head_file(
 /// Download XORB data directly.
 /// Supports Range header for partial downloads.
 pub async fn get_file_term_data(
-    State(state): State<Arc<LocalClient>>,
+    State(state): State<Arc<dyn DirectAccessClient>>,
     Path((_prefix, hash_str)): Path<(String, String)>,
     headers: HeaderMap,
 ) -> Response {
@@ -507,16 +487,11 @@ mod tests {
 
     #[test]
     fn test_encode_decode_term() {
-        let file_path = "/tmp/test/data/xorbs/abc123def456.xorb";
-        let encoded = encode_term(file_path);
-        let decoded = decode_term(&encoded).unwrap();
-        assert_eq!(decoded.to_str().unwrap(), file_path);
-    }
+        let xorb_hash = MerkleHash::from_hex(&format!("{:0>64}", "abc123")).unwrap();
 
-    #[test]
-    fn test_extract_file_path_from_local_url() {
-        let local_url = "\"/tmp/test/data/xorbs/abc123.xorb\":100:200:1234567890";
-        let file_path = extract_file_path_from_local_url(local_url);
-        assert_eq!(file_path, "/tmp/test/data/xorbs/abc123.xorb");
+        let encoded = encode_term(&xorb_hash);
+        let decoded_hash = decode_term(&encoded).unwrap();
+
+        assert_eq!(decoded_hash, xorb_hash);
     }
 }

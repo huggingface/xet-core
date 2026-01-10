@@ -21,7 +21,7 @@ pub struct FileTermReference {
     /// End chunk index (exclusive) within the XORB.
     pub chunk_end: u32,
     /// The data for this term (concatenated chunk data).
-    pub data: Vec<u8>,
+    pub data: Bytes,
     /// The chunk hashes for this term.
     pub chunk_hashes: Vec<MerkleHash>,
 }
@@ -35,7 +35,7 @@ pub struct RandomFileContents {
     /// The file hash (used for reconstruction queries).
     pub file_hash: MerkleHash,
     /// The complete file data.
-    pub data: Vec<u8>,
+    pub data: Bytes,
     /// The RawXorbData for each XORB that was created, keyed by XORB hash.
     pub xorbs: HashMap<MerkleHash, RawXorbData>,
     /// Information about each term in file order.
@@ -63,8 +63,8 @@ impl RandomFileContents {
     }
 
     /// Returns the expected data for a specific term.
-    pub fn term_data(&self, term_index: usize) -> Option<&[u8]> {
-        self.terms.get(term_index).map(|t| t.data.as_slice())
+    pub fn term_data(&self, term_index: usize) -> Option<&Bytes> {
+        self.terms.get(term_index).map(|t| &t.data)
     }
 
     /// Returns the XORB hash for a specific term.
@@ -180,7 +180,7 @@ pub trait ClientTestingUtils: Client + Send + Sync {
                 xorb_hash: xorb_h,
                 chunk_start: chunk_idx_start as u32,
                 chunk_end: chunk_idx_end as u32,
-                data: term_data,
+                data: Bytes::from(term_data),
                 chunk_hashes: term_chunk_hashes,
             });
         }
@@ -202,11 +202,11 @@ pub trait ClientTestingUtils: Client + Send + Sync {
 
         Ok(RandomFileContents {
             file_hash,
-            data: file_data,
+            data: Bytes::from(file_data),
             xorbs,
             terms: term_infos,
         })
     }
 }
 
-impl<T: Client + Send + Sync> ClientTestingUtils for T {}
+impl<T: ?Sized + Client + Send + Sync> ClientTestingUtils for T {}
