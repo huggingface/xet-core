@@ -4,11 +4,9 @@ pub use interface::Client;
 #[cfg(not(target_family = "wasm"))]
 pub use output_provider::*;
 pub use remote_client::RemoteClient;
+pub use simulation::{ClientTestingUtils, DirectAccessClient, MemoryClient, RandomFileContents};
 #[cfg(not(target_family = "wasm"))]
-pub use simulation::{
-    ClientTestingUtils, DirectAccessClient, LocalClient, LocalServer, LocalServerConfig, LocalTestServer, MemoryClient,
-    RandomFileContents,
-};
+pub use simulation::{LocalClient, LocalServer, LocalServerConfig, LocalTestServer};
 use tracing::Level;
 
 pub use crate::error::CasClientError;
@@ -24,7 +22,6 @@ mod interface;
 mod output_provider;
 pub mod remote_client;
 pub mod retry_wrapper;
-#[cfg(not(target_family = "wasm"))]
 pub mod simulation;
 pub mod upload_progress_stream;
 

@@ -7,28 +7,37 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use async_trait::async_trait;
 use bytes::Bytes;
 use cas_object::{CasObject, SerializedCasObject};
+#[cfg(not(target_family = "wasm"))]
 use cas_types::{
     BatchQueryReconstructionResponse, CASReconstructionFetchInfo, CASReconstructionTerm, ChunkRange, FileRange,
     HexMerkleHash, HttpRange, QueryReconstructionResponse,
 };
+#[cfg(target_family = "wasm")]
+use cas_types::{ChunkRange, FileRange, HttpRange};
 use mdb_shard::MDBShardInfo;
 use mdb_shard::file_structs::MDBFileInfo;
 use mdb_shard::shard_in_memory::MDBInMemoryShard;
 use merklehash::MerkleHash;
+#[cfg(not(target_family = "wasm"))]
 use more_asserts::{assert_ge, assert_gt, debug_assert_lt};
+#[cfg(not(target_family = "wasm"))]
 use progress_tracking::item_tracking::SingleItemProgressUpdater;
 use progress_tracking::upload_tracking::CompletionTracker;
 use rand::Rng;
+#[cfg(not(target_family = "wasm"))]
 use tokio::io::AsyncWriteExt;
 use tokio::sync::RwLock;
 use tokio::time::{Duration, Instant};
 use tracing::{error, info};
 
 use super::direct_access_client::DirectAccessClient;
+use crate::Client;
 use crate::adaptive_concurrency::AdaptiveConcurrencyController;
+#[cfg(not(target_family = "wasm"))]
 use crate::download_utils::TermDownloadOutput;
 use crate::error::{CasClientError, Result};
-use crate::{Client, SeekingOutputProvider, SequentialOutput};
+#[cfg(not(target_family = "wasm"))]
+use crate::{SeekingOutputProvider, SequentialOutput};
 
 lazy_static::lazy_static! {
     /// Reference instant for URL timestamps. Initialized far in the past to allow
@@ -112,7 +121,8 @@ impl Default for MemoryClient {
     }
 }
 
-#[async_trait]
+#[cfg_attr(not(target_family = "wasm"), async_trait)]
+#[cfg_attr(target_family = "wasm", async_trait(?Send))]
 impl DirectAccessClient for MemoryClient {
     fn set_fetch_term_url_expiration(&self, expiration: Duration) {
         self.url_expiration_ms.store(expiration.as_millis() as u64, Ordering::Relaxed);
@@ -269,7 +279,8 @@ impl DirectAccessClient for MemoryClient {
     }
 }
 
-#[async_trait]
+#[cfg_attr(not(target_family = "wasm"), async_trait)]
+#[cfg_attr(target_family = "wasm", async_trait(?Send))]
 impl Client for MemoryClient {
     async fn get_file_reconstruction_info(
         &self,
@@ -387,6 +398,7 @@ impl Client for MemoryClient {
         true
     }
 
+    #[cfg(not(target_family = "wasm"))]
     async fn get_reconstruction(
         &self,
         file_id: &MerkleHash,
@@ -578,6 +590,7 @@ impl Client for MemoryClient {
         }))
     }
 
+    #[cfg(not(target_family = "wasm"))]
     async fn batch_get_reconstruction(&self, file_ids: &[MerkleHash]) -> Result<BatchQueryReconstructionResponse> {
         self.apply_api_delay().await;
         let mut files = HashMap::new();
@@ -600,6 +613,7 @@ impl Client for MemoryClient {
         })
     }
 
+    #[cfg(not(target_family = "wasm"))]
     async fn get_file_term_data(
         &self,
         hash: MerkleHash,
@@ -655,6 +669,7 @@ impl Client for MemoryClient {
         })
     }
 
+    #[cfg(not(target_family = "wasm"))]
     async fn get_file_with_sequential_writer(
         self: Arc<Self>,
         hash: &MerkleHash,
@@ -669,6 +684,7 @@ impl Client for MemoryClient {
         Ok(len)
     }
 
+    #[cfg(not(target_family = "wasm"))]
     async fn get_file_with_parallel_writer(
         self: Arc<Self>,
         hash: &MerkleHash,
@@ -683,11 +699,13 @@ impl Client for MemoryClient {
     }
 }
 
+#[cfg(not(target_family = "wasm"))]
 fn generate_fetch_url(hash: &MerkleHash, byte_range: &FileRange, timestamp: Instant) -> String {
     let timestamp_ms = timestamp.saturating_duration_since(*REFERENCE_INSTANT).as_millis() as u64;
     format!("{}:{}:{}:{}", hash.hex(), byte_range.start, byte_range.end, timestamp_ms)
 }
 
+#[cfg(not(target_family = "wasm"))]
 fn parse_fetch_url(url: &str) -> Result<(MerkleHash, FileRange, Instant)> {
     let mut parts = url.rsplitn(4, ':').collect::<Vec<_>>();
     parts.reverse();
@@ -707,7 +725,7 @@ fn parse_fetch_url(url: &str) -> Result<(MerkleHash, FileRange, Instant)> {
     Ok((hash, byte_range, timestamp))
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(target_family = "wasm")))]
 mod tests {
     use super::*;
 

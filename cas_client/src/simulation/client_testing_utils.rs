@@ -81,7 +81,6 @@ impl RandomFileContents {
 /// A trait that adds testing utility functions to the Client interface.
 #[cfg_attr(not(target_family = "wasm"), async_trait::async_trait)]
 #[cfg_attr(target_family = "wasm", async_trait::async_trait(?Send))]
-#[async_trait::async_trait]
 pub trait ClientTestingUtils: Client + Send + Sync {
     /// Insert a random file into the local CAS.
     ///
