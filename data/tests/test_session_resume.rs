@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 // Run tests that determine deduplication, especially across different test subjects.
-use data::{FileUploadSession, SessionConfig};
+use data::{FileUploadSession, SessionContext};
 use deduplication::constants::{MAX_XORB_BYTES, MAX_XORB_CHUNKS, TARGET_CHUNK_SIZE};
 use tempfile::TempDir;
 use utils::{test_set_config, test_set_constants};
@@ -56,7 +56,7 @@ mod tests {
         // Set a temporary directory for the endpoint.
         let cas_dir = TempDir::new().unwrap();
 
-        let session = SessionConfig::for_local_path(cas_dir.path());
+        let session = SessionContext::for_local_path(cas_dir.path());
 
         {
             let progress_tracker = AggregatingProgressUpdater::new_aggregation_only();
@@ -128,7 +128,7 @@ mod tests {
         // Set a temporary directory for the endpoint.
         let cas_dir = TempDir::new().unwrap();
 
-        let session = SessionConfig::for_local_path(cas_dir.path());
+        let session = SessionContext::for_local_path(cas_dir.path());
 
         let mut prev_rn = 0;
 

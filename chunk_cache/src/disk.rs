@@ -1018,7 +1018,9 @@ mod tests {
             keys_and_ranges.push((key, range));
         }
 
-        let cache2 = DiskCache::initialize(&config).unwrap();
+        let cache2 =
+            DiskCache::initialize_with_capacity(&cache_root.path().to_path_buf(), DEFAULT_CHUNK_CACHE_CAPACITY)
+                .unwrap();
         for (i, (key, range)) in keys_and_ranges.iter().enumerate() {
             let get_result = cache2.get(&key, &range).await;
             assert!(get_result.is_ok(), "{i} {get_result:?}");
@@ -1078,7 +1080,7 @@ mod tests {
         let (key, range, chunk_byte_indices, data) = it.next().unwrap();
         cache.put(&key, &range, &chunk_byte_indices, &data).await.unwrap();
 
-        let cache2 = DiskCache::initialize(&config).unwrap();
+        let cache2 = DiskCache::initialize_with_capacity(&cache_root.path().to_path_buf(), capacity).unwrap();
         let get_result = cache2.get(&key, &range).await;
         assert!(get_result.is_ok());
         assert!(get_result.unwrap().is_some());

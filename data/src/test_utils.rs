@@ -9,7 +9,7 @@ use rand::prelude::*;
 use tempfile::TempDir;
 use xet_runtime::xet_config;
 
-use crate::configurations::SessionConfig;
+use crate::configurations::SessionContext;
 use crate::data_client::clean_file;
 use crate::{FileDownloader, FileUploadSession, XetFileInfo};
 
@@ -162,9 +162,9 @@ impl LocalHydrateDehydrateTest {
         FileUploadSession::new(session, progress_tracker).await.unwrap()
     }
 
-    fn create_local_session(&self) -> SessionConfig {
+    fn create_local_session(&self) -> SessionContext {
         let endpoint = format!("{}{}", xet_config().data.local_cas_scheme, self.cas_dir.display());
-        SessionConfig::new(endpoint).with_repo_paths(vec!["".into()])
+        SessionContext::new(endpoint).with_repo_paths(vec!["".into()])
     }
 
     pub async fn clean_all_files(&self, upload_session: &Arc<FileUploadSession>, sequential: bool) {

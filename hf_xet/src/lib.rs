@@ -8,7 +8,7 @@ use std::iter::IntoIterator;
 use std::sync::Arc;
 
 use data::errors::DataProcessingError;
-use data::{SessionConfig, XetFileInfo, data_client};
+use data::{SessionContext, XetFileInfo, data_client};
 use xet_runtime::xet_config;
 use itertools::Itertools;
 use progress_tracking::TrackingProgressUpdater;
@@ -60,7 +60,7 @@ pub fn upload_bytes(
             file_contents.len(),
         );
 
-        let session = SessionConfig::with_default_auth(
+        let session = SessionContext::with_default_auth(
             endpoint.unwrap_or_else(|| xet_config().data.default_cas_endpoint.clone()),
             token_info,
             refresher.map(|v| v as Arc<_>),
@@ -106,7 +106,7 @@ pub fn upload_files(
             if file_paths.len() > 3 { "..." } else { "." }
         );
 
-        let session = SessionConfig::with_default_auth(
+        let session = SessionContext::with_default_auth(
             endpoint.unwrap_or_else(|| xet_config().data.default_cas_endpoint.clone()),
             token_info,
             refresher.map(|v| v as Arc<_>),
@@ -150,7 +150,7 @@ pub fn download_files(
             if file_infos.len() > 3 { "..." } else { "." }
         );
 
-        let session = SessionConfig::with_default_auth(
+        let session = SessionContext::with_default_auth(
             endpoint.unwrap_or_else(|| xet_config().data.default_cas_endpoint.clone()),
             token_info,
             refresher.map(|v| v as Arc<_>),

@@ -13,7 +13,7 @@ mod shard_interface;
 mod xet_file;
 
 // Re-export public types
-pub use configurations::SessionConfig;
+pub use configurations::SessionContext;
 pub use deduplication::RawXorbData;
 pub use file_downloader::FileDownloader;
 pub use file_upload_session::FileUploadSession;

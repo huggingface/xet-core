@@ -4,7 +4,7 @@ use std::sync::{Arc, OnceLock};
 
 use async_trait::async_trait;
 use data::data_client::clean_file;
-use data::{FileUploadSession, SessionConfig};
+use data::{FileUploadSession, SessionContext};
 use hub_client::Operation;
 use progress_tracking::{ProgressUpdate, TrackingProgressUpdater};
 use utils::auth::TokenRefresher;
@@ -124,7 +124,7 @@ impl TransferAgent for XetAgent {
             .map_err(GitXetError::internal)?;
 
         let session_config =
-            SessionConfig::with_default_auth(cas_url, Some((token, token_expiry)), Some(token_refresher), user_agent)
+            SessionContext::with_default_auth(cas_url, Some((token, token_expiry)), Some(token_refresher), user_agent)
                 .with_session_id(session_id);
         let session = FileUploadSession::new(session_config, Some(Arc::new(xet_updater))).await?;
 

@@ -25,7 +25,7 @@ use tracing::{Instrument, Span, info_span, instrument};
 use ulid::Ulid;
 use xet_runtime::{GlobalSemaphoreHandle, XetRuntime, global_semaphore_handle, xet_config};
 
-use crate::configurations::{SessionConfig, TranslatorConfig};
+use crate::configurations::{SessionContext, TranslatorConfig};
 use crate::errors::*;
 use crate::file_cleaner::SingleFileCleaner;
 use crate::remote_client_interface::create_remote_client;
@@ -70,7 +70,7 @@ pub struct FileUploadSession {
 // Constructors
 impl FileUploadSession {
     pub async fn new(
-        session: SessionConfig,
+        session: SessionContext,
         upload_progress_updater: Option<Arc<dyn TrackingProgressUpdater>>,
     ) -> Result<Arc<FileUploadSession>> {
         let config = Arc::new(TranslatorConfig::new(session)?);
@@ -78,7 +78,7 @@ impl FileUploadSession {
     }
 
     pub async fn dry_run(
-        session: SessionConfig,
+        session: SessionContext,
         upload_progress_updater: Option<Arc<dyn TrackingProgressUpdater>>,
     ) -> Result<Arc<FileUploadSession>> {
         let config = Arc::new(TranslatorConfig::new(session)?);
@@ -539,7 +539,7 @@ mod tests {
     use tempfile::tempdir;
     use xet_runtime::XetRuntime;
 
-    use crate::configurations::SessionConfig;
+    use crate::configurations::SessionContext;
     use crate::{FileDownloader, FileUploadSession, XetFileInfo};
 
     /// Return a shared threadpool to be reused as needed.
@@ -566,7 +566,7 @@ mod tests {
                 .unwrap(),
         );
 
-        let session = SessionConfig::for_local_path(cas_path);
+        let session = SessionContext::for_local_path(cas_path);
         let upload_session = FileUploadSession::new(session, None).await.unwrap();
 
         let mut cleaner = upload_session
@@ -597,7 +597,7 @@ mod tests {
 
         let xet_file = serde_json::from_str::<XetFileInfo>(&input).unwrap();
 
-        let session = SessionConfig::for_local_path(cas_path);
+        let session = SessionContext::for_local_path(cas_path);
         let translator = FileDownloader::new(session).await.unwrap();
 
         translator

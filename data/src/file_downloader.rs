@@ -8,7 +8,7 @@ use progress_tracking::item_tracking::ItemProgressUpdater;
 use tracing::{info, instrument};
 use ulid::Ulid;
 
-use crate::configurations::{SessionConfig, TranslatorConfig};
+use crate::configurations::{SessionContext, TranslatorConfig};
 use crate::errors::*;
 use crate::prometheus_metrics;
 use crate::remote_client_interface::create_remote_client;
@@ -24,7 +24,7 @@ pub struct FileDownloader {
 
 /// Smudge operations
 impl FileDownloader {
-    pub async fn new(session: SessionConfig) -> Result<Self> {
+    pub async fn new(session: SessionContext) -> Result<Self> {
         let config = TranslatorConfig::new(session)?;
         let session_id = config
             .session

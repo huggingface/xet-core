@@ -13,7 +13,7 @@ use tracing::{Instrument, Span, info, info_span, instrument};
 use xet_runtime::utils::run_constrained_with_semaphore;
 use xet_runtime::{GlobalSemaphoreHandle, XetRuntime, global_semaphore_handle, xet_config};
 
-use crate::configurations::SessionConfig;
+use crate::configurations::SessionContext;
 use crate::errors::DataProcessingError;
 use crate::file_upload_session::CONCURRENT_FILE_INGESTION_LIMITER;
 use crate::{FileDownloader, FileUploadSession, XetFileInfo, errors};
@@ -25,7 +25,7 @@ lazy_static! {
 
 #[instrument(skip_all, name = "data_client::upload_bytes", fields(session_id = tracing::field::Empty, num_files=file_contents.len()))]
 pub async fn upload_bytes_async(
-    session: SessionConfig,
+    session: SessionContext,
     file_contents: Vec<Vec<u8>>,
     progress_updater: Option<Arc<dyn TrackingProgressUpdater>>,
 ) -> errors::Result<Vec<XetFileInfo>> {
@@ -58,7 +58,7 @@ pub async fn upload_bytes_async(
     defrag_prevented_dedup_chunks = tracing::field::Empty
     ))]
 pub async fn upload_async(
-    session: SessionConfig,
+    session: SessionContext,
     file_paths: Vec<String>,
     sha256s: Option<Vec<String>>,
     progress_updater: Option<Arc<dyn TrackingProgressUpdater>>,
@@ -102,7 +102,7 @@ pub async fn upload_async(
 
 #[instrument(skip_all, name = "data_client::download", fields(session_id = tracing::field::Empty, num_files=file_infos.len()))]
 pub async fn download_async(
-    session: SessionConfig,
+    session: SessionContext,
     file_infos: Vec<(XetFileInfo, String)>,
     progress_updaters: Option<Vec<Arc<dyn TrackingProgressUpdater>>>,
 ) -> errors::Result<Vec<String>> {
@@ -225,7 +225,7 @@ mod tests {
         let temp_dir = tempdir().unwrap();
         let _hf_home_guard = EnvVarGuard::set("HF_HOME", temp_dir.path().to_str().unwrap());
 
-        let session = SessionConfig::with_default_auth("http://localhost:8080", None, None, "");
+        let session = SessionContext::with_default_auth("http://localhost:8080", None, None, "");
         let config = TranslatorConfig::new(session).unwrap();
 
         assert!(config.chunk_cache_directory.starts_with(temp_dir.path()));
@@ -240,7 +240,7 @@ mod tests {
         let hf_xet_cache_guard = EnvVarGuard::set("HF_XET_CACHE", temp_dir_xet_cache.path().to_str().unwrap());
         let hf_home_guard = EnvVarGuard::set("HF_HOME", temp_dir_hf_home.path().to_str().unwrap());
 
-        let session = SessionConfig::with_default_auth("http://localhost:8080", None, None, "");
+        let session = SessionContext::with_default_auth("http://localhost:8080", None, None, "");
         let config = TranslatorConfig::new(session).unwrap();
 
         assert!(config.chunk_cache_directory.starts_with(temp_dir_xet_cache.path()));
@@ -251,7 +251,7 @@ mod tests {
         let temp_dir = tempdir().unwrap();
         let _hf_home_guard = EnvVarGuard::set("HF_HOME", temp_dir.path().to_str().unwrap());
 
-        let session = SessionConfig::with_default_auth("http://localhost:8080", None, None, "");
+        let session = SessionContext::with_default_auth("http://localhost:8080", None, None, "");
         let config = TranslatorConfig::new(session).unwrap();
 
         assert!(config.chunk_cache_directory.starts_with(temp_dir.path()));
@@ -263,7 +263,7 @@ mod tests {
         let temp_dir = tempdir().unwrap();
         let _hf_xet_cache_guard = EnvVarGuard::set("HF_XET_CACHE", temp_dir.path().to_str().unwrap());
 
-        let session = SessionConfig::with_default_auth("http://localhost:8080", None, None, "");
+        let session = SessionContext::with_default_auth("http://localhost:8080", None, None, "");
         let config = TranslatorConfig::new(session).unwrap();
 
         assert!(config.chunk_cache_directory.starts_with(temp_dir.path()));
@@ -272,7 +272,7 @@ mod tests {
     #[test]
     #[serial(default_config_env)]
     fn test_translator_config_without_env_vars() {
-        let session = SessionConfig::with_default_auth("http://localhost:8080", None, None, "");
+        let session = SessionContext::with_default_auth("http://localhost:8080", None, None, "");
         let config = TranslatorConfig::new(session).unwrap();
 
         let expected = home_dir().unwrap().join(".cache").join("huggingface").join("xet");

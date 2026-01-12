@@ -9,7 +9,7 @@ use xet_runtime::XetRuntime;
 use xet_runtime::utils::run_constrained;
 
 use super::hub_client_token_refresher::HubClientTokenRefresher;
-use crate::configurations::SessionConfig;
+use crate::configurations::SessionContext;
 use crate::data_client::clean_file;
 use crate::errors::DataProcessingError;
 use crate::{FileUploadSession, XetFileInfo};
@@ -70,7 +70,7 @@ pub async fn migrate_files_impl(
     }) as Arc<dyn TokenRefresher>;
     let cas = cas_endpoint.unwrap_or(jwt_info.cas_url);
 
-    let session = SessionConfig::with_default_auth(
+    let session = SessionContext::with_default_auth(
         cas,
         Some((jwt_info.access_token, jwt_info.exp)),
         Some(token_refresher),

@@ -6,7 +6,7 @@ use std::sync::{Arc, OnceLock};
 use anyhow::Result;
 use cas_client::SeekingOutputProvider;
 use clap::{Args, Parser, Subcommand};
-use data::{FileDownloader, FileUploadSession, SessionConfig, XetFileInfo};
+use data::{FileDownloader, FileUploadSession, SessionContext, XetFileInfo};
 use xet_runtime::{XetRuntime, xet_config};
 
 #[derive(Parser)]
@@ -91,7 +91,7 @@ async fn clean(mut reader: impl Read, mut writer: impl Write, size: u64) -> Resu
     let local_path = std::env::current_dir()?.join("xet");
     std::fs::create_dir_all(&local_path)?;
     let endpoint = format!("{}{}", xet_config().data.local_cas_scheme, local_path.display());
-    let session = SessionConfig::new(endpoint).with_repo_paths(vec!["".into()]);
+    let session = SessionContext::new(endpoint).with_repo_paths(vec!["".into()]);
 
     let translator = FileUploadSession::new(session, None).await?;
 
@@ -141,7 +141,7 @@ async fn smudge(name: Arc<str>, mut reader: impl Read, writer: SeekingOutputProv
     // Create a local endpoint for the example
     let local_path = std::env::current_dir()?.join("xet");
     let endpoint = format!("{}{}", xet_config().data.local_cas_scheme, local_path.display());
-    let session = SessionConfig::new(endpoint).with_repo_paths(vec!["".into()]);
+    let session = SessionContext::new(endpoint).with_repo_paths(vec!["".into()]);
 
     let downloader = FileDownloader::new(session).await?;
 

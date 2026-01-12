@@ -11,7 +11,7 @@ use crate::errors::Result;
 /// Session-specific configuration that varies per upload/download session.
 /// These are runtime values that cannot be configured via environment variables.
 #[derive(Debug, Clone)]
-pub struct SessionConfig {
+pub struct SessionContext {
     /// The endpoint URL. Use the `local://` prefix (configurable via `HF_XET_DATA_LOCAL_CAS_SCHEME`)
     /// to specify a local filesystem path instead of a remote server.
     pub endpoint: String,
@@ -21,7 +21,7 @@ pub struct SessionConfig {
     pub session_id: Option<String>,
 }
 
-impl SessionConfig {
+impl SessionContext {
     pub fn new(endpoint: impl Into<String>) -> Self {
         Self {
             endpoint: endpoint.into(),
@@ -101,7 +101,7 @@ impl SessionConfig {
 /// Combines session-specific values with runtime-computed paths derived from the endpoint.
 #[derive(Debug)]
 pub(crate) struct TranslatorConfig {
-    pub(crate) session: SessionConfig,
+    pub(crate) session: SessionContext,
 
     /// Directory for chunk cache.
     pub(crate) chunk_cache_directory: PathBuf,
@@ -119,7 +119,7 @@ pub(crate) struct TranslatorConfig {
 
 impl TranslatorConfig {
     /// Creates a new TranslatorConfig from a SessionConfig, computing all derived paths.
-    pub(crate) fn new(session: SessionConfig) -> Result<Self> {
+    pub(crate) fn new(session: SessionContext) -> Result<Self> {
         info!(
             endpoint = %session.endpoint,
             session_id = ?session.session_id,

@@ -7,7 +7,7 @@ use anyhow::Result;
 use cas_client::{Client, RemoteClient};
 use cas_types::{FileRange, QueryReconstructionResponse};
 use clap::{Args, Parser, Subcommand};
-use data::SessionConfig;
+use data::SessionContext;
 use data::migration_tool::hub_client_token_refresher::HubClientTokenRefresher;
 use data::migration_tool::migrate::migrate_files_impl;
 use hub_client::{BearerCredentialHelper, HubClient, Operation, RepoInfo};
@@ -190,7 +190,7 @@ async fn query_reconstruction(
         client: Arc::new(hub_client),
     }) as Arc<dyn TokenRefresher>;
 
-    let session = SessionConfig::with_default_auth(
+    let session = SessionContext::with_default_auth(
         jwt_info.cas_url.clone(),
         Some((jwt_info.access_token, jwt_info.exp)),
         Some(token_refresher),
