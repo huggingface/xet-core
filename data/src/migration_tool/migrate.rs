@@ -1,7 +1,6 @@
 use std::sync::Arc;
 
 use anyhow::{Result, anyhow};
-use cas_object::CompressionScheme;
 use hub_client::{BearerCredentialHelper, HubClient, Operation, RepoInfo};
 use mdb_shard::file_structs::MDBFileInfo;
 use tracing::{Instrument, Span, info_span, instrument};
@@ -10,7 +9,8 @@ use xet_runtime::XetRuntime;
 use xet_runtime::utils::run_constrained;
 
 use super::hub_client_token_refresher::HubClientTokenRefresher;
-use crate::data_client::{clean_file, default_config};
+use crate::configurations::SessionContext;
+use crate::data_client::clean_file;
 use crate::errors::DataProcessingError;
 use crate::{FileUploadSession, XetFileInfo};
 
@@ -45,7 +45,7 @@ pub async fn migrate_with_external_runtime(
         cred_helper,
     )?;
 
-    migrate_files_impl(file_paths, sha256s, false, hub_client, cas_endpoint, None, false).await?;
+    migrate_files_impl(file_paths, sha256s, false, hub_client, cas_endpoint, false).await?;
 
     Ok(())
 }
@@ -60,7 +60,6 @@ pub async fn migrate_files_impl(
     sequential: bool,
     hub_client: HubClient,
     cas_endpoint: Option<String>,
-    compression: Option<CompressionScheme>,
     dry_run: bool,
 ) -> Result<MigrationInfo> {
     let operation = Operation::Upload;
@@ -71,14 +70,13 @@ pub async fn migrate_files_impl(
     }) as Arc<dyn TokenRefresher>;
     let cas = cas_endpoint.unwrap_or(jwt_info.cas_url);
 
-    let config = default_config(
+    let session = SessionContext::with_default_auth(
         cas,
-        compression,
         Some((jwt_info.access_token, jwt_info.exp)),
         Some(token_refresher),
-        USER_AGENT.to_string(),
-    )?;
-    Span::current().record("session_id", &config.session_id);
+        USER_AGENT,
+    );
+    Span::current().record("session_id", &session.session_id);
 
     let num_workers = if sequential {
         1
@@ -86,9 +84,9 @@ pub async fn migrate_files_impl(
         XetRuntime::current().num_worker_threads()
     };
     let processor = if dry_run {
-        FileUploadSession::dry_run(config.into(), None).await?
+        FileUploadSession::dry_run(session, None).await?
     } else {
-        FileUploadSession::new(config.into(), None).await?
+        FileUploadSession::new(session, None).await?
     };
 
     let sha256s: Box<dyn Iterator<Item = String> + Send> = match sha256s {

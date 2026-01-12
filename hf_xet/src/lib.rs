@@ -8,7 +8,8 @@ use std::iter::IntoIterator;
 use std::sync::Arc;
 
 use data::errors::DataProcessingError;
-use data::{XetFileInfo, data_client};
+use data::{SessionContext, XetFileInfo, data_client};
+use xet_runtime::xet_config;
 use itertools::Itertools;
 use progress_tracking::TrackingProgressUpdater;
 use pyo3::exceptions::{PyKeyboardInterrupt, PyRuntimeError};
@@ -59,15 +60,15 @@ pub fn upload_bytes(
             file_contents.len(),
         );
 
-        let out: Vec<PyXetUploadInfo> = data_client::upload_bytes_async(
-            file_contents,
-            endpoint,
+        let session = SessionContext::with_default_auth(
+            endpoint.unwrap_or_else(|| xet_config().data.default_cas_endpoint.clone()),
             token_info,
             refresher.map(|v| v as Arc<_>),
-            updater.map(|v| v as Arc<_>),
-            USER_AGENT.to_string(),
-        )
-        .await
+            USER_AGENT,
+        );
+
+        let out: Vec<PyXetUploadInfo> = data_client::upload_bytes_async(session, file_contents, updater.map(|v| v as Arc<_>))
+            .await
         .map_err(convert_data_processing_error)?
         .into_iter()
         .map(PyXetUploadInfo::from)
@@ -105,16 +106,15 @@ pub fn upload_files(
             if file_paths.len() > 3 { "..." } else { "." }
         );
 
-        let out: Vec<PyXetUploadInfo> = data_client::upload_async(
-            file_paths,
-            None,
-            endpoint,
+        let session = SessionContext::with_default_auth(
+            endpoint.unwrap_or_else(|| xet_config().data.default_cas_endpoint.clone()),
             token_info,
             refresher.map(|v| v as Arc<_>),
-            updater.map(|v| v as Arc<_>),
-            USER_AGENT.to_string(),
-        )
-        .await
+            USER_AGENT,
+        );
+
+        let out: Vec<PyXetUploadInfo> = data_client::upload_async(session, file_paths, None, updater.map(|v| v as Arc<_>))
+            .await
         .map_err(convert_data_processing_error)?
         .into_iter()
         .map(PyXetUploadInfo::from)
@@ -150,15 +150,15 @@ pub fn download_files(
             if file_infos.len() > 3 { "..." } else { "." }
         );
 
-        let out: Vec<String> = data_client::download_async(
-            file_infos,
-            endpoint,
+        let session = SessionContext::with_default_auth(
+            endpoint.unwrap_or_else(|| xet_config().data.default_cas_endpoint.clone()),
             token_info,
             refresher.map(|v| v as Arc<_>),
-            updaters,
-            USER_AGENT.to_string(),
-        )
-        .await
+            USER_AGENT,
+        );
+
+        let out: Vec<String> = data_client::download_async(session, file_infos, updaters)
+            .await
         .map_err(convert_data_processing_error)?;
 
         debug!("Download call {x:x}: Completed.");

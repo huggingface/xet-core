@@ -7,8 +7,8 @@ use merklehash::MerkleHash;
 use progress_tracking::upload_tracking::FileXorbDependency;
 use tokio::task::JoinSet;
 use tracing::Instrument;
+use xet_runtime::xet_config;
 
-use crate::configurations::GlobalDedupPolicy;
 use crate::errors::Result;
 use crate::file_upload_session::FileUploadSession;
 
@@ -26,7 +26,7 @@ impl UploadSessionDataManager {
     }
 
     fn global_dedup_queries_enabled(&self) -> bool {
-        matches!(self.session.config.shard_config.global_dedup_policy, GlobalDedupPolicy::Always)
+        xet_config().deduplication.global_dedup_query_enabled
     }
 }
 

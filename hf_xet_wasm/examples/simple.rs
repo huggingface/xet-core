@@ -3,7 +3,7 @@ use std::sync::Arc;
 use cas_object::CompressionScheme;
 use futures::AsyncReadExt;
 use hf_xet_wasm::blob_reader::BlobReader;
-use hf_xet_wasm::configurations::{DataConfig, ShardConfig, TranslatorConfig};
+use hf_xet_wasm::configurations::{SessionConfig, TranslatorConfig};
 use hf_xet_wasm::wasm_file_upload_session::FileUploadSession;
 use hf_xet_wasm::wasm_timer::ConsoleTimer;
 use log::Level;
@@ -162,17 +162,10 @@ pub async fn clean_file(file: web_sys::File, endpoint: String, jwt_token: String
     const USER_AGENT: &str = concat!(env!("CARGO_PKG_NAME"), "/", env!("CARGO_PKG_VERSION"));
 
     let config = TranslatorConfig {
-        data_config: DataConfig {
-            endpoint,
-            compression: Some(CompressionScheme::LZ4),
-            auth: AuthConfig::maybe_new(Some(jwt_token), Some(expiration), None),
-            prefix: "default".to_owned(),
-            user_agent: USER_AGENT.to_string(),
-        },
-        shard_config: ShardConfig {
-            prefix: "default-merkledb".to_owned(),
-        },
-        session_id: uuid::Uuid::new_v4().to_string(),
+        session: SessionConfig::new(endpoint, uuid::Uuid::new_v4().to_string())
+            .with_user_agent(USER_AGENT)
+            .with_auth(AuthConfig::maybe_new(Some(jwt_token), Some(expiration), None))
+            .with_compression(Some(CompressionScheme::LZ4)),
     };
 
     let upload_session = Arc::new(FileUploadSession::new(Arc::new(config)));

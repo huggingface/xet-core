@@ -2,8 +2,6 @@ mod cache_manager;
 mod disk;
 pub mod error;
 
-use std::path::PathBuf;
-
 use async_trait::async_trait;
 pub use cache_manager::get_cache;
 use cas_types::{ChunkRange, Key};
@@ -11,7 +9,6 @@ pub use disk::DiskCache;
 pub use disk::test_utils::*;
 use error::ChunkCacheError;
 use mockall::automock;
-use xet_runtime::xet_config;
 
 /// Return dto for cache gets
 /// offsets has 1 more than then number of chunks in the specified range
@@ -69,19 +66,4 @@ pub trait ChunkCache: Sync + Send {
         chunk_byte_indices: &[u32],
         data: &[u8],
     ) -> Result<(), ChunkCacheError>;
-}
-
-#[derive(Debug, Clone)]
-pub struct CacheConfig {
-    pub cache_directory: PathBuf,
-    pub cache_size: u64,
-}
-
-impl Default for CacheConfig {
-    fn default() -> Self {
-        CacheConfig {
-            cache_directory: PathBuf::from("/tmp"),
-            cache_size: xet_config().chunk_cache.size_bytes,
-        }
-    }
 }

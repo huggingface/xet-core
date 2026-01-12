@@ -56,7 +56,7 @@ impl DeduplicationDataInterface for UploadSessionDataManager {
     /// global deduplication.  This is expected to run in the background.
     async fn register_global_dedup_query(&mut self, chunk_hash: MerkleHash) -> Result<()> {
         let client = self.session.client.clone();
-        let prefix = self.session.config.shard_config.prefix.clone();
+        let prefix = self.session.config.session.prefix.clone();
         self.query_tasks.spawn(async move {
             client
                 .query_for_global_dedup_shard(&prefix, &chunk_hash)

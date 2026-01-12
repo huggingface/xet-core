@@ -624,7 +624,7 @@ mod tests {
             then.status(200).json_body_obj(&response);
         });
 
-        let client: Arc<dyn Client + Send + Sync> = RemoteClient::new(&server.base_url(), &None, &None, "", false, "");
+        let client: Arc<dyn Client + Send + Sync> = RemoteClient::new(&server.base_url(), &None, None, "", false, "");
         let fetch_info = FetchInfo::new(MerkleHash::default(), file_range);
 
         fetch_info.query(&client).await?;
@@ -667,7 +667,7 @@ mod tests {
             then.status(200).json_body_obj(&response);
         });
 
-        let client: Arc<dyn Client + Send + Sync> = RemoteClient::new(&server.base_url(), &None, &None, "", false, "");
+        let client: Arc<dyn Client + Send + Sync> = RemoteClient::new(&server.base_url(), &None, None, "", false, "");
         let fetch_info = Arc::new(FetchInfo::new(MerkleHash::default(), file_range_to_refresh));
 
         // Spawn multiple tasks each calling into refresh with a different delay in
@@ -733,7 +733,7 @@ mod tests {
             then.status(403).delay(Duration::from_millis(100));
         });
 
-        let client: Arc<dyn Client + Send + Sync> = RemoteClient::new(&server.base_url(), &None, &None, "", false, "");
+        let client: Arc<dyn Client + Send + Sync> = RemoteClient::new(&server.base_url(), &None, None, "", false, "");
 
         let fetch_info = FetchInfo::new(MerkleHash::default(), file_range);
 

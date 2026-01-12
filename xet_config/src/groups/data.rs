@@ -82,4 +82,27 @@ crate::config_group!({
     /// Use the environment variable `HF_XET_DATA_DEFAULT_CAS_ENDPOINT` to set this value.
     ref default_cas_endpoint: String = "http://localhost:8080".to_string();
 
+    /// Whether to aggregate progress updates before sending them.
+    /// When enabled, progress updates are batched and sent at regular intervals
+    /// to reduce overhead.
+    ///
+    /// The default value is true.
+    ///
+    /// Use the environment variable `HF_XET_DATA_AGGREGATE_PROGRESS` to set this value.
+    ref aggregate_progress: bool = true;
+
+    /// Default prefix used for CAS and shard operations.
+    ///
+    /// The default value is "default".
+    ///
+    /// Use the environment variable `HF_XET_DATA_DEFAULT_PREFIX` to set this value.
+    ref default_prefix: String = "default".to_string();
+
+    /// Subdirectory name for staging data within the endpoint cache directory.
+    ///
+    /// The default value is "staging".
+    ///
+    /// Use the environment variable `HF_XET_DATA_STAGING_SUBDIR` to set this value.
+    ref staging_subdir: String = "staging".to_string();
+
 });

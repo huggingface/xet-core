@@ -292,3 +292,56 @@ lazy_static! {
 pub fn is_high_performance() -> bool {
     *HIGH_PERFORMANCE
 }
+
+#[cfg(test)]
+mod tests {
+    use std::str::FromStr;
+
+    use strum::{Display, EnumString};
+
+    use super::*;
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, EnumString, Display)]
+    #[strum(ascii_case_insensitive)]
+    pub enum TestMode {
+        Fast,
+        Normal,
+        Slow,
+    }
+
+    impl FromStrParseable for TestMode {}
+
+    #[test]
+    fn test_strum_enum_case_insensitive() {
+        assert_eq!(TestMode::from_str("fast").unwrap(), TestMode::Fast);
+        assert_eq!(TestMode::from_str("FAST").unwrap(), TestMode::Fast);
+        assert_eq!(TestMode::from_str("Fast").unwrap(), TestMode::Fast);
+        assert_eq!(TestMode::from_str("normal").unwrap(), TestMode::Normal);
+        assert_eq!(TestMode::from_str("SLOW").unwrap(), TestMode::Slow);
+    }
+
+    #[test]
+    fn test_strum_enum_display() {
+        assert_eq!(format!("{}", TestMode::Fast), "Fast");
+        assert_eq!(format!("{}", TestMode::Normal), "Normal");
+        assert_eq!(format!("{}", TestMode::Slow), "Slow");
+    }
+
+    #[test]
+    fn test_strum_enum_parse_user_value() {
+        assert_eq!(TestMode::parse_user_value("fast"), Some(TestMode::Fast));
+        assert_eq!(TestMode::parse_user_value("invalid"), None);
+    }
+
+    #[test]
+    fn test_strum_enum_parse_with_default() {
+        let result = TestMode::parse("TEST_VAR", Some("slow".to_string()), TestMode::Fast);
+        assert_eq!(result, TestMode::Slow);
+
+        let result = TestMode::parse("TEST_VAR", None, TestMode::Normal);
+        assert_eq!(result, TestMode::Normal);
+
+        let result = TestMode::parse("TEST_VAR", Some("invalid".to_string()), TestMode::Fast);
+        assert_eq!(result, TestMode::Fast);
+    }
+}

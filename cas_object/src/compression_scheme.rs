@@ -1,10 +1,11 @@
 use std::borrow::Cow;
-use std::fmt::Display;
 use std::io::{Cursor, Read, Write, copy};
+use std::str::FromStr;
 use std::time::Instant;
 
 use anyhow::anyhow;
 use lz4_flex::frame::{FrameDecoder, FrameEncoder};
+use strum::{Display, EnumString};
 
 use crate::byte_grouping::BG4Predictor;
 use crate::byte_grouping::bg4::{bg4_regroup, bg4_split};
@@ -15,22 +16,47 @@ pub static mut BG4_REGROUP_RUNTIME: f64 = 0.;
 pub static mut BG4_LZ4_COMPRESS_RUNTIME: f64 = 0.;
 pub static mut BG4_LZ4_DECOMPRESS_RUNTIME: f64 = 0.;
 
+/// Compression schemes for xorb data.
 /// Dis-allow the value of ascii capital letters as valid CompressionScheme, 65-90
 #[repr(u8)]
-#[derive(Debug, PartialEq, Eq, Clone, Copy, Default)]
+#[derive(Debug, PartialEq, Eq, Clone, Copy, Default, Display, EnumString)]
+#[strum(serialize_all = "lowercase", ascii_case_insensitive)]
 pub enum CompressionScheme {
     #[default]
+    #[strum(serialize = "none")]
     None = 0,
+
+    #[strum(serialize = "lz4")]
     LZ4 = 1,
+
+    #[strum(serialize = "bg4-lz4", serialize = "bg4_lz4", serialize = "bg4lz4")]
     ByteGrouping4LZ4 = 2, // 4 byte groups
 }
 pub const NUM_COMPRESSION_SCHEMES: usize = 3;
 
-impl Display for CompressionScheme {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", Into::<&str>::into(self))
+impl CompressionScheme {
+    /// Parses an optional compression scheme from a string.
+    /// Returns None for empty/blank strings (meaning auto-detect).
+    /// Returns Some(scheme) for valid scheme names.
+    /// Returns None and logs a warning for invalid scheme names.
+    pub fn parse_optional(s: &str) -> Option<Self> {
+        let trimmed = s.trim();
+        if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("auto") {
+            return None;
+        }
+        match Self::from_str(trimmed) {
+            Ok(scheme) => Some(scheme),
+            Err(_) => {
+                tracing::warn!(
+                    "Invalid compression scheme '{}'; using auto-detection. Valid values: none, lz4, bg4-lz4",
+                    trimmed
+                );
+                None
+            },
+        }
     }
 }
+
 impl From<&CompressionScheme> for &'static str {
     fn from(value: &CompressionScheme) -> Self {
         match value {
@@ -163,6 +189,7 @@ fn bg4_lz4_decompress_from_reader<R: Read, W: Write>(reader: &mut R, writer: &mu
 #[cfg(test)]
 mod tests {
     use std::mem::size_of;
+    use std::str::FromStr;
 
     use half::prelude::*;
     use rand::Rng;
@@ -174,6 +201,29 @@ mod tests {
         assert_eq!(Into::<&str>::into(CompressionScheme::None), "none");
         assert_eq!(Into::<&str>::into(CompressionScheme::LZ4), "lz4");
         assert_eq!(Into::<&str>::into(CompressionScheme::ByteGrouping4LZ4), "bg4-lz4");
+    }
+
+    #[test]
+    fn test_from_str() {
+        assert_eq!(CompressionScheme::from_str("none"), Ok(CompressionScheme::None));
+        assert_eq!(CompressionScheme::from_str("lz4"), Ok(CompressionScheme::LZ4));
+        assert_eq!(CompressionScheme::from_str("LZ4"), Ok(CompressionScheme::LZ4));
+        assert_eq!(CompressionScheme::from_str("bg4-lz4"), Ok(CompressionScheme::ByteGrouping4LZ4));
+        assert_eq!(CompressionScheme::from_str("bg4_lz4"), Ok(CompressionScheme::ByteGrouping4LZ4));
+        assert_eq!(CompressionScheme::from_str("BG4-LZ4"), Ok(CompressionScheme::ByteGrouping4LZ4));
+        assert!(CompressionScheme::from_str("invalid").is_err());
+    }
+
+    #[test]
+    fn test_parse_optional() {
+        assert_eq!(CompressionScheme::parse_optional(""), None);
+        assert_eq!(CompressionScheme::parse_optional("auto"), None);
+        assert_eq!(CompressionScheme::parse_optional("AUTO"), None);
+        assert_eq!(CompressionScheme::parse_optional("  "), None);
+        assert_eq!(CompressionScheme::parse_optional("lz4"), Some(CompressionScheme::LZ4));
+        assert_eq!(CompressionScheme::parse_optional("none"), Some(CompressionScheme::None));
+        assert_eq!(CompressionScheme::parse_optional("bg4-lz4"), Some(CompressionScheme::ByteGrouping4LZ4));
+        assert_eq!(CompressionScheme::parse_optional("invalid"), None);
     }
 
     #[test]

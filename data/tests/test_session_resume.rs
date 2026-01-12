@@ -1,8 +1,7 @@
 use std::time::Duration;
 
 // Run tests that determine deduplication, especially across different test subjects.
-use data::FileUploadSession;
-use data::configurations::TranslatorConfig;
+use data::{FileUploadSession, SessionContext};
 use deduplication::constants::{MAX_XORB_BYTES, MAX_XORB_CHUNKS, TARGET_CHUNK_SIZE};
 use tempfile::TempDir;
 use utils::{test_set_config, test_set_constants};
@@ -57,11 +56,11 @@ mod tests {
         // Set a temporary directory for the endpoint.
         let cas_dir = TempDir::new().unwrap();
 
-        let config = Arc::new(TranslatorConfig::local_config(cas_dir).unwrap());
+        let session = SessionContext::for_local_path(cas_dir.path());
 
         {
             let progress_tracker = AggregatingProgressUpdater::new_aggregation_only();
-            let file_upload_session = FileUploadSession::new(config.clone(), Some(progress_tracker.clone()))
+            let file_upload_session = FileUploadSession::new(session.clone(), Some(progress_tracker.clone()))
                 .await
                 .unwrap();
 
@@ -81,7 +80,7 @@ mod tests {
         // Now try again to test the resume.
         {
             let progress_tracker = AggregatingProgressUpdater::new_aggregation_only();
-            let file_upload_session = FileUploadSession::new(config, Some(progress_tracker.clone())).await.unwrap();
+            let file_upload_session = FileUploadSession::new(session, Some(progress_tracker.clone())).await.unwrap();
 
             // Feed it half the data, and checkpoint.
             let mut cleaner = file_upload_session
@@ -129,13 +128,13 @@ mod tests {
         // Set a temporary directory for the endpoint.
         let cas_dir = TempDir::new().unwrap();
 
-        let config = Arc::new(TranslatorConfig::local_config(cas_dir).unwrap());
+        let session = SessionContext::for_local_path(cas_dir.path());
 
         let mut prev_rn = 0;
 
         for rn in resume_n {
             let progress_tracker = AggregatingProgressUpdater::new_aggregation_only();
-            let file_upload_session = FileUploadSession::new(config.clone(), Some(progress_tracker.clone()))
+            let file_upload_session = FileUploadSession::new(session.clone(), Some(progress_tracker.clone()))
                 .await
                 .unwrap();
 
@@ -169,7 +168,7 @@ mod tests {
         // Now try again to test the resume.
         {
             let progress_tracker = AggregatingProgressUpdater::new_aggregation_only();
-            let file_upload_session = FileUploadSession::new(config, Some(progress_tracker.clone())).await.unwrap();
+            let file_upload_session = FileUploadSession::new(session, Some(progress_tracker.clone())).await.unwrap();
 
             // Feed it half the data, and checkpoint.
             let mut cleaner = file_upload_session

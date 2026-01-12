@@ -97,6 +97,7 @@ sha2 = "0.10"
 shell-words = "1.1"
 shellexpand = "3.1"
 static_assertions = "1.1"
+strum = { version = "0.26", features = ["derive"] }
 statrs = "0.16"
 sysinfo = "0.37"
 tempfile = "3.20"

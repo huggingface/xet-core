@@ -5,10 +5,9 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use cas_client::{Client, RemoteClient};
-use cas_object::CompressionScheme;
 use cas_types::{FileRange, QueryReconstructionResponse};
 use clap::{Args, Parser, Subcommand};
-use data::data_client::default_config;
+use data::SessionContext;
 use data::migration_tool::hub_client_token_refresher::HubClientTokenRefresher;
 use data::migration_tool::migrate::migrate_files_impl;
 use hub_client::{BearerCredentialHelper, HubClient, Operation, RepoInfo};
@@ -95,13 +94,6 @@ struct DedupArg {
     /// to the file; otherwise write out to the stdout.
     #[clap(short, long)]
     output: Option<PathBuf>,
-    /// The compression scheme to use on XORB upload. Choices are
-    /// 0: no compression;
-    /// 1: LZ4 compression;
-    /// 2: 4 byte groups with LZ4 compression.
-    /// If not specified, this will be determined by the repo type.
-    #[clap(short, long)]
-    compression: Option<u8>,
     /// Migrate the files by actually uploading them to the CAS server.
     #[clap(short, long)]
     migrate: bool,
@@ -123,16 +115,8 @@ impl Command {
                 let file_paths = walk_files(arg.files, arg.recursive);
                 eprintln!("Dedupping {} files...", file_paths.len());
 
-                let (all_file_info, clean_ret, total_bytes_trans) = migrate_files_impl(
-                    file_paths,
-                    None,
-                    arg.sequential,
-                    hub_client,
-                    None,
-                    arg.compression.and_then(|c| CompressionScheme::try_from(c).ok()),
-                    !arg.migrate,
-                )
-                .await?;
+                let (all_file_info, clean_ret, total_bytes_trans) =
+                    migrate_files_impl(file_paths, None, arg.sequential, hub_client, None, !arg.migrate).await?;
 
                 // Print file info for analysis
                 if !arg.migrate {
@@ -206,22 +190,14 @@ async fn query_reconstruction(
         client: Arc::new(hub_client),
     }) as Arc<dyn TokenRefresher>;
 
-    let config = default_config(
+    let session = SessionContext::with_default_auth(
         jwt_info.cas_url.clone(),
-        None,
         Some((jwt_info.access_token, jwt_info.exp)),
         Some(token_refresher),
-        USER_AGENT.to_string(),
-    )?;
-    let cas_storage_config = &config.data_config;
-    let remote_client = RemoteClient::new(
-        &jwt_info.cas_url,
-        &cas_storage_config.auth,
-        &Some(cas_storage_config.cache_config.clone()),
-        "",
-        true,
-        &cas_storage_config.user_agent,
+        USER_AGENT,
     );
+    // For dry-run reconstruction queries, we don't need a cache
+    let remote_client = RemoteClient::new(&jwt_info.cas_url, &session.auth, None, "", true, &session.user_agent);
 
     remote_client
         .get_reconstruction(&file_hash, bytes_range)
