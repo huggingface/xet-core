@@ -32,6 +32,7 @@ lz4_flex = { workspace = true }
 more-asserts = { workspace = true }
 rand = { workspace = true }
 serde = { workspace = true }
+strum = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["time", "rt", "macros", "io-util"] }
 tracing = { workspace = true }

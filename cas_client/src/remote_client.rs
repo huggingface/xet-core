@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::mem::take;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -10,7 +11,7 @@ use cas_types::{
     BatchQueryReconstructionResponse, CASReconstructionFetchInfo, CASReconstructionTerm, ChunkRange, FileRange,
     HttpRange, Key, QueryReconstructionResponse, UploadShardResponse, UploadShardResponseType, UploadXorbResponse,
 };
-use chunk_cache::{CacheConfig, ChunkCache};
+use chunk_cache::ChunkCache;
 use error_printer::ErrorPrinter;
 use http::HeaderValue;
 use http::header::{CONTENT_LENGTH, RANGE};
@@ -184,19 +185,20 @@ impl RemoteClient {
     pub fn new(
         endpoint: &str,
         auth: &Option<AuthConfig>,
-        cache_config: &Option<CacheConfig>,
+        cache_directory: Option<&PathBuf>,
         session_id: &str,
         dry_run: bool,
         user_agent: &str,
     ) -> Arc<Self> {
-        // use disk cache if cache_config provided.
-        let chunk_cache = if let Some(cache_config) = cache_config {
-            if cache_config.cache_size == 0 {
+        // use disk cache if cache directory provided and cache size > 0.
+        let chunk_cache = if let Some(cache_dir) = cache_directory {
+            let cache_size = xet_config().chunk_cache.size_bytes;
+            if cache_size == 0 {
                 event!(INFORMATION_LOG_LEVEL, "Chunk cache size set to 0, disabling chunk cache");
                 None
             } else {
-                event!(INFORMATION_LOG_LEVEL, cache.dir=?cache_config.cache_directory, cache.size=cache_config.cache_size,"Using disk cache");
-                chunk_cache::get_cache(cache_config)
+                event!(INFORMATION_LOG_LEVEL, cache.dir=?cache_dir, cache.size=cache_size, "Using disk cache");
+                chunk_cache::get_cache(cache_dir)
                     .log_error("failed to initialize cache, not using cache")
                     .ok()
             }
@@ -1009,7 +1011,7 @@ mod tests {
         let raw_xorb = build_raw_xorb(3, ChunkSize::Random(512, 10248));
 
         let threadpool = XetRuntime::new().unwrap();
-        let client = RemoteClient::new(CAS_ENDPOINT, &None, &None, "", false, "");
+        let client = RemoteClient::new(CAS_ENDPOINT, &None, None, "", false, "");
 
         let cas_object = build_and_verify_cas_object(raw_xorb, Some(CompressionScheme::LZ4));
 
@@ -1392,7 +1394,7 @@ mod tests {
 
         // test reconstruct and sequential write
         let test = test_case.clone();
-        let client = RemoteClient::new(endpoint, &None, &None, "", false, "");
+        let client = RemoteClient::new(endpoint, &None, None, "", false, "");
         let buf = ThreadSafeBuffer::default();
         let provider = SequentialOutput::from(buf.clone());
         let resp = threadpool.external_run_async_task(async move {
@@ -1414,7 +1416,7 @@ mod tests {
 
         // test reconstruct and parallel write
         let test = test_case;
-        let client = RemoteClient::new(endpoint, &None, &None, "", false, "");
+        let client = RemoteClient::new(endpoint, &None, None, "", false, "");
         let buf = ThreadSafeBuffer::default();
         let provider = SeekingOutputProvider::from(buf.clone());
         let resp = threadpool.external_run_async_task(async move {

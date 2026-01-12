@@ -8,4 +8,11 @@ crate::config_group!({
     ///
     /// Use the environment variable `HF_XET_CHUNK_CACHE_SIZE_BYTES` to set this value.
     ref size_bytes: u64 = DEFAULT_CHUNK_CACHE_CAPACITY;
+
+    /// Subdirectory name for chunk cache within the endpoint cache directory.
+    ///
+    /// The default value is "chunk-cache".
+    ///
+    /// Use the environment variable `HF_XET_CHUNK_CACHE_SUBDIR` to set this value.
+    ref subdir: String = "chunk-cache".to_string();
 });

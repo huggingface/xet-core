@@ -3,8 +3,8 @@ use std::str::FromStr;
 use std::sync::{Arc, OnceLock};
 
 use async_trait::async_trait;
-use data::FileUploadSession;
-use data::data_client::{clean_file, default_config};
+use data::data_client::clean_file;
+use data::{FileUploadSession, SessionConfig};
 use hub_client::Operation;
 use progress_tracking::{ProgressUpdate, TrackingProgressUpdater};
 use utils::auth::TokenRefresher;
@@ -123,11 +123,10 @@ impl TransferAgent for XetAgent {
             .parse()
             .map_err(GitXetError::internal)?;
 
-        let config =
-            default_config(cas_url, None, Some((token, token_expiry)), Some(token_refresher), user_agent.to_string())?
-                .disable_progress_aggregation()
-                .with_session_id(session_id); // upload one file at a time so no need for the heavy progress aggregator
-        let session = FileUploadSession::new(config.into(), Some(Arc::new(xet_updater))).await?;
+        let session_config =
+            SessionConfig::with_default_auth(cas_url, Some((token, token_expiry)), Some(token_refresher), user_agent)
+                .with_session_id(session_id);
+        let session = FileUploadSession::new(session_config, Some(Arc::new(xet_updater))).await?;
 
         let Some(file_path) = &req.path else {
             return Err(GitLFSProtocolError::bad_syntax("file path not provided for upload request").into());

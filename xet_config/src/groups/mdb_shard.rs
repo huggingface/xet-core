@@ -36,4 +36,18 @@ crate::config_group!({
     ///
     /// Use the environment variable `HF_XET_MDB_SHARD_CHUNK_INDEX_TABLE_MAX_SIZE` to set this value.
     ref chunk_index_table_max_size: usize = 64 * 1024 * 1024;
+
+    /// Subdirectory name for shard cache within the endpoint cache directory.
+    ///
+    /// The default value is "shard-cache".
+    ///
+    /// Use the environment variable `HF_XET_MDB_SHARD_CACHE_SUBDIR` to set this value.
+    ref cache_subdir: String = "shard-cache".to_string();
+
+    /// Subdirectory name for shard session data within the staging directory.
+    ///
+    /// The default value is "shard-session".
+    ///
+    /// Use the environment variable `HF_XET_MDB_SHARD_SESSION_SUBDIR` to set this value.
+    ref session_subdir: String = "shard-session".to_string();
 });

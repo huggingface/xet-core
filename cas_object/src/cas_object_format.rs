@@ -1296,7 +1296,17 @@ pub struct SerializedCasObject {
 
 impl SerializedCasObject {
     /// Builds the xorb from raw xorb data.
-    pub fn from_xorb(
+    /// Compression is determined by the `HF_XET_XORB_COMPRESSION_POLICY` environment variable.
+    /// If empty or "auto", the best compression is chosen based on data analysis.
+    #[cfg(not(target_family = "wasm"))]
+    pub fn from_xorb(xorb: RawXorbData, serialize_footer: bool) -> Result<Self, CasObjectError> {
+        let compression_scheme = CompressionScheme::parse_optional(&xet_config().xorb.compression_policy);
+        Self::from_xorb_with_compression(xorb, compression_scheme, serialize_footer)
+    }
+
+    /// Builds the xorb from raw xorb data with an explicit compression scheme.
+    /// If compression_scheme is None, the best compression is chosen based on data analysis.
+    pub fn from_xorb_with_compression(
         xorb: RawXorbData,
         compression_scheme: Option<CompressionScheme>,
         serialize_footer: bool,
@@ -1561,7 +1571,8 @@ pub mod test_utils {
         xorb: RawXorbData,
         compression_scheme: Option<CompressionScheme>,
     ) -> SerializedCasObject {
-        let cas_object = SerializedCasObject::from_xorb(xorb.clone(), compression_scheme, true).unwrap();
+        let cas_object =
+            SerializedCasObject::from_xorb_with_compression(xorb.clone(), compression_scheme, true).unwrap();
 
         verify_serialized_cas_object(&xorb, compression_scheme, &cas_object);
 

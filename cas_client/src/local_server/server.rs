@@ -246,7 +246,7 @@ impl LocalTestServer {
 
         tokio::time::sleep(Duration::from_millis(50)).await;
 
-        let remote_client = RemoteClient::new(&endpoint, &None, &None, "test-session", false, "test-agent");
+        let remote_client = RemoteClient::new(&endpoint, &None, None, "test-session", false, "test-agent");
 
         Self {
             endpoint,

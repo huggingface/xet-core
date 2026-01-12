@@ -1,4 +1,3 @@
-pub use chunk_cache::CacheConfig;
 pub use http_client::{Api, ResponseErrorLogger, RetryConfig, build_auth_http_client, build_http_client};
 pub use interface::Client;
 #[cfg(not(target_family = "wasm"))]

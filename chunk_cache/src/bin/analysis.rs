@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 use std::u64;
 
-use chunk_cache::{CacheConfig, DiskCache};
+use chunk_cache::DiskCache;
 use clap::Parser;
 
 #[derive(Debug, Parser)]
@@ -18,10 +18,6 @@ fn main() {
 }
 
 fn print_main(root: PathBuf) {
-    let cache = DiskCache::initialize(&CacheConfig {
-        cache_directory: root,
-        cache_size: u64::MAX,
-    })
-    .unwrap();
+    let cache = DiskCache::initialize_with_capacity(&root, u64::MAX).unwrap();
     cache.print();
 }

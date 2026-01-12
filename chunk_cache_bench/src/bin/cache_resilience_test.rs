@@ -3,7 +3,7 @@ use std::process::{exit, Stdio};
 use std::time::{Duration, SystemTime};
 
 use cas_types::{ChunkRange, Key};
-use chunk_cache::{CacheConfig, ChunkCache, DiskCache, RandomEntryIterator};
+use chunk_cache::{ChunkCache, DiskCache, RandomEntryIterator};
 use clap::{Args, Parser, Subcommand};
 use tempdir::TempDir;
 
@@ -94,11 +94,7 @@ async fn child_main(args: ChildArgs) {
     let id = std::process::id();
     let end_time = SystemTime::now().checked_add(Duration::from_secs(args.seconds)).unwrap();
 
-    let config = CacheConfig {
-        cache_directory: PathBuf::from(args.cache_root),
-        cache_size: args.capacity,
-    };
-    let cache = DiskCache::initialize(&config).unwrap();
+    let cache = DiskCache::initialize_with_capacity(&PathBuf::from(args.cache_root), args.capacity).unwrap();
 
     eprintln!("initialized id: {id} with {} entries", cache.num_items().await);
 

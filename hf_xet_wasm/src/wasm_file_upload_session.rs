@@ -38,17 +38,18 @@ pub struct FileUploadSession {
 
 impl FileUploadSession {
     pub fn new(config: Arc<TranslatorConfig>) -> Self {
+        let session = &config.session;
         let client = RemoteClient::new(
-            &config.data_config.endpoint,
-            &config.data_config.auth,
+            &session.endpoint,
+            &session.auth,
             &None,
-            &config.session_id,
+            &session.session_id,
             false,
-            &config.data_config.user_agent,
+            &session.user_agent,
         );
 
-        let xorb_uploader =
-            Box::new(XorbUploaderSpawnParallel::new(client.clone(), &config.data_config.prefix, UPLOAD_CONCURRENCY));
+        let prefix = config.session.prefix.clone();
+        let xorb_uploader = Box::new(XorbUploaderSpawnParallel::new(client.clone(), &prefix, UPLOAD_CONCURRENCY));
 
         Self {
             session_shard: Mutex::new(MDBInMemoryShard::default()),
@@ -116,9 +117,9 @@ impl FileUploadSession {
             return Ok(());
         }
 
-        let compression_scheme = self.config.data_config.compression;
+        let compression_scheme = self.config.session.compression;
         let use_footer = self.client.use_xorb_footer();
-        let cas_object = SerializedCasObject::from_xorb(xorb, compression_scheme, use_footer)?;
+        let cas_object = SerializedCasObject::from_xorb_with_compression(xorb, compression_scheme, use_footer)?;
 
         let Some(ref mut xorb_uploader) = *self.xorb_uploader.lock().await else {
             return Err(DataProcessingError::internal("register xorb after drop"));

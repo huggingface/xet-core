@@ -7,8 +7,9 @@ use cas_client::SeekingOutputProvider;
 use progress_tracking::TrackingProgressUpdater;
 use rand::prelude::*;
 use tempfile::TempDir;
+use xet_runtime::xet_config;
 
-use crate::configurations::TranslatorConfig;
+use crate::configurations::SessionConfig;
 use crate::data_client::clean_file;
 use crate::{FileDownloader, FileUploadSession, XetFileInfo};
 
@@ -157,8 +158,13 @@ impl LocalHydrateDehydrateTest {
         &self,
         progress_tracker: Option<Arc<dyn TrackingProgressUpdater>>,
     ) -> Arc<FileUploadSession> {
-        let config = Arc::new(TranslatorConfig::local_config(&self.cas_dir).unwrap());
-        FileUploadSession::new(config.clone(), progress_tracker).await.unwrap()
+        let session = self.create_local_session();
+        FileUploadSession::new(session, progress_tracker).await.unwrap()
+    }
+
+    fn create_local_session(&self) -> SessionConfig {
+        let endpoint = format!("{}{}", xet_config().data.local_cas_scheme, self.cas_dir.display());
+        SessionConfig::new(endpoint).with_repo_paths(vec!["".into()])
     }
 
     pub async fn clean_all_files(&self, upload_session: &Arc<FileUploadSession>, sequential: bool) {
@@ -205,11 +211,11 @@ impl LocalHydrateDehydrateTest {
     }
 
     pub async fn hydrate(&self) {
-        let config = TranslatorConfig::local_config(&self.cas_dir).unwrap();
+        let session = self.create_local_session();
 
         create_dir_all(&self.dest_dir).unwrap();
 
-        let downloader = FileDownloader::new(config.into()).await.unwrap();
+        let downloader = FileDownloader::new(session).await.unwrap();
 
         for entry in read_dir(&self.ptr_dir).unwrap() {
             let entry = entry.unwrap();

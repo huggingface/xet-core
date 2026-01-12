@@ -6,9 +6,8 @@ use std::sync::{Arc, OnceLock};
 use anyhow::Result;
 use cas_client::SeekingOutputProvider;
 use clap::{Args, Parser, Subcommand};
-use data::configurations::*;
-use data::{FileDownloader, FileUploadSession, XetFileInfo};
-use xet_runtime::XetRuntime;
+use data::{FileDownloader, FileUploadSession, SessionConfig, XetFileInfo};
+use xet_runtime::{XetRuntime, xet_config};
 
 #[derive(Parser)]
 struct XCommand {
@@ -88,8 +87,13 @@ async fn clean(mut reader: impl Read, mut writer: impl Write, size: u64) -> Resu
 
     let mut read_buf = vec![0u8; READ_BLOCK_SIZE];
 
-    let translator =
-        FileUploadSession::new(TranslatorConfig::local_config(std::env::current_dir()?)?.into(), None).await?;
+    // Create a local endpoint for the example
+    let local_path = std::env::current_dir()?.join("xet");
+    std::fs::create_dir_all(&local_path)?;
+    let endpoint = format!("{}{}", xet_config().data.local_cas_scheme, local_path.display());
+    let session = SessionConfig::new(endpoint).with_repo_paths(vec!["".into()]);
+
+    let translator = FileUploadSession::new(session, None).await?;
 
     let mut size_read = 0;
     let mut handle = translator.start_clean(None, size, None).await;
@@ -134,7 +138,12 @@ async fn smudge(name: Arc<str>, mut reader: impl Read, writer: SeekingOutputProv
     let xet_file: XetFileInfo = serde_json::from_str(&input)
         .map_err(|_| anyhow::anyhow!("Failed to parse xet file info. Please check the format."))?;
 
-    let downloader = FileDownloader::new(TranslatorConfig::local_config(std::env::current_dir()?)?.into()).await?;
+    // Create a local endpoint for the example
+    let local_path = std::env::current_dir()?.join("xet");
+    let endpoint = format!("{}{}", xet_config().data.local_cas_scheme, local_path.display());
+    let session = SessionConfig::new(endpoint).with_repo_paths(vec!["".into()]);
+
+    let downloader = FileDownloader::new(session).await?;
 
     downloader
         .smudge_file_from_hash(

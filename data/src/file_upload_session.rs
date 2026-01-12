@@ -25,7 +25,7 @@ use tracing::{Instrument, Span, info_span, instrument};
 use ulid::Ulid;
 use xet_runtime::{GlobalSemaphoreHandle, XetRuntime, global_semaphore_handle, xet_config};
 
-use crate::configurations::*;
+use crate::configurations::{SessionConfig, TranslatorConfig};
 use crate::errors::*;
 use crate::file_cleaner::SingleFileCleaner;
 use crate::remote_client_interface::create_remote_client;
@@ -47,9 +47,6 @@ pub struct FileUploadSession {
     // The parts of this that manage the
     pub(crate) client: Arc<dyn Client + Send + Sync>,
     pub(crate) shard_interface: SessionShardInterface,
-
-    /// The configuration settings, if needed.
-    pub(crate) config: Arc<TranslatorConfig>,
 
     /// Tracking upload completion between xorbs and files.
     pub(crate) completion_tracker: Arc<CompletionTracker>,
@@ -73,16 +70,18 @@ pub struct FileUploadSession {
 // Constructors
 impl FileUploadSession {
     pub async fn new(
-        config: Arc<TranslatorConfig>,
+        session: SessionConfig,
         upload_progress_updater: Option<Arc<dyn TrackingProgressUpdater>>,
     ) -> Result<Arc<FileUploadSession>> {
+        let config = Arc::new(TranslatorConfig::new(session)?);
         FileUploadSession::new_impl(config, upload_progress_updater, false).await
     }
 
     pub async fn dry_run(
-        config: Arc<TranslatorConfig>,
+        session: SessionConfig,
         upload_progress_updater: Option<Arc<dyn TrackingProgressUpdater>>,
     ) -> Result<Arc<FileUploadSession>> {
+        let config = Arc::new(TranslatorConfig::new(session)?);
         FileUploadSession::new_impl(config, upload_progress_updater, true).await
     }
 
@@ -92,6 +91,7 @@ impl FileUploadSession {
         dry_run: bool,
     ) -> Result<Arc<FileUploadSession>> {
         let session_id = config
+            .session
             .session_id
             .as_ref()
             .map(Cow::Borrowed)
@@ -101,7 +101,7 @@ impl FileUploadSession {
             match upload_progress_updater {
                 Some(updater) => {
                     let flush_interval = xet_config().data.progress_update_interval;
-                    if !flush_interval.is_zero() && config.progress_config.aggregate {
+                    if !flush_interval.is_zero() && xet_config().data.aggregate_progress {
                         let aggregator = AggregatingProgressUpdater::new(
                             updater,
                             flush_interval,
@@ -129,12 +129,11 @@ impl FileUploadSession {
 
         let client = create_remote_client(&config, &session_id, dry_run)?;
 
-        let shard_interface = SessionShardInterface::new(config.clone(), client.clone(), dry_run).await?;
+        let shard_interface = SessionShardInterface::new(&config, client.clone(), dry_run).await?;
 
         Ok(Arc::new(Self {
             shard_interface,
             client,
-            config,
             completion_tracker,
             progress_aggregator,
             current_session_data: Mutex::new(DataAggregator::default()),
@@ -324,15 +323,13 @@ impl FileUploadSession {
         let xorb_hash = xorb.hash();
 
         // Serialize the object; this can be relatively expensive, so run it on a compute thread.
-        let compression_scheme = self.config.data_config.compression;
         let with_footer = self.client.use_xorb_footer();
         let cas_object =
-            tokio::task::spawn_blocking(move || SerializedCasObject::from_xorb(xorb, compression_scheme, with_footer))
-                .await??;
+            tokio::task::spawn_blocking(move || SerializedCasObject::from_xorb(xorb, with_footer)).await??;
 
         let session = self.clone();
         let upload_permit = self.client.acquire_upload_permit().await?;
-        let cas_prefix = session.config.data_config.prefix.clone();
+        let cas_prefix = xet_config().data.default_prefix.clone();
         let completion_tracker = self.completion_tracker.clone();
 
         self.xorb_upload_tasks.lock().await.spawn(
@@ -533,13 +530,16 @@ impl FileUploadSession {
 
 #[cfg(test)]
 mod tests {
-    use std::fs::{File, OpenOptions};
+    use std::fs::{File, OpenOptions, read, write};
     use std::io::{Read, Write};
     use std::path::Path;
     use std::sync::{Arc, OnceLock};
 
+    use cas_client::SeekingOutputProvider;
+    use tempfile::tempdir;
     use xet_runtime::XetRuntime;
 
+    use crate::configurations::SessionConfig;
     use crate::{FileDownloader, FileUploadSession, XetFileInfo};
 
     /// Return a shared threadpool to be reused as needed.
@@ -566,9 +566,8 @@ mod tests {
                 .unwrap(),
         );
 
-        let upload_session = FileUploadSession::new(TranslatorConfig::local_config(cas_path).unwrap().into(), None)
-            .await
-            .unwrap();
+        let session = SessionConfig::for_local_path(cas_path);
+        let upload_session = FileUploadSession::new(session, None).await.unwrap();
 
         let mut cleaner = upload_session
             .start_clean(Some("test".into()), read_data.len() as u64, None)
@@ -598,9 +597,8 @@ mod tests {
 
         let xet_file = serde_json::from_str::<XetFileInfo>(&input).unwrap();
 
-        let translator = FileDownloader::new(TranslatorConfig::local_config(cas_path).unwrap().into())
-            .await
-            .unwrap();
+        let session = SessionConfig::for_local_path(cas_path);
+        let translator = FileDownloader::new(session).await.unwrap();
 
         translator
             .smudge_file_from_hash(
@@ -613,13 +611,6 @@ mod tests {
             .await
             .unwrap();
     }
-
-    use std::fs::{read, write};
-
-    use cas_client::SeekingOutputProvider;
-    use tempfile::tempdir;
-
-    use super::*;
 
     #[test]
     fn test_clean_smudge_round_trip() {
