@@ -31,16 +31,37 @@ fn install_sigint_handler() -> Result<(), MultithreadedRuntimeError> {
 }
 
 #[cfg(windows)]
+extern "system" fn console_ctrl_handler(
+    ctrl_type: winapi::shared::minwindef::DWORD,
+) -> winapi::shared::minwindef::BOOL {
+    use winapi::um::wincon;
+
+    // Only handle CTRL_C_EVENT
+    if ctrl_type == wincon::CTRL_C_EVENT {
+        // Set the flag to indicate that a SIGINT has been detected, can happen multiple times.
+        SIGINT_DETECTED.store(true, Ordering::SeqCst);
+    }
+
+    // Always return false so the python signal handler still gets the signal.
+    winapi::shared::minwindef::FALSE
+}
+
+#[cfg(windows)]
 fn install_sigint_handler() -> Result<(), MultithreadedRuntimeError> {
-    // On Windows, use ctrlc crate.
-    // This sets a callback to run on Ctrl-C:
-    let sigint_detected_flag = SIGINT_DETECTED.clone();
-    ctrlc::set_handler(move || {
-        sigint_detected_flag.store(true, Ordering::SeqCst);
-    })
-    .map_err(|e| {
-        MultithreadedRuntimeError::Other(format!("Initialization Error: Unable to register SIGINT handler {e:?}"))
-    })?;
+    use winapi::um::consoleapi::SetConsoleCtrlHandler;
+    use winapi::um::wincon::CTRL_C_EVENT;
+
+    // Install our handler using Windows API directly (instead of ctrlc).  We want to
+    // always return false so that the signal handler continues to propagate the signal
+    // to the python Ctrl+C handler, which isn't possible with the ctrlc package.
+    unsafe {
+        if SetConsoleCtrlHandler(Some(console_ctrl_handler), winapi::shared::minwindef::TRUE) == 0 {
+            let error = winapi::um::errhandlingapi::GetLastError();
+            return Err(MultithreadedRuntimeError::Other(format!(
+                "Initialization Error: Unable to register SIGINT handler. Windows error: {error}"
+            )));
+        }
+    }
     Ok(())
 }
 
