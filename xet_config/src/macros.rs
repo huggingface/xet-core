@@ -50,6 +50,12 @@ macro_rules! config_group {
             }
         }
 
+        impl AsRef<ConfigValueGroup> for ConfigValueGroup {
+            fn as_ref(&self) -> &ConfigValueGroup {
+                self
+            }
+        }
+
         impl ConfigValueGroup {
             /// Create a new instance with default values only (no environment variable overrides).
             /// This is an alias for `Default::default()`.

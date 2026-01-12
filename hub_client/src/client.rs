@@ -1,7 +1,8 @@
 use std::sync::Arc;
 
 use cas_client::exports::ClientWithMiddleware;
-use cas_client::{Api, ResponseErrorLogger, RetryConfig, build_http_client};
+use cas_client::retry_wrapper::RetryWrapper;
+use cas_client::{Api, build_http_client};
 use urlencoding::encode;
 
 use crate::auth::CredentialHelper;
@@ -53,7 +54,7 @@ impl HubClient {
             endpoint: endpoint.to_owned(),
             repo_info,
             reference,
-            client: build_http_client(RetryConfig::default(), session_id, user_agent)?,
+            client: build_http_client(session_id, user_agent)?,
             cred_helper,
         })
     }
@@ -83,15 +84,24 @@ impl HubClient {
         // note that this API doesn't take a Basic auth
         let url = format!("{endpoint}/api/{repo_type}s/{repo_id}/xet-{token_type}-token/{rev}{query}");
 
-        let req = self.client.get(url).with_extension(Api("xet-token"));
-        let req = self
-            .cred_helper
-            .fill_credential(req)
-            .await
-            .map_err(HubClientError::CredentialHelper)?;
-        let response = req.send().await.process_error("xet-write-token")?;
+        let client = self.client.clone();
+        let cred_helper = self.cred_helper.clone();
 
-        let info: CasJWTInfo = response.json().await?;
+        let info: CasJWTInfo = RetryWrapper::new("xet-token")
+            .run_and_extract_json(move |_| {
+                let url = url.clone();
+                let client = client.clone();
+                let cred_helper = cred_helper.clone();
+                async move {
+                    let req = client.get(&url).with_extension(Api("xet-token"));
+                    let req = cred_helper
+                        .fill_credential(req)
+                        .await
+                        .map_err(reqwest_middleware::Error::Middleware)?;
+                    req.send().await
+                }
+            })
+            .await?;
 
         Ok(info)
     }

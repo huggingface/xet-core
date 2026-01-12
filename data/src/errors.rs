@@ -3,6 +3,7 @@ use std::sync::mpsc::RecvError;
 
 use cas_client::CasClientError;
 use cas_object::error::CasObjectError;
+use file_reconstruction::FileReconstructionError;
 use mdb_shard::error::MDBShardError;
 use thiserror::Error;
 use tokio::sync::AcquireError;
@@ -77,6 +78,9 @@ pub enum DataProcessingError {
 
     #[error("Permit Acquisition Error: {0}")]
     PermitAcquisitionError(#[from] AcquireError),
+
+    #[error("File Reconstruction Error: {0}")]
+    FileReconstructionError(#[from] FileReconstructionError),
 }
 
 pub type Result<T> = std::result::Result<T, DataProcessingError>;

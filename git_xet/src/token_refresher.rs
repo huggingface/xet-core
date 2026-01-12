@@ -1,7 +1,8 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use cas_client::{Api, RetryConfig, build_http_client};
+use cas_client::retry_wrapper::RetryWrapper;
+use cas_client::{Api, build_http_client};
 use hub_client::{CasJWTInfo, CredentialHelper, Operation};
 use reqwest_middleware::ClientWithMiddleware;
 use utils::auth::{TokenInfo, TokenRefresher};
@@ -36,7 +37,7 @@ impl DirectRefreshRouteTokenRefresher {
 
         Ok(Self {
             refresh_route: refresh_route.to_owned(),
-            client: build_http_client(RetryConfig::default(), session_id, user_agent)?,
+            client: build_http_client(session_id, user_agent)?,
             cred_helper,
         })
     }
@@ -45,15 +46,26 @@ impl DirectRefreshRouteTokenRefresher {
 #[async_trait]
 impl TokenRefresher for DirectRefreshRouteTokenRefresher {
     async fn refresh(&self) -> std::result::Result<TokenInfo, AuthError> {
-        let req = self.client.get(&self.refresh_route).with_extension(Api("xet-token"));
-        let req = self
-            .cred_helper
-            .fill_credential(req)
+        let client = self.client.clone();
+        let refresh_route = self.refresh_route.clone();
+        let cred_helper = self.cred_helper.clone();
+
+        let jwt_info: CasJWTInfo = RetryWrapper::new("xet-token")
+            .run_and_extract_json(move |_| {
+                let refresh_route = refresh_route.clone();
+                let client = client.clone();
+                let cred_helper = cred_helper.clone();
+                async move {
+                    let req = client.get(&refresh_route).with_extension(Api("xet-token"));
+                    let req = cred_helper
+                        .fill_credential(req)
+                        .await
+                        .map_err(reqwest_middleware::Error::Middleware)?;
+                    req.send().await
+                }
+            })
             .await
             .map_err(AuthError::token_refresh_failure)?;
-        let response = req.send().await.map_err(AuthError::token_refresh_failure)?;
-
-        let jwt_info: CasJWTInfo = response.json().await.map_err(AuthError::token_refresh_failure)?;
 
         Ok((jwt_info.access_token, jwt_info.exp))
     }

@@ -29,6 +29,7 @@ path = "examples/xorb-check/main.rs"
 [dependencies]
 cas_client = { path = "../cas_client" }
 cas_object = { path = "../cas_object" }
+file_reconstruction = { path = "../file_reconstruction" }
 cas_types = { path = "../cas_types" }
 deduplication = { path = "../deduplication" }
 error_printer = { path = "../error_printer" }

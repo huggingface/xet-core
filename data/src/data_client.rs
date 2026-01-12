@@ -3,10 +3,11 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use cas_client::CacheConfig;
 use cas_client::remote_client::PREFIX_DEFAULT;
-use cas_client::{CacheConfig, SeekingOutputProvider, SequentialOutput, sequential_output_from_filepath};
 use cas_object::CompressionScheme;
 use deduplication::DeduplicationMetrics;
+use file_reconstruction::DataOutput;
 use lazy_static::lazy_static;
 use mdb_shard::Sha256;
 use progress_tracking::TrackingProgressUpdater;
@@ -298,25 +299,11 @@ async fn smudge_file(
     // Wrap the progress updater in the proper tracking struct.
     let progress_updater = progress_updater.map(ItemProgressUpdater::new);
 
-    if xet_config().client.reconstruct_write_sequentially {
-        let output: SequentialOutput = sequential_output_from_filepath(file_path)?;
-        info!("Using sequential writer for smudge");
-        downloader
-            .smudge_file_from_hash_sequential(
-                &file_info.merkle_hash()?,
-                file_path.into(),
-                output,
-                None,
-                progress_updater,
-            )
-            .await?;
-    } else {
-        let output = SeekingOutputProvider::new_file_provider(path);
-        info!("Using parallel writer for smudge");
-        downloader
-            .smudge_file_from_hash(&file_info.merkle_hash()?, file_path.into(), output, None, progress_updater)
-            .await?;
-    };
+    let output = DataOutput::write_in_file(&path);
+
+    downloader
+        .smudge_file_from_hash(&file_info.merkle_hash()?, file_path.into(), output, None, progress_updater)
+        .await?;
 
     Ok(file_path.to_string())
 }

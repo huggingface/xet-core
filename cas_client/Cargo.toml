@@ -23,7 +23,6 @@ base64 = { workspace = true }
 bytes = { workspace = true }
 chrono = { workspace = true }
 clap = { workspace = true }
-derivative = { workspace = true }
 futures = { workspace = true }
 http = { workspace = true }
 lazy_static = { workspace = true }

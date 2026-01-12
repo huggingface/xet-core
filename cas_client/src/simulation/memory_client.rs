@@ -20,12 +20,8 @@ use mdb_shard::shard_in_memory::MDBInMemoryShard;
 use merklehash::MerkleHash;
 #[cfg(not(target_family = "wasm"))]
 use more_asserts::{assert_ge, assert_gt, debug_assert_lt};
-#[cfg(not(target_family = "wasm"))]
-use progress_tracking::item_tracking::SingleItemProgressUpdater;
 use progress_tracking::upload_tracking::CompletionTracker;
 use rand::Rng;
-#[cfg(not(target_family = "wasm"))]
-use tokio::io::AsyncWriteExt;
 use tokio::sync::RwLock;
 use tokio::time::{Duration, Instant};
 use tracing::{error, info};
@@ -35,11 +31,7 @@ use super::direct_access_client::DirectAccessClient;
 use super::random_xorb::RandomXorb;
 use crate::Client;
 use crate::adaptive_concurrency::AdaptiveConcurrencyController;
-#[cfg(not(target_family = "wasm"))]
-use crate::download_utils::TermDownloadOutput;
 use crate::error::{CasClientError, Result};
-#[cfg(not(target_family = "wasm"))]
-use crate::{SeekingOutputProvider, SequentialOutput};
 
 lazy_static::lazy_static! {
     /// Reference instant for URL timestamps. Initialized far in the past to allow
@@ -456,6 +448,69 @@ impl DirectAccessClient for MemoryClient {
             XorbStorage::Random(xorb) => Ok(xorb.serialized_length()),
         }
     }
+
+    #[cfg(not(target_family = "wasm"))]
+    async fn fetch_term_data(
+        &self,
+        hash: MerkleHash,
+        fetch_term: CASReconstructionFetchInfo,
+    ) -> Result<(Bytes, Vec<u32>)> {
+        self.apply_api_delay().await;
+        let (xorb_hash, url_byte_range, url_timestamp) = parse_fetch_url(&fetch_term.url)?;
+
+        // Check if URL has expired
+        let expiration_ms = self.url_expiration_ms.load(Ordering::Relaxed);
+        let elapsed_ms = Instant::now().saturating_duration_since(url_timestamp).as_millis() as u64;
+        if elapsed_ms > expiration_ms {
+            return Err(CasClientError::PresignedUrlExpirationError);
+        }
+
+        // Validate byte range matches url_range
+        // Note: url_byte_range is FileRange (exclusive end), url_range is HttpRange (inclusive end)
+        // We convert url_range to FileRange for comparison
+        let fetch_byte_range = FileRange::from(fetch_term.url_range);
+        if url_byte_range.start != fetch_byte_range.start || url_byte_range.end != fetch_byte_range.end {
+            return Err(CasClientError::InvalidArguments);
+        }
+
+        let xorbs = self.xorbs.read().await;
+        let storage = xorbs.get(&xorb_hash).ok_or_else(|| {
+            error!("Unable to find xorb in memory CAS {:?}", hash);
+            CasClientError::XORBNotFound(hash)
+        })?;
+
+        let (data, cas) = match storage {
+            XorbStorage::Materialized(entry) => {
+                let mut reader = BufReader::new(Cursor::new(&entry.serialized_data));
+                let cas = CasObject::deserialize(&mut reader)?;
+                let data = cas.get_bytes_by_chunk_range(&mut reader, fetch_term.range.start, fetch_term.range.end)?;
+                (Bytes::from(data), cas)
+            },
+            XorbStorage::Random(xorb) => {
+                let data = xorb
+                    .get_chunk_range_data(fetch_term.range.start, fetch_term.range.end)
+                    .ok_or(CasClientError::XORBNotFound(hash))?;
+                let cas = xorb.get_cas_object();
+                (data, cas)
+            },
+        };
+
+        let chunk_byte_indices = {
+            let mut indices = Vec::new();
+            let mut cumulative = 0u32;
+            indices.push(0);
+            for chunk_idx in fetch_term.range.start..fetch_term.range.end {
+                let chunk_len = cas
+                    .uncompressed_chunk_length(chunk_idx)
+                    .map_err(|e| CasClientError::Other(format!("Failed to get chunk length: {e}")))?;
+                cumulative += chunk_len;
+                indices.push(cumulative);
+            }
+            indices
+        };
+
+        Ok((data, chunk_byte_indices))
+    }
 }
 
 #[cfg_attr(not(target_family = "wasm"), async_trait)]
@@ -795,14 +850,20 @@ impl Client for MemoryClient {
         })
     }
 
+    async fn acquire_download_permit(&self) -> Result<crate::adaptive_concurrency::ConnectionPermit> {
+        self.apply_api_delay().await;
+        self.upload_concurrency_controller.acquire_connection_permit().await
+    }
+
     #[cfg(not(target_family = "wasm"))]
     async fn get_file_term_data(
         &self,
-        hash: MerkleHash,
-        fetch_term: CASReconstructionFetchInfo,
-    ) -> Result<TermDownloadOutput> {
+        url_info: Box<dyn crate::URLProvider>,
+        _download_permit: crate::adaptive_concurrency::ConnectionPermit,
+    ) -> Result<(Bytes, Vec<u32>)> {
         self.apply_api_delay().await;
-        let (xorb_hash, url_byte_range, url_timestamp) = parse_fetch_url(&fetch_term.url)?;
+        let (url, range) = url_info.retrieve_url().await?;
+        let (xorb_hash, _url_byte_range, url_timestamp) = parse_fetch_url(&url)?;
 
         // Check if URL has expired
         let expiration_ms = self.url_expiration_ms.load(Ordering::Relaxed);
@@ -811,84 +872,27 @@ impl Client for MemoryClient {
             return Err(CasClientError::PresignedUrlExpirationError);
         }
 
-        // Validate byte range matches url_range
-        // Note: url_byte_range is FileRange (exclusive end), url_range is HttpRange (inclusive end)
-        // We convert url_range to FileRange for comparison
-        let fetch_byte_range = FileRange::from(fetch_term.url_range);
-        if url_byte_range.start != fetch_byte_range.start || url_byte_range.end != fetch_byte_range.end {
-            return Err(CasClientError::InvalidArguments);
-        }
-
         let xorbs = self.xorbs.read().await;
-        let storage = xorbs.get(&xorb_hash).ok_or_else(|| {
-            error!("Unable to find xorb in memory CAS {:?}", hash);
-            CasClientError::XORBNotFound(hash)
-        })?;
+        let storage = xorbs.get(&xorb_hash).ok_or(CasClientError::XORBNotFound(xorb_hash))?;
 
-        let (data, cas) = match storage {
+        // Extract the byte range from the serialized data and deserialize
+        let start = range.start as usize;
+        let end = range.end as usize + 1; // HttpRange is inclusive end
+
+        match storage {
             XorbStorage::Materialized(entry) => {
-                let mut reader = BufReader::new(Cursor::new(&entry.serialized_data));
-                let cas = CasObject::deserialize(&mut reader)?;
-                let data = cas.get_bytes_by_chunk_range(&mut reader, fetch_term.range.start, fetch_term.range.end)?;
-                (Bytes::from(data), cas)
+                let range_data = &entry.serialized_data[start..end];
+                let (decompressed_data, chunk_byte_indices) =
+                    cas_object::deserialize_chunks(&mut Cursor::new(range_data))?;
+                Ok((Bytes::from(decompressed_data), chunk_byte_indices))
             },
             XorbStorage::Random(xorb) => {
-                let data = xorb
-                    .get_chunk_range_data(fetch_term.range.start, fetch_term.range.end)
-                    .ok_or(CasClientError::XORBNotFound(hash))?;
-                let cas = xorb.get_cas_object();
-                (data, cas)
+                let range_data = xorb.get_serialized_range(start as u64, end as u64);
+                let (decompressed_data, chunk_byte_indices) =
+                    cas_object::deserialize_chunks(&mut Cursor::new(range_data.as_ref()))?;
+                Ok((Bytes::from(decompressed_data), chunk_byte_indices))
             },
-        };
-
-        let chunk_byte_indices = {
-            let mut indices = Vec::new();
-            let mut cumulative = 0u32;
-            indices.push(0);
-            for chunk_idx in fetch_term.range.start..fetch_term.range.end {
-                let chunk_len = cas
-                    .uncompressed_chunk_length(chunk_idx)
-                    .map_err(|e| CasClientError::Other(format!("Failed to get chunk length: {e}")))?;
-                cumulative += chunk_len;
-                indices.push(cumulative);
-            }
-            indices
-        };
-
-        Ok(TermDownloadOutput {
-            data,
-            chunk_byte_indices,
-            chunk_range: fetch_term.range,
-        })
-    }
-
-    #[cfg(not(target_family = "wasm"))]
-    async fn get_file_with_sequential_writer(
-        self: Arc<Self>,
-        hash: &MerkleHash,
-        byte_range: Option<FileRange>,
-        mut output_provider: SequentialOutput,
-        _progress_updater: Option<Arc<SingleItemProgressUpdater>>,
-    ) -> Result<u64> {
-        self.apply_api_delay().await;
-        let data = self.get_file_data(hash, byte_range).await?;
-        let len = data.len() as u64;
-        output_provider.write_all(&data).await?;
-        Ok(len)
-    }
-
-    #[cfg(not(target_family = "wasm"))]
-    async fn get_file_with_parallel_writer(
-        self: Arc<Self>,
-        hash: &MerkleHash,
-        byte_range: Option<FileRange>,
-        output_provider: SeekingOutputProvider,
-        progress_updater: Option<Arc<SingleItemProgressUpdater>>,
-    ) -> Result<u64> {
-        self.apply_api_delay().await;
-        let sequential = output_provider.try_into()?;
-        self.get_file_with_sequential_writer(hash, byte_range, sequential, progress_updater)
-            .await
+        }
     }
 }
 
@@ -1038,8 +1042,8 @@ mod tests {
         for term in &recon.terms {
             let xorb_hash: MerkleHash = term.hash.into();
             for fetch_info in recon.fetch_info.get(&term.hash).unwrap() {
-                let term_data = client.get_file_term_data(xorb_hash, fetch_info.clone()).await.unwrap();
-                assert!(!term_data.data.is_empty());
+                let (data, _chunk_indices) = client.fetch_term_data(xorb_hash, fetch_info.clone()).await.unwrap();
+                assert!(!data.is_empty());
             }
         }
     }

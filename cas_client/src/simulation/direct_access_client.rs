@@ -10,7 +10,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use bytes::Bytes;
 use cas_object::CasObject;
-use cas_types::FileRange;
+use cas_types::{CASReconstructionFetchInfo, FileRange};
 use merklehash::MerkleHash;
 
 use crate::error::Result;
@@ -77,4 +77,12 @@ pub trait DirectAccessClient: Client + Send + Sync {
 
     /// Get the total length of the raw (serialized) XORB data.
     async fn xorb_raw_length(&self, hash: &MerkleHash) -> Result<u64>;
+
+    /// Fetches term data for a given hash and fetch term.
+    /// Returns (data bytes, chunk byte indices) matching `Client::get_file_term_data`.
+    async fn fetch_term_data(
+        &self,
+        hash: MerkleHash,
+        fetch_term: CASReconstructionFetchInfo,
+    ) -> Result<(Bytes, Vec<u32>)>;
 }

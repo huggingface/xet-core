@@ -686,7 +686,6 @@ dependencies = [
  "chunk_cache",
  "clap",
  "deduplication",
- "derivative",
  "error_printer",
  "file_utils",
  "futures",
@@ -1238,6 +1237,7 @@ dependencies = [
  "deduplication",
  "dirs",
  "error_printer",
+ "file_reconstruction",
  "hub_client",
  "lazy_static",
  "mdb_shard",
@@ -1619,6 +1619,28 @@ name = "fiat-crypto"
 version = "0.2.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "28dea519a9695b9977216879a3ebfddf92f1c08c05d984f8996aecd6ecdc811d"
+
+[[package]]
+name = "file_reconstruction"
+version = "0.14.5"
+dependencies = [
+ "async-trait",
+ "bytes",
+ "cas_client",
+ "cas_types",
+ "lazy_static",
+ "merklehash",
+ "more-asserts",
+ "progress_tracking",
+ "rand 0.9.1",
+ "tempfile",
+ "thiserror 2.0.12",
+ "tokio",
+ "tracing",
+ "utils",
+ "xet_config",
+ "xet_runtime",
+]
 
 [[package]]
 name = "file_utils"

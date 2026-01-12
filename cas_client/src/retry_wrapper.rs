@@ -30,6 +30,7 @@ pub struct RetryWrapper {
     max_attempts: usize,
     base_delay: Duration,
     no_retry_on_429: bool,
+    retry_on_403: bool,
     log_errors_as_info: bool,
     api_tag: &'static str,
     connection_permit: Option<Mutex<ConnectionPermitInfo>>,
@@ -41,6 +42,7 @@ impl RetryWrapper {
             max_attempts: xet_config().client.retry_max_attempts,
             base_delay: xet_config().client.retry_base_delay,
             no_retry_on_429: false,
+            retry_on_403: false,
             log_errors_as_info: false,
             api_tag,
             connection_permit: None,
@@ -59,6 +61,11 @@ impl RetryWrapper {
 
     pub fn with_429_no_retry(mut self) -> Self {
         self.no_retry_on_429 = true;
+        self
+    }
+
+    pub fn with_retry_on_403(mut self) -> Self {
+        self.retry_on_403 = true;
         self
     }
 
@@ -140,8 +147,14 @@ impl RetryWrapper {
 
         match (resp.error_for_status(), retriability) {
             (Err(e), Some(Retryable::Fatal)) => {
-                let cas_err = process_error("Fatal Error", e, false);
-                Err(RetryableReqwestError::FatalError(cas_err))
+                // Intercept the forbidden condition if retry on 403 is enabled.
+                if e.status() == Some(StatusCode::FORBIDDEN) && self.retry_on_403 {
+                    let cas_err = process_error("Retry on 403 (Forbidden) enabled)", e, true);
+                    Err(RetryableReqwestError::RetryableError(cas_err))
+                } else {
+                    let cas_err = process_error("Fatal Error", e, false);
+                    Err(RetryableReqwestError::FatalError(cas_err))
+                }
             },
             (Err(e), Some(Retryable::Transient)) => {
                 // Intercept the too many requests condition in the case of no retrying on 429.
@@ -253,7 +266,12 @@ impl RetryWrapper {
 
                     // reply_bytes is ignored if the size was specified earlier, as in the case for upload.
                     let (reply_bytes, processing_result) = match checked_result {
-                        Ok(ok_response) => (ok_response.content_length().unwrap_or(0), process_fn(ok_response).await),
+                        Ok(ok_response) => {
+                            // Got an okay response, so now we can run the processing function.
+                            let reply_bytes = ok_response.content_length().unwrap_or(0);
+                            let prosess_fn_result = process_fn(ok_response).await;
+                            (reply_bytes, prosess_fn_result)
+                        },
                         Err(e) => (0, Err(e)),
                     };
 
@@ -299,6 +317,14 @@ impl RetryWrapper {
                 Err(e)
             },
             Err(RetryableReqwestError::RetryableError(e)) => {
+                // Retries exhausted - report failure on the permit if present
+                if let Some(permit_holder) = &self_.connection_permit {
+                    let mut permit_info = permit_holder.lock().await;
+                    if let Some(permit) = permit_info.permit.take() {
+                        permit.report_completion(0, false).await;
+                    }
+                }
+
                 // Log this here, as this is aborting things.
                 if self_.log_errors_as_info {
                     info!("No more retries; aborting: {e}");
@@ -794,5 +820,98 @@ mod tests {
         check_429_no_retry(&server).await;
         check_json_reserialization(&server).await;
         check_json_unexpected_eof_retry(&server).await;
+    }
+
+    #[tokio::test]
+    async fn test_403_no_retry_by_default() {
+        let server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path("/forbidden"))
+            .respond_with(ResponseTemplate::new(403))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let client = make_client();
+        let counter = Arc::new(AtomicU32::new(0));
+        let counter_ = counter.clone();
+
+        let result = connection_wrapper("test_403_no_retry_by_default")
+            .with_max_attempts(3)
+            .run(move |_partial_report_fn| {
+                let url = format!("{}/forbidden", server.uri());
+                counter_.fetch_add(1, Ordering::Relaxed);
+                client.clone().get(&url).send()
+            })
+            .await;
+
+        assert!(result.is_err());
+        assert_eq!(counter.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn test_403_retry_when_enabled() {
+        let server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path("/forbidden"))
+            .respond_with(ResponseTemplate::new(403))
+            .expect(4)
+            .mount(&server)
+            .await;
+
+        let client = make_client();
+        let counter = Arc::new(AtomicU32::new(0));
+        let counter_ = counter.clone();
+
+        let result = connection_wrapper("test_403_retry_when_enabled")
+            .with_max_attempts(3)
+            .with_retry_on_403()
+            .run(move |_partial_report_fn| {
+                let url = format!("{}/forbidden", server.uri());
+                counter_.fetch_add(1, Ordering::Relaxed);
+                client.clone().get(&url).send()
+            })
+            .await;
+
+        assert!(result.is_err());
+        assert_eq!(counter.load(Ordering::SeqCst), 4);
+    }
+
+    #[tokio::test]
+    async fn test_403_retry_then_success() {
+        let server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path("/forbidden_then_ok"))
+            .respond_with(ResponseTemplate::new(403))
+            .up_to_n_times(2)
+            .mount(&server)
+            .await;
+
+        Mock::given(method("GET"))
+            .and(path("/forbidden_then_ok"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("Success"))
+            .mount(&server)
+            .await;
+
+        let client = make_client();
+        let counter = Arc::new(AtomicU32::new(0));
+        let counter_ = counter.clone();
+
+        let result = connection_wrapper("test_403_retry_then_success")
+            .with_max_attempts(3)
+            .with_retry_on_403()
+            .run(move |_partial_report_fn| {
+                let url = format!("{}/forbidden_then_ok", server.uri());
+                counter_.fetch_add(1, Ordering::Relaxed);
+                client.clone().get(&url).send()
+            })
+            .await;
+
+        assert!(result.is_ok());
+        assert_eq!(&result.unwrap().bytes().await.unwrap()[..], b"Success");
+        assert_eq!(counter.load(Ordering::SeqCst), 3);
     }
 }
