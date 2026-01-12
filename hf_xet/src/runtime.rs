@@ -51,12 +51,11 @@ extern "system" fn console_ctrl_handler(
         if has_active_ops {
             // We have active operations, handle it ourselves
             SIGINT_DETECTED.store(true, Ordering::SeqCst);
-            winapi::shared::minwindef::TRUE
-        } else {
-            // No active operations, let Python's handler (or default) handle it
-            // Return FALSE to continue handler chain
-            winapi::shared::minwindef::FALSE
         }
+
+        // Always return FALSE to continue handler chain
+        // This is important to ensure that Python's handler (or default) can still handle the SIGINT
+        winapi::shared::minwindef::FALSE
     } else {
         // For other control events, let default handler process them
         winapi::shared::minwindef::FALSE
