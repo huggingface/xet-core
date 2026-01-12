@@ -3,6 +3,7 @@ use std::io::Write;
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 
+use bytes::Bytes;
 use cas_object::error::CasObjectError;
 use cas_types::{CASReconstructionFetchInfo, CASReconstructionTerm, ChunkRange, FileRange, HexMerkleHash, Key};
 use chunk_cache::{CacheRange, ChunkCache};
@@ -166,7 +167,7 @@ pub(crate) struct SequentialTermDownload {
 }
 
 impl SequentialTermDownload {
-    pub async fn run(self, client: Arc<dyn Client + Send + Sync>) -> Result<TermDownloadResult<Vec<u8>>> {
+    pub async fn run(self, client: Arc<dyn Client + Send + Sync>) -> Result<TermDownloadResult<Bytes>> {
         let TermDownloadResult {
             payload:
                 TermDownloadOutput {
@@ -189,15 +190,16 @@ impl SequentialTermDownload {
         debug_assert!(start_byte_index < data.len());
         debug_assert!(end_byte_index <= data.len());
         debug_assert!(start_byte_index < end_byte_index);
-        let data_slice = &data[start_byte_index..end_byte_index];
 
         // extract just the actual range data out of the term download output
         let start = self.skip_bytes as usize;
         let end = start + self.take as usize;
-        let final_term_data = &data_slice[start..end];
+        let final_start = start_byte_index + start;
+        let final_end = start_byte_index + end;
+        let final_term_data = data.slice(final_start..final_end);
 
         Ok(TermDownloadResult {
-            payload: final_term_data.to_vec(),
+            payload: final_term_data,
             duration,
             n_retries_on_403,
         })
@@ -223,7 +225,7 @@ impl<T: Clone> Clone for TermDownloadResult<T> {
 
 #[derive(Debug, Clone)]
 pub struct TermDownloadOutput {
-    pub data: Vec<u8>,
+    pub data: Bytes,
     pub chunk_byte_indices: Vec<u32>,
     pub chunk_range: ChunkRange,
 }
@@ -231,7 +233,7 @@ pub struct TermDownloadOutput {
 impl From<CacheRange> for TermDownloadOutput {
     fn from(CacheRange { data, offsets, range }: CacheRange) -> Self {
         Self {
-            data,
+            data: data.into(),
             chunk_byte_indices: offsets,
             chunk_range: range,
         }
@@ -534,7 +536,7 @@ async fn download_fetch_term_data(
         .await
         .map_err(parse_map_err)?;
         Ok(DownloadRangeResult::Data(TermDownloadOutput {
-            data,
+            data: data.into(),
             chunk_byte_indices,
             chunk_range: fetch_term.range,
         }))

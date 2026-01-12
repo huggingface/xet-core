@@ -30,5 +30,13 @@ pub(crate) fn create_remote_client(
             #[cfg(target_family = "wasm")]
             unimplemented!("Local file system access is not supported in WASM builds")
         },
+        Endpoint::InMemory => {
+            #[cfg(not(target_family = "wasm"))]
+            {
+                Ok(cas_client::MemoryClient::new())
+            }
+            #[cfg(target_family = "wasm")]
+            unimplemented!("In-memory client is not supported in WASM builds")
+        },
     }
 }

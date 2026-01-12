@@ -342,7 +342,7 @@ impl RemoteClient {
         // Use an unlimited queue size, as queue size is inherently bounded by degree of concurrency.
         let (task_tx, mut task_rx) = mpsc::unbounded_channel::<DownloadQueueItem<SequentialTermDownload>>();
         let (running_downloads_tx, mut running_downloads_rx) =
-            mpsc::unbounded_channel::<JoinHandle<Result<(TermDownloadResult<Vec<u8>>, OwnedSemaphorePermit)>>>();
+            mpsc::unbounded_channel::<JoinHandle<Result<(TermDownloadResult<Bytes>, OwnedSemaphorePermit)>>>();
 
         // derive the actual range to reconstruct
         let file_reconstruct_range = byte_range.unwrap_or_else(FileRange::full);
@@ -387,7 +387,7 @@ impl RemoteClient {
                         let permit = download_concurrency_limiter.clone().acquire_owned().await?;
                         debug!(call_id, "spawning 1 download task");
                         let client = client_for_dispatch.clone();
-                        let future: JoinHandle<Result<(TermDownloadResult<Vec<u8>>, OwnedSemaphorePermit)>> =
+                        let future: JoinHandle<Result<(TermDownloadResult<Bytes>, OwnedSemaphorePermit)>> =
                             tokio::spawn(async move {
                                 let data = term_download.run(client).await?;
                                 Ok((data, permit))

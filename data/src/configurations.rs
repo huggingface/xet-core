@@ -13,6 +13,7 @@ use crate::errors::Result;
 pub enum Endpoint {
     Server(String),
     FileSystem(PathBuf),
+    InMemory,
 }
 
 #[derive(Debug)]
@@ -91,6 +92,41 @@ impl TranslatorConfig {
         let translator_config = Self {
             data_config: DataConfig {
                 endpoint: Endpoint::FileSystem(path.join("xorbs")),
+                compression: Default::default(),
+                auth: None,
+                prefix: PREFIX_DEFAULT.into(),
+                cache_config: CacheConfig {
+                    cache_directory: path.join("cache"),
+                    cache_size: xet_config().chunk_cache.size_bytes,
+                },
+                staging_directory: None,
+                user_agent: String::new(),
+            },
+            shard_config: ShardConfig {
+                prefix: PREFIX_DEFAULT.into(),
+                cache_directory: path.join("shard-cache"),
+                session_directory: path.join("shard-session"),
+                global_dedup_policy: Default::default(),
+            },
+            repo_info: Some(RepoInfo {
+                repo_paths: vec!["".into()],
+            }),
+            session_id: None,
+            progress_config: ProgressConfig { aggregate: true },
+        };
+
+        Ok(translator_config)
+    }
+
+    /// Creates a TranslatorConfig that uses in-memory storage for XORBs.
+    /// Shard data still uses file-based storage in the provided base directory.
+    pub fn memory_config(base_dir: impl AsRef<Path>) -> Result<Self> {
+        let path = base_dir.as_ref().join("xet");
+        std::fs::create_dir_all(&path)?;
+
+        let translator_config = Self {
+            data_config: DataConfig {
+                endpoint: Endpoint::InMemory,
                 compression: Default::default(),
                 auth: None,
                 prefix: PREFIX_DEFAULT.into(),
