@@ -42,7 +42,6 @@ tracing = "0.1"
 # Unix-specific dependencies
 [target.'cfg(unix)'.dependencies]
 signal-hook = "0.3"
-signal-hook-registry = "1.4"
 
 # Windows-specific dependencies
 [target.'cfg(windows)'.dependencies]
