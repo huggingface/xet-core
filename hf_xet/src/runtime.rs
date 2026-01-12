@@ -38,28 +38,12 @@ extern "system" fn console_ctrl_handler(
 
     // Only handle CTRL_C_EVENT
     if ctrl_type == wincon::CTRL_C_EVENT {
-        // Check if we have active operations
-        let has_active_ops = {
-            let guard = MULTITHREADED_RUNTIME.read().unwrap();
-            if let Some((runtime_pid, ref runtime)) = *guard {
-                runtime_pid == std::process::id() && runtime.external_executor_count() > 0
-            } else {
-                false
-            }
-        };
-
-        if has_active_ops {
-            // We have active operations, handle it ourselves
-            SIGINT_DETECTED.store(true, Ordering::SeqCst);
-        }
-
-        // Always return FALSE to continue handler chain
-        // This is important to ensure that Python's handler (or default) can still handle the SIGINT
-        winapi::shared::minwindef::FALSE
-    } else {
-        // For other control events, let default handler process them
-        winapi::shared::minwindef::FALSE
+        // Set the flag to indicate that a SIGINT has been detected, can happen multiple times.
+        SIGINT_DETECTED.store(true, Ordering::SeqCst);
     }
+
+    // Always return false so the python signal handler still gets the signal.
+    winapi::shared::minwindef::FALSE
 }
 
 #[cfg(windows)]
@@ -67,11 +51,9 @@ fn install_sigint_handler() -> Result<(), MultithreadedRuntimeError> {
     use winapi::um::consoleapi::SetConsoleCtrlHandler;
     use winapi::um::wincon::CTRL_C_EVENT;
 
-    // Install our handler using Windows API directly (instead of ctrlc)
-    // Our handler checks if operations are active:
-    // - If active: handles Ctrl+C and returns TRUE (stops propagation)
-    // - If not active: returns FALSE (allows Python's handler or default to handle it)
-    // This way we don't need to save/restore Python's handler - we just delegate to it
+    // Install our handler using Windows API directly (instead of ctrlc).  We want to
+    // always return false so that the signal handler continues to propagate the signal
+    // to the python Ctrl+C handler, which isn't possible with the ctrlc package.    
     unsafe {
         if SetConsoleCtrlHandler(Some(console_ctrl_handler), winapi::shared::minwindef::TRUE) == 0 {
             let error = winapi::um::errhandlingapi::GetLastError();
