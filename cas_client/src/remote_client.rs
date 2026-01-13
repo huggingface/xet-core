@@ -7,7 +7,6 @@ use cas_types::{
     BatchQueryReconstructionResponse, FileRange, HttpRange, Key, QueryReconstructionResponse, UploadShardResponse,
     UploadShardResponseType, UploadXorbResponse,
 };
-#[cfg(not(target_family = "wasm"))]
 use futures::TryStreamExt;
 use http::HeaderValue;
 use http::header::{CONTENT_LENGTH, RANGE};
@@ -23,7 +22,6 @@ use xet_runtime::xet_config;
 use crate::adaptive_concurrency::{AdaptiveConcurrencyController, ConnectionPermit};
 use crate::error::{CasClientError, Result};
 use crate::http_client::Api;
-#[cfg(not(target_family = "wasm"))]
 use crate::interface::URLProvider;
 use crate::retry_wrapper::{RetryWrapper, RetryableReqwestError};
 use crate::upload_progress_stream::UploadProgressStream;
@@ -122,7 +120,6 @@ impl RemoteClient {
     }
 }
 
-#[cfg(not(target_family = "wasm"))]
 impl RemoteClient {
     #[instrument(skip_all, name = "RemoteClient::batch_get_reconstruction")]
     #[allow(dead_code)]
@@ -170,7 +167,6 @@ impl RemoteClient {
 #[cfg_attr(not(target_family = "wasm"), async_trait::async_trait)]
 #[cfg_attr(target_family = "wasm", async_trait::async_trait(?Send))]
 impl Client for RemoteClient {
-    #[cfg(not(target_family = "wasm"))]
     async fn get_reconstruction(
         &self,
         file_id: &MerkleHash,
@@ -219,7 +215,6 @@ impl Client for RemoteClient {
         }
     }
 
-    #[cfg(not(target_family = "wasm"))]
     async fn batch_get_reconstruction(&self, file_ids: &[MerkleHash]) -> Result<BatchQueryReconstructionResponse> {
         let mut url_str = format!("{}/reconstructions?", self.endpoint);
         let mut is_first = true;
@@ -259,7 +254,6 @@ impl Client for RemoteClient {
         self.download_concurrency_controller.acquire_connection_permit().await
     }
 
-    #[cfg(not(target_family = "wasm"))]
     async fn get_file_term_data(
         &self,
         url_info: Box<dyn URLProvider>,

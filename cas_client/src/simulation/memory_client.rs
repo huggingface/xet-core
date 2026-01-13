@@ -7,18 +7,14 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use async_trait::async_trait;
 use bytes::Bytes;
 use cas_object::{CasObject, SerializedCasObject};
-#[cfg(not(target_family = "wasm"))]
 use cas_types::{
     BatchQueryReconstructionResponse, CASReconstructionFetchInfo, CASReconstructionTerm, ChunkRange, FileRange,
     HexMerkleHash, HttpRange, QueryReconstructionResponse,
 };
-#[cfg(target_family = "wasm")]
-use cas_types::{ChunkRange, FileRange, HttpRange};
 use mdb_shard::MDBShardInfo;
 use mdb_shard::file_structs::MDBFileInfo;
 use mdb_shard::shard_in_memory::MDBInMemoryShard;
 use merklehash::MerkleHash;
-#[cfg(not(target_family = "wasm"))]
 use more_asserts::{assert_ge, assert_gt, debug_assert_lt};
 use progress_tracking::upload_tracking::CompletionTracker;
 use rand::Rng;
@@ -449,7 +445,6 @@ impl DirectAccessClient for MemoryClient {
         }
     }
 
-    #[cfg(not(target_family = "wasm"))]
     async fn fetch_term_data(
         &self,
         hash: MerkleHash,
@@ -632,7 +627,6 @@ impl Client for MemoryClient {
         true
     }
 
-    #[cfg(not(target_family = "wasm"))]
     async fn get_reconstruction(
         &self,
         file_id: &MerkleHash,
@@ -827,7 +821,6 @@ impl Client for MemoryClient {
         }))
     }
 
-    #[cfg(not(target_family = "wasm"))]
     async fn batch_get_reconstruction(&self, file_ids: &[MerkleHash]) -> Result<BatchQueryReconstructionResponse> {
         self.apply_api_delay().await;
         let mut files = HashMap::new();
@@ -855,7 +848,6 @@ impl Client for MemoryClient {
         self.upload_concurrency_controller.acquire_connection_permit().await
     }
 
-    #[cfg(not(target_family = "wasm"))]
     async fn get_file_term_data(
         &self,
         url_info: Box<dyn crate::URLProvider>,
@@ -896,13 +888,11 @@ impl Client for MemoryClient {
     }
 }
 
-#[cfg(not(target_family = "wasm"))]
 fn generate_fetch_url(hash: &MerkleHash, byte_range: &FileRange, timestamp: Instant) -> String {
     let timestamp_ms = timestamp.saturating_duration_since(*REFERENCE_INSTANT).as_millis() as u64;
     format!("{}:{}:{}:{}", hash.hex(), byte_range.start, byte_range.end, timestamp_ms)
 }
 
-#[cfg(not(target_family = "wasm"))]
 fn parse_fetch_url(url: &str) -> Result<(MerkleHash, FileRange, Instant)> {
     let mut parts = url.rsplitn(4, ':').collect::<Vec<_>>();
     parts.reverse();

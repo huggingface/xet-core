@@ -2,9 +2,7 @@ use std::sync::Arc;
 
 use bytes::Bytes;
 use cas_object::SerializedCasObject;
-#[cfg(not(target_family = "wasm"))]
-use cas_types::{BatchQueryReconstructionResponse, FileRange};
-use cas_types::{HttpRange, QueryReconstructionResponse};
+use cas_types::{BatchQueryReconstructionResponse, FileRange, HttpRange, QueryReconstructionResponse};
 use mdb_shard::file_structs::MDBFileInfo;
 use merklehash::MerkleHash;
 use progress_tracking::upload_tracking::CompletionTracker;
@@ -34,19 +32,16 @@ pub trait Client: Send + Sync {
         file_hash: &MerkleHash,
     ) -> Result<Option<(MDBFileInfo, Option<MerkleHash>)>>;
 
-    #[cfg(not(target_family = "wasm"))]
     async fn get_reconstruction(
         &self,
         file_id: &MerkleHash,
         bytes_range: Option<FileRange>,
     ) -> Result<Option<QueryReconstructionResponse>>;
 
-    #[cfg(not(target_family = "wasm"))]
     async fn batch_get_reconstruction(&self, file_ids: &[MerkleHash]) -> Result<BatchQueryReconstructionResponse>;
 
     async fn acquire_download_permit(&self) -> Result<ConnectionPermit>;
 
-    #[cfg(not(target_family = "wasm"))]
     async fn get_file_term_data(
         &self,
         url_info: Box<dyn URLProvider>,
