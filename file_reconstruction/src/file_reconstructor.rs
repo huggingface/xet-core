@@ -775,7 +775,7 @@ mod tests {
             DataOutput::SequentialWriter(Box::new(writer)),
         )
         .with_config(url_refresh_test_config())
-        .with_buffer_semaphore(tiny_semaphore, 1);
+        .with_buffer_semaphore(tiny_semaphore, 1, 1);
 
         // Run reconstruction - this should trigger URL refreshes
         reconstructor
@@ -816,7 +816,7 @@ mod tests {
             DataOutput::SequentialWriter(Box::new(writer)),
         )
         .with_config(url_refresh_test_config())
-        .with_buffer_semaphore(tiny_semaphore, 1);
+        .with_buffer_semaphore(tiny_semaphore, 1, 1);
 
         reconstructor.run().await.expect("Reconstruction should succeed");
 
@@ -845,7 +845,7 @@ mod tests {
             DataOutput::SequentialWriter(Box::new(writer)),
         )
         .with_config(url_refresh_test_config())
-        .with_buffer_semaphore(tiny_semaphore, 1);
+        .with_buffer_semaphore(tiny_semaphore, 1, 1);
 
         reconstructor.run().await.expect("Reconstruction should succeed");
 
@@ -874,7 +874,7 @@ mod tests {
             DataOutput::SequentialWriter(Box::new(writer)),
         )
         .with_config(url_refresh_test_config())
-        .with_buffer_semaphore(tiny_semaphore, 1);
+        .with_buffer_semaphore(tiny_semaphore, 1, 1);
 
         reconstructor.run().await.expect("Reconstruction should succeed");
 
@@ -905,7 +905,7 @@ mod tests {
         )
         .with_byte_range(range)
         .with_config(url_refresh_test_config())
-        .with_buffer_semaphore(tiny_semaphore, 1);
+        .with_buffer_semaphore(tiny_semaphore, 1, 1);
 
         reconstructor.run().await.expect("Reconstruction should succeed");
 
