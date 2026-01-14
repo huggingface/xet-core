@@ -14,7 +14,6 @@ use crate::data_writer::DataFuture;
 use crate::error::Result;
 use crate::reconstruction_terms::retrieval_urls::TermBlockRetrievalURLs;
 use crate::reconstruction_terms::xorb_block::{XorbBlock, XorbBlockData};
-
 /// A single term in a file reconstruction, representing a contiguous byte range
 /// in the output file that maps to a chunk range within a xorb block.
 #[derive(Clone)]

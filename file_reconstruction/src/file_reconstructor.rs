@@ -17,7 +17,10 @@ lazy_static::lazy_static! {
 
     /// A global limit on how much memory can be used for buffering data during reconstruction.  This could be overridden by
     /// a custom semaphore, but by default all reconstructions share a common memory limit.  By default, set to 8gb.
-    static ref RECONSTRUCTION_DOWNLOAD_BUFFER_SIZE: usize = xet_config().reconstruction.download_buffer_size.as_u64().min(usize::MAX as u64) as usize;
+    static ref RECONSTRUCTION_DOWNLOAD_BUFFER_SIZE: usize =
+        ((((xet_config().reconstruction.download_buffer_size.as_u64() as f64) /
+         (xet_config().reconstruction.download_buffer_permit_basis.as_u64() as f64)).ceil()) as u32) as usize;
+
     static ref RECONSTRUCTION_DOWNLOAD_BUFFER_LIMITER: GlobalSemaphoreHandle =
         global_semaphore_handle!(*RECONSTRUCTION_DOWNLOAD_BUFFER_SIZE);
 }
@@ -34,7 +37,7 @@ pub struct FileReconstructor {
     progress_updater: Option<Arc<SingleItemProgressUpdater>>,
     config: Arc<ReconstructionConfig>,
     /// Custom buffer semaphore (semaphore, total_permits) for testing or specialized use cases.
-    custom_buffer_semaphore: Option<(Arc<Semaphore>, usize)>,
+    custom_buffer_semaphore: Option<(Arc<Semaphore>, usize, usize)>,
 }
 
 impl FileReconstructor {
@@ -78,9 +81,9 @@ impl FileReconstructor {
     /// # Arguments
     /// * `semaphore` - The semaphore to use for buffer limiting
     /// * `total_permits` - The total number of permits in the semaphore (used to cap requests)
-    pub fn with_buffer_semaphore(self, semaphore: Arc<Semaphore>, total_permits: usize) -> Self {
+    pub fn with_buffer_semaphore(self, semaphore: Arc<Semaphore>, total_permits: usize, size_basis: usize) -> Self {
         Self {
-            custom_buffer_semaphore: Some((semaphore, total_permits)),
+            custom_buffer_semaphore: Some((semaphore, total_permits, size_basis)),
             ..self
         }
     }
@@ -113,11 +116,16 @@ impl FileReconstructor {
 
         // Determine buffer size and semaphore based on whether a custom one is provided.
         // Tuple is (semaphore, total_permits).
-        let (download_buffer_semaphore, buffer_size) = custom_buffer_semaphore.unwrap_or_else(|| {
-            let global_semaphore = XetRuntime::current().global_semaphore(*RECONSTRUCTION_DOWNLOAD_BUFFER_LIMITER);
-            let default_buffer_size = *RECONSTRUCTION_DOWNLOAD_BUFFER_SIZE;
-            (global_semaphore, default_buffer_size)
-        });
+        let (download_buffer_semaphore, buffer_size, permit_size_basis) =
+            custom_buffer_semaphore.unwrap_or_else(|| {
+                let global_semaphore = XetRuntime::current().global_semaphore(*RECONSTRUCTION_DOWNLOAD_BUFFER_LIMITER);
+                let default_buffer_size = *RECONSTRUCTION_DOWNLOAD_BUFFER_SIZE;
+                (
+                    global_semaphore,
+                    default_buffer_size,
+                    xet_config().reconstruction.download_buffer_permit_basis.as_u64() as usize,
+                )
+            });
 
         // The range start offset - we need to adjust byte ranges to be relative to this.
         let range_start_offset = requested_range.start;
@@ -159,7 +167,11 @@ impl FileReconstructor {
                 // u32::MAX, but if the buffer is tiny, then we could deadlock if we request a
                 // larger number of permits.
                 let max_request_size = buffer_size.min(u32::MAX as usize) as u32;
-                let requested_permit_size = term_size.min(max_request_size);
+
+                // Get the requested permit size; note that `as u32` saturates to u32::MAX, so this should handle all
+                // the edge cases.
+                let requested_permit_size =
+                    (((term_size as f64) / (permit_size_basis as f64)).ceil() as u32).min(max_request_size);
 
                 // Acquire a permit from the memory limiter for using the memory needed for
                 // the next term.

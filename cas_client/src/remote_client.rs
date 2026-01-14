@@ -261,7 +261,7 @@ impl Client for RemoteClient {
     ) -> Result<(Bytes, Vec<u32>)> {
         let api_tag = "s3::get_range";
         let http_client = self.http_client.clone();
-        let url_info = Arc::new(tokio::sync::Mutex::new(url_info));
+        let url_info = Arc::new(url_info);
 
         RetryWrapper::new(api_tag)
             .with_retry_on_403()
@@ -272,8 +272,7 @@ impl Client for RemoteClient {
                     let url_info = url_info.clone();
 
                     async move {
-                        let url_guard = url_info.lock().await;
-                        let (url_string, url_range) = url_guard
+                        let (url_string, url_range) = url_info
                             .retrieve_url()
                             .await
                             .map_err(|e| reqwest_middleware::Error::Middleware(e.into()))?;
@@ -288,7 +287,7 @@ impl Client for RemoteClient {
                             .await?;
 
                         if response.status() == reqwest::StatusCode::FORBIDDEN {
-                            url_guard
+                            url_info
                                 .refresh_url()
                                 .await
                                 .map_err(|e| reqwest_middleware::Error::Middleware(e.into()))?;

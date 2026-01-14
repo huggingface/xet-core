@@ -28,6 +28,14 @@ crate::config_group!({
     /// Use the environment variable `HF_XET_RECONSTRUCTION_DOWNLOAD_BUFFER_SIZE` to set this value.
     ref download_buffer_size: ByteSize = ByteSize::from("8gb");
 
+    /// The basic unit of data acquired in a permit for the download buffer.  Because the underlying unit in the
+    /// Mutex supporting this is a u32, this requires us to measure size in larger values than bytes.
+    ///
+    /// The default value is 1MB.
+    ///
+    /// Use the environment variable `HF_XET_RECONSTRUCTION_DOWNLOAD_BUFFER_PEMIT_BASIS` to set this value.
+    ref download_buffer_permit_basis: ByteSize = ByteSize::from("1mb");
+
     /// The half-life in count of observations for the exponentially weighted moving average used to estimate
     /// completion rate during reconstruction prefetching.
     ///
