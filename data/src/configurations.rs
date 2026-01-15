@@ -1,11 +1,9 @@
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
-use cas_client::CacheConfig;
 use cas_client::remote_client::PREFIX_DEFAULT;
 use cas_object::CompressionScheme;
 use utils::auth::AuthConfig;
-use xet_runtime::xet_config;
 
 use crate::errors::Result;
 
@@ -22,7 +20,6 @@ pub struct DataConfig {
     pub compression: Option<CompressionScheme>,
     pub auth: Option<AuthConfig>,
     pub prefix: String,
-    pub cache_config: CacheConfig,
     pub staging_directory: Option<PathBuf>,
     pub user_agent: String,
 }
@@ -95,10 +92,6 @@ impl TranslatorConfig {
                 compression: Default::default(),
                 auth: None,
                 prefix: PREFIX_DEFAULT.into(),
-                cache_config: CacheConfig {
-                    cache_directory: path.join("cache"),
-                    cache_size: xet_config().chunk_cache.size_bytes,
-                },
                 staging_directory: None,
                 user_agent: String::new(),
             },
@@ -130,10 +123,6 @@ impl TranslatorConfig {
                 compression: Default::default(),
                 auth: None,
                 prefix: PREFIX_DEFAULT.into(),
-                cache_config: CacheConfig {
-                    cache_directory: path.join("cache"),
-                    cache_size: xet_config().chunk_cache.size_bytes,
-                },
                 staging_directory: None,
                 user_agent: String::new(),
             },

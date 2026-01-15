@@ -3,7 +3,6 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use cas_client::CacheConfig;
 use cas_client::remote_client::PREFIX_DEFAULT;
 use cas_object::CompressionScheme;
 use deduplication::DeduplicationMetrics;
@@ -76,10 +75,6 @@ pub fn default_config(
             compression: xorb_compression,
             auth: auth_cfg.clone(),
             prefix: PREFIX_DEFAULT.into(),
-            cache_config: CacheConfig {
-                cache_directory: cache_path.join("chunk-cache"),
-                cache_size: xet_config().chunk_cache.size_bytes,
-            },
             staging_directory: None,
             user_agent: user_agent.clone(),
         },
@@ -328,7 +323,7 @@ mod tests {
 
         assert!(result.is_ok());
         let config = result.unwrap();
-        assert!(config.data_config.cache_config.cache_directory.starts_with(&temp_dir.path()));
+        assert!(config.shard_config.cache_directory.starts_with(&temp_dir.path()));
     }
 
     #[test]
@@ -345,13 +340,7 @@ mod tests {
 
         assert!(result.is_ok());
         let config = result.unwrap();
-        assert!(
-            config
-                .data_config
-                .cache_config
-                .cache_directory
-                .starts_with(&temp_dir_xet_cache.path())
-        );
+        assert!(config.shard_config.cache_directory.starts_with(&temp_dir_xet_cache.path()));
 
         drop(hf_xet_cache_guard);
         drop(hf_home_guard);
@@ -364,7 +353,7 @@ mod tests {
 
         assert!(result.is_ok());
         let config = result.unwrap();
-        assert!(config.data_config.cache_config.cache_directory.starts_with(&temp_dir.path()));
+        assert!(config.shard_config.cache_directory.starts_with(&temp_dir.path()));
     }
 
     #[test]
@@ -378,7 +367,7 @@ mod tests {
 
         assert!(result.is_ok());
         let config = result.unwrap();
-        assert!(config.data_config.cache_config.cache_directory.starts_with(&temp_dir.path()));
+        assert!(config.shard_config.cache_directory.starts_with(&temp_dir.path()));
     }
 
     #[test]
@@ -391,7 +380,7 @@ mod tests {
 
         assert!(result.is_ok());
         let config = result.unwrap();
-        let test_cache_dir = &config.data_config.cache_config.cache_directory;
+        let test_cache_dir = &config.shard_config.cache_directory;
         assert!(
             test_cache_dir.starts_with(&expected),
             "cache dir = {test_cache_dir:?}; does not start with {expected:?}",

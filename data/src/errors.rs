@@ -22,9 +22,6 @@ pub enum DataProcessingError {
     #[error("Shard configuration error: {0}")]
     ShardConfigError(String),
 
-    #[error("Cache configuration error: {0}")]
-    CacheConfigError(String),
-
     #[error("Deduplication configuration error: {0}")]
     DedupConfigError(String),
 

@@ -683,7 +683,6 @@ dependencies = [
  "cas_object",
  "cas_types",
  "chrono",
- "chunk_cache",
  "clap",
  "deduplication",
  "error_printer",

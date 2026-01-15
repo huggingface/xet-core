@@ -1,4 +1,3 @@
-pub use chunk_cache::CacheConfig;
 pub use http_client::{Api, ResponseErrorLogger, build_auth_http_client, build_http_client};
 pub use interface::{Client, URLProvider};
 pub use remote_client::RemoteClient;
