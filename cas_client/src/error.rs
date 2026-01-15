@@ -12,9 +12,6 @@ use tokio::task::JoinError;
 #[non_exhaustive]
 #[derive(Error, Debug)]
 pub enum CasClientError {
-    #[error("ChunkCache Error: {0}")]
-    ChunkCache(#[from] chunk_cache::error::ChunkCacheError),
-
     #[error("Cas Object Error: {0}")]
     CasObjectError(#[from] cas_object::error::CasObjectError),
 

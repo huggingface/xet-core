@@ -151,7 +151,7 @@ fn test_active_window_protection() {
     // Set up environment variables for small size limit to trigger cleanup
     let env_vars = [
         ("HF_XET_LOG_DIR_MAX_SIZE", "1kb"),
-        ("HF_XET_LOG_DIR_MIN_DELETION_AGE", "1s"),
+        ("HF_XET_LOG_DIR_MIN_DELETION_AGE", "2s"),
         ("HF_XET_LOG_DIR_MAX_RETENTION_AGE", "1h"),
         ("HF_XET_LOG_DIR_DISABLE_CLEANUP", "false"),
     ];

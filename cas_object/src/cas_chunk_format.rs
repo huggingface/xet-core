@@ -8,7 +8,6 @@ use crate::CompressionScheme;
 use crate::cas_object_format::CAS_OBJECT_FORMAT_IDENT;
 use crate::error::CasObjectError;
 
-#[cfg(not(target_family = "wasm"))]
 pub mod deserialize_async;
 
 pub const CAS_CHUNK_HEADER_LENGTH: usize = size_of::<CASChunkHeader>();

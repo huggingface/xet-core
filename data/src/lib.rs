@@ -12,7 +12,6 @@ mod sha256;
 mod shard_interface;
 mod xet_file;
 
-pub use cas_client::CacheConfig;
 // Reexport this one for now
 pub use deduplication::RawXorbData;
 pub use file_downloader::FileDownloader;

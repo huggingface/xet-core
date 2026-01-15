@@ -41,7 +41,6 @@ impl FileUploadSession {
         let client = RemoteClient::new(
             &config.data_config.endpoint,
             &config.data_config.auth,
-            &None,
             &config.session_id,
             false,
             &config.data_config.user_agent,

@@ -91,7 +91,7 @@ impl LocalServer {
         let client: Arc<dyn DirectAccessClient> = if config.in_memory {
             MemoryClient::new()
         } else {
-            LocalClient::new(&config.data_directory)?
+            LocalClient::new(&config.data_directory).await?
         };
         Ok(Self { config, client })
     }
@@ -270,7 +270,7 @@ impl LocalTestServer {
 
         tokio::time::sleep(Duration::from_millis(50)).await;
 
-        let remote_client = RemoteClient::new(&endpoint, &None, &None, "test-session", false, "test-agent");
+        let remote_client = RemoteClient::new(&endpoint, &None, "test-session", false, "test-agent");
 
         Self {
             endpoint,

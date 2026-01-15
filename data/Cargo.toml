@@ -32,6 +32,7 @@ cas_object = { path = "../cas_object" }
 cas_types = { path = "../cas_types" }
 deduplication = { path = "../deduplication" }
 error_printer = { path = "../error_printer" }
+file_reconstruction = { path = "../file_reconstruction" }
 hub_client = { path = "../hub_client" }
 mdb_shard = { path = "../mdb_shard" }
 merklehash = { path = "../merklehash" }

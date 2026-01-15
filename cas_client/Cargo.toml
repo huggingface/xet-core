@@ -7,7 +7,6 @@ edition = "2024"
 [dependencies]
 cas_object = { path = "../cas_object" }
 cas_types = { path = "../cas_types" }
-chunk_cache = { path = "../chunk_cache" }
 deduplication = { path = "../deduplication" }
 error_printer = { path = "../error_printer" }
 file_utils = { path = "../file_utils" }
@@ -23,7 +22,6 @@ base64 = { workspace = true }
 bytes = { workspace = true }
 chrono = { workspace = true }
 clap = { workspace = true }
-derivative = { workspace = true }
 futures = { workspace = true }
 http = { workspace = true }
 lazy_static = { workspace = true }

@@ -1,8 +1,5 @@
-pub use chunk_cache::CacheConfig;
-pub use http_client::{Api, ResponseErrorLogger, RetryConfig, build_auth_http_client, build_http_client};
-pub use interface::Client;
-#[cfg(not(target_family = "wasm"))]
-pub use output_provider::*;
+pub use http_client::{Api, ResponseErrorLogger, build_auth_http_client, build_http_client};
+pub use interface::{Client, URLProvider};
 pub use remote_client::RemoteClient;
 pub use simulation::{ClientTestingUtils, DirectAccessClient, MemoryClient, RandomFileContents, RandomXorb};
 #[cfg(not(target_family = "wasm"))]
@@ -12,14 +9,10 @@ use tracing::Level;
 pub use crate::error::CasClientError;
 
 pub mod adaptive_concurrency;
-#[cfg(not(target_family = "wasm"))]
-mod download_utils;
 mod error;
 pub mod exports;
 pub mod http_client;
 mod interface;
-#[cfg(not(target_family = "wasm"))]
-mod output_provider;
 pub mod remote_client;
 pub mod retry_wrapper;
 pub mod simulation;
