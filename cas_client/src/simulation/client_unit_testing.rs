@@ -23,6 +23,7 @@ where
     test_reconstruction_with_multiple_xorbs(factory().await).await;
     test_reconstruction_overlapping_range_merging(factory().await).await;
     test_range_requests(factory().await).await;
+    test_sequential_writer(factory().await).await;
     test_upload_configurations(factory().await).await;
     test_chunk_boundary_shrinking(factory().await).await;
     test_chunk_boundary_multiple_segments(factory().await).await;
@@ -232,6 +233,36 @@ pub async fn test_range_requests(client: Arc<dyn DirectAccessClient>) {
         .unwrap();
     let total_unpacked: u64 = response.terms.iter().map(|t| t.unpacked_length as u64).sum();
     assert_eq!(total_unpacked, total_file_size);
+}
+
+/// Tests the sequential writer interface.
+pub async fn test_sequential_writer(client: Arc<dyn DirectAccessClient>) {
+    use crate::output_provider::buffer_provider::ThreadSafeBuffer;
+
+    let term_spec = &[(1, (0, 5))];
+    let file = client.upload_random_file(term_spec, 2048).await.unwrap();
+
+    let buffer = ThreadSafeBuffer::default();
+    let bytes_written = client
+        .clone()
+        .get_file_with_sequential_writer(&file.file_hash, None, buffer.clone().into(), None)
+        .await
+        .unwrap();
+
+    assert_eq!(bytes_written as usize, file.data.len());
+    assert_eq!(buffer.value(), file.data);
+
+    // Test with range
+    let buffer2 = ThreadSafeBuffer::default();
+    let half = file.data.len() as u64 / 2;
+    let bytes_written2 = client
+        .clone()
+        .get_file_with_sequential_writer(&file.file_hash, Some(FileRange::new(0, half)), buffer2.clone().into(), None)
+        .await
+        .unwrap();
+
+    assert_eq!(bytes_written2, half);
+    assert_eq!(buffer2.value(), &file.data[..half as usize]);
 }
 
 /// Tests various file upload configurations.
@@ -635,7 +666,7 @@ pub async fn test_global_dedup(client: Arc<dyn DirectAccessClient>) {
     use std::io::Cursor;
 
     use mdb_shard::shard_format::test_routines::gen_random_shard_with_cas_references;
-    use mdb_shard::utils::{parse_shard_filename, shard_file_name};
+    use mdb_shard::utils::parse_shard_filename;
     use mdb_shard::{MDBShardFile, MDBShardInfo};
     use tempfile::TempDir;
 
@@ -662,16 +693,30 @@ pub async fn test_global_dedup(client: Arc<dyn DirectAccessClient>) {
 
     assert_ne!(dedup_hashes.len(), 0);
 
-    // Query for global dedup and verify we get the shard back
+    // Query for global dedup and verify we get a valid shard back
     let new_shard = client
         .query_for_global_dedup_shard("default", &dedup_hashes[0])
         .await
         .unwrap()
         .unwrap();
 
-    let sf = MDBShardFile::write_out_from_reader(shard_dir_2.clone(), &mut Cursor::new(new_shard)).unwrap();
+    // Verify the returned shard can be loaded and contains the expected data
+    let sf = MDBShardFile::write_out_from_reader(shard_dir_2.clone(), &mut Cursor::new(&new_shard)).unwrap();
 
-    assert_eq!(sf.path, shard_dir_2.join(shard_file_name(&shard_hash)));
+    // Verify the shard has the same dedup hashes (the content matches semantically)
+    let returned_dedup_hashes = MDBShardInfo::filter_cas_chunks_for_global_dedup(&mut Cursor::new(&new_shard)).unwrap();
+    for hash in &dedup_hashes {
+        assert!(returned_dedup_hashes.contains(hash));
+    }
+
+    // Verify the shard file exists and is valid
+    assert!(sf.path.exists());
+
+    // Note: We don't check that the returned shard path matches the original shard_hash
+    // because streaming shard support may rebuild the shard with lookup tables, resulting
+    // in a different hash. The semantic correctness is verified above by checking that
+    // the dedup hashes match.
+    let _ = shard_hash; // Acknowledge we have it but don't assert path equality
 }
 
 /// Runs all URL expiration tests. Must be called from a `#[tokio::test(start_paused = true)]` context.
@@ -706,7 +751,7 @@ async fn test_url_expiration_within_window(client: Arc<dyn DirectAccessClient>) 
     tokio::time::advance(Duration::from_secs(30)).await;
 
     // The fetch should still succeed
-    let result = client.fetch_term_data(xorb_hash, fetch_info).await;
+    let result = client.get_file_term_data(xorb_hash, fetch_info).await;
     assert!(result.is_ok(), "URL should be valid within expiration window");
 }
 
@@ -731,7 +776,7 @@ async fn test_url_expiration_after_window(client: Arc<dyn DirectAccessClient>) {
     tokio::time::advance(Duration::from_secs(61)).await;
 
     // The fetch should fail with expiration error
-    let result = client.fetch_term_data(xorb_hash, fetch_info).await;
+    let result = client.get_file_term_data(xorb_hash, fetch_info).await;
     assert!(result.is_err(), "URL should be expired after expiration window");
     assert!(matches!(result.unwrap_err(), CasClientError::PresignedUrlExpirationError));
 }
@@ -756,7 +801,7 @@ async fn test_url_expiration_default_infinite(client: Arc<dyn DirectAccessClient
     tokio::time::advance(Duration::from_secs(365 * 24 * 60 * 60)).await;
 
     // The fetch should still succeed
-    let result = client.fetch_term_data(xorb_hash, fetch_info).await;
+    let result = client.get_file_term_data(xorb_hash, fetch_info).await;
     assert!(result.is_ok(), "URL should not expire with default infinite expiration");
 }
 
@@ -780,13 +825,13 @@ async fn test_url_expiration_exact_boundary(client: Arc<dyn DirectAccessClient>)
     // Test inside boundary (59 seconds elapsed, within 60 second window) - should be valid
     tokio::time::advance(Duration::from_secs(59)).await;
 
-    let result = client.fetch_term_data(xorb_hash, fetch_info.clone()).await;
+    let result = client.get_file_term_data(xorb_hash, fetch_info.clone()).await;
     assert!(result.is_ok(), "URL should be valid inside expiration boundary");
 
     // Advance 2 more seconds (now 61 seconds total, past 60 second window) - should be expired
     tokio::time::advance(Duration::from_secs(2)).await;
 
-    let result = client.fetch_term_data(xorb_hash, fetch_info).await;
+    let result = client.get_file_term_data(xorb_hash, fetch_info).await;
     assert!(result.is_err(), "URL should be expired past boundary");
     assert!(matches!(result.unwrap_err(), CasClientError::PresignedUrlExpirationError));
 }

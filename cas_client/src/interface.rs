@@ -2,22 +2,21 @@ use std::sync::Arc;
 
 use bytes::Bytes;
 use cas_object::SerializedCasObject;
-use cas_types::{BatchQueryReconstructionResponse, FileRange, HttpRange, QueryReconstructionResponse};
+use cas_types::QueryReconstructionResponse;
+#[cfg(not(target_family = "wasm"))]
+use cas_types::{BatchQueryReconstructionResponse, CASReconstructionFetchInfo, FileRange};
 use mdb_shard::file_structs::MDBFileInfo;
 use merklehash::MerkleHash;
+#[cfg(not(target_family = "wasm"))]
+use progress_tracking::item_tracking::SingleItemProgressUpdater;
 use progress_tracking::upload_tracking::CompletionTracker;
 
 use crate::adaptive_concurrency::ConnectionPermit;
+#[cfg(not(target_family = "wasm"))]
+use crate::download_utils::TermDownloadOutput;
 use crate::error::Result;
-
-#[async_trait::async_trait]
-pub trait URLProvider: Send + Sync {
-    // Retrieves the URL.
-    async fn retrieve_url(&self) -> Result<(String, HttpRange)>;
-
-    // Asks for a refresh of the URL; triggered on 403 errors.
-    async fn refresh_url(&self) -> Result<()>;
-}
+#[cfg(not(target_family = "wasm"))]
+use crate::output_provider::{SeekingOutputProvider, SequentialOutput};
 
 /// A Client to the Shard service. The shard service
 /// provides for
@@ -32,21 +31,40 @@ pub trait Client: Send + Sync {
         file_hash: &MerkleHash,
     ) -> Result<Option<(MDBFileInfo, Option<MerkleHash>)>>;
 
+    #[cfg(not(target_family = "wasm"))]
     async fn get_reconstruction(
         &self,
         file_id: &MerkleHash,
         bytes_range: Option<FileRange>,
     ) -> Result<Option<QueryReconstructionResponse>>;
 
+    #[cfg(not(target_family = "wasm"))]
     async fn batch_get_reconstruction(&self, file_ids: &[MerkleHash]) -> Result<BatchQueryReconstructionResponse>;
 
-    async fn acquire_download_permit(&self) -> Result<ConnectionPermit>;
-
+    #[cfg(not(target_family = "wasm"))]
     async fn get_file_term_data(
         &self,
-        url_info: Box<dyn URLProvider>,
-        download_permit: ConnectionPermit,
-    ) -> Result<(Bytes, Vec<u32>)>;
+        hash: MerkleHash,
+        fetch_term: CASReconstructionFetchInfo,
+    ) -> Result<TermDownloadOutput>;
+
+    #[cfg(not(target_family = "wasm"))]
+    async fn get_file_with_sequential_writer(
+        self: Arc<Self>,
+        hash: &MerkleHash,
+        byte_range: Option<FileRange>,
+        output_provider: SequentialOutput,
+        progress_updater: Option<Arc<SingleItemProgressUpdater>>,
+    ) -> Result<u64>;
+
+    #[cfg(not(target_family = "wasm"))]
+    async fn get_file_with_parallel_writer(
+        self: Arc<Self>,
+        hash: &MerkleHash,
+        byte_range: Option<FileRange>,
+        output_provider: SeekingOutputProvider,
+        progress_updater: Option<Arc<SingleItemProgressUpdater>>,
+    ) -> Result<u64>;
 
     async fn query_for_global_dedup_shard(&self, prefix: &str, chunk_hash: &MerkleHash) -> Result<Option<Bytes>>;
 
@@ -64,12 +82,4 @@ pub trait Client: Send + Sync {
         upload_tracker: Option<Arc<CompletionTracker>>,
         upload_permit: ConnectionPermit,
     ) -> Result<u64>;
-
-    /// Indicates if the serialized cas object should have a written footer.
-    /// This should only be true for testing with LocalClient.
-    fn use_xorb_footer(&self) -> bool;
-
-    /// Indicates if the serialized cas object should have a written footer.
-    /// This should only be true for testing with LocalClient.
-    fn use_shard_footer(&self) -> bool;
 }

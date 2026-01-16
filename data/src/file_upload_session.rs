@@ -127,7 +127,7 @@ impl FileUploadSession {
 
         let completion_tracker = Arc::new(CompletionTracker::new(progress_updater));
 
-        let client = create_remote_client(&config, &session_id, dry_run).await?;
+        let client = create_remote_client(&config, &session_id, dry_run)?;
 
         let shard_interface = SessionShardInterface::new(config.clone(), client.clone(), dry_run).await?;
 
@@ -324,10 +324,10 @@ impl FileUploadSession {
         let xorb_hash = xorb.hash();
 
         // Serialize the object; this can be relatively expensive, so run it on a compute thread.
+        // XORBs are sent without footer - the server/client reconstructs it from chunk data.
         let compression_scheme = self.config.data_config.compression;
-        let with_footer = self.client.use_xorb_footer();
         let cas_object =
-            tokio::task::spawn_blocking(move || SerializedCasObject::from_xorb(xorb, compression_scheme, with_footer))
+            tokio::task::spawn_blocking(move || SerializedCasObject::from_xorb(xorb, compression_scheme, false))
                 .await??;
 
         let session = self.clone();
@@ -590,25 +590,23 @@ mod tests {
     /// * `pointer_path`: path to the pointer file
     /// * `output_path`: path to write the hydrated/original file
     async fn test_smudge_file(cas_path: &Path, pointer_path: &Path, output_path: &Path) {
-        use file_reconstruction::DataOutput;
-
         let mut reader = File::open(pointer_path).unwrap();
+        let writer = SeekingOutputProvider::new_file_provider(output_path.to_path_buf());
 
         let mut input = String::new();
         reader.read_to_string(&mut input).unwrap();
 
         let xet_file = serde_json::from_str::<XetFileInfo>(&input).unwrap();
 
-        let config = TranslatorConfig::local_config(cas_path).unwrap();
-        let translator = FileDownloader::new(config.into()).await.unwrap();
-
-        let output = DataOutput::write_in_file(output_path);
+        let translator = FileDownloader::new(TranslatorConfig::local_config(cas_path).unwrap().into())
+            .await
+            .unwrap();
 
         translator
             .smudge_file_from_hash(
                 &xet_file.merkle_hash().expect("File hash is not a valid file hash"),
                 output_path.to_string_lossy().into(),
-                output,
+                writer,
                 None,
                 None,
             )
@@ -618,6 +616,7 @@ mod tests {
 
     use std::fs::{read, write};
 
+    use cas_client::SeekingOutputProvider;
     use tempfile::tempdir;
 
     use super::*;

@@ -296,6 +296,7 @@ dependencies = [
  "chunk_cache",
  "clap",
  "deduplication",
+ "derivative",
  "error_printer",
  "file_utils",
  "futures",

@@ -265,11 +265,7 @@ impl SessionShardInterface {
                 async move {
                     debug!("Uploading shard {:?} from staging area to CAS.", &si.shard_hash);
 
-                    let data: Bytes = if !shard_client.use_shard_footer() {
-                        read_shard_to_bytes_remove_footer(&si)?
-                    } else {
-                        std::fs::read(&si.path)?.into()
-                    };
+                    let data: Bytes = read_shard_to_bytes_remove_footer(&si)?;
 
                     shard_bytes_uploaded.fetch_add(data.len() as u64, Ordering::Relaxed);
 

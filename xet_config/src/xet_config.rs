@@ -1,5 +1,3 @@
-use utils::ByteSize;
-
 use crate::groups;
 
 /// Primary configuration struct containing all config sections
@@ -11,7 +9,6 @@ pub struct XetConfig {
     pub chunk_cache: groups::chunk_cache::ConfigValues,
     pub client: groups::client::ConfigValues,
     pub log: groups::log::ConfigValues,
-    pub reconstruction: groups::reconstruction::ConfigValues,
     pub xorb: groups::xorb::ConfigValues,
 }
 
@@ -40,7 +37,6 @@ impl XetConfig {
         self.chunk_cache.apply_env_overrides();
         self.client.apply_env_overrides();
         self.log.apply_env_overrides();
-        self.reconstruction.apply_env_overrides();
         self.xorb.apply_env_overrides();
         self
     }
@@ -72,10 +68,6 @@ impl XetConfig {
         self.client.ac_min_download_concurrency = 4;
         self.client.ac_initial_upload_concurrency = 16;
         self.client.ac_initial_download_concurrency = 16;
-
-        self.reconstruction.min_reconstruction_fetch_size = ByteSize::from("1gb");
-        self.reconstruction.max_reconstruction_fetch_size = ByteSize::from("16gb");
-        self.reconstruction.download_buffer_size = ByteSize::from("64gb");
 
         self
     }
