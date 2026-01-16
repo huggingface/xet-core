@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::fs::{File, metadata};
 use std::io::{BufReader, Cursor, Seek, SeekFrom, Write};
+use std::mem::size_of;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -17,23 +18,30 @@ use cas_types::{
 use file_utils::SafeFileCreator;
 use heed::types::*;
 use lazy_static::lazy_static;
+use mdb_shard::cas_structs::MDBCASInfo;
 use mdb_shard::file_structs::MDBFileInfo;
 use mdb_shard::shard_file_reconstructor::FileReconstructor;
+use mdb_shard::shard_in_memory::MDBInMemoryShard;
+use mdb_shard::streaming_shard::MDBMinimalShard;
 use mdb_shard::utils::shard_file_name;
-use mdb_shard::{MDBShardFile, MDBShardInfo, ShardFileManager};
+use mdb_shard::{MDBShardFile, ShardFileManager};
 use merklehash::MerkleHash;
 use more_asserts::*;
+use progress_tracking::item_tracking::SingleItemProgressUpdater;
 use progress_tracking::upload_tracking::CompletionTracker;
 use rand::Rng;
 use tempfile::TempDir;
+use tokio::io::AsyncWriteExt;
+use tokio::runtime::Handle;
 use tokio::time::{Duration, Instant};
 use tracing::{error, info, warn};
 use utils::serialization_utils::read_u32;
 
 use super::direct_access_client::DirectAccessClient;
-use crate::Client;
 use crate::adaptive_concurrency::AdaptiveConcurrencyController;
+use crate::download_utils::TermDownloadOutput;
 use crate::error::{CasClientError, Result};
+use crate::{Client, SeekingOutputProvider, SequentialOutput};
 
 lazy_static! {
     /// Reference instant for URL timestamps. Initialized far in the past to allow
@@ -73,9 +81,12 @@ impl LocalClient {
 
     /// Create a local client hosted in a directory.  Effectively, this directory
     /// is the CAS endpoint and persists across instances of LocalClient.  
-    pub async fn new(path: impl AsRef<Path>) -> Result<Arc<Self>> {
+    pub fn new(path: impl AsRef<Path>) -> Result<Arc<Self>> {
         let path = path.as_ref().to_owned();
-        Ok(Arc::new(Self::new_internal(path, None).await?))
+        let s = tokio::task::block_in_place(|| {
+            Handle::current().block_on(async move { Self::new_internal(path, None).await })
+        })?;
+        Ok(Arc::new(s))
     }
 
     async fn new_internal(path: impl AsRef<Path>, tmp_dir: Option<TempDir>) -> Result<Self> {
@@ -375,57 +386,6 @@ impl DirectAccessClient for LocalClient {
         let metadata = std::fs::metadata(&file_path).map_err(|_| CasClientError::XORBNotFound(*hash))?;
         Ok(metadata.len())
     }
-
-    async fn fetch_term_data(
-        &self,
-        hash: MerkleHash,
-        fetch_term: CASReconstructionFetchInfo,
-    ) -> Result<(Bytes, Vec<u32>)> {
-        self.apply_api_delay().await;
-        let (file_path, url_byte_range, url_timestamp) = parse_fetch_url(&fetch_term.url)?;
-
-        // Check if URL has expired
-        let expiration_ms = self.url_expiration_ms.load(Ordering::Relaxed);
-        let elapsed_ms = Instant::now().saturating_duration_since(url_timestamp).as_millis() as u64;
-        if elapsed_ms > expiration_ms {
-            return Err(CasClientError::PresignedUrlExpirationError);
-        }
-
-        // Validate byte range matches url_range
-        // Note: url_byte_range is FileRange (exclusive end), url_range is HttpRange (inclusive end)
-        // We convert url_range to FileRange for comparison
-        let fetch_byte_range = FileRange::from(fetch_term.url_range);
-        if url_byte_range.start != fetch_byte_range.start || url_byte_range.end != fetch_byte_range.end {
-            return Err(CasClientError::InvalidArguments);
-        }
-        let file = File::open(&file_path).map_err(|_| {
-            error!("Unable to find xorb in local CAS {:?}", file_path);
-            CasClientError::XORBNotFound(hash)
-        })?;
-
-        let mut reader = BufReader::new(file);
-        let cas = CasObject::deserialize(&mut reader)?;
-
-        let data = cas.get_bytes_by_chunk_range(&mut reader, fetch_term.range.start, fetch_term.range.end)?;
-
-        let chunk_byte_indices = {
-            let mut indices = Vec::new();
-            let mut cumulative = 0u32;
-            // Start with 0, matching the format from deserialize_chunks_from_stream
-            indices.push(0);
-            // ChunkRange is exclusive-end, so we iterate from start to end (exclusive)
-            for chunk_idx in fetch_term.range.start..fetch_term.range.end {
-                let chunk_len = cas
-                    .uncompressed_chunk_length(chunk_idx)
-                    .map_err(|e| CasClientError::Other(format!("Failed to get chunk length: {e}")))?;
-                cumulative += chunk_len;
-                indices.push(cumulative);
-            }
-            indices
-        };
-
-        Ok((data.into(), chunk_byte_indices))
-    }
 }
 
 /// LocalClient is responsible for writing/reading Xorbs on the local disk.
@@ -465,13 +425,51 @@ impl Client for LocalClient {
         _permit: crate::adaptive_concurrency::ConnectionPermit,
     ) -> Result<bool> {
         self.apply_api_delay().await;
-        let shard = MDBShardFile::write_out_from_reader(&self.shard_dir, &mut Cursor::new(&shard_data))?;
+
+        // Parse the shard using the streaming parser (handles shards without footer)
+        let mut reader = Cursor::new(&shard_data);
+        let minimal_shard = MDBMinimalShard::from_reader(&mut reader, true, true)?;
+
+        // Rebuild a full in-memory shard with proper lookup tables
+        let mut in_memory_shard = MDBInMemoryShard::default();
+
+        // Add file info by deserializing from the view's raw bytes
+        for i in 0..minimal_shard.num_files() {
+            let file_view = minimal_shard.file(i).unwrap();
+            let mut cursor = Cursor::new(file_view.bytes());
+            if let Some(file_info) = mdb_shard::file_structs::MDBFileInfo::deserialize(&mut cursor)? {
+                in_memory_shard.add_file_reconstruction_info(file_info)?;
+            }
+        }
+
+        // Add CAS info by rebuilding from the view
+        for i in 0..minimal_shard.num_cas() {
+            let cas_view = minimal_shard.cas(i).unwrap();
+            let chunks: Vec<_> = (0..cas_view.num_entries()).map(|j| cas_view.chunk(j)).collect();
+            let total_bytes = chunks
+                .last()
+                .map(|c| c.chunk_byte_range_start + c.unpacked_segment_bytes)
+                .unwrap_or(0);
+            let cas_info = MDBCASInfo {
+                metadata: mdb_shard::cas_structs::CASChunkSequenceHeader::new(
+                    cas_view.cas_hash(),
+                    chunks.len() as u32,
+                    total_bytes,
+                ),
+                chunks,
+            };
+            in_memory_shard.add_cas_block(cas_info)?;
+        }
+
+        // Write the rebuilt shard to disk (creates proper lookup tables)
+        let shard_path = in_memory_shard.write_to_directory(&self.shard_dir, None)?;
+        let shard = MDBShardFile::load_from_file(&shard_path)?;
         let shard_hash = shard.shard_hash;
 
         self.shard_manager.register_shards(&[shard]).await?;
 
-        let mut shard_reader = Cursor::new(shard_data);
-        let chunk_hashes = MDBShardInfo::filter_cas_chunks_for_global_dedup(&mut shard_reader)?;
+        // Get global dedup chunks from the minimal shard
+        let chunk_hashes = minimal_shard.global_dedup_eligible_chunks();
 
         let env = self
             .global_dedup_db_env
@@ -498,22 +496,41 @@ impl Client for LocalClient {
         _permit: crate::adaptive_concurrency::ConnectionPermit,
     ) -> Result<u64> {
         self.apply_api_delay().await;
-        let hash = &serialized_cas_object.hash;
-        if self.xorb_exists(hash).await? {
+        let hash = serialized_cas_object.hash;
+        if self.xorb_exists(&hash).await? {
             info!("object {hash:?} already exists in Local CAS; returning.");
             return Ok(0);
         }
 
-        let file_path = self.get_path_for_entry(hash);
+        // Reconstruct footer if not present
+        let data_to_write = if serialized_cas_object.footer_start.is_some() {
+            serialized_cas_object.serialized_data
+        } else {
+            let mut data_with_footer = Vec::new();
+            let (_, computed_hash) = cas_object::reconstruct_xorb_with_footer(
+                &mut data_with_footer,
+                &serialized_cas_object.serialized_data,
+            )?;
+            if computed_hash != hash {
+                return Err(CasClientError::Other(format!(
+                    "XORB hash mismatch: expected {}, got {}",
+                    hash.hex(),
+                    computed_hash.hex(),
+                )));
+            }
+            data_with_footer
+        };
+
+        let file_path = self.get_path_for_entry(&hash);
         info!("Writing XORB {hash:?} to local path {file_path:?}");
 
         let mut file = SafeFileCreator::new(&file_path)?;
 
         for i in 0..10 {
-            let start = (i * serialized_cas_object.serialized_data.len()) / 10;
-            let end = ((i + 1) * serialized_cas_object.serialized_data.len()) / 10;
+            let start = (i * data_to_write.len()) / 10;
+            let end = ((i + 1) * data_to_write.len()) / 10;
 
-            file.write_all(&serialized_cas_object.serialized_data[start..end])?;
+            file.write_all(&data_to_write[start..end])?;
 
             if let Some(upload_tracker) = &upload_tracker {
                 let adjusted_byte_start = (i * serialized_cas_object.raw_num_bytes as usize) / 10;
@@ -521,12 +538,12 @@ impl Client for LocalClient {
                 let adjusted_progress = adjusted_byte_end - adjusted_byte_start;
 
                 upload_tracker
-                    .register_xorb_upload_progress(*hash, adjusted_progress as u64)
+                    .register_xorb_upload_progress(hash, adjusted_progress as u64)
                     .await;
             }
         }
 
-        let bytes_written = serialized_cas_object.serialized_data.len();
+        let bytes_written = data_to_write.len();
         file.close()?;
 
         #[cfg(unix)]
@@ -541,13 +558,6 @@ impl Client for LocalClient {
         Ok(bytes_written as u64)
     }
 
-    fn use_xorb_footer(&self) -> bool {
-        true
-    }
-
-    fn use_shard_footer(&self) -> bool {
-        true
-    }
     async fn get_reconstruction(
         &self,
         file_id: &MerkleHash,
@@ -763,51 +773,86 @@ impl Client for LocalClient {
         })
     }
 
-    async fn acquire_download_permit(&self) -> Result<crate::adaptive_concurrency::ConnectionPermit> {
-        self.apply_api_delay().await;
-        self.upload_concurrency_controller.acquire_connection_permit().await
-    }
-
     async fn get_file_term_data(
         &self,
-        url_info: Box<dyn crate::URLProvider>,
-        _download_permit: crate::adaptive_concurrency::ConnectionPermit,
-    ) -> Result<(Bytes, Vec<u32>)> {
-        // Retry loop: try to fetch, and if URL expired, refresh and retry once.
-        for attempt in 0..2 {
-            self.apply_api_delay().await;
-            let (url, range) = url_info.retrieve_url().await?;
-            let (file_path, _url_byte_range, url_timestamp) = parse_fetch_url(&url)?;
+        hash: MerkleHash,
+        fetch_term: CASReconstructionFetchInfo,
+    ) -> Result<TermDownloadOutput> {
+        self.apply_api_delay().await;
+        let (file_path, url_byte_range, url_timestamp) = parse_fetch_url(&fetch_term.url)?;
 
-            // Check if URL has expired
-            let expiration_ms = self.url_expiration_ms.load(Ordering::Relaxed);
-            let elapsed_ms = Instant::now().saturating_duration_since(url_timestamp).as_millis() as u64;
-            if elapsed_ms > expiration_ms {
-                if attempt == 0 {
-                    // First attempt failed due to expiration - refresh URL and retry.
-                    url_info.refresh_url().await?;
-                    continue;
-                }
-                return Err(CasClientError::PresignedUrlExpirationError);
-            }
-
-            // Read the byte range from the file and deserialize
-            let mut file = File::open(&file_path).map_err(|_| CasClientError::XORBNotFound(MerkleHash::default()))?;
-            let start = range.start;
-            let end = range.end + 1; // HttpRange is inclusive end
-            file.seek(SeekFrom::Start(start))?;
-            let len = (end - start) as usize;
-            let mut data = vec![0u8; len];
-            std::io::Read::read_exact(&mut file, &mut data)?;
-
-            // Deserialize the chunks from the raw CAS data
-            let (decompressed_data, chunk_byte_indices) = cas_object::deserialize_chunks(&mut Cursor::new(&data))?;
-
-            return Ok((Bytes::from(decompressed_data), chunk_byte_indices));
+        // Check if URL has expired
+        let expiration_ms = self.url_expiration_ms.load(Ordering::Relaxed);
+        let elapsed_ms = Instant::now().saturating_duration_since(url_timestamp).as_millis() as u64;
+        if elapsed_ms > expiration_ms {
+            return Err(CasClientError::PresignedUrlExpirationError);
         }
 
-        // Should not reach here, but return error if we do.
-        Err(CasClientError::PresignedUrlExpirationError)
+        // Validate byte range matches url_range
+        // Note: url_byte_range is FileRange (exclusive end), url_range is HttpRange (inclusive end)
+        // We convert url_range to FileRange for comparison
+        let fetch_byte_range = FileRange::from(fetch_term.url_range);
+        if url_byte_range.start != fetch_byte_range.start || url_byte_range.end != fetch_byte_range.end {
+            return Err(CasClientError::InvalidArguments);
+        }
+        let file = File::open(&file_path).map_err(|_| {
+            error!("Unable to find xorb in local CAS {:?}", file_path);
+            CasClientError::XORBNotFound(hash)
+        })?;
+
+        let mut reader = BufReader::new(file);
+        let cas = CasObject::deserialize(&mut reader)?;
+
+        let data = cas.get_bytes_by_chunk_range(&mut reader, fetch_term.range.start, fetch_term.range.end)?;
+
+        let chunk_byte_indices = {
+            let mut indices = Vec::new();
+            let mut cumulative = 0u32;
+            // Start with 0, matching the format from deserialize_chunks_from_stream
+            indices.push(0);
+            // ChunkRange is exclusive-end, so we iterate from start to end (exclusive)
+            for chunk_idx in fetch_term.range.start..fetch_term.range.end {
+                let chunk_len = cas
+                    .uncompressed_chunk_length(chunk_idx)
+                    .map_err(|e| CasClientError::Other(format!("Failed to get chunk length: {e}")))?;
+                cumulative += chunk_len;
+                indices.push(cumulative);
+            }
+            indices
+        };
+
+        Ok(TermDownloadOutput {
+            data: data.into(),
+            chunk_byte_indices,
+            chunk_range: fetch_term.range,
+        })
+    }
+
+    async fn get_file_with_sequential_writer(
+        self: Arc<Self>,
+        hash: &MerkleHash,
+        byte_range: Option<FileRange>,
+        mut output_provider: SequentialOutput,
+        _progress_updater: Option<Arc<SingleItemProgressUpdater>>,
+    ) -> Result<u64> {
+        self.apply_api_delay().await;
+        let data = self.get_file_data(hash, byte_range).await?;
+        let len = data.len() as u64;
+        output_provider.write_all(&data).await?;
+        Ok(len)
+    }
+
+    async fn get_file_with_parallel_writer(
+        self: Arc<Self>,
+        hash: &MerkleHash,
+        byte_range: Option<FileRange>,
+        output_provider: SeekingOutputProvider,
+        progress_updater: Option<Arc<SingleItemProgressUpdater>>,
+    ) -> Result<u64> {
+        self.apply_api_delay().await;
+        let sequential = output_provider.try_into()?;
+        self.get_file_with_sequential_writer(hash, byte_range, sequential, progress_updater)
+            .await
     }
 }
 
@@ -887,7 +932,7 @@ mod tests {
             url: valid_url.clone(),
             url_range: valid_url_range,
         };
-        let result = client.fetch_term_data(hash, valid_fetch_term).await;
+        let result = client.get_file_term_data(hash, valid_fetch_term).await;
         assert!(result.is_ok(), "Valid fetch_term should succeed");
 
         // Test 2: Invalid URL format - too few parts (3 instead of 4)
@@ -897,7 +942,7 @@ mod tests {
             url: too_few_parts.to_string(),
             url_range: valid_url_range,
         };
-        let result = client.fetch_term_data(hash, invalid_fetch_term).await;
+        let result = client.get_file_term_data(hash, invalid_fetch_term).await;
         assert!(result.is_err(), "URL with too few parts should fail");
         assert!(matches!(result.unwrap_err(), CasClientError::InvalidArguments));
 
@@ -909,7 +954,7 @@ mod tests {
             url: wrong_start_pos,
             url_range: valid_url_range,
         };
-        let result = client.fetch_term_data(hash, invalid_fetch_term).await;
+        let result = client.get_file_term_data(hash, invalid_fetch_term).await;
         assert!(result.is_err(), "Wrong start_pos should fail");
         assert!(matches!(result.unwrap_err(), CasClientError::InvalidArguments));
 
@@ -921,7 +966,7 @@ mod tests {
             url: wrong_end_pos,
             url_range: valid_url_range,
         };
-        let result = client.fetch_term_data(hash, invalid_fetch_term).await;
+        let result = client.get_file_term_data(hash, invalid_fetch_term).await;
         assert!(result.is_err(), "Wrong end_pos should fail");
         assert!(matches!(result.unwrap_err(), CasClientError::InvalidArguments));
 
@@ -933,7 +978,7 @@ mod tests {
             url: non_numeric_start,
             url_range: valid_url_range,
         };
-        let result = client.fetch_term_data(hash, invalid_fetch_term).await;
+        let result = client.get_file_term_data(hash, invalid_fetch_term).await;
         assert!(result.is_err(), "Non-numeric start_pos should fail");
         assert!(matches!(result.unwrap_err(), CasClientError::InvalidArguments));
 
@@ -944,7 +989,7 @@ mod tests {
             url: non_numeric_end,
             url_range: valid_url_range,
         };
-        let result = client.fetch_term_data(hash, invalid_fetch_term).await;
+        let result = client.get_file_term_data(hash, invalid_fetch_term).await;
         assert!(result.is_err(), "Non-numeric end_pos should fail");
         assert!(matches!(result.unwrap_err(), CasClientError::InvalidArguments));
 
@@ -954,7 +999,7 @@ mod tests {
             url: String::new(),
             url_range: valid_url_range,
         };
-        let result = client.fetch_term_data(hash, invalid_fetch_term).await;
+        let result = client.get_file_term_data(hash, invalid_fetch_term).await;
         assert!(result.is_err(), "Empty URL should fail");
         assert!(matches!(result.unwrap_err(), CasClientError::InvalidArguments));
 
@@ -965,7 +1010,7 @@ mod tests {
             url: non_numeric_timestamp,
             url_range: valid_url_range,
         };
-        let result = client.fetch_term_data(hash, invalid_fetch_term).await;
+        let result = client.get_file_term_data(hash, invalid_fetch_term).await;
         assert!(result.is_err(), "Non-numeric timestamp should fail");
         assert!(matches!(result.unwrap_err(), CasClientError::InvalidArguments));
 
@@ -977,7 +1022,7 @@ mod tests {
             url: non_existent_url,
             url_range: valid_url_range,
         };
-        let result = client.fetch_term_data(hash, invalid_fetch_term).await;
+        let result = client.get_file_term_data(hash, invalid_fetch_term).await;
         assert!(result.is_err(), "Non-existent file should fail");
     }
 

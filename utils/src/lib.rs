@@ -43,6 +43,3 @@ pub use configuration_utils::is_high_performance;
 
 #[cfg(not(target_family = "wasm"))]
 pub mod pipe;
-
-mod unique_id;
-pub use unique_id::UniqueId;

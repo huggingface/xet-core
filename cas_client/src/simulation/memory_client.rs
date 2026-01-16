@@ -7,17 +7,26 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use async_trait::async_trait;
 use bytes::Bytes;
 use cas_object::{CasObject, SerializedCasObject};
+#[cfg(not(target_family = "wasm"))]
 use cas_types::{
     BatchQueryReconstructionResponse, CASReconstructionFetchInfo, CASReconstructionTerm, ChunkRange, FileRange,
     HexMerkleHash, HttpRange, QueryReconstructionResponse,
 };
-use mdb_shard::MDBShardInfo;
-use mdb_shard::file_structs::MDBFileInfo;
+#[cfg(target_family = "wasm")]
+use cas_types::{ChunkRange, FileRange, HttpRange};
+use mdb_shard::cas_structs::{CASChunkSequenceEntry, CASChunkSequenceHeader, MDBCASInfo};
+use mdb_shard::file_structs::{FileDataSequenceEntry, FileDataSequenceHeader, MDBFileInfo};
 use mdb_shard::shard_in_memory::MDBInMemoryShard;
+use mdb_shard::streaming_shard::MDBMinimalShard;
 use merklehash::MerkleHash;
+#[cfg(not(target_family = "wasm"))]
 use more_asserts::{assert_ge, assert_gt, debug_assert_lt};
+#[cfg(not(target_family = "wasm"))]
+use progress_tracking::item_tracking::SingleItemProgressUpdater;
 use progress_tracking::upload_tracking::CompletionTracker;
 use rand::Rng;
+#[cfg(not(target_family = "wasm"))]
+use tokio::io::AsyncWriteExt;
 use tokio::sync::RwLock;
 use tokio::time::{Duration, Instant};
 use tracing::{error, info};
@@ -27,7 +36,11 @@ use super::direct_access_client::DirectAccessClient;
 use super::random_xorb::RandomXorb;
 use crate::Client;
 use crate::adaptive_concurrency::AdaptiveConcurrencyController;
+#[cfg(not(target_family = "wasm"))]
+use crate::download_utils::TermDownloadOutput;
 use crate::error::{CasClientError, Result};
+#[cfg(not(target_family = "wasm"))]
+use crate::{SeekingOutputProvider, SequentialOutput};
 
 lazy_static::lazy_static! {
     /// Reference instant for URL timestamps. Initialized far in the past to allow
@@ -88,8 +101,6 @@ impl MemoryClient {
     /// This allows storing XORBs that generate their data on-the-fly,
     /// enabling testing with massive files without storing all data in memory.
     pub async fn insert_random_xorb(&self, xorb: RandomXorb) -> Result<MerkleHash> {
-        use mdb_shard::cas_structs::{CASChunkSequenceEntry, CASChunkSequenceHeader, MDBCASInfo};
-
         let hash = xorb.xorb_hash();
         let cas = xorb.get_cas_object();
 
@@ -140,8 +151,6 @@ impl MemoryClient {
         term_spec: &[(u64, (u64, u64))],
         chunk_size: usize,
     ) -> Result<RandomFileContents> {
-        use mdb_shard::file_structs::{FileDataSequenceEntry, FileDataSequenceHeader, MDBFileInfo};
-
         // Collect max chunk count needed for each xorb seed
         let mut xorb_num_chunks = std::collections::HashMap::<u64, u64>::new();
         for &(xorb_seed, (_, chunk_idx_end)) in term_spec {
@@ -444,68 +453,6 @@ impl DirectAccessClient for MemoryClient {
             XorbStorage::Random(xorb) => Ok(xorb.serialized_length()),
         }
     }
-
-    async fn fetch_term_data(
-        &self,
-        hash: MerkleHash,
-        fetch_term: CASReconstructionFetchInfo,
-    ) -> Result<(Bytes, Vec<u32>)> {
-        self.apply_api_delay().await;
-        let (xorb_hash, url_byte_range, url_timestamp) = parse_fetch_url(&fetch_term.url)?;
-
-        // Check if URL has expired
-        let expiration_ms = self.url_expiration_ms.load(Ordering::Relaxed);
-        let elapsed_ms = Instant::now().saturating_duration_since(url_timestamp).as_millis() as u64;
-        if elapsed_ms > expiration_ms {
-            return Err(CasClientError::PresignedUrlExpirationError);
-        }
-
-        // Validate byte range matches url_range
-        // Note: url_byte_range is FileRange (exclusive end), url_range is HttpRange (inclusive end)
-        // We convert url_range to FileRange for comparison
-        let fetch_byte_range = FileRange::from(fetch_term.url_range);
-        if url_byte_range.start != fetch_byte_range.start || url_byte_range.end != fetch_byte_range.end {
-            return Err(CasClientError::InvalidArguments);
-        }
-
-        let xorbs = self.xorbs.read().await;
-        let storage = xorbs.get(&xorb_hash).ok_or_else(|| {
-            error!("Unable to find xorb in memory CAS {:?}", hash);
-            CasClientError::XORBNotFound(hash)
-        })?;
-
-        let (data, cas) = match storage {
-            XorbStorage::Materialized(entry) => {
-                let mut reader = BufReader::new(Cursor::new(&entry.serialized_data));
-                let cas = CasObject::deserialize(&mut reader)?;
-                let data = cas.get_bytes_by_chunk_range(&mut reader, fetch_term.range.start, fetch_term.range.end)?;
-                (Bytes::from(data), cas)
-            },
-            XorbStorage::Random(xorb) => {
-                let data = xorb
-                    .get_chunk_range_data(fetch_term.range.start, fetch_term.range.end)
-                    .ok_or(CasClientError::XORBNotFound(hash))?;
-                let cas = xorb.get_cas_object();
-                (data, cas)
-            },
-        };
-
-        let chunk_byte_indices = {
-            let mut indices = Vec::new();
-            let mut cumulative = 0u32;
-            indices.push(0);
-            for chunk_idx in fetch_term.range.start..fetch_term.range.end {
-                let chunk_len = cas
-                    .uncompressed_chunk_length(chunk_idx)
-                    .map_err(|e| CasClientError::Other(format!("Failed to get chunk length: {e}")))?;
-                cumulative += chunk_len;
-                indices.push(cumulative);
-            }
-            indices
-        };
-
-        Ok((data, chunk_byte_indices))
-    }
 }
 
 #[cfg_attr(not(target_family = "wasm"), async_trait)]
@@ -537,26 +484,58 @@ impl Client for MemoryClient {
         _permit: crate::adaptive_concurrency::ConnectionPermit,
     ) -> Result<bool> {
         self.apply_api_delay().await;
-        // Parse the shard info from bytes
+
+        // Parse the shard using the streaming parser (handles shards without footer)
         let mut reader = Cursor::new(&shard_data);
-        let shard_info = MDBShardInfo::load_from_reader(&mut reader)?;
+        let minimal_shard = MDBMinimalShard::from_reader(&mut reader, true, true)?;
 
         // Merge file info into our shard
         {
             let mut shard_lg = self.shard.write().await;
-            reader.set_position(0);
-            for file_info in shard_info.read_all_file_info_sections(&mut reader)? {
+
+            // Convert file views to MDBFileInfo and add to shard
+            for i in 0..minimal_shard.num_files() {
+                let file_view = minimal_shard.file(i).unwrap();
+                let segments: Vec<FileDataSequenceEntry> =
+                    (0..file_view.num_entries()).map(|j| file_view.entry(j)).collect();
+                let verification = if file_view.contains_verification() {
+                    (0..file_view.num_entries()).map(|j| file_view.verification(j)).collect()
+                } else {
+                    vec![]
+                };
+                let file_info = MDBFileInfo {
+                    metadata: FileDataSequenceHeader::new(
+                        file_view.file_hash(),
+                        segments.len(),
+                        file_view.contains_verification(),
+                        file_view.contains_metadata_ext(),
+                    ),
+                    segments,
+                    verification,
+                    metadata_ext: None,
+                };
                 shard_lg.add_file_reconstruction_info(file_info)?;
             }
-            reader.set_position(0);
-            for cas_info in shard_info.read_all_cas_blocks_full(&mut reader)? {
+
+            // Convert CAS views to MDBCASInfo and add to shard
+            for i in 0..minimal_shard.num_cas() {
+                let cas_view = minimal_shard.cas(i).unwrap();
+                let chunks: Vec<CASChunkSequenceEntry> =
+                    (0..cas_view.num_entries()).map(|j| cas_view.chunk(j)).collect();
+                let total_bytes = chunks
+                    .last()
+                    .map(|c| c.chunk_byte_range_start + c.unpacked_segment_bytes)
+                    .unwrap_or(0);
+                let cas_info = MDBCASInfo {
+                    metadata: CASChunkSequenceHeader::new(cas_view.cas_hash(), chunks.len() as u32, total_bytes),
+                    chunks,
+                };
                 shard_lg.add_cas_block(cas_info)?;
             }
         }
 
-        // Update global dedup lookup
-        let mut shard_reader = Cursor::new(&shard_data);
-        let chunk_hashes = MDBShardInfo::filter_cas_chunks_for_global_dedup(&mut shard_reader)?;
+        // Update global dedup lookup using the minimal shard's method
+        let chunk_hashes = minimal_shard.global_dedup_eligible_chunks();
 
         {
             let mut dedup_lg = self.global_dedup.write().await;
@@ -589,11 +568,30 @@ impl Client for MemoryClient {
 
         info!("Storing XORB {hash:?} in memory");
 
-        // Deserialize the CasObject for later use
-        let mut reader = BufReader::new(Cursor::new(&serialized_cas_object.serialized_data));
-        let cas_object = CasObject::deserialize(&mut reader)?;
+        // Reconstruct CasObject from chunk data if no footer, or deserialize if footer present
+        let (cas_object, serialized_data) = if serialized_cas_object.footer_start.is_some() {
+            // Data has footer - deserialize directly
+            let mut reader = Cursor::new(&serialized_cas_object.serialized_data);
+            let cas_object = CasObject::deserialize(&mut reader)?;
+            (cas_object, serialized_cas_object.serialized_data)
+        } else {
+            // No footer - reconstruct CasObject from chunk data and append footer
+            let mut data_with_footer = Vec::new();
+            let (cas_object, computed_hash) = cas_object::reconstruct_xorb_with_footer(
+                &mut data_with_footer,
+                &serialized_cas_object.serialized_data,
+            )?;
+            if computed_hash != hash {
+                return Err(CasClientError::Other(format!(
+                    "XORB hash mismatch: expected {}, got {}",
+                    hash.hex(),
+                    computed_hash.hex(),
+                )));
+            }
+            (cas_object, data_with_footer)
+        };
 
-        let bytes_written = serialized_cas_object.serialized_data.len();
+        let bytes_written = serialized_data.len();
 
         // Store the xorb
         {
@@ -601,7 +599,7 @@ impl Client for MemoryClient {
             xorbs.insert(
                 hash,
                 XorbStorage::Materialized(MaterializedXorb {
-                    serialized_data: Bytes::from(serialized_cas_object.serialized_data),
+                    serialized_data: Bytes::from(serialized_data),
                     cas_object,
                 }),
             );
@@ -619,14 +617,7 @@ impl Client for MemoryClient {
         Ok(bytes_written as u64)
     }
 
-    fn use_xorb_footer(&self) -> bool {
-        true
-    }
-
-    fn use_shard_footer(&self) -> bool {
-        true
-    }
-
+    #[cfg(not(target_family = "wasm"))]
     async fn get_reconstruction(
         &self,
         file_id: &MerkleHash,
@@ -821,6 +812,7 @@ impl Client for MemoryClient {
         }))
     }
 
+    #[cfg(not(target_family = "wasm"))]
     async fn batch_get_reconstruction(&self, file_ids: &[MerkleHash]) -> Result<BatchQueryReconstructionResponse> {
         self.apply_api_delay().await;
         let mut files = HashMap::new();
@@ -843,19 +835,14 @@ impl Client for MemoryClient {
         })
     }
 
-    async fn acquire_download_permit(&self) -> Result<crate::adaptive_concurrency::ConnectionPermit> {
-        self.apply_api_delay().await;
-        self.upload_concurrency_controller.acquire_connection_permit().await
-    }
-
+    #[cfg(not(target_family = "wasm"))]
     async fn get_file_term_data(
         &self,
-        url_info: Box<dyn crate::URLProvider>,
-        _download_permit: crate::adaptive_concurrency::ConnectionPermit,
-    ) -> Result<(Bytes, Vec<u32>)> {
+        hash: MerkleHash,
+        fetch_term: CASReconstructionFetchInfo,
+    ) -> Result<TermDownloadOutput> {
         self.apply_api_delay().await;
-        let (url, range) = url_info.retrieve_url().await?;
-        let (xorb_hash, _url_byte_range, url_timestamp) = parse_fetch_url(&url)?;
+        let (xorb_hash, url_byte_range, url_timestamp) = parse_fetch_url(&fetch_term.url)?;
 
         // Check if URL has expired
         let expiration_ms = self.url_expiration_ms.load(Ordering::Relaxed);
@@ -864,35 +851,94 @@ impl Client for MemoryClient {
             return Err(CasClientError::PresignedUrlExpirationError);
         }
 
+        // Validate byte range matches url_range
+        // Note: url_byte_range is FileRange (exclusive end), url_range is HttpRange (inclusive end)
+        // We convert url_range to FileRange for comparison
+        let fetch_byte_range = FileRange::from(fetch_term.url_range);
+        if url_byte_range.start != fetch_byte_range.start || url_byte_range.end != fetch_byte_range.end {
+            return Err(CasClientError::InvalidArguments);
+        }
+
         let xorbs = self.xorbs.read().await;
-        let storage = xorbs.get(&xorb_hash).ok_or(CasClientError::XORBNotFound(xorb_hash))?;
+        let storage = xorbs.get(&xorb_hash).ok_or_else(|| {
+            error!("Unable to find xorb in memory CAS {:?}", hash);
+            CasClientError::XORBNotFound(hash)
+        })?;
 
-        // Extract the byte range from the serialized data and deserialize
-        let start = range.start as usize;
-        let end = range.end as usize + 1; // HttpRange is inclusive end
-
-        match storage {
+        let (data, cas) = match storage {
             XorbStorage::Materialized(entry) => {
-                let range_data = &entry.serialized_data[start..end];
-                let (decompressed_data, chunk_byte_indices) =
-                    cas_object::deserialize_chunks(&mut Cursor::new(range_data))?;
-                Ok((Bytes::from(decompressed_data), chunk_byte_indices))
+                let mut reader = BufReader::new(Cursor::new(&entry.serialized_data));
+                let cas = CasObject::deserialize(&mut reader)?;
+                let data = cas.get_bytes_by_chunk_range(&mut reader, fetch_term.range.start, fetch_term.range.end)?;
+                (Bytes::from(data), cas)
             },
             XorbStorage::Random(xorb) => {
-                let range_data = xorb.get_serialized_range(start as u64, end as u64);
-                let (decompressed_data, chunk_byte_indices) =
-                    cas_object::deserialize_chunks(&mut Cursor::new(range_data.as_ref()))?;
-                Ok((Bytes::from(decompressed_data), chunk_byte_indices))
+                let data = xorb
+                    .get_chunk_range_data(fetch_term.range.start, fetch_term.range.end)
+                    .ok_or(CasClientError::XORBNotFound(hash))?;
+                let cas = xorb.get_cas_object();
+                (data, cas)
             },
-        }
+        };
+
+        let chunk_byte_indices = {
+            let mut indices = Vec::new();
+            let mut cumulative = 0u32;
+            indices.push(0);
+            for chunk_idx in fetch_term.range.start..fetch_term.range.end {
+                let chunk_len = cas
+                    .uncompressed_chunk_length(chunk_idx)
+                    .map_err(|e| CasClientError::Other(format!("Failed to get chunk length: {e}")))?;
+                cumulative += chunk_len;
+                indices.push(cumulative);
+            }
+            indices
+        };
+
+        Ok(TermDownloadOutput {
+            data,
+            chunk_byte_indices,
+            chunk_range: fetch_term.range,
+        })
+    }
+
+    #[cfg(not(target_family = "wasm"))]
+    async fn get_file_with_sequential_writer(
+        self: Arc<Self>,
+        hash: &MerkleHash,
+        byte_range: Option<FileRange>,
+        mut output_provider: SequentialOutput,
+        _progress_updater: Option<Arc<SingleItemProgressUpdater>>,
+    ) -> Result<u64> {
+        self.apply_api_delay().await;
+        let data = self.get_file_data(hash, byte_range).await?;
+        let len = data.len() as u64;
+        output_provider.write_all(&data).await?;
+        Ok(len)
+    }
+
+    #[cfg(not(target_family = "wasm"))]
+    async fn get_file_with_parallel_writer(
+        self: Arc<Self>,
+        hash: &MerkleHash,
+        byte_range: Option<FileRange>,
+        output_provider: SeekingOutputProvider,
+        progress_updater: Option<Arc<SingleItemProgressUpdater>>,
+    ) -> Result<u64> {
+        self.apply_api_delay().await;
+        let sequential = output_provider.try_into()?;
+        self.get_file_with_sequential_writer(hash, byte_range, sequential, progress_updater)
+            .await
     }
 }
 
+#[cfg(not(target_family = "wasm"))]
 fn generate_fetch_url(hash: &MerkleHash, byte_range: &FileRange, timestamp: Instant) -> String {
     let timestamp_ms = timestamp.saturating_duration_since(*REFERENCE_INSTANT).as_millis() as u64;
     format!("{}:{}:{}:{}", hash.hex(), byte_range.start, byte_range.end, timestamp_ms)
 }
 
+#[cfg(not(target_family = "wasm"))]
 fn parse_fetch_url(url: &str) -> Result<(MerkleHash, FileRange, Instant)> {
     let mut parts = url.rsplitn(4, ':').collect::<Vec<_>>();
     parts.reverse();
@@ -1032,8 +1078,8 @@ mod tests {
         for term in &recon.terms {
             let xorb_hash: MerkleHash = term.hash.into();
             for fetch_info in recon.fetch_info.get(&term.hash).unwrap() {
-                let (data, _chunk_indices) = client.fetch_term_data(xorb_hash, fetch_info.clone()).await.unwrap();
-                assert!(!data.is_empty());
+                let term_data = client.get_file_term_data(xorb_hash, fetch_info.clone()).await.unwrap();
+                assert!(!term_data.data.is_empty());
             }
         }
     }
