@@ -477,32 +477,16 @@ impl Client for LocalClient {
         // Rebuild a full in-memory shard with proper lookup tables
         let mut in_memory_shard = MDBInMemoryShard::default();
 
-        // Add file info by deserializing from the view's raw bytes
+        // Add file info from the views
         for i in 0..minimal_shard.num_files() {
             let file_view = minimal_shard.file(i).unwrap();
-            let mut cursor = Cursor::new(file_view.bytes());
-            if let Some(file_info) = mdb_shard::file_structs::MDBFileInfo::deserialize(&mut cursor)? {
-                in_memory_shard.add_file_reconstruction_info(file_info)?;
-            }
+            in_memory_shard.add_file_reconstruction_info(MDBFileInfo::from(file_view))?;
         }
 
-        // Add CAS info by rebuilding from the view
+        // Add CAS info from the views
         for i in 0..minimal_shard.num_cas() {
             let cas_view = minimal_shard.cas(i).unwrap();
-            let chunks: Vec<_> = (0..cas_view.num_entries()).map(|j| cas_view.chunk(j)).collect();
-            let total_bytes = chunks
-                .last()
-                .map(|c| c.chunk_byte_range_start + c.unpacked_segment_bytes)
-                .unwrap_or(0);
-            let cas_info = MDBCASInfo {
-                metadata: mdb_shard::cas_structs::CASChunkSequenceHeader::new(
-                    cas_view.cas_hash(),
-                    chunks.len() as u32,
-                    total_bytes,
-                ),
-                chunks,
-            };
-            in_memory_shard.add_cas_block(cas_info)?;
+            in_memory_shard.add_cas_block(MDBCASInfo::from(cas_view))?;
         }
 
         // Write the rebuilt shard to disk (creates proper lookup tables)

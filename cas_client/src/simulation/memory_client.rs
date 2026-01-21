@@ -11,8 +11,8 @@ use cas_types::{
     BatchQueryReconstructionResponse, CASReconstructionFetchInfo, CASReconstructionTerm, ChunkRange, FileRange,
     HexMerkleHash, HttpRange, QueryReconstructionResponse,
 };
-use mdb_shard::cas_structs::{CASChunkSequenceEntry, CASChunkSequenceHeader, MDBCASInfo};
-use mdb_shard::file_structs::{FileDataSequenceEntry, FileDataSequenceHeader, MDBFileInfo};
+use mdb_shard::cas_structs::MDBCASInfo;
+use mdb_shard::file_structs::MDBFileInfo;
 use mdb_shard::shard_in_memory::MDBInMemoryShard;
 use mdb_shard::streaming_shard::MDBMinimalShard;
 use merklehash::MerkleHash;
@@ -546,44 +546,16 @@ impl Client for MemoryClient {
         {
             let mut shard_lg = self.shard.write().await;
 
-            // Convert file views to MDBFileInfo and add to shard
+            // Add file info from the views
             for i in 0..minimal_shard.num_files() {
                 let file_view = minimal_shard.file(i).unwrap();
-                let segments: Vec<FileDataSequenceEntry> =
-                    (0..file_view.num_entries()).map(|j| file_view.entry(j)).collect();
-                let verification = if file_view.contains_verification() {
-                    (0..file_view.num_entries()).map(|j| file_view.verification(j)).collect()
-                } else {
-                    vec![]
-                };
-                let file_info = MDBFileInfo {
-                    metadata: FileDataSequenceHeader::new(
-                        file_view.file_hash(),
-                        segments.len(),
-                        file_view.contains_verification(),
-                        file_view.contains_metadata_ext(),
-                    ),
-                    segments,
-                    verification,
-                    metadata_ext: None,
-                };
-                shard_lg.add_file_reconstruction_info(file_info)?;
+                shard_lg.add_file_reconstruction_info(MDBFileInfo::from(file_view))?;
             }
 
-            // Convert CAS views to MDBCASInfo and add to shard
+            // Add CAS info from the views
             for i in 0..minimal_shard.num_cas() {
                 let cas_view = minimal_shard.cas(i).unwrap();
-                let chunks: Vec<CASChunkSequenceEntry> =
-                    (0..cas_view.num_entries()).map(|j| cas_view.chunk(j)).collect();
-                let total_bytes = chunks
-                    .last()
-                    .map(|c| c.chunk_byte_range_start + c.unpacked_segment_bytes)
-                    .unwrap_or(0);
-                let cas_info = MDBCASInfo {
-                    metadata: CASChunkSequenceHeader::new(cas_view.cas_hash(), chunks.len() as u32, total_bytes),
-                    chunks,
-                };
-                shard_lg.add_cas_block(cas_info)?;
+                shard_lg.add_cas_block(MDBCASInfo::from(cas_view))?;
             }
         }
 
