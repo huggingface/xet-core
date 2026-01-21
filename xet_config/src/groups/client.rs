@@ -299,4 +299,13 @@ crate::config_group!({
     /// Use the environment variable `HF_XET_CLIENT_AC_INITIAL_DOWNLOAD_CONCURRENCY` to set this value.
     ref ac_initial_download_concurrency: usize = 1;
 
+    /// Path to Unix domain socket for CAS HTTP connections.
+    /// When set, all CAS HTTP traffic uses this socket instead of TCP.
+    /// Only supported on Linux/macOS (not WASM).
+    ///
+    /// The default value is None (use TCP).
+    ///
+    /// Use the environment variable `HF_XET_CLIENT_UNIX_SOCKET_PATH` to set this value.
+    ref unix_socket_path: Option<String> = None;
+
 });

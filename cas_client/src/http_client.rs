@@ -13,34 +13,90 @@ use utils::auth::{AuthConfig, TokenProvider};
 
 use crate::{CasClientError, error};
 
+/// Returns the Unix socket path if configured via `HF_XET_CLIENT_UNIX_SOCKET_PATH` env var.
+#[cfg(not(target_family = "wasm"))]
+pub fn get_unix_socket_path() -> Option<String> {
+    use xet_runtime::xet_config;
+    xet_config().client.unix_socket_path.clone()
+}
+
+/// Middleware that rewrites https:// URLs to http:// when using Unix socket.
+/// This allows the proxy to parse plain HTTP and upgrade to HTTPS when forwarding.
+#[cfg(unix)]
+struct HttpsToHttpMiddleware;
+
+#[cfg(unix)]
+#[async_trait::async_trait]
+impl Middleware for HttpsToHttpMiddleware {
+    async fn handle(
+        &self,
+        mut req: Request,
+        extensions: &mut Extensions,
+        next: Next<'_>,
+    ) -> Result<Response, reqwest_middleware::Error> {
+        let url = req.url_mut();
+        if url.scheme() == "https" {
+            let original_scheme = url.scheme().to_string();
+            url.set_scheme("http").ok();
+            info!(original_scheme, new_scheme = "http", url = %url, "Rewriting URL scheme for Unix socket proxy");
+        }
+        next.run(req, extensions).await
+    }
+}
+
 #[cfg(not(target_family = "wasm"))]
 fn reqwest_client(user_agent: &str) -> Result<reqwest::Client, CasClientError> {
     use xet_runtime::{XetRuntime, xet_config};
 
-    let client = XetRuntime::get_or_create_reqwest_client(|| {
-        let mut builder = reqwest::Client::builder()
-            .pool_idle_timeout(xet_config().client.idle_connection_timeout)
-            .pool_max_idle_per_host(xet_config().client.max_idle_connections)
-            .connect_timeout(xet_config().client.connect_timeout)
-            .read_timeout(xet_config().client.read_timeout)
-            // Explicitly NOT setting .timeout() to disable transfer-level timeout.
-            // We rely on packet-level timeouts (read_timeout) which reset when data
-            // is received, allowing slow but progressing transfers to complete.
-            .http1_only(); // high throughput parallel I/O has been shown to bottleneck with http2
+    let unix_socket_path = get_unix_socket_path();
 
-        if !user_agent.is_empty() {
-            builder = builder.user_agent(user_agent);
-        }
+    let client = if let Some(ref socket_path) = unix_socket_path {
+        XetRuntime::get_or_create_reqwest_uds_client(|| {
+            let mut builder = reqwest::Client::builder()
+                .pool_idle_timeout(xet_config().client.idle_connection_timeout)
+                .pool_max_idle_per_host(xet_config().client.max_idle_connections)
+                .connect_timeout(xet_config().client.connect_timeout)
+                .read_timeout(xet_config().client.read_timeout)
+                .http1_only();
 
-        builder.build()
-    })?;
+            if !user_agent.is_empty() {
+                builder = builder.user_agent(user_agent);
+            }
 
-    info!(
-        idle_timeout=?xet_config().client.idle_connection_timeout,
-        max_idle_connections=xet_config().client.max_idle_connections,
-        user_agent=?if user_agent.is_empty() { None } else { Some(user_agent) },
-        "HTTP client configured"
-    );
+            #[cfg(unix)]
+            {
+                builder = builder.unix_socket(socket_path.clone());
+            }
+
+            builder.build()
+        })?
+    } else {
+        XetRuntime::get_or_create_reqwest_client(|| {
+            let mut builder = reqwest::Client::builder()
+                .pool_idle_timeout(xet_config().client.idle_connection_timeout)
+                .pool_max_idle_per_host(xet_config().client.max_idle_connections)
+                .connect_timeout(xet_config().client.connect_timeout)
+                .read_timeout(xet_config().client.read_timeout)
+                .http1_only();
+
+            if !user_agent.is_empty() {
+                builder = builder.user_agent(user_agent);
+            }
+
+            builder.build()
+        })?
+    };
+
+    if unix_socket_path.is_some() {
+        info!(socket_path=?unix_socket_path, "HTTP client configured with Unix socket");
+    } else {
+        info!(
+            idle_timeout=?xet_config().client.idle_connection_timeout,
+            max_idle_connections=xet_config().client.max_idle_connections,
+            user_agent=?if user_agent.is_empty() { None } else { Some(user_agent) },
+            "HTTP client configured"
+        );
+    }
 
     Ok(client)
 }
@@ -65,7 +121,15 @@ pub fn build_auth_http_client(
     let auth_middleware = auth_config.as_ref().map(AuthMiddleware::from).info_none("CAS auth disabled");
     let logging_middleware = Some(LoggingMiddleware);
     let session_middleware = (!session_id.is_empty()).then(|| SessionMiddleware(session_id.to_owned()));
-    Ok(ClientBuilder::new(reqwest_client(user_agent)?)
+
+    let mut builder = ClientBuilder::new(reqwest_client(user_agent)?);
+
+    #[cfg(unix)]
+    if get_unix_socket_path().is_some() {
+        builder = builder.with(HttpsToHttpMiddleware);
+    }
+
+    Ok(builder
         .maybe_with(auth_middleware)
         .maybe_with(logging_middleware)
         .maybe_with(session_middleware)
@@ -235,4 +299,82 @@ pub fn request_id_from_response(res: &Response) -> &str {
         .get(REQUEST_ID_HEADER)
         .and_then(|h| h.to_str().ok())
         .unwrap_or_default()
+}
+
+#[cfg(test)]
+#[cfg(not(target_family = "wasm"))]
+mod tests {
+    use super::*;
+
+    #[cfg(unix)]
+    mod uds_tests {
+        use super::*;
+
+        #[tokio::test]
+        async fn test_https_to_http_middleware_rewrites_https() {
+            let _middleware = HttpsToHttpMiddleware;
+
+            let client = reqwest::Client::new();
+            let mut test_request = client.get("https://example.com/api/data").build().unwrap();
+
+            let url = test_request.url_mut();
+            assert_eq!(url.scheme(), "https");
+
+            if url.scheme() == "https" {
+                url.set_scheme("http").ok();
+            }
+
+            assert_eq!(test_request.url().scheme(), "http");
+            assert_eq!(test_request.url().host_str(), Some("example.com"));
+            assert_eq!(test_request.url().path(), "/api/data");
+        }
+
+        #[tokio::test]
+        async fn test_https_to_http_middleware_preserves_http() {
+            let client = reqwest::Client::new();
+            let mut test_request = client.get("http://example.com/api/data").build().unwrap();
+
+            let url = test_request.url_mut();
+            let original_scheme = url.scheme().to_string();
+
+            if url.scheme() == "https" {
+                url.set_scheme("http").ok();
+            }
+
+            assert_eq!(test_request.url().scheme(), "http");
+            assert_eq!(original_scheme, "http");
+        }
+
+        #[tokio::test]
+        async fn test_https_to_http_middleware_preserves_url_components() {
+            let client = reqwest::Client::new();
+            let mut test_request = client
+                .get("https://example.com:8443/path/to/resource?query=value&foo=bar")
+                .build()
+                .unwrap();
+
+            let url = test_request.url_mut();
+            if url.scheme() == "https" {
+                url.set_scheme("http").ok();
+            }
+
+            assert_eq!(test_request.url().scheme(), "http");
+            assert_eq!(test_request.url().host_str(), Some("example.com"));
+            assert_eq!(test_request.url().port(), Some(8443));
+            assert_eq!(test_request.url().path(), "/path/to/resource");
+            assert_eq!(test_request.url().query(), Some("query=value&foo=bar"));
+        }
+    }
+
+    #[test]
+    fn test_get_unix_socket_path_returns_none_by_default() {
+        let path = get_unix_socket_path();
+        let _: Option<String> = path;
+    }
+
+    #[test]
+    fn test_build_http_client_without_uds() {
+        let result = build_http_client("test-session", "test-agent");
+        assert!(result.is_ok());
+    }
 }
