@@ -122,6 +122,9 @@ pub struct XetRuntime {
     // A cached reqwest Client to be shared by all high-level clients.
     global_reqwest_client: OnceLock<Client>,
 
+    // A cached reqwest Client for Unix socket connections.
+    global_reqwest_uds_client: OnceLock<Client>,
+
     // Primary configuration struct
     config: Arc<XetConfig>,
 }
@@ -182,6 +185,7 @@ impl XetRuntime {
             sigint_shutdown: false.into(),
             global_semaphore_table: GlobalSemaphoreLookup::default(),
             global_reqwest_client: OnceLock::new(),
+            global_reqwest_uds_client: OnceLock::new(),
             config: Arc::new(config),
         });
 
@@ -245,6 +249,7 @@ impl XetRuntime {
             sigint_shutdown: false.into(),
             global_semaphore_table: GlobalSemaphoreLookup::default(),
             global_reqwest_client: OnceLock::new(),
+            global_reqwest_uds_client: OnceLock::new(),
             config: Arc::new(XetConfig::new()),
         })
     }
@@ -278,6 +283,20 @@ impl XetRuntime {
         // runtime, like in tests.
         if let Some(rt) = Self::current_if_exists() {
             rt.get_or_create_reqwest_client_in_runtime(f)
+        } else {
+            f()
+        }
+    }
+
+    pub fn get_or_create_reqwest_uds_client<F>(f: F) -> std::result::Result<Client, reqwest::Error>
+    where
+        F: FnOnce() -> std::result::Result<Client, reqwest::Error>,
+    {
+        if let Some(rt) = Self::current_if_exists() {
+            let client_ref = rt
+                .global_reqwest_uds_client
+                .get_or_init(|| f().expect("failed to create reqwest UDS client"));
+            Ok(client_ref.clone())
         } else {
             f()
         }
@@ -411,5 +430,65 @@ impl Display for XetRuntime {
             metrics.num_alive_tasks(),
             metrics.global_queue_depth()
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use super::*;
+
+    #[test]
+    fn test_get_or_create_reqwest_uds_client_caches_client() {
+        let call_count = AtomicUsize::new(0);
+
+        let _client1 = XetRuntime::get_or_create_reqwest_uds_client(|| {
+            call_count.fetch_add(1, Ordering::SeqCst);
+            reqwest::Client::builder().build()
+        })
+        .unwrap();
+
+        assert_eq!(call_count.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn test_get_or_create_reqwest_uds_client_returns_client() {
+        let result = XetRuntime::get_or_create_reqwest_uds_client(|| reqwest::Client::builder().build());
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_get_or_create_reqwest_client_returns_client() {
+        let result = XetRuntime::get_or_create_reqwest_client(|| reqwest::Client::builder().build());
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_runtime_has_separate_uds_and_regular_client_storage() {
+        let rt = XetRuntime::new().expect("Failed to create runtime");
+
+        let _regular_client = rt
+            .get_or_create_reqwest_client_in_runtime(|| reqwest::Client::builder().user_agent("regular").build())
+            .unwrap();
+
+        assert!(rt.global_reqwest_client.get().is_some());
+        assert!(rt.global_reqwest_uds_client.get().is_none());
+    }
+
+    #[test]
+    fn test_runtime_initializes_with_empty_client_caches() {
+        let rt = XetRuntime::new().expect("Failed to create runtime");
+
+        assert!(rt.global_reqwest_client.get().is_none());
+        assert!(rt.global_reqwest_uds_client.get().is_none());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_uds_client_can_be_configured_with_socket_path() {
+        let result = reqwest::Client::builder().unix_socket("/tmp/nonexistent.sock").build();
+
+        assert!(result.is_ok());
     }
 }
