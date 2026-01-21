@@ -551,13 +551,6 @@ impl Client for RemoteClient {
         Ok(n_upload_bytes)
     }
 
-    fn use_xorb_footer(&self) -> bool {
-        false
-    }
-
-    fn use_shard_footer(&self) -> bool {
-        false
-    }
 }
 
 #[cfg(test)]
