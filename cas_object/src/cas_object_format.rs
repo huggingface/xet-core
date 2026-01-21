@@ -2429,7 +2429,8 @@ mod tests {
 
         // Reconstruct with footer
         let mut data_with_footer = Vec::new();
-        let (cas_object, computed_hash) = super::reconstruct_xorb_with_footer(&mut data_with_footer, &raw_data).unwrap();
+        let (cas_object, computed_hash) =
+            super::reconstruct_xorb_with_footer(&mut data_with_footer, &raw_data).unwrap();
 
         assert_eq!(computed_hash, expected_hash);
         assert_eq!(cas_object.info.cashash, expected_hash);
@@ -2450,7 +2451,8 @@ mod tests {
 
         // Reconstruct from the data that already has footer
         let mut data_with_footer = Vec::new();
-        let (cas_object, computed_hash) = super::reconstruct_xorb_with_footer(&mut data_with_footer, &cas_data).unwrap();
+        let (cas_object, computed_hash) =
+            super::reconstruct_xorb_with_footer(&mut data_with_footer, &cas_data).unwrap();
 
         assert_eq!(computed_hash, original.info.cashash);
         assert_eq!(cas_object.info.cashash, original.info.cashash);
@@ -2525,7 +2527,8 @@ mod tests {
         let expected_hash = merklehash::xorb_hash(&[(chunk_hash, 1024)]);
 
         let mut data_with_footer = Vec::new();
-        let (cas_object, computed_hash) = super::reconstruct_xorb_with_footer(&mut data_with_footer, &raw_data).unwrap();
+        let (cas_object, computed_hash) =
+            super::reconstruct_xorb_with_footer(&mut data_with_footer, &raw_data).unwrap();
 
         assert_eq!(computed_hash, expected_hash);
         assert_eq!(cas_object.info.num_chunks, 1);

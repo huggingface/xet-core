@@ -550,7 +550,6 @@ impl Client for RemoteClient {
 
         Ok(n_upload_bytes)
     }
-
 }
 
 #[cfg(test)]

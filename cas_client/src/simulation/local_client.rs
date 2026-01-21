@@ -554,10 +554,7 @@ impl Client for LocalClient {
             serialized_data
         } else {
             let mut data_with_footer = Vec::new();
-            let (_, computed_hash) = cas_object::reconstruct_xorb_with_footer(
-                &mut data_with_footer,
-                &serialized_data,
-            )?;
+            let (_, computed_hash) = cas_object::reconstruct_xorb_with_footer(&mut data_with_footer, &serialized_data)?;
             if computed_hash != hash {
                 return Err(CasClientError::Other(format!(
                     "XORB hash mismatch: expected {}, got {}",

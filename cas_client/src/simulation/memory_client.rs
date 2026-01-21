@@ -633,10 +633,8 @@ impl Client for MemoryClient {
         } else {
             // No footer - reconstruct CasObject from chunk data and append footer
             let mut data_with_footer = Vec::new();
-            let (cas_object, computed_hash) = cas_object::reconstruct_xorb_with_footer(
-                &mut data_with_footer,
-                &serialized_data,
-            )?;
+            let (cas_object, computed_hash) =
+                cas_object::reconstruct_xorb_with_footer(&mut data_with_footer, &serialized_data)?;
             if computed_hash != hash {
                 return Err(CasClientError::Other(format!(
                     "XORB hash mismatch: expected {}, got {}",

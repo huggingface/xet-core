@@ -64,5 +64,4 @@ pub trait Client: Send + Sync {
         upload_tracker: Option<Arc<CompletionTracker>>,
         upload_permit: ConnectionPermit,
     ) -> Result<u64>;
-
 }
