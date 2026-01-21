@@ -563,6 +563,23 @@ mod tests {
 
             assert_eq!(min_shard, min_shard_async);
 
+            // Verify From trait implementations for views
+            for i in 0..min_shard.num_files() {
+                let file_view = min_shard.file(i).unwrap();
+                let file_info = MDBFileInfo::from(file_view);
+                assert_eq!(file_info.metadata.file_hash, file_view.file_hash());
+                assert_eq!(file_info.segments.len(), file_view.num_entries());
+                assert_eq!(file_info.contains_verification(), file_view.contains_verification());
+                assert_eq!(file_info.contains_metadata_ext(), file_view.contains_metadata_ext());
+            }
+
+            for i in 0..min_shard.num_cas() {
+                let cas_view = min_shard.cas(i).unwrap();
+                let cas_info = MDBCASInfo::from(cas_view);
+                assert_eq!(cas_info.metadata.cas_hash, cas_view.cas_hash());
+                assert_eq!(cas_info.chunks.len(), cas_view.num_entries());
+            }
+
             verify_serialization(&min_shard, mem_shard).unwrap();
         }
 

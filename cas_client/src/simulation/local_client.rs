@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::fs::{File, metadata};
 use std::io::{BufReader, Cursor, Seek, SeekFrom, Write};
+use std::mem::size_of;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -17,10 +18,13 @@ use cas_types::{
 use file_utils::SafeFileCreator;
 use heed::types::*;
 use lazy_static::lazy_static;
+use mdb_shard::cas_structs::MDBCASInfo;
 use mdb_shard::file_structs::MDBFileInfo;
 use mdb_shard::shard_file_reconstructor::FileReconstructor;
+use mdb_shard::shard_in_memory::MDBInMemoryShard;
+use mdb_shard::streaming_shard::MDBMinimalShard;
 use mdb_shard::utils::shard_file_name;
-use mdb_shard::{MDBShardFile, MDBShardInfo, ShardFileManager};
+use mdb_shard::{MDBShardFile, ShardFileManager};
 use merklehash::MerkleHash;
 use more_asserts::*;
 use progress_tracking::upload_tracking::CompletionTracker;
@@ -465,13 +469,35 @@ impl Client for LocalClient {
         _permit: crate::adaptive_concurrency::ConnectionPermit,
     ) -> Result<bool> {
         self.apply_api_delay().await;
-        let shard = MDBShardFile::write_out_from_reader(&self.shard_dir, &mut Cursor::new(&shard_data))?;
+
+        // Parse the shard using the streaming parser (handles shards without footer)
+        let mut reader = Cursor::new(&shard_data);
+        let minimal_shard = MDBMinimalShard::from_reader(&mut reader, true, true)?;
+
+        // Rebuild a full in-memory shard with proper lookup tables
+        let mut in_memory_shard = MDBInMemoryShard::default();
+
+        // Add file info from the views
+        for i in 0..minimal_shard.num_files() {
+            let file_view = minimal_shard.file(i).unwrap();
+            in_memory_shard.add_file_reconstruction_info(MDBFileInfo::from(file_view))?;
+        }
+
+        // Add CAS info from the views
+        for i in 0..minimal_shard.num_cas() {
+            let cas_view = minimal_shard.cas(i).unwrap();
+            in_memory_shard.add_cas_block(MDBCASInfo::from(cas_view))?;
+        }
+
+        // Write the rebuilt shard to disk (creates proper lookup tables)
+        let shard_path = in_memory_shard.write_to_directory(&self.shard_dir, None)?;
+        let shard = MDBShardFile::load_from_file(&shard_path)?;
         let shard_hash = shard.shard_hash;
 
         self.shard_manager.register_shards(&[shard]).await?;
 
-        let mut shard_reader = Cursor::new(shard_data);
-        let chunk_hashes = MDBShardInfo::filter_cas_chunks_for_global_dedup(&mut shard_reader)?;
+        // Get global dedup chunks from the minimal shard
+        let chunk_hashes = minimal_shard.global_dedup_eligible_chunks();
 
         let env = self
             .global_dedup_db_env
@@ -498,35 +524,54 @@ impl Client for LocalClient {
         _permit: crate::adaptive_concurrency::ConnectionPermit,
     ) -> Result<u64> {
         self.apply_api_delay().await;
-        let hash = &serialized_cas_object.hash;
-        if self.xorb_exists(hash).await? {
+        let hash = serialized_cas_object.hash;
+        let raw_num_bytes = serialized_cas_object.raw_num_bytes;
+        let footer_start = serialized_cas_object.footer_start;
+        let serialized_data = serialized_cas_object.serialized_data;
+        if self.xorb_exists(&hash).await? {
             info!("object {hash:?} already exists in Local CAS; returning.");
             return Ok(0);
         }
 
-        let file_path = self.get_path_for_entry(hash);
+        // Reconstruct footer if not present
+        let data_to_write = if footer_start.is_some() {
+            serialized_data
+        } else {
+            let mut data_with_footer = Vec::new();
+            let (_, computed_hash) = cas_object::reconstruct_xorb_with_footer(&mut data_with_footer, &serialized_data)?;
+            if computed_hash != hash {
+                return Err(CasClientError::Other(format!(
+                    "XORB hash mismatch: expected {}, got {}",
+                    hash.hex(),
+                    computed_hash.hex(),
+                )));
+            }
+            data_with_footer
+        };
+
+        let file_path = self.get_path_for_entry(&hash);
         info!("Writing XORB {hash:?} to local path {file_path:?}");
 
         let mut file = SafeFileCreator::new(&file_path)?;
 
         for i in 0..10 {
-            let start = (i * serialized_cas_object.serialized_data.len()) / 10;
-            let end = ((i + 1) * serialized_cas_object.serialized_data.len()) / 10;
+            let start = (i * data_to_write.len()) / 10;
+            let end = ((i + 1) * data_to_write.len()) / 10;
 
-            file.write_all(&serialized_cas_object.serialized_data[start..end])?;
+            file.write_all(&data_to_write[start..end])?;
 
             if let Some(upload_tracker) = &upload_tracker {
-                let adjusted_byte_start = (i * serialized_cas_object.raw_num_bytes as usize) / 10;
-                let adjusted_byte_end = ((i + 1) * serialized_cas_object.raw_num_bytes as usize) / 10;
+                let adjusted_byte_start = (i * raw_num_bytes as usize) / 10;
+                let adjusted_byte_end = ((i + 1) * raw_num_bytes as usize) / 10;
                 let adjusted_progress = adjusted_byte_end - adjusted_byte_start;
 
                 upload_tracker
-                    .register_xorb_upload_progress(*hash, adjusted_progress as u64)
+                    .register_xorb_upload_progress(hash, adjusted_progress as u64)
                     .await;
             }
         }
 
-        let bytes_written = serialized_cas_object.serialized_data.len();
+        let bytes_written = data_to_write.len();
         file.close()?;
 
         #[cfg(unix)]
@@ -541,13 +586,6 @@ impl Client for LocalClient {
         Ok(bytes_written as u64)
     }
 
-    fn use_xorb_footer(&self) -> bool {
-        true
-    }
-
-    fn use_shard_footer(&self) -> bool {
-        true
-    }
     async fn get_reconstruction(
         &self,
         file_id: &MerkleHash,
