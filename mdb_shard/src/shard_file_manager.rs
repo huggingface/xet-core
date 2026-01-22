@@ -7,7 +7,7 @@ use std::sync::atomic::AtomicBool;
 use merklehash::{HMACKey, MerkleHash};
 use tokio::sync::RwLock;
 use tracing::{debug, info, instrument, trace, warn};
-use utils::RwTaskLock;
+use utils::{MerkleHashMap, RwTaskLock, TruncatedMerkleHashMap};
 use xet_runtime::xet_config;
 
 use crate::cas_structs::*;
@@ -36,7 +36,7 @@ struct ChunkCacheElement {
 struct KeyedShardCollection {
     hmac_key: HMACKey,
     shard_list: Vec<Arc<MDBShardFile>>,
-    chunk_lookup: HashMap<u64, ChunkCacheElement>,
+    chunk_lookup: TruncatedMerkleHashMap<ChunkCacheElement>,
 }
 
 impl KeyedShardCollection {
@@ -53,8 +53,8 @@ impl KeyedShardCollection {
 #[derive(Default)]
 struct ShardBookkeeper {
     shard_collections: Vec<KeyedShardCollection>,
-    collection_by_key: HashMap<HMACKey, usize>,
-    shard_lookup_by_shard_hash: HashMap<MerkleHash, (usize, usize)>,
+    collection_by_key: MerkleHashMap<usize>,
+    shard_lookup_by_shard_hash: MerkleHashMap<(usize, usize)>,
 
     // We cap the number of chunks indexed for dedup; beyond those, we simply drop the search.
     total_indexed_chunks: usize,
@@ -66,7 +66,7 @@ impl ShardBookkeeper {
         // we always try to dedup locally first.
         Self {
             shard_collections: vec![KeyedShardCollection::new(HMACKey::default())],
-            collection_by_key: HashMap::from([(HMACKey::default(), 0)]),
+            collection_by_key: MerkleHashMap::from([(HMACKey::default(), 0)]),
             ..Default::default()
         }
     }

@@ -16,9 +16,9 @@ use tracing::warn;
 use utils::serialization_utils::*;
 use xet_runtime::xet_config;
 
-use crate::cas_chunk_format::{deserialize_chunk, serialize_chunk};
+use crate::cas_chunk_format::{deserialize_chunk, deserialize_chunk_header, serialize_chunk, write_chunk_header};
 use crate::constants::XORB_BLOCK_SIZE;
-use crate::error::CasObjectError;
+use crate::error::{CasObjectError, Validate};
 use crate::{CASChunkHeader, CompressionScheme};
 
 pub type CasObjectIdent = [u8; 7];
@@ -1013,8 +1013,6 @@ impl CasObject {
         // - the object info format is incorrect (e.g. ident mismatch);
         // and we should reject instead of propagating the error.
 
-        use crate::error::Validate;
-
         let Some(cas) = CasObject::deserialize(reader).ok_for_format_error()? else {
             return Ok(None);
         };
@@ -1386,6 +1384,7 @@ impl SerializedCasObject {
 }
 
 pub mod test_utils {
+    use deduplication::test_utils::raw_xorb_to_vec;
     use merklehash::xorb_hash;
     use rand::Rng;
 
@@ -1471,8 +1470,6 @@ pub mod test_utils {
         compression_scheme: Option<CompressionScheme>,
         cas_object: &SerializedCasObject,
     ) {
-        use deduplication::test_utils::raw_xorb_to_vec;
-
         let xorb_hash = xorb.hash();
         let num_chunks = xorb.data.len();
 
@@ -1630,6 +1627,77 @@ pub mod test_utils {
 
         (c, writer.get_ref().to_vec(), data_contents_raw, raw_chunk_boundaries)
     }
+}
+
+/// Reconstructs a CasObject from raw chunk data (potentially without footer).
+///
+/// This function parses the raw XORB data (chunk headers + compressed data),
+/// validates the chunk structure, and appends a proper footer.
+///
+/// # Arguments
+/// * `writer` - The writer to output the reconstructed data with footer
+/// * `raw_data` - The raw XORB data (chunk headers + compressed data, optionally with footer)
+///
+/// # Returns
+/// - `CasObject`: The reconstructed CasObject with metadata
+/// - `MerkleHash`: The computed XORB hash (caller should verify this matches expected)
+///
+/// # Errors
+/// Returns an error if:
+/// - Chunk headers cannot be parsed
+/// - Compressed data cannot be read or decompressed
+/// - Footer serialization fails
+pub fn reconstruct_xorb_with_footer(
+    writer: &mut impl Write,
+    raw_data: &[u8],
+) -> Result<(CasObject, MerkleHash), CasObjectError> {
+    let mut reader = Cursor::new(raw_data);
+    let mut chunk_hash_and_size: Vec<(MerkleHash, u64)> = Vec::new();
+    let mut info = CasObjectInfoV1::default();
+
+    while (reader.position() as usize) < raw_data.len() {
+        let chunk_header = match deserialize_chunk_header(&mut reader) {
+            Ok(header) => header,
+            Err(CasObjectError::ChunkHeaderParseErrorFooterIdent) => {
+                // Hit footer identifier, stop processing chunks
+                break;
+            },
+            Err(e) => return Err(e),
+        };
+
+        let compressed_len = chunk_header.get_compressed_length() as usize;
+        let mut compressed_buf = vec![0u8; compressed_len];
+        reader
+            .read_exact(&mut compressed_buf)
+            .map_err(|e| CasObjectError::FormatError(anyhow!("Failed to read chunk data: {e}")))?;
+
+        let uncompressed_data = chunk_header
+            .get_compression_scheme()?
+            .decompress_from_slice(&compressed_buf)
+            .map_err(|e| CasObjectError::FormatError(anyhow!("Failed to decompress chunk: {e}")))?;
+
+        let chunk_hash = merklehash::compute_data_hash(&uncompressed_data);
+        chunk_hash_and_size.push((chunk_hash, uncompressed_data.len() as u64));
+
+        info.chunk_hashes.push(chunk_hash);
+        info.chunk_boundary_offsets.push(
+            info.chunk_boundary_offsets.last().unwrap_or(&0) + (size_of::<CASChunkHeader>() + compressed_len) as u32,
+        );
+        info.unpacked_chunk_offsets
+            .push(info.unpacked_chunk_offsets.last().unwrap_or(&0) + uncompressed_data.len() as u32);
+
+        write_chunk_header(writer, &chunk_header)?;
+        writer.write_all(&compressed_buf)?;
+    }
+
+    let computed_hash = merklehash::xorb_hash(&chunk_hash_and_size);
+    info.cashash = computed_hash;
+    info.num_chunks = chunk_hash_and_size.len() as u32;
+    info.fill_in_boundary_offsets();
+
+    let (cas_object, _) = CasObject::serialize_given_info(writer, info)?;
+
+    Ok((cas_object, computed_hash))
 }
 
 #[cfg(test)]
@@ -2339,5 +2407,137 @@ mod tests {
             assert_eq!(len, c.info_length as usize);
             assert_eq!(len, buf.len())
         }
+    }
+
+    #[test]
+    fn test_reconstruct_xorb_with_footer_no_footer() {
+        // Build raw chunk data without footer
+        let chunk_sizes = [1024u32, 2048, 512];
+        let compression = CompressionScheme::LZ4;
+
+        let mut raw_data = Vec::new();
+        let mut chunk_hashes_and_sizes = Vec::new();
+
+        for size in &chunk_sizes {
+            let bytes = gen_random_bytes(*size);
+            let chunk_hash = merklehash::compute_data_hash(&bytes);
+            chunk_hashes_and_sizes.push((chunk_hash, bytes.len() as u64));
+            serialize_chunk(&bytes, &mut raw_data, Some(compression)).unwrap();
+        }
+
+        let expected_hash = merklehash::xorb_hash(&chunk_hashes_and_sizes);
+
+        // Reconstruct with footer
+        let mut data_with_footer = Vec::new();
+        let (cas_object, computed_hash) =
+            super::reconstruct_xorb_with_footer(&mut data_with_footer, &raw_data).unwrap();
+
+        assert_eq!(computed_hash, expected_hash);
+        assert_eq!(cas_object.info.cashash, expected_hash);
+        assert_eq!(cas_object.info.num_chunks, 3);
+        assert_eq!(cas_object.info.chunk_hashes.len(), 3);
+
+        // Verify the reconstructed data can be deserialized
+        let mut reader = Cursor::new(&data_with_footer);
+        let deserialized = CasObject::deserialize(&mut reader).unwrap();
+        assert_eq!(deserialized.info.cashash, expected_hash);
+        assert_eq!(deserialized.info.num_chunks, 3);
+    }
+
+    #[test]
+    fn test_reconstruct_xorb_with_footer_already_has_footer() {
+        // Build a CasObject with footer using the test utilities
+        let (original, cas_data, _, _) = build_cas_object(5, ChunkSize::Fixed(1024), CompressionScheme::LZ4);
+
+        // Reconstruct from the data that already has footer
+        let mut data_with_footer = Vec::new();
+        let (cas_object, computed_hash) =
+            super::reconstruct_xorb_with_footer(&mut data_with_footer, &cas_data).unwrap();
+
+        assert_eq!(computed_hash, original.info.cashash);
+        assert_eq!(cas_object.info.cashash, original.info.cashash);
+        assert_eq!(cas_object.info.num_chunks, original.info.num_chunks);
+        assert_eq!(cas_object.info.chunk_hashes, original.info.chunk_hashes);
+
+        // Verify the reconstructed data can be deserialized
+        let mut reader = Cursor::new(&data_with_footer);
+        let deserialized = CasObject::deserialize(&mut reader).unwrap();
+        assert_eq!(deserialized.info.cashash, original.info.cashash);
+    }
+
+    #[test]
+    fn test_reconstruct_xorb_with_footer_various_compression() {
+        for compression in [CompressionScheme::None, CompressionScheme::LZ4] {
+            let chunk_sizes = [512u32, 1024, 2048];
+            let mut raw_data = Vec::new();
+            let mut chunk_hashes_and_sizes = Vec::new();
+
+            for size in &chunk_sizes {
+                let bytes = gen_random_bytes(*size);
+                let chunk_hash = merklehash::compute_data_hash(&bytes);
+                chunk_hashes_and_sizes.push((chunk_hash, bytes.len() as u64));
+                serialize_chunk(&bytes, &mut raw_data, Some(compression)).unwrap();
+            }
+
+            let expected_hash = merklehash::xorb_hash(&chunk_hashes_and_sizes);
+
+            let mut output = Vec::new();
+            let (cas_object, computed_hash) = super::reconstruct_xorb_with_footer(&mut output, &raw_data).unwrap();
+
+            assert_eq!(computed_hash, expected_hash);
+            assert_eq!(cas_object.info.num_chunks, 3);
+        }
+    }
+
+    #[test]
+    fn test_reconstruct_xorb_with_footer_boundary_offsets() {
+        let chunk_sizes = [100u32, 200, 300];
+        let compression = CompressionScheme::None;
+
+        let mut raw_data = Vec::new();
+        let mut chunk_hashes_and_sizes = Vec::new();
+
+        for size in &chunk_sizes {
+            let bytes = gen_random_bytes(*size);
+            let chunk_hash = merklehash::compute_data_hash(&bytes);
+            chunk_hashes_and_sizes.push((chunk_hash, bytes.len() as u64));
+            serialize_chunk(&bytes, &mut raw_data, Some(compression)).unwrap();
+        }
+
+        let mut output = Vec::new();
+        let (cas_object, _) = super::reconstruct_xorb_with_footer(&mut output, &raw_data).unwrap();
+
+        // Verify unpacked chunk offsets are cumulative
+        assert_eq!(cas_object.info.unpacked_chunk_offsets.len(), 3);
+        assert_eq!(cas_object.info.unpacked_chunk_offsets[0], 100);
+        assert_eq!(cas_object.info.unpacked_chunk_offsets[1], 300);
+        assert_eq!(cas_object.info.unpacked_chunk_offsets[2], 600);
+
+        // Verify chunk boundary offsets are cumulative (8-byte header per chunk + data)
+        assert_eq!(cas_object.info.chunk_boundary_offsets.len(), 3);
+    }
+
+    #[test]
+    fn test_reconstruct_xorb_with_footer_single_chunk() {
+        let mut raw_data = Vec::new();
+        let bytes = gen_random_bytes(1024);
+        let chunk_hash = merklehash::compute_data_hash(&bytes);
+        serialize_chunk(&bytes, &mut raw_data, Some(CompressionScheme::LZ4)).unwrap();
+
+        let expected_hash = merklehash::xorb_hash(&[(chunk_hash, 1024)]);
+
+        let mut data_with_footer = Vec::new();
+        let (cas_object, computed_hash) =
+            super::reconstruct_xorb_with_footer(&mut data_with_footer, &raw_data).unwrap();
+
+        assert_eq!(computed_hash, expected_hash);
+        assert_eq!(cas_object.info.num_chunks, 1);
+        assert_eq!(cas_object.info.chunk_hashes.len(), 1);
+        assert_eq!(cas_object.info.chunk_hashes[0], chunk_hash);
+
+        // Verify the reconstructed data can be deserialized
+        let mut reader = Cursor::new(&data_with_footer);
+        let deserialized = CasObject::deserialize(&mut reader).unwrap();
+        assert_eq!(deserialized.info.num_chunks, 1);
     }
 }

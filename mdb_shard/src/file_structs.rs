@@ -596,6 +596,39 @@ impl MDBFileInfoView {
     pub fn bytes(&self) -> Bytes {
         self.data.clone()
     }
+
+    /// Returns the metadata extension if present.
+    #[inline]
+    pub fn metadata_ext(&self) -> Option<FileMetadataExt> {
+        if !self.contains_metadata_ext() {
+            return None;
+        }
+        // metadata_ext is stored at the end of the data
+        let offset = self.data.len() - MDB_FILE_INFO_ENTRY_SIZE;
+        FileMetadataExt::deserialize(&mut Cursor::new(&self.data[offset..])).ok()
+    }
+}
+
+impl From<&MDBFileInfoView> for MDBFileInfo {
+    fn from(view: &MDBFileInfoView) -> Self {
+        let segments: Vec<FileDataSequenceEntry> = (0..view.num_entries()).map(|i| view.entry(i)).collect();
+        let verification = if view.contains_verification() {
+            (0..view.num_entries()).map(|i| view.verification(i)).collect()
+        } else {
+            vec![]
+        };
+        MDBFileInfo {
+            metadata: FileDataSequenceHeader::new(
+                view.file_hash(),
+                segments.len(),
+                view.contains_verification(),
+                view.contains_metadata_ext(),
+            ),
+            segments,
+            verification,
+            metadata_ext: view.metadata_ext(),
+        }
+    }
 }
 
 #[cfg(test)]

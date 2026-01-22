@@ -1825,6 +1825,7 @@ name = "utils"
 version = "0.14.5"
 dependencies = [
  "async-trait",
+ "bincode",
  "bytes",
  "ctor",
  "derivative",
@@ -1833,8 +1834,12 @@ dependencies = [
  "futures",
  "lazy_static",
  "merklehash",
+ "more-asserts",
  "pin-project",
+ "rand",
+ "serde",
  "shellexpand",
+ "tempfile",
  "thiserror",
  "tokio",
  "tokio-util",
