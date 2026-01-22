@@ -4,13 +4,20 @@
 # unzips it, and moves it to the user's local bin directory.
 
 # --- Configuration ---
-URL_LINUX_AMD64="https://github.com/huggingface/xet-core/releases/download/git-xet-v0.2.0/git-xet-linux-x86_64.zip"
-URL_LINUX_ARM64="https://github.com/huggingface/xet-core/releases/download/git-xet-v0.2.0/git-xet-linux-aarch64.zip"
-URL_MACOS_AMD64="https://github.com/huggingface/xet-core/releases/download/git-xet-v0.2.0/git-xet-macos-x86_64.zip"
-URL_MACOS_ARM64="https://github.com/huggingface/xet-core/releases/download/git-xet-v0.2.0/git-xet-macos-aarch64.zip"
+XET_LINUX_AMD64="https://github.com/huggingface/xet-core/releases/download/git-xet-v0.2.0/git-xet-linux-x86_64.zip"
+XET_LINUX_ARM64="https://github.com/huggingface/xet-core/releases/download/git-xet-v0.2.0/git-xet-linux-aarch64.zip"
+XET_MACOS_AMD64="https://github.com/huggingface/xet-core/releases/download/git-xet-v0.2.0/git-xet-macos-x86_64.zip"
+XET_MACOS_ARM64="https://github.com/huggingface/xet-core/releases/download/git-xet-v0.2.0/git-xet-macos-aarch64.zip"
+
+LFS_LINUX_AMD64="https://github.com/git-lfs/git-lfs/releases/download/v3.7.1/git-lfs-linux-amd64-v3.7.1.tar.gz"
+LFS_LINUX_ARM64="https://github.com/git-lfs/git-lfs/releases/download/v3.7.1/git-lfs-linux-arm64-v3.7.1.tar.gz"
+LFS_MACOS_AMD64="https://github.com/git-lfs/git-lfs/releases/download/v3.7.1/git-lfs-darwin-amd64-v3.7.1.zip"
+LFS_MACOS_ARM64="https://github.com/git-lfs/git-lfs/releases/download/v3.7.1/git-lfs-darwin-arm64-v3.7.1.zip"
 
 BINARY_NAME="git-xet"
 INSTALL_DIR="/usr/local/bin"
+
+LFS_DIR="git-lfs-3.7.1"
 
 # --- Functions ---
 
@@ -40,25 +47,38 @@ ARCH="$(uname -m)"
 echo "Detected OS: $OS"
 echo "Detected Architecture: $ARCH"
 
-DOWNLOAD_URL=""
+XET_URL=""
+LFS_URL=""
 
 # Select download URL
 case "$OS" in
     Linux)
         case "$ARCH" in
-            x86_64) DOWNLOAD_URL="$URL_LINUX_AMD64" ;;
-            aarch64|arm64) DOWNLOAD_URL="$URL_LINUX_ARM64" ;;
+            x86_64)
+                XET_URL="$XET_LINUX_AMD64"
+                LFS_URL="$LFS_LINUX_AMD64"
+                ;;
+            aarch64|arm64)
+                XET_URL="$XET_LINUX_ARM64"
+                LFS_URL="$LFS_LINUX_ARM64"
+                ;;
         esac
         ;;
     Darwin)
         case "$ARCH" in
-            x86_64) DOWNLOAD_URL="$URL_MACOS_AMD64" ;;
-            arm64) DOWNLOAD_URL="$URL_MACOS_ARM64" ;;
+            x86_64)
+                XET_URL="$XET_MACOS_AMD64"
+                LFS_URL="$LFS_MACOS_AMD64"
+                ;;
+            arm64)
+                XET_URL="$XET_MACOS_ARM64"
+                LFS_URL="$LFS_MACOS_ARM64"
+                ;;
         esac
         ;;
 esac
 
-if [ -z "$DOWNLOAD_URL" ]; then
+if [ -z "$XET_URL" ]; then
     handle_error "Unsupported OS/Architecture combination: $OS/$ARCH"
 fi
 
@@ -68,8 +88,8 @@ TMP_DIR="$(mktemp -d)"
 
 cd "$TMP_DIR" || handle_error "Could not cd into temp directory."
 
-echo "Downloading from: $DOWNLOAD_URL..."
-if ! curl -sSL -o binary.zip "$DOWNLOAD_URL"; then
+echo "Downloading from: $XET_URL..."
+if ! curl -sSL -o binary.zip "$XET_URL"; then
     handle_error "Download failed."
 fi
 
@@ -100,7 +120,26 @@ git-xet install --concurrency 3
 
 # Check git-lfs
 if ! command -v git-lfs >/dev/null 2>&1; then
-    echo "git-lfs is not installed. Please install it for git-xet to work. Install it from https://git-lfs.com/"
+    printf "The dependency git-lfs is not installed. Continue to install it from https://github.com/git-lfs/git-lfs/releases? (y/n) "
+    read -r response
+    if [ "$response" != "y" ]; then
+        echo "Please install git-lfs for git-xet to work. Install it from https://git-lfs.com/"
+        exit 1
+    fi
+
+    echo "Downloading from: $LFS_URL..."
+    if ! curl -sSL -o lfs.zip "$LFS_URL"; then
+        handle_error "Download failed."
+    fi
+
+    echo "Unzipping..."
+    if ! unzip -q lfs.zip; then
+        handle_error "Unzipping failed. Install 'unzip' and try again."
+    fi
+
+    cd $LFS_DIR
+
+    sudo ./install.sh
 fi
 
 echo "Installation complete!"
