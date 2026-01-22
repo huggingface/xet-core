@@ -5,7 +5,7 @@ use merklehash::MerkleHash;
 use serde::{Deserialize, Serialize};
 
 /// Trait for types that can efficiently provide a u64 hash value.
-/// Types implementing this trait are optimized for use with DHPassthroughHasher,
+/// Types implementing this trait are optimized for use with `U64DirectHasher`,
 /// which avoids extra computation by directly using the u64 value as the hash.
 pub trait U64HashExtractable {
     fn u64_hash_value(&self) -> u64;

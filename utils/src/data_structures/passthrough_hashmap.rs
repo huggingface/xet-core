@@ -8,7 +8,7 @@ use super::passthrough_hasher::{U64DirectHasher, U64HashExtractable};
 
 /// A HashMap wrapper optimized for keys that implement `U64HashExtractable`.
 ///
-/// This structure uses `DHPassthroughHasher` which avoids extra hash computation
+/// This structure uses `U64DirectHasher` which avoids extra hash computation
 /// by directly using the u64 value extracted from the key. This is particularly
 /// efficient for cryptographic hashes (like `MerkleHash`) where the first 8 bytes
 /// already provide excellent distribution.
