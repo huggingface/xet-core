@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use std::result::Result;
 
 use mdb_shard::file_structs::{
@@ -8,6 +7,7 @@ use mdb_shard::hash_is_global_dedup_eligible;
 use merklehash::{MerkleHash, file_hash};
 use more_asserts::{debug_assert_le, debug_assert_lt};
 use progress_tracking::upload_tracking::FileXorbDependency;
+use utils::MerkleHashMap;
 
 use crate::Chunk;
 use crate::constants::{MAX_XORB_BYTES, MAX_XORB_CHUNKS};
@@ -30,7 +30,7 @@ pub struct FileDeduper<DataInterfaceType: DeduplicationDataInterface> {
     new_data_size: usize,
 
     /// A hashmap allowing deduplication against the current chunk.
-    new_data_hash_lookup: HashMap<MerkleHash, usize>,
+    new_data_hash_lookup: MerkleHashMap<usize>,
 
     /// The current chunk hashes for this file.
     chunk_hashes: Vec<(MerkleHash, u64)>,
@@ -62,7 +62,7 @@ impl<DataInterfaceType: DeduplicationDataInterface> FileDeduper<DataInterfaceTyp
             file_id,
             new_data: Vec::new(),
             new_data_size: 0,
-            new_data_hash_lookup: HashMap::new(),
+            new_data_hash_lookup: MerkleHashMap::new(),
             chunk_hashes: Vec::new(),
             file_info: Vec::new(),
             internally_referencing_entries: Vec::new(),

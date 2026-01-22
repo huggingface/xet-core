@@ -22,6 +22,7 @@ use rand::Rng;
 use tokio::sync::RwLock;
 use tokio::time::{Duration, Instant};
 use tracing::{error, info};
+use utils::MerkleHashMap;
 
 use super::client_testing_utils::{FileTermReference, RandomFileContents};
 use super::direct_access_client::DirectAccessClient;
@@ -57,11 +58,11 @@ enum XorbStorage {
 /// In-memory client for testing purposes. Stores all data in memory using hash tables.
 pub struct MemoryClient {
     /// XORBs stored by hash
-    xorbs: RwLock<HashMap<MerkleHash, XorbStorage>>,
+    xorbs: RwLock<MerkleHashMap<XorbStorage>>,
     /// In-memory shard for file reconstruction info
     shard: RwLock<MDBInMemoryShard>,
     /// Global dedup lookup: chunk_hash -> shard bytes
-    global_dedup: RwLock<HashMap<MerkleHash, Bytes>>,
+    global_dedup: RwLock<MerkleHashMap<Bytes>>,
     /// Upload concurrency controller
     upload_concurrency_controller: Arc<AdaptiveConcurrencyController>,
     /// URL expiration in milliseconds
@@ -74,9 +75,9 @@ impl MemoryClient {
     /// Create a new in-memory client.
     pub fn new() -> Arc<Self> {
         Arc::new(Self {
-            xorbs: RwLock::new(HashMap::new()),
+            xorbs: RwLock::new(MerkleHashMap::new()),
             shard: RwLock::new(MDBInMemoryShard::default()),
-            global_dedup: RwLock::new(HashMap::new()),
+            global_dedup: RwLock::new(MerkleHashMap::new()),
             upload_concurrency_controller: AdaptiveConcurrencyController::new_upload("memory_uploads"),
             url_expiration_ms: AtomicU64::new(u64::MAX),
             random_ms_delay_window: (AtomicU64::new(0), AtomicU64::new(0)),
@@ -205,7 +206,7 @@ impl MemoryClient {
         Ok(RandomFileContents {
             file_hash,
             data: Bytes::from(file_data),
-            xorbs: std::collections::HashMap::new(),
+            xorbs: MerkleHashMap::new(),
             terms: term_infos,
         })
     }
@@ -232,9 +233,9 @@ impl MemoryClient {
 impl Default for MemoryClient {
     fn default() -> Self {
         Self {
-            xorbs: RwLock::new(HashMap::new()),
+            xorbs: RwLock::new(MerkleHashMap::new()),
             shard: RwLock::new(MDBInMemoryShard::default()),
-            global_dedup: RwLock::new(HashMap::new()),
+            global_dedup: RwLock::new(MerkleHashMap::new()),
             upload_concurrency_controller: AdaptiveConcurrencyController::new_upload("memory_uploads"),
             url_expiration_ms: AtomicU64::new(u64::MAX),
             random_ms_delay_window: (AtomicU64::new(0), AtomicU64::new(0)),
@@ -715,7 +716,7 @@ impl Client for MemoryClient {
             byte_range: FileRange,
         }
 
-        let mut fetch_info_map: HashMap<MerkleHash, Vec<FetchInfoIntermediate>> = HashMap::new();
+        let mut fetch_info_map: MerkleHashMap<Vec<FetchInfoIntermediate>> = MerkleHashMap::new();
 
         let xorbs = self.xorbs.read().await;
 

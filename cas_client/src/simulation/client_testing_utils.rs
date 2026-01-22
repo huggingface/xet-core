@@ -7,6 +7,7 @@ use mdb_shard::file_structs::{FileDataSequenceEntry, FileDataSequenceHeader, MDB
 use mdb_shard::shard_in_memory::MDBInMemoryShard;
 use merklehash::{MerkleHash, compute_data_hash, file_hash_with_salt};
 use rand::prelude::*;
+use utils::MerkleHashMap;
 
 use crate::error::Result;
 use crate::interface::Client;
@@ -37,7 +38,7 @@ pub struct RandomFileContents {
     /// The complete file data.
     pub data: Bytes,
     /// The RawXorbData for each XORB that was created, keyed by XORB hash.
-    pub xorbs: HashMap<MerkleHash, RawXorbData>,
+    pub xorbs: MerkleHashMap<RawXorbData>,
     /// Information about each term in file order.
     pub terms: Vec<FileTermReference>,
 }

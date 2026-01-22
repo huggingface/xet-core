@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::io::{Cursor, Read, Write, copy};
 use std::mem::size_of;
 
@@ -8,6 +8,7 @@ use futures_util::io::AsyncReadExt;
 use itertools::Itertools;
 use merklehash::MerkleHash;
 use more_asserts::debug_assert_lt;
+use utils::MerkleHashMap;
 
 use crate::cas_structs::{CASChunkSequenceEntry, CASChunkSequenceHeader, MDBCASInfoView};
 use crate::error::{MDBShardError, Result};
@@ -301,8 +302,8 @@ impl MDBMinimalShard {
 
     /// Return a lookup of xorb hash to starting chunk indices for all the files present in the
     /// shard.  These are the chunks that are useful for global dedup.
-    fn file_start_entries(&self) -> HashMap<MerkleHash, Vec<usize>> {
-        let mut file_start_entries = HashMap::<MerkleHash, Vec<usize>>::new();
+    fn file_start_entries(&self) -> MerkleHashMap<Vec<usize>> {
+        let mut file_start_entries = MerkleHashMap::<Vec<usize>>::new();
 
         for f_idx in 0..self.num_files() {
             let Some(fv) = self.file(f_idx) else {
