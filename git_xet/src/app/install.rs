@@ -97,10 +97,9 @@ fn install_impl(location: ConfigLocation, concurrency: Option<u32>) -> Result<()
     if run_git_captured_with_input_and_output(&wd, "config", ["--get", "filter.lfs.process"])?
         .wait_with_output()
         .is_err()
+        && run_git_captured(&wd, "lfs", ["install"]).is_err()
     {
-        if run_git_captured(&wd, "lfs", ["install"]).is_err() {
-            eprintln!("WARNING: git-lfs is not properly installed, please install git-lfs for git-xet to work.");
-        }
+        eprintln!("WARNING: git-lfs is not properly installed, please install git-lfs for git-xet to work.");
     }
 
     Ok(())
