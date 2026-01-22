@@ -115,42 +115,39 @@ else
     fi
 fi
 
-# Post-install
-git-xet install --concurrency 3
-
 # Check git-lfs
 if ! command -v git-lfs >/dev/null 2>&1; then
     printf "The dependency git-lfs is not installed. Continue to install it from https://github.com/git-lfs/git-lfs/releases? (y/n) "
     read -r response < /dev/tty
-    if [ "$response" != "y" ]; then
+    if [ "$response" = "y" ]; then
+        # Download and extract git-lfs based on OS
+        if [ "$OS" = "Linux" ]; then
+            echo "Downloading git-lfs from: $LFS_URL..."
+            if ! curl -sSL -o lfs.tar.gz "$LFS_URL"; then
+                handle_error "LFS download failed."
+            fi
+            echo "Extracting tarball..."
+            if ! tar -xzf lfs.tar.gz; then
+                handle_error "LFS extraction failed. Install 'tar' and try again."
+            fi
+        else # Darwin (macOS)
+            echo "Downloading git-lfs from: $LFS_URL..."
+            if ! curl -sSL -o lfs.zip "$LFS_URL"; then
+                handle_error "LFS download failed."
+            fi
+            echo "Unzipping..."
+            if ! unzip -q lfs.zip; then
+                handle_error "Unzipping LFS failed. Install 'unzip' and try again."
+            fi
+        fi
+        cd "$LFS_DIR" || handle_error "Could not cd into LFS directory '$LFS_DIR'."
+        sudo ./install.sh
+    else
         echo "Please install git-lfs for git-xet to work. Install it from https://git-lfs.com/"
-        exit 1
     fi
-
-    # Download and extract git-lfs based on OS
-    if [ "$OS" = "Linux" ]; then
-        echo "Downloading git-lfs from: $LFS_URL..."
-        if ! curl -sSL -o lfs.tar.gz "$LFS_URL"; then
-            handle_error "LFS download failed."
-        fi
-        echo "Extracting tarball..."
-        if ! tar -xzf lfs.tar.gz; then
-            handle_error "LFS extraction failed. Install 'tar' and try again."
-        fi
-    else # Darwin (macOS)
-        echo "Downloading git-lfs from: $LFS_URL..."
-        if ! curl -sSL -o lfs.zip "$LFS_URL"; then
-            handle_error "LFS download failed."
-        fi
-        echo "Unzipping..."
-        if ! unzip -q lfs.zip; then
-            handle_error "Unzipping LFS failed. Install 'unzip' and try again."
-        fi
-    fi
-
-    cd "$LFS_DIR" || handle_error "Could not cd into LFS directory '$LFS_DIR'."
-
-    sudo ./install.sh
 fi
+
+# Post-install
+git-xet install --concurrency 3
 
 echo "Installation complete!"
