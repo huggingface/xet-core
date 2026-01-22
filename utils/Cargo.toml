@@ -40,7 +40,6 @@ tokio = { workspace = true, features = [
     "macros",
     "sync",
     "test-util",
-    "fs",
 ] }
 tokio-util = { workspace = true, features = ["io"] }
 
