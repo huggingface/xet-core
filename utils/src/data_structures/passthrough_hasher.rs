@@ -55,7 +55,7 @@ impl<T: U64HashExtractable> Hasher for U64DirectHasher<T> {
     }
 
     fn write(&mut self, bytes: &[u8]) {
-        debug_assert!(bytes.len() >= 8);
+        debug_assert_eq!(bytes.len(), 32);
 
         unsafe {
             let dest = &mut self.state as *mut u64 as *mut u8;

@@ -5859,6 +5859,7 @@ dependencies = [
  "futures-util",
  "lazy_static",
  "merklehash",
+ "more-asserts",
  "pin-project",
  "rand 0.9.1",
  "serde",

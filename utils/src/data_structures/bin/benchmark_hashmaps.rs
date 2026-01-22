@@ -1,22 +1,29 @@
-//! Benchmark comparing HashMap and PassThroughHashMap performance.
+//! Benchmark comparing HashMap, PassThroughHashMap, and ParallelHashMap performance.
 //!
 //! Run with: cargo run --bin benchmark_hashmaps --release
 
 use std::collections::{BTreeMap, HashMap};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use merklehash::{DataHash, MerkleHash};
 use rand::Rng;
-use utils::data_structures::PassThroughHashMap;
+use tempfile::TempDir;
+use tokio::task::JoinSet;
+use utils::data_structures::{ParallelHashMap, ParallelMerkleHashMap, PassThroughHashMap};
 
 // Type aliases for cleaner code
 type MerklePassThroughHashMap = PassThroughHashMap<DataHash, u64>;
 
 const OPERATION_COUNTS: &[usize] = &[100_000, 1_000_000, 10_000_000];
+const THREAD_COUNTS: &[usize] = &[4, 8];
 
 // Data structure identifiers for columns
 const DS_HASHMAP: &str = "HashMap";
 const DS_PASSTHROUGH: &str = "PassThrough";
+const DS_PARALLEL: &str = "Parallel";
+const DS_MUTEX_HASHMAP: &str = "Mutex<HashMap>";
+const DS_MUTEX_PASSTHROUGH: &str = "Mutex<PassThrough>";
 
 /// Results storage for summary table
 #[derive(Default)]
@@ -30,13 +37,24 @@ impl BenchmarkResults {
         self.results.insert((test.to_string(), size, ds.to_string()), duration);
     }
 
-    fn print_summary_table(&self) {
-        let data_structures = [DS_HASHMAP, DS_PASSTHROUGH];
+    fn print_summary_tables(&self) {
+        // Table 1: Single-threaded
+        self.print_single_threaded_table();
+
+        // Table 2: 4 Threads
+        self.print_parallel_table(4);
+
+        // Table 3: 8 Threads
+        self.print_parallel_table(8);
+    }
+
+    fn print_single_threaded_table(&self) {
+        let data_structures = [DS_HASHMAP, DS_PASSTHROUGH, DS_PARALLEL];
         let tests = ["Insert", "Lookup", "Insert+Lookup", "Serialize", "Deserialize"];
 
-        println!("\n{}", "=".repeat(65));
-        println!("PERFORMANCE SUMMARY (times in ms, lower is better)");
-        println!("{}", "=".repeat(65));
+        println!("\n{}", "=".repeat(85));
+        println!("SINGLE-THREADED PERFORMANCE (times in ms, lower is better)");
+        println!("{}", "=".repeat(85));
 
         // Print header
         print!("{:<25}", "Test");
@@ -44,14 +62,15 @@ impl BenchmarkResults {
             print!("{:>20}", ds);
         }
         println!();
-        println!("{}", "-".repeat(65));
+        println!("{}", "-".repeat(85));
 
         for &size in OPERATION_COUNTS {
             println!("--- {} ---", format_count(size));
             for test in &tests {
+                let test_key = format!("1T: {}", test);
                 print!("  {:<23}", test);
                 for ds in &data_structures {
-                    if let Some(duration) = self.results.get(&(test.to_string(), size, ds.to_string())) {
+                    if let Some(duration) = self.results.get(&(test_key.clone(), size, ds.to_string())) {
                         print!("{:>20}", format_duration_ms(*duration));
                     } else {
                         print!("{:>20}", "-");
@@ -61,7 +80,42 @@ impl BenchmarkResults {
             }
             println!();
         }
-        println!("{}", "=".repeat(65));
+        println!("{}", "=".repeat(85));
+    }
+
+    fn print_parallel_table(&self, num_threads: usize) {
+        let data_structures = [DS_MUTEX_HASHMAP, DS_MUTEX_PASSTHROUGH, DS_PARALLEL];
+        let tests = ["Insert", "Lookup", "Insert+Lookup"];
+
+        println!("\n{}", "=".repeat(85));
+        println!("PARALLEL {} THREADS PERFORMANCE (times in ms, lower is better)", num_threads);
+        println!("{}", "=".repeat(85));
+
+        // Print header
+        print!("{:<25}", "Test");
+        for ds in &data_structures {
+            print!("{:>20}", ds);
+        }
+        println!();
+        println!("{}", "-".repeat(85));
+
+        for &size in OPERATION_COUNTS {
+            println!("--- {} ---", format_count(size));
+            for test in &tests {
+                let test_key = format!("{}T: {}", num_threads, test);
+                print!("  {:<23}", test);
+                for ds in &data_structures {
+                    if let Some(duration) = self.results.get(&(test_key.clone(), size, ds.to_string())) {
+                        print!("{:>20}", format_duration_ms(*duration));
+                    } else {
+                        print!("{:>20}", "-");
+                    }
+                }
+                println!();
+            }
+            println!();
+        }
+        println!("{}", "=".repeat(85));
     }
 }
 
@@ -118,7 +172,7 @@ fn print_result(name: &str, count: usize, duration: Duration) {
 }
 
 // ============================================================================
-// Benchmarks
+// Single-threaded Benchmarks
 // ============================================================================
 
 fn bench_insert(keys: &[DataHash], map_type: &str) -> Duration {
@@ -135,6 +189,15 @@ fn bench_insert(keys: &[DataHash], map_type: &str) -> Duration {
         DS_PASSTHROUGH => {
             let start = Instant::now();
             let mut map: MerklePassThroughHashMap = PassThroughHashMap::with_capacity(keys.len());
+            for (i, key) in keys.iter().enumerate() {
+                map.insert(*key, i as u64);
+            }
+            std::hint::black_box(&map);
+            start.elapsed()
+        },
+        DS_PARALLEL => {
+            let start = Instant::now();
+            let map: ParallelMerkleHashMap<u64> = ParallelHashMap::new();
             for (i, key) in keys.iter().enumerate() {
                 map.insert(*key, i as u64);
             }
@@ -178,6 +241,21 @@ fn bench_lookup(keys: &[DataHash], map_type: &str) -> Duration {
             std::hint::black_box(sum);
             start.elapsed()
         },
+        DS_PARALLEL => {
+            let map: ParallelMerkleHashMap<u64> = ParallelHashMap::new();
+            for (i, key) in keys.iter().enumerate() {
+                map.insert(*key, i as u64);
+            }
+            let start = Instant::now();
+            let mut sum = 0u64;
+            for key in keys {
+                if let Some(v) = map.get(key) {
+                    sum = sum.wrapping_add(v);
+                }
+            }
+            std::hint::black_box(sum);
+            start.elapsed()
+        },
         _ => Duration::ZERO,
     }
 }
@@ -209,6 +287,21 @@ fn bench_insert_then_lookup(keys: &[DataHash], map_type: &str) -> Duration {
             for key in keys {
                 if let Some(v) = map.get(key) {
                     sum = sum.wrapping_add(*v);
+                }
+            }
+            std::hint::black_box(sum);
+            start.elapsed()
+        },
+        DS_PARALLEL => {
+            let start = Instant::now();
+            let map: ParallelMerkleHashMap<u64> = ParallelHashMap::new();
+            for (i, key) in keys.iter().enumerate() {
+                map.insert(*key, i as u64);
+            }
+            let mut sum = 0u64;
+            for key in keys {
+                if let Some(v) = map.get(key) {
+                    sum = sum.wrapping_add(v);
                 }
             }
             std::hint::black_box(sum);
@@ -273,58 +366,526 @@ fn bench_deserialize(keys: &[DataHash], map_type: &str) -> Duration {
 }
 
 // ============================================================================
+// Multi-threaded Benchmarks
+// ============================================================================
+
+async fn bench_insert_threaded(keys: Arc<Vec<DataHash>>, map_type: &str, num_threads: usize) -> Duration {
+    let chunk_size = keys.len() / num_threads;
+
+    match map_type {
+        DS_PARALLEL => {
+            let map: Arc<ParallelMerkleHashMap<u64>> = Arc::new(ParallelHashMap::new());
+            let start = Instant::now();
+            let mut join_set = JoinSet::new();
+
+            for t in 0..num_threads {
+                let map = map.clone();
+                let keys = keys.clone();
+                let start_idx = t * chunk_size;
+                let end_idx = if t == num_threads - 1 {
+                    keys.len()
+                } else {
+                    (t + 1) * chunk_size
+                };
+
+                join_set.spawn(async move {
+                    for i in start_idx..end_idx {
+                        map.insert(keys[i], i as u64);
+                    }
+                });
+            }
+
+            while join_set.join_next().await.is_some() {}
+            let elapsed = start.elapsed();
+            std::hint::black_box(&map);
+            elapsed
+        },
+        DS_MUTEX_HASHMAP => {
+            let map: Arc<Mutex<HashMap<DataHash, u64>>> = Arc::new(Mutex::new(HashMap::with_capacity(keys.len())));
+            let start = Instant::now();
+            let mut join_set = JoinSet::new();
+
+            for t in 0..num_threads {
+                let map = map.clone();
+                let keys = keys.clone();
+                let start_idx = t * chunk_size;
+                let end_idx = if t == num_threads - 1 {
+                    keys.len()
+                } else {
+                    (t + 1) * chunk_size
+                };
+
+                join_set.spawn(async move {
+                    for i in start_idx..end_idx {
+                        map.lock().unwrap().insert(keys[i], i as u64);
+                    }
+                });
+            }
+
+            while join_set.join_next().await.is_some() {}
+            let elapsed = start.elapsed();
+            std::hint::black_box(&map);
+            elapsed
+        },
+        DS_MUTEX_PASSTHROUGH => {
+            let map: Arc<Mutex<MerklePassThroughHashMap>> =
+                Arc::new(Mutex::new(PassThroughHashMap::with_capacity(keys.len())));
+            let start = Instant::now();
+            let mut join_set = JoinSet::new();
+
+            for t in 0..num_threads {
+                let map = map.clone();
+                let keys = keys.clone();
+                let start_idx = t * chunk_size;
+                let end_idx = if t == num_threads - 1 {
+                    keys.len()
+                } else {
+                    (t + 1) * chunk_size
+                };
+
+                join_set.spawn(async move {
+                    for i in start_idx..end_idx {
+                        map.lock().unwrap().insert(keys[i], i as u64);
+                    }
+                });
+            }
+
+            while join_set.join_next().await.is_some() {}
+            let elapsed = start.elapsed();
+            std::hint::black_box(&map);
+            elapsed
+        },
+        _ => Duration::ZERO,
+    }
+}
+
+async fn bench_lookup_threaded(keys: Arc<Vec<DataHash>>, map_type: &str, num_threads: usize) -> Duration {
+    let chunk_size = keys.len() / num_threads;
+
+    match map_type {
+        DS_PARALLEL => {
+            let map: Arc<ParallelMerkleHashMap<u64>> = Arc::new(ParallelHashMap::new());
+            for (i, key) in keys.iter().enumerate() {
+                map.insert(*key, i as u64);
+            }
+
+            let start = Instant::now();
+            let mut join_set = JoinSet::new();
+
+            for t in 0..num_threads {
+                let map = map.clone();
+                let keys = keys.clone();
+                let start_idx = t * chunk_size;
+                let end_idx = if t == num_threads - 1 {
+                    keys.len()
+                } else {
+                    (t + 1) * chunk_size
+                };
+
+                join_set.spawn(async move {
+                    let mut sum = 0u64;
+                    for i in start_idx..end_idx {
+                        if let Some(v) = map.get(&keys[i]) {
+                            sum = sum.wrapping_add(v);
+                        }
+                    }
+                    sum
+                });
+            }
+
+            let mut total = 0u64;
+            while let Some(result) = join_set.join_next().await {
+                total = total.wrapping_add(result.unwrap());
+            }
+            let elapsed = start.elapsed();
+            std::hint::black_box(total);
+            elapsed
+        },
+        DS_MUTEX_HASHMAP => {
+            let map: Arc<Mutex<HashMap<DataHash, u64>>> = Arc::new(Mutex::new(HashMap::with_capacity(keys.len())));
+            for (i, key) in keys.iter().enumerate() {
+                map.lock().unwrap().insert(*key, i as u64);
+            }
+
+            let start = Instant::now();
+            let mut join_set = JoinSet::new();
+
+            for t in 0..num_threads {
+                let map = map.clone();
+                let keys = keys.clone();
+                let start_idx = t * chunk_size;
+                let end_idx = if t == num_threads - 1 {
+                    keys.len()
+                } else {
+                    (t + 1) * chunk_size
+                };
+
+                join_set.spawn(async move {
+                    let mut sum = 0u64;
+                    for i in start_idx..end_idx {
+                        if let Some(v) = map.lock().unwrap().get(&keys[i]) {
+                            sum = sum.wrapping_add(*v);
+                        }
+                    }
+                    sum
+                });
+            }
+
+            let mut total = 0u64;
+            while let Some(result) = join_set.join_next().await {
+                total = total.wrapping_add(result.unwrap());
+            }
+            let elapsed = start.elapsed();
+            std::hint::black_box(total);
+            elapsed
+        },
+        DS_MUTEX_PASSTHROUGH => {
+            let map: Arc<Mutex<MerklePassThroughHashMap>> =
+                Arc::new(Mutex::new(PassThroughHashMap::with_capacity(keys.len())));
+            for (i, key) in keys.iter().enumerate() {
+                map.lock().unwrap().insert(*key, i as u64);
+            }
+
+            let start = Instant::now();
+            let mut join_set = JoinSet::new();
+
+            for t in 0..num_threads {
+                let map = map.clone();
+                let keys = keys.clone();
+                let start_idx = t * chunk_size;
+                let end_idx = if t == num_threads - 1 {
+                    keys.len()
+                } else {
+                    (t + 1) * chunk_size
+                };
+
+                join_set.spawn(async move {
+                    let mut sum = 0u64;
+                    for i in start_idx..end_idx {
+                        if let Some(v) = map.lock().unwrap().get(&keys[i]) {
+                            sum = sum.wrapping_add(*v);
+                        }
+                    }
+                    sum
+                });
+            }
+
+            let mut total = 0u64;
+            while let Some(result) = join_set.join_next().await {
+                total = total.wrapping_add(result.unwrap());
+            }
+            let elapsed = start.elapsed();
+            std::hint::black_box(total);
+            elapsed
+        },
+        _ => Duration::ZERO,
+    }
+}
+
+async fn bench_insert_then_lookup_threaded(keys: Arc<Vec<DataHash>>, map_type: &str, num_threads: usize) -> Duration {
+    let chunk_size = keys.len() / num_threads;
+
+    match map_type {
+        DS_PARALLEL => {
+            let map: Arc<ParallelMerkleHashMap<u64>> = Arc::new(ParallelHashMap::new());
+
+            let start = Instant::now();
+
+            // Insert phase
+            let mut join_set = JoinSet::new();
+            for t in 0..num_threads {
+                let map = map.clone();
+                let keys = keys.clone();
+                let start_idx = t * chunk_size;
+                let end_idx = if t == num_threads - 1 {
+                    keys.len()
+                } else {
+                    (t + 1) * chunk_size
+                };
+
+                join_set.spawn(async move {
+                    for i in start_idx..end_idx {
+                        map.insert(keys[i], i as u64);
+                    }
+                });
+            }
+            while join_set.join_next().await.is_some() {}
+
+            // Lookup phase
+            let mut join_set = JoinSet::new();
+            for t in 0..num_threads {
+                let map = map.clone();
+                let keys = keys.clone();
+                let start_idx = t * chunk_size;
+                let end_idx = if t == num_threads - 1 {
+                    keys.len()
+                } else {
+                    (t + 1) * chunk_size
+                };
+
+                join_set.spawn(async move {
+                    let mut sum = 0u64;
+                    for i in start_idx..end_idx {
+                        if let Some(v) = map.get(&keys[i]) {
+                            sum = sum.wrapping_add(v);
+                        }
+                    }
+                    sum
+                });
+            }
+
+            let mut total = 0u64;
+            while let Some(result) = join_set.join_next().await {
+                total = total.wrapping_add(result.unwrap());
+            }
+            let elapsed = start.elapsed();
+            std::hint::black_box(total);
+            elapsed
+        },
+        DS_MUTEX_HASHMAP => {
+            let map: Arc<Mutex<HashMap<DataHash, u64>>> = Arc::new(Mutex::new(HashMap::with_capacity(keys.len())));
+
+            let start = Instant::now();
+
+            // Insert phase
+            let mut join_set = JoinSet::new();
+            for t in 0..num_threads {
+                let map = map.clone();
+                let keys = keys.clone();
+                let start_idx = t * chunk_size;
+                let end_idx = if t == num_threads - 1 {
+                    keys.len()
+                } else {
+                    (t + 1) * chunk_size
+                };
+
+                join_set.spawn(async move {
+                    for i in start_idx..end_idx {
+                        map.lock().unwrap().insert(keys[i], i as u64);
+                    }
+                });
+            }
+            while join_set.join_next().await.is_some() {}
+
+            // Lookup phase
+            let mut join_set = JoinSet::new();
+            for t in 0..num_threads {
+                let map = map.clone();
+                let keys = keys.clone();
+                let start_idx = t * chunk_size;
+                let end_idx = if t == num_threads - 1 {
+                    keys.len()
+                } else {
+                    (t + 1) * chunk_size
+                };
+
+                join_set.spawn(async move {
+                    let mut sum = 0u64;
+                    for i in start_idx..end_idx {
+                        if let Some(v) = map.lock().unwrap().get(&keys[i]) {
+                            sum = sum.wrapping_add(*v);
+                        }
+                    }
+                    sum
+                });
+            }
+
+            let mut total = 0u64;
+            while let Some(result) = join_set.join_next().await {
+                total = total.wrapping_add(result.unwrap());
+            }
+            let elapsed = start.elapsed();
+            std::hint::black_box(total);
+            elapsed
+        },
+        DS_MUTEX_PASSTHROUGH => {
+            let map: Arc<Mutex<MerklePassThroughHashMap>> =
+                Arc::new(Mutex::new(PassThroughHashMap::with_capacity(keys.len())));
+
+            let start = Instant::now();
+
+            // Insert phase
+            let mut join_set = JoinSet::new();
+            for t in 0..num_threads {
+                let map = map.clone();
+                let keys = keys.clone();
+                let start_idx = t * chunk_size;
+                let end_idx = if t == num_threads - 1 {
+                    keys.len()
+                } else {
+                    (t + 1) * chunk_size
+                };
+
+                join_set.spawn(async move {
+                    for i in start_idx..end_idx {
+                        map.lock().unwrap().insert(keys[i], i as u64);
+                    }
+                });
+            }
+            while join_set.join_next().await.is_some() {}
+
+            // Lookup phase
+            let mut join_set = JoinSet::new();
+            for t in 0..num_threads {
+                let map = map.clone();
+                let keys = keys.clone();
+                let start_idx = t * chunk_size;
+                let end_idx = if t == num_threads - 1 {
+                    keys.len()
+                } else {
+                    (t + 1) * chunk_size
+                };
+
+                join_set.spawn(async move {
+                    let mut sum = 0u64;
+                    for i in start_idx..end_idx {
+                        if let Some(v) = map.lock().unwrap().get(&keys[i]) {
+                            sum = sum.wrapping_add(*v);
+                        }
+                    }
+                    sum
+                });
+            }
+
+            let mut total = 0u64;
+            while let Some(result) = join_set.join_next().await {
+                total = total.wrapping_add(result.unwrap());
+            }
+            let elapsed = start.elapsed();
+            std::hint::black_box(total);
+            elapsed
+        },
+        _ => Duration::ZERO,
+    }
+}
+
+// ============================================================================
+// Archive Serialization (ParallelHashMap only)
+// ============================================================================
+
+async fn bench_parallel_serialize(keys: &[DataHash]) -> Duration {
+    let map: ParallelMerkleHashMap<u64> = ParallelHashMap::new();
+    for (i, key) in keys.iter().enumerate() {
+        map.insert(*key, i as u64);
+    }
+
+    let temp_dir = TempDir::new().unwrap();
+    let archive_path = temp_dir.path().join("benchmark_archive");
+
+    let start = Instant::now();
+    map.serialize_to_archive(&archive_path).await.unwrap();
+    start.elapsed()
+}
+
+async fn bench_parallel_deserialize(keys: &[DataHash]) -> Duration {
+    let map: ParallelMerkleHashMap<u64> = ParallelHashMap::new();
+    for (i, key) in keys.iter().enumerate() {
+        map.insert(*key, i as u64);
+    }
+
+    let temp_dir = TempDir::new().unwrap();
+    let archive_path = temp_dir.path().join("benchmark_archive");
+    map.serialize_to_archive(&archive_path).await.unwrap();
+
+    let start = Instant::now();
+    let map2: ParallelMerkleHashMap<u64> = ParallelHashMap::deserialize_from_archive(&archive_path).await.unwrap();
+    std::hint::black_box(&map2);
+    start.elapsed()
+}
+
+// ============================================================================
 // Main Benchmark Runner
 // ============================================================================
 
-fn run_benchmarks(count: usize, results: &mut BenchmarkResults) {
+async fn run_benchmarks(count: usize, results: &mut BenchmarkResults) {
     println!("\n{}", "=".repeat(80));
     println!("Benchmarking {} operations", count);
     println!("{}", "=".repeat(80));
 
     println!("\n--- Generating keys ---");
     let keys = generate_merkle_keys(count);
+    let keys_arc = Arc::new(keys.clone());
     println!("  Generated {} MerkleHash keys", count);
 
-    println!("\n--- Benchmarks ---");
+    // Single-threaded benchmarks
+    println!("\n--- Single-threaded ---");
 
-    for ds in [DS_HASHMAP, DS_PASSTHROUGH] {
+    for ds in [DS_HASHMAP, DS_PASSTHROUGH, DS_PARALLEL] {
         let d = bench_insert(&keys, ds);
         print_result(&format!("{} Insert", ds), count, d);
-        results.record("Insert", count, ds, d);
+        results.record("1T: Insert", count, ds, d);
     }
 
-    for ds in [DS_HASHMAP, DS_PASSTHROUGH] {
+    for ds in [DS_HASHMAP, DS_PASSTHROUGH, DS_PARALLEL] {
         let d = bench_lookup(&keys, ds);
         print_result(&format!("{} Lookup", ds), count, d);
-        results.record("Lookup", count, ds, d);
+        results.record("1T: Lookup", count, ds, d);
     }
 
-    for ds in [DS_HASHMAP, DS_PASSTHROUGH] {
+    for ds in [DS_HASHMAP, DS_PASSTHROUGH, DS_PARALLEL] {
         let d = bench_insert_then_lookup(&keys, ds);
         print_result(&format!("{} Insert+Lookup", ds), count, d);
-        results.record("Insert+Lookup", count, ds, d);
+        results.record("1T: Insert+Lookup", count, ds, d);
     }
 
     for ds in [DS_HASHMAP, DS_PASSTHROUGH] {
         let d = bench_serialize(&keys, ds);
         print_result(&format!("{} Serialize", ds), count, d);
-        results.record("Serialize", count, ds, d);
+        results.record("1T: Serialize", count, ds, d);
     }
+
+    // Parallel serialize
+    let d = bench_parallel_serialize(&keys).await;
+    print_result("Parallel Serialize", count, d);
+    results.record("1T: Serialize", count, DS_PARALLEL, d);
 
     for ds in [DS_HASHMAP, DS_PASSTHROUGH] {
         let d = bench_deserialize(&keys, ds);
         print_result(&format!("{} Deserialize", ds), count, d);
-        results.record("Deserialize", count, ds, d);
+        results.record("1T: Deserialize", count, ds, d);
+    }
+
+    // Parallel deserialize
+    let d = bench_parallel_deserialize(&keys).await;
+    print_result("Parallel Deserialize", count, d);
+    results.record("1T: Deserialize", count, DS_PARALLEL, d);
+
+    // Multi-threaded benchmarks
+    for &num_threads in THREAD_COUNTS {
+        println!("\n--- {} threads ---", num_threads);
+        let thread_label = format!("{}T", num_threads);
+
+        for ds in [DS_PARALLEL, DS_MUTEX_HASHMAP, DS_MUTEX_PASSTHROUGH] {
+            let d = bench_insert_threaded(keys_arc.clone(), ds, num_threads).await;
+            print_result(&format!("{} Insert", ds), count, d);
+            results.record(&format!("{}: Insert", thread_label), count, ds, d);
+        }
+
+        for ds in [DS_PARALLEL, DS_MUTEX_HASHMAP, DS_MUTEX_PASSTHROUGH] {
+            let d = bench_lookup_threaded(keys_arc.clone(), ds, num_threads).await;
+            print_result(&format!("{} Lookup", ds), count, d);
+            results.record(&format!("{}: Lookup", thread_label), count, ds, d);
+        }
+
+        for ds in [DS_PARALLEL, DS_MUTEX_HASHMAP, DS_MUTEX_PASSTHROUGH] {
+            let d = bench_insert_then_lookup_threaded(keys_arc.clone(), ds, num_threads).await;
+            print_result(&format!("{} Insert+Lookup", ds), count, d);
+            results.record(&format!("{}: Insert+Lookup", thread_label), count, ds, d);
+        }
     }
 }
 
-fn main() {
+#[tokio::main]
+async fn main() {
     println!("HashMap Benchmark Suite");
     println!("=======================");
     println!();
     println!("Comparing:");
     println!("  - HashMap: std::collections::HashMap");
-    println!("  - PassThrough: PassThroughHashMap (optimized hasher for MerkleHash keys)");
+    println!("  - PassThrough: PassThroughHashMap (optimized hasher)");
+    println!("  - Parallel: ParallelHashMap (concurrent submaps)");
+    println!("  - Mutex<HashMap>: Mutex wrapper around HashMap");
+    println!("  - Mutex<PassThrough>: Mutex wrapper around PassThroughHashMap");
     println!();
     println!("Key type: MerkleHash (32 bytes)");
     println!("Value type: u64");
@@ -332,11 +893,11 @@ fn main() {
     let mut results = BenchmarkResults::default();
 
     for &count in OPERATION_COUNTS {
-        run_benchmarks(count, &mut results);
+        run_benchmarks(count, &mut results).await;
     }
 
-    // Print summary table
-    results.print_summary_table();
+    // Print summary tables
+    results.print_summary_tables();
 
     println!("\nBenchmark complete!");
 }

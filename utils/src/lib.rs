@@ -3,6 +3,11 @@
 pub mod async_iterator;
 pub mod data_structures;
 pub use data_structures::{MerkleHashMap, PassThroughHashMap, TruncatedMerkleHashMap, U64HashExtractable};
+#[cfg(not(target_family = "wasm"))]
+pub use data_structures::{
+    ParallelHashMap, ParallelHashSet, ParallelMerkleHashMap, ParallelMerkleHashSet, ParallelTruncatedMerkleHashMap,
+    ParallelTruncatedMerkleHashSet,
+};
 pub mod async_read;
 pub mod auth;
 pub mod errors;

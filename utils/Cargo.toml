@@ -22,36 +22,41 @@ derivative = { workspace = true }
 duration-str = { workspace = true }
 futures = { workspace = true }
 lazy_static = { workspace = true }
+more-asserts = { workspace = true }
 pin-project = { workspace = true }
 serde = { workspace = true }
 shellexpand = { workspace = true }
 thiserror = { workspace = true }
-tokio = { workspace = true, features = [
-    "time",
-    "rt",
-    "macros",
-    "sync",
-    "test-util",
-] }
 tracing = { workspace = true }
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
 bincode = { workspace = true }
 rand = { workspace = true }
+tempfile = { workspace = true }
+tokio = { workspace = true, features = [
+    "time",
+    "rt",
+    "rt-multi-thread",
+    "macros",
+    "sync",
+    "test-util",
+    "fs",
+] }
 tokio-util = { workspace = true, features = ["io"] }
+
+[target.'cfg(target_family = "wasm")'.dependencies]
+tokio = { workspace = true, features = ["time", "rt", "macros", "sync"] }
+web-time = { workspace = true }
 
 [target.'cfg(not(target_family = "wasm"))'.dev-dependencies]
 tempfile = { workspace = true }
 xet_runtime = { path = "../xet_runtime" }
 
-[target.'cfg(target_family = "wasm")'.dependencies]
-web-time = { workspace = true }
-
 [dev-dependencies]
 bincode = { workspace = true }
-futures-util = { workspace = true }
 rand = { workspace = true }
 serial_test = { workspace = true }
+futures-util = { workspace = true }
 
 [features]
 strict = []
