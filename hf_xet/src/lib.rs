@@ -153,10 +153,7 @@ pub fn upload_files(
 ///     comparing the computed hash with the expected hash from the server.
 #[pyfunction]
 #[pyo3(signature = (file_paths), text_signature = "(file_paths: List[str]) -> List[PyXetUploadInfo]")]
-pub fn hash_files(
-    py: Python,
-    file_paths: Vec<String>,
-) -> PyResult<Vec<PyXetUploadInfo>> {
+pub fn hash_files(py: Python, file_paths: Vec<String>) -> PyResult<Vec<PyXetUploadInfo>> {
     async_run(py, async move {
         let out: Vec<PyXetUploadInfo> = data_client::hash_files_async(file_paths)
             .await
