@@ -291,6 +291,7 @@ pub async fn clean_file(
 ///
 /// # Arguments
 /// * `filename` - Path to the file to hash
+/// * `buffer_size` - Size of the read buffer in bytes
 ///
 /// # Returns
 /// * `XetFileInfo` containing the hex-encoded hash and file size
@@ -302,11 +303,10 @@ pub async fn clean_file(
 /// - Verify that downloaded files are correctly reassembled
 /// - Check if a file needs to be uploaded (by comparing hashes)
 /// - Generate cache keys for local file operations
-async fn hash_single_file(filename: String) -> errors::Result<XetFileInfo> {
+async fn hash_single_file(filename: String, buffer_size: usize) -> errors::Result<XetFileInfo> {
     let mut reader = File::open(&filename)?;
     let filesize = reader.metadata()?.len();
 
-    let buffer_size = *xet_config().data.ingestion_block_size as usize;
     let mut buffer = vec![0u8; buffer_size];
     let mut chunker = Chunker::default();
     let mut chunk_hashes: Vec<(MerkleHash, u64)> = Vec::new();
@@ -362,10 +362,11 @@ async fn hash_single_file(filename: String) -> errors::Result<XetFileInfo> {
 #[instrument(skip_all, name = "data_client::hash_files", fields(num_files=file_paths.len()))]
 pub async fn hash_files_async(file_paths: Vec<String>) -> errors::Result<Vec<XetFileInfo>> {
     let semaphore = XetRuntime::current().global_semaphore(*CONCURRENT_FILE_INGESTION_LIMITER);
+    let buffer_size = *xet_config().data.ingestion_block_size as usize;
 
     let hash_futures = file_paths
         .into_iter()
-        .map(|file_path| hash_single_file(file_path).instrument(info_span!("hash_file")));
+        .map(|file_path| hash_single_file(file_path, buffer_size).instrument(info_span!("hash_file")));
 
     let files = run_constrained_with_semaphore(hash_futures, semaphore).await?;
 
@@ -485,7 +486,8 @@ mod tests {
         let file_path = temp_dir.path().join("empty.txt");
         std::fs::write(&file_path, b"").unwrap();
 
-        let result = hash_single_file(file_path.to_str().unwrap().to_string()).await;
+        let buffer_size = 8 * 1024 * 1024; // 8MB
+        let result = hash_single_file(file_path.to_str().unwrap().to_string(), buffer_size).await;
         assert!(result.is_ok());
 
         let file_info = result.unwrap();
@@ -500,7 +502,8 @@ mod tests {
         let content = b"Hello, World!";
         std::fs::write(&file_path, content).unwrap();
 
-        let result = hash_single_file(file_path.to_str().unwrap().to_string()).await;
+        let buffer_size = 8 * 1024 * 1024; // 8MB
+        let result = hash_single_file(file_path.to_str().unwrap().to_string(), buffer_size).await;
         assert!(result.is_ok());
 
         let file_info = result.unwrap();
@@ -509,7 +512,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[serial(hash_config_env)]
     async fn test_hash_determinism() {
         let temp_dir = tempdir().unwrap();
         let file_path = temp_dir.path().join("test.txt");
@@ -522,16 +524,13 @@ mod tests {
 
         let file_path_str = file_path.to_str().unwrap().to_string();
 
-        // Hash with default buffer size
-        let result1 = hash_single_file(file_path_str.clone()).await;
+        // Hash with 8MB buffer size
+        let result1 = hash_single_file(file_path_str.clone(), 8 * 1024 * 1024).await;
         assert!(result1.is_ok());
         let file_info1 = result1.unwrap();
 
-        // Hash with a different buffer size (4MB instead of default 8MB)
-        let _guard = EnvVarGuard::set("HF_XET_DATA_INGESTION_BLOCK_SIZE", "4mb");
-        xet_runtime::reset_xet_config_for_test();
-
-        let result2 = hash_single_file(file_path_str).await;
+        // Hash with 4MB buffer size
+        let result2 = hash_single_file(file_path_str, 4 * 1024 * 1024).await;
         assert!(result2.is_ok());
         let file_info2 = result2.unwrap();
 
@@ -543,7 +542,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_hash_file_not_found() {
-        let result = hash_single_file("/nonexistent/file.txt".to_string()).await;
+        let buffer_size = 8 * 1024 * 1024; // 8MB
+        let result = hash_single_file("/nonexistent/file.txt".to_string(), buffer_size).await;
         assert!(result.is_err());
     }
 
@@ -573,7 +573,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[serial(hash_config_env)]
     async fn test_hash_file_size_multiple_of_buffer() {
         // Regression test for bug where final chunk wasn't produced when file size
         // is exactly a multiple of buffer_size. This test verifies that
@@ -581,34 +580,27 @@ mod tests {
         let temp_dir = tempdir().unwrap();
         let file_path = temp_dir.path().join("multiple_of_buffer.bin");
 
-        // Create a file that is exactly 16MB (2x the default 8MB ingestion_block_size)
+        // Create a file that is exactly 16MB
         let file_size = 16 * 1024 * 1024;
         let content: Vec<u8> = (0..file_size).map(|i| (i % 256) as u8).collect();
         std::fs::write(&file_path, &content).unwrap();
 
         let file_path_str = file_path.to_str().unwrap().to_string();
 
-        // Hash with default buffer size (8MB) - file is exactly 2x buffer size
-        let result1 = hash_single_file(file_path_str.clone()).await;
+        // Hash with 8MB buffer size - file is exactly 2x buffer size
+        let result1 = hash_single_file(file_path_str.clone(), 8 * 1024 * 1024).await;
         assert!(result1.is_ok());
         let file_info1 = result1.unwrap();
         assert_eq!(file_info1.file_size(), file_size as u64);
         assert!(!file_info1.hash().is_empty());
 
         // Hash with 4MB buffer size - file is exactly 4x buffer size
-        let _guard = EnvVarGuard::set("HF_XET_DATA_INGESTION_BLOCK_SIZE", "4mb");
-        xet_runtime::reset_xet_config_for_test();
-
-        let result2 = hash_single_file(file_path_str.clone()).await;
+        let result2 = hash_single_file(file_path_str.clone(), 4 * 1024 * 1024).await;
         assert!(result2.is_ok());
         let file_info2 = result2.unwrap();
 
         // Hash with 2MB buffer size - file is exactly 8x buffer size
-        drop(_guard);
-        let _guard2 = EnvVarGuard::set("HF_XET_DATA_INGESTION_BLOCK_SIZE", "2mb");
-        xet_runtime::reset_xet_config_for_test();
-
-        let result3 = hash_single_file(file_path_str).await;
+        let result3 = hash_single_file(file_path_str, 2 * 1024 * 1024).await;
         assert!(result3.is_ok());
         let file_info3 = result3.unwrap();
 
