@@ -509,22 +509,34 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial(hash_config_env)]
     async fn test_hash_determinism() {
         let temp_dir = tempdir().unwrap();
         let file_path = temp_dir.path().join("test.txt");
-        let content = b"Test content for determinism";
-        std::fs::write(&file_path, content).unwrap();
+
+        // Create a file that is large enough to span multiple buffer reads
+        // Using 20MB to ensure it's larger than typical buffer sizes
+        let file_size = 20 * 1024 * 1024;
+        let content: Vec<u8> = (0..file_size).map(|i| (i % 256) as u8).collect();
+        std::fs::write(&file_path, &content).unwrap();
 
         let file_path_str = file_path.to_str().unwrap().to_string();
+
+        // Hash with default buffer size
         let result1 = hash_single_file(file_path_str.clone()).await;
-        let result2 = hash_single_file(file_path_str).await;
-
         assert!(result1.is_ok());
-        assert!(result2.is_ok());
-
         let file_info1 = result1.unwrap();
+
+        // Hash with a different buffer size (4MB instead of default 8MB)
+        let _guard = EnvVarGuard::set("HF_XET_DATA_INGESTION_BLOCK_SIZE", "4mb");
+        xet_runtime::reset_xet_config_for_test();
+
+        let result2 = hash_single_file(file_path_str).await;
+        assert!(result2.is_ok());
         let file_info2 = result2.unwrap();
 
+        // Hashes should be identical regardless of buffer size
+        // This verifies that chunker.finish() is called correctly
         assert_eq!(file_info1.hash(), file_info2.hash());
         assert_eq!(file_info1.file_size(), file_info2.file_size());
     }
@@ -561,30 +573,51 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial(hash_config_env)]
     async fn test_hash_file_size_multiple_of_buffer() {
         // Regression test for bug where final chunk wasn't produced when file size
-        // is exactly a multiple of buffer_size
+        // is exactly a multiple of buffer_size. This test verifies that
+        // chunker.finish() is called to flush any remaining data.
         let temp_dir = tempdir().unwrap();
         let file_path = temp_dir.path().join("multiple_of_buffer.bin");
 
-        // Create a file that is exactly 2x the ingestion_block_size
-        let buffer_size = *xet_config().data.ingestion_block_size as usize;
-        let file_size = buffer_size * 2;
+        // Create a file that is exactly 16MB (2x the default 8MB ingestion_block_size)
+        let file_size = 16 * 1024 * 1024;
         let content: Vec<u8> = (0..file_size).map(|i| (i % 256) as u8).collect();
         std::fs::write(&file_path, &content).unwrap();
 
-        let result = hash_single_file(file_path.to_str().unwrap().to_string()).await;
-        assert!(result.is_ok());
+        let file_path_str = file_path.to_str().unwrap().to_string();
 
-        let file_info = result.unwrap();
-        assert_eq!(file_info.file_size(), file_size as u64);
-        assert!(!file_info.hash().is_empty());
+        // Hash with default buffer size (8MB) - file is exactly 2x buffer size
+        let result1 = hash_single_file(file_path_str.clone()).await;
+        assert!(result1.is_ok());
+        let file_info1 = result1.unwrap();
+        assert_eq!(file_info1.file_size(), file_size as u64);
+        assert!(!file_info1.hash().is_empty());
 
-        // Verify the hash is deterministic - this would fail if chunker.finish()
-        // isn't called and the final chunk is missing
-        let result2 = hash_single_file(file_path.to_str().unwrap().to_string()).await;
+        // Hash with 4MB buffer size - file is exactly 4x buffer size
+        let _guard = EnvVarGuard::set("HF_XET_DATA_INGESTION_BLOCK_SIZE", "4mb");
+        xet_runtime::reset_xet_config_for_test();
+
+        let result2 = hash_single_file(file_path_str.clone()).await;
         assert!(result2.is_ok());
         let file_info2 = result2.unwrap();
-        assert_eq!(file_info.hash(), file_info2.hash());
+
+        // Hash with 2MB buffer size - file is exactly 8x buffer size
+        drop(_guard);
+        let _guard2 = EnvVarGuard::set("HF_XET_DATA_INGESTION_BLOCK_SIZE", "2mb");
+        xet_runtime::reset_xet_config_for_test();
+
+        let result3 = hash_single_file(file_path_str).await;
+        assert!(result3.is_ok());
+        let file_info3 = result3.unwrap();
+
+        // All hashes should be identical regardless of buffer size
+        // This verifies that chunker.finish() is properly called to flush remaining chunks
+        // Without finish(), different buffer sizes would produce different (incomplete) hashes
+        assert_eq!(file_info1.hash(), file_info2.hash(), "Hash mismatch between 8MB and 4MB buffer sizes");
+        assert_eq!(file_info1.hash(), file_info3.hash(), "Hash mismatch between 8MB and 2MB buffer sizes");
+        assert_eq!(file_info1.file_size(), file_info2.file_size());
+        assert_eq!(file_info1.file_size(), file_info3.file_size());
     }
 }

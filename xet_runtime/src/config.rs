@@ -28,3 +28,9 @@ pub fn xet_config() -> Arc<XetConfig> {
 
     config
 }
+
+/// Reset the thread-local config cache for testing purposes.
+/// This forces the next call to `xet_config()` to reload from environment variables.
+pub fn reset_xet_config_for_test() {
+    THREAD_CONFIG_REF.set(None);
+}

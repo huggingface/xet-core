@@ -23,4 +23,4 @@ pub use cache_dir::xet_cache_root;
 
 mod config;
 
-pub use config::xet_config;
+pub use config::{reset_xet_config_for_test, xet_config};
