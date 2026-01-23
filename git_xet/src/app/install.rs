@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use crate::app::Command::Transfer;
 use crate::constants::{GIT_LFS_CUSTOM_TRANSFER_AGENT_NAME, GIT_LFS_CUSTOM_TRANSFER_AGENT_PROGRAM};
 use crate::errors::{GitXetError, Result};
-use crate::utils::process_wrapping::run_git_captured;
+use crate::utils::process_wrapping::{run_git_captured, run_git_captured_with_input_and_output};
 
 #[derive(Default)]
 pub(crate) enum ConfigLocation {
@@ -89,6 +89,18 @@ fn install_impl(location: ConfigLocation, concurrency: Option<u32>) -> Result<()
             concurrent,
         ],
     )?;
+
+    // If git-lfs is not configured ("git config --get" exits with error code 1), run "git lfs install",
+    // but ignoring errors in case users intend to install and configure manually:
+    // - if git-xet is installed from brew, git-lfs should be installed automatically and this configures git-lfs;
+    // - if git-xet is installed using the install.sh script, user may opt out of the automatic git-lfs installation.
+    if run_git_captured_with_input_and_output(&wd, "config", ["--get", "filter.lfs.process"])?
+        .wait_with_output()
+        .is_err()
+        && run_git_captured(&wd, "lfs", ["install"]).is_err()
+    {
+        eprintln!("WARNING: git-lfs is not properly installed, please install git-lfs for git-xet to work.");
+    }
 
     Ok(())
 }
