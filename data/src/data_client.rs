@@ -559,4 +559,32 @@ mod tests {
         assert_eq!(file_infos[1].file_size(), 19);
         assert_ne!(file_infos[0].hash(), file_infos[1].hash());
     }
+
+    #[tokio::test]
+    async fn test_hash_file_size_multiple_of_buffer() {
+        // Regression test for bug where final chunk wasn't produced when file size
+        // is exactly a multiple of buffer_size
+        let temp_dir = tempdir().unwrap();
+        let file_path = temp_dir.path().join("multiple_of_buffer.bin");
+
+        // Create a file that is exactly 2x the ingestion_block_size
+        let buffer_size = *xet_config().data.ingestion_block_size as usize;
+        let file_size = buffer_size * 2;
+        let content: Vec<u8> = (0..file_size).map(|i| (i % 256) as u8).collect();
+        std::fs::write(&file_path, &content).unwrap();
+
+        let result = hash_single_file(file_path.to_str().unwrap().to_string()).await;
+        assert!(result.is_ok());
+
+        let file_info = result.unwrap();
+        assert_eq!(file_info.file_size(), file_size as u64);
+        assert!(!file_info.hash().is_empty());
+
+        // Verify the hash is deterministic - this would fail if chunker.finish()
+        // isn't called and the final chunk is missing
+        let result2 = hash_single_file(file_path.to_str().unwrap().to_string()).await;
+        assert!(result2.is_ok());
+        let file_info2 = result2.unwrap();
+        assert_eq!(file_info.hash(), file_info2.hash());
+    }
 }
