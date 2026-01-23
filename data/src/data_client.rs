@@ -3,12 +3,14 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use bytes::Bytes;
 use cas_client::remote_client::PREFIX_DEFAULT;
 use cas_object::CompressionScheme;
-use deduplication::DeduplicationMetrics;
+use deduplication::{Chunker, DeduplicationMetrics};
 use file_reconstruction::DataOutput;
 use lazy_static::lazy_static;
 use mdb_shard::Sha256;
+use merklehash::MerkleHash;
 use progress_tracking::TrackingProgressUpdater;
 use progress_tracking::item_tracking::ItemProgressUpdater;
 use tracing::{Instrument, Span, info, info_span, instrument};
@@ -280,6 +282,48 @@ pub async fn clean_file(
     handle.finish().await
 }
 
+fn hash_single_file(filename: &str) -> errors::Result<XetFileInfo> {
+    let mut reader = File::open(filename)?;
+    let filesize = reader.metadata()?.len();
+
+    let buffer_size = *xet_config().data.ingestion_block_size as usize;
+    let mut buffer = vec![0u8; buffer_size];
+    let mut chunker = Chunker::default();
+    let mut chunk_hashes: Vec<(MerkleHash, u64)> = Vec::new();
+
+    loop {
+        let bytes_read = reader.read(&mut buffer)?;
+        if bytes_read == 0 {
+            break;
+        }
+
+        let data = Bytes::copy_from_slice(&buffer[0..bytes_read]);
+        let is_final = bytes_read < buffer_size;
+        let chunks = chunker.next_block_bytes(&data, is_final);
+
+        for chunk in chunks {
+            chunk_hashes.push((chunk.hash, chunk.data.len() as u64));
+        }
+    }
+
+    let file_hash = merklehash::file_hash(&chunk_hashes);
+    Ok(XetFileInfo::new(file_hash.hex(), filesize))
+}
+
+#[instrument(skip_all, name = "data_client::hash_files", fields(num_files=file_paths.len()))]
+pub async fn hash_files_async(file_paths: Vec<String>) -> errors::Result<Vec<XetFileInfo>> {
+    let semaphore = XetRuntime::current().global_semaphore(*CONCURRENT_FILE_INGESTION_LIMITER);
+
+    let hash_futures = file_paths.into_iter().map(|file_path| {
+        async move { tokio::task::spawn_blocking(move || hash_single_file(&file_path)).await? }
+            .instrument(info_span!("hash_file"))
+    });
+
+    let files = run_constrained_with_semaphore(hash_futures, semaphore).await?;
+
+    Ok(files)
+}
+
 async fn smudge_file(
     downloader: &FileDownloader,
     file_info: &XetFileInfo,
@@ -385,5 +429,85 @@ mod tests {
             test_cache_dir.starts_with(&expected),
             "cache dir = {test_cache_dir:?}; does not start with {expected:?}",
         );
+    }
+
+    #[test]
+    fn test_hash_empty_file() {
+        let temp_dir = tempdir().unwrap();
+        let file_path = temp_dir.path().join("empty.txt");
+        std::fs::write(&file_path, b"").unwrap();
+
+        let result = hash_single_file(file_path.to_str().unwrap());
+        assert!(result.is_ok());
+
+        let file_info = result.unwrap();
+        assert_eq!(file_info.file_size(), 0);
+        assert!(!file_info.hash().is_empty());
+    }
+
+    #[test]
+    fn test_hash_small_file() {
+        let temp_dir = tempdir().unwrap();
+        let file_path = temp_dir.path().join("small.txt");
+        let content = b"Hello, World!";
+        std::fs::write(&file_path, content).unwrap();
+
+        let result = hash_single_file(file_path.to_str().unwrap());
+        assert!(result.is_ok());
+
+        let file_info = result.unwrap();
+        assert_eq!(file_info.file_size(), content.len() as u64);
+        assert!(!file_info.hash().is_empty());
+    }
+
+    #[test]
+    fn test_hash_determinism() {
+        let temp_dir = tempdir().unwrap();
+        let file_path = temp_dir.path().join("test.txt");
+        let content = b"Test content for determinism";
+        std::fs::write(&file_path, content).unwrap();
+
+        let result1 = hash_single_file(file_path.to_str().unwrap());
+        let result2 = hash_single_file(file_path.to_str().unwrap());
+
+        assert!(result1.is_ok());
+        assert!(result2.is_ok());
+
+        let file_info1 = result1.unwrap();
+        let file_info2 = result2.unwrap();
+
+        assert_eq!(file_info1.hash(), file_info2.hash());
+        assert_eq!(file_info1.file_size(), file_info2.file_size());
+    }
+
+    #[test]
+    fn test_hash_file_not_found() {
+        let result = hash_single_file("/nonexistent/file.txt");
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_hash_files_async() {
+        let temp_dir = tempdir().unwrap();
+
+        let file1_path = temp_dir.path().join("file1.txt");
+        let file2_path = temp_dir.path().join("file2.txt");
+
+        std::fs::write(&file1_path, b"First file content").unwrap();
+        std::fs::write(&file2_path, b"Second file content").unwrap();
+
+        let file_paths = vec![
+            file1_path.to_str().unwrap().to_string(),
+            file2_path.to_str().unwrap().to_string(),
+        ];
+
+        let result = hash_files_async(file_paths).await;
+        assert!(result.is_ok());
+
+        let file_infos = result.unwrap();
+        assert_eq!(file_infos.len(), 2);
+        assert_eq!(file_infos[0].file_size(), 18);
+        assert_eq!(file_infos[1].file_size(), 19);
+        assert_ne!(file_infos[0].hash(), file_infos[1].hash());
     }
 }

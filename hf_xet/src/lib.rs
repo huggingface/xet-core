@@ -125,6 +125,35 @@ pub fn upload_files(
 }
 
 #[pyfunction]
+#[pyo3(signature = (file_paths), text_signature = "(file_paths: List[str]) -> List[PyXetUploadInfo]")]
+pub fn hash_files(
+    py: Python,
+    file_paths: Vec<String>,
+) -> PyResult<Vec<PyXetUploadInfo>> {
+    let file_names = file_paths.iter().take(3).join(", ");
+    let x: u64 = rand::rng().random();
+
+    async_run(py, async move {
+        debug!(
+            "Hash call {x:x}: (PID = {}) Hashing {} files {file_names}{}",
+            std::process::id(),
+            file_paths.len(),
+            if file_paths.len() > 3 { "..." } else { "." }
+        );
+
+        let out: Vec<PyXetUploadInfo> = data_client::hash_files_async(file_paths)
+            .await
+            .map_err(convert_data_processing_error)?
+            .into_iter()
+            .map(PyXetUploadInfo::from)
+            .collect();
+
+        debug!("Hash call {x:x} finished.");
+        PyResult::Ok(out)
+    })
+}
+
+#[pyfunction]
 #[pyo3(signature = (files, endpoint, token_info, token_refresher, progress_updater), text_signature = "(files: List[PyXetDownloadInfo], endpoint: Optional[str], token_info: Optional[(str, int)], token_refresher: Optional[Callable[[], (str, int)]], progress_updater: Optional[List[Callable[[int], None]]]) -> List[str]")]
 pub fn download_files(
     py: Python,
@@ -306,6 +335,7 @@ impl From<PyXetDownloadInfo> for (XetFileInfo, DestinationPath) {
 pub fn hf_xet(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(upload_files, m)?)?;
     m.add_function(wrap_pyfunction!(upload_bytes, m)?)?;
+    m.add_function(wrap_pyfunction!(hash_files, m)?)?;
     m.add_function(wrap_pyfunction!(download_files, m)?)?;
     m.add_function(wrap_pyfunction!(force_sigint_shutdown, m)?)?;
     m.add_class::<PyXetUploadInfo>()?;
