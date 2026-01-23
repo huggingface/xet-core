@@ -318,12 +318,16 @@ async fn hash_single_file(filename: String) -> errors::Result<XetFileInfo> {
         }
 
         let data = Bytes::copy_from_slice(&buffer[0..bytes_read]);
-        let is_final = bytes_read < buffer_size;
-        let chunks = chunker.next_block_bytes(&data, is_final);
+        let chunks = chunker.next_block_bytes(&data, false);
 
         for chunk in chunks {
             chunk_hashes.push((chunk.hash, chunk.data.len() as u64));
         }
+    }
+
+    // Get the final chunk if any data remains in the chunker
+    if let Some(final_chunk) = chunker.finish() {
+        chunk_hashes.push((final_chunk.hash, final_chunk.data.len() as u64));
     }
 
     let file_hash = merklehash::file_hash(&chunk_hashes);
