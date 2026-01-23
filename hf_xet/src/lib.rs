@@ -124,23 +124,40 @@ pub fn upload_files(
     })
 }
 
+/// Compute xet hashes for files without uploading.
+///
+/// This function computes cryptographic hashes for the specified files using the same
+/// chunking and hashing algorithm as upload operations, but without requiring
+/// authentication or server connection. The resulting hashes can be used to verify
+/// file integrity after downloads or to determine which files need to be uploaded.
+///
+/// Args:
+///     file_paths: List of file paths to hash.
+///
+/// Returns:
+///     List[PyXetUploadInfo]: List of hash results in the same order as input paths.
+///         Each result contains the hash (as hex string) and file size in bytes.
+///
+/// Raises:
+///     RuntimeError: If any file cannot be read or hashed.
+///
+/// Example:
+///     >>> import hf_xet
+///     >>> results = hf_xet.hash_files(["/path/to/file1.txt", "/path/to/file2.txt"])
+///     >>> for path, info in zip(file_paths, results):
+///     ...     print(f"Hash: {info.hash}, Size: {info.file_size}")
+///
+/// Note:
+///     This function is primarily used for validation and verification of transferred
+///     files. Clients can verify that downloaded files are correctly reassembled by
+///     comparing the computed hash with the expected hash from the server.
 #[pyfunction]
 #[pyo3(signature = (file_paths), text_signature = "(file_paths: List[str]) -> List[PyXetUploadInfo]")]
 pub fn hash_files(
     py: Python,
     file_paths: Vec<String>,
 ) -> PyResult<Vec<PyXetUploadInfo>> {
-    let file_names = file_paths.iter().take(3).join(", ");
-    let x: u64 = rand::rng().random();
-
     async_run(py, async move {
-        debug!(
-            "Hash call {x:x}: (PID = {}) Hashing {} files {file_names}{}",
-            std::process::id(),
-            file_paths.len(),
-            if file_paths.len() > 3 { "..." } else { "." }
-        );
-
         let out: Vec<PyXetUploadInfo> = data_client::hash_files_async(file_paths)
             .await
             .map_err(convert_data_processing_error)?
@@ -148,7 +165,6 @@ pub fn hash_files(
             .map(PyXetUploadInfo::from)
             .collect();
 
-        debug!("Hash call {x:x} finished.");
         PyResult::Ok(out)
     })
 }

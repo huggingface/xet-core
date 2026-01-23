@@ -282,6 +282,26 @@ pub async fn clean_file(
     handle.finish().await
 }
 
+/// Computes the xet hash for a single file without uploading.
+///
+/// This function performs local-only hash computation by reading the file,
+/// chunking it using content-defined chunking, and computing the aggregated
+/// hash from the chunk hashes. The resulting hash is identical to what would
+/// be returned by upload operations, enabling verification of downloaded files.
+///
+/// # Arguments
+/// * `filename` - Path to the file to hash
+///
+/// # Returns
+/// * `XetFileInfo` containing the hex-encoded hash and file size
+///
+/// # Errors
+/// * `IoError` if the file cannot be opened or read
+///
+/// # Use Cases
+/// - Verify that downloaded files are correctly reassembled
+/// - Check if a file needs to be uploaded (by comparing hashes)
+/// - Generate cache keys for local file operations
 fn hash_single_file(filename: &str) -> errors::Result<XetFileInfo> {
     let mut reader = File::open(filename)?;
     let filesize = reader.metadata()?.len();
@@ -310,6 +330,32 @@ fn hash_single_file(filename: &str) -> errors::Result<XetFileInfo> {
     Ok(XetFileInfo::new(file_hash.hex(), filesize))
 }
 
+/// Computes xet hashes for multiple files in parallel without uploading.
+///
+/// This function processes multiple files concurrently using a semaphore to limit
+/// parallelism. Each file is hashed independently using `hash_single_file()` in a
+/// blocking task. The resulting hashes are identical to those from upload operations,
+/// enabling validation and verification of file transfers.
+///
+/// # Arguments
+/// * `file_paths` - Vector of file paths to hash
+///
+/// # Returns
+/// * Vector of `XetFileInfo` in the same order as input file paths
+///
+/// # Errors
+/// * Returns error if any file cannot be read or hashed
+/// * Async task errors are propagated
+///
+/// # Use Cases
+/// - Verify integrity of downloaded files by comparing computed hashes
+/// - Batch validation of multiple files after transfer
+/// - Determine which files need to be uploaded by comparing with server hashes
+///
+/// # Performance
+/// - Uses `CONCURRENT_FILE_INGESTION_LIMITER` to control parallelism
+/// - No authentication or server connection required
+/// - Pure local computation
 #[instrument(skip_all, name = "data_client::hash_files", fields(num_files=file_paths.len()))]
 pub async fn hash_files_async(file_paths: Vec<String>) -> errors::Result<Vec<XetFileInfo>> {
     let semaphore = XetRuntime::current().global_semaphore(*CONCURRENT_FILE_INGESTION_LIMITER);
