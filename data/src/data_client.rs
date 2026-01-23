@@ -302,8 +302,8 @@ pub async fn clean_file(
 /// - Verify that downloaded files are correctly reassembled
 /// - Check if a file needs to be uploaded (by comparing hashes)
 /// - Generate cache keys for local file operations
-fn hash_single_file(filename: &str) -> errors::Result<XetFileInfo> {
-    let mut reader = File::open(filename)?;
+async fn hash_single_file(filename: String) -> errors::Result<XetFileInfo> {
+    let mut reader = File::open(&filename)?;
     let filesize = reader.metadata()?.len();
 
     let buffer_size = *xet_config().data.ingestion_block_size as usize;
@@ -333,8 +333,8 @@ fn hash_single_file(filename: &str) -> errors::Result<XetFileInfo> {
 /// Computes xet hashes for multiple files in parallel without uploading.
 ///
 /// This function processes multiple files concurrently using a semaphore to limit
-/// parallelism. Each file is hashed independently using `hash_single_file()` in a
-/// blocking task. The resulting hashes are identical to those from upload operations,
+/// parallelism. Each file is hashed independently using `hash_single_file()`.
+/// The resulting hashes are identical to those from upload operations,
 /// enabling validation and verification of file transfers.
 ///
 /// # Arguments
@@ -345,7 +345,6 @@ fn hash_single_file(filename: &str) -> errors::Result<XetFileInfo> {
 ///
 /// # Errors
 /// * Returns error if any file cannot be read or hashed
-/// * Async task errors are propagated
 ///
 /// # Use Cases
 /// - Verify integrity of downloaded files by comparing computed hashes
@@ -360,10 +359,9 @@ fn hash_single_file(filename: &str) -> errors::Result<XetFileInfo> {
 pub async fn hash_files_async(file_paths: Vec<String>) -> errors::Result<Vec<XetFileInfo>> {
     let semaphore = XetRuntime::current().global_semaphore(*CONCURRENT_FILE_INGESTION_LIMITER);
 
-    let hash_futures = file_paths.into_iter().map(|file_path| {
-        async move { tokio::task::spawn_blocking(move || hash_single_file(&file_path)).await? }
-            .instrument(info_span!("hash_file"))
-    });
+    let hash_futures = file_paths
+        .into_iter()
+        .map(|file_path| hash_single_file(file_path).instrument(info_span!("hash_file")));
 
     let files = run_constrained_with_semaphore(hash_futures, semaphore).await?;
 
@@ -477,13 +475,13 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_hash_empty_file() {
+    #[tokio::test]
+    async fn test_hash_empty_file() {
         let temp_dir = tempdir().unwrap();
         let file_path = temp_dir.path().join("empty.txt");
         std::fs::write(&file_path, b"").unwrap();
 
-        let result = hash_single_file(file_path.to_str().unwrap());
+        let result = hash_single_file(file_path.to_str().unwrap().to_string()).await;
         assert!(result.is_ok());
 
         let file_info = result.unwrap();
@@ -491,14 +489,14 @@ mod tests {
         assert!(!file_info.hash().is_empty());
     }
 
-    #[test]
-    fn test_hash_small_file() {
+    #[tokio::test]
+    async fn test_hash_small_file() {
         let temp_dir = tempdir().unwrap();
         let file_path = temp_dir.path().join("small.txt");
         let content = b"Hello, World!";
         std::fs::write(&file_path, content).unwrap();
 
-        let result = hash_single_file(file_path.to_str().unwrap());
+        let result = hash_single_file(file_path.to_str().unwrap().to_string()).await;
         assert!(result.is_ok());
 
         let file_info = result.unwrap();
@@ -506,15 +504,16 @@ mod tests {
         assert!(!file_info.hash().is_empty());
     }
 
-    #[test]
-    fn test_hash_determinism() {
+    #[tokio::test]
+    async fn test_hash_determinism() {
         let temp_dir = tempdir().unwrap();
         let file_path = temp_dir.path().join("test.txt");
         let content = b"Test content for determinism";
         std::fs::write(&file_path, content).unwrap();
 
-        let result1 = hash_single_file(file_path.to_str().unwrap());
-        let result2 = hash_single_file(file_path.to_str().unwrap());
+        let file_path_str = file_path.to_str().unwrap().to_string();
+        let result1 = hash_single_file(file_path_str.clone()).await;
+        let result2 = hash_single_file(file_path_str).await;
 
         assert!(result1.is_ok());
         assert!(result2.is_ok());
@@ -526,9 +525,9 @@ mod tests {
         assert_eq!(file_info1.file_size(), file_info2.file_size());
     }
 
-    #[test]
-    fn test_hash_file_not_found() {
-        let result = hash_single_file("/nonexistent/file.txt");
+    #[tokio::test]
+    async fn test_hash_file_not_found() {
+        let result = hash_single_file("/nonexistent/file.txt".to_string()).await;
         assert!(result.is_err());
     }
 
