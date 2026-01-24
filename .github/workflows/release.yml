@@ -57,7 +57,7 @@ jobs:
         with:
           tag: ${{ github.event.inputs.tag }}
       - name: Build wheels
-        uses: PyO3/maturin-action@v1.49.4.49.4.49.4.49.4.49.4.49.4
+        uses: PyO3/maturin-action@v1
         with:
           target: ${{ matrix.platform.target }}
           args: --profile ${{ env.BUILD_PROFILE }} -i ${{ matrix.python-version }} --out dist
@@ -151,7 +151,7 @@ jobs:
         with:
           tag: ${{ github.event.inputs.tag }}
       - name: Build wheels
-        uses: PyO3/maturin-action@v1.49.4.49.4.49.4.49.4.49.4.49.4
+        uses: PyO3/maturin-action@v1
         with:
           target: ${{ matrix.platform.target }}
           args: --profile ${{ env.BUILD_PROFILE }} -i ${{ matrix.python-version }}  --out dist
@@ -230,7 +230,7 @@ jobs:
             sed -i '/^version /s/=.*$/= "'"$VERSION"'"/' hf_xet/Cargo.toml
           fi
       - name: Build wheels
-        uses: PyO3/maturin-action@v1.49.4.49.4.49.4.49.4.49.4.49.4
+        uses: PyO3/maturin-action@v1
         with:
           target: ${{ matrix.platform.target }}
           args: --release -i python${{ matrix.python-version }} --out dist
@@ -294,7 +294,7 @@ jobs:
         with:
           tag: ${{ github.event.inputs.tag }}
       - name: Build wheels
-        uses: PyO3/maturin-action@v1.49.4.49.4.49.4.49.4.49.4.49.4
+        uses: PyO3/maturin-action@v1
         with:
           target: ${{ matrix.platform.target }}
           args: --profile ${{ env.BUILD_PROFILE }} -i ${{ matrix.python-version }} --strip --out dist
@@ -341,7 +341,7 @@ jobs:
             sed -i '/^version /s/=.*$/= "'"$VERSION"'"/' hf_xet/Cargo.toml
           fi
       - name: Build sdist
-        uses: PyO3/maturin-action@v1.49.4.49.4.49.4.49.4.49.4.49.4
+        uses: PyO3/maturin-action@v1
         with:
           command: sdist
           args: --out dist
@@ -379,11 +379,11 @@ jobs:
     steps:
       - uses: actions/download-artifact@v7
       - name: Generate artifact attestation
-        uses: actions/attest-build-provenance@v3.1.0
+        uses: actions/attest-build-provenance@v3
         with:
           subject-path: 'wheels-*/*'
       - name: Publish to PyPI
-        uses: PyO3/maturin-action@v1.49.4.49.4.49.4.49.4.49.4.49.4
+        uses: PyO3/maturin-action@v1
         with:
           command: upload
           args: --non-interactive --skip-existing wheels-*/*
