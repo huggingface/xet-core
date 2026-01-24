@@ -16,7 +16,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
-      - uses: dtolnay/rust-toolchain@v1
+      - uses: dtolnay/rust-toolchain@nightly
         with:
           toolchain: nightly
           components: rustfmt
@@ -29,7 +29,7 @@ jobs:
     steps:
       - uses: actions/checkout@v6
       - name: Machete
-        uses: bnjbvr/cargo-machete@v0.9.1
+        uses: bnjbvr/cargo-machete@main
   build_and_test-linux:
     runs-on: ubuntu-latest
     steps:
@@ -93,7 +93,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v6
       - name: Install Rust nightly
-        uses: dtolnay/rust-toolchain@v1
+        uses: dtolnay/rust-toolchain@nightly
         with:
           targets: wasm32-unknown-unknown
           components: rust-src
