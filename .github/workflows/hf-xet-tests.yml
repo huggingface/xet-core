@@ -29,7 +29,7 @@ jobs:
       - name: Create venv
         run: python3 -m venv .venv
       - name: Build wheel
-        uses: PyO3/maturin-action@v1.49.4
+        uses: PyO3/maturin-action@v1
         with:
           command: develop
           sccache: 'true'
