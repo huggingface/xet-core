@@ -135,8 +135,8 @@ pub(super) mod archive {
         dir.join(format!("data_{file_index}.bin"))
     }
 
-    fn invalid_data_error(msg: impl Into<String>) -> io::Error {
-        io::Error::new(ErrorKind::InvalidData, msg.into())
+    fn invalid_data_error(msg: impl ToString) -> io::Error {
+        io::Error::new(ErrorKind::InvalidData, msg.to_string())
     }
 
     /// Reads hasher from archive directory.
@@ -145,7 +145,7 @@ pub(super) mod archive {
         S: for<'de> Deserialize<'de>,
     {
         let hasher_bytes = fs::read(hasher_path(dir))?;
-        let hasher: S = bincode::deserialize(&hasher_bytes).map_err(|e| invalid_data_error(e.to_string()))?;
+        let hasher: S = bincode::deserialize(&hasher_bytes).map_err(invalid_data_error)?;
         Ok(hasher)
     }
 
@@ -154,8 +154,7 @@ pub(super) mod archive {
         S: for<'de> Deserialize<'de>,
     {
         let metadata_bytes = fs::read(metadata_path(dir))?;
-        let metadata: ArchiveMetadata =
-            bincode::deserialize(&metadata_bytes).map_err(|e| invalid_data_error(e.to_string()))?;
+        let metadata: ArchiveMetadata = bincode::deserialize(&metadata_bytes).map_err(invalid_data_error)?;
         let hasher = read_hasher(dir)?;
         Ok((metadata, hasher))
     }
@@ -194,28 +193,25 @@ pub(super) mod archive {
 
     impl DataFileHeader {
         fn write_to<W: io::Write>(&self, writer: &mut W) -> io::Result<()> {
-            bincode::serialize_into(&mut *writer, &self.magic).map_err(|e| invalid_data_error(e.to_string()))?;
-            bincode::serialize_into(&mut *writer, &self.version).map_err(|e| invalid_data_error(e.to_string()))?;
-            bincode::serialize_into(&mut *writer, &self.file_index).map_err(|e| invalid_data_error(e.to_string()))?;
-            bincode::serialize_into(&mut *writer, &self.num_submaps).map_err(|e| invalid_data_error(e.to_string()))?;
+            bincode::serialize_into(&mut *writer, &self.magic).map_err(invalid_data_error)?;
+            bincode::serialize_into(&mut *writer, &self.version).map_err(invalid_data_error)?;
+            bincode::serialize_into(&mut *writer, &self.file_index).map_err(invalid_data_error)?;
+            bincode::serialize_into(&mut *writer, &self.num_submaps).map_err(invalid_data_error)?;
             Ok(())
         }
 
         #[allow(dead_code)]
         fn read_from<R: io::Read>(reader: &mut R) -> io::Result<Self> {
-            let magic: u64 = bincode::deserialize_from(&mut *reader).map_err(|e| invalid_data_error(e.to_string()))?;
+            let magic: u64 = bincode::deserialize_from(&mut *reader).map_err(invalid_data_error)?;
             if magic != FILE_MAGIC {
                 return Err(invalid_data_error("Invalid file magic number"));
             }
-            let version: u32 =
-                bincode::deserialize_from(&mut *reader).map_err(|e| invalid_data_error(e.to_string()))?;
+            let version: u32 = bincode::deserialize_from(&mut *reader).map_err(invalid_data_error)?;
             if version != FILE_VERSION {
                 return Err(invalid_data_error(format!("Unsupported file version: {version}")));
             }
-            let file_index: u32 =
-                bincode::deserialize_from(&mut *reader).map_err(|e| invalid_data_error(e.to_string()))?;
-            let num_submaps: u64 =
-                bincode::deserialize_from(&mut *reader).map_err(|e| invalid_data_error(e.to_string()))?;
+            let file_index: u32 = bincode::deserialize_from(&mut *reader).map_err(invalid_data_error)?;
+            let num_submaps: u64 = bincode::deserialize_from(&mut *reader).map_err(invalid_data_error)?;
             Ok(Self {
                 magic,
                 version,
@@ -256,62 +252,54 @@ pub(super) mod archive {
                 let inner = self.clone();
                 let dir = dir.clone();
 
-                join_set.spawn(async move {
-                    tokio::task::spawn_blocking(move || {
-                        let submap_range = submaps_for_file(file_idx, FIRST_LEVEL_SIZE, num_files);
-                        if submap_range.is_empty() {
-                            return Ok(Vec::new());
+                join_set.spawn_blocking(move || {
+                    let submap_range = submaps_for_file(file_idx, FIRST_LEVEL_SIZE, num_files);
+                    if submap_range.is_empty() {
+                        return Ok(Vec::new());
+                    }
+
+                    let path = data_file_path(&dir, file_idx);
+                    let file = File::create(&path)?;
+                    let mut writer = BufWriter::with_capacity(WRITE_BUFFER_SIZE, file);
+
+                    // Write file header
+                    let header = DataFileHeader {
+                        magic: FILE_MAGIC,
+                        version: FILE_VERSION,
+                        file_index: file_idx as u32,
+                        num_submaps: submap_range.len() as u64,
+                    };
+                    header.write_to(&mut writer)?;
+
+                    let mut locations = Vec::with_capacity(submap_range.len());
+
+                    // Write each submap
+                    for submap_idx in submap_range {
+                        // Record byte offset before writing this submap
+                        let byte_offset = writer.stream_position()?;
+
+                        let guard = inner.submaps[submap_idx].lock().unwrap();
+                        let count = guard.len() as u64;
+
+                        // Write submap index and count
+                        bincode::serialize_into(&mut writer, &(submap_idx as u64)).map_err(invalid_data_error)?;
+                        bincode::serialize_into(&mut writer, &count).map_err(invalid_data_error)?;
+
+                        // Stream entries
+                        for (k, v) in guard.iter() {
+                            bincode::serialize_into(&mut writer, k).map_err(invalid_data_error)?;
+                            bincode::serialize_into(&mut writer, v).map_err(invalid_data_error)?;
                         }
 
-                        let path = data_file_path(&dir, file_idx);
-                        let file = File::create(&path)?;
-                        let mut writer = BufWriter::with_capacity(WRITE_BUFFER_SIZE, file);
+                        locations.push(SubmapLocation {
+                            file_index: file_idx,
+                            byte_offset,
+                            entry_count: count as usize,
+                        });
+                    }
 
-                        // Write file header
-                        let header = DataFileHeader {
-                            magic: FILE_MAGIC,
-                            version: FILE_VERSION,
-                            file_index: file_idx as u32,
-                            num_submaps: submap_range.len() as u64,
-                        };
-                        header.write_to(&mut writer)?;
-
-                        let mut locations = Vec::with_capacity(submap_range.len());
-
-                        // Write each submap
-                        for submap_idx in submap_range {
-                            // Record byte offset before writing this submap
-                            let byte_offset = writer.stream_position()?;
-
-                            let guard = inner.submaps[submap_idx].lock().unwrap();
-                            let count = guard.len() as u64;
-
-                            // Write submap index and count
-                            bincode::serialize_into(&mut writer, &(submap_idx as u64))
-                                .map_err(|e| invalid_data_error(e.to_string()))?;
-                            bincode::serialize_into(&mut writer, &count)
-                                .map_err(|e| invalid_data_error(e.to_string()))?;
-
-                            // Stream entries
-                            for (k, v) in guard.iter() {
-                                bincode::serialize_into(&mut writer, k)
-                                    .map_err(|e| invalid_data_error(e.to_string()))?;
-                                bincode::serialize_into(&mut writer, v)
-                                    .map_err(|e| invalid_data_error(e.to_string()))?;
-                            }
-
-                            locations.push(SubmapLocation {
-                                file_index: file_idx,
-                                byte_offset,
-                                entry_count: count as usize,
-                            });
-                        }
-
-                        drop(writer);
-                        Ok(locations)
-                    })
-                    .await
-                    .map_err(io::Error::other)?
+                    drop(writer);
+                    Ok(locations)
                 });
             }
 
@@ -342,10 +330,10 @@ pub(super) mod archive {
                 submap_locations: all_locations,
             };
 
-            let metadata_bytes = bincode::serialize(&metadata).map_err(|e| invalid_data_error(e.to_string()))?;
+            let metadata_bytes = bincode::serialize(&metadata).map_err(invalid_data_error)?;
             fs::write(metadata_path(&dir), metadata_bytes)?;
 
-            let hasher_bytes = bincode::serialize(&self.hasher).map_err(|e| invalid_data_error(e.to_string()))?;
+            let hasher_bytes = bincode::serialize(&self.hasher).map_err(invalid_data_error)?;
             fs::write(hasher_path(&dir), hasher_bytes)?;
 
             Ok(())
@@ -448,9 +436,8 @@ pub(super) mod archive {
 
                         // Read submap index and count
                         let disk_submap_idx: u64 =
-                            bincode::deserialize_from(&mut reader).map_err(|e| invalid_data_error(e.to_string()))?;
-                        let count: u64 =
-                            bincode::deserialize_from(&mut reader).map_err(|e| invalid_data_error(e.to_string()))?;
+                            bincode::deserialize_from(&mut reader).map_err(invalid_data_error)?;
+                        let count: u64 = bincode::deserialize_from(&mut reader).map_err(invalid_data_error)?;
 
                         // Sanity check
                         if count as usize != entry_count {
@@ -471,10 +458,8 @@ pub(super) mod archive {
                             let mut inserted = 0usize;
 
                             for _ in 0..count {
-                                let k: Key = bincode::deserialize_from(&mut reader)
-                                    .map_err(|e| invalid_data_error(e.to_string()))?;
-                                let v: Value = bincode::deserialize_from(&mut reader)
-                                    .map_err(|e| invalid_data_error(e.to_string()))?;
+                                let k: Key = bincode::deserialize_from(&mut reader).map_err(invalid_data_error)?;
+                                let v: Value = bincode::deserialize_from(&mut reader).map_err(invalid_data_error)?;
 
                                 if overwrite {
                                     guard.insert(k, v);
@@ -490,10 +475,8 @@ pub(super) mod archive {
                             let mut inserted = 0usize;
 
                             for _ in 0..count {
-                                let k: Key = bincode::deserialize_from(&mut reader)
-                                    .map_err(|e| invalid_data_error(e.to_string()))?;
-                                let v: Value = bincode::deserialize_from(&mut reader)
-                                    .map_err(|e| invalid_data_error(e.to_string()))?;
+                                let k: Key = bincode::deserialize_from(&mut reader).map_err(invalid_data_error)?;
+                                let v: Value = bincode::deserialize_from(&mut reader).map_err(invalid_data_error)?;
 
                                 let target_idx = inner.submap_index(&k);
 
