@@ -303,7 +303,7 @@ pub async fn clean_file(
 /// - Verify that downloaded files are correctly reassembled
 /// - Check if a file needs to be uploaded (by comparing hashes)
 /// - Generate cache keys for local file operations
-async fn hash_single_file(filename: String, buffer_size: usize) -> errors::Result<XetFileInfo> {
+fn hash_single_file(filename: String, buffer_size: usize) -> errors::Result<XetFileInfo> {
     let mut reader = File::open(&filename)?;
     let filesize = reader.metadata()?.len();
 
@@ -312,6 +312,10 @@ async fn hash_single_file(filename: String, buffer_size: usize) -> errors::Resul
     let mut chunk_hashes: Vec<(MerkleHash, u64)> = Vec::new();
 
     loop {
+        if XetRuntime::current().in_sigint_shutdown() {
+            return Err(std::io::Error::new(std::io::ErrorKind::Interrupted, "Operation interrupted by SIGINT").into());
+        }
+
         let bytes_read = reader.read(&mut buffer)?;
         if bytes_read == 0 {
             break;
@@ -364,9 +368,14 @@ pub async fn hash_files_async(file_paths: Vec<String>) -> errors::Result<Vec<Xet
     let semaphore = XetRuntime::current().global_semaphore(*CONCURRENT_FILE_INGESTION_LIMITER);
     let buffer_size = *xet_config().data.ingestion_block_size as usize;
 
-    let hash_futures = file_paths
-        .into_iter()
-        .map(|file_path| hash_single_file(file_path, buffer_size).instrument(info_span!("hash_file")));
+    let hash_futures = file_paths.into_iter().map(|file_path| {
+        async move {
+            tokio::task::spawn_blocking(move || hash_single_file(file_path, buffer_size))
+                .await
+                .map_err(|e| std::io::Error::other(e.to_string()))?
+        }
+        .instrument(info_span!("hash_file"))
+    });
 
     let files = run_constrained_with_semaphore(hash_futures, semaphore).await?;
 
@@ -487,7 +496,7 @@ mod tests {
         std::fs::write(&file_path, b"").unwrap();
 
         let buffer_size = 8 * 1024 * 1024; // 8MB
-        let result = hash_single_file(file_path.to_str().unwrap().to_string(), buffer_size).await;
+        let result = hash_single_file(file_path.to_str().unwrap().to_string(), buffer_size);
         assert!(result.is_ok());
 
         let file_info = result.unwrap();
@@ -503,7 +512,7 @@ mod tests {
         std::fs::write(&file_path, content).unwrap();
 
         let buffer_size = 8 * 1024 * 1024; // 8MB
-        let result = hash_single_file(file_path.to_str().unwrap().to_string(), buffer_size).await;
+        let result = hash_single_file(file_path.to_str().unwrap().to_string(), buffer_size);
         assert!(result.is_ok());
 
         let file_info = result.unwrap();
@@ -525,12 +534,12 @@ mod tests {
         let file_path_str = file_path.to_str().unwrap().to_string();
 
         // Hash with 8MB buffer size
-        let result1 = hash_single_file(file_path_str.clone(), 8 * 1024 * 1024).await;
+        let result1 = hash_single_file(file_path_str.clone(), 8 * 1024 * 1024);
         assert!(result1.is_ok());
         let file_info1 = result1.unwrap();
 
         // Hash with 4MB buffer size
-        let result2 = hash_single_file(file_path_str, 4 * 1024 * 1024).await;
+        let result2 = hash_single_file(file_path_str, 4 * 1024 * 1024);
         assert!(result2.is_ok());
         let file_info2 = result2.unwrap();
 
@@ -543,7 +552,7 @@ mod tests {
     #[tokio::test]
     async fn test_hash_file_not_found() {
         let buffer_size = 8 * 1024 * 1024; // 8MB
-        let result = hash_single_file("/nonexistent/file.txt".to_string(), buffer_size).await;
+        let result = hash_single_file("/nonexistent/file.txt".to_string(), buffer_size);
         assert!(result.is_err());
     }
 
@@ -588,19 +597,19 @@ mod tests {
         let file_path_str = file_path.to_str().unwrap().to_string();
 
         // Hash with 8MB buffer size - file is exactly 2x buffer size
-        let result1 = hash_single_file(file_path_str.clone(), 8 * 1024 * 1024).await;
+        let result1 = hash_single_file(file_path_str.clone(), 8 * 1024 * 1024);
         assert!(result1.is_ok());
         let file_info1 = result1.unwrap();
         assert_eq!(file_info1.file_size(), file_size as u64);
         assert!(!file_info1.hash().is_empty());
 
         // Hash with 4MB buffer size - file is exactly 4x buffer size
-        let result2 = hash_single_file(file_path_str.clone(), 4 * 1024 * 1024).await;
+        let result2 = hash_single_file(file_path_str.clone(), 4 * 1024 * 1024);
         assert!(result2.is_ok());
         let file_info2 = result2.unwrap();
 
         // Hash with 2MB buffer size - file is exactly 8x buffer size
-        let result3 = hash_single_file(file_path_str, 2 * 1024 * 1024).await;
+        let result3 = hash_single_file(file_path_str, 2 * 1024 * 1024);
         assert!(result3.is_ok());
         let file_info3 = result3.unwrap();
 
