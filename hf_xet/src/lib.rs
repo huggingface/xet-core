@@ -124,6 +124,48 @@ pub fn upload_files(
     })
 }
 
+/// Compute xet hashes for files without uploading.
+///
+/// This function computes cryptographic hashes for the specified files using the same
+/// chunking and hashing algorithm as upload operations, but without requiring
+/// authentication or server connection. The resulting hashes can be used to verify
+/// file integrity after downloads or to determine which files need to be uploaded.
+///
+/// Args:
+///     file_paths: List of file paths to hash.
+///
+/// Returns:
+///     List[PyXetUploadInfo]: List of hash results in the same order as input paths.
+///         Each result contains the hash (as hex string) and file size in bytes.
+///
+/// Raises:
+///     RuntimeError: If any file cannot be read or hashed.
+///
+/// Example:
+///     >>> import hf_xet
+///     >>> results = hf_xet.hash_files(["/path/to/file1.txt", "/path/to/file2.txt"])
+///     >>> for path, info in zip(file_paths, results):
+///     ...     print(f"Hash: {info.hash}, Size: {info.file_size}")
+///
+/// Note:
+///     This function is primarily used for validation and verification of transferred
+///     files. Clients can verify that downloaded files are correctly reassembled by
+///     comparing the computed hash with the expected hash from the server.
+#[pyfunction]
+#[pyo3(signature = (file_paths), text_signature = "(file_paths: List[str]) -> List[PyXetUploadInfo]")]
+pub fn hash_files(py: Python, file_paths: Vec<String>) -> PyResult<Vec<PyXetUploadInfo>> {
+    async_run(py, async move {
+        let out: Vec<PyXetUploadInfo> = data_client::hash_files_async(file_paths)
+            .await
+            .map_err(convert_data_processing_error)?
+            .into_iter()
+            .map(PyXetUploadInfo::from)
+            .collect();
+
+        PyResult::Ok(out)
+    })
+}
+
 #[pyfunction]
 #[pyo3(signature = (files, endpoint, token_info, token_refresher, progress_updater), text_signature = "(files: List[PyXetDownloadInfo], endpoint: Optional[str], token_info: Optional[(str, int)], token_refresher: Optional[Callable[[], (str, int)]], progress_updater: Optional[List[Callable[[int], None]]]) -> List[str]")]
 pub fn download_files(
@@ -306,6 +348,7 @@ impl From<PyXetDownloadInfo> for (XetFileInfo, DestinationPath) {
 pub fn hf_xet(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(upload_files, m)?)?;
     m.add_function(wrap_pyfunction!(upload_bytes, m)?)?;
+    m.add_function(wrap_pyfunction!(hash_files, m)?)?;
     m.add_function(wrap_pyfunction!(download_files, m)?)?;
     m.add_function(wrap_pyfunction!(force_sigint_shutdown, m)?)?;
     m.add_class::<PyXetUploadInfo>()?;
