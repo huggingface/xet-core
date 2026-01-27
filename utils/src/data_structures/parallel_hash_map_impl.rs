@@ -426,77 +426,72 @@ pub(super) mod archive {
                 let entry_count = location.entry_count;
                 let num_disk_submaps = metadata.num_submaps;
 
-                join_set.spawn(async move {
-                    tokio::task::spawn_blocking(move || {
-                        let file = File::open(&path)?;
-                        let mut reader = BufReader::with_capacity(READ_BUFFER_SIZE, file);
+                join_set.spawn_blocking(move || {
+                    let file = File::open(&path)?;
+                    let mut reader = BufReader::with_capacity(READ_BUFFER_SIZE, file);
 
-                        // Seek to the submap's byte offset
-                        reader.seek(io::SeekFrom::Start(byte_offset))?;
+                    // Seek to the submap's byte offset
+                    reader.seek(io::SeekFrom::Start(byte_offset))?;
 
-                        // Read submap index and count
-                        let disk_submap_idx: u64 =
-                            bincode::deserialize_from(&mut reader).map_err(invalid_data_error)?;
-                        let count: u64 = bincode::deserialize_from(&mut reader).map_err(invalid_data_error)?;
+                    // Read submap index and count
+                    let disk_submap_idx: u64 = bincode::deserialize_from(&mut reader).map_err(invalid_data_error)?;
+                    let count: u64 = bincode::deserialize_from(&mut reader).map_err(invalid_data_error)?;
 
-                        // Sanity check
-                        if count as usize != entry_count {
-                            return Err(invalid_data_error(format!(
-                                "Entry count mismatch: metadata says {}, file says {}",
-                                entry_count, count
-                            )));
+                    // Sanity check
+                    if count as usize != entry_count {
+                        return Err(invalid_data_error(format!(
+                            "Entry count mismatch: metadata says {}, file says {}",
+                            entry_count, count
+                        )));
+                    }
+
+                    let total_inserted = if num_disk_submaps == FIRST_LEVEL_SIZE {
+                        // Direct load: all entries go to the same submap, acquire lock once
+                        let target_idx = disk_submap_idx as usize;
+                        if target_idx >= FIRST_LEVEL_SIZE {
+                            return Err(invalid_data_error(format!("Invalid submap index: {target_idx}")));
                         }
 
-                        let total_inserted = if num_disk_submaps == FIRST_LEVEL_SIZE {
-                            // Direct load: all entries go to the same submap, acquire lock once
-                            let target_idx = disk_submap_idx as usize;
-                            if target_idx >= FIRST_LEVEL_SIZE {
-                                return Err(invalid_data_error(format!("Invalid submap index: {target_idx}")));
+                        let mut guard = inner.submaps[target_idx].lock().unwrap();
+                        let mut inserted = 0usize;
+
+                        for _ in 0..count {
+                            let k: Key = bincode::deserialize_from(&mut reader).map_err(invalid_data_error)?;
+                            let v: Value = bincode::deserialize_from(&mut reader).map_err(invalid_data_error)?;
+
+                            if overwrite {
+                                guard.insert(k, v);
+                                inserted += 1;
+                            } else if let Entry::Vacant(e) = guard.entry(k) {
+                                e.insert(v);
+                                inserted += 1;
                             }
+                        }
+                        inserted
+                    } else {
+                        // Redistribute: entries may go to different submaps, rehash each key
+                        let mut inserted = 0usize;
+
+                        for _ in 0..count {
+                            let k: Key = bincode::deserialize_from(&mut reader).map_err(invalid_data_error)?;
+                            let v: Value = bincode::deserialize_from(&mut reader).map_err(invalid_data_error)?;
+
+                            let target_idx = inner.submap_index(&k);
 
                             let mut guard = inner.submaps[target_idx].lock().unwrap();
-                            let mut inserted = 0usize;
-
-                            for _ in 0..count {
-                                let k: Key = bincode::deserialize_from(&mut reader).map_err(invalid_data_error)?;
-                                let v: Value = bincode::deserialize_from(&mut reader).map_err(invalid_data_error)?;
-
-                                if overwrite {
-                                    guard.insert(k, v);
-                                    inserted += 1;
-                                } else if let Entry::Vacant(e) = guard.entry(k) {
-                                    e.insert(v);
-                                    inserted += 1;
-                                }
+                            if overwrite {
+                                guard.insert(k, v);
+                                inserted += 1;
+                            } else if let Entry::Vacant(e) = guard.entry(k) {
+                                e.insert(v);
+                                inserted += 1;
                             }
-                            inserted
-                        } else {
-                            // Redistribute: entries may go to different submaps, rehash each key
-                            let mut inserted = 0usize;
+                        }
+                        inserted
+                    };
 
-                            for _ in 0..count {
-                                let k: Key = bincode::deserialize_from(&mut reader).map_err(invalid_data_error)?;
-                                let v: Value = bincode::deserialize_from(&mut reader).map_err(invalid_data_error)?;
-
-                                let target_idx = inner.submap_index(&k);
-
-                                let mut guard = inner.submaps[target_idx].lock().unwrap();
-                                if overwrite {
-                                    guard.insert(k, v);
-                                    inserted += 1;
-                                } else if let Entry::Vacant(e) = guard.entry(k) {
-                                    e.insert(v);
-                                    inserted += 1;
-                                }
-                            }
-                            inserted
-                        };
-
-                        drop(permit);
-                        Ok(total_inserted)
-                    })
-                    .await
-                    .map_err(io::Error::other)?
+                    drop(permit);
+                    Ok(total_inserted)
                 });
             }
 
