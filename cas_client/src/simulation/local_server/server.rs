@@ -45,7 +45,6 @@ use crate::RemoteClient;
 use crate::error::{CasClientError, Result};
 use crate::interface::Client;
 #[cfg(unix)]
-#[cfg(not(target_family = "wasm"))]
 use crate::simulation::socket_proxy::UnixSocketProxy;
 use crate::simulation::{DirectAccessClient, LocalClient, MemoryClient};
 
@@ -240,8 +239,8 @@ pub struct LocalTestServer {
     server_shutdown_tx: Option<oneshot::Sender<()>>,
     remote_client: Arc<RemoteClient>,
     client: Arc<dyn DirectAccessClient>,
+
     #[cfg(unix)]
-    #[cfg(not(target_family = "wasm"))]
     _socket_proxy: Option<UnixSocketProxy>,
 }
 
@@ -264,8 +263,6 @@ impl LocalTestServer {
     /// * `socket_path` - Optional Unix socket path. If provided, creates a proxy and connects RemoteClient through it.
     ///
     /// The server listens on a randomly assigned available port on localhost.
-    #[cfg(unix)]
-    #[cfg(not(target_family = "wasm"))]
     pub async fn start_with_socket_proxy(in_memory: bool, socket_path: Option<PathBuf>) -> Self {
         let client: Arc<dyn DirectAccessClient> = if in_memory {
             MemoryClient::new()
@@ -275,17 +272,11 @@ impl LocalTestServer {
         Self::start_with_client_and_socket(client, socket_path).await
     }
 
-    #[cfg(not(unix))]
-    pub async fn start_with_socket_proxy(in_memory: bool, _socket_path: Option<PathBuf>) -> Self {
-        Self::start(in_memory).await
-    }
-
     /// Starts a new test server using an existing `DirectAccessClient`.
     ///
     /// Useful when you need to pre-populate the client with data before starting the server.
     pub async fn start_with_client(client: Arc<dyn DirectAccessClient>) -> Self {
         #[cfg(unix)]
-        #[cfg(not(target_family = "wasm"))]
         {
             Self::start_with_client_and_socket(client, None).await
         }
@@ -298,8 +289,6 @@ impl LocalTestServer {
     /// Starts a new test server using an existing `DirectAccessClient` with an optional socket proxy.
     ///
     /// Useful when you need to pre-populate the client with data before starting the server.
-    #[cfg(unix)]
-    #[cfg(not(target_family = "wasm"))]
     async fn start_with_client_and_socket(client: Arc<dyn DirectAccessClient>, socket_path: Option<PathBuf>) -> Self {
         let port = Self::find_available_port();
         let host = "127.0.0.1".to_string();
@@ -314,31 +303,42 @@ impl LocalTestServer {
 
         tokio::time::sleep(Duration::from_millis(50)).await;
 
-        let (remote_client, socket_proxy) = if let Some(socket_path) = socket_path {
-            // Extract host:port from http://host:port
-            let tcp_addr = tcp_endpoint.strip_prefix("http://").unwrap_or(&tcp_endpoint).to_string();
+        let (remote_client, socket_proxy) = {
+            #[cfg(unix)]
+            {
+                if let Some(socket_path) = socket_path {
+                    // Extract host:port from http://host:port
+                    let tcp_addr = tcp_endpoint.strip_prefix("http://").unwrap_or(&tcp_endpoint).to_string();
 
-            let proxy = UnixSocketProxy::new(socket_path.clone(), tcp_addr)
-                .await
-                .expect("Failed to create Unix socket proxy");
+                    let proxy = UnixSocketProxy::new(socket_path.clone(), tcp_addr)
+                        .await
+                        .expect("Failed to create Unix socket proxy");
 
-            tokio::time::sleep(Duration::from_millis(500)).await;
+                    tokio::time::sleep(Duration::from_millis(500)).await;
 
-            // Create RemoteClient with socket path
-            let socket_path_str = socket_path.to_string_lossy().to_string();
-            let client = RemoteClient::new_with_socket(
-                &tcp_endpoint,
-                &None,
-                "test-session",
-                false,
-                "test-agent",
-                Some(&socket_path_str),
-            );
+                    // Create RemoteClient with socket path
+                    let socket_path_str = socket_path.to_string_lossy().to_string();
+                    let client = RemoteClient::new_with_socket(
+                        &tcp_endpoint,
+                        &None,
+                        "test-session",
+                        false,
+                        "test-agent",
+                        Some(&socket_path_str),
+                    );
 
-            (client, Some(proxy))
-        } else {
-            let client = RemoteClient::new(&tcp_endpoint, &None, "test-session", false, "test-agent");
-            (client, None)
+                    (client, Some(proxy))
+                } else {
+                    let client = RemoteClient::new(&tcp_endpoint, &None, "test-session", false, "test-agent");
+                    (client, None)
+                }
+            }
+
+            #[cfg(not(unix))]
+            {
+                let client = RemoteClient::new(&tcp_endpoint, &None, "test-session", false, "test-agent");
+                (client, None)
+            }
         };
 
         Self {
@@ -346,35 +346,8 @@ impl LocalTestServer {
             server_shutdown_tx: Some(shutdown_tx),
             remote_client,
             client,
-            _socket_proxy: socket_proxy,
-        }
-    }
-
-    #[cfg(not(unix))]
-    async fn start_with_client_and_socket(client: Arc<dyn DirectAccessClient>, _socket_path: Option<PathBuf>) -> Self {
-        let port = Self::find_available_port();
-        let host = "127.0.0.1".to_string();
-        let endpoint = format!("http://{}:{}", host, port);
-
-        let server = LocalServer::from_client(client.clone(), host, port);
-        let (shutdown_tx, shutdown_rx) = oneshot::channel();
-
-        tokio::spawn(async move {
-            let _ = server.run_until_stopped(shutdown_rx).await;
-        });
-
-        tokio::time::sleep(Duration::from_millis(50)).await;
-
-        let remote_client = RemoteClient::new(&endpoint, &None, "test-session", false, "test-agent");
-
-        Self {
-            endpoint,
-            server_shutdown_tx: Some(shutdown_tx),
-            remote_client,
-            client,
             #[cfg(unix)]
-            #[cfg(not(target_family = "wasm"))]
-            _socket_proxy: None,
+            _socket_proxy: socket_proxy,
         }
     }
 
