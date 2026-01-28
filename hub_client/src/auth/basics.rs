@@ -46,12 +46,6 @@ impl CredentialHelper for BearerCredentialHelper {
         Ok(req.bearer_auth(&self.hf_token))
     }
 
-    fn fill_headers(&self, headers: &mut reqwest::header::HeaderMap) {
-        if let Ok(value) = format!("Bearer {}", self.hf_token).parse() {
-            headers.insert(reqwest::header::AUTHORIZATION, value);
-        }
-    }
-
     fn whoami(&self) -> &str {
         self._whoami
     }
