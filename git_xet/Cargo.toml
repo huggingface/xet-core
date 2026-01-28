@@ -13,6 +13,7 @@ data = { path = "../data" }
 progress_tracking = { path = "../progress_tracking" }
 utils = { path = "../utils" }
 hub_client = { path = "../hub_client" }
+xet_config = { path = "../xet_config" }
 
 anyhow = { workspace = true }
 async-trait = { workspace = true }
@@ -36,6 +37,7 @@ serial_test = { workspace = true }
 
 [features]
 git-xet-for-integration-test = []
+monitored = []
 
 # tell cargo-machete a renamed crate
 [package.metadata.cargo-machete.renamed]

@@ -9,6 +9,8 @@ use tokio::runtime::{Builder as TokioRuntimeBuilder, Handle as TokioRuntimeHandl
 use tokio::sync::Semaphore;
 use tokio::task::JoinHandle;
 use tracing::{debug, info};
+#[cfg(feature = "monitored")]
+use utils::system_monitor::SystemMonitor;
 use xet_config::XetConfig;
 
 use crate::errors::MultithreadedRuntimeError;
@@ -124,6 +126,10 @@ pub struct XetRuntime {
 
     // Primary configuration struct
     config: Arc<XetConfig>,
+
+    //  System monitor instance if the feature "monitored" is enabled.
+    #[cfg(feature = "monitored")]
+    system_monitor: Option<SystemMonitor>,
 }
 
 // Use thread-local references to the runtime that are set on initialization among all
@@ -182,6 +188,12 @@ impl XetRuntime {
             sigint_shutdown: false.into(),
             global_semaphore_table: GlobalSemaphoreLookup::default(),
             global_reqwest_client: OnceLock::new(),
+            #[cfg(feature = "monitored")]
+            system_monitor: SystemMonitor::follow_process(
+                config.system_monitor.sample_interval,
+                config.system_monitor.output_path.clone(),
+            )
+            .ok(),
             config: Arc::new(config),
         });
 
@@ -238,6 +250,7 @@ impl XetRuntime {
     }
 
     pub fn from_external(rt_handle: TokioRuntimeHandle) -> Arc<Self> {
+        let config = Arc::new(XetConfig::new());
         Arc::new(Self {
             runtime: std::sync::RwLock::new(None),
             handle_ref: rt_handle.into(),
@@ -245,7 +258,13 @@ impl XetRuntime {
             sigint_shutdown: false.into(),
             global_semaphore_table: GlobalSemaphoreLookup::default(),
             global_reqwest_client: OnceLock::new(),
-            config: Arc::new(XetConfig::new()),
+            #[cfg(feature = "monitored")]
+            system_monitor: SystemMonitor::follow_process(
+                config.system_monitor.sample_interval,
+                config.system_monitor.output_path.clone(),
+            )
+            .ok(),
+            config,
         })
     }
 
@@ -353,7 +372,15 @@ impl XetRuntime {
         F: Future + Send + 'static,
         F::Output: Send + Sync,
     {
-        self.external_executor_count.fetch_add(1, Ordering::SeqCst);
+        let _prev_count = self.external_executor_count.fetch_add(1, Ordering::SeqCst);
+
+        #[cfg(feature = "monitored")]
+        // start monitor when the first task starts to run
+        if _prev_count == 0 {
+            if let Some(monitor) = &self.system_monitor {
+                monitor.start().map_err(|e| MultithreadedRuntimeError::Other(e.to_string()))?;
+            }
+        }
 
         let ret = self.handle().block_on(async move {
             // Run the actual task on a task worker thread so we can get back information
@@ -361,7 +388,16 @@ impl XetRuntime {
             self.handle().spawn(future).await.map_err(MultithreadedRuntimeError::from)
         });
 
-        self.external_executor_count.fetch_sub(1, Ordering::SeqCst);
+        let _prev_count = self.external_executor_count.fetch_sub(1, Ordering::SeqCst);
+
+        #[cfg(feature = "monitored")]
+        // stop monitor when the last task finishes
+        if _prev_count == 1 {
+            if let Some(monitor) = &self.system_monitor {
+                monitor.stop().map_err(|e| MultithreadedRuntimeError::Other(e.to_string()))?;
+            }
+        }
+
         ret
     }
 

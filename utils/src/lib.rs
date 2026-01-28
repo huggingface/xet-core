@@ -10,6 +10,8 @@ mod output_bytes;
 pub mod serialization_utils;
 #[cfg(not(target_family = "wasm"))]
 pub mod singleflight;
+#[cfg(not(target_family = "wasm"))]
+pub mod system_monitor;
 
 pub use output_bytes::output_bytes;
 
