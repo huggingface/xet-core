@@ -377,6 +377,7 @@ impl XetRuntime {
         #[cfg(feature = "monitored")]
         // start monitor when the first task starts to run
         if _prev_count == 0 {
+            println!("hello");
             if let Some(monitor) = &self.system_monitor {
                 monitor.start().map_err(|e| MultithreadedRuntimeError::Other(e.to_string()))?;
             }
