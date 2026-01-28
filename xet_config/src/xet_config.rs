@@ -10,6 +10,7 @@ pub struct XetConfig {
     pub client: groups::client::ConfigValues,
     pub log: groups::log::ConfigValues,
     pub xorb: groups::xorb::ConfigValues,
+    pub system_monitor: groups::system_monitor::ConfigValues,
 }
 
 impl XetConfig {
@@ -38,6 +39,7 @@ impl XetConfig {
         self.client.apply_env_overrides();
         self.log.apply_env_overrides();
         self.xorb.apply_env_overrides();
+        self.system_monitor.apply_env_overrides();
         self
     }
 
