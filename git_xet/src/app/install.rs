@@ -29,6 +29,17 @@ pub fn local(repo_path: Option<PathBuf>, concurrency: Option<u32>) -> Result<()>
     install_impl(ConfigLocation::Local(repo_path), concurrency)
 }
 
+/// Returns true if the git-lfs CLI is available (e.g. `git lfs version` succeeds).
+/// Used by install/uninstall tests to skip when git-lfs is not installed.
+#[allow(dead_code)]
+pub fn git_lfs_available() -> bool {
+    let cwd = match std::env::current_dir() {
+        Ok(c) => c,
+        Err(_) => return false,
+    };
+    run_git_captured(&cwd, "lfs", ["version"]).is_ok()
+}
+
 // Set up the "xet" transfer agent under the name "lfs.customtransfer.xet" in
 // the Git config specified by `location` with the below values
 //     path = git-xet
@@ -224,18 +235,27 @@ pub mod tests {
     #[test]
     #[serial(env_var_write_read)]
     fn test_local_install_with_default_concurrency() -> Result<()> {
+        if !super::git_lfs_available() {
+            return Ok(());
+        }
         test_install_with_default_concurrency(local)
     }
 
     #[test]
     #[serial(env_var_write_read)]
     fn test_local_install_with_no_concurrency() -> Result<()> {
+        if !super::git_lfs_available() {
+            return Ok(());
+        }
         test_install_with_no_concurrency(local)
     }
 
     #[test]
     #[serial(env_var_write_read)]
     fn test_local_install_with_custom_concurrency() -> Result<()> {
+        if !super::git_lfs_available() {
+            return Ok(());
+        }
         test_install_with_custom_concurrency(local)
     }
 
@@ -248,6 +268,9 @@ pub mod tests {
     #[test]
     #[serial(env_var_write_read)]
     fn test_install_precedence() -> Result<()> {
+        if !super::git_lfs_available() {
+            return Ok(());
+        }
         // set up repo
         let test_repo = TestRepo::new("main")?;
 
