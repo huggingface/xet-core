@@ -3,7 +3,7 @@ use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use cas_client::{Client, LocalClient, LocalTestServer};
+use cas_client::{Client, LocalClient, LocalTestServer, LocalTestServerBuilder};
 use file_reconstruction::{DataOutput, FileReconstructor};
 use progress_tracking::TrackingProgressUpdater;
 use rand::prelude::*;
@@ -191,7 +191,7 @@ impl HydrateDehydrateTest {
         if self.client.is_none() {
             let client = if self.use_test_server {
                 let local_client = LocalClient::new(self.cas_dir.join("xet/xorbs")).await.unwrap();
-                TestClient::Server(LocalTestServer::start_with_client(local_client).await)
+                TestClient::Server(LocalTestServerBuilder::new().with_client(local_client).start().await)
             } else {
                 TestClient::Local(LocalClient::new(self.cas_dir.join("xet/xorbs")).await.unwrap())
             };

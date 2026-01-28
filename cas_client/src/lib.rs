@@ -3,7 +3,9 @@ pub use interface::{Client, URLProvider};
 pub use remote_client::RemoteClient;
 pub use simulation::{ClientTestingUtils, DirectAccessClient, MemoryClient, RandomFileContents, RandomXorb};
 #[cfg(not(target_family = "wasm"))]
-pub use simulation::{LocalClient, LocalServer, LocalServerConfig, LocalTestServer};
+pub use simulation::{
+    LocalClient, LocalServer, LocalServerConfig, LocalTestServer, LocalTestServerBuilder, RemoteSimulationClient,
+};
 use tracing::Level;
 
 pub use crate::error::CasClientError;
