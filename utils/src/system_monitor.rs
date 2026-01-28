@@ -512,7 +512,6 @@ impl SystemMonitor {
 mod tests {
     use std::fs::File;
     use std::io::{BufRead, BufReader};
-    use std::os::unix::fs::MetadataExt;
     use std::time::Duration;
 
     use serial_test::serial;
@@ -584,7 +583,7 @@ mod tests {
         monitor.stop()?;
 
         // check monitor logs
-        let filesize = std::fs::metadata(data_file)?.size();
+        let filesize = std::fs::metadata(data_file)?.len();
         assert_eq!(filesize, total_written_bytes);
 
         let log_reader = BufReader::new(File::open(log_path)?);
