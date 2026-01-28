@@ -4,9 +4,6 @@
 //! to a TCP server, enabling testing of Unix socket support without modifying
 //! the server implementation.
 
-#![cfg(unix)]
-#![cfg(not(target_family = "wasm"))]
-
 use std::path::PathBuf;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpStream, UnixListener, UnixStream};
@@ -340,6 +337,8 @@ mod tests {
 
         // Socket file should be removed (or at least the proxy should have attempted cleanup)
         // Note: On some systems, the socket file might still exist briefly
+
+        assert!(!socket_path.exists());
     }
 
     #[tokio::test]

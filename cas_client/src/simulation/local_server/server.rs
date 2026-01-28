@@ -33,23 +33,21 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
+use async_trait::async_trait;
 use axum::Router;
 use axum::routing::{get, head, post};
 use tokio::net::TcpListener;
 use tokio::sync::oneshot;
 use tower_http::cors::CorsLayer;
 
-use async_trait::async_trait;
-
 use super::handlers;
 use crate::RemoteClient;
 use crate::error::{CasClientError, Result};
 use crate::interface::Client;
-use crate::simulation::{DirectAccessClient, LocalClient, MemoryClient};
-
 #[cfg(unix)]
 #[cfg(not(target_family = "wasm"))]
 use crate::simulation::socket_proxy::UnixSocketProxy;
+use crate::simulation::{DirectAccessClient, LocalClient, MemoryClient};
 
 /// Configuration for the local CAS server.
 #[derive(Clone, Debug)]
@@ -302,10 +300,7 @@ impl LocalTestServer {
     /// Useful when you need to pre-populate the client with data before starting the server.
     #[cfg(unix)]
     #[cfg(not(target_family = "wasm"))]
-    async fn start_with_client_and_socket(
-        client: Arc<dyn DirectAccessClient>,
-        socket_path: Option<PathBuf>,
-    ) -> Self {
+    async fn start_with_client_and_socket(client: Arc<dyn DirectAccessClient>, socket_path: Option<PathBuf>) -> Self {
         let port = Self::find_available_port();
         let host = "127.0.0.1".to_string();
         let tcp_endpoint = format!("http://{}:{}", host, port);
@@ -321,17 +316,14 @@ impl LocalTestServer {
 
         let (remote_client, socket_proxy) = if let Some(socket_path) = socket_path {
             // Extract host:port from http://host:port
-            let tcp_addr = tcp_endpoint
-                .strip_prefix("http://")
-                .unwrap_or(&tcp_endpoint)
-                .to_string();
-            
+            let tcp_addr = tcp_endpoint.strip_prefix("http://").unwrap_or(&tcp_endpoint).to_string();
+
             let proxy = UnixSocketProxy::new(socket_path.clone(), tcp_addr)
                 .await
                 .expect("Failed to create Unix socket proxy");
-            
+
             tokio::time::sleep(Duration::from_millis(500)).await;
-            
+
             // Create RemoteClient with socket path
             let socket_path_str = socket_path.to_string_lossy().to_string();
             let client = RemoteClient::new_with_socket(
@@ -342,7 +334,7 @@ impl LocalTestServer {
                 "test-agent",
                 Some(&socket_path_str),
             );
-            
+
             (client, Some(proxy))
         } else {
             let client = RemoteClient::new(&tcp_endpoint, &None, "test-session", false, "test-agent");
@@ -359,10 +351,7 @@ impl LocalTestServer {
     }
 
     #[cfg(not(unix))]
-    async fn start_with_client_and_socket(
-        client: Arc<dyn DirectAccessClient>,
-        _socket_path: Option<PathBuf>,
-    ) -> Self {
+    async fn start_with_client_and_socket(client: Arc<dyn DirectAccessClient>, _socket_path: Option<PathBuf>) -> Self {
         let port = Self::find_available_port();
         let host = "127.0.0.1".to_string();
         let endpoint = format!("http://{}:{}", host, port);
@@ -472,7 +461,9 @@ impl Client for LocalTestServer {
         upload_tracker: Option<std::sync::Arc<progress_tracking::upload_tracking::CompletionTracker>>,
         upload_permit: crate::adaptive_concurrency::ConnectionPermit,
     ) -> Result<u64> {
-        self.remote_client.upload_xorb(prefix, serialized_cas_object, upload_tracker, upload_permit).await
+        self.remote_client
+            .upload_xorb(prefix, serialized_cas_object, upload_tracker, upload_permit)
+            .await
     }
 }
 
