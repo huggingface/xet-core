@@ -14,13 +14,6 @@ use xet_runtime::{XetRuntime, xet_config};
 
 use crate::{CasClientError, error};
 
-/// Returns the Unix socket path if configured via `HF_XET_CLIENT_UNIX_SOCKET_PATH` env var.
-#[cfg(not(target_family = "wasm"))]
-pub fn get_unix_socket_path() -> Option<String> {
-    use xet_runtime::xet_config;
-    xet_config().client.unix_socket_path.clone()
-}
-
 /// Middleware that rewrites https:// URLs to http:// when using Unix socket.
 /// This allows the proxy to parse plain HTTP and upgrade to HTTPS when forwarding.
 #[cfg(unix)]
