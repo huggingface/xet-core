@@ -5,6 +5,7 @@
 //! the server implementation.
 
 use std::path::PathBuf;
+
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpStream, UnixListener, UnixStream};
 use tokio::sync::oneshot;
@@ -19,6 +20,7 @@ use tokio::sync::oneshot;
 ///
 /// ```no_run
 /// use std::path::PathBuf;
+///
 /// use cas_client::simulation::socket_proxy::UnixSocketProxy;
 ///
 /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
@@ -95,10 +97,7 @@ impl UnixSocketProxy {
     }
 
     /// Handles a single connection by proxying data between Unix socket and TCP.
-    async fn handle_connection(
-        unix_stream: UnixStream,
-        tcp_endpoint: &str,
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    async fn handle_connection(unix_stream: UnixStream, tcp_endpoint: &str) -> Result<(), Box<dyn std::error::Error>> {
         let tcp_stream = TcpStream::connect(tcp_endpoint).await?;
 
         // Use tokio::io::split to get owned halves that can be moved into tasks
@@ -114,7 +113,7 @@ impl UnixSocketProxy {
                         if tcp_write.write_all(&buf[..n]).await.is_err() {
                             break;
                         }
-                    }
+                    },
                     Err(_) => break,
                 }
             }
@@ -131,7 +130,7 @@ impl UnixSocketProxy {
                         if unix_write.write_all(&buf[..n]).await.is_err() {
                             break;
                         }
-                    }
+                    },
                     Err(_) => break,
                 }
             }
@@ -157,11 +156,13 @@ impl Drop for UnixSocketProxy {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use std::time::Duration;
+
     use tempfile::TempDir;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::{TcpListener, UnixStream};
+
+    use super::*;
 
     /// Helper function to create a simple TCP echo server.
     async fn create_echo_server(port: u16) -> (tokio::task::JoinHandle<()>, tokio::sync::oneshot::Sender<()>) {
@@ -356,22 +357,25 @@ mod tests {
     #[tokio::test]
     async fn test_client_functionality_through_socket_proxy() {
         use std::sync::Arc;
+
         use tempfile::TempDir;
-        use crate::simulation::local_server::LocalTestServer;
+
         use crate::simulation::client_unit_testing::test_client_functionality;
+        use crate::simulation::local_server::LocalTestServer;
 
         let temp_dir = TempDir::new().unwrap();
         let socket_path = temp_dir.path().join("test_socket.sock");
-        
+
         // Run all client functionality tests through the socket proxy
         test_client_functionality(|| async {
             let server = LocalTestServer::start_with_socket_proxy(true, Some(socket_path.clone())).await;
-            
+
             // Verify the socket file exists
             assert!(socket_path.exists(), "Unix socket file should exist");
-            
+
             // Return the server as a DirectAccessClient
             Arc::new(server) as Arc<dyn crate::simulation::DirectAccessClient>
-        }).await;
+        })
+        .await;
     }
 }
