@@ -142,6 +142,38 @@ impl TranslatorConfig {
         Ok(translator_config)
     }
 
+    /// Creates a TranslatorConfig that connects to a CAS server at the given endpoint.
+    /// Shard cache and session directories are created under the provided base directory.
+    /// Useful for tests that use LocalTestServer.
+    pub fn test_server_config(endpoint: impl AsRef<str>, base_dir: impl AsRef<Path>) -> Result<Self> {
+        let path = base_dir.as_ref().join("xet");
+        std::fs::create_dir_all(&path)?;
+
+        let translator_config = Self {
+            data_config: DataConfig {
+                endpoint: Endpoint::Server(endpoint.as_ref().to_string()),
+                compression: Default::default(),
+                auth: None,
+                prefix: PREFIX_DEFAULT.into(),
+                staging_directory: None,
+                user_agent: String::new(),
+            },
+            shard_config: ShardConfig {
+                prefix: PREFIX_DEFAULT.into(),
+                cache_directory: path.join("shard-cache"),
+                session_directory: path.join("shard-session"),
+                global_dedup_policy: Default::default(),
+            },
+            repo_info: Some(RepoInfo {
+                repo_paths: vec!["".into()],
+            }),
+            session_id: None,
+            progress_config: ProgressConfig { aggregate: true },
+        };
+
+        Ok(translator_config)
+    }
+
     pub fn disable_progress_aggregation(self) -> Self {
         Self {
             progress_config: ProgressConfig { aggregate: false },
