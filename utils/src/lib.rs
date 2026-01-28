@@ -2,7 +2,7 @@
 
 pub mod async_iterator;
 pub mod data_structures;
-pub use data_structures::{MerkleHashMap, PassThroughHashMap, TruncatedMerkleHashMap, U64HashExtractable};
+pub use data_structures::{MerkleHashMap, PassThroughHashMap, TruncatedMerkleHashMap, U64DirectHasher, U64HashExtractable};
 pub mod async_read;
 pub mod auth;
 pub mod errors;
