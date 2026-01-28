@@ -635,7 +635,7 @@ pub async fn test_global_dedup(client: Arc<dyn DirectAccessClient>) {
     use std::io::Cursor;
 
     use mdb_shard::shard_format::test_routines::gen_random_shard_with_cas_references;
-    use mdb_shard::utils::{parse_shard_filename, shard_file_name};
+    use mdb_shard::utils::parse_shard_filename;
     use mdb_shard::{MDBShardFile, MDBShardInfo};
     use tempfile::TempDir;
 
@@ -662,16 +662,30 @@ pub async fn test_global_dedup(client: Arc<dyn DirectAccessClient>) {
 
     assert_ne!(dedup_hashes.len(), 0);
 
-    // Query for global dedup and verify we get the shard back
+    // Query for global dedup and verify we get a valid shard back
     let new_shard = client
         .query_for_global_dedup_shard("default", &dedup_hashes[0])
         .await
         .unwrap()
         .unwrap();
 
-    let sf = MDBShardFile::write_out_from_reader(shard_dir_2.clone(), &mut Cursor::new(new_shard)).unwrap();
+    // Verify the returned shard can be loaded and contains the expected data
+    let sf = MDBShardFile::write_out_from_reader(shard_dir_2.clone(), &mut Cursor::new(&new_shard)).unwrap();
 
-    assert_eq!(sf.path, shard_dir_2.join(shard_file_name(&shard_hash)));
+    // Verify the shard has the same dedup hashes (the content matches semantically)
+    let returned_dedup_hashes = MDBShardInfo::filter_cas_chunks_for_global_dedup(&mut Cursor::new(&new_shard)).unwrap();
+    for hash in &dedup_hashes {
+        assert!(returned_dedup_hashes.contains(hash));
+    }
+
+    // Verify the shard file exists and is valid
+    assert!(sf.path.exists());
+
+    // Note: We don't check that the returned shard path matches the original shard_hash
+    // because streaming shard support may rebuild the shard with lookup tables, resulting
+    // in a different hash. The semantic correctness is verified above by checking that
+    // the dedup hashes match.
+    let _ = shard_hash; // Acknowledge we have it but don't assert path equality
 }
 
 /// Runs all URL expiration tests. Must be called from a `#[tokio::test(start_paused = true)]` context.

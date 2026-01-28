@@ -11,9 +11,10 @@ use cas_types::{
     BatchQueryReconstructionResponse, CASReconstructionFetchInfo, CASReconstructionTerm, ChunkRange, FileRange,
     HexMerkleHash, HttpRange, QueryReconstructionResponse,
 };
-use mdb_shard::MDBShardInfo;
+use mdb_shard::cas_structs::MDBCASInfo;
 use mdb_shard::file_structs::MDBFileInfo;
 use mdb_shard::shard_in_memory::MDBInMemoryShard;
+use mdb_shard::streaming_shard::MDBMinimalShard;
 use merklehash::MerkleHash;
 use more_asserts::{assert_ge, assert_gt, debug_assert_lt};
 use progress_tracking::upload_tracking::CompletionTracker;
@@ -21,6 +22,7 @@ use rand::Rng;
 use tokio::sync::RwLock;
 use tokio::time::{Duration, Instant};
 use tracing::{error, info};
+use utils::MerkleHashMap;
 
 use super::client_testing_utils::{FileTermReference, RandomFileContents};
 use super::direct_access_client::DirectAccessClient;
@@ -56,11 +58,11 @@ enum XorbStorage {
 /// In-memory client for testing purposes. Stores all data in memory using hash tables.
 pub struct MemoryClient {
     /// XORBs stored by hash
-    xorbs: RwLock<HashMap<MerkleHash, XorbStorage>>,
+    xorbs: RwLock<MerkleHashMap<XorbStorage>>,
     /// In-memory shard for file reconstruction info
     shard: RwLock<MDBInMemoryShard>,
     /// Global dedup lookup: chunk_hash -> shard bytes
-    global_dedup: RwLock<HashMap<MerkleHash, Bytes>>,
+    global_dedup: RwLock<MerkleHashMap<Bytes>>,
     /// Upload concurrency controller
     upload_concurrency_controller: Arc<AdaptiveConcurrencyController>,
     /// URL expiration in milliseconds
@@ -73,9 +75,9 @@ impl MemoryClient {
     /// Create a new in-memory client.
     pub fn new() -> Arc<Self> {
         Arc::new(Self {
-            xorbs: RwLock::new(HashMap::new()),
+            xorbs: RwLock::new(MerkleHashMap::new()),
             shard: RwLock::new(MDBInMemoryShard::default()),
-            global_dedup: RwLock::new(HashMap::new()),
+            global_dedup: RwLock::new(MerkleHashMap::new()),
             upload_concurrency_controller: AdaptiveConcurrencyController::new_upload("memory_uploads"),
             url_expiration_ms: AtomicU64::new(u64::MAX),
             random_ms_delay_window: (AtomicU64::new(0), AtomicU64::new(0)),
@@ -204,7 +206,7 @@ impl MemoryClient {
         Ok(RandomFileContents {
             file_hash,
             data: Bytes::from(file_data),
-            xorbs: std::collections::HashMap::new(),
+            xorbs: MerkleHashMap::new(),
             terms: term_infos,
         })
     }
@@ -231,9 +233,9 @@ impl MemoryClient {
 impl Default for MemoryClient {
     fn default() -> Self {
         Self {
-            xorbs: RwLock::new(HashMap::new()),
+            xorbs: RwLock::new(MerkleHashMap::new()),
             shard: RwLock::new(MDBInMemoryShard::default()),
-            global_dedup: RwLock::new(HashMap::new()),
+            global_dedup: RwLock::new(MerkleHashMap::new()),
             upload_concurrency_controller: AdaptiveConcurrencyController::new_upload("memory_uploads"),
             url_expiration_ms: AtomicU64::new(u64::MAX),
             random_ms_delay_window: (AtomicU64::new(0), AtomicU64::new(0)),
@@ -537,26 +539,29 @@ impl Client for MemoryClient {
         _permit: crate::adaptive_concurrency::ConnectionPermit,
     ) -> Result<bool> {
         self.apply_api_delay().await;
-        // Parse the shard info from bytes
+        // Parse the shard using the streaming parser (handles shards without footer)
         let mut reader = Cursor::new(&shard_data);
-        let shard_info = MDBShardInfo::load_from_reader(&mut reader)?;
+        let minimal_shard = MDBMinimalShard::from_reader(&mut reader, true, true)?;
 
         // Merge file info into our shard
         {
             let mut shard_lg = self.shard.write().await;
-            reader.set_position(0);
-            for file_info in shard_info.read_all_file_info_sections(&mut reader)? {
-                shard_lg.add_file_reconstruction_info(file_info)?;
+
+            // Add file info from the views
+            for i in 0..minimal_shard.num_files() {
+                let file_view = minimal_shard.file(i).unwrap();
+                shard_lg.add_file_reconstruction_info(MDBFileInfo::from(file_view))?;
             }
-            reader.set_position(0);
-            for cas_info in shard_info.read_all_cas_blocks_full(&mut reader)? {
-                shard_lg.add_cas_block(cas_info)?;
+
+            // Add CAS info from the views
+            for i in 0..minimal_shard.num_cas() {
+                let cas_view = minimal_shard.cas(i).unwrap();
+                shard_lg.add_cas_block(MDBCASInfo::from(cas_view))?;
             }
         }
 
-        // Update global dedup lookup
-        let mut shard_reader = Cursor::new(&shard_data);
-        let chunk_hashes = MDBShardInfo::filter_cas_chunks_for_global_dedup(&mut shard_reader)?;
+        // Update global dedup lookup using the minimal shard's method
+        let chunk_hashes = minimal_shard.global_dedup_eligible_chunks();
 
         {
             let mut dedup_lg = self.global_dedup.write().await;
@@ -577,6 +582,9 @@ impl Client for MemoryClient {
     ) -> Result<u64> {
         self.apply_api_delay().await;
         let hash = serialized_cas_object.hash;
+        let raw_num_bytes = serialized_cas_object.raw_num_bytes;
+        let footer_start = serialized_cas_object.footer_start;
+        let serialized_data = serialized_cas_object.serialized_data;
 
         // Check if already exists
         {
@@ -589,11 +597,28 @@ impl Client for MemoryClient {
 
         info!("Storing XORB {hash:?} in memory");
 
-        // Deserialize the CasObject for later use
-        let mut reader = BufReader::new(Cursor::new(&serialized_cas_object.serialized_data));
-        let cas_object = CasObject::deserialize(&mut reader)?;
+        // Reconstruct CasObject from chunk data if no footer, or deserialize if footer present
+        let (cas_object, serialized_data) = if footer_start.is_some() {
+            // Data has footer - deserialize directly
+            let mut reader = Cursor::new(&serialized_data);
+            let cas_object = CasObject::deserialize(&mut reader)?;
+            (cas_object, serialized_data)
+        } else {
+            // No footer - reconstruct CasObject from chunk data and append footer
+            let mut data_with_footer = Vec::new();
+            let (cas_object, computed_hash) =
+                cas_object::reconstruct_xorb_with_footer(&mut data_with_footer, &serialized_data)?;
+            if computed_hash != hash {
+                return Err(CasClientError::Other(format!(
+                    "XORB hash mismatch: expected {}, got {}",
+                    hash.hex(),
+                    computed_hash.hex(),
+                )));
+            }
+            (cas_object, data_with_footer)
+        };
 
-        let bytes_written = serialized_cas_object.serialized_data.len();
+        let bytes_written = serialized_data.len();
 
         // Store the xorb
         {
@@ -601,7 +626,7 @@ impl Client for MemoryClient {
             xorbs.insert(
                 hash,
                 XorbStorage::Materialized(MaterializedXorb {
-                    serialized_data: Bytes::from(serialized_cas_object.serialized_data),
+                    serialized_data: Bytes::from(serialized_data),
                     cas_object,
                 }),
             );
@@ -609,22 +634,12 @@ impl Client for MemoryClient {
 
         // Update progress tracker
         if let Some(tracker) = upload_tracker {
-            tracker
-                .register_xorb_upload_progress(hash, serialized_cas_object.raw_num_bytes)
-                .await;
+            tracker.register_xorb_upload_progress(hash, raw_num_bytes).await;
         }
 
         info!("XORB {hash:?} successfully stored with {bytes_written} bytes.");
 
         Ok(bytes_written as u64)
-    }
-
-    fn use_xorb_footer(&self) -> bool {
-        true
-    }
-
-    fn use_shard_footer(&self) -> bool {
-        true
     }
 
     async fn get_reconstruction(
@@ -701,7 +716,7 @@ impl Client for MemoryClient {
             byte_range: FileRange,
         }
 
-        let mut fetch_info_map: HashMap<MerkleHash, Vec<FetchInfoIntermediate>> = HashMap::new();
+        let mut fetch_info_map: MerkleHashMap<Vec<FetchInfoIntermediate>> = MerkleHashMap::new();
 
         let xorbs = self.xorbs.read().await;
 

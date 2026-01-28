@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::io::{Cursor, Read, Write, copy};
 use std::mem::size_of;
 
@@ -8,6 +8,7 @@ use futures_util::io::AsyncReadExt;
 use itertools::Itertools;
 use merklehash::MerkleHash;
 use more_asserts::debug_assert_lt;
+use utils::MerkleHashMap;
 
 use crate::cas_structs::{CASChunkSequenceEntry, CASChunkSequenceHeader, MDBCASInfoView};
 use crate::error::{MDBShardError, Result};
@@ -301,8 +302,8 @@ impl MDBMinimalShard {
 
     /// Return a lookup of xorb hash to starting chunk indices for all the files present in the
     /// shard.  These are the chunks that are useful for global dedup.
-    fn file_start_entries(&self) -> HashMap<MerkleHash, Vec<usize>> {
-        let mut file_start_entries = HashMap::<MerkleHash, Vec<usize>>::new();
+    fn file_start_entries(&self) -> MerkleHashMap<Vec<usize>> {
+        let mut file_start_entries = MerkleHashMap::<Vec<usize>>::new();
 
         for f_idx in 0..self.num_files() {
             let Some(fv) = self.file(f_idx) else {
@@ -562,6 +563,23 @@ mod tests {
             let min_shard_async = MDBMinimalShard::from_reader_async(&mut &buffer[..], true, true).await.unwrap();
 
             assert_eq!(min_shard, min_shard_async);
+
+            // Verify From trait implementations for views
+            for i in 0..min_shard.num_files() {
+                let file_view = min_shard.file(i).unwrap();
+                let file_info = MDBFileInfo::from(file_view);
+                assert_eq!(file_info.metadata.file_hash, file_view.file_hash());
+                assert_eq!(file_info.segments.len(), file_view.num_entries());
+                assert_eq!(file_info.contains_verification(), file_view.contains_verification());
+                assert_eq!(file_info.contains_metadata_ext(), file_view.contains_metadata_ext());
+            }
+
+            for i in 0..min_shard.num_cas() {
+                let cas_view = min_shard.cas(i).unwrap();
+                let cas_info = MDBCASInfo::from(cas_view);
+                assert_eq!(cas_info.metadata.cas_hash, cas_view.cas_hash());
+                assert_eq!(cas_info.chunks.len(), cas_view.num_entries());
+            }
 
             verify_serialization(&min_shard, mem_shard).unwrap();
         }

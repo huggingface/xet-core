@@ -3097,12 +3097,14 @@ name = "merklehash"
 version = "0.14.5"
 dependencies = [
  "base64 0.22.1",
+ "bincode",
  "blake3",
  "getrandom 0.3.3",
  "heed",
  "rand 0.9.1",
  "safe-transmute",
  "serde",
+ "tokio",
 ]
 
 [[package]]
@@ -3936,6 +3938,7 @@ dependencies = [
  "merklehash",
  "more-asserts",
  "tokio",
+ "utils",
 ]
 
 [[package]]
@@ -5847,6 +5850,7 @@ name = "utils"
 version = "0.14.5"
 dependencies = [
  "async-trait",
+ "bincode",
  "bytes",
  "ctor",
  "derivative",

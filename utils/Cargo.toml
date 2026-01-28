@@ -7,6 +7,10 @@ edition = "2024"
 name = "utils"
 path = "src/lib.rs"
 
+[[bin]]
+name = "benchmark_hashmaps"
+path = "src/data_structures/bin/benchmark_hashmaps.rs"
+
 [dependencies]
 error_printer = { path = "../error_printer" }
 merklehash = { path = "../merklehash" }
@@ -34,6 +38,8 @@ tracing = { workspace = true }
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
 sysinfo = { workspace = true }
+bincode = { workspace = true }
+rand = { workspace = true }
 tokio-util = { workspace = true, features = ["io"] }
 
 [target.'cfg(not(target_family = "wasm"))'.dev-dependencies]
@@ -44,9 +50,10 @@ xet_runtime = { path = "../xet_runtime" }
 web-time = { workspace = true }
 
 [dev-dependencies]
+bincode = { workspace = true }
+futures-util = { workspace = true }
 rand = { workspace = true }
 serial_test = { workspace = true }
-futures-util = { workspace = true }
 
 [features]
 strict = []

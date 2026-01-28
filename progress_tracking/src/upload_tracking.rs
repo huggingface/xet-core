@@ -1,11 +1,12 @@
+use std::collections::BTreeSet;
 use std::collections::hash_map::Entry as HashMapEntry;
-use std::collections::{BTreeSet, HashMap};
 use std::mem::take;
 use std::sync::Arc;
 
 use merklehash::MerkleHash;
 use more_asserts::{debug_assert_ge, debug_assert_le};
 use tokio::sync::Mutex;
+use utils::MerkleHashMap;
 
 use crate::{ItemProgressUpdate, ProgressUpdate, TrackingProgressUpdater};
 
@@ -57,7 +58,7 @@ struct FileDependency {
     /// Mapping of xorb_hash -> (number of completed bytes / number of bytes of the file contained in that xorb).  Only
     /// xorbs that are not uploaded yet are tracked here.
     /// Once an xorb is uploaded, we remove it from here (and add to `completed_bytes`).
-    remaining_xorbs_parts: HashMap<MerkleHash, XorbPartCompletionStats>,
+    remaining_xorbs_parts: MerkleHashMap<XorbPartCompletionStats>,
 }
 
 /// Tracks all files and all xorbs, allowing you to register file
@@ -68,7 +69,7 @@ struct CompletionTrackerImpl {
     /// List of all files being tracked.
     files: Vec<FileDependency>,
     /// Map of xorb hash -> its dependency info (which files rely on it).
-    xorbs: HashMap<MerkleHash, XorbDependency>,
+    xorbs: MerkleHashMap<XorbDependency>,
 
     /// Keep track of the totals across all xorbs.
     total_upload_bytes: u64,
@@ -99,7 +100,7 @@ impl CompletionTrackerImpl {
             name: name.into(),
             total_bytes: n_bytes,
             completed_bytes: 0,
-            remaining_xorbs_parts: HashMap::new(),
+            remaining_xorbs_parts: MerkleHashMap::new(),
         };
 
         // Insert it into our files vector.

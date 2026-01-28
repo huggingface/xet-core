@@ -296,3 +296,17 @@ impl MDBCASInfoView {
         Ok(n_out_bytes)
     }
 }
+
+impl From<&MDBCASInfoView> for MDBCASInfo {
+    fn from(view: &MDBCASInfoView) -> Self {
+        let chunks: Vec<CASChunkSequenceEntry> = (0..view.num_entries()).map(|i| view.chunk(i)).collect();
+        let total_bytes = chunks
+            .last()
+            .map(|c| c.chunk_byte_range_start + c.unpacked_segment_bytes)
+            .unwrap_or(0);
+        MDBCASInfo {
+            metadata: CASChunkSequenceHeader::new(view.cas_hash(), chunks.len() as u32, total_bytes),
+            chunks,
+        }
+    }
+}

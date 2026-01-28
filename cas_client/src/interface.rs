@@ -64,12 +64,4 @@ pub trait Client: Send + Sync {
         upload_tracker: Option<Arc<CompletionTracker>>,
         upload_permit: ConnectionPermit,
     ) -> Result<u64>;
-
-    /// Indicates if the serialized cas object should have a written footer.
-    /// This should only be true for testing with LocalClient.
-    fn use_xorb_footer(&self) -> bool;
-
-    /// Indicates if the serialized cas object should have a written footer.
-    /// This should only be true for testing with LocalClient.
-    fn use_shard_footer(&self) -> bool;
 }
