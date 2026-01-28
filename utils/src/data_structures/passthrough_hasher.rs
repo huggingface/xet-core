@@ -1,7 +1,7 @@
 use std::hash::{BuildHasher, Hasher};
 use std::marker::PhantomData;
 
-use merklehash::MerkleHash;
+use merklehash::DataHash;
 use serde::{Deserialize, Serialize};
 
 /// Trait for types that can efficiently provide a u64 hash value.
@@ -17,7 +17,7 @@ impl U64HashExtractable for u64 {
     }
 }
 
-impl U64HashExtractable for MerkleHash {
+impl U64HashExtractable for DataHash {
     fn u64_hash_value(&self) -> u64 {
         self[0]
     }
@@ -80,7 +80,7 @@ impl<T: U64HashExtractable> BuildHasher for U64DirectHasher<T> {
 mod tests {
     use std::hash::Hash;
 
-    use merklehash::DataHash;
+    use merklehash::MerkleHash;
 
     use super::*;
 

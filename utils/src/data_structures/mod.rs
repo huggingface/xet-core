@@ -2,7 +2,7 @@ mod passthrough_hasher;
 mod passthrough_hashmap;
 
 use merklehash::MerkleHash;
-pub use passthrough_hasher::U64HashExtractable;
+pub use passthrough_hasher::{U64DirectHasher, U64HashExtractable};
 pub use passthrough_hashmap::PassThroughHashMap;
 
 /// A HashMap specialized for `MerkleHash` keys using passthrough hashing.
