@@ -53,17 +53,11 @@ impl XetConfig {
     /// - HF_XET_HP
     ///
     /// This method sets the following values to their high performance defaults:
-    /// - data.max_concurrent_uploads: 8 -> 100
     /// - data.max_concurrent_file_ingestion: 8 -> 100
-    /// - data.max_concurrent_downloads: 8 -> 100
-    /// - cas_client.num_range_in_segment_base: 16 -> 128
     ///
     /// Note: This method is automatically called by `XetConfig::new()` if high performance mode is enabled.
     pub fn with_high_performance(mut self) -> Self {
-        self.client.fixed_concurrency_max_uploads = 100;
         self.data.max_concurrent_file_ingestion = 100;
-        self.client.fixed_concurrency_max_downloads = 100;
-        self.client.num_range_in_segment_base = 128;
 
         // Adjustments to the adaptive concurrency control.
         self.client.ac_max_upload_concurrency = 124;
