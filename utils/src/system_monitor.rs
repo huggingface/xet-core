@@ -20,10 +20,12 @@ use tracing::error;
 ///
 /// ```no_run
 /// use std::time::Duration;
+///
 /// use utils::system_monitor::SystemMonitor;
 ///
 /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
-/// let monitor = SystemMonitor::follow_process(Duration::from_secs(5), Some("monitor_log.txt".to_string()))?;
+/// let monitor =
+///     SystemMonitor::follow_process(Duration::from_secs(5), Some("monitor_log.txt".to_string()))?;
 /// monitor.start()?;
 ///
 /// // ... application logic ...
@@ -403,8 +405,8 @@ impl SystemMonitor {
     ///
     /// # Arguments
     /// * `sample_interval` - The interval at which to sample system metrics.
-    /// * `output_path` - Optional path template for the output log file. If None, logs to tracing error.
-    ///   If the string contains "#PID#", it will be replaced with the monitored process ID.
+    /// * `output_path` - Optional path template for the output log file. If None, logs to tracing error. If the string
+    ///   contains "#PID#", it will be replaced with the monitored process ID.
     ///
     /// # Errors
     /// Returns an error if the current process ID cannot be determined.
@@ -421,8 +423,8 @@ impl SystemMonitor {
     ///
     /// * `pid` - The process ID to monitor.
     /// * `sample_interval` - The interval at which to sample system metrics.
-    /// * `output_path` - Optional path template for the output log file. If None, logs to tracing error.
-    ///   If the string contains "#PID#", it will be replaced with the monitored process ID.
+    /// * `output_path` - Optional path template for the output log file. If None, logs to tracing error. If the string
+    ///   contains "#PID#", it will be replaced with the monitored process ID.
     ///
     /// # Errors
     /// Returns an error if no active process has the specific ID.
