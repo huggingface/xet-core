@@ -160,7 +160,8 @@ impl Drop for LocalClient {
         // allowing the file handles to be released. Without this, the cached
         // environment reference prevents the file descriptors from being closed.
         if let Some(env) = self.global_dedup_db_env.take() {
-            let _closing_event = env.prepare_for_closing();
+            let closing_event = env.prepare_for_closing();
+            closing_event.wait();
         }
     }
 }
