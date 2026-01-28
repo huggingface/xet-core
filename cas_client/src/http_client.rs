@@ -45,6 +45,7 @@ impl Middleware for HttpsToHttpMiddleware {
     }
 }
 
+#[allow(unused_variables)]
 #[cfg(not(target_family = "wasm"))]
 fn reqwest_client(user_agent: &str, unix_socket_path: Option<&str>) -> Result<reqwest::Client, CasClientError> {
     // Check config if explicit socket path is not provided
@@ -110,6 +111,7 @@ fn reqwest_client(user_agent: &str, _unix_socket_path: Option<&str>) -> Result<r
 }
 
 /// Builds authenticated HTTP Client to talk to CAS.
+#[allow(unused_mut)]
 pub fn build_auth_http_client(
     auth_config: &Option<AuthConfig>,
     session_id: &str,

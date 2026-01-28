@@ -337,7 +337,7 @@ impl LocalTestServer {
             #[cfg(not(unix))]
             {
                 let client = RemoteClient::new(&tcp_endpoint, &None, "test-session", false, "test-agent");
-                (client, None)
+                (client, Option::<()>::None)
             }
         };
 
