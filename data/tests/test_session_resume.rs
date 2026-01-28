@@ -1,5 +1,6 @@
 use std::time::Duration;
 
+use cas_client::LocalTestServer;
 // Run tests that determine deduplication, especially across different test subjects.
 use data::FileUploadSession;
 use data::configurations::TranslatorConfig;
@@ -54,10 +55,9 @@ mod tests {
         let mut rng = StdRng::seed_from_u64(0);
         rng.fill(&mut data[..]);
 
-        // Set a temporary directory for the endpoint.
-        let cas_dir = TempDir::new().unwrap();
-
-        let config = Arc::new(TranslatorConfig::local_config(cas_dir).unwrap());
+        let server = LocalTestServer::start(true).await;
+        let shard_base = TempDir::new().unwrap();
+        let config = Arc::new(TranslatorConfig::test_server_config(server.endpoint(), shard_base.path()).unwrap());
 
         {
             let progress_tracker = AggregatingProgressUpdater::new_aggregation_only();
@@ -126,10 +126,9 @@ mod tests {
         let mut rng = StdRng::seed_from_u64(0);
         rng.fill(&mut data[..]);
 
-        // Set a temporary directory for the endpoint.
-        let cas_dir = TempDir::new().unwrap();
-
-        let config = Arc::new(TranslatorConfig::local_config(cas_dir).unwrap());
+        let server = LocalTestServer::start(true).await;
+        let shard_base = TempDir::new().unwrap();
+        let config = Arc::new(TranslatorConfig::test_server_config(server.endpoint(), shard_base.path()).unwrap());
 
         let mut prev_rn = 0;
 
