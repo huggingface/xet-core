@@ -32,7 +32,6 @@ use rand::Rng;
 use tempfile::TempDir;
 use tokio::time::{Duration, Instant};
 use tracing::{error, info, warn};
-use utils::MerkleHashMap;
 use utils::serialization_utils::read_u32;
 
 use super::direct_access_client::DirectAccessClient;
@@ -475,7 +474,7 @@ impl Client for LocalClient {
         let mut reader = Cursor::new(&shard_data);
         let minimal_shard = MDBMinimalShard::from_reader(&mut reader, true, true)?;
 
-        // Rebuild a full in-memory shard with proper lookup tables
+        // Rebuild a full in-memory shard to rebuild the new shard.  Quick and convenient.
         let mut in_memory_shard = MDBInMemoryShard::default();
 
         // Add file info from the views
@@ -662,7 +661,7 @@ impl Client for LocalClient {
             byte_range: FileRange,
         }
 
-        let mut fetch_info_map: MerkleHashMap<Vec<FetchInfoIntermediate>> = MerkleHashMap::new();
+        let mut fetch_info_map: HashMap<MerkleHash, Vec<FetchInfoIntermediate>> = HashMap::new();
 
         while s_idx < file_info.segments.len() && cumulative_bytes < file_range.end {
             let mut segment = file_info.segments[s_idx].clone();

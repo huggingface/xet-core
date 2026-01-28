@@ -102,7 +102,7 @@ async fn run_client(min_data_kb: u64, max_data_kb: u64, repeat_duration_seconds:
     eprintln!("Connecting to server at {}", server_addr);
 
     // Create HTTP client
-    let http_client = build_http_client("test_session", "test_user_agent").expect("Failed to create HTTP client");
+    let http_client = build_http_client("test_session", "test_user_agent", None).expect("Failed to create HTTP client");
 
     // Wait for server to be ready before starting
     wait_for_server_ready(&http_client, server_addr)

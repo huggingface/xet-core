@@ -10,6 +10,7 @@ use reqwest_middleware::{ClientBuilder, ClientWithMiddleware, Middleware, Next};
 use tokio::sync::Mutex;
 use tracing::{Instrument, info, info_span, warn};
 use utils::auth::{AuthConfig, TokenProvider};
+use xet_runtime::{XetRuntime, xet_config};
 
 use crate::{CasClientError, error};
 
@@ -45,54 +46,49 @@ impl Middleware for HttpsToHttpMiddleware {
 }
 
 #[cfg(not(target_family = "wasm"))]
-fn reqwest_client(user_agent: &str) -> Result<reqwest::Client, CasClientError> {
-    use xet_runtime::{XetRuntime, xet_config};
+fn reqwest_client(user_agent: &str, unix_socket_path: Option<&str>) -> Result<reqwest::Client, CasClientError> {
+    // Check config if explicit socket path is not provided
+    let socket_path = unix_socket_path
+        .map(|s| s.to_string())
+        .or_else(|| xet_config().client.unix_socket_path.clone());
 
-    let unix_socket_path = get_unix_socket_path();
+    // Determine the tag for client caching
+    let tag = socket_path.as_deref().unwrap_or("tcp").to_string();
 
-    let client = if let Some(ref socket_path) = unix_socket_path {
-        XetRuntime::get_or_create_reqwest_uds_client(|| {
-            let mut builder = reqwest::Client::builder()
-                .pool_idle_timeout(xet_config().client.idle_connection_timeout)
-                .pool_max_idle_per_host(xet_config().client.max_idle_connections)
-                .connect_timeout(xet_config().client.connect_timeout)
-                .read_timeout(xet_config().client.read_timeout)
-                .http1_only();
+    // Create client function
+    let socket_path_clone = socket_path.clone();
+    let user_agent_for_closure = user_agent.to_string();
+    let create_client = move || {
+        let config = &xet_config().client;
+        let mut builder = reqwest::Client::builder()
+            .pool_idle_timeout(config.idle_connection_timeout)
+            .pool_max_idle_per_host(config.max_idle_connections)
+            .connect_timeout(config.connect_timeout)
+            .read_timeout(config.read_timeout)
+            .http1_only();
 
-            if !user_agent.is_empty() {
-                builder = builder.user_agent(user_agent);
-            }
+        if !user_agent_for_closure.is_empty() {
+            builder = builder.user_agent(&user_agent_for_closure);
+        }
 
-            #[cfg(unix)]
-            {
-                builder = builder.unix_socket(socket_path.clone());
-            }
+        #[cfg(unix)]
+        if let Some(ref path) = socket_path_clone {
+            builder = builder.unix_socket(path.clone());
+        }
 
-            builder.build()
-        })?
-    } else {
-        XetRuntime::get_or_create_reqwest_client(|| {
-            let mut builder = reqwest::Client::builder()
-                .pool_idle_timeout(xet_config().client.idle_connection_timeout)
-                .pool_max_idle_per_host(xet_config().client.max_idle_connections)
-                .connect_timeout(xet_config().client.connect_timeout)
-                .read_timeout(xet_config().client.read_timeout)
-                .http1_only();
-
-            if !user_agent.is_empty() {
-                builder = builder.user_agent(user_agent);
-            }
-
-            builder.build()
-        })?
+        builder.build()
     };
 
-    if unix_socket_path.is_some() {
-        info!(socket_path=?unix_socket_path, "HTTP client configured with Unix socket");
+    // Try to use cached client if in a runtime, otherwise create directly
+    let client = XetRuntime::get_or_create_reqwest_client(tag, create_client)?;
+
+    if socket_path.is_some() {
+        info!(socket_path=?socket_path, "HTTP client configured with Unix socket");
     } else {
+        let config = &xet_config().client;
         info!(
-            idle_timeout=?xet_config().client.idle_connection_timeout,
-            max_idle_connections=xet_config().client.max_idle_connections,
+            idle_timeout=?config.idle_connection_timeout,
+            max_idle_connections=config.max_idle_connections,
             user_agent=?if user_agent.is_empty() { None } else { Some(user_agent) },
             "HTTP client configured"
         );
@@ -102,9 +98,10 @@ fn reqwest_client(user_agent: &str) -> Result<reqwest::Client, CasClientError> {
 }
 
 #[cfg(target_family = "wasm")]
-fn reqwest_client(user_agent: &str) -> Result<reqwest::Client, CasClientError> {
+fn reqwest_client(user_agent: &str, _unix_socket_path: Option<&str>) -> Result<reqwest::Client, CasClientError> {
     // For WASM, create a new client with the specified user_agent
     // Note: we could cache this, but user_agent can vary, so we create per-call
+    // Unix socket path is ignored on WASM
     let mut builder = reqwest::Client::builder();
     if !user_agent.is_empty() {
         builder = builder.user_agent(user_agent);
@@ -117,15 +114,16 @@ pub fn build_auth_http_client(
     auth_config: &Option<AuthConfig>,
     session_id: &str,
     user_agent: &str,
+    unix_socket_path: Option<&str>,
 ) -> Result<ClientWithMiddleware, CasClientError> {
     let auth_middleware = auth_config.as_ref().map(AuthMiddleware::from).info_none("CAS auth disabled");
     let logging_middleware = Some(LoggingMiddleware);
     let session_middleware = (!session_id.is_empty()).then(|| SessionMiddleware(session_id.to_owned()));
 
-    let mut builder = ClientBuilder::new(reqwest_client(user_agent)?);
+    let mut builder = ClientBuilder::new(reqwest_client(user_agent, unix_socket_path)?);
 
     #[cfg(unix)]
-    if get_unix_socket_path().is_some() {
+    if unix_socket_path.is_some() {
         builder = builder.with(HttpsToHttpMiddleware);
     }
 
@@ -137,8 +135,12 @@ pub fn build_auth_http_client(
 }
 
 /// Builds HTTP Client to talk to CAS.
-pub fn build_http_client(session_id: &str, user_agent: &str) -> Result<ClientWithMiddleware, CasClientError> {
-    build_auth_http_client(&None, session_id, user_agent)
+pub fn build_http_client(
+    session_id: &str,
+    user_agent: &str,
+    unix_socket_path: Option<&str>,
+) -> Result<ClientWithMiddleware, CasClientError> {
+    build_auth_http_client(&None, session_id, user_agent, unix_socket_path)
 }
 
 /// Helper trait to allow the reqwest_middleware client to optionally add a middleware.
@@ -367,14 +369,8 @@ mod tests {
     }
 
     #[test]
-    fn test_get_unix_socket_path_returns_none_by_default() {
-        let path = get_unix_socket_path();
-        let _: Option<String> = path;
-    }
-
-    #[test]
     fn test_build_http_client_without_uds() {
-        let result = build_http_client("test-session", "test-agent");
+        let result = build_http_client("test-session", "test-agent", None);
         assert!(result.is_ok());
     }
 }
