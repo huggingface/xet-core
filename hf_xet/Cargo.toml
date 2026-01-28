@@ -45,7 +45,7 @@ signal-hook = "0.3"
 winapi = { version = "0.3", features = ["consoleapi", "wincon", "errhandlingapi"] }
 
 [features]
-default = ["no-default-cache", "elevated_information_level"] # By default, hf_xet disables the disk cache and uses aggressive logging level
+default = ["no-default-cache", "elevated_information_level", "monitored"] # By default, hf_xet disables the disk cache and uses aggressive logging level
 native-tls = ["cas_client/native-tls-vendored"]
 native-tls-vendored = ["cas_client/native-tls-vendored"]
 no-default-cache = ["xet_config/no-default-cache"]
