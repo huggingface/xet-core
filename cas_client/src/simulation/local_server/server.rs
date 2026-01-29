@@ -33,6 +33,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
+use async_trait::async_trait;
 use axum::Router;
 use axum::routing::{get, head, post};
 use tokio::net::TcpListener;
@@ -42,6 +43,9 @@ use tower_http::cors::CorsLayer;
 use super::handlers;
 use crate::RemoteClient;
 use crate::error::{CasClientError, Result};
+use crate::interface::Client;
+#[cfg(unix)]
+use crate::simulation::socket_proxy::UnixSocketProxy;
 use crate::simulation::{DirectAccessClient, LocalClient, MemoryClient};
 
 /// Configuration for the local CAS server.
@@ -235,6 +239,9 @@ pub struct LocalTestServer {
     server_shutdown_tx: Option<oneshot::Sender<()>>,
     remote_client: Arc<RemoteClient>,
     client: Arc<dyn DirectAccessClient>,
+
+    #[cfg(unix)]
+    _socket_proxy: Option<UnixSocketProxy>,
 }
 
 impl LocalTestServer {
@@ -242,24 +249,50 @@ impl LocalTestServer {
     ///
     /// # Arguments
     /// * `in_memory` - If true, uses in-memory storage; if false, uses a temporary directory on disk.
+    /// * `socket_path` - Optional Unix socket path. If provided, creates a proxy and connects RemoteClient through it.
     ///
     /// The server listens on a randomly assigned available port on localhost.
     pub async fn start(in_memory: bool) -> Self {
+        Self::start_with_socket_proxy(in_memory, None).await
+    }
+
+    /// Starts a new test server with an optional socket proxy.
+    ///
+    /// # Arguments
+    /// * `in_memory` - If true, uses in-memory storage; if false, uses a temporary directory on disk.
+    /// * `socket_path` - Optional Unix socket path. If provided, creates a proxy and connects RemoteClient through it.
+    ///
+    /// The server listens on a randomly assigned available port on localhost.
+    pub async fn start_with_socket_proxy(in_memory: bool, socket_path: Option<PathBuf>) -> Self {
         let client: Arc<dyn DirectAccessClient> = if in_memory {
             MemoryClient::new()
         } else {
             LocalClient::temporary().await.unwrap()
         };
-        Self::start_with_client(client).await
+        Self::start_with_client_and_socket(client, socket_path).await
     }
 
     /// Starts a new test server using an existing `DirectAccessClient`.
     ///
     /// Useful when you need to pre-populate the client with data before starting the server.
     pub async fn start_with_client(client: Arc<dyn DirectAccessClient>) -> Self {
+        #[cfg(unix)]
+        {
+            Self::start_with_client_and_socket(client, None).await
+        }
+        #[cfg(not(unix))]
+        {
+            Self::start_with_client_and_socket(client, None).await
+        }
+    }
+
+    /// Starts a new test server using an existing `DirectAccessClient` with an optional socket proxy.
+    ///
+    /// Useful when you need to pre-populate the client with data before starting the server.
+    async fn start_with_client_and_socket(client: Arc<dyn DirectAccessClient>, socket_path: Option<PathBuf>) -> Self {
         let port = Self::find_available_port();
         let host = "127.0.0.1".to_string();
-        let endpoint = format!("http://{}:{}", host, port);
+        let tcp_endpoint = format!("http://{}:{}", host, port);
 
         let server = LocalServer::from_client(client.clone(), host, port);
         let (shutdown_tx, shutdown_rx) = oneshot::channel();
@@ -270,13 +303,51 @@ impl LocalTestServer {
 
         tokio::time::sleep(Duration::from_millis(50)).await;
 
-        let remote_client = RemoteClient::new(&endpoint, &None, "test-session", false, "test-agent");
+        let (remote_client, socket_proxy) = {
+            #[cfg(unix)]
+            {
+                if let Some(socket_path) = socket_path {
+                    // Extract host:port from http://host:port
+                    let tcp_addr = tcp_endpoint.strip_prefix("http://").unwrap_or(&tcp_endpoint).to_string();
+
+                    let proxy = UnixSocketProxy::new(socket_path.clone(), tcp_addr)
+                        .await
+                        .expect("Failed to create Unix socket proxy");
+
+                    tokio::time::sleep(Duration::from_millis(500)).await;
+
+                    // Create RemoteClient with socket path
+                    let socket_path_str = socket_path.to_string_lossy().to_string();
+                    let client = RemoteClient::new_with_socket(
+                        &tcp_endpoint,
+                        &None,
+                        "test-session",
+                        false,
+                        "test-agent",
+                        Some(&socket_path_str),
+                    );
+
+                    (client, Some(proxy))
+                } else {
+                    let client = RemoteClient::new(&tcp_endpoint, &None, "test-session", false, "test-agent");
+                    (client, None)
+                }
+            }
+
+            #[cfg(not(unix))]
+            {
+                let client = RemoteClient::new(&tcp_endpoint, &None, "test-session", false, "test-agent");
+                (client, Option::<()>::None)
+            }
+        };
 
         Self {
-            endpoint,
+            endpoint: tcp_endpoint,
             server_shutdown_tx: Some(shutdown_tx),
             remote_client,
             client,
+            #[cfg(unix)]
+            _socket_proxy: socket_proxy,
         }
     }
 
@@ -297,6 +368,150 @@ impl LocalTestServer {
 
     fn find_available_port() -> u16 {
         StdTcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port()
+    }
+}
+
+#[async_trait]
+impl Client for LocalTestServer {
+    async fn get_file_reconstruction_info(
+        &self,
+        file_hash: &merklehash::MerkleHash,
+    ) -> Result<Option<(mdb_shard::file_structs::MDBFileInfo, Option<merklehash::MerkleHash>)>> {
+        self.remote_client.get_file_reconstruction_info(file_hash).await
+    }
+
+    async fn get_reconstruction(
+        &self,
+        file_id: &merklehash::MerkleHash,
+        bytes_range: Option<cas_types::FileRange>,
+    ) -> Result<Option<cas_types::QueryReconstructionResponse>> {
+        self.remote_client.get_reconstruction(file_id, bytes_range).await
+    }
+
+    async fn batch_get_reconstruction(
+        &self,
+        file_ids: &[merklehash::MerkleHash],
+    ) -> Result<cas_types::BatchQueryReconstructionResponse> {
+        self.remote_client.batch_get_reconstruction(file_ids).await
+    }
+
+    async fn acquire_download_permit(&self) -> Result<crate::adaptive_concurrency::ConnectionPermit> {
+        self.remote_client.acquire_download_permit().await
+    }
+
+    async fn get_file_term_data(
+        &self,
+        url_info: Box<dyn crate::interface::URLProvider>,
+        download_permit: crate::adaptive_concurrency::ConnectionPermit,
+    ) -> Result<(bytes::Bytes, Vec<u32>)> {
+        self.remote_client.get_file_term_data(url_info, download_permit).await
+    }
+
+    async fn query_for_global_dedup_shard(
+        &self,
+        prefix: &str,
+        chunk_hash: &merklehash::MerkleHash,
+    ) -> Result<Option<bytes::Bytes>> {
+        self.remote_client.query_for_global_dedup_shard(prefix, chunk_hash).await
+    }
+
+    async fn acquire_upload_permit(&self) -> Result<crate::adaptive_concurrency::ConnectionPermit> {
+        self.remote_client.acquire_upload_permit().await
+    }
+
+    async fn upload_shard(
+        &self,
+        shard_data: bytes::Bytes,
+        upload_permit: crate::adaptive_concurrency::ConnectionPermit,
+    ) -> Result<bool> {
+        self.remote_client.upload_shard(shard_data, upload_permit).await
+    }
+
+    async fn upload_xorb(
+        &self,
+        prefix: &str,
+        serialized_cas_object: cas_object::SerializedCasObject,
+        upload_tracker: Option<std::sync::Arc<progress_tracking::upload_tracking::CompletionTracker>>,
+        upload_permit: crate::adaptive_concurrency::ConnectionPermit,
+    ) -> Result<u64> {
+        self.remote_client
+            .upload_xorb(prefix, serialized_cas_object, upload_tracker, upload_permit)
+            .await
+    }
+}
+
+#[async_trait]
+impl DirectAccessClient for LocalTestServer {
+    fn set_fetch_term_url_expiration(&self, expiration: std::time::Duration) {
+        self.client.set_fetch_term_url_expiration(expiration);
+    }
+
+    fn set_api_delay_range(&self, delay_range: Option<std::ops::Range<std::time::Duration>>) {
+        self.client.set_api_delay_range(delay_range);
+    }
+
+    async fn list_xorbs(&self) -> Result<Vec<merklehash::MerkleHash>> {
+        self.client.list_xorbs().await
+    }
+
+    async fn delete_xorb(&self, hash: &merklehash::MerkleHash) {
+        self.client.delete_xorb(hash).await;
+    }
+
+    async fn get_full_xorb(&self, hash: &merklehash::MerkleHash) -> Result<bytes::Bytes> {
+        self.client.get_full_xorb(hash).await
+    }
+
+    async fn get_xorb_ranges(
+        &self,
+        hash: &merklehash::MerkleHash,
+        chunk_ranges: Vec<(u32, u32)>,
+    ) -> Result<Vec<bytes::Bytes>> {
+        self.client.get_xorb_ranges(hash, chunk_ranges).await
+    }
+
+    async fn xorb_length(&self, hash: &merklehash::MerkleHash) -> Result<u32> {
+        self.client.xorb_length(hash).await
+    }
+
+    async fn xorb_exists(&self, hash: &merklehash::MerkleHash) -> Result<bool> {
+        self.client.xorb_exists(hash).await
+    }
+
+    async fn xorb_footer(&self, hash: &merklehash::MerkleHash) -> Result<cas_object::CasObject> {
+        self.client.xorb_footer(hash).await
+    }
+
+    async fn get_file_size(&self, hash: &merklehash::MerkleHash) -> Result<u64> {
+        self.client.get_file_size(hash).await
+    }
+
+    async fn get_file_data(
+        &self,
+        hash: &merklehash::MerkleHash,
+        byte_range: Option<cas_types::FileRange>,
+    ) -> Result<bytes::Bytes> {
+        self.client.get_file_data(hash, byte_range).await
+    }
+
+    async fn get_xorb_raw_bytes(
+        &self,
+        hash: &merklehash::MerkleHash,
+        byte_range: Option<cas_types::FileRange>,
+    ) -> Result<bytes::Bytes> {
+        self.client.get_xorb_raw_bytes(hash, byte_range).await
+    }
+
+    async fn xorb_raw_length(&self, hash: &merklehash::MerkleHash) -> Result<u64> {
+        self.client.xorb_raw_length(hash).await
+    }
+
+    async fn fetch_term_data(
+        &self,
+        hash: merklehash::MerkleHash,
+        fetch_term: cas_types::CASReconstructionFetchInfo,
+    ) -> Result<(bytes::Bytes, Vec<u32>)> {
+        self.client.fetch_term_data(hash, fetch_term).await
     }
 }
 

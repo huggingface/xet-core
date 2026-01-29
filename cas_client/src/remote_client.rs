@@ -46,6 +46,39 @@ pub struct RemoteClient {
 }
 
 impl RemoteClient {
+    /// Creates a new RemoteClient with an explicit Unix socket path.
+    ///
+    /// # Arguments
+    /// * `endpoint` - The CAS endpoint URL
+    /// * `auth` - Optional authentication configuration
+    /// * `session_id` - Session identifier
+    /// * `dry_run` - Whether to run in dry-run mode
+    /// * `user_agent` - User agent string
+    /// * `unix_socket_path` - Optional Unix socket path for proxying connections (ignored on non-Unix platforms)
+    pub fn new_with_socket(
+        endpoint: &str,
+        auth: &Option<AuthConfig>,
+        session_id: &str,
+        dry_run: bool,
+        user_agent: &str,
+        unix_socket_path: Option<&str>,
+    ) -> Arc<Self> {
+        Arc::new(Self {
+            endpoint: endpoint.to_string(),
+            dry_run,
+            authenticated_http_client: Arc::new(
+                http_client::build_auth_http_client(auth, session_id, user_agent, unix_socket_path).unwrap(),
+            ),
+            http_client: Arc::new(http_client::build_http_client(session_id, user_agent, unix_socket_path).unwrap()),
+            upload_concurrency_controller: AdaptiveConcurrencyController::new_upload("upload"),
+            download_concurrency_controller: AdaptiveConcurrencyController::new_download("download"),
+        })
+    }
+
+    /// Creates a new RemoteClient.
+    ///
+    /// If `HF_XET_CLIENT_UNIX_SOCKET_PATH` is set in the configuration, this will
+    /// automatically use the Unix socket for connections (checked by build_http_client).
     pub fn new(
         endpoint: &str,
         auth: &Option<AuthConfig>,
@@ -57,9 +90,9 @@ impl RemoteClient {
             endpoint: endpoint.to_string(),
             dry_run,
             authenticated_http_client: Arc::new(
-                http_client::build_auth_http_client(auth, session_id, user_agent).unwrap(),
+                http_client::build_auth_http_client(auth, session_id, user_agent, None).unwrap(),
             ),
-            http_client: Arc::new(http_client::build_http_client(session_id, user_agent).unwrap()),
+            http_client: Arc::new(http_client::build_http_client(session_id, user_agent, None).unwrap()),
             upload_concurrency_controller: AdaptiveConcurrencyController::new_upload("upload"),
             download_concurrency_controller: AdaptiveConcurrencyController::new_download("download"),
         })

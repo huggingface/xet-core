@@ -54,7 +54,7 @@ impl HubClient {
             endpoint: endpoint.to_owned(),
             repo_info,
             reference,
-            client: build_http_client(session_id, user_agent)?,
+            client: build_http_client(session_id, user_agent, None)?,
             cred_helper,
         })
     }

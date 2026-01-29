@@ -223,8 +223,8 @@ macro_rules! test_set_constants {
 ///         max_concurrent_uploads = 16;
 ///         max_concurrent_downloads = 20;
 ///     }
-///     cas_client {
-///         num_concurrent_range_gets = 64;
+///     client {
+///         upload_reporting_block_size = 1024000;
 ///     }
 /// }
 ///

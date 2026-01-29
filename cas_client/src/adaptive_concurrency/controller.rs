@@ -286,34 +286,26 @@ impl AdaptiveConcurrencyController {
     /// This will use adaptive concurrency if enabled, otherwise fixed concurrency.
     pub fn new_upload(logging_tag: &'static str) -> Arc<Self> {
         let config = xet_config();
-        if config.client.enable_adaptive_concurrency {
-            Self::new(
-                logging_tag,
-                config.client.ac_initial_upload_concurrency,
-                (config.client.ac_min_upload_concurrency, config.client.ac_max_upload_concurrency),
-                config.client.ac_min_bytes_required_for_adjustment.into(),
-                config.client.ac_num_transmissions_required_for_adjustment,
-            )
-        } else {
-            Self::new_fixed(logging_tag, config.client.fixed_concurrency_max_uploads as usize)
-        }
+        Self::new(
+            logging_tag,
+            config.client.ac_initial_upload_concurrency,
+            (config.client.ac_min_upload_concurrency, config.client.ac_max_upload_concurrency),
+            config.client.ac_min_bytes_required_for_adjustment.into(),
+            config.client.ac_num_transmissions_required_for_adjustment,
+        )
     }
 
     /// Create a new concurrency controller for downloads using configuration values.
     /// This will use adaptive concurrency if enabled, otherwise fixed concurrency.
     pub fn new_download(logging_tag: &'static str) -> Arc<Self> {
         let config = xet_config();
-        if config.client.enable_adaptive_concurrency {
-            Self::new(
-                logging_tag,
-                config.client.ac_initial_download_concurrency,
-                (config.client.ac_min_download_concurrency, config.client.ac_max_download_concurrency),
-                config.client.ac_min_bytes_required_for_adjustment.into(),
-                config.client.ac_num_transmissions_required_for_adjustment,
-            )
-        } else {
-            Self::new_fixed(logging_tag, config.client.fixed_concurrency_max_downloads as usize)
-        }
+        Self::new(
+            logging_tag,
+            config.client.ac_initial_download_concurrency,
+            (config.client.ac_min_download_concurrency, config.client.ac_max_download_concurrency),
+            config.client.ac_min_bytes_required_for_adjustment.into(),
+            config.client.ac_num_transmissions_required_for_adjustment,
+        )
     }
 
     pub async fn acquire_connection_permit(self: &Arc<Self>) -> Result<ConnectionPermit, CasClientError> {

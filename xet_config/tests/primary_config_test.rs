@@ -25,7 +25,6 @@ fn test_primary_config_struct() {
     let config = XetConfig::default();
 
     // Verify the struct has the correct fields (using actual XetConfig fields)
-    assert_eq!(config.client.fixed_concurrency_max_uploads, 8);
     assert_eq!(config.mdb_shard.target_size, 64 * 1024 * 1024);
 }
 
@@ -35,7 +34,6 @@ fn test_primary_config_clone() {
     let config1 = XetConfig::new();
     let config2 = config1.clone();
 
-    assert_eq!(config1.client.fixed_concurrency_max_uploads, config2.client.fixed_concurrency_max_uploads);
     assert_eq!(config1.mdb_shard.target_size, config2.mdb_shard.target_size);
 }
 
