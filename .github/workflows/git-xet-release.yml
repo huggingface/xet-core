@@ -55,7 +55,7 @@ jobs:
       - uses: ./.github/actions/cache-rust-build
       - name: Build
         run: |
-          cargo build --release
+          cargo build --release --features "git2-vendored-openssl"
           mkdir dist
           cp target/release/git-xet dist/
           cp git_xet/entitlements.xml dist/
