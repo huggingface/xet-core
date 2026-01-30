@@ -70,6 +70,9 @@ mod tests {
     #[test]
     #[serial(env_var_write_read)]
     fn test_uninstall_local() -> Result<()> {
+        if !install::git_lfs_available() {
+            return Ok(());
+        }
         // set up repo
         let test_repo = TestRepo::new("main")?;
 
@@ -105,6 +108,9 @@ mod tests {
     #[test]
     #[serial(env_var_write_read)]
     fn test_uninstall_all() -> Result<()> {
+        if !install::git_lfs_available() {
+            return Ok(());
+        }
         // set up repo
         let test_repo = TestRepo::new("main")?;
 
