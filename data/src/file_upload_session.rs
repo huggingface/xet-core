@@ -346,7 +346,7 @@ impl FileUploadSession {
                 session.completion_tracker.register_xorb_upload_completion(xorb_hash).await;
 
                 // Record the number of bytes uploaded.
-                session.deduplication_metrics.lock().await.xorb_bytes_uploaded += n_bytes_transmitted as u64;
+                session.deduplication_metrics.lock().await.xorb_bytes_uploaded += n_bytes_transmitted;
 
                 // Add this as a completed cas block so that future sessions can resume quickly.
                 session.shard_interface.add_uploaded_cas_block(xorb_cas_info).await?;
