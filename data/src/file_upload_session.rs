@@ -326,9 +326,9 @@ impl FileUploadSession {
         // Serialize the object; this can be relatively expensive, so run it on a compute thread.
         // XORBs are sent without footer - the server/client reconstructs it from chunk data.
         let compression_scheme = self.config.data_config.compression;
-        let cas_object =
-            tokio::task::spawn_blocking(move || SerializedCasObject::from_xorb(xorb, compression_scheme, false))
-                .await??;
+        let cas_object = XetRuntime::current()
+            .spawn_blocking(move || SerializedCasObject::from_xorb(xorb, compression_scheme, false))
+            .await??;
 
         let session = self.clone();
         let upload_permit = self.client.acquire_upload_permit().await?;

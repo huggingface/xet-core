@@ -1,6 +1,7 @@
 use mdb_shard::Sha256;
 use sha2::{Digest, Sha256 as sha2Sha256};
 use tokio::task::{JoinError, JoinHandle};
+use xet_runtime::XetRuntime;
 
 pub enum ShaGenerator {
     Generate(Sha256Generator),
@@ -43,7 +44,8 @@ impl Sha256Generator {
 
         // The previous task returns the hasher; we consume that and pass it on.
         // Use the compute background thread for this process.
-        self.hasher = Some(tokio::task::spawn_blocking(move || {
+        let rt = XetRuntime::current();
+        self.hasher = Some(rt.spawn_blocking(move || {
             hasher.update(&new_data);
 
             Ok(hasher)
