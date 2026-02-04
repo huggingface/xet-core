@@ -16,6 +16,7 @@ use progress_tracking::item_tracking::ItemProgressUpdater;
 use tracing::{Instrument, Span, info, info_span, instrument};
 use ulid::Ulid;
 use utils::auth::{AuthConfig, TokenRefresher};
+use xet_runtime::runtime::check_sigint_shutdown;
 use xet_runtime::utils::run_constrained_with_semaphore;
 use xet_runtime::{GlobalSemaphoreHandle, XetRuntime, global_semaphore_handle, xet_cache_root, xet_config};
 
@@ -312,9 +313,7 @@ fn hash_single_file(filename: String, buffer_size: usize) -> errors::Result<XetF
     let mut chunk_hashes: Vec<(MerkleHash, u64)> = Vec::new();
 
     loop {
-        if XetRuntime::current().in_sigint_shutdown() {
-            return Err(std::io::Error::new(std::io::ErrorKind::Interrupted, "Operation interrupted by SIGINT").into());
-        }
+        check_sigint_shutdown()?;
 
         let bytes_read = reader.read(&mut buffer)?;
         if bytes_read == 0 {
@@ -365,12 +364,14 @@ fn hash_single_file(filename: String, buffer_size: usize) -> errors::Result<XetF
 /// - Pure local computation
 #[instrument(skip_all, name = "data_client::hash_files", fields(num_files=file_paths.len()))]
 pub async fn hash_files_async(file_paths: Vec<String>) -> errors::Result<Vec<XetFileInfo>> {
-    let semaphore = XetRuntime::current().global_semaphore(*CONCURRENT_FILE_INGESTION_LIMITER);
+    let rt = XetRuntime::current();
+    let semaphore = rt.global_semaphore(*CONCURRENT_FILE_INGESTION_LIMITER);
     let buffer_size = *xet_config().data.ingestion_block_size as usize;
 
     let hash_futures = file_paths.into_iter().map(|file_path| {
+        let rt = rt.clone();
         async move {
-            tokio::task::spawn_blocking(move || hash_single_file(file_path, buffer_size))
+            rt.spawn_blocking(move || hash_single_file(file_path, buffer_size))
                 .await
                 .map_err(|e| std::io::Error::other(e.to_string()))?
         }

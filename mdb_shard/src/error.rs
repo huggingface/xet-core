@@ -45,6 +45,9 @@ pub enum MDBShardError {
 
     #[error("Error: {0}")]
     Other(String),
+
+    #[error("Runtime Error: {0}")]
+    RuntimeError(#[from] xet_runtime::errors::MultithreadedRuntimeError),
 }
 
 // Define our own result type here (this seems to be the standard).

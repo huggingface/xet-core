@@ -9,7 +9,7 @@ use mdb_shard::Sha256;
 use mdb_shard::file_structs::FileMetadataExt;
 use progress_tracking::upload_tracking::CompletionTrackerFileId;
 use tracing::{Instrument, debug_span, info, instrument};
-use xet_runtime::xet_config;
+use xet_runtime::{XetRuntime, xet_config};
 
 use crate::XetFileInfo;
 use crate::deduplication_interface::UploadSessionDataManager;
@@ -103,8 +103,9 @@ impl SingleFileCleaner {
         let chunk_data_jh = {
             let mut chunker = std::mem::take(&mut self.chunker);
             let data = data.clone();
+            let rt = XetRuntime::current();
 
-            tokio::task::spawn_blocking(move || {
+            rt.spawn_blocking(move || {
                 let chunks: Arc<[Chunk]> = Arc::from(chunker.next_block_bytes(&data, false));
                 (chunks, chunker)
             })

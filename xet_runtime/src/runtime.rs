@@ -57,6 +57,19 @@ fn get_num_tokio_worker_threads() -> usize {
     n
 }
 
+/// Quick function to check for a sigint shutdown.
+#[inline]
+pub fn check_sigint_shutdown() -> Result<(), MultithreadedRuntimeError> {
+    if XetRuntime::current_if_exists()
+        .map(|rt| rt.in_sigint_shutdown())
+        .unwrap_or(false)
+    {
+        Err(MultithreadedRuntimeError::TaskCanceled("CTRL-C Cancellation".to_owned()))
+    } else {
+        Ok(())
+    }
+}
+
 /// This module provides a simple wrapper around Tokio's runtime to create a thread pool
 /// with some default settings. It is intended to be used as a singleton thread pool for
 /// the entire application.
@@ -404,6 +417,24 @@ impl XetRuntime {
         self.handle().spawn(future)
     }
 
+    /// Spawn a blocking task on the runtime's blocking thread pool. The task runs with this
+    /// runtime stored in thread-local storage so [`XetRuntime::current()`] works inside `f`.
+    ///
+    /// The receiver must be an `Arc<XetRuntime>` so the runtime can be installed in the
+    /// blocking thread (e.g. `rt.spawn_blocking(|| { ... })` where `rt: Arc<XetRuntime>`).
+    pub fn spawn_blocking<F, R>(self: &Arc<Self>, f: F) -> JoinHandle<R>
+    where
+        F: FnOnce() -> R + Send + 'static,
+        R: Send + 'static,
+    {
+        let rt = self.clone();
+        self.handle().spawn_blocking(move || {
+            let pid = std::process::id();
+            THREAD_RUNTIME_REF.set(Some((pid, rt)));
+            f()
+        })
+    }
+
     /// Allows a user to access a global semaphore that is associated with the runtime.
     ///
     /// The key here is a function handle that, when called, returns the number of permits
@@ -531,5 +562,17 @@ mod tests {
         let guard2 = rt.global_reqwest_client.lock().unwrap();
         let (tag2, _) = guard2.as_ref().unwrap();
         assert_eq!(tag2, "/tmp/socket.sock", "Client should be replaced when tag changes");
+    }
+
+    #[test]
+    fn test_spawn_blocking_sets_current_runtime() {
+        let rt = XetRuntime::new().expect("Failed to create runtime");
+        let rt_clone = rt.clone();
+        let jh = rt.spawn_blocking(move || {
+            let current = XetRuntime::current();
+            Arc::ptr_eq(&current, &rt_clone)
+        });
+        let same = rt.external_run_async_task(async { jh.await.unwrap() }).unwrap();
+        assert!(same);
     }
 }

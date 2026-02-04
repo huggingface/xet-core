@@ -9,7 +9,7 @@ use pyo3::prelude::PyAnyMethods;
 use pyo3::types::{IntoPyDict, PyList, PyString};
 use pyo3::{IntoPyObjectExt, Py, PyAny, PyResult, Python, pyclass};
 use tracing::error;
-use xet_runtime::exports::tokio;
+use xet_runtime::XetRuntime;
 
 use crate::runtime::convert_multithreading_error;
 
@@ -222,7 +222,8 @@ impl WrappedProgressUpdaterImpl {
 
     async fn register_updates_impl(self: Arc<Self>, updates: ProgressUpdate) -> PyResult<()> {
         // Run on compute thread that doesn't block async workers
-        tokio::task::spawn_blocking(move || {
+        let rt = XetRuntime::current();
+        rt.spawn_blocking(move || {
             Python::attach(|py| {
                 let f = self.py_func.bind(py);
 

@@ -78,6 +78,9 @@ pub enum DataProcessingError {
 
     #[error("File Reconstruction Error: {0}")]
     FileReconstructionError(#[from] FileReconstructionError),
+
+    #[error("Runtime Error: {0}")]
+    RuntimeError(#[from] xet_runtime::errors::MultithreadedRuntimeError),
 }
 
 pub type Result<T> = std::result::Result<T, DataProcessingError>;
