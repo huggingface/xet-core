@@ -3,6 +3,7 @@ resolver = "2"
 
 members = [
     "cas_client",
+    "simulation",
     "cas_object",
     "cas_types",
     "chunk_cache",

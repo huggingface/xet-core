@@ -1,0 +1,34 @@
+[package]
+name = "simulation"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "run_ac_simulation"
+path = "src/bin/run_ac_simulation.rs"
+
+[dependencies]
+cas_client = { path = "../cas_client" }
+chrono = { workspace = true }
+clap = { workspace = true }
+rand = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+uuid = { workspace = true }
+xet_runtime = { path = "../xet_runtime" }
+
+bytes = { workspace = true }
+http = { workspace = true }
+reqwest = { workspace = true }
+reqwest-middleware = { workspace = true }
+tracing-log = { workspace = true }
+tracing-subscriber = { workspace = true }
+url = { workspace = true }
+
+toxiproxy_rust = { git = "https://github.com/itarato/toxiproxy_rust.git" }
