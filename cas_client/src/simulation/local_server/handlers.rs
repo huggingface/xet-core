@@ -32,8 +32,22 @@ use futures_util::StreamExt;
 use http::header::RANGE;
 use merklehash::MerkleHash;
 
+use super::delay_simulation::DelaySimulation;
 use crate::error::CasClientError;
 use crate::simulation::DirectAccessClient;
+
+/// Server state passed to all handlers.
+#[derive(Clone)]
+pub struct ServerState {
+    pub client: Arc<dyn DirectAccessClient>,
+    pub delay_simulation: Arc<DelaySimulation>,
+}
+
+// ServerState is Send + Sync because:
+// - Arc<dyn DirectAccessClient> is Send + Sync (DirectAccessClient requires Send + Sync)
+// - Arc<DelaySimulation> is Send + Sync (DelaySimulation contains only Send + Sync types)
+unsafe impl Send for ServerState {}
+unsafe impl Sync for ServerState {}
 
 /// Represents the different forms a Range header can take.
 pub enum FileRangeVariant {
@@ -178,23 +192,28 @@ fn transform_fetch_info_urls(
 /// The URLs in fetch_info are transformed from local file paths to HTTP URLs
 /// that point to the /v1/fetch_term endpoint.
 pub async fn get_reconstruction(
-    State(state): State<Arc<dyn DirectAccessClient>>,
+    State(state): State<ServerState>,
     Path(HexMerkleHash(file_id)): Path<HexMerkleHash>,
     headers: HeaderMap,
 ) -> Response {
+    let connection_guard = state.delay_simulation.register_connection().await;
+    if let Some(simulated_error) = connection_guard.simulate_error() {
+        return simulated_error;
+    }
+
     let base_url = get_base_url(&headers);
 
     let range = match parse_range_header(headers.get(RANGE)) {
         Ok(Some(FileRangeVariant::Normal(range))) => Some(range),
         Ok(Some(FileRangeVariant::OpenRHS(start))) => {
-            let file_size = match state.get_file_size(&file_id).await {
+            let file_size = match state.client.get_file_size(&file_id).await {
                 Ok(size) => size,
                 Err(e) => return error_to_response(e),
             };
             Some(FileRange::new(start, file_size))
         },
         Ok(Some(FileRangeVariant::Suffix(suffix))) => {
-            let file_size = match state.get_file_size(&file_id).await {
+            let file_size = match state.client.get_file_size(&file_id).await {
                 Ok(size) => size,
                 Err(e) => return error_to_response(e),
             };
@@ -204,7 +223,7 @@ pub async fn get_reconstruction(
         Err((status, msg)) => return (status, msg).into_response(),
     };
 
-    match state.get_reconstruction(&file_id, range).await {
+    match state.client.get_reconstruction(&file_id, range).await {
         Ok(Some(mut response)) => {
             transform_fetch_info_urls(&mut response.fetch_info, &base_url);
             Json(response).into_response()
@@ -223,10 +242,14 @@ pub async fn get_reconstruction(
 ///
 /// The URLs in fetch_info are transformed from local file paths to HTTP URLs.
 pub async fn batch_get_reconstruction(
-    State(state): State<Arc<dyn DirectAccessClient>>,
+    State(state): State<ServerState>,
     uri: axum::http::Uri,
     headers: HeaderMap,
 ) -> Response {
+    let connection_guard = state.delay_simulation.register_connection().await;
+    if let Some(simulated_error) = connection_guard.simulate_error() {
+        return simulated_error;
+    }
     let base_url = get_base_url(&headers);
 
     // Parse repeated file_id query parameters
@@ -253,7 +276,7 @@ pub async fn batch_get_reconstruction(
         return (StatusCode::BAD_REQUEST, "Invalid file_id format").into_response();
     }
 
-    match state.batch_get_reconstruction(&file_ids).await {
+    match state.client.batch_get_reconstruction(&file_ids).await {
         Ok(mut response) => {
             transform_fetch_info_urls(&mut response.fetch_info, &base_url);
             Json(response).into_response()
@@ -269,11 +292,11 @@ pub async fn batch_get_reconstruction(
 ///
 /// This endpoint is called by RemoteClient when fetching reconstruction terms.
 /// It returns raw (compressed) bytes that the client will decompress.
-pub async fn fetch_term(
-    State(state): State<Arc<dyn DirectAccessClient>>,
-    uri: axum::http::Uri,
-    headers: HeaderMap,
-) -> Response {
+pub async fn fetch_term(State(state): State<ServerState>, uri: axum::http::Uri, headers: HeaderMap) -> Response {
+    let connection_guard = state.delay_simulation.register_connection().await;
+    if let Some(simulated_error) = connection_guard.simulate_error() {
+        return simulated_error;
+    }
     // Extract 'term' query parameter
     let term = uri.query().unwrap_or("").split('&').find_map(|param| {
         let (key, value) = param.split_once('=')?;
@@ -290,7 +313,7 @@ pub async fn fetch_term(
     };
 
     // Get total length of the raw XORB data for Range header handling
-    let total_length = match state.xorb_raw_length(&xorb_hash).await {
+    let total_length = match state.client.xorb_raw_length(&xorb_hash).await {
         Ok(len) => len,
         Err(e) => return error_to_response(e),
     };
@@ -307,7 +330,7 @@ pub async fn fetch_term(
     };
 
     // Fetch raw (serialized/compressed) bytes from the XORB
-    match state.get_xorb_raw_bytes(&xorb_hash, byte_range).await {
+    match state.client.get_xorb_raw_bytes(&xorb_hash, byte_range).await {
         Ok(data) => (StatusCode::OK, data).into_response(),
         Err(e) => error_to_response(e),
     }
@@ -317,11 +340,12 @@ pub async fn fetch_term(
 ///
 /// Query for a global deduplication shard by chunk hash.
 /// Returns the shard data if found, 404 otherwise.
-pub async fn get_dedup_info_by_chunk(
-    State(state): State<Arc<dyn DirectAccessClient>>,
-    Path(key): Path<HexKey>,
-) -> Response {
-    match state.query_for_global_dedup_shard(&key.prefix, &key.hash).await {
+pub async fn get_dedup_info_by_chunk(State(state): State<ServerState>, Path(key): Path<HexKey>) -> Response {
+    let connection_guard = state.delay_simulation.register_connection().await;
+    if let Some(simulated_error) = connection_guard.simulate_error() {
+        return simulated_error;
+    }
+    match state.client.query_for_global_dedup_shard(&key.prefix, &key.hash).await {
         Ok(Some(data)) => (StatusCode::OK, data).into_response(),
         Ok(None) => (StatusCode::NOT_FOUND, "Shard not found").into_response(),
         Err(e) => error_to_response(e),
@@ -332,8 +356,12 @@ pub async fn get_dedup_info_by_chunk(
 ///
 /// Check if a XORB exists in the store.
 /// Returns 200 if found, 404 otherwise.
-pub async fn head_xorb(State(state): State<Arc<dyn DirectAccessClient>>, Path(key): Path<HexKey>) -> Response {
-    match state.get_file_reconstruction_info(&key.hash).await {
+pub async fn head_xorb(State(state): State<ServerState>, Path(key): Path<HexKey>) -> Response {
+    let connection_guard = state.delay_simulation.register_connection().await;
+    if let Some(simulated_error) = connection_guard.simulate_error() {
+        return simulated_error;
+    }
+    match state.client.get_file_reconstruction_info(&key.hash).await {
         Ok(Some(_)) => {
             let mut headers = HeaderMap::new();
             headers.insert(http::header::CONTENT_LENGTH, HeaderValue::from(0));
@@ -349,11 +377,12 @@ pub async fn head_xorb(State(state): State<Arc<dyn DirectAccessClient>>, Path(ke
 /// Upload a XORB (content-addressed block) to the store.
 /// Request body: Serialized CAS object data
 /// Response: JSON indicating if the XORB was newly inserted
-pub async fn post_xorb(
-    State(state): State<Arc<dyn DirectAccessClient>>,
-    Path(key): Path<HexKey>,
-    body: Body,
-) -> Response {
+pub async fn post_xorb(State(state): State<ServerState>, Path(key): Path<HexKey>, body: Body) -> Response {
+    let connection_guard = state.delay_simulation.register_connection().await;
+    if let Some(simulated_error) = connection_guard.simulate_error() {
+        return simulated_error;
+    }
+
     let data = match collect_body(body).await {
         Ok(d) => d,
         Err(e) => return (StatusCode::BAD_REQUEST, e).into_response(),
@@ -367,12 +396,12 @@ pub async fn post_xorb(
         footer_start: None,
     };
 
-    let permit = match state.acquire_upload_permit().await {
+    let permit = match state.client.acquire_upload_permit().await {
         Ok(p) => p,
         Err(e) => return error_to_response(e),
     };
 
-    match state.upload_xorb(&key.prefix, cas_object, None, permit).await {
+    match state.client.upload_xorb(&key.prefix, cas_object, None, permit).await {
         Ok(_) => Json(UploadXorbResponse { was_inserted: true }).into_response(),
         Err(e) => error_to_response(e),
     }
@@ -383,18 +412,22 @@ pub async fn post_xorb(
 /// Upload a shard (deduplication index) to the store.
 /// Request body: Raw shard data
 /// Response: JSON indicating if the shard was newly inserted or already existed
-pub async fn post_shard(State(state): State<Arc<dyn DirectAccessClient>>, body: Body) -> Response {
+pub async fn post_shard(State(state): State<ServerState>, body: Body) -> Response {
+    let connection_guard = state.delay_simulation.register_connection().await;
+    if let Some(simulated_error) = connection_guard.simulate_error() {
+        return simulated_error;
+    }
     let data = match collect_body(body).await {
         Ok(d) => d,
         Err(e) => return (StatusCode::BAD_REQUEST, e).into_response(),
     };
 
-    let permit = match state.acquire_upload_permit().await {
+    let permit = match state.client.acquire_upload_permit().await {
         Ok(p) => p,
         Err(e) => return error_to_response(e),
     };
 
-    match state.upload_shard(data, permit).await {
+    match state.client.upload_shard(data, permit).await {
         Ok(was_new) => {
             let result = if was_new {
                 UploadShardResponseType::SyncPerformed
@@ -412,10 +445,14 @@ pub async fn post_shard(State(state): State<Arc<dyn DirectAccessClient>>, body: 
 /// Get the size of a file.
 /// Returns Content-Length header with file size if found, 404 otherwise.
 pub async fn head_file(
-    State(state): State<Arc<dyn DirectAccessClient>>,
+    State(state): State<ServerState>,
     Path(HexMerkleHash(file_id)): Path<HexMerkleHash>,
 ) -> Response {
-    match state.get_file_size(&file_id).await {
+    let connection_guard = state.delay_simulation.register_connection().await;
+    if let Some(simulated_error) = connection_guard.simulate_error() {
+        return simulated_error;
+    }
+    match state.client.get_file_size(&file_id).await {
         Ok(size) => {
             let mut headers = HeaderMap::new();
             headers.insert(http::header::CONTENT_LENGTH, HeaderValue::from(size));
@@ -430,10 +467,14 @@ pub async fn head_file(
 /// Download XORB data directly.
 /// Supports Range header for partial downloads.
 pub async fn get_file_term_data(
-    State(state): State<Arc<dyn DirectAccessClient>>,
+    State(state): State<ServerState>,
     Path((_prefix, hash_str)): Path<(String, String)>,
     headers: HeaderMap,
 ) -> Response {
+    let connection_guard = state.delay_simulation.register_connection().await;
+    if let Some(simulated_error) = connection_guard.simulate_error() {
+        return simulated_error;
+    }
     let hash = match MerkleHash::from_hex(&hash_str) {
         Ok(h) => h,
         Err(_) => return (StatusCode::BAD_REQUEST, "Invalid hash").into_response(),
@@ -446,7 +487,7 @@ pub async fn get_file_term_data(
         Err((status, msg)) => return (status, msg).into_response(),
     };
 
-    match state.get_file_data(&hash, range).await {
+    match state.client.get_file_data(&hash, range).await {
         Ok(data) => (StatusCode::OK, data).into_response(),
         Err(e) => error_to_response(e),
     }
@@ -481,6 +522,188 @@ async fn collect_body(body: Body) -> Result<Bytes, String> {
     Ok(Bytes::from(data))
 }
 
+/// Parses a duration range string in the format "(min, max)" where min and max are duration strings.
+///
+/// Supports duration formats like "10ms", "1s", "500us", etc. (via duration_str crate).
+///
+/// Examples:
+/// - "(10ms, 100ms)" -> Duration range from 10ms to 100ms
+/// - "(1s, 5s)" -> Duration range from 1s to 5s
+#[cfg(test)]
+fn parse_duration_range(value: &str) -> Result<std::ops::Range<std::time::Duration>, String> {
+    let trimmed = value.trim();
+
+    // Remove parentheses if present
+    let inner = if trimmed.starts_with('(') && trimmed.ends_with(')') {
+        &trimmed[1..trimmed.len() - 1]
+    } else {
+        trimmed
+    };
+
+    // Split by comma
+    let parts: Vec<&str> = inner.split(',').map(|s| s.trim()).collect();
+    if parts.len() != 2 {
+        return Err(format!("Expected format '(min, max)' with two duration values, got: {value}"));
+    }
+
+    let min = duration_str::parse(parts[0]).map_err(|e| format!("Invalid min duration '{}': {e}", parts[0]))?;
+    let max = duration_str::parse(parts[1]).map_err(|e| format!("Invalid max duration '{}': {e}", parts[1]))?;
+
+    if min > max {
+        return Err(format!("Min duration ({:?}) cannot be greater than max ({:?})", min, max));
+    }
+
+    Ok(min..max)
+}
+
+pub async fn set_config(State(state): State<ServerState>, uri: axum::http::Uri, body: Body) -> Response {
+    use super::delay_simulation::ServerDelayProfile;
+
+    // Try to parse as JSON body first
+    let body_bytes = match axum::body::to_bytes(body, usize::MAX).await {
+        Ok(bytes) => bytes,
+        Err(_) => Bytes::new(),
+    };
+
+    if !body_bytes.is_empty() {
+        match serde_json::from_slice::<ServerDelayProfile>(&body_bytes) {
+            Ok(profile) => {
+                state.delay_simulation.update_profile(profile).await;
+                return (StatusCode::OK, "Profile updated").into_response();
+            },
+            Err(_) => {
+                // If JSON parsing fails, fall through to query param parsing
+            },
+        }
+    }
+
+    // Fall back to query parameter parsing (legacy format)
+    let query = uri.query().unwrap_or("");
+    let params: std::collections::HashMap<String, String> = query
+        .split('&')
+        .filter_map(|param| {
+            let (key, value) = param.split_once('=')?;
+            Some((key.to_string(), urlencoding::decode(value).ok()?.into_owned()))
+        })
+        .collect();
+
+    let Some(config_name) = params.get("config") else {
+        return (StatusCode::BAD_REQUEST, "Missing 'config' query parameter or JSON body").into_response();
+    };
+
+    let Some(value) = params.get("value") else {
+        return (StatusCode::BAD_REQUEST, "Missing 'value' query parameter").into_response();
+    };
+
+    match config_name.to_lowercase().as_str() {
+        "congestion" => match parse_congestion_config(value) {
+            Ok((threshold, min_ms, max_ms, error_rate)) => {
+                let profile = ServerDelayProfile {
+                    random_delay_ms: None,
+                    connection_threshold: Some(threshold),
+                    min_congestion_penalty_ms: Some(min_ms),
+                    max_congestion_penalty_ms: Some(max_ms),
+                    congestion_error_rate: Some(error_rate),
+                };
+                state.delay_simulation.update_profile(profile).await;
+                (StatusCode::OK, "Congestion config set").into_response()
+            },
+            Err(e) => (StatusCode::BAD_REQUEST, format!("Invalid congestion value: {e}")).into_response(),
+        },
+        "random_delay" => match parse_random_delay_value(value) {
+            Ok((min_ms, max_ms)) => {
+                let profile = ServerDelayProfile {
+                    random_delay_ms: Some((min_ms, max_ms)),
+                    connection_threshold: None,
+                    min_congestion_penalty_ms: None,
+                    max_congestion_penalty_ms: None,
+                    congestion_error_rate: None,
+                };
+                state.delay_simulation.update_profile(profile).await;
+                (StatusCode::OK, "Random delay config set").into_response()
+            },
+            Err(e) => (StatusCode::BAD_REQUEST, format!("Invalid random_delay value: {e}")).into_response(),
+        },
+        _ => (
+            StatusCode::BAD_REQUEST,
+            format!("Unknown config: {config_name}. Supported: congestion, random_delay"),
+        )
+            .into_response(),
+    }
+}
+
+/// Parse random_delay value in format "(min, max)" where min and max are duration strings (e.g. "10ms", "100ms").
+/// Returns (min_ms, max_ms).
+fn parse_random_delay_value(value: &str) -> Result<(u64, u64), String> {
+    let trimmed = value.trim();
+    let inner = if trimmed.starts_with('(') && trimmed.ends_with(')') {
+        trimmed[1..trimmed.len() - 1].trim()
+    } else {
+        trimmed
+    };
+    let parts: Vec<&str> = inner.split(',').map(|s| s.trim()).collect();
+    if parts.len() != 2 {
+        return Err(format!("Expected format '(min, max)' with two duration values, got: {value}"));
+    }
+    let min_dur = duration_str::parse(parts[0]).map_err(|e| format!("Invalid min duration '{}': {e}", parts[0]))?;
+    let max_dur = duration_str::parse(parts[1]).map_err(|e| format!("Invalid max duration '{}': {e}", parts[1]))?;
+    if min_dur > max_dur {
+        return Err("Min duration cannot be greater than max".to_string());
+    }
+    let min_ms = min_dur.as_millis().try_into().map_err(|_| "Duration too large".to_string())?;
+    let max_ms = max_dur.as_millis().try_into().map_err(|_| "Duration too large".to_string())?;
+    Ok((min_ms, max_ms))
+}
+
+/// Parse congestion config from format: "connection_threshold,min_penalty_ms,max_penalty_ms,error_rate"
+/// Returns (threshold, min_ms, max_ms, error_rate)
+fn parse_congestion_config(value: &str) -> Result<(u64, u64, u64, f64), String> {
+    let parts: Vec<&str> = value.split(',').map(|s| s.trim()).collect();
+    if parts.len() != 4 {
+        return Err("Expected format: connection_threshold,min_penalty_ms,max_penalty_ms,error_rate".to_string());
+    }
+
+    let connection_threshold = parts[0]
+        .parse::<u64>()
+        .map_err(|e| format!("Invalid connection_threshold: {e}"))?;
+    let min_penalty_ms = parts[1].parse::<u64>().map_err(|e| format!("Invalid min_penalty_ms: {e}"))?;
+    let max_penalty_ms = parts[2].parse::<u64>().map_err(|e| format!("Invalid max_penalty_ms: {e}"))?;
+    let error_rate = parts[3].parse::<f64>().map_err(|e| format!("Invalid error_rate: {e}"))?;
+
+    if !(0.0..=1.0).contains(&error_rate) {
+        return Err("error_rate must be between 0.0 and 1.0".to_string());
+    }
+
+    Ok((connection_threshold, min_penalty_ms, max_penalty_ms, error_rate))
+}
+
+/// POST /simulation/dummy_upload
+///
+/// Accepts an upload stream and discards all data. Returns after applying the configured delays.
+/// This is useful for testing upload throughput without actual storage overhead.
+///
+/// If congestion is configured and active connections exceed the threshold:
+/// - May return INTERNAL_SERVER_ERROR with probability `error_rate`
+/// - Otherwise applies an additional penalty delay
+pub async fn dummy_upload(State(state): State<ServerState>, body: Body) -> Response {
+    let connection_guard = state.delay_simulation.register_connection().await;
+    if let Some(simulated_error) = connection_guard.simulate_error() {
+        return simulated_error;
+    }
+
+    // Consume and discard the entire body
+    let mut stream = body.into_data_stream();
+    while let Some(chunk) = stream.next().await {
+        if let Err(e) = chunk {
+            return (StatusCode::BAD_REQUEST, format!("Error reading body: {e}")).into_response();
+        }
+        // Discard the chunk
+    }
+
+    (StatusCode::OK, "Upload discarded").into_response()
+    // connection_guard dropped here, decrementing active connection count
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -493,5 +716,40 @@ mod tests {
         let decoded_hash = decode_term(&encoded).unwrap();
 
         assert_eq!(decoded_hash, xorb_hash);
+    }
+
+    #[test]
+    fn test_parse_duration_range() {
+        use std::time::Duration;
+
+        // Basic format with parentheses
+        let range = super::parse_duration_range("(10ms, 100ms)").unwrap();
+        assert_eq!(range.start, Duration::from_millis(10));
+        assert_eq!(range.end, Duration::from_millis(100));
+
+        // Without parentheses
+        let range = super::parse_duration_range("50ms, 200ms").unwrap();
+        assert_eq!(range.start, Duration::from_millis(50));
+        assert_eq!(range.end, Duration::from_millis(200));
+
+        // With extra whitespace
+        let range = super::parse_duration_range("  (  1s  ,  5s  )  ").unwrap();
+        assert_eq!(range.start, Duration::from_secs(1));
+        assert_eq!(range.end, Duration::from_secs(5));
+
+        // Same min and max
+        let range = super::parse_duration_range("(100ms, 100ms)").unwrap();
+        assert_eq!(range.start, Duration::from_millis(100));
+        assert_eq!(range.end, Duration::from_millis(100));
+
+        // Error: min > max
+        assert!(super::parse_duration_range("(200ms, 100ms)").is_err());
+
+        // Error: invalid format
+        assert!(super::parse_duration_range("100ms").is_err());
+        assert!(super::parse_duration_range("(100ms)").is_err());
+
+        // Error: invalid duration string
+        assert!(super::parse_duration_range("(invalid, 100ms)").is_err());
     }
 }
