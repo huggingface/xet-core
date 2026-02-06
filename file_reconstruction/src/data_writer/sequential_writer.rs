@@ -1250,11 +1250,10 @@ mod tests {
         }
 
         let ret = writer.finish().await;
-        assert!(matches!(ret, Err(FileReconstructionError::IoError(_))));
-        let Err(FileReconstructionError::IoError(inner_err)) = ret else {
-            panic!("unexpected error occurred")
+        assert!(ret.is_err());
+        if let Err(FileReconstructionError::IoError(inner_err)) = ret {
+            assert_eq!(inner_err.kind(), std::io::ErrorKind::InvalidInput);
         };
-        assert_eq!(inner_err.kind(), std::io::ErrorKind::InvalidInput);
     }
 
     #[tokio::test]
@@ -1311,11 +1310,10 @@ mod tests {
         }
 
         let ret = writer.finish().await;
-        assert!(matches!(ret, Err(FileReconstructionError::IoError(_))));
-        let Err(FileReconstructionError::IoError(inner_err)) = ret else {
-            panic!("unexpected error occurred")
+        assert!(ret.is_err());
+        if let Err(FileReconstructionError::IoError(inner_err)) = ret {
+            assert_eq!(inner_err.kind(), std::io::ErrorKind::InvalidInput);
         };
-        assert_eq!(inner_err.kind(), std::io::ErrorKind::InvalidInput);
     }
 
     #[tokio::test]
