@@ -1,26 +1,64 @@
-//! Minimal TCP proxy that enforces separate upload and download bandwidth caps.
-//! Binds to an unused port and forwards to the given upstream (e.g. LocalTestServer
-//! host:port). Callers (e.g. Toxiproxy) use the returned listen address as their upstream.
+//! TCP proxy that enforces bandwidth, latency, and optional connection drop.
+//! Binds to an unused port and forwards to the given upstream (e.g. LocalTestServer).
 //!
-//! Uses tokio semaphores: each chunk acquires `n` permits (and discards them), and 50ms
-//! refill loops add permits at the target rates so fairness is preserved.
+//! Uses tokio semaphores for bandwidth; adds per-chunk latency (with jitter) and
+//! optionally drops new connections with a configurable probability.
+//! Supports a schedule of (Duration, NetworkProfile) pairs with a background updater.
 
 use std::sync::Arc;
 
+use rand::Rng;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::{Semaphore, broadcast};
-use tokio::time::{Duration, interval};
+use tokio::sync::{RwLock, Semaphore, broadcast};
+use tokio::time::{Duration, interval, sleep};
 use tracing::debug;
 
 use super::error::{Result, SimulationError};
+use super::network_profile::NetworkProfile;
 
 const BUF_SIZE: usize = 65536;
 const REFILL_INTERVAL_MS: u64 = 50;
 
+/// Configuration for the bandwidth-limit proxy (bandwidth, latency, drop probability).
+#[derive(Clone, Debug)]
+pub struct ProxyConfig {
+    pub upload_bandwidth_bytes_per_sec: u64,
+    pub download_bandwidth_bytes_per_sec: u64,
+    pub latency_ms: Option<u32>,
+    pub jitter_ms: Option<u32>,
+    pub drop_probability: f64,
+}
+
+impl ProxyConfig {
+    /// Build from a network profile; uses profile bandwidth for both upload and download.
+    pub fn from_profile(profile: &NetworkProfile) -> Self {
+        let bps = profile.bandwidth_kbps.map(|k| (u64::from(k) * 1000) / 8).unwrap_or(0);
+        Self {
+            upload_bandwidth_bytes_per_sec: bps,
+            download_bandwidth_bytes_per_sec: bps,
+            latency_ms: profile.latency_ms,
+            jitter_ms: profile.jitter_ms,
+            drop_probability: profile.drop_probability.unwrap_or(0.0),
+        }
+    }
+}
+
+/// Per-chunk latency parameters (optional).
+#[derive(Clone)]
+struct LatencyParams {
+    latency_ms: u32,
+    jitter_ms: u32,
+}
+
 /// Copy data from `reader` to `writer`. If `limiter` is `Some`, acquires `n` permits
-/// (consumed, not returned) before writing each chunk.
-async fn copy_with_limit<R, W>(mut reader: R, mut writer: W, limiter: Option<Arc<Semaphore>>) -> std::io::Result<u64>
+/// before writing. If `latency` is `Some`, sleeps latency ± jitter before each write.
+async fn copy_with_limit<R, W>(
+    mut reader: R,
+    mut writer: W,
+    limiter: Option<Arc<Semaphore>>,
+    latency: Option<LatencyParams>,
+) -> std::io::Result<u64>
 where
     R: tokio::io::AsyncRead + Unpin,
     W: tokio::io::AsyncWrite + Unpin,
@@ -38,6 +76,14 @@ where
                     std::io::Error::new(std::io::ErrorKind::ConnectionReset, "bandwidth limiter closed")
                 })?;
                 permit.forget();
+            }
+            if let Some(ref lat) = latency {
+                let jitter_range = lat.jitter_ms as i32;
+                let jitter_ms = rand::rng().random_range(-jitter_range..=jitter_range);
+                let delay_ms = (lat.latency_ms as i32 + jitter_ms).max(0) as u64;
+                if delay_ms > 0 {
+                    sleep(Duration::from_millis(delay_ms)).await;
+                }
             }
         }
         writer.write_all(&buf[..n]).await?;
@@ -61,49 +107,57 @@ impl Drop for BandwidthLimitProxyGuard {
     }
 }
 
-/// Starts a TCP proxy that forwards to `upstream` (server host:port, e.g. LocalTestServer)
-/// and enforces separate upload and download bandwidth. Binds to an unused port on 127.0.0.1
-/// and returns the listen address (host:port) for callers to use (e.g. as Toxiproxy upstream).
-/// Drop the guard to stop the proxy.
-///
-/// * `upstream`: server address (host:port); no http:// prefix.
-/// * `upload_bandwidth_bytes_per_sec`: cap for client→server; 0 = no limit.
-/// * `download_bandwidth_bytes_per_sec`: cap for server→client; 0 = no limit.
-pub async fn start_bandwidth_limit_proxy(
+/// Starts a TCP proxy with the given config (bandwidth, latency, drop probability).
+/// Binds to an unused port on 127.0.0.1 and returns the listen address (host:port).
+pub async fn start_bandwidth_limit_proxy_with_config(
     upstream: &str,
-    upload_bandwidth_bytes_per_sec: u64,
-    download_bandwidth_bytes_per_sec: u64,
+    config: &ProxyConfig,
 ) -> Result<(String, BandwidthLimitProxyGuard)> {
     let upstream = upstream.to_string();
     let listener = TcpListener::bind("127.0.0.1:0")
         .await
-        .map_err(|e| SimulationError::Toxiproxy(e.to_string()))?;
-    let listen_addr = listener.local_addr().map_err(|e| SimulationError::Toxiproxy(e.to_string()))?;
+        .map_err(|e| SimulationError::Proxy(e.to_string()))?;
+    let listen_addr = listener.local_addr().map_err(|e| SimulationError::Proxy(e.to_string()))?;
     let listen_str = format!("127.0.0.1:{}", listen_addr.port());
 
     let (shutdown_tx, _) = broadcast::channel(1);
     let shutdown_rx_proxy = shutdown_tx.subscribe();
 
-    let upload_limiter = if upload_bandwidth_bytes_per_sec > 0 {
+    let upload_limiter = if config.upload_bandwidth_bytes_per_sec > 0 {
         let limiter = Arc::new(Semaphore::new(0));
         let rx = shutdown_tx.subscribe();
-        tokio::spawn(refill_loop(limiter.clone(), permits_per_interval(upload_bandwidth_bytes_per_sec), rx));
+        tokio::spawn(refill_loop(limiter.clone(), permits_per_interval(config.upload_bandwidth_bytes_per_sec), rx));
         Some(limiter)
     } else {
         None
     };
 
-    let download_limiter = if download_bandwidth_bytes_per_sec > 0 {
+    let download_limiter = if config.download_bandwidth_bytes_per_sec > 0 {
         let limiter = Arc::new(Semaphore::new(0));
         let rx = shutdown_tx.subscribe();
-        tokio::spawn(refill_loop(limiter.clone(), permits_per_interval(download_bandwidth_bytes_per_sec), rx));
+        tokio::spawn(refill_loop(limiter.clone(), permits_per_interval(config.download_bandwidth_bytes_per_sec), rx));
         Some(limiter)
     } else {
         None
     };
 
+    let latency = config
+        .latency_ms
+        .zip(config.jitter_ms)
+        .map(|(latency_ms, jitter_ms)| LatencyParams { latency_ms, jitter_ms });
+
+    let drop_probability = config.drop_probability;
     let proxy_join = tokio::spawn(async move {
-        run_proxy_loop(listener, upstream, upload_limiter, download_limiter, shutdown_rx_proxy).await;
+        run_proxy_loop(
+            listener,
+            upstream,
+            upload_limiter,
+            download_limiter,
+            latency,
+            drop_probability,
+            shutdown_rx_proxy,
+        )
+        .await;
     });
 
     Ok((
@@ -115,8 +169,198 @@ pub async fn start_bandwidth_limit_proxy(
     ))
 }
 
+/// Schedule entry: (duration to apply this profile, profile). Repeats cyclically.
+pub type ProxySchedule = Vec<(Duration, NetworkProfile)>;
+
+/// Starts a TCP proxy that applies a repeating schedule of network profiles.
+/// A background task updates the active config every `duration`; refill and new connections use the current config.
+/// `schedule` must be non-empty. Returns the listen address and a guard; drop the guard to stop the proxy.
+pub async fn start_bandwidth_limit_proxy_with_schedule(
+    upstream: &str,
+    schedule: ProxySchedule,
+) -> Result<(String, BandwidthLimitProxyGuard)> {
+    if schedule.is_empty() {
+        return Err(SimulationError::Proxy("proxy schedule must be non-empty".to_string()));
+    }
+    let upstream = upstream.to_string();
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .map_err(|e| SimulationError::Proxy(e.to_string()))?;
+    let listen_addr = listener.local_addr().map_err(|e| SimulationError::Proxy(e.to_string()))?;
+    let listen_str = format!("127.0.0.1:{}", listen_addr.port());
+
+    let (shutdown_tx, _) = broadcast::channel(1);
+    let shutdown_rx_proxy = shutdown_tx.subscribe();
+    let shutdown_rx_refill = shutdown_tx.subscribe();
+    let shutdown_rx_scheduler = shutdown_tx.subscribe();
+
+    let initial = ProxyConfig::from_profile(&schedule[0].1);
+    let current_config = Arc::new(RwLock::new(initial));
+    let upload_limiter = Arc::new(Semaphore::new(0));
+    let download_limiter = Arc::new(Semaphore::new(0));
+
+    tokio::spawn(refill_loop_scheduled(
+        upload_limiter.clone(),
+        download_limiter.clone(),
+        current_config.clone(),
+        shutdown_rx_refill,
+    ));
+    let schedule_clone: Vec<(Duration, NetworkProfile)> = schedule.into_iter().collect();
+    tokio::spawn(scheduler_loop(schedule_clone, current_config.clone(), shutdown_rx_scheduler));
+
+    let proxy_join = tokio::spawn(async move {
+        run_proxy_loop_scheduled(
+            listener,
+            upstream,
+            upload_limiter,
+            download_limiter,
+            current_config,
+            shutdown_rx_proxy,
+        )
+        .await;
+    });
+
+    Ok((
+        listen_str,
+        BandwidthLimitProxyGuard {
+            shutdown_tx: Some(shutdown_tx),
+            proxy_join,
+        },
+    ))
+}
+
+/// Refill loop for scheduled proxy: each tick, read current config and add permits for upload and download.
+async fn refill_loop_scheduled(
+    upload_limiter: Arc<Semaphore>,
+    download_limiter: Arc<Semaphore>,
+    current_config: Arc<RwLock<ProxyConfig>>,
+    mut shutdown_rx: broadcast::Receiver<()>,
+) {
+    let mut ticker = interval(Duration::from_millis(REFILL_INTERVAL_MS));
+    ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    loop {
+        tokio::select! {
+            _ = shutdown_rx.recv() => {
+                debug!("bandwidth limit scheduled refill loop shutting down");
+                break;
+            }
+            _ = ticker.tick() => {
+                let config = current_config.read().await;
+                let up = permits_per_interval(config.upload_bandwidth_bytes_per_sec);
+                let down = permits_per_interval(config.download_bandwidth_bytes_per_sec);
+                if up > 0 {
+                    upload_limiter.add_permits(up);
+                }
+                if down > 0 {
+                    download_limiter.add_permits(down);
+                }
+            }
+        }
+    }
+}
+
+const SCHEDULER_POLL_INTERVAL: Duration = Duration::from_millis(100);
+
+/// Scheduler loop: cycle through schedule, sleep in short intervals and check shutdown, then write next config.
+async fn scheduler_loop(
+    schedule: Vec<(Duration, NetworkProfile)>,
+    current_config: Arc<RwLock<ProxyConfig>>,
+    mut shutdown_rx: broadcast::Receiver<()>,
+) {
+    let mut index = 0usize;
+    loop {
+        let (duration, ref profile) = schedule[index];
+        *current_config.write().await = ProxyConfig::from_profile(profile);
+        index = (index + 1) % schedule.len();
+        let mut remaining = duration;
+        while remaining > Duration::ZERO {
+            let chunk = remaining.min(SCHEDULER_POLL_INTERVAL);
+            let sleep_fut = sleep(chunk);
+            tokio::select! {
+                _ = shutdown_rx.recv() => {
+                    debug!("bandwidth limit scheduler shutting down");
+                    return;
+                }
+                _ = sleep_fut => {
+                    remaining -= chunk;
+                }
+            }
+        }
+    }
+}
+
+/// Proxy accept loop that reads current config for latency and drop on each accept.
+async fn run_proxy_loop_scheduled(
+    listener: TcpListener,
+    upstream: String,
+    upload_limiter: Arc<Semaphore>,
+    download_limiter: Arc<Semaphore>,
+    current_config: Arc<RwLock<ProxyConfig>>,
+    mut shutdown_rx: broadcast::Receiver<()>,
+) {
+    loop {
+        let accept = listener.accept();
+        tokio::select! {
+            biased;
+            _ = shutdown_rx.recv() => {
+                debug!("bandwidth limit proxy shutting down");
+                break;
+            }
+            res = accept => {
+                let (client_stream, _) = match res {
+                    Ok(p) => p,
+                    Err(e) => {
+                        tracing::warn!(error = %e, "bandwidth proxy accept error");
+                        continue;
+                    }
+                };
+                let config = current_config.read().await.clone();
+                let drop_probability = config.drop_probability;
+                let latency = config
+                    .latency_ms
+                    .zip(config.jitter_ms)
+                    .map(|(latency_ms, jitter_ms)| LatencyParams { latency_ms, jitter_ms });
+                drop(config);
+                if drop_probability > 0.0 && rand::random::<f64>() < drop_probability {
+                    drop(client_stream);
+                    continue;
+                }
+                let upstream = upstream.clone();
+                let ul = upload_limiter.clone();
+                let dl = download_limiter.clone();
+                tokio::spawn(async move {
+                    if let Err(e) = handle_connection(client_stream, &upstream, Some(ul), Some(dl), latency).await {
+                        tracing::debug!(error = %e, "bandwidth proxy connection error");
+                    }
+                });
+            }
+        }
+    }
+}
+
+/// Starts a TCP proxy that forwards to `upstream` and enforces separate upload and download
+/// bandwidth only (no latency or drop). Convenience wrapper around `start_bandwidth_limit_proxy_with_config`.
+pub async fn start_bandwidth_limit_proxy(
+    upstream: &str,
+    upload_bandwidth_bytes_per_sec: u64,
+    download_bandwidth_bytes_per_sec: u64,
+) -> Result<(String, BandwidthLimitProxyGuard)> {
+    let config = ProxyConfig {
+        upload_bandwidth_bytes_per_sec,
+        download_bandwidth_bytes_per_sec,
+        latency_ms: None,
+        jitter_ms: None,
+        drop_probability: 0.0,
+    };
+    start_bandwidth_limit_proxy_with_config(upstream, &config).await
+}
+
 fn permits_per_interval(bandwidth_bytes_per_sec: u64) -> usize {
-    (bandwidth_bytes_per_sec / (1000 / REFILL_INTERVAL_MS)).max(1) as usize
+    if bandwidth_bytes_per_sec == 0 {
+        0
+    } else {
+        (bandwidth_bytes_per_sec / (1000 / REFILL_INTERVAL_MS)).max(1) as usize
+    }
 }
 
 /// Adds permits to the semaphore every 50ms until shutdown.
@@ -141,6 +385,8 @@ async fn run_proxy_loop(
     upstream: String,
     upload_limiter: Option<Arc<Semaphore>>,
     download_limiter: Option<Arc<Semaphore>>,
+    latency: Option<LatencyParams>,
+    drop_probability: f64,
     mut shutdown_rx: broadcast::Receiver<()>,
 ) {
     loop {
@@ -159,11 +405,16 @@ async fn run_proxy_loop(
                         continue;
                     }
                 };
+                if drop_probability > 0.0 && rand::random::<f64>() < drop_probability {
+                    drop(client_stream);
+                    continue;
+                }
                 let upstream = upstream.clone();
                 let ul = upload_limiter.clone();
                 let dl = download_limiter.clone();
+                let lat = latency.clone();
                 tokio::spawn(async move {
-                    if let Err(e) = handle_connection(client_stream, &upstream, ul, dl).await {
+                    if let Err(e) = handle_connection(client_stream, &upstream, ul, dl, lat).await {
                         tracing::debug!(error = %e, "bandwidth proxy connection error");
                     }
                 });
@@ -177,13 +428,14 @@ async fn handle_connection(
     upstream: &str,
     upload_limiter: Option<Arc<Semaphore>>,
     download_limiter: Option<Arc<Semaphore>>,
+    latency: Option<LatencyParams>,
 ) -> std::io::Result<()> {
     let upstream_stream = TcpStream::connect(upstream).await?;
     let (client_read, mut client_write) = client.into_split();
     let (upstream_read, upstream_write) = upstream_stream.into_split();
 
-    let to_upstream = copy_with_limit(client_read, upstream_write, upload_limiter);
-    let from_upstream = copy_with_limit(upstream_read, &mut client_write, download_limiter);
+    let to_upstream = copy_with_limit(client_read, upstream_write, upload_limiter, latency.clone());
+    let from_upstream = copy_with_limit(upstream_read, &mut client_write, download_limiter, latency);
 
     let _ = tokio::join!(to_upstream, from_upstream);
     Ok(())

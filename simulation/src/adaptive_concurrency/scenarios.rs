@@ -1,10 +1,10 @@
-//! Scenario definitions and runner: LocalTestServer + Toxiproxy + upload clients + reporting.
+//! Scenario definitions and runner: LocalTestServer + bandwidth proxy + upload clients + reporting.
 //!
 //! Each scenario is a separate async function that mirrors the original bash scripts:
 //! it calls `run_upload_clients` one or more times (possibly in parallel or staggered).
 
 use std::path::Path;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use cas_client::simulation::local_server::ServerDelayProfile;
 use cas_client::{LocalTestServer, LocalTestServerBuilder};
@@ -15,8 +15,8 @@ use super::client_runner::run_upload_clients;
 use super::common::NetworkStats;
 use super::reporting::{generate_summary_csv, generate_timeline_csv};
 use crate::network_simulation::{
-    BandwidthLimitProxyGuard, NetworkProfile, NetworkSimulationProxy, endpoint_to_host_port,
-    start_bandwidth_limit_proxy,
+    BandwidthLimitProxyGuard, NetworkProfile, ProxyConfig, ProxySchedule, endpoint_to_host_port,
+    start_bandwidth_limit_proxy_with_config, start_bandwidth_limit_proxy_with_schedule,
 };
 
 /// Scenario identifier; each corresponds to a scenario function below.
@@ -157,9 +157,18 @@ pub async fn scenario_added_uploads(
     Ok(())
 }
 
+/// Builds the heavy-congestion schedule: 30s degraded (reduced bandwidth, 200 ms latency) then 30s normal, repeating.
+pub fn build_heavy_congestion_schedule(normal_profile: &NetworkProfile) -> ProxySchedule {
+    let degraded = normal_profile.for_heavy_degraded_phase();
+    vec![
+        (Duration::from_secs(30), degraded),
+        (Duration::from_secs(30), normal_profile.clone()),
+    ]
+}
+
 /// Build upload NetworkProfile from optional bandwidth/latency/congestion strings.
 /// Congestion: "none" | "medium" | "heavy" | "bursty". Bandwidth e.g. "10mbps", latency e.g. "50ms".
-/// "realistic" (varying conditions over time) is not supported; Toxiproxy would require a
+/// "realistic" (varying conditions over time) is not supported; would require a
 /// background profile-update loop.
 pub fn build_upload_profile(
     bandwidth: Option<&str>,
@@ -189,35 +198,70 @@ pub fn build_upload_profile(
     Ok(p)
 }
 
+/// Default scenario duration in seconds (used for network_stats schedule writing).
+fn default_duration_sec(scenario: Scenario) -> u64 {
+    match scenario {
+        Scenario::SanityCheck => 60,
+        Scenario::SingleUpload => 600,
+        Scenario::GitxetUploadBurst => 600,
+        Scenario::AddedUploads => 600,
+    }
+}
+
 /// Writes network_stats.json so summary.csv can compute network_utilization_percent.
+/// When `schedule` is Some, writes one line per time segment (timestamp_ms, bandwidth, latency) so
+/// utilization is correct over the run; `duration_sec` is the scenario run length.
 fn write_network_stats(
     scenario_dir: &Path,
     profile: Option<&NetworkProfile>,
+    schedule: Option<&ProxySchedule>,
+    duration_sec: f64,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let bandwidth_bytes_per_sec = profile.and_then(|p| p.bandwidth_kbps).map(|k| k as u64 * 1000 / 8).unwrap_or(0);
-    let latency_ms = profile.and_then(|p| p.latency_ms).map(f64::from).unwrap_or(0.0);
-    let stat = NetworkStats {
-        timestamp: "0".to_string(),
-        latency_ms,
-        bandwidth_bytes_per_sec,
-        congestion_mode: None,
-        interface: None,
-    };
     let path = scenario_dir.join("network_stats.json");
-    let line = serde_json::to_string(&stat)?;
-    std::fs::write(path, format!("{}\n", line))?;
+    let lines = if let Some(sched) = schedule {
+        let duration_ms = (duration_sec * 1000.0) as u64;
+        let mut out = Vec::new();
+        let mut time_ms: u64 = 0;
+        let mut index = 0usize;
+        while time_ms < duration_ms && !sched.is_empty() {
+            let profile = &sched[index].1;
+            let config = ProxyConfig::from_profile(profile);
+            let bandwidth_bytes_per_sec = config.upload_bandwidth_bytes_per_sec;
+            let latency_ms = config.latency_ms.map(f64::from).unwrap_or(0.0);
+            let stat = NetworkStats {
+                timestamp: time_ms.to_string(),
+                latency_ms,
+                bandwidth_bytes_per_sec,
+                congestion_mode: None,
+                interface: None,
+            };
+            out.push(serde_json::to_string(&stat)?);
+            time_ms += sched[index].0.as_millis() as u64;
+            index = (index + 1) % sched.len();
+        }
+        out.join("\n") + "\n"
+    } else {
+        let bandwidth_bytes_per_sec = profile.and_then(|p| p.bandwidth_kbps).map(|k| k as u64 * 1000 / 8).unwrap_or(0);
+        let latency_ms = profile.and_then(|p| p.latency_ms).map(f64::from).unwrap_or(0.0);
+        let stat = NetworkStats {
+            timestamp: "0".to_string(),
+            latency_ms,
+            bandwidth_bytes_per_sec,
+            congestion_mode: None,
+            interface: None,
+        };
+        serde_json::to_string(&stat)? + "\n"
+    };
+    std::fs::write(path, lines)?;
     Ok(())
 }
 
-/// Holds server, optional bandwidth-limit proxy guard, and Toxiproxy so the caller can drop
-/// them in sync context (avoids dropping Toxiproxy's blocking client from within async context).
+/// Holds server and optional bandwidth-limit proxy guard so the caller can drop them in sync context.
 pub struct ScenarioCleanup {
     #[allow(dead_code)]
     server: LocalTestServer,
     #[allow(dead_code)]
     bandwidth_guard: Option<BandwidthLimitProxyGuard>,
-    #[allow(dead_code)]
-    proxy: NetworkSimulationProxy,
 }
 
 /// Server API delay range (min_ms, max_ms). (0, 0) means no delay.
@@ -226,16 +270,19 @@ pub type ServerDelayMs = (u64, u64);
 /// Default server delay: 400–1000 ms for API calls.
 pub const DEFAULT_SERVER_DELAY_MS: ServerDelayMs = (400, 1000);
 
-/// Starts LocalTestServer and Toxiproxy proxy, applies upload profile, runs the given scenario
+/// Starts LocalTestServer and bandwidth-limit proxy, applies upload profile, runs the given scenario
 /// (which may call `run_upload_clients` multiple times), then generates timeline.csv.
 /// Returns a cleanup guard; drop it after `block_on` returns so the proxy is dropped in sync context.
 ///
+/// When `schedule` is Some, the bandwidth proxy uses that schedule (e.g. 30s degraded / 30s normal)
+/// instead of a fixed config, and network_stats.json is written with segment data for utilization.
 /// `server_delay_ms`: random delay range (min_ms, max_ms) for server API calls. (0, 0) = no delay.
 /// Default when None is (400, 1000).
 pub async fn run_scenario(
     scenario: Scenario,
     duration_override: Option<u64>,
     upload_profile: Option<NetworkProfile>,
+    schedule: Option<ProxySchedule>,
     server_delay_ms: Option<ServerDelayMs>,
     scenario_dir: &Path,
 ) -> Result<ScenarioCleanup, Box<dyn std::error::Error + Send + Sync>> {
@@ -258,10 +305,19 @@ pub async fn run_scenario(
     let server_host_port = endpoint_to_host_port(&endpoint)
         .map_err(|e| Box::<dyn std::error::Error + Send + Sync>::from(e.to_string()))?;
 
-    let (toxiproxy_upstream_endpoint, bandwidth_guard) = if let Some(ref profile) = upload_profile {
-        if let Some(kbps) = profile.bandwidth_kbps {
-            let bps = (u64::from(kbps) * 1000) / 8;
-            let (listen_addr, guard) = start_bandwidth_limit_proxy(&server_host_port, bps, bps)
+    let (client_endpoint, bandwidth_guard) = if let Some(sched) = &schedule {
+        if !sched.is_empty() {
+            let (listen_addr, guard) = start_bandwidth_limit_proxy_with_schedule(&server_host_port, sched.clone())
+                .await
+                .map_err(|e| Box::<dyn std::error::Error + Send + Sync>::from(e.to_string()))?;
+            (format!("http://{}", listen_addr), Some(guard))
+        } else {
+            (endpoint.clone(), None)
+        }
+    } else if let Some(ref profile) = upload_profile {
+        if !profile.is_empty() {
+            let config = ProxyConfig::from_profile(profile);
+            let (listen_addr, guard) = start_bandwidth_limit_proxy_with_config(&server_host_port, &config)
                 .await
                 .map_err(|e| Box::<dyn std::error::Error + Send + Sync>::from(e.to_string()))?;
             (format!("http://{}", listen_addr), Some(guard))
@@ -272,23 +328,9 @@ pub async fn run_scenario(
         (endpoint.clone(), None)
     };
 
-    let profile_opt = upload_profile.clone();
-    let proxy: NetworkSimulationProxy = tokio::task::spawn_blocking(move || {
-        let mut p = NetworkSimulationProxy::new(&toxiproxy_upstream_endpoint).map_err(|e| {
-            let msg = format!("Toxiproxy not available: {e}. Start Toxiproxy or set TOXIPROXY_ADDR.");
-            Box::<dyn std::error::Error + Send + Sync>::from(msg)
-        })?;
-        if let Some(profile) = profile_opt {
-            p.apply_upload_profile(profile)
-                .map_err(|e| Box::<dyn std::error::Error + Send + Sync>::from(e.to_string()))?;
-        }
-        Ok::<_, Box<dyn std::error::Error + Send + Sync>>(p)
-    })
-    .await
-    .map_err(|e| Box::<dyn std::error::Error + Send + Sync>::from(e.to_string()))??;
-
-    let proxy_addr = proxy.proxy_endpoint().trim_start_matches("http://").to_string();
-    write_network_stats(scenario_dir, upload_profile.as_ref())?;
+    let proxy_addr = client_endpoint.trim_start_matches("http://").to_string();
+    let duration_sec = duration_override.unwrap_or_else(|| default_duration_sec(scenario)) as f64;
+    write_network_stats(scenario_dir, upload_profile.as_ref(), schedule.as_ref(), duration_sec)?;
     let start = Instant::now();
 
     match scenario {
@@ -306,7 +348,6 @@ pub async fn run_scenario(
     Ok(ScenarioCleanup {
         server,
         bandwidth_guard,
-        proxy,
     })
 }
 

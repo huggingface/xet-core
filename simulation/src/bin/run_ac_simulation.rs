@@ -123,6 +123,7 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .ok();
 
     let args = Args::parse();
+    let start_time = std::time::Instant::now();
 
     let scenario = Scenario::from_name(&args.scenario).ok_or_else(|| format!("Unknown scenario: {}", args.scenario))?;
 
@@ -152,6 +153,22 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         )
         .into());
     }
+
+    eprintln!("=== Adaptive concurrency simulation ===");
+    eprintln!("Scenario: {}", scenario.name());
+    eprintln!(
+        "Matrix: {} bandwidth × {} latency × {} congestion = {} runs",
+        bandwidths.len(),
+        latencies.len(),
+        congestions.len(),
+        bandwidths.len() * latencies.len() * congestions.len()
+    );
+    eprintln!("Max parallel: {}", args.max_parallel);
+    eprintln!("Results directory: {}", results_base.display());
+    if let Some(d) = args.duration_sec {
+        eprintln!("Duration per run: {}s", d);
+    }
+    eprintln!("----------------------------------------");
 
     let mut tasks = Vec::new();
     for bandwidth in &bandwidths {
@@ -241,12 +258,23 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     let total = handles.len();
     let mut completed = 0usize;
+    let mut succeeded = 0usize;
+    let mut failed_labels = Vec::new();
     for (label, status) in rx {
         completed += 1;
         let msg = match &status {
-            Ok(s) if s.success() => format!("Completed ({}/{}): {}", completed, total, label),
-            Ok(s) => format!("Completed ({}/{}): {} (exit code {:?})", completed, total, label, s.code()),
-            Err(e) => format!("Completed ({}/{}): {} (failed: {})", completed, total, label, e),
+            Ok(s) if s.success() => {
+                succeeded += 1;
+                format!("OK ({}/{}): {}", completed, total, label)
+            },
+            Ok(s) => {
+                failed_labels.push(label.clone());
+                format!("FAIL ({}/{}): {} (exit code {:?})", completed, total, label, s.code())
+            },
+            Err(e) => {
+                failed_labels.push(label.clone());
+                format!("FAIL ({}/{}): {} (error: {})", completed, total, label, e)
+            },
         };
         eprintln!("{}", msg);
     }
@@ -256,6 +284,15 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     }
 
     aggregate_summary(&results_base)?;
-    eprintln!("Results in {}", results_base.display());
+    let elapsed = start_time.elapsed();
+    eprintln!("----------------------------------------");
+    eprintln!("=== Summary ===");
+    eprintln!("Total: {} | Succeeded: {} | Failed: {}", total, succeeded, total - succeeded);
+    eprintln!("Elapsed: {:.1}s", elapsed.as_secs_f64());
+    eprintln!("Results: {}", results_base.display());
+    eprintln!("Summary CSV: {}", results_base.join("summary.csv").display());
+    if !failed_labels.is_empty() {
+        eprintln!("Failed runs: {}", failed_labels.join(", "));
+    }
     Ok(())
 }

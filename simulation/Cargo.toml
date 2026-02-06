@@ -35,5 +35,3 @@ reqwest-middleware = { workspace = true }
 tracing-log = { workspace = true }
 tracing-subscriber = { workspace = true }
 url = { workspace = true }
-
-toxiproxy_rust = { git = "https://github.com/itarato/toxiproxy_rust.git" }

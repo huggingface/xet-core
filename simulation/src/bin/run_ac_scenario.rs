@@ -2,14 +2,16 @@
 //! and directs logs there via xet_config (HF_XET_LOG_DEST).
 //!
 //! Bandwidth is enforced by the custom proxy (bandwidth_limit_router) when --bandwidth is set;
-//! run_scenario starts that proxy in front of the test server and points Toxiproxy at it.
+//! run_scenario starts the bandwidth-limit proxy in front of the test server.
 
 #![cfg(not(target_family = "wasm"))]
 
 use std::path::PathBuf;
 
 use clap::Parser;
-use simulation::adaptive_concurrency::{DEFAULT_SERVER_DELAY_MS, Scenario, build_upload_profile, run_scenario};
+use simulation::adaptive_concurrency::{
+    DEFAULT_SERVER_DELAY_MS, Scenario, build_heavy_congestion_schedule, build_upload_profile, run_scenario,
+};
 use simulation::network_simulation::NetworkProfile;
 use xet_logging::{LoggingConfig, init as init_logging};
 use xet_runtime::XetRuntime;
@@ -79,6 +81,12 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let profile: NetworkProfile =
         build_upload_profile(bandwidth.as_deref(), latency.as_deref(), args.jitter.as_deref(), Some(congestion))?;
 
+    let schedule = if congestion.eq_ignore_ascii_case("heavy") && !profile.is_empty() {
+        Some(build_heavy_congestion_schedule(&profile))
+    } else {
+        None
+    };
+
     let server_delay_ms = Some((args.server_delay_min_ms, args.server_delay_max_ms));
     let xet = XetRuntime::new().map_err(|e| e.to_string())?;
     let run_result = xet.external_run_async_task(async move {
@@ -87,7 +95,14 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 .enable_all()
                 .build()
                 .expect("runtime");
-            rt.block_on(run_scenario(scenario, args.duration_sec, Some(profile), server_delay_ms, &args.out_dir))
+            rt.block_on(run_scenario(
+                scenario,
+                args.duration_sec,
+                Some(profile),
+                schedule,
+                server_delay_ms,
+                &args.out_dir,
+            ))
         })
         .await
         .map_err(|e| Box::<dyn std::error::Error + Send + Sync>::from(e.to_string()))?

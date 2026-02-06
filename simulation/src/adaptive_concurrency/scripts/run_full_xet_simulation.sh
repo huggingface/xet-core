@@ -27,7 +27,7 @@ mkdir -p "$RESULTS_DIR"
 
 # Same matrix as run_full_xet_simulation.sh: bandwidth, latency, congestion.
 # "realistic" (varying latency/bandwidth over time) is not supported; would require
-# a background profile-update loop with Toxiproxy and is dropped for now.
+# a background profile-update loop and is dropped for now.
 # Optional: set MAX_PARALLEL (default 1) to run scenarios in parallel
 "$BIN" \
     --scenario=single_upload \

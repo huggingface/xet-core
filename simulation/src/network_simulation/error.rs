@@ -1,11 +1,11 @@
-//! Errors for network simulation (Toxiproxy, endpoint parsing).
+//! Errors for network simulation (proxy, endpoint parsing).
 
 use thiserror::Error;
 
 #[derive(Debug, Error)]
 pub enum SimulationError {
-    #[error("Toxiproxy error: {0}")]
-    Toxiproxy(String),
+    #[error("Proxy error: {0}")]
+    Proxy(String),
 
     #[error("Invalid endpoint: {0}")]
     InvalidEndpoint(String),
