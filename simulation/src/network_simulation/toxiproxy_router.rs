@@ -17,11 +17,10 @@ use tracing::info;
 use super::error::{Result, SimulationError};
 use super::network_profile::NetworkProfile;
 
+/// Applies latency and slicer (congestion) to one direction. Bandwidth is enforced by
+/// the custom proxy (bandwidth_limit_router) between Toxiproxy and LocalTestServer.
 fn apply_profile_to_stream(proxy: &Proxy, profile: &NetworkProfile, stream: &str) {
     let stream = stream.to_string();
-    if let Some(rate) = profile.bandwidth_kbps {
-        proxy.with_bandwidth(stream.clone(), rate, 1.0);
-    }
     if let (Some(latency), Some(jitter)) = (profile.latency_ms, profile.jitter_ms) {
         proxy.with_latency(stream.clone(), latency, jitter, 1.0);
     }
@@ -172,7 +171,7 @@ impl NetworkSimulationProxy {
     }
 }
 
-fn endpoint_to_host_port(endpoint: &str) -> Result<String> {
+pub fn endpoint_to_host_port(endpoint: &str) -> Result<String> {
     let s = endpoint.trim_end_matches('/');
     let host_port = s
         .strip_prefix("http://")
@@ -297,12 +296,7 @@ mod tests {
                     .expect("apply_download_profile");
 
                 let names = router.applied_toxic_names().expect("applied_toxic_names");
-                assert!(
-                    names.len() >= 4,
-                    "expected at least 4 toxics (upload/download bandwidth and latency), got {}",
-                    names.len()
-                );
-                assert!(names.iter().any(|n| n.contains("bandwidth")), "expected bandwidth toxic, got {:?}", names);
+                assert!(names.len() >= 2, "expected at least 2 toxics (upload/download latency), got {}", names.len());
                 assert!(names.iter().any(|n| n.contains("latency")), "expected latency toxic, got {:?}", names);
 
                 router.reset_upload_profile().expect("reset_upload after apply");

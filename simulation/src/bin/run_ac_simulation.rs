@@ -1,22 +1,21 @@
-//! Adaptive concurrency simulation binary: run scenarios against LocalTestServer dummy_upload
-//! through Toxiproxy, with timeline and summary CSV output.
+//! Runs multiple adaptive-concurrency scenarios in parallel by spawning run_ac_scenario for each.
+//! Limits concurrency with a semaphore and reports each completion. Writes aggregate summary.csv.
 //!
-//! Each scenario runs in its own std thread with a dedicated XetRuntime; parallelism is
-//! limited by a std::sync-style semaphore.
+//! Bandwidth limits are enforced by the custom proxy inside each run_ac_scenario run (see
+//! run_scenario and bandwidth_limit_router); --bandwidth is passed through to the scenario.
 
 #![cfg(not(target_family = "wasm"))]
 
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::process::Command;
+use std::sync::{Arc, mpsc};
+use std::thread;
 
 use clap::Parser;
-use simulation::adaptive_concurrency::{
-    DEFAULT_SERVER_DELAY_MS, Scenario, aggregate_summary, build_upload_profile, run_scenario,
-};
+use simulation::adaptive_concurrency::{DEFAULT_SERVER_DELAY_MS, Scenario, aggregate_summary, build_upload_profile};
 use simulation::network_simulation::NetworkProfile;
-use xet_runtime::XetRuntime;
 
-/// Blocking semaphore using std::sync primitives (limits how many scenarios run at once).
+/// Blocking semaphore (limits how many scenario processes run at once).
 struct StdSemaphore {
     permits: std::sync::Mutex<usize>,
     condvar: std::sync::Condvar,
@@ -52,7 +51,6 @@ impl Drop for StdSemaphorePermit<'_> {
     }
 }
 
-/// Parse comma-separated list; "default" or empty string means None (use default).
 fn parse_list(s: &str) -> Vec<Option<String>> {
     if s.trim().is_empty() {
         return vec![None];
@@ -72,49 +70,49 @@ fn parse_list(s: &str) -> Vec<Option<String>> {
 #[derive(Parser, Debug)]
 #[command(author, version, about)]
 struct Args {
-    /// Scenario name: sanity_check, single_upload, gitxet_upload_burst, added_uploads
     #[arg(long, default_value = "sanity_check")]
     scenario: String,
 
-    /// Override duration in seconds (default from scenario)
     #[arg(long)]
     duration_sec: Option<u64>,
 
-    /// Bandwidth(s), comma-separated. "default" or omit = no limit. e.g. 10mbps,100mbps
     #[arg(long)]
     bandwidth: Option<String>,
 
-    /// Latency(s), comma-separated. "default" or omit = no added latency. e.g. 10ms,50ms
     #[arg(long)]
     latency: Option<String>,
 
-    /// Jitter e.g. 5ms (used with latency; single value for all latency runs)
     #[arg(long)]
     jitter: Option<String>,
 
-    /// Congestion mode(s), comma-separated: none, medium, heavy, bursty
     #[arg(long, default_value = "none")]
     congestion: String,
 
-    /// Server API delay min (ms). With server_delay_max, sets random_delay_ms on LocalTestServer. 0,0 = no delay.
     #[arg(long, default_value_t = DEFAULT_SERVER_DELAY_MS.0)]
     server_delay_min_ms: u64,
 
-    /// Server API delay max (ms). With server_delay_min, sets random_delay_ms on LocalTestServer.
     #[arg(long, default_value_t = DEFAULT_SERVER_DELAY_MS.1)]
     server_delay_max_ms: u64,
 
-    /// Output directory (default: results/). A timestamped subdir is created.
     #[arg(long, default_value = "results")]
     out_dir: String,
 
-    /// Skip generating summary.csv (only generate timeline.csv for this run)
-    #[arg(long)]
-    no_summary: bool,
-
-    /// Maximum number of scenario runs in parallel (1 = sequential).
     #[arg(long, default_value_t = 1)]
     max_parallel: usize,
+
+    /// Path to run_ac_scenario binary (default: same directory as this binary).
+    #[arg(long)]
+    scenario_bin: Option<PathBuf>,
+}
+
+fn scenario_binary() -> PathBuf {
+    let current = std::env::current_exe().expect("current exe");
+    let dir = current.parent().expect("exe has parent");
+    #[cfg(windows)]
+    let name = "run_ac_scenario.exe";
+    #[cfg(not(windows))]
+    let name = "run_ac_scenario";
+    dir.join(name)
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
@@ -146,77 +144,118 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let results_base = PathBuf::from(&args.out_dir).join(&timestamp);
     std::fs::create_dir_all(&results_base)?;
 
-    let semaphore = Arc::new(StdSemaphore::new(args.max_parallel));
-    let mut handles = Vec::new();
+    let bin = args.scenario_bin.unwrap_or_else(scenario_binary);
+    if !bin.exists() {
+        return Err(format!(
+            "run_ac_scenario binary not found at {}; build with cargo build --release -p simulation",
+            bin.display()
+        )
+        .into());
+    }
 
+    let mut tasks = Vec::new();
     for bandwidth in &bandwidths {
         for latency in &latencies {
             for congestion in &congestions {
-                let profile: NetworkProfile = build_upload_profile(
+                let bandwidth_label = bandwidth.as_deref().unwrap_or("default");
+                let latency_label = latency.as_deref().unwrap_or("default");
+                let _profile: NetworkProfile = build_upload_profile(
                     bandwidth.as_deref(),
                     latency.as_deref(),
                     args.jitter.as_deref(),
                     Some(congestion),
                 )?;
-                let bandwidth_label = bandwidth.as_deref().unwrap_or("default");
-                let latency_label = latency.as_deref().unwrap_or("default");
                 let scenario_subdir =
                     format!("{}-{}-{}-{}", scenario.name(), bandwidth_label, latency_label, congestion);
                 let scenario_dir = results_base.join(&scenario_subdir);
                 std::fs::create_dir_all(&scenario_dir)?;
 
-                let scenario = scenario;
-                let duration_sec = args.duration_sec;
-                let server_delay_ms = Some((args.server_delay_min_ms, args.server_delay_max_ms));
-                let sem = Arc::clone(&semaphore);
-                let scenario_dir = scenario_dir.clone();
-                let bandwidth_label = bandwidth_label.to_string();
-                let latency_label = latency_label.to_string();
-                let congestion = congestion.clone();
+                let bandwidth_arg = bandwidth.as_ref().map(|s| s.as_str()).unwrap_or("default");
+                let latency_arg = latency.as_ref().map(|s| s.as_str()).unwrap_or("default");
 
-                handles.push(std::thread::spawn(move || {
-                    let _permit = sem.acquire();
-                    eprintln!(
-                        "Running {} (bandwidth={}, latency={}, congestion={})",
-                        scenario.name(),
-                        bandwidth_label,
-                        latency_label,
-                        congestion
-                    );
-                    let xet = XetRuntime::new().map_err(|e| e.to_string())?;
-                    xet.external_run_async_task(async move {
-                        tokio::task::spawn_blocking(move || {
-                            let rt = tokio::runtime::Builder::new_multi_thread()
-                                .enable_all()
-                                .build()
-                                .expect("runtime");
-                            rt.block_on(run_scenario(
-                                scenario,
-                                duration_sec,
-                                Some(profile),
-                                server_delay_ms,
-                                &scenario_dir,
-                            ))
-                        })
-                        .await
-                        .map_err(|e| Box::<dyn std::error::Error + Send + Sync>::from(e.to_string()))?
-                        .map(|_| ())
-                    })
-                    .map_err(|e| Box::<dyn std::error::Error + Send + Sync>::from(e.to_string()))?
-                }));
+                let jitter_arg = args.jitter.clone();
+                tasks.push((
+                    scenario_subdir,
+                    scenario_dir,
+                    args.scenario.clone(),
+                    bandwidth_arg.to_string(),
+                    latency_arg.to_string(),
+                    congestion.clone(),
+                    jitter_arg,
+                    args.duration_sec,
+                    args.server_delay_min_ms,
+                    args.server_delay_max_ms,
+                ));
             }
         }
     }
 
+    let semaphore = Arc::new(StdSemaphore::new(args.max_parallel));
+    let (tx, rx) = mpsc::channel::<(String, std::result::Result<std::process::ExitStatus, std::io::Error>)>();
+
+    let mut handles = Vec::with_capacity(tasks.len());
+    for (
+        label,
+        scenario_dir,
+        scenario_name,
+        bandwidth_arg,
+        latency_arg,
+        congestion_arg,
+        jitter_arg,
+        duration_sec,
+        server_delay_min,
+        server_delay_max,
+    ) in tasks
+    {
+        let bin = bin.clone();
+        let sem = Arc::clone(&semaphore);
+        let tx = tx.clone();
+        handles.push(thread::spawn(move || {
+            let _permit = sem.acquire();
+            let mut cmd = Command::new(&bin);
+            cmd.arg("--scenario")
+                .arg(&scenario_name)
+                .arg("--out-dir")
+                .arg(&scenario_dir)
+                .arg("--bandwidth")
+                .arg(&bandwidth_arg)
+                .arg("--latency")
+                .arg(&latency_arg)
+                .arg("--congestion")
+                .arg(&congestion_arg)
+                .arg("--server-delay-min-ms")
+                .arg(server_delay_min.to_string())
+                .arg("--server-delay-max-ms")
+                .arg(server_delay_max.to_string());
+            if let Some(ref j) = jitter_arg {
+                cmd.arg("--jitter").arg(j);
+            }
+            if let Some(d) = duration_sec {
+                cmd.arg("--duration-sec").arg(d.to_string());
+            }
+            let status = cmd.status();
+            let _ = tx.send((label, status));
+        }));
+    }
+    drop(tx);
+
+    let total = handles.len();
+    let mut completed = 0usize;
+    for (label, status) in rx {
+        completed += 1;
+        let msg = match &status {
+            Ok(s) if s.success() => format!("Completed ({}/{}): {}", completed, total, label),
+            Ok(s) => format!("Completed ({}/{}): {} (exit code {:?})", completed, total, label, s.code()),
+            Err(e) => format!("Completed ({}/{}): {} (failed: {})", completed, total, label, e),
+        };
+        eprintln!("{}", msg);
+    }
+
     for h in handles {
-        h.join()
-            .map_err(|_| Box::<dyn std::error::Error + Send + Sync>::from("scenario thread panicked"))??;
+        h.join().map_err(|_| "scenario thread panicked")?;
     }
 
-    if !args.no_summary {
-        aggregate_summary(&results_base)?;
-    }
-
+    aggregate_summary(&results_base)?;
     eprintln!("Results in {}", results_base.display());
     Ok(())
 }

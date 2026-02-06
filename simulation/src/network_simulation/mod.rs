@@ -1,12 +1,14 @@
-//! Network simulation: Toxiproxy-backed profiles and proxy for CAS traffic.
+//! Network simulation: bandwidth limit proxy and Toxiproxy-backed profiles for CAS traffic.
 //!
-//! Route traffic through a Toxiproxy server with configurable bandwidth,
-//! latency, jitter, and congestion (slicer) per upload/download direction.
+//! Total bandwidth is enforced by a custom proxy (bandwidth_limit_router) between
+//! Toxiproxy and LocalTestServer. Latency, jitter, and congestion are applied via Toxiproxy.
 
+mod bandwidth_limit_router;
 mod error;
 mod network_profile;
-mod proxy_router;
+mod toxiproxy_router;
 
+pub use bandwidth_limit_router::{BandwidthLimitProxyGuard, start_bandwidth_limit_proxy};
 pub use error::{Result, SimulationError};
 pub use network_profile::{NetworkProfile, SlicerParams};
-pub use proxy_router::{NetworkSimulationProxy, TOXIPROXY_ADDR_ENV};
+pub use toxiproxy_router::{NetworkSimulationProxy, TOXIPROXY_ADDR_ENV, endpoint_to_host_port};

@@ -7,6 +7,10 @@ edition = "2024"
 path = "src/lib.rs"
 
 [[bin]]
+name = "run_ac_scenario"
+path = "src/bin/run_ac_scenario.rs"
+
+[[bin]]
 name = "run_ac_simulation"
 path = "src/bin/run_ac_simulation.rs"
 
@@ -21,6 +25,7 @@ thiserror = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
 uuid = { workspace = true }
+xet_logging = { path = "../xet_logging" }
 xet_runtime = { path = "../xet_runtime" }
 
 bytes = { workspace = true }

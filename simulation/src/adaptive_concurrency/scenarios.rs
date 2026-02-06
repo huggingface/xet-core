@@ -12,8 +12,12 @@ use tokio::time::sleep;
 use tracing::info;
 
 use super::client_runner::run_upload_clients;
+use super::common::NetworkStats;
 use super::reporting::{generate_summary_csv, generate_timeline_csv};
-use crate::network_simulation::{NetworkProfile, NetworkSimulationProxy};
+use crate::network_simulation::{
+    BandwidthLimitProxyGuard, NetworkProfile, NetworkSimulationProxy, endpoint_to_host_port,
+    start_bandwidth_limit_proxy,
+};
 
 /// Scenario identifier; each corresponds to a scenario function below.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -54,7 +58,7 @@ pub async fn scenario_sanity_check(
     scenario_dir: &Path,
     duration_override: Option<u64>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let duration = duration_override.unwrap_or(20);
+    let duration = duration_override.unwrap_or(60);
     run_upload_clients(proxy_addr, scenario_dir, MIN_DATA_KB, MAX_DATA_KB, duration).await?;
     Ok(())
 }
@@ -185,11 +189,33 @@ pub fn build_upload_profile(
     Ok(p)
 }
 
-/// Holds server and proxy so the caller can drop them in sync context (avoids dropping
-/// Toxiproxy's blocking client from within async context).
+/// Writes network_stats.json so summary.csv can compute network_utilization_percent.
+fn write_network_stats(
+    scenario_dir: &Path,
+    profile: Option<&NetworkProfile>,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let bandwidth_bytes_per_sec = profile.and_then(|p| p.bandwidth_kbps).map(|k| k as u64 * 1000 / 8).unwrap_or(0);
+    let latency_ms = profile.and_then(|p| p.latency_ms).map(f64::from).unwrap_or(0.0);
+    let stat = NetworkStats {
+        timestamp: "0".to_string(),
+        latency_ms,
+        bandwidth_bytes_per_sec,
+        congestion_mode: None,
+        interface: None,
+    };
+    let path = scenario_dir.join("network_stats.json");
+    let line = serde_json::to_string(&stat)?;
+    std::fs::write(path, format!("{}\n", line))?;
+    Ok(())
+}
+
+/// Holds server, optional bandwidth-limit proxy guard, and Toxiproxy so the caller can drop
+/// them in sync context (avoids dropping Toxiproxy's blocking client from within async context).
 pub struct ScenarioCleanup {
     #[allow(dead_code)]
     server: LocalTestServer,
+    #[allow(dead_code)]
+    bandwidth_guard: Option<BandwidthLimitProxyGuard>,
     #[allow(dead_code)]
     proxy: NetworkSimulationProxy,
 }
@@ -229,10 +255,26 @@ pub async fn run_scenario(
     }
     let server = builder.start().await;
     let endpoint = server.http_endpoint().to_string();
-    let profile_opt = upload_profile.clone();
+    let server_host_port = endpoint_to_host_port(&endpoint)
+        .map_err(|e| Box::<dyn std::error::Error + Send + Sync>::from(e.to_string()))?;
 
+    let (toxiproxy_upstream_endpoint, bandwidth_guard) = if let Some(ref profile) = upload_profile {
+        if let Some(kbps) = profile.bandwidth_kbps {
+            let bps = (u64::from(kbps) * 1000) / 8;
+            let (listen_addr, guard) = start_bandwidth_limit_proxy(&server_host_port, bps, bps)
+                .await
+                .map_err(|e| Box::<dyn std::error::Error + Send + Sync>::from(e.to_string()))?;
+            (format!("http://{}", listen_addr), Some(guard))
+        } else {
+            (endpoint.clone(), None)
+        }
+    } else {
+        (endpoint.clone(), None)
+    };
+
+    let profile_opt = upload_profile.clone();
     let proxy: NetworkSimulationProxy = tokio::task::spawn_blocking(move || {
-        let mut p = NetworkSimulationProxy::new(&endpoint).map_err(|e| {
+        let mut p = NetworkSimulationProxy::new(&toxiproxy_upstream_endpoint).map_err(|e| {
             let msg = format!("Toxiproxy not available: {e}. Start Toxiproxy or set TOXIPROXY_ADDR.");
             Box::<dyn std::error::Error + Send + Sync>::from(msg)
         })?;
@@ -246,6 +288,7 @@ pub async fn run_scenario(
     .map_err(|e| Box::<dyn std::error::Error + Send + Sync>::from(e.to_string()))??;
 
     let proxy_addr = proxy.proxy_endpoint().trim_start_matches("http://").to_string();
+    write_network_stats(scenario_dir, upload_profile.as_ref())?;
     let start = Instant::now();
 
     match scenario {
@@ -260,7 +303,11 @@ pub async fn run_scenario(
     info!(scenario = scenario.name(), elapsed_sec = start.elapsed().as_secs_f64(), "Scenario run finished");
 
     generate_timeline_csv(scenario_dir)?;
-    Ok(ScenarioCleanup { server, proxy })
+    Ok(ScenarioCleanup {
+        server,
+        bandwidth_guard,
+        proxy,
+    })
 }
 
 /// Generates summary.csv for a results directory (timestamp dir containing scenario subdirs).

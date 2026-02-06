@@ -184,6 +184,7 @@ fn process_timeline_csv(
         .iter()
         .position(|&s| s == "total_bytes")
         .ok_or("total_bytes column")?;
+    let elapsed_ms_idx = header_cols.iter().position(|&s| s == "elapsed_ms").ok_or("elapsed_ms column")?;
     let total_retries_idx = header_cols
         .iter()
         .position(|&s| s == "total_retries")
@@ -210,30 +211,35 @@ fn process_timeline_csv(
         .collect();
 
     let mut max_total_bytes: f64 = 0.0;
+    let mut max_elapsed_ms: u64 = 0;
     let mut max_total_retries: u64 = 0;
     let mut total_concurrency_sum = 0.0;
     let mut average_concurrency_sum = 0.0;
     let mut client_concurrency_sum = 0.0;
     let mut row_count = 0;
 
+    let max_idx = total_bytes_idx
+        .max(total_retries_idx)
+        .max(total_concurrency_idx)
+        .max(average_concurrency_idx)
+        .max(elapsed_ms_idx);
+
     for line in lines.iter().skip(1) {
         if line.trim().is_empty() {
             continue;
         }
         let cols: Vec<&str> = line.split(',').collect();
-        let max_idx = total_bytes_idx
-            .max(total_retries_idx)
-            .max(total_concurrency_idx)
-            .max(average_concurrency_idx);
         if cols.len() <= max_idx {
             continue;
         }
         let bytes: f64 = cols[total_bytes_idx].parse().unwrap_or(0.0);
+        let elapsed_ms: u64 = cols[elapsed_ms_idx].parse().unwrap_or(0);
         let retries: u64 = cols[total_retries_idx].parse().unwrap_or(0);
         let concurrency: f64 = cols[total_concurrency_idx].parse().unwrap_or(0.0);
         let avg_concurrency: f64 = cols[average_concurrency_idx].parse().unwrap_or(0.0);
 
         max_total_bytes = max_total_bytes.max(bytes);
+        max_elapsed_ms = max_elapsed_ms.max(elapsed_ms);
         max_total_retries = max_total_retries.max(retries);
         total_concurrency_sum += concurrency;
         average_concurrency_sum += avg_concurrency;
@@ -266,7 +272,13 @@ fn process_timeline_csv(
         client_concurrency_sum / row_count as f64
     };
 
-    let network_utilization_percent = calculate_network_utilization(scenario_dir, max_total_bytes).unwrap_or(0.0);
+    let duration_sec = if max_elapsed_ms > 0 {
+        max_elapsed_ms as f64 / 1000.0
+    } else {
+        0.0
+    };
+    let network_utilization_percent =
+        calculate_network_utilization(scenario_dir, max_total_bytes, duration_sec).unwrap_or(0.0);
     let average_round_trip_time_ms = calculate_average_rtt(scenario_dir).unwrap_or(0.0);
 
     Ok(ScenarioSummaryRow {
@@ -280,12 +292,15 @@ fn process_timeline_csv(
     })
 }
 
+/// Computes network utilization as (bytes_sent / max_possible_bytes) * 100, capped at 100%.
+/// max_possible_bytes = bandwidth_bytes_per_sec * duration_sec from network_stats.json.
 fn calculate_network_utilization(
     scenario_dir: &Path,
     total_bytes: f64,
+    duration_sec: f64,
 ) -> Result<f64, Box<dyn std::error::Error + Send + Sync>> {
     let network_stats_path = scenario_dir.join("network_stats.json");
-    if !network_stats_path.exists() {
+    if !network_stats_path.exists() || duration_sec <= 0.0 {
         return Ok(0.0);
     }
     let network_stats: Vec<NetworkStats> = load_json_lines(&network_stats_path)?;
@@ -294,21 +309,23 @@ fn calculate_network_utilization(
     }
     let mut sorted_stats = network_stats;
     sorted_stats.sort_by_key(|s| s.timestamp.parse::<u64>().unwrap_or(0));
-    let duration_ms = 60_000u64;
-    let mut max_possible: u64 = 0;
+    let duration_sec_f = duration_sec;
+    let mut max_possible: f64 = 0.0;
     let mut current_time = 0u64;
     for (i, stat) in sorted_stats.iter().enumerate() {
         let next_time = if i + 1 < sorted_stats.len() {
             sorted_stats[i + 1].timestamp.parse::<u64>().unwrap_or(0)
         } else {
-            duration_ms
+            (duration_sec_f * 1000.0) as u64
         };
-        let segment_ms = next_time - current_time;
-        max_possible += (stat.bandwidth_bytes_per_sec as f64 / 1000.0 * segment_ms as f64) as u64;
+        let segment_ms = (next_time - current_time) as f64;
+        let segment_sec = segment_ms / 1000.0;
+        max_possible += stat.bandwidth_bytes_per_sec as f64 * segment_sec;
         current_time = next_time;
     }
-    if max_possible > 0 {
-        Ok((total_bytes / max_possible as f64) * 100.0)
+    if max_possible > 0.0 {
+        let utilization = (total_bytes / max_possible) * 100.0;
+        Ok(utilization.min(100.0))
     } else {
         Ok(0.0)
     }
