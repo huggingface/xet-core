@@ -13,6 +13,18 @@ use xet_runtime::{XetRuntime, check_sigint_shutdown};
 use crate::data_writer::{DataFuture, DataWriter};
 use crate::{ErrorState, FileReconstructionError, Result};
 
+// On macOS and Linux, writev(int fildes, const struct iovec *iov, int iovcnt) may return EINVAL if
+// - the sum of the iov_len values in the iov array overflows a 32-bit integer (macOS) or an ssize_t value (Linux);
+// - iovcnt is less than or equal to 0, or greater than UIO_MAXIOV (POSIX standard IOV_MAX, value 1024); and
+//  specially on Linux, the glibc wrapper functions do some extra work if they detect that the underlying kernel
+//  system call failed because this limit was exceeded. The wrapper function would allocate a temporary buffer large
+//  enough for all of the items specified by iov, copies data from iov to this buffer, and passes the buffer in a
+//  call to write().
+// To avoid these potential syscall failures or performance degradation, we put a limit on the sum of the iov_len values
+// in the iov array and on iovcnt.
+const WRITEV_MAX_BYTES: usize = 1024 * 1024 * 1024; // 1 GB
+const WRITEV_MAX_SLICE: usize = 128;
+
 /// Items sent to the background writer thread.
 enum QueueItem {
     Data {
@@ -118,7 +130,7 @@ impl<W: Write + Send + 'static> WriterThread<W> {
     }
 
     /// Run the vectorized writer loop.
-    fn run_vectorized(mut self) -> Result<()> {
+    fn run_vectorized(mut self, writev_max_bytes: usize, writev_max_slice: usize) -> Result<()> {
         let mut pending_writes: VecDeque<PendingWrite> = VecDeque::new();
 
         while !self.finished || !pending_writes.is_empty() {
@@ -139,7 +151,16 @@ impl<W: Write + Send + 'static> WriterThread<W> {
             }
 
             // Build IoSlice vector from all pending writes.
-            let io_slices: Vec<IoSlice<'_>> = pending_writes.iter().map(|(data, _)| IoSlice::new(data)).collect();
+            let mut total_to_writev = 0;
+            let io_slices: Vec<IoSlice<'_>> = pending_writes
+                .iter()
+                .take(writev_max_slice)
+                .take_while(|(data, _)| {
+                    total_to_writev += data.len();
+                    total_to_writev <= writev_max_bytes
+                })
+                .map(|(data, _)| IoSlice::new(data))
+                .collect();
 
             // Call write_vectored.
             let written = match self.writer.write_vectored(&io_slices) {
@@ -329,7 +350,7 @@ impl SequentialWriter {
     /// The writer type `W` can be any type implementing `Write + Send + 'static`.
     /// The writer is moved to a background thread for blocking I/O operations.
     pub fn new<W: Write + Send + 'static>(writer: W) -> Self {
-        Self::new_internal(writer, false)
+        Self::new_internal(writer, false, 0, 0)
     }
 
     /// Creates a new sequential writer that uses vectorized writes (write_vectored).
@@ -345,10 +366,25 @@ impl SequentialWriter {
     /// The writer type `W` can be any type implementing `Write + Send + 'static`.
     /// The writer is moved to a background thread for blocking I/O operations.
     pub fn new_vectorized<W: Write + Send + 'static>(writer: W) -> Self {
-        Self::new_internal(writer, true)
+        // with default limits for Linux and macOS
+        Self::new_internal(writer, true, WRITEV_MAX_BYTES, WRITEV_MAX_SLICE)
     }
 
-    fn new_internal<W: Write + Send + 'static>(writer: W, use_vectorized: bool) -> Self {
+    #[cfg(test)]
+    fn new_vectorized_with_config<W: Write + Send + 'static>(
+        writer: W,
+        writev_max_bytes: usize,
+        writev_max_slice: usize,
+    ) -> Self {
+        Self::new_internal(writer, true, writev_max_bytes, writev_max_slice)
+    }
+
+    fn new_internal<W: Write + Send + 'static>(
+        writer: W,
+        use_vectorized: bool,
+        writev_max_bytes: usize,
+        writev_max_slice: usize,
+    ) -> Self {
         let (tx, rx) = unbounded_channel::<QueueItem>();
         let error_state = Arc::new(ErrorState::new());
         let bytes_written = Arc::new(AtomicU64::new(0));
@@ -359,7 +395,7 @@ impl SequentialWriter {
         let handle = XetRuntime::current().spawn_blocking(move || {
             let writer_thread = WriterThread::new(rx, writer, bytes_written_clone);
             let result = if use_vectorized {
-                writer_thread.run_vectorized()
+                writer_thread.run_vectorized(writev_max_bytes, writev_max_slice)
             } else {
                 writer_thread.run()
             };
@@ -408,10 +444,16 @@ mod tests {
     /// Configuration for the TestWriter behavior.
     #[derive(Clone, Default)]
     struct TestWriterConfig {
-        /// Maximum bytes to write per write call (simulates partial writes).
+        /// Maximum bytes to write per write call, a call exceeding this limit triggers partial writes.
         max_write_size: Option<usize>,
-        /// Maximum bytes to write per write_vectored call.
+        /// Maximum bytes to write per write_vectored call, a call exceeding this limit triggers partial writes.
         max_vectored_write_size: Option<usize>,
+        /// Hard limit maximum bytes to write per write_vectored call, a call exceeding this limit returns InvalidInput
+        /// error.
+        hard_limit_vectored_write_bytes: Option<usize>,
+        /// Hard limit maximum number of slices per write_vectored call, a call exceeding this limit returns
+        /// InvalidInput error.
+        hard_limit_vectored_write_slice: Option<usize>,
         /// If true, occasionally return Interrupted error.
         simulate_interrupts: bool,
         /// Counter for how many writes before an interrupt (cycles).
@@ -426,6 +468,14 @@ mod tests {
         fn vectorized_partial(max_size: usize) -> Self {
             Self {
                 max_vectored_write_size: Some(max_size),
+                ..Default::default()
+            }
+        }
+
+        fn vectorized_hard_limit(max_bytes: usize, max_slice: usize) -> Self {
+            Self {
+                hard_limit_vectored_write_bytes: Some(max_bytes),
+                hard_limit_vectored_write_slice: Some(max_slice),
                 ..Default::default()
             }
         }
@@ -499,6 +549,18 @@ mod tests {
         fn write_vectored(&mut self, bufs: &[IoSlice<'_>]) -> io::Result<usize> {
             if self.should_interrupt() {
                 return Err(io::Error::new(io::ErrorKind::Interrupted, "simulated interrupt"));
+            }
+
+            if let Some(max_slice) = self.config.hard_limit_vectored_write_slice
+                && bufs.len() > max_slice
+            {
+                return Err(io::Error::new(io::ErrorKind::InvalidInput, "simulated iovcnt EINVAL"));
+            }
+
+            if let Some(max_bytes) = self.config.hard_limit_vectored_write_bytes
+                && bufs.iter().fold(0usize, |sum, data| sum + data.len()) > max_bytes
+            {
+                return Err(io::Error::new(io::ErrorKind::InvalidInput, "simulated iov EINVAL"));
             }
 
             self.vectored_write_count.fetch_add(1, Ordering::Relaxed);
@@ -1146,6 +1208,128 @@ mod tests {
         for i in 0..10 {
             let start = i * 500;
             let end = start + 500;
+            let chunk: Vec<u8> = (start..end).map(|j| (j % 256) as u8).collect();
+            writer
+                .set_next_term_data_source(
+                    FileRange::new(start as u64, end as u64),
+                    None,
+                    immediate_future(Bytes::from(chunk)),
+                )
+                .await
+                .unwrap();
+        }
+
+        writer.finish().await.unwrap();
+
+        let result = buffer.lock().unwrap();
+        assert_eq!(&*result, &expected);
+    }
+
+    #[tokio::test]
+    async fn test_vectorized_exceeded_max_slice() {
+        let test_writer = TestWriter::new(TestWriterConfig::vectorized_hard_limit(20000, 2)); // hard limit set to 2 slices at a time
+
+        let writer = Arc::new(SequentialWriter::new_vectorized_with_config(Box::new(test_writer), 20000, 20)); // controlled writev at max 20 slices at a time
+
+        // Write in slices of 10 bytes, creating in total 1000 slices
+        for i in 0..1000 {
+            let start = i * 10;
+            let end = start + 10;
+            let chunk: Vec<u8> = (start..end).map(|j| (j % 256) as u8).collect();
+            if writer
+                .set_next_term_data_source(
+                    FileRange::new(start as u64, end as u64),
+                    None,
+                    immediate_future(Bytes::from(chunk)),
+                )
+                .await
+                .is_err()
+            {
+                break;
+            }
+        }
+
+        let ret = writer.finish().await;
+        assert!(matches!(ret, Err(FileReconstructionError::IoError(_))));
+        let Err(FileReconstructionError::IoError(inner_err)) = ret else {
+            panic!("unexpected error occurred")
+        };
+        assert_eq!(inner_err.kind(), std::io::ErrorKind::InvalidInput);
+    }
+
+    #[tokio::test]
+    async fn test_vectorized_controlled_max_slice() {
+        let expected: Vec<u8> = (0..10000).map(|i| (i % 256) as u8).collect();
+        let test_writer = TestWriter::new(TestWriterConfig::vectorized_hard_limit(20000, 2)); // hard limit set to 2 slices at a time
+        let buffer = test_writer.buffer.clone();
+
+        let writer = Arc::new(SequentialWriter::new_vectorized_with_config(Box::new(test_writer), 20000, 2)); // controlled writev at max 2 slices at a time
+
+        // Write in slices of 10 bytes, creating in total 1000 slices
+        for i in 0..1000 {
+            let start = i * 10;
+            let end = start + 10;
+            let chunk: Vec<u8> = (start..end).map(|j| (j % 256) as u8).collect();
+            writer
+                .set_next_term_data_source(
+                    FileRange::new(start as u64, end as u64),
+                    None,
+                    immediate_future(Bytes::from(chunk)),
+                )
+                .await
+                .unwrap();
+        }
+
+        writer.finish().await.unwrap();
+
+        let result = buffer.lock().unwrap();
+        assert_eq!(&*result, &expected);
+    }
+
+    #[tokio::test]
+    async fn test_vectorized_exceeded_max_bytes() {
+        let test_writer = TestWriter::new(TestWriterConfig::vectorized_hard_limit(2000, 100)); // hard limit set to 2000 bytes at a time
+
+        let writer = Arc::new(SequentialWriter::new_vectorized_with_config(Box::new(test_writer), 20000, 100)); // controlled writev at max 20000 bytes at a time
+
+        // Write in slices of 1000 bytes, creating in total 10 slices
+        for i in 0..10 {
+            let start = i * 1000;
+            let end = start + 1000;
+            let chunk: Vec<u8> = (start..end).map(|j| (j % 256) as u8).collect();
+            if writer
+                .set_next_term_data_source(
+                    FileRange::new(start as u64, end as u64),
+                    None,
+                    immediate_future(Bytes::from(chunk)),
+                )
+                .await
+                .is_err()
+            {
+                break;
+            }
+        }
+
+        let ret = writer.finish().await;
+        assert!(matches!(ret, Err(FileReconstructionError::IoError(_))));
+        let Err(FileReconstructionError::IoError(inner_err)) = ret else {
+            panic!("unexpected error occurred")
+        };
+        assert_eq!(inner_err.kind(), std::io::ErrorKind::InvalidInput);
+    }
+
+    #[tokio::test]
+    async fn test_vectorized_controlled_max_bytes() {
+        let expected: Vec<u8> = (0..10000).map(|i| (i % 256) as u8).collect();
+        let test_writer = TestWriter::new(TestWriterConfig::vectorized_hard_limit(2000, 100)); // hard limit set to 2000 bytes at a time
+        let buffer = test_writer.buffer.clone();
+
+        let writer = Arc::new(SequentialWriter::new_vectorized_with_config(Box::new(test_writer), 2000, 100)); // controlled writev at max 2000 bytes at a time
+
+        // Write in slices of 1000 bytes, creating in total 10 slices
+        for i in 0..10 {
+            let start = i * 1000;
+            let end = start + 1000;
             let chunk: Vec<u8> = (start..end).map(|j| (j % 256) as u8).collect();
             writer
                 .set_next_term_data_source(
