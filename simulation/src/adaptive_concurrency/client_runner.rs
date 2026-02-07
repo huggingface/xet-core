@@ -20,9 +20,12 @@ use xet_runtime::xet_config;
 
 use super::common::ClientMetrics;
 
+const PING_PATH: &str = "/simulation/ping";
 const DUMMY_UPLOAD_PATH: &str = "/simulation/dummy_upload";
 const STATS_INTERVAL_MS: u64 = 200;
 const UPLOAD_TASKS: usize = 100;
+const SERVER_READY_POLL_INTERVAL_MS: u64 = 100;
+const SERVER_READY_TIMEOUT_SECS: u64 = 30;
 
 /// Normalizes server address to a base URL (e.g. "127.0.0.1:8080" -> "http://127.0.0.1:8080").
 fn base_url(server_addr: &str) -> String {
@@ -34,19 +37,29 @@ fn base_url(server_addr: &str) -> String {
     }
 }
 
-/// Waits for the server to be ready by POSTing to dummy_upload. Errors if not ready within 30s.
+/// Waits for the server to be ready by GETting the ping endpoint every 100ms. Errors if not ready within 30s.
 pub async fn wait_for_server_ready(
     http_client: &ClientWithMiddleware,
     server_addr: &str,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let url = format!("{}{}", base_url(server_addr).trim_end_matches('/'), DUMMY_UPLOAD_PATH);
-    let timeout = Duration::from_secs(30);
+    let url = format!("{}{}", base_url(server_addr).trim_end_matches('/'), PING_PATH);
+    let timeout = Duration::from_secs(SERVER_READY_TIMEOUT_SECS);
+    let poll_interval = Duration::from_millis(SERVER_READY_POLL_INTERVAL_MS);
     let start = Instant::now();
-    let check_interval = Duration::from_millis(500);
 
     loop {
-        match http_client.post(&url).body(vec![]).timeout(Duration::from_secs(1)).send().await {
-            Ok(_) => return Ok(()),
+        match http_client.get(&url).timeout(Duration::from_secs(1)).send().await {
+            Ok(res) if res.status().is_success() => return Ok(()),
+            Ok(_) => {
+                if start.elapsed() >= timeout {
+                    return Err(format!(
+                        "Server at {} did not return success within {}s",
+                        server_addr, SERVER_READY_TIMEOUT_SECS
+                    )
+                    .into());
+                }
+                tokio::time::sleep(poll_interval).await;
+            },
             Err(e) => {
                 let is_connect_error = match &e {
                     reqwest_middleware::Error::Reqwest(we) => we.is_connect() || we.is_timeout(),
@@ -54,11 +67,15 @@ pub async fn wait_for_server_ready(
                 };
                 if is_connect_error {
                     if start.elapsed() >= timeout {
-                        return Err(format!("Server at {} not ready within 30s", server_addr).into());
+                        return Err(format!(
+                            "Server at {} not ready within {}s",
+                            server_addr, SERVER_READY_TIMEOUT_SECS
+                        )
+                        .into());
                     }
-                    tokio::time::sleep(check_interval).await;
+                    tokio::time::sleep(poll_interval).await;
                 } else {
-                    return Ok(());
+                    return Err(e.into());
                 }
             },
         }

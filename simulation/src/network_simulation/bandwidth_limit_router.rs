@@ -3,9 +3,10 @@
 //!
 //! Uses tokio semaphores for bandwidth; adds per-chunk latency (with jitter) and
 //! optionally drops new connections with a configurable probability.
-//! Supports a schedule of (Duration, NetworkProfile) pairs with a background updater.
+//! Supports a time-based profile provider: every 250ms the provider returns the current
+//! NetworkProfile from elapsed time; bandwidth is recorded for baseline reporting.
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use rand::Rng;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -16,9 +17,11 @@ use tracing::debug;
 
 use super::error::{Result, SimulationError};
 use super::network_profile::NetworkProfile;
+use super::profile_provider::NetworkProfileProvider;
 
 const BUF_SIZE: usize = 65536;
 const REFILL_INTERVAL_MS: u64 = 50;
+const CONFIG_POLL_INTERVAL_MS: u64 = 250;
 
 /// Configuration for the bandwidth-limit proxy (bandwidth, latency, drop probability).
 #[derive(Clone, Debug)]
@@ -92,11 +95,16 @@ where
     Ok(total)
 }
 
+/// Recorded (elapsed, bandwidth_bytes_per_sec, latency_ms) for baseline reporting.
+pub type BandwidthRecording = Vec<(Duration, u64, f64)>;
+
 /// Guard that stops the proxy and refill loops when dropped.
+/// When started with a provider, holds a recording of (elapsed, bandwidth, latency) for baseline.
 pub struct BandwidthLimitProxyGuard {
     shutdown_tx: Option<broadcast::Sender<()>>,
     #[allow(dead_code)]
     proxy_join: tokio::task::JoinHandle<()>,
+    recording: Option<Arc<Mutex<BandwidthRecording>>>,
 }
 
 impl Drop for BandwidthLimitProxyGuard {
@@ -165,23 +173,18 @@ pub async fn start_bandwidth_limit_proxy_with_config(
         BandwidthLimitProxyGuard {
             shutdown_tx: Some(shutdown_tx),
             proxy_join,
+            recording: None,
         },
     ))
 }
 
-/// Schedule entry: (duration to apply this profile, profile). Repeats cyclically.
-pub type ProxySchedule = Vec<(Duration, NetworkProfile)>;
-
-/// Starts a TCP proxy that applies a repeating schedule of network profiles.
-/// A background task updates the active config every `duration`; refill and new connections use the current config.
-/// `schedule` must be non-empty. Returns the listen address and a guard; drop the guard to stop the proxy.
-pub async fn start_bandwidth_limit_proxy_with_schedule(
+/// Starts a TCP proxy driven by a time-based profile provider.
+/// Every 250ms the provider is called with elapsed time; the returned profile is applied and
+/// (elapsed, bandwidth, latency) is recorded for baseline reporting. Shutdown is checked each 250ms.
+pub async fn start_bandwidth_limit_proxy_with_provider(
     upstream: &str,
-    schedule: ProxySchedule,
+    provider: Arc<dyn NetworkProfileProvider + Send + Sync>,
 ) -> Result<(String, BandwidthLimitProxyGuard)> {
-    if schedule.is_empty() {
-        return Err(SimulationError::Proxy("proxy schedule must be non-empty".to_string()));
-    }
     let upstream = upstream.to_string();
     let listener = TcpListener::bind("127.0.0.1:0")
         .await
@@ -192,12 +195,14 @@ pub async fn start_bandwidth_limit_proxy_with_schedule(
     let (shutdown_tx, _) = broadcast::channel(1);
     let shutdown_rx_proxy = shutdown_tx.subscribe();
     let shutdown_rx_refill = shutdown_tx.subscribe();
-    let shutdown_rx_scheduler = shutdown_tx.subscribe();
+    let shutdown_rx_provider = shutdown_tx.subscribe();
 
-    let initial = ProxyConfig::from_profile(&schedule[0].1);
+    let initial = ProxyConfig::from_profile(&provider.profile_at(Duration::ZERO));
     let current_config = Arc::new(RwLock::new(initial));
     let upload_limiter = Arc::new(Semaphore::new(0));
     let download_limiter = Arc::new(Semaphore::new(0));
+    let recording: BandwidthRecording = Vec::new();
+    let recording = Arc::new(Mutex::new(recording));
 
     tokio::spawn(refill_loop_scheduled(
         upload_limiter.clone(),
@@ -205,8 +210,7 @@ pub async fn start_bandwidth_limit_proxy_with_schedule(
         current_config.clone(),
         shutdown_rx_refill,
     ));
-    let schedule_clone: Vec<(Duration, NetworkProfile)> = schedule.into_iter().collect();
-    tokio::spawn(scheduler_loop(schedule_clone, current_config.clone(), shutdown_rx_scheduler));
+    tokio::spawn(provider_loop(provider, current_config.clone(), recording.clone(), shutdown_rx_provider));
 
     let proxy_join = tokio::spawn(async move {
         run_proxy_loop_scheduled(
@@ -225,8 +229,17 @@ pub async fn start_bandwidth_limit_proxy_with_schedule(
         BandwidthLimitProxyGuard {
             shutdown_tx: Some(shutdown_tx),
             proxy_join,
+            recording: Some(recording),
         },
     ))
+}
+
+impl BandwidthLimitProxyGuard {
+    /// Takes the bandwidth recording (elapsed, bandwidth_bps, latency_ms) if this guard was started with a provider.
+    pub fn take_bandwidth_recording(&self) -> Option<BandwidthRecording> {
+        let rec = self.recording.as_ref()?;
+        rec.lock().ok().map(|mut v| std::mem::take(&mut *v))
+    }
 }
 
 /// Refill loop for scheduled proxy: each tick, read current config and add permits for upload and download.
@@ -259,30 +272,41 @@ async fn refill_loop_scheduled(
     }
 }
 
-const SCHEDULER_POLL_INTERVAL: Duration = Duration::from_millis(100);
-
-/// Scheduler loop: cycle through schedule, sleep in short intervals and check shutdown, then write next config.
-async fn scheduler_loop(
-    schedule: Vec<(Duration, NetworkProfile)>,
+/// Provider loop: every 250ms get profile from provider, update config, record (elapsed, bandwidth, latency).
+async fn provider_loop(
+    provider: Arc<dyn NetworkProfileProvider + Send + Sync>,
     current_config: Arc<RwLock<ProxyConfig>>,
+    recording: Arc<Mutex<BandwidthRecording>>,
     mut shutdown_rx: broadcast::Receiver<()>,
 ) {
-    let mut index = 0usize;
+    let start = tokio::time::Instant::now();
+    {
+        let profile = provider.profile_at(Duration::ZERO);
+        let config = ProxyConfig::from_profile(&profile);
+        let bps = config.upload_bandwidth_bytes_per_sec;
+        let latency_ms = config.latency_ms.map(f64::from).unwrap_or(0.0);
+        if let Ok(mut rec) = recording.lock() {
+            rec.push((Duration::ZERO, bps, latency_ms));
+        }
+    }
+    let poll_interval = Duration::from_millis(CONFIG_POLL_INTERVAL_MS);
+    let mut ticker = interval(poll_interval);
+    ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     loop {
-        let (duration, ref profile) = schedule[index];
-        *current_config.write().await = ProxyConfig::from_profile(profile);
-        index = (index + 1) % schedule.len();
-        let mut remaining = duration;
-        while remaining > Duration::ZERO {
-            let chunk = remaining.min(SCHEDULER_POLL_INTERVAL);
-            let sleep_fut = sleep(chunk);
-            tokio::select! {
-                _ = shutdown_rx.recv() => {
-                    debug!("bandwidth limit scheduler shutting down");
-                    return;
-                }
-                _ = sleep_fut => {
-                    remaining -= chunk;
+        tokio::select! {
+            _ = shutdown_rx.recv() => {
+                debug!("bandwidth limit provider loop shutting down");
+                break;
+            }
+            _ = ticker.tick() => {
+                let elapsed = start.elapsed();
+                let profile = provider.profile_at(elapsed);
+                let config = ProxyConfig::from_profile(&profile);
+                let bps = config.upload_bandwidth_bytes_per_sec;
+                let latency_ms = config.latency_ms.map(f64::from).unwrap_or(0.0);
+                *current_config.write().await = config;
+                if let Ok(mut rec) = recording.lock() {
+                    rec.push((elapsed, bps, latency_ms));
                 }
             }
         }

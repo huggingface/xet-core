@@ -677,6 +677,13 @@ fn parse_congestion_config(value: &str) -> Result<(u64, u64, u64, f64), String> 
     Ok((connection_threshold, min_penalty_ms, max_penalty_ms, error_rate))
 }
 
+/// GET /simulation/ping
+///
+/// Returns 200 OK with a simple success body. Used by the simulation to confirm the server is ready.
+pub async fn ping() -> Response {
+    (StatusCode::OK, "ok").into_response()
+}
+
 /// POST /simulation/dummy_upload
 ///
 /// Accepts an upload stream and discards all data. Returns after applying the configured delays.

@@ -4,20 +4,25 @@
 //! it calls `run_upload_clients` one or more times (possibly in parallel or staggered).
 
 use std::path::Path;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use cas_client::simulation::local_server::ServerDelayProfile;
-use cas_client::{LocalTestServer, LocalTestServerBuilder};
-use tokio::time::sleep;
-use tracing::info;
+use cas_client::{LocalTestServer, LocalTestServerBuilder, RemoteSimulationClient};
+use tokio::sync::broadcast;
+use tokio::time::{interval, sleep};
+use tracing::{debug, info};
 
 use super::client_runner::run_upload_clients;
 use super::common::NetworkStats;
 use super::reporting::{generate_summary_csv, generate_timeline_csv};
 use crate::network_simulation::{
-    BandwidthLimitProxyGuard, NetworkProfile, ProxyConfig, ProxySchedule, endpoint_to_host_port,
-    start_bandwidth_limit_proxy_with_config, start_bandwidth_limit_proxy_with_schedule,
+    BandwidthLimitProxyGuard, BandwidthRecording, DelayProfileProvider, FixedDelayProfileProvider, NetworkProfile,
+    NetworkProfileProvider, ProxyConfig, endpoint_to_host_port, start_bandwidth_limit_proxy_with_config,
+    start_bandwidth_limit_proxy_with_provider,
 };
+
+const DELAY_PROFILE_POLL_INTERVAL_MS: u64 = 250;
 
 /// Scenario identifier; each corresponds to a scenario function below.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -157,15 +162,6 @@ pub async fn scenario_added_uploads(
     Ok(())
 }
 
-/// Builds the heavy-congestion schedule: 30s degraded (reduced bandwidth, 200 ms latency) then 30s normal, repeating.
-pub fn build_heavy_congestion_schedule(normal_profile: &NetworkProfile) -> ProxySchedule {
-    let degraded = normal_profile.for_heavy_degraded_phase();
-    vec![
-        (Duration::from_secs(30), degraded),
-        (Duration::from_secs(30), normal_profile.clone()),
-    ]
-}
-
 /// Build upload NetworkProfile from optional bandwidth/latency/congestion strings.
 /// Congestion: "none" | "medium" | "heavy" | "bursty". Bandwidth e.g. "10mbps", latency e.g. "50ms".
 /// "realistic" (varying conditions over time) is not supported; would require a
@@ -209,35 +205,31 @@ fn default_duration_sec(scenario: Scenario) -> u64 {
 }
 
 /// Writes network_stats.json so summary.csv can compute network_utilization_percent.
-/// When `schedule` is Some, writes one line per time segment (timestamp_ms, bandwidth, latency) so
-/// utilization is correct over the run; `duration_sec` is the scenario run length.
+/// When `recording` is Some (from provider-based proxy), writes one line per sample (elapsed_ms, bandwidth, latency).
+/// Otherwise uses `profile` for a single fixed segment. `duration_sec` is the run length for the last segment.
 fn write_network_stats(
     scenario_dir: &Path,
     profile: Option<&NetworkProfile>,
-    schedule: Option<&ProxySchedule>,
+    recording: Option<&BandwidthRecording>,
     duration_sec: f64,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let path = scenario_dir.join("network_stats.json");
-    let lines = if let Some(sched) = schedule {
+    let lines = if let Some(rec) = recording {
         let duration_ms = (duration_sec * 1000.0) as u64;
         let mut out = Vec::new();
-        let mut time_ms: u64 = 0;
-        let mut index = 0usize;
-        while time_ms < duration_ms && !sched.is_empty() {
-            let profile = &sched[index].1;
-            let config = ProxyConfig::from_profile(profile);
-            let bandwidth_bytes_per_sec = config.upload_bandwidth_bytes_per_sec;
-            let latency_ms = config.latency_ms.map(f64::from).unwrap_or(0.0);
+        for (elapsed, bandwidth_bytes_per_sec, latency_ms) in rec {
+            let time_ms = elapsed.as_millis() as u64;
+            if time_ms >= duration_ms {
+                break;
+            }
             let stat = NetworkStats {
                 timestamp: time_ms.to_string(),
-                latency_ms,
-                bandwidth_bytes_per_sec,
+                latency_ms: *latency_ms,
+                bandwidth_bytes_per_sec: *bandwidth_bytes_per_sec,
                 congestion_mode: None,
                 interface: None,
             };
             out.push(serde_json::to_string(&stat)?);
-            time_ms += sched[index].0.as_millis() as u64;
-            index = (index + 1) % sched.len();
         }
         out.join("\n") + "\n"
     } else {
@@ -256,12 +248,50 @@ fn write_network_stats(
     Ok(())
 }
 
-/// Holds server and optional bandwidth-limit proxy guard so the caller can drop them in sync context.
+/// Runs the delay profile update loop: every 250ms sets the server delay profile from the provider.
+async fn delay_profile_update_loop(
+    client: Arc<RemoteSimulationClient>,
+    provider: Arc<dyn DelayProfileProvider + Send + Sync>,
+    mut shutdown_rx: broadcast::Receiver<()>,
+) {
+    let start = Instant::now();
+    if let Err(e) = client.simulation_set_delay_profile(provider.profile_at(Duration::ZERO)).await {
+        tracing::warn!(error = %e, "initial delay profile set failed");
+    }
+    let mut ticker = interval(Duration::from_millis(DELAY_PROFILE_POLL_INTERVAL_MS));
+    ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    loop {
+        tokio::select! {
+            _ = shutdown_rx.recv() => {
+                debug!("delay profile update loop shutting down");
+                break;
+            }
+            _ = ticker.tick() => {
+                let elapsed = start.elapsed();
+                let profile = provider.profile_at(elapsed);
+                if let Err(e) = client.simulation_set_delay_profile(profile).await {
+                    tracing::warn!(error = %e, "delay profile update failed");
+                }
+            }
+        }
+    }
+}
+
+/// Holds server, optional bandwidth-limit proxy guard, and optional delay-loop shutdown sender.
 pub struct ScenarioCleanup {
     #[allow(dead_code)]
     server: LocalTestServer,
     #[allow(dead_code)]
     bandwidth_guard: Option<BandwidthLimitProxyGuard>,
+    delay_shutdown_tx: Option<broadcast::Sender<()>>,
+}
+
+impl Drop for ScenarioCleanup {
+    fn drop(&mut self) {
+        if let Some(tx) = self.delay_shutdown_tx.take() {
+            let _ = tx.send(());
+        }
+    }
 }
 
 /// Server API delay range (min_ms, max_ms). (0, 0) means no delay.
@@ -274,46 +304,57 @@ pub const DEFAULT_SERVER_DELAY_MS: ServerDelayMs = (400, 1000);
 /// (which may call `run_upload_clients` multiple times), then generates timeline.csv.
 /// Returns a cleanup guard; drop it after `block_on` returns so the proxy is dropped in sync context.
 ///
-/// When `schedule` is Some, the bandwidth proxy uses that schedule (e.g. 30s degraded / 30s normal)
-/// instead of a fixed config, and network_stats.json is written with segment data for utilization.
-/// `server_delay_ms`: random delay range (min_ms, max_ms) for server API calls. (0, 0) = no delay.
+/// When `profile_provider` is Some, the bandwidth proxy uses it (profile at elapsed time every 250ms)
+/// and records bandwidth for baseline; network_stats.json is written from the recording after the run.
+/// When `delay_profile_provider` is Some, the server's delay profile is updated every 250ms from it.
+/// `server_delay_ms`: fixed random delay range (min_ms, max_ms) when delay_profile_provider is None. (0, 0) = no delay.
 /// Default when None is (400, 1000).
 pub async fn run_scenario(
     scenario: Scenario,
     duration_override: Option<u64>,
     upload_profile: Option<NetworkProfile>,
-    schedule: Option<ProxySchedule>,
+    profile_provider: Option<Arc<dyn NetworkProfileProvider + Send + Sync>>,
     server_delay_ms: Option<ServerDelayMs>,
+    delay_profile_provider: Option<Arc<dyn DelayProfileProvider + Send + Sync>>,
     scenario_dir: &Path,
 ) -> Result<ScenarioCleanup, Box<dyn std::error::Error + Send + Sync>> {
     std::fs::create_dir_all(scenario_dir)?;
 
-    let delay_profile = server_delay_ms
-        .or(Some(DEFAULT_SERVER_DELAY_MS))
-        .filter(|(min, max)| *min > 0 || *max > 0)
-        .map(|(min_ms, max_ms)| ServerDelayProfile {
-            random_delay_ms: Some((min_ms, max_ms.max(min_ms))),
-            ..ServerDelayProfile::default()
-        });
+    let delay_provider: Option<Arc<dyn DelayProfileProvider + Send + Sync>> =
+        if let Some(provider) = delay_profile_provider {
+            Some(provider)
+        } else {
+            server_delay_ms
+                .or(Some(DEFAULT_SERVER_DELAY_MS))
+                .filter(|(min, max)| *min > 0 || *max > 0)
+                .map(|(min_ms, max_ms)| {
+                    Arc::new(FixedDelayProfileProvider(ServerDelayProfile {
+                        random_delay_ms: Some((min_ms, max_ms.max(min_ms))),
+                        ..ServerDelayProfile::default()
+                    })) as Arc<dyn DelayProfileProvider + Send + Sync>
+                })
+        };
 
-    let mut builder = LocalTestServerBuilder::new().with_ephemeral_disk();
-    if let Some(profile) = delay_profile {
-        builder = builder.with_server_delay_profile(profile);
-    }
+    let builder = LocalTestServerBuilder::new().with_ephemeral_disk();
     let server = builder.start().await;
+
+    let delay_shutdown_tx = if let Some(provider) = &delay_provider {
+        let (tx, rx) = broadcast::channel(1);
+        let client = server.remote_simulation_client().clone();
+        tokio::spawn(delay_profile_update_loop(client, provider.clone(), rx));
+        Some(tx)
+    } else {
+        None
+    };
     let endpoint = server.http_endpoint().to_string();
     let server_host_port = endpoint_to_host_port(&endpoint)
         .map_err(|e| Box::<dyn std::error::Error + Send + Sync>::from(e.to_string()))?;
 
-    let (client_endpoint, bandwidth_guard) = if let Some(sched) = &schedule {
-        if !sched.is_empty() {
-            let (listen_addr, guard) = start_bandwidth_limit_proxy_with_schedule(&server_host_port, sched.clone())
-                .await
-                .map_err(|e| Box::<dyn std::error::Error + Send + Sync>::from(e.to_string()))?;
-            (format!("http://{}", listen_addr), Some(guard))
-        } else {
-            (endpoint.clone(), None)
-        }
+    let (client_endpoint, bandwidth_guard) = if let Some(provider) = &profile_provider {
+        let (listen_addr, guard) = start_bandwidth_limit_proxy_with_provider(&server_host_port, provider.clone())
+            .await
+            .map_err(|e| Box::<dyn std::error::Error + Send + Sync>::from(e.to_string()))?;
+        (format!("http://{}", listen_addr), Some(guard))
     } else if let Some(ref profile) = upload_profile {
         if !profile.is_empty() {
             let config = ProxyConfig::from_profile(profile);
@@ -330,7 +371,9 @@ pub async fn run_scenario(
 
     let proxy_addr = client_endpoint.trim_start_matches("http://").to_string();
     let duration_sec = duration_override.unwrap_or_else(|| default_duration_sec(scenario)) as f64;
-    write_network_stats(scenario_dir, upload_profile.as_ref(), schedule.as_ref(), duration_sec)?;
+    if profile_provider.is_none() {
+        write_network_stats(scenario_dir, upload_profile.as_ref(), None, duration_sec)?;
+    }
     let start = Instant::now();
 
     match scenario {
@@ -344,10 +387,16 @@ pub async fn run_scenario(
 
     info!(scenario = scenario.name(), elapsed_sec = start.elapsed().as_secs_f64(), "Scenario run finished");
 
+    if let Some(ref guard) = bandwidth_guard {
+        if let Some(recording) = guard.take_bandwidth_recording() {
+            write_network_stats(scenario_dir, None, Some(&recording), duration_sec)?;
+        }
+    }
     generate_timeline_csv(scenario_dir)?;
     Ok(ScenarioCleanup {
         server,
         bandwidth_guard,
+        delay_shutdown_tx,
     })
 }
 

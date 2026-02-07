@@ -7,12 +7,11 @@
 #![cfg(not(target_family = "wasm"))]
 
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use clap::Parser;
-use simulation::adaptive_concurrency::{
-    DEFAULT_SERVER_DELAY_MS, Scenario, build_heavy_congestion_schedule, build_upload_profile, run_scenario,
-};
-use simulation::network_simulation::NetworkProfile;
+use simulation::adaptive_concurrency::{DEFAULT_SERVER_DELAY_MS, Scenario, build_upload_profile, run_scenario};
+use simulation::network_simulation::{CyclingProfileProvider, NetworkProfile, NetworkProfileProvider};
 use xet_logging::{LoggingConfig, init as init_logging};
 use xet_runtime::XetRuntime;
 
@@ -81,11 +80,23 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let profile: NetworkProfile =
         build_upload_profile(bandwidth.as_deref(), latency.as_deref(), args.jitter.as_deref(), Some(congestion))?;
 
-    let schedule = if congestion.eq_ignore_ascii_case("heavy") && !profile.is_empty() {
-        Some(build_heavy_congestion_schedule(&profile))
-    } else {
-        None
-    };
+    let profile_provider: Option<Arc<dyn NetworkProfileProvider + Send + Sync>> =
+        if (congestion.eq_ignore_ascii_case("heavy") || congestion.eq_ignore_ascii_case("medium"))
+            && !profile.is_empty()
+        {
+            let degraded = if congestion.eq_ignore_ascii_case("heavy") {
+                profile.for_heavy_degraded_phase()
+            } else {
+                profile.for_medium_degraded_phase()
+            };
+            Some(Arc::new(CyclingProfileProvider {
+                normal: profile.clone(),
+                degraded,
+                period_secs: 30,
+            }))
+        } else {
+            None
+        };
 
     let server_delay_ms = Some((args.server_delay_min_ms, args.server_delay_max_ms));
     let xet = XetRuntime::new().map_err(|e| e.to_string())?;
@@ -99,8 +110,9 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 scenario,
                 args.duration_sec,
                 Some(profile),
-                schedule,
+                profile_provider,
                 server_delay_ms,
+                None,
                 &args.out_dir,
             ))
         })

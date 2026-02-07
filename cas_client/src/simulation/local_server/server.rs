@@ -150,6 +150,7 @@ impl LocalServer {
             .nest(
                 "/simulation",
                 Router::new()
+                    .route("/ping", get(handlers::ping))
                     .route("/set_config", post(handlers::set_config))
                     .route("/dummy_upload", post(handlers::dummy_upload)),
             )

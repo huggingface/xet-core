@@ -132,13 +132,26 @@ impl NetworkProfile {
     }
 
     /// Returns a profile for the "degraded" phase of heavy congestion: 200 ms latency, 50 ms jitter,
-    /// and bandwidth reduced to 10% of this profile (minimum 1000 kbps). Used with a schedule.
+    /// and bandwidth reduced to 10% of this profile (minimum 1000 kbps).
     pub fn for_heavy_degraded_phase(&self) -> Self {
         let bandwidth_kbps = self.bandwidth_kbps.map(|k| (k / 10).max(1000)).or(Some(1000));
         Self {
             bandwidth_kbps,
             latency_ms: Some(200),
             jitter_ms: Some(50),
+            slicer: None,
+            drop_probability: self.drop_probability,
+        }
+    }
+
+    /// Returns a profile for the "degraded" phase of medium congestion: 100 ms latency, 25 ms jitter,
+    /// and bandwidth reduced to 50% of this profile (minimum 1000 kbps).
+    pub fn for_medium_degraded_phase(&self) -> Self {
+        let bandwidth_kbps = self.bandwidth_kbps.map(|k| (k / 2).max(1000)).or(Some(1000));
+        Self {
+            bandwidth_kbps,
+            latency_ms: Some(100),
+            jitter_ms: Some(25),
             slicer: None,
             drop_probability: self.drop_probability,
         }
