@@ -15,26 +15,26 @@ merklehash = { path = "../merklehash" }
 progress_tracking = { path = "../progress_tracking" }
 utils = { path = "../utils" }
 
-async-trait = "0.1.88"
-bytes = "1.10.1"
+async-trait = "0.1"
+bytes = "1.11"
 console_error_panic_hook = "0.1.7"
 console_log = { version = "1.0.0", features = ["color"] }
-env_logger = "0.11.5"
-futures = "0.3.31"
+env_logger = "0.11"
+futures = "0.3"
 getrandom = { version = "0.3", features = ["wasm_js"] }
-js-sys = "0.3.72"
-log = "0.4.22"
-serde = { version = "1.0.217", features = ["derive"] }
+js-sys = "0.3.85"
+log = "0.4"
+serde = { version = "1", features = ["derive"] }
 serde-wasm-bindgen = "0.6.5"
-sha2 = { version = "0.10.8", features = ["asm"] }
+sha2 = { version = "0.10", features = ["asm"] }
 thiserror = "2.0"
-tokio = { version = "1.44", features = ["sync", "rt"] }
-tokio_with_wasm = { version = "0.8.2", features = ["rt"] }
+tokio = { version = "1.49", features = ["sync", "rt"] }
+tokio_with_wasm = { version = "0.8", features = ["rt"] }
 uuid = { version = "1", features = ["v4", "js"] }
 wasm_thread = "0.3"
 wasm-bindgen = "=0.2.100"
-wasm-bindgen-futures = "0.4.50"
-web-sys = { version = "0.3.72", features = [
+wasm-bindgen-futures = "0.4.58"
+web-sys = { version = "0.3.85", features = [
     "File",
     "ReadableStream",
     "ReadableStreamDefaultReader",
@@ -60,4 +60,4 @@ web-sys = { version = "0.3.72", features = [
 targets = ["wasm32-unknown-unknown"]
 
 [dev-dependencies]
-wasm-bindgen-test = "0.3.50"
+wasm-bindgen-test = "0.3.58"
