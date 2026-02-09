@@ -134,6 +134,7 @@ pub async fn upload_bytes_async(
 /// when the stream is first polled. The number of concurrent downloads is
 /// bounded by a global semaphore. `stream_buffer_size` controls how many chunks
 /// can be buffered in each stream before backpressure is applied.
+#[allow(clippy::too_many_arguments)]
 #[instrument(skip_all, name = "data_client::download_bytes", fields(session_id = tracing::field::Empty, num_files=file_infos.len()))]
 pub async fn download_bytes_async(
     file_infos: Vec<XetFileInfo>,
