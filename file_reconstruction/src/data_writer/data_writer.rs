@@ -12,6 +12,7 @@ use xet_config::ReconstructionConfig;
 use crate::Result;
 use crate::data_writer::DataOutput;
 use crate::data_writer::sequential_writer::SequentialWriter;
+use crate::data_writer::streaming_writer::StreamingWriter;
 
 /// A future that produces the data bytes to be written.
 pub type DataFuture = Pin<Box<dyn Future<Output = Result<Bytes>> + Send + 'static>>;
@@ -69,6 +70,7 @@ pub fn new_data_writer(
                 Ok(Arc::new(SequentialWriter::new(writer)))
             }
         },
+        DataOutput::Channel(sender) => Ok(Arc::new(StreamingWriter::new(sender))),
         DataOutput::File { path, offset } => {
             let mut file = OpenOptions::new().write(true).create(true).truncate(false).open(&path)?;
 
