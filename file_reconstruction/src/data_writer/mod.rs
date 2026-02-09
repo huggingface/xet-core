@@ -1,3 +1,4 @@
+mod channel_writer;
 mod data_output;
 #[allow(clippy::module_inception)]
 mod data_writer;

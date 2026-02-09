@@ -1,6 +1,11 @@
 use std::io::Write;
 use std::path::PathBuf;
 
+use bytes::Bytes;
+use tokio::sync::mpsc;
+
+use super::channel_writer::ChannelWriter;
+
 /// The data output type for the file reconstructor.
 pub enum DataOutput {
     /// A custom writer that will receive the reconstructed data.
@@ -48,5 +53,14 @@ impl DataOutput {
     /// byte range being reconstructed.
     pub fn writer(writer: impl Write + Send + 'static) -> Self {
         Self::SequentialWriter(Box::new(writer))
+    }
+
+    /// Creates a writer output that sends data as `Bytes` chunks through a channel.
+    ///
+    /// Returns the `DataOutput` and the receiving end of the channel.
+    /// Backpressure is provided by the bounded channel buffer.
+    pub fn write_to_channel(buffer_size: usize) -> (Self, mpsc::Receiver<Bytes>) {
+        let (tx, rx) = mpsc::channel(buffer_size);
+        (Self::writer(ChannelWriter::new(tx)), rx)
     }
 }

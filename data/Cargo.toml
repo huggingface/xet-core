@@ -40,7 +40,9 @@ progress_tracking = { path = "../progress_tracking" }
 utils = { path = "../utils" }
 xet_runtime = { path = "../xet_runtime" }
 
+futures = { workspace = true }
 anyhow = { workspace = true }
+async-stream = { workspace = true }
 async-trait = { workspace = true }
 bytes = { workspace = true }
 chrono = { workspace = true }

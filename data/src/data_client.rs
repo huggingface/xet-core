@@ -7,6 +7,7 @@ use bytes::Bytes;
 use cas_client::remote_client::PREFIX_DEFAULT;
 use cas_object::CompressionScheme;
 use deduplication::{Chunker, DeduplicationMetrics};
+use async_stream::try_stream;
 use file_reconstruction::DataOutput;
 use mdb_shard::Sha256;
 use merklehash::MerkleHash;
@@ -112,9 +113,10 @@ pub async fn upload_bytes_async(
 
     let semaphore = XetRuntime::current().common().file_ingestion_semaphore.clone();
     let upload_session = FileUploadSession::new(config.into(), progress_updater).await?;
-    let clean_futures = file_contents.into_iter().map(|blob| {
+    let clean_futures = file_contents.into_iter().enumerate().map(|(i, blob)| {
         let upload_session = upload_session.clone();
-        async move { clean_bytes(upload_session, blob).await.map(|(xf, _metrics)| xf) }
+        let name: Arc<str> = format!("{i}").into();
+        async move { clean_bytes(upload_session, blob, Some(name)).await.map(|(xf, _metrics)| xf) }
             .instrument(info_span!("clean_task"))
     });
     let files = run_constrained_with_semaphore(clean_futures, semaphore).await?;
@@ -123,6 +125,55 @@ pub async fn upload_bytes_async(
     let _metrics = upload_session.finalize().await?;
 
     Ok(files)
+}
+
+/// Downloads multiple files and returns their contents as byte streams.
+///
+/// Returns one stream per file. Each stream is lazy — the download starts only
+/// when the stream is first polled. The number of concurrent downloads is
+/// bounded by a global semaphore. `stream_buffer_size` controls how many chunks
+/// can be buffered in each stream before backpressure is applied.
+#[instrument(skip_all, name = "data_client::download_bytes", fields(session_id = tracing::field::Empty, num_files=file_infos.len()))]
+pub async fn download_bytes_async(
+    file_infos: Vec<XetFileInfo>,
+    endpoint: Option<String>,
+    token_info: Option<(String, u64)>,
+    token_refresher: Option<Arc<dyn TokenRefresher>>,
+    progress_updaters: Option<Vec<Arc<dyn TrackingProgressUpdater>>>,
+    user_agent: String,
+    stream_buffer_size: usize,
+) -> errors::Result<Vec<impl Stream<Item = errors::Result<Bytes>>>> {
+    if let Some(updaters) = &progress_updaters
+        && updaters.len() != file_infos.len()
+    {
+        return Err(DataProcessingError::ParameterError("updaters are not same length as file_infos".to_string()));
+    }
+
+    let config = default_config(
+        endpoint.unwrap_or_else(|| xet_config().data.default_cas_endpoint.clone()),
+        None,
+        token_info,
+        token_refresher,
+        user_agent,
+    )?;
+    Span::current().record("session_id", &config.session_id);
+
+    let downloader = Arc::new(FileDownloader::new(config.into()).await?);
+    let semaphore = XetRuntime::current().global_semaphore(*CONCURRENT_FILE_DOWNLOAD_LIMITER);
+    let updaters = match progress_updaters {
+        None => vec![None; file_infos.len()],
+        Some(updaters) => updaters.into_iter().map(Some).collect(),
+    };
+
+    let readers = file_infos
+        .into_iter()
+        .zip(updaters)
+        .map(|(file_info, progress_updater)| {
+            smudge_bytes(downloader.clone(), semaphore.clone(), file_info, progress_updater, stream_buffer_size)
+        })
+        .collect::<errors::Result<Vec<_>>>()?;
+
+    Ok(readers)
 }
 
 // The sha256, if provided and valid, will be directly used in shard upload to avoid redundant computation.
@@ -239,8 +290,9 @@ pub async fn download_async(
 pub async fn clean_bytes(
     processor: Arc<FileUploadSession>,
     bytes: Vec<u8>,
+    name: Option<Arc<str>>,
 ) -> errors::Result<(XetFileInfo, DeduplicationMetrics)> {
-    let mut handle = processor.start_clean(None, bytes.len() as u64, None).await;
+    let mut handle = processor.start_clean(name, bytes.len() as u64, None).await;
     handle.add_data(&bytes).await?;
     handle.finish().await
 }
@@ -399,9 +451,46 @@ async fn smudge_file(
     Ok(file_path.to_string())
 }
 
+/// Downloads a file's content and returns it as a stream of byte chunks.
+///
+/// The download is lazy: nothing happens until the consumer starts polling the
+/// stream. On first poll, a bounded channel is created and the download is
+/// spawned into a background task that writes chunks into the channel. The
+/// consumer reads from the other end, with backpressure provided by the channel
+/// buffer. A semaphore limits the number of concurrent downloads.
+fn smudge_bytes(
+    downloader: Arc<FileDownloader>,
+    semaphore: Arc<tokio::sync::Semaphore>,
+    file_info: XetFileInfo,
+    progress_updater: Option<Arc<dyn TrackingProgressUpdater>>,
+    stream_buffer_size: usize,
+) -> errors::Result<impl Stream<Item = errors::Result<Bytes>>> {
+    let merkle_hash = file_info.merkle_hash()?;
+    let file_hash = file_info.hash().into();
+
+    Ok(try_stream! {
+        let progress_updater = progress_updater.map(ItemProgressUpdater::new);
+        let (producer, mut consumer) = DataOutput::write_to_channel(stream_buffer_size);
+
+        let handle = tokio::spawn(async move {
+            let _permit = semaphore.acquire().await;
+            downloader
+                .smudge_file_from_hash(&merkle_hash, file_hash, producer, None, progress_updater)
+                .await
+        });
+
+        while let Some(chunk) = consumer.recv().await {
+            yield chunk;
+        }
+
+        handle.await??;
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use dirs::home_dir;
+    use futures::TryStreamExt;
     use serial_test::serial;
     use tempfile::tempdir;
     use utils::EnvVarGuard;
@@ -614,5 +703,99 @@ mod tests {
         assert_eq!(file_info1.hash(), file_info3.hash(), "Hash mismatch between 8MB and 2MB buffer sizes");
         assert_eq!(file_info1.file_size(), file_info2.file_size());
         assert_eq!(file_info1.file_size(), file_info3.file_size());
+    }
+
+    fn test_contents() -> Vec<Vec<u8>> {
+        vec![
+            vec![],
+            b"Hello, World!".to_vec(),
+            (0..1_000_000).map(|i| (i % 256) as u8).collect(),
+        ]
+    }
+
+    #[tokio::test]
+    async fn test_bytes_round_trip() {
+        let temp_dir = tempdir().unwrap();
+        let endpoint = format!("local://{}", temp_dir.path().display());
+        let contents = test_contents();
+
+        let file_infos = upload_bytes_async(contents.clone(), Some(endpoint.clone()), None, None, None, "test".into())
+            .await
+            .unwrap();
+
+        let readers = download_bytes_async(file_infos, Some(endpoint), None, None, None, "test".into(), 64)
+            .await
+            .unwrap();
+        for (reader, expected) in readers.into_iter().zip(&contents) {
+            let chunks: Vec<Bytes> = reader.try_collect().await.unwrap();
+            assert_eq!(chunks.concat(), *expected);
+        }
+    }
+
+    #[tokio::test]
+    async fn test_upload_bytes() {
+        let temp_dir = tempdir().unwrap();
+        let endpoint = format!("local://{}", temp_dir.path().display());
+
+        let contents = test_contents();
+
+        // Upload all as bytes.
+        let file_infos = upload_bytes_async(contents.clone(), Some(endpoint.clone()), None, None, None, "test".into())
+            .await
+            .unwrap();
+
+        assert_eq!(file_infos.len(), contents.len());
+        for (info, content) in file_infos.iter().zip(&contents) {
+            assert_eq!(info.file_size(), content.len() as u64);
+            assert!(!info.hash().is_empty());
+        }
+        // Different contents produce different hashes.
+        assert_ne!(file_infos[0].hash(), file_infos[2].hash());
+
+        // Download to files and verify.
+        let download_dir = tempdir().unwrap();
+        let file_infos_with_paths: Vec<_> = file_infos
+            .into_iter()
+            .enumerate()
+            .map(|(i, info)| (info, download_dir.path().join(format!("{i}")).to_str().unwrap().to_string()))
+            .collect();
+        let paths = download_async(file_infos_with_paths, Some(endpoint), None, None, None, "test".into())
+            .await
+            .unwrap();
+        for (path, expected) in paths.iter().zip(&contents) {
+            assert_eq!(std::fs::read(path).unwrap(), *expected);
+        }
+    }
+
+    #[tokio::test]
+    async fn test_download_bytes() {
+        let temp_dir = tempdir().unwrap();
+        let endpoint = format!("local://{}", temp_dir.path().display());
+
+        let contents = test_contents();
+
+        // Write contents to files and upload via upload_async.
+        let upload_dir = tempdir().unwrap();
+        let file_paths: Vec<String> = contents
+            .iter()
+            .enumerate()
+            .map(|(i, content)| {
+                let path = upload_dir.path().join(format!("{i}"));
+                std::fs::write(&path, content).unwrap();
+                path.to_str().unwrap().to_string()
+            })
+            .collect();
+        let file_infos = upload_async(file_paths, None, Some(endpoint.clone()), None, None, None, "test".into())
+            .await
+            .unwrap();
+
+        // Download all as bytes and verify.
+        let readers = download_bytes_async(file_infos, Some(endpoint), None, None, None, "test".into(), 64)
+            .await
+            .unwrap();
+        for (reader, expected) in readers.into_iter().zip(&contents) {
+            let chunks: Vec<Bytes> = reader.try_collect().await.unwrap();
+            assert_eq!(chunks.concat(), *expected);
+        }
     }
 }

@@ -12,6 +12,7 @@ utils = { path = "../utils" }
 xet_config = { path = "../xet_config" }
 xet_runtime = { path = "../xet_runtime" }
 
+futures = { workspace = true }
 async-trait = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
