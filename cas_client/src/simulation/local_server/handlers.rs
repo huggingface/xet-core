@@ -32,20 +32,22 @@ use futures_util::StreamExt;
 use http::header::RANGE;
 use merklehash::MerkleHash;
 
-use super::delay_simulation::DelaySimulation;
+use super::load_simulation::LoadSimulation;
 use crate::error::CasClientError;
 use crate::simulation::DirectAccessClient;
+use crate::simulation::network_simulation::NetworkCapacityStats;
 
 /// Server state passed to all handlers.
 #[derive(Clone)]
 pub struct ServerState {
     pub client: Arc<dyn DirectAccessClient>,
-    pub delay_simulation: Arc<DelaySimulation>,
+    pub load_simulation: Arc<LoadSimulation>,
+    pub network_capacity: Option<Arc<NetworkCapacityStats>>,
 }
 
 // ServerState is Send + Sync because:
 // - Arc<dyn DirectAccessClient> is Send + Sync (DirectAccessClient requires Send + Sync)
-// - Arc<DelaySimulation> is Send + Sync (DelaySimulation contains only Send + Sync types)
+// - Arc<LoadSimulation> is Send + Sync (LoadSimulation contains only Send + Sync types)
 unsafe impl Send for ServerState {}
 unsafe impl Sync for ServerState {}
 
@@ -196,7 +198,7 @@ pub async fn get_reconstruction(
     Path(HexMerkleHash(file_id)): Path<HexMerkleHash>,
     headers: HeaderMap,
 ) -> Response {
-    let connection_guard = state.delay_simulation.register_connection().await;
+    let connection_guard = state.load_simulation.register_connection().await;
     if let Some(simulated_error) = connection_guard.simulate_error() {
         return simulated_error;
     }
@@ -246,7 +248,7 @@ pub async fn batch_get_reconstruction(
     uri: axum::http::Uri,
     headers: HeaderMap,
 ) -> Response {
-    let connection_guard = state.delay_simulation.register_connection().await;
+    let connection_guard = state.load_simulation.register_connection().await;
     if let Some(simulated_error) = connection_guard.simulate_error() {
         return simulated_error;
     }
@@ -293,7 +295,7 @@ pub async fn batch_get_reconstruction(
 /// This endpoint is called by RemoteClient when fetching reconstruction terms.
 /// It returns raw (compressed) bytes that the client will decompress.
 pub async fn fetch_term(State(state): State<ServerState>, uri: axum::http::Uri, headers: HeaderMap) -> Response {
-    let connection_guard = state.delay_simulation.register_connection().await;
+    let connection_guard = state.load_simulation.register_connection().await;
     if let Some(simulated_error) = connection_guard.simulate_error() {
         return simulated_error;
     }
@@ -341,7 +343,7 @@ pub async fn fetch_term(State(state): State<ServerState>, uri: axum::http::Uri, 
 /// Query for a global deduplication shard by chunk hash.
 /// Returns the shard data if found, 404 otherwise.
 pub async fn get_dedup_info_by_chunk(State(state): State<ServerState>, Path(key): Path<HexKey>) -> Response {
-    let connection_guard = state.delay_simulation.register_connection().await;
+    let connection_guard = state.load_simulation.register_connection().await;
     if let Some(simulated_error) = connection_guard.simulate_error() {
         return simulated_error;
     }
@@ -357,7 +359,7 @@ pub async fn get_dedup_info_by_chunk(State(state): State<ServerState>, Path(key)
 /// Check if a XORB exists in the store.
 /// Returns 200 if found, 404 otherwise.
 pub async fn head_xorb(State(state): State<ServerState>, Path(key): Path<HexKey>) -> Response {
-    let connection_guard = state.delay_simulation.register_connection().await;
+    let connection_guard = state.load_simulation.register_connection().await;
     if let Some(simulated_error) = connection_guard.simulate_error() {
         return simulated_error;
     }
@@ -378,7 +380,7 @@ pub async fn head_xorb(State(state): State<ServerState>, Path(key): Path<HexKey>
 /// Request body: Serialized CAS object data
 /// Response: JSON indicating if the XORB was newly inserted
 pub async fn post_xorb(State(state): State<ServerState>, Path(key): Path<HexKey>, body: Body) -> Response {
-    let connection_guard = state.delay_simulation.register_connection().await;
+    let connection_guard = state.load_simulation.register_connection().await;
     if let Some(simulated_error) = connection_guard.simulate_error() {
         return simulated_error;
     }
@@ -413,7 +415,7 @@ pub async fn post_xorb(State(state): State<ServerState>, Path(key): Path<HexKey>
 /// Request body: Raw shard data
 /// Response: JSON indicating if the shard was newly inserted or already existed
 pub async fn post_shard(State(state): State<ServerState>, body: Body) -> Response {
-    let connection_guard = state.delay_simulation.register_connection().await;
+    let connection_guard = state.load_simulation.register_connection().await;
     if let Some(simulated_error) = connection_guard.simulate_error() {
         return simulated_error;
     }
@@ -448,7 +450,7 @@ pub async fn head_file(
     State(state): State<ServerState>,
     Path(HexMerkleHash(file_id)): Path<HexMerkleHash>,
 ) -> Response {
-    let connection_guard = state.delay_simulation.register_connection().await;
+    let connection_guard = state.load_simulation.register_connection().await;
     if let Some(simulated_error) = connection_guard.simulate_error() {
         return simulated_error;
     }
@@ -471,7 +473,7 @@ pub async fn get_file_term_data(
     Path((_prefix, hash_str)): Path<(String, String)>,
     headers: HeaderMap,
 ) -> Response {
-    let connection_guard = state.delay_simulation.register_connection().await;
+    let connection_guard = state.load_simulation.register_connection().await;
     if let Some(simulated_error) = connection_guard.simulate_error() {
         return simulated_error;
     }
@@ -557,7 +559,7 @@ fn parse_duration_range(value: &str) -> Result<std::ops::Range<std::time::Durati
 }
 
 pub async fn set_config(State(state): State<ServerState>, uri: axum::http::Uri, body: Body) -> Response {
-    use super::delay_simulation::ServerDelayProfile;
+    use super::load_simulation::ServerLoadProfile;
 
     // Try to parse as JSON body first
     let body_bytes = match axum::body::to_bytes(body, usize::MAX).await {
@@ -566,9 +568,9 @@ pub async fn set_config(State(state): State<ServerState>, uri: axum::http::Uri, 
     };
 
     if !body_bytes.is_empty() {
-        match serde_json::from_slice::<ServerDelayProfile>(&body_bytes) {
+        match serde_json::from_slice::<ServerLoadProfile>(&body_bytes) {
             Ok(profile) => {
-                state.delay_simulation.update_profile(profile).await;
+                state.load_simulation.update_profile(profile).await;
                 return (StatusCode::OK, "Profile updated").into_response();
             },
             Err(_) => {
@@ -598,28 +600,26 @@ pub async fn set_config(State(state): State<ServerState>, uri: axum::http::Uri, 
     match config_name.to_lowercase().as_str() {
         "congestion" => match parse_congestion_config(value) {
             Ok((threshold, min_ms, max_ms, error_rate)) => {
-                let profile = ServerDelayProfile {
+                let profile = ServerLoadProfile {
                     random_delay_ms: None,
-                    connection_threshold: Some(threshold),
-                    min_congestion_penalty_ms: Some(min_ms),
-                    max_congestion_penalty_ms: Some(max_ms),
+                    connection_degradation_threshold: Some(threshold),
+                    congestion_penalty_ms: Some((min_ms, max_ms)),
                     congestion_error_rate: Some(error_rate),
                 };
-                state.delay_simulation.update_profile(profile).await;
+                state.load_simulation.update_profile(profile).await;
                 (StatusCode::OK, "Congestion config set").into_response()
             },
             Err(e) => (StatusCode::BAD_REQUEST, format!("Invalid congestion value: {e}")).into_response(),
         },
         "random_delay" => match parse_random_delay_value(value) {
             Ok((min_ms, max_ms)) => {
-                let profile = ServerDelayProfile {
+                let profile = ServerLoadProfile {
                     random_delay_ms: Some((min_ms, max_ms)),
-                    connection_threshold: None,
-                    min_congestion_penalty_ms: None,
-                    max_congestion_penalty_ms: None,
+                    connection_degradation_threshold: None,
+                    congestion_penalty_ms: None,
                     congestion_error_rate: None,
                 };
-                state.delay_simulation.update_profile(profile).await;
+                state.load_simulation.update_profile(profile).await;
                 (StatusCode::OK, "Random delay config set").into_response()
             },
             Err(e) => (StatusCode::BAD_REQUEST, format!("Invalid random_delay value: {e}")).into_response(),
@@ -684,6 +684,22 @@ pub async fn ping() -> Response {
     (StatusCode::OK, "ok").into_response()
 }
 
+/// GET /simulation/network_capacity
+///
+/// Returns total_upload_bytes_possible and total_download_bytes_possible from the network simulation proxy (if
+/// present).
+pub async fn network_capacity(State(state): State<ServerState>) -> Response {
+    let (up, down) = match &state.network_capacity {
+        Some(cap) => (cap.total_upload_bytes_possible(), cap.total_download_bytes_possible()),
+        None => (0u64, 0u64),
+    };
+    let body = serde_json::json!({
+        "total_upload_bytes_possible": up,
+        "total_download_bytes_possible": down,
+    });
+    (StatusCode::OK, axum::Json(body)).into_response()
+}
+
 /// POST /simulation/dummy_upload
 ///
 /// Accepts an upload stream and discards all data. Returns after applying the configured delays.
@@ -693,7 +709,7 @@ pub async fn ping() -> Response {
 /// - May return INTERNAL_SERVER_ERROR with probability `error_rate`
 /// - Otherwise applies an additional penalty delay
 pub async fn dummy_upload(State(state): State<ServerState>, body: Body) -> Response {
-    let connection_guard = state.delay_simulation.register_connection().await;
+    let connection_guard = state.load_simulation.register_connection().await;
     if let Some(simulated_error) = connection_guard.simulate_error() {
         return simulated_error;
     }

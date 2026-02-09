@@ -9,6 +9,7 @@
 //! - [`DirectAccessClient`]: Trait for clients with direct XORB/file access
 //! - [`client_testing_utils`]: Testing utilities for Client implementations (not available in WASM)
 //! - [`client_unit_testing`]: Common unit tests for Client implementations (not available in WASM)
+//! - [`network_simulation`]: Bandwidth-limit proxy and network profiles (not available in WASM)
 
 pub mod client_testing_utils;
 #[cfg(all(test, not(target_family = "wasm")))]
@@ -19,6 +20,8 @@ mod local_client;
 #[cfg(not(target_family = "wasm"))]
 pub mod local_server;
 mod memory_client;
+#[cfg(not(target_family = "wasm"))]
+pub mod network_simulation;
 mod random_xorb;
 #[cfg(not(target_family = "wasm"))]
 mod simulation_client;
@@ -35,6 +38,12 @@ pub use local_client::LocalClient;
 #[cfg(not(target_family = "wasm"))]
 pub use local_server::{LocalServer, LocalServerConfig};
 pub use memory_client::MemoryClient;
+#[cfg(not(target_family = "wasm"))]
+pub use network_simulation::{
+    BandwidthLimitProxyGuard, BandwidthRecording, ConfigurableProfileProvider, CongestionProfile, NetworkCapacityStats,
+    NetworkProfile, NetworkProfileBuilder, NetworkProfileProvider, ProxyConfig, endpoint_to_host_port, parse_duration,
+    start_bandwidth_limit_proxy_with_config, start_bandwidth_limit_proxy_with_provider,
+};
 pub use random_xorb::RandomXorb;
 #[cfg(not(target_family = "wasm"))]
 pub use simulation_client::RemoteSimulationClient;

@@ -13,9 +13,9 @@
 //! - [`LocalServerConfig`]: Configuration for the server (host, port, data directory)
 //! - `handlers`: HTTP request handlers for each API endpoint
 
-mod delay_simulation;
 mod handlers;
+mod load_simulation;
 mod server;
 
-pub use delay_simulation::ServerDelayProfile;
+pub use load_simulation::ServerLoadProfile;
 pub use server::{LocalServer, LocalServerConfig};

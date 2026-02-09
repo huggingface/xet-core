@@ -42,13 +42,13 @@ pub async fn wait_for_server_ready(
     http_client: &ClientWithMiddleware,
     server_addr: &str,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let url = format!("{}{}", base_url(server_addr).trim_end_matches('/'), PING_PATH);
+    let ping_url = format!("{}{}", base_url(server_addr).trim_end_matches('/'), PING_PATH);
     let timeout = Duration::from_secs(SERVER_READY_TIMEOUT_SECS);
     let poll_interval = Duration::from_millis(SERVER_READY_POLL_INTERVAL_MS);
     let start = Instant::now();
 
     loop {
-        match http_client.get(&url).timeout(Duration::from_secs(1)).send().await {
+        match http_client.get(&ping_url).timeout(Duration::from_secs(1)).send().await {
             Ok(res) if res.status().is_success() => return Ok(()),
             Ok(_) => {
                 if start.elapsed() >= timeout {

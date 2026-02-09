@@ -21,6 +21,7 @@
 //!         host: "127.0.0.1".to_string(),
 //!         port: 8080,
 //!         in_memory: false,
+//!         network_capacity: None,
 //!     };
 //!     let server = LocalServer::new(config).await?;
 //!     server.run().await?;
@@ -37,13 +38,13 @@ use axum::routing::{get, head, post};
 use tokio::net::TcpListener;
 use tower_http::cors::CorsLayer;
 
-use super::delay_simulation::DelaySimulation;
 use super::handlers;
+use super::load_simulation::LoadSimulation;
 use crate::error::{CasClientError, Result};
 use crate::simulation::{DirectAccessClient, LocalClient, MemoryClient};
 
 /// Configuration for the local CAS server.
-#[derive(Clone, Debug)]
+#[derive(Debug, Clone)]
 pub struct LocalServerConfig {
     /// Directory where CAS data (XORBs, shards, indices) will be stored.
     /// Only used when `in_memory` is false.
@@ -54,6 +55,9 @@ pub struct LocalServerConfig {
     pub port: u16,
     /// Whether to use in-memory storage instead of disk-backed storage.
     pub in_memory: bool,
+    /// Optional network capacity stats (total_upload_bytes_possible, total_download_bytes_possible) for GET
+    /// /simulation/network_capacity.
+    pub network_capacity: Option<Arc<super::super::network_simulation::NetworkCapacityStats>>,
 }
 
 impl Default for LocalServerConfig {
@@ -63,6 +67,7 @@ impl Default for LocalServerConfig {
             host: "127.0.0.1".to_string(),
             port: 8080,
             in_memory: false,
+            network_capacity: None,
         }
     }
 }
@@ -78,7 +83,7 @@ impl Default for LocalServerConfig {
 pub struct LocalServer {
     config: LocalServerConfig,
     client: Arc<dyn DirectAccessClient>,
-    delay_simulation: Arc<DelaySimulation>,
+    load_simulation: Arc<LoadSimulation>,
 }
 
 impl LocalServer {
@@ -92,10 +97,11 @@ impl LocalServer {
         } else {
             LocalClient::new(&config.data_directory).await?
         };
+        let load_simulation = LoadSimulation::new();
         Ok(Self {
             config,
             client,
-            delay_simulation: DelaySimulation::new(),
+            load_simulation,
         })
     }
 
@@ -104,16 +110,23 @@ impl LocalServer {
     /// Useful when you want to share a client instance between the server
     /// and other code (e.g., for testing where you want to verify server behavior
     /// against direct client access).
-    pub fn from_client(client: Arc<dyn DirectAccessClient>, host: String, port: u16) -> Self {
+    pub fn from_client(
+        client: Arc<dyn DirectAccessClient>,
+        host: String,
+        port: u16,
+        network_capacity: Option<Arc<super::super::network_simulation::NetworkCapacityStats>>,
+    ) -> Self {
+        let load_simulation = LoadSimulation::new();
         Self {
             config: LocalServerConfig {
                 data_directory: PathBuf::new(),
                 host,
                 port,
                 in_memory: false,
+                network_capacity,
             },
             client,
-            delay_simulation: DelaySimulation::new(),
+            load_simulation,
         }
     }
 
@@ -152,6 +165,7 @@ impl LocalServer {
                 Router::new()
                     .route("/ping", get(handlers::ping))
                     .route("/set_config", post(handlers::set_config))
+                    .route("/network_capacity", get(handlers::network_capacity))
                     .route("/dummy_upload", post(handlers::dummy_upload)),
             )
             // Routes used by RemoteClient without /v1/ prefix
@@ -160,7 +174,8 @@ impl LocalServer {
             .layer(CorsLayer::very_permissive())
             .with_state(handlers::ServerState {
                 client: self.client.clone(),
-                delay_simulation: self.delay_simulation.clone(),
+                load_simulation: self.load_simulation.clone(),
+                network_capacity: self.config.network_capacity.clone(),
             })
     }
 

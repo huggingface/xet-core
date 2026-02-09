@@ -16,7 +16,10 @@ use tokio::sync::oneshot;
 use crate::RemoteClient;
 use crate::error::Result;
 use crate::interface::Client;
-use crate::simulation::local_server::{LocalServer, ServerDelayProfile};
+use crate::simulation::local_server::{LocalServer, ServerLoadProfile};
+use crate::simulation::network_simulation::{
+    BandwidthLimitProxyGuard, NetworkCapacityStats, NetworkProfileProvider, start_bandwidth_limit_proxy_with_provider,
+};
 #[cfg(unix)]
 use crate::simulation::socket_proxy::UnixSocketProxy;
 use crate::simulation::{DirectAccessClient, LocalClient, MemoryClient, RemoteSimulationClient};
@@ -52,18 +55,12 @@ use crate::simulation::{DirectAccessClient, LocalClient, MemoryClient, RemoteSim
 ///     .start()
 ///     .await;
 ///
-/// // With server delay profile for simulation
-/// use cas_client::simulation::local_server::ServerDelayProfile;
-/// let delay_profile = ServerDelayProfile {
-///     random_delay_ms: Some((10, 100)),
-///     connection_threshold: Some(5),
-///     min_congestion_penalty_ms: Some(50),
-///     max_congestion_penalty_ms: Some(200),
-///     congestion_error_rate: Some(0.1),
-/// };
+/// // With server load profile for simulation
+/// use cas_client::simulation::local_server::ServerLoadProfile;
+/// let load_profile = ServerLoadProfile::realistic();
 /// let server = LocalTestServerBuilder::new()
 ///     .with_ephemeral_disk()
-///     .with_server_delay_profile(delay_profile)
+///     .with_server_load_profile(load_profile)
 ///     .start()
 ///     .await;
 ///
@@ -82,7 +79,8 @@ pub struct LocalTestServerBuilder {
     ephemeral_socket: bool,
     ephemeral_disk: bool,
     client: Option<Arc<dyn DirectAccessClient>>,
-    server_delay_profile: Option<ServerDelayProfile>,
+    server_load_profile: Option<ServerLoadProfile>,
+    dynamic_network_profile_provider: Option<Arc<dyn NetworkProfileProvider + Send + Sync>>,
 }
 
 #[allow(dead_code)]
@@ -96,7 +94,8 @@ impl LocalTestServerBuilder {
             ephemeral_socket: false,
             ephemeral_disk: false,
             client: None,
-            server_delay_profile: None,
+            server_load_profile: None,
+            dynamic_network_profile_provider: None,
         }
     }
 
@@ -153,12 +152,19 @@ impl LocalTestServerBuilder {
         self
     }
 
-    /// Configures the server's delay profile for simulation.
+    /// Configures the server's load profile for simulation.
     ///
-    /// This sets the delay and congestion simulation parameters that will be applied
+    /// This sets the load simulation parameters (delays, congestion) that will be applied
     /// to all requests handled by the server. The profile is applied after the server starts.
-    pub fn with_server_delay_profile(mut self, profile: ServerDelayProfile) -> Self {
-        self.server_delay_profile = Some(profile);
+    pub fn with_server_load_profile(mut self, profile: ServerLoadProfile) -> Self {
+        self.server_load_profile = Some(profile);
+        self
+    }
+
+    /// Configures a dynamic network profile provider. When set, a bandwidth-limit proxy is started
+    /// in front of the server and the client endpoint routes through it. Capacity stats are tracked for utilization.
+    pub fn with_dynamic_network_profile(mut self, provider: Arc<dyn NetworkProfileProvider + Send + Sync>) -> Self {
+        self.dynamic_network_profile_provider = Some(provider);
         self
     }
 
@@ -194,8 +200,16 @@ impl LocalTestServerBuilder {
         let port = LocalTestServer::find_available_port();
         let host = "127.0.0.1".to_string();
         let tcp_endpoint = format!("http://{}:{}", host, port);
+        let server_host_port = format!("{}:{}", host, port);
 
-        let server = LocalServer::from_client(client.clone(), host, port);
+        let (network_capacity, dynamic_provider) = if self.dynamic_network_profile_provider.is_some() {
+            let cap = Arc::new(NetworkCapacityStats::new());
+            (Some(Arc::clone(&cap)), self.dynamic_network_profile_provider.clone())
+        } else {
+            (None, None)
+        };
+
+        let server = LocalServer::from_client(client.clone(), host, port, network_capacity.clone());
         let (shutdown_tx, shutdown_rx) = oneshot::channel();
 
         tokio::spawn(async move {
@@ -204,14 +218,21 @@ impl LocalTestServerBuilder {
 
         tokio::time::sleep(Duration::from_millis(50)).await;
 
-        #[cfg(unix)]
-        let actual_endpoint = tcp_endpoint.clone();
+        let (proxy_guard, client_endpoint) = if let Some(provider) = dynamic_provider {
+            let capacity_for_proxy = network_capacity.as_ref().map(|a| (**a).clone());
+            let (listen_addr, guard) =
+                start_bandwidth_limit_proxy_with_provider(&server_host_port, provider, capacity_for_proxy)
+                    .await
+                    .expect("Failed to start bandwidth limit proxy");
+            (Some(guard), format!("http://{}", listen_addr))
+        } else {
+            (None, tcp_endpoint.clone())
+        };
 
         #[cfg(unix)]
         let (remote_client, socket_proxy) = {
             if let Some(socket_path) = socket_path {
-                // Extract host:port from http://host:port
-                let tcp_addr = actual_endpoint.strip_prefix("http://").unwrap_or(&actual_endpoint).to_string();
+                let tcp_addr = client_endpoint.strip_prefix("http://").unwrap_or(&client_endpoint).to_string();
 
                 let proxy = UnixSocketProxy::new(socket_path.clone(), tcp_addr)
                     .await
@@ -219,10 +240,9 @@ impl LocalTestServerBuilder {
 
                 tokio::time::sleep(Duration::from_millis(500)).await;
 
-                // Create RemoteClient with socket path
                 let socket_path_str = socket_path.to_string_lossy().to_string();
                 let client = RemoteClient::new_with_socket(
-                    &tcp_endpoint,
+                    &client_endpoint,
                     &None,
                     "test-session",
                     false,
@@ -232,41 +252,42 @@ impl LocalTestServerBuilder {
 
                 (client, Some(proxy))
             } else {
-                let client = RemoteClient::new(&tcp_endpoint, &None, "test-session", false, "test-agent");
+                let client = RemoteClient::new(&client_endpoint, &None, "test-session", false, "test-agent");
                 (client, None)
             }
         };
 
         #[cfg(not(unix))]
-        let remote_client = RemoteClient::new(&tcp_endpoint, &None, "test-session", false, "test-agent");
+        let remote_client = RemoteClient::new(&client_endpoint, &None, "test-session", false, "test-agent");
 
         let remote_simulation_client = Arc::new(RemoteSimulationClient::new(remote_client));
 
         #[cfg(unix)]
         let server = LocalTestServer {
-            http_endpoint: tcp_endpoint,
+            http_endpoint: client_endpoint,
             server_shutdown_tx: Some(shutdown_tx),
             remote_simulation_client,
             client,
             socket_proxy,
             _ephemeral_socket_tempdir: ephemeral_tempdir,
+            network_simulation_proxy_guard: proxy_guard,
         };
 
         #[cfg(not(unix))]
         let server = LocalTestServer {
-            http_endpoint: tcp_endpoint,
+            http_endpoint: client_endpoint,
             server_shutdown_tx: Some(shutdown_tx),
             remote_simulation_client,
             client,
+            network_simulation_proxy_guard: proxy_guard,
         };
 
-        // Apply delay profile if configured
-        if let Some(profile) = self.server_delay_profile {
+        if let Some(profile) = self.server_load_profile {
             server
                 .remote_simulation_client()
-                .simulation_set_delay_profile(profile)
+                .simulation_set_load_profile(profile)
                 .await
-                .expect("Failed to set server delay profile");
+                .expect("Failed to set server load profile");
         }
 
         server
@@ -310,6 +331,7 @@ pub struct LocalTestServer {
     server_shutdown_tx: Option<oneshot::Sender<()>>,
     remote_simulation_client: Arc<RemoteSimulationClient>,
     client: Arc<dyn DirectAccessClient>,
+    network_simulation_proxy_guard: Option<BandwidthLimitProxyGuard>,
 
     #[cfg(unix)]
     socket_proxy: Option<UnixSocketProxy>,
@@ -318,9 +340,36 @@ pub struct LocalTestServer {
 }
 
 impl LocalTestServer {
-    /// Returns the HTTP endpoint URL (e.g., "http://127.0.0.1:12345").
+    /// Returns the HTTP endpoint URL. When a network simulation proxy is present, returns the proxy endpoint so traffic
+    /// routes through it.
     pub fn http_endpoint(&self) -> &str {
         &self.http_endpoint
+    }
+
+    /// Returns total upload bytes possible since proxy start (0 if no proxy).
+    pub fn total_upload_bytes_possible(&self) -> u64 {
+        self.network_simulation_proxy_guard
+            .as_ref()
+            .and_then(|g| g.network_capacity_stats())
+            .map(|c| c.total_upload_bytes_possible())
+            .unwrap_or(u64::MAX)
+    }
+
+    /// Returns total download bytes possible since proxy start (0 if no proxy).
+    pub fn total_download_bytes_possible(&self) -> u64 {
+        self.network_simulation_proxy_guard
+            .as_ref()
+            .and_then(|g| g.network_capacity_stats())
+            .map(|c| c.total_download_bytes_possible())
+            .unwrap_or(u64::MAX)
+    }
+
+    /// Takes the bandwidth recording (elapsed, bandwidth_bps, latency_ms) from the network proxy if present and it was
+    /// started with a provider.
+    pub fn take_bandwidth_recording(&self) -> Option<crate::simulation::BandwidthRecording> {
+        self.network_simulation_proxy_guard
+            .as_ref()
+            .and_then(|g| g.take_bandwidth_recording())
     }
 
     #[cfg(unix)]
@@ -343,18 +392,18 @@ impl LocalTestServer {
         &self.client
     }
 
-    /// Sets the server's delay profile for simulation.
+    /// Sets the server's load profile for simulation.
     ///
-    /// This sets the delay and congestion simulation parameters that will be applied
+    /// This sets the load simulation parameters (delays, congestion) that will be applied
     /// to all requests handled by the server.
     ///
     /// # Arguments
-    /// * `profile` - The delay profile to apply
+    /// * `profile` - The load profile to apply
     ///
     /// # Errors
     /// Returns an error if the profile cannot be applied.
-    pub async fn set_server_delay_profile(&self, profile: ServerDelayProfile) -> Result<()> {
-        self.remote_simulation_client().simulation_set_delay_profile(profile).await
+    pub async fn set_server_load_profile(&self, profile: ServerLoadProfile) -> Result<()> {
+        self.remote_simulation_client().simulation_set_load_profile(profile).await
     }
 
     fn find_available_port() -> u16 {

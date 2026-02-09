@@ -12,8 +12,9 @@ use std::sync::{Arc, mpsc};
 use std::thread;
 
 use clap::Parser;
-use simulation::adaptive_concurrency::{DEFAULT_SERVER_DELAY_MS, Scenario, aggregate_summary, build_upload_profile};
-use simulation::network_simulation::NetworkProfile;
+use simulation::adaptive_concurrency::generate_summary_csv;
+
+const VALID_SCENARIOS: &[&str] = &["sanity_check", "single_upload", "gitxet_upload_burst", "added_uploads"];
 
 /// Blocking semaphore (limits how many scenario processes run at once).
 struct StdSemaphore {
@@ -88,11 +89,13 @@ struct Args {
     #[arg(long, default_value = "none")]
     congestion: String,
 
-    #[arg(long, default_value_t = DEFAULT_SERVER_DELAY_MS.0)]
-    server_delay_min_ms: u64,
+    /// Server load profile: none, light, realistic, heavy.
+    #[arg(long, default_value = "realistic")]
+    server_load_profile: String,
 
-    #[arg(long, default_value_t = DEFAULT_SERVER_DELAY_MS.1)]
-    server_delay_max_ms: u64,
+    /// Connection degradation threshold (number of concurrent connections).
+    #[arg(long)]
+    server_connection_degradation_threshold: Option<u64>,
 
     #[arg(long, default_value = "results")]
     out_dir: String,
@@ -125,7 +128,9 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let args = Args::parse();
     let start_time = std::time::Instant::now();
 
-    let scenario = Scenario::from_name(&args.scenario).ok_or_else(|| format!("Unknown scenario: {}", args.scenario))?;
+    if !VALID_SCENARIOS.contains(&args.scenario.as_str()) {
+        return Err(format!("Unknown scenario: {}. Valid: {:?}", args.scenario, VALID_SCENARIOS).into());
+    }
 
     let bandwidths = parse_list(args.bandwidth.as_deref().unwrap_or(""));
     let latencies = parse_list(args.latency.as_deref().unwrap_or(""));
@@ -155,7 +160,7 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     }
 
     eprintln!("=== Adaptive concurrency simulation ===");
-    eprintln!("Scenario: {}", scenario.name());
+    eprintln!("Scenario: {}", args.scenario);
     eprintln!(
         "Matrix: {} bandwidth × {} latency × {} congestion = {} runs",
         bandwidths.len(),
@@ -176,14 +181,7 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             for congestion in &congestions {
                 let bandwidth_label = bandwidth.as_deref().unwrap_or("default");
                 let latency_label = latency.as_deref().unwrap_or("default");
-                let _profile: NetworkProfile = build_upload_profile(
-                    bandwidth.as_deref(),
-                    latency.as_deref(),
-                    args.jitter.as_deref(),
-                    Some(congestion),
-                )?;
-                let scenario_subdir =
-                    format!("{}-{}-{}-{}", scenario.name(), bandwidth_label, latency_label, congestion);
+                let scenario_subdir = format!("{}-{}-{}-{}", args.scenario, bandwidth_label, latency_label, congestion);
                 let scenario_dir = results_base.join(&scenario_subdir);
                 std::fs::create_dir_all(&scenario_dir)?;
 
@@ -200,8 +198,8 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                     congestion.clone(),
                     jitter_arg,
                     args.duration_sec,
-                    args.server_delay_min_ms,
-                    args.server_delay_max_ms,
+                    args.server_load_profile.clone(),
+                    args.server_connection_degradation_threshold,
                 ));
             }
         }
@@ -220,8 +218,8 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         congestion_arg,
         jitter_arg,
         duration_sec,
-        server_delay_min,
-        server_delay_max,
+        server_load_profile,
+        server_degradation_threshold,
     ) in tasks
     {
         let bin = bin.clone();
@@ -240,10 +238,11 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 .arg(&latency_arg)
                 .arg("--congestion")
                 .arg(&congestion_arg)
-                .arg("--server-delay-min-ms")
-                .arg(server_delay_min.to_string())
-                .arg("--server-delay-max-ms")
-                .arg(server_delay_max.to_string());
+                .arg("--server-load-profile")
+                .arg(&server_load_profile);
+            if let Some(threshold) = server_degradation_threshold {
+                cmd.arg("--server-connection-degradation-threshold").arg(threshold.to_string());
+            }
             if let Some(ref j) = jitter_arg {
                 cmd.arg("--jitter").arg(j);
             }
@@ -283,7 +282,7 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         h.join().map_err(|_| "scenario thread panicked")?;
     }
 
-    aggregate_summary(&results_base)?;
+    generate_summary_csv(&results_base)?;
     let elapsed = start_time.elapsed();
     eprintln!("----------------------------------------");
     eprintln!("=== Summary ===");

@@ -18,11 +18,11 @@ use crate::http_client::Api;
 use crate::interface::Client;
 use crate::remote_client::RemoteClient;
 use crate::retry_wrapper::RetryWrapper;
-use crate::simulation::local_server::ServerDelayProfile;
+use crate::simulation::local_server::ServerLoadProfile;
 use crate::upload_progress_stream::UploadProgressStream;
 
 /// A wrapper around `RemoteClient` that provides simulation-specific methods for controlling
-/// delay profiles and uploading dummy data for benchmarking and simulation purposes.
+/// load profiles and uploading dummy data for benchmarking and simulation purposes.
 pub struct RemoteSimulationClient {
     inner: Arc<RemoteClient>,
 }
@@ -33,16 +33,16 @@ impl RemoteSimulationClient {
         Self { inner: remote_client }
     }
 
-    /// Set the delay profile on the simulation server.
+    /// Set the load profile on the simulation server.
     ///
-    /// This sends a POST request to `/simulation/set_config` with the provided `DelayProfile`
+    /// This sends a POST request to `/simulation/set_config` with the provided `ServerLoadProfile`
     /// as JSON in the request body.
-    pub async fn simulation_set_delay_profile(&self, profile: ServerDelayProfile) -> Result<()> {
+    pub async fn simulation_set_load_profile(&self, profile: ServerLoadProfile) -> Result<()> {
         let url = Url::parse(&format!("{}/simulation/set_config", self.inner.endpoint()))?;
         let client = self.inner.http_client();
 
         let json_body = serde_json::to_vec(&profile)
-            .map_err(|e| CasClientError::Other(format!("Failed to serialize DelayProfile: {e}")))?;
+            .map_err(|e| CasClientError::Other(format!("Failed to serialize ServerLoadProfile: {e}")))?;
 
         let response = client
             .post(url)

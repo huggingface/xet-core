@@ -104,6 +104,7 @@ async fn main() -> anyhow::Result<()> {
         host: args.host,
         port: args.port,
         in_memory: args.in_memory,
+        network_capacity: None,
     };
 
     tracing::info!("Starting local CAS server with config: {:?}", config);
