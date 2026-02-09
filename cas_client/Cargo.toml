@@ -50,9 +50,9 @@ elevated_information_level = []
 
 # Three options for compliation here.
 rustls-tls = [
-    "reqwest/rustls-tls",
-    "reqwest/rustls-tls-webpki-roots",
-    "reqwest/rustls-tls-native-roots",
+    "reqwest/rustls",
+    "reqwest/rustls-native-certs",
+    "reqwest/webpki-roots",
 ]
 
 # rustls-tls uses the rustls package, which embeds all of the ssl stuff in a rust package.  This is the

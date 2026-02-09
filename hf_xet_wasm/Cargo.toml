@@ -21,6 +21,7 @@ console_error_panic_hook = "0.1.7"
 console_log = { version = "1.0.0", features = ["color"] }
 env_logger = "0.11.5"
 futures = "0.3.31"
+getrandom = { version = "0.3", features = ["wasm_js"] }
 js-sys = "0.3.72"
 log = "0.4.22"
 serde = { version = "1.0.217", features = ["derive"] }
