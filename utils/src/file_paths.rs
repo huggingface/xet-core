@@ -5,20 +5,24 @@ use chrono::Local;
 
 /// A path buffer that can contain template variables like `{PID}` and `{TIMESTAMP}`.
 ///
-/// This type stores a path template and only allows access to the evaluated path
-/// after substituting template variables with actual values.
+/// This type stores both the original template and its evaluated form. Templates are
+/// evaluated on creation and can be re-evaluated to get fresh dynamic values.
 ///
 /// Supported placeholders (case-insensitive, any case combination allowed):
 /// - `{PID}`, `{pid}`, `{Pid}`, etc.: Process ID of the current process
 /// - `{TIMESTAMP}`, `{timestamp}`, `{TimeStamp}`, etc.: ISO 8601 timestamp in local timezone with offset (e.g.,
 ///   `2024-02-05T14-30-45-0500` for EST, `2024-02-05T19-30-45+0000` for UTC)
 ///
-/// The original template is kept private and cannot be accessed directly.
-/// Use the `evaluate()` method to get a concrete `PathBuf` with substituted values.
+/// # Usage
+///
+/// - Use `new()` to create a `TemplatedPathBuf` that stores both template and evaluated path
+/// - Use `as_path()` to get a reference to the evaluated path
+/// - Use `re_evaluate()` to refresh dynamic values like `{TIMESTAMP}`
+/// - Use `evaluate()` static method for one-time evaluation without keeping the template
 ///
 /// # Path normalization
 ///
-/// The `evaluate()` method performs the following transformations:
+/// Path evaluation performs the following transformations:
 /// - Expands `~` to the user's home directory
 /// - Replaces placeholders with actual values (timestamp uses local timezone with offset)
 /// - Converts to an absolute path
