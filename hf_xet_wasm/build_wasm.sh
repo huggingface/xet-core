@@ -12,7 +12,7 @@ set -ex
 #   features enabled, ensuring that LLVM will generate atomic instructions,
 #   shared memory, passive segments, etc.
 
-WASM_BINDGEN_VERSION="0.2.108"
+WASM_BINDGEN_VERSION="0.2.100"
 
 if command -v wasm-bindgen >/dev/null 2>&1; then
   INSTALLED_WASM_BINDGEN_VERSION="$(wasm-bindgen --version | awk '{print $2}')"

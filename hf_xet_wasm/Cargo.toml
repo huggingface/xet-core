@@ -22,7 +22,7 @@ console_log = { version = "1.0.0", features = ["color"] }
 env_logger = "0.11"
 futures = "0.3"
 getrandom = { version = "0.3", features = ["wasm_js"] }
-js-sys = "0.3.85"
+js-sys = "0.3.77"
 log = "0.4"
 serde = { version = "1", features = ["derive"] }
 serde-wasm-bindgen = "0.6.5"
@@ -32,9 +32,9 @@ tokio = { version = "1.49", features = ["sync", "rt"] }
 tokio_with_wasm = { version = "0.8", features = ["rt"] }
 uuid = { version = "1", features = ["v4", "js"] }
 wasm_thread = "0.3"
-wasm-bindgen = "=0.2.108"
-wasm-bindgen-futures = "0.4.58"
-web-sys = { version = "0.3.85", features = [
+wasm-bindgen = "=0.2.100"
+wasm-bindgen-futures = "0.4.50"
+web-sys = { version = "0.3.77", features = [
     "File",
     "ReadableStream",
     "ReadableStreamDefaultReader",
@@ -63,4 +63,4 @@ targets = ["wasm32-unknown-unknown"]
 ignored = ["getrandom"]
 
 [dev-dependencies]
-wasm-bindgen-test = "0.3.58"
+wasm-bindgen-test = "0.3.50"
