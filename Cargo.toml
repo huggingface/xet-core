@@ -58,7 +58,7 @@ duration-str = "0.19"
 futures = "0.3"
 futures-util = "0.3"
 gearhash = "0.1"
-getrandom = "0.4"
+getrandom = { version = "0.4", features = ["wasm_js"] }
 git-url-parse = "0.4"
 git-version = "0.3"
 git2 = "0.20"

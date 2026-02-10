@@ -14,4 +14,7 @@ merklehash = { path = "../merklehash" }
 getrandom = { version = "0.3", features = ["wasm_js"] }
 serde = { version = "1", features = ["derive"] }
 serde-wasm-bindgen = "0.6.5"
-wasm-bindgen = "=0.2.100"
+wasm-bindgen = "=0.2.108"
+
+[package.metadata.cargo-machete]
+ignored = ["getrandom"]
