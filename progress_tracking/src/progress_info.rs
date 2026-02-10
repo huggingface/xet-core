@@ -5,6 +5,8 @@ use std::sync::Arc;
 #[derive(Clone, Debug)]
 pub struct ItemProgressUpdate {
     pub item_name: Arc<str>,
+
+    // The total bytes in this item, independent from the total bytes of all items.
     pub total_bytes: u64,
 
     // Bytes completed are the total bytes completed, either through
@@ -35,25 +37,25 @@ impl ItemProgressUpdate {
 pub struct ProgressUpdate {
     pub item_updates: Vec<ItemProgressUpdate>,
 
-    /// The total bytes known to process
+    /// The total bytes known to process.
     pub total_bytes: u64,
 
     /// The change in total bytes known from the last update
     pub total_bytes_increment: u64,
 
-    /// The total bytes that have been processed
+    /// The total bytes that have been processed.
     pub total_bytes_completed: u64,
 
     /// How much this update adjusts the total bytes..
     pub total_bytes_completion_increment: u64,
 
-    /// The total bytes that have been processed
+    /// The rate at which the total bytes are being processed, if known.  
     pub total_bytes_completion_rate: Option<f64>,
 
-    /// Total bytes known that need to be uploaded or downloaded.   
+    /// Total bytes known that need to be uploaded or downloaded.  
     pub total_transfer_bytes: u64,
 
-    /// The change in total transfer bytes known from the last update
+    /// The change in total transfer bytes known from the last update.
     pub total_transfer_bytes_increment: u64,
 
     /// The total bytes that have been uploaded or downloaded.
@@ -78,8 +80,19 @@ impl ProgressUpdate {
     pub fn merge_in(&mut self, other: ProgressUpdate) {
         self.item_updates.extend(other.item_updates);
 
-        self.total_bytes = self.total_bytes.max(other.total_bytes);
+        // Reconcile the total bytes and total transfer bytes.
+        // If the other update doesn't have an absolute total bytes, but does have an increment,
+        // then we just go with the increment there.  Otherwise, we use the max of the two.
+        self.total_bytes = {
+            if other.total_bytes > 0 {
+                self.total_bytes.max(other.total_bytes)
+            } else {
+                self.total_bytes + other.total_bytes_increment
+            }
+        };
+
         self.total_bytes_increment += other.total_bytes_increment;
+
         self.total_bytes_completed = self.total_bytes_completed.max(other.total_bytes_completed);
         self.total_bytes_completion_increment += other.total_bytes_completion_increment;
 

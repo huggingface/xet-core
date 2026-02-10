@@ -223,7 +223,7 @@ impl ShardFileManager {
         let mut new_shards = Vec::from(new_shards);
 
         // Compare in reverse order to sort from newest to oldest
-        new_shards.sort_by(|s1, s2| s2.last_modified_time.cmp(&s1.last_modified_time));
+        new_shards.sort_by_key(|s| std::cmp::Reverse(s.last_modified_time));
         let num_shards = new_shards.len();
 
         for s in new_shards {

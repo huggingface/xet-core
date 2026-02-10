@@ -6,6 +6,8 @@ use std::sync::Arc;
 use cas_client::{Client, LocalClient, LocalTestServer};
 use file_reconstruction::{DataOutput, FileReconstructor};
 use progress_tracking::TrackingProgressUpdater;
+#[cfg(test)]
+use progress_tracking::{download_tracking::DownloadProgressTracker, NoOpProgressUpdater};
 use rand::prelude::*;
 use tempfile::TempDir;
 
@@ -256,6 +258,9 @@ impl HydrateDehydrateTest {
 
         let client = self.get_or_create_client().await.as_client();
 
+        #[cfg(test)]
+        let tracker = DownloadProgressTracker::new(NoOpProgressUpdater::new());
+
         for entry in read_dir(&self.ptr_dir).unwrap() {
             let entry = entry.unwrap();
             let out_filename = self.dest_dir.join(entry.file_name());
@@ -264,11 +269,21 @@ impl HydrateDehydrateTest {
             let xf: XetFileInfo = serde_json::from_reader(File::open(entry.path()).unwrap()).unwrap();
             let file_hash = xf.merkle_hash().unwrap();
 
-            FileReconstructor::new(&client, file_hash, DataOutput::write_in_file(&out_filename))
-                .run()
-                .await
-                .unwrap();
+            #[cfg(test)]
+            let reconstructor = {
+                let task = tracker.new_download_task(Arc::from(entry.file_name().to_string_lossy().as_ref()));
+                FileReconstructor::new(&client, file_hash, DataOutput::write_in_file(&out_filename))
+                    .with_progress_updater(task)
+            };
+            #[cfg(not(test))]
+            let reconstructor =
+                FileReconstructor::new(&client, file_hash, DataOutput::write_in_file(&out_filename));
+
+            reconstructor.run().await.unwrap();
         }
+
+        #[cfg(test)]
+        tracker.assert_complete();
     }
 
     pub fn verify_src_dest_match(&self) {

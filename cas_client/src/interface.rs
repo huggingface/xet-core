@@ -1,14 +1,12 @@
-use std::sync::Arc;
-
 use bytes::Bytes;
 use cas_object::SerializedCasObject;
 use cas_types::{BatchQueryReconstructionResponse, FileRange, HttpRange, QueryReconstructionResponse};
 use mdb_shard::file_structs::MDBFileInfo;
 use merklehash::MerkleHash;
-use progress_tracking::upload_tracking::CompletionTracker;
 
 use crate::adaptive_concurrency::ConnectionPermit;
 use crate::error::Result;
+use crate::progress_tracked_streams::ProgressCallback;
 
 #[async_trait::async_trait]
 pub trait URLProvider: Send + Sync {
@@ -42,10 +40,14 @@ pub trait Client: Send + Sync {
 
     async fn acquire_download_permit(&self) -> Result<ConnectionPermit>;
 
+    /// Optional progress callback receives (delta, completed, total) in transfer bytes.
+    /// When [uncompressed_size_if_known] is [Some], the returned Bytes must have len() equal to that value.
     async fn get_file_term_data(
         &self,
         url_info: Box<dyn URLProvider>,
         download_permit: ConnectionPermit,
+        progress_callback: Option<ProgressCallback>,
+        uncompressed_size_if_known: Option<usize>,
     ) -> Result<(Bytes, Vec<u32>)>;
 
     async fn query_for_global_dedup_shard(&self, prefix: &str, chunk_hash: &MerkleHash) -> Result<Option<Bytes>>;
@@ -56,12 +58,12 @@ pub trait Client: Send + Sync {
     /// Upload a new shard.
     async fn upload_shard(&self, shard_data: bytes::Bytes, upload_permit: ConnectionPermit) -> Result<bool>;
 
-    /// Upload a new xorb.
+    /// Upload a new xorb. Optional progress callback receives (delta, completed, total) in transfer bytes.
     async fn upload_xorb(
         &self,
         prefix: &str,
         serialized_cas_object: SerializedCasObject,
-        upload_tracker: Option<Arc<CompletionTracker>>,
+        progress_callback: Option<ProgressCallback>,
         upload_permit: ConnectionPermit,
     ) -> Result<u64>;
 }
