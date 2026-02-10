@@ -12,4 +12,4 @@ more-asserts = { workspace = true }
 tokio = { workspace = true, features = ["test-util", "time"] }
 
 [dev-dependencies]
-tokio = { workspace = true, features = ["test-util"] }
+tokio = { workspace = true, features = ["test-util", "rt", "rt-multi-thread", "macros"] }

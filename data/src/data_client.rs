@@ -397,7 +397,7 @@ async fn smudge_file(
     let progress_updater = progress_updater.map(|p| {
         let tracker = DownloadProgressTracker::new(p);
         let task = tracker.new_download_task(file_path.into());
-        task.update_totals(file_info.file_size(), file_info.file_size());
+        task.update_item_size(file_info.file_size(), true);
         task
     });
 

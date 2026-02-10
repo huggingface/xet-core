@@ -111,7 +111,7 @@ impl<W: Write + Send + 'static> WriterThread<W> {
             self.writer.write_all(&data)?;
             self.bytes_written.fetch_add(len, Ordering::Relaxed);
             if let Some(ref updater) = self.progress_updater {
-                updater.update_progress(len, 0);
+                updater.report_bytes_written(len);
             }
             drop(permit);
 
@@ -167,7 +167,7 @@ impl<W: Write + Send + 'static> WriterThread<W> {
 
             self.bytes_written.fetch_add(written as u64, Ordering::Relaxed);
             if let Some(ref updater) = self.progress_updater {
-                updater.update_progress(written as u64, 0);
+                updater.report_bytes_written(written as u64);
             }
 
             // Pop completed writes, releasing permits. For partial writes, slice the Bytes.

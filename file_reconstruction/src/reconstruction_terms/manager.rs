@@ -145,7 +145,8 @@ impl ReconstructionTermManager {
                 self.total_bytes_reported = self.total_bytes_reported.saturating_add(new_bytes);
                 self.total_transfer_bytes_reported =
                     self.total_transfer_bytes_reported.saturating_add(new_transfer_bytes);
-                progress_updater.update_totals(self.total_bytes_reported, self.total_transfer_bytes_reported);
+                progress_updater.update_item_size(self.total_bytes_reported, false);
+                progress_updater.update_transfer_size(self.total_transfer_bytes_reported);
             }
 
             Ok(Some(file_terms))

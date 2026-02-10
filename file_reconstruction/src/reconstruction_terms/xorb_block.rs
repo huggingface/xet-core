@@ -83,7 +83,7 @@ impl XorbBlock {
         let progress_callback: Option<ProgressCallback> = progress_updater.as_ref().map(|updater| {
             let updater = updater.clone();
             Arc::new(move |delta: u64, _completed: u64, _total: u64| {
-                updater.update_progress(0, delta); // Updates only the transfer bytes
+                updater.report_transfer_progress(delta);
             }) as ProgressCallback
         });
 

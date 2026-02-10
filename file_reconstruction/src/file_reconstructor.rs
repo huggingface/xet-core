@@ -578,6 +578,78 @@ mod tests {
         assert_eq!(bytes_written, expected_bytes);
     }
 
+    /// Verifies the external progress tracker flow without a known file size:
+    /// totals are discovered incrementally by the ReconstructionTermManager.
+    #[tokio::test]
+    async fn test_external_progress_tracker_incremental_discovery() {
+        let term_spec: Vec<(u64, (u64, u64))> = (1..=5).map(|i| (i, (0, 3))).collect();
+        let (client, file_contents) = setup_test_file(&term_spec).await;
+        let config = test_config();
+
+        let tracker = DownloadProgressTracker::new(NoOpProgressUpdater::new());
+        let task = tracker.new_download_task(Arc::from("test_file.bin"));
+
+        let buffer = Arc::new(std::sync::Mutex::new(Cursor::new(Vec::new())));
+        let writer = StaticCursorWriter(buffer.clone());
+
+        let bytes_written = FileReconstructor::new(
+            &(client.clone() as Arc<dyn Client>),
+            file_contents.file_hash,
+            DataOutput::writer(writer),
+        )
+        .with_config(&config)
+        .with_progress_updater(task.clone())
+        .run()
+        .await
+        .unwrap();
+
+        assert_eq!(bytes_written, file_contents.data.len() as u64);
+
+        task.assert_complete();
+        assert_eq!(task.total_bytes_completed(), file_contents.data.len() as u64);
+
+        tracker.assert_complete();
+    }
+
+    /// Verifies the data_client.rs flow: file size is known upfront (is_final=true),
+    /// then the manager discovers transfer sizes and also tries to update_item_size
+    /// (which is ignored since final was already set).
+    #[tokio::test]
+    async fn test_external_progress_tracker_final_size_upfront() {
+        let term_spec: Vec<(u64, (u64, u64))> = (1..=5).map(|i| (i, (0, 3))).collect();
+        let (client, file_contents) = setup_test_file(&term_spec).await;
+        let config = test_config();
+        let file_size = file_contents.data.len() as u64;
+
+        let tracker = DownloadProgressTracker::new(NoOpProgressUpdater::new());
+        let task = tracker.new_download_task(Arc::from("test_file.bin"));
+
+        // Simulate data_client.rs: set final size before reconstruction.
+        task.update_item_size(file_size, true);
+
+        let buffer = Arc::new(std::sync::Mutex::new(Cursor::new(Vec::new())));
+        let writer = StaticCursorWriter(buffer.clone());
+
+        let bytes_written = FileReconstructor::new(
+            &(client.clone() as Arc<dyn Client>),
+            file_contents.file_hash,
+            DataOutput::writer(writer),
+        )
+        .with_config(&config)
+        .with_progress_updater(task.clone())
+        .run()
+        .await
+        .unwrap();
+
+        assert_eq!(bytes_written, file_size);
+
+        // item_bytes should still be file_size (manager's update_item_size calls were ignored).
+        assert_eq!(task.total_bytes_completed(), file_size);
+
+        task.assert_complete();
+        tracker.assert_complete();
+    }
+
     // ==================== Byte Range Reconstruction Tests ====================
 
     #[tokio::test]
