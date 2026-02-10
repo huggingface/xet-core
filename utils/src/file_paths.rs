@@ -1,8 +1,7 @@
 use std::ffi::OsString;
-use std::fmt::Display;
 use std::path::{Path, PathBuf};
 
-use chrono::{DateTime, FixedOffset, Local};
+use chrono::Local;
 
 /// A path buffer that can contain template variables like `{PID}` and `{TIMESTAMP}`.
 ///
@@ -23,49 +22,75 @@ use chrono::{DateTime, FixedOffset, Local};
 /// - Expands `~` to the user's home directory
 /// - Replaces placeholders with actual values (timestamp uses local timezone with offset)
 /// - Converts to an absolute path
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct TemplatedPathBuf(PathBuf);
+#[derive(Clone, Debug)]
+pub struct TemplatedPathBuf {
+    template: PathBuf,
+    evaluated: PathBuf,
+}
 
 impl TemplatedPathBuf {
     /// Creates a new `TemplatedPathBuf` from a path-like value.
     pub fn new(path: impl Into<PathBuf>) -> Self {
-        path.into().into()
+        let template = path.into();
+        let evaluated = Self::eval_impl(&template, &Self::default_substitutes());
+
+        Self { template, evaluated }
     }
 
     /// Convenience function to create and evaluate a template in one step.
     ///
-    /// This is equivalent to calling `TemplatedPathBuf::new(path).evaluated()`.
+    /// This is equivalent to calling `TemplatedPathBuf::new(path).as_path().to_path_buf()`.
     /// Use this when you don't need to keep the template around.
     pub fn evaluate(path: impl Into<PathBuf>) -> PathBuf {
-        Self::new(path).evaluated()
+        Self::new(path).as_path().into()
     }
 
-    /// Evaluates the template by replacing all placeholders and expanding paths.
+    /// Returns a reference to the evaluated path.
+    ///
+    /// The evaluated path has all template variables substituted with their actual values,
+    /// tilde expansion applied, and is converted to an absolute path.
+    pub fn as_path(&self) -> &Path {
+        &self.evaluated
+    }
+
+    /// Re-evaluates the template by replacing all placeholders with fresh values and expanding paths.
+    ///
+    /// This method updates the internal evaluated path and returns a reference to it.
+    /// Call this if you need to refresh dynamic values like `{PID}` or `{TIMESTAMP}`.
+    ///
     /// # Examples
     ///
     /// ```
     /// use utils::TemplatedPathBuf;
     ///
-    /// let template = TemplatedPathBuf::new("~/logs/app_{PID}_{TIMESTAMP}.txt");
-    /// let path = template.evaluated();
+    /// let mut template = TemplatedPathBuf::new("~/logs/app_{PID}_{TIMESTAMP}.txt");
+    /// let path = template.as_path();
     /// // Returns an absolute path like "/home/user/logs/app_12345_2024-01-15T10-30-45-0500.txt"
     /// // (timestamp in local timezone with offset appended)
+    ///
+    /// // Later, re-evaluate to get a fresh timestamp
+    /// template.re_evaluate();
+    /// let new_path = template.as_path();
     /// ```
-    pub fn evaluated(&self) -> PathBuf {
-        let substitutes: Vec<Box<dyn Substitute>> = vec![
-            Box::new(SubstitutePid::default()),
-            Box::new(SubstituteTimestamp::default()),
-        ];
-        self.eval_impl(&substitutes)
+    pub fn re_evaluate(&mut self) -> &Path {
+        self.evaluated = Self::eval_impl(&self.template, &Self::default_substitutes());
+        &self.evaluated
+    }
+
+    fn default_substitutes() -> [Substitute; 2] {
+        [
+            ("pid", Box::new(|| std::process::id().to_string())),
+            ("timestamp", Box::new(|| Local::now().fixed_offset().format("%Y-%m-%dT%H-%M-%S%z").to_string())),
+        ]
     }
 
     /// Note: Templates can come from environment variables or other non-UTF-8 sources.
     /// We work at the byte level using `into_encoded_bytes()` to preserve all path data
     /// across all platforms (Unix raw bytes, Windows WTF-8), only interpreting ASCII
     /// patterns like {PID} and {TIMESTAMP} which are guaranteed to be ASCII.
-    fn eval_impl(&self, substitutes: &[Box<dyn Substitute>]) -> PathBuf {
+    fn eval_impl(template: &Path, substitutes: &[Substitute]) -> PathBuf {
         // Get platform-specific encoded bytes (Unix: raw bytes, Windows WTF-8)
-        let path_bytes = self.0.as_os_str().as_encoded_bytes();
+        let path_bytes = template.as_os_str().as_encoded_bytes();
 
         // One-pass scan to replace placeholders (ASCII patterns)
         let mut result = Vec::with_capacity(path_bytes.len());
@@ -81,9 +106,9 @@ impl TemplatedPathBuf {
                     let mut matched = false;
                     if let Ok(pattern_str) = std::str::from_utf8(pattern_bytes) {
                         for sub in substitutes {
-                            if sub.matches(pattern_str) {
+                            if pattern_str.eq_ignore_ascii_case(sub.0) {
                                 // Found a placeholder, replace it
-                                result.extend_from_slice(sub.to_string().as_bytes());
+                                result.extend_from_slice(sub.1().as_bytes());
                                 i += close_offset + 2; // Skip past {pattern}
                                 matched = true;
                                 break;
@@ -117,76 +142,34 @@ impl TemplatedPathBuf {
 // Implement From traits for easy conversion
 impl From<PathBuf> for TemplatedPathBuf {
     fn from(path: PathBuf) -> Self {
-        Self(path)
+        Self::new(path)
     }
 }
 
 impl From<&Path> for TemplatedPathBuf {
     fn from(path: &Path) -> Self {
-        Self(path.to_path_buf())
+        Self::new(path.to_path_buf())
     }
 }
 
 impl From<String> for TemplatedPathBuf {
     fn from(s: String) -> Self {
-        Self(PathBuf::from(s))
+        Self::new(PathBuf::from(s))
     }
 }
 
 impl From<&str> for TemplatedPathBuf {
     fn from(s: &str) -> Self {
-        Self(PathBuf::from(s))
+        Self::new(PathBuf::from(s))
     }
 }
 
-trait Substitute: Display {
-    fn matches(&self, key: &str) -> bool;
-}
-
-struct SubstitutePid(u32);
-
-impl Default for SubstitutePid {
-    fn default() -> Self {
-        Self(std::process::id())
-    }
-}
-
-impl Substitute for SubstitutePid {
-    fn matches(&self, key: &str) -> bool {
-        key.eq_ignore_ascii_case("pid")
-    }
-}
-
-impl Display for SubstitutePid {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.0)
-    }
-}
-
-struct SubstituteTimestamp(DateTime<FixedOffset>);
-
-impl Default for SubstituteTimestamp {
-    fn default() -> Self {
-        Self(Local::now().fixed_offset())
-    }
-}
-
-impl Substitute for SubstituteTimestamp {
-    fn matches(&self, key: &str) -> bool {
-        key.eq_ignore_ascii_case("timestamp")
-    }
-}
-
-impl Display for SubstituteTimestamp {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        // Format timestamp as ISO 8601 with hyphens instead of colons (filesystem-safe)
-        // Format: YYYY-MM-DDTHH-MM-SS+ZZZZ (with timezone offset)
-        self.0.format("%Y-%m-%dT%H-%M-%S%z").fmt(f)
-    }
-}
+type Substitute = (&'static str, Box<dyn Fn() -> String>);
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
     use serial_test::serial;
     use tempfile::tempdir;
 
@@ -201,9 +184,9 @@ mod tests {
     #[test]
     fn test_pid_substitution_case_insensitive() {
         // Test that {PID}, {pid}, and {Pid} all work
+        let substitutes: [Substitute; 1] = [("pid", Box::new(|| "12345".to_string()))];
         for pattern in ["log_{PID}.txt", "log_{pid}.txt", "log_{Pid}.txt"] {
-            let template = TemplatedPathBuf::new(pattern);
-            let result = template.eval_impl(&[Box::new(SubstitutePid(12345))]);
+            let result = TemplatedPathBuf::eval_impl(Path::new(pattern), &substitutes);
             assert!(result.ends_with("log_12345.txt"));
         }
     }
@@ -212,9 +195,10 @@ mod tests {
     fn test_timestamp_substitution_case_insensitive() {
         // Test that {TIMESTAMP}, {timestamp}, and {TimeStamp} all work
         let timestamp = chrono::DateTime::parse_from_rfc3339("2009-02-13T23:31:30Z").unwrap();
+        let substitutes: [Substitute; 1] =
+            [("timestamp", Box::new(move || timestamp.format("%Y-%m-%dT%H-%M-%S%z").to_string()))];
         for pattern in ["log_{TIMESTAMP}.txt", "log_{timestamp}.txt", "log_{TimeStamp}.txt"] {
-            let template = TemplatedPathBuf::new(pattern);
-            let result = template.eval_impl(&[Box::new(SubstituteTimestamp(timestamp))]);
+            let result = TemplatedPathBuf::eval_impl(Path::new(pattern), &substitutes);
             assert!(result.ends_with("log_2009-02-13T23-31-30+0000.txt"));
         }
     }
@@ -222,17 +206,19 @@ mod tests {
     #[test]
     fn test_multiple_substitutions() {
         // Test that multiple occurrence of placeholders all get substituted
-        let template = TemplatedPathBuf::new("/var/log/app_{pid}_{TIMESTAMP}.log");
         let timestamp = chrono::DateTime::parse_from_rfc3339("2009-02-13T23:31:30Z").unwrap();
-        let result = template.eval_impl(&[Box::new(SubstitutePid(999)), Box::new(SubstituteTimestamp(timestamp))]);
+        let substitutes: [Substitute; 2] = [
+            ("pid", Box::new(|| "999".to_string())),
+            ("timestamp", Box::new(move || timestamp.format("%Y-%m-%dT%H-%M-%S%z").to_string())),
+        ];
+
+        let result = TemplatedPathBuf::eval_impl(Path::new("/var/log/app_{pid}_{TIMESTAMP}.log"), &substitutes);
         #[cfg(unix)]
         assert_eq!(result, PathBuf::from("/var/log/app_999_2009-02-13T23-31-30+0000.log"));
         #[cfg(windows)]
         assert!(result.ends_with("var\\log\\app_999_2009-02-13T23-31-30+0000.log"));
 
-        let template = TemplatedPathBuf::new("/var/log_{pid}/app_{pid}_{TIMESTAMP}.log");
-        let timestamp = chrono::DateTime::parse_from_rfc3339("2009-02-13T23:31:30Z").unwrap();
-        let result = template.eval_impl(&[Box::new(SubstitutePid(999)), Box::new(SubstituteTimestamp(timestamp))]);
+        let result = TemplatedPathBuf::eval_impl(Path::new("/var/log_{pid}/app_{pid}_{TIMESTAMP}.log"), &substitutes);
         #[cfg(unix)]
         assert_eq!(result, PathBuf::from("/var/log_999/app_999_2009-02-13T23-31-30+0000.log"));
         #[cfg(windows)]
@@ -241,8 +227,9 @@ mod tests {
 
     #[test]
     fn test_non_ascii_paths_substitutions() {
-        let template = TemplatedPathBuf::new("-Me {pid} encantan los 🌶️ jalapeños . -我也喜欢");
-        let result = template.eval_impl(&[Box::new(SubstitutePid(566))]);
+        let substitutes: [Substitute; 1] = [("pid", Box::new(|| "566".to_string()))];
+        let result =
+            TemplatedPathBuf::eval_impl(Path::new("-Me {pid} encantan los 🌶️ jalapeños . -我也喜欢"), &substitutes);
         assert!(result.ends_with("-Me 566 encantan los 🌶️ jalapeños . -我也喜欢"));
     }
 
@@ -258,14 +245,44 @@ mod tests {
     }
 
     #[test]
+    fn test_as_path_and_re_evaluate() {
+        // Test as_path() returns the evaluated path with substitutions
+        let mut template = TemplatedPathBuf::new("/var/log/app_{PID}_{TIMESTAMP}.log");
+
+        // as_path() should return an absolute path with placeholders substituted
+        let path1 = template.as_path();
+        assert!(path1.is_absolute(), "Path should be absolute");
+
+        // Verify path contains expected structure
+        let path_str = path1.to_string_lossy();
+        let pid = std::process::id();
+        assert!(path_str.contains(&format!("app_{pid}")));
+        assert!(!path_str.contains("{TIMESTAMP}"), "TIMESTAMP placeholder should be substituted");
+
+        // Multiple calls to as_path() without re-evaluate should return same path
+        let path2 = template.as_path().to_path_buf();
+        assert_eq!(path1, &path2);
+
+        std::thread::sleep(Duration::from_secs(1));
+
+        // re_evaluate() should update the evaluated path and return a reference to it
+        let path3 = template.re_evaluate().to_path_buf();
+        assert_ne!(path3, path2, "re_evaluate() didn't return new result");
+
+        // as_path() after re_evaluate() should return the updated path
+        let path4 = template.as_path();
+        assert_eq!(path3, path4);
+    }
+
+    #[test]
     #[serial(default_config_env)]
     fn makes_relative_path_absolute() {
         let tmp = tempdir().unwrap();
         let base_path = tmp.path().canonicalize().unwrap();
         let _cwd = CwdGuard::set(&base_path).unwrap();
 
-        let rel = "subdir/{pid}file.txt";
-        let got = TemplatedPathBuf::new(rel).eval_impl(&[Box::new(SubstitutePid(2563))]);
+        let substitutes: [Substitute; 1] = [("pid", Box::new(|| "2563".to_string()))];
+        let got = TemplatedPathBuf::eval_impl(Path::new("subdir/{pid}file.txt"), &substitutes);
         let expected = std::path::absolute(base_path.join("subdir/2563file.txt")).unwrap();
 
         assert!(got.is_absolute(), "result should be absolute");
@@ -299,7 +316,8 @@ mod tests {
         assert_eq!(got_home, std::path::absolute(home.path()).unwrap());
 
         // "~" with a trailing path
-        let got_sub = TemplatedPathBuf::new("~/projects/demo_{pid}").eval_impl(&[Box::new(SubstitutePid(123))]);
+        let substitutes: [Substitute; 1] = [("pid", Box::new(|| "123".to_string()))];
+        let got_sub = TemplatedPathBuf::eval_impl(Path::new("~/projects/demo_{pid}"), &substitutes);
         let expected_sub = home.path().join("projects").join("demo_123");
         assert_eq!(got_sub, expected_sub);
         assert!(got_sub.is_absolute());
