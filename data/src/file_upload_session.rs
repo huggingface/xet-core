@@ -335,7 +335,7 @@ impl FileUploadSession {
         let xorb_hash = cas_object.hash;
         let raw_num_bytes = cas_object.raw_num_bytes;
         let progress_callback: ProgressCallback = Arc::new(move |delta, _completed, total| {
-            let raw_delta = if total > 0 { (delta * raw_num_bytes) / total } else { 0 };
+            let raw_delta = (delta * raw_num_bytes).checked_div(total).unwrap_or(0);
             if raw_delta > 0 {
                 completion_tracker
                     .clone()

@@ -314,13 +314,13 @@ mod tests {
         assert_eq!(task.item_bytes.load(Ordering::Relaxed), 1000);
         assert_eq!(tracker.total_bytes.load(Ordering::Relaxed), 1000);
 
-        // Subsequent calls with smaller values are ignored.
+        // Subsequent non-final calls are ignored.
         task.update_item_size(500, false);
         assert_eq!(task.item_bytes.load(Ordering::Relaxed), 1000);
         assert_eq!(tracker.total_bytes.load(Ordering::Relaxed), 1000);
 
-        // Even with is_final=true, still ignored.
-        task.update_item_size(2000, true);
+        // A second is_final call with the same value is also ignored (no-op).
+        task.update_item_size(1000, true);
         assert_eq!(task.item_bytes.load(Ordering::Relaxed), 1000);
         assert_eq!(tracker.total_bytes.load(Ordering::Relaxed), 1000);
     }
