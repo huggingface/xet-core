@@ -12,7 +12,6 @@ error_printer = { path = "../error_printer" }
 file_utils = { path = "../file_utils" }
 mdb_shard = { path = "../mdb_shard" }
 merklehash = { path = "../merklehash" }
-progress_tracking = { path = "../progress_tracking" }
 utils = { path = "../utils" }
 xet_runtime = { path = "../xet_runtime" }
 

@@ -7,7 +7,7 @@ use cas_client::{Client, LocalClient, LocalTestServer};
 use file_reconstruction::{DataOutput, FileReconstructor};
 use progress_tracking::TrackingProgressUpdater;
 #[cfg(test)]
-use progress_tracking::{download_tracking::DownloadProgressTracker, NoOpProgressUpdater};
+use progress_tracking::{NoOpProgressUpdater, download_tracking::DownloadProgressTracker};
 use rand::prelude::*;
 use tempfile::TempDir;
 
@@ -276,8 +276,7 @@ impl HydrateDehydrateTest {
                     .with_progress_updater(task)
             };
             #[cfg(not(test))]
-            let reconstructor =
-                FileReconstructor::new(&client, file_hash, DataOutput::write_in_file(&out_filename));
+            let reconstructor = FileReconstructor::new(&client, file_hash, DataOutput::write_in_file(&out_filename));
 
             reconstructor.run().await.unwrap();
         }
