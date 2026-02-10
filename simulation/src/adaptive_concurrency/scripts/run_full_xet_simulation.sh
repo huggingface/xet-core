@@ -30,10 +30,11 @@ mkdir -p "$RESULTS_DIR"
 # a background profile-update loop and is dropped for now.
 # Optional: set MAX_PARALLEL (default 1) to run scenarios in parallel
 "$BIN" \
-    --scenario=single_upload \
+    --scenario="single_upload,gitxet_upload_burst,added_uploads" \
     --out-dir="$RESULTS_DIR" \
-    --bandwidth="10mbps,50mbps,100mbps,1gbps,10gbps" \
+    --bandwidth="10mbps,100mbps,1gbps,10gbps" \
     --latency="20ms,250ms" \
     --congestion="none,medium,heavy" \
+    --server-load-profile="realistic" \
     --max-parallel="${MAX_PARALLEL:-4}" \
     "$@"

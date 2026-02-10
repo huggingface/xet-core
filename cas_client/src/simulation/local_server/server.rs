@@ -21,7 +21,6 @@
 //!         host: "127.0.0.1".to_string(),
 //!         port: 8080,
 //!         in_memory: false,
-//!         network_capacity: None,
 //!     };
 //!     let server = LocalServer::new(config).await?;
 //!     server.run().await?;
@@ -39,7 +38,7 @@ use tokio::net::TcpListener;
 use tower_http::cors::CorsLayer;
 
 use super::handlers;
-use super::load_simulation::LoadSimulation;
+use super::latency_simulation::LatencySimulation;
 use crate::error::{CasClientError, Result};
 use crate::simulation::{DirectAccessClient, LocalClient, MemoryClient};
 
@@ -55,9 +54,6 @@ pub struct LocalServerConfig {
     pub port: u16,
     /// Whether to use in-memory storage instead of disk-backed storage.
     pub in_memory: bool,
-    /// Optional network capacity stats (total_upload_bytes_possible, total_download_bytes_possible) for GET
-    /// /simulation/network_capacity.
-    pub network_capacity: Option<Arc<super::super::network_simulation::NetworkCapacityStats>>,
 }
 
 impl Default for LocalServerConfig {
@@ -67,7 +63,6 @@ impl Default for LocalServerConfig {
             host: "127.0.0.1".to_string(),
             port: 8080,
             in_memory: false,
-            network_capacity: None,
         }
     }
 }
@@ -83,7 +78,7 @@ impl Default for LocalServerConfig {
 pub struct LocalServer {
     config: LocalServerConfig,
     client: Arc<dyn DirectAccessClient>,
-    load_simulation: Arc<LoadSimulation>,
+    latency_simulation: Arc<LatencySimulation>,
 }
 
 impl LocalServer {
@@ -97,11 +92,11 @@ impl LocalServer {
         } else {
             LocalClient::new(&config.data_directory).await?
         };
-        let load_simulation = LoadSimulation::new();
+        let latency_simulation = LatencySimulation::new();
         Ok(Self {
             config,
             client,
-            load_simulation,
+            latency_simulation,
         })
     }
 
@@ -110,23 +105,17 @@ impl LocalServer {
     /// Useful when you want to share a client instance between the server
     /// and other code (e.g., for testing where you want to verify server behavior
     /// against direct client access).
-    pub fn from_client(
-        client: Arc<dyn DirectAccessClient>,
-        host: String,
-        port: u16,
-        network_capacity: Option<Arc<super::super::network_simulation::NetworkCapacityStats>>,
-    ) -> Self {
-        let load_simulation = LoadSimulation::new();
+    pub fn from_client(client: Arc<dyn DirectAccessClient>, host: String, port: u16) -> Self {
+        let latency_simulation = LatencySimulation::new();
         Self {
             config: LocalServerConfig {
                 data_directory: PathBuf::new(),
                 host,
                 port,
                 in_memory: false,
-                network_capacity,
             },
             client,
-            load_simulation,
+            latency_simulation,
         }
     }
 
@@ -165,7 +154,6 @@ impl LocalServer {
                 Router::new()
                     .route("/ping", get(handlers::ping))
                     .route("/set_config", post(handlers::set_config))
-                    .route("/network_capacity", get(handlers::network_capacity))
                     .route("/dummy_upload", post(handlers::dummy_upload)),
             )
             // Routes used by RemoteClient without /v1/ prefix
@@ -174,8 +162,7 @@ impl LocalServer {
             .layer(CorsLayer::very_permissive())
             .with_state(handlers::ServerState {
                 client: self.client.clone(),
-                load_simulation: self.load_simulation.clone(),
-                network_capacity: self.config.network_capacity.clone(),
+                latency_simulation: self.latency_simulation.clone(),
             })
     }
 

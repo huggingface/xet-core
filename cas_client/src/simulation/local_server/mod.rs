@@ -14,8 +14,8 @@
 //! - `handlers`: HTTP request handlers for each API endpoint
 
 mod handlers;
-mod load_simulation;
+mod latency_simulation;
 mod server;
 
-pub use load_simulation::ServerLoadProfile;
+pub use latency_simulation::ServerLatencyProfile;
 pub use server::{LocalServer, LocalServerConfig};

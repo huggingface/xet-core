@@ -17,12 +17,14 @@ path = "src/bin/run_ac_simulation.rs"
 [dependencies]
 cas_client = { path = "../cas_client" }
 chrono = { workspace = true }
+duration-str = { workspace = true }
 clap = { workspace = true }
 rand = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
+tokio-util = { workspace = true }
 tracing = { workspace = true }
 uuid = { workspace = true }
 xet_logging = { path = "../xet_logging" }

@@ -39,11 +39,7 @@ pub use local_client::LocalClient;
 pub use local_server::{LocalServer, LocalServerConfig};
 pub use memory_client::MemoryClient;
 #[cfg(not(target_family = "wasm"))]
-pub use network_simulation::{
-    BandwidthLimitProxyGuard, BandwidthRecording, ConfigurableProfileProvider, CongestionProfile, NetworkCapacityStats,
-    NetworkProfile, NetworkProfileBuilder, NetworkProfileProvider, ProxyConfig, endpoint_to_host_port, parse_duration,
-    start_bandwidth_limit_proxy_with_config, start_bandwidth_limit_proxy_with_provider,
-};
+pub use network_simulation::{NetworkConfig, NetworkProfile, NetworkProfileOptions, NetworkSimulationProxy};
 pub use random_xorb::RandomXorb;
 #[cfg(not(target_family = "wasm"))]
 pub use simulation_client::RemoteSimulationClient;

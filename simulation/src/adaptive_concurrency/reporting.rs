@@ -6,7 +6,9 @@ use std::path::Path;
 
 use serde::Deserialize;
 
-use super::common::{ClientMetrics, NetworkStats};
+use crate::scenario::NetworkStats;
+
+use super::upload_simulation_client::ClientMetrics;
 
 const INTERVAL_MS: u64 = 250;
 

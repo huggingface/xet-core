@@ -1,6 +1,6 @@
 //! Runs a single adaptive-concurrency scenario.
 //!
-//! Starts a LocalTestServer with optional network shaping and server load simulation,
+//! Starts a LocalTestServer with optional network shaping and server latency simulation,
 //! runs upload clients according to the chosen scenario, then writes
 //! network_stats.json and timeline.csv to the output directory.
 
@@ -8,27 +8,19 @@
 
 use std::future::Future;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use cas_client::simulation::local_server::ServerLoadProfile;
-use cas_client::simulation::{
-    BandwidthRecording, CongestionProfile, NetworkProfile, NetworkProfileBuilder, NetworkProfileProvider,
-    parse_duration,
-};
-use cas_client::{CasClientError, LocalTestServerBuilder};
+use cas_client::simulation::local_server::ServerLatencyProfile;
 use clap::Parser;
-use simulation::adaptive_concurrency::{NetworkStats, generate_timeline_csv, run_upload_clients};
-use tokio::task::JoinHandle;
+use simulation::adaptive_concurrency::run_upload_clients_until_cancelled;
+use simulation::scenario::{
+    MAX_DATA_KB, MIN_DATA_KB, ScenarioError, ScenarioResult, SimulationScenario, SimulationScenarioBuilder,
+    VALID_SCENARIOS,
+};
 use tokio::time::sleep;
 use tracing::info;
 use xet_logging::{LoggingConfig, init as init_logging};
 use xet_runtime::XetRuntime;
-
-const VALID_SCENARIOS: &[&str] = &["sanity_check", "single_upload", "gitxet_upload_burst", "added_uploads"];
-
-const MIN_DATA_KB: u64 = 49152;
-const MAX_DATA_KB: u64 = 65536;
 
 #[derive(Parser, Debug)]
 #[command(author, version, about)]
@@ -39,26 +31,27 @@ struct Args {
     #[arg(long)]
     duration_sec: Option<u64>,
 
-    /// Single value or "default". e.g. 10mbps
-    #[arg(long)]
-    bandwidth: Option<String>,
+    /// e.g. 1gbps
+    #[arg(long, default_value = "1gbps")]
+    bandwidth: String,
 
-    /// Single value or "default". e.g. 20ms
-    #[arg(long)]
-    latency: Option<String>,
+    /// e.g. 50ms
+    #[arg(long, default_value = "50ms")]
+    latency: String,
 
-    #[arg(long)]
-    jitter: Option<String>,
+    /// e.g. 20ms
+    #[arg(long, default_value = "20ms")]
+    jitter: String,
 
     #[arg(long, default_value = "none")]
     congestion: String,
 
-    /// Server load profile: none, light, realistic, heavy.
+    /// Server latency profile: none, light, realistic, heavy.
     #[arg(long, default_value = "realistic")]
-    server_load_profile: String,
+    server_latency_profile: String,
 
     /// Connection degradation threshold (number of concurrent connections).
-    /// When set, congestion penalties and error rates from the load profile activate
+    /// When set, congestion penalties and error rates from the latency profile activate
     /// once active connections exceed this value.
     #[arg(long)]
     server_connection_degradation_threshold: Option<u64>,
@@ -70,217 +63,77 @@ struct Args {
 
 // ── Scenario functions ───────────────────────────────────────────────────────
 
+/// Adds an upload client task that runs until the scenario's finish (or its token is cancelled).
+/// Returns the cancellation token for this task so the caller can cancel it early if desired.
+fn add_upload_client_task(scenario: &mut SimulationScenario) -> tokio_util::sync::CancellationToken {
+    let addr = scenario.server().http_endpoint().to_string();
+    let out_dir = scenario.out_dir().to_path_buf();
+    scenario.add_task(move |token| {
+        tokio::spawn(async move {
+            run_upload_clients_until_cancelled(&addr, &out_dir, MIN_DATA_KB, MAX_DATA_KB, token)
+                .await
+                .map_err(|e| ScenarioError::Client(e.to_string()))
+        })
+    })
+}
+
 /// Sanity check: one client, short duration.
-async fn run_sanity_check(
-    proxy_addr: &str,
-    out_dir: &Path,
-    duration_override: Option<u64>,
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    run_upload_clients(proxy_addr, out_dir, MIN_DATA_KB, MAX_DATA_KB, duration_override.unwrap_or(60)).await
+async fn run_sanity_check(mut scenario: SimulationScenario, duration_sec: u64) -> ScenarioResult<()> {
+    add_upload_client_task(&mut scenario);
+    sleep(Duration::from_secs(duration_sec)).await;
+    scenario.finish().await
 }
 
 /// Single client upload for an extended period.
-async fn run_single_upload(
-    proxy_addr: &str,
-    out_dir: &Path,
-    duration_override: Option<u64>,
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    run_upload_clients(proxy_addr, out_dir, MIN_DATA_KB, MAX_DATA_KB, duration_override.unwrap_or(600)).await
+async fn run_single_upload(mut scenario: SimulationScenario, duration_sec: u64) -> ScenarioResult<()> {
+    add_upload_client_task(&mut scenario);
+    sleep(Duration::from_secs(duration_sec)).await;
+    scenario.finish().await
 }
 
-/// Burst of simultaneous clients with different run lengths.
-async fn run_gitxet_upload_burst(
-    proxy_addr: &str,
-    out_dir: &Path,
-    duration_override: Option<u64>,
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let base_duration = duration_override.unwrap_or(600);
-    let client_durations = [600u64, 500, 500, 400, 400, 300, 300, 200, 200, 100];
-    let mut handles = Vec::with_capacity(client_durations.len());
-    for &d in &client_durations {
-        handles.push(spawn_upload(proxy_addr, out_dir, d.min(base_duration)));
+/// Burst of simultaneous clients.
+async fn run_gitxet_upload_burst(mut scenario: SimulationScenario, duration_sec: u64) -> ScenarioResult<()> {
+    for _ in 0..10 {
+        add_upload_client_task(&mut scenario);
     }
-    for h in handles {
-        h.await??;
-    }
-    Ok(())
+    sleep(Duration::from_secs(duration_sec)).await;
+    scenario.finish().await
 }
 
 /// Staggered client starts: launch clients in waves with pauses between.
-async fn run_added_uploads(
-    proxy_addr: &str,
-    out_dir: &Path,
-    _duration_override: Option<u64>,
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let mut handles = vec![];
-
-    // Wave 1: single long-running client
-    handles.push(spawn_upload(proxy_addr, out_dir, 600));
+async fn run_added_uploads(mut scenario: SimulationScenario, _duration_sec: u64) -> ScenarioResult<()> {
+    add_upload_client_task(&mut scenario);
     sleep(Duration::from_secs(100)).await;
 
-    // Wave 2: three clients with varying durations
-    for duration in [500u64, 150, 100] {
-        handles.push(spawn_upload(proxy_addr, out_dir, duration));
+    for _ in 0..3 {
+        add_upload_client_task(&mut scenario);
     }
     sleep(Duration::from_secs(100)).await;
 
-    // Wave 3: two medium clients
     for _ in 0..2 {
-        handles.push(spawn_upload(proxy_addr, out_dir, 200));
+        add_upload_client_task(&mut scenario);
     }
     sleep(Duration::from_secs(100)).await;
 
-    // Wave 4: six short clients
     for _ in 0..6 {
-        handles.push(spawn_upload(proxy_addr, out_dir, 30));
+        add_upload_client_task(&mut scenario);
     }
     sleep(Duration::from_secs(100)).await;
 
-    // Wave 5: one medium client
-    handles.push(spawn_upload(proxy_addr, out_dir, 200));
+    add_upload_client_task(&mut scenario);
     sleep(Duration::from_secs(100)).await;
 
-    // Wave 6: one short client
-    handles.push(spawn_upload(proxy_addr, out_dir, 100));
+    add_upload_client_task(&mut scenario);
     sleep(Duration::from_secs(100)).await;
 
-    for h in handles {
-        h.await??;
-    }
-    Ok(())
-}
-
-fn spawn_upload(
-    addr: &str,
-    dir: &Path,
-    duration: u64,
-) -> JoinHandle<Result<(), Box<dyn std::error::Error + Send + Sync>>> {
-    let addr = addr.to_string();
-    let dir = dir.to_path_buf();
-    tokio::spawn(async move { run_upload_clients(&addr, &dir, MIN_DATA_KB, MAX_DATA_KB, duration).await })
-}
-
-// ── Network profile ──────────────────────────────────────────────────────────
-
-fn build_upload_profile(
-    bandwidth: Option<&str>,
-    latency: Option<&str>,
-    jitter: Option<&str>,
-    congestion: Option<&str>,
-) -> Result<
-    (NetworkProfile, Option<Arc<dyn NetworkProfileProvider + Send + Sync>>),
-    Box<dyn std::error::Error + Send + Sync>,
-> {
-    let to_err = |e: CasClientError| -> Box<dyn std::error::Error + Send + Sync> { e.to_string().into() };
-
-    let lat_ms = latency.map(|s| parse_duration(s).map_err(to_err)).transpose()?.unwrap_or(50);
-    let jit_ms = jitter.map(|s| parse_duration(s).map_err(to_err)).transpose()?.unwrap_or(10);
-    let min_lat = lat_ms.saturating_sub(jit_ms);
-    let max_lat = lat_ms + jit_ms;
-
-    let mut builder = NetworkProfileBuilder::new()
-        .with_base_latency_window(min_lat, max_lat)
-        .with_congestion_strength(1.0);
-
-    if let Some(b) = bandwidth {
-        builder = builder.with_max_bandwidth(b).map_err(to_err)?;
-    } else {
-        builder = builder.with_max_bandwidth("10mbps").map_err(to_err)?;
-    }
-
-    let congestion_profile = match congestion.map(|s| s.trim().to_lowercase()).as_deref() {
-        Some("medium") => CongestionProfile::medium(),
-        Some("heavy") => CongestionProfile::heavy(),
-        Some("bursty") => CongestionProfile::bursty(),
-        _ => CongestionProfile::None,
-    };
-
-    let prov = builder.with_congestion_profile(congestion_profile).build_provider();
-    let profile = prov.normal_profile();
-    let provider = Some(Arc::new(prov) as Arc<dyn NetworkProfileProvider + Send + Sync>);
-
-    Ok((profile, provider))
-}
-
-// ── Server setup ─────────────────────────────────────────────────────────────
-
-const VALID_LOAD_PROFILES: &[&str] = &["none", "light", "realistic", "heavy"];
-
-fn parse_load_profile(
-    name: &str,
-    degradation_threshold: Option<u64>,
-) -> Result<ServerLoadProfile, Box<dyn std::error::Error + Send + Sync>> {
-    let mut profile = match name {
-        "none" => ServerLoadProfile::none(),
-        "light" => ServerLoadProfile::light(),
-        "realistic" => ServerLoadProfile::realistic(),
-        "heavy" => ServerLoadProfile::heavy(),
-        _ => return Err(format!("Unknown server load profile: {name}. Valid: {:?}", VALID_LOAD_PROFILES).into()),
-    };
-    if let Some(threshold) = degradation_threshold {
-        profile = profile.with_connection_degradation_threshold(threshold);
-    }
-    Ok(profile)
-}
-
-// ── Reporting ────────────────────────────────────────────────────────────────
-
-fn default_duration_sec(scenario: &str) -> u64 {
-    if scenario == "sanity_check" { 60 } else { 600 }
-}
-
-fn write_network_stats(
-    out_dir: &Path,
-    profile: Option<&NetworkProfile>,
-    recording: Option<&BandwidthRecording>,
-    duration_sec: f64,
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let path = out_dir.join("network_stats.json");
-    let content = if let Some(rec) = recording {
-        let duration_ms = (duration_sec * 1000.0) as u64;
-        let mut lines = Vec::new();
-        for (elapsed, bandwidth_bytes_per_sec, latency_ms) in rec {
-            if elapsed.as_millis() as u64 >= duration_ms {
-                break;
-            }
-            lines.push(serde_json::to_string(&NetworkStats {
-                timestamp: (elapsed.as_millis() as u64).to_string(),
-                latency_ms: *latency_ms,
-                bandwidth_bytes_per_sec: *bandwidth_bytes_per_sec,
-                congestion_mode: None,
-                interface: None,
-            })?);
-        }
-        lines.join("\n") + "\n"
-    } else {
-        let bandwidth_bytes_per_sec = profile
-            .and_then(|p| p.bandwidth_kbps())
-            .map(|k| k as u64 * 1000 / 8)
-            .unwrap_or(0);
-        let latency_ms = profile.and_then(|p| p.latency_ms()).map(f64::from).unwrap_or(0.0);
-        serde_json::to_string(&NetworkStats {
-            timestamp: "0".to_string(),
-            latency_ms,
-            bandwidth_bytes_per_sec,
-            congestion_mode: None,
-            interface: None,
-        })? + "\n"
-    };
-    std::fs::write(path, content)?;
-    Ok(())
+    scenario.finish().await
 }
 
 // ── Utilities ────────────────────────────────────────────────────────────────
 
-fn normalize_optional_arg(s: Option<&str>) -> Option<String> {
-    s.and_then(|s| {
-        let s = s.trim();
-        if s.is_empty() || s.eq_ignore_ascii_case("default") {
-            None
-        } else {
-            Some(s.to_string())
-        }
-    })
+/// Parses a duration string (duration_str crate: e.g. "10ms", "1s").
+fn parse_duration(s: &str) -> ScenarioResult<Duration> {
+    duration_str::parse(s).map_err(|e| ScenarioError::Scenario(format!("invalid duration {:?}: {}", s, e)))
 }
 
 fn setup_logging(out_dir: &Path) {
@@ -290,85 +143,87 @@ fn setup_logging(out_dir: &Path) {
 }
 
 /// Runs an async future on a fresh multi-threaded tokio runtime, using XetRuntime for initialization.
-fn run_async<F>(future: F) -> Result<(), Box<dyn std::error::Error + Send + Sync>>
+fn run_async<F>(future: F) -> ScenarioResult<()>
 where
-    F: Future<Output = Result<(), Box<dyn std::error::Error + Send + Sync>>> + Send + 'static,
+    F: Future<Output = ScenarioResult<()>> + Send + 'static,
 {
-    let xet = XetRuntime::new().map_err(|e| e.to_string())?;
-    xet.external_run_async_task(async move {
-        tokio::task::spawn_blocking(move || {
-            tokio::runtime::Builder::new_multi_thread()
-                .enable_all()
-                .build()
-                .expect("runtime")
-                .block_on(future)
+    let xet = XetRuntime::new().map_err(|e| ScenarioError::Runtime(e.to_string()))?;
+    let result = xet
+        .external_run_async_task(async move {
+            tokio::task::spawn_blocking(move || {
+                tokio::runtime::Builder::new_multi_thread()
+                    .enable_all()
+                    .build()
+                    .map_err(|e| ScenarioError::Runtime(e.to_string()))?
+                    .block_on(future)
+            })
+            .await
+            .map_err(ScenarioError::from)?
         })
-        .await
-        .map_err(|e| Box::<dyn std::error::Error + Send + Sync>::from(e.to_string()))?
-    })
-    .map_err(|e| Box::<dyn std::error::Error + Send + Sync>::from(e.to_string()))?
+        .map_err(|e| ScenarioError::Runtime(e.to_string()))?;
+    result
 }
 
 // ── Entry point ──────────────────────────────────────────────────────────────
 
-fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+fn main() -> ScenarioResult<()> {
     let args = Args::parse();
     std::fs::create_dir_all(&args.out_dir)?;
     setup_logging(&args.out_dir);
 
     let scenario = args.scenario.as_str();
     if !VALID_SCENARIOS.contains(&scenario) {
-        return Err(format!("Unknown scenario: {}. Valid: {:?}", scenario, VALID_SCENARIOS).into());
+        return Err(ScenarioError::UnknownScenario {
+            name: scenario.to_string(),
+            valid: VALID_SCENARIOS,
+        });
     }
 
-    let bandwidth = normalize_optional_arg(args.bandwidth.as_deref());
-    let latency = normalize_optional_arg(args.latency.as_deref());
-    let (profile, profile_provider) = build_upload_profile(
-        bandwidth.as_deref(),
-        latency.as_deref(),
-        args.jitter.as_deref(),
-        Some(args.congestion.trim()),
-    )?;
+    let lat = parse_duration(&args.latency)?;
+    let jit = parse_duration(&args.jitter)?;
+    let latency_profile_name = args.server_latency_profile.trim().to_string();
+    let mut latency_profile = ServerLatencyProfile::from_name(&latency_profile_name).ok_or_else(|| {
+        ScenarioError::Scenario(format!(
+            "Unknown server latency profile: {latency_profile_name}. Valid: {:?}",
+            ServerLatencyProfile::VALID_NAMES
+        ))
+    })?;
+    if let Some(threshold) = args.server_connection_degradation_threshold {
+        latency_profile = latency_profile.with_connection_degradation_threshold(threshold);
+    }
 
-    let has_profile_provider = profile_provider.is_some();
-    let load_profile =
-        parse_load_profile(args.server_load_profile.trim(), args.server_connection_degradation_threshold)?;
-    let duration_override = args.duration_sec;
-    let duration_sec = duration_override.unwrap_or_else(|| default_duration_sec(scenario)) as f64;
-    let scenario_name = args.scenario;
-    let out_dir = args.out_dir;
+    let duration_sec = args
+        .duration_sec
+        .unwrap_or_else(|| if scenario == "sanity_check" { 60 } else { 600 });
+    let scenario_name = args.scenario.clone();
+    let out_dir = args.out_dir.clone();
+    let bandwidth = args.bandwidth.clone();
+    let congestion = args.congestion.trim().to_lowercase();
 
     run_async(async move {
-        let mut builder = LocalTestServerBuilder::new()
-            .with_ephemeral_disk()
-            .with_server_load_profile(load_profile);
-        if let Some(provider) = profile_provider {
-            builder = builder.with_dynamic_network_profile(provider);
-        }
-        let server = builder.start().await;
-        let proxy_addr = server.http_endpoint().trim_start_matches("http://").to_string();
-
-        if !has_profile_provider {
-            write_network_stats(&out_dir, Some(&profile), None, duration_sec)?;
-        }
+        let mut builder = SimulationScenarioBuilder::new()
+            .with_out_dir(out_dir)
+            .with_latency_profile(latency_profile)
+            .with_server_latency_profile_name(&latency_profile_name)
+            .with_latency(lat, jit)
+            .with_congestion_strength(1.0);
+        builder = builder.with_bandwidth_str(&bandwidth)?;
+        builder = builder.with_congestion(&congestion)?;
+        let scenario = builder.start().await?;
 
         let start = Instant::now();
-        if scenario_name == "sanity_check" {
-            run_sanity_check(&proxy_addr, &out_dir, duration_override).await?;
+        let result = if scenario_name == "sanity_check" {
+            run_sanity_check(scenario, duration_sec).await
         } else if scenario_name == "single_upload" {
-            run_single_upload(&proxy_addr, &out_dir, duration_override).await?;
+            run_single_upload(scenario, duration_sec).await
         } else if scenario_name == "gitxet_upload_burst" {
-            run_gitxet_upload_burst(&proxy_addr, &out_dir, duration_override).await?;
+            run_gitxet_upload_burst(scenario, duration_sec).await
         } else if scenario_name == "added_uploads" {
-            run_added_uploads(&proxy_addr, &out_dir, duration_override).await?;
-        }
+            run_added_uploads(scenario, duration_sec).await
+        } else {
+            unreachable!("scenario already validated")
+        };
         info!(scenario = scenario_name.as_str(), elapsed_sec = start.elapsed().as_secs_f64(), "Scenario finished");
-
-        if let Some(recording) = server.take_bandwidth_recording() {
-            write_network_stats(&out_dir, None, Some(&recording), duration_sec)?;
-        }
-        generate_timeline_csv(&out_dir)?;
-        drop(server);
-        Ok(())
+        result
     })
 }
