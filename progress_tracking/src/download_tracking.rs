@@ -39,6 +39,8 @@ impl DownloadProgressTracker {
     }
 }
 
+/// The interface struct for a single file or file segment.  Holds a reference to the
+/// group-level DownloadProgressTracker.  
 pub struct DownloadTaskUpdater {
     item_name: Arc<str>,
     item_bytes: AtomicU64,
