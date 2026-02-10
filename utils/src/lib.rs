@@ -34,7 +34,7 @@ pub use guards::{CwdGuard, EnvVarGuard};
 mod file_paths;
 
 #[cfg(not(target_family = "wasm"))]
-pub use file_paths::normalized_path_from_user_string;
+pub use file_paths::TemplatedPathBuf;
 
 pub mod byte_size;
 pub use byte_size::ByteSize;

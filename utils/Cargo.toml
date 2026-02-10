@@ -17,6 +17,7 @@ merklehash = { path = "../merklehash" }
 
 async-trait = { workspace = true }
 bytes = { workspace = true }
+chrono = { workspace = true }
 ctor = { workspace = true }
 derivative = { workspace = true }
 duration-str = { workspace = true }
@@ -25,7 +26,7 @@ lazy_static = { workspace = true }
 pin-project = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-shellexpand = { workspace = true }
+shellexpand = { workspace = true, features = ["path"] }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = [
     "time",
