@@ -37,7 +37,7 @@ impl DirectRefreshRouteTokenRefresher {
 
         Ok(Self {
             refresh_route: refresh_route.to_owned(),
-            client: build_http_client(session_id, user_agent)?,
+            client: build_http_client(session_id, user_agent, None)?,
             cred_helper,
         })
     }

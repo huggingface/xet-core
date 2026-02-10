@@ -7,7 +7,8 @@ use bytes::Bytes;
 use cas_types::FileRange;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 use tokio::sync::{Mutex, OwnedSemaphorePermit, oneshot};
-use tokio::task::{JoinHandle, JoinSet, spawn_blocking};
+use tokio::task::{JoinHandle, JoinSet};
+use xet_runtime::{XetRuntime, check_sigint_shutdown};
 
 use crate::data_writer::{DataFuture, DataWriter};
 use crate::{ErrorState, FileReconstructionError, Result};
@@ -106,6 +107,8 @@ impl<W: Write + Send + 'static> WriterThread<W> {
             if self.finished {
                 break;
             }
+
+            check_sigint_shutdown()?;
         }
 
         debug_assert!(self.finished);
@@ -119,6 +122,8 @@ impl<W: Write + Send + 'static> WriterThread<W> {
         let mut pending_writes: VecDeque<PendingWrite> = VecDeque::new();
 
         while !self.finished || !pending_writes.is_empty() {
+            check_sigint_shutdown()?;
+
             // If no pending writes, block to get at least one.
             if pending_writes.is_empty() {
                 let Some(write) = self.next_write(true)? else {
@@ -351,7 +356,7 @@ impl SequentialWriter {
         let error_state_clone = error_state.clone();
         let bytes_written_clone = bytes_written.clone();
 
-        let handle = spawn_blocking(move || {
+        let handle = XetRuntime::current().spawn_blocking(move || {
             let writer_thread = WriterThread::new(rx, writer, bytes_written_clone);
             let result = if use_vectorized {
                 writer_thread.run_vectorized()

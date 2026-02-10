@@ -37,6 +37,7 @@ serial_test = { workspace = true }
 
 [features]
 git-xet-for-integration-test = []
+git2-vendored-openssl = ["git2/vendored-openssl"]
 monitored = []
 
 # tell cargo-machete a renamed crate

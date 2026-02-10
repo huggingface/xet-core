@@ -20,6 +20,9 @@ mod local_client;
 pub mod local_server;
 mod memory_client;
 mod random_xorb;
+#[cfg(unix)]
+#[cfg(not(target_family = "wasm"))]
+pub mod socket_proxy;
 
 pub use client_testing_utils::{ClientTestingUtils, RandomFileContents};
 pub use direct_access_client::DirectAccessClient;
@@ -29,3 +32,6 @@ pub use local_client::LocalClient;
 pub use local_server::{LocalServer, LocalServerConfig, LocalTestServer};
 pub use memory_client::MemoryClient;
 pub use random_xorb::RandomXorb;
+#[cfg(unix)]
+#[cfg(not(target_family = "wasm"))]
+pub use socket_proxy::UnixSocketProxy;
