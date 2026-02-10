@@ -2,7 +2,9 @@ use std::str::FromStr;
 
 use tracing::{Level, event, info, warn};
 
-use crate::{ByteSize, TemplatedPathBuf};
+use crate::ByteSize;
+#[cfg(not(target_family = "wasm"))]
+use crate::TemplatedPathBuf;
 
 #[cfg(not(feature = "elevated_information_level"))]
 pub const INFORMATION_LOG_LEVEL: Level = Level::DEBUG;
@@ -105,6 +107,7 @@ impl ParsableConfigValue for std::time::Duration {
     }
 }
 
+#[cfg(not(target_family = "wasm"))]
 impl ParsableConfigValue for TemplatedPathBuf {
     fn parse_user_value(value: &str) -> Option<Self> {
         Some(Self::new(value))
