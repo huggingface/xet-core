@@ -240,6 +240,24 @@ mod tests {
     }
 
     #[test]
+    fn test_non_ascii_paths_substitutions() {
+        let template = TemplatedPathBuf::new("-Me {pid} encantan los 🌶️ jalapeños . -我也喜欢");
+        let result = template.eval_impl(&[Box::new(SubstitutePid(566))]);
+        assert!(result.ends_with("-Me 566 encantan los 🌶️ jalapeños . -我也喜欢"));
+    }
+
+    #[test]
+    fn leaves_unrecognized_patterns_unsubstituted() {
+        let template = Path::new("path_with_{unrecognized}_{patterns}.txt");
+        let result = TemplatedPathBuf::evaluate(template);
+        assert!(result.ends_with(template));
+
+        let template = Path::new("path_with_{未识别的}_{patterns}.txt");
+        let result = TemplatedPathBuf::evaluate(template);
+        assert!(result.ends_with(template));
+    }
+
+    #[test]
     #[serial(default_config_env)]
     fn makes_relative_path_absolute() {
         let tmp = tempdir().unwrap();
