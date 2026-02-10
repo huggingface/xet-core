@@ -204,7 +204,7 @@ mod tests {
         for pattern in ["log_{PID}.txt", "log_{pid}.txt", "log_{Pid}.txt"] {
             let template = TemplatedPathBuf::new(pattern);
             let result = template.eval_impl(&[Box::new(SubstitutePid(12345))]);
-            assert!(result.to_string_lossy().ends_with("log_12345.txt"));
+            assert!(result.ends_with("log_12345.txt"));
         }
     }
 
@@ -215,7 +215,7 @@ mod tests {
         for pattern in ["log_{TIMESTAMP}.txt", "log_{timestamp}.txt", "log_{TimeStamp}.txt"] {
             let template = TemplatedPathBuf::new(pattern);
             let result = template.eval_impl(&[Box::new(SubstituteTimestamp(timestamp))]);
-            assert!(result.to_string_lossy().ends_with("log_2009-02-13T23-31-30+0000.txt"));
+            assert!(result.ends_with("log_2009-02-13T23-31-30+0000.txt"));
         }
     }
 
@@ -225,12 +225,18 @@ mod tests {
         let template = TemplatedPathBuf::new("/var/log/app_{pid}_{TIMESTAMP}.log");
         let timestamp = chrono::DateTime::parse_from_rfc3339("2009-02-13T23:31:30Z").unwrap();
         let result = template.eval_impl(&[Box::new(SubstitutePid(999)), Box::new(SubstituteTimestamp(timestamp))]);
-        assert_eq!(result.to_string_lossy(), "/var/log/app_999_2009-02-13T23-31-30+0000.log");
+        #[cfg(unix)]
+        assert_eq!(result, PathBuf::from("/var/log/app_999_2009-02-13T23-31-30+0000.log"));
+        #[cfg(windows)]
+        assert!(result.ends_with("var\\log\\app_999_2009-02-13T23-31-30+0000.log"));
 
         let template = TemplatedPathBuf::new("/var/log_{pid}/app_{pid}_{TIMESTAMP}.log");
         let timestamp = chrono::DateTime::parse_from_rfc3339("2009-02-13T23:31:30Z").unwrap();
         let result = template.eval_impl(&[Box::new(SubstitutePid(999)), Box::new(SubstituteTimestamp(timestamp))]);
-        assert_eq!(result.to_string_lossy(), "/var/log_999/app_999_2009-02-13T23-31-30+0000.log");
+        #[cfg(unix)]
+        assert_eq!(result, PathBuf::from("/var/log_999/app_999_2009-02-13T23-31-30+0000.log"));
+        #[cfg(windows)]
+        assert!(result.ends_with("var\\log_999\\app_999_2009-02-13T23-31-30+0000.log"));
     }
 
     #[test]
