@@ -9,7 +9,8 @@ use tokio::runtime::{Builder as TokioRuntimeBuilder, Handle as TokioRuntimeHandl
 use tokio::sync::Semaphore;
 use tokio::task::JoinHandle;
 use tracing::{debug, info};
-use utils::system_monitor::SystemMonitor;
+#[cfg(not(target_family = "wasm"))]
+use utils::SystemMonitor;
 use xet_config::XetConfig;
 
 use crate::errors::MultithreadedRuntimeError;
@@ -141,6 +142,7 @@ pub struct XetRuntime {
     config: Arc<XetConfig>,
 
     //  System monitor instance if enabled, monitor starts on initiation
+    #[cfg(not(target_family = "wasm"))]
     _system_monitor: Option<SystemMonitor>,
 }
 
@@ -199,6 +201,7 @@ impl XetRuntime {
             external_executor_count: 0.into(),
             sigint_shutdown: false.into(),
             global_semaphore_table: GlobalSemaphoreLookup::default(),
+            #[cfg(not(target_family = "wasm"))]
             _system_monitor: config
                 .system_monitor
                 .enabled
@@ -274,6 +277,7 @@ impl XetRuntime {
             external_executor_count: 0.into(),
             sigint_shutdown: false.into(),
             global_semaphore_table: GlobalSemaphoreLookup::default(),
+            #[cfg(not(target_family = "wasm"))]
             _system_monitor: config
                 .system_monitor
                 .enabled
@@ -385,6 +389,7 @@ impl XetRuntime {
         drop(runtime);
 
         // Stops the system monitor loop if there is one running.
+        #[cfg(not(target_family = "wasm"))]
         if let Some(monitor) = &self._system_monitor {
             let _ = monitor.stop();
         }

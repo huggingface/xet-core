@@ -492,9 +492,9 @@ impl SystemMonitor {
         if let Some(path) = log_path {
             let path = path.as_path();
             let mut file = OpenOptions::new().create(true).append(true).open(path)?;
-            writeln!(file, "{}", json_report)?;
+            writeln!(file, "{json_report}")?;
         } else {
-            info!("{}", json_report);
+            info!(system_usage = json_report);
         }
 
         Ok(())
