@@ -13,7 +13,7 @@ use rand::Rng;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{Mutex, Semaphore};
-use tokio::time::{Instant, interval, sleep};
+use tokio::time::{Instant, interval, sleep, sleep_until};
 use utils::CallbackGuard;
 
 use super::network_profile::{NetworkConfig, NetworkProfile};
@@ -25,6 +25,10 @@ const ACCEPT_POLL_MS: u64 = 50;
 /// Each semaphore permit represents this many bytes (1 KiB). Permits are acquired/issued in these units to stay within
 /// u32.
 const BASE_BANDWIDTH_PERMIT_SIZE: u64 = 1024;
+
+/// Depth of the latency simulation pipe — limits how many chunks can be "in flight"
+/// between the bandwidth-limited reader and the latency-delayed writer.
+const LATENCY_PIPE_DEPTH: usize = 16;
 
 /// Single struct for the network simulation proxy. Methods take `Arc<Self>` for use in async tasks.
 pub struct NetworkSimulationProxy {
@@ -182,8 +186,10 @@ impl NetworkSimulationProxy {
         let latency = (profile.latency, profile.jitter);
         let upload_limiter = Arc::clone(&self.upload_limiter);
         let download_limiter = Arc::clone(&self.download_limiter);
-        let to_upstream = tokio::spawn(copy_with_limit(client_read, upstream_write, Some(upload_limiter), latency));
-        let from_upstream = tokio::spawn(copy_with_limit(upstream_read, client_write, Some(download_limiter), latency));
+        let to_upstream =
+            tokio::spawn(copy_with_rate_and_latency(client_read, upstream_write, Some(upload_limiter), latency));
+        let from_upstream =
+            tokio::spawn(copy_with_rate_and_latency(upstream_read, client_write, Some(download_limiter), latency));
         let (to_res, from_res) = tokio::join!(to_upstream, from_upstream);
         to_res.map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))??;
         from_res.map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))??;
@@ -217,28 +223,47 @@ impl NetworkSimulationProxy {
     }
 }
 
-/// Copy data from `reader` to `writer`. If `limiter` is `Some`, acquires ceil(n / BASE_PERMIT_SIZE) permits before
-/// writing. If latency is non-zero, sleeps base latency ± jitter (in seconds, f64) before each write.
-async fn copy_with_limit<R, W>(
-    mut reader: R,
-    mut writer: W,
+/// Copy data from `reader` to `writer` with bandwidth limiting and latency simulation.
+///
+/// Bandwidth is enforced by acquiring semaphore permits before each chunk is read.
+/// When latency is non-zero, data flows through a pipeline that models a network link:
+/// the reader acquires bandwidth permits and enqueues each chunk with a delivery timestamp
+/// of `now + latency ± jitter`. A writer task dequeues chunks and sleeps until their
+/// delivery time before forwarding. This allows multiple chunks to be "in flight"
+/// simultaneously, so latency adds a fixed offset to delivery without reducing throughput.
+async fn copy_with_rate_and_latency<R, W>(
+    reader: R,
+    writer: W,
     limiter: Option<Arc<Semaphore>>,
     latency: (Duration, Duration),
 ) -> std::io::Result<u64>
 where
-    R: tokio::io::AsyncRead + Unpin,
+    R: tokio::io::AsyncRead + Unpin + Send + 'static,
     W: tokio::io::AsyncWrite + Unpin,
 {
-    let mut buf = [0u8; BUF_SIZE];
-    let mut total: u64 = 0;
-    let base_secs = latency.0.as_secs_f64();
-    let jitter_secs = latency.1.as_secs_f64();
-    loop {
-        let n = reader.read(&mut buf).await?;
-        if n == 0 {
-            break;
-        }
-        if n > 0 {
+    let has_latency = latency.0 > Duration::ZERO || latency.1 > Duration::ZERO;
+
+    if !has_latency {
+        return copy_bandwidth_only(reader, writer, limiter).await;
+    }
+
+    // Pipeline: reader task enqueues (delivery_time, data), current task dequeues and delivers.
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<(Instant, Vec<u8>)>(LATENCY_PIPE_DEPTH);
+
+    let base_latency = latency.0;
+    let jitter = latency.1;
+
+    // Spawn reader: reads chunks, acquires bandwidth permits, sends with delivery timestamp.
+    let reader_handle = tokio::spawn(async move {
+        let mut reader = reader;
+        let mut buf = [0u8; BUF_SIZE];
+        let base_secs = base_latency.as_secs_f64();
+        let jitter_secs = jitter.as_secs_f64();
+        loop {
+            let n = reader.read(&mut buf).await?;
+            if n == 0 {
+                break;
+            }
             if let Some(ref lim) = limiter {
                 let permits = ((n as u64 + BASE_BANDWIDTH_PERMIT_SIZE - 1) / BASE_BANDWIDTH_PERMIT_SIZE)
                     .min(u32::MAX as u64) as u32;
@@ -248,9 +273,57 @@ where
                 permit.forget();
             }
             let delay_secs = base_secs + rand::rng().random_range(-jitter_secs..=jitter_secs);
-            if delay_secs > 0.0 {
-                sleep(Duration::from_secs_f64(delay_secs)).await;
+            let delivery_time = Instant::now() + Duration::from_secs_f64(delay_secs.max(0.0));
+            if tx.send((delivery_time, buf[..n].to_vec())).await.is_err() {
+                break;
             }
+        }
+        Ok::<(), std::io::Error>(())
+    });
+
+    // Writer (current task): dequeue, sleep until delivery time, write.
+    let mut total: u64 = 0;
+    let mut writer = writer;
+    while let Some((delivery_time, chunk)) = rx.recv().await {
+        if delivery_time > Instant::now() {
+            sleep_until(delivery_time).await;
+        }
+        writer.write_all(&chunk).await?;
+        total += chunk.len() as u64;
+    }
+
+    reader_handle
+        .await
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))??;
+
+    Ok(total)
+}
+
+/// Bandwidth-only copy without latency simulation. Used as a fast path when latency is zero.
+async fn copy_bandwidth_only<R, W>(
+    mut reader: R,
+    mut writer: W,
+    limiter: Option<Arc<Semaphore>>,
+) -> std::io::Result<u64>
+where
+    R: tokio::io::AsyncRead + Unpin,
+    W: tokio::io::AsyncWrite + Unpin,
+{
+    let mut buf = [0u8; BUF_SIZE];
+    let mut total: u64 = 0;
+    loop {
+        let n = reader.read(&mut buf).await?;
+        if n == 0 {
+            break;
+        }
+        if let Some(ref lim) = limiter {
+            let permits =
+                ((n as u64 + BASE_BANDWIDTH_PERMIT_SIZE - 1) / BASE_BANDWIDTH_PERMIT_SIZE).min(u32::MAX as u64) as u32;
+            let permit = lim
+                .acquire_many(permits)
+                .await
+                .map_err(|_| std::io::Error::new(std::io::ErrorKind::ConnectionReset, "bandwidth limiter closed"))?;
+            permit.forget();
         }
         writer.write_all(&buf[..n]).await?;
         total += n as u64;
