@@ -94,6 +94,7 @@ jobs:
           WHEEL_VERSION=$(echo $LATEST_WHEEL | cut -d '-' -f 2)
           SYMBOL_FILE=${WHEEL_NAME}.so.dbg
           wheel unpack $LATEST_WHEEL
+          rm *.whl
           objcopy --only-keep-debug hf_xet-${WHEEL_VERSION}/hf_xet/hf_xet.*.so hf_xet-${WHEEL_VERSION}/hf_xet/${SYMBOL_FILE}
           objcopy --strip-debug hf_xet-${WHEEL_VERSION}/hf_xet/hf_xet.*.so
           objcopy --add-gnu-debuglink=hf_xet-${WHEEL_VERSION}/hf_xet/${SYMBOL_FILE} hf_xet-${WHEEL_VERSION}/hf_xet/hf_xet.*.so
@@ -180,6 +181,7 @@ jobs:
           WHEEL_VERSION=$(echo $LATEST_WHEEL | cut -d '-' -f 2)
           SYMBOL_FILE=${WHEEL_NAME}.so.dbg
           wheel unpack $LATEST_WHEEL
+          rm *.whl
           objcopy --only-keep-debug hf_xet-${WHEEL_VERSION}/hf_xet/hf_xet.*.so hf_xet-${WHEEL_VERSION}/hf_xet/${SYMBOL_FILE}
           objcopy --strip-debug hf_xet-${WHEEL_VERSION}/hf_xet/hf_xet.*.so
           objcopy --add-gnu-debuglink=hf_xet-${WHEEL_VERSION}/hf_xet/${SYMBOL_FILE} hf_xet-${WHEEL_VERSION}/hf_xet/hf_xet.*.so

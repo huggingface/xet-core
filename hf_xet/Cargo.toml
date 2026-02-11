@@ -33,7 +33,7 @@ pyo3 = { version = "0.26", features = [
     "abi3-py37",
     "auto-initialize",
 ] }
-rand = "0.9.2"
+rand = "0.9"
 tracing = "0.1"
 
 # Unix-specific dependencies

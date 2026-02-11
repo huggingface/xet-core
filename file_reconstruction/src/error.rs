@@ -30,6 +30,9 @@ pub enum FileReconstructionError {
 
     #[error("Task Join Error: {0}")]
     TaskJoinError(Arc<tokio::task::JoinError>),
+
+    #[error("Runtime Error: {0}")]
+    RuntimeError(Arc<xet_runtime::errors::MultithreadedRuntimeError>),
 }
 
 pub type Result<T> = std::result::Result<T, FileReconstructionError>;
@@ -57,6 +60,13 @@ impl From<tokio::task::JoinError> for FileReconstructionError {
         FileReconstructionError::TaskJoinError(Arc::new(err))
     }
 }
+
+impl From<xet_runtime::errors::MultithreadedRuntimeError> for FileReconstructionError {
+    fn from(err: xet_runtime::errors::MultithreadedRuntimeError) -> Self {
+        FileReconstructionError::RuntimeError(Arc::new(err))
+    }
+}
+
 /// Thread-safe container for propagating errors from background tasks.
 /// Uses atomic flag for fast checking and mutex for error storage.
 pub struct ErrorState {

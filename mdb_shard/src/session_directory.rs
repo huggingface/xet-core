@@ -6,6 +6,7 @@ use std::sync::Arc;
 
 use tokio::task::JoinHandle;
 use tracing::{error, info};
+use xet_runtime::{XetRuntime, check_sigint_shutdown};
 
 use crate::error::Result;
 use crate::set_operations::shard_set_union;
@@ -79,6 +80,8 @@ pub fn merge_shards(
     let mut cur_si = MDBShardInfo::default();
 
     for sfi in shards {
+        check_sigint_shutdown()?;
+
         // Now, load the new shard data in.  To be resiliant to the possibility of shards
         // being deleted under us (as can happen in shard session resume with multiple
         // processes running), always load it all into memory at the start and write it out
@@ -157,7 +160,6 @@ pub fn merge_shards_background(
     let source_directory = source_directory.as_ref().to_owned();
     let target_directory = target_directory.as_ref().to_owned();
 
-    tokio::task::spawn_blocking(move || {
-        merge_shards(source_directory, target_directory, target_max_size, skip_on_error)
-    })
+    XetRuntime::current()
+        .spawn_blocking(move || merge_shards(source_directory, target_directory, target_max_size, skip_on_error))
 }

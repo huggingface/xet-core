@@ -9,8 +9,8 @@ path = "src/lib.rs"
 
 [dependencies]
 utils = { path = "../utils" }
-konst = "0.3"
-const-str = "0.3"
+konst = "0.4"
+const-str = "1.1"
 
 [dev-dependencies]
 serial_test = { workspace = true }

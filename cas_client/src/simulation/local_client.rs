@@ -54,7 +54,7 @@ pub struct LocalClient {
     // because heed holds file handles that need to be closed before the directory is deleted.
     // We use Option<heed::Env> so we can take() it in Drop to properly close via prepare_for_closing.
     global_dedup_db_env: Option<heed::Env>,
-    global_dedup_table: heed::Database<OwnedType<MerkleHash>, OwnedType<MerkleHash>>,
+    global_dedup_table: heed::Database<SerdeBincode<MerkleHash>, SerdeBincode<MerkleHash>>,
     shard_manager: Arc<ShardFileManager>,
     xorb_dir: PathBuf,
     shard_dir: PathBuf,
@@ -104,13 +104,18 @@ impl LocalClient {
         }
 
         // Open / set up the global dedup lookup.
-        let global_dedup_db_env = heed::EnvOpenOptions::new()
-            .open(&global_dedup_dir)
+        let global_dedup_db_env = unsafe { heed::EnvOpenOptions::new().open(&global_dedup_dir) }
             .map_err(|e| CasClientError::Other(format!("Error opening db at {global_dedup_dir:?}: {e}")))?;
 
+        let mut write_txn = global_dedup_db_env
+            .write_txn()
+            .map_err(|e| CasClientError::Other(format!("Error opening heed write transaction: {e}")))?;
         let global_dedup_table = global_dedup_db_env
-            .create_database(None)
+            .create_database(&mut write_txn, None)
             .map_err(|e| CasClientError::Other(format!("Error opening heed table: {e}")))?;
+        write_txn
+            .commit()
+            .map_err(|e| CasClientError::Other(format!("Error committing heed database: {e}")))?;
 
         // Open / set up the shard lookup
         let shard_manager = ShardFileManager::new_in_session_directory(shard_dir.clone(), true).await?;

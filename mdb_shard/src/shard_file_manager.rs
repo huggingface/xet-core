@@ -8,7 +8,7 @@ use merklehash::{HMACKey, MerkleHash};
 use tokio::sync::RwLock;
 use tracing::{debug, info, instrument, trace, warn};
 use utils::{MerkleHashMap, RwTaskLock, TruncatedMerkleHashMap};
-use xet_runtime::xet_config;
+use xet_runtime::{XetRuntime, xet_config};
 
 use crate::cas_structs::*;
 use crate::constants::MDB_SHARD_EXPIRATION_BUFFER;
@@ -223,7 +223,7 @@ impl ShardFileManager {
         let mut new_shards = Vec::from(new_shards);
 
         // Compare in reverse order to sort from newest to oldest
-        new_shards.sort_by(|s1, s2| s2.last_modified_time.cmp(&s1.last_modified_time));
+        new_shards.sort_by_key(|shard| std::cmp::Reverse(shard.last_modified_time));
         let num_shards = new_shards.len();
 
         for s in new_shards {
@@ -250,7 +250,7 @@ impl ShardFileManager {
             // Begin loading the truncated hashes in the background for this shard so they're ready
             // when we have to insert them.
             let s_rth = s.clone();
-            let s_truncated_hashes_jh = tokio::task::spawn_blocking(move || s_rth.read_all_truncated_hashes());
+            let s_truncated_hashes_jh = XetRuntime::current().spawn_blocking(move || s_rth.read_all_truncated_hashes());
 
             // Update the bookkeeper with the task of
             self.shard_bookkeeper
