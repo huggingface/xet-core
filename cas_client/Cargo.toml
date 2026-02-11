@@ -48,21 +48,19 @@ strict = []
 default = ["rustls-tls"]
 elevated_information_level = []
 
-# Three options for compliation here.
-rustls-tls = [
-    "reqwest/rustls",
-    "reqwest/rustls-native-certs",
-    "reqwest/webpki-roots",
-]
+# rustls-tls uses the rustls package with rustls-platform-verifier, which verifies TLS
+# certificates using the platform's native certificate store (Security.framework on macOS,
+# SChannel on Windows, system cert paths on Linux). Falls back to bundled webpki-roots
+# when the system store is unavailable (e.g. minimal containers).
+rustls-tls = ["reqwest/rustls"]
 
-# rustls-tls uses the rustls package, which embeds all of the ssl stuff in a rust package.  This is the
-# most portable option, but also may not respect local network configurations.  Use this if the native-ssl options don't work.
-# Uses native tls in the request package; this uses the native-tls package to wrap openssl, which is a more robust and portable
-# way of ensuring that tls just works.
+# native-tls wraps the platform's TLS library (OpenSSL on Linux, SChannel on Windows,
+# Security.framework on macOS). Use this if rustls causes issues in specific environments.
 native-tls = ["reqwest/native-tls"]
 
-# This uses the above, but statically compiles in openssl, which makes the result more portable at the expense of
-# library size.
+# Same as native-tls but statically compiles OpenSSL, making the result more portable
+# at the expense of binary size. Useful for manylinux builds where system OpenSSL may
+# not be available.
 native-tls-vendored = ["reqwest/native-tls-vendored"]
 
 
