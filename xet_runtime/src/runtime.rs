@@ -9,7 +9,6 @@ use tokio::runtime::{Builder as TokioRuntimeBuilder, Handle as TokioRuntimeHandl
 use tokio::sync::Semaphore;
 use tokio::task::JoinHandle;
 use tracing::{debug, info};
-#[cfg(feature = "monitored")]
 use utils::system_monitor::SystemMonitor;
 use xet_config::XetConfig;
 
@@ -141,9 +140,8 @@ pub struct XetRuntime {
     // Primary configuration struct
     config: Arc<XetConfig>,
 
-    //  System monitor instance if the feature "monitored" is enabled.
-    #[cfg(feature = "monitored")]
-    system_monitor: Option<SystemMonitor>,
+    //  System monitor instance if enabled, monitor starts on initiation
+    _system_monitor: Option<SystemMonitor>,
 }
 
 // Use thread-local references to the runtime that are set on initialization among all
@@ -201,12 +199,17 @@ impl XetRuntime {
             external_executor_count: 0.into(),
             sigint_shutdown: false.into(),
             global_semaphore_table: GlobalSemaphoreLookup::default(),
-            #[cfg(feature = "monitored")]
-            system_monitor: SystemMonitor::follow_process(
-                config.system_monitor.sample_interval,
-                config.system_monitor.output_path.clone(),
-            )
-            .ok(),
+            _system_monitor: config
+                .system_monitor
+                .enabled
+                .then(|| {
+                    SystemMonitor::follow_process(
+                        config.system_monitor.sample_interval,
+                        config.system_monitor.log_path.clone(),
+                    )
+                    .ok()
+                })
+                .flatten(),
             global_reqwest_client: std::sync::Mutex::new(None),
             config: Arc::new(config),
         });
@@ -271,12 +274,17 @@ impl XetRuntime {
             external_executor_count: 0.into(),
             sigint_shutdown: false.into(),
             global_semaphore_table: GlobalSemaphoreLookup::default(),
-            #[cfg(feature = "monitored")]
-            system_monitor: SystemMonitor::follow_process(
-                config.system_monitor.sample_interval,
-                config.system_monitor.output_path.clone(),
-            )
-            .ok(),
+            _system_monitor: config
+                .system_monitor
+                .enabled
+                .then(|| {
+                    SystemMonitor::follow_process(
+                        config.system_monitor.sample_interval,
+                        config.system_monitor.log_path.clone(),
+                    )
+                    .ok()
+                })
+                .flatten(),
             config,
             global_reqwest_client: std::sync::Mutex::new(None),
         })
@@ -375,6 +383,11 @@ impl XetRuntime {
         // Dropping the runtime will cancel all the tasks; shutdown occurs when the next async call
         // is encountered.  Ideally, all async code should be cancellation safe.
         drop(runtime);
+
+        // Stops the system monitor loop if there is one running.
+        if let Some(monitor) = &self._system_monitor {
+            let _ = monitor.stop();
+        }
     }
 
     /// Discards the runtime without shutdown; to be used after fork-exec or spawn.
@@ -413,15 +426,7 @@ impl XetRuntime {
         F: Future + Send + 'static,
         F::Output: Send + Sync,
     {
-        let _prev_count = self.external_executor_count.fetch_add(1, Ordering::SeqCst);
-
-        #[cfg(feature = "monitored")]
-        // start monitor when the first task starts to run
-        if _prev_count == 0 {
-            if let Some(monitor) = &self.system_monitor {
-                monitor.start().map_err(|e| MultithreadedRuntimeError::Other(e.to_string()))?;
-            }
-        }
+        self.external_executor_count.fetch_add(1, Ordering::SeqCst);
 
         let ret = self.handle().block_on(async move {
             // Run the actual task on a task worker thread so we can get back information
@@ -429,15 +434,7 @@ impl XetRuntime {
             self.handle().spawn(future).await.map_err(MultithreadedRuntimeError::from)
         });
 
-        let _prev_count = self.external_executor_count.fetch_sub(1, Ordering::SeqCst);
-
-        #[cfg(feature = "monitored")]
-        // stop monitor when the last task finishes
-        if _prev_count == 1 {
-            if let Some(monitor) = &self.system_monitor {
-                monitor.stop().map_err(|e| MultithreadedRuntimeError::Other(e.to_string()))?;
-            }
-        }
+        self.external_executor_count.fetch_sub(1, Ordering::SeqCst);
 
         ret
     }

@@ -52,7 +52,6 @@ no-default-cache = ["xet_config/no-default-cache"]
 profiling = ["pprof"]
 tokio-console = ["xet_logging/tokio-console"]
 elevated_information_level = ["cas_client/elevated_information_level", "utils/elevated_information_level"]
-monitored = ["xet_runtime/monitored"]
 
 [profile.release]
 split-debuginfo = "packed"
