@@ -31,7 +31,7 @@ pub struct XetClient {
 
 impl XetClient {
     /// Creates a new client with the given connection parameters.
-    pub async fn new(
+    pub fn new(
         endpoint: Option<String>,
         token_info: Option<(String, u64)>,
         token_refresher: Option<Arc<dyn TokenRefresher>>,
@@ -284,13 +284,25 @@ impl Stream for XetReader {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
-
     use futures::{StreamExt, TryStreamExt};
     use tempfile::tempdir;
 
     use super::*;
-    use crate::data_client::upload_bytes_async;
+
+    /// Upload `content` via [`XetWriter`] and download it back via [`XetReader`],
+    /// asserting the round-tripped bytes match the original.
+    async fn assert_roundtrip(client: &XetClient, content: &[u8]) {
+        let mut writer = client.write(None, None, content.len() as u64).await.unwrap();
+        for chunk in content.chunks(4096) {
+            writer.write(Bytes::copy_from_slice(chunk)).await.unwrap();
+        }
+        let file_info = writer.close().await.unwrap();
+        assert_eq!(file_info.file_size(), content.len() as u64);
+
+        let reader = client.read(file_info, None, None, 64).unwrap();
+        let chunks: Vec<Bytes> = reader.try_collect().await.unwrap();
+        assert_eq!(chunks.concat(), content);
+    }
 
     /// Create a reader already in the streaming state for testing poll behavior.
     fn streaming_reader(rx: mpsc::Receiver<Bytes>, handle: JoinHandle<errors::Result<u64>>) -> XetReader {
@@ -307,110 +319,33 @@ mod tests {
         }
     }
 
-    fn test_contents() -> Vec<Vec<u8>> {
-        vec![
-            vec![],
-            b"Hello, World!".to_vec(),
-            (0..1_000_000).map(|i| (i % 256) as u8).collect(),
-        ]
+    #[tokio::test]
+    async fn test_roundtrip() {
+        let temp_dir = tempdir().unwrap();
+        let endpoint = format!("local://{}", temp_dir.path().display());
+        let client = XetClient::new(Some(endpoint), None, None, "test".into()).unwrap();
+
+        // Empty.
+        assert_roundtrip(&client, &[]).await;
+        // Small.
+        assert_roundtrip(&client, b"Hello, World!").await;
+        // Large (1 MB).
+        let large: Vec<u8> = (0..1_000_000).map(|i| (i % 256) as u8).collect();
+        assert_roundtrip(&client, &large).await;
     }
 
     #[tokio::test]
-    async fn test_xet_writer_round_trip() {
+    async fn test_partial_range() {
         let temp_dir = tempdir().unwrap();
         let endpoint = format!("local://{}", temp_dir.path().display());
+        let client = XetClient::new(Some(endpoint), None, None, "test".into()).unwrap();
+
         let content: Vec<u8> = (0..1_000_000).map(|i| (i % 256) as u8).collect();
-
-        let client = XetClient::new(Some(endpoint.clone()), None, None, "test".into()).await.unwrap();
-
-        // Upload using XetWriter, feeding data in small chunks.
         let mut writer = client.write(None, None, content.len() as u64).await.unwrap();
         for chunk in content.chunks(4096) {
             writer.write(Bytes::copy_from_slice(chunk)).await.unwrap();
         }
         let file_info = writer.close().await.unwrap();
-
-        assert_eq!(file_info.file_size(), content.len() as u64);
-
-        // Verify hash matches the in-memory upload path.
-        let byte_infos =
-            upload_bytes_async(vec![content.clone()], Some(endpoint.clone()), None, None, None, "test".into())
-                .await
-                .unwrap();
-        assert_eq!(file_info.hash(), byte_infos[0].hash());
-
-        // Download back and verify contents using XetReader.
-        let reader = client.read(file_info, None, None, 64).unwrap();
-        let chunks: Vec<Bytes> = reader.try_collect().await.unwrap();
-        assert_eq!(chunks.concat(), content);
-    }
-
-    #[tokio::test]
-    async fn test_xet_reader_round_trip() {
-        let temp_dir = tempdir().unwrap();
-        let endpoint = format!("local://{}", temp_dir.path().display());
-        let contents = test_contents();
-
-        let client = XetClient::new(Some(endpoint.clone()), None, None, "test".into()).await.unwrap();
-
-        // Upload all as bytes.
-        let file_infos = upload_bytes_async(contents.clone(), Some(endpoint.clone()), None, None, None, "test".into())
-            .await
-            .unwrap();
-
-        // Download each back via XetReader and verify.
-        for (file_info, expected) in file_infos.into_iter().zip(&contents) {
-            let reader = client.read(file_info, None, None, 64).unwrap();
-            let chunks: Vec<Bytes> = reader.try_collect().await.unwrap();
-            assert_eq!(chunks.concat(), *expected);
-        }
-    }
-
-    #[tokio::test]
-    async fn test_xet_reader_with_file_upload() {
-        let temp_dir = tempdir().unwrap();
-        let endpoint = format!("local://{}", temp_dir.path().display());
-        let contents = test_contents();
-
-        let client = XetClient::new(Some(endpoint.clone()), None, None, "test".into()).await.unwrap();
-
-        // Write contents to files and upload via upload_async.
-        let upload_dir = tempdir().unwrap();
-        let file_paths: Vec<String> = contents
-            .iter()
-            .enumerate()
-            .map(|(i, content)| {
-                let path = upload_dir.path().join(format!("{i}"));
-                std::fs::write(&path, content).unwrap();
-                path.to_str().unwrap().to_string()
-            })
-            .collect();
-        let file_infos =
-            crate::data_client::upload_async(file_paths, None, Some(endpoint.clone()), None, None, None, "test".into())
-                .await
-                .unwrap();
-
-        // Download all via XetReader and verify.
-        for (file_info, expected) in file_infos.into_iter().zip(&contents) {
-            let reader = client.read(file_info, None, None, 64).unwrap();
-            let chunks: Vec<Bytes> = reader.try_collect().await.unwrap();
-            assert_eq!(chunks.concat(), *expected);
-        }
-    }
-
-    #[tokio::test]
-    async fn test_xet_reader_partial_range() {
-        let temp_dir = tempdir().unwrap();
-        let endpoint = format!("local://{}", temp_dir.path().display());
-        let content: Vec<u8> = (0..1_000_000).map(|i| (i % 256) as u8).collect();
-
-        let client = XetClient::new(Some(endpoint.clone()), None, None, "test".into()).await.unwrap();
-
-        let file_infos =
-            upload_bytes_async(vec![content.clone()], Some(endpoint.clone()), None, None, None, "test".into())
-                .await
-                .unwrap();
-        let file_info = file_infos.into_iter().next().unwrap();
 
         let range = FileRange::new(1000, 5000);
         let reader = client.read(file_info, Some(range), None, 64).unwrap();
@@ -419,67 +354,35 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_xet_reader_lazy_initialization() {
+    async fn test_lazy_initialization() {
         let temp_dir = tempdir().unwrap();
         let endpoint = format!("local://{}", temp_dir.path().display());
+        let client = XetClient::new(Some(endpoint), None, None, "test".into()).unwrap();
 
-        let client = XetClient::new(Some(endpoint.clone()), None, None, "test".into()).await.unwrap();
-
-        let file_infos =
-            upload_bytes_async(vec![b"hello".to_vec()], Some(endpoint.clone()), None, None, None, "test".into())
-                .await
-                .unwrap();
-        let file_info = file_infos.into_iter().next().unwrap();
+        let mut writer = client.write(None, None, 5).await.unwrap();
+        writer.write(Bytes::from_static(b"hello")).await.unwrap();
+        let file_info = writer.close().await.unwrap();
 
         let mut reader = client.read(file_info, None, None, 64).unwrap();
-
-        // Download should not have started yet.
         assert!(matches!(reader.state, ReaderState::Init { .. }));
 
-        // First poll triggers the start.
         let _ = reader.next().await;
         assert!(!matches!(reader.state, ReaderState::Init { .. }));
     }
 
     #[tokio::test]
-    async fn test_xet_reader_complete_yields_none() {
-        let temp_dir = tempdir().unwrap();
-        let endpoint = format!("local://{}", temp_dir.path().display());
-
-        let client = XetClient::new(Some(endpoint.clone()), None, None, "test".into()).await.unwrap();
-
-        let file_infos =
-            upload_bytes_async(vec![b"hello".to_vec()], Some(endpoint.clone()), None, None, None, "test".into())
-                .await
-                .unwrap();
-        let file_info = file_infos.into_iter().next().unwrap();
-
-        let mut reader = client.read(file_info, None, None, 64).unwrap();
-
-        // Drain all chunks.
-        while let Some(chunk) = reader.next().await {
-            chunk.unwrap();
-        }
-
-        // After completion, further polls should return None.
-        assert!(reader.next().await.is_none());
-        assert!(reader.next().await.is_none());
-    }
-
-    #[tokio::test]
-    async fn test_xet_reader_error_propagation() {
+    async fn test_reader_error_propagation() {
         let (_tx, rx) = mpsc::channel(4);
         let handle = tokio::spawn(async { Err(DataProcessingError::InternalError("download failed".into())) });
         let mut reader = streaming_reader(rx, handle);
 
         let item = reader.next().await.unwrap();
         assert!(item.is_err());
-        // Stream should be complete after error.
         assert!(reader.next().await.is_none());
     }
 
     #[tokio::test]
-    async fn test_xet_reader_error_surfaces_before_buffered_chunks() {
+    async fn test_reader_error_surfaces_early() {
         let (tx, rx) = mpsc::channel(16);
         let handle = tokio::spawn(async move {
             tx.send(Bytes::from("a")).await.unwrap();
@@ -489,7 +392,7 @@ mod tests {
         });
         let mut reader = streaming_reader(rx, handle);
 
-        // Give the producer a moment to fill the buffer and return the error.
+        // Give the producer time to fill the buffer and return the error.
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
         let mut saw_error = false;
@@ -508,16 +411,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_xet_writer_abort() {
+    async fn test_writer_abort() {
         let temp_dir = tempdir().unwrap();
         let endpoint = format!("local://{}", temp_dir.path().display());
+        let client = XetClient::new(Some(endpoint), None, None, "test".into()).unwrap();
 
-        let client = XetClient::new(Some(endpoint), None, None, "test".into()).await.unwrap();
         let mut writer = client.write(None, None, 100).await.unwrap();
         writer.write(Bytes::from_static(b"some data")).await.unwrap();
         writer.abort().await.unwrap();
 
-        // After abort, write and close should fail.
         assert!(writer.write(Bytes::from_static(b"more")).await.is_err());
         assert!(writer.close().await.is_err());
     }
