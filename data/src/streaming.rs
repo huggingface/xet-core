@@ -66,13 +66,8 @@ impl XetClient {
     ///
     /// Each call creates a fresh [`FileUploadSession`] because sessions are
     /// consumed on finalization and cannot be reused.
-    pub async fn write(
-        &self,
-        progress_updater: Option<Arc<dyn TrackingProgressUpdater>>,
-        name: Option<Arc<str>>,
-        size: u64,
-    ) -> errors::Result<XetWriter> {
-        XetWriter::new(self.config.clone(), progress_updater, name, size).await
+    pub async fn write(&self, name: Option<Arc<str>>) -> errors::Result<XetWriter> {
+        XetWriter::new(self.config.clone(), name).await
     }
 }
 
@@ -89,17 +84,9 @@ pub struct XetWriter {
 
 impl XetWriter {
     /// Creates a new writer that will upload a single file.
-    ///
-    /// `size` is the total number of bytes that will be written and is used for
-    /// progress tracking. The caller must know the content length before writing.
-    pub async fn new(
-        config: Arc<TranslatorConfig>,
-        progress_updater: Option<Arc<dyn TrackingProgressUpdater>>,
-        name: Option<Arc<str>>,
-        size: u64,
-    ) -> errors::Result<Self> {
-        let session = FileUploadSession::new(config, progress_updater).await?;
-        let handle = session.start_clean(name, size, None).await;
+    pub async fn new(config: Arc<TranslatorConfig>, name: Option<Arc<str>>) -> errors::Result<Self> {
+        let session = FileUploadSession::new(config, None).await?;
+        let handle = session.start_clean(name, None, None).await;
         Ok(Self {
             session: Some(session),
             handle: Some(handle),
@@ -292,7 +279,7 @@ mod tests {
     /// Upload `content` via [`XetWriter`] and download it back via [`XetReader`],
     /// asserting the round-tripped bytes match the original.
     async fn assert_roundtrip(client: &XetClient, content: &[u8]) {
-        let mut writer = client.write(None, None, content.len() as u64).await.unwrap();
+        let mut writer = client.write(None).await.unwrap();
         for chunk in content.chunks(4096) {
             writer.write(Bytes::copy_from_slice(chunk)).await.unwrap();
         }
@@ -341,7 +328,7 @@ mod tests {
         let client = XetClient::new(Some(endpoint), None, None, "test".into()).unwrap();
 
         let content: Vec<u8> = (0..1_000_000).map(|i| (i % 256) as u8).collect();
-        let mut writer = client.write(None, None, content.len() as u64).await.unwrap();
+        let mut writer = client.write(None).await.unwrap();
         for chunk in content.chunks(4096) {
             writer.write(Bytes::copy_from_slice(chunk)).await.unwrap();
         }
@@ -359,7 +346,7 @@ mod tests {
         let endpoint = format!("local://{}", temp_dir.path().display());
         let client = XetClient::new(Some(endpoint), None, None, "test".into()).unwrap();
 
-        let mut writer = client.write(None, None, 5).await.unwrap();
+        let mut writer = client.write(None).await.unwrap();
         writer.write(Bytes::from_static(b"hello")).await.unwrap();
         let file_info = writer.close().await.unwrap();
 
@@ -416,7 +403,7 @@ mod tests {
         let endpoint = format!("local://{}", temp_dir.path().display());
         let client = XetClient::new(Some(endpoint), None, None, "test".into()).unwrap();
 
-        let mut writer = client.write(None, None, 100).await.unwrap();
+        let mut writer = client.write(None).await.unwrap();
         writer.write(Bytes::from_static(b"some data")).await.unwrap();
         writer.abort().await.unwrap();
 
@@ -431,7 +418,7 @@ mod tests {
         let client = XetClient::new(Some(endpoint), None, None, "test".into()).unwrap();
 
         let content = b"Hello, World!";
-        let mut writer = client.write(None, None, Some(content.len() as u64)).await.unwrap();
+        let mut writer = client.write(None).await.unwrap();
         writer.write(Bytes::from_static(content)).await.unwrap();
         let file_info = writer.close().await.unwrap();
 
