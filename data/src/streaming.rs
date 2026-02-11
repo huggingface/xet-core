@@ -436,4 +436,21 @@ mod tests {
         assert!(writer.write(Bytes::from_static(b"more")).await.is_err());
         assert!(writer.close().await.is_err());
     }
+
+    #[tokio::test]
+    async fn test_sha256_returned() {
+        let temp_dir = tempdir().unwrap();
+        let endpoint = format!("local://{}", temp_dir.path().display());
+        let client = XetClient::new(Some(endpoint), None, None, "test".into()).unwrap();
+
+        let content = b"Hello, World!";
+        let mut writer = client.write(None, None, Some(content.len() as u64)).await.unwrap();
+        writer.write(Bytes::from_static(content)).await.unwrap();
+        let file_info = writer.close().await.unwrap();
+
+        assert!(file_info.sha256().is_some(), "SHA256 hash should be present");
+        let sha256 = file_info.sha256().unwrap();
+        assert_eq!(sha256.len(), 64, "SHA256 should be 64 hex characters");
+        assert!(sha256.chars().all(|c| c.is_ascii_hexdigit()), "SHA256 should be valid hex");
+    }
 }
