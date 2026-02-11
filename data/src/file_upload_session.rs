@@ -10,7 +10,6 @@ use cas_client::Client;
 use cas_object::SerializedCasObject;
 use deduplication::constants::{MAX_XORB_BYTES, MAX_XORB_CHUNKS};
 use deduplication::{DataAggregator, DeduplicationMetrics, RawXorbData};
-use lazy_static::lazy_static;
 use mdb_shard::Sha256;
 use mdb_shard::file_structs::MDBFileInfo;
 use more_asserts::*;
@@ -23,7 +22,7 @@ use tokio::sync::Mutex;
 use tokio::task::{JoinHandle, JoinSet};
 use tracing::{Instrument, Span, info_span, instrument};
 use ulid::Ulid;
-use xet_runtime::{GlobalSemaphoreHandle, XetRuntime, global_semaphore_handle, xet_config};
+use xet_runtime::{XetRuntime, xet_config};
 
 use crate::configurations::*;
 use crate::errors::*;
@@ -31,11 +30,6 @@ use crate::file_cleaner::SingleFileCleaner;
 use crate::remote_client_interface::create_remote_client;
 use crate::shard_interface::SessionShardInterface;
 use crate::{XetFileInfo, prometheus_metrics};
-
-lazy_static! {
-    pub static ref CONCURRENT_FILE_INGESTION_LIMITER: GlobalSemaphoreHandle =
-        global_semaphore_handle!(xet_config().data.max_concurrent_file_ingestion);
-}
 
 /// Manages the translation of files between the
 /// MerkleDB / pointer file format and the materialized version.
@@ -165,8 +159,7 @@ impl FileUploadSession {
             let file_id = self.completion_tracker.register_new_file(file_name.clone(), file_size).await;
 
             // Now, spawn a task
-            let ingestion_concurrency_limiter =
-                XetRuntime::current().global_semaphore(*CONCURRENT_FILE_INGESTION_LIMITER);
+            let ingestion_concurrency_limiter = XetRuntime::current().common().file_ingestion_semaphore.clone();
             let session = self.clone();
 
             cleaning_tasks.push(tokio::spawn(async move {
