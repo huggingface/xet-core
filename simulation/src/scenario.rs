@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
-use crate::adaptive_concurrency::generate_timeline_csv;
+use crate::upload_concurrency::generate_timeline_csv;
 
 pub const VALID_SCENARIOS: &[&str] = &["sanity_check", "single_upload", "gitxet_upload_burst", "added_uploads"];
 
@@ -205,6 +205,7 @@ impl SimulationScenarioBuilder {
     }
 }
 
+// Create a scenario to easily run
 pub struct SimulationScenario {
     server: Arc<LocalTestServer>,
     out_dir: PathBuf,

@@ -1,4 +1,4 @@
-//! Runs a single adaptive-concurrency scenario.
+//! Runs a single upload-concurrency scenario.
 //!
 //! Starts a LocalTestServer with optional network shaping and server latency simulation,
 //! runs upload clients according to the chosen scenario, then writes
@@ -12,11 +12,11 @@ use std::time::{Duration, Instant};
 
 use cas_client::simulation::local_server::ServerLatencyProfile;
 use clap::Parser;
-use simulation::adaptive_concurrency::run_upload_clients_until_cancelled;
 use simulation::scenario::{
     MAX_DATA_KB, MIN_DATA_KB, ScenarioError, ScenarioResult, SimulationScenario, SimulationScenarioBuilder,
     VALID_SCENARIOS,
 };
+use simulation::upload_concurrency::run_upload_clients_until_cancelled;
 use tokio::time::sleep;
 use tracing::info;
 use xet_logging::{LoggingConfig, init as init_logging};
@@ -139,7 +139,7 @@ fn parse_duration(s: &str) -> ScenarioResult<Duration> {
 fn setup_logging(out_dir: &Path) {
     let log_dest = format!("{}/", out_dir.display());
     unsafe { std::env::set_var("HF_XET_LOG_DEST", &log_dest) };
-    init_logging(LoggingConfig::default_to_directory("run_ac_scenario".to_string(), out_dir));
+    init_logging(LoggingConfig::default_to_directory("run_upload_scenario".to_string(), out_dir));
 }
 
 /// Runs an async future on a fresh multi-threaded tokio runtime, using XetRuntime for initialization.

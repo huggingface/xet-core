@@ -1,7 +1,7 @@
-//! Runs multiple adaptive-concurrency scenarios in parallel by spawning run_ac_scenario for each.
+//! Runs multiple upload-concurrency scenarios in parallel by spawning run_upload_scenario for each.
 //! Limits concurrency with a semaphore and reports each completion. Writes aggregate summary.csv.
 //!
-//! Bandwidth limits are enforced by the custom proxy inside each run_ac_scenario run (see
+//! Bandwidth limits are enforced by the custom proxy inside each run_upload_scenario run (see
 //! run_scenario and bandwidth_limit_router); --bandwidth is passed through to the scenario.
 
 #![cfg(not(target_family = "wasm"))]
@@ -12,7 +12,7 @@ use std::sync::{Arc, mpsc};
 use std::thread;
 
 use clap::Parser;
-use simulation::adaptive_concurrency::generate_summary_csv;
+use simulation::upload_concurrency::generate_summary_csv;
 
 const VALID_SCENARIOS: &[&str] = &["sanity_check", "single_upload", "gitxet_upload_burst", "added_uploads"];
 
@@ -107,7 +107,7 @@ struct Args {
     #[arg(long, default_value_t = 1)]
     max_parallel: usize,
 
-    /// Path to run_ac_scenario binary (default: same directory as this binary).
+    /// Path to run_upload_scenario binary (default: same directory as this binary).
     #[arg(long)]
     scenario_bin: Option<PathBuf>,
 }
@@ -116,9 +116,9 @@ fn scenario_binary() -> PathBuf {
     let current = std::env::current_exe().expect("current exe");
     let dir = current.parent().expect("exe has parent");
     #[cfg(windows)]
-    let name = "run_ac_scenario.exe";
+    let name = "run_upload_scenario.exe";
     #[cfg(not(windows))]
-    let name = "run_ac_scenario";
+    let name = "run_upload_scenario";
     dir.join(name)
 }
 
@@ -181,7 +181,7 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let bin = args.scenario_bin.unwrap_or_else(scenario_binary);
     if !bin.exists() {
         return Err(format!(
-            "run_ac_scenario binary not found at {}; build with cargo build --release -p simulation",
+            "run_upload_scenario binary not found at {}; build with cargo build --release -p simulation",
             bin.display()
         )
         .into());
@@ -190,7 +190,7 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let total_runs =
         scenarios.len() * bandwidths.len() * latencies.len() * congestions.len() * server_latency_profiles.len();
     eprintln!(
-        "run_ac_simulation START timestamp={} scenarios=[{}] bandwidth=[{}] latency=[{}] congestion=[{}] server_profile=[{}] max_parallel={} out_dir={} total_runs={} duration_sec={:?}",
+        "run_upload_simulations START timestamp={} scenarios=[{}] bandwidth=[{}] latency=[{}] congestion=[{}] server_profile=[{}] max_parallel={} out_dir={} total_runs={} duration_sec={:?}",
         timestamp,
         scenarios.join(","),
         args.bandwidth.as_deref().unwrap_or(""),
@@ -315,7 +315,7 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     }
 
     eprintln!(
-        "run_ac_simulation SHUTDOWN received={} succeeded={} failed={} out_dir={}",
+        "run_upload_simulations SHUTDOWN received={} succeeded={} failed={} out_dir={}",
         total,
         succeeded,
         total - succeeded,

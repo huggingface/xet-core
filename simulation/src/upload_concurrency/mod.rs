@@ -1,4 +1,4 @@
-//! Adaptive concurrency simulation: run upload clients through the bandwidth proxy to LocalTestServer dummy_upload,
+//! Upload concurrency simulation: run upload clients through the bandwidth proxy to LocalTestServer dummy_upload,
 //! with timeline and summary CSV reporting.
 
 mod reporting;

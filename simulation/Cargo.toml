@@ -7,12 +7,12 @@ edition = "2024"
 path = "src/lib.rs"
 
 [[bin]]
-name = "run_ac_scenario"
-path = "src/bin/run_ac_scenario.rs"
+name = "run_upload_scenario"
+path = "src/bin/run_upload_scenario.rs"
 
 [[bin]]
-name = "run_ac_simulation"
-path = "src/bin/run_ac_simulation.rs"
+name = "run_upload_simulations"
+path = "src/bin/run_upload_simulations.rs"
 
 [dependencies]
 cas_client = { path = "../cas_client" }
