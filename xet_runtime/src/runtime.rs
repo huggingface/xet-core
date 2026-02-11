@@ -143,7 +143,7 @@ pub struct XetRuntime {
 
     //  System monitor instance if enabled, monitor starts on initiation
     #[cfg(not(target_family = "wasm"))]
-    _system_monitor: Option<SystemMonitor>,
+    system_monitor: Option<SystemMonitor>,
 }
 
 // Use thread-local references to the runtime that are set on initialization among all
@@ -202,7 +202,7 @@ impl XetRuntime {
             sigint_shutdown: false.into(),
             global_semaphore_table: GlobalSemaphoreLookup::default(),
             #[cfg(not(target_family = "wasm"))]
-            _system_monitor: config
+            system_monitor: config
                 .system_monitor
                 .enabled
                 .then(|| {
@@ -278,7 +278,7 @@ impl XetRuntime {
             sigint_shutdown: false.into(),
             global_semaphore_table: GlobalSemaphoreLookup::default(),
             #[cfg(not(target_family = "wasm"))]
-            _system_monitor: config
+            system_monitor: config
                 .system_monitor
                 .enabled
                 .then(|| {
@@ -390,7 +390,7 @@ impl XetRuntime {
 
         // Stops the system monitor loop if there is one running.
         #[cfg(not(target_family = "wasm"))]
-        if let Some(monitor) = &self._system_monitor {
+        if let Some(monitor) = &self.system_monitor {
             let _ = monitor.stop();
         }
     }
