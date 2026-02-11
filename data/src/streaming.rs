@@ -205,7 +205,7 @@ impl XetReader {
             let config = config.clone();
             let merkle_hash = self.merkle_hash;
             let file_hash = self.file_hash.clone();
-            let file_range = self.file_range.clone();
+            let file_range = self.file_range;
             let progress_updater = self.progress_updater.take();
             let handle = tokio::spawn(async move {
                 let downloader = match FileDownloader::new(config).await {
@@ -239,16 +239,16 @@ impl Stream for XetReader {
 
             ReaderState::Streaming { rx, handle } => {
                 // Check the task handle first for early error detection.
-                if let Some(h) = handle {
-                    if let Poll::Ready(result) = Pin::new(h).poll(cx) {
-                        let result = result.expect("download task panicked");
-                        match result {
-                            Ok(_) => *handle = None,
-                            Err(e) => {
-                                this.state = ReaderState::Completed;
-                                return Poll::Ready(Some(Err(e)));
-                            },
-                        }
+                if let Some(h) = handle
+                    && let Poll::Ready(result) = Pin::new(h).poll(cx)
+                {
+                    let result = result.expect("download task panicked");
+                    match result {
+                        Ok(_) => *handle = None,
+                        Err(e) => {
+                            this.state = ReaderState::Completed;
+                            return Poll::Ready(Some(Err(e)));
+                        },
                     }
                 }
 
