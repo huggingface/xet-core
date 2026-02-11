@@ -26,15 +26,13 @@ pub struct JsChunkOut {
     pub dedup: bool,
 }
 
-
-
 impl JsChunkOut {
     fn new_with_dedup(chunk: deduplication::Chunk) -> Self {
         let hash_eligible = mdb_shard::constants::hash_is_global_dedup_eligible(&chunk.hash);
         JsChunkOut {
             hash: chunk.hash.hex(),
             length: chunk.data.len() as u32,
-            dedup:  hash_eligible,
+            dedup: hash_eligible,
         }
     }
 }
@@ -60,12 +58,12 @@ impl JsChunker {
     pub fn add_data(&mut self, data: Vec<u8>) -> Result<JsValue, JsValue> {
         let result = self.inner.next_block(&data, false);
         let mut serializable_result: Vec<JsChunkOut> = Vec::with_capacity(result.len());
-        
+
         for chunk in result {
             serializable_result.push(JsChunkOut::new_with_dedup(chunk));
             self.first_chunk_outputted = true;
         }
-        
+
         serde_wasm_bindgen::to_value(&serializable_result).map_err(|e| e.into())
     }
 
@@ -123,12 +121,11 @@ pub fn compute_verification_hash(chunk_hashes: Vec<String>) -> Result<String, Js
 /// takes a hash and HMAC key (both as hex strings) and returns the HMAC result as a hex string
 #[wasm_bindgen]
 pub fn compute_hmac(hash_hex: &str, hmac_key_hex: &str) -> Result<String, JsValue> {
-    let hash = MerkleHash::from_hex(hash_hex)
-        .map_err(|e| JsValue::from(format!("Invalid hash hex: {}", e)))?;
-    
-    let hmac_key = MerkleHash::from_hex(hmac_key_hex)
-        .map_err(|e| JsValue::from(format!("Invalid HMAC key hex: {}", e)))?;
-    
-    let hmac_result = hash.hmac(hmac_key.into());
+    let hash = MerkleHash::from_hex(hash_hex).map_err(|e| JsValue::from(format!("Invalid hash hex: {}", e)))?;
+
+    let hmac_key =
+        MerkleHash::from_hex(hmac_key_hex).map_err(|e| JsValue::from(format!("Invalid HMAC key hex: {}", e)))?;
+
+    let hmac_result = hash.hmac(hmac_key);
     Ok(hmac_result.hex())
 }

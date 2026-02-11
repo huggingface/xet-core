@@ -235,10 +235,10 @@ async fn run_upload_clients_impl(
                 if elapsed >= end_duration {
                     break;
                 }
-                if let Some(ref c) = task_cancel {
-                    if c.is_cancelled() {
-                        break;
-                    }
+                if let Some(ref c) = task_cancel
+                    && c.is_cancelled()
+                {
+                    break;
                 }
                 let permit = match concurrency_controller.acquire_connection_permit().await {
                     Ok(p) => p,

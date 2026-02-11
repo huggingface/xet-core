@@ -119,8 +119,7 @@ impl NetworkSimulationProxy {
                 // on the next connection.
                 let current_active_connections = self.active_connections.load(Ordering::Relaxed);
                 if current_active_connections > 0 {
-                    let add_permits = ((add_bytes + BASE_BANDWIDTH_PERMIT_SIZE - 1) / BASE_BANDWIDTH_PERMIT_SIZE)
-                        .min(usize::MAX as u64) as usize;
+                    let add_permits = add_bytes.div_ceil(BASE_BANDWIDTH_PERMIT_SIZE).min(usize::MAX as u64) as usize;
                     let one_second_permits =
                         (bytes_per_sec / BASE_BANDWIDTH_PERMIT_SIZE).min(usize::MAX as u64) as usize;
 
@@ -191,8 +190,8 @@ impl NetworkSimulationProxy {
         let from_upstream =
             tokio::spawn(copy_with_rate_and_latency(upstream_read, client_write, Some(download_limiter), latency));
         let (to_res, from_res) = tokio::join!(to_upstream, from_upstream);
-        to_res.map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))??;
-        from_res.map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))??;
+        to_res.map_err(std::io::Error::other)??;
+        from_res.map_err(std::io::Error::other)??;
         Ok(())
     }
 
@@ -265,8 +264,7 @@ where
                 break;
             }
             if let Some(ref lim) = limiter {
-                let permits = ((n as u64 + BASE_BANDWIDTH_PERMIT_SIZE - 1) / BASE_BANDWIDTH_PERMIT_SIZE)
-                    .min(u32::MAX as u64) as u32;
+                let permits = (n as u64).div_ceil(BASE_BANDWIDTH_PERMIT_SIZE).min(u32::MAX as u64) as u32;
                 let permit = lim.acquire_many(permits).await.map_err(|_| {
                     std::io::Error::new(std::io::ErrorKind::ConnectionReset, "bandwidth limiter closed")
                 })?;
@@ -292,9 +290,7 @@ where
         total += chunk.len() as u64;
     }
 
-    reader_handle
-        .await
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))??;
+    reader_handle.await.map_err(std::io::Error::other)??;
 
     Ok(total)
 }
@@ -317,8 +313,7 @@ where
             break;
         }
         if let Some(ref lim) = limiter {
-            let permits =
-                ((n as u64 + BASE_BANDWIDTH_PERMIT_SIZE - 1) / BASE_BANDWIDTH_PERMIT_SIZE).min(u32::MAX as u64) as u32;
+            let permits = (n as u64).div_ceil(BASE_BANDWIDTH_PERMIT_SIZE).min(u32::MAX as u64) as u32;
             let permit = lim
                 .acquire_many(permits)
                 .await

@@ -5,8 +5,8 @@ use cas_client::{Client, RemoteClient};
 use cas_object::SerializedCasObject;
 use deduplication::constants::{MAX_XORB_BYTES, MAX_XORB_CHUNKS};
 use deduplication::{DataAggregator, DeduplicationMetrics, RawXorbData};
-use mdb_shard::shard_in_memory::MDBInMemoryShard;
 use mdb_shard::MDBShardInfo;
+use mdb_shard::shard_in_memory::MDBInMemoryShard;
 use merklehash::{HashedWrite, MerkleHash};
 use tokio::sync::Mutex;
 
@@ -164,9 +164,7 @@ impl FileUploadSession {
 
         let _timer = ConsoleTimer::new("upload shard");
         let permit = self.client.acquire_upload_permit().await?;
-        self.client
-            .upload_shard(shard_data.into(), permit)
-            .await?;
+        self.client.upload_shard(shard_data.into(), permit).await?;
 
         Ok(())
     }

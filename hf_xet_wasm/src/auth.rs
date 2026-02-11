@@ -2,14 +2,14 @@ use std::fmt::{Debug, Formatter};
 use std::sync::Arc;
 
 use tokio::sync::Mutex;
-use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsValue;
+use wasm_bindgen::prelude::*;
 
 /// The internal token refreshing mechanism expects to be passed in a TokenInfo and TokenRefresher
 /// javascript interface objects that implement the following interface.
 ///
 /// To pass these constructs into the wasm program, use the XetSession export.
-/// 
+///
 ///```typescript
 /// interface TokenInfo {
 ///   token(): string {}
@@ -19,7 +19,7 @@ use wasm_bindgen::JsValue;
 /// interface TokenRefresher {
 ///   async refreshToken(): TokenInfo {}
 /// }
-///```
+/// ```
 
 #[wasm_bindgen]
 extern "C" {

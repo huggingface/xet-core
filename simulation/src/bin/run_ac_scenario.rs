@@ -148,20 +148,18 @@ where
     F: Future<Output = ScenarioResult<()>> + Send + 'static,
 {
     let xet = XetRuntime::new().map_err(|e| ScenarioError::Runtime(e.to_string()))?;
-    let result = xet
-        .external_run_async_task(async move {
-            tokio::task::spawn_blocking(move || {
-                tokio::runtime::Builder::new_multi_thread()
-                    .enable_all()
-                    .build()
-                    .map_err(|e| ScenarioError::Runtime(e.to_string()))?
-                    .block_on(future)
-            })
-            .await
-            .map_err(ScenarioError::from)?
+    xet.external_run_async_task(async move {
+        tokio::task::spawn_blocking(move || {
+            tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .build()
+                .map_err(|e| ScenarioError::Runtime(e.to_string()))?
+                .block_on(future)
         })
-        .map_err(|e| ScenarioError::Runtime(e.to_string()))?;
-    result
+        .await
+        .map_err(ScenarioError::from)?
+    })
+    .map_err(|e| ScenarioError::Runtime(e.to_string()))?
 }
 
 // ── Entry point ──────────────────────────────────────────────────────────────

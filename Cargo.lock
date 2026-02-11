@@ -4565,10 +4565,7 @@ dependencies = [
  "tokio",
  "tokio-util",
  "tracing",
- "tracing-log",
  "tracing-subscriber",
- "url",
- "uuid",
  "xet_logging",
  "xet_runtime",
 ]
