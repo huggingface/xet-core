@@ -10,6 +10,8 @@ use std::{fmt, str};
 use base64::Engine as _;
 // URL safe Base 64 encoding with ending characters removed.
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+#[cfg(not(target_family = "wasm"))]
+use bytemuck::{Pod, Zeroable};
 use rand::rngs::SmallRng;
 use rand::{RngCore, SeedableRng};
 use safe_transmute::{transmute_to_bytes, transmute_to_bytes_mut};
@@ -124,14 +126,14 @@ impl core::ops::Rem<u64> for DataHash {
 }
 
 #[cfg(not(target_family = "wasm"))]
-unsafe impl heed::bytemuck::Zeroable for DataHash {
+unsafe impl Zeroable for DataHash {
     fn zeroed() -> Self {
         DataHash([0; 4])
     }
 }
 
 #[cfg(not(target_family = "wasm"))]
-unsafe impl heed::bytemuck::Pod for DataHash {}
+unsafe impl Pod for DataHash {}
 
 /// The error type that is returned if [DataHash::from_hex] fails.
 #[derive(Debug, Clone)]

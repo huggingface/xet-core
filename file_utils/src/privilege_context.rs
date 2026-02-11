@@ -213,11 +213,12 @@ pub fn create_file(path: impl AsRef<Path>) -> std::io::Result<File> {
 fn permission_warning(path: &Path, recursive: bool) {
     #[cfg(unix)]
     {
+        let username = whoami::username().unwrap_or_else(|_| "unknown".to_string());
         let message = format!(
             "The process doesn't have correct read-write permission into path {path:?}, please resets 
         ownership by 'sudo chown{}{} {path:?}'.",
             if recursive { " -R " } else { " " },
-            whoami::username()
+            username
         );
 
         eprintln!("{}", message.bright_blue());

@@ -1219,7 +1219,7 @@ mod tests {
     async fn test_vectorized_exceeded_max_slice() {
         let test_writer = TestWriter::new(TestWriterConfig::vectorized_hard_limit(2)); // hard limit set to 2 slices at a time
 
-        let writer = Arc::new(SequentialWriter::new_vectorized(Box::new(test_writer))); // controlled writev at max 24 slices at a time
+        let writer = Arc::new(SequentialWriter::new_vectorized(Box::new(test_writer), None)); // controlled writev at max 24 slices at a time
 
         // Write in slices of 10 bytes, creating in total 1000 slices
         for i in 0..1000 {
@@ -1252,7 +1252,7 @@ mod tests {
         let test_writer = TestWriter::new(TestWriterConfig::vectorized_hard_limit(40)); // hard limit set to 40 slices at a time
         let buffer = test_writer.buffer.clone();
 
-        let writer = Arc::new(SequentialWriter::new_vectorized(Box::new(test_writer))); // controlled writev at max 24 slices at a time
+        let writer = Arc::new(SequentialWriter::new_vectorized(Box::new(test_writer), None)); // controlled writev at max 24 slices at a time
 
         // Write in slices of 10 bytes, creating in total 1000 slices
         for i in 0..1000 {
