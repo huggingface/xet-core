@@ -9,6 +9,8 @@ use tokio::runtime::{Builder as TokioRuntimeBuilder, Handle as TokioRuntimeHandl
 use tokio::sync::Semaphore;
 use tokio::task::JoinHandle;
 use tracing::{debug, info};
+#[cfg(not(target_family = "wasm"))]
+use utils::SystemMonitor;
 use xet_config::XetConfig;
 
 use crate::errors::MultithreadedRuntimeError;
@@ -138,6 +140,10 @@ pub struct XetRuntime {
 
     // Primary configuration struct
     config: Arc<XetConfig>,
+
+    //  System monitor instance if enabled, monitor starts on initiation
+    #[cfg(not(target_family = "wasm"))]
+    system_monitor: Option<SystemMonitor>,
 }
 
 // Use thread-local references to the runtime that are set on initialization among all
@@ -195,6 +201,18 @@ impl XetRuntime {
             external_executor_count: 0.into(),
             sigint_shutdown: false.into(),
             global_semaphore_table: GlobalSemaphoreLookup::default(),
+            #[cfg(not(target_family = "wasm"))]
+            system_monitor: config
+                .system_monitor
+                .enabled
+                .then(|| {
+                    SystemMonitor::follow_process(
+                        config.system_monitor.sample_interval,
+                        config.system_monitor.log_path.clone(),
+                    )
+                    .ok()
+                })
+                .flatten(),
             global_reqwest_client: std::sync::Mutex::new(None),
             config: Arc::new(config),
         });
@@ -252,14 +270,27 @@ impl XetRuntime {
     }
 
     pub fn from_external(rt_handle: TokioRuntimeHandle) -> Arc<Self> {
+        let config = Arc::new(XetConfig::new());
         Arc::new(Self {
             runtime: std::sync::RwLock::new(None),
             handle_ref: rt_handle.into(),
             external_executor_count: 0.into(),
             sigint_shutdown: false.into(),
             global_semaphore_table: GlobalSemaphoreLookup::default(),
+            #[cfg(not(target_family = "wasm"))]
+            system_monitor: config
+                .system_monitor
+                .enabled
+                .then(|| {
+                    SystemMonitor::follow_process(
+                        config.system_monitor.sample_interval,
+                        config.system_monitor.log_path.clone(),
+                    )
+                    .ok()
+                })
+                .flatten(),
+            config,
             global_reqwest_client: std::sync::Mutex::new(None),
-            config: Arc::new(XetConfig::new()),
         })
     }
 
@@ -356,6 +387,12 @@ impl XetRuntime {
         // Dropping the runtime will cancel all the tasks; shutdown occurs when the next async call
         // is encountered.  Ideally, all async code should be cancellation safe.
         drop(runtime);
+
+        // Stops the system monitor loop if there is one running.
+        #[cfg(not(target_family = "wasm"))]
+        if let Some(monitor) = &self.system_monitor {
+            let _ = monitor.stop();
+        }
     }
 
     /// Discards the runtime without shutdown; to be used after fork-exec or spawn.
@@ -403,6 +440,7 @@ impl XetRuntime {
         });
 
         self.external_executor_count.fetch_sub(1, Ordering::SeqCst);
+
         ret
     }
 
