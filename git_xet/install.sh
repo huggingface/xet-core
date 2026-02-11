@@ -147,7 +147,56 @@ if ! command -v git-lfs >/dev/null 2>&1; then
     fi
 fi
 
+# Check for OpenSSL 3 dependency on macOS
+OPENSSL_AVAILABLE=true
+if [ "$OS" = "Darwin" ]; then
+    OPENSSL_LIB="/opt/homebrew/opt/openssl@3/lib/libssl.3.dylib"
+    if [ "$ARCH" = "x86_64" ]; then
+        OPENSSL_LIB="/usr/local/opt/openssl@3/lib/libssl.3.dylib"
+    fi
+    if [ ! -f "$OPENSSL_LIB" ]; then
+        OPENSSL_AVAILABLE=false
+        echo ""
+        echo "WARNIN: OpenSSL 3 is required but was not found at: $OPENSSL_LIB"
+        echo "The git-xet binary is dynamically linked against OpenSSL 3."
+        echo ""
+        if command -v brew >/dev/null 2>&1; then
+            printf "Install it now with Homebrew? (y/n) "
+            read -r response < /dev/tty
+            if [ "$response" = "y" ]; then
+                if brew install openssl@3; then
+                    OPENSSL_AVAILABLE=true
+                else
+                    handle_error "Failed to install OpenSSL 3 via Homebrew."
+                fi
+            else
+                echo "Please run 'brew install openssl@3' manually before using git-xet."
+            fi
+        else
+            echo "Please install Homebrew (https://brew.sh) and then run:"
+            echo "  brew install openssl@3"
+            echo ""
+            echo "Alternatively, install OpenSSL 3 so that $OPENSSL_LIB exists."
+        fi
+    fi
+fi
+
 # Post-install
-git-xet install --concurrency 3
+if [ "$OPENSSL_AVAILABLE" = false ]; then
+    echo ""
+    echo "Skipping 'git-xet install' because OpenSSL 3 is not available."
+    echo "After installing OpenSSL 3, run:"
+    echo "  brew install openssl@3"
+    echo "  git-xet install --concurrency 3"
+    exit 1
+elif ! git-xet install --concurrency 3; then
+    echo ""
+    echo "WARNING: 'git-xet install' failed."
+    if [ "$OS" = "Darwin" ]; then
+        echo "This might be due to a missing OpenSSL 3 dependency."
+        echo "Run 'brew install openssl@3' and then 'git-xet install --concurrency 3'."
+    fi
+    exit 1
+fi
 
 echo "Installation complete!"
