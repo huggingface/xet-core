@@ -13,9 +13,7 @@ use agent_state::LFSAgentState;
 pub use errors::GitLFSProtocolError;
 pub use progress_updater::ProgressUpdater;
 pub use protocol_spec::*;
-#[cfg(feature = "monitored")]
-use utils::system_monitor::SystemMonitor;
-#[cfg(feature = "monitored")]
+use utils::SystemMonitor;
 use xet_config::XetConfig;
 
 // Any Git LFS custom transfer agent should implement this trait to be plugged
@@ -68,13 +66,20 @@ where
     W: Write + Send + Sync + 'static,
     A: TransferAgent,
 {
-    #[cfg(feature = "monitored")]
     let xet_config = XetConfig::new();
-    #[cfg(feature = "monitored")]
-    let sys_monitor = SystemMonitor::follow_process(
-        xet_config.system_monitor.sample_interval,
-        xet_config.system_monitor.output_path.clone(),
-    ); // ignore error
+    let sys_monitor = xet_config
+        .system_monitor
+        .enabled
+        .then(|| {
+            {
+                SystemMonitor::follow_process(
+                    xet_config.system_monitor.sample_interval,
+                    xet_config.system_monitor.log_path.clone(),
+                )
+            }
+            .ok() // ignore error
+        })
+        .flatten();
 
     let mut stdin = input_channel;
     let stdout = Arc::new(Mutex::new(output_channel));
@@ -131,8 +136,7 @@ where
         stdout.lock().map_err(GitXetError::internal)?.write_all(response.as_bytes())?;
     }
 
-    #[cfg(feature = "monitored")]
-    if let Ok(monitor) = sys_monitor {
+    if let Some(monitor) = sys_monitor {
         let _ = monitor.stop(); // ignore error
     }
 
