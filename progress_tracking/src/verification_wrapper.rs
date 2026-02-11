@@ -51,11 +51,14 @@ impl ProgressUpdaterVerificationWrapper {
         let tr = self.tr.lock().await;
 
         for (item_name, data) in tr.items.iter() {
-            assert_eq!(
-                data.last_completed, data.total_count,
-                "Item '{}' is not fully complete: {}/{}",
-                item_name, data.last_completed, data.total_count
-            );
+            // Skip for files registered without a known size (total_count == 0).
+            if data.total_count > 0 {
+                assert_eq!(
+                    data.last_completed, data.total_count,
+                    "Item '{}' is not fully complete: {}/{}",
+                    item_name, data.last_completed, data.total_count
+                );
+            }
         }
 
         assert_eq!(tr.total_transfer_bytes_completed, tr.total_transfer_bytes);
@@ -97,13 +100,16 @@ impl TrackingProgressUpdater for ProgressUpdaterVerificationWrapper {
             );
 
             // 2) `completed_count` must not exceed `total_count`
-            assert!(
-                up.bytes_completed <= up.total_bytes,
-                "Item '{}' completed_count {} exceeds total {}",
-                up.item_name,
-                up.bytes_completed,
-                up.total_bytes
-            );
+            // Skip for files registered without a known size (total_bytes == 0).
+            if up.total_bytes > 0 {
+                assert!(
+                    up.bytes_completed <= up.total_bytes,
+                    "Item '{}' completed_count {} exceeds total {}",
+                    up.item_name,
+                    up.bytes_completed,
+                    up.total_bytes
+                );
+            }
 
             // 3) The increment must match the difference
             let expected_new = entry.last_completed + up.bytes_completion_increment;
