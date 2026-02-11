@@ -32,9 +32,9 @@ mkdir -p "$RESULTS_DIR"
 "$BIN" \
     --scenario="single_upload,gitxet_upload_burst,added_uploads" \
     --out-dir="$RESULTS_DIR" \
-    --bandwidth="10mbps,100mbps,1gbps,10gbps" \
-    --latency="20ms,250ms" \
-    --congestion="none,medium,heavy" \
+    --bandwidth="100mbps,10gbps" \
+    --latency="50ms" \
+    --congestion="light" \
     --server-latency-profile="realistic" \
-    --max-parallel="${MAX_PARALLEL:-4}" \
+    --max-parallel="${MAX_PARALLEL:-8}" \
     "$@"

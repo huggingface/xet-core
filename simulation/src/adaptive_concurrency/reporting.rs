@@ -6,9 +6,8 @@ use std::path::Path;
 
 use serde::Deserialize;
 
-use crate::scenario::NetworkStats;
-
 use super::upload_simulation_client::ClientMetrics;
+use crate::scenario::NetworkStats;
 
 const INTERVAL_MS: u64 = 250;
 
@@ -295,7 +294,8 @@ fn process_timeline_csv(
 }
 
 /// Computes network utilization as (bytes_sent / max_possible_bytes) * 100, capped at 100%.
-/// max_possible_bytes = bandwidth_bytes_per_sec * duration_sec from network_stats.json.
+/// max_possible_bytes = sum over segments of (bandwidth_bytes_per_sec * segment_sec) from network_stats.json,
+/// using elapsed_sec for segment boundaries so we don't mix absolute timestamps with duration.
 fn calculate_network_utilization(
     scenario_dir: &Path,
     total_bytes: f64,
@@ -310,20 +310,18 @@ fn calculate_network_utilization(
         return Ok(0.0);
     }
     let mut sorted_stats = network_stats;
-    sorted_stats.sort_by_key(|s| s.timestamp.parse::<u64>().unwrap_or(0));
-    let duration_sec_f = duration_sec;
+    sorted_stats.sort_by(|a, b| a.elapsed_sec.partial_cmp(&b.elapsed_sec).unwrap_or(std::cmp::Ordering::Equal));
     let mut max_possible: f64 = 0.0;
-    let mut current_time = 0u64;
+    let mut current_elapsed_sec: f64 = 0.0;
     for (i, stat) in sorted_stats.iter().enumerate() {
-        let next_time = if i + 1 < sorted_stats.len() {
-            sorted_stats[i + 1].timestamp.parse::<u64>().unwrap_or(0)
+        let next_elapsed_sec = if i + 1 < sorted_stats.len() {
+            sorted_stats[i + 1].elapsed_sec
         } else {
-            (duration_sec_f * 1000.0) as u64
+            duration_sec
         };
-        let segment_ms = (next_time - current_time) as f64;
-        let segment_sec = segment_ms / 1000.0;
+        let segment_sec = (next_elapsed_sec - current_elapsed_sec).max(0.0);
         max_possible += stat.bandwidth_bytes_per_sec as f64 * segment_sec;
-        current_time = next_time;
+        current_elapsed_sec = next_elapsed_sec;
     }
     if max_possible > 0.0 {
         let utilization = (total_bytes / max_possible) * 100.0;
@@ -409,4 +407,39 @@ pub fn generate_summary_csv(results_dir: &Path) -> Result<(), Box<dyn std::error
     let csv_path = results_dir.join("summary.csv");
     fs::write(&csv_path, csv)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+
+    use super::generate_summary_csv;
+
+    /// Verifies network utilization is computed from elapsed_sec in network_stats (not raw timestamps).
+    #[test]
+    fn network_utilization_uses_elapsed_sec() {
+        let temp = tempfile::tempdir().unwrap();
+        let results_dir = temp.path();
+        let scenario_dir = results_dir.join("test-1gbps-20ms-none");
+        fs::create_dir_all(&scenario_dir).unwrap();
+        let timeline = "timestamp_ms,elapsed_ms,client_01_bytes,client_01_concurrency,client_01_retries,client_01_success_ratio,client_01_predicted_bandwidth,client_01_predicted_max_rtt,client_01_predicted_max_rtt_standard_error,total_bytes,total_retries,total_concurrency,average_concurrency\n\
+1000,0,0,1,0,1.0,0.0,0.0,0.0,0,0,1,1.00\n\
+20000,19000,625000000,1,0,1.0,0.0,0.0,0.0,625000000,0,1,1.00\n";
+        fs::write(scenario_dir.join("timeline.csv"), timeline).unwrap();
+        let network_stats = r#"{"timestamp":"1000","latency_ms":20.0,"bandwidth_bytes_per_sec":125000000,"congestion_mode":null,"interface":null,"elapsed_sec":0.0,"total_upload_possible":0,"server_latency_profile":"none"}
+{"timestamp":"2000","latency_ms":20.0,"bandwidth_bytes_per_sec":125000000,"congestion_mode":null,"interface":null,"elapsed_sec":0.25,"total_upload_possible":31250000,"server_latency_profile":"none"}
+{"timestamp":"3000","latency_ms":20.0,"bandwidth_bytes_per_sec":125000000,"congestion_mode":null,"interface":null,"elapsed_sec":5.0,"total_upload_possible":625000000,"server_latency_profile":"none"}
+"#;
+        fs::write(scenario_dir.join("network_stats.json"), network_stats).unwrap();
+        generate_summary_csv(results_dir).unwrap();
+        let csv = fs::read_to_string(results_dir.join("summary.csv")).unwrap();
+        let lines: Vec<&str> = csv.lines().collect();
+        assert!(lines.len() >= 2, "expected header + at least one row");
+        let row = lines[1];
+        let parts: Vec<&str> = row.split(',').collect();
+        let utilization: f64 = parts.get(1).unwrap().parse().unwrap();
+        assert!(utilization > 0.0 && utilization <= 100.0, "utilization should be in (0, 100], got {}", utilization);
+        let total_bytes: f64 = parts.get(5).unwrap().parse().unwrap();
+        assert_eq!(total_bytes, 625_000_000.0);
+    }
 }

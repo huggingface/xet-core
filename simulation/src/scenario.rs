@@ -2,9 +2,9 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use cas_client::simulation::local_server::ServerLatencyProfile;
 use cas_client::simulation::NetworkProfileOptions;
-use cas_client::{build_http_client, LocalTestServer, LocalTestServerBuilder};
+use cas_client::simulation::local_server::ServerLatencyProfile;
+use cas_client::{LocalTestServer, LocalTestServerBuilder, build_http_client};
 use reqwest_middleware::Error as ReqwestMiddlewareError;
 use serde::{Deserialize, Serialize};
 use tokio::task::JoinHandle;
@@ -336,5 +336,90 @@ impl SimulationScenario {
         generate_timeline_csv(&self.out_dir).map_err(|e| ScenarioError::Scenario(e.to_string()))?;
         drop(self.server);
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use cas_client::simulation::local_server::ServerLatencyProfile;
+
+    use super::SimulationScenarioBuilder;
+
+    /// Writes minimal client_stats so generate_timeline_csv can run (needs at least one client with valid timestamps).
+    fn write_minimal_client_stats(out_dir: &std::path::Path) -> std::io::Result<()> {
+        let path = out_dir.join("client_stats_0.json");
+        let line1 = r#"{"client_id":0,"server_tag":"test","timestamp":"1000","elapsed_seconds":0.0,"interval_bytes":0,"total_bytes":0,"interval_sec":0.2,"interval_throughput_bps":0.0,"total_throughput_bps":0.0,"average_round_trip_time_ms":0.0,"total_server_calls":0,"total_retries":0,"total_successful_transmissions":0,"current_max_concurrency":1,"current_active_connections":0,"concurrency_controller_stats":null,"latency_model_stats":null}"#;
+        let line2 = r#"{"client_id":0,"server_tag":"test","timestamp":"2000","elapsed_seconds":1.0,"interval_bytes":0,"total_bytes":0,"interval_sec":0.2,"interval_throughput_bps":0.0,"total_throughput_bps":0.0,"average_round_trip_time_ms":0.0,"total_server_calls":0,"total_retries":0,"total_successful_transmissions":0,"current_max_concurrency":1,"current_active_connections":0,"concurrency_controller_stats":null,"latency_model_stats":null}"#;
+        std::fs::write(path, format!("{}\n{}\n", line1, line2))?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn shutdown_cancels_tasks_and_awaits() {
+        let temp = tempfile::tempdir().unwrap();
+        let out_dir = temp.path().to_path_buf();
+        let latency_profile = ServerLatencyProfile::from_name("none").unwrap();
+        let mut scenario = SimulationScenarioBuilder::new()
+            .with_out_dir(&out_dir)
+            .with_latency_profile(latency_profile)
+            .with_server_latency_profile_name("none")
+            .with_bandwidth_str("1gbps")
+            .unwrap()
+            .with_latency(Duration::from_millis(20), Duration::ZERO)
+            .with_congestion("none")
+            .unwrap()
+            .start()
+            .await
+            .unwrap();
+        scenario.add_task(|child_token| {
+            tokio::spawn(async move {
+                child_token.cancelled().await;
+                Ok(())
+            })
+        });
+        write_minimal_client_stats(&out_dir).unwrap();
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        let result = scenario.finish().await;
+        assert!(result.is_ok(), "finish() should succeed: {:?}", result.err());
+        assert!(out_dir.join("network_stats.json").exists());
+        assert!(out_dir.join("timeline.csv").exists());
+    }
+
+    #[tokio::test]
+    async fn multiple_tasks_all_awaited_on_shutdown() {
+        let temp = tempfile::tempdir().unwrap();
+        let out_dir = temp.path().to_path_buf();
+        let latency_profile = ServerLatencyProfile::from_name("none").unwrap();
+        let mut scenario = SimulationScenarioBuilder::new()
+            .with_out_dir(&out_dir)
+            .with_latency_profile(latency_profile)
+            .with_server_latency_profile_name("none")
+            .with_bandwidth_str("1gbps")
+            .unwrap()
+            .with_latency(Duration::from_millis(20), Duration::ZERO)
+            .with_congestion("none")
+            .unwrap()
+            .start()
+            .await
+            .unwrap();
+        scenario.add_task(|child_token| {
+            tokio::spawn(async move {
+                child_token.cancelled().await;
+                Ok(())
+            })
+        });
+        scenario.add_task(|child_token| {
+            tokio::spawn(async move {
+                child_token.cancelled().await;
+                Ok(())
+            })
+        });
+        write_minimal_client_stats(&out_dir).unwrap();
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        let result = scenario.finish().await;
+        assert!(result.is_ok(), "finish() should succeed: {:?}", result.err());
+        assert!(out_dir.join("network_stats.json").exists());
     }
 }

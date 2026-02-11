@@ -5025,6 +5025,7 @@ dependencies = [
  "reqwest-middleware",
  "serde",
  "serde_json",
+ "tempfile",
  "thiserror 2.0.12",
  "tokio",
  "tokio-util",

@@ -71,27 +71,31 @@ fn parse_list(s: &str) -> Vec<Option<String>> {
 #[derive(Parser, Debug)]
 #[command(author, version, about)]
 struct Args {
+    /// Comma-separated scenarios (e.g. sanity_check,single_upload). Each expands to a run.
     #[arg(long, default_value = "sanity_check")]
     scenario: String,
 
     #[arg(long)]
     duration_sec: Option<u64>,
 
+    /// Comma-separated bandwidths (e.g. 10mbps,1gbps). Each expands to a run.
     #[arg(long)]
     bandwidth: Option<String>,
 
+    /// Comma-separated latencies (e.g. 20ms,50ms). Each expands to a run.
     #[arg(long)]
     latency: Option<String>,
 
     #[arg(long)]
     jitter: Option<String>,
 
+    /// Comma-separated congestion modes (e.g. none,heavy). Each expands to a run.
     #[arg(long, default_value = "none")]
     congestion: String,
 
-    /// Server load profile: none, light, realistic, heavy.
+    /// Comma-separated server latency profiles: none, light, realistic, heavy. Each expands to a run.
     #[arg(long, default_value = "realistic")]
-    server_load_profile: String,
+    server_latency_profile: String,
 
     /// Connection degradation threshold (number of concurrent connections).
     #[arg(long)]
@@ -128,8 +132,21 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let args = Args::parse();
     let start_time = std::time::Instant::now();
 
-    if !VALID_SCENARIOS.contains(&args.scenario.as_str()) {
-        return Err(format!("Unknown scenario: {}. Valid: {:?}", args.scenario, VALID_SCENARIOS).into());
+    let scenarios: Vec<String> = args
+        .scenario
+        .split(',')
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect();
+    let scenarios = if scenarios.is_empty() {
+        vec!["sanity_check".to_string()]
+    } else {
+        scenarios
+    };
+    for s in &scenarios {
+        if !VALID_SCENARIOS.contains(&s.as_str()) {
+            return Err(format!("Unknown scenario: {}. Valid: {:?}", s, VALID_SCENARIOS).into());
+        }
     }
 
     let bandwidths = parse_list(args.bandwidth.as_deref().unwrap_or(""));
@@ -145,6 +162,17 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     } else {
         congestions
     };
+    let server_latency_profiles: Vec<String> = args
+        .server_latency_profile
+        .split(',')
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect();
+    let server_latency_profiles = if server_latency_profiles.is_empty() {
+        vec!["realistic".to_string()]
+    } else {
+        server_latency_profiles
+    };
 
     let timestamp = chrono::Utc::now().format("%Y%m%d_%H%M%S").to_string();
     let results_base = PathBuf::from(&args.out_dir).join(&timestamp);
@@ -159,48 +187,56 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .into());
     }
 
-    eprintln!("=== Adaptive concurrency simulation ===");
-    eprintln!("Scenario: {}", args.scenario);
+    let total_runs =
+        scenarios.len() * bandwidths.len() * latencies.len() * congestions.len() * server_latency_profiles.len();
     eprintln!(
-        "Matrix: {} bandwidth × {} latency × {} congestion = {} runs",
-        bandwidths.len(),
-        latencies.len(),
-        congestions.len(),
-        bandwidths.len() * latencies.len() * congestions.len()
+        "run_ac_simulation START timestamp={} scenarios=[{}] bandwidth=[{}] latency=[{}] congestion=[{}] server_profile=[{}] max_parallel={} out_dir={} total_runs={} duration_sec={:?}",
+        timestamp,
+        scenarios.join(","),
+        args.bandwidth.as_deref().unwrap_or(""),
+        args.latency.as_deref().unwrap_or(""),
+        args.congestion,
+        args.server_latency_profile,
+        args.max_parallel,
+        results_base.display(),
+        total_runs,
+        args.duration_sec
     );
-    eprintln!("Max parallel: {}", args.max_parallel);
-    eprintln!("Results directory: {}", results_base.display());
-    if let Some(d) = args.duration_sec {
-        eprintln!("Duration per run: {}s", d);
-    }
     eprintln!("----------------------------------------");
 
     let mut tasks = Vec::new();
-    for bandwidth in &bandwidths {
-        for latency in &latencies {
-            for congestion in &congestions {
-                let bandwidth_label = bandwidth.as_deref().unwrap_or("default");
-                let latency_label = latency.as_deref().unwrap_or("default");
-                let scenario_subdir = format!("{}-{}-{}-{}", args.scenario, bandwidth_label, latency_label, congestion);
-                let scenario_dir = results_base.join(&scenario_subdir);
-                std::fs::create_dir_all(&scenario_dir)?;
+    for scenario in &scenarios {
+        for bandwidth in &bandwidths {
+            for latency in &latencies {
+                for congestion in &congestions {
+                    for server_profile in &server_latency_profiles {
+                        let bandwidth_label = bandwidth.as_deref().unwrap_or("default");
+                        let latency_label = latency.as_deref().unwrap_or("default");
+                        let scenario_subdir = format!(
+                            "{}-{}-{}-{}-{}",
+                            scenario, bandwidth_label, latency_label, congestion, server_profile
+                        );
+                        let scenario_dir = results_base.join(&scenario_subdir);
+                        std::fs::create_dir_all(&scenario_dir)?;
 
-                let bandwidth_arg = bandwidth.as_ref().map(|s| s.as_str()).unwrap_or("default");
-                let latency_arg = latency.as_ref().map(|s| s.as_str()).unwrap_or("default");
+                        let bandwidth_arg = bandwidth.as_ref().map(|s| s.as_str()).unwrap_or("default");
+                        let latency_arg = latency.as_ref().map(|s| s.as_str()).unwrap_or("default");
 
-                let jitter_arg = args.jitter.clone();
-                tasks.push((
-                    scenario_subdir,
-                    scenario_dir,
-                    args.scenario.clone(),
-                    bandwidth_arg.to_string(),
-                    latency_arg.to_string(),
-                    congestion.clone(),
-                    jitter_arg,
-                    args.duration_sec,
-                    args.server_load_profile.clone(),
-                    args.server_connection_degradation_threshold,
-                ));
+                        let jitter_arg = args.jitter.clone();
+                        tasks.push((
+                            scenario_subdir,
+                            scenario_dir,
+                            scenario.clone(),
+                            bandwidth_arg.to_string(),
+                            latency_arg.to_string(),
+                            congestion.clone(),
+                            jitter_arg,
+                            args.duration_sec,
+                            server_profile.clone(),
+                            args.server_connection_degradation_threshold,
+                        ));
+                    }
+                }
             }
         }
     }
@@ -218,7 +254,7 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         congestion_arg,
         jitter_arg,
         duration_sec,
-        server_load_profile,
+        server_latency_profile,
         server_degradation_threshold,
     ) in tasks
     {
@@ -238,8 +274,8 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 .arg(&latency_arg)
                 .arg("--congestion")
                 .arg(&congestion_arg)
-                .arg("--server-load-profile")
-                .arg(&server_load_profile);
+                .arg("--server-latency-profile")
+                .arg(&server_latency_profile);
             if let Some(threshold) = server_degradation_threshold {
                 cmd.arg("--server-connection-degradation-threshold").arg(threshold.to_string());
             }
@@ -277,6 +313,14 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         };
         eprintln!("{}", msg);
     }
+
+    eprintln!(
+        "run_ac_simulation SHUTDOWN received={} succeeded={} failed={} out_dir={}",
+        total,
+        succeeded,
+        total - succeeded,
+        results_base.display()
+    );
 
     for h in handles {
         h.join().map_err(|_| "scenario thread panicked")?;
