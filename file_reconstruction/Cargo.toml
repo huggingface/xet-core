@@ -13,6 +13,7 @@ xet_config = { path = "../xet_config" }
 xet_runtime = { path = "../xet_runtime" }
 
 async-trait = { workspace = true }
+futures-core = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
@@ -20,5 +21,6 @@ bytes = { workspace = true }
 more-asserts = { workspace = true }
 
 [dev-dependencies]
+futures = { workspace = true }
 tempfile = { workspace = true }
 rand = { workspace = true }

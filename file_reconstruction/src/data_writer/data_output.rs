@@ -23,7 +23,7 @@ pub enum DataOutput {
     /// An async channel for streaming `Bytes` directly, bypassing sync `Write`.
     /// Paired with `StreamingWriter`, which sends resolved `Bytes` through the
     /// channel without the blocking thread or redundant copies of `SequentialWriter`.
-    Channel(mpsc::Sender<Bytes>),
+    ByteStream(mpsc::Sender<Bytes>),
 }
 
 impl DataOutput {
@@ -58,12 +58,12 @@ impl DataOutput {
         Self::SequentialWriter(Box::new(writer))
     }
 
-    /// Creates a channel output and returns the receiving end for streaming bytes.
+    /// Creates a byte-stream output paired with a receiver.
     ///
-    /// `buffer_size` controls how many chunks can be buffered in the channel
-    /// before backpressure is applied to the writer.
-    pub fn write_byte_stream(buffer_size: usize) -> (Self, mpsc::Receiver<Bytes>) {
+    /// `buffer_size` controls how many chunks can be buffered before
+    /// backpressure is applied.
+    pub fn byte_stream(buffer_size: usize) -> (Self, mpsc::Receiver<Bytes>) {
         let (tx, rx) = mpsc::channel(buffer_size);
-        (Self::Channel(tx), rx)
+        (Self::ByteStream(tx), rx)
     }
 }

@@ -10,6 +10,7 @@ mod prometheus_metrics;
 mod remote_client_interface;
 mod sha256;
 mod shard_interface;
+pub mod streaming;
 mod xet_file;
 
 // Reexport this one for now

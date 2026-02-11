@@ -1,29 +1,26 @@
-use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
-
 use bytes::Bytes;
 use cas_types::FileRange;
-use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender, unbounded_channel};
-use tokio::sync::{Mutex, OwnedSemaphorePermit, oneshot};
-use tokio::task::{JoinHandle, JoinSet};
+use tokio::sync::mpsc::{self, UnboundedSender, unbounded_channel};
+use tokio::sync::{Mutex, OwnedSemaphorePermit};
+use tokio::task::JoinHandle;
 
 use crate::data_writer::{DataFuture, DataWriter};
-use crate::{ErrorState, FileReconstructionError, Result};
+use crate::{FileReconstructionError, Result};
 
-/// Items sent to the background async task for ordered processing.
-enum QueueItem {
-    Data {
-        receiver: oneshot::Receiver<Bytes>,
-        permit: Option<OwnedSemaphorePermit>,
-    },
-    Finish,
+/// Item queued for ordered processing by the background task.
+struct QueueItem {
+    handle: JoinHandle<Result<Bytes>>,
+    permit: Option<OwnedSemaphorePermit>,
 }
 
-/// Mutable state for the streaming queue, protected by a mutex.
-struct QueueState {
-    sender: UnboundedSender<QueueItem>,
+/// All mutable state, behind a single mutex.
+struct Inner {
+    /// Sending side of the ordering queue. `None` after `finish()`.
+    queue_tx: Option<UnboundedSender<QueueItem>>,
+    /// Expected start position of the next term.
     next_position: u64,
-    finished: bool,
+    /// The background task that forwards chunks in order.
+    background: Option<JoinHandle<Result<()>>>,
 }
 
 /// Writes data as a stream of `Bytes` chunks through an async channel.
@@ -33,61 +30,37 @@ struct QueueState {
 /// through a bounded `mpsc::Sender<Bytes>`, preserving sequential order with zero
 /// extra copies.
 pub struct StreamingWriter {
-    queue_state: Mutex<QueueState>,
-    background_handle: Mutex<Option<JoinHandle<Result<()>>>>,
-    error_state: Arc<ErrorState>,
-    bytes_written: Arc<AtomicU64>,
-    active_tasks: Arc<Mutex<JoinSet<Result<()>>>>,
+    inner: Mutex<Inner>,
 }
 
 impl StreamingWriter {
     /// Creates a new streaming writer that sends `Bytes` through the given channel.
     pub fn new(output: mpsc::Sender<Bytes>) -> Self {
-        let (tx, rx) = unbounded_channel::<QueueItem>();
-        let error_state = Arc::new(ErrorState::new());
-        let bytes_written = Arc::new(AtomicU64::new(0));
+        let (queue_tx, queue_rx) = unbounded_channel::<QueueItem>();
 
-        let bytes_written_clone = bytes_written.clone();
-
-        let handle = tokio::spawn(Self::background_task(rx, output, bytes_written_clone));
+        let handle = tokio::spawn(Self::background_task(queue_rx, output));
 
         Self {
-            queue_state: Mutex::new(QueueState {
-                sender: tx,
+            inner: Mutex::new(Inner {
+                queue_tx: Some(queue_tx),
                 next_position: 0,
-                finished: false,
+                background: Some(handle),
             }),
-            background_handle: Mutex::new(Some(handle)),
-            error_state,
-            bytes_written,
-            active_tasks: Arc::new(Mutex::new(JoinSet::new())),
         }
     }
 
-    /// Background async task that processes queue items in order and sends
-    /// resolved `Bytes` through the bounded output channel.
-    async fn background_task(
-        mut rx: UnboundedReceiver<QueueItem>,
-        tx: mpsc::Sender<Bytes>,
-        bytes_written: Arc<AtomicU64>,
-    ) -> Result<()> {
+    /// Background task that awaits each spawned data future in queue order
+    /// and forwards the resolved `Bytes` through the bounded output channel.
+    async fn background_task(mut rx: mpsc::UnboundedReceiver<QueueItem>, tx: mpsc::Sender<Bytes>) -> Result<()> {
         while let Some(item) = rx.recv().await {
-            match item {
-                QueueItem::Data { receiver, permit } => {
-                    let data = receiver.await.map_err(|_| {
-                        FileReconstructionError::InternalWriterError(
-                            "Data sender was dropped before sending data.".to_string(),
-                        )
-                    })?;
-                    let len = data.len() as u64;
-                    tx.send(data).await.map_err(|_| {
-                        FileReconstructionError::InternalWriterError("Output channel closed".to_string())
-                    })?;
-                    bytes_written.fetch_add(len, Ordering::Relaxed);
-                    drop(permit);
-                },
-                QueueItem::Finish => break,
-            }
+            let data = item
+                .handle
+                .await
+                .map_err(|e| FileReconstructionError::InternalError(format!("Task join error: {e}")))??;
+            tx.send(data)
+                .await
+                .map_err(|_| FileReconstructionError::InternalWriterError("Output channel closed".to_string()))?;
+            drop(item.permit);
         }
         Ok(())
     }
@@ -101,49 +74,24 @@ impl DataWriter for StreamingWriter {
         permit: Option<OwnedSemaphorePermit>,
         data_future: DataFuture,
     ) -> Result<()> {
-        self.error_state.check()?;
+        let mut inner = self.inner.lock().await;
 
-        // Check for any errors from previously spawned tasks.
-        {
-            let mut tasks = self.active_tasks.lock().await;
-            while let Some(result) = tasks.try_join_next() {
-                result.map_err(|e| FileReconstructionError::InternalError(format!("Task join error: {e}")))??;
-            }
+        if inner.queue_tx.is_none() {
+            return Err(FileReconstructionError::InternalWriterError("Writer has already finished".to_string()));
         }
 
-        let (sender, expected_size) = {
-            let mut state = self.queue_state.lock().await;
+        if byte_range.start != inner.next_position {
+            return Err(FileReconstructionError::InternalWriterError(format!(
+                "Byte range not sequential: expected start at {}, got {}",
+                inner.next_position, byte_range.start
+            )));
+        }
 
-            if state.finished {
-                return Err(FileReconstructionError::InternalWriterError("Writer has already finished".to_string()));
-            }
+        let expected_size = byte_range.end - byte_range.start;
+        inner.next_position = byte_range.end;
 
-            if byte_range.start != state.next_position {
-                return Err(FileReconstructionError::InternalWriterError(format!(
-                    "Byte range not sequential: expected start at {}, got {}",
-                    state.next_position, byte_range.start
-                )));
-            }
-
-            let expected_size = byte_range.end - byte_range.start;
-            state.next_position = byte_range.end;
-
-            let (sender, receiver) = oneshot::channel();
-
-            state.sender.send(QueueItem::Data { receiver, permit }).map_err(|_| {
-                FileReconstructionError::InternalWriterError("Background writer channel closed".to_string())
-            })?;
-
-            (sender, expected_size)
-        };
-
-        // Spawn a task to evaluate the future and send the result.
-        let error_state = self.error_state.clone();
-        let task = async move {
-            error_state.check()?;
-
+        let handle = tokio::spawn(async move {
             let data = data_future.await?;
-
             if data.len() as u64 != expected_size {
                 return Err(FileReconstructionError::InternalWriterError(format!(
                     "Data size mismatch: expected {} bytes, got {} bytes",
@@ -151,69 +99,42 @@ impl DataWriter for StreamingWriter {
                     data.len()
                 )));
             }
+            Ok(data)
+        });
 
-            sender.send(data).map_err(|_| {
-                FileReconstructionError::InternalWriterError("Failed to send data: receiver dropped".to_string())
+        inner
+            .queue_tx
+            .as_ref()
+            .unwrap()
+            .send(QueueItem { handle, permit })
+            .map_err(|_| {
+                FileReconstructionError::InternalWriterError("Background writer channel closed".to_string())
             })?;
-
-            Ok(())
-        };
-
-        {
-            let mut tasks = self.active_tasks.lock().await;
-            tasks.spawn(task);
-        }
 
         Ok(())
     }
 
     async fn finish(&self) -> Result<u64> {
-        self.error_state.check()?;
+        let (handle, total_bytes) = {
+            let mut inner = self.inner.lock().await;
 
-        let expected_bytes = {
-            let mut state = self.queue_state.lock().await;
-
-            if state.finished {
+            if inner.queue_tx.is_none() {
                 return Err(FileReconstructionError::InternalWriterError("Writer has already finished".to_string()));
             }
 
-            state.finished = true;
+            // Drop the sender — the background task will drain remaining items then exit.
+            inner.queue_tx.take();
 
-            state.sender.send(QueueItem::Finish).map_err(|_| {
-                FileReconstructionError::InternalWriterError("Background writer channel closed".to_string())
-            })?;
-
-            state.next_position
+            (inner.background.take().expect("background task missing"), inner.next_position)
         };
 
-        // Wait for all spawned data-fetching tasks to complete.
-        {
-            let mut tasks = self.active_tasks.lock().await;
-            while let Some(result) = tasks.join_next().await {
-                result.map_err(|e| FileReconstructionError::InternalError(format!("Task join error: {e}")))??;
-            }
-        }
-
-        let handle =
-            self.background_handle.lock().await.take().ok_or_else(|| {
-                FileReconstructionError::InternalWriterError("Background writer not running".to_string())
-            })?;
-
+        // The background task awaits each JoinHandle in order, so joining it
+        // implicitly waits for all spawned data-fetching tasks to complete.
         handle.await.map_err(|e| {
             FileReconstructionError::InternalWriterError(format!("Background writer task failed: {e}"))
         })??;
 
-        self.error_state.check()?;
-
-        let actual_bytes = self.bytes_written.load(Ordering::Relaxed);
-        if actual_bytes != expected_bytes {
-            return Err(FileReconstructionError::InternalWriterError(format!(
-                "Bytes written mismatch: expected {} bytes, but wrote {} bytes",
-                expected_bytes, actual_bytes
-            )));
-        }
-
-        Ok(actual_bytes)
+        Ok(total_bytes)
     }
 }
 

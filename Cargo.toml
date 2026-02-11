@@ -37,9 +37,9 @@ debug = 1
 [workspace.dependencies]
 anyhow = "1"
 axum = "0.8"
-async-stream = "0.3"
 async-trait = "0.1"
 base64 = "0.22"
+futures-core = "0.3"
 bincode = "1.3"
 bitflags = { version = "2.10", features = ["serde"] }
 blake3 = "1.8"
