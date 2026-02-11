@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use utils::normalized_path_from_user_string;
+use utils::TemplatedPathBuf;
 use xet_runtime::xet_config;
 
 #[derive(Clone, Debug, PartialEq)]
@@ -52,7 +52,7 @@ impl LoggingConfig {
                 if log_dest.as_str().is_empty() {
                     LoggingMode::Console
                 } else {
-                    let path = normalized_path_from_user_string(log_dest);
+                    let path = TemplatedPathBuf::evaluate(log_dest);
 
                     if log_dest.ends_with('/')
                         || (cfg!(windows) && log_dest.ends_with('\\'))
