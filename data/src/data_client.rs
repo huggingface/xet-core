@@ -134,6 +134,11 @@ pub async fn upload_bytes_async(
 /// when the stream is first polled. The number of concurrent downloads is
 /// bounded by a global semaphore. `stream_buffer_size` controls how many chunks
 /// can be buffered in each stream before backpressure is applied.
+///
+/// **Error handling:** If a download fails after some chunks have already been
+/// yielded, the error surfaces only when the stream is polled past the last
+/// buffered chunk. Callers must consume the stream to completion (or until an
+/// error is returned) to detect download failures.
 #[allow(clippy::too_many_arguments)]
 #[instrument(skip_all, name = "data_client::download_bytes", fields(session_id = tracing::field::Empty, num_files=file_infos.len()))]
 pub async fn download_bytes_async(
@@ -491,7 +496,9 @@ fn smudge_bytes(
         let (output, mut rx) = DataOutput::write_byte_stream(stream_buffer_size);
 
         let handle = tokio::spawn(async move {
-            let _permit = semaphore.acquire().await;
+            let _permit = semaphore.acquire().await.map_err(|_| {
+                DataProcessingError::InternalError("download semaphore closed".to_string())
+            })?;
             downloader
                 .smudge_file_from_hash(&merkle_hash, file_hash, output, file_range, progress_updater)
                 .await
