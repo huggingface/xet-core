@@ -6,9 +6,9 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use cas_client::CasClientError;
 use deduplication::{DeduplicationDataInterface, RawXorbData};
+use mdb_shard::MDBShardInfo;
 use mdb_shard::file_structs::FileDataSequenceEntry;
 use mdb_shard::shard_in_memory::MDBInMemoryShard;
-use mdb_shard::MDBShardInfo;
 use merklehash::{HMACKey, MerkleHash};
 use progress_tracking::upload_tracking::FileXorbDependency;
 use tokio_with_wasm::alias as wasmtokio;
@@ -57,11 +57,8 @@ impl DeduplicationDataInterface for UploadSessionDataManager {
     async fn register_global_dedup_query(&mut self, chunk_hash: MerkleHash) -> Result<()> {
         let client = self.session.client.clone();
         let prefix = self.session.config.shard_config.prefix.clone();
-        self.query_tasks.spawn(async move {
-            client
-                .query_for_global_dedup_shard(&prefix, &chunk_hash)
-                .await
-        });
+        self.query_tasks
+            .spawn(async move { client.query_for_global_dedup_shard(&prefix, &chunk_hash).await });
 
         Ok(())
     }
