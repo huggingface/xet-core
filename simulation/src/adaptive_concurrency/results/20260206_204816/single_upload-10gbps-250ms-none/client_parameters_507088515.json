@@ -1,9 +1,0 @@
-{
-  "client_id": 507088515,
-  "max_data_kb": 65536,
-  "max_data_size_bytes": 67108864,
-  "min_data_kb": 49152,
-  "min_data_size_bytes": 50331648,
-  "repeat_duration_seconds": 600,
-  "server_addr": "127.0.0.1:53916"
-}

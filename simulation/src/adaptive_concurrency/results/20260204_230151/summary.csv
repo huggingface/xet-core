@@ -1,3 +1,0 @@
-scenario_name,network_utilization_percent,total_retries,average_per_client_concurrency,total_concurrency,total_data_transmitted_bytes,average_round_trip_time_ms
-sanity_check-100mbps-20ms-none,0.00,0,13.80,13.80,11222928409,667.30
-sanity_check-10mbps-20ms-none,0.00,0,5.22,5.22,293715829,1193.06
