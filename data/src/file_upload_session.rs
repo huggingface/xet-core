@@ -253,14 +253,13 @@ impl FileUploadSession {
     pub async fn start_clean(
         self: &Arc<Self>,
         file_name: Option<Arc<str>>,
-        size: Option<u64>,
+        size: u64,
         sha256: Option<Sha256>,
     ) -> SingleFileCleaner {
-        // Get a new file id for the completion tracking.
-        // When size is unknown (None), register with 0 to disable progress assertions.
+        // Get a new file id for the completion tracking
         let file_id = self
             .completion_tracker
-            .register_new_file(file_name.clone().unwrap_or_default(), size.unwrap_or(0))
+            .register_new_file(file_name.clone().unwrap_or_default(), size)
             .await;
 
         SingleFileCleaner::new(file_name, file_id, sha256, self.clone())
@@ -565,7 +564,7 @@ mod tests {
             .unwrap();
 
         let mut cleaner = upload_session
-            .start_clean(Some("test".into()), Some(read_data.len() as u64), None)
+            .start_clean(Some("test".into()), read_data.len() as u64, None)
             .await;
 
         // Read blocks from the source file and hand them to the cleaning handle

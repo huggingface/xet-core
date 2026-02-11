@@ -141,9 +141,7 @@ impl CompletionTrackerImpl {
             if dep.is_external {
                 // This is the freebie case, where we can just increment the progress.
                 file_entry.completed_bytes += dep.n_bytes;
-                if file_entry.total_bytes > 0 {
-                    debug_assert_le!(file_entry.completed_bytes, file_entry.total_bytes);
-                }
+                debug_assert_le!(file_entry.completed_bytes, file_entry.total_bytes);
 
                 let progress_update = ItemProgressUpdate {
                     item_name: file_entry.name.clone(),
@@ -165,9 +163,7 @@ impl CompletionTrackerImpl {
                 // If the entry has already been completed, then just mark this as completed.
                 if entry.is_completed {
                     file_entry.completed_bytes += dep.n_bytes;
-                    if file_entry.total_bytes > 0 {
-                        debug_assert_le!(file_entry.completed_bytes, file_entry.total_bytes);
-                    }
+                    debug_assert_le!(file_entry.completed_bytes, file_entry.total_bytes);
 
                     let progress_update = ItemProgressUpdate {
                         item_name: file_entry.name.clone(),
@@ -190,9 +186,7 @@ impl CompletionTrackerImpl {
         // Register that this much has been completed already
         self.total_bytes_completed += file_bytes_processed;
 
-        if self.total_bytes > 0 {
-            debug_assert_le!(self.total_bytes_completed, self.total_bytes);
-        }
+        debug_assert_le!(self.total_bytes_completed, self.total_bytes);
 
         // There may be a lot of per-file updates, but these don't actually count against the new byte total;
         // this is counted only using xorbs.
@@ -307,9 +301,7 @@ impl CompletionTrackerImpl {
         self.total_upload_bytes_completed += byte_completion_increment;
 
         self.total_bytes_completed += file_bytes_processed;
-        if self.total_bytes > 0 {
-            debug_assert_le!(self.total_bytes_completed, self.total_bytes);
-        }
+        debug_assert_le!(self.total_bytes_completed, self.total_bytes);
 
         ProgressUpdate {
             item_updates,
@@ -421,9 +413,7 @@ impl CompletionTrackerImpl {
         debug_assert_le!(self.total_upload_bytes_completed, self.total_upload_bytes);
 
         self.total_bytes_completed += file_bytes_processed;
-        if self.total_bytes > 0 {
-            debug_assert_le!(self.total_bytes_completed, self.total_bytes);
-        }
+        debug_assert_le!(self.total_bytes_completed, self.total_bytes);
 
         ProgressUpdate {
             item_updates,
@@ -467,14 +457,11 @@ impl CompletionTrackerImpl {
     fn assert_complete(&self) {
         // Check each file for completeness
         for (idx, file) in self.files.iter().enumerate() {
-            // Skip size check for files registered without a known size (total_bytes == 0).
-            if file.total_bytes > 0 {
-                assert_eq!(
-                    file.completed_bytes, file.total_bytes,
-                    "File #{} ({}) is not fully completed: {}/{} bytes",
-                    idx, file.name, file.completed_bytes, file.total_bytes
-                );
-            }
+            assert_eq!(
+                file.completed_bytes, file.total_bytes,
+                "File #{} ({}) is not fully completed: {}/{} bytes",
+                idx, file.name, file.completed_bytes, file.total_bytes
+            );
             assert!(
                 file.remaining_xorbs_parts.is_empty(),
                 "File #{} ({}) still has uncompleted xorb parts: {:?}",

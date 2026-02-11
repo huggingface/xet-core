@@ -70,7 +70,7 @@ impl XetClient {
         &self,
         progress_updater: Option<Arc<dyn TrackingProgressUpdater>>,
         name: Option<Arc<str>>,
-        size: Option<u64>,
+        size: u64,
     ) -> errors::Result<XetWriter> {
         XetWriter::new(self.config.clone(), progress_updater, name, size).await
     }
@@ -91,12 +91,12 @@ impl XetWriter {
     /// Creates a new writer that will upload a single file.
     ///
     /// `size` is the total number of bytes that will be written and is used for
-    /// progress tracking. Pass `None` if the content length is not known upfront.
+    /// progress tracking. The caller must know the content length before writing.
     pub async fn new(
         config: Arc<TranslatorConfig>,
         progress_updater: Option<Arc<dyn TrackingProgressUpdater>>,
         name: Option<Arc<str>>,
-        size: Option<u64>,
+        size: u64,
     ) -> errors::Result<Self> {
         let session = FileUploadSession::new(config, progress_updater).await?;
         let handle = session.start_clean(name, size, None).await;
@@ -291,8 +291,8 @@ mod tests {
 
     /// Upload `content` via [`XetWriter`] and download it back via [`XetReader`],
     /// asserting the round-tripped bytes match the original.
-    async fn assert_roundtrip(client: &XetClient, content: &[u8], size: Option<u64>) {
-        let mut writer = client.write(None, None, size).await.unwrap();
+    async fn assert_roundtrip(client: &XetClient, content: &[u8]) {
+        let mut writer = client.write(None, None, content.len() as u64).await.unwrap();
         for chunk in content.chunks(4096) {
             writer.write(Bytes::copy_from_slice(chunk)).await.unwrap();
         }
@@ -326,25 +326,12 @@ mod tests {
         let client = XetClient::new(Some(endpoint), None, None, "test".into()).unwrap();
 
         // Empty.
-        assert_roundtrip(&client, &[], Some(0)).await;
+        assert_roundtrip(&client, &[]).await;
         // Small.
-        assert_roundtrip(&client, b"Hello, World!", Some(13)).await;
+        assert_roundtrip(&client, b"Hello, World!").await;
         // Large (1 MB).
         let large: Vec<u8> = (0..1_000_000).map(|i| (i % 256) as u8).collect();
-        assert_roundtrip(&client, &large, Some(large.len() as u64)).await;
-    }
-
-    #[tokio::test]
-    async fn test_roundtrip_unknown_size() {
-        let temp_dir = tempdir().unwrap();
-        let endpoint = format!("local://{}", temp_dir.path().display());
-        let client = XetClient::new(Some(endpoint), None, None, "test".into()).unwrap();
-
-        // Small without explicit size.
-        assert_roundtrip(&client, b"Hello, World!", None).await;
-        // Large (1 MB) without explicit size.
-        let large: Vec<u8> = (0..1_000_000).map(|i| (i % 256) as u8).collect();
-        assert_roundtrip(&client, &large, None).await;
+        assert_roundtrip(&client, &large).await;
     }
 
     #[tokio::test]
@@ -354,7 +341,7 @@ mod tests {
         let client = XetClient::new(Some(endpoint), None, None, "test".into()).unwrap();
 
         let content: Vec<u8> = (0..1_000_000).map(|i| (i % 256) as u8).collect();
-        let mut writer = client.write(None, None, Some(content.len() as u64)).await.unwrap();
+        let mut writer = client.write(None, None, content.len() as u64).await.unwrap();
         for chunk in content.chunks(4096) {
             writer.write(Bytes::copy_from_slice(chunk)).await.unwrap();
         }
@@ -372,7 +359,7 @@ mod tests {
         let endpoint = format!("local://{}", temp_dir.path().display());
         let client = XetClient::new(Some(endpoint), None, None, "test".into()).unwrap();
 
-        let mut writer = client.write(None, None, Some(5)).await.unwrap();
+        let mut writer = client.write(None, None, 5).await.unwrap();
         writer.write(Bytes::from_static(b"hello")).await.unwrap();
         let file_info = writer.close().await.unwrap();
 
@@ -429,7 +416,7 @@ mod tests {
         let endpoint = format!("local://{}", temp_dir.path().display());
         let client = XetClient::new(Some(endpoint), None, None, "test".into()).unwrap();
 
-        let mut writer = client.write(None, None, Some(100)).await.unwrap();
+        let mut writer = client.write(None, None, 100).await.unwrap();
         writer.write(Bytes::from_static(b"some data")).await.unwrap();
         writer.abort().await.unwrap();
 

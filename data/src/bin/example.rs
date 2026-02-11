@@ -91,7 +91,7 @@ async fn clean(mut reader: impl Read, mut writer: impl Write, size: u64) -> Resu
         FileUploadSession::new(TranslatorConfig::local_config(std::env::current_dir()?)?.into(), None).await?;
 
     let mut size_read = 0;
-    let mut handle = translator.start_clean(None, Some(size), None).await;
+    let mut handle = translator.start_clean(None, size, None).await;
 
     loop {
         let bytes = reader.read(&mut read_buf)?;

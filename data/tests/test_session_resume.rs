@@ -67,7 +67,7 @@ mod tests {
 
             // Feed it half the data, and checkpoint.
             let mut cleaner = file_upload_session
-                .start_clean(Some("data".into()), Some(data.len() as u64), None)
+                .start_clean(Some("data".into()), data.len() as u64, None)
                 .await;
             cleaner.add_data(&data[..half_n]).await.unwrap();
             cleaner.checkpoint().await.unwrap();
@@ -85,7 +85,7 @@ mod tests {
 
             // Feed it half the data, and checkpoint.
             let mut cleaner = file_upload_session
-                .start_clean(Some("data".into()), Some(data.len() as u64), None)
+                .start_clean(Some("data".into()), data.len() as u64, None)
                 .await;
 
             // Add all the data.  Roughly the first half should dedup.
@@ -140,7 +140,7 @@ mod tests {
 
             // Feed it half the data, and checkpoint.
             let mut cleaner = file_upload_session
-                .start_clean(Some("data".into()), Some(data.len() as u64), None)
+                .start_clean(Some("data".into()), data.len() as u64, None)
                 .await;
             cleaner.add_data(&data[..rn]).await.unwrap();
             cleaner.checkpoint().await.unwrap();
@@ -172,7 +172,7 @@ mod tests {
 
             // Feed it half the data, and checkpoint.
             let mut cleaner = file_upload_session
-                .start_clean(Some("data".into()), Some(data.len() as u64), None)
+                .start_clean(Some("data".into()), data.len() as u64, None)
                 .await;
 
             // Add all the data.  Roughly the first half should dedup.
