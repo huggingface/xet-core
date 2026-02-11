@@ -91,7 +91,7 @@ impl DownloadTaskUpdater {
             self.item_size_finalized.store(true, Ordering::Relaxed);
         }
 
-        let old_item_total = self.item_bytes.swap(total_item_bytes, Ordering::Relaxed);
+        let old_item_total = self.item_bytes.swap(total_item_bytes, Ordering::Release);
 
         if old_item_total == total_item_bytes {
             return;
@@ -101,7 +101,7 @@ impl DownloadTaskUpdater {
         debug_assert_le!(old_item_total, total_item_bytes);
 
         let total_bytes_increment = total_item_bytes.saturating_sub(old_item_total);
-        let old_total_bytes = self.tracker.total_bytes.fetch_add(total_bytes_increment, Ordering::Relaxed);
+        let old_total_bytes = self.tracker.total_bytes.fetch_add(total_bytes_increment, Ordering::Release);
         let total_bytes = old_total_bytes + total_bytes_increment;
 
         let item_update = ItemProgressUpdate {
@@ -176,7 +176,7 @@ impl DownloadTaskUpdater {
             return;
         }
 
-        let item_total_bytes = self.item_bytes.load(Ordering::Relaxed);
+        let item_total_bytes = self.item_bytes.load(Ordering::Acquire);
         let old_completed = self.bytes_completed.fetch_add(increment, Ordering::Relaxed);
         let bytes_completed = old_completed + increment;
 
@@ -187,7 +187,7 @@ impl DownloadTaskUpdater {
         let global_old_completed = self.tracker.total_bytes_completed.fetch_add(increment, Ordering::Relaxed);
         let total_bytes_completed = global_old_completed + increment;
 
-        let total_bytes = self.tracker.total_bytes.load(Ordering::Relaxed);
+        let total_bytes = self.tracker.total_bytes.load(Ordering::Acquire);
         debug_assert_le!(total_bytes_completed, total_bytes);
 
         let item_progress_update = ItemProgressUpdate {

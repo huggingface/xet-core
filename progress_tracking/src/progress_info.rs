@@ -80,19 +80,8 @@ impl ProgressUpdate {
     pub fn merge_in(&mut self, other: ProgressUpdate) {
         self.item_updates.extend(other.item_updates);
 
-        // Reconcile the total bytes and total transfer bytes.
-        // If the other update doesn't have an absolute total bytes, but does have an increment,
-        // then we just go with the increment there.  Otherwise, we use the max of the two.
-        self.total_bytes = {
-            if other.total_bytes > 0 {
-                self.total_bytes.max(other.total_bytes)
-            } else {
-                self.total_bytes + other.total_bytes_increment
-            }
-        };
-
+        self.total_bytes = self.total_bytes.max(other.total_bytes);
         self.total_bytes_increment += other.total_bytes_increment;
-
         self.total_bytes_completed = self.total_bytes_completed.max(other.total_bytes_completed);
         self.total_bytes_completion_increment += other.total_bytes_completion_increment;
 
