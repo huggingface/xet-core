@@ -1,6 +1,15 @@
 use std::io::Write;
 use std::path::PathBuf;
 
+use bytes::Bytes;
+use tokio::sync::OwnedSemaphorePermit;
+use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
+
+/// An item sent through the channel output: data bytes paired with an optional
+/// semaphore permit for backpressure control. The receiver controls memory
+/// pressure by holding permits until it has finished processing each chunk.
+pub type DataOutputChannelItem = (Bytes, Option<OwnedSemaphorePermit>);
+
 /// The data output type for the file reconstructor.
 pub enum DataOutput {
     /// A custom writer that will receive the reconstructed data.
@@ -16,6 +25,14 @@ pub enum DataOutput {
         /// If `None`, use the byte range start from the reconstruction request.
         offset: Option<u64>,
     },
+
+    /// Stream reconstructed data through an unbounded tokio channel.
+    ///
+    /// Each data chunk is sent as a `(Bytes, Option<OwnedSemaphorePermit>)`.
+    /// The semaphore permit is forwarded from the writer so the receiver can
+    /// control overall memory pressure by dropping permits when done processing.
+    /// Completion is signaled by dropping the sender (the receiver sees `None`).
+    Channel(UnboundedSender<DataOutputChannelItem>),
 }
 
 impl DataOutput {
@@ -48,5 +65,17 @@ impl DataOutput {
     /// byte range being reconstructed.
     pub fn writer(writer: impl Write + Send + 'static) -> Self {
         Self::SequentialWriter(Box::new(writer))
+    }
+
+    /// Creates a channel output and returns the receiving end.
+    ///
+    /// Data chunks are sent as `(Bytes, Option<OwnedSemaphorePermit>)` through
+    /// an unbounded channel. Memory pressure is controlled by the semaphore
+    /// permits passed to `set_next_term_data_source`; the receiver should drop
+    /// each permit after processing. The receiver will yield `None` when all
+    /// data has been written.
+    pub fn channel() -> (Self, UnboundedReceiver<DataOutputChannelItem>) {
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        (Self::Channel(tx), rx)
     }
 }

@@ -73,6 +73,7 @@ pub fn new_data_writer(
                 Ok(Arc::new(SequentialWriter::new(writer, progress_updater)))
             }
         },
+        DataOutput::Channel(sender) => Ok(Arc::new(SequentialWriter::new_channel(sender))),
         DataOutput::File { path, offset } => {
             if let Some(parent) = path.parent() {
                 std::fs::create_dir_all(parent)?;
