@@ -74,6 +74,9 @@ pub fn new_data_writer(
             }
         },
         DataOutput::File { path, offset } => {
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
             let mut file = OpenOptions::new().write(true).create(true).truncate(false).open(&path)?;
 
             let seek_position = offset.unwrap_or(default_write_position);

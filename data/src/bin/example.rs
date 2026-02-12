@@ -125,9 +125,8 @@ async fn smudge_file(arg: &SmudgeArg) -> Result<()> {
     Ok(())
 }
 
-async fn smudge(name: Arc<str>, mut reader: impl Read, output_path: PathBuf) -> Result<()> {
+async fn smudge(_name: Arc<str>, mut reader: impl Read, output_path: PathBuf) -> Result<()> {
     use data::configurations::TranslatorConfig;
-    use file_reconstruction::DataOutput;
 
     let mut input = String::new();
     reader.read_to_string(&mut input)?;
@@ -138,19 +137,9 @@ async fn smudge(name: Arc<str>, mut reader: impl Read, output_path: PathBuf) -> 
     // Use local config pointing to current directory
     let cas_path = std::env::current_dir()?;
     let config = TranslatorConfig::local_config(cas_path)?;
-    let downloader = data::FileDownloader::new(config.into()).await?;
+    let session = data::FileDownloadSession::new(config.into(), None).await?;
 
-    let output = DataOutput::write_in_file(&output_path);
-
-    downloader
-        .smudge_file_from_hash(
-            &xet_file.merkle_hash().map_err(|_| anyhow::anyhow!("Xet hash is corrupted"))?,
-            name,
-            output,
-            None,
-            None,
-        )
-        .await?;
+    session.download_file(&xet_file, &output_path, None).await?;
 
     Ok(())
 }
