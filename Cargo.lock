@@ -5419,6 +5419,7 @@ dependencies = [
  "io-uring",
  "libc",
  "mio",
+ "parking_lot 0.12.4",
  "pin-project-lite",
  "signal-hook-registry",
  "slab",
@@ -6587,6 +6588,30 @@ name = "writeable"
 version = "0.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ea2f10b9bb0928dfb1b42b65e1f9e36f7f54dbdf08457afefb38afcdec4fa2bb"
+
+[[package]]
+name = "xet-session"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "clap",
+ "data",
+ "file_reconstruction",
+ "progress_tracking",
+ "serde",
+ "serde_json",
+ "serial_test",
+ "tempfile",
+ "thiserror 2.0.12",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "ulid",
+ "utils",
+ "xet_config",
+ "xet_runtime",
+]
 
 [[package]]
 name = "xet_config"
