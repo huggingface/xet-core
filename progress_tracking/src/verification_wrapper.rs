@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use more_asserts::assert_le;
+use more_asserts::{assert_ge, assert_le};
 use tokio::sync::Mutex;
 
 use crate::{ProgressUpdate, TrackingProgressUpdater};
@@ -74,16 +74,20 @@ impl TrackingProgressUpdater for ProgressUpdaterVerificationWrapper {
                 last_completed: 0,
             });
 
-            // If first time seeing total_count for this item, record it.
-            // Otherwise, ensure it stays consistent.
+            // Record the total_count for this item, allowing it to grow monotonically
+            // (e.g. when the file size is not known upfront and is updated incrementally).
             if entry.total_count == 0 {
                 entry.total_count = up.total_bytes;
             } else {
-                assert_eq!(
-                    entry.total_count, up.total_bytes,
-                    "Inconsistent total_count for '{}'; was {}, now {}",
-                    up.item_name, entry.total_count, up.total_bytes
+                assert_ge!(
+                    up.total_bytes,
+                    entry.total_count,
+                    "total_count for '{}' decreased; was {}, now {}",
+                    up.item_name,
+                    entry.total_count,
+                    up.total_bytes
                 );
+                entry.total_count = up.total_bytes;
             }
 
             // Check increments:
