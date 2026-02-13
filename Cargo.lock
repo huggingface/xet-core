@@ -1372,7 +1372,6 @@ dependencies = [
  "cas_client",
  "cas_types",
  "futures",
- "futures-core",
  "merklehash",
  "more-asserts",
  "progress_tracking",
