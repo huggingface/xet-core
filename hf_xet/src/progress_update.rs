@@ -254,7 +254,7 @@ impl WrappedProgressUpdaterImpl {
                                 py,
                                 PyItemProgressUpdate {
                                     item_name: PyString::new(py, &u.item_name).into(),
-                                    total_bytes: u.total_bytes,
+                                    total_bytes: u.total_bytes.unwrap_or(0),
                                     bytes_completed: u.bytes_completed,
                                     bytes_completion_increment: u.bytes_completion_increment,
                                 },

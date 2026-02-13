@@ -276,7 +276,7 @@ mod tests {
             .register_updates(ProgressUpdate {
                 item_updates: vec![ItemProgressUpdate {
                     item_name: Arc::from("fileA.txt"),
-                    total_bytes: 100,
+                    total_bytes: Some(100),
                     bytes_completed: 10,
                     bytes_completion_increment: 10,
                 }],
@@ -299,7 +299,7 @@ mod tests {
             .register_updates(ProgressUpdate {
                 item_updates: vec![ItemProgressUpdate {
                     item_name: Arc::from("fileB.txt"),
-                    total_bytes: 200,
+                    total_bytes: Some(200),
                     bytes_completed: 50,
                     bytes_completion_increment: 50,
                 }],
@@ -323,13 +323,13 @@ mod tests {
                 item_updates: vec![
                     ItemProgressUpdate {
                         item_name: Arc::from("fileC.txt"),
-                        total_bytes: 300,
+                        total_bytes: Some(300),
                         bytes_completed: 90,
                         bytes_completion_increment: 90,
                     },
                     ItemProgressUpdate {
                         item_name: Arc::from("fileA.txt"),
-                        total_bytes: 100,
+                        total_bytes: Some(100),
                         bytes_completed: 30,
                         bytes_completion_increment: 20,
                     },
@@ -368,19 +368,19 @@ mod tests {
 
         let a = &flushed.item_updates[0];
         assert_eq!(a.item_name.as_ref(), "fileA.txt");
-        assert_eq!(a.total_bytes, 100);
+        assert_eq!(a.total_bytes, Some(100));
         assert_eq!(a.bytes_completed, 30);
         assert_eq!(a.bytes_completion_increment, 30);
 
         let b = &flushed.item_updates[1];
         assert_eq!(b.item_name.as_ref(), "fileB.txt");
-        assert_eq!(b.total_bytes, 200);
+        assert_eq!(b.total_bytes, Some(200));
         assert_eq!(b.bytes_completed, 50);
         assert_eq!(b.bytes_completion_increment, 50);
 
         let c = &flushed.item_updates[2];
         assert_eq!(c.item_name.as_ref(), "fileC.txt");
-        assert_eq!(c.total_bytes, 300);
+        assert_eq!(c.total_bytes, Some(300));
         assert_eq!(c.bytes_completed, 90);
         assert_eq!(c.bytes_completion_increment, 90);
     }

@@ -112,9 +112,10 @@ pub async fn upload_bytes_async(
 
     let semaphore = XetRuntime::current().common().file_ingestion_semaphore.clone();
     let upload_session = FileUploadSession::new(config.into(), progress_updater).await?;
-    let clean_futures = file_contents.into_iter().map(|blob| {
+    let clean_futures = file_contents.into_iter().enumerate().map(|(i, blob)| {
         let upload_session = upload_session.clone();
-        async move { clean_bytes(upload_session, blob).await.map(|(xf, _metrics)| xf) }
+        let name: Arc<str> = format!("{i}").into();
+        async move { clean_bytes(upload_session, blob, Some(name)).await.map(|(xf, _metrics)| xf) }
             .instrument(info_span!("clean_task"))
     });
     let files = run_constrained_with_semaphore(clean_futures, semaphore).await?;
@@ -239,8 +240,9 @@ pub async fn download_async(
 pub async fn clean_bytes(
     processor: Arc<FileUploadSession>,
     bytes: Vec<u8>,
+    name: Option<Arc<str>>,
 ) -> errors::Result<(XetFileInfo, DeduplicationMetrics)> {
-    let mut handle = processor.start_clean(None, bytes.len() as u64, None).await;
+    let mut handle = processor.start_clean(name, Some(bytes.len() as u64), None).await;
     handle.add_data(&bytes).await?;
     handle.finish().await
 }
@@ -261,7 +263,11 @@ pub async fn clean_file(
     let mut buffer = vec![0u8; u64::min(filesize, *xet_config().data.ingestion_block_size) as usize];
 
     let mut handle = processor
-        .start_clean(Some(filename.as_ref().to_string_lossy().into()), filesize, Sha256::from_hex(sha256.as_ref()).ok())
+        .start_clean(
+            Some(filename.as_ref().to_string_lossy().into()),
+            Some(filesize),
+            Sha256::from_hex(sha256.as_ref()).ok(),
+        )
         .await;
 
     loop {
@@ -614,5 +620,44 @@ mod tests {
         assert_eq!(file_info1.hash(), file_info3.hash(), "Hash mismatch between 8MB and 2MB buffer sizes");
         assert_eq!(file_info1.file_size(), file_info2.file_size());
         assert_eq!(file_info1.file_size(), file_info3.file_size());
+    }
+
+    #[tokio::test]
+    async fn test_upload_bytes() {
+        let temp_dir = tempdir().unwrap();
+        let endpoint = format!("local://{}", temp_dir.path().display());
+
+        let contents: Vec<Vec<u8>> = vec![
+            vec![],
+            b"Hello, World!".to_vec(),
+            (0..1_000_000).map(|i| (i % 256) as u8).collect(),
+        ];
+
+        // Upload all as bytes.
+        let file_infos = upload_bytes_async(contents.clone(), Some(endpoint.clone()), None, None, None, "test".into())
+            .await
+            .unwrap();
+
+        assert_eq!(file_infos.len(), contents.len());
+        for (info, content) in file_infos.iter().zip(&contents) {
+            assert_eq!(info.file_size(), content.len() as u64);
+            assert!(!info.hash().is_empty());
+        }
+        // Different contents produce different hashes.
+        assert_ne!(file_infos[0].hash(), file_infos[2].hash());
+
+        // Download to files and verify.
+        let download_dir = tempdir().unwrap();
+        let file_infos_with_paths: Vec<_> = file_infos
+            .into_iter()
+            .enumerate()
+            .map(|(i, info)| (info, download_dir.path().join(format!("{i}")).to_str().unwrap().to_string()))
+            .collect();
+        let paths = download_async(file_infos_with_paths, Some(endpoint), None, None, None, "test".into())
+            .await
+            .unwrap();
+        for (path, expected) in paths.iter().zip(&contents) {
+            assert_eq!(std::fs::read(path).unwrap(), *expected);
+        }
     }
 }

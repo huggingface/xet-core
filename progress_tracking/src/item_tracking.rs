@@ -109,7 +109,7 @@ impl SingleItemProgressUpdater {
             .clone()
             .do_item_update(ItemProgressUpdate {
                 item_name: self.item_name.clone(),
-                total_bytes: self.n_bytes.load(Ordering::Relaxed),
+                total_bytes: Some(self.n_bytes.load(Ordering::Relaxed)),
                 bytes_completed: old_completed_count + increment,
                 bytes_completion_increment: increment,
             })

@@ -10,7 +10,7 @@ use crate::{ProgressUpdate, TrackingProgressUpdater};
 /// Internal structure to track and validate progress data for one item.
 #[derive(Debug)]
 struct ItemProgressData {
-    total_count: u64,
+    total_count: Option<u64>,
     last_completed: u64,
 }
 
@@ -51,11 +51,13 @@ impl ProgressUpdaterVerificationWrapper {
         let tr = self.tr.lock().await;
 
         for (item_name, data) in tr.items.iter() {
-            assert_eq!(
-                data.last_completed, data.total_count,
-                "Item '{}' is not fully complete: {}/{}",
-                item_name, data.last_completed, data.total_count
-            );
+            if let Some(total) = data.total_count {
+                assert_eq!(
+                    data.last_completed, total,
+                    "Item '{}' is not fully complete: {}/{}",
+                    item_name, data.last_completed, total
+                );
+            }
         }
 
         assert_eq!(tr.total_transfer_bytes_completed, tr.total_transfer_bytes);
@@ -70,20 +72,18 @@ impl TrackingProgressUpdater for ProgressUpdaterVerificationWrapper {
 
         for up in update.item_updates.iter() {
             let entry = tr.items.entry(up.item_name.clone()).or_insert(ItemProgressData {
-                total_count: 0,
+                total_count: None,
                 last_completed: 0,
             });
 
             // If first time seeing total_count for this item, record it.
             // Otherwise, ensure it stays consistent.
-            if entry.total_count == 0 {
-                entry.total_count = up.total_bytes;
-            } else {
-                assert_eq!(
-                    entry.total_count, up.total_bytes,
-                    "Inconsistent total_count for '{}'; was {}, now {}",
-                    up.item_name, entry.total_count, up.total_bytes
-                );
+            match (entry.total_count, up.total_bytes) {
+                (None, _) => entry.total_count = up.total_bytes,
+                (Some(prev), Some(new)) => {
+                    assert_eq!(prev, new, "Inconsistent total_count for '{}'; was {}, now {}", up.item_name, prev, new);
+                },
+                _ => {},
             }
 
             // Check increments:
@@ -96,14 +96,16 @@ impl TrackingProgressUpdater for ProgressUpdaterVerificationWrapper {
                 up.bytes_completed
             );
 
-            // 2) `completed_count` must not exceed `total_count`
-            assert!(
-                up.bytes_completed <= up.total_bytes,
-                "Item '{}' completed_count {} exceeds total {}",
-                up.item_name,
-                up.bytes_completed,
-                up.total_bytes
-            );
+            // 2) `completed_count` must not exceed `total_count` (skip if total is unknown)
+            if let Some(total) = up.total_bytes {
+                assert!(
+                    up.bytes_completed <= total,
+                    "Item '{}' completed_count {} exceeds total {}",
+                    up.item_name,
+                    up.bytes_completed,
+                    total
+                );
+            }
 
             // 3) The increment must match the difference
             let expected_new = entry.last_completed + up.bytes_completion_increment;
@@ -223,13 +225,13 @@ mod tests {
                 item_updates: vec![
                     ItemProgressUpdate {
                         item_name: Arc::from("fileA"),
-                        total_bytes: 100,
+                        total_bytes: Some(100),
                         bytes_completed: 50,
                         bytes_completion_increment: 50,
                     },
                     ItemProgressUpdate {
                         item_name: Arc::from("fileB"),
-                        total_bytes: 200,
+                        total_bytes: Some(200),
                         bytes_completed: 100,
                         bytes_completion_increment: 100,
                     },
@@ -252,13 +254,13 @@ mod tests {
                 item_updates: vec![
                     ItemProgressUpdate {
                         item_name: Arc::from("fileA"),
-                        total_bytes: 100,
+                        total_bytes: Some(100),
                         bytes_completed: 100,
                         bytes_completion_increment: 50,
                     },
                     ItemProgressUpdate {
                         item_name: Arc::from("fileB"),
-                        total_bytes: 200,
+                        total_bytes: Some(200),
                         bytes_completed: 200,
                         bytes_completion_increment: 100,
                     },

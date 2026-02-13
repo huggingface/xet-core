@@ -5,7 +5,7 @@ use std::sync::Arc;
 #[derive(Clone, Debug)]
 pub struct ItemProgressUpdate {
     pub item_name: Arc<str>,
-    pub total_bytes: u64,
+    pub total_bytes: Option<u64>,
 
     // Bytes completed are the total bytes completed, either through
     // deduplication, upload/download, loading from cache, etc.
@@ -19,7 +19,10 @@ impl ItemProgressUpdate {
 
         // Just in case the total got updated, as can be the case when we don't know the
         // size ahead of time.
-        self.total_bytes = self.total_bytes.max(other.total_bytes);
+        self.total_bytes = match (self.total_bytes, other.total_bytes) {
+            (Some(a), Some(b)) => Some(a.max(b)),
+            (a, b) => a.or(b),
+        };
         self.bytes_completed = self.bytes_completed.max(other.bytes_completed);
         self.bytes_completion_increment += other.bytes_completion_increment;
     }

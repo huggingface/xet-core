@@ -156,7 +156,10 @@ impl FileUploadSession {
 
             // Get a new file id for the completion tracking.  This also registers the size against the total bytes
             // of the file.
-            let file_id = self.completion_tracker.register_new_file(file_name.clone(), file_size).await;
+            let file_id = self
+                .completion_tracker
+                .register_new_file(file_name.clone(), Some(file_size))
+                .await;
 
             // Now, spawn a task
             let ingestion_concurrency_limiter = XetRuntime::current().common().file_ingestion_semaphore.clone();
@@ -253,7 +256,7 @@ impl FileUploadSession {
     pub async fn start_clean(
         self: &Arc<Self>,
         file_name: Option<Arc<str>>,
-        size: u64,
+        size: Option<u64>,
         sha256: Option<Sha256>,
     ) -> SingleFileCleaner {
         // Get a new file id for the completion tracking
@@ -564,7 +567,7 @@ mod tests {
             .unwrap();
 
         let mut cleaner = upload_session
-            .start_clean(Some("test".into()), read_data.len() as u64, None)
+            .start_clean(Some("test".into()), Some(read_data.len() as u64), None)
             .await;
 
         // Read blocks from the source file and hand them to the cleaning handle
