@@ -35,6 +35,7 @@ pyo3 = { version = "0.26", features = [
 ] }
 rand = "0.9"
 tracing = "0.1"
+http = "1" 
 
 # Unix-specific dependencies
 [target.'cfg(unix)'.dependencies]

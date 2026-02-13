@@ -1016,6 +1016,7 @@ dependencies = [
  "dirs",
  "error_printer",
  "file_reconstruction",
+ "http",
  "hub_client",
  "lazy_static",
  "mdb_shard",

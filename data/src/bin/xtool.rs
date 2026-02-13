@@ -212,10 +212,11 @@ async fn query_reconstruction(
         Some((jwt_info.access_token, jwt_info.exp)),
         Some(token_refresher),
         USER_AGENT.to_string(),
+        None,
     )?;
     let cas_storage_config = &config.data_config;
     let remote_client =
-        RemoteClient::new(&jwt_info.cas_url, &cas_storage_config.auth, "", true, &cas_storage_config.user_agent);
+        RemoteClient::new(&jwt_info.cas_url, &cas_storage_config.auth, "", true, &cas_storage_config.user_agent, None);
 
     remote_client
         .get_reconstruction(&file_hash, bytes_range)

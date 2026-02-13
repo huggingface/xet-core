@@ -9,7 +9,7 @@ use cas_types::{
 };
 use futures::TryStreamExt;
 use http::HeaderValue;
-use http::header::{CONTENT_LENGTH, RANGE};
+use http::header::{CONTENT_LENGTH, RANGE, HeaderMap};
 use mdb_shard::file_structs::{FileDataSequenceEntry, FileDataSequenceHeader, MDBFileInfo};
 use merklehash::MerkleHash;
 use progress_tracking::upload_tracking::CompletionTracker;
@@ -43,6 +43,7 @@ pub struct RemoteClient {
     authenticated_http_client: Arc<ClientWithMiddleware>,
     upload_concurrency_controller: Arc<AdaptiveConcurrencyController>,
     download_concurrency_controller: Arc<AdaptiveConcurrencyController>,
+    custom_headers: Option<Arc<HeaderMap>>,
 }
 
 impl RemoteClient {
@@ -55,6 +56,7 @@ impl RemoteClient {
     /// * `dry_run` - Whether to run in dry-run mode
     /// * `user_agent` - User agent string
     /// * `unix_socket_path` - Optional Unix socket path for proxying connections (ignored on non-Unix platforms)
+    /// * `custom_headers` - Optional custom headers to include in HTTP requests
     pub fn new_with_socket(
         endpoint: &str,
         auth: &Option<AuthConfig>,
@@ -62,6 +64,7 @@ impl RemoteClient {
         dry_run: bool,
         user_agent: &str,
         unix_socket_path: Option<&str>,
+        custom_headers: Option<Arc<HeaderMap>>,
     ) -> Arc<Self> {
         Arc::new(Self {
             endpoint: endpoint.to_string(),
@@ -72,6 +75,7 @@ impl RemoteClient {
             http_client: Arc::new(http_client::build_http_client(session_id, user_agent, unix_socket_path).unwrap()),
             upload_concurrency_controller: AdaptiveConcurrencyController::new_upload("upload"),
             download_concurrency_controller: AdaptiveConcurrencyController::new_download("download"),
+            custom_headers,
         })
     }
 
@@ -79,12 +83,21 @@ impl RemoteClient {
     ///
     /// If `HF_XET_CLIENT_UNIX_SOCKET_PATH` is set in the configuration, this will
     /// automatically use the Unix socket for connections (checked by build_http_client).
+    ///
+    /// # Arguments
+    /// * `endpoint` - The CAS endpoint URL
+    /// * `auth` - Optional authentication configuration
+    /// * `session_id` - Session identifier
+    /// * `dry_run` - Whether to run in dry-run mode
+    /// * `user_agent` - User agent string
+    /// * `custom_headers` - Optional custom headers to include in HTTP requests
     pub fn new(
         endpoint: &str,
         auth: &Option<AuthConfig>,
         session_id: &str,
         dry_run: bool,
         user_agent: &str,
+        custom_headers: Option<Arc<HeaderMap>>,
     ) -> Arc<Self> {
         Arc::new(Self {
             endpoint: endpoint.to_string(),
@@ -95,6 +108,7 @@ impl RemoteClient {
             http_client: Arc::new(http_client::build_http_client(session_id, user_agent, None).unwrap()),
             upload_concurrency_controller: AdaptiveConcurrencyController::new_upload("upload"),
             download_concurrency_controller: AdaptiveConcurrencyController::new_download("download"),
+            custom_headers,
         })
     }
 
@@ -295,6 +309,7 @@ impl Client for RemoteClient {
         let api_tag = "s3::get_range";
         let http_client = self.http_client.clone();
         let url_info = Arc::new(url_info);
+        let custom_headers = self.custom_headers.clone();
 
         RetryWrapper::new(api_tag)
             .with_retry_on_403()
@@ -303,6 +318,7 @@ impl Client for RemoteClient {
                 move |_partial_report_fn| {
                     let http_client = http_client.clone();
                     let url_info = url_info.clone();
+                    let custom_headers = custom_headers.clone();
 
                     async move {
                         let (url_string, url_range) = url_info
@@ -312,9 +328,18 @@ impl Client for RemoteClient {
                         let url =
                             Url::parse(&url_string).map_err(|e| reqwest_middleware::Error::Middleware(e.into()))?;
 
-                        let response = http_client
+                        let mut request = http_client
                             .get(url)
-                            .header(RANGE, url_range.range_header())
+                            .header(RANGE, url_range.range_header());
+
+                        // Apply custom headers if present
+                        if let Some(headers) = custom_headers {
+                            for (name, value) in headers.iter() {
+                                request = request.header(name.clone(), value.clone());
+                            }
+                        }
+
+                        let response = request
                             .with_extension(Api(api_tag))
                             .send()
                             .await?;
@@ -604,7 +629,7 @@ mod tests {
         let raw_xorb = build_raw_xorb(3, ChunkSize::Random(512, 10248));
 
         let threadpool = XetRuntime::new().unwrap();
-        let client = RemoteClient::new(CAS_ENDPOINT, &None, "", false, "");
+        let client = RemoteClient::new(CAS_ENDPOINT, &None, "", false, "", None);
 
         let cas_object = build_and_verify_cas_object(raw_xorb, Some(CompressionScheme::LZ4));
 

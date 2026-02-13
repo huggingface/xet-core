@@ -8,6 +8,7 @@ use cas_client::remote_client::PREFIX_DEFAULT;
 use cas_object::CompressionScheme;
 use deduplication::{Chunker, DeduplicationMetrics};
 use file_reconstruction::DataOutput;
+use http::header::{HeaderMap, HeaderValue, USER_AGENT};
 use lazy_static::lazy_static;
 use mdb_shard::Sha256;
 use merklehash::MerkleHash;
@@ -36,6 +37,7 @@ pub fn default_config(
     token_info: Option<(String, u64)>,
     token_refresher: Option<Arc<dyn TokenRefresher>>,
     user_agent: String,
+    custom_headers: Option<Arc<HeaderMap>>,
 ) -> errors::Result<TranslatorConfig> {
     // Intercept local:// to run a simulated CAS server in a specified directory.
     // This is useful for testing and development.
@@ -72,6 +74,24 @@ pub fn default_config(
     let staging_root = cache_path.join("staging");
     std::fs::create_dir_all(&staging_root)?;
 
+    // Merge custom headers with default USER_AGENT
+    let merged_headers = {
+        let mut map = custom_headers.map(|h| (*h).clone()).unwrap_or_default();
+
+        // Append our USER_AGENT to any existing User-Agent header, or add it if not present
+        let combined_user_agent = if let Some(existing_ua) = map.get(USER_AGENT) {
+            // Append our user agent to the existing one
+            let existing_str = existing_ua.to_str().unwrap_or("");
+            format!("{} {}", existing_str, user_agent)
+        } else {
+            // No existing user agent, use ours
+            user_agent.clone()
+        };
+        map.insert(USER_AGENT, HeaderValue::from_str(&combined_user_agent).unwrap());
+
+        Some(Arc::new(map))
+    };
+
     let translator_config = TranslatorConfig {
         data_config: DataConfig {
             endpoint: Endpoint::Server(endpoint.clone()),
@@ -80,6 +100,7 @@ pub fn default_config(
             prefix: PREFIX_DEFAULT.into(),
             staging_directory: None,
             user_agent: user_agent.clone(),
+            custom_headers: merged_headers,
         },
         shard_config: ShardConfig {
             prefix: PREFIX_DEFAULT.into(),
@@ -113,6 +134,7 @@ pub async fn upload_bytes_async(
         token_info,
         token_refresher,
         user_agent,
+        None,
     )?;
 
     Span::current().record("session_id", &config.session_id);
@@ -162,6 +184,7 @@ pub async fn upload_async(
         token_info,
         token_refresher,
         user_agent,
+        None,
     )?;
 
     let span = Span::current();
@@ -210,6 +233,7 @@ pub async fn download_async(
     token_refresher: Option<Arc<dyn TokenRefresher>>,
     progress_updaters: Option<Vec<Arc<dyn TrackingProgressUpdater>>>,
     user_agent: String,
+    custom_headers: Option<Arc<HeaderMap>>,
 ) -> errors::Result<Vec<String>> {
     if let Some(updaters) = &progress_updaters
         && updaters.len() != file_infos.len()
@@ -222,6 +246,7 @@ pub async fn download_async(
         token_info,
         token_refresher,
         user_agent,
+        custom_headers,
     )?;
     Span::current().record("session_id", &config.session_id);
 
@@ -422,7 +447,7 @@ mod tests {
         let _hf_home_guard = EnvVarGuard::set("HF_HOME", temp_dir.path().to_str().unwrap());
 
         let endpoint = "http://localhost:8080".to_string();
-        let result = default_config(endpoint, None, None, None, String::new());
+        let result = default_config(endpoint, None, None, None, String::new(), None);
 
         assert!(result.is_ok());
         let config = result.unwrap();
@@ -439,7 +464,7 @@ mod tests {
         let hf_home_guard = EnvVarGuard::set("HF_HOME", temp_dir_hf_home.path().to_str().unwrap());
 
         let endpoint = "http://localhost:8080".to_string();
-        let result = default_config(endpoint, None, None, None, String::new());
+        let result = default_config(endpoint, None, None, None, String::new(), None);
 
         assert!(result.is_ok());
         let config = result.unwrap();
@@ -452,7 +477,7 @@ mod tests {
         let _hf_home_guard = EnvVarGuard::set("HF_HOME", temp_dir.path().to_str().unwrap());
 
         let endpoint = "http://localhost:8080".to_string();
-        let result = default_config(endpoint, None, None, None, String::new());
+        let result = default_config(endpoint, None, None, None, String::new(), None);
 
         assert!(result.is_ok());
         let config = result.unwrap();
@@ -466,7 +491,7 @@ mod tests {
         let _hf_xet_cache_guard = EnvVarGuard::set("HF_XET_CACHE", temp_dir.path().to_str().unwrap());
 
         let endpoint = "http://localhost:8080".to_string();
-        let result = default_config(endpoint, None, None, None, String::new());
+        let result = default_config(endpoint, None, None, None, String::new(), None);
 
         assert!(result.is_ok());
         let config = result.unwrap();
@@ -477,7 +502,7 @@ mod tests {
     #[serial(default_config_env)]
     fn test_default_config_without_env_vars() {
         let endpoint = "http://localhost:8080".to_string();
-        let result = default_config(endpoint, None, None, None, String::new());
+        let result = default_config(endpoint, None, None, None, String::new(), None);
 
         let expected = home_dir().unwrap().join(".cache").join("huggingface").join("xet");
 
@@ -487,6 +512,74 @@ mod tests {
         assert!(
             test_cache_dir.starts_with(&expected),
             "cache dir = {test_cache_dir:?}; does not start with {expected:?}",
+        );
+    }
+
+    #[test]
+    #[serial(default_config_env)]
+    fn test_custom_headers_user_agent_merging() {
+        use http::header::{HeaderMap, HeaderValue, USER_AGENT};
+
+        let temp_dir = tempdir().unwrap();
+        let _hf_home_guard = EnvVarGuard::set("HF_HOME", temp_dir.path().to_str().unwrap());
+
+        let endpoint = "http://localhost:8080".to_string();
+        let user_agent = "test_agent/1.0".to_string();
+
+        // Test 1: No custom headers - should use default USER_AGENT
+        let result = default_config(endpoint.clone(), None, None, None, user_agent.clone(), None);
+        assert!(result.is_ok());
+        let config = result.unwrap();
+        let headers = config.data_config.custom_headers.as_ref().unwrap();
+        let ua_value = headers.get(USER_AGENT).unwrap().to_str().unwrap();
+        assert_eq!(ua_value, "test_agent/1.0", "Should use default user agent when no custom headers provided");
+
+        // Test 2: Custom headers without User-Agent - should add default USER_AGENT
+        let mut custom_headers = HeaderMap::new();
+        custom_headers.insert("X-Custom-Header", HeaderValue::from_static("custom-value"));
+        let result = default_config(
+            endpoint.clone(),
+            None,
+            None,
+            None,
+            user_agent.clone(),
+            Some(Arc::new(custom_headers)),
+        );
+        assert!(result.is_ok());
+        let config = result.unwrap();
+        let headers = config.data_config.custom_headers.as_ref().unwrap();
+        let ua_value = headers.get(USER_AGENT).unwrap().to_str().unwrap();
+        assert_eq!(ua_value, "test_agent/1.0", "Should use default user agent when custom headers don't include User-Agent");
+        assert_eq!(
+            headers.get("X-Custom-Header").unwrap().to_str().unwrap(),
+            "custom-value",
+            "Custom headers should be preserved"
+        );
+
+        // Test 3: Custom headers WITH User-Agent - should append our USER_AGENT
+        let mut custom_headers = HeaderMap::new();
+        custom_headers.insert(USER_AGENT, HeaderValue::from_static("CustomAgent/2.0"));
+        custom_headers.insert("X-Custom-Header", HeaderValue::from_static("custom-value"));
+        let result = default_config(
+            endpoint.clone(),
+            None,
+            None,
+            None,
+            user_agent.clone(),
+            Some(Arc::new(custom_headers)),
+        );
+        assert!(result.is_ok());
+        let config = result.unwrap();
+        let headers = config.data_config.custom_headers.as_ref().unwrap();
+        let ua_value = headers.get(USER_AGENT).unwrap().to_str().unwrap();
+        assert_eq!(
+            ua_value, "CustomAgent/2.0 test_agent/1.0",
+            "Should append our user agent to custom User-Agent header"
+        );
+        assert_eq!(
+            headers.get("X-Custom-Header").unwrap().to_str().unwrap(),
+            "custom-value",
+            "Other custom headers should be preserved"
         );
     }
 

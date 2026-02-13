@@ -3,12 +3,14 @@ mod progress_update;
 mod runtime;
 mod token_refresh;
 
+use std::collections::HashMap;
 use std::fmt::Debug;
 use std::iter::IntoIterator;
 use std::sync::Arc;
 
 use data::errors::DataProcessingError;
 use data::{XetFileInfo, data_client};
+use http::header::{HeaderMap, HeaderName, HeaderValue};
 use itertools::Itertools;
 use progress_tracking::TrackingProgressUpdater;
 use pyo3::exceptions::{PyKeyboardInterrupt, PyRuntimeError};
@@ -167,7 +169,7 @@ pub fn hash_files(py: Python, file_paths: Vec<String>) -> PyResult<Vec<PyXetUplo
 }
 
 #[pyfunction]
-#[pyo3(signature = (files, endpoint, token_info, token_refresher, progress_updater), text_signature = "(files: List[PyXetDownloadInfo], endpoint: Optional[str], token_info: Optional[(str, int)], token_refresher: Optional[Callable[[], (str, int)]], progress_updater: Optional[List[Callable[[int], None]]]) -> List[str]")]
+#[pyo3(signature = (files, endpoint, token_info, token_refresher, progress_updater, request_headers=None), text_signature = "(files: List[PyXetDownloadInfo], endpoint: Optional[str], token_info: Optional[(str, int)], token_refresher: Optional[Callable[[], (str, int)]], progress_updater: Optional[List[Callable[[int], None]]], request_headers: Optional[Dict[str, str]]) -> List[str]")]
 pub fn download_files(
     py: Python,
     files: Vec<PyXetDownloadInfo>,
@@ -175,10 +177,26 @@ pub fn download_files(
     token_info: Option<(String, u64)>,
     token_refresher: Option<Py<PyAny>>,
     progress_updater: Option<Vec<Py<PyAny>>>,
+    request_headers: Option<HashMap<String, String>>,
 ) -> PyResult<Vec<String>> {
     let file_infos: Vec<_> = files.into_iter().map(<(XetFileInfo, DestinationPath)>::from).collect();
     let refresher = token_refresher.map(WrappedTokenRefresher::from_func).transpose()?.map(Arc::new);
     let updaters = progress_updater.map(try_parse_progress_updaters).transpose()?;
+
+    // Convert Python dict -> Rust HashMap -> HeaderMap
+    let header_map = request_headers
+        .map(|headers| {
+            let mut map = HeaderMap::new();
+            for (key, value) in headers {
+                let name = HeaderName::from_bytes(key.as_bytes())
+                    .map_err(|e| PyRuntimeError::new_err(format!("Invalid header name '{}': {}", key, e)))?;
+                let value = HeaderValue::from_str(&value)
+                    .map_err(|e| PyRuntimeError::new_err(format!("Invalid header value for '{}': {}", key, e)))?;
+                map.insert(name, value);
+            }
+            Ok::<_, PyErr>(Arc::new(map))
+        })
+        .transpose()?;
 
     let x: u64 = rand::rng().random();
 
@@ -199,6 +217,7 @@ pub fn download_files(
             refresher.map(|v| v as Arc<_>),
             updaters,
             USER_AGENT.to_string(),
+            header_map,
         )
         .await
         .map_err(convert_data_processing_error)?;

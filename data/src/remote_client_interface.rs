@@ -19,6 +19,7 @@ pub(crate) async fn create_remote_client(
             session_id,
             dry_run,
             &cas_storage_config.user_agent,
+            cas_storage_config.custom_headers.clone(),
         )),
         Endpoint::FileSystem(ref path) => {
             #[cfg(not(target_family = "wasm"))]
