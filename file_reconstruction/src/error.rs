@@ -28,6 +28,9 @@ pub enum FileReconstructionError {
     #[error("Internal Error: {0}")]
     InternalError(String),
 
+    #[error("Cancelled: {0}")]
+    Cancelled(String),
+
     #[error("Task Join Error: {0}")]
     TaskJoinError(Arc<tokio::task::JoinError>),
 

@@ -8,6 +8,7 @@ use bytes::Bytes;
 use cas_types::FileRange;
 use progress_tracking::download_tracking::DownloadTaskUpdater;
 use tokio::sync::OwnedSemaphorePermit;
+use tokio_util::sync::CancellationToken;
 use xet_config::ReconstructionConfig;
 
 use crate::Result;
@@ -62,18 +63,21 @@ pub fn new_data_writer(
     default_write_position: u64,
     config: &ReconstructionConfig,
     progress_updater: Option<Arc<DownloadTaskUpdater>>,
+    cancellation_token: CancellationToken,
 ) -> Result<Arc<dyn DataWriter>> {
     let use_vectored = config.use_vectored_write;
 
     match output {
         DataOutput::SequentialWriter(writer) => {
             if use_vectored {
-                Ok(Arc::new(SequentialWriter::new_vectorized(writer, progress_updater)))
+                Ok(Arc::new(SequentialWriter::new_vectorized(writer, progress_updater, cancellation_token)))
             } else {
-                Ok(Arc::new(SequentialWriter::new(writer, progress_updater)))
+                Ok(Arc::new(SequentialWriter::new(writer, progress_updater, cancellation_token)))
             }
         },
-        DataOutput::Channel(sender) => Ok(Arc::new(SequentialWriter::new_channel(sender))),
+        DataOutput::Channel(sender) => {
+            Ok(Arc::new(SequentialWriter::new_channel(sender, progress_updater, cancellation_token)))
+        },
         DataOutput::File { path, offset } => {
             if let Some(parent) = path.parent() {
                 std::fs::create_dir_all(parent)?;
@@ -86,9 +90,9 @@ pub fn new_data_writer(
             }
 
             if use_vectored {
-                Ok(Arc::new(SequentialWriter::new_vectorized(file, progress_updater)))
+                Ok(Arc::new(SequentialWriter::new_vectorized(file, progress_updater, cancellation_token)))
             } else {
-                Ok(Arc::new(SequentialWriter::new(file, progress_updater)))
+                Ok(Arc::new(SequentialWriter::new(file, progress_updater, cancellation_token)))
             }
         },
     }

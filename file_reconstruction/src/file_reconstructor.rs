@@ -5,11 +5,13 @@ use cas_types::FileRange;
 use merklehash::MerkleHash;
 use progress_tracking::download_tracking::DownloadTaskUpdater;
 use tokio::sync::Semaphore;
-use tracing::{debug, info};
+use tokio_util::sync::CancellationToken;
+use tracing::{debug, info, warn};
 use xet_config::ReconstructionConfig;
 use xet_runtime::{GlobalSemaphoreHandle, XetRuntime, global_semaphore_handle, xet_config};
 
 use crate::data_writer::{DataOutput, new_data_writer};
+use crate::download_stream::DownloadStream;
 use crate::error::{FileReconstructionError, Result};
 use crate::reconstruction_terms::ReconstructionTermManager;
 
@@ -32,21 +34,26 @@ pub struct FileReconstructor {
     client: Arc<dyn Client>,
     file_hash: MerkleHash,
     byte_range: Option<FileRange>,
-    output: DataOutput,
+    output: Option<DataOutput>,
     progress_updater: Option<Arc<DownloadTaskUpdater>>,
     config: Arc<ReconstructionConfig>,
 
     /// Custom buffer semaphore (semaphore, total_permits) for testing or specialized use cases.
     custom_buffer_semaphore: Option<(Arc<Semaphore>, usize, usize)>,
+
+    /// Cancellation token checked at each major step of the reconstruction loop.
+    /// When cancelled, reconstruction stops at its next check point. Long waits
+    /// (such as semaphore acquisition) use `tokio::select!` so they abort promptly.
+    cancellation_token: CancellationToken,
 }
 
 impl FileReconstructor {
-    pub fn new(client: &Arc<dyn Client>, file_hash: MerkleHash, output: DataOutput) -> Self {
+    pub fn new(client: &Arc<dyn Client>, file_hash: MerkleHash) -> Self {
         Self {
             client: client.clone(),
             file_hash,
             byte_range: None,
-            output,
+            output: None,
             progress_updater: {
                 if cfg!(debug_assertions) {
                     Some(DownloadTaskUpdater::correctness_verification_tracker())
@@ -56,6 +63,19 @@ impl FileReconstructor {
             },
             config: Arc::new(xet_config().reconstruction.clone()),
             custom_buffer_semaphore: None,
+            cancellation_token: CancellationToken::new(),
+        }
+    }
+
+    /// Sets the data output destination for the reconstruction.
+    ///
+    /// Must be called before [`run`](Self::run). For streaming downloads, use
+    /// [`stream_download`](Self::stream_download) instead, which sets up a
+    /// channel output automatically.
+    pub fn with_data_output(self, output: DataOutput) -> Self {
+        Self {
+            output: Some(output),
+            ..self
         }
     }
 
@@ -94,6 +114,51 @@ impl FileReconstructor {
         }
     }
 
+    /// Replaces the default cancellation token with the given one. This is used
+    /// when external code (such as [`DownloadStream`]) needs to share the same
+    /// token for coordinated cancellation.
+    pub fn with_cancellation_token(self, token: CancellationToken) -> Self {
+        Self {
+            cancellation_token: token,
+            ..self
+        }
+    }
+
+    /// Checks the cancellation token and returns an error if cancellation has been
+    /// requested. The `location` parameter is logged so the cancellation point is
+    /// easy to find in traces.
+    fn check_cancelled(token: &CancellationToken, file_hash: &MerkleHash, location: &str) -> Result<()> {
+        if token.is_cancelled() {
+            warn!(
+                file_hash = %file_hash,
+                location,
+                "Reconstruction cancelled"
+            );
+            return Err(FileReconstructionError::Cancelled(format!(
+                "Reconstruction of {file_hash} cancelled at {location}"
+            )));
+        }
+        Ok(())
+    }
+
+    /// Creates a streaming download, returning a [`DownloadStream`] that yields
+    /// data chunks as they are reconstructed.
+    ///
+    /// This consumes the `FileReconstructor` and sets up a channel-based output
+    /// internally. Any previously configured data output is replaced.
+    ///
+    /// When `start_prefetch` is `true`, the reconstruction task is spawned
+    /// immediately. Otherwise it starts lazily on the first call to
+    /// [`DownloadStream::next`] or [`DownloadStream::blocking_next`].
+    pub fn stream_download(mut self, start_prefetch: bool) -> DownloadStream {
+        let (output, receiver) = DataOutput::channel();
+        self.output = Some(output);
+
+        let cancellation_token = self.cancellation_token.clone();
+
+        DownloadStream::new(self, receiver, cancellation_token, start_prefetch)
+    }
+
     /// Runs the file reconstruction.
     /// Returns the number of bytes written.
     pub async fn run(self) -> Result<u64> {
@@ -103,6 +168,20 @@ impl FileReconstructor {
             "Starting file reconstruction"
         );
 
+        let cancellation_token = self.cancellation_token.clone();
+        let result = self.run_impl().await;
+
+        if result.is_err() {
+            cancellation_token.cancel();
+        }
+
+        match result {
+            Err(FileReconstructionError::Cancelled(_)) => Ok(0),
+            other => other,
+        }
+    }
+
+    async fn run_impl(self) -> Result<u64> {
         let Self {
             client,
             file_hash,
@@ -111,7 +190,17 @@ impl FileReconstructor {
             progress_updater,
             config,
             custom_buffer_semaphore,
+            cancellation_token,
+            ..
         } = self;
+
+        let output = output.ok_or_else(|| {
+            FileReconstructionError::ConfigurationError(
+                "No data output specified. Call with_data_output() before run(), or use stream_download().".to_string(),
+            )
+        })?;
+
+        Self::check_cancelled(&cancellation_token, &file_hash, "before term manager creation")?;
 
         let requested_range = byte_range.unwrap_or_else(FileRange::full);
 
@@ -124,7 +213,13 @@ impl FileReconstructor {
         )
         .await?;
 
-        let data_writer = new_data_writer(output, requested_range.start, &config, progress_updater.clone())?;
+        let data_writer = new_data_writer(
+            output,
+            requested_range.start,
+            &config,
+            progress_updater.clone(),
+            cancellation_token.clone(),
+        )?;
 
         // Determine buffer size and semaphore based on whether a custom one is provided.
         // Tuple is (semaphore, total_permits).
@@ -149,6 +244,8 @@ impl FileReconstructor {
 
         // Outer loop: retrieve blocks of file terms.
         while let Some(file_terms) = term_manager.next_file_terms().await? {
+            Self::check_cancelled(&cancellation_token, &file_hash, "before processing term block")?;
+
             let block_term_count = file_terms.len();
             let block_start = file_terms.first().map(|t| t.byte_range.start).unwrap_or(0);
             let block_end = file_terms.last().map(|t| t.byte_range.end).unwrap_or(0);
@@ -165,6 +262,7 @@ impl FileReconstructor {
 
             // Inner loop: process each file term in the block.
             for file_term in file_terms {
+                Self::check_cancelled(&cancellation_token, &file_hash, "before processing file term")?;
                 // Calculate the number of bytes this term will use.
                 let term_size = (file_term.byte_range.end - file_term.byte_range.start) as u32;
 
@@ -185,15 +283,23 @@ impl FileReconstructor {
                 let requested_permit_size =
                     (((term_size as f64) / (permit_size_basis as f64)).ceil() as u32).min(max_request_size);
 
-                // Acquire a permit from the memory limiter for using the memory needed for
-                // the next term.
-                let buffer_permit = download_buffer_semaphore
-                    .clone()
-                    .acquire_many_owned(requested_permit_size)
-                    .await
-                    .map_err(|e| {
-                        FileReconstructionError::InternalError(format!("Error acquiring download buffer permit: {e}"))
-                    })?;
+                // Acquire a permit from the memory limiter, aborting promptly if
+                // the cancellation token fires while we are waiting.
+                let buffer_permit = tokio::select! {
+                    biased;
+                    _ = cancellation_token.cancelled() => {
+                        return Err(FileReconstructionError::Cancelled(format!(
+                            "Reconstruction of {file_hash} cancelled while waiting for buffer permit"
+                        )));
+                    }
+                    result = download_buffer_semaphore.clone().acquire_many_owned(requested_permit_size) => {
+                        result.map_err(|e| {
+                            FileReconstructionError::InternalError(format!(
+                                "Error acquiring download buffer permit: {e}"
+                            ))
+                        })?
+                    }
+                };
 
                 // Get the data future that will retrieve the term's data.
                 let data_future = file_term.get_data_task(client.clone(), progress_updater.clone()).await?;
@@ -261,6 +367,7 @@ mod tests {
     use cas_types::FileRange;
     use progress_tracking::NoOpProgressUpdater;
     use progress_tracking::download_tracking::DownloadProgressTracker;
+    use tokio_util::sync::CancellationToken;
 
     use super::*;
 
@@ -293,9 +400,9 @@ mod tests {
         let buffer = Arc::new(std::sync::Mutex::new(Cursor::new(Vec::new())));
         let writer = StaticCursorWriter(buffer.clone());
 
-        let mut reconstructor =
-            FileReconstructor::new(&(client.clone() as Arc<dyn Client>), file_hash, DataOutput::writer(writer))
-                .with_config(config);
+        let mut reconstructor = FileReconstructor::new(&(client.clone() as Arc<dyn Client>), file_hash)
+            .with_data_output(DataOutput::writer(writer))
+            .with_config(config);
 
         if let Some(range) = byte_range {
             reconstructor = reconstructor.with_byte_range(range);
@@ -318,12 +425,9 @@ mod tests {
         let temp_dir = tempfile::tempdir().unwrap();
         let file_path = temp_dir.path().join("output.bin");
 
-        let mut reconstructor = FileReconstructor::new(
-            &(client.clone() as Arc<dyn Client>),
-            file_hash,
-            DataOutput::write_in_file(&file_path),
-        )
-        .with_config(config);
+        let mut reconstructor = FileReconstructor::new(&(client.clone() as Arc<dyn Client>), file_hash)
+            .with_data_output(DataOutput::write_in_file(&file_path))
+            .with_config(config);
 
         if let Some(range) = byte_range {
             reconstructor = reconstructor.with_byte_range(range);
@@ -350,12 +454,9 @@ mod tests {
         let temp_dir = tempfile::tempdir().unwrap();
         let file_path = temp_dir.path().join("output.bin");
 
-        let mut reconstructor = FileReconstructor::new(
-            &(client.clone() as Arc<dyn Client>),
-            file_hash,
-            DataOutput::write_file_at_offset(&file_path, offset as u64), // Write at offset 9.
-        )
-        .with_config(config);
+        let mut reconstructor = FileReconstructor::new(&(client.clone() as Arc<dyn Client>), file_hash)
+            .with_data_output(DataOutput::write_file_at_offset(&file_path, offset as u64))
+            .with_config(config);
 
         if let Some(range) = byte_range {
             reconstructor = reconstructor.with_byte_range(range);
@@ -379,12 +480,9 @@ mod tests {
         let temp_dir = tempfile::tempdir().unwrap();
         let file_path = temp_dir.path().join("output.bin");
 
-        let mut reconstructor = FileReconstructor::new(
-            &(client.clone() as Arc<dyn Client>),
-            file_hash,
-            DataOutput::write_file_at_offset(&file_path, 0), // Write at offset 9.
-        )
-        .with_config(config);
+        let mut reconstructor = FileReconstructor::new(&(client.clone() as Arc<dyn Client>), file_hash)
+            .with_data_output(DataOutput::write_file_at_offset(&file_path, 0))
+            .with_config(config);
 
         if let Some(range) = byte_range {
             reconstructor = reconstructor.with_byte_range(range);
@@ -536,16 +634,13 @@ mod tests {
 
         let progress_updater =
             DownloadProgressTracker::new(NoOpProgressUpdater::new()).new_download_task(Arc::from("file"));
-        let bytes_written = FileReconstructor::new(
-            &(client.clone() as Arc<dyn Client>),
-            file_contents.file_hash,
-            DataOutput::writer(writer),
-        )
-        .with_config(&config)
-        .with_progress_updater(progress_updater.clone())
-        .run()
-        .await
-        .unwrap();
+        let bytes_written = FileReconstructor::new(&(client.clone() as Arc<dyn Client>), file_contents.file_hash)
+            .with_data_output(DataOutput::writer(writer))
+            .with_config(&config)
+            .with_progress_updater(progress_updater.clone())
+            .run()
+            .await
+            .unwrap();
 
         assert_eq!(bytes_written, file_contents.data.len() as u64);
     }
@@ -563,17 +658,14 @@ mod tests {
 
         let progress_updater =
             DownloadProgressTracker::new(NoOpProgressUpdater::new()).new_download_task(Arc::from("file"));
-        let bytes_written = FileReconstructor::new(
-            &(client.clone() as Arc<dyn Client>),
-            file_contents.file_hash,
-            DataOutput::writer(writer),
-        )
-        .with_config(&config)
-        .with_byte_range(range)
-        .with_progress_updater(progress_updater.clone())
-        .run()
-        .await
-        .unwrap();
+        let bytes_written = FileReconstructor::new(&(client.clone() as Arc<dyn Client>), file_contents.file_hash)
+            .with_data_output(DataOutput::writer(writer))
+            .with_config(&config)
+            .with_byte_range(range)
+            .with_progress_updater(progress_updater.clone())
+            .run()
+            .await
+            .unwrap();
 
         assert_eq!(bytes_written, expected_bytes);
     }
@@ -592,16 +684,13 @@ mod tests {
         let buffer = Arc::new(std::sync::Mutex::new(Cursor::new(Vec::new())));
         let writer = StaticCursorWriter(buffer.clone());
 
-        let bytes_written = FileReconstructor::new(
-            &(client.clone() as Arc<dyn Client>),
-            file_contents.file_hash,
-            DataOutput::writer(writer),
-        )
-        .with_config(&config)
-        .with_progress_updater(task.clone())
-        .run()
-        .await
-        .unwrap();
+        let bytes_written = FileReconstructor::new(&(client.clone() as Arc<dyn Client>), file_contents.file_hash)
+            .with_data_output(DataOutput::writer(writer))
+            .with_config(&config)
+            .with_progress_updater(task.clone())
+            .run()
+            .await
+            .unwrap();
 
         assert_eq!(bytes_written, file_contents.data.len() as u64);
 
@@ -630,16 +719,13 @@ mod tests {
         let buffer = Arc::new(std::sync::Mutex::new(Cursor::new(Vec::new())));
         let writer = StaticCursorWriter(buffer.clone());
 
-        let bytes_written = FileReconstructor::new(
-            &(client.clone() as Arc<dyn Client>),
-            file_contents.file_hash,
-            DataOutput::writer(writer),
-        )
-        .with_config(&config)
-        .with_progress_updater(task.clone())
-        .run()
-        .await
-        .unwrap();
+        let bytes_written = FileReconstructor::new(&(client.clone() as Arc<dyn Client>), file_contents.file_hash)
+            .with_data_output(DataOutput::writer(writer))
+            .with_config(&config)
+            .with_progress_updater(task.clone())
+            .run()
+            .await
+            .unwrap();
 
         assert_eq!(bytes_written, file_size);
 
@@ -924,13 +1010,10 @@ mod tests {
         // This ensures each term is fully written before the next is fetched
         let tiny_semaphore = Arc::new(Semaphore::new(1));
 
-        let reconstructor = FileReconstructor::new(
-            &(client.clone() as Arc<dyn Client>),
-            file_contents.file_hash,
-            DataOutput::SequentialWriter(Box::new(writer)),
-        )
-        .with_config(url_refresh_test_config())
-        .with_buffer_semaphore(tiny_semaphore, 1, 1);
+        let reconstructor = FileReconstructor::new(&(client.clone() as Arc<dyn Client>), file_contents.file_hash)
+            .with_data_output(DataOutput::SequentialWriter(Box::new(writer)))
+            .with_config(url_refresh_test_config())
+            .with_buffer_semaphore(tiny_semaphore, 1, 1);
 
         // Run reconstruction - this should trigger URL refreshes
         reconstructor
@@ -965,13 +1048,10 @@ mod tests {
 
         let tiny_semaphore = Arc::new(Semaphore::new(1));
 
-        let reconstructor = FileReconstructor::new(
-            &(client.clone() as Arc<dyn Client>),
-            file_contents.file_hash,
-            DataOutput::SequentialWriter(Box::new(writer)),
-        )
-        .with_config(url_refresh_test_config())
-        .with_buffer_semaphore(tiny_semaphore, 1, 1);
+        let reconstructor = FileReconstructor::new(&(client.clone() as Arc<dyn Client>), file_contents.file_hash)
+            .with_data_output(DataOutput::SequentialWriter(Box::new(writer)))
+            .with_config(url_refresh_test_config())
+            .with_buffer_semaphore(tiny_semaphore, 1, 1);
 
         reconstructor.run().await.expect("Reconstruction should succeed");
 
@@ -994,13 +1074,10 @@ mod tests {
 
         let tiny_semaphore = Arc::new(Semaphore::new(1));
 
-        let reconstructor = FileReconstructor::new(
-            &(client.clone() as Arc<dyn Client>),
-            file_contents.file_hash,
-            DataOutput::SequentialWriter(Box::new(writer)),
-        )
-        .with_config(url_refresh_test_config())
-        .with_buffer_semaphore(tiny_semaphore, 1, 1);
+        let reconstructor = FileReconstructor::new(&(client.clone() as Arc<dyn Client>), file_contents.file_hash)
+            .with_data_output(DataOutput::SequentialWriter(Box::new(writer)))
+            .with_config(url_refresh_test_config())
+            .with_buffer_semaphore(tiny_semaphore, 1, 1);
 
         reconstructor.run().await.expect("Reconstruction should succeed");
 
@@ -1023,13 +1100,10 @@ mod tests {
 
         let tiny_semaphore = Arc::new(Semaphore::new(1));
 
-        let reconstructor = FileReconstructor::new(
-            &(client.clone() as Arc<dyn Client>),
-            file_contents.file_hash,
-            DataOutput::SequentialWriter(Box::new(writer)),
-        )
-        .with_config(url_refresh_test_config())
-        .with_buffer_semaphore(tiny_semaphore, 1, 1);
+        let reconstructor = FileReconstructor::new(&(client.clone() as Arc<dyn Client>), file_contents.file_hash)
+            .with_data_output(DataOutput::SequentialWriter(Box::new(writer)))
+            .with_config(url_refresh_test_config())
+            .with_buffer_semaphore(tiny_semaphore, 1, 1);
 
         reconstructor.run().await.expect("Reconstruction should succeed");
 
@@ -1053,14 +1127,11 @@ mod tests {
 
         let range = FileRange::new(file_len / 4, file_len * 3 / 4);
 
-        let reconstructor = FileReconstructor::new(
-            &(client.clone() as Arc<dyn Client>),
-            file_contents.file_hash,
-            DataOutput::SequentialWriter(Box::new(writer)),
-        )
-        .with_byte_range(range)
-        .with_config(url_refresh_test_config())
-        .with_buffer_semaphore(tiny_semaphore, 1, 1);
+        let reconstructor = FileReconstructor::new(&(client.clone() as Arc<dyn Client>), file_contents.file_hash)
+            .with_data_output(DataOutput::SequentialWriter(Box::new(writer)))
+            .with_byte_range(range)
+            .with_config(url_refresh_test_config())
+            .with_buffer_semaphore(tiny_semaphore, 1, 1);
 
         reconstructor.run().await.expect("Reconstruction should succeed");
 
@@ -1081,7 +1152,8 @@ mod tests {
         range: FileRange,
         config: ReconstructionConfig,
     ) -> Result<u64> {
-        FileReconstructor::new(&(client.clone() as Arc<dyn Client>), file_hash, DataOutput::write_in_file(file_path))
+        FileReconstructor::new(&(client.clone() as Arc<dyn Client>), file_hash)
+            .with_data_output(DataOutput::write_in_file(file_path))
             .with_byte_range(range)
             .with_config(config)
             .run()
@@ -1137,7 +1209,8 @@ mod tests {
             let config = config.clone();
 
             join_set.spawn(async move {
-                FileReconstructor::new(&(client as Arc<dyn Client>), file_hash, DataOutput::write_in_file(&file_path))
+                FileReconstructor::new(&(client as Arc<dyn Client>), file_hash)
+                    .with_data_output(DataOutput::write_in_file(&file_path))
                     .with_byte_range(range)
                     .with_config(config)
                     .run()
@@ -1186,5 +1259,107 @@ mod tests {
 
         // Middle third should have reconstructed data.
         assert_eq!(&result[start as usize..end as usize], &file_contents.data[start as usize..end as usize]);
+    }
+
+    // ==================== Cancellation Flag Tests ====================
+
+    #[tokio::test]
+    async fn test_cancellation_token_before_start() {
+        let (client, file_contents) = setup_test_file(&[(1, (0, 3))]).await;
+        let config = test_config();
+
+        let token = CancellationToken::new();
+        token.cancel();
+        let buffer = Arc::new(std::sync::Mutex::new(Cursor::new(Vec::new())));
+        let writer = StaticCursorWriter(buffer.clone());
+
+        let bytes_written = FileReconstructor::new(&(client.clone() as Arc<dyn Client>), file_contents.file_hash)
+            .with_data_output(DataOutput::writer(writer))
+            .with_config(&config)
+            .with_cancellation_token(token)
+            .run()
+            .await
+            .unwrap();
+
+        assert_eq!(bytes_written, 0);
+    }
+
+    /// A writer that cancels a token after a certain number of writes,
+    /// used to deterministically test mid-reconstruction cancellation.
+    struct CancellingWriter {
+        buffer: Arc<std::sync::Mutex<Vec<u8>>>,
+        cancel_token: CancellationToken,
+        write_count: AtomicUsize,
+        cancel_after_writes: usize,
+    }
+
+    impl Write for CancellingWriter {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            let n = self.buffer.lock().unwrap().write(buf)?;
+            let count = self.write_count.fetch_add(1, Ordering::Relaxed) + 1;
+            if count >= self.cancel_after_writes {
+                self.cancel_token.cancel();
+            }
+            Ok(n)
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn test_cancellation_token_during_reconstruction() {
+        let term_spec: Vec<(u64, (u64, u64))> = (1..=10).map(|i| (i, (0, 5))).collect();
+        let (client, file_contents) = setup_test_file(&term_spec).await;
+        let config = test_config();
+
+        let token = CancellationToken::new();
+        let buffer = Arc::new(std::sync::Mutex::new(Vec::new()));
+
+        let writer = CancellingWriter {
+            buffer: buffer.clone(),
+            cancel_token: token.clone(),
+            write_count: AtomicUsize::new(0),
+            cancel_after_writes: 1,
+        };
+
+        // Use a tiny semaphore to force sequential term processing.
+        let tiny_semaphore = Arc::new(Semaphore::new(1));
+
+        let bytes_written = FileReconstructor::new(&(client.clone() as Arc<dyn Client>), file_contents.file_hash)
+            .with_data_output(DataOutput::SequentialWriter(Box::new(writer)))
+            .with_config(&config)
+            .with_cancellation_token(token)
+            .with_buffer_semaphore(tiny_semaphore, 1, 1)
+            .run()
+            .await
+            .unwrap();
+
+        // Verify cancellation returned Ok(0) and only partial data was written.
+        assert_eq!(bytes_written, 0);
+        let written = buffer.lock().unwrap().len();
+        assert!(written < file_contents.data.len());
+    }
+
+    #[tokio::test]
+    async fn test_cancellation_token_not_set_completes_normally() {
+        let (client, file_contents) = setup_test_file(&[(1, (0, 3)), (2, (0, 2))]).await;
+        let config = test_config();
+
+        let token = CancellationToken::new();
+        let buffer = Arc::new(std::sync::Mutex::new(Cursor::new(Vec::new())));
+        let writer = StaticCursorWriter(buffer.clone());
+
+        let bytes_written = FileReconstructor::new(&(client.clone() as Arc<dyn Client>), file_contents.file_hash)
+            .with_data_output(DataOutput::writer(writer))
+            .with_config(&config)
+            .with_cancellation_token(token)
+            .run()
+            .await
+            .unwrap();
+
+        assert_eq!(bytes_written, file_contents.data.len() as u64);
+        assert_eq!(buffer.lock().unwrap().get_ref().clone(), file_contents.data);
     }
 }
