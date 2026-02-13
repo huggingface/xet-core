@@ -9,7 +9,6 @@ use cas_object::CompressionScheme;
 use deduplication::{Chunker, DeduplicationMetrics};
 use file_reconstruction::DataOutput;
 use http::header::{HeaderMap, HeaderValue, USER_AGENT};
-use lazy_static::lazy_static;
 use mdb_shard::Sha256;
 use merklehash::MerkleHash;
 use progress_tracking::TrackingProgressUpdater;
@@ -19,17 +18,11 @@ use ulid::Ulid;
 use utils::auth::{AuthConfig, TokenRefresher};
 use xet_runtime::runtime::check_sigint_shutdown;
 use xet_runtime::utils::run_constrained_with_semaphore;
-use xet_runtime::{GlobalSemaphoreHandle, XetRuntime, global_semaphore_handle, xet_cache_root, xet_config};
+use xet_runtime::{XetRuntime, xet_cache_root, xet_config};
 
 use crate::configurations::*;
 use crate::errors::DataProcessingError;
-use crate::file_upload_session::CONCURRENT_FILE_INGESTION_LIMITER;
 use crate::{FileDownloader, FileUploadSession, XetFileInfo, errors};
-
-lazy_static! {
-    static ref CONCURRENT_FILE_DOWNLOAD_LIMITER: GlobalSemaphoreHandle =
-        global_semaphore_handle!(xet_config().data.max_concurrent_file_downloads as usize);
-}
 
 pub fn default_config(
     endpoint: String,
@@ -139,7 +132,7 @@ pub async fn upload_bytes_async(
 
     Span::current().record("session_id", &config.session_id);
 
-    let semaphore = XetRuntime::current().global_semaphore(*CONCURRENT_FILE_INGESTION_LIMITER);
+    let semaphore = XetRuntime::current().common().file_ingestion_semaphore.clone();
     let upload_session = FileUploadSession::new(config.into(), progress_updater).await?;
     let clean_futures = file_contents.into_iter().map(|blob| {
         let upload_session = upload_session.clone();
@@ -260,7 +253,7 @@ pub async fn download_async(
         async move { smudge_file(&proc, &file_info, &file_path, updater).await }.instrument(info_span!("download_file"))
     });
 
-    let semaphore = XetRuntime::current().global_semaphore(*CONCURRENT_FILE_DOWNLOAD_LIMITER);
+    let semaphore = XetRuntime::current().common().file_download_semaphore.clone();
 
     let paths = run_constrained_with_semaphore(smudge_file_futures, semaphore).await?;
 
@@ -384,13 +377,13 @@ fn hash_single_file(filename: String, buffer_size: usize) -> errors::Result<XetF
 /// - Determine which files need to be uploaded by comparing with server hashes
 ///
 /// # Performance
-/// - Uses `CONCURRENT_FILE_INGESTION_LIMITER` to control parallelism
+/// - Uses `file_ingestion_semaphore` to control parallelism
 /// - No authentication or server connection required
 /// - Pure local computation
 #[instrument(skip_all, name = "data_client::hash_files", fields(num_files=file_paths.len()))]
 pub async fn hash_files_async(file_paths: Vec<String>) -> errors::Result<Vec<XetFileInfo>> {
     let rt = XetRuntime::current();
-    let semaphore = rt.global_semaphore(*CONCURRENT_FILE_INGESTION_LIMITER);
+    let semaphore = rt.common().file_ingestion_semaphore.clone();
     let buffer_size = *xet_config().data.ingestion_block_size as usize;
 
     let hash_futures = file_paths.into_iter().map(|file_path| {
@@ -537,19 +530,16 @@ mod tests {
         // Test 2: Custom headers without User-Agent - should add default USER_AGENT
         let mut custom_headers = HeaderMap::new();
         custom_headers.insert("X-Custom-Header", HeaderValue::from_static("custom-value"));
-        let result = default_config(
-            endpoint.clone(),
-            None,
-            None,
-            None,
-            user_agent.clone(),
-            Some(Arc::new(custom_headers)),
-        );
+        let result =
+            default_config(endpoint.clone(), None, None, None, user_agent.clone(), Some(Arc::new(custom_headers)));
         assert!(result.is_ok());
         let config = result.unwrap();
         let headers = config.data_config.custom_headers.as_ref().unwrap();
         let ua_value = headers.get(USER_AGENT).unwrap().to_str().unwrap();
-        assert_eq!(ua_value, "test_agent/1.0", "Should use default user agent when custom headers don't include User-Agent");
+        assert_eq!(
+            ua_value, "test_agent/1.0",
+            "Should use default user agent when custom headers don't include User-Agent"
+        );
         assert_eq!(
             headers.get("X-Custom-Header").unwrap().to_str().unwrap(),
             "custom-value",
@@ -560,14 +550,8 @@ mod tests {
         let mut custom_headers = HeaderMap::new();
         custom_headers.insert(USER_AGENT, HeaderValue::from_static("CustomAgent/2.0"));
         custom_headers.insert("X-Custom-Header", HeaderValue::from_static("custom-value"));
-        let result = default_config(
-            endpoint.clone(),
-            None,
-            None,
-            None,
-            user_agent.clone(),
-            Some(Arc::new(custom_headers)),
-        );
+        let result =
+            default_config(endpoint.clone(), None, None, None, user_agent.clone(), Some(Arc::new(custom_headers)));
         assert!(result.is_ok());
         let config = result.unwrap();
         let headers = config.data_config.custom_headers.as_ref().unwrap();

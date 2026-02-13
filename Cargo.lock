@@ -1371,7 +1371,6 @@ dependencies = [
  "bytes",
  "cas_client",
  "cas_types",
- "lazy_static",
  "merklehash",
  "more-asserts",
  "progress_tracking",
@@ -1696,7 +1695,7 @@ dependencies = [
 
 [[package]]
 name = "git_xet"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "anyhow",
  "async-trait",
