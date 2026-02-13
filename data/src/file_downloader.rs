@@ -5,7 +5,7 @@ use cas_client::Client;
 use cas_types::FileRange;
 use file_reconstruction::{DataOutput, FileReconstructor};
 use merklehash::MerkleHash;
-use progress_tracking::item_tracking::ItemProgressUpdater;
+use progress_tracking::download_tracking::DownloadTaskUpdater;
 use tracing::instrument;
 use ulid::Ulid;
 
@@ -34,20 +34,18 @@ impl FileDownloader {
     pub async fn smudge_file_from_hash(
         &self,
         file_id: &MerkleHash,
-        file_name: Arc<str>,
+        _file_name: Arc<str>,
         output: DataOutput,
         range: Option<FileRange>,
-        progress_updater: Option<Arc<ItemProgressUpdater>>,
+        progress_updater: Option<Arc<DownloadTaskUpdater>>,
     ) -> Result<u64> {
-        let file_progress_tracker = progress_updater.map(|p| ItemProgressUpdater::item_tracker(&p, file_name, None));
-
         let mut reconstructor = FileReconstructor::new(&self.client, *file_id, output);
 
         if let Some(range) = range {
             reconstructor = reconstructor.with_byte_range(range);
         }
 
-        if let Some(tracker) = file_progress_tracker {
+        if let Some(tracker) = progress_updater {
             reconstructor = reconstructor.with_progress_updater(tracker);
         }
 

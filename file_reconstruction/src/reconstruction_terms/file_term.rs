@@ -6,6 +6,7 @@ use bytes::Bytes;
 use cas_client::Client;
 use cas_types::{ChunkRange, FileRange, HttpRange};
 use merklehash::MerkleHash;
+use progress_tracking::download_tracking::DownloadTaskUpdater;
 use tokio::sync::RwLock;
 use utils::UniqueId;
 
@@ -13,7 +14,7 @@ use crate::FileReconstructionError;
 use crate::data_writer::DataFuture;
 use crate::error::Result;
 use crate::reconstruction_terms::retrieval_urls::TermBlockRetrievalURLs;
-use crate::reconstruction_terms::xorb_block::{XorbBlock, XorbBlockData};
+use crate::reconstruction_terms::xorb_block::{XorbBlock, XorbBlockData, XorbReference};
 /// A single term in a file reconstruction, representing a contiguous byte range
 /// in the output file that maps to a chunk range within a xorb block.
 #[derive(Clone)]
@@ -38,48 +39,51 @@ impl FileTerm {
 
     /// Get a future that will retrieve and extract the data bytes for this file term.
     ///
-    /// If the xorb data is already cached, returns a future that immediately resolves.
-    /// Otherwise, acquires a download permit and returns a future that downloads the data.
-    pub async fn get_data_task(&self, client: Arc<dyn Client>) -> Result<DataFuture> {
+    /// If the xorb data is already cached, returns a future that immediately resolves (no progress
+    /// report, since the block was already reported by the term that triggered the download).
+    /// Otherwise, acquires a download permit and returns a future that downloads the data (progress
+    /// is reported inside retrieve_data during get_file_term_data and in reconciliation after).
+    pub async fn get_data_task(
+        &self,
+        client: Arc<dyn Client>,
+        progress_updater: Option<Arc<DownloadTaskUpdater>>,
+    ) -> Result<DataFuture> {
         // First, try to read the cached data without blocking.
         if let Ok(guard) = self.xorb_block.data.try_read()
             && let Some(ref xorb_block_data) = *guard
         {
-            // Data is already cached - extract bytes and return immediately.
             let bytes = self.extract_bytes(xorb_block_data);
             return Ok(Box::pin(async move { Ok(bytes) }));
         }
 
         // Data not cached - need to download it.
-        // Acquire a download permit first.
         let permit = client.acquire_download_permit().await?;
 
-        // Clone the necessary data for the async block.
         let file_term = self.clone();
         let url_info = self.url_info.clone();
         let xorb_block = self.xorb_block.clone();
 
-        // Start a background task to begin the downloading immediately, not on await.
         let task = tokio::task::spawn(async move {
-            let xorb_block_data = xorb_block.retrieve_data(client, permit, url_info).await?;
+            let xorb_block_data = xorb_block.retrieve_data(client, permit, url_info, progress_updater).await?;
             Ok(file_term.extract_bytes(&xorb_block_data))
         });
 
-        // Return a future that retrieves the data and extracts the bytes.
         Ok(Box::pin(async move { task.await? }))
     }
 }
 
 /// Retrieve file terms from the client for a given file hash and byte range.
 /// Returns None if the requested byte range is past the end of the file.
-/// Returns the actual retrieved range along with the Vec<FileTerm>.
+/// Returns the actual retrieved range and the number of bytes required for the
+/// download (with dedup and compression enabled)
+/// along with the Vec<FileTerm>.
 pub async fn retrieve_file_term_block(
     client: Arc<dyn Client>,
     file_hash: MerkleHash,
-    file_byte_range: FileRange,
-) -> Result<Option<(FileRange, Vec<FileTerm>)>> {
+    query_file_byte_range: FileRange,
+) -> Result<Option<(FileRange, u64, Vec<FileTerm>)>> {
     // First, get the raw reconstruction.
-    let Some(raw_reconstruction) = client.get_reconstruction(&file_hash, Some(file_byte_range)).await? else {
+    let Some(raw_reconstruction) = client.get_reconstruction(&file_hash, Some(query_file_byte_range)).await? else {
         // None means we've requested a byte range beyond the end of the file.
         return Ok(None);
     };
@@ -88,14 +92,13 @@ pub async fn retrieve_file_term_block(
     let acquisition_id = UniqueId::new();
 
     // Intermediate storage for file term data before we create the actual FileTerm structs.
-    // (byte_range, xorb_chunk_range, offset_into_first_range, xorb_block)
-    let mut file_term_data =
-        Vec::<(FileRange, ChunkRange, u64, Arc<XorbBlock>)>::with_capacity(raw_reconstruction.terms.len());
+    // (byte_range, xorb_chunk_range, offset_into_first_range, index into xorb_blocks)
+    let mut file_term_data = Vec::<(FileRange, ChunkRange, u64, usize)>::with_capacity(raw_reconstruction.terms.len());
 
     let n_xorb_terms = raw_reconstruction.fetch_info.values().map(|v| v.len()).sum();
 
     // Keep track of the xorb blocks we've created, keyed by (xorb_hash, first chunk index).
-    let mut xorb_blocks = Vec::<Arc<XorbBlock>>::with_capacity(n_xorb_terms);
+    let mut xorb_blocks: Vec<XorbBlock> = Vec::with_capacity(n_xorb_terms);
 
     // Keep track of the URLs for each.
     let mut xorb_block_retrieval_urls = Vec::<(String, HttpRange)>::with_capacity(n_xorb_terms);
@@ -104,7 +107,7 @@ pub async fn retrieve_file_term_block(
     let mut xorb_index_lookup = HashMap::<(MerkleHash, u64), usize>::with_capacity(n_xorb_terms);
 
     // Keep track of where we are so as to map the file terms to the byte range within the file.
-    let mut cur_file_byte_offset = file_byte_range.start;
+    let mut cur_file_byte_offset = query_file_byte_range.start;
 
     // We'll create the URL info after processing all terms, once we know the actual range.
 
@@ -119,8 +122,8 @@ pub async fn retrieve_file_term_block(
             )));
         };
 
-        // Get the xorb block that this term belongs to.
-        let xorb_block: Arc<XorbBlock> = 'find_xorb_block: {
+        // Get the xorb block index that this term belongs to.
+        let xorb_block_index = 'find_xorb_block: {
             for raw_xorb_block_info in xorb_info.iter() {
                 let chunk_range = raw_xorb_block_info.range;
 
@@ -133,19 +136,18 @@ pub async fn retrieve_file_term_block(
                     }
 
                     // Reuse the previous one if it exists, otherwise insert a new one.
-                    let xorb_block = match xorb_index_lookup.entry((xorb_hash, chunk_range.start as u64)) {
-                        Entry::Occupied(entry) => xorb_blocks[*entry.get()].clone(),
+                    let index = match xorb_index_lookup.entry((xorb_hash, chunk_range.start as u64)) {
+                        Entry::Occupied(entry) => *entry.get(),
                         Entry::Vacant(entry) => {
                             let new_index = xorb_blocks.len();
-
-                            let new_block = Arc::new(XorbBlock {
+                            xorb_blocks.push(XorbBlock {
                                 xorb_hash,
                                 chunk_range,
                                 xorb_block_index: new_index,
+                                references: vec![],
+                                uncompressed_size_if_known: None,
                                 data: RwLock::new(None),
                             });
-
-                            xorb_blocks.push(new_block.clone());
 
                             // Store the retrieval URL and range for this xorb block.
                             xorb_block_retrieval_urls
@@ -153,11 +155,11 @@ pub async fn retrieve_file_term_block(
 
                             // Store the index.
                             entry.insert(new_index);
-                            new_block
+                            new_index
                         },
                     };
 
-                    break 'find_xorb_block xorb_block;
+                    break 'find_xorb_block index;
                 }
             }
             return Err(FileReconstructionError::CorruptedReconstruction(format!(
@@ -174,24 +176,38 @@ pub async fn retrieve_file_term_block(
             }
         };
 
-        // The effective size of this term in the file..
+        // The effective size of this term in the file.
         let term_byte_size = term.unpacked_length as u64 - offset_into_first_range;
 
-        // Store the file term data. We'll create the FileTerm structs after we know the actual range.
+        // Update the references term on the XorbBlock to track where the xorb gets used.
+        xorb_blocks[xorb_block_index].references.push(XorbReference {
+            term_chunks: term.range,
+            uncompressed_size: term.unpacked_length as usize,
+        });
+
+        // Store the file term data (byte_range, xorb_chunk_range, offset_into_first_range, xorb_block_index).
+        // We'll create the FileTerm structs after we know the actual range.
         file_term_data.push((
             FileRange::new(cur_file_byte_offset, cur_file_byte_offset + term_byte_size),
             term.range,
             offset_into_first_range,
-            xorb_block,
+            xorb_block_index,
         ));
 
         cur_file_byte_offset += term_byte_size;
     }
 
+    // Sort the block references so that we can easily scan the terms to figure out how many references
+    // a particular chunk may have.
+    for block in &mut xorb_blocks {
+        block.references.sort_by_key(|r| r.term_chunks.start);
+        block.uncompressed_size_if_known = XorbBlock::determine_size_if_possible(block.chunk_range, &block.references);
+    }
+
     // Now, it's possible that we have to shrink the byte range of the last term, as we may have retrieved more
     // due to chunk offsets.
-    if cur_file_byte_offset > file_byte_range.end {
-        let last_term_shrinkage = cur_file_byte_offset - file_byte_range.end;
+    if cur_file_byte_offset > query_file_byte_range.end {
+        let last_term_shrinkage = cur_file_byte_offset - query_file_byte_range.end;
 
         debug_assert!(!file_term_data.is_empty());
 
@@ -206,23 +222,35 @@ pub async fn retrieve_file_term_block(
         file_term_data.last().map(|(br, _, _, _)| br.end).unwrap_or(0),
     );
 
+    // Now, calculate the total number of bytes that needs to be downloaded given dedup and compression savings.
+    let total_transfer_bytes = xorb_block_retrieval_urls
+        .iter()
+        .map(|(_, http_range)| {
+            let file_range = FileRange::from(*http_range);
+            file_range.end.saturating_sub(file_range.start)
+        })
+        .sum();
+
     // Now create the URL info with the actual range and retrieval URLs.
     let url_info =
         Arc::new(TermBlockRetrievalURLs::new(file_hash, actual_range, acquisition_id, xorb_block_retrieval_urls));
 
+    // Convert xorb_blocks to Arc<XorbBlock> for use in FileTerms.
+    let xorb_blocks_arc: Vec<Arc<XorbBlock>> = xorb_blocks.into_iter().map(Arc::new).collect();
+
     // Convert the intermediate data to FileTerm structs with the shared url_info.
     let file_terms: Vec<FileTerm> = file_term_data
         .into_iter()
-        .map(|(byte_range, xorb_chunk_range, offset_into_first_range, xorb_block)| FileTerm {
+        .map(|(byte_range, xorb_chunk_range, offset_into_first_range, xorb_block_index)| FileTerm {
             byte_range,
             xorb_chunk_range,
             offset_into_first_range,
-            xorb_block,
+            xorb_block: xorb_blocks_arc[xorb_block_index].clone(),
             url_info: url_info.clone(),
         })
         .collect();
 
-    Ok(Some((actual_range, file_terms)))
+    Ok(Some((actual_range, total_transfer_bytes, file_terms)))
 }
 
 #[cfg(test)]
@@ -230,13 +258,34 @@ mod tests {
     use std::sync::Arc;
 
     use cas_client::{ClientTestingUtils, LocalClient, RandomFileContents};
-    use cas_types::FileRange;
+    use cas_types::{ChunkRange, FileRange};
     use more_asserts::{assert_ge, assert_le};
     use utils::UniqueId;
 
     use super::*;
 
     const TEST_CHUNK_SIZE: usize = 101;
+
+    fn verify_xorb_block_references(file_terms: &[FileTerm]) {
+        for file_term in file_terms {
+            let refs = &file_term.xorb_block.references;
+            assert!(
+                refs.iter().any(|r| r.term_chunks == file_term.xorb_chunk_range),
+                "xorb_chunk_range {:?} must be in block references {:?}",
+                file_term.xorb_chunk_range,
+                refs.as_slice()
+            );
+        }
+        let mut seen_blocks = std::collections::HashSet::new();
+        for file_term in file_terms {
+            if seen_blocks.insert(file_term.xorb_block.xorb_block_index) {
+                let refs = &file_term.xorb_block.references;
+                for w in refs.windows(2) {
+                    assert_le!(w[0].term_chunks.start, w[1].term_chunks.start);
+                }
+            }
+        }
+    }
 
     /// Creates a test client and uploads a random file with the given term specification.
     /// Returns the client and file contents for verification.
@@ -265,7 +314,7 @@ mod tests {
         let requested_range = requested_range.unwrap_or_else(|| FileRange::new(0, file_contents.data.len() as u64));
         let dyn_client: Arc<dyn Client> = client.clone();
 
-        let (returned_range, file_terms) =
+        let (returned_range, _, file_terms) =
             retrieve_file_term_block(dyn_client.clone(), file_contents.file_hash, requested_range)
                 .await
                 .expect("retrieve_file_term_block should succeed")
@@ -329,7 +378,7 @@ mod tests {
             assert!(file_contents.xorbs.contains_key(&file_term.xorb_block.xorb_hash));
 
             // Get the data task and await it.
-            let data_future = file_term.get_data_task(dyn_client.clone()).await.unwrap();
+            let data_future = file_term.get_data_task(dyn_client.clone(), None).await.unwrap();
             let data = data_future.await.unwrap();
 
             // Verify the data size matches the byte range.
@@ -356,9 +405,41 @@ mod tests {
         let expected_data = &file_contents.data[requested_range.start as usize..requested_range.end as usize];
         assert_eq!(reconstructed_data.len(), expected_data.len());
         assert_eq!(reconstructed_data, expected_data);
+
+        verify_xorb_block_references(&file_terms);
     }
 
     // ==================== Test Cases ====================
+
+    #[tokio::test]
+    async fn test_xorb_block_references_exact() {
+        let (client, file_contents) = setup_test_file(&[(1, (0, 2)), (1, (2, 4)), (1, (4, 6))]).await;
+        let file_range = FileRange::new(0, file_contents.data.len() as u64);
+        let dyn_client: Arc<dyn Client> = client.clone();
+        let (_, _, file_terms) = retrieve_file_term_block(dyn_client, file_contents.file_hash, file_range)
+            .await
+            .unwrap()
+            .unwrap();
+        verify_xorb_block_references(&file_terms);
+        assert_eq!(file_terms.len(), 3);
+        let block = &file_terms[0].xorb_block;
+        let ref_ranges: Vec<ChunkRange> = block.references.iter().map(|r| r.term_chunks).collect();
+        let expected = vec![ChunkRange::new(0, 2), ChunkRange::new(2, 4), ChunkRange::new(4, 6)];
+        assert_eq!(ref_ranges, expected);
+
+        let (client2, file_contents2) = setup_test_file(&[(1, (0, 5)), (1, (0, 5))]).await;
+        let file_range2 = FileRange::new(0, file_contents2.data.len() as u64);
+        let dyn_client2: Arc<dyn Client> = client2.clone();
+        let (_, _, file_terms2) = retrieve_file_term_block(dyn_client2, file_contents2.file_hash, file_range2)
+            .await
+            .unwrap()
+            .unwrap();
+        verify_xorb_block_references(&file_terms2);
+        let block2 = &file_terms2[0].xorb_block;
+        let ref_ranges2: Vec<ChunkRange> = block2.references.iter().map(|r| r.term_chunks).collect();
+        let expected2 = vec![ChunkRange::new(0, 5), ChunkRange::new(0, 5)];
+        assert_eq!(ref_ranges2, expected2);
+    }
 
     #[tokio::test]
     async fn test_single_xorb_full_range() {
@@ -416,7 +497,7 @@ mod tests {
 
         match result {
             Ok(None) => {},
-            Ok(Some((_, file_terms))) => assert!(file_terms.is_empty()),
+            Ok(Some((_, _, file_terms))) => assert!(file_terms.is_empty()),
             Err(_) => {},
         }
     }
@@ -465,7 +546,7 @@ mod tests {
         let file_range = FileRange::new(0, file_contents.data.len() as u64);
         let dyn_client: Arc<dyn Client> = client.clone();
 
-        let (_, file_terms) = retrieve_file_term_block(dyn_client, file_contents.file_hash, file_range)
+        let (_, _, file_terms) = retrieve_file_term_block(dyn_client, file_contents.file_hash, file_range)
             .await
             .unwrap()
             .unwrap();

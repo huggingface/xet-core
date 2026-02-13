@@ -88,7 +88,7 @@ impl HubClient {
         let cred_helper = self.cred_helper.clone();
 
         let info: CasJWTInfo = RetryWrapper::new("xet-token")
-            .run_and_extract_json(move |_| {
+            .run_and_extract_json(move || {
                 let url = url.clone();
                 let client = client.clone();
                 let cred_helper = cred_helper.clone();

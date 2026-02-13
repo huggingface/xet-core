@@ -16,6 +16,7 @@ use xet_runtime::xet_config;
 
 use crate::CasClientError;
 use crate::adaptive_concurrency::rtt_prediction::RTTPredictor;
+use crate::progress_tracked_streams::ProgressCallback;
 
 const MIN_PARTIAL_REPORT_INTERVAL_MS: u64 = 200;
 const PARTIAL_REPORT_WEIGHT_RATIO: f64 = 0.2;
@@ -557,15 +558,12 @@ impl ConnectionPermit {
 
     /// Get a closure that can be used to report partial completion of a transfer.
     ///
-    /// The returned closure takes:
-    /// - `portion_completed`: fraction of transfer completed (0.0 to 1.0)
-    /// - `size_completed`: number of bytes completed so far
-    ///
+    /// The returned [ProgressCallback] receives (delta, completed, total) in transfer bytes.
     /// The closure uses tokio::spawn to asynchronously report the progress.
     /// Reports are throttled to at most once every MIN_PARTIAL_REPORT_INTERVAL_MS milliseconds.
-    pub(crate) fn get_partial_completion_reporting_function(&self) -> Arc<dyn Fn(f64, u64) + Send + Sync> {
+    pub fn get_partial_completion_reporting_function(&self) -> ProgressCallback {
         let info = Arc::clone(&self.info);
-        Arc::new(move |portion_completed: f64, total_bytes: u64| {
+        Arc::new(move |_delta: u64, completed: u64, total: u64| {
             let info = Arc::clone(&info);
 
             // Throttle reports to at most once every MIN_PARTIAL_REPORT_INTERVAL_MS
@@ -586,6 +584,12 @@ impl ConnectionPermit {
             {
                 return;
             }
+
+            let portion_completed = if total > 0 {
+                (completed as f64 / total as f64).min(1.0)
+            } else {
+                0.0
+            };
 
             tokio::spawn(async move {
                 // The weight that gets passed to the controller is PARTIAL_REPORT_WEIGHT_RATIO * portion_completed for
@@ -610,13 +614,10 @@ impl ConnectionPermit {
                 // difference between the two.
                 let weight = (portion_scaled - previous_portion_scaled) as f64 / u32::MAX as f64;
 
-                // Get the size completed based on the proportion.
-                let size_completed = (total_bytes as f64 * portion_completed).floor() as u64;
-
-                // Report to controller
+                // Report to controller (size_completed = completed from the callback args)
                 info.controller
                     .clone()
-                    .report_and_update(&info, Some(size_completed), true, true, weight)
+                    .report_and_update(&info, Some(completed), true, true, weight)
                     .await;
             });
         })
@@ -851,15 +852,15 @@ mod tests {
 
         let permit = controller.acquire_connection_permit().await.unwrap();
 
-        // Get the reporting function
+        // Get the reporting function (delta, completed, total)
         let report = permit.get_partial_completion_reporting_function();
 
         // Report partial completions
-        report(0.2, 200); // weight = PARTIAL_REPORT_WEIGHT_RATIO * 0.2 = 0.04
+        report(200, 200, 1000); // portion 0.2, weight = PARTIAL_REPORT_WEIGHT_RATIO * 0.2 = 0.04
         advance(Duration::from_millis(10)).await;
-        report(0.5, 500); // weight = PARTIAL_REPORT_WEIGHT_RATIO * 0.3 = 0.06
+        report(300, 500, 1000); // portion 0.5, weight = PARTIAL_REPORT_WEIGHT_RATIO * 0.3 = 0.06
         advance(Duration::from_millis(10)).await;
-        report(0.8, 800); // weight = PARTIAL_REPORT_WEIGHT_RATIO * 0.3 = 0.06
+        report(300, 800, 1000); // portion 0.8, weight = PARTIAL_REPORT_WEIGHT_RATIO * 0.3 = 0.06
         // Total partial weight = 0.04 + 0.06 + 0.06 = 0.16
 
         advance(Duration::from_millis(10)).await;
@@ -878,14 +879,15 @@ mod tests {
 
         let permit = controller.acquire_connection_permit().await.unwrap();
 
-        // Get the reporting function
+        // Get the reporting function (delta, completed, total)
         let report = permit.get_partial_completion_reporting_function();
 
         // Report many small partial completions that would exceed PARTIAL_REPORT_WEIGHT_RATIO total
         for i in 1..=20 {
-            let portion = i as f64 / 20.0; // 0.05, 0.10, ..., 1.0
-            let size = i * 50;
-            report(portion, size);
+            let completed = i * 50;
+            let total = 1000u64;
+            let delta = 50;
+            report(delta, completed, total);
             advance(Duration::from_millis(1)).await;
         }
         // Each update has weight = PARTIAL_REPORT_WEIGHT_RATIO * 0.05 = 0.01

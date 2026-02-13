@@ -17,7 +17,6 @@ use mdb_shard::shard_in_memory::MDBInMemoryShard;
 use mdb_shard::streaming_shard::MDBMinimalShard;
 use merklehash::MerkleHash;
 use more_asserts::{assert_ge, assert_gt, debug_assert_lt};
-use progress_tracking::upload_tracking::CompletionTracker;
 use rand::Rng;
 use tokio::sync::RwLock;
 use tokio::time::{Duration, Instant};
@@ -30,6 +29,7 @@ use super::random_xorb::RandomXorb;
 use crate::Client;
 use crate::adaptive_concurrency::AdaptiveConcurrencyController;
 use crate::error::{CasClientError, Result};
+use crate::progress_tracked_streams::ProgressCallback;
 
 lazy_static::lazy_static! {
     /// Reference instant for URL timestamps. Initialized far in the past to allow
@@ -577,12 +577,11 @@ impl Client for MemoryClient {
         &self,
         _prefix: &str,
         serialized_cas_object: SerializedCasObject,
-        upload_tracker: Option<Arc<CompletionTracker>>,
+        progress_callback: Option<ProgressCallback>,
         _permit: crate::adaptive_concurrency::ConnectionPermit,
     ) -> Result<u64> {
         self.apply_api_delay().await;
         let hash = serialized_cas_object.hash;
-        let raw_num_bytes = serialized_cas_object.raw_num_bytes;
         let footer_start = serialized_cas_object.footer_start;
         let serialized_data = serialized_cas_object.serialized_data;
 
@@ -632,9 +631,9 @@ impl Client for MemoryClient {
             );
         }
 
-        // Update progress tracker
-        if let Some(tracker) = upload_tracker {
-            tracker.register_xorb_upload_progress(hash, raw_num_bytes).await;
+        if let Some(ref cb) = progress_callback {
+            let n = bytes_written as u64;
+            cb(n, n, n);
         }
 
         info!("XORB {hash:?} successfully stored with {bytes_written} bytes.");
@@ -867,6 +866,8 @@ impl Client for MemoryClient {
         &self,
         url_info: Box<dyn crate::URLProvider>,
         _download_permit: crate::adaptive_concurrency::ConnectionPermit,
+        progress_callback: Option<ProgressCallback>,
+        uncompressed_size_if_known: Option<usize>,
     ) -> Result<(Bytes, Vec<u32>)> {
         self.apply_api_delay().await;
         let (url, range) = url_info.retrieve_url().await?;
@@ -885,21 +886,33 @@ impl Client for MemoryClient {
         // Extract the byte range from the serialized data and deserialize
         let start = range.start as usize;
         let end = range.end as usize + 1; // HttpRange is inclusive end
+        let transfer_len = (end - start) as u64;
 
-        match storage {
+        let (decompressed_data, chunk_byte_indices) = match storage {
             XorbStorage::Materialized(entry) => {
                 let range_data = &entry.serialized_data[start..end];
-                let (decompressed_data, chunk_byte_indices) =
-                    cas_object::deserialize_chunks(&mut Cursor::new(range_data))?;
-                Ok((Bytes::from(decompressed_data), chunk_byte_indices))
+                cas_object::deserialize_chunks(&mut Cursor::new(range_data))?
             },
             XorbStorage::Random(xorb) => {
                 let range_data = xorb.get_serialized_range(start as u64, end as u64);
-                let (decompressed_data, chunk_byte_indices) =
-                    cas_object::deserialize_chunks(&mut Cursor::new(range_data.as_ref()))?;
-                Ok((Bytes::from(decompressed_data), chunk_byte_indices))
+                cas_object::deserialize_chunks(&mut Cursor::new(range_data.as_ref()))?
             },
+        };
+
+        if let Some(expected) = uncompressed_size_if_known {
+            debug_assert_eq!(
+                decompressed_data.len(),
+                expected,
+                "get_file_term_data: expected {} bytes, got {}",
+                expected,
+                decompressed_data.len()
+            );
         }
+
+        if let Some(ref cb) = progress_callback {
+            cb(transfer_len, transfer_len, transfer_len);
+        }
+        Ok((Bytes::from(decompressed_data), chunk_byte_indices))
     }
 }
 

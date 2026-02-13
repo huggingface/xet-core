@@ -6,6 +6,7 @@ use cas_client::Client;
 use cas_types::FileRange;
 use merklehash::MerkleHash;
 use more_asserts::*;
+use progress_tracking::download_tracking::DownloadTaskUpdater;
 use tokio::task::JoinHandle;
 use tokio::time::Instant;
 use tracing::{debug, info};
@@ -16,7 +17,7 @@ use super::file_term::{FileTerm, retrieve_file_term_block};
 use crate::FileReconstructionError;
 use crate::error::Result;
 
-type RawFetchedFileTerms = Result<Option<Vec<FileTerm>>>;
+type RawFetchedFileTerms = Result<Option<(Vec<FileTerm>, u64, u64)>>;
 
 /// Manages the iteration over file terms during reconstruction, with adaptive prefetching.
 /// Prefetches reconstruction blocks ahead of consumption based on observed completion rates
@@ -32,6 +33,9 @@ pub struct ReconstructionTermManager {
     current_active_byte_position: u64,
     prefetch_queue: VecDeque<JoinHandle<RawFetchedFileTerms>>,
     completion_rate_estimator: ExpWeightedMovingAvg,
+    progress_updater: Option<Arc<DownloadTaskUpdater>>,
+    total_bytes_reported: u64,
+    total_transfer_bytes_reported: u64,
 }
 
 impl ReconstructionTermManager {
@@ -40,6 +44,7 @@ impl ReconstructionTermManager {
         client: Arc<dyn Client>,
         file_hash: MerkleHash,
         file_byte_range: FileRange,
+        progress_updater: Option<Arc<DownloadTaskUpdater>>,
     ) -> Result<Self> {
         let completion_rate_estimator =
             ExpWeightedMovingAvg::new_count_decay(config.completion_rate_estimator_half_life);
@@ -57,6 +62,9 @@ impl ReconstructionTermManager {
             prefetch_queue: VecDeque::new(),
             known_final_byte_position: Arc::new(AtomicU64::new(requested_byte_range.end)),
             completion_rate_estimator,
+            progress_updater,
+            total_bytes_reported: 0,
+            total_transfer_bytes_reported: 0,
         };
 
         // Start things by prefetching two smaller blocks to get things started.  This way,
@@ -114,7 +122,7 @@ impl ReconstructionTermManager {
             .await
             .map_err(|e| FileReconstructionError::InternalError(format!("Join error: {e}")))??;
 
-        if let Some(file_terms) = maybe_next_block {
+        if let Some((file_terms, new_bytes, new_transfer_bytes)) = maybe_next_block {
             // Calculate the byte range of this block from the file terms.
             let block_start = file_terms.first().map(|t| t.byte_range.start).unwrap_or(0);
             let block_end = file_terms.last().map(|t| t.byte_range.end).unwrap_or(0);
@@ -132,6 +140,14 @@ impl ReconstructionTermManager {
                 block_size = file_terms.len(),
                 "Received block of file terms from prefetch queue"
             );
+
+            if let Some(progress_updater) = &self.progress_updater {
+                self.total_bytes_reported = self.total_bytes_reported.saturating_add(new_bytes);
+                self.total_transfer_bytes_reported =
+                    self.total_transfer_bytes_reported.saturating_add(new_transfer_bytes);
+                progress_updater.update_item_size(self.total_bytes_reported, false);
+                progress_updater.update_transfer_size(self.total_transfer_bytes_reported);
+            }
 
             Ok(Some(file_terms))
         } else {
@@ -254,7 +270,7 @@ impl ReconstructionTermManager {
             let result = retrieve_file_term_block(client, file_hash, prefetch_block_range).await;
 
             // See if we're done with the file.
-            if let Ok(Some((ref returned_range, ref file_terms))) = result {
+            if let Ok(Some((ref returned_range, transfer_bytes, ref file_terms))) = result {
                 // See if the returned range is less than the requested range; if so, then
                 // we know we've reached the end of the file.
                 debug_assert_eq!(returned_range.start, prefetch_block_range.start);
@@ -263,8 +279,8 @@ impl ReconstructionTermManager {
                     known_final_byte_position.store(returned_range.end, Ordering::Relaxed);
                 }
 
-                // Return just the file terms.
-                Ok(Some(file_terms.clone()))
+                let new_bytes = returned_range.end.saturating_sub(returned_range.start);
+                Ok(Some((file_terms.clone(), new_bytes, transfer_bytes)))
             } else if let Ok(None) = result {
                 // If the returned block is None, then we're beyond the end of the file; update the known final byte
                 // position to the start of the prefetch block if it hasn't been set yet (which it might
@@ -272,7 +288,12 @@ impl ReconstructionTermManager {
                 known_final_byte_position.fetch_min(prefetch_block_range.start, Ordering::Relaxed);
                 Ok(None)
             } else {
-                result.map(|r| r.map(|(_, file_terms)| file_terms))
+                result.map(|r| {
+                    r.map(|(returned_range, transfer_bytes, file_terms)| {
+                        let new_bytes = returned_range.end.saturating_sub(returned_range.start);
+                        (file_terms, new_bytes, transfer_bytes)
+                    })
+                })
             }
         });
 

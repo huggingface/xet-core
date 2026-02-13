@@ -13,10 +13,14 @@ mod error;
 pub mod exports;
 pub mod http_client;
 mod interface;
+pub mod progress_tracked_streams;
 pub mod remote_client;
 pub mod retry_wrapper;
 pub mod simulation;
-pub mod upload_progress_stream;
+
+pub use progress_tracked_streams::{
+    DownloadProgressStream, ProgressCallback, StreamProgressReporter, UploadProgressStream,
+};
 
 #[cfg(not(feature = "elevated_information_level"))]
 pub const INFORMATION_LOG_LEVEL: Level = Level::DEBUG;
