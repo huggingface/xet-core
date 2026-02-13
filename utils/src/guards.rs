@@ -97,6 +97,51 @@ impl Drop for CwdGuard {
     }
 }
 
+/// Guard that runs a callback when dropped.
+///
+/// Holds any `FnOnce()` and invokes it exactly once when the guard is dropped.
+/// Useful for ad-hoc cleanup, logging, or running code at scope exit.
+///
+/// # Examples
+///
+/// ```
+/// use utils::CallbackGuard;
+///
+/// let ran = std::cell::Cell::new(false);
+/// {
+///     let _grd = CallbackGuard::new(|| ran.set(true));
+/// }
+/// assert!(ran.get());
+/// ```
+pub struct CallbackGuard<F>
+where
+    F: FnOnce(),
+{
+    callback: Option<F>,
+}
+
+impl<F> CallbackGuard<F>
+where
+    F: FnOnce(),
+{
+    pub fn new(callback: F) -> Self {
+        Self {
+            callback: Some(callback),
+        }
+    }
+}
+
+impl<F> Drop for CallbackGuard<F>
+where
+    F: FnOnce(),
+{
+    fn drop(&mut self) {
+        if let Some(f) = self.callback.take() {
+            f();
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use serial_test::serial;
@@ -202,5 +247,34 @@ mod tests {
 
         let result = CwdGuard::set(nonexistent);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn callback_guard_invokes_on_drop() {
+        let ran = std::cell::Cell::new(false);
+        {
+            let _grd = CallbackGuard::new(|| ran.set(true));
+            assert!(!ran.get());
+        }
+        assert!(ran.get());
+    }
+
+    #[test]
+    fn callback_guard_invokes_only_once() {
+        let count = std::cell::Cell::new(0u32);
+        {
+            let _grd = CallbackGuard::new(|| count.set(count.get() + 1));
+        }
+        assert_eq!(count.get(), 1);
+    }
+
+    #[test]
+    fn callback_guard_captures_environment() {
+        let x = std::cell::Cell::new(0i32);
+        {
+            let _grd = CallbackGuard::new(|| x.set(x.get() + 10));
+            x.set(1);
+        }
+        assert_eq!(x.get(), 11);
     }
 }

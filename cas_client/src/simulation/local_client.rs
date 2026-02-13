@@ -137,24 +137,6 @@ impl LocalClient {
     fn get_path_for_entry(&self, hash: &MerkleHash) -> PathBuf {
         self.xorb_dir.join(format!("default.{hash:?}"))
     }
-
-    /// Applies the configured API delay if set.
-    async fn apply_api_delay(&self) {
-        let min_ms = self.random_ms_delay_window.0.load(Ordering::Relaxed);
-        let max_ms = self.random_ms_delay_window.1.load(Ordering::Relaxed);
-
-        if min_ms == 0 && max_ms == 0 {
-            return;
-        }
-
-        let delay_ms = if min_ms == max_ms {
-            min_ms
-        } else {
-            rand::rng().random_range(min_ms..max_ms)
-        };
-
-        tokio::time::sleep(Duration::from_millis(delay_ms)).await;
-    }
 }
 
 impl Drop for LocalClient {
@@ -191,6 +173,23 @@ impl DirectAccessClient for LocalClient {
                 self.random_ms_delay_window.1.store(0, Ordering::Relaxed);
             },
         }
+    }
+
+    async fn apply_api_delay(&self) {
+        let min_ms = self.random_ms_delay_window.0.load(Ordering::Relaxed);
+        let max_ms = self.random_ms_delay_window.1.load(Ordering::Relaxed);
+
+        if min_ms == 0 && max_ms == 0 {
+            return;
+        }
+
+        let delay_ms = if min_ms == max_ms {
+            min_ms
+        } else {
+            rand::rng().random_range(min_ms..max_ms)
+        };
+
+        tokio::time::sleep(Duration::from_millis(delay_ms)).await;
     }
 
     async fn list_xorbs(&self) -> Result<Vec<MerkleHash>> {

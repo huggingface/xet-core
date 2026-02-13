@@ -28,7 +28,7 @@ use crate::interface::Client;
 /// local server to work with either backend.
 #[cfg_attr(not(target_family = "wasm"), async_trait)]
 #[cfg_attr(target_family = "wasm", async_trait(?Send))]
-pub trait DirectAccessClient: Client + Send + Sync {
+pub trait DirectAccessClient: Client + Send + Sync + 'static {
     /// Sets the expiration duration for fetch term URLs.
     fn set_fetch_term_url_expiration(&self, expiration: Duration);
 
@@ -39,6 +39,12 @@ pub trait DirectAccessClient: Client + Send + Sync {
     ///
     /// Pass `None` to disable the delay.
     fn set_api_delay_range(&self, delay_range: Option<Range<Duration>>);
+
+    /// Applies the configured API delay if set.
+    ///
+    /// This method sleeps for a random duration within the configured delay range.
+    /// If no delay is configured (via `set_api_delay_range`), this returns immediately.
+    async fn apply_api_delay(&self);
 
     /// Returns all XORB hashes stored in this client.
     async fn list_xorbs(&self) -> Result<Vec<MerkleHash>>;
