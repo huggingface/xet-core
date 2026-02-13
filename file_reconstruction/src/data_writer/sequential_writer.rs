@@ -9,6 +9,7 @@ use progress_tracking::download_tracking::DownloadTaskUpdater;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 use tokio::sync::{Mutex, OwnedSemaphorePermit, oneshot};
 use tokio::task::{JoinHandle, JoinSet};
+use tokio_util::sync::CancellationToken;
 use xet_runtime::{XetRuntime, check_sigint_shutdown};
 
 use crate::data_writer::{DataFuture, DataWriter};
@@ -37,26 +38,24 @@ enum QueueItem {
 /// Pending write data with its associated permit.
 type PendingWrite = (Bytes, Option<OwnedSemaphorePermit>);
 
-/// Background writer thread that processes queue items and writes to the output.
-struct WriterThread<W: Write + Send + 'static> {
+/// Background writer thread that processes queue items and dispatches data
+/// to an output sink (a `Write` impl or a stream function).
+struct SyncWriterThread {
     rx: UnboundedReceiver<QueueItem>,
-    writer: W,
     bytes_written: Arc<AtomicU64>,
     progress_updater: Option<Arc<DownloadTaskUpdater>>,
     pending: Option<QueueItem>,
     finished: bool,
 }
 
-impl<W: Write + Send + 'static> WriterThread<W> {
+impl SyncWriterThread {
     fn new(
         rx: UnboundedReceiver<QueueItem>,
-        writer: W,
         bytes_written: Arc<AtomicU64>,
         progress_updater: Option<Arc<DownloadTaskUpdater>>,
     ) -> Self {
         Self {
             rx,
-            writer,
             bytes_written,
             progress_updater,
             pending: None,
@@ -116,10 +115,10 @@ impl<W: Write + Send + 'static> WriterThread<W> {
     }
 
     /// Run the non-vectorized writer loop.
-    fn run(mut self) -> Result<()> {
+    fn run(mut self, mut writer: impl Write) -> Result<()> {
         while let Some((data, permit)) = self.next_write(true)? {
             let len = data.len() as u64;
-            self.writer.write_all(&data)?;
+            writer.write_all(&data)?;
             self.bytes_written.fetch_add(len, Ordering::Relaxed);
             if let Some(ref updater) = self.progress_updater {
                 updater.report_bytes_written(len);
@@ -135,12 +134,12 @@ impl<W: Write + Send + 'static> WriterThread<W> {
 
         debug_assert!(self.finished);
 
-        self.writer.flush()?;
+        writer.flush()?;
         Ok(())
     }
 
     /// Run the vectorized writer loop.
-    fn run_vectorized(mut self) -> Result<()> {
+    fn run_vectorized(mut self, mut writer: impl Write) -> Result<()> {
         let mut pending_writes: VecDeque<PendingWrite> = VecDeque::new();
 
         while !self.finished || !pending_writes.is_empty() {
@@ -168,7 +167,7 @@ impl<W: Write + Send + 'static> WriterThread<W> {
                 .collect();
 
             // Call write_vectored.
-            let written = match self.writer.write_vectored(&io_slices) {
+            let written = match writer.write_vectored(&io_slices) {
                 Ok(0) if !io_slices.is_empty() => {
                     return Err(FileReconstructionError::IoError(Arc::new(std::io::Error::new(
                         std::io::ErrorKind::WriteZero,
@@ -200,7 +199,32 @@ impl<W: Write + Send + 'static> WriterThread<W> {
             }
         }
 
-        self.writer.flush()?;
+        writer.flush()?;
+        Ok(())
+    }
+    /// Run the channel writer loop, forwarding data and permits to the output channel.
+    fn run_channel(mut self, tx: UnboundedSender<(Bytes, Option<OwnedSemaphorePermit>)>) -> Result<()> {
+        while let Some((data, permit)) = self.next_write(true)? {
+            let len = data.len() as u64;
+            tx.send((data, permit)).map_err(|_| {
+                FileReconstructionError::IoError(Arc::new(std::io::Error::new(
+                    std::io::ErrorKind::BrokenPipe,
+                    "Channel receiver was dropped",
+                )))
+            })?;
+            self.bytes_written.fetch_add(len, Ordering::Relaxed);
+            if let Some(ref updater) = self.progress_updater {
+                updater.report_bytes_written(len);
+            }
+
+            if self.finished {
+                break;
+            }
+
+            check_sigint_shutdown()?;
+        }
+
+        debug_assert!(self.finished);
         Ok(())
     }
 }
@@ -221,6 +245,13 @@ pub struct SequentialWriter {
     error_state: Arc<ErrorState>,
     bytes_written: Arc<AtomicU64>,
     active_tasks: Arc<Mutex<JoinSet<Result<()>>>>,
+    cancellation_token: CancellationToken,
+}
+
+impl Drop for SequentialWriter {
+    fn drop(&mut self) {
+        self.cancellation_token.cancel();
+    }
 }
 
 #[async_trait::async_trait]
@@ -357,8 +388,12 @@ impl SequentialWriter {
     ///
     /// The writer type `W` can be any type implementing `Write + Send + 'static`.
     /// The writer is moved to a background thread for blocking I/O operations.
-    pub fn new<W: Write + Send + 'static>(writer: W, progress_updater: Option<Arc<DownloadTaskUpdater>>) -> Self {
-        Self::new_internal(writer, false, progress_updater)
+    pub fn new<W: Write + Send + 'static>(
+        writer: W,
+        progress_updater: Option<Arc<DownloadTaskUpdater>>,
+        cancellation_token: CancellationToken,
+    ) -> Self {
+        Self::new_file_impl(writer, false, progress_updater, cancellation_token)
     }
 
     /// Creates a new sequential writer that uses vectorized writes (write_vectored).
@@ -376,14 +411,43 @@ impl SequentialWriter {
     pub fn new_vectorized<W: Write + Send + 'static>(
         writer: W,
         progress_updater: Option<Arc<DownloadTaskUpdater>>,
+        cancellation_token: CancellationToken,
     ) -> Self {
-        Self::new_internal(writer, true, progress_updater)
+        Self::new_file_impl(writer, true, progress_updater, cancellation_token)
     }
 
-    fn new_internal<W: Write + Send + 'static>(
+    /// Creates a new sequential writer that forwards data through an unbounded channel.
+    ///
+    /// Each data chunk is sent as `(Bytes, Option<OwnedSemaphorePermit>)`.
+    /// The permit is forwarded to the receiver so it can control memory pressure.
+    /// Completion is signaled by dropping the sender (the receiver sees `None`).
+    pub fn new_channel(
+        tx: UnboundedSender<(Bytes, Option<OwnedSemaphorePermit>)>,
+        progress_updater: Option<Arc<DownloadTaskUpdater>>,
+        cancellation_token: CancellationToken,
+    ) -> Self {
+        Self::spawn_sync_background(progress_updater, cancellation_token, |writer_thread| writer_thread.run_channel(tx))
+    }
+
+    fn new_file_impl<W: Write + Send + 'static>(
         writer: W,
         use_vectorized: bool,
         progress_updater: Option<Arc<DownloadTaskUpdater>>,
+        cancellation_token: CancellationToken,
+    ) -> Self {
+        Self::spawn_sync_background(progress_updater, cancellation_token, move |writer_thread| {
+            if use_vectorized {
+                writer_thread.run_vectorized(writer)
+            } else {
+                writer_thread.run(writer)
+            }
+        })
+    }
+
+    fn spawn_sync_background(
+        progress_updater: Option<Arc<DownloadTaskUpdater>>,
+        cancellation_token: CancellationToken,
+        run_fn: impl FnOnce(SyncWriterThread) -> Result<()> + Send + 'static,
     ) -> Self {
         let (tx, rx) = unbounded_channel::<QueueItem>();
         let error_state = Arc::new(ErrorState::new());
@@ -393,17 +457,22 @@ impl SequentialWriter {
         let bytes_written_clone = bytes_written.clone();
 
         let handle = XetRuntime::current().spawn_blocking(move || {
-            let writer_thread = WriterThread::new(rx, writer, bytes_written_clone, progress_updater);
-            let result = if use_vectorized {
-                writer_thread.run_vectorized()
-            } else {
-                writer_thread.run()
-            };
-            if let Err(err) = result {
+            let writer_thread = SyncWriterThread::new(rx, bytes_written_clone, progress_updater);
+            if let Err(err) = run_fn(writer_thread) {
                 error_state_clone.set(err);
             }
         });
 
+        Self::from_parts(tx, handle, error_state, bytes_written, cancellation_token)
+    }
+
+    fn from_parts(
+        tx: UnboundedSender<QueueItem>,
+        handle: JoinHandle<()>,
+        error_state: Arc<ErrorState>,
+        bytes_written: Arc<AtomicU64>,
+        cancellation_token: CancellationToken,
+    ) -> Self {
         let writing_queue_state = WritingQueueState {
             sender: tx,
             next_position: 0,
@@ -416,6 +485,7 @@ impl SequentialWriter {
             error_state,
             bytes_written,
             active_tasks: Arc::new(Mutex::new(JoinSet::new())),
+            cancellation_token,
         }
     }
 }
@@ -588,7 +658,8 @@ mod tests {
         let buffer = Arc::new(std::sync::Mutex::new(Vec::new()));
         let buffer_clone = buffer.clone();
 
-        let writer = Arc::new(SequentialWriter::new(Box::new(SharedBuffer(buffer_clone)), None));
+        let writer =
+            Arc::new(SequentialWriter::new(Box::new(SharedBuffer(buffer_clone)), None, CancellationToken::new()));
 
         writer
             .set_next_term_data_source(FileRange::new(0, 5), None, immediate_future(Bytes::from("Hello")))
@@ -614,7 +685,8 @@ mod tests {
         let buffer = Arc::new(std::sync::Mutex::new(Vec::new()));
         let buffer_clone = buffer.clone();
 
-        let writer = Arc::new(SequentialWriter::new(Box::new(SharedBuffer(buffer_clone)), None));
+        let writer =
+            Arc::new(SequentialWriter::new(Box::new(SharedBuffer(buffer_clone)), None, CancellationToken::new()));
 
         // Create futures that resolve with delays
         let f0: DataFuture = Box::pin(async {
@@ -640,7 +712,7 @@ mod tests {
     #[tokio::test]
     async fn test_size_mismatch_error() {
         let buffer = std::io::Cursor::new(Vec::new());
-        let writer = Arc::new(SequentialWriter::new(Box::new(buffer), None));
+        let writer = Arc::new(SequentialWriter::new(Box::new(buffer), None, CancellationToken::new()));
 
         writer
             .set_next_term_data_source(FileRange::new(0, 10), None, immediate_future(Bytes::from("Hello")))
@@ -663,7 +735,7 @@ mod tests {
             }
         }
 
-        let writer = Arc::new(SequentialWriter::new(Box::new(FailingWriter), None));
+        let writer = Arc::new(SequentialWriter::new(Box::new(FailingWriter), None, CancellationToken::new()));
 
         writer
             .set_next_term_data_source(FileRange::new(0, 4), None, immediate_future(Bytes::from("Test")))
@@ -683,7 +755,7 @@ mod tests {
     #[tokio::test]
     async fn test_finish_twice_returns_error() {
         let buffer = std::io::Cursor::new(Vec::new());
-        let writer = Arc::new(SequentialWriter::new(Box::new(buffer), None));
+        let writer = Arc::new(SequentialWriter::new(Box::new(buffer), None, CancellationToken::new()));
 
         writer.finish().await.unwrap();
         let result = writer.finish().await;
@@ -694,7 +766,7 @@ mod tests {
     #[tokio::test]
     async fn test_write_after_finish_returns_error() {
         let buffer = std::io::Cursor::new(Vec::new());
-        let writer = Arc::new(SequentialWriter::new(Box::new(buffer), None));
+        let writer = Arc::new(SequentialWriter::new(Box::new(buffer), None, CancellationToken::new()));
 
         writer.finish().await.unwrap();
         let result = writer
@@ -716,7 +788,7 @@ mod tests {
             }
         }
 
-        let writer = Arc::new(SequentialWriter::new(Box::new(FlushFailingWriter), None));
+        let writer = Arc::new(SequentialWriter::new(Box::new(FlushFailingWriter), None, CancellationToken::new()));
         let result = writer.finish().await;
         assert!(result.is_err());
         assert!(matches!(result, Err(FileReconstructionError::IoError(_))));
@@ -727,7 +799,8 @@ mod tests {
         let buffer = Arc::new(std::sync::Mutex::new(Vec::new()));
         let buffer_clone = buffer.clone();
 
-        let writer = Arc::new(SequentialWriter::new(Box::new(SharedBuffer(buffer_clone)), None));
+        let writer =
+            Arc::new(SequentialWriter::new(Box::new(SharedBuffer(buffer_clone)), None, CancellationToken::new()));
 
         let failing_future: DataFuture =
             Box::pin(async { Err(FileReconstructionError::InternalError("Simulated future error".to_string())) });
@@ -744,7 +817,7 @@ mod tests {
     #[tokio::test]
     async fn test_size_mismatch_too_small() {
         let buffer = std::io::Cursor::new(Vec::new());
-        let writer = Arc::new(SequentialWriter::new(Box::new(buffer), None));
+        let writer = Arc::new(SequentialWriter::new(Box::new(buffer), None, CancellationToken::new()));
 
         writer
             .set_next_term_data_source(FileRange::new(0, 10), None, immediate_future(Bytes::from("Hi")))
@@ -758,7 +831,7 @@ mod tests {
     #[tokio::test]
     async fn test_size_mismatch_too_large() {
         let buffer = std::io::Cursor::new(Vec::new());
-        let writer = Arc::new(SequentialWriter::new(Box::new(buffer), None));
+        let writer = Arc::new(SequentialWriter::new(Box::new(buffer), None, CancellationToken::new()));
 
         writer
             .set_next_term_data_source(FileRange::new(0, 2), None, immediate_future(Bytes::from("Hello World")))
@@ -774,7 +847,8 @@ mod tests {
         let buffer = Arc::new(std::sync::Mutex::new(Vec::new()));
         let buffer_clone = buffer.clone();
 
-        let writer = Arc::new(SequentialWriter::new(Box::new(SharedBuffer(buffer_clone)), None));
+        let writer =
+            Arc::new(SequentialWriter::new(Box::new(SharedBuffer(buffer_clone)), None, CancellationToken::new()));
 
         writer
             .set_next_term_data_source(FileRange::new(0, 5), None, immediate_future(Bytes::from("Hello")))
@@ -799,7 +873,7 @@ mod tests {
     #[tokio::test]
     async fn test_non_sequential_range_returns_error() {
         let buffer = std::io::Cursor::new(Vec::new());
-        let writer = Arc::new(SequentialWriter::new(Box::new(buffer), None));
+        let writer = Arc::new(SequentialWriter::new(Box::new(buffer), None, CancellationToken::new()));
 
         writer
             .set_next_term_data_source(FileRange::new(0, 5), None, immediate_future(Bytes::from("Hello")))
@@ -816,7 +890,7 @@ mod tests {
     #[tokio::test]
     async fn test_first_range_must_start_at_zero() {
         let buffer = std::io::Cursor::new(Vec::new());
-        let writer = Arc::new(SequentialWriter::new(Box::new(buffer), None));
+        let writer = Arc::new(SequentialWriter::new(Box::new(buffer), None, CancellationToken::new()));
 
         let result = writer
             .set_next_term_data_source(FileRange::new(5, 10), None, immediate_future(Bytes::from("Hello")))
@@ -831,7 +905,8 @@ mod tests {
         let buffer_clone = buffer.clone();
         let semaphore = Arc::new(Semaphore::new(2));
 
-        let writer = Arc::new(SequentialWriter::new(Box::new(SharedBuffer(buffer_clone)), None));
+        let writer =
+            Arc::new(SequentialWriter::new(Box::new(SharedBuffer(buffer_clone)), None, CancellationToken::new()));
 
         let permit1 = semaphore.clone().acquire_owned().await.unwrap();
         let permit2 = semaphore.clone().acquire_owned().await.unwrap();
@@ -868,7 +943,7 @@ mod tests {
         let buffer = test_writer.buffer.clone();
         let vectored_count = test_writer.vectored_write_count.clone();
 
-        let writer = Arc::new(SequentialWriter::new_vectorized(Box::new(test_writer), None));
+        let writer = Arc::new(SequentialWriter::new_vectorized(Box::new(test_writer), None, CancellationToken::new()));
 
         writer
             .set_next_term_data_source(FileRange::new(0, 5), None, immediate_future(Bytes::from("Hello")))
@@ -895,7 +970,7 @@ mod tests {
         let test_writer = TestWriter::new(TestWriterConfig::vectorized_partial(3));
         let buffer = test_writer.buffer.clone();
 
-        let writer = Arc::new(SequentialWriter::new_vectorized(Box::new(test_writer), None));
+        let writer = Arc::new(SequentialWriter::new_vectorized(Box::new(test_writer), None, CancellationToken::new()));
 
         writer
             .set_next_term_data_source(FileRange::new(0, 5), None, immediate_future(Bytes::from("Hello")))
@@ -925,7 +1000,7 @@ mod tests {
         let test_writer = TestWriter::new(TestWriterConfig::vectorized());
         let buffer = test_writer.buffer.clone();
 
-        let writer = Arc::new(SequentialWriter::new_vectorized(Box::new(test_writer), None));
+        let writer = Arc::new(SequentialWriter::new_vectorized(Box::new(test_writer), None, CancellationToken::new()));
 
         // Create futures that resolve with different delays
         let f0: DataFuture = Box::pin(async {
@@ -955,7 +1030,7 @@ mod tests {
         let buffer = test_writer.buffer.clone();
         let vectored_count = test_writer.vectored_write_count.clone();
 
-        let writer = Arc::new(SequentialWriter::new_vectorized(Box::new(test_writer), None));
+        let writer = Arc::new(SequentialWriter::new_vectorized(Box::new(test_writer), None, CancellationToken::new()));
 
         // Write 100 single-byte chunks
         for i in 0..100u8 {
@@ -984,7 +1059,7 @@ mod tests {
         let test_writer = TestWriter::new(TestWriterConfig::vectorized_with_interrupts());
         let buffer = test_writer.buffer.clone();
 
-        let writer = Arc::new(SequentialWriter::new_vectorized(Box::new(test_writer), None));
+        let writer = Arc::new(SequentialWriter::new_vectorized(Box::new(test_writer), None, CancellationToken::new()));
 
         writer
             .set_next_term_data_source(FileRange::new(0, 5), None, immediate_future(Bytes::from("Hello")))
@@ -1011,7 +1086,7 @@ mod tests {
         let buffer = test_writer.buffer.clone();
         let semaphore = Arc::new(Semaphore::new(2));
 
-        let writer = Arc::new(SequentialWriter::new_vectorized(Box::new(test_writer), None));
+        let writer = Arc::new(SequentialWriter::new_vectorized(Box::new(test_writer), None, CancellationToken::new()));
 
         let permit1 = semaphore.clone().acquire_owned().await.unwrap();
         let permit2 = semaphore.clone().acquire_owned().await.unwrap();
@@ -1046,7 +1121,7 @@ mod tests {
         let buffer = test_writer.buffer.clone();
         let semaphore = Arc::new(Semaphore::new(3));
 
-        let writer = Arc::new(SequentialWriter::new_vectorized(Box::new(test_writer), None));
+        let writer = Arc::new(SequentialWriter::new_vectorized(Box::new(test_writer), None, CancellationToken::new()));
 
         let permit1 = semaphore.clone().acquire_owned().await.unwrap();
         let permit2 = semaphore.clone().acquire_owned().await.unwrap();
@@ -1082,7 +1157,7 @@ mod tests {
         let write_count = test_writer.write_count.clone();
         let vectored_count = test_writer.vectored_write_count.clone();
 
-        let writer = Arc::new(SequentialWriter::new(Box::new(test_writer), None));
+        let writer = Arc::new(SequentialWriter::new(Box::new(test_writer), None, CancellationToken::new()));
 
         writer
             .set_next_term_data_source(FileRange::new(0, 5), None, immediate_future(Bytes::from("Hello")))
@@ -1110,7 +1185,7 @@ mod tests {
         let test_writer = TestWriter::new(TestWriterConfig::partial(3));
         let buffer = test_writer.buffer.clone();
 
-        let writer = Arc::new(SequentialWriter::new(Box::new(test_writer), None));
+        let writer = Arc::new(SequentialWriter::new(Box::new(test_writer), None, CancellationToken::new()));
 
         writer
             .set_next_term_data_source(FileRange::new(0, 5), None, immediate_future(Bytes::from("Hello")))
@@ -1140,7 +1215,7 @@ mod tests {
         let test_writer = TestWriter::new(TestWriterConfig::vectorized_partial(1));
         let buffer = test_writer.buffer.clone();
 
-        let writer = Arc::new(SequentialWriter::new_vectorized(Box::new(test_writer), None));
+        let writer = Arc::new(SequentialWriter::new_vectorized(Box::new(test_writer), None, CancellationToken::new()));
 
         writer
             .set_next_term_data_source(FileRange::new(0, 5), None, immediate_future(Bytes::from("ABCDE")))
@@ -1163,7 +1238,7 @@ mod tests {
         let test_writer = TestWriter::new(TestWriterConfig::vectorized());
         let buffer = test_writer.buffer.clone();
 
-        let writer = Arc::new(SequentialWriter::new_vectorized(Box::new(test_writer), None));
+        let writer = Arc::new(SequentialWriter::new_vectorized(Box::new(test_writer), None, CancellationToken::new()));
 
         // Write in chunks of 1000 bytes
         for i in 0..10 {
@@ -1192,7 +1267,7 @@ mod tests {
         let test_writer = TestWriter::new(TestWriterConfig::vectorized_partial(100));
         let buffer = test_writer.buffer.clone();
 
-        let writer = Arc::new(SequentialWriter::new_vectorized(Box::new(test_writer), None));
+        let writer = Arc::new(SequentialWriter::new_vectorized(Box::new(test_writer), None, CancellationToken::new()));
 
         // Write in chunks of 500 bytes
         for i in 0..10 {
@@ -1219,7 +1294,7 @@ mod tests {
     async fn test_vectorized_exceeded_max_slice() {
         let test_writer = TestWriter::new(TestWriterConfig::vectorized_hard_limit(2)); // hard limit set to 2 slices at a time
 
-        let writer = Arc::new(SequentialWriter::new_vectorized(Box::new(test_writer), None)); // controlled writev at max 24 slices at a time
+        let writer = Arc::new(SequentialWriter::new_vectorized(Box::new(test_writer), None, CancellationToken::new())); // controlled writev at max 24 slices at a time
 
         // Write in slices of 10 bytes, creating in total 1000 slices
         for i in 0..1000 {
@@ -1252,7 +1327,7 @@ mod tests {
         let test_writer = TestWriter::new(TestWriterConfig::vectorized_hard_limit(40)); // hard limit set to 40 slices at a time
         let buffer = test_writer.buffer.clone();
 
-        let writer = Arc::new(SequentialWriter::new_vectorized(Box::new(test_writer), None)); // controlled writev at max 24 slices at a time
+        let writer = Arc::new(SequentialWriter::new_vectorized(Box::new(test_writer), None, CancellationToken::new())); // controlled writev at max 24 slices at a time
 
         // Write in slices of 10 bytes, creating in total 1000 slices
         for i in 0..1000 {
@@ -1273,5 +1348,230 @@ mod tests {
 
         let result = buffer.lock().unwrap();
         assert_eq!(&*result, &expected);
+    }
+
+    // ==================== Channel Writer Tests ====================
+
+    #[tokio::test]
+    async fn test_channel_basic() {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+
+        let writer = Arc::new(SequentialWriter::new_channel(tx, None, CancellationToken::new()));
+
+        let reader = tokio::spawn(async move {
+            let mut collected = Vec::new();
+            while let Some((data, _permit)) = rx.recv().await {
+                collected.extend_from_slice(&data);
+            }
+            collected
+        });
+
+        writer
+            .set_next_term_data_source(FileRange::new(0, 5), None, immediate_future(Bytes::from("Hello")))
+            .await
+            .unwrap();
+        writer
+            .set_next_term_data_source(FileRange::new(5, 6), None, immediate_future(Bytes::from(" ")))
+            .await
+            .unwrap();
+        writer
+            .set_next_term_data_source(FileRange::new(6, 11), None, immediate_future(Bytes::from("World")))
+            .await
+            .unwrap();
+
+        writer.finish().await.unwrap();
+
+        let result = reader.await.unwrap();
+        assert_eq!(&result, b"Hello World");
+    }
+
+    #[tokio::test]
+    async fn test_channel_with_delayed_futures() {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+
+        let writer = Arc::new(SequentialWriter::new_channel(tx, None, CancellationToken::new()));
+
+        let reader = tokio::spawn(async move {
+            let mut collected = Vec::new();
+            while let Some((data, _permit)) = rx.recv().await {
+                collected.extend_from_slice(&data);
+            }
+            collected
+        });
+
+        // Futures that resolve out of order in time
+        let f0: DataFuture = Box::pin(async {
+            tokio::time::sleep(Duration::from_millis(40)).await;
+            Ok(Bytes::from("First"))
+        });
+        let f1: DataFuture = Box::pin(async {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+            Ok(Bytes::from("-Second"))
+        });
+        let f2: DataFuture = Box::pin(async { Ok(Bytes::from("-Third")) });
+
+        writer.set_next_term_data_source(FileRange::new(0, 5), None, f0).await.unwrap();
+        writer.set_next_term_data_source(FileRange::new(5, 12), None, f1).await.unwrap();
+        writer
+            .set_next_term_data_source(FileRange::new(12, 18), None, f2)
+            .await
+            .unwrap();
+
+        writer.finish().await.unwrap();
+
+        let result = reader.await.unwrap();
+        assert_eq!(&result, b"First-Second-Third");
+    }
+
+    #[tokio::test]
+    async fn test_channel_with_permits_forwarded() {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let semaphore = Arc::new(Semaphore::new(2));
+
+        let writer = Arc::new(SequentialWriter::new_channel(tx, None, CancellationToken::new()));
+
+        let reader = tokio::spawn(async move {
+            let mut collected = Vec::new();
+            let mut permits = Vec::new();
+            while let Some((data, permit)) = rx.recv().await {
+                collected.extend_from_slice(&data);
+                permits.push(permit);
+            }
+            (collected, permits)
+        });
+
+        let permit1 = semaphore.clone().acquire_owned().await.unwrap();
+        let permit2 = semaphore.clone().acquire_owned().await.unwrap();
+        assert_eq!(semaphore.available_permits(), 0);
+
+        writer
+            .set_next_term_data_source(FileRange::new(0, 5), Some(permit1), immediate_future(Bytes::from("Hello")))
+            .await
+            .unwrap();
+        writer
+            .set_next_term_data_source(FileRange::new(5, 6), Some(permit2), immediate_future(Bytes::from(" ")))
+            .await
+            .unwrap();
+
+        writer.finish().await.unwrap();
+
+        let (result, permits) = reader.await.unwrap();
+        assert_eq!(&result, b"Hello ");
+
+        // Permits were forwarded to the receiver, not yet released
+        assert_eq!(semaphore.available_permits(), 0);
+
+        // Dropping the permits releases them
+        drop(permits);
+        assert_eq!(semaphore.available_permits(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_channel_empty_finish() {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+
+        let writer = Arc::new(SequentialWriter::new_channel(tx, None, CancellationToken::new()));
+
+        // Finish immediately with no data
+        let bytes = writer.finish().await.unwrap();
+        assert_eq!(bytes, 0);
+
+        // Receiver should see None (sender dropped)
+        assert!(rx.recv().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_channel_large_data() {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+
+        let writer = Arc::new(SequentialWriter::new_channel(tx, None, CancellationToken::new()));
+
+        let reader = tokio::spawn(async move {
+            let mut collected = Vec::new();
+            while let Some((data, _permit)) = rx.recv().await {
+                collected.extend_from_slice(&data);
+            }
+            collected
+        });
+
+        let expected: Vec<u8> = (0..5000).map(|i| (i % 256) as u8).collect();
+
+        for i in 0..10 {
+            let start = i * 500;
+            let end = start + 500;
+            let chunk: Vec<u8> = (start..end).map(|j| (j % 256) as u8).collect();
+            writer
+                .set_next_term_data_source(
+                    FileRange::new(start as u64, end as u64),
+                    None,
+                    immediate_future(Bytes::from(chunk)),
+                )
+                .await
+                .unwrap();
+        }
+
+        writer.finish().await.unwrap();
+
+        let result = reader.await.unwrap();
+        assert_eq!(result, expected);
+    }
+
+    #[tokio::test]
+    async fn test_channel_receiver_dropped_propagates_error() {
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+
+        let writer = Arc::new(SequentialWriter::new_channel(tx, None, CancellationToken::new()));
+
+        // Drop the receiver immediately
+        drop(rx);
+
+        writer
+            .set_next_term_data_source(FileRange::new(0, 5), None, immediate_future(Bytes::from("Hello")))
+            .await
+            .unwrap();
+
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        let result = writer.finish().await;
+        assert!(result.is_err());
+        assert!(matches!(result, Err(FileReconstructionError::IoError(_))));
+    }
+
+    #[tokio::test]
+    async fn test_channel_slow_consumer_with_semaphore() {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let semaphore = Arc::new(Semaphore::new(4));
+
+        let writer = Arc::new(SequentialWriter::new_channel(tx, None, CancellationToken::new()));
+
+        let reader = tokio::spawn(async move {
+            let mut collected = Vec::new();
+            while let Some((data, permit)) = rx.recv().await {
+                collected.extend_from_slice(&data);
+                // Simulate slow processing before releasing permit
+                tokio::time::sleep(Duration::from_millis(5)).await;
+                drop(permit);
+            }
+            collected
+        });
+
+        let expected: Vec<u8> = (0..20u8).collect();
+
+        for i in 0..20u8 {
+            let permit = semaphore.clone().acquire_owned().await.unwrap();
+            writer
+                .set_next_term_data_source(
+                    FileRange::new(i as u64, i as u64 + 1),
+                    Some(permit),
+                    immediate_future(Bytes::from(vec![i])),
+                )
+                .await
+                .unwrap();
+        }
+
+        writer.finish().await.unwrap();
+
+        let result = reader.await.unwrap();
+        assert_eq!(result, expected);
     }
 }

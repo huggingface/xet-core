@@ -192,7 +192,7 @@ impl WrappedProgressUpdaterImpl {
                 2 => {
                     if param_names
                         .iter()
-                        .zip(DETAILED_PROGRESS_ARG_NAMES.into_iter())
+                        .zip(DETAILED_PROGRESS_ARG_NAMES)
                         .all(|(v1, v2)| v1.to_string_lossy(py) == v2)
                     {
                         true
