@@ -7,22 +7,16 @@ use std::sync::Arc;
 use cas_client::Client;
 use cas_types::FileRange;
 use file_reconstruction::{DataOutput, FileReconstructor};
-use lazy_static::lazy_static;
 use progress_tracking::TrackingProgressUpdater;
 use progress_tracking::download_tracking::{DownloadProgressTracker, DownloadTaskUpdater};
 use tracing::instrument;
 use ulid::Ulid;
-use xet_runtime::{GlobalSemaphoreHandle, XetRuntime, global_semaphore_handle, xet_config};
+use xet_runtime::XetRuntime;
 
 use crate::configurations::TranslatorConfig;
 use crate::errors::*;
 use crate::remote_client_interface::create_remote_client;
 use crate::{XetFileInfo, prometheus_metrics};
-
-lazy_static! {
-    pub(crate) static ref CONCURRENT_FILE_DOWNLOAD_LIMITER: GlobalSemaphoreHandle =
-        global_semaphore_handle!(xet_config().data.max_concurrent_file_downloads as usize);
-}
 
 /// Manages the downloading of files from CAS storage.
 ///
@@ -161,7 +155,7 @@ impl FileDownloadSession {
         range: Option<FileRange>,
         progress_updater: Option<Arc<DownloadTaskUpdater>>,
     ) -> Result<u64> {
-        let semaphore = XetRuntime::current().global_semaphore(*CONCURRENT_FILE_DOWNLOAD_LIMITER);
+        let semaphore = XetRuntime::current().common().file_download_semaphore.clone();
         let _permit = semaphore.acquire().await?;
 
         let file_id = file_info.merkle_hash()?;

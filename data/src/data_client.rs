@@ -20,7 +20,6 @@ use xet_runtime::{XetRuntime, xet_cache_root, xet_config};
 use crate::configurations::*;
 use crate::errors::DataProcessingError;
 use crate::file_download_session::FileDownloadSession;
-use crate::file_upload_session::CONCURRENT_FILE_INGESTION_LIMITER;
 use crate::{FileUploadSession, XetFileInfo, errors};
 
 pub fn default_config(
@@ -110,7 +109,7 @@ pub async fn upload_bytes_async(
 
     Span::current().record("session_id", &config.session_id);
 
-    let semaphore = XetRuntime::current().global_semaphore(*CONCURRENT_FILE_INGESTION_LIMITER);
+    let semaphore = XetRuntime::current().common().file_ingestion_semaphore.clone();
     let upload_session = FileUploadSession::new(config.into(), progress_updater).await?;
     let clean_futures = file_contents.into_iter().map(|blob| {
         let upload_session = upload_session.clone();
@@ -365,13 +364,13 @@ fn hash_single_file(filename: String, buffer_size: usize) -> errors::Result<XetF
 /// - Determine which files need to be uploaded by comparing with server hashes
 ///
 /// # Performance
-/// - Uses `CONCURRENT_FILE_INGESTION_LIMITER` to control parallelism
+/// - Uses `file_ingestion_semaphore` to control parallelism
 /// - No authentication or server connection required
 /// - Pure local computation
 #[instrument(skip_all, name = "data_client::hash_files", fields(num_files=file_paths.len()))]
 pub async fn hash_files_async(file_paths: Vec<String>) -> errors::Result<Vec<XetFileInfo>> {
     let rt = XetRuntime::current();
-    let semaphore = rt.global_semaphore(*CONCURRENT_FILE_INGESTION_LIMITER);
+    let semaphore = rt.common().file_ingestion_semaphore.clone();
     let buffer_size = *xet_config().data.ingestion_block_size as usize;
 
     let hash_futures = file_paths.into_iter().map(|file_path| {

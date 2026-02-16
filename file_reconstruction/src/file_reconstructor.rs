@@ -4,26 +4,14 @@ use cas_client::Client;
 use cas_types::FileRange;
 use merklehash::MerkleHash;
 use progress_tracking::download_tracking::DownloadTaskUpdater;
-use tokio::sync::Semaphore;
 use tracing::{debug, info};
+use utils::ResourceSemaphore;
 use xet_config::ReconstructionConfig;
-use xet_runtime::{GlobalSemaphoreHandle, XetRuntime, global_semaphore_handle, xet_config};
+use xet_runtime::{XetRuntime, xet_config};
 
 use crate::data_writer::{DataOutput, new_data_writer};
 use crate::error::{FileReconstructionError, Result};
 use crate::reconstruction_terms::ReconstructionTermManager;
-
-lazy_static::lazy_static! {
-
-    /// A global limit on how much memory can be used for buffering data during reconstruction.  This could be overridden by
-    /// a custom semaphore, but by default all reconstructions share a common memory limit.  By default, set to 8gb.
-    static ref RECONSTRUCTION_DOWNLOAD_BUFFER_SIZE: usize =
-        ((((xet_config().reconstruction.download_buffer_size.as_u64() as f64) /
-         (xet_config().reconstruction.download_buffer_permit_basis.as_u64() as f64)).ceil()) as u32) as usize;
-
-    static ref RECONSTRUCTION_DOWNLOAD_BUFFER_LIMITER: GlobalSemaphoreHandle =
-        global_semaphore_handle!(*RECONSTRUCTION_DOWNLOAD_BUFFER_SIZE);
-}
 
 /// Reconstructs a file from its content-addressed chunks by downloading xorb blocks
 /// and writing the reassembled data to an output. Supports byte range requests and
@@ -36,8 +24,8 @@ pub struct FileReconstructor {
     progress_updater: Option<Arc<DownloadTaskUpdater>>,
     config: Arc<ReconstructionConfig>,
 
-    /// Custom buffer semaphore (semaphore, total_permits) for testing or specialized use cases.
-    custom_buffer_semaphore: Option<(Arc<Semaphore>, usize, usize)>,
+    /// Custom buffer semaphore for testing or specialized use cases.
+    custom_buffer_semaphore: Option<ResourceSemaphore>,
 }
 
 impl FileReconstructor {
@@ -83,13 +71,9 @@ impl FileReconstructor {
     /// Sets a custom buffer semaphore for controlling download buffer memory usage.
     /// This is primarily useful for testing scenarios where you want to control
     /// the timing of term fetches by limiting buffer capacity.
-    ///
-    /// # Arguments
-    /// * `semaphore` - The semaphore to use for buffer limiting
-    /// * `total_permits` - The total number of permits in the semaphore (used to cap requests)
-    pub fn with_buffer_semaphore(self, semaphore: Arc<Semaphore>, total_permits: usize, size_basis: usize) -> Self {
+    pub fn with_buffer_semaphore(self, semaphore: ResourceSemaphore) -> Self {
         Self {
-            custom_buffer_semaphore: Some((semaphore, total_permits, size_basis)),
+            custom_buffer_semaphore: Some(semaphore),
             ..self
         }
     }
@@ -126,18 +110,11 @@ impl FileReconstructor {
 
         let data_writer = new_data_writer(output, requested_range.start, &config, progress_updater.clone())?;
 
-        // Determine buffer size and semaphore based on whether a custom one is provided.
-        // Tuple is (semaphore, total_permits).
-        let (download_buffer_semaphore, buffer_size, permit_size_basis) =
-            custom_buffer_semaphore.unwrap_or_else(|| {
-                let global_semaphore = XetRuntime::current().global_semaphore(*RECONSTRUCTION_DOWNLOAD_BUFFER_LIMITER);
-                let default_buffer_size = *RECONSTRUCTION_DOWNLOAD_BUFFER_SIZE;
-                (
-                    global_semaphore,
-                    default_buffer_size,
-                    xet_config().reconstruction.download_buffer_permit_basis.as_u64() as usize,
-                )
-            });
+        // Determine buffer semaphore based on whether a custom one is provided.
+        let download_buffer_semaphore = custom_buffer_semaphore.unwrap_or_else(|| {
+            let rt = XetRuntime::current();
+            rt.common().reconstruction_download_buffer.clone()
+        });
 
         // The range start offset - we need to adjust byte ranges to be relative to this.
         let range_start_offset = requested_range.start;
@@ -166,7 +143,7 @@ impl FileReconstructor {
             // Inner loop: process each file term in the block.
             for file_term in file_terms {
                 // Calculate the number of bytes this term will use.
-                let term_size = (file_term.byte_range.end - file_term.byte_range.start) as u32;
+                let term_size = file_term.byte_range.end - file_term.byte_range.start;
 
                 debug!(
                     xorb_hash = %file_term.xorb_block.xorb_hash,
@@ -175,25 +152,11 @@ impl FileReconstructor {
                     "Processing file term"
                 );
 
-                // Don't request more permits than the buffer size. Term size is limited to
-                // u32::MAX, but if the buffer is tiny, then we could deadlock if we request a
-                // larger number of permits.
-                let max_request_size = buffer_size.min(u32::MAX as usize) as u32;
-
-                // Get the requested permit size; note that `as u32` saturates to u32::MAX, so this should handle all
-                // the edge cases.
-                let requested_permit_size =
-                    (((term_size as f64) / (permit_size_basis as f64)).ceil() as u32).min(max_request_size);
-
-                // Acquire a permit from the memory limiter for using the memory needed for
-                // the next term.
-                let buffer_permit = download_buffer_semaphore
-                    .clone()
-                    .acquire_many_owned(requested_permit_size)
-                    .await
-                    .map_err(|e| {
-                        FileReconstructionError::InternalError(format!("Error acquiring download buffer permit: {e}"))
-                    })?;
+                // Acquire a permit from the memory limiter for the memory needed for
+                // the next term. The ResourceSemaphore handles scaling and clamping.
+                let buffer_permit = download_buffer_semaphore.acquire_owned(term_size).await.map_err(|e| {
+                    FileReconstructionError::InternalError(format!("Error acquiring download buffer permit: {e}"))
+                })?;
 
                 // Get the data future that will retrieve the term's data.
                 let data_future = file_term.get_data_task(client.clone(), progress_updater.clone()).await?;
@@ -217,7 +180,7 @@ impl FileReconstructor {
                     .await?;
 
                 total_terms_processed += 1;
-                total_bytes_scheduled += term_size as u64;
+                total_bytes_scheduled += term_size;
             }
         }
 
@@ -922,7 +885,7 @@ mod tests {
 
         // Create a tiny semaphore (1 permit) to force sequential processing
         // This ensures each term is fully written before the next is fetched
-        let tiny_semaphore = Arc::new(Semaphore::new(1));
+        let tiny_semaphore = ResourceSemaphore::new(1);
 
         let reconstructor = FileReconstructor::new(
             &(client.clone() as Arc<dyn Client>),
@@ -930,7 +893,7 @@ mod tests {
             DataOutput::SequentialWriter(Box::new(writer)),
         )
         .with_config(url_refresh_test_config())
-        .with_buffer_semaphore(tiny_semaphore, 1, 1);
+        .with_buffer_semaphore(tiny_semaphore);
 
         // Run reconstruction - this should trigger URL refreshes
         reconstructor
@@ -963,7 +926,7 @@ mod tests {
         let writer = TimeAdvancingWriter::new(Duration::from_secs(2));
         let writer_buffer = writer.buffer.clone();
 
-        let tiny_semaphore = Arc::new(Semaphore::new(1));
+        let tiny_semaphore = ResourceSemaphore::new(1);
 
         let reconstructor = FileReconstructor::new(
             &(client.clone() as Arc<dyn Client>),
@@ -971,7 +934,7 @@ mod tests {
             DataOutput::SequentialWriter(Box::new(writer)),
         )
         .with_config(url_refresh_test_config())
-        .with_buffer_semaphore(tiny_semaphore, 1, 1);
+        .with_buffer_semaphore(tiny_semaphore);
 
         reconstructor.run().await.expect("Reconstruction should succeed");
 
@@ -992,7 +955,7 @@ mod tests {
         let writer = TimeAdvancingWriter::new(Duration::from_secs(2));
         let writer_buffer = writer.buffer.clone();
 
-        let tiny_semaphore = Arc::new(Semaphore::new(1));
+        let tiny_semaphore = ResourceSemaphore::new(1);
 
         let reconstructor = FileReconstructor::new(
             &(client.clone() as Arc<dyn Client>),
@@ -1000,7 +963,7 @@ mod tests {
             DataOutput::SequentialWriter(Box::new(writer)),
         )
         .with_config(url_refresh_test_config())
-        .with_buffer_semaphore(tiny_semaphore, 1, 1);
+        .with_buffer_semaphore(tiny_semaphore);
 
         reconstructor.run().await.expect("Reconstruction should succeed");
 
@@ -1021,7 +984,7 @@ mod tests {
         let writer = TimeAdvancingWriter::new(Duration::from_millis(100));
         let writer_buffer = writer.buffer.clone();
 
-        let tiny_semaphore = Arc::new(Semaphore::new(1));
+        let tiny_semaphore = ResourceSemaphore::new(1);
 
         let reconstructor = FileReconstructor::new(
             &(client.clone() as Arc<dyn Client>),
@@ -1029,7 +992,7 @@ mod tests {
             DataOutput::SequentialWriter(Box::new(writer)),
         )
         .with_config(url_refresh_test_config())
-        .with_buffer_semaphore(tiny_semaphore, 1, 1);
+        .with_buffer_semaphore(tiny_semaphore);
 
         reconstructor.run().await.expect("Reconstruction should succeed");
 
@@ -1049,7 +1012,7 @@ mod tests {
         let writer = TimeAdvancingWriter::new(Duration::from_secs(2));
         let writer_buffer = writer.buffer.clone();
 
-        let tiny_semaphore = Arc::new(Semaphore::new(1));
+        let tiny_semaphore = ResourceSemaphore::new(1);
 
         let range = FileRange::new(file_len / 4, file_len * 3 / 4);
 
@@ -1060,7 +1023,7 @@ mod tests {
         )
         .with_byte_range(range)
         .with_config(url_refresh_test_config())
-        .with_buffer_semaphore(tiny_semaphore, 1, 1);
+        .with_buffer_semaphore(tiny_semaphore);
 
         reconstructor.run().await.expect("Reconstruction should succeed");
 

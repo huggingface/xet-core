@@ -1,7 +1,7 @@
 <Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
   <Package Name="Git-Xet" 
            Manufacturer="Hugging Face" 
-           Version="0.2.0" 
+           Version="0.2.1" 
            Language="1033"
            UpgradeCode="1aedaf4a-9b02-44e5-be42-ef18ce3b5c28">
 
