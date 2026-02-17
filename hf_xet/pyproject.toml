@@ -46,10 +46,9 @@ tests = [
 
 [project.urls]
 Homepage = "https://github.com/huggingface/xet-core"
-Documentation = "https://huggingface.co/docs/hub/en/storage-backends#using-xet-storage"
+Documentation = "https://huggingface.co/docs/hub/xet/index"
 Issues = "https://github.com/huggingface/xet-core/issues"
 Repository = "https://github.com/huggingface/xet-core.git"
 
 [tool.maturin]
-python-source = "python"
 features = ["pyo3/extension-module"]
