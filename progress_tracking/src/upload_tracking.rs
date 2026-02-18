@@ -49,8 +49,8 @@ struct FileDependency {
     /// Human-readable name of the file.
     name: Arc<str>,
 
-    /// Total size of this file in bytes.
-    total_bytes: u64,
+    /// Total size of this file in bytes, or `None` if the size is not known upfront.
+    total_bytes: Option<u64>,
 
     /// Total bytes already uploaded for this file (across its xorbs).
     completed_bytes: u64,
@@ -86,11 +86,11 @@ pub struct CompletionTracker {
 
 impl CompletionTrackerImpl {
     /// Registers a new file for tracking and returns an ID (its index in `files`).
-    /// `n_bytes` is the total size of the file.
+    /// `n_bytes` is the total size of the file, or `None` if the size is not known upfront.
     fn register_new_file(
         &mut self,
         name: impl Into<Arc<str>>,
-        n_bytes: u64,
+        n_bytes: Option<u64>,
     ) -> (ProgressUpdate, CompletionTrackerFileId) {
         // The file's ID is simply its index in the internal `files` vector.
         let file_id = self.files.len() as CompletionTrackerFileId;
@@ -107,7 +107,8 @@ impl CompletionTrackerImpl {
         self.files.push(file_dependency);
 
         // We have more to process now.
-        self.total_bytes += n_bytes;
+        let n_bytes_known = n_bytes.unwrap_or(0);
+        self.total_bytes += n_bytes_known;
 
         // Register that the total bytes known has changed, and return the file ID so the caller can register
         // dependencies on this file.
@@ -115,7 +116,7 @@ impl CompletionTrackerImpl {
             ProgressUpdate {
                 item_updates: vec![],
                 total_bytes: self.total_bytes,
-                total_bytes_increment: n_bytes,
+                total_bytes_increment: n_bytes_known,
                 total_bytes_completed: self.total_bytes_completed,
                 total_bytes_completion_increment: 0,
                 total_transfer_bytes: self.total_upload_bytes,
@@ -141,7 +142,9 @@ impl CompletionTrackerImpl {
             if dep.is_external {
                 // This is the freebie case, where we can just increment the progress.
                 file_entry.completed_bytes += dep.n_bytes;
-                debug_assert_le!(file_entry.completed_bytes, file_entry.total_bytes);
+                if let Some(total) = file_entry.total_bytes {
+                    debug_assert_le!(file_entry.completed_bytes, total);
+                }
 
                 let progress_update = ItemProgressUpdate {
                     item_name: file_entry.name.clone(),
@@ -163,7 +166,9 @@ impl CompletionTrackerImpl {
                 // If the entry has already been completed, then just mark this as completed.
                 if entry.is_completed {
                     file_entry.completed_bytes += dep.n_bytes;
-                    debug_assert_le!(file_entry.completed_bytes, file_entry.total_bytes);
+                    if let Some(total) = file_entry.total_bytes {
+                        debug_assert_le!(file_entry.completed_bytes, total);
+                    }
 
                     let progress_update = ItemProgressUpdate {
                         item_name: file_entry.name.clone(),
@@ -185,8 +190,6 @@ impl CompletionTrackerImpl {
 
         // Register that this much has been completed already
         self.total_bytes_completed += file_bytes_processed;
-
-        debug_assert_le!(self.total_bytes_completed, self.total_bytes);
 
         // There may be a lot of per-file updates, but these don't actually count against the new byte total;
         // this is counted only using xorbs.
@@ -301,7 +304,6 @@ impl CompletionTrackerImpl {
         self.total_upload_bytes_completed += byte_completion_increment;
 
         self.total_bytes_completed += file_bytes_processed;
-        debug_assert_le!(self.total_bytes_completed, self.total_bytes);
 
         ProgressUpdate {
             item_updates,
@@ -413,7 +415,6 @@ impl CompletionTrackerImpl {
         debug_assert_le!(self.total_upload_bytes_completed, self.total_upload_bytes);
 
         self.total_bytes_completed += file_bytes_processed;
-        debug_assert_le!(self.total_bytes_completed, self.total_bytes);
 
         ProgressUpdate {
             item_updates,
@@ -433,7 +434,7 @@ impl CompletionTrackerImpl {
         let (mut sum_completed, mut sum_total) = (0, 0);
         for file in &self.files {
             sum_completed += file.completed_bytes;
-            sum_total += file.total_bytes;
+            sum_total += file.total_bytes.unwrap_or(0);
         }
         (sum_completed, sum_total)
     }
@@ -457,11 +458,13 @@ impl CompletionTrackerImpl {
     fn assert_complete(&self) {
         // Check each file for completeness
         for (idx, file) in self.files.iter().enumerate() {
-            assert_eq!(
-                file.completed_bytes, file.total_bytes,
-                "File #{} ({}) is not fully completed: {}/{} bytes",
-                idx, file.name, file.completed_bytes, file.total_bytes
-            );
+            if let Some(total_bytes) = file.total_bytes {
+                assert_eq!(
+                    file.completed_bytes, total_bytes,
+                    "File #{} ({}) is not fully completed: {}/{} bytes",
+                    idx, file.name, file.completed_bytes, total_bytes
+                );
+            }
             assert!(
                 file.remaining_xorbs_parts.is_empty(),
                 "File #{} ({}) still has uncompleted xorb parts: {:?}",
@@ -493,7 +496,7 @@ impl CompletionTracker {
         }
     }
 
-    pub async fn register_new_file(&self, name: impl Into<Arc<str>>, n_bytes: u64) -> CompletionTrackerFileId {
+    pub async fn register_new_file(&self, name: impl Into<Arc<str>>, n_bytes: Option<u64>) -> CompletionTrackerFileId {
         let mut update_lock = self.inner.lock().await;
 
         let (updates, ret) = update_lock.register_new_file(name, n_bytes);
@@ -605,8 +608,8 @@ mod tests {
         let tracker = CompletionTracker::new(verifier.clone());
 
         // Register two files
-        let file_a = tracker.register_new_file("fileA", 100).await;
-        let file_b = tracker.register_new_file("fileB", 50).await;
+        let file_a = tracker.register_new_file("fileA", Some(100)).await;
+        let file_b = tracker.register_new_file("fileB", Some(50)).await;
 
         // Initially, done=0, total=150
         let (done, total) = tracker.status().await;
@@ -668,8 +671,8 @@ mod tests {
         let tracker = CompletionTracker::new(verifier.clone());
 
         // Two files => 200 + 300 = 500 total
-        let file_a = tracker.register_new_file("fileA", 200).await;
-        let file_b = tracker.register_new_file("fileB", 300).await;
+        let file_a = tracker.register_new_file("fileA", Some(200)).await;
+        let file_b = tracker.register_new_file("fileB", Some(300)).await;
 
         let (done, total) = tracker.status().await;
         assert_eq!(done, 0);
@@ -762,7 +765,7 @@ mod tests {
         let verifier = ProgressUpdaterVerificationWrapper::new(no_op);
         let tracker = CompletionTracker::new(verifier.clone());
 
-        let f = tracker.register_new_file("bigFile", 300).await;
+        let f = tracker.register_new_file("bigFile", Some(300)).await;
 
         let x1 = MerkleHash::random_from_seed(1);
         let x2 = MerkleHash::random_from_seed(2);
@@ -830,7 +833,7 @@ mod tests {
         let tracker = CompletionTracker::new(verifier.clone());
 
         // One file, 50 bytes
-        let file_id = tracker.register_new_file("lateFile", 50).await;
+        let file_id = tracker.register_new_file("lateFile", Some(50)).await;
 
         // xhash completed before we mention any dependencies
         let x = MerkleHash::random_from_seed(999);
@@ -867,7 +870,7 @@ mod tests {
         let verifier = ProgressUpdaterVerificationWrapper::new(no_op);
         let tracker = CompletionTracker::new(verifier.clone());
 
-        let file_id = tracker.register_new_file("someFile", 100).await;
+        let file_id = tracker.register_new_file("someFile", Some(100)).await;
         let x = MerkleHash::random_from_seed(123);
 
         tracker.register_new_xorb(x, 1000).await;

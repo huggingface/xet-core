@@ -1,6 +1,9 @@
 use std::io::Write;
 use std::path::PathBuf;
 
+use bytes::Bytes;
+use tokio::sync::mpsc;
+
 /// The data output type for the file reconstructor.
 pub enum DataOutput {
     /// A custom writer that will receive the reconstructed data.
@@ -16,6 +19,11 @@ pub enum DataOutput {
         /// If `None`, use the byte range start from the reconstruction request.
         offset: Option<u64>,
     },
+
+    /// An async channel for streaming `Bytes` directly, bypassing sync `Write`.
+    /// Paired with `StreamingWriter`, which sends resolved `Bytes` through the
+    /// channel without the blocking thread or redundant copies of `SequentialWriter`.
+    ByteStream(mpsc::Sender<Bytes>),
 }
 
 impl DataOutput {
@@ -48,5 +56,14 @@ impl DataOutput {
     /// byte range being reconstructed.
     pub fn writer(writer: impl Write + Send + 'static) -> Self {
         Self::SequentialWriter(Box::new(writer))
+    }
+
+    /// Creates a byte-stream output paired with a receiver.
+    ///
+    /// `buffer_size` controls how many chunks can be buffered before
+    /// backpressure is applied.
+    pub fn byte_stream(buffer_size: usize) -> (Self, mpsc::Receiver<Bytes>) {
+        let (tx, rx) = mpsc::channel(buffer_size);
+        (Self::ByteStream(tx), rx)
     }
 }

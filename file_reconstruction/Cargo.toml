@@ -20,5 +20,6 @@ bytes = { workspace = true }
 more-asserts = { workspace = true }
 
 [dev-dependencies]
+futures = { workspace = true }
 tempfile = { workspace = true }
 rand = { workspace = true }
