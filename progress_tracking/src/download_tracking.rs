@@ -3,7 +3,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use more_asserts::debug_assert_le;
 
-use crate::{ItemProgressUpdate, NoOpProgressUpdater, ProgressUpdate, TrackingProgressUpdater};
+use crate::{ItemProgressUpdate, ProgressUpdate, TrackingProgressUpdater};
 
 /// Tracks the total progress across all download tasks.  Updates on individual download tasks
 /// are forwarded to the inner progress updater, using this info to update the totals.
@@ -30,12 +30,16 @@ impl DownloadProgressTracker {
         Arc::new(DownloadTaskUpdater::new(item_name, self.clone()))
     }
 
+    #[inline]
     pub fn assert_complete(&self) {
-        assert_eq!(self.total_bytes_completed.load(Ordering::Relaxed), self.total_bytes.load(Ordering::Relaxed));
-        assert_eq!(
-            self.total_transfer_bytes_completed.load(Ordering::Relaxed),
-            self.total_transfer_bytes.load(Ordering::Relaxed)
-        );
+        #[cfg(debug_assertions)]
+        {
+            assert_eq!(self.total_bytes_completed.load(Ordering::Relaxed), self.total_bytes.load(Ordering::Relaxed));
+            assert_eq!(
+                self.total_transfer_bytes_completed.load(Ordering::Relaxed),
+                self.total_transfer_bytes.load(Ordering::Relaxed)
+            );
+        }
     }
 }
 
@@ -64,8 +68,9 @@ impl DownloadTaskUpdater {
         }
     }
 
+    #[cfg(debug_assertions)]
     pub fn correctness_verification_tracker() -> Arc<Self> {
-        let null_tracker = NoOpProgressUpdater::new();
+        let null_tracker = crate::NoOpProgressUpdater::new();
 
         let testing_download_tracker = DownloadProgressTracker::new(null_tracker);
         testing_download_tracker.new_download_task(Arc::from(""))
@@ -272,6 +277,7 @@ impl DownloadTaskUpdater {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::NoOpProgressUpdater;
 
     fn make_task(name: &str) -> (Arc<DownloadProgressTracker>, Arc<DownloadTaskUpdater>) {
         let tracker = DownloadProgressTracker::new(NoOpProgressUpdater::new());

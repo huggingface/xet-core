@@ -10,9 +10,9 @@ use progress_tracking::download_tracking::DownloadTaskUpdater;
 use tokio::sync::OwnedSemaphorePermit;
 use xet_config::ReconstructionConfig;
 
-use crate::Result;
 use crate::data_writer::DataOutput;
 use crate::data_writer::sequential_writer::SequentialWriter;
+use crate::error::Result;
 
 /// A future that produces the data bytes to be written.
 pub type DataFuture = Pin<Box<dyn Future<Output = Result<Bytes>> + Send + 'static>>;

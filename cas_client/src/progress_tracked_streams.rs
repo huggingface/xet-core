@@ -5,9 +5,9 @@ use std::task::{Context, Poll};
 
 use bytes::Bytes;
 use futures::Stream;
-use more_asserts::*;
+use more_asserts::debug_assert_le;
 
-// The progress callback function type which reports delta (change since previous), portion completed, total.
+/// Progress callback receiving (delta, completed, total) in bytes.
 pub type ProgressCallback = Arc<dyn Fn(u64, u64, u64) + Send + Sync + 'static>;
 
 /// Helper for progress reporting with reset/resume semantics. When a stream is

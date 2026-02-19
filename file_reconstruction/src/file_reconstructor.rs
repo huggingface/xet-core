@@ -36,9 +36,12 @@ impl FileReconstructor {
             byte_range: None,
             output,
             progress_updater: {
-                if cfg!(debug_assertions) {
+                #[cfg(debug_assertions)]
+                {
                     Some(DownloadTaskUpdater::correctness_verification_tracker())
-                } else {
+                }
+                #[cfg(not(debug_assertions))]
+                {
                     None
                 }
             },
@@ -201,6 +204,8 @@ impl FileReconstructor {
 
         #[cfg(debug_assertions)]
         {
+            // This verifies that when the user asked us for a byte range, we actually downloaded and
+            // recorded the correct byte range for that part.
             if let Some(ref updater) = progress_updater {
                 updater.assert_complete();
                 if let Some(byte_range) = byte_range {
