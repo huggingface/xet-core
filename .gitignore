@@ -13,9 +13,6 @@ debug/
 # Mac OS Trash
 .DS_Store
 
-# Agents
-AGENTS.md
-
 # VS Code configs
 .vscode/*
 !.vscode/settings.json
