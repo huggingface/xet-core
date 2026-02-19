@@ -30,12 +30,16 @@ impl DownloadProgressTracker {
         Arc::new(DownloadTaskUpdater::new(item_name, self.clone()))
     }
 
+    #[inline]
     pub fn assert_complete(&self) {
-        assert_eq!(self.total_bytes_completed.load(Ordering::Relaxed), self.total_bytes.load(Ordering::Relaxed));
-        assert_eq!(
-            self.total_transfer_bytes_completed.load(Ordering::Relaxed),
-            self.total_transfer_bytes.load(Ordering::Relaxed)
-        );
+        #[cfg(debug_assertions)]
+        {
+            assert_eq!(self.total_bytes_completed.load(Ordering::Relaxed), self.total_bytes.load(Ordering::Relaxed));
+            assert_eq!(
+                self.total_transfer_bytes_completed.load(Ordering::Relaxed),
+                self.total_transfer_bytes.load(Ordering::Relaxed)
+            );
+        }
     }
 }
 
@@ -64,6 +68,7 @@ impl DownloadTaskUpdater {
         }
     }
 
+    #[cfg(debug_assertions)]
     pub fn correctness_verification_tracker() -> Arc<Self> {
         let null_tracker = NoOpProgressUpdater::new();
 
