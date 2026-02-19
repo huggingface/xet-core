@@ -92,7 +92,7 @@ impl TermBlockRetrievalURLs {
 
         // Since this hopefully doesn't happen too often, go through and retrieve an
         // entire new block, then make sure everything matches up and take in the new stuff.
-        let Some((returned_range, file_terms)) =
+        let Some((returned_range, _transfer_bytes, file_terms)) =
             retrieve_file_term_block(client, self.file_hash, self.byte_range).await?
         else {
             return Err(FileReconstructionError::CorruptedReconstruction(

@@ -11,7 +11,7 @@ use file_reconstruction::DataOutput;
 use mdb_shard::Sha256;
 use merklehash::MerkleHash;
 use progress_tracking::TrackingProgressUpdater;
-use progress_tracking::item_tracking::ItemProgressUpdater;
+use progress_tracking::download_tracking::DownloadProgressTracker;
 use tracing::{Instrument, Span, info, info_span, instrument};
 use ulid::Ulid;
 use utils::auth::{AuthConfig, TokenRefresher};
@@ -387,8 +387,12 @@ async fn smudge_file(
         std::fs::create_dir_all(parent_dir)?;
     }
 
-    // Wrap the progress updater in the proper tracking struct.
-    let progress_updater = progress_updater.map(ItemProgressUpdater::new);
+    let progress_updater = progress_updater.map(|p| {
+        let tracker = DownloadProgressTracker::new(p);
+        let task = tracker.new_download_task(file_path.into());
+        task.update_item_size(file_info.file_size(), true);
+        task
+    });
 
     let output = DataOutput::write_in_file(&path);
 
