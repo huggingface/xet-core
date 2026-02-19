@@ -12,7 +12,7 @@ use tokio::task::{JoinHandle, JoinSet};
 use xet_runtime::{XetRuntime, check_sigint_shutdown};
 
 use crate::data_writer::{DataFuture, DataWriter};
-use crate::{ErrorState, FileReconstructionError, Result};
+use crate::error::{ErrorState, FileReconstructionError, Result};
 
 // On macOS and Linux, writev(int fildes, const struct iovec *iov, int iovcnt) may return EINVAL if
 // - the sum of the iov_len values in the iov array overflows a 32-bit integer (macOS) or an ssize_t value (Linux);
