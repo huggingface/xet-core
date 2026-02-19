@@ -369,7 +369,9 @@ impl Client for RemoteClient {
                                         expected,
                                         buffer.len()
                                     );
-                                    warn!("get_file_term_data: expected {} bytes, got {}", expected, buffer.len());
+                                    if expected != buffer.len() {
+                                        warn!("get_file_term_data: expected {} bytes, got {}", expected, buffer.len());
+                                    }
                                 }
                                 Ok((Bytes::from(buffer), chunk_byte_indices))
                             },
