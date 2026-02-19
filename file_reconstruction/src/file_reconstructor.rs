@@ -36,12 +36,15 @@ impl FileReconstructor {
             byte_range: None,
             output,
             progress_updater: {
-                if cfg!(debug_assertions) {
+                #[cfg(debug_assertions)]
+                {
                     // When debug assertions are enabled, we want to verify that all the reconstruction
                     // information is correct.  However, we don't want to pay the cost of the verification
                     // in release mode.
                     Some(DownloadTaskUpdater::correctness_verification_tracker())
-                } else {
+                }
+                #[cfg(not(debug_assertions))]
+                {
                     None
                 }
             },

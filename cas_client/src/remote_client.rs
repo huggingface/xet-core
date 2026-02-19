@@ -14,7 +14,7 @@ use mdb_shard::file_structs::{FileDataSequenceEntry, FileDataSequenceHeader, MDB
 use merklehash::MerkleHash;
 use reqwest::{Body, Response, StatusCode, Url};
 use reqwest_middleware::ClientWithMiddleware;
-use tracing::{event, info, instrument};
+use tracing::{event, info, instrument, warn};
 use utils::auth::AuthConfig;
 use xet_runtime::xet_config;
 
@@ -369,6 +369,7 @@ impl Client for RemoteClient {
                                         expected,
                                         buffer.len()
                                     );
+                                    warn!("get_file_term_data: expected {} bytes, got {}", expected, buffer.len());
                                 }
                                 Ok((Bytes::from(buffer), chunk_byte_indices))
                             },
