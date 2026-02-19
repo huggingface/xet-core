@@ -52,6 +52,10 @@ struct FileDependency {
     /// Total size of this file in bytes.
     total_bytes: u64,
 
+    /// Whether the total size is known to be final. When false, the size can be
+    /// updated via `update_file_size`.
+    is_final_size_known: bool,
+
     /// Total bytes already uploaded for this file (across its xorbs).
     completed_bytes: u64,
 
@@ -86,19 +90,29 @@ pub struct CompletionTracker {
 
 impl CompletionTrackerImpl {
     /// Registers a new file for tracking and returns an ID (its index in `files`).
-    /// `n_bytes` is the total size of the file.
+    ///
+    /// If `n_bytes` is `Some(size)`, the file size is treated as final and cannot be
+    /// updated later.  If `n_bytes` is `None`, the file is registered with a size of
+    /// zero and `is_final_size_known` is set to `false`; callers should subsequently
+    /// call `update_file_size` to provide the actual size.
     fn register_new_file(
         &mut self,
         name: impl Into<Arc<str>>,
-        n_bytes: u64,
+        n_bytes: Option<u64>,
     ) -> (ProgressUpdate, CompletionTrackerFileId) {
+        let (total_bytes, is_final_size_known) = match n_bytes {
+            Some(size) => (size, true),
+            None => (0, false),
+        };
+
         // The file's ID is simply its index in the internal `files` vector.
         let file_id = self.files.len() as CompletionTrackerFileId;
 
         // Create a new FileDependency record.
         let file_dependency = FileDependency {
             name: name.into(),
-            total_bytes: n_bytes,
+            total_bytes,
+            is_final_size_known,
             completed_bytes: 0,
             remaining_xorbs_parts: MerkleHashMap::new(),
         };
@@ -107,7 +121,7 @@ impl CompletionTrackerImpl {
         self.files.push(file_dependency);
 
         // We have more to process now.
-        self.total_bytes += n_bytes;
+        self.total_bytes += total_bytes;
 
         // Register that the total bytes known has changed, and return the file ID so the caller can register
         // dependencies on this file.
@@ -115,7 +129,7 @@ impl CompletionTrackerImpl {
             ProgressUpdate {
                 item_updates: vec![],
                 total_bytes: self.total_bytes,
-                total_bytes_increment: n_bytes,
+                total_bytes_increment: total_bytes,
                 total_bytes_completed: self.total_bytes_completed,
                 total_bytes_completion_increment: 0,
                 total_transfer_bytes: self.total_upload_bytes,
@@ -126,6 +140,47 @@ impl CompletionTrackerImpl {
             },
             file_id,
         )
+    }
+
+    /// Increments the total size of a previously registered file by `size_increment` bytes.
+    ///
+    /// Returns `Some(ProgressUpdate)` if the size was updated, or `None` if the file's size
+    /// has already been finalized (via `register_new_file` with `Some(size)`).  When `None`
+    /// is returned, no internal state is modified.
+    fn increment_file_size(&mut self, file_id: CompletionTrackerFileId, size_increment: u64) -> Option<ProgressUpdate> {
+        let file_entry = &mut self.files[file_id as usize];
+
+        // If already finalized, nothing to do.
+        if file_entry.is_final_size_known {
+            return None;
+        }
+
+        file_entry.total_bytes += size_increment;
+        self.total_bytes += size_increment;
+
+        debug_assert_ge!(file_entry.total_bytes, file_entry.completed_bytes);
+        debug_assert_ge!(self.total_bytes, self.total_bytes_completed);
+
+        // Emit an item update so progress reporters see the new total for this file.
+        let item_update = ItemProgressUpdate {
+            item_name: file_entry.name.clone(),
+            total_bytes: file_entry.total_bytes,
+            bytes_completed: file_entry.completed_bytes,
+            bytes_completion_increment: 0,
+        };
+
+        Some(ProgressUpdate {
+            item_updates: vec![item_update],
+            total_bytes: self.total_bytes,
+            total_bytes_increment: size_increment,
+            total_bytes_completed: self.total_bytes_completed,
+            total_bytes_completion_increment: 0,
+            total_transfer_bytes: self.total_upload_bytes,
+            total_transfer_bytes_increment: 0,
+            total_transfer_bytes_completed: self.total_upload_bytes_completed,
+            total_transfer_bytes_completion_increment: 0,
+            ..Default::default()
+        })
     }
 
     /// Registers that all or part of a given file (by `file_id`) depends on one or more
@@ -493,7 +548,7 @@ impl CompletionTracker {
         }
     }
 
-    pub async fn register_new_file(&self, name: impl Into<Arc<str>>, n_bytes: u64) -> CompletionTrackerFileId {
+    pub async fn register_new_file(&self, name: impl Into<Arc<str>>, n_bytes: Option<u64>) -> CompletionTrackerFileId {
         let mut update_lock = self.inner.lock().await;
 
         let (updates, ret) = update_lock.register_new_file(name, n_bytes);
@@ -503,6 +558,16 @@ impl CompletionTracker {
         }
 
         ret
+    }
+
+    pub async fn increment_file_size(&self, file_id: CompletionTrackerFileId, size_increment: u64) {
+        let mut update_lock = self.inner.lock().await;
+
+        if let Some(updates) = update_lock.increment_file_size(file_id, size_increment)
+            && !updates.is_empty()
+        {
+            self.progress_reporter.register_updates(updates).await;
+        }
     }
 
     pub async fn register_new_xorb(&self, xorb_hash: MerkleHash, xorb_size: u64) -> bool {
@@ -605,8 +670,8 @@ mod tests {
         let tracker = CompletionTracker::new(verifier.clone());
 
         // Register two files
-        let file_a = tracker.register_new_file("fileA", 100).await;
-        let file_b = tracker.register_new_file("fileB", 50).await;
+        let file_a = tracker.register_new_file("fileA", Some(100)).await;
+        let file_b = tracker.register_new_file("fileB", Some(50)).await;
 
         // Initially, done=0, total=150
         let (done, total) = tracker.status().await;
@@ -668,8 +733,8 @@ mod tests {
         let tracker = CompletionTracker::new(verifier.clone());
 
         // Two files => 200 + 300 = 500 total
-        let file_a = tracker.register_new_file("fileA", 200).await;
-        let file_b = tracker.register_new_file("fileB", 300).await;
+        let file_a = tracker.register_new_file("fileA", Some(200)).await;
+        let file_b = tracker.register_new_file("fileB", Some(300)).await;
 
         let (done, total) = tracker.status().await;
         assert_eq!(done, 0);
@@ -762,7 +827,7 @@ mod tests {
         let verifier = ProgressUpdaterVerificationWrapper::new(no_op);
         let tracker = CompletionTracker::new(verifier.clone());
 
-        let f = tracker.register_new_file("bigFile", 300).await;
+        let f = tracker.register_new_file("bigFile", Some(300)).await;
 
         let x1 = MerkleHash::random_from_seed(1);
         let x2 = MerkleHash::random_from_seed(2);
@@ -830,7 +895,7 @@ mod tests {
         let tracker = CompletionTracker::new(verifier.clone());
 
         // One file, 50 bytes
-        let file_id = tracker.register_new_file("lateFile", 50).await;
+        let file_id = tracker.register_new_file("lateFile", Some(50)).await;
 
         // xhash completed before we mention any dependencies
         let x = MerkleHash::random_from_seed(999);
@@ -867,7 +932,7 @@ mod tests {
         let verifier = ProgressUpdaterVerificationWrapper::new(no_op);
         let tracker = CompletionTracker::new(verifier.clone());
 
-        let file_id = tracker.register_new_file("someFile", 100).await;
+        let file_id = tracker.register_new_file("someFile", Some(100)).await;
         let x = MerkleHash::random_from_seed(123);
 
         tracker.register_new_xorb(x, 1000).await;
@@ -889,6 +954,265 @@ mod tests {
         let (done, total) = tracker.status().await;
         assert_eq!(done, 100);
         assert_eq!(total, 100);
+        assert!(tracker.is_complete().await);
+
+        tracker.assert_complete().await;
+        verifier.assert_complete().await;
+    }
+
+    /// Register a file with no initial size, then grow it incrementally.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_increment_file_size_basic() {
+        let no_op = NoOpProgressUpdater::new();
+        let verifier = ProgressUpdaterVerificationWrapper::new(no_op);
+        let tracker = CompletionTracker::new(verifier.clone());
+
+        // Register file with unknown size
+        let file_id = tracker.register_new_file("growingFile", None).await;
+
+        let (done, total) = tracker.status().await;
+        assert_eq!(done, 0);
+        assert_eq!(total, 0);
+
+        // Increment size in steps
+        tracker.increment_file_size(file_id, 100).await;
+        let (done, total) = tracker.status().await;
+        assert_eq!(done, 0);
+        assert_eq!(total, 100);
+
+        tracker.increment_file_size(file_id, 150).await;
+        let (done, total) = tracker.status().await;
+        assert_eq!(done, 0);
+        assert_eq!(total, 250);
+
+        tracker.increment_file_size(file_id, 50).await;
+        let (done, total) = tracker.status().await;
+        assert_eq!(done, 0);
+        assert_eq!(total, 300);
+
+        // Complete the file via an external dependency
+        let x = MerkleHash::random_from_seed(1);
+        tracker
+            .register_dependencies(&[FileXorbDependency {
+                file_id,
+                xorb_hash: x,
+                n_bytes: 300,
+                is_external: true,
+            }])
+            .await;
+
+        let (done, total) = tracker.status().await;
+        assert_eq!(done, 300);
+        assert_eq!(total, 300);
+        assert!(tracker.is_complete().await);
+
+        tracker.assert_complete().await;
+        verifier.assert_complete().await;
+    }
+
+    /// Register a file with unknown size, increment alongside dependency registration.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_increment_file_size_with_xorb_uploads() {
+        let no_op = NoOpProgressUpdater::new();
+        let verifier = ProgressUpdaterVerificationWrapper::new(no_op);
+        let tracker = CompletionTracker::new(verifier.clone());
+
+        let file_id = tracker.register_new_file("streamFile", None).await;
+
+        let x1 = MerkleHash::random_from_seed(10);
+        let x2 = MerkleHash::random_from_seed(20);
+
+        tracker.register_new_xorb(x1, 500).await;
+        tracker.register_new_xorb(x2, 500).await;
+
+        // Discover first chunk: increment by 200, register dependency on x1 for 200 bytes
+        tracker.increment_file_size(file_id, 200).await;
+        tracker
+            .register_dependencies(&[FileXorbDependency {
+                file_id,
+                xorb_hash: x1,
+                n_bytes: 200,
+                is_external: false,
+            }])
+            .await;
+
+        let (done, total) = tracker.status().await;
+        assert_eq!(done, 0);
+        assert_eq!(total, 200);
+
+        // Upload x1 => file goes to 200/200 so far
+        tracker.register_xorb_upload_completion(x1).await;
+        let (done, total) = tracker.status().await;
+        assert_eq!(done, 200);
+        assert_eq!(total, 200);
+
+        // Discover second chunk: increment by 300, register dependency on x2 for 300 bytes
+        tracker.increment_file_size(file_id, 300).await;
+        tracker
+            .register_dependencies(&[FileXorbDependency {
+                file_id,
+                xorb_hash: x2,
+                n_bytes: 300,
+                is_external: false,
+            }])
+            .await;
+
+        let (done, total) = tracker.status().await;
+        assert_eq!(done, 200);
+        assert_eq!(total, 500);
+
+        // Upload x2 => file goes to 500/500
+        tracker.register_xorb_upload_completion(x2).await;
+        let (done, total) = tracker.status().await;
+        assert_eq!(done, 500);
+        assert_eq!(total, 500);
+        assert!(tracker.is_complete().await);
+
+        tracker.assert_complete().await;
+        verifier.assert_complete().await;
+    }
+
+    /// Multiple files, one with known size and one with unknown size that gets incremented.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_increment_file_size_mixed_known_unknown() {
+        let no_op = NoOpProgressUpdater::new();
+        let verifier = ProgressUpdaterVerificationWrapper::new(no_op);
+        let tracker = CompletionTracker::new(verifier.clone());
+
+        // fileA has known size, fileB does not
+        let file_a = tracker.register_new_file("fileA", Some(100)).await;
+        let file_b = tracker.register_new_file("fileB", None).await;
+
+        let (done, total) = tracker.status().await;
+        assert_eq!(done, 0);
+        assert_eq!(total, 100);
+
+        // Complete fileA immediately via external dep
+        let xa = MerkleHash::random_from_seed(1);
+        tracker
+            .register_dependencies(&[FileXorbDependency {
+                file_id: file_a,
+                xorb_hash: xa,
+                n_bytes: 100,
+                is_external: true,
+            }])
+            .await;
+
+        let (done, total) = tracker.status().await;
+        assert_eq!(done, 100);
+        assert_eq!(total, 100);
+
+        // fileB discovers its size incrementally and gets deps
+        tracker.increment_file_size(file_b, 200).await;
+        let (done, total) = tracker.status().await;
+        assert_eq!(done, 100);
+        assert_eq!(total, 300);
+
+        let xb = MerkleHash::random_from_seed(2);
+        tracker.register_new_xorb(xb, 200).await;
+        tracker
+            .register_dependencies(&[FileXorbDependency {
+                file_id: file_b,
+                xorb_hash: xb,
+                n_bytes: 200,
+                is_external: false,
+            }])
+            .await;
+
+        tracker.register_xorb_upload_completion(xb).await;
+
+        let (done, total) = tracker.status().await;
+        assert_eq!(done, 300);
+        assert_eq!(total, 300);
+        assert!(tracker.is_complete().await);
+
+        tracker.assert_complete().await;
+        verifier.assert_complete().await;
+    }
+
+    /// File registered with Some(size) ignores increment_file_size calls.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_increment_file_size_ignored_when_already_final() {
+        let no_op = NoOpProgressUpdater::new();
+        let verifier = ProgressUpdaterVerificationWrapper::new(no_op);
+        let tracker = CompletionTracker::new(verifier.clone());
+
+        // Register with a known size (is_final_size_known = true)
+        let file_id = tracker.register_new_file("fixedFile", Some(100)).await;
+
+        // Attempt to increment -- should be ignored
+        tracker.increment_file_size(file_id, 999).await;
+        let (_, total) = tracker.status().await;
+        assert_eq!(total, 100);
+
+        // Complete the file
+        let x = MerkleHash::random_from_seed(1);
+        tracker
+            .register_dependencies(&[FileXorbDependency {
+                file_id,
+                xorb_hash: x,
+                n_bytes: 100,
+                is_external: true,
+            }])
+            .await;
+
+        assert!(tracker.is_complete().await);
+        tracker.assert_complete().await;
+        verifier.assert_complete().await;
+    }
+
+    /// File size increment with partial xorb upload progress.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_increment_file_size_with_partial_xorb_progress() {
+        let no_op = NoOpProgressUpdater::new();
+        let verifier = ProgressUpdaterVerificationWrapper::new(no_op);
+        let tracker = CompletionTracker::new(verifier.clone());
+
+        let file_id = tracker.register_new_file("partialFile", None).await;
+
+        let x = MerkleHash::random_from_seed(42);
+        tracker.register_new_xorb(x, 1000).await;
+
+        // Increment to initial size, register dep
+        tracker.increment_file_size(file_id, 400).await;
+        tracker
+            .register_dependencies(&[FileXorbDependency {
+                file_id,
+                xorb_hash: x,
+                n_bytes: 400,
+                is_external: false,
+            }])
+            .await;
+
+        // Partial upload progress on the xorb
+        tracker.register_xorb_upload_progress(x, 500).await;
+        let (done, total) = tracker.status().await;
+        assert_eq!(total, 400);
+        // Partial progress means some fraction of 400 is done
+        assert!(done > 0);
+        assert!(done < 400);
+
+        // Grow the file by 200 more bytes
+        tracker.increment_file_size(file_id, 200).await;
+        let (_, total) = tracker.status().await;
+        assert_eq!(total, 600);
+
+        // Register the additional 200 bytes as external (already uploaded)
+        tracker
+            .register_dependencies(&[FileXorbDependency {
+                file_id,
+                xorb_hash: MerkleHash::random_from_seed(99),
+                n_bytes: 200,
+                is_external: true,
+            }])
+            .await;
+
+        // Complete the xorb
+        tracker.register_xorb_upload_completion(x).await;
+
+        let (done, total) = tracker.status().await;
+        assert_eq!(done, 600);
+        assert_eq!(total, 600);
         assert!(tracker.is_complete().await);
 
         tracker.assert_complete().await;

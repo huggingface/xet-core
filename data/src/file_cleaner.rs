@@ -22,6 +22,9 @@ pub struct SingleFileCleaner {
     // File name, if known.
     file_name: Option<Arc<str>>,
 
+    // Completion id
+    file_id: CompletionTrackerFileId,
+
     // Common state.
     session: Arc<FileUploadSession>,
 
@@ -51,6 +54,7 @@ impl SingleFileCleaner {
 
         Self {
             file_name,
+            file_id,
             dedup_manager_fut: Box::pin(async move { Ok(deduper) }),
             session,
             chunker: deduplication::Chunker::default(),
@@ -99,6 +103,13 @@ impl SingleFileCleaner {
 
     #[instrument(skip_all, level="debug", name = "FileCleaner::add_data", fields(file_name=self.file_name.as_ref().map(|s|s.to_string()), len=data.len()))]
     pub(crate) async fn add_data_impl(&mut self, data: Bytes) -> Result<()> {
+        // If the file size was not specified at the beginning, then incrementally update tho total size with
+        // how much data we know about.
+        self.session
+            .completion_tracker
+            .increment_file_size(self.file_id, data.len() as u64)
+            .await;
+
         // Put the chunking on a compute thread so it doesn't tie up the async schedulers
         let chunk_data_jh = {
             let mut chunker = std::mem::take(&mut self.chunker);

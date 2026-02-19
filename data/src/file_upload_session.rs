@@ -154,9 +154,12 @@ impl FileUploadSession {
             // repo size at the beginning.
             let file_size = std::fs::metadata(&file_path)?.len();
 
-            // Get a new file id for the completion tracking.  This also registers the size against the total bytes
-            // of the file.
-            let file_id = self.completion_tracker.register_new_file(file_name.clone(), file_size).await;
+            // Get a new file id for the completion tracking.  The size is not passed here;
+            // it will be discovered incrementally via increment_file_size in add_data_impl.
+            let file_id = self
+                .completion_tracker
+                .register_new_file(file_name.clone(), Some(file_size))
+                .await;
 
             // Now, spawn a task
             let ingestion_concurrency_limiter = XetRuntime::current().common().file_ingestion_semaphore.clone();
@@ -259,7 +262,7 @@ impl FileUploadSession {
         // Get a new file id for the completion tracking
         let file_id = self
             .completion_tracker
-            .register_new_file(file_name.clone().unwrap_or_default(), size)
+            .register_new_file(file_name.clone().unwrap_or_default(), Some(size))
             .await;
 
         SingleFileCleaner::new(file_name, file_id, sha256, self.clone())
