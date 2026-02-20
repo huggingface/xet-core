@@ -488,7 +488,6 @@ mod tests {
         );
     }
 
-
     #[tokio::test]
     async fn test_hash_empty_file() {
         let temp_dir = tempdir().unwrap();
