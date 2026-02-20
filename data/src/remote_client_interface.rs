@@ -18,7 +18,6 @@ pub(crate) async fn create_remote_client(
             &cas_storage_config.auth,
             session_id,
             dry_run,
-            &cas_storage_config.user_agent,
             cas_storage_config.custom_headers.clone(),
         )),
         Endpoint::FileSystem(ref path) => {

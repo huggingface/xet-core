@@ -31,6 +31,48 @@ const USER_AGENT: &str = concat!(env!("CARGO_PKG_NAME"), "/", env!("CARGO_PKG_VE
 #[cfg(feature = "profiling")]
 pub(crate) mod profiling;
 
+/// Converts a Python dictionary of headers to a HeaderMap and merges in the USER_AGENT.
+///
+/// If the input contains a User-Agent header, the USER_AGENT is appended to it.
+/// Otherwise, USER_AGENT is set as the only User-Agent header.
+fn build_headers_with_user_agent(
+    request_headers: Option<HashMap<String, String>>,
+) -> PyResult<Option<Arc<HeaderMap>>> {
+    let mut map = request_headers
+        .map(|headers| {
+            let mut map = HeaderMap::new();
+            for (key, value) in headers {
+                let name = HeaderName::from_bytes(key.as_bytes())
+                    .map_err(|e| PyRuntimeError::new_err(format!("Invalid header name '{}': {}", key, e)))?;
+                let value = HeaderValue::from_str(&value)
+                    .map_err(|e| PyRuntimeError::new_err(format!("Invalid header value for '{}': {}", key, e)))?;
+                map.insert(name, value);
+            }
+            Ok::<_, PyErr>(map)
+        })
+        .transpose()?
+        .unwrap_or_default();
+
+    // Append our USER_AGENT to any existing User-Agent header, or add it if not present
+    use http::header::USER_AGENT as UA_HEADER;
+    let combined_user_agent = if let Some(existing_ua) = map.get(UA_HEADER) {
+        // Append our user agent to the existing one
+        let existing_str = existing_ua.to_str().unwrap_or("");
+        format!("{}; {}", existing_str, USER_AGENT)
+    } else {
+        // No existing user agent, use ours
+        USER_AGENT.to_string()
+    };
+
+    // Try to create the combined header value, fall back gracefully if invalid
+    let user_agent_value = HeaderValue::from_str(&combined_user_agent)
+        .or_else(|_| HeaderValue::from_str(USER_AGENT))
+        .unwrap_or_else(|_| HeaderValue::from_static("unknown"));
+    map.insert(UA_HEADER, user_agent_value);
+
+    Ok(Some(Arc::new(map)))
+}
+
 fn convert_data_processing_error(e: DataProcessingError) -> PyErr {
     if cfg!(debug_assertions) {
         PyRuntimeError::new_err(format!("Data processing error: {e:?}"))
@@ -40,7 +82,7 @@ fn convert_data_processing_error(e: DataProcessingError) -> PyErr {
 }
 
 #[pyfunction]
-#[pyo3(signature = (file_contents, endpoint, token_info, token_refresher, progress_updater, _repo_type), text_signature = "(file_contents: List[bytes], endpoint: Optional[str], token_info: Optional[(str, int)], token_refresher: Optional[Callable[[], (str, int)]], progress_updater: Optional[Callable[[int], None]], _repo_type: Optional[str]) -> List[PyXetUploadInfo]")]
+#[pyo3(signature = (file_contents, endpoint, token_info, token_refresher, progress_updater, _repo_type, request_headers=None), text_signature = "(file_contents: List[bytes], endpoint: Optional[str], token_info: Optional[(str, int)], token_refresher: Optional[Callable[[], (str, int)]], progress_updater: Optional[Callable[[int], None]], _repo_type: Optional[str], request_headers: Optional[Dict[str, str]]) -> List[PyXetUploadInfo]")]
 pub fn upload_bytes(
     py: Python,
     file_contents: Vec<Vec<u8>>,
@@ -49,10 +91,14 @@ pub fn upload_bytes(
     token_refresher: Option<Py<PyAny>>,
     progress_updater: Option<Py<PyAny>>,
     _repo_type: Option<String>,
+    request_headers: Option<HashMap<String, String>>,
 ) -> PyResult<Vec<PyXetUploadInfo>> {
     let refresher = token_refresher.map(WrappedTokenRefresher::from_func).transpose()?.map(Arc::new);
     let updater = progress_updater.map(WrappedProgressUpdater::new).transpose()?.map(Arc::new);
     let x: u64 = rand::rng().random();
+
+    // Convert Python dict -> Rust HashMap -> HeaderMap and merge with USER_AGENT
+    let header_map = build_headers_with_user_agent(request_headers)?;
 
     async_run(py, async move {
         debug!(
@@ -67,7 +113,7 @@ pub fn upload_bytes(
             token_info,
             refresher.map(|v| v as Arc<_>),
             updater.map(|v| v as Arc<_>),
-            USER_AGENT.to_string(),
+            header_map,
         )
         .await
         .map_err(convert_data_processing_error)?
@@ -82,7 +128,7 @@ pub fn upload_bytes(
 }
 
 #[pyfunction]
-#[pyo3(signature = (file_paths, endpoint, token_info, token_refresher, progress_updater, _repo_type), text_signature = "(file_paths: List[str], endpoint: Optional[str], token_info: Optional[(str, int)], token_refresher: Optional[Callable[[], (str, int)]], progress_updater: Optional[Callable[[int], None]], _repo_type: Optional[str]) -> List[PyXetUploadInfo]")]
+#[pyo3(signature = (file_paths, endpoint, token_info, token_refresher, progress_updater, _repo_type, request_headers=None), text_signature = "(file_paths: List[str], endpoint: Optional[str], token_info: Optional[(str, int)], token_refresher: Optional[Callable[[], (str, int)]], progress_updater: Optional[Callable[[int], None]], _repo_type: Optional[str], request_headers: Optional[Dict[str, str]]) -> List[PyXetUploadInfo]")]
 pub fn upload_files(
     py: Python,
     file_paths: Vec<String>,
@@ -91,6 +137,7 @@ pub fn upload_files(
     token_refresher: Option<Py<PyAny>>,
     progress_updater: Option<Py<PyAny>>,
     _repo_type: Option<String>,
+    request_headers: Option<HashMap<String, String>>,
 ) -> PyResult<Vec<PyXetUploadInfo>> {
     let refresher = token_refresher.map(WrappedTokenRefresher::from_func).transpose()?.map(Arc::new);
     let updater = progress_updater.map(WrappedProgressUpdater::new).transpose()?.map(Arc::new);
@@ -98,6 +145,9 @@ pub fn upload_files(
     let file_names = file_paths.iter().take(3).join(", ");
 
     let x: u64 = rand::rng().random();
+
+    // Convert Python dict -> Rust HashMap -> HeaderMap and merge with USER_AGENT
+    let header_map = build_headers_with_user_agent(request_headers)?;
 
     async_run(py, async move {
         debug!(
@@ -114,7 +164,7 @@ pub fn upload_files(
             token_info,
             refresher.map(|v| v as Arc<_>),
             updater.map(|v| v as Arc<_>),
-            USER_AGENT.to_string(),
+            header_map,
         )
         .await
         .map_err(convert_data_processing_error)?
@@ -183,20 +233,8 @@ pub fn download_files(
     let refresher = token_refresher.map(WrappedTokenRefresher::from_func).transpose()?.map(Arc::new);
     let updaters = progress_updater.map(try_parse_progress_updaters).transpose()?;
 
-    // Convert Python dict -> Rust HashMap -> HeaderMap
-    let header_map = request_headers
-        .map(|headers| {
-            let mut map = HeaderMap::new();
-            for (key, value) in headers {
-                let name = HeaderName::from_bytes(key.as_bytes())
-                    .map_err(|e| PyRuntimeError::new_err(format!("Invalid header name '{}': {}", key, e)))?;
-                let value = HeaderValue::from_str(&value)
-                    .map_err(|e| PyRuntimeError::new_err(format!("Invalid header value for '{}': {}", key, e)))?;
-                map.insert(name, value);
-            }
-            Ok::<_, PyErr>(Arc::new(map))
-        })
-        .transpose()?;
+    // Convert Python dict -> Rust HashMap -> HeaderMap and merge with USER_AGENT
+    let header_map = build_headers_with_user_agent(request_headers)?;
 
     let x: u64 = rand::rng().random();
 
@@ -216,7 +254,6 @@ pub fn download_files(
             token_info,
             refresher.map(|v| v as Arc<_>),
             updaters,
-            USER_AGENT.to_string(),
             header_map,
         )
         .await

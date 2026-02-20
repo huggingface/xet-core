@@ -23,7 +23,6 @@ pub struct DataConfig {
     pub auth: Option<AuthConfig>,
     pub prefix: String,
     pub staging_directory: Option<PathBuf>,
-    pub user_agent: String,
     pub custom_headers: Option<Arc<HeaderMap>>,
 }
 
@@ -96,7 +95,6 @@ impl TranslatorConfig {
                 auth: None,
                 prefix: PREFIX_DEFAULT.into(),
                 staging_directory: None,
-                user_agent: String::new(),
                 custom_headers: None,
             },
             shard_config: ShardConfig {
@@ -128,7 +126,6 @@ impl TranslatorConfig {
                 auth: None,
                 prefix: PREFIX_DEFAULT.into(),
                 staging_directory: None,
-                user_agent: String::new(),
                 custom_headers: None,
             },
             shard_config: ShardConfig {
@@ -161,7 +158,6 @@ impl TranslatorConfig {
                 auth: None,
                 prefix: PREFIX_DEFAULT.into(),
                 staging_directory: None,
-                user_agent: String::new(),
                 custom_headers: None,
             },
             shard_config: ShardConfig {

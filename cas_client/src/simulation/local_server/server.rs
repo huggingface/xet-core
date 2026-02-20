@@ -323,21 +323,20 @@ impl LocalTestServer {
                         &None,
                         "test-session",
                         false,
-                        "test-agent",
                         Some(&socket_path_str),
                         None,
                     );
 
                     (client, Some(proxy))
                 } else {
-                    let client = RemoteClient::new(&tcp_endpoint, &None, "test-session", false, "test-agent", None);
+                    let client = RemoteClient::new(&tcp_endpoint, &None, "test-session", false, None);
                     (client, None)
                 }
             }
 
             #[cfg(not(unix))]
             {
-                let client = RemoteClient::new(&tcp_endpoint, &None, "test-session", false, "test-agent", None);
+                let client = RemoteClient::new(&tcp_endpoint, &None, "test-session", false, None);
                 (client, Option::<()>::None)
             }
         };

@@ -206,17 +206,20 @@ async fn query_reconstruction(
         client: Arc::new(hub_client),
     }) as Arc<dyn TokenRefresher>;
 
+    // Create headers with USER_AGENT
+    let mut headers = http::HeaderMap::new();
+    headers.insert(http::header::USER_AGENT, http::HeaderValue::from_static(USER_AGENT));
+
     let config = default_config(
         jwt_info.cas_url.clone(),
         None,
         Some((jwt_info.access_token, jwt_info.exp)),
         Some(token_refresher),
-        USER_AGENT.to_string(),
-        None,
+        Some(Arc::new(headers)),
     )?;
     let cas_storage_config = &config.data_config;
     let remote_client =
-        RemoteClient::new(&jwt_info.cas_url, &cas_storage_config.auth, "", true, &cas_storage_config.user_agent, None);
+        RemoteClient::new(&jwt_info.cas_url, &cas_storage_config.auth, "", true, cas_storage_config.custom_headers.clone());
 
     remote_client
         .get_reconstruction(&file_hash, bytes_range)

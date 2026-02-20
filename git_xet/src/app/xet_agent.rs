@@ -78,7 +78,6 @@ impl TransferAgent for XetAgent {
         let repo = self.repo.get().unwrap(); // protocol state guarantees self.repo is set.
 
         let session_id = req.action.header.get(XET_SESSION_ID).map(|s| s.as_str()).unwrap_or_default();
-        let user_agent = USER_AGENT;
         let token_refresher: Arc<dyn TokenRefresher> = Arc::new(DirectRefreshRouteTokenRefresher::new(
             repo,
             self.remote_url.clone(),
@@ -123,8 +122,12 @@ impl TransferAgent for XetAgent {
             .parse()
             .map_err(GitXetError::internal)?;
 
+        // Create headers with user agent
+        let mut headers = reqwest::header::HeaderMap::new();
+        headers.insert(http::header::USER_AGENT, http::HeaderValue::from_static(USER_AGENT));
+
         let config =
-            default_config(cas_url, None, Some((token, token_expiry)), Some(token_refresher), user_agent.to_string(), None)?
+            default_config(cas_url, None, Some((token, token_expiry)), Some(token_refresher), Some(Arc::new(headers)))?
                 .disable_progress_aggregation()
                 .with_session_id(session_id); // upload one file at a time so no need for the heavy progress aggregator
         let session = FileUploadSession::new(config.into(), Some(Arc::new(xet_updater))).await?;

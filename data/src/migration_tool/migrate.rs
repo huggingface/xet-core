@@ -71,13 +71,16 @@ pub async fn migrate_files_impl(
     }) as Arc<dyn TokenRefresher>;
     let cas = cas_endpoint.unwrap_or(jwt_info.cas_url);
 
+    // Create headers with USER_AGENT
+    let mut headers = http::HeaderMap::new();
+    headers.insert(http::header::USER_AGENT, http::HeaderValue::from_static(USER_AGENT));
+
     let config = default_config(
         cas,
         compression,
         Some((jwt_info.access_token, jwt_info.exp)),
         Some(token_refresher),
-        USER_AGENT.to_string(),
-        None,
+        Some(Arc::new(headers)),
     )?;
     Span::current().record("session_id", &config.session_id);
 
