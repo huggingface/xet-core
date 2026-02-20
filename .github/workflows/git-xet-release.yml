@@ -83,6 +83,10 @@ jobs:
         platform:
           - runner: windows-latest
             target: x86_64
+            wix_arch: x64
+          - runner: win11-arm
+            target: aarch64
+            wix_arch: arm64
     steps:
       - uses: actions/checkout@v6
       - name: Install Rust 1.89
@@ -107,7 +111,7 @@ jobs:
         run: |
           cp git_xet/windows_installer/Package.wxs dist/
           cd dist
-          wix build Package.wxs -o bin\git-xet-windows-installer -arch x64
+          wix build Package.wxs -o bin\git-xet-windows-installer -arch ${{ matrix.platform.wix_arch }}
       - name: Codesign the installer
         uses: ./.github/actions/windows-codesign
         with:
