@@ -10,7 +10,7 @@ use std::sync::Arc;
 
 use data::errors::DataProcessingError;
 use data::{XetFileInfo, data_client};
-use http::header::{HeaderMap, HeaderName, HeaderValue};
+use http::header::{self, HeaderMap, HeaderName, HeaderValue};
 use itertools::Itertools;
 use progress_tracking::TrackingProgressUpdater;
 use pyo3::exceptions::{PyKeyboardInterrupt, PyRuntimeError};
@@ -31,7 +31,7 @@ const USER_AGENT: &str = concat!(env!("CARGO_PKG_NAME"), "/", env!("CARGO_PKG_VE
 #[cfg(feature = "profiling")]
 pub(crate) mod profiling;
 
-/// Converts a Python dictionary of headers to a HeaderMap and merges in the USER_AGENT.
+/// Converts a HashMap of headers to a HeaderMap and merges in the USER_AGENT.
 ///
 /// If the input contains a User-Agent header, the USER_AGENT is appended to it.
 /// Otherwise, USER_AGENT is set as the only User-Agent header.
@@ -54,8 +54,7 @@ fn build_headers_with_user_agent(
         .unwrap_or_default();
 
     // Append our USER_AGENT to any existing User-Agent header, or add it if not present
-    use http::header::USER_AGENT as UA_HEADER;
-    let combined_user_agent = if let Some(existing_ua) = map.get(UA_HEADER) {
+    let combined_user_agent = if let Some(existing_ua) = map.get(header::USER_AGENT) {
         // Append our user agent to the existing one
         let existing_str = existing_ua.to_str().unwrap_or("");
         format!("{}; {}", existing_str, USER_AGENT)
@@ -66,9 +65,9 @@ fn build_headers_with_user_agent(
 
     // Try to create the combined header value, fall back gracefully if invalid
     let user_agent_value = HeaderValue::from_str(&combined_user_agent)
-        .or_else(|_| HeaderValue::from_str(USER_AGENT))
-        .unwrap_or_else(|_| HeaderValue::from_static("unknown"));
-    map.insert(UA_HEADER, user_agent_value);
+        .or_else(|_: http::header::InvalidHeaderValue| Ok::<HeaderValue, http::header::InvalidHeaderValue>(HeaderValue::from_static(USER_AGENT)))
+        .unwrap_or_else(|_: http::header::InvalidHeaderValue| HeaderValue::from_static("unknown"));
+    map.insert(header::USER_AGENT, user_agent_value);
 
     Ok(Some(Arc::new(map)))
 }
@@ -441,4 +440,113 @@ pub fn hf_xet(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashMap;
+
+    // Initialize Python once for all tests
+    fn setup() {
+        // When auto-initialize is enabled, Python will be initialized on first use
+        // This ensures Python is available for the tests
+        let _ = pyo3::Python::attach(|_py| {});
+    }
+
+    #[test]
+    fn test_build_headers_with_none_empty_hashmap() {
+        setup();
+        let empty_map: HashMap<String, String> = HashMap::new();
+        let result = build_headers_with_user_agent(Some(empty_map)).unwrap();
+        let headers = result.unwrap();
+
+        // Should have exactly one header: USER_AGENT
+        assert_eq!(headers.len(), 1);
+        assert!(headers.contains_key(header::USER_AGENT));
+
+        let user_agent = headers.get(header::USER_AGENT).unwrap().to_str().unwrap();
+        assert_eq!(user_agent, USER_AGENT);
+
+        let result = build_headers_with_user_agent(None).unwrap();
+        let headers = result.unwrap();
+
+        // Should have exactly one header: USER_AGENT
+        assert_eq!(headers.len(), 1);
+        assert!(headers.contains_key(header::USER_AGENT));
+
+        let user_agent = headers.get(header::USER_AGENT).unwrap().to_str().unwrap();
+        assert_eq!(user_agent, USER_AGENT);
+    }
+
+    #[test]
+    fn test_build_headers_with_valid_headers() {
+        setup();
+        let mut headers_map = HashMap::new();
+        headers_map.insert("Content-Type".to_string(), "application/json".to_string());
+        headers_map.insert("Authorization".to_string(), "Bearer token123".to_string());
+
+        let result = build_headers_with_user_agent(Some(headers_map)).unwrap();
+        let headers = result.unwrap();
+
+        // Should have 3 headers: Content-Type, Authorization, and USER_AGENT
+        assert_eq!(headers.len(), 3);
+
+        // Verify each header was converted correctly
+        assert_eq!(
+            headers.get(header::CONTENT_TYPE).unwrap().to_str().unwrap(),
+            "application/json"
+        );
+        assert_eq!(
+            headers.get(header::AUTHORIZATION).unwrap().to_str().unwrap(),
+            "Bearer token123"
+        );
+
+        // Verify USER_AGENT was added
+        let user_agent = headers.get(header::USER_AGENT).unwrap().to_str().unwrap();
+        assert_eq!(user_agent, USER_AGENT);
+    }
+
+    #[test]
+    fn test_build_headers_appends_to_existing_user_agent() {
+        setup();
+        let mut headers_map = HashMap::new();
+        headers_map.insert("User-Agent".to_string(), "CustomClient/1.0".to_string());
+
+        let result = build_headers_with_user_agent(Some(headers_map)).unwrap();
+        let headers = result.unwrap();
+
+        // Should have exactly one header: USER_AGENT
+        assert_eq!(headers.len(), 1);
+
+        // Verify USER_AGENT was appended to existing one
+        let user_agent = headers.get(header::USER_AGENT).unwrap().to_str().unwrap();
+        assert_eq!(user_agent, format!("CustomClient/1.0; {}", USER_AGENT));
+    }
+
+    #[test]
+    fn test_build_headers_with_invalid_header_name_or_value() {
+        setup();
+        let mut headers_map = HashMap::new();
+        headers_map.insert("Invalid Header!".to_string(), "value".to_string());
+
+        let result = build_headers_with_user_agent(Some(headers_map));
+
+        // Should return an error for invalid header name
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(err_msg.contains("Invalid header name"));
+        
+
+        let mut headers_map = HashMap::new();
+        // Header values cannot contain newlines 
+        headers_map.insert("X-Custom".to_string(), "value\nwith\nnewlines".to_string());
+
+        let result = build_headers_with_user_agent(Some(headers_map));
+
+        // Should return an error for invalid header value
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(err_msg.contains("Invalid header value"));
+    }
 }

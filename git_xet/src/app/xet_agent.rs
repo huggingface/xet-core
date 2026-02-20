@@ -5,6 +5,7 @@ use std::sync::{Arc, OnceLock};
 use async_trait::async_trait;
 use data::FileUploadSession;
 use data::data_client::{clean_file, default_config};
+use http::header;
 use hub_client::Operation;
 use progress_tracking::{ProgressUpdate, TrackingProgressUpdater};
 use utils::auth::TokenRefresher;
@@ -84,7 +85,7 @@ impl TransferAgent for XetAgent {
             &req.action.href,
             Operation::Upload,
             session_id,
-            user_agent,
+            USER_AGENT,
         )?);
         // From git-lfs:
         // > First worker is the only one allowed to start immediately.
@@ -124,7 +125,7 @@ impl TransferAgent for XetAgent {
 
         // Create headers with user agent
         let mut headers = reqwest::header::HeaderMap::new();
-        headers.insert(http::header::USER_AGENT, http::HeaderValue::from_static(USER_AGENT));
+        headers.insert(header::USER_AGENT, header::HeaderValue::from_static(USER_AGENT));
 
         let config =
             default_config(cas_url, None, Some((token, token_expiry)), Some(token_refresher), Some(Arc::new(headers)))?

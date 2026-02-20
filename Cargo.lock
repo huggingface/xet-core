@@ -1704,6 +1704,7 @@ dependencies = [
  "data",
  "git-url-parse",
  "git2",
+ "http",
  "hub_client",
  "progress_tracking",
  "rand_core 0.6.4",
