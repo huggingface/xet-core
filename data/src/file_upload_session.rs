@@ -541,7 +541,7 @@ mod tests {
 
     use xet_runtime::XetRuntime;
 
-    use crate::{FileDownloader, FileUploadSession, XetFileInfo};
+    use crate::{FileDownloadSession, FileUploadSession, XetFileInfo};
 
     /// Return a shared threadpool to be reused as needed.
     fn get_threadpool() -> Arc<XetRuntime> {
@@ -591,8 +591,6 @@ mod tests {
     /// * `pointer_path`: path to the pointer file
     /// * `output_path`: path to write the hydrated/original file
     async fn test_smudge_file(cas_path: &Path, pointer_path: &Path, output_path: &Path) {
-        use file_reconstruction::DataOutput;
-
         let mut reader = File::open(pointer_path).unwrap();
 
         let mut input = String::new();
@@ -601,20 +599,9 @@ mod tests {
         let xet_file = serde_json::from_str::<XetFileInfo>(&input).unwrap();
 
         let config = TranslatorConfig::local_config(cas_path).unwrap();
-        let translator = FileDownloader::new(config.into()).await.unwrap();
+        let session = FileDownloadSession::new(config.into(), None).await.unwrap();
 
-        let output = DataOutput::write_in_file(output_path);
-
-        translator
-            .smudge_file_from_hash(
-                &xet_file.merkle_hash().expect("File hash is not a valid file hash"),
-                output_path.to_string_lossy().into(),
-                output,
-                None,
-                None,
-            )
-            .await
-            .unwrap();
+        session.download_file(&xet_file, output_path, None).await.unwrap();
     }
 
     use std::fs::{read, write};

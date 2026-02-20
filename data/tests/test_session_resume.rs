@@ -269,6 +269,8 @@ mod tests {
         // Finally, verify that hydration works successfully.
         ts.hydrate().await;
         ts.verify_src_dest_match();
+        ts.hydrate_partitioned_writers(4).await;
+        ts.verify_src_dest_match();
     }
 
     /// 4) A single tiny file
@@ -276,7 +278,7 @@ mod tests {
     async fn test_tiny_file_resume() {
         let mut ts = HydrateDehydrateTest::default();
 
-        create_random_file(&ts.src_dir.join("f1"), 128, 0);
+        create_random_file(ts.src_dir.join("f1"), 128, 0);
 
         // Clean the files present, but drop the upload session.
         {
@@ -299,7 +301,7 @@ mod tests {
             // Now interrupt the session and don't call finalize
         }
 
-        create_random_file(&ts.src_dir.join("f2"), 128, 1);
+        create_random_file(ts.src_dir.join("f2"), 128, 1);
 
         // Test these files and actually call finalize.
         {
@@ -323,6 +325,8 @@ mod tests {
 
         // Finally, verify that hydration works successfully.
         ts.hydrate().await;
+        ts.verify_src_dest_match();
+        ts.hydrate_partitioned_writers(4).await;
         ts.verify_src_dest_match();
     }
 }

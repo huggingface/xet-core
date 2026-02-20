@@ -7,11 +7,9 @@ use bytes::Bytes;
 use cas_client::remote_client::PREFIX_DEFAULT;
 use cas_object::CompressionScheme;
 use deduplication::{Chunker, DeduplicationMetrics};
-use file_reconstruction::DataOutput;
 use mdb_shard::Sha256;
 use merklehash::MerkleHash;
 use progress_tracking::TrackingProgressUpdater;
-use progress_tracking::download_tracking::DownloadProgressTracker;
 use tracing::{Instrument, Span, info, info_span, instrument};
 use ulid::Ulid;
 use utils::auth::{AuthConfig, TokenRefresher};
@@ -21,7 +19,8 @@ use xet_runtime::{XetRuntime, xet_cache_root, xet_config};
 
 use crate::configurations::*;
 use crate::errors::DataProcessingError;
-use crate::{FileDownloader, FileUploadSession, XetFileInfo, errors};
+use crate::file_download_session::FileDownloadSession;
+use crate::{FileUploadSession, XetFileInfo, errors};
 
 pub fn default_config(
     endpoint: String,
@@ -209,28 +208,41 @@ pub async fn download_async(
     {
         return Err(DataProcessingError::ParameterError("updaters are not same length as pointer_files".to_string()));
     }
-    let config = default_config(
+    let config: Arc<TranslatorConfig> = default_config(
         endpoint.unwrap_or_else(|| xet_config().data.default_cas_endpoint.clone()),
         None,
         token_info,
         token_refresher,
         user_agent,
-    )?;
+    )?
+    .into();
     Span::current().record("session_id", &config.session_id);
 
-    let processor = Arc::new(FileDownloader::new(config.into()).await?);
     let updaters = match progress_updaters {
         None => vec![None; file_infos.len()],
         Some(updaters) => updaters.into_iter().map(Some).collect(),
     };
-    let smudge_file_futures = file_infos.into_iter().zip(updaters).map(|((file_info, file_path), updater)| {
-        let proc = processor.clone();
-        async move { smudge_file(&proc, &file_info, &file_path, updater).await }.instrument(info_span!("download_file"))
-    });
 
-    let semaphore = XetRuntime::current().common().file_download_semaphore.clone();
+    let session = FileDownloadSession::new(config, None).await?;
 
-    let paths = run_constrained_with_semaphore(smudge_file_futures, semaphore).await?;
+    let mut tasks = Vec::with_capacity(file_infos.len());
+
+    for ((file_info, file_path), updater) in file_infos.into_iter().zip(updaters) {
+        let session = session.clone();
+        tasks.push(tokio::spawn(
+            async move {
+                let path = PathBuf::from(&file_path);
+                session.download_file_with_updater(&file_info, &path, updater).await?;
+                errors::Result::Ok(file_path)
+            }
+            .instrument(info_span!("download_file")),
+        ));
+    }
+
+    let mut paths = Vec::with_capacity(tasks.len());
+    for task in tasks {
+        paths.push(task.await??);
+    }
 
     Ok(paths)
 }
@@ -376,33 +388,6 @@ pub async fn hash_files_async(file_paths: Vec<String>) -> errors::Result<Vec<Xet
     Ok(files)
 }
 
-async fn smudge_file(
-    downloader: &FileDownloader,
-    file_info: &XetFileInfo,
-    file_path: &str,
-    progress_updater: Option<Arc<dyn TrackingProgressUpdater>>,
-) -> errors::Result<String> {
-    let path = PathBuf::from(file_path);
-    if let Some(parent_dir) = path.parent() {
-        std::fs::create_dir_all(parent_dir)?;
-    }
-
-    let progress_updater = progress_updater.map(|p| {
-        let tracker = DownloadProgressTracker::new(p);
-        let task = tracker.new_download_task(file_path.into());
-        task.update_item_size(file_info.file_size(), true);
-        task
-    });
-
-    let output = DataOutput::write_in_file(&path);
-
-    downloader
-        .smudge_file_from_hash(&file_info.merkle_hash()?, file_path.into(), output, None, progress_updater)
-        .await?;
-
-    Ok(file_path.to_string())
-}
-
 #[cfg(test)]
 mod tests {
     use dirs::home_dir;
@@ -423,7 +408,7 @@ mod tests {
 
         assert!(result.is_ok());
         let config = result.unwrap();
-        assert!(config.shard_config.cache_directory.starts_with(&temp_dir.path()));
+        assert!(config.shard_config.cache_directory.starts_with(temp_dir.path()));
     }
 
     #[test]
@@ -440,7 +425,7 @@ mod tests {
 
         assert!(result.is_ok());
         let config = result.unwrap();
-        assert!(config.shard_config.cache_directory.starts_with(&temp_dir_xet_cache.path()));
+        assert!(config.shard_config.cache_directory.starts_with(temp_dir_xet_cache.path()));
 
         drop(hf_xet_cache_guard);
         drop(hf_home_guard);
@@ -453,7 +438,7 @@ mod tests {
 
         assert!(result.is_ok());
         let config = result.unwrap();
-        assert!(config.shard_config.cache_directory.starts_with(&temp_dir.path()));
+        assert!(config.shard_config.cache_directory.starts_with(temp_dir.path()));
     }
 
     #[test]
@@ -467,7 +452,7 @@ mod tests {
 
         assert!(result.is_ok());
         let config = result.unwrap();
-        assert!(config.shard_config.cache_directory.starts_with(&temp_dir.path()));
+        assert!(config.shard_config.cache_directory.starts_with(temp_dir.path()));
     }
 
     #[test]
