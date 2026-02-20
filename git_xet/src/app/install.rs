@@ -119,7 +119,7 @@ fn install_impl(location: ConfigLocation, concurrency: Option<u32>) -> Result<()
 #[cfg(test)]
 pub mod tests {
     use std::io::{BufRead, BufReader, Cursor};
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
 
     use anyhow::Result;
     use serial_test::serial;
@@ -127,7 +127,7 @@ pub mod tests {
     use super::{global, local};
     use crate::git_repo::GitRepo;
     use crate::test_utils::TestRepo;
-    use crate::utils::process_wrapping::run_git_captured_with_input_and_output;
+    use crate::utils::process_wrapping::{run_git_captured, run_git_captured_with_input_and_output};
 
     pub fn get_lfs_env(env_list: &[u8], key: &str) -> Result<Option<String>> {
         let reader = BufReader::new(Cursor::new(env_list));
@@ -144,12 +144,19 @@ pub mod tests {
         Ok(None)
     }
 
+    pub fn git_lfs_available(repo_path: &Path) -> bool {
+        run_git_captured(repo_path, "lfs", ["env"]).is_ok()
+    }
+
     fn test_install_with_default_concurrency<F>(install_fn: F) -> Result<()>
     where
         F: FnOnce(Option<PathBuf>, Option<u32>) -> crate::errors::Result<()>,
     {
         // set up repo
         let test_repo = TestRepo::new("main")?;
+        if !git_lfs_available(test_repo.path()) {
+            return Ok(());
+        }
 
         // install with default concurrency
         install_fn(Some(test_repo.path().to_owned()), None)?;
@@ -175,6 +182,9 @@ pub mod tests {
     {
         // set up repo
         let test_repo = TestRepo::new("main")?;
+        if !git_lfs_available(test_repo.path()) {
+            return Ok(());
+        }
 
         // install with concurrency disabled
         install_fn(Some(test_repo.path().to_owned()), Some(1))?;
@@ -199,6 +209,9 @@ pub mod tests {
     {
         // set up repo
         let test_repo = TestRepo::new("main")?;
+        if !git_lfs_available(test_repo.path()) {
+            return Ok(());
+        }
 
         // install with concurrency = 16
         install_fn(Some(test_repo.path().to_owned()), Some(16))?;
@@ -223,6 +236,9 @@ pub mod tests {
         F: FnOnce(Option<PathBuf>, Option<u32>) -> crate::errors::Result<()>,
     {
         let test_repo = TestRepo::new("main")?;
+        if !git_lfs_available(test_repo.path()) {
+            return Ok(());
+        }
 
         // install with concurrency = 0
         let ret = install_fn(Some(test_repo.path().to_owned()), Some(0));
@@ -273,6 +289,9 @@ pub mod tests {
         }
         // set up repo
         let test_repo = TestRepo::new("main")?;
+        if !git_lfs_available(test_repo.path()) {
+            return Ok(());
+        }
 
         // install local + global
         local(Some(test_repo.path().to_owned()), Some(16))?;

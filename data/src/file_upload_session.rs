@@ -6,7 +6,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use bytes::Bytes;
-use cas_client::Client;
+use cas_client::{Client, ProgressCallback};
 use cas_object::SerializedCasObject;
 use deduplication::constants::{MAX_XORB_BYTES, MAX_XORB_CHUNKS};
 use deduplication::{DataAggregator, DeduplicationMetrics, RawXorbData};
@@ -314,8 +314,6 @@ impl FileUploadSession {
         let xorb_cas_info = Arc::new(xorb.cas_info.clone());
         self.shard_interface.add_cas_block(xorb_cas_info.clone()).await?;
 
-        let xorb_hash = xorb.hash();
-
         // Serialize the object; this can be relatively expensive, so run it on a compute thread.
         // XORBs are sent without footer - the server/client reconstructs it from chunk data.
         let compression_scheme = self.config.data_config.compression;
@@ -327,12 +325,22 @@ impl FileUploadSession {
         let upload_permit = self.client.acquire_upload_permit().await?;
         let cas_prefix = session.config.data_config.prefix.clone();
         let completion_tracker = self.completion_tracker.clone();
+        let xorb_hash = cas_object.hash;
+        let raw_num_bytes = cas_object.raw_num_bytes;
+        let progress_callback: ProgressCallback = Arc::new(move |delta, _completed, total| {
+            let raw_delta = (delta * raw_num_bytes).checked_div(total).unwrap_or(0);
+            if raw_delta > 0 {
+                completion_tracker
+                    .clone()
+                    .register_xorb_upload_progress_background(xorb_hash, raw_delta);
+            }
+        });
 
         self.xorb_upload_tasks.lock().await.spawn(
             async move {
                 let n_bytes_transmitted = session
                     .client
-                    .upload_xorb(&cas_prefix, cas_object, Some(completion_tracker), upload_permit)
+                    .upload_xorb(&cas_prefix, cas_object, Some(progress_callback), upload_permit)
                     .await?;
 
                 // Register that the xorb has been uploaded.

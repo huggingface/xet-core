@@ -403,8 +403,12 @@ impl Client for LocalTestServer {
         &self,
         url_info: Box<dyn crate::interface::URLProvider>,
         download_permit: crate::adaptive_concurrency::ConnectionPermit,
+        progress_callback: Option<crate::ProgressCallback>,
+        uncompressed_size_if_known: Option<usize>,
     ) -> Result<(bytes::Bytes, Vec<u32>)> {
-        self.remote_client.get_file_term_data(url_info, download_permit).await
+        self.remote_client
+            .get_file_term_data(url_info, download_permit, progress_callback, uncompressed_size_if_known)
+            .await
     }
 
     async fn query_for_global_dedup_shard(
@@ -431,11 +435,11 @@ impl Client for LocalTestServer {
         &self,
         prefix: &str,
         serialized_cas_object: cas_object::SerializedCasObject,
-        upload_tracker: Option<std::sync::Arc<progress_tracking::upload_tracking::CompletionTracker>>,
+        progress_callback: Option<crate::ProgressCallback>,
         upload_permit: crate::adaptive_concurrency::ConnectionPermit,
     ) -> Result<u64> {
         self.remote_client
-            .upload_xorb(prefix, serialized_cas_object, upload_tracker, upload_permit)
+            .upload_xorb(prefix, serialized_cas_object, progress_callback, upload_permit)
             .await
     }
 }

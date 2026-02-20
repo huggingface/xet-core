@@ -3,7 +3,7 @@ use std::sync::Arc;
 use cas_client::Client;
 use cas_types::FileRange;
 use merklehash::MerkleHash;
-use progress_tracking::item_tracking::SingleItemProgressUpdater;
+use progress_tracking::download_tracking::DownloadTaskUpdater;
 use tracing::{debug, info};
 use utils::ResourceSemaphore;
 use xet_config::ReconstructionConfig;
@@ -21,9 +21,9 @@ pub struct FileReconstructor {
     file_hash: MerkleHash,
     byte_range: Option<FileRange>,
     output: DataOutput,
-    #[allow(dead_code)] // TODO: integrate progress tracking into the new reconstruction logic
-    progress_updater: Option<Arc<SingleItemProgressUpdater>>,
+    progress_updater: Option<Arc<DownloadTaskUpdater>>,
     config: Arc<ReconstructionConfig>,
+
     /// Custom buffer semaphore for testing or specialized use cases.
     custom_buffer_semaphore: Option<ResourceSemaphore>,
 }
@@ -35,7 +35,19 @@ impl FileReconstructor {
             file_hash,
             byte_range: None,
             output,
-            progress_updater: None,
+            progress_updater: {
+                #[cfg(debug_assertions)]
+                {
+                    // When debug assertions are enabled, we want to verify that all the reconstruction
+                    // information is correct.  However, we don't want to pay the cost of the verification
+                    // in release mode.
+                    Some(DownloadTaskUpdater::correctness_verification_tracker())
+                }
+                #[cfg(not(debug_assertions))]
+                {
+                    None
+                }
+            },
             config: Arc::new(xet_config().reconstruction.clone()),
             custom_buffer_semaphore: None,
         }
@@ -48,7 +60,7 @@ impl FileReconstructor {
         }
     }
 
-    pub fn with_progress_updater(self, progress_updater: Arc<SingleItemProgressUpdater>) -> Self {
+    pub fn with_progress_updater(self, progress_updater: Arc<DownloadTaskUpdater>) -> Self {
         Self {
             progress_updater: Some(progress_updater),
             ..self
@@ -86,17 +98,23 @@ impl FileReconstructor {
             file_hash,
             byte_range,
             output,
-            progress_updater: _,
+            progress_updater,
             config,
             custom_buffer_semaphore,
         } = self;
 
         let requested_range = byte_range.unwrap_or_else(FileRange::full);
 
-        let mut term_manager =
-            ReconstructionTermManager::new(config.clone(), client.clone(), file_hash, requested_range).await?;
+        let mut term_manager = ReconstructionTermManager::new(
+            config.clone(),
+            client.clone(),
+            file_hash,
+            requested_range,
+            progress_updater.clone(),
+        )
+        .await?;
 
-        let data_writer = new_data_writer(output, requested_range.start, &config)?;
+        let data_writer = new_data_writer(output, requested_range.start, &config, progress_updater.clone())?;
 
         // Determine buffer semaphore based on whether a custom one is provided.
         let download_buffer_semaphore = custom_buffer_semaphore.unwrap_or_else(|| {
@@ -147,7 +165,13 @@ impl FileReconstructor {
                 })?;
 
                 // Get the data future that will retrieve the term's data.
-                let data_future = file_term.get_data_task(client.clone()).await?;
+                let data_future = file_term.get_data_task(client.clone(), progress_updater.clone()).await?;
+
+                #[cfg(debug_assertions)]
+                {
+                    let refs = &file_term.xorb_block.references;
+                    assert!(refs.iter().any(|r| r.term_chunks == file_term.xorb_chunk_range));
+                }
 
                 // Adjust byte range to be relative to the requested range start (writer expects 0-based ranges).
                 let relative_byte_range = FileRange::new(
@@ -181,6 +205,18 @@ impl FileReconstructor {
 
         info!(bytes_written, "File reconstruction completed successfully");
 
+        #[cfg(debug_assertions)]
+        {
+            // This verifies that the when the user asked us for a byte range, we actually downloaded and
+            // recorded the correct byte range for that part.
+            if let Some(ref updater) = progress_updater {
+                updater.assert_complete();
+                if let Some(byte_range) = byte_range {
+                    assert_eq!(updater.total_bytes_completed(), byte_range.end - byte_range.start);
+                }
+            }
+        }
+
         Ok(bytes_written)
     }
 }
@@ -194,6 +230,8 @@ mod tests {
 
     use cas_client::{ClientTestingUtils, DirectAccessClient, LocalClient, RandomFileContents};
     use cas_types::FileRange;
+    use progress_tracking::NoOpProgressUpdater;
+    use progress_tracking::download_tracking::DownloadProgressTracker;
 
     use super::*;
 
@@ -456,6 +494,131 @@ mod tests {
         let term_spec: Vec<(u64, (u64, u64))> = (1..=20).map(|i| (i, (0, 1))).collect();
         let (client, file_contents) = setup_test_file(&term_spec).await;
         reconstruct_and_verify_full(&client, &file_contents, test_config()).await;
+    }
+
+    // ==================== Progress tracker tests ====================
+
+    #[tokio::test]
+    async fn test_progress_tracker_records_full_reconstruction_bytes() {
+        let (client, file_contents) = setup_test_file(&[(1, (0, 3)), (2, (0, 2))]).await;
+        let config = test_config();
+        let buffer = Arc::new(std::sync::Mutex::new(Cursor::new(Vec::new())));
+        let writer = StaticCursorWriter(buffer.clone());
+
+        let progress_updater =
+            DownloadProgressTracker::new(NoOpProgressUpdater::new()).new_download_task(Arc::from("file"));
+        let bytes_written = FileReconstructor::new(
+            &(client.clone() as Arc<dyn Client>),
+            file_contents.file_hash,
+            DataOutput::writer(writer),
+        )
+        .with_config(&config)
+        .with_progress_updater(progress_updater.clone())
+        .run()
+        .await
+        .unwrap();
+
+        assert_eq!(bytes_written, file_contents.data.len() as u64);
+    }
+
+    #[tokio::test]
+    async fn test_progress_tracker_records_partial_range_bytes() {
+        let (client, file_contents) = setup_test_file(&[(1, (0, 10))]).await;
+        let config = test_config();
+        let file_len = file_contents.data.len() as u64;
+        let range = FileRange::new(file_len / 4, file_len * 3 / 4);
+        let expected_bytes = range.end - range.start;
+
+        let buffer = Arc::new(std::sync::Mutex::new(Cursor::new(Vec::new())));
+        let writer = StaticCursorWriter(buffer.clone());
+
+        let progress_updater =
+            DownloadProgressTracker::new(NoOpProgressUpdater::new()).new_download_task(Arc::from("file"));
+        let bytes_written = FileReconstructor::new(
+            &(client.clone() as Arc<dyn Client>),
+            file_contents.file_hash,
+            DataOutput::writer(writer),
+        )
+        .with_config(&config)
+        .with_byte_range(range)
+        .with_progress_updater(progress_updater.clone())
+        .run()
+        .await
+        .unwrap();
+
+        assert_eq!(bytes_written, expected_bytes);
+    }
+
+    /// Verifies the external progress tracker flow without a known file size:
+    /// totals are discovered incrementally by the ReconstructionTermManager.
+    #[tokio::test]
+    async fn test_external_progress_tracker_incremental_discovery() {
+        let term_spec: Vec<(u64, (u64, u64))> = (1..=5).map(|i| (i, (0, 3))).collect();
+        let (client, file_contents) = setup_test_file(&term_spec).await;
+        let config = test_config();
+
+        let tracker = DownloadProgressTracker::new(NoOpProgressUpdater::new());
+        let task = tracker.new_download_task(Arc::from("test_file.bin"));
+
+        let buffer = Arc::new(std::sync::Mutex::new(Cursor::new(Vec::new())));
+        let writer = StaticCursorWriter(buffer.clone());
+
+        let bytes_written = FileReconstructor::new(
+            &(client.clone() as Arc<dyn Client>),
+            file_contents.file_hash,
+            DataOutput::writer(writer),
+        )
+        .with_config(&config)
+        .with_progress_updater(task.clone())
+        .run()
+        .await
+        .unwrap();
+
+        assert_eq!(bytes_written, file_contents.data.len() as u64);
+
+        task.assert_complete();
+        assert_eq!(task.total_bytes_completed(), file_contents.data.len() as u64);
+
+        tracker.assert_complete();
+    }
+
+    /// Verifies the data_client.rs flow: file size is known upfront (is_final=true),
+    /// then the manager discovers transfer sizes and also tries to update_item_size
+    /// (which is ignored since final was already set).
+    #[tokio::test]
+    async fn test_external_progress_tracker_final_size_upfront() {
+        let term_spec: Vec<(u64, (u64, u64))> = (1..=5).map(|i| (i, (0, 3))).collect();
+        let (client, file_contents) = setup_test_file(&term_spec).await;
+        let config = test_config();
+        let file_size = file_contents.data.len() as u64;
+
+        let tracker = DownloadProgressTracker::new(NoOpProgressUpdater::new());
+        let task = tracker.new_download_task(Arc::from("test_file.bin"));
+
+        // Simulate data_client.rs: set final size before reconstruction.
+        task.update_item_size(file_size, true);
+
+        let buffer = Arc::new(std::sync::Mutex::new(Cursor::new(Vec::new())));
+        let writer = StaticCursorWriter(buffer.clone());
+
+        let bytes_written = FileReconstructor::new(
+            &(client.clone() as Arc<dyn Client>),
+            file_contents.file_hash,
+            DataOutput::writer(writer),
+        )
+        .with_config(&config)
+        .with_progress_updater(task.clone())
+        .run()
+        .await
+        .unwrap();
+
+        assert_eq!(bytes_written, file_size);
+
+        // item_bytes should still be file_size (manager's update_item_size calls were ignored).
+        assert_eq!(task.total_bytes_completed(), file_size);
+
+        task.assert_complete();
+        tracker.assert_complete();
     }
 
     // ==================== Byte Range Reconstruction Tests ====================
