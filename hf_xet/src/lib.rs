@@ -35,7 +35,7 @@ pub(crate) mod profiling;
 ///
 /// If the input contains a User-Agent header, the USER_AGENT is appended to it.
 /// Otherwise, USER_AGENT is set as the only User-Agent header.
-fn build_headers_with_user_agent(request_headers: Option<HashMap<String, String>>,) -> PyResult<Option<Arc<HeaderMap>>> {
+fn build_headers_with_user_agent(request_headers: Option<HashMap<String, String>>) -> PyResult<Option<Arc<HeaderMap>>> {
     let mut map = request_headers
         .map(|headers| {
             let mut map = HeaderMap::new();
@@ -444,8 +444,9 @@ pub fn hf_xet(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use std::collections::HashMap;
+
+    use super::*;
 
     // Initialize Python once for all tests
     fn setup() {
@@ -530,7 +531,6 @@ mod tests {
         assert!(result.is_err());
         let err_msg = result.unwrap_err().to_string();
         assert!(err_msg.contains("Invalid header name"));
-        
 
         let mut headers_map = HashMap::new();
         // Header values cannot contain newlines
