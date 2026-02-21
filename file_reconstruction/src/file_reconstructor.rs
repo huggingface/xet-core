@@ -38,9 +38,6 @@ impl FileReconstructor {
             progress_updater: {
                 #[cfg(debug_assertions)]
                 {
-                    // When debug assertions are enabled, we want to verify that all the reconstruction
-                    // information is correct.  However, we don't want to pay the cost of the verification
-                    // in release mode.
                     Some(DownloadTaskUpdater::correctness_verification_tracker())
                 }
                 #[cfg(not(debug_assertions))]
@@ -207,7 +204,7 @@ impl FileReconstructor {
 
         #[cfg(debug_assertions)]
         {
-            // This verifies that the when the user asked us for a byte range, we actually downloaded and
+            // This verifies that when the user asked us for a byte range, we actually downloaded and
             // recorded the correct byte range for that part.
             if let Some(ref updater) = progress_updater {
                 updater.assert_complete();
