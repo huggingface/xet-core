@@ -22,6 +22,7 @@ console_log = { version = "1.0.0", features = ["color"] }
 env_logger = "0.11"
 futures = "0.3"
 getrandom = { version = "0.3", features = ["wasm_js"] }
+http = "1"
 js-sys = "0.3.77"
 log = "0.4"
 serde = { version = "1", features = ["derive"] }

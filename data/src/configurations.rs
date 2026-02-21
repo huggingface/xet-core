@@ -1,8 +1,10 @@
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
+use std::sync::Arc;
 
 use cas_client::remote_client::PREFIX_DEFAULT;
 use cas_object::CompressionScheme;
+use http::HeaderMap;
 use utils::auth::AuthConfig;
 
 use crate::errors::Result;
@@ -21,7 +23,7 @@ pub struct DataConfig {
     pub auth: Option<AuthConfig>,
     pub prefix: String,
     pub staging_directory: Option<PathBuf>,
-    pub user_agent: String,
+    pub custom_headers: Option<Arc<HeaderMap>>,
 }
 
 #[derive(Debug)]
@@ -93,7 +95,7 @@ impl TranslatorConfig {
                 auth: None,
                 prefix: PREFIX_DEFAULT.into(),
                 staging_directory: None,
-                user_agent: String::new(),
+                custom_headers: None,
             },
             shard_config: ShardConfig {
                 prefix: PREFIX_DEFAULT.into(),
@@ -124,7 +126,7 @@ impl TranslatorConfig {
                 auth: None,
                 prefix: PREFIX_DEFAULT.into(),
                 staging_directory: None,
-                user_agent: String::new(),
+                custom_headers: None,
             },
             shard_config: ShardConfig {
                 prefix: PREFIX_DEFAULT.into(),
@@ -156,7 +158,7 @@ impl TranslatorConfig {
                 auth: None,
                 prefix: PREFIX_DEFAULT.into(),
                 staging_directory: None,
-                user_agent: String::new(),
+                custom_headers: None,
             },
             shard_config: ShardConfig {
                 prefix: PREFIX_DEFAULT.into(),
