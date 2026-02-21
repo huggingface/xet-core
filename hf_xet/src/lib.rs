@@ -35,9 +35,7 @@ pub(crate) mod profiling;
 ///
 /// If the input contains a User-Agent header, the USER_AGENT is appended to it.
 /// Otherwise, USER_AGENT is set as the only User-Agent header.
-fn build_headers_with_user_agent(
-    request_headers: Option<HashMap<String, String>>,
-) -> PyResult<Option<Arc<HeaderMap>>> {
+fn build_headers_with_user_agent(request_headers: Option<HashMap<String, String>>,) -> PyResult<Option<Arc<HeaderMap>>> {
     let mut map = request_headers
         .map(|headers| {
             let mut map = HeaderMap::new();
@@ -65,7 +63,9 @@ fn build_headers_with_user_agent(
 
     // Try to create the combined header value, fall back gracefully if invalid
     let user_agent_value = HeaderValue::from_str(&combined_user_agent)
-        .or_else(|_: http::header::InvalidHeaderValue| Ok::<HeaderValue, http::header::InvalidHeaderValue>(HeaderValue::from_static(USER_AGENT)))
+        .or_else(|_: http::header::InvalidHeaderValue| {
+            Ok::<HeaderValue, http::header::InvalidHeaderValue>(HeaderValue::from_static(USER_AGENT))
+        })
         .unwrap_or_else(|_: http::header::InvalidHeaderValue| HeaderValue::from_static("unknown"));
     map.insert(header::USER_AGENT, user_agent_value);
 
@@ -493,14 +493,8 @@ mod tests {
         assert_eq!(headers.len(), 3);
 
         // Verify each header was converted correctly
-        assert_eq!(
-            headers.get(header::CONTENT_TYPE).unwrap().to_str().unwrap(),
-            "application/json"
-        );
-        assert_eq!(
-            headers.get(header::AUTHORIZATION).unwrap().to_str().unwrap(),
-            "Bearer token123"
-        );
+        assert_eq!(headers.get(header::CONTENT_TYPE).unwrap().to_str().unwrap(), "application/json");
+        assert_eq!(headers.get(header::AUTHORIZATION).unwrap().to_str().unwrap(), "Bearer token123");
 
         // Verify USER_AGENT was added
         let user_agent = headers.get(header::USER_AGENT).unwrap().to_str().unwrap();
@@ -539,7 +533,7 @@ mod tests {
         
 
         let mut headers_map = HashMap::new();
-        // Header values cannot contain newlines 
+        // Header values cannot contain newlines
         headers_map.insert("X-Custom".to_string(), "value\nwith\nnewlines".to_string());
 
         let result = build_headers_with_user_agent(Some(headers_map));
