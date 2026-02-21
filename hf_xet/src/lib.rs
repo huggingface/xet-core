@@ -82,6 +82,7 @@ fn convert_data_processing_error(e: DataProcessingError) -> PyErr {
 
 #[pyfunction]
 #[pyo3(signature = (file_contents, endpoint, token_info, token_refresher, progress_updater, _repo_type, request_headers=None), text_signature = "(file_contents: List[bytes], endpoint: Optional[str], token_info: Optional[(str, int)], token_refresher: Optional[Callable[[], (str, int)]], progress_updater: Optional[Callable[[int], None]], _repo_type: Optional[str], request_headers: Optional[Dict[str, str]]) -> List[PyXetUploadInfo]")]
+#[allow(clippy::too_many_arguments)]
 pub fn upload_bytes(
     py: Python,
     file_contents: Vec<Vec<u8>>,
@@ -128,6 +129,7 @@ pub fn upload_bytes(
 
 #[pyfunction]
 #[pyo3(signature = (file_paths, endpoint, token_info, token_refresher, progress_updater, _repo_type, request_headers=None), text_signature = "(file_paths: List[str], endpoint: Optional[str], token_info: Optional[(str, int)], token_refresher: Optional[Callable[[], (str, int)]], progress_updater: Optional[Callable[[int], None]], _repo_type: Optional[str], request_headers: Optional[Dict[str, str]]) -> List[PyXetUploadInfo]")]
+#[allow(clippy::too_many_arguments)]
 pub fn upload_files(
     py: Python,
     file_paths: Vec<String>,
