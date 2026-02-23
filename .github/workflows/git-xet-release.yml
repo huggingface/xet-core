@@ -84,7 +84,7 @@ jobs:
           - runner: windows-latest
             target: x86_64
             wix_arch: x64
-          - runner: win11-arm
+          - runner: windows-11-arm
             target: aarch64
             wix_arch: arm64
     steps:
