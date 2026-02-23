@@ -78,6 +78,9 @@ impl TransferAgent for XetAgent {
         // only one prompt is presented.
         let repo = self.repo.get().unwrap(); // protocol state guarantees self.repo is set.
 
+        let mut headers = header::HeaderMap::new();
+        headers.insert(header::USER_AGENT, header::HeaderValue::from_static(USER_AGENT));
+
         let session_id = req.action.header.get(XET_SESSION_ID).map(|s| s.as_str()).unwrap_or_default();
         let token_refresher: Arc<dyn TokenRefresher> = Arc::new(DirectRefreshRouteTokenRefresher::new(
             repo,
@@ -85,7 +88,7 @@ impl TransferAgent for XetAgent {
             &req.action.href,
             Operation::Upload,
             session_id,
-            USER_AGENT,
+            Some(Arc::new(headers)),
         )?);
         // From git-lfs:
         // > First worker is the only one allowed to start immediately.

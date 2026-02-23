@@ -11,6 +11,7 @@ use clap::{Args, Parser, Subcommand};
 use data::data_client::default_config;
 use data::migration_tool::hub_client_token_refresher::HubClientTokenRefresher;
 use data::migration_tool::migrate::migrate_files_impl;
+use http::header::{self, HeaderMap, HeaderValue};
 use hub_client::{BearerCredentialHelper, HubClient, Operation, RepoInfo};
 use merklehash::MerkleHash;
 use utils::auth::TokenRefresher;
@@ -56,14 +57,17 @@ impl XCommand {
             .token
             .unwrap_or_else(|| std::env::var("HF_TOKEN").unwrap_or_default());
 
+        let mut headers = HeaderMap::new();
+        headers.insert(header::USER_AGENT, HeaderValue::from_static(USER_AGENT));
+
         let cred_helper = BearerCredentialHelper::new(token, "");
         let hub_client = HubClient::new(
             &endpoint,
             RepoInfo::try_from(&self.overrides.repo_type, &self.overrides.repo_id)?,
             Some("main".to_owned()),
-            USER_AGENT,
             "",
             cred_helper,
+            Some(Arc::new(headers)),
         )?;
 
         self.command.run(hub_client).await

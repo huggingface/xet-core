@@ -44,7 +44,7 @@ pub struct RemoteClient {
     authenticated_http_client: Arc<ClientWithMiddleware>,
     upload_concurrency_controller: Arc<AdaptiveConcurrencyController>,
     download_concurrency_controller: Arc<AdaptiveConcurrencyController>,
-    custom_headers: Option<Arc<HeaderMap>>,
+    // custom_headers: Option<Arc<HeaderMap>>,
 }
 
 impl RemoteClient {
@@ -69,12 +69,15 @@ impl RemoteClient {
             endpoint: endpoint.to_string(),
             dry_run,
             authenticated_http_client: Arc::new(
-                http_client::build_auth_http_client(auth, session_id, "", unix_socket_path).unwrap(),
+                http_client::build_auth_http_client(auth, session_id, unix_socket_path, custom_headers.clone())
+                    .unwrap(),
             ),
-            http_client: Arc::new(http_client::build_http_client(session_id, "", unix_socket_path).unwrap()),
+            http_client: Arc::new(
+                http_client::build_http_client(session_id, unix_socket_path, custom_headers).unwrap(),
+            ),
             upload_concurrency_controller: AdaptiveConcurrencyController::new_upload("upload"),
             download_concurrency_controller: AdaptiveConcurrencyController::new_download("download"),
-            custom_headers,
+            // custom_headers,
         })
     }
 
@@ -100,12 +103,12 @@ impl RemoteClient {
             endpoint: endpoint.to_string(),
             dry_run,
             authenticated_http_client: Arc::new(
-                http_client::build_auth_http_client(auth, session_id, "", None).unwrap(),
+                http_client::build_auth_http_client(auth, session_id, None, custom_headers.clone()).unwrap(),
             ),
-            http_client: Arc::new(http_client::build_http_client(session_id, "", None).unwrap()),
+            http_client: Arc::new(http_client::build_http_client(session_id, None, custom_headers).unwrap()),
             upload_concurrency_controller: AdaptiveConcurrencyController::new_upload("upload"),
             download_concurrency_controller: AdaptiveConcurrencyController::new_download("download"),
-            custom_headers,
+            // custom_headers,
         })
     }
 
@@ -191,21 +194,9 @@ impl RemoteClient {
 
         let api_tag = "cas::batch_get_reconstruction";
         let client = self.authenticated_http_client.clone();
-        let custom_headers = self.custom_headers.clone();
 
         let response: BatchQueryReconstructionResponse = RetryWrapper::new(api_tag)
-            .run_and_extract_json(move || {
-                let mut request = client.get(url.clone()).with_extension(Api(api_tag));
-
-                // Apply custom headers if present
-                if let Some(headers) = &custom_headers {
-                    for (name, value) in headers.iter() {
-                        request = request.header(name.clone(), value.clone());
-                    }
-                }
-
-                request.send()
-            })
+            .run_and_extract_json(move || client.get(url.clone()).with_extension(Api(api_tag)).send())
             .await?;
 
         event!(
@@ -240,7 +231,6 @@ impl Client for RemoteClient {
 
         let api_tag = "cas::get_reconstruction";
         let client = self.authenticated_http_client.clone();
-        let custom_headers = self.custom_headers.clone();
 
         let result: Result<QueryReconstructionResponse> = RetryWrapper::new(api_tag)
             .run_and_extract_json(move || {
@@ -248,13 +238,6 @@ impl Client for RemoteClient {
                 if let Some(range) = bytes_range {
                     // convert exclusive-end to inclusive-end range
                     request = request.header(RANGE, HttpRange::from(range).range_header())
-                }
-
-                // Apply custom headers if present
-                if let Some(headers) = &custom_headers {
-                    for (name, value) in headers.iter() {
-                        request = request.header(name.clone(), value.clone());
-                    }
                 }
 
                 request.send()
@@ -301,21 +284,9 @@ impl Client for RemoteClient {
 
         let api_tag = "cas::batch_get_reconstruction";
         let client = self.authenticated_http_client.clone();
-        let custom_headers = self.custom_headers.clone();
 
         let response: BatchQueryReconstructionResponse = RetryWrapper::new(api_tag)
-            .run_and_extract_json(move || {
-                let mut request = client.get(url.clone()).with_extension(Api(api_tag));
-
-                // Apply custom headers if present
-                if let Some(headers) = &custom_headers {
-                    for (name, value) in headers.iter() {
-                        request = request.header(name.clone(), value.clone());
-                    }
-                }
-
-                request.send()
-            })
+            .run_and_extract_json(move || client.get(url.clone()).with_extension(Api(api_tag)).send())
             .await?;
 
         info!(call_id,

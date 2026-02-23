@@ -2038,6 +2038,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "cas_client",
+ "http",
  "reqwest",
  "reqwest-middleware",
  "serde",
