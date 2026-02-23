@@ -44,7 +44,6 @@ pub struct RemoteClient {
     authenticated_http_client: Arc<ClientWithMiddleware>,
     upload_concurrency_controller: Arc<AdaptiveConcurrencyController>,
     download_concurrency_controller: Arc<AdaptiveConcurrencyController>,
-    // custom_headers: Option<Arc<HeaderMap>>,
 }
 
 impl RemoteClient {
@@ -77,7 +76,6 @@ impl RemoteClient {
             ),
             upload_concurrency_controller: AdaptiveConcurrencyController::new_upload("upload"),
             download_concurrency_controller: AdaptiveConcurrencyController::new_download("download"),
-            // custom_headers,
         })
     }
 
@@ -108,7 +106,6 @@ impl RemoteClient {
             http_client: Arc::new(http_client::build_http_client(session_id, None, custom_headers).unwrap()),
             upload_concurrency_controller: AdaptiveConcurrencyController::new_upload("upload"),
             download_concurrency_controller: AdaptiveConcurrencyController::new_download("download"),
-            // custom_headers,
         })
     }
 
