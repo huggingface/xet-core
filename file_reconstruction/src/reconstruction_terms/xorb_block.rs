@@ -16,11 +16,10 @@ use crate::reconstruction_terms::retrieval_urls::{TermBlockRetrievalURLs, XorbUR
 /// Downloaded and decompressed data for a xorb block, including chunk boundary offsets.
 pub struct XorbBlockData {
     pub chunk_offsets: Vec<usize>,
+    pub uncompressed_size: u64,
     pub data: Bytes,
 }
 
-/// The XorbBlock below holds list of references to info in the file terms that compose this block;
-/// This info is used for tracking and for determining the total uncompressed size of the block when possible.
 #[derive(Debug)]
 pub struct XorbReference {
     pub term_chunks: ChunkRange,
@@ -93,8 +92,13 @@ impl XorbBlock {
             .await?;
 
         let chunk_offsets: Vec<usize> = chunk_byte_offsets.iter().map(|&x| x as usize).collect();
+        let uncompressed_size = data.len() as u64;
 
-        let xorb_block_data = Arc::new(XorbBlockData { chunk_offsets, data });
+        let xorb_block_data = Arc::new(XorbBlockData {
+            chunk_offsets,
+            uncompressed_size,
+            data,
+        });
 
         // Store the data in the xorb block.
         *xbd_lg = Some(xorb_block_data.clone());

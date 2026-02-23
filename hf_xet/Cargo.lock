@@ -982,6 +982,7 @@ dependencies = [
  "progress_tracking",
  "thiserror 2.0.18",
  "tokio",
+ "tokio-util",
  "tracing",
  "utils",
  "xet_config",

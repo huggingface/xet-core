@@ -294,6 +294,24 @@ impl HydrateDehydrateTest {
         }
     }
 
+    pub async fn hydrate_stream(&mut self) {
+        let client = self.get_or_create_client().await;
+        let session = FileDownloadSession::from_client(client, None);
+
+        for entry in read_dir(&self.ptr_dir).unwrap() {
+            let entry = entry.unwrap();
+            let out_filename = self.dest_dir.join(entry.file_name());
+
+            let xf: XetFileInfo = serde_json::from_reader(File::open(entry.path()).unwrap()).unwrap();
+            let mut stream = session.download_stream(&xf, None).unwrap();
+
+            let mut file = File::create(&out_filename).unwrap();
+            while let Some(chunk) = stream.next().await.unwrap() {
+                file.write_all(&chunk).unwrap();
+            }
+        }
+    }
+
     pub fn verify_src_dest_match(&self) {
         verify_directories_match(&self.src_dir, &self.dest_dir);
     }
