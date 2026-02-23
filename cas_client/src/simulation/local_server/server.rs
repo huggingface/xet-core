@@ -36,6 +36,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use axum::Router;
 use axum::routing::{get, head, post};
+use http::header::{self, HeaderMap, HeaderValue};
 use tokio::net::TcpListener;
 use tokio::sync::oneshot;
 use tower_http::cors::CorsLayer;
@@ -303,6 +304,8 @@ impl LocalTestServer {
 
         tokio::time::sleep(Duration::from_millis(50)).await;
 
+        let mut headers = HeaderMap::new();
+        headers.insert(header::USER_AGENT, HeaderValue::from_static("test-agent"));
         let (remote_client, socket_proxy) = {
             #[cfg(unix)]
             {
@@ -323,20 +326,21 @@ impl LocalTestServer {
                         &None,
                         "test-session",
                         false,
-                        "test-agent",
                         Some(&socket_path_str),
+                        Some(Arc::new(headers)),
                     );
 
                     (client, Some(proxy))
                 } else {
-                    let client = RemoteClient::new(&tcp_endpoint, &None, "test-session", false, "test-agent");
+                    let client =
+                        RemoteClient::new(&tcp_endpoint, &None, "test-session", false, Some(Arc::new(headers)));
                     (client, None)
                 }
             }
 
             #[cfg(not(unix))]
             {
-                let client = RemoteClient::new(&tcp_endpoint, &None, "test-session", false, "test-agent");
+                let client = RemoteClient::new(&tcp_endpoint, &None, "test-session", false, None);
                 (client, Option::<()>::None)
             }
         };

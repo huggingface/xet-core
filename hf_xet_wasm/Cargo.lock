@@ -1144,6 +1144,7 @@ dependencies = [
  "env_logger",
  "futures",
  "getrandom 0.3.4",
+ "http",
  "js-sys",
  "log",
  "mdb_shard",

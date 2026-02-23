@@ -52,6 +52,9 @@ jobs:
       - name: Build and Test
         run: |
           cargo test --verbose --no-fail-fast --features "strict git-xet-for-integration-test"
+      - name: Build and Test hf_xet
+        run: |
+          cd hf_xet && cargo test --verbose --no-fail-fast
       - name: Check Cargo.lock has no uncommitted changes
         run: |
           # the build and test steps would update Cargo.lock if it is out of date
@@ -69,6 +72,9 @@ jobs:
       - name: Build and Test
         run: |
           cargo test --verbose --no-fail-fast --features "strict git-xet-for-integration-test"
+      - name: Build and Test hf_xet
+        run: |
+          cd hf_xet && cargo test --verbose --no-fail-fast
   build_and_test-macos:
     runs-on: macos-latest
     steps:
@@ -86,6 +92,9 @@ jobs:
       - name: Build and Test
         run: |
           cargo test --verbose --no-fail-fast --features "strict git-xet-for-integration-test"
+      - name: Build and Test hf_xet
+        run: |
+          cd hf_xet && cargo test --verbose --no-fail-fast
   build_and_test-wasm:
     name: Build WASM
     runs-on: ubuntu-latest
