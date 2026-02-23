@@ -10,8 +10,7 @@ use cas_client::http_client::build_http_client;
 use cas_client::progress_tracked_streams::{StreamProgressReporter, UploadProgressStream};
 use cas_client::retry_wrapper::RetryWrapper;
 use clap::Parser;
-use http::HeaderValue;
-use http::header::CONTENT_LENGTH;
+use http::header::{self, CONTENT_LENGTH, HeaderMap, HeaderValue};
 use rand::Rng;
 use reqwest::Body;
 use reqwest_middleware::ClientWithMiddleware;
@@ -102,7 +101,10 @@ async fn run_client(min_data_kb: u64, max_data_kb: u64, repeat_duration_seconds:
     eprintln!("Connecting to server at {}", server_addr);
 
     // Create HTTP client
-    let http_client = build_http_client("test_session", None, None).expect("Failed to create HTTP client");
+    let mut headers = HeaderMap::new();
+    headers.insert(header::USER_AGENT, HeaderValue::from_static("test_user_agent"));
+    let http_client =
+        build_http_client("test_session", None, Some(Arc::new(headers))).expect("Failed to create HTTP client");
 
     // Wait for server to be ready before starting
     wait_for_server_ready(&http_client, server_addr)
