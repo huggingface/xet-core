@@ -4,7 +4,7 @@ use anyhow::anyhow;
 use cas_types::{REQUEST_ID_HEADER, SESSION_ID_HEADER};
 use error_printer::{ErrorPrinter, OptionPrinter};
 use http::{Extensions, HeaderMap, StatusCode};
-use reqwest::header::{AUTHORIZATION, HeaderValue};
+use reqwest::header::{AUTHORIZATION, COOKIE, HeaderValue, SET_COOKIE};
 use reqwest::{Request, Response};
 use reqwest_middleware::{ClientBuilder, ClientWithMiddleware, Middleware, Next};
 use tokio::sync::Mutex;
@@ -36,6 +36,19 @@ impl Middleware for HttpsToHttpMiddleware {
         }
         next.run(req, extensions).await
     }
+}
+
+/// Utility to redact sensitive headers from a HeaderMap before logging
+fn redact_headers(headers: &HeaderMap) -> HeaderMap {
+    let mut sanitized_headers = headers.clone();
+    let sensitive_keys = vec![AUTHORIZATION, COOKIE, SET_COOKIE];
+
+    for key in sensitive_keys {
+        if sanitized_headers.contains_key(&key) {
+            sanitized_headers.insert(key, "[REDACTED]".parse().unwrap());
+        }
+    }
+    sanitized_headers
 }
 
 #[allow(unused_variables)]
@@ -83,6 +96,7 @@ fn reqwest_client(
         info!(socket_path=?socket_path, "HTTP client configured with Unix socket");
     } else {
         let config = &xet_config().client;
+        let custom_headers = custom_headers.as_deref().map(redact_headers);
         info!(
             idle_timeout=?config.idle_connection_timeout,
             max_idle_connections=config.max_idle_connections,
