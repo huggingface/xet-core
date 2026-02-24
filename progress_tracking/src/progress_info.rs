@@ -5,6 +5,8 @@ use std::sync::Arc;
 #[derive(Clone, Debug)]
 pub struct ItemProgressUpdate {
     pub item_name: Arc<str>,
+
+    // The total bytes in this item, independent from the total bytes of all items.
     pub total_bytes: u64,
 
     // Bytes completed are the total bytes completed, either through
@@ -35,25 +37,25 @@ impl ItemProgressUpdate {
 pub struct ProgressUpdate {
     pub item_updates: Vec<ItemProgressUpdate>,
 
-    /// The total bytes known to process
+    /// The total bytes known to process.
     pub total_bytes: u64,
 
     /// The change in total bytes known from the last update
     pub total_bytes_increment: u64,
 
-    /// The total bytes that have been processed
+    /// The total bytes that have been processed.
     pub total_bytes_completed: u64,
 
     /// How much this update adjusts the total bytes..
     pub total_bytes_completion_increment: u64,
 
-    /// The total bytes that have been processed
+    /// The rate at which the total bytes are being processed, if known.  
     pub total_bytes_completion_rate: Option<f64>,
 
-    /// Total bytes known that need to be uploaded or downloaded.   
+    /// Total bytes known that need to be uploaded or downloaded.  
     pub total_transfer_bytes: u64,
 
-    /// The change in total transfer bytes known from the last update
+    /// The change in total transfer bytes known from the last update.
     pub total_transfer_bytes_increment: u64,
 
     /// The total bytes that have been uploaded or downloaded.

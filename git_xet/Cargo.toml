@@ -1,6 +1,6 @@
 [package]
 name = "git_xet"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2024"
 
 [[bin]]
@@ -19,6 +19,7 @@ async-trait = { workspace = true }
 clap = { workspace = true }
 git-url-parse = { workspace = true }
 git2 = { workspace = true }
+http = { workspace = true }
 rand_core = { workspace = true }
 reqwest = { workspace = true }
 reqwest-middleware = { workspace = true }

@@ -7,7 +7,7 @@ license = "Apache-2.0"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 [lib]
 name = "hf_xet"
-crate-type = ["cdylib"]
+crate-type = ["cdylib", "lib"]
 
 [dependencies]
 cas_client = { path = "../cas_client" }
@@ -30,12 +30,12 @@ pprof = { version = "0.14", features = [
     "protobuf-codec",
 ], optional = true }
 pyo3 = { version = "0.26", features = [
-    "extension-module",
     "abi3-py37",
     "auto-initialize",
 ] }
-rand = "0.9.2"
+rand = "0.9"
 tracing = "0.1"
+http = "1" 
 
 # Unix-specific dependencies
 [target.'cfg(unix)'.dependencies]
@@ -47,6 +47,7 @@ winapi = { version = "0.3", features = ["consoleapi", "wincon", "errhandlingapi"
 
 [features]
 default = ["no-default-cache", "elevated_information_level"] # By default, hf_xet disables the disk cache and uses aggressive logging level
+extension-module = ["pyo3/extension-module"] # Only enabled when building with maturin
 native-tls = ["cas_client/native-tls-vendored"]
 native-tls-vendored = ["cas_client/native-tls-vendored"]
 no-default-cache = ["xet_config/no-default-cache"]

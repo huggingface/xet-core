@@ -17,6 +17,7 @@ merklehash = { path = "../merklehash" }
 
 async-trait = { workspace = true }
 bytes = { workspace = true }
+chrono = { workspace = true }
 ctor = { workspace = true }
 derivative = { workspace = true }
 duration-str = { workspace = true }
@@ -24,7 +25,6 @@ futures = { workspace = true }
 lazy_static = { workspace = true }
 pin-project = { workspace = true }
 serde = { workspace = true }
-shellexpand = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = [
     "time",
@@ -38,6 +38,7 @@ tracing = { workspace = true }
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
 bincode = { workspace = true }
 rand = { workspace = true }
+shellexpand = { workspace = true, features = ["path"] }
 tokio-util = { workspace = true, features = ["io"] }
 
 [target.'cfg(not(target_family = "wasm"))'.dev-dependencies]

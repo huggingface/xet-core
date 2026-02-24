@@ -45,6 +45,7 @@ async-trait = { workspace = true }
 bytes = { workspace = true }
 chrono = { workspace = true }
 clap = { workspace = true }
+http = { workspace = true }
 lazy_static = { workspace = true }
 more-asserts = { workspace = true }
 prometheus = { workspace = true }

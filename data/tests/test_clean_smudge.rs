@@ -24,6 +24,8 @@ pub async fn check_clean_smudge_files(file_list: &[(impl AsRef<str> + Clone, usi
             ts.dehydrate(sequential).await;
             ts.hydrate().await;
             ts.verify_src_dest_match();
+            ts.hydrate_partitioned_writers(4).await;
+            ts.verify_src_dest_match();
         }
     }
 }
@@ -44,6 +46,8 @@ async fn check_clean_smudge_files_multipart(file_specs: &[(String, Vec<(usize, u
 
             ts.dehydrate(sequential).await;
             ts.hydrate().await;
+            ts.verify_src_dest_match();
+            ts.hydrate_partitioned_writers(4).await;
             ts.verify_src_dest_match();
         }
     }

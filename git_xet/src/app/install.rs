@@ -29,6 +29,17 @@ pub fn local(repo_path: Option<PathBuf>, concurrency: Option<u32>) -> Result<()>
     install_impl(ConfigLocation::Local(repo_path), concurrency)
 }
 
+/// Returns true if the git-lfs CLI is available (e.g. `git lfs version` succeeds).
+/// Used by install/uninstall tests to skip when git-lfs is not installed.
+#[allow(dead_code)]
+pub fn git_lfs_available() -> bool {
+    let cwd = match std::env::current_dir() {
+        Ok(c) => c,
+        Err(_) => return false,
+    };
+    run_git_captured(&cwd, "lfs", ["version"]).is_ok()
+}
+
 // Set up the "xet" transfer agent under the name "lfs.customtransfer.xet" in
 // the Git config specified by `location` with the below values
 //     path = git-xet
@@ -108,7 +119,7 @@ fn install_impl(location: ConfigLocation, concurrency: Option<u32>) -> Result<()
 #[cfg(test)]
 pub mod tests {
     use std::io::{BufRead, BufReader, Cursor};
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
 
     use anyhow::Result;
     use serial_test::serial;
@@ -116,7 +127,7 @@ pub mod tests {
     use super::{global, local};
     use crate::git_repo::GitRepo;
     use crate::test_utils::TestRepo;
-    use crate::utils::process_wrapping::run_git_captured_with_input_and_output;
+    use crate::utils::process_wrapping::{run_git_captured, run_git_captured_with_input_and_output};
 
     pub fn get_lfs_env(env_list: &[u8], key: &str) -> Result<Option<String>> {
         let reader = BufReader::new(Cursor::new(env_list));
@@ -133,12 +144,19 @@ pub mod tests {
         Ok(None)
     }
 
+    pub fn git_lfs_available(repo_path: &Path) -> bool {
+        run_git_captured(repo_path, "lfs", ["env"]).is_ok()
+    }
+
     fn test_install_with_default_concurrency<F>(install_fn: F) -> Result<()>
     where
         F: FnOnce(Option<PathBuf>, Option<u32>) -> crate::errors::Result<()>,
     {
         // set up repo
         let test_repo = TestRepo::new("main")?;
+        if !git_lfs_available(test_repo.path()) {
+            return Ok(());
+        }
 
         // install with default concurrency
         install_fn(Some(test_repo.path().to_owned()), None)?;
@@ -164,6 +182,9 @@ pub mod tests {
     {
         // set up repo
         let test_repo = TestRepo::new("main")?;
+        if !git_lfs_available(test_repo.path()) {
+            return Ok(());
+        }
 
         // install with concurrency disabled
         install_fn(Some(test_repo.path().to_owned()), Some(1))?;
@@ -188,6 +209,9 @@ pub mod tests {
     {
         // set up repo
         let test_repo = TestRepo::new("main")?;
+        if !git_lfs_available(test_repo.path()) {
+            return Ok(());
+        }
 
         // install with concurrency = 16
         install_fn(Some(test_repo.path().to_owned()), Some(16))?;
@@ -212,6 +236,9 @@ pub mod tests {
         F: FnOnce(Option<PathBuf>, Option<u32>) -> crate::errors::Result<()>,
     {
         let test_repo = TestRepo::new("main")?;
+        if !git_lfs_available(test_repo.path()) {
+            return Ok(());
+        }
 
         // install with concurrency = 0
         let ret = install_fn(Some(test_repo.path().to_owned()), Some(0));
@@ -224,18 +251,27 @@ pub mod tests {
     #[test]
     #[serial(env_var_write_read)]
     fn test_local_install_with_default_concurrency() -> Result<()> {
+        if !super::git_lfs_available() {
+            return Ok(());
+        }
         test_install_with_default_concurrency(local)
     }
 
     #[test]
     #[serial(env_var_write_read)]
     fn test_local_install_with_no_concurrency() -> Result<()> {
+        if !super::git_lfs_available() {
+            return Ok(());
+        }
         test_install_with_no_concurrency(local)
     }
 
     #[test]
     #[serial(env_var_write_read)]
     fn test_local_install_with_custom_concurrency() -> Result<()> {
+        if !super::git_lfs_available() {
+            return Ok(());
+        }
         test_install_with_custom_concurrency(local)
     }
 
@@ -248,8 +284,14 @@ pub mod tests {
     #[test]
     #[serial(env_var_write_read)]
     fn test_install_precedence() -> Result<()> {
+        if !super::git_lfs_available() {
+            return Ok(());
+        }
         // set up repo
         let test_repo = TestRepo::new("main")?;
+        if !git_lfs_available(test_repo.path()) {
+            return Ok(());
+        }
 
         // install local + global
         local(Some(test_repo.path().to_owned()), Some(16))?;

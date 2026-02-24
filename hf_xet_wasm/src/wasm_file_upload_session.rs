@@ -5,8 +5,9 @@ use cas_client::{Client, RemoteClient};
 use cas_object::SerializedCasObject;
 use deduplication::constants::{MAX_XORB_BYTES, MAX_XORB_CHUNKS};
 use deduplication::{DataAggregator, DeduplicationMetrics, RawXorbData};
-use mdb_shard::shard_in_memory::MDBInMemoryShard;
+use http::header::{self, HeaderValue};
 use mdb_shard::MDBShardInfo;
+use mdb_shard::shard_in_memory::MDBInMemoryShard;
 use merklehash::{HashedWrite, MerkleHash};
 use tokio::sync::Mutex;
 
@@ -38,12 +39,21 @@ pub struct FileUploadSession {
 
 impl FileUploadSession {
     pub fn new(config: Arc<TranslatorConfig>) -> Self {
+        let headers = match HeaderValue::from_str(&config.data_config.user_agent) {
+            Ok(value) => {
+                let mut headers = http::HeaderMap::new();
+                headers.insert(header::USER_AGENT, value);
+                Some(Arc::new(headers))
+            }
+            Err(_) => None
+        };
+
         let client = RemoteClient::new(
             &config.data_config.endpoint,
             &config.data_config.auth,
             &config.session_id,
             false,
-            &config.data_config.user_agent,
+            headers,
         );
 
         let xorb_uploader =
@@ -164,9 +174,7 @@ impl FileUploadSession {
 
         let _timer = ConsoleTimer::new("upload shard");
         let permit = self.client.acquire_upload_permit().await?;
-        self.client
-            .upload_shard(shard_data.into(), permit)
-            .await?;
+        self.client.upload_shard(shard_data.into(), permit).await?;
 
         Ok(())
     }

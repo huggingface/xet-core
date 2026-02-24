@@ -1,17 +1,16 @@
 use std::fs::{File, create_dir_all, read_dir};
-use std::io::{Read, Write};
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use cas_client::{Client, LocalClient, LocalTestServer};
-use file_reconstruction::{DataOutput, FileReconstructor};
 use progress_tracking::TrackingProgressUpdater;
 use rand::prelude::*;
 use tempfile::TempDir;
 
 use crate::configurations::TranslatorConfig;
 use crate::data_client::clean_file;
-use crate::{FileUploadSession, XetFileInfo};
+use crate::{FileDownloadSession, FileUploadSession, XetFileInfo};
 
 /// Creates or overwrites a single file in `dir` with `size` bytes of random data.
 /// Panics on any I/O error. Returns the total number of bytes written (=`size`).
@@ -124,21 +123,6 @@ pub fn verify_directories_match(dir1: impl AsRef<Path>, dir2: impl AsRef<Path>) 
     }
 }
 
-/// Holds either a LocalClient directly or a LocalTestServer (which provides a RemoteClient).
-enum TestClient {
-    Local(Arc<LocalClient>),
-    Server(LocalTestServer),
-}
-
-impl TestClient {
-    fn as_client(&self) -> Arc<dyn Client> {
-        match self {
-            TestClient::Local(c) => c.clone(),
-            TestClient::Server(s) => s.remote_client().clone(),
-        }
-    }
-}
-
 pub struct HydrateDehydrateTest {
     _temp_dir: TempDir,
     pub cas_dir: PathBuf,
@@ -146,7 +130,8 @@ pub struct HydrateDehydrateTest {
     pub ptr_dir: PathBuf,
     pub dest_dir: PathBuf,
     use_test_server: bool,
-    client: Option<TestClient>,
+    /// Kept alive so the test server stays running for the duration of the test.
+    test_server: Option<LocalTestServer>,
 }
 
 impl Default for HydrateDehydrateTest {
@@ -182,22 +167,21 @@ impl HydrateDehydrateTest {
             dest_dir,
             _temp_dir,
             use_test_server,
-            client: None, // Client created lazily
+            test_server: None,
         }
     }
 
-    /// Lazily initializes and returns the test client.
-    async fn get_or_create_client(&mut self) -> &TestClient {
-        if self.client.is_none() {
-            let client = if self.use_test_server {
+    /// Lazily initializes the test server (if needed) and returns a CAS client.
+    async fn get_or_create_client(&mut self) -> Arc<dyn Client> {
+        if self.use_test_server {
+            if self.test_server.is_none() {
                 let local_client = LocalClient::new(self.cas_dir.join("xet/xorbs")).await.unwrap();
-                TestClient::Server(LocalTestServer::start_with_client(local_client).await)
-            } else {
-                TestClient::Local(LocalClient::new(self.cas_dir.join("xet/xorbs")).await.unwrap())
-            };
-            self.client = Some(client);
+                self.test_server = Some(LocalTestServer::start_with_client(local_client).await);
+            }
+            self.test_server.as_ref().unwrap().remote_client().clone() as Arc<dyn Client>
+        } else {
+            LocalClient::new(self.cas_dir.join("xet/xorbs")).await.unwrap() as Arc<dyn Client>
         }
-        self.client.as_ref().unwrap()
     }
 
     pub async fn new_upload_session(
@@ -252,22 +236,61 @@ impl HydrateDehydrateTest {
     }
 
     pub async fn hydrate(&mut self) {
-        create_dir_all(&self.dest_dir).unwrap();
-
-        let client = self.get_or_create_client().await.as_client();
+        let client = self.get_or_create_client().await;
+        let session = FileDownloadSession::from_client(client, None);
 
         for entry in read_dir(&self.ptr_dir).unwrap() {
             let entry = entry.unwrap();
             let out_filename = self.dest_dir.join(entry.file_name());
 
-            // Pointer file.
             let xf: XetFileInfo = serde_json::from_reader(File::open(entry.path()).unwrap()).unwrap();
-            let file_hash = xf.merkle_hash().unwrap();
+            session.download_file(&xf, &out_filename, None).await.unwrap();
+        }
+    }
 
-            FileReconstructor::new(&client, file_hash, DataOutput::write_in_file(&out_filename))
-                .run()
-                .await
-                .unwrap();
+    pub async fn hydrate_partitioned_writers(&mut self, partitions: usize) {
+        let client = self.get_or_create_client().await;
+        let session = FileDownloadSession::from_client(client, None);
+
+        for entry in read_dir(&self.ptr_dir).unwrap() {
+            let entry = entry.unwrap();
+            let out_filename = self.dest_dir.join(entry.file_name());
+            let xf: XetFileInfo = serde_json::from_reader(File::open(entry.path()).unwrap()).unwrap();
+            let file_size = xf.file_size();
+
+            let out_file = File::create(&out_filename).unwrap();
+            out_file.set_len(file_size).unwrap();
+
+            if file_size == 0 {
+                continue;
+            }
+
+            let partition_count = partitions.max(1) as u64;
+            let mut tasks = Vec::new();
+
+            for idx in 0..partition_count {
+                let start = (idx * file_size) / partition_count;
+                let end = ((idx + 1) * file_size) / partition_count;
+
+                if start == end {
+                    continue;
+                }
+
+                let session = session.clone();
+                let xf = xf.clone();
+                let out_filename = out_filename.clone();
+                tasks.push(tokio::spawn(async move {
+                    let mut writer = std::fs::OpenOptions::new().write(true).open(out_filename).unwrap();
+                    writer.seek(SeekFrom::Start(start)).unwrap();
+                    session
+                        .download_to_writer(&xf, start..end, writer, Some(Arc::from(format!("partition-{idx}"))))
+                        .await
+                }));
+            }
+
+            for task in tasks {
+                task.await.unwrap().unwrap();
+            }
         }
     }
 

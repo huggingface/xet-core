@@ -9,13 +9,12 @@ use cas_types::{
 };
 use futures::TryStreamExt;
 use http::HeaderValue;
-use http::header::{CONTENT_LENGTH, RANGE};
+use http::header::{CONTENT_LENGTH, HeaderMap, RANGE};
 use mdb_shard::file_structs::{FileDataSequenceEntry, FileDataSequenceHeader, MDBFileInfo};
 use merklehash::MerkleHash;
-use progress_tracking::upload_tracking::CompletionTracker;
 use reqwest::{Body, Response, StatusCode, Url};
 use reqwest_middleware::ClientWithMiddleware;
-use tracing::{event, info, instrument};
+use tracing::{event, info, instrument, warn};
 use utils::auth::AuthConfig;
 use xet_runtime::xet_config;
 
@@ -23,8 +22,10 @@ use crate::adaptive_concurrency::{AdaptiveConcurrencyController, ConnectionPermi
 use crate::error::{CasClientError, Result};
 use crate::http_client::Api;
 use crate::interface::URLProvider;
+use crate::progress_tracked_streams::{
+    DownloadProgressStream, ProgressCallback, StreamProgressReporter, UploadProgressStream,
+};
 use crate::retry_wrapper::{RetryWrapper, RetryableReqwestError};
-use crate::upload_progress_stream::UploadProgressStream;
 use crate::{Client, INFORMATION_LOG_LEVEL, http_client};
 
 pub const CAS_ENDPOINT: &str = "http://localhost:8080";
@@ -53,23 +54,26 @@ impl RemoteClient {
     /// * `auth` - Optional authentication configuration
     /// * `session_id` - Session identifier
     /// * `dry_run` - Whether to run in dry-run mode
-    /// * `user_agent` - User agent string
     /// * `unix_socket_path` - Optional Unix socket path for proxying connections (ignored on non-Unix platforms)
+    /// * `custom_headers` - Optional custom headers to include in HTTP requests (should include User-Agent)
     pub fn new_with_socket(
         endpoint: &str,
         auth: &Option<AuthConfig>,
         session_id: &str,
         dry_run: bool,
-        user_agent: &str,
         unix_socket_path: Option<&str>,
+        custom_headers: Option<Arc<HeaderMap>>,
     ) -> Arc<Self> {
         Arc::new(Self {
             endpoint: endpoint.to_string(),
             dry_run,
             authenticated_http_client: Arc::new(
-                http_client::build_auth_http_client(auth, session_id, user_agent, unix_socket_path).unwrap(),
+                http_client::build_auth_http_client(auth, session_id, unix_socket_path, custom_headers.clone())
+                    .unwrap(),
             ),
-            http_client: Arc::new(http_client::build_http_client(session_id, user_agent, unix_socket_path).unwrap()),
+            http_client: Arc::new(
+                http_client::build_http_client(session_id, unix_socket_path, custom_headers).unwrap(),
+            ),
             upload_concurrency_controller: AdaptiveConcurrencyController::new_upload("upload"),
             download_concurrency_controller: AdaptiveConcurrencyController::new_download("download"),
         })
@@ -79,20 +83,27 @@ impl RemoteClient {
     ///
     /// If `HF_XET_CLIENT_UNIX_SOCKET_PATH` is set in the configuration, this will
     /// automatically use the Unix socket for connections (checked by build_http_client).
+    ///
+    /// # Arguments
+    /// * `endpoint` - The CAS endpoint URL
+    /// * `auth` - Optional authentication configuration
+    /// * `session_id` - Session identifier
+    /// * `dry_run` - Whether to run in dry-run mode
+    /// * `custom_headers` - Optional custom headers to include in HTTP requests (should include User-Agent)
     pub fn new(
         endpoint: &str,
         auth: &Option<AuthConfig>,
         session_id: &str,
         dry_run: bool,
-        user_agent: &str,
+        custom_headers: Option<Arc<HeaderMap>>,
     ) -> Arc<Self> {
         Arc::new(Self {
             endpoint: endpoint.to_string(),
             dry_run,
             authenticated_http_client: Arc::new(
-                http_client::build_auth_http_client(auth, session_id, user_agent, None).unwrap(),
+                http_client::build_auth_http_client(auth, session_id, None, custom_headers.clone()).unwrap(),
             ),
-            http_client: Arc::new(http_client::build_http_client(session_id, user_agent, None).unwrap()),
+            http_client: Arc::new(http_client::build_http_client(session_id, None, custom_headers).unwrap()),
             upload_concurrency_controller: AdaptiveConcurrencyController::new_upload("upload"),
             download_concurrency_controller: AdaptiveConcurrencyController::new_download("download"),
         })
@@ -126,7 +137,7 @@ impl RemoteClient {
         let result = RetryWrapper::new(api_tag)
             .with_429_no_retry()
             .log_errors_as_info()
-            .run(move |_partial_report_fn| client.get(url.clone()).with_extension(Api(api_tag)).send())
+            .run(move || client.get(url.clone()).with_extension(Api(api_tag)).send())
             .await;
 
         if result.as_ref().is_err_and(|e| e.status().is_some()) {
@@ -182,7 +193,7 @@ impl RemoteClient {
         let client = self.authenticated_http_client.clone();
 
         let response: BatchQueryReconstructionResponse = RetryWrapper::new(api_tag)
-            .run_and_extract_json(move |_partial_report_fn| client.get(url.clone()).with_extension(Api(api_tag)).send())
+            .run_and_extract_json(move || client.get(url.clone()).with_extension(Api(api_tag)).send())
             .await?;
 
         event!(
@@ -219,12 +230,13 @@ impl Client for RemoteClient {
         let client = self.authenticated_http_client.clone();
 
         let result: Result<QueryReconstructionResponse> = RetryWrapper::new(api_tag)
-            .run_and_extract_json(move |_partial_report_fn| {
+            .run_and_extract_json(move || {
                 let mut request = client.get(url.clone()).with_extension(Api(api_tag));
                 if let Some(range) = bytes_range {
                     // convert exclusive-end to inclusive-end range
                     request = request.header(RANGE, HttpRange::from(range).range_header())
                 }
+
                 request.send()
             })
             .await;
@@ -271,7 +283,7 @@ impl Client for RemoteClient {
         let client = self.authenticated_http_client.clone();
 
         let response: BatchQueryReconstructionResponse = RetryWrapper::new(api_tag)
-            .run_and_extract_json(move |_partial_report_fn| client.get(url.clone()).with_extension(Api(api_tag)).send())
+            .run_and_extract_json(move || client.get(url.clone()).with_extension(Api(api_tag)).send())
             .await?;
 
         info!(call_id,
@@ -291,16 +303,27 @@ impl Client for RemoteClient {
         &self,
         url_info: Box<dyn URLProvider>,
         download_permit: ConnectionPermit,
+        progress_callback: Option<ProgressCallback>,
+        uncompressed_size_if_known: Option<usize>,
     ) -> Result<(Bytes, Vec<u32>)> {
         let api_tag = "s3::get_range";
         let http_client = self.http_client.clone();
         let url_info = Arc::new(url_info);
 
-        RetryWrapper::new(api_tag)
+        let (_, url_range) = url_info.retrieve_url().await?;
+        let total_download_bytes = url_range.length();
+
+        let mut transfer_reporter = StreamProgressReporter::new(total_download_bytes)
+            .with_adaptive_concurrency_reporter(download_permit.get_partial_completion_reporting_function());
+        if let Some(cb) = progress_callback {
+            transfer_reporter = transfer_reporter.with_progress_callback(cb);
+        }
+
+        let result = RetryWrapper::new(api_tag)
             .with_retry_on_403()
             .with_connection_permit(download_permit, None)
             .run_and_extract_custom(
-                move |_partial_report_fn| {
+                move || {
                     let http_client = http_client.clone();
                     let url_info = url_info.clone();
 
@@ -329,19 +352,48 @@ impl Client for RemoteClient {
                         Ok(response)
                     }
                 },
-                |resp: Response| async move {
-                    let result = cas_object::deserialize_async::deserialize_chunks_from_stream(
-                        resp.bytes_stream().map_err(std::io::Error::other),
-                    )
-                    .await;
+                move |resp: Response| {
+                    let transfer_reporter = transfer_reporter.clone();
+                    async move {
+                        let incoming_stream = DownloadProgressStream::wrap_stream(
+                            resp.bytes_stream().map_err(std::io::Error::other),
+                            transfer_reporter,
+                        );
 
-                    match result {
-                        Ok((data, chunk_byte_indices)) => Ok((Bytes::from(data), chunk_byte_indices)),
-                        Err(e) => Err(RetryableReqwestError::RetryableError(CasClientError::CasObjectError(e))),
+                        let capacity = uncompressed_size_if_known.unwrap_or(0);
+                        let mut buffer = Vec::with_capacity(capacity);
+                        let mut writer = std::io::Cursor::new(&mut buffer);
+
+                        let result = cas_object::deserialize_async::deserialize_chunks_to_writer_from_stream(
+                            incoming_stream,
+                            &mut writer,
+                        )
+                        .await;
+
+                        match result {
+                            Ok((_compressed_len, chunk_byte_indices)) => {
+                                if let Some(expected) = uncompressed_size_if_known {
+                                    debug_assert_eq!(
+                                        buffer.len(),
+                                        expected,
+                                        "get_file_term_data: expected {} bytes, got {}",
+                                        expected,
+                                        buffer.len()
+                                    );
+                                    if expected != buffer.len() {
+                                        warn!("get_file_term_data: expected {} bytes, got {}", expected, buffer.len());
+                                    }
+                                }
+                                Ok((Bytes::from(buffer), chunk_byte_indices))
+                            },
+                            Err(e) => Err(RetryableReqwestError::RetryableError(CasClientError::CasObjectError(e))),
+                        }
                     }
                 },
             )
-            .await
+            .await?;
+
+        Ok(result)
     }
 
     #[instrument(skip_all, name = "RemoteClient::get_file_reconstruction", fields(file.hash = file_hash.hex()
@@ -358,7 +410,7 @@ impl Client for RemoteClient {
         let client = self.authenticated_http_client.clone();
 
         let response: QueryReconstructionResponse = RetryWrapper::new(api_tag)
-            .run_and_extract_json(move |_partial_report_fn| client.get(url.clone()).with_extension(Api(api_tag)).send())
+            .run_and_extract_json(move || client.get(url.clone()).with_extension(Api(api_tag)).send())
             .await?;
 
         let terms_count = response.terms.len();
@@ -412,7 +464,7 @@ impl Client for RemoteClient {
 
         let response: UploadShardResponse = RetryWrapper::new(api_tag)
             .with_connection_permit(upload_permit, Some(shard_data.len() as u64))
-            .run_and_extract_json(move |_partial_report_fn| {
+            .run_and_extract_json(move || {
                 client
                     .post(url.clone())
                     .with_extension(Api(api_tag))
@@ -453,7 +505,7 @@ impl Client for RemoteClient {
         &self,
         prefix: &str,
         serialized_cas_object: SerializedCasObject,
-        upload_tracker: Option<Arc<CompletionTracker>>,
+        progress_callback: Option<ProgressCallback>,
         upload_permit: ConnectionPermit,
     ) -> Result<u64> {
         let key = Key {
@@ -475,14 +527,16 @@ impl Client for RemoteClient {
             "Starting upload_xorb API call",
         );
 
-        let n_raw_bytes = serialized_cas_object.raw_num_bytes;
-        let xorb_hash = serialized_cas_object.hash;
         let n_transfer_bytes = serialized_cas_object.serialized_data.len() as u64;
 
         let serialized_data = serialized_cas_object.serialized_data.clone();
+        let block_size = xet_config().client.upload_reporting_block_size;
 
-        let upload_stream =
-            UploadProgressStream::new(serialized_data.clone(), xet_config().client.upload_reporting_block_size);
+        let mut upload_reporter = StreamProgressReporter::new(n_transfer_bytes)
+            .with_adaptive_concurrency_reporter(upload_permit.get_partial_completion_reporting_function());
+        if let Some(cb) = progress_callback {
+            upload_reporter = upload_reporter.with_progress_callback(cb);
+        }
 
         let xorb_uploaded = {
             if !self.dry_run {
@@ -492,29 +546,12 @@ impl Client for RemoteClient {
 
                 let response: UploadXorbResponse = RetryWrapper::new(api_tag)
                     .with_connection_permit(upload_permit, Some(n_transfer_bytes))
-                    .run_and_extract_json(move |partial_report_fn| {
-                        let partial_report_fn = partial_report_fn.clone();
-                        let total_size = n_transfer_bytes;
-                        let upload_tracker = upload_tracker.clone();
-
-                        let progress_callback = move |bytes_sent_delta: u64, total_bytes: u64| {
-                            if let Some(utr) = upload_tracker.as_ref() {
-                                // First, recalibrate the sending, as the compressed size is different from the actual
-                                // data size.
-                                let adjusted_update = (bytes_sent_delta * n_raw_bytes) / n_upload_bytes;
-
-                                utr.clone().register_xorb_upload_progress_background(xorb_hash, adjusted_update);
-                            }
-
-                            if let Some(ref partial_report_fn) = partial_report_fn
-                                && total_size > 0
-                            {
-                                let portion = (total_bytes as f64 / total_size as f64).min(1.0);
-                                partial_report_fn(portion, total_bytes);
-                            }
-                        };
-
-                        let upload_stream = upload_stream.clone_with_reset_and_new_callback(progress_callback);
+                    .run_and_extract_json(move || {
+                        let upload_stream = UploadProgressStream::wrap_bytes_as_stream(
+                            serialized_data.clone(),
+                            block_size,
+                            upload_reporter.clone(),
+                        );
                         let url = url.clone();
 
                         client
@@ -561,7 +598,7 @@ impl Client for RemoteClient {
         &self,
         prefix: &str,
         serialized_cas_object: SerializedCasObject,
-        upload_tracker: Option<Arc<CompletionTracker>>,
+        _progress_callback: Option<ProgressCallback>,
         _upload_permit: ConnectionPermit,
     ) -> Result<u64> {
         let key = Key {
@@ -604,7 +641,7 @@ mod tests {
         let raw_xorb = build_raw_xorb(3, ChunkSize::Random(512, 10248));
 
         let threadpool = XetRuntime::new().unwrap();
-        let client = RemoteClient::new(CAS_ENDPOINT, &None, "", false, "");
+        let client = RemoteClient::new(CAS_ENDPOINT, &None, "", false, None);
 
         let cas_object = build_and_verify_cas_object(raw_xorb, Some(CompressionScheme::LZ4));
 

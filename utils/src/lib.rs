@@ -19,6 +19,8 @@ pub mod rw_task_lock;
 pub use rw_task_lock::{RwTaskLock, RwTaskLockError, RwTaskLockReadGuard};
 
 pub mod adjustable_semaphore;
+pub mod resource_semaphore;
+pub use resource_semaphore::ResourceSemaphore;
 
 mod exp_weighted_moving_avg;
 pub use exp_weighted_moving_avg::ExpWeightedMovingAvg;
@@ -32,7 +34,7 @@ pub use guards::{CwdGuard, EnvVarGuard};
 mod file_paths;
 
 #[cfg(not(target_family = "wasm"))]
-pub use file_paths::normalized_path_from_user_string;
+pub use file_paths::TemplatedPathBuf;
 
 pub mod byte_size;
 pub use byte_size::ByteSize;

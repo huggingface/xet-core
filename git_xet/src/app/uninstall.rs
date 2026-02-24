@@ -63,15 +63,21 @@ mod tests {
 
     use super::{all, local};
     use crate::app::install;
-    use crate::app::install::tests::get_lfs_env;
+    use crate::app::install::tests::{get_lfs_env, git_lfs_available};
     use crate::test_utils::TestRepo;
     use crate::utils::process_wrapping::run_git_captured_with_input_and_output;
 
     #[test]
     #[serial(env_var_write_read)]
     fn test_uninstall_local() -> Result<()> {
+        if !install::git_lfs_available() {
+            return Ok(());
+        }
         // set up repo
         let test_repo = TestRepo::new("main")?;
+        if !git_lfs_available(test_repo.path()) {
+            return Ok(());
+        }
 
         // install with custom concurrency
         install::local(Some(test_repo.path().to_owned()), Some(16))?;
@@ -105,8 +111,14 @@ mod tests {
     #[test]
     #[serial(env_var_write_read)]
     fn test_uninstall_all() -> Result<()> {
+        if !install::git_lfs_available() {
+            return Ok(());
+        }
         // set up repo
         let test_repo = TestRepo::new("main")?;
+        if !git_lfs_available(test_repo.path()) {
+            return Ok(());
+        }
 
         // install local + global
         install::local(Some(test_repo.path().to_owned()), Some(16))?;

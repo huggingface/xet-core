@@ -6,12 +6,13 @@ use std::sync::Arc;
 
 use bytes::Bytes;
 use cas_types::FileRange;
+use progress_tracking::download_tracking::DownloadTaskUpdater;
 use tokio::sync::OwnedSemaphorePermit;
 use xet_config::ReconstructionConfig;
 
-use crate::Result;
 use crate::data_writer::DataOutput;
 use crate::data_writer::sequential_writer::SequentialWriter;
+use crate::error::Result;
 
 /// A future that produces the data bytes to be written.
 pub type DataFuture = Pin<Box<dyn Future<Output = Result<Bytes>> + Send + 'static>>;
@@ -49,6 +50,8 @@ pub trait DataWriter: Send + Sync + 'static {
 ///   `DataOutput::SequentialWriter`, this is ignored (the writer handles positioning). For `DataOutput::File`, the file
 ///   is seeked to either the explicit offset (if provided) or this default position.
 /// * `config` - Reconstruction configuration, including whether to use vectorized writes.
+/// * `progress_updater` - Optional progress updater; when provided, decompressed bytes written are reported on each
+///   successful write.
 ///
 /// # File Handling
 /// When using `DataOutput::File`, the file is opened with read/write access without
@@ -58,18 +61,22 @@ pub fn new_data_writer(
     output: DataOutput,
     default_write_position: u64,
     config: &ReconstructionConfig,
+    progress_updater: Option<Arc<DownloadTaskUpdater>>,
 ) -> Result<Arc<dyn DataWriter>> {
     let use_vectored = config.use_vectored_write;
 
     match output {
         DataOutput::SequentialWriter(writer) => {
             if use_vectored {
-                Ok(Arc::new(SequentialWriter::new_vectorized(writer)))
+                Ok(Arc::new(SequentialWriter::new_vectorized(writer, progress_updater)))
             } else {
-                Ok(Arc::new(SequentialWriter::new(writer)))
+                Ok(Arc::new(SequentialWriter::new(writer, progress_updater)))
             }
         },
         DataOutput::File { path, offset } => {
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
             let mut file = OpenOptions::new().write(true).create(true).truncate(false).open(&path)?;
 
             let seek_position = offset.unwrap_or(default_write_position);
@@ -78,9 +85,9 @@ pub fn new_data_writer(
             }
 
             if use_vectored {
-                Ok(Arc::new(SequentialWriter::new_vectorized(file)))
+                Ok(Arc::new(SequentialWriter::new_vectorized(file, progress_updater)))
             } else {
-                Ok(Arc::new(SequentialWriter::new(file)))
+                Ok(Arc::new(SequentialWriter::new(file, progress_updater)))
             }
         },
     }
