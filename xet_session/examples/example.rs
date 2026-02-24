@@ -14,8 +14,7 @@ use std::time::Duration;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
-use xet_config::XetConfig;
-use xet_session::{XetSession, TaskStatus};
+use xet_session::{TaskStatus, XetSession};
 
 #[derive(Parser)]
 #[clap(name = "session-demo")]
@@ -74,13 +73,17 @@ async fn main() -> Result<()> {
     match cli.command {
         Command::Upload { files, endpoint } => {
             upload_files(files, endpoint).await?;
-        }
-        Command::Download { metadata_file, output_dir, endpoint } => {
+        },
+        Command::Download {
+            metadata_file,
+            output_dir,
+            endpoint,
+        } => {
             download_files(metadata_file, output_dir, endpoint).await?;
-        }
+        },
         Command::RoundTrip { files, output_dir } => {
             round_trip(files, output_dir).await?;
-        }
+        },
     }
 
     Ok(())
@@ -91,12 +94,11 @@ async fn upload_files(files: Vec<PathBuf>, endpoint: Option<String>) -> Result<(
     println!("📤 Starting upload session...");
 
     // Create XetSession with configuration
-    let config = XetConfig::new();
-    let session = XetSession::new_with_auth(
-        config,
+    let session = XetSession::new(
         endpoint,
         None, // token_info
         None, // token_refresher
+        "session-demo/0.1.0".to_string(),
     )?;
 
     println!("✅ Session created");
@@ -108,8 +110,7 @@ async fn upload_files(files: Vec<PathBuf>, endpoint: Option<String>) -> Result<(
     // Start uploading all files (tasks execute immediately)
     println!("\n🚀 Starting uploads for {} files...", files.len());
     for file in &files {
-        let file_str = file.to_string_lossy().to_string();
-        let task_id = upload_commit.upload_file(file_str.clone()).await?;
+        let task_id = upload_commit.upload_from_path(file.clone())?;
         println!("  ⏫ Started upload: {} (task: {})", file.display(), task_id);
     }
 
@@ -131,8 +132,10 @@ async fn upload_files(files: Vec<PathBuf>, endpoint: Option<String>) -> Result<(
             0
         };
 
-        print!("\r  Progress: {}/{} files | {}/{} bytes ({}%)",
-               completed, total_files, completed_bytes, total_bytes, percentage);
+        print!(
+            "\r  Progress: {}/{} files | {}/{} bytes ({}%)",
+            completed, total_files, completed_bytes, total_bytes, percentage
+        );
         std::io::stdout().flush()?;
 
         // Check if all done
@@ -146,14 +149,16 @@ async fn upload_files(files: Vec<PathBuf>, endpoint: Option<String>) -> Result<(
 
     // Commit - finalize uploads and get metadata
     println!("\n💾 Committing uploads...");
-    let metadata = upload_commit.commit().await?;
+    let metadata = upload_commit.commit()?;
 
     println!("\n✅ Upload complete! Metadata:");
     for m in &metadata {
-        println!("  📄 {} -> {} ({} bytes)",
-                 m.file_name.as_ref().unwrap_or(&"<unknown>".to_string()),
-                 m.hash,
-                 m.file_size);
+        println!(
+            "  📄 {} -> {} ({} bytes)",
+            m.file_name.as_ref().unwrap_or(&"<unknown>".to_string()),
+            m.hash,
+            m.file_size
+        );
     }
 
     // Save metadata to file for later download
@@ -161,19 +166,13 @@ async fn upload_files(files: Vec<PathBuf>, endpoint: Option<String>) -> Result<(
     std::fs::write("upload_metadata.json", metadata_json)?;
     println!("\n💾 Metadata saved to upload_metadata.json");
 
-    // End the session
-    session.end().await?;
-    println!("🏁 Session ended");
+    println!("🏁 Upload session complete");
 
     Ok(())
 }
 
 /// Download files using metadata from a previous upload
-async fn download_files(
-    metadata_file: PathBuf,
-    output_dir: PathBuf,
-    endpoint: Option<String>,
-) -> Result<()> {
+async fn download_files(metadata_file: PathBuf, output_dir: PathBuf, endpoint: Option<String>) -> Result<()> {
     println!("📥 Starting download session...");
 
     // Load metadata
@@ -181,13 +180,7 @@ async fn download_files(
     let metadata: Vec<serde_json::Value> = serde_json::from_str(&metadata_json)?;
 
     // Create XetSession
-    let config = XetConfig::new();
-    let session = XetSession::new_with_auth(
-        config,
-        endpoint,
-        None,
-        None,
-    )?;
+    let session = XetSession::new(endpoint, None, None, "session-demo/0.1.0".to_string())?;
 
     println!("✅ Session created");
 
@@ -206,9 +199,8 @@ async fn download_files(
         let file_name = item["file_name"].as_str().unwrap();
 
         let dest_path = output_dir.join(file_name);
-        let dest_str = dest_path.to_string_lossy().to_string();
 
-        let task_id = download_group.download_file(hash, file_size, dest_str).await?;
+        let task_id = download_group.download_file(hash, file_size, dest_path)?;
         println!("  ⏬ Started download: {} (task: {})", file_name, task_id);
     }
 
@@ -230,8 +222,10 @@ async fn download_files(
             0
         };
 
-        print!("\r  Progress: {}/{} files | {}/{} bytes ({}%)",
-               completed, total_files, completed_bytes, total_bytes, percentage);
+        print!(
+            "\r  Progress: {}/{} files | {}/{} bytes ({}%)",
+            completed, total_files, completed_bytes, total_bytes, percentage
+        );
         std::io::stdout().flush()?;
 
         if completed + failed == total_files {
@@ -244,16 +238,14 @@ async fn download_files(
 
     // Finish - wait for all downloads
     println!("\n💾 Finishing downloads...");
-    let results = download_group.finish().await?;
+    let results = download_group.finish()?;
 
     println!("\n✅ Download complete!");
     for r in &results {
-        println!("  📄 {} -> {}", r.file_hash, r.dest_path);
+        println!("  📄 {} -> {}", r.file_hash, r.dest_path.display());
     }
 
-    // End session
-    session.end().await?;
-    println!("🏁 Session ended");
+    println!("🏁 Download session complete");
 
     Ok(())
 }
@@ -264,32 +256,30 @@ async fn round_trip(files: Vec<PathBuf>, output_dir: PathBuf) -> Result<()> {
 
     // === UPLOAD PHASE ===
     println!("=== UPLOAD PHASE ===");
-    let config = XetConfig::new();
-    let session = XetSession::new(config)?;
+    let session = XetSession::new(None, None, None, "session-demo/0.1.0".to_string())?;
 
     let upload_commit = session.new_upload_commit()?;
     println!("📦 Created upload commit");
 
     // Upload files
     for file in &files {
-        let file_str = file.to_string_lossy().to_string();
-        upload_commit.upload_file(file_str).await?;
+        upload_commit.upload_from_path(file.clone())?;
     }
     println!("⏫ Started {} uploads", files.len());
 
     // Wait for uploads
     loop {
         let progress = upload_commit.get_progress();
-        let all_done = progress.iter().all(|p| {
-            p.status == TaskStatus::Completed || p.status == TaskStatus::Failed
-        });
+        let all_done = progress
+            .iter()
+            .all(|p| p.status == TaskStatus::Completed || p.status == TaskStatus::Failed);
         if all_done {
             break;
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
 
-    let metadata = upload_commit.commit().await?;
+    let metadata = upload_commit.commit()?;
     println!("✅ Uploaded {} files\n", metadata.len());
 
     // === DOWNLOAD PHASE ===
@@ -304,29 +294,26 @@ async fn round_trip(files: Vec<PathBuf>, output_dir: PathBuf) -> Result<()> {
     for m in &metadata {
         let file_name = m.file_name.as_ref().unwrap();
         let dest_path = output_dir.join(file_name);
-        let dest_str = dest_path.to_string_lossy().to_string();
 
-        download_group.download_file(m.hash.clone(), m.file_size, dest_str).await?;
+        download_group.download_file(m.hash.clone(), m.file_size, dest_path)?;
     }
     println!("⏬ Started {} downloads", metadata.len());
 
     // Wait for downloads
     loop {
         let progress = download_group.get_progress();
-        let all_done = progress.iter().all(|p| {
-            p.status == TaskStatus::Completed || p.status == TaskStatus::Failed
-        });
+        let all_done = progress
+            .iter()
+            .all(|p| p.status == TaskStatus::Completed || p.status == TaskStatus::Failed);
         if all_done {
             break;
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
 
-    let results = download_group.finish().await?;
+    let results = download_group.finish()?;
     println!("✅ Downloaded {} files to {}\n", results.len(), output_dir.display());
 
-    // End session
-    session.end().await?;
     println!("🏁 Round-trip complete!");
 
     Ok(())

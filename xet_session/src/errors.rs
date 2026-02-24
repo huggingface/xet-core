@@ -2,44 +2,60 @@
 
 use thiserror::Error;
 
-/// Errors that can occur during session operations
+/// Errors that can occur during session operations.
+///
+/// Most API methods return `Result<_, SessionError>`.  The variants cover the
+/// full lifecycle of a session, from runtime initialisation failures through
+/// network I/O errors to logical misuse (e.g. committing twice).
 #[derive(Debug, Error)]
 pub enum SessionError {
-    #[error("Session is already executing tasks")]
-    AlreadyExecuting,
+    /// The session (or its parent commit/group) has been aborted.
+    ///
+    /// Returned when [`XetSession::abort`](crate::XetSession::abort) was called
+    /// before this operation started.
+    #[error("Session is already aborted")]
+    Aborted,
 
-    #[error("Session is not accepting new tasks")]
-    NotAcceptingTasks,
-
+    /// [`UploadCommit::commit`](crate::UploadCommit::commit) was called more than once.
     #[error("Upload commit already committed")]
     AlreadyCommitted,
 
+    /// [`DownloadGroup::finish`](crate::DownloadGroup::finish) was called more than once.
     #[error("Download group already finished")]
     AlreadyFinished,
 
-    #[error("Task not found: {0}")]
-    TaskNotFound(ulid::Ulid),
-
+    /// A background task panicked or was cancelled by the runtime.
     #[error("Task join error: {0}")]
     TaskJoinError(#[from] tokio::task::JoinError),
 
+    /// The tokio runtime could not be initialised.
     #[error("Runtime error: {0}")]
     Runtime(#[from] xet_runtime::errors::MultithreadedRuntimeError),
 
+    /// An error occurred in the underlying data-processing layer (chunking,
+    /// deduplication, CAS communication, etc.).
     #[error("Data processing error: {0}")]
     DataProcessing(#[from] data::errors::DataProcessingError),
 
-    #[error("Session already ended")]
-    SessionEnded,
-
+    /// A `std::sync::Mutex` or `RwLock` was poisoned by a panicking thread.
     #[error("Lock poisoned: {0}")]
     LockPoisoned(String),
 
+    /// An I/O error occurred (e.g. reading a source file or writing a
+    /// destination file).
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
 
+    /// A catch-all for errors that don't fit a more specific variant.
     #[error("Other error: {0}")]
     Other(String),
+}
+
+impl SessionError {
+    /// Create an [`Other`](SessionError::Other) variant from any [`Display`](std::fmt::Display) value.
+    pub fn other(msg: impl std::fmt::Display) -> Self {
+        Self::Other(msg.to_string())
+    }
 }
 
 impl From<String> for SessionError {

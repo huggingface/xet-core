@@ -36,6 +36,7 @@ pub fn default_config(
     token_info: Option<(String, u64)>,
     token_refresher: Option<Arc<dyn TokenRefresher>>,
     user_agent: String,
+    session_id: Option<Ulid>,
 ) -> errors::Result<TranslatorConfig> {
     // Intercept local:// to run a simulated CAS server in a specified directory.
     // This is useful for testing and development.
@@ -90,7 +91,7 @@ pub fn default_config(
         repo_info: Some(RepoInfo {
             repo_paths: vec!["".into()],
         }),
-        session_id: Some(Ulid::new().to_string()),
+        session_id: Some(session_id.unwrap_or_else(Ulid::new).to_string()),
         progress_config: ProgressConfig { aggregate: true },
     };
 
@@ -113,6 +114,7 @@ pub async fn upload_bytes_async(
         token_info,
         token_refresher,
         user_agent,
+        None,
     )?;
 
     Span::current().record("session_id", &config.session_id);
@@ -162,6 +164,7 @@ pub async fn upload_async(
         token_info,
         token_refresher,
         user_agent,
+        None,
     )?;
 
     let span = Span::current();
@@ -222,6 +225,7 @@ pub async fn download_async(
         token_info,
         token_refresher,
         user_agent,
+        None,
     )?;
     Span::current().record("session_id", &config.session_id);
 
@@ -422,7 +426,7 @@ mod tests {
         let _hf_home_guard = EnvVarGuard::set("HF_HOME", temp_dir.path().to_str().unwrap());
 
         let endpoint = "http://localhost:8080".to_string();
-        let result = default_config(endpoint, None, None, None, String::new());
+        let result = default_config(endpoint, None, None, None, String::new(), None);
 
         assert!(result.is_ok());
         let config = result.unwrap();
@@ -439,7 +443,7 @@ mod tests {
         let hf_home_guard = EnvVarGuard::set("HF_HOME", temp_dir_hf_home.path().to_str().unwrap());
 
         let endpoint = "http://localhost:8080".to_string();
-        let result = default_config(endpoint, None, None, None, String::new());
+        let result = default_config(endpoint, None, None, None, String::new(), None);
 
         assert!(result.is_ok());
         let config = result.unwrap();
@@ -452,7 +456,7 @@ mod tests {
         let _hf_home_guard = EnvVarGuard::set("HF_HOME", temp_dir.path().to_str().unwrap());
 
         let endpoint = "http://localhost:8080".to_string();
-        let result = default_config(endpoint, None, None, None, String::new());
+        let result = default_config(endpoint, None, None, None, String::new(), None);
 
         assert!(result.is_ok());
         let config = result.unwrap();
@@ -466,7 +470,7 @@ mod tests {
         let _hf_xet_cache_guard = EnvVarGuard::set("HF_XET_CACHE", temp_dir.path().to_str().unwrap());
 
         let endpoint = "http://localhost:8080".to_string();
-        let result = default_config(endpoint, None, None, None, String::new());
+        let result = default_config(endpoint, None, None, None, String::new(), None);
 
         assert!(result.is_ok());
         let config = result.unwrap();
@@ -477,7 +481,7 @@ mod tests {
     #[serial(default_config_env)]
     fn test_default_config_without_env_vars() {
         let endpoint = "http://localhost:8080".to_string();
-        let result = default_config(endpoint, None, None, None, String::new());
+        let result = default_config(endpoint, None, None, None, String::new(), None);
 
         let expected = home_dir().unwrap().join(".cache").join("huggingface").join("xet");
 

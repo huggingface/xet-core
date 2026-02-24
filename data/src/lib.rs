@@ -14,6 +14,7 @@ mod xet_file;
 
 // Reexport this one for now
 pub use deduplication::RawXorbData;
+pub use file_cleaner::SingleFileCleaner;
 pub use file_downloader::FileDownloader;
 pub use file_upload_session::FileUploadSession;
 pub use xet_file::XetFileInfo;

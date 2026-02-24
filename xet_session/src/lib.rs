@@ -10,27 +10,25 @@
 //! ## Example
 //!
 //! ```rust,no_run
-//! use xet_session::{XetSession, XetConfig};
+//! use std::path::PathBuf;
+//! use xet_session::XetSession;
 //!
-//! #[tokio::main]
-//! async fn main() -> Result<(), Box<dyn std::error::Error>> {
-//!     let session = XetSession::new(XetConfig::new())?;
+//! fn main() -> Result<(), Box<dyn std::error::Error>> {
+//!     let session = XetSession::new(None, None, None, "my-app/1.0".to_string())?;
 //!
 //!     // Upload commit
 //!     let upload_commit = session.new_upload_commit()?;
-//!     upload_commit.upload_file("file.bin".to_string()).await?;
-//!     let metadata = upload_commit.commit().await?;
+//!     upload_commit.upload_from_path(PathBuf::from("file.bin"))?;
+//!     let metadata = upload_commit.commit()?;
 //!
 //!     // Download group
 //!     let download_group = session.new_download_group()?;
 //!     download_group.download_file(
 //!         metadata[0].hash.clone(),
 //!         metadata[0].file_size,
-//!         "dest.bin".to_string()
-//!     ).await?;
-//!     let results = download_group.finish().await?;
-//!
-//!     session.end().await?;
+//!         PathBuf::from("dest.bin"),
+//!     )?;
+//!     let _results = download_group.finish()?;
 //!
 //!     Ok(())
 //! }
@@ -41,6 +39,10 @@ mod upload_commit;
 mod download_group;
 mod progress;
 mod errors;
+
+// C FFI bindings (enabled with "ffi" feature)
+#[cfg(feature = "ffi")]
+pub mod ffi;
 
 pub use session::XetSession;
 pub use upload_commit::{UploadCommit, UploadProgress, FileMetadata};

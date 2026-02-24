@@ -11,6 +11,11 @@ categories = ["network-programming", "api-bindings"]
 [lib]
 name = "xet_session"
 path = "src/lib.rs"
+crate-type = ["lib", "cdylib", "staticlib"]
+
+[features]
+default = []
+ffi = []
 
 [dependencies]
 xet_runtime = { path = "../xet_runtime" }
