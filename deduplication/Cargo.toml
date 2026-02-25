@@ -16,5 +16,15 @@ gearhash = { workspace = true }
 more-asserts = { workspace = true }
 lazy_static = { workspace = true }
 
+# Parallel chunking dependencies (feature-gated)
+crossbeam = { version = "0.8.4", optional = true }
+memmap2 = { version = "0.9.8", optional = true }
+num_cpus = { version = "1.16", optional = true }
+
 [dev-dependencies]
 rand = { workspace = true }
+tempfile = { workspace = true }
+
+[features]
+default = []
+parallel-chunking = ["dep:crossbeam", "dep:memmap2", "dep:num_cpus"]
