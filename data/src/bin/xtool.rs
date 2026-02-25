@@ -220,7 +220,6 @@ async fn query_reconstruction(
         Some((jwt_info.access_token, jwt_info.exp)),
         Some(token_refresher),
         Some(Arc::new(headers)),
-        None,
     )?;
     let cas_storage_config = &config.data_config;
     let remote_client = RemoteClient::new(

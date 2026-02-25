@@ -27,7 +27,8 @@ file_reconstruction = { path = "../file_reconstruction" }
 
 # Workspace dependencies
 async-trait = { workspace = true }
-tokio = { workspace = true, features = ["full"] }
+http = { workspace = true }
+tokio = { workspace = true }
 ulid = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }

@@ -1,7 +1,6 @@
 mod logging;
 mod progress_update;
 mod runtime;
-mod session;
 mod token_refresh;
 
 use std::collections::HashMap;
@@ -414,16 +413,6 @@ pub fn hf_xet(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyXetUploadInfo>()?;
     m.add_class::<progress_update::PyItemProgressUpdate>()?;
     m.add_class::<progress_update::PyTotalProgressUpdate>()?;
-
-    // Session-based API classes
-    m.add_class::<session::PyXetSession>()?;
-    m.add_class::<session::PyUploadCommit>()?;
-    m.add_class::<session::PyDownloadGroup>()?;
-    m.add_class::<session::PyUploadProgress>()?;
-    m.add_class::<session::PyDownloadProgress>()?;
-    m.add_class::<session::PyFileMetadata>()?;
-    m.add_class::<session::PyDownloadResult>()?;
-    m.add_class::<session::PyXetConfig>()?;
 
     // TODO: remove this during the next major version update.
     // This supports backward compatibility for PyPointerFile with old versions

@@ -130,16 +130,10 @@ impl TransferAgent for XetAgent {
         let mut headers = reqwest::header::HeaderMap::new();
         headers.insert(header::USER_AGENT, header::HeaderValue::from_static(USER_AGENT));
 
-        let config = default_config(
-            cas_url,
-            None,
-            Some((token, token_expiry)),
-            Some(token_refresher),
-            Some(Arc::new(headers)),
-            None,
-        )?
-        .disable_progress_aggregation()
-        .with_session_id(session_id); // upload one file at a time so no need for the heavy progress aggregator
+        let config =
+            default_config(cas_url, None, Some((token, token_expiry)), Some(token_refresher), Some(Arc::new(headers)))?
+                .disable_progress_aggregation()
+                .with_session_id(session_id); // upload one file at a time so no need for the heavy progress aggregator
         let session = FileUploadSession::new(config.into(), Some(Arc::new(xet_updater))).await?;
 
         let Some(file_path) = &req.path else {

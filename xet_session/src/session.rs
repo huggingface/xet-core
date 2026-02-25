@@ -1,5 +1,6 @@
 //! XetSession - manages runtime and configuration
 
+use http::HeaderMap;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use ulid::Ulid;
@@ -31,7 +32,7 @@ pub struct XetSessionInner {
     pub(crate) endpoint: Option<String>,
     pub(crate) token_info: Option<(String, u64)>,
     pub(crate) token_refresher: Option<Arc<dyn TokenRefresher>>,
-    pub(crate) user_agent: String,
+    pub(crate) custom_headers: Option<Arc<HeaderMap>>,
 
     // Track active upload commits and download groups.
     pub(crate) active_upload_commits: Mutex<HashMap<Ulid, UploadCommit>>,
@@ -39,7 +40,7 @@ pub struct XetSessionInner {
 
     // Session state
     state: Mutex<SessionState>,
-    pub(crate) session_id: Ulid,
+    pub(crate) id: Ulid,
 }
 
 /// Handle for managing file uploads and downloads.
@@ -89,9 +90,9 @@ impl XetSession {
         endpoint: Option<String>,
         token_info: Option<(String, u64)>,
         token_refresher: Option<Arc<dyn TokenRefresher>>,
-        user_agent: String,
+        custom_headers: Option<Arc<HeaderMap>>,
     ) -> Result<Self, SessionError> {
-        Self::new_with_config(XetConfig::new(), endpoint, token_info, token_refresher, user_agent)
+        Self::new_with_config(XetConfig::new(), endpoint, token_info, token_refresher, custom_headers)
     }
 
     /// Create a new session with a custom [`XetConfig`].
@@ -103,7 +104,7 @@ impl XetSession {
         endpoint: Option<String>,
         token_info: Option<(String, u64)>,
         token_refresher: Option<Arc<dyn TokenRefresher>>,
-        user_agent: String,
+        custom_headers: Option<Arc<HeaderMap>>,
     ) -> Result<Self, SessionError> {
         let runtime = XetRuntime::new_with_config(config.clone())?;
 
@@ -116,11 +117,11 @@ impl XetSession {
                 endpoint,
                 token_info,
                 token_refresher,
-                user_agent,
+                custom_headers,
                 active_upload_commits: Mutex::new(HashMap::new()),
                 active_download_groups: Mutex::new(HashMap::new()),
                 state: Mutex::new(SessionState::ALIVE),
-                session_id,
+                id: session_id,
             }),
         })
     }
@@ -207,7 +208,7 @@ mod tests {
     use super::*;
 
     fn make_session() -> XetSession {
-        XetSession::new(None, None, None, "test/0.0".to_string()).expect("Failed to create session")
+        XetSession::new(None, None, None, None).expect("Failed to create session")
     }
 
     #[test]
@@ -220,7 +221,7 @@ mod tests {
         let s1 = make_session();
         let s2 = s1.clone();
         // Both refer to the same inner, so their session IDs must match.
-        assert_eq!(s1.session_id, s2.session_id);
+        assert_eq!(s1.id, s2.id);
     }
 
     #[test]

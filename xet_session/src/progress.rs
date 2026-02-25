@@ -7,51 +7,6 @@ use std::sync::{Arc, Mutex};
 use async_trait::async_trait;
 use progress_tracking::{ProgressUpdate, TrackingProgressUpdater};
 
-/// Lock-free progress tracker using atomic integers.
-///
-/// Designed to be shared between upload/download tasks and their callers.
-/// All reads are non-blocking so Python can poll progress without acquiring the GIL.
-pub struct AtomicProgress {
-    bytes_completed: AtomicU64,
-    bytes_total: AtomicU64,
-}
-
-impl AtomicProgress {
-    /// Create a new progress tracker with all counters at zero.
-    pub fn new() -> Self {
-        Self {
-            bytes_completed: AtomicU64::new(0),
-            bytes_total: AtomicU64::new(0),
-        }
-    }
-
-    /// Return the number of bytes processed so far.
-    pub fn get_completed(&self) -> u64 {
-        self.bytes_completed.load(Ordering::Relaxed)
-    }
-
-    /// Return the total number of bytes to process.
-    pub fn get_total(&self) -> u64 {
-        self.bytes_total.load(Ordering::Relaxed)
-    }
-
-    /// Increment the completed-bytes counter.
-    pub fn add_completed(&self, bytes: u64) {
-        self.bytes_completed.fetch_add(bytes, Ordering::Relaxed);
-    }
-
-    /// Set the total-bytes counter.
-    pub fn set_total(&self, total: u64) {
-        self.bytes_total.store(total, Ordering::Relaxed);
-    }
-}
-
-impl Default for AtomicProgress {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 /// Lifecycle state of a single upload or download task.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TaskStatus {
@@ -65,31 +20,6 @@ pub enum TaskStatus {
     Failed,
     /// Task was cancelled before it could complete.
     Cancelled,
-}
-
-/// Bridges the `data` crate's progress-tracking callback into [`AtomicProgress`].
-///
-/// Implements [`TrackingProgressUpdater`] so it can be passed to `FileDownloader`
-/// — without ever touching the Python GIL.
-pub struct AtomicProgressUpdater {
-    progress: Arc<AtomicProgress>,
-}
-
-impl AtomicProgressUpdater {
-    /// Create a new updater that writes into `progress`.
-    pub fn new(progress: Arc<AtomicProgress>) -> Self {
-        Self { progress }
-    }
-}
-
-#[async_trait]
-impl TrackingProgressUpdater for AtomicProgressUpdater {
-    async fn register_updates(&self, updates: ProgressUpdate) {
-        self.progress.set_total(updates.total_bytes);
-        self.progress
-            .bytes_completed
-            .store(updates.total_bytes_completed, Ordering::Relaxed);
-    }
 }
 
 // ── Aggregate / per-file progress ───────────────────────────────────────────
@@ -240,38 +170,6 @@ impl TrackingProgressUpdater for CommitProgress {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_atomic_progress_initial_values() {
-        let p = AtomicProgress::new();
-        assert_eq!(p.get_completed(), 0);
-        assert_eq!(p.get_total(), 0);
-    }
-
-    #[test]
-    fn test_atomic_progress_add_completed() {
-        let p = AtomicProgress::new();
-        p.add_completed(100);
-        assert_eq!(p.get_completed(), 100);
-        p.add_completed(50);
-        assert_eq!(p.get_completed(), 150);
-    }
-
-    #[test]
-    fn test_atomic_progress_set_total() {
-        let p = AtomicProgress::new();
-        p.set_total(1024);
-        assert_eq!(p.get_total(), 1024);
-        p.set_total(2048);
-        assert_eq!(p.get_total(), 2048);
-    }
-
-    #[test]
-    fn test_atomic_progress_default() {
-        let p = AtomicProgress::default();
-        assert_eq!(p.get_completed(), 0);
-        assert_eq!(p.get_total(), 0);
-    }
 
     #[test]
     fn test_task_status_equality() {

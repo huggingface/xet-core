@@ -1,20 +1,18 @@
 //! DownloadGroup - groups related downloads
 
-use data::{FileDownloader, XetFileInfo, configurations::TranslatorConfig};
-use file_reconstruction::DataOutput;
-use progress_tracking::item_tracking::ItemProgressUpdater;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, RwLock};
+
+use data::{FileDownloadSession, XetFileInfo};
+use tokio::sync::Mutex as TokioMutex;
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
 use ulid::Ulid;
 
-// Use tokio Mutex only for downloader (held across await in get_or_create_downloader)
-use tokio::sync::Mutex as TokioMutex;
-
+use crate::common::{GroupState, create_translator_config};
 use crate::errors::SessionError;
-use crate::progress::{AtomicProgress, AtomicProgressUpdater, TaskStatus};
+use crate::progress::{CommitProgress, FileProgressSnapshot, TaskStatus};
 use crate::session::XetSession;
 
 /// Commands sent to the background worker thread
@@ -25,10 +23,10 @@ pub(crate) enum GroupCommand {
         dest_path: PathBuf,
         response_tx: oneshot::Sender<Result<Ulid, SessionError>>,
     },
-    DownloadBytes {
+    DownloadStream {
         file_hash: String,
-        file_size: u64,
-        response_tx: oneshot::Sender<Result<(Ulid, Vec<u8>), SessionError>>,
+        file_size: Option<u64>,
+        response_tx: oneshot::Sender<Result<(), SessionError>>,
     },
     Finish {
         response_tx: oneshot::Sender<Result<Vec<DownloadResult>, SessionError>>,
@@ -42,16 +40,7 @@ pub(crate) struct DownloadTaskHandle {
     file_hash: String,
     file_size: u64,
     join_handle: JoinHandle<Result<PathBuf, SessionError>>,
-    progress: Arc<AtomicProgress>,
     status: Arc<Mutex<TaskStatus>>,
-}
-
-/// State of the download group
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum GroupState {
-    Alive,
-    Finished,
-    Aborted,
 }
 
 /// All shared state owned by a single DownloadGroup instance.
@@ -64,9 +53,12 @@ pub struct DownloadGroupInner {
     // Active download tasks for this group
     active_tasks: RwLock<HashMap<Ulid, DownloadTaskHandle>>,
 
-    // Shared downloader (FileDownloader from data crate)
-    // Uses tokio::Mutex because it's held across await in get_or_create_downloader
-    downloader: TokioMutex<Option<Arc<FileDownloader>>>,
+    // Aggregate + per-file progress, fed into FileDownloadSession as a TrackingProgressUpdater
+    progress: Arc<CommitProgress>,
+
+    // Shared download session (FileDownloadSession from data crate)
+    // Uses tokio::Mutex because it's held across await in get_or_create_download_session
+    download_session: TokioMutex<Option<Arc<FileDownloadSession>>>,
 
     // State
     state: Mutex<GroupState>,
@@ -89,65 +81,38 @@ impl DownloadGroupInner {
 
     // ===== Async handlers (called by the background worker thread) =====
 
-    /// Get or create the shared `FileDownloader`.
-    async fn get_or_create_downloader(&self) -> Result<Arc<FileDownloader>, SessionError> {
-        let mut downloader_lock = self.downloader.lock().await;
-        if downloader_lock.is_none() {
+    /// Get or create the shared `FileDownloadSession`.
+    async fn get_or_create_download_session(&self) -> Result<Arc<FileDownloadSession>, SessionError> {
+        let mut session_lock = self.download_session.lock().await;
+        if session_lock.is_none() {
             let config = create_translator_config(&self.session)?;
-            let new_downloader = FileDownloader::new(Arc::new(config)).await?;
-            *downloader_lock = Some(Arc::new(new_downloader));
+            let progress_updater = self.progress.clone() as Arc<dyn progress_tracking::TrackingProgressUpdater>;
+            let new_session = FileDownloadSession::new(Arc::new(config), Some(progress_updater)).await?;
+            *session_lock = Some(new_session);
         }
-        Ok(downloader_lock
+        Ok(session_lock
             .as_ref()
-            .ok_or_else(|| SessionError::other("Downloader not initialized"))?
+            .ok_or_else(|| SessionError::other("Download session not initialized"))?
             .clone())
     }
 
     /// Spawn a runtime task that performs the actual file download.
     fn spawn_download_task(
         self: &Arc<Self>,
-        downloader: Arc<FileDownloader>,
+        download_session: Arc<FileDownloadSession>,
         file_hash: String,
         file_size: u64,
         dest_path: PathBuf,
-        progress: Arc<AtomicProgress>,
         status: Arc<Mutex<TaskStatus>>,
     ) -> JoinHandle<Result<PathBuf, SessionError>> {
         self.session.runtime.spawn(async move {
             *status.lock()? = TaskStatus::Running;
 
-            // Create parent directories if needed
-            if let Some(parent_dir) = dest_path.parent() {
-                if let Err(e) = std::fs::create_dir_all(parent_dir) {
-                    *status.lock()? = TaskStatus::Failed;
-                    return Err(e.into());
-                }
-            }
-
-            let atomic_updater = Arc::new(AtomicProgressUpdater::new(progress));
-            let progress_updater = Some(ItemProgressUpdater::new(atomic_updater));
-
             let file_info = XetFileInfo::new(file_hash, file_size);
+            let tracking_id = dest_path.to_string_lossy().to_string();
 
-            let merkle_hash = match file_info.merkle_hash() {
-                Ok(hash) => hash,
-                Err(e) => {
-                    *status.lock()? = TaskStatus::Failed;
-                    return Err(SessionError::other(format!("Invalid hash: {:?}", e)));
-                },
-            };
-
-            let output = DataOutput::write_in_file(&dest_path);
-            let dest_path_str: Arc<str> = dest_path.to_string_lossy().to_string().into();
-
-            let result: Result<_, SessionError> = downloader
-                .smudge_file_from_hash(
-                    &merkle_hash,
-                    dest_path_str,
-                    output,
-                    None, // No byte range - download full file
-                    progress_updater,
-                )
+            let result: Result<_, SessionError> = download_session
+                .download_file(&file_info, &dest_path, Some(&tracking_id))
                 .await
                 .map_err(SessionError::from);
 
@@ -172,17 +137,15 @@ impl DownloadGroupInner {
         self.check_accepting_tasks()?;
 
         let task_id = Ulid::new();
-        let progress = Arc::new(AtomicProgress::new());
         let status = Arc::new(Mutex::new(TaskStatus::Queued));
 
-        let downloader_arc = self.get_or_create_downloader().await?;
+        let download_session_arc = self.get_or_create_download_session().await?;
 
         let join_handle = self.spawn_download_task(
-            downloader_arc,
+            download_session_arc,
             file_hash.clone(),
             file_size,
             dest_path.clone(),
-            progress.clone(),
             status.clone(),
         );
 
@@ -192,23 +155,12 @@ impl DownloadGroupInner {
             file_hash,
             file_size,
             join_handle,
-            progress,
             status,
         };
 
         self.active_tasks.write()?.insert(task_id, handle);
 
         Ok(task_id)
-    }
-
-    /// Handle a `DownloadBytes` command from the public API.
-    pub(crate) async fn handle_download_bytes(
-        &self,
-        _file_hash: String,
-        _file_size: u64,
-    ) -> Result<(Ulid, Vec<u8>), SessionError> {
-        // TODO: Implement download_bytes
-        Err(SessionError::other("download_bytes not yet implemented"))
     }
 
     /// Handle a `Finish` command from the public API.
@@ -289,7 +241,8 @@ impl DownloadGroup {
             group_id,
             session,
             active_tasks: RwLock::new(HashMap::new()),
-            downloader: TokioMutex::new(None),
+            progress: Arc::new(CommitProgress::new()),
+            download_session: TokioMutex::new(None),
             state: Mutex::new(GroupState::Alive),
             command_tx,
         });
@@ -308,14 +261,12 @@ impl DownloadGroup {
                         let result = inner_clone.handle_download_file(file_hash, file_size, dest_path).await;
                         let _ = response_tx.send(result);
                     },
-                    GroupCommand::DownloadBytes {
+
+                    GroupCommand::DownloadStream {
                         file_hash,
                         file_size,
                         response_tx,
-                    } => {
-                        let result = inner_clone.handle_download_bytes(file_hash, file_size).await;
-                        let _ = response_tx.send(result);
-                    },
+                    } => todo!(),
                     GroupCommand::Finish { response_tx } => {
                         let result = inner_clone.handle_finish().await;
                         let _ = response_tx.send(result);
@@ -341,11 +292,6 @@ impl DownloadGroup {
     }
 
     // ===== Public synchronous methods =====
-
-    /// Return a reference to the parent session.
-    pub fn session(&self) -> &XetSession {
-        &self.session
-    }
 
     /// Queue a file for download to `dest_path`, starting the transfer immediately.
     ///
@@ -383,28 +329,9 @@ impl DownloadGroup {
             .map_err(|_| SessionError::other("Failed to receive download response"))?
     }
 
-    /// Download a file into memory, returning the bytes alongside the task ID.
-    ///
-    /// See [`download_file`](Self::download_file) for parameter details.
-    pub fn download_bytes(&self, file_hash: String, file_size: u64) -> Result<(Ulid, Vec<u8>), SessionError> {
-        self.session.check_alive()?;
-        let (response_tx, response_rx) = oneshot::channel();
-
-        self.command_tx
-            .send(GroupCommand::DownloadBytes {
-                file_hash,
-                file_size,
-                response_tx,
-            })
-            .map_err(|_| SessionError::other("Failed to send download_bytes command"))?;
-
-        response_rx
-            .blocking_recv()
-            .map_err(|_| SessionError::other("Failed to receive download_bytes response"))?
-    }
-
     /// Returns `true` if [`finish`](Self::finish) has been called and completed.
-    pub fn is_finished(&self) -> bool {
+    #[cfg(test)]
+    fn is_finished(&self) -> bool {
         match self.state.lock() {
             Ok(state) => *state == GroupState::Finished,
             Err(_) => false,
@@ -413,8 +340,9 @@ impl DownloadGroup {
 
     /// Return a snapshot of progress for every queued download.
     ///
-    /// This method is fast and lock-free (atomic reads only), making it safe
-    /// to call frequently from Python without GIL contention.
+    /// Per-file byte counts come from [`CommitProgress`], which is updated by
+    /// the `FileDownloadSession` callback keyed on the destination path.
+    /// The method is safe to call frequently from Python without GIL contention.
     pub fn get_progress(&self) -> Vec<DownloadProgress> {
         let tasks = match self.active_tasks.read() {
             Ok(tasks) => tasks,
@@ -424,19 +352,35 @@ impl DownloadGroup {
             },
         };
 
+        // Build a dest_path→snapshot lookup from CommitProgress.
+        let file_snapshots: HashMap<String, FileProgressSnapshot> = self
+            .progress
+            .files()
+            .into_iter()
+            .map(|s| (s.item_name.to_string(), s))
+            .collect();
+
         tasks
             .values()
             .filter_map(|handle| {
                 match handle.status.lock() {
-                    Ok(status) => Some(DownloadProgress {
-                        task_id: handle.task_id,
-                        dest_path: handle.dest_path.clone(),
-                        file_hash: handle.file_hash.clone(),
-                        bytes_completed: handle.progress.get_completed(),
-                        bytes_total: handle.progress.get_total(),
-                        status: *status,
-                        speed_bps: 0.0, // TODO: Calculate speed
-                    }),
+                    Ok(status) => {
+                        let dest_path_str = handle.dest_path.to_string_lossy().to_string();
+                        let (bytes_total, bytes_completed) = file_snapshots
+                            .get(&dest_path_str)
+                            .map(|s| (s.total_bytes, s.bytes_completed))
+                            .unwrap_or((0, 0));
+
+                        Some(DownloadProgress {
+                            task_id: handle.task_id,
+                            dest_path: handle.dest_path.clone(),
+                            file_hash: handle.file_hash.clone(),
+                            bytes_completed,
+                            bytes_total,
+                            status: *status,
+                            speed_bps: 0.0, // TODO: Calculate speed
+                        })
+                    },
                     Err(e) => {
                         tracing::error!("Failed to acquire lock on task status for {}: {}", handle.task_id, e);
                         None
@@ -504,35 +448,27 @@ mod tests {
     use super::*;
     use crate::session::XetSession;
 
-    fn make_session() -> Result<XetSession, SessionError> {
-        XetSession::new(None, None, None, "test/0.0".to_string())
-    }
-
-    fn make_group(session: &XetSession) -> Result<DownloadGroup, SessionError> {
-        session.new_download_group()
-    }
-
     #[test]
     fn test_group_not_finished_initially() -> Result<(), Box<dyn std::error::Error>> {
-        let session = make_session()?;
-        let group = make_group(&session)?;
+        let session = XetSession::new(None, None, None, None)?;
+        let group = session.new_download_group()?;
         assert!(!group.is_finished());
         Ok(())
     }
 
     #[test]
     fn test_group_has_unique_id() -> Result<(), Box<dyn std::error::Error>> {
-        let session = make_session()?;
-        let g1 = make_group(&session)?;
-        let g2 = make_group(&session)?;
+        let session = XetSession::new(None, None, None, None)?;
+        let g1 = session.new_download_group()?;
+        let g2 = session.new_download_group()?;
         assert_ne!(g1.id(), g2.id());
         Ok(())
     }
 
     #[test]
     fn test_group_clone_shares_id() -> Result<(), Box<dyn std::error::Error>> {
-        let session = make_session()?;
-        let group = make_group(&session)?;
+        let session = XetSession::new(None, None, None, None)?;
+        let group = session.new_download_group()?;
         let group2 = group.clone();
         assert_eq!(group.id(), group2.id());
         Ok(())
@@ -540,8 +476,8 @@ mod tests {
 
     #[test]
     fn test_download_file_on_aborted_session_returns_error() -> Result<(), Box<dyn std::error::Error>> {
-        let session = make_session()?;
-        let group = make_group(&session)?;
+        let session = XetSession::new(None, None, None, None)?;
+        let group = session.new_download_group()?;
         session.abort().unwrap();
         let err = group
             .download_file("abc123".to_string(), 1024, PathBuf::from("dest.bin"))
@@ -551,19 +487,9 @@ mod tests {
     }
 
     #[test]
-    fn test_download_bytes_on_aborted_session_returns_error() -> Result<(), Box<dyn std::error::Error>> {
-        let session = make_session()?;
-        let group = make_group(&session)?;
-        session.abort().unwrap();
-        let err = group.download_bytes("abc123".to_string(), 1024).unwrap_err();
-        assert!(matches!(err, SessionError::Aborted));
-        Ok(())
-    }
-
-    #[test]
     fn test_get_progress_empty_initially() -> Result<(), Box<dyn std::error::Error>> {
-        let session = make_session()?;
-        let group = make_group(&session)?;
+        let session = XetSession::new(None, None, None, None)?;
+        let group = session.new_download_group()?;
         let progress = group.get_progress();
         assert!(progress.is_empty());
         Ok(())
@@ -571,8 +497,8 @@ mod tests {
 
     #[test]
     fn test_finish_empty_succeeds() -> Result<(), Box<dyn std::error::Error>> {
-        let session = make_session()?;
-        let group = make_group(&session)?;
+        let session = XetSession::new(None, None, None, None)?;
+        let group = session.new_download_group()?;
         let results = group.finish()?;
         assert!(results.is_empty());
         Ok(())
@@ -580,8 +506,8 @@ mod tests {
 
     #[test]
     fn test_finish_marks_as_finished() -> Result<(), Box<dyn std::error::Error>> {
-        let session = make_session()?;
-        let group = make_group(&session)?;
+        let session = XetSession::new(None, None, None, None)?;
+        let group = session.new_download_group()?;
         let group_clone = group.clone();
         group.finish().unwrap();
         assert!(group_clone.is_finished());
@@ -590,8 +516,8 @@ mod tests {
 
     #[test]
     fn test_second_finish_fails() -> Result<(), Box<dyn std::error::Error>> {
-        let session = make_session()?;
-        let g1 = make_group(&session)?;
+        let session = XetSession::new(None, None, None, None)?;
+        let g1 = session.new_download_group()?;
         let g2 = g1.clone();
         g1.finish()?;
         let err = g2.finish().unwrap_err();
@@ -601,29 +527,11 @@ mod tests {
 
     #[test]
     fn test_finish_unregisters_from_session() -> Result<(), Box<dyn std::error::Error>> {
-        let session = make_session()?;
-        let group = make_group(&session)?;
+        let session = XetSession::new(None, None, None, None)?;
+        let group = session.new_download_group()?;
         assert_eq!(session.active_download_groups.lock().unwrap().len(), 1);
         group.finish().unwrap();
         assert_eq!(session.active_download_groups.lock().unwrap().len(), 0);
         Ok(())
     }
-}
-
-// Helper function to create TranslatorConfig
-fn create_translator_config(session: &XetSession) -> Result<TranslatorConfig, SessionError> {
-    let endpoint = session
-        .endpoint
-        .clone()
-        .unwrap_or_else(|| session.config.data.default_cas_endpoint.clone());
-
-    data::data_client::default_config(
-        endpoint,
-        None, // xorb_compression
-        session.token_info.clone(),
-        session.token_refresher.clone(),
-        session.user_agent.clone(),
-        Some(session.session_id),
-    )
-    .map_err(|e| e.into())
 }

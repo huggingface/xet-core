@@ -18,7 +18,6 @@ utils = { path = "../utils" }
 xet_config = { path= "../xet_config" }
 xet_logging = { path = "../xet_logging" }
 xet_runtime = { path = "../xet_runtime" }
-xet-session = { path = "../xet_session" }
 
 async-trait = "0.1"
 chrono = "0.4"

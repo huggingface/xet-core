@@ -58,18 +58,6 @@ impl SessionError {
     }
 }
 
-impl From<String> for SessionError {
-    fn from(s: String) -> Self {
-        SessionError::Other(s)
-    }
-}
-
-impl From<&str> for SessionError {
-    fn from(s: &str) -> Self {
-        SessionError::Other(s.to_string())
-    }
-}
-
 // Helper to convert PoisonError from Mutex
 impl<T> From<std::sync::PoisonError<std::sync::MutexGuard<'_, T>>> for SessionError {
     fn from(e: std::sync::PoisonError<std::sync::MutexGuard<'_, T>>) -> Self {

@@ -98,7 +98,7 @@ async fn upload_files(files: Vec<PathBuf>, endpoint: Option<String>) -> Result<(
         endpoint,
         None, // token_info
         None, // token_refresher
-        "session-demo/0.1.0".to_string(),
+        None, // custom_headers
     )?;
 
     println!("✅ Session created");
@@ -180,7 +180,7 @@ async fn download_files(metadata_file: PathBuf, output_dir: PathBuf, endpoint: O
     let metadata: Vec<serde_json::Value> = serde_json::from_str(&metadata_json)?;
 
     // Create XetSession
-    let session = XetSession::new(endpoint, None, None, "session-demo/0.1.0".to_string())?;
+    let session = XetSession::new(endpoint, None, None, None)?;
 
     println!("✅ Session created");
 
@@ -256,7 +256,7 @@ async fn round_trip(files: Vec<PathBuf>, output_dir: PathBuf) -> Result<()> {
 
     // === UPLOAD PHASE ===
     println!("=== UPLOAD PHASE ===");
-    let session = XetSession::new(None, None, None, "session-demo/0.1.0".to_string())?;
+    let session = XetSession::new(None, None, None, None)?;
 
     let upload_commit = session.new_upload_commit()?;
     println!("📦 Created upload commit");

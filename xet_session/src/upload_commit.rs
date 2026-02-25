@@ -4,12 +4,13 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, RwLock};
 
-use data::{FileUploadSession, SingleFileCleaner, XetFileInfo, configurations::TranslatorConfig};
+use data::{FileUploadSession, SingleFileCleaner, XetFileInfo};
 use tokio::sync::Mutex as TokioMutex;
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
 use ulid::Ulid;
 
+use crate::common::{GroupState, create_translator_config};
 use crate::errors::SessionError;
 use crate::progress::{CommitProgress, FileProgressSnapshot, TaskStatus};
 use crate::session::XetSession;
@@ -42,14 +43,6 @@ pub(crate) struct UploadTaskHandle {
     status: Arc<Mutex<TaskStatus>>,
 }
 
-/// State of the upload commit
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum CommitState {
-    Alive,
-    Committed,
-    Aborted,
-}
-
 /// All shared state owned by a single UploadCommit instance.
 /// Accessed through `Arc<UploadCommitInner>`; do not use this type directly.
 #[doc(hidden)]
@@ -68,7 +61,7 @@ pub struct UploadCommitInner {
     upload_session: TokioMutex<Option<Arc<FileUploadSession>>>,
 
     // State
-    state: Mutex<CommitState>,
+    state: Mutex<GroupState>,
 
     // Command channel to background worker task
     command_tx: mpsc::UnboundedSender<CommitCommand>,
@@ -80,9 +73,9 @@ impl UploadCommitInner {
     /// Check whether the commit is still accepting new tasks.
     fn check_accepting_tasks(&self) -> Result<(), SessionError> {
         match *self.state.lock()? {
-            CommitState::Committed => Err(SessionError::AlreadyCommitted),
-            CommitState::Aborted => Err(SessionError::Aborted),
-            CommitState::Alive => Ok(()),
+            GroupState::Finished => Err(SessionError::AlreadyCommitted),
+            GroupState::Aborted => Err(SessionError::Aborted),
+            GroupState::Alive => Ok(()),
         }
     }
 
@@ -141,8 +134,7 @@ impl UploadCommitInner {
 
         let upload_session_arc = self.get_or_create_upload_session().await?;
 
-        let join_handle =
-            self.spawn_upload_task(upload_session_arc, file_path.clone(), status.clone());
+        let join_handle = self.spawn_upload_task(upload_session_arc, file_path.clone(), status.clone());
 
         let handle = UploadTaskHandle {
             task_id,
@@ -184,10 +176,10 @@ impl UploadCommitInner {
         // Mark as not accepting new tasks
         {
             let mut state_guard = self.state.lock()?;
-            if *state_guard == CommitState::Committed {
+            if *state_guard == GroupState::Finished {
                 return Err(SessionError::AlreadyCommitted);
             }
-            *state_guard = CommitState::Aborted; // stop new tasks while draining
+            *state_guard = GroupState::Aborted; // stop new tasks while draining
         }
 
         // Wait for all uploads to complete
@@ -213,7 +205,7 @@ impl UploadCommitInner {
         }
 
         // Mark as committed
-        *self.state.lock()? = CommitState::Committed;
+        *self.state.lock()? = GroupState::Finished;
 
         // Unregister from session
         self.session.finish_upload_commit(self.commit_id)?;
@@ -265,7 +257,7 @@ impl UploadCommit {
             active_tasks: RwLock::new(HashMap::new()),
             progress: Arc::new(CommitProgress::new()),
             upload_session: TokioMutex::new(None),
-            state: Mutex::new(CommitState::Alive),
+            state: Mutex::new(GroupState::Alive),
             command_tx,
         });
 
@@ -310,7 +302,7 @@ impl UploadCommit {
 
     /// Abort this upload commit.
     pub(crate) fn abort(&self) -> Result<(), SessionError> {
-        *self.state.lock()? = CommitState::Aborted;
+        *self.state.lock()? = GroupState::Aborted;
         Ok(())
     }
 
@@ -409,7 +401,7 @@ impl UploadCommit {
     #[cfg(test)]
     fn is_committed(&self) -> bool {
         match self.state.lock() {
-            Ok(state) => *state == CommitState::Committed,
+            Ok(state) => *state == GroupState::Finished,
             Err(_) => false,
         }
     }
@@ -439,34 +431,27 @@ impl UploadCommit {
 
         tasks
             .values()
-            .filter_map(|handle| {
-                match handle.status.lock() {
-                    Ok(status) => {
-                        let (bytes_total, bytes_completed) = handle
-                            .file_name
-                            .as_deref()
-                            .and_then(|name| file_snapshots.get(name))
-                            .map(|s| (s.total_bytes, s.bytes_completed))
-                            .unwrap_or((0, 0));
+            .filter_map(|handle| match handle.status.lock() {
+                Ok(status) => {
+                    let (bytes_total, bytes_completed) = handle
+                        .file_name
+                        .as_deref()
+                        .and_then(|name| file_snapshots.get(name))
+                        .map(|s| (s.total_bytes, s.bytes_completed))
+                        .unwrap_or((0, 0));
 
-                        Some(UploadProgress {
-                            task_id: handle.task_id,
-                            file_name: handle.file_name.clone(),
-                            bytes_completed,
-                            bytes_total,
-                            status: *status,
-                            speed_bps: 0.0, // TODO: Calculate speed
-                        })
-                    },
-                    Err(e) => {
-                        tracing::error!(
-                            "Failed to acquire lock on task status for {}: {}",
-                            handle.task_id,
-                            e
-                        );
-                        None
-                    },
-                }
+                    Some(UploadProgress {
+                        task_id: handle.task_id,
+                        file_name: handle.file_name.clone(),
+                        bytes_completed,
+                        bytes_total,
+                        status: *status,
+                    })
+                },
+                Err(e) => {
+                    tracing::error!("Failed to acquire lock on task status for {}: {}", handle.task_id, e);
+                    None
+                },
             })
             .collect()
     }
@@ -508,8 +493,6 @@ pub struct UploadProgress {
     pub bytes_total: u64,
     /// Current lifecycle state of the task.
     pub status: TaskStatus,
-    /// Instantaneous upload throughput in bytes per second.
-    pub speed_bps: f64,
 }
 
 /// Per-file metadata returned by [`UploadCommit::commit`].
@@ -517,7 +500,7 @@ pub struct UploadProgress {
 pub struct FileMetadata {
     /// Original file name, if known.
     pub file_name: Option<String>,
-    /// Content-addressed hash that can be used to download the file later.
+    /// File Xet hash.
     pub hash: String,
     /// File size in bytes.
     pub file_size: u64,
@@ -528,35 +511,27 @@ mod tests {
     use super::*;
     use crate::session::XetSession;
 
-    fn make_session() -> Result<XetSession, SessionError> {
-        XetSession::new(None, None, None, "test/0.0".to_string())
-    }
-
-    fn make_commit(session: &XetSession) -> Result<UploadCommit, SessionError> {
-        session.new_upload_commit()
-    }
-
     #[test]
     fn test_commit_not_committed_initially() -> Result<(), Box<dyn std::error::Error>> {
-        let session = make_session()?;
-        let commit = make_commit(&session)?;
+        let session = XetSession::new(None, None, None, None)?;
+        let commit = session.new_upload_commit()?;
         assert!(!commit.is_committed());
         Ok(())
     }
 
     #[test]
     fn test_commit_has_unique_id() -> Result<(), Box<dyn std::error::Error>> {
-        let session = make_session()?;
-        let c1 = make_commit(&session)?;
-        let c2 = make_commit(&session)?;
+        let session = XetSession::new(None, None, None, None)?;
+        let c1 = session.new_upload_commit()?;
+        let c2 = session.new_upload_commit()?;
         assert_ne!(c1.id(), c2.id());
         Ok(())
     }
 
     #[test]
     fn test_commit_clone_shares_id() -> Result<(), Box<dyn std::error::Error>> {
-        let session = make_session()?;
-        let commit = make_commit(&session)?;
+        let session = XetSession::new(None, None, None, None)?;
+        let commit = session.new_upload_commit()?;
         let commit2 = commit.clone();
         assert_eq!(commit.id(), commit2.id());
         Ok(())
@@ -564,8 +539,8 @@ mod tests {
 
     #[test]
     fn test_upload_file_on_aborted_session_returns_error() -> Result<(), Box<dyn std::error::Error>> {
-        let session = make_session()?;
-        let commit = make_commit(&session)?;
+        let session = XetSession::new(None, None, None, None)?;
+        let commit = session.new_upload_commit()?;
         session.abort().unwrap();
         let err = commit.upload_from_path(PathBuf::from("nonexistent.bin")).unwrap_err();
         assert!(matches!(err, SessionError::Aborted));
@@ -574,8 +549,8 @@ mod tests {
 
     #[test]
     fn test_upload_bytes_on_aborted_session_returns_error() -> Result<(), Box<dyn std::error::Error>> {
-        let session = make_session()?;
-        let commit = make_commit(&session)?;
+        let session = XetSession::new(None, None, None, None)?;
+        let commit = session.new_upload_commit()?;
         session.abort().unwrap();
         let err = commit.upload_bytes(b"data".to_vec()).unwrap_err();
         assert!(matches!(err, SessionError::Aborted));
@@ -584,8 +559,8 @@ mod tests {
 
     #[test]
     fn test_get_progress_empty_initially() -> Result<(), Box<dyn std::error::Error>> {
-        let session = make_session()?;
-        let commit = make_commit(&session)?;
+        let session = XetSession::new(None, None, None, None)?;
+        let commit = session.new_upload_commit()?;
         let progress = commit.get_progress();
         assert!(progress.is_empty());
         Ok(())
@@ -593,17 +568,16 @@ mod tests {
 
     #[test]
     fn test_commit_empty_succeeds() -> Result<(), Box<dyn std::error::Error>> {
-        let session = make_session()?;
-        let commit = make_commit(&session)?;
-        let results = commit.commit()?;
+        let session = XetSession::new(None, None, None, None)?;
+        let results = session.new_upload_commit()?.commit()?;
         assert!(results.is_empty());
         Ok(())
     }
 
     #[test]
     fn test_commit_marks_as_committed() -> Result<(), Box<dyn std::error::Error>> {
-        let session = make_session()?;
-        let commit = make_commit(&session)?;
+        let session = XetSession::new(None, None, None, None)?;
+        let commit = session.new_upload_commit()?;
         let commit_clone = commit.clone();
         commit.commit().unwrap();
         assert!(commit_clone.is_committed());
@@ -612,8 +586,8 @@ mod tests {
 
     #[test]
     fn test_second_commit_fails() -> Result<(), Box<dyn std::error::Error>> {
-        let session = make_session()?;
-        let c1 = make_commit(&session)?;
+        let session = XetSession::new(None, None, None, None)?;
+        let c1 = session.new_upload_commit()?;
         let c2 = c1.clone();
         c1.commit()?;
         let err = c2.commit().unwrap_err();
@@ -623,29 +597,11 @@ mod tests {
 
     #[test]
     fn test_commit_unregisters_from_session() -> Result<(), Box<dyn std::error::Error>> {
-        let session = make_session()?;
-        let commit = make_commit(&session)?;
+        let session = XetSession::new(None, None, None, None)?;
+        let commit = session.new_upload_commit()?;
         assert_eq!(session.active_upload_commits.lock().unwrap().len(), 1);
         commit.commit().unwrap();
         assert_eq!(session.active_upload_commits.lock().unwrap().len(), 0);
         Ok(())
     }
-}
-
-// Helper function to create TranslatorConfig
-fn create_translator_config(session: &XetSession) -> Result<TranslatorConfig, SessionError> {
-    let endpoint = session
-        .endpoint
-        .clone()
-        .unwrap_or_else(|| session.config.data.default_cas_endpoint.clone());
-
-    data::data_client::default_config(
-        endpoint,
-        None, // xorb_compression
-        session.token_info.clone(),
-        session.token_refresher.clone(),
-        session.user_agent.clone(),
-        Some(session.session_id),
-    )
-    .map_err(|e| e.into())
 }

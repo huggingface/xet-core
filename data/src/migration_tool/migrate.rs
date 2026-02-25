@@ -84,7 +84,6 @@ pub async fn migrate_files_impl(
         Some((jwt_info.access_token, jwt_info.exp)),
         Some(token_refresher),
         Some(Arc::new(headers)),
-        None,
     )?;
     Span::current().record("session_id", &config.session_id);
 

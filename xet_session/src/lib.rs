@@ -14,7 +14,7 @@
 //! use xet_session::XetSession;
 //!
 //! fn main() -> Result<(), Box<dyn std::error::Error>> {
-//!     let session = XetSession::new(None, None, None, "my-app/1.0".to_string())?;
+//!     let session = XetSession::new(None, None, None, None)?;
 //!
 //!     // Upload commit
 //!     let upload_commit = session.new_upload_commit()?;
@@ -34,21 +34,22 @@
 //! }
 //! ```
 
+mod common;
+mod download_group;
+mod errors;
+mod progress;
 mod session;
 mod upload_commit;
-mod download_group;
-mod progress;
-mod errors;
 
 // C FFI bindings (enabled with "ffi" feature)
 #[cfg(feature = "ffi")]
 pub mod ffi;
 
-pub use session::XetSession;
-pub use upload_commit::{UploadCommit, UploadProgress, FileMetadata};
 pub use download_group::{DownloadGroup, DownloadProgress, DownloadResult};
-pub use progress::{AtomicProgress, TaskStatus};
 pub use errors::SessionError;
+pub use progress::TaskStatus;
+pub use session::XetSession;
+pub use upload_commit::{FileMetadata, UploadCommit, UploadProgress};
 
 // Re-export XetConfig for convenience
 pub use xet_config::XetConfig;
