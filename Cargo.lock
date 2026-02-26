@@ -6197,7 +6197,6 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.12",
  "tokio",
- "tracing",
  "tracing-subscriber",
  "ulid",
  "utils",
