@@ -12,8 +12,7 @@ use progress_tracking::aggregator::AggregatingProgressUpdater;
 use progress_tracking::download_tracking::{DownloadProgressTracker, DownloadTaskUpdater};
 use tracing::instrument;
 use ulid::Ulid;
-use xet_runtime::XetRuntime;
-use xet_runtime::xet_config;
+use xet_runtime::{XetRuntime, xet_config};
 
 use crate::configurations::TranslatorConfig;
 use crate::errors::*;
