@@ -14,7 +14,7 @@ use std::time::Duration;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
-use xet_session::{TaskStatus, XetSession};
+use xet_session::{TaskHandle, TaskStatus, XetFileInfo, XetSession};
 
 #[derive(Parser)]
 #[clap(name = "session-demo")]
@@ -89,14 +89,23 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
+/// Poll a set of task handles and return (completed, failed) counts.
+fn poll_task_counts(handles: &[TaskHandle]) -> (usize, usize) {
+    let completed = handles
+        .iter()
+        .filter(|h| matches!(h.status(), Ok(TaskStatus::Completed)))
+        .count();
+    let failed = handles.iter().filter(|h| matches!(h.status(), Ok(TaskStatus::Failed))).count();
+    (completed, failed)
+}
+
 /// Upload files using XetSession and UploadCommit
 async fn upload_files(files: Vec<PathBuf>, endpoint: Option<String>) -> Result<()> {
     println!("📤 Starting upload session...");
 
     // Create XetSession with configuration
     let session = XetSession::new(
-        endpoint,
-        None, // token_info
+        endpoint, None, // token_info
         None, // token_refresher
         None, // custom_headers
     )?;
@@ -109,32 +118,31 @@ async fn upload_files(files: Vec<PathBuf>, endpoint: Option<String>) -> Result<(
 
     // Start uploading all files (tasks execute immediately)
     println!("\n🚀 Starting uploads for {} files...", files.len());
+    let mut task_handles: Vec<TaskHandle> = Vec::new();
     for file in &files {
-        let task_id = upload_commit.upload_from_path(file.clone())?;
-        println!("  ⏫ Started upload: {} (task: {})", file.display(), task_id);
+        let handle = upload_commit.upload_from_path(file.clone())?;
+        println!("  ⏫ Started upload: {}", file.display());
+        task_handles.push(handle);
     }
 
     // Poll progress until all uploads complete
     println!("\n📊 Monitoring progress...");
     loop {
-        let progress = upload_commit.get_progress();
+        let snapshot = upload_commit.get_progress()?;
+        let total = snapshot.total();
 
-        let total_files = progress.len();
-        let completed = progress.iter().filter(|p| p.status == TaskStatus::Completed).count();
-        let failed = progress.iter().filter(|p| p.status == TaskStatus::Failed).count();
+        let total_files = task_handles.len();
+        let (completed, failed) = poll_task_counts(&task_handles);
 
-        let total_bytes: u64 = progress.iter().map(|p| p.bytes_total).sum();
-        let completed_bytes: u64 = progress.iter().map(|p| p.bytes_completed).sum();
-
-        let percentage = if total_bytes > 0 {
-            (completed_bytes as f64 / total_bytes as f64 * 100.0) as u32
+        let percentage = if total.total_bytes > 0 {
+            (total.total_bytes_completed as f64 / total.total_bytes as f64 * 100.0) as u32
         } else {
             0
         };
 
         print!(
             "\r  Progress: {}/{} files | {}/{} bytes ({}%)",
-            completed, total_files, completed_bytes, total_bytes, percentage
+            completed, total_files, total.total_bytes_completed, total.total_bytes, percentage
         );
         std::io::stdout().flush()?;
 
@@ -162,7 +170,18 @@ async fn upload_files(files: Vec<PathBuf>, endpoint: Option<String>) -> Result<(
     }
 
     // Save metadata to file for later download
-    let metadata_json = serde_json::to_string_pretty(&metadata)?;
+    let metadata_json = serde_json::to_string_pretty(
+        &metadata
+            .iter()
+            .map(|m| {
+                serde_json::json!({
+                    "file_name": m.file_name,
+                    "hash": m.hash.to_string(),
+                    "file_size": m.file_size,
+                })
+            })
+            .collect::<Vec<_>>(),
+    )?;
     std::fs::write("upload_metadata.json", metadata_json)?;
     println!("\n💾 Metadata saved to upload_metadata.json");
 
@@ -193,6 +212,7 @@ async fn download_files(metadata_file: PathBuf, output_dir: PathBuf, endpoint: O
 
     // Start downloading all files
     println!("\n🚀 Starting downloads for {} files...", metadata.len());
+    let mut task_handles: Vec<TaskHandle> = Vec::new();
     for item in &metadata {
         let hash = item["hash"].as_str().unwrap().to_string();
         let file_size = item["file_size"].as_u64().unwrap();
@@ -200,31 +220,29 @@ async fn download_files(metadata_file: PathBuf, output_dir: PathBuf, endpoint: O
 
         let dest_path = output_dir.join(file_name);
 
-        let task_id = download_group.download_file(hash, file_size, dest_path)?;
-        println!("  ⏬ Started download: {} (task: {})", file_name, task_id);
+        let handle = download_group.download_file(XetFileInfo::new(hash, file_size), dest_path)?;
+        println!("  ⏬ Started download: {}", file_name);
+        task_handles.push(handle);
     }
 
     // Poll progress
     println!("\n📊 Monitoring progress...");
     loop {
-        let progress = download_group.get_progress();
+        let snapshot = download_group.get_progress()?;
+        let total = snapshot.total();
 
-        let total_files = progress.len();
-        let completed = progress.iter().filter(|p| p.status == TaskStatus::Completed).count();
-        let failed = progress.iter().filter(|p| p.status == TaskStatus::Failed).count();
+        let total_files = task_handles.len();
+        let (completed, failed) = poll_task_counts(&task_handles);
 
-        let total_bytes: u64 = progress.iter().map(|p| p.bytes_total).sum();
-        let completed_bytes: u64 = progress.iter().map(|p| p.bytes_completed).sum();
-
-        let percentage = if total_bytes > 0 {
-            (completed_bytes as f64 / total_bytes as f64 * 100.0) as u32
+        let percentage = if total.total_bytes > 0 {
+            (total.total_bytes_completed as f64 / total.total_bytes as f64 * 100.0) as u32
         } else {
             0
         };
 
         print!(
             "\r  Progress: {}/{} files | {}/{} bytes ({}%)",
-            completed, total_files, completed_bytes, total_bytes, percentage
+            completed, total_files, total.total_bytes_completed, total.total_bytes, percentage
         );
         std::io::stdout().flush()?;
 
@@ -242,7 +260,7 @@ async fn download_files(metadata_file: PathBuf, output_dir: PathBuf, endpoint: O
 
     println!("\n✅ Download complete!");
     for r in &results {
-        println!("  📄 {} -> {}", r.file_hash, r.dest_path.display());
+        println!("  📄 {:?} -> {}", r.file_info, r.dest_path.display());
     }
 
     println!("🏁 Download session complete");
@@ -261,19 +279,17 @@ async fn round_trip(files: Vec<PathBuf>, output_dir: PathBuf) -> Result<()> {
     let upload_commit = session.new_upload_commit()?;
     println!("📦 Created upload commit");
 
-    // Upload files
+    let mut upload_handles: Vec<TaskHandle> = Vec::new();
     for file in &files {
-        upload_commit.upload_from_path(file.clone())?;
+        let handle = upload_commit.upload_from_path(file.clone())?;
+        upload_handles.push(handle);
     }
     println!("⏫ Started {} uploads", files.len());
 
     // Wait for uploads
     loop {
-        let progress = upload_commit.get_progress();
-        let all_done = progress
-            .iter()
-            .all(|p| p.status == TaskStatus::Completed || p.status == TaskStatus::Failed);
-        if all_done {
+        let (completed, failed) = poll_task_counts(&upload_handles);
+        if completed + failed == upload_handles.len() {
             break;
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
@@ -290,22 +306,20 @@ async fn round_trip(files: Vec<PathBuf>, output_dir: PathBuf) -> Result<()> {
     // Create output directory
     std::fs::create_dir_all(&output_dir)?;
 
-    // Download files
+    let mut download_handles: Vec<TaskHandle> = Vec::new();
     for m in &metadata {
         let file_name = m.file_name.as_ref().unwrap();
         let dest_path = output_dir.join(file_name);
 
-        download_group.download_file(m.hash.clone(), m.file_size, dest_path)?;
+        let handle = download_group.download_file(XetFileInfo::new(m.hash.to_string(), m.file_size), dest_path)?;
+        download_handles.push(handle);
     }
     println!("⏬ Started {} downloads", metadata.len());
 
     // Wait for downloads
     loop {
-        let progress = download_group.get_progress();
-        let all_done = progress
-            .iter()
-            .all(|p| p.status == TaskStatus::Completed || p.status == TaskStatus::Failed);
-        if all_done {
+        let (completed, failed) = poll_task_counts(&download_handles);
+        if completed + failed == download_handles.len() {
             break;
         }
         tokio::time::sleep(Duration::from_millis(100)).await;

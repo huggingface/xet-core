@@ -1,4 +1,4 @@
-//! Progress tracking without callbacks (GIL-free)
+//! Progress tracking for upload commits and download groups.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -6,6 +6,9 @@ use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use progress_tracking::{ProgressUpdate, TrackingProgressUpdater};
+use ulid::Ulid;
+
+use crate::SessionError;
 
 /// Lifecycle state of a single upload or download task.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -22,7 +25,39 @@ pub enum TaskStatus {
     Cancelled,
 }
 
+#[derive(Debug)]
+pub struct TaskHandle {
+    pub(crate) status: Arc<Mutex<TaskStatus>>,
+    pub(crate) group_progress: Arc<GroupProgress>,
+    pub(crate) tracking_id: Ulid,
+}
+
+impl TaskHandle {
+    pub fn status(&self) -> Result<TaskStatus, SessionError> {
+        Ok(*self.status.lock()?)
+    }
+
+    pub fn progress(&self) -> Result<FileProgress, SessionError> {
+        self.group_progress.file(self.tracking_id)
+    }
+}
+
 // ── Aggregate / per-file progress ───────────────────────────────────────────
+
+pub struct ProgressSnapshot {
+    total: TotalProgressSnapshot,
+    files: HashMap<Ulid, FileProgress>,
+}
+
+impl ProgressSnapshot {
+    pub fn total(&self) -> &TotalProgressSnapshot {
+        &self.total
+    }
+
+    pub fn file(&self, task_id: Ulid) -> Result<&FileProgress, SessionError> {
+        self.files.get(&task_id).ok_or(SessionError::InvalidTaskID(task_id))
+    }
+}
 
 /// Snapshot of aggregate progress returned by [`TaskProgress::total`].
 #[derive(Clone, Debug, Default)]
@@ -43,7 +78,7 @@ pub struct TotalProgressSnapshot {
 
 /// Snapshot of a single file's progress returned by [`TaskProgress::files`].
 #[derive(Clone, Debug)]
-pub struct FileProgressSnapshot {
+pub struct FileProgress {
     /// File name as reported by the data layer.
     pub item_name: Arc<str>,
     /// Total size of this file in bytes.
@@ -51,6 +86,8 @@ pub struct FileProgressSnapshot {
     /// Bytes of this file processed so far.
     pub bytes_completed: u64,
 }
+
+pub type FileProgressSnapshot = FileProgress;
 
 /// Tracks per-file and aggregate transfer progress for upload commits and download groups.
 ///
@@ -61,6 +98,7 @@ pub struct FileProgressSnapshot {
 ///
 /// All integer counters are stored as [`AtomicU64`]; floating-point completion
 /// rates use a `Mutex` (rarely written, never held across await points).
+#[derive(Debug)]
 pub struct GroupProgress {
     // Aggregate totals
     total_bytes: AtomicU64,
@@ -73,7 +111,7 @@ pub struct GroupProgress {
     total_transfer_bytes_completion_rate: Mutex<Option<f64>>,
 
     // Per-file: item_name → (total_bytes, bytes_completed)
-    items: Mutex<HashMap<Arc<str>, (u64, u64)>>,
+    files: Mutex<HashMap<Ulid, FileProgress>>,
 }
 
 impl GroupProgress {
@@ -86,12 +124,19 @@ impl GroupProgress {
             total_transfer_bytes_completed: AtomicU64::new(0),
             total_bytes_completion_rate: Mutex::new(None),
             total_transfer_bytes_completion_rate: Mutex::new(None),
-            items: Mutex::new(HashMap::new()),
+            files: Mutex::new(HashMap::new()),
         }
     }
 
+    /// Return a combined snapshot of aggregate and per-file progress.
+    pub fn snapshot(&self) -> Result<ProgressSnapshot, SessionError> {
+        let total = self.total();
+        let files = self.files.lock()?.clone();
+        Ok(ProgressSnapshot { total, files })
+    }
+
     /// Return a combined snapshot of aggregate progress.
-    pub fn total(&self) -> TotalProgressSnapshot {
+    fn total(&self) -> TotalProgressSnapshot {
         TotalProgressSnapshot {
             total_bytes: self.total_bytes.load(Ordering::Relaxed),
             total_bytes_completed: self.total_bytes_completed.load(Ordering::Relaxed),
@@ -106,19 +151,12 @@ impl GroupProgress {
         }
     }
 
-    /// Return a combined snapshot of per-file progress.
-    pub fn files(&self) -> Vec<FileProgressSnapshot> {
-        match self.items.lock() {
-            Ok(items) => items
-                .iter()
-                .map(|(name, &(total_bytes, bytes_completed))| FileProgressSnapshot {
-                    item_name: name.clone(),
-                    total_bytes,
-                    bytes_completed,
-                })
-                .collect(),
-            Err(_) => Vec::new(),
-        }
+    fn file(&self, tracking_id: Ulid) -> Result<FileProgressSnapshot, SessionError> {
+        self.files
+            .lock()?
+            .get(&tracking_id)
+            .cloned()
+            .ok_or(SessionError::InvalidTaskID(tracking_id))
     }
 }
 
@@ -148,11 +186,15 @@ impl TrackingProgressUpdater for GroupProgress {
         }
 
         // Update per-file progress.
-        if let Ok(mut items) = self.items.lock() {
+        if let Ok(mut items) = self.files.lock() {
             for item_update in updates.item_updates {
-                let entry = items.entry(item_update.item_name).or_insert((0, 0));
-                entry.0 = entry.0.max(item_update.total_bytes);
-                entry.1 = entry.1.max(item_update.bytes_completed);
+                let entry = items.entry(item_update.tracking_id).or_insert(FileProgress {
+                    item_name: item_update.item_name.clone(),
+                    total_bytes: item_update.total_bytes,
+                    bytes_completed: item_update.bytes_completed,
+                });
+                entry.total_bytes = entry.total_bytes.max(item_update.total_bytes);
+                entry.bytes_completed = entry.bytes_completed.max(item_update.bytes_completed);
             }
         }
     }
@@ -160,15 +202,16 @@ impl TrackingProgressUpdater for GroupProgress {
 
 #[cfg(test)]
 mod tests {
+    use progress_tracking::ItemProgressUpdate;
+
     use super::*;
 
     #[tokio::test]
     async fn test_commit_progress_register_updates() {
-        use progress_tracking::ItemProgressUpdate;
-        use std::sync::Arc;
-
         let p = GroupProgress::new();
 
+        let file_a = (Ulid::new(), "fileA.bin");
+        let file_b = (Ulid::new(), "fileB.bin");
         let update = ProgressUpdate {
             total_bytes: 1000,
             total_bytes_completed: 400,
@@ -178,13 +221,15 @@ mod tests {
             total_transfer_bytes_completion_rate: Some(0.375),
             item_updates: vec![
                 ItemProgressUpdate {
-                    item_name: Arc::from("file_a.bin"),
+                    tracking_id: file_a.0,
+                    item_name: file_a.1.into(),
                     total_bytes: 500,
                     bytes_completed: 200,
                     bytes_completion_increment: 200,
                 },
                 ItemProgressUpdate {
-                    item_name: Arc::from("file_b.bin"),
+                    tracking_id: file_b.0,
+                    item_name: file_b.1.into(),
                     total_bytes: 500,
                     bytes_completed: 200,
                     bytes_completion_increment: 200,
@@ -195,19 +240,18 @@ mod tests {
 
         p.register_updates(update).await;
 
-        let (total, files) = p.snapshot();
+        let snapshot = p.snapshot().unwrap();
+        let total = snapshot.total();
         assert_eq!(total.total_bytes, 1000);
         assert_eq!(total.total_bytes_completed, 400);
         assert_eq!(total.total_bytes_completion_rate, Some(0.4));
         assert_eq!(total.total_transfer_bytes, 800);
         assert_eq!(total.total_transfer_bytes_completed, 300);
         assert_eq!(total.total_transfer_bytes_completion_rate, Some(0.375));
-        assert_eq!(files.len(), 2);
-        let find = |name: &str| files.iter().find(|f| f.item_name.as_ref() == name).cloned();
-        let fa = find("file_a.bin").unwrap();
+        let fa = snapshot.file(file_a.0).unwrap();
         assert_eq!(fa.total_bytes, 500);
         assert_eq!(fa.bytes_completed, 200);
-        let fb = find("file_b.bin").unwrap();
+        let fb = snapshot.file(file_b.0).unwrap();
         assert_eq!(fb.total_bytes, 500);
         assert_eq!(fb.bytes_completed, 200);
     }

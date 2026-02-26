@@ -1,8 +1,9 @@
 //! XetSession - manages runtime and configuration
 
-use http::HeaderMap;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
+
+use http::HeaderMap;
 use ulid::Ulid;
 use utils::auth::TokenRefresher;
 use xet_config::XetConfig;
@@ -59,8 +60,8 @@ pub struct XetSessionInner {
 ///
 /// 1. Create a session with [`XetSession::new`] or [`XetSession::new_with_config`].
 /// 2. Create one or more [`UploadCommit`]s / [`DownloadGroup`]s.
-/// 3. When a graceful shutdown is needed, drop the session (or all clones of
-///    it).  For an emergency stop, call [`XetSession::abort`].
+/// 3. When a graceful shutdown is needed, drop the session (or all clones of it).  For an emergency stop, call
+///    [`XetSession::abort`].
 #[derive(Clone)]
 pub struct XetSession {
     inner: Arc<XetSessionInner>,
@@ -78,14 +79,11 @@ impl XetSession {
     ///
     /// # Parameters
     ///
-    /// * `endpoint` – Specify the CAS server endpoint URL.  Pass `None` to
-    ///   use the default (local CAS).
-    /// * `token_info` – `(token, expiry_unix_timestamp)` pair for
-    ///   authentication.  Pass `None` for unauthenticated access.
-    /// * `token_refresher` – Optional callback used to obtain a fresh token
-    ///   when the current one expires.
-    /// * `user_agent` – User-agent string sent with every request (e.g.
-    ///   `"my-app/1.2.3"`).
+    /// * `endpoint` – Specify the CAS server endpoint URL.  Pass `None` to use the default (local CAS).
+    /// * `token_info` – `(token, expiry_unix_timestamp)` pair for authentication.  Pass `None` for unauthenticated
+    ///   access.
+    /// * `token_refresher` – Optional callback used to obtain a fresh token when the current one expires.
+    /// * `user_agent` – User-agent string sent with every request (e.g. `"my-app/1.2.3"`).
     pub fn new(
         endpoint: Option<String>,
         token_info: Option<(String, u64)>,

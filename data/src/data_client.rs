@@ -8,6 +8,7 @@ use cas_client::remote_client::PREFIX_DEFAULT;
 use cas_object::CompressionScheme;
 use deduplication::{Chunker, DeduplicationMetrics};
 use http::header::HeaderMap;
+use itertools::multizip;
 use mdb_shard::Sha256;
 use merklehash::MerkleHash;
 use progress_tracking::TrackingProgressUpdater;
@@ -177,9 +178,9 @@ pub async fn upload_async(
         None => Box::new(std::iter::repeat(None)),
     };
 
-    let files_and_sha256s = file_paths.into_iter().zip(sha256s);
+    let files_sha256_and_tracking_ids = multizip((file_paths.into_iter(), sha256s, std::iter::repeat_with(Ulid::new)));
 
-    let ret = upload_session.upload_files(files_and_sha256s).await?;
+    let ret = upload_session.upload_files(files_sha256_and_tracking_ids).await?;
 
     // Push the CAS blocks and flush the mdb to disk
     let metrics = upload_session.finalize().await?;
@@ -254,7 +255,7 @@ pub async fn clean_bytes(
     processor: Arc<FileUploadSession>,
     bytes: Vec<u8>,
 ) -> errors::Result<(XetFileInfo, DeduplicationMetrics)> {
-    let mut handle = processor.start_clean(None, bytes.len() as u64, None).await;
+    let mut handle = processor.start_clean(None, bytes.len() as u64, None, Ulid::new()).await;
     handle.add_data(&bytes).await?;
     handle.finish().await
 }
@@ -275,7 +276,12 @@ pub async fn clean_file(
     let mut buffer = vec![0u8; u64::min(filesize, *xet_config().data.ingestion_block_size) as usize];
 
     let mut handle = processor
-        .start_clean(Some(filename.as_ref().to_string_lossy().into()), filesize, Sha256::from_hex(sha256.as_ref()).ok())
+        .start_clean(
+            Some(filename.as_ref().to_string_lossy().into()),
+            filesize,
+            Sha256::from_hex(sha256.as_ref()).ok(),
+            Ulid::new(),
+        )
         .await;
 
     loop {

@@ -4,9 +4,11 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use cas_client::{Client, LocalClient, LocalTestServer};
+use itertools::multizip;
 use progress_tracking::TrackingProgressUpdater;
 use rand::prelude::*;
 use tempfile::TempDir;
+use ulid::Ulid;
 
 use crate::configurations::TranslatorConfig;
 use crate::data_client::clean_file;
@@ -216,10 +218,10 @@ impl HydrateDehydrateTest {
                 .map(|entry| self.src_dir.join(entry.unwrap().file_name()))
                 .collect();
 
-            let clean_results = upload_session
-                .upload_files(files.iter().zip(std::iter::repeat(None)))
-                .await
-                .unwrap();
+            let files_sha256_and_tracking_ids =
+                multizip((files.iter(), std::iter::repeat(None), std::iter::repeat_with(Ulid::new)));
+
+            let clean_results = upload_session.upload_files(files_sha256_and_tracking_ids).await.unwrap();
 
             for (i, xf) in clean_results.into_iter().enumerate() {
                 std::fs::write(self.ptr_dir.join(files[i].file_name().unwrap()), serde_json::to_string(&xf).unwrap())
@@ -244,7 +246,7 @@ impl HydrateDehydrateTest {
             let out_filename = self.dest_dir.join(entry.file_name());
 
             let xf: XetFileInfo = serde_json::from_reader(File::open(entry.path()).unwrap()).unwrap();
-            session.download_file(&xf, &out_filename, None).await.unwrap();
+            session.download_file(&xf, &out_filename, Ulid::new()).await.unwrap();
         }
     }
 
@@ -282,14 +284,30 @@ impl HydrateDehydrateTest {
                 tasks.push(tokio::spawn(async move {
                     let mut writer = std::fs::OpenOptions::new().write(true).open(out_filename).unwrap();
                     writer.seek(SeekFrom::Start(start)).unwrap();
-                    session
-                        .download_to_writer(&xf, start..end, writer, Some(Arc::from(format!("partition-{idx}"))))
-                        .await
+                    session.download_to_writer(&xf, start..end, writer, Ulid::new()).await
                 }));
             }
 
             for task in tasks {
                 task.await.unwrap().unwrap();
+            }
+        }
+    }
+
+    pub async fn hydrate_stream(&mut self) {
+        let client = self.get_or_create_client().await;
+        let session = FileDownloadSession::from_client(client, None);
+
+        for entry in read_dir(&self.ptr_dir).unwrap() {
+            let entry = entry.unwrap();
+            let out_filename = self.dest_dir.join(entry.file_name());
+
+            let xf: XetFileInfo = serde_json::from_reader(File::open(entry.path()).unwrap()).unwrap();
+            let mut stream = session.download_stream(&xf, Ulid::new()).unwrap();
+
+            let mut file = File::create(&out_filename).unwrap();
+            while let Some(chunk) = stream.next().await.unwrap() {
+                file.write_all(&chunk).unwrap();
             }
         }
     }

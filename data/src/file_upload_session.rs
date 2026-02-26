@@ -142,11 +142,11 @@ impl FileUploadSession {
 
     pub async fn upload_files(
         self: &Arc<Self>,
-        files_and_sha256s: impl IntoIterator<Item = (impl AsRef<Path>, Option<Sha256>)> + Send,
+        files_sha256_and_tracking_ids: impl IntoIterator<Item = (impl AsRef<Path>, Option<Sha256>, Ulid)> + Send,
     ) -> Result<Vec<XetFileInfo>> {
         let mut cleaning_tasks: Vec<JoinHandle<_>> = vec![];
 
-        for (f, sha256) in files_and_sha256s.into_iter() {
+        for (f, sha256, tracking_id) in files_sha256_and_tracking_ids.into_iter() {
             let file_path = f.as_ref().to_owned();
             let file_name: Arc<str> = Arc::from(file_path.to_string_lossy());
 
@@ -158,7 +158,7 @@ impl FileUploadSession {
             // it will be discovered incrementally via increment_file_size in add_data_impl.
             let file_id = self
                 .completion_tracker
-                .register_new_file(file_name.clone(), Some(file_size))
+                .register_new_file(tracking_id, file_name.clone(), Some(file_size))
                 .await;
 
             // Now, spawn a task
@@ -258,11 +258,12 @@ impl FileUploadSession {
         file_name: Option<Arc<str>>,
         size: u64,
         sha256: Option<Sha256>,
+        tracking_id: Ulid,
     ) -> SingleFileCleaner {
         // Get a new file id for the completion tracking
         let file_id = self
             .completion_tracker
-            .register_new_file(file_name.clone().unwrap_or_default(), Some(size))
+            .register_new_file(tracking_id, file_name.clone().unwrap_or_default(), Some(size))
             .await;
 
         SingleFileCleaner::new(file_name, file_id, sha256, self.clone())
@@ -575,7 +576,7 @@ mod tests {
             .unwrap();
 
         let mut cleaner = upload_session
-            .start_clean(Some("test".into()), read_data.len() as u64, None)
+            .start_clean(Some("test".into()), read_data.len() as u64, None, Ulid::new())
             .await;
 
         // Read blocks from the source file and hand them to the cleaning handle
@@ -604,7 +605,7 @@ mod tests {
         let config = TranslatorConfig::local_config(cas_path).unwrap();
         let session = FileDownloadSession::new(config.into(), None).await.unwrap();
 
-        session.download_file(&xet_file, output_path, None).await.unwrap();
+        session.download_file(&xet_file, output_path, Ulid::new()).await.unwrap();
     }
 
     use std::fs::{read, write};

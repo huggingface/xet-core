@@ -18,7 +18,9 @@ tokio = { workspace = true }
 tracing = { workspace = true }
 bytes = { workspace = true }
 more-asserts = { workspace = true }
+tokio-util = { workspace = true }
 
 [dev-dependencies]
-tempfile = { workspace = true }
 rand = { workspace = true }
+tempfile = { workspace = true }
+ulid = { workspace = true }

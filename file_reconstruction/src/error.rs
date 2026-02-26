@@ -1,5 +1,4 @@
-use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use thiserror::Error;
 
@@ -64,48 +63,5 @@ impl From<tokio::task::JoinError> for FileReconstructionError {
 impl From<xet_runtime::errors::MultithreadedRuntimeError> for FileReconstructionError {
     fn from(err: xet_runtime::errors::MultithreadedRuntimeError) -> Self {
         FileReconstructionError::RuntimeError(Arc::new(err))
-    }
-}
-
-/// Thread-safe container for propagating errors from background tasks.
-/// Uses atomic flag for fast checking and mutex for error storage.
-pub struct ErrorState {
-    has_error: AtomicBool,
-    stored_error: Mutex<Option<FileReconstructionError>>,
-}
-
-impl Default for ErrorState {
-    fn default() -> Self {
-        Self {
-            has_error: AtomicBool::new(false),
-            stored_error: Mutex::new(None),
-        }
-    }
-}
-
-impl ErrorState {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    pub fn check(&self) -> Result<()> {
-        if self.has_error.load(AtomicOrdering::Acquire) {
-            let error_guard = self.stored_error.lock().unwrap();
-            if let Some(err) = error_guard.as_ref() {
-                return Err(err.clone());
-            }
-            return Err(FileReconstructionError::InternalWriterError(
-                "Unknown error occurred in background writer".to_string(),
-            ));
-        }
-        Ok(())
-    }
-
-    pub fn set(&self, error: FileReconstructionError) {
-        let mut error_guard = self.stored_error.lock().unwrap();
-        if error_guard.is_none() {
-            *error_guard = Some(error);
-            self.has_error.store(true, AtomicOrdering::Release);
-        }
     }
 }

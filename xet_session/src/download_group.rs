@@ -5,14 +5,13 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex, RwLock};
 
 use data::{FileDownloadSession, XetFileInfo};
-use tokio::sync::Mutex as TokioMutex;
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{Mutex as TokioMutex, mpsc, oneshot};
 use tokio::task::JoinHandle;
 use ulid::Ulid;
 
 use crate::common::{GroupState, create_translator_config};
 use crate::errors::SessionError;
-use crate::progress::{FileProgressSnapshot, GroupProgress, TaskStatus};
+use crate::progress::{GroupProgress, ProgressSnapshot, TaskHandle, TaskStatus};
 use crate::session::XetSession;
 
 /// Groups related file downloads into a single unit of work.
@@ -67,12 +66,11 @@ impl DownloadGroup {
             while let Some(command) = command_rx.recv().await {
                 match command {
                     GroupCommand::DownloadFile {
-                        file_hash,
-                        file_size,
+                        file_info,
                         dest_path,
                         response_tx,
                     } => {
-                        let result = inner_clone.handle_download_file(file_hash, file_size, dest_path).await;
+                        let result = inner_clone.handle_download_file(file_info, dest_path).await;
                         let _ = response_tx.send(result);
                     },
                     GroupCommand::Finish { response_tx } => {
@@ -107,26 +105,25 @@ impl DownloadGroup {
     ///
     /// * `file_hash` – Content-addressed hash returned by a previous
     ///   [`UploadCommit::commit`](crate::UploadCommit::commit).
-    /// * `file_size` – Expected file size in bytes (used to pre-allocate
-    ///   buffers and report progress).
-    /// * `dest_path` – Local path where the downloaded file will be written.
-    ///   Parent directories are created automatically.
+    /// * `file_size` – Expected file size in bytes (used to pre-allocate buffers and report progress).
+    /// * `dest_path` – Local path where the downloaded file will be written. Parent directories are created
+    ///   automatically.
     ///
-    /// Returns the task ID that can be correlated with [`get_progress`](Self::get_progress).
+    /// Returns a [`TaskHandle`] that can be used to poll status and per-file
+    /// progress without taking the GIL.
     ///
     /// # Errors
     ///
     /// Returns [`SessionError::Aborted`] if the session has been aborted, or
     /// [`SessionError::AlreadyFinished`] if [`finish`](Self::finish) has already
     /// been called.
-    pub fn download_file(&self, file_hash: String, file_size: u64, dest_path: PathBuf) -> Result<Ulid, SessionError> {
+    pub fn download_file(&self, file_info: XetFileInfo, dest_path: PathBuf) -> Result<TaskHandle, SessionError> {
         self.session.check_alive()?;
         let (response_tx, response_rx) = oneshot::channel();
 
         self.command_tx
             .send(GroupCommand::DownloadFile {
-                file_hash,
-                file_size,
+                file_info,
                 dest_path,
                 response_tx,
             })
@@ -152,51 +149,13 @@ impl DownloadGroup {
 
     /// Return a snapshot of progress for every queued download.
     ///
-    /// Per-file byte counts come from [`TaskProgress`], which is updated by
-    /// the `FileDownloadSession` callback keyed on the destination path.
-    /// The method is safe to call frequently from Python without GIL contention.
-    pub fn get_progress(&self) -> Vec<DownloadProgress> {
-        let tasks = match self.active_tasks.read() {
-            Ok(tasks) => tasks,
-            Err(e) => {
-                tracing::error!("Failed to acquire read lock on active_tasks: {}", e);
-                return Vec::new();
-            },
-        };
-
-        // Build a dest_path→snapshot lookup from TaskProgress.
-        let (_, files) = self.progress.snapshot();
-        let file_snapshots: HashMap<String, FileProgressSnapshot> =
-            files.into_iter().map(|s| (s.item_name.to_string(), s)).collect();
-
-        tasks
-            .values()
-            .filter_map(|handle| {
-                match handle.status.lock() {
-                    Ok(status) => {
-                        let dest_path_str = handle.dest_path.to_string_lossy().to_string();
-                        let (bytes_total, bytes_completed) = file_snapshots
-                            .get(&dest_path_str)
-                            .map(|s| (s.total_bytes, s.bytes_completed))
-                            .unwrap_or((0, 0));
-
-                        Some(DownloadProgress {
-                            task_id: handle.task_id,
-                            dest_path: handle.dest_path.clone(),
-                            file_hash: handle.file_hash.clone(),
-                            bytes_completed,
-                            bytes_total,
-                            status: *status,
-                            speed_bps: 0.0, // TODO: Calculate speed
-                        })
-                    },
-                    Err(e) => {
-                        tracing::error!("Failed to acquire lock on task status for {}: {}", handle.task_id, e);
-                        None
-                    },
-                }
-            })
-            .collect()
+    /// Per-file byte counts come from [`GroupProgress`], which is updated by
+    /// the [`TrackingProgressUpdater`] implementation as data flows through
+    /// `FileDownloadSession`.  The method is safe to call frequently from Python:
+    /// integer counters are read atomically and the per-file map requires only
+    /// a brief lock.
+    pub fn get_progress(&self) -> Result<ProgressSnapshot, SessionError> {
+        self.progress.snapshot()
     }
 
     /// Wait for all downloads to complete and return their results.
@@ -223,24 +182,19 @@ impl DownloadGroup {
 /// Commands sent to the background worker thread
 pub(crate) enum GroupCommand {
     DownloadFile {
-        file_hash: String,
-        file_size: u64,
+        file_info: XetFileInfo,
         dest_path: PathBuf,
-        response_tx: oneshot::Sender<Result<Ulid, SessionError>>,
+        response_tx: oneshot::Sender<Result<TaskHandle, SessionError>>,
     },
     Finish {
         response_tx: oneshot::Sender<Result<Vec<DownloadResult>, SessionError>>,
     },
 }
 
-/// Handle for a single download task
-pub(crate) struct DownloadTaskHandle {
-    task_id: Ulid,
+/// Handle for a single download task tracked internally by DownloadGroup.
+pub(crate) struct InnerDownloadTaskHandle {
     dest_path: PathBuf,
-    file_hash: String,
-    file_size: u64,
-    join_handle: JoinHandle<Result<PathBuf, SessionError>>,
-    status: Arc<Mutex<TaskStatus>>,
+    join_handle: JoinHandle<Result<XetFileInfo, SessionError>>,
 }
 
 /// All shared state owned by a single DownloadGroup instance.
@@ -251,7 +205,7 @@ pub struct DownloadGroupInner {
     session: XetSession,
 
     // Active download tasks for this group
-    active_tasks: RwLock<HashMap<Ulid, DownloadTaskHandle>>,
+    active_tasks: RwLock<HashMap<Ulid, InnerDownloadTaskHandle>>,
 
     // Aggregate + per-file progress, fed into FileDownloadSession as a TrackingProgressUpdater
     progress: Arc<GroupProgress>,
@@ -300,19 +254,16 @@ impl DownloadGroupInner {
     fn spawn_download_task(
         self: &Arc<Self>,
         download_session: Arc<FileDownloadSession>,
-        file_hash: String,
-        file_size: u64,
+        file_info: XetFileInfo,
         dest_path: PathBuf,
         status: Arc<Mutex<TaskStatus>>,
-    ) -> JoinHandle<Result<PathBuf, SessionError>> {
+        tracking_id: Ulid,
+    ) -> JoinHandle<Result<XetFileInfo, SessionError>> {
         self.session.runtime.spawn(async move {
             *status.lock()? = TaskStatus::Running;
 
-            let file_info = XetFileInfo::new(file_hash, file_size);
-            let tracking_id = dest_path.to_string_lossy().to_string();
-
             let result: Result<_, SessionError> = download_session
-                .download_file(&file_info, &dest_path, Some(&tracking_id))
+                .download_file(&file_info, &dest_path, tracking_id)
                 .await
                 .map_err(SessionError::from);
 
@@ -323,44 +274,40 @@ impl DownloadGroupInner {
             };
             *status.lock()? = new_status;
 
-            result.map(|_| dest_path)
+            Ok(XetFileInfo {
+                hash: file_info.hash,
+                file_size: result?,
+            })
         })
     }
 
     /// Handle a `DownloadFile` command from the public API.
     pub(crate) async fn handle_download_file(
         self: &Arc<Self>,
-        file_hash: String,
-        file_size: u64,
+        file_info: XetFileInfo,
         dest_path: PathBuf,
-    ) -> Result<Ulid, SessionError> {
+    ) -> Result<TaskHandle, SessionError> {
         self.check_accepting_tasks()?;
 
-        let task_id = Ulid::new();
+        let tracking_id = Ulid::new();
         let status = Arc::new(Mutex::new(TaskStatus::Queued));
+
+        let task_handle = TaskHandle {
+            status: status.clone(),
+            group_progress: self.progress.clone(),
+            tracking_id,
+        };
 
         let download_session_arc = self.get_or_create_download_session().await?;
 
-        let join_handle = self.spawn_download_task(
-            download_session_arc,
-            file_hash.clone(),
-            file_size,
-            dest_path.clone(),
-            status.clone(),
-        );
+        let join_handle =
+            self.spawn_download_task(download_session_arc, file_info.clone(), dest_path.clone(), status, tracking_id);
 
-        let handle = DownloadTaskHandle {
-            task_id,
-            dest_path,
-            file_hash,
-            file_size,
-            join_handle,
-            status,
-        };
+        let handle = InnerDownloadTaskHandle { dest_path, join_handle };
 
-        self.active_tasks.write()?.insert(task_id, handle);
+        self.active_tasks.write()?.insert(tracking_id, handle);
 
-        Ok(task_id)
+        Ok(task_handle)
     }
 
     /// Handle a `Finish` command from the public API.
@@ -382,12 +329,11 @@ impl DownloadGroupInner {
 
         let mut results = Vec::new();
         for (_task_id, handle) in handles {
-            let dest_path = handle.join_handle.await.map_err(SessionError::TaskJoinError)??;
+            let file_info = handle.join_handle.await.map_err(SessionError::TaskJoinError)??;
 
             results.push(DownloadResult {
-                dest_path,
-                file_hash: handle.file_hash,
-                file_size: handle.file_size,
+                dest_path: handle.dest_path,
+                file_info,
             });
         }
 
@@ -427,10 +373,8 @@ pub struct DownloadProgress {
 pub struct DownloadResult {
     /// Local path where the file was written.
     pub dest_path: PathBuf,
-    /// Content-addressed hash of the downloaded file.
-    pub file_hash: String,
-    /// File size in bytes.
-    pub file_size: u64,
+    /// Xet file hash and size of the downloaded file.
+    pub file_info: XetFileInfo,
 }
 
 #[cfg(test)]
@@ -470,7 +414,13 @@ mod tests {
         let group = session.new_download_group()?;
         session.abort().unwrap();
         let err = group
-            .download_file("abc123".to_string(), 1024, PathBuf::from("dest.bin"))
+            .download_file(
+                XetFileInfo {
+                    hash: "abc123".to_string(),
+                    file_size: 1024,
+                },
+                PathBuf::from("dest.bin"),
+            )
             .unwrap_err();
         assert!(matches!(err, SessionError::Aborted));
         Ok(())
@@ -480,8 +430,10 @@ mod tests {
     fn test_get_progress_empty_initially() -> Result<(), Box<dyn std::error::Error>> {
         let session = XetSession::new(None, None, None, None)?;
         let group = session.new_download_group()?;
-        let progress = group.get_progress();
-        assert!(progress.is_empty());
+        let snapshot = group.get_progress()?;
+        let total = snapshot.total();
+        assert_eq!(total.total_bytes, 0);
+        assert_eq!(total.total_bytes_completed, 0);
         Ok(())
     }
 

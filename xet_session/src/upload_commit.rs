@@ -5,14 +5,13 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex, RwLock};
 
 use data::{FileUploadSession, SingleFileCleaner, XetFileInfo};
-use tokio::sync::Mutex as TokioMutex;
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{Mutex as TokioMutex, mpsc, oneshot};
 use tokio::task::JoinHandle;
 use ulid::Ulid;
 
 use crate::common::{GroupState, create_translator_config};
 use crate::errors::SessionError;
-use crate::progress::{FileProgressSnapshot, GroupProgress, TaskStatus};
+use crate::progress::{GroupProgress, ProgressSnapshot, TaskHandle, TaskStatus};
 use crate::session::XetSession;
 
 /// Groups related file uploads into a single atomic commit.
@@ -119,7 +118,7 @@ impl UploadCommit {
     /// Returns [`SessionError::Aborted`] if the session has been aborted, or
     /// [`SessionError::AlreadyCommitted`] if [`commit`](Self::commit) has
     /// already been called.
-    pub fn upload_from_path(&self, file_path: PathBuf) -> Result<Ulid, SessionError> {
+    pub fn upload_from_path(&self, file_path: PathBuf) -> Result<TaskHandle, SessionError> {
         self.session.check_alive()?;
         let (response_tx, response_rx) = oneshot::channel();
 
@@ -165,7 +164,7 @@ impl UploadCommit {
         &self,
         file_name: Option<String>,
         file_size: u64,
-    ) -> Result<(Ulid, SingleFileCleaner), SessionError> {
+    ) -> Result<(TaskHandle, SingleFileCleaner), SessionError> {
         self.session.check_alive()?;
         let (response_tx, response_rx) = oneshot::channel();
 
@@ -185,7 +184,7 @@ impl UploadCommit {
     /// Queue raw bytes for upload, starting the transfer immediately.
     ///
     /// Returns the task ID. See [`upload_file`](Self::upload_file) for details.
-    pub fn upload_bytes(&self, bytes: Vec<u8>) -> Result<Ulid, SessionError> {
+    pub fn upload_bytes(&self, bytes: Vec<u8>) -> Result<TaskHandle, SessionError> {
         self.session.check_alive()?;
         let (response_tx, response_rx) = oneshot::channel();
 
@@ -208,50 +207,8 @@ impl UploadCommit {
     }
 
     /// Return a snapshot of progress for every queued upload.
-    ///
-    /// Per-file byte counts come from [`TaskProgress`], which is updated by
-    /// the `FileUploadSession` callback.  The method is safe to call frequently
-    /// from Python: integer counters are read atomically and the per-file map
-    /// requires only a brief lock.
-    pub fn get_progress(&self) -> Vec<UploadProgress> {
-        let tasks = match self.active_tasks.read() {
-            Ok(tasks) => tasks,
-            Err(e) => {
-                tracing::error!("Failed to acquire read lock on active_tasks: {}", e);
-                return Vec::new();
-            },
-        };
-
-        // Build a name→(total, completed) lookup from TaskProgress.
-        let (_, files) = self.progress.snapshot();
-        let file_snapshots: std::collections::HashMap<String, FileProgressSnapshot> =
-            files.into_iter().map(|s| (s.item_name.to_string(), s)).collect();
-
-        tasks
-            .values()
-            .filter_map(|handle| match handle.status.lock() {
-                Ok(status) => {
-                    let (bytes_total, bytes_completed) = handle
-                        .file_name
-                        .as_deref()
-                        .and_then(|name| file_snapshots.get(name))
-                        .map(|s| (s.total_bytes, s.bytes_completed))
-                        .unwrap_or((0, 0));
-
-                    Some(UploadProgress {
-                        task_id: handle.task_id,
-                        file_name: handle.file_name.clone(),
-                        bytes_completed,
-                        bytes_total,
-                        status: *status,
-                    })
-                },
-                Err(e) => {
-                    tracing::error!("Failed to acquire lock on task status for {}: {}", handle.task_id, e);
-                    None
-                },
-            })
-            .collect()
+    pub fn get_progress(&self) -> Result<ProgressSnapshot, SessionError> {
+        self.progress.snapshot()
     }
 
     /// Wait for all uploads to complete and push metadata to the CAS server.
@@ -280,28 +237,26 @@ impl UploadCommit {
 pub(crate) enum CommitCommand {
     UploadFromPath {
         file_path: PathBuf,
-        response_tx: oneshot::Sender<Result<Ulid, SessionError>>,
+        response_tx: oneshot::Sender<Result<TaskHandle, SessionError>>,
     },
     UploadBytes {
         bytes: Vec<u8>,
-        response_tx: oneshot::Sender<Result<Ulid, SessionError>>,
+        response_tx: oneshot::Sender<Result<TaskHandle, SessionError>>,
     },
     UploadFile {
         file_name: Option<String>,
         file_size: u64,
-        response_tx: oneshot::Sender<Result<(Ulid, SingleFileCleaner), SessionError>>,
+        response_tx: oneshot::Sender<Result<(TaskHandle, SingleFileCleaner), SessionError>>,
     },
     Commit {
         response_tx: oneshot::Sender<Result<Vec<FileMetadata>, SessionError>>,
     },
 }
 
-/// Handle for a single upload task
-pub(crate) struct UploadTaskHandle {
-    task_id: Ulid,
+/// Handle for a single upload task tracked internally by UploadCommit.
+pub(crate) struct InnerUploadTaskHandle {
     file_name: Option<String>,
     join_handle: JoinHandle<Result<XetFileInfo, SessionError>>,
-    status: Arc<Mutex<TaskStatus>>,
 }
 
 /// All shared state owned by a single UploadCommit instance.
@@ -312,7 +267,7 @@ pub struct UploadCommitInner {
     session: XetSession,
 
     // Active upload tasks for this commit
-    active_tasks: RwLock<HashMap<Ulid, UploadTaskHandle>>,
+    active_tasks: RwLock<HashMap<Ulid, InnerUploadTaskHandle>>,
 
     // Aggregate + per-file progress, fed into FileUploadSession as a TrackingProgressUpdater
     progress: Arc<GroupProgress>,
@@ -363,11 +318,12 @@ impl UploadCommitInner {
         upload_session: Arc<FileUploadSession>,
         file_path: PathBuf,
         status: Arc<Mutex<TaskStatus>>,
+        tracking_id: Ulid,
     ) -> JoinHandle<Result<XetFileInfo, SessionError>> {
         self.session.runtime.spawn(async move {
             *status.lock()? = TaskStatus::Running;
 
-            let files = vec![(file_path.as_path(), None)];
+            let files = vec![(file_path.as_path(), None, tracking_id)];
 
             let result: Result<XetFileInfo, SessionError> = upload_session
                 .upload_files(files)
@@ -387,26 +343,29 @@ impl UploadCommitInner {
     }
 
     /// Handle an `UploadFile` command from the public API.
-    async fn start_upload_file_from_path(&self, file_path: PathBuf) -> Result<Ulid, SessionError> {
+    async fn start_upload_file_from_path(&self, file_path: PathBuf) -> Result<TaskHandle, SessionError> {
         self.check_accepting_tasks()?;
 
-        let task_id = Ulid::new();
+        let tracking_id = Ulid::new();
         let status = Arc::new(Mutex::new(TaskStatus::Queued));
+        let task_handle = TaskHandle {
+            status: status.clone(),
+            group_progress: self.progress.clone(),
+            tracking_id,
+        };
 
         let upload_session_arc = self.get_or_create_upload_session().await?;
 
-        let join_handle = self.spawn_upload_task(upload_session_arc, file_path.clone(), status.clone());
+        let join_handle = self.spawn_upload_task(upload_session_arc, file_path.clone(), status.clone(), tracking_id);
 
-        let handle = UploadTaskHandle {
-            task_id,
+        let handle = InnerUploadTaskHandle {
             file_name: file_path.file_name().and_then(|n| n.to_str()).map(|s| s.to_string()),
             join_handle,
-            status,
         };
 
-        self.active_tasks.write()?.insert(task_id, handle);
+        self.active_tasks.write()?.insert(tracking_id, handle);
 
-        Ok(task_id)
+        Ok(task_handle)
     }
 
     /// Handle a `StartClean` command: initialise the upload session and return a
@@ -415,19 +374,25 @@ impl UploadCommitInner {
         &self,
         file_name: Option<String>,
         file_size: u64,
-    ) -> Result<(Ulid, SingleFileCleaner), SessionError> {
+    ) -> Result<(TaskHandle, SingleFileCleaner), SessionError> {
         self.check_accepting_tasks()?;
 
-        let task_id = Ulid::new();
+        let tracking_id = Ulid::new();
+        let status = Arc::new(Mutex::new(TaskStatus::Queued));
+        let task_handle = TaskHandle {
+            status,
+            group_progress: self.progress.clone(),
+            tracking_id,
+        };
         let upload_session = self.get_or_create_upload_session().await?;
         let file_name_arc: Option<std::sync::Arc<str>> = file_name.as_deref().map(std::sync::Arc::from);
-        let cleaner = upload_session.start_clean(file_name_arc, file_size, None).await;
+        let cleaner = upload_session.start_clean(file_name_arc, file_size, None, tracking_id).await;
 
-        Ok((task_id, cleaner))
+        Ok((task_handle, cleaner))
     }
 
     /// Handle an `UploadBytes` command from the public API.
-    async fn start_upload_bytes(&self, _bytes: Vec<u8>) -> Result<Ulid, SessionError> {
+    async fn start_upload_bytes(&self, _bytes: Vec<u8>) -> Result<TaskHandle, SessionError> {
         // TODO: Implement upload_bytes
         Err(SessionError::other("upload_bytes not yet implemented"))
     }
@@ -541,8 +506,10 @@ mod tests {
     fn test_get_progress_empty_initially() -> Result<(), Box<dyn std::error::Error>> {
         let session = XetSession::new(None, None, None, None)?;
         let commit = session.new_upload_commit()?;
-        let progress = commit.get_progress();
-        assert!(progress.is_empty());
+        let snapshot = commit.get_progress()?;
+        let total = snapshot.total();
+        assert_eq!(total.total_bytes, 0);
+        assert_eq!(total.total_bytes_completed, 0);
         Ok(())
     }
 

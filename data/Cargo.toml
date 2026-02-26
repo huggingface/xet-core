@@ -46,6 +46,7 @@ bytes = { workspace = true }
 chrono = { workspace = true }
 clap = { workspace = true }
 http = { workspace = true }
+itertools = { workspace = true }
 lazy_static = { workspace = true }
 more-asserts = { workspace = true }
 prometheus = { workspace = true }
@@ -68,10 +69,10 @@ sha2 = { workspace = true, features = ["asm"] }
 sha2 = { workspace = true }
 
 [dev-dependencies]
-serial_test = { workspace = true }
-tracing-test = { workspace = true }
 ctor = { workspace = true }
 dirs = { workspace = true }
+serial_test = { workspace = true }
+tracing-test = { workspace = true }
 
 [features]
 strict = []

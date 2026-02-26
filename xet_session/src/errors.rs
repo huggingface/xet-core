@@ -1,6 +1,7 @@
 //! Error types for xet-session
 
 use thiserror::Error;
+use ulid::Ulid;
 
 /// Errors that can occur during session operations.
 ///
@@ -36,6 +37,9 @@ pub enum SessionError {
     /// deduplication, CAS communication, etc.).
     #[error("Data processing error: {0}")]
     DataProcessing(#[from] data::errors::DataProcessingError),
+
+    #[error("Invalid task id: {0}")]
+    InvalidTaskID(Ulid),
 
     /// A `std::sync::Mutex` or `RwLock` was poisoned by a panicking thread.
     #[error("Lock poisoned: {0}")]

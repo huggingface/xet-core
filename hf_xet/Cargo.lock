@@ -763,6 +763,7 @@ dependencies = [
  "file_reconstruction",
  "http",
  "hub_client",
+ "itertools 0.14.0",
  "lazy_static",
  "mdb_shard",
  "merklehash",
@@ -983,6 +984,7 @@ dependencies = [
  "progress_tracking",
  "thiserror 2.0.18",
  "tokio",
+ "tokio-util",
  "tracing",
  "utils",
  "xet_config",
@@ -2551,6 +2553,7 @@ dependencies = [
  "merklehash",
  "more-asserts",
  "tokio",
+ "ulid",
  "utils",
 ]
 

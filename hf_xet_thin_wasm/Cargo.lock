@@ -1315,6 +1315,7 @@ dependencies = [
  "merklehash",
  "more-asserts",
  "tokio",
+ "ulid",
  "utils",
 ]
 
@@ -1875,6 +1876,16 @@ name = "typewit"
 version = "1.14.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f8c1ae7cc0fdb8b842d65d127cb981574b0d2b249b74d1c7a2986863dc134f71"
+
+[[package]]
+name = "ulid"
+version = "1.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "470dbf6591da1b39d43c14523b2b469c86879a53e8b758c8e090a470fe7b1fbe"
+dependencies = [
+ "rand 0.9.1",
+ "web-time",
+]
 
 [[package]]
 name = "unicode-ident"
