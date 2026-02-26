@@ -1,9 +1,12 @@
 use std::fmt::Debug;
 use std::sync::Arc;
 
+use ulid::Ulid;
+
 /// A class to make all the bookkeeping clear with progress updating.
 #[derive(Clone, Debug)]
 pub struct ItemProgressUpdate {
+    pub tracking_id: Ulid,
     pub item_name: Arc<str>,
 
     // The total bytes in this item, independent from the total bytes of all items.
@@ -17,6 +20,7 @@ pub struct ItemProgressUpdate {
 
 impl ItemProgressUpdate {
     pub fn merge_in(&mut self, other: ItemProgressUpdate) {
+        debug_assert_eq!(self.tracking_id, other.tracking_id);
         debug_assert_eq!(self.item_name, other.item_name);
 
         // Just in case the total got updated, as can be the case when we don't know the

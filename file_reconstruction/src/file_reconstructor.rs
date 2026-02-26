@@ -338,6 +338,7 @@ mod tests {
     use progress_tracking::NoOpProgressUpdater;
     use progress_tracking::download_tracking::DownloadProgressTracker;
     use tokio_util::sync::CancellationToken;
+    use ulid::Ulid;
 
     use super::*;
 
@@ -598,7 +599,7 @@ mod tests {
         let writer = StaticCursorWriter(buffer.clone());
 
         let progress_updater =
-            DownloadProgressTracker::new(NoOpProgressUpdater::new()).new_download_task(Arc::from("file"));
+            DownloadProgressTracker::new(NoOpProgressUpdater::new()).new_download_task(Ulid::new(), Arc::from("file"));
         let bytes_written = FileReconstructor::new(&(client.clone() as Arc<dyn Client>), file_contents.file_hash)
             .with_config(&config)
             .with_progress_updater(progress_updater.clone())
@@ -621,7 +622,7 @@ mod tests {
         let writer = StaticCursorWriter(buffer.clone());
 
         let progress_updater =
-            DownloadProgressTracker::new(NoOpProgressUpdater::new()).new_download_task(Arc::from("file"));
+            DownloadProgressTracker::new(NoOpProgressUpdater::new()).new_download_task(Ulid::new(), Arc::from("file"));
         let bytes_written = FileReconstructor::new(&(client.clone() as Arc<dyn Client>), file_contents.file_hash)
             .with_config(&config)
             .with_byte_range(range)
@@ -642,7 +643,7 @@ mod tests {
         let config = test_config();
 
         let tracker = DownloadProgressTracker::new(NoOpProgressUpdater::new());
-        let task = tracker.new_download_task(Arc::from("test_file.bin"));
+        let task = tracker.new_download_task(Ulid::new(), Arc::from("test_file.bin"));
 
         let buffer = Arc::new(std::sync::Mutex::new(Cursor::new(Vec::new())));
         let writer = StaticCursorWriter(buffer.clone());
@@ -673,7 +674,7 @@ mod tests {
         let file_size = file_contents.data.len() as u64;
 
         let tracker = DownloadProgressTracker::new(NoOpProgressUpdater::new());
-        let task = tracker.new_download_task(Arc::from("test_file.bin"));
+        let task = tracker.new_download_task(Ulid::new(), Arc::from("test_file.bin"));
 
         // Simulate data_client.rs: set final size before reconstruction.
         task.update_item_size(file_size, true);
