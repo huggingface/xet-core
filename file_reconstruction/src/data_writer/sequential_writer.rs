@@ -7,8 +7,9 @@ use bytes::Bytes;
 use cas_types::FileRange;
 use progress_tracking::download_tracking::DownloadTaskUpdater;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
-use tokio::sync::{Mutex, OwnedSemaphorePermit, oneshot};
+use tokio::sync::{Mutex, oneshot};
 use tokio::task::{JoinHandle, JoinSet};
+use utils::adjustable_semaphore::AdjustableSemaphorePermit;
 use xet_runtime::{XetRuntime, check_sigint_shutdown};
 
 use crate::data_writer::{DataFuture, DataWriter};
@@ -29,13 +30,13 @@ const WRITEV_MAX_SLICE: usize = 24;
 enum QueueItem {
     Data {
         receiver: oneshot::Receiver<Bytes>,
-        permit: Option<OwnedSemaphorePermit>,
+        permit: Option<AdjustableSemaphorePermit>,
     },
     Finish,
 }
 
 /// Pending write data with its associated permit.
-type PendingWrite = (Bytes, Option<OwnedSemaphorePermit>);
+type PendingWrite = (Bytes, Option<AdjustableSemaphorePermit>);
 
 /// Background writer thread that processes queue items and writes to the output.
 struct WriterThread<W: Write + Send + 'static> {
@@ -231,7 +232,7 @@ impl DataWriter for SequentialWriter {
     async fn set_next_term_data_source(
         &self,
         byte_range: FileRange,
-        permit: Option<OwnedSemaphorePermit>,
+        permit: Option<AdjustableSemaphorePermit>,
         data_future: DataFuture,
     ) -> Result<()> {
         self.error_state.check()?;
@@ -425,7 +426,7 @@ mod tests {
     use std::io;
     use std::time::Duration;
 
-    use tokio::sync::Semaphore;
+    use utils::adjustable_semaphore::AdjustableSemaphore;
 
     use super::*;
 
@@ -829,12 +830,12 @@ mod tests {
     async fn test_semaphore_permit_released_after_write() {
         let buffer = Arc::new(std::sync::Mutex::new(Vec::new()));
         let buffer_clone = buffer.clone();
-        let semaphore = Arc::new(Semaphore::new(2));
+        let semaphore = AdjustableSemaphore::new(2, (0, 2));
 
         let writer = Arc::new(SequentialWriter::new(Box::new(SharedBuffer(buffer_clone)), None));
 
-        let permit1 = semaphore.clone().acquire_owned().await.unwrap();
-        let permit2 = semaphore.clone().acquire_owned().await.unwrap();
+        let permit1 = semaphore.acquire().await.unwrap();
+        let permit2 = semaphore.acquire().await.unwrap();
 
         assert_eq!(semaphore.available_permits(), 0);
 
@@ -1009,12 +1010,12 @@ mod tests {
     async fn test_vectorized_permit_release() {
         let test_writer = TestWriter::new(TestWriterConfig::vectorized());
         let buffer = test_writer.buffer.clone();
-        let semaphore = Arc::new(Semaphore::new(2));
+        let semaphore = AdjustableSemaphore::new(2, (0, 2));
 
         let writer = Arc::new(SequentialWriter::new_vectorized(Box::new(test_writer), None));
 
-        let permit1 = semaphore.clone().acquire_owned().await.unwrap();
-        let permit2 = semaphore.clone().acquire_owned().await.unwrap();
+        let permit1 = semaphore.acquire().await.unwrap();
+        let permit2 = semaphore.acquire().await.unwrap();
 
         assert_eq!(semaphore.available_permits(), 0);
 
@@ -1044,13 +1045,13 @@ mod tests {
     async fn test_vectorized_partial_permit_release() {
         let test_writer = TestWriter::new(TestWriterConfig::vectorized_partial(2));
         let buffer = test_writer.buffer.clone();
-        let semaphore = Arc::new(Semaphore::new(3));
+        let semaphore = AdjustableSemaphore::new(3, (0, 3));
 
         let writer = Arc::new(SequentialWriter::new_vectorized(Box::new(test_writer), None));
 
-        let permit1 = semaphore.clone().acquire_owned().await.unwrap();
-        let permit2 = semaphore.clone().acquire_owned().await.unwrap();
-        let permit3 = semaphore.clone().acquire_owned().await.unwrap();
+        let permit1 = semaphore.acquire().await.unwrap();
+        let permit2 = semaphore.acquire().await.unwrap();
+        let permit3 = semaphore.acquire().await.unwrap();
 
         assert_eq!(semaphore.available_permits(), 0);
 

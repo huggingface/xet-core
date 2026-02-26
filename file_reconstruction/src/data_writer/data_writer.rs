@@ -7,7 +7,7 @@ use std::sync::Arc;
 use bytes::Bytes;
 use cas_types::FileRange;
 use progress_tracking::download_tracking::DownloadTaskUpdater;
-use tokio::sync::OwnedSemaphorePermit;
+use utils::adjustable_semaphore::AdjustableSemaphorePermit;
 use xet_config::ReconstructionConfig;
 
 use crate::data_writer::DataOutput;
@@ -32,7 +32,7 @@ pub trait DataWriter: Send + Sync + 'static {
     async fn set_next_term_data_source(
         &self,
         byte_range: FileRange,
-        permit: Option<OwnedSemaphorePermit>,
+        permit: Option<AdjustableSemaphorePermit>,
         data_future: DataFuture,
     ) -> Result<()>;
 

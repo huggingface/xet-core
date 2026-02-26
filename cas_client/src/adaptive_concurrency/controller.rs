@@ -256,7 +256,10 @@ impl AdaptiveConcurrencyController {
         let config = xet_config();
         Arc::new(Self {
             state: Mutex::new(ConcurrencyControllerState::new()),
-            concurrency_semaphore: AdjustableSemaphore::new(current_concurrency, (min_concurrency, max_concurrency)),
+            concurrency_semaphore: AdjustableSemaphore::new(
+                current_concurrency as u64,
+                (min_concurrency as u64, max_concurrency as u64),
+            ),
 
             min_concurrency_increase_delay: Duration::from_millis(config.client.ac_min_adjustment_window_ms),
             min_concurrency_decrease_delay: Duration::from_millis(config.client.ac_min_adjustment_window_ms),
@@ -273,7 +276,10 @@ impl AdaptiveConcurrencyController {
 
         Arc::new(Self {
             state: Mutex::new(ConcurrencyControllerState::new()),
-            concurrency_semaphore: AdjustableSemaphore::new(concurrency, (concurrency, concurrency)),
+            concurrency_semaphore: AdjustableSemaphore::new(
+                concurrency as u64,
+                (concurrency as u64, concurrency as u64),
+            ),
             adjustment_disabled: true,
             min_concurrency_increase_delay: Default::default(),
             min_concurrency_decrease_delay: Default::default(),
@@ -315,7 +321,7 @@ impl AdaptiveConcurrencyController {
         let info = Arc::new(ConnectionPermitInfo {
             controller: Arc::clone(self),
             transfer_start_time: Mutex::new(Instant::now()),
-            starting_concurrency: self.concurrency_semaphore.active_permits(),
+            starting_concurrency: self.concurrency_semaphore.active_permits() as usize,
             rtt_model_at_start: Some(self.state.lock().await.rtt_predictor.clone()),
             report_portion: AtomicU32::new(0),
             last_partial_report_ms: AtomicU64::new(0),
@@ -327,17 +333,17 @@ impl AdaptiveConcurrencyController {
     /// The current concurrency; there may be more permits out there due to the lazy resolution of decrements, but those
     /// are resolved before any new permits are issued.
     pub fn total_permits(&self) -> usize {
-        self.concurrency_semaphore.total_permits()
+        self.concurrency_semaphore.total_permits() as usize
     }
 
     /// The number of permits available currently.  Used mainly for testing.
     pub fn available_permits(&self) -> usize {
-        self.concurrency_semaphore.available_permits()
+        self.concurrency_semaphore.available_permits() as usize
     }
 
     /// The number of currently active permits (concurrent connections).
     pub fn active_permits(&self) -> usize {
-        self.concurrency_semaphore.active_permits()
+        self.concurrency_semaphore.active_permits() as usize
     }
 
     /// Get the current network model state from the concurrency controller.
@@ -463,7 +469,7 @@ impl AdaptiveConcurrencyController {
                 .unwrap_or(f64::INFINITY);
 
             if predicted_rtt < target_rtt_secs {
-                self.concurrency_semaphore.increment_total_permits();
+                self.concurrency_semaphore.increment_total_permits(1);
                 let new_concurrency_actual = self.concurrency_semaphore.total_permits();
                 state_lg.last_adjustment_time = Instant::now();
 
@@ -491,7 +497,11 @@ impl AdaptiveConcurrencyController {
             // permits too quickly.
             if state_lg.last_adjustment_time.elapsed() > self.min_concurrency_decrease_delay {
                 let old_concurrency = self.concurrency_semaphore.total_permits();
-                self.concurrency_semaphore.decrement_total_permits();
+
+                // Attempt decrement; we're delegating the bounds checking entirely to the semaphore, so
+                // we don't care about whether it succeeded or not.
+                let _ = self.concurrency_semaphore.decrement_total_permits(1);
+
                 let new_concurrency = self.concurrency_semaphore.total_permits();
                 state_lg.last_adjustment_time = Instant::now();
 
@@ -686,9 +696,11 @@ impl ConcurrencyControllerState {
 impl AdaptiveConcurrencyController {
     pub fn new_testing(concurrency: usize, concurrency_bounds: (usize, usize)) -> Arc<Self> {
         Arc::new(Self {
-            // Start with 2x the minimum; increase over time.
             state: Mutex::new(ConcurrencyControllerState::new_testing()),
-            concurrency_semaphore: AdjustableSemaphore::new(concurrency, concurrency_bounds),
+            concurrency_semaphore: AdjustableSemaphore::new(
+                concurrency as u64,
+                (concurrency_bounds.0 as u64, concurrency_bounds.1 as u64),
+            ),
             min_concurrency_increase_delay: Duration::from_millis(test_constants::INCR_SPACING_MS),
             min_concurrency_decrease_delay: Duration::from_millis(test_constants::DECR_SPACING_MS),
             adjustment_disabled: false,
