@@ -7,6 +7,7 @@ use more_asserts::*;
 use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
 use tokio::time::Instant;
+use ulid::Ulid;
 
 use crate::{ProgressUpdate, TrackingProgressUpdater};
 
@@ -40,7 +41,7 @@ struct SpeedWindowSample {
 #[derive(Default)]
 struct AggregationState {
     pending: ProgressUpdate,
-    item_lookup: HashMap<Arc<str>, usize>,
+    item_lookup: HashMap<Ulid, usize>,
     finished: bool,
 
     /// A round-robin sampling window
@@ -66,7 +67,7 @@ impl AggregationState {
         debug_assert!(!self.finished);
 
         for item in other.item_updates.drain(..) {
-            match self.item_lookup.entry(item.item_name.clone()) {
+            match self.item_lookup.entry(item.tracking_id) {
                 HashMapEntry::Occupied(entry) => {
                     self.pending.item_updates[*entry.get()].merge_in(item);
                 },
@@ -235,6 +236,8 @@ mod tests {
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::Duration;
 
+    use ulid::Ulid;
+
     use super::*;
     use crate::ItemProgressUpdate;
 
@@ -271,11 +274,16 @@ mod tests {
         let aggregator =
             AggregatingProgressUpdater::new(mock.clone(), Duration::from_millis(50), Duration::from_millis(200));
 
+        let file_a = (Ulid::new(), "fileA.txt");
+        let file_b = (Ulid::new(), "fileB.txt");
+        let file_c = (Ulid::new(), "fileC.txt");
+
         // First update: fileA
         aggregator
             .register_updates(ProgressUpdate {
                 item_updates: vec![ItemProgressUpdate {
-                    item_name: Arc::from("fileA.txt"),
+                    tracking_id: file_a.0,
+                    item_name: file_a.1.into(),
                     total_bytes: 100,
                     bytes_completed: 10,
                     bytes_completion_increment: 10,
@@ -298,7 +306,8 @@ mod tests {
         aggregator
             .register_updates(ProgressUpdate {
                 item_updates: vec![ItemProgressUpdate {
-                    item_name: Arc::from("fileB.txt"),
+                    tracking_id: file_b.0,
+                    item_name: file_b.1.into(),
                     total_bytes: 200,
                     bytes_completed: 50,
                     bytes_completion_increment: 50,
@@ -322,13 +331,15 @@ mod tests {
             .register_updates(ProgressUpdate {
                 item_updates: vec![
                     ItemProgressUpdate {
-                        item_name: Arc::from("fileC.txt"),
+                        tracking_id: file_c.0,
+                        item_name: file_c.1.into(),
                         total_bytes: 300,
                         bytes_completed: 90,
                         bytes_completion_increment: 90,
                     },
                     ItemProgressUpdate {
-                        item_name: Arc::from("fileA.txt"),
+                        tracking_id: file_a.0,
+                        item_name: file_a.1.into(),
                         total_bytes: 100,
                         bytes_completed: 30,
                         bytes_completion_increment: 20,

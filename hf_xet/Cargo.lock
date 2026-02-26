@@ -762,6 +762,7 @@ dependencies = [
  "error_printer",
  "file_reconstruction",
  "hub_client",
+ "itertools 0.14.0",
  "lazy_static",
  "mdb_shard",
  "merklehash",
@@ -2549,6 +2550,7 @@ dependencies = [
  "merklehash",
  "more-asserts",
  "tokio",
+ "ulid",
  "utils",
 ]
 

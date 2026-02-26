@@ -4,6 +4,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use more_asserts::{assert_ge, assert_le};
 use tokio::sync::Mutex;
+use ulid::Ulid;
 
 use crate::{ProgressUpdate, TrackingProgressUpdater};
 
@@ -16,7 +17,7 @@ struct ItemProgressData {
 
 #[derive(Debug, Default)]
 pub struct ProgressUpdaterVerificationWrapperImpl {
-    items: HashMap<Arc<str>, ItemProgressData>,
+    items: HashMap<Ulid, (Arc<str>, ItemProgressData)>,
     total_transfer_bytes: u64,
     total_transfer_bytes_completed: u64,
     total_bytes: u64,
@@ -50,11 +51,11 @@ impl ProgressUpdaterVerificationWrapper {
     pub async fn assert_complete(&self) {
         let tr = self.tr.lock().await;
 
-        for (item_name, data) in tr.items.iter() {
+        for (tracking_id, (item_name, data)) in tr.items.iter() {
             assert_eq!(
                 data.last_completed, data.total_count,
-                "Item '{}' is not fully complete: {}/{}",
-                item_name, data.last_completed, data.total_count
+                "Item({}) '{}' is not fully complete: {}/{}",
+                tracking_id, item_name, data.last_completed, data.total_count
             );
         }
 
@@ -69,34 +70,37 @@ impl TrackingProgressUpdater for ProgressUpdaterVerificationWrapper {
         let mut tr = self.tr.lock().await;
 
         for up in update.item_updates.iter() {
-            let entry = tr.items.entry(up.item_name.clone()).or_insert(ItemProgressData {
-                total_count: 0,
-                last_completed: 0,
-            });
+            let entry = tr.items.entry(up.tracking_id).or_insert((
+                up.item_name.clone(),
+                ItemProgressData {
+                    total_count: 0,
+                    last_completed: 0,
+                },
+            ));
 
             // Record the total_count for this item, allowing it to grow monotonically
             // (e.g. when the file size is not known upfront and is updated incrementally).
-            if entry.total_count == 0 {
-                entry.total_count = up.total_bytes;
+            if entry.1.total_count == 0 {
+                entry.1.total_count = up.total_bytes;
             } else {
                 assert_ge!(
                     up.total_bytes,
-                    entry.total_count,
+                    entry.1.total_count,
                     "total_count for '{}' decreased; was {}, now {}",
                     up.item_name,
-                    entry.total_count,
+                    entry.1.total_count,
                     up.total_bytes
                 );
-                entry.total_count = up.total_bytes;
+                entry.1.total_count = up.total_bytes;
             }
 
             // Check increments:
             // 1) `completed_count` should never go down
             assert!(
-                up.bytes_completed >= entry.last_completed,
+                up.bytes_completed >= entry.1.last_completed,
                 "Item '{}' completed_count went backwards: old={}, new={}",
                 up.item_name,
-                entry.last_completed,
+                entry.1.last_completed,
                 up.bytes_completed
             );
 
@@ -110,15 +114,15 @@ impl TrackingProgressUpdater for ProgressUpdaterVerificationWrapper {
             );
 
             // 3) The increment must match the difference
-            let expected_new = entry.last_completed + up.bytes_completion_increment;
+            let expected_new = entry.1.last_completed + up.bytes_completion_increment;
             assert_eq!(
                 up.bytes_completed, expected_new,
                 "Item '{}': mismatch: last_completed={} + update_increment={} != completed_count={}",
-                up.item_name, entry.last_completed, up.bytes_completion_increment, up.bytes_completed
+                up.item_name, entry.1.last_completed, up.bytes_completion_increment, up.bytes_completed
             );
 
             // Update item record
-            entry.last_completed = up.bytes_completed;
+            entry.1.last_completed = up.bytes_completed;
         }
 
         assert_le!(
@@ -195,6 +199,8 @@ impl TrackingProgressUpdater for ProgressUpdaterVerificationWrapper {
 
 #[cfg(test)]
 mod tests {
+    use ulid::Ulid;
+
     use super::*;
     use crate::ItemProgressUpdate;
 
@@ -221,18 +227,23 @@ mod tests {
         // Wrap it with our verification wrapper
         let wrapper = ProgressUpdaterVerificationWrapper::new(logger.clone());
 
+        let file_a = (Ulid::new(), "fileA");
+        let file_b = (Ulid::new(), "fileB");
+
         // Let's register some progress updates
         wrapper
             .register_updates(ProgressUpdate {
                 item_updates: vec![
                     ItemProgressUpdate {
-                        item_name: Arc::from("fileA"),
+                        tracking_id: file_a.0,
+                        item_name: file_a.1.into(),
                         total_bytes: 100,
                         bytes_completed: 50,
                         bytes_completion_increment: 50,
                     },
                     ItemProgressUpdate {
-                        item_name: Arc::from("fileB"),
+                        tracking_id: file_b.0,
+                        item_name: file_b.1.into(),
                         total_bytes: 200,
                         bytes_completed: 100,
                         bytes_completion_increment: 100,
@@ -255,13 +266,15 @@ mod tests {
             .register_updates(ProgressUpdate {
                 item_updates: vec![
                     ItemProgressUpdate {
-                        item_name: Arc::from("fileA"),
+                        tracking_id: file_a.0,
+                        item_name: file_a.1.into(),
                         total_bytes: 100,
                         bytes_completed: 100,
                         bytes_completion_increment: 50,
                     },
                     ItemProgressUpdate {
-                        item_name: Arc::from("fileB"),
+                        tracking_id: file_b.0,
+                        item_name: file_b.1.into(),
                         total_bytes: 200,
                         bytes_completed: 200,
                         bytes_completion_increment: 100,

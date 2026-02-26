@@ -69,16 +69,11 @@ impl FileDownloadSession {
     /// If `tracking_id` is provided, it is used as the progress item name;
     /// otherwise the write path is used.
     #[instrument(skip_all, name = "FileDownloadSession::download_file", fields(hash = file_info.hash()))]
-    pub async fn download_file(
-        &self,
-        file_info: &XetFileInfo,
-        write_path: &Path,
-        tracking_id: Option<&str>,
-    ) -> Result<u64> {
+    pub async fn download_file(&self, file_info: &XetFileInfo, write_path: &Path, tracking_id: Ulid) -> Result<u64> {
         let semaphore = XetRuntime::current().common().file_download_semaphore.clone();
         let _permit = semaphore.acquire().await?;
 
-        let reconstructor = self.setup_reconstructor(file_info, None, tracking_id, Some(write_path), None)?;
+        let reconstructor = self.setup_reconstructor(file_info, None, tracking_id, Some(write_path))?;
         let n_bytes = reconstructor.reconstruct_to_file(write_path, None).await?;
         prometheus_metrics::FILTER_BYTES_SMUDGED.inc_by(n_bytes);
 
@@ -98,10 +93,10 @@ impl FileDownloadSession {
         file_info: &XetFileInfo,
         source_range: Range<u64>,
         writer: W,
-        tracking_name: Option<Arc<str>>,
+        tracking_id: Ulid,
     ) -> Result<u64> {
         let range = FileRange::new(source_range.start, source_range.end);
-        let reconstructor = self.setup_reconstructor(file_info, Some(range), None, None, tracking_name)?;
+        let reconstructor = self.setup_reconstructor(file_info, Some(range), tracking_id, None)?;
         let n_bytes = reconstructor.reconstruct_to_writer(writer).await?;
         prometheus_metrics::FILTER_BYTES_SMUDGED.inc_by(n_bytes);
 
@@ -122,11 +117,11 @@ impl FileDownloadSession {
         let semaphore = XetRuntime::current().common().file_download_semaphore.clone();
         let _permit = semaphore.acquire().await?;
 
-        let tracking_name = self.tracker_name(None, Some(write_path), None);
+        let tracking_name = self.tracker_name(Some(write_path));
 
         let per_file_tracker = progress_updater.map(|updater| {
             let tracker = DownloadProgressTracker::new(updater);
-            let task = tracker.new_download_task(tracking_name);
+            let task = tracker.new_download_task(Ulid::new(), tracking_name);
             task.update_item_size(file_info.file_size(), true);
             task
         });
@@ -153,20 +148,14 @@ impl FileDownloadSession {
     ///
     /// This path does not acquire the session-level file download semaphore.
     #[instrument(skip_all, name = "FileDownloadSession::download_stream", fields(hash = file_info.hash()))]
-    pub fn download_stream(&self, file_info: &XetFileInfo, tracking_id: Option<&str>) -> Result<DownloadStream> {
-        let reconstructor = self.setup_reconstructor(file_info, None, tracking_id, None, None)?;
+    pub fn download_stream(&self, file_info: &XetFileInfo, tracking_id: Ulid) -> Result<DownloadStream> {
+        let reconstructor = self.setup_reconstructor(file_info, None, tracking_id, None)?;
         Ok(reconstructor.reconstruct_to_stream())
     }
 
-    fn tracker_name(
-        &self,
-        tracking_id: Option<&str>,
-        write_path: Option<&Path>,
-        explicit_name: Option<Arc<str>>,
-    ) -> Arc<str> {
-        explicit_name
-            .or_else(|| tracking_id.map(Arc::from))
-            .or_else(|| write_path.map(|path| Arc::from(path.to_string_lossy().as_ref())))
+    fn tracker_name(&self, write_path: Option<&Path>) -> Arc<str> {
+        write_path
+            .map(|path| Arc::from(path.to_string_lossy().as_ref()))
             .unwrap_or_else(|| Arc::from(""))
     }
 
@@ -175,14 +164,13 @@ impl FileDownloadSession {
         &self,
         file_info: &XetFileInfo,
         range: Option<FileRange>,
-        tracking_id: Option<&str>,
+        tracking_id: Ulid,
         write_path: Option<&Path>,
-        explicit_name: Option<Arc<str>>,
     ) -> Result<FileReconstructor> {
         let file_id = file_info.merkle_hash()?;
-        let tracking_name = self.tracker_name(tracking_id, write_path, explicit_name);
+        let tracking_name = self.tracker_name(write_path);
         let task_updater = self.progress_tracker.as_ref().map(|tracker| {
-            let task = tracker.new_download_task(tracking_name);
+            let task = tracker.new_download_task(tracking_id, tracking_name);
             let size = range
                 .map(|r| r.end.saturating_sub(r.start))
                 .unwrap_or_else(|| file_info.file_size());
@@ -229,7 +217,9 @@ mod tests {
             .await
             .unwrap();
 
-        let mut cleaner = upload_session.start_clean(Some("test".into()), data.len() as u64, None).await;
+        let mut cleaner = upload_session
+            .start_clean(Some("test".into()), data.len() as u64, None, Ulid::new())
+            .await;
         cleaner.add_data(data).await.unwrap();
         let (xfi, _metrics) = cleaner.finish().await.unwrap();
         upload_session.finalize().await.unwrap();
@@ -252,7 +242,7 @@ mod tests {
                 let session = FileDownloadSession::new(config.into(), None).await.unwrap();
 
                 let out_path = temp.path().join("output.txt");
-                let n_bytes = session.download_file(&xfi, &out_path, None).await.unwrap();
+                let n_bytes = session.download_file(&xfi, &out_path, Ulid::new()).await.unwrap();
 
                 assert_eq!(n_bytes, original_data.len() as u64);
                 assert_eq!(read(&out_path).unwrap(), original_data);
@@ -278,7 +268,7 @@ mod tests {
                 let out_path = temp.path().join("deep").join("nested").join("dir").join("output.txt");
                 assert!(!out_path.parent().unwrap().exists());
 
-                session.download_file(&xfi, &out_path, None).await.unwrap();
+                session.download_file(&xfi, &out_path, Ulid::new()).await.unwrap();
 
                 assert_eq!(read(&out_path).unwrap(), original_data);
             })
@@ -301,10 +291,7 @@ mod tests {
                 let session = FileDownloadSession::new(config.into(), None).await.unwrap();
 
                 let out_path = temp.path().join("tracked.txt");
-                let n_bytes = session
-                    .download_file(&xfi, &out_path, Some("my-custom-tracking-id"))
-                    .await
-                    .unwrap();
+                let n_bytes = session.download_file(&xfi, &out_path, Ulid::new()).await.unwrap();
 
                 assert_eq!(n_bytes, original_data.len() as u64);
                 assert_eq!(read(&out_path).unwrap(), original_data);
@@ -333,10 +320,7 @@ mod tests {
                 let mut file = std::fs::OpenOptions::new().write(true).open(&out_path).unwrap();
                 file.seek(SeekFrom::Start(4)).unwrap();
 
-                let n_bytes = session
-                    .download_to_writer(&xfi, 4..12, file, Some(Arc::from("partial-writer")))
-                    .await
-                    .unwrap();
+                let n_bytes = session.download_to_writer(&xfi, 4..12, file, Ulid::new()).await.unwrap();
 
                 assert_eq!(n_bytes, 8);
                 let result = read(&out_path).unwrap();
@@ -379,9 +363,7 @@ mod tests {
                     tasks.push(tokio::spawn(async move {
                         let mut writer = std::fs::OpenOptions::new().write(true).open(out_path).unwrap();
                         writer.seek(SeekFrom::Start(start)).unwrap();
-                        session
-                            .download_to_writer(&xfi, start..end, writer, Some(Arc::from(format!("part-{idx}"))))
-                            .await
+                        session.download_to_writer(&xfi, start..end, writer, Ulid::new()).await
                     }));
                 }
 
@@ -420,17 +402,13 @@ mod tests {
                 let xfi_a_clone = xfi_a.clone();
                 let out_a_clone = out_a.clone();
                 let task_a =
-                    tokio::spawn(
-                        async move { session_a.download_file(&xfi_a_clone, &out_a_clone, Some("file-a")).await },
-                    );
+                    tokio::spawn(async move { session_a.download_file(&xfi_a_clone, &out_a_clone, Ulid::new()).await });
 
                 let session_b = session.clone();
                 let xfi_b_clone = xfi_b.clone();
                 let out_b_clone = out_b.clone();
                 let task_b =
-                    tokio::spawn(
-                        async move { session_b.download_file(&xfi_b_clone, &out_b_clone, Some("file-b")).await },
-                    );
+                    tokio::spawn(async move { session_b.download_file(&xfi_b_clone, &out_b_clone, Ulid::new()).await });
 
                 task_a.await.unwrap().unwrap();
                 task_b.await.unwrap().unwrap();
@@ -458,7 +436,7 @@ mod tests {
                 let config = TranslatorConfig::local_config(&cas_path).unwrap();
                 let session = FileDownloadSession::new(config.into(), None).await.unwrap();
 
-                let mut stream = session.download_stream(&xfi, None).unwrap();
+                let mut stream = session.download_stream(&xfi, Ulid::new()).unwrap();
 
                 let mut collected = Vec::new();
                 while let Some(chunk) = stream.next().await.unwrap() {
@@ -485,7 +463,7 @@ mod tests {
                 let config = TranslatorConfig::local_config(&cas_path).unwrap();
                 let session = FileDownloadSession::new(config.into(), None).await.unwrap();
 
-                let stream = session.download_stream(&xfi, None).unwrap();
+                let stream = session.download_stream(&xfi, Ulid::new()).unwrap();
 
                 let collected = tokio::task::spawn_blocking(move || {
                     let mut stream = stream;
@@ -518,7 +496,7 @@ mod tests {
                 let config = TranslatorConfig::local_config(&cas_path).unwrap();
                 let session = FileDownloadSession::new(config.into(), None).await.unwrap();
 
-                let stream = session.download_stream(&xfi, None).unwrap();
+                let stream = session.download_stream(&xfi, Ulid::new()).unwrap();
 
                 let collected = tokio::task::spawn_blocking(move || {
                     let mut stream = stream;
@@ -551,7 +529,7 @@ mod tests {
                 let config = TranslatorConfig::local_config(&cas_path).unwrap();
                 let session = FileDownloadSession::new(config.into(), None).await.unwrap();
 
-                let mut stream = session.download_stream(&xfi, None).unwrap();
+                let mut stream = session.download_stream(&xfi, Ulid::new()).unwrap();
 
                 // Drain all data
                 while stream.next().await.unwrap().is_some() {}
@@ -578,7 +556,7 @@ mod tests {
                 let config = TranslatorConfig::local_config(&cas_path).unwrap();
                 let session = FileDownloadSession::new(config.into(), None).await.unwrap();
 
-                let mut stream = session.download_stream(&xfi, Some("my-stream-tracking")).unwrap();
+                let mut stream = session.download_stream(&xfi, Ulid::new()).unwrap();
 
                 let mut collected = Vec::new();
                 while let Some(chunk) = stream.next().await.unwrap() {
@@ -608,8 +586,8 @@ mod tests {
                 let config = TranslatorConfig::local_config(&cas_path).unwrap();
                 let session = FileDownloadSession::new(config.into(), None).await.unwrap();
 
-                let mut stream_a = session.download_stream(&xfi_a, Some("stream-a")).unwrap();
-                let mut stream_b = session.download_stream(&xfi_b, Some("stream-b")).unwrap();
+                let mut stream_a = session.download_stream(&xfi_a, Ulid::new()).unwrap();
+                let mut stream_b = session.download_stream(&xfi_b, Ulid::new()).unwrap();
 
                 let task_a = tokio::spawn(async move {
                     let mut buf = Vec::new();
@@ -652,12 +630,12 @@ mod tests {
                 let session = FileDownloadSession::new(config.into(), None).await.unwrap();
 
                 // Create a stream but never start it, then drop.
-                let stream = session.download_stream(&xfi, None).unwrap();
+                let stream = session.download_stream(&xfi, Ulid::new()).unwrap();
                 drop(stream);
 
                 // A subsequent file download must succeed, proving no resources leaked.
                 let out_path = temp.path().join("after_drop.txt");
-                session.download_file(&xfi, &out_path, None).await.unwrap();
+                session.download_file(&xfi, &out_path, Ulid::new()).await.unwrap();
                 assert_eq!(read(&out_path).unwrap(), original_data);
             })
             .unwrap();
@@ -679,7 +657,7 @@ mod tests {
                 let session = FileDownloadSession::new(config.into(), None).await.unwrap();
 
                 // Create the stream, then drop without reading any chunks.
-                let stream = session.download_stream(&xfi, None).unwrap();
+                let stream = session.download_stream(&xfi, Ulid::new()).unwrap();
                 drop(stream);
 
                 // Yield to let the runtime process the cancellation.
@@ -687,7 +665,7 @@ mod tests {
 
                 // A subsequent download must succeed.
                 let out_path = temp.path().join("after_drop.txt");
-                session.download_file(&xfi, &out_path, None).await.unwrap();
+                session.download_file(&xfi, &out_path, Ulid::new()).await.unwrap();
                 assert_eq!(read(&out_path).unwrap(), original_data);
             })
             .unwrap();
@@ -709,7 +687,7 @@ mod tests {
                 let session = FileDownloadSession::new(config.into(), None).await.unwrap();
 
                 // Read one chunk, then drop mid-stream.
-                let mut stream = session.download_stream(&xfi, None).unwrap();
+                let mut stream = session.download_stream(&xfi, Ulid::new()).unwrap();
                 let _chunk = stream.next().await;
                 drop(stream);
 
@@ -718,7 +696,7 @@ mod tests {
 
                 // A subsequent download must succeed.
                 let out_path = temp.path().join("after_drop.txt");
-                session.download_file(&xfi, &out_path, None).await.unwrap();
+                session.download_file(&xfi, &out_path, Ulid::new()).await.unwrap();
                 assert_eq!(read(&out_path).unwrap(), original_data);
             })
             .unwrap();
@@ -741,7 +719,7 @@ mod tests {
 
                 // Repeatedly create, start, optionally read, and drop streams.
                 for i in 0..5u32 {
-                    let mut stream = session.download_stream(&xfi, None).unwrap();
+                    let mut stream = session.download_stream(&xfi, Ulid::new()).unwrap();
                     if i % 3 == 0 {
                         let _ = stream.next().await;
                     }
@@ -751,7 +729,7 @@ mod tests {
 
                 // After many create/drop cycles, a full download must still work.
                 let out_path = temp.path().join("after_cycles.txt");
-                session.download_file(&xfi, &out_path, None).await.unwrap();
+                session.download_file(&xfi, &out_path, Ulid::new()).await.unwrap();
                 assert_eq!(read(&out_path).unwrap(), original_data);
             })
             .unwrap();
@@ -773,7 +751,7 @@ mod tests {
                 let session = FileDownloadSession::new(config.into(), None).await.unwrap();
 
                 // Read one chunk via blocking next() in a spawn_blocking, then drop.
-                let stream = session.download_stream(&xfi, None).unwrap();
+                let stream = session.download_stream(&xfi, Ulid::new()).unwrap();
 
                 tokio::task::spawn_blocking(move || {
                     let mut stream = stream;
@@ -788,7 +766,7 @@ mod tests {
 
                 // A subsequent download must succeed.
                 let out_path = temp.path().join("after_blocking_drop.txt");
-                session.download_file(&xfi, &out_path, None).await.unwrap();
+                session.download_file(&xfi, &out_path, Ulid::new()).await.unwrap();
                 assert_eq!(read(&out_path).unwrap(), original_data);
             })
             .unwrap();
@@ -809,7 +787,7 @@ mod tests {
                 let config = TranslatorConfig::local_config(&cas_path).unwrap();
                 let session = FileDownloadSession::new(config.into(), None).await.unwrap();
 
-                let mut stream = session.download_stream(&xfi, None).unwrap();
+                let mut stream = session.download_stream(&xfi, Ulid::new()).unwrap();
                 stream.cancel();
                 assert!(stream.next().await.unwrap().is_none());
                 assert!(stream.next().await.unwrap().is_none());
@@ -832,14 +810,14 @@ mod tests {
                 let config = TranslatorConfig::local_config(&cas_path).unwrap();
                 let session = FileDownloadSession::new(config.into(), None).await.unwrap();
 
-                let mut stream = session.download_stream(&xfi, None).unwrap();
+                let mut stream = session.download_stream(&xfi, Ulid::new()).unwrap();
                 let _ = stream.next().await.unwrap();
                 stream.cancel();
                 assert!(stream.next().await.unwrap().is_none());
                 assert!(stream.next().await.unwrap().is_none());
 
                 let out_path = temp.path().join("after_cancel.txt");
-                session.download_file(&xfi, &out_path, None).await.unwrap();
+                session.download_file(&xfi, &out_path, Ulid::new()).await.unwrap();
                 assert_eq!(read(&out_path).unwrap(), original_data);
             })
             .unwrap();
