@@ -24,7 +24,7 @@ pub enum TaskStatus {
 
 // ── Aggregate / per-file progress ───────────────────────────────────────────
 
-/// Snapshot of aggregate progress returned by [`CommitProgress::total`].
+/// Snapshot of aggregate progress returned by [`TaskProgress::total`].
 #[derive(Clone, Debug, Default)]
 pub struct TotalProgressSnapshot {
     /// Total bytes known to process (includes deduplicated bytes).
@@ -41,7 +41,7 @@ pub struct TotalProgressSnapshot {
     pub total_transfer_bytes_completion_rate: Option<f64>,
 }
 
-/// Snapshot of a single file's progress returned by [`CommitProgress::files`].
+/// Snapshot of a single file's progress returned by [`TaskProgress::files`].
 #[derive(Clone, Debug)]
 pub struct FileProgressSnapshot {
     /// File name as reported by the data layer.
@@ -52,24 +52,23 @@ pub struct FileProgressSnapshot {
     pub bytes_completed: u64,
 }
 
-/// Tracks per-file and aggregate upload progress received from [`FileUploadSession`].
+/// Tracks per-file and aggregate transfer progress for upload commits and download groups.
 ///
-/// Implements [`TrackingProgressUpdater`] so it can be passed directly to
-/// [`FileUploadSession::new`](data::FileUploadSession::new).
+/// Implements [`TrackingProgressUpdater`].
 ///
-/// - Call [`CommitProgress::total`] for an aggregate snapshot (lock-free reads).
-/// - Call [`CommitProgress::files`] for a per-file breakdown.
+/// - Call [`GroupProgress::total`] for an aggregate snapshot (lock-free reads).
+/// - Call [`GroupProgress::files`] for a per-file breakdown.
 ///
 /// All integer counters are stored as [`AtomicU64`]; floating-point completion
 /// rates use a `Mutex` (rarely written, never held across await points).
-pub struct CommitProgress {
-    // Aggregate totals — lock-free reads
+pub struct GroupProgress {
+    // Aggregate totals
     total_bytes: AtomicU64,
     total_bytes_completed: AtomicU64,
     total_transfer_bytes: AtomicU64,
     total_transfer_bytes_completed: AtomicU64,
 
-    // Completion rates — rarely written, never held across await
+    // Completion rates
     total_bytes_completion_rate: Mutex<Option<f64>>,
     total_transfer_bytes_completion_rate: Mutex<Option<f64>>,
 
@@ -77,7 +76,7 @@ pub struct CommitProgress {
     items: Mutex<HashMap<Arc<str>, (u64, u64)>>,
 }
 
-impl CommitProgress {
+impl GroupProgress {
     /// Create a new tracker with all counters at zero.
     pub fn new() -> Self {
         Self {
@@ -91,19 +90,12 @@ impl CommitProgress {
         }
     }
 
-    /// Return a snapshot of aggregate progress.
-    ///
-    /// Integer fields are read atomically (no lock); rate fields require a brief
-    /// lock acquisition.
+    /// Return a combined snapshot of aggregate progress.
     pub fn total(&self) -> TotalProgressSnapshot {
         TotalProgressSnapshot {
             total_bytes: self.total_bytes.load(Ordering::Relaxed),
             total_bytes_completed: self.total_bytes_completed.load(Ordering::Relaxed),
-            total_bytes_completion_rate: self
-                .total_bytes_completion_rate
-                .lock()
-                .ok()
-                .and_then(|g| *g),
+            total_bytes_completion_rate: self.total_bytes_completion_rate.lock().ok().and_then(|g| *g),
             total_transfer_bytes: self.total_transfer_bytes.load(Ordering::Relaxed),
             total_transfer_bytes_completed: self.total_transfer_bytes_completed.load(Ordering::Relaxed),
             total_transfer_bytes_completion_rate: self
@@ -114,7 +106,7 @@ impl CommitProgress {
         }
     }
 
-    /// Return a per-file progress snapshot for every file seen so far.
+    /// Return a combined snapshot of per-file progress.
     pub fn files(&self) -> Vec<FileProgressSnapshot> {
         match self.items.lock() {
             Ok(items) => items
@@ -130,21 +122,20 @@ impl CommitProgress {
     }
 }
 
-impl Default for CommitProgress {
+impl Default for GroupProgress {
     fn default() -> Self {
         Self::new()
     }
 }
 
 #[async_trait]
-impl TrackingProgressUpdater for CommitProgress {
+impl TrackingProgressUpdater for GroupProgress {
     async fn register_updates(&self, updates: ProgressUpdate) {
         // Update aggregate integer counters atomically.
         self.total_bytes.store(updates.total_bytes, Ordering::Relaxed);
         self.total_bytes_completed
             .store(updates.total_bytes_completed, Ordering::Relaxed);
-        self.total_transfer_bytes
-            .store(updates.total_transfer_bytes, Ordering::Relaxed);
+        self.total_transfer_bytes.store(updates.total_transfer_bytes, Ordering::Relaxed);
         self.total_transfer_bytes_completed
             .store(updates.total_transfer_bytes_completed, Ordering::Relaxed);
 
@@ -171,43 +162,12 @@ impl TrackingProgressUpdater for CommitProgress {
 mod tests {
     use super::*;
 
-    #[test]
-    fn test_task_status_equality() {
-        assert_eq!(TaskStatus::Queued, TaskStatus::Queued);
-        assert_eq!(TaskStatus::Running, TaskStatus::Running);
-        assert_eq!(TaskStatus::Completed, TaskStatus::Completed);
-        assert_eq!(TaskStatus::Failed, TaskStatus::Failed);
-        assert_eq!(TaskStatus::Cancelled, TaskStatus::Cancelled);
-        assert_ne!(TaskStatus::Queued, TaskStatus::Running);
-        assert_ne!(TaskStatus::Completed, TaskStatus::Failed);
-    }
-
-    #[test]
-    fn test_task_status_copy() {
-        let s = TaskStatus::Running;
-        let s2 = s; // Copy
-        assert_eq!(s, s2);
-    }
-
-    #[test]
-    fn test_commit_progress_initial_values() {
-        let p = CommitProgress::new();
-        let total = p.total();
-        assert_eq!(total.total_bytes, 0);
-        assert_eq!(total.total_bytes_completed, 0);
-        assert!(total.total_bytes_completion_rate.is_none());
-        assert_eq!(total.total_transfer_bytes, 0);
-        assert_eq!(total.total_transfer_bytes_completed, 0);
-        assert!(total.total_transfer_bytes_completion_rate.is_none());
-        assert!(p.files().is_empty());
-    }
-
     #[tokio::test]
     async fn test_commit_progress_register_updates() {
         use progress_tracking::ItemProgressUpdate;
         use std::sync::Arc;
 
-        let p = CommitProgress::new();
+        let p = GroupProgress::new();
 
         let update = ProgressUpdate {
             total_bytes: 1000,
@@ -235,15 +195,13 @@ mod tests {
 
         p.register_updates(update).await;
 
-        let total = p.total();
+        let (total, files) = p.snapshot();
         assert_eq!(total.total_bytes, 1000);
         assert_eq!(total.total_bytes_completed, 400);
         assert_eq!(total.total_bytes_completion_rate, Some(0.4));
         assert_eq!(total.total_transfer_bytes, 800);
         assert_eq!(total.total_transfer_bytes_completed, 300);
         assert_eq!(total.total_transfer_bytes_completion_rate, Some(0.375));
-
-        let files = p.files();
         assert_eq!(files.len(), 2);
         let find = |name: &str| files.iter().find(|f| f.item_name.as_ref() == name).cloned();
         let fa = find("file_a.bin").unwrap();

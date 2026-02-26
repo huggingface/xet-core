@@ -15,7 +15,8 @@ pub(crate) fn create_translator_config(session: &XetSession) -> Result<Translato
         session.token_info.clone(),
         session.token_refresher.clone(),
         session.custom_headers.clone(),
-    )?)
+    )?
+    .with_session_id(&session.id.to_string()))
 }
 
 /// State of the upload commit and download group

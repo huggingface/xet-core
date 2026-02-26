@@ -14,8 +14,8 @@ use crate::upload_commit::UploadCommit;
 
 /// Session state
 enum SessionState {
-    ALIVE,
-    ABORTED,
+    Alive,
+    Aborted,
 }
 
 /// All shared state for a session.
@@ -120,7 +120,7 @@ impl XetSession {
                 custom_headers,
                 active_upload_commits: Mutex::new(HashMap::new()),
                 active_download_groups: Mutex::new(HashMap::new()),
-                state: Mutex::new(SessionState::ALIVE),
+                state: Mutex::new(SessionState::Alive),
                 id: session_id,
             }),
         })
@@ -131,7 +131,7 @@ impl XetSession {
     /// Returns `Err(SessionError::Aborted)` if the session has been aborted.
     pub fn new_upload_commit(&self) -> Result<UploadCommit, SessionError> {
         let state = self.state.lock()?;
-        if matches!(*state, SessionState::ABORTED) {
+        if matches!(*state, SessionState::Aborted) {
             return Err(SessionError::Aborted);
         }
 
@@ -148,7 +148,7 @@ impl XetSession {
     /// Returns `Err(SessionError::Aborted)` if the session has been aborted.
     pub fn new_download_group(&self) -> Result<DownloadGroup, SessionError> {
         let state = self.state.lock()?;
-        if matches!(*state, SessionState::ABORTED) {
+        if matches!(*state, SessionState::Aborted) {
             return Err(SessionError::Aborted);
         }
 
@@ -167,7 +167,7 @@ impl XetSession {
     pub fn abort(&self) -> Result<(), SessionError> {
         // Mark as not accepting new work, hold the lock so no new task can be created when aborting
         let mut state = self.state.lock()?;
-        *state = SessionState::ABORTED;
+        *state = SessionState::Aborted;
 
         // Perform SIGINT shutdown on the runtime
         // This will cancel all active tasks (uploads, downloads, etc.)
@@ -186,7 +186,7 @@ impl XetSession {
     }
 
     pub(crate) fn check_alive(&self) -> Result<(), SessionError> {
-        if matches!(*self.state.lock()?, SessionState::ABORTED) {
+        if matches!(*self.state.lock()?, SessionState::Aborted) {
             return Err(SessionError::Aborted);
         }
         Ok(())

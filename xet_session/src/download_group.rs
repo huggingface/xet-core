@@ -12,8 +12,213 @@ use ulid::Ulid;
 
 use crate::common::{GroupState, create_translator_config};
 use crate::errors::SessionError;
-use crate::progress::{CommitProgress, FileProgressSnapshot, TaskStatus};
+use crate::progress::{FileProgressSnapshot, GroupProgress, TaskStatus};
 use crate::session::XetSession;
+
+/// Groups related file downloads into a single unit of work.
+///
+/// Queue files with [`download_file`](Self::download_file) (they start
+/// downloading immediately in the background), poll progress with
+/// [`get_progress`](Self::get_progress), then call
+/// [`finish`](Self::finish) to wait for all downloads to complete.
+///
+/// # Cloning
+///
+/// Cloning is cheap — it simply increments an atomic reference count.
+/// All clones share the same background worker and task state.
+///
+/// # Errors
+///
+/// Methods return [`SessionError::Aborted`] if the parent session has been
+/// aborted, and [`SessionError::AlreadyFinished`] if
+/// [`finish`](Self::finish) has already been called.
+#[derive(Clone)]
+pub struct DownloadGroup {
+    inner: Arc<DownloadGroupInner>,
+}
+
+impl std::ops::Deref for DownloadGroup {
+    type Target = DownloadGroupInner;
+    fn deref(&self) -> &Self::Target {
+        &self.inner
+    }
+}
+
+impl DownloadGroup {
+    /// Create a new download group
+    pub(crate) fn new(session: XetSession) -> Result<Self, SessionError> {
+        let group_id = Ulid::new();
+
+        let (command_tx, mut command_rx) = mpsc::unbounded_channel::<GroupCommand>();
+
+        let inner = Arc::new(DownloadGroupInner {
+            group_id,
+            session,
+            active_tasks: RwLock::new(HashMap::new()),
+            progress: Arc::new(GroupProgress::new()),
+            download_session: TokioMutex::new(None),
+            state: Mutex::new(GroupState::Alive),
+            command_tx,
+        });
+
+        // Spawn background worker task on the runtime directly
+        let inner_clone = inner.clone();
+        inner.session.runtime.spawn(async move {
+            while let Some(command) = command_rx.recv().await {
+                match command {
+                    GroupCommand::DownloadFile {
+                        file_hash,
+                        file_size,
+                        dest_path,
+                        response_tx,
+                    } => {
+                        let result = inner_clone.handle_download_file(file_hash, file_size, dest_path).await;
+                        let _ = response_tx.send(result);
+                    },
+                    GroupCommand::Finish { response_tx } => {
+                        let result = inner_clone.handle_finish().await;
+                        let _ = response_tx.send(result);
+                        // After finish, stop processing commands
+                        break;
+                    },
+                }
+            }
+        });
+
+        Ok(Self { inner })
+    }
+
+    /// Get the group ID.
+    pub(crate) fn id(&self) -> Ulid {
+        self.group_id
+    }
+
+    /// Abort this download group.
+    pub(crate) fn abort(&self) -> Result<(), SessionError> {
+        *self.state.lock()? = GroupState::Aborted;
+        Ok(())
+    }
+
+    // ===== Public synchronous methods =====
+
+    /// Queue a file for download to `dest_path`, starting the transfer immediately.
+    ///
+    /// # Parameters
+    ///
+    /// * `file_hash` – Content-addressed hash returned by a previous
+    ///   [`UploadCommit::commit`](crate::UploadCommit::commit).
+    /// * `file_size` – Expected file size in bytes (used to pre-allocate
+    ///   buffers and report progress).
+    /// * `dest_path` – Local path where the downloaded file will be written.
+    ///   Parent directories are created automatically.
+    ///
+    /// Returns the task ID that can be correlated with [`get_progress`](Self::get_progress).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SessionError::Aborted`] if the session has been aborted, or
+    /// [`SessionError::AlreadyFinished`] if [`finish`](Self::finish) has already
+    /// been called.
+    pub fn download_file(&self, file_hash: String, file_size: u64, dest_path: PathBuf) -> Result<Ulid, SessionError> {
+        self.session.check_alive()?;
+        let (response_tx, response_rx) = oneshot::channel();
+
+        self.command_tx
+            .send(GroupCommand::DownloadFile {
+                file_hash,
+                file_size,
+                dest_path,
+                response_tx,
+            })
+            .map_err(|_| SessionError::other("Failed to send download command"))?;
+
+        response_rx
+            .blocking_recv()
+            .map_err(|_| SessionError::other("Failed to receive download response"))?
+    }
+
+    pub fn download_stream(&self, _file_hash: String, _file_size: u64) -> Result<(), SessionError> {
+        todo!()
+    }
+
+    /// Returns `true` if [`finish`](Self::finish) has been called and completed.
+    #[cfg(test)]
+    fn is_finished(&self) -> bool {
+        match self.state.lock() {
+            Ok(state) => *state == GroupState::Finished,
+            Err(_) => false,
+        }
+    }
+
+    /// Return a snapshot of progress for every queued download.
+    ///
+    /// Per-file byte counts come from [`TaskProgress`], which is updated by
+    /// the `FileDownloadSession` callback keyed on the destination path.
+    /// The method is safe to call frequently from Python without GIL contention.
+    pub fn get_progress(&self) -> Vec<DownloadProgress> {
+        let tasks = match self.active_tasks.read() {
+            Ok(tasks) => tasks,
+            Err(e) => {
+                tracing::error!("Failed to acquire read lock on active_tasks: {}", e);
+                return Vec::new();
+            },
+        };
+
+        // Build a dest_path→snapshot lookup from TaskProgress.
+        let (_, files) = self.progress.snapshot();
+        let file_snapshots: HashMap<String, FileProgressSnapshot> =
+            files.into_iter().map(|s| (s.item_name.to_string(), s)).collect();
+
+        tasks
+            .values()
+            .filter_map(|handle| {
+                match handle.status.lock() {
+                    Ok(status) => {
+                        let dest_path_str = handle.dest_path.to_string_lossy().to_string();
+                        let (bytes_total, bytes_completed) = file_snapshots
+                            .get(&dest_path_str)
+                            .map(|s| (s.total_bytes, s.bytes_completed))
+                            .unwrap_or((0, 0));
+
+                        Some(DownloadProgress {
+                            task_id: handle.task_id,
+                            dest_path: handle.dest_path.clone(),
+                            file_hash: handle.file_hash.clone(),
+                            bytes_completed,
+                            bytes_total,
+                            status: *status,
+                            speed_bps: 0.0, // TODO: Calculate speed
+                        })
+                    },
+                    Err(e) => {
+                        tracing::error!("Failed to acquire lock on task status for {}: {}", handle.task_id, e);
+                        None
+                    },
+                }
+            })
+            .collect()
+    }
+
+    /// Wait for all downloads to complete and return their results.
+    ///
+    /// Blocks until every queued download finishes (or fails).  Returns one
+    /// [`DownloadResult`] entry per download in the order they were registered.
+    ///
+    /// Consumes `self` — subsequent calls on any clone will return
+    /// [`SessionError::AlreadyFinished`] (or a channel-closed error if the
+    /// background worker has already exited).
+    pub fn finish(self) -> Result<Vec<DownloadResult>, SessionError> {
+        let (response_tx, response_rx) = oneshot::channel();
+
+        self.command_tx
+            .send(GroupCommand::Finish { response_tx })
+            .map_err(|_| SessionError::other("Failed to send finish command"))?;
+
+        response_rx
+            .blocking_recv()
+            .map_err(|_| SessionError::other("Failed to receive finish response"))?
+    }
+}
 
 /// Commands sent to the background worker thread
 pub(crate) enum GroupCommand {
@@ -22,11 +227,6 @@ pub(crate) enum GroupCommand {
         file_size: u64,
         dest_path: PathBuf,
         response_tx: oneshot::Sender<Result<Ulid, SessionError>>,
-    },
-    DownloadStream {
-        file_hash: String,
-        file_size: Option<u64>,
-        response_tx: oneshot::Sender<Result<(), SessionError>>,
     },
     Finish {
         response_tx: oneshot::Sender<Result<Vec<DownloadResult>, SessionError>>,
@@ -54,7 +254,7 @@ pub struct DownloadGroupInner {
     active_tasks: RwLock<HashMap<Ulid, DownloadTaskHandle>>,
 
     // Aggregate + per-file progress, fed into FileDownloadSession as a TrackingProgressUpdater
-    progress: Arc<CommitProgress>,
+    progress: Arc<GroupProgress>,
 
     // Shared download session (FileDownloadSession from data crate)
     // Uses tokio::Mutex because it's held across await in get_or_create_download_session
@@ -198,216 +398,6 @@ impl DownloadGroupInner {
         self.session.finish_download_group(self.group_id)?;
 
         Ok(results)
-    }
-}
-
-/// Groups related file downloads into a single unit of work.
-///
-/// Queue files with [`download_file`](Self::download_file) (they start
-/// downloading immediately in the background), poll progress with
-/// [`get_progress`](Self::get_progress), then call
-/// [`finish`](Self::finish) to wait for all downloads to complete.
-///
-/// # Cloning
-///
-/// Cloning is cheap — it simply increments an atomic reference count.
-/// All clones share the same background worker and task state.
-///
-/// # Errors
-///
-/// Methods return [`SessionError::Aborted`] if the parent session has been
-/// aborted, and [`SessionError::AlreadyFinished`] if
-/// [`finish`](Self::finish) has already been called.
-#[derive(Clone)]
-pub struct DownloadGroup {
-    inner: Arc<DownloadGroupInner>,
-}
-
-impl std::ops::Deref for DownloadGroup {
-    type Target = DownloadGroupInner;
-    fn deref(&self) -> &Self::Target {
-        &self.inner
-    }
-}
-
-impl DownloadGroup {
-    /// Create a new download group
-    pub(crate) fn new(session: XetSession) -> Result<Self, SessionError> {
-        let group_id = Ulid::new();
-
-        let (command_tx, mut command_rx) = mpsc::unbounded_channel::<GroupCommand>();
-
-        let inner = Arc::new(DownloadGroupInner {
-            group_id,
-            session,
-            active_tasks: RwLock::new(HashMap::new()),
-            progress: Arc::new(CommitProgress::new()),
-            download_session: TokioMutex::new(None),
-            state: Mutex::new(GroupState::Alive),
-            command_tx,
-        });
-
-        // Spawn background worker task on the runtime directly
-        let inner_clone = inner.clone();
-        inner.session.runtime.spawn(async move {
-            while let Some(command) = command_rx.recv().await {
-                match command {
-                    GroupCommand::DownloadFile {
-                        file_hash,
-                        file_size,
-                        dest_path,
-                        response_tx,
-                    } => {
-                        let result = inner_clone.handle_download_file(file_hash, file_size, dest_path).await;
-                        let _ = response_tx.send(result);
-                    },
-
-                    GroupCommand::DownloadStream {
-                        file_hash,
-                        file_size,
-                        response_tx,
-                    } => todo!(),
-                    GroupCommand::Finish { response_tx } => {
-                        let result = inner_clone.handle_finish().await;
-                        let _ = response_tx.send(result);
-                        // After finish, stop processing commands
-                        break;
-                    },
-                }
-            }
-        });
-
-        Ok(Self { inner })
-    }
-
-    /// Get the group ID.
-    pub(crate) fn id(&self) -> Ulid {
-        self.group_id
-    }
-
-    /// Abort this download group.
-    pub(crate) fn abort(&self) -> Result<(), SessionError> {
-        *self.state.lock()? = GroupState::Aborted;
-        Ok(())
-    }
-
-    // ===== Public synchronous methods =====
-
-    /// Queue a file for download to `dest_path`, starting the transfer immediately.
-    ///
-    /// # Parameters
-    ///
-    /// * `file_hash` – Content-addressed hash returned by a previous
-    ///   [`UploadCommit::commit`](crate::UploadCommit::commit).
-    /// * `file_size` – Expected file size in bytes (used to pre-allocate
-    ///   buffers and report progress).
-    /// * `dest_path` – Local path where the downloaded file will be written.
-    ///   Parent directories are created automatically.
-    ///
-    /// Returns the task ID that can be correlated with [`get_progress`](Self::get_progress).
-    ///
-    /// # Errors
-    ///
-    /// Returns [`SessionError::Aborted`] if the session has been aborted, or
-    /// [`SessionError::AlreadyFinished`] if [`finish`](Self::finish) has already
-    /// been called.
-    pub fn download_file(&self, file_hash: String, file_size: u64, dest_path: PathBuf) -> Result<Ulid, SessionError> {
-        self.session.check_alive()?;
-        let (response_tx, response_rx) = oneshot::channel();
-
-        self.command_tx
-            .send(GroupCommand::DownloadFile {
-                file_hash,
-                file_size,
-                dest_path,
-                response_tx,
-            })
-            .map_err(|_| SessionError::other("Failed to send download command"))?;
-
-        response_rx
-            .blocking_recv()
-            .map_err(|_| SessionError::other("Failed to receive download response"))?
-    }
-
-    /// Returns `true` if [`finish`](Self::finish) has been called and completed.
-    #[cfg(test)]
-    fn is_finished(&self) -> bool {
-        match self.state.lock() {
-            Ok(state) => *state == GroupState::Finished,
-            Err(_) => false,
-        }
-    }
-
-    /// Return a snapshot of progress for every queued download.
-    ///
-    /// Per-file byte counts come from [`CommitProgress`], which is updated by
-    /// the `FileDownloadSession` callback keyed on the destination path.
-    /// The method is safe to call frequently from Python without GIL contention.
-    pub fn get_progress(&self) -> Vec<DownloadProgress> {
-        let tasks = match self.active_tasks.read() {
-            Ok(tasks) => tasks,
-            Err(e) => {
-                tracing::error!("Failed to acquire read lock on active_tasks: {}", e);
-                return Vec::new();
-            },
-        };
-
-        // Build a dest_path→snapshot lookup from CommitProgress.
-        let file_snapshots: HashMap<String, FileProgressSnapshot> = self
-            .progress
-            .files()
-            .into_iter()
-            .map(|s| (s.item_name.to_string(), s))
-            .collect();
-
-        tasks
-            .values()
-            .filter_map(|handle| {
-                match handle.status.lock() {
-                    Ok(status) => {
-                        let dest_path_str = handle.dest_path.to_string_lossy().to_string();
-                        let (bytes_total, bytes_completed) = file_snapshots
-                            .get(&dest_path_str)
-                            .map(|s| (s.total_bytes, s.bytes_completed))
-                            .unwrap_or((0, 0));
-
-                        Some(DownloadProgress {
-                            task_id: handle.task_id,
-                            dest_path: handle.dest_path.clone(),
-                            file_hash: handle.file_hash.clone(),
-                            bytes_completed,
-                            bytes_total,
-                            status: *status,
-                            speed_bps: 0.0, // TODO: Calculate speed
-                        })
-                    },
-                    Err(e) => {
-                        tracing::error!("Failed to acquire lock on task status for {}: {}", handle.task_id, e);
-                        None
-                    },
-                }
-            })
-            .collect()
-    }
-
-    /// Wait for all downloads to complete and return their results.
-    ///
-    /// Blocks until every queued download finishes (or fails).  Returns one
-    /// [`DownloadResult`] entry per download in the order they were registered.
-    ///
-    /// Consumes `self` — subsequent calls on any clone will return
-    /// [`SessionError::AlreadyFinished`] (or a channel-closed error if the
-    /// background worker has already exited).
-    pub fn finish(self) -> Result<Vec<DownloadResult>, SessionError> {
-        let (response_tx, response_rx) = oneshot::channel();
-
-        self.command_tx
-            .send(GroupCommand::Finish { response_tx })
-            .map_err(|_| SessionError::other("Failed to send finish command"))?;
-
-        response_rx
-            .blocking_recv()
-            .map_err(|_| SessionError::other("Failed to receive finish response"))?
     }
 }
 

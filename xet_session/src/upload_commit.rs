@@ -12,8 +12,269 @@ use ulid::Ulid;
 
 use crate::common::{GroupState, create_translator_config};
 use crate::errors::SessionError;
-use crate::progress::{CommitProgress, FileProgressSnapshot, TaskStatus};
+use crate::progress::{FileProgressSnapshot, GroupProgress, TaskStatus};
 use crate::session::XetSession;
+
+/// Groups related file uploads into a single atomic commit.
+///
+/// Enqueue files with [`upload_from_path`](Self::upload_from_path) or stream
+/// bytes with [`upload_file`](Self::upload_file) — transfers start immediately
+/// in the background.  Poll progress with [`get_progress`](Self::get_progress),
+/// then call [`commit`](Self::commit) to wait for all uploads to finish and
+/// push the final metadata to the CAS server.
+///
+/// # Cloning
+///
+/// Cloning is cheap — it simply increments an atomic reference count.
+/// All clones share the same background worker and task state.
+///
+/// # Errors
+///
+/// Methods return [`SessionError::Aborted`] if the parent session has been
+/// aborted, and [`SessionError::AlreadyCommitted`] if [`commit`](Self::commit)
+/// has already been called.
+#[derive(Clone)]
+pub struct UploadCommit {
+    inner: Arc<UploadCommitInner>,
+}
+
+impl std::ops::Deref for UploadCommit {
+    type Target = UploadCommitInner;
+    fn deref(&self) -> &Self::Target {
+        &self.inner
+    }
+}
+
+impl UploadCommit {
+    /// Create a new upload commit
+    pub(crate) fn new(session: XetSession) -> Result<Self, SessionError> {
+        let commit_id = Ulid::new();
+
+        let (command_tx, mut command_rx) = mpsc::unbounded_channel::<CommitCommand>();
+
+        let inner = Arc::new(UploadCommitInner {
+            commit_id,
+            session,
+            active_tasks: RwLock::new(HashMap::new()),
+            progress: Arc::new(GroupProgress::new()),
+            upload_session: TokioMutex::new(None),
+            state: Mutex::new(GroupState::Alive),
+            command_tx,
+        });
+
+        // Spawn background worker task on the runtime directly
+        let inner_clone = inner.clone();
+        inner.session.runtime.spawn(async move {
+            while let Some(command) = command_rx.recv().await {
+                match command {
+                    CommitCommand::UploadFromPath { file_path, response_tx } => {
+                        let result = inner_clone.start_upload_file_from_path(file_path).await;
+                        let _ = response_tx.send(result);
+                    },
+                    CommitCommand::UploadBytes { bytes, response_tx } => {
+                        let result = inner_clone.start_upload_bytes(bytes).await;
+                        let _ = response_tx.send(result);
+                    },
+                    CommitCommand::UploadFile {
+                        file_name,
+                        file_size,
+                        response_tx,
+                    } => {
+                        let result = inner_clone.start_upload_file(file_name, file_size).await;
+                        let _ = response_tx.send(result);
+                    },
+                    CommitCommand::Commit { response_tx } => {
+                        let result = inner_clone.handle_commit().await;
+                        let _ = response_tx.send(result);
+                        // After commit, stop processing commands
+                        break;
+                    },
+                }
+            }
+        });
+
+        Ok(Self { inner })
+    }
+
+    /// Get the commit ID.
+    pub(crate) fn id(&self) -> Ulid {
+        self.commit_id
+    }
+
+    /// Abort this upload commit.
+    pub(crate) fn abort(&self) -> Result<(), SessionError> {
+        *self.state.lock()? = GroupState::Aborted;
+        Ok(())
+    }
+
+    // ===== Public synchronous methods =====
+
+    /// Queue a file for upload, starting the transfer immediately.
+    ///
+    /// Returns the task ID that can be used to correlate entries returned by
+    /// [`get_progress`](Self::get_progress).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SessionError::Aborted`] if the session has been aborted, or
+    /// [`SessionError::AlreadyCommitted`] if [`commit`](Self::commit) has
+    /// already been called.
+    pub fn upload_from_path(&self, file_path: PathBuf) -> Result<Ulid, SessionError> {
+        self.session.check_alive()?;
+        let (response_tx, response_rx) = oneshot::channel();
+
+        self.command_tx
+            .send(CommitCommand::UploadFromPath { file_path, response_tx })
+            .map_err(|_| SessionError::other("Failed to send upload command"))?;
+
+        response_rx
+            .blocking_recv()
+            .map_err(|_| SessionError::other("Failed to receive upload response"))?
+    }
+
+    /// Begin an incremental file upload, returning a [`SingleFileCleaner`] that the
+    /// caller uses to stream bytes.
+    ///
+    /// This is the low-level streaming counterpart to [`upload_from_path`](Self::upload_from_path).
+    ///
+    /// ```rust,no_run
+    /// # use std::fs::File;
+    /// # use std::io::Read;
+    /// # use xet_session::SessionError;
+    /// # async fn example(commit: xet_session::UploadCommit, filename: &str, filesize: u64) -> Result<(), Box<dyn std::error::Error>> {
+    /// let (task_id, mut cleaner) = commit.upload_file(Some(filename.into()), filesize)?;
+    /// let mut reader = File::open(&filename)?;
+    /// let mut buffer = vec![0u8; 65536];
+    /// loop {
+    ///     let bytes = reader.read(&mut buffer)?;
+    ///     if bytes == 0 {
+    ///         break;
+    ///     }
+    ///     cleaner.add_data(&buffer[0..bytes]).await?;
+    /// }
+    /// let (file_info, _metrics) = cleaner.finish().await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    ///
+    /// # Parameters
+    ///
+    /// - `file_name`: optional name used for progress/telemetry reporting.
+    /// - `file_size`: expected size in bytes (used for progress tracking; `0` is valid if unknown).
+    pub fn upload_file(
+        &self,
+        file_name: Option<String>,
+        file_size: u64,
+    ) -> Result<(Ulid, SingleFileCleaner), SessionError> {
+        self.session.check_alive()?;
+        let (response_tx, response_rx) = oneshot::channel();
+
+        self.command_tx
+            .send(CommitCommand::UploadFile {
+                file_name,
+                file_size,
+                response_tx,
+            })
+            .map_err(|_| SessionError::other("Failed to send start_clean command"))?;
+
+        response_rx
+            .blocking_recv()
+            .map_err(|_| SessionError::other("Failed to receive start_clean response"))?
+    }
+
+    /// Queue raw bytes for upload, starting the transfer immediately.
+    ///
+    /// Returns the task ID. See [`upload_file`](Self::upload_file) for details.
+    pub fn upload_bytes(&self, bytes: Vec<u8>) -> Result<Ulid, SessionError> {
+        self.session.check_alive()?;
+        let (response_tx, response_rx) = oneshot::channel();
+
+        self.command_tx
+            .send(CommitCommand::UploadBytes { bytes, response_tx })
+            .map_err(|_| SessionError::other("Failed to send upload_bytes command"))?;
+
+        response_rx
+            .blocking_recv()
+            .map_err(|_| SessionError::other("Failed to receive upload_bytes response"))?
+    }
+
+    /// Returns `true` if [`commit`](Self::commit) has been called and completed.
+    #[cfg(test)]
+    fn is_committed(&self) -> bool {
+        match self.state.lock() {
+            Ok(state) => *state == GroupState::Finished,
+            Err(_) => false,
+        }
+    }
+
+    /// Return a snapshot of progress for every queued upload.
+    ///
+    /// Per-file byte counts come from [`TaskProgress`], which is updated by
+    /// the `FileUploadSession` callback.  The method is safe to call frequently
+    /// from Python: integer counters are read atomically and the per-file map
+    /// requires only a brief lock.
+    pub fn get_progress(&self) -> Vec<UploadProgress> {
+        let tasks = match self.active_tasks.read() {
+            Ok(tasks) => tasks,
+            Err(e) => {
+                tracing::error!("Failed to acquire read lock on active_tasks: {}", e);
+                return Vec::new();
+            },
+        };
+
+        // Build a name→(total, completed) lookup from TaskProgress.
+        let (_, files) = self.progress.snapshot();
+        let file_snapshots: std::collections::HashMap<String, FileProgressSnapshot> =
+            files.into_iter().map(|s| (s.item_name.to_string(), s)).collect();
+
+        tasks
+            .values()
+            .filter_map(|handle| match handle.status.lock() {
+                Ok(status) => {
+                    let (bytes_total, bytes_completed) = handle
+                        .file_name
+                        .as_deref()
+                        .and_then(|name| file_snapshots.get(name))
+                        .map(|s| (s.total_bytes, s.bytes_completed))
+                        .unwrap_or((0, 0));
+
+                    Some(UploadProgress {
+                        task_id: handle.task_id,
+                        file_name: handle.file_name.clone(),
+                        bytes_completed,
+                        bytes_total,
+                        status: *status,
+                    })
+                },
+                Err(e) => {
+                    tracing::error!("Failed to acquire lock on task status for {}: {}", handle.task_id, e);
+                    None
+                },
+            })
+            .collect()
+    }
+
+    /// Wait for all uploads to complete and push metadata to the CAS server.
+    ///
+    /// Blocks until every queued upload finishes (or fails), then finalises
+    /// the upload session.  Returns one [`FileMetadata`] entry per uploaded
+    /// file in the order they were registered.
+    ///
+    /// Consumes `self` — subsequent calls on any clone will return
+    /// [`SessionError::AlreadyCommitted`] (or a channel-closed error if the
+    /// background worker has already exited).
+    pub fn commit(self) -> Result<Vec<FileMetadata>, SessionError> {
+        let (response_tx, response_rx) = oneshot::channel();
+
+        self.command_tx
+            .send(CommitCommand::Commit { response_tx })
+            .map_err(|_| SessionError::other("Failed to send commit command"))?;
+
+        response_rx
+            .blocking_recv()
+            .map_err(|_| SessionError::other("Failed to receive commit response"))?
+    }
+}
 
 /// Commands sent to the background worker thread
 pub(crate) enum CommitCommand {
@@ -54,7 +315,7 @@ pub struct UploadCommitInner {
     active_tasks: RwLock<HashMap<Ulid, UploadTaskHandle>>,
 
     // Aggregate + per-file progress, fed into FileUploadSession as a TrackingProgressUpdater
-    progress: Arc<CommitProgress>,
+    progress: Arc<GroupProgress>,
 
     // Shared upload session (FileUploadSession from data crate)
     // Uses tokio::Mutex because it's held across await in get_or_create_upload_session
@@ -212,287 +473,6 @@ impl UploadCommitInner {
 
         Ok(results)
     }
-}
-
-/// Groups related file uploads into a single atomic commit.
-///
-/// Enqueue files with [`upload_from_path`](Self::upload_from_path) or stream
-/// bytes with [`upload_file`](Self::upload_file) — transfers start immediately
-/// in the background.  Poll progress with [`get_progress`](Self::get_progress),
-/// then call [`commit`](Self::commit) to wait for all uploads to finish and
-/// push the final metadata to the CAS server.
-///
-/// # Cloning
-///
-/// Cloning is cheap — it simply increments an atomic reference count.
-/// All clones share the same background worker and task state.
-///
-/// # Errors
-///
-/// Methods return [`SessionError::Aborted`] if the parent session has been
-/// aborted, and [`SessionError::AlreadyCommitted`] if [`commit`](Self::commit)
-/// has already been called.
-#[derive(Clone)]
-pub struct UploadCommit {
-    inner: Arc<UploadCommitInner>,
-}
-
-impl std::ops::Deref for UploadCommit {
-    type Target = UploadCommitInner;
-    fn deref(&self) -> &Self::Target {
-        &self.inner
-    }
-}
-
-impl UploadCommit {
-    /// Create a new upload commit
-    pub(crate) fn new(session: XetSession) -> Result<Self, SessionError> {
-        let commit_id = Ulid::new();
-
-        let (command_tx, mut command_rx) = mpsc::unbounded_channel::<CommitCommand>();
-
-        let inner = Arc::new(UploadCommitInner {
-            commit_id,
-            session,
-            active_tasks: RwLock::new(HashMap::new()),
-            progress: Arc::new(CommitProgress::new()),
-            upload_session: TokioMutex::new(None),
-            state: Mutex::new(GroupState::Alive),
-            command_tx,
-        });
-
-        // Spawn background worker task on the runtime directly
-        let inner_clone = inner.clone();
-        inner.session.runtime.spawn(async move {
-            while let Some(command) = command_rx.recv().await {
-                match command {
-                    CommitCommand::UploadFromPath { file_path, response_tx } => {
-                        let result = inner_clone.start_upload_file_from_path(file_path).await;
-                        let _ = response_tx.send(result);
-                    },
-                    CommitCommand::UploadBytes { bytes, response_tx } => {
-                        let result = inner_clone.start_upload_bytes(bytes).await;
-                        let _ = response_tx.send(result);
-                    },
-                    CommitCommand::UploadFile {
-                        file_name,
-                        file_size,
-                        response_tx,
-                    } => {
-                        let result = inner_clone.start_upload_file(file_name, file_size).await;
-                        let _ = response_tx.send(result);
-                    },
-                    CommitCommand::Commit { response_tx } => {
-                        let result = inner_clone.handle_commit().await;
-                        let _ = response_tx.send(result);
-                        // After commit, stop processing commands
-                        break;
-                    },
-                }
-            }
-        });
-
-        Ok(Self { inner })
-    }
-
-    /// Get the commit ID.
-    pub(crate) fn id(&self) -> Ulid {
-        self.commit_id
-    }
-
-    /// Abort this upload commit.
-    pub(crate) fn abort(&self) -> Result<(), SessionError> {
-        *self.state.lock()? = GroupState::Aborted;
-        Ok(())
-    }
-
-    // ===== Public synchronous methods =====
-
-    /// Queue a file for upload, starting the transfer immediately.
-    ///
-    /// Returns the task ID that can be used to correlate entries returned by
-    /// [`get_progress`](Self::get_progress).
-    ///
-    /// # Errors
-    ///
-    /// Returns [`SessionError::Aborted`] if the session has been aborted, or
-    /// [`SessionError::AlreadyCommitted`] if [`commit`](Self::commit) has
-    /// already been called.
-    pub fn upload_from_path(&self, file_path: PathBuf) -> Result<Ulid, SessionError> {
-        self.session.check_alive()?;
-        let (response_tx, response_rx) = oneshot::channel();
-
-        self.command_tx
-            .send(CommitCommand::UploadFromPath { file_path, response_tx })
-            .map_err(|_| SessionError::other("Failed to send upload command"))?;
-
-        response_rx
-            .blocking_recv()
-            .map_err(|_| SessionError::other("Failed to receive upload response"))?
-    }
-
-    /// Begin an incremental file upload, returning a [`SingleFileCleaner`] that the
-    /// caller uses to stream bytes.
-    ///
-    /// This is the low-level streaming counterpart to [`upload_from_path`](Self::upload_from_path).
-    ///
-    /// ```rust,no_run
-    /// # use std::fs::File;
-    /// # use std::io::Read;
-    /// # use xet_session::SessionError;
-    /// # async fn example(commit: xet_session::UploadCommit, filename: &str, filesize: u64) -> Result<(), Box<dyn std::error::Error>> {
-    /// let (task_id, mut cleaner) = commit.upload_file(Some(filename.into()), filesize)?;
-    /// let mut reader = File::open(&filename)?;
-    /// let mut buffer = vec![0u8; 65536];
-    /// loop {
-    ///     let bytes = reader.read(&mut buffer)?;
-    ///     if bytes == 0 {
-    ///         break;
-    ///     }
-    ///     cleaner.add_data(&buffer[0..bytes]).await?;
-    /// }
-    /// let (file_info, _metrics) = cleaner.finish().await?;
-    /// # Ok(())
-    /// # }
-    /// ```
-    ///
-    /// # Parameters
-    ///
-    /// - `file_name`: optional name used for progress/telemetry reporting.
-    /// - `file_size`: expected size in bytes (used for progress tracking; `0` is valid if unknown).
-    pub fn upload_file(
-        &self,
-        file_name: Option<String>,
-        file_size: u64,
-    ) -> Result<(Ulid, SingleFileCleaner), SessionError> {
-        self.session.check_alive()?;
-        let (response_tx, response_rx) = oneshot::channel();
-
-        self.command_tx
-            .send(CommitCommand::UploadFile {
-                file_name,
-                file_size,
-                response_tx,
-            })
-            .map_err(|_| SessionError::other("Failed to send start_clean command"))?;
-
-        response_rx
-            .blocking_recv()
-            .map_err(|_| SessionError::other("Failed to receive start_clean response"))?
-    }
-
-    /// Queue raw bytes for upload, starting the transfer immediately.
-    ///
-    /// Returns the task ID. See [`upload_file`](Self::upload_file) for details.
-    pub fn upload_bytes(&self, bytes: Vec<u8>) -> Result<Ulid, SessionError> {
-        self.session.check_alive()?;
-        let (response_tx, response_rx) = oneshot::channel();
-
-        self.command_tx
-            .send(CommitCommand::UploadBytes { bytes, response_tx })
-            .map_err(|_| SessionError::other("Failed to send upload_bytes command"))?;
-
-        response_rx
-            .blocking_recv()
-            .map_err(|_| SessionError::other("Failed to receive upload_bytes response"))?
-    }
-
-    /// Returns `true` if [`commit`](Self::commit) has been called and completed.
-    #[cfg(test)]
-    fn is_committed(&self) -> bool {
-        match self.state.lock() {
-            Ok(state) => *state == GroupState::Finished,
-            Err(_) => false,
-        }
-    }
-
-    /// Return a snapshot of progress for every queued upload.
-    ///
-    /// Per-file byte counts come from [`CommitProgress`], which is updated by
-    /// the `FileUploadSession` callback.  The method is safe to call frequently
-    /// from Python: integer counters are read atomically and the per-file map
-    /// requires only a brief lock.
-    pub fn get_progress(&self) -> Vec<UploadProgress> {
-        let tasks = match self.active_tasks.read() {
-            Ok(tasks) => tasks,
-            Err(e) => {
-                tracing::error!("Failed to acquire read lock on active_tasks: {}", e);
-                return Vec::new();
-            },
-        };
-
-        // Build a name→(total, completed) lookup from CommitProgress.
-        let file_snapshots: std::collections::HashMap<String, FileProgressSnapshot> = self
-            .progress
-            .files()
-            .into_iter()
-            .map(|s| (s.item_name.to_string(), s))
-            .collect();
-
-        tasks
-            .values()
-            .filter_map(|handle| match handle.status.lock() {
-                Ok(status) => {
-                    let (bytes_total, bytes_completed) = handle
-                        .file_name
-                        .as_deref()
-                        .and_then(|name| file_snapshots.get(name))
-                        .map(|s| (s.total_bytes, s.bytes_completed))
-                        .unwrap_or((0, 0));
-
-                    Some(UploadProgress {
-                        task_id: handle.task_id,
-                        file_name: handle.file_name.clone(),
-                        bytes_completed,
-                        bytes_total,
-                        status: *status,
-                    })
-                },
-                Err(e) => {
-                    tracing::error!("Failed to acquire lock on task status for {}: {}", handle.task_id, e);
-                    None
-                },
-            })
-            .collect()
-    }
-
-    /// Wait for all uploads to complete and push metadata to the CAS server.
-    ///
-    /// Blocks until every queued upload finishes (or fails), then finalises
-    /// the upload session.  Returns one [`FileMetadata`] entry per uploaded
-    /// file in the order they were registered.
-    ///
-    /// Consumes `self` — subsequent calls on any clone will return
-    /// [`SessionError::AlreadyCommitted`] (or a channel-closed error if the
-    /// background worker has already exited).
-    pub fn commit(self) -> Result<Vec<FileMetadata>, SessionError> {
-        let (response_tx, response_rx) = oneshot::channel();
-
-        self.command_tx
-            .send(CommitCommand::Commit { response_tx })
-            .map_err(|_| SessionError::other("Failed to send commit command"))?;
-
-        response_rx
-            .blocking_recv()
-            .map_err(|_| SessionError::other("Failed to receive commit response"))?
-    }
-}
-
-/// A progress snapshot for a single queued upload.
-///
-/// Returned by [`UploadCommit::get_progress`].
-#[derive(Clone, Debug)]
-pub struct UploadProgress {
-    /// Unique identifier for this upload task.
-    pub task_id: Ulid,
-    /// Original file name, if the upload came from [`UploadCommit::upload_file`].
-    pub file_name: Option<String>,
-    /// Number of bytes uploaded so far.
-    pub bytes_completed: u64,
-    /// Total file size in bytes (0 if not yet known).
-    pub bytes_total: u64,
-    /// Current lifecycle state of the task.
-    pub status: TaskStatus,
 }
 
 /// Per-file metadata returned by [`UploadCommit::commit`].

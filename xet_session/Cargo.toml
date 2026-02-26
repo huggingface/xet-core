@@ -23,7 +23,6 @@ xet_config = { path = "../xet_config" }
 data = { path = "../data" }
 utils = { path = "../utils" }
 progress_tracking = { path = "../progress_tracking" }
-file_reconstruction = { path = "../file_reconstruction" }
 
 # Workspace dependencies
 async-trait = { workspace = true }
