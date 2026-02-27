@@ -28,7 +28,7 @@ pub use exp_weighted_moving_avg::ExpWeightedMovingAvg;
 mod guards;
 
 #[cfg(not(target_family = "wasm"))]
-pub use guards::{CwdGuard, EnvVarGuard};
+pub use guards::{CallbackGuard, CwdGuard, EnvVarGuard};
 
 #[cfg(not(target_family = "wasm"))]
 mod file_paths;

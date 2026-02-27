@@ -247,6 +247,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "bandwidth"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7a464cd54c99441ba44d3d09f6f980f8c29d068645022852ab66cbaad42ef6a0"
+dependencies = [
+ "rustversion",
+ "serde",
+]
+
+[[package]]
 name = "base64"
 version = "0.21.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -351,15 +361,16 @@ dependencies = [
  "bytes",
  "cas_object",
  "cas_types",
- "chrono",
  "clap",
  "deduplication",
+ "duration-str",
  "error_printer",
  "file_utils",
  "futures",
  "futures-util",
  "heed",
  "http",
+ "human-bandwidth",
  "hyper",
  "lazy_static",
  "mdb_shard",
@@ -378,9 +389,9 @@ dependencies = [
  "tokio-retry",
  "tower-http",
  "tracing",
- "tracing-log",
  "tracing-subscriber",
  "url",
+ "urlencoding",
  "utils",
  "warp",
  "web-time",
@@ -1469,6 +1480,15 @@ dependencies = [
  "serde",
  "thiserror 2.0.18",
  "urlencoding",
+]
+
+[[package]]
+name = "human-bandwidth"
+version = "0.1.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8a5afe042873d564e1fccc5d50983e1e6341ffcae8fb7603c6c542de7129a785"
+dependencies = [
+ "bandwidth",
 ]
 
 [[package]]

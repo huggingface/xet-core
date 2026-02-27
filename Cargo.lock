@@ -287,6 +287,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "bandwidth"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7a464cd54c99441ba44d3d09f6f980f8c29d068645022852ab66cbaad42ef6a0"
+dependencies = [
+ "rustversion",
+ "serde",
+]
+
+[[package]]
 name = "base16ct"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -460,9 +470,9 @@ dependencies = [
  "bytes",
  "cas_object",
  "cas_types",
- "chrono",
  "clap",
  "deduplication",
+ "duration-str",
  "error_printer",
  "file_utils",
  "futures",
@@ -470,6 +480,7 @@ dependencies = [
  "heed",
  "http",
  "httpmock",
+ "human-bandwidth",
  "hyper",
  "lazy_static",
  "mdb_shard",
@@ -489,10 +500,10 @@ dependencies = [
  "tokio-retry",
  "tower-http",
  "tracing",
- "tracing-log",
  "tracing-subscriber",
  "tracing-test",
  "url",
+ "urlencoding",
  "utils",
  "warp",
  "web-time",
@@ -2046,6 +2057,15 @@ dependencies = [
  "thiserror 2.0.12",
  "tokio",
  "urlencoding",
+]
+
+[[package]]
+name = "human-bandwidth"
+version = "0.1.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8a5afe042873d564e1fccc5d50983e1e6341ffcae8fb7603c6c542de7129a785"
+dependencies = [
+ "bandwidth",
 ]
 
 [[package]]
@@ -4525,6 +4545,31 @@ name = "similar"
 version = "2.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bbbb5d9659141646ae647b42fe094daf6c6192d1620870b449d9557f748b2daa"
+
+[[package]]
+name = "simulation"
+version = "0.1.0"
+dependencies = [
+ "bytes",
+ "cas_client",
+ "chrono",
+ "clap",
+ "duration-str",
+ "http",
+ "rand 0.9.1",
+ "reqwest",
+ "reqwest-middleware",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.12",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "tracing-subscriber",
+ "xet_logging",
+ "xet_runtime",
+]
 
 [[package]]
 name = "siphasher"

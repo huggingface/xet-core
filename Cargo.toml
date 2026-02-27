@@ -3,6 +3,7 @@ resolver = "2"
 
 members = [
     "cas_client",
+    "simulation",
     "cas_object",
     "cas_types",
     "chunk_cache",
@@ -54,6 +55,7 @@ csv = "1"
 ctor = "0.6"
 derivative = "2.2"
 dirs = "6.0"
+human-bandwidth = "0.1"
 duration-str = "0.19"
 futures = "0.3"
 futures-util = "0.3"

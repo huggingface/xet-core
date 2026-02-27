@@ -19,7 +19,6 @@ anyhow = { workspace = true }
 async-trait = { workspace = true }
 base64 = { workspace = true }
 bytes = { workspace = true }
-chrono = { workspace = true }
 clap = { workspace = true }
 futures = { workspace = true }
 http = { workspace = true }
@@ -37,7 +36,6 @@ thiserror = { workspace = true }
 tokio = { workspace = true }
 tokio-retry = { workspace = true }
 tracing = { workspace = true }
-tracing-log = { workspace = true }
 tracing-subscriber = { workspace = true }
 url = { workspace = true }
 
@@ -65,10 +63,13 @@ native-tls-vendored = ["reqwest/native-tls-vendored"]
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
 axum = { workspace = true }
+duration-str = { workspace = true }
+human-bandwidth = { workspace = true }
 futures-util = { workspace = true }
 heed = { workspace = true }
 hyper = { workspace = true }
 tower-http = { version = "0.6", features = ["cors"] }
+urlencoding = { workspace = true }
 warp = { workspace = true }
 
 [target.'cfg(target_family = "wasm")'.dependencies]
@@ -85,22 +86,3 @@ wiremock = { workspace = true }
 [[bin]]
 name = "local_cas_server"
 path = "src/simulation/local_server/main.rs"
-
-[[bin]]
-name = "simulation_server"
-path = "tests/adaptive_concurrency/src/simulation_server.rs"
-
-[[bin]]
-name = "simulation_client"
-path = "tests/adaptive_concurrency/src/simulation_client.rs"
-test = true
-
-[[bin]]
-name = "generate_summary"
-path = "tests/adaptive_concurrency/src/generate_summary.rs"
-test = true
-
-[[bin]]
-name = "generate_scenario_report"
-path = "tests/adaptive_concurrency/src/generate_scenario_report.rs"
-test = true
