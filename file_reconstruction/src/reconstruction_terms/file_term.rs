@@ -88,7 +88,7 @@ pub async fn retrieve_file_term_block(
     let response = client.get_reconstruction_v2(&file_hash, Some(query_file_byte_range)).await?;
 
     match response {
-        Some(ReconstructionResponse::V2(v2)) => retrieve_from_v2(client, file_hash, v2, query_file_byte_range).await,
+        Some(ReconstructionResponse::V2(v2)) => retrieve_from_v2(file_hash, v2, query_file_byte_range),
         Some(ReconstructionResponse::V1(v1)) => retrieve_from_v1(file_hash, v1, query_file_byte_range),
         None => Ok(None),
     }
@@ -265,29 +265,27 @@ fn retrieve_from_v1(
     Ok(Some((actual_range, total_transfer_bytes, file_terms)))
 }
 
-/// Process a V2 reconstruction response: eagerly download all xorb data via multi-range
-/// requests and return pre-populated file terms.
-async fn retrieve_from_v2(
-    client: Arc<dyn Client>,
+/// Process a V2 reconstruction response into file terms with lazy download.
+///
+/// V2 provides pre-computed URLs and byte ranges per xorb block. Instead of eagerly
+/// downloading all data, we store the URL + byte range for each block and let the
+/// existing lazy download path (XorbBlock::retrieve_data) handle fetching on demand.
+/// This ensures downloads respect memory limits, report progress, and support URL refresh.
+fn retrieve_from_v2(
     file_hash: MerkleHash,
     v2: QueryReconstructionResponseV2,
     query_file_byte_range: FileRange,
 ) -> Result<Option<(FileRange, u64, Vec<FileTerm>)>> {
-    // Build file_term_data from v2.terms (identical structure to V1 terms).
-    let mut file_term_data = Vec::<(FileRange, ChunkRange, u64, usize)>::with_capacity(v2.terms.len());
+    let acquisition_id = UniqueId::new();
 
-    // Map from (xorb_hash, chunk_range_start) -> xorb_block_index for dedup.
+    let mut file_term_data = Vec::<(FileRange, ChunkRange, u64, usize)>::with_capacity(v2.terms.len());
     let mut xorb_index_lookup = HashMap::<(MerkleHash, ChunkRange), usize>::new();
     let mut xorb_blocks: Vec<XorbBlock> = Vec::new();
-
-    // Track total transfer bytes.
+    let mut xorb_block_retrieval_urls = Vec::<(String, HttpRange)>::new();
     let mut total_transfer_bytes: u64 = 0;
-
     let mut cur_file_byte_offset = query_file_byte_range.start;
 
-    // First pass: build the xorb block structure from the V2 xorb descriptors.
-    // Each XorbMultiRangeFetch entry has a URL and a list of ranges.
-    // Each range becomes a separate xorb block.
+    // Build xorb blocks from V2 descriptors, storing URL + byte range for lazy download.
     for (xorb_hex_hash, descriptor) in &v2.xorbs {
         let xorb_hash: MerkleHash = (*xorb_hex_hash).into();
         for fetch_entry in &descriptor.fetch {
@@ -303,6 +301,7 @@ async fn retrieve_from_v2(
                         uncompressed_size_if_known: None,
                         data: RwLock::new(None),
                     });
+                    xorb_block_retrieval_urls.push((fetch_entry.url.clone(), range_desc.bytes));
                     entry.insert(new_index);
                     total_transfer_bytes += range_desc.bytes.length();
                 }
@@ -310,11 +309,10 @@ async fn retrieve_from_v2(
         }
     }
 
-    // Second pass: process terms to build file_term_data and references.
+    // Process terms to build file_term_data and references.
     for (local_term_index, term) in v2.terms.iter().enumerate() {
         let xorb_hash: MerkleHash = term.hash.into();
 
-        // Find which xorb block this term belongs to.
         let xorb_block_index = xorb_index_lookup
             .iter()
             .find_map(|(&(hash, chunk_range), &idx)| {
@@ -374,43 +372,12 @@ async fn retrieve_from_v2(
         file_term_data.last().map(|(br, _, _, _)| br.end).unwrap_or(0),
     );
 
-    // Eagerly download all xorb data via multi-range requests.
-    for (xorb_hex_hash, descriptor) in &v2.xorbs {
-        let xorb_hash: MerkleHash = (*xorb_hex_hash).into();
-
-        for fetch_entry in &descriptor.fetch {
-            // Extract the Range header value from the URL's X-Xet-Signed-Range query param.
-            let range_header = extract_signed_range(&fetch_entry.url).ok_or_else(|| {
-                FileReconstructionError::CorruptedReconstruction(format!(
-                    "No X-Xet-Signed-Range query param found in URL for xorb {xorb_hash:?}"
-                ))
-            })?;
-
-            let permit = client.acquire_download_permit().await?;
-
-            let parts = client
-                .get_multi_range_term_data(&fetch_entry.url, &range_header, fetch_entry.ranges.len(), permit, None)
-                .await?;
-
-            // Match each downloaded part to its xorb block and pre-populate.
-            for (i, (data, chunk_byte_indices)) in parts.into_iter().enumerate() {
-                let range_desc = &fetch_entry.ranges[i];
-                let key = (xorb_hash, range_desc.chunks);
-
-                if let Some(&block_idx) = xorb_index_lookup.get(&key) {
-                    let chunk_offsets: Vec<usize> = chunk_byte_indices.iter().map(|&x| x as usize).collect();
-                    let xorb_block_data = Arc::new(XorbBlockData { chunk_offsets, data });
-                    *xorb_blocks[block_idx].data.write().await = Some(xorb_block_data);
-                }
-            }
-        }
-    }
-
-    // Create a dummy TermBlockRetrievalURLs for API compatibility.
-    // V2 data is already downloaded, so URL refresh should never be needed.
-    let dummy_urls: Vec<(String, HttpRange)> =
-        xorb_blocks.iter().map(|_| (String::new(), HttpRange::new(0, 0))).collect();
-    let url_info = Arc::new(TermBlockRetrievalURLs::new(file_hash, actual_range, UniqueId::new(), dummy_urls));
+    let url_info = Arc::new(TermBlockRetrievalURLs::new(
+        file_hash,
+        actual_range,
+        acquisition_id,
+        xorb_block_retrieval_urls,
+    ));
 
     let xorb_blocks_arc: Vec<Arc<XorbBlock>> = xorb_blocks.into_iter().map(Arc::new).collect();
 
@@ -426,19 +393,6 @@ async fn retrieve_from_v2(
         .collect();
 
     Ok(Some((actual_range, total_transfer_bytes, file_terms)))
-}
-
-/// Extract the X-Xet-Signed-Range query parameter value from a URL.
-fn extract_signed_range(url: &str) -> Option<String> {
-    let query_start = url.find('?')?;
-    let query = &url[query_start + 1..];
-    for param in query.split('&') {
-        if let Some(value) = param.strip_prefix("X-Xet-Signed-Range=") {
-            // URL-decode the value (Range headers use simple chars, minimal decoding needed)
-            return Some(value.replace("%20", " ").replace("%3D", "=").replace("%2C", ","));
-        }
-    }
-    None
 }
 
 #[cfg(test)]
