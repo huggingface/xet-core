@@ -4,8 +4,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use bytes::Bytes;
 use cas_object::SerializedCasObject;
 use cas_types::{
-    BatchQueryReconstructionResponse, FileRange, HttpRange, Key, QueryReconstructionResponse, UploadShardResponse,
-    UploadShardResponseType, UploadXorbResponse,
+    BatchQueryReconstructionResponse, FileRange, HttpRange, Key, QueryReconstructionResponse,
+    QueryReconstructionResponseV2, ReconstructionResponse, UploadShardResponse, UploadShardResponseType,
+    UploadXorbResponse,
 };
 use futures::TryStreamExt;
 use http::HeaderValue;
@@ -258,6 +259,210 @@ impl Client for RemoteClient {
             },
             Err(e) => Err(e),
         }
+    }
+
+    async fn get_reconstruction_v2(
+        &self,
+        file_id: &MerkleHash,
+        bytes_range: Option<FileRange>,
+    ) -> Result<Option<ReconstructionResponse>> {
+        let call_id = FN_CALL_ID.fetch_add(1, Ordering::Relaxed);
+        let url = Url::parse(&format!("{}/v1/reconstructions/{}", self.endpoint, file_id.hex()))?;
+        event!(
+            INFORMATION_LOG_LEVEL,
+            call_id,
+            %file_id,
+            ?bytes_range,
+            "Starting get_reconstruction_v2 API call",
+        );
+
+        let api_tag = "cas::get_reconstruction_v2";
+        let client = self.authenticated_http_client.clone();
+
+        let result: Result<ReconstructionResponse> = RetryWrapper::new(api_tag)
+            .run_and_extract_custom(
+                move || {
+                    let mut request = client
+                        .get(url.clone())
+                        .with_extension(Api(api_tag))
+                        .header("X-Xet-Reconstruction-Version", "2");
+                    if let Some(range) = bytes_range {
+                        request = request.header(RANGE, HttpRange::from(range).range_header())
+                    }
+                    request.send()
+                },
+                |resp: Response| async move {
+                    let version = resp
+                        .headers()
+                        .get("X-Xet-Reconstruction-Version")
+                        .and_then(|v| v.to_str().ok())
+                        .unwrap_or("1")
+                        .to_string();
+
+                    let body = resp
+                        .bytes()
+                        .await
+                        .map_err(|e| RetryableReqwestError::RetryableError(e.into()))?;
+
+                    if version == "2" {
+                        let v2: QueryReconstructionResponseV2 = serde_json::from_slice(&body).map_err(|e| {
+                            RetryableReqwestError::RetryableError(CasClientError::Other(format!(
+                                "Failed to parse V2 reconstruction response: {e}"
+                            )))
+                        })?;
+                        Ok(ReconstructionResponse::V2(v2))
+                    } else {
+                        let v1: QueryReconstructionResponse = serde_json::from_slice(&body).map_err(|e| {
+                            RetryableReqwestError::RetryableError(CasClientError::Other(format!(
+                                "Failed to parse V1 reconstruction response: {e}"
+                            )))
+                        })?;
+                        Ok(ReconstructionResponse::V1(v1))
+                    }
+                },
+            )
+            .await;
+
+        match result {
+            Ok(response) => {
+                event!(
+                    INFORMATION_LOG_LEVEL,
+                    call_id,
+                    %file_id,
+                    ?bytes_range,
+                    "Completed get_reconstruction_v2 API call"
+                );
+                Ok(Some(response))
+            },
+            Err(CasClientError::ReqwestError(ref e, _)) if e.status() == Some(StatusCode::RANGE_NOT_SATISFIABLE) => {
+                Ok(None)
+            },
+            Err(e) => Err(e),
+        }
+    }
+
+    async fn get_multi_range_term_data(
+        &self,
+        url: &str,
+        range_header: &str,
+        expected_parts: usize,
+        download_permit: ConnectionPermit,
+        progress_callback: Option<ProgressCallback>,
+    ) -> Result<Vec<(Bytes, Vec<u32>)>> {
+        let api_tag = "s3::get_multi_range";
+        let http_client = self.http_client.clone();
+        let url_string = url.to_string();
+        let range_header_string = range_header.to_string();
+
+        let mut transfer_reporter = StreamProgressReporter::new(0)
+            .with_adaptive_concurrency_reporter(download_permit.get_partial_completion_reporting_function());
+        if let Some(cb) = progress_callback {
+            transfer_reporter = transfer_reporter.with_progress_callback(cb);
+        }
+
+        let result = RetryWrapper::new(api_tag)
+            .with_retry_on_403()
+            .with_connection_permit(download_permit, None)
+            .run_and_extract_custom(
+                move || {
+                    let http_client = http_client.clone();
+                    let url_string = url_string.clone();
+                    let range_header_string = range_header_string.clone();
+
+                    async move {
+                        let url =
+                            Url::parse(&url_string).map_err(|e| reqwest_middleware::Error::Middleware(e.into()))?;
+
+                        http_client
+                            .get(url)
+                            .header(RANGE, &range_header_string)
+                            .with_extension(Api(api_tag))
+                            .send()
+                            .await
+                    }
+                },
+                move |resp: Response| {
+                    let transfer_reporter = transfer_reporter.clone();
+                    async move {
+                        let content_type = resp
+                            .headers()
+                            .get("content-type")
+                            .and_then(|v| v.to_str().ok())
+                            .unwrap_or("")
+                            .to_string();
+
+                        let incoming_stream = DownloadProgressStream::wrap_stream(
+                            resp.bytes_stream().map_err(std::io::Error::other),
+                            transfer_reporter,
+                        );
+
+                        // Collect the full body through the progress stream
+                        use futures::StreamExt;
+                        let mut body_parts = Vec::new();
+                        futures::pin_mut!(incoming_stream);
+                        while let Some(chunk) = incoming_stream.next().await {
+                            let chunk =
+                                chunk.map_err(|e| RetryableReqwestError::RetryableError(CasClientError::from(e)))?;
+                            body_parts.push(chunk);
+                        }
+                        let body: Bytes = body_parts.into_iter().flatten().collect::<Vec<u8>>().into();
+
+                        // If the response is multipart/byteranges, parse into parts.
+                        // Otherwise (single range → 206 with plain body), treat the entire body as one part.
+                        let part_bodies: Vec<Bytes> = if content_type.contains("multipart/byteranges") {
+                            let multipart_parts =
+                                crate::multipart::parse_multipart_byteranges(&content_type, body)
+                                    .map_err(|e| RetryableReqwestError::FatalError(e))?;
+
+                            if multipart_parts.len() != expected_parts {
+                                return Err(RetryableReqwestError::FatalError(CasClientError::Other(format!(
+                                    "Expected {expected_parts} parts in multipart response, got {}",
+                                    multipart_parts.len()
+                                ))));
+                            }
+
+                            multipart_parts.into_iter().map(|p| p.data).collect()
+                        } else {
+                            if expected_parts != 1 {
+                                return Err(RetryableReqwestError::FatalError(CasClientError::Other(format!(
+                                    "Expected multipart response with {expected_parts} parts, but got single-range response"
+                                ))));
+                            }
+                            vec![body]
+                        };
+
+                        let mut results = Vec::with_capacity(part_bodies.len());
+                        for part_data in part_bodies {
+                            let mut buffer = Vec::new();
+                            let mut writer = std::io::Cursor::new(&mut buffer);
+
+                            let stream = futures::stream::iter(std::iter::once(Ok::<_, std::io::Error>(part_data)));
+
+                            let result = cas_object::deserialize_async::deserialize_chunks_to_writer_from_stream(
+                                stream,
+                                &mut writer,
+                            )
+                            .await;
+
+                            match result {
+                                Ok((_compressed_len, chunk_byte_indices)) => {
+                                    results.push((Bytes::from(buffer), chunk_byte_indices));
+                                },
+                                Err(e) => {
+                                    return Err(RetryableReqwestError::RetryableError(CasClientError::CasObjectError(
+                                        e,
+                                    )));
+                                },
+                            }
+                        }
+
+                        Ok(results)
+                    }
+                },
+            )
+            .await?;
+
+        Ok(result)
     }
 
     async fn batch_get_reconstruction(&self, file_ids: &[MerkleHash]) -> Result<BatchQueryReconstructionResponse> {
@@ -655,5 +860,285 @@ mod tests {
 
         // Assert
         assert!(result.is_ok());
+    }
+
+    /// Integration test for V2 reconstruction against a real CAS server.
+    ///
+    /// Requires:
+    ///   - DynamoDB local on port 8000
+    ///   - MinIO on port 9000
+    ///   - CAS server on port 4884 with JWT secret "xet-jwt-secret"
+    ///
+    /// Run with:
+    ///   CAS_TEST_WRITE_TOKEN=... CAS_TEST_READ_TOKEN=... \
+    ///   cargo test -p cas_client test_v2_reconstruction -- --ignored --nocapture
+    #[ignore = "requires a running CAS server on port 4884"]
+    #[traced_test]
+    #[tokio::test]
+    async fn test_v2_reconstruction() {
+        use cas_types::ReconstructionResponse;
+        use deduplication::{Chunk, RawXorbData};
+        use mdb_shard::chunk_verification::range_hash_from_chunks;
+        use mdb_shard::file_structs::{
+            FileDataSequenceEntry, FileDataSequenceHeader, FileMetadataExt, FileVerificationEntry, MDBFileInfo,
+        };
+        use mdb_shard::shard_in_memory::MDBInMemoryShard;
+        use merklehash::{compute_data_hash, file_hash_with_salt};
+        use rand::rngs::SmallRng;
+        use rand::{Rng, RngCore, SeedableRng};
+        use utils::auth::AuthConfig;
+
+        let endpoint = "http://localhost:4884";
+
+        let write_token = std::env::var("CAS_TEST_WRITE_TOKEN")
+            .expect("Set CAS_TEST_WRITE_TOKEN env var with a valid JWT write token");
+        let read_token =
+            std::env::var("CAS_TEST_READ_TOKEN").expect("Set CAS_TEST_READ_TOKEN env var with a valid JWT read token");
+
+        let write_auth = AuthConfig::maybe_new(Some(write_token), None, None);
+        let write_client = RemoteClient::new(endpoint, &write_auth, "test-v2", false, None);
+
+        // Build xorb data: 2 xorbs, one with 5 chunks, one with 3 chunks
+        let chunk_size = 512usize;
+        let term_spec: &[(u64, (u64, u64))] = &[(1, (0, 5)), (2, (0, 3))];
+
+        let mut xorb_num_chunks = std::collections::HashMap::<u64, u64>::new();
+        for &(xorb_seed, (_start, end)) in term_spec {
+            let c = xorb_num_chunks.entry(xorb_seed).or_default();
+            *c = (*c).max(end);
+        }
+
+        let mut shard = MDBInMemoryShard::default();
+        let mut xorb_data = std::collections::HashMap::<u64, RawXorbData>::new();
+
+        for (&xorb_seed, &n_chunks) in &xorb_num_chunks {
+            let mut rng = SmallRng::seed_from_u64(xorb_seed);
+            let n_chunks = n_chunks as usize;
+            let mut chunks = Vec::with_capacity(n_chunks);
+
+            for _ in 0..n_chunks {
+                let n = rng.random_range((chunk_size / 2 + 1)..chunk_size);
+                let n_left = chunk_size - n;
+                let mut rng_data = vec![0u8; n];
+                rng.fill_bytes(&mut rng_data);
+                let mut buf = vec![0u8; chunk_size];
+                buf[..n].copy_from_slice(&rng_data[..n]);
+                buf[n..].copy_from_slice(&rng_data[..n_left]);
+                let hash = compute_data_hash(&buf);
+                chunks.push(Chunk {
+                    hash,
+                    data: bytes::Bytes::from(buf),
+                });
+            }
+
+            let raw_xorb = RawXorbData::from_chunks(&chunks, vec![0]);
+            shard.add_cas_block(raw_xorb.cas_info.clone()).unwrap();
+
+            let serialized_xorb = cas_object::SerializedCasObject::from_xorb(raw_xorb.clone(), None, true).unwrap();
+            let upload_permit = write_client.acquire_upload_permit().await.unwrap();
+            write_client
+                .upload_xorb("default", serialized_xorb, None, upload_permit)
+                .await
+                .unwrap();
+
+            xorb_data.insert(xorb_seed, raw_xorb);
+        }
+
+        // Build file info with verification entries
+        let mut file_segments = Vec::new();
+        let mut verification = Vec::new();
+        let mut file_data = Vec::new();
+        let mut chunk_file_hashes = Vec::new();
+
+        for &(xorb_seed, (chunk_idx_start, chunk_idx_end)) in term_spec {
+            let raw_xorb = xorb_data.get(&xorb_seed).unwrap();
+            let xorb_h = raw_xorb.hash();
+            let (c_lb, c_ub) = (chunk_idx_start as usize, chunk_idx_end as usize);
+
+            let mut n_bytes = 0;
+            for i in c_lb..c_ub {
+                let chunk_bytes = &raw_xorb.data[i];
+                file_data.extend_from_slice(chunk_bytes);
+                n_bytes += chunk_bytes.len();
+                chunk_file_hashes.push((raw_xorb.cas_info.chunks[i].chunk_hash, chunk_bytes.len() as u64));
+            }
+
+            file_segments.push(FileDataSequenceEntry::new(
+                xorb_h,
+                n_bytes,
+                chunk_idx_start as usize,
+                chunk_idx_end as usize,
+            ));
+
+            // Compute verification hash from chunk hashes in this range
+            let chunk_hashes: Vec<_> = (c_lb..c_ub).map(|i| raw_xorb.cas_info.chunks[i].chunk_hash).collect();
+            let range_hash = range_hash_from_chunks(&chunk_hashes);
+            verification.push(FileVerificationEntry::new(range_hash));
+        }
+
+        let file_hash = file_hash_with_salt(&chunk_file_hashes, &[0; 32]);
+
+        // Compute a hash of the file data for metadata_ext SHA256 field.
+        // For testing purposes, we use the blake3 data hash (the server only checks the field exists).
+        let file_sha256 = compute_data_hash(&file_data);
+
+        shard
+            .add_file_reconstruction_info(MDBFileInfo {
+                metadata: FileDataSequenceHeader::new(
+                    file_hash,
+                    file_segments.len(),
+                    true, // contains_verification
+                    true, // contains_metadata_ext
+                ),
+                segments: file_segments,
+                verification,
+                metadata_ext: Some(FileMetadataExt::new(file_sha256)),
+            })
+            .unwrap();
+
+        let shard_bytes = shard.to_bytes().unwrap();
+
+        let upload_permit = write_client.acquire_upload_permit().await.unwrap();
+        write_client.upload_shard(shard_bytes.into(), upload_permit).await.unwrap();
+
+        info!("Upload complete. File hash: {file_hash:?}");
+
+        // Now query V2 reconstruction with a read client.
+        let read_auth = AuthConfig::maybe_new(Some(read_token), None, None);
+        let read_client = RemoteClient::new(endpoint, &read_auth, "test-v2", false, None);
+
+        let file_range = cas_types::FileRange::new(0, file_data.len() as u64);
+        let response = read_client
+            .get_reconstruction_v2(&file_hash, Some(file_range))
+            .await
+            .expect("get_reconstruction_v2 should succeed");
+
+        match response {
+            Some(ReconstructionResponse::V2(v2)) => {
+                assert!(!v2.terms.is_empty(), "V2 response should have terms");
+                assert!(!v2.xorbs.is_empty(), "V2 response should have xorb descriptors");
+
+                for term in &v2.terms {
+                    assert!(v2.xorbs.contains_key(&term.hash), "Term hash {:?} should be in xorbs map", term.hash);
+                }
+
+                for (hash, descriptor) in &v2.xorbs {
+                    assert!(!descriptor.fetch.is_empty(), "Xorb {hash:?} should have fetch entries");
+                    for fetch in &descriptor.fetch {
+                        assert!(!fetch.url.is_empty(), "Fetch URL should not be empty");
+                        assert!(!fetch.ranges.is_empty(), "Fetch should have ranges");
+                    }
+                }
+
+                info!("V2 reconstruction verified: {} terms, {} xorbs", v2.terms.len(), v2.xorbs.len());
+            },
+            Some(ReconstructionResponse::V1(_)) => {
+                panic!("Expected V2 response but got V1 — server may not support V2");
+            },
+            None => {
+                panic!("Expected reconstruction response but got None");
+            },
+        }
+    }
+
+    /// Integration test: V2 reconstruction with real CloudFront download (read-only).
+    ///
+    /// Tests the full V2 flow against a CAS server with prod S3/CloudFront config:
+    /// 1. get_reconstruction_v2 returns V2 response with CloudFront signed URLs
+    /// 2. get_multi_range_term_data downloads xorb data and deserializes CAS objects
+    ///
+    /// Prerequisites:
+    ///   - CAS server on port 4884 with prod S3/CloudFront config
+    ///
+    /// Run with:
+    ///   CAS_TEST_READ_TOKEN=... CAS_TEST_FILE_ID=... \
+    ///   cargo test -p cas_client test_v2_cloudfront_download -- --ignored --nocapture
+    #[ignore = "requires CAS server with prod CloudFront config"]
+    #[traced_test]
+    #[tokio::test]
+    async fn test_v2_cloudfront_download() {
+        use cas_types::ReconstructionResponse;
+        use utils::auth::AuthConfig;
+
+        let endpoint = "http://localhost:4884";
+
+        let read_token =
+            std::env::var("CAS_TEST_READ_TOKEN").expect("Set CAS_TEST_READ_TOKEN env var with a valid JWT read token");
+        let file_id_hex =
+            std::env::var("CAS_TEST_FILE_ID").expect("Set CAS_TEST_FILE_ID env var with a file hash from prod");
+
+        let file_hash = MerkleHash::from_hex(&file_id_hex).expect("invalid file hash hex");
+
+        let read_auth = AuthConfig::maybe_new(Some(read_token), None, None);
+        let client = RemoteClient::new(endpoint, &read_auth, "test-v2-cf", false, None);
+
+        // Optional byte range (e.g. "1000000000-1005000000") to limit the download size.
+        let file_range = std::env::var("CAS_TEST_FILE_RANGE").ok().map(|s| {
+            let parts: Vec<&str> = s.split('-').collect();
+            cas_types::FileRange::new(parts[0].parse().unwrap(), parts[1].parse().unwrap())
+        });
+
+        // Step 1: Get V2 reconstruction
+        info!("Requesting V2 reconstruction for {file_hash:?}, range={file_range:?}");
+        let response = client
+            .get_reconstruction_v2(&file_hash, file_range)
+            .await
+            .expect("get_reconstruction_v2 should succeed");
+
+        let v2 = match response {
+            Some(ReconstructionResponse::V2(v2)) => {
+                info!("Got V2 response: {} terms, {} xorbs", v2.terms.len(), v2.xorbs.len());
+                v2
+            },
+            Some(ReconstructionResponse::V1(_)) => panic!("Expected V2 but got V1"),
+            None => panic!("File not found"),
+        };
+
+        // Step 2: Download xorb data via CloudFront signed URLs
+        let mut total_downloaded = 0usize;
+        let mut total_parts = 0usize;
+
+        for (xorb_hash, descriptor) in &v2.xorbs {
+            for fetch_entry in &descriptor.fetch {
+                let range_header = fetch_entry
+                    .url
+                    .find('?')
+                    .and_then(|qi| {
+                        fetch_entry.url[qi + 1..].split('&').find_map(|p| {
+                            p.strip_prefix("X-Xet-Signed-Range=")
+                                .map(|v| v.replace("%20", " ").replace("%3D", "=").replace("%2C", ","))
+                        })
+                    })
+                    .unwrap_or_default();
+
+                info!(
+                    "Downloading xorb {xorb_hash}: {} ranges, range_header={range_header}",
+                    fetch_entry.ranges.len()
+                );
+
+                let permit = client.acquire_download_permit().await.unwrap();
+
+                let parts = client
+                    .get_multi_range_term_data(&fetch_entry.url, &range_header, fetch_entry.ranges.len(), permit, None)
+                    .await
+                    .expect("get_multi_range_term_data should succeed");
+
+                for (data, chunk_offsets) in &parts {
+                    info!(
+                        "  Part: {} bytes, {} chunks",
+                        data.len(),
+                        chunk_offsets.len()
+                    );
+                    total_downloaded += data.len();
+                    assert!(!data.is_empty(), "Downloaded data should not be empty");
+                    assert!(!chunk_offsets.is_empty(), "Chunk offsets should not be empty");
+                }
+
+                total_parts += parts.len();
+            }
+        }
+
+        info!("V2 CloudFront download complete: {total_parts} parts, {total_downloaded} bytes total");
+        assert!(total_downloaded > 0, "Should have downloaded some data");
     }
 }

@@ -257,6 +257,13 @@ pub struct XorbRangeDescriptor {
     pub bytes: HttpRange,
 }
 
+/// Wrapper enum for V1/V2 reconstruction responses.
+/// Allows the client to handle both versions transparently.
+pub enum ReconstructionResponse {
+    V1(QueryReconstructionResponse),
+    V2(QueryReconstructionResponseV2),
+}
+
 // Request json body type representation for the POST /reconstructions endpoint
 // to get the reconstruction for multiple files at a time.
 // listing of non-duplicate (enforced by HashSet) keys (file ids) to get reconstructions for
