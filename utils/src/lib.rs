@@ -9,11 +9,16 @@ pub mod errors;
 #[cfg(not(target_family = "wasm"))]
 pub mod limited_joinset;
 mod output_bytes;
+pub use output_bytes::output_bytes;
 pub mod serialization_utils;
 #[cfg(not(target_family = "wasm"))]
 pub mod singleflight;
 
-pub use output_bytes::output_bytes;
+#[cfg(not(target_family = "wasm"))]
+pub mod system_monitor;
+
+#[cfg(not(target_family = "wasm"))]
+pub use system_monitor::SystemMonitor;
 
 pub mod rw_task_lock;
 pub use rw_task_lock::{RwTaskLock, RwTaskLockError, RwTaskLockReadGuard};
