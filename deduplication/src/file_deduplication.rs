@@ -8,6 +8,7 @@ use merklehash::{MerkleHash, file_hash};
 use more_asserts::{debug_assert_le, debug_assert_lt};
 use progress_tracking::upload_tracking::FileXorbDependency;
 use utils::MerkleHashMap;
+use xet_config::DeduplicationConfig;
 
 use crate::Chunk;
 use crate::constants::{MAX_XORB_BYTES, MAX_XORB_CHUNKS};
@@ -53,10 +54,13 @@ pub struct FileDeduper<DataInterfaceType: DeduplicationDataInterface> {
 
     /// The tracked deduplication metrics for this file.
     deduplication_metrics: DeduplicationMetrics,
+
+    /// configuration settings
+    config: DeduplicationConfig,
 }
 
 impl<DataInterfaceType: DeduplicationDataInterface> FileDeduper<DataInterfaceType> {
-    pub fn new(data_manager: DataInterfaceType, file_id: u64) -> Self {
+    pub fn new(data_manager: DataInterfaceType, file_id: u64, config: DeduplicationConfig) -> Self {
         Self {
             data_mng: data_manager,
             file_id,
@@ -70,6 +74,7 @@ impl<DataInterfaceType: DeduplicationDataInterface> FileDeduper<DataInterfaceTyp
             min_spacing_between_global_dedup_queries: 0,
             next_chunk_index_eligible_for_global_dedup_query: 0,
             deduplication_metrics: DeduplicationMetrics::default(),
+            config,
         }
     }
 
@@ -96,66 +101,68 @@ impl<DataInterfaceType: DeduplicationDataInterface> FileDeduper<DataInterfaceTyp
         // This holds the results of the dedup queries.
         let mut deduped_blocks = vec![None; chunks.len()];
 
-        // Do at most two passes; 1) with global dedup querying possibly enabled, and 2) possibly rerunning
-        // if the global dedup query came back with a new shard.
+        if self.config.enable_deduplication {
+            // Do at most two passes; 1) with global dedup querying possibly enabled, and 2) possibly rerunning
+            // if the global dedup query came back with a new shard.
 
-        for first_pass in [true, false] {
-            // Now, go through and test all of these for whether or not they can be deduplicated.
-            let mut local_chunk_index = 0;
-            while local_chunk_index < chunks.len() {
-                let global_chunk_index = global_chunk_index_start + local_chunk_index;
+            for first_pass in [true, false] {
+                // Now, go through and test all of these for whether or not they can be deduplicated.
+                let mut local_chunk_index = 0;
+                while local_chunk_index < chunks.len() {
+                    let global_chunk_index = global_chunk_index_start + local_chunk_index;
 
-                // First check to see if we don't already know what these blocks are from a previous pass.
-                if let Some((n_deduped, _, _)) = &deduped_blocks[local_chunk_index] {
-                    local_chunk_index += n_deduped;
-                } else if let Some((n_deduped, fse, is_uploaded_shard)) =
-                    self.data_mng.chunk_hash_dedup_query(&chunk_hashes[local_chunk_index..]).await?
-                {
-                    if !first_pass {
-                        // This means new shards were discovered; so these are global dedup elegible.  We'll record
-                        // the rest later on
-                        dedup_metrics.deduped_chunks_by_global_dedup += n_deduped as u64;
-                        dedup_metrics.deduped_bytes_by_global_dedup += fse.unpacked_segment_bytes as u64;
-                    }
-
-                    deduped_blocks[local_chunk_index] = Some((n_deduped, fse, is_uploaded_shard));
-                    local_chunk_index += n_deduped;
-
-                    // Now see if we can issue a background query against the global dedup server to see if
-                    // any shards are present that give us more dedup ability.
-                    //
-                    // If we've already queried these against the global dedup, then we can proceed on without
-                    // re-querying anything.  Only doing this on the first pass also guarantees that in the case of
-                    // errors on shard retrieval, we don't get stuck in a loop trying to download
-                    // and reprocess.
-                } else {
-                    // Check for global deduplication.
-                    if
-                    // Only do this query on the first pass.
-                    first_pass
-                        // The first hash of every file and those matching a pattern are eligible. 
-                        && (global_chunk_index == 0
-                            || hash_is_global_dedup_eligible(&chunk_hashes[local_chunk_index]))
-                        // Limit by enforcing at least 4MB between chunk queries.
-                        && global_chunk_index >= self.next_chunk_index_eligible_for_global_dedup_query
+                    // First check to see if we don't already know what these blocks are from a previous pass.
+                    if let Some((n_deduped, _, _)) = &deduped_blocks[local_chunk_index] {
+                        local_chunk_index += n_deduped;
+                    } else if let Some((n_deduped, fse, is_uploaded_shard)) =
+                        self.data_mng.chunk_hash_dedup_query(&chunk_hashes[local_chunk_index..]).await?
                     {
-                        self.data_mng
-                            .register_global_dedup_query(chunk_hashes[local_chunk_index])
-                            .await?;
+                        if !first_pass {
+                            // This means new shards were discovered; so these are global dedup elegible.  We'll record
+                            // the rest later on
+                            dedup_metrics.deduped_chunks_by_global_dedup += n_deduped as u64;
+                            dedup_metrics.deduped_bytes_by_global_dedup += fse.unpacked_segment_bytes as u64;
+                        }
 
-                        self.next_chunk_index_eligible_for_global_dedup_query =
-                            global_chunk_index + self.min_spacing_between_global_dedup_queries;
+                        deduped_blocks[local_chunk_index] = Some((n_deduped, fse, is_uploaded_shard));
+                        local_chunk_index += n_deduped;
+
+                        // Now see if we can issue a background query against the global dedup server to see if
+                        // any shards are present that give us more dedup ability.
+                        //
+                        // If we've already queried these against the global dedup, then we can proceed on without
+                        // re-querying anything.  Only doing this on the first pass also guarantees that in the case of
+                        // errors on shard retrieval, we don't get stuck in a loop trying to download
+                        // and reprocess.
+                    } else {
+                        // Check for global deduplication.
+                        if
+                        // Only do this query on the first pass.
+                        first_pass
+                            // The first hash of every file and those matching a pattern are eligible. 
+                            && (global_chunk_index == 0
+                                || hash_is_global_dedup_eligible(&chunk_hashes[local_chunk_index]))
+                            // Limit by enforcing at least 4MB between chunk queries.
+                            && global_chunk_index >= self.next_chunk_index_eligible_for_global_dedup_query
+                        {
+                            self.data_mng
+                                .register_global_dedup_query(chunk_hashes[local_chunk_index])
+                                .await?;
+
+                            self.next_chunk_index_eligible_for_global_dedup_query =
+                                global_chunk_index + self.min_spacing_between_global_dedup_queries;
+                        }
+
+                        local_chunk_index += 1;
                     }
-
-                    local_chunk_index += 1;
                 }
-            }
 
-            // Now, see if any of the chunk queries have completed.
-            let new_shards_added = self.data_mng.complete_global_dedup_queries().await?;
+                // Now, see if any of the chunk queries have completed.
+                let new_shards_added = self.data_mng.complete_global_dedup_queries().await?;
 
-            if !new_shards_added {
-                break;
+                if !new_shards_added {
+                    break;
+                }
             }
         }
 
@@ -165,7 +172,7 @@ impl<DataInterfaceType: DeduplicationDataInterface> FileDeduper<DataInterfaceTyp
         while cur_idx < chunks.len() {
             let mut dedupe_query = deduped_blocks[cur_idx].take();
 
-            if dedupe_query.is_none() {
+            if dedupe_query.is_none() && self.config.enable_deduplication {
                 // In this case, do a second query against the local xorb to see if we're just repeating previous
                 // information in the xorb.
                 dedupe_query = self.dedup_query_against_local_data(&chunk_hashes[cur_idx..]);
@@ -409,5 +416,349 @@ impl<DataInterfaceType: DeduplicationDataInterface> FileDeduper<DataInterfaceTyp
         let remaining_data = DataAggregator::new(self.new_data, fi, self.internally_referencing_entries, self.file_id);
 
         (file_hash, remaining_data, self.deduplication_metrics)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+
+    use async_trait::async_trait;
+    use bytes::Bytes;
+    use mdb_shard::file_structs::FileDataSequenceEntry;
+    use merklehash::MerkleHash;
+    use progress_tracking::upload_tracking::FileXorbDependency;
+    use xet_config::DeduplicationConfig;
+
+    use super::*;
+
+    type DedupEntry = (usize, FileDataSequenceEntry, bool);
+
+    struct MockDataInterface {
+        dedup_results: HashMap<MerkleHash, DedupEntry>,
+        registered_xorbs: Vec<RawXorbData>,
+        global_dedup_queries: Vec<MerkleHash>,
+        pending_global_results: Option<HashMap<MerkleHash, DedupEntry>>,
+        dependencies: Vec<FileXorbDependency>,
+    }
+
+    impl MockDataInterface {
+        fn new() -> Self {
+            Self {
+                dedup_results: HashMap::new(),
+                registered_xorbs: Vec::new(),
+                global_dedup_queries: Vec::new(),
+                pending_global_results: None,
+                dependencies: Vec::new(),
+            }
+        }
+
+        fn add_dedup(mut self, hash: MerkleHash, entry: DedupEntry) -> Self {
+            self.dedup_results.insert(hash, entry);
+            self
+        }
+
+        fn with_pending_global(mut self, results: HashMap<MerkleHash, DedupEntry>) -> Self {
+            self.pending_global_results = Some(results);
+            self
+        }
+    }
+
+    #[async_trait]
+    impl DeduplicationDataInterface for MockDataInterface {
+        type ErrorType = std::io::Error;
+
+        async fn chunk_hash_dedup_query(
+            &self,
+            query_hashes: &[MerkleHash],
+        ) -> Result<Option<DedupEntry>, Self::ErrorType> {
+            Ok(self.dedup_results.get(&query_hashes[0]).cloned())
+        }
+
+        async fn register_global_dedup_query(&mut self, chunk_hash: MerkleHash) -> Result<(), Self::ErrorType> {
+            self.global_dedup_queries.push(chunk_hash);
+            Ok(())
+        }
+
+        async fn complete_global_dedup_queries(&mut self) -> Result<bool, Self::ErrorType> {
+            if let Some(results) = self.pending_global_results.take() {
+                self.dedup_results.extend(results);
+                Ok(true)
+            } else {
+                Ok(false)
+            }
+        }
+
+        async fn register_new_xorb(&mut self, xorb: RawXorbData) -> Result<(), Self::ErrorType> {
+            self.registered_xorbs.push(xorb);
+            Ok(())
+        }
+
+        async fn register_xorb_dependencies(&mut self, deps: &[FileXorbDependency]) {
+            for d in deps {
+                self.dependencies.push(FileXorbDependency {
+                    file_id: d.file_id,
+                    xorb_hash: d.xorb_hash,
+                    n_bytes: d.n_bytes,
+                    is_external: d.is_external,
+                });
+            }
+        }
+    }
+
+    fn chunk(data: &[u8]) -> Chunk {
+        Chunk::new(Bytes::copy_from_slice(data))
+    }
+
+    fn config(enable: bool) -> DeduplicationConfig {
+        let mut c = DeduplicationConfig::default();
+        c.enable_deduplication = enable;
+        c
+    }
+
+    fn deduper(enable: bool) -> FileDeduper<MockDataInterface> {
+        FileDeduper::new(MockDataInterface::new(), 0, config(enable))
+    }
+
+    fn deduper_with(mock: MockDataInterface, enable: bool) -> FileDeduper<MockDataInterface> {
+        FileDeduper::new(mock, 0, config(enable))
+    }
+
+    fn ext_fse(n_bytes: usize, start: usize, end: usize) -> FileDataSequenceEntry {
+        FileDataSequenceEntry::new(MerkleHash::from([1u8; 32]), n_bytes, start, end)
+    }
+
+    // ---- Dedup enable/disable tests ----
+
+    #[tokio::test]
+    async fn test_all_new_chunks() {
+        let mut d = deduper(true);
+        let m = d.process_chunks(&[chunk(b"hello"), chunk(b"world")]).await.unwrap();
+        assert_eq!(m.total_chunks, 2);
+        assert_eq!(m.new_chunks, 2);
+        assert_eq!(m.deduped_chunks, 0);
+        assert_eq!(m.new_bytes, 10);
+    }
+
+    #[tokio::test]
+    async fn test_local_dedup_repeated_chunks() {
+        let a = chunk(b"aaaa");
+        let b = chunk(b"bbbb");
+
+        let mut enabled = deduper(true);
+        let me = enabled
+            .process_chunks(&[a.clone(), b.clone(), a.clone(), b.clone()])
+            .await
+            .unwrap();
+        assert_eq!(me.new_chunks, 2);
+        assert_eq!(me.deduped_chunks, 2);
+        assert_eq!(me.deduped_bytes, 8);
+
+        let mut disabled = deduper(false);
+        let md = disabled.process_chunks(&[a, b.clone(), b.clone(), b]).await.unwrap();
+        assert_eq!(md.new_chunks, 4);
+        assert_eq!(md.deduped_chunks, 0);
+    }
+
+    #[tokio::test]
+    async fn test_local_dedup_across_calls() {
+        let c = vec![chunk(b"data1")];
+
+        let mut enabled = deduper(true);
+        let m1 = enabled.process_chunks(&c).await.unwrap();
+        assert_eq!((m1.new_chunks, m1.deduped_chunks), (1, 0));
+        let m2 = enabled.process_chunks(&c).await.unwrap();
+        assert_eq!((m2.new_chunks, m2.deduped_chunks), (0, 1));
+
+        let mut disabled = deduper(false);
+        disabled.process_chunks(&c).await.unwrap();
+        let m3 = disabled.process_chunks(&c).await.unwrap();
+        assert_eq!((m3.new_chunks, m3.deduped_chunks), (1, 0));
+    }
+
+    #[tokio::test]
+    async fn test_local_dedup_contiguous_only() {
+        let a = chunk(b"aaaa");
+        let b = chunk(b"bbbb");
+        let c = chunk(b"cccc");
+
+        let mut d = deduper(true);
+        // [A, B, C, A, C, B] - A at idx 3 dedupes against idx 0 (1 contiguous match),
+        // C at idx 4 does NOT continue from A's match so it's a separate 1-chunk match,
+        // B at idx 5 is also a separate 1-chunk match.
+        let m = d.process_chunks(&[a.clone(), b.clone(), c.clone(), a, c, b]).await.unwrap();
+        assert_eq!(m.new_chunks, 3);
+        assert_eq!(m.deduped_chunks, 3);
+    }
+
+    #[tokio::test]
+    async fn test_local_dedup_contiguous_pair() {
+        let a = chunk(b"aaaa");
+        let b = chunk(b"bbbb");
+        let c = chunk(b"cccc");
+
+        let mut d = deduper(true);
+        // [A, B, C, A, B] → A,B at indices 3,4 dedup as a contiguous pair
+        let m = d.process_chunks(&[a.clone(), b.clone(), c, a, b]).await.unwrap();
+        assert_eq!(m.new_chunks, 3);
+        assert_eq!(m.deduped_chunks, 2);
+        assert_eq!(m.deduped_bytes, 8);
+    }
+
+    // ---- External dedup tests ----
+
+    #[tokio::test]
+    async fn test_external_dedup_enabled() {
+        let c = chunk(b"known");
+        let mock = MockDataInterface::new().add_dedup(c.hash, (1, ext_fse(5, 0, 1), true));
+
+        let mut d = deduper_with(mock, true);
+        let m = d.process_chunks(&[c, chunk(b"fresh")]).await.unwrap();
+        assert_eq!(m.deduped_chunks, 1);
+        assert_eq!(m.deduped_bytes, 5);
+        assert_eq!(m.new_chunks, 1);
+    }
+
+    #[tokio::test]
+    async fn test_external_dedup_disabled() {
+        let c = chunk(b"known");
+        let mock = MockDataInterface::new().add_dedup(c.hash, (1, ext_fse(5, 0, 1), true));
+
+        let mut d = deduper_with(mock, false);
+        let m = d.process_chunks(&[c, chunk(b"fresh")]).await.unwrap();
+        assert_eq!(m.deduped_chunks, 0);
+        assert_eq!(m.new_chunks, 2);
+    }
+
+    #[tokio::test]
+    async fn test_external_dedup_records_dependency() {
+        let c = chunk(b"known");
+        let fse = ext_fse(5, 0, 1);
+        let mock = MockDataInterface::new().add_dedup(c.hash, (1, fse.clone(), true));
+
+        let mut d = deduper_with(mock, true);
+        d.process_chunks(&[c]).await.unwrap();
+        assert_eq!(d.data_mng.dependencies.len(), 1);
+        assert_eq!(d.data_mng.dependencies[0].xorb_hash, fse.cas_hash);
+    }
+
+    #[tokio::test]
+    async fn test_external_dedup_multi_chunk_match() {
+        let a = chunk(b"aa");
+        let b = chunk(b"bb");
+        let mock = MockDataInterface::new().add_dedup(a.hash, (2, ext_fse(4, 0, 2), true));
+
+        let mut d = deduper_with(mock, true);
+        let m = d.process_chunks(&[a, b, chunk(b"cc")]).await.unwrap();
+        assert_eq!(m.deduped_chunks, 2);
+        assert_eq!(m.deduped_bytes, 4);
+        assert_eq!(m.new_chunks, 1);
+    }
+
+    // ---- Global dedup tests ----
+
+    #[tokio::test]
+    async fn test_global_dedup_second_pass() {
+        let c = chunk(b"discoverable");
+        let mut pending = HashMap::new();
+        pending.insert(c.hash, (1, ext_fse(12, 0, 1), true));
+        let mock = MockDataInterface::new().with_pending_global(pending);
+
+        let mut d = deduper_with(mock, true);
+        let m = d.process_chunks(&[c]).await.unwrap();
+        assert_eq!(m.deduped_chunks, 1);
+        assert_eq!(m.deduped_chunks_by_global_dedup, 1);
+    }
+
+    #[tokio::test]
+    async fn test_global_dedup_disabled_skips_queries() {
+        let c = chunk(b"discoverable");
+        let mut pending = HashMap::new();
+        pending.insert(c.hash, (1, ext_fse(12, 0, 1), true));
+        let mock = MockDataInterface::new().with_pending_global(pending);
+
+        let mut d = deduper_with(mock, false);
+        let m = d.process_chunks(&[c]).await.unwrap();
+        assert_eq!(m.deduped_chunks, 0);
+        assert_eq!(m.new_chunks, 1);
+        assert!(d.data_mng.global_dedup_queries.is_empty());
+    }
+
+    // ---- Structural tests ----
+
+    #[tokio::test]
+    async fn test_empty_chunks() {
+        let mut d = deduper(true);
+        let m = d.process_chunks(&[]).await.unwrap();
+        assert_eq!(m.total_chunks, 0);
+        assert_eq!(m.total_bytes, 0);
+    }
+
+    #[tokio::test]
+    async fn test_contiguous_new_chunks_single_segment() {
+        let mut d = deduper(true);
+        d.process_chunks(&[chunk(b"aa"), chunk(b"bb"), chunk(b"cc")]).await.unwrap();
+
+        let (_, data_agg, _) = d.finalize(None);
+        assert_eq!(data_agg.pending_file_info[0].0.segments.len(), 1);
+        assert_eq!(data_agg.pending_file_info[0].0.segments[0].unpacked_segment_bytes, 6);
+    }
+
+    #[tokio::test]
+    async fn test_finalize_same_hash_regardless_of_dedup() {
+        let chunks = vec![chunk(b"aa"), chunk(b"bb"), chunk(b"aa"), chunk(b"bb")];
+
+        let mut d_on = deduper(true);
+        d_on.process_chunks(&chunks.clone()).await.unwrap();
+        let (hash_on, _, _) = d_on.finalize(None);
+
+        let mut d_off = deduper(false);
+        d_off.process_chunks(&chunks).await.unwrap();
+        let (hash_off, _, _) = d_off.finalize(None);
+
+        assert_eq!(hash_on, hash_off);
+        assert_ne!(hash_on, MerkleHash::default());
+    }
+
+    #[tokio::test]
+    async fn test_finalize_accumulates_metrics() {
+        let mut d = deduper(true);
+        let c = chunk(b"data");
+        let m1 = d.process_chunks(&[c.clone()]).await.unwrap();
+        let m2 = d.process_chunks(&[c]).await.unwrap();
+
+        let (_, _, total) = d.finalize(None);
+        assert_eq!(total.total_chunks, m1.total_chunks + m2.total_chunks);
+        assert_eq!(total.new_chunks, m1.new_chunks + m2.new_chunks);
+        assert_eq!(total.deduped_chunks, m1.deduped_chunks + m2.deduped_chunks);
+    }
+
+    #[tokio::test]
+    async fn test_mixed_external_and_new_segments() {
+        let known = chunk(b"known");
+        let mock = MockDataInterface::new().add_dedup(known.hash, (1, ext_fse(5, 0, 1), true));
+
+        let mut d = deduper_with(mock, true);
+        d.process_chunks(&[known, chunk(b"new1"), chunk(b"new2")]).await.unwrap();
+
+        let (_, data_agg, metrics) = d.finalize(None);
+        assert_eq!(metrics.deduped_chunks, 1);
+        assert_eq!(metrics.new_chunks, 2);
+        let segments = &data_agg.pending_file_info[0].0.segments;
+        assert_eq!(segments.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_dedup_with_interleaved_new_and_repeated() {
+        let a = chunk(b"aaaa");
+        let b = chunk(b"bbbb");
+        let c = chunk(b"cccc");
+
+        let mut d = deduper(true);
+        // [A, B, C, B] → B at idx 3 dedupes, A and C are new, first B is new
+        let m = d.process_chunks(&[a, b.clone(), c, b]).await.unwrap();
+        assert_eq!(m.new_chunks, 3);
+        assert_eq!(m.deduped_chunks, 1);
+        assert_eq!(m.total_chunks, 4);
     }
 }

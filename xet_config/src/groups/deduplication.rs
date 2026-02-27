@@ -1,4 +1,9 @@
 crate::config_group!({
+    /// Enable deduplication; if false, then deduplication is disabled.  Note that
+    /// this may result in significantly higher data and memory usage.
+    ref enable_deduplication: bool = true;
+
+
     /// Number of ranges to use when estimating fragmentation
     ///
     /// The default value is 128.
@@ -17,6 +22,7 @@ crate::config_group!({
     ///
     /// Use the environment variable `HF_XET_DEDUPLICATION_MIN_N_CHUNKS_PER_RANGE_HYSTERESIS_FACTOR` to set this value.
     ref min_n_chunks_per_range_hysteresis_factor: f32 = 0.5;
+
     /// Minimum number of chunks per range.
     ///
     /// The default value is 8.0.

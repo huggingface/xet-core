@@ -648,6 +648,7 @@ dependencies = [
  "more-asserts",
  "progress_tracking",
  "utils",
+ "xet_config",
  "xet_runtime",
 ]
 
@@ -1163,6 +1164,7 @@ dependencies = [
  "wasm-bindgen-test",
  "wasm_thread",
  "web-sys",
+ "xet_runtime",
 ]
 
 [[package]]
