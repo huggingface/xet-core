@@ -412,7 +412,7 @@ impl Client for RemoteClient {
                         let part_bodies: Vec<Bytes> = if content_type.contains("multipart/byteranges") {
                             let multipart_parts =
                                 crate::multipart::parse_multipart_byteranges(&content_type, body)
-                                    .map_err(|e| RetryableReqwestError::FatalError(e))?;
+                                    .map_err(RetryableReqwestError::FatalError)?;
 
                             if multipart_parts.len() != expected_parts {
                                 return Err(RetryableReqwestError::FatalError(CasClientError::Other(format!(
