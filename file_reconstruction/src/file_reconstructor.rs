@@ -1,11 +1,13 @@
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 
 use cas_client::Client;
 use cas_types::FileRange;
 use merklehash::MerkleHash;
 use progress_tracking::download_tracking::DownloadTaskUpdater;
 use tracing::{debug, info};
-use utils::ResourceSemaphore;
+use utils::ClosureGuard;
+use utils::adjustable_semaphore::AdjustableSemaphore;
 use xet_config::ReconstructionConfig;
 use xet_runtime::{XetRuntime, xet_config};
 
@@ -25,7 +27,7 @@ pub struct FileReconstructor {
     config: Arc<ReconstructionConfig>,
 
     /// Custom buffer semaphore for testing or specialized use cases.
-    custom_buffer_semaphore: Option<ResourceSemaphore>,
+    custom_buffer_semaphore: Option<Arc<AdjustableSemaphore>>,
 }
 
 impl FileReconstructor {
@@ -74,7 +76,7 @@ impl FileReconstructor {
     /// Sets a custom buffer semaphore for controlling download buffer memory usage.
     /// This is primarily useful for testing scenarios where you want to control
     /// the timing of term fetches by limiting buffer capacity.
-    pub fn with_buffer_semaphore(self, semaphore: ResourceSemaphore) -> Self {
+    pub fn with_buffer_semaphore(self, semaphore: Arc<AdjustableSemaphore>) -> Self {
         Self {
             custom_buffer_semaphore: Some(semaphore),
             ..self
@@ -113,11 +115,39 @@ impl FileReconstructor {
 
         let data_writer = new_data_writer(output, requested_range.start, &config, progress_updater.clone())?;
 
-        // Determine buffer semaphore based on whether a custom one is provided.
-        let download_buffer_semaphore = custom_buffer_semaphore.unwrap_or_else(|| {
-            let rt = XetRuntime::current();
-            rt.common().reconstruction_download_buffer.clone()
-        });
+        let using_global_memory_limit = custom_buffer_semaphore.is_none();
+        let download_buffer_semaphore = custom_buffer_semaphore
+            .unwrap_or_else(|| XetRuntime::current().common().reconstruction_download_buffer.clone());
+
+        // Dynamic buffer scaling: the target buffer size grows with the number of active
+        // downloads: target = (base + n * perfile).min(limit). On start we increment to
+        // the new target, possibly getting back a virtual permit that lets this download begin
+        // immediately without queuing behind existing acquires. On exit, the ClosureGuard
+        // recomputes the target for the reduced download count and shrinks back if needed.
+        let mut seed_buffer_permit;
+        let _download_count_decrement_guard;
+
+        if using_global_memory_limit {
+            let active_downloads = XetRuntime::current().common().active_downloads.clone();
+            let n = active_downloads.fetch_add(1, Ordering::Relaxed) + 1;
+
+            let base = config.download_buffer_size.as_u64();
+            let perfile = config.download_buffer_perfile_size.as_u64();
+            let limit = config.download_buffer_limit.as_u64();
+
+            let target = base.saturating_add(n.saturating_mul(perfile)).min(limit);
+            seed_buffer_permit = download_buffer_semaphore.increment_permits_to_target(target);
+
+            let buffer_sem = download_buffer_semaphore.clone();
+            _download_count_decrement_guard = Some(ClosureGuard::new(move || {
+                let n = active_downloads.fetch_sub(1, Ordering::Relaxed).saturating_sub(1);
+                let target = base.saturating_add(n.saturating_mul(perfile)).min(limit);
+                buffer_sem.decrement_permits_to_target(target);
+            }));
+        } else {
+            seed_buffer_permit = None;
+            _download_count_decrement_guard = None;
+        }
 
         // The range start offset - we need to adjust byte ranges to be relative to this.
         let range_start_offset = requested_range.start;
@@ -155,11 +185,23 @@ impl FileReconstructor {
                     "Processing file term"
                 );
 
-                // Acquire a permit from the memory limiter for the memory needed for
-                // the next term. The ResourceSemaphore handles scaling and clamping.
-                let buffer_permit = download_buffer_semaphore.acquire_owned(term_size).await.map_err(|e| {
-                    FileReconstructionError::InternalError(format!("Error acquiring download buffer permit: {e}"))
-                })?;
+                // Try to split from the reserved (virtual) permit first, giving this
+                // download immediate access without waiting in the FIFO queue.
+                // Fall back to the shared semaphore if the seed permit has been exhausted.
+                let buffer_permit = match seed_buffer_permit.as_mut().and_then(|rp| rp.split(term_size)) {
+                    Some(split) => split,
+                    None => {
+                        // Release any residual if present.
+                        seed_buffer_permit = None;
+
+                        // Acquire the buffer permit from the global memory semaphore.
+                        download_buffer_semaphore.acquire_many(term_size).await.map_err(|e| {
+                            FileReconstructionError::InternalError(format!(
+                                "Error acquiring download buffer permit: {e}"
+                            ))
+                        })?
+                    },
+                };
 
                 // Get the data future that will retrieve the term's data.
                 let data_future = file_term.get_data_task(client.clone(), progress_updater.clone()).await?;
@@ -890,7 +932,7 @@ mod tests {
 
         // Create a tiny semaphore (1 permit) to force sequential processing
         // This ensures each term is fully written before the next is fetched
-        let tiny_semaphore = ResourceSemaphore::new(1);
+        let tiny_semaphore = AdjustableSemaphore::new(1, (1, 1));
 
         let reconstructor = FileReconstructor::new(
             &(client.clone() as Arc<dyn Client>),
@@ -931,7 +973,7 @@ mod tests {
         let writer = TimeAdvancingWriter::new(Duration::from_secs(2));
         let writer_buffer = writer.buffer.clone();
 
-        let tiny_semaphore = ResourceSemaphore::new(1);
+        let tiny_semaphore = AdjustableSemaphore::new(1, (1, 1));
 
         let reconstructor = FileReconstructor::new(
             &(client.clone() as Arc<dyn Client>),
@@ -960,7 +1002,7 @@ mod tests {
         let writer = TimeAdvancingWriter::new(Duration::from_secs(2));
         let writer_buffer = writer.buffer.clone();
 
-        let tiny_semaphore = ResourceSemaphore::new(1);
+        let tiny_semaphore = AdjustableSemaphore::new(1, (1, 1));
 
         let reconstructor = FileReconstructor::new(
             &(client.clone() as Arc<dyn Client>),
@@ -989,7 +1031,7 @@ mod tests {
         let writer = TimeAdvancingWriter::new(Duration::from_millis(100));
         let writer_buffer = writer.buffer.clone();
 
-        let tiny_semaphore = ResourceSemaphore::new(1);
+        let tiny_semaphore = AdjustableSemaphore::new(1, (1, 1));
 
         let reconstructor = FileReconstructor::new(
             &(client.clone() as Arc<dyn Client>),
@@ -1017,7 +1059,7 @@ mod tests {
         let writer = TimeAdvancingWriter::new(Duration::from_secs(2));
         let writer_buffer = writer.buffer.clone();
 
-        let tiny_semaphore = ResourceSemaphore::new(1);
+        let tiny_semaphore = AdjustableSemaphore::new(1, (0, 1));
 
         let range = FileRange::new(file_len / 4, file_len * 3 / 4);
 
@@ -1035,6 +1077,38 @@ mod tests {
         let reconstructed = writer_buffer.lock().unwrap().clone();
         let expected = &file_contents.data[range.start as usize..range.end as usize];
         assert_eq!(reconstructed, expected);
+    }
+
+    #[test]
+    fn test_dynamic_buffer_scaling_noop_increment_preserves_total_permits() {
+        let mut runtime_config = xet_config::XetConfig::new();
+        runtime_config.reconstruction.download_buffer_size = utils::ByteSize::from("1kb");
+        runtime_config.reconstruction.download_buffer_limit = utils::ByteSize::from("4kb");
+        let expected_total = runtime_config.reconstruction.download_buffer_limit.as_u64();
+
+        let rt = XetRuntime::new_with_config(runtime_config).unwrap();
+
+        rt.external_run_async_task(async move {
+            let (client, file_contents) = setup_test_file(&[(1, (0, 2)), (2, (0, 2)), (3, (0, 2))]).await;
+            let sem = XetRuntime::current().common().reconstruction_download_buffer.clone();
+
+            // Pre-grow to max so the run's increment request is a no-op.
+            let p = sem.increment_total_permits(u64::MAX).unwrap();
+            drop(p);
+            assert_eq!(sem.total_permits(), expected_total);
+
+            let mut config = test_config();
+            config.download_buffer_perfile_size = utils::ByteSize::from("8kb");
+
+            let reconstructed = reconstruct_to_vec(&client, file_contents.file_hash, None, &config)
+                .await
+                .unwrap();
+            assert_eq!(reconstructed, file_contents.data);
+
+            assert_eq!(sem.total_permits(), expected_total);
+            assert_eq!(XetRuntime::current().common().active_downloads.load(Ordering::Relaxed), 0);
+        })
+        .unwrap();
     }
 
     // ==================== File Output Specific Tests ====================
